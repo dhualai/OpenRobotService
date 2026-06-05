@@ -1,0 +1,32 @@
+# 代码归属（CODEOWNERS）
+# 改动对应目录时，GitHub 自动指派该 owner 评审。
+# 占位用 @团队成员，正式使用时替换为真实 GitHub 用户名。
+#
+# 分工详见 docs/TEAM.md
+
+# ===== 基础框架（共建底座） =====
+/backend/app/core/        @backend-engineer
+/backend/app/models/      @backend-engineer
+/backend/app/schemas/     @backend-engineer
+/backend/app/wechat/      @backend-engineer
+/backend/app/kb/          @ai-engineer
+/backend/app/ai/          @ai-engineer
+/frontend/src/shared/     @frontend-engineer
+/frontend/src/router/     @frontend-engineer
+/frontend/src/api/        @frontend-engineer
+
+# ===== 功能模块（垂直 owner） =====
+# 我要摇人（需求侧）
+/backend/app/modules/call/    @frontend-engineer
+/frontend/src/views/call/     @frontend-engineer
+# 系统任务（供给侧）
+/backend/app/modules/tasks/   @backend-engineer
+/frontend/src/views/tasks/    @backend-engineer
+# 后台管理（管理侧）
+/backend/app/modules/admin/   @product-manager
+/frontend/src/views/admin/    @product-manager
+
+# ===== 文档 / 架构契约（总负责人把关） =====
+/docs/                    @lead
+/.github/                 @lead
+*.md                      @lead

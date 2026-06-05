@@ -1,0 +1,94 @@
+version: 1
+
+scope:
+  include:
+    - "backend/app/ai/agents/AiDataAnalysisPlatform/**"
+  exclude: []
+
+repowiki:
+  template: "architecture"
+  notes:
+    - text: "AI数据分析平台采用三层架构：config（环境变量驱动的多厂商配置）→ llm_client（基于 OpenAI SDK 的统一客户端）→ analyzer（数据预处理+LLM调用+结果解析），最上层由 agent.py 作为 Facade 编排，router.py 暴露 HTTP 接口。"
+    - text: "所有 LLM 提供商（DeepSeek/Qwen/GLM/SiliconFlow）均通过 OpenAI 兼容 API 调用，只需切换 base_url 和 api_key，不引入厂商私有 SDK。"
+    - text: "分析类型枚举 AnalysisType（general/fault/task_stats/risk/trend/custom）驱动 prompts.py 中的提示词选择，每种类型有独立的系统指令模板。"
+    - text: "analyzer.py 的 preprocess_data 方法负责数据格式转换：JSON 美化、CSV 转 Markdown 表格（使用 pandas+tabulate），其他格式原样传递给 LLM。"
+    - text: "流式输出使用 SSE（Server-Sent Events）格式，router.py 中通过 chr(10) 构造换行符而非直接使用转义序列。"
+    - text: "Agent 采用延迟初始化单例模式，首次调用 get_agent() 时从环境变量读取配置并创建实例，reset_agent() 用于测试重置。"
+  documents:
+    - title: "AI数据分析平台概览"
+      goal: "介绍平台整体架构、模块职责边界、技术选型和核心设计决策"
+      parent: ""
+      template: |
+        ## 模块定位
+        ## 目录结构
+        ## 核心架构图
+        ## 技术选型
+        ## 快速开始
+
+    - title: "配置管理"
+      goal: "深入解析 config.py 的多厂商配置机制、环境变量映射和 AnalysisConfig 工厂方法"
+      parent: "AI数据分析平台概览"
+      template: |
+        ## 配置架构
+        ## 支持的提供商
+        ## 环境变量映射表
+        ## AnalysisConfig.from_env() 工厂方法
+        ## 配置验证逻辑
+
+    - title: "LLM客户端"
+      goal: "解析 llm_client.py 如何通过 AsyncOpenAI 统一调用各开源大模型，包括同步和流式接口"
+      parent: "AI数据分析平台概览"
+      template: |
+        ## 设计理念
+        ## LLMClient 类结构
+        ## chat() 同步接口
+        ## chat_stream() 流式接口
+        ## 多厂商兼容性
+
+    - title: "数据分析引擎"
+      goal: "解析 analyzer.py 的数据预处理、LLM 调用编排和结构化结果解析逻辑"
+      parent: "AI数据分析平台概览"
+      template: |
+        ## DataAnalyzer 类结构
+        ## 数据预处理（preprocess_data）
+        ## 分析流程（analyze / analyze_stream）
+        ## 结果解析（_parse_result / _extract_summary / _extract_insights / _extract_recommendations）
+
+    - title: "Agent编排器"
+      goal: "解析 agent.py 的 Facade 模式设计，如何整合所有组件提供统一入口"
+      parent: "AI数据分析平台概览"
+      template: |
+        ## DataAnalysisAgent 设计
+        ## Facade 模式
+        ## 对外接口（analyze / analyze_stream / chat / health_check）
+        ## 单例管理
+
+    - title: "API路由"
+      goal: "解析 router.py 的 HTTP 端点设计，包括数据分析、流式输出、快速对话和健康检查"
+      parent: "AI数据分析平台概览"
+      template: |
+        ## 路由端点总览
+        ## POST /analyze 数据分析
+        ## SSE 流式输出
+        ## POST /chat 快速对话
+        ## GET /health 健康检查
+        ## GET /types 类型枚举
+
+    - title: "数据模型与提示词"
+      goal: "解析 schemas.py 的 Pydantic 模型定义和 prompts.py 的提示词模板体系"
+      parent: "AI数据分析平台概览"
+      template: |
+        ## 分析类型枚举（AnalysisType）
+        ## 请求/响应 Schema
+        ## 系统提示词体系
+        ## 用户消息构建
+        ## 提示词与分析类型的映射
+
+knowledgecard:
+  notes:
+    - text: "模块边界：AiDataAnalysisPlatform 仅负责 LLM 调用和数据分析，不包含知识库 RAG 检索（由 app/kb/ 模块负责）和对话上下文管理。"
+    - text: "所有提供商均通过 OpenAI 兼容 API 调用，底层使用 openai Python SDK 的 AsyncOpenAI 客户端，无需引入厂商私有 SDK。"
+    - text: "AnalysisType 枚举是整个模块的核心驱动器：它决定系统提示词（prompts.py）、分析指令和结果解析策略。新增分析类型只需在 schemas.py 加枚举值 + prompts.py 加指令模板。"
+    - text: "analyzer.py 的 _parse_result 方法使用正则表达式从 LLM 的 Markdown 回复中提取摘要、洞察（###标题）和建议列表，是脆弱点——LLM 输出格式偏离时解析可能降级。"
+    - text: "router.py 中 SSE 流式输出使用 chr(10) 代替转义序列 \\n 构造换行符，这是为了避免内容生成工具截断的工程规避措施。"
+    - text: "Agent 单例通过模块级全局变量 _agent 实现，延迟初始化——首次请求时才读取环境变量并创建 LLMClient，便于配置变更后通过 reset_agent() 热重载。"
