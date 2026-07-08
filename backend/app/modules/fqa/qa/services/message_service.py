@@ -1,0 +1,118 @@
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, desc
+from typing import Optional, List, Dict
+from app.modules.fqa.qa.models.message import Message, MessageRole, MessageType
+from app.modules.fqa.qa.schemas.message import MessageCreate, MessageUpdate
+from app.modules.fqa.utils.database_utils import DatabaseUtils
+from app.modules.fqa.utils.data_utils import safe_json_loads, safe_json_dumps, generate_content_preview
+
+
+class MessageService:
+    @staticmethod
+    async def create_message(db: AsyncSession, message: MessageCreate) -> Message:
+        max_sequence = await db.scalar(
+            select(func.max(Message.sequence))
+            .filter(Message.conversation_id == message.conversation_id)
+        )
+        
+        message_data = message.dict()
+        message_data["sequence"] = (max_sequence or 0) + 1
+        
+        if message_data.get("file_urls") is not None:
+            message_data["file_urls"] = safe_json_dumps(message_data["file_urls"])
+        if message_data.get("metadata_") is not None:
+            message_data["metadata_"] = safe_json_dumps(message_data["metadata_"])
+        
+        return await DatabaseUtils.create_and_commit(db, Message, **message_data)
+
+    @staticmethod
+    async def get_message(db: AsyncSession, message_id: int) -> Optional[Message]:
+        return await DatabaseUtils.get_by_id(db, Message, message_id)
+
+    @staticmethod
+    async def get_messages_by_conversation(db: AsyncSession, conversation_id: int, skip: int = 0, limit: int = 100) -> List[Message]:
+        result = await db.execute(
+            select(Message)
+            .filter(Message.conversation_id == conversation_id)
+            .order_by(Message.sequence)
+            .offset(skip)
+            .limit(limit)
+        )
+        return result.scalars().all()
+
+    @staticmethod
+    async def get_messages_brief_by_conversation(db: AsyncSession, conversation_id: int) -> List[Dict]:
+        result = await db.execute(
+            select(Message)
+            .filter(Message.conversation_id == conversation_id)
+            .order_by(Message.sequence)
+        )
+        messages = result.scalars().all()
+        
+        return [
+            {
+                "id": msg.id,
+                "role": msg.role.value,
+                "content_preview": generate_content_preview(msg.content),
+                "created_at": msg.created_at
+            }
+            for msg in messages
+        ]
+
+    @staticmethod
+    async def get_conversation_history(db: AsyncSession, conversation_id: int, limit: int = 10) -> List[Dict[str, str]]:
+        result = await db.execute(
+            select(Message)
+            .filter(Message.conversation_id == conversation_id)
+            .order_by(desc(Message.sequence))
+            .limit(limit)
+        )
+        messages = result.scalars().all()
+        
+        return [
+            {
+                "role": msg.role.value,
+                "content": msg.content
+            }
+            for msg in reversed(messages)
+        ]
+
+    @staticmethod
+    async def update_message(db: AsyncSession, message_id: int, message: MessageUpdate) -> Optional[Message]:
+        db_message = await DatabaseUtils.get_by_id(db, Message, message_id)
+        if not db_message:
+            return None
+        
+        update_data = message.dict(exclude_unset=True)
+        if update_data.get("file_urls") is not None:
+            update_data["file_urls"] = safe_json_dumps(update_data["file_urls"])
+        if update_data.get("metadata_") is not None:
+            update_data["metadata_"] = safe_json_dumps(update_data["metadata_"])
+        
+        for field, value in update_data.items():
+            setattr(db_message, field, value)
+        
+        return await DatabaseUtils.commit_and_refresh(db, db_message)
+
+    @staticmethod
+    async def delete_message(db: AsyncSession, message_id: int) -> bool:
+        message = await DatabaseUtils.get_by_id(db, Message, message_id)
+        if not message:
+            return False
+        
+        await db.delete(message)
+        await db.commit()
+        return True
+
+    @staticmethod
+    async def delete_messages_by_conversation(db: AsyncSession, conversation_id: int) -> int:
+        result = await db.execute(
+            select(Message).filter(Message.conversation_id == conversation_id)
+        )
+        messages = result.scalars().all()
+        
+        for message in messages:
+            await db.delete(message)
+        
+        await db.commit()
+        return len(messages)

@@ -1,0 +1,840 @@
+
+<!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>AGV任务统计报表</title>
+        <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+        <script>
+            // 系统配置
+            const SYSTEM_CONFIG = {
+                // API配置
+                api: {
+                    baseUrl: 'http://125.122.97.107:8801',
+                    endpoints: {
+                        dataAccess: '/api/data/access/'
+                    }
+                }
+            };
+
+            // 从URL参数中获取token
+            function getWechatToken() {
+                // 优先从localStorage获取
+                const localStorageToken = localStorage.getItem('wechat_token');
+                console.log('从localStorage获取的wechat_token:', localStorageToken);
+                
+                // 如果localStorage中有，直接返回
+                if (localStorageToken) {
+                    return localStorageToken;
+                }
+                
+                // 如果localStorage中没有，再尝试从URL参数获取
+                const urlParams = new URLSearchParams(window.location.search);
+                const urlToken = urlParams.get('token');
+                console.log('从URL获取的token:', urlToken);
+                
+                return urlToken || '';
+            }
+            
+            // 从URL路径中提取project_id和indicator_id
+            function getPathParams() {
+                // 获取当前URL路径
+                const path = window.location.pathname;
+                console.log('当前URL路径:', path);
+                
+                // 分割路径
+                const pathParts = path.split('/').filter(part => part !== '');
+                console.log('路径分割结果:', pathParts);
+                
+                // 假设路径格式为 /projects/{project_id}/{indicator_id} 或类似格式
+                // 找到最后两个非空部分作为project_id和indicator_id
+                let project_id = '';
+                let indicator_id = '';
+                
+                if (pathParts.length >= 2) {
+                    // 取倒数第二个作为project_id，最后一个作为indicator_id
+                    project_id = pathParts[pathParts.length - 2];
+                    indicator_id = pathParts[pathParts.length - 1];
+                    
+                    // 如果indicator_id包含.html，去除扩展名
+                    if (indicator_id.endsWith('.html')) {
+                        indicator_id = indicator_id.replace('.html', '');
+                    }
+                }
+                
+                console.log('提取的project_id:', project_id);
+                console.log('提取的indicator_id:', indicator_id);
+                
+                return { project_id, indicator_id };
+            }
+            
+            // 在页面加载时获取wechat_token
+            const currentToken = getWechatToken();
+            if (currentToken) {
+                // 存储到localStorage以便后续使用
+                localStorage.setItem('wechat_token', currentToken);
+            }
+            
+            tailwind.config = {
+                darkMode: 'class',
+                theme: {
+                    extend: {}
+                }
+            }
+        </script>
+        <script>
+            // 自定义样式定义
+            const colors = {
+                primary: '#FF4757',    // 红色
+                secondary: '#FF6348',   // 番茄红
+                success: '#26DE81',     // 亮绿色
+                warning: '#FFD32A',     // 黄色
+                danger: '#FC5C65',      // 珊瑚红
+                info: '#45AAF2'         // 亮蓝色
+            }
+        </script>
+        <style type="text/tailwindcss">
+            @layer utilities {
+                .content-auto {
+                    content-visibility: auto;
+                }
+                .card-shadow {
+                    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+                }
+                .hover-scale {
+                    transition: transform 0.2s ease;
+                }
+                .hover-scale:hover {
+                    transform: scale(1.02);
+                }
+            }
+        </style>
+    </head>
+    <body class="bg-gray-50">
+        <div class="container mx-auto px-4 py-8">
+            <!-- 页面标题 -->
+            <div class="text-center mb-8">
+                <h1 class="text-2xl font-bold text-gray-800 mb-2">AGV任务统计报表</h1>
+                <p id="report-time-range" class="text-gray-500">统计时间: 加载中...</p>
+                <p id="report-generate-time" class="text-gray-500">报表生成时间: 加载中...</p>
+            </div>
+
+            <!-- 关键指标卡片 -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+                <div class="bg-white rounded-lg p-4 card-shadow hover-scale">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-500">总计任务数</p>
+                            <h3 id="total-tasks-count" class="text-2xl font-bold text-blue-500">0</h3>
+                            <p class="text-xs text-green-500 mt-1"><i class="fa fa-arrow-up"></i> 完成或强制完成的搬运/充电/休息任务</p>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center">
+                            <i class="fa fa-th-list text-blue-400 text-xl"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white rounded-lg p-4 card-shadow hover-scale">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-500">活跃机器人</p>
+                            <h3 id="active-robots-count" class="text-2xl font-bold text-purple-500">0</h3>
+                            <p class="text-xs text-purple-500 mt-1"><i class="fa fa-circle text-xs mr-1"></i> 执行过任务的机器人</p>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-purple-50 flex items-center justify-center">
+                            <i class="fa fa-microchip text-purple-400 text-xl"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white rounded-lg p-4 card-shadow hover-scale">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-500">任务类型数量</p>
+                            <h3 id="task-types-count" class="text-2xl font-bold text-indigo-500">0</h3>
+                            <p class="text-xs text-indigo-500 mt-1"><i class="fa fa-check"></i> 机器人组数量</p>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-indigo-50 flex items-center justify-center">
+                            <i class="fa fa-users text-indigo-400 text-xl"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white rounded-lg p-4 card-shadow hover-scale">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-500">产线任务</p>
+                            <h3 id="line-tasks-count" class="text-2xl font-bold text-orange-500">0</h3>
+                            <p class="text-xs text-orange-500 mt-1"><i class="fa fa-industry text-xs mr-1"></i> ZCO任务数量</p>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-orange-50 flex items-center justify-center">
+                            <i class="fa fa-cogs text-orange-400 text-xl"></i>
+                        </div>
+                    </div>
+                </div>
+                
+
+            </div>
+
+            <!-- 任务类型卡片 -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div class="bg-white rounded-lg p-4 card-shadow hover-scale">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-500">出库任务</p>
+                            <h3 id="out-tasks-count" class="text-2xl font-bold text-red-500">0</h3>
+                            <p class="text-xs text-gray-400 mt-1">包括完成和强制完成</p>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center">
+                            <i class="fa fa-sign-out text-red-400 text-xl"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white rounded-lg p-4 card-shadow hover-scale">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-500">入库任务</p>
+                            <h3 id="in-tasks-count" class="text-2xl font-bold text-blue-500">0</h3>
+                            <p class="text-xs text-gray-400 mt-1">包括完成和强制完成</p>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center">
+                            <i class="fa fa-sign-in text-blue-400 text-xl"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white rounded-lg p-4 card-shadow hover-scale">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-500">移库任务</p>
+                            <h3 id="move-tasks-count" class="text-2xl font-bold text-yellow-500">0</h3>
+                            <p class="text-xs text-gray-400 mt-1">移库任务完成数量</p>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-yellow-50 flex items-center justify-center">
+                            <i class="fa fa-exchange text-yellow-400 text-xl"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white rounded-lg p-4 card-shadow hover-scale">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-500">其他任务</p>
+                            <h3 id="other-tasks-count" class="text-2xl font-bold text-gray-500">0</h3>
+                            <p class="text-xs text-gray-400 mt-1">包括完成和强制完成</p>
+                        </div>
+                        <div class="w-12 h-12 rounded-full bg-gray-50 flex items-center justify-center">
+                            <i class="fa fa-ellipsis-h text-gray-400 text-xl"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 图表区域 -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- 图表1: 机器人任务数量对比 -->
+                <div class="bg-white rounded-lg p-4 card-shadow">
+                    <h3 class="text-lg font-bold text-primary mb-4">机器人任务数量对比</h3>
+                    <div id="robotTaskChart" class="w-full h-80"></div>
+                </div>
+                <!-- 图表2: 各类型任务状态分布 -->
+                <div class="bg-white rounded-lg p-4 card-shadow">
+                    <h3 class="text-lg font-bold text-primary mb-4">各类型任务数量分布</h3>
+                    <div id="taskStatusChart" class="w-full h-80"></div>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            // 按照process_agv_task_data.py的逻辑处理AGV任务数据
+            function processAgvTaskData(data) {
+
+                console.log("processAgvTaskData:",data);
+                // 初始化统计数据
+                const stats = {
+                    total_tasks: data.total_count || 0,
+                    active_robots: 0,
+                    robot_tasks: {},  // 记录每个机器人的任务数量
+                    robot_status_data: {},  // 记录每个机器人的各状态任务数量
+                    in_tasks: {total: 0, Ftotal: 0, status_distribution: {}},
+                    line_tasks: {total: 0, Ftotal: 0, status_distribution: {}},
+                    out_tasks: {total: 0, Ftotal: 0, status_distribution: {}},
+                    move_tasks: {total: 0, Ftotal: 0, status_distribution: {}},
+                    other_tasks: {total: 0, Ftotal: 0, status_distribution: {}},
+                    name_task_data: {},  // 保存原始name类型的任务数据
+                    name_types: new Set(),  // 存储name的种类
+                    group_types: new Set()  // 存储group_id的种类
+
+                };
+                
+                // 提取数据列表
+                const task_list = data.data || [];
+                console.log("task_list:",task_list);
+                // 统计活跃机器人数量
+                const active_robots = new Set();
+                
+                // 遍历任务数据 - 按照指定规则：入库=I相加，产线=zco，出库=zco+o-mj，移库=o-middle+o-window
+                for (const task of task_list) {
+                    const robot_id = task.robot_id || 'unknown';
+                    const task_name = (task.name || '').toLowerCase();  // 从name字段获取任务类型信息
+                    const original_name = task.name || '';  // 保留原始name值（不转换大小写）
+                    const status = task.status || 'unknown';
+                    const count = task.count || 1;
+                    
+                    // 保存原始name类型的任务数据
+                    stats.name_types.add(original_name);
+                    
+                    // 保存group_id类型
+                    if (task.group_id !== undefined && task.group_id !== null) {
+                        stats.group_types.add(task.group_id);
+                    }
+                    
+                    if (!stats.name_task_data[original_name]) {
+                        stats.name_task_data[original_name] = {};
+                    }
+                    if (!stats.name_task_data[original_name][status]) {
+                        stats.name_task_data[original_name][status] = 0;
+                    }
+                    stats.name_task_data[original_name][status] += count;
+                    
+                    // 记录活跃机器人
+                    active_robots.add(robot_id);
+                    
+                    // 统计每个机器人的任务数量
+                    if (!stats.robot_tasks[robot_id]) {
+                        stats.robot_tasks[robot_id] = 0;
+                    }
+                    stats.robot_tasks[robot_id] += count;
+                    
+                    // 统计每个机器人的各状态任务数量
+                    if (!stats.robot_status_data[robot_id]) {
+                        stats.robot_status_data[robot_id] = {};
+                    }
+                    if (!stats.robot_status_data[robot_id][status]) {
+                        stats.robot_status_data[robot_id][status] = 0;
+                    }
+                    stats.robot_status_data[robot_id][status] += count;
+                    
+                    // 任务分类逻辑 - 严格按照指定规则，使用独立判断确保每个分类规则的独立性
+                    let is_other_task = true;
+                    
+                    // 1. 入库任务：所有以i开头的任务
+                    if (task_name.startsWith('i-')) {
+                        stats.in_tasks.total += count;
+                        if (status === 'FINISHED' || status === 'FORCE_FINISH') {
+                            stats.in_tasks.Ftotal += count;
+                        }
+                        stats.in_tasks.status_distribution[status] = (stats.in_tasks.status_distribution[status] || 0) + count;
+                        is_other_task = false;
+                    }
+                    
+                    // 2. 产线任务：只有zco任务
+                    if (task_name === 'zco') {
+                        stats.line_tasks.total += count;
+                        if (status === 'FINISHED' || status === 'FORCE_FINISH') {
+                            stats.line_tasks.Ftotal += count;
+                            stats.out_tasks.Ftotal += count;
+                        }
+                        stats.line_tasks.status_distribution[status] = (stats.line_tasks.status_distribution[status] || 0) + count;
+                        // 同时将zco任务计入出库任务
+                        stats.out_tasks.total += count;
+                        stats.out_tasks.status_distribution[status] = (stats.out_tasks.status_distribution[status] || 0) + count;
+                        is_other_task = false;
+                    }
+                    
+                    // 3. 出库任务：o-mj开头的任务（zco已在上面计入）
+                    else if (task_name.startsWith('o-mj')) {
+                        stats.out_tasks.total += count;
+                        if (status === 'FINISHED' || status === 'FORCE_FINISH') {
+                            stats.out_tasks.Ftotal += count;
+                        }
+                        stats.out_tasks.status_distribution[status] = (stats.out_tasks.status_distribution[status] || 0) + count;
+                        is_other_task = false;
+                    }
+                    
+                    // 4. 移库任务：o-middle、o-window和zco任务
+                    if (task_name === 'zco' || task_name.startsWith('o-middle') || task_name.startsWith('o-window') || task_name.startsWith('o-x')) {
+                        if (task_name === 'zco') {
+                            stats.move_tasks.total -= count;
+                            if (status === 'FINISHED' || status === 'FORCE_FINISH') {
+                                stats.move_tasks.Ftotal -= count;
+                            }
+                            stats.move_tasks.status_distribution[status] = (stats.move_tasks.status_distribution[status] || 0) - count;
+                            is_other_task = false;
+                        } else {
+                            stats.move_tasks.total += count;
+                            if (status === 'FINISHED' || status === 'FORCE_FINISH') {
+                                stats.move_tasks.Ftotal += count;
+                            }
+                            stats.move_tasks.status_distribution[status] = (stats.move_tasks.status_distribution[status] || 0) + count;
+                            is_other_task = false;
+                        }
+                    }
+                    
+                    // 5. 其他任务：不属于以上类别的任务
+                    if (is_other_task) {
+                        stats.other_tasks.total += count;
+                        if (status === 'FINISHED' || status === 'FORCE_FINISH') {
+                            stats.other_tasks.Ftotal += count;
+                        }
+                        stats.other_tasks.status_distribution[status] = (stats.other_tasks.status_distribution[status] || 0) + count;
+                    }
+                }
+                
+                // 计算活跃机器人数量
+                stats.active_robots = active_robots.size;
+                
+                // 转换set为列表以便序列化
+                stats.name_types = Array.from(stats.name_types);
+                stats.group_types = Array.from(stats.group_types);
+
+                
+                return stats;
+            }
+            
+            // 将处理后的数据转换为图表所需的格式
+            function transformToChartFormat(processedData) {
+                // 定义排序函数
+                function sorted(arr) {
+                    return Array.from(arr).sort();
+                }
+                
+                // 提取所有唯一的状态
+                const allStatuses = new Set();
+                Object.values(processedData.robot_status_data).forEach(robotStatus => {
+                    Object.keys(robotStatus).forEach(status => {
+                        allStatuses.add(status);
+                    });
+                });
+                const statuses = Array.from(allStatuses);
+                
+                // 准备机器人任务数据（图表1）
+                const robots = Object.keys(processedData.robot_status_data);
+                const robotSeries = statuses.map(status => {
+                    const data = robots.map(robot => {
+                        return processedData.robot_status_data[robot][status] || 0;
+                    });
+                    return {
+                        name: status,
+                        type: 'bar',
+                        stack: 'total',
+                        emphasis: {
+                            focus: 'series'
+                        },
+                        data: data
+                    };
+                });
+                
+                // 准备任务状态分布数据（图表2）- 与后端generate_task_status_chart_data函数保持一致
+                // 从processedData中获取name_task_data（如果存在）
+                const nameTaskData = processedData.name_task_data || {};
+                
+                // 获取所有任务类型（name值）并排序
+                const taskTypes = sorted(Object.keys(nameTaskData));
+                
+                const taskSeries = statuses.map(status => {
+                    const data = taskTypes.map(taskType => {
+                        // 从nameTaskData中获取对应任务类型和状态的数据
+                        return nameTaskData[taskType]?.[status] || 0;
+                    });
+                    return {
+                        name: status,
+                        type: 'bar',
+                        stack: 'total',
+                        emphasis: {
+                            focus: 'series'
+                        },
+                        data: data
+                    };
+                });
+                
+                // 更新页面上的统计数据
+                updateSummaryStats(processedData);
+                
+                return {
+                    robotTaskData: {
+                        robots: robots,
+                        statuses: statuses,
+                        series: robotSeries
+                    },
+                    taskStatusData: {
+                        types: taskTypes,  // 使用实际的name值作为x轴
+                        statuses: statuses,
+                        series: taskSeries
+                    }
+                };
+            }
+            
+            // 更新页面上的统计数据
+            function updateSummaryStats(stats) {
+                // 更新总计任务数
+                const totalTasksElement = document.getElementById('total-tasks-count');
+                if (totalTasksElement) {
+                    totalTasksElement.textContent = stats.total_tasks || 0;
+                }
+                
+                // 活跃机器人 - 使用ID选择器直接更新
+                const activeRobotsElement = document.getElementById('active-robots-count');
+                if (activeRobotsElement) {
+                    // 添加安全检查，确保即使active_robots未定义也能显示0
+                    activeRobotsElement.textContent = stats.active_robots || 0;
+                }
+                
+                // 任务类型数量 - 使用ID选择器直接更新
+                const taskTypesElement = document.getElementById('task-types-count');
+                if (taskTypesElement) {
+                    let taskTypesCount = 0;
+                    
+                    // 全面处理name_types可能的数据格式
+                    if (stats.name_types) {
+                        // 处理Set对象
+                        if (typeof stats.name_types.size === 'number') {
+                            taskTypesCount = stats.name_types.size;
+                        }
+                        // 处理数组
+                        else if (Array.isArray(stats.name_types)) {
+                            taskTypesCount = stats.name_types.length;
+                        }
+                        // 处理JSON序列化后的Set（可能是对象或其他格式）
+                        else if (typeof stats.name_types === 'object') {
+                            // 尝试获取键的数量（可能是序列化后的格式）
+                            taskTypesCount = Object.keys(stats.name_types).length;
+                        }
+                    }
+                    
+                    taskTypesElement.textContent = taskTypesCount;
+                }
+                
+                // 更新产线任务数量
+                const lineTasksElement = document.getElementById('line-tasks-count');
+                if (lineTasksElement) {
+                    lineTasksElement.textContent = stats.line_tasks?.Ftotal || 0;
+                }
+                
+                // 更新出库任务数量
+                const outTasksElement = document.getElementById('out-tasks-count');
+                if (outTasksElement) {
+                    outTasksElement.textContent = stats.out_tasks?.Ftotal || 0;
+                }
+                
+                // 更新入库任务数量
+                const inTasksElement = document.getElementById('in-tasks-count');
+                if (inTasksElement) {
+                    inTasksElement.textContent = stats.in_tasks?.Ftotal || 0;
+                }
+                
+                // 更新移库任务数量
+                const moveTasksElement = document.getElementById('move-tasks-count');
+                if (moveTasksElement) {
+                    moveTasksElement.textContent = stats.move_tasks?.Ftotal || 0;
+                }
+                
+                // 更新其他任务数量
+                const otherTasksElement = document.getElementById('other-tasks-count');
+                if (otherTasksElement) {
+                    otherTasksElement.textContent = stats.other_tasks?.Ftotal || 0;
+                }
+            }
+            
+            // 从API获取AGV任务数据
+            async function fetchAgvTaskData() {
+                // 获取token
+                const authToken = getWechatToken();
+                
+                // 设置请求头
+                const requestHeaders = { 'Content-Type': 'application/json' };
+                if (authToken) {
+                    requestHeaders["Authorization"] = `Bearer ${authToken}`;
+                } else {
+                    // 使用测试token作为备选
+                    requestHeaders["Authorization"] = "Bearer test_token";
+                }
+                
+                try {
+                    // 从URL路径中获取project_id和indicator_id
+                    const { project_id, indicator_id } = getPathParams();
+                    
+                    // 构建请求体参数
+                    const requestBody = {
+                        project: project_id,
+                        tag: indicator_id,
+                        indicator: ['*']
+                    };
+                    
+                    console.log('构建的请求体参数:', requestBody);
+                    
+                    // 调用指定的API接口（改为POST请求）
+                    const response = await fetch(`${SYSTEM_CONFIG.api.baseUrl}${SYSTEM_CONFIG.api.endpoints.dataAccess}`, {
+                        method: 'POST',
+                        headers: requestHeaders,
+                        body: JSON.stringify(requestBody)
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`获取AGV任务数据失败: ${response.status}`);
+                    }
+                    
+                    const responseData = await response.json();
+                    console.log('获取到的AGV任务原始数据:', responseData);
+                    
+                    // 提取access.json格式中的value.data部分
+                    const rawData = responseData.data && responseData.data[0] && responseData.data[0].content[0] ? 
+                        responseData.data[0].content[0] : responseData;
+                    const report_time = responseData.data[0].collection_time || 'N/A';
+                    // 按照process_agv_task_data.py的逻辑处理数据
+                    console.log('report_time:', report_time);
+                    console.log('rawData:', rawData);
+                    const processedData = processAgvTaskData(rawData);
+                    console.log('处理后的AGV任务数据:', processedData);
+                    
+                    // 转换为图表所需的数据格式
+                    const chartData = transformToChartFormat(processedData);
+                    console.log('转换后的图表数据:', chartData);
+                    
+                    // 返回带有stats字段的数据，供卡片更新使用
+                    return {
+                        report_time: report_time || 'N/A',
+                        begin_time: rawData.start_time || 'N/A',
+                        end_time: rawData.end_time || 'N/A',
+                        ...chartData,
+                        stats: processedData
+                    };
+                } catch (error) {
+                    console.error('获取AGV任务数据失败:', error);
+                    // 返回默认数据作为备选
+                    return {};
+                }
+            }
+            
+            // 初始化图表和获取数据
+            async function initCharts() {
+                try {
+                    // 获取数据
+                    const data = await fetchAgvTaskData();
+                    
+                    // 更新报表生成时间
+                    const timestampElement = document.getElementById('report-generate-time');
+                    if (timestampElement) {
+                        try {
+                            // 尝试从不同位置获取timestamp，考虑数据结构的复杂性
+                            let timestamp;
+                            // 尝试直接从data中获取
+                            if (data && data.report_time) {
+                                timestamp = data.report_time;
+                            }
+                            console.log('timestamp:', data);
+                            // 检查是否找到了timestamp
+                            if (timestamp !== undefined) {
+                                const date = new Date(timestamp);
+                                // 检查日期是否有效
+                                if (!isNaN(date.getTime())) {
+                                    // 格式化为本地时间字符串
+                                    const formattedDate = date.toLocaleString();
+                                    timestampElement.textContent = `报表生成时间: ${formattedDate}`;
+                                } else {
+                                    timestampElement.textContent = '报表生成时间: 无效的时间戳';
+                                }
+                            } else {
+                                timestampElement.textContent = '报表生成时间: 数据中无时间戳';
+                            }
+                        } catch (err) {
+                            console.error('更新时间戳失败:', err);
+                            timestampElement.textContent = '报表生成时间: 更新失败';
+                        }
+                    }
+                    
+                    // 更新统计时间范围
+                    const timeRangeElement = document.getElementById('report-time-range');
+                    if (timeRangeElement) {
+                        try {
+                            // 尝试从不同位置获取begin_time和end_time
+                            let beginTime, endTime;
+                            
+               
+                            beginTime = data.begin_time;
+                            endTime = data.end_time;
+                           
+                            // 检查是否找到了时间范围
+                            if (beginTime !== undefined && endTime !== undefined) {
+                                // 格式化时间
+                                const beginDate = new Date(beginTime);
+                                const endDate = new Date(endTime);
+                                
+                                // 检查日期是否有效
+                                if (!isNaN(beginDate.getTime()) && !isNaN(endDate.getTime())) {
+                                    // 格式化为本地时间字符串
+                                    const formattedBegin = beginDate.toLocaleString();
+                                    const formattedEnd = endDate.toLocaleString();
+                                    timeRangeElement.textContent = `统计时间: ${formattedBegin} 至 ${formattedEnd}`;
+                                } else {
+                                    console.warn('无效的时间范围:', beginTime, endTime);
+                                    timeRangeElement.textContent = '统计时间: 未知';
+                                }
+                            } else {
+                                timeRangeElement.textContent = '统计时间: 未知';
+                            }
+                        } catch (e) {
+                            console.error('处理时间范围时出错:', e);
+                            timeRangeElement.textContent = '统计时间: 未知';
+                        }
+                    }
+                    
+                    // 根据接口返回的数据结构调整
+                    const robotTaskData = data.robotTaskData || data; // 兼容不同的数据结构
+                    const taskStatusData = data.taskStatusData || data; // 兼容不同的数据结构
+                    
+                    // 更新卡片数据
+                    if (data.stats) {
+                        updateSummaryStats(data.stats);
+                    }
+                    
+                    // 初始化图表1: 机器人任务数量对比（按状态堆叠）
+                    const robotTaskChart = echarts.init(document.getElementById('robotTaskChart'));
+                    const robotTaskOption = {
+                        tooltip: {
+                            trigger: 'axis',
+                            axisPointer: {
+                                type: 'shadow'
+                            },
+                            // 增加总计计算
+                            formatter: function(params) {
+                                let result = params[0].name + '<br/>';
+                                let total = 0;
+                                params.forEach(item => {
+                                    total += item.value;
+                                    result += item.marker + item.seriesName + ': ' + item.value + '<br/>';
+                                });
+                                result += '<span style="font-weight:bold;">总计: ' + total + '</span>';
+                                return result;
+                            }
+                        },
+                        legend: {
+                            data: robotTaskData.statuses,
+                            top: 30,
+                            type: 'scroll',
+                            orient: 'horizontal',
+                            left: 'center'
+                        },
+                        grid: {
+                            left: '3%',
+                            right: '4%',
+                            bottom: '20%',
+                            top: '15%',
+                            containLabel: true
+                        },
+                        xAxis: {
+                            type: 'category',
+                            data: robotTaskData.robots,
+                            name: '机器人ID',
+                            nameLocation: 'middle',
+                            nameGap: 30,
+                            axisLabel: {
+                                rotate: 45
+                            }
+                        },
+                        yAxis: {
+                            type: 'value',
+                            name: '任务数量',
+                            nameLocation: 'middle',
+                            nameGap: 50
+                        },
+                        series: robotTaskData.series
+                    };
+                    robotTaskChart.setOption(robotTaskOption);
+                    
+                    // 初始化图表2: 各类型任务状态分布
+                    const taskStatusChart = echarts.init(document.getElementById('taskStatusChart'));
+                    const taskStatusOption = {
+                        tooltip: {
+                            trigger: 'axis',
+                            axisPointer: {
+                                type: 'shadow'
+                            },
+                            formatter: function(params) {
+                                let result = params[0].name + '<br/>';
+                                let total = 0;
+                                params.forEach(item => {
+                                    result += item.marker + item.seriesName + ': ' + item.value + '<br/>';
+                                    total += item.value;
+                                });
+                                result += '<span style="font-weight:bold;">总计: ' + total + '</span>';
+                                return result;
+                            }
+                        },
+                        legend: {
+                            data: taskStatusData.statuses,
+                            top: 30,
+                            type: 'scroll',
+                            orient: 'horizontal',
+                            left: 'center'
+                        },
+                        grid: {
+                            left: '3%',
+                            right: '4%',
+                            bottom: '25%',  // 增加底部边距，为x轴标签留出更多空间
+                            top: '15%',
+                            containLabel: true
+                        },
+                        xAxis: [
+                            {
+                                type: 'category',
+                                data: taskStatusData.types,
+                                name: '任务名称',
+                                nameLocation: 'middle',
+                                nameGap: 50,
+                                axisLabel: {
+                                    rotate: 45,  // 旋转标签以适应更多文字
+                                    interval: 0,  // 显示所有标签
+                                    fontWeight: 'normal',
+                                    fontSize: 9
+                                }
+                            }
+                        ],
+                        yAxis: [
+                            {
+                                type: 'value',
+                                name: '任务数量',
+                                nameLocation: 'middle',
+                                nameGap: 40
+                            }
+                        ],
+                        series: taskStatusData.series,
+                        media: [
+                            {
+                                query: {maxWidth: 768},
+                                option: {
+                                    grid: {
+                                        bottom: '30%'
+                                    },
+                                    xAxis: [{
+                                        axisLabel: {
+                                            rotate: 60,
+                                            fontSize: 8
+                                        }
+                                    }]
+                                }
+                            }
+                        ]
+                    };
+                    taskStatusChart.setOption(taskStatusOption);
+                    
+                    // 响应式调整
+                    window.addEventListener('resize', function() {
+                        robotTaskChart.resize();
+                        taskStatusChart.resize();
+                    });
+                } catch (error) {
+                    console.error('初始化图表失败:', error);
+                }
+            }
+            
+            // 页面加载完成后初始化图表
+            document.addEventListener('DOMContentLoaded', initCharts);
+        </script>
+    </body>
+</html>
+    
