@@ -48,10 +48,10 @@ export default function DataImport() {
         <TabPanel value="file" label="文件导入">
           <div style={{ padding: '24px 0' }}>
             <Upload
-              mediaType={['file']}
+              accept=".csv,.xlsx,.xls"
               max={1}
-              onSuccess={({ files }) => {
-                if (files?.[0]?.raw) handleFileUpload(files[0].raw);
+              onSuccess={({ fileList }) => {
+                if (fileList?.[0]?.raw) handleFileUpload(fileList[0].raw);
               }}
             />
             <p style={{ color: '#999', fontSize: 13, marginTop: 12, textAlign: 'center' }}>

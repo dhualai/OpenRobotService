@@ -23,7 +23,7 @@ export default function RiskList() {
   useEffect(() => { fetchRisks(); }, []);
 
   const handleDelete = (id: string) => {
-    Dialog.confirm({ title: '确认删除', content: '确定要删除此风险项吗？', onConfirm: async () => { await request(`/risks/${id}`, { method: 'DELETE' }); fetchRisks(); } });
+    Dialog.confirm?.({ title: '确认删除', content: '确定要删除此风险项吗？', onConfirm: async () => { await request(`/risks/${id}`, { method: 'DELETE' }); fetchRisks(); } });
   };
 
   if (loading) return <Loading text="加载中..." />;

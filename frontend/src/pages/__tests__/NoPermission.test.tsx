@@ -14,12 +14,12 @@ vi.mock('react-router-dom', async () => {
 
 // Mock tdesign-mobile-react
 vi.mock('tdesign-mobile-react', () => ({
-  Button: ({ children, onClick }: Record<string, unknown>) => (
+  Button: ({ children, onClick }: any) => (
     <button onClick={onClick as () => void} data-testid="btn">
       {children}
     </button>
   ),
-  NavBar: () => null,
+  Navbar: () => null,
 }));
 
 import NoPermission from '../../pages/NoPermission';

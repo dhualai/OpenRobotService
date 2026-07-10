@@ -25,7 +25,7 @@ export default function ProjectManage() {
   useEffect(() => { fetchProjects(); }, []);
 
   const handleDelete = (id: string) => {
-    Dialog.confirm({
+    Dialog.confirm?.({
       title: '确认删除', content: '确定要删除此项目吗？',
       onConfirm: async () => {
         await request(`/projects/${id}`, { method: 'DELETE' });

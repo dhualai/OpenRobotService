@@ -1,6 +1,6 @@
 import { Suspense, useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { NavBar, TabBar, Loading } from 'tdesign-mobile-react';
+import { Navbar, TabBar, TabBarItem, Loading } from 'tdesign-mobile-react';
 import type { ReactNode } from 'react';
 
 interface AdminLayoutProps {
@@ -35,9 +35,9 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
 
   return (
     <div className="mobile-shell" style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      <NavBar
+      <Navbar
         title={currentLabel}
-        leftIcon
+        leftArrow
         onLeftClick={() => setMenuVisible(!menuVisible)}
         fixed
       />
@@ -47,15 +47,15 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         </Suspense>
       </div>
       <TabBar fixed value={location.pathname} onChange={(value) => navigate(String(value))}>
-        <TabBar.TabBarItem value="/call/ai-chat" icon={() => <span>💬</span>}>
+        <TabBarItem value="/call/ai-chat" icon={<span>💬</span>}>
           摇人
-        </TabBar.TabBarItem>
-        <TabBar.TabBarItem value="/tasks" icon={() => <span>📋</span>}>
+        </TabBarItem>
+        <TabBarItem value="/tasks" icon={<span>📋</span>}>
           任务
-        </TabBar.TabBarItem>
-        <TabBar.TabBarItem value="/admin/dashboard" icon={() => <span>⚙️</span>}>
+        </TabBarItem>
+        <TabBarItem value="/admin/dashboard" icon={<span>⚙️</span>}>
           管理
-        </TabBar.TabBarItem>
+        </TabBarItem>
       </TabBar>
     </div>
   );

@@ -1,6 +1,6 @@
 // 一键报障 / 新建工单页面 - 从 HelpDesk NewTicketForm 迁移
 import { useState } from 'react';
-import { NavBar, Form, FormItem, Input, Textarea, Button, Toast, Upload } from 'tdesign-mobile-react';
+import { Navbar, Form, FormItem, Input, Textarea, Button, Toast, Upload } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -41,7 +41,7 @@ export default function NewTicket() {
 
   return (
     <div className="page-container" style={{ paddingTop: 56 }}>
-      <NavBar title="一键报障" fixed onLeftClick={() => navigate(-1)} />
+      <Navbar title="一键报障" fixed onLeftClick={() => navigate(-1)} />
       <Form onSubmit={handleSubmit}>
         <FormItem label="问题标题" name="title">
           <Input
@@ -74,7 +74,7 @@ export default function NewTicket() {
           />
         </FormItem>
         <FormItem label="附件" name="attachments">
-          <Upload mediaType={['image']} max={5} />
+          <Upload accept="image/*" max={5} />
         </FormItem>
         <FormItem>
           <Button theme="primary" type="submit" block loading={loading}>

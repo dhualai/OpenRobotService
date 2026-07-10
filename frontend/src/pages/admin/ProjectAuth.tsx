@@ -24,7 +24,7 @@ export default function ProjectAuth() {
   useEffect(() => { fetchData(); }, []);
 
   const handleRevoke = async (id: string) => {
-    Dialog.confirm({
+    Dialog.confirm?.({
       title: '确认撤销',
       content: '确定要撤销此授权吗？',
       onConfirm: async () => {

@@ -37,8 +37,8 @@ export default function UserManage() {
               <div style={{ fontWeight: 500 }}>{user.username}</div>
               <div style={{ fontSize: 13, color: '#666' }}>{user.email} · {user.role}</div>
             </div>
-            <Button size="small" theme={user.is_active ? 'success' : 'danger'} variant="outline" onClick={() => toggleActive(user)}>
-              {user.is_active ? '启用' : '禁用'}
+            <Button size="small" theme={user.is_active ? 'primary' : 'danger'} variant="outline" onClick={() => toggleActive(user)}>
+              {user.is_active ? '已启用' : '已禁用'}
             </Button>
           </div>
         </div>

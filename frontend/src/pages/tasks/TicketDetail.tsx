@@ -1,7 +1,7 @@
 // 任务详情页 - 从 HelpDesk TicketDetail 迁移（56KB 原文件，保留核心功能）
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { NavBar, Button, Textarea, Toast, Loading, Dialog } from 'tdesign-mobile-react';
+import { Navbar, Button, Textarea, Toast, Loading, Dialog } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
@@ -95,27 +95,27 @@ export default function TicketDetail() {
   if (!ticket) return <div style={{ padding: 32, textAlign: 'center' }}>工单不存在</div>;
 
   const actionButtons = () => {
-    const buttons: Array<{ label: string; status: string; theme: 'primary' | 'success' | 'danger' | 'warning' }> = [];
+    const buttons: Array<{ label: string; status: string; theme: 'primary' | 'danger' | 'default' | 'light' }> = [];
     switch (ticket.status) {
       case 'new':
         buttons.push({ label: '开始处理', status: 'in_progress', theme: 'primary' });
         break;
       case 'in_progress':
-        buttons.push({ label: '标记解决', status: 'resolved', theme: 'success' });
+        buttons.push({ label: '标记解决', status: 'resolved', theme: 'primary' });
         break;
       case 'resolved':
-        buttons.push({ label: '关闭工单', status: 'closed', theme: 'success' });
+        buttons.push({ label: '关闭工单', status: 'closed', theme: 'primary' });
         break;
     }
     if (ticket.status !== 'new') {
-      buttons.push({ label: '重新打开', status: 'new', theme: 'warning' });
+      buttons.push({ label: '重新打开', status: 'new', theme: 'danger' });
     }
     return buttons;
   };
 
   return (
     <div style={{ paddingBottom: 80 }}>
-      <NavBar title="任务详情" fixed onLeftClick={() => navigate(-1)} />
+      <Navbar title="任务详情" fixed onLeftClick={() => navigate(-1)} />
       <div className="page-container" style={{ paddingTop: 56 }}>
         {/* 工单标题 */}
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>{ticket.title}</h2>
@@ -148,7 +148,7 @@ export default function TicketDetail() {
               theme={btn.theme}
               size="small"
               onClick={() => {
-                Dialog.confirm({
+                Dialog.confirm?.({
                   title: '确认操作',
                   content: `确认要${btn.label}吗？`,
                   onConfirm: () => handleStatusChange(btn.status),
