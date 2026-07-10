@@ -94,13 +94,13 @@ function subscribeToRefresh(callback: Subscriber): void {
   refreshSubscribers.push(callback);
 }
 
-// 泛型请求选项
 export interface RequestOptions {
   method?: string;
   headers?: Record<string, string>;
   body?: BodyInit | null;
   skipCache?: boolean;
   responseType?: 'json' | 'arrayBuffer';
+  skipAuth?: boolean;  // 跳过Token校验（用于登录等无需认证的接口）
 }
 
 // createRequest 工厂函数
@@ -108,9 +108,9 @@ export function createRequest(baseUrl: string, serviceName = 'API') {
   const request = async <T = unknown>(
     endpoint: string,
     options: RequestOptions = {},
-    retries = 0
+    retries = 0,
   ): Promise<T> => {
-    if (!userToken) {
+    if (!options.skipAuth && !userToken) {
       initToken();
     }
 

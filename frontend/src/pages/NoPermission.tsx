@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { Button, NavBar } from 'tdesign-mobile-react';
+import { Button, Navbar } from 'tdesign-mobile-react';
 
 export default function NoPermission() {
   const navigate = useNavigate();

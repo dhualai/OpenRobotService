@@ -29,10 +29,10 @@ export default function FileUpload({ onSuccess, onError, accept = '.csv,.xlsx,.x
 
   return (
     <Upload
-      mediaType={['file']}
+      accept={accept}
       max={1}
-      onSuccess={({ files }) => {
-        if (files?.[0]?.raw) handleUpload(files[0].raw);
+      onSuccess={({ fileList }) => {
+        if (fileList?.[0]?.raw) handleUpload(fileList[0].raw);
       }}
     />
   );

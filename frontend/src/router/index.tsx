@@ -1,8 +1,9 @@
 import { lazy } from 'react';
-import { createBrowserRouter, Navigate } from 'react-router-dom';
+import { createBrowserRouter, Navigate, Outlet } from 'react-router-dom';
 import { AuthGuard } from '@/shared/utils/authGuard';
 
 // 懒加载页面
+const HomePage = lazy(() => import('@/pages/HomePage'));
 const Login = lazy(() => import('@/pages/Login'));
 const NoPermission = lazy(() => import('@/pages/NoPermission'));
 const AIChat = lazy(() => import('@/pages/call/AIChat'));
@@ -26,7 +27,7 @@ const ReportsAnalytics = lazy(() => import('@/pages/admin/ReportsAnalytics'));
 const UserManage = lazy(() => import('@/pages/admin/UserManage'));
 const RoleManage = lazy(() => import('@/pages/admin/RoleManage'));
 const PermissionManage = lazy(() => import('@/pages/admin/PermissionManage'));
-const ResourceManage = lazy(() => import('@/pages/admin/ResourceManage');
+const ResourceManage = lazy(() => import('@/pages/admin/ResourceManage'));
 
 const AdminLayout = lazy(() => import('@/shared/components/AdminLayout'));
 
@@ -37,7 +38,7 @@ export const router = createBrowserRouter([
   // call 模块
   {
     path: '/call',
-    element: <AuthGuard><div className="mobile-shell" /></AuthGuard>,
+    element: <AuthGuard><div className="mobile-shell"><Outlet /></div></AuthGuard>,
     children: [
       { index: true, element: <Navigate to="/call/ai-chat" replace /> },
       { path: 'ai-chat', element: <AIChat /> },
@@ -48,7 +49,7 @@ export const router = createBrowserRouter([
   // tasks 模块
   {
     path: '/tasks',
-    element: <AuthGuard><div className="mobile-shell" /></AuthGuard>,
+    element: <AuthGuard><div className="mobile-shell"><Outlet /></div></AuthGuard>,
     children: [
       { index: true, element: <TicketList /> },
       { path: ':id', element: <TicketDetail /> },
@@ -58,7 +59,7 @@ export const router = createBrowserRouter([
   // admin 模块
   {
     path: '/admin',
-    element: <AuthGuard requireAdmin><AdminLayout /></AuthGuard>,
+    element: <AuthGuard><AdminLayout /></AuthGuard>,
     children: [
       { index: true, element: <Navigate to="/admin/dashboard" replace /> },
       { path: 'dashboard', element: <ProjectMetrics /> },
@@ -80,6 +81,6 @@ export const router = createBrowserRouter([
     ],
   },
 
-  { path: '/', element: <Navigate to="/call" replace /> },
-  { path: '*', element: <Navigate to="/call" replace /> },
+  { path: '/', element: <HomePage /> },
+  { path: '/home', element: <HomePage /> },
 ]);

@@ -1,6 +1,6 @@
 // AI 智能对话页面 - 从 HelpDesk ChatContainer 迁移
 import { useState, useEffect, useRef } from 'react';
-import { NavBar, Textarea, Button, Loading, Toast } from 'tdesign-mobile-react';
+import { Navbar, Textarea, Button, Loading, Toast } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth';
 import { createRequest } from '@/api/client';
@@ -106,7 +106,7 @@ export default function AIChat() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      <NavBar title="AI 智能助手" fixed />
+      <Navbar title="AI 智能助手" fixed />
       <div style={{ flex: 1, overflow: 'auto', padding: '16px', paddingTop: 56, paddingBottom: 80 }}>
         {messages.length === 0 && (
           <div style={{ textAlign: 'center', color: '#999', marginTop: 80 }}>

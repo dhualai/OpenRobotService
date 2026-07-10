@@ -14,17 +14,17 @@ vi.mock('react-router-dom', async () => {
 
 // Mock tdesign-mobile-react
 vi.mock('tdesign-mobile-react', () => ({
-  Button: ({ children, onClick, loading, ...props }: Record<string, unknown>) => (
+  Button: ({ children, onClick, loading, ...props }: any) => (
     <button onClick={onClick as () => void} disabled={loading as boolean} data-testid="btn" {...props}>
       {children}
     </button>
   ),
-  NavBar: ({ title }: Record<string, unknown>) => (
+  Navbar: ({ title }: any) => (
     <nav data-testid="navbar">{title as string}</nav>
   ),
-  Form: ({ children, onSubmit }: Record<string, unknown>) => (
+  Form: ({ children, onSubmit }: any) => (
     <form
-      onSubmit={(e) => {
+      onSubmit={(e: React.FormEvent) => {
         e.preventDefault();
         (onSubmit as (e: React.FormEvent) => void)?.(e);
       }}
@@ -32,8 +32,8 @@ vi.mock('tdesign-mobile-react', () => ({
       {children}
     </form>
   ),
-  FormItem: ({ children }: Record<string, unknown>) => <div>{children}</div>,
-  Input: (props: Record<string, unknown>) => (
+  FormItem: ({ children }: any) => <div>{children}</div>,
+  Input: (props: any) => (
     <input placeholder={props.placeholder as string} defaultValue={props.defaultValue as string} />
   ),
   Toast: vi.fn(),
@@ -107,7 +107,7 @@ describe('Login', () => {
     expect(inputs.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('should have NavBar with title', () => {
+  it('should have Navbar with title', () => {
     render(
       <MemoryRouter>
         <Login />

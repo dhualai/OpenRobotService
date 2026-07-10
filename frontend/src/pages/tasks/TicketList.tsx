@@ -1,6 +1,6 @@
 // 任务收件箱 - 从 HelpDesk TicketsList 迁移（53KB 原文件，保留核心功能）
 import { useState, useEffect, useCallback } from 'react';
-import { NavBar, Tabs, TabPanel, Input, Button, Loading, Toast } from 'tdesign-mobile-react';
+import { Navbar, Tabs, TabPanel, Input, Button, Loading, Toast } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -63,7 +63,7 @@ export default function TicketList() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <NavBar title="系统任务" fixed />
+      <Navbar title="系统任务" fixed />
       <div style={{ paddingTop: 48 }}>
         <div style={{ padding: '12px 16px', background: '#fff' }}>
           <Input
