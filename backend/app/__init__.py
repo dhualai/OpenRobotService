@@ -4,12 +4,11 @@ from fastapi.security import HTTPBearer
 import time
 from app.core.config import settings
 from app.core.database import init_users_db
-from app.modules.das.utils.database_init import init_das_db
-from app.modules.fqa.utils.database_init import init_fqa_db
-from app.modules.aas import aas_router
-from app.modules.das.api.routes import api_router as das_api_router
-from app.modules.wechat import wechat_api_router
-from app.modules.fqa import fqa_router
+from app.core.auth_routes import router as auth_router
+from app.wechat import wechat_api_router
+from app.modules.admin import admin_router
+from app.modules.tasks import tasks_router
+from app.modules.call import call_router
 
 security = HTTPBearer()
 
@@ -47,8 +46,6 @@ async def startup_event():
     app.openapi_schema["security"] = [{"BearerAuth": []}]
     
     init_users_db()
-    init_das_db()
-    init_fqa_db()
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,12 +55,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(aas_router, prefix=f"{settings.API_V1_STR}/AAS")
-app.include_router(das_api_router, prefix=f"{settings.API_V1_STR}/DAS")
+app.include_router(auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["认证"])
+app.include_router(admin_router, prefix=f"{settings.API_V1_STR}")
+app.include_router(tasks_router, prefix=f"{settings.API_V1_STR}")
+app.include_router(call_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(wechat_api_router, prefix=f"{settings.API_V1_STR}")
-app.include_router(fqa_router, prefix=f"{settings.API_V1_STR}")
 
-@app.get(f"{settings.API_V1_STR}/AAS/health")
+@app.get(f"{settings.API_V1_STR}/health")
 async def health_check():
     return {
         "status": "healthy",

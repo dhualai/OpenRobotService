@@ -1,7 +1,8 @@
 import os
-from typing import Optional, List, ClassVar, Dict
+import re
+from typing import Optional, List, Dict
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, model_validator
 
 class Settings(BaseSettings):
     APP_NAME: str = Field(default="用户认证与权限管理服务")
@@ -9,25 +10,48 @@ class Settings(BaseSettings):
     API_V1_STR: str = Field(default="/api")
     AUTH_STR: str = Field(default="/auth")
     
-    SECRET_KEY: str = Field(default="your-secret-key-here")
+    APP_ENV: str = Field(default="dev")
+    
+    SECRET_KEY: str = Field(default="")
+    JWT_SECRET: str = Field(default="")
     ALGORITHM: str = Field(default="HS256")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30)
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7)
     
-    BACKEND_CORS_ORIGINS: List[str] = Field(default=["http://hao.cavacn.com"])
     BACKEND_CORS_ORIGINS: List[str] = Field(default=["*"])
+    FRONTEND_BASE_URL: str = Field(default="http://127.0.0.1:5173")
+    
     DATABASE_URL: Optional[str] = Field(default=None)
     
     ADMIN_USERNAME: str = Field(default="admin")
     ADMIN_PASSWORD: str = Field(default="123456")
     
-    DB_CONFIG: ClassVar[dict] = {
-        'user': 'root',
-        'password': '123456',
-        'host': '127.0.0.1',
-        'port': '3306',
-        'database': 'helpdesk'
-    }
+    @property
+    def DB_CONFIG(self) -> dict:
+        if not self.DATABASE_URL:
+            return {
+                'user': 'root',
+                'password': '123456',
+                'host': '127.0.0.1',
+                'port': '3306',
+                'database': 'helpdesk'
+            }
+        match = re.match(r'mysql\+pymysql://([^:]+):([^@]+)@([^:]+):(\d+)/([^?]+)', self.DATABASE_URL)
+        if match:
+            return {
+                'user': match.group(1),
+                'password': match.group(2),
+                'host': match.group(3),
+                'port': match.group(4),
+                'database': match.group(5)
+            }
+        return {
+            'user': 'root',
+            'password': '123456',
+            'host': '127.0.0.1',
+            'port': '3306',
+            'database': 'helpdesk'
+        }
     
     DATA_SERVICE_URL: str = Field(default="http://localhost:8002")
     DATA_DEBUG_SERVICE_URL: str = Field(default="http://localhost:8012")
@@ -38,8 +62,8 @@ class Settings(BaseSettings):
     USER_CENTER_BASE_URL: str = Field(default="http://localhost:8001")
     
     MINIO_ENDPOINT: str = Field(default="localhost:9000")
-    MINIO_ACCESS_KEY: str = Field(default="minioadmin")
-    MINIO_SECRET_KEY: str = Field(default="minioadmin")
+    MINIO_ACCESS_KEY: str = Field(default="")
+    MINIO_SECRET_KEY: str = Field(default="")
     MINIO_BUCKET: str = Field(default="helpdesk")
     MINIO_SECURE: bool = Field(default=False)
     
@@ -55,12 +79,18 @@ class Settings(BaseSettings):
     
     WECHAT_API_BASE_URL: str = Field(default="https://api.weixin.qq.com")
     
-    WECHAT_TOKEN: str = Field(default="11234")
-    WECHAT_APP_ID: str = Field(default="wx6ea819c1785ef67b")
-    WECHAT_APP_SECRET: str = Field(default="e9aee000a8dbb40b2b0126e9f7a4da20")
-    WECHAT_ENCODING_AES_KEY: str = Field(default="J6o6gj1F1dLN8fUB4yzDMKjH6fnoSs3LKNkM8H9agG0")
+    WECHAT_TOKEN: str = Field(default="")
+    WECHAT_APP_ID: str = Field(default="")
+    WECHAT_APP_SECRET: str = Field(default="")
+    WECHAT_ENCODING_AES_KEY: str = Field(default="")
     
-    SUGGESTIONS_NOTIFICATION_USERS: List[str] = Field(default=["oM1WF6s2nHKMBoXyqENYU-C9vyJw","毛梦晴","张文星"])
+    SUGGESTIONS_NOTIFICATION_USERS: List[str] = Field(default=[])
+    
+    MQTT_BROKER: str = Field(default="")
+    MQTT_PORT: int = Field(default=8084)
+    MQTT_USERNAME: str = Field(default="")
+    MQTT_PASSWORD: str = Field(default="")
+    MQTT_CLIENT_ID: str = Field(default="DAS_MQTT_WX")
     
     @property
     def WECHAT_CONFIG(self) -> Dict:
@@ -142,6 +172,28 @@ class Settings(BaseSettings):
     @property
     def WECHAT_TAGS_GET_ID_LIST_URL(self) -> str:
         return f"{self.WECHAT_API_BASE_URL}/cgi-bin/tags/getidlist"
+    
+    @model_validator(mode='after')
+    def validate_secret_key(self) -> 'Settings':
+        if not self.SECRET_KEY and self.JWT_SECRET:
+            self.SECRET_KEY = self.JWT_SECRET
+        return self
+    
+    @model_validator(mode='after')
+    def validate_production_config(self) -> 'Settings':
+        if self.APP_ENV == 'production':
+            errors = []
+            if not self.DATABASE_URL:
+                errors.append("DATABASE_URL is required in production")
+            if not self.SECRET_KEY:
+                errors.append("SECRET_KEY is required in production")
+            if not self.WECHAT_APP_ID:
+                errors.append("WECHAT_APP_ID is required in production")
+            if not self.WECHAT_APP_SECRET:
+                errors.append("WECHAT_APP_SECRET is required in production")
+            if errors:
+                raise ValueError(f"Production configuration errors: {', '.join(errors)}")
+        return self
     
     class Config:
         env_file = ".env"

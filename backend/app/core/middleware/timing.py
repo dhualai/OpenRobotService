@@ -1,10 +1,10 @@
-from fastapi import Request, Response, HTTPException
+﻿from fastapi import Request, Response, HTTPException
 from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from datetime import datetime
 import json
 from app.services.logging import get_logger
-from app.modules.aas.api.auth import get_current_active_user_from_token
+from app.modules.admin.api.auth import get_current_active_user_from_token
 from starlette.status import HTTP_403_FORBIDDEN, HTTP_401_UNAUTHORIZED
 from app.core.security import decode_token
 from jose import JWTError
