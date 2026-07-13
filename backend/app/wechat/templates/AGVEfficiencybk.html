@@ -1,0 +1,1403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AGV效率分析</title>
+    <script>
+        // 页面加载完成后执行
+        document.addEventListener('DOMContentLoaded', function() {
+            try {
+                // 从localStorage获取扫码数据
+                const scanResultStr = localStorage.getItem('scanResult');
+                if (scanResultStr) {
+                    const scanData = JSON.parse(scanResultStr);
+                    console.log('AGVEfficiencybk.html: 读取到扫码数据', scanData);
+                    
+                    // 创建并显示扫码数据
+                    const dataDisplay = document.createElement('div');
+                    dataDisplay.style.cssText = 'background-color: #e8f4f8; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #3498db;';
+                    dataDisplay.innerHTML = `
+                        <h3 style="margin-top: 0;">扫码信息</h3>
+                        <p><strong>项目ID:</strong> ${scanData.project_id || 'N/A'}</p>
+                        <p><strong>消息:</strong> ${scanData.message || '无'}</p>
+                        <p><strong>时间:</strong> ${new Date(scanData.timestamp).toLocaleString()}</p>
+                    `;
+                    
+                    // 查找页面中的第一个h1元素，并在其后插入数据显示区域
+                    const firstH1 = document.querySelector('h1');
+                    if (firstH1) {
+                        firstH1.parentNode.insertBefore(dataDisplay, firstH1.nextSibling);
+                    } else {
+                        // 如果找不到h1，尝试添加到body的开头
+                        document.body.insertBefore(dataDisplay, document.body.firstChild);
+                    }
+                }
+            } catch (error) {
+                console.error('AGVEfficiencybk.html: 处理扫码数据失败', error);
+            }
+        });
+    </script>
+    <style>
+        /* 基础样式 */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 20px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        /* 统计卡片样式 */
+        .grid {
+            display: grid;
+        }
+        
+        .grid-cols-1 {
+            grid-template-columns: repeat(1, minmax(0, 1fr));
+        }
+        
+        .md\:grid-cols-2 {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        
+        .lg\:grid-cols-3 {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        
+        .gap-4 {
+            gap: 1rem;
+        }
+        
+        .mb-6 {
+            margin-bottom: 1.5rem;
+        }
+        
+        .bg-white {
+            background-color: #ffffff;
+        }
+        
+        .p-4 {
+            padding: 1rem;
+        }
+        
+        .rounded-lg {
+            border-radius: 0.5rem;
+        }
+        
+        .card-shadow {
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+        }
+        
+        /* 图表容器样式 */
+        .chart-container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        
+        .chart-container h2 {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 20px;
+        }
+        
+        #stackedBarChart {
+            width: 100%;
+            height: 400px;
+        }
+        
+        /* 响应式调整 */
+        @media (max-width: 768px) {
+            .chart-container {
+                padding: 15px;
+            }
+            
+            #stackedBarChart {
+                height: 300px;
+            }
+        }
+        
+        .hover-scale {
+            transition: transform 0.2s ease;
+        }
+        
+        .hover-scale:hover {
+            transform: translateY(-2px);
+        }
+        
+        .flex {
+            display: flex;
+        }
+        
+        .justify-between {
+            justify-content: space-between;
+        }
+        
+        .items-start {
+            align-items: flex-start;
+        }
+        
+        .w-10 {
+            width: 2.5rem;
+        }
+        
+        .h-10 {
+            height: 2.5rem;
+        }
+        
+        .rounded-full {
+            border-radius: 9999px;
+        }
+        
+        .items-center {
+            align-items: center;
+        }
+        
+        .justify-center {
+            justify-content: center;
+        }
+        
+        .h-6 {
+            height: 1.5rem;
+        }
+        
+        .w-6 {
+            width: 1.5rem;
+        }
+        
+        .text-gray-500 {
+            color: #6b7280;
+        }
+        
+        .text-sm {
+            font-size: 0.875rem;
+        }
+        
+        .text-2xl {
+            font-size: 1.5rem;
+        }
+        
+        .font-bold {
+            font-weight: 700;
+        }
+        
+        .text-blue-100 {
+            background-color: #dbeafe;
+        }
+        
+        .text-blue-600 {
+            color: #2563eb;
+        }
+        
+        .text-green-100 {
+            background-color: #d1fae5;
+        }
+        
+        .text-green-600 {
+            color: #059669;
+        }
+        
+        .text-red-100 {
+            background-color: #fee2e2;
+        }
+        
+        .text-red-600 {
+            color: #dc2626;
+        }
+        
+        .text-yellow-100 {
+            background-color: #fef3c7;
+        }
+        
+        .text-yellow-600 {
+            color: #d97706;
+        }
+        
+        .text-purple-100 {
+            background-color: #f3e8ff;
+        }
+        
+        .text-purple-600 {
+            color: #7c3aed;
+        }
+        
+        .text-indigo-100 {
+            background-color: #e0e7ff;
+        }
+
+        .text-indigo-600 {
+            color: #4f46e5;
+        }
+        
+        .text-orange-100 {
+            background-color: #ffedd5;
+        }
+        
+        .text-orange-600 {
+            color: #ea580c;
+        }
+
+        .mt-2 {
+            margin-top: 0.5rem;
+        }
+
+        .text-xs {
+            font-size: 0.75rem;
+        }
+    </style>
+<script>
+        // 系统配置 - 可以根据环境修改这些变量
+        const SYSTEM_CONFIG = {
+            // API配置
+            api: {
+                baseUrl: 'http://120.26.23.199:8002',
+                endpoints: {
+                    historyDataAccess: '/api/history/data/access/',
+                    dataAccess: '/api/data/access/'
+                }
+            }
+        };
+        
+        // 获取完整API URL的辅助函数
+        function getApiUrl(endpoint) {
+            return SYSTEM_CONFIG.api.baseUrl + SYSTEM_CONFIG.api.endpoints[endpoint];
+        }
+    </script>
+    </head>
+<body>
+    <h1>AGV效率分析</h1>
+    <div class="date-selector" style="margin: 15px 0; padding: 10px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+        <label for="date_picker">选择日期: </label>
+        <input type="date" id="date_picker" value="" style="padding: 5px 10px; border: 1px solid #ddd; border-radius: 4px; margin-right: 10px;">
+        <button id="refresh_data" style="padding: 5px 15px; background: #2563eb; color: white; border: none; border-radius: 4px; cursor: pointer;">刷新数据</button>
+    </div>
+    <p id="report-time-range" class="text-gray-500">统计时间: 加载中...</p>
+    <p id="report-generate-time" class="text-gray-500">报表生成时间: 加载中...</p>
+    
+    <!-- 关键指标卡片 -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+        <!-- 总任务数卡片 -->
+        <div class="bg-white p-4 rounded-lg card-shadow hover-scale">
+            <div class="flex justify-between items-start">
+                <div>
+                    <p class="text-gray-500 text-sm">搬运任务总数</p>
+                    <p id="total-tasks-count" class="text-2xl font-bold">0</p>
+                </div>
+                <div class="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                    </svg>
+                </div>
+            </div>
+            <p id="total-tasks-status" class="text-xs text-green-600 mt-2">加载中...</p>
+        </div>
+
+        <!-- AGV运行时间卡片 -->
+        <div class="bg-white p-4 rounded-lg card-shadow hover-scale">
+            <div class="flex justify-between items-start">
+                <div>
+                    <p class="text-gray-500 text-sm">有效工作时长</p>
+                    <p id="agv-running-time" class="text-2xl font-bold">0</p>
+                </div>
+                <div class="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                </div>
+            </div>
+            <p id="agv-running-status" class="text-xs text-green-600 mt-2">加载中...</p>
+        </div>
+
+        <!-- 有效搬运效率卡片 -->
+        <div class="bg-white p-4 rounded-lg card-shadow hover-scale">
+            <div class="flex justify-between items-start">
+                <div>
+                    <p class="text-gray-500 text-sm">有效搬运效率</p>
+                    <p id="woke-efficiency" class="text-2xl font-bold">0</p>
+                </div>
+                <div class="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                    </svg>
+                </div>
+            </div>
+            <p id="error-time-status" class="text-xs text-green-600 mt-2">加载中...</p>
+        </div>
+
+        <!-- 无任务时间卡片 -->
+        <div class="bg-white p-4 rounded-lg card-shadow hover-scale">
+            <div class="flex justify-between items-start">
+                <div>
+                    <p class="text-gray-500 text-sm">机器人故障时长</p>
+                    <p id="error-time" class="text-2xl font-bold">0</p>
+                </div>
+                <div class="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                </div>
+            </div>
+            <p id="free-time-status" class="text-xs text-green-600 mt-2">加载中...</p>
+        </div>
+
+        <!-- 空闲无任务时间卡片 -->
+        <div class="bg-white p-4 rounded-lg card-shadow hover-scale">
+            <div class="flex justify-between items-start">
+                <div>
+                    <p class="text-gray-500 text-sm">空闲无任务时间</p>
+                    <p id="idle-time" class="text-2xl font-bold">0</p>
+                </div>
+                <div class="w-10 h-10 rounded-full bg-yellow-100 flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-yellow-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                    </svg>
+                </div>
+            </div>
+            <p id="idle-time-status" class="text-xs text-green-600 mt-2">加载中...</p>
+        </div>
+
+        <!-- 平均手动率卡片 -->
+        <div class="bg-white p-4 rounded-lg card-shadow hover-scale">
+            <div class="flex justify-between items-start">
+                <div>
+                    <p class="text-gray-500 text-sm">平均手动率</p>
+                    <p id="manual-rate" class="text-2xl font-bold">0</p>
+                </div>
+                <div class="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-orange-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                    </svg>
+                </div>
+            </div>
+            <p id="manual-rate-status" class="text-xs text-green-600 mt-2">加载中...</p>
+        </div>
+        
+        <!-- 当天剩余时间卡片 -->
+        <div class="bg-white p-4 rounded-lg card-shadow hover-scale">
+            <div class="flex justify-between items-start">
+                <div>
+                    <p class="text-gray-500 text-sm">当天剩余时间</p>
+                    <p id="tasks-per-hour" class="text-2xl font-bold">0.0</p>
+                </div>
+                <div class="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 平均单次故障时间卡片 -->
+        <div class="bg-white p-4 rounded-lg card-shadow hover-scale">
+            <div class="flex justify-between items-start">
+                <div>
+                    <p class="text-gray-500 text-sm">平均单次故障时间</p>
+                    <p id="avg-error-time" class="text-2xl font-bold">0.0</p>
+                </div>
+                <div class="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                </div>
+            </div>
+            <p id="avg-error-status" class="text-xs text-green-600 mt-2">加载中...</p>
+        </div>
+        
+        <!-- 平均单次搬运任务时间卡片 -->
+        <div class="bg-white p-4 rounded-lg card-shadow hover-scale">
+            <div class="flex justify-between items-start">
+                <div>
+                    <p class="text-gray-500 text-sm">平均单次搬运任务时间</p>
+                    <p id="avg-task-time" class="text-2xl font-bold">0.0</p>
+                </div>
+                <div class="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                </div>
+            </div>
+            <p id="avg-task-status" class="text-xs text-green-600 mt-2">加载中...</p>
+        </div>
+    </div>
+    
+    <!-- 添加堆叠柱状图容器 -->
+    <div class="chart-container">
+        <h2>各分组平均时间分布</h2>
+        <div id="stackedBarChart" style="width: 100%; height: 400px;"></div>
+    </div>
+    
+    <script>
+        // 确保页面中引入了ECharts库
+        if (typeof echarts === 'undefined') {
+            // 如果未引入，动态加载ECharts
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js';
+            script.onload = function() {
+                console.log('ECharts已成功加载');
+            };
+            document.head.appendChild(script);
+        }
+        
+        // 页面加载完成后执行
+        document.addEventListener('DOMContentLoaded', function() {
+            initDatePicker();
+            fetchAGVData();
+        });
+
+        function getWechatToken() {
+            // 优先从localStorage获取
+            const localStorageToken = localStorage.getItem('wechat_token');
+            console.log('从localStorage获取的wechat_token:', localStorageToken);
+            
+            // 如果localStorage中有，直接返回
+            if (localStorageToken) {
+                return localStorageToken;
+            }
+            
+            // 如果localStorage中没有，再尝试从URL参数获取
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlToken = urlParams.get('token');
+            console.log('从URL获取的token:', urlToken);
+            
+            return urlToken || '';
+        }
+
+        function getPathParams() {
+            // 获取当前URL路径
+            const path = window.location.pathname;
+            console.log('当前URL路径:', path);
+            
+            // 分割路径
+            const pathParts = path.split('/').filter(part => part !== '');
+            console.log('路径分割结果:', pathParts);
+            
+            // 假设路径格式为 /projects/{project_id}/{indicator_id} 或类似格式
+            // 找到最后两个非空部分作为project_id和indicator_id
+            let project_id = '';
+            let indicator_id = '';
+            
+            if (pathParts.length >= 2) {
+                // 取倒数第二个作为project_id，最后一个作为indicator_id
+                project_id = pathParts[pathParts.length - 2];
+                indicator_id = pathParts[pathParts.length - 1];
+                
+                // 如果indicator_id包含.html，去除扩展名
+                if (indicator_id.endsWith('.html')) {
+                    indicator_id = indicator_id.replace('.html', '');
+                }
+            }
+            
+            console.log('提取的project_id:', project_id);
+            console.log('提取的indicator_id:', indicator_id);
+            
+            return { project_id, indicator_id };
+        }
+
+  
+        async function fetchDataFromLoc() {
+            const requestHeaders = { 'Content-Type': 'application/json' };
+            // 使用测试token作为备选
+            requestHeaders["Authorization"] = "Bearer test_token";
+            
+            // 通过服务器接口获取数据
+            const requestBody = {
+                    project: '',
+                    tag: '',
+                    indicator: ['*']
+                };
+                
+                console.log('构建的请求体参数:', requestBody);
+                
+                // 调用指定的API接口（改为GET请求）
+                try {
+                    const response = await fetch('http://localhost:8001/file/merged_agv_data.json', {
+                        method: 'GET',
+                        headers: requestHeaders
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`获取AGV任务数据失败: ${response.status}`);
+                    }
+                    
+                    const responseData = await response.json();
+                    console.log('获取到的AGV任务原始数据:', responseData);
+                    
+                    // 验证数据结构并提取
+                    const rawData = responseData.data || [];
+                    const report_time = responseData.timestamp || new Date().toISOString();
+                    
+                    
+                    console.log('report_time:', report_time);
+                    console.log('rawData:', rawData);
+                    return { data: rawData, report_time };
+                } catch (error) {
+                    console.error('数据获取失败，使用模拟数据进行验证:', error);
+                    return { data: null, report_time: '使用模拟数据' };
+                }
+        }
+        
+
+
+        // 从API获取数据的封装函数
+        async function fetchDataFromApi(begin_time,end_time) {
+            const authToken = getWechatToken();
+            
+            // 设置请求头
+            const requestHeaders = { 'Content-Type': 'application/json' };
+            if (authToken) {
+                requestHeaders["Authorization"] = `Bearer ${authToken}`;
+            } else {
+                // 使用测试token作为备选
+                requestHeaders["Authorization"] = "Bearer test_token";
+            }
+
+            const { project_id, indicator_id } = getPathParams();
+            // 通过服务器接口获取数据
+            const requestBody = {
+                project: project_id,
+                tag: indicator_id,
+                indicator: ['*'],
+                start_time: begin_time,
+                end_time: end_time
+            };
+    
+            console.log('构建的请求体参数:', requestBody);
+            
+            // 调用指定的API接口（改为POST请求）
+            //const response = await fetch('http://120.26.23.199:8002/api/data/access/', {
+            const response = await fetch(getApiUrl('historyDataAccess'), {
+                method: 'POST',
+                headers: requestHeaders,
+                body: JSON.stringify(requestBody)
+            });
+            
+            if (!response.ok) {
+                throw new Error(`获取AGV任务数据失败: ${response.status}`);
+            }
+            
+            const responseData = await response.json();
+            console.log('获取到的AGV任务原始数据:', responseData);
+            let rawData = [];
+            if (responseData.data && Array.isArray(responseData.data)) {
+                if (responseData.data.length == 2) {
+                    rawData = responseData.data[1].value || [];
+                } else {
+                    rawData = responseData.data[0].value || [];
+                }
+            }
+            const report_time = responseData.data[0].timestamp || 'N/A';
+            // 按照process_agv_task_data.py的逻辑处理数据
+            console.log('report_time:', report_time);
+            console.log('rawData:', rawData);
+            const data = rawData;
+            const history_data = responseData.data[0].value || [];
+
+            return { data, report_time,history_data };
+        }
+
+        // 从API获取数据的封装函数
+        async function fetchTodayDataFromApi() {
+            const authToken = getWechatToken();
+            
+            // 设置请求头
+            const requestHeaders = { 'Content-Type': 'application/json' };
+            if (authToken) {
+                requestHeaders["Authorization"] = `Bearer ${authToken}`;
+            } else {
+                // 使用测试token作为备选
+                requestHeaders["Authorization"] = "Bearer test_token";
+            }
+
+            const { project_id, indicator_id } = getPathParams();
+            // 通过服务器接口获取数据
+            const requestBody = {
+                project: project_id,
+                tag: indicator_id,
+                indicator: ['*']
+            };
+    
+            console.log('构建的请求体参数:', requestBody);
+            
+            // 调用指定的API接口（改为POST请求）
+            const response = await fetch(getApiUrl('dataAccess'), {
+                method: 'POST',
+                headers: requestHeaders,
+                body: JSON.stringify(requestBody)
+            });
+            
+            if (!response.ok) {
+                throw new Error(`获取AGV任务数据失败: ${response.status}`);
+            }
+            
+            const responseData = await response.json();
+            console.log('今日获取到的AGV任务原始数据:', responseData);
+            const rawData = responseData.data && responseData.data[0] && responseData.data[0].value ? 
+            responseData.data[0].value : responseData;
+            const report_time = responseData.data[0].timestamp || 'N/A';
+            // 按照process_agv_task_data.py的逻辑处理数据
+            const data = rawData;
+            
+            return { data, report_time };
+        }
+        
+        // 初始化日期选择器，默认选择今天
+        function initDatePicker() {
+            const datePicker = document.getElementById('date_picker');
+            const today = new Date();
+            const formattedToday = today.toISOString().split('T')[0]; // 格式化为 YYYY-MM-DD
+            datePicker.value = formattedToday;
+            
+            // 添加刷新按钮事件
+            const refreshBtn = document.getElementById('refresh_data');
+            refreshBtn.addEventListener('click', fetchAGVData);
+        }
+        
+        // 根据选择的日期计算开始和结束时间
+        function calculateTimeRange() {
+            const datePicker = document.getElementById('date_picker');
+            const selectedDate = new Date(datePicker.value);
+            
+            if (isNaN(selectedDate.getTime())) {
+                // 如果日期无效，默认使用今天
+                const today = new Date();
+                selectedDate.setTime(today.getTime());
+            }
+            
+            // 设置开始时间为选择日期的0点
+            const beginDate = new Date(selectedDate);
+            beginDate.setDate(beginDate.getDate()-1);
+            beginDate.setHours(0, 0, 0, 0);
+            // 转换为YYYY-MM-DD HH:MM:SS格式
+            const begin_time = beginDate.toISOString().replace('Z', '+00:00'); // 格式化为ISO格式
+            
+            // 设置结束时间为选择日期的后一天0点
+            const endDate = new Date(selectedDate);
+            endDate.setDate(endDate.getDate()+2);
+            endDate.setHours(0, 0, 0, 0);
+            const end_time = endDate.toISOString().replace('Z', '+00:00'); // 格式化为ISO格式
+            
+            console.log(`计算的时间范围: ${begin_time} 到 ${end_time}`);
+            
+            // 更新页面显示的时间范围
+            const timeRangeElement = document.getElementById('report-time-range');
+            if (timeRangeElement) {
+                const formattedBegin = beginDate.toLocaleDateString();
+                timeRangeElement.textContent = `统计时间: ${formattedBegin}`;
+            }
+            
+            return { begin_time, end_time,selectedDate};
+        }
+        
+        async function fetchAGVData() {
+            try {
+                // 根据选择的日期计算时间范围
+                const { begin_time, end_time, selectedDate } = calculateTimeRange();
+                // 判断当前时间和selectedDate是否是同一天，如果是则调用fetchTodayDataFromApi
+                const currentTime = new Date();
+                const selectedDateTime = new Date(selectedDate);
+                let data, report_time, history_data = [];
+                
+                // 首先尝试从本地存储获取数据
+                try {
+                    const localStorageData = localStorage.getItem('lastScanResult');
+                    if (localStorageData) {
+                        const scanResult = JSON.parse(localStorageData);
+                        console.log('从本地存储获取到的扫码数据:', scanResult);
+                        
+                        // 如果需要使用扫码数据中的project_id或其他信息，可以在这里处理
+                        // 例如：如果有project_id，可以将其用于后续的数据获取
+                        window.currentProjectId = scanResult.project_id || null;
+                    }
+                } catch (error) {
+                    console.error('读取本地存储数据失败:', error);
+                    
+                    alert('读取本地存储数据失败');
+                }
+                const localStorageData = localStorage.getItem('lastScanResult');
+                const scanResult = JSON.parse(localStorageData);
+                data = scanResult.data
+                
+                //const { data, report_time } = await fetchDataFromLoc();
+                // 计算剩余时间：endtime减去reporttime（小时），当reportTime大于endTime时显示0
+                // 更新报表生成时间
+                const timestampElement = document.getElementById('report-generate-time');
+                if (timestampElement && report_time !== 'N/A') {
+                    try {
+                        const date = new Date(report_time);
+                        if (!isNaN(date.getTime())) {
+                            const formattedDate = date.toLocaleString();
+                            timestampElement.textContent = `报表生成时间: ${formattedDate}`;
+                        } else {
+                            console.warn('无效的时间戳:', report_time);
+                            timestampElement.textContent = '报表生成时间: 未知';
+                        }
+                    } catch (e) {
+                        console.error('处理时间戳时出错:', e);
+                        timestampElement.textContent = '报表生成时间: 未知';
+                    }
+                }
+                
+                // 更新统计时间范围
+                const timeRangeElement = document.getElementById('report-time-range');
+                if (timeRangeElement) {
+                    try {
+                        // 尝试从不同位置获取begin_time和end_time
+                        let beginTime, endTime;
+                        
+                        // 首先尝试从data中获取
+                        if (data && data.begin_time) {
+                            beginTime = data.begin_time;
+                            endTime = data.end_time;
+                        }
+                        
+                        // 检查是否找到了时间范围
+                        if (beginTime !== undefined && endTime !== undefined) {
+                            // 格式化时间
+                            const beginDate = new Date(beginTime);
+                            const endDate = new Date(endTime);
+                            
+                            // 检查日期是否有效
+                            if (!isNaN(beginDate.getTime()) && !isNaN(endDate.getTime())) {
+                                // 格式化为本地时间字符串
+                                const formattedBegin = beginDate.toLocaleString();
+                                const formattedEnd = endDate.toLocaleString();
+                                
+                                // 计算当前时间与结束时间的差值（当天剩余时间）
+                                const now = new Date(report_time);
+                                const timeDiff = endDate - now;
+                                let remainingTime = '0';
+                                
+                                if (timeDiff > 0) {
+                                    // 转换为小时、分钟和秒
+                                    const hours = Math.floor(timeDiff / (1000 * 60 * 60));
+                                    const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
+                                    const seconds = Math.floor((timeDiff % (1000 * 60)) / 1000);
+                                    
+                                    // 格式化剩余时间显示
+                                    if (hours > 0) {
+                                        remainingTime = `${hours}小时${minutes}分钟${seconds}秒`;
+                                    } else if (minutes > 0) {
+                                        remainingTime = `${minutes}分钟${seconds}秒`;
+                                    } else {
+                                        remainingTime = `${seconds}秒`;
+                                    }
+                                }
+                                
+                                // 更新时间范围显示，包含剩余时间
+                                timeRangeElement.textContent = `统计时间: ${formattedBegin} 至 ${formattedEnd}`;
+                                
+                                // 同时更新卡片中的剩余时间显示，保留两位小数作为小时数
+                                const tasksPerHourElement = document.getElementById('tasks-per-hour');
+                                if (tasksPerHourElement) {
+                                    // 计算剩余时间为小时数并保留两位小数，添加小时单位
+                                    const remainingHours = Math.max(0, timeDiff / (1000 * 60 * 60)).toFixed(2);
+                                    tasksPerHourElement.textContent = remainingHours + ' 小时';
+                                }
+                                
+                                // 更新状态文本
+                                const statusElement = document.getElementById('tasks-per-hour-status');
+                                if (statusElement) {
+                                    statusElement.textContent = timeDiff > 0 ? '进行中' : '';
+                                    statusElement.className = `text-xs ${timeDiff > 0 ? 'text-green-600' : 'text-red-600'} mt-2`;
+                                }
+                            } else {
+                                console.warn('无效的时间范围:', beginTime, endTime);
+                                timeRangeElement.textContent = '统计时间: 未知';
+                            }
+                        } else {
+                            timeRangeElement.textContent = '统计时间: 未知';
+                        }
+                    } catch (e) {
+                        console.error('处理时间范围时出错:', e);
+                        timeRangeElement.textContent = '统计时间: 未知';
+                    }
+                }
+                // 保存历史统计数据和当前统计数据
+                let historyStatsWithAverage = null;
+                if (history_data) {
+                    // 直接处理history_data作为历史统计数据
+                    historyStatsWithAverage = processAndRender(history_data);
+                }
+                const currentStatsWithAverage = processAndRender(data);
+                
+                // 计算环比并更新统计卡片
+                updateStatCards(currentStatsWithAverage, historyStatsWithAverage);
+
+            } catch (error) {
+                console.error('数据处理失败:', error);
+                
+                // 显示获取到的数据
+                alert('数据加载失败，请检查服务器是否运行\n\n获取到的数据:\n' + error);
+            }
+        }
+
+        // 数据处理和渲染函数
+        function processAndRender(data) {
+            try {
+                // 增强数据验证，处理可能的对象或非数组数据
+                const processableData = Array.isArray(data) ? data : (data && typeof data === 'object' && 'data' in data) ? data.data : (typeof data === 'object' ? [data] : []);
+                
+                if (!processableData || processableData.length === 0) {
+                    console.error('无效或空的数据');
+                    // 返回默认统计对象，避免后续计算出错
+                    return {
+                        total_tasks: 0,
+                        total_agv_count: 0,
+                        group_statistics: {},
+                        overall_avg_statistics: {
+                            group_no_error_task_time: 0,
+                            group_error_task_time: 0,
+                            group_agv_free_time: 0
+                        }
+                    };
+                }
+                
+                // 将时间从秒转换为小时
+                const secondsToHours = (seconds) => {
+                    return seconds / 3600;
+                };
+                
+                
+                // 初始化统计数据
+                const totalStats = {
+                    total_tasks:          0,  // 对应Python中的total_task_count
+                    total_task_time:      0,  // 对应Python中的group_task_time
+                    total_no_error_task_time: 0,  // 对应Python中的group_no_error_task_time
+                    total_error_task_time: 0,  // 对应Python中的group_error_task_time
+                    total_error_time:     0,  // 对应Python中的group_error_time
+                    agv_free_time:        0,  // 对应Python中的group_agv_free_time
+                    agv_offline_time:     0,  // 对应Python中的group_agv_offline_time
+                    efficiency:           0,   // 对应Python中的group_efficiency
+                    total_error_count:      0,  // 对应Python中的total_error_count
+                    total_manual_count:     0   // 对应Python中的total_manual_count
+                };
+                
+                // 初始化分组统计 - 对应Python中的group_statistics
+                const groupStatistics = {};
+                // 初始化每个机器人的数据
+                const robotData = {};
+                // 初始化分组平均统计 - 对应Python中的group_avg_statistics
+                const groupAvgStatistics = {};
+                // 初始化总体平均统计 - 对应Python中的overall_avg_statistics
+                const overallAvgStatistics = {};
+                
+                // 遍历处理后的数据项进行统计
+                for (const groupAgvData of processableData) {
+                    // 确保必要字段存在
+                    if (!groupAgvData || typeof groupAgvData !== 'object') continue;
+                    
+                    const groupId = groupAgvData.group_id;
+                    const agvId = groupAgvData.agv_id || `AGV_${Object.keys(robotData).length + 1}`; // 如果没有agv_id，生成一个
+                    const statusContent = groupAgvData.status_content || {};
+                    
+                    // 计算任务总数
+                    const taskCount = groupAgvData.total_task_count || 0;
+                    // 获取手动任务数量
+                    const manualCount = groupAgvData.total_manual_count || 0;
+                    // 计算手动率
+                    const manualRate = taskCount > 0 ? (manualCount / taskCount) * 100 : 0;
+                    // 转换时间单位为小时
+                    const taskTime = secondsToHours(parseFloat(groupAgvData.total_execution_time || 0));
+                    const noErrorTaskTime = secondsToHours(parseFloat(groupAgvData.total_no_error_time || 0));
+                    const errorTaskTime = taskTime - noErrorTaskTime;
+                    const errorTime = secondsToHours(parseFloat(groupAgvData.total_error_time || 0));
+                    const freeTime = secondsToHours(parseFloat(groupAgvData.task_free_times || 0));
+                    const errorCount = groupAgvData.total_task_error_count || 0;
+                    // 计算离线时间
+                    let offlineTime = 0;
+                    if (groupAgvData.error_time_seconds && typeof groupAgvData.error_time_seconds === 'object') {
+                        offlineTime = secondsToHours(parseFloat(groupAgvData.error_time_seconds.OFFLINE || 0));
+                    }
+                    
+                    // 计算效率
+                    let efficiency = 0;
+                    if (noErrorTaskTime > 0) {
+                        efficiency = taskTime / noErrorTaskTime;
+                    }
+                    
+                    // 保存每个机器人的数据
+                    robotData[agvId] = {
+                        group_id: groupId,
+                        agv_id: agvId,
+                        task_count: taskCount,
+                        manual_count: manualCount,
+                        manual_rate: manualRate,
+                        task_time: taskTime,
+                        no_error_task_time: noErrorTaskTime,
+                        error_task_time: errorTaskTime,
+                        error_time: errorTime,
+                        free_time: freeTime,
+                        offline_time: offlineTime,
+                        efficiency: efficiency,
+                        error_count: errorCount,
+                        original_data: groupAgvData // 保留原始数据
+                    };
+                    
+                    // 初始化分组统计
+                    if (!groupStatistics[groupId]) {
+                        groupStatistics[groupId] = {
+                            group_task_count: 0,
+                            group_manual_count: 0,
+                            group_task_time: 0,
+                            group_no_error_task_time: 0,
+                            group_error_task_time: 0,
+                            group_error_time: 0,
+                            group_agv_free_time: 0,
+                            group_agv_offline_time: 0,
+                            group_efficiency: 0,
+                            group_agv_count: 0,
+                            group_error_count: 0,
+                        };
+                    }
+                    
+                    // 累加分组统计
+                    groupStatistics[groupId].group_task_count += taskCount;
+                    groupStatistics[groupId].group_manual_count += manualCount;
+                    groupStatistics[groupId].group_task_time += taskTime;
+                    groupStatistics[groupId].group_no_error_task_time += noErrorTaskTime;
+                    groupStatistics[groupId].group_error_task_time += errorTaskTime;
+                    groupStatistics[groupId].group_error_time += errorTime;
+                    groupStatistics[groupId].group_agv_free_time += freeTime;
+                    groupStatistics[groupId].group_agv_offline_time += offlineTime;
+                    groupStatistics[groupId].group_efficiency += efficiency;
+                    groupStatistics[groupId].group_agv_count += 1;
+                    groupStatistics[groupId].group_error_count += errorCount;
+                    
+                    // 累加总体统计
+                    totalStats.total_tasks += taskCount;
+                    totalStats.total_task_time += taskTime;
+                    totalStats.total_no_error_task_time += noErrorTaskTime;
+                    totalStats.total_error_task_time += errorTaskTime;
+                    totalStats.total_error_time += errorTime;
+                    totalStats.agv_free_time += freeTime;
+                    totalStats.agv_offline_time += offlineTime;
+                    totalStats.total_error_count += errorCount;
+                    totalStats.total_manual_count += manualCount;
+                }
+                
+                // 计算总体效率
+                if (totalStats.total_no_error_task_time > 0) {
+                    totalStats.efficiency = totalStats.total_tasks / totalStats.total_no_error_task_time;
+                }
+                
+                // 计算分组平均统计
+                const groupCount = Object.keys(groupStatistics).length;
+                const groupMetricsSum = {
+                    group_task_time: 0,
+                    group_no_error_task_time: 0,
+                    group_error_task_time: 0,
+                    group_error_time: 0,
+                    group_agv_free_time: 0,
+                    group_agv_offline_time: 0,
+                    group_efficiency: 0
+                };
+                
+                for (const [groupId, stats] of Object.entries(groupStatistics)) {
+                    const agvCount = stats.group_agv_count;
+                    if (agvCount > 0) {
+                        groupAvgStatistics[groupId] = {
+                            group_task_count: stats.group_task_count,
+                            group_agv_count: agvCount,
+                            group_task_time: stats.group_task_time / agvCount,
+                            group_no_error_task_time: stats.group_no_error_task_time / agvCount,
+                            group_error_task_time: stats.group_error_task_time / agvCount,
+                            group_error_time: stats.group_error_time / agvCount,
+                            group_agv_free_time: stats.group_agv_free_time / agvCount,
+                            group_agv_offline_time: stats.group_agv_offline_time / agvCount,
+                            group_efficiency: stats.group_task_count / stats.group_no_error_task_time || 0,
+                            group_error_count: stats.group_error_count/ agvCount || 0
+                        };
+                        
+                        // 累加分组平均值用于计算总体平均
+                        for (const metric of Object.keys(groupMetricsSum)) {
+                            groupMetricsSum[metric] += groupAvgStatistics[groupId][metric];
+                        }
+                    }
+                }
+                
+                // 计算总体平均统计
+                if (groupCount > 0) {
+                    for (const metric of Object.keys(groupMetricsSum)) {
+                        overallAvgStatistics[metric] = groupMetricsSum[metric] / groupCount;
+                    }
+                }
+                
+                // 添加日志记录，验证计算结果
+                console.log('统计结果:');
+                console.log('- 总任务数:', totalStats.total_tasks);
+                console.log('- 总任务时间:', totalStats.total_task_time, '小时');
+                console.log('- 分组数:', groupCount);
+                console.log('- 机器人数量:', Object.keys(robotData).length);
+                
+                // 打印每个组的平均数据到控制台
+                console.log('每个组的平均数据:');
+                Object.entries(groupAvgStatistics).forEach(([groupName, groupData]) => {
+                    console.log(`\n组名: ${groupName}`);
+                    console.log(`- 任务总数: ${groupData.group_task_count}`);
+                    console.log(`- 机器人数量: ${groupData.group_agv_count}`);
+                    console.log(`- 平均任务时间: ${groupData.group_task_time} 小时/车`);
+                    console.log(`- 平均有效工作时长: ${groupData.group_no_error_task_time} 小时/车`);
+                    console.log(`- 平均空闲无任务时长: ${groupData.group_agv_free_time} 小时/车`);
+                    console.log(`- 平均机器人故障: ${groupData.group_error_task_time} 小时/车`);
+                    console.log(`- 平均效率: ${groupData.group_efficiency} 任务/小时`);
+                    console.log(`- 平均手动率: ${groupData.group_manual_rate} 任务/小时`);
+                    console.log(`- 手动次数: ${groupData.group_manual_count} 次`);
+                });
+                
+                // 打印总体平均数据
+                console.log('\n总体平均数据:');
+                Object.entries(overallAvgStatistics).forEach(([metric, value]) => {
+                    console.log(`- ${metric}: ${value}`);
+                });
+                
+                // 计算总手动次数和总任务数，计算全局手动率
+                let totalManualCount = 0;
+                let totalTaskCount = 0;
+                
+                for (const agvId in robotData) {
+                    const robot = robotData[agvId];
+                    totalManualCount += robot.manual_count;
+                    totalTaskCount += robot.task_count;
+                }
+                
+                const averageManualRate = totalTaskCount > 0 ? (totalManualCount / totalTaskCount * 100) : 0;
+                
+                // 构建包含所有统计信息的statsWithAverage对象
+                const statsWithAverage = {
+                    ...totalStats,
+                    total_agv_count: Object.keys(robotData).length,
+                    group_count: groupCount,
+                    group_statistics: groupStatistics,
+                    group_avg_statistics: groupAvgStatistics,
+                    overall_avg_statistics: overallAvgStatistics,
+                    robot_data: robotData,
+                    average_efficiency: overallAvgStatistics.group_efficiency || 0,
+                    average_manual_rate: averageManualRate
+                };
+                
+                // 更新统计卡片
+                //updateStatCards(statsWithAverage);
+                
+                // 返回处理后的数据
+                return statsWithAverage;
+            } catch (error) {
+                console.error('处理和渲染AGV数据时出错:', error);
+                // 发生异常时返回默认统计对象，确保后续代码能正常执行
+                return {
+                    total_tasks: 0,
+                    total_agv_count: 0,
+                    group_statistics: {},
+                    overall_avg_statistics: {
+                        group_no_error_task_time: 0,
+                        group_error_task_time: 0,
+                        group_agv_free_time: 0
+                    }
+                };
+            }
+        }
+    
+        
+
+        
+        // 计算环比的函数
+        function calculateGrowthRate(current, previous) {
+            // 增加更严格的空值检查
+            if (current === undefined || current === null || current === '') {
+                current = 0;
+            }
+            if (previous === undefined || previous === null || previous === 0) {
+                return current > 0 ? '100.00%' : '0.00%';
+            }
+            const rate = ((current - previous) / previous) * 100;
+            return (rate > 0 ? '+' : '') + rate.toFixed(2) + '%';
+        }
+        
+        // 获取环比样式类的函数
+        function getGrowthRateClass(rateText) {
+            if (rateText === '0.00%' || rateText === '100.00%') {
+                return 'text-gray-500';
+            }
+            return rateText.startsWith('+') ? 'text-green-600' : 'text-red-600';
+        }
+        
+        // 更新统计卡片数据的函数
+        function updateStatCards(currentStats, historyStats) {
+            // 格式化时间为小时，添加空值检查
+            const formatTime = (hours) => {
+                if (hours === undefined || hours === null || isNaN(hours)) {
+                    return '0.00';
+                }
+                return hours.toFixed(2);
+            };
+            
+            // 确保currentStats和historyStats是有效对象
+            if (!currentStats || typeof currentStats !== 'object') {
+                console.error('无效的当前统计数据');
+                return;
+            }
+            
+            // 如果没有历史数据，使用默认空对象，确保环比计算不会出错
+            if (!historyStats || typeof historyStats !== 'object') {
+                historyStats = {};
+            }
+        
+            console.info('当前统计数据currentStats:', currentStats);
+            // 更新总任务数
+            const currentTasks = currentStats.total_tasks || 0;
+            const historyTasks = historyStats?.total_tasks || 0;
+            const tasksGrowthRate = calculateGrowthRate(currentTasks, historyTasks);
+            
+            document.getElementById('total-tasks-count').textContent = currentTasks;
+            
+            // 更新状态文本，显示环比
+            const tasksStatusElement = document.getElementById('total-tasks-status');
+            if (tasksStatusElement) {
+                tasksStatusElement.innerHTML = `数据已更新<br><span class="text-xs ${getGrowthRateClass(tasksGrowthRate)}">环比: ${tasksGrowthRate}</span>`;
+            }
+            
+            // 更新有效工作时长（使用分组平均数据 - 对应Python中的overall_avg_statistics.group_no_error_task_time）
+            const currentAvgEffectiveTime = currentStats.overall_avg_statistics?.group_no_error_task_time || 0;
+            const historyAvgEffectiveTime = historyStats?.overall_avg_statistics?.group_no_error_task_time || 0;
+            const effectiveTimeGrowthRate = calculateGrowthRate(currentAvgEffectiveTime, historyAvgEffectiveTime);
+            
+            document.getElementById('agv-running-time').textContent = formatTime(currentAvgEffectiveTime) + ' 小时';
+            
+            // 更新状态文本，显示环比
+            const runningStatusElement = document.getElementById('agv-running-status');
+            if (runningStatusElement) {
+                runningStatusElement.innerHTML = `按${currentStats.total_agv_count || 0}辆车取平均<br><span class="text-xs ${getGrowthRateClass(effectiveTimeGrowthRate)}">环比: ${effectiveTimeGrowthRate}</span>`;
+            }
+            
+            // 更新有效搬运效率（使用平均效率数据 - 对应Python中的average_efficiency）
+            // 增强除以0检查
+            const currentTotalTasks = currentStats.total_tasks || 0;
+            const currentAgvCount = currentStats.total_agv_count || 1;
+            const currentAvgEfficiency = currentAvgEffectiveTime > 0 ? (currentTotalTasks / currentAvgEffectiveTime / currentAgvCount) : 0;
+            
+            const historyTotalTasks = historyStats?.total_tasks || 0;
+            const historyAvgTime = historyStats?.overall_avg_statistics?.group_no_error_task_time || 1;
+            const historyAgvCount = historyStats?.total_agv_count || 1;
+            const historyAvgEfficiency = historyAvgTime > 0 ? (historyTotalTasks / historyAvgTime / historyAgvCount) : 0;
+            const efficiencyGrowthRate = calculateGrowthRate(currentAvgEfficiency, historyAvgEfficiency);
+            
+            document.getElementById('woke-efficiency').textContent = formatTime(currentAvgEfficiency) + ' 任务/小时';
+            
+            // 更新状态文本，显示环比
+            const errorTimeStatusElement = document.getElementById('error-time-status');
+            if (errorTimeStatusElement) {
+                errorTimeStatusElement.innerHTML = `按${currentStats.total_agv_count || 0}辆车取平均<br><span class="text-xs ${getGrowthRateClass(efficiencyGrowthRate)}">环比: ${efficiencyGrowthRate}</span>`;
+            }
+            
+            // 更新错误时间（使用分组平均数据 - 对应Python中的overall_avg_statistics.group_error_task_time）
+            const currentAvgErrorTime = currentStats.overall_avg_statistics?.group_error_task_time || 0;
+            const historyAvgErrorTime = historyStats?.overall_avg_statistics?.group_error_task_time || 0;
+            const errorTimeGrowthRate = calculateGrowthRate(currentAvgErrorTime, historyAvgErrorTime);
+            
+            document.getElementById('error-time').textContent = formatTime(currentAvgErrorTime) + ' 小时';
+            
+            // 更新状态文本，显示环比
+            const freeTimeStatusElement = document.getElementById('free-time-status');
+            if (freeTimeStatusElement) {
+                freeTimeStatusElement.innerHTML = `按${currentStats.total_agv_count || 0}辆车取平均<br><span class="text-xs ${getGrowthRateClass(errorTimeGrowthRate)}">环比: ${errorTimeGrowthRate}</span>`;
+            }
+            
+            // 更新空闲无任务时间（使用分组平均数据 - 同时兼容group_free_time和group_agv_free_time）
+            const currentAvgFreeTime = currentStats.overall_avg_statistics?.group_agv_free_time || 0;
+            const historyAvgFreeTime = historyStats?.overall_avg_statistics?.group_agv_free_time || 0;
+            const freeTimeGrowthRate = calculateGrowthRate(currentAvgFreeTime, historyAvgFreeTime);
+            
+            document.getElementById('idle-time').textContent = formatTime(currentAvgFreeTime) + ' 小时';
+            
+            // 更新状态文本，显示环比
+            const idleTimeStatusElement = document.getElementById('idle-time-status');
+            if (idleTimeStatusElement) {
+                idleTimeStatusElement.innerHTML = `按${currentStats.total_agv_count || 0}辆车取平均<br><span class="text-xs ${getGrowthRateClass(freeTimeGrowthRate)}">环比: ${freeTimeGrowthRate}</span>`;
+            }
+            
+            // 更新平均手动率卡片
+            const currentAvgManualRate = currentStats.average_manual_rate || 0;
+            const totalManualCount = currentStats.total_manual_count || 0;
+            const historyAvgManualRate = historyStats?.average_manual_rate || 0;
+            const manualRateGrowthRate = calculateGrowthRate(currentAvgManualRate, historyAvgManualRate);
+            
+            document.getElementById('manual-rate').textContent = formatTime(currentAvgManualRate) + ' %' + ' (' + totalManualCount + '次)';
+            
+            // 更新手动率状态文本，显示环比
+            const manualRateStatusElement = document.getElementById('manual-rate-status');
+            if (manualRateStatusElement) {
+                manualRateStatusElement.innerHTML = `总手动次数/总任务数<br><span class="text-xs ${getGrowthRateClass(manualRateGrowthRate)}">环比: ${manualRateGrowthRate}</span>`;
+            }
+            
+            // 验证数据是否正确显示
+            console.log('卡片更新成功:', {
+                totalTasks: currentStats.total_tasks || 0,
+                effectiveTime: formatTime(currentAvgEffectiveTime),
+                efficiency: formatTime(currentAvgEfficiency),
+                errorTime: formatTime(currentAvgErrorTime),
+                freeTime: formatTime(currentAvgFreeTime),
+                manualRate: formatTime(currentAvgManualRate)
+            });
+            
+            // 调用图表渲染函数，传入分组统计数据
+            if (currentStats.group_statistics) {
+                renderStackedBarChart(currentStats.group_statistics);   
+            }
+            
+            // 平均单次故障时间（使用total_error_count）
+            const totalErrorCount = currentStats.total_error_count || 0;
+            const avgSingleErrorTime = totalErrorCount > 0 ? (currentStats.total_error_task_time || 0) / totalErrorCount * 60 : 0; // 转换为分钟
+            const historyErrorCount = historyStats?.total_error_count || 0;
+            const historyAvgSingleErrorTime = historyErrorCount > 0 ? (historyStats?.total_error_task_time || 0) / historyErrorCount * 60 : 0;
+            const avgSingleErrorGrowthRate = calculateGrowthRate(avgSingleErrorTime, historyAvgSingleErrorTime);
+            
+            document.getElementById('avg-error-time').textContent = avgSingleErrorTime.toFixed(1) + ' 分钟';
+            
+            // 更新状态文本，显示环比
+            const avgErrorStatusElement = document.getElementById('avg-error-status');
+            if (avgErrorStatusElement) {
+                avgErrorStatusElement.innerHTML = `基于${totalErrorCount}次故障计算<br><span class="text-xs ${getGrowthRateClass(avgSingleErrorGrowthRate)}">环比: ${avgSingleErrorGrowthRate}</span>`;
+            }
+            
+            // 平均单次搬运任务时间（使用total_manual_count）
+            const totalTaskTime = currentStats.total_task_time || 0;
+            const currentAvgTaskTime = currentStats.total_tasks > 0 ? totalTaskTime / currentStats.total_tasks * 60 : 0; // 转换为分钟
+            const historyTaskTime = historyStats?.total_task_time || 0;
+            const historyAvgTaskTime = historyStats.total_tasks > 0 ? historyTaskTime / historyStats.total_tasks * 60 : 0;  
+            const avgTaskGrowthRate = calculateGrowthRate(currentAvgTaskTime, historyAvgTaskTime);
+            console.log('currentAvgTaskTime:', currentAvgTaskTime);
+            console.log('historyAvgTaskTime:', historyAvgTaskTime);
+            document.getElementById('avg-task-time').textContent = currentAvgTaskTime.toFixed(1) + ' 分钟';
+            
+            // 更新状态文本，显示环比
+            const avgTaskStatusElement = document.getElementById('avg-task-status');
+            if (avgTaskStatusElement) {
+                avgTaskStatusElement.innerHTML = `总任务时间/总任务数计算<br><span class="text-xs ${getGrowthRateClass(avgTaskGrowthRate)}">环比: ${avgTaskGrowthRate}</span>`;
+            }
+        }
+        
+        // 渲染堆叠柱状图的函数
+        function renderStackedBarChart(groupAvgStats) {
+            // 确保ECharts已加载
+            if (typeof echarts === 'undefined') {
+                console.log('ECharts尚未加载完成，等待加载...');
+                setTimeout(() => {
+                    renderStackedBarChart(groupAvgStats);
+                }, 500);
+                return;
+            }
+            
+            // 获取图表容器
+            const chartDom = document.getElementById('stackedBarChart');
+            if (!chartDom) {
+                console.error('未找到图表容器');
+                return;
+            }
+            console.log('分组统计数据:', groupAvgStats);
+            // 初始化图表
+            const myChart = echarts.init(chartDom);
+            
+            // 准备数据
+            const groupNames = Object.keys(groupAvgStats);
+            const noErrorTaskTimeData = groupNames.map(groupId => groupAvgStats[groupId].group_no_error_task_time/groupAvgStats[groupId].group_agv_count || 0);
+            const agvFreeTimeData = groupNames.map(groupId => groupAvgStats[groupId].group_agv_free_time/groupAvgStats[groupId].group_agv_count || 0);  
+            const errorTaskTimeData = groupNames.map(groupId => groupAvgStats[groupId].group_error_task_time/groupAvgStats[groupId].group_agv_count || 0);
+            
+            // 设置图表选项
+            const option = {
+                tooltip: {
+                    trigger: 'axis',
+                    axisPointer: {
+                        type: 'shadow'
+                    },
+                    formatter: function(params) {
+                        let result = params[0].name + '<br/>';
+                        let total = 0;
+                        params.forEach(item => {
+                            result += item.marker + item.seriesName + ': ' + item.value.toFixed(2) + ' 小时<br/>';
+                            total += item.value;
+                        });
+                        result += '总计: ' + total.toFixed(2) + ' 小时';
+                        return result;
+                    }
+                },
+                legend: {
+                    data: ['有效工作时间', '空闲无任务时间', '故障时间']
+                },
+                grid: {
+                    left: '3%',
+                    right: '4%',
+                    bottom: '3%',
+                    containLabel: true
+                },
+                xAxis: {
+                    type: 'value',
+                    name: '时间（小时）',
+                    axisLabel: {
+                        formatter: '{value}'
+                    }
+                },
+                yAxis: {
+                    type: 'category',
+                    data: groupNames
+                },
+                series: [
+                    {
+                        name: '有效工作时间',
+                        type: 'bar',
+                        stack: '总量',
+                        emphasis: {
+                            focus: 'series'
+                        },
+                        data: noErrorTaskTimeData,
+                        itemStyle: {
+                            color: '#52c41a' // 绿色
+                        }
+                    },
+                    {
+                        name: '空闲无任务时间',
+                        type: 'bar',
+                        stack: '总量',
+                        emphasis: {
+                            focus: 'series'
+                        },
+                        data: agvFreeTimeData,
+                        itemStyle: {
+                            color: '#faad14' // 黄色
+                        }
+                    },
+                    {
+                        name: '故障时间',
+                        type: 'bar',
+                        stack: '总量',
+                        emphasis: {
+                            focus: 'series'
+                        },
+                        data: errorTaskTimeData,
+                        itemStyle: {
+                            color: '#f5222d' // 红色
+                        }
+                    }
+                ]
+            };
+            
+            // 设置图表选项
+            myChart.setOption(option);
+            
+            // 响应式调整
+            window.addEventListener('resize', function() {
+                myChart.resize();
+            });
+            
+            console.log('堆叠柱状图渲染完成');
+        }
+    </script>
+</body>
+</html>

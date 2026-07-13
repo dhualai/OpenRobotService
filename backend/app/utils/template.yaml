@@ -1,0 +1,50 @@
+template:
+  1:
+    id: TukPKMkubGh-SRmWQjHxVwah8qoTd-EA1AYz8PDdNBQ
+    data:
+      character_string1: ""
+      thing11: ""
+      thing23: ""
+      const17:
+        enum: [ "工单长时间未更新"]
+      time21: ""
+
+  2:
+    id: 7zjOnZPzoEiMTUUTTtn1XZlc-DmMAimFzFlZQod3h0k
+    data:
+      number29: ""
+      character_string72: ""
+      character_string71: ""
+
+  3:
+    id: ocgOylTcus7KtDJ-y_MT8epPdQEFWZt-bY0uSt4W4wk
+    data:
+      character_string9: ""
+      thing8: ""
+      short_thing5: ""
+      thing14: ""
+      time24: ""
+  4:
+    id: y5Oh6AHXFrVUk5WLnGkCgUBN-Tk8QscEnRtZ10gU5P0
+    data:
+      character_string1: ""
+      thing26: ""
+      thing15: ""
+      time2: ""
+      time18: ""
+  5:
+    id: -mAz5bQqKj8lw6dD2P3rIjnz2rKL7cdnMelE6fxYr8g
+    data:
+      character_string14: ""
+      thing13: ""
+      thing6: ""
+      thing81: ""
+      time86: ""
+  6:
+    id: 5GQVjmi2phU5xuRLUOcvsLuJ9pUiKjXlkQ2XlkqRrK0
+    data:
+      character_string23: ""
+      thing15: ""
+      character_string22: ""
+      time4: ""
+      time6: ""
