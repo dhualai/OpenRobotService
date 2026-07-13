@@ -1,6 +1,6 @@
 import { Suspense, useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Navbar, TabBar, TabBarItem, Loading } from 'tdesign-mobile-react';
+import { Navbar, TabBar, TabBarItem, Loading, Button } from 'tdesign-mobile-react';
 import type { ReactNode } from 'react';
 
 interface AdminLayoutProps {
@@ -38,9 +38,18 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
       <Navbar
         title={currentLabel}
         leftArrow
-        onLeftClick={() => setMenuVisible(!menuVisible)}
+        onLeftClick={() => navigate(-1)}
         fixed
-      />
+      >
+        <Button
+          variant="text"
+          size="small"
+          onClick={() => setMenuVisible(!menuVisible)}
+          style={{ color: '#0052d9' }}
+        >
+          ☰
+        </Button>
+      </Navbar>
       <div style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 60 }}>
         <Suspense fallback={<Loading text="加载中..." />}>
           {children || <Outlet />}
