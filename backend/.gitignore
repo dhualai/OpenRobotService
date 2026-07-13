@@ -1,0 +1,48 @@
+# ===== 虚拟环境 =====
+.venv/
+env/
+venv/
+
+# ===== 配置文件 =====
+.env
+.env.local
+.env.*.local
+
+# ===== 日志文件 =====
+*.log
+logs/
+
+# ===== 数据库 =====
+*.db
+*.sqlite
+data/
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+.Python
+
+# ===== 编辑器 =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+
+# ===== 构建产物 =====
+dist/
+build/
+*.egg-info/
+
+# ===== 测试 =====
+.coverage
+htmlcov/
+.pytest_cache/
+
+# ===== MQTT =====
+mqtt_header_id.json
