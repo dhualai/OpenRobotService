@@ -1,0 +1,217 @@
+"""
+对话上下文管理
+
+- Redis 可用 → 持久化存储（服务重启保留）
+- Redis 不可用 → 内存 dict（服务重启丢失，但无需任何外部服务）
+"""
+import asyncio
+import json
+import re
+import time
+from typing import List, Optional, Dict, Any, Tuple
+from dataclasses import dataclass, field
+
+from app.ai.config import get_ai_config
+from app.ai.exceptions import ServiceUnavailableError
+
+
+@dataclass
+class SessionMemory:
+    """会话记忆"""
+    session_id: str
+    turns: List[Dict[str, str]] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class MemoryManager:
+    """
+    会话记忆管理
+
+    优先 Redis，连接失败自动降到内存模式。
+    """
+
+    PRONOUN_PATTERNS = [
+        (r"然后呢", "继续上一步"),
+        (r"接着", "继续上一步"),
+        (r"下一步", "下一步"),
+        (r"还有呢", "继续"),
+        (r"刚才说的", "上一条"),
+        (r"那个", "上一条"),
+    ]
+
+    def __init__(self, redis_url: str, max_turns: int = 10, ttl: int = 0):
+        self.redis_url = redis_url
+        self.max_turns = max_turns
+        self.ttl = ttl  # 0 = 永久
+        self._redis = None
+        self._fallback: Dict[str, Dict[str, Any]] = {}
+        self._fallback_pending: set = set()
+        self._redis_ok: Optional[bool] = None
+        self._redis_last_check: float = 0       # 上次尝试 Redis 的时间戳
+        self._redis_retry_interval: float = 60.0  # Redis 恢复后重试间隔（秒）
+        self._lock = asyncio.Lock()
+
+    async def _ensure_redis(self, for_write: bool = False):
+        """懒连接 Redis，失败则自动用内存；每隔 retry_interval 秒重试一次"""
+        now = time.time()
+        if self._redis_ok is False:
+            # 距上次失败不足 retry_interval 秒，不再尝试
+            if now - self._redis_last_check < self._redis_retry_interval:
+                return None
+            # 超过间隔，重置标记允许重试
+            self._redis_ok = None
+        if self._redis is not None:
+            return self._redis
+        async with self._lock:
+            if self._redis is not None:
+                return self._redis
+            if self._redis_ok is False:
+                return None
+            try:
+                import redis.asyncio as redis
+                self._redis = redis.from_url(
+                    self.redis_url, encoding="utf-8", decode_responses=True,
+                    socket_connect_timeout=1, socket_timeout=1,
+                )
+                await self._redis.ping()
+                self._redis_ok = True
+                self._redis_last_check = now
+            except Exception:
+                self._redis = None
+                self._redis_ok = False
+                self._redis_last_check = now
+        return self._redis
+
+    def _get_key(self, session_id: str) -> str:
+        return f"ai:memory:{session_id}"
+
+    async def get_memory(self, session_id: str) -> SessionMemory:
+        client = await self._ensure_redis()
+        if client:
+            try:
+                data = await client.get(self._get_key(session_id))
+                if data:
+                    parsed = json.loads(data)
+                    return SessionMemory(session_id=session_id, turns=parsed.get("turns", []), metadata=parsed.get("metadata", {}))
+            except Exception:
+                pass
+        # 内存兜底
+        if session_id in self._fallback:
+            data = self._fallback[session_id]
+            return SessionMemory(session_id=session_id, turns=data.get("turns", []), metadata=data.get("metadata", {}))
+        return SessionMemory(session_id=session_id)
+
+    async def save_memory(self, memory: SessionMemory) -> None:
+        data = {"turns": memory.turns[-self.max_turns:], "metadata": memory.metadata}
+        # 写 Redis
+        client = await self._ensure_redis(for_write=True)
+        if client:
+            try:
+                value = json.dumps(data, ensure_ascii=False)
+                key = self._get_key(memory.session_id)
+                if self.ttl > 0:
+                    await client.setex(key, self.ttl, value)
+                else:
+                    await client.set(key, value)
+                return
+            except Exception:
+                pass
+        # 内存兜底
+        self._fallback[memory.session_id] = data
+
+    async def add_turn(self, session_id: str, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> SessionMemory:
+        memory = await self.get_memory(session_id)
+        turn = {"role": role, "content": content}
+        if metadata:
+            turn["metadata"] = metadata
+        memory.turns.append(turn)
+        if len(memory.turns) > self.max_turns:
+            memory.turns = memory.turns[-self.max_turns:]
+        await self.save_memory(memory)
+        return memory
+
+    async def get_context(self, session_id: str, max_turns: Optional[int] = None) -> List[Dict[str, str]]:
+        memory = await self.get_memory(session_id)
+        turns = memory.turns[-self.max_turns:] if max_turns is None else memory.turns[-max_turns:]
+        return [{"role": t["role"], "content": t["content"]} for t in turns]
+
+    async def resolve_pronoun(self, query: str, session_id: str) -> Tuple[str, bool]:
+        """
+        指代消解检测（预留方法，暂未集成到 Agent pipeline）。
+        TODO: 在 _agent_think 中调用此方法处理"然后呢"等指代补全。
+        """
+        for pattern, _ in self.PRONOUN_PATTERNS:
+            if re.search(pattern, query):
+                break
+        else:
+            return query, False
+        memory = await self.get_memory(session_id)
+        user_turns = [t for t in memory.turns if t["role"] == "user"]
+        if not user_turns:
+            return query, False
+        return query, query != user_turns[-1]["content"]
+
+    async def clear(self, session_id: str) -> None:
+        client = await self._ensure_redis()
+        if client:
+            try:
+                await client.delete(self._get_key(session_id))
+            except Exception:
+                pass
+        self._fallback.pop(session_id, None)
+
+    async def clear_all(self) -> int:
+        """清空所有会话，返回清除数量"""
+        count = 0
+        client = await self._ensure_redis()
+        if client:
+            try:
+                keys = await client.keys(self._get_key("*"))
+                if keys:
+                    count = await client.delete(*keys)
+            except Exception:
+                pass
+        count += len(self._fallback)
+        self._fallback.clear()
+        return count
+
+    async def add_pending_ticket(self, session_id: str) -> None:
+        """将 session 加入待派单列表"""
+        client = await self._ensure_redis()
+        if client:
+            await client.sadd("usp:pending_tickets", session_id)
+        self._fallback_pending.add(session_id)
+
+    async def remove_pending_ticket(self, session_id: str) -> None:
+        client = await self._ensure_redis()
+        if client:
+            await client.srem("usp:pending_tickets", session_id)
+        self._fallback_pending.discard(session_id)
+
+    async def list_pending_tickets(self) -> list:
+        client = await self._ensure_redis()
+        if client:
+            return list(await client.smembers("usp:pending_tickets"))
+        return list(self._fallback_pending)
+
+    async def health_check(self) -> bool:
+        client = await self._ensure_redis()
+        return client is not None
+
+
+# 全局单例
+_memory_manager: Optional[MemoryManager] = None
+_manager_lock = asyncio.Lock()
+
+async def get_memory_manager() -> MemoryManager:
+    global _memory_manager
+    if _memory_manager is None:
+        async with _manager_lock:
+            if _memory_manager is None:
+                config = get_ai_config()
+                _memory_manager = MemoryManager(
+                    redis_url=config.redis_url,
+                    max_turns=config.redis_max_context_turns,
+                    ttl=config.redis_ttl,
+                )
+    return _memory_manager
