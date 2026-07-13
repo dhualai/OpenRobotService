@@ -63,7 +63,7 @@ export default function TicketList() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
-      <Navbar title="系统任务" fixed />
+      <Navbar title="系统任务" fixed leftArrow onLeftClick={() => navigate(-1)} />
       <div style={{ paddingTop: 48 }}>
         <div style={{ padding: '12px 16px', background: '#fff' }}>
           <Input

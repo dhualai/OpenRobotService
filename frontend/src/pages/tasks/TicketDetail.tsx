@@ -115,7 +115,7 @@ export default function TicketDetail() {
 
   return (
     <div style={{ paddingBottom: 80 }}>
-      <Navbar title="任务详情" fixed onLeftClick={() => navigate(-1)} />
+      <Navbar title="任务详情" fixed leftArrow onLeftClick={() => navigate(-1)} />
       <div className="page-container" style={{ paddingTop: 56 }}>
         {/* 工单标题 */}
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>{ticket.title}</h2>

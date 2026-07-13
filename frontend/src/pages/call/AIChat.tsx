@@ -106,7 +106,7 @@ export default function AIChat() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      <Navbar title="AI 智能助手" fixed />
+      <Navbar title="AI 智能助手" fixed leftArrow onLeftClick={() => navigate(-1)} />
       <div style={{ flex: 1, overflow: 'auto', padding: '16px', paddingTop: 56, paddingBottom: 80 }}>
         {messages.length === 0 && (
           <div style={{ textAlign: 'center', color: '#999', marginTop: 80 }}>

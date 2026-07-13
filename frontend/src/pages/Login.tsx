@@ -38,7 +38,7 @@ export default function Login() {
 
   return (
     <div className="page-container" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: '100vh' }}>
-      <Navbar title="摇人吧" fixed />
+      <Navbar title="摇人吧" fixed leftArrow onLeftClick={() => navigate(-1)} />
       <div style={{ maxWidth: 400, margin: '80px auto 0', width: '100%' }}>
         <h2 style={{ textAlign: 'center', marginBottom: 32, color: '#0052d9' }}>登录 OpenRobotService</h2>
         <Form onSubmit={handleSubmit}>

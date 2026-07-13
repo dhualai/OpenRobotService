@@ -41,7 +41,7 @@ export default function NewTicket() {
 
   return (
     <div className="page-container" style={{ paddingTop: 56 }}>
-      <Navbar title="一键报障" fixed onLeftClick={() => navigate(-1)} />
+      <Navbar title="一键报障" fixed leftArrow onLeftClick={() => navigate(-1)} />
       <Form onSubmit={handleSubmit}>
         <FormItem label="问题标题" name="title">
           <Input
