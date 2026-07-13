@@ -43,7 +43,7 @@ export default function AIChat() {
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_CONFIG.FQA.BASE_URL}/qa/ask/stream`, {
+      const response = await fetch(`${API_CONFIG.CALL.BASE_URL}/qa/ask/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

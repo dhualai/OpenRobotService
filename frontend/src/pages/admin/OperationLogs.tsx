@@ -22,7 +22,8 @@ export default function OperationLogs() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const pageSize = 20;
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端暂无 /logs/ 接口，需后端补充操作日志端点
 
   const fetchLogs = useCallback(async () => {
     setLoading(true);

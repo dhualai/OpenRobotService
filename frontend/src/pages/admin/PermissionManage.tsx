@@ -9,18 +9,18 @@ interface Permission { id: string; name: string; resource: string; action: strin
 export default function PermissionManage() {
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.USER_CENTER.BASE_URL, 'UserCenter');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   const fetchPermissions = async () => {
     setLoading(true);
-    try { const data = await request<Permission[]>('/auth/permissions/'); setPermissions(data || []); } catch (e) { Toast({ message: String(e), theme: 'error' }); } finally { setLoading(false); }
+    try { const data = await request<Permission[]>('/permissions/'); setPermissions(data || []); } catch (e) { Toast({ message: String(e), theme: 'error' }); } finally { setLoading(false); }
   };
 
   useEffect(() => { fetchPermissions(); }, []);
 
   const togglePermission = async (perm: Permission) => {
     try {
-      await request(`/auth/permissions/${perm.id}`, { method: 'PATCH', body: JSON.stringify({ enabled: !perm.enabled }) });
+      await request(`/permissions/${perm.id}`, { method: 'PUT', body: JSON.stringify({ enabled: !perm.enabled }) });
       setPermissions((prev) => prev.map((p) => p.id === perm.id ? { ...p, enabled: !p.enabled } : p));
     } catch (e) { Toast({ message: String(e), theme: 'error' }); }
   };

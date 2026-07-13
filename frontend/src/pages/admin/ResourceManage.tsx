@@ -11,13 +11,13 @@ export default function ResourceManage() {
   const [items, setItems] = useState<ResourceItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [path, setPath] = useState<string[]>([]);
-  const request = createRequest(API_CONFIG.FQA.BASE_URL, 'FQA');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   const fetchItems = async (folderPath: string[] = []) => {
     setLoading(true);
     try {
       const folderParam = folderPath.length > 0 ? `?folder=${encodeURIComponent(folderPath.join('/'))}` : '';
-      const data = await request<ResourceItem[]>(`/resource-manager/files${folderParam}`);
+      const data = await request<ResourceItem[]>(`/resource-manager/resources/${folderParam}`);
       setItems(data || []);
     } catch (err) { Toast({ message: String(err), theme: 'error' }); }
     finally { setLoading(false); }
@@ -32,7 +32,7 @@ export default function ResourceManage() {
       fetchItems(newPath);
     } else {
       // 触发文件下载
-      window.open(`${API_CONFIG.FQA.BASE_URL}/resource-manager/files/download?path=${encodeURIComponent([...path, item.name].join('/'))}`, '_blank');
+      window.open(`${API_CONFIG.ADMIN.BASE_URL}/resource-manager/resources/${item.id}/download`, '_blank');
     }
   };
 

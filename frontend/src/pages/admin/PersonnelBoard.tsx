@@ -9,7 +9,8 @@ interface Allocation { id: string; person: string; project: string; role: string
 export default function PersonnelBoard() {
   const [items, setItems] = useState<Allocation[]>([]);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端暂无 /personnel/board 接口，需后端补充
 
   useEffect(() => {
     request<Allocation[]>('/personnel/board').then(setItems).catch(console.error).finally(() => setLoading(false));

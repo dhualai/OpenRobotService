@@ -8,7 +8,8 @@ export default function DataImport() {
   const [tab, setTab] = useState('file');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string | null>(null);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端导入接口为 /export/ 和 /wechat/import-data，需确认对应端点
 
   const handleFileUpload = async (file: File) => {
     setLoading(true);

@@ -10,7 +10,8 @@ interface ReportData { labels: string[]; values: number[]; summary: string; }
 export default function ReportsAnalytics() {
   const [data, setData] = useState<ReportData | null>(null);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端暂无 /reports/analytics 接口，可考虑改用 /daily-reports/
 
   useEffect(() => {
     request<ReportData>('/reports/analytics').then(setData).catch(console.error).finally(() => setLoading(false));

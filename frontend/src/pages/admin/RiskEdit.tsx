@@ -11,20 +11,20 @@ export default function RiskEdit() {
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({ title: '', description: '', level: 'medium', project: '', mitigation: '' });
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   useEffect(() => {
     if (id) {
       setLoading(true);
-      request<typeof form>(`/risks/${id}`).then(setForm).catch((e) => Toast({ message: String(e), theme: 'error' })).finally(() => setLoading(false));
+      request<typeof form>(`/${id}`).then(setForm).catch((e) => Toast({ message: String(e), theme: 'error' })).finally(() => setLoading(false));
     }
   }, [id]);
 
   const handleSubmit = async () => {
     setSubmitting(true);
     try {
-      if (id) await request(`/risks/${id}`, { method: 'PATCH', body: JSON.stringify(form) });
-      else await request('/risks/', { method: 'POST', body: JSON.stringify(form) });
+      if (id) await request(`/projects/risks/${id}`, { method: 'PUT', body: JSON.stringify(form) });
+      else await request('/projects/risks/', { method: 'POST', body: JSON.stringify(form) });
       Toast({ message: '保存成功', theme: 'success' });
       navigate(-1);
     } catch (err) { Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }); }

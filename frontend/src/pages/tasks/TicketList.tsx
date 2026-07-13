@@ -29,19 +29,19 @@ export default function TicketList() {
   const [total, setTotal] = useState(0);
   const pageSize = 20;
 
-  const request = createRequest(API_CONFIG.FQA.BASE_URL, 'FQA');
+  const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
 
   const fetchTickets = useCallback(async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams({
         page: String(page),
-        page_size: String(pageSize),
-        ...(search && { search }),
+        size: String(pageSize),
+        ...(search && { keyword: search }),
         ...(statusFilter !== 'all' && { status: statusFilter }),
       });
       const data = await request<{ items: Ticket[]; total: number }>(
-        `/tickets/?${params.toString()}`
+        `/?${params.toString()}`
       );
       setTickets(data.items || []);
       setTotal(data.total || 0);

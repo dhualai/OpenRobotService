@@ -9,10 +9,10 @@ interface Role { id: string; name: string; description: string; permissions: str
 export default function RoleManage() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.USER_CENTER.BASE_URL, 'UserCenter');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   useEffect(() => {
-    request<Role[]>('/auth/roles/').then(setRoles).catch((e) => Toast({ message: String(e), theme: 'error' })).finally(() => setLoading(false));
+    request<Role[]>('/roles/').then(setRoles).catch((e) => Toast({ message: String(e), theme: 'error' })).finally(() => setLoading(false));
   }, []);
 
   if (loading) return <Loading text="加载角色列表..." />;
