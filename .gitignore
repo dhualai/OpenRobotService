@@ -21,7 +21,6 @@ htmlcov/
 # ===== 环境变量 / 密钥（绝不提交）=====
 .env
 .env.*
-!.env.example
 *.pem
 *.key
 
@@ -31,6 +30,7 @@ htmlcov/
 
 # ===== 前端 =====
 node_modules/
+package-lock.json
 frontend/dist/
 frontend/.vite/
 npm-debug.log*
@@ -50,6 +50,7 @@ logs/
 
 # ===== Claude Code 本地设置 =====
 .claude/settings.local.json
+CODEBUDDY.md
 
 # ===== 临时 / 草稿（如 logo 草稿、导出中间文件）=====
 old/
