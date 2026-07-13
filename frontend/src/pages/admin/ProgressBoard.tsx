@@ -10,7 +10,8 @@ interface ProgressItem { name: string; progress: number; status: string; }
 export default function ProgressBoard() {
   const [items, setItems] = useState<ProgressItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端暂无 /progress/board 接口，需后端补充
 
   useEffect(() => {
     request<ProgressItem[]>('/progress/board').then(setItems).catch(console.error).finally(() => setLoading(false));

@@ -64,7 +64,7 @@ async function refreshTokenRequest(): Promise<string> {
   if (!storedRefreshToken) {
     throw new Error('No refresh token available');
   }
-  const response = await fetch('/api/FQA/user/refresh', {
+  const response = await fetch('/api/auth/refresh', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refresh_token: storedRefreshToken }),

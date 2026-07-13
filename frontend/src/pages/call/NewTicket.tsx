@@ -17,7 +17,7 @@ export default function NewTicket() {
     assignee_id: '',
   });
 
-  const request = createRequest(API_CONFIG.FQA.BASE_URL, 'FQA');
+  const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
 
   const handleSubmit = async () => {
     if (!formData.title.trim()) {

@@ -40,13 +40,13 @@ export default function TicketDetail() {
   const [newComment, setNewComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  const request = createRequest(API_CONFIG.FQA.BASE_URL, 'FQA');
+  const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
 
   const fetchDetail = async () => {
     if (!id) return;
     setLoading(true);
     try {
-      const data = await request<TicketDetailData>(`/tickets/${id}`);
+      const data = await request<TicketDetailData>(`/${id}?load_comments=true`);
       setTicket(data);
     } catch (err) {
       Toast({ message: `加载失败: ${err instanceof Error ? err.message : '未知错误'}`, theme: 'error' });
@@ -62,9 +62,8 @@ export default function TicketDetail() {
   const handleStatusChange = async (newStatus: string) => {
     if (!id) return;
     try {
-      await request(`/tickets/${id}`, {
+      await request(`/${id}/status?status=${newStatus}`, {
         method: 'PATCH',
-        body: JSON.stringify({ status: newStatus }),
       });
       Toast({ message: '状态更新成功', theme: 'success' });
       fetchDetail();
@@ -77,7 +76,7 @@ export default function TicketDetail() {
     if (!newComment.trim() || !id) return;
     setSubmitting(true);
     try {
-      await request(`/tickets/${id}/comments`, {
+      await request(`/${id}/comments`, {
         method: 'POST',
         body: JSON.stringify({ content: newComment }),
       });

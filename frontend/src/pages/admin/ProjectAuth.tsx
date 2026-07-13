@@ -9,12 +9,13 @@ interface AuthItem { id: string; project: string; user: string; role: string; gr
 export default function ProjectAuth() {
   const [items, setItems] = useState<AuthItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      const data = await request<AuthItem[]>('/project/auth/list');
+      const data = await request<AuthItem[]>('/projects/licenses/all');
+      // TODO: 原接口 /project/auth/list，新接口改为 /projects/licenses/{project_code}?type=all
       setItems(data || []);
     } catch (err) {
       Toast({ message: `加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -29,6 +30,7 @@ export default function ProjectAuth() {
       content: '确定要撤销此授权吗？',
       onConfirm: async () => {
         try {
+          // TODO: 撤销授权接口需确认新后端对应端点
           await request(`/project/auth/${id}`, { method: 'DELETE' });
           Toast({ message: '授权已撤销', theme: 'success' });
           fetchData();

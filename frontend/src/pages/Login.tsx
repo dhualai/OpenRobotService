@@ -16,12 +16,12 @@ export default function Login() {
     }
     setLoading(true);
     try {
-      const request = createRequest(API_CONFIG.FQA.BASE_URL, 'FQA');
+      const request = createRequest(API_CONFIG.AUTH.BASE_URL, '认证服务');
       const data = await request<{
         access_token: string;
         refresh_token: string;
         expires_in: number;
-      }>('/user/login', {
+      }>('/login', {
         method: 'POST',
         body: JSON.stringify({ username: 'debug', password: 'debug' }),
         skipAuth: true,

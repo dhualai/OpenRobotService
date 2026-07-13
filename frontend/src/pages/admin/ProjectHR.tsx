@@ -9,7 +9,8 @@ interface HRItem { id: string; name: string; role: string; projects: string[]; a
 export default function ProjectHR() {
   const [items, setItems] = useState<HRItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端暂无 /hr/overview 接口，需后端补充
 
   useEffect(() => {
     request<HRItem[]>('/hr/overview').then(setItems).catch((e) => Toast({ message: String(e), theme: 'error' })).finally(() => setLoading(false));

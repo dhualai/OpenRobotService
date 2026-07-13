@@ -11,7 +11,8 @@ interface FileUploadProps {
 }
 
 export default function FileUpload({ onSuccess, onError, accept = '.csv,.xlsx,.xls', maxSize = 10 }: FileUploadProps) {
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端导入接口路径待确认
 
   const handleUpload = async (file: File) => {
     const formData = new FormData();

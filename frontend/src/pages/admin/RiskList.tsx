@@ -13,17 +13,17 @@ export default function RiskList() {
   const navigate = useNavigate();
   const [risks, setRisks] = useState<Risk[]>([]);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   const fetchRisks = async () => {
     setLoading(true);
-    try { const data = await request<Risk[]>('/risks/'); setRisks(data || []); } catch (e) { Toast({ message: String(e), theme: 'error' }); } finally { setLoading(false); }
+    try { const data = await request<Risk[]>('/projects/risks/'); setRisks(data || []); } catch (e) { Toast({ message: String(e), theme: 'error' }); } finally { setLoading(false); }
   };
 
   useEffect(() => { fetchRisks(); }, []);
 
   const handleDelete = (id: string) => {
-    Dialog.confirm?.({ title: '确认删除', content: '确定要删除此风险项吗？', onConfirm: async () => { await request(`/risks/${id}`, { method: 'DELETE' }); fetchRisks(); } });
+    Dialog.confirm?.({ title: '确认删除', content: '确定要删除此风险项吗？', onConfirm: async () => { await request(`/projects/risks/${id}`, { method: 'DELETE' }); fetchRisks(); } });
   };
 
   if (loading) return <Loading text="加载中..." />;

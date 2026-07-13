@@ -7,7 +7,8 @@ import API_CONFIG from '@/config/api';
 export default function JsonImport() {
   const [jsonStr, setJsonStr] = useState('');
   const [loading, setLoading] = useState(false);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端导入接口路径待确认
 
   const handleImport = async () => {
     try {
