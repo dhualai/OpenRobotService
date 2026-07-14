@@ -1,0 +1,732 @@
+"""
+统一智能诊断 Agent（纯 Agent 架构）
+
+所有消息统一走 Agent 路径。
+Agent 自主决策：检索知识库 → 初步引导 → 追问 → 给出方案 → 转工单。
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import time
+import httpx
+from typing import Optional, Dict, List
+from dataclasses import dataclass, field
+
+from app.ai import SYSTEM_PROMPT
+from app.ai.config import get_ai_config
+from app.ai.exceptions import AITimeoutError, ServiceUnavailableError, RetrieveEmptyError
+from app.ai.core import get_llm_client, get_retrieval_service, get_memory_manager
+
+
+# ============================================================
+# 数据结构
+# ============================================================
+
+@dataclass
+class DiagnosisRequest:
+    session_id: str
+    query: str
+    rewritten_query: Optional[str] = None
+    skip_retrieval: bool = False  # 测试用：跳过 KB 检索
+
+
+@dataclass
+class AgentState:
+    """Agent 对问题的持续理解——每轮诊断更新"""
+    session_id: str
+    problem_summary: str = ""
+    ruled_out: List[str] = field(default_factory=list)
+    hypotheses: List[str] = field(default_factory=list)
+    collected_info: Dict[str, str] = field(default_factory=dict)
+    diagnosis_rounds: int = 0
+    phase: str = "idle"           # idle | diagnosing | escalated | resolved
+    original_query: str = ""
+
+
+# ============================================================
+# 状态辅助函数
+# ============================================================
+
+def _load_agent_state(metadata: dict) -> Optional[AgentState]:
+    s = metadata.get("agent_state")
+    if not s:
+        return None
+    return AgentState(
+        session_id=s["session_id"],
+        problem_summary=s.get("problem_summary", ""),
+        ruled_out=s.get("ruled_out", []),
+        hypotheses=s.get("hypotheses", []),
+        collected_info=s.get("collected_info", {}),
+        diagnosis_rounds=s.get("diagnosis_rounds", 0),
+        phase=s.get("phase", "idle"),
+        original_query=s.get("original_query", ""),
+    )
+
+
+def _save_agent_state(memory, state: AgentState) -> None:
+    existing = memory.metadata.get("agent_state", {})
+    memory.metadata["agent_state"] = {
+        "session_id": state.session_id,
+        "problem_summary": state.problem_summary,
+        "ruled_out": state.ruled_out,
+        "hypotheses": state.hypotheses,
+        "collected_info": state.collected_info,
+        "diagnosis_rounds": state.diagnosis_rounds,
+        "phase": state.phase,
+        "original_query": state.original_query,
+        "attachments": existing.get("attachments", []),  # 保留上传的附件
+    }
+
+
+def _agent_state_summary(state: AgentState) -> dict:
+    return {
+        "phase": state.phase,
+        "problem_summary": state.problem_summary[:100] if state.problem_summary else "",
+        "diagnosis_rounds": state.diagnosis_rounds,
+        "hypotheses": state.hypotheses,
+        "collected_fields": list(state.collected_info.keys()),
+    }
+
+
+# ============================================================
+# Agent 推理 Prompt
+# ============================================================
+
+DIAGNOSIS_PROMPT = """你是一个诊断 Agent，帮用户排查 AGV/AMR 问题。
+
+**知识库有答案→answer。信息不够→先看 hypotheses 和 collected_info，被验证的推测升级为诊断方向，被推翻的放入 ruled_out。追问时带着当前推测问，让用户感觉你在推理。如果你有明确的怀疑方向，直接让用户尝试验证（如"试一下重启车辆看是否恢复"）。实在排查不出→建议上传日志截图后点转工单。别干巴巴收集信息，别重复问。**
+
+## 对话
+{conversation}
+
+## 状态：问题={problem_summary} | 已收集={collected_info} | 已排除={ruled_out} | 推测={hypotheses}
+## 知识库：{reference_docs}
+## 第{round}轮
+
+---
+输出 JSON：
+```json
+{{"action":"ask|answer","state_update":{{"problem_summary":"概述","ruled_out":[],"hypotheses":[],"collected_info":{{}}}}}}
+```
+JSON 之后直接写回复。排查到头了就建议用户点转工单。语气像工程师。"""
+
+
+# ============================================================
+# ============================================================
+# 智能诊断 Agent
+# ============================================================
+
+class AiDiagnosisPlatform:
+    """纯 Agent 流水线：所有消息统一走 Agent 推理"""
+
+    def __init__(self):
+        self.config = get_ai_config()
+        self._llm_client = None
+        self._retriever = None
+        self._memory_manager = None
+        self._retrieval_cache: dict = {}  # 实例级缓存，不跨 session 串味
+
+    async def _ensure_clients(self):
+        if self._llm_client is None:
+            t0 = time.perf_counter()
+            self._llm_client = await get_llm_client()
+            print(f"  ⏱  [init] LLM client: {(time.perf_counter() - t0) * 1000:.0f}ms")
+        if self._retriever is None:
+            t0 = time.perf_counter()
+            self._retriever = await get_retrieval_service()
+            print(f"  ⏱  [init] Retriever: {(time.perf_counter() - t0) * 1000:.0f}ms")
+        if self._memory_manager is None:
+            t0 = time.perf_counter()
+            self._memory_manager = await get_memory_manager()
+            print(f"  ⏱  [init] MemoryManager: {(time.perf_counter() - t0) * 1000:.0f}ms")
+
+    # ================================================================
+    # run — 统一入口（纯 Agent）
+    # ================================================================
+    async def run(self, request: DiagnosisRequest) -> dict:
+        t0 = time.perf_counter()
+        await self._ensure_clients()
+        t_init = (time.perf_counter() - t0) * 1000
+        memory = await self._memory_manager.get_memory(request.session_id)
+        agent_state = _load_agent_state(memory.metadata)
+
+        if agent_state is None:
+            agent_state = AgentState(
+                session_id=request.session_id,
+                phase="idle",
+                original_query=request.query,
+                problem_summary=request.query,
+            )
+            _save_agent_state(memory, agent_state)
+            await self._memory_manager.save_memory(memory)
+
+        result = await self._agent_think(request, agent_state, memory)
+        total_ms = (time.perf_counter() - t0) * 1000
+        print(f"  ⏱  [run] total={total_ms:.0f}ms (init={t_init:.0f}ms)")
+        return result
+
+    # ================================================================
+    # Agent 推理循环（共用方法）
+    # ================================================================
+
+    def _build_diagnosis_prompt(self, state: AgentState, memory, reference_docs: str) -> str:
+        conversation_text = self._format_conversation(memory)
+        return DIAGNOSIS_PROMPT.format(
+            problem_summary=state.problem_summary or "（待分析）",
+            collected_info=json.dumps(state.collected_info, ensure_ascii=False) if state.collected_info else "（暂无）",
+            ruled_out="、".join(state.ruled_out) if state.ruled_out else "（暂无）",
+            hypotheses="、".join(state.hypotheses) if state.hypotheses else "（待推断）",
+            conversation=conversation_text,
+            reference_docs=reference_docs,
+            round=state.diagnosis_rounds,
+        )
+
+    def _apply_state_update(self, state: AgentState, state_update: dict) -> None:
+        if not state_update:
+            return
+        if "problem_summary" in state_update:
+            state.problem_summary = state_update["problem_summary"]
+        if "ruled_out" in state_update:
+            state.ruled_out = state_update["ruled_out"]
+        if "hypotheses" in state_update:
+            state.hypotheses = state_update["hypotheses"]
+        if "collected_info" in state_update:
+            # 合并新字段，空值/无 视为清除
+            for k, v in state_update["collected_info"].items():
+                if v is None:
+                    state.collected_info.pop(k, None)
+                    continue
+                if isinstance(v, (dict, list)):
+                    v = json.dumps(v, ensure_ascii=False)
+                v = str(v).strip()
+                if v and v not in ("无", "无无", "不清楚", "不知道", "暂无", "未知"):
+                    state.collected_info[k] = v
+                else:
+                    state.collected_info.pop(k, None)
+
+    def _apply_action_phase(self, state: AgentState, action: str) -> None:
+        if action == "answer":
+            state.phase = "resolved"
+
+    async def _finalize_diagnosis(self, session_id: str, state: AgentState,
+                                    thinking: str, action: str, message: str,
+                                    streaming: bool = False) -> dict:
+        await self._memory_manager.add_turn(session_id, "assistant", message)
+        fresh_memory = await self._memory_manager.get_memory(session_id)
+        _save_agent_state(fresh_memory, state)
+        await self._memory_manager.save_memory(fresh_memory)
+
+        return {
+            "type": "diagnosis",
+            "thinking": thinking,
+            "action": action,
+            "message": message,
+            "agent_state": _agent_state_summary(state),
+            "_tokens_streamed": streaming,
+        }
+
+    # ================================================================
+    # Agent 推理循环（同步）
+    # ================================================================
+    async def _agent_think(self, request: DiagnosisRequest, state: AgentState, memory) -> dict:
+        t = {}  # timing 字典，所有值单位 ms
+        t0 = time.perf_counter()
+
+        t1 = time.perf_counter()
+        memory = await self._memory_manager.add_turn(request.session_id, "user", request.query)
+        t["add_turn"] = round((time.perf_counter() - t1) * 1000)
+
+        state.diagnosis_rounds += 1
+        state.phase = "diagnosing"
+
+        # ---- 诊断路径 ----
+        t_retrieve_start = time.perf_counter()
+        reference_docs = (
+            "（跳过检索）" if request.skip_retrieval
+            else await self._retrieve_with_context(request.session_id, state)
+        )
+        t["retrieve"] = round((time.perf_counter() - t_retrieve_start) * 1000)
+
+        t_prompt_start = time.perf_counter()
+        prompt = self._build_diagnosis_prompt(state, memory, reference_docs)
+        t["build_prompt"] = round((time.perf_counter() - t_prompt_start) * 1000)
+        t["prompt_chars"] = len(prompt)
+
+        t_llm_start = time.perf_counter()
+        try:
+            raw = await asyncio.wait_for(
+                self._llm_client.complete(prompt=prompt, system_prompt=SYSTEM_PROMPT,
+                                           max_tokens=1500, temperature=0.5),
+                timeout=25.0,
+            )
+        except (asyncio.TimeoutError, AITimeoutError, ServiceUnavailableError, Exception):
+            t["llm_agent"] = round((time.perf_counter() - t_llm_start) * 1000)
+            t["total"] = round((time.perf_counter() - t0) * 1000)
+            return {
+                "type": "diagnosis",
+                "thinking": "",
+                "action": "ask",
+                "message": "AI 诊断服务暂时不可用，请稍后再试。",
+                "agent_state": _agent_state_summary(state),
+                "timing": t,
+            }
+        t["llm_agent"] = round((time.perf_counter() - t_llm_start) * 1000)
+        print(f"  ⏱  [llm] agent call: {t['llm_agent']}ms (prompt {t.get('prompt_chars', '?')} chars, max_tokens=1500)")
+
+        t_parse_start = time.perf_counter()
+        parsed = self._parse_agent_output(raw)
+        self._apply_state_update(state, parsed["state_update"])
+        self._apply_action_phase(state, parsed["action"])
+        t["parse_output"] = round((time.perf_counter() - t_parse_start) * 1000)
+
+        t["total"] = round((time.perf_counter() - t0) * 1000)
+        result = await self._finalize_diagnosis(
+            request.session_id, state,
+            parsed["thinking"], parsed["action"], parsed["message"],
+            streaming=False)
+        result["timing"] = t
+        return result
+
+    # ================================================================
+    # 检索：用近期对话上下文，带简单内存缓存
+    # ================================================================
+    _CACHE_TTL = 60  # 秒
+
+    async def _retrieve_with_context(self, session_id: str, state: AgentState) -> str:
+        t0 = time.perf_counter()
+        try:
+            memory = await self._memory_manager.get_memory(session_id)
+            user_msgs = [t["content"] for t in memory.turns if t["role"] == "user"][-4:]
+            search_query = " ".join(user_msgs) if user_msgs else state.original_query
+            # 加入当前推测提升检索精度
+            if state.hypotheses:
+                search_query = search_query + " " + " ".join(state.hypotheses)
+            if state.problem_summary:
+                search_query = search_query + " " + state.problem_summary
+
+            # 缓存命中：同一查询 60 秒内复用结果
+            cache_key = search_query[:200]
+            cached = self._retrieval_cache.get(cache_key)
+            if cached and time.time() - cached["ts"] < self._CACHE_TTL:
+                print(f"  ⏱  [retrieve] cache hit, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+                return cached["result"]
+
+            results, _ = await asyncio.wait_for(
+                self._retriever.retrieve(search_query, top_k=3),
+                timeout=1.5,
+            )
+            if results:
+                docs = []
+                for i, r in enumerate(results, 1):
+                    title = f"（{r.title}）" if r.title else ""
+                    content = r.content[:600] + "…" if len(r.content) > 600 else r.content
+                    docs.append(f"---\n参考文档 {i}{title}：\n{content}\n---")
+                result = "\n".join(docs)
+            else:
+                result = "（知识库暂无匹配文档，请基于机器人/工业自动化行业知识进行诊断。）"
+
+            self._retrieval_cache[cache_key] = {"result": result, "ts": time.time()}
+            # 防止缓存无限增长
+            if len(self._retrieval_cache) > 200:
+                oldest = min(self._retrieval_cache, key=lambda k: self._retrieval_cache[k]["ts"])
+                del self._retrieval_cache[oldest]
+            return result
+
+        except (ServiceUnavailableError, asyncio.TimeoutError, ConnectionError, RetrieveEmptyError):
+            print(f"  ⏱  [retrieve] failed/timed-out, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+        return "（知识库暂无匹配文档，请基于机器人/工业自动化行业知识进行诊断。）"
+
+    # ================================================================
+    # 工单生成
+    # ================================================================
+    async def _build_ticket(self, session_id: str, agent_state: AgentState, memory) -> dict:
+        conversation_text = self._format_conversation(memory)
+        reasoning = (
+            f"问题概述：{agent_state.problem_summary}\n"
+            f"推测原因：{'、'.join(agent_state.hypotheses) if agent_state.hypotheses else '无'}\n"
+            f"已排除：{'、'.join(agent_state.ruled_out) if agent_state.ruled_out else '无'}\n"
+            f"已收集信息：{json.dumps(agent_state.collected_info, ensure_ascii=False)}\n"
+            f"诊断轮数：{agent_state.diagnosis_rounds}"
+        )
+
+        prompt = (
+            f"请根据以下对话和诊断过程，生成结构化工单。\n\n"
+            f"## 对话记录\n{conversation_text}\n\n"
+            f"## Agent 推理链\n{reasoning}\n\n"
+            f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
+            f"然后以 JSON 格式返回：\n"
+            f'{{"type":"problem|bug|feature|support|other","title":"≤20字","description":"≤150字，含排查过程",'
+            f'"priority":"紧急|高|中|低","contact":"从对话提取的联系人，没有则为空",'
+            f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
+            f'"fault_code":"仅type=problem时填，故障码","special_notes":"仅type=problem时填，特殊说明",'
+            f'"steps_to_reproduce":"仅type=bug时填","expected_result":"仅type=bug时填",'
+            f'"actual_result":"仅type=bug时填","severity":"仅type=bug时填:阻塞/主要/次要/轻微",'
+            f'"version":"仅type=bug时填","scenario":"仅type=feature时填，需求场景",'
+            f'"expected_effect":"仅type=feature时填","source":"仅type=feature时填:客户提出/内部发现/竞品对标",'
+            f'"support_type":"仅type=support时填","preferred_response":"仅type=support时填:电话/现场/线上"}}'
+        )
+
+        try:
+            raw = await self._llm_client.complete(prompt=prompt, max_tokens=600, temperature=0.2)
+            clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+            analysis = json.loads(clean)
+        except Exception:
+            analysis = {}
+
+        ticket_type = analysis.get("type", "other")
+
+        # 通用字段
+        result = {
+            "ticket_id": f"AI-{session_id[-6:]}-{int(time.time()) % 100000}",
+            "session_id": session_id,
+            "type": ticket_type,
+            "title": analysis.get("title", agent_state.original_query[:20]),
+            "description": analysis.get("description", agent_state.problem_summary[:150]),
+            "priority": analysis.get("priority", "中"),
+            "status": "pending_dispatch",
+            "contact": analysis.get("contact", ""),
+            "diagnosis": {
+                "problem_summary": agent_state.problem_summary,
+                "hypotheses": agent_state.hypotheses,
+                "ruled_out": agent_state.ruled_out,
+                "collected_info": agent_state.collected_info,
+                "rounds": agent_state.diagnosis_rounds,
+            },
+            "created_at": int(time.time()),
+            "source": "ai_agent",
+            "attachments": memory.metadata.get("agent_state", {}).get("attachments", []),
+        }
+
+        # 类型专属字段
+        if ticket_type == "problem":
+            result["location"] = analysis.get("location", "")
+            result["robot_type"] = analysis.get("robot_type", "")
+            result["fault_code"] = analysis.get("fault_code", "")
+            result["special_notes"] = analysis.get("special_notes", "")
+        elif ticket_type == "bug":
+            result["steps_to_reproduce"] = analysis.get("steps_to_reproduce", "")
+            result["expected_result"] = analysis.get("expected_result", "")
+            result["actual_result"] = analysis.get("actual_result", "")
+            result["severity"] = analysis.get("severity", "")
+            result["version"] = analysis.get("version", "")
+        elif ticket_type == "feature":
+            result["scenario"] = analysis.get("scenario", "")
+            result["expected_effect"] = analysis.get("expected_effect", "")
+            result["source"] = analysis.get("source", "")
+        elif ticket_type == "support":
+            result["support_type"] = analysis.get("support_type", "")
+            result["preferred_response"] = analysis.get("preferred_response", "")
+
+        return result
+
+    async def get_ticket(self, session_id: str) -> dict:
+        """只读获取工单数据，不改变状态"""
+        memory = await self._memory_manager.get_memory(session_id)
+        agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
+        return await self._build_ticket(session_id, agent_state, memory)
+
+    async def submit(self, session_id: str) -> dict:
+        await self._ensure_clients()
+        memory = await self._memory_manager.get_memory(session_id)
+        agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
+        ticket = await self._build_ticket(session_id, agent_state, memory)
+
+        # ---- 存储到 MySQL ----
+        db_id = 0
+        try:
+            from app.models.ticket import Ticket
+            from app.core.database import SessionLocal
+            db = SessionLocal()
+            record = Ticket(
+                session_id=session_id,
+                ticket_ai_id=ticket.get("ticket_id", ""),
+                title=ticket.get("title", ""),
+                description=ticket.get("description", ""),
+                type=ticket.get("type", "other"),
+                priority=ticket.get("priority", "中"),
+                contact=ticket.get("contact", ""),
+                diagnosis=ticket.get("diagnosis", {}),
+                attachments=ticket.get("attachments", []),
+                location=ticket.get("location", ""),
+                robot_type=ticket.get("robot_type", ""),
+                fault_code=ticket.get("fault_code", ""),
+                special_notes=ticket.get("special_notes", ""),
+                steps_to_reproduce=ticket.get("steps_to_reproduce", ""),
+                expected_result=ticket.get("expected_result", ""),
+                actual_result=ticket.get("actual_result", ""),
+                severity=ticket.get("severity", ""),
+                version=ticket.get("version", ""),
+                scenario=ticket.get("scenario", ""),
+                expected_effect=ticket.get("expected_effect", ""),
+                source=ticket.get("source", ""),
+                support_type=ticket.get("support_type", ""),
+                preferred_response=ticket.get("preferred_response", ""),
+            )
+            db.add(record)
+            db.commit()
+            db.refresh(record)
+            db_id = record.id
+            ticket["db_id"] = db_id
+            db.close()
+        except Exception as e:
+            print(f"  ⚠️ MySQL 写入失败: {e}")
+
+        agent_state.phase = "resolved"
+        _save_agent_state(memory, agent_state)
+        await self._memory_manager.save_memory(memory)
+
+        try:
+            await self._memory_manager.add_pending_ticket(session_id)
+        except Exception:
+            pass
+
+        return {
+            "type": "ticket",
+            "data": {
+                "ticket": ticket,
+                "db_id": db_id,
+                "notice": "工单已生成并保存。",
+            },
+            "agent_state": _agent_state_summary(agent_state),
+        }
+
+    async def _push_to_dispatch(self, ticket: dict) -> bool:
+        dispatch_url = getattr(self.config, 'dispatch_api_url', '')
+        if not dispatch_url:
+            return False
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            try:
+                resp = await client.post(dispatch_url, json=ticket)
+                if resp.status_code == 200:
+                    await self._memory_manager.remove_pending_ticket(ticket["session_id"])
+                    return True
+                return False
+            except Exception:
+                return False
+
+    # ================================================================
+    # 工具方法
+    # ================================================================
+
+    def _format_conversation(self, memory, max_turns: int = 8) -> str:
+        """只取最近 N 条，避免长对话撑大 prompt"""
+        turns = memory.turns[-max_turns:] if len(memory.turns) > max_turns else memory.turns
+        return "\n".join(
+            f"{'用户' if t['role'] == 'user' else '助手'}：{t['content']}"
+            for t in turns
+        )
+
+    def _parse_agent_output(self, raw: str) -> dict:
+        """
+        解析 Agent 输出，支持三种格式：
+        A) ```json {...} ``` === 回复文本     ← 标准格式
+        B) ```json {...} ``` 回复文本         ← 缺 ===
+        C) {...} 回复文本                     ← 裸 JSON（无 ``` 包裹）
+        D) {...}                              ← 只有 JSON
+        """
+        text = raw.strip()
+        thinking = ""
+        action = "ask"
+        state_update = {}
+        message = text
+        json_end = 0  # JSON 区域结束位置
+
+        # ---- 尝试匹配带 ``` 包裹的 JSON ----
+        m_fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
+        # ---- 尝试匹配裸 JSON（以 { 开头，含 "thinking" 字段）----
+        m_bare = re.match(r"(\{[\s\S]*?\"action\"[\s\S]*?\})\s*", text) if not m_fenced else None
+
+        json_str = None
+        if m_fenced:
+            json_str = m_fenced.group(1).strip()
+            json_end = m_fenced.end()
+        elif m_bare:
+            json_str = m_bare.group(1).strip()
+            json_end = m_bare.end()
+
+        if json_str:
+            try:
+                data = json.loads(json_str)
+                thinking = data.get("thinking", "")
+                action = data.get("action", "ask").strip().lower()
+                if action not in ("answer", "ask"):
+                    action = "ask"
+                state_update = data.get("state_update", {})
+            except (json.JSONDecodeError, Exception):
+                pass
+
+        # ---- 提取 JSON 之后的文本 ----
+        after_json = text[json_end:] if json_end else text
+
+        if json_str:
+            after = re.sub(r"^```\s*", "", after_json).strip()
+            if after:
+                message = after
+
+        message = message.lstrip("\n\r ")
+
+        # 兜底：如果 message 仍然以 JSON 开头（无 === 且无后续文本），
+        # 尝试剥掉裸 JSON 对象
+        if message and (message.startswith("{") or message.startswith("```")):
+            # 先试带 ``` 包裹的
+            cleaned = re.sub(r'```(?:json)?\s*\{[\s\S]*?\}\s*```', '', message).strip()
+            # 再试裸 JSON
+            if not cleaned or cleaned.startswith("{"):
+                cleaned = re.sub(r'^\s*\{[\s\S]*?"action"[\s\S]*?\}\s*', '', message, count=1).strip()
+            if cleaned:
+                message = cleaned
+            else:
+                message = "抱歉，我未能正确生成回复，请重新描述您的问题。"
+
+        return {
+            "thinking": thinking,
+            "action": action,
+            "message": message,
+            "state_update": state_update,
+        }
+
+    # ================================================================
+    # run_stream（纯 Agent）
+    # ================================================================
+    async def run_stream(self, request: DiagnosisRequest):
+        t_req = time.perf_counter()
+        await self._ensure_clients()
+        memory = await self._memory_manager.get_memory(request.session_id)
+        agent_state = _load_agent_state(memory.metadata)
+        print(f"  ⏱  [overhead] init+redis={(time.perf_counter() - t_req)*1000:.0f}ms")
+
+        if agent_state is None:
+            agent_state = AgentState(
+                session_id=request.session_id,
+                phase="idle",
+                original_query=request.query,
+                problem_summary=request.query,
+            )
+            _save_agent_state(memory, agent_state)
+            await self._memory_manager.save_memory(memory)
+
+        async for event in self._agent_think_stream(request, agent_state, memory):
+            yield event
+
+    async def _agent_think_stream(self, request: DiagnosisRequest, state: AgentState, memory):
+        """Agent 推理流式版 —— 只流 === 之后的回复文本"""
+        t_stream: dict = {}  # 流式路径 timing (ms)
+        t0 = time.perf_counter()
+        memory = await self._memory_manager.add_turn(request.session_id, "user", request.query)
+
+        state.diagnosis_rounds += 1
+        state.phase = "diagnosing"
+
+        # ---- 诊断路径 ----
+        # 立刻发状态，别让用户干等
+        yield {"event": "status", "data": {"stage": "retrieving", "round": state.diagnosis_rounds}}
+        t_ret = time.perf_counter()
+        reference_docs = (
+            "（跳过检索）" if request.skip_retrieval
+            else await self._retrieve_with_context(request.session_id, state)
+        )
+        t_stream["retrieve"] = round((time.perf_counter() - t_ret) * 1000)
+        prompt = self._build_diagnosis_prompt(state, memory, reference_docs)
+        t_stream["prompt_chars"] = len(prompt)
+
+        yield {"event": "status", "data": {"stage": "analyzing", "round": state.diagnosis_rounds}}
+
+        t_llm = time.perf_counter()
+        t_stream["overhead_before_llm"] = round((t_llm - t0) * 1000)
+        raw_tokens: list[str] = []
+        t_first_llm = None
+        # JSON 过滤状态
+        json_depth = 0
+        has_json = False
+        reply_started = False
+        try:
+            async for token in self._llm_client.stream(prompt=prompt, system_prompt=SYSTEM_PROMPT,
+                                                         max_tokens=1500, temperature=0.5):
+                if t_first_llm is None:
+                    t_first_llm = time.perf_counter()
+                    t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
+                raw_tokens.append(token)
+
+                if reply_started:
+                    yield {"event": "token", "data": token}
+                else:
+                    json_depth += token.count("{") - token.count("}")
+                    if "{" in token:
+                        has_json = True
+                    if has_json and json_depth <= 0:
+                        # JSON 结束，提取后续文字
+                        full = "".join(raw_tokens)
+                        last = full.rfind("}")
+                        after = full[last + 1:].lstrip("\n\r ")
+                        if after.startswith("```"):
+                            after = after[3:].lstrip("\n\r ")
+                        after = after.lstrip("\n\r =-")
+                        if after and after[0] not in ",{[\"":
+                            reply_started = True
+                            for ch in after:
+                                yield {"event": "token", "data": ch}
+        except (AITimeoutError, ServiceUnavailableError, Exception):
+            msg = "AI 诊断服务暂时不可用，请稍后再试。"
+            for ch in msg:
+                yield {"event": "token", "data": ch}
+            yield {"event": "result", "data": {
+                "type": "diagnosis", "thinking": "", "action": "ask",
+                "message": msg, "agent_state": _agent_state_summary(state),
+                "_tokens_streamed": True,
+            }}
+            return
+
+        raw = "".join(raw_tokens)
+        t_stream["llm_agent"] = round((time.perf_counter() - t_llm) * 1000)
+        print(f"  ⏱  [timing] overhead={t_stream.get('overhead_before_llm','?')}ms  "
+              f"retrieve={t_stream.get('retrieve','?')}ms  "
+              f"prompt={t_stream.get('prompt_chars','?')}chars  "
+              f"llm_first={t_stream.get('llm_first_token','?')}ms  "
+              f"total={t_stream.get('llm_agent','?')}ms")
+        parsed = self._parse_agent_output(raw)
+
+        self._apply_state_update(state, parsed["state_update"])
+        self._apply_action_phase(state, parsed["action"])
+
+        result_data = await self._finalize_diagnosis(
+            request.session_id, state,
+            parsed["thinking"], parsed["action"], parsed["message"],
+            streaming=True)
+
+        # 嵌入流式路径 timing
+        t_stream["total"] = round((time.perf_counter() - t0) * 1000)
+        result_data["timing"] = t_stream
+
+        yield {"event": "result", "data": result_data}
+
+    async def run_with_timeout(self, request: DiagnosisRequest, timeout: float = 30.0) -> dict:
+        """超时保护在 LLM 调用层（asyncio.wait_for），这里只透传"""
+        try:
+            return await self.run(request)
+        except Exception:
+            return {
+                "type": "diagnosis",
+                "thinking": "",
+                "action": "ask",
+                "message": "AI 诊断服务暂时不可用，请稍后再试。",
+                "agent_state": {},
+            }
+
+
+# ============================================================
+# 全局单例
+# ============================================================
+
+_pipeline: Optional[AiDiagnosisPlatform] = None
+_pipeline_lock = asyncio.Lock()
+
+
+async def get_diagnosis_platform() -> AiDiagnosisPlatform:
+    global _pipeline
+    if _pipeline is None:
+        async with _pipeline_lock:
+            if _pipeline is None:
+                _pipeline = AiDiagnosisPlatform()
+    return _pipeline
