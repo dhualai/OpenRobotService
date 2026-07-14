@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { Button, Toast, Loading, Dialog } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { normalizeList } from '@/shared/utils/list';
 
 interface AuthItem { id: string; project: string; user: string; role: string; granted_at: string; }
 
@@ -14,9 +15,9 @@ export default function ProjectAuth() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const data = await request<AuthItem[]>('/projects/licenses/all');
+      const data = await request('/projects/licenses/all');
       // TODO: 原接口 /project/auth/list，新接口改为 /projects/licenses/{project_code}?type=all
-      setItems(data || []);
+      setItems(normalizeList<AuthItem>(data));
     } catch (err) {
       Toast({ message: `加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally { setLoading(false); }

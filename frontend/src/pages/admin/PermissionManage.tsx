@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { Switch, Toast, Loading } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { normalizeList } from '@/shared/utils/list';
 
 interface Permission { id: string; name: string; resource: string; action: string; enabled: boolean; }
 
@@ -13,7 +14,7 @@ export default function PermissionManage() {
 
   const fetchPermissions = async () => {
     setLoading(true);
-    try { const data = await request<Permission[]>('/permissions/'); setPermissions(data || []); } catch (e) { Toast({ message: String(e), theme: 'error' }); } finally { setLoading(false); }
+    try { const data = await request('/permissions/'); setPermissions(normalizeList<Permission>(data)); } catch (e) { Toast({ message: String(e), theme: 'error' }); } finally { setLoading(false); }
   };
 
   useEffect(() => { fetchPermissions(); }, []);

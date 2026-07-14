@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -14,8 +15,8 @@ vi.mock('react-router-dom', async () => {
 
 // Mock tdesign-mobile-react
 vi.mock('tdesign-mobile-react', () => ({
-  Button: ({ children, onClick }: any) => (
-    <button onClick={onClick as () => void} data-testid="btn">
+  Button: ({ children, onClick }: { children?: ReactNode; onClick?: () => void }) => (
+    <button onClick={onClick} data-testid="btn">
       {children}
     </button>
   ),

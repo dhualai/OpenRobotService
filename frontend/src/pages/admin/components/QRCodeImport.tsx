@@ -14,7 +14,7 @@ export default function QRCodeImport() {
     if (!code.trim()) return;
     setLoading(true);
     try {
-      const result = await request('/data/import/qrcode', { method: 'POST', body: JSON.stringify({ code }) });
+      await request('/data/import/qrcode', { method: 'POST', body: JSON.stringify({ code }) });
       Toast({ message: '扫描成功', theme: 'success' });
     } catch (err) {
       Toast({ message: `扫描失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });

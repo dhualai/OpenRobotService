@@ -33,6 +33,8 @@ node_modules/
 package-lock.json
 frontend/dist/
 frontend/.vite/
+frontend/coverage/
+*.tsbuildinfo
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
