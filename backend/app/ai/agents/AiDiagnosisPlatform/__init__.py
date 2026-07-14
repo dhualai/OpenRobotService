@@ -1,4 +1,4 @@
-from app.ai.agents.AiDiagnosisPlatform import (
+from app.ai.agents.AiDiagnosisPlatform.pipeline import (
     AiDiagnosisPlatform,
     DiagnosisRequest,
     AgentState,
