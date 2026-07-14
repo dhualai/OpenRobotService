@@ -42,3 +42,577 @@ html, body, #root {
   font-size: 17px;
   font-weight: 600;
 }
+
+/* ===== 工作台主布局（底部 TabBar） ===== */
+.tabbar-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 100vw;
+  overflow: hidden;
+}
+.tabbar-shell__content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+/* TabBar 入文档流：内容区天然在其上方，无需猜高度；补刘海屏安全区 */
+.tabbar-shell > .t-tab-bar {
+  flex-shrink: 0;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ===== 我要摇人 / AI 对话 ===== */
+.chat-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: 46px;
+  padding-bottom: 92px;
+  overflow: hidden;
+}
+/* 可复用对话面板 */
+.chat-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+.chat-panel.is-compact { padding-bottom: 0; }
+.chat-panel__bar {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 8px;
+}
+
+/* ===== 转工单悬浮入口（贴输入框右上角边框） ===== */
+.chat-panel__ticket-fab {
+  position: absolute;
+  top: -38px;
+  right: -2px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  pointer-events: auto;
+}
+.chat-ticket-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(4px);
+  color: #0052d9;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 6px rgba(0, 82, 217, 0.08);
+  opacity: 0.55;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+              box-shadow 0.25s ease,
+              background 0.25s ease,
+              opacity 0.3s ease;
+  animation: ticket-fab-enter 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.chat-ticket-btn:hover,
+.chat-ticket-btn.has-content:hover {
+  opacity: 1;
+  transform: scale(1.12);
+  background: #fff;
+  box-shadow: 0 4px 18px rgba(0, 82, 217, 0.22);
+}
+.chat-ticket-btn:active {
+  transform: scale(0.88);
+  opacity: 1;
+}
+
+/* 有对话内容时：略强一点但仍半透明 */
+.chat-ticket-btn.has-content {
+  opacity: 0.65;
+  box-shadow: 0 2px 10px rgba(0, 82, 217, 0.14);
+  animation: ticket-fab-enter 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both,
+             ticket-fab-pulse 2.4s ease-in-out 0.6s infinite;
+}
+
+/* 图标尺寸 */
+.chat-ticket-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* 标签文字 */
+.chat-ticket-btn__label {
+  font-size: 10px;
+  color: #0052d9;
+  opacity: 0.6;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  user-select: none;
+}
+
+@keyframes ticket-fab-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.3) rotate(-20deg);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+@keyframes ticket-fab-pulse {
+  0%, 100% {
+    box-shadow: 0 2px 10px rgba(0, 82, 217, 0.14);
+  }
+  50% {
+    box-shadow: 0 2px 20px rgba(0, 82, 217, 0.28), 0 0 0 4px rgba(0, 82, 217, 0.06);
+  }
+}
+
+/* 我要摇人：6:4 上下分栏 */
+.chat-view.call-split { padding-bottom: 0; }
+.call-top-chat {
+  flex: 0 0 60%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.call-bottom-tickets {
+  flex: 0 0 40%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-top: 1px solid #f0f0f0;
+}
+
+/* 历史工单列表 */
+.history-tickets {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.history-tickets__head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 6px;
+  font-size: 13px;
+  color: #888;
+  font-weight: 600;
+}
+.history-tickets__count {
+  background: #ecf2fe;
+  color: #0052d9;
+  border-radius: 10px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.history-tickets__viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 12px 8px;
+  -webkit-overflow-scrolling: touch;
+}
+.history-tickets__empty {
+  text-align: center;
+  color: #bbb;
+  padding: 30px 0;
+}
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  border-radius: 10px;
+  padding: 0 14px;
+  margin-bottom: 8px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.05);
+  cursor: pointer;
+}
+.history-row:active { background: #fafafa; }
+.history-row__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.history-row__title {
+  flex: 1;
+  font-size: 14px;
+  color: #222;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.history-row__status { font-size: 12px; color: #888; flex-shrink: 0; }
+.history-row__date { font-size: 12px; color: #bbb; flex-shrink: 0; }
+.chat-view__messages {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+.chat-view__empty {
+  text-align: center;
+  color: #999;
+  margin-top: 72px;
+}
+.chat-view__empty-emoji { font-size: 48px; margin-bottom: 12px; }
+.chat-view__empty-sub { font-size: 13px; margin-top: 8px; }
+.chat-bubble-wrap {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 16px;
+}
+.chat-bubble-wrap.is-right { align-items: flex-end; }
+.chat-bubble-wrap.is-left { align-items: flex-start; }
+.chat-bubble {
+  max-width: 80%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  word-break: break-word;
+}
+.chat-bubble.is-user { background: #0052d9; color: #fff; }
+.chat-bubble.is-ai { background: #fff; color: #333; }
+.chat-bubble__text { white-space: pre-wrap; }
+.chat-bubble__img {
+  max-width: 160px;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  display: block;
+}
+.chat-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+.chat-action {
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  padding: 2px 6px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+.chat-action.is-active { opacity: 1; }
+/* 输入区与工具栏融合为同一白色浮层卡片（仿千问） */
+.chat-input-bar {
+  flex-shrink: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 8px 10px;
+  padding: 8px 12px 10px;
+  background: #fff;
+  border: none;
+  border-radius: 16px;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.08);
+}
+.chat-input-bar__textarea {
+  width: 100%;
+}
+.chat-input-bar__textarea .t-textarea,
+.chat-input-bar__textarea .t-textarea__wrapper,
+.chat-input-bar__textarea .t-textarea__wrapper-inner {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.chat-input-bar__textarea textarea {
+  background: transparent;
+  border: none;
+  padding: 6px 4px 3px;
+  transition: min-height 0.15s ease;
+}
+/* 工具行：左侧图标 + 右侧发送 */
+.chat-input-bar__tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0;
+}
+.chat-input-bar__tools-left {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 发送按钮：黑底白箭头圆形 */
+.chat-send-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: #000;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.1s ease, background 0.15s ease;
+}
+.chat-send-btn:active { transform: scale(0.94); }
+.chat-send-btn:disabled { background: #c9c9c9; cursor: not-allowed; }
+.chat-send-btn__spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: chat-spin 0.7s linear infinite;
+}
+@keyframes chat-spin { to { transform: rotate(360deg); } }
+.chat-input-btn {
+  border: none;
+  background: transparent;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #555;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+}
+.chat-input-btn:active { color: #0052d9; }
+
+/* ===== 系统任务 / 工单 ===== */
+.tasks-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: 46px;
+  overflow: hidden;
+}
+/* 上：AI 任务助手（60%） */
+.tasks-top-chat {
+  flex: 0 0 60%;
+  min-height: 0;
+  border-bottom: 1px solid #f0f0f0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* 下：工单卡片列表（40%） */
+.tasks-list-section {
+  flex: 0 0 40%;
+  min-height: 0;
+  overflow: auto;
+}
+/* 任务卡片（与输入卡片审美一致：白底 + 阴影 + 圆角） */
+.tasks-cards { padding: 8px 12px 16px; }
+.task-card2 {
+  background: #fff;
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.15s ease;
+}
+.task-card2:active {
+  transform: scale(0.99);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
+}
+.task-card2__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.task-card2__type {
+  font-size: 12px;
+  color: #888;
+  background: #f2f3f5;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.task-card2__more {
+  margin-left: auto;
+  color: #aaa;
+  font-size: 18px;
+  padding: 0 4px;
+}
+.task-card2__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #222;
+  line-height: 1.4;
+  margin-bottom: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.task-card2__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 12px;
+  color: #999;
+}
+.tasks-view__filters {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #f5f5f5;
+  padding: 8px 12px;
+}
+.tasks-search {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 14px;
+  outline: none;
+}
+.tasks-tabs {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  overflow-x: auto;
+}
+.tasks-tab {
+  border: none;
+  background: #fff;
+  padding: 6px 12px;
+  border-radius: 14px;
+  font-size: 13px;
+  color: #666;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tasks-tab.is-active { background: #0052d9; color: #fff; }
+.tasks-head {
+  display: grid;
+  grid-template-columns: 64px 1fr 84px 36px 64px;
+  gap: 6px;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: #999;
+  background: #fff;
+  border-bottom: 1px solid #f0f0f0;
+}
+.task-card {
+  display: grid;
+  grid-template-columns: 64px 1fr 84px 36px 64px;
+  gap: 6px;
+  align-items: center;
+  padding: 12px 16px;
+  background: #fff;
+  border-bottom: 1px solid #f5f5f5;
+  font-size: 13px;
+  cursor: pointer;
+}
+.task-card:active { background: #fafafa; }
+.task-card__id { color: #999; font-size: 12px; }
+.task-card__project { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-card__date { color: #999; font-size: 12px; }
+.task-card__more { text-align: center; font-size: 18px; color: #999; }
+.task-card__status { text-align: right; }
+.tasks-empty { text-align: center; padding: 60px 0; color: #999; }
+
+.ticket-detail {
+  width: 100vw;
+  height: 100vh;
+  background: #f5f5f5;
+  overflow: auto;
+}
+.ticket-detail__body { padding: 12px 16px 80px; }
+.ticket-detail__cover {
+  width: 100%;
+  max-height: 200px;
+  object-fit: cover;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.ticket-detail__meta { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.ticket-detail__id { color: #999; font-size: 13px; }
+.ticket-detail__title { font-size: 18px; font-weight: 600; margin-bottom: 12px; }
+.ticket-detail__desc,
+.ticket-detail__summary,
+.ticket-detail__contact,
+.ticket-detail__comments {
+  background: #fff;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.ticket-detail__desc h4,
+.ticket-detail__summary h4,
+.ticket-detail__contact h4,
+.ticket-detail__comments h4 {
+  font-size: 14px;
+  margin-bottom: 8px;
+  color: #666;
+}
+.ticket-detail__summary p { color: #555; font-size: 13px; line-height: 1.6; }
+.ticket-detail__footer { color: #aaa; font-size: 12px; text-align: center; }
+.ticket-detail__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 16px 0;
+}
+.ticket-comment { padding: 8px 0; border-bottom: 1px solid #f5f5f5; }
+.ticket-comment__head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 4px;
+}
+.ticket-edit { padding: 16px; }
+.ticket-edit h4 { margin-bottom: 12px; }
+.ticket-edit .tasks-search { margin-bottom: 12px; }
+.ticket-edit__btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+/* ===== 后台管理入口 ===== */
+.admin-view { padding-top: 46px; }
+.admin-view__slogan {
+  text-align: center;
+  color: #0052d9;
+  font-weight: 600;
+  padding: 16px;
+  margin: 0;
+}
+.admin-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  padding: 0 16px;
+}
+.admin-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px 8px;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+.admin-card:active { background: #fafafa; }
+.admin-card__emoji { display: block; font-size: 28px; margin-bottom: 6px; }
+.admin-card__label { font-size: 13px; color: #333; }
+.admin-view__tip { text-align: center; color: #bbb; font-size: 12px; padding: 24px; }
+

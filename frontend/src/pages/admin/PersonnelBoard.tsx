@@ -3,16 +3,18 @@ import { useState, useEffect } from 'react';
 import { Loading } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { normalizeList } from '@/shared/utils/list';
 
 interface Allocation { id: string; person: string; project: string; role: string; workload: number; }
 
 export default function PersonnelBoard() {
   const [items, setItems] = useState<Allocation[]>([]);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端暂无 /personnel/board 接口，需后端补充
 
   useEffect(() => {
-    request<Allocation[]>('/personnel/board').then(setItems).catch(console.error).finally(() => setLoading(false));
+    request('/personnel/board').then((d) => setItems(normalizeList<Allocation>(d))).catch(console.error).finally(() => setLoading(false));
   }, []);
 
   if (loading) return <Loading text="加载人员分配..." />;

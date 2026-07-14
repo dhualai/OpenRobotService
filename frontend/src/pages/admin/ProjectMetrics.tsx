@@ -1,6 +1,6 @@
 // 项目指标仪表盘 - 从 BackgroundService tmp-project 迁移
 import { useState, useEffect } from 'react';
-import { Loading, Toast } from 'tdesign-mobile-react';
+import { Loading } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import ReactECharts from 'echarts-for-react';
@@ -17,7 +17,8 @@ interface MetricsData {
 export default function ProjectMetrics() {
   const [data, setData] = useState<MetricsData | null>(null);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端暂无 /metrics/dashboard 接口，需后端补充或改用 /projects/ 聚合
 
   useEffect(() => {
     const fetchData = async () => {

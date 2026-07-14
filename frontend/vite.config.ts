@@ -14,12 +14,19 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://192.168.103.233:8400',
+        target: 'http://8.152.219.181:8008',
         changeOrigin: true,
       },
-      '/AAS': {
-        target: 'http://192.168.103.233:8400',
-        changeOrigin: true,
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          echarts: ['echarts', 'echarts-for-react'],
+          tdesign: ['tdesign-mobile-react'],
+          react: ['react', 'react-dom', 'react-router-dom'],
+        },
       },
     },
   },

@@ -1,6 +1,6 @@
 // AI 智能对话页面 - 从 HelpDesk ChatContainer 迁移
-import { useState, useEffect, useRef } from 'react';
-import { Navbar, Textarea, Button, Loading, Toast } from 'tdesign-mobile-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Navbar, Textarea, Button, Toast } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth';
 import { createRequest } from '@/api/client';
@@ -19,7 +19,7 @@ export default function AIChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -29,6 +29,23 @@ export default function AIChat() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  /** 创建新会话，返回 conversation_id */
+  const ensureConversation = useCallback(async (): Promise<number> => {
+    if (conversationId) return conversationId;
+    const request = createRequest(API_CONFIG.CALL.BASE_URL, 'Call');
+    const conv = await request<{ id: number }>('/conversations', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: `对话 ${new Date().toLocaleString('zh-CN')}`,
+        user_id: username || 'anonymous',
+        service_ticket_id: `chat_${Date.now()}`,
+        scene_type: 'chat',
+      }),
+    });
+    setConversationId(conv.id);
+    return conv.id;
+  }, [conversationId, username]);
 
   const sendMessage = async () => {
     if (!input.trim() || !token) return;
@@ -43,7 +60,10 @@ export default function AIChat() {
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_CONFIG.FQA.BASE_URL}/qa/ask/stream`, {
+      // 确保会话已创建
+      const cid = await ensureConversation();
+
+      const response = await fetch(`${API_CONFIG.CALL.BASE_URL}/qa/ask/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -51,7 +71,7 @@ export default function AIChat() {
         },
         body: JSON.stringify({
           question: userMessage.content,
-          conversation_id: conversationId,
+          conversation_id: cid,
           include_history: true,
         }),
       });
@@ -61,7 +81,7 @@ export default function AIChat() {
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
       let assistantContent = '';
-      let serverConversationId = conversationId;
+      let serverConversationId: number | null = cid;
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -81,8 +101,8 @@ export default function AIChat() {
             try {
               const data = JSON.parse(line.slice(6));
               if (data.event === 'start') {
-                serverConversationId = data.conversation_id;
-                setConversationId(data.conversation_id);
+                serverConversationId = Number(data.conversation_id);
+                setConversationId(Number(data.conversation_id));
               } else if (data.event === 'message') {
                 assistantContent += data.content;
                 setMessages((prev) =>
@@ -91,7 +111,7 @@ export default function AIChat() {
                   )
                 );
               } else if (data.event === 'done') {
-                setConversationId(data.conversation_id || serverConversationId);
+                setConversationId(Number(data.conversation_id) || serverConversationId);
               }
             } catch { /* ignore */ }
           }

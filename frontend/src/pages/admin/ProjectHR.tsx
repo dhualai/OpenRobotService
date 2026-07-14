@@ -3,16 +3,18 @@ import { useState, useEffect } from 'react';
 import { Loading, Toast } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { normalizeList } from '@/shared/utils/list';
 
 interface HRItem { id: string; name: string; role: string; projects: string[]; availability: number; }
 
 export default function ProjectHR() {
   const [items, setItems] = useState<HRItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端暂无 /hr/overview 接口，需后端补充
 
   useEffect(() => {
-    request<HRItem[]>('/hr/overview').then(setItems).catch((e) => Toast({ message: String(e), theme: 'error' })).finally(() => setLoading(false));
+    request('/hr/overview').then((d) => setItems(normalizeList<HRItem>(d))).catch((e) => Toast({ message: String(e), theme: 'error' })).finally(() => setLoading(false));
   }, []);
 
   if (loading) return <Loading text="加载人力资源..." />;
