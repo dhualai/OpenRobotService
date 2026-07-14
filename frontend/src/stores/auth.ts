@@ -68,7 +68,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       return false;
     }
     try {
-      const response = await fetch(`${API_CONFIG.FQA.BASE_URL}/user/refresh`, {
+      const response = await fetch(`${API_CONFIG.AUTH.BASE_URL}/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token: storedRefreshToken }),
@@ -92,11 +92,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   fetchUserDetails: async (user, authToken) => {
-    const request = createRequest(API_CONFIG.USER_CENTER.BASE_URL, '用户中心');
+    const request = createRequest(API_CONFIG.ADMIN.BASE_URL, '用户中心');
     try {
       setApiToken(authToken);
       const userData = await request<{ roles?: { project_backend?: string[] } }>(
-        `/auth/users/${user}/detail`
+        `/users/${user}/detail`
       );
       const projectRoles = userData.roles?.project_backend || [];
       const hasAdminRole = projectRoles.includes('admin');

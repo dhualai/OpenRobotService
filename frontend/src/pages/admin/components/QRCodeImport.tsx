@@ -7,13 +7,14 @@ import API_CONFIG from '@/config/api';
 export default function QRCodeImport() {
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端导入接口路径待确认
 
   const handleScan = async () => {
     if (!code.trim()) return;
     setLoading(true);
     try {
-      const result = await request('/data/import/qrcode', { method: 'POST', body: JSON.stringify({ code }) });
+      await request('/data/import/qrcode', { method: 'POST', body: JSON.stringify({ code }) });
       Toast({ message: '扫描成功', theme: 'success' });
     } catch (err) {
       Toast({ message: `扫描失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });

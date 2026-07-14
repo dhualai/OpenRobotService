@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { Loading } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { normalizeList } from '@/shared/utils/list';
 import ReactECharts from 'echarts-for-react';
 
 interface ProgressItem { name: string; progress: number; status: string; }
@@ -10,10 +11,11 @@ interface ProgressItem { name: string; progress: number; status: string; }
 export default function ProgressBoard() {
   const [items, setItems] = useState<ProgressItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端暂无 /progress/board 接口，需后端补充
 
   useEffect(() => {
-    request<ProgressItem[]>('/progress/board').then(setItems).catch(console.error).finally(() => setLoading(false));
+    request('/progress/board').then((d) => setItems(normalizeList<ProgressItem>(d))).catch(console.error).finally(() => setLoading(false));
   }, []);
 
   if (loading) return <Loading text="加载进度看板..." />;

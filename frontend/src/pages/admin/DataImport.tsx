@@ -7,8 +7,8 @@ import API_CONFIG from '@/config/api';
 export default function DataImport() {
   const [tab, setTab] = useState('file');
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端导入接口为 /export/ 和 /wechat/import-data，需确认对应端点
 
   const handleFileUpload = async (file: File) => {
     setLoading(true);
@@ -65,7 +65,7 @@ export default function DataImport() {
               placeholder='[{"name": "...", "value": ...}]'
               rows={8}
               style={{ width: '100%', padding: 12, border: '1px solid #ddd', borderRadius: 8, fontSize: 14 }}
-              onChange={(e) => { /* store for submit */ }}
+              onChange={() => { /* store for submit */ }}
             />
             <Button theme="primary" block style={{ marginTop: 16 }} onClick={() => handleJsonImport('[{}]')}>
               导入JSON数据

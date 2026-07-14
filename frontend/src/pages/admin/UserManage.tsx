@@ -1,26 +1,27 @@
 // 用户管理 - 从 BackgroundService tmp 迁移
 import { useState, useEffect } from 'react';
-import { Button, Toast, Loading, Dialog } from 'tdesign-mobile-react';
+import { Button, Toast, Loading } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { normalizeList } from '@/shared/utils/list';
 
 interface User { id: string; username: string; email: string; role: string; is_active: boolean; }
 
 export default function UserManage() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.USER_CENTER.BASE_URL, 'UserCenter');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   const fetchUsers = async () => {
     setLoading(true);
-    try { const data = await request<User[]>('/auth/users/'); setUsers(data || []); } catch (e) { Toast({ message: String(e), theme: 'error' }); } finally { setLoading(false); }
+    try { const data = await request('/users/'); setUsers(normalizeList<User>(data)); } catch (e) { Toast({ message: String(e), theme: 'error' }); } finally { setLoading(false); }
   };
 
   useEffect(() => { fetchUsers(); }, []);
 
   const toggleActive = async (user: User) => {
     try {
-      await request(`/auth/users/${user.id}`, { method: 'PATCH', body: JSON.stringify({ is_active: !user.is_active }) });
+      await request(`/users/${user.username}`, { method: 'PUT', body: JSON.stringify({ is_active: !user.is_active }) });
       Toast({ message: '状态已更新', theme: 'success' });
       fetchUsers();
     } catch (e) { Toast({ message: String(e), theme: 'error' }); }

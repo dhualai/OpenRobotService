@@ -7,13 +7,14 @@ import API_CONFIG from '@/config/api';
 export default function JsonImport() {
   const [jsonStr, setJsonStr] = useState('');
   const [loading, setLoading] = useState(false);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // TODO: 新后端导入接口路径待确认
 
   const handleImport = async () => {
     try {
       const parsed = JSON.parse(jsonStr);
       setLoading(true);
-      const result = await request('/data/import/json', { method: 'POST', body: JSON.stringify({ data: parsed }) });
+      await request('/data/import/json', { method: 'POST', body: JSON.stringify({ data: parsed }) });
       Toast({ message: 'JSON导入成功', theme: 'success' });
     } catch (err) {
       Toast({ message: `导入失败: ${err instanceof Error ? err.message : 'JSON格式错误'}`, theme: 'error' });

@@ -4,6 +4,7 @@ import { Button, Toast, Loading, Dialog } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { normalizeList } from '@/shared/utils/list';
 
 interface Project { id: string; name: string; status: string; created_at: string; }
 
@@ -11,13 +12,13 @@ export default function ProjectManage() {
   const navigate = useNavigate();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   const fetchProjects = async () => {
     setLoading(true);
     try {
-      const data = await request<Project[]>('/projects/');
-      setProjects(data || []);
+      const data = await request('/projects/');
+      setProjects(normalizeList<Project>(data));
     } catch (err) { Toast({ message: String(err), theme: 'error' }); }
     finally { setLoading(false); }
   };

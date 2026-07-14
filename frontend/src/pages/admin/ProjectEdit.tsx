@@ -11,7 +11,7 @@ export default function ProjectEdit() {
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({ name: '', description: '', status: 'active' });
-  const request = createRequest(API_CONFIG.PROJECT.BASE_URL, 'Project');
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   useEffect(() => {
     if (id) {
@@ -27,7 +27,7 @@ export default function ProjectEdit() {
     setSubmitting(true);
     try {
       if (id) {
-        await request(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(form) });
+        await request(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(form) });
       } else {
         await request('/projects/', { method: 'POST', body: JSON.stringify(form) });
       }

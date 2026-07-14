@@ -1,6 +1,6 @@
 // 任务收件箱 - 从 HelpDesk TicketsList 迁移（53KB 原文件，保留核心功能）
 import { useState, useEffect, useCallback } from 'react';
-import { Navbar, Tabs, TabPanel, Input, Button, Loading, Toast } from 'tdesign-mobile-react';
+import { Navbar, Tabs, TabPanel, Input, Loading, Toast } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -29,19 +29,19 @@ export default function TicketList() {
   const [total, setTotal] = useState(0);
   const pageSize = 20;
 
-  const request = createRequest(API_CONFIG.FQA.BASE_URL, 'FQA');
+  const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
 
   const fetchTickets = useCallback(async () => {
     setLoading(true);
     try {
       const params = new URLSearchParams({
         page: String(page),
-        page_size: String(pageSize),
-        ...(search && { search }),
+        size: String(pageSize),
+        ...(search && { keyword: search }),
         ...(statusFilter !== 'all' && { status: statusFilter }),
       });
       const data = await request<{ items: Ticket[]; total: number }>(
-        `/tickets/?${params.toString()}`
+        `/?${params.toString()}`
       );
       setTickets(data.items || []);
       setTotal(data.total || 0);
