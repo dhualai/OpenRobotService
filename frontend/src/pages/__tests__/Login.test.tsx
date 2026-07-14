@@ -1,5 +1,6 @@
+import type { ReactNode, FormEvent } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 // Mock react-router-dom's useNavigate
@@ -14,27 +15,27 @@ vi.mock('react-router-dom', async () => {
 
 // Mock tdesign-mobile-react
 vi.mock('tdesign-mobile-react', () => ({
-  Button: ({ children, onClick, loading, ...props }: any) => (
-    <button onClick={onClick as () => void} disabled={loading as boolean} data-testid="btn" {...props}>
+  Button: ({ children, onClick, loading }: { children?: ReactNode; onClick?: () => void; loading?: boolean }) => (
+    <button onClick={onClick} disabled={loading} data-testid="btn">
       {children}
     </button>
   ),
-  Navbar: ({ title }: any) => (
-    <nav data-testid="navbar">{title as string}</nav>
+  Navbar: ({ title }: { title?: ReactNode }) => (
+    <nav data-testid="navbar">{title}</nav>
   ),
-  Form: ({ children, onSubmit }: any) => (
+  Form: ({ children, onSubmit }: { children?: ReactNode; onSubmit?: (e: FormEvent) => void }) => (
     <form
-      onSubmit={(e: React.FormEvent) => {
+      onSubmit={(e: FormEvent) => {
         e.preventDefault();
-        (onSubmit as (e: React.FormEvent) => void)?.(e);
+        onSubmit?.(e);
       }}
     >
       {children}
     </form>
   ),
-  FormItem: ({ children }: any) => <div>{children}</div>,
-  Input: (props: any) => (
-    <input placeholder={props.placeholder as string} defaultValue={props.defaultValue as string} />
+  FormItem: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Input: ({ placeholder, defaultValue }: { placeholder?: string; defaultValue?: string }) => (
+    <input placeholder={placeholder} defaultValue={defaultValue} />
   ),
   Toast: vi.fn(),
 }));

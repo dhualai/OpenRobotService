@@ -1,8 +1,9 @@
 // 用户管理 - 从 BackgroundService tmp 迁移
 import { useState, useEffect } from 'react';
-import { Button, Toast, Loading, Dialog } from 'tdesign-mobile-react';
+import { Button, Toast, Loading } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { normalizeList } from '@/shared/utils/list';
 
 interface User { id: string; username: string; email: string; role: string; is_active: boolean; }
 
@@ -13,7 +14,7 @@ export default function UserManage() {
 
   const fetchUsers = async () => {
     setLoading(true);
-    try { const data = await request<User[]>('/users/'); setUsers(data || []); } catch (e) { Toast({ message: String(e), theme: 'error' }); } finally { setLoading(false); }
+    try { const data = await request('/users/'); setUsers(normalizeList<User>(data)); } catch (e) { Toast({ message: String(e), theme: 'error' }); } finally { setLoading(false); }
   };
 
   useEffect(() => { fetchUsers(); }, []);

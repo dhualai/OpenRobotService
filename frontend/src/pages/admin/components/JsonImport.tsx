@@ -14,7 +14,7 @@ export default function JsonImport() {
     try {
       const parsed = JSON.parse(jsonStr);
       setLoading(true);
-      const result = await request('/data/import/json', { method: 'POST', body: JSON.stringify({ data: parsed }) });
+      await request('/data/import/json', { method: 'POST', body: JSON.stringify({ data: parsed }) });
       Toast({ message: 'JSON导入成功', theme: 'success' });
     } catch (err) {
       Toast({ message: `导入失败: ${err instanceof Error ? err.message : 'JSON格式错误'}`, theme: 'error' });

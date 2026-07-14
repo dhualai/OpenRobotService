@@ -1,6 +1,6 @@
 // 任务收件箱 - 从 HelpDesk TicketsList 迁移（53KB 原文件，保留核心功能）
 import { useState, useEffect, useCallback } from 'react';
-import { Navbar, Tabs, TabPanel, Input, Button, Loading, Toast } from 'tdesign-mobile-react';
+import { Navbar, Tabs, TabPanel, Input, Loading, Toast } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';

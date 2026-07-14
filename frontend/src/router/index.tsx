@@ -3,15 +3,15 @@ import { createBrowserRouter, Navigate, Outlet } from 'react-router-dom';
 import { AuthGuard } from '@/shared/utils/authGuard';
 
 // 懒加载页面
-const HomePage = lazy(() => import('@/pages/HomePage'));
 const Login = lazy(() => import('@/pages/Login'));
 const NoPermission = lazy(() => import('@/pages/NoPermission'));
-const AIChat = lazy(() => import('@/pages/call/AIChat'));
-const NewTicket = lazy(() => import('@/pages/call/NewTicket'));
-const TicketList = lazy(() => import('@/pages/tasks/TicketList'));
-const TicketDetail = lazy(() => import('@/pages/tasks/TicketDetail'));
+const MainLayout = lazy(() => import('@/shared/components/MainLayout'));
+const CallView = lazy(() => import('@/pages/call/CallView'));
+const TasksView = lazy(() => import('@/pages/tasks/TasksView'));
 
-// Admin 页面
+// Admin
+const AdminView = lazy(() => import('@/pages/admin/AdminView'));
+const AdminLayout = lazy(() => import('@/shared/components/AdminLayout'));
 const ProjectMetrics = lazy(() => import('@/pages/admin/ProjectMetrics'));
 const DataImport = lazy(() => import('@/pages/admin/DataImport'));
 const OperationLogs = lazy(() => import('@/pages/admin/OperationLogs'));
@@ -29,58 +29,59 @@ const RoleManage = lazy(() => import('@/pages/admin/RoleManage'));
 const PermissionManage = lazy(() => import('@/pages/admin/PermissionManage'));
 const ResourceManage = lazy(() => import('@/pages/admin/ResourceManage'));
 
-const AdminLayout = lazy(() => import('@/shared/components/AdminLayout'));
-
 export const router = createBrowserRouter([
   { path: '/login', element: <Login /> },
   { path: '/no-permission', element: <NoPermission /> },
 
-  // call 模块
+  // 工作台主入口：底部三 Tab（我要摇人 / 系统任务 / 后台管理）
   {
-    path: '/call',
-    element: <AuthGuard><div className="mobile-shell"><Outlet /></div></AuthGuard>,
+    path: '/app',
+    element: <AuthGuard><MainLayout /></AuthGuard>,
     children: [
-      { index: true, element: <Navigate to="/call/ai-chat" replace /> },
-      { path: 'ai-chat', element: <AIChat /> },
-      { path: 'new-ticket', element: <NewTicket /> },
+      { index: true, element: <Navigate to="/app/call" replace /> },
+      { path: 'call', element: <CallView /> },
+      { path: 'tasks', element: <TasksView /> },
+      { path: 'tasks/:id', element: <TasksView /> },
+      {
+        path: 'admin',
+        element: <Outlet />,
+        children: [
+          { index: true, element: <AdminView /> },
+          {
+            element: <AdminLayout />,
+            children: [
+              { path: 'dashboard', element: <ProjectMetrics /> },
+              { path: 'data-import', element: <DataImport /> },
+              { path: 'operation-logs', element: <OperationLogs /> },
+              { path: 'progress', element: <ProgressBoard /> },
+              { path: 'personnel', element: <PersonnelBoard /> },
+              { path: 'project-auth', element: <ProjectAuth /> },
+              { path: 'project-edit/:id?', element: <ProjectEdit /> },
+              { path: 'project-hr', element: <ProjectHR /> },
+              { path: 'project-manage', element: <ProjectManage /> },
+              { path: 'risks', element: <RiskList /> },
+              { path: 'risk-edit/:id?', element: <RiskEdit /> },
+              { path: 'reports', element: <ReportsAnalytics /> },
+              { path: 'users', element: <UserManage /> },
+              { path: 'roles', element: <RoleManage /> },
+              { path: 'permissions', element: <PermissionManage /> },
+              { path: 'resources', element: <ResourceManage /> },
+            ],
+          },
+        ],
+      },
     ],
   },
 
-  // tasks 模块
-  {
-    path: '/tasks',
-    element: <AuthGuard><div className="mobile-shell"><Outlet /></div></AuthGuard>,
-    children: [
-      { index: true, element: <TicketList /> },
-      { path: ':id', element: <TicketDetail /> },
-    ],
-  },
-
-  // admin 模块
-  {
-    path: '/admin',
-    element: <AuthGuard><AdminLayout /></AuthGuard>,
-    children: [
-      { index: true, element: <Navigate to="/admin/dashboard" replace /> },
-      { path: 'dashboard', element: <ProjectMetrics /> },
-      { path: 'data-import', element: <DataImport /> },
-      { path: 'operation-logs', element: <OperationLogs /> },
-      { path: 'progress', element: <ProgressBoard /> },
-      { path: 'personnel', element: <PersonnelBoard /> },
-      { path: 'project-auth', element: <ProjectAuth /> },
-      { path: 'project-edit/:id?', element: <ProjectEdit /> },
-      { path: 'project-hr', element: <ProjectHR /> },
-      { path: 'project-manage', element: <ProjectManage /> },
-      { path: 'risks', element: <RiskList /> },
-      { path: 'risk-edit/:id?', element: <RiskEdit /> },
-      { path: 'reports', element: <ReportsAnalytics /> },
-      { path: 'users', element: <UserManage /> },
-      { path: 'roles', element: <RoleManage /> },
-      { path: 'permissions', element: <PermissionManage /> },
-      { path: 'resources', element: <ResourceManage /> },
-    ],
-  },
-
-  { path: '/', element: <HomePage /> },
-  { path: '/home', element: <HomePage /> },
+  // 兼容旧路由 → 统一收敛到工作台
+  { path: '/', element: <Navigate to="/app/call" replace /> },
+  { path: '/call', element: <Navigate to="/app/call" replace /> },
+  { path: '/call/ai-chat', element: <Navigate to="/app/call" replace /> },
+  { path: '/call/new-ticket', element: <Navigate to="/app/call" replace /> },
+  { path: '/tasks', element: <Navigate to="/app/tasks" replace /> },
+  { path: '/tasks/:id', element: <Navigate to="/app/tasks" replace /> },
+  { path: '/admin', element: <Navigate to="/app/admin" replace /> },
+  { path: '/admin/*', element: <Navigate to="/app/admin" replace /> },
+  { path: '/home', element: <Navigate to="/app/call" replace /> },
+  { path: '*', element: <Navigate to="/app/call" replace /> },
 ]);

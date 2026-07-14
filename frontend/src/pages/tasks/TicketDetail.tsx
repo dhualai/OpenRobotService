@@ -4,9 +4,8 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Dialog } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
-import { useAuthStore } from '@/stores/auth';
 import SafeHtml from '@/shared/components/SafeHtml';
-import { normalizeStatus, STATUS_VALUE_MAP } from '@/shared/constants/ticket';
+import { normalizeStatus } from '@/shared/constants/ticket';
 import { formatDateTime, formatTime } from '@/shared/utils/url';
 
 interface Comment {
@@ -34,7 +33,6 @@ interface TicketDetailData {
 export default function TicketDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { username, isAdmin } = useAuthStore();
   const [ticket, setTicket] = useState<TicketDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [newComment, setNewComment] = useState('');

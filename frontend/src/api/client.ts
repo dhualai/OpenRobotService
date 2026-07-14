@@ -85,7 +85,7 @@ function onRefreshSuccess(newToken: string): void {
   refreshSubscribers = [];
 }
 
-function onRefreshFailed(error: unknown): void {
+function onRefreshFailed(_error: unknown): void {
   refreshSubscribers.forEach((cb) => cb(null));
   refreshSubscribers = [];
 }
@@ -104,7 +104,7 @@ export interface RequestOptions {
 }
 
 // createRequest 工厂函数
-export function createRequest(baseUrl: string, serviceName = 'API') {
+export function createRequest(baseUrl: string, _serviceName = 'API') {
   const request = async <T = unknown>(
     endpoint: string,
     options: RequestOptions = {},

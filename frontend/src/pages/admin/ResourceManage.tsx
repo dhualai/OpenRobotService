@@ -4,6 +4,7 @@ import { Button, Loading, Toast } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { formatDateTime } from '@/shared/utils/url';
+import { normalizeList } from '@/shared/utils/list';
 
 interface ResourceItem { id: string; name: string; type: 'file' | 'folder'; size?: number; updated_at: string; }
 
@@ -17,8 +18,8 @@ export default function ResourceManage() {
     setLoading(true);
     try {
       const folderParam = folderPath.length > 0 ? `?folder=${encodeURIComponent(folderPath.join('/'))}` : '';
-      const data = await request<ResourceItem[]>(`/resource-manager/resources/${folderParam}`);
-      setItems(data || []);
+      const data = await request(`/resource-manager/resources/${folderParam}`);
+      setItems(normalizeList<ResourceItem>(data));
     } catch (err) { Toast({ message: String(err), theme: 'error' }); }
     finally { setLoading(false); }
   };

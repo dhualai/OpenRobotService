@@ -1,6 +1,6 @@
 import { Suspense, useState, useCallback } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Navbar, TabBar, TabBarItem, Loading, Button } from 'tdesign-mobile-react';
+import { Navbar, Loading, Button } from 'tdesign-mobile-react';
 import type { ReactNode } from 'react';
 
 interface AdminLayoutProps {
@@ -15,21 +15,21 @@ interface MenuItem {
 
 // 后台管理侧边栏菜单配置
 const adminMenuItems: MenuItem[] = [
-  { path: '/admin/dashboard', label: '仪表盘', emoji: '📊' },
-  { path: '/admin/project-manage', label: '项目管理', emoji: '📁' },
-  { path: '/admin/project-edit', label: '新建/编辑项目', emoji: '✏️' },
-  { path: '/admin/progress', label: '进度看板', emoji: '📈' },
-  { path: '/admin/personnel', label: '人员分配', emoji: '👥' },
-  { path: '/admin/project-hr', label: '人力资源', emoji: '🧑‍💼' },
-  { path: '/admin/project-auth', label: '项目授权', emoji: '🔐' },
-  { path: '/admin/risks', label: '风险管理', emoji: '⚠️' },
-  { path: '/admin/reports', label: '报表分析', emoji: '📋' },
-  { path: '/admin/data-import', label: '数据导入', emoji: '📥' },
-  { path: '/admin/operation-logs', label: '操作记录', emoji: '📝' },
-  { path: '/admin/users', label: '用户管理', emoji: '👤' },
-  { path: '/admin/roles', label: '角色管理', emoji: '🏷️' },
-  { path: '/admin/permissions', label: '权限管理', emoji: '🔑' },
-  { path: '/admin/resources', label: '资源管理', emoji: '🗂️' },
+  { path: '/app/admin/dashboard', label: '仪表盘', emoji: '📊' },
+  { path: '/app/admin/project-manage', label: '项目管理', emoji: '📁' },
+  { path: '/app/admin/project-edit', label: '新建/编辑项目', emoji: '✏️' },
+  { path: '/app/admin/progress', label: '进度看板', emoji: '📈' },
+  { path: '/app/admin/personnel', label: '人员分配', emoji: '👥' },
+  { path: '/app/admin/project-hr', label: '人力资源', emoji: '🧑‍💼' },
+  { path: '/app/admin/project-auth', label: '项目授权', emoji: '🔐' },
+  { path: '/app/admin/risks', label: '风险管理', emoji: '⚠️' },
+  { path: '/app/admin/reports', label: '报表分析', emoji: '📋' },
+  { path: '/app/admin/data-import', label: '数据导入', emoji: '📥' },
+  { path: '/app/admin/operation-logs', label: '操作记录', emoji: '📝' },
+  { path: '/app/admin/users', label: '用户管理', emoji: '👤' },
+  { path: '/app/admin/roles', label: '角色管理', emoji: '🏷️' },
+  { path: '/app/admin/permissions', label: '权限管理', emoji: '🔑' },
+  { path: '/app/admin/resources', label: '资源管理', emoji: '🗂️' },
 ];
 
 // 根据当前路径匹配菜单高亮
@@ -60,7 +60,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
   );
 
   return (
-    <div className="mobile-shell" style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+    <div className="mobile-shell" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* 顶部导航栏 */}
       <Navbar
         title={currentLabel}
@@ -160,24 +160,11 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
       </div>
 
       {/* 主内容区 */}
-      <div style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 60 }}>
+      <div style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 16 }}>
         <Suspense fallback={<Loading text="加载中..." />}>
           {children || <Outlet />}
         </Suspense>
       </div>
-
-      {/* 底部导航栏 */}
-      <TabBar fixed value={location.pathname} onChange={(value) => navigate(String(value))}>
-        <TabBarItem value="/call/ai-chat" icon={<span>💬</span>}>
-          摇人
-        </TabBarItem>
-        <TabBarItem value="/tasks" icon={<span>📋</span>}>
-          任务
-        </TabBarItem>
-        <TabBarItem value="/admin/dashboard" icon={<span>⚙️</span>}>
-          管理
-        </TabBarItem>
-      </TabBar>
     </div>
   );
 }

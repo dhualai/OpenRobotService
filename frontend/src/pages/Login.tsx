@@ -9,10 +9,16 @@ export default function Login() {
   const navigate = useNavigate();
   const login = useAuthStore((s) => s.login);
   const [loading, setLoading] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
 
   const handleSubmit = async (e: unknown) => {
     if (e && typeof (e as { preventDefault?: () => void }).preventDefault === 'function') {
       (e as { preventDefault: () => void }).preventDefault();
+    }
+    if (!username.trim() || !password.trim()) {
+      Toast({ message: '请输入用户名和密码', theme: 'warning' });
+      return;
     }
     setLoading(true);
     try {
@@ -23,10 +29,10 @@ export default function Login() {
         expires_in: number;
       }>('/login', {
         method: 'POST',
-        body: JSON.stringify({ username: 'debug', password: 'debug' }),
+        body: JSON.stringify({ username: username.trim(), password }),
         skipAuth: true,
       });
-      login(data, 'debug用户');
+      login(data, username.trim());
       Toast({ message: '登录成功', theme: 'success' });
       navigate('/call', { replace: true });
     } catch (err) {
@@ -43,10 +49,10 @@ export default function Login() {
         <h2 style={{ textAlign: 'center', marginBottom: 32, color: '#0052d9' }}>登录 OpenRobotService</h2>
         <Form onSubmit={handleSubmit}>
           <FormItem label="用户名" name="username">
-            <Input placeholder="请输入用户名" defaultValue="debug" />
+            <Input placeholder="请输入用户名" value={username} onChange={(v) => setUsername(String(v))} />
           </FormItem>
           <FormItem label="密码" name="password">
-            <Input type="password" placeholder="请输入密码" defaultValue="debug" />
+            <Input type="password" placeholder="请输入密码" value={password} onChange={(v) => setPassword(String(v))} />
           </FormItem>
           <FormItem>
             <Button theme="primary" type="submit" block loading={loading}>
@@ -55,7 +61,7 @@ export default function Login() {
           </FormItem>
         </Form>
         <p style={{ textAlign: 'center', color: '#999', fontSize: 13, marginTop: 16 }}>
-          Debug模式：用户名和密码均为 debug
+          请使用您的系统账号登录
         </p>
       </div>
     </div>

@@ -1,8 +1,9 @@
 // 角色管理 - 从 BackgroundService tmp 迁移
 import { useState, useEffect } from 'react';
-import { Button, Toast, Loading } from 'tdesign-mobile-react';
+import { Toast, Loading } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { normalizeList } from '@/shared/utils/list';
 
 interface Role { id: string; name: string; description: string; permissions: string[]; }
 
@@ -12,7 +13,7 @@ export default function RoleManage() {
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   useEffect(() => {
-    request<Role[]>('/roles/').then(setRoles).catch((e) => Toast({ message: String(e), theme: 'error' })).finally(() => setLoading(false));
+    request('/roles/').then((d) => setRoles(normalizeList<Role>(d))).catch((e) => Toast({ message: String(e), theme: 'error' })).finally(() => setLoading(false));
   }, []);
 
   if (loading) return <Loading text="加载角色列表..." />;
