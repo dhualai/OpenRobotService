@@ -32,8 +32,10 @@ if str(_backend_dir) not in sys.path:
 load_dotenv(_backend_dir / ".env")
 load_dotenv(_backend_dir / "app" / "ai" / ".env")
 
-# 默认源文件：原始 Word 文档（在 docs/operation_doc/ 下）
-DEFAULT_SOURCE = _backend_dir.parent / "docs" / "operation_doc" / "USP 实施与操作手册.docx"
+# 默认源文件：通过 get_docs_dir() 动态获取文档路径
+def _default_source() -> str:
+    from app.ai.config import get_docs_dir
+    return str(get_docs_dir() / "operation_doc" / "USP 实施与操作手册.docx")
 
 # 正文开始的标记（去除封面/目录/修订记录等）
 CONTENT_START_MARKERS = [
@@ -341,11 +343,11 @@ def resolve_source(filepath: str) -> str:
     print(f"[WARN] 文件不存在: {filepath}")
 
     # 备选路径
+    from app.ai.config import get_docs_dir
+    docs = get_docs_dir()
     alternatives = [
-        _backend_dir.parent / "docs" / "operation_doc" / "USP 实施与操作手册.docx",
-        _backend_dir.parent / "docs" / "operation_doc" / "USP实施与操作手册.md",
-        _backend_dir.parent.parent / "docs" / "operation_doc" / "USP 实施与操作手册.docx",
-        Path.cwd() / "docs" / "operation_doc" / "USP 实施与操作手册.docx",
+        docs / "operation_doc" / "USP 实施与操作手册.docx",
+        docs / "operation_doc" / "USP实施与操作手册.md",
     ]
     for alt in alternatives:
         if alt.is_file():
@@ -358,6 +360,49 @@ def resolve_source(filepath: str) -> str:
 # ============================================================
 # 主入口
 # ============================================================
+
+async def auto_ingest() -> bool:
+    """首次启动 / clone 后自动入库（无 argparse，可被 main.py 调用）"""
+    from datetime import datetime
+    from app.ai.config import _write_active_collection, get_active_collection
+
+    filepath = resolve_source(_default_source())
+    print(f"[AUTO-INGEST] 操作手册源文件: {filepath}")
+
+    if filepath.lower().endswith('.docx'):
+        try:
+            text = convert_docx(filepath)
+        except FileNotFoundError:
+            print("[ERR] pandoc 未安装，跳过自动入库")
+            return False
+        except subprocess.CalledProcessError as e:
+            print(f"[ERR] pandoc 转换失败: {e.stderr}")
+            return False
+    else:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            text = f.read()
+
+    text = strip_frontmatter(text)
+    chunks = parse_manual(text)
+    if not chunks:
+        print("[ERR] auto_ingest: 未提取到任何 chunk")
+        return False
+
+    print_chunks_summary(chunks)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    collection_name = f"operation_docs_{ts}"
+    result = await ingest_chunks(chunks, collection_name=collection_name, rebuild=True)
+    if result["status"] != "ok":
+        print(f"[ERR] auto_ingest 入库失败: {result}")
+        return False
+
+    _write_active_collection(collection_name)
+    print(f"[AUTO-INGEST] 操作手册入库完成: {collection_name}")
+
+    await _cleanup_old_collections(keep=2)
+    return True
+
 
 async def main():
     import argparse
@@ -376,8 +421,8 @@ async def main():
     )
     parser.add_argument(
         "--file", "-f",
-        default=str(DEFAULT_SOURCE),
-        help=f"源文件路径，支持 .docx / .md（默认: {DEFAULT_SOURCE}）",
+        default=_default_source(),
+        help="源文件路径，支持 .docx / .md",
     )
     parser.add_argument(
         "--rebuild", "-r",
