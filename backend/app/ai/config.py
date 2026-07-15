@@ -8,10 +8,18 @@ AI 模块配置
     from app.ai.config import get_ai_config
     config = get_ai_config()
     print(config.deepseek_api_key)
+
+知识库热更新：
+    集合名通过 app/kb/active_collection.txt 指针文件动态切换，
+    入库脚本写入新集合后更新指针，服务无需重启。
 """
 import os
+from pathlib import Path
 from functools import lru_cache
 from pydantic import BaseModel, Field
+
+# 指针文件：记录当前活跃的 Qdrant 集合名
+_ACTIVE_COLLECTION_POINTER = Path(__file__).resolve().parent.parent.parent / "app" / "kb" / "active_collection.txt"
 
 
 class AIConfig(BaseModel):
@@ -30,6 +38,7 @@ class AIConfig(BaseModel):
     qdrant_port: int = Field(default=6333)
     qdrant_collection_name: str = Field(default="operation_docs")
     qdrant_timeout: float = Field(default=5.0)
+    qdrant_local_path: str = Field(default="", description="本地模式路径，非空时忽略 host/port")
 
     # ========== Redis ==========
     redis_url: str = Field(default="redis://localhost:6379/0")
@@ -54,11 +63,34 @@ class AIConfig(BaseModel):
     ai_chain_timeout: float = Field(default=2.5)
 
 
+def get_active_collection() -> str:
+    """
+    读取当前活跃的 Qdrant 集合名。
+    优先读指针文件（入库脚本写入），文件不存在时回退到 .env。
+    此函数不缓存，每次调用都读文件，保证热更新。
+    """
+    try:
+        if _ACTIVE_COLLECTION_POINTER.exists():
+            name = _ACTIVE_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return os.getenv("QDRANT_COLLECTION", "operation_docs")
+
+
+def _write_active_collection(name: str) -> None:
+    """写入活跃集合指针（入库脚本调用）"""
+    _ACTIVE_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
+    _ACTIVE_COLLECTION_POINTER.write_text(name, encoding="utf-8")
+
+
 @lru_cache()
 def get_ai_config() -> AIConfig:
     """
     获取 AI 配置单例
     所有值从环境变量读取（由 backend/.env 注入）
+    注意：qdrant_collection_name 可能被指针文件覆盖（见 get_active_collection）
     """
     return AIConfig(
         # DeepSeek
@@ -73,6 +105,7 @@ def get_ai_config() -> AIConfig:
         qdrant_port=int(os.getenv("QDRANT_PORT", "6333")),
         qdrant_collection_name=os.getenv("QDRANT_COLLECTION", "operation_docs"),
         qdrant_timeout=float(os.getenv("QDRANT_TIMEOUT", "5.0")),
+        qdrant_local_path=os.getenv("QDRANT_LOCAL_PATH", ""),
         # Redis
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         redis_max_context_turns=int(os.getenv("REDIS_MAX_CONTEXT_TURNS", "3")),
