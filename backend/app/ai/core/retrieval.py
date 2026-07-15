@@ -66,18 +66,25 @@ class QdrantClientWrapper:
         host: str,
         port: int,
         timeout: float,
-        collection_name: str,
+        collection_name: str = "",
     ):
         self.host = host
         self.port = port
         self.timeout = timeout
-        self.collection_name = collection_name
+        self._collection_fallback = collection_name  # 指针文件缺失时的回退
         self._client: Optional[QdrantClient] = None
         self._lock = asyncio.Lock()
+        self._is_local: Optional[bool] = None  # 延迟判断
         # 快速失败
         self._unavailable: bool = False
         self._unavailable_since: float = 0.0
         self._unavailable_cooldown: float = 30.0
+
+    @property
+    def collection_name(self) -> str:
+        """实时读取活跃集合名（支持热更新，无需重启）"""
+        from app.ai.config import get_active_collection
+        return get_active_collection() or self._collection_fallback
 
     # ------------------------------------------------------------
     # 快速失败 & 线程化调用辅助
@@ -124,12 +131,24 @@ class QdrantClientWrapper:
         if self._client is None:
             async with self._lock:
                 if self._client is None:
+                    config = get_ai_config()
                     try:
-                        self._client = QdrantClient(
-                            host=self.host,
-                            port=self.port,
-                            timeout=self.timeout,
-                        )
+                        if config.qdrant_local_path:
+                            from pathlib import Path as _Path
+                            _local = _Path(config.qdrant_local_path)
+                            if not _local.is_absolute():
+                                # 解析为 backend/ 的相对路径（不受 CWD 影响）
+                                _backend = _Path(__file__).resolve().parent.parent.parent.parent
+                                _local = _backend / _local
+                            self._client = QdrantClient(path=str(_local))
+                            self._is_local = True
+                        else:
+                            self._client = QdrantClient(
+                                host=self.host,
+                                port=self.port,
+                                timeout=self.timeout,
+                            )
+                            self._is_local = False
                     except Exception as e:
                         raise ServiceUnavailableError(
                             "Qdrant", f"连接失败: {str(e)}"
@@ -220,14 +239,26 @@ class QdrantClientWrapper:
             return []
         client = await self._ensure_client()
         try:
-            return await self._to_thread(
-                client.search,
-                collection_name=self.collection_name,
-                query_vector=("dense", vector),
-                limit=top_k,
-                score_threshold=score_threshold,
-                with_payload=True,
-            )
+            if self._is_local:
+                # 本地模式：query_points
+                result = await self._to_thread(
+                    client.query_points,
+                    collection_name=self.collection_name,
+                    query=vector,
+                    limit=top_k,
+                    score_threshold=score_threshold,
+                    with_payload=True,
+                )
+                return result.points
+            else:
+                return await self._to_thread(
+                    client.search,
+                    collection_name=self.collection_name,
+                    query_vector=("dense", vector),
+                    limit=top_k,
+                    score_threshold=score_threshold,
+                    with_payload=True,
+                )
         except ServiceUnavailableError:
             return []
         except Exception as e:
@@ -241,6 +272,9 @@ class QdrantClientWrapper:
     ) -> List[Any]:
         """稀疏向量检索"""
         if self.is_unavailable:
+            return []
+        # 本地模式不支持稀疏检索，跳过
+        if self._is_local:
             return []
         client = await self._ensure_client()
         try:
@@ -472,7 +506,6 @@ class RetrievalService:
             dense_task,
             sparse_task if bm25_sparse else asyncio.sleep(0),
         )
-
         # 3. RRF 融合
         results = self._rrf_fusion(
             dense_results,
@@ -483,7 +516,8 @@ class RetrievalService:
         if not results:
             raise RetrieveEmptyError("未找到相关文档")
 
-        top1_score = results[0].score if results else 0.0
+        # 使用原始向量相似度做置信度检查（RRF score 是排序分数，不适合做阈值比较）
+        top1_score = results[0].vector_score if results else 0.0
 
         # 4. 置信度检查
         if check_confidence and top1_score < self.score_threshold:
