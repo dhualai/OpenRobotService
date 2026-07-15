@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 from app.ai import SYSTEM_PROMPT
 from app.ai.config import get_ai_config
-from app.ai.exceptions import AITimeoutError, ServiceUnavailableError, RetrieveEmptyError
+from app.ai.exceptions import AITimeoutError, LowConfidenceError, ServiceUnavailableError, RetrieveEmptyError
 from app.ai.core import get_llm_client, get_retrieval_service, get_memory_manager
 
 
@@ -94,9 +94,20 @@ def _agent_state_summary(state: AgentState) -> dict:
 # Agent 推理 Prompt
 # ============================================================
 
-DIAGNOSIS_PROMPT = """你是一个诊断 Agent，帮用户排查 AGV/AMR 问题。
+DIAGNOSIS_PROMPT = """你是 AGV/AMR 技术支持 Agent。
 
-**知识库有答案→answer。信息不够→先看 hypotheses 和 collected_info，被验证的推测升级为诊断方向，被推翻的放入 ruled_out。追问时带着当前推测问，让用户感觉你在推理。如果你有明确的怀疑方向，直接让用户尝试验证（如"试一下重启车辆看是否恢复"）。实在排查不出→建议上传日志截图后点转工单。别干巴巴收集信息，别重复问。**
+## 先判断用户意图
+- **howto（操作咨询）**：用户问"怎么做/怎么上线/怎么配置/步骤/流程"等，想了解操作方法。
+  从知识库找答案，按前提→操作→预期结果的顺序给出步骤。直接 answer，不追问不假设故障。
+  标注来源（如"根据操作手册 §3.2"）。知识库没涉及的细节如实说"手册未覆盖"，不要自己编步骤。
+  知识库中的图片（![](url)）如果对操作有参考价值，可引用到回答中。
+
+- **troubleshoot（故障排查）**：用户描述了异常现象（离线、报错、不动、卡住、异常等）。
+  列出可能原因，引导用户逐项验证。看 hypotheses/collected_info/ruled_out 推进排查。
+  如果你有明确怀疑，让用户直接试（如"重启一下控制器看是否恢复"）。排查不出时建议转工单。
+  知识库中有相关截图/示意图时，引用到回答中帮助用户定位。
+
+- **chat（闲聊/问候）**：简单回应，引导用户描述具体问题。
 
 ## 对话
 {conversation}
@@ -108,9 +119,64 @@ DIAGNOSIS_PROMPT = """你是一个诊断 Agent，帮用户排查 AGV/AMR 问题�
 ---
 输出 JSON：
 ```json
-{{"action":"ask|answer","state_update":{{"problem_summary":"概述","ruled_out":[],"hypotheses":[],"collected_info":{{}}}}}}
+{{"action":"answer|ask","intent":"howto|troubleshoot|chat","state_update":{{"problem_summary":"概述","ruled_out":[],"hypotheses":[],"collected_info":{{}}}}}}
 ```
-JSON 之后直接写回复。排查到头了就建议用户点转工单。语气像工程师。"""
+JSON 之后直接写回复。语气像工程师。引用图片时用 ![说明](url) 格式。"""
+
+
+# ============================================================
+# 流式 JSON 过滤：检测 JSON→自然语言边界
+# ============================================================
+
+def _find_json_end(buffer: str) -> int:
+    """
+    在 LLM 原始输出中定位 JSON 结束、自然语言开始的位置。
+
+    支持三种格式：
+      ```json\\n{...}\\n```\\n\\n<message>
+      ```json\\n{...}\\n```<message>
+      {\\n...}\\n\\n<message>
+
+    Returns: message 起始位置，-1 表示 JSON 尚未结束。
+    """
+    if not buffer:
+        return -1
+
+    # Case 1: Fenced JSON — 找闭合的 ``` 出现在 } 之后
+    m = re.search(r'\}\s*```\s*', buffer)
+    if m:
+        return m.end()
+
+    # Case 2: Bare JSON — 跟踪括号深度，找顶层 }
+    depth = 0
+    in_string = False
+    escape = False
+    for i, ch in enumerate(buffer):
+        if escape:
+            escape = False
+            continue
+        if ch == '\\' and in_string:
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                # 顶层 JSON 已闭合，跳过后续空白，找消息起点
+                rest = buffer[i + 1:]
+                m2 = re.match(r'\s*', rest)
+                if m2 and m2.end() < len(rest):
+                    return i + 1 + m2.end()
+                # JSON 结束了但还没有消息正文（只有空白）
+                return -1
+
+    return -1
 
 
 # ============================================================
@@ -248,6 +314,7 @@ class AiDiagnosisPlatform:
             else await self._retrieve_with_context(request.session_id, state)
         )
         t["retrieve"] = round((time.perf_counter() - t_retrieve_start) * 1000)
+        t["retrieve_docs_len"] = len(reference_docs)
 
         t_prompt_start = time.perf_counter()
         prompt = self._build_diagnosis_prompt(state, memory, reference_docs)
@@ -313,15 +380,31 @@ class AiDiagnosisPlatform:
                 print(f"  ⏱  [retrieve] cache hit, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
                 return cached["result"]
 
+            # 正常检索流程
+            config = get_ai_config()
             results, _ = await asyncio.wait_for(
-                self._retriever.retrieve(search_query, top_k=3),
-                timeout=1.5,
+                self._retriever.retrieve(search_query, top_k=config.retrieval_top_k),
+                timeout=15.0,
             )
+
             if results:
                 docs = []
                 for i, r in enumerate(results, 1):
                     title = f"（{r.title}）" if r.title else ""
-                    content = r.content[:600] + "…" if len(r.content) > 600 else r.content
+                    # 图片路径改写：相对路径 → 可访问 URL
+                    # ![](media/image1.png) → ![](/api/media/operation_doc/image1.png)
+                    content = re.sub(
+                        r'!\[([^\]]*)\]\(media/([^)]+)\)',
+                        r'![\1](/api/media/operation_doc/\2)',
+                        r.content,
+                    )
+                    # 智能截断：优先保留文本，断在段落边界
+                    if len(content) > 800:
+                        # 在 800 字符内找最近的换行
+                        cut = content.rfind('\n', 0, 800)
+                        if cut < 400:
+                            cut = 800
+                        content = content[:cut] + "\n…（截断，完整内容见知识库）"
                     docs.append(f"---\n参考文档 {i}{title}：\n{content}\n---")
                 result = "\n".join(docs)
             else:
@@ -332,9 +415,14 @@ class AiDiagnosisPlatform:
             if len(self._retrieval_cache) > 200:
                 oldest = min(self._retrieval_cache, key=lambda k: self._retrieval_cache[k]["ts"])
                 del self._retrieval_cache[oldest]
+            print(f"  ⏱  [retrieve] total: {(time.perf_counter() - t0) * 1000:.0f}ms")
             return result
 
-        except (ServiceUnavailableError, asyncio.TimeoutError, ConnectionError, RetrieveEmptyError):
+        except ServiceUnavailableError as e:
+            print(f"  ⏱  [retrieve] ServiceUnavailable: {e}, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+        except LowConfidenceError as e:
+            print(f"  ⏱  [retrieve] LowConfidence: score={e.confidence:.3f} threshold={self.config.retrieval_score_threshold}, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+        except (asyncio.TimeoutError, ConnectionError, RetrieveEmptyError):
             print(f"  ⏱  [retrieve] failed/timed-out, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
         return "（知识库暂无匹配文档，请基于机器人/工业自动化行业知识进行诊断。）"
 
@@ -637,36 +725,30 @@ class AiDiagnosisPlatform:
         t_stream["overhead_before_llm"] = round((t_llm - t0) * 1000)
         raw_tokens: list[str] = []
         t_first_llm = None
-        # JSON 过滤状态
-        json_depth = 0
-        has_json = False
-        reply_started = False
+        _buf = ""          # 累积缓冲区，用于检测 JSON→消息边界
+        _json_done = False # True 表示已越过 JSON 区域
         try:
             async for token in self._llm_client.stream(prompt=prompt, system_prompt=SYSTEM_PROMPT,
                                                          max_tokens=1500, temperature=0.5):
-                if t_first_llm is None:
-                    t_first_llm = time.perf_counter()
-                    t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
                 raw_tokens.append(token)
 
-                if reply_started:
-                    yield {"event": "token", "data": token}
+                if not _json_done:
+                    _buf += token
+                    msg_start = _find_json_end(_buf)
+                    if msg_start >= 0:
+                        _json_done = True
+                        # 把缓冲区中属于消息的尾部发出去
+                        tail = _buf[msg_start:]
+                        if tail:
+                            if t_first_llm is None:
+                                t_first_llm = time.perf_counter()
+                                t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
+                            yield {"event": "token", "data": tail}
                 else:
-                    json_depth += token.count("{") - token.count("}")
-                    if "{" in token:
-                        has_json = True
-                    if has_json and json_depth <= 0:
-                        # JSON 结束，提取后续文字
-                        full = "".join(raw_tokens)
-                        last = full.rfind("}")
-                        after = full[last + 1:].lstrip("\n\r ")
-                        if after.startswith("```"):
-                            after = after[3:].lstrip("\n\r ")
-                        after = after.lstrip("\n\r =-")
-                        if after and after[0] not in ",{[\"":
-                            reply_started = True
-                            for ch in after:
-                                yield {"event": "token", "data": ch}
+                    if t_first_llm is None:
+                        t_first_llm = time.perf_counter()
+                        t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
+                    yield {"event": "token", "data": token}
         except (AITimeoutError, ServiceUnavailableError, Exception):
             msg = "AI 诊断服务暂时不可用，请稍后再试。"
             for ch in msg:

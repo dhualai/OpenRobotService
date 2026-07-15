@@ -23,6 +23,7 @@ load_dotenv(_backend_dir / "app" / "ai" / ".env")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from app.core.database import init_db
@@ -34,41 +35,41 @@ from app.modules.call.api.diagnosis import qa_router, chat_router, memory_router
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     print("\n" + "=" * 60)
-    print("🚀 启动 AI 模块...")
+    print("[STARTUP] Booting AI module...")
     print("=" * 60)
 
     try:
         init_db()
-        print("✅ MySQL 表已就绪")
+        print("[OK] MySQL tables ready")
     except Exception as e:
-        print(f"⚠️  MySQL 初始化失败: {e}")
+        print(f"[WARN] MySQL init failed: {e}")
 
     try:
         results = await validate_ai_config()
-        print("\n✅ AI 模块外部服务状态：")
+        print("\n[OK] AI module external services:")
         for name, info in results.items():
-            status_icon = "✅" if info["status"] == "ok" else "❌"
+            status_icon = "[OK]" if info["status"] == "ok" else "[FAIL]"
             print(f"   {status_icon} {name}: {info['message']}")
     except Exception as e:
-        print(f"\n⚠️  AI 模块初始化警告: {e}")
-        print("   部分功能可能不可用，但 API 仍可启动。")
+        print(f"\n[WARN] AI module init warning: {e}")
+        print("   Some features may be unavailable, but API will start.")
 
-    # 预热 embedding 模型（后台加载，首次 QA 不用等）
+    # Pre-warm embedding model
     try:
         from app.ai.core.embed import get_embed_client
         client = await get_embed_client()
         await client._ensure_model()
-        print(f"✅ Embedding 模型已预热")
+        print(f"[OK] Embedding model pre-warmed")
     except Exception as e:
-        print(f"⚠️  Embedding 预热失败: {e}")
+        print(f"[WARN] Embedding pre-warm failed: {e}")
 
     print("\n" + "=" * 60)
-    print("✅ 应用启动完成")
+    print("[OK] Application startup complete")
     print("=" * 60 + "\n")
 
     yield
 
-    print("\n🛑 关闭应用...")
+    print("\n[SHUTDOWN] Stopping application...")
 
 
 app = FastAPI(
@@ -89,6 +90,18 @@ app.add_middleware(
 app.include_router(qa_router)
 app.include_router(chat_router)
 app.include_router(memory_router)
+
+# 静态资源：操作手册图片（知识库引用的 media 文件）
+_media_dir = _backend_dir.parent / "docs" / "operation_doc" / "media"
+if _media_dir.is_dir():
+    app.mount(
+        "/api/media/operation_doc",
+        StaticFiles(directory=str(_media_dir)),
+        name="media_operation_doc",
+    )
+    print(f"[OK] Media static: {_media_dir} ({len(list(_media_dir.iterdir()))} files)")
+else:
+    print(f"[WARN] Media dir not found: {_media_dir}")
 
 
 @app.get("/health", tags=["系统"])
