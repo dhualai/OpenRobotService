@@ -77,7 +77,7 @@ export default function TasksView() {
     if (!draft) return;
     (async () => {
       try {
-        const created = await request<Ticket>('/tickets/', { method: 'POST', body: JSON.stringify(draft) });
+        const created = await request<Ticket>('/', { method: 'POST', body: JSON.stringify(draft) });
         Toast({ message: '工单已创建', theme: 'success' });
         refreshTasks();
         setSelectedTicketId(created.id);
@@ -121,7 +121,7 @@ export default function TasksView() {
   const saveEdit = async () => {
     if (!detail) return;
     try {
-      await request(`/${detail.id}`, { method: 'PATCH', body: JSON.stringify(editForm) });
+      await request(`/${detail.id}`, { method: 'PUT', body: JSON.stringify(editForm) });
       Toast({ message: '修改成功', theme: 'success' });
       setEditing(false);
       setDetailId(detail.id);
@@ -178,7 +178,7 @@ export default function TasksView() {
               </div>
               <div className="task-card2__title">{t.title}</div>
               <div className="task-card2__meta">
-                <span>#{t.id.slice(0, 8)}</span>
+                <span>#{String(t.id).slice(0, 8)}</span>
                 {t.project_name && <span>· {t.project_name}</span>}
                 <span>· {formatDateTime(t.created_at).slice(0, 10)}</span>
               </div>
