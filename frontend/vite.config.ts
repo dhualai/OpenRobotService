@@ -11,6 +11,7 @@ export default defineConfig({
     },
   },
   server: {
+    host: '0.0.0.0',
     port: 5173,
     proxy: {
       '/api': {
@@ -35,6 +36,9 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     css: true,
+    env: {
+      VITE_DISABLE_AUTH_GUARD: 'false',
+    },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
