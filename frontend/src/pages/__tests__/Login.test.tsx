@@ -85,7 +85,7 @@ describe('Login', () => {
     expect(screen.getByText('摇人吧')).toBeInTheDocument();
   });
 
-  it('should show debug hint text', () => {
+  it('should show login hint text', () => {
     render(
       <MemoryRouter>
         <Login />
@@ -93,7 +93,7 @@ describe('Login', () => {
     );
 
     expect(
-      screen.getByText('Debug模式：用户名和密码均为 debug')
+      screen.getByText('请使用您的系统账号登录')
     ).toBeInTheDocument();
   });
 
