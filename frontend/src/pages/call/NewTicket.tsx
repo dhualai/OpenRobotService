@@ -26,7 +26,7 @@ export default function NewTicket() {
     }
     setLoading(true);
     try {
-      await request('/tickets/', {
+      await request('/', {
         method: 'POST',
         body: JSON.stringify(formData),
       });
