@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 # 指针文件：记录当前活跃的 Qdrant 集合名
 _ACTIVE_COLLECTION_POINTER = Path(__file__).resolve().parent.parent.parent / "app" / "kb" / "active_collection.txt"
+_ACTIVE_FAQ_COLLECTION_POINTER = Path(__file__).resolve().parent.parent.parent / "app" / "kb" / "active_faq_collection.txt"
 
 
 class AIConfig(BaseModel):
@@ -62,6 +63,9 @@ class AIConfig(BaseModel):
     # ========== 超时 ==========
     ai_chain_timeout: float = Field(default=2.5)
 
+    # ========== 文档路径 ==========
+    docs_path: str = Field(default="", description="原始文档根目录，默认 ../docs/（相对于 backend/）")
+
 
 def get_active_collection() -> str:
     """
@@ -83,6 +87,38 @@ def _write_active_collection(name: str) -> None:
     """写入活跃集合指针（入库脚本调用）"""
     _ACTIVE_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
     _ACTIVE_COLLECTION_POINTER.write_text(name, encoding="utf-8")
+
+
+def get_active_faq_collection() -> str:
+    """读取当前活跃的 FAQ Qdrant 集合名"""
+    try:
+        if _ACTIVE_FAQ_COLLECTION_POINTER.exists():
+            name = _ACTIVE_FAQ_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _write_active_faq_collection(name: str) -> None:
+    """写入活跃 FAQ 集合指针（入库脚本调用）"""
+    _ACTIVE_FAQ_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
+    _ACTIVE_FAQ_COLLECTION_POINTER.write_text(name, encoding="utf-8")
+
+
+def get_docs_dir() -> Path:
+    """
+    获取文档根目录。
+    优先读 DOCS_PATH 环境变量，未设置时默认 backend/../docs/
+    """
+    config = get_ai_config()
+    if config.docs_path:
+        p = Path(config.docs_path)
+        if not p.is_absolute():
+            p = Path(__file__).resolve().parent.parent.parent / p
+        return p
+    return Path(__file__).resolve().parent.parent.parent.parent / "docs"
 
 
 @lru_cache()
@@ -123,6 +159,8 @@ def get_ai_config() -> AIConfig:
         # 派单
         dispatch_api_url=os.getenv("DISPATCH_API_URL", ""),
         upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),
+        # 文档路径
+        docs_path=os.getenv("DOCS_PATH", ""),
     )
 
 

@@ -233,17 +233,19 @@ class QdrantClientWrapper:
         vector: List[float],
         top_k: int = 3,
         score_threshold: Optional[float] = None,
+        collection_name: Optional[str] = None,
     ) -> List[Any]:
-        """向量检索"""
+        """向量检索，可指定 collection（默认使用活跃集合）"""
         if self.is_unavailable:
             return []
         client = await self._ensure_client()
+        col = collection_name or self.collection_name
         try:
             if self._is_local:
                 # 本地模式：query_points
                 result = await self._to_thread(
                     client.query_points,
-                    collection_name=self.collection_name,
+                    collection_name=col,
                     query=vector,
                     limit=top_k,
                     score_threshold=score_threshold,
@@ -253,7 +255,7 @@ class QdrantClientWrapper:
             else:
                 return await self._to_thread(
                     client.search,
-                    collection_name=self.collection_name,
+                    collection_name=col,
                     query_vector=("dense", vector),
                     limit=top_k,
                     score_threshold=score_threshold,
@@ -527,6 +529,48 @@ class RetrievalService:
             )
 
         return results, top1_score
+
+    async def retrieve_faq(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+    ) -> List[RetrievalResult]:
+        """
+        FAQ 知识库检索（仅向量检索，不做置信度检查）。
+
+        FAQ 条目通常较短，向量相似度足够区分，不需要 BM25。
+        使用独立的 FAQ 指针文件热切换集合。
+        """
+        from app.ai.config import get_active_faq_collection
+
+        faq_col = get_active_faq_collection()
+        if not faq_col:
+            return []  # FAQ 集合尚未入库
+
+        k = top_k or self.top_k
+        await self._ensure_clients()
+
+        if self._qdrant.is_unavailable:
+            return []
+
+        query_vector = await self._embed_client.embed(query)
+        points = await self._qdrant.search_dense(
+            query_vector.tolist(),
+            top_k=k,
+            collection_name=faq_col,
+        )
+
+        results = []
+        for point in points:
+            payload = point.payload or {}
+            results.append(RetrievalResult(
+                id=str(point.id),
+                score=point.score,
+                title=payload.get("question", ""),
+                content=payload.get("answer", ""),
+                vector_score=point.score,
+            ))
+        return results
 
     async def ensure_collection(self, vector_size: int) -> None:
         """确保集合存在"""

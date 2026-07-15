@@ -34,12 +34,15 @@ from dotenv import load_dotenv
 load_dotenv(_backend_dir / ".env")
 load_dotenv(_backend_dir / "app" / "ai" / ".env")
 
-# 路径常量
-FAQ_DIR = _backend_dir.parent / "docs" / "faq_doc"
-JSONL_PATH = FAQ_DIR / "faq_index_with_clarification.jsonl"
-XLSX_PATH = FAQ_DIR / "USP FAQ.xlsx"
-DOCX_PATH = FAQ_DIR / "USP FAQ手册.docx"
-MEDIA_DIR = FAQ_DIR / "media"
+# 路径常量（通过 get_docs_dir() 动态获取）
+def _faq_dir() -> Path:
+    from app.ai.config import get_docs_dir
+    return get_docs_dir() / "faq_doc"
+
+JSONL_PATH = _faq_dir() / "faq_index_with_clarification.jsonl"
+XLSX_PATH = _faq_dir() / "USP FAQ.xlsx"
+DOCX_PATH = _faq_dir() / "USP FAQ手册.docx"
+MEDIA_DIR = _faq_dir() / "media"
 
 # Qdrant FAQ 集合前缀
 FAQ_COLLECTION_PREFIX = "faq_docs"
@@ -206,47 +209,99 @@ def load_xlsx() -> List[FaqEntry]:
 
 
 # ============================================================
-# 步骤 3：提取 Docx 图片
+# 步骤 3：解析 FAQ Docx（按 Q&A 切分，图片自然归属）
 # ============================================================
 
-def extract_docx_media() -> Dict[str, str]:
-    """提取 docx 中的图片到 faq_doc/media/，返回 {文件名: 路径} 映射"""
+def load_docx_faq() -> List[FaqEntry]:
+    """
+    从 FAQ docx 提取 Q&A 对，图片自然归属到各自 Q&A 下。
+
+    Docx 结构：
+        # 1 USP部署与启动         ← 章节标题（仅分组，不用于切块）
+        **Q：客户在前期不开放...**  ← 问题
+        A：1. 临时方案...          ← 答案（可多段落）
+        ![](media/image2.png)       ← 截图（属于这条 QA）
+        ![](media/image1.png)       ← 分隔线（height≈0.035in，过滤掉）
+        **Q：下一个问题...**        ← 下一条 QA
+    """
+    # 1. 提取 docx 内嵌图片
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-
+    extracted = 0
     with zipfile.ZipFile(str(DOCX_PATH)) as z:
-        image_names = [n for n in z.namelist()
-                       if n.startswith('word/media/') and not n.endswith('/')]
-
-        extracted = {}
-        for name in image_names:
+        for name in z.namelist():
+            if not name.startswith('word/media/') or name.endswith('/'):
+                continue
             fname = name.split('/')[-1]
             dest = MEDIA_DIR / fname
+            if not dest.exists():
+                dest.write_bytes(z.read(name))
+                extracted += 1
+    print(f"[DOCX] {extracted} images extracted to {MEDIA_DIR}")
 
-            # 避免覆盖同名文件（不同 docx 可能重名）
-            if dest.exists():
-                # 检查内容是否相同
-                existing = dest.read_bytes()
-                new_data = z.read(name)
-                if existing != new_data:
-                    # 内容不同，加后缀
-                    base, ext = fname.rsplit('.', 1)
-                    fname = f"{base}_faq.{ext}"
-                    dest = MEDIA_DIR / fname
-
-            dest.write_bytes(z.read(name))
-            extracted[fname] = str(dest)
-
-        print(f"[DOCX] {len(extracted)} images extracted to {MEDIA_DIR}")
-        return extracted
-
-
-def get_docx_text() -> str:
-    """用 pandoc 将 FAQ docx 转为 markdown 文本"""
-    result = subprocess.run(
+    # 2. pandoc 转 markdown
+    text = subprocess.run(
         ["pandoc", str(DOCX_PATH), "-f", "docx", "-t", "markdown", "--wrap=none"],
         capture_output=True, encoding="utf-8", check=True,
-    )
-    return result.stdout
+    ).stdout
+
+    # 3. 去掉目录和修订记录（# 目 录 → # 1 之前的内容）
+    text = re.sub(r'^# \*\*目 录\*\*.*?(?=^# 1\s)', '', text, flags=re.MULTILINE | re.DOTALL)
+
+    # 4. 按 **Q 边界切分每个 Q&A block
+    qa_blocks = re.split(r'\n(?=\*\*Q[:：])', text)
+
+    entries: List[FaqEntry] = []
+    for i, block in enumerate(qa_blocks):
+        if not block.strip():
+            continue
+        # 跳过纯章节标题（没有 Q&A）
+        if not re.search(r'\*\*Q[:：]', block):
+            continue
+
+        # 提取问题：**Q：...** 或 **Q: ...**
+        q_match = re.search(r'\*\*Q[:：]\s*(.+?)\*\*\s*$', block, re.MULTILINE)
+        if not q_match:
+            continue
+        question = q_match.group(1).strip()
+
+        # 提取答案：A：... 或 **A:** ...（截到图片标记之前）
+        a_match = re.search(r'(?:\*\*)?A[:：]\s*\*?\*?(.+?)$', block, re.MULTILINE | re.DOTALL)
+        answer = ''
+        if a_match:
+            # 去掉末尾的图片标记（单独提取）
+            answer = re.sub(r'\n!\[descript\]\(media/[^)]+\)\{[^}]*\}', '', a_match.group(1)).strip()
+
+        # 提取图片：过滤分隔线（height < 0.1in 视为分隔线，如 image1.png height=0.035in）
+        images: List[str] = []
+        for img_m in re.finditer(
+            r'!\[descript\]\(media/([^)]+)\)\{[^}]*height="([^"]+)"[^}]*\}', block
+        ):
+            fname, height_str = img_m.group(1), img_m.group(2)
+            try:
+                if float(height_str.replace('in', '').strip()) < 0.1:
+                    continue  # 分隔线，跳过
+            except ValueError:
+                pass
+            if fname not in images:
+                images.append(fname)
+
+        entries.append(FaqEntry(
+            id=f"docx.{i:03d}",
+            question=question,
+            answer=answer,
+            answer_mode='troubleshoot',
+            source_type='docx_faq',
+            keywords=[],
+            aliases=[],
+            source_ids=[],
+            business_domain='',
+            images=images,
+        ))
+
+    has_a = sum(1 for e in entries if e.answer)
+    has_img = sum(1 for e in entries if e.images)
+    print(f"[DOCX] {len(entries)} Q&A pairs ({has_a} with answers, {has_img} with images)")
+    return entries
 
 
 # ============================================================
@@ -291,12 +346,14 @@ def merge_entries(jsonl_entries: List[FaqEntry],
                 best_entry = je
 
         if best_entry and best_overlap > 0.35:
-            # 合并：补充 aliases 和 keywords
+            # 合并：补充 aliases、answer、images
             if xe.question not in best_entry.aliases:
                 best_entry.aliases.append(xe.question)
             if xe.answer and not best_entry.answer:
                 best_entry.answer = xe.answer
                 best_entry.answer_mode = xe.answer_mode
+            if xe.images and not best_entry.images:
+                best_entry.images = xe.images
             merged_count += 1
         else:
             merged.append(xe)
@@ -316,10 +373,6 @@ def merge_entries(jsonl_entries: List[FaqEntry],
 def faq_to_chunk(entry: FaqEntry) -> str:
     """将 FAQ 条目转为可检索的文本块"""
     parts = [entry.question]
-    if entry.aliases:
-        parts.append('; '.join(entry.aliases[:5]))
-    if entry.keywords:
-        parts.append(', '.join(entry.keywords[:10]))
     if entry.answer:
         parts.append(entry.answer)
     if entry.images:
@@ -394,8 +447,6 @@ async def ingest_faq(entries: List[FaqEntry], collection_name: str,
                 "faq_id": entry.id,
                 "question": entry.question,
                 "answer": entry.answer,
-                "keywords": entry.keywords,
-                "aliases": entry.aliases,
                 "source_ids": entry.source_ids,
                 "images": entry.images,
                 "content": faq_to_chunk(entry),
@@ -470,27 +521,15 @@ async def main():
         await _cleanup_old_faq_collections()
         return
 
-    # 1. 加载
+    # 1. 加载三源
     jsonl_entries = load_jsonl()
     xlsx_entries = load_xlsx()
+    docx_entries = load_docx_faq() if DOCX_PATH.exists() else []
 
-    # 2. 提取图片
-    images = {}
-    if DOCX_PATH.exists():
-        images = extract_docx_media()
-
-    # 3. 合并
+    # 2. 三源合并：JSONL + XLSX → 再 + Docx（docx 图片自然带入）
     merged = merge_entries(jsonl_entries, xlsx_entries)
-
-    # 4. 尝试将 docx 图片关联到匹配的 FAQ 条目
-    #    策略：根据 docx 章节标题关键词匹配 business_domain
-    if images and DOCX_PATH.exists():
-        try:
-            docx_text = get_docx_text()
-            # 标记哪些条目可能有关联图片（基于 domain 关键词）
-            _link_images(merged, docx_text, images)
-        except Exception as e:
-            print(f"[WARN] docx image linking failed: {e}")
+    if docx_entries:
+        merged = merge_entries(merged, docx_entries)
 
     print_summary(merged)
 
@@ -505,8 +544,6 @@ async def main():
                     'faq_id': e.id,
                     'question': e.question,
                     'answer': e.answer,
-                    'aliases': e.aliases,
-                    'keywords': e.keywords[:15],
                     'source_ids': e.source_ids,
                     'images': e.images,
                 }, ensure_ascii=False) + '\n')
@@ -533,46 +570,31 @@ async def main():
         return
 
     # 6. 切换活跃 FAQ 集合
-    # FAQ 和 operation 用不同的 collection，FAQ collection 名写入同一个指针文件
-    # 目前先用独立指针，后续在 retrieval 中统一管理
-    old_faq = _get_active_faq_collection()
+    from app.ai.config import get_active_faq_collection, _write_active_faq_collection
+    old_faq = get_active_faq_collection()
     _write_active_faq_collection(collection_name)
     print(f"\n[SWITCH] FAQ 活跃集合: {old_faq or '(new)'} -> {collection_name}")
     print(f"[OK] FAQ 导入完成！")
-    if old_faq:
-        print(f"  旧集合 '{old_faq}' 保留中，确认正常后可用 --cleanup 清理。")
+
+    # 7. 自动清理：保留最新 2 个 FAQ 集合
+    await _cleanup_old_faq_collections(keep=2)
 
 
 # ============================================================
-# FAQ 集合指针管理
+# FAQ 集合指针管理（委托给 config.py 统一管理）
 # ============================================================
 
-FAQ_POINTER_FILE = _backend_dir / "app" / "kb" / "active_faq_collection.txt"
-
-
-def _get_active_faq_collection() -> str:
-    try:
-        if FAQ_POINTER_FILE.exists():
-            name = FAQ_POINTER_FILE.read_text(encoding="utf-8").strip()
-            if name:
-                return name
-    except Exception:
-        pass
-    return ""
-
-
-def _write_active_faq_collection(name: str) -> None:
-    FAQ_POINTER_FILE.parent.mkdir(parents=True, exist_ok=True)
-    FAQ_POINTER_FILE.write_text(name, encoding="utf-8")
-
-
-async def _cleanup_old_faq_collections():
-    """删除旧 FAQ 集合（保留当前活跃的）"""
-    from app.ai.config import get_ai_config
+async def _cleanup_old_faq_collections(keep: int = 1):
+    """
+    删除旧 FAQ 集合，保留最新的 keep 个。
+    keep=1: 仅保留活跃集合（--cleanup 手动清理）
+    keep=2: 保留活跃 + 上一版本（--rebuild 自动清理）
+    """
+    from app.ai.config import get_ai_config, get_active_faq_collection
     from qdrant_client import QdrantClient
 
     config = get_ai_config()
-    active = _get_active_faq_collection() or "NONE"
+    active = get_active_faq_collection() or ""
 
     if config.qdrant_local_path:
         local = Path(config.qdrant_local_path)
@@ -592,13 +614,16 @@ async def _cleanup_old_faq_collections():
         print(f"[ERR] 获取集合列表失败: {e}")
         return
 
-    our = [c for c in collections if c.startswith(FAQ_COLLECTION_PREFIX)]
-    print(f"[CLEANUP] 找到 {len(our)} 个 FAQ 集合: {our}")
-    print(f"  活跃集合: {active}")
+    our = sorted(
+        [c for c in collections if c.startswith(FAQ_COLLECTION_PREFIX)],
+        reverse=True,
+    )
+    print(f"[CLEANUP] 找到 {len(our)} 个 FAQ 集合，保留最新 {keep} 个")
+    print(f"  活跃集合: {active or '(无)'}")
 
     deleted = 0
     for c in our:
-        if c == active:
+        if c in our[:keep]:
             print(f"  [KEEP] {c}")
             continue
         try:
@@ -608,68 +633,10 @@ async def _cleanup_old_faq_collections():
         except Exception as e:
             print(f"  [ERR] 删除 {c} 失败: {e}")
 
-    print(f"\n[OK] 清理完成，删除 {deleted} 个旧集合。")
-
-
-def _link_images(entries: List[FaqEntry], docx_text: str, images: Dict[str, str]):
-    """
-    尝试将 docx 图片关联到 FAQ 条目。
-    简单策略：按文档中出现顺序分配图片到相邻的业务域条目。
-    """
-    # 找到 docx 中各章节的图片分布
-    section_images = {}  # {heading: [image_names]}
-    current_section = ""
-    heading_pattern = re.compile(r'^#+\s+(.+?)$', re.MULTILINE)
-    img_pattern = re.compile(r'!\[.*?\]\(media/([^)]+)\)')
-
-    last_heading_pos = 0
-    for m in heading_pattern.finditer(docx_text):
-        if current_section:
-            section_text = docx_text[last_heading_pos:m.start()]
-            imgs = [img.group(1) for img in img_pattern.finditer(section_text)]
-            if imgs:
-                section_images[current_section] = imgs
-        current_section = m.group(1).strip().strip('*').strip()
-        last_heading_pos = m.start()
-
-    # 最后一节
-    if current_section:
-        section_text = docx_text[last_heading_pos:]
-        imgs = [img.group(1) for img in img_pattern.finditer(section_text)]
-        if imgs:
-            section_images[current_section] = imgs
-
-    if not section_images:
-        return
-
-    # 章节标题 -> business_domain 简易映射
-    section_keywords = {
-        '部署': 'deployment',
-        '上线': 'robot_online',
-        '充电': 'charging',
-        '地图': 'map',
-        '库位': 'storage_location',
-        '路径': 'task',
-        '任务': 'task',
-    }
-
-    linked = 0
-    for section_title, img_list in section_images.items():
-        domain = ''
-        for kw, d in section_keywords.items():
-            if kw in section_title:
-                domain = d
-                break
-
-        if domain:
-            # 找该 domain 的条目，分配图片
-            domain_entries = [e for e in entries if e.business_domain == domain and not e.images]
-            if domain_entries:
-                domain_entries[0].images.extend(img_list[:3])  # 最多 3 张
-                linked += 1
-
-    if linked:
-        print(f"[LINK] 关联 {linked} 个章节的图片到 FAQ 条目")
+    if deleted:
+        print(f"\n[OK] 清理完成，删除 {deleted} 个旧集合。")
+    else:
+        print(f"\n[OK] 无需清理。")
 
 
 if __name__ == "__main__":

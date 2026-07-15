@@ -99,7 +99,7 @@ DIAGNOSIS_PROMPT = """你是 AGV/AMR 技术支持 Agent。
 ## 先判断用户意图
 - **howto（操作咨询）**：用户问"怎么做/怎么上线/怎么配置/步骤/流程"等，想了解操作方法。
   从知识库找答案，按前提→操作→预期结果的顺序给出步骤。直接 answer，不追问不假设故障。
-  标注来源（如"根据操作手册 §3.2"）。知识库没涉及的细节如实说"手册未覆盖"，不要自己编步骤。
+  知识库没涉及的细节如实说"手册未覆盖"，不要自己编步骤。
   知识库中的图片（![](url)）如果对操作有参考价值，可引用到回答中。
 
 - **troubleshoot（故障排查）**：用户描述了异常现象（离线、报错、不动、卡住、异常等）。
@@ -380,35 +380,50 @@ class AiDiagnosisPlatform:
                 print(f"  ⏱  [retrieve] cache hit, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
                 return cached["result"]
 
-            # 正常检索流程
+            # 正常检索流程：双路并行（操作手册 + FAQ）
             config = get_ai_config()
-            results, _ = await asyncio.wait_for(
+            manual_task = asyncio.wait_for(
                 self._retriever.retrieve(search_query, top_k=config.retrieval_top_k),
                 timeout=15.0,
             )
+            faq_task = asyncio.wait_for(
+                self._retriever.retrieve_faq(search_query, top_k=max(2, config.retrieval_top_k - 1)),
+                timeout=10.0,
+            )
 
-            if results:
-                docs = []
-                for i, r in enumerate(results, 1):
-                    title = f"（{r.title}）" if r.title else ""
-                    # 图片路径改写：相对路径 → 可访问 URL
-                    # ![](media/image1.png) → ![](/api/media/operation_doc/image1.png)
-                    content = re.sub(
-                        r'!\[([^\]]*)\]\(media/([^)]+)\)',
-                        r'![\1](/api/media/operation_doc/\2)',
-                        r.content,
-                    )
-                    # 智能截断：优先保留文本，断在段落边界
-                    if len(content) > 800:
-                        # 在 800 字符内找最近的换行
-                        cut = content.rfind('\n', 0, 800)
-                        if cut < 400:
-                            cut = 800
-                        content = content[:cut] + "\n…（截断，完整内容见知识库）"
-                    docs.append(f"---\n参考文档 {i}{title}：\n{content}\n---")
-                result = "\n".join(docs)
-            else:
-                result = "（知识库暂无匹配文档，请基于机器人/工业自动化行业知识进行诊断。）"
+            manual_results, faq_results = await asyncio.gather(
+                manual_task, faq_task,
+            )
+            results, _ = manual_results  # unpack (results, top1_score)
+
+            docs = []
+            idx = 1
+
+            # FAQ 结果优先（直接答案，更有用）
+            for r in (faq_results or []):
+                q = r.title or ""
+                a = r.content or ""
+                if a.strip():
+                    docs.append(f"---\nFAQ {idx}：{q}\n{a}\n---")
+                    idx += 1
+
+            # 操作手册结果
+            for r in (results or []):
+                title = f"（{r.title}）" if r.title else ""
+                content = re.sub(
+                    r'!\[([^\]]*)\]\(media/([^)]+)\)',
+                    r'![\1](/api/media/operation_doc/\2)',
+                    r.content,
+                )
+                if len(content) > 800:
+                    cut = content.rfind('\n', 0, 800)
+                    if cut < 400:
+                        cut = 800
+                    content = content[:cut] + "\n…（截断，完整内容见知识库）"
+                docs.append(f"---\n知识库 {idx}{title}：\n{content}\n---")
+                idx += 1
+
+            result = "\n".join(docs) if docs else "（知识库暂无匹配文档，请基于机器人/工业自动化行业知识进行诊断。）"
 
             self._retrieval_cache[cache_key] = {"result": result, "ts": time.time()}
             # 防止缓存无限增长
