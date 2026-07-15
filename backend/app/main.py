@@ -132,10 +132,16 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
 
+    port = 8400
+    print("服务启动...")
+    print(f"服务地址: http://0.0.0.0:{port}")
+    print(f"API文档: http://0.0.0.0:{port}/docs")
+    print("默认管理员账号: admin / 123456")
+
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=8000,
-        reload=False,
+        port=port,
+        reload=True,
         log_level="info",
     )
