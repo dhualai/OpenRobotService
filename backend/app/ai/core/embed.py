@@ -66,11 +66,14 @@ class EmbedClient:
                     from pathlib import Path as _Path
 
                     model_path = self.model_name
-                    # 本地相对路径 → 转绝对路径
-                    if "/" in model_path or "\\" in model_path:
-                        local = _Path(__file__).parent.parent.parent.parent / model_path  # app/ai/embed_models/...
-                        if local.exists():
-                            model_path = str(local.resolve())
+                    # 判断是本地路径还是 HuggingFace 模型名
+                    # 优先检查本地：相对路径（含 / 或 \）且实际存在 → 用本地
+                    # 否则作为 HuggingFace 模型名（如 BAAI/bge-small-zh-v1.5）
+                    local = _Path(model_path)
+                    if not local.is_absolute():
+                        local = _Path(__file__).parent.parent.parent.parent / model_path
+                    if local.exists():
+                        model_path = str(local.resolve())
 
                     try:
                         self._model = SentenceTransformer(model_path, device=self.device)

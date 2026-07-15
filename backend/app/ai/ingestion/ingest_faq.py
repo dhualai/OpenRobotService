@@ -492,6 +492,35 @@ def print_summary(entries: List[FaqEntry]):
 # 主入口
 # ============================================================
 
+async def auto_ingest() -> bool:
+    """首次启动自动入库（无 argparse，可被 main.py 调用）"""
+    from datetime import datetime
+    from app.ai.config import get_active_faq_collection, _write_active_faq_collection
+
+    jsonl_entries = load_jsonl()
+    xlsx_entries = load_xlsx()
+    docx_entries = load_docx_faq() if DOCX_PATH.exists() else []
+
+    merged = merge_entries(jsonl_entries, xlsx_entries)
+    if docx_entries:
+        merged = merge_entries(merged, docx_entries)
+
+    print_summary(merged)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    collection_name = f"{FAQ_COLLECTION_PREFIX}_{ts}"
+    result = await ingest_faq(merged, collection_name=collection_name, rebuild=True)
+    if result["status"] != "ok":
+        print(f"[ERR] auto_ingest FAQ 入库失败: {result}")
+        return False
+
+    _write_active_faq_collection(collection_name)
+    print(f"[AUTO-INGEST] FAQ 入库完成: {collection_name}")
+
+    await _cleanup_old_faq_collections(keep=2)
+    return True
+
+
 async def main():
     import argparse
     from datetime import datetime

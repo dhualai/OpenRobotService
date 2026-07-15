@@ -19,7 +19,6 @@ if str(_backend_dir) not in sys.path:
 # 加载 .env（必须在其他 app 导入之前）
 from dotenv import load_dotenv
 load_dotenv(_backend_dir / ".env")
-load_dotenv(_backend_dir / "app" / "ai" / ".env")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -63,6 +62,41 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[WARN] Embedding pre-warm failed: {e}")
 
+    # 知识库自动检查：首次启动无 collection 时自动入库
+    try:
+        from app.ai.config import get_active_collection, get_active_faq_collection, get_docs_dir
+        from qdrant_client import QdrantClient
+
+        qdrant_cfg = get_ai_config()
+        if qdrant_cfg.qdrant_local_path:
+            local = Path(qdrant_cfg.qdrant_local_path)
+            if not local.is_absolute():
+                local = _backend_dir / local
+            qdrant = QdrantClient(path=str(local))
+        else:
+            qdrant = QdrantClient(host=qdrant_cfg.qdrant_host, port=qdrant_cfg.qdrant_port)
+
+        op_active = get_active_collection()
+        op_exists = op_active and qdrant.collection_exists(op_active)
+        if not op_exists:
+            print("\n[KB] 操作手册知识库未就绪，自动入库中...")
+            from app.ai.ingestion.ingest_operation_manual import auto_ingest as auto_op
+            await auto_op()
+        else:
+            print(f"[KB] 操作手册集合: {op_active}")
+
+        faq_active = get_active_faq_collection()
+        faq_exists = faq_active and qdrant.collection_exists(faq_active)
+        if not faq_exists:
+            print("\n[KB] FAQ 知识库未就绪，自动入库中...")
+            from app.ai.ingestion.ingest_faq import auto_ingest as auto_faq
+            await auto_faq()
+        elif faq_active:
+            print(f"[KB] FAQ 集合: {faq_active}")
+
+    except Exception as e:
+        print(f"[WARN] 知识库自动入库失败: {e}")
+
     print("\n" + "=" * 60)
     print("[OK] Application startup complete")
     print("=" * 60 + "\n")
@@ -91,17 +125,28 @@ app.include_router(qa_router)
 app.include_router(chat_router)
 app.include_router(memory_router)
 
-# 静态资源：操作手册图片（知识库引用的 media 文件）
-_media_dir = _backend_dir.parent / "docs" / "operation_doc" / "media"
+# 静态资源：操作手册 + FAQ 图片（通过 DOCS_PATH 定位）
+from app.ai.config import get_docs_dir as _get_docs_dir
+_docs = _get_docs_dir()
+_media_dir = _docs / "operation_doc" / "media"
 if _media_dir.is_dir():
     app.mount(
         "/api/media/operation_doc",
         StaticFiles(directory=str(_media_dir)),
         name="media_operation_doc",
     )
-    print(f"[OK] Media static: {_media_dir} ({len(list(_media_dir.iterdir()))} files)")
+    print(f"[OK] Media static operation_doc: {_media_dir} ({len(list(_media_dir.iterdir()))} files)")
 else:
     print(f"[WARN] Media dir not found: {_media_dir}")
+
+_faq_media_dir = _docs / "faq_doc" / "media"
+if _faq_media_dir.is_dir():
+    app.mount(
+        "/api/media/faq_doc",
+        StaticFiles(directory=str(_faq_media_dir)),
+        name="media_faq_doc",
+    )
+    print(f"[OK] Media static faq_doc: {_faq_media_dir} ({len(list(_faq_media_dir.iterdir()))} files)")
 
 
 @app.get("/health", tags=["系统"])
