@@ -16,7 +16,7 @@ export default function RiskEdit() {
   useEffect(() => {
     if (id) {
       setLoading(true);
-      request<typeof form>(`/${id}`).then(setForm).catch((e) => Toast({ message: String(e), theme: 'error' })).finally(() => setLoading(false));
+      request<typeof form>(`/projects/risks/${id}`).then(setForm).catch((e) => Toast({ message: String(e), theme: 'error' })).finally(() => setLoading(false));
     }
   }, [id]);
 

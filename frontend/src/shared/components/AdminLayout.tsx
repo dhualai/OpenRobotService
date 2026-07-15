@@ -30,6 +30,7 @@ const adminMenuItems: MenuItem[] = [
   { path: '/app/admin/roles', label: '角色管理', emoji: '🏷️' },
   { path: '/app/admin/permissions', label: '权限管理', emoji: '🔑' },
   { path: '/app/admin/resources', label: '资源管理', emoji: '🗂️' },
+  { path: '/app/admin/daily-reports', label: '日报管理', emoji: '📰' },
 ];
 
 // 根据当前路径匹配菜单高亮

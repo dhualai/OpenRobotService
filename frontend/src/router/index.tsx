@@ -28,6 +28,7 @@ const UserManage = lazy(() => import('@/pages/admin/UserManage'));
 const RoleManage = lazy(() => import('@/pages/admin/RoleManage'));
 const PermissionManage = lazy(() => import('@/pages/admin/PermissionManage'));
 const ResourceManage = lazy(() => import('@/pages/admin/ResourceManage'));
+const DailyReportManage = lazy(() => import('@/pages/admin/DailyReportManage'));
 
 export const router = createBrowserRouter([
   { path: '/login', element: <Login /> },
@@ -66,6 +67,7 @@ export const router = createBrowserRouter([
               { path: 'roles', element: <RoleManage /> },
               { path: 'permissions', element: <PermissionManage /> },
               { path: 'resources', element: <ResourceManage /> },
+              { path: 'daily-reports', element: <DailyReportManage /> },
             ],
           },
         ],
