@@ -6,7 +6,7 @@ import json
 import requests
 import time
 
-BASE = "http://127.0.0.1:8000/api/ai/qa/ask/stream"
+BASE = "http://127.0.0.1:8400/api/ai/qa/ask/stream"
 SID = f"chat-{int(time.time())}"
 SESSION = requests.Session()  # 连接池复用，避免每次 TCP+TLS 握手
 
@@ -17,7 +17,7 @@ def ask_stream(query: str):
     try:
         resp = SESSION.post(BASE, json=body, stream=True, timeout=(5, 120))
         resp.raise_for_status()
-    except requests.exceptions.ConnectError:
+    except requests.exceptions.ConnectionError:
         print(f"\n❌ 无法连接 {BASE}，确认服务已启动？")
         return
     except requests.exceptions.ReadTimeout:
@@ -85,7 +85,7 @@ def show_result(d: dict):
 
 def submit_ticket():
     """模拟点击转工单按钮"""
-    resp = SESSION.post("http://localhost:8000/api/ai/qa/submit",
+    resp = SESSION.post("http://localhost:8400/api/ai/qa/submit",
                          json={"session_id": SID}, timeout=30)
     data = resp.json()
     if data.get("code") == 0:

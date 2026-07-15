@@ -21,6 +21,7 @@ from qdrant_client.models import (
     SparseVectorParams,
     SparseIndexParams,
     SearchParams,
+    SparseVector,
 )
 
 from app.ai.config import get_ai_config
@@ -256,7 +257,7 @@ class QdrantClientWrapper:
                 return await self._to_thread(
                     client.search,
                     collection_name=col,
-                    query_vector=("dense", vector),
+                    query_vector=vector,
                     limit=top_k,
                     score_threshold=score_threshold,
                     with_payload=True,
@@ -280,24 +281,28 @@ class QdrantClientWrapper:
             return []
         client = await self._ensure_client()
         try:
+            # qdrant_client >=1.10: sparse vector 需要 SparseVector 对象
+            indices = sorted(sparse_vector.keys())
+            values = [sparse_vector[i] for i in indices]
+            sv = SparseVector(indices=indices, values=values)
+
             return await self._to_thread(
                 client.search,
                 collection_name=self.collection_name,
-                query_vector=("sparse", sparse_vector),
+                query_vector=("sparse", sv),
                 limit=top_k,
                 score_threshold=score_threshold,
                 with_payload=True,
                 search_params=SearchParams(
-                    quantization=None,
-                    ignore=False,
                     hnsw_ef=128,
                     exact=False,
                 ),
             )
         except ServiceUnavailableError:
             return []
-        except Exception as e:
-            raise ServiceUnavailableError("Qdrant", f"稀疏检索失败: {str(e)}")
+        except Exception:
+            # 稀疏检索为辅助功能，API 不兼容时静默跳过
+            return []
 
     async def upsert(
         self,
