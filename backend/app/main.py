@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
 
     # 知识库自动检查：首次启动无 collection 时自动入库
     try:
-        from app.ai.config import get_active_collection, get_active_faq_collection, get_docs_dir
+        from app.ai.config import get_active_collection, get_active_faq_collection, get_active_troubleshooting_collection, get_docs_dir
         from qdrant_client import QdrantClient
 
         qdrant_cfg = get_ai_config()
@@ -93,6 +93,15 @@ async def lifespan(app: FastAPI):
             await auto_faq()
         elif faq_active:
             print(f"[KB] FAQ 集合: {faq_active}")
+
+        ts_active = get_active_troubleshooting_collection()
+        ts_exists = ts_active and qdrant.collection_exists(ts_active)
+        if not ts_exists:
+            print("\n[KB] 问题排查树知识库未就绪，自动入库中...")
+            from app.ai.ingestion.ingest_troubleshooting import auto_ingest as auto_ts
+            await auto_ts()
+        elif ts_active:
+            print(f"[KB] 排查树集合: {ts_active}")
 
     except Exception as e:
         print(f"[WARN] 知识库自动入库失败: {e}")
