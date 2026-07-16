@@ -17,6 +17,10 @@ logs/
 *.sqlite
 data/
 
+# ===== Qdrant =====
+app/snapshots/
+*.snapshot
+
 # ===== Python =====
 __pycache__/
 *.pyc
