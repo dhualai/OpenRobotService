@@ -2,7 +2,7 @@
 import { useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth';
-import { getUrlParams, buildWechatAuthUrl, checkUrlTokens } from '@/shared/utils/url';
+import { checkUrlTokens } from '@/shared/utils/url';
 
 const DISABLE_AUTH_GUARD = import.meta.env.VITE_DISABLE_AUTH_GUARD === 'true';
 
@@ -16,13 +16,11 @@ export function useAuthGuard(requireAdmin = false) {
 
     if (DISABLE_AUTH_GUARD) return;
 
-    if (!isLoggedIn) {
-      if (getUrlParams()) {
-        navigate('/login', { replace: true });
-      } else {
-        const authUrl = buildWechatAuthUrl(location.pathname);
-        window.location.href = authUrl;
-      }
+    // 先尝试从 URL 参数中恢复 token
+    const restored = checkUrlTokens();
+
+    if (!isLoggedIn && !restored) {
+      navigate('/login', { replace: true });
       return;
     }
 
@@ -51,15 +49,11 @@ export function AuthGuard({ children, requireAdmin = false }: AuthGuardProps) {
     if (isLoading) return;
     if (DISABLE_AUTH_GUARD) return;
 
-    checkUrlTokens();
+    // 先尝试从 URL 参数中恢复 token
+    const restored = checkUrlTokens();
 
-    if (!isLoggedIn) {
-      if (getUrlParams()) {
-        navigate('/login', { replace: true });
-      } else {
-        const authUrl = buildWechatAuthUrl(location.pathname);
-        window.location.href = authUrl;
-      }
+    if (!isLoggedIn && !restored) {
+      navigate('/login', { replace: true });
       return;
     }
     if (requireAdmin && !isAdmin) {
@@ -78,7 +72,7 @@ export function AuthGuard({ children, requireAdmin = false }: AuthGuardProps) {
   if (!isLoggedIn) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: '#0052d9' }}>
-        正在跳转认证...
+        正在跳转登录...
       </div>
     );
   }

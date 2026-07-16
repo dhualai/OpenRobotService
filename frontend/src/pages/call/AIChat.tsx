@@ -1,10 +1,10 @@
-// AI 智能对话页面 - 从 HelpDesk ChatContainer 迁移
+// AI 智能对话页面 - 对接 /api/ai/qa/ask/stream（SSE 流式诊断）
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Navbar, Textarea, Button, Toast } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth';
-import { createRequest } from '@/api/client';
-import API_CONFIG from '@/config/api';
+import { qaAskStream, generateSessionId, trackSession } from '@/api/ai';
+import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 
 interface Message {
   id: string;
@@ -19,7 +19,7 @@ export default function AIChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [conversationId, setConversationId] = useState<number | null>(null);
+  const [sessionId, setSessionId] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -30,22 +30,16 @@ export default function AIChat() {
     scrollToBottom();
   }, [messages]);
 
-  /** 创建新会话，返回 conversation_id */
-  const ensureConversation = useCallback(async (): Promise<number> => {
-    if (conversationId) return conversationId;
-    const request = createRequest(API_CONFIG.CALL.BASE_URL, 'Call');
-    const conv = await request<{ id: number }>('/conversations', {
-      method: 'POST',
-      body: JSON.stringify({
-        title: `对话 ${new Date().toLocaleString('zh-CN')}`,
-        user_id: username || 'anonymous',
-        service_ticket_id: `chat_${Date.now()}`,
-        scene_type: 'chat',
-      }),
-    });
-    setConversationId(conv.id);
-    return conv.id;
-  }, [conversationId, username]);
+  /** 确保 sessionId 存在——新对话自动生成，无需调创建接口 */
+  const ensureSessionId = useCallback((): string => {
+    if (!sessionId) {
+      const id = generateSessionId();
+      setSessionId(id);
+      trackSession(id);
+      return id;
+    }
+    return sessionId;
+  }, [sessionId]);
 
   const sendMessage = async () => {
     if (!input.trim() || !token) return;
@@ -56,32 +50,23 @@ export default function AIChat() {
       timestamp: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, userMessage]);
+    const currentQuery = input;
     setInput('');
     setLoading(true);
 
     try {
-      // 确保会话已创建
-      const cid = await ensureConversation();
+      const sid = ensureSessionId();
 
-      const response = await fetch(`${API_CONFIG.CALL.BASE_URL}/qa/ask/stream`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          question: userMessage.content,
-          conversation_id: cid,
-          include_history: true,
-        }),
+      const response = await qaAskStream({
+        session_id: sid,
+        query: currentQuery,
       });
 
-      if (!response.ok) throw new Error('请求失败');
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
       let assistantContent = '';
-      let serverConversationId: number | null = cid;
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -97,23 +82,38 @@ export default function AIChat() {
         const text = decoder.decode(value, { stream: true });
         const lines = text.split('\n');
         for (const line of lines) {
+          // 新版 SSE 格式：先 data: {"token":"..."}  后 event: done
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.slice(6));
-              if (data.event === 'start') {
-                serverConversationId = Number(data.conversation_id);
-                setConversationId(Number(data.conversation_id));
-              } else if (data.event === 'message') {
+              if (data.token) {
+                // 增量 token（新版 AI 诊断）
+                assistantContent += data.token;
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantMessage.id ? { ...m, content: assistantContent } : m
+                  )
+                );
+              } else if (data.content) {
+                // 兼容旧版 message 事件
                 assistantContent += data.content;
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === assistantMessage.id ? { ...m, content: assistantContent } : m
                   )
                 );
-              } else if (data.event === 'done') {
-                setConversationId(Number(data.conversation_id) || serverConversationId);
               }
-            } catch { /* ignore */ }
+            } catch { /* JSON 行解析出错则跳过 */ }
+          }
+          // event: first_token / result / done / error 由后端发出
+          if (line.startsWith('event: ') && line.includes('error')) {
+            const dataLine = lines.find((l) => l.startsWith('data: '));
+            if (dataLine) {
+              try {
+                const err = JSON.parse(dataLine.slice(6));
+                Toast({ message: `AI 错误: ${err.error || '未知错误'}`, theme: 'error' });
+              } catch { /* ignore */ }
+            }
           }
         }
       }
@@ -147,16 +147,24 @@ export default function AIChat() {
             <div
               style={{
                 maxWidth: '80%',
-                padding: '10px 16px',
+                padding: msg.role === 'user' ? '10px 16px' : '10px 16px',
                 borderRadius: 12,
                 background: msg.role === 'user' ? '#0052d9' : '#fff',
                 color: msg.role === 'user' ? '#fff' : '#333',
                 boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-                whiteSpace: 'pre-wrap',
+                whiteSpace: msg.role === 'user' ? 'pre-wrap' : 'normal',
                 wordBreak: 'break-word',
               }}
             >
-              {msg.content || (msg.role === 'assistant' && loading ? '思考中...' : '')}
+              {msg.role === 'assistant' ? (
+                msg.content ? (
+                  <MarkdownRenderer content={msg.content} />
+                ) : (
+                  loading ? '思考中...' : ''
+                )
+              ) : (
+                msg.content
+              )}
             </div>
           </div>
         ))}

@@ -12,8 +12,8 @@ export interface TicketDraft {
   ticket_type?: string;
   priority?: string;
   project_id?: string;
-  /** 来源对话 id，便于回溯 */
-  source_conversation_id?: number;
+  /** 来源对话 id，便于回溯（支持新版字符串 session_id 和旧版数字 id） */
+  source_conversation_id?: string | number;
 }
 
 /** 工单讨论带入对话的上下文（TasksView → CallView） */
