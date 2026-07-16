@@ -12,7 +12,6 @@ import re
 import time
 from typing import List, Optional, Dict, Any, Tuple
 from dataclasses import dataclass, field
-
 import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -21,7 +20,7 @@ from qdrant_client.models import (
     SparseVectorParams,
     SparseIndexParams,
     SearchParams,
-    SparseVector,
+    SparseVector
 )
 
 from app.ai.config import get_ai_config
@@ -468,6 +467,7 @@ class RetrievalService:
                 vector_score=scores["vector_score"],
                 sparse_score=scores["sparse_score"],
                 images=scores.get("images", []),
+
             ))
 
         return results

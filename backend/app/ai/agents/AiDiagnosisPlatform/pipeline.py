@@ -105,9 +105,11 @@ DIAGNOSIS_PROMPT = """你是 AGV/AMR 技术支持 Agent。
   每个子步骤/操作项的文字说明之后，紧跟该步骤对应的截图，再开始写下一个步骤。
   **禁止把所有图片堆在同一个步骤后面**，每张图只能出现在它所属的子步骤下。
 
+
 - **troubleshoot（故障排查）**：用户描述了异常现象（离线、报错、不动、卡住、异常等）。
   列出可能原因，引导用户逐项验证。看 hypotheses/collected_info/ruled_out 推进排查。
   如果你有明确怀疑，让用户直接试（如"重启一下控制器看是否恢复"）。排查不出时建议转工单。
+
   ⚠️ 知识库中有相关截图/示意图时，**必须引用**到回答中帮助用户定位。
 
 - **chat（闲聊/问候）**：简单回应，引导用户描述具体问题。
@@ -115,6 +117,7 @@ DIAGNOSIS_PROMPT = """你是 AGV/AMR 技术支持 Agent。
 ## 重要规则
 - 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：` 中标明。
   **只引用与用户问题直接相关的 chunk 内容**，无关 chunk（如用户问自研车，但检索到了科钛车/库位前置点）的内容和图片一律忽略。
+
 
 ## 对话
 {conversation}
@@ -601,7 +604,7 @@ class AiDiagnosisPlatform:
                 expected_effect=ticket.get("expected_effect", ""),
                 source=ticket.get("source", ""),
                 support_type=ticket.get("support_type", ""),
-                preferred_response=ticket.get("preferred_response", ""),
+                preferred_response=ticket.get("preferred_response", "")
             )
             db.add(record)
             db.commit()
@@ -761,6 +764,7 @@ class AiDiagnosisPlatform:
         # 指代消解："然后呢"等省略表达 → 用上文补全为完整查询
         resolved_query, _ = await self._memory_manager.resolve_pronoun(
             request.query, request.session_id)
+
 
         # ---- 诊断路径 ----
         # 立刻发状态，别让用户干等
