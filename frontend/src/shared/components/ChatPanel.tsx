@@ -1,12 +1,13 @@
-// 可复用 AI 对话面板 —— 我要摇人（全屏）与系统任务（顶部紧凑）共用
+// 可复用 AI 对话面板 —— 对接 /api/ai/qa/ask/stream（SSE 流式诊断）
+// 我要摇人（全屏）与系统任务（顶部紧凑）共用
 // 功能：SSE 流式 / 点赞点踩 / 复制 / 修改己方 / 语音 / 上传·拍照 / ENTER 发送
 // call 场景额外：消费工单讨论上下文 + 打包转工单
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Textarea, Toast } from 'tdesign-mobile-react';
-import { createRequest } from '@/api/client';
-import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore, type TicketDraft } from '@/stores/workbench';
+import { qaAskStream, qaSubmit, qaUpload, generateSessionId, trackSession } from '@/api/ai';
+import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 
 interface SpeechRecognitionResultEvent {
   results: ArrayLike<ArrayLike<{ transcript: string }>>;
@@ -59,8 +60,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [conversationId, setConversationId] = useState<number | null>(null);
+  const [sessionId, setSessionId] = useState<string>('');
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [submittingTicket, setSubmittingTicket] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -87,42 +89,67 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatContext]);
 
-  const ensureConversation = useCallback(async (): Promise<number> => {
-    if (conversationId) return conversationId;
-    const request = createRequest(API_CONFIG.CALL.BASE_URL, 'Call');
-    const conv = await request<{ id: number }>('/conversations', {
-      method: 'POST',
-      body: JSON.stringify({
-        title: `对话 ${new Date().toLocaleString('zh-CN')}`,
-        user_id: username || 'anonymous',
-        service_ticket_id: `${scene}_${Date.now()}`,
-        scene_type: cfg.sceneType,
-      }),
-    });
-    setConversationId(conv.id);
-    return conv.id;
-  }, [conversationId, username, scene, cfg.sceneType]);
+  /** 确保 sessionId——新 AI 模块无需预先创建会话 */
+  const ensureSessionId = useCallback((): string => {
+    if (!sessionId) {
+      const id = generateSessionId();
+      setSessionId(id);
+      trackSession(id);
+      return id;
+    }
+    return sessionId;
+  }, [sessionId]);
 
-  const send = async (text: string, imageUrl?: string) => {
+  /** 将图片上传到 AI 后端 */
+  const uploadImage = async (file: File): Promise<string> => {
+    const sid = ensureSessionId();
+    const res = await qaUpload(sid, [file]);
+    if (!res.ok) throw new Error(`上传失败: ${res.status}`);
+    const data = await res.json();
+    if (data.code !== 0) throw new Error(data.message || '上传失败');
+    return file.name;
+  };
+
+  const send = async (text: string, imageFile?: File) => {
     const content = text.trim();
-    if (!content && !imageUrl) return;
+    if (!content && !imageFile) return;
     if (!token) { Toast({ message: '未登录', theme: 'error' }); return; }
-    const userMessage: Message = { id: uid(), role: 'user', content, timestamp: new Date().toISOString(), imageUrl };
+
+    let imageTag = '';
+    if (imageFile) {
+      try {
+        const name = await uploadImage(imageFile);
+        imageTag = `[上传了附件] ${name}\n`;
+        Toast({ message: '图片已上传', theme: 'success' });
+      } catch (err) {
+        Toast({ message: `上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+        return;
+      }
+    }
+
+    const userContent = imageTag ? imageTag + content : content;
+    const userMessage: Message = {
+      id: uid(),
+      role: 'user',
+      content: userContent,
+      timestamp: new Date().toISOString(),
+      imageUrl: imageFile ? URL.createObjectURL(imageFile) : undefined,
+    };
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
     setLoading(true);
 
     const assistantId = uid();
     try {
-      const cid = await ensureConversation();
+      const sid = ensureSessionId();
       setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() }]);
 
-      const response = await fetch(`${API_CONFIG.CALL.BASE_URL}/qa/ask/stream`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ question: content, conversation_id: cid, include_history: true }),
+      const response = await qaAskStream({
+        session_id: sid,
+        query: userContent,
       });
-      if (!response.ok) throw new Error('请求失败');
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
@@ -132,15 +159,22 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         if (done) break;
         const text = decoder.decode(value, { stream: true });
         for (const line of text.split('\n')) {
+          // SSE 事件行：event: first_token / event: done / event: error
+          if (line.startsWith('event: ') && line.includes('error')) continue; // 错误行在下面处理
+
           if (!line.startsWith('data: ')) continue;
           try {
             const data = JSON.parse(line.slice(6));
-            if (data.event === 'start') setConversationId(Number(data.conversation_id));
-            else if (data.event === 'message') {
+            if (data.token) {
+              // 新版 AI 诊断：token 增量
+              acc += data.token;
+              setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
+            } else if (data.content) {
+              // 兼容旧版 message
               acc += data.content;
               setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
             }
-          } catch { /* ignore */ }
+          } catch { /* JSON 行解析出错则跳过 */ }
         }
       }
     } catch (err) {
@@ -177,12 +211,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const url = URL.createObjectURL(file);
-    send(input, url);
+    send(input, file);
     e.target.value = '';
   };
 
-  const convertToTicket = () => {
+  /** 转工单：优先调用后端 /api/ai/qa/submit，失败则本地 draft 模式兜底 */
+  const handleSubmitTicket = async () => {
+    if (submittingTicket || messages.length === 0) return;
+    setSubmittingTicket(true);
+
     const recent = messages.filter((m) => m.content).slice(-6);
     const userMsgs = recent.filter((m) => m.role === 'user').map((m) => m.content);
     const aiSummary = recent.filter((m) => m.role === 'assistant').map((m) => m.content).join('\n');
@@ -191,11 +228,27 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       description: `【用户描述】\n${userMsgs.join('\n')}\n\n【AI 诊断摘要】\n${aiSummary}`,
       ticket_type: 'support',
       priority: 'medium',
-      source_conversation_id: conversationId || undefined,
+      source_conversation_id: sessionId || undefined,
     };
+
+    if (sessionId) {
+      try {
+        const result = await qaSubmit(sessionId);
+        if (result.code === 0) {
+          setTicketDraft(draft);
+          goToTab('tasks', { ticketDraft: draft });
+          Toast({ message: '工单已提交，正在跳转…', theme: 'success' });
+          setSubmittingTicket(false);
+          return;
+        }
+      } catch { /* 后端失败则走本地 draft 兜底 */ }
+    }
+
+    // 本地 draft 模式兜底
     setTicketDraft(draft);
     goToTab('tasks', { ticketDraft: draft });
     Toast({ message: '已打包转工单，正在跳转…', theme: 'success' });
+    setSubmittingTicket(false);
   };
 
   const toggleReaction = (id: string, type: 'like' | 'dislike') => {
@@ -235,9 +288,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                     setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, content: String(v) } : m)))
                   }
                 />
+              ) : msg.role === 'assistant' ? (
+                msg.content ? (
+                  <MarkdownRenderer content={msg.content} compact={compact} />
+                ) : (
+                  loading ? <div className="chat-bubble__text">思考中…</div> : null
+                )
               ) : (
                 <div className="chat-bubble__text">
-                  {msg.content || (msg.role === 'assistant' && loading ? '思考中…' : '')}
+                  {msg.content}
                 </div>
               )}
             </div>
@@ -279,17 +338,22 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         {isCall && (
           <div className="chat-panel__ticket-fab" title="转为工单">
             <button
-              className={`chat-ticket-btn${messages.length > 0 ? ' has-content' : ''}`}
-              onClick={convertToTicket}
+              className={`chat-ticket-btn${messages.length > 0 ? ' has-content' : ''}${submittingTicket ? ' is-submitting' : ''}`}
+              onClick={handleSubmitTicket}
+              disabled={submittingTicket}
               aria-label="转工单"
             >
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path fill="currentColor" d="M16 1H8V5H16V1Z" />
-              <path fill="currentColor" d="M6 3H3V23H13.8762C13.0139 21.897 12.5 20.5085 12.5 19C12.5 15.4101 15.4101 12.5 19 12.5C19.6978 12.5 20.3699 12.61 21 12.8135V3H18V7H6V3Z" />
-              <path fill="currentColor" d="M24 20H20V24H18V20H14V18H18V14H20V18H24V20Z" />
-            </svg>
+              {submittingTicket ? (
+                <span className="chat-ticket-spinner" />
+              ) : (
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path fill="currentColor" d="M16 1H8V5H16V1Z" />
+                <path fill="currentColor" d="M6 3H3V23H13.8762C13.0139 21.897 12.5 20.5085 12.5 19C12.5 15.4101 15.4101 12.5 19 12.5C19.6978 12.5 20.3699 12.61 21 12.8135V3H18V7H6V3Z" />
+                <path fill="currentColor" d="M24 20H20V24H18V20H14V18H18V14H20V18H24V20Z" />
+              </svg>
+              )}
             </button>
-            <span className="chat-ticket-btn__label">转工单</span>
+            <span className="chat-ticket-btn__label">{submittingTicket ? '提交中…' : '转工单'}</span>
           </div>
         )}
         <Textarea
