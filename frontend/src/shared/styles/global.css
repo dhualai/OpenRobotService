@@ -850,3 +850,147 @@ html, body, #root {
 .admin-card__label { font-size: 13px; color: #333; }
 .admin-view__tip { text-align: center; color: #bbb; font-size: 12px; padding: 24px; }
 
+/* ===== 登录页（机器人开源平台风格） ===== */
+.login-page {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+  /* 科技蓝：纯色基调 + 斜向渐变 + 光晕 */
+  background:
+    radial-gradient(circle at 22% 18%, rgba(150, 195, 255, 0.32), transparent 42%),
+    radial-gradient(circle at 80% 86%, rgba(0, 120, 255, 0.22), transparent 48%),
+    linear-gradient(135deg, #1668e0 0%, #0052d9 50%, #003fad 100%);
+}
+.login-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 380px;
+  background: rgba(255, 255, 255, 0.98);
+  border-radius: 20px;
+  padding: 32px 24px 20px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+  animation: login-card-in 0.4s cubic-bezier(0.34, 1.2, 0.64, 1) both;
+}
+@keyframes login-card-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.login-card__brand { text-align: center; margin-bottom: 26px; }
+.login-logo {
+  width: 68px;
+  height: 68px;
+  margin: 0 auto 12px;
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: linear-gradient(145deg, #0052d9, #0041b3);
+  box-shadow: 0 8px 20px rgba(0, 82, 217, 0.35);
+}
+.login-logo svg { width: 42px; height: 42px; }
+.login-card__title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1a1a1a;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.login-card__subtitle { font-size: 13px; color: #8a93a2; }
+
+.login-form { display: flex; flex-direction: column; gap: 14px; }
+.login-field {
+  display: flex;
+  align-items: center;
+  background: #f5f7fa;
+  border: 1.5px solid transparent;
+  border-radius: 12px;
+  padding: 0 12px;
+  height: 48px;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.login-field:focus-within {
+  background: #fff;
+  border-color: #0052d9;
+  box-shadow: 0 0 0 3px rgba(0, 82, 217, 0.12);
+}
+.login-field__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 8px;
+  color: #9aa4b2;
+  flex-shrink: 0;
+}
+.login-field__icon svg { width: 20px; height: 20px; }
+.login-field__input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 15px;
+  color: #222;
+}
+.login-field__input::placeholder { color: #b3b9c2; }
+.login-field__eye {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  flex-shrink: 0;
+  color: #9aa4b2;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.15s ease;
+}
+.login-field__eye:active { color: #0052d9; }
+.login-field__eye svg { width: 20px; height: 20px; }
+
+.login-btn {
+  margin-top: 6px;
+  height: 48px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #0052d9, #0041b3);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 20px rgba(0, 82, 217, 0.3);
+  transition: transform 0.1s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
+.login-btn:active { transform: scale(0.99); }
+.login-btn:disabled { opacity: 0.75; cursor: wait; box-shadow: none; }
+.login-btn__spinner {
+  width: 20px;
+  height: 20px;
+  border: 2.5px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: login-spin 0.7s linear infinite;
+}
+@keyframes login-spin { to { transform: rotate(360deg); } }
+
+.login-card__foot {
+  text-align: center;
+  color: #c2c7d0;
+  font-size: 12px;
+  margin-top: 22px;
+  letter-spacing: 0.5px;
+}
+

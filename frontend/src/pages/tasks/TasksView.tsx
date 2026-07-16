@@ -132,6 +132,7 @@ export default function TasksView() {
   const discuss = (t: Ticket) => {
     setChatContext({ ticketId: t.id, title: t.title, description: t.description });
     goToTab('call', { chatContext: { ticketId: t.id, title: t.title, description: t.description } });
+    navigate('/app/call');
   };
 
   const statusTabs = [{ value: 'all', label: '全部' },

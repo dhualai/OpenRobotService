@@ -3,10 +3,12 @@
 // 功能：SSE 流式 / 点赞点踩 / 复制 / 修改己方 / 语音 / 上传·拍照 / ENTER 发送
 // call 场景额外：消费工单讨论上下文 + 打包转工单
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Textarea, Toast } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore, type TicketDraft } from '@/stores/workbench';
 import { qaAskStream, qaSubmit, qaUpload, generateSessionId, trackSession } from '@/api/ai';
+import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 
 interface SpeechRecognitionResultEvent {
@@ -52,6 +54,7 @@ const SCENE_CONFIG: Record<ChatScene, {
 };
 
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
+  const navigate = useNavigate();
   const { token, username } = useAuthStore();
   const { chatContext, consumeChatContext, goToTab, setTicketDraft } = useWorkbenchStore();
   const isCall = scene === 'call';
@@ -113,7 +116,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const send = async (text: string, imageFile?: File) => {
     const content = text.trim();
     if (!content && !imageFile) return;
-    if (!token) { Toast({ message: '未登录', theme: 'error' }); return; }
+    if (!token) { kickToLogin('请先登录'); return; }
 
     let imageTag = '';
     if (imageFile) {
@@ -178,7 +181,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         }
       }
     } catch (err) {
-      Toast({ message: `发送失败: ${err instanceof Error ? err.message : '未知错误'}`, theme: 'error' });
+      // 鉴权失效已由 kickToLogin 统一提示并跳转，此处不重复弹错误
+      if (!isKickingToLogin()) {
+        Toast({ message: `发送失败: ${err instanceof Error ? err.message : '未知错误'}`, theme: 'error' });
+      }
       setMessages((prev) => prev.filter((m) => m.id !== assistantId));
     } finally {
       setLoading(false);
@@ -237,6 +243,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         if (result.code === 0) {
           setTicketDraft(draft);
           goToTab('tasks', { ticketDraft: draft });
+          navigate('/app/tasks');
           Toast({ message: '工单已提交，正在跳转…', theme: 'success' });
           setSubmittingTicket(false);
           return;
@@ -247,6 +254,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // 本地 draft 模式兜底
     setTicketDraft(draft);
     goToTab('tasks', { ticketDraft: draft });
+    navigate('/app/tasks');
     Toast({ message: '已打包转工单，正在跳转…', theme: 'success' });
     setSubmittingTicket(false);
   };
@@ -256,10 +264,32 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   };
 
   const copyContent = (content: string) => {
-    navigator.clipboard?.writeText(content).then(
-      () => Toast({ message: '已复制', theme: 'success' }),
-      () => Toast({ message: '复制失败', theme: 'error' }),
-    );
+    // Clipboard API（安全上下文可用），否则降级 execCommand
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(content).then(
+        () => Toast({ message: '已复制', theme: 'success' }),
+        () => fallbackCopy(content),
+      );
+      return;
+    }
+    fallbackCopy(content);
+  };
+
+  const fallbackCopy = (content: string) => {
+    const ta = document.createElement('textarea');
+    ta.value = content;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      Toast({ message: '已复制', theme: 'success' });
+    } catch {
+      Toast({ message: '复制失败', theme: 'error' });
+    } finally {
+      document.body.removeChild(ta);
+    }
   };
 
   return (

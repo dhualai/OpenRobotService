@@ -8,6 +8,7 @@
  */
 import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
+import { kickToLogin } from '@/shared/utils/session';
 
 const BASE = API_CONFIG.AI.BASE_URL; // '/api/ai'
 
@@ -34,7 +35,7 @@ export const trackSession = (sessionId: string): void => {
 /** 带 token 的 fetch 封装（用于 SSE 流式请求） */
 export const fetchWithAuth = async (url: string, init: RequestInit = {}) => {
   const token = useAuthStore.getState().token;
-  return fetch(url, {
+  const res = await fetch(url, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -42,10 +43,16 @@ export const fetchWithAuth = async (url: string, init: RequestInit = {}) => {
       ...(init.headers as Record<string, string>),
     },
   });
+  // 401：鉴权失效 → 统一提示并跳登录页（AI 模块不走 client.ts，需自行处理）
+  if (res.status === 401) {
+    kickToLogin('登录已过期，请重新登录');
+    throw new Error('UNAUTHORIZED');
+  }
+  return res;
 };
 
 /** 通用 JSON POST */
-export const aiPost = async <T = any>(path: string, body: Record<string, any>): Promise<T> => {
+export const aiPost = async <T = unknown>(path: string, body: object): Promise<T> => {
   const res = await fetchWithAuth(`${BASE}${path}`, {
     method: 'POST',
     body: JSON.stringify(body),
@@ -55,7 +62,7 @@ export const aiPost = async <T = any>(path: string, body: Record<string, any>): 
 };
 
 /** 通用 JSON GET */
-export const aiGet = async <T = any>(path: string, params?: Record<string, string>): Promise<T> => {
+export const aiGet = async <T = unknown>(path: string, params?: Record<string, string>): Promise<T> => {
   const qs = params ? '?' + new URLSearchParams(params).toString() : '';
   const res = await fetchWithAuth(`${BASE}${path}${qs}`, { method: 'GET' });
   if (!res.ok) throw new Error(`AI 接口异常: ${res.status}`);
@@ -63,7 +70,7 @@ export const aiGet = async <T = any>(path: string, params?: Record<string, strin
 };
 
 /** 通用 JSON DELETE */
-export const aiDelete = async <T = any>(path: string, params?: Record<string, string>): Promise<T> => {
+export const aiDelete = async <T = unknown>(path: string, params?: Record<string, string>): Promise<T> => {
   const qs = params ? '?' + new URLSearchParams(params).toString() : '';
   const res = await fetchWithAuth(`${BASE}${path}${qs}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(`AI 接口异常: ${res.status}`);
@@ -83,7 +90,7 @@ export interface QAAskRequest {
 export interface QAAskResponse {
   code: number;
   message?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 /** 非流式问答 */
@@ -98,15 +105,15 @@ export const qaAskStream = (body: QAAskRequest): Promise<Response> =>
 
 /** 提交工单 */
 export const qaSubmit = (sessionId: string) =>
-  aiPost<{ code: number; [key: string]: any }>('/qa/submit', { session_id: sessionId });
+  aiPost<{ code: number; [key: string]: unknown }>('/qa/submit', { session_id: sessionId });
 
 /** 获取工单 */
 export const qaGetTicket = (sessionId: string) =>
-  aiGet<{ code: number; data?: any; message?: string }>('/qa/ticket', { session_id: sessionId });
+  aiGet<{ code: number; data?: unknown; message?: string }>('/qa/ticket', { session_id: sessionId });
 
 /** 派单确认回执 */
 export const qaTicketAck = (sessionId: string, dispatchId = '', status = 'dispatched') =>
-  aiPost<{ code: number; data?: any; message?: string }>('/qa/ticket/ack', {
+  aiPost<{ code: number; data?: unknown; message?: string }>('/qa/ticket/ack', {
     session_id: sessionId,
     dispatch_id: dispatchId,
     status,
@@ -126,7 +133,7 @@ export const qaUpload = async (sessionId: string, files: File[]): Promise<Respon
 };
 
 /** AI 模块健康检查 */
-export const qaHealth = () => aiGet<{ code: number; data?: any }>('/qa/health');
+export const qaHealth = () => aiGet<{ code: number; data?: unknown }>('/qa/health');
 
 // ---------------------------------------------------------------------------
 // 纯 LLM 对话接口 (/api/ai/chat)
@@ -182,8 +189,8 @@ export const memoryTickets = () => aiGet<TicketsResponse>('/memory/tickets');
 
 /** 清除单个会话 */
 export const memoryClear = (sessionId: string) =>
-  aiDelete<{ code: number; data?: any }>('/memory/clear', { session_id: sessionId });
+  aiDelete<{ code: number; data?: unknown }>('/memory/clear', { session_id: sessionId });
 
 /** 清除所有会话 */
 export const memoryClearAll = () =>
-  aiDelete<{ code: number; data?: any }>('/memory/clear-all');
+  aiDelete<{ code: number; data?: unknown }>('/memory/clear-all');
