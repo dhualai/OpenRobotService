@@ -253,10 +253,18 @@ if prompt := st.chat_input("描述您遇到的 AGV/AMR 问题…"):
 
                 if event.get("done"):
                     status_placeholder.empty()
-                    text_placeholder.markdown(fix_image_urls(full_text))
 
                     result = event.get("result", {}) or {}
                     timing_info["total_roundtrip"] = event.get("total_ms", 0)
+
+                    # 兜底：LLM 只输出 JSON 无消息正文时，后端会补发解析出的 message
+                    # 如果流式文本仍为空，用 result.message 填充
+                    if not full_text.strip():
+                        fallback = result.get("message", "")
+                        if fallback:
+                            full_text = fallback
+
+                    text_placeholder.markdown(fix_image_urls(full_text))
 
                     # 从服务器返回中提取细分计时
                     server_timing = result.get("timing", {})
