@@ -581,6 +581,49 @@ class RetrievalService:
             ))
         return results
 
+    async def retrieve_troubleshooting(
+        self,
+        query: str,
+        top_k: int = 3,
+    ) -> List[RetrievalResult]:
+        """
+        问题排查树检索（仅向量检索，不做置信度检查）。
+
+        排查树条目是结构化的步骤文本，向量相似度足够，不需要 BM25。
+        使用独立的排查树指针文件热切换集合。
+        top_k 默认为 3（比 FAQ 多 1），因为模糊查询需多返回候选项做分流。
+        """
+        from app.ai.config import get_active_troubleshooting_collection
+
+        ts_col = get_active_troubleshooting_collection()
+        if not ts_col:
+            return []  # 排查树集合尚未入库
+
+        k = top_k or 3
+        await self._ensure_clients()
+
+        if self._qdrant.is_unavailable:
+            return []
+
+        query_vector = await self._embed_client.embed(query)
+        points = await self._qdrant.search_dense(
+            query_vector.tolist(),
+            top_k=k,
+            collection_name=ts_col,
+        )
+
+        results = []
+        for point in points:
+            payload = point.payload or {}
+            results.append(RetrievalResult(
+                id=str(point.id),
+                score=point.score,
+                title=payload.get("symptom_name", ""),
+                content=payload.get("linearized_tree", ""),
+                vector_score=point.score,
+            ))
+        return results
+
     async def ensure_collection(self, vector_size: int) -> None:
         """确保集合存在"""
         await self._ensure_clients()

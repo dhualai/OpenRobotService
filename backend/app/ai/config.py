@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 # 指针文件：记录当前活跃的 Qdrant 集合名
 _ACTIVE_COLLECTION_POINTER = Path(__file__).resolve().parent.parent.parent / "app" / "kb" / "active_collection.txt"
 _ACTIVE_FAQ_COLLECTION_POINTER = Path(__file__).resolve().parent.parent.parent / "app" / "kb" / "active_faq_collection.txt"
+_ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER = Path(__file__).resolve().parent.parent.parent / "app" / "kb" / "active_troubleshooting_collection.txt"
 
 
 class AIConfig(BaseModel):
@@ -106,6 +107,24 @@ def _write_active_faq_collection(name: str) -> None:
     """写入活跃 FAQ 集合指针（入库脚本调用）"""
     _ACTIVE_FAQ_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
     _ACTIVE_FAQ_COLLECTION_POINTER.write_text(name, encoding="utf-8")
+
+
+def get_active_troubleshooting_collection() -> str:
+    """读取当前活跃的 troubleshooting Qdrant 集合名"""
+    try:
+        if _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER.exists():
+            name = _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _write_active_troubleshooting_collection(name: str) -> None:
+    """写入活跃 troubleshooting 集合指针（入库脚本调用）"""
+    _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
+    _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER.write_text(name, encoding="utf-8")
 
 
 def get_docs_dir() -> Path:

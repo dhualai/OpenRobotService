@@ -105,19 +105,42 @@ DIAGNOSIS_PROMPT = """你是 AGV/AMR 技术支持 Agent。
   每个子步骤/操作项的文字说明之后，紧跟该步骤对应的截图，再开始写下一个步骤。
   **禁止把所有图片堆在同一个步骤后面**，每张图只能出现在它所属的子步骤下。
 
-
 - **troubleshoot（故障排查）**：用户描述了异常现象（离线、报错、不动、卡住、异常等）。
   列出可能原因，引导用户逐项验证。看 hypotheses/collected_info/ruled_out 推进排查。
   如果你有明确怀疑，让用户直接试（如"重启一下控制器看是否恢复"）。排查不出时建议转工单。
-
   ⚠️ 知识库中有相关截图/示意图时，**必须引用**到回答中帮助用户定位。
 
 - **chat（闲聊/问候）**：简单回应，引导用户描述具体问题。
 
 ## 重要规则
-- 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：` 中标明。
+- 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：` 或 `🔍 故障排查树 N：` 中标明。
   **只引用与用户问题直接相关的 chunk 内容**，无关 chunk（如用户问自研车，但检索到了科钛车/库位前置点）的内容和图片一律忽略。
 
+## 🔍 故障排查树使用规则（极其重要）
+- 如果知识库中有「🔍 故障排查树」（结构化步骤引导），你应该用它来排查问题。
+  **但只有用户明确在排查故障（intent=troubleshoot）时才使用排查树**，
+  操作咨询（howto）走「知识库」chunk，不走排查树。
+
+1. **分流判断**（命中多个排查树 / 用户描述模糊时）：
+   - **不要**直接开始走某一棵树的步骤！
+   - 把命中的故障场景列出来让用户确认是哪一个，如：
+     "🔍 排查树匹配到以下几种情况，请确认你的具体现象：
+     1. 车待命，任务状态一直显示调度中，机器人编号为-
+     2. 车不动了，原子任务状态路径规划中
+     3. 车不动了，原子任务状态已下发
+     4. 车不动了，原子任务状态执行中
+     请问你的任务界面显示的是哪种状态？"
+   - **用户确认后再**进入该树的逐步骤排查。
+
+2. **逐步骤排查**（用户确认 / 只有一棵树命中时）：
+   - 严格按树的顺序，**一次只问一步**，把该步的分支选项列出来让用户选
+   - 根据用户回答跳转到对应分支（结论或下一步）
+   - 到达「【结论】」时输出原因+方案
+   - 如果某步有「以上都不是」分支但用户描述不在选项中，走「以上都不是」继续
+
+3. **排查树中的结论引用**：
+   - 排查树里的「原因」和「方案」是经验总结，输出时引用它们
+   - 如果【结论】涉及操作步骤（如"急停→推车→RESET"），展开为可执行的步骤
 
 ## 对话
 {conversation}
@@ -181,10 +204,11 @@ def _find_json_end(buffer: str) -> int:
                 # 顶层 JSON 已闭合，跳过后续空白，找消息起点
                 rest = buffer[i + 1:]
                 m2 = re.match(r'\s*', rest)
-                if m2 and m2.end() < len(rest):
+                # JSON 已完成：即使后面暂时只有空白，也标记边界
+                # （后续 token 到达时 _json_done=True 会直接流式输出）
+                if m2:
                     return i + 1 + m2.end()
-                # JSON 结束了但还没有消息正文（只有空白）
-                return -1
+                return i + 1
 
     return -1
 
@@ -398,7 +422,7 @@ class AiDiagnosisPlatform:
                 print(f"  ⏱  [retrieve] cache hit, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
                 return cached["result"]
 
-            # 正常检索流程：双路并行（操作手册 + FAQ）
+            # 正常检索流程：三路并行（排查树 + 操作手册 + FAQ）
             config = get_ai_config()
             manual_task = asyncio.wait_for(
                 self._retriever.retrieve(search_query, top_k=config.retrieval_top_k),
@@ -408,16 +432,28 @@ class AiDiagnosisPlatform:
                 self._retriever.retrieve_faq(search_query, top_k=max(2, config.retrieval_top_k - 1)),
                 timeout=10.0,
             )
+            troubleshooting_task = asyncio.wait_for(
+                self._retriever.retrieve_troubleshooting(search_query, top_k=3),
+                timeout=10.0,
+            )
 
-            manual_results, faq_results = await asyncio.gather(
-                manual_task, faq_task,
+            manual_results, faq_results, troubleshooting_results = await asyncio.gather(
+                manual_task, faq_task, troubleshooting_task,
             )
             results, _ = manual_results  # unpack (results, top1_score)
 
             docs = []
             idx = 1
 
-            # FAQ 结果优先（直接答案，更有用）
+            # 排查树结果最优先（结构化步骤引导最精准）
+            for r in (troubleshooting_results or []):
+                symptom = r.title or ""
+                tree_text = r.content or ""
+                if tree_text.strip():
+                    docs.append(f"---\n🔍 故障排查树 {idx}：{symptom}\n{tree_text}\n---")
+                    idx += 1
+
+            # FAQ 结果（直接答案）
             for r in (faq_results or []):
                 q = r.title or ""
                 a = r.content or ""
@@ -604,7 +640,7 @@ class AiDiagnosisPlatform:
                 expected_effect=ticket.get("expected_effect", ""),
                 source=ticket.get("source", ""),
                 support_type=ticket.get("support_type", ""),
-                preferred_response=ticket.get("preferred_response", "")
+                preferred_response=ticket.get("preferred_response", ""),
             )
             db.add(record)
             db.commit()
@@ -765,7 +801,6 @@ class AiDiagnosisPlatform:
         resolved_query, _ = await self._memory_manager.resolve_pronoun(
             request.query, request.session_id)
 
-
         # ---- 诊断路径 ----
         # 立刻发状态，别让用户干等
         yield {"event": "status", "data": {"stage": "retrieving", "round": state.diagnosis_rounds}}
@@ -826,6 +861,7 @@ class AiDiagnosisPlatform:
               f"prompt={t_stream.get('prompt_chars','?')}chars  "
               f"llm_first={t_stream.get('llm_first_token','?')}ms  "
               f"total={t_stream.get('llm_agent','?')}ms")
+
         parsed = self._parse_agent_output(raw)
 
         self._apply_state_update(state, parsed["state_update"])
@@ -835,6 +871,12 @@ class AiDiagnosisPlatform:
             request.session_id, state,
             parsed["thinking"], parsed["action"], parsed["message"],
             streaming=True)
+
+        # 兜底：如果 LLM 只输出了 JSON 没有消息正文，前面的流式 yield 不会触发任何 token。
+        # 此时把解析出来的 message 作为一次性 token 发出去，确保前端有内容展示。
+        if t_first_llm is None and parsed["message"]:
+            for ch in parsed["message"]:
+                yield {"event": "token", "data": ch}
 
         # 嵌入流式路径 timing
         t_stream["total"] = round((time.perf_counter() - t0) * 1000)
