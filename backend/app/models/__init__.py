@@ -36,6 +36,7 @@ from app.models.task import (
     TaskStatus,
     TaskPriority,
     TaskType,
+    TaskUserMapping,
 )
 
 # 会话 / 消息
@@ -66,7 +67,7 @@ __all__ = [
     "RealtimeData", "HistoryData", "CollectionData",
     "Risk", "ProjectDailyReport", "ProjectLicense",
     # task
-    "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType",
+    "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping",
     # conversation
     "Conversation", "Message", "SceneType", "MessageRole", "MessageType",
     # resource

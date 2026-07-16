@@ -73,9 +73,24 @@ class Settings(BaseSettings):
     REDIS_PORT: int = Field(default=6379)
     REDIS_DB: int = Field(default=0)
     
-    AI_MODEL_URL: str = Field(default="http://localhost:8005")
-    AI_MODEL_NAME: str = Field(default="qwen2")
+    AI_MODEL_URL: str = Field(default="https://api.deepseek.com")
+    AI_MODEL_NAME: str = Field(default="deepseek-v4-flash")
     AI_API_KEY: str = Field(default="")
+    
+    AI_SERVICE_PROVIDER: str = Field(default="openai")
+    LLM_API_KEY: str = Field(default="")
+    LLM_API_URL: str = Field(default="https://api.deepseek.com/chat/completions")
+    LLM_MODEL_NAME: str = Field(default="deepseek-v4-flash")
+    LLM_TEMPERATURE: float = Field(default=0.7)
+    LLM_STREAM: bool = Field(default=False)
+    
+    CUSTOM_AI_BASE_URL: str = Field(default="")
+    CUSTOM_AI_API_PATH: str = Field(default="/api/ask")
+    
+    MQTT_TOPIC_REQUEST: str = Field(default="ai/request")
+    MQTT_TOPIC_RESPONSE: str = Field(default="ai/response")
+    MQTT_USER: str = Field(default="")
+    MQTT_PASSWORD: str = Field(default="")
     
     WECHAT_API_BASE_URL: str = Field(default="https://api.weixin.qq.com")
     
@@ -91,7 +106,21 @@ class Settings(BaseSettings):
     MQTT_USERNAME: str = Field(default="")
     MQTT_PASSWORD: str = Field(default="")
     MQTT_CLIENT_ID: str = Field(default="DAS_MQTT_WX")
-    
+
+    # ===== Meilisearch 全文检索（可降级：MEILI_ENABLED=False 时回退 ilike）=====
+    MEILI_ENABLED: bool = Field(default=True)
+    MEILI_HOST_URL: str = Field(default="http://localhost:7700")
+    MEILI_MASTER_KEY: str = Field(default="")
+
+    # ===== 外部任务源（插件化，见 INTEGRATION_DESIGN.md）=====
+    TASK_SOURCES_ENABLED: List[str] = Field(default=[])   # 启用的任务源，如 ["zentao"]
+    ZENTAO_BASE_URL: str = Field(default="")
+    ZENTAO_ACCOUNT: str = Field(default="")
+    ZENTAO_PASSWORD: str = Field(default="")
+    ZENTAO_VERIFY_SSL: bool = Field(default=True)
+    ZENTAO_PROJECT_IDS: str = Field(default="")            # "[1,2,3]" 或 "1,2,3" 或 "1;2;3"
+    HELPDESK_SYNC_API_KEY: str = Field(default="")          # 外部任务源同步接口 API Key（Airflow 用，X-API-Key）
+
     @property
     def WECHAT_CONFIG(self) -> Dict:
         return {
@@ -177,6 +206,10 @@ class Settings(BaseSettings):
     def validate_secret_key(self) -> 'Settings':
         if not self.SECRET_KEY and self.JWT_SECRET:
             self.SECRET_KEY = self.JWT_SECRET
+        if not self.LLM_API_KEY and self.AI_API_KEY:
+            self.LLM_API_KEY = self.AI_API_KEY
+        if not self.MQTT_USER and self.MQTT_USERNAME:
+            self.MQTT_USER = self.MQTT_USERNAME
         return self
     
     @model_validator(mode='after')
