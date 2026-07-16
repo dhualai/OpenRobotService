@@ -249,6 +249,10 @@ class TicketService:
             query = TicketService._apply_string_op(
                 query, Ticket.project_id, query_params.project_id, query_params.project_id_op, 'equals')
 
+        if query_params.source:
+            query = TicketService._apply_string_op(
+                query, Ticket.source, query_params.source, query_params.source_op, 'equals')
+
         if query_params.deadline_at:
             query = query.where(Ticket.deadline_at == query_params.deadline_at)
 
@@ -453,6 +457,7 @@ class TicketService:
             'relatedResourceId': (Ticket.related_resource_id, 'number'),
             'projectName': (Ticket.project_name, 'text'),
             'projectId': (Ticket.project_id, 'text'),
+            'source': (Ticket.source, 'text'),
             'createdAt': (Ticket.created_at, 'datetime'),
             'updatedAt': (Ticket.updated_at, 'datetime'),
             'resolvedAt': (Ticket.resolved_at, 'datetime'),

@@ -151,6 +151,8 @@ class TicketQueryParams(BaseModel):
     project_name_op: Optional[str] = Field(None, description="项目名称过滤操作")
     project_id: Optional[str] = Field(None, description="项目ID")
     project_id_op: Optional[str] = Field(None, description="项目ID过滤操作")
+    source: Optional[str] = Field(None, description="任务来源：manual/zentao/...")
+    source_op: Optional[str] = Field(None, description="来源过滤操作")
     deadline_at: Optional[datetime] = Field(None, description="截止时间")
     created_at_start: Optional[datetime] = Field(None, description="创建时间起始")
     created_at_end: Optional[datetime] = Field(None, description="创建时间结束")
