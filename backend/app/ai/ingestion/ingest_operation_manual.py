@@ -149,7 +149,7 @@ def parse_manual(text: str, source_label: str = "usp-manual") -> List[Chunk]:
         # 提取图片路径
         images = [
             img_m.group(1)
-            for img_m in re.finditer(r'!\[.*?\]\((media/[^)]+)\)', raw_content)
+            for img_m in re.finditer(r'!\[.*?\]\((?:\./)?(media/[^)]+)\)', raw_content)
         ]
 
         # 生成稳定 ID
@@ -208,7 +208,7 @@ def _split_by_h3(chunks: List[Chunk], source_label: str) -> List[Chunk]:
 
             images = [
                 img_m.group(1)
-                for img_m in re.finditer(r'!\[.*?\]\((media/[^)]+)\)', h3_content)
+                for img_m in re.finditer(r'!\[.*?\]\((?:\./)?(media/[^)]+)\)', h3_content)
             ]
 
             full_title = f"{parent_title} > {h3_title}"

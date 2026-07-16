@@ -100,14 +100,21 @@ DIAGNOSIS_PROMPT = """你是 AGV/AMR 技术支持 Agent。
 - **howto（操作咨询）**：用户问"怎么做/怎么上线/怎么配置/步骤/流程"等，想了解操作方法。
   从知识库找答案，按前提→操作→预期结果的顺序给出步骤。直接 answer，不追问不假设故障。
   知识库没涉及的细节如实说"手册未覆盖"，不要自己编步骤。
-  知识库中的图片（![](url)）如果对操作有参考价值，可引用到回答中。
+  ⚠️ 图片规则（极其重要）：
+  知识库中的图片（![](url)）是操作界面截图。**必须严格按知识库原文的步骤结构来配图**——
+  每个子步骤/操作项的文字说明之后，紧跟该步骤对应的截图，再开始写下一个步骤。
+  **禁止把所有图片堆在同一个步骤后面**，每张图只能出现在它所属的子步骤下。
 
 - **troubleshoot（故障排查）**：用户描述了异常现象（离线、报错、不动、卡住、异常等）。
   列出可能原因，引导用户逐项验证。看 hypotheses/collected_info/ruled_out 推进排查。
   如果你有明确怀疑，让用户直接试（如"重启一下控制器看是否恢复"）。排查不出时建议转工单。
-  知识库中有相关截图/示意图时，引用到回答中帮助用户定位。
+  ⚠️ 知识库中有相关截图/示意图时，**必须引用**到回答中帮助用户定位。
 
 - **chat（闲聊/问候）**：简单回应，引导用户描述具体问题。
+
+## 重要规则
+- 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：` 中标明。
+  **只引用与用户问题直接相关的 chunk 内容**，无关 chunk（如用户问自研车，但检索到了科钛车/库位前置点）的内容和图片一律忽略。
 
 ## 对话
 {conversation}
@@ -307,11 +314,15 @@ class AiDiagnosisPlatform:
         state.diagnosis_rounds += 1
         state.phase = "diagnosing"
 
+        # 指代消解："然后呢"等省略表达 → 用上文补全为完整查询
+        resolved_query, _ = await self._memory_manager.resolve_pronoun(
+            request.query, request.session_id)
+
         # ---- 诊断路径 ----
         t_retrieve_start = time.perf_counter()
         reference_docs = (
             "（跳过检索）" if request.skip_retrieval
-            else await self._retrieve_with_context(request.session_id, state)
+            else await self._retrieve_with_context(request.session_id, state, resolved_query)
         )
         t["retrieve"] = round((time.perf_counter() - t_retrieve_start) * 1000)
         t["retrieve_docs_len"] = len(reference_docs)
@@ -361,12 +372,16 @@ class AiDiagnosisPlatform:
     # ================================================================
     _CACHE_TTL = 60  # 秒
 
-    async def _retrieve_with_context(self, session_id: str, state: AgentState) -> str:
+    async def _retrieve_with_context(self, session_id: str, state: AgentState,
+                                      resolved_query: str = "") -> str:
         t0 = time.perf_counter()
         try:
             memory = await self._memory_manager.get_memory(session_id)
             user_msgs = [t["content"] for t in memory.turns if t["role"] == "user"][-4:]
             search_query = " ".join(user_msgs) if user_msgs else state.original_query
+            # 指代消解后的完整查询优先，语义更明确
+            if resolved_query:
+                search_query = resolved_query + " " + search_query
             # 加入当前推测提升检索精度
             if state.hypotheses:
                 search_query = search_query + " " + " ".join(state.hypotheses)
@@ -410,16 +425,37 @@ class AiDiagnosisPlatform:
             # 操作手册结果
             for r in (results or []):
                 title = f"（{r.title}）" if r.title else ""
-                content = re.sub(
-                    r'!\[([^\]]*)\]\(media/([^)]+)\)',
-                    r'![\1](/api/media/operation_doc/\2)',
+                media_url = f"{config.media_url_prefix}/operation_doc"
+                raw = re.sub(
+                    r'!\[([^\]]*)\]\((?:\./)?media/([^)]+)\)',
+                    rf'![\1]({media_url}/\2)',
                     r.content,
                 )
-                if len(content) > 800:
-                    cut = content.rfind('\n', 0, 800)
-                    if cut < 400:
-                        cut = 800
-                    content = content[:cut] + "\n…（截断，完整内容见知识库）"
+                # 保序压缩：每张图保留前文 200 字上下文，确保每个步骤都有文字
+                img_sep = re.compile(r'(!\[[^\]]*\]\([^)]+\))')
+                parts = img_sep.split(raw)
+                compact: list[str] = []
+                ctx_budget = 200  # 每张图前面的文本预算
+                for i, part in enumerate(parts):
+                    if i % 2 == 0:  # 文本段 → 保留尾部（紧贴下一张图的部分）
+                        if len(part) > ctx_budget:
+                            part = "…" + part[-ctx_budget:]
+                        compact.append(part)
+                    else:  # 图片，原位置保留
+                        compact.append(part)
+                # 最后一段纯文本（尾部没有图片的），只截开头
+                if len(parts) % 2 == 1 and len(parts[-1]) > ctx_budget:
+                    compact[-1] = parts[-1][:ctx_budget] + "…"
+                # payload images 兜底：追回 content 中漏掉的
+                content = "".join(compact)
+                if r.images:
+                    extra = []
+                    for img in r.images:
+                        img_name = img.replace("media/", "")
+                        if img_name not in content:
+                            extra.append(f"![示意图]({media_url}/{img_name})")
+                    if extra:
+                        content += "\n\n" + "\n".join(extra)
                 docs.append(f"---\n知识库 {idx}{title}：\n{content}\n---")
                 idx += 1
 
@@ -722,13 +758,17 @@ class AiDiagnosisPlatform:
         state.diagnosis_rounds += 1
         state.phase = "diagnosing"
 
+        # 指代消解："然后呢"等省略表达 → 用上文补全为完整查询
+        resolved_query, _ = await self._memory_manager.resolve_pronoun(
+            request.query, request.session_id)
+
         # ---- 诊断路径 ----
         # 立刻发状态，别让用户干等
         yield {"event": "status", "data": {"stage": "retrieving", "round": state.diagnosis_rounds}}
         t_ret = time.perf_counter()
         reference_docs = (
             "（跳过检索）" if request.skip_retrieval
-            else await self._retrieve_with_context(request.session_id, state)
+            else await self._retrieve_with_context(request.session_id, state, resolved_query)
         )
         t_stream["retrieve"] = round((time.perf_counter() - t_ret) * 1000)
         prompt = self._build_diagnosis_prompt(state, memory, reference_docs)

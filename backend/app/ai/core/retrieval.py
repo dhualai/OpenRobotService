@@ -11,7 +11,7 @@ import asyncio
 import re
 import time
 from typing import List, Optional, Dict, Any, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from qdrant_client import QdrantClient
@@ -45,6 +45,7 @@ class RetrievalResult:
     content: str
     vector_score: float = 0.0
     sparse_score: float = 0.0
+    images: List[str] = field(default_factory=list)
 
 
 # ============================================================
@@ -426,7 +427,7 @@ class RetrievalService:
             if doc_id not in doc_scores:
                 doc_scores[doc_id] = {
                     "dense": 0.0, "sparse": 0.0,
-                    "title": "", "content": "",
+                    "title": "", "content": "", "images": [],
                     "vector_score": 0.0, "sparse_score": 0.0,
                 }
             doc_scores[doc_id]["dense"] = 1.0 / (rrf_k + rank + 1)
@@ -434,13 +435,14 @@ class RetrievalService:
             if point.payload:
                 doc_scores[doc_id]["title"] = point.payload.get("title", "")
                 doc_scores[doc_id]["content"] = point.payload.get("content", "")
+                doc_scores[doc_id]["images"] = point.payload.get("images", [])
 
         for rank, point in enumerate(sparse_results):
             doc_id = str(point.id)
             if doc_id not in doc_scores:
                 doc_scores[doc_id] = {
                     "dense": 0.0, "sparse": 0.0,
-                    "title": "", "content": "",
+                    "title": "", "content": "", "images": [],
                     "vector_score": 0.0, "sparse_score": 0.0,
                 }
             doc_scores[doc_id]["sparse"] = 1.0 / (rrf_k + rank + 1)
@@ -448,6 +450,7 @@ class RetrievalService:
             if point.payload and not doc_scores[doc_id]["title"]:
                 doc_scores[doc_id]["title"] = point.payload.get("title", "")
                 doc_scores[doc_id]["content"] = point.payload.get("content", "")
+                doc_scores[doc_id]["images"] = point.payload.get("images", [])
 
         rrf_scores = [
             (doc_id, scores["dense"] + scores["sparse"], scores)
@@ -464,6 +467,7 @@ class RetrievalService:
                 content=scores["content"],
                 vector_score=scores["vector_score"],
                 sparse_score=scores["sparse_score"],
+                images=scores.get("images", []),
             ))
 
         return results

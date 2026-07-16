@@ -376,7 +376,9 @@ def faq_to_chunk(entry: FaqEntry) -> str:
     if entry.answer:
         parts.append(entry.answer)
     if entry.images:
-        img_refs = ' '.join(f'![](/api/media/faq_doc/{img})' for img in entry.images)
+        from app.ai.config import get_ai_config
+        faq_media_url = f"{get_ai_config().media_url_prefix}/faq_doc"
+        img_refs = ' '.join(f'![]({faq_media_url}/{img})' for img in entry.images)
         parts.append(img_refs)
     return '\n'.join(parts)
 

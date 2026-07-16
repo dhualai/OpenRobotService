@@ -137,19 +137,46 @@ class MemoryManager:
 
     async def resolve_pronoun(self, query: str, session_id: str) -> Tuple[str, bool]:
         """
-        指代消解检测（预留方法，暂未集成到 Agent pipeline）。
-        TODO: 在 _agent_think 中调用此方法处理"然后呢"等指代补全。
+        指代消解：检测"然后呢""还有呢"等省略表达，用上文补全为完整查询。
+
+        用于提升检索精度——"然后呢"本身无法命中知识库，
+        结合上文用户问题和助手回答后可以构造出有意义的检索词。
         """
+        # 检测是否匹配指代模式
+        matched_pattern = None
         for pattern, _ in self.PRONOUN_PATTERNS:
             if re.search(pattern, query):
+                matched_pattern = pattern
                 break
-        else:
+        if not matched_pattern:
             return query, False
+
         memory = await self.get_memory(session_id)
-        user_turns = [t for t in memory.turns if t["role"] == "user"]
-        if not user_turns:
+        turns = memory.turns
+
+        # 找到最近一轮用户消息和助手回复（跳过当前 query 本身）
+        prev_user = None
+        prev_assistant = None
+        for t in reversed(turns):
+            if t["role"] == "user" and prev_user is None:
+                prev_user = t["content"]
+            elif t["role"] == "assistant" and prev_assistant is None:
+                prev_assistant = t["content"]
+            if prev_user and prev_assistant:
+                break
+
+        if not prev_user:
             return query, False
-        return query, query != user_turns[-1]["content"]
+
+        # 用上文补全：把用户省略表达和对话上下文拼接成可检索的完整查询
+        parts = [f"用户追问：{query}"]
+        parts.append(f"用户原问题：{prev_user[:300]}")
+        if prev_assistant:
+            # 截取助手回答的要点（去掉过长的细节）
+            assistant_brief = prev_assistant[:400]
+            parts.append(f"助手此前回答：{assistant_brief}")
+        resolved = "；".join(parts)
+        return resolved, True
 
     async def clear(self, session_id: str) -> None:
         client = await self._ensure_redis()
