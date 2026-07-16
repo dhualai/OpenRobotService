@@ -182,6 +182,7 @@ def get_ai_config() -> AIConfig:
         # 文档路径
         docs_path=os.getenv("DOCS_PATH", ""),
         media_url_prefix=os.getenv("MEDIA_URL_PREFIX", "/api/media"),
+
     )
 
 

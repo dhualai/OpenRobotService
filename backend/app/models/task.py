@@ -4,12 +4,17 @@ MIGRATION.md Wave 2.2: 将工单(tickets/ticket_comments)重命名为任务(task
 落地 ARCHITECTURE.md「任务是统一抽象、工单是其类型」。
 
 task_type 语义：problem/bug/feature/support/other
+
+INTEGRATION_DESIGN.md Phase 1:
+- Task 增加 source / external_id / external_url 字段 + (source, external_id) 唯一约束，
+  支持外部任务源（禅道等）以插件方式接入，核心零感知具体源。
+- 新增 TaskUserMapping：外部任务源账号 → 本平台 user_id 的跨源通用映射表。
 """
 import enum
 
 from sqlalchemy import (
     Column, Integer, String, DateTime, Text, Enum as SQLEnum,
-    BigInteger, Boolean, JSON, ForeignKey, desc,
+    BigInteger, Boolean, JSON, ForeignKey, desc, UniqueConstraint,
 )
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, mapped_column, Mapped
@@ -80,6 +85,17 @@ class Task(Base):
     reply_count = Column(Integer, nullable=False, default=0, comment="回复数量")
     view_count = Column(Integer, nullable=False, default=0, comment="查看数量")
 
+    # --- 外部任务源（插件化，见 INTEGRATION_DESIGN.md）---
+    source = Column(String(32), nullable=False, default="manual", index=True,
+                    comment="任务来源：manual / zentao / ...")
+    external_id = Column(String(64), nullable=True, index=True, comment="外部系统任务ID")
+    external_url = Column(String(512), nullable=True, comment="外部系统跳转链接")
+
+    __table_args__ = (
+        # MySQL 允许多个 NULL，故 manual 任务（external_id=NULL）不冲突
+        UniqueConstraint("source", "external_id", name="uq_task_source_external"),
+    )
+
     def __repr__(self):
         return f"<Task(id={self.id}, title='{self.title}', status={self.status})>"
 
@@ -123,3 +139,27 @@ class TaskComment(Base):
 
     def __repr__(self):
         return f"<TaskComment(id={self.id}, task_id={self.task_id}, created_by='{self.created_by}')>"
+
+
+class TaskUserMapping(Base):
+    """外部任务源账号 → 本平台 user_id 的映射（跨源通用，见 INTEGRATION_DESIGN.md §4.3）。
+
+    SyncEngine 落库时按 (source, external_account) 查本表解析处理人/创建人。
+    """
+    __tablename__ = "task_user_mapping"
+
+    id = Column(BigInteger, primary_key=True, index=True, comment="映射ID")
+    source = Column(String(32), nullable=False, index=True, comment="任务源：zentao / ...")
+    external_account = Column(String(64), nullable=False, comment="外部系统账号，如禅道 account")
+    external_realname = Column(String(128), nullable=True, comment="外部账号姓名，便于识别")
+    local_user_id = Column(String(50), nullable=False, index=True, comment="本平台 user_id")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False, comment="创建时间")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间")
+
+    __table_args__ = (
+        UniqueConstraint("source", "external_account", name="uq_mapping_src_account"),
+    )
+
+    def __repr__(self):
+        return f"<TaskUserMapping(source={self.source}, {self.external_account} -> {self.local_user_id})>"
