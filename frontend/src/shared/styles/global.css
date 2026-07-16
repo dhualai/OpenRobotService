@@ -93,7 +93,7 @@ html, body, #root {
 /* ===== 转工单悬浮入口（贴输入框右上角边框） ===== */
 .chat-panel__ticket-fab {
   position: absolute;
-  top: -38px;
+  top: -48px;
   right: -2px;
   z-index: 10;
   display: flex;
@@ -102,21 +102,31 @@ html, body, #root {
   gap: 2px;
   pointer-events: auto;
 }
+/* 标签默认隐藏，hover 容器时显示 */
+.chat-panel__ticket-fab .chat-ticket-btn__label {
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.chat-panel__ticket-fab:hover .chat-ticket-btn__label {
+  opacity: 0.6;
+  transform: translateY(0);
+}
 .chat-ticket-btn {
   width: 36px;
   height: 36px;
   border: none;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.55);
+  background: #fff;
   backdrop-filter: blur(4px);
-  color: #0052d9;
+  color: #333;
   cursor: pointer;
   padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 1px 6px rgba(0, 82, 217, 0.08);
-  opacity: 0.55;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.08);
+  opacity: 0.7;
   transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
               box-shadow 0.25s ease,
               background 0.25s ease,
@@ -128,17 +138,17 @@ html, body, #root {
   opacity: 1;
   transform: scale(1.12);
   background: #fff;
-  box-shadow: 0 4px 18px rgba(0, 82, 217, 0.22);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
 }
 .chat-ticket-btn:active {
   transform: scale(0.88);
   opacity: 1;
 }
 
-/* 有对话内容时：略强一点但仍半透明 */
+/* 有对话内容时：略强一点 */
 .chat-ticket-btn.has-content {
-  opacity: 0.65;
-  box-shadow: 0 2px 10px rgba(0, 82, 217, 0.14);
+  opacity: 0.8;
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.08);
   animation: ticket-fab-enter 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both,
              ticket-fab-pulse 2.4s ease-in-out 0.6s infinite;
 }
@@ -149,11 +159,10 @@ html, body, #root {
   height: 20px;
 }
 
-/* 标签文字 */
+/* 标签文字 — 默认隐藏，hover 容器时显示 */
 .chat-ticket-btn__label {
   font-size: 10px;
-  color: #0052d9;
-  opacity: 0.6;
+  color: #666;
   font-weight: 500;
   letter-spacing: 0.5px;
   user-select: none;
@@ -171,10 +180,54 @@ html, body, #root {
 }
 @keyframes ticket-fab-pulse {
   0%, 100% {
-    box-shadow: 0 2px 10px rgba(0, 82, 217, 0.14);
+    box-shadow: 0 2px 14px rgba(0, 0, 0, 0.08);
   }
   50% {
-    box-shadow: 0 2px 20px rgba(0, 82, 217, 0.28), 0 0 0 4px rgba(0, 82, 217, 0.06);
+    box-shadow: 0 2px 24px rgba(0, 0, 0, 0.12), 0 0 0 4px rgba(0, 0, 0, 0.03);
+  }
+}
+
+/* 转工单提交中状态 */
+.chat-ticket-btn.is-submitting {
+  opacity: 1 !important;
+  background: #0052d9;
+  color: #fff;
+  cursor: wait;
+  box-shadow: 0 0 0 4px rgba(0, 82, 217, 0.15);
+  animation: ticket-fab-enter 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both,
+             ticket-submit-glow 1.2s ease-in-out infinite;
+  transition: background 0.2s ease, box-shadow 0.2s ease, color 0.2s ease;
+}
+.chat-ticket-btn.is-submitting:hover {
+  transform: none;
+  background: #0052d9;
+  box-shadow: 0 0 0 4px rgba(0, 82, 217, 0.15);
+}
+.chat-ticket-btn:disabled {
+  pointer-events: none;
+}
+
+/* 提交中旋转圆环 */
+.chat-ticket-spinner {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: ticket-spin 0.7s linear infinite;
+}
+
+@keyframes ticket-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes ticket-submit-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 4px rgba(0, 82, 217, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(0, 82, 217, 0.06), 0 0 0 4px rgba(0, 82, 217, 0.2);
   }
 }
 
@@ -587,6 +640,187 @@ html, body, #root {
 .ticket-edit h4 { margin-bottom: 12px; }
 .ticket-edit .tasks-search { margin-bottom: 12px; }
 .ticket-edit__btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+/* ===== Markdown 渲染样式 ===== */
+.markdown-body {
+  font-size: 14px;
+  line-height: 1.7;
+  color: #333;
+  word-break: break-word;
+}
+.markdown-body.md-compact {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* 段落 */
+.markdown-body p { margin: 0 0 10px; }
+.markdown-body p:last-child { margin-bottom: 0; }
+
+/* 标题 */
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 14px 0 8px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.markdown-body h1 { font-size: 1.35em; }
+.markdown-body h2 { font-size: 1.2em; }
+.markdown-body h3 { font-size: 1.1em; }
+.markdown-body h4 { font-size: 1.05em; }
+.markdown-body h5,
+.markdown-body h6 { font-size: 1em; }
+
+/* 无序列表 */
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0 0 10px;
+  padding-left: 20px;
+}
+.markdown-body li { margin-bottom: 4px; }
+.markdown-body li:last-child { margin-bottom: 0; }
+
+/* 引用块 */
+.markdown-body blockquote {
+  margin: 0 0 10px;
+  padding: 6px 12px;
+  border-left: 3px solid #0052d9;
+  background: #f0f5ff;
+  color: #555;
+  border-radius: 0 6px 6px 0;
+}
+
+/* 分隔线 */
+.markdown-body hr {
+  margin: 14px 0;
+  border: none;
+  border-top: 1px solid #e8e8e8;
+}
+
+/* 行内代码 */
+.markdown-body .md-inline-code,
+.markdown-body code:not(pre code) {
+  background: rgba(0, 0, 0, 0.06);
+  color: #d54941;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+/* 代码块 */
+.markdown-body .md-code-block,
+.markdown-body pre {
+  margin: 0 0 10px;
+  padding: 12px 14px;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.55;
+  white-space: pre;
+}
+.markdown-body pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* 表格 */
+.markdown-body .md-table-wrap {
+  margin: 0 0 10px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.markdown-body .md-table,
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+.markdown-body table th,
+.markdown-body table td {
+  padding: 8px 10px;
+  border: 1px solid #e0e0e0;
+  text-align: left;
+}
+.markdown-body table th {
+  background: #f5f7fa;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.markdown-body table tr:nth-child(even) td {
+  background: #fafbfc;
+}
+
+/* 链接 */
+.markdown-body a {
+  color: #0052d9;
+  text-decoration: none;
+  word-break: break-all;
+}
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+
+/* 图片/视频容器 */
+.markdown-body .md-media-wrap,
+.markdown-body img,
+.markdown-body video {
+  display: block;
+  max-width: 100%;
+  margin: 8px 0;
+  border-radius: 8px;
+}
+.markdown-body .md-image {
+  max-width: 100%;
+  border-radius: 8px;
+  margin: 8px 0;
+}
+.markdown-body .md-media-fallback {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #888;
+}
+.markdown-body .md-media-fallback a {
+  color: #0052d9;
+}
+.markdown-body .md-media-loading {
+  display: block;
+  padding: 12px 16px;
+  background: #f5f5f5;
+  border-radius: 8px;
+  color: #999;
+  font-size: 13px;
+  margin: 8px 0;
+}
+
+/* 删除线 */
+.markdown-body del,
+.markdown-body s {
+  color: #aaa;
+}
+
+/* 粗体 / 斜体 */
+.markdown-body strong { font-weight: 600; }
+.markdown-body em { font-style: italic; }
+
+/* 任务列表 */
+.markdown-body input[type="checkbox"] {
+  margin-right: 6px;
+  accent-color: #0052d9;
+}
 
 /* ===== 后台管理入口 ===== */
 .admin-view { padding-top: 46px; }

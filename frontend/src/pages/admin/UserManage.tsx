@@ -7,7 +7,7 @@ import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
 
 interface User { id: string; username: string; email: string; role: string; is_active: boolean; }
-interface Role { id: string; name: string; }
+interface Role { id: string; name: string; description?: string; }
 
 export default function UserManage() {
   const [users, setUsers] = useState<User[]>([]);
