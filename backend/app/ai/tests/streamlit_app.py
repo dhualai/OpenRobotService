@@ -25,7 +25,17 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-API_BASE = "http://localhost:8000"
+API_BASE = "http://localhost:8400"
+
+
+def fix_image_urls(text: str) -> str:
+    """将相对路径的图片 URL 转为指向 FastAPI 后端的绝对路径"""
+    import re
+    return re.sub(
+        r'!\[([^\]]*)\]\((/api/media/[^)]+)\)',
+        rf'![\1]({API_BASE}\2)',
+        text,
+    )
 
 # ============================================================
 # 会话初始化
@@ -164,22 +174,37 @@ with chat_container:
 
         if role == "user":
             with st.chat_message("user"):
-                st.markdown(content)
+                st.markdown(fix_image_urls(content))
         else:
             with st.chat_message("assistant"):
-                st.markdown(content)
+                st.markdown(fix_image_urls(content))
 
                 # 工单信息
                 ticket = msg.get("ticket", {})
                 if ticket:
                     with st.expander("🎫 工单详情", expanded=True):
-                        st.json({
-                            "编号": ticket.get("ticket_id"),
-                            "标题": ticket.get("title"),
-                            "分类": ticket.get("category"),
-                            "紧急度": ticket.get("urgency"),
-                            "综述": ticket.get("description", ""),
-                        })
+                        cols = st.columns(3)
+                        cols[0].metric("类型", ticket.get("type", "-"))
+                        cols[1].metric("优先级", ticket.get("priority", "-"))
+                        cols[2].metric("状态", ticket.get("status", "-"))
+                        if ticket.get("title"):
+                            st.caption(f"📝 {ticket['title']}")
+                        if ticket.get("description"):
+                            st.caption(ticket["description"])
+                        # 类型专属字段
+                        extra_fields = []
+                        if ticket.get("location"):
+                            extra_fields.append(f"现场位置: {ticket['location']}")
+                        if ticket.get("robot_type"):
+                            extra_fields.append(f"机器人: {ticket['robot_type']}")
+                        if ticket.get("fault_code"):
+                            extra_fields.append(f"故障码: {ticket['fault_code']}")
+                        if ticket.get("severity"):
+                            extra_fields.append(f"严重程度: {ticket['severity']}")
+                        if ticket.get("version"):
+                            extra_fields.append(f"版本: {ticket['version']}")
+                        if extra_fields:
+                            st.caption(" | ".join(extra_fields))
 
                 # 计时
                 timing = msg.get("timing", {})
@@ -224,11 +249,11 @@ if prompt := st.chat_input("描述您遇到的 AGV/AMR 问题…"):
 
                 if event.get("token"):
                     full_text += event["token"]
-                    text_placeholder.markdown(full_text + "▌")
+                    text_placeholder.markdown(fix_image_urls(full_text) + "▌")
 
                 if event.get("done"):
                     status_placeholder.empty()
-                    text_placeholder.markdown(full_text)
+                    text_placeholder.markdown(fix_image_urls(full_text))
 
                     result = event.get("result", {}) or {}
                     timing_info["total_roundtrip"] = event.get("total_ms", 0)

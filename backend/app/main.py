@@ -125,28 +125,32 @@ app.include_router(qa_router)
 app.include_router(chat_router)
 app.include_router(memory_router)
 
-# 静态资源：操作手册 + FAQ 图片（通过 DOCS_PATH 定位）
-from app.ai.config import get_docs_dir as _get_docs_dir
+# 静态资源：操作手册 + FAQ 图片（通过 DOCS_PATH + MEDIA_URL_PREFIX 定位）
+from app.ai.config import get_docs_dir as _get_docs_dir, get_ai_config as _get_ai_config
+_ai_cfg = _get_ai_config()
 _docs = _get_docs_dir()
+_media_prefix = _ai_cfg.media_url_prefix  # 默认 /api/media，可通过 .env 覆盖
+
 _media_dir = _docs / "operation_doc" / "media"
 if _media_dir.is_dir():
+    _op_media_url = f"{_media_prefix}/operation_doc"
     app.mount(
-        "/api/media/operation_doc",
+        _op_media_url,
         StaticFiles(directory=str(_media_dir)),
         name="media_operation_doc",
     )
-    print(f"[OK] Media static operation_doc: {_media_dir} ({len(list(_media_dir.iterdir()))} files)")
+    # Media mount silent
 else:
     print(f"[WARN] Media dir not found: {_media_dir}")
 
 _faq_media_dir = _docs / "faq_doc" / "media"
 if _faq_media_dir.is_dir():
+    _faq_media_url = f"{_media_prefix}/faq_doc"
     app.mount(
-        "/api/media/faq_doc",
+        _faq_media_url,
         StaticFiles(directory=str(_faq_media_dir)),
         name="media_faq_doc",
-    )
-    print(f"[OK] Media static faq_doc: {_faq_media_dir} ({len(list(_faq_media_dir.iterdir()))} files)")
+    )  # silent
 
 
 @app.get("/health", tags=["系统"])
