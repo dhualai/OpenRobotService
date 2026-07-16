@@ -1,36 +1,62 @@
-// 会话历史列表 - 基于接口文档 GET /api/call/conversations
+// 会话历史列表 - 对接 /api/ai/memory/*（新版 AI 模块）
 import { useState, useEffect, useCallback } from 'react';
 import { Loading, Toast, Dialog } from 'tdesign-mobile-react';
-import { createRequest } from '@/api/client';
-import API_CONFIG from '@/config/api';
+import { memoryHistory, memoryClear } from '@/api/ai';
 import { formatDateTime } from '@/shared/utils/url';
 
-interface Conversation {
-  id: string;
-  title: string;
-  user_id?: string;
-  scene_type?: string;
-  created_at: string;
-  updated_at: string;
+interface Turn {
+  role: string;
+  content: string;
+  timestamp?: string;
+}
+
+interface Session {
+  session_id: string;
+  title?: string;
+  turns: Turn[];
+  count: number;
+  updated_at?: string;
 }
 
 interface ConversationListProps {
-  onSelectConversation?: (convId: string) => void;
+  onSelectConversation?: (sessionId: string) => void;
 }
 
 export default function ConversationList({ onSelectConversation }: ConversationListProps) {
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.CALL.BASE_URL, '对话服务');
 
-  const fetchConversations = useCallback(async () => {
+  const fetchSessions = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await request<Conversation[]>('/conversations');
+      // 会话历史需要传入 session_id——前端自行维护会话列表
+      // 这里改为从 localStorage 获取已知 session 列表并逐个拉取历史
+      const knownIds: string[] = JSON.parse(localStorage.getItem('ai_sessions') || '[]');
+      const results: Session[] = [];
+      for (const sid of knownIds) {
+        try {
+          const res = await memoryHistory(sid);
+          if (res.code === 0 && res.data) {
+            const { turns, count } = res.data;
+            // 用第一条用户消息作为标题
+            const firstUser = turns.find((t) => t.role === 'user');
+            results.push({
+              session_id: sid,
+              title: firstUser?.content?.slice(0, 30) || '新会话',
+              turns,
+              count,
+              updated_at: turns[turns.length - 1]?.timestamp || new Date().toISOString(),
+            });
+          }
+        } catch { /* 单个会话拉取失败则跳过 */ }
+      }
       // 按更新时间倒序
-      const list = Array.isArray(data) ? data : (data as any).items || [];
-      list.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
-      setConversations(list);
+      results.sort((a, b) => {
+        const da = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+        const db = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+        return db - da;
+      });
+      setSessions(results);
     } catch (err) {
       Toast({ message: `加载会话失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
@@ -38,17 +64,21 @@ export default function ConversationList({ onSelectConversation }: ConversationL
     }
   }, []);
 
-  useEffect(() => { fetchConversations(); }, [fetchConversations]);
+  useEffect(() => { fetchSessions(); }, [fetchSessions]);
 
-  const handleDelete = (conv: Conversation) => {
+  const handleDelete = (session: Session) => {
     Dialog.confirm?.({
       title: '确认删除',
-      content: `确定要删除会话「${conv.title || '未命名'}」吗？`,
+      content: `确定要删除会话「${session.title || '未命名'}」吗？`,
       onConfirm: async () => {
         try {
-          await request(`/conversations/${conv.id}`, { method: 'DELETE' });
+          await memoryClear(session.session_id);
           Toast({ message: '会话已删除', theme: 'success' });
-          fetchConversations();
+          // 从 localStorage 移除
+          const knownIds: string[] = JSON.parse(localStorage.getItem('ai_sessions') || '[]');
+          const updated = knownIds.filter((id) => id !== session.session_id);
+          localStorage.setItem('ai_sessions', JSON.stringify(updated));
+          fetchSessions();
         } catch (err) {
           Toast({ message: `删除失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
         }
@@ -61,16 +91,16 @@ export default function ConversationList({ onSelectConversation }: ConversationL
   return (
     <div style={{ padding: 16 }}>
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: '#333' }}>
-        会话历史 ({conversations.length})
+        会话历史 ({sessions.length})
       </div>
 
-      {conversations.length === 0 ? (
+      {sessions.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>暂无会话记录</div>
       ) : (
-        conversations.map((conv) => (
+        sessions.map((session) => (
           <div
-            key={conv.id}
-            onClick={() => onSelectConversation?.(conv.id)}
+            key={session.session_id}
+            onClick={() => onSelectConversation?.(session.session_id)}
             style={{
               background: '#fff',
               borderRadius: 8,
@@ -85,15 +115,15 @@ export default function ConversationList({ onSelectConversation }: ConversationL
           >
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 500, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {conv.title || '未命名会话'}
+                {session.title || '未命名会话'}
               </div>
               <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
-                {conv.scene_type && <span>{conv.scene_type} · </span>}
-                {formatDateTime(conv.updated_at)}
+                {session.count} 条对话
+                {session.updated_at && <> · {formatDateTime(session.updated_at)}</>}
               </div>
             </div>
             <button
-              onClick={(e) => { e.stopPropagation(); handleDelete(conv); }}
+              onClick={(e) => { e.stopPropagation(); handleDelete(session); }}
               style={{
                 marginLeft: 12,
                 padding: '4px 10px',

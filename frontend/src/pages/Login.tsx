@@ -34,7 +34,7 @@ export default function Login() {
       });
       login(data, username.trim());
       Toast({ message: '登录成功', theme: 'success' });
-      navigate('/call', { replace: true });
+      navigate('/app/call', { replace: true });
     } catch (err) {
       Toast({ message: `登录失败: ${err instanceof Error ? err.message : '未知错误'}`, theme: 'error' });
     } finally {
