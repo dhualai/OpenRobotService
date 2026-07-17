@@ -6,7 +6,7 @@ import path from 'path';
 // 测试服务器地址：dev（serve）走此地址；build 时 proxy target 置空。
 // 注：proxy 仅对 `vite dev` 生效，`vite build` 不启动 dev server，target 在构建期无实际作用，
 // 这里按需求在 build 时显式置空，避免硬编码后端地址。
-const TEST_API_TARGET = 'http://8.152.219.181:8008';
+const TEST_API_TARGET = 'http://125.122.97.107:8801';
 
 export default defineConfig(({ command }) => {
   // serve = npm run dev；build = npm run build

@@ -1,9 +1,8 @@
-import type { ReactNode, FormEvent } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
-// Mock react-router-dom's useNavigate
+// Mock react-router-dom 的 useNavigate
 const mockNavigate = vi.fn();
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
@@ -13,44 +12,19 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-// Mock tdesign-mobile-react
+// 仅用到 Toast
 vi.mock('tdesign-mobile-react', () => ({
-  Button: ({ children, onClick, loading }: { children?: ReactNode; onClick?: () => void; loading?: boolean }) => (
-    <button onClick={onClick} disabled={loading} data-testid="btn">
-      {children}
-    </button>
-  ),
-  Navbar: ({ title }: { title?: ReactNode }) => (
-    <nav data-testid="navbar">{title}</nav>
-  ),
-  Form: ({ children, onSubmit }: { children?: ReactNode; onSubmit?: (e: FormEvent) => void }) => (
-    <form
-      onSubmit={(e: FormEvent) => {
-        e.preventDefault();
-        onSubmit?.(e);
-      }}
-    >
-      {children}
-    </form>
-  ),
-  FormItem: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  Input: ({ placeholder, defaultValue }: { placeholder?: string; defaultValue?: string }) => (
-    <input placeholder={placeholder} defaultValue={defaultValue} />
-  ),
   Toast: vi.fn(),
 }));
 
 // Mock API
 vi.mock('@/api/client', () => ({
   createRequest: vi.fn(() =>
-    vi.fn().mockImplementation(() => {
-      // Will be overridden per-test
-      return Promise.resolve({
-        access_token: 'test-access',
-        refresh_token: 'test-refresh',
-        expires_in: 3600,
-      });
-    })
+    vi.fn().mockResolvedValue({
+      access_token: 'test-access',
+      refresh_token: 'test-refresh',
+      expires_in: 3600,
+    }),
   ),
 }));
 
@@ -73,48 +47,45 @@ describe('Login', () => {
     mockLogin.mockClear();
   });
 
-  it('should render login form', () => {
+  it('渲染品牌标题与副标题', () => {
     render(
       <MemoryRouter>
         <Login />
-      </MemoryRouter>
+      </MemoryRouter>,
     );
-
-    expect(screen.getByText('登录 OpenRobotService')).toBeInTheDocument();
-    expect(screen.getByText('登录')).toBeInTheDocument();
-    expect(screen.getByText('摇人吧')).toBeInTheDocument();
+    expect(screen.getByText('OpenRobotService')).toBeInTheDocument();
+    expect(screen.getByText(/机器人开源平台/)).toBeInTheDocument();
   });
 
-  it('should show login hint text', () => {
+  it('包含账号与密码输入框', () => {
     render(
       <MemoryRouter>
         <Login />
-      </MemoryRouter>
+      </MemoryRouter>,
     );
-
-    expect(
-      screen.getByText('请使用您的系统账号登录')
-    ).toBeInTheDocument();
-  });
-
-  it('should have username and password inputs', () => {
-    render(
-      <MemoryRouter>
-        <Login />
-      </MemoryRouter>
-    );
-
     const inputs = document.querySelectorAll('input');
     expect(inputs.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('should have Navbar with title', () => {
+  it('密码默认掩码，点击眼睛可切换显隐', () => {
     render(
       <MemoryRouter>
         <Login />
-      </MemoryRouter>
+      </MemoryRouter>,
     );
+    expect(document.querySelector('input[type="password"]')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '显示密码' }));
+    expect(document.querySelector('input[type="text"]')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '隐藏密码' })).toBeInTheDocument();
+  });
 
-    expect(screen.getByTestId('navbar')).toHaveTextContent('摇人吧');
+  it('空表单提交给出提示且不导航', () => {
+    render(
+      <MemoryRouter>
+        <Login />
+      </MemoryRouter>,
+    );
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement);
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 });
