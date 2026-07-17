@@ -269,6 +269,7 @@ async def ingest_chunks(chunks: List[Chunk], collection_name: str, rebuild: bool
             host=config.qdrant_host,
             port=config.qdrant_port,
             timeout=config.qdrant_timeout,
+            check_compatibility=False,
         )
 
     collection = collection_name
@@ -530,6 +531,7 @@ async def _cleanup_old_collections(keep: int = 1):
             host=config.qdrant_host,
             port=config.qdrant_port,
             timeout=config.qdrant_timeout,
+            check_compatibility=False,
         )
 
     try:

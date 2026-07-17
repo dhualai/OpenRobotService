@@ -14,7 +14,6 @@ import httpx
 from typing import Optional, Dict, List
 from dataclasses import dataclass, field
 
-from app.ai import SYSTEM_PROMPT
 from app.ai.config import get_ai_config
 from app.ai.exceptions import AITimeoutError, LowConfidenceError, ServiceUnavailableError, RetrieveEmptyError
 from app.ai.core import get_llm_client, get_retrieval_service, get_memory_manager
@@ -94,11 +93,22 @@ def _agent_state_summary(state: AgentState) -> dict:
 # Agent 推理 Prompt
 # ============================================================
 
-DIAGNOSIS_PROMPT = """你是 AGV/AMR 技术支持 Agent。
+DIAGNOSIS_PROMPT = """你是工业移动机器人（AGV/AMR）领域的技术支持专家。
+所服务的产品是 USP（Universal Scheduling Platform）大调度系统，用于 AGV/AMR 的调度管理、车辆管理、设备管理、地图编辑与监控运维。
+USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁提及"手机""移动端""APP"等移动端概念。
+严禁给出手机、电脑等消费电子产品的通用回答，严禁超出 AGV/AMR 领域。
 
-## 先判断用户意图
-- **howto（操作咨询）**：用户问"怎么做/怎么上线/怎么配置/步骤/流程"等，想了解操作方法。
-  从知识库找答案，按前提→操作→预期结果的顺序给出步骤。直接 answer，不追问不假设故障。
+## 知识库使用优先级（极其重要）
+知识库中有三类 chunk，按以下优先级使用：
+
+1. **FAQ（标题含「FAQ」）**：用户问的具体问题如果在 FAQ 中有直接匹配（如错误码含义、常见问题），**优先直接回答**，不追问不绕弯。
+2. **🔍 故障排查树**：用户描述了故障现象，FAQ 没有直接覆盖时，用排查树按步骤引导。
+3. **知识库（操作手册）**：howto 类操作问题走这里，按前提→操作→预期结果给出步骤。
+
+⚠️ **关键**：FAQ 和排查树不互斥！先看 FAQ 有没有现成答案，有就直接用；FAQ 没覆盖的故障才走排查树。
+
+## 意图判断（决定回复风格，不影响知识源选择）
+- **howto（操作咨询）**：用户问"怎么做/怎么上线/怎么配置/步骤/流程"等。直接 answer，不追问不假设故障。
   知识库没涉及的细节如实说"手册未覆盖"，不要自己编步骤。
   ⚠️ 图片规则（极其重要）：
   知识库中的图片（![](url)）是操作界面截图。**必须严格按知识库原文的步骤结构来配图**——
@@ -106,29 +116,37 @@ DIAGNOSIS_PROMPT = """你是 AGV/AMR 技术支持 Agent。
   **禁止把所有图片堆在同一个步骤后面**，每张图只能出现在它所属的子步骤下。
 
 - **troubleshoot（故障排查）**：用户描述了异常现象（离线、报错、不动、卡住、异常等）。
-  列出可能原因，引导用户逐项验证。看 hypotheses/collected_info/ruled_out 推进排查。
-  如果你有明确怀疑，让用户直接试（如"重启一下控制器看是否恢复"）。排查不出时建议转工单。
+  **先查 FAQ**：如果 FAQ 中有对应错误码/问题的直接答案，优先引用 FAQ 回答。
+  **FAQ 没覆盖 + 有排查树**：严格按排查树逐步骤引导（见下方详细规则）。
+  **都没有时**：列出可能原因，引导用户逐项验证。看 hypotheses/collected_info/ruled_out 推进排查。有明确怀疑直接让用户试（如"重启一下控制器看是否恢复"）。排查不出转工单。
   ⚠️ 知识库中有相关截图/示意图时，**必须引用**到回答中帮助用户定位。
 
 - **chat（闲聊/问候）**：简单回应，引导用户描述具体问题。
 
+- **转工单**：用户说"转工单""转单""生成工单""提交工单"或类似表述时，action 设为 answer，直接告知用户工单将基于当前诊断信息生成，不要开始新的排查。不要引用 prompt 示例中的任何内容。
+
 ## 重要规则
-- 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：` 或 `🔍 故障排查树 N：` 中标明。
-  **只引用与用户问题直接相关的 chunk 内容**，无关 chunk（如用户问自研车，但检索到了科钛车/库位前置点）的内容和图片一律忽略。
+- 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：`、`FAQ N：` 或 `🔍 故障排查树 N：` 中标明。
+  **只引用与用户问题直接相关的 chunk 内容**，无关 chunk 的内容和图片一律忽略。
+- **禁止在回复中暴露知识来源**：不要说"根据排查树""根据知识库""检索结果显示"等话术。
+  直接给出步骤/答案，用户不需要知道你查了什么。
 
 ## 🔍 故障排查树使用规则（极其重要）
-- 如果知识库中有「🔍 故障排查树」（结构化步骤引导），你应该用它来排查问题。
-  **但只有用户明确在排查故障（intent=troubleshoot）时才使用排查树**，
-  操作咨询（howto）走「知识库」chunk，不走排查树。
+- 排查树用于 FAQ 无法直接覆盖的故障场景。如果用户问题在 FAQ 中已有现成答案（如错误码解释），直接用 FAQ，不走排查树。
+
+⚠️ **铁律（违反将导致错误诊断）**：
+  - **绝对禁止**自己编造排查树中没有的检查项、原因或方案
+  - **绝对禁止**跳过排查树的步骤顺序，或合并多步为一步
+  - 你只能问排查树中明确列出的分支选项，不能自己添加选项
+  - 每一轮排查你只能说排查树中**当前这一步**的内容，不能提前透露后续步骤
 
 1. **分流判断**（命中多个排查树 / 用户描述模糊时）：
    - **不要**直接开始走某一棵树的步骤！
    - 把命中的故障场景列出来让用户确认是哪一个，如：
      "🔍 排查树匹配到以下几种情况，请确认你的具体现象：
-     1. 车待命，任务状态一直显示调度中，机器人编号为-
-     2. 车不动了，原子任务状态路径规划中
-     3. 车不动了，原子任务状态已下发
-     4. 车不动了，原子任务状态执行中
+     1. <场景A的症状名称>
+     2. <场景B的症状名称>
+     3. <场景C的症状名称>
      请问你的任务界面显示的是哪种状态？"
    - **用户确认后再**进入该树的逐步骤排查。
 
@@ -141,6 +159,7 @@ DIAGNOSIS_PROMPT = """你是 AGV/AMR 技术支持 Agent。
 3. **排查树中的结论引用**：
    - 排查树里的「原因」和「方案」是经验总结，输出时引用它们
    - 如果【结论】涉及操作步骤（如"急停→推车→RESET"），展开为可执行的步骤
+   - 排查树某一步走完后，下一轮继续按树往下走，不要回到自由发挥模式
 
 ## 对话
 {conversation}
@@ -313,10 +332,13 @@ class AiDiagnosisPlatform:
     async def _finalize_diagnosis(self, session_id: str, state: AgentState,
                                     thinking: str, action: str, message: str,
                                     streaming: bool = False) -> dict:
-        await self._memory_manager.add_turn(session_id, "assistant", message)
-        fresh_memory = await self._memory_manager.get_memory(session_id)
-        _save_agent_state(fresh_memory, state)
-        await self._memory_manager.save_memory(fresh_memory)
+        # 手动添加 turn + 更新 agent_state，一次 save_memory 完成
+        memory = await self._memory_manager.get_memory(session_id)
+        memory.turns.append({"role": "assistant", "content": message})
+        if len(memory.turns) > self._memory_manager.max_turns:
+            memory.turns = memory.turns[-self._memory_manager.max_turns:]
+        _save_agent_state(memory, state)
+        await self._memory_manager.save_memory(memory)
 
         return {
             "type": "diagnosis",
@@ -362,8 +384,7 @@ class AiDiagnosisPlatform:
         t_llm_start = time.perf_counter()
         try:
             raw = await asyncio.wait_for(
-                self._llm_client.complete(prompt=prompt, system_prompt=SYSTEM_PROMPT,
-                                           max_tokens=1500, temperature=0.5),
+                self._llm_client.complete(prompt=prompt, max_tokens=1500, temperature=0.5),
                 timeout=25.0,
             )
         except (asyncio.TimeoutError, AITimeoutError, ServiceUnavailableError, Exception):
@@ -498,7 +519,7 @@ class AiDiagnosisPlatform:
                 docs.append(f"---\n知识库 {idx}{title}：\n{content}\n---")
                 idx += 1
 
-            result = "\n".join(docs) if docs else "（知识库暂无匹配文档，请基于机器人/工业自动化行业知识进行诊断。）"
+            result = "\n".join(docs) if docs else "（知识库暂无匹配文档，请告知用户当前手册未覆盖此问题，建议转工单处理，不要自己编造答案。）"
 
             self._retrieval_cache[cache_key] = {"result": result, "ts": time.time()}
             # 防止缓存无限增长
@@ -514,7 +535,7 @@ class AiDiagnosisPlatform:
             print(f"  ⏱  [retrieve] LowConfidence: score={e.confidence:.3f} threshold={self.config.retrieval_score_threshold}, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
         except (asyncio.TimeoutError, ConnectionError, RetrieveEmptyError):
             print(f"  ⏱  [retrieve] failed/timed-out, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
-        return "（知识库暂无匹配文档，请基于机器人/工业自动化行业知识进行诊断。）"
+        return "（知识库检索失败，请告知用户当前系统检索异常、建议稍后重试或转工单处理，不要自己编造答案。）"
 
     # ================================================================
     # 工单生成
@@ -822,8 +843,7 @@ class AiDiagnosisPlatform:
         _buf = ""          # 累积缓冲区，用于检测 JSON→消息边界
         _json_done = False # True 表示已越过 JSON 区域
         try:
-            async for token in self._llm_client.stream(prompt=prompt, system_prompt=SYSTEM_PROMPT,
-                                                         max_tokens=1500, temperature=0.5):
+            async for token in self._llm_client.stream(prompt=prompt, max_tokens=1500, temperature=0.5):
                 raw_tokens.append(token)
 
                 if not _json_done:

@@ -3,18 +3,14 @@
 统一 LLM 接口层
 - 支持多厂商切换（DeepSeek/OpenAI）
 - 异步请求 + 重试机制
-- 响应缓存（LRU）
 - 流式输出支持
 """
 import asyncio
-import hashlib
 import json
 import time
 from typing import Optional, List, Dict, Any
 from abc import ABC, abstractmethod
 from enum import Enum
-from functools import lru_cache
-
 import httpx
 from tenacity import (
     retry,
@@ -125,40 +121,6 @@ _PROVIDERS: Dict[LLMProvider, BaseLLMProvider] = {
 
 
 # ============================================================
-# LLM 响应缓存
-# ============================================================
-
-_llm_response_cache: Dict[str, tuple] = {}  # {cache_key: (response, timestamp)}
-
-
-def _make_cache_key(
-    provider: str,
-    model: str,
-    messages: List[Dict[str, str]]
-) -> str:
-    """生成缓存键"""
-    content = json.dumps(
-        {"provider": provider, "model": model, "messages": messages},
-        ensure_ascii=False,
-        sort_keys=True
-    )
-    return hashlib.md5(content.encode()).hexdigest()
-
-
-def _is_cache_valid(cached_time: float, ttl: int) -> bool:
-    """检查缓存是否有效"""
-    return time.time() - cached_time < ttl
-
-
-def _cleanup_expired_cache(ttl: int) -> None:
-    """清理过期缓存"""
-    global _llm_response_cache
-    expired = [k for k, (_, t) in _llm_response_cache.items()
-               if not _is_cache_valid(t, ttl)]
-    for k in expired:
-        del _llm_response_cache[k]
-
-
 # ============================================================
 # 统一 LLM 客户端
 # ============================================================
@@ -281,7 +243,6 @@ class LLMClient:
         system_prompt: Optional[str] = None,
         max_tokens: int = 2000,
         temperature: float = 0.1,
-        use_cache: bool = True,
     ) -> str:
         """
         同步补全（单轮对话）
@@ -291,7 +252,6 @@ class LLMClient:
             system_prompt: 系统提示
             max_tokens: 最大 token 数
             temperature: 温度参数
-            use_cache: 是否使用缓存
 
         Returns:
             LLM 生成的文本
@@ -301,33 +261,13 @@ class LLMClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        # 检查缓存
-        if use_cache:
-            cache_key = _make_cache_key(
-                self.provider.value, self.model, messages
-            )
-            if cache_key in _llm_response_cache:
-                cached_response, cached_time = _llm_response_cache[cache_key]
-                if _is_cache_valid(cached_time, self.config.llm_cache_ttl):
-                    return cached_response
-
-        # 发起请求
         try:
             response = await self._make_request(
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
-
-            content = self._provider_impl.extract_content(response)
-
-            # 更新缓存
-            if use_cache:
-                _llm_response_cache[cache_key] = (content, time.time())
-                if len(_llm_response_cache) > 1000:
-                    _cleanup_expired_cache(self.config.llm_cache_ttl)
-
-            return content
+            return self._provider_impl.extract_content(response)
 
         except RetryError as e:
             raise AITimeoutError(f"LLM 服务响应超时: {str(e)}")
@@ -341,7 +281,6 @@ class LLMClient:
         messages: List[Dict[str, str]],
         max_tokens: int = 2000,
         temperature: float = 0.1,
-        use_cache: bool = True,
     ) -> str:
         """
         多轮对话
@@ -350,34 +289,17 @@ class LLMClient:
             messages: 消息列表 [{"role": "user", "content": "..."}]
             max_tokens: 最大 token 数
             temperature: 温度参数
-            use_cache: 是否使用缓存
 
         Returns:
             LLM 生成的文本
         """
-        # 检查缓存
-        if use_cache:
-            cache_key = _make_cache_key(
-                self.provider.value, self.model, messages
-            )
-            if cache_key in _llm_response_cache:
-                cached_response, cached_time = _llm_response_cache[cache_key]
-                if _is_cache_valid(cached_time, self.config.llm_cache_ttl):
-                    return cached_response
-
         try:
             response = await self._make_request(
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
-
-            content = self._provider_impl.extract_content(response)
-
-            if use_cache:
-                _llm_response_cache[cache_key] = (content, time.time())
-
-            return content
+            return self._provider_impl.extract_content(response)
 
         except RetryError as e:
             raise AITimeoutError(f"LLM 服务响应超时: {str(e)}")

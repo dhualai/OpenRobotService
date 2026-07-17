@@ -148,6 +148,7 @@ class QdrantClientWrapper:
                                 host=self.host,
                                 port=self.port,
                                 timeout=self.timeout,
+                                check_compatibility=False,
                             )
                             self._is_local = False
                     except Exception as e:
@@ -242,26 +243,16 @@ class QdrantClientWrapper:
         client = await self._ensure_client()
         col = collection_name or self.collection_name
         try:
-            if self._is_local:
-                # 本地模式：query_points
-                result = await self._to_thread(
-                    client.query_points,
-                    collection_name=col,
-                    query=vector,
-                    limit=top_k,
-                    score_threshold=score_threshold,
-                    with_payload=True,
-                )
-                return result.points
-            else:
-                return await self._to_thread(
-                    client.search,
-                    collection_name=col,
-                    query_vector=vector,
-                    limit=top_k,
-                    score_threshold=score_threshold,
-                    with_payload=True,
-                )
+            # qdrant_client >=1.18: search() → query_points()
+            result = await self._to_thread(
+                client.query_points,
+                collection_name=col,
+                query=vector,
+                limit=top_k,
+                score_threshold=score_threshold,
+                with_payload=True,
+            )
+            return result.points
         except ServiceUnavailableError:
             return []
         except Exception as e:
@@ -286,10 +277,11 @@ class QdrantClientWrapper:
             values = [sparse_vector[i] for i in indices]
             sv = SparseVector(indices=indices, values=values)
 
-            return await self._to_thread(
-                client.search,
+            # qdrant_client >=1.18: search() → query_points()
+            result = await self._to_thread(
+                client.query_points,
                 collection_name=self.collection_name,
-                query_vector=("sparse", sv),
+                query=("sparse", sv),
                 limit=top_k,
                 score_threshold=score_threshold,
                 with_payload=True,
@@ -298,6 +290,7 @@ class QdrantClientWrapper:
                     exact=False,
                 ),
             )
+            return result.points
         except ServiceUnavailableError:
             return []
         except Exception:
@@ -503,7 +496,7 @@ class RetrievalService:
         query_vector = await self._embed_client.embed(query)
         bm25_sparse = self._generate_bm25_sparse(query)
 
-        # 2. 并行检索（现在不会阻塞事件循环了）
+        # 2. 并行检索
         dense_task = self._qdrant.search_dense(
             query_vector.tolist(),
             top_k=k * 2,
@@ -513,10 +506,7 @@ class RetrievalService:
             top_k=k * 2,
         ) if bm25_sparse else asyncio.sleep(0)
 
-        dense_results, sparse_results = await asyncio.gather(
-            dense_task,
-            sparse_task if bm25_sparse else asyncio.sleep(0),
-        )
+        dense_results, sparse_results = await asyncio.gather(dense_task, sparse_task)
         # 3. RRF 融合
         results = self._rrf_fusion(
             dense_results,

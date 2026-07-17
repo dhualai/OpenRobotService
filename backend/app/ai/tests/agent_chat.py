@@ -114,7 +114,7 @@ while True:
     if msg.lower() in ("quit", "exit", "q"):
         print("退出。")
         break
-    if msg == "转工单":
+    if msg in ("转工单", "转工地那") or msg.startswith("转工"):
         submit_ticket()
     else:
         ask_stream(msg)
