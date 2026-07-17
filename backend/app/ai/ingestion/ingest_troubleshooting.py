@@ -216,6 +216,7 @@ async def ingest_troubleshooting(
             host=config.qdrant_host,
             port=config.qdrant_port,
             timeout=config.qdrant_timeout,
+            check_compatibility=False,
         )
 
     # 3. 重建
@@ -298,6 +299,7 @@ async def _cleanup_old_troubleshooting_collections(keep: int = 1):
             host=config.qdrant_host,
             port=config.qdrant_port,
             timeout=config.qdrant_timeout,
+            check_compatibility=False,
         )
 
     try:

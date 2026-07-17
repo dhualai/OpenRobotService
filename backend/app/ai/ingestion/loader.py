@@ -197,6 +197,7 @@ async def ingest_documents(
         host=config.qdrant_host,
         port=config.qdrant_port,
         timeout=config.qdrant_timeout,
+        check_compatibility=False,
     )
 
     # 如果重建，先删除集合
