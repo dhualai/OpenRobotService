@@ -22,6 +22,8 @@ from pydantic import BaseModel, Field
 _ACTIVE_COLLECTION_POINTER = Path(__file__).resolve().parent.parent.parent / "app" / "kb" / "active_collection.txt"
 _ACTIVE_FAQ_COLLECTION_POINTER = Path(__file__).resolve().parent.parent.parent / "app" / "kb" / "active_faq_collection.txt"
 _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER = Path(__file__).resolve().parent.parent.parent / "app" / "kb" / "active_troubleshooting_collection.txt"
+_ACTIVE_CHEDUAN_COLLECTION_POINTER = Path(__file__).resolve().parent.parent.parent / "app" / "kb" / "active_cheduan_collection.txt"
+_ACTIVE_TRANSLATION_COLLECTION_POINTER = Path(__file__).resolve().parent.parent.parent / "app" / "kb" / "active_translation_collection.txt"
 
 
 class AIConfig(BaseModel):
@@ -124,6 +126,42 @@ def _write_active_troubleshooting_collection(name: str) -> None:
     """写入活跃 troubleshooting 集合指针（入库脚本调用）"""
     _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
     _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER.write_text(name, encoding="utf-8")
+
+
+def get_active_cheduan_collection() -> str:
+    """读取当前活跃的车端错误码 Qdrant 集合名"""
+    try:
+        if _ACTIVE_CHEDUAN_COLLECTION_POINTER.exists():
+            name = _ACTIVE_CHEDUAN_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _write_active_cheduan_collection(name: str) -> None:
+    """写入活跃车端错误码集合指针"""
+    _ACTIVE_CHEDUAN_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
+    _ACTIVE_CHEDUAN_COLLECTION_POINTER.write_text(name, encoding="utf-8")
+
+
+def get_active_translation_collection() -> str:
+    """读取当前活跃的翻译表 Qdrant 集合名"""
+    try:
+        if _ACTIVE_TRANSLATION_COLLECTION_POINTER.exists():
+            name = _ACTIVE_TRANSLATION_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _write_active_translation_collection(name: str) -> None:
+    """写入活跃翻译表集合指针"""
+    _ACTIVE_TRANSLATION_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
+    _ACTIVE_TRANSLATION_COLLECTION_POINTER.write_text(name, encoding="utf-8")
 
 
 def get_docs_dir() -> Path:

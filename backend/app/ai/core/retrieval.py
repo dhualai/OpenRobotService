@@ -614,6 +614,103 @@ class RetrievalService:
             ))
         return results
 
+    async def retrieve_cheduan(
+        self,
+        query: str,
+        top_k: int = 3,
+    ) -> List[RetrievalResult]:
+        """
+        车端错误码检索（仅向量检索）。
+
+        读取车端错误码集合，匹配错误码或错误描述。
+        """
+        from app.ai.config import get_active_cheduan_collection
+
+        cd_col = get_active_cheduan_collection()
+        if not cd_col:
+            return []
+
+        k = top_k or 3
+        await self._ensure_clients()
+
+        if self._qdrant.is_unavailable:
+            return []
+
+        query_vector = await self._embed_client.embed(query)
+        points = await self._qdrant.search_dense(
+            query_vector.tolist(),
+            top_k=k,
+            collection_name=cd_col,
+        )
+
+        results = []
+        for point in points:
+            payload = point.payload or {}
+            results.append(RetrievalResult(
+                id=str(point.id),
+                score=point.score,
+                title=f"车端错误码 {payload.get('error_code', '')}",
+                content=(
+                    f"错误码：{payload.get('error_code', '')}\n"
+                    f"类别：{payload.get('category', '')}\n"
+                    f"等级：{payload.get('level', '')}\n"
+                    f"描述：{payload.get('description_cn', '')}\n"
+                    f"方案：{payload.get('solution_cn', '')}"
+                ),
+                vector_score=point.score,
+            ))
+        return results
+
+    async def retrieve_translation(
+        self,
+        query: str,
+        top_k: int = 2,
+    ) -> List[RetrievalResult]:
+        """
+        USP 翻译表检索（仅向量检索）。
+
+        读取翻译表集合，匹配 UI 标签、错误码说明等。
+        """
+        from app.ai.config import get_active_translation_collection
+
+        tr_col = get_active_translation_collection()
+        if not tr_col:
+            return []
+
+        k = top_k or 2
+        await self._ensure_clients()
+
+        if self._qdrant.is_unavailable:
+            return []
+
+        query_vector = await self._embed_client.embed(query)
+        points = await self._qdrant.search_dense(
+            query_vector.tolist(),
+            top_k=k,
+            collection_name=tr_col,
+        )
+
+        results = []
+        for point in points:
+            payload = point.payload or {}
+            samples = payload.get("sample_entries", [])
+            sample_text = "\n".join(
+                f"  {s['cn']} | {s['en']}"
+                for s in samples[:10]
+            )
+            results.append(RetrievalResult(
+                id=str(point.id),
+                score=point.score,
+                title=f"翻译表 [{payload.get('namespace', '')}]",
+                content=(
+                    f"namespace: {payload.get('namespace', '')}\n"
+                    f"共 {payload.get('entry_count', 0)} 条\n"
+                    f"示例：\n{sample_text}"
+                ),
+                vector_score=point.score,
+            ))
+        return results
+
     async def ensure_collection(self, vector_size: int) -> None:
         """确保集合存在"""
         await self._ensure_clients()

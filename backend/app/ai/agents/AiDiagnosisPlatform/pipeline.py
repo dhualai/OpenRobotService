@@ -99,13 +99,15 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁提�
 严禁给出手机、电脑等消费电子产品的通用回答，严禁超出 AGV/AMR 领域。
 
 ## 知识库使用优先级（极其重要）
-知识库中有三类 chunk，按以下优先级使用：
+知识库中有五类 chunk，按以下优先级使用：
 
 1. **FAQ（标题含「FAQ」）**：用户问的具体问题如果在 FAQ 中有直接匹配（如错误码含义、常见问题），**优先直接回答**，不追问不绕弯。
-2. **🔍 故障排查树**：用户描述了故障现象，FAQ 没有直接覆盖时，用排查树按步骤引导。
-3. **知识库（操作手册）**：howto 类操作问题走这里，按前提→操作→预期结果给出步骤。
+2. **🚗 车端错误码（标题含「车端错误码」）**：用户提到车载/车端/AGV本体上的错误码或报警时，直接匹配错误码给出原因和方案。
+3. **🌐 翻译表（标题含「翻译表」）**：用户问某个字段/标签/错误码的中英文含义时，从翻译表查找。也可辅助理解车端错误码的英文描述。
+4. **🔍 故障排查树**：用户描述了故障现象，以上来源没有直接覆盖时，用排查树按步骤引导。
+5. **知识库（操作手册）**：howto 类操作问题走这里，按前提→操作→预期结果给出步骤。
 
-⚠️ **关键**：FAQ 和排查树不互斥！先看 FAQ 有没有现成答案，有就直接用；FAQ 没覆盖的故障才走排查树。
+⚠️ **关键**：各知识源不互斥！先看 FAQ/车端错误码有没有现成答案，有就直接用；都没有的故障才走排查树。
 
 ## 意图判断（决定回复风格，不影响知识源选择）
 - **howto（操作咨询）**：用户问"怎么做/怎么上线/怎么配置/步骤/流程"等。直接 answer，不追问不假设故障。
@@ -126,7 +128,7 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁提�
 - **转工单**：用户说"转工单""转单""生成工单""提交工单"或类似表述时，action 设为 answer，直接告知用户工单将基于当前诊断信息生成，不要开始新的排查。不要引用 prompt 示例中的任何内容。
 
 ## 重要规则
-- 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：`、`FAQ N：` 或 `🔍 故障排查树 N：` 中标明。
+- 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：`、`FAQ N：`、`🔍 故障排查树 N：`、`🚗 车端错误码 N：` 或 `🌐 翻译表 N：` 中标明。
   **只引用与用户问题直接相关的 chunk 内容**，无关 chunk 的内容和图片一律忽略。
 - **禁止在回复中暴露知识来源**：不要说"根据排查树""根据知识库""检索结果显示"等话术。
   直接给出步骤/答案，用户不需要知道你查了什么。
@@ -443,7 +445,7 @@ class AiDiagnosisPlatform:
                 print(f"  ⏱  [retrieve] cache hit, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
                 return cached["result"]
 
-            # 正常检索流程：三路并行（排查树 + 操作手册 + FAQ）
+            # 正常检索流程：五路并行
             config = get_ai_config()
             manual_task = asyncio.wait_for(
                 self._retriever.retrieve(search_query, top_k=config.retrieval_top_k),
@@ -457,29 +459,51 @@ class AiDiagnosisPlatform:
                 self._retriever.retrieve_troubleshooting(search_query, top_k=3),
                 timeout=10.0,
             )
-
-            manual_results, faq_results, troubleshooting_results = await asyncio.gather(
-                manual_task, faq_task, troubleshooting_task,
+            cheduan_task = asyncio.wait_for(
+                self._retriever.retrieve_cheduan(search_query, top_k=3),
+                timeout=10.0,
             )
+            translation_task = asyncio.wait_for(
+                self._retriever.retrieve_translation(search_query, top_k=2),
+                timeout=10.0,
+            )
+
+            manual_results, faq_results, troubleshooting_results, cheduan_results, translation_results = \
+                await asyncio.gather(
+                    manual_task, faq_task, troubleshooting_task,
+                    cheduan_task, translation_task,
+                )
             results, _ = manual_results  # unpack (results, top1_score)
 
             docs = []
             idx = 1
 
-            # 排查树结果最优先（结构化步骤引导最精准）
-            for r in (troubleshooting_results or []):
-                symptom = r.title or ""
-                tree_text = r.content or ""
-                if tree_text.strip():
-                    docs.append(f"---\n🔍 故障排查树 {idx}：{symptom}\n{tree_text}\n---")
-                    idx += 1
-
-            # FAQ 结果（直接答案）
+            # FAQ 最优先（直接答案）
             for r in (faq_results or []):
                 q = r.title or ""
                 a = r.content or ""
                 if a.strip():
                     docs.append(f"---\nFAQ {idx}：{q}\n{a}\n---")
+                    idx += 1
+
+            # 车端错误码
+            for r in (cheduan_results or []):
+                if r.content.strip():
+                    docs.append(f"---\n🚗 车端错误码 {idx}：{r.title}\n{r.content}\n---")
+                    idx += 1
+
+            # 翻译表
+            for r in (translation_results or []):
+                if r.content.strip():
+                    docs.append(f"---\n🌐 翻译表 {idx}：{r.title}\n{r.content}\n---")
+                    idx += 1
+
+            # 排查树
+            for r in (troubleshooting_results or []):
+                symptom = r.title or ""
+                tree_text = r.content or ""
+                if tree_text.strip():
+                    docs.append(f"---\n🔍 故障排查树 {idx}：{symptom}\n{tree_text}\n---")
                     idx += 1
 
             # 操作手册结果

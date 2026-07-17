@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
     print("[STARTUP] Booting AI module...")
     print("=" * 60)
 
-    from app.ai.config import get_ai_config, validate_ai_config, get_active_collection, get_active_faq_collection, get_active_troubleshooting_collection, get_docs_dir
+    from app.ai.config import get_ai_config, validate_ai_config, get_active_collection, get_active_faq_collection, get_active_troubleshooting_collection, get_active_cheduan_collection, get_active_translation_collection, get_docs_dir
 
     try:
         results = await validate_ai_config()
@@ -100,6 +100,22 @@ async def lifespan(app: FastAPI):
             await auto_ts()
         elif ts_active:
             print(f"[KB] 排查树集合: {ts_active}")
+
+        cd_active = get_active_cheduan_collection()
+        if not (cd_active and qdrant.collection_exists(cd_active)):
+            print("\n[KB] 车端错误码知识库未就绪，自动入库中...")
+            from app.ai.ingestion.ingest_cheduan import auto_ingest as auto_cd
+            await auto_cd()
+        elif cd_active:
+            print(f"[KB] 车端错误码集合: {cd_active}")
+
+        tr_active = get_active_translation_collection()
+        if not (tr_active and qdrant.collection_exists(tr_active)):
+            print("\n[KB] 翻译表知识库未就绪，自动入库中...")
+            from app.ai.ingestion.ingest_translation import auto_ingest as auto_tr
+            await auto_tr()
+        elif tr_active:
+            print(f"[KB] 翻译表集合: {tr_active}")
 
     except Exception as e:
         print(f"[WARN] 知识库自动入库失败: {e}")

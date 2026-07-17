@@ -24,16 +24,18 @@ _REGISTRY = [
     ("ingest_operation_manual", "操作手册"),
     ("ingest_faq",             "FAQ"),
     ("ingest_troubleshooting", "问题排查树"),
+    ("ingest_cheduan",         "车端错误码"),
+    ("ingest_translation",     "翻译表"),
 ]
 
 
 async def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="一键入库：操作手册 + FAQ + 问题排查树")
+    parser = argparse.ArgumentParser(description="一键入库：操作手册 + FAQ + 问题排查树 + 车端错误码 + 翻译表")
     parser.add_argument("--dry-run", "-n", action="store_true", help="预览模式（目前仅排查树支持）")
     parser.add_argument("--skip", action="append", default=[],
-                        choices=["manual", "faq", "troubleshooting"],
+                        choices=["manual", "faq", "troubleshooting", "cheduan", "translation"],
                         help="跳过指定知识库")
     args = parser.parse_args()
 
@@ -41,6 +43,8 @@ async def main():
         "manual":          "ingest_operation_manual",
         "faq":             "ingest_faq",
         "troubleshooting": "ingest_troubleshooting",
+        "cheduan":         "ingest_cheduan",
+        "translation":     "ingest_translation",
     }
     skip_modules = {skip_map[s] for s in args.skip}
 
