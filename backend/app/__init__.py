@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-load_dotenv()  # 把 .env 注入 os.environ，供 app/ai/config.py 的 os.getenv() 读取（Pydantic Settings 不写入 os.environ）
+load_dotenv()  # 把 .env 注入 os.environ
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,22 +54,6 @@ async def startup_event():
     
     init_users_db()
 
-    # ---- AI 模块：连通性检查 + embedding 预热（失败不阻止主服务启动）----
-    try:
-        from app.ai.config import validate_ai_config
-        for name, info in (await validate_ai_config()).items():
-            icon = "[OK]" if info["status"] == "ok" else "[FAIL]"
-            print(f"   {icon} AI {name}: {info['message']}")
-    except Exception as e:
-        print(f"[WARN] AI config check skipped: {e}")
-
-    try:
-        from app.ai.core.embed import get_embed_client
-        await (await get_embed_client())._ensure_model()  # 首次会在线拉取嵌入模型
-        print("[OK] Embedding model pre-warmed")
-    except Exception as e:
-        print(f"[WARN] Embedding pre-warm failed: {e}")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.BACKEND_CORS_ORIGINS,
@@ -87,14 +71,6 @@ app.include_router(tasks_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(call_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(wechat_api_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(integrations_mappings_router, prefix=f"{settings.API_V1_STR}/admin")
-
-# AI 模块路由（router 自带 /api/ai/* 前缀，故不加 prefix，否则会变成 /api/api/ai/...）
-from app.modules.call.api.diagnosis import qa_router as ai_qa_router
-from app.modules.call.api.diagnosis import chat_router as ai_chat_router
-from app.modules.call.api.diagnosis import memory_router as ai_memory_router
-app.include_router(ai_qa_router)
-app.include_router(ai_chat_router)
-app.include_router(ai_memory_router)
 
 @app.get(f"{settings.API_V1_STR}/health")
 async def health_check():
