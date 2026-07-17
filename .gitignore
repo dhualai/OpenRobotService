@@ -53,8 +53,6 @@ logs/
 # ===== Claude Code 本地设置 =====
 .claude/settings.local.json
 codebuddy.md
-# 本地项目分析文档（不推送远程）
-frontend/项目文档.md
 
 # ===== 临时 / 草稿（如 logo 草稿、导出中间文件）=====
 old/

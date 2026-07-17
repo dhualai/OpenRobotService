@@ -74,7 +74,7 @@ describe('AuthGuard', () => {
       mockIsLoggedIn = false;
       mockIsLoading = false;
       renderAuthGuard();
-      expect(screen.getByText('正在跳转认证...')).toBeInTheDocument();
+      expect(screen.getByText('正在跳转登录...')).toBeInTheDocument();
     });
   });
 

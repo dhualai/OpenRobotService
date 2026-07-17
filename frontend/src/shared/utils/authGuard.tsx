@@ -20,7 +20,7 @@ export function useAuthGuard(requireAdmin = false) {
     const restored = checkUrlTokens();
 
     if (!isLoggedIn && !restored) {
-      navigate('/login', { replace: true });
+      navigate(`/login?from=${encodeURIComponent(location.pathname + location.search)}`, { replace: true });
       return;
     }
 
@@ -53,7 +53,7 @@ export function AuthGuard({ children, requireAdmin = false }: AuthGuardProps) {
     const restored = checkUrlTokens();
 
     if (!isLoggedIn && !restored) {
-      navigate('/login', { replace: true });
+      navigate(`/login?from=${encodeURIComponent(location.pathname + location.search)}`, { replace: true });
       return;
     }
     if (requireAdmin && !isAdmin) {
