@@ -6,10 +6,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Textarea, Toast } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
-import { useWorkbenchStore, type TicketDraft } from '@/stores/workbench';
+import { useWorkbenchStore } from '@/stores/workbench';
 import { qaAskStream, qaSubmit, qaUpload, generateSessionId, trackSession } from '@/api/ai';
-import { createRequest } from '@/api/client';
-import API_CONFIG from '@/config/api';
 import { createConversation, getConversation, listMyConversations, appendMessage, readAiSessionId } from '@/api/conversation';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
@@ -273,34 +271,21 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     e.target.value = '';
   };
 
-  /** 转工单：直接建单到 tasks 服务，刷新「历史工单」，留在摇人页（不跳系统任务） */
+  /** 转工单：调 AI 模块 /api/ai/qa/submit 生成工单（写 MySQL + 入待派单列表），刷新「历史工单」，留在摇人页 */
   const handleSubmitTicket = async () => {
     if (submittingTicket || messages.length === 0) return;
+    if (!sessionId) { Toast({ message: '会话未就绪，请先发送一条消息', theme: 'warning' }); return; }
     setSubmittingTicket(true);
-
-    const recent = messages.filter((m) => m.content).slice(-6);
-    const userMsgs = recent.filter((m) => m.role === 'user').map((m) => m.content);
-    const aiSummary = recent.filter((m) => m.role === 'assistant').map((m) => m.content).join('\n');
-    const draft: TicketDraft = {
-      title: userMsgs[0]?.slice(0, 40) || 'AI 咨询转工单',
-      description: `【用户描述】\n${userMsgs.join('\n')}\n\n【AI 诊断摘要】\n${aiSummary}`,
-      ticket_type: 'support',
-      priority: 'medium',
-      source_conversation_id: sessionId || undefined,
-    };
-
-    // 仍通知后端 QA 提单（失败不阻塞建单）
-    if (sessionId) {
-      try { await qaSubmit(sessionId); } catch { /* ignore */ }
-    }
-
     try {
-      const taskRequest = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
-      await taskRequest('/', { method: 'POST', body: JSON.stringify(draft) });
-      refreshTasks(); // 触发下方「历史工单」重新拉取，新工单以梗概形式出现
-      Toast({ message: '工单已提交，可在下方历史工单查看', theme: 'success' });
+      const res = await qaSubmit(sessionId);
+      if (res?.code === 0) {
+        refreshTasks(); // 触发下方「历史工单」重新拉取 AI 待派单列表
+        Toast({ message: '工单已生成，可在下方历史工单查看', theme: 'success' });
+      } else {
+        Toast({ message: (res as { message?: string })?.message || '生成工单失败', theme: 'error' });
+      }
     } catch (err) {
-      Toast({ message: `建单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      Toast({ message: `生成工单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setSubmittingTicket(false);
     }
