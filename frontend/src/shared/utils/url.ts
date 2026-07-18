@@ -1,4 +1,5 @@
 // URL 工具函数 - 从 HelpDesk urlUtils.js 移植
+import { WECHAT_CONFIG } from '@/config/wechat';
 
 const STORAGE_KEYS = {
   AUTH_TOKEN: 'auth_token',
@@ -49,14 +50,13 @@ export function checkUrlTokens(): string | null {
 }
 
 export function buildWechatAuthUrl(state: string): string {
-  const appId = import.meta.env.VITE_WECHAT_APP_ID || 'wx6ea819c1785ef67b';
-  const redirectUri = `${window.location.origin}/api/wechat/callback`;
+  const redirectUri = `${window.location.origin}${WECHAT_CONFIG.redirectPath}`;
   const baseUrl = 'https://open.weixin.qq.com/connect/oauth2/authorize';
   const params = new URLSearchParams({
-    appid: appId,
+    appid: WECHAT_CONFIG.appId,
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: 'snsapi_base',
+    scope: WECHAT_CONFIG.oauthScope,
     state: state || 'STATE',
   });
   return `${baseUrl}?${params.toString()}#wechat_redirect`;

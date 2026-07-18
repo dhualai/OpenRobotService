@@ -2,9 +2,26 @@
 import { useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth';
-import { checkUrlTokens } from '@/shared/utils/url';
+import { checkUrlTokens, buildWechatAuthUrl } from '@/shared/utils/url';
+import { WECHAT_CONFIG } from '@/config/wechat';
 
 const DISABLE_AUTH_GUARD = import.meta.env.VITE_DISABLE_AUTH_GUARD === 'true';
+
+// 未登录时的跳转策略：
+//   - 启用微信登录（VITE_WECHAT_LOGIN_ENABLED=true）→ 跳微信 OAuth 授权
+//   - 未启用（测试环境默认）→ 跳 /login 账密登录页，无需跳转微信
+function redirectUnauthenticated(
+  navigate: ReturnType<typeof useNavigate>,
+  target: string,
+): void {
+  if (WECHAT_CONFIG.loginEnabled) {
+    // state 记录目标路径（'/' 用 '0' 占位，后端 /wechat/callback 回调时还原）
+    const state = target.replace(/\//g, '0');
+    window.location.href = buildWechatAuthUrl(state);
+    return;
+  }
+  navigate(`/login?from=${encodeURIComponent(target)}`, { replace: true });
+}
 
 export function useAuthGuard(requireAdmin = false) {
   const { isLoggedIn, isLoading, isAdmin } = useAuthStore();
@@ -53,7 +70,7 @@ export function AuthGuard({ children, requireAdmin = false }: AuthGuardProps) {
     const restored = checkUrlTokens();
 
     if (!isLoggedIn && !restored) {
-      navigate(`/login?from=${encodeURIComponent(location.pathname + location.search)}`, { replace: true });
+      redirectUnauthenticated(navigate, location.pathname + location.search);
       return;
     }
     if (requireAdmin && !isAdmin) {
