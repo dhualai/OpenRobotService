@@ -13,8 +13,8 @@
 //   base='/p/app/'  (构建-生产)     → 前缀 '/p' → API_ROOT='/p/api'
 // （构建时用 `vite build --base=/t/app/` 或 `--base=/p/app/` 指定，见 package.json 的 build:test/build:prod）
 
-const RAW_BASE = import.meta.env.BASE_URL; // dev:'/'，构建:'/t/app/' 或 '/p/app/'
-const ENV_PREFIX = RAW_BASE === '/' ? '' : RAW_BASE.replace(/\/app\/?$/, ''); // '' | '/t' | '/p'
+export const RAW_BASE = import.meta.env.BASE_URL; // dev:'/'，构建:'/t/app/' 或 '/p/app/'
+export const ENV_PREFIX = RAW_BASE === '/' ? '' : RAW_BASE.replace(/\/app\/?$/, ''); // '' | '/t' | '/p'
 const API_ROOT = `${ENV_PREFIX}/api`;
 
 const API_CONFIG = {

@@ -55,7 +55,7 @@ export default function WechatMenuManage() {
     const hasExistingMenu = menuData && menuData.button && menuData.button.length > 0;
 
     if (hasExistingMenu) {
-      Dialog.confirm({
+      Dialog.confirm?.({
         title: '覆盖确认',
         content: '创建新菜单将覆盖当前所有菜单，确定要继续吗？',
         onConfirm: async () => {
@@ -97,7 +97,7 @@ export default function WechatMenuManage() {
   };
 
   const deleteMenu = async () => {
-    Dialog.confirm({
+    Dialog.confirm?.({
       title: '确认删除',
       content: '删除后需要重新创建菜单，确定要删除吗？',
       onConfirm: async () => {
@@ -183,10 +183,11 @@ export default function WechatMenuManage() {
       <Popup
         visible={showCreateDialog}
         onClose={() => setShowCreateDialog(false)}
-        title="创建菜单"
         placement="center"
+        showOverlay
       >
         <div style={{ padding: 16 }}>
+          <h4 style={{ marginBottom: 16, fontSize: 16, fontWeight: 600 }}>创建菜单</h4>
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: 'block', fontSize: 14, fontWeight: 500, marginBottom: 8 }}>
               菜单名称

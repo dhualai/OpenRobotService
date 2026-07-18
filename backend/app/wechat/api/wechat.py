@@ -38,7 +38,7 @@ router = APIRouter(tags=["微信接口"])
 user_states = {}
 
 
-@router.get("/", response_class=PlainTextResponse)
+@router.get("", response_class=PlainTextResponse)
 def wechat_verify(
     signature: str = Query(..., description="微信加密签名"),
     timestamp: str = Query(..., description="时间戳"),
@@ -62,7 +62,7 @@ def wechat_verify(
         return Response(content="内部服务器错误", status_code=500)
 
 
-@router.post("/")
+@router.post("")
 async def handle_wechat_message(request: Request):
     try:
         logger.info("收到微信服务器POST请求")

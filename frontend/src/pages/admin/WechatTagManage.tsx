@@ -87,7 +87,7 @@ export default function WechatTagManage() {
   };
 
   const deleteTag = async (tag: TagItem) => {
-    Dialog.confirm({
+    Dialog.confirm?.({
       title: '确认删除',
       content: `确定要删除标签「${tag.name}」吗？删除后无法恢复。`,
       onConfirm: async () => {
@@ -245,10 +245,11 @@ export default function WechatTagManage() {
       <Popup
         visible={showCreateDialog}
         onClose={() => setShowCreateDialog(false)}
-        title="创建标签"
         placement="center"
+        showOverlay
       >
         <div style={{ padding: 16 }}>
+          <h4 style={{ marginBottom: 16, fontSize: 16, fontWeight: 600 }}>创建标签</h4>
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: 'block', fontSize: 14, fontWeight: 500, marginBottom: 8 }}>
               标签名称
@@ -274,10 +275,11 @@ export default function WechatTagManage() {
       <Popup
         visible={showEditDialog}
         onClose={() => { setShowEditDialog(false); setEditingTag(null); }}
-        title="编辑标签"
         placement="center"
+        showOverlay
       >
         <div style={{ padding: 16 }}>
+          <h4 style={{ marginBottom: 16, fontSize: 16, fontWeight: 600 }}>编辑标签</h4>
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: 'block', fontSize: 14, fontWeight: 500, marginBottom: 8 }}>
               标签名称
@@ -303,10 +305,13 @@ export default function WechatTagManage() {
       <Popup
         visible={showBatchDialog}
         onClose={() => { setShowBatchDialog(false); setSelectedTagId(null); }}
-        title={batchOperation === 'tagging' ? '批量打标签' : '批量取消标签'}
         placement="center"
+        showOverlay
       >
         <div style={{ padding: 16 }}>
+          <h4 style={{ marginBottom: 16, fontSize: 16, fontWeight: 600 }}>
+            {batchOperation === 'tagging' ? '批量打标签' : '批量取消标签'}
+          </h4>
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: 'block', fontSize: 14, fontWeight: 500, marginBottom: 8 }}>
               选择标签
@@ -315,7 +320,7 @@ export default function WechatTagManage() {
               {tags.map((tag) => (
                 <Tag
                   key={tag.id}
-                  variant={selectedTagId === tag.id ? 'solid' : 'outline'}
+                  variant={selectedTagId === tag.id ? 'light' : 'outline'}
                   closable={false}
                   onClick={() => setSelectedTagId(tag.id)}
                   style={{ cursor: 'pointer' }}
