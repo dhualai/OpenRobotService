@@ -2,8 +2,8 @@
 
 ## 环境要求
 
-- Python 3.11+
-- MySQL 8.x
+- Python 3.11+（实测 3.14 可用；注意 `asyncmy` 在 3.14 下无预编译 wheel 且源码编译失败，后端已加 `aiomysql` 回退，见「2. 后端」）
+- MySQL 8.x（**避开 8.0.13**：该版 `DEFAULT (now())` 表达式默认值有缺陷，建表成功但之后 `CREATE INDEX`/`ALTER` 会误报 `Invalid default value for '...'`(1067)；用 **8.0.14+**，推荐 8.0.latest 或 8.4）
 - Node.js 18+（前端）
 
 ## 1. 数据库准备
@@ -17,44 +17,53 @@ CREATE DATABASE IF NOT EXISTS openrobotservice
 
 > Windows 用户可直接运行仓库内 `scripts/setup_mysql.ps1`（管理员 PowerShell）一键完成安装与建库。
 
+> **本地 Docker 方案（推荐，避免污染既有 MySQL / 踩 8.0.13 的坑）**：若本机已有旧版或共享 MySQL（尤其是 8.0.13），建议为本项目单独起一个 8.0.14+ 容器：
+> ```bash
+> docker run -d --name openrobot-mysql \
+>   -e MYSQL_ROOT_PASSWORD=123456 -e MYSQL_DATABASE=helpdesk_7_16 \
+>   -p 3307:3306 mysql:8.0 \
+>   --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+> ```
+> 再把 `backend/.env` 的 `DATABASE_URL` 端口改为 **3307**：`mysql+pymysql://root:123456@127.0.0.1:3307/helpdesk_7_16?charset=utf8mb4`（库名按需替换）。
+
 ## 2. 后端
 
 ```bash
 cd backend
 
-# 创建虚拟环境
-python -m venv .venv
+# 创建虚拟环境（仓库内现有目录名为 venv）
+python -m venv venv
 # 激活（Windows Git Bash）
-source .venv/Scripts/activate
+source venv/Scripts/activate
 # 激活（Windows PowerShell）
-# .venv\Scripts\Activate.ps1
+# venv\Scripts\Activate.ps1
 # 激活（Linux/Mac）
-# source .venv/bin/activate
+# source venv/bin/activate
 
 # 安装依赖
 pip install -r requirements.txt
 
 # 配置环境变量
 cp .env.example .env
-# 编辑 .env，填写数据库密码、JWT 密钥、微信参数
+# 编辑 .env：DATABASE_URL（注意端口——Docker 专用容器走 3307）、JWT 密钥、微信参数
 
-# 执行数据库迁移（建表）
-alembic upgrade head
+# 建表：app/core/database.py 在导入时即 Base.metadata.create_all()（运行时兜底）；
+# 也可走 Alembic 迁移 `alembic upgrade head`（目标态）。二者并存。
 
 # （可选）初始化种子数据：管理员、示例项目
 python -m app.seed
 
-# 启动开发服务器
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# 启动开发服务器（main.py 内部以 uvicorn 运行 "app:app"，端口 8400，reload）
+python main.py
 ```
 
-启动后访问交互式 API 文档：http://127.0.0.1:8000/docs
+启动后访问交互式 API 文档：http://127.0.0.1:8400/docs（默认管理员 `admin / 123456`）
 
 ## 3. 环境变量说明（.env）
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
-| `DATABASE_URL` | MySQL 连接串 | `mysql+pymysql://root:123456@127.0.0.1:3306/openrobotservice?charset=utf8mb4` |
+| `DATABASE_URL` | MySQL 连接串 | `mysql+pymysql://root:123456@127.0.0.1:3307/helpdesk_7_16?charset=utf8mb4`（Docker 专用容器为 **3307**；本地原生 MySQL 仍用 3306） |
 | `JWT_SECRET` | JWT 签名密钥（务必改成随机长串） | `change-me-to-a-random-secret` |
 | `JWT_EXPIRE_MINUTES` | Token 有效期（分钟） | `10080` |
 | `WECHAT_APP_ID` | 服务号 AppID | `wx1234567890abcdef` |
@@ -78,7 +87,26 @@ npm run dev    # 开发，默认 http://127.0.0.1:5173
 npm run build  # 生产构建，产物在 dist/
 ```
 
-前端通过 `VITE_API_BASE`（见 `frontend/.env`）指向后端地址。
+后端拆为**业务后端**（`backend/main.py`@8400）和**独立 AI 服务**（`ai/run.py`@8401），本地 dev 需**两者都启动**：
+
+```bash
+# 终端1：业务后端（/api/auth|admin|tasks|call|wechat）
+cd backend && python main.py          # → http://127.0.0.1:8400
+
+# 终端2：AI 服务（/api/ai/*）
+cd .. && python ai/run.py             # → http://127.0.0.1:8401
+```
+
+`npm run dev` 时 `vite.config.ts` 代理拆分：`/api/ai/*`→8401、其余 `/api/*`→8400（目标可用 `VITE_DEV_BACKEND_TARGET` / `VITE_DEV_AI_TARGET` 覆盖）。前端登录守卫开关见 `frontend/.env.local` 的 `VITE_DISABLE_AUTH_GUARD`。
+
+**生产构建**：经 nginx 按环境前缀分发（见 `deploy/nginx/conf/conf.d/app_gateway.conf`），需按环境构建并把产物分别放入 nginx `html/test/`、`html/prod/`：
+
+```bash
+npm run build:test   # base='/t/app/'，API 前缀推导为 /t/api（测试）
+npm run build:prod   # base='/p/app/'，API 前缀推导为 /p/api（生产）
+```
+
+API 前缀由 `src/config/api.ts` 据 vite `base` 自动推导，nginx 用最长前缀把 `.../api/ai/*` 转给 AI 服务、其余 `.../api/*` 转给业务后端，前端无需感知分流。
 
 ## 5. 运行测试
 

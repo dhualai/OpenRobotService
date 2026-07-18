@@ -995,3 +995,68 @@ html, body, #root {
   letter-spacing: 0.5px;
 }
 
+/* ===== 历史工单行：梗概（title + 一行 summary） ===== */
+.history-row__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+.history-row__main .history-row__title { flex: none; }
+.history-row__summary {
+  font-size: 12px;
+  color: #999;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===== 摇人 · 工单详情操作页（TicketDetailPage） ===== */
+.ticket-detail-page .page-container { padding: 12px 14px 80px; }
+.detail-card {
+  background: #fff;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.05);
+}
+.detail-card__meta { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.detail-card__type { font-size: 12px; color: #888; }
+.detail-card__id { color: #bbb; font-size: 12px; margin-left: auto; }
+.detail-card__title { font-size: 17px; font-weight: 600; margin: 0 0 10px; color: #222; }
+.detail-card__h { font-size: 14px; font-weight: 600; margin: 0 0 8px; color: #555; }
+.detail-row { display: flex; padding: 6px 0; }
+.detail-row__label { color: #999; width: 64px; flex-shrink: 0; font-size: 13px; }
+.detail-row__value { flex: 1; font-size: 13px; color: #333; word-break: break-word; }
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 0 2px;
+}
+.detail-comment { padding: 10px 0; border-bottom: 1px solid #f3f3f3; }
+.detail-comment:last-child { border-bottom: none; }
+.detail-comment__head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+.detail-comment__head strong { font-size: 13px; color: #444; }
+.detail-comment__head span { color: #bbb; }
+.detail-comment-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 8px 12px 12px;
+  background: #fff;
+  border-top: 1px solid #eee;
+  display: flex;
+  gap: 8px;
+  z-index: 20;
+}
+

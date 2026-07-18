@@ -15,7 +15,7 @@
 | 类别 | 选型 |
 |---|---|
 | Web 框架 | FastAPI 0.111 + Uvicorn（`main.py` 仅 `uvicorn.run("app:app", port=8400)`） |
-| ORM / DB | SQLAlchemy 2.0（同步 `pymysql` + 异步 `asyncmy`）+ MySQL 8 |
+| ORM / DB | SQLAlchemy 2.0（同步 `pymysql`；异步优先 `asyncmy`，缺失时回退 `aiomysql`——Py3.14 下 asyncmy 无 wheel 且编译失败）+ MySQL 8（**≥8.0.14**，避开 8.0.13 的 `DEFAULT(now())` 建 index bug） |
 | 迁移 | Alembic（URL 不写死，由 `env.py` 从 `settings.DB_CONFIG` 注入） |
 | 缓存/队列 | Redis（缓存 + Celery broker/backend） |
 | 异步任务 | Celery 5.6 |
@@ -113,6 +113,8 @@ backend/
 | `modules/call` | 需求（请求方） | `/api/call` | qa（AI 问答）/ conversations / messages / my-tasks / diagnosis | **ModelService（AI 核心）**、ConversationService、MessageService |
 | `integrations` | 外部集成 | `/api/tasks/sources` | 任务源列表、映射配置 | Engine、Registry、ZentaoAdapter |
 | `wechat` | 微信入口 | `/api/wechat` | OAuth 登录、消息回调、菜单/标签、通知、JS-SDK | WechatService、AuthService、DataService、ProjectTicketService |
+
+> **call 会话持久化**：`POST /api/call/conversations` 的 `user_id` **按 token 覆盖**（前端只持 `username`，须与列表查询的 `current_user.id` 对齐）。AI 诊断流式（`/api/ai/*`）本身走 Redis 短期记忆、**不写** `conversations/messages` 表——前端 `ChatPanel` 自行把每轮 user/assistant 消息落库以实现历史持久化与刷新恢复。注意 `SceneType` 枚举只有 `chat/faq/support/consultation/other`（无 `task_assist`，前端 tasks 场景映射为 `consultation`）。
 
 ## 四、分层与请求流
 

@@ -7,6 +7,7 @@ const Login = lazy(() => import('@/pages/Login'));
 const NoPermission = lazy(() => import('@/pages/NoPermission'));
 const MainLayout = lazy(() => import('@/shared/components/MainLayout'));
 const CallView = lazy(() => import('@/pages/call/CallView'));
+const TicketDetailPage = lazy(() => import('@/pages/call/TicketDetailPage'));
 const TasksView = lazy(() => import('@/pages/tasks/TasksView'));
 
 // Admin
@@ -41,6 +42,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/app/call" replace /> },
       { path: 'call', element: <CallView /> },
+      { path: 'call/ticket/:id', element: <TicketDetailPage /> },
       { path: 'tasks', element: <TasksView /> },
       { path: 'tasks/:id', element: <TasksView /> },
       {
