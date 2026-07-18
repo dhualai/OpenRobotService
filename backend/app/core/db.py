@@ -9,7 +9,14 @@ DATABASE_URL = settings.DATABASE_URL or f"mysql+pymysql://root:123456@127.0.0.1:
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-ASYNC_DATABASE_URL = DATABASE_URL.replace('mysql+pymysql', 'mysql+asyncmy')
+# 异步驱动：优先 asyncmy（C 扩展，更快）；Py3.14 等无预编译 wheel、编译失败的环境回退 aiomysql（纯 Python）
+try:
+    import asyncmy  # noqa: F401
+    _ASYNC_DIALECT = "mysql+asyncmy"
+except ModuleNotFoundError:
+    import aiomysql  # noqa: F401
+    _ASYNC_DIALECT = "mysql+aiomysql"
+ASYNC_DATABASE_URL = DATABASE_URL.replace('mysql+pymysql', _ASYNC_DIALECT)
 async_engine = create_async_engine(
     ASYNC_DATABASE_URL,
     pool_pre_ping=True,
