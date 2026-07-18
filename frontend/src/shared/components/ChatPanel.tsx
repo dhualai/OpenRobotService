@@ -8,6 +8,9 @@ import { Textarea, Toast } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore, type TicketDraft } from '@/stores/workbench';
 import { qaAskStream, qaSubmit, qaUpload, generateSessionId, trackSession } from '@/api/ai';
+import { createRequest } from '@/api/client';
+import API_CONFIG from '@/config/api';
+import { createConversation, getConversation, listMyConversations, appendMessage, readAiSessionId } from '@/api/conversation';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 
@@ -56,7 +59,7 @@ const SCENE_CONFIG: Record<ChatScene, {
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
   const navigate = useNavigate();
   const { token, username } = useAuthStore();
-  const { chatContext, consumeChatContext, goToTab, setTicketDraft } = useWorkbenchStore();
+  const { chatContext, consumeChatContext, refreshTasks } = useWorkbenchStore();
   const isCall = scene === 'call';
   const cfg = SCENE_CONFIG[scene];
 
@@ -70,9 +73,37 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const convRef = useRef<number | null>(null); // 当前 DB 会话 id，跨 send 复用
 
   const scrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); };
   useEffect(() => { scrollToBottom(); }, [messages]);
+
+  // 挂载时恢复"最近一条会话"：从 DB 读回历史消息 + ai_session_id，刷新/切页后内容不丢
+  useEffect(() => {
+    if (!token || !username) return;
+    if (chatContext) return; // 从工单「讨论」进入时走新会话，不恢复旧历史
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await listMyConversations(scene, 1);
+        if (cancelled || !list.length) return;
+        const full = await getConversation(list[0].id);
+        if (cancelled) return;
+        convRef.current = full.id;
+        const restored = (full.messages || []).map((m) => ({
+          id: String(m.id),
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+          timestamp: m.created_at,
+        }));
+        if (restored.length) setMessages(restored);
+        const sid = readAiSessionId(full);
+        if (sid) setSessionId(sid);
+      } catch { /* 恢复失败不阻塞新对话 */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, username, scene]);
 
   // call 场景：进入时若带工单讨论上下文，注入引导消息（一次性消费）
   useEffect(() => {
@@ -102,6 +133,22 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
     return sessionId;
   }, [sessionId]);
+
+  /** 确保 DB 会话存在：首条消息时创建（title 取首句），后续复用 convRef */
+  const ensureConversation = async (sid: string, firstContent: string): Promise<number | null> => {
+    if (convRef.current) return convRef.current;
+    try {
+      const conv = await createConversation({
+        title: firstContent.slice(0, 40) || 'AI 对话',
+        scene,
+        aiSessionId: sid,
+      });
+      convRef.current = conv.id;
+      return conv.id;
+    } catch {
+      return null;
+    }
+  };
 
   /** 将图片上传到 AI 后端 */
   const uploadImage = async (file: File): Promise<string> => {
@@ -145,6 +192,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const assistantId = uid();
     try {
       const sid = ensureSessionId();
+      // 持久化用户消息（首条会顺带建会话）
+      const convId = await ensureConversation(sid, userContent);
+      if (convId) appendMessage(convId, 'user', userContent).catch(() => {});
       setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() }]);
 
       const response = await qaAskStream({
@@ -180,6 +230,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           } catch { /* JSON 行解析出错则跳过 */ }
         }
       }
+      // 流式结束：持久化 AI 回复
+      if (acc && convRef.current) appendMessage(convRef.current, 'assistant', acc).catch(() => {});
     } catch (err) {
       // 鉴权失效已由 kickToLogin 统一提示并跳转，此处不重复弹错误
       if (!isKickingToLogin()) {
@@ -221,7 +273,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     e.target.value = '';
   };
 
-  /** 转工单：优先调用后端 /api/ai/qa/submit，失败则本地 draft 模式兜底 */
+  /** 转工单：直接建单到 tasks 服务，刷新「历史工单」，留在摇人页（不跳系统任务） */
   const handleSubmitTicket = async () => {
     if (submittingTicket || messages.length === 0) return;
     setSubmittingTicket(true);
@@ -237,26 +289,21 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       source_conversation_id: sessionId || undefined,
     };
 
+    // 仍通知后端 QA 提单（失败不阻塞建单）
     if (sessionId) {
-      try {
-        const result = await qaSubmit(sessionId);
-        if (result.code === 0) {
-          setTicketDraft(draft);
-          goToTab('tasks', { ticketDraft: draft });
-          navigate('/app/tasks');
-          Toast({ message: '工单已提交，正在跳转…', theme: 'success' });
-          setSubmittingTicket(false);
-          return;
-        }
-      } catch { /* 后端失败则走本地 draft 兜底 */ }
+      try { await qaSubmit(sessionId); } catch { /* ignore */ }
     }
 
-    // 本地 draft 模式兜底
-    setTicketDraft(draft);
-    goToTab('tasks', { ticketDraft: draft });
-    navigate('/app/tasks');
-    Toast({ message: '已打包转工单，正在跳转…', theme: 'success' });
-    setSubmittingTicket(false);
+    try {
+      const taskRequest = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
+      await taskRequest('/', { method: 'POST', body: JSON.stringify(draft) });
+      refreshTasks(); // 触发下方「历史工单」重新拉取，新工单以梗概形式出现
+      Toast({ message: '工单已提交，可在下方历史工单查看', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `建单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setSubmittingTicket(false);
+    }
   };
 
   const toggleReaction = (id: string, type: 'like' | 'dislike') => {
