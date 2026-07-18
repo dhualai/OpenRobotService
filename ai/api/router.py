@@ -9,7 +9,7 @@ import time
 import os
 from pathlib import Path
 from typing import List
-from fastapi import APIRouter, Depends, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,9 @@ from ai.config import get_ai_config
 from ai.agents.AiDiagnosisPlatform.pipeline import (
     get_diagnosis_platform, AiDiagnosisPlatform, DiagnosisRequest,
 )
+
+# 注：app.core.* 的导入（decode_token / get_user_with_roles / SessionLocal / Ticket）
+# 均为惰性（函数内），避免在 AI 进程启动时触发 backend app/__init__.py 全量装配。
 
 # ============================================================
 # 诊断 Agent (prefix /api/ai/qa)
@@ -43,6 +46,30 @@ class TicketAckRequest(BaseModel):
 
 async def get_pipeline() -> AiDiagnosisPlatform:
     return await get_diagnosis_platform()
+
+
+def _current_user(request: Request) -> tuple[str, bool]:
+    """从 Authorization 头解出 (username, is_admin)；无效/缺失返回 ('', False)。"""
+    from app.core.security import decode_token  # 惰性：避免启动期触发 backend 装配
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if not token:
+        return "", False
+    payload = decode_token(token)
+    if not payload:
+        return "", False
+    username = (payload.get("sub") or "").strip()
+    if not username:
+        return "", False
+    is_admin = False
+    try:
+        from app.core.database import get_user_with_roles
+        user = get_user_with_roles(username) or {}
+        perms = user.get("permissions") or []
+        is_admin = "admin" in perms
+    except Exception:
+        pass
+    return username, is_admin
 
 
 @qa_router.post("/ask", summary="统一问答（含诊断追问与提单）")
@@ -91,10 +118,12 @@ async def ask_question_stream(
 
 @qa_router.post("/submit", summary="生成工单并存库")
 async def submit_ticket(
-    request: QASubmitRequest,
+    request: Request,
+    body: QASubmitRequest,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
-    result = await pipeline.submit(session_id=request.session_id)
+    username, _ = _current_user(request)  # 记录创建人，供历史工单按角色过滤
+    result = await pipeline.submit(session_id=body.session_id, created_by=username)
     if "code" not in result:
         result["code"] = 0
     return result
@@ -113,6 +142,46 @@ async def get_ticket(session_id: str = Query(..., description="会话 ID")):
         return {"code": 0, "data": ticket}
     except Exception as e:
         return {"code": 1, "message": str(e)}
+
+
+def _ticket_brief(r) -> dict:
+    """DB Ticket 行 → 列表摘要"""
+    return {
+        "id": r.id,
+        "session_id": r.session_id,
+        "ticket_ai_id": r.ticket_ai_id,
+        "title": r.title,
+        "description": r.description,
+        "type": r.type,
+        "priority": r.priority,
+        "status": r.status,
+        "created_by": r.created_by,
+        "created_at": r.created_at.isoformat() if r.created_at else "",
+    }
+
+
+@qa_router.get("/tickets", summary="全量历史工单列表（按当前角色）")
+async def list_tickets(
+    request: Request,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict:
+    """admin 看全部；其余角色只看自己创建的（created_by == 当前用户）。"""
+    username, is_admin = _current_user(request)
+    if not username:
+        raise HTTPException(status_code=401, detail="未登录或 token 无效")
+    from app.models.ticket import Ticket
+    from app.core.database import SessionLocal
+    db = SessionLocal()
+    try:
+        q = db.query(Ticket)
+        if not is_admin:
+            q = q.filter(Ticket.created_by == username)
+        total = q.count()
+        rows = q.order_by(Ticket.created_at.desc()).offset(skip).limit(limit).all()
+        return {"code": 0, "data": {"items": [_ticket_brief(r) for r in rows], "total": total}}
+    finally:
+        db.close()
 
 
 @qa_router.post("/ticket/ack", summary="派单确认回执")

@@ -111,6 +111,27 @@ export const qaSubmit = (sessionId: string) =>
 export const qaGetTicket = (sessionId: string) =>
   aiGet<{ code: number; data?: unknown; message?: string }>('/qa/ticket', { session_id: sessionId });
 
+/** 历史工单摘要（/qa/tickets 列表项） */
+export interface AiTicketBrief {
+  id: number;
+  session_id: string;
+  ticket_ai_id?: string;
+  title: string;
+  description?: string;
+  type?: string;     // problem|bug|feature|support|other
+  priority?: string; // 紧急|高|中|低
+  status?: string;
+  created_by?: string;
+  created_at?: string; // ISO
+}
+
+/** 全量历史工单列表（按当前角色：admin 全部，其余仅本人创建） */
+export const qaListTickets = (skip = 0, limit = 50) =>
+  aiGet<{ code: number; data?: { items: AiTicketBrief[]; total: number }; message?: string }>('/qa/tickets', {
+    skip: String(skip),
+    limit: String(limit),
+  });
+
 /** 派单确认回执 */
 export const qaTicketAck = (sessionId: string, dispatchId = '', status = 'dispatched') =>
   aiPost<{ code: number; data?: unknown; message?: string }>('/qa/ticket/ack', {

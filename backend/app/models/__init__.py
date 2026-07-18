@@ -48,6 +48,9 @@ from app.models.conversation import (
     MessageType,
 )
 
+# 工单（AI 诊断生成，独立于 Task）
+from app.models.ticket import Ticket
+
 # 资源 / 文件夹
 from app.models.resource import (
     Resource,
@@ -70,6 +73,8 @@ __all__ = [
     "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping",
     # conversation
     "Conversation", "Message", "SceneType", "MessageRole", "MessageType",
+    # ticket (AI)
+    "Ticket",
     # resource
     "Resource", "ResourceFolder", "ResourceType", "ResourceStatus", "StorageType",
 ]
