@@ -13,12 +13,16 @@ import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 
 interface SpeechRecognitionResultEvent {
+  resultIndex: number;
   results: ArrayLike<ArrayLike<{ transcript: string }>>;
 }
 
 interface SpeechRecognitionLike {
   lang: string;
+  continuous: boolean;
   interimResults: boolean;
+  onsoundstart: (() => void) | null;
+  onsoundend: (() => void) | null;
   onresult: ((e: SpeechRecognitionResultEvent) => void) | null;
   onerror: (() => void) | null;
   onend: (() => void) | null;
@@ -67,6 +71,17 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const [sessionId, setSessionId] = useState<string>('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submittingTicket, setSubmittingTicket] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [voiceWillCancel, setVoiceWillCancel] = useState(false);
+  const [voiceHasSound, setVoiceHasSound] = useState(false);
+  const voiceStartYRef = useRef<number>(0);
+  const voiceCancelRef = useRef(false);
+  const voiceWillCancelRef = useRef(false);
+  const voiceSessionRef = useRef(0);       // 递增，防止延迟的 onend 误修改状态
+  const voiceHoldingRef = useRef(false);  // 用户是否正在按住语音按钮
+  const finishRecRef = useRef<(() => void) | null>(null); // 松手清理函数，供 button onMouseUp/onTouchEnd 调用
+  const voiceBtnRef = useRef<HTMLButtonElement>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -247,21 +262,103 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     send(msg.content);
   };
 
-  const startVoice = () => {
+  // voiceWillCancelRef 在 handleMove 中直接同步写入，不再通过 useEffect 异步同步
+
+  // 语音模式下全局监听 move/end，基于 voiceMode 而非 isRecording，确保录制结束后松手仍可触发 finishRecording
+  useEffect(() => {
+    if (!voiceMode) return;
+
+    const handleMove = (e: MouseEvent | TouchEvent) => {
+      const currentY = 'touches' in e
+        ? (e as TouchEvent).touches[0]?.clientY ?? 0
+        : (e as MouseEvent).clientY;
+      const deltaY = voiceStartYRef.current - currentY; // 正值 = 上移
+      const willCancel = deltaY > 60;
+      voiceWillCancelRef.current = willCancel; // 同步写 ref，确保 handleEnd/touchend 读到最新值
+      setVoiceWillCancel(willCancel);
+    };
+
+    // 松手清理：同时被文档 mouseup/touchend 和按钮 onMouseUp/onTouchEnd 调用，靠 voiceHoldingRef 防重
+    const finishRecording = () => {
+      if (!voiceHoldingRef.current) return; // 已执行过则忽略
+      voiceHoldingRef.current = false;
+      if (voiceWillCancelRef.current) {
+        voiceCancelRef.current = true; // 标记取消，阻止 onresult 写入
+      }
+      voiceSessionRef.current++;       // 递增，使任何延迟的 onend 失效
+      recognitionRef.current?.stop();
+      recognitionRef.current = null;
+      setIsRecording(false);
+      if (!voiceWillCancelRef.current) setVoiceMode(false); // 非取消时回到文本模式
+      setVoiceWillCancel(false);
+      setVoiceHasSound(false);
+    };
+
+    finishRecRef.current = finishRecording; // 供按钮 onMouseUp/onTouchEnd 直接调用
+
+    document.addEventListener('mousemove', handleMove);
+    document.addEventListener('touchmove', handleMove, { passive: true });
+    document.addEventListener('mouseup', finishRecording);
+    document.addEventListener('touchend', finishRecording);
+
+    return () => {
+      finishRecRef.current = null;
+      document.removeEventListener('mousemove', handleMove);
+      document.removeEventListener('touchmove', handleMove);
+      document.removeEventListener('mouseup', finishRecording);
+      document.removeEventListener('touchend', finishRecording);
+    };
+  }, [voiceMode]);
+
+  const startVoiceRecording = (e: React.MouseEvent | React.TouchEvent) => {
     if (!SR) { Toast({ message: '当前浏览器不支持语音输入', theme: 'warning' }); return; }
-    if (recognitionRef.current) { recognitionRef.current.stop(); recognitionRef.current = null; return; }
+    // 防止 touch 同时合成 mouse 事件导致双开识别实例互相干扰
+    if (voiceHoldingRef.current || recognitionRef.current) return;
+    e.preventDefault(); // 阻止 touch 后合成 mouse 事件
+
+    voiceHoldingRef.current = true;
+    const sessionId = ++voiceSessionRef.current; // 递增，用于 onend 校验
+    voiceStartYRef.current = 'touches' in e ? (e.touches[0]?.clientY || 0) : e.clientY;
+    voiceCancelRef.current = false;
+    setVoiceWillCancel(false);
+    setVoiceHasSound(false);
+
     const rec = new SR();
     rec.lang = 'zh-CN';
-    rec.interimResults = false;
-    rec.onresult = (e: SpeechRecognitionResultEvent) => {
-      const text = e.results[0][0].transcript;
-      setInput((prev) => (prev ? `${prev} ${text}` : text));
+    rec.continuous = true;       // 持续识别，不因用户停顿而自动停止
+    rec.interimResults = false;  // 仅返回最终识别结果
+    rec.onsoundstart = () => setVoiceHasSound(true);
+    rec.onsoundend = () => setVoiceHasSound(false);
+    rec.onresult = (ev: SpeechRecognitionResultEvent) => {
+      if (voiceCancelRef.current) return; // 上移取消，丢弃结果
+      // continuous 模式下从 resultIndex 开始遍历，取最新识别结果
+      let latest = '';
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        latest = ev.results[i][0].transcript;
+      }
+      if (latest) {
+        setInput((prev) => (prev ? `${prev} ${latest}` : latest));
+      }
     };
-    rec.onerror = () => Toast({ message: '语音识别失败', theme: 'error' });
-    rec.onend = () => { recognitionRef.current = null; };
+    rec.onerror = () => {
+      // 非当前 session 的延迟回调直接跳过，防止旧实例误操作新状态
+      if (voiceSessionRef.current !== sessionId) return;
+      voiceSessionRef.current++;       // 递增，防止后续 onend 再处理
+      voiceHoldingRef.current = false;
+      recognitionRef.current = null;
+      setIsRecording(false);
+      setVoiceHasSound(false);
+      setVoiceMode(false);
+    };
+    rec.onend = () => {
+      // 非当前 session 的延迟回调直接跳过（finishRecording/onerror 已先递增 session）
+      if (voiceSessionRef.current !== sessionId) return;
+      recognitionRef.current = null;   // 确认是当前 session 再清引用
+      setIsRecording(false);
+    };
     rec.start();
     recognitionRef.current = rec;
-    Toast({ message: '语音识别中，再次点击结束', theme: 'success' });
+    setIsRecording(true);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -418,22 +515,35 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             <span className="chat-ticket-btn__label">{submittingTicket ? '提交中…' : '转工单'}</span>
           </div>
         )}
-        <Textarea
-          value={input}
-          onChange={(v) => setInput(String(v))}
-          placeholder="发消息..."
-          autosize={{ minRows: 1, maxRows: 6 }}
-          className="chat-input-bar__textarea"
-        />
-        <div className="chat-input-bar__tools">
-          <div className="chat-input-bar__tools-left">
-            <button className="chat-input-btn" onClick={startVoice} title="语音输入" aria-label="语音输入">
+        {voiceMode ? (
+          <div className="chat-input-bar__voice-row">
+            <button className="chat-input-btn" onClick={() => setVoiceMode(false)} title="键盘输入" aria-label="键盘输入">
               <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="9" y="3" width="6" height="11" rx="3" />
-                <path d="M5 11a7 7 0 0 0 14 0" />
-                <line x1="12" y1="18" x2="12" y2="21" />
-                <line x1="8" y1="21" x2="16" y2="21" />
+                <rect x="2" y="5" width="20" height="14" rx="2" />
+                <line x1="6" y1="9" x2="6" y2="9" strokeWidth="2" strokeLinecap="round" />
+                <line x1="10" y1="9" x2="14" y2="9" />
+                <line x1="6" y1="13" x2="10" y2="13" />
+                <line x1="12" y1="13" x2="16" y2="13" />
+                <line x1="6" y1="17" x2="12" y2="17" />
               </svg>
+            </button>
+            <button
+              ref={voiceBtnRef}
+              className={`chat-voice-hold-btn${isRecording ? ' is-recording' : ''}${voiceWillCancel ? ' is-cancelling' : ''}`}
+              onMouseDown={startVoiceRecording}
+              onTouchStart={startVoiceRecording}
+              onMouseUp={() => finishRecRef.current?.()}
+              onTouchEnd={() => finishRecRef.current?.()}
+            >
+              {isRecording ? (
+                voiceWillCancel ? '松开 取消' : (
+                  <span className={`voice-wave-dots${voiceHasSound ? ' has-sound' : ''}`}>
+                    <span className="voice-dot" />
+                    <span className="voice-dot" />
+                    <span className="voice-dot" />
+                  </span>
+                )
+              ) : '按住 说话'}
             </button>
             <button className="chat-input-btn" onClick={() => fileInputRef.current?.click()} title="上传" aria-label="上传文件或拍照">
               <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
@@ -443,17 +553,46 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               </svg>
             </button>
           </div>
-          <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={!input.trim() || loading} aria-label="发送">
-            {loading ? (
-              <span className="chat-send-btn__spinner" />
-            ) : (
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="12" y1="19" x2="12" y2="5" />
-                <polyline points="6 11 12 5 18 11" />
-              </svg>
-            )}
-          </button>
-        </div>
+        ) : (
+          <>
+            <Textarea
+              value={input}
+              onChange={(v) => setInput(String(v))}
+              placeholder="发消息..."
+              autosize={{ minRows: 1, maxRows: 6 }}
+              className="chat-input-bar__textarea"
+            />
+            <div className="chat-input-bar__tools">
+              <div className="chat-input-bar__tools-left">
+                <button className="chat-input-btn" onClick={() => setVoiceMode(true)} title="语音输入" aria-label="语音输入">
+                  <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="3" width="6" height="11" rx="3" />
+                    <path d="M5 11a7 7 0 0 0 14 0" />
+                    <line x1="12" y1="18" x2="12" y2="21" />
+                    <line x1="8" y1="21" x2="16" y2="21" />
+                  </svg>
+                </button>
+                <button className="chat-input-btn" onClick={() => fileInputRef.current?.click()} title="上传" aria-label="上传文件或拍照">
+                  <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                    <circle cx="12" cy="12" r="9.5" />
+                    <line x1="12" y1="7.5" x2="12" y2="16.5" />
+                    <line x1="7.5" y1="12" x2="16.5" y2="12" />
+                  </svg>
+                </button>
+              </div>
+              <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={!input.trim() || loading} aria-label="发送">
+                {loading ? (
+                  <span className="chat-send-btn__spinner" />
+                ) : (
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="19" x2="12" y2="5" />
+                    <polyline points="6 11 12 5 18 11" />
+                  </svg>
+                )}
+              </button>
+            </div>
+          </>
+        )}
         <input ref={fileInputRef} type="file" accept="image/*" capture="environment" onChange={handleFileChange} style={{ display: 'none' }} />
       </div>
     </div>
