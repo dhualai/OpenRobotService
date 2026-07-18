@@ -21,8 +21,10 @@ export const WECHAT_CONFIG = {
   appId: import.meta.env.VITE_WECHAT_APP_ID || '',
   /** 授权作用域：snsapi_base（静默，仅拿 openid）| snsapi_userinfo（可拿昵称头像） */
   oauthScope: import.meta.env.VITE_WECHAT_OAUTH_SCOPE || 'snsapi_base',
-  /** OAuth 回调路径（拼接在 window.location.origin 之后） */
+  /** OAuth 回调路径（拼接在 window.location.origin 之后，作为 redirect_uri 的兜底推导） */
   redirectPath: import.meta.env.VITE_WECHAT_REDIRECT_PATH || '/api/wechat/callback',
+  /** 完整 OAuth 回调地址（可选）。填了则直接作为 redirect_uri；留空则自动用 origin + redirectPath 推导 */
+  redirectUri: import.meta.env.VITE_WECHAT_REDIRECT_URI || '',
 } as const;
 
 export default WECHAT_CONFIG;

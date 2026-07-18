@@ -8,6 +8,7 @@ interface ImportMetaEnv {
   readonly VITE_WECHAT_JSSDK_ENABLED: string;
   readonly VITE_WECHAT_OAUTH_SCOPE: string;
   readonly VITE_WECHAT_REDIRECT_PATH: string;
+  readonly VITE_WECHAT_REDIRECT_URI: string;
 }
 
 interface ImportMeta {

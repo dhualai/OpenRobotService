@@ -50,7 +50,8 @@ export function checkUrlTokens(): string | null {
 }
 
 export function buildWechatAuthUrl(state: string): string {
-  const redirectUri = `${window.location.origin}${WECHAT_CONFIG.redirectPath}`;
+  // 优先用显式配置的完整回调地址；未配置则按 origin + redirectPath 自动推导
+  const redirectUri = WECHAT_CONFIG.redirectUri || `${window.location.origin}${WECHAT_CONFIG.redirectPath}`;
   const baseUrl = 'https://open.weixin.qq.com/connect/oauth2/authorize';
   const params = new URLSearchParams({
     appid: WECHAT_CONFIG.appId,
