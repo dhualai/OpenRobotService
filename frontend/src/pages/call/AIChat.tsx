@@ -125,9 +125,18 @@ export default function AIChat() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#f5f5f5' }}>
       <Navbar title="AI 智能助手" fixed leftArrow onLeftClick={() => navigate(-1)} />
-      <div style={{ flex: 1, overflow: 'auto', padding: '16px', paddingTop: 56, paddingBottom: 80 }}>
+      <div
+        style={{
+          flex: 1,
+          overflow: 'auto',
+          padding: '12px 16px',
+          paddingTop: 56,
+          paddingBottom: 80,
+          background: '#f5f5f5',
+        }}
+      >
         {messages.length === 0 && (
           <div style={{ textAlign: 'center', color: '#999', marginTop: 80 }}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>🤖</div>
@@ -144,28 +153,46 @@ export default function AIChat() {
               marginBottom: 16,
             }}
           >
-            <div
-              style={{
-                maxWidth: '80%',
-                padding: msg.role === 'user' ? '10px 16px' : '10px 16px',
-                borderRadius: 12,
-                background: msg.role === 'user' ? '#0052d9' : '#fff',
-                color: msg.role === 'user' ? '#fff' : '#333',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-                whiteSpace: msg.role === 'user' ? 'pre-wrap' : 'normal',
-                wordBreak: 'break-word',
-              }}
-            >
-              {msg.role === 'assistant' ? (
-                msg.content ? (
+            {msg.role === 'assistant' ? (
+              /* AI 回复：白底黑字，Markdown 渲染 */
+              <div
+                style={{
+                  maxWidth: '88%',
+                  padding: '12px 16px',
+                  borderRadius: 12,
+                  background: '#fff',
+                  color: '#333',
+                  fontSize: 14,
+                  lineHeight: 1.7,
+                  boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {msg.content ? (
                   <MarkdownRenderer content={msg.content} />
                 ) : (
-                  loading ? '思考中...' : ''
-                )
-              ) : (
-                msg.content
-              )}
-            </div>
+                  loading ? (
+                    <span style={{ color: '#999', fontSize: 14 }}>思考中...</span>
+                  ) : null
+                )}
+              </div>
+            ) : (
+              /* 用户消息：品牌蓝气泡 */
+              <div
+                style={{
+                  maxWidth: '80%',
+                  padding: '10px 16px',
+                  borderRadius: 16,
+                  background: '#0052d9',
+                  color: '#fff',
+                  boxShadow: '0 2px 8px rgba(0, 82, 217, 0.25)',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {msg.content}
+              </div>
+            )}
           </div>
         ))}
         <div ref={messagesEndRef} />
@@ -182,6 +209,7 @@ export default function AIChat() {
           display: 'flex',
           gap: 8,
           alignItems: 'flex-end',
+          zIndex: 100,
         }}
       >
         <Textarea
