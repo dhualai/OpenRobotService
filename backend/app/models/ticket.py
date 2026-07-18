@@ -2,7 +2,7 @@
 from datetime import datetime
 from sqlalchemy import String, Integer, Text, DateTime, Enum, JSON
 from sqlalchemy.orm import Mapped, mapped_column
-from app.core.database import Base
+from app.models.base import Base
 
 
 class Ticket(Base):
@@ -21,6 +21,7 @@ class Ticket(Base):
     # 以下字段关联其他表，当前存原始值
     project_id: Mapped[int] = mapped_column(Integer, default=0, comment="项目 ID")
     creator_id: Mapped[int] = mapped_column(Integer, default=0, comment="发起人 ID")
+    created_by: Mapped[str] = mapped_column(String(64), default="", index=True, comment="创建人 username（历史工单按角色过滤用）")
     assignee_id: Mapped[int] = mapped_column(Integer, default=0, comment="接收人 ID")
     planned_at: Mapped[datetime] = mapped_column(DateTime, nullable=True, comment="计划完成时间")
     attachments: Mapped[str] = mapped_column(JSON, default=list, comment="附件列表")

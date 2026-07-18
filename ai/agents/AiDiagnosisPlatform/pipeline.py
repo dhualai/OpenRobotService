@@ -650,7 +650,7 @@ class AiDiagnosisPlatform:
         agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
         return await self._build_ticket(session_id, agent_state, memory)
 
-    async def submit(self, session_id: str) -> dict:
+    async def submit(self, session_id: str, created_by: str = "") -> dict:
         await self._ensure_clients()
         memory = await self._memory_manager.get_memory(session_id)
         agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
@@ -664,6 +664,7 @@ class AiDiagnosisPlatform:
             db = SessionLocal()
             record = Ticket(
                 session_id=session_id,
+                created_by=created_by,
                 ticket_ai_id=ticket.get("ticket_id", ""),
                 title=ticket.get("title", ""),
                 description=ticket.get("description", ""),
