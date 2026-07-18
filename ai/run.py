@@ -17,6 +17,9 @@ from contextlib import asynccontextmanager
 _project_root = Path(__file__).resolve().parent.parent  # ai/ → 项目根
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
+_backend_dir = _project_root / "backend"
+if str(_backend_dir) not in sys.path:
+    sys.path.insert(0, str(_backend_dir))
 
 # 加载 .env（AI 模块独立配置）
 from dotenv import load_dotenv
