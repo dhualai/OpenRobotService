@@ -1,7 +1,9 @@
-﻿from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
+from typing import Optional
 from app.wechat.schemas.message import SendMessageRequest, BroadcastMessageRequest, TemplateMessageRequest, SendLinkMessageRequest, ApiResponse, SendNotificationRequest, NotificationResponse
 from app.wechat.services.wechat_service import wechat_service
 from app.wechat.services.permission_service import PermissionService
+from app.wechat.api.dependencies import admin_auth
 import logging
 
 logger = logging.getLogger(__name__)
@@ -10,7 +12,7 @@ router = APIRouter(tags=["消息管理"])
 
 
 @router.post("/send_message", response_model=ApiResponse)
-async def api_send_message(request: SendMessageRequest):
+async def api_send_message(request: SendMessageRequest, credentials: Optional = admin_auth):
     try:
         logger.info(f"尝试给用户 {request.open_id} 发送消息")
         
@@ -24,7 +26,7 @@ async def api_send_message(request: SendMessageRequest):
 
 
 @router.post("/broadcast_message", response_model=ApiResponse)
-async def api_broadcast_message(request: BroadcastMessageRequest):
+async def api_broadcast_message(request: BroadcastMessageRequest, credentials: Optional = admin_auth):
     try:
         logger.info(f"尝试发送广播消息")
         
@@ -38,7 +40,7 @@ async def api_broadcast_message(request: BroadcastMessageRequest):
 
 
 @router.post("/send_link_message", response_model=ApiResponse)
-async def api_send_link_message(request: SendLinkMessageRequest):
+async def api_send_link_message(request: SendLinkMessageRequest, credentials: Optional = admin_auth):
     try:
         logger.info(f"尝试给用户 {request.open_id} 发送链接消息，标题: {request.title}")
         
@@ -54,7 +56,7 @@ async def api_send_link_message(request: SendLinkMessageRequest):
 
 
 @router.post("/webnotify", response_model=NotificationResponse)
-async def api_send_notification(request: SendNotificationRequest, request_obj: Request):
+async def api_send_notification(request: SendNotificationRequest, request_obj: Request, credentials: Optional = admin_auth):
     try:
         import asyncio
         from datetime import datetime

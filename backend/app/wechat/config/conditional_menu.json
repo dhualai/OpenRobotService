@@ -3,95 +3,23 @@
     {
       "button": [
         {
-          "name": "产品服务",
-          "sub_button": [
-            {
-              "type": "view",
-              "name": "工单",
-              "url": "https://usp.ep-zl.com/wechat/HelpDesk/tickets/"
-            },
-            {
-              "type": "view",
-              "name": "资源",
-              "url": "https://usp.ep-zl.com/wechat/HelpDesk/resource/"
-            },
-            {
-              "type": "view",
-              "name": "问答助手",
-              "url": "https://usp.ep-zl.com/wechat/HelpDesk/ai-assistant/"
-            },
-            {
-              "type": "view",
-              "name": "文档",
-              "url": "https://usp.ep-zl.com/wechat/HelpDesk/docs/intro/"
-            }
-          ]
+          "type": "view",
+          "name": "我要摇人",
+          "url": "https://usp.ep-zl.com/p/app/call"
         },
         {
           "type": "view",
-          "name": "项目资源",
-          "url": "https://usp.ep-zl.com/wechat/projects/"
+          "name": "系统任务",
+          "url": "https://usp.ep-zl.com/p/app/tasks"
         },
         {
+          "type": "view",
           "name": "后台管理",
-          "sub_button": [
-            {
-              "type": "view",
-              "name": "用户操作记录",
-              "url": "https://usp.ep-zl.com/wechat/backend/operation-logs"
-            },
-            {
-              "type": "view",
-              "name": "数据导入",
-              "url": "https://usp.ep-zl.com/wechat/backend/data-import"
-            }
-          ]
+          "url": "https://usp.ep-zl.com/wechat/admin"
         }
       ],
       "matchrule": {
         "tag_id": 100
-      }
-    },
-    {
-      "button": [
-        {
-          "type": "view",
-          "name": "数据导入",
-          "url": "https://usp.ep-zl.com/wechat/backend/data-import"
-        },
-        {
-          "type": "view",
-          "name": "项目资源",
-          "url": "https://usp.ep-zl.com/wechat/projects/"
-        },
-        {
-          "name": "产品服务",
-          "sub_button": [
-            {
-              "type": "view",
-              "name": "工单",
-              "url": "https://usp.ep-zl.com/wechat/HelpDesk/tickets/"
-            },
-            {
-              "type": "view",
-              "name": "资源",
-              "url": "https://usp.ep-zl.com/wechat/HelpDesk/resource/"
-            },
-            {
-              "type": "view",
-              "name": "问答助手",
-              "url": "https://usp.ep-zl.com/wechat/HelpDesk/ai-assistant/"
-            },
-            {
-              "type": "view",
-              "name": "文档",
-              "url": "https://usp.ep-zl.com/wechat/HelpDesk/docs/intro/"
-            }
-          ]
-        }
-      ],
-      "matchrule": {
-        "tag_id": 101
       }
     }
   ]
