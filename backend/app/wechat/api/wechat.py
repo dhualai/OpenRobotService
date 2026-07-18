@@ -29,7 +29,7 @@ from app.wechat.services.permission_service import PermissionService
 from app.wechat.api.match_report import parse_daily_report
 from app.modules.admin.services.daily_report_service import daily_report_service
 
-templates = Jinja2Templates(directory="app/modules/wechat/templates")
+templates = Jinja2Templates(directory="app/wechat/templates")
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["微信接口"])
