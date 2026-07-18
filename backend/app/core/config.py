@@ -53,11 +53,7 @@ class Settings(BaseSettings):
             'database': 'helpdesk'
         }
     
-    DATA_SERVICE_URL: str = Field(default="http://localhost:8002")
-    DATA_DEBUG_SERVICE_URL: str = Field(default="http://localhost:8012")
-    AUTH_SERVICE_URL: str = Field(default="http://localhost:8001")
     AI_SERVICE_URL: str = Field(default="http://localhost:8010")
-    FAQ_SERVER_URL: str = Field(default="http://localhost:8005")
     
     USER_CENTER_BASE_URL: str = Field(default="http://localhost:8001")
     

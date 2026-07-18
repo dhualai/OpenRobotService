@@ -13,7 +13,6 @@ from typing import Optional
 from fastapi import APIRouter, Request, Query, HTTPException, Body, UploadFile, File, Form
 from fastapi.responses import RedirectResponse, PlainTextResponse, Response, JSONResponse
 from fastapi.templating import Jinja2Templates
-import aiohttp
 
 from app.core.config import settings
 from app.wechat.services.ai_service import ai_service
@@ -28,6 +27,7 @@ from app.wechat.utils.opt_logger import log_operation
 from app.services.hmac_utils import generate_password, chinese_to_pinyin, get_password_hash, verify_password
 from app.wechat.services.permission_service import PermissionService
 from app.wechat.api.match_report import parse_daily_report
+from app.modules.admin.services.daily_report_service import daily_report_service
 
 templates = Jinja2Templates(directory="app/modules/wechat/templates")
 logger = logging.getLogger(__name__)
@@ -252,23 +252,13 @@ async def handle_text_message(message: dict):
                 "reporter": '',
                 "reporter_id": generate_wechat_username(user_id)
             }
-            print(token)
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{settings.DATA_SERVICE_URL}/api/daily-reports/",
-                    json=report_data_api,
-                    headers={"Authorization": f"Bearer {token}"},
-                    timeout=10
-                ) as response:
-                    if response.status == 200:
-                        response_data = await response.json()
-                        logger.info(f'日报创建成功: {response_data}')
-                        reply_message += '\r\n日报已成功提交！'
-                    else:
-                        error_text = await response.text()
-                        logger.error(f'日报创建失败: HTTP {response.status}, {error_text}')
-                        reply_message += f'\r\n日报提交失败，请稍后重试'
+            try:
+                response_data = daily_report_service.create_report(report_data_api)
+                logger.info(f'日报创建成功: {response_data}')
+                reply_message += '\r\n日报已成功提交！'
+            except Exception as e:
+                logger.error(f'日报创建失败: {e}')
+                reply_message += f'\r\n日报提交失败，请稍后重试'
         except Exception as e:
             logger.error(f'调用日报API异常: {e}')
             reply_message += f'\r\n日报提交异常，请联系管理员'
