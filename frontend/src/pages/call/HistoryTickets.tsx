@@ -12,6 +12,7 @@ import { formatDateTime } from '@/shared/utils/url';
 interface Ticket {
   id: string; title: string; status: string; project_name?: string; created_at: string;
   reporter_name?: string;
+  description?: string;
 }
 
 const ROW_HEIGHT = 56;
@@ -19,6 +20,16 @@ const STATUS_COLOR: Record<string, string> = {
   new: '#0052d9', in_progress: '#e37318', pending: '#e37318',
   resolved: '#2ba471', closed: '#999',
 };
+
+/** 从 description 提炼一行"梗概"：去 markdown 标记、取首条非空、限长 */
+function stripSummary(desc: string): string {
+  const firstLine = desc.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('【')) || '';
+  return firstLine
+    .replace(/^#+\s*/, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/[*_`>#-]/g, '')
+    .slice(0, 40);
+}
 
 export default function HistoryTickets() {
   const navigate = useNavigate();
@@ -87,10 +98,15 @@ export default function HistoryTickets() {
                 key={t.id}
                 className="history-row"
                 style={{ position: 'absolute', top: (start + i) * ROW_HEIGHT, left: 0, right: 0, height: ROW_HEIGHT }}
-                onClick={() => navigate(`/app/tasks/${t.id}`)}
+                onClick={() => navigate(`/app/call/ticket/${t.id}`)}
               >
                 <span className="history-row__dot" style={{ background: STATUS_COLOR[t.status] || '#999' }} />
-                <span className="history-row__title">{t.title}</span>
+                <span className="history-row__main">
+                  <span className="history-row__title">{t.title}</span>
+                  {t.description && (
+                    <span className="history-row__summary">{stripSummary(t.description)}</span>
+                  )}
+                </span>
                 <span className="history-row__status">{normalizeStatus(t.status)}</span>
                 <span className="history-row__date">{formatDateTime(t.created_at).slice(0, 10)}</span>
               </div>
