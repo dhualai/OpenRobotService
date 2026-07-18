@@ -38,6 +38,10 @@ const API_CONFIG = {
   ADMIN: {
     BASE_URL: `${API_ROOT}/admin`,
   },
+  /** 微信服务 - /api/wechat (菜单管理/标签管理/消息发送) */
+  WECHAT: {
+    BASE_URL: `${API_ROOT}/wechat`,
+  },
 } as const;
 
 export default API_CONFIG;

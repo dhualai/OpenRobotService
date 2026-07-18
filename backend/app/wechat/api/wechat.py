@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import shutil
 import traceback
@@ -28,6 +28,7 @@ from app.services.hmac_utils import generate_password, chinese_to_pinyin, get_pa
 from app.wechat.services.permission_service import PermissionService
 from app.wechat.api.match_report import parse_daily_report
 from app.modules.admin.services.daily_report_service import daily_report_service
+from app.wechat.api.dependencies import admin_auth
 
 templates = Jinja2Templates(directory="app/wechat/templates")
 logger = logging.getLogger(__name__)
@@ -675,7 +676,7 @@ async def validate_and_prepare_import_data(data: dict) -> dict:
 
 
 @router.post("/import-data")
-async def import_data(request: Request, data: dict = Body(...)):
+async def import_data(request: Request, data: dict = Body(...), credentials: Optional = admin_auth):
     try:
         logger.info(f"收到文本框导入请求，数据: {data}")
         

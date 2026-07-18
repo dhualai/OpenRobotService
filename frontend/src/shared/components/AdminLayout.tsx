@@ -25,6 +25,7 @@ const adminMenuItems: MenuItem[] = [
   { path: '/app/admin/risks', label: '风险管理', emoji: '⚠️' },
   { path: '/app/admin/reports', label: '报表分析', emoji: '📋' },
   { path: '/app/admin/data-import', label: '数据导入', emoji: '📥' },
+  { path: '/app/admin/wechat', label: '微信管理', emoji: '💬' },
   { path: '/app/admin/operation-logs', label: '操作记录', emoji: '📝' },
   { path: '/app/admin/users', label: '用户管理', emoji: '👤' },
   { path: '/app/admin/roles', label: '角色管理', emoji: '🏷️' },

@@ -13,6 +13,7 @@ const entries: Entry[] = [
   { path: '/app/admin/progress', label: '进度看板', emoji: '📈' },
   { path: '/app/admin/reports', label: '报表分析', emoji: '📋' },
   { path: '/app/admin/data-import', label: '机器人数据', emoji: '📥' },
+  { path: '/app/admin/wechat', label: '微信管理', emoji: '💬', adminOnly: true },
   { path: '/app/admin/users', label: '用户管理', emoji: '👤', adminOnly: true },
   { path: '/app/admin/roles', label: '角色管理', emoji: '🏷️', adminOnly: true },
   { path: '/app/admin/permissions', label: '权限管理', emoji: '🔑', adminOnly: true },
