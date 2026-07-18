@@ -701,24 +701,25 @@ html, body, #root {
   border-top: 1px solid #e8e8e8;
 }
 
-/* 行内代码 */
+/* 行内代码 —— 与白底黑字卡片协调 */
 .markdown-body .md-inline-code,
 .markdown-body code:not(pre code) {
-  background: rgba(0, 0, 0, 0.06);
-  color: #d54941;
+  background: #f2f3f5;
+  color: #333;
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.9em;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
 }
 
-/* 代码块 */
+/* 代码块 —— 浅色卡片风格，与白色对话气泡协调 */
 .markdown-body .md-code-block,
 .markdown-body pre {
   margin: 0 0 10px;
   padding: 12px 14px;
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: #f6f8fa;
+  border: 1px solid #e8ecf0;
+  color: #24292e;
   border-radius: 8px;
   overflow-x: auto;
   font-size: 0.85em;
