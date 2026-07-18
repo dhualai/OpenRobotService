@@ -37,7 +37,8 @@ export function useAuthGuard(requireAdmin = false) {
     const restored = checkUrlTokens();
 
     if (!isLoggedIn && !restored) {
-      navigate(`/login?from=${encodeURIComponent(location.pathname + location.search)}`, { replace: true });
+      // 与 AuthGuard 组件保持一致：按配置决定跳微信 OAuth 或账密页
+      redirectUnauthenticated(navigate, location.pathname);
       return;
     }
 
@@ -70,7 +71,8 @@ export function AuthGuard({ children, requireAdmin = false }: AuthGuardProps) {
     const restored = checkUrlTokens();
 
     if (!isLoggedIn && !restored) {
-      redirectUnauthenticated(navigate, location.pathname + location.search);
+      // 仅用 pathname 作为 state，避免 query 参数污染后端回跳时的 token 拼接
+      redirectUnauthenticated(navigate, location.pathname);
       return;
     }
     if (requireAdmin && !isAdmin) {
