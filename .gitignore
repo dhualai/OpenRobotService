@@ -22,6 +22,10 @@ htmlcov/
 .env
 .env.*
 !.env.example
+# 前端多环境构建配置（仅含公开信息：AppID、回调地址、开关，不含任何密钥），
+# 需要随代码提交，供 CI / 服务器 vite build --mode <env> 时加载。
+!.env.production
+!.env.staging
 *.pem
 *.key
 
