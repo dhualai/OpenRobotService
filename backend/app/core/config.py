@@ -55,8 +55,6 @@ class Settings(BaseSettings):
     
     AI_SERVICE_URL: str = Field(default="http://localhost:8010")
     
-    USER_CENTER_BASE_URL: str = Field(default="http://localhost:8001")
-    
     MINIO_ENDPOINT: str = Field(default="localhost:9000")
     MINIO_ACCESS_KEY: str = Field(default="")
     MINIO_SECRET_KEY: str = Field(default="")

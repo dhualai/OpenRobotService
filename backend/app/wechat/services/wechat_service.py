@@ -1,9 +1,10 @@
-﻿import time
+import time
 import requests
 import json
 import asyncio
 import hashlib
 import random
+import os
 from typing import Dict, List, Optional
 from app.core.config import settings
 
@@ -194,7 +195,9 @@ class WechatService:
             return False
 
         try:
-            with open("menu.json", "r", encoding="utf-8") as f:
+            config_dir = os.path.join(os.path.dirname(__file__), "..", "config")
+            menu_path = os.path.join(config_dir, "menu.json")
+            with open(menu_path, "r", encoding="utf-8") as f:
                 menu_data = json.load(f)
 
             regular_menu_data = {"button": menu_data.get("button", [])}
@@ -294,7 +297,9 @@ class WechatService:
             return []
 
         try:
-            with open("conditional_menu.json", "r", encoding="utf-8") as f:
+            config_dir = os.path.join(os.path.dirname(__file__), "..", "config")
+            menu_path = os.path.join(config_dir, "conditional_menu.json")
+            with open(menu_path, "r", encoding="utf-8") as f:
                 menu_data = json.load(f)
 
             menu_ids = []
@@ -317,14 +322,14 @@ class WechatService:
                 if menuid:
                     menu_ids.append(menuid)
             else:
-                print("menu.json文件缺少matchrule字段，无法创建个性化菜单")
+                print("conditional_menu.json文件缺少matchrule字段，无法创建个性化菜单")
 
             return menu_ids
         except FileNotFoundError:
-            print("menu.json文件不存在")
+            print("conditional_menu.json文件不存在")
             return []
         except json.JSONDecodeError as e:
-            print(f"解析menu.json文件失败: {e}")
+            print(f"解析conditional_menu.json文件失败: {e}")
             return []
         except Exception as e:
             print(f"从文件创建个性化菜单时发生异常: {e}")
