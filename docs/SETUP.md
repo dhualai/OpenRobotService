@@ -87,7 +87,26 @@ npm run dev    # 开发，默认 http://127.0.0.1:5173
 npm run build  # 生产构建，产物在 dist/
 ```
 
-开发态 `/api` 由 Vite 代理转发到本地后端：`vite.config.ts` 中 `TEST_API_TARGET`（当前 `http://localhost:8400`，仅 `serve` 即 `npm run dev` 生效；`build` 时置空）。需要切到远程测试服时改这个常量即可。前端登录守卫开关见 `frontend/.env.local` 的 `VITE_DISABLE_AUTH_GUARD`。
+后端拆为**业务后端**（`backend/main.py`@8400）和**独立 AI 服务**（`ai/run.py`@8401），本地 dev 需**两者都启动**：
+
+```bash
+# 终端1：业务后端（/api/auth|admin|tasks|call|wechat）
+cd backend && python main.py          # → http://127.0.0.1:8400
+
+# 终端2：AI 服务（/api/ai/*）
+cd .. && python ai/run.py             # → http://127.0.0.1:8401
+```
+
+`npm run dev` 时 `vite.config.ts` 代理拆分：`/api/ai/*`→8401、其余 `/api/*`→8400（目标可用 `VITE_DEV_BACKEND_TARGET` / `VITE_DEV_AI_TARGET` 覆盖）。前端登录守卫开关见 `frontend/.env.local` 的 `VITE_DISABLE_AUTH_GUARD`。
+
+**生产构建**：经 nginx 按环境前缀分发（见 `deploy/nginx/conf/conf.d/app_gateway.conf`），需按环境构建并把产物分别放入 nginx `html/test/`、`html/prod/`：
+
+```bash
+npm run build:test   # base='/t/app/'，API 前缀推导为 /t/api（测试）
+npm run build:prod   # base='/p/app/'，API 前缀推导为 /p/api（生产）
+```
+
+API 前缀由 `src/config/api.ts` 据 vite `base` 自动推导，nginx 用最长前缀把 `.../api/ai/*` 转给 AI 服务、其余 `.../api/*` 转给业务后端，前端无需感知分流。
 
 ## 5. 运行测试
 
