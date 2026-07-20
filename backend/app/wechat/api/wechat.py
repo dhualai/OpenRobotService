@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import shutil
 import traceback
 import uuid
@@ -36,6 +37,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["微信接口"])
 
 user_states = {}
+
+
+def resolve_callback_target(state: Optional[str], scheme: str, netloc: str) -> str:
+    """根据微信授权回调的 state 还原前端回跳地址（不含 token）。
+
+    新格式（前端 buildStateFromPath）：state 为 base64url 编码的**完整地址**
+        （origin + 部署前缀 + 路由路径，如 https://usp.ep-zl.com/p/app/app/admin/wechat）。
+        解码成功且以 http(s):// 开头则直接使用，避免丢失 /p/app 部署前缀。
+    旧格式（兼容）：state 为路由路径且把 '/' 编码成 '0'（如 0app0admin0wechat），
+        此时用回调请求的 scheme+netloc 重拼（可能缺少部署前缀，仅作兜底）。
+    """
+    if state:
+        try:
+            padding = '=' * (-len(state) % 4)
+            decoded = base64.urlsafe_b64decode(state + padding).decode('utf-8')
+            if decoded.startswith('http://') or decoded.startswith('https://'):
+                return decoded
+        except Exception:
+            pass
+        # 旧格式兜底：'0' 还原为 '/'
+        processed_path = state.replace('0', '/')
+    else:
+        processed_path = '/app/call'
+    return f"{scheme}://{netloc}{processed_path}"
 
 
 @router.get("", response_class=PlainTextResponse)
@@ -485,9 +510,11 @@ async def wechat_callback(
         scheme = request.url.scheme
         netloc = request.url.netloc
         
-        processed_path = state.replace('0', '/')
-        logger.info(f"处理后的path参数: {processed_path}")
-        frontend_url = f"{scheme}://{netloc}{processed_path}?token={token}&refresh_token={refresh_token}"
+        # state 优先按 base64url 完整地址解码（含部署前缀，避免 /p/app 丢失）；
+        # 无法解码则兼容旧的 '0'→'/' 路径格式，用回调域名兜底重拼。
+        target_url = resolve_callback_target(state, scheme, netloc)
+        logger.info(f"还原的前端回跳地址: {target_url}")
+        frontend_url = f"{target_url}?token={token}&refresh_token={refresh_token}"
         logger.info(f"准备重定向到前端业务页面: {frontend_url}")
         
         return RedirectResponse(url=frontend_url)
