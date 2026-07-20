@@ -1,6 +1,6 @@
 # OpenRobotService AI 模块说明文档
 
-> 版本：1.0 | 更新日期：2026-07-17
+> 版本：1.1 | 更新日期：2026-07-20
 
 ---
 
@@ -26,7 +26,7 @@
 │                      外部调用层                            │
 │   POST /api/ai/qa/ask        POST /api/ai/qa/ask/stream  │
 │   POST /api/ai/qa/submit     POST /api/ai/chat            │
-│   GET  /api/ai/memory/history                             │
+│   POST /api/ai/ticketReferee  GET /api/ai/memory/history   │
 └──────────────────────┬───────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────┐
@@ -36,7 +36,8 @@
 │   ├── 5 路并行知识库检索                                   │
 │   ├── 故障排查树分流 & 逐步骤引导                          │
 │   ├── 多轮对话状态管理 (AgentState)                        │
-│   └── 工单生成 + MySQL 入库                                │
+│   ├── assigner/ 智能派单子模块（自动推荐负责人）            │
+│   └── 工单生成 + MySQL 入库 + 自动派单                       │
 └──────────────────────┬───────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────┐
@@ -78,8 +79,8 @@ ai/                          ← 一级目录，与 backend/、frontend/ 并列
 ├── run.py                   # FastAPI 独立启动入口（端口 8401，零 backend 依赖）
 │
 ├── api/                     # API 路由（自举，不再依赖 backend）
-│   ├── __init__.py          # 导出 qa_router / chat_router / memory_router
-│   └── router.py            # 诊断 Agent + LLM 对话 + 会话记忆 全部端点
+│   ├── __init__.py          # 导出 qa_router / chat_router / memory_router / assigner_router
+│   └── router.py            # 诊断 Agent + LLM 对话 + 会话记忆 + 智能派单 全部端点
 │
 ├── core/                    # AI 基础层
 │   ├── __init__.py          # 统一导出（LLM/Retrieval/Embed/Memory）
@@ -90,7 +91,21 @@ ai/                          ← 一级目录，与 backend/、frontend/ 并列
 │
 ├── agents/                  # Agent 层
 │   ├── AiDiagnosisPlatform/
-│   │   └── pipeline.py      # 诊断 Agent：推理 + 5 路检索 + 工单生成
+│   │   ├── pipeline.py      # 诊断 Agent：推理 + 5 路检索 + 工单生成
+│   │   └── assigner/        # 智能派单子模块（工单生成后自动推荐负责人）
+│   │       ├── assigner.py      # 核心派单逻辑（四层流水线）
+│   │       ├── schemas.py       # TicketContext / EngineerProfile / AssignmentResult
+│   │       ├── config_loader.py # 配置加载（YAML + prompts.txt）
+│   │       ├── config/          # assigner_config.yaml + prompts.txt
+│   │       ├── data/            # 结构化参考数据（engineers.json + task_matching.json）
+│   │       ├── recall.py        # 多路召回（模块 + 标签 + 历史）
+│   │       ├── semantic_recall.py  # 语义召回（Embedding 向量匹配）
+│   │       ├── module_inferencer.py # 责任模块推断（LLM + 规则兜底）
+│   │       ├── llm_decider.py   # LLM 综合分析决策
+│   │       ├── ranker.py        # 精排评分（固定权重多维度）
+│   │       ├── decision.py      # 规则决策（阈值判定）
+│   │       ├── rule_filter.py   # 规则过滤（层级/负载）
+│   │       └── history_matcher.py  # 历史工单匹配
 │   └── AiDataAnalysisPlatform/
 │       ├── agent.py         # 门面编排器
 │       ├── analyzer.py      # 分析引擎（预处理 + LLM 调用 + 结果解析）
@@ -120,6 +135,9 @@ ai/                          ← 一级目录，与 backend/、frontend/ 并列
 │
 ├── embed_models/            # 本地 Embedding 模型缓存
 │   └── bge-small-zh-v1.5/
+│
+├── utils/                   # 工具函数
+│   └── keywords.py          # 关键词提取（供召回层使用）
 │
 └── tests/
     └── agent_chat.py        # 命令行交互测试工具
@@ -226,7 +244,7 @@ MemoryManager
 class AiDiagnosisPlatform:
     async def run(request: DiagnosisRequest) → dict          # 非流式入口
     async def run_stream(request: DiagnosisRequest) → SSE    # 流式入口
-    async def submit(session_id: str) → dict                  # 生成工单 + 写 MySQL
+    async def submit(session_id: str) → dict                  # 生成工单 + 写 MySQL + 智能派单
     async def get_ticket(session_id: str) → dict              # 只读获取工单数据
 ```
 
@@ -340,8 +358,95 @@ submit(session_id)
   ├── 写入 MySQL (tickets 表)
   ├── agent_state.phase = "resolved"
   ├── add_pending_ticket → Redis Set "usp:pending_tickets"
-  └── 返回 {ticket, db_id}
+  ├── assign_ticket() → 智能派单（assigner 一站式入口）
+  │     └── 推荐结果注入返回体 (assignee / confidence / reasoning)
+  └── 返回 {ticket, db_id, assignee, ...}
 ```
+
+### 4.8 智能派单 (`assigner/`)
+
+智能派单是诊断 Agent 的**子功能**——工单生成后自动推荐最合适的负责人。它不是独立平台，而是提单 Agent 流程中 `submit()` 的最后一环。
+
+**四层流水线**：
+
+```
+TicketContext + EngineerProfile[]
+        │
+        ▼
+【第一层: 规则过滤】RuleFilter
+  默认只保留 level=1 的一线工程师，预留负载/可用性过滤扩展
+        │
+        ▼
+【第二层: 多路召回】MultiPathRecaller
+  ├── 模块召回：LLM 推断责任模块 → 匹配工程师 responsibility_modules
+  ├── 标签召回：关键词提取 → 匹配工程师 skills
+  ├── 历史召回：task_matching.json 关键词匹配
+  └── 语义召回：Embedding 向量匹配工程师画像 + 历史任务描述
+        │
+        ▼
+【第三层: LLM 综合分析】LlmDecider
+  ├── 输入: 工单信息 + 工程师画像 + 各路召回分数
+  ├── LLM 直接输出: engineer_id, confidence_score, reasoning, decision_type
+  └── 异常时返回 None → 触发回退
+        │（回退路径）
+        ▼
+【第四层: 规则精排 + 决策】Ranker → DecisionMaker
+  ├── 固定权重多维度评分（技能30% + 模块30% + 历史25% + 语义15%）
+  └── 阈值判定: confidence ≥ 0.8 → auto / ≥ 0.5 → recommend / < 0.5 → fallback
+```
+
+**核心类**：
+
+```python
+class Assigner:
+    """工单负责人推荐器（全异步架构，无依赖注入）"""
+    async def aassign(...) -> AssignmentResult
+
+# ── 便捷入口（__init__.py 导出）──
+async def assign_ticket(
+    title, problem_description, **kwargs
+) -> AssignmentResult
+    """一站式派单：加载工程师 → 构建 Context → 四层流水线"
+
+def load_engineers() -> list[EngineerProfile]
+    """加载工程师画像（模块级缓存）"""
+
+
+class TicketContext(BaseModel):
+    """工单上下文，与提单 Agent 字段完整对齐"""
+    id, title, problem_description, status, priority, ticket_type
+    session_id, source, location, robot_type, fault_code
+    diagnosis_hypotheses, diagnosis_ruled_out, diagnosis_collected_info
+
+class EngineerProfile(BaseModel):
+    """工程师画像"""
+    id, name, level, responsibility_modules, skills, duty_text
+
+class AssignmentResult(BaseModel):
+    """派单结果"""
+    engineer_id, engineer_name, confidence_score, reasoning, decision_type
+```
+
+**设计原则**：
+
+| 原则 | 说明 |
+|------|------|
+| **无依赖注入** | LLM / Embedding 直接从 `ai.core` 获取单例，构造函数零参数 |
+| **全异步** | 从头到尾用 `ai.core` 异步客户端，不阻塞事件循环 |
+| **自动降级** | Embedding 不可用 → 跳过语义召回；LLM 不可用 → 回退到规则精排 |
+| **数据本地化** | 工程师画像（`engineers.json`）和任务匹配数据（`task_matching.json`）放在模块内 `data/` 下 |
+| **配置热更新** | YAML 配置 + Prompt 模板支持 `reload()`，运行时改规则无需重启 |
+
+**业务接入点**：`pipeline.submit()` 工单写入 MySQL 后调用 Assigner，推荐结果注入 `ticket` 返回体（`assignee / assignee_id / assign_confidence / assign_reasoning`），派单失败不阻塞工单生成。
+
+**LLM 依赖**：
+
+| 调用点 | 用途 | 失败策略 |
+|--------|------|---------|
+| `ModuleInferencer.ainfer()` | 从工单描述推断责任模块 | 回退到 rule_infer（关键词匹配） |
+| `LlmDecider.adecide()` | 综合分析召回分数 + 工程师画像 → 最终推荐 | 回退到 Ranker + DecisionMaker |
+| Embedding（`SemanticRecaller`） | 工单描述 vs 工程师画像 / 历史任务的语义相似度 | 跳过语义召回，仅关键词匹配 |
+
 
 ---
 
@@ -559,6 +664,39 @@ POST /api/ai/qa/ask
 | DELETE | `/api/ai/memory/clear?session_id=` | 清除指定会话 |
 | DELETE | `/api/ai/memory/clear-all` | 清除所有会话 |
 
+### 6.4 智能派单 (`/api/ai/ticketReferee`)
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/ai/ticketReferee` | 智能派单（输入 title + comments → 推荐最佳工程师） |
+| GET | `/api/ai/ticketReferee/health` | 派单服务健康检查 |
+
+**请求示例**：
+
+```json
+POST /api/ai/ticketReferee
+{
+    "title": "AGV小车无法启动",
+    "comments": ["潜伏车上线后无法移动", "MQTT连接正常但调度系统下发任务无响应"],
+    "workload_map": {"张三": 5}
+}
+```
+
+**响应示例**：
+
+```json
+{
+    "code": 200,
+    "data": {
+        "name": "张资源",
+        "id": "eng_zhangzhiy",
+        "confidence": 0.85,
+        "decision_type": "auto",
+        "reasoning": "推荐 张资源，综合置信度 0.85。依据: 责任模块匹配(0.50): 车端, 异常排查；语义相似度(0.53)。匹配度高，可直接派单。"
+    }
+}
+```
+
 ---
 
 ## 7. 知识库入库 (`ingestion/`)
@@ -567,13 +705,13 @@ POST /api/ai/qa/ask
 
 ```bash
 # 一键入库全部 5 个知识库
-python -m app.ai.ingestion.ingest_all
+python -m ai.ingestion.ingest_all
 
 # 跳过指定知识库
-python -m app.ai.ingestion.ingest_all --skip faq --skip translation
+python -m ai.ingestion.ingest_all --skip faq --skip translation
 
 # 预览（仅排查树支持）
-python -m app.ai.ingestion.ingest_all --dry-run
+python -m ai.ingestion.ingest_all --dry-run
 ```
 
 注册表 (`_REGISTRY`)：
@@ -700,7 +838,7 @@ async def validate_ai_config() → dict:
 
 ### 9.1 零依赖启动
 
-`ai/run.py` 完全自举，不依赖 backend 任何模块。仅需项目根目录在 `sys.path` 中以使 `ai.*` 可导入，配置统一从 `backend/.env` 读取。路由从 `ai.api` 直接挂载，无需 namespace hack。
+`ai/run.py` 完全自举，不依赖 backend 任何模块。仅需项目根目录在 `sys.path` 中以使 `ai.*` 可导入，配置统一从 `ai/.env` 读取。路由从 `ai.api` 直接挂载，无需 namespace hack。
 
 ### 9.2 Lifespan 启动序列
 
@@ -777,9 +915,15 @@ POST /api/ai/qa/submit {session_id}
 │    └── 填充专属字段       │
 │ 3. MySQL INSERT          │  → tickets 表
 │ 4. add_pending_ticket    │  → Redis Set
-│ 5. save_memory           │
+│ 5. assigner.aassign()    │  → 智能派单推荐负责人（四层流水线）
+│    ├── 规则过滤          │
+│    ├── 多路召回（模块+标签+历史+语义）
+│    ├── LLM 综合分析      │
+│    └── 规则精排（回退）  │
+│ 6. save_memory           │
 │                          │
-│ 返回 {ticket, db_id}     │
+│ 返回 {ticket, db_id,     │
+│        assignee, ...}    │
 └──────────────────────────┘
 ```
 
@@ -849,7 +993,7 @@ AIError (base)
 | `EMBEDDING_DEVICE` | `cpu` | 推理设备 |
 | `RETRIEVAL_TOP_K` | `3` | 检索返回数量 |
 | `RETRIEVAL_SCORE_THRESHOLD` | `0.65` | 置信度阈值 |
-| `DOCS_PATH` | `../docs/` | 文档目录 |
+| `DOCS_PATH` | `""` | 文档根目录（默认 ai/docs/） |
 | `MEDIA_URL_PREFIX` | `/api/media` | 图片 URL 前缀 |
 | `AI_CHAIN_TIMEOUT` | `2.5` | (保留字段) |
 | `DISPATCH_API_URL` | `""` | 派单系统回调地址 |

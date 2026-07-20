@@ -8,6 +8,6 @@ AI 模块 API 路由
     memory_router — /api/ai/memory/* 会话记忆
 """
 
-from ai.api.router import qa_router, chat_router, memory_router
+from ai.api.router import qa_router, chat_router, memory_router, assigner_router
 
-__all__ = ["qa_router", "chat_router", "memory_router"]
+__all__ = ["qa_router", "chat_router", "memory_router", "assigner_router"]
