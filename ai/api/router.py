@@ -8,7 +8,7 @@ import json
 import time
 import os
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -375,3 +375,62 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
         return {"code": 0, "data": {"session_id": session_id, "message": "已清除"}}
     except Exception as e:
         return {"code": 1, "data": {"error": str(e)}}
+
+
+# ============================================================
+# 智能派单 (prefix /api/ai)
+# ============================================================
+assigner_router = APIRouter(prefix="/api/ai", tags=["ai-assigner"])
+
+
+class RefereeRequest(BaseModel):
+    """派单请求"""
+    title: str
+    comments: List[str] = []
+    workload_map: Dict[str, int] = {}
+
+
+class RefereeResponse(BaseModel):
+    """派单响应"""
+    code: int
+    message: str = ""
+    data: Dict = {}
+
+
+@assigner_router.post("/ticketReferee", response_model=RefereeResponse)
+async def ticket_referee(req: RefereeRequest):
+    """智能派单接口（兼容后端现有调用方式）。"""
+    try:
+        description = "\n".join(filter(None, req.comments)) if req.comments else req.title
+        from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket
+        result = await assign_ticket(
+            title=req.title,
+            problem_description=description,
+        )
+        return RefereeResponse(
+            code=200,
+            data={
+                "name": result.engineer_name,
+                "id": result.engineer_id,
+                "confidence": result.confidence_score,
+                "decision_type": result.decision_type,
+                "reasoning": result.reasoning,
+            },
+        )
+    except Exception as e:
+        return RefereeResponse(
+            code=500,
+            message=f"AI派单失败: {str(e)}",
+            data={},
+        )
+
+
+@assigner_router.get("/ticketReferee/health")
+async def assigner_health_check():
+    """派单服务健康检查。"""
+    from ai.agents.AiDiagnosisPlatform.assigner import load_engineers
+    return {
+        "status": "ok",
+        "service": "ai-assigner",
+        "engineers_count": len(load_engineers()),
+    }
