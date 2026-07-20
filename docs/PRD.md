@@ -3,7 +3,7 @@
 > **文档定位**：本文是执行层 PRD，负责把 [PRODUCT.md](./PRODUCT.md)（产品形态蓝图）与 [ARCHITECTURE.md](./ARCHITECTURE.md)（技术架构）落到"这周谁做什么、做到什么标准才算完成"。三份文档分工：PRODUCT/ARCHITECTURE 回答"要做成什么样"，本文回答"现在具体做哪些点、谁负责、怎么验收"。
 > **基准代码**：`develop` 分支 `a53f22e`（2026-07-18），详细代码现状见 [工程文档.md](./工程文档.md)。
 > **维护规则**：本文是团队共同维护的活文档，不是产品经理单方面输出。功能点的认领、状态、验收结果由对应 Owner 更新，产品经理负责整体一致性把关。每次团队周会同步更新一次。
-> **读者**：产品经理、前端工程师、后端工程师、知识库/问答 Agent 工程师、派单 Agent 工程师、风险分析 Agent 工程师、测试工程师，共 7 人。
+> **读者**：产品经理、前端工程师、后端工程师、知识库/问答 Agent 工程师、任务 Agent 工程师、风险分析 Agent 工程师、测试工程师，共 7 人。
 
 ---
 
@@ -74,7 +74,7 @@
 
 - [ ] 微信服务号生产环境接入上线（OAuth 登录、菜单、消息回调，见第四节 checklist 全部打勾）
 - [ ] 三个模块（我要摇人 / 系统任务 / 后台管理）各自的本周新增功能点（见 3.2 登记表）全部达到"可演示、可验收"状态
-- [ ] 三个 Agent（提单/知识问答 Agent、派单 Agent、风险分析 Agent）与对应模块前后端联调打通，至少跑通一条端到端主链路
+- [ ] 三个 Agent（提单/知识问答 Agent、任务 Agent、风险分析 Agent）与对应模块前后端联调打通，至少跑通一条端到端主链路
 - [ ] 测试工程师的 AI 自动化测试 Agent 完成对三条主链路的首轮覆盖（即使非全量，也要能跑）
 
 ### 3.2 功能点登记表（团队协作认领，本表是本周排期的唯一事实来源）
@@ -87,8 +87,8 @@
 | 2 | 我要摇人 | AI 在线咨询引导诊断 | agent owner | 知识库/问答 Agent | P0 | **[待认领填写]** | 待认领 |
 | 3 | 我要摇人 | 我的工单列表/详情/催办 | 前端 | — | P1 | **[待认领填写]** | 待认领 |
 | 4 | 系统任务 | 统一任务收件箱（工单/bug/需求） | 后端 | — | P0 | **[待认领填写]** | 待认领 |
-| 5 | 系统任务 | 接单/处理/转派/上报 | agent owner | 派单 Agent | P0 | **[待认领填写]** | 待认领 |
-| 6 | 系统任务 | AI 辅助生成处理结果草稿 | agent owner | 派单 Agent | P1 | **[待认领填写]** | 待认领 |
+| 5 | 系统任务 | 接单/处理/转派/上报（任务 Agent 自由问答 + 工单分析） | 任务 Agent 工程师 | 任务 Agent | P0 | 工程师可在 ChatPanel 自由技术问答；选中工单后 Agent 自动加载诊断上下文并生成结构化方案草稿；方案可编辑提交 | **已完成** |
+| 6 | 系统任务 | AI 辅助生成处理结果草稿（任务 Agent analyze + SolutionCard） | 任务 Agent 工程师 | 任务 Agent | P1 | SSE 流式输出方案草稿（根因分析 + 建议步骤 + 参考来源 + 置信度）；SolutionCard 可编辑每条内容；submit 后工单状态更新为 resolved | **已完成** |
 | 7 | 后台管理 | 跨项目看板（工单总览/风险红黄灯） | 产品经理 | 风险分析 Agent | P0 | **[待认领填写]** | 待认领 |
 | 8 | 后台管理 | 项目/风险/日报管理 | 产品经理 | — | P0 | **[待认领填写]** | 待认领 |
 | 9 | 后台管理 | AI 风险分析与数据洞察 | agent owner | 风险分析 Agent | P1 | **[待认领填写]** | 待认领 |
@@ -221,23 +221,23 @@
 
 ## 七、功能规格 · 系统任务（供给视角）
 
-**工程 Owner**：后端工程师（含框架基建） ｜ **Agent Owner**：派单 Agent 工程师
-**对应代码**：`backend/app/modules/tasks/`（Router 前缀 `/api/tasks`）
+**工程 Owner**：后端工程师（含框架基建） ｜ **Agent Owner**：任务 Agent 工程师
+**对应代码**：`backend/app/modules/tasks/`（Router 前缀 `/api/tasks`）+ `ai/agents/AiTaskPlatform/`（任务 Agent）
 
 ### 7.1 功能范围
 
 - 统一任务收件箱（工单、bug、产品需求等多类型，见工程文档 `TaskType` 枚举）
 - 接单、处理、转派、上报
 - 系统派发待办（填日报提醒、巡检/回访）
-- AI 辅助生成处理结果草稿（人工编辑补充、校验后提交）
+- AI 辅助生成处理结果草稿（ChatPanel 自由问答 + 工单分析 → SolutionCard 可编辑提交）
 
-### 7.2 后端 ↔ 派单 Agent 接口边界
+### 7.2 后端 ↔ 任务 Agent 接口边界
 
-| 环节 | 后端职责 | 派单 Agent 职责 |
+| 环节 | 后端职责 | 任务 Agent 职责 |
 |------|---------|------------------|
-| 派单 | 执行派单动作、写入 `task_assignments` 历史、触发微信通知 | 基于任务内容 + 历史处理人画像，给出**建议**派单对象（人工最终确认，非自动执行） |
-| 处理草稿 | 提供任务详情上下文接口给 Agent 调用 | 生成处理结果草稿文本，供工程师编辑后提交 |
-| 边界 | 派单的最终写入动作、状态机校验（`ALLOWED_TRANSITIONS`）始终由后端把控 | Agent 只做"建议"，不直接修改任务状态，避免 AI 误判导致派单错误无法追溯 |
+| 派单 | 执行派单动作、写入 `task_assignments` 历史、触发微信通知 | Assigner（提单 Agent 子模块，非独立 Agent）基于工单内容 + 工程师画像，给出**建议**派单对象 |
+| 处理草稿 | 提供工单列表 API（`GET /api/tasks/`，查 tickets 表） | ChatPanel SSE 流式生成方案草稿，工程师编辑后提交；submit 更新 tickets 表状态 |
+| 边界 | 工单列表/详情的 CRUD、状态机校验始终由后端把控 | Agent 做"建议（方案生成）"和"自由问答"，方案提交写 tickets 表 |
 
 > 该 Agent 的模型/Prompt/流程版本迭代记录，见 [十二、AI Agent 版本迭代管理规范](#十二ai-agent-版本迭代管理规范)。
 
@@ -251,7 +251,7 @@
 
 ### 7.4 功能点规格
 
-沿用第六节模板，**[待后端 Owner + 派单 Agent Owner 认领并逐条补全]**。
+沿用第六节模板，**[待后端 Owner + 任务 Agent Owner 认领并逐条补全]**。
 
 ---
 
@@ -316,7 +316,13 @@
 
 | 接口 | 方法 | 所属模块 | 负责方 | 请求字段 | 响应字段 | 状态 |
 |------|------|---------|--------|---------|---------|------|
-| **[待各功能点 Owner 补全]** | | | | | | |
+| `/api/ai/task/chat/stream` | POST | AI 服务 (8401) | 任务 Agent 工程师 | `{session_id, query, task_id?, task_title?, task_description?}` | SSE: status → first_token → token... → done | ✅ |
+| `/api/ai/task/chat` | POST | AI 服务 (8401) | 任务 Agent 工程师 | 同上 | `{code, data: {reply}}` | ✅ |
+| `/api/ai/task/analyze/stream` | POST | AI 服务 (8401) | 任务 Agent 工程师 | `{task_id, session_id, query?}` | SSE: status×3 → first_token → token... → result { root_cause_analysis, suggested_actions, references, confidence, needs_more_info } → done | ✅ |
+| `/api/ai/task/analyze` | POST | AI 服务 (8401) | 任务 Agent 工程师 | 同上 | `{code, data: SolutionDraft}` | ✅ |
+| `/api/ai/task/submit` | POST | AI 服务 (8401) | 任务 Agent 工程师 | `{task_id, session_id, final_solution, resolution}` | `{code, data: {task_id, solution_indexed, ticket_updated}}` | ✅ |
+| `/api/ai/task/list` | POST | AI 服务 (8401) | 任务 Agent 工程师 | `{username}` | `{code, data: {summary, tickets[], total}}` | ✅ |
+| `/api/ai/task/health` | GET | AI 服务 (8401) | 任务 Agent 工程师 | — | `{status, service}` | ✅ |
 
 > 每个功能点在 3.2 登记表中被认领后，若涉及新增/变更接口，必须在本表登记后才能开始联调。
 
@@ -344,7 +350,7 @@
 | **前端工程师** | 前端 | 前端基建/设计系统/路由（**已完成**）；页面 UI 视觉设计（现状过于简约，待功能落地后集中调整） | 🆘 我要摇人 |
 | **后端工程师** | 后端 | 核心层/数据模型/认证 RBAC | 📥 系统任务 |
 | **知识库/问答 Agent 工程师** | AI | 知识库骨架 + RAG | 🆘 我要摇人 · 提单/诊断 Agent；版本迭代文档维护（`docs/agents/knowledge-qa-agent.md`） |
-| **派单 Agent 工程师** | AI | — | 📥 系统任务 · 派单 Agent；版本迭代文档维护（`docs/agents/dispatch-agent.md`） |
+| **任务 Agent 工程师** | AI | — | 📥 系统任务 · 任务 Agent + Assigner（提单 Agent 子模块）；版本迭代文档维护（`docs/agents/task-agent.md`） |
 | **风险分析 Agent 工程师** | AI | — | 📊 后台管理 · 风险分析/数据分析 Agent；版本迭代文档维护（`docs/agents/risk-agent.md`） |
 | **测试工程师** | 测试 | — | 全模块 · AI 自动化测试 Agent 搭建 |
 
@@ -411,7 +417,7 @@ R=负责执行 A=最终拍板/验收 C=需咨询 I=需知会
 
 ## 十二、AI Agent 版本迭代管理规范
 
-**Owner**：知识库/问答 Agent 工程师、派单 Agent 工程师、风险分析 Agent 工程师，各自独立维护自己负责的 Agent。
+**Owner**：知识库/问答 Agent 工程师、任务 Agent 工程师、风险分析 Agent 工程师，各自独立维护自己负责的 Agent。
 
 ### 12.1 为什么需要
 
@@ -424,7 +430,7 @@ R=负责执行 A=最终拍板/验收 C=需咨询 I=需知会
 | 文档 | 对应 Agent | Owner |
 |------|-----------|-------|
 | `docs/agents/knowledge-qa-agent.md` | 提单/知识问答 Agent（我要摇人） | 知识库/问答 Agent 工程师 |
-| `docs/agents/dispatch-agent.md` | 派单 Agent（系统任务） | 派单 Agent 工程师 |
+| `docs/agents/task-agent.md` | 任务 Agent（系统任务） | 任务 Agent 工程师 |
 | `docs/agents/risk-agent.md` | 风险分析 Agent（后台管理） | 风险分析 Agent 工程师 |
 
 ### 12.3 每次迭代需记录的内容模板
@@ -479,7 +485,7 @@ R=负责执行 A=最终拍板/验收 C=需咨询 I=需知会
 1. 北极星指标（1.3 节）的具体目标数值，需要团队本周内共同确认。
 2. 知识生产闭环（工单关闭 → AI 总结 → 人工审核 → 入知识库）是否在本周/下周启动，还是延后到阶段 2？涉及知识库/问答 Agent 工程师的排期。
 3. 本周 Scope 清单（3.2）中标记"待认领填写"的功能点，具体范围与优先级需要产品经理在周会上与各 Owner 逐条确认，本文档不能替代该讨论。
-4. 派单 Agent 的"建议派单"是否需要在本周就具备学习历史派单结果的能力，还是先用规则/简单相似度匹配起步？
+4. Assigner（提单 Agent 子模块的派单功能）是否需要在本周就具备学习历史派单结果的能力，还是先用规则/简单相似度匹配起步？当前已实现四层流水线（规则过滤 → 多路召回 → LLM 决策 → 规则回退）。
 5. 风险分析 Agent 的风险等级判定标准（红黄灯阈值）由谁定义——产品经理还是 Agent 工程师基于历史数据训练？
 6. 测试工程师的 AI 自动化测试 Agent 本身是否也需要纳入第 11 节的验收标准闭环（即"测试 Agent 谁来测试"）？
 
