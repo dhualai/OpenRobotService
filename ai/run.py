@@ -131,11 +131,12 @@ app.add_middleware(
 )
 
 # ── 挂载路由（从 ai/api 自举，不再依赖 backend）──────────────
-from ai.api import qa_router, chat_router, memory_router, assigner_router
+from ai.api import qa_router, chat_router, memory_router, assigner_router, task_agent_router
 app.include_router(qa_router)
 app.include_router(chat_router)
 app.include_router(memory_router)
 app.include_router(assigner_router)
+app.include_router(task_agent_router)
 
 # ── 静态资源（知识库图片等）───────────────────────────────────
 from ai.config import get_docs_dir, get_ai_config

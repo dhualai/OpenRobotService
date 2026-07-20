@@ -144,7 +144,7 @@ export default function TasksView() {
 
       {/* 上：AI 任务助手 */}
       <div className="tasks-top-chat">
-        <ChatPanel scene="tasks" compact />
+        <ChatPanel scene="tasks" compact taskId={detailId ?? undefined} />
       </div>
 
       {/* 下：工单卡片列表 */}
