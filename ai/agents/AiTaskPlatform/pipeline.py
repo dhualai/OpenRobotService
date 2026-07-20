@@ -196,6 +196,14 @@ class AiTaskAgent:
             max_tokens=1500,
             temperature=0.5,
         )
+
+        # 写入对话记忆（与 analyze 共享同一 session_id）
+        try:
+            await self._memory.add_turn(session_id, "user", query)
+            await self._memory.add_turn(session_id, "assistant", response)
+        except Exception:
+            pass
+
         return response
 
     async def chat_stream(
@@ -234,6 +242,7 @@ class AiTaskAgent:
         yield {"event": "status", "data": {"stage": "chatting"}}
         t_llm = _time.perf_counter()
         t_first = None
+        acc_tokens: list[str] = []
 
         try:
             async for token in self._llm_client.stream(
@@ -242,12 +251,22 @@ class AiTaskAgent:
                 max_tokens=1500,
                 temperature=0.5,
             ):
+                acc_tokens.append(token)
                 if t_first is None:
                     t_first = _time.perf_counter()
                     yield {"event": "first_token", "data": {"ms": round((t_first - t_llm) * 1000)}}
                 yield {"event": "token", "data": token}
         except Exception:
             yield {"event": "token", "data": "AI 服务暂时不可用，请稍后重试。"}
+
+        # 写入对话记忆（与 analyze 共享同一 session_id）
+        full_response = "".join(acc_tokens)
+        if full_response:
+            try:
+                await self._memory.add_turn(session_id, "user", query)
+                await self._memory.add_turn(session_id, "assistant", full_response)
+            except Exception:
+                pass
 
         total_ms = round((_time.perf_counter() - t0) * 1000)
         yield {"event": "done", "data": {"total_ms": total_ms}}
