@@ -92,26 +92,44 @@ export const qaSubmit = (sessionId: string) =>
 export const qaGetTicket = (sessionId: string) =>
   aiGet<{ code: number; data?: unknown; message?: string }>('/qa/ticket', { session_id: sessionId });
 
-/** 历史工单摘要（/qa/tickets 列表项） */
+/** 历史工单摘要（/memory/tickets/all 列表项，字段与后端 Ticket 表对齐） */
 export interface AiTicketBrief {
   id: number;
   session_id: string;
   ticket_ai_id?: string;
   title: string;
   description?: string;
-  type?: string;     // problem|bug|feature|support|other
-  priority?: string; // 紧急|高|中|低
-  status?: string;
-  created_by?: string;
+  type?: string;      // problem|bug|feature|support|other
+  priority?: string;  // 紧急|高|中|低
+  status?: string;    // pending|dispatched|in_progress|resolved|closed
+  contact?: string;
+  location?: string;
+  robot_type?: string;
+  fault_code?: string;
+  severity?: string;
+  attachments?: unknown;
+  diagnosis?: unknown;
   created_at?: string; // ISO
+  updated_at?: string; // ISO
 }
 
-/** 全量历史工单列表（按当前角色：admin 全部，其余仅本人创建） */
-export const qaListTickets = (skip = 0, limit = 50) =>
-  aiGet<{ code: number; data?: { items: AiTicketBrief[]; total: number }; message?: string }>('/qa/tickets', {
-    skip: String(skip),
-    limit: String(limit),
-  });
+/** 历史工单列表筛选参数（留空 = 不筛选，后端按当前角色返回：admin 全部 / 其余仅本人） */
+export interface AiTicketListFilters {
+  status?: string; // pending|dispatched|in_progress|resolved|closed
+  type?: string;   // problem|bug|feature|support|other
+}
+
+/** 历史工单列表（GET /api/ai/memory/tickets/all） */
+export const qaListTickets = (skip = 0, limit = 50, filters?: AiTicketListFilters) => {
+  const params: Record<string, string> = { skip: String(skip), limit: String(limit) };
+  if (filters?.status) params.status = filters.status;
+  if (filters?.type) params.type = filters.type;
+  return aiGet<{
+    code: number;
+    data?: { items: AiTicketBrief[]; total: number; skip?: number; limit?: number };
+    message?: string;
+  }>('/memory/tickets/all', params);
+};
 
 /** 派单确认回执 */
 export const qaTicketAck = (sessionId: string, dispatchId = '', status = 'dispatched') =>
