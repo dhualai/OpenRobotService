@@ -724,18 +724,237 @@ consumeTaskAgentContext: () => TaskAgentContext | null
 
 > **本节持续维护**。每次发现新的依赖或接口变更，更新本节并通知相关方。
 
-### 13.1 前端侧（需前端工程师配合）
+### 13.1 前端侧（直接复制给前端同事）
 
-| # | 事项 | 影响范围 | 优先级 | 状态 |
-|---|------|---------|:---:|:---:|
-| F1 | **ChatPanel SSE 端点切换** — `scene="tasks"` 时调 `/api/ai/task/analyze/stream` | `ChatPanel.tsx` | P1 | 待确认 |
-| F2 | **Message 模型扩展** — 当前 `role` 只有 `user | assistant`。需新增字段承载 `solution_draft` 结构化数据，触发 `<SolutionCard>` 渲染（而非纯 Markdown） | `ChatPanel.tsx` Message 接口 | P0 | 待确认 |
-| F3 | **`<SolutionCard>` 组件** — 可编辑卡片：根因分析 + 建议步骤（每步可编辑）+ 参考来源 + 置信度 + 提交按钮 | `src/shared/components/SolutionCard.tsx` | P0 | 待实现 |
-| F4 | **TasksView 改造** — 方案草稿渲染 + "提交方案" → `POST /api/ai/task/submit` → 更新本地任务状态 | `TasksView.tsx` | P1 | 待确认 |
-| F5 | **新建 `src/api/taskAgent.ts`** — 仿 `ai.ts` SSE 模式，导出 `taskAgentList` / `taskAgentAnalyzeStream` / `taskAgentSubmit` | `src/api/taskAgent.ts` | P1 | 待实现 |
-| F6 | **`config/api.ts` 新增 AI_TASK 服务** | `src/config/api.ts` | P2 | 待确认 |
-| F7 | **Workbench store 追加字段** — 只向 `workbench.ts` 追加，不建新 store | `src/stores/workbench.ts` | P2 | 待确认 |
-| F8 | **对话持久化场景类型** — 当前 `SceneType` 无 `task_agent` | 后端 + 前端 | P1 | 待确认 |
+> **以下内容可直接转发给前端同事，无需额外解释。**
+
+---
+
+#### 背景
+
+任务 Agent（AiTaskPlatform）已实现 5 个 API 端点，挂在 AI 服务（端口 8401）：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/ai/task/analyze/stream` | SSE 流式分析工单 → 逐 token 输出方案草稿 |
+| POST | `/api/ai/task/analyze` | 同上，非流式 |
+| POST | `/api/ai/task/submit` | 提交编辑后的方案 → 保存 + 更新工单状态 |
+| POST | `/api/ai/task/list` | 列出当前用户待处理工单 |
+| GET | `/api/ai/task/health` | 健康检查 |
+
+---
+
+#### 改动 1：ChatPanel.tsx — 在 tasks 场景下切换到任务 Agent API
+
+**当前行为**：ChatPanel 不管是什么 scene，统一调 `POST /api/ai/qa/ask/stream`（提单 Agent 的接口）。
+
+**需要改成**：`scene === 'tasks'` 时调 `POST /api/ai/task/analyze/stream`。
+
+```diff
+// ChatPanel.tsx 中
+- const apiEndpoint = '/api/ai/qa/ask/stream'
++ const apiEndpoint = scene === 'tasks'
++   ? '/api/ai/task/analyze/stream'
++   : '/api/ai/qa/ask/stream'
+```
+
+同时，SSE 请求的 body 需要从 `{ session_id, query }` 改为 `{ task_id, session_id }`。
+
+**ChatPanel 需要新增一个 prop**：`taskId?: string`。tasks 场景下由 TasksView 传入当前选中工单的 task_id。
+
+```ts
+// ChatPanel props 扩展
+interface ChatPanelProps {
+  scene: 'call' | 'tasks';
+  compact?: boolean;
+  taskId?: string;  // ← 新增：tasks 场景下必传
+}
+```
+
+---
+
+#### 改动 2：ChatPanel.tsx — Message 接口扩展 SolutionDraft
+
+当前 Message 接口只有 `role` 和 `content`。任务 Agent 的 `result` 事件返回结构化方案草稿，不能纯当 Markdown 渲染。
+
+```ts
+// Message 接口扩展
+interface Message {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  // ↓ 新增字段
+  subtype?: 'solution_draft';
+  solution_draft?: {
+    root_cause_analysis: string;
+    suggested_actions: string[];
+    references: string[];
+    confidence: number;
+    needs_more_info: boolean;
+  };
+}
+```
+
+SSE `event: result` 的 data 结构（JSON）：
+
+```json
+{
+  "root_cause_analysis": "MAPF v1.1.2 避让算法在特定场景下...",
+  "suggested_actions": [
+    "1. 将 MAPF 算法版本回退至 v1.1.1。操作路径：系统管理 → 算法配置 → MAPF版本选择",
+    "2. 设置 avoidance_distance_threshold >= 2.0m。操作路径：路径规划配置 → 避让参数"
+  ],
+  "references": [
+    "排查树「车不动，任务状态显示路径规划中」→ MAPF避让算法生成起点=终点路径",
+    "历史工单 #44123：AGV避让后死锁不动（相似度 0.89）"
+  ],
+  "confidence": 0.92,
+  "needs_more_info": false
+}
+```
+
+---
+
+#### 改动 3：新建 SolutionCard 组件
+
+文件：`src/shared/components/SolutionCard.tsx`
+
+当 `msg.subtype === 'solution_draft'` 时，不渲染 MarkdownRenderer，渲染一个**可编辑的方案卡片**：
+
+```
+┌─────────────────────────────────────────────┐
+│  AI 解决方案草稿                 置信度 92%  │
+│                                              │
+│  【根因分析】                                 │
+│  ┌──────────────────────────────────────┐   │
+│  │ (可编辑 textarea)                     │   │
+│  └──────────────────────────────────────┘   │
+│                                              │
+│  【建议步骤】                                 │
+│  1. ┌─────────────────────────────────┐    │
+│     │ (每步可单独编辑)                  │    │
+│     └─────────────────────────────────┘    │
+│  2. ┌─────────────────────────────────┐    │
+│     │ ...                              │    │
+│     └─────────────────────────────────┘    │
+│                                              │
+│  【参考来源】                                 │
+│  - 排查树「车不动...」                        │
+│  - 历史工单 #44123                            │
+│                                              │
+│  [提交方案]  [重新分析]                       │
+└─────────────────────────────────────────────┘
+```
+
+Props：
+
+```ts
+interface SolutionCardProps {
+  draft: SolutionDraft;                       // 初始草稿
+  onDraftChange: (draft: SolutionDraft) => void;  // 编辑回调
+  onSubmit: () => void;                       // 提交
+  onReanalyze: () => void;                    // 重新分析
+  submitting?: boolean;
+}
+```
+
+---
+
+#### 改动 4：ChatPanel.tsx — 渲染逻辑
+
+在消息渲染分支中，当 `msg.subtype === 'solution_draft'` 时渲染 `<SolutionCard>` 而非 `<MarkdownRenderer>`：
+
+```tsx
+{msg.role === 'assistant' && msg.subtype === 'solution_draft' ? (
+  <SolutionCard
+    draft={msg.solution_draft!}
+    onDraftChange={(d) => updateMessage(msg.id, { solution_draft: d })}
+    onSubmit={() => handleSubmitSolution(msg)}
+    onReanalyze={() => handleReanalyze()}
+  />
+) : (
+  <MarkdownRenderer content={msg.content} />
+)}
+```
+
+---
+
+#### 改动 5：TasksView — 提交方案按钮
+
+"提交方案" 按钮在 SolutionCard 内部，点击后调用：
+
+```ts
+POST /api/ai/task/submit
+{
+  "task_id": "44946",
+  "session_id": "task_44946_20260720",
+  "final_solution": {
+    "root_cause_analysis": "（工程师编辑后的内容）",
+    "suggested_actions": ["（编辑后的步骤）"],
+    "engineer_note": "已联系算法组确认"
+  },
+  "resolution": "resolved"
+}
+```
+
+返回成功后更新本地任务列表中的工单状态为 `resolved`。
+
+---
+
+#### 改动 6：新建 src/api/taskAgent.ts
+
+仿 `src/api/ai.ts` 的 SSE 模式：
+
+```ts
+// src/api/taskAgent.ts
+import { fetchWithAuth, AI_BASE } from './ai';  // 复用 fetchWithAuth
+
+const BASE = `${AI_BASE}/task`;
+
+// SSE 流式 — 仿 qaAskStream
+export const taskAgentAnalyzeStream = async (
+  body: { task_id: string; session_id: string },
+  onToken: (token: string) => void,
+  onResult: (result: any) => void,
+) => {
+  const res = await fetchWithAuth(`${BASE}/analyze/stream`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  // ... (SSE 管道，与 qaAskStream 相同逻辑)
+};
+
+// 提交方案
+export const taskAgentSubmit = (body: {
+  task_id: string;
+  session_id: string;
+  final_solution: Record<string, any>;
+  resolution: string;
+}) => aiPost('/task/submit', body);
+```
+
+---
+
+#### 改动 7：src/config/api.ts
+
+```diff
+export const API_CONFIG = {
+  // ... existing ...
++ AI_TASK: {
++   BASE_URL: `${API_ROOT}/ai/task`,
++ },
+} as const;
+```
+
+---
+
+#### 不需要改的
+
+| 事项 | 原因 |
+|------|------|
+| Workbench store | tasks 场景无需跨视图传递，`taskId` 通过 ChatPanel prop 传入即可 |
+| 对话持久化 sceneType | 当前 `consultation` 可临时复用，后续再加 `task_agent` |
+| Nginx 配置 | 已有 `/api/ai/*` → 8401 转发，新路由自动覆盖 |
 
 ### 13.2 后端侧（需后端工程师配合）
 
