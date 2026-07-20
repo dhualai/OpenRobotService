@@ -54,7 +54,7 @@ export default function Login() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   // 登录成功后回到来源页（AuthGuard 未登录跳转时携带），缺省进工作台
-  const from = params.get('from') || '/app/call';
+  const from = params.get('from') || '/call';
   const login = useAuthStore((s) => s.login);
 
   const [username, setUsername] = useState('');

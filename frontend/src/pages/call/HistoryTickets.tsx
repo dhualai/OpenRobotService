@@ -74,7 +74,7 @@ export default function HistoryTickets() {
                 key={t.session_id}
                 className="history-row"
                 style={{ position: 'absolute', top: (start + i) * ROW_HEIGHT, left: 0, right: 0, height: ROW_HEIGHT }}
-                onClick={() => navigate(`/app/call/ticket/${t.session_id}`)}
+                onClick={() => navigate(`/call/ticket/${t.session_id}`)}
               >
                 <span className="history-row__dot" style={{ background: PRIORITY_COLOR[t.priority || ''] || '#999' }} />
                 <span className="history-row__main">

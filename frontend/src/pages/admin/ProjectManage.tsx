@@ -40,7 +40,7 @@ export default function ProjectManage() {
 
   return (
     <div style={{ padding: 16 }}>
-      <Button theme="primary" block style={{ marginBottom: 16 }} onClick={() => navigate('/admin/project-edit')}>
+      <Button theme="primary" block style={{ marginBottom: 16 }} onClick={() => navigate('/app/admin/project-edit')}>
         新建项目
       </Button>
       {projects.map((p) => (
@@ -51,7 +51,7 @@ export default function ProjectManage() {
               <div style={{ fontSize: 12, color: '#999' }}>{p.status}</div>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <Button size="small" variant="outline" onClick={() => navigate(`/admin/project-edit/${p.id}`)}>编辑</Button>
+              <Button size="small" variant="outline" onClick={() => navigate(`/app/admin/project-edit/${p.id}`)}>编辑</Button>
               <Button size="small" theme="danger" variant="outline" onClick={() => handleDelete(p.id)}>删除</Button>
             </div>
           </div>
