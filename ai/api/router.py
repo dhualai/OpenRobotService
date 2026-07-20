@@ -484,8 +484,11 @@ task_agent_router = APIRouter(prefix="/api/ai/task", tags=["AI任务助手"])
 
 
 class TaskAnalyzeAPIRequest(BaseModel):
-    task_id: str = Field(..., description="工单 ID")
+    task_id: str = Field(default="", description="工单 ID（有 taskId 时走 analyze，空时走 chat）")
     session_id: str = Field(..., description="对话 session")
+    query: str = Field(default="", description="用户消息（有 taskId 时可选，无 taskId 时必有）")
+    task_title: str = Field(default="", description="工单标题（chat 模式可用）")
+    task_description: str = Field(default="", description="工单描述（chat 模式可用）")
 
 
 class TaskListAPIRequest(BaseModel):
@@ -568,6 +571,54 @@ async def task_submit(request: Request, body: TaskSubmitAPIRequest) -> dict:
         return result
     except Exception as e:
         return {"code": 1, "message": str(e)}
+
+
+@task_agent_router.post("/chat", summary="自由问答（非流式）")
+async def task_chat(body: TaskAnalyzeAPIRequest) -> dict:
+    """自由问答：工程师可以问任何 AGV/AMR 技术问题"""
+    try:
+        from ai.agents.AiTaskPlatform import get_task_agent
+        agent = await get_task_agent()
+        response = await agent.chat(
+            session_id=body.session_id, query=getattr(body, 'query', ''),
+        )
+        return {"code": 0, "data": {"reply": response}}
+    except Exception as e:
+        return {"code": 1, "message": str(e)}
+
+
+@task_agent_router.post("/chat/stream", summary="自由问答（流式 SSE）")
+async def task_chat_stream(body: TaskAnalyzeAPIRequest):
+    """流式自由问答"""
+    from ai.agents.AiTaskPlatform import get_task_agent
+
+    async def sse():
+        t0 = time.perf_counter()
+        first = False
+        try:
+            agent = await get_task_agent()
+            async for event in agent.chat_stream(
+                session_id=body.session_id,
+                query=getattr(body, 'query', ''),
+                task_id=getattr(body, 'task_id', '') or '',
+                task_title=getattr(body, 'task_title', '') or '',
+                task_description=getattr(body, 'task_description', '') or '',
+            ):
+                ev_type = event["event"]
+                if ev_type == "token":
+                    if not first:
+                        first = True
+                        yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
+                elif ev_type == "first_token":
+                    pass
+                else:
+                    yield f"event: status\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+            yield f"event: done\ndata: {json.dumps({'total_ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(sse(), media_type="text/event-stream")
 
 
 @task_agent_router.get("/health", summary="健康检查")

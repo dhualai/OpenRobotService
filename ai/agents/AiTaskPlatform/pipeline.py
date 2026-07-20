@@ -27,6 +27,7 @@ from ai.agents.AiTaskPlatform.schemas import (
 from ai.agents.AiTaskPlatform.prompts import (
     TASK_AGENT_SYSTEM_PROMPT,
     USER_PROMPT_TEMPLATE,
+    TASK_CHAT_SYSTEM_PROMPT,
 )
 
 
@@ -151,6 +152,104 @@ class AiTaskAgent:
         yield {"event": "result", "data": result_data}
 
         total_ms = round((time.perf_counter() - t0) * 1000)
+        yield {"event": "done", "data": {"total_ms": total_ms}}
+
+    # ============================================================
+    # chat（自由问答，无 taskId 或通用技术问答）
+    # ============================================================
+
+    async def chat(
+        self, session_id: str, query: str,
+        task_id: str = "", task_title: str = "", task_description: str = "",
+    ) -> str:
+        """自由对话：工程师可以问任何 AGV/AMR 技术问题"""
+        await self._ensure_clients()
+
+        # 构建对话上下文
+        conversation = ""
+        try:
+            memory = await self._memory.get_memory(session_id)
+            turns = memory.turns[-8:] if len(memory.turns) > 8 else memory.turns
+            conversation = "\n".join(
+                f"{'用户' if t['role'] == 'user' else '助手'}：{t['content']}"
+                for t in turns
+            )
+        except Exception:
+            pass
+
+        # 如果有工单上下文，拼入 prompt
+        if task_id:
+            prompt = (
+                f"## 对话历史\n{conversation}\n\n"
+                f"## 当前工单\n标题: {task_title}\n描述: {task_description}\n\n"
+                f"## 用户消息\n{query}"
+            )
+        else:
+            prompt = (
+                f"## 对话历史\n{conversation}\n\n"
+                f"## 用户消息\n{query}"
+            )
+
+        response = await self._llm_client.complete(
+            prompt=prompt,
+            system_prompt=TASK_CHAT_SYSTEM_PROMPT,
+            max_tokens=1500,
+            temperature=0.5,
+        )
+        return response
+
+    async def chat_stream(
+        self, session_id: str, query: str,
+        task_id: str = "", task_title: str = "", task_description: str = "",
+    ):
+        """流式自由对话"""
+        import time as _time
+        await self._ensure_clients()
+        t0 = _time.perf_counter()
+
+        # 构建对话上下文
+        conversation = ""
+        try:
+            memory = await self._memory.get_memory(session_id)
+            turns = memory.turns[-8:] if len(memory.turns) > 8 else memory.turns
+            conversation = "\n".join(
+                f"{'用户' if t['role'] == 'user' else '助手'}：{t['content']}"
+                for t in turns
+            )
+        except Exception:
+            pass
+
+        if task_id:
+            prompt = (
+                f"## 对话历史\n{conversation}\n\n"
+                f"## 当前工单\n标题: {task_title}\n描述: {task_description}\n\n"
+                f"## 用户消息\n{query}"
+            )
+        else:
+            prompt = (
+                f"## 对话历史\n{conversation}\n\n"
+                f"## 用户消息\n{query}"
+            )
+
+        yield {"event": "status", "data": {"stage": "chatting"}}
+        t_llm = _time.perf_counter()
+        t_first = None
+
+        try:
+            async for token in self._llm_client.stream(
+                prompt=prompt,
+                system_prompt=TASK_CHAT_SYSTEM_PROMPT,
+                max_tokens=1500,
+                temperature=0.5,
+            ):
+                if t_first is None:
+                    t_first = _time.perf_counter()
+                    yield {"event": "first_token", "data": {"ms": round((t_first - t_llm) * 1000)}}
+                yield {"event": "token", "data": token}
+        except Exception:
+            yield {"event": "token", "data": "AI 服务暂时不可用，请稍后重试。"}
+
+        total_ms = round((_time.perf_counter() - t0) * 1000)
         yield {"event": "done", "data": {"total_ms": total_ms}}
 
     # ============================================================
