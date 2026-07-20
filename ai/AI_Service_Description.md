@@ -1,6 +1,6 @@
 # OpenRobotService AI 模块说明文档
 
-> 版本：1.1 | 更新日期：2026-07-20
+> 版本：1.2 | 更新日期：2026-07-20
 
 ---
 
@@ -10,12 +10,13 @@
 2. [目录结构](#2-目录结构)
 3. [AI 基础层 (`core/`)](#3-ai-基础层-core)
 4. [智能诊断 Agent (`agents/AiDiagnosisPlatform/`)](#4-智能诊断-agent-agentsaidiagnosisplatform)
-5. [数据分析平台 (`agents/AiDataAnalysisPlatform/`)](#5-数据分析平台-agentsaidataanalysisplatform)
+5. [任务 Agent (`agents/AiTaskPlatform/`)](#5-任务-agent-agentsaitaskplatform)
+6. [数据分析平台 (`agents/AiDataAnalysisPlatform/`)](#6-数据分析平台-agentsaidataanalysisplatform)
 6. [API 路由 (`modules/call/api/`)](#6-api-路由-modulescallapi)
-7. [知识库入库 (`ingestion/`)](#7-知识库入库-ingestion)
-8. [配置系统 (`config.py`)](#8-配置系统-configpy)
-9. [启动流程 (`run.py`)](#9-启动流程-runpy)
-10. [数据流全景](#10-数据流全景)
+8. [知识库入库 (`ingestion/`)](#8-知识库入库-ingestion)
+9. [配置系统 (`config.py`)](#9-配置系统-configpy)
+10. [启动流程 (`run.py`)](#10-启动流程-runpy)
+11. [数据流全景](#11-数据流全景)
 
 ---
 
@@ -106,6 +107,13 @@ ai/                          ← 一级目录，与 backend/、frontend/ 并列
 │   │       ├── decision.py      # 规则决策（阈值判定）
 │   │       ├── rule_filter.py   # 规则过滤（层级/负载）
 │   │       └── history_matcher.py  # 历史工单匹配
+│   ├── AiTaskPlatform/
+│   │   ├── TASK_AGENT_DESIGN.md # 设计文档
+│   │   ├── pipeline.py      # 任务分析流水线
+│   │   ├── schemas.py       # TaskContext / SolutionDraft
+│   │   ├── prompts.py       # 方案生成 prompt 模板
+│   │   ├── analyzer.py      # 多路分析编排
+│   │   └── attachment_parser.py # 附件解析（日志/回放）
 │   └── AiDataAnalysisPlatform/
 │       ├── agent.py         # 门面编排器
 │       ├── analyzer.py      # 分析引擎（预处理 + LLM 调用 + 结果解析）
@@ -450,7 +458,77 @@ class AssignmentResult(BaseModel):
 
 ---
 
-## 5. 数据分析平台 (`agents/AiDataAnalysisPlatform/`)
+## 5. 任务 Agent (`agents/AiTaskPlatform/`)
+
+### 5.1 概述
+
+任务 Agent 是面向**接单工程师**的 AI 助手，对应「系统任务」视角。与提单 Agent（帮客户诊断+转工单）不同，任务 Agent 的目标是基于已有诊断信息 + 知识库 + 历史案例，**生成结构化解决方案草稿，人工校准后提交完成**。
+
+| 维度 | 提单 Agent | 任务 Agent |
+|------|-----------|-----------|
+| 使用者 | 客户/现场人员 | 接單工程师 |
+| 入口 | 我要摇人 | 系统任务 |
+| 目标 | 诊断 + 完善信息 + 转工單 | 分析 + 生成方案 + 辅助结单 |
+| 知识源 | 5 路 KB 检索 | 5 路 KB + 历史工单方案 (Qdrant) |
+| 输出 | 对话式引导 | 结构化 SolutionDraft |
+
+### 5.2 三 Agent 全景
+
+```
+                    ai/agents/
+                       │
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+   AiDiagnosisPlatform  AiTaskPlatform  AiDataAnalysisPlatform
+   （需求视角）         （供给视角）     （管理视角）
+   客户报障+诊断+提单   工程师接单+排查   数据看板+风险分析
+        │                    │
+        │  diagnosis JSON    │  读 diagnosis
+        ├──────────────────►│
+        │                    │
+        │            ┌───────┘
+        │            ▼
+        │    生成方案草稿 → 校准 → 提交
+        │            │
+        └────────────┘  方案回写 Qdrant（闭环）
+```
+
+### 5.3 核心流程
+
+1. 工程师选择工单 → 加载上下文（tasks 表 + diagnosis JSON + 对话历史）
+2. 多路并行分析：KB 检索 + 历史工单方案检索 + 附件解析（如有）
+3. LLM 综合分析 → 生成 SolutionDraft（SSE 流式输出）
+4. 前端渲染可编辑草稿 → 工程师校准 → 提交完成
+5. 方案回写 Qdrant task_resolutions collection（闭环）
+
+### 5.4 核心数据类
+
+```python
+class SolutionDraft(BaseModel):
+    root_cause_analysis: str     # 根因分析
+    suggested_actions: list[str] # 建议步骤
+    references: list[str]        # 参考来源（KB 条目 / 历史工单）
+    confidence: float            # 置信度 (0~1)
+    needs_more_info: bool        # 是否需要更多信息
+
+class TaskContext(BaseModel):
+    task_id, title, description, task_type, priority, status
+    problem_summary, hypotheses, ruled_out, collected_info
+    fault_code, robot_type, location, attachments, diagnosis_rounds
+```
+
+### 5.5 附件解析
+
+| 附件类型 | 解析方式 | 输出 |
+|---------|---------|------|
+| 日志文件 (txt/log) | 正则提取 ERROR/WARN + 时间线 | 关键事件摘要 |
+| 回放文件 | 路径数据提取 (起点/终点/状态变化) | 路径异常报告 |
+| 截图 | (暂不做) | — |
+| 无附件 | 跳过 | — |
+
+> 完整设计见 `ai/agents/AiTaskPlatform/TASK_AGENT_DESIGN.md`
+
+## 6. 数据分析平台 (`agents/AiDataAnalysisPlatform/`)
 
 ### 5.1 概述
 
@@ -606,9 +684,9 @@ POST /api/ai/analysis/analyze
 
 ---
 
-## 6. API 路由 (`api/`)
+## 8. API 路由 (`api/`)
 
-### 6.1 诊断 Agent (`/api/ai/qa`)
+### 8.1 诊断 Agent (`/api/ai/qa`)
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -648,14 +726,14 @@ POST /api/ai/qa/ask
 }
 ```
 
-### 6.2 LLM 对话 (`/api/ai/chat`)
+### 8.2 LLM 对话 (`/api/ai/chat`)
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/api/ai/chat` | 非流式纯 LLM 对话 |
 | POST | `/api/ai/chat/stream` | SSE 流式纯 LLM 对话 |
 
-### 6.3 会话记忆 (`/api/ai/memory`)
+### 8.3 会话记忆 (`/api/ai/memory`)
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -664,7 +742,7 @@ POST /api/ai/qa/ask
 | DELETE | `/api/ai/memory/clear?session_id=` | 清除指定会话 |
 | DELETE | `/api/ai/memory/clear-all` | 清除所有会话 |
 
-### 6.4 智能派单 (`/api/ai/ticketReferee`)
+### 8.4 智能派单 (`/api/ai/ticketReferee`)
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -699,9 +777,19 @@ POST /api/ai/ticketReferee
 
 ---
 
-## 7. 知识库入库 (`ingestion/`)
+## 9. 知识库入库 (`ingestion/`)
 
-### 7.1 统一入口：`ingest_all.py`
+### 8.5 任务 Agent (`/api/ai/task`)
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/ai/task/list` | 列出当前用户待处理工单 (Agent 视角) |
+| POST | `/api/ai/task/analyze` | 分析工单 → 生成方案草稿 |
+| POST | `/api/ai/task/analyze/stream` | SSE 流式分析 |
+| POST | `/api/ai/task/submit` | 确认方案 → 保存 + 回写知识库 |
+| GET | `/api/ai/task/health` | 健康检查 |
+
+### 9.1 统一入口：`ingest_all.py`
 
 ```bash
 # 一键入库全部 5 个知识库
@@ -726,7 +814,7 @@ python -m ai.ingestion.ingest_all --dry-run
 ]
 ```
 
-### 7.2 各知识库详情
+### 9.2 各知识库详情
 
 | 知识库 | 脚本 | 数据源 | 解析方式 | Chunk 策略 | Collection 前缀 |
 |--------|------|--------|---------|-----------|----------------|
@@ -736,7 +824,7 @@ python -m ai.ingestion.ingest_all --dry-run
 | 车端错误码 | `ingest_cheduan.py` | `docs/cheduan_doc/*.pdf` | pdfplumber 表解析 + 文本兜底 | 每个错误码 (55 条) 为一个 chunk | `cheduan` |
 | 翻译表 | `ingest_translation.py` | `docs/translation_doc/*.xlsx` | zipfile + xml.etree | 按 namespace 分组 (5 个 chunk) | `translation` |
 
-### 7.3 Collection 热更新机制
+### 9.3 Collection 热更新机制
 
 ```
 入库流程：
@@ -750,7 +838,7 @@ python -m ai.ingestion.ingest_all --dry-run
   → 自动指向新 collection，服务无需重启
 ```
 
-### 7.4 排查树线性化格式
+### 9.4 排查树线性化格式
 
 原始 JSON 树结构 → 可读文本：
 
@@ -768,7 +856,7 @@ python -m ai.ingestion.ingest_all --dry-run
 
 ---
 
-## 8. 配置系统 (`config.py`)
+## 10. 配置系统 (`config.py`)
 
 ### 8.1 配置模型 `AIConfig`
 
@@ -834,7 +922,7 @@ async def validate_ai_config() → dict:
 
 ---
 
-## 9. 启动流程 (`run.py`)
+## 11. 启动流程 (`run.py`)
 
 ### 9.1 零依赖启动
 
@@ -864,9 +952,9 @@ python ai/run.py    # 默认端口 8401
 
 ---
 
-## 10. 数据流全景
+## 12. 数据流全景
 
-### 10.1 用户提问 → Agent 回复
+### 12.1 用户提问 → Agent 回复
 
 ```
 POST /api/ai/qa/ask {session_id, query}
@@ -899,7 +987,7 @@ POST /api/ai/qa/ask {session_id, query}
 └──────────────────────────┘
 ```
 
-### 10.2 生成工单
+### 12.2 生成工单
 
 ```
 POST /api/ai/qa/submit {session_id}
@@ -927,7 +1015,7 @@ POST /api/ai/qa/submit {session_id}
 └──────────────────────────┘
 ```
 
-### 10.3 流式 SSE
+### 12.3 流式 SSE
 
 ```
 POST /api/ai/qa/ask/stream
@@ -951,6 +1039,33 @@ POST /api/ai/qa/ask/stream
 ```
 
 ---
+
+### 12.4 任务 Agent — 工单分析
+
+```
+POST /api/ai/task/analyze/stream {task_id, session_id}
+        │
+        ▼
+┌──────────────────────────┐
+│ AiTaskAgent.analyze()     │
+│                          │
+│ 1. 加载工单上下文         │
+│    ├── GET /api/tasks/   │  ← 业务后端 REST
+│    └── diagnosis JSON    │  ← tickets 表 / Redis
+│                          │
+│ 2. 多路分析（并行）       │
+│    ├── KB 检索           │  ← Qdrant (5 collections)
+│    ├── 历史方案检索       │  ← Qdrant (task_resolutions)
+│    └── 附件解析 (如有)   │  ← attachment_parser
+│                          │
+│ 3. build_prompt          │
+│ 4. LLM.stream            │  ← DeepSeek API
+│ 5. parse → SolutionDraft │
+│ 6. save to memory        │
+│                          │
+│ 返回 SSE → 前端渲染       │
+└──────────────────────────┘
+```
 
 ## 附录 A：异常类体系
 

@@ -1,4 +1,5 @@
-// 可复用 AI 对话面板 —— 对接 /api/ai/qa/ask/stream（SSE 流式诊断）
+// 可复用 AI 对话面板 —— call 场景对接 /api/ai/qa/ask/stream（SSE 流式诊断）
+// tasks 场景对接 /api/ai/task/analyze/stream（任务 Agent 方案生成）
 // 我要摇人（全屏）与系统任务（顶部紧凑）共用
 // 功能：SSE 流式 / 点赞点踩 / 复制 / 修改己方 / 语音 / 上传·拍照 / ENTER 发送
 // call 场景额外：消费工单讨论上下文 + 打包转工单
@@ -7,10 +8,13 @@ import { useNavigate } from 'react-router-dom';
 import { Textarea, Toast } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore } from '@/stores/workbench';
-import { qaAskStream, qaSubmit, qaUpload, generateSessionId, trackSession } from '@/api/ai';
+import API_CONFIG from '@/config/api';
+import { qaSubmit, qaUpload, generateSessionId, trackSession, fetchWithAuth } from '@/api/ai';
 import { createConversation, getConversation, listMyConversations, appendMessage, readAiSessionId } from '@/api/conversation';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
+import SolutionCard from '@/shared/components/SolutionCard';
+import type { SolutionDraft } from '@/shared/components/SolutionCard';
 
 interface SpeechRecognitionResultEvent {
   resultIndex: number;
@@ -45,6 +49,15 @@ interface Message {
   timestamp: string;
   imageUrl?: string;
   reaction?: 'like' | 'dislike' | null;
+  // 任务 Agent 专属：结构化方案草稿
+  subtype?: 'solution_draft';
+  solution_draft?: {
+    root_cause_analysis: string;
+    suggested_actions: string[];
+    references: string[];
+    confidence: number;
+    needs_more_info: boolean;
+  };
 }
 
 const uid = () => Date.now().toString() + Math.random().toString(36).slice(2, 6);
@@ -58,7 +71,7 @@ const SCENE_CONFIG: Record<ChatScene, {
   tasks: { sceneType: 'task_assist', emptyEmoji: '🤖', emptyTitle: 'AI 任务助手' },
 };
 
-export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
+export default function ChatPanel({ scene, compact = false, taskId }: { scene: ChatScene; compact?: boolean; taskId?: string }) {
   const navigate = useNavigate();
   const { token, username } = useAuthStore();
   const { chatContext, consumeChatContext, refreshTasks } = useWorkbenchStore();
@@ -71,6 +84,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const [sessionId, setSessionId] = useState<string>('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submittingTicket, setSubmittingTicket] = useState(false);
+  const [submittingSolution, setSubmittingSolution] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
   const [voiceWillCancel, setVoiceWillCancel] = useState(false);
@@ -210,41 +224,68 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (convId) appendMessage(convId, 'user', userContent).catch(() => {});
       setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() }]);
 
-      const response = await qaAskStream({
-        session_id: sid,
-        query: userContent,
-      });
+      // tasks 场景：调任务 Agent；call 场景：调提单 Agent
+      const AI_BASE = API_CONFIG.AI.BASE_URL;
+      const apiPath = isCall
+        ? `${AI_BASE}/qa/ask/stream`
+        : `${AI_BASE}/task/analyze/stream`;
+      const apiBody = isCall
+        ? JSON.stringify({ session_id: sid, query: userContent })
+        : JSON.stringify({ task_id: taskId || '', session_id: sid });
+
+      const response = await fetchWithAuth(apiPath, { method: 'POST', body: apiBody });
 
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
       let acc = '';
+      let solutionDraft: Message['solution_draft'] | null = null;
+      let currentEvent = '';
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true });
         for (const line of text.split('\n')) {
-          // SSE 事件行：event: first_token / event: done / event: error
-          if (line.startsWith('event: ') && line.includes('error')) continue; // 错误行在下面处理
-
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7);
+            if (currentEvent === 'error') continue;
+            continue;
+          }
           if (!line.startsWith('data: ')) continue;
           try {
             const data = JSON.parse(line.slice(6));
             if (data.token) {
-              // 新版 AI 诊断：token 增量
               acc += data.token;
               setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
             } else if (data.content) {
-              // 兼容旧版 message
               acc += data.content;
               setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
+            }
+            // 任务 Agent result 事件：拿到结构化方案草稿
+            if (currentEvent === 'result' && data.root_cause_analysis) {
+              solutionDraft = {
+                root_cause_analysis: data.root_cause_analysis,
+                suggested_actions: data.suggested_actions || [],
+                references: data.references || [],
+                confidence: data.confidence ?? 0,
+                needs_more_info: data.needs_more_info ?? false,
+              };
             }
           } catch { /* JSON 行解析出错则跳过 */ }
         }
       }
+
       // 流式结束：持久化 AI 回复
       if (acc && convRef.current) appendMessage(convRef.current, 'assistant', acc).catch(() => {});
+      // 任务 Agent 方案草稿：注入 solution_draft 标记
+      if (solutionDraft && !isCall) {
+        setMessages((prev) => prev.map((m) =>
+          m.id === assistantId
+            ? { ...m, subtype: 'solution_draft' as const, solution_draft: solutionDraft }
+            : m
+        ));
+      }
     } catch (err) {
       // 鉴权失效已由 kickToLogin 统一提示并跳转，此处不重复弹错误
       if (!isKickingToLogin()) {
@@ -388,6 +429,40 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
+  /** 任务 Agent：提交方案 → 调 /api/ai/task/submit */
+  const handleSubmitSolution = async (msg: Message) => {
+    if (submittingSolution || !msg.solution_draft) return;
+    setSubmittingSolution(true);
+    try {
+      const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/submit`, {
+        method: 'POST',
+        body: JSON.stringify({
+          task_id: taskId || '',
+          session_id: sessionId,
+          final_solution: msg.solution_draft,
+          resolution: 'resolved',
+        }),
+      });
+      const data = await res.json();
+      if (data.code === 0) {
+        refreshTasks();
+        Toast({ message: '方案已提交，工单已解决', theme: 'success' });
+      } else {
+        Toast({ message: (data as { message?: string })?.message || '提交失败', theme: 'error' });
+      }
+    } catch (err) {
+      Toast({ message: `提交失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setSubmittingSolution(false);
+    }
+  };
+
+  /** 任务 Agent：重新分析当前工单 */
+  const handleReanalyze = () => {
+    if (!taskId) return;
+    send(`请重新分析工单 #${taskId}`);
+  };
+
   const toggleReaction = (id: string, type: 'like' | 'dislike') => {
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, reaction: m.reaction === type ? null : type } : m)));
   };
@@ -448,7 +523,19 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   }
                 />
               ) : msg.role === 'assistant' ? (
-                msg.content ? (
+                msg.subtype === 'solution_draft' && msg.solution_draft ? (
+                  <SolutionCard
+                    draft={msg.solution_draft}
+                    onDraftChange={(draft) =>
+                      setMessages((prev) => prev.map((m) =>
+                        m.id === msg.id ? { ...m, solution_draft: draft } : m
+                      ))
+                    }
+                    onSubmit={() => handleSubmitSolution(msg)}
+                    onReanalyze={handleReanalyze}
+                    submitting={submittingSolution}
+                  />
+                ) : msg.content ? (
                   <MarkdownRenderer content={msg.content} compact={compact} />
                 ) : (
                   loading ? <div className="chat-bubble__text">思考中…</div> : null
