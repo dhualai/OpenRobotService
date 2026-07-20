@@ -528,7 +528,12 @@ async def task_analyze(body: TaskAnalyzeAPIRequest) -> dict:
         agent = await get_task_agent()
         draft = await agent.analyze(TaskAnalyzeRequest(
             task_id=body.task_id, session_id=body.session_id))
-        return {"code": 0, "data": draft.model_dump()}
+        resp_data = draft.model_dump()
+        resp_data.update({
+            "_trace": getattr(draft, "_trace", []),
+            "_total_ms": getattr(draft, "_total_ms", 0),
+        })
+        return {"code": 0, "data": resp_data}
     except Exception as e:
         return {"code": 1, "message": str(e)}
 
@@ -590,7 +595,7 @@ async def task_chat(body: TaskAnalyzeAPIRequest) -> dict:
         response = await agent.chat(
             session_id=body.session_id, query=getattr(body, 'query', ''),
         )
-        return {"code": 0, "data": {"reply": response}}
+        return {"code": 0, "data": {"reply": response}, "_trace": agent._pop_trace()}
     except Exception as e:
         return {"code": 1, "message": str(e)}
 

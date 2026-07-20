@@ -38,20 +38,48 @@ from ai.agents.AiTaskPlatform.prompts import (
 class AiTaskAgent:
     """任务 Agent：分析工单 → 生成解决方案草稿"""
 
+    # ── 可追踪的流程节点（供测试 Agent 对照）──
+    NODE_OVERHEAD = "overhead"          # 端点路由 + 客户端初始化
+    NODE_LOAD_CONTEXT = "load_context"  # 加载工单上下文（SQLAlchemy 读 tickets）
+    NODE_RETRIEVE = "retrieve"          # 三路并行分析
+    NODE_ATTACHMENT = "attachment"      # 附件解析（日志/回放）
+    NODE_BUILD_PROMPT = "build_prompt"  # Prompt 构建
+    NODE_LLM = "llm"                   # LLM 调用（DeepSeek API）
+    NODE_PARSE = "parse"               # 结果解析（JSON→SolutionDraft）
+    NODE_MEMORY = "memory"             # 记忆保存（Redis）
+    NODE_SUBMIT = "submit"             # 方案提交（tickets 表 + Qdrant 回写）
+
     def __init__(self):
         self.config = get_ai_config()
         self._llm_client = None
         self._retriever = None
         self._memory = None
+        self._trace: list[dict] = []
 
     async def _ensure_clients(self):
         """懒加载 AI 核心服务单例"""
+        t0 = time.perf_counter()
         if self._llm_client is None:
             self._llm_client = await get_llm_client()
         if self._retriever is None:
             self._retriever = await get_retrieval_service()
         if self._memory is None:
             self._memory = await get_memory_manager()
+        self._add_trace(self.NODE_OVERHEAD, "ok", elapsed_ms=round((time.perf_counter() - t0) * 1000))
+
+    # ── 埋点 ──────────────────────────────────────────────────
+
+    def _add_trace(self, node: str, status: str, **kwargs):
+        """追加一条追踪记录。status: ok | error | skipped"""
+        entry = {"node": node, "status": status, "ts": round(time.perf_counter() * 1000)}
+        entry.update(kwargs)
+        self._trace.append(entry)
+
+    def _pop_trace(self) -> list[dict]:
+        """取出全部追踪记录并清空（每次请求独立）"""
+        trace = self._trace
+        self._trace = []
+        return trace
 
     # ============================================================
     # analyze（非流式）
@@ -60,31 +88,67 @@ class AiTaskAgent:
     async def analyze(self, request: TaskAnalyzeRequest) -> SolutionDraft:
         """非流式分析工单 → 返回结构化方案草稿"""
         t0 = time.perf_counter()
+        self._pop_trace()  # 清理上次请求的残留
         await self._ensure_clients()
 
         # 1. 加载工单上下文
+        t1 = time.perf_counter()
         context = await self._load_task_context(request.task_id)
+        self._add_trace(self.NODE_LOAD_CONTEXT, "ok",
+                        input={"task_id": request.task_id},
+                        output={
+                            "has_title": bool(context.title),
+                            "has_problem_summary": bool(context.problem_summary),
+                            "hypotheses_count": len(context.hypotheses),
+                            "ruled_out_count": len(context.ruled_out),
+                        },
+                        elapsed_ms=round((time.perf_counter() - t1) * 1000))
 
         # 2. 三路并行分析
+        t2 = time.perf_counter()
         retrieval_results = await self._run_analysis(context)
+        self._add_trace(self.NODE_RETRIEVE, "ok",
+                        input={"query": self._build_query(context)},
+                        output={
+                            "troubleshooting_len": len(retrieval_results.get("troubleshooting", "")),
+                            "history_len": len(retrieval_results.get("history", "")),
+                            "has_attachment_analysis": bool(retrieval_results.get("attachment_analysis")),
+                        },
+                        elapsed_ms=round((time.perf_counter() - t2) * 1000))
 
         # 3. 构建 Prompt
+        t3 = time.perf_counter()
         prompt = self._build_prompt(context, retrieval_results)
+        self._add_trace(self.NODE_BUILD_PROMPT, "ok",
+                        input={"prompt_chars": len(prompt)},
+                        elapsed_ms=round((time.perf_counter() - t3) * 1000))
 
         # 4. LLM 生成
+        t4 = time.perf_counter()
         raw = await self._llm_client.complete(
             prompt=prompt,
             system_prompt=TASK_AGENT_SYSTEM_PROMPT,
             max_tokens=1500,
             temperature=0.3,
         )
+        self._add_trace(self.NODE_LLM, "ok",
+                        input={"model": self._llm_client.model, "max_tokens": 1500},
+                        output={"response_chars": len(raw)},
+                        elapsed_ms=round((time.perf_counter() - t4) * 1000))
 
         # 5. 解析
-        draft = self._parse_solution(raw)
+        t5 = time.perf_counter()
+        draft, parse_status = self._parse_solution_with_status(raw)
+        self._add_trace(self.NODE_PARSE, parse_status,
+                        output={"confidence": draft.confidence, "actions_count": len(draft.suggested_actions)},
+                        elapsed_ms=round((time.perf_counter() - t5) * 1000))
 
         total_ms = (time.perf_counter() - t0) * 1000
         print(f"  [task-agent] analyze total={total_ms:.0f}ms")
 
+        # 注入 trace 到返回体
+        draft._trace = self._pop_trace()
+        draft._total_ms = total_ms
         return draft
 
     # ============================================================
@@ -96,19 +160,36 @@ class AiTaskAgent:
     ) -> AsyncGenerator[dict, None]:
         """流式分析工单 → SSE 逐 token 输出"""
         t0 = time.perf_counter()
+        self._pop_trace()  # 清理上次请求的残留
         await self._ensure_clients()
 
         # 1. 加载上下文
         yield {"event": "status", "data": {"stage": "loading_context"}}
+        t1 = time.perf_counter()
         context = await self._load_task_context(request.task_id)
+        self._add_trace(self.NODE_LOAD_CONTEXT, "ok",
+                        input={"task_id": request.task_id},
+                        output={"has_title": bool(context.title), "has_problem_summary": bool(context.problem_summary),
+                                "hypotheses_count": len(context.hypotheses)},
+                        elapsed_ms=round((time.perf_counter() - t1) * 1000))
 
         # 2. 三路分析
         yield {"event": "status", "data": {"stage": "retrieving"}}
+        t2 = time.perf_counter()
         retrieval_results = await self._run_analysis(context)
+        self._add_trace(self.NODE_RETRIEVE, "ok",
+                        input={"query": self._build_query(context)},
+                        output={"troubleshooting_len": len(retrieval_results.get("troubleshooting", "")),
+                                "history_len": len(retrieval_results.get("history", ""))},
+                        elapsed_ms=round((time.perf_counter() - t2) * 1000))
 
         # 3. 构建 Prompt + 流式生成
         yield {"event": "status", "data": {"stage": "generating"}}
+        t3 = time.perf_counter()
         prompt = self._build_prompt(context, retrieval_results)
+        self._add_trace(self.NODE_BUILD_PROMPT, "ok",
+                        input={"prompt_chars": len(prompt)},
+                        elapsed_ms=round((time.perf_counter() - t3) * 1000))
 
         raw_tokens: list[str] = []
         t_llm = time.perf_counter()
@@ -127,29 +208,44 @@ class AiTaskAgent:
                     first_ms = round((t_first - t_llm) * 1000)
                     yield {"event": "first_token", "data": {"ms": first_ms}}
                 yield {"event": "token", "data": token}
+            self._add_trace(self.NODE_LLM, "ok",
+                            input={"model": self._llm_client.model, "max_tokens": 1500},
+                            output={"token_count": len(raw_tokens), "first_token_ms": round((t_first or t_llm) - t_llm) * 1000 if t_first else None},
+                            elapsed_ms=round((time.perf_counter() - t_llm) * 1000))
         except Exception:
+            self._add_trace(self.NODE_LLM, "error",
+                            elapsed_ms=round((time.perf_counter() - t_llm) * 1000))
             msg = "AI 分析服务暂时不可用，请稍后重试。"
             yield {"event": "token", "data": msg}
-            yield {"event": "result", "data": {
+            result = {
                 "root_cause_analysis": "", "suggested_actions": [], "references": [],
                 "confidence": 0, "needs_more_info": True,
-            }}
+                "_trace": self._pop_trace(),
+            }
+            yield {"event": "result", "data": result}
             return
 
         # 4. 解析 + 保存上下文
+        t5 = time.perf_counter()
         raw = "".join(raw_tokens)
-        draft = self._parse_solution(raw)
+        draft, parse_status = self._parse_solution_with_status(raw)
+        self._add_trace(self.NODE_PARSE, parse_status,
+                        output={"confidence": draft.confidence, "actions_count": len(draft.suggested_actions)},
+                        elapsed_ms=round((time.perf_counter() - t5) * 1000))
 
+        t6 = time.perf_counter()
         await self._save_analysis_context(request.session_id, context, draft)
+        self._add_trace(self.NODE_MEMORY, "ok",
+                        elapsed_ms=round((time.perf_counter() - t6) * 1000))
 
-        # 5. 返回结构化结果
+        # 5. 返回结构化结果（含 trace）
         result_data = draft.model_dump()
-        result_data["attachment_analysis"] = retrieval_results.get(
-            "attachment_analysis", {}
-        )
+        result_data["attachment_analysis"] = retrieval_results.get("attachment_analysis", {})
+        total_ms = round((time.perf_counter() - t0) * 1000)
+        result_data["_trace"] = self._pop_trace()
+        result_data["_total_ms"] = total_ms
         yield {"event": "result", "data": result_data}
 
-        total_ms = round((time.perf_counter() - t0) * 1000)
         yield {"event": "done", "data": {"total_ms": total_ms}}
 
     # ============================================================
@@ -161,6 +257,8 @@ class AiTaskAgent:
         task_id: str = "", task_title: str = "", task_description: str = "",
     ) -> str:
         """自由对话：工程师可以问任何 AGV/AMR 技术问题"""
+        t0 = time.perf_counter()
+        self._pop_trace()
         await self._ensure_clients()
 
         # 构建对话上下文
@@ -175,7 +273,8 @@ class AiTaskAgent:
         except Exception:
             pass
 
-        # 如果有工单上下文，拼入 prompt
+        # 构建 prompt
+        t_prompt = time.perf_counter()
         if task_id:
             prompt = (
                 f"## 对话历史\n{conversation}\n\n"
@@ -187,20 +286,33 @@ class AiTaskAgent:
                 f"## 对话历史\n{conversation}\n\n"
                 f"## 用户消息\n{query}"
             )
+        self._add_trace(self.NODE_BUILD_PROMPT, "ok",
+                        input={"prompt_chars": len(prompt), "has_task": bool(task_id)},
+                        elapsed_ms=round((time.perf_counter() - t_prompt) * 1000))
 
+        # LLM 调用
+        t_llm = time.perf_counter()
         response = await self._llm_client.complete(
             prompt=prompt,
             system_prompt=TASK_CHAT_SYSTEM_PROMPT,
             max_tokens=1500,
             temperature=0.5,
         )
+        self._add_trace(self.NODE_LLM, "ok",
+                        input={"model": self._llm_client.model},
+                        output={"response_chars": len(response)},
+                        elapsed_ms=round((time.perf_counter() - t_llm) * 1000))
 
-        # 写入对话记忆（与 analyze 共享同一 session_id）
+        # 写入对话记忆
+        t_mem = time.perf_counter()
         try:
             await self._memory.add_turn(session_id, "user", query)
             await self._memory.add_turn(session_id, "assistant", response)
+            self._add_trace(self.NODE_MEMORY, "ok",
+                            elapsed_ms=round((time.perf_counter() - t_mem) * 1000))
         except Exception:
-            pass
+            self._add_trace(self.NODE_MEMORY, "error",
+                            elapsed_ms=round((time.perf_counter() - t_mem) * 1000))
 
         return response
 
@@ -210,8 +322,9 @@ class AiTaskAgent:
     ):
         """流式自由对话"""
         import time as _time
-        await self._ensure_clients()
         t0 = _time.perf_counter()
+        self._pop_trace()
+        await self._ensure_clients()
 
         # 构建对话上下文
         conversation = ""
@@ -225,6 +338,7 @@ class AiTaskAgent:
         except Exception:
             pass
 
+        t_prompt = _time.perf_counter()
         if task_id:
             prompt = (
                 f"## 对话历史\n{conversation}\n\n"
@@ -236,6 +350,9 @@ class AiTaskAgent:
                 f"## 对话历史\n{conversation}\n\n"
                 f"## 用户消息\n{query}"
             )
+        self._add_trace(self.NODE_BUILD_PROMPT, "ok",
+                        input={"prompt_chars": len(prompt), "has_task": bool(task_id)},
+                        elapsed_ms=round((_time.perf_counter() - t_prompt) * 1000))
 
         yield {"event": "status", "data": {"stage": "chatting"}}
         t_llm = _time.perf_counter()
@@ -254,20 +371,30 @@ class AiTaskAgent:
                     t_first = _time.perf_counter()
                     yield {"event": "first_token", "data": {"ms": round((t_first - t_llm) * 1000)}}
                 yield {"event": "token", "data": token}
+            self._add_trace(self.NODE_LLM, "ok",
+                            input={"model": self._llm_client.model},
+                            output={"token_count": len(acc_tokens), "response_chars": sum(len(t) for t in acc_tokens)},
+                            elapsed_ms=round((_time.perf_counter() - t_llm) * 1000))
         except Exception:
+            self._add_trace(self.NODE_LLM, "error",
+                            elapsed_ms=round((_time.perf_counter() - t_llm) * 1000))
             yield {"event": "token", "data": "AI 服务暂时不可用，请稍后重试。"}
 
-        # 写入对话记忆（与 analyze 共享同一 session_id）
+        # 写入对话记忆
+        t_mem = _time.perf_counter()
         full_response = "".join(acc_tokens)
         if full_response:
             try:
                 await self._memory.add_turn(session_id, "user", query)
                 await self._memory.add_turn(session_id, "assistant", full_response)
+                self._add_trace(self.NODE_MEMORY, "ok",
+                                elapsed_ms=round((_time.perf_counter() - t_mem) * 1000))
             except Exception:
-                pass
+                self._add_trace(self.NODE_MEMORY, "error",
+                                elapsed_ms=round((_time.perf_counter() - t_mem) * 1000))
 
         total_ms = round((_time.perf_counter() - t0) * 1000)
-        yield {"event": "done", "data": {"total_ms": total_ms}}
+        yield {"event": "done", "data": {"total_ms": total_ms, "_trace": self._pop_trace()}}
 
     # ============================================================
     # submit（方案确认 → Qdrant + 后端状态更新）
@@ -276,10 +403,9 @@ class AiTaskAgent:
     async def submit(
         self, task_id: str, session_id: str, draft: SolutionDraft, resolution: str = "resolved"
     ) -> dict:
-        """确认方案 → Qdrant 回写 + tickets 表状态更新。
-
-        两个操作独立，任一失败不阻塞另一个。
-        """
+        """确认方案 → Qdrant 回写 + tickets 表状态更新。"""
+        t0 = time.perf_counter()
+        self._pop_trace()
         await self._ensure_clients()
         result = {"task_id": task_id, "solution_indexed": False, "ticket_updated": False}
 
@@ -288,14 +414,19 @@ class AiTaskAgent:
             f"步骤: {'; '.join(draft.suggested_actions)}"
         )
 
-        # 1. Qdrant 回写（AI 侧负责）
+        # 1. Qdrant 回写
+        t_qdrant = time.perf_counter()
         try:
             await self._index_solution(task_id, solution_text, draft)
             result["solution_indexed"] = True
+            self._add_trace(self.NODE_SUBMIT + "_qdrant", "ok",
+                            elapsed_ms=round((time.perf_counter() - t_qdrant) * 1000))
         except Exception as e:
-            print(f"  [task-agent] Qdrant index failed: {e}")
+            self._add_trace(self.NODE_SUBMIT + "_qdrant", "error",
+                            input={"error": str(e)}, elapsed_ms=round((time.perf_counter() - t_qdrant) * 1000))
 
-        # 2. 直接更新 tickets 表状态（不用调后端 API）
+        # 2. tickets 表更新
+        t_db = time.perf_counter()
         try:
             from app.models.ticket import Ticket
             from app.core.database import SessionLocal
@@ -306,7 +437,6 @@ class AiTaskAgent:
                 if ticket:
                     ticket.status = resolution
                     ticket.updated_at = func.now()
-                    # 将 solution 存入 diagnosis 的补充字段
                     diag = ticket.diagnosis or {}
                     diag["solution"] = draft.model_dump()
                     diag["resolved_by_agent"] = True
@@ -315,9 +445,14 @@ class AiTaskAgent:
                     result["ticket_updated"] = True
             finally:
                 db.close()
+            self._add_trace(self.NODE_SUBMIT + "_db", "ok",
+                            elapsed_ms=round((time.perf_counter() - t_db) * 1000))
         except Exception as e:
-            print(f"  [task-agent] Ticket update failed: {e}")
+            self._add_trace(self.NODE_SUBMIT + "_db", "error",
+                            input={"error": str(e)}, elapsed_ms=round((time.perf_counter() - t_db) * 1000))
 
+        result["_trace"] = self._pop_trace()
+        result["_total_ms"] = round((time.perf_counter() - t0) * 1000)
         return {"code": 0, "data": result}
 
     # ============================================================
@@ -560,7 +695,12 @@ class AiTaskAgent:
     @staticmethod
     def _parse_solution(raw: str) -> SolutionDraft:
         """从 LLM 原始输出解析 SolutionDraft JSON"""
-        # 尝试提取 JSON
+        draft, _ = AiTaskAgent._parse_solution_with_status(raw)
+        return draft
+
+    @staticmethod
+    def _parse_solution_with_status(raw: str) -> tuple[SolutionDraft, str]:
+        """解析 SolutionDraft JSON，同时返回状态 (ok/json_fail)"""
         json_match = re.search(r"\{[\s\S]*\}", raw)
         if json_match:
             try:
@@ -571,18 +711,30 @@ class AiTaskAgent:
                     references=data.get("references", []),
                     confidence=float(data.get("confidence", 0.0)),
                     needs_more_info=bool(data.get("needs_more_info", False)),
-                )
+                ), "ok"
             except (json.JSONDecodeError, ValueError, TypeError):
                 pass
-
-        # 兜底：把原始回复当根因分析
         return SolutionDraft(
             root_cause_analysis=raw.strip(),
-            suggested_actions=[],
-            references=[],
-            confidence=0.0,
-            needs_more_info=True,
-        )
+            suggested_actions=[], references=[],
+            confidence=0.0, needs_more_info=True,
+        ), "json_fail"
+
+    @staticmethod
+    def _build_query(context: TaskContext) -> str:
+        """构建检索查询文本"""
+        parts = []
+        if context.problem_summary:
+            parts.append(context.problem_summary)
+        elif context.description:
+            parts.append(context.description)
+        if context.hypotheses:
+            parts.append(" ".join(context.hypotheses))
+        if context.fault_code:
+            parts.append(context.fault_code)
+        if context.robot_type:
+            parts.append(context.robot_type)
+        return " ".join(parts) if parts else context.description
 
     # ============================================================
     # 私有：记忆 + 索引
