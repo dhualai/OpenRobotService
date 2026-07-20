@@ -204,7 +204,7 @@ class PermissionService:
             
             user_roles = PermissionService.get_user_roles_all_projects(db_user.id)
             
-            all_permissions = set(["admin"]) if db_user.username == 'admin' else set()
+            all_permissions = set(["admin"]) if db_user.username == 'admin' else set(["user"])
             
             project_permissions_dict = {}
             

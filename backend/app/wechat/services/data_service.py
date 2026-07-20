@@ -1,9 +1,8 @@
-﻿import aiohttp
-import traceback
-import json
+﻿import json
 import logging
 from typing import Dict, Optional, List, Tuple
-from app.core.config import settings
+
+from app.modules.admin.services.data_service import DataService as AdminDataService
 
 logger = logging.getLogger(__name__)
 
@@ -12,20 +11,20 @@ class DataService:
 
     async def get_project_data(self, project_id: str, tag: Optional[str], indicator: List[str], headers: Dict) -> Optional[Dict]:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{settings.DATA_SERVICE_URL}/api/data/access",
-                    json={"project": project_id, "tag": tag, "indicator": indicator},
-                    headers=headers,
-                    timeout=3
-                ) as response:
-                    if response.status == 200:
-                        response_data = await response.json()
-                        access_data = response_data.get('data', [])
-                        if access_data:
-                            return access_data[0]
-                    else:
-                        logger.error(f"获取项目数据失败: HTTP {response.status}")
+            result_item = AdminDataService.get_collection_data_for_indicators(
+                project=project_id,
+                tag=tag,
+                indicators=indicator,
+                start_time='',
+                end_time=''
+            )
+            
+            if result_item and result_item.get('project'):
+                return {
+                    'data': [result_item],
+                    'authorized_indicators': result_item.get('authorized_indicators', []),
+                    'value': result_item.get('content', [])[0] if result_item.get('content') else {}
+                }
         except Exception as e:
             logger.error(f"获取项目数据时发生异常: {e}")
 
@@ -36,7 +35,6 @@ class DataService:
         reply_content += f"有权限的内容：{access_data['authorized_indicators']}\n"
 
         if '*' in access_data['authorized_indicators']:
-            import json
             reply_content += json.dumps(access_data['value'], ensure_ascii=False)
         else:
             for value in access_data['authorized_indicators']:
@@ -47,26 +45,13 @@ class DataService:
 
     async def insert_project_data(self, data: Dict, headers: Dict = {"Content-Type": "application/json"}) -> Tuple[Optional[int], Optional[Dict]]:
         try:
-            url = f"{settings.DATA_DEBUG_SERVICE_URL}/api/data/insert/"
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    url,
-                    json=data,
-                    headers=headers
-                ) as response:
-                    status_code = response.status
-                    logger.info(f"API响应状态码: {status_code}")
-
-                    try:
-                        response_data = await response.json()
-                        logger.debug(f"API响应内容: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
-                    except json.JSONDecodeError:
-                        response_text = await response.text()
-                        logger.debug(f"API响应文本: {response_text}")
-                        response_data = None
-
-                    return status_code, response_data if status_code == 200 else response_data.get('error', None)
+            batch_data = data if isinstance(data, list) else [data]
+            success, result_ids = AdminDataService.insert_batch_collection_data(batch_data)
+            
+            if success:
+                return 200, {"ids": result_ids, "message": "插入成功"}
+            else:
+                return None, {"error": "插入失败"}
 
         except Exception as e:
             logger.error(f"发送数据失败: {e}", exc_info=True)

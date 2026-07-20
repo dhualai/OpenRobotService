@@ -35,7 +35,7 @@ vi.mock('tdesign-mobile-react', () => ({
 
 import AdminLayout from '../AdminLayout';
 
-const renderLayout = (route = '/app/admin/dashboard') => {
+const renderLayout = (route = '/admin/dashboard') => {
   return render(
     <MemoryRouter initialEntries={[route]}>
       <AdminLayout />
@@ -50,13 +50,13 @@ describe('AdminLayout', () => {
   });
 
   it('should render navbar with current page title', () => {
-    renderLayout('/app/admin/dashboard');
+    renderLayout('/admin/dashboard');
     expect(screen.getByTestId('navbar')).toBeInTheDocument();
     expect(screen.getByTestId('navbar-title')).toHaveTextContent('仪表盘');
   });
 
   it('should show default title for unknown path', () => {
-    renderLayout('/app/admin/unknown-page');
+    renderLayout('/admin/unknown-page');
     expect(screen.getByTestId('navbar-title')).toHaveTextContent('后台管理');
   });
 
@@ -118,7 +118,7 @@ describe('AdminLayout', () => {
     fireEvent.click(screen.getByTestId('btn-text-small'));
     fireEvent.click(screen.getByText('风险管理'));
 
-    expect(mockNavigate).toHaveBeenCalledWith('/app/admin/risks');
+    expect(mockNavigate).toHaveBeenCalledWith('/admin/risks');
   });
 
   it('should render Outlet for child routes', () => {

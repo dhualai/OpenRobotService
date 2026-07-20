@@ -3,13 +3,14 @@
   /api/ai/qa/*    诊断 Agent
   /api/ai/chat/*  纯 LLM 对话
   /api/ai/memory/* 会话记忆
+  /api/ai/task/*  任务 Agent
 """
 import json
 import time
 import os
 from pathlib import Path
-from typing import List
-from fastapi import APIRouter, Depends, UploadFile, File, Form, Query
+from typing import Dict, List
+from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -18,6 +19,9 @@ from ai.config import get_ai_config
 from ai.agents.AiDiagnosisPlatform.pipeline import (
     get_diagnosis_platform, AiDiagnosisPlatform, DiagnosisRequest,
 )
+
+# 注：app.core.* 的导入（decode_token / get_user_with_roles / SessionLocal / Ticket）
+# 均为惰性（函数内），避免在 AI 进程启动时触发 backend app/__init__.py 全量装配。
 
 # ============================================================
 # 诊断 Agent (prefix /api/ai/qa)
@@ -43,6 +47,30 @@ class TicketAckRequest(BaseModel):
 
 async def get_pipeline() -> AiDiagnosisPlatform:
     return await get_diagnosis_platform()
+
+
+def _current_user(request: Request) -> tuple[str, bool]:
+    """从 Authorization 头解出 (username, is_admin)；无效/缺失返回 ('', False)。"""
+    from app.core.security import decode_token  # 惰性：避免启动期触发 backend 装配
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if not token:
+        return "", False
+    payload = decode_token(token)
+    if not payload:
+        return "", False
+    username = (payload.get("sub") or "").strip()
+    if not username:
+        return "", False
+    is_admin = False
+    try:
+        from app.core.database import get_user_with_roles
+        user = get_user_with_roles(username) or {}
+        perms = user.get("permissions") or []
+        is_admin = "admin" in perms
+    except Exception:
+        pass
+    return username, is_admin
 
 
 @qa_router.post("/ask", summary="统一问答（含诊断追问与提单）")
@@ -91,10 +119,12 @@ async def ask_question_stream(
 
 @qa_router.post("/submit", summary="生成工单并存库")
 async def submit_ticket(
-    request: QASubmitRequest,
+    request: Request,
+    body: QASubmitRequest,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
-    result = await pipeline.submit(session_id=request.session_id)
+    username, _ = _current_user(request)  # 记录创建人，供历史工单按角色过滤
+    result = await pipeline.submit(session_id=body.session_id, created_by=username)
     if "code" not in result:
         result["code"] = 0
     return result
@@ -113,6 +143,46 @@ async def get_ticket(session_id: str = Query(..., description="会话 ID")):
         return {"code": 0, "data": ticket}
     except Exception as e:
         return {"code": 1, "message": str(e)}
+
+
+def _ticket_brief(r) -> dict:
+    """DB Ticket 行 → 列表摘要"""
+    return {
+        "id": r.id,
+        "session_id": r.session_id,
+        "ticket_ai_id": r.ticket_ai_id,
+        "title": r.title,
+        "description": r.description,
+        "type": r.type,
+        "priority": r.priority,
+        "status": r.status,
+        "created_by": r.created_by,
+        "created_at": r.created_at.isoformat() if r.created_at else "",
+    }
+
+
+@qa_router.get("/tickets", summary="全量历史工单列表（按当前角色）")
+async def list_tickets(
+    request: Request,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict:
+    """admin 看全部；其余角色只看自己创建的（created_by == 当前用户）。"""
+    username, is_admin = _current_user(request)
+    if not username:
+        raise HTTPException(status_code=401, detail="未登录或 token 无效")
+    from app.models.ticket import Ticket
+    from app.core.database import SessionLocal
+    db = SessionLocal()
+    try:
+        q = db.query(Ticket)
+        if not is_admin:
+            q = q.filter(Ticket.created_by == username)
+        total = q.count()
+        rows = q.order_by(Ticket.created_at.desc()).offset(skip).limit(limit).all()
+        return {"code": 0, "data": {"items": [_ticket_brief(r) for r in rows], "total": total}}
+    finally:
+        db.close()
 
 
 @qa_router.post("/ticket/ack", summary="派单确认回执")
@@ -346,3 +416,160 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
         return {"code": 0, "data": {"session_id": session_id, "message": "已清除"}}
     except Exception as e:
         return {"code": 1, "data": {"error": str(e)}}
+
+
+# ============================================================
+# 智能派单 (prefix /api/ai)
+# ============================================================
+assigner_router = APIRouter(prefix="/api/ai", tags=["ai-assigner"])
+
+
+class RefereeRequest(BaseModel):
+    """派单请求"""
+    title: str
+    comments: List[str] = []
+    workload_map: Dict[str, int] = {}
+
+
+class RefereeResponse(BaseModel):
+    """派单响应"""
+    code: int
+    message: str = ""
+    data: Dict = {}
+
+
+@assigner_router.post("/ticketReferee", response_model=RefereeResponse)
+async def ticket_referee(req: RefereeRequest):
+    """智能派单接口（兼容后端现有调用方式）。"""
+    try:
+        description = "\n".join(filter(None, req.comments)) if req.comments else req.title
+        from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket
+        result = await assign_ticket(
+            title=req.title,
+            problem_description=description,
+        )
+        return RefereeResponse(
+            code=200,
+            data={
+                "name": result.engineer_name,
+                "id": result.engineer_id,
+                "confidence": result.confidence_score,
+                "decision_type": result.decision_type,
+                "reasoning": result.reasoning,
+            },
+        )
+    except Exception as e:
+        return RefereeResponse(
+            code=500,
+            message=f"AI派单失败: {str(e)}",
+            data={},
+        )
+
+
+@assigner_router.get("/ticketReferee/health")
+async def assigner_health_check():
+    """派单服务健康检查。"""
+    from ai.agents.AiDiagnosisPlatform.assigner import load_engineers
+    return {
+        "status": "ok",
+        "service": "ai-assigner",
+        "engineers_count": len(load_engineers()),
+    }
+
+
+# ============================================================
+# 任务 Agent (prefix /api/ai/task)
+# ============================================================
+task_agent_router = APIRouter(prefix="/api/ai/task", tags=["AI任务助手"])
+
+
+class TaskAnalyzeAPIRequest(BaseModel):
+    task_id: str = Field(..., description="工单 ID")
+    session_id: str = Field(..., description="对话 session")
+
+
+class TaskListAPIRequest(BaseModel):
+    username: str = Field(default="", description="当前用户")
+
+
+class TaskSubmitAPIRequest(BaseModel):
+    task_id: str = Field(..., description="工单 ID")
+    session_id: str = Field(..., description="对话 session")
+    final_solution: dict = Field(..., description="工程师编辑后的最终方案")
+    resolution: str = Field(default="resolved")
+
+
+@task_agent_router.post("/list", summary="列出待处理工单")
+async def task_list(request: Request, body: TaskListAPIRequest) -> dict:
+    from ai.agents.AiTaskPlatform import get_task_agent
+    agent = await get_task_agent()
+    username = body.username
+    if not username:
+        username, _ = _current_user(request) if hasattr(request, 'headers') else ("", False)
+    # TODO: 从后端 API 获取用户待处理工单列表
+    return {"code": 0, "data": {"summary": "任务 Agent 就绪，待前后端对接工单列表 API", "tickets": []}}
+
+
+@task_agent_router.post("/analyze", summary="分析工单（非流式）")
+async def task_analyze(body: TaskAnalyzeAPIRequest) -> dict:
+    try:
+        from ai.agents.AiTaskPlatform import get_task_agent, TaskAnalyzeRequest
+        agent = await get_task_agent()
+        draft = await agent.analyze(TaskAnalyzeRequest(
+            task_id=body.task_id, session_id=body.session_id))
+        return {"code": 0, "data": draft.model_dump()}
+    except Exception as e:
+        return {"code": 1, "message": str(e)}
+
+
+@task_agent_router.post("/analyze/stream", summary="流式分析工单（SSE）")
+async def task_analyze_stream(body: TaskAnalyzeAPIRequest):
+    from ai.agents.AiTaskPlatform import get_task_agent, TaskAnalyzeRequest
+
+    async def sse():
+        t0 = time.perf_counter()
+        first = False
+        try:
+            agent = await get_task_agent()
+            async for event in agent.analyze_stream(TaskAnalyzeRequest(
+                task_id=body.task_id, session_id=body.session_id)):
+                ev_type = event["event"]
+                if ev_type == "token":
+                    if not first:
+                        first = True
+                        yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
+                elif ev_type == "result":
+                    yield f"event: result\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+                elif ev_type == "first_token":
+                    # 已在 token 分支处理 first，这里跳过
+                    pass
+                else:
+                    yield f"event: status\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+            yield f"event: done\ndata: {json.dumps({'total_ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+@task_agent_router.post("/submit", summary="提交方案")
+async def task_submit(request: Request, body: TaskSubmitAPIRequest) -> dict:
+    try:
+        from ai.agents.AiTaskPlatform import get_task_agent, SolutionDraft
+        agent = await get_task_agent()
+        draft = SolutionDraft(**body.final_solution)
+        result = await agent.submit(
+            task_id=body.task_id,
+            session_id=body.session_id,
+            draft=draft,
+            resolution=body.resolution,
+        )
+        return result
+    except Exception as e:
+        return {"code": 1, "message": str(e)}
+
+
+@task_agent_router.get("/health", summary="健康检查")
+async def task_agent_health() -> dict:
+    return {"status": "ok", "service": "ai-task-agent"}

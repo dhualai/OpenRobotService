@@ -22,7 +22,14 @@ router = APIRouter(prefix="/conversations", tags=["call-conversations"])
 
 
 @router.post("", response_model=ConversationResponse, summary="创建会话")
-async def create_conversation(conversation: ConversationCreate, db: AsyncSession = Depends(get_db)):
+async def create_conversation(
+    conversation: ConversationCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    # user_id 以 token 为准：前端只持有 username，无法可靠传递与列表查询（按 current_user.id 过滤）一致的 user_id
+    if current_user.get("id"):
+        conversation.user_id = current_user["id"]
     return await ConversationService.create_conversation(db, conversation)
 
 

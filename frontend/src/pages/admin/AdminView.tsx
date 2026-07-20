@@ -7,16 +7,17 @@ import { useAuthStore } from '@/stores/auth';
 interface Entry { path: string; label: string; emoji: string; adminOnly?: boolean; }
 
 const entries: Entry[] = [
-  { path: '/app/admin/dashboard', label: '项目看板', emoji: '📊' },
-  { path: '/app/admin/project-manage', label: '项目管理', emoji: '📁' },
-  { path: '/app/admin/risks', label: '风险红黄灯', emoji: '⚠️' },
-  { path: '/app/admin/progress', label: '进度看板', emoji: '📈' },
-  { path: '/app/admin/reports', label: '报表分析', emoji: '📋' },
-  { path: '/app/admin/data-import', label: '机器人数据', emoji: '📥' },
-  { path: '/app/admin/users', label: '用户管理', emoji: '👤', adminOnly: true },
-  { path: '/app/admin/roles', label: '角色管理', emoji: '🏷️', adminOnly: true },
-  { path: '/app/admin/permissions', label: '权限管理', emoji: '🔑', adminOnly: true },
-  { path: '/app/admin/resources', label: '资源管理', emoji: '🗂️', adminOnly: true },
+  { path: '/admin/dashboard', label: '项目看板', emoji: '📊' },
+  { path: '/admin/project-manage', label: '项目管理', emoji: '📁' },
+  { path: '/admin/risks', label: '风险红黄灯', emoji: '⚠️' },
+  { path: '/admin/progress', label: '进度看板', emoji: '📈' },
+  { path: '/admin/reports', label: '报表分析', emoji: '📋' },
+  { path: '/admin/data-import', label: '机器人数据', emoji: '📥' },
+  { path: '/admin/wechat', label: '微信管理', emoji: '💬', adminOnly: true },
+  { path: '/admin/users', label: '用户管理', emoji: '👤', adminOnly: true },
+  { path: '/admin/roles', label: '角色管理', emoji: '🏷️', adminOnly: true },
+  { path: '/admin/permissions', label: '权限管理', emoji: '🔑', adminOnly: true },
+  { path: '/admin/resources', label: '资源管理', emoji: '🗂️', adminOnly: true },
 ];
 
 export default function AdminView() {

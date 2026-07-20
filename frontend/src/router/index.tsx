@@ -7,6 +7,7 @@ const Login = lazy(() => import('@/pages/Login'));
 const NoPermission = lazy(() => import('@/pages/NoPermission'));
 const MainLayout = lazy(() => import('@/shared/components/MainLayout'));
 const CallView = lazy(() => import('@/pages/call/CallView'));
+const TicketDetailPage = lazy(() => import('@/pages/call/TicketDetailPage'));
 const TasksView = lazy(() => import('@/pages/tasks/TasksView'));
 
 // Admin
@@ -29,6 +30,7 @@ const RoleManage = lazy(() => import('@/pages/admin/RoleManage'));
 const PermissionManage = lazy(() => import('@/pages/admin/PermissionManage'));
 const ResourceManage = lazy(() => import('@/pages/admin/ResourceManage'));
 const DailyReportManage = lazy(() => import('@/pages/admin/DailyReportManage'));
+const WechatManage = lazy(() => import('@/pages/admin/WechatManage'));
 
 export const router = createBrowserRouter([
   { path: '/login', element: <Login /> },
@@ -36,11 +38,12 @@ export const router = createBrowserRouter([
 
   // 工作台主入口：底部三 Tab（我要摇人 / 系统任务 / 后台管理）
   {
-    path: '/app',
+    path: '/',
     element: <AuthGuard><MainLayout /></AuthGuard>,
     children: [
-      { index: true, element: <Navigate to="/app/call" replace /> },
+      { index: true, element: <Navigate to="/call" replace /> },
       { path: 'call', element: <CallView /> },
+      { path: 'call/ticket/:id', element: <TicketDetailPage /> },
       { path: 'tasks', element: <TasksView /> },
       { path: 'tasks/:id', element: <TasksView /> },
       {
@@ -68,6 +71,7 @@ export const router = createBrowserRouter([
               { path: 'permissions', element: <PermissionManage /> },
               { path: 'resources', element: <ResourceManage /> },
               { path: 'daily-reports', element: <DailyReportManage /> },
+              { path: 'wechat', element: <WechatManage /> },
             ],
           },
         ],
@@ -76,14 +80,13 @@ export const router = createBrowserRouter([
   },
 
   // 兼容旧路由 → 统一收敛到工作台
-  { path: '/', element: <Navigate to="/app/call" replace /> },
-  { path: '/call', element: <Navigate to="/app/call" replace /> },
-  { path: '/call/ai-chat', element: <Navigate to="/app/call" replace /> },
-  { path: '/call/new-ticket', element: <Navigate to="/app/call" replace /> },
-  { path: '/tasks', element: <Navigate to="/app/tasks" replace /> },
-  { path: '/tasks/:id', element: <Navigate to="/app/tasks" replace /> },
-  { path: '/admin', element: <Navigate to="/app/admin" replace /> },
-  { path: '/admin/*', element: <Navigate to="/app/admin" replace /> },
-  { path: '/home', element: <Navigate to="/app/call" replace /> },
-  { path: '*', element: <Navigate to="/app/call" replace /> },
+  { path: '/call', element: <Navigate to="/call" replace /> },
+  { path: '/call/ai-chat', element: <Navigate to="/call" replace /> },
+  { path: '/call/new-ticket', element: <Navigate to="/call" replace /> },
+  { path: '/tasks', element: <Navigate to="/tasks" replace /> },
+  { path: '/tasks/:id', element: <Navigate to="/tasks" replace /> },
+  { path: '/admin', element: <Navigate to="/admin" replace /> },
+  { path: '/admin/*', element: <Navigate to="/admin" replace /> },
+  { path: '/home', element: <Navigate to="/call" replace /> },
+  { path: '*', element: <Navigate to="/call" replace /> },
 ]);

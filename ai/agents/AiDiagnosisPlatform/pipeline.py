@@ -678,7 +678,7 @@ class AiDiagnosisPlatform:
         agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
         return await self._build_ticket(session_id, agent_state, memory)
 
-    async def submit(self, session_id: str) -> dict:
+    async def submit(self, session_id: str, created_by: str = "") -> dict:
         await self._ensure_clients()
         memory = await self._memory_manager.get_memory(session_id)
         agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
@@ -692,6 +692,7 @@ class AiDiagnosisPlatform:
             db = SessionLocal()
             record = Ticket(
                 session_id=session_id,
+                created_by=created_by,
                 ticket_ai_id=ticket.get("ticket_id", ""),
                 title=ticket.get("title", ""),
                 description=ticket.get("description", ""),
@@ -732,6 +733,36 @@ class AiDiagnosisPlatform:
             await self._memory_manager.add_pending_ticket(session_id)
         except Exception:
             pass
+
+        # ---- 智能派单推荐 ----
+        try:
+            from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket
+            _result = await assign_ticket(
+                ticket_id=str(db_id or ticket["ticket_id"]),
+                title=ticket.get("title", ""),
+                problem_description=ticket.get("description", ""),
+                status="pending_dispatch",
+                priority=ticket.get("priority", "中"),
+                ticket_type=ticket.get("type", "other"),
+                session_id=session_id,
+                source="ai_agent",
+                location=ticket.get("location", ""),
+                robot_type=ticket.get("robot_type", ""),
+                fault_code=ticket.get("fault_code", ""),
+                special_notes=ticket.get("special_notes", ""),
+                diagnosis_hypotheses=agent_state.hypotheses,
+                diagnosis_ruled_out=agent_state.ruled_out,
+                diagnosis_collected_info=agent_state.collected_info,
+                diagnosis_rounds=agent_state.diagnosis_rounds,
+                contact=ticket.get("contact", ""),
+            )
+            ticket["assignee"] = _result.engineer_name
+            ticket["assignee_id"] = _result.engineer_id
+            ticket["assign_confidence"] = _result.confidence_score
+            ticket["assign_reasoning"] = _result.reasoning
+            ticket["assign_decision_type"] = _result.decision_type
+        except Exception as _e:
+            print(f"  ⚠️ 智能派单失败（不阻塞工单生成）: {_e}")
 
         return {
             "type": "ticket",

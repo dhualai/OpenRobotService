@@ -7,15 +7,15 @@ import { TabBar, TabBarItem, Loading } from 'tdesign-mobile-react';
 import { useWorkbenchStore, type WorkbenchTab } from '@/stores/workbench';
 
 const TAB_PATHS: Record<WorkbenchTab, string> = {
-  call: '/app/call',
-  tasks: '/app/tasks',
-  admin: '/app/admin',
+  call: '/call',
+  tasks: '/tasks',
+  admin: '/admin',
 };
 
 /** 由当前路径反推激活的 Tab */
 function pathToTab(pathname: string): WorkbenchTab {
-  if (pathname.startsWith('/app/tasks')) return 'tasks';
-  if (pathname.startsWith('/app/admin')) return 'admin';
+  if (pathname.startsWith('/tasks')) return 'tasks';
+  if (pathname.startsWith('/admin')) return 'admin';
   return 'call';
 }
 
