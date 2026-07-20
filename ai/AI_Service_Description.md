@@ -1,6 +1,6 @@
 # OpenRobotService AI 模块说明文档
 
-> 版本：1.2 | 更新日期：2026-07-20
+> 版本：1.3 | 更新日期：2026-07-20
 
 ---
 
@@ -107,13 +107,14 @@ ai/                          ← 一级目录，与 backend/、frontend/ 并列
 │   │       ├── decision.py      # 规则决策（阈值判定）
 │   │       ├── rule_filter.py   # 规则过滤（层级/负载）
 │   │       └── history_matcher.py  # 历史工单匹配
-│   ├── AiTaskPlatform/
+│   ├── AiTaskPlatform/       # 任务 Agent（已实现）
 │   │   ├── TASK_AGENT_DESIGN.md # 设计文档
-│   │   ├── pipeline.py      # 任务分析流水线
-│   │   ├── schemas.py       # TaskContext / SolutionDraft
-│   │   ├── prompts.py       # 方案生成 prompt 模板
-│   │   ├── analyzer.py      # 多路分析编排
-│   │   └── attachment_parser.py # 附件解析（日志/回放）
+│   │   ├── pipeline.py      # 核心流水线：上下文加载→三路分析→LLM生成
+│   │   ├── schemas.py       # TaskContext / SolutionDraft / 请求/响应模型
+│   │   ├── prompts.py       # System prompt + user prompt 模板
+│   │   ├── analyzer.py      # 三路分析编排：排查树+历史方案+附件
+│   │   ├── attachment_parser.py # 日志 ERROR/WARN 提取 + 大文件截断
+│   │   └── demo.py          # Mock 数据演示脚本
 │   └── AiDataAnalysisPlatform/
 │       ├── agent.py         # 门面编排器
 │       ├── analyzer.py      # 分析引擎（预处理 + LLM 调用 + 结果解析）
@@ -525,6 +526,8 @@ class TaskContext(BaseModel):
 | 回放文件 | 路径数据提取 (起点/终点/状态变化) | 路径异常报告 |
 | 截图 | (暂不做) | — |
 | 无附件 | 跳过 | — |
+
+**实现状态**：2026-07-20 已交付。AI 服务端 7 个源文件（pipeline/schemas/prompts/analyzer/attachment_parser/demo）+ 前端集成（ChatPanel 场景切换 + SolutionCard 组件）。Qdrant `task_resolutions` collection 和附件解析的回放支持为后续迭代项。
 
 > 完整设计见 `ai/agents/AiTaskPlatform/TASK_AGENT_DESIGN.md`
 
@@ -1090,7 +1093,8 @@ AIError (base)
 | `EmbedClient` | `get_embed_client()` | Embedding 客户端 |
 | `RetrievalService` | `get_retrieval_service()` | 检索服务 |
 | `MemoryManager` | `get_memory_manager()` | 会话记忆管理 |
-| `AiDiagnosisPlatform` | `get_diagnosis_platform()` | 诊断 Agent |
+| `AiDiagnosisPlatform` | `get_diagnosis_platform()` | 诊断 Agent（提单） |
+| `AiTaskAgent` | `get_task_agent()` | 任务 Agent（方案生成） |
 
 ## 附录 C：环境变量速查
 
