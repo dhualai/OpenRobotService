@@ -1,10 +1,10 @@
 # AiTaskPlatform — 任务 Agent 设计文档
 
-> 版本：1.0 | 日期：2026-07-20
+> 版本：1.1 | 日期：2026-07-20
 >
 > **本文件是 AiTaskPlatform 的权威设计文档**，供开发时参考和每次新对话恢复上下文。
 >
-> **当前状态**：AI 侧核心功能 + 前端集成已交付。Qdrant task_resolutions、附件回放解析为后续迭代。
+> **当前状态**：AI 侧核心功能 + 前端集成 + 全节点埋点已交付。Qdrant task_resolutions、附件回放解析为后续迭代。
 
 ---
 
@@ -144,7 +144,8 @@ ai/agents/AiTaskPlatform/
 ├── analyzer.py             # TaskAnalyzer: 三路并行分析编排
 ├── attachment_parser.py    # 日志 ERROR/WARN 提取 + 截断
 ├── demo.py                 # Mock 数据演示（供开发调试）
-└── cli_chat.py             # 命令行交互（供开发调试，不提交）
+├── cli_chat.py             # 命令行交互工具（模拟前端 ChatPanel + TasksView 全流程）
+└── PROJECT_OVERVIEW.md     # 项目总览报告（代码变更 / API / 数据架构 / 验证结果）
 ```
 
 **依赖复用**：
@@ -296,6 +297,36 @@ class TaskContext(BaseModel):
 | Qdrant | `ai.core.retrieval` | 排查树结论检索（已就绪）；task_resolutions（未实现） |
 | DeepSeek | `ai.core.llm` | 两种 system prompt 切换 |
 
+### 埋点追踪（Trace）
+
+每个请求独立产生 `_trace` 数组，暴露全流程节点供测试 Agent 验证。
+
+**9 个追踪节点**：
+
+| 节点常量 | 说明 | 关键指标 |
+|------|------|------|
+| `overhead` | 端点路由 + 客户端初始化 | 耗时 |
+| `load_context` | 加载工单上下文（SQLAlchemy 读 tickets） | has_title, has_problem_summary, hypotheses_count |
+| `retrieve` | 三路并行分析 | troubleshooting_len, history_len |
+| `build_prompt` | Prompt 构建 | prompt_chars |
+| `llm` | LLM 调用（DeepSeek API） | model, token_count, first_token_ms, response_chars |
+| `parse` | 结果解析（JSON→SolutionDraft） | status (ok/json_fail), confidence, actions_count |
+| `memory` | 记忆保存（Redis） | 耗时 |
+| `submit_qdrant` | 方案提交 — Qdrant 回写 | status |
+| `submit_db` | 方案提交 — tickets 表更新 | status |
+
+**嵌入位置**：
+
+| 接口 | trace 位置 |
+|------|------|
+| `chat()` | 调用 `agent._pop_trace()` 后在 API 响应体注入 `_trace` |
+| `chat/stream` | SSE `done` 事件的 `_trace` 字段 |
+| `analyze()` | `SolutionDraft._trace` + `._total_ms` |
+| `analyze/stream` | SSE `result` 事件的 `_trace` + `_total_ms` |
+| `submit()` | 响应体 `data._trace` + `data._total_ms` |
+
+**测试集成**：测试 Agent 直接调 API，读 `_trace` 数组校验每个节点的 status 和耗时。
+
 ---
 
 ## 8. LLM Prompt 设计
@@ -404,6 +435,8 @@ class TaskContext(BaseModel):
 | — | DB 直读 | `_load_task_context()` 用 SQLAlchemy 读 tickets 表 |
 | — | 上下文连续 | `chat()` / `chat_stream()` 写入 Redis memory |
 | — | bugfix | 重复 return ctx（已修复） |
+| — | 全节点埋点 | `_trace`: 9 个节点 (overhead→load_context→retrieve→build_prompt→llm→parse→memory→submit)，每个 API 响应体嵌入 `_trace` 数组 |
+| — | CLI 交互工具 | `cli_chat.py`: 模拟前端 ChatPanel + TasksView 全流程，支持 /analyze /submit /trace /list /chat
 
 ### 待完成 ⚠️
 
