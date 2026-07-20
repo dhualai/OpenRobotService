@@ -1,5 +1,5 @@
 // 我要摇人底部：AI 诊断生成的历史工单（全量，按角色）
-// 数据源：AI 模块 GET /api/ai/qa/tickets（admin 全部，其余仅本人创建）
+// 数据源：AI 模块 GET /api/ai/memory/tickets/all（admin 全部，其余仅本人创建）
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Toast } from 'tdesign-mobile-react';
