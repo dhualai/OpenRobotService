@@ -103,6 +103,9 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁提�
 
 1. **FAQ（标题含「FAQ」）**：用户问的具体问题如果在 FAQ 中有直接匹配（如错误码含义、常见问题），**优先直接回答**，不追问不绕弯。
 2. **🚗 车端错误码（标题含「车端错误码」）**：用户提到车载/车端/AGV本体上的错误码或报警时，直接匹配错误码给出原因和方案。
+   ⚠️ **铁律**：如果车端错误码 section 显示「未找到匹配项」，该错误码**确实不在系统收录范围内**。
+   你**必须**在回复中明确告知用户"该错误码未收录"，**绝对禁止**根据其他知识库内容、翻译表或自身知识编造该错误码的含义。
+   用户问的是具体数字错误码，不等于问"车端有什么常见报警"。
 3. **🌐 翻译表（标题含「翻译表」）**：用户问某个字段/标签/错误码的中英文含义时，从翻译表查找。也可辅助理解车端错误码的英文描述。
 4. **🔍 故障排查树**：用户描述了故障现象，以上来源没有直接覆盖时，用排查树按步骤引导。
 5. **知识库（操作手册）**：howto 类操作问题走这里，按前提→操作→预期结果给出步骤。
@@ -253,15 +256,15 @@ class AiDiagnosisPlatform:
         if self._llm_client is None:
             t0 = time.perf_counter()
             self._llm_client = await get_llm_client()
-            print(f"  ⏱  [init] LLM client: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            print(f"  [T]  [init] LLM client: {(time.perf_counter() - t0) * 1000:.0f}ms")
         if self._retriever is None:
             t0 = time.perf_counter()
             self._retriever = await get_retrieval_service()
-            print(f"  ⏱  [init] Retriever: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            print(f"  [T]  [init] Retriever: {(time.perf_counter() - t0) * 1000:.0f}ms")
         if self._memory_manager is None:
             t0 = time.perf_counter()
             self._memory_manager = await get_memory_manager()
-            print(f"  ⏱  [init] MemoryManager: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            print(f"  [T]  [init] MemoryManager: {(time.perf_counter() - t0) * 1000:.0f}ms")
 
     # ================================================================
     # run — 统一入口（纯 Agent）
@@ -285,7 +288,7 @@ class AiDiagnosisPlatform:
 
         result = await self._agent_think(request, agent_state, memory)
         total_ms = (time.perf_counter() - t0) * 1000
-        print(f"  ⏱  [run] total={total_ms:.0f}ms (init={t_init:.0f}ms)")
+        print(f"  [T]  [run] total={total_ms:.0f}ms (init={t_init:.0f}ms)")
         return result
 
     # ================================================================
@@ -401,7 +404,7 @@ class AiDiagnosisPlatform:
                 "timing": t,
             }
         t["llm_agent"] = round((time.perf_counter() - t_llm_start) * 1000)
-        print(f"  ⏱  [llm] agent call: {t['llm_agent']}ms (prompt {t.get('prompt_chars', '?')} chars, max_tokens=1500)")
+        print(f"  [T]  [llm] agent call: {t['llm_agent']}ms (prompt {t.get('prompt_chars', '?')} chars, max_tokens=1500)")
 
         t_parse_start = time.perf_counter()
         parsed = self._parse_agent_output(raw)
@@ -442,7 +445,7 @@ class AiDiagnosisPlatform:
             cache_key = search_query[:200]
             cached = self._retrieval_cache.get(cache_key)
             if cached and time.time() - cached["ts"] < self._CACHE_TTL:
-                print(f"  ⏱  [retrieve] cache hit, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+                print(f"  [T]  [retrieve] cache hit, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
                 return cached["result"]
 
             # 正常检索流程：五路并行
@@ -468,11 +471,25 @@ class AiDiagnosisPlatform:
                 timeout=10.0,
             )
 
-            manual_results, faq_results, troubleshooting_results, cheduan_results, translation_results = \
-                await asyncio.gather(
-                    manual_task, faq_task, troubleshooting_task,
-                    cheduan_task, translation_task,
-                )
+            gathered = await asyncio.gather(
+                manual_task, faq_task, troubleshooting_task,
+                cheduan_task, translation_task,
+                return_exceptions=True,
+            )
+            manual_results, faq_results, troubleshooting_results, cheduan_results, translation_results = gathered
+
+            # 单路失败不拖垮全部：只丢弃异常的那一路
+            if isinstance(manual_results, BaseException):
+                manual_results = ([], 0.0)
+            if isinstance(faq_results, BaseException):
+                faq_results = []
+            if isinstance(troubleshooting_results, BaseException):
+                troubleshooting_results = []
+            if isinstance(cheduan_results, BaseException):
+                cheduan_results = []
+            if isinstance(translation_results, BaseException):
+                translation_results = []
+
             results, _ = manual_results  # unpack (results, top1_score)
 
             docs = []
@@ -487,10 +504,21 @@ class AiDiagnosisPlatform:
                     idx += 1
 
             # 车端错误码
+            cheduan_found = False
             for r in (cheduan_results or []):
                 if r.content.strip():
+                    cheduan_found = True
                     docs.append(f"---\n🚗 车端错误码 {idx}：{r.title}\n{r.content}\n---")
                     idx += 1
+
+            # 关键：用户明确问了错误码，但车端知识库没匹配到 → 显式告知 LLM
+            # 防止 LLM 根据其他渠道（FAQ/排查树）的无关内容编造答案
+            _query_codes = self._retriever._extract_error_codes(search_query)
+            if _query_codes and not cheduan_found:
+                codes_str = "、".join(_query_codes)
+                docs.insert(0, f"---\n🚗 车端错误码（重要）：用户查询的错误码 [{codes_str}] 在车端知识库中**未找到匹配项**。"
+                                 f"这意味着该错误码不在系统收录范围内。你必须在回复中明确告知用户该错误码未收录，"
+                                 f"**绝对禁止**根据其他知识库内容或自身知识编造该错误码的含义。\n---")
 
             # 翻译表
             for r in (translation_results or []):
@@ -550,15 +578,15 @@ class AiDiagnosisPlatform:
             if len(self._retrieval_cache) > 200:
                 oldest = min(self._retrieval_cache, key=lambda k: self._retrieval_cache[k]["ts"])
                 del self._retrieval_cache[oldest]
-            print(f"  ⏱  [retrieve] total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            print(f"  [T]  [retrieve] total: {(time.perf_counter() - t0) * 1000:.0f}ms")
             return result
 
         except ServiceUnavailableError as e:
-            print(f"  ⏱  [retrieve] ServiceUnavailable: {e}, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            print(f"  [T]  [retrieve] ServiceUnavailable: {e}, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
         except LowConfidenceError as e:
-            print(f"  ⏱  [retrieve] LowConfidence: score={e.confidence:.3f} threshold={self.config.retrieval_score_threshold}, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            print(f"  [T]  [retrieve] LowConfidence: score={e.confidence:.3f} threshold={self.config.retrieval_score_threshold}, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
         except (asyncio.TimeoutError, ConnectionError, RetrieveEmptyError):
-            print(f"  ⏱  [retrieve] failed/timed-out, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            print(f"  [T]  [retrieve] failed/timed-out, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
         return "（知识库检索失败，请告知用户当前系统检索异常、建议稍后重试或转工单处理，不要自己编造答案。）"
 
     # ================================================================
@@ -608,7 +636,7 @@ class AiDiagnosisPlatform:
             "title": analysis.get("title", agent_state.original_query[:20]),
             "description": analysis.get("description", agent_state.problem_summary[:150]),
             "priority": analysis.get("priority", "中"),
-            "status": "pending_dispatch",
+            "status": "pending",
             "contact": analysis.get("contact", ""),
             "diagnosis": {
                 "problem_summary": agent_state.problem_summary,
@@ -849,7 +877,7 @@ class AiDiagnosisPlatform:
         await self._ensure_clients()
         memory = await self._memory_manager.get_memory(request.session_id)
         agent_state = _load_agent_state(memory.metadata)
-        print(f"  ⏱  [overhead] init+redis={(time.perf_counter() - t_req)*1000:.0f}ms")
+        print(f"  [T]  [overhead] init+redis={(time.perf_counter() - t_req)*1000:.0f}ms")
 
         if agent_state is None:
             agent_state = AgentState(
@@ -931,7 +959,7 @@ class AiDiagnosisPlatform:
 
         raw = "".join(raw_tokens)
         t_stream["llm_agent"] = round((time.perf_counter() - t_llm) * 1000)
-        print(f"  ⏱  [timing] overhead={t_stream.get('overhead_before_llm','?')}ms  "
+        print(f"  [T]  [timing] overhead={t_stream.get('overhead_before_llm','?')}ms  "
               f"retrieve={t_stream.get('retrieve','?')}ms  "
               f"prompt={t_stream.get('prompt_chars','?')}chars  "
               f"llm_first={t_stream.get('llm_first_token','?')}ms  "
