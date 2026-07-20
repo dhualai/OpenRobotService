@@ -71,7 +71,7 @@ const SCENE_CONFIG: Record<ChatScene, {
   tasks: { sceneType: 'task_assist', emptyEmoji: '🤖', emptyTitle: 'AI 任务助手' },
 };
 
-export default function ChatPanel({ scene, compact = false, taskId }: { scene: ChatScene; compact?: boolean; taskId?: string }) {
+export default function ChatPanel({ scene, compact = false, taskId, taskTitle, taskDescription }: { scene: ChatScene; compact?: boolean; taskId?: string; taskTitle?: string; taskDescription?: string }) {
   const navigate = useNavigate();
   const { token, username } = useAuthStore();
   const { chatContext, consumeChatContext, refreshTasks } = useWorkbenchStore();
@@ -149,6 +149,25 @@ export default function ChatPanel({ scene, compact = false, taskId }: { scene: C
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatContext]);
+
+  // tasks 场景：选中工单时注入诊断上下文消息（taskId 变化时触发）
+  const prevTaskIdRef = useRef<string | undefined>();
+  useEffect(() => {
+    if (isCall || !taskId || taskId === prevTaskIdRef.current) return;
+    prevTaskIdRef.current = taskId;
+    const title = taskTitle || `工单 #${taskId}`;
+    const desc = taskDescription || '';
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: uid(),
+        role: 'assistant',
+        content: `📋 你已选中工单 #${taskId}「${title}」${desc ? `\n\n${desc}` : ''}\n\n我可以帮你分析这个工单的根因并生成解决方案草稿，也可以回答任何技术问题。请直接告诉我你需要什么。`,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId]);
 
   /** 确保 sessionId——新 AI 模块无需预先创建会话 */
   const ensureSessionId = useCallback((): string => {
