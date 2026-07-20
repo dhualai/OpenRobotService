@@ -463,15 +463,62 @@ class TaskSubmitAPIRequest(BaseModel):
     resolution: str = Field(default="resolved")
 
 
-@task_agent_router.post("/list", summary="列出待处理工单")
-async def task_list(request: Request, body: TaskListAPIRequest) -> dict:
-    from ai.agents.AiTaskPlatform import get_task_agent
-    agent = await get_task_agent()
-    username = body.username
-    if not username:
-        username, _ = _current_user(request) if hasattr(request, 'headers') else ("", False)
-    # TODO: 从后端 API 获取用户待处理工单列表
-    return {"code": 0, "data": {"summary": "任务 Agent 就绪，待前后端对接工单列表 API", "tickets": []}}
+@task_agent_router.post("/list", summary="列出当前用户待处理工单")
+async def task_list(body: TaskListAPIRequest) -> dict:
+    """列出分配给当前用户的工单（从 tickets 表查询）。
+
+    查询策略：按 assignee_id 匹配用户 ID，回退到 created_by 匹配。
+    status 过滤：默认排除 resolved/closed，只看待处理。
+    """
+    try:
+        from app.models.ticket import Ticket
+        from app.core.database import SessionLocal
+        db = SessionLocal()
+        tickets_list = []
+        try:
+            q = db.query(Ticket).filter(
+                ~Ticket.status.in_(["resolved", "closed"])
+            )
+            # 按用户名匹配创建者
+            if body.username:
+                q = q.filter(Ticket.created_by == body.username)
+            q = q.order_by(
+                Ticket.priority.desc(), Ticket.created_at.desc()
+            ).limit(50)
+            for t in q.all():
+                tickets_list.append({
+                    "task_id": str(t.id),
+                    "title": t.title or "",
+                    "description": (t.description or "")[:100],
+                    "priority": t.priority or "中",
+                    "status": t.status or "pending_dispatch",
+                    "type": t.type or "problem",
+                    "robot_type": t.robot_type or "",
+                    "created_at": t.created_at.isoformat() if t.created_at else "",
+                    "has_attachments": bool(t.attachments),
+                })
+        finally:
+            db.close()
+
+        priority_counts = {}
+        for t in tickets_list:
+            p = t["priority"]
+            priority_counts[p] = priority_counts.get(p, 0) + 1
+        summary_parts = [f"你当前有 {len(tickets_list)} 个待处理工单"]
+        if priority_counts:
+            detail = "，".join(f"{v} 个{c}" for c, v in priority_counts.items())
+            summary_parts.append(f"（{detail}）")
+
+        return {
+            "code": 0,
+            "data": {
+                "summary": "".join(summary_parts),
+                "tickets": tickets_list,
+                "total": len(tickets_list),
+            },
+        }
+    except Exception as e:
+        return {"code": 1, "message": f"加载工单列表失败: {str(e)}", "data": {"tickets": [], "total": 0}}
 
 
 @task_agent_router.post("/analyze", summary="分析工单（非流式）")
