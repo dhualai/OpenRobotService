@@ -224,14 +224,20 @@ export default function ChatPanel({ scene, compact = false, taskId }: { scene: C
       if (convId) appendMessage(convId, 'user', userContent).catch(() => {});
       setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() }]);
 
-      // tasks 场景：调任务 Agent；call 场景：调提单 Agent
+      // tasks 场景：无 taskId 走自由对话，有 taskId 走工单分析
+      // call 场景：走提单 Agent
       const AI_BASE = API_CONFIG.AI.BASE_URL;
+      const hasTask = !!taskId;
       const apiPath = isCall
         ? `${AI_BASE}/qa/ask/stream`
-        : `${AI_BASE}/task/analyze/stream`;
+        : hasTask
+          ? `${AI_BASE}/task/analyze/stream`
+          : `${AI_BASE}/task/chat/stream`;
       const apiBody = isCall
         ? JSON.stringify({ session_id: sid, query: userContent })
-        : JSON.stringify({ task_id: taskId || '', session_id: sid });
+        : hasTask
+          ? JSON.stringify({ task_id: taskId, session_id: sid, query: userContent })
+          : JSON.stringify({ session_id: sid, query: userContent });
 
       const response = await fetchWithAuth(apiPath, { method: 'POST', body: apiBody });
 
