@@ -1,12 +1,14 @@
 // 登录页 —— 机器人开源平台风格（移动端 H5）
 // 未登录时由 AuthGuard 跳转至此（携带 ?from=原路径，登录成功回到来源页）。
-import { useState, type FormEvent } from 'react';
+import { useState, useEffect, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Toast } from 'tdesign-mobile-react';
 import { RobotIcon } from 'tdesign-icons-react';
 import { useAuthStore } from '@/stores/auth';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { WECHAT_CONFIG } from '@/config/wechat';
+import { buildWechatAuthUrl } from '@/shared/utils/url';
 
 /* ---------- 图标 ---------- */
 /* 机器人徽标用 tdesign-icons-react（描边几何风，硬朗）；其余表单图标为内联 SVG。 */
@@ -56,6 +58,22 @@ export default function Login() {
   // 登录成功后回到来源页（AuthGuard 未登录跳转时携带），缺省进工作台
   const from = params.get('from') || '/call';
   const login = useAuthStore((s) => s.login);
+  const isLoggedIn = useAuthStore((s) => s.isLoggedIn);
+  // debug=true 时强制显示账密登录表单（便于后台人员登录）；否则走微信登录
+  const debugMode = params.get('debug') === 'true';
+
+  // 与守卫页面保持一致的跳转策略：
+  // 已登录 → 直接回来源页；启用微信登录且非 debug → 跳微信授权；其余 → 显示账密表单
+  useEffect(() => {
+    if (isLoggedIn) {
+      navigate(from, { replace: true });
+      return;
+    }
+    if (WECHAT_CONFIG.loginEnabled && !debugMode) {
+      const state = from.replace(/\//g, '0');
+      window.location.href = buildWechatAuthUrl(state);
+    }
+  }, [isLoggedIn, debugMode, from, navigate]);
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');

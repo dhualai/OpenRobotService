@@ -92,7 +92,7 @@
 | 7 | 后台管理 | 跨项目看板（工单总览/风险红黄灯） | 产品经理 | 风险分析 Agent | P0 | **[待认领填写]** | 待认领 |
 | 8 | 后台管理 | 项目/风险/日报管理 | 产品经理 | — | P0 | **[待认领填写]** | 待认领 |
 | 9 | 后台管理 | AI 风险分析与数据洞察 | agent owner | 风险分析 Agent | P1 | **[待认领填写]** | 待认领 |
-| 10 | 全局 | 微信 OAuth 登录 + 菜单 + 模板消息生产上线 | 后端+前端 | — | P0 | 见第四节 | 待认领 |
+| 10 | 全局 | 微信 OAuth 登录 + 菜单 + 模板消息生产上线 | 后端+前端 | — | P0 | 见第四节 | **部分完成**：OAuth 登录前端跳转 + 生产配置已实现（AppID=`wx7c6fcd3acf3db8bd`、域名 `usp.ep-zl.com`、`/p/api/wechat/callback` 回调、nginx `MP_verify` 放行、`.env.production` 已纳入版本库）；菜单/模板消息/消息回调仍待认领 |
 | 11 | 全局 | AI 自动化测试首轮覆盖 | 测试 | — | P0 | 见第十一节 | 待认领 |
 
 > ⚠️ 表中"待认领填写"是本文档交付时的真实状态，不是遗漏——这张表本身就是解决"分工不够具体、需求不够明确"问题的工具，需要在周会上现场填满，而不是产品经理一人臆造功能点。
@@ -124,9 +124,9 @@
 
 ### 4.3 网页授权（OAuth 登录）
 
-- [ ] 授权回调域名已在公众平台配置（不带 `https://`）
-- [ ] 校验文件（`MP_verify_*.txt`）可通过 `https://<域名>/MP_verify_*.txt` 访问 —— 需在 nginx 新增放行规则（工程文档已知问题，需前端/运维确认已加）
-- [ ] 前端 `VITE_WECHAT_REDIRECT_URI` 已显式设置为 `https://<域名>/p/api/wechat/callback`（不要用默认无前缀值）
+- [ ] 授权回调域名已在公众平台配置（不带 `https://`）（域名 `usp.ep-zl.com`）
+- [x] 校验文件（`MP_verify_*.txt`）可通过公网访问 —— nginx 放行规则（`location ~ ^/MP_verify_.*\.txt$`）已加至 `deploy/nginx/conf/conf.d/app_gateway.conf`
+- [x] 前端 `VITE_WECHAT_REDIRECT_URI` 已显式设置为 `https://usp.ep-zl.com/p/api/wechat/callback`（`.env.production` 已纳入版本库，构建即生效）
 - [ ] 后端信任 `X-Forwarded-Proto`，确认回跳协议不会被 nginx 转成 `http://`
 
 ### 4.4 自定义菜单

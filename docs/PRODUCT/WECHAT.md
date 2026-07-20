@@ -49,6 +49,8 @@
 3. 后端用 `code` + `WECHAT_APP_ID`/`WECHAT_APP_SECRET` 调微信换 `openid`，注册/登录并签发 JWT，再 `RedirectResponse` 回前端 `?token=...&refresh_token=...`
 4. 前端 `checkUrlTokens()` 读取 URL 上的 token 存入 localStorage，完成登录
 
+> **登录页 `/login` 行为**：启用微信登录（`VITE_WECHAT_LOGIN_ENABLED=true`）且访问不带 `?debug=true` 时，登录页自身也会直接跳微信授权（与受守卫页面一致）；仅当访问 `https://<域名>/p/app/login?debug=true` 时才显示账密表单，便于后台人员登录。
+
 所需环境变量：
 
 - 前端（`.env.[mode]`）：`VITE_WECHAT_LOGIN_ENABLED`、`VITE_WECHAT_APP_ID`、`VITE_WECHAT_OAUTH_SCOPE`、`VITE_WECHAT_REDIRECT_PATH`（可选）、`VITE_WECHAT_REDIRECT_URI`（可选）
