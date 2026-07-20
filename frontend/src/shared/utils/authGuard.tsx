@@ -2,7 +2,7 @@
 import { useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth';
-import { checkUrlTokens, buildWechatAuthUrl } from '@/shared/utils/url';
+import { checkUrlTokens, buildWechatAuthUrl, buildStateFromPath } from '@/shared/utils/url';
 import { WECHAT_CONFIG } from '@/config/wechat';
 
 const DISABLE_AUTH_GUARD = import.meta.env.VITE_DISABLE_AUTH_GUARD === 'true';
@@ -15,8 +15,9 @@ function redirectUnauthenticated(
   target: string,
 ): void {
   if (WECHAT_CONFIG.loginEnabled) {
-    // state 记录目标路径（'/' 用 '0' 占位，后端 /wechat/callback 回调时还原）
-    const state = target.replace(/\//g, '0');
+    // state 携带完整目标地址（origin + 部署前缀 + 路由路径）的 base64url 编码，
+    // 后端 /wechat/callback 解码后原样回跳，避免丢失 /p/app 前缀。
+    const state = buildStateFromPath(target);
     window.location.href = buildWechatAuthUrl(state);
     return;
   }

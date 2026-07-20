@@ -49,6 +49,28 @@ export function checkUrlTokens(): string | null {
   }
 }
 
+/**
+ * 将完整目标 URL 编码为微信 OAuth `state` 安全字符串（base64url，字符集 A-Za-z0-9-_）。
+ * 微信 state 仅接受有限字符且长度 <=128，base64url 全部落在安全集内、无需二次转义。
+ * 采用 UTF-8 安全编码，兼容路径中可能出现的非 ASCII 字符。
+ */
+export function encodeWechatState(fullUrl: string): string {
+  const b64 = btoa(unescape(encodeURIComponent(fullUrl)));
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/**
+ * 由 React Router 的路由路径（不含部署前缀，如 `/app/admin/wechat`）构造微信 `state`。
+ * 拼上 `origin` 与 Vite 部署前缀（`import.meta.env.BASE_URL`，如 `/p/app`），得到浏览器
+ * 可直接访问的**完整地址**再 base64url 编码。后端 `/wechat/callback` 解码后原样回跳，
+ * 从根本上避免旧方案（仅传路径、后端用 netloc 重拼）丢失 `/p/app` 前缀导致的 404。
+ */
+export function buildStateFromPath(routerPath: string): string {
+  const base = import.meta.env.BASE_URL.replace(/\/$/, ''); // '/p/app' | '/t/app' | ''
+  const fullUrl = `${window.location.origin}${base}${routerPath}`;
+  return encodeWechatState(fullUrl);
+}
+
 export function buildWechatAuthUrl(state: string): string {
   // 优先用显式配置的完整回调地址；未配置则按 origin + redirectPath 自动推导
   const redirectUri = WECHAT_CONFIG.redirectUri || `${window.location.origin}${WECHAT_CONFIG.redirectPath}`;
