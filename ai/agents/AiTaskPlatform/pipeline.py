@@ -43,8 +43,6 @@ class AiTaskAgent:
         self._llm_client = None
         self._retriever = None
         self._memory = None
-        self._backend_url = "http://127.0.0.1:8400"  # 业务后端地址
-        self._backend_api_prefix = "/api/v1"
 
     async def _ensure_clients(self):
         """懒加载 AI 核心服务单例"""
@@ -278,12 +276,12 @@ class AiTaskAgent:
     async def submit(
         self, task_id: str, session_id: str, draft: SolutionDraft, resolution: str = "resolved"
     ) -> dict:
-        """确认方案 → Qdrant 回写 + 调后端 API 更新状态。
+        """确认方案 → Qdrant 回写 + tickets 表状态更新。
 
         两个操作独立，任一失败不阻塞另一个。
         """
         await self._ensure_clients()
-        result = {"task_id": task_id, "solution_indexed": False, "backend_updated": False}
+        result = {"task_id": task_id, "solution_indexed": False, "ticket_updated": False}
 
         solution_text = (
             f"根因: {draft.root_cause_analysis}\n"
@@ -297,76 +295,75 @@ class AiTaskAgent:
         except Exception as e:
             print(f"  [task-agent] Qdrant index failed: {e}")
 
-        # 2. 调后端 API 更新状态（业务后端负责状态机 + 审计）
+        # 2. 直接更新 tickets 表状态（不用调后端 API）
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-                resp = await client.put(
-                    f"{self._backend_url}{self._backend_api_prefix}/tasks/{task_id}",
-                    json={
-                        "status": resolution,
-                        "metadata_info": {
-                            "solution": draft.model_dump(),
-                            "resolved_by_agent": True,
-                            "resolved_at": int(time.time()),
-                        },
-                    },
-                )
-                if resp.status_code == 200:
-                    result["backend_updated"] = True
-                else:
-                    print(f"  [task-agent] Backend update failed: {resp.status_code}")
+            from app.models.ticket import Ticket
+            from app.core.database import SessionLocal
+            from sqlalchemy.sql import func
+            db = SessionLocal()
+            try:
+                ticket = db.query(Ticket).filter(Ticket.id == int(task_id)).first()
+                if ticket:
+                    ticket.status = resolution
+                    ticket.updated_at = func.now()
+                    # 将 solution 存入 diagnosis 的补充字段
+                    diag = ticket.diagnosis or {}
+                    diag["solution"] = draft.model_dump()
+                    diag["resolved_by_agent"] = True
+                    ticket.diagnosis = diag
+                    db.commit()
+                    result["ticket_updated"] = True
+            finally:
+                db.close()
         except Exception as e:
-            print(f"  [task-agent] Backend HTTP call failed: {e}")
+            print(f"  [task-agent] Ticket update failed: {e}")
 
         return {"code": 0, "data": result}
 
     # ============================================================
-    # 私有：上下文加载
+    # 私有：上下文加载 — 直接从 tickets 表读取（AI 模块自有数据）
     # ============================================================
 
     async def _load_task_context(self, task_id: str) -> TaskContext:
-        """从业务后端 REST API + diagnosis 组装工单上下文。
+        """从 tickets 表直接读取工单上下文。
 
-        两路数据：
-            - GET /api/tasks/{task_id} → tasks 表字段
-            - 从 metadata_info 取 diagnosis JSON（如果提单 Agent 写入过）
+        tickets 表包含 AI 模块的全部工单数据（title/description/type/priority
+        /diagnosis/robot_type/fault_code/attachments/...）。
+        不需要调后端 API。
         """
         ctx = TaskContext(task_id=task_id)
 
-        # 1. 调后端 API
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
-                resp = await client.get(
-                    f"{self._backend_url}{self._backend_api_prefix}/tasks/{task_id}"
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    # 兼容不同响应结构
-                    ticket = data.get("data") or data.get("ticket") or data
-                    ctx.title = ticket.get("title", "")
-                    ctx.description = ticket.get("description", "")
-                    ctx.task_type = ticket.get("task_type") or ticket.get("ticket_type", "")
-                    ctx.priority = ticket.get("priority", "")
-                    ctx.status = ticket.get("status", "")
-                    ctx.source = ticket.get("source", "manual")
-                    ctx.assigned_to = ticket.get("assigned_to")
-                    ctx.project_name = ticket.get("project_name")
-                    ctx.attachments = ticket.get("attachments") or []
-                    ctx.metadata_info = ticket.get("metadata_info")
-        except Exception as e:
-            print(f"  [task-agent] Failed to fetch task {task_id}: {e}")
+            from app.models.ticket import Ticket
+            from app.core.database import SessionLocal
+            db = SessionLocal()
+            try:
+                ticket = db.query(Ticket).filter(Ticket.id == int(task_id)).first()
+                if ticket:
+                    ctx.title = ticket.title or ""
+                    ctx.description = ticket.description or ""
+                    ctx.task_type = ticket.type or "problem"
+                    ctx.priority = ticket.priority or "中"
+                    ctx.status = ticket.status or "pending_dispatch"
+                    ctx.source = ticket.source or "ai_agent"
+                    ctx.attachments = ticket.attachments or []
+                    ctx.robot_type = ticket.robot_type or ""
+                    ctx.fault_code = ticket.fault_code or ""
+                    ctx.location = ticket.location or ""
 
-        # 2. 从 metadata_info 取 diagnosis JSON（提单 Agent 写入）
-        if ctx.metadata_info and "diagnosis" in ctx.metadata_info:
-            diag = ctx.metadata_info["diagnosis"]
-            ctx.problem_summary = diag.get("problem_summary", "")
-            ctx.hypotheses = diag.get("hypotheses") or []
-            ctx.ruled_out = diag.get("ruled_out") or []
-            ctx.collected_info = diag.get("collected_info") or {}
-            ctx.diagnosis_rounds = diag.get("rounds", 0)
-            ctx.fault_code = diag.get("fault_code", "")
-            ctx.robot_type = diag.get("robot_type", "")
-            ctx.location = diag.get("location", "")
+                    # diagnosis JSON — 提单 Agent 的诊断结果（核心材料）
+                    diag = ticket.diagnosis or {}
+                    ctx.problem_summary = diag.get("problem_summary", "")
+                    ctx.hypotheses = diag.get("hypotheses") or []
+                    ctx.ruled_out = diag.get("ruled_out") or []
+                    ctx.collected_info = diag.get("collected_info") or {}
+                    ctx.diagnosis_rounds = diag.get("rounds", 0)
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"  [task-agent] Failed to load ticket {task_id}: {e}")
+
+        return ctx
 
         return ctx
 
