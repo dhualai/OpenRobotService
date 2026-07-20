@@ -1,0 +1,26 @@
+{
+  "conditionalmenu": [
+    {
+      "button": [
+        {
+          "type": "view",
+          "name": "我要摇人",
+          "url": "https://usp.ep-zl.com/p/app/call"
+        },
+        {
+          "type": "view",
+          "name": "系统任务",
+          "url": "https://usp.ep-zl.com/p/app/tasks"
+        },
+        {
+          "type": "view",
+          "name": "后台管理",
+          "url": "https://usp.ep-zl.com/wechat/admin"
+        }
+      ],
+      "matchrule": {
+        "tag_id": 100
+      }
+    }
+  ]
+}

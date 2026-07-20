@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:test": "tsc -b && vite build --base=/t/app/",
+    "build:prod": "tsc -b && vite build --base=/p/app/",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -13,7 +15,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "dompurify": "^3.3.1",
+    "dompurify": "^3.4.12",
     "echarts": "^6.0.0",
     "echarts-for-react": "^3.0.5",
     "react": "^19.2.4",
