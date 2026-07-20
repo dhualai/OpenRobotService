@@ -239,7 +239,7 @@ async def chat_stream(request: ChatRequest):
         chunks: list[str] = []
         try:
             prompt = await _build_prompt(request.session_id, request.query)
-            print(f"  ⏱  [chat-stream] prompt={len(prompt)}chars  overhead={(time.perf_counter()-t0)*1000:.0f}ms")
+            print(f"  [T]  [chat-stream] prompt={len(prompt)}chars  overhead={(time.perf_counter()-t0)*1000:.0f}ms")
             t_llm = time.perf_counter()
             async for token in llm.stream(
                 prompt=prompt,
@@ -249,7 +249,7 @@ async def chat_stream(request: ChatRequest):
             ):
                 if not first:
                     first = True
-                    print(f"  ⏱  [chat-stream] llm_first_token={(time.perf_counter()-t_llm)*1000:.0f}ms")
+                    print(f"  [T]  [chat-stream] llm_first_token={(time.perf_counter()-t_llm)*1000:.0f}ms")
                     yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
                 chunks.append(token)
                 yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
@@ -284,6 +284,46 @@ async def list_pending() -> dict:
         mgr = await get_memory_manager()
         sessions = await mgr.list_pending_tickets()
         return {"code": 0, "data": {"pending": sessions, "count": len(sessions)}}
+    except Exception as e:
+        return {"code": 1, "data": {"error": str(e)}}
+
+
+@memory_router.get("/tickets/all", summary="历史工单列表")
+async def list_all_tickets(
+    skip: int = Query(0, ge=0, description="跳过条数"),
+    limit: int = Query(20, ge=1, le=200, description="返回条数"),
+    status: str = Query("", description="按状态筛选: pending / dispatched / in_progress / resolved / closed"),
+    type_: str = Query("", alias="type", description="按类型筛选"),
+) -> dict:
+    """查询 MySQL tickets 表，分页返回所有历史工单"""
+    try:
+        from ai.core.database import Ticket, SessionLocal
+        from sqlalchemy import desc
+
+        db = SessionLocal()
+        try:
+            q = db.query(Ticket)
+            if status:
+                q = q.filter(Ticket.status == status)
+            if type_:
+                q = q.filter(Ticket.type == type_)
+            total = q.count()
+            rows = q.order_by(desc(Ticket.created_at)).offset(skip).limit(limit).all()
+            items = []
+            for r in rows:
+                items.append({
+                    "id": r.id, "session_id": r.session_id, "ticket_ai_id": r.ticket_ai_id,
+                    "title": r.title, "description": r.description, "type": r.type,
+                    "priority": r.priority, "status": r.status, "contact": r.contact,
+                    "location": r.location, "robot_type": r.robot_type,
+                    "fault_code": r.fault_code, "severity": r.severity,
+                    "attachments": r.attachments, "diagnosis": r.diagnosis,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                })
+            return {"code": 0, "data": {"total": total, "skip": skip, "limit": limit, "items": items}}
+        finally:
+            db.close()
     except Exception as e:
         return {"code": 1, "data": {"error": str(e)}}
 

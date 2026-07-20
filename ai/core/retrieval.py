@@ -236,22 +236,25 @@ class QdrantClientWrapper:
         top_k: int = 3,
         score_threshold: Optional[float] = None,
         collection_name: Optional[str] = None,
+        query_filter: Optional[Any] = None,
     ) -> List[Any]:
-        """向量检索，可指定 collection（默认使用活跃集合）"""
+        """向量检索，可指定 collection（默认使用活跃集合）。支持 payload filter 精确过滤。"""
         if self.is_unavailable:
             return []
         client = await self._ensure_client()
         col = collection_name or self.collection_name
         try:
             # qdrant_client >=1.18: search() → query_points()
-            result = await self._to_thread(
-                client.query_points,
+            kwargs = dict(
                 collection_name=col,
                 query=vector,
                 limit=top_k,
                 score_threshold=score_threshold,
                 with_payload=True,
             )
+            if query_filter is not None:
+                kwargs["query_filter"] = query_filter
+            result = await self._to_thread(client.query_points, **kwargs)
             return result.points
         except ServiceUnavailableError:
             return []
@@ -614,15 +617,22 @@ class RetrievalService:
             ))
         return results
 
+    @staticmethod
+    def _extract_error_codes(query: str) -> List[str]:
+        r"""从查询中提取可能的车端错误码（3~5 位数字）。
+        不能用 \b —— Python 3 re.UNICODE 默认开启，中文被视作 \w。"""
+        return re.findall(r'(?<!\d)(\d{3,5})(?!\d)', query)
+
     async def retrieve_cheduan(
         self,
         query: str,
         top_k: int = 3,
     ) -> List[RetrievalResult]:
         """
-        车端错误码检索（仅向量检索）。
+        车端错误码检索。
 
-        读取车端错误码集合，匹配错误码或错误描述。
+        策略：先从 query 中提取数字错误码做 payload filter 精确匹配，
+        再叠加纯向量检索补充语义匹配结果（去重合并）。
         """
         from ai.config import get_active_cheduan_collection
 
@@ -636,17 +646,47 @@ class RetrievalService:
         if self._qdrant.is_unavailable:
             return []
 
+        codes = self._extract_error_codes(query)
         query_vector = await self._embed_client.embed(query)
-        points = await self._qdrant.search_dense(
-            query_vector.tolist(),
-            top_k=k,
-            collection_name=cd_col,
-        )
+        seen_ids: set = set()
 
-        results = []
-        for point in points:
+        # ── 第一路：错误码精确匹配 ──
+        exact_points: list = []
+        if codes:
+            from qdrant_client.models import Filter, FieldCondition, MatchAny
+            code_filter = Filter(
+                must=[FieldCondition(key="error_code", match=MatchAny(any=codes))]
+            )
+            try:
+                exact_points = await self._qdrant.search_dense(
+                    query_vector.tolist(),
+                    top_k=len(codes) * 2,  # 每个码至少拿 2 个候选
+                    collection_name=cd_col,
+                    query_filter=code_filter,
+                )
+            except Exception:
+                exact_points = []
+
+        # ── 第二路：纯向量检索（语义兜底）──
+        # 关键：当用户明确指出错误码但精确匹配无结果时，向量兜底极其危险——
+        # 数字的 embedding 权重极低，很容易误匹配到不相关的错误码，导致 LLM
+        # 把错误码 A 的描述当作用户问的 B 来回答。
+        vector_points: list = []
+        if not codes:
+            # 无明确错误码 → 用户描述性提问，向量检索可用
+            try:
+                vector_points = await self._qdrant.search_dense(
+                    query_vector.tolist(),
+                    top_k=k,
+                    collection_name=cd_col,
+                )
+            except Exception:
+                vector_points = []
+
+        # ── 合并：精确匹配优先，向量结果去重补充 ──
+        def _make_result(point) -> RetrievalResult:
             payload = point.payload or {}
-            results.append(RetrievalResult(
+            return RetrievalResult(
                 id=str(point.id),
                 score=point.score,
                 title=f"车端错误码 {payload.get('error_code', '')}",
@@ -658,8 +698,22 @@ class RetrievalService:
                     f"方案：{payload.get('solution_cn', '')}"
                 ),
                 vector_score=point.score,
-            ))
-        return results
+            )
+
+        results: List[RetrievalResult] = []
+        for pt in exact_points:
+            rid = str(pt.id)
+            if rid not in seen_ids:
+                seen_ids.add(rid)
+                results.append(_make_result(pt))
+
+        for pt in vector_points:
+            rid = str(pt.id)
+            if rid not in seen_ids:
+                seen_ids.add(rid)
+                results.append(_make_result(pt))
+
+        return results[:k]
 
     async def retrieve_translation(
         self,

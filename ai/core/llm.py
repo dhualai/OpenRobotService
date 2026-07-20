@@ -346,7 +346,7 @@ class LLMClient:
                 t_conn = time.perf_counter()
                 async with client.stream("POST", url, json=payload) as response:
                     t_resp = time.perf_counter()
-                    print(f"  ⏱  [llm-internal] connect={((t_conn-t_stream_start)*1000):.0f}ms  "
+                    print(f"  [T]  [llm-internal] connect={((t_conn-t_stream_start)*1000):.0f}ms  "
                           f"resp_wait={((t_resp-t_conn)*1000):.0f}ms  "
                           f"status={response.status_code}")
                     if response.status_code != 200:
@@ -368,7 +368,7 @@ class LLMClient:
                                     if content:
                                         if t_first_content is None:
                                             t_first_content = time.perf_counter()
-                                            print(f"  ⏱  [llm-stream] first-token-from-http={((t_first_content-t_resp)*1000):.0f}ms")
+                                            print(f"  [T]  [llm-stream] first-token-from-http={((t_first_content-t_resp)*1000):.0f}ms")
                                         has_yielded = True
                                         yield content
                             except (json.JSONDecodeError, KeyError, IndexError):
