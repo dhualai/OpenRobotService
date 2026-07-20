@@ -13,7 +13,6 @@ interface MenuItem {
   emoji: string;
 }
 
-// 后台管理侧边栏菜单配置
 const adminMenuItems: MenuItem[] = [
   { path: '/app/admin/dashboard', label: '仪表盘', emoji: '📊' },
   { path: '/app/admin/project-manage', label: '项目管理', emoji: '📁' },
@@ -34,12 +33,9 @@ const adminMenuItems: MenuItem[] = [
   { path: '/app/admin/daily-reports', label: '日报管理', emoji: '📰' },
 ];
 
-// 根据当前路径匹配菜单高亮
 function matchMenuPath(items: MenuItem[], currentPath: string): string {
-  // 精确匹配优先
   const exact = items.find((item) => item.path === currentPath);
   if (exact) return exact.path;
-  // 前缀匹配（如 /admin/project-edit/123 匹配 /admin/project-edit）
   const prefix = items.find((item) => currentPath.startsWith(item.path + '/'));
   if (prefix) return prefix.path;
   return '';
@@ -63,7 +59,6 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
 
   return (
     <div className="mobile-shell" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* 顶部导航栏 */}
       <Navbar
         title={currentLabel}
         leftArrow
@@ -80,7 +75,6 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         </Button>
       </Navbar>
 
-      {/* 侧边栏遮罩 */}
       {menuVisible && (
         <div
           onClick={() => setMenuVisible(false)}
@@ -94,7 +88,6 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         />
       )}
 
-      {/* 侧边栏抽屉 */}
       <div
         style={{
           position: 'fixed',
@@ -110,7 +103,6 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           flexDirection: 'column',
         }}
       >
-        {/* 抽屉头部 */}
         <div
           style={{
             padding: '20px 16px 16px',
@@ -123,7 +115,6 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
           ⚙️ 后台管理
         </div>
 
-        {/* 菜单列表 */}
         <div style={{ flex: 1, overflow: 'auto', padding: '8px 0' }}>
           {adminMenuItems.map((item) => (
             <div
@@ -161,7 +152,6 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         </div>
       </div>
 
-      {/* 主内容区 */}
       <div style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 16 }}>
         <Suspense fallback={<Loading text="加载中..." />}>
           {children || <Outlet />}
