@@ -145,45 +145,6 @@ async def get_ticket(session_id: str = Query(..., description="会话 ID")):
         return {"code": 1, "message": str(e)}
 
 
-def _ticket_brief(r) -> dict:
-    """DB Ticket 行 → 列表摘要"""
-    return {
-        "id": r.id,
-        "session_id": r.session_id,
-        "ticket_ai_id": r.ticket_ai_id,
-        "title": r.title,
-        "description": r.description,
-        "type": r.type,
-        "priority": r.priority,
-        "status": r.status,
-        "created_by": r.created_by,
-        "created_at": r.created_at.isoformat() if r.created_at else "",
-    }
-
-
-@qa_router.get("/tickets", summary="全量历史工单列表（按当前角色）")
-async def list_tickets(
-    request: Request,
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
-) -> dict:
-    """admin 看全部；其余角色只看自己创建的（created_by == 当前用户）。"""
-    username, is_admin = _current_user(request)
-    if not username:
-        raise HTTPException(status_code=401, detail="未登录或 token 无效")
-    from app.models.ticket import Ticket
-    from app.core.database import SessionLocal
-    db = SessionLocal()
-    try:
-        q = db.query(Ticket)
-        if not is_admin:
-            q = q.filter(Ticket.created_by == username)
-        total = q.count()
-        rows = q.order_by(Ticket.created_at.desc()).offset(skip).limit(limit).all()
-        return {"code": 0, "data": {"items": [_ticket_brief(r) for r in rows], "total": total}}
-    finally:
-        db.close()
-
 
 @qa_router.post("/ticket/ack", summary="派单确认回执")
 async def ack_ticket(request: TicketAckRequest):
