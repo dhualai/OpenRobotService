@@ -8,6 +8,12 @@ import '@/shared/styles/global.css';
 
 // 初始化认证状态
 import { useAuthStore } from '@/stores/auth';
+import { checkUrlTokens } from '@/shared/utils/url';
+// 必须在 RouterProvider 渲染前从 URL 提取 token：访问 /p/app/call?token=... 这类
+// 只有单层 /app 的链接时，会命中旧路由 <Navigate> 重定向到 /app/call，query 会被丢弃，
+// 导致 AuthGuard 里的 checkUrlTokens 再也取不到 token。提前在这里取出存入 localStorage，
+// 再恢复登录态，带 token 的直链即可直接登录。
+checkUrlTokens();
 useAuthStore.getState().checkLoginStatus();
 
 // 懒加载兜底：部署后旧 chunk hash 失效，import() 会 reject。
