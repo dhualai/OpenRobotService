@@ -51,7 +51,10 @@ def resolve_callback_target(state: Optional[str], scheme: str, netloc: str) -> s
     if state:
         try:
             padding = '=' * (-len(state) % 4)
-            decoded = base64.urlsafe_b64decode(state + padding).decode('utf-8')
+            try:
+                decoded = base64.urlsafe_b64decode(state + padding).decode('utf-8')
+            except Exception:
+                decoded = base64.b64decode(state + padding).decode('utf-8')
             if decoded.startswith('http://') or decoded.startswith('https://'):
                 return decoded
         except Exception:

@@ -103,8 +103,8 @@ export default function TasksView() {
       .finally(() => setDetailLoading(false));
   }, [detailId]);
 
-  const openDetail = (id: string) => { setDetailId(id); navigate(`/app/tasks/${id}`); };
-  const closeDetail = () => { setDetailId(null); setDetail(null); navigate('/app/tasks'); };
+  const openDetail = (id: string) => { setDetailId(id); navigate(`/tasks/${id}`); };
+  const closeDetail = () => { setDetailId(null); setDetail(null); navigate('/tasks'); };
 
   const handleUrge = async (t: Ticket) => {
     try { await request(`/${t.id}/urge`, { method: 'POST' }).catch(() => {}); Toast({ message: '已催办', theme: 'success' }); }
@@ -132,7 +132,7 @@ export default function TasksView() {
   const discuss = (t: Ticket) => {
     setChatContext({ ticketId: t.id, title: t.title, description: t.description });
     goToTab('call', { chatContext: { ticketId: t.id, title: t.title, description: t.description } });
-    navigate('/app/call');
+    navigate('/call');
   };
 
   const statusTabs = [{ value: 'all', label: '全部' },
