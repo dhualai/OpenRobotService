@@ -37,12 +37,22 @@ class AuthService:
         try:
             username = generate_wechat_username(openid)
             password = generate_wechat_user_password(openid)
-
-            if db_manager.get_user(username):
-                logger.info(f"用户已存在: {username}")
-                return True
-
             hashed_password = get_password_hash(password)
+
+            existing_user = db_manager.get_user(username)
+            if existing_user:
+                logger.info(f"用户已存在，更新密码: {username}")
+                user_detail = user_service.get_user_detail(username)
+                if user_detail:
+                    success = db_manager.update_user(user_detail["id"], password_hash=hashed_password, status="active")
+                    if success:
+                        logger.info(f"成功更新用户密码: {username}")
+                        return True
+                    else:
+                        logger.error(f"更新用户密码失败")
+                        return False
+                return False
+
             success = db_manager.add_user(
                 user_id=openid,
                 username=username,
@@ -83,7 +93,7 @@ class AuthService:
             
             if not user_detail:
                 logger.error(f"用户不存在: {username}")
-                return None
+                return False
             
             update_data = {
                 "name": name
@@ -93,13 +103,13 @@ class AuthService:
 
             if success:
                 logger.info(f"成功更新用户 {username} 的名字为: {name}")
-                return user_service.get_user_detail(username)
+                return True
             else:
                 logger.error(f"更新用户名字失败")
         except Exception as e:
             logger.error(f"保存用户名字时发生异常: {e}")
 
-        return None
+        return False
 
     def handle_user_unsubscribe(self, openid: str) -> bool:
         try:
