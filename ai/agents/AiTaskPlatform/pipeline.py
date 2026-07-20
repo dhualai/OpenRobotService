@@ -416,9 +416,11 @@ class AiTaskAgent:
 
         # 附件分析摘要
         att = retrieval.get("attachment_analysis", {})
-        if att.get("has_logs") or att.get("has_replay"):
+        # 兼容 Pydantic 对象和 dict
+        att_dict = att.model_dump() if hasattr(att, 'model_dump') else (att or {})
+        if att_dict.get("has_logs") or att_dict.get("has_replay"):
             attachment_text = json.dumps(
-                {k: v for k, v in att.items() if v},
+                {k: v for k, v in att_dict.items() if v},
                 ensure_ascii=False, indent=2
             )
         else:
