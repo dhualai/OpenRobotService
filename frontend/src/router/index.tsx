@@ -38,10 +38,10 @@ export const router = createBrowserRouter([
 
   // 工作台主入口：底部三 Tab（我要摇人 / 系统任务 / 后台管理）
   {
-    path: '/app',
+    path: '/',
     element: <AuthGuard><MainLayout /></AuthGuard>,
     children: [
-      { index: true, element: <Navigate to="/app/call" replace /> },
+      { index: true, element: <Navigate to="/call" replace /> },
       { path: 'call', element: <CallView /> },
       { path: 'call/ticket/:id', element: <TicketDetailPage /> },
       { path: 'tasks', element: <TasksView /> },
@@ -80,14 +80,13 @@ export const router = createBrowserRouter([
   },
 
   // 兼容旧路由 → 统一收敛到工作台
-  { path: '/', element: <Navigate to="/app/call" replace /> },
-  { path: '/call', element: <Navigate to="/app/call" replace /> },
-  { path: '/call/ai-chat', element: <Navigate to="/app/call" replace /> },
-  { path: '/call/new-ticket', element: <Navigate to="/app/call" replace /> },
-  { path: '/tasks', element: <Navigate to="/app/tasks" replace /> },
-  { path: '/tasks/:id', element: <Navigate to="/app/tasks" replace /> },
-  { path: '/admin', element: <Navigate to="/app/admin" replace /> },
-  { path: '/admin/*', element: <Navigate to="/app/admin" replace /> },
-  { path: '/home', element: <Navigate to="/app/call" replace /> },
-  { path: '*', element: <Navigate to="/app/call" replace /> },
+  { path: '/call', element: <Navigate to="/call" replace /> },
+  { path: '/call/ai-chat', element: <Navigate to="/call" replace /> },
+  { path: '/call/new-ticket', element: <Navigate to="/call" replace /> },
+  { path: '/tasks', element: <Navigate to="/tasks" replace /> },
+  { path: '/tasks/:id', element: <Navigate to="/tasks" replace /> },
+  { path: '/admin', element: <Navigate to="/admin" replace /> },
+  { path: '/admin/*', element: <Navigate to="/admin" replace /> },
+  { path: '/home', element: <Navigate to="/call" replace /> },
+  { path: '*', element: <Navigate to="/call" replace /> },
 ]);

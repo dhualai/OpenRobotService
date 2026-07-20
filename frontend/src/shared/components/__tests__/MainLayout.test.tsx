@@ -44,7 +44,7 @@ vi.mock('tdesign-mobile-react', () => ({
 
 import MainLayout from '../MainLayout';
 
-const renderLayout = (route = '/app/call') => {
+const renderLayout = (route = '/call') => {
   return render(
     <MemoryRouter initialEntries={[route]}>
       <MainLayout />
@@ -81,12 +81,12 @@ describe('MainLayout', () => {
   });
 
   it('should set activeTab from route on mount', () => {
-    renderLayout('/app/tasks');
+    renderLayout('/tasks');
     expect(mockSetActiveTab).toHaveBeenCalledWith('tasks');
   });
 
   it('should set activeTab to call for unknown paths', () => {
-    renderLayout('/app/unknown');
+    renderLayout('/unknown');
     expect(mockSetActiveTab).toHaveBeenCalledWith('call');
   });
 
@@ -96,6 +96,6 @@ describe('MainLayout', () => {
     fireEvent.click(trigger);
 
     expect(mockSetActiveTab).toHaveBeenCalled();
-    expect(mockNavigate).toHaveBeenCalledWith('/app/tasks');
+    expect(mockNavigate).toHaveBeenCalledWith('/tasks');
   });
 });

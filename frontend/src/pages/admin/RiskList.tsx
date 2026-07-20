@@ -38,7 +38,7 @@ export default function RiskList() {
 
   return (
     <div style={{ padding: 16 }}>
-      <Button theme="primary" block style={{ marginBottom: 16 }} onClick={() => navigate('/app/admin/risk-edit')}>新建风险项</Button>
+      <Button theme="primary" block style={{ marginBottom: 16 }} onClick={() => navigate('/admin/risk-edit')}>新建风险项</Button>
       {risks.map((r) => (
         <div key={r.id} style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -50,7 +50,7 @@ export default function RiskList() {
               <div style={{ fontSize: 13, color: '#666' }}>{r.project} · {r.level}</div>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <Button size="small" variant="outline" onClick={() => navigate(`/app/admin/risk-edit/${r.id}`)}>编辑</Button>
+              <Button size="small" variant="outline" onClick={() => navigate(`/admin/risk-edit/${r.id}`)}>编辑</Button>
               <Button size="small" theme="danger" variant="outline" onClick={() => handleDelete(r.id)}>删除</Button>
             </div>
           </div>
