@@ -42,9 +42,10 @@
 前端授权流程（由 `VITE_WECHAT_LOGIN_ENABLED=true` 开启，对应 `src/config/wechat.ts`）：
 
 1. 未登录访问 H5，前端 `AuthGuard` 直接构造并跳转微信授权页
-   `https://open.weixin.qq.com/connect/oauth2/authorize?appid=APPID&redirect_uri=<后端回调>&response_type=code&scope=snsapi_base&state=<路径>&#wechat_redirect`
+   `https://open.weixin.qq.com/connect/oauth2/authorize?appid=APPID&redirect_uri=<后端回调>&response_type=code&scope=snsapi_base&state=<编码地址>&#wechat_redirect`
    - `redirect_uri` 默认 = `前端 origin + /api/wechat/callback`；但生产网关只转发 `/p/api/*`，故必须改用 `VITE_WECHAT_REDIRECT_URI=https://<域名>/p/api/wechat/callback` 覆盖（见下方「部署注意」）
-   - `state` 为当前路径（把 `/` 编码为 `0`），后端回调时原样还原并跳回该页面
+   - `state` 携带**完整目标地址**（`origin + 部署前缀 + 路由路径`，如 `https://usp.ep-zl.com/p/app/app/admin/wechat`）经 `buildStateFromPath()` 做 base64url 编码（字符集 `A-Za-z0-9-_`，长度安全、无需二次转义）。后端 `/wechat/callback` 用 `resolve_callback_target()` 解码后**原样回跳**，从根本上避免旧方案仅传路径、后端用 `netloc` 重拼所丢失的 `/p/app` 部署前缀问题。
+   - 兼容旧格式：`state` 仍可为把 `/` 编码成 `0` 的路径（如 `0app0admin0wechat`），无法 base64url 解码时后端按旧逻辑用回调域名兜底重拼。
 2. 微信回跳 `GET /api/wechat/callback?code=CODE&state=STATE`（后端路由，见 `app/wechat/api/wechat.py`）
 3. 后端用 `code` + `WECHAT_APP_ID`/`WECHAT_APP_SECRET` 调微信换 `openid`，注册/登录并签发 JWT，再 `RedirectResponse` 回前端 `?token=...&refresh_token=...`
 4. 前端 `checkUrlTokens()` 读取 URL 上的 token 存入 localStorage，完成登录
