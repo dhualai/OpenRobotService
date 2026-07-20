@@ -8,7 +8,7 @@ import { useAuthStore } from '@/stores/auth';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { WECHAT_CONFIG } from '@/config/wechat';
-import { buildWechatAuthUrl } from '@/shared/utils/url';
+import { buildWechatAuthUrl, buildStateFromPath } from '@/shared/utils/url';
 
 /* ---------- 图标 ---------- */
 /* 机器人徽标用 tdesign-icons-react（描边几何风，硬朗）；其余表单图标为内联 SVG。 */
@@ -70,7 +70,8 @@ export default function Login() {
       return;
     }
     if (WECHAT_CONFIG.loginEnabled && !debugMode) {
-      const state = from.replace(/\//g, '0');
+      // 携带完整来源地址（含部署前缀）的 base64url state，后端解码后原样回跳
+      const state = buildStateFromPath(from);
       window.location.href = buildWechatAuthUrl(state);
     }
   }, [isLoggedIn, debugMode, from, navigate]);
