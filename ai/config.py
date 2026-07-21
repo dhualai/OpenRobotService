@@ -26,6 +26,7 @@ _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER = _KB_DIR / "active_troubleshooting_c
 _ACTIVE_CHEDUAN_COLLECTION_POINTER = _KB_DIR / "active_cheduan_collection.txt"
 _ACTIVE_TRANSLATION_COLLECTION_POINTER = _KB_DIR / "active_translation_collection.txt"
 _ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER = _KB_DIR / "active_cheduan_manual_collection.txt"
+_ACTIVE_TASK_RESOLUTIONS_POINTER = _KB_DIR / "active_task_resolutions_collection.txt"
 
 
 class AIConfig(BaseModel):
@@ -182,6 +183,24 @@ def _write_active_cheduan_manual_collection(name: str) -> None:
     """写入活跃车端实施手册集合指针"""
     _ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
     _ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER.write_text(name, encoding="utf-8")
+
+
+def get_active_task_resolutions_collection() -> str:
+    """读取当前活跃的任务解决方案 Qdrant 集合名"""
+    try:
+        if _ACTIVE_TASK_RESOLUTIONS_POINTER.exists():
+            name = _ACTIVE_TASK_RESOLUTIONS_POINTER.read_text(encoding="utf-8").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _write_active_task_resolutions_collection(name: str) -> None:
+    """写入活跃任务解决方案集合指针"""
+    _ACTIVE_TASK_RESOLUTIONS_POINTER.parent.mkdir(parents=True, exist_ok=True)
+    _ACTIVE_TASK_RESOLUTIONS_POINTER.write_text(name, encoding="utf-8")
 
 
 def get_docs_dir() -> Path:
