@@ -425,26 +425,12 @@ class AiTaskAgent:
             self._add_trace(self.NODE_SUBMIT + "_qdrant", "error",
                             input={"error": str(e)}, elapsed_ms=round((time.perf_counter() - t_qdrant) * 1000))
 
-        # 2. tickets 表更新
+        # 2. tasks 表更新（source='ai' 任务）
         t_db = time.perf_counter()
         try:
-            from app.models.ticket import Ticket
-            from app.core.database import SessionLocal
-            from sqlalchemy.sql import func
-            db = SessionLocal()
-            try:
-                ticket = db.query(Ticket).filter(Ticket.id == int(task_id)).first()
-                if ticket:
-                    ticket.status = resolution
-                    ticket.updated_at = func.now()
-                    diag = ticket.diagnosis or {}
-                    diag["solution"] = draft.model_dump()
-                    diag["resolved_by_agent"] = True
-                    ticket.diagnosis = diag
-                    db.commit()
-                    result["ticket_updated"] = True
-            finally:
-                db.close()
+            from ai.core.task_adapter import update_task_resolution
+            ok = update_task_resolution(task_id, draft.model_dump(), resolution)
+            result["ticket_updated"] = ok
             self._add_trace(self.NODE_SUBMIT + "_db", "ok",
                             elapsed_ms=round((time.perf_counter() - t_db) * 1000))
         except Exception as e:
@@ -460,43 +446,36 @@ class AiTaskAgent:
     # ============================================================
 
     async def _load_task_context(self, task_id: str) -> TaskContext:
-        """从 tickets 表直接读取工单上下文。
+        """从 tasks 表读取工单上下文（source='ai' 任务）。
 
-        tickets 表包含 AI 模块的全部工单数据（title/description/type/priority
-        /diagnosis/robot_type/fault_code/attachments/...）。
-        不需要调后端 API。
+        AI 专属字段（diagnosis/robot_type/fault_code 等）存于 metadata_info。
+        priority 由适配层反向映射回中文，保持 LLM prompt 输入不变。
         """
         ctx = TaskContext(task_id=task_id)
 
         try:
-            from app.models.ticket import Ticket
-            from app.core.database import SessionLocal
-            db = SessionLocal()
-            try:
-                ticket = db.query(Ticket).filter(Ticket.id == int(task_id)).first()
-                if ticket:
-                    ctx.title = ticket.title or ""
-                    ctx.description = ticket.description or ""
-                    ctx.task_type = ticket.type or "problem"
-                    ctx.priority = ticket.priority or "中"
-                    ctx.status = ticket.status or "pending_dispatch"
-                    ctx.source = ticket.source or "ai_agent"
-                    ctx.attachments = ticket.attachments or []
-                    ctx.robot_type = ticket.robot_type or ""
-                    ctx.fault_code = ticket.fault_code or ""
-                    ctx.location = ticket.location or ""
+            from ai.core.task_adapter import load_task_context_dict
+            d = load_task_context_dict(task_id)
+            if d:
+                ctx.title = d.get("title", "")
+                ctx.description = d.get("description", "")
+                ctx.task_type = d.get("type", "problem") or "problem"
+                ctx.priority = d.get("priority", "中") or "中"
+                ctx.status = d.get("status", "pending") or "pending"
+                ctx.source = d.get("source", "ai") or "ai"
+                ctx.attachments = d.get("attachments") or []
+                ctx.robot_type = d.get("robot_type", "")
+                ctx.fault_code = d.get("fault_code", "")
+                ctx.location = d.get("location", "")
 
-                    # diagnosis JSON — 提单 Agent 的诊断结果（核心材料）
-                    diag = ticket.diagnosis or {}
-                    ctx.problem_summary = diag.get("problem_summary", "")
-                    ctx.hypotheses = diag.get("hypotheses") or []
-                    ctx.ruled_out = diag.get("ruled_out") or []
-                    ctx.collected_info = diag.get("collected_info") or {}
-                    ctx.diagnosis_rounds = diag.get("rounds", 0)
-            finally:
-                db.close()
+                # diagnosis JSON — 提单 Agent 的诊断结果（核心材料）
+                ctx.problem_summary = d.get("problem_summary", "")
+                ctx.hypotheses = d.get("hypotheses") or []
+                ctx.ruled_out = d.get("ruled_out") or []
+                ctx.collected_info = d.get("collected_info") or {}
+                ctx.diagnosis_rounds = d.get("diagnosis_rounds", 0)
         except Exception as e:
-            print(f"  [task-agent] Failed to load ticket {task_id}: {e}")
+            print(f"  [task-agent] Failed to load task {task_id}: {e}")
 
         return ctx
 
