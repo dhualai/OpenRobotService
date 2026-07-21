@@ -47,7 +47,8 @@ class AiTaskAgent:
     NODE_LLM = "llm"                   # LLM 调用（DeepSeek API）
     NODE_PARSE = "parse"               # 结果解析（JSON→SolutionDraft）
     NODE_MEMORY = "memory"             # 记忆保存（Redis）
-    NODE_SUBMIT = "submit"             # 方案提交（tickets 表 + Qdrant 回写）
+    NODE_COMMENT = "comment"           # 诊断结果写入 task_comments
+    NODE_SUBMIT = "submit"             # 方案提交（tasks 表 + Qdrant 回写）
 
     def __init__(self):
         self.config = get_ai_config()
@@ -142,6 +143,17 @@ class AiTaskAgent:
         self._add_trace(self.NODE_PARSE, parse_status,
                         output={"confidence": draft.confidence, "actions_count": len(draft.suggested_actions)},
                         elapsed_ms=round((time.perf_counter() - t5) * 1000))
+
+        # 6. 诊断结果写入 task_comments（AI任务助手评论）
+        t6 = time.perf_counter()
+        try:
+            task_id_int = int(request.task_id)
+            self._add_diagnosis_comment(task_id_int, draft)
+            self._add_trace(self.NODE_COMMENT, "ok",
+                            elapsed_ms=round((time.perf_counter() - t6) * 1000))
+        except Exception:
+            self._add_trace(self.NODE_COMMENT, "error",
+                            elapsed_ms=round((time.perf_counter() - t6) * 1000))
 
         total_ms = (time.perf_counter() - t0) * 1000
         print(f"  [task-agent] analyze total={total_ms:.0f}ms")
@@ -740,24 +752,12 @@ class AiTaskAgent:
     ) -> None:
         """向量化方案 → 写入 Qdrant task_resolutions collection"""
         try:
-            # 从 tickets 表取工单信息（title/fault_code/robot_type/diagnosis）
-            from app.models.ticket import Ticket
-            from app.core.database import SessionLocal
-            db = SessionLocal()
-            title = f"工单 #{task_id}"
-            fault_code = ""
-            robot_type = ""
-            problem_summary = ""
-            try:
-                ticket = db.query(Ticket).filter(Ticket.id == int(task_id)).first()
-                if ticket:
-                    title = ticket.title or title
-                    fault_code = ticket.fault_code or ""
-                    robot_type = ticket.robot_type or ""
-                    diag = ticket.diagnosis or {}
-                    problem_summary = diag.get("problem_summary", "")
-            finally:
-                db.close()
+            from ai.core.task_adapter import load_task_context_dict
+            d = load_task_context_dict(task_id)
+            title = d.get("title", f"工单 #{task_id}") or f"工单 #{task_id}"
+            fault_code = d.get("fault_code", "")
+            robot_type = d.get("robot_type", "")
+            problem_summary = d.get("problem_summary", "")
 
             await self._retriever.index_task_resolution(
                 task_id=task_id,
@@ -771,6 +771,49 @@ class AiTaskAgent:
             )
         except Exception as e:
             print(f"  [task-agent] Solution index failed: {e}")
+
+    @staticmethod
+    def _add_diagnosis_comment(task_id: int, draft: "SolutionDraft", created_by: str = "AI任务助手") -> bool:
+        """将 AI 诊断结果写入 task_comments 表。
+
+        当前 created_by 固定为 \"AI任务助手\"。
+        TODO: 后续改为提单人的用户名（从工单 created_by 字段获取）。
+        """
+        from app.models.task import TaskComment
+        from app.core.database import SessionLocal
+        content_parts = [
+            f"## AI 诊断结果",
+            f"",
+            f"**根因分析**：{draft.root_cause_analysis}",
+            f"",
+            f"**建议步骤**：",
+        ]
+        for i, action in enumerate(draft.suggested_actions, 1):
+            content_parts.append(f"{i}. {action}")
+        if draft.references:
+            content_parts.append(f"")
+            content_parts.append(f"**参考来源**：")
+            for ref in draft.references:
+                content_parts.append(f"- {ref}")
+        content_parts.append(f"")
+        content_parts.append(f"置信度：{draft.confidence:.0%}")
+
+        db = SessionLocal()
+        try:
+            comment = TaskComment(
+                task_id=task_id,
+                content="\n".join(content_parts),
+                created_by=created_by,
+                is_public=True,
+            )
+            db.add(comment)
+            db.commit()
+            return True
+        except Exception as e:
+            print(f"  [task-agent] Diagnosis comment failed: {e}")
+            return False
+        finally:
+            db.close()
 
 
 # ============================================================
