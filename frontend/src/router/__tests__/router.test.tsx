@@ -38,7 +38,7 @@ describe('Router Configuration', () => {
     expect(adminRoute).toBeDefined();
     expect(adminRoute?.children).toBeDefined();
 
-    // Should have AdminView at index
+    // Should have Dashboard at index
     const adminIndex = adminRoute?.children?.find((r) => r.index === true);
     expect(adminIndex).toBeDefined();
 
@@ -74,8 +74,6 @@ describe('Router Configuration', () => {
     expect(paths).toContain('dashboard');
     expect(paths).toContain('project-manage');
     expect(paths).toContain('project-edit/:id?');
-    expect(paths).toContain('progress');
-    expect(paths).toContain('personnel');
     expect(paths).toContain('risks');
     expect(paths).toContain('reports');
     expect(paths).toContain('users');
@@ -84,8 +82,24 @@ describe('Router Configuration', () => {
     expect(paths).toContain('resources');
     expect(paths).toContain('data-import');
     expect(paths).toContain('operation-logs');
-    expect(paths).toContain('project-hr');
     expect(paths).toContain('project-auth');
     expect(paths).toContain('risk-edit/:id?');
+    expect(paths).toContain('ticket-monitor');
+    expect(paths).toContain('project-progress');
+    expect(paths).toContain('daily-reports');
+    // 已从导航移除（文件保留，路由注释），不应再出现在路由表中
+    expect(paths).not.toContain('progress');
+    expect(paths).not.toContain('personnel');
+    expect(paths).not.toContain('project-hr');
+  });
+
+  it('should have dashboard drill-down routes directly under admin', () => {
+    const rootRoute = router.routes.find((r) => r.path === '/');
+    const adminRoute = rootRoute?.children?.find((r) => r.path === 'admin');
+    const paths = adminRoute?.children?.map((r) => r.path) || [];
+
+    expect(paths).toContain('dashboard/tickets/:status');
+    expect(paths).toContain('dashboard/projects/:dimension/:key');
+    expect(paths).toContain('entries');
   });
 });

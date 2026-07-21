@@ -28,17 +28,17 @@ vi.mock('@/stores/auth', () => ({
   },
 }));
 
-import AdminView from '../admin/AdminView';
+import AdminEntries from '../admin/AdminEntries';
 
 const renderView = () => {
   return render(
     <MemoryRouter>
-      <AdminView />
+      <AdminEntries />
     </MemoryRouter>
   );
 };
 
-describe('AdminView', () => {
+describe('AdminEntries', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockNavigate.mockClear();
@@ -47,22 +47,14 @@ describe('AdminView', () => {
 
   it('should render navbar with title', () => {
     renderView();
-    expect(screen.getByTestId('navbar')).toHaveTextContent('后台管理');
-  });
-
-  it('should display slogan', () => {
-    renderView();
-    expect(screen.getByText('东厂管不了的事，我西厂管！')).toBeInTheDocument();
+    expect(screen.getByTestId('navbar')).toHaveTextContent('更多功能');
   });
 
   it('should show public entries for all users', () => {
     renderView();
-    expect(screen.getByText('项目看板')).toBeInTheDocument();
-    expect(screen.getByText('项目管理')).toBeInTheDocument();
-    expect(screen.getByText('风险红黄灯')).toBeInTheDocument();
-    expect(screen.getByText('进度看板')).toBeInTheDocument();
-    expect(screen.getByText('报表分析')).toBeInTheDocument();
-    expect(screen.getByText('机器人数据')).toBeInTheDocument();
+    expect(screen.getByText('工单状态监测')).toBeInTheDocument();
+    expect(screen.getByText('项目进度管理')).toBeInTheDocument();
+    expect(screen.getByText('日报 / 周报')).toBeInTheDocument();
   });
 
   it('should hide admin-only entries for non-admin', () => {
@@ -70,8 +62,7 @@ describe('AdminView', () => {
     renderView();
     expect(screen.queryByText('用户管理')).not.toBeInTheDocument();
     expect(screen.queryByText('角色管理')).not.toBeInTheDocument();
-    expect(screen.queryByText('权限管理')).not.toBeInTheDocument();
-    expect(screen.queryByText('资源管理')).not.toBeInTheDocument();
+    expect(screen.queryByText('微信管理')).not.toBeInTheDocument();
   });
 
   it('should show admin-only entries for admin', () => {
@@ -79,8 +70,7 @@ describe('AdminView', () => {
     renderView();
     expect(screen.getByText('用户管理')).toBeInTheDocument();
     expect(screen.getByText('角色管理')).toBeInTheDocument();
-    expect(screen.getByText('权限管理')).toBeInTheDocument();
-    expect(screen.getByText('资源管理')).toBeInTheDocument();
+    expect(screen.getByText('微信管理')).toBeInTheDocument();
   });
 
   it('should show tip for non-admin users', () => {
@@ -97,14 +87,14 @@ describe('AdminView', () => {
 
   it('should navigate on entry card click', () => {
     renderView();
-    fireEvent.click(screen.getByText('项目看板'));
-    expect(mockNavigate).toHaveBeenCalledWith('/admin/dashboard');
+    fireEvent.click(screen.getByText('工单状态监测'));
+    expect(mockNavigate).toHaveBeenCalledWith('/admin/ticket-monitor');
   });
 
   it('should render correct emoji icons', () => {
     renderView();
+    expect(screen.getByText('🎫')).toBeInTheDocument();
     expect(screen.getByText('📊')).toBeInTheDocument();
-    expect(screen.getByText('📁')).toBeInTheDocument();
-    expect(screen.getByText('⚠️')).toBeInTheDocument();
+    expect(screen.getByText('📋')).toBeInTheDocument();
   });
 });
