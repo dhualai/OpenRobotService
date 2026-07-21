@@ -323,34 +323,44 @@ async def list_pending() -> dict:
 async def list_all_tickets(
     skip: int = Query(0, ge=0, description="跳过条数"),
     limit: int = Query(20, ge=1, le=200, description="返回条数"),
-    status: str = Query("", description="按状态筛选: pending / dispatched / in_progress / resolved / closed"),
+    status: str = Query("", description="按状态筛选: pending / in_progress / resolved / closed"),
     type_: str = Query("", alias="type", description="按类型筛选"),
 ) -> dict:
-    """查询 MySQL tickets 表，分页返回所有历史工单"""
+    """查询 tasks 表（source='ai'），分页返回所有历史工单"""
     try:
-        from ai.core.database import Ticket, SessionLocal
+        from ai.core.task_adapter import task_to_dict
+        from app.models.task import Task, TaskStatus, TaskType
+        from app.core.database import SessionLocal
         from sqlalchemy import desc
 
         db = SessionLocal()
         try:
-            q = db.query(Ticket)
+            q = db.query(Task).filter(Task.source == "ai")
+            # status/type 字符串 → 枚举；非法值（如旧值 dispatched）降级为不过滤
             if status:
-                q = q.filter(Ticket.status == status)
+                try:
+                    q = q.filter(Task.status == TaskStatus(status))
+                except ValueError:
+                    pass
             if type_:
-                q = q.filter(Ticket.type == type_)
+                try:
+                    q = q.filter(Task.task_type == TaskType(type_))
+                except ValueError:
+                    pass
             total = q.count()
-            rows = q.order_by(desc(Ticket.created_at)).offset(skip).limit(limit).all()
+            rows = q.order_by(desc(Task.created_at)).offset(skip).limit(limit).all()
             items = []
             for r in rows:
+                d = task_to_dict(r)
                 items.append({
-                    "id": r.id, "session_id": r.session_id, "ticket_ai_id": r.ticket_ai_id,
-                    "title": r.title, "description": r.description, "type": r.type,
-                    "priority": r.priority, "status": r.status, "contact": r.contact,
-                    "location": r.location, "robot_type": r.robot_type,
-                    "fault_code": r.fault_code, "severity": r.severity,
-                    "attachments": r.attachments, "diagnosis": r.diagnosis,
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
-                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                    "id": d["id"], "session_id": d["session_id"], "ticket_ai_id": d["ticket_ai_id"],
+                    "title": d["title"], "description": d["description"], "type": d["type"],
+                    "priority": d["priority"], "status": d["status"], "contact": d["contact"],
+                    "location": d["location"], "robot_type": d["robot_type"],
+                    "fault_code": d["fault_code"], "severity": d["severity"],
+                    "attachments": d["attachments"], "diagnosis": d["diagnosis"],
+                    "created_at": d["created_at"].isoformat() if d["created_at"] else None,
+                    "updated_at": d["updated_at"].isoformat() if d["updated_at"] else None,
                 })
             return {"code": 0, "data": {"total": total, "skip": skip, "limit": limit, "items": items}}
         finally:
@@ -465,35 +475,37 @@ class TaskSubmitAPIRequest(BaseModel):
 
 @task_agent_router.post("/list", summary="列出当前用户待处理工单")
 async def task_list(body: TaskListAPIRequest) -> dict:
-    """列出分配给当前用户的工单（从 tickets 表查询）。
+    """列出当前用户的待处理任务（从 tasks 表查询，source='ai'）。
 
-    查询策略：按 assignee_id 匹配用户 ID，回退到 created_by 匹配。
+    查询策略：按 created_by 匹配用户名。
     status 过滤：默认排除 resolved/closed，只看待处理。
     """
     try:
-        from app.models.ticket import Ticket
+        from ai.core.task_adapter import task_to_dict
+        from app.models.task import Task, TaskStatus
         from app.core.database import SessionLocal
         db = SessionLocal()
         tickets_list = []
         try:
-            q = db.query(Ticket).filter(
-                ~Ticket.status.in_(["resolved", "closed"])
+            q = db.query(Task).filter(
+                ~Task.status.in_([TaskStatus.RESOLVED, TaskStatus.CLOSED])
             )
             # 按用户名匹配创建者
             if body.username:
-                q = q.filter(Ticket.created_by == body.username)
+                q = q.filter(Task.created_by == body.username)
             q = q.order_by(
-                Ticket.priority.desc(), Ticket.created_at.desc()
+                Task.priority.desc(), Task.created_at.desc()
             ).limit(50)
             for t in q.all():
+                d = task_to_dict(t)
                 tickets_list.append({
                     "task_id": str(t.id),
-                    "title": t.title or "",
-                    "description": (t.description or "")[:100],
-                    "priority": t.priority or "中",
-                    "status": t.status or "pending_dispatch",
-                    "type": t.type or "problem",
-                    "robot_type": t.robot_type or "",
+                    "title": d["title"],
+                    "description": (d["description"] or "")[:100],
+                    "priority": d["priority"],
+                    "status": d["status"],
+                    "type": d["type"],
+                    "robot_type": d["robot_type"],
                     "created_at": t.created_at.isoformat() if t.created_at else "",
                     "has_attachments": bool(t.attachments),
                 })

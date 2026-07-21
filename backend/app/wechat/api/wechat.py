@@ -127,10 +127,278 @@ async def handle_wechat_message(request: Request):
 
 
 async def handle_text_message(message: dict):
+    content = message.get('Content', '').strip()
     from_user_name = message.get('FromUserName')
     to_user_name = message.get('ToUserName')
-    reply_xml = build_reply_text(from_user_name, to_user_name, 'HI! https://usp.ep-zl.com/p/app/call')
-    return Response(content=reply_xml, media_type="text/xml")
+
+    logger.info(f'收到用户 {from_user_name} 的消息: {content}')
+    permissions_data = auth_service.get_user_permissions(from_user_name)
+    
+    if permissions_data is None:
+        reply_xml = build_reply_text(from_user_name, to_user_name, '获取权限信息失败')
+        return Response(content=reply_xml, media_type="text/xml")
+    if permissions_data.get("name", None) is None and '@' != content[0]:
+        reply_xml = build_reply_text(from_user_name, to_user_name, '请先输入您的名字。例如：\r\n@张三')
+        return Response(content=reply_xml, media_type="text/xml")
+
+    if content.startswith('@'):
+        user_name = content[1:]
+        logger.info(f'用户 {from_user_name} 输入的名字是: {user_name}')
+
+        save_success = auth_service.save_user_name(from_user_name, user_name)
+        
+        user_info = auth_service.get_user_permissions(from_user_name)
+        usp_name = ""
+        usp_password = ""
+        
+        try:
+            if save_success and "external_credentials" in save_success:
+                external_credentials = save_success.get('external_credentials', None)
+                if "usp" in external_credentials:
+                    usp_credentials = external_credentials["usp"]
+                    usp_name = usp_credentials.get("username", "")
+                    usp_password = usp_credentials.get("password", "")
+        except Exception as e:
+            logger.error(f'获取用户信息失败: {traceback.format_exc()}')
+            
+        log_operation(
+            timestamp=datetime.now().astimezone().isoformat(timespec='milliseconds'),
+            client_ip='127.0.0.1',
+            method='POST',
+            path='',
+            status_code=200,
+            processing_time=0.0,
+            operator=generate_wechat_username(from_user_name),
+            summary='绑定姓名',
+        )
+
+        confirmation_message = f"{user_name}！\n\n您的信息已保存，请联系相关管理员获取项目权限。\r\nusp用户名：{usp_name}\r\n初始密码：{usp_password} \n请及时自行修改密码。修改方法：回复\"#修改密码\"。"
+        reply_xml = build_reply_text(from_user_name, to_user_name, confirmation_message)
+        return Response(content=reply_xml, media_type="text/xml")
+    elif content.startswith('help') or content.startswith('帮助'):
+        reply_xml = build_reply_text(from_user_name, to_user_name, '指令：\r\n@张三：绑定姓名为张三\r\n#修改密码：修改USP密码\r\n&或建议+建议内容：提交建议或意见\r\n#或日报+日报内容：提交日报')
+        return Response(content=reply_xml, media_type="text/xml")
+    elif content.startswith('日报模板'):
+        reply_xml = build_reply_text(from_user_name, to_user_name, '日报：项目名或者项目编号\r\n2026年3月20日\r\n替换你的内容')
+        return Response(content=reply_xml, media_type="text/xml")
+    elif content == '#修改密码':
+        user_states[from_user_name] = {'state': 'changing_password_step1', 'temp_data': {}}
+        reply_xml = build_reply_text(from_user_name, to_user_name, '请输入新的 USP 密码')
+        return Response(content=reply_xml, media_type="text/xml")
+    elif from_user_name in user_states:
+        user_state = user_states[from_user_name]
+        if user_state['state'] == 'changing_password_step1':
+            first_password = content
+            user_state['state'] = 'changing_password_step2'
+            user_state['temp_data']['first_password'] = first_password
+            reply_xml = build_reply_text(from_user_name, to_user_name, '请再次输入新的 USP 密码')
+            return Response(content=reply_xml, media_type="text/xml")
+        elif user_state['state'] == 'changing_password_step2':
+            second_password = content
+            first_password = user_state['temp_data'].get('first_password', '')
+            
+            if first_password == second_password:
+                try:
+                    token, refresh_token = auth_service.get_wechat_user_token(from_user_name)
+                    username = generate_wechat_username(from_user_name)
+                    success, message = auth_service.change_password(username, token, second_password)
+                    
+                    if success:
+                        reply_message = 'USP 密码修改成功！\n 请联系调度对接人以生效新密码。'
+                    else:
+                        reply_message = f'USP 密码修改失败：{message}'
+                except Exception as e:
+                    logger.error(f'修改 USP 密码异常: {e}')
+                    reply_message = 'USP 密码修改失败，请稍后重试'
+                
+                del user_states[from_user_name]
+                reply_xml = build_reply_text(from_user_name, to_user_name, reply_message)
+                return Response(content=reply_xml, media_type="text/xml")
+            else:
+                del user_states[from_user_name]
+                reply_xml = build_reply_text(from_user_name, to_user_name, '两次输入的密码不一致，请重新输入"#修改密码"开始修改')
+                return Response(content=reply_xml, media_type="text/xml")
+    elif content.startswith('#') or content.startswith('日报'):
+        logger.info(f'用户 {from_user_name} 输入的日报内容: {content}')
+        
+        report_data = parse_daily_report(content)
+        print(report_data)
+        if report_data['project'] is None:
+            reply_xml = build_reply_text(from_user_name, to_user_name, '日报格式错误，请使用格式：日报：项目名 或 项目：项目名')
+            return Response(content=reply_xml, media_type="text/xml")
+        
+        if report_data['date'] is None:
+            reply_xml = build_reply_text(from_user_name, to_user_name, '日期格式错误，请使用格式：2026年3月20日')
+            return Response(content=reply_xml, media_type="text/xml")
+        
+        user_id = from_user_name      
+        token, refresh_token = auth_service.get_wechat_user_token(user_id)
+        projects = await project_ticket_service.get_user_projects(generate_wechat_username(user_id), token)
+        if projects is None:
+            reply_xml = build_reply_text(from_user_name, to_user_name, '获取项目列表失败')
+            return Response(content=reply_xml, media_type="text/xml")
+        if len(projects) == 0:
+            reply_xml = build_reply_text(from_user_name, to_user_name, '没有关联项目')
+            return Response(content=reply_xml, media_type="text/xml")
+        
+        project_input = report_data['project'].strip()
+        project = None
+        
+        if project_input.isdigit():
+            index = int(project_input) - 1
+            if 0 <= index < len(projects):
+                project = projects[index]
+        elif any(char.isalpha() or char in '_-.' for char in project_input):
+            project = next((p for p in projects if p.get("project_code") == project_input), None)
+        else:
+            best_match = None
+            best_ratio = 0.7
+            
+            for p in projects:
+                project_name = p.get("name", "")
+                if project_name:
+                    matcher = SequenceMatcher(None, project_input.lower(), project_name.lower())
+                    ratio = matcher.ratio()
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_match = p
+            
+            project = best_match
+        if project is None:
+            reply_xml = build_reply_text(from_user_name, to_user_name, f'项目 {report_data["project"]} 不存在')
+            return Response(content=reply_xml, media_type="text/xml")
+        
+        reply_message = f'上报日报：{project["project_code"]}\r\n{project["name"]}\r\n{report_data["date"]}'
+        
+        try:
+            report_data_api = {
+                "project_code": project.get("project_code", ""),
+                "report_date": report_data["date"],
+                "report_content": {
+                    "content": report_data.get("content", "")
+                },
+                "reporter": '',
+                "reporter_id": generate_wechat_username(user_id)
+            }
+            print(token)
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{settings.DATA_SERVICE_URL}/api/daily-reports/",
+                    json=report_data_api,
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=10
+                ) as response:
+                    if response.status == 200:
+                        response_data = await response.json()
+                        logger.info(f'日报创建成功: {response_data}')
+                        reply_message += '\r\n日报已成功提交！'
+                    else:
+                        error_text = await response.text()
+                        logger.error(f'日报创建失败: HTTP {response.status}, {error_text}')
+                        reply_message += f'\r\n日报提交失败，请稍后重试'
+        except Exception as e:
+            logger.error(f'调用日报API异常: {e}')
+            reply_message += f'\r\n日报提交异常，请联系管理员'
+        
+        reply_xml = build_reply_text(from_user_name, to_user_name, reply_message)
+        return Response(content=reply_xml, media_type="text/xml")
+    elif content.startswith('&') or content.startswith('建议'):
+        suggestion = content[1:]
+        logger.info(f'用户 {from_user_name} 输入的建议或者意见是: {suggestion}')
+        
+        csv_file_path = 'suggestions.csv'
+        file_exists = os.path.exists(csv_file_path)
+        with open(csv_file_path, 'a', encoding='utf-8', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            if not file_exists:
+                writer.writerow(['时间', '用户', '内容'])
+            writer.writerow([
+                datetime.now().astimezone().isoformat(timespec='milliseconds'),
+                from_user_name,
+                suggestion
+            ])
+        
+        async def send_notification_to_user(user_name):
+            try:
+                from_name = permissions_data.get("name", '未知用户')
+                title = "新建议或意见"
+                description = f'用户 {from_name} 建议：{suggestion}'
+                url = "https://usp.ep-zl.com/wechat/download/suggestions.csv"
+                success, result = await wechat_service.send_link_message_to_user(user_name, title, description, url)
+                if success:
+                    logger.info(f'成功发送通知给用户 {user_name}')
+                    return {"user_name": user_name, "status": "success"}
+                else:
+                    err_code = result.get('errcode', 0)
+                    if err_code in (45047, 45015):
+                        err_map = {
+                            45047: f"客服接口下行条数超过上限,请主动联系 {user_name} 处理",
+                            45015: f"回复时间超过限制,请主动联系 {user_name} 处理"
+                        }
+                        error_message = err_map.get(err_code, "未知错误")
+                    else:
+                        error_message = result.get("errmsg", '未知错误')
+                    logger.warning(f'发送通知给用户 {user_name} 失败: {error_message}')
+                    return {"user_name": user_name, "status": "failed", "error": error_message}
+            except Exception as e:
+                logger.error(f'发送通知给用户 {user_name} 异常: {e}')
+                return {"user_name": user_name, "status": "failed", "error": str(e)}
+        
+        user_id = from_user_name      
+        token, refresh_token = auth_service.get_wechat_user_token(user_id)
+        users = await PermissionService.get_user_list(None, token)
+        print(users)
+        user_list = []
+        for user in users:
+            if user['name'] in settings.SUGGESTIONS_NOTIFICATION_USERS:
+                user_list.append(user['id'])
+
+        notification_tasks = [send_notification_to_user(user_name) for user_name in user_list]
+        notification_results = await asyncio.gather(*notification_tasks)
+        logger.info(f'通知发送结果: {notification_results}')
+        
+        reply_xml = build_reply_text(from_user_name, to_user_name, f'您的建议或者意见已收到：{suggestion}')
+        return Response(content=reply_xml, media_type="text/xml")
+    else:
+        log_operation(
+            timestamp=datetime.now().astimezone().isoformat(timespec='milliseconds'),
+            client_ip='127.0.0.1',
+            method='POST',
+            path='',
+            status_code=200,
+            processing_time=0.0,
+            operator=generate_wechat_username(from_user_name),
+            summary='发送文本数据',
+        )
+    if permissions_data:
+         project_permissions = permissions_data.get('projectPermissions', {})    
+         print(project_permissions)
+    
+    try:
+        name = permissions_data.get('name', '用户')
+        user_id = from_user_name
+        
+        token, refresh_token = auth_service.get_wechat_user_token(user_id)
+        print(f"获取到的token: {token}")
+        
+        user_name = generate_wechat_username(user_id)
+        print(f"用户信息: {user_name}")
+        projects = await project_ticket_service.get_user_projects(user_name, token)
+        print(f"项目列表: {projects}")
+        
+        tickets_data = await project_ticket_service.get_user_tickets(user_name, token)
+        print(f"工单数据: {tickets_data}")
+        
+        reply_content = project_ticket_service.format_user_info_reply(name, projects, tickets_data)
+        print(f"回复内容: {reply_content}")
+        reply_xml = build_reply_text(from_user_name, to_user_name, reply_content)
+        return Response(content=reply_xml, media_type="text/xml")
+    except Exception as e:
+        logger.warning(f'获取用户信息异常: {str(e)}')
+        error_message = f"获取用户信息异常: {str(e)}，请稍后重试"
+        reply_xml = build_reply_text(from_user_name, to_user_name, error_message)
+        return Response(content=reply_xml, media_type="text/xml")
 
 
 async def handle_event_message(message: dict):
