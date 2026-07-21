@@ -1,10 +1,10 @@
 # AiTaskPlatform — 任务 Agent 设计文档
 
-> 版本：2.1 | 日期：2026-07-21（Day 2 停晚）
+> 版本：2.2 | 日期：2026-07-21（Day 2 收尾）
 >
 > **本文件是 AiTaskPlatform 的权威设计文档**，供开发时参考和每次新对话恢复上下文。
 >
-> **当前状态**：v2.1 — tickets→tasks 迁移已完成（`ai/core/task_adapter.py`）。诊断结果改用 `task_comments` 表存储。Chat 与 Diagnosis 分离开发中。
+> **当前状态**：v2.2 — v2.0 架构重构全部完成。Chat 感知用户全量工单，Diagnosis 后台自动服务，附件 ZIP/文件夹解，task_comments 存储诊断。知识闭环 Layer 1 读+写就绪，待联调验证。
 
 ---
 
@@ -12,8 +12,9 @@
 
 | 日期 | 版本 | 变更摘要 |
 |------|:---:|------|
-| 2026-07-21 | 2.1 | tickets→tasks 迁移已完成（`task_adapter.py`）；诊断结果改用 `task_comments`（created_by="AI任务助手"，备注后续改为提单人）；`_index_solution` 切到 task_adapter |
-| 2026-07-21 | 2.0 | **架构重构**：Chat + Diagnosis 分离；Chat 感知用户全量工单+诊断；Diagnosis 独立服务+追踪表 |
+| 2026-07-21 | 2.2 | Day 2 收尾：附件 ZIP/文件夹解+图片识别；Chat API v2.0(username+工单感知)；Prompt 工单感知规则升级 |
+| 2026-07-21 | 2.1 | 停晚：tickets→tasks 迁移已完成（`task_adapter.py`）；诊断结果改用 `task_comments` |
+| 2026-07-21 | 2.0 | **架构重构**：Chat + Diagnosis 分离；Diagnosis 独立服务+自动触发 |
 | 2026-07-21 | 1.2 | Day 2 上午：能力分层路线图（Layer 0-3）+ 迭代时间线 |
 | 2026-07-20 | 1.1 | Day 1 下午：全节点埋点（9 个追踪节点）+ CLI 交互工具 + PRD 合规 |
 | 2026-07-20 | 1.0 | Day 1 上午：初始交付——7 端点 API + ChatPanel + SolutionCard + tickets 表直读 |
