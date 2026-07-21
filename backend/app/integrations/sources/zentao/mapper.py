@@ -94,16 +94,21 @@ def build_external_url(base_url: str, task_id: Any) -> str:
     return f"{base}/task-view-{task_id}.html" if base else ""
 
 
+def build_story_url(base_url: str, story_id: Any) -> str:
+    base = (base_url or "").strip().rstrip("/")
+    return f"{base}/story-view-{story_id}.html" if base else ""
+
+
 def zentao_task_to_external(t: Dict[str, Any], *, base_url: str = "") -> ExternalTask:
     """把一条禅道 task 翻译为 ExternalTask。"""
     assigned = _flatten_user(t.get("assignedTo"))
     opened = _flatten_user(t.get("openedBy"))
 
     extra: Dict[str, Any] = {}
+    extra["zentao_entity_type"] = "task"
     for k in ("estimate", "consumed", "left"):
         if t.get(k) is not None:
             extra[k] = t.get(k)
-    # 层级：执行字段禅道有笔误 executi1n，优先取它，回退 execution/parent
     exec_id = t.get("executi1n") or t.get("execution") or t.get("parent")
     if exec_id:
         extra["execution_id"] = exec_id
@@ -125,7 +130,7 @@ def zentao_task_to_external(t: Dict[str, Any], *, base_url: str = "") -> Externa
     return ExternalTask(
         external_id=str(task_id),
         title=name,
-        description=desc if desc else name,   # desc 为空时回退用标题
+        description=desc if desc else name,
         status=map_status(t.get("status")),
         priority=map_priority(t.get("pri")),
         task_type=map_task_type(t.get("type")),
@@ -134,5 +139,73 @@ def zentao_task_to_external(t: Dict[str, Any], *, base_url: str = "") -> Externa
         created_at=_parse_datetime(t.get("openedDate")),
         deadline_at=_parse_datetime(t.get("deadline")),
         url=build_external_url(base_url, task_id),
+        extra=extra,
+    )
+
+
+ZENTAO_STORY_STATUS_MAP: Dict[str, TaskStatus] = {
+    "draft": TaskStatus.NEW,
+    "active": TaskStatus.IN_PROGRESS,
+    "reviewed": TaskStatus.IN_PROGRESS,
+    "planned": TaskStatus.IN_PROGRESS,
+    "developed": TaskStatus.IN_PROGRESS,
+    "tested": TaskStatus.RESOLVED,
+    "released": TaskStatus.RESOLVED,
+    "closed": TaskStatus.CLOSED,
+    "changed": TaskStatus.IN_PROGRESS,
+}
+
+
+def map_story_status(status: Any) -> TaskStatus:
+    if not status:
+        return TaskStatus.NEW
+    return ZENTAO_STORY_STATUS_MAP.get(str(status), TaskStatus.NEW)
+
+
+def zentao_story_to_external(s: Dict[str, Any], *, base_url: str = "") -> ExternalTask:
+    """把一条禅道 story 翻译为 ExternalTask。"""
+    assigned = _flatten_user(s.get("assignedTo"))
+    opened = _flatten_user(s.get("openedBy"))
+
+    extra: Dict[str, Any] = {}
+    extra["zentao_entity_type"] = "story"
+    if s.get("execution"):
+        extra["execution_id"] = s.get("execution")
+    if s.get("project"):
+        extra["zentao_project_id"] = s.get("project")
+    if s.get("product"):
+        extra["zentao_product_id"] = s.get("product")
+    if s.get("branch"):
+        extra["zentao_branch_id"] = s.get("branch")
+    if s.get("pri") is not None:
+        extra["zentao_pri"] = s.get("pri")
+    if s.get("category"):
+        extra["zentao_category"] = s.get("category")
+    if s.get("stage"):
+        extra["zentao_stage"] = s.get("stage")
+    if s.get("plan"):
+        extra["zentao_plan"] = s.get("plan")
+    if s.get("source"):
+        extra["zentao_source"] = s.get("source")
+    if opened.get("realname"):
+        extra["opened_realname"] = opened.get("realname")
+    if assigned.get("realname"):
+        extra["assigned_realname"] = assigned.get("realname")
+
+    story_id = s.get("id")
+    title = s.get("title") or ""
+
+    return ExternalTask(
+        external_id=f"story-{story_id}",
+        title=title,
+        description=title,
+        status=map_story_status(s.get("status")),
+        priority=map_priority(s.get("pri")),
+        task_type=TaskType.FEATURE,
+        assigned_account=assigned.get("account"),
+        created_account=opened.get("account"),
+        created_at=_parse_datetime(s.get("openedDate")),
+        deadline_at=_parse_datetime(s.get("deadline")),
+        url=build_story_url(base_url, story_id),
         extra=extra,
     )
