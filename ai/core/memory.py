@@ -106,6 +106,15 @@ class MemoryManager:
         if session_id in self._fallback:
             data = self._fallback[session_id]
             return SessionMemory(session_id=session_id, turns=data.get("turns", []), metadata=data.get("metadata", {}))
+        # MySQL 降级：Redis 和内存都没有时，尝试从 MySQL 加载
+        try:
+            from ai.core.conversation_store import get_history
+            rows = await asyncio.to_thread(get_history, session_id)
+            if rows:
+                turns = [{"role": r["role"], "content": r["content"]} for r in rows]
+                return SessionMemory(session_id=session_id, turns=turns)
+        except Exception:
+            pass
         return SessionMemory(session_id=session_id)
 
     async def save_memory(self, memory: SessionMemory) -> None:
@@ -126,7 +135,11 @@ class MemoryManager:
         # 内存兜底
         self._fallback[memory.session_id] = data
 
-    async def add_turn(self, session_id: str, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> SessionMemory:
+    async def add_turn(
+        self, session_id: str, role: str, content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        user_id: str = "",
+    ) -> SessionMemory:
         memory = await self.get_memory(session_id)
         turn = {"role": role, "content": content}
         if metadata:
@@ -135,6 +148,17 @@ class MemoryManager:
         if len(memory.turns) > self.max_turns:
             memory.turns = memory.turns[-self.max_turns:]
         await self.save_memory(memory)
+
+        # MySQL 持久化（异步写，不阻塞主流程）
+        try:
+            from ai.core.conversation_store import save_message
+            await asyncio.to_thread(
+                save_message, session_id=session_id, role=role,
+                content=content, user_id=user_id,
+            )
+        except Exception:
+            pass
+
         return memory
 
     async def get_context(self, session_id: str, max_turns: Optional[int] = None) -> List[Dict[str, str]]:

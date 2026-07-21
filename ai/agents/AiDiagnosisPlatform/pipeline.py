@@ -737,6 +737,8 @@ class AiDiagnosisPlatform:
         # ---- 智能派单推荐 ----
         try:
             from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket
+            print(f"\n{'='*50}")
+            print(f"[派单] 工单「{ticket.get('title', '')}」自动派单中...")
             _result = await assign_ticket(
                 ticket_id=str(db_id or ticket["ticket_id"]),
                 title=ticket.get("title", ""),
@@ -761,6 +763,10 @@ class AiDiagnosisPlatform:
             ticket["assign_confidence"] = _result.confidence_score
             ticket["assign_reasoning"] = _result.reasoning
             ticket["assign_decision_type"] = _result.decision_type
+            print(f"[派单] ✅ 已自动分派 → {_result.engineer_name} (ID:{_result.engineer_id})")
+            print(f"[派单]    置信度: {_result.confidence_score:.0%} | 决策: {_result.decision_type}")
+            print(f"[派单]    理由: {_result.reasoning[:120]}")
+            print(f"{'='*50}\n")
         except Exception as _e:
             print(f"  ⚠️ 智能派单失败（不阻塞工单生成）: {_e}")
 
