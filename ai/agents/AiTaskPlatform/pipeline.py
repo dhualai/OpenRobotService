@@ -760,9 +760,38 @@ class AiTaskAgent:
         self, task_id: str, solution_text: str, draft: SolutionDraft
     ) -> None:
         """向量化方案 → 写入 Qdrant task_resolutions collection"""
-        # TODO: 等 ai/core/retrieval.py 新增 retrieve_task_resolutions() 后，
-        # 这里调用对应的 write/index 方法
-        print(f"  [task-agent] Solution indexed: {task_id} (placeholder)")
+        try:
+            # 从 tickets 表取工单信息（title/fault_code/robot_type/diagnosis）
+            from app.models.ticket import Ticket
+            from app.core.database import SessionLocal
+            db = SessionLocal()
+            title = f"工单 #{task_id}"
+            fault_code = ""
+            robot_type = ""
+            problem_summary = ""
+            try:
+                ticket = db.query(Ticket).filter(Ticket.id == int(task_id)).first()
+                if ticket:
+                    title = ticket.title or title
+                    fault_code = ticket.fault_code or ""
+                    robot_type = ticket.robot_type or ""
+                    diag = ticket.diagnosis or {}
+                    problem_summary = diag.get("problem_summary", "")
+            finally:
+                db.close()
+
+            await self._retriever.index_task_resolution(
+                task_id=task_id,
+                title=title,
+                root_cause=draft.root_cause_analysis,
+                solution_steps="；".join(draft.suggested_actions),
+                engineer_note=draft.references[0] if draft.references else "",
+                fault_code=fault_code,
+                robot_type=robot_type,
+                problem_summary=problem_summary,
+            )
+        except Exception as e:
+            print(f"  [task-agent] Solution index failed: {e}")
 
 
 # ============================================================
