@@ -1,0 +1,14 @@
+{
+  "button": [
+    {
+      "type": "view",
+      "name": "我要摇人",
+      "url": "https://usp.ep-zl.com/p/app/call"
+    },
+    {
+      "type": "view",
+      "name": "系统任务",
+      "url": "https://usp.ep-zl.com/p/app/task"
+    }
+  ]
+}

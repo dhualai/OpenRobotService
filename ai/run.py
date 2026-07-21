@@ -10,13 +10,24 @@ ai/ 位于项目根目录，与 backend/、frontend/ 并列。
     # → FastAPI 服务运行在 http://0.0.0.0:8401
 """
 import sys
+import os
 from pathlib import Path
 from contextlib import asynccontextmanager
+
+# Windows GBK → UTF-8：避免 print() 中的 emoji 字符（⏱ 等）导致崩溃
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+if sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr.encoding.lower() not in ("utf-8", "utf8"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # ── 路径初始化 ──────────────────────────────────────────────
 _project_root = Path(__file__).resolve().parent.parent  # ai/ → 项目根
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
+_backend_dir = _project_root / "backend"
+if str(_backend_dir) not in sys.path:
+    sys.path.insert(0, str(_backend_dir))
 
 # 加载 .env（AI 模块独立配置）
 from dotenv import load_dotenv
@@ -36,11 +47,6 @@ async def lifespan(app: FastAPI):
     print("=" * 60)
 
     from ai.config import get_ai_config, validate_ai_config
-    from ai.config import (
-        get_active_collection, get_active_faq_collection,
-        get_active_troubleshooting_collection, get_active_cheduan_collection,
-        get_active_translation_collection,
-    )
 
     # 1. 连通性检查（DeepSeek + Qdrant + Redis）
     try:
@@ -61,9 +67,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[WARN] Embedding pre-warm failed: {e}")
 
-    # 3. 知识库自动检查 & 入库（5 路并行知识库）
+    # 3. 知识库自动检查 & 入库（统一框架，自动发现所有 parser）
     try:
         from qdrant_client import QdrantClient
+        from ai.ingestion.registry import discover_parsers, list_registered
 
         qdrant_cfg = get_ai_config()
         if qdrant_cfg.qdrant_local_path:
@@ -77,33 +84,59 @@ async def lifespan(app: FastAPI):
                 check_compatibility=False,
             )
 
-        kb_registry = [
-            ("操作手册", get_active_collection,
-             "ai.ingestion.ingest_operation_manual"),
-            ("FAQ", get_active_faq_collection,
-             "ai.ingestion.ingest_faq"),
-            ("问题排查树", get_active_troubleshooting_collection,
-             "ai.ingestion.ingest_troubleshooting"),
-            ("车端错误码", get_active_cheduan_collection,
-             "ai.ingestion.ingest_cheduan"),
-            ("翻译表", get_active_translation_collection,
-             "ai.ingestion.ingest_translation"),
-        ]
+        # 自动发现所有 parser 模块
+        discover_parsers()
 
-        for label, getter, module_name in kb_registry:
-            active = getter()
-            if not (active and qdrant.collection_exists(active)):
+        print(f"\n[DEBUG] Qdrant 本地路径: {local}")
+        print(f"[DEBUG] 目录存在: {local.is_dir()}")
+        try:
+            existing = [c.name for c in qdrant.get_collections().collections]
+            print(f"[DEBUG] 现有集合 ({len(existing)}): {existing}")
+        except Exception:
+            print(f"[DEBUG] 无法列出集合")
+        print()
+
+        # 关键排序：rebuild=True 的先执行（创建新集合），rebuild=False 的后执行（追加到新集合）
+        # 否则 append 模式的 parser 会先创建集合，导致 rebuild parser 误判为"已存在"而跳过
+        registered = sorted(
+            list_registered(),
+            key=lambda m: (m.collection_type, not m.ingester_cls.rebuild),
+        )
+
+        for meta in registered:
+            ingester = meta.ingester_cls()
+            active = ingester.pointer_reader()
+            label = meta.description or meta.name
+
+            # 对于 rebuild=True 的 parser：检查活跃集合是否存在
+            # 对于 rebuild=False 的 parser（追加模式）：始终运行（idempotent upsert）
+            if not ingester.rebuild:
+                # 追加模式：始终检查源文件是否更新
+                if ingester.validate_source_files():
+                    print(f"\n[KB] {label}（追加模式）检查中...")
+                    try:
+                        await ingester.auto_ingest(client=qdrant)
+                    except Exception as e:
+                        print(f"[WARN] {label}入库失败: {e}")
+            elif not (active and qdrant.collection_exists(active)):
                 print(f"\n[KB] {label}知识库未就绪，自动入库中...")
                 try:
-                    mod = __import__(module_name, fromlist=["auto_ingest"])
-                    await mod.auto_ingest()
+                    await ingester.auto_ingest(client=qdrant)
                 except Exception as e:
                     print(f"[WARN] {label}入库失败: {e}")
+                    import traceback
+                    traceback.print_exc()
             elif active:
                 print(f"[KB] {label}集合: {active}")
 
     except Exception as e:
         print(f"[WARN] 知识库自动入库失败: {e}")
+
+    # 本地文件模式：释放 lifespan 持有的 QdrantClient，让 RetrievalService 创建自己的
+    try:
+        qdrant.close()
+    except Exception:
+        pass
 
     print("\n" + "=" * 60)
     print("[OK] Application startup complete")
@@ -128,10 +161,12 @@ app.add_middleware(
 )
 
 # ── 挂载路由（从 ai/api 自举，不再依赖 backend）──────────────
-from ai.api import qa_router, chat_router, memory_router
+from ai.api import qa_router, chat_router, memory_router, assigner_router, task_agent_router
 app.include_router(qa_router)
 app.include_router(chat_router)
 app.include_router(memory_router)
+app.include_router(assigner_router)
+app.include_router(task_agent_router)
 
 # ── 挂载 AiDataAnalysisPlatform 路由（数据分析）──────────────
 from ai.agents.AiDataAnalysisPlatform.router import router as analysis_router
@@ -157,6 +192,14 @@ if _faq_media_dir.is_dir():
         f"{_media_prefix}/faq_doc",
         StaticFiles(directory=str(_faq_media_dir)),
         name="media_faq_doc",
+    )
+
+_cheduan_media_dir = _docs / "cheduan_doc" / "media"
+if _cheduan_media_dir.is_dir():
+    app.mount(
+        f"{_media_prefix}/cheduan_doc",
+        StaticFiles(directory=str(_cheduan_media_dir)),
+        name="media_cheduan_doc",
     )
 
 

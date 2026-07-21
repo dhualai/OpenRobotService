@@ -1,6 +1,8 @@
 // 通用API客户端 - 从 HelpDesk apiClient.js 移植，增加 TypeScript 类型
 // 功能：Token管理 / 请求缓存 / 自动重试 / 超时控制 / 发布-订阅Token刷新
 
+import { getApiBaseUrl } from '../config/api';
+
 const MAX_RETRIES = 2;
 const RETRY_DELAY = 1000;
 const REQUEST_TIMEOUT = 30000;
@@ -64,7 +66,8 @@ async function refreshTokenRequest(): Promise<string> {
   if (!storedRefreshToken) {
     throw new Error('No refresh token available');
   }
-  const response = await fetch('/api/auth/refresh', {
+  const authBaseUrl = getApiBaseUrl('AUTH');
+  const response = await fetch(`${authBaseUrl}/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refresh_token: storedRefreshToken }),

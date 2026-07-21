@@ -98,7 +98,7 @@ describe('AdminView', () => {
   it('should navigate on entry card click', () => {
     renderView();
     fireEvent.click(screen.getByText('项目看板'));
-    expect(mockNavigate).toHaveBeenCalledWith('/app/admin/dashboard');
+    expect(mockNavigate).toHaveBeenCalledWith('/admin/dashboard');
   });
 
   it('should render correct emoji icons', () => {

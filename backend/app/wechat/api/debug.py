@@ -1,8 +1,10 @@
-﻿from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from pydantic import BaseModel
 import logging
+from typing import Optional
 from app.wechat.schemas.message import ApiResponse
 from app.wechat.services.wechat_service import wechat_service
+from app.wechat.api.dependencies import admin_auth
 
 logger = logging.getLogger(__name__)
 
@@ -17,17 +19,8 @@ class DebugRequest(BaseModel):
 
 
 @router.post("/debug", response_model=dict)
-async def api_wechat_debug(request: DebugRequest, request_obj: Request):
+async def api_wechat_debug(request: DebugRequest, request_obj: Request, credentials: Optional = admin_auth):
     try:
-        token = request_obj.headers.get("Authorization", "").replace("Bearer ", "")
-        logger.info(f"调试请求，token: {token}")
-        
-        if not token:
-            return {
-                "code": 401,
-                "message": "缺少token",
-                "data": {}
-            }
         
         method = request.method.upper()
         url = request.url

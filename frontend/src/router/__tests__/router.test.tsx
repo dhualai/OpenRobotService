@@ -13,28 +13,28 @@ describe('Router Configuration', () => {
     expect(route).toBeDefined();
   });
 
-  it('should have /app root with children', () => {
-    const route = router.routes.find((r) => r.path === '/app');
+  it('should have / root with children', () => {
+    const route = router.routes.find((r) => r.path === '/');
     expect(route).toBeDefined();
     expect(route?.children).toBeDefined();
     expect(route?.children?.length).toBeGreaterThan(0);
   });
 
   it('should have call child route', () => {
-    const appRoute = router.routes.find((r) => r.path === '/app');
-    const callRoute = appRoute?.children?.find((r) => r.path === 'call');
+    const rootRoute = router.routes.find((r) => r.path === '/');
+    const callRoute = rootRoute?.children?.find((r) => r.path === 'call');
     expect(callRoute).toBeDefined();
   });
 
   it('should have tasks child route', () => {
-    const appRoute = router.routes.find((r) => r.path === '/app');
-    const tasksRoute = appRoute?.children?.find((r) => r.path === 'tasks');
+    const rootRoute = router.routes.find((r) => r.path === '/');
+    const tasksRoute = rootRoute?.children?.find((r) => r.path === 'tasks');
     expect(tasksRoute).toBeDefined();
   });
 
   it('should have admin child route with nested children', () => {
-    const appRoute = router.routes.find((r) => r.path === '/app');
-    const adminRoute = appRoute?.children?.find((r) => r.path === 'admin');
+    const rootRoute = router.routes.find((r) => r.path === '/');
+    const adminRoute = rootRoute?.children?.find((r) => r.path === 'admin');
     expect(adminRoute).toBeDefined();
     expect(adminRoute?.children).toBeDefined();
 
@@ -48,7 +48,7 @@ describe('Router Configuration', () => {
     expect(adminChildren?.children?.length).toBeGreaterThan(10);
   });
 
-  it('should redirect root to /app/call', () => {
+  it('should redirect root to /call', () => {
     const route = router.routes.find((r) => r.path === '/');
     expect(route).toBeDefined();
   });
@@ -66,8 +66,8 @@ describe('Router Configuration', () => {
   });
 
   it('should have admin sub-routes for all management pages', () => {
-    const appRoute = router.routes.find((r) => r.path === '/app');
-    const adminRoute = appRoute?.children?.find((r) => r.path === 'admin');
+    const rootRoute = router.routes.find((r) => r.path === '/');
+    const adminRoute = rootRoute?.children?.find((r) => r.path === 'admin');
     const adminLayout = adminRoute?.children?.find((r) => r.children);
     const paths = adminLayout?.children?.map((r) => r.path) || [];
 
