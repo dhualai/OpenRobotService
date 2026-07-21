@@ -1,10 +1,8 @@
 /**
- * AI 模块 API 封装 —— /api/ai/*
+ * AI 模块 API 封装 —— /api/ai/qa/*
  *
- * 三大路由组：
- *   /api/ai/qa/*    诊断 Agent（流式/非流式问答、工单提交、附件上传）
- *   /api/ai/chat/*  纯 LLM 对话（流式/非流式）
- *   /api/ai/memory/* 会话记忆（历史、待派单、清除）
+ * 诊断 Agent：流式问答（SSE）、工单提交/查询/派单回执、历史工单列表、附件上传。
+ * 注：/chat/* 纯对话与 /memory/* 会话记忆两组接口此前未接线，已移除。
  */
 import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
@@ -69,14 +67,6 @@ export const aiGet = async <T = unknown>(path: string, params?: Record<string, s
   return res.json();
 };
 
-/** 通用 JSON DELETE */
-export const aiDelete = async <T = unknown>(path: string, params?: Record<string, string>): Promise<T> => {
-  const qs = params ? '?' + new URLSearchParams(params).toString() : '';
-  const res = await fetchWithAuth(`${BASE}${path}${qs}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(`AI 接口异常: ${res.status}`);
-  return res.json();
-};
-
 // ---------------------------------------------------------------------------
 // QA 诊断接口 (/api/ai/qa)
 // ---------------------------------------------------------------------------
@@ -86,15 +76,6 @@ export interface QAAskRequest {
   query: string;
   skip_retrieval?: boolean;
 }
-
-export interface QAAskResponse {
-  code: number;
-  message?: string;
-  [key: string]: unknown;
-}
-
-/** 非流式问答 */
-export const qaAsk = (body: QAAskRequest) => aiPost<QAAskResponse>('/qa/ask', body);
 
 /** 流式问答（SSE）—— 返回 fetch Response，调用方自行读取 ReadableStream */
 export const qaAskStream = (body: QAAskRequest): Promise<Response> =>
@@ -110,6 +91,45 @@ export const qaSubmit = (sessionId: string) =>
 /** 获取工单 */
 export const qaGetTicket = (sessionId: string) =>
   aiGet<{ code: number; data?: unknown; message?: string }>('/qa/ticket', { session_id: sessionId });
+
+/** 历史工单摘要（/memory/tickets/all 列表项，字段与后端 Ticket 表对齐） */
+export interface AiTicketBrief {
+  id: number;
+  session_id: string;
+  ticket_ai_id?: string;
+  title: string;
+  description?: string;
+  type?: string;      // problem|bug|feature|support|other
+  priority?: string;  // 紧急|高|中|低
+  status?: string;    // pending|dispatched|in_progress|resolved|closed
+  contact?: string;
+  location?: string;
+  robot_type?: string;
+  fault_code?: string;
+  severity?: string;
+  attachments?: unknown;
+  diagnosis?: unknown;
+  created_at?: string; // ISO
+  updated_at?: string; // ISO
+}
+
+/** 历史工单列表筛选参数（留空 = 不筛选，后端按当前角色返回：admin 全部 / 其余仅本人） */
+export interface AiTicketListFilters {
+  status?: string; // pending|dispatched|in_progress|resolved|closed
+  type?: string;   // problem|bug|feature|support|other
+}
+
+/** 历史工单列表（GET /api/ai/memory/tickets/all） */
+export const qaListTickets = (skip = 0, limit = 50, filters?: AiTicketListFilters) => {
+  const params: Record<string, string> = { skip: String(skip), limit: String(limit) };
+  if (filters?.status) params.status = filters.status;
+  if (filters?.type) params.type = filters.type;
+  return aiGet<{
+    code: number;
+    data?: { items: AiTicketBrief[]; total: number; skip?: number; limit?: number };
+    message?: string;
+  }>('/memory/tickets/all', params);
+};
 
 /** 派单确认回执 */
 export const qaTicketAck = (sessionId: string, dispatchId = '', status = 'dispatched') =>
@@ -131,66 +151,3 @@ export const qaUpload = async (sessionId: string, files: File[]): Promise<Respon
     body: formData,
   });
 };
-
-/** AI 模块健康检查 */
-export const qaHealth = () => aiGet<{ code: number; data?: unknown }>('/qa/health');
-
-// ---------------------------------------------------------------------------
-// 纯 LLM 对话接口 (/api/ai/chat)
-// ---------------------------------------------------------------------------
-
-export interface ChatRequest {
-  session_id?: string;
-  query: string;
-  max_tokens?: number;
-  temperature?: number;
-  system_prompt?: string;
-}
-
-export interface ChatResponse {
-  code: number;
-  data?: { answer: string; total_ms: number };
-}
-
-/** 非流式 LLM 对话 */
-export const chatSend = (body: ChatRequest) => aiPost<ChatResponse>('/chat', body);
-
-/** 流式 LLM 对话（SSE） */
-export const chatSendStream = (body: ChatRequest): Promise<Response> =>
-  fetchWithAuth(`${BASE}/chat/stream`, {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
-
-// ---------------------------------------------------------------------------
-// 会话记忆接口 (/api/ai/memory)
-// ---------------------------------------------------------------------------
-
-export interface HistoryResponse {
-  code: number;
-  data?: {
-    session_id: string;
-    turns: Array<{ role: string; content: string; timestamp?: string }>;
-    count: number;
-  };
-}
-
-export interface TicketsResponse {
-  code: number;
-  data?: { pending: string[]; count: number };
-}
-
-/** 获取会话对话历史 */
-export const memoryHistory = (sessionId: string) =>
-  aiGet<HistoryResponse>('/memory/history', { session_id: sessionId });
-
-/** 获取待派单列表 */
-export const memoryTickets = () => aiGet<TicketsResponse>('/memory/tickets');
-
-/** 清除单个会话 */
-export const memoryClear = (sessionId: string) =>
-  aiDelete<{ code: number; data?: unknown }>('/memory/clear', { session_id: sessionId });
-
-/** 清除所有会话 */
-export const memoryClearAll = () =>
-  aiDelete<{ code: number; data?: unknown }>('/memory/clear-all');

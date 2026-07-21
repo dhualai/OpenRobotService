@@ -37,6 +37,18 @@ from .schemas import (
     HealthResponse,
     QuickChatRequest,
 )
+from .report_schemas import (
+    ReportPeriod,
+    ReportRequest,
+    ReportResult,
+    ReportSection,
+    ProjectStats,
+    RiskStats,
+    TicketStats,
+    TaskStats,
+    CollectedData,
+)
+from .report_generator import ReportGenerator, generate_report, generate_report_stream
 
 __all__ = [
     # Agent
@@ -61,4 +73,17 @@ __all__ = [
     "DataSource",
     "HealthResponse",
     "QuickChatRequest",
+    # Report
+    "ReportPeriod",
+    "ReportRequest",
+    "ReportResult",
+    "ReportSection",
+    "ProjectStats",
+    "RiskStats",
+    "TicketStats",
+    "TaskStats",
+    "CollectedData",
+    "ReportGenerator",
+    "generate_report",
+    "generate_report_stream",
 ]

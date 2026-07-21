@@ -447,6 +447,107 @@ html, body, #root {
   padding: 0;
 }
 .chat-input-btn:active { color: #0052d9; }
+.chat-input-btn.is-recording {
+  color: #e74c3c;
+  position: relative;
+}
+.chat-input-btn.is-recording::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border: 2px solid #e74c3c;
+  border-radius: 50%;
+  animation: voice-pulse 1.2s ease-out infinite;
+}
+@keyframes voice-pulse {
+  0% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+/* 语音输入行：单行横排，图标 + 按住说话按钮 + 图标 */
+.chat-input-bar__voice-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 按住说话按钮 —— 科技蓝卡片样式，与工具栏同行 */
+.chat-voice-hold-btn {
+  flex: 1;
+  height: 40px;
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #3385ff 0%, #1e6cf0 100%);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  -webkit-user-select: none;
+  box-shadow: 0 2px 8px rgba(51, 133, 255, 0.25);
+  transition: transform 0.1s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+.chat-voice-hold-btn:active {
+  transform: scale(0.98);
+  box-shadow: 0 1px 4px rgba(51, 133, 255, 0.35);
+}
+
+/* 录制中：加深 + 脉冲光晕 */
+.chat-voice-hold-btn.is-recording {
+  background: linear-gradient(135deg, #1e6cf0 0%, #1557d0 100%);
+  box-shadow: 0 0 0 4px rgba(51, 133, 255, 0.2), 0 2px 12px rgba(51, 133, 255, 0.3);
+  animation: voice-glow 1.4s ease-in-out infinite;
+}
+@keyframes voice-glow {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(51, 133, 255, 0.2), 0 2px 12px rgba(51, 133, 255, 0.3); }
+  50% { box-shadow: 0 0 0 8px rgba(51, 133, 255, 0.08), 0 2px 18px rgba(51, 133, 255, 0.45); }
+}
+
+/* 上移取消：红色警示 */
+.chat-voice-hold-btn.is-cancelling {
+  background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+  box-shadow: 0 0 0 4px rgba(231, 76, 60, 0.2), 0 2px 12px rgba(231, 76, 60, 0.3);
+  animation: voice-cancel-glow 1s ease-in-out infinite;
+}
+@keyframes voice-cancel-glow {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(231, 76, 60, 0.2), 0 2px 12px rgba(231, 76, 60, 0.3); }
+  50% { box-shadow: 0 0 0 8px rgba(231, 76, 60, 0.08), 0 2px 18px rgba(231, 76, 60, 0.4); }
+}
+
+/* 声波纹圆点容器 */
+.voice-wave-dots {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 20px;
+}
+.voice-dot {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fff;
+  /* 默认静默态：静止不动，微透明 */
+  opacity: 0.45;
+  transform: translateY(0);
+  transition: opacity 0.25s ease;
+}
+/* 有声时才律动 */
+.voice-wave-dots.has-sound .voice-dot {
+  opacity: 1;
+  animation: voice-dot-bounce 0.75s ease-in-out infinite;
+}
+.voice-wave-dots.has-sound .voice-dot:nth-child(2) { animation-delay: 0.12s; }
+.voice-wave-dots.has-sound .voice-dot:nth-child(3) { animation-delay: 0.24s; }
+@keyframes voice-dot-bounce {
+  0%, 100% { transform: translateY(0); opacity: 0.6; }
+  50% { transform: translateY(-8px); opacity: 1; }
+}
 
 /* ===== 系统任务 / 工单 ===== */
 .tasks-view {

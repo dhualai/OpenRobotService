@@ -1,4 +1,5 @@
-// 可复用 AI 对话面板 —— 对接 /api/ai/qa/ask/stream（SSE 流式诊断）
+// 可复用 AI 对话面板 —— call 场景对接 /api/ai/qa/ask/stream（SSE 流式诊断）
+// tasks 场景对接 /api/ai/task/analyze/stream（任务 Agent 方案生成）
 // 我要摇人（全屏）与系统任务（顶部紧凑）共用
 // 功能：SSE 流式 / 点赞点踩 / 复制 / 修改己方 / 语音 / 上传·拍照 / ENTER 发送
 // call 场景额外：消费工单讨论上下文 + 打包转工单
@@ -6,21 +7,26 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Textarea, Toast } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
-import { useWorkbenchStore, type TicketDraft } from '@/stores/workbench';
-import { qaAskStream, qaSubmit, qaUpload, generateSessionId, trackSession } from '@/api/ai';
-import { createRequest } from '@/api/client';
+import { useWorkbenchStore } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
+import { qaSubmit, qaUpload, generateSessionId, trackSession, fetchWithAuth } from '@/api/ai';
 import { createConversation, getConversation, listMyConversations, appendMessage, readAiSessionId } from '@/api/conversation';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
+import SolutionCard from '@/shared/components/SolutionCard';
+import type { SolutionDraft } from '@/shared/components/SolutionCard';
 
 interface SpeechRecognitionResultEvent {
+  resultIndex: number;
   results: ArrayLike<ArrayLike<{ transcript: string }>>;
 }
 
 interface SpeechRecognitionLike {
   lang: string;
+  continuous: boolean;
   interimResults: boolean;
+  onsoundstart: (() => void) | null;
+  onsoundend: (() => void) | null;
   onresult: ((e: SpeechRecognitionResultEvent) => void) | null;
   onerror: (() => void) | null;
   onend: (() => void) | null;
@@ -43,6 +49,15 @@ interface Message {
   timestamp: string;
   imageUrl?: string;
   reaction?: 'like' | 'dislike' | null;
+  // 任务 Agent 专属：结构化方案草稿
+  subtype?: 'solution_draft';
+  solution_draft?: {
+    root_cause_analysis: string;
+    suggested_actions: string[];
+    references: string[];
+    confidence: number;
+    needs_more_info: boolean;
+  };
 }
 
 const uid = () => Date.now().toString() + Math.random().toString(36).slice(2, 6);
@@ -56,7 +71,7 @@ const SCENE_CONFIG: Record<ChatScene, {
   tasks: { sceneType: 'task_assist', emptyEmoji: '🤖', emptyTitle: 'AI 任务助手' },
 };
 
-export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
+export default function ChatPanel({ scene, compact = false, taskId, taskTitle, taskDescription }: { scene: ChatScene; compact?: boolean; taskId?: string; taskTitle?: string; taskDescription?: string }) {
   const navigate = useNavigate();
   const { token, username } = useAuthStore();
   const { chatContext, consumeChatContext, refreshTasks } = useWorkbenchStore();
@@ -69,6 +84,18 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const [sessionId, setSessionId] = useState<string>('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submittingTicket, setSubmittingTicket] = useState(false);
+  const [submittingSolution, setSubmittingSolution] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [voiceWillCancel, setVoiceWillCancel] = useState(false);
+  const [voiceHasSound, setVoiceHasSound] = useState(false);
+  const voiceStartYRef = useRef<number>(0);
+  const voiceCancelRef = useRef(false);
+  const voiceWillCancelRef = useRef(false);
+  const voiceSessionRef = useRef(0);       // 递增，防止延迟的 onend 误修改状态
+  const voiceHoldingRef = useRef(false);  // 用户是否正在按住语音按钮
+  const finishRecRef = useRef<(() => void) | null>(null); // 松手清理函数，供 button onMouseUp/onTouchEnd 调用
+  const voiceBtnRef = useRef<HTMLButtonElement>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -122,6 +149,25 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatContext]);
+
+  // tasks 场景：选中工单时注入诊断上下文消息（taskId 变化时触发）
+  const prevTaskIdRef = useRef<string | undefined>();
+  useEffect(() => {
+    if (isCall || !taskId || taskId === prevTaskIdRef.current) return;
+    prevTaskIdRef.current = taskId;
+    const title = taskTitle || `工单 #${taskId}`;
+    const desc = taskDescription || '';
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: uid(),
+        role: 'assistant',
+        content: `📋 你已选中工单 #${taskId}「${title}」${desc ? `\n\n${desc}` : ''}\n\n我可以帮你分析这个工单的根因并生成解决方案草稿，也可以回答任何技术问题。请直接告诉我你需要什么。`,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId]);
 
   /** 确保 sessionId——新 AI 模块无需预先创建会话 */
   const ensureSessionId = useCallback((): string => {
@@ -197,41 +243,74 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (convId) appendMessage(convId, 'user', userContent).catch(() => {});
       setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() }]);
 
-      const response = await qaAskStream({
-        session_id: sid,
-        query: userContent,
-      });
+      // tasks 场景：无 taskId 走自由对话，有 taskId 走工单分析
+      // call 场景：走提单 Agent
+      const AI_BASE = API_CONFIG.AI.BASE_URL;
+      const hasTask = !!taskId;
+      const apiPath = isCall
+        ? `${AI_BASE}/qa/ask/stream`
+        : hasTask
+          ? `${AI_BASE}/task/analyze/stream`
+          : `${AI_BASE}/task/chat/stream`;
+      const apiBody = isCall
+        ? JSON.stringify({ session_id: sid, query: userContent })
+        : hasTask
+          ? JSON.stringify({ task_id: taskId, session_id: sid, query: userContent })
+          : JSON.stringify({ session_id: sid, query: userContent });
+
+      const response = await fetchWithAuth(apiPath, { method: 'POST', body: apiBody });
 
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
       let acc = '';
+      let solutionDraft: Message['solution_draft'] | null = null;
+      let currentEvent = '';
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true });
         for (const line of text.split('\n')) {
-          // SSE 事件行：event: first_token / event: done / event: error
-          if (line.startsWith('event: ') && line.includes('error')) continue; // 错误行在下面处理
-
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7);
+            if (currentEvent === 'error') continue;
+            continue;
+          }
           if (!line.startsWith('data: ')) continue;
           try {
             const data = JSON.parse(line.slice(6));
             if (data.token) {
-              // 新版 AI 诊断：token 增量
               acc += data.token;
               setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
             } else if (data.content) {
-              // 兼容旧版 message
               acc += data.content;
               setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
+            }
+            // 任务 Agent result 事件：拿到结构化方案草稿
+            if (currentEvent === 'result' && data.root_cause_analysis) {
+              solutionDraft = {
+                root_cause_analysis: data.root_cause_analysis,
+                suggested_actions: data.suggested_actions || [],
+                references: data.references || [],
+                confidence: data.confidence ?? 0,
+                needs_more_info: data.needs_more_info ?? false,
+              };
             }
           } catch { /* JSON 行解析出错则跳过 */ }
         }
       }
+
       // 流式结束：持久化 AI 回复
       if (acc && convRef.current) appendMessage(convRef.current, 'assistant', acc).catch(() => {});
+      // 任务 Agent 方案草稿：注入 solution_draft 标记
+      if (solutionDraft && !isCall) {
+        setMessages((prev) => prev.map((m) =>
+          m.id === assistantId
+            ? { ...m, subtype: 'solution_draft' as const, solution_draft: solutionDraft }
+            : m
+        ));
+      }
     } catch (err) {
       // 鉴权失效已由 kickToLogin 统一提示并跳转，此处不重复弹错误
       if (!isKickingToLogin()) {
@@ -249,21 +328,103 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     send(msg.content);
   };
 
-  const startVoice = () => {
+  // voiceWillCancelRef 在 handleMove 中直接同步写入，不再通过 useEffect 异步同步
+
+  // 语音模式下全局监听 move/end，基于 voiceMode 而非 isRecording，确保录制结束后松手仍可触发 finishRecording
+  useEffect(() => {
+    if (!voiceMode) return;
+
+    const handleMove = (e: MouseEvent | TouchEvent) => {
+      const currentY = 'touches' in e
+        ? (e as TouchEvent).touches[0]?.clientY ?? 0
+        : (e as MouseEvent).clientY;
+      const deltaY = voiceStartYRef.current - currentY; // 正值 = 上移
+      const willCancel = deltaY > 60;
+      voiceWillCancelRef.current = willCancel; // 同步写 ref，确保 handleEnd/touchend 读到最新值
+      setVoiceWillCancel(willCancel);
+    };
+
+    // 松手清理：同时被文档 mouseup/touchend 和按钮 onMouseUp/onTouchEnd 调用，靠 voiceHoldingRef 防重
+    const finishRecording = () => {
+      if (!voiceHoldingRef.current) return; // 已执行过则忽略
+      voiceHoldingRef.current = false;
+      if (voiceWillCancelRef.current) {
+        voiceCancelRef.current = true; // 标记取消，阻止 onresult 写入
+      }
+      voiceSessionRef.current++;       // 递增，使任何延迟的 onend 失效
+      recognitionRef.current?.stop();
+      recognitionRef.current = null;
+      setIsRecording(false);
+      if (!voiceWillCancelRef.current) setVoiceMode(false); // 非取消时回到文本模式
+      setVoiceWillCancel(false);
+      setVoiceHasSound(false);
+    };
+
+    finishRecRef.current = finishRecording; // 供按钮 onMouseUp/onTouchEnd 直接调用
+
+    document.addEventListener('mousemove', handleMove);
+    document.addEventListener('touchmove', handleMove, { passive: true });
+    document.addEventListener('mouseup', finishRecording);
+    document.addEventListener('touchend', finishRecording);
+
+    return () => {
+      finishRecRef.current = null;
+      document.removeEventListener('mousemove', handleMove);
+      document.removeEventListener('touchmove', handleMove);
+      document.removeEventListener('mouseup', finishRecording);
+      document.removeEventListener('touchend', finishRecording);
+    };
+  }, [voiceMode]);
+
+  const startVoiceRecording = (e: React.MouseEvent | React.TouchEvent) => {
     if (!SR) { Toast({ message: '当前浏览器不支持语音输入', theme: 'warning' }); return; }
-    if (recognitionRef.current) { recognitionRef.current.stop(); recognitionRef.current = null; return; }
+    // 防止 touch 同时合成 mouse 事件导致双开识别实例互相干扰
+    if (voiceHoldingRef.current || recognitionRef.current) return;
+    e.preventDefault(); // 阻止 touch 后合成 mouse 事件
+
+    voiceHoldingRef.current = true;
+    const sessionId = ++voiceSessionRef.current; // 递增，用于 onend 校验
+    voiceStartYRef.current = 'touches' in e ? (e.touches[0]?.clientY || 0) : e.clientY;
+    voiceCancelRef.current = false;
+    setVoiceWillCancel(false);
+    setVoiceHasSound(false);
+
     const rec = new SR();
     rec.lang = 'zh-CN';
-    rec.interimResults = false;
-    rec.onresult = (e: SpeechRecognitionResultEvent) => {
-      const text = e.results[0][0].transcript;
-      setInput((prev) => (prev ? `${prev} ${text}` : text));
+    rec.continuous = true;       // 持续识别，不因用户停顿而自动停止
+    rec.interimResults = false;  // 仅返回最终识别结果
+    rec.onsoundstart = () => setVoiceHasSound(true);
+    rec.onsoundend = () => setVoiceHasSound(false);
+    rec.onresult = (ev: SpeechRecognitionResultEvent) => {
+      if (voiceCancelRef.current) return; // 上移取消，丢弃结果
+      // continuous 模式下从 resultIndex 开始遍历，取最新识别结果
+      let latest = '';
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        latest = ev.results[i][0].transcript;
+      }
+      if (latest) {
+        setInput((prev) => (prev ? `${prev} ${latest}` : latest));
+      }
     };
-    rec.onerror = () => Toast({ message: '语音识别失败', theme: 'error' });
-    rec.onend = () => { recognitionRef.current = null; };
+    rec.onerror = () => {
+      // 非当前 session 的延迟回调直接跳过，防止旧实例误操作新状态
+      if (voiceSessionRef.current !== sessionId) return;
+      voiceSessionRef.current++;       // 递增，防止后续 onend 再处理
+      voiceHoldingRef.current = false;
+      recognitionRef.current = null;
+      setIsRecording(false);
+      setVoiceHasSound(false);
+      setVoiceMode(false);
+    };
+    rec.onend = () => {
+      // 非当前 session 的延迟回调直接跳过（finishRecording/onerror 已先递增 session）
+      if (voiceSessionRef.current !== sessionId) return;
+      recognitionRef.current = null;   // 确认是当前 session 再清引用
+      setIsRecording(false);
+    };
     rec.start();
     recognitionRef.current = rec;
-    Toast({ message: '语音识别中，再次点击结束', theme: 'success' });
+    setIsRecording(true);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -273,37 +434,58 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     e.target.value = '';
   };
 
-  /** 转工单：直接建单到 tasks 服务，刷新「历史工单」，留在摇人页（不跳系统任务） */
+  /** 转工单：调 AI 模块 /api/ai/qa/submit 生成工单（写 MySQL + 入待派单列表），刷新「历史工单」，留在摇人页 */
   const handleSubmitTicket = async () => {
     if (submittingTicket || messages.length === 0) return;
+    if (!sessionId) { Toast({ message: '会话未就绪，请先发送一条消息', theme: 'warning' }); return; }
     setSubmittingTicket(true);
-
-    const recent = messages.filter((m) => m.content).slice(-6);
-    const userMsgs = recent.filter((m) => m.role === 'user').map((m) => m.content);
-    const aiSummary = recent.filter((m) => m.role === 'assistant').map((m) => m.content).join('\n');
-    const draft: TicketDraft = {
-      title: userMsgs[0]?.slice(0, 40) || 'AI 咨询转工单',
-      description: `【用户描述】\n${userMsgs.join('\n')}\n\n【AI 诊断摘要】\n${aiSummary}`,
-      ticket_type: 'support',
-      priority: 'medium',
-      source_conversation_id: sessionId || undefined,
-    };
-
-    // 仍通知后端 QA 提单（失败不阻塞建单）
-    if (sessionId) {
-      try { await qaSubmit(sessionId); } catch { /* ignore */ }
-    }
-
     try {
-      const taskRequest = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
-      await taskRequest('/', { method: 'POST', body: JSON.stringify(draft) });
-      refreshTasks(); // 触发下方「历史工单」重新拉取，新工单以梗概形式出现
-      Toast({ message: '工单已提交，可在下方历史工单查看', theme: 'success' });
+      const res = await qaSubmit(sessionId);
+      if (res?.code === 0) {
+        refreshTasks(); // 触发下方「历史工单」重新拉取 AI 待派单列表
+        Toast({ message: '工单已生成，可在下方历史工单查看', theme: 'success' });
+      } else {
+        Toast({ message: (res as { message?: string })?.message || '生成工单失败', theme: 'error' });
+      }
     } catch (err) {
-      Toast({ message: `建单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      Toast({ message: `生成工单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setSubmittingTicket(false);
     }
+  };
+
+  /** 任务 Agent：提交方案 → 调 /api/ai/task/submit */
+  const handleSubmitSolution = async (msg: Message) => {
+    if (submittingSolution || !msg.solution_draft) return;
+    setSubmittingSolution(true);
+    try {
+      const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/submit`, {
+        method: 'POST',
+        body: JSON.stringify({
+          task_id: taskId || '',
+          session_id: sessionId,
+          final_solution: msg.solution_draft,
+          resolution: 'resolved',
+        }),
+      });
+      const data = await res.json();
+      if (data.code === 0) {
+        refreshTasks();
+        Toast({ message: '方案已提交，工单已解决', theme: 'success' });
+      } else {
+        Toast({ message: (data as { message?: string })?.message || '提交失败', theme: 'error' });
+      }
+    } catch (err) {
+      Toast({ message: `提交失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setSubmittingSolution(false);
+    }
+  };
+
+  /** 任务 Agent：重新分析当前工单 */
+  const handleReanalyze = () => {
+    if (!taskId) return;
+    send(`请重新分析工单 #${taskId}`);
   };
 
   const toggleReaction = (id: string, type: 'like' | 'dislike') => {
@@ -366,7 +548,19 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   }
                 />
               ) : msg.role === 'assistant' ? (
-                msg.content ? (
+                msg.subtype === 'solution_draft' && msg.solution_draft ? (
+                  <SolutionCard
+                    draft={msg.solution_draft}
+                    onDraftChange={(draft) =>
+                      setMessages((prev) => prev.map((m) =>
+                        m.id === msg.id ? { ...m, solution_draft: draft } : m
+                      ))
+                    }
+                    onSubmit={() => handleSubmitSolution(msg)}
+                    onReanalyze={handleReanalyze}
+                    submitting={submittingSolution}
+                  />
+                ) : msg.content ? (
                   <MarkdownRenderer content={msg.content} compact={compact} />
                 ) : (
                   loading ? <div className="chat-bubble__text">思考中…</div> : null
@@ -433,22 +627,35 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             <span className="chat-ticket-btn__label">{submittingTicket ? '提交中…' : '转工单'}</span>
           </div>
         )}
-        <Textarea
-          value={input}
-          onChange={(v) => setInput(String(v))}
-          placeholder="发消息..."
-          autosize={{ minRows: 1, maxRows: 6 }}
-          className="chat-input-bar__textarea"
-        />
-        <div className="chat-input-bar__tools">
-          <div className="chat-input-bar__tools-left">
-            <button className="chat-input-btn" onClick={startVoice} title="语音输入" aria-label="语音输入">
+        {voiceMode ? (
+          <div className="chat-input-bar__voice-row">
+            <button className="chat-input-btn" onClick={() => setVoiceMode(false)} title="键盘输入" aria-label="键盘输入">
               <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="9" y="3" width="6" height="11" rx="3" />
-                <path d="M5 11a7 7 0 0 0 14 0" />
-                <line x1="12" y1="18" x2="12" y2="21" />
-                <line x1="8" y1="21" x2="16" y2="21" />
+                <rect x="2" y="5" width="20" height="14" rx="2" />
+                <line x1="6" y1="9" x2="6" y2="9" strokeWidth="2" strokeLinecap="round" />
+                <line x1="10" y1="9" x2="14" y2="9" />
+                <line x1="6" y1="13" x2="10" y2="13" />
+                <line x1="12" y1="13" x2="16" y2="13" />
+                <line x1="6" y1="17" x2="12" y2="17" />
               </svg>
+            </button>
+            <button
+              ref={voiceBtnRef}
+              className={`chat-voice-hold-btn${isRecording ? ' is-recording' : ''}${voiceWillCancel ? ' is-cancelling' : ''}`}
+              onMouseDown={startVoiceRecording}
+              onTouchStart={startVoiceRecording}
+              onMouseUp={() => finishRecRef.current?.()}
+              onTouchEnd={() => finishRecRef.current?.()}
+            >
+              {isRecording ? (
+                voiceWillCancel ? '松开 取消' : (
+                  <span className={`voice-wave-dots${voiceHasSound ? ' has-sound' : ''}`}>
+                    <span className="voice-dot" />
+                    <span className="voice-dot" />
+                    <span className="voice-dot" />
+                  </span>
+                )
+              ) : '按住 说话'}
             </button>
             <button className="chat-input-btn" onClick={() => fileInputRef.current?.click()} title="上传" aria-label="上传文件或拍照">
               <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
@@ -458,17 +665,46 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               </svg>
             </button>
           </div>
-          <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={!input.trim() || loading} aria-label="发送">
-            {loading ? (
-              <span className="chat-send-btn__spinner" />
-            ) : (
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="12" y1="19" x2="12" y2="5" />
-                <polyline points="6 11 12 5 18 11" />
-              </svg>
-            )}
-          </button>
-        </div>
+        ) : (
+          <>
+            <Textarea
+              value={input}
+              onChange={(v) => setInput(String(v))}
+              placeholder="发消息..."
+              autosize={{ minRows: 1, maxRows: 6 }}
+              className="chat-input-bar__textarea"
+            />
+            <div className="chat-input-bar__tools">
+              <div className="chat-input-bar__tools-left">
+                <button className="chat-input-btn" onClick={() => setVoiceMode(true)} title="语音输入" aria-label="语音输入">
+                  <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="3" width="6" height="11" rx="3" />
+                    <path d="M5 11a7 7 0 0 0 14 0" />
+                    <line x1="12" y1="18" x2="12" y2="21" />
+                    <line x1="8" y1="21" x2="16" y2="21" />
+                  </svg>
+                </button>
+                <button className="chat-input-btn" onClick={() => fileInputRef.current?.click()} title="上传" aria-label="上传文件或拍照">
+                  <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                    <circle cx="12" cy="12" r="9.5" />
+                    <line x1="12" y1="7.5" x2="12" y2="16.5" />
+                    <line x1="7.5" y1="12" x2="16.5" y2="12" />
+                  </svg>
+                </button>
+              </div>
+              <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={!input.trim() || loading} aria-label="发送">
+                {loading ? (
+                  <span className="chat-send-btn__spinner" />
+                ) : (
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="19" x2="12" y2="5" />
+                    <polyline points="6 11 12 5 18 11" />
+                  </svg>
+                )}
+              </button>
+            </div>
+          </>
+        )}
         <input ref={fileInputRef} type="file" accept="image/*" capture="environment" onChange={handleFileChange} style={{ display: 'none' }} />
       </div>
     </div>

@@ -1,69 +1,45 @@
-// 我要摇人底部：我提交的历史工单列表（虚拟滚动，每条一行圆角 tab）
+// 我要摇人底部：AI 诊断生成的历史工单（全量，按角色）
+// 数据源：AI 模块 GET /api/ai/memory/tickets/all（admin 全部，其余仅本人创建）
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Toast } from 'tdesign-mobile-react';
-import { createRequest } from '@/api/client';
-import API_CONFIG from '@/config/api';
-import { useAuthStore } from '@/stores/auth';
+import { qaListTickets, type AiTicketBrief } from '@/api/ai';
 import { useWorkbenchStore } from '@/stores/workbench';
-import { normalizeStatus } from '@/shared/constants/ticket';
-import { formatDateTime } from '@/shared/utils/url';
 
-interface Ticket {
-  id: string; title: string; status: string; project_name?: string; created_at: string;
-  reporter_name?: string;
-  description?: string;
-}
-
-const ROW_HEIGHT = 56;
-const STATUS_COLOR: Record<string, string> = {
-  new: '#0052d9', in_progress: '#e37318', pending: '#e37318',
-  resolved: '#2ba471', closed: '#999',
+const PRIORITY_COLOR: Record<string, string> = {
+  紧急: '#d54941', 高: '#e37318', 中: '#0052d9', 低: '#999',
 };
-
-/** 从 description 提炼一行"梗概"：去 markdown 标记、取首条非空、限长 */
-function stripSummary(desc: string): string {
-  const firstLine = desc.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('【')) || '';
-  return firstLine
-    .replace(/^#+\s*/, '')
-    .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/[*_`>#-]/g, '')
-    .slice(0, 40);
-}
+const TYPE_LABEL: Record<string, string> = {
+  problem: '报障', bug: '缺陷', feature: '需求', support: '支持', other: '其他',
+};
 
 export default function HistoryTickets() {
   const navigate = useNavigate();
-  const { username } = useAuthStore();
   const tasksRefreshKey = useWorkbenchStore((s) => s.tasksRefreshKey);
-  const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
 
-  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [tickets, setTickets] = useState<AiTicketBrief[]>([]);
   const [loading, setLoading] = useState(false);
 
   const fetchTickets = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ page: '1', size: '200' });
-      if (username) params.set('reporter', username);
-      const data = await request<{ items: Ticket[]; total: number }>(`/?${params.toString()}`);
-      let list = data.items || [];
-      // 后端可能忽略 reporter 参数，前端再兜底过滤
-      if (username) list = list.filter((t) => !t.reporter_name || t.reporter_name === username);
-      setTickets(list);
+      const res = await qaListTickets(0, 200); // {code, data:{items, total}}
+      setTickets(res?.data?.items || []);
     } catch (err) {
       Toast({ message: `历史工单加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setLoading(false);
     }
-  }, [username]);
+  }, []);
 
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
-  useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
+  useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey, fetchTickets]);
 
   // ---- 虚拟滚动 ----
   const viewportRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(0);
+  const ROW_HEIGHT = 56;
 
   useEffect(() => {
     const el = viewportRef.current;
@@ -95,20 +71,21 @@ export default function HistoryTickets() {
           <div style={{ height: totalH, position: 'relative' }}>
             {visible.map((t, i) => (
               <div
-                key={t.id}
+                key={t.session_id}
                 className="history-row"
                 style={{ position: 'absolute', top: (start + i) * ROW_HEIGHT, left: 0, right: 0, height: ROW_HEIGHT }}
-                onClick={() => navigate(`/app/call/ticket/${t.id}`)}
+                onClick={() => navigate(`/call/ticket/${t.session_id}`)}
               >
-                <span className="history-row__dot" style={{ background: STATUS_COLOR[t.status] || '#999' }} />
+                <span className="history-row__dot" style={{ background: PRIORITY_COLOR[t.priority || ''] || '#999' }} />
                 <span className="history-row__main">
-                  <span className="history-row__title">{t.title}</span>
-                  {t.description && (
-                    <span className="history-row__summary">{stripSummary(t.description)}</span>
-                  )}
+                  <span className="history-row__title">
+                    {t.type && <span className="history-row__type">{TYPE_LABEL[t.type] || t.type}</span>}
+                    {t.title}
+                  </span>
+                  {t.description && <span className="history-row__summary">{t.description.slice(0, 40)}</span>}
                 </span>
-                <span className="history-row__status">{normalizeStatus(t.status)}</span>
-                <span className="history-row__date">{formatDateTime(t.created_at).slice(0, 10)}</span>
+                <span className="history-row__status">{t.priority || ''}</span>
+                <span className="history-row__date">{(t.created_at || '').slice(0, 10)}</span>
               </div>
             ))}
           </div>

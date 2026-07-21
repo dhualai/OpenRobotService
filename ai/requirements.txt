@@ -27,7 +27,7 @@ charset-normalizer==3.4.9
 # ---- 向量库 ----
 qdrant-client==1.18.0
 grpcio==1.82.1
-protobuf==7.35.1
+protobuf>=5.29
 portalocker==3.2.0
 
 # ---- Embedding / 模型 ----

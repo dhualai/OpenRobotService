@@ -1,0 +1,42 @@
+[
+  {
+    "id": "eng_example_01",
+    "name": "张工",
+    "responsibility_modules": ["车端", "异常排查"],
+    "skills": ["潜伏车", "科钛", "VDA5050", "MQTT", "适配层", "自研"],
+    "duty_text": "负责车辆控制、适配层开发与现场故障排查",
+    "level": 1
+  },
+  {
+    "id": "eng_example_02",
+    "name": "李工",
+    "responsibility_modules": ["地图编辑", "定位"],
+    "skills": ["地图编辑", "SLAM", "定位", "反光板", "重定位"],
+    "duty_text": "负责地图编辑工具、SLAM 定位相关开发",
+    "level": 1
+  },
+  {
+    "id": "eng_example_03",
+    "name": "王工",
+    "responsibility_modules": ["任务调度", "算法"],
+    "skills": ["任务调度", "流程编排", "订单", "算法", "AI"],
+    "duty_text": "负责任务调度系统与智能推荐算法",
+    "level": 1
+  },
+  {
+    "id": "eng_example_04",
+    "name": "赵工",
+    "responsibility_modules": ["前端", "网络"],
+    "skills": ["前端", "UI", "可视化", "2D", "微信"],
+    "duty_text": "负责前端页面开发与微信服务号对接",
+    "level": 1
+  },
+  {
+    "id": "eng_example_05",
+    "name": "陈工",
+    "responsibility_modules": ["部署运维", "外设"],
+    "skills": ["部署", "运维", "Docker", "输送线", "充电桩", "自动门"],
+    "duty_text": "负责环境部署、运维与外设对接",
+    "level": 1
+  }
+]

@@ -66,13 +66,17 @@ class EmbedClient:
                     from pathlib import Path as _Path
 
                     model_path = self.model_name
-                    # 判断是本地路径还是 HuggingFace 模型名
-                    # 优先检查本地：相对路径（含 / 或 \）且实际存在 → 用本地
-                    # 否则作为 HuggingFace 模型名（如 BAAI/bge-small-zh-v1.5）
                     local = _Path(model_path)
                     if not local.is_absolute():
-                        # 相对路径相对于 ai/ 目录
                         local = _Path(__file__).resolve().parent.parent / model_path
+                    if not local.exists():
+                        # HuggingFace 模型名（如 BAAI/bge-small-zh-v1.5）
+                        # → 在 ai/embed_models/ 下找同名目录
+                        _embed_dir = _Path(__file__).resolve().parent.parent / "embed_models"
+                        _model_name = _Path(model_path).name  # bge-small-zh-v1.5
+                        _candidate = _embed_dir / _model_name
+                        if _candidate.is_dir() and (_candidate / "config.json").exists():
+                            local = _candidate
                     if local.exists():
                         model_path = str(local.resolve())
 

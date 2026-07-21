@@ -1,6 +1,8 @@
-﻿from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from typing import Optional
 from app.wechat.schemas.message import ApiResponse
 from app.wechat.services.wechat_service import wechat_service
+from app.wechat.api.dependencies import admin_auth
 import logging
 
 logger = logging.getLogger(__name__)
@@ -9,7 +11,8 @@ router = APIRouter(tags=["菜单管理"])
 
 
 @router.post("/create_menu", response_model=ApiResponse)
-async def api_create_menu():
+async def api_create_menu(credentials: Optional = admin_auth):
+
     try:
         logger.info("尝试创建微信菜单")
         
@@ -23,7 +26,8 @@ async def api_create_menu():
 
 
 @router.get("/get_menu", response_model=dict)
-async def api_get_menu():
+async def api_get_menu(credentials: Optional = admin_auth):
+
     try:
         logger.info("尝试获取微信菜单")
         
@@ -38,7 +42,8 @@ async def api_get_menu():
 
 
 @router.delete("/delete_menu", response_model=ApiResponse)
-async def api_delete_menu():
+async def api_delete_menu(credentials: Optional = admin_auth):
+
     try:
         logger.info("尝试删除微信菜单")
         
@@ -52,7 +57,8 @@ async def api_delete_menu():
 
 
 @router.post("/create_conditional_menu", response_model=dict)
-async def api_create_conditional_menu(menu_data: dict):
+async def api_create_conditional_menu(menu_data: dict, credentials: Optional = admin_auth):
+
     try:
         logger.info("尝试创建个性化菜单")
         
@@ -67,7 +73,8 @@ async def api_create_conditional_menu(menu_data: dict):
 
 
 @router.post("/create_conditional_menu_from_file", response_model=dict)
-async def api_create_conditional_menu_from_file():
+async def api_create_conditional_menu_from_file(credentials: Optional = admin_auth):
+
     try:
         logger.info("尝试从文件创建个性化菜单")
         
@@ -82,7 +89,8 @@ async def api_create_conditional_menu_from_file():
 
 
 @router.delete("/delete_conditional_menu/{menuid}", response_model=ApiResponse)
-async def api_delete_conditional_menu(menuid: str):
+async def api_delete_conditional_menu(menuid: str, credentials: Optional = admin_auth):
+
     try:
         logger.info(f"尝试删除个性化菜单: {menuid}")
         
@@ -96,7 +104,8 @@ async def api_delete_conditional_menu(menuid: str):
 
 
 @router.post("/try_match_menu", response_model=dict)
-async def api_try_match_menu(user_id: str):
+async def api_try_match_menu(user_id: str, credentials: Optional = admin_auth):
+
     try:
         logger.info(f"尝试测试个性化菜单，用户ID: {user_id}")
         
