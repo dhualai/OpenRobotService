@@ -1,8 +1,6 @@
-// 可复用 AI 对话面板 —— call 场景对接 /api/ai/qa/ask/stream（SSE 流式诊断）
-// tasks 场景对接 /api/ai/task/analyze/stream（任务 Agent 方案生成）
-// 我要摇人（全屏）与系统任务（顶部紧凑）共用
-// 功能：SSE 流式 / 点赞点踩 / 复制 / 修改己方 / 语音 / 上传·拍照 / ENTER 发送
-// call 场景额外：消费工单讨论上下文 + 打包转工单
+// 可复用 AI 对话面板
+// call 场景：提单 Agent（/api/ai/qa/ask/stream）—— 我要摇人，诊断+提单
+// tasks 场景：任务 Agent（/api/ai/task/chat/stream）—— 系统任务，自由问答+感知工单
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Textarea, Toast } from 'tdesign-mobile-react';
@@ -225,7 +223,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() }]);
 
       // tasks 场景：任务 Agent chat/stream（感知用户所有工单）
-      // call 场景：提单 Agent
+      // 选择 API：call「我要摇人」走提单 Agent，tasks「系统任务」走任务 Agent
       const AI_BASE = API_CONFIG.AI.BASE_URL;
       const apiPath = isCall
         ? `${AI_BASE}/qa/ask/stream`
