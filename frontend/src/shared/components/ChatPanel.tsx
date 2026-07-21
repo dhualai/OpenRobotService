@@ -71,7 +71,7 @@ const SCENE_CONFIG: Record<ChatScene, {
   tasks: { sceneType: 'task_assist', emptyEmoji: '🤖', emptyTitle: 'AI 任务助手' },
 };
 
-export default function ChatPanel({ scene, compact = false, taskId, taskTitle, taskDescription }: { scene: ChatScene; compact?: boolean; taskId?: string; taskTitle?: string; taskDescription?: string }) {
+export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
   const navigate = useNavigate();
   const { token, username } = useAuthStore();
   const { chatContext, consumeChatContext, refreshTasks } = useWorkbenchStore();
@@ -150,25 +150,6 @@ export default function ChatPanel({ scene, compact = false, taskId, taskTitle, t
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatContext]);
 
-  // tasks 场景：选中工单时注入诊断上下文消息（taskId 变化时触发）
-  const prevTaskIdRef = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    if (isCall || !taskId || taskId === prevTaskIdRef.current) return;
-    prevTaskIdRef.current = taskId;
-    const title = taskTitle || `工单 #${taskId}`;
-    const desc = taskDescription || '';
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: uid(),
-        role: 'assistant',
-        content: `📋 你已选中工单 #${taskId}「${title}」${desc ? `\n\n${desc}` : ''}\n\n我可以帮你分析这个工单的根因并生成解决方案草稿，也可以回答任何技术问题。请直接告诉我你需要什么。`,
-        timestamp: new Date().toISOString(),
-      },
-    ]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskId]);
-
   /** 确保 sessionId——新 AI 模块无需预先创建会话 */
   const ensureSessionId = useCallback((): string => {
     if (!sessionId) {
@@ -243,20 +224,15 @@ export default function ChatPanel({ scene, compact = false, taskId, taskTitle, t
       if (convId) appendMessage(convId, 'user', userContent).catch(() => {});
       setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() }]);
 
-      // tasks 场景：无 taskId 走自由对话，有 taskId 走工单分析
-      // call 场景：走提单 Agent
+      // tasks 场景：任务 Agent chat/stream（感知用户所有工单）
+      // call 场景：提单 Agent
       const AI_BASE = API_CONFIG.AI.BASE_URL;
-      const hasTask = !!taskId;
       const apiPath = isCall
         ? `${AI_BASE}/qa/ask/stream`
-        : hasTask
-          ? `${AI_BASE}/task/analyze/stream`
-          : `${AI_BASE}/task/chat/stream`;
+        : `${AI_BASE}/task/chat/stream`;
       const apiBody = isCall
         ? JSON.stringify({ session_id: sid, query: userContent })
-        : hasTask
-          ? JSON.stringify({ task_id: taskId, session_id: sid, query: userContent })
-          : JSON.stringify({ session_id: sid, query: userContent });
+        : JSON.stringify({ session_id: sid, query: userContent, username: username || '' });
 
       const response = await fetchWithAuth(apiPath, { method: 'POST', body: apiBody });
 
@@ -459,10 +435,11 @@ export default function ChatPanel({ scene, compact = false, taskId, taskTitle, t
     if (submittingSolution || !msg.solution_draft) return;
     setSubmittingSolution(true);
     try {
+      // task_id 从 solution_draft 内携带，或由 Agent 在对话中推断
       const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/submit`, {
         method: 'POST',
         body: JSON.stringify({
-          task_id: taskId || '',
+          task_id: msg.solution_draft._task_id || '',
           session_id: sessionId,
           final_solution: msg.solution_draft,
           resolution: 'resolved',
@@ -482,10 +459,9 @@ export default function ChatPanel({ scene, compact = false, taskId, taskTitle, t
     }
   };
 
-  /** 任务 Agent：重新分析当前工单 */
+  /** 任务 Agent：请求重新分析 */
   const handleReanalyze = () => {
-    if (!taskId) return;
-    send(`请重新分析工单 #${taskId}`);
+    send('请重新分析这个工单的问题');
   };
 
   const toggleReaction = (id: string, type: 'like' | 'dislike') => {

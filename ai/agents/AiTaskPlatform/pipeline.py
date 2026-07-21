@@ -266,14 +266,21 @@ class AiTaskAgent:
 
     async def chat(
         self, session_id: str, query: str,
-        task_id: str = "", task_title: str = "", task_description: str = "",
+        username: str = "",
     ) -> str:
-        """自由对话：工程师可以问任何 AGV/AMR 技术问题"""
+        """v2.0 自由对话：感知用户所有工单 + 诊断状态。
+
+        Args:
+            username: 当前工程师用户名（从 auth store 传入），用于查询 assigned_to 的工单
+        """
         t0 = time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
 
-        # 构建对话上下文
+        # 1. 加载用户工单列表
+        tasks_summary = await self._fetch_user_tasks_summary(username)
+
+        # 2. 对话上下文
         conversation = ""
         try:
             memory = await self._memory.get_memory(session_id)
@@ -285,24 +292,18 @@ class AiTaskAgent:
         except Exception:
             pass
 
-        # 构建 prompt
+        # 3. 构建 prompt
         t_prompt = time.perf_counter()
-        if task_id:
-            prompt = (
-                f"## 对话历史\n{conversation}\n\n"
-                f"## 当前工单\n标题: {task_title}\n描述: {task_description}\n\n"
-                f"## 用户消息\n{query}"
-            )
-        else:
-            prompt = (
-                f"## 对话历史\n{conversation}\n\n"
-                f"## 用户消息\n{query}"
-            )
+        prompt = (
+            f"## 对话历史\n{conversation}\n\n"
+            f"## 用户消息\n{query}\n\n"
+            f"## 当前用户的工单\n{tasks_summary}"
+        )
         self._add_trace(self.NODE_BUILD_PROMPT, "ok",
-                        input={"prompt_chars": len(prompt), "has_task": bool(task_id)},
+                        input={"prompt_chars": len(prompt), "task_count": tasks_summary.count("#")},
                         elapsed_ms=round((time.perf_counter() - t_prompt) * 1000))
 
-        # LLM 调用
+        # 4. LLM
         t_llm = time.perf_counter()
         response = await self._llm_client.complete(
             prompt=prompt,
@@ -315,7 +316,7 @@ class AiTaskAgent:
                         output={"response_chars": len(response)},
                         elapsed_ms=round((time.perf_counter() - t_llm) * 1000))
 
-        # 写入对话记忆
+        # 5. 记忆
         t_mem = time.perf_counter()
         try:
             await self._memory.add_turn(session_id, "user", query)
@@ -330,15 +331,18 @@ class AiTaskAgent:
 
     async def chat_stream(
         self, session_id: str, query: str,
-        task_id: str = "", task_title: str = "", task_description: str = "",
+        username: str = "",
     ):
-        """流式自由对话"""
+        """v2.0 流式自由对话：感知用户所有工单"""
         import time as _time
         t0 = _time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
 
-        # 构建对话上下文
+        # 1. 加载用户工单列表
+        tasks_summary = await self._fetch_user_tasks_summary(username)
+
+        # 2. 对话上下文
         conversation = ""
         try:
             memory = await self._memory.get_memory(session_id)
@@ -351,19 +355,13 @@ class AiTaskAgent:
             pass
 
         t_prompt = _time.perf_counter()
-        if task_id:
-            prompt = (
-                f"## 对话历史\n{conversation}\n\n"
-                f"## 当前工单\n标题: {task_title}\n描述: {task_description}\n\n"
-                f"## 用户消息\n{query}"
-            )
-        else:
-            prompt = (
-                f"## 对话历史\n{conversation}\n\n"
-                f"## 用户消息\n{query}"
-            )
+        prompt = (
+            f"## 对话历史\n{conversation}\n\n"
+            f"## 用户消息\n{query}\n\n"
+            f"## 当前用户的工单\n{tasks_summary}"
+        )
         self._add_trace(self.NODE_BUILD_PROMPT, "ok",
-                        input={"prompt_chars": len(prompt), "has_task": bool(task_id)},
+                        input={"prompt_chars": len(prompt), "task_count": tasks_summary.count("#")},
                         elapsed_ms=round((_time.perf_counter() - t_prompt) * 1000))
 
         yield {"event": "status", "data": {"stage": "chatting"}}
@@ -456,6 +454,50 @@ class AiTaskAgent:
     # ============================================================
     # 私有：上下文加载 — 直接从 tickets 表读取（AI 模块自有数据）
     # ============================================================
+
+    async def _fetch_user_tasks_summary(self, username: str) -> str:
+        """从业务后端获取当前用户工单 + 诊断状态摘要。
+
+        返回注入 Chat Prompt 的文本：每条工单一行，含优先级/状态/诊断状态。
+        无工单时返回"（无待处理工单）"。
+        """
+        if not username:
+            return "（无用户信息，无法获取工单列表）"
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                resp = await client.get(
+                    f"http://localhost:8400/api/tasks/",
+                    params={"assigned_to": username, "size": 50, "status": "in_progress,pending,new"}
+                )
+                if resp.status_code != 200:
+                    return "（工单列表获取失败）"
+
+                data = resp.json()
+                items = data.get("items") or data.get("data", {}).get("items", [])
+                if not items:
+                    return "（无待处理工单）"
+
+                from ai.agents.AiTaskPlatform.diagnosis_service import _is_diagnosed
+
+                lines = []
+                for task in items:
+                    tid = task.get("id", "")
+                    title = task.get("title", "")[:50]
+                    priority = task.get("priority", "中")
+                    status = task.get("status", "")
+                    status_cn = {"new": "新建", "in_progress": "进行中", "pending": "待处理",
+                                  "resolved": "已解决", "closed": "已关闭"}.get(status, status)
+                    diagnosed = _is_diagnosed(int(tid))
+                    diag_mark = "✅已诊断" if diagnosed else "⚠️待诊断"
+
+                    lines.append(f"  #{tid} {title} [{priority}/{status_cn}/{diag_mark}]")
+
+                return "\n".join(lines) if lines else "（无待处理工单）"
+
+        except Exception as e:
+            print(f"  [task-agent] Failed to fetch user tasks: {e}")
+            return "（工单列表暂时不可用）"
 
     async def _load_task_context(self, task_id: str) -> TaskContext:
         """从 tasks 表读取工单上下文（source='ai' 任务）。
