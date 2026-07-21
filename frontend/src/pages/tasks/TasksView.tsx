@@ -9,6 +9,8 @@ import API_CONFIG from '@/config/api';
 import Pagination from '@/shared/components/Pagination';
 import SafeHtml from '@/shared/components/SafeHtml';
 import ChatPanel from '@/shared/components/ChatPanel';
+import UserSelect from '@/shared/components/UserSelect';
+import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { normalizeStatus, STATUS_DISPLAY_MAP, TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { formatDateTime, formatTime } from '@/shared/utils/url';
@@ -49,6 +51,7 @@ export default function TasksView() {
   const [moreSheetId, setMoreSheetId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({ title: '', description: '' });
+  const [escalateUser, setEscalateUser] = useState<UserItem | null>(null);
 
   const fetchTickets = useCallback(async () => {
     setLoading(true);
@@ -111,8 +114,28 @@ export default function TasksView() {
     catch { Toast({ message: '催办失败', theme: 'error' }); }
   };
   const handleEscalate = async (t: Ticket) => {
-    try { await request(`/${t.id}/escalate`, { method: 'POST' }).catch(() => {}); Toast({ message: '已升级上报', theme: 'success' }); }
-    catch { Toast({ message: '上报失败', theme: 'error' }); }
+    if (!escalateUser) {
+      Toast({ message: '请先选择升级对象', theme: 'warning' });
+      return;
+    }
+    const target = escalateUser.name || escalateUser.username;
+    try {
+      await request('/', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: `【升级→${target}】${t.title}`,
+          description: `原工单 #${t.id}「${t.title}」申请升级给 ${target}，请处理。\n\n原始描述：${t.description || '无'}`,
+          ticket_type: t.ticket_type || 'problem',
+          priority: 'urgent',
+          related_resource_id: Number(t.id),
+          assigned_to: escalateUser.id,
+        }),
+      });
+      Toast({ message: `已升级，已指派给 ${target}`, theme: 'success' });
+      setEscalateUser(null);
+    } catch (err) {
+      Toast({ message: `升级失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
   };
   const copyId = (id: string) => {
     navigator.clipboard?.writeText(id).then(() => Toast({ message: '已复制工单号', theme: 'success' }));
@@ -252,10 +275,13 @@ export default function TasksView() {
                 )}
 
                 <div className="ticket-detail__actions">
-                  <Button size="small" theme="primary" onClick={() => handleUrge(detail)}>一键催办</Button>
-                  <Button size="small" theme="default" onClick={startEdit}>修改工单</Button>
-                  <Button size="small" theme="primary" onClick={() => discuss(detail)}>讨论</Button>
-                  <Button size="small" theme="danger" onClick={() => handleEscalate(detail)}>升级上报</Button>
+                  <UserSelect value={escalateUser?.id ?? null} onChange={setEscalateUser} />
+                  <div className="ticket-detail__action-btns">
+                    <Button size="small" theme="primary" onClick={() => handleUrge(detail)}>一键催办</Button>
+                    <Button size="small" theme="default" onClick={startEdit}>修改工单</Button>
+                    <Button size="small" theme="primary" onClick={() => discuss(detail)}>讨论</Button>
+                    <Button size="small" theme="danger" onClick={() => handleEscalate(detail)}>升级上报</Button>
+                  </div>
                 </div>
                 <div className="ticket-detail__footer">
                   创建：{formatDateTime(detail.created_at)} · 更新：{formatDateTime(detail.updated_at)}
