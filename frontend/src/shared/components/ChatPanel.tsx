@@ -151,7 +151,7 @@ export default function ChatPanel({ scene, compact = false, taskId, taskTitle, t
   }, [chatContext]);
 
   // tasks 场景：选中工单时注入诊断上下文消息（taskId 变化时触发）
-  const prevTaskIdRef = useRef<string | undefined>();
+  const prevTaskIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (isCall || !taskId || taskId === prevTaskIdRef.current) return;
     prevTaskIdRef.current = taskId;

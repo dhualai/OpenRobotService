@@ -684,44 +684,13 @@ class AiDiagnosisPlatform:
         agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
         ticket = await self._build_ticket(session_id, agent_state, memory)
 
-        # ---- 存储到 MySQL ----
+        # ---- 存储到 tasks 表（source='ai'，按 session_id 幂等 upsert）----
         db_id = 0
         try:
-            from app.models.ticket import Ticket
-            from app.core.database import SessionLocal
-            db = SessionLocal()
-            record = Ticket(
-                session_id=session_id,
-                created_by=created_by,
-                ticket_ai_id=ticket.get("ticket_id", ""),
-                title=ticket.get("title", ""),
-                description=ticket.get("description", ""),
-                type=ticket.get("type", "other"),
-                priority=ticket.get("priority", "中"),
-                contact=ticket.get("contact", ""),
-                diagnosis=ticket.get("diagnosis", {}),
-                attachments=ticket.get("attachments", []),
-                location=ticket.get("location", ""),
-                robot_type=ticket.get("robot_type", ""),
-                fault_code=ticket.get("fault_code", ""),
-                special_notes=ticket.get("special_notes", ""),
-                steps_to_reproduce=ticket.get("steps_to_reproduce", ""),
-                expected_result=ticket.get("expected_result", ""),
-                actual_result=ticket.get("actual_result", ""),
-                severity=ticket.get("severity", ""),
-                version=ticket.get("version", ""),
-                scenario=ticket.get("scenario", ""),
-                expected_effect=ticket.get("expected_effect", ""),
-                source=ticket.get("source", ""),
-                support_type=ticket.get("support_type", ""),
-                preferred_response=ticket.get("preferred_response", ""),
-            )
-            db.add(record)
-            db.commit()
-            db.refresh(record)
+            from ai.core.task_adapter import upsert_task
+            record = upsert_task(ticket, created_by=created_by)
             db_id = record.id
             ticket["db_id"] = db_id
-            db.close()
         except Exception as e:
             print(f"  ⚠️ MySQL 写入失败: {e}")
 
