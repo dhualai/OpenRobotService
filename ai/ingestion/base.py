@@ -21,6 +21,7 @@
             ...
 """
 import hashlib
+import re
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -310,9 +311,11 @@ class BaseIngester(ABC, Generic[T]):
                     pass
             return
 
-        # 只匹配同前缀且不同后缀的集合：cheduan_YYYYMMDD 不等于 cheduan_manual_YYYYMMDD
+        # 只匹配同前缀 + 时间戳后缀的集合：cheduan_YYYYMMDD 不等于 cheduan_manual_YYYYMMDD
+        # 用正则确保 prefix_ 之后紧跟数字，避免 cheduan 误匹配 cheduan_manual
+        prefix_pat = re.compile(rf"^{re.escape(self.collection_prefix)}_\d")
         ours = sorted(
-            [c for c in all_cols if c.startswith(self.collection_prefix + "_")],
+            [c for c in all_cols if prefix_pat.match(c)],
             reverse=True,
         )
         self._log(f"[CLEANUP] {self.collection_prefix}: 找到 {len(ours)} 个集合，保留最新 {keep} 个")
