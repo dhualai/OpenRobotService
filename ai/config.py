@@ -65,6 +65,9 @@ class AIConfig(BaseModel):
     dispatch_api_url: str = Field(default="", description="派单系统推送地址")
     upload_dir: str = Field(default="./uploads", description="附件上传目录")
 
+    # ========== 诊断服务 ==========
+    diagnosis_scan_interval: int = Field(default=60, description="诊断服务扫描新工单间隔（秒）")
+
     # ========== 超时 ==========
     ai_chain_timeout: float = Field(default=2.5)
 
@@ -253,6 +256,9 @@ def get_ai_config() -> AIConfig:
         retrieval_score_threshold=float(os.getenv("RETRIEVAL_SCORE_THRESHOLD", "0.65")),
         # 超时
         ai_chain_timeout=float(os.getenv("AI_CHAIN_TIMEOUT", "2.5")),
+        # 派单
+        # 诊断服务
+        diagnosis_scan_interval=int(os.getenv("DIAGNOSIS_SCAN_INTERVAL", "60")),
         # 派单
         dispatch_api_url=os.getenv("DISPATCH_API_URL", ""),
         upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),
