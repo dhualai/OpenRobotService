@@ -68,6 +68,9 @@ class AIConfig(BaseModel):
     # ========== 诊断服务 ==========
     diagnosis_scan_interval: int = Field(default=60, description="诊断服务扫描新工单间隔（秒）")
 
+    # ========== Debug ==========
+    debug_assign_to_admin: bool = Field(default=False, description="开发模式：所有工单直接分配给 admin，跳过 AI 派单")
+
     # ========== 超时 ==========
     ai_chain_timeout: float = Field(default=2.5)
 
@@ -259,6 +262,8 @@ def get_ai_config() -> AIConfig:
         # 派单
         # 诊断服务
         diagnosis_scan_interval=int(os.getenv("DIAGNOSIS_SCAN_INTERVAL", "60")),
+        # Debug
+        debug_assign_to_admin=os.getenv("DEBUG_ASSIGN_TO_ADMIN", "false").lower() in ("1", "true", "yes"),
         # 派单
         dispatch_api_url=os.getenv("DISPATCH_API_URL", ""),
         upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),

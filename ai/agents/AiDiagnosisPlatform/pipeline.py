@@ -704,34 +704,61 @@ class AiDiagnosisPlatform:
             pass
 
         # ---- 智能派单推荐 ----
-        try:
-            from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket
-            _result = await assign_ticket(
-                ticket_id=str(db_id or ticket["ticket_id"]),
-                title=ticket.get("title", ""),
-                problem_description=ticket.get("description", ""),
-                status="pending_dispatch",
-                priority=ticket.get("priority", "中"),
-                ticket_type=ticket.get("type", "other"),
-                session_id=session_id,
-                source="ai_agent",
-                location=ticket.get("location", ""),
-                robot_type=ticket.get("robot_type", ""),
-                fault_code=ticket.get("fault_code", ""),
-                special_notes=ticket.get("special_notes", ""),
-                diagnosis_hypotheses=agent_state.hypotheses,
-                diagnosis_ruled_out=agent_state.ruled_out,
-                diagnosis_collected_info=agent_state.collected_info,
-                diagnosis_rounds=agent_state.diagnosis_rounds,
-                contact=ticket.get("contact", ""),
-            )
-            ticket["assignee"] = _result.engineer_name
-            ticket["assignee_id"] = _result.engineer_id
-            ticket["assign_confidence"] = _result.confidence_score
-            ticket["assign_reasoning"] = _result.reasoning
-            ticket["assign_decision_type"] = _result.decision_type
-        except Exception as _e:
-            print(f"  ⚠️ 智能派单失败（不阻塞工单生成）: {_e}")
+        # Debug 模式：跳过 AI 派单，直接分配给 admin
+        if get_ai_config().debug_assign_to_admin:
+            ticket["assignee"] = "admin"
+            ticket["assignee_id"] = "admin"
+            ticket["assign_confidence"] = 1.0
+            ticket["assign_reasoning"] = "Debug 模式：自动分配给管理员"
+            ticket["assign_decision_type"] = "debug"
+            try:
+                from ai.core.task_adapter import update_task_assignment
+                update_task_assignment(
+                    db_id, engineer_name="admin", engineer_id="admin",
+                    confidence=1.0, reasoning="Debug 模式：自动分配给管理员",
+                )
+            except Exception as _ue:
+                print(f"  ⚠️ Debug 派单回写失败: {_ue}")
+        else:
+            try:
+                from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket
+                _result = await assign_ticket(
+                    ticket_id=str(db_id or ticket["ticket_id"]),
+                    title=ticket.get("title", ""),
+                    problem_description=ticket.get("description", ""),
+                    status="pending_dispatch",
+                    priority=ticket.get("priority", "中"),
+                    ticket_type=ticket.get("type", "other"),
+                    session_id=session_id,
+                    source="ai_agent",
+                    location=ticket.get("location", ""),
+                    robot_type=ticket.get("robot_type", ""),
+                    fault_code=ticket.get("fault_code", ""),
+                    special_notes=ticket.get("special_notes", ""),
+                    diagnosis_hypotheses=agent_state.hypotheses,
+                    diagnosis_ruled_out=agent_state.ruled_out,
+                    diagnosis_collected_info=agent_state.collected_info,
+                    diagnosis_rounds=agent_state.diagnosis_rounds,
+                    contact=ticket.get("contact", ""),
+                )
+                ticket["assignee"] = _result.engineer_name
+                ticket["assignee_id"] = _result.engineer_id
+                ticket["assign_confidence"] = _result.confidence_score
+                ticket["assign_reasoning"] = _result.reasoning
+                ticket["assign_decision_type"] = _result.decision_type
+                # 回写到 tasks 表，这样前端工单详情页能显示处理人
+                try:
+                    from ai.core.task_adapter import update_task_assignment
+                    update_task_assignment(
+                        db_id, engineer_name=_result.engineer_name,
+                        engineer_id=_result.engineer_id,
+                        confidence=_result.confidence_score,
+                        reasoning=_result.reasoning,
+                    )
+                except Exception as _ue:
+                    print(f"  ⚠️ 派单结果回写 tasks 表失败: {_ue}")
+            except Exception as _e:
+                print(f"  ⚠️ 智能派单失败（不阻塞工单生成）: {_e}")
 
         return {
             "type": "ticket",
