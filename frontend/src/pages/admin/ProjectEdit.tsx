@@ -10,14 +10,14 @@ export default function ProjectEdit() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [form, setForm] = useState({ name: '', description: '', status: 'active' });
+  const [form, setForm] = useState({ project_code: '', name: '', description: '', status: '售前方案' });
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   useEffect(() => {
     if (id) {
       setLoading(true);
-      request<{ name: string; description: string; status: string }>(`/projects/${id}`)
-        .then((data) => setForm({ name: data.name, description: data.description, status: data.status }))
+      request<{ project_code: string; name: string; description: string; status: string }>(`/projects/${id}`)
+        .then((data) => setForm({ project_code: data.project_code, name: data.name, description: data.description, status: data.status }))
         .catch((err) => Toast({ message: `加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
         .finally(() => setLoading(false));
     }
@@ -44,6 +44,9 @@ export default function ProjectEdit() {
     <div style={{ padding: 16 }}>
       <h4 style={{ marginBottom: 16 }}>{id ? '编辑项目' : '新建项目'}</h4>
       <Form onSubmit={handleSubmit}>
+        <FormItem label="项目编码" name="project_code">
+          <Input value={form.project_code} onChange={(v) => setForm((p) => ({ ...p, project_code: String(v) }))} placeholder="输入项目编码" clearable />
+        </FormItem>
         <FormItem label="项目名称" name="name">
           <Input value={form.name} onChange={(v) => setForm((p) => ({ ...p, name: String(v) }))} placeholder="输入项目名称" clearable />
         </FormItem>

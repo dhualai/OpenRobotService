@@ -1,4 +1,4 @@
-﻿from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, and_
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
@@ -528,6 +528,9 @@ class TicketService:
 
     @staticmethod
     async def get_ticket_by_id(db: AsyncSession, ticket_id: int, load_comments: bool = False, token: Optional[str] = None) -> Optional[Ticket]:
+        import logging
+        logger = logging.getLogger(__name__)
+        
         if not is_valid_id(ticket_id):
             return None
         
@@ -548,12 +551,34 @@ class TicketService:
             ticket = result.scalar_one_or_none()
         
         if ticket and load_comments:
-            comments = await TicketService.get_comments(db, ticket_id, token)
-            set_committed_value(ticket, 'comments', comments)
+            logger.info(f"开始加载评论: ticket_id={ticket_id}")
+            try:
+                from sqlalchemy.orm import joinedload
+                result = await db.execute(
+                    select(Ticket)
+                    .where(Ticket.id == ticket_id)
+                    .options(joinedload(Ticket.comments))
+                )
+                ticket = result.unique().scalar_one_or_none()
+
+                if ticket:
+                    user_map = await TicketService._get_user_map(token)
+                    for comment in ticket.comments:
+                        setattr(comment, "created_by_name", user_map.get(comment.created_by, comment.created_by))
+                        content = comment.content
+                        comment.content = ImageProcessor.process_content_for_response(content)
+
+                logger.info(f"评论加载成功: ticket_id={ticket_id}, comment_count={len(ticket.comments) if ticket else 0}")
+            except Exception as e:
+                logger.error(f"评论加载失败: ticket_id={ticket_id}, error={str(e)}", exc_info=True)
+                raise
+            finally:
+                # 评论加载完成后设 committed_value，避免后续序列化时触发 lazy load → MissingGreenlet
+                if ticket:
+                    set_committed_value(ticket, 'comments', getattr(ticket, 'comments', []))
         elif ticket:
             # 未请求评论时也设空列表，避免序列化时触发 lazy load → MissingGreenlet
             set_committed_value(ticket, 'comments', [])
-
         return ticket
 
     @staticmethod
@@ -694,18 +719,31 @@ class TicketService:
 
     @staticmethod
     async def get_comments(db: AsyncSession, ticket_id: int, token: Optional[str] = None) -> List[TicketComment]:
+        import logging
+        logger = logging.getLogger(__name__)
+        
         result = await db.execute(
             select(TicketComment)
             .where(TicketComment.task_id == ticket_id)
             .order_by(TicketComment.created_at.desc())
+            .execution_options(populate_existing=True)
         )
         comments = list(result.scalars().all())
+        logger.info(f"查询到评论数: ticket_id={ticket_id}, count={len(comments)}")
         
         user_map = await TicketService._get_user_map(token)
         
         for comment in comments:
             setattr(comment, "created_by_name", user_map.get(comment.created_by, comment.created_by))
-            comment.content = ImageProcessor.process_content_for_response(comment.content)
+            try:
+                content = comment.content
+                logger.info(f"开始处理评论内容: comment_id={comment.id}, content_length={len(content) if content else 0}")
+                processed_content = ImageProcessor.process_content_for_response(content)
+                comment.content = processed_content
+                logger.info(f"评论内容处理成功: comment_id={comment.id}")
+            except Exception as e:
+                logger.error(f"评论内容处理失败: comment_id={comment.id}, error={str(e)}", exc_info=True)
+                raise
         
         return comments
 

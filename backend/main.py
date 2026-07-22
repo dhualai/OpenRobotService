@@ -6,7 +6,7 @@ if __name__ == "__main__":
     print(f"服务启动...")
     print(f"服务地址: http://0.0.0.0:{port}")
     print(f"API文档: http://0.0.0.0:{port}/docs")
-    print(f"默认管理员账号: admin / 123456")
+    print(f"默认管理员账号: admin / usp2026@EP")
     
     uvicorn.run(
         "app:app",
