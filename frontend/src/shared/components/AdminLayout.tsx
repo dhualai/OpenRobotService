@@ -29,7 +29,6 @@ const adminMenuItems: MenuItem[] = [
 
   // === 项目管理操作入口 ===
   { path: '/admin/project-edit', label: '新建/编辑项目', emoji: '✏️' },
-  { path: '/admin/project-auth', label: '项目授权', emoji: '🔐' },
 
   // === 管理工具 ===
   { path: '/admin/users', label: '用户管理', emoji: '👤' },
