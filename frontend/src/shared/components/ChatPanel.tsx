@@ -50,6 +50,7 @@ interface Message {
   // 任务 Agent 专属：结构化方案草稿
   subtype?: 'solution_draft';
   solution_draft?: {
+    _task_id?: string;
     root_cause_analysis: string;
     suggested_actions: string[];
     references: string[];
@@ -264,6 +265,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             // 任务 Agent result 事件：拿到结构化方案草稿
             if (currentEvent === 'result' && data.root_cause_analysis) {
               solutionDraft = {
+                _task_id: data._task_id,
                 root_cause_analysis: data.root_cause_analysis,
                 suggested_actions: data.suggested_actions || [],
                 references: data.references || [],
