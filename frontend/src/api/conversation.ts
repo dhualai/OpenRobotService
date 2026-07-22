@@ -39,7 +39,10 @@ export interface Conversation {
 export function readAiSessionId(conv: { metadata_: string | null }): string {
   if (!conv.metadata_) return '';
   try {
-    const obj = JSON.parse(conv.metadata_);
+    // 兼容后端 safe_json_dumps 对已 stringify 的 metadata_ 再次 dumps 导致的「双重 JSON 编码」：
+    // parse 一次后若拿到的还是字符串，需再 parse 一次才能得到对象。后端根治前以此兜底。
+    let obj = JSON.parse(conv.metadata_);
+    if (typeof obj === 'string') obj = JSON.parse(obj);
     return obj?.ai_session_id || '';
   } catch {
     return '';
