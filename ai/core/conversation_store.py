@@ -11,12 +11,13 @@ session_id 存储在 conversations.service_ticket_id 中（AI 会话无工单时
 """
 
 import json
-import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-_log = logging.getLogger("ai.conversation_store")
+from ai.core.logging import get_logger
+
+_log = get_logger(__name__)
 
 
 def _get_session() -> "Session":
@@ -103,7 +104,7 @@ def save_message(
         db.refresh(msg)
         return msg.id
     except Exception as e:
-        _log.warning(f"save_message failed: {e}")
+        _log.error(f"save_message 失败: session_id={session_id}, role={role}, error={e}", exc_info=True)
         db.rollback()
         return None
     finally:

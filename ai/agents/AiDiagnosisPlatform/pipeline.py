@@ -17,6 +17,9 @@ from dataclasses import dataclass, field
 from ai.config import get_ai_config
 from ai.exceptions import AITimeoutError, LowConfidenceError, ServiceUnavailableError, RetrieveEmptyError
 from ai.core import get_llm_client, get_retrieval_service, get_memory_manager
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================
@@ -42,6 +45,7 @@ class AgentState:
     diagnosis_rounds: int = 0
     phase: str = "idle"           # idle | diagnosing | escalated | resolved
     original_query: str = ""
+    last_submitted_ticket: dict = field(default_factory=dict)  # 上一个已提交工单的摘要
 
 
 # ============================================================
@@ -61,6 +65,7 @@ def _load_agent_state(metadata: dict) -> Optional[AgentState]:
         diagnosis_rounds=s.get("diagnosis_rounds", 0),
         phase=s.get("phase", "idle"),
         original_query=s.get("original_query", ""),
+        last_submitted_ticket=s.get("last_submitted_ticket", {}),
     )
 
 
@@ -75,6 +80,7 @@ def _save_agent_state(memory, state: AgentState) -> None:
         "diagnosis_rounds": state.diagnosis_rounds,
         "phase": state.phase,
         "original_query": state.original_query,
+        "last_submitted_ticket": state.last_submitted_ticket,
         "attachments": existing.get("attachments", []),  # 保留上传的附件
     }
 
@@ -168,6 +174,9 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁提�
 
 ## 对话
 {conversation}
+
+## 上一个工单上下文
+{last_ticket_context}
 
 ## 状态：问题={problem_summary} | 已收集={collected_info} | 已排除={ruled_out} | 推测={hypotheses}
 ## 知识库：{reference_docs}
@@ -285,6 +294,12 @@ class AiDiagnosisPlatform:
             )
             _save_agent_state(memory, agent_state)
             await self._memory_manager.save_memory(memory)
+        elif agent_state.phase == "idle" and not agent_state.problem_summary:
+            # 上一轮工单已提交、诊断状态已清空 → 全新话题
+            agent_state.original_query = request.query
+            agent_state.problem_summary = request.query
+            _save_agent_state(memory, agent_state)
+            await self._memory_manager.save_memory(memory)
 
         result = await self._agent_think(request, agent_state, memory)
         total_ms = (time.perf_counter() - t0) * 1000
@@ -297,6 +312,18 @@ class AiDiagnosisPlatform:
 
     def _build_diagnosis_prompt(self, state: AgentState, memory, reference_docs: str) -> str:
         conversation_text = self._format_conversation(memory)
+        last_ticket = state.last_submitted_ticket
+        if last_ticket and last_ticket.get("ticket_id"):
+            last_ticket_context = (
+                f"用户刚才提交了工单「{last_ticket.get('title', '')}」（ID: {last_ticket.get('ticket_id', '')}），"
+                f"问题概述：{last_ticket.get('topic', '')}。\n"
+                f"⚠️ 如果用户接下来的消息是补充这个工单的信息（截图、日志、补充描述等），"
+                f"请确认收到并告知会补充到工单中，不要开始新的诊断。\n"
+                f"⚠️ 如果用户描述的是新的、不相关的问题，说明上一个工单已结束，"
+                f"请忽略上一个工单，直接开始全新的诊断流程。"
+            )
+        else:
+            last_ticket_context = "（无）"
         return DIAGNOSIS_PROMPT.format(
             problem_summary=state.problem_summary or "（待分析）",
             collected_info=json.dumps(state.collected_info, ensure_ascii=False) if state.collected_info else "（暂无）",
@@ -305,6 +332,7 @@ class AiDiagnosisPlatform:
             conversation=conversation_text,
             reference_docs=reference_docs,
             round=state.diagnosis_rounds,
+            last_ticket_context=last_ticket_context,
         )
 
     def _apply_state_update(self, state: AgentState, state_update: dict) -> None:
@@ -583,10 +611,13 @@ class AiDiagnosisPlatform:
 
         except ServiceUnavailableError as e:
             print(f"  [T]  [retrieve] ServiceUnavailable: {e}, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            logger.warning(f"检索服务不可用: session={request.session_id}, error={e}")
         except LowConfidenceError as e:
             print(f"  [T]  [retrieve] LowConfidence: score={e.confidence:.3f} threshold={self.config.retrieval_score_threshold}, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            logger.warning(f"检索置信度过低: session={request.session_id}, score={e.confidence:.3f}")
         except (asyncio.TimeoutError, ConnectionError, RetrieveEmptyError):
             print(f"  [T]  [retrieve] failed/timed-out, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            logger.warning(f"检索超时/失败: session={request.session_id}")
         return "（知识库检索失败，请告知用户当前系统检索异常、建议稍后重试或转工单处理，不要自己编造答案。）"
 
     # ================================================================
@@ -623,7 +654,8 @@ class AiDiagnosisPlatform:
             raw = await self._llm_client.complete(prompt=prompt, max_tokens=600, temperature=0.2)
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
             analysis = json.loads(clean)
-        except Exception:
+        except Exception as e:
+            logger.error(f"LLM 工单生成失败（将使用默认值）: session={session_id}, error={e}", exc_info=True)
             analysis = {}
 
         ticket_type = analysis.get("type", "other")
@@ -691,60 +723,44 @@ class AiDiagnosisPlatform:
             record = upsert_task(ticket, created_by=created_by)
             db_id = record.id
             ticket["db_id"] = db_id
+            logger.info(f"工单已入库: session_id={session_id}, db_id={db_id}, "
+                        f"title={ticket.get('title', '')}, type={ticket.get('type', '')}")
         except Exception as e:
+            logger.error(f"MySQL 工单写入失败: session_id={session_id}, error={e}", exc_info=True)
             print(f"  ⚠️ MySQL 写入失败: {e}")
 
         agent_state.phase = "resolved"
+        # 记住上一个工单（供后续对话判断"补充信息"还是"新话题"）
+        agent_state.last_submitted_ticket = {
+            "ticket_id": ticket.get("ticket_id", ""),
+            "db_id": db_id,
+            "title": ticket.get("title", ""),
+            "topic": agent_state.problem_summary,
+            "submitted_at": int(time.time()),
+        }
+        # 清空诊断状态——下一轮自动开始新诊断
+        agent_state.problem_summary = ""
+        agent_state.ruled_out = []
+        agent_state.hypotheses = []
+        agent_state.collected_info = {}
+        agent_state.diagnosis_rounds = 0
+        agent_state.original_query = ""
         _save_agent_state(memory, agent_state)
         await self._memory_manager.save_memory(memory)
 
+        # ---- 加入待派单池（后台 Worker 定时扫描并派单）----
         try:
             await self._memory_manager.add_pending_ticket(session_id)
-        except Exception:
-            pass
-
-        # ---- 智能派单推荐 ----
-        try:
-            from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket
-            print(f"\n{'='*50}")
-            print(f"[派单] 工单「{ticket.get('title', '')}」自动派单中...")
-            _result = await assign_ticket(
-                ticket_id=str(db_id or ticket["ticket_id"]),
-                title=ticket.get("title", ""),
-                problem_description=ticket.get("description", ""),
-                status="pending_dispatch",
-                priority=ticket.get("priority", "中"),
-                ticket_type=ticket.get("type", "other"),
-                session_id=session_id,
-                source="ai_agent",
-                location=ticket.get("location", ""),
-                robot_type=ticket.get("robot_type", ""),
-                fault_code=ticket.get("fault_code", ""),
-                special_notes=ticket.get("special_notes", ""),
-                diagnosis_hypotheses=agent_state.hypotheses,
-                diagnosis_ruled_out=agent_state.ruled_out,
-                diagnosis_collected_info=agent_state.collected_info,
-                diagnosis_rounds=agent_state.diagnosis_rounds,
-                contact=ticket.get("contact", ""),
-            )
-            ticket["assignee"] = _result.engineer_name
-            ticket["assignee_id"] = _result.engineer_id
-            ticket["assign_confidence"] = _result.confidence_score
-            ticket["assign_reasoning"] = _result.reasoning
-            ticket["assign_decision_type"] = _result.decision_type
-            print(f"[派单] ✅ 已自动分派 → {_result.engineer_name} (ID:{_result.engineer_id})")
-            print(f"[派单]    置信度: {_result.confidence_score:.0%} | 决策: {_result.decision_type}")
-            print(f"[派单]    理由: {_result.reasoning[:120]}")
-            print(f"{'='*50}\n")
-        except Exception as _e:
-            print(f"  ⚠️ 智能派单失败（不阻塞工单生成）: {_e}")
+            logger.info(f"工单已加入待派单池: session_id={session_id}, db_id={db_id}")
+        except Exception as e:
+            logger.warning(f"加入待派单池失败: session_id={session_id}, error={e}")
 
         return {
             "type": "ticket",
             "data": {
                 "ticket": ticket,
                 "db_id": db_id,
-                "notice": "工单已生成并保存。",
+                "notice": "工单已生成并保存，等待自动派单。",
             },
             "agent_state": _agent_state_summary(agent_state),
         }
@@ -861,6 +877,12 @@ class AiDiagnosisPlatform:
                 original_query=request.query,
                 problem_summary=request.query,
             )
+            _save_agent_state(memory, agent_state)
+            await self._memory_manager.save_memory(memory)
+        elif agent_state.phase == "idle" and not agent_state.problem_summary:
+            # 上一轮工单已提交、诊断状态已清空 → 全新话题
+            agent_state.original_query = request.query
+            agent_state.problem_summary = request.query
             _save_agent_state(memory, agent_state)
             await self._memory_manager.save_memory(memory)
 

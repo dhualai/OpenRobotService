@@ -12,6 +12,11 @@ from typing import Optional, List, Dict, Any
 from abc import ABC, abstractmethod
 from enum import Enum
 import httpx
+
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -270,10 +275,12 @@ class LLMClient:
             return self._provider_impl.extract_content(response)
 
         except RetryError as e:
+            logger.error(f"LLM 请求超时（重试耗尽）: {e}", exc_info=True)
             raise AITimeoutError(f"LLM 服务响应超时: {str(e)}")
         except Exception as e:
             if isinstance(e, (AITimeoutError, ServiceUnavailableError)):
                 raise
+            logger.error(f"LLM 请求失败: {e}", exc_info=True)
             raise ServiceUnavailableError("LLM", f"请求失败: {str(e)}")
 
     async def chat(
@@ -302,10 +309,12 @@ class LLMClient:
             return self._provider_impl.extract_content(response)
 
         except RetryError as e:
+            logger.error(f"LLM 请求超时（重试耗尽）: {e}", exc_info=True)
             raise AITimeoutError(f"LLM 服务响应超时: {str(e)}")
         except Exception as e:
             if isinstance(e, (AITimeoutError, ServiceUnavailableError)):
                 raise
+            logger.error(f"LLM 请求失败: {e}", exc_info=True)
             raise ServiceUnavailableError("LLM", f"请求失败: {str(e)}")
 
     async def stream(
@@ -376,6 +385,7 @@ class LLMClient:
                 return  # 正常结束
             except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException) as e:
                 last_error = e
+                logger.warning(f"LLM 流式重试: attempt={attempt+1}, error={type(e).__name__}: {str(e)[:200]}")
                 print(f"  ⚠️  [llm] stream retry attempt={attempt+1} err={type(e).__name__}: {str(e)[:100]}")
                 if has_yielded or attempt == 2:
                     if isinstance(e, (httpx.ConnectError, httpx.TimeoutException)):

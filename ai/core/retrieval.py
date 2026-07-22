@@ -13,6 +13,10 @@ import time
 from typing import List, Optional, Dict, Any, Tuple
 from dataclasses import dataclass, field
 import numpy as np
+
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -339,6 +343,7 @@ class QdrantClientWrapper:
             )
             return True
         except Exception as e:
+            logger.error(f"Qdrant 写入失败: collection={collection_name}, error={e}", exc_info=True)
             print(f"  [qdrant] upsert_to_collection({collection_name}) failed: {e}")
             return False
 
@@ -878,6 +883,7 @@ class RetrievalService:
             print(f"  [retrieval] Created task_resolutions collection: {name}")
             return name
         except Exception as e:
+            logger.error(f"创建 task_resolutions 集合失败: {e}", exc_info=True)
             print(f"  [retrieval] Failed to create task_resolutions collection: {e}")
             return ""
 
