@@ -298,19 +298,56 @@ class AiTaskAgent:
                                 "has_problem_summary": bool(context.problem_summary)},
                         elapsed_ms=round((time.perf_counter() - t1) * 1000))
 
-        # 2. 附件分析（能力一）
+        # 2. 附件分析（能力一：日志走 LogSubAgent，其他走 parse_attachments）
         t2 = time.perf_counter()
         att_has_logs = False
         att_log_summary = ""
+        log_sub_result = None
         try:
             if context.attachments:
-                from ai.agents.AiTaskPlatform.attachment_parser import parse_attachments
-                att_analysis = await parse_attachments(context.attachments)
-                att_has_logs = att_analysis.has_logs
-                att_log_summary = att_analysis.log_summary[:500] if att_analysis.log_summary else ""
-                self._add_trace(self.NODE_ATTACHMENT, "ok",
-                                output={"has_logs": att_has_logs},
-                                elapsed_ms=round((time.perf_counter() - t2) * 1000))
+                # 2a. 找到日志文件 → 用 LogSubAgent 多轮推理
+                log_paths = []
+                for att in context.attachments:
+                    if not isinstance(att, dict):
+                        continue
+                    path = att.get("path") or att.get("url") or ""
+                    name = (att.get("filename") or att.get("name") or "").lower()
+                    if path and (name.endswith((".log", ".txt")) or "log" in name):
+                        log_paths.append(path)
+
+                if log_paths:
+                    from ai.agents.AiTaskPlatform.log_sub_agent import LogSubAgent
+                    task_ctx = {
+                        "title": context.title,
+                        "description": context.description,
+                        "problem_summary": context.problem_summary,
+                        "hypotheses": context.hypotheses,
+                        "ruled_out": context.ruled_out,
+                        "robot_type": context.robot_type,
+                        "fault_code": context.fault_code,
+                        "collected_info": context.collected_info,
+                    }
+                    # 取第一个日志文件（后续可扩展到多个日志文件的合并分析）
+                    sub = LogSubAgent(log_paths[0])
+                    log_sub_result = await sub.analyze(task_ctx)
+                    if log_sub_result.conclusion:
+                        att_has_logs = True
+                        att_log_summary = log_sub_result.to_prompt_text()
+                    self._add_trace(self.NODE_ATTACHMENT, "ok",
+                                    output={"has_logs": att_has_logs,
+                                            "sub_rounds": log_sub_result.queries_made,
+                                            "evidence_count": len(log_sub_result.evidence)},
+                                    elapsed_ms=round((time.perf_counter() - t2) * 1000))
+
+                # 2b. 非日志附件 → 旧 parser（图片/ZIP/文件夹等）
+                non_log_atts = [a for a in context.attachments
+                                if not ((a.get("filename") or a.get("name") or "").lower().endswith((".log", ".txt")))]
+                if non_log_atts and not att_has_logs:
+                    from ai.agents.AiTaskPlatform.attachment_parser import parse_attachments
+                    att_analysis = await parse_attachments(non_log_atts)
+                    att_has_logs = att_has_logs or att_analysis.has_logs
+                    if att_analysis.log_summary and not att_log_summary:
+                        att_log_summary = att_analysis.log_summary[:500]
             else:
                 self._add_trace(self.NODE_ATTACHMENT, "skipped", elapsed_ms=0)
         except Exception as e:
@@ -417,7 +454,7 @@ class AiTaskAgent:
             discussion_lines.append(f"[{author}] {content_str}")
         discussion_history = "\n".join(discussion_lines) if discussion_lines else "（暂无讨论）"
 
-        # 3. 按需调附件分析 / 历史工单
+        # 3. 按需调日志子Agent / 附件分析 / 历史工单
         facultative = ""
         att_keywords = ["日志", "附件", "图片", "log", "file", "image", "zip"]
         hist_keywords = ["历史", "类似", "之前", "案例", "参考"]
@@ -425,10 +462,38 @@ class AiTaskAgent:
         if query and any(kw in query.lower() for kw in att_keywords):
             try:
                 if ctx.attachments:
-                    from ai.agents.AiTaskPlatform.attachment_parser import parse_attachments
-                    att = await parse_attachments(ctx.attachments)
-                    if att.has_logs:
-                        facultative += f"\n[附件分析]\n{att.log_summary[:500]}\n"
+                    # 3a. 日志文件 → LogSubAgent 多轮推理
+                    log_paths = []
+                    for att in ctx.attachments:
+                        if not isinstance(att, dict):
+                            continue
+                        path = att.get("path") or att.get("url") or ""
+                        name = (att.get("filename") or att.get("name") or "").lower()
+                        if path and (name.endswith((".log", ".txt")) or "log" in name):
+                            log_paths.append(path)
+
+                    if log_paths:
+                        from ai.agents.AiTaskPlatform.log_sub_agent import LogSubAgent
+                        task_ctx = {
+                            "title": ctx.title, "description": ctx.description,
+                            "problem_summary": ctx.problem_summary,
+                            "hypotheses": ctx.hypotheses, "ruled_out": ctx.ruled_out,
+                            "robot_type": ctx.robot_type, "fault_code": ctx.fault_code,
+                            "collected_info": ctx.collected_info,
+                        }
+                        sub = LogSubAgent(log_paths[0])
+                        log_result = await sub.analyze(task_ctx, user_question=query)
+                        if log_result.conclusion:
+                            facultative += f"\n[日志子Agent分析（{log_result.queries_made}轮查询）]\n{log_result.to_prompt_text()}\n"
+
+                    # 3b. 非日志附件 → 旧 parser
+                    non_log = [a for a in ctx.attachments
+                               if not ((a.get("filename") or a.get("name") or "").lower().endswith((".log", ".txt")))]
+                    if non_log and not facultative:
+                        from ai.agents.AiTaskPlatform.attachment_parser import parse_attachments
+                        att = await parse_attachments(non_log)
+                        if att.has_logs:
+                            facultative += f"\n[附件分析]\n{att.log_summary[:500]}\n"
             except Exception:
                 pass
 
