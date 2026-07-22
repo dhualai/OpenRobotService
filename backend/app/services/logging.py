@@ -104,7 +104,13 @@ def setup_logging():
         config = DEFAULT_LOG_CONFIG
         with open(LOG_CONFIG_PATH, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
-    
+
+    # 强制 file handler 的 filename 指向当前项目的 logs：logging_config.json 会缓存
+    # 生成时的绝对路径，换机器/换目录后那个路径已不存在，导致 FileNotFoundError。
+    # 每次启动按 __file__ 重定位，日志总落到当前 backend/logs/backend.log。
+    log_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs', 'backend.log')
+    config.setdefault('handlers', {}).setdefault('file', {})['filename'] = log_file
+
     logging.config.dictConfig(config)
     
     logger = logging.getLogger("DAS")
