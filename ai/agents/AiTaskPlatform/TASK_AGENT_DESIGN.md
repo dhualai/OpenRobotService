@@ -1,10 +1,10 @@
 # AiTaskPlatform — 任务 Agent 设计文档
 
-> 版本：2.2 | 日期：2026-07-21（Day 2 收尾）
+> 版本：3.0 | 日期：2026-07-22
 >
 > **本文件是 AiTaskPlatform 的权威设计文档**，供开发时参考和每次新对话恢复上下文。
 >
-> **当前状态**：v2.2 — v2.0 架构重构全部完成。Chat 感知用户全量工单，Diagnosis 后台自动服务，附件 ZIP/文件夹解，task_comments 存储诊断。知识闭环 Layer 1 读+写就绪，待联调验证。
+> **当前状态**：v3.0 架构重构——砍掉大聊天，任务 Agent 聚焦工单详情页。能力拆分为 Skill/Tool，@AI 讨论 + 诊断报告 + 讨论摘要。
 
 ---
 
@@ -12,518 +12,554 @@
 
 | 日期 | 版本 | 变更摘要 |
 |------|:---:|------|
-| 2026-07-21 | 2.2 | Day 2 收尾：附件 ZIP/文件夹解+图片识别；Chat API v2.0(username+工单感知)；Prompt 工单感知规则升级 |
-| 2026-07-21 | 2.1 | 停晚：tickets→tasks 迁移已完成（`task_adapter.py`）；诊断结果改用 `task_comments` |
-| 2026-07-21 | 2.0 | **架构重构**：Chat + Diagnosis 分离；Diagnosis 独立服务+自动触发 |
-| 2026-07-21 | 1.2 | Day 2 上午：能力分层路线图（Layer 0-3）+ 迭代时间线 |
-| 2026-07-20 | 1.1 | Day 1 下午：全节点埋点（9 个追踪节点）+ CLI 交互工具 + PRD 合规 |
-| 2026-07-20 | 1.0 | Day 1 上午：初始交付——7 端点 API + ChatPanel + SolutionCard + tickets 表直读 |
+| 2026-07-22 | 3.0 | **架构重构**：砍掉大聊天；Agent 聚焦工单详情页；新增 诊断报告 + @AI 讨论 + 讨论摘要。诊断报告为即时生成不落库。 |
+| 2026-07-21 | 2.2 | Day 2 收尾：ZIP/文件夹解析；Chat v2.0；diagnosis service |
+| 2026-07-21 | 2.0 | Chat + Diagnosis 分离 |
+| 2026-07-20 | 1.0 | 初始交付 |
 
 ---
 
 ## 目录
 
-1. [v2.0 架构总览](#1-v20-架构总览)
-2. [职责边界](#2-职责边界)
-3. [Chat 自由问答（新）](#3-chat-自由问答新)
-4. [Diagnosis 诊断服务（新）](#4-diagnosis-诊断服务新)
-5. [诊断状态追踪](#5-诊断状态追踪)
-6. [API 契约](#6-api-契约)
-7. [数据流](#7-数据流)
-8. [前端对接](#8-前端对接)
-9. [tickets → tasks 迁移](#9-tickets--tasks-迁移)
-10. [目录结构](#10-目录结构)
-11. [实现状态](#11-实现状态)
-12. [本周开发任务](#12-本周开发任务)
-13. [能力分层路线图](#13-能力分层路线图)
+1. [v3.0 架构总览](#1-v30-架构总览)
+2. [交互流程](#2-交互流程)
+3. [API 契约](#3-api-契约)
+4. [Skill/Tool 能力体系](#4-skilltool-能力体系)
+5. [诊断报告](#5-诊断报告)
+6. [@AI 讨论回复](#6-ai-讨论回复)
+7. [讨论摘要](#7-讨论摘要)
+8. [与前端的数据契约](#8-与前端的数据契约)
+9. [v2.x → v3.0 变更清单](#9-v2x--v30-变更清单)
+10. [实现计划](#10-实现计划)
 
 ---
 
-## 1. v2.0 架构总览
-
-### 架构变化
-
-```
-v1.x（旧）:
-  ChatPanel
-    ├── 无 taskId → chat/stream（自由问答）
-    └── 有 taskId → analyze/stream → SolutionCard（聊天内渲染）
-
-v2.0（新）:
-  ChatPanel（纯聊天）                      Diagnosis 服务（独立）
-    ├── 感知用户所有已派单工单                 ├── 新派单自动触发
-    ├── 感知各工单的诊断信息                   ├── 三路分析 → 写入 task_comments（AI任务助手评论）（AI任务助手评论）
-    ├── 判断"哪单最急""哪个最难"              ├── 写入 task_comments（AI任务助手评论）
-    ├── 无工单也能工程师视角问答               └── 工单详情页静态展示
-    └── 不需要 taskId prop
-```
-
-### 系统任务页面分工
-
-```
-系统任务页面
-├── ChatPanel（顶部 AI 助手）
-│    └── 任务 Agent chat 接口
-│         ├── 调后端 GET /api/tasks/?assigned_to=<username> 获取用户工单
-│         ├── 感知所有工单 + 诊断信息
-│         ├── 自由技术问答（无工单也能用）
-│         └── 不传 taskId（与 v1.x 的关键区别）
-│
-├── 工单卡片列表（全部/待处理/已完成）
-│    └── GET /api/tasks/?assigned_to=<username>&status=...（业务后端 8400）
-│         └── 后端按 assigned_to 过滤，显示"分配给我"的工单
-│
-└── 工单详情 Popup
-     └── AI 诊断结果（静态展示，非聊天窗口）
-          └── 从 task_comments（AI任务助手评论） 读取，诊断服务预先生成
-```
-
----
-
-## 2. 职责边界
-
-### 提单 Agent（已完成）→ 任务 Agent 的数据流
-
-```
-提单 Agent (AiDiagnosisPlatform)
-  │
-  └── submit() → tickets 表
-        └── diagnosis JSON: {problem_summary, hypotheses, ruled_out, collected_info}
-
-─────────────── tickets/tasks 表 ────────────────
-
-任务 Agent (AiTaskPlatform)
-  ├── Chat: 读 task_comments（AI任务助手评论），感知用户全量工单
-  └── Diagnosis: 新派单自动分析 → 写 task_comments（created_by=AI任务助手）
-```
-
-### 铁律（不变）
-
-- ❌ 重新做 5 路 KB 全文检索（提单 Agent 已经做过）
-- ❌ 重新推断 hypotheses（直接用已有）
-- ❌ 追问已 collected_info 中的信息
-- ❌ 建议排查 ruled_out 中的方向
-- ❌ 编造排查树和历史案例中没有的操作步骤
-
----
-
-## 3. Chat 自由问答（新）
+## 1. v3.0 架构总览
 
 ### 核心变化
 
-| | v1.x | v2.0 |
+```
+v2.x（旧）:
+  系统任务页面
+  ├── ChatPanel（自由聊天，感知全量工单）         ← 砍掉
+  └── 工单详情（AI诊断在评论里）
+
+v3.0（新）:
+  系统任务页面
+  ├── 工单卡片列表（无 ChatPanel）
+  │
+  └── 点击进入 → 工单详情页（独立页面，和「我要摇人」分开）
+       ├── 工单信息区
+       ├── 讨论区（含 @AI 能力）
+       │    └── [@AI 帮我看看] 按钮 / 输入框
+       ├── [帮我分析] 按钮 → 触发诊断报告
+       └── 讨论摘要卡片（AI 自动生成）
+```
+
+### 三个核心能力
+
+| 能力 | 触发方式 | 说明 |
 |------|------|------|
-| taskId prop | ✅ 需要，前端传 | ❌ 不需要 |
-| 工单感知 | 只感知当前选中工单 | **感知当前用户所有已派单工单** |
-| 诊断信息 | 需要手动 /analyze | **自动注入所有工单的诊断摘要** |
-| 无工单场景 | 可以问答 | 可以问答（工程师视角） |
-| 优先级判断 | 不支持 | **支持："哪单最急""哪个最难"** |
+| **@AI 讨论** | 前端输入框 + @ 按钮 | 任务 Agent 基于讨论历史 + 工单上下文回复 |
+| **诊断报告** | [帮我分析] 按钮 | 调用全能力（日志解析 / 图片分析 / 排查树 / 历史方案）→ 输出结构化报告 |
+| **讨论摘要** | AI 后台定时扫描 | 检测讨论更新 → 总结新讨论的摘要 → 写 task_comments |
 
-### Chat API 内部流程
+### 与前端完全解耦
 
-```
-POST /api/ai/task/chat/stream {session_id, query}
-  │
-  ├─ 1. 获取当前用户信息（从 JWT token 解析 username）
-  │
-  ├─ 2. HTTP GET /api/tasks/?assigned_to=<username>&status=in_progress&size=50
-  │     └── 业务后端返回"分配给我"的工单列表
-  │     └── 每条含: task_id, title, description, status, priority, diagnosis, ...
-  │
-  ├─ 3. 构建 Chat Prompt（注入用户工单上下文）
-  │     ├── 对话历史（Redis memory，同一 session_id）
-  │     ├── 用户工单列表 + 各工单诊断摘要
-  │     └── 用户当前消息
-  │
-  ├─ 4. LLM 流式生成
-  │
-  └─ 5. 写入 Redis memory
-```
-
-### Chat Prompt 设计
-
-```
-你是工业移动机器人（AGV/AMR）领域的技术支持专家，服务于接单工程师。
-
-## 你的能力
-- 回答 AGV/AMR 技术问题（错误码、配置、故障排查）
-- 根据当前用户的工单列表，帮助判断优先级和紧急程度
-- 结合工单诊断信息给出针对性建议
-
-## 当前用户的工单
-{user_tickets_summary}
-  #44946 避让后车不动 [高/进行中]
-    诊断: 推测路径规划死锁，已排除网络/硬件故障
-  #44958 地图加载不完整 [中/进行中]
-    诊断: 推测存储路径异常，已排除网络中断
-  #44972 充电桩通信超时 [低/待处理]
-    诊断: 推测MQTT消息丢失
-
-## 对话历史
-{conversation_history}
-
-## 用户消息
-{query}
-
----
-根据用户工单列表和对话历史，给出有帮助的回复。
-如果用户在问"哪单最急""优先处理哪个"，结合 priority 和 diagnosis 的置信度/严重性判断。
-如果用户问的是纯技术问题，正常回答，不强行关联工单。
-如果用户没有工单，以工程师视角回答问题。
-```
-
-### 无工单时的行为
-
-- 仍然可以问答
-- System Prompt 注入："你当前没有待处理工单。"
-- 回答风格：工程技术视角，帮助排查问题或解答疑问
+前端只管调 API。我们暴露 4 个端点，前端同事按契约接入。
 
 ---
 
-## 4. Diagnosis 诊断服务（新）
+## 2. 交互流程
 
-### 定位
-
-从 ChatPanel 中完全剥离。**不是聊天功能**，是一个独立的后台服务。
-
-### 触发方式
-
-| 触发条件 | 说明 |
-|------|------|
-| 新派单（status 从 pending_dispatch → in_progress） | 检测到新派单 → 自动触发 → 结果写 task_comments |
-| 手动触发 | 工单详情页"重新分析"按钮 |
-| 批量触发 | 管理员/定时任务批量重分析 |
-
-### 流程
+### 2.1 工程师进入工单详情页
 
 ```
-触发（新派单 / 手动 / 批量）
+系统任务 → 点击工单卡片 → 进入独立工单详情页
+
+页面布局:
+  ┌──────────────────────────────────────────┐
+  │  工单 #44946  避让后车不动                 │
+  │  状态: 进行中  |  优先级: 高  |  潜伏车     │
+  │  描述: 44946避让生成的时候...              │
+  │                                            │
+  │  [帮我分析]  按钮                          │
+  │                                            │
+  │  ── 讨论区 ────────────────────────────   │
+  │  👤 张工: 日志拿到了，帮我看看             │
+  │  🤖 @AI: 根据日志，时间是14:40...         │
+  │  👤 张工: 找到问题了，MAPF版本太旧         │
+  │                                            │
+  │  [输入框] [@AI] [发送]                    │
+  │                                            │
+  │  ── 讨论摘要 ──────────────────────────   │
+  │  📝 2026-07-22 15:30                       │
+  │  张工确认根因为MAPF v1.1.2版本缺陷...      │
+  └──────────────────────────────────────────┘
+```
+
+### 2.2 工程师点击 [帮我分析]
+
+```
+POST /api/ai/task/diagnose { task_id }
   │
   ├─ 1. 加载工单上下文
-  │     └── SQLAlchemy: 读 tasks 表 → diagnosis JSON
+  │     └── task_adapter.load_task_context_dict(task_id)
+  │           → title, description, diagnosis, attachments
   │
-  ├─ 2. 三路并行分析（不复诊！）
-  │     ├── 排查树结论检索（Qdrant troubleshooting）
-  │     ├── 历史工单方案检索（Qdrant task_resolutions）
-  │     └── 附件解析（日志/回放）
+  ├─ 2. 扫描可用附件 → 激活对应 Skill
+  │     ├── 有日志文件 → LogParser
+  │     ├── 有图片 → ImageAnalyzer (暂标记，后续OCR)
+  │     ├── 有 ZIP → ZipExtractor → LogParser
+  │     └── 无附件 → 跳过
   │
-  ├─ 3. LLM 综合分析 → SolutionDraft
+  ├─ 3. 知识库检索（Skill: KnowledgeRetriever）
+  │     ├── 排查树结论节点
+  │     └── 历史工单方案 (task_resolutions)
   │
-  ├─ 4. 写入 task_comments（created_by=AI任务助手）
-  │     └── solution_draft + diagnosed_at + confidence
+  ├─ 4. LLM 综合分析 → 输出诊断报告
+  │     └── report: { root_cause, steps, references, confidence }
   │
-  └─ 5. 写入 Qdrant task_resolutions（知识闭环）
-        └── 向量化方案 → 供后续相似工单检索
+  ├─ 5. 诊断报告写入 task_comments（AI任务助手）
+  │
+  └─ 返回报告 JSON + task_comments 中自动展示
 ```
 
-### 输出格式
+### 2.3 工程师 @AI 提问
 
-**不写独立的 JSON 字段**。AI 诊断结果作为一条 `task_comment` 存入 `task_comments` 表，前端无需改代码即可在工单讨论区渲染。
-
-```sql
--- 判断工单是否已被诊断过：
-SELECT 1 FROM task_comments
-WHERE task_id = X AND created_by = 'AI任务助手'
-LIMIT 1;
 ```
-
-评论内容格式（Markdown）：
-
-```markdown
-## AI 诊断结果
-
-**根因分析**：MAPF v1.1.2 避让算法在特定场景下生成起点=终点的死循环路径...
-
-**建议步骤**：
-1. 将 MAPF 算法版本回退至 v1.1.1。操作路径：系统管理 → 算法配置 → MAPF版本选择
-2. 设置 avoidance_distance_threshold >= 2.0m
-
-**参考来源**：
-- 排查树「车不动，任务状态显示路径规划中」→ MAPF避让算法生成起点=终点路径
-- 历史工单 #44123：AGV避让后死锁不动（相似度 0.89）
-
-置信度：85%
+POST /api/ai/task/discuss { task_id, query?, context_discussion }
+  │
+  ├─ 1. 加载讨论历史（最近 10 条 task_comments）
+  │
+  ├─ 2. 加载工单上下文
+  │
+  ├─ 3. LLM 基于讨论+上下文回复
+  │     └── 如果 query 为空 → 基于讨论内容主动给出分析
+  │     └── 如果 query 有值 → 针对具体问题回答
+  │
+  └─ 4. 回复写入 task_comments（AI任务助手）
 ```
-
-**选择 task_comments 的原因**：
-- 前端已有渲染逻辑，零改动
-- 保留历史版本（每次诊断都是一条新评论）
-- 所有工程师可见（is_public=True）
-- created_by="AI任务助手"，备注后续改为提单人用户名
 
 ---
 
-## 5. 诊断状态追踪
+## 3. API 契约
 
-### 目的
+### 端点一览（v3.0）
 
-全局视角判断——"这个工单被 Agent 诊断过没有"。
-
-### 方案：复用 task_comments
-
-**不需要新建追踪表**。直接查询 `task_comments` 表即可：
-
-```sql
--- 是否已诊断
-SELECT 1 FROM task_comments WHERE task_id = X AND created_by = 'AI任务助手' LIMIT 1;
-
--- 最近一次诊断时间
-SELECT MAX(created_at) FROM task_comments WHERE task_id = X AND created_by = 'AI任务助手';
-```
-
-### 查询方式
-
-- 诊断服务启动时：查 `tasks` 表中 status=in_progress 且 `task_comments` 中无 AI任务助手 记录的工单 → 排队诊断
-- Chat API 加载工单时：直接取 `task_comments` 中最新一条 AI任务助手 评论作为诊断上下文
-- 工单详情页：前端已经在渲染 `task_comments` 列表，AI 诊断自然出现
-
----
-
-## 6. API 契约
-
-### 端点一览（v2.0 变更）
-
-| 方法 | 路径 | 说明 | v1→v2 变化 |
+| 方法 | 路径 | 说明 | 触发 |
 |------|------|------|------|
-| POST | `/api/ai/task/chat/stream` | Chat 自由问答 SSE | **不再需要 taskId**；内部自动加载用户工单列表 |
-| POST | `/api/ai/task/chat` | Chat 自由问答非流式 | 同上 |
-| POST | `/api/ai/task/diagnose` | **新增** — 触发单个工单诊断 | 替代旧 `/analyze` |
-| POST | `/api/ai/task/diagnose/status` | **新增** — 查询诊断状态 | 读追踪表 |
-| POST | `/api/ai/task/submit` | 提交方案→更新工单 | 数据源切换：Ticket→Task |
-| POST | `/api/ai/task/list` | 列出工单 | 数据源切换：Ticket→Task |
-| GET | `/api/ai/task/health` | 健康检查 | 不变 |
+| POST | `/api/ai/task/diagnose` | 全能力诊断 → 即时返回报告（不落库） | [帮我分析] 按钮 |
+| POST | `/api/ai/task/discuss` | @AI 讨论回复（带讨论上下文）→ 写 task_comments | 讨论区 @AI |
+| POST | `/api/ai/task/summarize` | 检测新讨论 → 生成摘要 → 写 task_comments | 后台定时 / 手动 |
+| POST | `/api/ai/task/submit` | 提交方案 → 更新工单 + Qdrant 回写 | 工程师确认 |
+| GET | `/api/ai/task/health` | 健康检查 | 运维 |
 
-### 废弃的端点（保留兼容，逐步下线）
+### 废弃的端点（v2.x → 移除）
 
-| 端点 | 命运 |
+| 端点 | 原因 |
 |------|------|
-| `POST /api/ai/task/analyze/stream` | 逻辑移入 `/diagnose`，旧端保留但不再增强 |
+| `POST /api/ai/task/chat/stream` | v3.0 取消大聊天 |
+| `POST /api/ai/task/chat` | 同上 |
+| `POST /api/ai/task/analyze/stream` | 合并到 `/diagnose` |
 | `POST /api/ai/task/analyze` | 同上 |
+| `POST /api/ai/task/list` | 前端走业务后端 API |
 
 ### 关键请求/响应
 
-#### POST /api/ai/task/chat/stream（v2.0）
+#### POST /api/ai/task/diagnose
 
-```json
-// Request — 不再需要 taskId
-{ "session_id": "chat_xxx", "query": "我现在有什么急单？" }
-
-// Agent 内部：
-// 1. 从 JWT 解析 username
-// 2. GET /api/tasks/?assigned_to=<username>&status=in_progress
-// 3. 注入工单上下文 → Prompt
-// 4. LLM 流式回复
-```
-
-#### POST /api/ai/task/diagnose（新）
+即时生成诊断报告，**不存数据库**。前端拿到 JSON 后直接渲染弹窗。
 
 ```json
 // Request
 { "task_id": "44946" }
 
 // Response
-{ "code": 0, "data": { "task_id": "44946", "status": "diagnosing" } }
-
-// 异步完成后写 task_comments（created_by=AI任务助手） + 更新追踪表
-```
-
-#### POST /api/ai/task/diagnose/status（新）
-
-```json
-// Request
-{ "task_id": "44946" }
-
-// Response
-{ "code": 0, "data": {
+{
+  "code": 0,
+  "data": {
     "task_id": "44946",
-    "diagnosis_status": "diagnosed",
-    "confidence": 0.85,
-    "diagnosed_at": "2026-07-21T15:30:00"
-}}
+    "root_cause_analysis": "MAPF v1.1.2 避让算法在特定场景下...",
+    "suggested_actions": [
+      "1. 回退 MAPF 版本至 v1.1.1",
+      "2. 设置 avoidance_distance_threshold >= 2.0m"
+    ],
+    "evidence": [
+      "🔍 排查树「车不动」结论：路径死循环",
+      "📋 历史工单 #44123：同版本同症状",
+      "📄 日志: 6行, 4条异常, 14:40:02~14:40:05"
+    ],
+    "capabilities_used": ["log_parser", "knowledge_retrieval"],
+    "confidence": 0.85
+  }
+}
+```
+
+#### POST /api/ai/task/discuss
+
+```json
+// Request
+{
+  "task_id": "44946",
+  "query": "日志文件分析有什么需要注意的地方？",
+  "context": {
+    "recent_comments": [
+      {"author": "张工", "content": "日志拿到了，帮我看看", "created_at": "..."},
+      {"author": "AI任务助手", "content": "请提供日志内容", "created_at": "..."}
+    ]
+  }
+}
+
+// Response
+{
+  "code": 0,
+  "data": {
+    "task_id": "44946",
+    "reply": "分析这份日志时需要注意：1. 关注14:40前后的ERROR行...",
+    "comment_id": 123
+  }
+}
+```
+
+#### POST /api/ai/task/summarize
+
+```json
+// Request
+{ "task_id": "44946" }
+
+// Response
+{
+  "code": 0,
+  "data": {
+    "task_id": "44946",
+    "summary": "张工确认根因为MAPF v1.1.2版本缺陷，已回退至v1.1.1解决。建议提issue给算法组。",
+    "new_messages_since_last_summary": 5,
+    "comment_id": 124
+  }
+}
 ```
 
 ---
 
-## 7. 数据流
+## 4. 能力体系
 
-### 7.1 Chat 数据流
-
-```
-POST /api/ai/task/chat/stream {session_id, query}
-  │
-  ├─ 1. 解析 username（从 JWT token）
-  │
-  ├─ 2. HTTP GET /api/tasks/?assigned_to=<username>（业务后端 8400）
-  │     └── 返回用户所有待处理工单（含 diagnosis 字段）
-  │
-  ├─ 3. 构建 Prompt
-  │     ├── TASK_CHAT_V2_SYSTEM_PROMPT（含工单列表 + 诊断摘要）
-  │     ├── 对话历史（Redis memory）
-  │     └── 用户消息
-  │
-  ├─ 4. LLM.stream → SSE 逐 token
-  │
-  └─ 5. Redis memory 写入
-```
-
-### 7.2 Diagnosis 数据流
+三个核心功能各自依赖的能力不同。每项能力下包含具体的实现函数，按需调用。
 
 ```
-触发（新派单 / 手动 / 批量）
-  │
-  ├─ 1. 更新追踪表: status = "diagnosing"
-  │
-  ├─ 2. _load_task_context(task_id)
-  │     └── SQLAlchemy: db.query(Task).filter(id==task_id)
-  │           → diagnosis JSON + title/description/priority/attachments
-  │
-  ├─ 3. _run_analysis（三路并行）
-  │
-  ├─ 4. LLM 综合分析 → SolutionDraft
-  │
-  ├─ 5. 写入 task_comments（created_by=AI任务助手）
-  │
-  └─ 6. 更新追踪表: status = "diagnosed"
+                         ┌─────────────────────┐
+                         │  工单上下文加载       │  ← 公共依赖，每个功能都用
+                         │  load_task_context() │
+                         └─────────┬───────────┘
+                                   │
+        ┌──────────────────────────┼──────────────────────────┐
+        ▼                          ▼                          ▼
+  ┌──────────┐             ┌──────────────┐            ┌──────────────┐
+  │ 诊断报告  │             │  @AI 讨论     │            │  讨论摘要     │
+  │ /diagnose│             │  /discuss     │            │  /summarize  │
+  └────┬─────┘             └──────┬───────┘            └──────┬───────┘
+       │                          │                           │
+       ▼                          ▼                           ▼
+  ┌──────────┐             ┌──────────────┐            ┌──────────────┐
+  │ ✅ 附件分析│              │ ✅ 讨论区理解  │            │ ✅ 讨论区理解  │
+  │ ✅ 知识库 │              │               │            │               │
+  └──────────┘             └──────────────┘            └──────────────┘
 ```
 
 ---
 
-## 8. 前端对接
+### 4.1 公共依赖：工单上下文加载
 
-### v2.0 需要改的前端部分
-
-| # | 改动 | 说明 | 优先级 |
-|---|------|------|:---:|
-| F1 | **ChatPanel 去掉 taskId prop** | 不再需要传 taskId，ChatAgent 内部自动获取用户工单 | P0 |
-| F2 | **ChatPanel SSE body 简化** | `{session_id, query}` — 去掉 task_id 字段 | P0 |
-| F3 | **工单详情页渲染诊断** | 从 `task_comments（created_by=AI任务助手）` 读取，静态展示（非聊天窗口） | P0 |
-| F4 | **SolutionCard 改为静态展示** | 保留编辑+提交功能，去掉聊天气泡外壳 | P1 |
-| F5 | **"重新分析"按钮** | 工单详情页按钮 → `POST /api/ai/task/diagnose` | P1 |
-
-### 不需要改的
-
-| 事项 | 原因 |
-|------|------|
-| TasksView 工单卡片列表 | 后端按 `assigned_to` 过滤，前端不感知 |
-| Nginx 配置 | 已有 `/api/ai/*` → 8401 |
-| Workbench store | v2.0 不需要跨视图传递 taskId |
+三个功能都需要。从 `task_adapter.load_task_context_dict(task_id)` 获取工单全量信息（title/description/diagnosis/attachments/robot_type/fault_code/status/priority），不是独立能力，是一个公共函数。
 
 ---
 
-## 9. tickets → tasks 迁移（✅ 已完成）
+### 4.2 能力一：附件分析
 
-### 状态
+**用途**：诊断报告生成时，分析工单附带的文件。@AI 讨论和讨论摘要不需要。
 
-2026-07-21 后端同事已完成合并，通过 `ai/core/task_adapter.py` 适配层统一读写。
+**分类依据**：当前附件处理的"深度"还不够——日志也就是提取 ERROR 行，图片也就是列出文件名，ZIP 就是解压遍历。它们本质上都是"读附件 → 提取文本摘要"，往后继续各自升级（比如图片走 OCR）才值得拆开。现阶段统一为附件分析，用一个入口函数对附件列表做分派。
 
-### 适配层（已实现）
+| 函数 | 说明 | 触发条件 | 状态 |
+|------|------|------|:---:|
+| `analyze_attachments(attachments)` | 入口：遍历附件列表 → 按类型分派 | 有附件时自动调用 | ✅ |
+| └ `_extract_log_text(file)` | 日志/文本：ERROR/WARN 提取 + 时间线 | 附件为 .txt/.log/.csv | ✅ 已有 |
+| └ `_extract_zip_text(file)` | ZIP：内存解压 → 识别内部日志文件 | 附件为 .zip | ✅ 已有 |
+| └ `_traverse_dir_text(path)` | 文件夹：遍历目录树 → 识别日志文件 | 路径为本地目录 | ✅ 已有 |
+| └ `_list_image_info(files)` | 图片：提取文件名列表（暂不做 OCR） | 附件为 .jpg/.png 等 | ✅ 已有 |
 
-| 函数 | 作用 | 调用方 |
+---
+
+### 4.3 能力二：历史工单检索
+
+**用途**：诊断报告生成时，用 diagnosis JSON 中的信息检索相似已解决工单的方案。@AI 讨论和讨论摘要不需要。
+
+**为什么不含排查树**：提单 Agent 在初次诊断时已经走了排查树——结论已体现在 diagnosis JSON 的 `hypotheses` 和 `ruled_out` 中。任务 Agent 再做一次排查树检索就是重复诊断，违反铁律。任务 Agent 新增的价值是**历史工单方案检索**——"之前有没有类似的工单？最后怎么解决的？"——这是提单 Agent 没做的。
+
+| 函数 | 说明 | 触发条件 | 状态 |
+|------|------|------|:---:|
+| `retrieve_task_resolutions(problem_summary, hypotheses, fault_code, robot_type)` | Qdrant 语义检索相似已解决工单的最终方案 | diagnosis JSON 存在时自动调用 | ✅ 已有（待联调） |
+
+---
+
+### 4.4 能力三：讨论区理解
+
+**用途**：@AI 讨论回复时需要读讨论历史来理解上下文；讨论摘要时需要读近期评论来生成摘要。诊断报告不需要。
+
+**分类依据**：两个功能都用 `task_comments` 表的数据——只是用的方式不同（讨论回复基于历史推理、摘要是总结归纳）。都走同一个数据源。
+
+| 函数 | 说明 | 触发条件 | 状态 |
+|------|------|------|:---:|
+| `load_recent_comments(task_id, limit=20)` | 读取最近 N 条评论 | @AI 讨论 / 摘要生成 | ✅ 已有（SQLAlchemy） |
+| `load_new_comments_since(task_id, since_time)` | 读取某时间点后的新评论 | 判断是否有新讨论 | ✅ 新增 |
+
+---
+
+### 4.5 三功能能力对照
+
+```
+               附件分析    历史工单检索  讨论区理解
+诊断报告         ✅          ✅          ✗
+@AI 讨论         ✅          ✅          ✅
+讨论摘要         ✗          ✗          ✅
+```
+
+各功能入口：
+
+```python
+# 诊断报告
+async def diagnose(task_id):
+    ctx = load_task_context(task_id)
+    attachments_result = await analyze_attachments(ctx.attachments)  # 能力一
+    history_result = await retrieve_task_resolutions(ctx.query_text) # 能力二
+    return await llm.generate_report(ctx, attachments_result, history_result)
+
+# @AI 讨论 — 按需调用全能力
+async def discuss(task_id, query):
+    ctx = load_task_context(task_id)
+    history = await load_recent_comments(task_id)                # 能力三：必调
+    # 能力一、二按需：工程师可能问附件或历史工单
+    attachments_result = None
+    history_result = None
+    if _query_mentions_attachment(query, history):
+        attachments_result = await analyze_attachments(ctx.attachments)
+    if _query_mentions_history(query, history):
+        history_result = await retrieve_task_resolutions(ctx.query_text)
+    return await llm.respond_to_discussion(ctx, history, query, attachments_result, history_result)
+
+# 讨论摘要
+async def summarize(task_id):
+    ctx = load_task_context(task_id)
+    new_comments = await load_new_comments_since(task_id, last_summary) # 能力三
+    return await llm.summarize_discussion(ctx, new_comments)
+```
+
+---
+
+## 5. 诊断报告
+
+诊断报告是 `[帮我分析]` 按钮的输出。不是聊天消息，是结构化文档。
+
+### 报告格式
+
+```markdown
+## AI 诊断报告
+
+**工单**：#44946 避让后车不动 | 潜伏车 | 高优先级
+**分析时间**：2026-07-22 15:30
+
+### 根因分析
+MAPF v1.1.2 避让算法在特定场景下为被避让车生成起点=终点的占位路径，导致车辆无路径可执行。推理链：提单Agent诊断推测路径规划死锁 → 历史工单#44123确认同版本缺陷 → 日志14:40:02证实路径起点=终点 → 根因确认为MAPF版本缺陷。
+
+### 建议步骤
+1. 在 RCS 后台将 MAPF 版本回退至 v1.1.1
+2. 设置 avoidance_distance_threshold >= 2.0m
+3. 验证：手动触发一次避让场景，确认正常
+
+### 证据
+- 📋 提单Agent诊断：推测路径规划死锁，排除网络/硬件故障
+- 📋 历史工单 #44123（相似度 0.89）：同一版本同一症状，回退版本后解决
+- 📄 日志分析：robot.log 6行，提取4条异常，时间范围 14:40:02 ~ 14:40:05
+
+### 使用的分析能力
+- 附件分析（日志异常提取）
+- 历史工单检索（相似已解决案例）
+
+**置信度**：85%
+```
+
+### 存储
+
+**不存库**。诊断报告即时生成，直接返回 JSON 给前端渲染为弹窗。工程师可以根据报告内容自行决定后续操作（在讨论区讨论、手动复制等）。讨论区的 @AI 回复和讨论摘要才会写入 `task_comments` 留存。
+
+---
+
+## 6. @AI 讨论回复
+
+### 与诊断报告的区别
+
+| | @AI 讨论 | [帮我分析] 诊断 |
 |------|------|------|
-| `load_task_context_dict(task_id)` | 读 Task → 解构 diagnosis JSON | `_load_task_context()` |
-| `update_task_resolution(task_id, solution, resolution)` | 提交方案 → 写 metadata_info.diagnosis | `submit()` |
-| `task_to_dict(task)` | Task → 兼容旧字段名的 dict | `task_list()` |
-| `upsert_task(ticket_dict, created_by)` | 提单 Agent 幂等写入 | 提单 Agent |
+| 触发 | 讨论区输入 | 按钮 |
+| 上下文 | 讨论历史 + 工单 | 工单全量 + 附件 + KB |
+| 使用能力 | 按需调用全部能力 | 自动调全部能力 |
+| 输出 | 简短回复 → 写评论 | 完整报告 → 弹窗（不存库） |
 
-### 我们的代码已全部切换
-
-| # | 文件 | 状态 |
-|---|------|:---:|
-| C1 | `_load_task_context()` → `load_task_context_dict()` | ✅ |
-| C2 | `submit()` → `update_task_resolution()` | ✅ |
-| C3 | `_index_solution()` → `load_task_context_dict()` | ✅ |
-| C4 | `task_list()` → `Task` 模型 + `task_to_dict()` | ✅ |
-| C5 | `_add_diagnosis_comment()` → 直接写 `TaskComment` | ✅ |
-
----
-
-## 10. 目录结构
+### @AI 的 Prompt 设计
 
 ```
-ai/agents/AiTaskPlatform/
-├── TASK_AGENT_DESIGN.md    # 本文件
-├── FEATURE_LIST.md          # 功能清单（给产品经理）
-├── PROJECT_OVERVIEW.md      # 项目总览报告
-├── __init__.py              # 导出 pipeline + schemas
-├── pipeline.py              # AiTaskAgent 核心类
-│   ├── chat() / chat_stream()           自由问答（v2.0 改造：注入用户工单列表）
-│   ├── diagnose()                       诊断服务（从 analyze 剥离）
-│   ├── submit()                         方案提交
-│   ├── _load_task_context()            从 tasks 表读工单
-│   ├── _run_analysis()                  三路并行分析
-│   ├── _build_prompt() / _parse_solution()
-│   └── _extract_log_errors()
-├── schemas.py               # Pydantic 模型
-├── prompts.py               # Prompt 模板（chat v2 / diagnose）
-├── analyzer.py              # TaskAnalyzer 三路分析引擎
-├── attachment_parser.py     # 附件解析（日志 + 待做：ZIP/文件夹）
-├── diagnosis 追踪：复用 task_comments（created_by=AI任务助手）
-├── demo.py                  # Mock 数据演示
-└── cli_chat.py              # 命令行交互工具
+你正在参与工单 #44946「避让后车不动」的讨论。
+
+## 工单背景
+标题: 避让后车不动
+描述: 44946避让生成的时候...
+诊断: 推测路径规划死锁 / MAPF算法异常
+
+## 近期讨论
+[张工] 日志拿到了，帮我看看
+[张工] 时间是14:40左右
+
+## 用户消息
+日志文件分析有什么需要注意的地方？
+
+---
+请用简洁的工程师口吻回复（≤300字），直接回答问题。
+如果讨论中有明显的诊断线索，主动指出。
 ```
 
 ---
 
-## 11. 实现状态
+## 7. 讨论摘要
 
-### 已完成 ✅
+### 触发方式
 
-| 功能 | 说明 |
+1. **后台定时扫描**（diagnosis worker 内复用）：每 60 秒检查一次所有活跃工单的讨论更新
+2. **手动触发**：前端按钮调用 `/api/ai/task/summarize`
+
+### 判断"有新讨论"
+
+```sql
+-- 上次摘要之后的评论数
+SELECT COUNT(*) FROM task_comments
+WHERE task_id = X
+  AND created_at > (上次摘要时间 OR 最近一条AI摘要的created_at)
+  AND created_by != 'AI任务助手'  -- 不算AI自己的评论
+```
+
+有新评论（≥2条）→ 触发摘要生成。
+
+### 摘要 Prompt
+
+```
+总结以下讨论的关键进展。只提取和工单解决相关的信息，忽略闲聊。
+
+## 近期讨论
+[张工 15:20] 日志拿到了，帮我看看
+[李工 15:25] 应该是MAPF版本的问题
+[张工 15:30] 确认了，v1.1.2有这个bug，回退到v1.1.1就好了
+
+---
+请用一句话总结（≤100字）：
+```
+
+---
+
+## 8. 与前端的数据契约
+
+### 前端需要的接口
+
+| 前端动作 | API | 我们提供 |
+|------|------|:---:|
+| 点 [帮我分析] | `POST /api/ai/task/diagnose` | ✅ |
+| 讨论区 @AI | `POST /api/ai/task/discuss` | ✅ |
+| 获取讨论摘要 | `POST /api/ai/task/summarize` | ✅ |
+| 提交解决方案 | `POST /api/ai/task/submit` | ✅ |
+| 查看诊断报告 | `GET /api/tasks/{id}/comments`（后端，已有） | ✅ 不需要我们 |
+
+### 工单详情页数据
+
+前端从业务后端 `GET /api/tasks/{id}?load_comments=true` 获取：
+- 工单基本信息（title/description/status/priority）
+- 附件列表
+- 所有评论（包括 "AI任务助手" 的诊断报告和讨论回复）
+- 讨论摘要（前端自己在评论中筛选 `created_by="AI任务助手"` 且 `content` 以 "## 讨论摘要" 开头的）
+
+**AI 模块不负责提供工单详情页数据**——全部由业务后端返回。
+
+### 前端页面结构预期
+
+```
+工单详情页（前端独立页面，和「我要摇人」的工单详情分开）
+├── 工单信息（从 GET /api/tasks/{id}）
+├── [帮我分析] → POST /api/ai/task/diagnose
+├── 讨论区
+│   ├── 评论列表（从 GET /api/tasks/{id}?load_comments=true）
+│   └── [输入框] [@AI 按钮] → POST /api/ai/task/discuss
+└── 讨论摘要卡片（从评论中筛选AI生成的摘要）
+```
+
+---
+
+## 9. v2.x → v3.0 变更清单
+
+### 要砍掉的
+
+| 组件 | 原因 |
 |------|------|
-| ChatPanel 自由问答 | 无 taskId 场景的通用问答（v1.0 交付） |
-| 三路分析引擎 | 排查树结论 + 历史方案 + 附件解析 |
-| SolutionCard | 可编辑方案卡片 |
-| 全节点埋点 | 9 个追踪节点 |
-| 知识闭环 Layer 1 | Qdrant task_resolutions 读+写 |
-| 附件日志解析 | ERROR/WARN 提取 + 截断 |
-| PRD 合规 | 版本管理 + 接口登记 |
-| CLI 调试工具 | 全流程模拟 |
+| `pipeline.py:chat()` / `chat_stream()` | 大聊天功能取消 |
+| `pipeline.py:_fetch_user_tasks_summary()` | 不需要感知用户全量工单 |
+| `prompts.py:TASK_CHAT_SYSTEM_PROMPT` | Chat Prompt 不再需要 |
+| `router.py:/api/ai/task/chat/stream` | 端点废弃 |
+| `router.py:/api/ai/task/chat` | 端点废弃 |
+| `router.py:/api/ai/task/analyze/stream` | 合并到 diagnose |
+| `router.py:/api/ai/task/analyze` | 合并到 diagnose |
+| `router.py:/api/ai/task/list` | 前端走业务后端 |
+| `ChatPanel.tsx` taskId / username / token props | 前端不再需要 |
+| `ChatPanel.tsx` 中有 taskId 路由的逻辑 | 前端不再需要 |
 
-### 待完成 ⚠️
+### 要新增的
 
-| 事项 | 优先级 | 说明 |
-|------|:---:|------|
-| Chat 感知用户全量工单 | **P0** | 去掉 taskId，注入工单列表 |
-| 诊断追踪 | **P0** | 复用 task_comments（查询 created_by=AI任务助手） |
-| Diagnosis 独立服务 | **P0** | 新派单自动触发 |
-| 附件 ZIP/文件夹解析 | P0 | 解压+遍历+识别 |
-| tickets→tasks 迁移 | P0 | 等后端加列后改 5 处代码 |
-| 知识闭环收尾 | P1 | 联调验证 |
+| 组件 | 说明 |
+|------|------|
+| `pipeline.py:diagnose()` | 全能力诊断 → 返回报告 |
+| `pipeline.py:discuss()` | @AI 讨论回复 |
+| `pipeline.py:summarize()` | 讨论摘要 |
+| `skills/` 目录 | LogParser / ZipExtractor / ImageAnalyzer / KnowledgeRetrieval / Summarizer |
+| `router.py:/api/ai/task/diagnose` | 新端点 |
+| `router.py:/api/ai/task/discuss` | 新端点 |
+| `router.py:/api/ai/task/summarize` | 新端点 |
+| `prompts.py:DIAGNOSE_PROMPT` | 诊断报告 Prompt |
+| `prompts.py:DISCUSS_PROMPT` | @AI 讨论 Prompt |
+| `prompts.py:SUMMARIZE_PROMPT` | 讨论摘要 Prompt |
+| `schemas.py:DiagnosticReport` | 诊断报告模型 |
 
----
+### 保留不变
 
-## 12. 本周开发任务
-
-### 已完成
-
-1. ✅ 系统任务界面自由问答
-2. ✅ 工单深度分析诊断一轮对话版 — 三路并行分析
-3. ✅ 工单聊天与自由问答带记忆切换
-4. ✅ Agent 全节点埋点 — 9 个追踪节点
-5. ✅ 初步知识闭环（Qdrant task_resolutions 读+写）
-6. ✅ 附件解析 — txt/log 文件错误提取
-7. ✅ ChatPanel 场景切换 + SolutionCard + TasksView 参数透传
-
-### 本周待实现
-
-1. **自由聊天与诊断分离**（P0）— Chat 感知用户全量工单，Diagnosis 独立服务
-2. **诊断追踪**（P0）— 复用 task_comments 判断诊断状态
-3. **tickets→tasks 迁移**（P0）— 等后端加列，代码切换数据源
-4. **新派单自动触发诊断**（P0）— 检测派单→自动生成→写入 task_comments（AI任务助手评论）
-5. **附件解析升级**（P0）— 加入 ZIP/文件夹处理
-6. **知识闭环收尾**（P1）— collection 初始化验证 + 日志深度分析升级
+| 组件 | 说明 |
+|------|------|
+| `diagnosis_service.py` | 后台自动诊断 worker（修改后适配新 diagnose 方法） |
+| `_add_diagnosis_comment()` | 写 task_comments 的方法 |
+| `_index_solution()` + `retrieval.py` 读/写 | 知识闭环 |
+| `analyzer.py` / `attachment_parser.py` | 作为 Skill 复用 |
+| `SolutionCard.tsx` | 保留给工单详情页展示诊断报告 |
+| `submit()` | 方案提交 |
 
 ---
 
-## 13. 能力分层路线图
+## 10. 实现计划
 
-（从 v1.2 保留，不变）
+### Phase 1: 砍旧
+- [ ] 移除 `chat()` / `chat_stream()` / `_fetch_user_tasks_summary()`
+- [ ] 移除 Chat 相关 Prompt（`TASK_CHAT_SYSTEM_PROMPT`）
+- [ ] 移除废弃端点（chat/stream, chat, analyze/stream, analyze, list）
 
-```
-Layer 0: 基础诊断（✅ 已完成）    Layer 1: 证据链（👈 当前）   Layer 2: 协作推理              Layer 3: 知识闭环
-┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
-│ ✅ 排查树结论检索      │  │ ✅ 历史工单方案检索     │  │ 🔲 多步假设验证         │  │ 🔲 方案效果评估         │
-│ ✅ 附件日志解析        │  │ 🔲 日志深度分析        │  │ 🔲 配置参数感知         │  │ 🔲 方案回写 Qdrant     │
-│ ✅ LLM 直接推断        │  │ 🔲 对话历史线索提取    │  │ 🔲 相似工单聚合告警     │  │ 🔲 版本-缺陷知识库      │
-└─────────────────────┘  └─────────────────────┘  └─────────────────────┘  └─────────────────────┘
-```
+### Phase 2: 三大新功能
+- [ ] `diagnose()` — 全能力诊断，即时返回报告（不落库）
+- [ ] `discuss()` — @AI 讨论回复（写 task_comments）
+- [ ] `summarize()` — 讨论摘要（写 task_comments）
+- [ ] 新增 3 个 Prompt + 3 个端点
+
+### Phase 3: 前端对齐
+- [ ] 前端 ChatPanel 移除 tasks 场景逻辑
+- [ ] 工单详情页对接 3 个新端点
+- [ ] 诊断报告弹窗渲染
