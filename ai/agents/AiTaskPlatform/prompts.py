@@ -131,9 +131,11 @@ SUMMARIZE_SYSTEM_PROMPT = """你是工单讨论的摘要助手。总结近期讨
 
 SUMMARIZE_USER_TEMPLATE = """## 工单
 标题: {title}
+描述: {description}
+诊断: {diagnosis_summary}
 
 ## 近期讨论
 {discussion_history}
 
 ---
-请用一句话总结关键进展。"""
+请用一句话总结关键进展。只提取和工单解决相关的信息，忽略闲聊。"""
