@@ -230,7 +230,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         : `${AI_BASE}/task/chat/stream`;
       const apiBody = isCall
         ? JSON.stringify({ session_id: sid, query: userContent })
-        : JSON.stringify({ session_id: sid, query: userContent, username: username || '' });
+        : JSON.stringify({ session_id: sid, query: userContent, username: username || '', token: token || '' });
 
       const response = await fetchWithAuth(apiPath, { method: 'POST', body: apiBody });
 

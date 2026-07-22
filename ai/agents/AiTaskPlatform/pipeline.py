@@ -266,19 +266,20 @@ class AiTaskAgent:
 
     async def chat(
         self, session_id: str, query: str,
-        username: str = "",
+        username: str = "", token: str = "",
     ) -> str:
         """v2.0 自由对话：感知用户所有工单 + 诊断状态。
 
         Args:
-            username: 当前工程师用户名（从 auth store 传入），用于查询 assigned_to 的工单
+            username: 当前工程师用户名（从 auth store 传入）
+            token: 用户 JWT token（用于调后端 API 鉴权）
         """
         t0 = time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
 
         # 1. 加载用户工单列表
-        tasks_summary = await self._fetch_user_tasks_summary(username)
+        tasks_summary = await self._fetch_user_tasks_summary(username, token)
 
         # 2. 对话上下文
         conversation = ""
@@ -331,7 +332,7 @@ class AiTaskAgent:
 
     async def chat_stream(
         self, session_id: str, query: str,
-        username: str = "",
+        username: str = "", token: str = "",
     ):
         """v2.0 流式自由对话：感知用户所有工单"""
         import time as _time
@@ -340,7 +341,7 @@ class AiTaskAgent:
         await self._ensure_clients()
 
         # 1. 加载用户工单列表
-        tasks_summary = await self._fetch_user_tasks_summary(username)
+        tasks_summary = await self._fetch_user_tasks_summary(username, token)
 
         # 2. 对话上下文
         conversation = ""
@@ -455,8 +456,8 @@ class AiTaskAgent:
     # 私有：上下文加载 — 直接从 tickets 表读取（AI 模块自有数据）
     # ============================================================
 
-    async def _fetch_user_tasks_summary(self, username: str) -> str:
-        """从业务后端获取当前用户工单 + 诊断状态摘要。
+    async def _fetch_user_tasks_summary(self, username: str, token: str = "") -> str:
+        """从业务后端获取当前用户工单 + 诊断状态摘要（带 JWT 鉴权）。
 
         返回注入 Chat Prompt 的文本：每条工单一行，含优先级/状态/诊断状态。
         无工单时返回"（无待处理工单）"。
@@ -465,10 +466,14 @@ class AiTaskAgent:
             return "（无用户信息，无法获取工单列表）"
 
         try:
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
             async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
                 resp = await client.get(
-                    f"http://localhost:8400/api/tasks/",
-                    params={"assigned_to": username, "size": 50, "status": "in_progress,pending,new"}
+                    f"http://127.0.0.1:8400/api/tasks/",
+                    params={"assigned_to": username, "size": 50, "status": "in_progress,pending,new"},
+                    headers=headers,
                 )
                 if resp.status_code != 200:
                     return "（工单列表获取失败）"
