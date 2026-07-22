@@ -113,9 +113,10 @@ const DataImport = lazyImport(() => import('@/pages/admin/DataImport'));
 const OperationLogs = lazyImport(() => import('@/pages/admin/OperationLogs'));
 // const ProgressBoard = lazyImport(() => import('@/pages/admin/ProgressBoard'));   // 已并入 ProjectProgress
 // const PersonnelBoard = lazyImport(() => import('@/pages/admin/PersonnelBoard')); // 已从导航移除
-const ProjectAuth = lazyImport(() => import('@/pages/admin/ProjectAuth'));
 const ProjectEdit = lazyImport(() => import('@/pages/admin/ProjectEdit'));
 // const ProjectHR = lazyImport(() => import('@/pages/admin/ProjectHR'));           // 已从导航移除
+// 项目管理二级页面：上（项目导入 ProjectImport）+ 下（项目授权 ProjectAuth）并列，
+// 两个子页面由 ProjectManage.tsx 内部静态引入，不再各自单独挂路由。
 const ProjectManage = lazyImport(() => import('@/pages/admin/ProjectManage'));
 const RiskList = lazyImport(() => import('@/pages/admin/RiskList'));
 const RiskEdit = lazyImport(() => import('@/pages/admin/RiskEdit'));
@@ -171,9 +172,9 @@ const router = createBrowserRouter([
                   { path: 'operation-logs', element: <OperationLogs /> },
                   // { path: 'progress', element: <ProgressBoard /> },       // 已并入 ProjectProgress
                   // { path: 'personnel', element: <PersonnelBoard /> },     // 已从导航移除
-                  { path: 'project-auth', element: <ProjectAuth /> },
                   { path: 'project-edit/:id?', element: <ProjectEdit /> },
                   // { path: 'project-hr', element: <ProjectHR /> },         // 已从导航移除
+                  // 项目管理二级页面：内部并列展示项目导入 + 项目授权，见 ProjectManage.tsx
                   { path: 'project-manage', element: <ProjectManage /> },
                   { path: 'risks', element: <RiskList /> },
                   { path: 'risk-edit/:id?', element: <RiskEdit /> },

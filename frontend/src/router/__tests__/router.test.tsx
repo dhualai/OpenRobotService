@@ -82,7 +82,6 @@ describe('Router Configuration', () => {
     expect(paths).toContain('resources');
     expect(paths).toContain('data-import');
     expect(paths).toContain('operation-logs');
-    expect(paths).toContain('project-auth');
     expect(paths).toContain('risk-edit/:id?');
     expect(paths).toContain('ticket-monitor');
     expect(paths).toContain('project-progress');
@@ -91,6 +90,8 @@ describe('Router Configuration', () => {
     expect(paths).not.toContain('progress');
     expect(paths).not.toContain('personnel');
     expect(paths).not.toContain('project-hr');
+    // 项目授权已并入项目管理二级页面（ProjectManage.tsx 内部展示），不再单独挂路由
+    expect(paths).not.toContain('project-auth');
   });
 
   it('should have dashboard drill-down routes directly under admin', () => {
