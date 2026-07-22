@@ -27,6 +27,7 @@ class TaskStatus(str, enum.Enum):
     IN_PROGRESS = "in_progress"
     PENDING = "pending"
     RESOLVED = "resolved"
+    CANCELED = "canceled"
     CLOSED = "closed"
 
 
@@ -75,6 +76,7 @@ class Task(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False, comment="创建时间")
     updated_at = Column(DateTime, server_default=func.now(), nullable=False, comment="更新时间")
     resolved_at = Column(DateTime, nullable=True, comment="解决时间")
+    canceled_at = Column(DateTime, nullable=True, comment="取消时间")
     closed_at = Column(DateTime, nullable=True, comment="关闭时间")
     deadline_at = Column(DateTime, nullable=True, comment="截止时间")
 
@@ -106,6 +108,10 @@ class Task(Base):
     @property
     def is_resolved(self) -> bool:
         return self.status == TaskStatus.RESOLVED
+
+    @property
+    def is_canceled(self) -> bool:
+        return self.status == TaskStatus.CANCELED
 
     @property
     def is_closed(self) -> bool:

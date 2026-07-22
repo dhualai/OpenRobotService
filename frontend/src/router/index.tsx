@@ -9,6 +9,7 @@ const MainLayout = lazy(() => import('@/shared/components/MainLayout'));
 const CallView = lazy(() => import('@/pages/call/CallView'));
 const TicketDetailPage = lazy(() => import('@/pages/call/TicketDetailPage'));
 const TasksView = lazy(() => import('@/pages/tasks/TasksView'));
+const TaskDetailPage = lazy(() => import('@/pages/tasks/TaskDetailPage'));
 
 // Admin
 const Dashboard = lazy(() => import('@/pages/admin/Dashboard'));
@@ -56,7 +57,7 @@ export const router = createBrowserRouter([
       { path: 'call', element: <CallView /> },
       { path: 'call/ticket/:id', element: <TicketDetailPage /> },
       { path: 'tasks', element: <TasksView /> },
-      { path: 'tasks/:id', element: <TasksView /> },
+      { path: 'tasks/:id', element: <TaskDetailPage /> },
       {
         path: 'admin',
         element: <Outlet />,
@@ -106,7 +107,7 @@ export const router = createBrowserRouter([
   { path: '/call/ai-chat', element: <Navigate to="/call" replace /> },
   { path: '/call/new-ticket', element: <Navigate to="/call" replace /> },
   { path: '/tasks', element: <Navigate to="/tasks" replace /> },
-  { path: '/tasks/:id', element: <Navigate to="/tasks" replace /> },
+  { path: '/tasks/:id', element: <Navigate to="/tasks/:id" replace /> },
   { path: '/admin', element: <Navigate to="/admin" replace /> },
   { path: '/admin/*', element: <Navigate to="/admin" replace /> },
   { path: '/home', element: <Navigate to="/call" replace /> },

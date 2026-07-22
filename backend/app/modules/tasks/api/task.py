@@ -33,12 +33,19 @@ async def create_task(
     db: AsyncSession = Depends(get_db),
     current_user = Depends(lambda: None)
 ):
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
         username = current_user.username if current_user else "system"
         token = getattr(current_user, 'token', None)
+        logger.info(f"开始创建任务: title={ticket_data.title[:50] if ticket_data.title else '无标题'}, ticket_type={ticket_data.ticket_type}, created_by={username}")
+        
         ticket = await TicketService.create_ticket(db, ticket_data, username, comment_attachment_map, token)
+        logger.info(f"创建任务成功: task_id={ticket.id}, title={ticket.title[:50] if ticket.title else '无标题'}")
         return ticket
     except Exception as e:
+        logger.error(f"创建任务失败: title={ticket_data.title[:50] if ticket_data.title else '无标题'}, error={str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"创建任务失败: {str(e)}")
 
 
@@ -86,9 +93,15 @@ async def get_tasks(
     deadline_at_end: Optional[datetime] = Query(None, description="截止时间结束"),
     db: AsyncSession = Depends(get_db)
 ):
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
+        logger.info(f"开始获取任务列表, page={page}, size={size}, status={status}, keyword={keyword}, ticket_type={ticket_type}, priority={priority}")
+        
         priority_enum = TicketPriority(priority) if priority else None
         ticket_type_enum = TicketType(ticket_type) if ticket_type else None
+        logger.debug(f"优先级枚举转换完成, priority_enum={priority_enum}, ticket_type_enum={ticket_type_enum}")
 
         query_params = TicketQueryParams(
             page=page,
@@ -131,13 +144,17 @@ async def get_tasks(
             deadline_at_start=deadline_at_start,
             deadline_at_end=deadline_at_end,
         )
+        logger.debug(f"查询参数构建完成, query_params={query_params}")
 
         auth_header = request.headers.get("Authorization")
         token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
+        logger.debug(f"获取认证信息完成, has_token={token is not None}")
 
         result = await TicketService.get_tickets(db, query_params, token)
+        logger.info(f"获取任务列表成功, total={result.get('total', 0)}, items_count={len(result.get('items', []))}")
         return result
     except Exception as e:
+        logger.error(f"获取任务列表失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取任务列表失败: {str(e)}")
 
 
@@ -147,13 +164,20 @@ async def filter_tasks(
     request: Request,
     db: AsyncSession = Depends(get_db)
 ):
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
+        logger.info(f"开始复合过滤查询任务列表, filters_count={len(filter_request.filters) if filter_request.filters else 0}, page={filter_request.page}, size={filter_request.size}")
+        
         auth_header = request.headers.get("Authorization")
         token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
 
         result = await TicketService.filter_tickets(db, filter_request, token)
+        logger.info(f"复合过滤查询任务列表成功, total={result.get('total', 0)}")
         return result
     except Exception as e:
+        logger.error(f"复合过滤查询任务列表失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"复合过滤查询任务列表失败: {str(e)}")
 
 
@@ -183,8 +207,11 @@ async def get_task(
     token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
 
     try:
+        logger.info(f"开始获取任务详情: task_id={task_id}, load_comments={load_comments}")
+        
         ticket = await TicketService.get_ticket_by_id(db, task_id, load_comments, token)
         if not ticket:
+            logger.warning(f"任务未找到: task_id={task_id}")
             raise HTTPException(status_code=404, detail="任务未找到")
         logger.info(f"获取任务详情成功: task_id={task_id}, load_comments={load_comments}")
         return ticket
