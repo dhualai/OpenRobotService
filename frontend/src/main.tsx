@@ -95,16 +95,27 @@ const CallView = lazyImport(() => import('@/pages/call/CallView'));
 const TicketDetailPage = lazyImport(() => import('@/pages/call/TicketDetailPage'));
 const TasksView = lazyImport(() => import('@/pages/tasks/TasksView'));
 
-const AdminView = lazyImport(() => import('@/pages/admin/AdminView'));
+const Dashboard = lazyImport(() => import('@/pages/admin/Dashboard'));
+const AdminEntries = lazyImport(() => import('@/pages/admin/AdminEntries'));
 const AdminLayout = lazyImport(() => import('@/shared/components/AdminLayout'));
+
+// 仪表盘下钻明细
+const TicketStatusDetail = lazyImport(() => import('@/pages/admin/TicketStatusDetail'));
+const ProjectCategoryDetail = lazyImport(() => import('@/pages/admin/ProjectCategoryDetail'));
+
+// 三大核心功能（明细列表页）
+const TicketMonitor = lazyImport(() => import('@/pages/admin/TicketMonitor'));
+const ProjectProgress = lazyImport(() => import('@/pages/admin/ProjectProgress'));
+
+// 次级功能
 const ProjectMetrics = lazyImport(() => import('@/pages/admin/ProjectMetrics'));
 const DataImport = lazyImport(() => import('@/pages/admin/DataImport'));
 const OperationLogs = lazyImport(() => import('@/pages/admin/OperationLogs'));
-const ProgressBoard = lazyImport(() => import('@/pages/admin/ProgressBoard'));
-const PersonnelBoard = lazyImport(() => import('@/pages/admin/PersonnelBoard'));
+// const ProgressBoard = lazyImport(() => import('@/pages/admin/ProgressBoard'));   // 已并入 ProjectProgress
+// const PersonnelBoard = lazyImport(() => import('@/pages/admin/PersonnelBoard')); // 已从导航移除
 const ProjectAuth = lazyImport(() => import('@/pages/admin/ProjectAuth'));
 const ProjectEdit = lazyImport(() => import('@/pages/admin/ProjectEdit'));
-const ProjectHR = lazyImport(() => import('@/pages/admin/ProjectHR'));
+// const ProjectHR = lazyImport(() => import('@/pages/admin/ProjectHR'));           // 已从导航移除
 const ProjectManage = lazyImport(() => import('@/pages/admin/ProjectManage'));
 const RiskList = lazyImport(() => import('@/pages/admin/RiskList'));
 const RiskEdit = lazyImport(() => import('@/pages/admin/RiskEdit'));
@@ -139,18 +150,30 @@ const router = createBrowserRouter([
             path: 'admin',
             element: <Outlet />,
             children: [
-              { index: true, element: <AdminView /> },
+              // 默认首页：上中下三段式仪表盘（工单状态 / 跨项目看板 / 待补）
+              { index: true, element: <Dashboard /> },
+              // 仪表盘下钻明细：点击状态/分类标签后展示对应列表
+              { path: 'dashboard/tickets/:status', element: <TicketStatusDetail /> },
+              { path: 'dashboard/projects/:dimension/:key', element: <ProjectCategoryDetail /> },
+              // 次级入口：三大功能传统列表页 + 管理员工具
+              { path: 'entries', element: <AdminEntries /> },
               {
                 element: <AdminLayout />,
                 children: [
+                  // === 三大核心功能 ===
+                  { path: 'ticket-monitor', element: <TicketMonitor /> },
+                  { path: 'project-progress', element: <ProjectProgress /> },
+                  { path: 'daily-reports', element: <DailyReportManage /> },
+
+                  // === 次级功能 ===
                   { path: 'dashboard', element: <ProjectMetrics /> },
                   { path: 'data-import', element: <DataImport /> },
                   { path: 'operation-logs', element: <OperationLogs /> },
-                  { path: 'progress', element: <ProgressBoard /> },
-                  { path: 'personnel', element: <PersonnelBoard /> },
+                  // { path: 'progress', element: <ProgressBoard /> },       // 已并入 ProjectProgress
+                  // { path: 'personnel', element: <PersonnelBoard /> },     // 已从导航移除
                   { path: 'project-auth', element: <ProjectAuth /> },
                   { path: 'project-edit/:id?', element: <ProjectEdit /> },
-                  { path: 'project-hr', element: <ProjectHR /> },
+                  // { path: 'project-hr', element: <ProjectHR /> },         // 已从导航移除
                   { path: 'project-manage', element: <ProjectManage /> },
                   { path: 'risks', element: <RiskList /> },
                   { path: 'risk-edit/:id?', element: <RiskEdit /> },
@@ -159,7 +182,6 @@ const router = createBrowserRouter([
                   { path: 'roles', element: <RoleManage /> },
                   { path: 'permissions', element: <PermissionManage /> },
                   { path: 'resources', element: <ResourceManage /> },
-                  { path: 'daily-reports', element: <DailyReportManage /> },
                   { path: 'wechat', element: <WechatManage /> },
                 ],
               },

@@ -35,7 +35,7 @@ vi.mock('tdesign-mobile-react', () => ({
 
 import AdminLayout from '../AdminLayout';
 
-const renderLayout = (route = '/admin/dashboard') => {
+const renderLayout = (route = '/admin/ticket-monitor') => {
   return render(
     <MemoryRouter initialEntries={[route]}>
       <AdminLayout />
@@ -50,9 +50,9 @@ describe('AdminLayout', () => {
   });
 
   it('should render navbar with current page title', () => {
-    renderLayout('/admin/dashboard');
+    renderLayout('/admin/ticket-monitor');
     expect(screen.getByTestId('navbar')).toBeInTheDocument();
-    expect(screen.getByTestId('navbar-title')).toHaveTextContent('仪表盘');
+    expect(screen.getByTestId('navbar-title')).toHaveTextContent('工单状态监测');
   });
 
   it('should show default title for unknown path', () => {
@@ -94,7 +94,7 @@ describe('AdminLayout', () => {
     const dashboardItems = screen.getAllByText('仪表盘');
     expect(dashboardItems.length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('项目管理')).toBeInTheDocument();
-    expect(screen.getByText('进度看板')).toBeInTheDocument();
+    expect(screen.getByText('项目进度管理')).toBeInTheDocument();
     expect(screen.getByText('风险管理')).toBeInTheDocument();
     expect(screen.getByText('用户管理')).toBeInTheDocument();
     expect(screen.getByText('角色管理')).toBeInTheDocument();

@@ -28,10 +28,10 @@ DEFAULT_LOG_CONFIG = {
             "class": "logging.handlers.TimedRotatingFileHandler",
             "level": "INFO",
             "formatter": "standard",
-            "filename": os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs', 'das.log'),
+            "filename": os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs', 'backend.log'),
             "when": "midnight",
             "interval": 1,
-            "backupCount": 30,
+            "backupCount": 7,
             "encoding": "utf-8"
         }
     },

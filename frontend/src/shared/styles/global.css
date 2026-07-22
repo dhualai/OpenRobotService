@@ -956,6 +956,81 @@ html, body, #root {
 .admin-card__label { font-size: 13px; color: #333; }
 .admin-view__tip { text-align: center; color: #bbb; font-size: 12px; padding: 24px; }
 
+/* ===== 后台管理仪表盘（上中下三段式看板） ===== */
+.dashboard-page { padding-top: 46px; }
+.dashboard-section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1a1a1a;
+  margin: 20px 0 10px;
+}
+.dashboard-section-title:first-child { margin-top: 4px; }
+.dashboard-section-title__more { font-size: 12px; color: #0052d9; font-weight: 400; cursor: pointer; }
+.dashboard-section {
+  background: #fff;
+  border-radius: 12px;
+  padding: 14px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+.dashboard-section--placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 80px;
+}
+.dashboard-section__subtitle { font-size: 13px; color: #666; margin: 0 0 8px; font-weight: 500; }
+.dashboard-section__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dashboard-section__chart { flex: 1; min-width: 0; }
+.dashboard-section__stats {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.dashboard-stat-item { text-align: center; }
+.dashboard-stat-item__value { font-size: 20px; font-weight: 700; }
+.dashboard-stat-item__label { font-size: 11px; color: #999; margin-top: 2px; }
+.dashboard-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f0f0;
+}
+.dashboard-tag {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.dashboard-tag__pending { font-size: 9px; margin-left: 2px; opacity: 0.7; }
+.dashboard-urgency-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.dashboard-urgency-card {
+  border: 1px solid;
+  border-radius: 10px;
+  padding: 10px 4px;
+  text-align: center;
+  cursor: pointer;
+  background: #fafafa;
+}
+.dashboard-urgency-card__value { font-size: 20px; font-weight: 700; }
+.dashboard-urgency-card__label { font-size: 10px; color: #666; margin-top: 4px; }
+
+
 /* ===== 登录页（机器人开源平台风格） ===== */
 .login-page {
   position: relative;

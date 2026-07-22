@@ -236,43 +236,41 @@ async def create_project(
     project_data: ProjectCreate,
     credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
 ) -> ProjectResponse:
-    if not project_data.contact_person or not project_data.contact_person_id:
-        raise HTTPException(status_code=400, detail="项目必须指定对接人")
-    
     token = request.headers.get("Authorization", "")
     token = token[7:]
     
-    try:
-        existing_projects = await PermissionService.get_projects(request, token)
-        project_exists = any(p.get("project_code") == project_data.project_code for p in existing_projects["projects"])
+    if project_data.contact_person and project_data.contact_person_id:
+        try:
+            existing_projects = await PermissionService.get_projects(request, token)
+            project_exists = any(p.get("project_code") == project_data.project_code for p in existing_projects["projects"])
+            
+            if not project_exists:
+                project_dict = project_data.model_dump()
+                await PermissionService.create_project(request, token, project_dict)
+            
+            role_data = {
+                "project_id": project_data.project_code,
+                "role_ids": ["project_contact"]
+            }
+            await PermissionService.assign_role(request, token, project_data.contact_person_id, role_data)
+            
+            from app.modules.admin.utils_das.security import decode_token
+            from app.modules.admin.services.wechat_service import WeChatService
+            
+            current_user = decode_token(token)
+            current_username = current_user.get("sub", "系统") if current_user else "系统"
+            
+            users = await PermissionService.get_users_list(request, token)
+            contact_user = next((u for u in users if u["username"] == project_data.contact_person_id), None)
+            if contact_user:
+                current_user_info = next((u for u in users if u["username"] == current_username), None)
+                current_user_name = current_user_info.get("name", current_username) if current_user_info else current_username
+                title = project_data.name
+                content = f"{current_user_name} 给您设置为项目 '{project_data.name}' 的对接人"
+                WeChatService.send_notification(contact_user["id"], content, url='https://usp.ep-zl.com/wechat/projects')
         
-        if not project_exists:
-            project_dict = project_data.model_dump()
-            await PermissionService.create_project(request, token, project_dict)
-        
-        role_data = {
-            "project_id": project_data.project_code,
-            "role_ids": ["project_contact"]
-        }
-        await PermissionService.assign_role(request, token, project_data.contact_person_id, role_data)
-        
-        from app.modules.admin.utils_das.security import decode_token
-        from app.modules.admin.services.wechat_service import WeChatService
-        
-        current_user = decode_token(token)
-        current_username = current_user.get("sub", "系统") if current_user else "系统"
-        
-        users = await PermissionService.get_users_list(request, token)
-        contact_user = next((u for u in users if u["username"] == project_data.contact_person_id), None)
-        if contact_user:
-            current_user_info = next((u for u in users if u["username"] == current_username), None)
-            current_user_name = current_user_info.get("name", current_username) if current_user_info else current_username
-            title = project_data.name
-            content = f"{current_user_name} 给您设置为项目 '{project_data.name}' 的对接人"
-            WeChatService.send_notification(contact_user["id"], content, url='https://usp.ep-zl.com/wechat/projects')
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"权限服务操作失败: {str(e)}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"权限服务操作失败: {str(e)}")
     
     project = project_service.create_project(project_data.model_dump())
     return project
