@@ -126,6 +126,7 @@ const RoleManage = lazyImport(() => import('@/pages/admin/RoleManage'));
 const PermissionManage = lazyImport(() => import('@/pages/admin/PermissionManage'));
 const ResourceManage = lazyImport(() => import('@/pages/admin/ResourceManage'));
 const DailyReportManage = lazyImport(() => import('@/pages/admin/DailyReportManage'));
+const DailySummaryAgent = lazyImport(() => import('@/pages/admin/DailySummaryAgent'));
 const WechatManage = lazyImport(() => import('@/pages/admin/WechatManage'));
 
 const router = createBrowserRouter([
@@ -165,6 +166,7 @@ const router = createBrowserRouter([
                   { path: 'ticket-monitor', element: <TicketMonitor /> },
                   { path: 'project-progress', element: <ProjectProgress /> },
                   { path: 'daily-reports', element: <DailyReportManage /> },
+                  { path: 'daily-summary', element: <DailySummaryAgent /> },
 
                   // === 次级功能 ===
                   { path: 'dashboard', element: <ProjectMetrics /> },

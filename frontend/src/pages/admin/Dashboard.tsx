@@ -1,7 +1,7 @@
 // 后台管理首页仪表盘 —— 上中下三段式看板
 // 上：工单状态饼图 + 四项统计卡（点击状态可下钻明细）
 // 中：跨项目看板 —— 调度阶段饼图 + 紧急度四象限（点击标签可下钻明细）
-// 下：更多功能 —— 项目管理 / 数据管理 / 角色管理 / 其他 快捷入口
+// 下：更多功能 —— 项目管理 / 数据管理 / 日报周报 / 其他 快捷入口
 //
 // 数据接口均为「前端先行、后端待接入」，见 src/api/dashboard.ts 顶部说明。
 // 接口未就绪时一律优雅降级为「0/暂无数据」，不阻塞页面渲染。
@@ -22,7 +22,7 @@ interface MoreFunctionEntry { path: string; label: string; emoji: string; }
 const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
   { path: '/admin/project-manage', label: '项目管理', emoji: '📁' },
   { path: '/admin/data-import', label: '数据管理', emoji: '🗄️' },
-  { path: '/admin/roles', label: '角色管理', emoji: '🏷️' },
+  { path: '/admin/daily-summary', label: '日报周报', emoji: '🤖' },
   { path: '/admin/entries', label: '其他', emoji: '⋯' },
 ];
 

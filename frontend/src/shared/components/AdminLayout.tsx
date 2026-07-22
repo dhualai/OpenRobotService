@@ -21,6 +21,7 @@ const adminMenuItems: MenuItem[] = [
   { path: '/admin/ticket-monitor', label: '工单状态监测', emoji: '🎫' },
   { path: '/admin/project-progress', label: '项目进度管理', emoji: '📊' },
   { path: '/admin/daily-reports', label: '日报管理', emoji: '📋' },
+  { path: '/admin/daily-summary', label: '日报周报', emoji: '🤖' },
 
   // === 次级功能 ===
   { path: '/admin/project-manage', label: '项目管理', emoji: '📁' },
