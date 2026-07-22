@@ -26,7 +26,7 @@ ZENTAO_STATUS_MAP: Dict[str, TaskStatus] = {
     "doing": TaskStatus.IN_PROGRESS,
     "pause": TaskStatus.PENDING,
     "done": TaskStatus.RESOLVED,
-    "cancel": TaskStatus.CLOSED,
+    "cancel": TaskStatus.CANCELED,
     "closed": TaskStatus.CLOSED,
 }
 
