@@ -459,6 +459,7 @@ class TaskAnalyzeAPIRequest(BaseModel):
     session_id: str = Field(..., description="对话 session")
     query: str = Field(default="", description="用户消息")
     username: str = Field(default="", description="当前用户名（chat 模式用于获取用户工单）")
+    token: str = Field(default="", description="用户 JWT token（用于调后端 API 鉴权）")
 
 
 class TaskListAPIRequest(BaseModel):
@@ -607,6 +608,7 @@ async def task_chat(body: TaskAnalyzeAPIRequest) -> dict:
             session_id=body.session_id,
             query=getattr(body, 'query', ''),
             username=getattr(body, 'username', '') or "",
+            token=getattr(body, 'token', '') or "",
         )
         return {"code": 0, "data": {"reply": response}, "_trace": agent._pop_trace()}
     except Exception as e:
@@ -627,6 +629,7 @@ async def task_chat_stream(body: TaskAnalyzeAPIRequest):
                 session_id=body.session_id,
                 query=getattr(body, 'query', ''),
                 username=getattr(body, 'username', '') or "",
+                token=getattr(body, 'token', '') or "",
             ):
                 ev_type = event["event"]
                 if ev_type == "token":
