@@ -14,31 +14,43 @@ interface MenuItem {
 }
 
 const adminMenuItems: MenuItem[] = [
-  { path: '/admin/dashboard', label: '仪表盘', emoji: '📊' },
+  // === 仪表盘首页 ===
+  { path: '/admin', label: '仪表盘', emoji: '🏠' },
+
+  // === 三大核心功能 ===
+  { path: '/admin/ticket-monitor', label: '工单状态监测', emoji: '🎫' },
+  { path: '/admin/project-progress', label: '项目进度管理', emoji: '📊' },
+  { path: '/admin/daily-reports', label: '日报管理', emoji: '📋' },
+
+  // === 次级功能 ===
   { path: '/admin/project-manage', label: '项目管理', emoji: '📁' },
-  { path: '/admin/project-edit', label: '新建/编辑项目', emoji: '✏️' },
-  { path: '/admin/progress', label: '进度看板', emoji: '📈' },
-  { path: '/admin/personnel', label: '人员分配', emoji: '👥' },
-  { path: '/admin/project-hr', label: '人力资源', emoji: '🧑‍💼' },
-  { path: '/admin/project-auth', label: '项目授权', emoji: '🔐' },
   { path: '/admin/risks', label: '风险管理', emoji: '⚠️' },
-  { path: '/admin/reports', label: '报表分析', emoji: '📋' },
-  { path: '/admin/data-import', label: '数据导入', emoji: '📥' },
-  { path: '/admin/wechat', label: '微信管理', emoji: '💬' },
-  { path: '/admin/operation-logs', label: '操作记录', emoji: '📝' },
+  { path: '/admin/reports', label: '报表分析', emoji: '📈' },
+
+  // === 项目管理操作入口 ===
+  { path: '/admin/project-edit', label: '新建/编辑项目', emoji: '✏️' },
+  { path: '/admin/project-auth', label: '项目授权', emoji: '🔐' },
+
+  // === 管理工具 ===
   { path: '/admin/users', label: '用户管理', emoji: '👤' },
   { path: '/admin/roles', label: '角色管理', emoji: '🏷️' },
   { path: '/admin/permissions', label: '权限管理', emoji: '🔑' },
+  { path: '/admin/wechat', label: '微信管理', emoji: '💬' },
+  { path: '/admin/data-import', label: '数据导入', emoji: '📥' },
   { path: '/admin/resources', label: '资源管理', emoji: '🗂️' },
-  { path: '/admin/daily-reports', label: '日报管理', emoji: '📰' },
+
+  // === 系统日志 ===
+  { path: '/admin/operation-logs', label: '操作记录', emoji: '📝' },
 ];
 
 function matchMenuPath(items: MenuItem[], currentPath: string): string {
   const exact = items.find((item) => item.path === currentPath);
   if (exact) return exact.path;
-  const prefix = items.find((item) => currentPath.startsWith(item.path + '/'));
-  if (prefix) return prefix.path;
-  return '';
+  // 取最长前缀匹配，避免「/admin」（仪表盘首页）作为短前缀误吞所有 /admin/* 子路径
+  const prefixMatches = items
+    .filter((item) => item.path !== '/admin' && currentPath.startsWith(item.path + '/'))
+    .sort((a, b) => b.path.length - a.path.length);
+  return prefixMatches[0]?.path || '';
 }
 
 export default function AdminLayout({ children }: AdminLayoutProps) {

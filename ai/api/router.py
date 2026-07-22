@@ -455,11 +455,11 @@ task_agent_router = APIRouter(prefix="/api/ai/task", tags=["AI任务助手"])
 
 
 class TaskAnalyzeAPIRequest(BaseModel):
-    task_id: str = Field(default="", description="工单 ID（有 taskId 时走 analyze，空时走 chat）")
+    task_id: str = Field(default="", description="工单 ID（仅 analyze 需要）")
     session_id: str = Field(..., description="对话 session")
-    query: str = Field(default="", description="用户消息（有 taskId 时可选，无 taskId 时必有）")
-    task_title: str = Field(default="", description="工单标题（chat 模式可用）")
-    task_description: str = Field(default="", description="工单描述（chat 模式可用）")
+    query: str = Field(default="", description="用户消息")
+    username: str = Field(default="", description="当前用户名（chat 模式用于获取用户工单）")
+    token: str = Field(default="", description="用户 JWT token（用于调后端 API 鉴权）")
 
 
 class TaskListAPIRequest(BaseModel):
@@ -600,12 +600,15 @@ async def task_submit(request: Request, body: TaskSubmitAPIRequest) -> dict:
 
 @task_agent_router.post("/chat", summary="自由问答（非流式）")
 async def task_chat(body: TaskAnalyzeAPIRequest) -> dict:
-    """自由问答：工程师可以问任何 AGV/AMR 技术问题"""
+    """v2.0 自由问答：感知用户所有工单 + 诊断状态"""
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
         response = await agent.chat(
-            session_id=body.session_id, query=getattr(body, 'query', ''),
+            session_id=body.session_id,
+            query=getattr(body, 'query', ''),
+            username=getattr(body, 'username', '') or "",
+            token=getattr(body, 'token', '') or "",
         )
         return {"code": 0, "data": {"reply": response}, "_trace": agent._pop_trace()}
     except Exception as e:
@@ -625,9 +628,8 @@ async def task_chat_stream(body: TaskAnalyzeAPIRequest):
             async for event in agent.chat_stream(
                 session_id=body.session_id,
                 query=getattr(body, 'query', ''),
-                task_id=getattr(body, 'task_id', '') or '',
-                task_title=getattr(body, 'task_title', '') or '',
-                task_description=getattr(body, 'task_description', '') or '',
+                username=getattr(body, 'username', '') or "",
+                token=getattr(body, 'token', '') or "",
             ):
                 ev_type = event["event"]
                 if ev_type == "token":

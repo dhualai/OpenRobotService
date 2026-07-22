@@ -1,4 +1,4 @@
-﻿"""tasks 任务管理 API（承接 fqa/ticket）。
+"""tasks 任务管理 API（承接 fqa/ticket）。
 
 MIGRATION.md 阶段 3：从 `app/modules/fqa/ticket/api/ticket.py` 搬迁而来，
 路由前缀从 `/api/fqa/tickets` 迁移到 `/api/tasks`。
@@ -176,13 +176,23 @@ async def get_task(
     load_comments: bool = Query(False, description="是否加载评论"),
     db: AsyncSession = Depends(get_db)
 ):
+    import logging
+    logger = logging.getLogger(__name__)
+    
     auth_header = request.headers.get("Authorization")
     token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
 
-    ticket = await TicketService.get_ticket_by_id(db, task_id, load_comments, token)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="任务未找到")
-    return ticket
+    try:
+        ticket = await TicketService.get_ticket_by_id(db, task_id, load_comments, token)
+        if not ticket:
+            raise HTTPException(status_code=404, detail="任务未找到")
+        logger.info(f"获取任务详情成功: task_id={task_id}, load_comments={load_comments}")
+        return ticket
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取任务详情失败: task_id={task_id}, load_comments={load_comments}, error={str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取任务详情失败: {str(e)}")
 
 
 @router.put("/{task_id}")

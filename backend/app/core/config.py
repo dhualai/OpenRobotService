@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     DATABASE_URL: Optional[str] = Field(default=None)
     
     ADMIN_USERNAME: str = Field(default="admin")
-    ADMIN_PASSWORD: str = Field(default="123456")
+    ADMIN_PASSWORD: str = Field(default="usp2026@EP")
     
     @property
     def DB_CONFIG(self) -> dict:
