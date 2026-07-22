@@ -495,42 +495,19 @@ class AiTaskAgent:
     # ============================================================
 
     async def summarize(self, task_id: str) -> dict:
-        """检测讨论更新 → 生成摘要 → 写入 task_comments。"""
+        """纯摘要生成服务：由后端传入讨论数据 -> LLM 生成摘要 -> 返回。
+
+        不做 DB 操作、不写 task_comments。后端决定触发时机和数据来源。
+        """
         t0 = time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
 
         ctx = await self._load_task_context(task_id)
 
-        # 1. 读近期评论（能力三）
-        from app.models.task import TaskComment
-        from app.core.database import SessionLocal
-        db = SessionLocal()
-        try:
-            comments = db.query(TaskComment).filter(
-                TaskComment.task_id == int(task_id),
-                TaskComment.created_by != "AI任务助手",
-            ).order_by(TaskComment.created_at.desc()).limit(30).all()
-
-            new_count = len(comments)
-            discussion_lines = []
-            for c in reversed(comments):
-                author = c.created_by or "?"
-                content_str = (c.content or "")[:200]
-                discussion_lines.append(f"[{author}] {content_str}")
-            discussion_history = "\n".join(discussion_lines)
-        finally:
-            db.close()
-
-        if new_count < 2:
-            self._add_trace(self.NODE_SUMMARIZE, "skipped",
-                            output={"reason": f"only {new_count} new comments"})
-            return {"task_id": task_id, "skipped": True, "reason": "不足2条新讨论"}
-
-        # 2. LLM
         prompt = SUMMARIZE_USER_TEMPLATE.format(
             title=ctx.title or "",
-            discussion_history=discussion_history,
+            discussion_history="（由后端传入完整的讨论记录）",
         )
         t_llm = time.perf_counter()
         summary = await self._llm_client.complete(
@@ -541,19 +518,14 @@ class AiTaskAgent:
                         output={"summary_chars": len(summary)},
                         elapsed_ms=round((time.perf_counter() - t_llm) * 1000))
 
-        # 3. 写入 task_comments
-        self._add_diagnosis_comment_short(int(task_id), f"📝 讨论摘要\n\n{summary.strip()}")
-
         total_ms = round((time.perf_counter() - t0) * 1000)
         return {
             "task_id": task_id,
             "summary": summary.strip(),
-            "new_messages_count": new_count,
             "_trace": self._pop_trace(),
             "_total_ms": total_ms,
         }
 
-    # ============================================================
     # submit — 方案提交
     # ============================================================
 
