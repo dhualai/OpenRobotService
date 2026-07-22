@@ -30,7 +30,8 @@ from ai.agents.AiTaskPlatform.prompts import (
     DISCUSS_SYSTEM_PROMPT,
     DISCUSS_USER_TEMPLATE,
     SUMMARIZE_SYSTEM_PROMPT,
-    SUMMARIZE_USER_TEMPLATE,
+    SUMMARIZE_FULL_TEMPLATE,
+    SUMMARIZE_INCREMENTAL_TEMPLATE,
 )
 
 
@@ -497,9 +498,11 @@ class AiTaskAgent:
     async def summarize(
         self, task_id: str, title: str = "", description: str = "",
         diagnosis_summary: str = "", discussion_history: list = None,
+        previous_summary: str = "",
     ) -> dict:
         """纯摘要生成服务：后端传入工单信息+讨论记录 → LLM 生成摘要 → 返回。
 
+        如果 previous_summary 非空，做增量总结（融入新讨论到已有摘要）。
         不做 DB 操作、不写 task_comments。后端决定触发时机和数据来源。
         """
         t0 = time.perf_counter()
@@ -515,12 +518,20 @@ class AiTaskAgent:
             history_lines.append(f"[{author}] {content}")
         history_text = "\n".join(history_lines) if history_lines else "（暂无讨论）"
 
-        prompt = SUMMARIZE_USER_TEMPLATE.format(
-            title=title or f"工单 #{task_id}",
-            description=description or "",
-            diagnosis_summary=diagnosis_summary or "无",
-            discussion_history=history_text,
-        )
+        if previous_summary:
+            # 增量模式：只需上次摘要 + 新增讨论
+            prompt = SUMMARIZE_INCREMENTAL_TEMPLATE.format(
+                previous_summary=previous_summary,
+                discussion_history=history_text,
+            )
+        else:
+            # 首次模式：完整工单上下文
+            prompt = SUMMARIZE_FULL_TEMPLATE.format(
+                title=title or f"工单 #{task_id}",
+                description=description or "",
+                diagnosis_summary=diagnosis_summary or "无",
+                discussion_history=history_text,
+            )
         t_llm = time.perf_counter()
         summary = await self._llm_client.complete(
             prompt=prompt, system_prompt=SUMMARIZE_SYSTEM_PROMPT,
