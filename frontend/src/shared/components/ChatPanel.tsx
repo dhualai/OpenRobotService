@@ -1,6 +1,5 @@
-// 可复用 AI 对话面板
-// call 场景：提单 Agent（/api/ai/qa/ask/stream）—— 我要摇人，诊断+提单
-// tasks 场景：任务 Agent（/api/ai/task/chat/stream）—— 系统任务，自由问答+感知工单
+// 可复用 AI 对话面板 — 提单 Agent（/api/ai/qa/ask/stream）
+// 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Textarea, Toast } from 'tdesign-mobile-react';
@@ -11,8 +10,6 @@ import { qaSubmit, qaUpload, generateSessionId, trackSession, fetchWithAuth } fr
 import { createConversation, getConversation, listMyConversations, appendMessage, readAiSessionId } from '@/api/conversation';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
-import SolutionCard from '@/shared/components/SolutionCard';
-import type { SolutionDraft } from '@/shared/components/SolutionCard';
 
 interface SpeechRecognitionResultEvent {
   resultIndex: number;
@@ -83,7 +80,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const [sessionId, setSessionId] = useState<string>('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submittingTicket, setSubmittingTicket] = useState(false);
-  const [submittingSolution, setSubmittingSolution] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
   const [voiceWillCancel, setVoiceWillCancel] = useState(false);
@@ -223,15 +219,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (convId) appendMessage(convId, 'user', userContent).catch(() => {});
       setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() }]);
 
-      // tasks 场景：任务 Agent chat/stream（感知用户所有工单）
-      // 选择 API：call「我要摇人」走提单 Agent，tasks「系统任务」走任务 Agent
-      const AI_BASE = API_CONFIG.AI.BASE_URL;
-      const apiPath = isCall
-        ? `${AI_BASE}/qa/ask/stream`
-        : `${AI_BASE}/task/chat/stream`;
-      const apiBody = isCall
-        ? JSON.stringify({ session_id: sid, query: userContent })
-        : JSON.stringify({ session_id: sid, query: userContent, username: username || '', token: token || '' });
+      // 提单 Agent
+      const apiPath = `${API_CONFIG.AI.BASE_URL}/qa/ask/stream`;
+      const apiBody = JSON.stringify({ session_id: sid, query: userContent });
 
       const response = await fetchWithAuth(apiPath, { method: 'POST', body: apiBody });
 
@@ -430,40 +420,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
-  /** 任务 Agent：提交方案 → 调 /api/ai/task/submit */
-  const handleSubmitSolution = async (msg: Message) => {
-    if (submittingSolution || !msg.solution_draft) return;
-    setSubmittingSolution(true);
-    try {
-      // task_id 从 solution_draft 内携带，或由 Agent 在对话中推断
-      const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/submit`, {
-        method: 'POST',
-        body: JSON.stringify({
-          task_id: msg.solution_draft._task_id || '',
-          session_id: sessionId,
-          final_solution: msg.solution_draft,
-          resolution: 'resolved',
-        }),
-      });
-      const data = await res.json();
-      if (data.code === 0) {
-        refreshTasks();
-        Toast({ message: '方案已提交，工单已解决', theme: 'success' });
-      } else {
-        Toast({ message: (data as { message?: string })?.message || '提交失败', theme: 'error' });
-      }
-    } catch (err) {
-      Toast({ message: `提交失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    } finally {
-      setSubmittingSolution(false);
-    }
-  };
-
-  /** 任务 Agent：请求重新分析 */
-  const handleReanalyze = () => {
-    send('请重新分析这个工单的问题');
-  };
-
   const toggleReaction = (id: string, type: 'like' | 'dislike') => {
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, reaction: m.reaction === type ? null : type } : m)));
   };
@@ -524,19 +480,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   }
                 />
               ) : msg.role === 'assistant' ? (
-                msg.subtype === 'solution_draft' && msg.solution_draft ? (
-                  <SolutionCard
-                    draft={msg.solution_draft}
-                    onDraftChange={(draft) =>
-                      setMessages((prev) => prev.map((m) =>
-                        m.id === msg.id ? { ...m, solution_draft: draft } : m
-                      ))
-                    }
-                    onSubmit={() => handleSubmitSolution(msg)}
-                    onReanalyze={handleReanalyze}
-                    submitting={submittingSolution}
-                  />
-                ) : msg.content ? (
+                msg.content ? (
                   <MarkdownRenderer content={msg.content} compact={compact} />
                 ) : (
                   loading ? <div className="chat-bubble__text">思考中…</div> : null

@@ -18,16 +18,6 @@ vi.mock('tdesign-mobile-react', () => ({
   ),
 }));
 
-// Mock auth store
-let mockIsAdmin = false;
-vi.mock('@/stores/auth', () => ({
-  useAuthStore: (selector?: (s: Record<string, unknown>) => unknown) => {
-    const state = { isAdmin: mockIsAdmin };
-    if (selector) return selector(state);
-    return state;
-  },
-}));
-
 import AdminEntries from '../admin/AdminEntries';
 
 const renderView = () => {
@@ -42,59 +32,30 @@ describe('AdminEntries', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockNavigate.mockClear();
-    mockIsAdmin = false;
   });
 
   it('should render navbar with title', () => {
     renderView();
-    expect(screen.getByTestId('navbar')).toHaveTextContent('更多功能');
+    expect(screen.getByTestId('navbar')).toHaveTextContent('其他');
   });
 
-  it('should show public entries for all users', () => {
+  it('should show the three admin tool entries', () => {
     renderView();
-    expect(screen.getByText('工单状态监测')).toBeInTheDocument();
-    expect(screen.getByText('项目进度管理')).toBeInTheDocument();
-    expect(screen.getByText('日报 / 周报')).toBeInTheDocument();
-  });
-
-  it('should hide admin-only entries for non-admin', () => {
-    mockIsAdmin = false;
-    renderView();
-    expect(screen.queryByText('用户管理')).not.toBeInTheDocument();
-    expect(screen.queryByText('角色管理')).not.toBeInTheDocument();
-    expect(screen.queryByText('微信管理')).not.toBeInTheDocument();
-  });
-
-  it('should show admin-only entries for admin', () => {
-    mockIsAdmin = true;
-    renderView();
-    expect(screen.getByText('用户管理')).toBeInTheDocument();
     expect(screen.getByText('角色管理')).toBeInTheDocument();
-    expect(screen.getByText('微信管理')).toBeInTheDocument();
-  });
-
-  it('should show tip for non-admin users', () => {
-    mockIsAdmin = false;
-    renderView();
-    expect(screen.getByText('部分管理功能仅对管理员可见')).toBeInTheDocument();
-  });
-
-  it('should hide tip for admin users', () => {
-    mockIsAdmin = true;
-    renderView();
-    expect(screen.queryByText('部分管理功能仅对管理员可见')).not.toBeInTheDocument();
+    expect(screen.getByText('权限管理')).toBeInTheDocument();
+    expect(screen.getByText('操作记录')).toBeInTheDocument();
   });
 
   it('should navigate on entry card click', () => {
     renderView();
-    fireEvent.click(screen.getByText('工单状态监测'));
-    expect(mockNavigate).toHaveBeenCalledWith('/admin/ticket-monitor');
+    fireEvent.click(screen.getByText('角色管理'));
+    expect(mockNavigate).toHaveBeenCalledWith('/admin/roles');
   });
 
   it('should render correct emoji icons', () => {
     renderView();
-    expect(screen.getByText('🎫')).toBeInTheDocument();
-    expect(screen.getByText('📊')).toBeInTheDocument();
-    expect(screen.getByText('📋')).toBeInTheDocument();
+    expect(screen.getByText('🏷️')).toBeInTheDocument();
+    expect(screen.getByText('🔑')).toBeInTheDocument();
+    expect(screen.getByText('📝')).toBeInTheDocument();
   });
 });
