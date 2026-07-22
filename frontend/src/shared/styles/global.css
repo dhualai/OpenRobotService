@@ -59,7 +59,9 @@ html, body, #root {
   display: flex;
   flex-direction: column;
 }
-/* TabBar 入文档流：内容区天然在其上方，无需猜高度；补刘海屏安全区 */
+/* TabBar 悬浮固定在底部（tdesign fixed 默认 true）；placeholder 撑开等高占位块，
+   使 .tabbar-shell__content 的可滚动内容不会被悬浮 TabBar 遮挡末尾内容 */
+.tabbar-shell > .t-tab-bar__placeholder,
 .tabbar-shell > .t-tab-bar {
   flex-shrink: 0;
   padding-bottom: env(safe-area-inset-bottom);
