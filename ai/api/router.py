@@ -472,6 +472,7 @@ class SummarizeRequest(BaseModel):
     description: str = Field(default="", description="工单描述")
     diagnosis_summary: str = Field(default="", description="提单Agent诊断摘要（从 metadata_info.diagnosis 拼接）")
     discussion_history: list = Field(default_factory=list, description="近期讨论 [{author, content, time}, ...]")
+    previous_summary: str = Field(default="", description="上次摘要结果（有值时增量总结，空值时首次总结）")
 
 
 # ── v3.0 端点 ──
@@ -512,6 +513,7 @@ async def task_summarize(body: SummarizeRequest) -> dict:
             description=body.description,
             diagnosis_summary=body.diagnosis_summary,
             discussion_history=body.discussion_history,
+            previous_summary=body.previous_summary,
         )
         return {"code": 0, "data": result}
     except Exception as e:
