@@ -178,6 +178,29 @@ def upsert_task(ticket: dict, created_by: str = "") -> Task:
         db.close()
 
 
+def update_task_assignment(task_id, engineer_name: str = "", engineer_id: str = "",
+                          confidence: float = 0.0, reasoning: str = ""):
+    """将智能派单结果回写到 tasks 表（assigned_to 列 + metadata_info 中的派单详情）。"""
+    db = SessionLocal()
+    try:
+        task = db.query(Task).filter(Task.id == int(task_id)).first()
+        if not task:
+            return False
+        task.assigned_to = engineer_name or engineer_id or "unassigned"
+        meta = dict(task.metadata_info or {})
+        meta["assign_result"] = {
+            "engineer_name": engineer_name,
+            "engineer_id": engineer_id,
+            "confidence": confidence,
+            "reasoning": reasoning,
+        }
+        task.metadata_info = meta
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
 def update_task_resolution(task_id, solution: dict, resolution: str = "resolved") -> bool:
     """任务 Agent submit：置状态 + 把方案写进 metadata_info.diagnosis。
 
