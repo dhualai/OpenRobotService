@@ -681,7 +681,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             </div>
           </>
         )}
-        <input ref={fileInputRef} type="file" accept="image/*" capture="environment" onChange={handleFileChange} style={{ display: 'none' }} />
+        <input ref={fileInputRef} type="file" accept="*/*" onChange={handleFileChange} style={{ display: 'none' }} />
       </div>
     </div>
   );
