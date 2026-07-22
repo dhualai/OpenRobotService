@@ -94,6 +94,7 @@ const MainLayout = lazyImport(() => import('@/shared/components/MainLayout'));
 const CallView = lazyImport(() => import('@/pages/call/CallView'));
 const TicketDetailPage = lazyImport(() => import('@/pages/call/TicketDetailPage'));
 const TasksView = lazyImport(() => import('@/pages/tasks/TasksView'));
+const TaskDetailPage = lazyImport(() => import('@/pages/tasks/TaskDetailPage'));
 
 const Dashboard = lazyImport(() => import('@/pages/admin/Dashboard'));
 const AdminEntries = lazyImport(() => import('@/pages/admin/AdminEntries'));
@@ -146,7 +147,7 @@ const router = createBrowserRouter([
           { path: 'call', element: <CallView /> },
           { path: 'call/ticket/:id', element: <TicketDetailPage /> },
           { path: 'tasks', element: <TasksView /> },
-          { path: 'tasks/:id', element: <TasksView /> },
+          { path: 'tasks/:id', element: <TaskDetailPage /> },
           {
             path: 'admin',
             element: <Outlet />,
@@ -196,7 +197,6 @@ const router = createBrowserRouter([
       { path: '/call/ai-chat', element: <Navigate to="/call" replace /> },
       { path: '/call/new-ticket', element: <Navigate to="/call" replace /> },
       { path: '/tasks', element: <Navigate to="/tasks" replace /> },
-      { path: '/tasks/:id', element: <Navigate to="/tasks" replace /> },
       { path: '/admin', element: <Navigate to="/admin" replace /> },
       { path: '/admin/*', element: <Navigate to="/admin" replace /> },
       { path: '/home', element: <Navigate to="/call" replace /> },
