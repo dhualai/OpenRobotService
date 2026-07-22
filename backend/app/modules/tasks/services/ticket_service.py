@@ -3,6 +3,7 @@ from sqlalchemy import select, func, or_, and_
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import joinedload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.modules.tasks.models.ticket import Ticket, TicketComment, TicketStatus, TicketPriority, TicketType
 from app.modules.tasks.schemas.ticket import TicketCreate, TicketUpdate, TicketCommentCreate, TicketCommentUpdate, TicketQueryParams, TicketFilterRequest
@@ -548,8 +549,11 @@ class TicketService:
         
         if ticket and load_comments:
             comments = await TicketService.get_comments(db, ticket_id, token)
-            ticket.comments = comments
-        
+            set_committed_value(ticket, 'comments', comments)
+        elif ticket:
+            # 未请求评论时也设空列表，避免序列化时触发 lazy load → MissingGreenlet
+            set_committed_value(ticket, 'comments', [])
+
         return ticket
 
     @staticmethod
@@ -643,7 +647,7 @@ class TicketService:
         
         if is_admin:
             from sqlalchemy import delete
-            await db.execute(delete(TicketComment).where(TicketComment.ticket_id == ticket_id))
+            await db.execute(delete(TicketComment).where(TicketComment.task_id == ticket_id))
             await db.delete(ticket)
         else:
             ticket.status = TicketStatus.CLOSED
@@ -692,7 +696,7 @@ class TicketService:
     async def get_comments(db: AsyncSession, ticket_id: int, token: Optional[str] = None) -> List[TicketComment]:
         result = await db.execute(
             select(TicketComment)
-            .where(TicketComment.ticket_id == ticket_id)
+            .where(TicketComment.task_id == ticket_id)
             .order_by(TicketComment.created_at.desc())
         )
         comments = list(result.scalars().all())
@@ -916,7 +920,7 @@ class TicketService:
             comments = []
             comment_query = await db.execute(
                 select(TicketComment.content)
-                .where(TicketComment.ticket_id == ticket.id)
+                .where(TicketComment.task_id == ticket.id)
                 .order_by(TicketComment.created_at.asc())
                 .limit(1)
             )
