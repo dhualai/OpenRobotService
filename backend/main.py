@@ -1,4 +1,5 @@
 import uvicorn
+import os
 from app.core.config import settings
 
 if __name__ == "__main__":
@@ -12,5 +13,5 @@ if __name__ == "__main__":
         "app:app",
         host="0.0.0.0",
         port=port,
-        reload=True
+        reload=False
     )
