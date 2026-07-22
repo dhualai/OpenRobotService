@@ -494,8 +494,11 @@ class AiTaskAgent:
     # summarize — 讨论摘要
     # ============================================================
 
-    async def summarize(self, task_id: str) -> dict:
-        """纯摘要生成服务：由后端传入讨论数据 -> LLM 生成摘要 -> 返回。
+    async def summarize(
+        self, task_id: str, title: str = "", description: str = "",
+        diagnosis_summary: str = "", discussion_history: list = None,
+    ) -> dict:
+        """纯摘要生成服务：后端传入工单信息+讨论记录 → LLM 生成摘要 → 返回。
 
         不做 DB 操作、不写 task_comments。后端决定触发时机和数据来源。
         """
@@ -503,11 +506,20 @@ class AiTaskAgent:
         self._pop_trace()
         await self._ensure_clients()
 
-        ctx = await self._load_task_context(task_id)
+        # 组装讨论文本
+        history_items = discussion_history or []
+        history_lines = []
+        for item in history_items[-20:]:
+            author = item.get("author", item.get("created_by", "?"))
+            content = str(item.get("content", ""))[:200]
+            history_lines.append(f"[{author}] {content}")
+        history_text = "\n".join(history_lines) if history_lines else "（暂无讨论）"
 
         prompt = SUMMARIZE_USER_TEMPLATE.format(
-            title=ctx.title or "",
-            discussion_history="（由后端传入完整的讨论记录）",
+            title=title or f"工单 #{task_id}",
+            description=description or "",
+            diagnosis_summary=diagnosis_summary or "无",
+            discussion_history=history_text,
         )
         t_llm = time.perf_counter()
         summary = await self._llm_client.complete(
