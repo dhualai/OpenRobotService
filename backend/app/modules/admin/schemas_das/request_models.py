@@ -38,20 +38,20 @@ class ProjectBase(BaseModel):
     system_id: Optional[str] = None
     project_code: str
     name: str
-    description: str
-    contact_person: str
-    contact_person_id: str
-    status: ProjectStatus
-    expected_trend: ProjectStatus
-    issues: int
-    risks: int
+    description: Optional[str] = None
+    contact_person: Optional[str] = None
+    contact_person_id: Optional[str] = None
+    status: ProjectStatus = ProjectStatus.PRE_SALES_SCHEME
+    expected_trend: Optional[ProjectStatus] = None
+    issues: int = 0
+    risks: int = 0
     personnel_plan: Optional[str] = '无'
     risk_list: Optional[str] = None
-    deployment_date: str
-    deployment_version: str
-    recent_delivery_date: str
+    deployment_date: Optional[str] = None
+    deployment_version: Optional[str] = None
+    recent_delivery_date: Optional[str] = None
     recent_delivery_content: Optional[str] = None
-    final_delivery_date: str
+    final_delivery_date: Optional[str] = None
     project_summary: Optional[str] = None
     task_execution_status: Optional[str] = None
     field_links: Optional[Dict[str, str]] = None

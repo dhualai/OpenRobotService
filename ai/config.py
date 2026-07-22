@@ -26,6 +26,7 @@ _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER = _KB_DIR / "active_troubleshooting_c
 _ACTIVE_CHEDUAN_COLLECTION_POINTER = _KB_DIR / "active_cheduan_collection.txt"
 _ACTIVE_TRANSLATION_COLLECTION_POINTER = _KB_DIR / "active_translation_collection.txt"
 _ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER = _KB_DIR / "active_cheduan_manual_collection.txt"
+_ACTIVE_TASK_RESOLUTIONS_POINTER = _KB_DIR / "active_task_resolutions_collection.txt"
 
 
 class AIConfig(BaseModel):
@@ -63,6 +64,12 @@ class AIConfig(BaseModel):
     # ========== 派单 ==========
     dispatch_api_url: str = Field(default="", description="派单系统推送地址")
     upload_dir: str = Field(default="./uploads", description="附件上传目录")
+
+    # ========== 诊断服务 ==========
+    diagnosis_scan_interval: int = Field(default=60, description="诊断服务扫描新工单间隔（秒）")
+
+    # ========== Debug ==========
+    debug_assign_to_admin: bool = Field(default=False, description="开发模式：所有工单直接分配给 admin，跳过 AI 派单")
 
     # ========== 超时 ==========
     ai_chain_timeout: float = Field(default=2.5)
@@ -184,6 +191,24 @@ def _write_active_cheduan_manual_collection(name: str) -> None:
     _ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER.write_text(name, encoding="utf-8")
 
 
+def get_active_task_resolutions_collection() -> str:
+    """读取当前活跃的任务解决方案 Qdrant 集合名"""
+    try:
+        if _ACTIVE_TASK_RESOLUTIONS_POINTER.exists():
+            name = _ACTIVE_TASK_RESOLUTIONS_POINTER.read_text(encoding="utf-8").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _write_active_task_resolutions_collection(name: str) -> None:
+    """写入活跃任务解决方案集合指针"""
+    _ACTIVE_TASK_RESOLUTIONS_POINTER.parent.mkdir(parents=True, exist_ok=True)
+    _ACTIVE_TASK_RESOLUTIONS_POINTER.write_text(name, encoding="utf-8")
+
+
 def get_docs_dir() -> Path:
     """
     获取文档根目录（知识库源文件所在目录）。
@@ -234,6 +259,11 @@ def get_ai_config() -> AIConfig:
         retrieval_score_threshold=float(os.getenv("RETRIEVAL_SCORE_THRESHOLD", "0.65")),
         # 超时
         ai_chain_timeout=float(os.getenv("AI_CHAIN_TIMEOUT", "2.5")),
+        # 派单
+        # 诊断服务
+        diagnosis_scan_interval=int(os.getenv("DIAGNOSIS_SCAN_INTERVAL", "60")),
+        # Debug
+        debug_assign_to_admin=os.getenv("DEBUG_ASSIGN_TO_ADMIN", "false").lower() in ("1", "true", "yes"),
         # 派单
         dispatch_api_url=os.getenv("DISPATCH_API_URL", ""),
         upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),

@@ -10,6 +10,7 @@ ai/ 位于项目根目录，与 backend/、frontend/ 并列。
     # → FastAPI 服务运行在 http://0.0.0.0:8401
 """
 import sys
+import asyncio
 import os
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -138,11 +139,30 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
 
+    # 4. 启动诊断后台服务（扫描新工单 → 自动生成 AI 诊断）
+    diag_worker = None
+    diag_stop = None
+    try:
+        from ai.agents.AiTaskPlatform.diagnosis_service import diagnosis_worker_start
+        diag_worker, diag_stop = diagnosis_worker_start()
+        print(f"[OK] Diagnosis worker started (scan interval={get_ai_config().diagnosis_scan_interval}s)")
+    except Exception as e:
+        print(f"[WARN] Diagnosis worker start failed: {e}")
+
     print("\n" + "=" * 60)
     print("[OK] Application startup complete")
     print("=" * 60 + "\n")
 
     yield
+
+    # ── 关闭 ──
+    if diag_stop:
+        diag_stop.set()
+        print("[SHUTDOWN] Diagnosis worker stopping...")
+        try:
+            await asyncio.wait_for(diag_worker, timeout=10)
+        except asyncio.TimeoutError:
+            pass
 
 
 app = FastAPI(

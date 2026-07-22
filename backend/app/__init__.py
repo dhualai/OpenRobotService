@@ -1,6 +1,9 @@
 from dotenv import load_dotenv
 load_dotenv()  # 把 .env 注入 os.environ
 
+from app.services.logging import setup_logging
+setup_logging()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer

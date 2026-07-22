@@ -47,7 +47,8 @@ class AiTaskAgent:
     NODE_LLM = "llm"                   # LLM 调用（DeepSeek API）
     NODE_PARSE = "parse"               # 结果解析（JSON→SolutionDraft）
     NODE_MEMORY = "memory"             # 记忆保存（Redis）
-    NODE_SUBMIT = "submit"             # 方案提交（tickets 表 + Qdrant 回写）
+    NODE_COMMENT = "comment"           # 诊断结果写入 task_comments
+    NODE_SUBMIT = "submit"             # 方案提交（tasks 表 + Qdrant 回写）
 
     def __init__(self):
         self.config = get_ai_config()
@@ -142,6 +143,17 @@ class AiTaskAgent:
         self._add_trace(self.NODE_PARSE, parse_status,
                         output={"confidence": draft.confidence, "actions_count": len(draft.suggested_actions)},
                         elapsed_ms=round((time.perf_counter() - t5) * 1000))
+
+        # 6. 诊断结果写入 task_comments（AI任务助手评论）
+        t6 = time.perf_counter()
+        try:
+            task_id_int = int(request.task_id)
+            self._add_diagnosis_comment(task_id_int, draft)
+            self._add_trace(self.NODE_COMMENT, "ok",
+                            elapsed_ms=round((time.perf_counter() - t6) * 1000))
+        except Exception:
+            self._add_trace(self.NODE_COMMENT, "error",
+                            elapsed_ms=round((time.perf_counter() - t6) * 1000))
 
         total_ms = (time.perf_counter() - t0) * 1000
         print(f"  [task-agent] analyze total={total_ms:.0f}ms")
@@ -254,14 +266,22 @@ class AiTaskAgent:
 
     async def chat(
         self, session_id: str, query: str,
-        task_id: str = "", task_title: str = "", task_description: str = "",
+        username: str = "", token: str = "",
     ) -> str:
-        """自由对话：工程师可以问任何 AGV/AMR 技术问题"""
+        """v2.0 自由对话：感知用户所有工单 + 诊断状态。
+
+        Args:
+            username: 当前工程师用户名（从 auth store 传入）
+            token: 用户 JWT token（用于调后端 API 鉴权）
+        """
         t0 = time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
 
-        # 构建对话上下文
+        # 1. 加载用户工单列表
+        tasks_summary = await self._fetch_user_tasks_summary(username, token)
+
+        # 2. 对话上下文
         conversation = ""
         try:
             memory = await self._memory.get_memory(session_id)
@@ -273,24 +293,18 @@ class AiTaskAgent:
         except Exception:
             pass
 
-        # 构建 prompt
+        # 3. 构建 prompt
         t_prompt = time.perf_counter()
-        if task_id:
-            prompt = (
-                f"## 对话历史\n{conversation}\n\n"
-                f"## 当前工单\n标题: {task_title}\n描述: {task_description}\n\n"
-                f"## 用户消息\n{query}"
-            )
-        else:
-            prompt = (
-                f"## 对话历史\n{conversation}\n\n"
-                f"## 用户消息\n{query}"
-            )
+        prompt = (
+            f"## 对话历史\n{conversation}\n\n"
+            f"## 用户消息\n{query}\n\n"
+            f"## 当前用户的工单\n{tasks_summary}"
+        )
         self._add_trace(self.NODE_BUILD_PROMPT, "ok",
-                        input={"prompt_chars": len(prompt), "has_task": bool(task_id)},
+                        input={"prompt_chars": len(prompt), "task_count": tasks_summary.count("#")},
                         elapsed_ms=round((time.perf_counter() - t_prompt) * 1000))
 
-        # LLM 调用
+        # 4. LLM
         t_llm = time.perf_counter()
         response = await self._llm_client.complete(
             prompt=prompt,
@@ -303,7 +317,7 @@ class AiTaskAgent:
                         output={"response_chars": len(response)},
                         elapsed_ms=round((time.perf_counter() - t_llm) * 1000))
 
-        # 写入对话记忆
+        # 5. 记忆
         t_mem = time.perf_counter()
         try:
             await self._memory.add_turn(session_id, "user", query)
@@ -318,15 +332,18 @@ class AiTaskAgent:
 
     async def chat_stream(
         self, session_id: str, query: str,
-        task_id: str = "", task_title: str = "", task_description: str = "",
+        username: str = "", token: str = "",
     ):
-        """流式自由对话"""
+        """v2.0 流式自由对话：感知用户所有工单"""
         import time as _time
         t0 = _time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
 
-        # 构建对话上下文
+        # 1. 加载用户工单列表
+        tasks_summary = await self._fetch_user_tasks_summary(username, token)
+
+        # 2. 对话上下文
         conversation = ""
         try:
             memory = await self._memory.get_memory(session_id)
@@ -339,19 +356,13 @@ class AiTaskAgent:
             pass
 
         t_prompt = _time.perf_counter()
-        if task_id:
-            prompt = (
-                f"## 对话历史\n{conversation}\n\n"
-                f"## 当前工单\n标题: {task_title}\n描述: {task_description}\n\n"
-                f"## 用户消息\n{query}"
-            )
-        else:
-            prompt = (
-                f"## 对话历史\n{conversation}\n\n"
-                f"## 用户消息\n{query}"
-            )
+        prompt = (
+            f"## 对话历史\n{conversation}\n\n"
+            f"## 用户消息\n{query}\n\n"
+            f"## 当前用户的工单\n{tasks_summary}"
+        )
         self._add_trace(self.NODE_BUILD_PROMPT, "ok",
-                        input={"prompt_chars": len(prompt), "has_task": bool(task_id)},
+                        input={"prompt_chars": len(prompt), "task_count": tasks_summary.count("#")},
                         elapsed_ms=round((_time.perf_counter() - t_prompt) * 1000))
 
         yield {"event": "status", "data": {"stage": "chatting"}}
@@ -444,6 +455,54 @@ class AiTaskAgent:
     # ============================================================
     # 私有：上下文加载 — 直接从 tickets 表读取（AI 模块自有数据）
     # ============================================================
+
+    async def _fetch_user_tasks_summary(self, username: str, token: str = "") -> str:
+        """从业务后端获取当前用户工单 + 诊断状态摘要（带 JWT 鉴权）。
+
+        返回注入 Chat Prompt 的文本：每条工单一行，含优先级/状态/诊断状态。
+        无工单时返回"（无待处理工单）"。
+        """
+        if not username:
+            return "（无用户信息，无法获取工单列表）"
+
+        try:
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                resp = await client.get(
+                    f"http://127.0.0.1:8400/api/tasks/",
+                    params={"assigned_to": username, "size": 50, "status": "in_progress,pending,new"},
+                    headers=headers,
+                )
+                if resp.status_code != 200:
+                    return "（工单列表获取失败）"
+
+                data = resp.json()
+                items = data.get("items") or data.get("data", {}).get("items", [])
+                if not items:
+                    return "（无待处理工单）"
+
+                from ai.agents.AiTaskPlatform.diagnosis_service import _is_diagnosed
+
+                lines = []
+                for task in items:
+                    tid = task.get("id", "")
+                    title = task.get("title", "")[:50]
+                    priority = task.get("priority", "中")
+                    status = task.get("status", "")
+                    status_cn = {"new": "新建", "in_progress": "进行中", "pending": "待处理",
+                                  "resolved": "已解决", "closed": "已关闭"}.get(status, status)
+                    diagnosed = _is_diagnosed(int(tid))
+                    diag_mark = "✅已诊断" if diagnosed else "⚠️待诊断"
+
+                    lines.append(f"  #{tid} {title} [{priority}/{status_cn}/{diag_mark}]")
+
+                return "\n".join(lines) if lines else "（无待处理工单）"
+
+        except Exception as e:
+            print(f"  [task-agent] Failed to fetch user tasks: {e}")
+            return "（工单列表暂时不可用）"
 
     async def _load_task_context(self, task_id: str) -> TaskContext:
         """从 tasks 表读取工单上下文（source='ai' 任务）。
@@ -739,9 +798,69 @@ class AiTaskAgent:
         self, task_id: str, solution_text: str, draft: SolutionDraft
     ) -> None:
         """向量化方案 → 写入 Qdrant task_resolutions collection"""
-        # TODO: 等 ai/core/retrieval.py 新增 retrieve_task_resolutions() 后，
-        # 这里调用对应的 write/index 方法
-        print(f"  [task-agent] Solution indexed: {task_id} (placeholder)")
+        try:
+            from ai.core.task_adapter import load_task_context_dict
+            d = load_task_context_dict(task_id)
+            title = d.get("title", f"工单 #{task_id}") or f"工单 #{task_id}"
+            fault_code = d.get("fault_code", "")
+            robot_type = d.get("robot_type", "")
+            problem_summary = d.get("problem_summary", "")
+
+            await self._retriever.index_task_resolution(
+                task_id=task_id,
+                title=title,
+                root_cause=draft.root_cause_analysis,
+                solution_steps="；".join(draft.suggested_actions),
+                engineer_note=draft.references[0] if draft.references else "",
+                fault_code=fault_code,
+                robot_type=robot_type,
+                problem_summary=problem_summary,
+            )
+        except Exception as e:
+            print(f"  [task-agent] Solution index failed: {e}")
+
+    @staticmethod
+    def _add_diagnosis_comment(task_id: int, draft: "SolutionDraft", created_by: str = "AI任务助手") -> bool:
+        """将 AI 诊断结果写入 task_comments 表。
+
+        当前 created_by 固定为 \"AI任务助手\"。
+        TODO: 后续改为提单人的用户名（从工单 created_by 字段获取）。
+        """
+        from app.models.task import TaskComment
+        from app.core.database import SessionLocal
+        content_parts = [
+            f"## AI 诊断结果",
+            f"",
+            f"**根因分析**：{draft.root_cause_analysis}",
+            f"",
+            f"**建议步骤**：",
+        ]
+        for i, action in enumerate(draft.suggested_actions, 1):
+            content_parts.append(f"{i}. {action}")
+        if draft.references:
+            content_parts.append(f"")
+            content_parts.append(f"**参考来源**：")
+            for ref in draft.references:
+                content_parts.append(f"- {ref}")
+        content_parts.append(f"")
+        content_parts.append(f"置信度：{draft.confidence:.0%}")
+
+        db = SessionLocal()
+        try:
+            comment = TaskComment(
+                task_id=task_id,
+                content="\n".join(content_parts),
+                created_by=created_by,
+                is_public=True,
+            )
+            db.add(comment)
+            db.commit()
+            return True
+        except Exception as e:
+            print(f"  [task-agent] Diagnosis comment failed: {e}")
+            return False
+        finally:
+            db.close()
 
 
 # ============================================================

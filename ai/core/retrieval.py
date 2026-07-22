@@ -317,6 +317,31 @@ class QdrantClientWrapper:
         except Exception as e:
             raise ServiceUnavailableError("Qdrant", f"写入失败: {str(e)}")
 
+    async def upsert_to_collection(
+        self,
+        collection_name: str,
+        vectors: List,
+        ids: List[str],
+        payloads: List[dict],
+    ) -> bool:
+        """写入到指定 collection（支持跨 collection 操作）"""
+        from qdrant_client.models import PointStruct
+        client = await self._ensure_client()
+        points = [
+            PointStruct(id=idx, vector=vec, payload=pl)
+            for idx, vec, pl in zip(ids, vectors, payloads)
+        ]
+        try:
+            await self._to_thread(
+                client.upsert,
+                collection_name=collection_name,
+                points=points,
+            )
+            return True
+        except Exception as e:
+            print(f"  [qdrant] upsert_to_collection({collection_name}) failed: {e}")
+            return False
+
     async def delete_collection(self) -> None:
         """删除集合"""
         client = await self._ensure_client()
@@ -765,6 +790,140 @@ class RetrievalService:
             ))
         return results
 
+    # ── 任务 Agent：历史工单方案检索 ───────────────────────────
+
+    async def retrieve_task_resolutions(
+        self,
+        query: str,
+        top_k: int = 3,
+    ) -> List[RetrievalResult]:
+        """
+        历史工单方案检索：从 Qdrant task_resolutions collection 中语义检索
+        相似已解决工单的最终方案。
+
+        查询文本建议：problem_summary + hypotheses + fault_code + robot_type。
+
+        如果 collection 不存在，自动创建并返回空列表。
+        """
+        from ai.config import get_active_task_resolutions_collection
+
+        tr_col = get_active_task_resolutions_collection()
+        if not tr_col:
+            return []
+
+        k = top_k or 3
+        await self._ensure_clients()
+
+        if self._qdrant.is_unavailable:
+            return []
+
+        query_vector = await self._embed_client.embed(query)
+        try:
+            points = await self._qdrant.search_dense(
+                query_vector.tolist(),
+                top_k=k,
+                collection_name=tr_col,
+            )
+        except Exception:
+            return []
+
+        results = []
+        for point in points:
+            payload = point.payload or {}
+            results.append(RetrievalResult(
+                id=str(point.id),
+                score=point.score,
+                title=payload.get('title', f'工单 #{point.id}'),
+                content=(
+                    f"根因: {payload.get('root_cause', '')}\n"
+                    f"方案: {payload.get('solution_steps', '')}\n"
+                    f"备注: {payload.get('engineer_note', '')}\n"
+                    f"解决时间: {payload.get('resolved_at', '')}"
+                ),
+                vector_score=point.score,
+            ))
+        return results
+
+    async def ensure_task_resolutions_collection(self) -> str:
+        """确保 task_resolutions collection 存在，不存在则创建。
+
+        Returns:
+            collection 名称，创建失败返回空字符串。
+        """
+        from ai.config import get_active_task_resolutions_collection
+        import time as _time
+
+        tr_col = get_active_task_resolutions_collection()
+        if tr_col:
+            try:
+                client = await self._qdrant._ensure_client()
+                if await self._to_thread(client.collection_exists, tr_col):
+                    return tr_col
+            except Exception:
+                pass
+
+        await self._ensure_clients()
+        try:
+            vec_dim = await self._embed_client.get_dimension()
+            name = f"task_resolutions_{_time.strftime('%Y%m%d_%H%M%S')}"
+            client = await self._qdrant._ensure_client()
+            from qdrant_client.models import Distance, VectorParams
+            await self._to_thread(
+                client.create_collection,
+                collection_name=name,
+                vectors_config=VectorParams(size=vec_dim, distance=Distance.COSINE),
+            )
+            from ai.config import _write_active_task_resolutions_collection
+            _write_active_task_resolutions_collection(name)
+            print(f"  [retrieval] Created task_resolutions collection: {name}")
+            return name
+        except Exception as e:
+            print(f"  [retrieval] Failed to create task_resolutions collection: {e}")
+            return ""
+
+    async def index_task_resolution(
+        self,
+        task_id: str,
+        title: str,
+        root_cause: str,
+        solution_steps: str,
+        engineer_note: str = "",
+        fault_code: str = "",
+        robot_type: str = "",
+        problem_summary: str = "",
+    ) -> bool:
+        """向量化并写入一条工单解决方案到 Qdrant。"""
+        from ai.config import get_active_task_resolutions_collection
+        import uuid
+
+        col = get_active_task_resolutions_collection()
+        if not col:
+            col = await self.ensure_task_resolutions_collection()
+        if not col:
+            return False
+
+        await self._ensure_clients()
+        if self._qdrant.is_unavailable:
+            return False
+
+        index_text = f"{title} {problem_summary} {root_cause} {solution_steps} {fault_code} {robot_type}"
+        query_vector = await self._embed_client.embed(index_text)
+
+        payload = {
+            "task_id": task_id, "title": title,
+            "problem_summary": problem_summary, "root_cause": root_cause,
+            "solution_steps": solution_steps, "engineer_note": engineer_note,
+            "fault_code": fault_code, "robot_type": robot_type,
+            "resolved_at": __import__("time").strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        return await self._qdrant.upsert_to_collection(
+            collection_name=col,
+            vectors=[query_vector.tolist()],
+            ids=[str(uuid.uuid4())],
+            payloads=[payload],
+        )
+
     async def ensure_collection(self, vector_size: int) -> None:
         """确保集合存在"""
         await self._ensure_clients()
@@ -792,7 +951,7 @@ async def get_retrieval_service() -> RetrievalService:
                     score_threshold=config.retrieval_score_threshold,
                 )
 
-    return _retrieval_service
+
 
 
 # ============================================================
