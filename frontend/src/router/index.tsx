@@ -108,7 +108,6 @@ export const router = createBrowserRouter([
   { path: '/call/ai-chat', element: <Navigate to="/call" replace /> },
   { path: '/call/new-ticket', element: <Navigate to="/call" replace /> },
   { path: '/tasks', element: <Navigate to="/tasks" replace /> },
-  { path: '/tasks/:id', element: <Navigate to="/tasks/:id" replace /> },
   { path: '/admin', element: <Navigate to="/admin" replace /> },
   { path: '/admin/*', element: <Navigate to="/admin" replace /> },
   { path: '/home', element: <Navigate to="/call" replace /> },
