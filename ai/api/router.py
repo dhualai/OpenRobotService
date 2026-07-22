@@ -454,198 +454,74 @@ async def assigner_health_check():
 task_agent_router = APIRouter(prefix="/api/ai/task", tags=["AI任务助手"])
 
 
-class TaskAnalyzeAPIRequest(BaseModel):
-    task_id: str = Field(default="", description="工单 ID（仅 analyze 需要）")
-    session_id: str = Field(..., description="对话 session")
-    query: str = Field(default="", description="用户消息")
-    username: str = Field(default="", description="当前用户名（chat 模式用于获取用户工单）")
-    token: str = Field(default="", description="用户 JWT token（用于调后端 API 鉴权）")
+# ── v3.0 请求模型 ──
 
-
-class TaskListAPIRequest(BaseModel):
-    username: str = Field(default="", description="当前用户")
-
-
-class TaskSubmitAPIRequest(BaseModel):
+class DiagnoseRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
-    session_id: str = Field(..., description="对话 session")
-    final_solution: dict = Field(..., description="工程师编辑后的最终方案")
-    resolution: str = Field(default="resolved")
 
 
-@task_agent_router.post("/list", summary="列出当前用户待处理工单")
-async def task_list(body: TaskListAPIRequest) -> dict:
-    """列出当前用户的待处理任务（从 tasks 表查询，source='ai'）。
+class DiscussRequest(BaseModel):
+    task_id: str = Field(..., description="工单 ID")
+    query: str = Field(default="", description="用户问题（可为空）")
+    context: dict = Field(default_factory=dict, description="前端传来的讨论上下文")
 
-    查询策略：按 created_by 匹配用户名。
-    status 过滤：默认排除 resolved/closed，只看待处理。
-    """
+
+class SummarizeRequest(BaseModel):
+    task_id: str = Field(..., description="工单 ID")
+
+
+# ── v3.0 端点 ──
+
+@task_agent_router.post("/diagnose", summary="诊断报告（[帮我分析] 按钮）")
+async def task_diagnose(body: DiagnoseRequest) -> dict:
+    """全能力诊断 → 即时返回报告（不存库）"""
     try:
-        from ai.core.task_adapter import task_to_dict
-        from app.models.task import Task, TaskStatus
-        from app.core.database import SessionLocal
-        db = SessionLocal()
-        tickets_list = []
-        try:
-            q = db.query(Task).filter(
-                ~Task.status.in_([TaskStatus.RESOLVED, TaskStatus.CLOSED])
-            )
-            # 按用户名匹配创建者
-            if body.username:
-                q = q.filter(Task.created_by == body.username)
-            q = q.order_by(
-                Task.priority.desc(), Task.created_at.desc()
-            ).limit(50)
-            for t in q.all():
-                d = task_to_dict(t)
-                tickets_list.append({
-                    "task_id": str(t.id),
-                    "title": d["title"],
-                    "description": (d["description"] or "")[:100],
-                    "priority": d["priority"],
-                    "status": d["status"],
-                    "type": d["type"],
-                    "robot_type": d["robot_type"],
-                    "created_at": t.created_at.isoformat() if t.created_at else "",
-                    "has_attachments": bool(t.attachments),
-                })
-        finally:
-            db.close()
-
-        priority_counts = {}
-        for t in tickets_list:
-            p = t["priority"]
-            priority_counts[p] = priority_counts.get(p, 0) + 1
-        summary_parts = [f"你当前有 {len(tickets_list)} 个待处理工单"]
-        if priority_counts:
-            detail = "，".join(f"{v} 个{c}" for c, v in priority_counts.items())
-            summary_parts.append(f"（{detail}）")
-
-        return {
-            "code": 0,
-            "data": {
-                "summary": "".join(summary_parts),
-                "tickets": tickets_list,
-                "total": len(tickets_list),
-            },
-        }
-    except Exception as e:
-        return {"code": 1, "message": f"加载工单列表失败: {str(e)}", "data": {"tickets": [], "total": 0}}
-
-
-@task_agent_router.post("/analyze", summary="分析工单（非流式）")
-async def task_analyze(body: TaskAnalyzeAPIRequest) -> dict:
-    try:
-        from ai.agents.AiTaskPlatform import get_task_agent, TaskAnalyzeRequest
+        from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
-        draft = await agent.analyze(TaskAnalyzeRequest(
-            task_id=body.task_id, session_id=body.session_id))
-        resp_data = draft.model_dump()
-        resp_data.update({
-            "_trace": getattr(draft, "_trace", []),
-            "_total_ms": getattr(draft, "_total_ms", 0),
-        })
-        return {"code": 0, "data": resp_data}
+        result = await agent.diagnose(body.task_id)
+        return {"code": 0, "data": result}
     except Exception as e:
         return {"code": 1, "message": str(e)}
 
 
-@task_agent_router.post("/analyze/stream", summary="流式分析工单（SSE）")
-async def task_analyze_stream(body: TaskAnalyzeAPIRequest):
-    from ai.agents.AiTaskPlatform import get_task_agent, TaskAnalyzeRequest
+@task_agent_router.post("/discuss", summary="@AI 讨论回复")
+async def task_discuss(body: DiscussRequest) -> dict:
+    """@AI 讨论：带讨论上下文 + 按需调用附件分析/历史工单检索"""
+    try:
+        from ai.agents.AiTaskPlatform import get_task_agent
+        agent = await get_task_agent()
+        result = await agent.discuss(body.task_id, body.query, body.context or {})
+        return {"code": 0, "data": result}
+    except Exception as e:
+        return {"code": 1, "message": str(e)}
 
-    async def sse():
-        t0 = time.perf_counter()
-        first = False
-        try:
-            agent = await get_task_agent()
-            async for event in agent.analyze_stream(TaskAnalyzeRequest(
-                task_id=body.task_id, session_id=body.session_id)):
-                ev_type = event["event"]
-                if ev_type == "token":
-                    if not first:
-                        first = True
-                        yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
-                elif ev_type == "result":
-                    yield f"event: result\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-                elif ev_type == "first_token":
-                    # 已在 token 分支处理 first，这里跳过
-                    pass
-                else:
-                    yield f"event: status\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-            yield f"event: done\ndata: {json.dumps({'total_ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
-        except Exception as e:
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
-    return StreamingResponse(sse(), media_type="text/event-stream")
+@task_agent_router.post("/summarize", summary="讨论摘要")
+async def task_summarize(body: SummarizeRequest) -> dict:
+    """检测讨论更新 → 生成摘要"""
+    try:
+        from ai.agents.AiTaskPlatform import get_task_agent
+        agent = await get_task_agent()
+        result = await agent.summarize(body.task_id)
+        return {"code": 0, "data": result}
+    except Exception as e:
+        return {"code": 1, "message": str(e)}
 
 
 @task_agent_router.post("/submit", summary="提交方案")
-async def task_submit(request: Request, body: TaskSubmitAPIRequest) -> dict:
+async def task_submit(request: Request, body: dict) -> dict:
     try:
-        from ai.agents.AiTaskPlatform import get_task_agent, SolutionDraft
+        from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
-        draft = SolutionDraft(**body.final_solution)
         result = await agent.submit(
-            task_id=body.task_id,
-            session_id=body.session_id,
-            draft=draft,
-            resolution=body.resolution,
+            task_id=body.get("task_id", ""),
+            session_id=body.get("session_id", ""),
+            draft=body.get("final_solution", {}),
+            resolution=body.get("resolution", "resolved"),
         )
         return result
     except Exception as e:
         return {"code": 1, "message": str(e)}
-
-
-@task_agent_router.post("/chat", summary="自由问答（非流式）")
-async def task_chat(body: TaskAnalyzeAPIRequest) -> dict:
-    """v2.0 自由问答：感知用户所有工单 + 诊断状态"""
-    try:
-        from ai.agents.AiTaskPlatform import get_task_agent
-        agent = await get_task_agent()
-        response = await agent.chat(
-            session_id=body.session_id,
-            query=getattr(body, 'query', ''),
-            username=getattr(body, 'username', '') or "",
-            token=getattr(body, 'token', '') or "",
-        )
-        return {"code": 0, "data": {"reply": response}, "_trace": agent._pop_trace()}
-    except Exception as e:
-        return {"code": 1, "message": str(e)}
-
-
-@task_agent_router.post("/chat/stream", summary="自由问答（流式 SSE）")
-async def task_chat_stream(body: TaskAnalyzeAPIRequest):
-    """流式自由问答"""
-    from ai.agents.AiTaskPlatform import get_task_agent
-
-    async def sse():
-        t0 = time.perf_counter()
-        first = False
-        try:
-            agent = await get_task_agent()
-            async for event in agent.chat_stream(
-                session_id=body.session_id,
-                query=getattr(body, 'query', ''),
-                username=getattr(body, 'username', '') or "",
-                token=getattr(body, 'token', '') or "",
-            ):
-                ev_type = event["event"]
-                if ev_type == "token":
-                    if not first:
-                        first = True
-                        yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
-                elif ev_type == "first_token":
-                    pass
-                else:
-                    yield f"event: status\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-            yield f"event: done\ndata: {json.dumps({'total_ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
-        except Exception as e:
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
-
-    return StreamingResponse(sse(), media_type="text/event-stream")
 
 
 @task_agent_router.get("/health", summary="健康检查")
