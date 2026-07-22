@@ -63,6 +63,7 @@ class AIConfig(BaseModel):
 
     # ========== 派单 ==========
     dispatch_api_url: str = Field(default="", description="派单系统推送地址")
+    assign_scan_interval: int = Field(default=60, description="派单 Worker 扫描待派单工单间隔（秒）")
     upload_dir: str = Field(default="./uploads", description="附件上传目录")
 
     # ========== 诊断服务 ==========
@@ -262,6 +263,8 @@ def get_ai_config() -> AIConfig:
         # 派单
         # 诊断服务
         diagnosis_scan_interval=int(os.getenv("DIAGNOSIS_SCAN_INTERVAL", "60")),
+        # 派单后台
+        assign_scan_interval=int(os.getenv("ASSIGN_SCAN_INTERVAL", "60")),
         # Debug
         debug_assign_to_admin=os.getenv("DEBUG_ASSIGN_TO_ADMIN", "false").lower() in ("1", "true", "yes"),
         # 派单

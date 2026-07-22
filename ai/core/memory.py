@@ -13,6 +13,9 @@ from dataclasses import dataclass, field
 
 from ai.config import get_ai_config
 from ai.exceptions import ServiceUnavailableError
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -83,10 +86,11 @@ class MemoryManager:
                 await self._redis.ping()
                 self._redis_ok = True
                 self._redis_last_check = now
-            except Exception:
+            except Exception as e:
                 self._redis = None
                 self._redis_ok = False
                 self._redis_last_check = now
+                logger.warning(f"Redis 连接失败（将使用内存/MySQL降级）: url={self.redis_url}, error={e}")
         return self._redis
 
     def _get_key(self, session_id: str) -> str:
@@ -112,9 +116,10 @@ class MemoryManager:
             rows = await asyncio.to_thread(get_history, session_id)
             if rows:
                 turns = [{"role": r["role"], "content": r["content"]} for r in rows]
+                logger.info(f"MySQL 降级加载成功: session={session_id}, turns={len(turns)}")
                 return SessionMemory(session_id=session_id, turns=turns)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"MySQL 降级加载失败: session={session_id}, error={e}", exc_info=True)
         return SessionMemory(session_id=session_id)
 
     async def save_memory(self, memory: SessionMemory) -> None:
@@ -156,8 +161,8 @@ class MemoryManager:
                 save_message, session_id=session_id, role=role,
                 content=content, user_id=user_id,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"MySQL 双写失败: session={session_id}, role={role}, error={e}", exc_info=True)
 
         return memory
 

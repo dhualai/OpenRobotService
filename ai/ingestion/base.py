@@ -28,6 +28,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Generic, TypeVar, Callable
 
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
@@ -217,6 +221,7 @@ class BaseIngester(ABC, Generic[T]):
         try:
             entries = self.parse()
         except Exception as e:
+            logger.error(f"入库解析失败: {label}, error={e}", exc_info=True)
             self._log(f"[ERR] {label}: 解析步骤失败 — {e}")
             import traceback
             traceback.print_exc()
@@ -231,6 +236,7 @@ class BaseIngester(ABC, Generic[T]):
         try:
             chunks = [self.to_chunk(e) for e in entries]
         except Exception as e:
+            logger.error(f"入库 chunk 构建失败: {label}, error={e}", exc_info=True)
             self._log(f"[ERR] {label}: 构建 chunk 失败 — {e}")
             import traceback
             traceback.print_exc()
@@ -253,9 +259,8 @@ class BaseIngester(ABC, Generic[T]):
         try:
             result = await self.embed_and_upsert(chunks, collection_name, client=client)
         except Exception as e:
+            logger.error(f"入库 embed/upsert 失败: {label}, error={e}", exc_info=True)
             self._log(f"[ERR] {label}: embed/upsert 失败 — {e}")
-            import traceback
-            traceback.print_exc()
             if _own_client:
                 try:
                     client.close()
@@ -263,6 +268,7 @@ class BaseIngester(ABC, Generic[T]):
                     pass
             return False
         if result.get("status") != "ok":
+            logger.error(f"入库结果异常: {label}, result={result}")
             self._log(f"[ERR] {label} 入库失败: {result}")
             if _own_client:
                 try:
@@ -303,6 +309,7 @@ class BaseIngester(ABC, Generic[T]):
         try:
             all_cols = [c.name for c in client.get_collections().collections]
         except Exception as e:
+            logger.error(f"获取 Qdrant 集合列表失败: {e}", exc_info=True)
             self._log(f"[ERR] 获取集合列表失败: {e}")
             if _own_client:
                 try:

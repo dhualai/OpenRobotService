@@ -14,6 +14,10 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 from ai.core import get_llm_client, get_memory_manager
 from ai.config import get_ai_config
 from ai.agents.AiDiagnosisPlatform.pipeline import (
@@ -123,11 +127,15 @@ async def submit_ticket(
     body: QASubmitRequest,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
-    username, _ = _current_user(request)  # 记录创建人，供历史工单按角色过滤
-    result = await pipeline.submit(session_id=body.session_id, created_by=username)
-    if "code" not in result:
-        result["code"] = 0
-    return result
+    username, _ = _current_user(request)
+    try:
+        result = await pipeline.submit(session_id=body.session_id, created_by=username)
+        if "code" not in result:
+            result["code"] = 0
+        return result
+    except Exception as e:
+        logger.error(f"转工单接口异常: session_id={body.session_id}, user={username}, error={e}", exc_info=True)
+        return {"code": 1, "message": f"工单生成失败: {str(e)}"}
 
 
 @qa_router.get("/ticket", summary="获取工单数据")
@@ -387,65 +395,6 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
         return {"code": 0, "data": {"session_id": session_id, "message": "已清除"}}
     except Exception as e:
         return {"code": 1, "data": {"error": str(e)}}
-
-
-# ============================================================
-# 智能派单 (prefix /api/ai)
-# ============================================================
-assigner_router = APIRouter(prefix="/api/ai", tags=["ai-assigner"])
-
-
-class RefereeRequest(BaseModel):
-    """派单请求"""
-    title: str
-    comments: List[str] = []
-    workload_map: Dict[str, int] = {}
-
-
-class RefereeResponse(BaseModel):
-    """派单响应"""
-    code: int
-    message: str = ""
-    data: Dict = {}
-
-
-@assigner_router.post("/ticketReferee", response_model=RefereeResponse)
-async def ticket_referee(req: RefereeRequest):
-    """智能派单接口（兼容后端现有调用方式）。"""
-    try:
-        description = "\n".join(filter(None, req.comments)) if req.comments else req.title
-        from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket
-        result = await assign_ticket(
-            title=req.title,
-            problem_description=description,
-        )
-        return RefereeResponse(
-            code=200,
-            data={
-                "name": result.engineer_name,
-                "id": result.engineer_id,
-                "confidence": result.confidence_score,
-                "decision_type": result.decision_type,
-                "reasoning": result.reasoning,
-            },
-        )
-    except Exception as e:
-        return RefereeResponse(
-            code=500,
-            message=f"AI派单失败: {str(e)}",
-            data={},
-        )
-
-
-@assigner_router.get("/ticketReferee/health")
-async def assigner_health_check():
-    """派单服务健康检查。"""
-    from ai.agents.AiDiagnosisPlatform.assigner import load_engineers
-    return {
-        "status": "ok",
-        "service": "ai-assigner",
-        "engineers_count": len(load_engineers()),
-    }
 
 
 # ============================================================
