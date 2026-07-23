@@ -1,62 +1,29 @@
-// 项目管理 - 从 BackgroundService tmp 迁移
-import { useState, useEffect } from 'react';
-import { Button, Toast, Loading, Dialog } from 'tdesign-mobile-react';
-import { useNavigate } from 'react-router-dom';
-import { createRequest } from '@/api/client';
-import API_CONFIG from '@/config/api';
-import { normalizeList } from '@/shared/utils/list';
-
-interface Project { id: string; name: string; status: string; created_at: string; }
+// 项目管理（二级页面）—— 上下并列展示「项目导入」与「项目授权」两部分
+// 原「项目管理」页面（项目增删改查）已更名为 ProjectImport，作为本页上半部分；
+// 「项目授权」（ProjectAuth）作为本页下半部分，两者原样复用，不改动各自内部逻辑。
+// 注意：ProjectImport / ProjectAuth 各自内部已带 padding:16 的根容器，
+// 本页外层不再重复加 padding，避免双重内边距。
+import ProjectImport from './ProjectImport';
+import ProjectAuth from './ProjectAuth';
 
 export default function ProjectManage() {
-  const navigate = useNavigate();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [loading, setLoading] = useState(true);
-  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
-
-  const fetchProjects = async () => {
-    setLoading(true);
-    try {
-      const data = await request('/projects/');
-      setProjects(normalizeList<Project>(data));
-    } catch (err) { Toast({ message: String(err), theme: 'error' }); }
-    finally { setLoading(false); }
-  };
-
-  useEffect(() => { fetchProjects(); }, []);
-
-  const handleDelete = (id: string) => {
-    Dialog.confirm?.({
-      title: '确认删除', content: '确定要删除此项目吗？',
-      onConfirm: async () => {
-        await request(`/projects/${id}`, { method: 'DELETE' });
-        Toast({ message: '已删除', theme: 'success' });
-        fetchProjects();
-      },
-    });
-  };
-
-  if (loading) return <Loading text="加载中..." />;
-
   return (
-    <div style={{ padding: 16 }}>
-      <Button theme="primary" block style={{ marginBottom: 16 }} onClick={() => navigate('/admin/project-edit')}>
-        新建项目
-      </Button>
-      {projects.map((p) => (
-        <div key={p.id} style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <div style={{ fontWeight: 500 }}>{p.name}</div>
-              <div style={{ fontSize: 12, color: '#999' }}>{p.status}</div>
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <Button size="small" variant="outline" onClick={() => navigate(`/admin/project-edit/${p.id}`)}>编辑</Button>
-              <Button size="small" theme="danger" variant="outline" onClick={() => handleDelete(p.id)}>删除</Button>
-            </div>
-          </div>
-        </div>
-      ))}
+    <div>
+      {/* ============ 上：项目导入 ============ */}
+      <SectionHeader emoji="📁" title="项目导入" />
+      <ProjectImport />
+
+      {/* ============ 下：项目授权 ============ */}
+      <SectionHeader emoji="🔐" title="项目授权" />
+      <ProjectAuth />
+    </div>
+  );
+}
+
+function SectionHeader({ emoji, title }: { emoji: string; title: string }) {
+  return (
+    <div className="project-manage-section-title">
+      <span>{emoji} {title}</span>
     </div>
   );
 }

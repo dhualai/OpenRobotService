@@ -1,7 +1,7 @@
 // 后台管理首页仪表盘 —— 上中下三段式看板
 // 上：工单状态饼图 + 四项统计卡（点击状态可下钻明细）
 // 中：跨项目看板 —— 调度阶段饼图 + 紧急度四象限（点击标签可下钻明细）
-// 下：占位区（待产品补充需求）
+// 下：更多功能 —— 项目管理 / 数据管理 / 日报周报 / 其他 快捷入口
 //
 // 数据接口均为「前端先行、后端待接入」，见 src/api/dashboard.ts 顶部说明。
 // 接口未就绪时一律优雅降级为「0/暂无数据」，不阻塞页面渲染。
@@ -16,6 +16,15 @@ import {
   fetchTicketSummary, fetchProjectStageSummary, fetchUrgencySummary,
   type TicketSummary, type ProjectStageSummary, type UrgencySummary,
 } from '@/api/dashboard';
+
+interface MoreFunctionEntry { path: string; label: string; emoji: string; }
+
+const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
+  { path: '/admin/project-manage', label: '项目管理', emoji: '📁' },
+  { path: '/admin/data-import', label: '数据管理', emoji: '🗄️' },
+  { path: '/admin/daily-summary', label: '日报周报', emoji: '🤖' },
+  { path: '/admin/entries', label: '其他', emoji: '⋯' },
+];
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -43,18 +52,7 @@ export default function Dashboard() {
 
   return (
     <div className="dashboard-page">
-      <Navbar
-        title="后台管理"
-        fixed
-        right={
-          <span
-            style={{ fontSize: 13, color: '#0052d9', padding: '0 12px' }}
-            onClick={() => navigate('/admin/entries')}
-          >
-            更多功能 ›
-          </span>
-        }
-      />
+      <Navbar title="后台管理" fixed />
 
       <div style={{ padding: '16px 16px 32px' }}>
         {/* ============ 上：工单状态监测概览 ============ */}
@@ -128,10 +126,17 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* ============ 下：占位区 ============ */}
-        <SectionTitle emoji="📋" title="更多看板" />
-        <div className="dashboard-section dashboard-section--placeholder">
-          <span style={{ fontSize: 13, color: '#bbb' }}>敬请期待 —— 待产品补充需求</span>
+        {/* ============ 下：更多功能 ============ */}
+        <SectionTitle emoji="📋" title="更多功能" />
+        <div className="dashboard-section">
+          <div className="dashboard-more-grid">
+            {MORE_FUNCTION_ENTRIES.map((e) => (
+              <div key={e.path} className="dashboard-more-card" onClick={() => navigate(e.path)}>
+                <span className="dashboard-more-card__emoji">{e.emoji}</span>
+                <span className="dashboard-more-card__label">{e.label}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>

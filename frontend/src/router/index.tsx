@@ -9,6 +9,7 @@ const MainLayout = lazy(() => import('@/shared/components/MainLayout'));
 const CallView = lazy(() => import('@/pages/call/CallView'));
 const TicketDetailPage = lazy(() => import('@/pages/call/TicketDetailPage'));
 const TasksView = lazy(() => import('@/pages/tasks/TasksView'));
+const TaskDetailPage = lazy(() => import('@/pages/tasks/TaskDetailPage'));
 
 // Admin
 const Dashboard = lazy(() => import('@/pages/admin/Dashboard'));
@@ -29,9 +30,10 @@ const DataImport = lazy(() => import('@/pages/admin/DataImport'));
 const OperationLogs = lazy(() => import('@/pages/admin/OperationLogs'));
 // const ProgressBoard = lazy(() => import('@/pages/admin/ProgressBoard'));   // 已并入 ProjectProgress
 // const PersonnelBoard = lazy(() => import('@/pages/admin/PersonnelBoard')); // 已从导航移除
-const ProjectAuth = lazy(() => import('@/pages/admin/ProjectAuth'));
 const ProjectEdit = lazy(() => import('@/pages/admin/ProjectEdit'));
 // const ProjectHR = lazy(() => import('@/pages/admin/ProjectHR'));           // 已从导航移除
+// 项目管理二级页面：上（项目导入 ProjectImport）+ 下（项目授权 ProjectAuth）并列，
+// 两个子页面由 ProjectManage.tsx 内部静态引入，不再各自单独挂路由。
 const ProjectManage = lazy(() => import('@/pages/admin/ProjectManage'));
 const RiskList = lazy(() => import('@/pages/admin/RiskList'));
 const RiskEdit = lazy(() => import('@/pages/admin/RiskEdit'));
@@ -56,7 +58,7 @@ export const router = createBrowserRouter([
       { path: 'call', element: <CallView /> },
       { path: 'call/ticket/:id', element: <TicketDetailPage /> },
       { path: 'tasks', element: <TasksView /> },
-      { path: 'tasks/:id', element: <TasksView /> },
+      { path: 'tasks/:id', element: <TaskDetailPage /> },
       {
         path: 'admin',
         element: <Outlet />,
@@ -82,9 +84,9 @@ export const router = createBrowserRouter([
               { path: 'operation-logs', element: <OperationLogs /> },
               // { path: 'progress', element: <ProgressBoard /> },       // 已并入 ProjectProgress
               // { path: 'personnel', element: <PersonnelBoard /> },     // 已从导航移除
-              { path: 'project-auth', element: <ProjectAuth /> },
               { path: 'project-edit/:id?', element: <ProjectEdit /> },
               // { path: 'project-hr', element: <ProjectHR /> },         // 已从导航移除
+              // 项目管理二级页面：内部并列展示项目导入 + 项目授权，见 ProjectManage.tsx
               { path: 'project-manage', element: <ProjectManage /> },
               { path: 'risks', element: <RiskList /> },
               { path: 'risk-edit/:id?', element: <RiskEdit /> },
@@ -106,7 +108,6 @@ export const router = createBrowserRouter([
   { path: '/call/ai-chat', element: <Navigate to="/call" replace /> },
   { path: '/call/new-ticket', element: <Navigate to="/call" replace /> },
   { path: '/tasks', element: <Navigate to="/tasks" replace /> },
-  { path: '/tasks/:id', element: <Navigate to="/tasks" replace /> },
   { path: '/admin', element: <Navigate to="/admin" replace /> },
   { path: '/admin/*', element: <Navigate to="/admin" replace /> },
   { path: '/home', element: <Navigate to="/call" replace /> },

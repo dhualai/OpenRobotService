@@ -7,10 +7,11 @@ Wave 2.2 完成：工单(tickets)已升格为任务(tasks)，本模块使用统�
 """
 from fastapi import APIRouter, HTTPException, Depends, Query, Request, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from app.core.database import get_async_db as get_db
+from app.core.auth_routes import get_current_active_user_from_token
 from app.modules.tasks.schemas.ticket import (
     TicketCreate, TicketUpdate, TicketResponse, TicketListResponse,
     TicketCommentCreate, TicketCommentUpdate, TicketCommentResponse,
@@ -31,14 +32,21 @@ comment_attachment_map = {}
 async def create_task(
     ticket_data: TicketCreate,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(lambda: None)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
-        username = current_user.username if current_user else "system"
-        token = getattr(current_user, 'token', None)
+        username = current_user.get('username') if current_user else "system"
+        token = current_user.get('token')
+        logger.info(f"开始创建任务: title={ticket_data.title[:50] if ticket_data.title else '无标题'}, ticket_type={ticket_data.ticket_type}, created_by={username}")
+        
         ticket = await TicketService.create_ticket(db, ticket_data, username, comment_attachment_map, token)
+        logger.info(f"创建任务成功: task_id={ticket.id}, title={ticket.title[:50] if ticket.title else '无标题'}")
         return ticket
     except Exception as e:
+        logger.error(f"创建任务失败: title={ticket_data.title[:50] if ticket_data.title else '无标题'}, error={str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"创建任务失败: {str(e)}")
 
 
@@ -86,9 +94,15 @@ async def get_tasks(
     deadline_at_end: Optional[datetime] = Query(None, description="截止时间结束"),
     db: AsyncSession = Depends(get_db)
 ):
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
+        logger.info(f"开始获取任务列表, page={page}, size={size}, status={status}, keyword={keyword}, ticket_type={ticket_type}, priority={priority}")
+        
         priority_enum = TicketPriority(priority) if priority else None
         ticket_type_enum = TicketType(ticket_type) if ticket_type else None
+        logger.debug(f"优先级枚举转换完成, priority_enum={priority_enum}, ticket_type_enum={ticket_type_enum}")
 
         query_params = TicketQueryParams(
             page=page,
@@ -131,13 +145,17 @@ async def get_tasks(
             deadline_at_start=deadline_at_start,
             deadline_at_end=deadline_at_end,
         )
+        logger.debug(f"查询参数构建完成, query_params={query_params}")
 
         auth_header = request.headers.get("Authorization")
         token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
+        logger.debug(f"获取认证信息完成, has_token={token is not None}")
 
         result = await TicketService.get_tickets(db, query_params, token)
+        logger.info(f"获取任务列表成功, total={result.get('total', 0)}, items_count={len(result.get('items', []))}")
         return result
     except Exception as e:
+        logger.error(f"获取任务列表失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取任务列表失败: {str(e)}")
 
 
@@ -147,20 +165,27 @@ async def filter_tasks(
     request: Request,
     db: AsyncSession = Depends(get_db)
 ):
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
+        logger.info(f"开始复合过滤查询任务列表, filters_count={len(filter_request.filters) if filter_request.filters else 0}, page={filter_request.page}, size={filter_request.size}")
+        
         auth_header = request.headers.get("Authorization")
         token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
 
         result = await TicketService.filter_tickets(db, filter_request, token)
+        logger.info(f"复合过滤查询任务列表成功, total={result.get('total', 0)}")
         return result
     except Exception as e:
+        logger.error(f"复合过滤查询任务列表失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"复合过滤查询任务列表失败: {str(e)}")
 
 
 @router.get("/stats/overview", response_model=dict)
 async def get_task_stats(
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(lambda: None)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
     try:
         stats = await TicketService.get_ticket_stats(db)
@@ -183,8 +208,11 @@ async def get_task(
     token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
 
     try:
+        logger.info(f"开始获取任务详情: task_id={task_id}, load_comments={load_comments}")
+        
         ticket = await TicketService.get_ticket_by_id(db, task_id, load_comments, token)
         if not ticket:
+            logger.warning(f"任务未找到: task_id={task_id}")
             raise HTTPException(status_code=404, detail="任务未找到")
         logger.info(f"获取任务详情成功: task_id={task_id}, load_comments={load_comments}")
         return ticket
@@ -200,14 +228,14 @@ async def update_task(
     task_id: int,
     ticket_update: TicketUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(lambda: None)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
     ticket = await TicketService.get_ticket_by_id(db, task_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = getattr(current_user, 'is_admin', False)
-    username = getattr(current_user, 'username', '')
+    is_admin = current_user.get('is_admin', False)
+    username = current_user.get('username', '')
 
     if not is_admin:
         if username not in [ticket.assigned_to, ticket.customer, ticket.created_by]:
@@ -223,7 +251,7 @@ async def update_task(
                 raise HTTPException(status_code=400, detail="只允许发起人的更新已解决任务！")
 
     try:
-        token = getattr(current_user, 'token', None)
+        token = current_user.get('token')
         result = await TicketService.update_ticket(db, task_id, ticket_update, token=token, operator_id=username)
 
         if result["ticket"] is None:
@@ -243,14 +271,14 @@ async def update_task(
 async def delete_task(
     task_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(lambda: None)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
     ticket = await TicketService.get_ticket_by_id(db, task_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = getattr(current_user, 'is_admin', False)
-    username = getattr(current_user, 'username', '')
+    is_admin = current_user.get('is_admin', False)
+    username = current_user.get('username', '')
 
     if not is_admin:
         if username not in [ticket.assigned_to, ticket.created_by]:
@@ -270,10 +298,10 @@ async def add_comment(
     task_id: int,
     comment_data: TicketCommentCreate,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(lambda: None)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
     try:
-        username = current_user.username if current_user else "system"
+        username = current_user.get('username') if current_user else "system"
         comment = await TicketService.add_comment(db, task_id, comment_data, username, comment_attachment_map)
         if not comment:
             raise HTTPException(status_code=404, detail="任务未找到")
@@ -316,7 +344,7 @@ async def update_comment(
     comment_id: int,
     comment_update: TicketCommentUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(lambda: None)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
     from sqlalchemy import select
     from app.modules.tasks.models.ticket import TicketComment
@@ -327,7 +355,7 @@ async def update_comment(
     if not comment:
         raise HTTPException(status_code=404, detail="评论未找到")
 
-    username = getattr(current_user, 'username', '')
+    username = current_user.get('username', '')
     if comment.created_by != username:
         raise HTTPException(status_code=403, detail="无权限更新此评论")
 
@@ -351,7 +379,7 @@ async def update_comment(
 async def delete_comment(
     comment_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(lambda: None)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
     from sqlalchemy import select
     from app.modules.tasks.models.ticket import TicketComment
@@ -362,7 +390,7 @@ async def delete_comment(
     if not comment:
         raise HTTPException(status_code=404, detail="评论未找到")
 
-    username = getattr(current_user, 'username', '')
+    username = current_user.get('username', '')
     if comment.created_by != username:
         raise HTTPException(status_code=403, detail="无权限删除此评论")
 
@@ -380,14 +408,14 @@ async def update_task_status(
     task_id: int,
     status: str,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(lambda: None)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
     ticket = await TicketService.get_ticket_by_id(db, task_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = getattr(current_user, 'is_admin', False)
-    username = getattr(current_user, 'username', '')
+    is_admin = current_user.get('is_admin', False)
+    username = current_user.get('username', '')
 
     if ticket.created_by != username and ticket.assigned_to != username and not is_admin:
         raise HTTPException(status_code=403, detail="无权限更新任务状态")
@@ -407,9 +435,9 @@ async def assign_task(
     task_id: int,
     user_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(lambda: None)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
-    is_admin = getattr(current_user, 'is_admin', False)
+    is_admin = current_user.get('is_admin', False)
     if not is_admin:
         raise HTTPException(status_code=403, detail="无权限分配任务")
 
@@ -425,10 +453,10 @@ async def assign_task(
 @router.post("/{task_id}/ai-assign")
 async def trigger_ai_assignment(
     task_id: int,
-    current_user = Depends(lambda: None)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
     try:
-        token = getattr(current_user, 'token', None)
+        token = current_user.get('token')
         result = await TicketService.trigger_ai_assignment(task_id, token)
         if result.get("code") == 404:
             raise HTTPException(status_code=404, detail=result.get("message"))
@@ -445,7 +473,7 @@ async def trigger_ai_assignment(
 async def upload_comment_attachment(
     file: UploadFile = File(...),
     temp_id: str = Form(...),
-    current_user = Depends(lambda: None)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
     try:
         file_bytes = await file.read()
@@ -476,7 +504,7 @@ async def upload_comment_attachment(
 async def delete_comment_attachment(
         temp_id: str = Form(...),
         file_name: str = Form(...),
-        current_user = Depends(lambda: None)
+        current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
     try:
         bucket_name = settings.COMMENT_BUCKET
@@ -503,7 +531,7 @@ async def delete_comment_attachment(
 async def send_cuiban_notification(
     notification_data: TicketCuibanNotification,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(lambda: None)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
     try:
         ticket_id = notification_data.ticket_id
@@ -534,7 +562,7 @@ async def send_cuiban_notification(
                     yuqi_days = yuqi_seconds / (24 * 3600)
                     yuqi_day = f"{yuqi_days:.0f}"
 
-            token = getattr(current_user, 'token', None)
+            token = current_user.get('token')
             user_map = await TicketService._get_user_map(token)
             assigned_name = user_map.get(ticket.assigned_to, ticket.assigned_to)
 
@@ -553,7 +581,7 @@ async def send_cuiban_notification(
 
         else:
             extr = await TicketService.get_user_ticket_stats(db, assigned_to)
-            token = getattr(current_user, 'token', None)
+            token = current_user.get('token')
             result = await NotificationUtils.send_ticket_cuiban_notification(
                 notify_type=notify_type,
                 user_names=[assigned_to],
