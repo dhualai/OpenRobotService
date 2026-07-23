@@ -128,6 +128,9 @@ async def submit_ticket(
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
     username, _ = _current_user(request)
+    # 本地测试 / 无 token 时用 debug 用户名
+    if not username and get_ai_config().debug_assign_to_admin:
+        username = "debug_test_user"
     try:
         result = await pipeline.submit(session_id=body.session_id, created_by=username)
         if "code" not in result:
@@ -195,8 +198,16 @@ async def upload_files(
         state["attachments"] = existing + saved
         memory.metadata["agent_state"] = state
         await mgr.save_memory(memory)
-    except Exception:
-        pass
+
+        # 如果已有提交的工单，自动将附件追加到工单
+        last_ticket = state.get("last_submitted_ticket", {})
+        if last_ticket and last_ticket.get("ticket_id"):
+            pipeline = await get_pipeline()
+            ok = await pipeline._append_to_ticket(session_id, attachments=saved)
+            if ok:
+                logger.info(f"上传附件已追加到工单: session={session_id[:8]}, files={filenames}")
+    except Exception as e:
+        logger.warning(f"上传附件处理失败: {e}")
     return {"code": 0, "data": {"saved": len(saved), "files": saved}}
 
 
@@ -278,7 +289,7 @@ async def chat_stream(request: ChatRequest):
         chunks: list[str] = []
         try:
             prompt = await _build_prompt(request.session_id, request.query)
-            print(f"  [T]  [chat-stream] prompt={len(prompt)}chars  overhead={(time.perf_counter()-t0)*1000:.0f}ms")
+            logger.debug(f"[chat-stream] prompt={len(prompt)}chars  overhead={(time.perf_counter()-t0)*1000:.0f}ms")
             t_llm = time.perf_counter()
             async for token in llm.stream(
                 prompt=prompt,
@@ -288,7 +299,7 @@ async def chat_stream(request: ChatRequest):
             ):
                 if not first:
                     first = True
-                    print(f"  [T]  [chat-stream] llm_first_token={(time.perf_counter()-t_llm)*1000:.0f}ms")
+                    logger.debug(f"[chat-stream] llm_first_token={(time.perf_counter()-t_llm)*1000:.0f}ms")
                     yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
                 chunks.append(token)
                 yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
@@ -338,7 +349,7 @@ async def list_all_tickets(
     try:
         from ai.core.task_adapter import task_to_dict
         from app.models.task import Task, TaskStatus, TaskType
-        from app.core.database import SessionLocal
+        from app.core.db import SessionLocal
         from sqlalchemy import desc
 
         db = SessionLocal()
@@ -432,7 +443,7 @@ async def task_list(body: TaskListAPIRequest) -> dict:
     try:
         from ai.core.task_adapter import task_to_dict
         from app.models.task import Task, TaskStatus
-        from app.core.database import SessionLocal
+        from app.core.db import SessionLocal
         db = SessionLocal()
         tickets_list = []
         try:

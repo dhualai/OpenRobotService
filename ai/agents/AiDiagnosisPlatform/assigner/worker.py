@@ -85,7 +85,7 @@ class AssignmentWorker:
         """从 MySQL 查询待指派工单（source='ai', status='pending', 未指派）"""
         try:
             from app.models.task import Task
-            from app.core.database import SessionLocal
+            from app.core.db import SessionLocal
 
             db = SessionLocal()
             try:
@@ -158,7 +158,7 @@ class AssignmentWorker:
         """将派单结果写回 tasks 表"""
         try:
             from app.models.task import Task
-            from app.core.database import SessionLocal
+            from app.core.db import SessionLocal
 
             db = SessionLocal()
             try:

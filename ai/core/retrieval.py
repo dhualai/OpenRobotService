@@ -604,6 +604,48 @@ class RetrievalService:
             ))
         return results
 
+    async def retrieve_platform_faq(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+    ) -> List[RetrievalResult]:
+        """
+        平台 FAQ 检索（摇人吧服务号自身介绍）。
+
+        当用户问"支持什么工单类型""有哪些角色""工单流转是怎样的"等
+        关于服务号本身的问题时，通过此方法检索。
+        """
+        from ai.config import get_active_platform_faq_collection
+
+        pf_col = get_active_platform_faq_collection()
+        if not pf_col:
+            return []
+
+        k = top_k or self.top_k
+        await self._ensure_clients()
+
+        if self._qdrant.is_unavailable:
+            return []
+
+        query_vector = await self._embed_client.embed(query)
+        points = await self._qdrant.search_dense(
+            query_vector.tolist(),
+            top_k=k,
+            collection_name=pf_col,
+        )
+
+        results = []
+        for point in points:
+            payload = point.payload or {}
+            results.append(RetrievalResult(
+                id=str(point.id),
+                score=point.score,
+                title=payload.get("question", ""),
+                content=payload.get("answer", ""),
+                vector_score=point.score,
+            ))
+        return results
+
     async def retrieve_troubleshooting(
         self,
         query: str,
@@ -956,8 +998,7 @@ async def get_retrieval_service() -> RetrievalService:
                     top_k=config.retrieval_top_k,
                     score_threshold=config.retrieval_score_threshold,
                 )
-
-
+    return _retrieval_service
 
 
 # ============================================================

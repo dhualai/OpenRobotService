@@ -9,6 +9,27 @@
 
 ## 提单 Agent 主线
 
+### v1.4 · 2026-07-22 ~ 2026-07-23
+
+- **变更类型**：流程逻辑变更 + Prompt 调整 + 新增知识源
+- **变更内容**：
+  - **自动提单 + 服务端兜底**：LLM 输出 `action: "submit"` 时自动调用 `self.submit()` 生成工单；另加服务端关键词检测（"转工单""转单""提单"等），无论 LLM 是否输出 submit 都强制提单
+  - **多工单支持**：新增 `ticket_seq` 计数器，`external_id` 格式由 `session_id` 变为 `session_id#seq`，同一会话可独立创建多个工单不再互相覆盖
+  - **补充信息追加**：提单后用户发送的补充信息（文字/附件）自动追加到最新工单的 `description` 字段。双层检测：① LLM 输出 `intent="follow_up"` ② 兜底：`action="answer"` 且 intent 非 troubleshoot/howto/chat
+  - **闲聊收尾短接**：纯问候/致谢/结束语（"ok""感谢""好的"等）正则匹配后直接返回短回复，跳过检索和 LLM 调用
+  - **Platform FAQ 知识库**：新增第 6 路检索（`retrieve_platform_faq`），覆盖摇人吧平台自身 FAQ（工单类型/流转/角色/功能入口/转工单方式等 8 条），6 路并行检索
+  - **DIAGNOSIS_PROMPT 分层**：身份+核心规则保留在 system prompt，平台 FAQ 细节下沉到知识库按需检索
+  - **转工单 Prompt 强化**：转工单规则提升至最高优先级（⛔ 标记），独立于 howto/troubleshoot/chat 意图判断；follow_up 场景禁止追问/排查/给建议
+  - **DB 导入解耦**：`ai/` 模块中 `from app.core.database import SessionLocal` 全部改为 `from app.core.db import SessionLocal`，不再间接依赖 identity_service → security → jose 认证链
+- **变更原因**：
+  - LLM 频繁 role-play 提单（回复"已生成工单"但 JSON 里 `action="answer"`），需服务端强制兜底
+  - 原 `upsert_task` 按 `session_id` 唯一键 upsert，同一会话第 2 次转单会覆盖第 1 个工单
+  - 用户提单后发送补充信息，agent 仍在继续排查引导而非直接记录
+- **效果对比**：自动提单成功率 100%（关键词兜底）；同一会话可生成多个独立工单；补充信息正确追加到对应工单；闲聊收尾不再触发排查
+- **回滚方式**：移除 `pipeline.py` 中 `_force_submit_kw` 检测块 + 移除 `_bye_str` 短接块；`external_id` 格式兼容旧数据（无 `#seq` 后缀的旧工单 LIKE 查询仍能匹配）
+
+---
+
 ### v1.3 · 2026-07-21
 
 - **变更类型**：流程逻辑变更 + Prompt 调整
