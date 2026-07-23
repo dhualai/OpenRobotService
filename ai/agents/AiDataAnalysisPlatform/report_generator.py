@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from datetime import date, datetime, timedelta
 from typing import AsyncIterator
@@ -27,6 +26,7 @@ from ai.core.database import SessionLocal, Ticket, Task, ProjectDelivery, Risk
 
 from .llm_client import LLMClient
 from .config import AnalysisConfig
+from .logging_config import get_logger
 from .report_prompts import build_report_system_prompt, build_report_user_prompt
 from .report_schemas import (
     ReportPeriod,
@@ -40,7 +40,7 @@ from .report_schemas import (
     CollectedData,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger("ReportGenerator")
 
 
 # ── 日期工具 ──────────────────────────────────────────────────────

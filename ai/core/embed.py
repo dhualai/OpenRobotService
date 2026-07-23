@@ -114,7 +114,7 @@ class EmbedClient:
         try:
             embedding = await loop.run_in_executor(
                 None,
-                lambda: model.encode(text, normalize_embeddings=normalize)
+                lambda: model.encode(text, normalize_embeddings=normalize, show_progress_bar=False)
             )
         except Exception as e:
             raise EmbeddingError(f"向量化失败: {str(e)}")

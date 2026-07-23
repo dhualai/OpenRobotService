@@ -138,3 +138,33 @@ class Risk(Base):
     close_time = Column(String(30), nullable=True)
     created_at = Column(String(30), nullable=False)
     updated_at = Column(String(30), nullable=False)
+
+
+class Conversation(Base):
+    """会话表（对齐 backend/app/models/conversation.py）"""
+    __tablename__ = "conversations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(255), nullable=False, default="新会话")
+    user_id = Column(String(255), nullable=False, default="")
+    scene_type = Column(String(255), nullable=False, default="chat")
+    service_ticket_id = Column(String(255), nullable=False, default="")
+    metadata_ = Column(Text, nullable=True)
+    created_at = Column(DateTime)
+    updated_at = Column(DateTime)
+
+
+class Message(Base):
+    """消息表（对齐 backend/app/models/conversation.py Message）"""
+    __tablename__ = "messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, nullable=False)
+    role = Column(String(20), nullable=False)
+    content = Column(Text, nullable=False)
+    message_type = Column(String(20), nullable=False, default="text")
+    file_urls = Column(Text, nullable=True)
+    parent_message_id = Column(Integer, nullable=True)
+    sequence = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime)
+    metadata_ = Column(Text, nullable=True)

@@ -76,7 +76,7 @@ def test_url_empty_when_no_base():
     ("doing", TaskStatus.IN_PROGRESS),
     ("pause", TaskStatus.PENDING),
     ("done", TaskStatus.RESOLVED),
-    ("cancel", TaskStatus.CLOSED),
+    ("cancel", TaskStatus.CANCELED),
     ("closed", TaskStatus.CLOSED),
     ("", TaskStatus.NEW),
     (None, TaskStatus.NEW),

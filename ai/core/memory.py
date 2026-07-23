@@ -13,6 +13,9 @@ from dataclasses import dataclass, field
 
 from ai.config import get_ai_config
 from ai.exceptions import ServiceUnavailableError
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -83,29 +86,43 @@ class MemoryManager:
                 await self._redis.ping()
                 self._redis_ok = True
                 self._redis_last_check = now
-            except Exception:
+            except Exception as e:
                 self._redis = None
                 self._redis_ok = False
                 self._redis_last_check = now
+                logger.warning(f"Redis 连接失败（将使用内存/MySQL降级）: url={self.redis_url}, error={e}")
         return self._redis
 
     def _get_key(self, session_id: str) -> str:
         return f"ai:memory:{session_id}"
 
     async def get_memory(self, session_id: str) -> SessionMemory:
-        client = await self._ensure_redis()
-        if client:
-            try:
-                data = await client.get(self._get_key(session_id))
-                if data:
-                    parsed = json.loads(data)
-                    return SessionMemory(session_id=session_id, turns=parsed.get("turns", []), metadata=parsed.get("metadata", {}))
-            except Exception:
-                pass
-        # 内存兜底
+        # 1. 内存兜底优先——save_memory 总是双写，内存数据最新，且绝不会挂起
         if session_id in self._fallback:
             data = self._fallback[session_id]
             return SessionMemory(session_id=session_id, turns=data.get("turns", []), metadata=data.get("metadata", {}))
+        # 2. Redis（带超时保护，避免僵死连接挂起整个请求）
+        client = await self._ensure_redis()
+        if client:
+            try:
+                data = await asyncio.wait_for(
+                    client.get(self._get_key(session_id)), timeout=2.0,
+                )
+                if data:
+                    parsed = json.loads(data)
+                    return SessionMemory(session_id=session_id, turns=parsed.get("turns", []), metadata=parsed.get("metadata", {}))
+            except (asyncio.TimeoutError, Exception):
+                pass
+        # 3. MySQL 降级：Redis 和内存都没有时，尝试从 MySQL 加载
+        try:
+            from ai.core.conversation_store import get_history
+            rows = await asyncio.to_thread(get_history, session_id)
+            if rows:
+                turns = [{"role": r["role"], "content": r["content"]} for r in rows]
+                logger.info(f"MySQL 降级加载成功: session={session_id}, turns={len(turns)}")
+                return SessionMemory(session_id=session_id, turns=turns)
+        except Exception as e:
+            logger.error(f"MySQL 降级加载失败: session={session_id}, error={e}", exc_info=True)
         return SessionMemory(session_id=session_id)
 
     async def save_memory(self, memory: SessionMemory) -> None:
@@ -126,7 +143,11 @@ class MemoryManager:
         # 内存兜底
         self._fallback[memory.session_id] = data
 
-    async def add_turn(self, session_id: str, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> SessionMemory:
+    async def add_turn(
+        self, session_id: str, role: str, content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        user_id: str = "",
+    ) -> SessionMemory:
         memory = await self.get_memory(session_id)
         turn = {"role": role, "content": content}
         if metadata:
@@ -135,6 +156,17 @@ class MemoryManager:
         if len(memory.turns) > self.max_turns:
             memory.turns = memory.turns[-self.max_turns:]
         await self.save_memory(memory)
+
+        # MySQL 持久化（异步写，不阻塞主流程）
+        try:
+            from ai.core.conversation_store import save_message
+            await asyncio.to_thread(
+                save_message, session_id=session_id, role=role,
+                content=content, user_id=user_id,
+            )
+        except Exception as e:
+            logger.error(f"MySQL 双写失败: session={session_id}, role={role}, error={e}", exc_info=True)
+
         return memory
 
     async def get_context(self, session_id: str, max_turns: Optional[int] = None) -> List[Dict[str, str]]:

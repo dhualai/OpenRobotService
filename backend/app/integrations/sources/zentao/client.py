@@ -241,3 +241,11 @@ class ZentaoRestClient:
             list_key="tasks",
             page_size=page_size,
         )
+
+    async def get_execution_stories(self, execution_id: int, *, page_size: int = 100) -> List[Dict[str, Any]]:
+        """``GET /executions/{id}/stories``：获取执行下的需求列表。"""
+        return await self._get_paged(
+            f"executions/{execution_id}/stories",
+            list_key="stories",
+            page_size=page_size,
+        )
