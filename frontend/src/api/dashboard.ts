@@ -28,9 +28,10 @@ const EMPTY_TICKET_SUMMARY: TicketSummary = {
 };
 
 /**
- * 待接入：GET /api/admin/dashboard/tickets/summary
- * 期望响应：{ code: 0, data: TicketSummary }
- * 数据来源建议：系统任务模块 tasks 表按 TaskStatus 分组统计 + deadline_at 超时计算。
+ * GET /api/admin/dashboard/tickets/summary
+ * 响应：{ code: 0, data: TicketSummary }
+ * 数据来源：系统任务模块 tasks 表按 TaskStatus 分组统计 + deadline_at 超时计算，
+ * 见 backend/app/modules/admin/services/task_dashboard_service.py。
  * 与「工单状态监测」页面（/admin/ticket-monitor，对接 AI 服务 tickets 表）是不同数据源，
  * 本仪表盘统计的是系统任务模块的 Task，不是 AI 模块的 Ticket，需注意区分。
  */
@@ -50,8 +51,8 @@ export interface TicketListItem {
 }
 
 /**
- * 待接入：GET /api/admin/dashboard/tickets?status={key}
- * 点击某个状态标签后展示该状态下的工单列表，期望响应：{ code: 0, data: { items: TicketListItem[], total: number } }
+ * GET /api/admin/dashboard/tickets?status={key}
+ * 点击某个状态标签后展示该状态下的工单列表，响应：{ code: 0, data: { items: TicketListItem[], total: number } }
  */
 export async function fetchTicketsByStatus(status: string): Promise<{ items: TicketListItem[]; total: number }> {
   try {

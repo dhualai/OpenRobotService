@@ -3,10 +3,10 @@
 
 // ============================================================
 // 一、工单状态（系统任务模块 TaskStatus）
-// 数据源：GET /api/admin/dashboard/tickets/summary（待后端接入，见 docs/工程文档.md）
-// 后端现状：backend/app/models/task.py TaskStatus 枚举目前只有 5 个值
-// （new/in_progress/pending/resolved/closed），产品要求的「暂停/挂起」「已取消」
-// 两个状态后端暂无对应字段，本页先按 6 个状态占位设计，接口返回 0 即可。
+// 数据源：GET /api/admin/dashboard/tickets/summary（backend/app/modules/admin/api/dashboard.py）
+// 后端 backend/app/models/task.py TaskStatus 枚举：new/in_progress/pending/resolved/canceled/closed。
+// 「暂停/挂起」「已取消」在后端分别复用 pending/canceled 语义，映射见
+// backend/app/modules/admin/services/task_dashboard_service.py FRONTEND_STATUS_MAP。
 // ============================================================
 export type TicketStatusKey =
   | 'new' | 'in_progress' | 'paused' | 'resolved' | 'closed' | 'cancelled';
@@ -16,10 +16,10 @@ export interface StatusMeta { key: TicketStatusKey; label: string; color: string
 export const TICKET_STATUS_LIST: StatusMeta[] = [
   { key: 'new', label: '新建', color: '#0052d9', backendReady: true },
   { key: 'in_progress', label: '处理中', color: '#2ba471', backendReady: true },
-  { key: 'paused', label: '暂停/挂起', color: '#e37318', backendReady: false }, // 后端 TaskStatus 无对应值，待补
+  { key: 'paused', label: '暂停/挂起', color: '#e37318', backendReady: true },
   { key: 'resolved', label: '已解决', color: '#00a870', backendReady: true },
   { key: 'closed', label: '已关闭', color: '#999999', backendReady: true },
-  { key: 'cancelled', label: '已取消', color: '#d54941', backendReady: false }, // 后端 TaskStatus 无对应值，待补
+  { key: 'cancelled', label: '已取消', color: '#d54941', backendReady: true },
 ];
 
 export const TICKET_STATUS_MAP: Record<string, StatusMeta> =
