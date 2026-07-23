@@ -74,8 +74,13 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
     setHasMore(total > skip + items.length);
   }, [skip, buildFilters]);
 
-  // search/statusFilter 变化 → 防抖 400ms 后重新加载（后端搜索）
+  // search/statusFilter 变化 → 重新加载（后端搜索）
+  // search 非空 → 防抖 400ms（避免每次按键都请求）；search 空 → 立即加载全部（首屏/清空/statusFilter 切换）
   useEffect(() => {
+    if (!search.trim()) {
+      loadInitial();
+      return;
+    }
     const t = setTimeout(() => { loadInitial(); }, 400);
     return () => clearTimeout(t);
   }, [loadInitial]);
@@ -120,12 +125,17 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
       )}
       {/* 搜索 + 状态快捷筛选 */}
       <div className="history-toolbar">
-        <input
-          className="history-search"
-          placeholder="搜索工单标题/描述…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
+        <div className="history-search-wrap">
+          <input
+            className="history-search"
+            placeholder="搜索工单标题/描述…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          {search && (
+            <button type="button" className="history-search__clear" onClick={() => setSearch('')} aria-label="清空">×</button>
+          )}
+        </div>
         <div className="history-tabs">
           {STATUS_TABS.map((tab) => (
             <button
