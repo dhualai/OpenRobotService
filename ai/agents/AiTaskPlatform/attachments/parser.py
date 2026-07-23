@@ -23,6 +23,10 @@ import httpx
 from pathlib import Path
 
 from ai.agents.AiTaskPlatform.schemas import AttachmentAnalysis
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 
 # ── 常量 ──────────────────────────────────────────────────────
@@ -259,7 +263,7 @@ async def _read_content(att: dict) -> str:
             return project_local.read_text(encoding="utf-8", errors="replace")[:_TEXT_CHUNK_LIMIT]
 
     except Exception as e:
-        print(f"  [attachment-parser] Failed to read {path}: {e}")
+        logger.warning(f"Failed to read {path}: {e}")
 
     return ""
 
@@ -287,7 +291,7 @@ async def _read_bytes(att: dict) -> Optional[bytes]:
             return project_local.read_bytes()
 
     except Exception as e:
-        print(f"  [attachment-parser] Failed to read bytes {path}: {e}")
+        logger.warning(f"Failed to read bytes {path}: {e}")
 
     return None
 
