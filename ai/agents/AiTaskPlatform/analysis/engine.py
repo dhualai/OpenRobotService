@@ -14,7 +14,11 @@ from typing import Optional
 from ai.config import get_ai_config
 from ai.core import get_retrieval_service
 from ai.agents.AiTaskPlatform.schemas import TaskContext, AttachmentAnalysis
-from ai.agents.AiTaskPlatform.attachment_parser import parse_attachments
+from ai.agents.AiTaskPlatform.attachments.parser import parse_attachments
+from ai.core.logging import get_logger
+
+logger = get_logger("TASK_AGENT")
+
 
 
 class AnalysisResults:
@@ -79,7 +83,7 @@ class TaskAnalyzer:
                 results.attachment = t_attachment
 
         except Exception as e:
-            print(f"  [task-analyzer] Partial failure: {e}")
+            logger.warning(f"Partial failure: {e}")
 
         return results
 
@@ -139,7 +143,7 @@ class TaskAnalyzer:
 
             return "\n".join(lines) if lines else "（排查树匹配但无有效结论）"
         except Exception as e:
-            print(f"  [task-analyzer] Troubleshooting retrieval failed: {e}")
+            logger.warning(f"Troubleshooting retrieval failed: {e}")
             return "（排查树检索失败）"
 
     @staticmethod
@@ -194,5 +198,5 @@ class TaskAnalyzer:
 
             return "\n".join(lines) if lines else "（无相似的历史工单方案）"
         except Exception as e:
-            print(f"  [task-analyzer] Task resolutions retrieval failed: {e}")
+            logger.warning(f"Task resolutions retrieval failed: {e}")
             return "（历史方案检索失败）"

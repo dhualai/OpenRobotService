@@ -126,14 +126,26 @@ SUMMARIZE_SYSTEM_PROMPT = """你是工单讨论的摘要助手。总结近期讨
 
 ## 输出要求
 - 一句话总结（≤150字）
+- 如果之前已有摘要且给了新增讨论，把新讨论融入之前的摘要，形成更新后的完整摘要
 - 如果讨论没有实质进展，如实说"暂无新的关键进展"
 - 不要重复已有的摘要内容"""
 
-SUMMARIZE_USER_TEMPLATE = """## 工单
+SUMMARIZE_FULL_TEMPLATE = """## 工单
 标题: {title}
+描述: {description}
+诊断: {diagnosis_summary}
 
 ## 近期讨论
 {discussion_history}
 
 ---
-请用一句话总结关键进展。"""
+请用一句话总结关键进展。只提取和工单解决相关的信息，忽略闲聊。"""
+
+SUMMARIZE_INCREMENTAL_TEMPLATE = """## 之前的摘要
+{previous_summary}
+
+## 新增讨论
+{discussion_history}
+
+---
+将新增讨论融入之前的摘要，输出更新后的完整摘要（≤150字）。只提取和工单解决相关的信息。"""
