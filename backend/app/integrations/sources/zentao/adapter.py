@@ -12,7 +12,7 @@ from typing import AsyncIterator, List, Optional
 from app.core.config import settings
 from app.integrations.base import ExternalTask, TaskSourceAdapter
 from app.integrations.sources.zentao.client import ZentaoError, ZentaoRestClient
-from app.integrations.sources.zentao.mapper import zentao_task_to_external
+from app.integrations.sources.zentao.mapper import zentao_task_to_external, zentao_story_to_external
 
 logger = logging.getLogger(__name__)
 
@@ -90,3 +90,11 @@ class ZentaoAdapter(TaskSourceAdapter):
                         continue
                     for t in tasks:
                         yield zentao_task_to_external(t, base_url=settings.ZENTAO_BASE_URL)
+
+                    try:
+                        stories = await client.get_execution_stories(eid)
+                    except ZentaoError as exc:
+                        logger.warning("获取禅道执行 %s 需求失败，跳过：%s", eid, exc)
+                        continue
+                    for s in stories:
+                        yield zentao_story_to_external(s, base_url=settings.ZENTAO_BASE_URL)

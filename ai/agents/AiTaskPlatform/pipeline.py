@@ -25,9 +25,12 @@ from ai.agents.AiTaskPlatform.schemas import (
     AttachmentAnalysis,
 )
 from ai.agents.AiTaskPlatform.prompts import (
-    TASK_AGENT_SYSTEM_PROMPT,
-    USER_PROMPT_TEMPLATE,
-    TASK_CHAT_SYSTEM_PROMPT,
+    DIAGNOSE_SYSTEM_PROMPT,
+    DIAGNOSE_USER_TEMPLATE,
+    DISCUSS_SYSTEM_PROMPT,
+    DISCUSS_USER_TEMPLATE,
+    SUMMARIZE_SYSTEM_PROMPT,
+    SUMMARIZE_USER_TEMPLATE,
 )
 
 
@@ -46,8 +49,19 @@ class AiTaskAgent:
     NODE_BUILD_PROMPT = "build_prompt"  # Prompt 构建
     NODE_LLM = "llm"                   # LLM 调用（DeepSeek API）
     NODE_PARSE = "parse"               # 结果解析（JSON→SolutionDraft）
+    NODE_DIAGNOSE = "diagnose"         # 诊断报告生成
+    NODE_DISCUSS = "discuss"           # @AI 讨论回复
+    NODE_SUMMARIZE = "summarize"       # 讨论摘要
+    NODE_ATTACHMENT = "attachment"      # 附件分析
+    NODE_KNOWLEDGE = "knowledge"       # 历史工单检索
+    NODE_DIAGNOSE = "diagnose"         # 诊断报告生成
+    NODE_DISCUSS = "discuss"           # @AI 讨论回复
+    NODE_SUMMARIZE = "summarize"       # 讨论摘要
+    NODE_ATTACHMENT = "attachment"      # 附件分析
+    NODE_KNOWLEDGE = "knowledge"       # 历史工单检索
     NODE_MEMORY = "memory"             # 记忆保存（Redis）
-    NODE_SUBMIT = "submit"             # 方案提交（tickets 表 + Qdrant 回写）
+    NODE_COMMENT = "comment"           # 诊断结果写入 task_comments
+    NODE_SUBMIT = "submit"             # 方案提交（tasks 表 + Qdrant 回写）
 
     def __init__(self):
         self.config = get_ai_config()
@@ -142,6 +156,17 @@ class AiTaskAgent:
         self._add_trace(self.NODE_PARSE, parse_status,
                         output={"confidence": draft.confidence, "actions_count": len(draft.suggested_actions)},
                         elapsed_ms=round((time.perf_counter() - t5) * 1000))
+
+        # 6. 诊断结果写入 task_comments（AI任务助手评论）
+        t6 = time.perf_counter()
+        try:
+            task_id_int = int(request.task_id)
+            self._add_diagnosis_comment(task_id_int, draft)
+            self._add_trace(self.NODE_COMMENT, "ok",
+                            elapsed_ms=round((time.perf_counter() - t6) * 1000))
+        except Exception:
+            self._add_trace(self.NODE_COMMENT, "error",
+                            elapsed_ms=round((time.perf_counter() - t6) * 1000))
 
         total_ms = (time.perf_counter() - t0) * 1000
         print(f"  [task-agent] analyze total={total_ms:.0f}ms")
@@ -248,171 +273,300 @@ class AiTaskAgent:
 
         yield {"event": "done", "data": {"total_ms": total_ms}}
 
+
     # ============================================================
-    # chat（自由问答，无 taskId 或通用技术问答）
+    # diagnose — 诊断报告（[帮我分析] 按钮）
     # ============================================================
 
-    async def chat(
-        self, session_id: str, query: str,
-        task_id: str = "", task_title: str = "", task_description: str = "",
-    ) -> str:
-        """自由对话：工程师可以问任何 AGV/AMR 技术问题"""
+    async def diagnose(self, task_id: str) -> dict:
+        """全能力诊断 → 即时返回报告 JSON（不存库）。
+
+        使用能力：附件分析 + 历史工单检索。
+        不检索排查树——提单 Agent 已经走过，结论在 diagnosis JSON 里。
+        """
         t0 = time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
 
-        # 构建对话上下文
-        conversation = ""
+        # 1. 加载工单上下文
+        t1 = time.perf_counter()
+        context = await self._load_task_context(task_id)
+        self._add_trace(self.NODE_LOAD_CONTEXT, "ok",
+                        input={"task_id": task_id},
+                        output={"has_title": bool(context.title),
+                                "has_problem_summary": bool(context.problem_summary)},
+                        elapsed_ms=round((time.perf_counter() - t1) * 1000))
+
+        # 2. 附件分析（能力一）
+        t2 = time.perf_counter()
+        att_has_logs = False
+        att_log_summary = ""
         try:
-            memory = await self._memory.get_memory(session_id)
-            turns = memory.turns[-8:] if len(memory.turns) > 8 else memory.turns
-            conversation = "\n".join(
-                f"{'用户' if t['role'] == 'user' else '助手'}：{t['content']}"
-                for t in turns
-            )
-        except Exception:
-            pass
+            if context.attachments:
+                from ai.agents.AiTaskPlatform.attachment_parser import parse_attachments
+                att_analysis = await parse_attachments(context.attachments)
+                att_has_logs = att_analysis.has_logs
+                att_log_summary = att_analysis.log_summary[:500] if att_analysis.log_summary else ""
+                self._add_trace(self.NODE_ATTACHMENT, "ok",
+                                output={"has_logs": att_has_logs},
+                                elapsed_ms=round((time.perf_counter() - t2) * 1000))
+            else:
+                self._add_trace(self.NODE_ATTACHMENT, "skipped", elapsed_ms=0)
+        except Exception as e:
+            self._add_trace(self.NODE_ATTACHMENT, "error",
+                            input={"error": str(e)},
+                            elapsed_ms=round((time.perf_counter() - t2) * 1000))
 
-        # 构建 prompt
-        t_prompt = time.perf_counter()
-        if task_id:
-            prompt = (
-                f"## 对话历史\n{conversation}\n\n"
-                f"## 当前工单\n标题: {task_title}\n描述: {task_description}\n\n"
-                f"## 用户消息\n{query}"
-            )
-        else:
-            prompt = (
-                f"## 对话历史\n{conversation}\n\n"
-                f"## 用户消息\n{query}"
-            )
-        self._add_trace(self.NODE_BUILD_PROMPT, "ok",
-                        input={"prompt_chars": len(prompt), "has_task": bool(task_id)},
-                        elapsed_ms=round((time.perf_counter() - t_prompt) * 1000))
+        # 3. 历史工单检索（能力二）
+        t3 = time.perf_counter()
+        hist_found = False
+        hist_summary = ""
+        try:
+            query_text = self._build_query(context)
+            history_text = await self._retrieve_task_resolutions(query_text)
+            hist_found = history_text is not None and len(history_text) > 0 and "无" not in history_text[:20]
+            hist_summary = history_text[:1000] if history_text else ""
+            self._add_trace(self.NODE_KNOWLEDGE, "ok",
+                            output={"found": hist_found},
+                            elapsed_ms=round((time.perf_counter() - t3) * 1000))
+        except Exception as e:
+            self._add_trace(self.NODE_KNOWLEDGE, "error",
+                            input={"error": str(e)},
+                            elapsed_ms=round((time.perf_counter() - t3) * 1000))
 
-        # LLM 调用
-        t_llm = time.perf_counter()
-        response = await self._llm_client.complete(
-            prompt=prompt,
-            system_prompt=TASK_CHAT_SYSTEM_PROMPT,
-            max_tokens=1500,
-            temperature=0.5,
+        # 4. LLM 综合分析
+        t4 = time.perf_counter()
+        att_text = att_log_summary if att_has_logs else "（无附件或无可解析内容）"
+        hist_text = hist_summary if hist_found else "（无相似的历史工单方案）"
+
+        fault_parts = []
+        if context.fault_code:
+            fault_parts.append(f"故障码: {context.fault_code}")
+        if context.robot_type:
+            fault_parts.append(f"车型: {context.robot_type}")
+        if context.location:
+            fault_parts.append(f"位置: {context.location}")
+        fault_info = "\n".join(fault_parts) if fault_parts else "（无特殊故障信息）"
+
+        prompt = DIAGNOSE_USER_TEMPLATE.format(
+            title=context.title or "",
+            description=context.description or "",
+            task_type=context.task_type or "problem",
+            priority=context.priority or "中",
+            problem_summary=context.problem_summary or "（提单 Agent 未提供）",
+            hypotheses="、".join(context.hypotheses) if context.hypotheses else "（无）",
+            ruled_out="、".join(context.ruled_out) if context.ruled_out else "（无）",
+            collected_info=json.dumps(context.collected_info, ensure_ascii=False) if context.collected_info else "（无）",
+            rounds=context.diagnosis_rounds,
+            fault_info=fault_info,
+            attachment_analysis=att_text,
+            historical_solutions=hist_text,
+        )
+
+        raw = await self._llm_client.complete(
+            prompt=prompt, system_prompt=DIAGNOSE_SYSTEM_PROMPT,
+            max_tokens=1500, temperature=0.3,
         )
         self._add_trace(self.NODE_LLM, "ok",
-                        input={"model": self._llm_client.model},
-                        output={"response_chars": len(response)},
-                        elapsed_ms=round((time.perf_counter() - t_llm) * 1000))
+                        input={"model": self._llm_client.model, "prompt_chars": len(prompt)},
+                        output={"response_chars": len(raw)},
+                        elapsed_ms=round((time.perf_counter() - t4) * 1000))
 
-        # 写入对话记忆
-        t_mem = time.perf_counter()
-        try:
-            await self._memory.add_turn(session_id, "user", query)
-            await self._memory.add_turn(session_id, "assistant", response)
-            self._add_trace(self.NODE_MEMORY, "ok",
-                            elapsed_ms=round((time.perf_counter() - t_mem) * 1000))
-        except Exception:
-            self._add_trace(self.NODE_MEMORY, "error",
-                            elapsed_ms=round((time.perf_counter() - t_mem) * 1000))
+        # 5. 解析
+        t5 = time.perf_counter()
+        draft, parse_status = self._parse_solution_with_status(raw)
+        self._add_trace(self.NODE_PARSE, parse_status,
+                        output={"confidence": draft.confidence},
+                        elapsed_ms=round((time.perf_counter() - t5) * 1000))
 
-        return response
+        total_ms = round((time.perf_counter() - t0) * 1000)
 
-    async def chat_stream(
-        self, session_id: str, query: str,
-        task_id: str = "", task_title: str = "", task_description: str = "",
-    ):
-        """流式自由对话"""
-        import time as _time
-        t0 = _time.perf_counter()
+        return {
+            "task_id": task_id,
+            "root_cause_analysis": draft.root_cause_analysis,
+            "suggested_actions": draft.suggested_actions,
+            "references": draft.references,
+            "confidence": draft.confidence,
+            "needs_more_info": draft.needs_more_info,
+            "attachment_analysis": {"has_logs": att_has_logs, "summary": att_log_summary},
+            "history_found": hist_found,
+            "_trace": self._pop_trace(),
+            "_total_ms": total_ms,
+        }
+
+    # ============================================================
+    # discuss — @AI 讨论回复
+    # ============================================================
+
+    async def discuss(self, task_id: str, query: str, context: dict) -> dict:
+        """@AI 讨论：基于讨论历史 + 工单上下文 + 按需附件/历史工单 回复。"""
+        t0 = time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
 
-        # 构建对话上下文
-        conversation = ""
+        # 1. 工单上下文
+        ctx = await self._load_task_context(task_id)
+
+        # 2. 讨论历史（能力三）
+        recent = context.get("recent_comments", []) if context else []
+        discussion_lines = []
+        for c in recent[-10:]:
+            author = c.get("author", c.get("created_by", "?"))
+            content_str = str(c.get("content", ""))[:200]
+            discussion_lines.append(f"[{author}] {content_str}")
+        discussion_history = "\n".join(discussion_lines) if discussion_lines else "（暂无讨论）"
+
+        # 3. 按需调附件分析 / 历史工单
+        facultative = ""
+        att_keywords = ["日志", "附件", "图片", "log", "file", "image", "zip"]
+        hist_keywords = ["历史", "类似", "之前", "案例", "参考"]
+
+        if query and any(kw in query.lower() for kw in att_keywords):
+            try:
+                if ctx.attachments:
+                    from ai.agents.AiTaskPlatform.attachment_parser import parse_attachments
+                    att = await parse_attachments(ctx.attachments)
+                    if att.has_logs:
+                        facultative += f"\n[附件分析]\n{att.log_summary[:500]}\n"
+            except Exception:
+                pass
+
+        if query and any(kw in query.lower() for kw in hist_keywords):
+            try:
+                query_text = self._build_query(ctx)
+                hist = await self._retrieve_task_resolutions(query_text)
+                if hist and "无" not in hist[:10]:
+                    facultative += f"\n[历史相似工单]\n{hist[:500]}\n"
+            except Exception:
+                pass
+
+        # 4. LLM
+        diag_summary = f"推测: {' / '.join(ctx.hypotheses) if ctx.hypotheses else '无'}"
+        prompt = DISCUSS_USER_TEMPLATE.format(
+            title=ctx.title or "",
+            description=(ctx.description or "")[:200],
+            diagnosis_summary=diag_summary,
+            discussion_history=discussion_history,
+            query=query or "请基于讨论历史和工单信息，给出你的分析和建议。",
+            facultative_analysis=facultative,
+        )
+
+        t_llm = time.perf_counter()
+        reply = await self._llm_client.complete(
+            prompt=prompt, system_prompt=DISCUSS_SYSTEM_PROMPT,
+            max_tokens=600, temperature=0.4,
+        )
+        self._add_trace(self.NODE_LLM, "ok",
+                        output={"reply_chars": len(reply)},
+                        elapsed_ms=round((time.perf_counter() - t_llm) * 1000))
+
+        # 5. 回复写入 task_comments
         try:
-            memory = await self._memory.get_memory(session_id)
-            turns = memory.turns[-8:] if len(memory.turns) > 8 else memory.turns
-            conversation = "\n".join(
-                f"{'用户' if t['role'] == 'user' else '助手'}：{t['content']}"
-                for t in turns
-            )
+            self._add_diagnosis_comment_short(int(task_id), reply.strip())
         except Exception:
             pass
 
-        t_prompt = _time.perf_counter()
-        if task_id:
-            prompt = (
-                f"## 对话历史\n{conversation}\n\n"
-                f"## 当前工单\n标题: {task_title}\n描述: {task_description}\n\n"
-                f"## 用户消息\n{query}"
-            )
-        else:
-            prompt = (
-                f"## 对话历史\n{conversation}\n\n"
-                f"## 用户消息\n{query}"
-            )
-        self._add_trace(self.NODE_BUILD_PROMPT, "ok",
-                        input={"prompt_chars": len(prompt), "has_task": bool(task_id)},
-                        elapsed_ms=round((_time.perf_counter() - t_prompt) * 1000))
+        total_ms = round((time.perf_counter() - t0) * 1000)
+        return {
+            "task_id": task_id,
+            "reply": reply.strip(),
+            "comment_id": None,
+            "_trace": self._pop_trace(),
+            "_total_ms": total_ms,
+        }
 
-        yield {"event": "status", "data": {"stage": "chatting"}}
-        t_llm = _time.perf_counter()
-        t_first = None
-        acc_tokens: list[str] = []
-
+    @staticmethod
+    def _add_diagnosis_comment_short(task_id: int, content: str) -> bool:
+        """简短回复写入 task_comments（用于 @AI 讨论/摘要）"""
+        from app.models.task import TaskComment
+        from app.core.database import SessionLocal
+        db = SessionLocal()
         try:
-            async for token in self._llm_client.stream(
-                prompt=prompt,
-                system_prompt=TASK_CHAT_SYSTEM_PROMPT,
-                max_tokens=1500,
-                temperature=0.5,
-            ):
-                acc_tokens.append(token)
-                if t_first is None:
-                    t_first = _time.perf_counter()
-                    yield {"event": "first_token", "data": {"ms": round((t_first - t_llm) * 1000)}}
-                yield {"event": "token", "data": token}
-            self._add_trace(self.NODE_LLM, "ok",
-                            input={"model": self._llm_client.model},
-                            output={"token_count": len(acc_tokens), "response_chars": sum(len(t) for t in acc_tokens)},
-                            elapsed_ms=round((_time.perf_counter() - t_llm) * 1000))
-        except Exception:
-            self._add_trace(self.NODE_LLM, "error",
-                            elapsed_ms=round((_time.perf_counter() - t_llm) * 1000))
-            yield {"event": "token", "data": "AI 服务暂时不可用，请稍后重试。"}
-
-        # 写入对话记忆
-        t_mem = _time.perf_counter()
-        full_response = "".join(acc_tokens)
-        if full_response:
-            try:
-                await self._memory.add_turn(session_id, "user", query)
-                await self._memory.add_turn(session_id, "assistant", full_response)
-                self._add_trace(self.NODE_MEMORY, "ok",
-                                elapsed_ms=round((_time.perf_counter() - t_mem) * 1000))
-            except Exception:
-                self._add_trace(self.NODE_MEMORY, "error",
-                                elapsed_ms=round((_time.perf_counter() - t_mem) * 1000))
-
-        total_ms = round((_time.perf_counter() - t0) * 1000)
-        yield {"event": "done", "data": {"total_ms": total_ms, "_trace": self._pop_trace()}}
+            comment = TaskComment(task_id=task_id, content=content,
+                                  created_by="AI任务助手", is_public=True)
+            db.add(comment)
+            db.commit()
+            return True
+        finally:
+            db.close()
 
     # ============================================================
-    # submit（方案确认 → Qdrant + 后端状态更新）
+    # summarize — 讨论摘要
+    # ============================================================
+
+    async def summarize(self, task_id: str) -> dict:
+        """检测讨论更新 → 生成摘要 → 写入 task_comments。"""
+        t0 = time.perf_counter()
+        self._pop_trace()
+        await self._ensure_clients()
+
+        ctx = await self._load_task_context(task_id)
+
+        # 1. 读近期评论（能力三）
+        from app.models.task import TaskComment
+        from app.core.database import SessionLocal
+        db = SessionLocal()
+        try:
+            comments = db.query(TaskComment).filter(
+                TaskComment.task_id == int(task_id),
+                TaskComment.created_by != "AI任务助手",
+            ).order_by(TaskComment.created_at.desc()).limit(30).all()
+
+            new_count = len(comments)
+            discussion_lines = []
+            for c in reversed(comments):
+                author = c.created_by or "?"
+                content_str = (c.content or "")[:200]
+                discussion_lines.append(f"[{author}] {content_str}")
+            discussion_history = "\n".join(discussion_lines)
+        finally:
+            db.close()
+
+        if new_count < 2:
+            self._add_trace(self.NODE_SUMMARIZE, "skipped",
+                            output={"reason": f"only {new_count} new comments"})
+            return {"task_id": task_id, "skipped": True, "reason": "不足2条新讨论"}
+
+        # 2. LLM
+        prompt = SUMMARIZE_USER_TEMPLATE.format(
+            title=ctx.title or "",
+            discussion_history=discussion_history,
+        )
+        t_llm = time.perf_counter()
+        summary = await self._llm_client.complete(
+            prompt=prompt, system_prompt=SUMMARIZE_SYSTEM_PROMPT,
+            max_tokens=300, temperature=0.3,
+        )
+        self._add_trace(self.NODE_LLM, "ok",
+                        output={"summary_chars": len(summary)},
+                        elapsed_ms=round((time.perf_counter() - t_llm) * 1000))
+
+        # 3. 写入 task_comments
+        self._add_diagnosis_comment_short(int(task_id), f"📝 讨论摘要\n\n{summary.strip()}")
+
+        total_ms = round((time.perf_counter() - t0) * 1000)
+        return {
+            "task_id": task_id,
+            "summary": summary.strip(),
+            "new_messages_count": new_count,
+            "_trace": self._pop_trace(),
+            "_total_ms": total_ms,
+        }
+
+    # ============================================================
+    # submit — 方案提交
     # ============================================================
 
     async def submit(
-        self, task_id: str, session_id: str, draft: SolutionDraft, resolution: str = "resolved"
+        self, task_id: str, session_id: str, draft, resolution: str = "resolved"
     ) -> dict:
-        """确认方案 → Qdrant 回写 + tickets 表状态更新。"""
+        """确认方案 → Qdrant 回写 + tasks 表状态更新。"""
         t0 = time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
         result = {"task_id": task_id, "solution_indexed": False, "ticket_updated": False}
 
-        solution_text = (
-            f"根因: {draft.root_cause_analysis}\n"
-            f"步骤: {'; '.join(draft.suggested_actions)}"
-        )
+        solution_text = f"根因: {getattr(draft, 'root_cause_analysis', '')}\n步骤: {'; '.join(getattr(draft, 'suggested_actions', []))}"
 
         # 1. Qdrant 回写
         t_qdrant = time.perf_counter()
@@ -423,80 +577,58 @@ class AiTaskAgent:
                             elapsed_ms=round((time.perf_counter() - t_qdrant) * 1000))
         except Exception as e:
             self._add_trace(self.NODE_SUBMIT + "_qdrant", "error",
-                            input={"error": str(e)}, elapsed_ms=round((time.perf_counter() - t_qdrant) * 1000))
+                            input={"error": str(e)},
+                            elapsed_ms=round((time.perf_counter() - t_qdrant) * 1000))
 
-        # 2. tickets 表更新
+        # 2. tasks 表更新
         t_db = time.perf_counter()
         try:
-            from app.models.ticket import Ticket
-            from app.core.database import SessionLocal
-            from sqlalchemy.sql import func
-            db = SessionLocal()
-            try:
-                ticket = db.query(Ticket).filter(Ticket.id == int(task_id)).first()
-                if ticket:
-                    ticket.status = resolution
-                    ticket.updated_at = func.now()
-                    diag = ticket.diagnosis or {}
-                    diag["solution"] = draft.model_dump()
-                    diag["resolved_by_agent"] = True
-                    ticket.diagnosis = diag
-                    db.commit()
-                    result["ticket_updated"] = True
-            finally:
-                db.close()
+            from ai.core.task_adapter import update_task_resolution
+            draft_dict = getattr(draft, 'model_dump', lambda: {})() if hasattr(draft, 'model_dump') else {}
+            ok = update_task_resolution(task_id, draft_dict, resolution)
+            result["ticket_updated"] = ok
             self._add_trace(self.NODE_SUBMIT + "_db", "ok",
                             elapsed_ms=round((time.perf_counter() - t_db) * 1000))
         except Exception as e:
             self._add_trace(self.NODE_SUBMIT + "_db", "error",
-                            input={"error": str(e)}, elapsed_ms=round((time.perf_counter() - t_db) * 1000))
+                            input={"error": str(e)},
+                            elapsed_ms=round((time.perf_counter() - t_db) * 1000))
 
         result["_trace"] = self._pop_trace()
         result["_total_ms"] = round((time.perf_counter() - t0) * 1000)
         return {"code": 0, "data": result}
 
-    # ============================================================
-    # 私有：上下文加载 — 直接从 tickets 表读取（AI 模块自有数据）
-    # ============================================================
-
     async def _load_task_context(self, task_id: str) -> TaskContext:
-        """从 tickets 表直接读取工单上下文。
+        """从 tasks 表读取工单上下文（source='ai' 任务）。
 
-        tickets 表包含 AI 模块的全部工单数据（title/description/type/priority
-        /diagnosis/robot_type/fault_code/attachments/...）。
-        不需要调后端 API。
+        AI 专属字段（diagnosis/robot_type/fault_code 等）存于 metadata_info。
+        priority 由适配层反向映射回中文，保持 LLM prompt 输入不变。
         """
         ctx = TaskContext(task_id=task_id)
 
         try:
-            from app.models.ticket import Ticket
-            from app.core.database import SessionLocal
-            db = SessionLocal()
-            try:
-                ticket = db.query(Ticket).filter(Ticket.id == int(task_id)).first()
-                if ticket:
-                    ctx.title = ticket.title or ""
-                    ctx.description = ticket.description or ""
-                    ctx.task_type = ticket.type or "problem"
-                    ctx.priority = ticket.priority or "中"
-                    ctx.status = ticket.status or "pending_dispatch"
-                    ctx.source = ticket.source or "ai_agent"
-                    ctx.attachments = ticket.attachments or []
-                    ctx.robot_type = ticket.robot_type or ""
-                    ctx.fault_code = ticket.fault_code or ""
-                    ctx.location = ticket.location or ""
+            from ai.core.task_adapter import load_task_context_dict
+            d = load_task_context_dict(task_id)
+            if d:
+                ctx.title = d.get("title", "")
+                ctx.description = d.get("description", "")
+                ctx.task_type = d.get("type", "problem") or "problem"
+                ctx.priority = d.get("priority", "中") or "中"
+                ctx.status = d.get("status", "pending") or "pending"
+                ctx.source = d.get("source", "ai") or "ai"
+                ctx.attachments = d.get("attachments") or []
+                ctx.robot_type = d.get("robot_type", "")
+                ctx.fault_code = d.get("fault_code", "")
+                ctx.location = d.get("location", "")
 
-                    # diagnosis JSON — 提单 Agent 的诊断结果（核心材料）
-                    diag = ticket.diagnosis or {}
-                    ctx.problem_summary = diag.get("problem_summary", "")
-                    ctx.hypotheses = diag.get("hypotheses") or []
-                    ctx.ruled_out = diag.get("ruled_out") or []
-                    ctx.collected_info = diag.get("collected_info") or {}
-                    ctx.diagnosis_rounds = diag.get("rounds", 0)
-            finally:
-                db.close()
+                # diagnosis JSON — 提单 Agent 的诊断结果（核心材料）
+                ctx.problem_summary = d.get("problem_summary", "")
+                ctx.hypotheses = d.get("hypotheses") or []
+                ctx.ruled_out = d.get("ruled_out") or []
+                ctx.collected_info = d.get("collected_info") or {}
+                ctx.diagnosis_rounds = d.get("diagnosis_rounds", 0)
         except Exception as e:
-            print(f"  [task-agent] Failed to load ticket {task_id}: {e}")
+            print(f"  [task-agent] Failed to load task {task_id}: {e}")
 
         return ctx
 
@@ -760,9 +892,69 @@ class AiTaskAgent:
         self, task_id: str, solution_text: str, draft: SolutionDraft
     ) -> None:
         """向量化方案 → 写入 Qdrant task_resolutions collection"""
-        # TODO: 等 ai/core/retrieval.py 新增 retrieve_task_resolutions() 后，
-        # 这里调用对应的 write/index 方法
-        print(f"  [task-agent] Solution indexed: {task_id} (placeholder)")
+        try:
+            from ai.core.task_adapter import load_task_context_dict
+            d = load_task_context_dict(task_id)
+            title = d.get("title", f"工单 #{task_id}") or f"工单 #{task_id}"
+            fault_code = d.get("fault_code", "")
+            robot_type = d.get("robot_type", "")
+            problem_summary = d.get("problem_summary", "")
+
+            await self._retriever.index_task_resolution(
+                task_id=task_id,
+                title=title,
+                root_cause=draft.root_cause_analysis,
+                solution_steps="；".join(draft.suggested_actions),
+                engineer_note=draft.references[0] if draft.references else "",
+                fault_code=fault_code,
+                robot_type=robot_type,
+                problem_summary=problem_summary,
+            )
+        except Exception as e:
+            print(f"  [task-agent] Solution index failed: {e}")
+
+    @staticmethod
+    def _add_diagnosis_comment(task_id: int, draft: "SolutionDraft", created_by: str = "AI任务助手") -> bool:
+        """将 AI 诊断结果写入 task_comments 表。
+
+        当前 created_by 固定为 \"AI任务助手\"。
+        TODO: 后续改为提单人的用户名（从工单 created_by 字段获取）。
+        """
+        from app.models.task import TaskComment
+        from app.core.db import SessionLocal
+        content_parts = [
+            f"## AI 诊断结果",
+            f"",
+            f"**根因分析**：{draft.root_cause_analysis}",
+            f"",
+            f"**建议步骤**：",
+        ]
+        for i, action in enumerate(draft.suggested_actions, 1):
+            content_parts.append(f"{i}. {action}")
+        if draft.references:
+            content_parts.append(f"")
+            content_parts.append(f"**参考来源**：")
+            for ref in draft.references:
+                content_parts.append(f"- {ref}")
+        content_parts.append(f"")
+        content_parts.append(f"置信度：{draft.confidence:.0%}")
+
+        db = SessionLocal()
+        try:
+            comment = TaskComment(
+                task_id=task_id,
+                content="\n".join(content_parts),
+                created_by=created_by,
+                is_public=True,
+            )
+            db.add(comment)
+            db.commit()
+            return True
+        except Exception as e:
+            print(f"  [task-agent] Diagnosis comment failed: {e}")
+            return False
+        finally:
+            db.close()
 
 
 # ============================================================

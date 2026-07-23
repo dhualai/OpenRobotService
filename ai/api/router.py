@@ -14,6 +14,10 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 from ai.core import get_llm_client, get_memory_manager
 from ai.config import get_ai_config
 from ai.agents.AiDiagnosisPlatform.pipeline import (
@@ -123,11 +127,18 @@ async def submit_ticket(
     body: QASubmitRequest,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
-    username, _ = _current_user(request)  # 记录创建人，供历史工单按角色过滤
-    result = await pipeline.submit(session_id=body.session_id, created_by=username)
-    if "code" not in result:
-        result["code"] = 0
-    return result
+    username, _ = _current_user(request)
+    # 本地测试 / 无 token 时用 debug 用户名
+    if not username and get_ai_config().debug_assign_to_admin:
+        username = "debug_test_user"
+    try:
+        result = await pipeline.submit(session_id=body.session_id, created_by=username)
+        if "code" not in result:
+            result["code"] = 0
+        return result
+    except Exception as e:
+        logger.error(f"转工单接口异常: session_id={body.session_id}, user={username}, error={e}", exc_info=True)
+        return {"code": 1, "message": f"工单生成失败: {str(e)}"}
 
 
 @qa_router.get("/ticket", summary="获取工单数据")
@@ -187,8 +198,16 @@ async def upload_files(
         state["attachments"] = existing + saved
         memory.metadata["agent_state"] = state
         await mgr.save_memory(memory)
-    except Exception:
-        pass
+
+        # 如果已有提交的工单，自动将附件追加到工单
+        last_ticket = state.get("last_submitted_ticket", {})
+        if last_ticket and last_ticket.get("ticket_id"):
+            pipeline = await get_pipeline()
+            ok = await pipeline._append_to_ticket(session_id, attachments=saved)
+            if ok:
+                logger.info(f"上传附件已追加到工单: session={session_id[:8]}, files={filenames}")
+    except Exception as e:
+        logger.warning(f"上传附件处理失败: {e}")
     return {"code": 0, "data": {"saved": len(saved), "files": saved}}
 
 
@@ -270,7 +289,7 @@ async def chat_stream(request: ChatRequest):
         chunks: list[str] = []
         try:
             prompt = await _build_prompt(request.session_id, request.query)
-            print(f"  [T]  [chat-stream] prompt={len(prompt)}chars  overhead={(time.perf_counter()-t0)*1000:.0f}ms")
+            logger.debug(f"[chat-stream] prompt={len(prompt)}chars  overhead={(time.perf_counter()-t0)*1000:.0f}ms")
             t_llm = time.perf_counter()
             async for token in llm.stream(
                 prompt=prompt,
@@ -280,7 +299,7 @@ async def chat_stream(request: ChatRequest):
             ):
                 if not first:
                     first = True
-                    print(f"  [T]  [chat-stream] llm_first_token={(time.perf_counter()-t_llm)*1000:.0f}ms")
+                    logger.debug(f"[chat-stream] llm_first_token={(time.perf_counter()-t_llm)*1000:.0f}ms")
                     yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
                 chunks.append(token)
                 yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
@@ -323,34 +342,44 @@ async def list_pending() -> dict:
 async def list_all_tickets(
     skip: int = Query(0, ge=0, description="跳过条数"),
     limit: int = Query(20, ge=1, le=200, description="返回条数"),
-    status: str = Query("", description="按状态筛选: pending / dispatched / in_progress / resolved / closed"),
+    status: str = Query("", description="按状态筛选: pending / in_progress / resolved / closed"),
     type_: str = Query("", alias="type", description="按类型筛选"),
 ) -> dict:
-    """查询 MySQL tickets 表，分页返回所有历史工单"""
+    """查询 tasks 表（source='ai'），分页返回所有历史工单"""
     try:
-        from ai.core.database import Ticket, SessionLocal
+        from ai.core.task_adapter import task_to_dict
+        from app.models.task import Task, TaskStatus, TaskType
+        from app.core.db import SessionLocal
         from sqlalchemy import desc
 
         db = SessionLocal()
         try:
-            q = db.query(Ticket)
+            q = db.query(Task).filter(Task.source == "ai")
+            # status/type 字符串 → 枚举；非法值（如旧值 dispatched）降级为不过滤
             if status:
-                q = q.filter(Ticket.status == status)
+                try:
+                    q = q.filter(Task.status == TaskStatus(status))
+                except ValueError:
+                    pass
             if type_:
-                q = q.filter(Ticket.type == type_)
+                try:
+                    q = q.filter(Task.task_type == TaskType(type_))
+                except ValueError:
+                    pass
             total = q.count()
-            rows = q.order_by(desc(Ticket.created_at)).offset(skip).limit(limit).all()
+            rows = q.order_by(desc(Task.created_at)).offset(skip).limit(limit).all()
             items = []
             for r in rows:
+                d = task_to_dict(r)
                 items.append({
-                    "id": r.id, "session_id": r.session_id, "ticket_ai_id": r.ticket_ai_id,
-                    "title": r.title, "description": r.description, "type": r.type,
-                    "priority": r.priority, "status": r.status, "contact": r.contact,
-                    "location": r.location, "robot_type": r.robot_type,
-                    "fault_code": r.fault_code, "severity": r.severity,
-                    "attachments": r.attachments, "diagnosis": r.diagnosis,
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
-                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                    "id": d["id"], "session_id": d["session_id"], "ticket_ai_id": d["ticket_ai_id"],
+                    "title": d["title"], "description": d["description"], "type": d["type"],
+                    "priority": d["priority"], "status": d["status"], "contact": d["contact"],
+                    "location": d["location"], "robot_type": d["robot_type"],
+                    "fault_code": d["fault_code"], "severity": d["severity"],
+                    "attachments": d["attachments"], "diagnosis": d["diagnosis"],
+                    "created_at": d["created_at"].isoformat() if d["created_at"] else None,
+                    "updated_at": d["updated_at"].isoformat() if d["updated_at"] else None,
                 })
             return {"code": 0, "data": {"total": total, "skip": skip, "limit": limit, "items": items}}
         finally:
@@ -380,76 +409,17 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
 
 
 # ============================================================
-# 智能派单 (prefix /api/ai)
-# ============================================================
-assigner_router = APIRouter(prefix="/api/ai", tags=["ai-assigner"])
-
-
-class RefereeRequest(BaseModel):
-    """派单请求"""
-    title: str
-    comments: List[str] = []
-    workload_map: Dict[str, int] = {}
-
-
-class RefereeResponse(BaseModel):
-    """派单响应"""
-    code: int
-    message: str = ""
-    data: Dict = {}
-
-
-@assigner_router.post("/ticketReferee", response_model=RefereeResponse)
-async def ticket_referee(req: RefereeRequest):
-    """智能派单接口（兼容后端现有调用方式）。"""
-    try:
-        description = "\n".join(filter(None, req.comments)) if req.comments else req.title
-        from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket
-        result = await assign_ticket(
-            title=req.title,
-            problem_description=description,
-        )
-        return RefereeResponse(
-            code=200,
-            data={
-                "name": result.engineer_name,
-                "id": result.engineer_id,
-                "confidence": result.confidence_score,
-                "decision_type": result.decision_type,
-                "reasoning": result.reasoning,
-            },
-        )
-    except Exception as e:
-        return RefereeResponse(
-            code=500,
-            message=f"AI派单失败: {str(e)}",
-            data={},
-        )
-
-
-@assigner_router.get("/ticketReferee/health")
-async def assigner_health_check():
-    """派单服务健康检查。"""
-    from ai.agents.AiDiagnosisPlatform.assigner import load_engineers
-    return {
-        "status": "ok",
-        "service": "ai-assigner",
-        "engineers_count": len(load_engineers()),
-    }
-
-
-# ============================================================
 # 任务 Agent (prefix /api/ai/task)
 # ============================================================
 task_agent_router = APIRouter(prefix="/api/ai/task", tags=["AI任务助手"])
 
 
 class TaskAnalyzeAPIRequest(BaseModel):
-    task_id: str = Field(default="", description="工单 ID（有 taskId 时走 analyze，空时走 chat）")
+    task_id: str = Field(default="", description="工单 ID（仅 analyze 需要）")
     session_id: str = Field(..., description="对话 session")
-    query: str = Field(default="", description="用户消息（有 taskId 时可选，无 taskId 时必有）")
-    task_title: str = Field(default="", description="工单标题（chat 模式可用）")
-    task_description: str = Field(default="", description="工单描述（chat 模式可用）")
+    query: str = Field(default="", description="用户消息")
+    username: str = Field(default="", description="当前用户名（chat 模式用于获取用户工单）")
+    token: str = Field(default="", description="用户 JWT token（用于调后端 API 鉴权）")
 
 
 class TaskListAPIRequest(BaseModel):
@@ -465,35 +435,37 @@ class TaskSubmitAPIRequest(BaseModel):
 
 @task_agent_router.post("/list", summary="列出当前用户待处理工单")
 async def task_list(body: TaskListAPIRequest) -> dict:
-    """列出分配给当前用户的工单（从 tickets 表查询）。
+    """列出当前用户的待处理任务（从 tasks 表查询，source='ai'）。
 
-    查询策略：按 assignee_id 匹配用户 ID，回退到 created_by 匹配。
+    查询策略：按 created_by 匹配用户名。
     status 过滤：默认排除 resolved/closed，只看待处理。
     """
     try:
-        from app.models.ticket import Ticket
-        from app.core.database import SessionLocal
+        from ai.core.task_adapter import task_to_dict
+        from app.models.task import Task, TaskStatus
+        from app.core.db import SessionLocal
         db = SessionLocal()
         tickets_list = []
         try:
-            q = db.query(Ticket).filter(
-                ~Ticket.status.in_(["resolved", "closed"])
+            q = db.query(Task).filter(
+                ~Task.status.in_([TaskStatus.RESOLVED, TaskStatus.CLOSED])
             )
             # 按用户名匹配创建者
             if body.username:
-                q = q.filter(Ticket.created_by == body.username)
+                q = q.filter(Task.created_by == body.username)
             q = q.order_by(
-                Ticket.priority.desc(), Ticket.created_at.desc()
+                Task.priority.desc(), Task.created_at.desc()
             ).limit(50)
             for t in q.all():
+                d = task_to_dict(t)
                 tickets_list.append({
                     "task_id": str(t.id),
-                    "title": t.title or "",
-                    "description": (t.description or "")[:100],
-                    "priority": t.priority or "中",
-                    "status": t.status or "pending_dispatch",
-                    "type": t.type or "problem",
-                    "robot_type": t.robot_type or "",
+                    "title": d["title"],
+                    "description": (d["description"] or "")[:100],
+                    "priority": d["priority"],
+                    "status": d["status"],
+                    "type": d["type"],
+                    "robot_type": d["robot_type"],
                     "created_at": t.created_at.isoformat() if t.created_at else "",
                     "has_attachments": bool(t.attachments),
                 })
@@ -588,12 +560,15 @@ async def task_submit(request: Request, body: TaskSubmitAPIRequest) -> dict:
 
 @task_agent_router.post("/chat", summary="自由问答（非流式）")
 async def task_chat(body: TaskAnalyzeAPIRequest) -> dict:
-    """自由问答：工程师可以问任何 AGV/AMR 技术问题"""
+    """v2.0 自由问答：感知用户所有工单 + 诊断状态"""
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
         response = await agent.chat(
-            session_id=body.session_id, query=getattr(body, 'query', ''),
+            session_id=body.session_id,
+            query=getattr(body, 'query', ''),
+            username=getattr(body, 'username', '') or "",
+            token=getattr(body, 'token', '') or "",
         )
         return {"code": 0, "data": {"reply": response}, "_trace": agent._pop_trace()}
     except Exception as e:
@@ -613,9 +588,8 @@ async def task_chat_stream(body: TaskAnalyzeAPIRequest):
             async for event in agent.chat_stream(
                 session_id=body.session_id,
                 query=getattr(body, 'query', ''),
-                task_id=getattr(body, 'task_id', '') or '',
-                task_title=getattr(body, 'task_title', '') or '',
-                task_description=getattr(body, 'task_description', '') or '',
+                username=getattr(body, 'username', '') or "",
+                token=getattr(body, 'token', '') or "",
             ):
                 ev_type = event["event"]
                 if ev_type == "token":

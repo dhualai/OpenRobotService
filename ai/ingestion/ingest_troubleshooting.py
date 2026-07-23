@@ -18,6 +18,7 @@
 import sys
 import json
 import hashlib
+import re
 import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -308,8 +309,9 @@ async def _cleanup_old_troubleshooting_collections(keep: int = 1):
         print(f"[ERR] 获取集合列表失败: {e}")
         return
 
+    prefix_pat = re.compile(rf"^{TROUBLESHOOTING_COLLECTION_PREFIX}_\d")
     our = sorted(
-        [c for c in collections if c.startswith(TROUBLESHOOTING_COLLECTION_PREFIX)],
+        [c for c in collections if prefix_pat.match(c)],
         reverse=True,
     )
     print(f"[CLEANUP] 找到 {len(our)} 个排查树集合，保留最新 {keep} 个")

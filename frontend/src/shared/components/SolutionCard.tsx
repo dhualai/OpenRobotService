@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Textarea, Button, Tag, Toast } from 'tdesign-mobile-react';
 interface SolutionDraft {
+  _task_id?: string;
   root_cause_analysis: string;
   suggested_actions: string[];
   references: string[];

@@ -21,11 +21,16 @@
             ...
 """
 import hashlib
+import re
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Generic, TypeVar, Callable
+
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root) not in sys.path:
@@ -108,6 +113,40 @@ class BaseIngester(ABC, Generic[T]):
                 self._log(f"[WARN] 源文件不存在: {p}")
             return False
         return True
+
+    def _get_source_fingerprint(self) -> str:
+        """基于源文件路径 + mtime 生成指纹，用于判断文件是否变更"""
+        import hashlib
+        h = hashlib.md5()
+        for p in sorted(self.source_paths, key=lambda x: str(x)):
+            h.update(str(p).encode())
+            if p.exists():
+                h.update(str(p.stat().st_mtime).encode())
+        return h.hexdigest()
+
+    def _get_ingest_state_path(self) -> Path:
+        """入库状态文件路径"""
+        from ai.config import _KB_DIR
+        state_dir = _KB_DIR / ".ingest_state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        return state_dir / f"{self.collection_prefix}.json"
+
+    def _load_ingest_state(self) -> dict:
+        """加载上次入库状态"""
+        import json
+        p = self._get_ingest_state_path()
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {}
+
+    def _save_ingest_state(self, state: dict) -> None:
+        """保存入库状态"""
+        import json
+        p = self._get_ingest_state_path()
+        p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # ================================================================
     # 通用入库流程（子类不需要覆盖）
@@ -212,10 +251,20 @@ class BaseIngester(ABC, Generic[T]):
             self._log(f"[SKIP] {label}: 源文件缺失，跳过")
             return False
 
+        # 追加模式：源文件无变更则跳过，避免每次启动都重复入库
+        if not self.rebuild:
+            fp = self._get_source_fingerprint()
+            prev = self._load_ingest_state()
+            if prev.get("fingerprint") == fp and self.pointer_reader():
+                logger.info(f"知识库 {label} 源文件未变更，跳过（集合: {self.pointer_reader()}）")
+                return False  # False = 未做任何操作
+            logger.info(f"知识库 {label} 源文件有变更，开始追加入库...")
+
         # 1. 解析
         try:
             entries = self.parse()
         except Exception as e:
+            logger.error(f"入库解析失败: {label}, error={e}", exc_info=True)
             self._log(f"[ERR] {label}: 解析步骤失败 — {e}")
             import traceback
             traceback.print_exc()
@@ -230,6 +279,7 @@ class BaseIngester(ABC, Generic[T]):
         try:
             chunks = [self.to_chunk(e) for e in entries]
         except Exception as e:
+            logger.error(f"入库 chunk 构建失败: {label}, error={e}", exc_info=True)
             self._log(f"[ERR] {label}: 构建 chunk 失败 — {e}")
             import traceback
             traceback.print_exc()
@@ -252,9 +302,8 @@ class BaseIngester(ABC, Generic[T]):
         try:
             result = await self.embed_and_upsert(chunks, collection_name, client=client)
         except Exception as e:
+            logger.error(f"入库 embed/upsert 失败: {label}, error={e}", exc_info=True)
             self._log(f"[ERR] {label}: embed/upsert 失败 — {e}")
-            import traceback
-            traceback.print_exc()
             if _own_client:
                 try:
                     client.close()
@@ -262,6 +311,7 @@ class BaseIngester(ABC, Generic[T]):
                     pass
             return False
         if result.get("status") != "ok":
+            logger.error(f"入库结果异常: {label}, result={result}")
             self._log(f"[ERR] {label} 入库失败: {result}")
             if _own_client:
                 try:
@@ -285,6 +335,13 @@ class BaseIngester(ABC, Generic[T]):
             except Exception:
                 pass
 
+        # 7. 记录入库状态，下次启动跳过无变更文件
+        self._save_ingest_state({
+            "fingerprint": self._get_source_fingerprint(),
+            "collection": collection_name,
+            "label": label,
+        })
+
         self._log(f"[OK] {label} 入库完成: {collection_name}")
         return True
 
@@ -302,6 +359,7 @@ class BaseIngester(ABC, Generic[T]):
         try:
             all_cols = [c.name for c in client.get_collections().collections]
         except Exception as e:
+            logger.error(f"获取 Qdrant 集合列表失败: {e}", exc_info=True)
             self._log(f"[ERR] 获取集合列表失败: {e}")
             if _own_client:
                 try:
@@ -310,9 +368,11 @@ class BaseIngester(ABC, Generic[T]):
                     pass
             return
 
-        # 只匹配同前缀且不同后缀的集合：cheduan_YYYYMMDD 不等于 cheduan_manual_YYYYMMDD
+        # 只匹配同前缀 + 时间戳后缀的集合：cheduan_YYYYMMDD 不等于 cheduan_manual_YYYYMMDD
+        # 用正则确保 prefix_ 之后紧跟数字，避免 cheduan 误匹配 cheduan_manual
+        prefix_pat = re.compile(rf"^{re.escape(self.collection_prefix)}_\d")
         ours = sorted(
-            [c for c in all_cols if c.startswith(self.collection_prefix + "_")],
+            [c for c in all_cols if prefix_pat.match(c)],
             reverse=True,
         )
         self._log(f"[CLEANUP] {self.collection_prefix}: 找到 {len(ours)} 个集合，保留最新 {keep} 个")
