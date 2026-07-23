@@ -13,6 +13,7 @@ const STORAGE_KEYS = {
 export interface AuthState {
   isLoggedIn: boolean;
   username: string;
+  name: string;
   token: string | null;
   isLoading: boolean;
   isAdmin: boolean;
@@ -28,6 +29,7 @@ export interface AuthState {
 export const useAuthStore = create<AuthState>((set, get) => ({
   isLoggedIn: false,
   username: '',
+  name: '',
   token: null,
   isLoading: true,
   isAdmin: false,
@@ -95,12 +97,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const request = createRequest(API_CONFIG.ADMIN.BASE_URL, '用户中心');
     try {
       setApiToken(authToken);
-      const userData = await request<{ roles?: { project_backend?: string[] } }>(
+      const userData = await request<{ roles?: { project_backend?: string[] }, name?: string }>(
         `/users/${user}/detail`
       );
       const projectRoles = userData.roles?.project_backend || [];
       const hasAdminRole = projectRoles.includes('admin');
-      set({ roles: (userData.roles as Record<string, string[]>) || null, isAdmin: hasAdminRole });
+      set({ 
+        roles: (userData.roles as Record<string, string[]>) || null, 
+        isAdmin: hasAdminRole,
+        name: userData.name || ''
+      });
       return hasAdminRole;
     } catch {
       set({ isAdmin: false });
