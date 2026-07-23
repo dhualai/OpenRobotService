@@ -88,6 +88,9 @@ class AnalysisConfig:
     provider: LLMProvider
     provider_config: ProviderConfig
     settings: LLMSettings = field(default_factory=LLMSettings)
+    # AI 服务的 HTTP 地址（ai/api/router.py 暴露的统一对话接口）
+    # 本模块不再直连在线大模型，而是调用该服务
+    api_base_url: str = "http://localhost:8401"
 
     @classmethod
     def from_env(cls) -> "AnalysisConfig":
@@ -125,12 +128,16 @@ class AnalysisConfig:
             timeout=int(os.getenv("LLM_TIMEOUT", "120")),
         )
 
+        # AI 服务地址：本模块通过 HTTP 调用其 /api/ai/chat 接口
+        api_base_url = os.getenv("AI_API_BASE_URL", "http://localhost:8401")
+
         return cls(
             provider=provider,
             provider_config=ProviderConfig(
                 api_key=api_key, base_url=base_url, model=model
             ),
             settings=settings,
+            api_base_url=api_base_url,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -139,6 +146,7 @@ class AnalysisConfig:
             "provider": self.provider.value,
             "model": self.provider_config.model,
             "base_url": self.provider_config.base_url,
+            "api_base_url": self.api_base_url,
             "temperature": self.settings.temperature,
             "max_tokens": self.settings.max_tokens,
             "timeout": self.settings.timeout,

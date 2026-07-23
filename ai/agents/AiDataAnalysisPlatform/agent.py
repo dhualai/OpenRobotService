@@ -143,11 +143,14 @@ class DataAnalysisAgent:
     # ── 健康检查 ────────────────────────────────────────────
 
     def health_check(self) -> HealthResponse:
-        """返回平台配置信息（不实际调用 API）。"""
+        """返回平台配置信息（不实际调用 API）。
+
+        base_url 为实际调用的 AI 服务地址（``/api/ai/chat`` 所在服务）。
+        """
         return HealthResponse(
             provider=self._config.provider.value,
             model=self._config.provider_config.model,
-            base_url=self._config.provider_config.base_url,
+            base_url=self._config.api_base_url,
         )
 
     # ── 属性 ────────────────────────────────────────────────
