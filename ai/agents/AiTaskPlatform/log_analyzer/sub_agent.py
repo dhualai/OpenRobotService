@@ -28,8 +28,17 @@ from ai.agents.AiTaskPlatform.log_analyzer.indexer import (
 )
 
 # ── 日志说明手册加载 ──────────────────────────────────────────────
-
-_DOCS_DIR = Path(__file__).parent / "log_manual"
+# 优先从 DOCS_PATH（.env）读取，确保部署时本地文件不丢失；
+# 本地开发时 DOCS_PATH 未设置或无效则回退到代码目录下的 log_manual/。
+_ai_config = get_ai_config()
+if _ai_config.docs_path:
+    _candidate = Path(_ai_config.docs_path) / "task_agent"
+    if _candidate.is_dir():
+        _DOCS_DIR = _candidate
+    else:
+        _DOCS_DIR = Path(__file__).parent / "log_manual"
+else:
+    _DOCS_DIR = Path(__file__).parent / "log_manual"
 
 
 def _load_log_docs() -> str:
