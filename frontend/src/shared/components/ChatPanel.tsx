@@ -514,7 +514,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const res = await qaSubmit(sessionId);
       if (res?.code === 0) {
         refreshTasks(); // 触发下方「历史工单」重新拉取 AI 待派单列表
-        Toast({ message: '工单已生成，可在下方历史工单查看', theme: 'success' });
+        Toast({ message: '工单已生成，可在右上角历史工单查看', theme: 'success' });
       } else {
         Toast({ message: (res as { message?: string })?.message || '生成工单失败', theme: 'error' });
       }
