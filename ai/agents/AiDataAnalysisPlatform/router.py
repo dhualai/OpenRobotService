@@ -24,6 +24,8 @@ from .schemas import (
     HealthResponse,
     QuickChatRequest,
 )
+from .report_schemas import ReportRequest, ReportResult, ReportPeriod
+from .report_generator import ReportGenerator, _parse_date
 
 logger = logging.getLogger(__name__)
 
@@ -144,3 +146,76 @@ async def list_analysis_types():
             {"value": s.value, "label": s.name} for s in DataSource
         ],
     }
+
+
+# -- 报告生成 -------------------------------------------------------
+
+
+@router.post("/report/generate", summary="生成日报/周报")
+async def generate_report_api(request: ReportRequest):
+    """生成日报或周报。
+
+    - 非流式（stream=false）：返回结构化 ReportResult。
+    - 流式（stream=true）：返回 SSE 文本流。
+    """
+    agent = get_agent()
+    llm_client = agent._llm
+    generator = ReportGenerator(llm_client)
+    target_date = _parse_date(request.date)
+
+    if request.stream:
+        async def stream_generator():
+            try:
+                async for chunk in generator.generate_stream(
+                    period=request.period,
+                    target_date=target_date,
+                    project_code=request.project_code,
+                ):
+                    payload = json.dumps(
+                        {"content": chunk}, ensure_ascii=False
+                    )
+                    yield "data: " + payload + _SSE_NEWLINE
+                yield "data: [DONE]" + _SSE_NEWLINE
+            except Exception as exc:
+                logger.exception("流式报告生成出错")
+                err_payload = json.dumps(
+                    {"error": str(exc)}, ensure_ascii=False
+                )
+                yield "data: " + err_payload + _SSE_NEWLINE
+
+        return StreamingResponse(
+            stream_generator(),
+            media_type="text/event-stream",
+        )
+
+    try:
+        result = await generator.generate(
+            period=request.period,
+            target_date=target_date,
+            project_code=request.project_code,
+        )
+        return {"code": 0, "data": result.model_dump()}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("报告生成失败")
+        raise HTTPException(status_code=500, detail="报告生成服务内部错误") from exc
+
+
+@router.get("/report/health", summary="报告服务健康检查")
+async def report_health():
+    """检查报告生成服务是否可用。"""
+    try:
+        agent = get_agent()
+        health = agent.health_check()
+        return {
+            "code": 0,
+            "data": {
+                "status": "ok",
+                "service": "report-generator",
+                "provider": health.provider,
+                "model": health.model,
+            },
+        }
+    except Exception as exc:
+        return {"code": 1, "data": {"status": "error", "error": str(exc)}}

@@ -195,6 +195,10 @@ app.include_router(chat_router)
 app.include_router(memory_router)
 app.include_router(task_agent_router)
 
+# ── 挂载 AiDataAnalysisPlatform 路由（数据分析）──────────────
+from ai.agents.AiDataAnalysisPlatform.router import router as analysis_router
+app.include_router(analysis_router, prefix="/api/ai/analysis", tags=["AI数据分析"])
+
 # ── 静态资源（知识库图片等）───────────────────────────────────
 from ai.config import get_docs_dir, get_ai_config
 _ai_cfg = get_ai_config()

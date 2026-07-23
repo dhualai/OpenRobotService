@@ -20,8 +20,6 @@ interface SpeechRecognitionLike {
   lang: string;
   continuous: boolean;
   interimResults: boolean;
-  onsoundstart: (() => void) | null;
-  onsoundend: (() => void) | null;
   onresult: ((e: SpeechRecognitionResultEvent) => void) | null;
   onerror: (() => void) | null;
   onend: (() => void) | null;
@@ -83,18 +81,24 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const [isRecording, setIsRecording] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
   const [voiceWillCancel, setVoiceWillCancel] = useState(false);
-  const [voiceHasSound, setVoiceHasSound] = useState(false);
   const voiceStartYRef = useRef<number>(0);
   const voiceCancelRef = useRef(false);
   const voiceWillCancelRef = useRef(false);
   const voiceSessionRef = useRef(0);       // 递增，防止延迟的 onend 误修改状态
   const voiceHoldingRef = useRef(false);  // 用户是否正在按住语音按钮
-  const finishRecRef = useRef<(() => void) | null>(null); // 松手清理函数，供 button onMouseUp/onTouchEnd 调用
   const voiceBtnRef = useRef<HTMLButtonElement>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  // 语音 tap/hold 双模式 + 真实音量可视化
+  const voiceInteractionModeRef = useRef<'tap' | 'hold' | null>(null);
+  const longPressTimerRef = useRef<number | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const voiceRafRef = useRef<number | null>(null);
+  const [voiceLevels, setVoiceLevels] = useState<number[]>([0, 0, 0, 0, 0]);
   const convRef = useRef<number | null>(null); // 当前 DB 会话 id，跨 send 复用
 
   const scrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); };
@@ -296,101 +300,202 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
   // voiceWillCancelRef 在 handleMove 中直接同步写入，不再通过 useEffect 异步同步
 
-  // 语音模式下全局监听 move/end，基于 voiceMode 而非 isRecording，确保录制结束后松手仍可触发 finishRecording
+  // hold 模式：手指上滑 >60px 标记取消（pointermove 统一 touch/mouse，无合成事件）
   useEffect(() => {
     if (!voiceMode) return;
-
-    const handleMove = (e: MouseEvent | TouchEvent) => {
-      const currentY = 'touches' in e
-        ? (e as TouchEvent).touches[0]?.clientY ?? 0
-        : (e as MouseEvent).clientY;
-      const deltaY = voiceStartYRef.current - currentY; // 正值 = 上移
+    const handleMove = (e: PointerEvent) => {
+      if (voiceInteractionModeRef.current !== 'hold') return; // 仅 hold 检测上滑取消
+      const deltaY = voiceStartYRef.current - e.clientY; // 正值 = 上移
       const willCancel = deltaY > 60;
-      voiceWillCancelRef.current = willCancel; // 同步写 ref，确保 handleEnd/touchend 读到最新值
+      voiceWillCancelRef.current = willCancel;
       setVoiceWillCancel(willCancel);
     };
-
-    // 松手清理：同时被文档 mouseup/touchend 和按钮 onMouseUp/onTouchEnd 调用，靠 voiceHoldingRef 防重
-    const finishRecording = () => {
-      if (!voiceHoldingRef.current) return; // 已执行过则忽略
-      voiceHoldingRef.current = false;
-      if (voiceWillCancelRef.current) {
-        voiceCancelRef.current = true; // 标记取消，阻止 onresult 写入
-      }
-      voiceSessionRef.current++;       // 递增，使任何延迟的 onend 失效
-      recognitionRef.current?.stop();
-      recognitionRef.current = null;
-      setIsRecording(false);
-      if (!voiceWillCancelRef.current) setVoiceMode(false); // 非取消时回到文本模式
-      setVoiceWillCancel(false);
-      setVoiceHasSound(false);
-    };
-
-    finishRecRef.current = finishRecording; // 供按钮 onMouseUp/onTouchEnd 直接调用
-
-    document.addEventListener('mousemove', handleMove);
-    document.addEventListener('touchmove', handleMove, { passive: true });
-    document.addEventListener('mouseup', finishRecording);
-    document.addEventListener('touchend', finishRecording);
-
-    return () => {
-      finishRecRef.current = null;
-      document.removeEventListener('mousemove', handleMove);
-      document.removeEventListener('touchmove', handleMove);
-      document.removeEventListener('mouseup', finishRecording);
-      document.removeEventListener('touchend', finishRecording);
-    };
+    document.addEventListener('pointermove', handleMove);
+    return () => document.removeEventListener('pointermove', handleMove);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceMode]);
 
-  const startVoiceRecording = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!SR) { Toast({ message: '当前浏览器不支持语音输入', theme: 'warning' }); return; }
-    // 防止 touch 同时合成 mouse 事件导致双开识别实例互相干扰
-    if (voiceHoldingRef.current || recognitionRef.current) return;
-    e.preventDefault(); // 阻止 touch 后合成 mouse 事件
-
-    voiceHoldingRef.current = true;
-    const sessionId = ++voiceSessionRef.current; // 递增，用于 onend 校验
-    voiceStartYRef.current = 'touches' in e ? (e.touches[0]?.clientY || 0) : e.clientY;
-    voiceCancelRef.current = false;
-    setVoiceWillCancel(false);
-    setVoiceHasSound(false);
-
-    const rec = new SR();
+  // 创建 SpeechRecognition 实例：onend 时若仍在录音则自动重启，支持"一直长按说话"
+  const createRecognition = (sessionId: number): SpeechRecognitionLike => {
+    const rec = new SR!();
     rec.lang = 'zh-CN';
     rec.continuous = true;       // 持续识别，不因用户停顿而自动停止
     rec.interimResults = false;  // 仅返回最终识别结果
-    rec.onsoundstart = () => setVoiceHasSound(true);
-    rec.onsoundend = () => setVoiceHasSound(false);
     rec.onresult = (ev: SpeechRecognitionResultEvent) => {
       if (voiceCancelRef.current) return; // 上移取消，丢弃结果
-      // continuous 模式下从 resultIndex 开始遍历，取最新识别结果
       let latest = '';
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         latest = ev.results[i][0].transcript;
       }
-      if (latest) {
-        setInput((prev) => (prev ? `${prev} ${latest}` : latest));
-      }
+      if (latest) setInput((prev) => (prev ? `${prev} ${latest}` : latest));
     };
     rec.onerror = () => {
-      // 非当前 session 的延迟回调直接跳过，防止旧实例误操作新状态
-      if (voiceSessionRef.current !== sessionId) return;
+      if (voiceSessionRef.current !== sessionId) return; // 旧 session 忽略
       voiceSessionRef.current++;       // 递增，防止后续 onend 再处理
       voiceHoldingRef.current = false;
-      recognitionRef.current = null;
+      voiceInteractionModeRef.current = null;
+      stopRecognition();
+      stopAudioMonitor();
       setIsRecording(false);
-      setVoiceHasSound(false);
       setVoiceMode(false);
     };
     rec.onend = () => {
-      // 非当前 session 的延迟回调直接跳过（finishRecording/onerror 已先递增 session）
-      if (voiceSessionRef.current !== sessionId) return;
-      recognitionRef.current = null;   // 确认是当前 session 再清引用
-      setIsRecording(false);
+      if (voiceSessionRef.current !== sessionId) return; // 旧 session 忽略
+      // 仍在 hold 或 tap 录音 → 自动重启 SR（浏览器无声超时 onend 后续上，保证一直长按）
+      if (voiceHoldingRef.current || voiceInteractionModeRef.current === 'tap') {
+        try {
+          const next = createRecognition(sessionId);
+          recognitionRef.current = next;
+          next.start();
+        } catch { /* 重启失败则按停止处理 */ }
+      } else {
+        recognitionRef.current = null;
+      }
     };
-    rec.start();
-    recognitionRef.current = rec;
-    setIsRecording(true);
+    return rec;
+  };
+
+  const startRecognition = () => {
+    try {
+      const rec = createRecognition(++voiceSessionRef.current);
+      rec.start();
+      recognitionRef.current = rec;
+      setIsRecording(true);
+    } catch { /* */ }
+  };
+
+  const stopRecognition = () => {
+    voiceSessionRef.current++; // 使延迟的 onend/onerror 失效
+    try { recognitionRef.current?.stop(); } catch { /* */ }
+    recognitionRef.current = null;
+  };
+
+  // 真实音量可视化：getUserMedia → AudioContext → AnalyserNode → raf 驱动一排圆点
+  const startAudioMonitor = async () => {
+    try {
+      // 复用 onVoiceBtnDown 在 pointerdown 手势内预创建的 AudioContext（手机端必需）
+      const ctx = audioContextRef.current ?? new AudioContext();
+      if (ctx.state === 'suspended') await ctx.resume(); // 必须 running，否则 graph 不渲染
+      audioContextRef.current = ctx;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 64;
+      const src = ctx.createMediaStreamSource(stream);
+      src.connect(analyser);
+      // 关键：analyser 必须连到 destination 才能驱动 graph 渲染，否则 getByteFrequencyData 恒为 0；
+      // 中间插一个静音 gain，避免把麦克风声音回放出来（啸叫）
+      const mute = ctx.createGain();
+      mute.gain.value = 0;
+      analyser.connect(mute);
+      mute.connect(ctx.destination);
+      analyserRef.current = analyser;
+      const bins = new Uint8Array(analyser.frequencyBinCount);
+      const tick = () => {
+        const an = analyserRef.current;
+        if (!an) return;
+        an.getByteFrequencyData(bins);
+        // 取 5 个频段（人声低-中频区）归一化到 0~1
+        setVoiceLevels([2, 4, 6, 8, 10].map((idx) => (bins[idx] || 0) / 255));
+        voiceRafRef.current = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch {
+      // 麦克风权限/不支持：不影响 SR 识别，圆点保持静止
+      setVoiceLevels([0, 0, 0, 0, 0]);
+    }
+  };
+
+  const stopAudioMonitor = () => {
+    if (voiceRafRef.current) { cancelAnimationFrame(voiceRafRef.current); voiceRafRef.current = null; }
+    micStreamRef.current?.getTracks().forEach((t) => t.stop());
+    micStreamRef.current = null;
+    audioContextRef.current?.close().catch(() => {});
+    audioContextRef.current = null;
+    analyserRef.current = null;
+    setVoiceLevels([0, 0, 0, 0, 0]);
+  };
+
+  // tap 模式：再次轻触停止（留在语音模式，可继续轻触或切键盘）
+  const stopTapRecording = () => {
+    voiceInteractionModeRef.current = null;
+    stopRecognition();
+    stopAudioMonitor();
+    setIsRecording(false);
+  };
+
+  // 按钮按下：tap/hold 入口（300ms 计时区分）。用 PointerEvent 统一 touch/mouse，无合成事件干扰，不需 preventDefault
+  const onVoiceBtnDown = (e: React.PointerEvent) => {
+    if (!SR) { Toast({ message: '当前浏览器不支持语音输入', theme: 'warning' }); return; }
+    // tap 录音中 → 再次轻触停止
+    if (voiceInteractionModeRef.current === 'tap' && recognitionRef.current) {
+      stopTapRecording();
+      return;
+    }
+    if (voiceHoldingRef.current || recognitionRef.current || longPressTimerRef.current) return;
+    // 预创建并 resume AudioContext：必须在 pointerdown 用户手势同步段内，iOS/Android 手机端才允许；
+    // 后续 setTimeout(hold)/pointerup(tap) 里再创建会被手势策略拒绝，导致 AnalyserNode 拿不到数据
+    if (!audioContextRef.current) {
+      try {
+        const ctx = new AudioContext();
+        if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+        audioContextRef.current = ctx;
+      } catch { /* */ }
+    }
+    voiceStartYRef.current = e.clientY;
+    voiceCancelRef.current = false;
+    setVoiceWillCancel(false);
+    // 300ms 长按计时：超时 → hold 开始录音
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTimerRef.current = null;
+      voiceHoldingRef.current = true;
+      voiceInteractionModeRef.current = 'hold';
+      startRecognition();
+      startAudioMonitor();
+    }, 300);
+  };
+
+  // hold 模式松手：停止录音（含上滑取消判定）
+  const finishRecording = () => {
+    if (voiceInteractionModeRef.current !== 'hold' || !voiceHoldingRef.current) return;
+    voiceHoldingRef.current = false;
+    if (voiceWillCancelRef.current) voiceCancelRef.current = true; // 上移取消，丢弃结果
+    voiceSessionRef.current++;       // 递增，使任何延迟的 onend 失效
+    stopRecognition();
+    stopAudioMonitor();
+    voiceInteractionModeRef.current = null;
+    setIsRecording(false);
+    if (!voiceWillCancelRef.current) setVoiceMode(false); // 非取消时回到文本模式
+    setVoiceWillCancel(false);
+  };
+
+  // 按钮松手：hold → 停；300ms 内松手 → tap 开始
+  const onVoiceBtnUp = () => {
+    if (voiceHoldingRef.current) {
+      finishRecording(); // hold 模式松手停
+      return;
+    }
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+      if (!recognitionRef.current) {
+        voiceInteractionModeRef.current = 'tap';
+        startRecognition();
+        startAudioMonitor();
+      }
+    }
+  };
+
+  // 键盘按钮：退出语音模式 + 停止任何进行中的录音/计时
+  const exitVoiceMode = () => {
+    if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null; }
+    voiceHoldingRef.current = false;
+    voiceInteractionModeRef.current = null;
+    stopRecognition();
+    stopAudioMonitor();
+    setIsRecording(false);
+    setVoiceWillCancel(false);
+    setVoiceMode(false);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -549,7 +654,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         )}
         {voiceMode ? (
           <div className="chat-input-bar__voice-row">
-            <button className="chat-input-btn" onClick={() => setVoiceMode(false)} title="键盘输入" aria-label="键盘输入">
+            <button className="chat-input-btn" onClick={exitVoiceMode} title="键盘输入" aria-label="键盘输入">
               <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="2" y="5" width="20" height="14" rx="2" />
                 <line x1="6" y1="9" x2="6" y2="9" strokeWidth="2" strokeLinecap="round" />
@@ -562,20 +667,18 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             <button
               ref={voiceBtnRef}
               className={`chat-voice-hold-btn${isRecording ? ' is-recording' : ''}${voiceWillCancel ? ' is-cancelling' : ''}`}
-              onMouseDown={startVoiceRecording}
-              onTouchStart={startVoiceRecording}
-              onMouseUp={() => finishRecRef.current?.()}
-              onTouchEnd={() => finishRecRef.current?.()}
+              onPointerDown={onVoiceBtnDown}
+              onPointerUp={onVoiceBtnUp}
             >
               {isRecording ? (
                 voiceWillCancel ? '松开 取消' : (
-                  <span className={`voice-wave-dots${voiceHasSound ? ' has-sound' : ''}`}>
-                    <span className="voice-dot" />
-                    <span className="voice-dot" />
-                    <span className="voice-dot" />
+                  <span className="voice-wave-dots">
+                    {voiceLevels.map((lv, i) => (
+                      <span key={i} className="voice-dot" style={{ height: `${5 + lv * 15}px`, opacity: 0.4 + lv * 0.6 }} />
+                    ))}
                   </span>
                 )
-              ) : '按住 说话'}
+              ) : '轻触或按住 说话'}
             </button>
             <button className="chat-input-btn" onClick={() => fileInputRef.current?.click()} title="上传" aria-label="上传文件或拍照">
               <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
