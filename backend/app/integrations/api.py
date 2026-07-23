@@ -1,15 +1,17 @@
 """外部任务源通用路由（INTEGRATION_DESIGN.md §8）。
 
 挂 /api/tasks/sources，独立 ``X-API-Key`` 鉴权（与用户 JWT 分离，供 Airflow / 手动触发）。
-按 source 名分发到对应 adapter，不随源增删而改动。
-"""
+按 source 名分发到对应 adapter，不随源增删而改动。"""
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Dict, Any
 
 from app.core.config import settings
 from app.core.database import get_async_db
 from app.integrations.engine import SyncEngine
 from app.integrations.registry import registry
+from app.integrations.sources.wecom.adapter import wecom_project_adapter
+from app.modules.admin.api.auth import get_current_active_user_from_token
 
 router = APIRouter(prefix="/tasks/sources", tags=["integrations"])
 
@@ -43,3 +45,18 @@ async def sync_source(
     engine = SyncEngine(db)
     result = await engine.sync_source(source)
     return {"code": 200, "message": "ok", "data": result.to_dict()}
+
+
+@router.post("/wecom/projects/sync")
+async def sync_wecom_projects(current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)):
+    """同步企业微信项目数据到数据库。
+    
+    调用 AI 服务的 /api/ai/wecom/projects 接口获取项目数据，
+    解析并存储到 project 表中。
+    """
+    result = await wecom_project_adapter.sync_projects()
+    return {
+        "code": 200,
+        "message": "同步完成",
+        "data": result,
+    }
