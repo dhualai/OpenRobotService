@@ -63,3 +63,6 @@ old/
 
 # =====ai向量库====
 /ai/docs/
+
+# =====生产同步的媒体文件（operation_doc 图片等），不入库====
+/docs/operation_doc/
