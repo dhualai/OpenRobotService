@@ -611,3 +611,72 @@ async def task_chat_stream(body: TaskAnalyzeAPIRequest):
 @task_agent_router.get("/health", summary="健康检查")
 async def task_agent_health() -> dict:
     return {"status": "ok", "service": "ai-task-agent"}
+
+
+# ============================================================
+# 企业微信 (prefix /api/ai/wecom)
+# ============================================================
+wecom_router = APIRouter(prefix="/api/ai/wecom", tags=["企业微信"])
+
+
+class WecomUpdateRequest(BaseModel):
+    values: dict = Field(..., description="扁平格式的字段值，如 {\"项目名称\": \"新值\"}")
+
+
+@wecom_router.get("/projects", summary="拉取全部项目")
+async def wecom_pull_projects() -> dict:
+    """从企业微信 Smartsheet 拉取 USP 项目表全部记录（已拍扁）"""
+    try:
+        from ai.integrations.wecom import WecomSmartsheetClient
+        client = WecomSmartsheetClient()
+        records = await client.pull_all()
+        return {"code": 0, "data": {"total": len(records), "records": records}}
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom pull_projects 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"拉取项目失败: {str(e)}"}
+
+
+@wecom_router.get("/projects/search", summary="分页查询项目")
+async def wecom_search_projects(
+    offset: int = Query(0, ge=0, description="偏移量"),
+    limit: int = Query(100, ge=1, le=1000, description="每页条数"),
+) -> dict:
+    """分页查询项目表，支持排序和字段过滤"""
+    try:
+        from ai.integrations.wecom import WecomSmartsheetClient
+        client = WecomSmartsheetClient()
+        data = await client.pull(limit=limit, offset=offset)
+        return {"code": 0, "data": data}
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom search_projects 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"查询项目失败: {str(e)}"}
+
+
+@wecom_router.post("/projects/{record_id}", summary="更新单条项目")
+async def wecom_update_project(record_id: str, body: WecomUpdateRequest) -> dict:
+    """更新单条项目记录，values 为扁平格式"""
+    try:
+        from ai.integrations.wecom import WecomSmartsheetClient
+        client = WecomSmartsheetClient()
+        ok = await client.push_one(record_id, body.values)
+        return {"code": 0, "data": {"record_id": record_id, "updated": ok}}
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom update_project 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"更新项目失败: {str(e)}"}
+
+
+@wecom_router.get("/health", summary="健康检查")
+async def wecom_health() -> dict:
+    try:
+        from ai.config import get_ai_config
+        cfg = get_ai_config()
+        configured = bool(cfg.wecom_corpid and cfg.wecom_corpsecret)
+        return {"status": "ok", "configured": configured}
+    except Exception:
+        return {"status": "ok", "configured": False}
