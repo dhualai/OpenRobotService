@@ -383,7 +383,7 @@ html, body, #root {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: 10px;
   margin: 0 8px 0;
   padding: 14px 12px 12px;
   background: #fff;
@@ -404,7 +404,7 @@ html, body, #root {
 .chat-input-bar__textarea textarea {
   background: transparent;
   border: none;
-  padding: 6px 0 3px;
+  padding: 6px 0 3px 16px;
   letter-spacing: 0;
   line-height: 1.4;
   transition: min-height 0.15s ease;
@@ -503,6 +503,7 @@ html, body, #root {
   display: flex;
   align-items: center;
   gap: 2px;
+  margin-left: -10px;
 }
 
 /* 发送按钮：黑底白箭头圆形 */
