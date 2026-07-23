@@ -147,11 +147,29 @@ async def get_ticket(session_id: str = Query(..., description="会话 ID")):
         mgr = await get_memory_manager()
         memory = await mgr.get_memory(session_id)
         agent_state = memory.metadata.get("agent_state", {})
-        if agent_state.get("phase") not in ("escalated", "resolved"):
-            return {"code": 1, "message": "该会话尚未生成工单"}
-        pipeline = await get_pipeline()
-        ticket = await pipeline.get_ticket(session_id)
-        return {"code": 0, "data": ticket}
+        # 主路径：Redis/内存中 agent_state 有效 → 直接组装工单
+        if agent_state.get("phase") in ("escalated", "resolved"):
+            pipeline = await get_pipeline()
+            ticket = await pipeline.get_ticket(session_id)
+            return {"code": 0, "data": ticket}
+
+        # 降级：MySQL tasks 表中已有记录但 Redis 内存丢失（Redis 重启/过期等场景）
+        from ai.core.task_adapter import task_to_dict
+        from app.models.task import Task
+        from app.core.db import SessionLocal
+        db = SessionLocal()
+        try:
+            task = db.query(Task).filter(
+                Task.source == "ai",
+                Task.external_id.like(f"{session_id}%"),
+            ).order_by(Task.id.desc()).first()
+            if task:
+                logger.info(f"MySQL 降级命中工单: session_id={session_id[:20]}, task_id={task.id}")
+                return {"code": 0, "data": task_to_dict(task)}
+        finally:
+            db.close()
+
+        return {"code": 1, "message": "该会话尚未生成工单"}
     except Exception as e:
         return {"code": 1, "message": str(e)}
 
