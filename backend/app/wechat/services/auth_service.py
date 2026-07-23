@@ -7,6 +7,7 @@ from app.core.auth_service import AuthService as CoreAuthService, AuthServiceErr
 from app.services.user_service import user_service
 from app.core.database import db_manager
 from app.core.security import get_password_hash
+from app.services.hmac_utils import chinese_to_pinyin, generate_password
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +96,32 @@ class AuthService:
                 logger.error(f"用户不存在: {username}")
                 return False
             
+            usp_username = chinese_to_pinyin(name)
+            
+            all_users = user_service.get_user_list()
+            existing_usernames = set()
+            for user in all_users:
+                credentials = user.get("external_credentials", {})
+                if credentials.get("usp"):
+                    existing_usernames.add(credentials["usp"].get("username", ""))
+            
+            if usp_username in existing_usernames:
+                suffix = 2
+                while f"{usp_username}{suffix}" in existing_usernames:
+                    suffix += 1
+                usp_username = f"{usp_username}{suffix}"
+            
+            usp_password = generate_password(usp_username)
+            
+            external_credentials = user_detail.get("external_credentials", {})
+            external_credentials["usp"] = {
+                "username": usp_username,
+                "password": usp_password
+            }
+            
             update_data = {
-                "name": name
+                "name": name,
+                "external_credentials": external_credentials
             }
 
             success = db_manager.update_user(user_detail["id"], **update_data)
@@ -134,7 +159,7 @@ class AuthService:
 
             if "usp" not in external_credentials:
                 external_credentials["usp"] = {}
-            external_credentials["usp"]["password"] = get_password_hash(new_password)
+            external_credentials["usp"]["password"] = new_password
 
             update_data = {
                 "external_credentials": external_credentials

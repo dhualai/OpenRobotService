@@ -1,16 +1,15 @@
 // 摇人 · 历史工单详情页（AI 诊断生成的工单）
-// 数据源：AI 模块 GET /api/ai/qa/ticket?session_id=...；操作：POST /api/ai/qa/ticket/ack（确认派单）
+// 数据源：AI 模块 GET /api/ai/qa/ticket?session_id=...；操作：催办 / 上报（任务服务通知）
 // 路由 /app/call/ticket/:id 中的 :id 即 AI 会话 session_id
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Toast, Loading, Tag } from 'tdesign-mobile-react';
-import { qaGetTicket, qaTicketAck } from '@/api/ai';
-import type { UserItem } from '@/api/users';
-import UserSelect from '@/shared/components/UserSelect';
+import { qaGetTicket } from '@/api/ai';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
-import { useWorkbenchStore } from '@/stores/workbench';
-import { formatDateTime } from '@/shared/utils/url';
+import SafeHtml from '@/shared/components/SafeHtml';
+import { useAuthStore } from '@/stores/auth';
+import { formatDateTime, formatTime } from '@/shared/utils/url';
 
 interface AiDiagnosis {
   problem_summary?: string;
@@ -19,6 +18,7 @@ interface AiDiagnosis {
   collected_info?: Record<string, unknown>;
   rounds?: number;
 }
+interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; }
 interface AiTicket {
   ticket_id?: string;
   session_id: string;
@@ -31,6 +31,7 @@ interface AiTicket {
   created_at?: number;
   diagnosis?: AiDiagnosis;
   attachments?: Array<Record<string, unknown>>;
+  comments?: Comment[];
   // 类型专属
   location?: string; robot_type?: string; fault_code?: string; special_notes?: string;
   steps_to_reproduce?: string; expected_result?: string; actual_result?: string; severity?: string; version?: string;
@@ -45,22 +46,33 @@ const TYPE_LABEL: Record<string, string> = {
 export default function TicketDetailPage() {
   const { id: sessionId = '' } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { refreshTasks, setChatContext, goToTab } = useWorkbenchStore();
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
+  const currentUsername = useAuthStore((s) => s.username);
 
   const [ticket, setTicket] = useState<AiTicket | null>(null);
   const [loading, setLoading] = useState(true);
-  const [acking, setAcking] = useState(false);
   const [msg, setMsg] = useState('');
-  const [escalateUser, setEscalateUser] = useState<UserItem | null>(null);
+  const [commentText, setCommentText] = useState('');
+  const [submittingComment, setSubmittingComment] = useState(false);
+  const chatMessagesRef = useRef<HTMLDivElement>(null);
 
   const fetchDetail = useCallback(async () => {
     if (!sessionId) return;
     setLoading(true);
     try {
       const res = await qaGetTicket(sessionId);
-      if (res?.code === 0 && res.data) setTicket(res.data as AiTicket);
-      else setMsg(res?.message || '该会话尚未生成工单');
+      if (res?.code === 0 && res.data) {
+        const aiTicket = res.data as AiTicket;
+        setTicket(aiTicket);
+        if (aiTicket.ticket_id) {
+          try {
+            const taskDetail = await request<{ comments: Comment[] }>(`/${aiTicket.ticket_id}?load_comments=true`);
+            setTicket((prev) => prev ? { ...prev, comments: taskDetail.comments || [] } : prev);
+          } catch { /* 评论加载失败不阻塞主流程 */ }
+        }
+      } else {
+        setMsg(res?.message || '该会话尚未生成工单');
+      }
     } catch (err) {
       setMsg(err instanceof Error ? err.message : '加载失败');
     } finally {
@@ -70,24 +82,11 @@ export default function TicketDetailPage() {
 
   useEffect(() => { fetchDetail(); }, [fetchDetail]);
 
-  const handleAck = async () => {
-    if (!sessionId) return;
-    setAcking(true);
-    try {
-      const res = await qaTicketAck(sessionId, '', 'dispatched');
-      if (res?.code === 0) {
-        Toast({ message: '已确认派单', theme: 'success' });
-        refreshTasks();
-        navigate(-1);
-      } else {
-        Toast({ message: res?.message || '派单失败', theme: 'error' });
-      }
-    } catch (err) {
-      Toast({ message: `派单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    } finally {
-      setAcking(false);
+  useEffect(() => {
+    if (chatMessagesRef.current) {
+      chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
     }
-  };
+  }, [ticket?.comments?.length]);
 
   const handleUrge = async () => {
     if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法催办', theme: 'warning' }); return; }
@@ -117,50 +116,31 @@ export default function TicketDetailPage() {
     }
   };
 
-  // 升级：选目标用户后，为其创建一个高优先级待处理 task（POST /api/tasks/，并指派 assigned_to）
-  const handleEscalate = async () => {
-    if (!ticket) return;
-    if (!escalateUser) {
-      Toast({ message: '请先选择升级对象', theme: 'warning' });
+  // 升级、讨论、确认派单按钮已按需求移除
+
+  const handleAddComment = async () => {
+    if (!ticket?.ticket_id || !commentText.trim()) {
+      Toast({ message: '请输入评论内容', theme: 'warning' });
       return;
     }
-    const target = escalateUser.name || escalateUser.username;
+    setSubmittingComment(true);
     try {
-      await request('/', {
+      const newComment = await request<Comment>(`/${ticket.ticket_id}/comments`, {
         method: 'POST',
-        body: JSON.stringify({
-          title: `【升级→${target}】${ticket.title || `工单 ${ticket.ticket_id}`}`,
-          description: `原工单 #${ticket.ticket_id || ''}「${ticket.title || ''}」申请升级给 ${target}，请处理。\n\n原始描述：${ticket.description || '无'}`,
-          ticket_type: ticket.type || 'problem',
-          priority: 'urgent',
-          related_resource_id: ticket.ticket_id ? Number(ticket.ticket_id) : undefined,
-          assigned_to: escalateUser.id,
-        }),
+        body: JSON.stringify({ content: commentText.trim(), is_public: true }),
       });
-      Toast({ message: `已升级，已指派给 ${target}`, theme: 'success' });
-      setEscalateUser(null);
-    } catch (err) {
-      Toast({ message: `升级失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    }
-  };
-
-  const handleDiscuss = async () => {
-    if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法发起讨论', theme: 'warning' }); return; }
-    try {
-      // 真实接口：后端任务服务工单评论/讨论（POST /api/tasks/{id}/comments）
-      await request(`/${Number(ticket.ticket_id)}/comments`, {
-        method: 'POST',
-        body: JSON.stringify({ content: `发起关于工单「${ticket.title || ticket.ticket_id}」的讨论`, is_public: true }),
+      setTicket((prev) => {
+        if (!prev) return prev;
+        const updatedComments = prev.comments ? [...prev.comments, newComment] : [newComment];
+        return { ...prev, comments: updatedComments };
       });
-      Toast({ message: '已发起讨论', theme: 'success' });
+      setCommentText('');
+      Toast({ message: '评论已添加', theme: 'success' });
     } catch (err) {
-      Toast({ message: `讨论失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      Toast({ message: `添加评论失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setSubmittingComment(false);
     }
-    // 同时跳转到 AI 会话，带入工单上下文继续沟通
-    const ctx = { ticketId: ticket.ticket_id || '', title: ticket.title || '', description: ticket.description };
-    setChatContext(ctx);
-    goToTab('call', { chatContext: ctx });
-    navigate('/call');
   };
 
   if (loading) return <Loading text="加载中..." />;
@@ -250,15 +230,53 @@ export default function TicketDetailPage() {
           </div>
         )}
 
+        <div className="detail-card detail-chat-container">
+          <h4 className="detail-card__h">讨论（{ticket.comments?.length || 0}）</h4>
+          <div className="detail-chat-messages" ref={chatMessagesRef}>
+            {ticket.comments && ticket.comments.length > 0 ? (
+              ticket.comments.map((c) => {
+                const authorName = c.created_by_name || c.created_by || '未知用户';
+                const isCurrentUser = (c.created_by?.toLowerCase() === currentUsername?.toLowerCase()) ||
+                                     (c.created_by_name?.toLowerCase() === currentUsername?.toLowerCase());
+                return (
+                  <div key={c.id} className={`detail-chat-row ${isCurrentUser ? 'is-right' : ''}`}>
+                    <div className={`detail-chat-bubble ${isCurrentUser ? 'is-self' : ''}`}>
+                      <div className="detail-chat-name">{authorName}</div>
+                      <SafeHtml html={c.content} />
+                      <div className="detail-chat-time">{formatTime(c.created_at)}</div>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="detail-chat-empty">暂无评论</div>
+            )}
+          </div>
+          <div className="detail-chat-input">
+            <input
+              className="detail-chat-input-field"
+              value={commentText}
+              onChange={(e) => setCommentText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleAddComment(); }}
+              placeholder={ticket?.ticket_id ? '直接评论或者 @AI 进行讨论。' : '工单号缺失，无法评论'}
+              disabled={submittingComment || !ticket?.ticket_id}
+            />
+            <Button
+              size="small"
+              theme="primary"
+              onClick={handleAddComment}
+              disabled={submittingComment || !commentText.trim() || !ticket?.ticket_id}
+            >
+              {submittingComment ? '发送中' : '发送'}
+            </Button>
+          </div>
+        </div>
+
         {/* 操作 */}
         <div className="detail-actions">
-          <UserSelect value={escalateUser?.id ?? null} onChange={setEscalateUser} />
           <div className="detail-actions__btns">
-            <Button theme="primary" size="small" loading={acking} onClick={handleAck}>确认派单</Button>
             <Button size="small" theme="default" onClick={handleUrge}>一键催办</Button>
-            <Button size="small" theme="primary" onClick={handleDiscuss}>讨论</Button>
             <Button size="small" theme="light" onClick={handleReport}>上报</Button>
-            <Button size="small" theme="danger" onClick={handleEscalate}>升级</Button>
           </div>
         </div>
       </div>

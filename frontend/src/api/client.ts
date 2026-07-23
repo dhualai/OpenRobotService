@@ -2,6 +2,8 @@
 // 功能：Token管理 / 请求缓存 / 自动重试 / 超时控制 / 发布-订阅Token刷新
 
 import { getApiBaseUrl } from '../config/api';
+import { WECHAT_CONFIG } from '../config/wechat';
+import { buildWechatAuthUrl, buildStateFromPath } from '../shared/utils/url';
 
 const MAX_RETRIES = 2;
 const RETRY_DELAY = 1000;
@@ -174,7 +176,13 @@ export function createRequest(baseUrl: string, _serviceName = 'API') {
               return request<T>(endpoint, options, retries + 1);
             } catch (refreshError) {
               onRefreshFailed(refreshError);
-              window.location.href = '/login';
+              if (WECHAT_CONFIG.loginEnabled) {
+                const state = buildStateFromPath(window.location.pathname);
+                window.location.href = buildWechatAuthUrl(state);
+              } else {
+                const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+                window.location.href = `${base}/login`;
+              }
               throw refreshError;
             } finally {
               isRefreshing = false;
