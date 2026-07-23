@@ -15,8 +15,13 @@ import time
 import logging
 
 from ai.config import get_ai_config
+from ai.core.logging import get_logger
 
-logger = logging.getLogger("ai.diagnosis")
+logger = get_logger("TASK_AGENT")
+
+
+from ai.core.logging import get_logger
+logger = get_logger("TASK_AGENT")
 
 
 def _is_diagnosed(task_id: int) -> bool:
