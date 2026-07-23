@@ -44,25 +44,19 @@ class AiTaskAgent:
 
     # ── 可追踪的流程节点（供测试 Agent 对照）──
     NODE_OVERHEAD = "overhead"          # 端点路由 + 客户端初始化
-    NODE_LOAD_CONTEXT = "load_context"  # 加载工单上下文（SQLAlchemy 读 tickets）
+    NODE_LOAD_CONTEXT = "load_context"  # 加载工单上下文（task_adapter 读 tasks）
     NODE_RETRIEVE = "retrieve"          # 三路并行分析
-    NODE_ATTACHMENT = "attachment"      # 附件解析（日志/回放）
+    NODE_ATTACHMENT = "attachment"      # 附件分析（日志子Agent/parser）
+    NODE_KNOWLEDGE = "knowledge"        # 历史工单检索
     NODE_BUILD_PROMPT = "build_prompt"  # Prompt 构建
-    NODE_LLM = "llm"                   # LLM 调用（DeepSeek API）
-    NODE_PARSE = "parse"               # 结果解析（JSON→SolutionDraft）
-    NODE_DIAGNOSE = "diagnose"         # 诊断报告生成
-    NODE_DISCUSS = "discuss"           # @AI 讨论回复
-    NODE_SUMMARIZE = "summarize"       # 讨论摘要
-    NODE_ATTACHMENT = "attachment"      # 附件分析
-    NODE_KNOWLEDGE = "knowledge"       # 历史工单检索
-    NODE_DIAGNOSE = "diagnose"         # 诊断报告生成
-    NODE_DISCUSS = "discuss"           # @AI 讨论回复
-    NODE_SUMMARIZE = "summarize"       # 讨论摘要
-    NODE_ATTACHMENT = "attachment"      # 附件分析
-    NODE_KNOWLEDGE = "knowledge"       # 历史工单检索
-    NODE_MEMORY = "memory"             # 记忆保存（Redis）
-    NODE_COMMENT = "comment"           # 诊断结果写入 task_comments
-    NODE_SUBMIT = "submit"             # 方案提交（tasks 表 + Qdrant 回写）
+    NODE_LLM = "llm"                    # LLM 调用（DeepSeek API）
+    NODE_PARSE = "parse"                # 结果解析（JSON→SolutionDraft）
+    NODE_DIAGNOSE = "diagnose"          # 诊断报告生成
+    NODE_DISCUSS = "discuss"            # @AI 讨论回复
+    NODE_SUMMARIZE = "summarize"        # 讨论摘要
+    NODE_MEMORY = "memory"              # 记忆保存（Redis）
+    NODE_COMMENT = "comment"            # 诊断结果写入 task_comments
+    NODE_SUBMIT = "submit"              # 方案提交（tasks 表 + Qdrant 回写）
 
     def __init__(self):
         self.config = get_ai_config()
@@ -316,7 +310,7 @@ class AiTaskAgent:
                         log_paths.append(path)
 
                 if log_paths:
-                    from ai.agents.AiTaskPlatform.log_sub_agent import LogSubAgent
+                    from ai.agents.AiTaskPlatform.log_analyzer.sub_agent import LogSubAgent
                     task_ctx = {
                         "title": context.title,
                         "description": context.description,
@@ -343,7 +337,7 @@ class AiTaskAgent:
                 non_log_atts = [a for a in context.attachments
                                 if not ((a.get("filename") or a.get("name") or "").lower().endswith((".log", ".txt")))]
                 if non_log_atts and not att_has_logs:
-                    from ai.agents.AiTaskPlatform.attachment_parser import parse_attachments
+                    from ai.agents.AiTaskPlatform.attachments.parser import parse_attachments
                     att_analysis = await parse_attachments(non_log_atts)
                     att_has_logs = att_has_logs or att_analysis.has_logs
                     if att_analysis.log_summary and not att_log_summary:
@@ -473,7 +467,7 @@ class AiTaskAgent:
                             log_paths.append(path)
 
                     if log_paths:
-                        from ai.agents.AiTaskPlatform.log_sub_agent import LogSubAgent
+                        from ai.agents.AiTaskPlatform.log_analyzer.sub_agent import LogSubAgent
                         task_ctx = {
                             "title": ctx.title, "description": ctx.description,
                             "problem_summary": ctx.problem_summary,
@@ -490,7 +484,7 @@ class AiTaskAgent:
                     non_log = [a for a in ctx.attachments
                                if not ((a.get("filename") or a.get("name") or "").lower().endswith((".log", ".txt")))]
                     if non_log and not facultative:
-                        from ai.agents.AiTaskPlatform.attachment_parser import parse_attachments
+                        from ai.agents.AiTaskPlatform.attachments.parser import parse_attachments
                         att = await parse_attachments(non_log)
                         if att.has_logs:
                             facultative += f"\n[附件分析]\n{att.log_summary[:500]}\n"
