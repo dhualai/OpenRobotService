@@ -11,12 +11,12 @@
 from __future__ import annotations
 
 import json
-import logging
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from .agent import DataAnalysisAgent
+from .logging_config import get_logger
 from .schemas import (
     AnalysisRequest,
     AnalysisResult,
@@ -27,7 +27,7 @@ from .schemas import (
 from .report_schemas import ReportRequest, ReportResult, ReportPeriod
 from .report_generator import ReportGenerator, _parse_date
 
-logger = logging.getLogger(__name__)
+logger = get_logger("Router")
 
 router = APIRouter()
 

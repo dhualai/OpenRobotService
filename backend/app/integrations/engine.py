@@ -25,6 +25,7 @@ STATUS_ORD = {
     TaskStatus.IN_PROGRESS: 1,
     TaskStatus.PENDING: 1,
     TaskStatus.RESOLVED: 2,
+    TaskStatus.CANCELED: 3,
     TaskStatus.CLOSED: 3,
 }
 
@@ -132,6 +133,8 @@ class SyncEngine:
             local.status = new_status
             if new_status == TaskStatus.RESOLVED and local.resolved_at is None:
                 local.resolved_at = datetime.now()
+            elif new_status == TaskStatus.CANCELED and local.canceled_at is None:
+                local.canceled_at = datetime.now()
             elif new_status == TaskStatus.CLOSED and local.closed_at is None:
                 local.closed_at = datetime.now()
         local.updated_at = datetime.now()

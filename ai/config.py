@@ -23,9 +23,11 @@ _KB_DIR = Path(__file__).resolve().parent / "kb"
 _ACTIVE_COLLECTION_POINTER = _KB_DIR / "active_collection.txt"
 _ACTIVE_FAQ_COLLECTION_POINTER = _KB_DIR / "active_faq_collection.txt"
 _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER = _KB_DIR / "active_troubleshooting_collection.txt"
+_ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER = _KB_DIR / "active_platform_faq_collection.txt"
 _ACTIVE_CHEDUAN_COLLECTION_POINTER = _KB_DIR / "active_cheduan_collection.txt"
 _ACTIVE_TRANSLATION_COLLECTION_POINTER = _KB_DIR / "active_translation_collection.txt"
 _ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER = _KB_DIR / "active_cheduan_manual_collection.txt"
+_ACTIVE_TASK_RESOLUTIONS_POINTER = _KB_DIR / "active_task_resolutions_collection.txt"
 
 
 class AIConfig(BaseModel):
@@ -62,7 +64,14 @@ class AIConfig(BaseModel):
 
     # ========== 派单 ==========
     dispatch_api_url: str = Field(default="", description="派单系统推送地址")
+    assign_scan_interval: int = Field(default=60, description="派单 Worker 扫描待派单工单间隔（秒）")
     upload_dir: str = Field(default="./uploads", description="附件上传目录")
+
+    # ========== 诊断服务 ==========
+    diagnosis_scan_interval: int = Field(default=60, description="诊断服务扫描新工单间隔（秒）")
+
+    # ========== Debug ==========
+    debug_assign_to_admin: bool = Field(default=False, description="开发模式：所有工单直接分配给 admin，跳过 AI 派单")
 
     # ========== 超时 ==========
     ai_chain_timeout: float = Field(default=2.5)
@@ -110,6 +119,24 @@ def _write_active_faq_collection(name: str) -> None:
     """写入活跃 FAQ 集合指针（入库脚本调用）"""
     _ACTIVE_FAQ_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
     _ACTIVE_FAQ_COLLECTION_POINTER.write_text(name, encoding="utf-8")
+
+
+def get_active_platform_faq_collection() -> str:
+    """读取当前活跃的 platform FAQ Qdrant 集合名"""
+    try:
+        if _ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER.exists():
+            name = _ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _write_active_platform_faq_collection(name: str) -> None:
+    """写入活跃 platform FAQ 集合指针（入库脚本调用）"""
+    _ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
+    _ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER.write_text(name, encoding="utf-8")
 
 
 def get_active_troubleshooting_collection() -> str:
@@ -184,6 +211,24 @@ def _write_active_cheduan_manual_collection(name: str) -> None:
     _ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER.write_text(name, encoding="utf-8")
 
 
+def get_active_task_resolutions_collection() -> str:
+    """读取当前活跃的任务解决方案 Qdrant 集合名"""
+    try:
+        if _ACTIVE_TASK_RESOLUTIONS_POINTER.exists():
+            name = _ACTIVE_TASK_RESOLUTIONS_POINTER.read_text(encoding="utf-8").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _write_active_task_resolutions_collection(name: str) -> None:
+    """写入活跃任务解决方案集合指针"""
+    _ACTIVE_TASK_RESOLUTIONS_POINTER.parent.mkdir(parents=True, exist_ok=True)
+    _ACTIVE_TASK_RESOLUTIONS_POINTER.write_text(name, encoding="utf-8")
+
+
 def get_docs_dir() -> Path:
     """
     获取文档根目录（知识库源文件所在目录）。
@@ -235,6 +280,13 @@ def get_ai_config() -> AIConfig:
         # 超时
         ai_chain_timeout=float(os.getenv("AI_CHAIN_TIMEOUT", "2.5")),
         # 派单
+        # 诊断服务
+        diagnosis_scan_interval=int(os.getenv("DIAGNOSIS_SCAN_INTERVAL", "60")),
+        # 派单后台
+        assign_scan_interval=int(os.getenv("ASSIGN_SCAN_INTERVAL", "60")),
+        # Debug
+        debug_assign_to_admin=os.getenv("DEBUG_ASSIGN_TO_ADMIN", "false").lower() in ("1", "true", "yes"),
+        # 派单
         dispatch_api_url=os.getenv("DISPATCH_API_URL", ""),
         upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),
         # 文档路径
@@ -272,8 +324,10 @@ async def validate_ai_config() -> dict:
 
     try:
         redis_mgr = await get_memory_manager()
-        await redis_mgr.health_check()
-        results["redis"] = {"status": "ok", "message": "连接成功"}
+        if await redis_mgr.health_check():
+            results["redis"] = {"status": "ok", "message": "连接成功"}
+        else:
+            results["redis"] = {"status": "error", "message": "连接超时，使用内存/MySQL降级"}
     except Exception as e:
         results["redis"] = {"status": "error", "message": str(e)}
 

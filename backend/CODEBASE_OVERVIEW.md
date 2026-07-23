@@ -109,7 +109,7 @@ backend/
 | 模块 | 视角 | 路由前缀 | 核心路由 | 主要 Service |
 |---|---|---|---|---|
 | `modules/admin` | 管理 | `/api/admin` | projects / risks / daily-reports / export / users / roles / permissions / resource-manager | AuthService、ProjectService、RiskService、DailyReportService、PermissionChecker、ResourceService |
-| `modules/tasks` | 供给（处理方） | `/api/tasks` | task CRUD + 状态/派单/AI 分配 + comments/attachments + Celery 异步 | TicketService、TaskService（异步） |
+| `modules/tasks` | 供给（处理方） | `/api/tasks` | task CRUD + 状态/派单/AI 分配 + comments/attachments + assignable-users（可指派人员选人，仅登录、字段最小化）+ Celery 异步 | TicketService、TaskService（异步） |
 | `modules/call` | 需求（请求方） | `/api/call` | qa（AI 问答）/ conversations / messages / my-tasks / diagnosis | **ModelService（AI 核心）**、ConversationService、MessageService |
 | `integrations` | 外部集成 | `/api/tasks/sources` | 任务源列表、映射配置 | Engine、Registry、ZentaoAdapter |
 | `wechat` | 微信入口 | `/api/wechat` | OAuth 登录、消息回调、菜单/标签、通知、JS-SDK | WechatService、AuthService、DataService、ProjectTicketService |

@@ -6,12 +6,12 @@
 
 from __future__ import annotations
 
-import logging
 from typing import AsyncIterator
 
 from .analyzer import DataAnalyzer
 from .config import AnalysisConfig
 from .llm_client import LLMClient
+from .logging_config import get_logger
 from .prompts import build_chat_prompt, build_system_prompt
 from .schemas import (
     AnalysisResult,
@@ -21,7 +21,7 @@ from .schemas import (
     HealthResponse,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger("Agent")
 
 
 class DataAnalysisAgent:

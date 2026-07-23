@@ -1,4 +1,4 @@
-﻿import re
+import re
 import base64
 from typing import List, Dict, Tuple
 from io import BytesIO
@@ -18,11 +18,10 @@ class ImageProcessor:
     @classmethod
     def get_minio_url_pattern(cls):
         endpoint = settings.MINIO_ENDPOINT
-        endpoint_pattern = endpoint.replace("localhost", "(?:localhost|127\\.0\\.0\\.1)")
-        endpoint_pattern = re.escape(endpoint_pattern)
-        endpoint_pattern = endpoint_pattern.replace("%28%3F%3A", "(?:").replace("%29", ")")
+        escaped = re.escape(endpoint)
+        escaped = escaped.replace('localhost', '(?:localhost|127\\.0\\.0\\.1)')
         return re.compile(
-            rf'<img[^>]+src=["\']([^"\']*https?://{endpoint_pattern}[^"\']*)["\']',
+            rf'<img[^>]+src=["\']([^"\']*https?://{escaped}[^"\']*)["\']',
             re.IGNORECASE
         )
 
@@ -110,37 +109,49 @@ class ImageProcessor:
         if not content:
             return content
 
-        matches = cls.get_minio_url_pattern().findall(content)
+        try:
+            pattern = cls.get_minio_url_pattern()
+            logger.info(f"MinIO URL模式: {pattern.pattern}")
+            
+            matches = pattern.findall(content)
+            logger.info(f"匹配到MinIO URL数量: {len(matches)}")
 
-        if not matches:
-            return content
+            if not matches:
+                return content
 
-        processed_content = content
+            processed_content = content
 
-        for minio_url in matches:
-            try:
-                object_path = cls.extract_object_path_from_url(minio_url)
+            for minio_url in matches:
+                try:
+                    logger.info(f"处理MinIO URL: {minio_url[:100]}..." if len(minio_url) > 100 else f"处理MinIO URL: {minio_url}")
+                    
+                    object_path = cls.extract_object_path_from_url(minio_url)
+                    logger.info(f"提取对象路径: {object_path}")
 
-                if not object_path:
-                    continue
+                    if not object_path:
+                        continue
 
-                image_bytes = cls.download_from_minio(object_path)
+                    image_bytes = cls.download_from_minio(object_path)
+                    logger.info(f"下载图片字节数: {len(image_bytes) if image_bytes else 0}")
 
-                if not image_bytes:
-                    continue
+                    if not image_bytes:
+                        continue
 
-                image_type = cls.get_image_type_from_path(object_path)
-                base64_data = base64.b64encode(image_bytes).decode('utf-8')
-                base64_src = f"data:image/{image_type};base64,{base64_data}"
+                    image_type = cls.get_image_type_from_path(object_path)
+                    base64_data = base64.b64encode(image_bytes).decode('utf-8')
+                    base64_src = f"data:image/{image_type};base64,{base64_data}"
 
-                processed_content = processed_content.replace(minio_url, base64_src)
+                    processed_content = processed_content.replace(minio_url, base64_src)
 
-                logger.info(f"成功转换MinIO URL为base64: {object_path}")
+                    logger.info(f"成功转换MinIO URL为base64: {object_path}")
 
-            except Exception as e:
-                logger.error(f"转换MinIO URL失败: {str(e)}")
+                except Exception as e:
+                    logger.error(f"转换MinIO URL失败: url={minio_url[:50]}..., error={str(e)}", exc_info=True)
 
-        return processed_content
+            return processed_content
+        except Exception as e:
+            logger.error(f"process_content_for_response整体失败: content_length={len(content)}, error={str(e)}", exc_info=True)
+            raise
 
     @classmethod
     def extract_object_path_from_url(cls, url: str) -> str:
