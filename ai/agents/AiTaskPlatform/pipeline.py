@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from ai.config import get_ai_config
 from ai.core import get_llm_client, get_memory_manager, get_retrieval_service
+from ai.core.logging import get_logger
 from ai.agents.AiTaskPlatform.schemas import (
     TaskAnalyzeRequest,
     TaskContext,
@@ -30,8 +31,11 @@ from ai.agents.AiTaskPlatform.prompts import (
     DISCUSS_SYSTEM_PROMPT,
     DISCUSS_USER_TEMPLATE,
     SUMMARIZE_SYSTEM_PROMPT,
-    SUMMARIZE_USER_TEMPLATE,
+    SUMMARIZE_FULL_TEMPLATE,
+    SUMMARIZE_INCREMENTAL_TEMPLATE,
 )
+
+logger = get_logger("TASK_AGENT")
 
 
 # ============================================================
@@ -43,25 +47,19 @@ class AiTaskAgent:
 
     # ── 可追踪的流程节点（供测试 Agent 对照）──
     NODE_OVERHEAD = "overhead"          # 端点路由 + 客户端初始化
-    NODE_LOAD_CONTEXT = "load_context"  # 加载工单上下文（SQLAlchemy 读 tickets）
+    NODE_LOAD_CONTEXT = "load_context"  # 加载工单上下文（task_adapter 读 tasks）
     NODE_RETRIEVE = "retrieve"          # 三路并行分析
-    NODE_ATTACHMENT = "attachment"      # 附件解析（日志/回放）
+    NODE_ATTACHMENT = "attachment"      # 附件分析（日志子Agent/parser）
+    NODE_KNOWLEDGE = "knowledge"        # 历史工单检索
     NODE_BUILD_PROMPT = "build_prompt"  # Prompt 构建
-    NODE_LLM = "llm"                   # LLM 调用（DeepSeek API）
-    NODE_PARSE = "parse"               # 结果解析（JSON→SolutionDraft）
-    NODE_DIAGNOSE = "diagnose"         # 诊断报告生成
-    NODE_DISCUSS = "discuss"           # @AI 讨论回复
-    NODE_SUMMARIZE = "summarize"       # 讨论摘要
-    NODE_ATTACHMENT = "attachment"      # 附件分析
-    NODE_KNOWLEDGE = "knowledge"       # 历史工单检索
-    NODE_DIAGNOSE = "diagnose"         # 诊断报告生成
-    NODE_DISCUSS = "discuss"           # @AI 讨论回复
-    NODE_SUMMARIZE = "summarize"       # 讨论摘要
-    NODE_ATTACHMENT = "attachment"      # 附件分析
-    NODE_KNOWLEDGE = "knowledge"       # 历史工单检索
-    NODE_MEMORY = "memory"             # 记忆保存（Redis）
-    NODE_COMMENT = "comment"           # 诊断结果写入 task_comments
-    NODE_SUBMIT = "submit"             # 方案提交（tasks 表 + Qdrant 回写）
+    NODE_LLM = "llm"                    # LLM 调用（DeepSeek API）
+    NODE_PARSE = "parse"                # 结果解析（JSON→SolutionDraft）
+    NODE_DIAGNOSE = "diagnose"          # 诊断报告生成
+    NODE_DISCUSS = "discuss"            # @AI 讨论回复
+    NODE_SUMMARIZE = "summarize"        # 讨论摘要
+    NODE_MEMORY = "memory"              # 记忆保存（Redis）
+    NODE_COMMENT = "comment"            # 诊断结果写入 task_comments
+    NODE_SUBMIT = "submit"              # 方案提交（tasks 表 + Qdrant 回写）
 
     def __init__(self):
         self.config = get_ai_config()
@@ -169,7 +167,7 @@ class AiTaskAgent:
                             elapsed_ms=round((time.perf_counter() - t6) * 1000))
 
         total_ms = (time.perf_counter() - t0) * 1000
-        print(f"  [task-agent] analyze total={total_ms:.0f}ms")
+        logger.info(f"analyze total={total_ms:.0f}ms")
 
         # 注入 trace 到返回体
         draft._trace = self._pop_trace()
@@ -297,19 +295,63 @@ class AiTaskAgent:
                                 "has_problem_summary": bool(context.problem_summary)},
                         elapsed_ms=round((time.perf_counter() - t1) * 1000))
 
-        # 2. 附件分析（能力一）
+        # 2. 附件分析（能力一：日志走 LogSubAgent，其他走 parse_attachments）
         t2 = time.perf_counter()
         att_has_logs = False
         att_log_summary = ""
+        log_sub_result = None
         try:
             if context.attachments:
-                from ai.agents.AiTaskPlatform.attachment_parser import parse_attachments
-                att_analysis = await parse_attachments(context.attachments)
-                att_has_logs = att_analysis.has_logs
-                att_log_summary = att_analysis.log_summary[:500] if att_analysis.log_summary else ""
-                self._add_trace(self.NODE_ATTACHMENT, "ok",
-                                output={"has_logs": att_has_logs},
-                                elapsed_ms=round((time.perf_counter() - t2) * 1000))
+                # 2a. 找到日志文件 → 用 LogSubAgent 多轮推理
+                log_paths = []
+                for att in context.attachments:
+                    if not isinstance(att, dict):
+                        continue
+                    path = att.get("path") or att.get("url") or ""
+                    name = (att.get("filename") or att.get("name") or "").lower()
+                    if path and (name.endswith((".log", ".txt")) or "log" in name):
+                        log_paths.append(path)
+
+                if log_paths:
+                    from ai.agents.AiTaskPlatform.log_analyzer.sub_agent import LogSubAgent
+                    task_ctx = {
+                        "title": context.title,
+                        "description": context.description,
+                        "problem_summary": context.problem_summary,
+                        "hypotheses": context.hypotheses,
+                        "ruled_out": context.ruled_out,
+                        "robot_type": context.robot_type,
+                        "fault_code": context.fault_code,
+                        "collected_info": context.collected_info,
+                    }
+                    # 取第一个日志文件（后续可扩展到多个日志文件的合并分析）
+                    sub = LogSubAgent(log_paths[0])
+                    auto_question = f"日志分析，重点排查: {context.problem_summary}"
+                    if context.hypotheses:
+                        auto_question += f"，可能原因: {'/'.join(context.hypotheses)}"
+                    if context.fault_code:
+                        auto_question += f"，故障码: {context.fault_code}"
+                    if context.robot_type:
+                        auto_question += f"，车型: {context.robot_type}"
+                    log_sub_result = await sub.analyze(task_ctx, user_question=auto_question)
+                    if log_sub_result.conclusion:
+                        att_has_logs = True
+                        att_log_summary = log_sub_result.to_prompt_text()
+                    self._add_trace(self.NODE_ATTACHMENT, "ok",
+                                    output={"has_logs": att_has_logs,
+                                            "sub_rounds": log_sub_result.queries_made,
+                                            "evidence_count": len(log_sub_result.evidence)},
+                                    elapsed_ms=round((time.perf_counter() - t2) * 1000))
+
+                # 2b. 非日志附件 → 旧 parser（图片/ZIP/文件夹等）
+                non_log_atts = [a for a in context.attachments
+                                if not ((a.get("filename") or a.get("name") or "").lower().endswith((".log", ".txt")))]
+                if non_log_atts and not att_has_logs:
+                    from ai.agents.AiTaskPlatform.attachments.parser import parse_attachments
+                    att_analysis = await parse_attachments(non_log_atts)
+                    att_has_logs = att_has_logs or att_analysis.has_logs
+                    if att_analysis.log_summary and not att_log_summary:
+                        att_log_summary = att_analysis.log_summary[:500]
             else:
                 self._add_trace(self.NODE_ATTACHMENT, "skipped", elapsed_ms=0)
         except Exception as e:
@@ -416,7 +458,7 @@ class AiTaskAgent:
             discussion_lines.append(f"[{author}] {content_str}")
         discussion_history = "\n".join(discussion_lines) if discussion_lines else "（暂无讨论）"
 
-        # 3. 按需调附件分析 / 历史工单
+        # 3. 按需调日志子Agent / 附件分析 / 历史工单
         facultative = ""
         att_keywords = ["日志", "附件", "图片", "log", "file", "image", "zip"]
         hist_keywords = ["历史", "类似", "之前", "案例", "参考"]
@@ -424,10 +466,38 @@ class AiTaskAgent:
         if query and any(kw in query.lower() for kw in att_keywords):
             try:
                 if ctx.attachments:
-                    from ai.agents.AiTaskPlatform.attachment_parser import parse_attachments
-                    att = await parse_attachments(ctx.attachments)
-                    if att.has_logs:
-                        facultative += f"\n[附件分析]\n{att.log_summary[:500]}\n"
+                    # 3a. 日志文件 → LogSubAgent 多轮推理
+                    log_paths = []
+                    for att in ctx.attachments:
+                        if not isinstance(att, dict):
+                            continue
+                        path = att.get("path") or att.get("url") or ""
+                        name = (att.get("filename") or att.get("name") or "").lower()
+                        if path and (name.endswith((".log", ".txt")) or "log" in name):
+                            log_paths.append(path)
+
+                    if log_paths:
+                        from ai.agents.AiTaskPlatform.log_analyzer.sub_agent import LogSubAgent
+                        task_ctx = {
+                            "title": ctx.title, "description": ctx.description,
+                            "problem_summary": ctx.problem_summary,
+                            "hypotheses": ctx.hypotheses, "ruled_out": ctx.ruled_out,
+                            "robot_type": ctx.robot_type, "fault_code": ctx.fault_code,
+                            "collected_info": ctx.collected_info,
+                        }
+                        sub = LogSubAgent(log_paths[0])
+                        log_result = await sub.analyze(task_ctx, user_question=query)
+                        if log_result.conclusion:
+                            facultative += f"\n[日志子Agent分析（{log_result.queries_made}轮查询）]\n{log_result.to_prompt_text()}\n"
+
+                    # 3b. 非日志附件 → 旧 parser
+                    non_log = [a for a in ctx.attachments
+                               if not ((a.get("filename") or a.get("name") or "").lower().endswith((".log", ".txt")))]
+                    if non_log and not facultative:
+                        from ai.agents.AiTaskPlatform.attachments.parser import parse_attachments
+                        att = await parse_attachments(non_log)
+                        if att.has_logs:
+                            facultative += f"\n[附件分析]\n{att.log_summary[:500]}\n"
             except Exception:
                 pass
 
@@ -494,44 +564,43 @@ class AiTaskAgent:
     # summarize — 讨论摘要
     # ============================================================
 
-    async def summarize(self, task_id: str) -> dict:
-        """检测讨论更新 → 生成摘要 → 写入 task_comments。"""
+    async def summarize(
+        self, task_id: str, title: str = "", description: str = "",
+        diagnosis_summary: str = "", discussion_history: list = None,
+        previous_summary: str = "",
+    ) -> dict:
+        """纯摘要生成服务：后端传入工单信息+讨论记录 → LLM 生成摘要 → 返回。
+
+        如果 previous_summary 非空，做增量总结（融入新讨论到已有摘要）。
+        不做 DB 操作、不写 task_comments。后端决定触发时机和数据来源。
+        """
         t0 = time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
 
-        ctx = await self._load_task_context(task_id)
+        # 组装讨论文本
+        history_items = discussion_history or []
+        history_lines = []
+        for item in history_items[-20:]:
+            author = item.get("author", item.get("created_by", "?"))
+            content = str(item.get("content", ""))[:200]
+            history_lines.append(f"[{author}] {content}")
+        history_text = "\n".join(history_lines) if history_lines else "（暂无讨论）"
 
-        # 1. 读近期评论（能力三）
-        from app.models.task import TaskComment
-        from app.core.database import SessionLocal
-        db = SessionLocal()
-        try:
-            comments = db.query(TaskComment).filter(
-                TaskComment.task_id == int(task_id),
-                TaskComment.created_by != "AI任务助手",
-            ).order_by(TaskComment.created_at.desc()).limit(30).all()
-
-            new_count = len(comments)
-            discussion_lines = []
-            for c in reversed(comments):
-                author = c.created_by or "?"
-                content_str = (c.content or "")[:200]
-                discussion_lines.append(f"[{author}] {content_str}")
-            discussion_history = "\n".join(discussion_lines)
-        finally:
-            db.close()
-
-        if new_count < 2:
-            self._add_trace(self.NODE_SUMMARIZE, "skipped",
-                            output={"reason": f"only {new_count} new comments"})
-            return {"task_id": task_id, "skipped": True, "reason": "不足2条新讨论"}
-
-        # 2. LLM
-        prompt = SUMMARIZE_USER_TEMPLATE.format(
-            title=ctx.title or "",
-            discussion_history=discussion_history,
-        )
+        if previous_summary:
+            # 增量模式：只需上次摘要 + 新增讨论
+            prompt = SUMMARIZE_INCREMENTAL_TEMPLATE.format(
+                previous_summary=previous_summary,
+                discussion_history=history_text,
+            )
+        else:
+            # 首次模式：完整工单上下文
+            prompt = SUMMARIZE_FULL_TEMPLATE.format(
+                title=title or f"工单 #{task_id}",
+                description=description or "",
+                diagnosis_summary=diagnosis_summary or "无",
+                discussion_history=history_text,
+            )
         t_llm = time.perf_counter()
         summary = await self._llm_client.complete(
             prompt=prompt, system_prompt=SUMMARIZE_SYSTEM_PROMPT,
@@ -541,19 +610,14 @@ class AiTaskAgent:
                         output={"summary_chars": len(summary)},
                         elapsed_ms=round((time.perf_counter() - t_llm) * 1000))
 
-        # 3. 写入 task_comments
-        self._add_diagnosis_comment_short(int(task_id), f"📝 讨论摘要\n\n{summary.strip()}")
-
         total_ms = round((time.perf_counter() - t0) * 1000)
         return {
             "task_id": task_id,
             "summary": summary.strip(),
-            "new_messages_count": new_count,
             "_trace": self._pop_trace(),
             "_total_ms": total_ms,
         }
 
-    # ============================================================
     # submit — 方案提交
     # ============================================================
 
@@ -628,7 +692,7 @@ class AiTaskAgent:
                 ctx.collected_info = d.get("collected_info") or {}
                 ctx.diagnosis_rounds = d.get("diagnosis_rounds", 0)
         except Exception as e:
-            print(f"  [task-agent] Failed to load task {task_id}: {e}")
+            logger.warning(f"Failed to load task {task_id}: {e}")
 
         return ctx
 
@@ -659,7 +723,7 @@ class AiTaskAgent:
                 await asyncio.gather(troubleshooting_task, history_task, attachment_task)
             )
         except Exception as e:
-            print(f"  [task-agent] Partial analysis failure: {e}")
+            logger.warning(f"Partial analysis failure: {e}")
             if "troubleshooting" not in results:
                 results["troubleshooting"] = "（检索暂不可用）"
             if "history" not in results:
@@ -911,7 +975,7 @@ class AiTaskAgent:
                 problem_summary=problem_summary,
             )
         except Exception as e:
-            print(f"  [task-agent] Solution index failed: {e}")
+            logger.warning(f"Solution index failed: {e}")
 
     @staticmethod
     def _add_diagnosis_comment(task_id: int, draft: "SolutionDraft", created_by: str = "AI任务助手") -> bool:
@@ -951,7 +1015,7 @@ class AiTaskAgent:
             db.commit()
             return True
         except Exception as e:
-            print(f"  [task-agent] Diagnosis comment failed: {e}")
+            logger.warning(f"Diagnosis comment failed: {e}")
             return False
         finally:
             db.close()
