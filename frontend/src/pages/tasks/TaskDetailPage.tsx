@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup } from 'tdesign-mobile-react';
+import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import SafeHtml from '@/shared/components/SafeHtml';
@@ -10,6 +10,7 @@ import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { formatDateTime, formatTime } from '@/shared/utils/url';
+import { fetchWithAuth } from '@/api/ai';
 
 interface Attachment { id: string; url: string; }
 interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; }
@@ -19,6 +20,8 @@ interface Ticket {
   contact?: string; created_at: string; updated_at: string;
   attachments?: Attachment[]; ai_summary?: string; comments?: Comment[];
 }
+
+const AI_NAME = 'AI任务助手';
 
 export default function TaskDetailPage() {
   const { id: detailId } = useParams<{ id: string }>();
@@ -36,13 +39,35 @@ export default function TaskDetailPage() {
   const [showEscalatePopup, setShowEscalatePopup] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
+  const [askingAI, setAskingAI] = useState(false);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
+
+  // AI 诊断
+  const [diagnosing, setDiagnosing] = useState(false);
+  const [diagnosisReport, setDiagnosisReport] = useState<{
+    root_cause_analysis?: string;
+    suggested_actions?: string[];
+    references?: string[];
+    confidence?: number;
+  } | null>(null);
+  const [reportVisible, setReportVisible] = useState(false);
+
+  // AI 摘要（后端定时写入评论，前端从评论提取展示）
+  const [aiSummary, setAiSummary] = useState('');
 
   useEffect(() => {
     if (!detailId) { setDetail(null); return; }
     setDetailLoading(true);
     request<Ticket>(`/${detailId}?load_comments=true`)
-      .then(setDetail)
+      .then((t) => {
+        setDetail(t);
+        // 后端 summarize 写入 task_comments，前端从评论中提取最新摘要展示
+        const aiComments = (t.comments || []).filter(
+          (c) => c.created_by_name === AI_NAME || c.created_by === AI_NAME
+        );
+        const lastSummary = aiComments.find((c) => c.content?.startsWith('📝 讨论摘要'));
+        if (lastSummary) setAiSummary(lastSummary.content.replace('📝 讨论摘要\n\n', ''));
+      })
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
   }, [detailId]);
@@ -158,6 +183,113 @@ export default function TaskDetailPage() {
     }
   };
 
+  // ── @AI 按钮：在输入框填入 @AI 前缀 ──
+  const handleAIClick = () => {
+    if (!commentText.startsWith('@AI ')) {
+      setCommentText('@AI ' + commentText);
+    }
+  };
+
+  // ── 讨论发送时检测 @AI 前缀 → 调 POST /api/ai/task/discuss ──
+  const handleAIDiscuss = async () => {
+    if (!detail || !commentText.trim()) return;
+    setAskingAI(true);
+    try {
+      const recentComments = (detail.comments || []).slice(-10).map((c) => ({
+        author: c.created_by_name || c.created_by || '?',
+        content: c.content,
+      }));
+      const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/discuss`, {
+        method: 'POST',
+        body: JSON.stringify({
+          task_id: detail.id,
+          query: commentText.trim().replace(/^@AI\s*/, ''),
+          context: { recent_comments: recentComments },
+        }),
+      });
+      const data = await res.json();
+      if (data.code === 0) {
+        Toast({ message: 'AI 已回复', theme: 'success' });
+        loadDetail();
+      } else {
+        Toast({ message: data.message || 'AI 回复失败', theme: 'error' });
+      }
+    } catch (err) {
+      Toast({ message: `AI 回复失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setAskingAI(false);
+    }
+  };
+
+  // ── 发送评论：检测 @AI 前缀决定走普通评论还是 AI 讨论 ──
+  const handleSendComment = async () => {
+    if (commentText.trim().startsWith('@AI ')) {
+      await handleAIDiscuss();
+    } else {
+      await handleAddComment();
+    }
+  };
+
+  // ── [帮我分析] → POST /api/ai/task/diagnose → 讨论区展示短链接 ──
+  const handleDiagnose = async () => {
+    if (!detail || diagnosing) return;
+    setDiagnosing(true);
+    try {
+      const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/diagnose`, {
+        method: 'POST',
+        body: JSON.stringify({ task_id: detail.id }),
+      });
+      const data = await res.json();
+      if (data.code === 0) {
+        const d = data.data;
+        setDiagnosisReport(d);
+        // 讨论区插入短链接（本地，不写后端）
+        const shortLink = `📋 <a href="javascript:void(0)" class="diagnosis-link">AI 诊断报告 — ${d.root_cause_analysis?.slice(0, 40) || '点击查看'}…</a>`;
+        setDetail((prev) => {
+          if (!prev) return prev;
+          const aiComment: Comment = {
+            id: `diagnosis_${Date.now()}`,
+            content: shortLink,
+            created_by_name: AI_NAME,
+            created_by: AI_NAME,
+            created_at: new Date().toISOString(),
+          };
+          return { ...prev, comments: [...(prev.comments || []), aiComment] };
+        });
+      } else {
+        Toast({ message: data.message || '分析失败', theme: 'error' });
+      }
+    } catch (err) {
+      Toast({ message: `分析失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setDiagnosing(false);
+    }
+  };
+
+  // ── 点击诊断短链接 → 弹窗 ──
+  const handleOpenReport = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('.diagnosis-link')) {
+      e.preventDefault();
+      setReportVisible(true);
+    }
+  };
+
+  // ── 重新加载（AI 讨论后刷新评论） ──
+  const loadDetail = () => {
+    if (!detailId) return;
+    request<Ticket>(`/${detailId}?load_comments=true`)
+      .then((t) => {
+        setDetail(t);
+        const aiComments = (t.comments || []).filter(
+          (c) => c.created_by_name === AI_NAME || c.created_by === AI_NAME
+        );
+        const lastSummary = aiComments.find((c) => c.content?.startsWith('📝 讨论摘要'));
+        if (lastSummary) setAiSummary(lastSummary.content.replace('📝 讨论摘要\n\n', ''));
+      })
+      .catch(() => {});
+  };
+
   if (detailLoading) return <Loading text="加载中…" />;
   if (!detail) return (
     <div>
@@ -205,8 +337,17 @@ export default function TaskDetailPage() {
         </div>
 
         <div className="detail-card">
-          <h4 className="detail-card__h">🤖 AI 讨论摘要</h4>
-          <p>{detail.ai_summary || 'AI 摘要生成中…'}</p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h4 className="detail-card__h">🤖 AI 讨论摘要</h4>
+            <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing}>
+              🤖 帮我分析
+            </Button>
+          </div>
+          {aiSummary ? (
+            <SafeHtml html={aiSummary} />
+          ) : (
+            <p style={{ color: '#999' }}>暂无摘要，AI 将自动总结讨论进展</p>
+          )}
         </div>
 
         {(detail.contact || detail.reporter_name || detail.assignee_name) && (
@@ -226,7 +367,7 @@ export default function TaskDetailPage() {
 
         <div className="detail-card detail-chat-container">
           <h4 className="detail-card__h">讨论（{detail.comments?.length || 0}）</h4>
-          <div className="detail-chat-messages" ref={chatMessagesRef}>
+          <div className="detail-chat-messages" ref={chatMessagesRef} onClick={handleOpenReport}>
             {detail.comments && detail.comments.length > 0 ? (
               detail.comments.map((c) => {
                 const authorName = c.created_by_name || c.created_by || '未知用户';
@@ -251,17 +392,25 @@ export default function TaskDetailPage() {
               className="detail-chat-input-field"
               value={commentText}
               onChange={(e) => setCommentText(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleAddComment(); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleSendComment(); }}
               placeholder="直接评论或者 @AI 进行讨论。"
-              disabled={submittingComment}
+              disabled={submittingComment || askingAI}
             />
             <Button
               size="small"
-              theme="primary"
-              onClick={handleAddComment}
-              disabled={submittingComment || !commentText.trim()}
+              theme="default"
+              onClick={handleAIClick}
+              disabled={submittingComment || askingAI}
             >
-              {submittingComment ? '发送中' : '发送'}
+              @AI
+            </Button>
+            <Button
+              size="small"
+              theme="primary"
+              onClick={handleSendComment}
+              disabled={(submittingComment || askingAI) || !commentText.trim()}
+            >
+              {submittingComment || askingAI ? '发送中' : '发送'}
             </Button>
           </div>
         </div>
@@ -297,6 +446,24 @@ export default function TaskDetailPage() {
           </div>
         </div>
       </Popup>
+
+      <Dialog
+        visible={reportVisible}
+        title="🤖 AI 诊断报告"
+        confirmBtn="关闭"
+        onConfirm={() => setReportVisible(false)}
+        content={
+          diagnosisReport
+            ? `<div style="line-height:1.8;text-align:left">
+<h4>📋 根因分析</h4>
+<p>${diagnosisReport.root_cause_analysis || '暂未得出明确根因'}</p>
+${(diagnosisReport.suggested_actions || []).length ? `<h4>💡 建议步骤</h4><ol>${diagnosisReport.suggested_actions!.map((a: string) => `<li>${a}</li>`).join('')}</ol>` : ''}
+${(diagnosisReport.references || []).length ? `<h4>📚 参考来源</h4><ul>${diagnosisReport.references!.map((r: string) => `<li>${r}</li>`).join('')}</ul>` : ''}
+${diagnosisReport.confidence != null ? `<p style="margin-top:12px;color:#999">置信度：${Math.round(diagnosisReport.confidence * 100)}%</p>` : ''}
+</div>`
+            : '暂无诊断数据'
+        }
+      />
     </div>
   );
 }
