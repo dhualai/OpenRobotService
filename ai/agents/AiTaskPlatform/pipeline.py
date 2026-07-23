@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from ai.config import get_ai_config
 from ai.core import get_llm_client, get_memory_manager, get_retrieval_service
+from ai.core.logging import get_logger
 from ai.agents.AiTaskPlatform.schemas import (
     TaskAnalyzeRequest,
     TaskContext,
@@ -33,6 +34,8 @@ from ai.agents.AiTaskPlatform.prompts import (
     SUMMARIZE_FULL_TEMPLATE,
     SUMMARIZE_INCREMENTAL_TEMPLATE,
 )
+
+logger = get_logger(__name__)
 
 
 # ============================================================
@@ -164,7 +167,7 @@ class AiTaskAgent:
                             elapsed_ms=round((time.perf_counter() - t6) * 1000))
 
         total_ms = (time.perf_counter() - t0) * 1000
-        print(f"  [task-agent] analyze total={total_ms:.0f}ms")
+        logger.info(f"analyze total={total_ms:.0f}ms")
 
         # 注入 trace 到返回体
         draft._trace = self._pop_trace()
@@ -689,7 +692,7 @@ class AiTaskAgent:
                 ctx.collected_info = d.get("collected_info") or {}
                 ctx.diagnosis_rounds = d.get("diagnosis_rounds", 0)
         except Exception as e:
-            print(f"  [task-agent] Failed to load task {task_id}: {e}")
+            logger.warning(f"Failed to load task {task_id}: {e}")
 
         return ctx
 
@@ -720,7 +723,7 @@ class AiTaskAgent:
                 await asyncio.gather(troubleshooting_task, history_task, attachment_task)
             )
         except Exception as e:
-            print(f"  [task-agent] Partial analysis failure: {e}")
+            logger.warning(f"Partial analysis failure: {e}")
             if "troubleshooting" not in results:
                 results["troubleshooting"] = "（检索暂不可用）"
             if "history" not in results:
@@ -972,7 +975,7 @@ class AiTaskAgent:
                 problem_summary=problem_summary,
             )
         except Exception as e:
-            print(f"  [task-agent] Solution index failed: {e}")
+            logger.warning(f"Solution index failed: {e}")
 
     @staticmethod
     def _add_diagnosis_comment(task_id: int, draft: "SolutionDraft", created_by: str = "AI任务助手") -> bool:
@@ -1012,7 +1015,7 @@ class AiTaskAgent:
             db.commit()
             return True
         except Exception as e:
-            print(f"  [task-agent] Diagnosis comment failed: {e}")
+            logger.warning(f"Diagnosis comment failed: {e}")
             return False
         finally:
             db.close()

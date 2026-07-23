@@ -13,6 +13,10 @@
 """
 
 import re, os, time as _time
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 from typing import Optional, Dict, List
 
 
@@ -132,9 +136,9 @@ class LogIndex:
                 if fld.get("level") in ("ERROR","WARN","FATAL") or "error" in fld:
                     self._err_lines.append(n)
                 if n % 50000 == 0:
-                    print("  [idx] {:,} lines ({:.0f}s)".format(n, _time.perf_counter()-t0))
+                    logger.info("{:,} lines indexed ({:.0f}s)".format(n, _time.perf_counter()-t0))
         elapsed = _time.perf_counter() - t0
-        print("  [idx] {:,} lines | {} ts | {} robots | {} tasks | {} errors ({:.0f}s)"
+        logger.info("{:,} lines | {} ts | {} robots | {} tasks | {} errors ({:.0f}s)"
               .format(self._total, len(self._ts_idx), len(self._robot_idx),
                       len(self._task_idx), len(self._err_lines), elapsed))
         self._built = True

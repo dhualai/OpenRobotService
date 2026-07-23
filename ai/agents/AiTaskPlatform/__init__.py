@@ -8,7 +8,7 @@
 
     agent = await get_task_agent()
     report = await agent.diagnose("44946")
-    print(report["root_cause_analysis"], report["suggested_actions"])
+    logger.info(f"diagnose: {report.get("root_cause_analysis","")[:80]}")
 """
 
 from ai.agents.AiTaskPlatform.pipeline import AiTaskAgent, get_task_agent
