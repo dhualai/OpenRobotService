@@ -373,15 +373,22 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 真实音量可视化：getUserMedia → AudioContext → AnalyserNode → raf 驱动一排圆点
   const startAudioMonitor = async () => {
     try {
-      // 复用 onVoiceBtnDown 在 pointerdown 手势内预创建并 resume 的 AudioContext（手机端必需）
+      // 复用 onVoiceBtnDown 在 pointerdown 手势内预创建的 AudioContext（手机端必需）
       const ctx = audioContextRef.current ?? new AudioContext();
-      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      if (ctx.state === 'suspended') await ctx.resume(); // 必须 running，否则 graph 不渲染
       audioContextRef.current = ctx;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micStreamRef.current = stream;
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 64;
-      ctx.createMediaStreamSource(stream).connect(analyser);
+      const src = ctx.createMediaStreamSource(stream);
+      src.connect(analyser);
+      // 关键：analyser 必须连到 destination 才能驱动 graph 渲染，否则 getByteFrequencyData 恒为 0；
+      // 中间插一个静音 gain，避免把麦克风声音回放出来（啸叫）
+      const mute = ctx.createGain();
+      mute.gain.value = 0;
+      analyser.connect(mute);
+      mute.connect(ctx.destination);
       analyserRef.current = analyser;
       const bins = new Uint8Array(analyser.frequencyBinCount);
       const tick = () => {
