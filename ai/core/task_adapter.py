@@ -14,7 +14,7 @@ legacy tickets 表，本模块让 AI 改为读写 tasks 表，与 backend 工单
 """
 import hashlib
 
-from app.core.database import SessionLocal
+from app.core.db import SessionLocal
 from app.models.task import Task, TaskStatus, TaskPriority, TaskType
 
 
@@ -95,6 +95,10 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
     if ticket.get("type") == "feature" and ticket.get("source"):
         meta["feature_source"] = ticket["source"]
 
+    ext_id = _external_id_for(ticket.get("session_id", ""))
+    # 同一会话多次转单时，ticket_seq 确保 external_id 唯一
+    if ticket.get("ticket_seq"):
+        ext_id = f"{ext_id}#{ticket['ticket_seq']}"
     return {
         "title": ticket.get("title", "") or "",
         "description": ticket.get("description", "") or "",
@@ -103,7 +107,7 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
         "status": TaskStatus.PENDING,
         "created_by": created_by or "system",
         "source": AI_SOURCE,
-        "external_id": _external_id_for(ticket.get("session_id", "")),
+        "external_id": ext_id,
         "external_url": None,
         "attachments": ticket.get("attachments") or [],
         "tags": ["ai_generated"],

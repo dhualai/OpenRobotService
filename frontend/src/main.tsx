@@ -94,6 +94,7 @@ const MainLayout = lazyImport(() => import('@/shared/components/MainLayout'));
 const CallView = lazyImport(() => import('@/pages/call/CallView'));
 const TicketDetailPage = lazyImport(() => import('@/pages/call/TicketDetailPage'));
 const TasksView = lazyImport(() => import('@/pages/tasks/TasksView'));
+const TaskDetailPage = lazyImport(() => import('@/pages/tasks/TaskDetailPage'));
 
 const Dashboard = lazyImport(() => import('@/pages/admin/Dashboard'));
 const AdminEntries = lazyImport(() => import('@/pages/admin/AdminEntries'));
@@ -126,6 +127,7 @@ const RoleManage = lazyImport(() => import('@/pages/admin/RoleManage'));
 const PermissionManage = lazyImport(() => import('@/pages/admin/PermissionManage'));
 const ResourceManage = lazyImport(() => import('@/pages/admin/ResourceManage'));
 const DailyReportManage = lazyImport(() => import('@/pages/admin/DailyReportManage'));
+const DailySummaryAgent = lazyImport(() => import('@/pages/admin/DailySummaryAgent'));
 const WechatManage = lazyImport(() => import('@/pages/admin/WechatManage'));
 
 const router = createBrowserRouter([
@@ -146,7 +148,7 @@ const router = createBrowserRouter([
           { path: 'call', element: <CallView /> },
           { path: 'call/ticket/:id', element: <TicketDetailPage /> },
           { path: 'tasks', element: <TasksView /> },
-          { path: 'tasks/:id', element: <TasksView /> },
+          { path: 'tasks/:id', element: <TaskDetailPage /> },
           {
             path: 'admin',
             element: <Outlet />,
@@ -165,6 +167,7 @@ const router = createBrowserRouter([
                   { path: 'ticket-monitor', element: <TicketMonitor /> },
                   { path: 'project-progress', element: <ProjectProgress /> },
                   { path: 'daily-reports', element: <DailyReportManage /> },
+                  { path: 'daily-summary', element: <DailySummaryAgent /> },
 
                   // === 次级功能 ===
                   { path: 'dashboard', element: <ProjectMetrics /> },
@@ -196,7 +199,6 @@ const router = createBrowserRouter([
       { path: '/call/ai-chat', element: <Navigate to="/call" replace /> },
       { path: '/call/new-ticket', element: <Navigate to="/call" replace /> },
       { path: '/tasks', element: <Navigate to="/tasks" replace /> },
-      { path: '/tasks/:id', element: <Navigate to="/tasks" replace /> },
       { path: '/admin', element: <Navigate to="/admin" replace /> },
       { path: '/admin/*', element: <Navigate to="/admin" replace /> },
       { path: '/home', element: <Navigate to="/call" replace /> },

@@ -17,6 +17,9 @@ from dataclasses import dataclass, field
 from ai.config import get_ai_config
 from ai.exceptions import AITimeoutError, LowConfidenceError, ServiceUnavailableError, RetrieveEmptyError
 from ai.core import get_llm_client, get_retrieval_service, get_memory_manager
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================
@@ -42,6 +45,8 @@ class AgentState:
     diagnosis_rounds: int = 0
     phase: str = "idle"           # idle | diagnosing | escalated | resolved
     original_query: str = ""
+    last_submitted_ticket: dict = field(default_factory=dict)  # 上一个已提交工单的摘要
+    ticket_seq: int = 0  # 工单序号，同一会话多次转单时自增，确保 external_id 唯一
 
 
 # ============================================================
@@ -61,6 +66,8 @@ def _load_agent_state(metadata: dict) -> Optional[AgentState]:
         diagnosis_rounds=s.get("diagnosis_rounds", 0),
         phase=s.get("phase", "idle"),
         original_query=s.get("original_query", ""),
+        last_submitted_ticket=s.get("last_submitted_ticket", {}),
+        ticket_seq=s.get("ticket_seq", 0),
     )
 
 
@@ -75,6 +82,8 @@ def _save_agent_state(memory, state: AgentState) -> None:
         "diagnosis_rounds": state.diagnosis_rounds,
         "phase": state.phase,
         "original_query": state.original_query,
+        "last_submitted_ticket": state.last_submitted_ticket,
+        "ticket_seq": state.ticket_seq,
         "attachments": existing.get("attachments", []),  # 保留上传的附件
     }
 
@@ -93,10 +102,31 @@ def _agent_state_summary(state: AgentState) -> dict:
 # Agent 推理 Prompt
 # ============================================================
 
-DIAGNOSIS_PROMPT = """你是工业移动机器人（AGV/AMR）领域的技术支持专家。
+DIAGNOSIS_PROMPT = """你是「摇人吧」微信服务号的 AI 诊断助手，面向 AGV/AMR（工业移动机器人）行业的技术支持专家。
+你的服务对象是现场工程师、客户和项目管理人员。
+
 所服务的产品是 USP（Universal Scheduling Platform）大调度系统，用于 AGV/AMR 的调度管理、车辆管理、设备管理、地图编辑与监控运维。
-USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁提及"手机""移动端""APP"等移动端概念。
-严禁给出手机、电脑等消费电子产品的通用回答，严禁超出 AGV/AMR 领域。
+USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在操作指引中提及"手机""移动端""APP"等概念——USP 只有 PC 浏览器版。
+严禁给出手机、电脑等消费电子产品的通用回答，严禁超出 AGV/AMR 和 USP 领域。
+
+## 服务号三个入口
+关注微信服务号 **「摇人吧」** 后，底部三个菜单：
+- 🆘 **我要摇人**：报障提单、AI 在线诊断——你主要在这里
+- 📥 **系统任务**：统一任务收件箱，处理工单——你在这里辅助工程师生成方案草稿
+- 📊 **后台管理**：跨项目看板、风险管理、数据统计——你在这里提供分析建议
+
+## 你的能力
+1. **在线诊断**：查知识库 → FAQ 有答案直接答 → 没有就逐步排查 → 搞不定自动转工单
+2. **协助工程师**：接到工单后自动生成解决方案草稿（根因分析 + 建议步骤 + 参考资料）
+3. **记住对话**：每一轮都会记录原始问题、已排除原因、当前推测、已收集信息，用于缩小诊断范围，转工单时一并交给工程师
+如果以上都找不到答案，告知用户手册未覆盖、建议转工单，**不会编造答案**。
+
+## 平台用户角色
+- customer（客户/现场人员）：报障、咨询、看自己的工单
+- engineer（实施工程师）：接单处理、转派、上报
+- manager（项目经理）：派单、看本项目所有工单
+- leader（上级领导）：接收上报、看全局
+- admin（系统管理员）：全部权限
 
 ## 知识库使用优先级（极其重要）
 知识库中有五类 chunk，按以下优先级使用：
@@ -112,6 +142,13 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁提�
 
 ⚠️ **关键**：各知识源不互斥！先看 FAQ/车端错误码有没有现成答案，有就直接用；都没有的故障才走排查树。
 
+## ⛔ 转工单规则（优先级最高，优先于所有意图判断）
+
+用户消息中含"转工单""转单""生成工单""提交工单""提单""不想排查"等关键词时：
+→ **立即执行**：action 必须设为 "submit"，不要设为 "answer"。
+→ 回复只需一句话："好的，已为你生成工单，工程师会尽快处理。"
+→ 禁止做任何其他事：不要描述工单内容、不要总结排查结果、不要反问、不要排查、不要给建议。
+
 ## 意图判断（决定回复风格，不影响知识源选择）
 - **howto（操作咨询）**：用户问"怎么做/怎么上线/怎么配置/步骤/流程"等。直接 answer，不追问不假设故障。
   知识库没涉及的细节如实说"手册未覆盖"，不要自己编步骤。
@@ -126,9 +163,7 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁提�
   **都没有时**：列出可能原因，引导用户逐项验证。看 hypotheses/collected_info/ruled_out 推进排查。有明确怀疑直接让用户试（如"重启一下控制器看是否恢复"）。排查不出转工单。
   ⚠️ 知识库中有相关截图/示意图时，**必须引用**到回答中帮助用户定位。
 
-- **chat（闲聊/问候）**：简单回应，引导用户描述具体问题。
-
-- **转工单**：用户说"转工单""转单""生成工单""提交工单"或类似表述时，action 设为 answer，直接告知用户工单将基于当前诊断信息生成，不要开始新的排查。不要引用 prompt 示例中的任何内容。
+- **chat（闲聊/问候）**：简单回应，不要追问技术问题。用户说"好的""谢谢""感谢"是对话收尾，回复"不客气，有问题随时找我"即可。禁止顺势开始排查或反问用户。
 
 ## 重要规则
 - 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：`、`FAQ N：`、`🔍 故障排查树 N：`、`🚗 车端错误码 N：` 或 `🌐 翻译表 N：` 中标明。
@@ -169,14 +204,17 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁提�
 ## 对话
 {conversation}
 
+## 上一个工单上下文
+{last_ticket_context}
+
 ## 状态：问题={problem_summary} | 已收集={collected_info} | 已排除={ruled_out} | 推测={hypotheses}
 ## 知识库：{reference_docs}
 ## 第{round}轮
 
 ---
-输出 JSON：
+输出 JSON（如果用户要求转工单，action 必须是 submit 不是 answer）：
 ```json
-{{"action":"answer|ask","intent":"howto|troubleshoot|chat","state_update":{{"problem_summary":"概述","ruled_out":[],"hypotheses":[],"collected_info":{{}}}}}}
+{{"action":"answer|ask|submit","intent":"howto|troubleshoot|chat","state_update":{{"problem_summary":"概述","ruled_out":[],"hypotheses":[],"collected_info":{{}}}}}}
 ```
 JSON 之后直接写回复。语气像工程师。引用图片时用 ![说明](url) 格式。"""
 
@@ -256,15 +294,15 @@ class AiDiagnosisPlatform:
         if self._llm_client is None:
             t0 = time.perf_counter()
             self._llm_client = await get_llm_client()
-            print(f"  [T]  [init] LLM client: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            logger.debug(f"LLM client 初始化: {(time.perf_counter() - t0) * 1000:.0f}ms")
         if self._retriever is None:
             t0 = time.perf_counter()
             self._retriever = await get_retrieval_service()
-            print(f"  [T]  [init] Retriever: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            logger.debug(f"Retriever 初始化: {(time.perf_counter() - t0) * 1000:.0f}ms")
         if self._memory_manager is None:
             t0 = time.perf_counter()
             self._memory_manager = await get_memory_manager()
-            print(f"  [T]  [init] MemoryManager: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            logger.debug(f"MemoryManager 初始化: {(time.perf_counter() - t0) * 1000:.0f}ms")
 
     # ================================================================
     # run — 统一入口（纯 Agent）
@@ -273,7 +311,14 @@ class AiDiagnosisPlatform:
         t0 = time.perf_counter()
         await self._ensure_clients()
         t_init = (time.perf_counter() - t0) * 1000
-        memory = await self._memory_manager.get_memory(request.session_id)
+        try:
+            memory = await asyncio.wait_for(
+                self._memory_manager.get_memory(request.session_id), timeout=3.0,
+            )
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"[agent] get_memory 超时/失败，使用空记忆: {e}")
+            from ai.core.memory import SessionMemory
+            memory = SessionMemory(session_id=request.session_id)
         agent_state = _load_agent_state(memory.metadata)
 
         if agent_state is None:
@@ -285,27 +330,69 @@ class AiDiagnosisPlatform:
             )
             _save_agent_state(memory, agent_state)
             await self._memory_manager.save_memory(memory)
+        elif agent_state.phase in ("idle", "resolved") and not agent_state.problem_summary:
+            # 上一轮工单已提交、诊断状态已清空 → 全新话题
+            agent_state.phase = "idle"
+            agent_state.original_query = request.query
+            agent_state.problem_summary = request.query
+            _save_agent_state(memory, agent_state)
+            await self._memory_manager.save_memory(memory)
 
         result = await self._agent_think(request, agent_state, memory)
         total_ms = (time.perf_counter() - t0) * 1000
-        print(f"  [T]  [run] total={total_ms:.0f}ms (init={t_init:.0f}ms)")
+        logger.debug(f"[run] total={total_ms:.0f}ms init={t_init:.0f}ms")
         return result
 
     # ================================================================
     # Agent 推理循环（共用方法）
     # ================================================================
 
+    @staticmethod
+    def _escape_format(s: str) -> str:
+        """转义 .format() 特殊字符：{ → {{, } → }}"""
+        return s.replace("{", "{{").replace("}", "}}")
+
     def _build_diagnosis_prompt(self, state: AgentState, memory, reference_docs: str) -> str:
         conversation_text = self._format_conversation(memory)
-        return DIAGNOSIS_PROMPT.format(
-            problem_summary=state.problem_summary or "（待分析）",
-            collected_info=json.dumps(state.collected_info, ensure_ascii=False) if state.collected_info else "（暂无）",
-            ruled_out="、".join(state.ruled_out) if state.ruled_out else "（暂无）",
-            hypotheses="、".join(state.hypotheses) if state.hypotheses else "（待推断）",
-            conversation=conversation_text,
-            reference_docs=reference_docs,
-            round=state.diagnosis_rounds,
-        )
+        last_ticket = state.last_submitted_ticket
+        if last_ticket and last_ticket.get("ticket_id"):
+            last_ticket_context = (
+                f"用户刚才提交了工单「{last_ticket.get('title', '')}」（ID: {last_ticket.get('ticket_id', '')}），"
+                f"问题概述：{last_ticket.get('topic', '')}。\n"
+                f"⚠️ 如果用户接下来的消息是补充这个工单的信息（以\"补充\"开头、截图、日志、额外描述等），"
+                f"你的回复只能确认收到并告知已补充到工单，一句话就够了。输出 JSON 时使用 intent=\"follow_up\"，"
+                f"action=\"answer\"，不要设置新的 problem_summary，不要再提问、不要开始排查、不要给建议，"
+                f"不要反问用户任何问题。\n"
+                f"⚠️ 如果用户描述的是新的、不相关的问题，说明上一个工单已结束，"
+                f"请忽略上一个工单，按正常诊断流程处理（intent=\"troubleshoot\" 或 \"howto\"）。"
+            )
+        else:
+            last_ticket_context = "（无）"
+        try:
+            return DIAGNOSIS_PROMPT.format(
+                problem_summary=self._escape_format(state.problem_summary or "（待分析）"),
+                collected_info=self._escape_format(
+                    json.dumps(state.collected_info, ensure_ascii=False) if state.collected_info else "（暂无）"
+                ),
+                ruled_out=self._escape_format("、".join(state.ruled_out) if state.ruled_out else "（暂无）"),
+                hypotheses=self._escape_format("、".join(state.hypotheses) if state.hypotheses else "（待推断）"),
+                conversation=self._escape_format(conversation_text),
+                reference_docs=self._escape_format(reference_docs),
+                round=state.diagnosis_rounds,
+                last_ticket_context=self._escape_format(last_ticket_context),
+            )
+        except Exception:
+            logger.error(
+                f"Prompt 格式化失败 (round={state.diagnosis_rounds}): "
+                f"ref_docs_len={len(reference_docs)}, conv_len={len(conversation_text)}",
+                exc_info=True,
+            )
+            # 降级：用最简单的 prompt 保证不中断服务
+            return (
+                f"请根据以下对话回答用户问题。你是AGV/AMR领域的技术支持专家。\n\n"
+                f"## 对话\n{conversation_text}\n\n"
+                f"请直接回复，不要输出JSON。"
+            )
 
     def _apply_state_update(self, state: AgentState, state_update: dict) -> None:
         if not state_update:
@@ -333,6 +420,8 @@ class AiDiagnosisPlatform:
     def _apply_action_phase(self, state: AgentState, action: str) -> None:
         if action == "answer":
             state.phase = "resolved"
+        elif action == "submit":
+            state.phase = "escalated"
 
     async def _finalize_diagnosis(self, session_id: str, state: AgentState,
                                     thinking: str, action: str, message: str,
@@ -360,6 +449,7 @@ class AiDiagnosisPlatform:
     async def _agent_think(self, request: DiagnosisRequest, state: AgentState, memory) -> dict:
         t = {}  # timing 字典，所有值单位 ms
         t0 = time.perf_counter()
+        logger.info(f"[agent] 开始推理: session={request.session_id[:8]}, query={request.query[:50]}, round={state.diagnosis_rounds}")
 
         t1 = time.perf_counter()
         memory = await self._memory_manager.add_turn(request.session_id, "user", request.query)
@@ -367,6 +457,11 @@ class AiDiagnosisPlatform:
 
         state.diagnosis_rounds += 1
         state.phase = "diagnosing"
+
+        # 记录本轮开始前是否已有已提交的工单
+        was_post_submit = bool(
+            state.last_submitted_ticket and state.last_submitted_ticket.get("ticket_id")
+        )
 
         # 指代消解："然后呢"等省略表达 → 用上文补全为完整查询
         resolved_query, _ = await self._memory_manager.resolve_pronoun(
@@ -376,7 +471,7 @@ class AiDiagnosisPlatform:
         t_retrieve_start = time.perf_counter()
         reference_docs = (
             "（跳过检索）" if request.skip_retrieval
-            else await self._retrieve_with_context(request.session_id, state, resolved_query)
+            else await self._retrieve_with_context(request.session_id, state, resolved_query, memory.turns)
         )
         t["retrieve"] = round((time.perf_counter() - t_retrieve_start) * 1000)
         t["retrieve_docs_len"] = len(reference_docs)
@@ -385,6 +480,7 @@ class AiDiagnosisPlatform:
         prompt = self._build_diagnosis_prompt(state, memory, reference_docs)
         t["build_prompt"] = round((time.perf_counter() - t_prompt_start) * 1000)
         t["prompt_chars"] = len(prompt)
+        logger.info(f"[agent] prompt构建完成: {t['prompt_chars']} chars, retrieve={t['retrieve']}ms")
 
         t_llm_start = time.perf_counter()
         try:
@@ -392,9 +488,11 @@ class AiDiagnosisPlatform:
                 self._llm_client.complete(prompt=prompt, max_tokens=1500, temperature=0.5),
                 timeout=25.0,
             )
-        except (asyncio.TimeoutError, AITimeoutError, ServiceUnavailableError, Exception):
+            logger.info(f"[agent] LLM返回: {len(raw)} chars, 前80字={raw[:80]}")
+        except (asyncio.TimeoutError, AITimeoutError, ServiceUnavailableError, Exception) as e:
             t["llm_agent"] = round((time.perf_counter() - t_llm_start) * 1000)
             t["total"] = round((time.perf_counter() - t0) * 1000)
+            logger.error(f"[agent] LLM调用失败: {type(e).__name__}: {e}", exc_info=True)
             return {
                 "type": "diagnosis",
                 "thinking": "",
@@ -404,20 +502,61 @@ class AiDiagnosisPlatform:
                 "timing": t,
             }
         t["llm_agent"] = round((time.perf_counter() - t_llm_start) * 1000)
-        print(f"  [T]  [llm] agent call: {t['llm_agent']}ms (prompt {t.get('prompt_chars', '?')} chars, max_tokens=1500)")
+        logger.debug(f"[llm] agent call: {t['llm_agent']}ms prompt={t.get('prompt_chars','?')}chars")
 
         t_parse_start = time.perf_counter()
         parsed = self._parse_agent_output(raw)
+        logger.info(f"[agent] 解析结果: action={parsed['action']}, message_len={len(parsed['message'])}, "
+                    f"message前50字={parsed['message'][:50]}")
         self._apply_state_update(state, parsed["state_update"])
         self._apply_action_phase(state, parsed["action"])
         t["parse_output"] = round((time.perf_counter() - t_parse_start) * 1000)
+
+        # ---- 服务端兜底：用户消息含转工单关键词 → 强制提单 ----
+        _force_submit_kw = ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转")
+        if parsed["action"] != "submit" and any(
+            kw in request.query for kw in _force_submit_kw
+        ):
+            logger.info(f"[agent] 服务端兜底提单: query={request.query[:40]}")
+            parsed["action"] = "submit"
+
+        # ---- 自动提单：LLM 输出 action=submit 时直接生成工单 ----
+        ticket_data = None
+        if parsed["action"] == "submit":
+            try:
+                ticket_data = await self.submit(request.session_id, created_by="")
+                logger.info(f"[agent] 自动提单成功: session={request.session_id[:8]}, "
+                            f"ticket={ticket_data.get('data', {}).get('ticket', {}).get('ticket_id', '?')}")
+                # submit() 已清空诊断状态并保存，刷新本地 state 避免 _finalize_diagnosis 覆写旧状态
+                memory = await self._memory_manager.get_memory(request.session_id)
+                state = _load_agent_state(memory.metadata) or state
+            except Exception as e:
+                logger.error(f"[agent] 自动提单失败: session={request.session_id[:8]}, error={e}", exc_info=True)
+
+        # ---- 补充工单：post-submit 时判断是否为补充信息 → 更新 MySQL 工单 ----
+        _is_follow_up = parsed.get("intent") == "follow_up" or (
+            was_post_submit and parsed["action"] == "answer"
+            and parsed.get("intent") not in ("troubleshoot", "howto", "chat")
+        )
+        if _is_follow_up:
+            try:
+                appended = await self._append_to_ticket(
+                    request.session_id, text=f"用户补充：{request.query}"
+                )
+                if appended:
+                    logger.info(f"[agent] 补充信息已追加到工单: session={request.session_id[:8]}")
+            except Exception as e:
+                logger.error(f"[agent] 补充工单失败: {e}", exc_info=True)
 
         t["total"] = round((time.perf_counter() - t0) * 1000)
         result = await self._finalize_diagnosis(
             request.session_id, state,
             parsed["thinking"], parsed["action"], parsed["message"],
             streaming=False)
+        if ticket_data:
+            result["ticket"] = ticket_data
         result["timing"] = t
+        logger.info(f"[agent] 推理完成: total={t['total']}ms, message_len={len(parsed['message'])}")
         return result
 
     # ================================================================
@@ -426,11 +565,15 @@ class AiDiagnosisPlatform:
     _CACHE_TTL = 60  # 秒
 
     async def _retrieve_with_context(self, session_id: str, state: AgentState,
-                                      resolved_query: str = "") -> str:
+                                      resolved_query: str = "",
+                                      user_turns: list = None) -> str:
         t0 = time.perf_counter()
+        logger.info(f"[retrieve] 进入检索: session={session_id[:8]}")
         try:
-            memory = await self._memory_manager.get_memory(session_id)
-            user_msgs = [t["content"] for t in memory.turns if t["role"] == "user"][-4:]
+            # 直接用外部传入的 turns，不再内部调 get_memory()——避免重复 I/O 挂起
+            if user_turns is None:
+                user_turns = []
+            user_msgs = [t["content"] for t in user_turns if t.get("role") == "user"][-4:]
             search_query = " ".join(user_msgs) if user_msgs else state.original_query
             # 指代消解后的完整查询优先，语义更明确
             if resolved_query:
@@ -445,10 +588,10 @@ class AiDiagnosisPlatform:
             cache_key = search_query[:200]
             cached = self._retrieval_cache.get(cache_key)
             if cached and time.time() - cached["ts"] < self._CACHE_TTL:
-                print(f"  [T]  [retrieve] cache hit, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+                logger.debug(f"[retrieve] cache hit: {(time.perf_counter() - t0) * 1000:.0f}ms")
                 return cached["result"]
 
-            # 正常检索流程：五路并行
+            # 正常检索流程：六路并行（含平台FAQ）
             config = get_ai_config()
             manual_task = asyncio.wait_for(
                 self._retriever.retrieve(search_query, top_k=config.retrieval_top_k),
@@ -470,13 +613,22 @@ class AiDiagnosisPlatform:
                 self._retriever.retrieve_translation(search_query, top_k=2),
                 timeout=10.0,
             )
-
-            gathered = await asyncio.gather(
-                manual_task, faq_task, troubleshooting_task,
-                cheduan_task, translation_task,
-                return_exceptions=True,
+            platform_faq_task = asyncio.wait_for(
+                self._retriever.retrieve_platform_faq(search_query, top_k=2),
+                timeout=10.0,
             )
-            manual_results, faq_results, troubleshooting_results, cheduan_results, translation_results = gathered
+
+            logger.info(f"[retrieve] 开始六路并行检索: query={search_query[:60]}...")
+            gathered = await asyncio.wait_for(
+                asyncio.gather(
+                    manual_task, faq_task, troubleshooting_task,
+                    cheduan_task, translation_task, platform_faq_task,
+                    return_exceptions=True,
+                ),
+                timeout=20.0,
+            )
+            logger.info(f"[retrieve] 六路检索完成")
+            manual_results, faq_results, troubleshooting_results, cheduan_results, translation_results, platform_faq_results = gathered
 
             # 单路失败不拖垮全部：只丢弃异常的那一路
             if isinstance(manual_results, BaseException):
@@ -489,6 +641,8 @@ class AiDiagnosisPlatform:
                 cheduan_results = []
             if isinstance(translation_results, BaseException):
                 translation_results = []
+            if isinstance(platform_faq_results, BaseException):
+                platform_faq_results = []
 
             results, _ = manual_results  # unpack (results, top1_score)
 
@@ -501,6 +655,14 @@ class AiDiagnosisPlatform:
                 a = r.content or ""
                 if a.strip():
                     docs.append(f"---\nFAQ {idx}：{q}\n{a}\n---")
+                    idx += 1
+
+            # 平台 FAQ（服务号自身介绍，如工单类型/角色/流转等）
+            for r in (platform_faq_results or []):
+                q = r.title or ""
+                a = r.content or ""
+                if a.strip():
+                    docs.append(f"---\n📋 平台FAQ {idx}：{q}\n{a}\n---")
                     idx += 1
 
             # 车端错误码
@@ -578,15 +740,19 @@ class AiDiagnosisPlatform:
             if len(self._retrieval_cache) > 200:
                 oldest = min(self._retrieval_cache, key=lambda k: self._retrieval_cache[k]["ts"])
                 del self._retrieval_cache[oldest]
-            print(f"  [T]  [retrieve] total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            logger.debug(f"[retrieve] total: {(time.perf_counter() - t0) * 1000:.0f}ms")
             return result
 
         except ServiceUnavailableError as e:
-            print(f"  [T]  [retrieve] ServiceUnavailable: {e}, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            logger.warning(f"[retrieve] ServiceUnavailable: {e}")
+            logger.warning(f"检索服务不可用: session={session_id[:8]}, error={e}")
         except LowConfidenceError as e:
-            print(f"  [T]  [retrieve] LowConfidence: score={e.confidence:.3f} threshold={self.config.retrieval_score_threshold}, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            thr = getattr(self, '_score_threshold', get_ai_config().retrieval_score_threshold)
+            logger.warning(f"[retrieve] LowConfidence: score={e.confidence:.3f} threshold={thr}")
+            logger.warning(f"检索置信度过低: session={session_id[:8]}, score={e.confidence:.3f}")
         except (asyncio.TimeoutError, ConnectionError, RetrieveEmptyError):
-            print(f"  [T]  [retrieve] failed/timed-out, total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            logger.warning(f"[retrieve] 超时/失败: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            logger.warning(f"检索超时/失败: session={session_id[:8]}")
         return "（知识库检索失败，请告知用户当前系统检索异常、建议稍后重试或转工单处理，不要自己编造答案。）"
 
     # ================================================================
@@ -623,7 +789,8 @@ class AiDiagnosisPlatform:
             raw = await self._llm_client.complete(prompt=prompt, max_tokens=600, temperature=0.2)
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
             analysis = json.loads(clean)
-        except Exception:
+        except Exception as e:
+            logger.error(f"LLM 工单生成失败（将使用默认值）: session={session_id}, error={e}", exc_info=True)
             analysis = {}
 
         ticket_type = analysis.get("type", "other")
@@ -684,70 +851,96 @@ class AiDiagnosisPlatform:
         agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
         ticket = await self._build_ticket(session_id, agent_state, memory)
 
-        # ---- 存储到 tasks 表（source='ai'，按 session_id 幂等 upsert）----
+        # 同一会话多次转单：ticket_seq 自增，确保 external_id 唯一（不同话题各自独立工单）
+        agent_state.ticket_seq += 1
+        ticket["ticket_seq"] = agent_state.ticket_seq
+
+        # ---- 存储到 tasks 表（source='ai'，按 (source, external_id) 幂等 upsert）----
         db_id = 0
         try:
             from ai.core.task_adapter import upsert_task
             record = upsert_task(ticket, created_by=created_by)
             db_id = record.id
             ticket["db_id"] = db_id
+            logger.info(f"工单已入库: session_id={session_id}, db_id={db_id}, seq={agent_state.ticket_seq}, "
+                        f"title={ticket.get('title', '')}, type={ticket.get('type', '')}")
         except Exception as e:
+            logger.error(f"MySQL 工单写入失败: session_id={session_id}, error={e}", exc_info=True)
             print(f"  ⚠️ MySQL 写入失败: {e}")
 
         agent_state.phase = "resolved"
+        # 记住上一个工单（供后续对话判断"补充信息"还是"新话题"）
+        agent_state.last_submitted_ticket = {
+            "ticket_id": ticket.get("ticket_id", ""),
+            "db_id": db_id,
+            "title": ticket.get("title", ""),
+            "topic": agent_state.problem_summary,
+            "submitted_at": int(time.time()),
+        }
+        # 清空诊断状态——下一轮自动开始新诊断
+        agent_state.problem_summary = ""
+        agent_state.ruled_out = []
+        agent_state.hypotheses = []
+        agent_state.collected_info = {}
+        agent_state.diagnosis_rounds = 0
+        agent_state.original_query = ""
         _save_agent_state(memory, agent_state)
         await self._memory_manager.save_memory(memory)
 
+        # ---- 加入待派单池（后台 Worker 定时扫描并派单）----
         try:
             await self._memory_manager.add_pending_ticket(session_id)
-        except Exception:
-            pass
-
-        # ---- 智能派单推荐 ----
-        try:
-            from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket
-            print(f"\n{'='*50}")
-            print(f"[派单] 工单「{ticket.get('title', '')}」自动派单中...")
-            _result = await assign_ticket(
-                ticket_id=str(db_id or ticket["ticket_id"]),
-                title=ticket.get("title", ""),
-                problem_description=ticket.get("description", ""),
-                status="pending_dispatch",
-                priority=ticket.get("priority", "中"),
-                ticket_type=ticket.get("type", "other"),
-                session_id=session_id,
-                source="ai_agent",
-                location=ticket.get("location", ""),
-                robot_type=ticket.get("robot_type", ""),
-                fault_code=ticket.get("fault_code", ""),
-                special_notes=ticket.get("special_notes", ""),
-                diagnosis_hypotheses=agent_state.hypotheses,
-                diagnosis_ruled_out=agent_state.ruled_out,
-                diagnosis_collected_info=agent_state.collected_info,
-                diagnosis_rounds=agent_state.diagnosis_rounds,
-                contact=ticket.get("contact", ""),
-            )
-            ticket["assignee"] = _result.engineer_name
-            ticket["assignee_id"] = _result.engineer_id
-            ticket["assign_confidence"] = _result.confidence_score
-            ticket["assign_reasoning"] = _result.reasoning
-            ticket["assign_decision_type"] = _result.decision_type
-            print(f"[派单] ✅ 已自动分派 → {_result.engineer_name} (ID:{_result.engineer_id})")
-            print(f"[派单]    置信度: {_result.confidence_score:.0%} | 决策: {_result.decision_type}")
-            print(f"[派单]    理由: {_result.reasoning[:120]}")
-            print(f"{'='*50}\n")
-        except Exception as _e:
-            print(f"  ⚠️ 智能派单失败（不阻塞工单生成）: {_e}")
+            logger.info(f"工单已加入待派单池: session_id={session_id}, db_id={db_id}")
+        except Exception as e:
+            logger.warning(f"加入待派单池失败: session_id={session_id}, error={e}")
 
         return {
             "type": "ticket",
             "data": {
                 "ticket": ticket,
                 "db_id": db_id,
-                "notice": "工单已生成并保存。",
+                "notice": "工单已生成并保存，等待自动派单。",
             },
             "agent_state": _agent_state_summary(agent_state),
         }
+
+    async def _append_to_ticket(self, session_id: str, text: str = "",
+                                attachments: list = None) -> bool:
+        """将补充信息追加到已提交的工单（更新 MySQL tasks 表）。"""
+        try:
+            from ai.core.task_adapter import _external_id_for, AI_SOURCE
+            from app.core.db import SessionLocal
+            from app.models.task import Task
+
+            db = SessionLocal()
+            try:
+                # 找到该会话最新的工单（external_id 格式: session_id 或 session_id#seq）
+                ext_prefix = _external_id_for(session_id)
+                task = db.query(Task).filter(
+                    Task.source == AI_SOURCE,
+                    Task.external_id.like(f"{ext_prefix}%"),
+                ).order_by(Task.created_at.desc()).first()
+                if not task:
+                    logger.warning(f"[append_ticket] 未找到工单: session={session_id[:8]}")
+                    return False
+
+                if text:
+                    task.description = (task.description or "") + f"\n[补充] {text}"
+
+                if attachments:
+                    existing = list(task.attachments or [])
+                    existing.extend(attachments)
+                    task.attachments = existing
+
+                db.commit()
+                logger.info(f"[append_ticket] 工单已更新: session={session_id[:8]}, "
+                            f"db_id={task.id}, text_len={len(text)}, attach={len(attachments or [])}")
+                return True
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"[append_ticket] 更新工单失败: session={session_id[:8]}, error={e}", exc_info=True)
+            return False
 
     async def _push_to_dispatch(self, ticket: dict) -> bool:
         dispatch_url = getattr(self.config, 'dispatch_api_url', '')
@@ -786,6 +979,7 @@ class AiDiagnosisPlatform:
         text = raw.strip()
         thinking = ""
         action = "ask"
+        intent = ""
         state_update = {}
         message = text
         json_end = 0  # JSON 区域结束位置
@@ -808,8 +1002,9 @@ class AiDiagnosisPlatform:
                 data = json.loads(json_str)
                 thinking = data.get("thinking", "")
                 action = data.get("action", "ask").strip().lower()
-                if action not in ("answer", "ask"):
+                if action not in ("answer", "ask", "submit"):
                     action = "ask"
+                intent = data.get("intent", "").strip().lower()
                 state_update = data.get("state_update", {})
             except (json.JSONDecodeError, Exception):
                 pass
@@ -837,9 +1032,15 @@ class AiDiagnosisPlatform:
             else:
                 message = "抱歉，我未能正确生成回复，请重新描述您的问题。"
 
+        # 最终兜底：message 为空时给一个有意义的默认回复
+        if not message or not message.strip():
+            logger.warning(f"[parse] 解析后 message 为空! raw前100字={text[:100]}")
+            message = "抱歉，我未能正确生成回复，请重新描述您的问题。"
+
         return {
             "thinking": thinking,
             "action": action,
+            "intent": intent,
             "message": message,
             "state_update": state_update,
         }
@@ -850,9 +1051,16 @@ class AiDiagnosisPlatform:
     async def run_stream(self, request: DiagnosisRequest):
         t_req = time.perf_counter()
         await self._ensure_clients()
-        memory = await self._memory_manager.get_memory(request.session_id)
+        try:
+            memory = await asyncio.wait_for(
+                self._memory_manager.get_memory(request.session_id), timeout=3.0,
+            )
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"[stream] get_memory 超时/失败，使用空记忆: {e}")
+            from ai.core.memory import SessionMemory
+            memory = SessionMemory(session_id=request.session_id)
         agent_state = _load_agent_state(memory.metadata)
-        print(f"  [T]  [overhead] init+redis={(time.perf_counter() - t_req)*1000:.0f}ms")
+        logger.debug(f"[overhead] init+redis={(time.perf_counter() - t_req)*1000:.0f}ms")
 
         if agent_state is None:
             agent_state = AgentState(
@@ -863,6 +1071,13 @@ class AiDiagnosisPlatform:
             )
             _save_agent_state(memory, agent_state)
             await self._memory_manager.save_memory(memory)
+        elif agent_state.phase in ("idle", "resolved") and not agent_state.problem_summary:
+            # 上一轮工单已提交、诊断状态已清空 → 全新话题
+            agent_state.phase = "idle"
+            agent_state.original_query = request.query
+            agent_state.problem_summary = request.query
+            _save_agent_state(memory, agent_state)
+            await self._memory_manager.save_memory(memory)
 
         async for event in self._agent_think_stream(request, agent_state, memory):
             yield event
@@ -871,10 +1086,32 @@ class AiDiagnosisPlatform:
         """Agent 推理流式版 —— 只流 === 之后的回复文本"""
         t_stream: dict = {}  # 流式路径 timing (ms)
         t0 = time.perf_counter()
+        logger.info(f"[stream] 开始流式推理: session={request.session_id[:8]}, query={request.query[:50]}, round={state.diagnosis_rounds}")
         memory = await self._memory_manager.add_turn(request.session_id, "user", request.query)
 
         state.diagnosis_rounds += 1
         state.phase = "diagnosing"
+
+        # 记录本轮开始前是否已有已提交的工单（用于判断本轮是否为补充信息）
+        was_post_submit = bool(
+            state.last_submitted_ticket and state.last_submitted_ticket.get("ticket_id")
+        )
+
+        # ---- 闲聊收尾短接：纯问候/致谢/结束语 → 跳过 LLM，直接回复 ----
+        _bye_str = re.sub(r"[，。.!！\s]", "", request.query.strip())
+        if _bye_str and re.fullmatch(
+            r"(好的|ok|okay|感谢|谢谢|多谢|嗯|知道了|明白了|收到|哦|行|好|拜拜|再见|byebye|bye|thanks?|thank\s*you|没事了|没问题了|没有了)+",
+            _bye_str, re.IGNORECASE
+        ):
+            logger.info(f"[stream] 闲聊收尾短接: query={request.query[:30]}")
+            short_msg = "不客气，有问题随时找我。" if "谢" in request.query else "好的，有问题随时找我。"
+            yield {"event": "token", "data": short_msg}
+            result = await self._finalize_diagnosis(
+                request.session_id, state,
+                thinking="", action="answer", message=short_msg,
+                streaming=True)
+            yield {"event": "result", "data": result}
+            return
 
         # 指代消解："然后呢"等省略表达 → 用上文补全为完整查询
         resolved_query, _ = await self._memory_manager.resolve_pronoun(
@@ -884,13 +1121,16 @@ class AiDiagnosisPlatform:
         # 立刻发状态，别让用户干等
         yield {"event": "status", "data": {"stage": "retrieving", "round": state.diagnosis_rounds}}
         t_ret = time.perf_counter()
+        logger.info(f"[stream] 开始检索: session={request.session_id[:8]}")
         reference_docs = (
             "（跳过检索）" if request.skip_retrieval
-            else await self._retrieve_with_context(request.session_id, state, resolved_query)
+            else await self._retrieve_with_context(request.session_id, state, resolved_query, memory.turns)
         )
         t_stream["retrieve"] = round((time.perf_counter() - t_ret) * 1000)
+        logger.info(f"[stream] 检索完成: {t_stream['retrieve']}ms, docs_len={len(reference_docs)}")
         prompt = self._build_diagnosis_prompt(state, memory, reference_docs)
         t_stream["prompt_chars"] = len(prompt)
+        logger.info(f"[stream] prompt构建完成: {t_stream['prompt_chars']} chars, retrieve={t_stream['retrieve']}ms")
 
         yield {"event": "status", "data": {"stage": "analyzing", "round": state.diagnosis_rounds}}
 
@@ -934,21 +1174,70 @@ class AiDiagnosisPlatform:
 
         raw = "".join(raw_tokens)
         t_stream["llm_agent"] = round((time.perf_counter() - t_llm) * 1000)
-        print(f"  [T]  [timing] overhead={t_stream.get('overhead_before_llm','?')}ms  "
-              f"retrieve={t_stream.get('retrieve','?')}ms  "
-              f"prompt={t_stream.get('prompt_chars','?')}chars  "
-              f"llm_first={t_stream.get('llm_first_token','?')}ms  "
-              f"total={t_stream.get('llm_agent','?')}ms")
+        logger.debug(f"[timing] overhead={t_stream.get('overhead_before_llm','?')}ms  "
+                     f"retrieve={t_stream.get('retrieve','?')}ms  "
+                     f"prompt={t_stream.get('prompt_chars','?')}chars  "
+                     f"llm_first={t_stream.get('llm_first_token','?')}ms  "
+                     f"total={t_stream.get('llm_agent','?')}ms")
 
         parsed = self._parse_agent_output(raw)
 
         self._apply_state_update(state, parsed["state_update"])
         self._apply_action_phase(state, parsed["action"])
 
+        # ---- 服务端兜底：用户消息含转工单关键词 → 强制提单，不依赖 LLM ----
+        _force_submit_kw = ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转")
+        if parsed["action"] != "submit" and any(
+            kw in request.query for kw in _force_submit_kw
+        ):
+            logger.info(f"[stream] 服务端兜底提单: query={request.query[:40]}")
+            parsed["action"] = "submit"
+
+        # ---- 自动提单：LLM 输出 action=submit 时直接生成工单 ----
+        ticket_data = None
+        if parsed["action"] == "submit":
+            try:
+                yield {"event": "status", "data": {"stage": "submitting"}}
+                ticket_data = await self.submit(request.session_id, created_by="")
+                ticket_info = ticket_data.get('data', {}).get('ticket', {})
+                logger.info(f"[stream] 自动提单成功: session={request.session_id[:8]}, "
+                            f"ticket={ticket_info.get('ticket_id', '?')}")
+                # 生成醒目的提单成功提示，随流式输出
+                yield {"event": "status", "data": {
+                    "stage": "submitted",
+                    "ticket_id": ticket_info.get("ticket_id", ""),
+                    "title": ticket_info.get("title", ""),
+                    "db_id": ticket_data.get("data", {}).get("db_id", 0),
+                }}
+                # submit() 已清空诊断状态并保存，刷新本地 state 避免 _finalize_diagnosis 覆写旧状态
+                memory = await self._memory_manager.get_memory(request.session_id)
+                state = _load_agent_state(memory.metadata) or state
+            except Exception as e:
+                logger.error(f"[stream] 自动提单失败: session={request.session_id[:8]}, error={e}", exc_info=True)
+                yield {"event": "status", "data": {"stage": "submit_failed", "error": str(e)}}
+
+        # ---- 补充工单：post-submit 时判断是否为补充信息 → 更新 MySQL 工单 ----
+        # 双层检测：① LLM 明确输出 intent=follow_up ② 兜底：action=answer 且非 howto/troubleshoot
+        _is_follow_up = parsed.get("intent") == "follow_up" or (
+            was_post_submit and parsed["action"] == "answer"
+            and parsed.get("intent") not in ("troubleshoot", "howto", "chat")
+        )
+        if _is_follow_up:
+            try:
+                appended = await self._append_to_ticket(
+                    request.session_id, text=f"用户补充：{request.query}"
+                )
+                if appended:
+                    logger.info(f"[stream] 补充信息已追加到工单: session={request.session_id[:8]}")
+            except Exception as e:
+                logger.error(f"[stream] 补充工单失败: {e}", exc_info=True)
+
         result_data = await self._finalize_diagnosis(
             request.session_id, state,
             parsed["thinking"], parsed["action"], parsed["message"],
             streaming=True)
+        if ticket_data:
+            result_data["ticket"] = ticket_data
 
         # 兜底：如果 LLM 只输出了 JSON 没有消息正文，前面的流式 yield 不会触发任何 token。
         # 此时把解析出来的 message 作为一次性 token 发出去，确保前端有内容展示。

@@ -13,6 +13,10 @@ import time
 from typing import List, Optional, Dict, Any, Tuple
 from dataclasses import dataclass, field
 import numpy as np
+
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -339,6 +343,7 @@ class QdrantClientWrapper:
             )
             return True
         except Exception as e:
+            logger.error(f"Qdrant 写入失败: collection={collection_name}, error={e}", exc_info=True)
             print(f"  [qdrant] upsert_to_collection({collection_name}) failed: {e}")
             return False
 
@@ -585,6 +590,48 @@ class RetrievalService:
             query_vector.tolist(),
             top_k=k,
             collection_name=faq_col,
+        )
+
+        results = []
+        for point in points:
+            payload = point.payload or {}
+            results.append(RetrievalResult(
+                id=str(point.id),
+                score=point.score,
+                title=payload.get("question", ""),
+                content=payload.get("answer", ""),
+                vector_score=point.score,
+            ))
+        return results
+
+    async def retrieve_platform_faq(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+    ) -> List[RetrievalResult]:
+        """
+        平台 FAQ 检索（摇人吧服务号自身介绍）。
+
+        当用户问"支持什么工单类型""有哪些角色""工单流转是怎样的"等
+        关于服务号本身的问题时，通过此方法检索。
+        """
+        from ai.config import get_active_platform_faq_collection
+
+        pf_col = get_active_platform_faq_collection()
+        if not pf_col:
+            return []
+
+        k = top_k or self.top_k
+        await self._ensure_clients()
+
+        if self._qdrant.is_unavailable:
+            return []
+
+        query_vector = await self._embed_client.embed(query)
+        points = await self._qdrant.search_dense(
+            query_vector.tolist(),
+            top_k=k,
+            collection_name=pf_col,
         )
 
         results = []
@@ -878,6 +925,7 @@ class RetrievalService:
             print(f"  [retrieval] Created task_resolutions collection: {name}")
             return name
         except Exception as e:
+            logger.error(f"创建 task_resolutions 集合失败: {e}", exc_info=True)
             print(f"  [retrieval] Failed to create task_resolutions collection: {e}")
             return ""
 
@@ -950,8 +998,7 @@ async def get_retrieval_service() -> RetrievalService:
                     top_k=config.retrieval_top_k,
                     score_threshold=config.retrieval_score_threshold,
                 )
-
-
+    return _retrieval_service
 
 
 # ============================================================
