@@ -107,7 +107,12 @@ class ReportDataCollector:
                     "issues": p.issues,
                     "risks": p.risks,
                     "deployment_date": p.deployment_date,
+                    "deployment_version": p.deployment_version,
+                    "recent_delivery_date": p.recent_delivery_date,
+                    "recent_delivery_content": p.recent_delivery_content,
                     "final_delivery_date": p.final_delivery_date,
+                    "task_execution_status": p.task_execution_status,
+                    "contact_person": p.contact_person,
                     "category_basis": p.category_basis,
                 })
 
@@ -212,6 +217,7 @@ class ReportDataCollector:
             by_status: dict[str, int] = {}
             by_priority: dict[str, int] = {}
             by_type: dict[str, int] = {}
+            items: list[dict] = []
 
             for t in all_tickets:
                 # 状态统计
@@ -228,8 +234,10 @@ class ReportDataCollector:
 
                 # 新增工单（created_at 在时间范围内）
                 created = t.created_at
+                is_new = False
                 if created and start <= created <= end:
                     new_tickets += 1
+                    is_new = True
 
                 # 已解决 / 已关闭
                 updated = t.updated_at
@@ -237,6 +245,20 @@ class ReportDataCollector:
                     resolved += 1
                 if status in ("closed",) and updated and start <= updated <= end:
                     closed += 1
+
+                # 采集当日有变更的工单明细（最多50条）
+                if (is_new or (updated and start <= updated <= end)) and len(items) < 50:
+                    items.append({
+                        "id": t.id,
+                        "ticket_ai_id": t.ticket_ai_id,
+                        "title": t.title,
+                        "description": (t.description or "")[:80],
+                        "status": status,
+                        "type": ttype,
+                        "priority": priority,
+                        "created_at": created.isoformat() if created else None,
+                        "updated_at": updated.isoformat() if updated else None,
+                    })
 
             return TicketStats(
                 total=total,
@@ -246,6 +268,7 @@ class ReportDataCollector:
                 by_status=by_status,
                 by_priority=by_priority,
                 by_type=by_type,
+                items=items,
             )
         finally:
             db.close()
@@ -272,6 +295,7 @@ class ReportDataCollector:
             by_status: dict[str, int] = {}
             by_type: dict[str, int] = {}
             by_priority: dict[str, int] = {}
+            items: list[dict] = []
 
             today = date.today()
 
@@ -290,15 +314,14 @@ class ReportDataCollector:
 
                 # 新增任务
                 created = t.created_at
+                is_new = False
                 if created and start <= created <= end:
                     new_tasks += 1
+                    is_new = True
 
                 # 已解决
                 if status == "resolved":
                     resolved += 1
-                    resolved_at = t.resolved_at
-                    if resolved_at and start <= resolved_at <= end:
-                        pass  # 本周期内解决的
 
                 # 已关闭
                 if status == "closed":
@@ -308,6 +331,22 @@ class ReportDataCollector:
                 if t.deadline_at and t.deadline_at.date() < today:
                     if status not in ("resolved", "closed"):
                         overdue += 1
+
+                # 采集当日有变更的任务明细（最多50条）
+                updated = t.updated_at
+                if (is_new or (updated and start <= updated <= end)) and len(items) < 50:
+                    items.append({
+                        "id": t.id,
+                        "title": t.title,
+                        "status": status,
+                        "task_type": ttype,
+                        "priority": priority,
+                        "project_name": t.project_name,
+                        "assigned_to": t.assigned_to,
+                        "created_at": created.isoformat() if created else None,
+                        "updated_at": updated.isoformat() if updated else None,
+                        "resolved_at": t.resolved_at.isoformat() if t.resolved_at else None,
+                    })
 
             # 解决率
             closed_or_resolved = resolved + closed
@@ -323,6 +362,7 @@ class ReportDataCollector:
                 by_status=by_status,
                 by_type=by_type,
                 by_priority=by_priority,
+                items=items,
             )
         finally:
             db.close()
@@ -476,6 +516,7 @@ class ReportGenerator:
                     "total": collected.project.total,
                     "active": collected.project.active,
                     "completed": collected.project.completed,
+                    "on_hold": collected.project.on_hold,
                 }
             elif "风险" in title_lower:
                 metrics = {
@@ -489,15 +530,20 @@ class ReportGenerator:
                     "total": collected.ticket.total,
                     "new": collected.ticket.new_tickets,
                     "resolved": collected.ticket.resolved,
+                    "closed": collected.ticket.closed,
                     "by_status": collected.ticket.by_status,
+                    "by_type": collected.ticket.by_type,
                 }
             elif "任务" in title_lower:
                 metrics = {
                     "total": collected.task.total,
                     "new": collected.task.new_tasks,
                     "resolved": collected.task.resolved,
+                    "closed": collected.task.closed,
                     "overdue": collected.task.overdue,
                     "resolve_rate": collected.task.resolve_rate,
+                    "by_status": collected.task.by_status,
+                    "by_type": collected.task.by_type,
                 }
 
             sections.append(ReportSection(title=title, content=content, metrics=metrics))

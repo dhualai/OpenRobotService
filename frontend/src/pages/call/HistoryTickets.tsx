@@ -19,7 +19,7 @@ const TYPE_LABEL: Record<string, string> = {
   problem: '报障', bug: '缺陷', feature: '需求', support: '支持', other: '其他',
 };
 
-export default function HistoryTickets() {
+export default function HistoryTickets({ showHeader = true }: { showHeader?: boolean }) {
   const navigate = useNavigate();
   const tasksRefreshKey = useWorkbenchStore((s) => s.tasksRefreshKey);
 
@@ -59,10 +59,12 @@ export default function HistoryTickets() {
 
   return (
     <div className="history-tickets">
-      <div className="history-tickets__head">
-        <span>历史工单</span>
-        <span className="history-tickets__count">{tickets.length}</span>
-      </div>
+      {showHeader && (
+        <div className="history-tickets__head">
+          <span>历史工单</span>
+          <span className="history-tickets__count">{tickets.length}</span>
+        </div>
+      )}
       <PullToRefresh
         className="history-tickets__viewport"
         onRefresh={loadInitial}

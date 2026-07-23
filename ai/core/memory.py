@@ -127,7 +127,9 @@ class MemoryManager:
 
     async def save_memory(self, memory: SessionMemory) -> None:
         data = {"turns": memory.turns[-self.max_turns:], "metadata": memory.metadata}
-        # 写 Redis
+        # 始终写入内存兜底（确保服务生命周期内数据不丢失）
+        self._fallback[memory.session_id] = data
+        # 写 Redis（失败不影响内存数据）
         client = await self._ensure_redis(for_write=True)
         if client:
             try:
@@ -137,11 +139,8 @@ class MemoryManager:
                     await client.setex(key, self.ttl, value)
                 else:
                     await client.set(key, value)
-                return
-            except Exception:
-                pass
-        # 内存兜底
-        self._fallback[memory.session_id] = data
+            except Exception as e:
+                logger.warning(f"Redis 写入失败: session={memory.session_id}, error={e}")
 
     async def add_turn(
         self, session_id: str, role: str, content: str,
