@@ -323,7 +323,14 @@ class AiTaskAgent:
                     }
                     # 取第一个日志文件（后续可扩展到多个日志文件的合并分析）
                     sub = LogSubAgent(log_paths[0])
-                    log_sub_result = await sub.analyze(task_ctx)
+                    auto_question = f"日志分析，重点排查: {context.problem_summary}"
+                    if context.hypotheses:
+                        auto_question += f"，可能原因: {'/'.join(context.hypotheses)}"
+                    if context.fault_code:
+                        auto_question += f"，故障码: {context.fault_code}"
+                    if context.robot_type:
+                        auto_question += f"，车型: {context.robot_type}"
+                    log_sub_result = await sub.analyze(task_ctx, user_question=auto_question)
                     if log_sub_result.conclusion:
                         att_has_logs = True
                         att_log_summary = log_sub_result.to_prompt_text()
