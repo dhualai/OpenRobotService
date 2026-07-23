@@ -193,8 +193,23 @@ export default function TaskDetailPage() {
   // ── 讨论发送时检测 @AI 前缀 → 调 POST /api/ai/task/discuss ──
   const handleAIDiscuss = async () => {
     if (!detail || !commentText.trim()) return;
+    const userMsg = commentText.trim();
+    setCommentText('');
     setAskingAI(true);
     try {
+      // 1. 先保存用户的 @AI 消息到 task_comments
+      try {
+        const newComment = await request<Comment>(`/${detail.id}/comments`, {
+          method: 'POST',
+          body: JSON.stringify({ content: userMsg, is_public: true }),
+        });
+        setDetail((prev) => {
+          if (!prev) return prev;
+          const updatedComments = prev.comments ? [...prev.comments, newComment] : [newComment];
+          return { ...prev, comments: updatedComments };
+        });
+      } catch { /* 保存用户消息失败不阻塞 AI 调用 */ }
+      // 2. 调 AI 讨论
       const recentComments = (detail.comments || []).slice(-10).map((c) => ({
         author: c.created_by_name || c.created_by || '?',
         content: c.content,
@@ -202,15 +217,15 @@ export default function TaskDetailPage() {
       const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/discuss`, {
         method: 'POST',
         body: JSON.stringify({
-          task_id: detail.id,
-          query: commentText.trim().replace(/^@AI\s*/, ''),
+          task_id: String(detail.id),
+          query: userMsg.replace(/^@AI\s*/, ''),
           context: { recent_comments: recentComments },
         }),
       });
       const data = await res.json();
       if (data.code === 0) {
         Toast({ message: 'AI 已回复', theme: 'success' });
-        loadDetail();
+        loadDetail();  // 重新加载评论（含 AI 回复）
       } else {
         Toast({ message: data.message || 'AI 回复失败', theme: 'error' });
       }
@@ -237,7 +252,7 @@ export default function TaskDetailPage() {
     try {
       const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/diagnose`, {
         method: 'POST',
-        body: JSON.stringify({ task_id: detail.id }),
+        body: JSON.stringify({ task_id: String(detail.id) }),
       });
       const data = await res.json();
       if (data.code === 0) {
