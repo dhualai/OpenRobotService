@@ -191,6 +191,8 @@ def update_task_assignment(task_id, engineer_name: str = "", engineer_id: str = 
         if not task:
             return False
         task.assigned_to = engineer_name or engineer_id or "unassigned"
+        if engineer_name or engineer_id:
+            task.status = TaskStatus.IN_PROGRESS
         meta = dict(task.metadata_info or {})
         meta["assign_result"] = {
             "engineer_name": engineer_name,
