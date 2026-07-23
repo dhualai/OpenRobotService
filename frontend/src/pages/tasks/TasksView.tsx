@@ -8,6 +8,7 @@ import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import Pagination from '@/shared/components/Pagination';
 import { useWorkbenchStore } from '@/stores/workbench';
+import { useAuthStore } from '@/stores/auth';
 import { normalizeStatus, STATUS_DISPLAY_MAP, TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { formatDateTime } from '@/shared/utils/url';
 
@@ -29,11 +30,13 @@ export default function TasksView() {
     tasksRefreshKey, ticketDraft, consumeTicketDraft, refreshTasks,
   } = useWorkbenchStore();
 
+  const { name: currentUserName } = useAuthStore();
+
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [relevanceFilter, setRelevanceFilter] = useState('all');
+  const [relevanceFilter, setRelevanceFilter] = useState('mine');
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -45,8 +48,12 @@ export default function TasksView() {
         page: String(page), size: String(pageSize),
         ...(search && { keyword: search }),
         ...(statusFilter !== 'all' && { status: statusFilter }),
-        ...(relevanceFilter !== 'all' && { relevance: relevanceFilter }),
       });
+      
+      if (relevanceFilter === 'mine' && currentUserName) {
+        params.set('assigned_to_name', currentUserName);
+      }
+      
       const data = await request<{ items: Ticket[]; total: number }>(`/?${params.toString()}`);
       setTickets(data.items || []);
       setTotal(data.total || 0);
@@ -55,7 +62,7 @@ export default function TasksView() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, statusFilter, relevanceFilter]);
+  }, [page, search, statusFilter, relevanceFilter, currentUserName]);
 
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);

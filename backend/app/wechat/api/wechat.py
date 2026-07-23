@@ -152,9 +152,9 @@ async def handle_text_message(message: dict):
         usp_password = ""
         
         try:
-            if save_success and "external_credentials" in save_success:
-                external_credentials = save_success.get('external_credentials', None)
-                if "usp" in external_credentials:
+            if user_info and "external_credentials" in user_info:
+                external_credentials = user_info.get('external_credentials', None)
+                if external_credentials and "usp" in external_credentials:
                     usp_credentials = external_credentials["usp"]
                     usp_name = usp_credentials.get("username", "")
                     usp_password = usp_credentials.get("password", "")
