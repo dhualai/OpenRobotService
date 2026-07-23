@@ -29,7 +29,7 @@ from ai.agents.AiTaskPlatform.log_analyzer.indexer import (
 
 # ── 知识库加载 ──────────────────────────────────────────────
 
-_DOCS_DIR = Path(__file__).parent / "docs"
+_DOCS_DIR = Path(__file__).parent / "log_manual"
 
 
 def _load_log_docs() -> str:
