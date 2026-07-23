@@ -7,8 +7,8 @@
     from ai.agents.AiTaskPlatform import get_task_agent
 
     agent = await get_task_agent()
-    draft = await agent.analyze(TaskAnalyzeRequest(task_id="44946", session_id="..."))
-    print(draft.root_cause_analysis, draft.suggested_actions)
+    report = await agent.diagnose("44946")
+    print(report["root_cause_analysis"], report["suggested_actions"])
 """
 
 from ai.agents.AiTaskPlatform.pipeline import AiTaskAgent, get_task_agent

@@ -2,16 +2,18 @@
 export const STATUS_DISPLAY_MAP: Record<string, string> = {
   new: '新建',
   in_progress: '进行中',
-  pending: '待处理',
+  pending: '已挂起',
   resolved: '已解决',
+  canceled: '已取消',
   closed: '已关闭',
 };
 
 export const STATUS_VALUE_MAP: Record<string, string> = {
   '新建': 'new',
   '进行中': 'in_progress',
-  '待处理': 'pending',
+  '已挂起': 'pending',
   '已解决': 'resolved',
+  '已取消': 'canceled',
   '已关闭': 'closed',
 };
 
