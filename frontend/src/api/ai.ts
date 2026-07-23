@@ -117,6 +117,7 @@ export interface AiTicketBrief {
 export interface AiTicketListFilters {
   status?: string; // pending|dispatched|in_progress|resolved|closed
   type?: string;   // problem|bug|feature|support|other
+  keyword?: string; // 模糊搜索标题/描述
 }
 
 /** 历史工单列表（GET /api/ai/memory/tickets/all） */
@@ -124,6 +125,7 @@ export const qaListTickets = (skip = 0, limit = 50, filters?: AiTicketListFilter
   const params: Record<string, string> = { skip: String(skip), limit: String(limit) };
   if (filters?.status) params.status = filters.status;
   if (filters?.type) params.type = filters.type;
+  if (filters?.keyword) params.keyword = filters.keyword;
   return aiGet<{
     code: number;
     data?: { items: AiTicketBrief[]; total: number; skip?: number; limit?: number };
