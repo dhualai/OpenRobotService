@@ -39,11 +39,19 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
 
-  // 首屏 / 下拉刷新：重置分页（带 status 筛选）
+  // 构造筛选参数（status + keyword 后端 SQL LIKE 搜索，搜全部不只已加载）
+  const buildFilters = useCallback(() => {
+    const f: { status?: string; keyword?: string } = {};
+    if (statusFilter) f.status = statusFilter;
+    if (search.trim()) f.keyword = search.trim();
+    return Object.keys(f).length ? f : undefined;
+  }, [statusFilter, search]);
+
+  // 首屏 / 下拉刷新：重置分页
   const loadInitial = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await qaListTickets(0, PAGE_SIZE, statusFilter ? { status: statusFilter } : undefined);
+      const res = await qaListTickets(0, PAGE_SIZE, buildFilters());
       const items = res?.data?.items || [];
       const total = res?.data?.total ?? items.length;
       setTickets(items);
@@ -54,29 +62,26 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
     } finally {
       setLoading(false);
     }
-  }, [statusFilter]);
+  }, [buildFilters]);
 
   // 触底加载更多：追加下一页
   const loadMore = useCallback(async () => {
-    const res = await qaListTickets(skip, PAGE_SIZE, statusFilter ? { status: statusFilter } : undefined);
+    const res = await qaListTickets(skip, PAGE_SIZE, buildFilters());
     const items = res?.data?.items || [];
     const total = res?.data?.total ?? 0;
     setTickets((prev) => [...prev, ...items]);
     setSkip((s) => s + items.length);
     setHasMore(total > skip + items.length);
-  }, [skip, statusFilter]);
+  }, [skip, buildFilters]);
 
-  useEffect(() => { loadInitial(); }, [loadInitial]);
+  // search/statusFilter 变化 → 防抖 400ms 后重新加载（后端搜索）
+  useEffect(() => {
+    const t = setTimeout(() => { loadInitial(); }, 400);
+    return () => clearTimeout(t);
+  }, [loadInitial]);
 
-  // 前端模糊搜索（后端 /memory/tickets/all 无 keyword 参数）
-  const displayedTickets = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return tickets;
-    return tickets.filter((t) =>
-      (t.title || '').toLowerCase().includes(q) ||
-      (t.description || '').toLowerCase().includes(q)
-    );
-  }, [tickets, search]);
+  // 后端已按 keyword 搜索，前端无需再过滤
+  const displayedTickets = tickets;
 
   type ActionType = 'urge' | 'report' | 'cancel';
   const [acting, setActing] = useState<{ id: number; action: ActionType } | null>(null);
