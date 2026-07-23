@@ -234,22 +234,29 @@ html, body, #root {
   }
 }
 
-/* 我要摇人：6:4 上下分栏 */
-.chat-view.call-split { padding-bottom: 0; }
-.call-top-chat {
-  flex: 0 0 60%;
+/* 我要摇人：全屏 AI 问答 + 历史工单入口 */
+.call-full-chat {
+  flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
-.call-bottom-tickets {
-  flex: 0 0 40%;
-  min-height: 0;
+
+.navbar-history-btn {
+  background: none;
+  border: none;
+  color: inherit;
+  padding: 8px;
+  cursor: pointer;
   display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border-top: 1px solid #f0f0f0;
+  align-items: center;
+  justify-content: center;
+}
+
+.navbar-history-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 8px;
 }
 
 /* 历史工单列表 */
@@ -535,25 +542,13 @@ html, body, #root {
 }
 .voice-dot {
   display: block;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+  width: 5px;
+  height: 6px;
+  border-radius: 3px;
   background: #fff;
-  /* 默认静默态：静止不动，微透明 */
-  opacity: 0.45;
-  transform: translateY(0);
-  transition: opacity 0.25s ease;
-}
-/* 有声时才律动 */
-.voice-wave-dots.has-sound .voice-dot {
-  opacity: 1;
-  animation: voice-dot-bounce 0.75s ease-in-out infinite;
-}
-.voice-wave-dots.has-sound .voice-dot:nth-child(2) { animation-delay: 0.12s; }
-.voice-wave-dots.has-sound .voice-dot:nth-child(3) { animation-delay: 0.24s; }
-@keyframes voice-dot-bounce {
-  0%, 100% { transform: translateY(0); opacity: 0.6; }
-  50% { transform: translateY(-8px); opacity: 1; }
+  opacity: 0.5;
+  /* 高度/透明度由 JS 按真实麦克风音量实时驱动（ChatPanel voiceLevels）；静音时高度低、不跳动 */
+  transition: height 0.06s linear, opacity 0.15s ease;
 }
 
 /* ===== 系统任务 / 工单 ===== */

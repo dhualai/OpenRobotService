@@ -7,8 +7,9 @@
 """
 import os
 from pathlib import Path
-from sqlalchemy import create_engine, Column, String, Integer, Text, DateTime, JSON
+from sqlalchemy import create_engine, Column, String, Integer, BigInteger, Text, DateTime, JSON, Enum as SQLEnum
 from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.sql import func
 
 
 # ai/core/database.py → parent=core → parent=ai → parent=项目根
@@ -69,10 +70,74 @@ class Ticket(Base):
     diagnosis = Column(JSON, default=dict)
     project_id = Column(Integer, default=0)
     creator_id = Column(Integer, default=0)
+    created_by = Column(String(64), default="", index=True)
     assignee_id = Column(Integer, default=0)
     planned_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime)
     updated_at = Column(DateTime)
+
+
+class Task(Base):
+    """任务表（仅查询，字段对齐 backend/app/models/task.py）"""
+    __tablename__ = "tasks"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=False)
+    task_type = Column(String(30), nullable=False, default="problem")
+    status = Column(String(30), nullable=False, default="new")
+    priority = Column(String(30), nullable=False, default="medium")
+    created_by = Column(String(50), nullable=False)
+    assigned_to = Column(String(50), nullable=True)
+    project_name = Column(String(255), nullable=True)
+    project_id = Column(String(255), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now())
+    resolved_at = Column(DateTime, nullable=True)
+    closed_at = Column(DateTime, nullable=True)
+    deadline_at = Column(DateTime, nullable=True)
+    source = Column(String(32), nullable=False, default="manual")
+
+
+class ProjectDelivery(Base):
+    """交付项目表（仅查询，字段对齐 backend/app/models/delivery.py Project）"""
+    __tablename__ = "project"
+
+    id = Column(String(64), primary_key=True)
+    code = Column(String(64), unique=True, nullable=False)
+    name = Column(String(128), nullable=False)
+    status = Column(String(20), nullable=False, default="active")
+    description = Column(String(1000), nullable=True)
+    contact_person = Column(String(50), nullable=True)
+    issues = Column(Integer, nullable=False, default=0)
+    risks = Column(Integer, nullable=False, default=0)
+    deployment_date = Column(String(20), nullable=True)
+    deployment_version = Column(String(50), nullable=True)
+    recent_delivery_date = Column(String(20), nullable=True)
+    final_delivery_date = Column(String(20), nullable=True)
+    project_summary = Column(String(1000), nullable=True)
+    category_basis = Column(String(20), nullable=False, default="重要紧急")
+
+
+class Risk(Base):
+    """风险表（仅查询，字段对齐 backend/app/models/delivery.py Risk）"""
+    __tablename__ = "risk"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    risk_code = Column(String(50), nullable=False)
+    project_code = Column(String(50), nullable=False)
+    project_name = Column(String(100), nullable=False)
+    risk_category = Column(String(50), nullable=False)
+    description = Column(String(1000), nullable=False)
+    risk_level = Column(String(20), nullable=False)
+    response_measure = Column(String(1000), nullable=True)
+    progress = Column(String(100), nullable=True)
+    responsible_person = Column(String(50), nullable=False)
+    status = Column(String(20), nullable=False)
+    discovery_time = Column(String(20), nullable=False)
+    close_time = Column(String(30), nullable=True)
+    created_at = Column(String(30), nullable=False)
+    updated_at = Column(String(30), nullable=False)
 
 
 class Conversation(Base):
