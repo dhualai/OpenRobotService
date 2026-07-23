@@ -143,7 +143,7 @@ async def lifespan(app: FastAPI):
     diag_worker = None
     diag_stop = None
     try:
-        from ai.agents.AiTaskPlatform.diagnosis_service import diagnosis_worker_start
+        from ai.agents.AiTaskPlatform.services.diagnosis_worker import diagnosis_worker_start
         diag_worker, diag_stop = diagnosis_worker_start()
         print(f"[OK] Diagnosis worker started (scan interval={get_ai_config().diagnosis_scan_interval}s)")
     except Exception as e:

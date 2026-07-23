@@ -14,7 +14,7 @@ from typing import Optional
 from ai.config import get_ai_config
 from ai.core import get_retrieval_service
 from ai.agents.AiTaskPlatform.schemas import TaskContext, AttachmentAnalysis
-from ai.agents.AiTaskPlatform.attachment_parser import parse_attachments
+from ai.agents.AiTaskPlatform.attachments.parser import parse_attachments
 
 
 class AnalysisResults:

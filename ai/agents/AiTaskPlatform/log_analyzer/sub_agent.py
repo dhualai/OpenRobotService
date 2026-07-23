@@ -18,7 +18,7 @@
    "next_step": "下一轮要查什么"}
 
 设计原则:
-  - 不做诊断（提单 Agent 已完成），只做日志分析
+  - 不做排查树诊断（提单 Agent 已完成），只做日志分析
   - 每轮把之前所有查询结果累积，不丢失上下文
   - 输出 ≤2000 字的分析结论，供上层 Agent 消费
 """
@@ -28,7 +28,7 @@ from typing import Optional, Dict, List, Callable
 
 from ai.config import get_ai_config
 from ai.core import get_llm_client
-from ai.agents.AiTaskPlatform.algorithm_log_parser import (
+from ai.agents.AiTaskPlatform.log_analyzer.indexer import (
     LogIndex, LogQuery, extract_fields, fields_summary,
 )
 
