@@ -97,20 +97,23 @@ class MemoryManager:
         return f"ai:memory:{session_id}"
 
     async def get_memory(self, session_id: str) -> SessionMemory:
-        client = await self._ensure_redis()
-        if client:
-            try:
-                data = await client.get(self._get_key(session_id))
-                if data:
-                    parsed = json.loads(data)
-                    return SessionMemory(session_id=session_id, turns=parsed.get("turns", []), metadata=parsed.get("metadata", {}))
-            except Exception:
-                pass
-        # 内存兜底
+        # 1. 内存兜底优先——save_memory 总是双写，内存数据最新，且绝不会挂起
         if session_id in self._fallback:
             data = self._fallback[session_id]
             return SessionMemory(session_id=session_id, turns=data.get("turns", []), metadata=data.get("metadata", {}))
-        # MySQL 降级：Redis 和内存都没有时，尝试从 MySQL 加载
+        # 2. Redis（带超时保护，避免僵死连接挂起整个请求）
+        client = await self._ensure_redis()
+        if client:
+            try:
+                data = await asyncio.wait_for(
+                    client.get(self._get_key(session_id)), timeout=2.0,
+                )
+                if data:
+                    parsed = json.loads(data)
+                    return SessionMemory(session_id=session_id, turns=parsed.get("turns", []), metadata=parsed.get("metadata", {}))
+            except (asyncio.TimeoutError, Exception):
+                pass
+        # 3. MySQL 降级：Redis 和内存都没有时，尝试从 MySQL 加载
         try:
             from ai.core.conversation_store import get_history
             rows = await asyncio.to_thread(get_history, session_id)

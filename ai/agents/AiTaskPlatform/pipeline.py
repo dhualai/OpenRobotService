@@ -827,7 +827,7 @@ class AiTaskAgent:
         TODO: 后续改为提单人的用户名（从工单 created_by 字段获取）。
         """
         from app.models.task import TaskComment
-        from app.core.database import SessionLocal
+        from app.core.db import SessionLocal
         content_parts = [
             f"## AI 诊断结果",
             f"",

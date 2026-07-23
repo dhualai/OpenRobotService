@@ -23,6 +23,7 @@ _KB_DIR = Path(__file__).resolve().parent / "kb"
 _ACTIVE_COLLECTION_POINTER = _KB_DIR / "active_collection.txt"
 _ACTIVE_FAQ_COLLECTION_POINTER = _KB_DIR / "active_faq_collection.txt"
 _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER = _KB_DIR / "active_troubleshooting_collection.txt"
+_ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER = _KB_DIR / "active_platform_faq_collection.txt"
 _ACTIVE_CHEDUAN_COLLECTION_POINTER = _KB_DIR / "active_cheduan_collection.txt"
 _ACTIVE_TRANSLATION_COLLECTION_POINTER = _KB_DIR / "active_translation_collection.txt"
 _ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER = _KB_DIR / "active_cheduan_manual_collection.txt"
@@ -118,6 +119,24 @@ def _write_active_faq_collection(name: str) -> None:
     """写入活跃 FAQ 集合指针（入库脚本调用）"""
     _ACTIVE_FAQ_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
     _ACTIVE_FAQ_COLLECTION_POINTER.write_text(name, encoding="utf-8")
+
+
+def get_active_platform_faq_collection() -> str:
+    """读取当前活跃的 platform FAQ Qdrant 集合名"""
+    try:
+        if _ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER.exists():
+            name = _ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _write_active_platform_faq_collection(name: str) -> None:
+    """写入活跃 platform FAQ 集合指针（入库脚本调用）"""
+    _ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
+    _ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER.write_text(name, encoding="utf-8")
 
 
 def get_active_troubleshooting_collection() -> str:
@@ -305,8 +324,10 @@ async def validate_ai_config() -> dict:
 
     try:
         redis_mgr = await get_memory_manager()
-        await redis_mgr.health_check()
-        results["redis"] = {"status": "ok", "message": "连接成功"}
+        if await redis_mgr.health_check():
+            results["redis"] = {"status": "ok", "message": "连接成功"}
+        else:
+            results["redis"] = {"status": "error", "message": "连接超时，使用内存/MySQL降级"}
     except Exception as e:
         results["redis"] = {"status": "error", "message": str(e)}
 

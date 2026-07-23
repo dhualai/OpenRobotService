@@ -106,12 +106,12 @@ async def lifespan(app: FastAPI):
 
         for meta in registered:
             ingester = meta.ingester_cls()
+            ingester.verbose = False  # 静默模式，状态由 logger 输出
             active = ingester.pointer_reader()
             label = meta.description or meta.name
 
             if not ingester.rebuild:
                 if ingester.validate_source_files():
-                    logger.info(f"知识库 {label}（追加模式）检查中...")
                     try:
                         await ingester.auto_ingest(client=qdrant)
                     except Exception as e:
