@@ -362,6 +362,7 @@ async def list_all_tickets(
     limit: int = Query(20, ge=1, le=200, description="返回条数"),
     status: str = Query("", description="按状态筛选: pending / in_progress / resolved / closed"),
     type_: str = Query("", alias="type", description="按类型筛选"),
+    keyword: str = Query("", description="模糊搜索标题/描述"),
 ) -> dict:
     """查询 tasks 表（source='ai'），分页返回所有历史工单"""
     try:
@@ -384,6 +385,8 @@ async def list_all_tickets(
                     q = q.filter(Task.task_type == TaskType(type_))
                 except ValueError:
                     pass
+            if keyword:
+                q = q.filter(Task.title.contains(keyword) | Task.description.contains(keyword))
             total = q.count()
             rows = q.order_by(desc(Task.created_at)).offset(skip).limit(limit).all()
             items = []

@@ -81,6 +81,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const [isRecording, setIsRecording] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
   const [voiceWillCancel, setVoiceWillCancel] = useState(false);
+  const [textareaFullscreen, setTextareaFullscreen] = useState(false);
+  const [textareaMaxed, setTextareaMaxed] = useState(false);
+  const textareaContainerRef = useRef<HTMLDivElement>(null);
   const voiceStartYRef = useRef<number>(0);
   const voiceCancelRef = useRef(false);
   const voiceWillCancelRef = useRef(false);
@@ -106,6 +109,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
   const scrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); };
   useEffect(() => { scrollToBottom(); }, [messages]);
+
+  // 检测 textarea 是否达到最大高度，显示全屏按钮
+  useEffect(() => {
+    const ta = textareaContainerRef.current?.querySelector('textarea');
+    if (ta) setTextareaMaxed(ta.scrollHeight > ta.clientHeight + 2);
+  }, [input]);
 
   // 挂载时恢复"最近一条会话"：从 DB 读回历史消息 + ai_session_id，刷新/切页后内容不丢
   useEffect(() => {
@@ -693,13 +702,29 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           </div>
         ) : (
           <>
-            <Textarea
-              value={input}
-              onChange={(v) => setInput(String(v))}
-              placeholder="发消息..."
-              autosize={{ minRows: 1, maxRows: 6 }}
-              className="chat-input-bar__textarea"
-            />
+            <div ref={textareaContainerRef} className="chat-input-bar__textarea">
+              <Textarea
+                value={input}
+                onChange={(v) => setInput(String(v))}
+                placeholder="发消息..."
+                autosize={{ minRows: 1, maxRows: 6 }}
+              />
+            </div>
+            {textareaMaxed && !textareaFullscreen && (
+              <button
+                type="button"
+                className="chat-input-bar__expand-btn"
+                onClick={() => setTextareaFullscreen(true)}
+                aria-label="全屏输入"
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="15 3 21 3 21 9" />
+                  <polyline points="9 21 3 21 3 15" />
+                  <line x1="21" y1="3" x2="14" y2="10" />
+                  <line x1="3" y1="21" x2="10" y2="14" />
+                </svg>
+              </button>
+            )}
             <div className="chat-input-bar__tools">
               <div className="chat-input-bar__tools-left">
                 <button className="chat-input-btn" onClick={() => setVoiceMode(true)} title="语音输入" aria-label="语音输入">
@@ -734,6 +759,50 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" onChange={handleFileChange} style={{ display: 'none' }} />
         <input ref={albumInputRef} type="file" accept="image/*" onChange={handleFileChange} style={{ display: 'none' }} />
         <input ref={fileInputRef} type="file" accept="*/*" onChange={handleFileChange} style={{ display: 'none' }} />
+        {textareaFullscreen && (
+          <div className="chat-input-bar__fullscreen-overlay" onClick={() => setTextareaFullscreen(false)}>
+            <div className="chat-input-bar__fullscreen-panel" onClick={(e) => e.stopPropagation()}>
+              <div className="chat-input-bar__fullscreen-header">
+                <button
+                  type="button"
+                  className="chat-input-bar__clear-btn"
+                  onClick={() => { setInput(''); }}
+                >
+                  清空
+                </button>
+                <button
+                  type="button"
+                  className="chat-input-bar__collapse-btn"
+                  onClick={() => setTextareaFullscreen(false)}
+                  aria-label="收起"
+                >
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="4 8 12 16 20 8" />
+                  </svg>
+                </button>
+              </div>
+              <textarea
+                className="chat-input-bar__fullscreen-textarea"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="发消息..."
+                autoFocus
+              />
+              <div className="chat-input-bar__fullscreen-footer">
+                <button type="button" className="chat-send-btn" onClick={() => { send(input); setTextareaFullscreen(false); }} disabled={!input.trim() || loading} aria-label="发送">
+                  {loading ? (
+                    <span className="chat-send-btn__spinner" />
+                  ) : (
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="19" x2="12" y2="5" />
+                      <polyline points="6 11 12 5 18 11" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <Popup visible={showUploadMenu} onClose={() => setShowUploadMenu(false)} placement="bottom" showOverlay>
           <div className="upload-menu">
             <button type="button" className="upload-menu__item" onClick={() => { setShowUploadMenu(false); cameraInputRef.current?.click(); }}>拍摄</button>
