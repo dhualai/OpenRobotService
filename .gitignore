@@ -61,5 +61,11 @@ codebuddy.md
 # ===== 临时 / 草稿（如 logo 草稿、导出中间文件）=====
 old/
 
+# ===== AI 对话用户上传临时文件 =====
+uploads/
+
 # =====ai向量库====
 /ai/docs/
+
+# =====生产同步的媒体文件（operation_doc 图片等），不入库====
+/docs/operation_doc/
