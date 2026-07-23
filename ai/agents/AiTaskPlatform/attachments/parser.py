@@ -25,7 +25,7 @@ from pathlib import Path
 from ai.agents.AiTaskPlatform.schemas import AttachmentAnalysis
 from ai.core.logging import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("TASK_AGENT")
 
 
 

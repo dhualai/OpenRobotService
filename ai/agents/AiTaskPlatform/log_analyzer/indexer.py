@@ -15,7 +15,7 @@
 import re, os, time as _time
 from ai.core.logging import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("TASK_AGENT")
 
 from typing import Optional, Dict, List
 

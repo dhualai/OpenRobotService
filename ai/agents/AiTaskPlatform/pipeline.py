@@ -35,7 +35,7 @@ from ai.agents.AiTaskPlatform.prompts import (
     SUMMARIZE_INCREMENTAL_TEMPLATE,
 )
 
-logger = get_logger(__name__)
+logger = get_logger("TASK_AGENT")
 
 
 # ============================================================

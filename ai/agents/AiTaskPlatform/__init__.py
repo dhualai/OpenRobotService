@@ -11,6 +11,10 @@
     logger.info(f"diagnose: {report.get("root_cause_analysis","")[:80]}")
 """
 
+from ai.core.logging import get_logger
+
+logger = get_logger("TASK_AGENT")
+
 from ai.agents.AiTaskPlatform.pipeline import AiTaskAgent, get_task_agent
 from ai.agents.AiTaskPlatform.log_analyzer import LogSubAgent, LogAnalysisResult
 from ai.agents.AiTaskPlatform.attachments import parse_attachments

@@ -17,7 +17,7 @@ from ai.agents.AiTaskPlatform.schemas import TaskContext, AttachmentAnalysis
 from ai.agents.AiTaskPlatform.attachments.parser import parse_attachments
 from ai.core.logging import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("TASK_AGENT")
 
 
 
