@@ -1251,7 +1251,7 @@ html, body, #root {
 
 /* ===== 项目管理二级页面（项目导入 + 项目授权 上下并列） ===== */
 .project-manage-section-title {
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
   color: #1a1a1a;
   padding: 16px 16px 4px;
