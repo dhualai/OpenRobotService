@@ -65,4 +65,4 @@ old/
 /ai/docs/
 
 # ===== 日志排查文档（部署时从服务器拷贝）=====
-ai/agents/AiTaskPlatform/log_analyzer/docs/
+ai/agents/AiTaskPlatform/log_analyzer/log_manual/
