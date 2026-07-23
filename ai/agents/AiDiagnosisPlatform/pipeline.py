@@ -1174,7 +1174,7 @@ class AiDiagnosisPlatform:
 
         raw = "".join(raw_tokens)
         t_stream["llm_agent"] = round((time.perf_counter() - t_llm) * 1000)
-        logger.debug(f"[timing] overhead={t_stream.get('overhead_before_llm','?')}ms  "
+        logger.info(f"[timing] overhead={t_stream.get('overhead_before_llm','?')}ms  "
                      f"retrieve={t_stream.get('retrieve','?')}ms  "
                      f"prompt={t_stream.get('prompt_chars','?')}chars  "
                      f"llm_first={t_stream.get('llm_first_token','?')}ms  "

@@ -157,6 +157,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"派单 Worker 启动失败: {e}", exc_info=True)
 
+    # 6. 企业微信 Smartsheet 集成状态
+    try:
+        _wcfg = get_ai_config()
+        if _wcfg.wecom_corpid and _wcfg.wecom_corpsecret:
+            logger.info(f"企业微信已配置: corpid={_wcfg.wecom_corpid[:6]}..., "
+                         f"docid={_wcfg.wecom_docid[:8]}..., "
+                         f"sheet_id={_wcfg.wecom_sheet_id[:8]}...")
+            logger.info(f"企业微信接口: "
+                         f"GET  /api/ai/wecom/projects (拉全部), "
+                         f"GET  /api/ai/wecom/projects/search (分页查), "
+                         f"POST /api/ai/wecom/projects/{{id}} (更新)")
+        else:
+            logger.warning("企业微信未配置 (WECOM_CORPID / WECOM_CORPSECRET 未设置)，接口不可用")
+    except Exception as e:
+        logger.warning(f"企业微信配置检查失败: {e}")
+
     logger.info("AI 模块启动完成")
 
     yield
@@ -189,11 +205,12 @@ app.add_middleware(
 )
 
 # ── 挂载路由（从 ai/api 自举，不再依赖 backend）──────────────
-from ai.api import qa_router, chat_router, memory_router, task_agent_router
+from ai.api import qa_router, chat_router, memory_router, task_agent_router, wecom_router
 app.include_router(qa_router)
 app.include_router(chat_router)
 app.include_router(memory_router)
 app.include_router(task_agent_router)
+app.include_router(wecom_router)
 
 # ── 静态资源（知识库图片等）───────────────────────────────────
 from ai.config import get_docs_dir, get_ai_config

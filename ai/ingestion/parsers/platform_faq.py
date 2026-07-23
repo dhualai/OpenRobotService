@@ -14,6 +14,9 @@ from ai.config import get_docs_dir
 from ai.ingestion.base import BaseIngester, Chunk
 from ai.ingestion.registry import register
 
+# 源文件固定在项目目录下（跟着代码走，不依赖外部 Data 目录）
+_PROJECT_DIR = Path(__file__).resolve().parent.parent.parent  # ai/ 目录
+
 
 # ── 数据模型 ────────────────────────────────────────────────────
 
