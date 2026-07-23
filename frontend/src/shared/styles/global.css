@@ -1124,6 +1124,19 @@ html, body, #root {
 }
 .dashboard-section-title:first-child { margin-top: 4px; }
 .dashboard-section-title__more { font-size: 12px; color: #0052d9; font-weight: 400; cursor: pointer; }
+.dashboard-section-title__actions { display: flex; align-items: center; gap: 10px; }
+.dashboard-section-title__sync-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 16px;
+  border: 1px solid #0052d9;
+  background: #fff;
+  color: #0052d9;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.dashboard-section-title__sync-btn:hover:not(:disabled) { background: #0052d9; color: #fff; }
+.dashboard-section-title__sync-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .dashboard-section {
   background: #fff;
   border-radius: 12px;

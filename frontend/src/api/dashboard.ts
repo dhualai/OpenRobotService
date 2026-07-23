@@ -10,6 +10,7 @@ import API_CONFIG from '@/config/api';
 import type { TicketStatusKey, ProjectStageKey, UrgencyKey } from '@/shared/constants/dashboard';
 
 const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+const tasksRequest = createRequest(API_CONFIG.TASKS.BASE_URL, 'Tasks');
 
 // ============================================================
 // 一、工单状态汇总
@@ -151,5 +152,31 @@ export async function fetchProjectsByUrgency(urgency: string): Promise<{ items: 
     return { items: [], total: 0 };
   } catch {
     return { items: [], total: 0 };
+  }
+}
+
+export interface SyncResult {
+  fetched: number;
+  filtered: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+}
+
+/**
+ * POST /api/tasks/sources/wecom/projects/sync
+ * 同步企业微信项目数据到数据库
+ */
+export async function syncWecomProjects(): Promise<SyncResult | null> {
+  try {
+    const res = await tasksRequest<{ code: number; data: SyncResult }>(
+      '/sources/wecom/projects/sync',
+      { method: 'POST' },
+    );
+    if (res.code === 200 && res.data) return res.data;
+    return null;
+  } catch {
+    return null;
   }
 }
