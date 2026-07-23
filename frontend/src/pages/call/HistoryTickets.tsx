@@ -6,7 +6,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Toast } from 'tdesign-mobile-react';
+import { NotificationIcon, UploadIcon, RollbackIcon } from 'tdesign-icons-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
+import { urgeTicket, reportTicket, cancelTicket } from '@/api/ticket';
 import { useWorkbenchStore } from '@/stores/workbench';
 import PullToRefresh from '@/shared/components/PullToRefresh';
 
@@ -57,6 +59,32 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
 
   useEffect(() => { loadInitial(); }, [loadInitial]);
 
+  const [acting, setActing] = useState<number | null>(null);
+  const handleUrge = async (e: React.MouseEvent, t: AiTicketBrief) => {
+    e.stopPropagation();
+    if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    setActing(t.id);
+    try { await urgeTicket(t.id); Toast({ message: '已催办，已通知处理人', theme: 'success' }); }
+    catch (err) { Toast({ message: `催办失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }); }
+    finally { setActing(null); }
+  };
+  const handleReport = async (e: React.MouseEvent, t: AiTicketBrief) => {
+    e.stopPropagation();
+    if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    setActing(t.id);
+    try { await reportTicket(t.id); Toast({ message: '已上报，已通知上级', theme: 'success' }); }
+    catch (err) { Toast({ message: `上报失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }); }
+    finally { setActing(null); }
+  };
+  const handleCancel = async (e: React.MouseEvent, t: AiTicketBrief) => {
+    e.stopPropagation();
+    if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    setActing(t.id);
+    try { await cancelTicket(t.id); Toast({ message: '已撤回，工单已取消', theme: 'success' }); loadInitial(); }
+    catch (err) { Toast({ message: `撤回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }); }
+    finally { setActing(null); }
+  };
+
   return (
     <div className="history-tickets">
       {showHeader && (
@@ -94,6 +122,11 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
               </span>
               <span className="history-row__status">{t.priority || ''}</span>
               <span className="history-row__date">{(t.created_at || '').slice(0, 10)}</span>
+              <div className="history-row__actions" onClick={(e) => e.stopPropagation()}>
+                <button type="button" className="history-action-btn" disabled={acting === t.id} onClick={(e) => handleUrge(e, t)} title="催办" aria-label="催办"><NotificationIcon size="16px" /></button>
+                <button type="button" className="history-action-btn" disabled={acting === t.id} onClick={(e) => handleReport(e, t)} title="上报" aria-label="上报"><UploadIcon size="16px" /></button>
+                <button type="button" className="history-action-btn" disabled={acting === t.id} onClick={(e) => handleCancel(e, t)} title="撤回" aria-label="撤回"><RollbackIcon size="16px" /></button>
+              </div>
             </div>
           ))
         )}

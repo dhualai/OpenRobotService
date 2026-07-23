@@ -1549,3 +1549,35 @@ html, body, #root {
   gap: 6px;
 }
 
+
+/* ===== HistoryTickets 行内操作按钮 ===== */
+.history-row__actions { display: flex; gap: 4px; flex-shrink: 0; margin-left: 8px; }
+.history-action-btn {
+  background: none; border: none; padding: 4px; color: #888; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; border-radius: 6px;
+}
+.history-action-btn:hover { background: #f0f0f0; color: #333; }
+.history-action-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* ===== TicketDetailPage 评论附件上传 ===== */
+.detail-chat-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.detail-chat-file {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: #f2f3f5; border-radius: 6px; padding: 4px 8px; font-size: 12px; color: #333;
+}
+.detail-chat-file__name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-chat-file button { background: none; border: none; color: #999; cursor: pointer; font-size: 16px; line-height: 1; padding: 0; }
+.detail-chat-attach {
+  background: none; border: none; color: #666; cursor: pointer; padding: 4px;
+  display: flex; align-items: center; justify-content: center;
+}
+.detail-chat-attach:disabled { opacity: 0.4; }
+
+/* 历史工单入口红点 */
+.navbar-history-btn { position: relative; }
+.navbar-history-badge {
+  position: absolute; top: 0; right: 0;
+  background: #d54941; color: #fff; font-size: 10px; line-height: 1;
+  padding: 2px 5px; border-radius: 8px; min-width: 14px; text-align: center;
+  transform: translate(4px, -4px);
+}
