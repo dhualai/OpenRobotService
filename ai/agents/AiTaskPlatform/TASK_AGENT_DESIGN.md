@@ -12,6 +12,7 @@
 
 | 日期 | 版本 | 变更摘要 |
 |------|:---:|------|
+| 2026-07-23 | 3.1 | **前端接入完成**：「帮我分析」→ 短链接 → Dialog；@AI 按钮自动填前缀；摘要纯展示；修复 task_id 422 + /diagnose router |
 | 2026-07-22 | 3.0 | **架构重构**：砍掉大聊天；Agent 聚焦工单详情页；新增 诊断报告 + @AI 讨论 + 讨论摘要。诊断报告为即时生成不落库。 |
 | 2026-07-21 | 2.2 | Day 2 收尾：ZIP/文件夹解析；Chat v2.0；diagnosis service |
 | 2026-07-21 | 2.0 | Chat + Diagnosis 分离 |
@@ -72,88 +73,83 @@ v3.0（新）:
 
 ## 2. 交互流程
 
-### 2.1 工程师进入工单详情页
+### 2.1 工程师进入工单详情页（v3.1 实际实现）
 
 ```
 系统任务 → 点击工单卡片 → 进入独立工单详情页
 
-页面布局:
+页面布局（v3.1 实际）:
   ┌──────────────────────────────────────────┐
-  │  工单 #44946  避让后车不动                 │
-  │  状态: 进行中  |  优先级: 高  |  潜伏车     │
-  │  描述: 44946避让生成的时候...              │
+  │  工单 #42  系统故障排查                     │
+  │  状态: 进行中  |  优先级: 高               │
+  │  描述: ...                                 │
   │                                            │
-  │  [帮我分析]  按钮                          │
+  │  ── 🤖 AI 讨论摘要 ── [🤖 帮我分析] ──   │
+  │  📝 摘要内容（后端定时写入，前端从评论提取） │
   │                                            │
   │  ── 讨论区 ────────────────────────────   │
   │  👤 张工: 日志拿到了，帮我看看             │
-  │  🤖 @AI: 根据日志，时间是14:40...         │
-  │  👤 张工: 找到问题了，MAPF版本太旧         │
+  │  🤖 AI任务助手: 📋 AI 诊断报告 — 点击查看… │
+  │  👤 张工: @AI 找到问题了，MAPF版本太旧     │
   │                                            │
   │  [输入框] [@AI] [发送]                    │
-  │                                            │
-  │  ── 讨论摘要 ──────────────────────────   │
-  │  📝 2026-07-22 15:30                       │
-  │  张工确认根因为MAPF v1.1.2版本缺陷...      │
   └──────────────────────────────────────────┘
+
+关键交互：
+  - [🤖 帮我分析] 在 AI 摘要卡片右上角 → 调 /diagnose → 讨论区插入短链接
+  - [@AI] 按钮 → 自动在输入框填入 "@AI " 前缀 → 工程师补充问题 → [发送]
+  - 讨论区发送时检测 @AI 前缀 → 调 /discuss；否则普通评论
+  - 点击诊断短链接 → Dialog 弹窗展示完整报告
+  - AI 摘要纯展示，后端定时触发 /summarize 写入 task_comments
 ```
 
-### 2.2 工程师点击 [帮我分析]
+### 2.2 工程师点击 [帮我分析]（v3.1 实际流程）
 
 ```
 POST /api/ai/task/diagnose { task_id }
   │
-  ├─ 1. 加载工单上下文
-  │     └── task_adapter.load_task_context_dict(task_id)
-  │           → title, description, diagnosis, attachments
+  ├─ 1. 加载工单上下文（task_adapter.load_task_context_dict）
   │
-  ├─ 2. 扫描可用附件 → 激活对应 Skill
-  │     ├── 有日志文件 → LogParser
-  │     ├── 有图片 → ImageAnalyzer (暂标记，后续OCR)
-  │     ├── 有 ZIP → ZipExtractor → LogParser
-  │     └── 无附件 → 跳过
+  ├─ 2. 附件分析：日志 → LogSubAgent 多轮推理；非日志 → parse_attachments
   │
-  ├─ 3. 知识库检索（Skill: KnowledgeRetriever）
-  │     ├── 排查树结论节点
-  │     └── 历史工单方案 (task_resolutions)
+  ├─ 3. 历史工单检索（Qdrant task_resolutions 语义检索）
   │
-  ├─ 4. LLM 综合分析 → 输出诊断报告
-  │     └── report: { root_cause, steps, references, confidence }
+  ├─ 4. LLM 综合分析 → 输出 { root_cause_analysis, suggested_actions, references, confidence }
   │
-  ├─ 5. 诊断报告写入 task_comments（AI任务助手）
-  │
-  └─ 返回报告 JSON + task_comments 中自动展示
+  └─ 5. 返回 JSON → 前端不写 task_comments
+        └── 前端本地插入短链接到讨论区（不写后端）
+             └── 点击短链接 → Dialog 弹窗展示完整报告
 ```
 
-### 2.3 工程师 @AI 提问
+### 2.3 工程师 @AI 提问（v3.1 实际流程）
 
 ```
-POST /api/ai/task/discuss { task_id, query?, context_discussion }
-  │
-  ├─ 1. 加载讨论历史（最近 10 条 task_comments）
-  │
-  ├─ 2. 加载工单上下文
-  │
-  ├─ 3. LLM 基于讨论+上下文回复
-  │     └── 如果 query 为空 → 基于讨论内容主动给出分析
-  │     └── 如果 query 有值 → 针对具体问题回答
-  │
-  └─ 4. 回复写入 task_comments（AI任务助手）
+点击 [@AI] 按钮 → 输入框自动填入 "@AI " 前缀
+  → 工程师补充问题 → 点击 [发送]
+  → 前端检测到 @AI 前缀：
+      ├─ 1. 先把用户消息写入 task_comments（普通评论）
+      └─ 2. 调 POST /api/ai/task/discuss { task_id, query, context }
+            │
+            ├─ 加载讨论历史（最近 10 条 task_comments）
+            ├─ 加载工单上下文
+            ├─ 按需调 LogSubAgent / 附件分析 / 历史工单（关键词匹配）
+            ├─ LLM 基于讨论+上下文回复 → 写 task_comments（AI任务助手）
+            └─ 前端 loadDetail() 刷新评论列表
 ```
 
 ---
 
 ## 3. API 契约
 
-### 端点一览（v3.0）
+### 端点一览（v3.1 实际状态）
 
-| 方法 | 路径 | 说明 | 触发 |
-|------|------|------|------|
-| POST | `/api/ai/task/diagnose` | 全能力诊断 → 即时返回报告（不落库） | [帮我分析] 按钮 |
-| POST | `/api/ai/task/discuss` | @AI 讨论回复（带讨论上下文）→ 写 task_comments | 讨论区 @AI |
-| POST | `/api/ai/task/summarize` | 检测新讨论 → 生成摘要 → 写 task_comments | 后台定时 / 手动 |
-| POST | `/api/ai/task/submit` | 提交方案 → 更新工单 + Qdrant 回写 | 工程师确认 |
-| GET | `/api/ai/task/health` | 健康检查 | 运维 |
+| 方法 | 路径 | 说明 | 触发 | 落库 |
+|------|------|------|------|:---:|
+| POST | `/api/ai/task/diagnose` | 全能力诊断 → 即时返回报告 | [帮我分析] 按钮 | ❌ 不落库 |
+| POST | `/api/ai/task/discuss` | @AI 讨论回复 → 写 task_comments | 讨论区 @AI | ✅ AI 回复写评论 |
+| POST | `/api/ai/task/summarize` | 检测新讨论 → 生成摘要 → 写 task_comments | 后台定时 | ✅ 摘要写评论 |
+| POST | `/api/ai/task/submit` | 提交方案 → 更新工单 + Qdrant 回写 | 工程师确认 | ✅ |
+| GET | `/api/ai/task/health` | 健康检查 | 运维 | - |
 
 ### 废弃的端点（v2.x → 移除）
 
@@ -466,37 +462,52 @@ WHERE task_id = X
 
 ## 8. 与前端的数据契约
 
-### 前端需要的接口
+### 前端需要的接口（v3.1 实际状态）
 
-| 前端动作 | API | 我们提供 |
+| 前端动作 | API | 状态 |
 |------|------|:---:|
-| 点 [帮我分析] | `POST /api/ai/task/diagnose` | ✅ |
-| 讨论区 @AI | `POST /api/ai/task/discuss` | ✅ |
-| 获取讨论摘要 | `POST /api/ai/task/summarize` | ✅ |
+| 点 [帮我分析] | `POST /api/ai/task/diagnose` | ✅ 已接入 |
+| 讨论区 @AI | `POST /api/ai/task/discuss` | ✅ 已接入 |
+| 获取讨论摘要 | 后端定时 `POST /api/ai/task/summarize` | ✅ 后端触发 |
 | 提交解决方案 | `POST /api/ai/task/submit` | ✅ |
-| 查看诊断报告 | `GET /api/tasks/{id}/comments`（后端，已有） | ✅ 不需要我们 |
+| 查看诊断报告 | 前端 Dialog 弹窗（本地 state，不写后端） | ✅ |
 
-### 工单详情页数据
+### 工单详情页数据（v3.1 实际）
 
 前端从业务后端 `GET /api/tasks/{id}?load_comments=true` 获取：
 - 工单基本信息（title/description/status/priority）
 - 附件列表
-- 所有评论（包括 "AI任务助手" 的诊断报告和讨论回复）
-- 讨论摘要（前端自己在评论中筛选 `created_by="AI任务助手"` 且 `content` 以 "## 讨论摘要" 开头的）
+- 所有评论（包括 "AI任务助手" 的 AI 回复和摘要）
+
+**AI 摘要提取逻辑**（前端）：
+- 筛选 `created_by === 'AI任务助手'` 的评论
+- 取最新一条 `content` 以 `📝 讨论摘要` 开头的 → 展示在 AI 摘要卡片
 
 **AI 模块不负责提供工单详情页数据**——全部由业务后端返回。
 
-### 前端页面结构预期
+### 前端页面实际结构（v3.1）
 
 ```
-工单详情页（前端独立页面，和「我要摇人」的工单详情分开）
+工单详情页（TaskDetailPage.tsx）
 ├── 工单信息（从 GET /api/tasks/{id}）
-├── [帮我分析] → POST /api/ai/task/diagnose
+├── AI 摘要卡片 → 右上角 [🤖 帮我分析] → POST /api/ai/task/diagnose
+│   └── 摘要内容（从评论中提取 📝 讨论摘要）
 ├── 讨论区
-│   ├── 评论列表（从 GET /api/tasks/{id}?load_comments=true）
-│   └── [输入框] [@AI 按钮] → POST /api/ai/task/discuss
-└── 讨论摘要卡片（从评论中筛选AI生成的摘要）
+│   ├── 评论列表（含 AI 诊断短链接）
+│   │   └── 诊断短链接：📋 <a class="diagnosis-link"> → 点击 → Dialog 弹窗
+│   └── [输入框] [@AI] [发送]
+│       ├── [@AI] → 自动填入 "@AI " 前缀（不直接调API）
+│       └── [发送] → 检测 @AI 前缀 → /discuss；否则普通评论
+└── Dialog（AI 诊断报告：根因/建议/参考/置信度）
 ```
+
+### 关键实现细节
+
+1. **task_id 类型**：业务后端返回整数，前端 `String(detail.id)` 避免 Pydantic 422
+2. **@AI 用户体验**：@AI 按钮只负责在输入框填前缀，工程师可继续打字，点发送才调 API
+3. **@AI 消息双写**：用户 @AI 消息先写入 task_comments（普通评论），再调 /discuss，AI 回复也写入
+4. **诊断短链接**：纯前端本地 state，不写 task_comments；只存活在当前会话
+5. **摘要**：后端定时 summarize → 写入 comments → 前端 loadDetail 时自动提取
 
 ---
 
@@ -548,18 +559,27 @@ WHERE task_id = X
 
 ## 10. 实现计划
 
-### Phase 1: 砍旧
-- [ ] 移除 `chat()` / `chat_stream()` / `_fetch_user_tasks_summary()`
-- [ ] 移除 Chat 相关 Prompt（`TASK_CHAT_SYSTEM_PROMPT`）
-- [ ] 移除废弃端点（chat/stream, chat, analyze/stream, analyze, list）
+### Phase 1: 砍旧 ✅
+- [x] 移除 `chat()` / `chat_stream()` / `_fetch_user_tasks_summary()`
+- [x] 移除 Chat 相关 Prompt（`TASK_CHAT_SYSTEM_PROMPT`）
+- [x] 移除废弃端点（chat/stream, chat, analyze/stream, analyze, list）
 
-### Phase 2: 三大新功能
-- [ ] `diagnose()` — 全能力诊断，即时返回报告（不落库）
-- [ ] `discuss()` — @AI 讨论回复（写 task_comments）
-- [ ] `summarize()` — 讨论摘要（写 task_comments）
-- [ ] 新增 3 个 Prompt + 3 个端点
+### Phase 2: 三大新功能 ✅
+- [x] `diagnose()` — 全能力诊断，即时返回报告
+- [x] `discuss()` — @AI 讨论回复（写 task_comments）
+- [x] `summarize()` — 讨论摘要（写 task_comments）
+- [x] 新增 3 个 Prompt + 3 个端点
+- [x] router: 修复 `/diagnose`（原为错误的工单列表代码），新增 `/discuss`
 
-### Phase 3: 前端对齐
-- [ ] 前端 ChatPanel 移除 tasks 场景逻辑
-- [ ] 工单详情页对接 3 个新端点
-- [ ] 诊断报告弹窗渲染
+### Phase 3: 前端对齐 ✅ (v3.1, 2026-07-23)
+- [x] 工单详情页（TaskDetailPage.tsx）对接 /diagnose + /discuss
+- [x] [🤖 帮我分析] 按钮放在 AI 摘要卡片右上角
+- [x] [@AI] 按钮自动填入前缀，不直接调 API
+- [x] 诊断报告以短链接形式插入讨论区 → 点击弹 Dialog
+- [x] AI 摘要从评论中提取 `📝 讨论摘要` 展示
+- [x] fix: task_id String() 转换避免 Pydantic 422
+
+### 已知问题 / 注意事项
+- `/diagnose` 使用的 router 代码在 merge 前是工单列表逻辑，已修复
+- 前端 `detail.id` 是 number，发给 AI 服务必须 `String()` 否则 422
+- 诊断短链接是前端本地 state，刷新页面后消失（预期行为）
