@@ -458,57 +458,55 @@ async def task_list(body: TaskListAPIRequest) -> dict:
     查询策略：按 created_by 匹配用户名。
     status 过滤：默认排除 resolved/closed，只看待处理。
     """
+
+
+class SummarizeRequest(BaseModel):
+    task_id: str = Field(..., description="工单 ID")
+    title: str = Field(default="", description="工单标题")
+    description: str = Field(default="", description="工单描述")
+    diagnosis_summary: str = Field(default="", description="提单Agent诊断摘要（从 metadata_info.diagnosis 拼接）")
+    discussion_history: list = Field(default_factory=list, description="近期讨论 [{author, content, time}, ...]")
+    previous_summary: str = Field(default="", description="上次摘要结果（有值时增量总结，空值时首次总结）")
+
+
+# ── v3.0 端点 ──
+
+class TaskDiagnoseRequest(BaseModel):
+    task_id: str = Field(..., description="工单 ID")
+
+
+class TaskDiscussRequest(BaseModel):
+    task_id: str = Field(..., description="工单 ID")
+    query: str = Field(..., description="用户问题（如 @AI 帮我分析这个日志）")
+    context: dict = Field(default_factory=dict, description="讨论上下文 {recent_comments: [{author, content}]}")
+
+
+@task_agent_router.post("/diagnose", summary="诊断报告（[帮我分析] 按钮）")
+async def task_diagnose(body: TaskDiagnoseRequest) -> dict:
+    """全能力诊断 → 即时返回报告（不存库）"""
     try:
-        from ai.core.task_adapter import task_to_dict
-        from app.models.task import Task, TaskStatus
-        from app.core.db import SessionLocal
-        db = SessionLocal()
-        tickets_list = []
-        try:
-            q = db.query(Task).filter(
-                ~Task.status.in_([TaskStatus.RESOLVED, TaskStatus.CLOSED])
-            )
-            # 按用户名匹配创建者
-            if body.username:
-                q = q.filter(Task.created_by == body.username)
-            q = q.order_by(
-                Task.priority.desc(), Task.created_at.desc()
-            ).limit(50)
-            for t in q.all():
-                d = task_to_dict(t)
-                tickets_list.append({
-                    "task_id": str(t.id),
-                    "title": d["title"],
-                    "description": (d["description"] or "")[:100],
-                    "priority": d["priority"],
-                    "status": d["status"],
-                    "type": d["type"],
-                    "robot_type": d["robot_type"],
-                    "created_at": t.created_at.isoformat() if t.created_at else "",
-                    "has_attachments": bool(t.attachments),
-                })
-        finally:
-            db.close()
-
-        priority_counts = {}
-        for t in tickets_list:
-            p = t["priority"]
-            priority_counts[p] = priority_counts.get(p, 0) + 1
-        summary_parts = [f"你当前有 {len(tickets_list)} 个待处理工单"]
-        if priority_counts:
-            detail = "，".join(f"{v} 个{c}" for c, v in priority_counts.items())
-            summary_parts.append(f"（{detail}）")
-
-        return {
-            "code": 0,
-            "data": {
-                "summary": "".join(summary_parts),
-                "tickets": tickets_list,
-                "total": len(tickets_list),
-            },
-        }
+        from ai.agents.AiTaskPlatform import get_task_agent
+        agent = await get_task_agent()
+        result = await agent.diagnose(task_id=body.task_id)
+        return {"code": 0, "data": result}
     except Exception as e:
-        return {"code": 1, "message": f"加载工单列表失败: {str(e)}", "data": {"tickets": [], "total": 0}}
+        return {"code": 1, "message": str(e)}
+
+
+@task_agent_router.post("/discuss", summary="@AI 讨论")
+async def task_discuss(body: TaskDiscussRequest) -> dict:
+    """@AI 讨论回复（带讨论上下文，按需调日志子Agent）→ 写 task_comments"""
+    try:
+        from ai.agents.AiTaskPlatform import get_task_agent
+        agent = await get_task_agent()
+        result = await agent.discuss(
+            task_id=body.task_id,
+            query=body.query,
+            context=body.context,
+        )
+        return {"code": 0, "data": result}
+    except Exception as e:
+        return {"code": 1, "message": str(e)}
 
 
 @task_agent_router.post("/analyze", summary="分析工单（非流式）")
@@ -557,6 +555,25 @@ async def task_analyze_stream(body: TaskAnalyzeAPIRequest):
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(sse(), media_type="text/event-stream")
+
+
+@task_agent_router.post("/summarize", summary="讨论摘要")
+async def task_summarize(body: SummarizeRequest) -> dict:
+    """后端触发：传入工单信息+讨论记录 → 生成摘要 → 返回"""
+    try:
+        from ai.agents.AiTaskPlatform import get_task_agent
+        agent = await get_task_agent()
+        result = await agent.summarize(
+            task_id=body.task_id,
+            title=body.title,
+            description=body.description,
+            diagnosis_summary=body.diagnosis_summary,
+            discussion_history=body.discussion_history,
+            previous_summary=body.previous_summary,
+        )
+        return {"code": 0, "data": result}
+    except Exception as e:
+        return {"code": 1, "message": str(e)}
 
 
 @task_agent_router.post("/submit", summary="提交方案")

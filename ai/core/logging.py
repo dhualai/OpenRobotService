@@ -24,10 +24,17 @@ from logging.handlers import TimedRotatingFileHandler
 # 日志根目录：ai/logs/
 _LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 _LOGGER_NAME = "AI"
+_TASK_AGENT_LOGGER = "TASK_AGENT"
+
+# logger → handler 映射
+_MODULE_HANDLERS = {
+    _TASK_AGENT_LOGGER: "task_agent_file",
+}
 
 
 def _default_config() -> dict:
     log_file = str(_LOG_DIR / "ai.log")
+    task_log_file = str(_LOG_DIR / "task_agent" / "task_agent.log")
     return {
         "version": 1,
         "disable_existing_loggers": False,
@@ -54,11 +61,26 @@ def _default_config() -> dict:
                 "backupCount": 30,
                 "encoding": "utf-8",
             },
+            "task_agent_file": {
+                "class": "logging.handlers.TimedRotatingFileHandler",
+                "level": "DEBUG",
+                "formatter": "standard",
+                "filename": task_log_file,
+                "when": "midnight",
+                "interval": 1,
+                "backupCount": 30,
+                "encoding": "utf-8",
+            },
         },
         "loggers": {
             _LOGGER_NAME: {
                 "level": "DEBUG",
                 "handlers": ["console", "file"],
+                "propagate": False,
+            },
+            _TASK_AGENT_LOGGER: {
+                "level": "DEBUG",
+                "handlers": ["console", "task_agent_file"],
                 "propagate": False,
             },
         },
@@ -72,6 +94,7 @@ def _default_config() -> dict:
 def setup_logging() -> logging.Logger:
     """初始化 AI 模块日志（在 run.py lifespan 中调用）"""
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    (_LOG_DIR / "task_agent").mkdir(parents=True, exist_ok=True)
 
     config = _default_config()
     logging.config.dictConfig(config)
@@ -79,9 +102,10 @@ def setup_logging() -> logging.Logger:
     logger = logging.getLogger(_LOGGER_NAME)
     logger.info("AI 日志系统初始化完成")
     logger.info(f"日志文件: {_LOG_DIR / 'ai.log'}")
+    logger.info(f"任务Agent日志: {_LOG_DIR / 'task_agent' / 'task_agent.log'}")
     return logger
 
 
 def get_logger(name: str = _LOGGER_NAME) -> logging.Logger:
-    """获取 AI 模块 logger。全部统一返回 'AI' logger，模块名由 formatter 自动注入。"""
-    return logging.getLogger(_LOGGER_NAME)
+    """获取 logger。'AI'→ai.log，'TASK_AGENT'→task_agent/task_agent.log。"""
+    return logging.getLogger(name)

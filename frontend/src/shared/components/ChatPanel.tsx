@@ -2,7 +2,7 @@
 // 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Textarea, Toast } from 'tdesign-mobile-react';
+import { Textarea, Toast, Popup } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
@@ -90,6 +90,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const albumInputRef = useRef<HTMLInputElement>(null);
+  const [showUploadMenu, setShowUploadMenu] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   // 语音 tap/hold 双模式 + 真实音量可视化
   const voiceInteractionModeRef = useRef<'tap' | 'hold' | null>(null);
@@ -680,7 +683,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 )
               ) : '轻触或按住 说话'}
             </button>
-            <button className="chat-input-btn" onClick={() => fileInputRef.current?.click()} title="上传" aria-label="上传文件或拍照">
+            <button className="chat-input-btn" onClick={() => setShowUploadMenu(true)} title="上传" aria-label="上传文件或拍照">
               <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
                 <circle cx="12" cy="12" r="9.5" />
                 <line x1="12" y1="7.5" x2="12" y2="16.5" />
@@ -707,7 +710,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                     <line x1="8" y1="21" x2="16" y2="21" />
                   </svg>
                 </button>
-                <button className="chat-input-btn" onClick={() => fileInputRef.current?.click()} title="上传" aria-label="上传文件或拍照">
+                <button className="chat-input-btn" onClick={() => setShowUploadMenu(true)} title="上传" aria-label="上传文件或拍照">
                   <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
                     <circle cx="12" cy="12" r="9.5" />
                     <line x1="12" y1="7.5" x2="12" y2="16.5" />
@@ -728,7 +731,17 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             </div>
           </>
         )}
+        <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" onChange={handleFileChange} style={{ display: 'none' }} />
+        <input ref={albumInputRef} type="file" accept="image/*" onChange={handleFileChange} style={{ display: 'none' }} />
         <input ref={fileInputRef} type="file" accept="*/*" onChange={handleFileChange} style={{ display: 'none' }} />
+        <Popup visible={showUploadMenu} onClose={() => setShowUploadMenu(false)} placement="bottom" showOverlay>
+          <div className="upload-menu">
+            <button type="button" className="upload-menu__item" onClick={() => { setShowUploadMenu(false); cameraInputRef.current?.click(); }}>拍摄</button>
+            <button type="button" className="upload-menu__item" onClick={() => { setShowUploadMenu(false); albumInputRef.current?.click(); }}>从相册选择</button>
+            <button type="button" className="upload-menu__item" onClick={() => { setShowUploadMenu(false); fileInputRef.current?.click(); }}>上传文件</button>
+            <button type="button" className="upload-menu__cancel" onClick={() => setShowUploadMenu(false)}>取消</button>
+          </div>
+        </Popup>
       </div>
     </div>
   );
