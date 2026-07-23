@@ -27,7 +27,7 @@ from ai.agents.AiTaskPlatform.log_analyzer.indexer import (
     LogIndex, LogQuery, extract_fields, fields_summary,
 )
 
-# ── 知识库加载 ──────────────────────────────────────────────
+# ── 日志说明手册加载 ──────────────────────────────────────────────
 
 _DOCS_DIR = Path(__file__).parent / "log_manual"
 
