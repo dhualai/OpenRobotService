@@ -2,7 +2,7 @@
 // 数据源：AI 模块 GET /api/ai/memory/tickets/all（admin 全部，其余仅本人创建）
 // 搜索：前端模糊过滤（title/description）；状态筛选：qaListTickets status filter（后端）
 // 分页：每页 PAGE_SIZE 条，下拉刷新、触底加载更多。
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Toast, Button } from 'tdesign-mobile-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
@@ -74,16 +74,21 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
     setHasMore(total > skip + items.length);
   }, [skip, buildFilters]);
 
-  // search/statusFilter 变化 → 重新加载（后端搜索）
-  // search 非空 → 防抖 400ms（避免每次按键都请求）；search 空 → 立即加载全部（首屏/清空/statusFilter 切换）
+  // 联动加载：statusFilter 变 → 立即加载（含 keyword 联动）；search 变 → 防抖 400ms（非空）；search 空 → 立即
+  const loadInitialRef = useRef(loadInitial);
+  loadInitialRef.current = loadInitial;
+  const prevStatus = useRef(statusFilter);
   useEffect(() => {
-    if (!search.trim()) {
-      loadInitial();
+    const statusChanged = prevStatus.current !== statusFilter;
+    prevStatus.current = statusFilter;
+    // status 切换 / search 为空 → 立即加载；search 非空 → 防抖（避免每次按键请求）
+    if (statusChanged || !search.trim()) {
+      loadInitialRef.current();
       return;
     }
-    const t = setTimeout(() => { loadInitial(); }, 400);
+    const t = setTimeout(() => { loadInitialRef.current(); }, 400);
     return () => clearTimeout(t);
-  }, [loadInitial]);
+  }, [statusFilter, search]);
 
   // 后端已按 keyword 搜索，前端无需再过滤
   const displayedTickets = tickets;
