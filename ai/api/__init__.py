@@ -11,10 +11,10 @@ AI 模块 API 路由
 
 from ai.api.router import (
     qa_router, chat_router, memory_router,
-    task_agent_router,
+    task_agent_router, wecom_router,
 )
 
 __all__ = [
     "qa_router", "chat_router", "memory_router",
-    "task_agent_router",
+    "task_agent_router", "wecom_router",
 ]

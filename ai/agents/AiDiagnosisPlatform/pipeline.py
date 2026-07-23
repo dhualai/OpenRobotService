@@ -841,6 +841,7 @@ class AiDiagnosisPlatform:
 
     async def get_ticket(self, session_id: str) -> dict:
         """只读获取工单数据，不改变状态"""
+        await self._ensure_clients()
         memory = await self._memory_manager.get_memory(session_id)
         agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
         return await self._build_ticket(session_id, agent_state, memory)
@@ -1174,7 +1175,7 @@ class AiDiagnosisPlatform:
 
         raw = "".join(raw_tokens)
         t_stream["llm_agent"] = round((time.perf_counter() - t_llm) * 1000)
-        logger.debug(f"[timing] overhead={t_stream.get('overhead_before_llm','?')}ms  "
+        logger.info(f"[timing] overhead={t_stream.get('overhead_before_llm','?')}ms  "
                      f"retrieve={t_stream.get('retrieve','?')}ms  "
                      f"prompt={t_stream.get('prompt_chars','?')}chars  "
                      f"llm_first={t_stream.get('llm_first_token','?')}ms  "
