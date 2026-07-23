@@ -32,7 +32,7 @@ def fix_image_urls(text: str) -> str:
     """将相对路径的图片 URL 转为指向 FastAPI 后端的绝对路径"""
     import re
     return re.sub(
-        r'!\[([^\]]*)\]\((/api/media/[^)]+)\)',
+        r'!\[([^\]]*)\]\((/api/ai/media/[^)]+)\)',
         rf'![\1]({API_BASE}\2)',
         text,
     )
