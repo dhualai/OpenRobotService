@@ -145,7 +145,7 @@ def init_users_db():
     from app.core.security import get_password_hash
     admin_id = "user_admin"
     admin_username = "admin"
-    admin_password = "123456"
+    admin_password = "usp2026@EP"
     admin_permissions = ["admin", "permissions:*", "users:*"]
 
     if not db_manager.get_user(admin_username):

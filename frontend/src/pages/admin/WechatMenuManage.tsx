@@ -29,8 +29,8 @@ export default function WechatMenuManage() {
   const fetchMenu = async () => {
     setLoading(true);
     try {
-      const data = await request<MenuData>('/get_menu');
-      setMenuData(data);
+      const response = await request<{ data: { menu: MenuData } }>('/get_menu');
+      setMenuData(response.data?.menu ?? null);
     } catch (err) {
       Toast({ message: `获取菜单失败: ${err instanceof Error ? err.message : '未知错误'}`, theme: 'error' });
     } finally {

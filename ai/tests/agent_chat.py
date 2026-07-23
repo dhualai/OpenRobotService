@@ -55,6 +55,15 @@ def ask_stream(query: str):
                 first_token = False
             print(ev["token"], end="", flush=True)
 
+        # 提单成功提示（status 事件，stage=submitted）
+        if current_event == "status" and isinstance(ev, dict) and ev.get("stage") == "submitted":
+            print(f"\n\n🎫 工单已生成！")
+            print(f"   工单号: {ev.get('ticket_id', '?')}")
+            print(f"   标题: {ev.get('title', '?')}")
+            print(f"   数据库ID: {ev.get('db_id', '?')}")
+        if current_event == "status" and isinstance(ev, dict) and ev.get("stage") == "submit_failed":
+            print(f"\n\n❌ 提单失败: {ev.get('error', '未知错误')}")
+
         if current_event == "result":
             result_data = ev
             current_event = None
@@ -77,10 +86,15 @@ def show_result(d: dict):
             print(f"  ⏱  {' | '.join(parts)}")
     ticket = d.get("ticket", {})
     if ticket:
-        print(f"\n🎫 工单: {ticket.get('title', '')} | {ticket.get('category')} | {ticket.get('urgency')}")
-    notice = d.get("ticket_notice", "")
-    if notice:
-        print(f"📢 {notice}")
+        # ticket 结构: {type:"ticket", data:{ticket:{title,type,priority,...}, db_id, notice}, ...}
+        inner = ticket.get("data", {}).get("ticket", {}) if isinstance(ticket, dict) else {}
+        if inner:
+            print(f"\n🎫 工单: {inner.get('title', '')} | {inner.get('type', '')} | {inner.get('priority', '')}")
+            if inner.get('ticket_id'):
+                print(f"   ticket_id: {inner['ticket_id']}")
+        notice = ticket.get("data", {}).get("notice", "")
+        if notice:
+            print(f"📢 {notice}")
 
 
 def submit_ticket():
@@ -91,8 +105,8 @@ def submit_ticket():
     if data.get("code") == 0:
         t = data.get("data", {}).get("ticket", {})
         print(f"\n🎫 工单已生成: {t.get('title', '')}")
-        print(f"   ticket_id: {t.get('ticket_id')}")
-        print(f"   分类: {t.get('category')}  紧急度: {t.get('urgency')}")
+        print(f"   ticket_id: {t.get('ticket_id')}  类型: {t.get('type', '?')}  优先级: {t.get('priority', '?')}")
+        print(f"   数据库ID: {data.get('data', {}).get('db_id', '?')}")
     else:
         print(f"\n❌ 转工单失败: {data.get('message', '')}")
 
@@ -114,7 +128,7 @@ while True:
     if msg.lower() in ("quit", "exit", "q"):
         print("退出。")
         break
-    if msg in ("转工单", "转工地那") or msg.startswith("转工"):
+    if msg in ("转工单", "转工地那"):
         submit_ticket()
     else:
         ask_stream(msg)

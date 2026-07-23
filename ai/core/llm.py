@@ -12,6 +12,11 @@ from typing import Optional, List, Dict, Any
 from abc import ABC, abstractmethod
 from enum import Enum
 import httpx
+
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -270,10 +275,12 @@ class LLMClient:
             return self._provider_impl.extract_content(response)
 
         except RetryError as e:
+            logger.error(f"LLM 请求超时（重试耗尽）: {e}", exc_info=True)
             raise AITimeoutError(f"LLM 服务响应超时: {str(e)}")
         except Exception as e:
             if isinstance(e, (AITimeoutError, ServiceUnavailableError)):
                 raise
+            logger.error(f"LLM 请求失败: {e}", exc_info=True)
             raise ServiceUnavailableError("LLM", f"请求失败: {str(e)}")
 
     async def chat(
@@ -302,10 +309,12 @@ class LLMClient:
             return self._provider_impl.extract_content(response)
 
         except RetryError as e:
+            logger.error(f"LLM 请求超时（重试耗尽）: {e}", exc_info=True)
             raise AITimeoutError(f"LLM 服务响应超时: {str(e)}")
         except Exception as e:
             if isinstance(e, (AITimeoutError, ServiceUnavailableError)):
                 raise
+            logger.error(f"LLM 请求失败: {e}", exc_info=True)
             raise ServiceUnavailableError("LLM", f"请求失败: {str(e)}")
 
     async def stream(
@@ -346,9 +355,9 @@ class LLMClient:
                 t_conn = time.perf_counter()
                 async with client.stream("POST", url, json=payload) as response:
                     t_resp = time.perf_counter()
-                    print(f"  [T]  [llm-internal] connect={((t_conn-t_stream_start)*1000):.0f}ms  "
-                          f"resp_wait={((t_resp-t_conn)*1000):.0f}ms  "
-                          f"status={response.status_code}")
+                    logger.debug(f"[llm-internal] connect={((t_conn-t_stream_start)*1000):.0f}ms  "
+                                 f"resp_wait={((t_resp-t_conn)*1000):.0f}ms  "
+                                 f"status={response.status_code}")
                     if response.status_code != 200:
                         raise ServiceUnavailableError("LLM", f"流式响应失败: {response.status_code}")
 
@@ -368,7 +377,7 @@ class LLMClient:
                                     if content:
                                         if t_first_content is None:
                                             t_first_content = time.perf_counter()
-                                            print(f"  [T]  [llm-stream] first-token-from-http={((t_first_content-t_resp)*1000):.0f}ms")
+                                            logger.debug(f"[llm-stream] first-token-from-http={((t_first_content-t_resp)*1000):.0f}ms")
                                         has_yielded = True
                                         yield content
                             except (json.JSONDecodeError, KeyError, IndexError):
@@ -376,6 +385,7 @@ class LLMClient:
                 return  # 正常结束
             except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException) as e:
                 last_error = e
+                logger.warning(f"LLM 流式重试: attempt={attempt+1}, error={type(e).__name__}: {str(e)[:200]}")
                 print(f"  ⚠️  [llm] stream retry attempt={attempt+1} err={type(e).__name__}: {str(e)[:100]}")
                 if has_yielded or attempt == 2:
                     if isinstance(e, (httpx.ConnectError, httpx.TimeoutException)):

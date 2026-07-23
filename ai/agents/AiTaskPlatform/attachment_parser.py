@@ -1,16 +1,38 @@
-"""附件解析器：日志 → 关键错误提取 + 回放 → 路径/状态分析
+"""附件解析器：日志 / ZIP / 文件夹 / 图片 → 诊断上下文
+
+支持的附件类型：
+    - 日志文件 (.txt/.log/.csv)          → ERROR/WARN 提取 + 时间范围
+    - ZIP 压缩包 (.zip)                 → 解压 → 遍历 → 识别日志 → 提取
+    - 文件夹（多文件多级目录）           → 遍历目录树 → 识别日志 → 提取
+    - 图片 (.jpg/.png/.jpeg/.bmp)       → 提取文件名列表（OCR 后续迭代）
+    - 回放文件                           → 预留入口，解析逻辑未实现
 
 设计原则：
     - 无附件不报错，静默跳过
     - 解析失败不阻塞主流程
-    - 文本截断 100KB，防止大文件撑爆 context
+    - 文本截断 100KB/2000 字，防止撑爆 LLM context
+    - ZIP 解压最多遍历 50 个文件，防止炸弹
 """
 
-from typing import List, Optional
+import io
+import os
+import tempfile
+import zipfile
+from typing import List, Optional, Tuple, Set
 import httpx
 from pathlib import Path
 
 from ai.agents.AiTaskPlatform.schemas import AttachmentAnalysis
+
+
+# ── 常量 ──────────────────────────────────────────────────────
+
+_TEXT_CHUNK_LIMIT = 100_000      # 单个文本文件最大字节
+_EXTRACT_SUMMARY_LIMIT = 2000   # 日志摘要最多 2000 字
+_ZIP_MAX_FILES = 50              # ZIP 最多遍历文件数
+_DIR_MAX_FILES = 50              # 文件夹最多遍历文件数
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
+_LOG_EXTS = {".txt", ".log", ".csv"}
 
 
 # ============================================================
@@ -20,15 +42,15 @@ from ai.agents.AiTaskPlatform.schemas import AttachmentAnalysis
 async def parse_attachments(attachments: list) -> AttachmentAnalysis:
     """解析附件列表 → 分析摘要。
 
-    Args:
-        attachments: 附件列表 [{"filename":"...", "path":"...", ...}, ...]
-
-    Returns:
-        AttachmentAnalysis: 含日志摘要和回放摘要
+    单个附件：直接按类型处理。
+    多个附件：逐个处理，日志摘要合并，图片列表合并。
     """
     result = AttachmentAnalysis()
     if not attachments:
         return result
+
+    log_texts: list[str] = []
+    image_names: list[str] = []
 
     for att in attachments:
         if not isinstance(att, dict):
@@ -39,21 +61,151 @@ async def parse_attachments(attachments: list) -> AttachmentAnalysis:
         if not filename and not path:
             continue
 
-        # 判断文件类型
+        # ── 日志文件 ──
         if _is_log_file(filename, path):
             try:
                 content = await _read_content(att)
                 if content:
-                    result.has_logs = True
-                    result.log_summary = _extract_log_errors(content)
+                    log_texts.append(f"--- {filename} ---\n{content}")
             except Exception:
                 pass
 
+        # ── ZIP 压缩包 ──
+        elif _is_zip_file(filename, path):
+            try:
+                zip_logs = await _parse_zip(att)
+                log_texts.extend(zip_logs)
+            except Exception:
+                pass
+
+        # ── 文件夹（path 指向本地目录）──
+        elif _is_directory(path):
+            try:
+                dir_logs = _traverse_directory(path)
+                log_texts.extend(dir_logs)
+            except Exception:
+                pass
+
+        # ── 图片 ──
+        elif _is_image_file(filename, path):
+            image_names.append(filename or Path(path).name)
+
+        # ── 回放 ──
         elif _is_replay_file(filename, path):
             result.has_replay = True
-            # 回放解析后续实现
+
+        # ── 未知类型 → 尝试当文本读（可能是无扩展名的日志）──
+        else:
+            try:
+                content = await _read_content(att)
+                if content:
+                    log_texts.append(f"--- {filename or '未命名附件'} ---\n{content}")
+            except Exception:
+                pass
+
+    # ── 汇总 ──
+    if log_texts:
+        result.has_logs = True
+        combined = "\n".join(log_texts)
+        result.log_summary = _extract_log_errors(combined)
+
+    if image_names:
+        result.has_screenshots = True
+        result.log_summary = (
+            f"{result.log_summary}\n\n[附图片 {len(image_names)} 张："
+            f"{', '.join(image_names[:10])}{' ...' if len(image_names) > 10 else ''}]"
+        ).strip()
 
     return result
+
+
+# ============================================================
+# ZIP 解析
+# ============================================================
+
+async def _parse_zip(att: dict) -> list[str]:
+    """解压 ZIP → 遍历内部文件 → 对日志型文件提取文本。
+
+    处理方式：
+        - 内存解压（不落盘），单个文件 ≤100KB
+        - 最多遍历 50 个文件
+        - 嵌套 ZIP 不递归（安全）
+
+    返回: ["--- outer.zip/filename.log ---\\n<content>", ...]
+    """
+    zip_bytes = await _read_bytes(att)
+    if not zip_bytes:
+        return []
+
+    results: list[str] = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            count = 0
+            for name in zf.namelist():
+                if count >= _ZIP_MAX_FILES:
+                    results.append(f"--- ZIP({len(zf.namelist())}文件,仅展示前{_ZIP_MAX_FILES}) ---")
+                    break
+                count += 1
+
+                # 跳过目录项
+                if name.endswith("/"):
+                    continue
+
+                if _is_log_file(name, ""):
+                    try:
+                        content = zf.read(name).decode("utf-8", errors="replace")[:_TEXT_CHUNK_LIMIT]
+                        label = f"--- {Path(name).name} (ZIP) ---"
+                        results.append(f"{label}\n{content}")
+                    except Exception:
+                        pass
+    except zipfile.BadZipFile:
+        pass
+    except Exception:
+        pass
+
+    return results
+
+
+def _is_directory(path: str) -> bool:
+    """判断路径是否为本地目录"""
+    if not path:
+        return False
+    p = Path(path)
+    return p.is_dir()
+
+
+# ============================================================
+# 文件夹遍历
+# ============================================================
+
+def _traverse_directory(dir_path: str) -> list[str]:
+    """遍历本地文件夹 → 识别日志/文本文件。
+
+    返回: ["--- subdir/file.log ---\\n<content>", ...]
+    """
+    results: list[str] = []
+    root = Path(dir_path)
+    if not root.is_dir():
+        return results
+
+    count = 0
+    for entry in root.rglob("*"):
+        if count >= _DIR_MAX_FILES:
+            break
+        if not entry.is_file():
+            continue
+        count += 1
+
+        if _is_log_file(entry.name, ""):
+            try:
+                content = entry.read_text(encoding="utf-8", errors="replace")[:_TEXT_CHUNK_LIMIT]
+                # 相对路径作为标签
+                label = f"--- {entry.relative_to(root)} ---"
+                results.append(f"{label}\n{content}")
+            except Exception:
+                pass
+
+    return results
 
 
 # ============================================================
@@ -61,50 +213,50 @@ async def parse_attachments(attachments: list) -> AttachmentAnalysis:
 # ============================================================
 
 def _is_log_file(filename: str, path: str) -> bool:
-    """判断是否为日志文件"""
     name = (filename or path).lower()
-    return name.endswith((".txt", ".log", ".csv"))
+    return any(name.endswith(ext) for ext in _LOG_EXTS)
+
+
+def _is_zip_file(filename: str, path: str) -> bool:
+    name = (filename or path).lower()
+    return name.endswith(".zip")
+
+
+def _is_image_file(filename: str, path: str) -> bool:
+    name = (filename or path).lower()
+    return any(name.endswith(ext) for ext in _IMAGE_EXTS)
 
 
 def _is_replay_file(filename: str, path: str) -> bool:
-    """判断是否为回放文件"""
     name = (filename or path).lower()
     return "replay" in name or "回放" in name
 
 
 # ============================================================
-# 内容读取
+# 内容读取（文本 / 二进制）
 # ============================================================
 
 async def _read_content(att: dict) -> str:
-    """读取附件文本内容。
-
-    支持本地文件路径和远程 HTTP URL，超过 100KB 自动截断。
-    """
+    """读取附件为文本字符串。"""
     path = att.get("path") or att.get("url", "")
     if not path:
         return ""
 
     try:
-        # HTTP URL
         if path.startswith("http://") or path.startswith("https://"):
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
                 resp = await client.get(path)
                 if resp.status_code == 200:
-                    text = resp.text
-                    # 用 errors="replace" 跳过乱码字符
-                    return text[:100_000]
+                    return resp.text[:_TEXT_CHUNK_LIMIT]
 
-        # 本地文件路径
         local = Path(path)
         if local.is_absolute() and local.exists():
-            return local.read_text(encoding="utf-8", errors="replace")[:100_000]
+            return local.read_text(encoding="utf-8", errors="replace")[:_TEXT_CHUNK_LIMIT]
 
-        # 相对于项目根目录
         from pathlib import Path as _Path
         project_local = _Path(__file__).resolve().parent.parent.parent / path
         if project_local.exists():
-            return project_local.read_text(encoding="utf-8", errors="replace")[:100_000]
+            return project_local.read_text(encoding="utf-8", errors="replace")[:_TEXT_CHUNK_LIMIT]
 
     except Exception as e:
         print(f"  [attachment-parser] Failed to read {path}: {e}")
@@ -112,25 +264,51 @@ async def _read_content(att: dict) -> str:
     return ""
 
 
+async def _read_bytes(att: dict) -> Optional[bytes]:
+    """读取附件为二进制（用于 ZIP 解压等）。"""
+    path = att.get("path") or att.get("url", "")
+    if not path:
+        return None
+
+    try:
+        if path.startswith("http://") or path.startswith("https://"):
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                resp = await client.get(path)
+                if resp.status_code == 200:
+                    return resp.content
+
+        local = Path(path)
+        if local.is_absolute() and local.exists():
+            return local.read_bytes()
+
+        from pathlib import Path as _Path
+        project_local = _Path(__file__).resolve().parent.parent.parent / path
+        if project_local.exists():
+            return project_local.read_bytes()
+
+    except Exception as e:
+        print(f"  [attachment-parser] Failed to read bytes {path}: {e}")
+
+    return None
+
+
 # ============================================================
-# 日志解析
+# 日志 ERROR/WARN 提取
 # ============================================================
 
 def _extract_log_errors(text: str) -> str:
     """从日志文本提取 ERROR/WARN/异常行 + 时间线上下文。
 
     提取策略：
-        1. 扫描所有 ERROR/WARN/EXCEPTION/FAIL/FATAL 行
-        2. 按时间排序
-        3. 取前 20 条
-        4. 附加日志首尾时间戳范围
+        1. 扫描所有 ERROR/WARN/EXCEPTION/FAIL/FATAL/Traceback 行
+        2. 取前 20 条
+        3. 附加日志首尾时间戳范围
 
     Returns:
         摘要文本（≤2000 chars）
     """
     lines = text.split("\n")
 
-    # 提取错误/异常行
     error_keywords = ("ERROR", "WARN", "EXCEPTION", "FAIL", "FATAL", "Traceback")
     error_lines = []
     for line in lines:
@@ -138,7 +316,6 @@ def _extract_log_errors(text: str) -> str:
         if any(kw in upper for kw in error_keywords):
             error_lines.append(line.strip()[:200])
 
-    # 找出首尾包含时间戳的行（给工程师时间范围参考）
     first_ts_line = next((l for l in lines if _has_timestamp(l)), "")
     last_ts_line = next((l for l in reversed(lines) if _has_timestamp(l)), "")
 
@@ -158,14 +335,10 @@ def _extract_log_errors(text: str) -> str:
             f"时间范围: {first_ts_line.strip()[:60]} ~ {last_ts_line.strip()[:60]}"
         )
 
-    return "\n".join(parts)[:2000]
+    return "\n".join(parts)[:_EXTRACT_SUMMARY_LIMIT]
 
 
 def _has_timestamp(line: str) -> bool:
-    """检测行是否包含时间戳（支持常见格式）。
-
-    支持: YYYY-MM-DD HH:MM:SS, [YYYY-MM-DD HH:MM:SS],
-           HH:MM:SS.mmm, ISO 8601
-    """
+    """检测行是否包含时间戳（HH:MM:SS 格式）。"""
     import re
     return bool(re.search(r"\d{2}:\d{2}:\d{2}", line))

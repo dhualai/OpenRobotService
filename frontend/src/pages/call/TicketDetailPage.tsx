@@ -5,6 +5,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Toast, Loading, Tag } from 'tdesign-mobile-react';
 import { qaGetTicket, qaTicketAck } from '@/api/ai';
+import type { UserItem } from '@/api/users';
+import UserSelect from '@/shared/components/UserSelect';
+import { createRequest } from '@/api/client';
+import API_CONFIG from '@/config/api';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { formatDateTime } from '@/shared/utils/url';
 
@@ -41,12 +45,14 @@ const TYPE_LABEL: Record<string, string> = {
 export default function TicketDetailPage() {
   const { id: sessionId = '' } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const refreshTasks = useWorkbenchStore((s) => s.refreshTasks);
+  const { refreshTasks, setChatContext, goToTab } = useWorkbenchStore();
+  const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
 
   const [ticket, setTicket] = useState<AiTicket | null>(null);
   const [loading, setLoading] = useState(true);
   const [acking, setAcking] = useState(false);
   const [msg, setMsg] = useState('');
+  const [escalateUser, setEscalateUser] = useState<UserItem | null>(null);
 
   const fetchDetail = useCallback(async () => {
     if (!sessionId) return;
@@ -81,6 +87,80 @@ export default function TicketDetailPage() {
     } finally {
       setAcking(false);
     }
+  };
+
+  const handleUrge = async () => {
+    if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法催办', theme: 'warning' }); return; }
+    try {
+      // 真实接口：后端任务服务催办通知（后端要求工单已设置截止时间且已分配处理人）
+      await request('/cuiban-notification', {
+        method: 'POST',
+        body: JSON.stringify({ ticket_id: Number(ticket.ticket_id), notify_type: 1 }),
+      });
+      Toast({ message: '已催办，已通知处理人', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `催办失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
+
+  // 上报：催办通知功能，上报给上级/管理员（to_admin=true 区别于催办处理人）
+  const handleReport = async () => {
+    if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法上报', theme: 'warning' }); return; }
+    try {
+      await request('/cuiban-notification', {
+        method: 'POST',
+        body: JSON.stringify({ ticket_id: Number(ticket.ticket_id), notify_type: 1, to_admin: true }),
+      });
+      Toast({ message: '已上报，已通知上级', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `上报失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
+
+  // 升级：选目标用户后，为其创建一个高优先级待处理 task（POST /api/tasks/，并指派 assigned_to）
+  const handleEscalate = async () => {
+    if (!ticket) return;
+    if (!escalateUser) {
+      Toast({ message: '请先选择升级对象', theme: 'warning' });
+      return;
+    }
+    const target = escalateUser.name || escalateUser.username;
+    try {
+      await request('/', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: `【升级→${target}】${ticket.title || `工单 ${ticket.ticket_id}`}`,
+          description: `原工单 #${ticket.ticket_id || ''}「${ticket.title || ''}」申请升级给 ${target}，请处理。\n\n原始描述：${ticket.description || '无'}`,
+          ticket_type: ticket.type || 'problem',
+          priority: 'urgent',
+          related_resource_id: ticket.ticket_id ? Number(ticket.ticket_id) : undefined,
+          assigned_to: escalateUser.id,
+        }),
+      });
+      Toast({ message: `已升级，已指派给 ${target}`, theme: 'success' });
+      setEscalateUser(null);
+    } catch (err) {
+      Toast({ message: `升级失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
+
+  const handleDiscuss = async () => {
+    if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法发起讨论', theme: 'warning' }); return; }
+    try {
+      // 真实接口：后端任务服务工单评论/讨论（POST /api/tasks/{id}/comments）
+      await request(`/${Number(ticket.ticket_id)}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ content: `发起关于工单「${ticket.title || ticket.ticket_id}」的讨论`, is_public: true }),
+      });
+      Toast({ message: '已发起讨论', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `讨论失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+    // 同时跳转到 AI 会话，带入工单上下文继续沟通
+    const ctx = { ticketId: ticket.ticket_id || '', title: ticket.title || '', description: ticket.description };
+    setChatContext(ctx);
+    goToTab('call', { chatContext: ctx });
+    navigate('/call');
   };
 
   if (loading) return <Loading text="加载中..." />;
@@ -172,7 +252,14 @@ export default function TicketDetailPage() {
 
         {/* 操作 */}
         <div className="detail-actions">
-          <Button theme="primary" size="small" loading={acking} onClick={handleAck}>确认派单</Button>
+          <UserSelect value={escalateUser?.id ?? null} onChange={setEscalateUser} />
+          <div className="detail-actions__btns">
+            <Button theme="primary" size="small" loading={acking} onClick={handleAck}>确认派单</Button>
+            <Button size="small" theme="default" onClick={handleUrge}>一键催办</Button>
+            <Button size="small" theme="primary" onClick={handleDiscuss}>讨论</Button>
+            <Button size="small" theme="light" onClick={handleReport}>上报</Button>
+            <Button size="small" theme="danger" onClick={handleEscalate}>升级</Button>
+          </div>
         </div>
       </div>
     </div>
