@@ -1,8 +1,13 @@
 ﻿from pydantic import BaseModel, Field
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 from datetime import datetime
 
 from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, TicketType
+
+# 附件可以是字符串（本平台手动上传流程存的是 object_path 字符串），
+# 也可以是字典（外部任务源/微信会话写入的 {path, size, filename} 结构）。
+# 二者在 tasks/task_comments.attachments(JSON) 列中并存，故统一用联合类型承接。
+AttachmentItem = Union[str, Dict[str, Any]]
 
 
 class TicketBase(BaseModel):
@@ -17,7 +22,7 @@ class TicketBase(BaseModel):
     related_resource_id: Optional[int] = Field(None, description="关联资源ID")
     tags: Optional[List[str]] = Field(None, description="标签列表")
     metadata_info: Optional[Dict[str, Any]] = Field(None, description="扩展元数据")
-    attachments: Optional[List[str]] = Field(None, description="附件列表")
+    attachments: Optional[List[AttachmentItem]] = Field(None, description="附件列表")
     deadline_at: Optional[datetime] = Field(None, description="截止时间")
 
 
@@ -39,7 +44,7 @@ class TicketUpdate(BaseModel):
     related_resource_id: Optional[int] = Field(None, description="关联资源ID")
     tags: Optional[List[str]] = Field(None, description="标签列表")
     metadata_info: Optional[Dict[str, Any]] = Field(None, description="扩展元数据")
-    attachments: Optional[List[str]] = Field(None, description="附件列表")
+    attachments: Optional[List[AttachmentItem]] = Field(None, description="附件列表")
     resolved_at: Optional[datetime] = Field(None, description="解决时间")
     deadline_at: Optional[datetime] = Field(None, description="截止时间")
 
@@ -47,7 +52,7 @@ class TicketUpdate(BaseModel):
 class TicketCommentBase(BaseModel):
     content: str = Field(..., description="评论内容")
     is_public: bool = Field(default=True, description="是否公开")
-    attachments: Optional[List[str]] = Field(None, description="附件列表")
+    attachments: Optional[List[AttachmentItem]] = Field(None, description="附件列表")
 
 
 class TicketCommentCreate(TicketCommentBase):
@@ -57,7 +62,7 @@ class TicketCommentCreate(TicketCommentBase):
 class TicketCommentUpdate(BaseModel):
     content: Optional[str] = Field(None, description="评论内容")
     is_public: Optional[bool] = Field(None, description="是否公开")
-    attachments: Optional[List[str]] = Field(None, description="附件列表")
+    attachments: Optional[List[AttachmentItem]] = Field(None, description="附件列表")
 
 
 class TicketCommentResponse(TicketCommentBase):
