@@ -74,7 +74,7 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   padding-top: 46px;
-  padding-bottom: 92px;
+  padding-bottom: 5px;
   overflow: hidden;
 }
 /* 可复用对话面板 */
@@ -96,7 +96,7 @@ html, body, #root {
 /* ===== 转工单悬浮入口（贴输入框右上角边框） ===== */
 .chat-panel__ticket-fab {
   position: absolute;
-  top: -48px;
+  top: -40px;
   right: -2px;
   z-index: 10;
   display: flex;
@@ -105,14 +105,14 @@ html, body, #root {
   gap: 2px;
   pointer-events: auto;
 }
-/* 标签默认隐藏，hover 容器时显示 */
+/* 标签常显 */
 .chat-panel__ticket-fab .chat-ticket-btn__label {
-  opacity: 0;
-  transform: translateY(-4px);
+  opacity: 0.6;
+  transform: translateY(0);
   transition: opacity 0.25s ease, transform 0.25s ease;
 }
 .chat-panel__ticket-fab:hover .chat-ticket-btn__label {
-  opacity: 0.6;
+  opacity: 1;
   transform: translateY(0);
 }
 .chat-ticket-btn {
@@ -290,7 +290,7 @@ html, body, #root {
   /* 底部留白需覆盖 TabBar(~50px) + 安全区(~34px) ≈ 84px，
      因 .chat-view 的 92px 在移动端 100vh 地址栏下可能落到 TabBar 覆盖区，
      故列表自身补齐到 96px 以保证最后一行滚到底时不被遮挡 */
-  padding: 0 12px 96px;
+  padding: 20px 12px 96px;
   -webkit-overflow-scrolling: touch;
 }
 .history-tickets__empty {
@@ -384,7 +384,7 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin: 0 8px 10px;
+  margin: 0 8px 0;
   padding: 8px 12px 10px;
   background: #fff;
   border: none;
@@ -1716,3 +1716,19 @@ html, body, #root {
   width: 100%; padding: 14px; border: none; background: #fff;
   font-size: 16px; color: #999; cursor: pointer; margin-top: 8px;
 }
+
+/* ===== 历史工单搜索 + 状态快捷筛选 ===== */
+.history-toolbar { padding: 8px 12px 4px; flex-shrink: 0; }
+.history-search {
+  width: 100%; box-sizing: border-box; padding: 8px 12px;
+  border: 1px solid #e0e0e0; border-radius: 8px; font-size: 14px; margin-bottom: 8px;
+  outline: none; background: #fff;
+}
+.history-search:focus { border-color: #0052d9; }
+.history-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
+.history-tabs::-webkit-scrollbar { display: none; }
+.history-tab {
+  flex-shrink: 0; padding: 4px 12px; font-size: 13px; border-radius: 14px;
+  border: 1px solid #e0e0e0; background: #fff; color: #666; cursor: pointer; white-space: nowrap;
+}
+.history-tab.is-active { background: #0052d9; color: #fff; border-color: #0052d9; }
