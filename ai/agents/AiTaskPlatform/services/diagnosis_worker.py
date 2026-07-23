@@ -22,7 +22,7 @@ logger = logging.getLogger("ai.diagnosis")
 def _is_diagnosed(task_id: int) -> bool:
     """查询 task_comments 表：此工单是否已有 AI 诊断评论。"""
     from app.models.task import TaskComment
-    from app.core.database import SessionLocal
+    from app.core.db import SessionLocal
     db = SessionLocal()
     try:
         return db.query(TaskComment).filter(
@@ -40,7 +40,7 @@ def _scan_undiagnosed_tasks() -> list[dict]:
         工单列表，每项包含 {"id": int, "title": str, "status": str, "priority": str}
     """
     from app.models.task import Task, TaskStatus
-    from app.core.database import SessionLocal
+    from app.core.db import SessionLocal
 
     db = SessionLocal()
     try:

@@ -42,33 +42,38 @@ from fastapi.staticfiles import StaticFiles
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动时：连通性检查 → Embedding 预热 → 知识库自动入库"""
-    print("\n" + "=" * 60)
-    print("[STARTUP] Booting AI module...")
-    print("=" * 60)
+    """启动时：日志初始化 → 连通性检查 → Embedding 预热 → 知识库自动入库"""
+    from ai.core.logging import setup_logging, get_logger
+    setup_logging()
+    logger = get_logger(__name__)
+    logger.info("=" * 40)
+    logger.info("AI 模块启动中...")
 
     from ai.config import get_ai_config, validate_ai_config
 
     # 1. 连通性检查（DeepSeek + Qdrant + Redis）
     try:
         results = await validate_ai_config()
-        print("\n[OK] External services:")
         for name, info in results.items():
-            icon = "[OK]" if info["status"] == "ok" else "[FAIL]"
-            print(f"   {icon} {name}: {info['message']}")
+            if info["status"] == "ok":
+                logger.info(f"外部服务连通: {name} — {info['message']}")
+            else:
+                logger.error(f"外部服务不通: {name} — {info['message']}")
     except Exception as e:
-        print(f"\n[WARN] Init warning: {e}")
+        logger.error(f"连通性检查异常: {e}", exc_info=True)
 
     # 2. Embedding 模型预热
     try:
         from ai.core.embed import get_embed_client
         client = await get_embed_client()
         await client._ensure_model()
-        print("[OK] Embedding model pre-warmed")
+        logger.info("Embedding 模型预热完成")
     except Exception as e:
-        print(f"[WARN] Embedding pre-warm failed: {e}")
+        logger.error(f"Embedding 模型预热失败: {e}", exc_info=True)
 
     # 3. 知识库自动检查 & 入库（统一框架，自动发现所有 parser）
+    qdrant = None
+    local = None
     try:
         from qdrant_client import QdrantClient
         from ai.ingestion.registry import discover_parsers, list_registered
@@ -85,20 +90,15 @@ async def lifespan(app: FastAPI):
                 check_compatibility=False,
             )
 
-        # 自动发现所有 parser 模块
         discover_parsers()
+        logger.debug(f"Qdrant 本地路径: {local}")
 
-        print(f"\n[DEBUG] Qdrant 本地路径: {local}")
-        print(f"[DEBUG] 目录存在: {local.is_dir()}")
         try:
             existing = [c.name for c in qdrant.get_collections().collections]
-            print(f"[DEBUG] 现有集合 ({len(existing)}): {existing}")
+            logger.debug(f"现有 Qdrant 集合 ({len(existing)}): {existing}")
         except Exception:
-            print(f"[DEBUG] 无法列出集合")
-        print()
+            logger.debug("无法列出 Qdrant 集合")
 
-        # 关键排序：rebuild=True 的先执行（创建新集合），rebuild=False 的后执行（追加到新集合）
-        # 否则 append 模式的 parser 会先创建集合，导致 rebuild parser 误判为"已存在"而跳过
         registered = sorted(
             list_registered(),
             key=lambda m: (m.collection_type, not m.ingester_cls.rebuild),
@@ -106,63 +106,71 @@ async def lifespan(app: FastAPI):
 
         for meta in registered:
             ingester = meta.ingester_cls()
+            ingester.verbose = False  # 静默模式，状态由 logger 输出
             active = ingester.pointer_reader()
             label = meta.description or meta.name
 
-            # 对于 rebuild=True 的 parser：检查活跃集合是否存在
-            # 对于 rebuild=False 的 parser（追加模式）：始终运行（idempotent upsert）
             if not ingester.rebuild:
-                # 追加模式：始终检查源文件是否更新
                 if ingester.validate_source_files():
-                    print(f"\n[KB] {label}（追加模式）检查中...")
                     try:
                         await ingester.auto_ingest(client=qdrant)
                     except Exception as e:
-                        print(f"[WARN] {label}入库失败: {e}")
+                        logger.error(f"知识库 {label} 入库失败: {e}", exc_info=True)
             elif not (active and qdrant.collection_exists(active)):
-                print(f"\n[KB] {label}知识库未就绪，自动入库中...")
+                logger.info(f"知识库 {label} 未就绪，自动入库中...")
                 try:
                     await ingester.auto_ingest(client=qdrant)
                 except Exception as e:
-                    print(f"[WARN] {label}入库失败: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    logger.error(f"知识库 {label} 入库失败: {e}", exc_info=True)
             elif active:
-                print(f"[KB] {label}集合: {active}")
+                logger.info(f"知识库 {label} 已就绪，集合: {active}")
 
     except Exception as e:
-        print(f"[WARN] 知识库自动入库失败: {e}")
+        logger.error(f"知识库自动入库异常: {e}", exc_info=True)
 
-    # 本地文件模式：释放 lifespan 持有的 QdrantClient，让 RetrievalService 创建自己的
-    try:
-        qdrant.close()
-    except Exception:
-        pass
+    if qdrant is not None:
+        try:
+            qdrant.close()
+        except Exception:
+            pass
 
-    # 4. 启动诊断后台服务（扫描新工单 → 自动生成 AI 诊断）
+    # 4. 启动诊断后台服务
     diag_worker = None
     diag_stop = None
     try:
         from ai.agents.AiTaskPlatform.services.diagnosis_worker import diagnosis_worker_start
         diag_worker, diag_stop = diagnosis_worker_start()
-        print(f"[OK] Diagnosis worker started (scan interval={get_ai_config().diagnosis_scan_interval}s)")
+        logger.info(f"诊断后台服务已启动 (scan interval={get_ai_config().diagnosis_scan_interval}s)")
     except Exception as e:
-        print(f"[WARN] Diagnosis worker start failed: {e}")
+        logger.error(f"诊断后台服务启动失败: {e}", exc_info=True)
 
-    print("\n" + "=" * 60)
-    print("[OK] Application startup complete")
-    print("=" * 60 + "\n")
+    # 5. 启动派单后台 Worker（定时扫描待派单池 → 自动指派）
+    assign_worker = None
+    assign_worker_task = None
+    try:
+        from ai.agents.AiDiagnosisPlatform.assigner.worker import AssignmentWorker
+        _cfg = get_ai_config()
+        assign_worker = AssignmentWorker(interval=_cfg.assign_scan_interval)
+        assign_worker_task = asyncio.create_task(assign_worker.run())
+        assign_worker._task = assign_worker_task
+        logger.info(f"派单 Worker 已启动 (scan interval={_cfg.assign_scan_interval}s)")
+    except Exception as e:
+        logger.error(f"派单 Worker 启动失败: {e}", exc_info=True)
+
+    logger.info("AI 模块启动完成")
 
     yield
 
     # ── 关闭 ──
+    if assign_worker:
+        await assign_worker.stop()
     if diag_stop:
         diag_stop.set()
-        print("[SHUTDOWN] Diagnosis worker stopping...")
+        logger.info("诊断后台服务停止中...")
         try:
             await asyncio.wait_for(diag_worker, timeout=10)
         except asyncio.TimeoutError:
-            pass
+            logger.warning("诊断后台服务停止超时(10s)")
 
 
 app = FastAPI(
@@ -181,11 +189,10 @@ app.add_middleware(
 )
 
 # ── 挂载路由（从 ai/api 自举，不再依赖 backend）──────────────
-from ai.api import qa_router, chat_router, memory_router, assigner_router, task_agent_router
+from ai.api import qa_router, chat_router, memory_router, task_agent_router
 app.include_router(qa_router)
 app.include_router(chat_router)
 app.include_router(memory_router)
-app.include_router(assigner_router)
 app.include_router(task_agent_router)
 
 # ── 静态资源（知识库图片等）───────────────────────────────────

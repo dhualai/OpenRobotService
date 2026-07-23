@@ -3,19 +3,18 @@
 AI 模块 API 路由
 
 四个 Router：
-    qa_router       — /api/ai/qa/*     诊断 Agent
-    chat_router     — /api/ai/chat/*   纯 LLM 对话
-    memory_router   — /api/ai/memory/* 会话记忆
-    assigner_router — /api/ai/ticketReferee 智能派单
-    task_agent_router — /api/ai/task/* 任务 Agent
+    qa_router         — /api/ai/qa/*     诊断 Agent
+    chat_router       — /api/ai/chat/*   纯 LLM 对话
+    memory_router     — /api/ai/memory/* 会话记忆
+    task_agent_router — /api/ai/task/*   任务 Agent
 """
 
 from ai.api.router import (
     qa_router, chat_router, memory_router,
-    assigner_router, task_agent_router,
+    task_agent_router,
 )
 
 __all__ = [
     "qa_router", "chat_router", "memory_router",
-    "assigner_router", "task_agent_router",
+    "task_agent_router",
 ]

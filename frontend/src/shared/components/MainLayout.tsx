@@ -43,7 +43,7 @@ export default function MainLayout() {
           <Outlet />
         </Suspense>
       </div>
-      <TabBar value={activeTab} onChange={handleChange}>
+      <TabBar value={activeTab} onChange={handleChange} placeholder>
         <TabBarItem value="call" icon={<span>🆘</span>}>
           我要摇人
         </TabBarItem>
