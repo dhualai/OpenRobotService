@@ -9,6 +9,26 @@
 
 ## 提单 Agent 主线
 
+### v1.5 · 2026-07-24
+
+- **变更类型**：新功能 + 修复 + 仓库清理
+- **变更内容**：
+  - **对话标题生成**：第 2 轮对话结束后用 LLM 生成会话标题，通过独立 SSE `event: title` 发送给前端。中文不超过 15 字，英文不超过 50 字符，`max_tokens=40`。标题同时写入 `memory.metadata["title"]`，后续轮次不再重新生成。`/ask/stream` 端点新增 `title` event type 处理。
+  - **工单状态修正**：新提 AI 工单状态从 `PENDING`（待处理）改为 `NEW`（新建），`ticket_dict_to_task_fields()` 中 `status` 字段变更，`AssignerWorker._get_pending_tickets()` 同步改为查询 `status='new'`。
+  - **Git 仓库清理**：移除本地生成/敏感数据出库——
+    - `ai/kb/qdrant/` 及 `ai/kb/.ingest_state/`（18 个文件，~12MB）不再跟踪，加入 `.gitignore`
+    - `ai/integrations/wecom/user_map.json`（含 23 人真实姓名+邮箱）移除跟踪，新增 `user_map.example.json` 模板，加入 `.gitignore`
+  - **图片路径修复**（`operation_prose_docx.py`）：修复入库时 image URL 拼接 double `media/` bug，content body 中 pandoc 生成的相对路径 `](media/xxx.png)` 替换为完整 URL。
+  - **Embedding 模型外迁**：`EMBEDDING_MODEL_NAME` 改为绝对路径 `D:\Code\OpenRobotService_Data\embed_models\...`，模型文件不再随项目代码上传。
+- **变更原因**：
+  - 前端需要在对话列表展示会话标题，前后端约定通过独立 SSE event 传递
+  - AI 提的单子应该是「新建」而非「待处理」，否则统计数据不准、派单 Worker 查询条件不一致
+  - 之前 `ai/kb/` 整个 Qdrant 数据目录和 PII 数据被跟踪，随代码推到 GitHub 有隐私泄漏风险且污染仓库
+- **效果对比**：标题在 Round 2 结束时正确生成并发出（测试：`event: title` → `{"title": "AGV充电桩指示灯不亮排查"}`）；新工单状态 `new` 覆盖写入+派单扫描路径；Git 跟踪文件减少 19 个。
+- **回滚方式**：标题生成在 `pipeline.py` `_generate_title()` 中，注释掉调用块即可关闭；工单状态改回 `TaskStatus.PENDING` 恢复旧行为。
+
+---
+
 ### v1.4 · 2026-07-22 ~ 2026-07-23
 
 - **变更类型**：流程逻辑变更 + Prompt 调整 + 新增知识源
