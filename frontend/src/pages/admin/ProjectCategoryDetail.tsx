@@ -51,7 +51,7 @@ export default function ProjectCategoryDetail() {
                   background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10,
                   boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
                 }}
-                onClick={() => navigate(`/admin/project-edit/${p.id}`)}
+                onClick={() => navigate(`/admin/project-detail/${p.id}`)}
               >
                 <div style={{ fontWeight: 600, fontSize: 15 }}>{p.name}</div>
                 <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
