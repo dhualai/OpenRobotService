@@ -104,7 +104,7 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
         "description": ticket.get("description", "") or "",
         "task_type": _type_to_enum(ticket.get("type")),
         "priority": _priority_to_enum(ticket.get("priority")),
-        "status": TaskStatus.PENDING,
+        "status": TaskStatus.NEW,
         "created_by": created_by or "system",
         "source": AI_SOURCE,
         "external_id": ext_id,

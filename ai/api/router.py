@@ -250,10 +250,10 @@ chat_router = APIRouter(prefix="/api/ai/chat", tags=["AI对话"])
 
 class ChatRequest(BaseModel):
     session_id: str = Field(default="default")
-    query: str = Field(..., min_length=1, max_length=2000)
+    query: str = Field(..., min_length=1, max_length=200000)
     max_tokens: int = Field(default=2000)
     temperature: float = Field(default=0.7, ge=0, le=2)
-    system_prompt: str = Field(default="", max_length=2000, description="可选系统提示词")
+    system_prompt: str = Field(default="", max_length=20000, description="可选系统提示词")
 
 
 async def _save_memory(session_id: str, query: str, answer: str):
