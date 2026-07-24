@@ -13,8 +13,8 @@ import {
   TICKET_STATUS_LIST, PROJECT_STAGE_LIST, URGENCY_LIST,
 } from '@/shared/constants/dashboard';
 import {
-  fetchTicketSummary, fetchProjectStageSummary, fetchUrgencySummary,
-  type TicketSummary, type ProjectStageSummary, type UrgencySummary,
+  fetchTicketSummary, fetchProjectStageSummary, fetchUrgencySummary, syncWecomProjects,
+  type TicketSummary, type ProjectStageSummary, type UrgencySummary, type SyncResult,
 } from '@/api/dashboard';
 
 interface MoreFunctionEntry { path: string; label: string; emoji: string; }
@@ -32,6 +32,8 @@ export default function Dashboard() {
   const [stageSummary, setStageSummary] = useState<ProjectStageSummary | null>(null);
   const [urgencySummary, setUrgencySummary] = useState<UrgencySummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -45,6 +47,17 @@ export default function Dashboard() {
     setUrgencySummary(urgency);
     setLoading(false);
   }, []);
+
+  const handleSync = useCallback(async () => {
+    setSyncing(true);
+    setSyncResult(null);
+    const result = await syncWecomProjects();
+    if (result) {
+      setSyncResult(result);
+      await loadAll();
+    }
+    setSyncing(false);
+  }, [loadAll]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
@@ -86,7 +99,15 @@ export default function Dashboard() {
         </div>
 
         {/* ============ 中：跨项目看板 ============ */}
-        <SectionTitle emoji="📊" title="跨项目看板" onMore={() => navigate('/admin/project-progress')} />
+        <SectionTitle emoji="📊" title="跨项目看板" onMore={() => navigate('/admin/project-progress')}>
+          <button
+            className="dashboard-section-title__sync-btn"
+            onClick={handleSync}
+            disabled={syncing}
+          >
+            {syncing ? '同步中...' : '同步最新数据'}
+          </button>
+        </SectionTitle>
         <div className="dashboard-section">
           <p className="dashboard-section__subtitle">调度项目看板</p>
           <div className="dashboard-section__row">
@@ -143,11 +164,14 @@ export default function Dashboard() {
   );
 }
 
-function SectionTitle({ emoji, title, onMore }: { emoji: string; title: string; onMore?: () => void }) {
+function SectionTitle({ emoji, title, onMore, children }: { emoji: string; title: string; onMore?: () => void; children?: React.ReactNode }) {
   return (
     <div className="dashboard-section-title">
       <span>{emoji} {title}</span>
-      {onMore && <span className="dashboard-section-title__more" onClick={onMore}>查看明细 ›</span>}
+      <div className="dashboard-section-title__actions">
+        {children}
+        {onMore && <span className="dashboard-section-title__more" onClick={onMore}>查看明细 ›</span>}
+      </div>
     </div>
   );
 }

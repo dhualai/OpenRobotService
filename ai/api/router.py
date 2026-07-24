@@ -113,6 +113,8 @@ async def ask_question_stream(
                     yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
                 elif ev_type == "result":
                     yield f"event: result\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+                elif ev_type == "title":
+                    yield f"event: title\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
                 else:
                     yield f"event: status\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
             yield f"event: done\ndata: {json.dumps({'total_ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
@@ -147,11 +149,29 @@ async def get_ticket(session_id: str = Query(..., description="会话 ID")):
         mgr = await get_memory_manager()
         memory = await mgr.get_memory(session_id)
         agent_state = memory.metadata.get("agent_state", {})
-        if agent_state.get("phase") not in ("escalated", "resolved"):
-            return {"code": 1, "message": "该会话尚未生成工单"}
-        pipeline = await get_pipeline()
-        ticket = await pipeline.get_ticket(session_id)
-        return {"code": 0, "data": ticket}
+        # 主路径：Redis/内存中 agent_state 有效 → 直接组装工单
+        if agent_state.get("phase") in ("escalated", "resolved"):
+            pipeline = await get_pipeline()
+            ticket = await pipeline.get_ticket(session_id)
+            return {"code": 0, "data": ticket}
+
+        # 降级：MySQL tasks 表中已有记录但 Redis 内存丢失（Redis 重启/过期等场景）
+        from ai.core.task_adapter import task_to_dict
+        from app.models.task import Task
+        from app.core.db import SessionLocal
+        db = SessionLocal()
+        try:
+            task = db.query(Task).filter(
+                Task.source == "ai",
+                Task.external_id.like(f"{session_id}%"),
+            ).order_by(Task.id.desc()).first()
+            if task:
+                logger.info(f"MySQL 降级命中工单: session_id={session_id[:20]}, task_id={task.id}")
+                return {"code": 0, "data": task_to_dict(task)}
+        finally:
+            db.close()
+
+        return {"code": 1, "message": "该会话尚未生成工单"}
     except Exception as e:
         return {"code": 1, "message": str(e)}
 
@@ -230,10 +250,10 @@ chat_router = APIRouter(prefix="/api/ai/chat", tags=["AI对话"])
 
 class ChatRequest(BaseModel):
     session_id: str = Field(default="default")
-    query: str = Field(..., min_length=1, max_length=2000)
+    query: str = Field(..., min_length=1, max_length=200000)
     max_tokens: int = Field(default=2000)
     temperature: float = Field(default=0.7, ge=0, le=2)
-    system_prompt: str = Field(default="", max_length=2000, description="可选系统提示词")
+    system_prompt: str = Field(default="", max_length=20000, description="可选系统提示词")
 
 
 async def _save_memory(session_id: str, query: str, answer: str):
@@ -344,6 +364,7 @@ async def list_all_tickets(
     limit: int = Query(20, ge=1, le=200, description="返回条数"),
     status: str = Query("", description="按状态筛选: pending / in_progress / resolved / closed"),
     type_: str = Query("", alias="type", description="按类型筛选"),
+    keyword: str = Query("", description="模糊搜索标题/描述"),
 ) -> dict:
     """查询 tasks 表（source='ai'），分页返回所有历史工单"""
     try:
@@ -366,6 +387,8 @@ async def list_all_tickets(
                     q = q.filter(Task.task_type == TaskType(type_))
                 except ValueError:
                     pass
+            if keyword:
+                q = q.filter(Task.title.contains(keyword) | Task.description.contains(keyword))
             total = q.count()
             rows = q.order_by(desc(Task.created_at)).offset(skip).limit(limit).all()
             items = []
@@ -628,3 +651,72 @@ async def task_chat_stream(body: TaskAnalyzeAPIRequest):
 @task_agent_router.get("/health", summary="健康检查")
 async def task_agent_health() -> dict:
     return {"status": "ok", "service": "ai-task-agent"}
+
+
+# ============================================================
+# 企业微信 (prefix /api/ai/wecom)
+# ============================================================
+wecom_router = APIRouter(prefix="/api/ai/wecom", tags=["企业微信"])
+
+
+class WecomUpdateRequest(BaseModel):
+    values: dict = Field(..., description="扁平格式的字段值，如 {\"项目名称\": \"新值\"}")
+
+
+@wecom_router.get("/projects", summary="拉取全部项目")
+async def wecom_pull_projects() -> dict:
+    """从企业微信 Smartsheet 拉取 USP 项目表全部记录（已拍扁）"""
+    try:
+        from ai.integrations.wecom import WecomSmartsheetClient
+        client = WecomSmartsheetClient()
+        records = await client.pull_all()
+        return {"code": 0, "data": {"total": len(records), "records": records}}
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom pull_projects 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"拉取项目失败: {str(e)}"}
+
+
+@wecom_router.get("/projects/search", summary="分页查询项目")
+async def wecom_search_projects(
+    offset: int = Query(0, ge=0, description="偏移量"),
+    limit: int = Query(100, ge=1, le=1000, description="每页条数"),
+) -> dict:
+    """分页查询项目表，支持排序和字段过滤"""
+    try:
+        from ai.integrations.wecom import WecomSmartsheetClient
+        client = WecomSmartsheetClient()
+        data = await client.pull(limit=limit, offset=offset)
+        return {"code": 0, "data": data}
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom search_projects 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"查询项目失败: {str(e)}"}
+
+
+@wecom_router.post("/projects/{record_id}", summary="更新单条项目")
+async def wecom_update_project(record_id: str, body: WecomUpdateRequest) -> dict:
+    """更新单条项目记录，values 为扁平格式"""
+    try:
+        from ai.integrations.wecom import WecomSmartsheetClient
+        client = WecomSmartsheetClient()
+        ok = await client.push_one(record_id, body.values)
+        return {"code": 0, "data": {"record_id": record_id, "updated": ok}}
+    except ValueError as e:
+        return {"code": 1, "message": str(e)}
+    except Exception as e:
+        logger.error(f"wecom update_project 失败: {e}", exc_info=True)
+        return {"code": 1, "message": f"更新项目失败: {str(e)}"}
+
+
+@wecom_router.get("/health", summary="健康检查")
+async def wecom_health() -> dict:
+    try:
+        from ai.config import get_ai_config
+        cfg = get_ai_config()
+        configured = bool(cfg.wecom_corpid and cfg.wecom_corpsecret)
+        return {"status": "ok", "configured": configured}
+    except Exception:
+        return {"status": "ok", "configured": False}

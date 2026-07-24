@@ -72,6 +72,7 @@ tzdata>=2026.3
 tabulate>=0.9.0
 
 # ---- CLI 工具（fastapi-cli / uvicorn 所需）----
+colorlog>=6.9.0
 typer>=0.27.0
 click>=8.4.2
 rich>=15.0.0
