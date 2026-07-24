@@ -461,17 +461,18 @@ class AiDiagnosisPlatform:
         _save_agent_state(memory, state)
         await self._memory_manager.save_memory(memory)
 
-        # MySQL 持久化 AI 回复，确保重启后对话可恢复
-        try:
-            from ai.core.conversation_store import save_message
-            logger.info(f"[persist] 开始 MySQL 写入 assistant 消息: session={session_id[:16]}, len={len(message)}")
-            msg_id = await asyncio.to_thread(
-                save_message, session_id=session_id, role="assistant",
-                content=message, user_id="",
-            )
-            logger.info(f"[persist] assistant 消息已写入 MySQL: msg_id={msg_id}, session={session_id[:16]}")
-        except Exception as e:
-            logger.error(f"[persist] MySQL 写入失败: session={session_id[:16]}, error={e}", exc_info=True)
+        # MySQL 双写已禁用：会话管理统一走前端 → backend /api/call/conversations
+        # （原 conversation_store.save_message 会创建 title="新会话" 的冗余会话记录）
+        # try:
+        #     from ai.core.conversation_store import save_message
+        #     logger.info(f"[persist] 开始 MySQL 写入 assistant 消息: session={session_id[:16]}, len={len(message)}")
+        #     msg_id = await asyncio.to_thread(
+        #         save_message, session_id=session_id, role="assistant",
+        #         content=message, user_id="",
+        #     )
+        #     logger.info(f"[persist] assistant 消息已写入 MySQL: msg_id={msg_id}, session={session_id[:16]}")
+        # except Exception as e:
+        #     logger.error(f"[persist] MySQL 写入失败: session={session_id[:16]}, error={e}", exc_info=True)
 
         # 第2轮对话结束后生成标题（fire-and-forget 方式，不阻塞结果返回）
         title = ""
