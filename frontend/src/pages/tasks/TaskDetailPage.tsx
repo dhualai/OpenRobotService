@@ -11,6 +11,8 @@ import { useAuthStore } from '@/stores/auth';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { formatDateTime, formatTime } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface Attachment { id: string; url: string; }
 interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; }
@@ -44,12 +46,7 @@ export default function TaskDetailPage() {
 
   // AI 诊断
   const [diagnosing, setDiagnosing] = useState(false);
-  const [diagnosisReport, setDiagnosisReport] = useState<{
-    root_cause_analysis?: string;
-    suggested_actions?: string[];
-    references?: string[];
-    confidence?: number;
-  } | null>(null);
+  const [diagnosisReport, setDiagnosisReport] = useState('');  // raw Markdown
   const [reportVisible, setReportVisible] = useState(false);
 
   // AI 摘要（后端定时写入评论，前端从评论提取展示）
@@ -257,9 +254,11 @@ export default function TaskDetailPage() {
       const data = await res.json();
       if (data.code === 0) {
         const d = data.data;
-        setDiagnosisReport(d);
-        // 讨论区插入短链接（本地，不写后端）
-        const shortLink = `📋 <a href="javascript:void(0)" class="diagnosis-link">AI 诊断报告 — ${d.root_cause_analysis?.slice(0, 40) || '点击查看'}…</a>`;
+        // 原始 Markdown 存 state，供 Dialog 用 react-markdown 渲染
+        setDiagnosisReport(d.report_md || d.root_cause_analysis || '');
+        // 短链接预览取根因分析首行
+        const preview = d.root_cause_analysis?.slice(0, 40) || '点击查看';
+        const shortLink = `📋 <a href="javascript:void(0)" class="diagnosis-link">AI 诊断报告 — ${preview}…</a>`;
         setDetail((prev) => {
           if (!prev) return prev;
           const aiComment: Comment = {
@@ -467,18 +466,17 @@ export default function TaskDetailPage() {
         title="🤖 AI 诊断报告"
         confirmBtn="关闭"
         onConfirm={() => setReportVisible(false)}
-        content={
-          diagnosisReport
-            ? `<div style="line-height:1.8;text-align:left">
-<h4>📋 根因分析</h4>
-<p>${diagnosisReport.root_cause_analysis || '暂未得出明确根因'}</p>
-${(diagnosisReport.suggested_actions || []).length ? `<h4>💡 建议步骤</h4><ol>${diagnosisReport.suggested_actions!.map((a: string) => `<li>${a}</li>`).join('')}</ol>` : ''}
-${(diagnosisReport.references || []).length ? `<h4>📚 参考来源</h4><ul>${diagnosisReport.references!.map((r: string) => `<li>${r}</li>`).join('')}</ul>` : ''}
-${diagnosisReport.confidence != null ? `<p style="margin-top:12px;color:#999">置信度：${Math.round(diagnosisReport.confidence * 100)}%</p>` : ''}
-</div>`
-            : '暂无诊断数据'
-        }
-      />
+      >
+        <div style={{ maxHeight: '60vh', overflowY: 'auto', textAlign: 'left', fontSize: 14, lineHeight: 1.8 }}>
+          {diagnosisReport ? (
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {diagnosisReport}
+            </ReactMarkdown>
+          ) : (
+            <p>暂无诊断数据</p>
+          )}
+        </div>
+      </Dialog>
     </div>
   );
 }
