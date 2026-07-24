@@ -435,7 +435,8 @@ class IdentityService:
                 'name': permission.name,
                 'description': permission.description,
                 'resource_type': permission.resource_type,
-                'action': permission.action
+                'action': permission.action,
+                'enabled': permission.enabled == "true"
             } for permission in permissions]
         finally:
             db.close()
@@ -507,8 +508,11 @@ class IdentityService:
             
             update_fields = {}
             for key, value in kwargs.items():
-                if key in ['name', 'description', 'resource_type', 'action'] and value is not None:
-                    update_fields[key] = value
+                if key in ['name', 'description', 'resource_type', 'action', 'enabled'] and value is not None:
+                    if key == 'enabled':
+                        update_fields[key] = "true" if value else "false"
+                    else:
+                        update_fields[key] = value
             
             if not update_fields:
                 return True

@@ -4,7 +4,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Toast, Loading, Tag } from 'tdesign-mobile-react';
+import { NotificationIcon, UploadIcon, RollbackIcon } from 'tdesign-icons-react';
 import { qaGetTicket } from '@/api/ai';
+import { cancelTicket, uploadCommentAttachment } from '@/api/ticket';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import SafeHtml from '@/shared/components/SafeHtml';
@@ -54,7 +56,10 @@ export default function TicketDetailPage() {
   const [msg, setMsg] = useState('');
   const [commentText, setCommentText] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
+  const tempIdRef = useRef<string>(typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `t_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const fetchDetail = useCallback(async () => {
     if (!sessionId) return;
@@ -116,18 +121,40 @@ export default function TicketDetailPage() {
     }
   };
 
-  // 升级、讨论、确认派单按钮已按需求移除
+  // 撤回：将工单状态置为已取消（Canceled）
+  const handleCancel = async () => {
+    if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法撤回', theme: 'warning' }); return; }
+    try {
+      await cancelTicket(ticket.ticket_id);
+      Toast({ message: '已撤回，工单已取消', theme: 'success' });
+      fetchDetail();
+    } catch (err) {
+      Toast({ message: `撤回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
+
+  const handleSelectFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length) setPendingFiles((prev) => [...prev, ...files]);
+    e.target.value = '';
+  };
+  const removeFile = (idx: number) => setPendingFiles((prev) => prev.filter((_, i) => i !== idx));
 
   const handleAddComment = async () => {
-    if (!ticket?.ticket_id || !commentText.trim()) {
-      Toast({ message: '请输入评论内容', theme: 'warning' });
+    if (!ticket?.ticket_id || (!commentText.trim() && pendingFiles.length === 0)) {
+      Toast({ message: '请输入评论内容或选择附件', theme: 'warning' });
       return;
     }
     setSubmittingComment(true);
     try {
+      const tempId = tempIdRef.current;
+      // 先逐个上传附件（temp_id 关联，后端登记到 comment_attachment_map）
+      for (const f of pendingFiles) {
+        await uploadCommentAttachment(f, tempId);
+      }
       const newComment = await request<Comment>(`/${ticket.ticket_id}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ content: commentText.trim(), is_public: true }),
+        body: JSON.stringify({ content: commentText.trim(), is_public: true, attachments: pendingFiles.length ? [tempId] : [] }),
       });
       setTicket((prev) => {
         if (!prev) return prev;
@@ -135,6 +162,8 @@ export default function TicketDetailPage() {
         return { ...prev, comments: updatedComments };
       });
       setCommentText('');
+      setPendingFiles([]);
+      tempIdRef.current = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `t_${Date.now()}_${Math.random().toString(36).slice(2)}`;
       Toast({ message: '评论已添加', theme: 'success' });
     } catch (err) {
       Toast({ message: `添加评论失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -253,6 +282,16 @@ export default function TicketDetailPage() {
             )}
           </div>
           <div className="detail-chat-input">
+            {pendingFiles.length > 0 && (
+              <div className="detail-chat-files">
+                {pendingFiles.map((f, i) => (
+                  <span key={i} className="detail-chat-file">
+                    <span className="detail-chat-file__name">{f.name}</span>
+                    <button type="button" onClick={() => removeFile(i)} aria-label="移除">×</button>
+                  </span>
+                ))}
+              </div>
+            )}
             <input
               className="detail-chat-input-field"
               value={commentText}
@@ -261,22 +300,27 @@ export default function TicketDetailPage() {
               placeholder={ticket?.ticket_id ? '直接评论或者 @AI 进行讨论。' : '工单号缺失，无法评论'}
               disabled={submittingComment || !ticket?.ticket_id}
             />
+            <button type="button" className="detail-chat-attach" onClick={() => fileInputRef.current?.click()} disabled={submittingComment || !ticket?.ticket_id} aria-label="上传图片或文件">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
+            </button>
             <Button
               size="small"
               theme="primary"
               onClick={handleAddComment}
-              disabled={submittingComment || !commentText.trim() || !ticket?.ticket_id}
+              disabled={submittingComment || (!commentText.trim() && pendingFiles.length === 0) || !ticket?.ticket_id}
             >
               {submittingComment ? '发送中' : '发送'}
             </Button>
+            <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={handleSelectFile} />
           </div>
         </div>
 
         {/* 操作 */}
         <div className="detail-actions">
           <div className="detail-actions__btns">
-            <Button size="small" theme="default" onClick={handleUrge}>一键催办</Button>
-            <Button size="small" theme="light" onClick={handleReport}>上报</Button>
+            <Button size="small" variant="outline" theme="default" icon={<NotificationIcon />} onClick={handleUrge}>催办</Button>
+            <Button size="small" variant="outline" theme="default" icon={<UploadIcon />} onClick={handleReport}>上报</Button>
+            <Button size="small" variant="outline" theme="default" icon={<RollbackIcon />} onClick={handleCancel}>撤回</Button>
           </div>
         </div>
       </div>
