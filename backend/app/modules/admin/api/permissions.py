@@ -26,7 +26,7 @@ async def get_all_permissions(
         return DataResponse(
             code=0,
             message="success",
-            data={"permissions": permissions}
+            data=permissions
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取权限列表失败: {str(e)}")
@@ -113,13 +113,13 @@ async def update_permission(
             if "admin" in role_permissions:
                 be_create = True
                 break
-        if permission_data['resource_type'] == 'indicators':
+        if permission_data.get('resource_type') == 'indicators':
             be_create = True
         
         if not be_create:
             raise HTTPException(status_code=403, detail="没有权限更新")
 
-        updatable_fields = ['name', 'action', 'description']
+        updatable_fields = ['name', 'action', 'description', 'enabled']
         update_data = {}
         for field in updatable_fields:
             if field in permission_data:

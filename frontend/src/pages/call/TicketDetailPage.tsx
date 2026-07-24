@@ -4,6 +4,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Toast, Loading, Tag } from 'tdesign-mobile-react';
+import { NotificationIcon, UploadIcon, RollbackIcon } from 'tdesign-icons-react';
 import { qaGetTicket } from '@/api/ai';
 import { cancelTicket, uploadCommentAttachment } from '@/api/ticket';
 import { createRequest } from '@/api/client';
@@ -317,9 +318,9 @@ export default function TicketDetailPage() {
         {/* 操作 */}
         <div className="detail-actions">
           <div className="detail-actions__btns">
-            <Button size="small" theme="default" onClick={handleUrge}>一键催办</Button>
-            <Button size="small" theme="light" onClick={handleReport}>上报</Button>
-            <Button size="small" theme="danger" onClick={handleCancel}>撤回</Button>
+            <Button size="small" variant="outline" theme="default" icon={<NotificationIcon />} onClick={handleUrge}>催办</Button>
+            <Button size="small" variant="outline" theme="default" icon={<UploadIcon />} onClick={handleReport}>上报</Button>
+            <Button size="small" variant="outline" theme="default" icon={<RollbackIcon />} onClick={handleCancel}>撤回</Button>
           </div>
         </div>
       </div>
