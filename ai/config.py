@@ -40,6 +40,11 @@ class AIConfig(BaseModel):
     llm_connect_timeout: float = Field(default=3.0)
     llm_read_timeout: float = Field(default=30.0)  # Agent 回复可能较长
 
+    # ========== Vision LLM（图片分析，OpenAI 兼容接口）==========
+    vision_api_key: str = Field(default="", description="视觉 API Key")
+    vision_base_url: str = Field(default="", description="视觉 API 地址")
+    vision_model: str = Field(default="gpt-4o", description="视觉模型名")
+
     # ========== Qdrant 向量库 ==========
     qdrant_host: str = Field(default="localhost")
     qdrant_port: int = Field(default=6333)
@@ -69,6 +74,13 @@ class AIConfig(BaseModel):
 
     # ========== 诊断服务 ==========
     diagnosis_scan_interval: int = Field(default=60, description="诊断服务扫描新工单间隔（秒）")
+
+    # ========== MinIO 对象存储（附件图片读取）==========
+    minio_endpoint: str = Field(default="localhost:9000")
+    minio_access_key: str = Field(default="")
+    minio_secret_key: str = Field(default="")
+    minio_bucket: str = Field(default="helpdesk")
+    minio_secure: bool = Field(default=False)
 
     # ========== 企业微信 ==========
     wecom_corpid: str = Field(default="", description="企业微信 企业ID")
@@ -265,6 +277,16 @@ def get_ai_config() -> AIConfig:
         deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
         llm_connect_timeout=float(os.getenv("LLM_CONNECT_TIMEOUT", "3.0")),
         llm_read_timeout=float(os.getenv("LLM_READ_TIMEOUT", "30.0")),
+
+        vision_api_key=os.getenv("VISION_API_KEY", ""),
+        vision_base_url=os.getenv("VISION_BASE_URL", ""),
+        vision_model=os.getenv("VISION_MODEL", "gpt-4o"),
+
+        minio_endpoint=os.getenv("MINIO_ENDPOINT", "localhost:9000"),
+        minio_access_key=os.getenv("MINIO_ACCESS_KEY", ""),
+        minio_secret_key=os.getenv("MINIO_SECRET_KEY", ""),
+        minio_bucket=os.getenv("MINIO_BUCKET", "helpdesk"),
+        minio_secure=os.getenv("MINIO_SECURE", "false").lower() in ("1", "true", "yes"),
         # Qdrant
         qdrant_host=os.getenv("QDRANT_HOST", "localhost"),
         qdrant_port=int(os.getenv("QDRANT_PORT", "6333")),

@@ -23,9 +23,12 @@ from typing import Optional, Dict, List
 
 from ai.config import get_ai_config
 from ai.core import get_llm_client
+from ai.core.logging import get_logger
 from ai.agents.AiTaskPlatform.log_analyzer.indexer import (
     LogIndex, LogQuery, extract_fields, fields_summary,
 )
+
+logger = get_logger("TASK_AGENT")
 
 # ── 日志说明手册加载 ──────────────────────────────────────────────
 # 优先从 DOCS_PATH（.env）读取，确保部署时本地文件不丢失；
@@ -198,6 +201,8 @@ class LogSubAgent:
         user_question: str = "",
     ) -> LogAnalysisResult:
         """主入口：多轮推理 → 返回分析结论。"""
+        t0 = _time.perf_counter()
+        logger.info(f"LogSubAgent start: path={Path(self.log_path).name}, question={user_question[:60]}")
         await self._ensure_clients()
         result = LogAnalysisResult()
 
@@ -244,6 +249,8 @@ class LogSubAgent:
                 )
                 query_result = self._index.query(log_query)
                 result.queries_made += 1
+                matched_lines = int(re.search(r"matched (\d+)", query_result).group(1)) if re.search(r"matched (\d+)", query_result) else 0
+                logger.info(f"LogSubAgent R{round_num}: {cmd.get('purpose','?')[:60]} → {matched_lines} lines")
 
                 analysis = cmd.get("analysis", "")
                 feedback = f"查询第{round_num}轮结果：\n{query_result[:1500]}"
@@ -261,9 +268,11 @@ class LogSubAgent:
             else:
                 if action == "conclude":
                     result.conclusion = cmd.get("conclusion", "")
+                    logger.info(f"LogSubAgent conclude at R{round_num}: {result.conclusion[:80]}")
                 elif action == "fallback":
                     result.conclusion = cmd.get("reason", "无结论")
                     result.fallback_used = True
+                    logger.info(f"LogSubAgent fallback at R{round_num}: {result.conclusion[:80]}")
                 break
 
         # 兜底
@@ -278,6 +287,7 @@ class LogSubAgent:
                 result.fallback_used = True
             result.queries_made += 1
 
+        logger.info(f"LogSubAgent done: rounds={result.queries_made}, evidence={len(result.evidence)}, fallback={result.fallback_used}, elapsed={(_time.perf_counter()-t0)*1000:.0f}ms")
         return result
 
 

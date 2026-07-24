@@ -283,6 +283,57 @@ class LLMClient:
             logger.error(f"LLM 请求失败: {e}", exc_info=True)
             raise ServiceUnavailableError("LLM", f"请求失败: {str(e)}")
 
+    async def complete_vision(
+        self,
+        prompt: str,
+        images: List[str],
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 500,
+        temperature: float = 0.3,
+    ) -> str:
+        """多模态补全：文本 + 图片 → 视觉 LLM（独立客户端，不走 DeepSeek）"""
+        cfg = self.config
+
+        content_parts: list = [{"type": "text", "text": prompt}]
+        for img in images:
+            content_parts.append({"type": "image_url", "image_url": {"url": img}})
+
+        messages: list = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": content_parts})
+
+        payload = {
+            "model": cfg.vision_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        try:
+            async with httpx.AsyncClient(
+                headers={
+                    "Authorization": f"Bearer {cfg.vision_api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0),
+            ) as client:
+                url = f"{cfg.vision_base_url}/v1/chat/completions"
+                resp = await client.post(url, json=payload)
+                if resp.status_code != 200:
+                    raise ServiceUnavailableError("Vision", f"API {resp.status_code}: {resp.text[:200]}")
+                data = resp.json()
+                return data["choices"][0]["message"].get("content", "")
+
+        except httpx.TimeoutException as e:
+            logger.error(f"Vision 超时: {e}", exc_info=True)
+            raise AITimeoutError(f"Vision 超时: {str(e)}")
+        except Exception as e:
+            if isinstance(e, (AITimeoutError, ServiceUnavailableError)):
+                raise
+            logger.error(f"Vision 失败: {e}", exc_info=True)
+            raise ServiceUnavailableError("Vision", str(e)[:100])
+
     async def chat(
         self,
         messages: List[Dict[str, str]],
