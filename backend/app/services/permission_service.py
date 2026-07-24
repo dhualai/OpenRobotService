@@ -100,7 +100,8 @@ class PermissionService:
                     'name': permission.name,
                     'description': permission.description,
                     'resource_type': permission.resource_type,
-                    'action': permission.action
+                    'action': permission.action,
+                    'enabled': permission.enabled == "true"
                 }
             return None
         finally:

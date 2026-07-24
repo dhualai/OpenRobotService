@@ -1,5 +1,5 @@
 from pydantic import BaseModel, validator, Field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
 import re
 from datetime import datetime
 from enum import Enum
@@ -88,6 +88,8 @@ class ProjectUpdate(BaseModel):
 
 class ProjectResponse(ProjectBase):
     id: str
+    status: Union[str, ProjectStatus] = ProjectStatus.PRE_SALES_SCHEME
+    expected_trend: Optional[Union[str, ProjectStatus]] = None
     
     class Config:
         from_attributes = True
