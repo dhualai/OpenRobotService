@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import io
 import json
-import logging
 import re
 from typing import Any
 
@@ -15,6 +14,7 @@ import pandas as pd
 from tabulate import tabulate
 
 from .llm_client import LLMClient
+from .logging_config import get_logger
 from .prompts import build_system_prompt, build_user_prompt
 from .schemas import (
     AnalysisInsight,
@@ -23,7 +23,7 @@ from .schemas import (
     DataSource,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger("Analyzer")
 
 
 class DataAnalyzer:

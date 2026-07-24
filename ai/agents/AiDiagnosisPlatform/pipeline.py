@@ -98,6 +98,33 @@ def _agent_state_summary(state: AgentState) -> dict:
     }
 
 
+async def _generate_title(llm_client, memory) -> str:
+    """第2轮对话结束后，用前两轮对话生成会话标题（中文不超过15字，英文不超过50字符）"""
+    turns = memory.turns
+    if len(turns) < 4 or "title" in memory.metadata:
+        return ""
+    prompt = (
+        "根据以下对话生成一个简短标题（中文不超过15字，英文不超过50字符）：\n\n"
+        f"用户：{turns[0]['content']}\n"
+        f"助手：{turns[1]['content']}\n"
+        f"用户：{turns[2]['content']}\n"
+        f"助手：{turns[3]['content']}\n\n"
+        "只输出标题，不要引号或任何额外内容。"
+    )
+    try:
+        title = (await llm_client.complete(
+            prompt=prompt, max_tokens=40, temperature=0.3,
+        )).strip()
+        title = title.strip('"\'""''「」《》').strip()
+        if title:
+            memory.metadata["title"] = title
+            logger.info(f"[title] 标题生成: {title}")
+            return title
+    except Exception as e:
+        logger.warning(f"[title] 标题生成失败: {e}")
+    return ""
+
+
 # ============================================================
 # Agent 推理 Prompt
 # ============================================================
@@ -434,12 +461,30 @@ class AiDiagnosisPlatform:
         _save_agent_state(memory, state)
         await self._memory_manager.save_memory(memory)
 
+        # MySQL 持久化 AI 回复，确保重启后对话可恢复
+        try:
+            from ai.core.conversation_store import save_message
+            logger.info(f"[persist] 开始 MySQL 写入 assistant 消息: session={session_id[:16]}, len={len(message)}")
+            msg_id = await asyncio.to_thread(
+                save_message, session_id=session_id, role="assistant",
+                content=message, user_id="",
+            )
+            logger.info(f"[persist] assistant 消息已写入 MySQL: msg_id={msg_id}, session={session_id[:16]}")
+        except Exception as e:
+            logger.error(f"[persist] MySQL 写入失败: session={session_id[:16]}, error={e}", exc_info=True)
+
+        # 第2轮对话结束后生成标题（fire-and-forget 方式，不阻塞结果返回）
+        title = ""
+        if state.diagnosis_rounds == 2 and "title" not in memory.metadata:
+            title = await _generate_title(self._llm_client, memory)
+
         return {
             "type": "diagnosis",
             "thinking": thinking,
             "action": action,
             "message": message,
             "agent_state": _agent_state_summary(state),
+            "title": title,
             "_tokens_streamed": streaming,
         }
 
@@ -841,6 +886,7 @@ class AiDiagnosisPlatform:
 
     async def get_ticket(self, session_id: str) -> dict:
         """只读获取工单数据，不改变状态"""
+        await self._ensure_clients()
         memory = await self._memory_manager.get_memory(session_id)
         agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
         return await self._build_ticket(session_id, agent_state, memory)
@@ -1110,6 +1156,8 @@ class AiDiagnosisPlatform:
                 request.session_id, state,
                 thinking="", action="answer", message=short_msg,
                 streaming=True)
+            if result.get("title"):
+                yield {"event": "title", "data": {"title": result["title"]}}
             yield {"event": "result", "data": result}
             return
 
@@ -1174,7 +1222,7 @@ class AiDiagnosisPlatform:
 
         raw = "".join(raw_tokens)
         t_stream["llm_agent"] = round((time.perf_counter() - t_llm) * 1000)
-        logger.debug(f"[timing] overhead={t_stream.get('overhead_before_llm','?')}ms  "
+        logger.info(f"[timing] overhead={t_stream.get('overhead_before_llm','?')}ms  "
                      f"retrieve={t_stream.get('retrieve','?')}ms  "
                      f"prompt={t_stream.get('prompt_chars','?')}chars  "
                      f"llm_first={t_stream.get('llm_first_token','?')}ms  "
@@ -1238,6 +1286,10 @@ class AiDiagnosisPlatform:
             streaming=True)
         if ticket_data:
             result_data["ticket"] = ticket_data
+
+        # 标题生成：第2轮对话结束后通过独立 SSE event 发送
+        if result_data.get("title"):
+            yield {"event": "title", "data": {"title": result_data["title"]}}
 
         # 兜底：如果 LLM 只输出了 JSON 没有消息正文，前面的流式 yield 不会触发任何 token。
         # 此时把解析出来的 message 作为一次性 token 发出去，确保前端有内容展示。

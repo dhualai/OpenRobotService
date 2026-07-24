@@ -1,0 +1,1809 @@
+<html lang="zh-CN">
+
+  <head>
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Organic Biophilic B-End Design System</title>
+
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet">
+
+    <!-- Font Awesome -->
+    <link href="https://cdn.bootcdn.net/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tailwind Config -->
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: '#3B82F6',
+              'primary-light': '#60A5FA',
+              cta: '#F97316',
+              'cta-hover': '#ea580c',
+              background: '#F8FAFC',
+              surface: '#FFFFFF',
+              text: {
+                main: '#1E293B',
+                sub: '#64748B',
+              },
+              success: '#10B981',
+              warning: '#F59E0B',
+              error: '#EF4444',
+              organic: {
+                green: '#ECFDF5',
+                blue: '#EFF6FF',
+              }
+            },
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+            },
+            borderRadius: {
+              'std': '16px',
+              'lg': '24px',
+              'leaf': '24px 4px 24px 4px',
+              'stone': '20px 24px 16px 24px',
+              'pill': '9999px',
+            },
+            boxShadow: {
+              'natural': '0 4px 20px -2px rgba(59, 130, 246, 0.08), 0 2px 6px -1px rgba(0, 0, 0, 0.02)',
+              'float': '0 10px 30px -5px rgba(59, 130, 246, 0.15)',
+              'inner-soft': 'inset 0 2px 4px 0 rgba(0, 0, 0, 0.03)',
+            },
+            spacing: {
+              'touch': '44px',
+            }
+          }
+        }
+      }
+    </script>
+    <style type="text/tailwindcss">
+      @layer utilities {
+            .scrollbar-hide::-webkit-scrollbar {
+                display: none;
+            }
+            .scrollbar-hide {
+                -ms-overflow-style: none;
+                scrollbar-width: none;
+            }
+            .glass-effect {
+                background-color: rgba(255, 255, 255, 0.85);
+                backdrop-filter: blur(12px);
+                -webkit-backdrop-filter: blur(12px);
+            }
+            .text-balance {
+                text-wrap: balance;
+            }
+        }
+        @layer components {
+            .h1-title {
+                @apply text-3xl font-bold text-text-main tracking-tight leading-tight;
+            }
+            .h2-title {
+                @apply text-xl font-semibold text-text-main leading-snug;
+            }
+            .body-text {
+                @apply text-sm text-text-main leading-relaxed;
+            }
+            .caption-text {
+                @apply text-xs text-text-sub font-medium;
+            }
+            .card-panel {
+                @apply bg-surface rounded-std shadow-natural p-5 border border-slate-100 transition-shadow duration-300;
+            }
+            .section-header {
+                @apply pb-2 text-text-sub uppercase text-xs font-bold tracking-wider border-b border-slate-200;
+            }
+            .btn-primary {
+                @apply h-touch px-6 bg-primary text-white rounded-pill font-medium shadow-lg shadow-blue-200 flex items-center justify-center gap-2 active:scale-95 transition-all duration-200 hover:bg-blue-600;
+            }
+            .btn-cta {
+                @apply h-touch px-6 bg-cta text-white rounded-pill font-medium shadow-lg shadow-orange-100 flex items-center justify-center gap-2 active:scale-95 transition-all duration-200 hover:bg-cta-hover;
+            }
+            .btn-ghost {
+                @apply h-touch px-4 text-primary bg-organic-blue rounded-std font-medium flex items-center justify-center hover:bg-blue-100 transition-colors;
+            }
+            
+            .input-box {
+                @apply h-touch w-full rounded-std bg-slate-50 border border-slate-200 px-4 text-sm text-text-main outline-none focus:ring-4 focus:ring-primary/20 focus:border-primary transition-all duration-300 placeholder-slate-400;
+            }
+            .list-item {
+                @apply flex items-center justify-between p-4 bg-surface rounded-std border border-slate-50 shadow-sm hover:shadow-md transition-shadow cursor-pointer active:bg-slate-50;
+            }
+        }
+        .modal-mask {
+            background-color: rgba(0, 0, 0, 0.5);
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 40;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+        }
+        .modal-mask.hidden {
+            display: none;
+        }
+        .bottom-sheet {
+            background-color: #FFFFFF;
+            border-top-left-radius: 24px;
+            border-top-right-radius: 24px;
+            width: 100%;
+            max-height: 80%;
+            z-index: 50;
+        }
+        .bottom-sheet.hidden {
+            display: none;
+        }
+    </style>
+
+    <style>
+      /* 新增动画定义 */
+      @keyframes yt_modalFadeIn {
+        from {
+          opacity: 0;
+        }
+
+        to {
+          opacity: 1;
+        }
+      }
+
+      /* 新增动画定义 */
+      @keyframes yt_modalFadeOut {
+        from {
+          opacity: 1;
+        }
+
+        to {
+          opacity: 0;
+        }
+      }
+    </style>
+  </head>
+
+  <body class="bg-background font-sans text-text-main" id="yt_1784817759122_c4w686lcf">
+
+
+    <header class="fixed top-0 left-0 right-0 h-16 bg-surface glass-effect border-b border-slate-100 z-30 flex items-center px-4">
+
+      <div class="flex items-center gap-3 w-full">
+
+        <button type="button" id="backBtn" class="w-10 h-10 flex items-center justify-center rounded-full bg-slate-50">
+
+          <i class="fas fa-arrow-left text-text-sub"></i>
+        </button>
+
+
+        <h1 class="h2-title flex-1 text-center">
+
+          项目详情
+        </h1>
+
+
+        <button type="button" class="w-10 h-10 flex items-center justify-center rounded-full bg-slate-50">
+
+          <i class="fas fa-ellipsis-v text-text-sub"></i>
+        </button>
+      </div>
+    </header>
+
+
+    <main class="pt-20 pb-6 px-4 flex flex-col gap-6" style="">
+
+      <div class="card-panel" style="width: 408px; height: 290px;">
+
+        <div class="flex items-center justify-between">
+
+          <div class="flex flex-col gap-1">
+
+            <h2 class="h2-title text-lg">
+
+              智能仓储AGV项目
+            </h2>
+
+
+            <p class="caption-text">
+
+              项目编号: ZL-2024-0012
+            </p>
+          </div>
+
+
+          <div class="flex flex-col items-end gap-2">
+
+            <span class="px-3 py-1 bg-organic-green text-success text-xs font-medium rounded-pill">
+
+              实施中
+            </span>
+
+
+            <span class="px-3 py-1 bg-orange-50 text-warning text-xs font-medium rounded-pill">
+
+              中风险
+            </span>
+          </div>
+        </div>
+
+
+        <div class="w-full h-px bg-slate-100 my-4"></div>
+
+
+        <div class="grid grid-cols-2 gap-4" style="">
+
+          <div class="flex flex-col gap-1">
+
+            <span class="caption-text">
+
+              交付关键节点
+            </span>
+
+
+            <span class="body-text font-medium">
+
+              2024.06.30 交付
+            </span>
+          </div>
+
+
+          <div class="flex flex-col gap-1" id="yt_1784817683172_fsush4inb" style="">
+
+            <span class="caption-text">
+
+              责任人
+            </span>
+
+
+            <span class="body-text font-medium" style="" id="yt_1784817751831_50bnhb0ps">
+
+              张工程师
+            </span>
+          </div>
+        </div>
+
+
+        <div class="flex flex-col gap-3" style="width: 366px; height: 90.75px; padding-bottom: 16px; padding-top: 31px;">
+
+          <div class="flex items-center justify-between">
+
+            <span class="caption-text">
+
+              项目时间进度
+            </span>
+
+
+            <span class="caption-text text-primary">
+
+              65%
+            </span>
+          </div>
+
+
+          <div class="w-full h-2 bg-slate-100 rounded-pill overflow-hidden">
+
+            <div class="h-full w-[65%] bg-gradient-to-r from-primary to-primary-light rounded-pill"></div>
+          </div>
+        </div>
+
+
+        <div class="grid grid-cols-3 gap-2" style="width: 366px; height: 42.75px; padding-top: 0px;">
+
+          <div class="flex flex-col gap-1">
+
+            <span class="caption-text">
+
+              初次接触
+            </span>
+
+
+            <span class="body-text font-medium">
+
+              2024.01.05
+            </span>
+          </div>
+
+
+          <div class="flex flex-col gap-1">
+
+            <span class="caption-text">
+
+              预计进场
+            </span>
+
+
+            <span class="body-text font-medium">
+
+              2024.05.25
+            </span>
+          </div>
+
+
+          <div class="flex flex-col gap-1">
+
+            <span class="caption-text">
+
+              预计下线
+            </span>
+
+
+            <span class="body-text font-medium">
+
+              2024.06.30
+            </span>
+          </div>
+        </div>
+      </div>
+
+
+      <div class="card-panel" style="">
+
+        <h3 class="section-header">
+
+          项目基础画像
+        </h3>
+
+
+        <div class="flex flex-col gap-4" style="">
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              项目名称
+            </label>
+
+
+            <input type="text" class="input-box" value="智能仓储AGV项目" readonly="">
+          </div>
+
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              项目编号/内部编号
+            </label>
+
+
+            <input type="text" class="input-box" value="ZL-2024-0012 / NB-2024-087" readonly="">
+          </div>
+
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              项目类型
+            </label>
+
+
+            <button type="button" id="projectTypeBtn" class="input-box flex items-center justify-between">
+
+              <span>
+
+                大客户项目
+              </span>
+
+
+              <i class="fas fa-chevron-down text-text-sub"></i>
+            </button>
+          </div>
+
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              项目区域/地点
+            </label>
+
+
+            <button type="button" id="regionBtn" class="input-box flex items-center justify-between">
+
+              <span>
+
+                大陆 (China Mainland)
+              </span>
+
+
+              <i class="fas fa-chevron-down text-text-sub"></i>
+            </button>
+          </div>
+
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              总车数
+            </label>
+
+
+            <input type="text" class="input-box" value="32台" readonly="">
+          </div>
+
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              车型&amp;车数
+            </label>
+
+
+            <input type="text" class="input-box" value="潜伏式16台，堆垛式10台，移载式6台" readonly="">
+          </div>
+
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              控制器选择
+            </label>
+
+
+            <button type="button" id="controllerBtn" class="input-box flex items-center justify-between">
+
+              <span>
+
+                自研
+              </span>
+
+
+              <i class="fas fa-chevron-down text-text-sub"></i>
+            </button>
+          </div>
+
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              系统/外设对接
+            </label>
+
+
+            <button type="button" id="peripheralBtn" class="input-box flex items-center justify-between">
+
+              <span>
+
+                DAS、客户WMS、自动门
+              </span>
+
+
+              <i class="fas fa-chevron-down text-text-sub"></i>
+            </button>
+          </div>
+
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              服务器部署
+            </label>
+
+
+            <button type="button" id="serverBtn" class="input-box flex items-center justify-between">
+
+              <span>
+
+                已布-客户服务器
+              </span>
+
+
+              <i class="fas fa-chevron-down text-text-sub"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+
+
+      <div class="card-panel" style="">
+
+        <div class="w-full h-px bg-slate-100 my-6"></div>
+
+
+        <h3 class="section-header">
+
+          项目生命周期
+        </h3>
+
+
+        <div class="flex flex-col gap-5 pl-2 relative">
+
+          <div class="absolute left-[11px] top-6 bottom-6 w-0.5 bg-slate-200"></div>
+
+
+          <div class="flex items-start gap-4 relative z-10">
+
+            <div class="w-6 h-6 rounded-full bg-primary flex items-center justify-center text-white text-xs">
+
+              <i class="fas fa-check"></i>
+            </div>
+
+
+            <div class="flex flex-col pt-1">
+
+              <span class="body-text font-medium">
+
+                售前方案
+              </span>
+
+
+              <span class="caption-text">
+
+                2024.01.15 完成
+              </span>
+            </div>
+          </div>
+
+
+          <div class="flex items-start gap-4 relative z-10">
+
+            <div class="w-6 h-6 rounded-full bg-primary flex items-center justify-center text-white text-xs">
+
+              <i class="fas fa-check"></i>
+            </div>
+
+
+            <div class="flex flex-col pt-1">
+
+              <span class="body-text font-medium">
+
+                投标阶段
+              </span>
+
+
+              <span class="caption-text">
+
+                2024.02.20 完成
+              </span>
+            </div>
+          </div>
+
+
+          <div class="flex items-start gap-4 relative z-10">
+
+            <div class="w-6 h-6 rounded-full bg-primary flex items-center justify-center text-white text-xs">
+
+              <i class="fas fa-check"></i>
+            </div>
+
+
+            <div class="flex flex-col pt-1">
+
+              <span class="body-text font-medium">
+
+                签单洽谈
+              </span>
+
+
+              <span class="caption-text">
+
+                2024.03.10 完成
+              </span>
+            </div>
+          </div>
+
+
+          <div class="flex items-start gap-4 relative z-10">
+
+            <div class="w-6 h-6 rounded-full bg-primary flex items-center justify-center text-white text-xs">
+
+              <i class="fas fa-check"></i>
+            </div>
+
+
+            <div class="flex flex-col pt-1">
+
+              <span class="body-text font-medium">
+
+                已签合同
+              </span>
+
+
+              <span class="caption-text">
+
+                2024.03.25 完成
+              </span>
+            </div>
+          </div>
+
+
+          <div class="flex items-start gap-4 relative z-10">
+
+            <div class="w-6 h-6 rounded-full bg-primary flex items-center justify-center text-white text-xs">
+
+              <i class="fas fa-check"></i>
+            </div>
+
+
+            <div class="flex flex-col pt-1">
+
+              <span class="body-text font-medium">
+
+                出厂测试
+              </span>
+
+
+              <span class="caption-text">
+
+                2024.05.10 完成
+              </span>
+            </div>
+          </div>
+
+
+          <div class="flex items-start gap-4 relative z-10">
+
+            <div class="w-6 h-6 rounded-full bg-primary-light border-4 border-white shadow-natural"></div>
+
+
+            <div class="flex flex-col pt-1">
+
+              <span class="body-text font-medium">
+
+                即将进场
+              </span>
+
+
+              <span class="caption-text">
+
+                2024.05.20 进行中
+              </span>
+            </div>
+          </div>
+
+
+          <div class="flex items-start gap-4 relative z-10">
+
+            <div class="w-6 h-6 rounded-full bg-slate-200"></div>
+
+
+            <div class="flex flex-col pt-1">
+
+              <span class="body-text font-medium text-text-sub">
+
+                延期进场
+              </span>
+
+
+              <span class="caption-text">
+
+                待开始
+              </span>
+            </div>
+          </div>
+
+
+          <div class="flex items-start gap-4 relative z-10">
+
+            <div class="w-6 h-6 rounded-full bg-slate-200"></div>
+
+
+            <div class="flex flex-col pt-1">
+
+              <span class="body-text font-medium text-text-sub">
+
+                正在实施
+              </span>
+
+
+              <span class="caption-text">
+
+                待开始
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+
+      <div class="card-panel">
+
+        <h3 class="section-header">
+
+          风险管理
+        </h3>
+
+
+        <div class="flex flex-col gap-4">
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              风险承接
+            </label>
+
+
+            <button type="button" id="riskTypeBtn" class="input-box flex items-center justify-between">
+
+              <span>
+
+                中风险承接
+              </span>
+
+
+              <i class="fas fa-chevron-down text-text-sub"></i>
+            </button>
+          </div>
+
+
+          <div class="flex items-center gap-3 p-3 bg-orange-50 rounded-std border border-orange-100">
+
+            <i class="fas fa-exclamation-triangle text-warning"></i>
+
+
+            <span class="body-text text-warning font-medium">
+
+              已标记为特别关注项目
+            </span>
+          </div>
+
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              风险和任务描述
+            </label>
+
+
+            <textarea class="input-box min-h-[100px] resize-none" readonly="">
+                        客户现场电梯对接存在协议差异，需要额外开发适配。现场施工环境复杂，需要提前勘测路线。
+                        </textarea>
+          </div>
+
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              项目管理策略
+            </label>
+
+
+            <textarea class="input-box min-h-[80px] resize-none" readonly="">
+                        每周同步进度，安排资深工程师驻场，提前与客户技术部对接电梯协议细节。
+                        </textarea>
+          </div>
+
+
+          <div class="flex flex-col gap-3">
+
+            <label class="caption-text">
+
+              项目文档
+            </label>
+
+
+            <div class="flex flex-col gap-2">
+
+              <div class="list-item">
+
+                <div class="flex items-center gap-3">
+
+                  <div class="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center">
+
+                    <i class="fas fa-file-pdf text-primary"></i>
+                  </div>
+
+
+                  <span class="body-text">
+
+                    项目合同.pdf
+                  </span>
+                </div>
+
+
+                <i class="fas fa-download text-text-sub"></i>
+              </div>
+
+
+              <div class="list-item">
+
+                <div class="flex items-center gap-3">
+
+                  <div class="w-10 h-10 rounded-lg bg-green-50 flex items-center justify-center">
+
+                    <i class="fas fa-file-excel text-success"></i>
+                  </div>
+
+
+                  <span class="body-text">
+
+                    实施进度表.xlsx
+                  </span>
+                </div>
+
+
+                <i class="fas fa-download text-text-sub"></i>
+              </div>
+
+
+              <div class="list-item">
+
+                <div class="flex items-center gap-3">
+
+                  <div class="w-10 h-10 rounded-lg bg-orange-50 flex items-center justify-center">
+
+                    <i class="fas fa-file-image text-warning"></i>
+                  </div>
+
+
+                  <span class="body-text">
+
+                    现场勘测图.jpg
+                  </span>
+                </div>
+
+
+                <i class="fas fa-download text-text-sub"></i>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+
+      <div class="card-panel" style="">
+
+        <h3 class="section-header">
+
+          责任体系
+        </h3>
+
+
+        <div class="flex flex-col gap-4" style="">
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              销售
+            </label>
+
+
+            <input type="text" class="input-box" value="王销售" readonly="">
+          </div>
+
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              售前
+            </label>
+
+
+            <input type="text" class="input-box" value="赵售前" readonly="">
+          </div>
+
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              项目经理
+            </label>
+
+
+            <input type="text" class="input-box" value="张经理" readonly="">
+          </div>
+
+
+          <div class="flex flex-col gap-2">
+
+            <label class="caption-text">
+
+              实施工程师
+            </label>
+
+
+            <input type="text" class="input-box" value="刘工、陈工" readonly="">
+          </div>
+        </div>
+      </div>
+
+
+      <div class="h-6"></div>
+    </main>
+
+
+    <div id="projectTypeMask" class="modal-mask hidden">
+
+      <div id="projectTypeSheet" class="bottom-sheet hidden p-5 pb-8">
+
+        <div class="w-full flex justify-center pb-4">
+
+          <div class="w-12 h-1 bg-slate-200 rounded-full"></div>
+        </div>
+
+
+        <h3 class="h2-title pb-4">
+
+          选择项目类型
+        </h3>
+
+
+        <div class="flex flex-col gap-2 max-h-[60vh] overflow-y-auto scrollbar-hide">
+
+          <div class="list-item">
+
+            受关注项目
+          </div>
+
+
+          <div class="list-item">
+
+            大客户项目
+          </div>
+
+
+          <div class="list-item">
+
+            展会/演示项目
+          </div>
+
+
+          <div class="list-item">
+
+            展厅项目
+          </div>
+
+
+          <div class="list-item">
+
+            PK项目
+          </div>
+
+
+          <div class="list-item">
+
+            试点项目
+          </div>
+
+
+          <div class="list-item">
+
+            试用项目
+          </div>
+
+
+          <div class="list-item">
+
+            内部/测试项目
+          </div>
+
+
+          <div class="list-item">
+
+            普通项目
+          </div>
+
+
+          <div class="list-item">
+
+            增补项目
+          </div>
+        </div>
+
+
+        <button type="button" id="closeProjectType" class="btn-ghost mt-4 w-full">
+
+          取消
+        </button>
+      </div>
+    </div>
+
+
+    <div id="regionMask" class="modal-mask hidden">
+
+      <div id="regionSheet" class="bottom-sheet hidden p-5 pb-8">
+
+        <div class="w-full flex justify-center pb-4">
+
+          <div class="w-12 h-1 bg-slate-200 rounded-full"></div>
+        </div>
+
+
+        <h3 class="h2-title pb-4">
+
+          选择项目区域
+        </h3>
+
+
+        <div class="flex flex-col gap-2 max-h-[60vh] overflow-y-auto scrollbar-hide">
+
+          <div class="list-item">
+
+            大陆 (China Mainland)
+          </div>
+
+
+          <div class="list-item">
+
+            亚洲 Asia
+          </div>
+
+
+          <div class="list-item">
+
+            欧洲 Europe
+          </div>
+
+
+          <div class="list-item">
+
+            北美 North America
+          </div>
+
+
+          <div class="list-item">
+
+            南美 South America
+          </div>
+
+
+          <div class="list-item">
+
+            大洋洲 Oceania
+          </div>
+
+
+          <div class="list-item">
+
+            港澳台
+          </div>
+        </div>
+
+
+        <button type="button" id="closeRegion" class="btn-ghost mt-4 w-full">
+
+          取消
+        </button>
+      </div>
+    </div>
+
+
+    <div id="controllerMask" class="modal-mask hidden">
+
+      <div id="controllerSheet" class="bottom-sheet hidden p-5 pb-8">
+
+        <div class="w-full flex justify-center pb-4">
+
+          <div class="w-12 h-1 bg-slate-200 rounded-full"></div>
+        </div>
+
+
+        <h3 class="h2-title pb-4">
+
+          选择控制器
+        </h3>
+
+
+        <div class="flex flex-col gap-2 max-h-[60vh] overflow-y-auto scrollbar-hide">
+
+          <div class="list-item">
+
+            自研
+          </div>
+
+
+          <div class="list-item">
+
+            睿芯行
+          </div>
+
+
+          <div class="list-item">
+
+            利科钛
+          </div>
+
+
+          <div class="list-item">
+
+            海康
+          </div>
+
+
+          <div class="list-item">
+
+            华睿
+          </div>
+
+
+          <div class="list-item">
+
+            中兴
+          </div>
+
+
+          <div class="list-item">
+
+            科聪
+          </div>
+
+
+          <div class="list-item">
+
+            有光
+          </div>
+
+
+          <div class="list-item">
+
+            特定
+          </div>
+        </div>
+
+
+        <button type="button" id="closeController" class="btn-ghost mt-4 w-full">
+
+          取消
+        </button>
+      </div>
+    </div>
+
+
+    <div id="peripheralMask" class="modal-mask hidden">
+
+      <div id="peripheralSheet" class="bottom-sheet hidden p-5 pb-8">
+
+        <div class="w-full flex justify-center pb-4">
+
+          <div class="w-12 h-1 bg-slate-200 rounded-full"></div>
+        </div>
+
+
+        <h3 class="h2-title pb-4">
+
+          选择系统/外设对接
+        </h3>
+
+
+        <div class="flex flex-col gap-2 max-h-[60vh] overflow-y-auto scrollbar-hide">
+
+          <div class="list-item">
+
+            DAS
+          </div>
+
+
+          <div class="list-item">
+
+            客户WMS
+          </div>
+
+
+          <div class="list-item">
+
+            客户MES/ERP
+          </div>
+
+
+          <div class="list-item">
+
+            客户系统
+          </div>
+
+
+          <div class="list-item">
+
+            数字孪生
+          </div>
+
+
+          <div class="list-item">
+
+            PDA
+          </div>
+
+
+          <div class="list-item">
+
+            平板
+          </div>
+
+
+          <div class="list-item">
+
+            电梯
+          </div>
+
+
+          <div class="list-item">
+
+            输送线/辊筒线
+          </div>
+
+
+          <div class="list-item">
+
+            自动门
+          </div>
+
+
+          <div class="list-item">
+
+            红绿灯
+          </div>
+
+
+          <div class="list-item">
+
+            呼叫器
+          </div>
+
+
+          <div class="list-item">
+
+            机械臂
+          </div>
+
+
+          <div class="list-item">
+
+            码垛机/叠盘机
+          </div>
+
+
+          <div class="list-item">
+
+            缠膜机
+          </div>
+
+
+          <div class="list-item">
+
+            其他外设
+          </div>
+
+
+          <div class="list-item">
+
+            其他
+          </div>
+        </div>
+
+
+        <button type="button" id="closePeripheral" class="btn-ghost mt-4 w-full">
+
+          取消
+        </button>
+      </div>
+    </div>
+
+
+    <div id="serverMask" class="modal-mask hidden">
+
+      <div id="serverSheet" class="bottom-sheet hidden p-5 pb-8">
+
+        <div class="w-full flex justify-center pb-4">
+
+          <div class="w-12 h-1 bg-slate-200 rounded-full"></div>
+        </div>
+
+
+        <h3 class="h2-title pb-4">
+
+          选择服务器部署
+        </h3>
+
+
+        <div class="flex flex-col gap-2 max-h-[60vh] overflow-y-auto scrollbar-hide">
+
+          <div class="list-item">
+
+            已布-中力服务器
+          </div>
+
+
+          <div class="list-item">
+
+            在布-中力服务器
+          </div>
+
+
+          <div class="list-item">
+
+            待布-中力服务器
+          </div>
+
+
+          <div class="list-item">
+
+            已布-客户服务器
+          </div>
+
+
+          <div class="list-item">
+
+            待布-客户服务器
+          </div>
+
+
+          <div class="list-item">
+
+            已布-云服务器
+          </div>
+
+
+          <div class="list-item">
+
+            待布-云服务器
+          </div>
+
+
+          <div class="list-item">
+
+            已布
+          </div>
+
+
+          <div class="list-item">
+
+            待布
+          </div>
+        </div>
+
+
+        <button type="button" id="closeServer" class="btn-ghost mt-4 w-full">
+
+          取消
+        </button>
+      </div>
+    </div>
+
+
+    <div id="riskMask" class="modal-mask hidden">
+
+      <div id="riskSheet" class="bottom-sheet hidden p-5 pb-8">
+
+        <div class="w-full flex justify-center pb-4">
+
+          <div class="w-12 h-1 bg-slate-200 rounded-full"></div>
+        </div>
+
+
+        <h3 class="h2-title pb-4">
+
+          选择风险承接类型
+        </h3>
+
+
+        <div class="flex flex-col gap-2 max-h-[60vh] overflow-y-auto scrollbar-hide">
+
+          <div class="list-item">
+
+            数据同步错误
+          </div>
+
+
+          <div class="list-item">
+
+            公司评审不通过
+          </div>
+
+
+          <div class="list-item">
+
+            缺前置承接
+          </div>
+
+
+          <div class="list-item">
+
+            高风险承接
+          </div>
+
+
+          <div class="list-item">
+
+            中风险承接
+          </div>
+
+
+          <div class="list-item">
+
+            低风险承接
+          </div>
+
+
+          <div class="list-item">
+
+            方案变动不承接
+          </div>
+
+
+          <div class="list-item">
+
+            调度主动不承接
+          </div>
+        </div>
+
+
+        <button type="button" id="closeRisk" class="btn-ghost mt-4 w-full">
+
+          取消
+        </button>
+      </div>
+    </div>
+
+
+    <div id="dockingMask" class="modal-mask hidden">
+
+      <div id="dockingSheet" class="bottom-sheet hidden p-5 pb-8">
+
+        <div class="w-full flex justify-center pb-4">
+
+          <div class="w-12 h-1 bg-slate-200 rounded-full"></div>
+        </div>
+
+
+        <h3 class="h2-title pb-4">
+
+          选择调度对接人
+        </h3>
+
+
+        <div class="flex flex-col gap-2 max-h-[60vh] overflow-y-auto scrollbar-hide">
+
+          <div class="list-item">
+
+            李调度
+          </div>
+
+
+          <div class="list-item">
+
+            张调度
+          </div>
+
+
+          <div class="list-item">
+
+            王调度
+          </div>
+
+
+          <div class="list-item">
+
+            刘调度
+          </div>
+
+
+          <div class="list-item">
+
+            陈调度
+          </div>
+        </div>
+
+
+        <button type="button" id="closeDocking" class="btn-ghost mt-4 w-full">
+
+          取消
+        </button>
+      </div>
+    </div>
+
+    <script></script>
+    <script>
+      window.ytHandles = {
+        //浏览器回退功能
+        back: function() {
+
+          // 检测浏览器是否有历史记录
+          if (window.history && window.history.length > 1) {
+            // 浏览器回退到上一页
+            window.history.back();
+          } else {
+            console.warn('No history to go back');
+          }
+
+        },
+        //显示id为targetId的目标容器
+        show: function(targetId, callback) {
+          const modal = document.getElementById(targetId); //获取targetId的隐藏框元素
+          // 检查targetId的隐藏框元素是否存在
+          if (!modal) {
+            console.error('Modal element not found: targetId');
+            return;
+          }
+
+          // 递归清理子元素的内联样式和hidden类
+          const clearChildrenStyles = function(element) {
+            if (!element) return;
+            const children = element.children;
+            for (let i = 0; i < children.length; i++) {
+              const child = children[i];
+              // 清理hidden类
+              child.classList.remove("hidden");
+              // 清理内联样式
+              child.style.display = "";
+              child.style.visibility = "";
+              child.style.opacity = "";
+              child.style.transform = "";
+              child.style.animation = "";
+              // 递归处理子元素的子元素
+              clearChildrenStyles(child);
+            }
+          };
+          // 1. 清理该元素之前的状态和监听器
+          if (modal._hideAnimationEndHandler) {
+            modal.removeEventListener("animationend", modal._hideAnimationEndHandler);
+            delete modal._hideAnimationEndHandler;
+          }
+          if (modal._hideTimeout) {
+            clearTimeout(modal._hideTimeout);
+            delete modal._hideTimeout;
+          }
+          // 2. 移除目标元素的隐藏类并重置内联样式
+          modal.classList.remove("hidden");
+          modal.style.display = ""; // 清空内联隐藏，让 CSS 的 flex 自动接管
+          modal.style.visibility = "";
+          modal.style.opacity = "";
+          modal.style.transform = "";
+          modal.style.animation = "";
+          // 3. 递归清理所有子元素的内联样式和hidden类
+          clearChildrenStyles(modal);
+          // 4. 强制重绘以确保样式应用
+          void modal.offsetHeight;
+          // 5. 执行显示动画
+          modal.style.animation = 'yt_modalFadeIn 0.3s ease-out';
+          // 6. 动画结束后清理动画样式
+          const onAnimationEnd = function() {
+            modal.style.animation = "";
+            delete modal._showAnimationEndHandler;
+          };
+          modal._showAnimationEndHandler = onAnimationEnd;
+          modal.addEventListener("animationend", onAnimationEnd, {
+            once: true
+          });
+          if (callback) callback();
+
+        },
+        //关闭id为targetId的目标容器
+        hide: function(targetId) {
+          const modal = document.getElementById(targetId); //获取targetId的元素
+          // 检查targetId元素是否存在
+          if (!modal) {
+            console.error('Modal element not found: targetId');
+            return;
+          }
+
+          //1. 准备隐藏前先清理旧动画和监听器
+          if (modal._hideTimeout) clearTimeout(modal._hideTimeout);
+          if (modal._showAnimationEndHandler) {
+            modal.removeEventListener("animationend", modal._showAnimationEndHandler);
+            delete modal._showAnimationEndHandler;
+          }
+          modal.style.animation = "";
+          // 2. 强制重绘以确保样式应用
+          void modal.offsetHeight;
+          // 3. 启动淡出动画
+          modal.style.animation = 'yt_modalFadeOut 0.3s ease-out';
+          let animationCompleted = false;
+          const onAnimationEnd = function() {
+            if (animationCompleted) return;
+            animationCompleted = true;
+            // 4. 动画结束后，添加隐藏类并清空所有内联干扰样式
+            modal.classList.add("hidden");
+            modal.style.display = "";
+            modal.style.visibility = "";
+            modal.style.opacity = "";
+            modal.style.animation = "";
+            modal.style.transform = "";
+            // 清理引用
+            delete modal._hideAnimationEndHandler;
+            if (modal._hideTimeout) {
+              clearTimeout(modal._hideTimeout);
+              delete modal._hideTimeout;
+            }
+          };
+          // 5. 使用事件监听 + 定时器双重保险，确保清理逻辑一定会执行
+          modal._hideAnimationEndHandler = onAnimationEnd;
+          modal.addEventListener("animationend", onAnimationEnd, {
+            once: true
+          });
+          modal._hideTimeout = setTimeout(onAnimationEnd, 400); // 略长于动画时间
+
+        }
+      };
+
+      window.onload = function() {
+        try {
+          //为#backBtn元素添加click事件监听器
+          let _el = document.getElementById(`backBtn`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.back();
+            })
+          }
+        } catch (e) {
+          console.error('Back error:', e);
+        }
+        try {
+          //为#projectTypeBtn元素添加click事件监听器
+          let _el = document.getElementById(`projectTypeBtn`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.show('projectTypeMask');
+              ytHandles.show('projectTypeSheet');
+            })
+          }
+        } catch (e) {
+          console.error('OpenModal error:', e);
+        }
+        try {
+          //为#closeProjectType元素添加click事件监听器
+          let _el = document.getElementById(`closeProjectType`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.hide('projectTypeMask');
+              ytHandles.hide('projectTypeSheet');
+            })
+          }
+        } catch (e) {
+          console.error('CloseModal error:', e);
+        }
+        try {
+          //为#regionBtn元素添加click事件监听器
+          let _el = document.getElementById(`regionBtn`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.show('regionMask');
+              ytHandles.show('regionSheet');
+            })
+          }
+        } catch (e) {
+          console.error('OpenModal error:', e);
+        }
+        try {
+          //为#closeRegion元素添加click事件监听器
+          let _el = document.getElementById(`closeRegion`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.hide('regionMask');
+              ytHandles.hide('regionSheet');
+            })
+          }
+        } catch (e) {
+          console.error('CloseModal error:', e);
+        }
+        try {
+          //为#controllerBtn元素添加click事件监听器
+          let _el = document.getElementById(`controllerBtn`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.show('controllerMask');
+              ytHandles.show('controllerSheet');
+            })
+          }
+        } catch (e) {
+          console.error('OpenModal error:', e);
+        }
+        try {
+          //为#closeController元素添加click事件监听器
+          let _el = document.getElementById(`closeController`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.hide('controllerMask');
+              ytHandles.hide('controllerSheet');
+            })
+          }
+        } catch (e) {
+          console.error('CloseModal error:', e);
+        }
+        try {
+          //为#peripheralBtn元素添加click事件监听器
+          let _el = document.getElementById(`peripheralBtn`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.show('peripheralMask');
+              ytHandles.show('peripheralSheet');
+            })
+          }
+        } catch (e) {
+          console.error('OpenModal error:', e);
+        }
+        try {
+          //为#closePeripheral元素添加click事件监听器
+          let _el = document.getElementById(`closePeripheral`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.hide('peripheralMask');
+              ytHandles.hide('peripheralSheet');
+            })
+          }
+        } catch (e) {
+          console.error('CloseModal error:', e);
+        }
+        try {
+          //为#serverBtn元素添加click事件监听器
+          let _el = document.getElementById(`serverBtn`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.show('serverMask');
+              ytHandles.show('serverSheet');
+            })
+          }
+        } catch (e) {
+          console.error('OpenModal error:', e);
+        }
+        try {
+          //为#closeServer元素添加click事件监听器
+          let _el = document.getElementById(`closeServer`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.hide('serverMask');
+              ytHandles.hide('serverSheet');
+            })
+          }
+        } catch (e) {
+          console.error('CloseModal error:', e);
+        }
+        try {
+          //为#riskTypeBtn元素添加click事件监听器
+          let _el = document.getElementById(`riskTypeBtn`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.show('riskMask');
+              ytHandles.show('riskSheet');
+            })
+          }
+        } catch (e) {
+          console.error('OpenModal error:', e);
+        }
+        try {
+          //为#closeRisk元素添加click事件监听器
+          let _el = document.getElementById(`closeRisk`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.hide('riskMask');
+              ytHandles.hide('riskSheet');
+            })
+          }
+        } catch (e) {
+          console.error('CloseModal error:', e);
+        }
+        try {
+          //为#closeDocking元素添加click事件监听器
+          let _el = document.getElementById(`closeDocking`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.hide('dockingMask');
+              ytHandles.hide('dockingSheet');
+            })
+          }
+        } catch (e) {
+          console.error('CloseModal error:', e);
+        }
+
+        try {
+          //为#yt_1784817683172_fsush4inb元素添加click事件监听器
+          let _el = document.getElementById(`yt_1784817683172_fsush4inb`);
+          if (_el) {
+            _el.addEventListener('click', function(event) {
+              ytHandles.show('dockingMask');
+            })
+          }
+        } catch (e) {
+          console.error('OpenModal error:', e);
+        }
+      }
+    </script>
+
+  </body>
+
+</html>

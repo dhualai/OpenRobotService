@@ -95,6 +95,7 @@ class TicketStats(BaseModel):
     by_status: dict[str, int] = Field(default_factory=dict)
     by_priority: dict[str, int] = Field(default_factory=dict)
     by_type: dict[str, int] = Field(default_factory=dict)
+    items: list[dict[str, Any]] = Field(default_factory=list, description="工单明细列表")
 
 
 class TaskStats(BaseModel):
@@ -109,6 +110,7 @@ class TaskStats(BaseModel):
     by_status: dict[str, int] = Field(default_factory=dict)
     by_type: dict[str, int] = Field(default_factory=dict)
     by_priority: dict[str, int] = Field(default_factory=dict)
+    items: list[dict[str, Any]] = Field(default_factory=list, description="任务明细列表")
 
 
 class CollectedData(BaseModel):

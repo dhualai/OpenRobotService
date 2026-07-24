@@ -75,6 +75,12 @@ class AIConfig(BaseModel):
     # ========== 诊断服务 ==========
     diagnosis_scan_interval: int = Field(default=60, description="诊断服务扫描新工单间隔（秒）")
 
+    # ========== 企业微信 ==========
+    wecom_corpid: str = Field(default="", description="企业微信 企业ID")
+    wecom_corpsecret: str = Field(default="", description="企业微信 应用Secret")
+    wecom_docid: str = Field(default="", description="企业微信 Smartsheet 文档ID")
+    wecom_sheet_id: str = Field(default="", description="企业微信 Smartsheet 子表ID")
+
     # ========== Debug ==========
     debug_assign_to_admin: bool = Field(default=False, description="开发模式：所有工单直接分配给 admin，跳过 AI 派单")
 
@@ -83,7 +89,7 @@ class AIConfig(BaseModel):
 
     # ========== 文档路径 ==========
     docs_path: str = Field(default="", description="原始文档根目录，默认 ai/docs/")
-    media_url_prefix: str = Field(default="/api/media", description="媒体文件 URL 前缀，用于前端渲染图片")
+    media_url_prefix: str = Field(default="/api/ai/media", description="媒体文件 URL 前缀，用于前端渲染图片")
 
 
 def get_active_collection() -> str:
@@ -300,7 +306,12 @@ def get_ai_config() -> AIConfig:
         upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),
         # 文档路径
         docs_path=os.getenv("DOCS_PATH", ""),
-        media_url_prefix=os.getenv("MEDIA_URL_PREFIX", "/api/media"),
+        media_url_prefix=os.getenv("MEDIA_URL_PREFIX", "/api/ai/media"),
+        # 企业微信
+        wecom_corpid=os.getenv("WECOM_CORPID", ""),
+        wecom_corpsecret=os.getenv("WECOM_CORPSECRET", ""),
+        wecom_docid=os.getenv("WECOM_DOCID", ""),
+        wecom_sheet_id=os.getenv("WECOM_SHEET_ID", ""),
 
     )
 

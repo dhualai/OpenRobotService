@@ -47,6 +47,7 @@ class Permission(Base):
     description = Column(Text, nullable=True)
     resource_type = Column(String(64), nullable=False)
     action = Column(String(64), nullable=False)
+    enabled = Column(String(8), default="true", nullable=False)
 
 
 class UserDB(Base):

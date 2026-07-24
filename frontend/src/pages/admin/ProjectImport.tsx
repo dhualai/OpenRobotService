@@ -44,14 +44,17 @@ export default function ProjectManage() {
         新建项目
       </Button>
       {projects.map((p) => (
-        <div key={p.id} style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+        <div
+          key={p.id}
+          onClick={() => navigate(`/admin/project-detail/${p.id}`)}
+          style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer' }}
+        >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
               <div style={{ fontWeight: 500 }}>{p.name}</div>
               <div style={{ fontSize: 12, color: '#999' }}>{p.status}</div>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <Button size="small" variant="outline" onClick={() => navigate(`/admin/project-edit/${p.id}`)}>编辑</Button>
+            <div style={{ display: 'flex', gap: 8 }} onClick={(e) => e.stopPropagation()}>
               <Button size="small" theme="danger" variant="outline" onClick={() => handleDelete(p.id)}>删除</Button>
             </div>
           </div>

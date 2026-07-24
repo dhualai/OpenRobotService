@@ -16,15 +16,15 @@
 from __future__ import annotations
 
 import json
-import logging
 import uuid
 from typing import AsyncIterator
 
 import httpx
 
 from .config import AnalysisConfig
+from .logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("LLMClient")
 
 
 class LLMClient:
