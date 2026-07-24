@@ -34,6 +34,84 @@ class ExecutionStatus(str, Enum):
     BLOCKED = "阻塞"
 
 
+class ProjectType(str, Enum):
+    WATCHED = "受关注项目"
+    KEY_ACCOUNT = "大客户项目"
+    EXHIBITION_DEMO = "展会/演示项目"
+    SHOWROOM = "展厅项目"
+    PK = "PK项目"
+    PILOT = "试点项目"
+    TRIAL = "试用项目"
+    INTERNAL_TEST = "内部/测试项目"
+    NORMAL = "普通项目"
+    SUPPLEMENT = "增补项目"
+
+
+class RiskCarryingType(str, Enum):
+    DATA_SYNC_ERROR = "数据同步错误"
+    REVIEW_REJECTED = "公司评审不通过"
+    MISSING_PREREQUISITE = "缺前置承接"
+    HIGH_RISK = "高风险承接"
+    MEDIUM_RISK = "中风险承接"
+    LOW_RISK = "低风险承接"
+    PLAN_CHANGE_NOT_CARRIED = "方案变动不承接"
+    SCHEDULING_NOT_CARRIED = "调度主动不承接"
+
+
+class ProjectRegion(str, Enum):
+    CHINA_MAINLAND = "大陆(China Mainland)"
+    ASIA = "亚洲(Asia)"
+    EUROPE = "欧洲(Europe)"
+    NORTH_AMERICA = "北美(North America)"
+    SOUTH_AMERICA = "南美(South America)"
+    OCEANIA = "大洋洲(Oceania)"
+    HK_MACAU_TAIWAN = "港澳台"
+
+
+class ControllerVendor(str, Enum):
+    SELF_DEVELOPED = "自研"
+    RUIXINHANG = "睿芯行"
+    LEKETAI = "利科钛"
+    HIKVISION = "海康"
+    HUARUI = "华睿"
+    ZTE = "中兴"
+    KECONG = "科聪"
+    YOUGUANG = "有光"
+    TEDING = "特定"
+
+
+class SystemIntegrationType(str, Enum):
+    DAS = "DAS"
+    CUSTOMER_WMS = "客户WMS"
+    CUSTOMER_MES_ERP = "客户MES/ERP"
+    CUSTOMER_SYSTEM = "客户系统"
+    DIGITAL_TWIN = "数字孪生"
+    PDA = "PDA"
+    TABLET = "平板"
+    ELEVATOR = "电梯"
+    CONVEYOR = "输送线/辊筒线"
+    AUTO_DOOR = "自动门"
+    TRAFFIC_LIGHT = "红绿灯"
+    CALLER = "呼叫器"
+    ROBOT_ARM = "机械臂"
+    OTHER_PERIPHERAL = "其他外设"
+    OTHER = "其他"
+    PALLETIZER = "码垛机/叠盘机"
+    FILM_WRAPPER = "缠膜机"
+
+
+class ServerDeploymentStatus(str, Enum):
+    DEPLOYED_ZHONGLI = "已布-中力服务器"
+    DEPLOYING_ZHONGLI = "在布-中力服务器"
+    PENDING_ZHONGLI = "待布-中力服务器"
+    DEPLOYED_CUSTOMER = "已布-客户服务器"
+    PENDING_CUSTOMER = "待布-客户服务器"
+    DEPLOYED_CLOUD = "已布-云服务器"
+    PENDING_CLOUD = "待布-云服务器"
+    DEPLOYED = "已布"
+    PENDING = "待布"
+
+
 class ProjectBase(BaseModel):
     system_id: Optional[str] = None
     project_code: str
@@ -56,6 +134,23 @@ class ProjectBase(BaseModel):
     task_execution_status: Optional[str] = None
     field_links: Optional[Dict[str, str]] = None
     category_basis: ProjectCategory = ProjectCategory.IMPORTANT_URGENT
+    project_type: Optional[ProjectType] = None
+    stage_notes: Optional[Dict[str, str]] = None
+    risk_carrying_type: Optional[RiskCarryingType] = None
+    special_attention: Optional[str] = None
+    risk_task_description: Optional[str] = None
+    management_strategy: Optional[str] = None
+    project_documents: Optional[List[Dict[str, str]]] = None
+    sales: Optional[str] = None
+    pre_sales: Optional[str] = None
+    project_manager: Optional[str] = None
+    field_engineer: Optional[str] = None
+    internal_code: Optional[str] = None
+    project_region: Optional[ProjectRegion] = None
+    total_vehicle_count: Optional[int] = None
+    controller_vendor: Optional[ControllerVendor] = None
+    system_integration: Optional[List[SystemIntegrationType]] = None
+    server_deployment_status: Optional[ServerDeploymentStatus] = None
 
 
 class ProjectCreate(ProjectBase):
@@ -84,6 +179,23 @@ class ProjectUpdate(BaseModel):
     task_execution_status: Optional[str] = None
     field_links: Optional[Dict[str, str]] = None
     category_basis: Optional[ProjectCategory] = None
+    project_type: Optional[ProjectType] = None
+    stage_notes: Optional[Dict[str, str]] = None
+    risk_carrying_type: Optional[RiskCarryingType] = None
+    special_attention: Optional[str] = None
+    risk_task_description: Optional[str] = None
+    management_strategy: Optional[str] = None
+    project_documents: Optional[List[Dict[str, str]]] = None
+    sales: Optional[str] = None
+    pre_sales: Optional[str] = None
+    project_manager: Optional[str] = None
+    field_engineer: Optional[str] = None
+    internal_code: Optional[str] = None
+    project_region: Optional[ProjectRegion] = None
+    total_vehicle_count: Optional[int] = None
+    controller_vendor: Optional[ControllerVendor] = None
+    system_integration: Optional[List[SystemIntegrationType]] = None
+    server_deployment_status: Optional[ServerDeploymentStatus] = None
 
 
 class ProjectResponse(ProjectBase):
