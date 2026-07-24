@@ -61,39 +61,31 @@ async def create_permission(
         if field not in permission_data:
             raise HTTPException(status_code=400, detail=f"缺少必要参数: {field}")
     
-    be_create = False
-    if "admin" in current_user.get('roles', {}):
-        be_create = True
-    for role_permissions in current_user.get('roles', {}).values():
-        if "admin" in role_permissions:
-            be_create = True
-            break
-    if permission_data['resource_type'] == 'indicators':
-        be_create = True
+    if permission_data.get('resource_type') != 'indicators':
+        user_permissions = current_user.get('permissions', [])
+        if "admin" not in user_permissions and "backend:permission:base:write" not in user_permissions:
+            raise HTTPException(status_code=403, detail="没有权限创建权限")
     
-    if not be_create:
-        raise HTTPException(status_code=403, detail="没有权限创建权限")
-    
-    try:
-        permission_id = f"perm_{permission_data['code'].replace(':', '_')}"
-        
-        result = db_manager.add_permission(
-            permission_id=permission_id,
-            code=permission_data['code'],
-            name=permission_data['name'],
-            resource_type=permission_data['resource_type'],
-            action=permission_data['action'],
-            description=permission_data.get('description')
-        )
-        
-        if result:
-            return SuccessResponse(message="权限创建成功")
-        else:
-            raise HTTPException(status_code=400, detail="权限ID或编码已存在")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"创建权限失败: {str(e)}")
+    # try:
+    permission_id = f"perm_{permission_data['code'].replace(':', '_')}"
+
+    result = db_manager.add_permission(
+        permission_id=permission_id,
+        code=permission_data['code'],
+        name=permission_data['name'],
+        resource_type=permission_data['resource_type'],
+        action=permission_data['action'],
+        description=permission_data.get('description')
+    )
+
+    if result:
+        return SuccessResponse(message="权限创建成功")
+    else:
+        raise HTTPException(status_code=400, detail="权限ID或编码已存在")
+    # except HTTPException:
+    #     raise
+    # except Exception as e:
+    #     raise HTTPException(status_code=500, detail=f"创建权限失败: {str(e)}")
 
 @router.put("/{permission_id}", response_model=SuccessResponse, summary="更新权限")
 async def update_permission(
@@ -106,18 +98,10 @@ async def update_permission(
         if not permission:
             raise HTTPException(status_code=404, detail=f"权限不存在: {permission_id}")
         
-        be_create = False
-        if "admin" in current_user.get('roles', {}):
-            be_create = True
-        for role_permissions in current_user.get('roles', {}).values():
-            if "admin" in role_permissions:
-                be_create = True
-                break
-        if permission_data.get('resource_type') == 'indicators':
-            be_create = True
-        
-        if not be_create:
-            raise HTTPException(status_code=403, detail="没有权限更新")
+        if permission_data.get('resource_type') != 'indicators':
+            user_permissions = current_user.get('permissions', [])
+            if "admin" not in user_permissions and "backend:permission:base:write" not in user_permissions:
+                raise HTTPException(status_code=403, detail="没有权限更新")
 
         updatable_fields = ['name', 'action', 'description', 'enabled']
         update_data = {}
@@ -146,18 +130,10 @@ async def delete_permission(
         if not permission:
             raise HTTPException(status_code=404, detail=f"权限不存在: {permission_id}")
         
-        be_create = False
-        if "admin" in current_user.roles:
-            be_create = True
-        for role_permissions in current_user.roles.values():
-            if "admin" in role_permissions:
-                be_create = True
-                break
-        if permission['resource_type'] == 'indicators':
-            be_create = True
-        
-        if not be_create:
-            raise HTTPException(status_code=403, detail="没有权限删除权限")
+        if permission.get('resource_type') != 'indicators':
+            user_permissions = current_user.get('permissions', [])
+            if "admin" not in user_permissions and "backend:permission:base:delete" not in user_permissions:
+                raise HTTPException(status_code=403, detail="没有权限删除权限")
         
         result = db_manager.delete_permission(permission_id)
         
