@@ -6,7 +6,7 @@ import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
 
-interface Permission { id: string; name: string; resource: string; action: string; enabled: boolean; }
+interface Permission { id: string; code: string; name: string; resource_type: string; action: string; enabled: boolean; }
 
 export default function PermissionManage() {
   const [permissions, setPermissions] = useState<Permission[]>([]);
@@ -14,7 +14,7 @@ export default function PermissionManage() {
 
   // 新建权限
   const [createVisible, setCreateVisible] = useState(false);
-  const [form, setForm] = useState({ name: '', resource: '', action: '' });
+  const [form, setForm] = useState({ name: '', resource_type: '', action: '', code: '' });
   const [submitting, setSubmitting] = useState(false);
 
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
@@ -40,12 +40,14 @@ export default function PermissionManage() {
   // 创建权限
   const handleCreate = async () => {
     if (!form.name.trim()) { Toast({ message: '请输入权限名称', theme: 'warning' }); return; }
+    if (!form.code.trim()) { Toast({ message: '请输入权限编码', theme: 'warning' }); return; }
+    if (!form.resource_type.trim()) { Toast({ message: '请输入资源类型', theme: 'warning' }); return; }
     setSubmitting(true);
     try {
       await request('/permissions/', { method: 'POST', body: JSON.stringify(form) });
       Toast({ message: '权限已创建', theme: 'success' });
       setCreateVisible(false);
-      setForm({ name: '', resource: '', action: '' });
+      setForm({ name: '', resource_type: '', action: '', code: '' });
       fetchPermissions();
     } catch (err) {
       Toast({ message: `创建失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -82,7 +84,7 @@ export default function PermissionManage() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 500 }}>{perm.name}</div>
-              <div style={{ fontSize: 13, color: '#666' }}>{perm.resource} · {perm.action}</div>
+              <div style={{ fontSize: 13, color: '#666' }}>{perm.resource_type} · {perm.action}</div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <Switch value={perm.enabled} onChange={() => togglePermission(perm)} />
@@ -97,11 +99,14 @@ export default function PermissionManage() {
         <div style={{ padding: 20 }}>
           <h4 style={{ marginBottom: 16 }}>新建权限</h4>
           <Form onSubmit={handleCreate}>
-            <FormItem label="权限名称">
-              <Input value={form.name} onChange={(v) => setForm((p) => ({ ...p, name: String(v) }))} placeholder="如 user:read" clearable />
+            <FormItem label="权限编码">
+              <Input value={form.code} onChange={(v) => setForm((p) => ({ ...p, code: String(v) }))} placeholder="如 backend:permission:base:read" clearable />
             </FormItem>
-            <FormItem label="资源">
-              <Input value={form.resource} onChange={(v) => setForm((p) => ({ ...p, resource: String(v) }))} placeholder="如 users" clearable />
+            <FormItem label="权限名称">
+              <Input value={form.name} onChange={(v) => setForm((p) => ({ ...p, name: String(v) }))} placeholder="如 基础权限" clearable />
+            </FormItem>
+            <FormItem label="资源类型">
+              <Input value={form.resource_type} onChange={(v) => setForm((p) => ({ ...p, resource_type: String(v) }))} placeholder="如 backend" clearable />
             </FormItem>
             <FormItem label="操作">
               <Input value={form.action} onChange={(v) => setForm((p) => ({ ...p, action: String(v) }))} placeholder="如 read, write" clearable />

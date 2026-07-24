@@ -61,5 +61,20 @@ codebuddy.md
 # ===== 临时 / 草稿（如 logo 草稿、导出中间文件）=====
 old/
 
+# ===== AI 对话用户上传临时文件 =====
+uploads/
+
 # =====ai向量库====
 /ai/docs/
+ai/kb/active_*.txt
+ai/kb/qdrant/
+ai/kb/.ingest_state/
+
+# =====生产同步的媒体文件（operation_doc 图片等），不入库====
+/docs/operation_doc/
+
+# ===== 日志排查文档（部署时从服务器拷贝）=====
+ai/agents/AiTaskPlatform/log_analyzer/log_manual/
+
+# ===== 企业微信用户映射（含真实姓名/邮箱，不提交）=====
+ai/integrations/wecom/user_map.json
