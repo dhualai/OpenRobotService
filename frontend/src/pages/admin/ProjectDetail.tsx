@@ -4,10 +4,16 @@
 // 不再使用 field_links 承载编造的扩展字段。system_id 即企业微信原始记录 record_id，用于溯源。
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Navbar, Loading, Toast, Popup } from 'tdesign-mobile-react';
+import { Navbar, Loading, Toast, Popup, Upload, Checkbox } from 'tdesign-mobile-react';
 import { Input, Textarea } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { useAuthStore } from '@/stores/auth';
+
+interface ProjectDocument {
+  name: string;
+  resource_id: number;
+}
 
 interface ProjectDetailData {
   id: string;
@@ -31,6 +37,23 @@ interface ProjectDetailData {
   task_execution_status?: string | null;
   field_links?: Record<string, string> | null;
   category_basis: string;
+  project_type?: string | null;
+  stage_notes?: Record<string, string> | null;
+  risk_carrying_type?: string | null;
+  special_attention?: string | null;
+  risk_task_description?: string | null;
+  management_strategy?: string | null;
+  project_documents?: ProjectDocument[] | null;
+  sales?: string | null;
+  pre_sales?: string | null;
+  project_manager?: string | null;
+  field_engineer?: string | null;
+  internal_code?: string | null;
+  project_region?: string | null;
+  total_vehicle_count?: number | null;
+  controller_vendor?: string | null;
+  system_integration?: string[] | null;
+  server_deployment_status?: string | null;
 }
 
 // 与 backend ProjectStatus 枚举严格一致（顺序即生命周期顺序），"项目中止"为终止分支单独处理
@@ -43,6 +66,42 @@ const LIFECYCLE_STATUSES = STATUS_OPTIONS.filter((s) => s !== '项目中止');
 // 与 backend ProjectCategory 枚举严格一致
 const CATEGORY_OPTIONS = ['重要紧急', '紧急不重要', '重要不紧急', '不紧急不重要'];
 
+// 与 backend ProjectType 枚举严格一致（企业微信项目类型表头原值）
+const PROJECT_TYPE_OPTIONS = [
+  '受关注项目', '大客户项目', '展会/演示项目', '展厅项目', 'PK项目',
+  '试点项目', '试用项目', '内部/测试项目', '普通项目', '增补项目',
+];
+
+// 与 backend RiskCarryingType 枚举严格一致
+const RISK_CARRYING_OPTIONS = [
+  '数据同步错误', '公司评审不通过', '缺前置承接', '高风险承接',
+  '中风险承接', '低风险承接', '方案变动不承接', '调度主动不承接',
+];
+
+// 与 backend ProjectRegion 枚举严格一致
+const PROJECT_REGION_OPTIONS = [
+  '大陆(China Mainland)', '亚洲(Asia)', '欧洲(Europe)', '北美(North America)',
+  '南美(South America)', '大洋洲(Oceania)', '港澳台',
+];
+
+// 与 backend ControllerVendor 枚举严格一致
+const CONTROLLER_VENDOR_OPTIONS = [
+  '自研', '睿芯行', '利科钛', '海康', '华睿', '中兴', '科聪', '有光', '特定',
+];
+
+// 与 backend ServerDeploymentStatus 枚举严格一致
+const SERVER_DEPLOYMENT_OPTIONS = [
+  '已布-中力服务器', '在布-中力服务器', '待布-中力服务器', '已布-客户服务器',
+  '待布-客户服务器', '已布-云服务器', '待布-云服务器', '已布', '待布',
+];
+
+// 与 backend SystemIntegrationType 枚举严格一致（多选）
+const SYSTEM_INTEGRATION_OPTIONS = [
+  'DAS', '客户WMS', '客户MES/ERP', '客户系统', '数字孪生', 'PDA', '平板', '电梯',
+  '输送线/辊筒线', '自动门', '红绿灯', '呼叫器', '机械臂', '其他外设', '其他',
+  '码垛机/叠盘机', '缠膜机',
+];
+
 const STATUS_COLOR: Record<string, string> = {
   '售前方案': '#8e5fd9', '签单洽谈': '#0052d9', '已签合同': '#0089ff', '出厂测试': '#00a3c4',
   '即将进场': '#2ba471', '延期进场': '#e37318', '正在实施': '#00a870', '实施暂停': '#ed7b2f',
@@ -54,9 +113,16 @@ const URGENCY_COLOR: Record<string, string> = {
   '重要紧急': '#d54941', '紧急不重要': '#0052d9', '重要不紧急': '#e37318', '不紧急不重要': '#999999',
 };
 
-const PICKERS: { key: 'status' | 'category_basis'; label: string; options: string[] }[] = [
+type PickerKey = 'status' | 'category_basis' | 'project_type' | 'risk_carrying_type' | 'project_region' | 'controller_vendor' | 'server_deployment_status';
+
+const PICKERS: { key: PickerKey; label: string; options: string[] }[] = [
   { key: 'status', label: '项目阶段', options: STATUS_OPTIONS },
   { key: 'category_basis', label: '项目类别', options: CATEGORY_OPTIONS },
+  { key: 'project_type', label: '项目类型', options: PROJECT_TYPE_OPTIONS },
+  { key: 'risk_carrying_type', label: '风险承接', options: RISK_CARRYING_OPTIONS },
+  { key: 'project_region', label: '项目区域/地点', options: PROJECT_REGION_OPTIONS },
+  { key: 'controller_vendor', label: '控制器选择', options: CONTROLLER_VENDOR_OPTIONS },
+  { key: 'server_deployment_status', label: '服务器部署', options: SERVER_DEPLOYMENT_OPTIONS },
 ];
 
 function cardStyle(): React.CSSProperties {
@@ -70,9 +136,15 @@ function cardTitleStyle(): React.CSSProperties {
 export default function ProjectDetail() {
   const { id = '' } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const username = useAuthStore((s) => s.username);
   const [project, setProject] = useState<ProjectDetailData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activePicker, setActivePicker] = useState<'status' | 'category_basis' | null>(null);
+  const [activePicker, setActivePicker] = useState<PickerKey | null>(null);
+  const [noteStage, setNoteStage] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [systemIntegrationOpen, setSystemIntegrationOpen] = useState(false);
+  const [systemIntegrationDraft, setSystemIntegrationDraft] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   const load = useCallback(async () => {
@@ -88,7 +160,7 @@ export default function ProjectDetail() {
   useEffect(() => { load(); }, [load]);
 
   // 保存单个 Project 字段（真实列），仅回写发生变化的那一个字段
-  const saveField = async (key: keyof ProjectDetailData, value: string) => {
+  const saveField = async (key: keyof ProjectDetailData, value: unknown) => {
     try {
       await request(`/projects/${id}`, { method: 'PUT', body: JSON.stringify({ [key]: value }) });
       setProject((prev) => (prev ? { ...prev, [key]: value } : prev));
@@ -98,9 +170,64 @@ export default function ProjectDetail() {
     }
   };
 
-  const handlePickSingle = (key: 'status' | 'category_basis', value: string) => {
+  const handlePickSingle = (key: PickerKey, value: string) => {
     setActivePicker(null);
     saveField(key, value);
+  };
+
+  const openNoteEditor = (stage: string) => {
+    setNoteDraft(project?.stage_notes?.[stage] || '');
+    setNoteStage(stage);
+  };
+
+  const openSystemIntegrationEditor = () => {
+    setSystemIntegrationDraft(project?.system_integration || []);
+    setSystemIntegrationOpen(true);
+  };
+
+  const toggleSystemIntegration = (opt: string) => {
+    setSystemIntegrationDraft((prev) => (prev.includes(opt) ? prev.filter((v) => v !== opt) : [...prev, opt]));
+  };
+
+  const saveSystemIntegration = () => {
+    setSystemIntegrationOpen(false);
+    saveField('system_integration', systemIntegrationDraft);
+  };
+
+  const saveNote = () => {
+    if (!noteStage || !project) return;
+    const merged = { ...(project.stage_notes || {}), [noteStage]: noteDraft };
+    setNoteStage(null);
+    saveField('stage_notes', merged);
+  };
+
+  const handleUploadDocument = async (file: File) => {
+    if (!project) return;
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('owner_id', username || 'admin');
+      formData.append('resource_type', 'document');
+      formData.append('category', '项目文档');
+      formData.append('description', `项目 ${project.project_code} 文档`);
+      const resource = await request<{ id: number; resource_name: string }>('/resource-manager/resources/', {
+        method: 'POST',
+        body: formData,
+      });
+      const docs = [...(project.project_documents || []), { name: resource.resource_name, resource_id: resource.id }];
+      await saveField('project_documents', docs);
+    } catch (err) {
+      Toast({ message: `上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const removeDocument = (resourceId: number) => {
+    if (!project) return;
+    const docs = (project.project_documents || []).filter((d) => d.resource_id !== resourceId);
+    saveField('project_documents', docs);
   };
 
   if (loading) return <Loading text="加载项目详情..." />;
@@ -140,12 +267,10 @@ export default function ProjectDetail() {
             </div>
           </div>
 
-          {project.category_basis === '重要紧急' && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 10, marginTop: 12, background: '#fff7ed', borderRadius: 8, border: '1px solid #fed7aa' }}>
-              <span>⚠️</span>
-              <span style={{ fontSize: 13, color: '#e37318', fontWeight: 500 }}>已标记为特别关注项目（重要紧急）</span>
-            </div>
-          )}
+          {/* 项目对接人 —— 位于项目编号与项目进度之间，可编辑 */}
+          <div style={{ marginTop: 12 }}>
+            <EditableField label="项目对接人" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} compact />
+          </div>
 
           <div style={{ height: 1, background: '#f0f0f0', margin: '14px 0' }} />
 
@@ -188,10 +313,36 @@ export default function ProjectDetail() {
           <h3 style={cardTitleStyle()}>项目基础画像</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <EditableField label="项目名称" value={project.name} onSave={(v) => saveField('name', v)} />
+            <EditableField label="项目编号" value={project.project_code} onSave={(v) => saveField('project_code', v)} />
+            <EditableField label="内部编号" value={project.internal_code || ''} placeholder="未填写" onSave={(v) => saveField('internal_code', v)} />
             <EditableField label="项目描述" value={project.description || ''} placeholder="未填写" multiline onSave={(v) => saveField('description', v)} />
-            <PickerField label="项目类别" value={project.category_basis || '未设置'} onClick={() => setActivePicker('category_basis')} />
+            <PickerField label="项目类型" value={project.project_type || '未设置'} onClick={() => setActivePicker('project_type')} />
+            <PickerField label="项目区域/地点" value={project.project_region || '未设置'} onClick={() => setActivePicker('project_region')} />
             <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} />
+            <EditableField
+              label="总车数"
+              type="number"
+              value={project.total_vehicle_count != null ? String(project.total_vehicle_count) : ''}
+              placeholder="未填写"
+              onSave={(v) => saveField('total_vehicle_count', v ? Number(v) : null)}
+            />
             <EditableField label="车型&车数" value={project.recent_delivery_content || ''} placeholder="未填写" onSave={(v) => saveField('recent_delivery_content', v)} />
+            <PickerField label="控制器选择" value={project.controller_vendor || '未设置'} onClick={() => setActivePicker('controller_vendor')} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label style={{ fontSize: 12, color: '#999' }}>系统/外设对接</label>
+              <div
+                onClick={openSystemIntegrationEditor}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                  fontSize: 14, color: project.system_integration?.length ? '#1a1a1a' : '#999',
+                  background: '#f8fafc', borderRadius: 8, padding: '10px 12px', cursor: 'pointer',
+                }}
+              >
+                <span>{project.system_integration?.length ? project.system_integration.join('、') : '未设置'}</span>
+                <span style={{ color: '#999', flexShrink: 0 }}>›</span>
+              </div>
+            </div>
+            <PickerField label="服务器部署" value={project.server_deployment_status || '未设置'} onClick={() => setActivePicker('server_deployment_status')} />
             <EditableField label="部署版本" value={project.deployment_version || ''} placeholder="未填写" onSave={(v) => saveField('deployment_version', v)} />
           </div>
         </div>
@@ -210,6 +361,7 @@ export default function ProjectDetail() {
               {LIFECYCLE_STATUSES.map((stage, idx) => {
                 const done = lifecycleIndex >= 0 && idx < lifecycleIndex;
                 const current = idx === lifecycleIndex;
+                const note = project.stage_notes?.[stage];
                 return (
                   <div key={stage} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, position: 'relative', zIndex: 1 }}>
                     <div style={{
@@ -221,9 +373,22 @@ export default function ProjectDetail() {
                     }}>
                       {done ? '✓' : ''}
                     </div>
-                    <div style={{ paddingTop: 2 }}>
-                      <div style={{ fontSize: 14, fontWeight: 500, color: done || current ? '#1a1a1a' : '#999' }}>{stage}</div>
-                      <div style={{ fontSize: 12, color: '#999' }}>{done ? '已完成' : current ? '进行中' : '待开始'}</div>
+                    <div style={{ paddingTop: 2, flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={{ fontSize: 14, fontWeight: 500, color: done || current ? '#1a1a1a' : '#999' }}>{stage}</div>
+                        <div style={{ fontSize: 12, color: '#999' }}>{done ? '已完成' : current ? '进行中' : '待开始'}</div>
+                        <span
+                          onClick={() => openNoteEditor(stage)}
+                          style={{ marginLeft: 'auto', fontSize: 11, color: '#0052d9', padding: '2px 8px', borderRadius: 999, background: '#eef4ff', cursor: 'pointer' }}
+                        >
+                          {note ? '编辑说明' : '+ 补充说明'}
+                        </span>
+                      </div>
+                      {note && (
+                        <div style={{ fontSize: 12, color: '#666', marginTop: 4, whiteSpace: 'pre-wrap', background: '#f8fafc', borderRadius: 6, padding: '6px 8px' }}>
+                          {note}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -236,13 +401,39 @@ export default function ProjectDetail() {
         <div style={cardStyle()}>
           <h3 style={cardTitleStyle()}>风险管理</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <ReadonlyField label="未关闭风险数" value={String(project.risks)} />
-              <ReadonlyField label="待处理问题数" value={String(project.issues)} />
-            </div>
+            <PickerField label="风险承接" value={project.risk_carrying_type || '未设置'} onClick={() => setActivePicker('risk_carrying_type')} />
+            <EditableField label="特别关注" value={project.special_attention || ''} placeholder="无" multiline onSave={(v) => saveField('special_attention', v)} />
+            <EditableField label="风险和任务描述" value={project.risk_task_description || ''} placeholder="无" multiline onSave={(v) => saveField('risk_task_description', v)} />
+            <EditableField label="项目管理策略" value={project.management_strategy || ''} placeholder="无" multiline onSave={(v) => saveField('management_strategy', v)} />
             <EditableField label="预期走向" value={project.expected_trend || ''} placeholder="未设置" onSave={(v) => saveField('expected_trend', v)} />
-            <ReadonlyField label="风险清单" value={project.risk_list || '无'} />
-            <ReadonlyField label="风险详情" value={project.project_summary || '无'} multiline />
+
+            {/* 项目文档 */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label style={{ fontSize: 12, color: '#999' }}>项目文档</label>
+              {(project.project_documents || []).map((doc) => (
+                <div key={doc.resource_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#f8fafc', borderRadius: 8, padding: '8px 12px', marginBottom: 6 }}>
+                  <a
+                    href={`${API_CONFIG.ADMIN.BASE_URL}/resource-manager/resources/${doc.resource_id}/download`}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ fontSize: 13, color: '#0052d9', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}
+                  >
+                    📄 {doc.name}
+                  </a>
+                  <span onClick={() => removeDocument(doc.resource_id)} style={{ color: '#d54941', fontSize: 12, cursor: 'pointer', marginLeft: 8 }}>删除</span>
+                </div>
+              ))}
+              <Upload
+                accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg"
+                max={1}
+                disabled={uploading}
+                onSuccess={({ fileList }) => {
+                  const raw = fileList?.[0]?.raw;
+                  if (raw) handleUploadDocument(raw);
+                }}
+              />
+              {uploading && <div style={{ fontSize: 12, color: '#999' }}>上传中...</div>}
+            </div>
           </div>
         </div>
 
@@ -250,28 +441,16 @@ export default function ProjectDetail() {
         <div style={cardStyle()}>
           <h3 style={cardTitleStyle()}>责任体系</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <EditableField label="项目对接人" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} />
+            <EditableField label="销售" value={project.sales || ''} placeholder="未指定" onSave={(v) => saveField('sales', v)} />
+            <EditableField label="售前" value={project.pre_sales || ''} placeholder="未指定" onSave={(v) => saveField('pre_sales', v)} />
+            <EditableField label="项目经理" value={project.project_manager || ''} placeholder="未指定" onSave={(v) => saveField('project_manager', v)} />
+            <EditableField label="实施工程师" value={project.field_engineer || ''} placeholder="未指定" onSave={(v) => saveField('field_engineer', v)} />
             <EditableField label="人员计划" value={project.personnel_plan || ''} placeholder="无" multiline onSave={(v) => saveField('personnel_plan', v)} />
           </div>
         </div>
-
-        {/* 相关链接：仅当 field_links 中存在真实数据时展示，不编造字段 */}
-        {project.field_links && Object.keys(project.field_links).length > 0 && (
-          <div style={cardStyle()}>
-            <h3 style={cardTitleStyle()}>相关链接</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {Object.entries(project.field_links).map(([k, v]) => (
-                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-                  <span style={{ color: '#999' }}>{k}</span>
-                  <a href={v} target="_blank" rel="noreferrer" style={{ color: '#0052d9', textDecoration: 'none', maxWidth: '70%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</a>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
-      {/* 项目阶段 / 项目类别 —— 单选弹窗（真实枚举，与 backend ProjectStatus / ProjectCategory 一致） */}
+      {/* 项目阶段 / 项目类别 / 项目类型 / 风险承接 —— 单选弹窗（真实枚举，与 backend 对应 Enum 一致） */}
       <Popup visible={!!activePicker} onClose={() => setActivePicker(null)} placement="bottom" showOverlay>
         <div style={{ padding: 20, maxHeight: '70vh', overflow: 'auto' }}>
           <h4 style={{ marginBottom: 16 }}>{activePickerConfig?.label}</h4>
@@ -285,6 +464,48 @@ export default function ProjectDetail() {
                 {opt}
               </div>
             ))}
+          </div>
+        </div>
+      </Popup>
+
+      {/* 生命周期阶段补充说明 —— 存入 stage_notes（JSON，键为阶段名） */}
+      <Popup visible={!!noteStage} onClose={() => setNoteStage(null)} placement="bottom" showOverlay>
+        <div style={{ padding: 20 }}>
+          <h4 style={{ marginBottom: 16 }}>{noteStage} · 补充说明</h4>
+          <Textarea
+            value={noteDraft}
+            onChange={(v: string | number) => setNoteDraft(String(v))}
+            placeholder="填写该阶段的详细内容..."
+            autosize={{ minRows: 4, maxRows: 10 }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+            <span onClick={saveNote} style={{ padding: '8px 20px', background: '#0052d9', color: '#fff', borderRadius: 999, fontSize: 14, cursor: 'pointer' }}>
+              保存
+            </span>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 系统/外设对接 —— 多选，存入 system_integration（JSON数组） */}
+      <Popup visible={systemIntegrationOpen} onClose={() => setSystemIntegrationOpen(false)} placement="bottom" showOverlay>
+        <div style={{ padding: 20, maxHeight: '70vh', overflow: 'auto' }}>
+          <h4 style={{ marginBottom: 16 }}>系统/外设对接</h4>
+          <div style={{ marginBottom: 16 }}>
+            {SYSTEM_INTEGRATION_OPTIONS.map((opt) => (
+              <div
+                key={opt}
+                onClick={() => toggleSystemIntegration(opt)}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer' }}
+              >
+                <Checkbox checked={systemIntegrationDraft.includes(opt)} />
+                <span style={{ fontSize: 14 }}>{opt}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <span onClick={saveSystemIntegration} style={{ padding: '8px 20px', background: '#0052d9', color: '#fff', borderRadius: 999, fontSize: 14, cursor: 'pointer' }}>
+              确定
+            </span>
           </div>
         </div>
       </Popup>
@@ -324,7 +545,7 @@ function PickerField({ label, value, onClick }: { label: string; value: string; 
   );
 }
 
-function EditableField({ label, value, placeholder, multiline, onSave }: { label: string; value: string; placeholder?: string; multiline?: boolean; onSave: (v: string) => void }) {
+function EditableField({ label, value, placeholder, multiline, compact, type, onSave }: { label: string; value: string; placeholder?: string; multiline?: boolean; compact?: boolean; type?: 'text' | 'number'; onSave: (v: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
 
@@ -346,6 +567,7 @@ function EditableField({ label, value, placeholder, multiline, onSave }: { label
           onBlur={commit}
           autofocus
           placeholder={placeholder}
+          {...(!multiline && type ? { type } : {})}
         />
       </div>
     );
@@ -358,7 +580,8 @@ function EditableField({ label, value, placeholder, multiline, onSave }: { label
         onClick={() => setEditing(true)}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-          fontSize: 14, color: value ? '#1a1a1a' : '#999', background: '#f8fafc', borderRadius: 8, padding: '10px 12px', cursor: 'pointer',
+          fontSize: 14, color: value ? '#1a1a1a' : '#999',
+          background: compact ? 'transparent' : '#f8fafc', borderRadius: 8, padding: compact ? '2px 0' : '10px 12px', cursor: 'pointer',
           whiteSpace: multiline ? 'pre-wrap' : 'nowrap', overflow: multiline ? 'visible' : 'hidden', textOverflow: 'ellipsis',
         }}
       >

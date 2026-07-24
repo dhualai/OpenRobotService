@@ -68,7 +68,7 @@ const SCENE_CONFIG: Record<ChatScene, {
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
   const navigate = useNavigate();
   const { token, username } = useAuthStore();
-  const { chatContext, consumeChatContext, refreshTasks } = useWorkbenchStore();
+  const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, renameConversation, refreshConversations } = useWorkbenchStore();
   const isCall = scene === 'call';
   const cfg = SCENE_CONFIG[scene];
 
@@ -106,6 +106,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const voiceRafRef = useRef<number | null>(null);
   const [voiceLevels, setVoiceLevels] = useState<number[]>([0, 0, 0, 0, 0]);
   const convRef = useRef<number | null>(null); // 当前 DB 会话 id，跨 send 复用
+  const sendingRef = useRef(false); // 防双发（Enter + click 竞态）
 
   const scrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); };
   useEffect(() => { scrollToBottom(); }, [messages]);
@@ -116,16 +117,40 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     if (ta) setTextareaMaxed(ta.scrollHeight > ta.clientHeight + 2);
   }, [input]);
 
-  // 挂载时恢复"最近一条会话"：从 DB 读回历史消息 + ai_session_id，刷新/切页后内容不丢
+  // 挂载时恢复最近一条会话 → 设置 conversationId（由下方 effect 加载消息）
   useEffect(() => {
     if (!token || !username) return;
-    if (chatContext) return; // 从工单「讨论」进入时走新会话，不恢复旧历史
+    if (chatContext) return;
     let cancelled = false;
     (async () => {
       try {
         const list = await listMyConversations(scene, 1);
         if (cancelled || !list.length) return;
-        const full = await getConversation(list[0].id);
+        setConversationId(list[0].id);
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, username, scene]);
+
+  // conversationId 变化 → 加载会话（切换）或清空（新建）。首次跳过（等上面的恢复）
+  const convLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!convLoadedRef.current) { convLoadedRef.current = true; return; }
+    if (conversationId === null) {
+      // 新建会话：清空消息 + sessionId
+      convRef.current = null;
+      setMessages([]);
+      setSessionId('');
+      return;
+    }
+    // convRef 已是当前会话 → ensureConversation 刚设置的，不重复加载（避免覆盖正在进行的对话）
+    if (convRef.current === conversationId) return;
+    if (!conversationId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const full = await getConversation(conversationId);
         if (cancelled) return;
         convRef.current = full.id;
         const restored = (full.messages || []).map((m) => ({
@@ -134,14 +159,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           content: m.content,
           timestamp: m.created_at,
         }));
-        if (restored.length) setMessages(restored);
+        setMessages(restored);
         const sid = readAiSessionId(full);
         if (sid) setSessionId(sid);
-      } catch { /* 恢复失败不阻塞新对话 */ }
+        else setSessionId('');
+      } catch { /* ignore */ }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, username, scene]);
+  }, [conversationId]);
 
   // call 场景：进入时若带工单讨论上下文，注入引导消息（一次性消费）
   useEffect(() => {
@@ -202,6 +228,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const content = text.trim();
     if (!content && !imageFile) return;
     if (!token) { kickToLogin('请先登录'); return; }
+    if (sendingRef.current) return; // 防双发
+    sendingRef.current = true;
 
     let imageTag = '';
     if (imageFile) {
@@ -230,6 +258,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const assistantId = uid();
     try {
       const sid = ensureSessionId();
+      const wasNew = !convRef.current; // 新会话：首轮问答完成后才同步到列表
       // 持久化用户消息（首条会顺带建会话）
       const convId = await ensureConversation(sid, userContent);
       if (convId) appendMessage(convId, 'user', userContent).catch(() => {});
@@ -247,6 +276,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const decoder = new TextDecoder();
       let acc = '';
       let solutionDraft: Message['solution_draft'] | null = null;
+      let ticketCreatedThisTurn = false;
       let currentEvent = '';
       while (true) {
         const { done, value } = await reader.read();
@@ -279,12 +309,21 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 needs_more_info: data.needs_more_info ?? false,
               };
             }
+            // AI 自动建单（对话中输入「转工单」等）：result 事件携带 ticket，标记本轮已建单
+            if (currentEvent === 'result' && data.ticket) {
+              ticketCreatedThisTurn = true;
+            }
           } catch { /* JSON 行解析出错则跳过 */ }
         }
       }
 
       // 流式结束：持久化 AI 回复
       if (acc && convRef.current) appendMessage(convRef.current, 'assistant', acc).catch(() => {});
+      // 首轮问答完成 → 同步会话到列表（标题=首轮提问），定位到新会话
+      if (wasNew && convRef.current) {
+        setConversationId(convRef.current);
+        refreshConversations();
+      }
       // 任务 Agent 方案草稿：注入 solution_draft 标记
       if (solutionDraft && !isCall) {
         setMessages((prev) => prev.map((m) =>
@@ -292,6 +331,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             ? { ...m, subtype: 'solution_draft' as const, solution_draft: solutionDraft }
             : m
         ));
+      }
+      // AI 自动建单（对话中输入「转工单」等）：本轮已建单 → 触发 badge 重新计数（与外层按钮路径一致）
+      if (ticketCreatedThisTurn) {
+        refreshTasks();
       }
     } catch (err) {
       // 鉴权失效已由 kickToLogin 统一提示并跳转，此处不重复弹错误
@@ -301,6 +344,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       setMessages((prev) => prev.filter((m) => m.id !== assistantId));
     } finally {
       setLoading(false);
+      sendingRef.current = false;
     }
   };
 

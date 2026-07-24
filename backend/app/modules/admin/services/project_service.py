@@ -171,7 +171,24 @@ class ProjectService:
             "project_summary": project.project_summary,
             "task_execution_status": project.task_execution_status,
             "field_links": json.loads(project.field_links) if project.field_links else None,
-            "category_basis": project.category_basis
+            "category_basis": project.category_basis,
+            "project_type": project.project_type,
+            "stage_notes": json.loads(project.stage_notes) if project.stage_notes else None,
+            "risk_carrying_type": project.risk_carrying_type,
+            "special_attention": project.special_attention,
+            "risk_task_description": project.risk_task_description,
+            "management_strategy": project.management_strategy,
+            "project_documents": json.loads(project.project_documents) if project.project_documents else None,
+            "sales": project.sales,
+            "pre_sales": project.pre_sales,
+            "project_manager": project.project_manager,
+            "field_engineer": project.field_engineer,
+            "internal_code": project.internal_code,
+            "project_region": project.project_region,
+            "total_vehicle_count": project.total_vehicle_count,
+            "controller_vendor": project.controller_vendor,
+            "system_integration": json.loads(project.system_integration) if project.system_integration else None,
+            "server_deployment_status": project.server_deployment_status,
         }
         return project_dict
     
@@ -210,7 +227,16 @@ class ProjectService:
             
             if project_data.get("field_links"):
                 project_data["field_links"] = json.dumps(project_data["field_links"])
-            
+
+            if project_data.get("stage_notes"):
+                project_data["stage_notes"] = json.dumps(project_data["stage_notes"])
+
+            if project_data.get("project_documents"):
+                project_data["project_documents"] = json.dumps(project_data["project_documents"])
+
+            if project_data.get("system_integration"):
+                project_data["system_integration"] = json.dumps(project_data["system_integration"])
+
             db_project = Project(**project_data)
             db.add(db_project)
             db.commit()
@@ -225,13 +251,34 @@ class ProjectService:
             project = db.query(Project).filter(Project.id == project_id).first()
             if not project:
                 return None
-            
+
+            if "project_code" in update_data:
+                update_data["code"] = update_data.pop("project_code")
+
             if "field_links" in update_data:
                 if update_data["field_links"]:
                     update_data["field_links"] = json.dumps(update_data["field_links"])
                 else:
                     update_data["field_links"] = None
-            
+
+            if "stage_notes" in update_data:
+                if update_data["stage_notes"]:
+                    update_data["stage_notes"] = json.dumps(update_data["stage_notes"])
+                else:
+                    update_data["stage_notes"] = None
+
+            if "project_documents" in update_data:
+                if update_data["project_documents"]:
+                    update_data["project_documents"] = json.dumps(update_data["project_documents"])
+                else:
+                    update_data["project_documents"] = None
+
+            if "system_integration" in update_data:
+                if update_data["system_integration"]:
+                    update_data["system_integration"] = json.dumps(update_data["system_integration"])
+                else:
+                    update_data["system_integration"] = None
+
             for field, value in update_data.items():
                 setattr(project, field, value)
             
