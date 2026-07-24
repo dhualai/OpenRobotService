@@ -414,24 +414,38 @@ class AiTaskAgent:
                         output={"response_chars": len(raw)},
                         elapsed_ms=round((time.perf_counter() - t4) * 1000))
 
-        # 5. 解析
+        # 5. 返回 Markdown 报告（无需 JSON 解析）
         t5 = time.perf_counter()
-        draft, parse_status = self._parse_solution_with_status(raw)
-        self._add_trace(self.NODE_PARSE, parse_status,
-                        output={"confidence": draft.confidence},
+        report_md = raw.strip()
+        # 从 Markdown 提取置信度（简单正则）
+        conf = 0.0
+        m = re.search(r'置信度[：:]\s*(\d+\.?\d*)', report_md)
+        if m:
+            try: conf = float(m.group(1))
+            except ValueError: pass
+        # 短预览：取第一个实质性段落（跳过标题和空白）
+        root_cause = report_md
+        for line in report_md.split('\n'):
+            stripped = line.strip()
+            if stripped and not stripped.startswith('#') and len(stripped) > 10:
+                root_cause = stripped[:200]
+                break
+        self._add_trace(self.NODE_PARSE, "ok",
+                        output={"report_chars": len(report_md), "confidence": conf},
                         elapsed_ms=round((time.perf_counter() - t5) * 1000))
 
         total_ms = round((time.perf_counter() - t0) * 1000)
 
         return {
             "task_id": task_id,
-            "root_cause_analysis": draft.root_cause_analysis,
-            "suggested_actions": draft.suggested_actions,
-            "references": draft.references,
-            "confidence": draft.confidence,
-            "needs_more_info": draft.needs_more_info,
+            "root_cause_analysis": root_cause,
+            "suggested_actions": [],
+            "references": [],
+            "confidence": conf,
+            "needs_more_info": conf < 0.5,
             "attachment_analysis": {"has_logs": att_has_logs, "summary": att_log_summary},
             "history_found": hist_found,
+            "report_md": report_md,
             "_trace": self._pop_trace(),
             "_total_ms": total_ms,
         }
@@ -546,8 +560,8 @@ class AiTaskAgent:
         }
 
     @staticmethod
-    def _add_diagnosis_comment_short(task_id: int, content: str) -> bool:
-        """简短回复写入 task_comments（用于 @AI 讨论/摘要）"""
+    def _add_diagnosis_comment_short(task_id: int, content: str) -> Optional[int]:
+        """简短回复写入 task_comments（用于 @AI 讨论/摘要），返回 comment_id"""
         from app.models.task import TaskComment
         from app.core.database import SessionLocal
         db = SessionLocal()
@@ -556,7 +570,11 @@ class AiTaskAgent:
                                   created_by="AI任务助手", is_public=True)
             db.add(comment)
             db.commit()
-            return True
+            db.refresh(comment)
+            return comment.id
+        except Exception:
+            db.rollback()
+            return None
         finally:
             db.close()
 
@@ -691,6 +709,8 @@ class AiTaskAgent:
                 ctx.ruled_out = d.get("ruled_out") or []
                 ctx.collected_info = d.get("collected_info") or {}
                 ctx.diagnosis_rounds = d.get("diagnosis_rounds", 0)
+            else:
+                logger.warning(f"Task {task_id} not found in database (load_task_context_dict returned empty)")
         except Exception as e:
             logger.warning(f"Failed to load task {task_id}: {e}")
 
@@ -910,10 +930,26 @@ class AiTaskAgent:
                 ), "ok"
             except (json.JSONDecodeError, ValueError, TypeError):
                 pass
+        # 兜底：从 Markdown 提取 sections
+        root_cause = raw
+        actions: list = []
+        refs: list = []
+        conf = 0.0
+        m = re.search(r"根因分析[：:]\s*(.+?)(?=###\s|建议步骤|证据|$)", raw, re.DOTALL)
+        if m: root_cause = m.group(1).strip()[:800]
+        for m in re.finditer(r"\d+\.\s*\*?\*?\s*(.+?)(?=\n\d+\.|\n\n|###|$)", raw):
+            a = m.group(1).strip()
+            if a and len(a) > 5: actions.append(a[:200])
+        m = re.search(r"置信度[：:]\s*.?(\d+\.?\d*)", raw)
+        if m:
+            try: conf = float(m.group(1))
+            except ValueError: pass
         return SolutionDraft(
-            root_cause_analysis=raw.strip(),
-            suggested_actions=[], references=[],
-            confidence=0.0, needs_more_info=True,
+            root_cause_analysis=root_cause.strip() or raw.strip(),
+            suggested_actions=actions or [],
+            references=refs or [],
+            confidence=conf if not actions else max(conf, 0.5),
+            needs_more_info=conf < 0.5,
         ), "json_fail"
 
     @staticmethod
