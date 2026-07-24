@@ -27,6 +27,7 @@
 
 from typing import Dict, List, Optional
 
+from ai.core.logging import get_logger
 from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.decision import DecisionMaker
 from ai.agents.AiDiagnosisPlatform.assigner.llm_decider import LlmDecider
@@ -40,6 +41,8 @@ from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     EngineerProfile,
     TicketContext,
 )
+
+logger = get_logger("assigner")
 
 
 class Assigner:
@@ -72,6 +75,8 @@ class Assigner:
         historical_matches: Optional[Dict[str, float]] = None,
     ) -> AssignmentResult:
         """异步根据工单上下文推荐唯一负责人。"""
+        logger.info(f"派单开始: ticket={ticket_context.title[:40]}")
+
         if not engineer_profiles:
             raise ValueError("工程师列表为空，无法派单。请检查 engineers.json 是否加载成功。")
 
@@ -83,8 +88,10 @@ class Assigner:
             ticket=ticket_context,
             engineers=engineer_profiles,
         )
+        logger.info(f"派单 L1 规则过滤: {len(engineer_profiles)}→{len(filtered)}")
 
         if not filtered:
+            logger.warning("派单: 规则过滤后无可用工程师，兜底")
             return self._decision_maker._fallback_result(
                 engineer_profiles[0], "规则过滤后无可用工程师，强制兜底"
             )
@@ -104,8 +111,9 @@ class Assigner:
             )
             recall_result.engineer_semantic = semantic_result.engineer_semantic
             recall_result.history_semantic = semantic_result.history_semantic
+            logger.debug("派单 L2b 语义召回成功")
         except Exception:
-            pass  # 语义召回失败不影响主流程
+            logger.debug("派单 L2b 语义召回失败，跳过")
 
         # 第三层：LLM 综合分析（异步）
         try:
@@ -117,9 +125,10 @@ class Assigner:
                 ranked_scores=ranked_scores,
             )
             if llm_result is not None:
+                logger.info(f"派单 L3 LLM决策: {llm_result.engineer_name} ({llm_result.decision_type})")
                 return llm_result
-        except Exception:
-            pass  # LLM 失败则回退
+        except Exception as e:
+            logger.warning(f"派单 L3 LLM决策失败,回退: {e}")
 
         # 第四层：回退到规则精排 + 决策
         ranked_scores = self._ranker.rank(recall_result)
@@ -127,6 +136,7 @@ class Assigner:
             ranked_scores=ranked_scores,
             engineers=filtered,
         )
+        logger.info(f"派单 L4 规则兜底: {result.engineer_name} ({result.decision_type})")
         return result
 
     def reload_config(self):
