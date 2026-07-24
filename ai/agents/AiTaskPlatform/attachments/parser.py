@@ -14,6 +14,7 @@
     - ZIP 解压最多遍历 50 个文件，防止炸弹
 """
 
+import base64
 import io
 import os
 import tempfile
@@ -26,6 +27,16 @@ from ai.agents.AiTaskPlatform.schemas import AttachmentAnalysis
 from ai.core.logging import get_logger
 
 logger = get_logger("TASK_AGENT")
+
+# MIME type 映射
+_EXT_TO_MIME = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".bmp": "image/bmp",
+    ".gif": "image/gif", ".webp": "image/webp",
+}
+
+# 单次最多分析几张图片（控制 token/时间）
+_VISION_MAX_IMAGES = 3
 
 
 
@@ -346,3 +357,134 @@ def _has_timestamp(line: str) -> bool:
     """检测行是否包含时间戳（HH:MM:SS 格式）。"""
     import re
     return bool(re.search(r"\d{2}:\d{2}:\d{2}", line))
+
+
+# ============================================================
+# 图片分析（视觉 LLM）
+# ============================================================
+
+async def analyze_images(attachments: list, task_context: dict = None) -> str:
+    """两阶段图片分析：VLM 看图描述 → 文本模型推理分析
+
+    Stage 1 — VLM (GPT-4o): 逐张描述画面内容、关键数据、异常信号、人工标注
+    Stage 2 — 文本模型 (DeepSeek): 结合工单背景，分析描述中的线索和关键发现
+
+    Returns:
+        完整分析文本（描述 + 推理），失败返回空字符串
+    """
+    tc = task_context or {}
+
+    # 1. 筛选图片附件
+    image_atts = []
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        filename = att.get("filename") or att.get("name") or ""
+        path = att.get("path") or att.get("url") or ""
+        if _is_image_file(filename, path):
+            image_atts.append(att)
+
+    if not image_atts:
+        return ""
+
+    # 2. 读取图片 → base64 data URIs
+    data_uris = []
+    for att in image_atts[:_VISION_MAX_IMAGES]:
+        fname = att.get("filename") or att.get("name") or ""
+        try:
+            img_bytes = await _read_bytes(att)
+            if img_bytes and len(img_bytes) < 10 * 1024 * 1024:
+                ext = Path(fname).suffix.lower()
+                mime = _EXT_TO_MIME.get(ext, "image/png")
+                b64 = base64.b64encode(img_bytes).decode()
+                data_uris.append((fname, f"data:{mime};base64,{b64}"))
+        except Exception:
+            logger.warning(f"Failed to read image: {fname}")
+
+    if not data_uris:
+        return ""
+
+    # ── Stage 1: VLM 看图描述 ──
+    try:
+        from ai.core import get_llm_client
+        llm = await get_llm_client()
+
+        names = ", ".join(f"{n}" for n, _ in data_uris)
+        images = [uri for _, uri in data_uris]
+
+        desc_prompt = _build_vision_prompt(names, tc)
+        raw_descriptions = await llm.complete_vision(
+            prompt=desc_prompt,
+            images=images,
+            system_prompt="你是 AGV/AMR 调度系统的操作专家。仔细看图，客观描述画面内容、关键数据、异常信号和人工标注。不诊断，不下结论。",
+            max_tokens=600,
+            temperature=0.2,
+        )
+    except Exception as e:
+        logger.error(f"Stage 1 VLM failed: {e}")
+        return f"[图片分析失败（VLM）: {e}]"
+
+    # ── Stage 2: 文本模型推理 ──
+    try:
+        analysis_prompt = _build_analysis_prompt(names, tc, raw_descriptions)
+        analysis = await llm.complete(
+            prompt=analysis_prompt,
+            system_prompt="你是 AGV/AMR 领域的技术支持专家。基于图片描述和工单背景，分析线索、关联问题、提取关键发现。简洁直接。",
+            max_tokens=400,
+            temperature=0.3,
+        )
+    except Exception as e:
+        logger.warning(f"Stage 2 text analysis failed, fallback to VLM only: {e}")
+        return f"[图片分析 {len(data_uris)} 张：{names}]\n{raw_descriptions.strip()}"
+
+    return (
+        f"[图片分析 {len(data_uris)} 张：{names}]\n"
+        f"📷 画面描述：\n{raw_descriptions.strip()}\n\n"
+        f"🔍 线索分析：\n{analysis.strip()}"
+    )
+
+
+def _build_vision_prompt(names: str, task_context: dict = None) -> str:
+    """Stage 1 VLM prompt — 纯看图描述，不下结论"""
+    tc = task_context or {}
+    ctx_parts = []
+    if tc.get("title"): ctx_parts.append(f"标题：{tc['title']}")
+    if tc.get("problem_summary"): ctx_parts.append(f"问题概述：{tc['problem_summary']}")
+    elif tc.get("description"): ctx_parts.append(f"描述：{tc['description'][:150]}")
+    if tc.get("hypotheses"): ctx_parts.append(f"推测方向：{'/'.join(tc['hypotheses'])}")
+    if tc.get("fault_code"): ctx_parts.append(f"故障码：{tc['fault_code']}")
+    if tc.get("robot_type"): ctx_parts.append(f"车型：{tc['robot_type']}")
+    ctx_text = "\n".join(ctx_parts) if ctx_parts else "（无工单背景信息）"
+
+    return (
+        f"工单背景：\n{ctx_text}\n\n"
+        f"现在看图片 {names}。这是 AGV/AMR 调度系统的操作截图。"
+        "请仔细观察，按以下要点描述（≥300字）：\n\n"
+        "**1. 画面内容** — 这是什么界面？\n"
+        "**2. 关键数据** — 任务编号、车辆编号、地图名称、状态码、时间戳、坐标等字段值\n"
+        "**3. 异常信号** — 红色/橙色高亮、报错弹窗、状态异常（离线/故障/取消/超时）\n"
+        "**4. 人工标注** — 红色框、箭头、圈注、画笔标记、文字批注及其指向位置\n\n"
+        "客观描述，不诊断，不下结论。"
+    )
+
+
+def _build_analysis_prompt(names: str, task_context: dict, descriptions: str) -> str:
+    """Stage 2 文本模型 prompt — 基于描述做推理"""
+    tc = task_context or {}
+    ctx_parts = []
+    if tc.get("title"): ctx_parts.append(f"工单：{tc['title']}")
+    if tc.get("description"): ctx_parts.append(f"描述：{tc['description'][:150]}")
+    if tc.get("problem_summary"): ctx_parts.append(f"诊断概述：{tc['problem_summary']}")
+    if tc.get("hypotheses"): ctx_parts.append(f"推测方向：{'/'.join(tc['hypotheses'])}")
+    ctx_text = "\n".join(ctx_parts) if ctx_parts else "（无）"
+
+    return (
+        f"工单背景：\n{ctx_text}\n\n"
+        f"以下是 {names} 的画面描述：\n\n"
+        f"{descriptions}\n\n"
+        "请基于以上描述，分析：\n"
+        "1. 这些截图和工单问题有什么关联？\n"
+        "2. 图中有什么值得关注的线索（异常值、状态矛盾、人工标注指向）？\n"
+        "3. 下一步应该重点排查什么方向？\n\n"
+        "简洁直接，工程师口吻，≤300字。"
+    )

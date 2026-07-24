@@ -40,6 +40,11 @@ class AIConfig(BaseModel):
     llm_connect_timeout: float = Field(default=3.0)
     llm_read_timeout: float = Field(default=30.0)  # Agent 回复可能较长
 
+    # ========== Vision LLM（图片分析，OpenAI 兼容接口）==========
+    vision_api_key: str = Field(default="", description="视觉 API Key")
+    vision_base_url: str = Field(default="", description="视觉 API 地址")
+    vision_model: str = Field(default="gpt-4o", description="视觉模型名")
+
     # ========== Qdrant 向量库 ==========
     qdrant_host: str = Field(default="localhost")
     qdrant_port: int = Field(default=6333)
@@ -259,6 +264,10 @@ def get_ai_config() -> AIConfig:
         deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
         llm_connect_timeout=float(os.getenv("LLM_CONNECT_TIMEOUT", "3.0")),
         llm_read_timeout=float(os.getenv("LLM_READ_TIMEOUT", "30.0")),
+
+        vision_api_key=os.getenv("VISION_API_KEY", ""),
+        vision_base_url=os.getenv("VISION_BASE_URL", ""),
+        vision_model=os.getenv("VISION_MODEL", "gpt-4o"),
         # Qdrant
         qdrant_host=os.getenv("QDRANT_HOST", "localhost"),
         qdrant_port=int(os.getenv("QDRANT_PORT", "6333")),
