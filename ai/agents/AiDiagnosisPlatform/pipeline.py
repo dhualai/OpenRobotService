@@ -99,12 +99,12 @@ def _agent_state_summary(state: AgentState) -> dict:
 
 
 async def _generate_title(llm_client, memory) -> str:
-    """第2轮对话结束后，用前两轮对话生成会话标题（不超过15字）"""
+    """第2轮对话结束后，用前两轮对话生成会话标题（中文不超过15字，英文不超过50字符）"""
     turns = memory.turns
     if len(turns) < 4 or "title" in memory.metadata:
         return ""
     prompt = (
-        "根据以下对话生成一个简短标题（不超过15字）：\n\n"
+        "根据以下对话生成一个简短标题（中文不超过15字，英文不超过50字符）：\n\n"
         f"用户：{turns[0]['content']}\n"
         f"助手：{turns[1]['content']}\n"
         f"用户：{turns[2]['content']}\n"
@@ -113,7 +113,7 @@ async def _generate_title(llm_client, memory) -> str:
     )
     try:
         title = (await llm_client.complete(
-            prompt=prompt, max_tokens=20, temperature=0.3,
+            prompt=prompt, max_tokens=40, temperature=0.3,
         )).strip()
         title = title.strip('"\'""''「」《》').strip()
         if title:
