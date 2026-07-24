@@ -28,7 +28,7 @@ export default function CallView() {
     return (
       <div className="chat-view">
         <Navbar title="历史工单" fixed leftArrow onLeftClick={() => setShowHistory(false)} />
-        <div className="page-container" style={{ paddingTop: 46, height: 'calc(100vh - 46px)', display: 'flex', flexDirection: 'column' }}>
+        <div className="page-container" style={{ paddingTop: 16, height: 'calc(100vh - 16px)', display: 'flex', flexDirection: 'column' }}>
           <HistoryTickets showHeader={false} />
         </div>
       </div>

@@ -1,0 +1,4 @@
+{
+  "_comment": "企业微信 userID → 姓名/邮箱 映射。复制为 user_map.json 并填入真实数据。",
+  "00000": {"name": "张三", "email": "zhangsan@example.com"}
+}

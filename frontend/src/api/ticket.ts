@@ -38,9 +38,13 @@ export const reportTicket = (ticketId: number | string) =>
     body: JSON.stringify({ ticket_id: Number(ticketId), notify_type: 1, to_admin: true }),
   });
 
-/** 撤回：将工单状态置为已取消（Canceled） */
+/** 撤回：将工单状态置为已取消（Canceled）
+ *  后端 PATCH /{task_id}/status 的 status 参数是 Body(...)（请求体），不是 Query */
 export const cancelTicket = (ticketId: number | string) =>
-  request(`/${Number(ticketId)}/status?status=canceled`, { method: 'PATCH' });
+  request(`/${Number(ticketId)}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify('canceled'),
+  });
 
 /** 评论列表（按工单绑定） */
 export const listComments = (ticketId: number | string) =>

@@ -113,6 +113,8 @@ async def ask_question_stream(
                     yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
                 elif ev_type == "result":
                     yield f"event: result\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+                elif ev_type == "title":
+                    yield f"event: title\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
                 else:
                     yield f"event: status\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
             yield f"event: done\ndata: {json.dumps({'total_ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
