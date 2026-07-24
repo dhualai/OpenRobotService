@@ -5,7 +5,7 @@ MIGRATION.md 阶段 3：从 `app/modules/fqa/ticket/api/ticket.py` 搬迁而来�
 
 Wave 2.2 完成：工单(tickets)已升格为任务(tasks)，本模块使用统一的 Task/TaskComment 模型。
 """
-from fastapi import APIRouter, HTTPException, Depends, Query, Request, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Depends, Query, Request, UploadFile, File, Form, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -406,7 +406,7 @@ async def delete_comment(
 @router.patch("/{task_id}/status", response_model=TicketResponse)
 async def update_task_status(
     task_id: int,
-    status: str,
+    status: str = Body(..., description="任务状态"),
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
