@@ -156,15 +156,16 @@ class MemoryManager:
             memory.turns = memory.turns[-self.max_turns:]
         await self.save_memory(memory)
 
-        # MySQL 持久化（异步写，不阻塞主流程）
-        try:
-            from ai.core.conversation_store import save_message
-            await asyncio.to_thread(
-                save_message, session_id=session_id, role=role,
-                content=content, user_id=user_id,
-            )
-        except Exception as e:
-            logger.error(f"MySQL 双写失败: session={session_id}, role={role}, error={e}", exc_info=True)
+        # MySQL 双写已禁用：会话管理统一走前端 → backend /api/call/conversations
+        # （原 conversation_store.save_message 会创建 title="新会话" 的冗余会话记录）
+        # try:
+        #     from ai.core.conversation_store import save_message
+        #     await asyncio.to_thread(
+        #         save_message, session_id=session_id, role=role,
+        #         content=content, user_id=user_id,
+        #     )
+        # except Exception as e:
+        #     logger.error(f"MySQL 双写失败: session={session_id}, role={role}, error={e}", exc_info=True)
 
         return memory
 
