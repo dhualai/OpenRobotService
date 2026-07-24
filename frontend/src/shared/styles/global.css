@@ -414,10 +414,10 @@ html, body, #root {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 56px;
+  min-height: 112px;
   background: #fff;
   border-radius: 10px;
-  padding: 8px 14px;
+  padding: 12px 14px;
   margin-bottom: 8px;
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.05);
   cursor: pointer;
@@ -433,9 +433,9 @@ html, body, #root {
   flex: 1;
   font-size: 14px;
   color: #222;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.4;
 }
 .history-row__status { font-size: 12px; color: #888; flex-shrink: 0; }
 .history-row__date { font-size: 12px; color: #bbb; flex-shrink: 0; }

@@ -175,7 +175,7 @@ export default function TicketDetailPage() {
   if (loading) return <Loading text="加载中..." />;
   if (!ticket) return (
     <div>
-      <Navbar title="工单详情" fixed leftArrow onLeftClick={() => navigate(-1)} />
+      <Navbar title="工单详情" fixed leftArrow onLeftClick={() => navigate('/call', { state: { showHistory: true } })} />
       <div style={{ padding: 32, textAlign: 'center', color: '#999', marginTop: 56 }}>{msg || '工单不存在'}</div>
     </div>
   );
@@ -188,7 +188,7 @@ export default function TicketDetailPage() {
 
   return (
     <div className="ticket-detail-page" style={{ paddingBottom: 72 }}>
-      <Navbar title="工单详情" fixed leftArrow onLeftClick={() => navigate(-1)} />
+      <Navbar title="工单详情" fixed leftArrow onLeftClick={() => navigate('/call', { state: { showHistory: true } })} />
       <div className="page-container" style={{ paddingTop: 56 }}>
         {/* 标题 + 基本信息 */}
         <div className="detail-card">
@@ -200,7 +200,7 @@ export default function TicketDetailPage() {
           </div>
           <h2 className="detail-card__title">{ticket.title || '(无标题)'}</h2>
           {ticket.contact && <DetailRow label="联系人" value={ticket.contact} />}
-          <DetailRow label="创建时间" value={ticket.created_at ? formatDateTime(new Date(ticket.created_at * 1000).toISOString()) : ''} />
+          <DetailRow label="创建时间" value={ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''} />
         </div>
 
         {/* 问题描述 */}
