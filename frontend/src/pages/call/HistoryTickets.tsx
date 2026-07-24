@@ -27,6 +27,16 @@ const STATUS_TABS = [
   { value: 'canceled', label: '已取消' },
   { value: 'closed', label: '已关闭' },
 ];
+// 状态徽标（圆点已表达优先级，这里展示真实工单状态）
+const STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
+  new:         { label: '新建',   color: '#0052d9', bg: '#ecf2fe' },
+  pending:     { label: '待处理', color: '#e37318', bg: '#fdf3e7' },
+  dispatched:  { label: '已派单', color: '#0052d9', bg: '#ecf2fe' },
+  in_progress: { label: '处理中', color: '#2ba471', bg: '#e8f8f2' },
+  resolved:    { label: '已解决', color: '#00a870', bg: '#e6f9f2' },
+  canceled:    { label: '已取消', color: '#999',    bg: '#f2f3f5' },
+  closed:      { label: '已关闭', color: '#999',    bg: '#f2f3f5' },
+};
 
 export default function HistoryTickets({ showHeader = true }: { showHeader?: boolean }) {
   const navigate = useNavigate();
@@ -168,29 +178,37 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
         ) : displayedTickets.length === 0 ? (
           <div className="history-tickets__empty">{search ? '无匹配工单' : '暂无历史工单'}</div>
         ) : (
-          displayedTickets.map((t) => (
+          displayedTickets.map((t) => {
+            const statusMeta = STATUS_META[t.status || ''] || { label: t.status || '', color: '#666', bg: '#f2f3f5' };
+            return (
             <div
-              key={t.session_id}
+              key={t.id}
               className="history-row"
               onClick={() => navigate(`/call/ticket/${t.session_id}`)}
             >
-              <span className="history-row__dot" style={{ background: PRIORITY_COLOR[t.priority || ''] || '#999' }} />
-              <span className="history-row__main">
-                <span className="history-row__title">
-                  {t.type && <span className="history-row__type">{TYPE_LABEL[t.type] || t.type}</span>}
-                  {t.title}
-                </span>
-                {t.description && <span className="history-row__summary">{t.description.slice(0, 40)}</span>}
-              </span>
-              <span className="history-row__status">{t.priority || ''}</span>
-              <span className="history-row__date">{(t.created_at || '').slice(0, 10)}</span>
-              <div className="history-row__actions" onClick={(e) => e.stopPropagation()}>
-                <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'urge'} onClick={(e) => handleUrge(e, t)}>催办</Button>
-                <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'report'} onClick={(e) => handleReport(e, t)}>上报</Button>
-                <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'cancel'} onClick={(e) => handleCancel(e, t)}>撤回</Button>
+              <div className="history-row__top">
+                <span className="history-row__dot" style={{ background: PRIORITY_COLOR[t.priority || ''] || '#999' }} />
+                {t.type && <span className="history-row__type">{TYPE_LABEL[t.type] || t.type}</span>}
+                <span className="history-row__title">{t.title}</span>
+                {t.priority && (
+                  <span className="history-row__priority" style={{ color: PRIORITY_COLOR[t.priority] || '#999' }}>{t.priority}</span>
+                )}
+                <span className="history-row__date">{(t.created_at || '').slice(0, 10)}</span>
+              </div>
+              {t.description && <span className="history-row__summary">{t.description}</span>}
+              <div className="history-row__bottom">
+                {statusMeta.label && (
+                  <span className="history-row__status" style={{ color: statusMeta.color, background: statusMeta.bg }}>{statusMeta.label}</span>
+                )}
+                <div className="history-row__actions" onClick={(e) => e.stopPropagation()}>
+                  <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'urge'} onClick={(e) => handleUrge(e, t)}>催办</Button>
+                  <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'report'} onClick={(e) => handleReport(e, t)}>上报</Button>
+                  <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'cancel'} onClick={(e) => handleCancel(e, t)}>撤回</Button>
+                </div>
               </div>
             </div>
-          ))
+            );
+          })
         )}
       </PullToRefresh>
     </div>
