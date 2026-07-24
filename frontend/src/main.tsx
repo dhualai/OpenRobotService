@@ -130,6 +130,7 @@ const ResourceManage = lazyImport(() => import('@/pages/admin/ResourceManage'));
 const DailyReportManage = lazyImport(() => import('@/pages/admin/DailyReportManage'));
 const DailySummaryAgent = lazyImport(() => import('@/pages/admin/DailySummaryAgent'));
 const WechatManage = lazyImport(() => import('@/pages/admin/WechatManage'));
+const UserProfile = lazyImport(() => import('@/pages/admin/UserProfile'));
 
 const router = createBrowserRouter([
   {
@@ -190,6 +191,7 @@ const router = createBrowserRouter([
                   { path: 'permissions', element: <PermissionManage /> },
                   { path: 'resources', element: <ResourceManage /> },
                   { path: 'wechat', element: <WechatManage /> },
+                  { path: 'profile', element: <UserProfile /> },
                 ],
               },
             ],

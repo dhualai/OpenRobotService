@@ -65,7 +65,12 @@ export default function Dashboard() {
 
   return (
     <div className="dashboard-page">
-      <Navbar title="后台管理" fixed />
+      <Navbar
+        title="后台管理"
+        right={<span style={{ fontSize: 20 }}>👤</span>}
+        onRightClick={() => navigate('/admin/profile')}
+        fixed
+      />
 
       <div style={{ padding: '16px 16px 32px' }}>
         {/* ============ 上：工单状态监测概览 ============ */}

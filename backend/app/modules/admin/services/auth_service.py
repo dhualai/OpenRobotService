@@ -89,5 +89,6 @@ class AuthService:
             "status": user.get('status', 'inactive'),
             "permissions": user['permissions'],
             "projectPermissions": user.get('projectPermissions', {}),
-            "roles": user['roles']
+            "roles": user['roles'],
+            "avatar_resource_id": user.get('avatar_resource_id')
         }

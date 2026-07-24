@@ -74,6 +74,7 @@ class IdentityService:
                     'name': getattr(db_user, 'name', None),
                     'status': getattr(db_user, 'status', 'inactive'),
                     'external_credentials': external_credentials,
+                    'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
                     'permissions': ["admin"] if db_user.username == 'admin' else ["user"]
                 }
             return None
@@ -100,6 +101,7 @@ class IdentityService:
                     'name': getattr(db_user, 'name', None),
                     'status': getattr(db_user, 'status', 'inactive'),
                     'external_credentials': external_credentials,
+                    'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
                     'permissions': ["admin"] if db_user.username == 'admin' else ["user"]
                 }
             return None

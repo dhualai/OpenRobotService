@@ -7,7 +7,7 @@
 - users / roles / permissions / projects
 - role_permissions / user_project_roles
 """
-from sqlalchemy import Column, String, Text, ForeignKey, Table
+from sqlalchemy import Column, String, Text, ForeignKey, Table, Integer
 
 from app.models.base import Base
 
@@ -59,3 +59,4 @@ class UserDB(Base):
     name = Column(String(128), nullable=True)
     status = Column(String(32), default="inactive", nullable=False)
     external_credentials = Column(Text, nullable=True)
+    avatar_resource_id = Column(Integer, nullable=True)

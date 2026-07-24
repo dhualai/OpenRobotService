@@ -14,6 +14,7 @@ export interface AuthState {
   isLoggedIn: boolean;
   username: string;
   name: string;
+  avatarResourceId: number | null;
   token: string | null;
   isLoading: boolean;
   isAdmin: boolean;
@@ -24,12 +25,14 @@ export interface AuthState {
   refreshAuthToken: () => Promise<boolean>;
   fetchUserDetails: (user: string, authToken: string) => Promise<boolean>;
   checkLoginStatus: () => void;
+  setProfile: (data: { name?: string; avatarResourceId?: number | null }) => void;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   isLoggedIn: false,
   username: '',
   name: '',
+  avatarResourceId: null,
   token: null,
   isLoading: true,
   isAdmin: false,
@@ -55,6 +58,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({
       token: null,
       username: '',
+      name: '',
+      avatarResourceId: null,
       isLoggedIn: false,
       isLoading: false,
       isAdmin: false,
@@ -97,21 +102,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const request = createRequest(API_CONFIG.ADMIN.BASE_URL, '用户中心');
     try {
       setApiToken(authToken);
-      const userData = await request<{ roles?: { project_backend?: string[] }, name?: string }>(
+      const userData = await request<{ roles?: { project_backend?: string[] }, name?: string, avatar_resource_id?: number | null }>(
         `/users/${user}/detail`
       );
       const projectRoles = userData.roles?.project_backend || [];
       const hasAdminRole = projectRoles.includes('admin');
-      set({ 
-        roles: (userData.roles as Record<string, string[]>) || null, 
+      set({
+        roles: (userData.roles as Record<string, string[]>) || null,
         isAdmin: hasAdminRole,
-        name: userData.name || ''
+        name: userData.name || '',
+        avatarResourceId: userData.avatar_resource_id ?? null,
       });
       return hasAdminRole;
     } catch {
       set({ isAdmin: false });
       return false;
     }
+  },
+
+  setProfile: ({ name, avatarResourceId }) => {
+    set((state) => ({
+      name: name !== undefined ? name : state.name,
+      avatarResourceId: avatarResourceId !== undefined ? avatarResourceId : state.avatarResourceId,
+    }));
   },
 
   checkLoginStatus: () => {
