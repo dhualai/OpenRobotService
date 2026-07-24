@@ -33,7 +33,7 @@ load_dotenv(_project_root / "backend" / ".env")
 
 from ai.agents.AiTaskPlatform.pipeline import AiTaskAgent
 from ai.agents.AiTaskPlatform.schemas import TaskContext, TaskAnalyzeRequest
-from ai.agents.AiTaskPlatform.prompts import USER_PROMPT_TEMPLATE, TASK_AGENT_SYSTEM_PROMPT
+from ai.agents.AiTaskPlatform.prompts import DIAGNOSE_USER_TEMPLATE, DIAGNOSE_SYSTEM_PROMPT
 
 # ============================================================
 # Mock 工单数据 — 模拟分配给当前工程师（你）的工单
