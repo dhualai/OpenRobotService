@@ -50,8 +50,9 @@ export function readAiSessionId(conv: { metadata_: string | null }): string {
 }
 
 /** 创建会话 */
-export const createConversation = (params: { title: string; scene: ChatScene; aiSessionId?: string }) =>
-  request<Conversation>('/conversations', {
+export const createConversation = (params: { title: string; scene: ChatScene; aiSessionId?: string }) => {
+  console.trace('[DEBUG] createConversation', params);
+  return request<Conversation>('/conversations', {
     method: 'POST',
     body: JSON.stringify({
       title: params.title,
@@ -61,10 +62,22 @@ export const createConversation = (params: { title: string; scene: ChatScene; ai
       metadata_: params.aiSessionId ? JSON.stringify({ ai_session_id: params.aiSessionId }) : null,
     }),
   });
+};
 
-/** 当前用户在指定场景下的会话列表（最新在前） */
+/** 当前用户在指定场景下的会话列表（最新在前）；skipCache 确保删除/新建后列表是最新的 */
 export const listMyConversations = (scene: ChatScene, limit = 5) =>
-  request<Conversation[]>(`/conversations?scene_type=${SCENE_TO_DB[scene]}&limit=${limit}`);
+  request<Conversation[]>(`/conversations?scene_type=${SCENE_TO_DB[scene]}&limit=${limit}`, { skipCache: true });
+
+/** 删除会话 */
+export const deleteConversation = (id: number) =>
+  request(`/conversations/${id}`, { method: 'DELETE' });
+
+/** 更新会话标题 */
+export const renameConversation = (id: number, title: string) =>
+  request<Conversation>(`/conversations/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ title }),
+  });
 
 /** 会话详情（含 messages） */
 export const getConversation = (id: number) => request<Conversation>(`/conversations/${id}`);

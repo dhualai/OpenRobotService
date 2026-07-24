@@ -2,6 +2,7 @@
 // 三视图（我要摇人 / 系统任务 / 后台管理）之间的联动状态都集中在这里，
 // 通过 goToTab 统一入口携带 payload，实现"用户交互驱动数据流转"。
 import { create } from 'zustand';
+import { listMyConversations, deleteConversation as apiDeleteConv, renameConversation as apiRenameConv, type Conversation } from '@/api/conversation';
 
 export type WorkbenchTab = 'call' | 'tasks' | 'admin';
 
@@ -48,6 +49,16 @@ export interface WorkbenchState {
   setChatContext: (ctx: ChatContext | null) => void;
   setSelectedTicketId: (id: string | null) => void;
   refreshTasks: () => void;
+
+  // 会话管理
+  conversations: Conversation[];
+  conversationId: number | null;
+  drawerOpen: boolean;
+  refreshConversations: () => Promise<void>;
+  setConversationId: (id: number | null) => void;
+  setDrawerOpen: (open: boolean) => void;
+  deleteConversation: (id: number) => Promise<boolean>;
+  renameConversation: (id: number, title: string) => Promise<void>;
 }
 
 export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
@@ -85,4 +96,32 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   setChatContext: (ctx) => set({ chatContext: ctx }),
   setSelectedTicketId: (id) => set({ selectedTicketId: id }),
   refreshTasks: () => set((s) => ({ tasksRefreshKey: s.tasksRefreshKey + 1 })),
+
+  // 会话管理
+  conversations: [],
+  conversationId: null,
+  drawerOpen: false,
+  refreshConversations: async () => {
+    try {
+      const list = await listMyConversations('call', 50);
+      set({ conversations: list });
+    } catch { /* ignore */ }
+  },
+  setConversationId: (id) => set({ conversationId: id }),
+  setDrawerOpen: (open) => set({ drawerOpen: open }),
+  deleteConversation: async (id) => {
+    let ok = false;
+    try { await apiDeleteConv(id); ok = true; } catch { /* ignore */ }
+    set({
+      conversations: get().conversations.filter((c) => c.id !== id),
+      conversationId: get().conversationId === id ? null : get().conversationId,
+    });
+    return ok;
+  },
+  renameConversation: async (id, title) => {
+    try {
+      const updated = await apiRenameConv(id, title);
+      set({ conversations: get().conversations.map((c) => (c.id === id ? updated : c)) });
+    } catch { /* ignore */ }
+  },
 }));

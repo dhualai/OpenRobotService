@@ -55,10 +55,19 @@ class TicketService:
             else:
                 processed_attachments.append(attachment)
         
+        processed_description, _ = ImageProcessor.process_content_for_storage(
+            ticket_data.description,
+            0,
+            0
+        )
+
+        user_map = await TicketService._get_user_map(token)
+        created_by_name = user_map.get(created_by, created_by)
+
         async with db.begin():
             db_ticket = Ticket(
                 title=ticket_data.title,
-                description="",
+                description=processed_description,
                 ticket_type=ticket_data.ticket_type,
                 priority=ticket_data.priority,
                 related_resource_id=ticket_data.related_resource_id,
@@ -68,28 +77,14 @@ class TicketService:
                 project_name=ticket_data.project_name,
                 project_id=ticket_data.project_id,
                 deadline_at=convert_to_shanghai_time(ticket_data.deadline_at),
-                assigned_to=ticket_data.assigned_to,
+                assigned_to=created_by,
                 customer=ticket_data.customer,
-                status=TicketStatus.PENDING
+                status=TicketStatus.NEW
             )
             db.add(db_ticket)
             await db.flush()
 
-            processed_description, _ = ImageProcessor.process_content_for_storage(
-                ticket_data.description,
-                db_ticket.id,
-                0
-            )
             ticket_id = db_ticket.id
-            comment = TicketComment(
-                ticket_id=db_ticket.id,
-                content=processed_description,
-                is_public=True,
-                created_by=created_by,
-                attachments=processed_attachments
-            )
-            db.add(comment)
-            db_ticket.reply_count = 1
 
         result = await db.execute(
             select(Ticket)
@@ -97,63 +92,13 @@ class TicketService:
             .options(joinedload(Ticket.comments))
         )
 
-        async def process_ai_assignment():
-            if not ticket_data.assigned_to:
-                try:
-                    from app.core.database import AsyncSessionLocal
-                    async with AsyncSessionLocal() as async_db:
-                        workload_query = await async_db.execute(
-                            select(Ticket.assigned_to, func.count(Ticket.id))
-                            .where(Ticket.status != TicketStatus.CLOSED)
-                            .group_by(Ticket.assigned_to)
-                        )
-                        workload_result = workload_query.all()
-                        
-                        workload_map = {}
-                        for user_id, count in workload_result:
-                            if user_id:
-                                user_map = await TicketService._get_user_map(token)
-                                user_name = user_map.get(user_id, user_id)
-                                workload_map[user_name] = count
-                        
-                        comments = []
-                        if processed_description:
-                            comments.append(processed_description)
-                        
-                        ai_result = await TicketService.get_ai_referee(
-                            title=ticket_data.title,
-                            comments=comments,
-                            workload_map=workload_map
-                        )
-                        
-                        if ai_result.get("code") == 200 and ai_result.get("data", {}).get("name"):
-                            ai_assigned_name = ai_result["data"]["name"]
-                            user_map = await TicketService._get_user_map(token)
-                            reverse_user_map = {v: k for k, v in user_map.items()}
-                            ai_assigned_id = reverse_user_map.get(ai_assigned_name)
-                            
-                            if ai_assigned_id:
-                                ticket = await TicketService.get_ticket_by_id(async_db, db_ticket.id)
-                                if ticket:
-                                    ticket.assigned_to = ai_assigned_id
-                                    ticket.status = TicketStatus.IN_PROGRESS
-                                    await async_db.commit()
-                                    await NotificationUtils.send_ticket_create_notification(
-                                        ticket_id, ticket_data.title, ticket_data.project_name, "AI自动派单", [ai_assigned_id], token)
-                except Exception as e:
-                    print(f"AI分配处理人失败: {str(e)}")
+        ticket = result.unique().scalar_one()
+        setattr(ticket, "created_by_name", created_by_name)
+        setattr(ticket, "reporter_name", created_by_name)
+        setattr(ticket, "assigned_to_name", created_by_name)
+        setattr(ticket, "assignee_name", created_by_name)
 
-        import asyncio
-        asyncio.create_task(process_ai_assignment())
-
-        user_map = await TicketService._get_user_map(token)
-        users = [ticket_data.assigned_to, ticket_data.customer] if ticket_data.assigned_to else [ticket_data.customer]
-
-        if ticket_data.assigned_to:
-            await NotificationUtils.send_ticket_create_notification(
-                ticket_id, ticket_data.title, ticket_data.project_name, user_map.get(created_by, created_by), users, token)
-
-        return result.unique().scalar_one()
+        return ticket
 
     @staticmethod
     def _apply_string_op(query, column, value: str, op: Optional[str], default_op: str = 'equals'):
@@ -314,8 +259,10 @@ class TicketService:
         
         for ticket in tickets:
             setattr(ticket, "created_by_name", user_map.get(ticket.created_by, ticket.created_by))
+            setattr(ticket, "reporter_name", user_map.get(ticket.created_by, ticket.created_by))
             if ticket.assigned_to:
                 setattr(ticket, "assigned_to_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
+                setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
             if ticket.customer:
                 setattr(ticket, "customer_name", user_map.get(ticket.customer, ticket.customer))
 
@@ -511,8 +458,10 @@ class TicketService:
         
         for ticket in tickets:
             setattr(ticket, "created_by_name", user_map.get(ticket.created_by, ticket.created_by))
+            setattr(ticket, "reporter_name", user_map.get(ticket.created_by, ticket.created_by))
             if ticket.assigned_to:
                 setattr(ticket, "assigned_to_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
+                setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
             if ticket.customer:
                 setattr(ticket, "customer_name", user_map.get(ticket.customer, ticket.customer))
 
@@ -549,6 +498,16 @@ class TicketService:
             await db.commit()
             result = await db.execute(query)
             ticket = result.scalar_one_or_none()
+        
+        if ticket:
+            user_map = await TicketService._get_user_map(token)
+            setattr(ticket, "created_by_name", user_map.get(ticket.created_by, ticket.created_by))
+            setattr(ticket, "reporter_name", user_map.get(ticket.created_by, ticket.created_by))
+            setattr(ticket, "reporter_name", user_map.get(ticket.created_by, ticket.created_by))
+            if ticket.assigned_to:
+                setattr(ticket, "assigned_to_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
+                setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
+                setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
         
         if ticket and load_comments:
             logger.info(f"开始加载评论: ticket_id={ticket_id}")
@@ -898,8 +857,10 @@ class TicketService:
         
         for ticket in tickets:
             setattr(ticket, "created_by_name", user_map.get(ticket.created_by, ticket.created_by))
+            setattr(ticket, "reporter_name", user_map.get(ticket.created_by, ticket.created_by))
             if ticket.assigned_to:
                 setattr(ticket, "assigned_to_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
+                setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
             if ticket.customer:
                 setattr(ticket, "customer_name", user_map.get(ticket.customer, ticket.customer))
 
