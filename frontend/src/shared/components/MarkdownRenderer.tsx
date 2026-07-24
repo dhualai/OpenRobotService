@@ -15,6 +15,7 @@ import { Component, useMemo, useState, useCallback, useEffect, useRef } from 're
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useAuthStore } from '@/stores/auth';
+import { ENV_PREFIX } from '@/config/api';
 
 // ---------------------------------------------------------------------------
 // 媒体 URL 检测正则
@@ -239,9 +240,11 @@ function AuthImage({ src, alt = '' }: AuthImageProps) {
     const needsAuth = isRelative || isSameOrigin;
     const fullUrl = isAbsolute
       ? src
-      : src.startsWith('/')
-        ? src
-        : `/${src}`;
+      : src.startsWith('/api/')
+        ? `${ENV_PREFIX}${src}`
+        : src.startsWith('/')
+          ? src
+          : `/${src}`;
     return { type: needsAuth ? 'auth' as const : 'direct' as const, url: src, fullUrl };
   }, [src]);
 
