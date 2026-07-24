@@ -197,20 +197,66 @@ async def upload_files(
     session_id: str = Form(..., description="会话 ID"),
     files: List[UploadFile] = File(..., description="附件文件"),
 ):
-    config = get_ai_config()
-    upload_root = Path(config.upload_dir)
-    session_dir = upload_root / session_id
-    session_dir.mkdir(parents=True, exist_ok=True)
+    from app.utils.minio_client import minio_client
+
+    # ── 1. 上传到 MinIO ──
     saved = []
+    raw_bytes: list[tuple] = []  # (filename, bytes) 暂存供 VLM
     for f in files:
-        file_path = session_dir / f.filename
         content = await f.read()
-        file_path.write_bytes(content)
-        saved.append({"filename": f.filename, "size": len(content), "path": str(file_path)})
+        raw_bytes.append((f.filename, content))
+        object_path = f"helpdesk/{session_id}/{f.filename}"
+        minio_client.upload_bytes(content, object_path, content_type=f.content_type)
+        url = minio_client.get_presigned_url(object_path, expires_minutes=1440)
+        saved.append({"filename": f.filename, "size": len(content), "path": url})
     filenames = "、".join(s["filename"] for s in saved)
+
+    # ── 2. 图片描述：VLM 看图层 → 注入会话上下文 ──
+    image_desc = ""
+    try:
+        from ai.agents.AiTaskPlatform.attachments.parser import _is_image_file
+        from ai.core import get_llm_client
+        import base64
+        _MIME_MAP = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                     ".png": "image/png", ".bmp": "image/bmp",
+                     ".gif": "image/gif", ".webp": "image/webp"}
+        data_uris = []
+        for fname, raw in raw_bytes:
+            if _is_image_file(fname, fname):
+                try:
+                    ext = Path(fname).suffix.lower()
+                    mime = _MIME_MAP.get(ext, "image/png")
+                    b64 = base64.b64encode(raw).decode()
+                    data_uris.append((fname, f"data:{mime};base64,{b64}"))
+                except Exception:
+                    pass
+        if data_uris:
+            llm = await get_llm_client()
+            names = ", ".join(n for n, _ in data_uris)
+            uris = [u for _, u in data_uris]
+            desc = await llm.complete_vision(
+                prompt=f"描述图片 {names}。这是 AGV/AMR 调度系统的截图。请描述画面内容、关键数据、异常信号和人工标注。用工程师口吻，客观描述，不下结论。",
+                images=uris,
+                system_prompt="你是 AGV/AMR 调度系统的操作专家。仔细看图，客观描述。不诊断，不下结论。",
+                max_tokens=400,
+                temperature=0.2,
+            )
+            image_desc = desc.strip()
+    except Exception as e:
+        logger.warning(f"上传图片描述失败: {e}")
+
+    # ── 3. 写入会话记忆 ──
     mgr = await get_memory_manager()
-    await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
-    await mgr.add_turn(session_id, "assistant", f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+    if image_desc:
+        await mgr.add_turn(session_id, "user",
+                           f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
+        await mgr.add_turn(session_id, "assistant",
+                           f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+    else:
+        await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
+        await mgr.add_turn(session_id, "assistant", f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+
+    # ── 4. agent_state.attachments + 追加到已提交工单 ──
     try:
         memory = await mgr.get_memory(session_id)
         state = memory.metadata.get("agent_state", {})
@@ -219,7 +265,6 @@ async def upload_files(
         memory.metadata["agent_state"] = state
         await mgr.save_memory(memory)
 
-        # 如果已有提交的工单，自动将附件追加到工单
         last_ticket = state.get("last_submitted_ticket", {})
         if last_ticket and last_ticket.get("ticket_id"):
             pipeline = await get_pipeline()
