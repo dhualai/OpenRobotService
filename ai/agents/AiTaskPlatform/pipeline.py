@@ -33,6 +33,8 @@ from ai.agents.AiTaskPlatform.prompts import (
     SUMMARIZE_SYSTEM_PROMPT,
     SUMMARIZE_FULL_TEMPLATE,
     SUMMARIZE_INCREMENTAL_TEMPLATE,
+    TASK_AGENT_SYSTEM_PROMPT,
+    USER_PROMPT_TEMPLATE,
 )
 
 logger = get_logger("TASK_AGENT")
@@ -352,6 +354,22 @@ class AiTaskAgent:
                     att_has_logs = att_has_logs or att_analysis.has_logs
                     if att_analysis.log_summary and not att_log_summary:
                         att_log_summary = att_analysis.log_summary[:500]
+
+                # 2c. 图片附件 → 视觉 LLM 分析（错误截图/故障现场/配置图等）
+                att_image_analysis = ""
+                try:
+                    from ai.agents.AiTaskPlatform.attachments.parser import analyze_images
+                    img_ctx = {
+                        "title": context.title, "description": context.description,
+                        "problem_summary": context.problem_summary,
+                        "hypotheses": context.hypotheses,
+                        "fault_code": context.fault_code, "robot_type": context.robot_type,
+                    }
+                    att_image_analysis = await analyze_images(context.attachments, img_ctx)
+                    if att_image_analysis:
+                        att_log_summary = (att_log_summary + "\n\n" + att_image_analysis).strip()
+                except Exception:
+                    pass
             else:
                 self._add_trace(self.NODE_ATTACHMENT, "skipped", elapsed_ms=0)
         except Exception as e:
@@ -414,24 +432,38 @@ class AiTaskAgent:
                         output={"response_chars": len(raw)},
                         elapsed_ms=round((time.perf_counter() - t4) * 1000))
 
-        # 5. 解析
+        # 5. 返回 Markdown 报告（无需 JSON 解析）
         t5 = time.perf_counter()
-        draft, parse_status = self._parse_solution_with_status(raw)
-        self._add_trace(self.NODE_PARSE, parse_status,
-                        output={"confidence": draft.confidence},
+        report_md = raw.strip()
+        # 从 Markdown 提取置信度（简单正则）
+        conf = 0.0
+        m = re.search(r'置信度[：:]\s*(\d+\.?\d*)', report_md)
+        if m:
+            try: conf = float(m.group(1))
+            except ValueError: pass
+        # 短预览：取第一个实质性段落（跳过标题和空白）
+        root_cause = report_md
+        for line in report_md.split('\n'):
+            stripped = line.strip()
+            if stripped and not stripped.startswith('#') and len(stripped) > 10:
+                root_cause = stripped[:200]
+                break
+        self._add_trace(self.NODE_PARSE, "ok",
+                        output={"report_chars": len(report_md), "confidence": conf},
                         elapsed_ms=round((time.perf_counter() - t5) * 1000))
 
         total_ms = round((time.perf_counter() - t0) * 1000)
 
         return {
             "task_id": task_id,
-            "root_cause_analysis": draft.root_cause_analysis,
-            "suggested_actions": draft.suggested_actions,
-            "references": draft.references,
-            "confidence": draft.confidence,
-            "needs_more_info": draft.needs_more_info,
+            "root_cause_analysis": root_cause,
+            "suggested_actions": [],
+            "references": [],
+            "confidence": conf,
+            "needs_more_info": conf < 0.5,
             "attachment_analysis": {"has_logs": att_has_logs, "summary": att_log_summary},
             "history_found": hist_found,
+            "report_md": report_md,
             "_trace": self._pop_trace(),
             "_total_ms": total_ms,
         }
@@ -458,15 +490,34 @@ class AiTaskAgent:
             discussion_lines.append(f"[{author}] {content_str}")
         discussion_history = "\n".join(discussion_lines) if discussion_lines else "（暂无讨论）"
 
-        # 3. 按需调日志子Agent / 附件分析 / 历史工单
+        # 3. 按需调附件分析 / 历史工单（日志和图片各自独立触发）
         facultative = ""
-        att_keywords = ["日志", "附件", "图片", "log", "file", "image", "zip"]
+        log_keywords = ["日志", "log", ".log", ".txt"]
+        img_keywords = ["图片", "截图", "照片", "image", "screenshot", "photo", "看下图", "看下图片"]
         hist_keywords = ["历史", "类似", "之前", "案例", "参考"]
 
-        if query and any(kw in query.lower() for kw in att_keywords):
-            try:
-                if ctx.attachments:
-                    # 3a. 日志文件 → LogSubAgent 多轮推理
+        if query and ctx.attachments:
+            q_lower = query.lower()
+
+            # ── 3a. 图片分析（VLM + 文本两阶段）──
+            if any(kw in q_lower for kw in img_keywords):
+                try:
+                    from ai.agents.AiTaskPlatform.attachments.parser import analyze_images
+                    img_ctx = {
+                        "title": ctx.title, "description": ctx.description,
+                        "problem_summary": ctx.problem_summary,
+                        "hypotheses": ctx.hypotheses,
+                        "fault_code": ctx.fault_code, "robot_type": ctx.robot_type,
+                    }
+                    img_result = await analyze_images(ctx.attachments, img_ctx)
+                    if img_result:
+                        facultative += f"\n{img_result}\n"
+                except Exception:
+                    pass
+
+            # ── 3b. 日志文件 → LogSubAgent 多轮推理 ──
+            if any(kw in q_lower for kw in log_keywords):
+                try:
                     log_paths = []
                     for att in ctx.attachments:
                         if not isinstance(att, dict):
@@ -489,18 +540,10 @@ class AiTaskAgent:
                         log_result = await sub.analyze(task_ctx, user_question=query)
                         if log_result.conclusion:
                             facultative += f"\n[日志子Agent分析（{log_result.queries_made}轮查询）]\n{log_result.to_prompt_text()}\n"
+                except Exception:
+                    pass
 
-                    # 3b. 非日志附件 → 旧 parser
-                    non_log = [a for a in ctx.attachments
-                               if not ((a.get("filename") or a.get("name") or "").lower().endswith((".log", ".txt")))]
-                    if non_log and not facultative:
-                        from ai.agents.AiTaskPlatform.attachments.parser import parse_attachments
-                        att = await parse_attachments(non_log)
-                        if att.has_logs:
-                            facultative += f"\n[附件分析]\n{att.log_summary[:500]}\n"
-            except Exception:
-                pass
-
+        # ── 3c. 历史工单检索 ──
         if query and any(kw in query.lower() for kw in hist_keywords):
             try:
                 query_text = self._build_query(ctx)
@@ -546,8 +589,8 @@ class AiTaskAgent:
         }
 
     @staticmethod
-    def _add_diagnosis_comment_short(task_id: int, content: str) -> bool:
-        """简短回复写入 task_comments（用于 @AI 讨论/摘要）"""
+    def _add_diagnosis_comment_short(task_id: int, content: str) -> Optional[int]:
+        """简短回复写入 task_comments（用于 @AI 讨论/摘要），返回 comment_id"""
         from app.models.task import TaskComment
         from app.core.database import SessionLocal
         db = SessionLocal()
@@ -556,7 +599,11 @@ class AiTaskAgent:
                                   created_by="AI任务助手", is_public=True)
             db.add(comment)
             db.commit()
-            return True
+            db.refresh(comment)
+            return comment.id
+        except Exception:
+            db.rollback()
+            return None
         finally:
             db.close()
 
@@ -691,6 +738,8 @@ class AiTaskAgent:
                 ctx.ruled_out = d.get("ruled_out") or []
                 ctx.collected_info = d.get("collected_info") or {}
                 ctx.diagnosis_rounds = d.get("diagnosis_rounds", 0)
+            else:
+                logger.warning(f"Task {task_id} not found in database (load_task_context_dict returned empty)")
         except Exception as e:
             logger.warning(f"Failed to load task {task_id}: {e}")
 
@@ -910,10 +959,26 @@ class AiTaskAgent:
                 ), "ok"
             except (json.JSONDecodeError, ValueError, TypeError):
                 pass
+        # 兜底：从 Markdown 提取 sections
+        root_cause = raw
+        actions: list = []
+        refs: list = []
+        conf = 0.0
+        m = re.search(r"根因分析[：:]\s*(.+?)(?=###\s|建议步骤|证据|$)", raw, re.DOTALL)
+        if m: root_cause = m.group(1).strip()[:800]
+        for m in re.finditer(r"\d+\.\s*\*?\*?\s*(.+?)(?=\n\d+\.|\n\n|###|$)", raw):
+            a = m.group(1).strip()
+            if a and len(a) > 5: actions.append(a[:200])
+        m = re.search(r"置信度[：:]\s*.?(\d+\.?\d*)", raw)
+        if m:
+            try: conf = float(m.group(1))
+            except ValueError: pass
         return SolutionDraft(
-            root_cause_analysis=raw.strip(),
-            suggested_actions=[], references=[],
-            confidence=0.0, needs_more_info=True,
+            root_cause_analysis=root_cause.strip() or raw.strip(),
+            suggested_actions=actions or [],
+            references=refs or [],
+            confidence=conf if not actions else max(conf, 0.5),
+            needs_more_info=conf < 0.5,
         ), "json_fail"
 
     @staticmethod

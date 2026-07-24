@@ -202,6 +202,13 @@ class ProjectResponse(ProjectBase):
     id: str
     status: Union[str, ProjectStatus] = ProjectStatus.PRE_SALES_SCHEME
     expected_trend: Optional[Union[str, ProjectStatus]] = None
+    category_basis: Union[str, ProjectCategory] = ProjectCategory.IMPORTANT_URGENT
+    project_type: Optional[Union[str, ProjectType]] = None
+    risk_carrying_type: Optional[Union[str, RiskCarryingType]] = None
+    project_region: Optional[Union[str, ProjectRegion]] = None
+    controller_vendor: Optional[Union[str, ControllerVendor]] = None
+    system_integration: Optional[List[Union[str, SystemIntegrationType]]] = None
+    server_deployment_status: Optional[Union[str, ServerDeploymentStatus]] = None
     
     class Config:
         from_attributes = True

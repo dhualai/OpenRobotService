@@ -1,5 +1,6 @@
 // 我要摇人 —— 全屏 AI 对话 + 左侧会话抽屉 + 右上角历史工单入口
 import { useState, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Navbar } from 'tdesign-mobile-react';
 
 import ChatPanel from '@/shared/components/ChatPanel';
@@ -12,6 +13,10 @@ const ACTIVE_STATUSES = ['new', 'in_progress', 'pending'];
 
 export default function CallView() {
   const [showHistory, setShowHistory] = useState(false);
+  const location = useLocation();
+  useEffect(() => {
+    if ((location.state as { showHistory?: boolean })?.showHistory) setShowHistory(true);
+  }, [location.state]);
   const [unread, setUnread] = useState(0);
   const { tasksRefreshKey, drawerOpen, setDrawerOpen } = useWorkbenchStore();
 
