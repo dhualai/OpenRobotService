@@ -1,9 +1,9 @@
 // 系统任务（供给视角）—— 上：AI 任务助手 / 下：工单卡片列表
 // 卡片样式与输入卡片审美一致（白底 + 阴影 + 圆角）。
 // 跨视图流转：消费 ticketDraft 自动建单；讨论按钮 → 带上下文跳回我要摇人。
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Navbar, Toast, Loading, Tag, Popup } from 'tdesign-mobile-react';
+import { Navbar, Toast, Loading, Tag, Popup, Button, Input, Textarea, Form, FormItem } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import Pagination from '@/shared/components/Pagination';
@@ -60,13 +60,78 @@ export default function TasksView() {
   const [total, setTotal] = useState(0);
   const [sortBy, setSortBy] = useState('priority');
   const [sortOrder, setSortOrder] = useState('desc');
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [creatingTask, setCreatingTask] = useState(false);
+  const [createForm, setCreateForm] = useState({
+    title: '',
+    description: '',
+    priority: 'medium',
+    ticket_type: 'problem',
+  });
 
-  const fetchTickets = useCallback(async () => {
-    setLoading(true);
+  const isFetchingRef = useRef(false);
+  const fetchTicketsRef = useRef<typeof fetchTickets>(async () => {});
+
+  const fetchTickets = useCallback(async (silent = false) => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    if (!silent) setLoading(true);
     try {
       let data;
       
-      if (relevanceFilter === 'related' && username) {
+      if (relevanceFilter === 'mine' && username) {
+        const filters: any[] = [];
+        
+        const workingStatusFilters = [
+          { field: 'status', op: 'eq', value: 'new' },
+          { field: 'status', op: 'eq', value: 'in_progress' },
+          { field: 'status', op: 'eq', value: 'pending' },
+        ];
+        
+        filters.push({
+          or: [
+            {
+              and: [
+                { or: workingStatusFilters },
+                { field: 'assignedTo', op: 'eq', value: username },
+              ],
+            },
+            {
+              and: [
+                { field: 'status', op: 'eq', value: 'resolved' },
+                { field: 'createdBy', op: 'eq', value: username },
+              ],
+            },
+          ],
+        });
+        
+        if (search) {
+          filters.push({ field: 'title', op: 'contains', value: search });
+        }
+        
+        if (statusFilter !== 'all') {
+          filters.push({ field: 'status', op: 'eq', value: statusFilter });
+        }
+        
+        if (priorityFilter !== 'all') {
+          filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
+        }
+        
+        const sorts = sortBy === 'priority' 
+          ? [] 
+          : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
+        
+        data = await request<{ items: Ticket[]; total: number }>('/filter', {
+          method: 'POST',
+          body: JSON.stringify({
+            filters,
+            sorts,
+            page,
+            size: pageSize,
+          }),
+          skipCache: true,
+        });
+      } else if (relevanceFilter === 'related' && username) {
         const filters: any[] = [];
         
         const userRelatedFilters = [
@@ -104,6 +169,7 @@ export default function TasksView() {
             page,
             size: pageSize,
           }),
+          skipCache: true,
         });
       } else {
         const params = new URLSearchParams({
@@ -115,11 +181,7 @@ export default function TasksView() {
           sort_order: sortOrder,
         });
         
-        if (relevanceFilter === 'mine' && username) {
-          params.set('assigned_to', username);
-        }
-        
-        data = await request<{ items: Ticket[]; total: number }>(`/?${params.toString()}`);
+        data = await request<{ items: Ticket[]; total: number }>(`/?${params.toString()}`, { skipCache: true });
       }
       
       let sortedItems = data.items || [];
@@ -133,14 +195,26 @@ export default function TasksView() {
       setTickets(sortedItems);
       setTotal(data.total || 0);
     } catch (err) {
-      Toast({ message: `加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      if (!silent) {
+        Toast({ message: `加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      }
     } finally {
-      setLoading(false);
+      isFetchingRef.current = false;
+      if (!silent) setLoading(false);
     }
   }, [page, search, statusFilter, priorityFilter, relevanceFilter, username, sortBy, sortOrder]);
 
+  fetchTicketsRef.current = fetchTickets;
+
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchTicketsRef.current(true);
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     const draft = consumeTicketDraft();
@@ -204,6 +278,33 @@ export default function TasksView() {
       parts.push(priorityOptions.find((o) => o.value === priorityFilter)?.label);
     }
     return parts.length > 0 ? parts.join(' · ') : '筛选';
+  };
+
+  const handleCreateTask = async () => {
+    if (!createForm.title.trim()) {
+      Toast({ message: '请输入工单标题', theme: 'warning' });
+      return;
+    }
+    if (!createForm.description.trim()) {
+      Toast({ message: '请输入工单描述', theme: 'warning' });
+      return;
+    }
+    setCreatingTask(true);
+    try {
+      await request<Ticket>('/', {
+        method: 'POST',
+        body: JSON.stringify(createForm),
+      });
+      Toast({ message: '工单创建成功', theme: 'success' });
+      setShowCreateModal(false);
+      setCreateForm({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
+      refreshTasks();
+      setPage(1);
+    } catch (err) {
+      Toast({ message: `创建失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setCreatingTask(false);
+    }
   };
 
   return (
@@ -392,6 +493,86 @@ export default function TasksView() {
               ))}
             </div>
           </div>
+        </div>
+      </Popup>
+
+      {/* 新建工单悬浮按钮 */}
+      <div className="tasks-view__fab">
+        <button
+          className={`tasks-view__fab-btn${creatingTask ? ' is-submitting' : ''}`}
+          onClick={() => setShowCreateModal(true)}
+          disabled={creatingTask}
+          aria-label="新建工单"
+        >
+          {creatingTask ? (
+            <span className="chat-ticket-spinner" />
+          ) : (
+            <svg viewBox="0 0 24 24" width="18" height="24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path fill="currentColor" d="M16 1H8V5H16V1Z" />
+              <path fill="currentColor" d="M6 3H3V23H13.8762C13.0139 21.897 12.5 20.5085 12.5 19C12.5 15.4101 15.4101 12.5 19 12.5C19.6978 12.5 20.3699 12.61 21 12.8135V3H18V7H6V3Z" />
+              <path fill="currentColor" d="M24 20H20V24H18V20H14V18H18V14H20V18H24V20Z" />
+            </svg>
+          )}
+        </button>
+        <span className="tasks-view__fab-label">{creatingTask ? '提交中…' : '新建工单'}</span>
+      </div>
+
+      {/* 新建工单表单弹窗 */}
+      <Popup visible={showCreateModal} onClose={() => setShowCreateModal(false)} placement="bottom" showOverlay>
+        <div className="tasks-create-modal">
+          <h4 className="tasks-create-modal__title">新建工单</h4>
+          <Form onSubmit={handleCreateTask}>
+            <FormItem label="标题">
+              <Input
+                value={createForm.title}
+                onChange={(v) => setCreateForm((p) => ({ ...p, title: String(v) }))}
+                placeholder="请输入工单标题"
+                clearable
+              />
+            </FormItem>
+            <FormItem label="类型">
+              <div className="tasks-create-modal__radio-group">
+                {Object.entries(TICKET_TYPE_DISPLAY_MAP).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`tasks-create-modal__radio-btn ${createForm.ticket_type === value ? 'is-active' : ''}`}
+                    onClick={() => setCreateForm((p) => ({ ...p, ticket_type: value }))}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </FormItem>
+            <FormItem label="优先级">
+              <div className="tasks-create-modal__radio-group">
+                {Object.entries(PRIORITY_DISPLAY_MAP).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`tasks-create-modal__radio-btn ${createForm.priority === value ? 'is-active' : ''}`}
+                    onClick={() => setCreateForm((p) => ({ ...p, priority: value }))}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </FormItem>
+            <FormItem label="描述">
+              <Textarea
+                value={createForm.description}
+                onChange={(v) => setCreateForm((p) => ({ ...p, description: String(v) }))}
+                placeholder="请描述问题详情…"
+                rows={4}
+              />
+            </FormItem>
+            <FormItem>
+              <div className="tasks-create-modal__actions">
+                <Button theme="default" block onClick={() => setShowCreateModal(false)}>取消</Button>
+                <Button theme="primary" block type="submit" loading={creatingTask}>创建工单</Button>
+              </div>
+            </FormItem>
+          </Form>
         </div>
       </Popup>
     </div>
