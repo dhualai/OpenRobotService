@@ -82,7 +82,7 @@ class AssignmentWorker:
                 )
 
     def _get_pending_tickets(self) -> list:
-        """从 MySQL 查询待指派工单（source='ai', status='pending', 未指派）"""
+        """从 MySQL 查询待指派工单（source='ai', status='new', 未指派）"""
         try:
             from app.models.task import Task
             from app.core.db import SessionLocal
@@ -93,7 +93,7 @@ class AssignmentWorker:
                     db.query(Task)
                     .filter(
                         Task.source == "ai",
-                        Task.status == "pending",
+                        Task.status == "new",
                         (Task.assigned_to == None) | (Task.assigned_to == ""),
                     )
                     .order_by(Task.created_at.asc())
