@@ -78,7 +78,8 @@ async def get_users(
                 roles=user_roles,
                 name=getattr(user_record, 'name', None),
                 status=getattr(user_record, 'status', 'inactive'),
-                external_credentials=external_credentials
+                external_credentials=external_credentials,
+                avatar_resource_id=getattr(user_record, 'avatar_resource_id', None)
             )
             
             result.append(user_response)
@@ -141,7 +142,8 @@ async def create_user(
         projectPermissions=created_user.get('projectPermissions', {}),
         name=created_user.get('name'),
         status=created_user.get('status', 'inactive'),
-        external_credentials=created_user.get('external_credentials', {})
+        external_credentials=created_user.get('external_credentials', {}),
+        avatar_resource_id=created_user.get('avatar_resource_id')
     )
 
 @router.get("/{username}/detail", response_model=UserDetail, summary="获取用户详细信息")
@@ -164,7 +166,8 @@ async def get_user_detail(
         projectPermissions=user.get('projectPermissions', {}),
         name=user.get('name'),
         status=user.get('status', 'inactive'),
-        external_credentials=user.get('external_credentials', {})
+        external_credentials=user.get('external_credentials', {}),
+        avatar_resource_id=user.get('avatar_resource_id')
     )
 
 @router.put("/{username}", response_model=User)
@@ -206,14 +209,16 @@ async def update_user(
             usp_password = external_creds["usp"]["password"]
             external_creds["usp"]["password"] = get_password_hash(usp_password)
         update_data["external_credentials"] = external_creds
-    
+    if user_data.avatar_resource_id is not None:
+        update_data["avatar_resource_id"] = user_data.avatar_resource_id
+
     success = db_manager.update_user(user['id'], **update_data)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="更新用户失败"
         )
-    
+
     updated_user = db_manager.get_user(username)
     return User(
         id=updated_user['id'],
@@ -222,7 +227,8 @@ async def update_user(
         roles=user.get('roles', {}),
         name=updated_user.get('name'),
         status=updated_user.get('status', 'inactive'),
-        external_credentials=updated_user.get('external_credentials', {})
+        external_credentials=updated_user.get('external_credentials', {}),
+        avatar_resource_id=updated_user.get('avatar_resource_id')
     )
 
 @router.delete("/{username}", response_model=SuccessResponse)
@@ -400,7 +406,8 @@ async def update_user_uspinfo(
         roles=user.get('roles', {}),
         name=updated_user.get('name'),
         status=updated_user.get('status', 'inactive'),
-        external_credentials=external_credentials
+        external_credentials=external_credentials,
+        avatar_resource_id=updated_user.get('avatar_resource_id')
     )
 
 @router.post("/project/assign-roles", response_model=SuccessResponse, summary="为项目批量分配用户角色和汇报人")

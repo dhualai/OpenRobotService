@@ -277,7 +277,8 @@ class PermissionService:
                 'projectPermissions': project_permissions_dict,
                 'name': getattr(db_user, 'name', None),
                 'status': getattr(db_user, 'status', 'inactive'),
-                'external_credentials': external_credentials
+                'external_credentials': external_credentials,
+                'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None)
             }
         finally:
             db.close()

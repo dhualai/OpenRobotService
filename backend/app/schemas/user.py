@@ -10,6 +10,7 @@ class UserBase(BaseModel):
     username: str
     name: Optional[str] = None
     status: Optional[str] = "inactive"
+    avatar_resource_id: Optional[int] = None
 
 class UserCreate(UserBase):
     user_id: Optional[str] = None
@@ -25,6 +26,7 @@ class UserUpdate(BaseModel):
     name: Optional[str] = None
     status: Optional[str] = None
     external_credentials: Optional[Dict[str, Dict[str, str]]] = None
+    avatar_resource_id: Optional[int] = None
 
 class UserInDB(UserBase):
     id: str
