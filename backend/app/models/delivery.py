@@ -106,6 +106,25 @@ class Project(Base):
     field_links = Column(String(1000), nullable=True, comment='字段链接(JSON格式)')
     category_basis = Column(String(20), nullable=False, default='重要紧急', comment='分类依据')
 
+    project_type = Column(String(20), nullable=True, comment='项目类型（企业微信项目类型字段原值）')
+    stage_notes = Column(String(4000), nullable=True, comment='生命周期各阶段补充说明(JSON格式，键为阶段名)')
+    risk_carrying_type = Column(String(20), nullable=True, comment='风险承接类型')
+    special_attention = Column(String(1000), nullable=True, comment='特别关注说明')
+    risk_task_description = Column(String(2000), nullable=True, comment='风险和任务描述')
+    management_strategy = Column(String(2000), nullable=True, comment='项目管理策略')
+    project_documents = Column(String(2000), nullable=True, comment='项目文档(JSON格式，[{name,resource_id,url}])')
+    sales = Column(String(50), nullable=True, comment='销售')
+    pre_sales = Column(String(50), nullable=True, comment='售前')
+    project_manager = Column(String(50), nullable=True, comment='项目经理')
+    field_engineer = Column(String(50), nullable=True, comment='实施工程师')
+
+    internal_code = Column(String(50), nullable=True, comment='内部编号')
+    project_region = Column(String(30), nullable=True, comment='项目区域/地点')
+    total_vehicle_count = Column(Integer, nullable=True, comment='总车数')
+    controller_vendor = Column(String(30), nullable=True, comment='控制器选择')
+    system_integration = Column(String(2000), nullable=True, comment='系统/外设对接(JSON数组)')
+    server_deployment_status = Column(String(30), nullable=True, comment='服务器部署')
+
     __table_args__ = (
         Index('idx_project_code', 'code', unique=True),
         Index('idx_project_status', 'status'),
