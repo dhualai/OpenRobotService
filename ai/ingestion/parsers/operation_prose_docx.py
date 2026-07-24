@@ -68,31 +68,39 @@ class OperationProseDocxIngester(BaseIngester[ProseSection]):
 
     def to_chunk(self, s: ProseSection) -> Chunk:
         title_path = f"{s.parent_title} > {s.title}" if s.parent_title else s.title
-        text = f"【车端实施手册】{title_path}\n{s.content}"
+
+        # 替换正文中的图片引用，去掉 media/ 前缀并补全 URL
+        from ai.config import get_ai_config
+        media_prefix = get_ai_config().media_url_prefix
+        content = s.content
+        image_urls: list = []
+        if s.images:
+            for img in s.images:
+                # img 格式: "media/image35.png" → 纯文件名
+                fname = img.split("/")[-1] if "/" in img else img
+                full_url = f"{media_prefix}/cheduan_doc/{fname}"
+                image_urls.append(full_url)
+                # 替换正文中 pandoc 生成的相对路径引用
+                content = content.replace(f"]({img})", f"]({full_url})")
+                content = content.replace(f"]({fname})", f"]({full_url})")
+
+        text = f"【车端实施手册】{title_path}\n{content}"
 
         payload: dict = {
             "title": s.title,
             "level": s.level,
             "parent_title": s.parent_title,
             "section_order": s.order,
-            "content": s.content,
+            "content": content,
             "images": s.images,
+            "image_urls": image_urls,
             "source": "车端实施文档.docx",
         }
 
-        # 图片 URL 引用嵌入检索文本（帮助 LLM 理解内容含图）
-        if s.images:
-            from ai.config import get_ai_config
-            media_prefix = get_ai_config().media_url_prefix
-            img_refs = " ".join(
-                f"![]({media_prefix}/cheduan_doc/{img})"
-                for img in s.images
-            )
+        # 图片 URL 显式列出（帮助 LLM 发现）
+        if image_urls:
+            img_refs = " ".join(f"![]({url})" for url in image_urls)
             text += f"\n{img_refs}"
-            payload["image_urls"] = [
-                f"{media_prefix}/cheduan_doc/{img}"
-                for img in s.images
-            ]
 
         return Chunk(
             id=self.stable_id("cheduan_manual", str(s.order), s.title[:60]),
