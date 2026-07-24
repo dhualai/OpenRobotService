@@ -406,7 +406,7 @@ async def delete_comment(
 @router.patch("/{task_id}/status", response_model=TicketResponse)
 async def update_task_status(
     task_id: int,
-    status: str = Body(..., description="任务状态"),
+    status: str = Body(..., embed=True, description="任务状态"),
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
