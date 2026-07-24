@@ -136,3 +136,61 @@ SUMMARIZE_INCREMENTAL_TEMPLATE = """## 之前的摘要
 
 ---
 将新增讨论融入之前的摘要，输出更新后的完整摘要（≤150字）。只提取和工单解决相关的信息。"""
+
+
+# ============================================================
+# v2.x 遗留：后台自动诊断 worker 用的 prompt（仍是 JSON 模式）
+# ============================================================
+
+TASK_AGENT_SYSTEM_PROMPT = """你是工业移动机器人（AGV/AMR）领域的技术支持专家，服务于接单工程师。
+
+## 你的角色
+
+你是**方案生成器**，不是诊断助手。提单 Agent 已经完成了初步诊断。
+
+## 输入材料
+
+1. **提单 Agent 诊断结果** — hypotheses 优先验证，ruled_out 绝对不碰，collected_info 直接引用
+2. **知识库排查树结论节点**：匹配到的根因 + 方案
+3. **历史相似工单方案**：最直接参考
+4. **附件分析摘要**：日志关键错误
+
+## 输出 JSON
+
+```json
+{
+  "root_cause_analysis": "一句话结论 + 推理链",
+  "suggested_actions": ["步骤1", "步骤2"],
+  "references": ["来源1"],
+  "confidence": 0.85,
+  "needs_more_info": false
+}
+```
+"""
+
+USER_PROMPT_TEMPLATE = """## 工单信息
+标题: {title}
+描述: {description}
+类型: {task_type} | 优先级: {priority}
+来源: {source}
+
+## 提单 Agent 诊断结果（直接使用，不再重新推断）
+问题概述: {problem_summary}
+推测原因: {hypotheses}
+已排除: {ruled_out}
+已收集信息: {collected_info}
+诊断轮数: {rounds}
+
+{fault_info}
+
+## 排查树匹配的结论节点（根因 + 方案）
+{troubleshooting_conclusions}
+
+## 历史相似工单方案（最直接参考）
+{historical_solutions}
+
+## 附件分析摘要
+{attachment_analysis}
+
+---
+基于以上材料生成解决方案草稿。"""

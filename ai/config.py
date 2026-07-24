@@ -75,6 +75,13 @@ class AIConfig(BaseModel):
     # ========== 诊断服务 ==========
     diagnosis_scan_interval: int = Field(default=60, description="诊断服务扫描新工单间隔（秒）")
 
+    # ========== MinIO 对象存储（附件图片读取）==========
+    minio_endpoint: str = Field(default="localhost:9000")
+    minio_access_key: str = Field(default="")
+    minio_secret_key: str = Field(default="")
+    minio_bucket: str = Field(default="helpdesk")
+    minio_secure: bool = Field(default=False)
+
     # ========== 企业微信 ==========
     wecom_corpid: str = Field(default="", description="企业微信 企业ID")
     wecom_corpsecret: str = Field(default="", description="企业微信 应用Secret")
@@ -274,6 +281,12 @@ def get_ai_config() -> AIConfig:
         vision_api_key=os.getenv("VISION_API_KEY", ""),
         vision_base_url=os.getenv("VISION_BASE_URL", ""),
         vision_model=os.getenv("VISION_MODEL", "gpt-4o"),
+
+        minio_endpoint=os.getenv("MINIO_ENDPOINT", "localhost:9000"),
+        minio_access_key=os.getenv("MINIO_ACCESS_KEY", ""),
+        minio_secret_key=os.getenv("MINIO_SECRET_KEY", ""),
+        minio_bucket=os.getenv("MINIO_BUCKET", "helpdesk"),
+        minio_secure=os.getenv("MINIO_SECURE", "false").lower() in ("1", "true", "yes"),
         # Qdrant
         qdrant_host=os.getenv("QDRANT_HOST", "localhost"),
         qdrant_port=int(os.getenv("QDRANT_PORT", "6333")),

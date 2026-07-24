@@ -256,6 +256,7 @@ async def _read_content(att: dict) -> str:
     path = att.get("path") or att.get("url", "")
     if not path:
         return ""
+    path = path.replace("\\", "/")
 
     try:
         if path.startswith("http://") or path.startswith("https://"):
@@ -280,18 +281,24 @@ async def _read_content(att: dict) -> str:
 
 
 async def _read_bytes(att: dict) -> Optional[bytes]:
-    """读取附件为二进制（用于 ZIP 解压等）。"""
+    """读取附件为二进制（用于 ZIP 解压/图片分析等）。
+
+    支持来源：HTTP URL → MinIO 对象路径 → 本地绝对路径 → 项目相对路径
+    """
     path = att.get("path") or att.get("url", "")
     if not path:
         return None
+    path = path.replace("\\", "/")  # Windows → Linux 兼容
 
     try:
+        # 1. HTTP(S) URL — 直读
         if path.startswith("http://") or path.startswith("https://"):
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
                 resp = await client.get(path)
                 if resp.status_code == 200:
                     return resp.content
 
+        # 2. 本地文件
         local = Path(path)
         if local.is_absolute() and local.exists():
             return local.read_bytes()
@@ -300,6 +307,17 @@ async def _read_bytes(att: dict) -> Optional[bytes]:
         project_local = _Path(__file__).resolve().parent.parent.parent / path
         if project_local.exists():
             return project_local.read_bytes()
+
+        # 3. MinIO 对象路径（与 backend 共用 minio_client，自动走 nginx /minio-api/ 代理）
+        if not path.startswith(("http://", "https://")) and "/" in path:
+            try:
+                from app.utils.minio_client import minio_client
+                bucket = path.split("/")[0]
+                object_name = "/".join(path.split("/")[1:])
+                data = minio_client.client.get_object(bucket, object_name)
+                return data.read()
+            except Exception as e:
+                logger.warning(f"MinIO 读取失败 {path}: {e}")
 
     except Exception as e:
         logger.warning(f"Failed to read bytes {path}: {e}")

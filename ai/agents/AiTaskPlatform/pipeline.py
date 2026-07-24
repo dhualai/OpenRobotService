@@ -33,6 +33,8 @@ from ai.agents.AiTaskPlatform.prompts import (
     SUMMARIZE_SYSTEM_PROMPT,
     SUMMARIZE_FULL_TEMPLATE,
     SUMMARIZE_INCREMENTAL_TEMPLATE,
+    TASK_AGENT_SYSTEM_PROMPT,
+    USER_PROMPT_TEMPLATE,
 )
 
 logger = get_logger("TASK_AGENT")
