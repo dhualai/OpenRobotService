@@ -1526,6 +1526,10 @@ html, body, #root {
   flex-wrap: wrap;
   width: 100%;
 }
+.detail-actions__btns .t-button { color: #1a1a1a; font-size: 12px; font-weight: 400; background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+.detail-actions__btns .t-button .t-icon,
+.detail-actions__btns .t-button svg { font-size: 12px; width: 12px; height: 12px; }
+}
 .detail-comment { padding: 10px 0; border-bottom: 1px solid #f3f3f3; }
 .detail-comment:last-child { border-bottom: none; }
 .detail-comment__head {
