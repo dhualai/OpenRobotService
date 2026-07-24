@@ -47,7 +47,7 @@ export default function TasksView() {
     tasksRefreshKey, ticketDraft, consumeTicketDraft, refreshTasks,
   } = useWorkbenchStore();
 
-  const { name: currentUserName } = useAuthStore();
+  const { username } = useAuthStore();
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(false);
@@ -64,20 +64,64 @@ export default function TasksView() {
   const fetchTickets = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({
-        page: String(page), size: String(pageSize),
-        ...(search && { keyword: search }),
-        ...(statusFilter !== 'all' && { status: statusFilter }),
-        ...(priorityFilter !== 'all' && { priority: priorityFilter }),
-        sort_by: sortBy,
-        sort_order: sortOrder,
-      });
+      let data;
       
-      if (relevanceFilter === 'mine' && currentUserName) {
-        params.set('assigned_to_name', currentUserName);
+      if (relevanceFilter === 'related' && username) {
+        const filters: any[] = [];
+        
+        const userRelatedFilters = [
+          { field: 'createdBy', op: 'eq', value: username },
+          { field: 'createdByName', op: 'contains', value: username },
+          { field: 'assignedTo', op: 'eq', value: username },
+          { field: 'assignedToName', op: 'contains', value: username },
+          { field: 'customer', op: 'eq', value: username },
+          { field: 'customerName', op: 'contains', value: username },
+        ];
+        
+        filters.push({ or: userRelatedFilters });
+        
+        if (search) {
+          filters.push({ field: 'title', op: 'contains', value: search });
+        }
+        
+        if (statusFilter !== 'all') {
+          filters.push({ field: 'status', op: 'eq', value: statusFilter });
+        }
+        
+        if (priorityFilter !== 'all') {
+          filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
+        }
+        
+        const sorts = sortBy === 'priority' 
+          ? [] 
+          : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
+        
+        data = await request<{ items: Ticket[]; total: number }>('/filter', {
+          method: 'POST',
+          body: JSON.stringify({
+            filters,
+            sorts,
+            page,
+            size: pageSize,
+          }),
+        });
+      } else {
+        const params = new URLSearchParams({
+          page: String(page), size: String(pageSize),
+          ...(search && { keyword: search }),
+          ...(statusFilter !== 'all' && { status: statusFilter }),
+          ...(priorityFilter !== 'all' && { priority: priorityFilter }),
+          sort_by: sortBy,
+          sort_order: sortOrder,
+        });
+        
+        if (relevanceFilter === 'mine' && username) {
+          params.set('assigned_to', username);
+        }
+        
+        data = await request<{ items: Ticket[]; total: number }>(`/?${params.toString()}`);
       }
       
-      const data = await request<{ items: Ticket[]; total: number }>(`/?${params.toString()}`);
       let sortedItems = data.items || [];
       if (sortBy === 'priority') {
         sortedItems = [...sortedItems].sort((a, b) => {
@@ -93,7 +137,7 @@ export default function TasksView() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, statusFilter, priorityFilter, relevanceFilter, currentUserName, sortBy, sortOrder]);
+  }, [page, search, statusFilter, priorityFilter, relevanceFilter, username, sortBy, sortOrder]);
 
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
