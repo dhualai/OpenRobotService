@@ -15,6 +15,11 @@ import { checkUrlTokens } from '@/shared/utils/url';
 // 再恢复登录态，带 token 的直链即可直接登录。
 checkUrlTokens();
 useAuthStore.getState().checkLoginStatus();
+// 恢复登录状态后，立即获取用户详情（包括 name）
+const authState = useAuthStore.getState();
+if (authState.isLoggedIn && authState.username && !authState.name) {
+  authState.fetchUserDetails(authState.username, authState.token || '').catch(() => {});
+}
 
 // 懒加载兜底：部署后旧 chunk hash 失效，import() 会 reject。
 //   - lazyImport：失败时自动刷新页面（取最新 index.html，含新 chunk 引用），

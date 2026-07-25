@@ -67,10 +67,12 @@ const SCENE_CONFIG: Record<ChatScene, {
 
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
   const navigate = useNavigate();
-  const { token, username } = useAuthStore();
+  const { token, name, username } = useAuthStore();
   const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, renameConversation, refreshConversations } = useWorkbenchStore();
   const isCall = scene === 'call';
   const cfg = SCENE_CONFIG[scene];
+
+  console.log('[ChatPanel] 用户信息: name="', name, '", username="', username, '", token=', !!token);
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -623,7 +625,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             <div className="chat-view__empty-emoji">{cfg.emptyEmoji}</div>
             <p>{cfg.emptyTitle}</p>
             <p className="chat-view__empty-sub">
-              {isCall ? `你好${username ? `，${username}` : ''}，描述你的问题，AI 先帮你初步诊断。` : '关于系统任务的问题，可以随时问我。'}
+              {isCall ? `你好${name || username ? `，${name || username}` : ''}，描述你的问题，AI 先帮你初步诊断。` : '关于系统任务的问题，可以随时问我。'}
             </p>
           </div>
         )}
