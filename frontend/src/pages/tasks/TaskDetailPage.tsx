@@ -31,7 +31,7 @@ export default function TaskDetailPage() {
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
 
   const { refreshTasks, setChatContext, goToTab } = useWorkbenchStore();
-  const currentUsername = useAuthStore((s) => s.username);
+  const { username, name } = useAuthStore();
 
   const [detail, setDetail] = useState<Ticket | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -166,9 +166,14 @@ export default function TaskDetailPage() {
         method: 'POST',
         body: JSON.stringify({ content: commentText.trim(), is_public: true }),
       });
+      const enrichedComment = {
+        ...newComment,
+        created_by_name: newComment.created_by_name || name || newComment.created_by || '未知用户',
+        created_by: newComment.created_by || username,
+      };
       setDetail((prev) => {
         if (!prev) return prev;
-        const updatedComments = prev.comments ? [...prev.comments, newComment] : [newComment];
+        const updatedComments = prev.comments ? [...prev.comments, enrichedComment] : [enrichedComment];
         return { ...prev, comments: updatedComments };
       });
       setCommentText('');
@@ -385,8 +390,9 @@ export default function TaskDetailPage() {
             {detail.comments && detail.comments.length > 0 ? (
               detail.comments.map((c) => {
                 const authorName = c.created_by_name || c.created_by || '未知用户';
-                const isCurrentUser = (c.created_by?.toLowerCase() === currentUsername?.toLowerCase()) ||
-                                     (c.created_by_name?.toLowerCase() === currentUsername?.toLowerCase());
+                const isCurrentUser = (c.created_by?.toLowerCase() === username?.toLowerCase()) ||
+                                     (c.created_by_name?.toLowerCase() === username?.toLowerCase()) ||
+                                     (c.created_by_name?.toLowerCase() === name?.toLowerCase());
                 return (
                   <div key={c.id} className={`detail-chat-row ${isCurrentUser ? 'is-right' : ''}`}>
                     <div className={`detail-chat-bubble ${isCurrentUser ? 'is-self' : ''}`}>
