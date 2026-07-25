@@ -39,6 +39,8 @@ export default function TaskDetailPage() {
   const [editForm, setEditForm] = useState({ title: '', description: '' });
   const [escalateUser, setEscalateUser] = useState<UserItem | null>(null);
   const [showEscalatePopup, setShowEscalatePopup] = useState(false);
+  const [resumeUser, setResumeUser] = useState<UserItem | null>(null);
+  const [showResumePopup, setShowResumePopup] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
@@ -55,7 +57,7 @@ export default function TaskDetailPage() {
   useEffect(() => {
     if (!detailId) { setDetail(null); return; }
     setDetailLoading(true);
-    request<Ticket>(`/${detailId}?load_comments=true`)
+    request<Ticket>(`/${detailId}?load_comments=true`, { skipCache: true })
       .then((t) => {
         setDetail(t);
         // 后端 summarize 写入 task_comments，前端从评论中提取最新摘要展示
@@ -77,24 +79,26 @@ export default function TaskDetailPage() {
 
 
 
-  const getActionButton = () => {
+  const getActionButtons = () => {
     const status = detail?.status?.toLowerCase();
-    if (!status) return null;
+    if (!status) return [];
     
-    const actions: Record<string, { label: string; nextStatus: string; theme: string }> = {
-      new: { label: '开始处理', nextStatus: 'in_progress', theme: 'primary' },
-      in_progress: { label: '处理完成', nextStatus: 'resolved', theme: 'success' },
-      pending: { label: '继续处理', nextStatus: 'in_progress', theme: 'primary' },
-      resolved: { label: '确认关闭', nextStatus: 'closed', theme: 'default' },
-      canceled: { label: '重新打开', nextStatus: 'new', theme: 'primary' },
+    const actions: Record<string, { label: string; nextStatus: string; theme: string; actionType?: string; customStyle?: Record<string, string> }[]> = {
+      new: [{ label: '开始处理', nextStatus: 'in_progress', theme: 'primary' }],
+      in_progress: [
+        { label: '暂停任务', nextStatus: 'pending', theme: 'warning', customStyle: { backgroundColor: '#faad14', color: '#fff', borderRadius: '10px', border: 'none' } },
+        { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: { backgroundColor: '#52c41a', color: '#fff', borderRadius: '10px', border: 'none' } },
+      ],
+      pending: [{ label: '继续处理', nextStatus: 'in_progress', theme: 'primary', actionType: 'resume' }],
+      resolved: [{ label: '确认关闭', nextStatus: 'closed', theme: 'default' }],
+      canceled: [{ label: '重新打开', nextStatus: 'new', theme: 'primary' }],
     };
     
-    return actions[status] || null;
+    return actions[status] || [];
   };
 
-  const handleStatusChange = async () => {
-    const action = getActionButton();
-    if (!action || !detail) return;
+  const handleStatusChange = async (action: { nextStatus: string }) => {
+    if (!detail) return;
     
     try {
       const updated = await request<Ticket>(`/${detail.id}/status`, {
@@ -102,9 +106,39 @@ export default function TaskDetailPage() {
         body: JSON.stringify({ status: action.nextStatus }),
       });
       setDetail(updated);
+      refreshTasks();
       Toast({ message: `状态已更新为${STATUS_DISPLAY_MAP[action.nextStatus] || action.nextStatus}`, theme: 'success' });
     } catch (err) {
       Toast({ message: `状态更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
+
+  const handleResume = async () => {
+    if (!detail) return;
+    
+    try {
+      await request<Ticket>(`/${detail.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'in_progress' }),
+      });
+
+      if (resumeUser) {
+        await request(`/${detail.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({ assigned_to: resumeUser.id }),
+        });
+      }
+
+      const refreshed = await request<Ticket>(`/${detail.id}?load_comments=true`, { skipCache: true });
+      setDetail(refreshed);
+      refreshTasks();
+      
+      const target = resumeUser?.name || resumeUser?.username || '原处理人';
+      Toast({ message: `已继续处理，处理人${resumeUser ? `变更为 ${target}` : '保持不变'}`, theme: 'success' });
+      setResumeUser(null);
+      setShowResumePopup(false);
+    } catch (err) {
+      Toast({ message: `继续处理失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
   };
 
@@ -115,18 +149,25 @@ export default function TaskDetailPage() {
     }
     const target = escalateUser.name || escalateUser.username;
     try {
-      await request('/', {
-        method: 'POST',
+      await request(`/${t.id}`, {
+        method: 'PUT',
         body: JSON.stringify({
-          title: `【升级→${target}】${t.title}`,
-          description: `原工单 #${t.id}「${t.title}」申请升级给 ${target}，请处理。\n\n原始描述：${t.description || '无'}`,
-          ticket_type: t.ticket_type || 'problem',
-          priority: 'urgent',
-          related_resource_id: Number(t.id),
           assigned_to: escalateUser.id,
         }),
       });
-      Toast({ message: `已升级，已指派给 ${target}`, theme: 'success' });
+
+      await request(`/${t.id}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({
+          content: `工单已升级，处理人变更为 ${target}`,
+          is_public: true,
+        }),
+      });
+
+      const refreshed = await request<Ticket>(`/${t.id}?load_comments=true`, { skipCache: true });
+      setDetail(refreshed);
+      refreshTasks();
+      Toast({ message: `已升级，处理人已变更为 ${target}`, theme: 'success' });
       setEscalateUser(null);
       setShowEscalatePopup(false);
     } catch (err) {
@@ -297,7 +338,7 @@ export default function TaskDetailPage() {
   // ── 重新加载（AI 讨论后刷新评论） ──
   const loadDetail = () => {
     if (!detailId) return;
-    request<Ticket>(`/${detailId}?load_comments=true`)
+    request<Ticket>(`/${detailId}?load_comments=true`, { skipCache: true })
       .then((t) => {
         setDetail(t);
         const aiComments = (t.comments || []).filter(
@@ -331,19 +372,26 @@ export default function TaskDetailPage() {
               <Tag theme="primary">{TICKET_TYPE_DISPLAY_MAP[detail.ticket_type] || detail.ticket_type || '其他'}</Tag>
               <span className="detail-card__id" onClick={() => copyId(detail.id)}>#${detail.id}</span>
             </div>
-            {(() => {
-              const action = getActionButton();
-              return action ? (
+            <div className="detail-card__action-btns">
+              {getActionButtons().map((action, index) => (
                 <Button 
+                  key={index}
                   size="small" 
                   theme={action.theme as any} 
-                  onClick={handleStatusChange}
+                  onClick={() => {
+                    if (action.actionType === 'resume') {
+                      setShowResumePopup(true);
+                    } else {
+                      handleStatusChange(action);
+                    }
+                  }}
                   className="detail-card__action-btn"
+                  style={action.customStyle}
                 >
                   {action.label}
                 </Button>
-              ) : null;
-            })()}
+              ))}
+            </div>
           </div>
           <h2 className="detail-card__title">{detail.title}</h2>
           <DetailRow label="创建时间" value={formatDateTime(detail.created_at)} />
@@ -459,10 +507,22 @@ export default function TaskDetailPage() {
         <div className="ticket-edit">
           <h4>升级上报</h4>
           <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>请选择升级对象</p>
-          <UserSelect value={escalateUser?.id ?? null} onChange={setEscalateUser} />
+          <UserSelect value={escalateUser?.id ?? null} onChange={setEscalateUser} title="选择升级对象" />
           <div className="ticket-edit__btns">
             <Button theme="default" onClick={() => setShowEscalatePopup(false)}>取消</Button>
             <Button theme="danger" onClick={() => handleEscalate(detail!)}>确认升级</Button>
+          </div>
+        </div>
+      </Popup>
+
+      <Popup visible={showResumePopup} onClose={() => { setShowResumePopup(false); setResumeUser(null); }} placement="bottom" showOverlay>
+        <div className="ticket-edit">
+          <h4>继续处理</h4>
+          <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>选择新的受理人（可不选，直接确认则保持原处理人）</p>
+          <UserSelect value={resumeUser?.id ?? null} onChange={setResumeUser} placeholder="请选择受理人（可选）" title="选择受理人" />
+          <div className="ticket-edit__btns">
+            <Button theme="default" onClick={() => { setShowResumePopup(false); setResumeUser(null); }}>取消</Button>
+            <Button theme="primary" onClick={handleResume}>确认继续</Button>
           </div>
         </div>
       </Popup>

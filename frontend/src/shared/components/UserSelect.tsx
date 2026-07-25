@@ -10,13 +10,14 @@ interface Props {
   value?: string | null;
   onChange?: (user: UserItem) => void;
   placeholder?: string;
+  title?: string;
 }
 
 // 模块级缓存，5 分钟内复用，减少重复请求
 let userCache: UserItem[] | null = null;
 let userCacheTs = 0;
 
-export default function UserSelect({ value, onChange, placeholder = '请选择升级对象' }: Props) {
+export default function UserSelect({ value, onChange, placeholder = '请选择升级对象', title = '选择升级对象' }: Props) {
   const [visible, setVisible] = useState(false);
   const [users, setUsers] = useState<UserItem[]>(userCache || []);
   const [loading, setLoading] = useState(false);
@@ -111,7 +112,7 @@ export default function UserSelect({ value, onChange, placeholder = '请选择�
           <div className="user-select__mask" onClick={() => setVisible(false)} />
           <div className="user-select__panel">
             <div className="user-select__panel-header">
-              <span>选择升级对象</span>
+              <span>{title}</span>
               <span className="user-select__close" onClick={() => setVisible(false)}>✕</span>
             </div>
             <input
