@@ -59,11 +59,17 @@ def allure_flush():
 
 @pytest.fixture
 async def mock_api_client():
+    from automation.config.models import ApiConfig
+    from automation.clients.api_client import ApiClient
     import httpx
     from automation.mocks.backend_mock import create_mock_transport
     transport = create_mock_transport()
-    async with httpx.AsyncClient(transport=transport, base_url='http://test') as client:
-        yield client
+    config = ApiConfig(base_url="http://test")
+    client = ApiClient(config=config)
+    client._client = httpx.AsyncClient(transport=transport, base_url=config.base_url)
+    client._connected = True
+    yield client
+    await client.close()
 
 
 @pytest.fixture
