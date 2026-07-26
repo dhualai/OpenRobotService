@@ -1,4 +1,4 @@
-﻿import os
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -56,3 +56,4 @@ class ConfigLoader:
                 f'Valid environments: {valid}'
             )
         return path
+

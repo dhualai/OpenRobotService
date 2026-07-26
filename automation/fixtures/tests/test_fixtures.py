@@ -1,4 +1,4 @@
-﻿"""Tests for shared fixture definitions — tests fixture logic without calling fixtures directly."""
+"""Tests for shared fixture definitions — tests fixture logic without calling fixtures directly."""
 
 import pytest
 

@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 import logging
 
 from automation.logger import LogConfig, get_logger, setup_logging

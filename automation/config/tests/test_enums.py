@@ -1,4 +1,4 @@
-﻿'''Tests for config.enums module.'''
+'''Tests for config.enums module.'''
 
 import pytest
 from automation.config.enums import ConfigEnv

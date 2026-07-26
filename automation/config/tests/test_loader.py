@@ -1,4 +1,4 @@
-﻿'''Tests for config.loader module.'''
+'''Tests for config.loader module.'''
 
 import os
 from pathlib import Path

@@ -1,9 +1,10 @@
-﻿from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from automation.config import load_config
 from automation.config.models import QdrantConfig
-from automation.clients.base import BaseClient, sync_retry, RetryConfig
-from automation.clients.exceptions import ConnectionError, QueryError
+from automation.clients.base import BaseClient
+from automation.utils.retry import sync_retry, RetryConfig
+from automation.clients.exceptions import ClientConnectionError, QueryError
 
 
 class QdrantClient(BaseClient):
@@ -58,11 +59,11 @@ class QdrantClient(BaseClient):
             limit: Maximum number of results
 
         Raises:
-            ConnectionError: If not connected
+            ClientConnectionError: If not connected
             QueryError: If the search fails
         """
         if not self._client:
-            raise ConnectionError("Qdrant not connected", host=self._cfg.host, port=self._cfg.port)
+            raise ClientConnectionError("Qdrant not connected", host=self._cfg.host, port=self._cfg.port)
         try:
             from qdrant_client.http import models
             results = self._search_with_retry(collection_name, query_vector, limit)
@@ -73,7 +74,7 @@ class QdrantClient(BaseClient):
     def upsert(self, collection_name: str, points: List[Dict[str, Any]]) -> int:
         """Insert or update points in a collection."""
         if not self._client:
-            raise ConnectionError("Qdrant not connected", host=self._cfg.host, port=self._cfg.port)
+            raise ClientConnectionError("Qdrant not connected", host=self._cfg.host, port=self._cfg.port)
         try:
             from qdrant_client.http import models
             qdrant_points = []
@@ -119,3 +120,4 @@ class QdrantClient(BaseClient):
             "payload": point.payload or {},
             "version": getattr(point, "version", None),
         }
+

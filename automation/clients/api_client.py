@@ -1,10 +1,11 @@
-﻿import httpx
+import httpx
 from typing import Any, Dict, Optional
 
 from automation.config import load_config
 from automation.config.models import ApiConfig
-from automation.clients.base import BaseClient, async_retry, RetryConfig
-from automation.clients.exceptions import AuthenticationError, ConnectionError, TimeoutError
+from automation.clients.base import BaseClient
+from automation.utils.retry import async_retry, RetryConfig
+from automation.clients.exceptions import AuthenticationError, ClientConnectionError, ClientTimeoutError
 
 
 class ApiClient(BaseClient):
@@ -57,12 +58,12 @@ class ApiClient(BaseClient):
             httpx.Response object
 
         Raises:
-            ConnectionError: If the request fails due to connection issues
-            TimeoutError: If the request times out
+            ClientConnectionError: If the request fails due to connection issues
+            ClientTimeoutError: If the request times out
             AuthenticationError: If authentication fails (401/403)
         """
         if not self._client:
-            raise ConnectionError("Client not connected. Call connect() first.", host=self._cfg.base_url)
+            raise ClientConnectionError("Client not connected. Call connect() first.", host=self._cfg.base_url)
 
         url = path.lstrip("/")
         self._log.debug("Request: %s %s", method.upper(), url)
@@ -78,12 +79,13 @@ class ApiClient(BaseClient):
             return response
 
         except httpx.ConnectError as e:
-            raise ConnectionError(f"Connection error: {e}", host=self._cfg.base_url) from e
+            raise ClientConnectionError(f"Connection error: {e}", host=self._cfg.base_url) from e
         except httpx.TimeoutException as e:
-            raise TimeoutError(f"Request timed out: {e}", timeout=self._cfg.timeout) from e
+            raise ClientTimeoutError(f"Request timed out: {e}", timeout=self._cfg.timeout) from e
 
     @async_retry()
     async def _send_with_retry(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         if not self._client:
-            raise ConnectionError("Client not connected", host=self._cfg.base_url)
+            raise ClientConnectionError("Client not connected", host=self._cfg.base_url)
         return await self._client.request(method, url, **kwargs)
+
