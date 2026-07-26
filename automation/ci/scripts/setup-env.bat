@@ -1,4 +1,5 @@
 ﻿@echo off
-docker compose -f automation\docker\docker-compose.test.yml up -d
-echo Waiting for services...
-timeout /t 10 /nobreak >nul
+REM Start test dependencies with healthcheck wait
+docker compose -f automation\docker\docker-compose.test.yml up -d --wait
+echo All services ready
+
