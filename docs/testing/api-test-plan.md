@@ -105,6 +105,31 @@ API_V1_STR = /api
 ### Phase 5 — Integrations（2 用例）
 
 **状态**：✅ 已完成（082ff3d）
+### Phase 4.5 — Admin Extensions（6 用例）
+
+| # | 模块 | 接口 | 测试点 | 优先级 |
+|---|------|------|--------|--------|
+| 50 | Admin | POST /api/admin/daily-reports | 创建日报 | P1 |
+| 51 | Admin | POST /api/admin/daily-reports | 创建周报 | P1 |
+| 52 | Admin | POST /api/admin/export | 数据导出 | P2 |
+| 53 | Admin | GET /api/admin/resources | 资源列表 | P1 |
+| 54 | Admin | POST /api/admin/resources | 创建资源 | P1 |
+| 55 | Admin | GET /api/admin/resources/{id} | 资源详情 | P1 |
+| 56 | Admin | PUT /api/admin/resources/{id} | 更新资源 | P1 |
+
+**状态**：✅ 已完成（10e10f9）
+
+### Phase 6 — AI Backend Endpoints（3 用例）
+
+| # | 模块 | 接口 | 测试点 | 优先级 |
+|---|------|------|--------|--------|
+| 57 | AI | POST /api/ai/task/diagnose | AI 诊断工单 | P1 |
+| 58 | AI | POST /api/ai/task/discuss | AI 讨论工单 | P1 |
+| 59 | AI | POST /api/ai/task/summarize | AI 摘要生成 | P1 |
+
+**状态**：✅ 已完成（10e10f9）
+
+
 
 | # | 模块 | 接口 | 测试点 | 优先级 |
 |---|------|------|--------|--------|
@@ -140,6 +165,9 @@ Phase 2 (WeChat)        →  ✅ 已提交（4825635）
 Phase 3 (Call+QA+Stream) →  ✅ 已提交（f4f89ed）
 Phase 4 (Admin)         →  ✅ 已提交（b094068）
 Phase 5 (Integrations)  →  ✅ 已提交（082ff3d）
+Phase 4.5 (Admin Extensions) →  ✅ 已提交（10e10f9）
+Phase 6 (AI Endpoints)       →  ✅ 已提交（10e10f9）
+
 CI 搭建                →  Phase 1-2 完成后
 `
 
