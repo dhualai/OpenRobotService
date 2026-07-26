@@ -55,6 +55,10 @@ class MockBackend:
         self._wechat_menu: dict = {}
         self._wechat_tags: dict = {}
         self._wechat_tag_id_counter: int = 1
+        self._admin_projects: dict = {}
+        self._admin_project_id: int = 1
+        self._admin_risks: dict = {}
+        self._admin_risk_id: int = 1
         self._setup_defaults()
 
     def _setup_defaults(self):
@@ -103,6 +107,10 @@ class MockBackend:
             return self._route_tasks(path, method, body, params, request)
         if path.startswith("/api/wechat"):
             return self._route_wechat(path, method, body, request)
+                if path.startswith("/api/admin"):
+            return self._route_admin(path, method, body, request, params)
+        if path.startswith("/api/conversations") or path.startswith("/api/qa") or path.startswith("/api/messages") or path.startswith("/api/my-tasks"):
+            return self._route_call(path, method, body, request)
         return httpx.Response(404, json={"detail": "Not found"})
 
     def _handle_login(self, body):
@@ -300,8 +308,95 @@ class MockBackend:
             return httpx.Response(200, json={"tag": {"id": tid, "name": name}})
         return httpx.Response(404, json={"detail": "WeChat route not found"})
 
+    def _route_call(self, path, method, body, request):
+        # --- Conversations ---
+        if path.startswith("/api/conversations"):
+            rest = path[len("/api/conversations"):] or ""
+            if not hasattr(self, "_conversations"):
+                self._conversations = {}
+            if not rest and method == "POST":
+                cid = len(self._conversations) + 1
+                now = __import__("time").strftime("%Y-%m-%dT%H:%M:%S", __import__("time").gmtime())
+                conv = {"id": cid, "title": body.get("title", ""), "created_at": now}
+                self._conversations[cid] = conv
+                return httpx.Response(200, json=conv)
+            if not rest and method == "GET":
+                return httpx.Response(200, json={"items": list(self._conversations.values()), "total": len(self._conversations)})
+            parts = rest.strip("/").split("/") if rest else []
+            if len(parts) >= 1 and parts[0].isdigit():
+                cid = int(parts[0])
+                if cid in self._conversations:
+                    return httpx.Response(200, json=self._conversations[cid])
+                return httpx.Response(404, json={"detail": "Conversation not found"})
+            return httpx.Response(404)
+        # --- QA ---
+        if path == "/api/qa/ask" and method == "POST":
+            q = body.get("question", "")
+            import time
+            return httpx.Response(200, json={"success": True, "question": q, "answer": "Mock: " + q, "conversation_id": 1, "action": "GENERAL_REPLY"})
+        if path == "/api/qa/ask/stream" and method == "POST":
+            q = body.get("question", "")
+            return httpx.Response(200, json={"event": "message", "data": {"content": "Mock stream: " + q}, "done": True})
+        # --- Messages ---
+        if path.startswith("/api/messages"):
+            rest = path[len("/api/messages"):] or ""
+            if not hasattr(self, "_messages"):
+                self._messages = {}
+                self._msg_id = 0
+            if not rest and method == "POST":
+                self._msg_id += 1
+                now = __import__("time").strftime("%Y-%m-%dT%H:%M:%S", __import__("time").gmtime())
+                msg = {"id": self._msg_id, "content": body.get("content", ""), "created_at": now}
+                self._messages[self._msg_id] = msg
+                return httpx.Response(200, json=msg)
+            if not rest and method == "GET":
+                return httpx.Response(200, json={"items": list(self._messages.values()), "total": len(self._messages)})
+            return httpx.Response(404)
+        # --- My Tasks ---
+        if path == "/api/my-tasks/" and method == "GET":
+            return httpx.Response(200, json={"items": [], "total": 0})
+        if path == "/api/my-tasks/" and method == "POST":
+            tid = len(self._tasks) + 1
+            return httpx.Response(200, json={"id": tid, "title": body.get("title", "")})
+        return httpx.Response(404)
+
+    def _route_admin(self, path, method, body, request, params):
+        rest = path[len("/api/admin"):] or ""
+        if rest == "/tickets" and method == "GET":
+            items = list(self._tasks.values())
+            return httpx.Response(200, json={"items": items, "total": len(items)})
+        if rest == "/tickets/stats" and method == "GET":
+            ss = {}
+            for t in self._tasks.values():
+                s = t.get("status", "unknown")
+                ss[s] = ss.get(s, 0) + 1
+            return httpx.Response(200, json={"total": len(self._tasks), "by_status": ss})
+        if rest == "/projects" and method == "GET":
+            return httpx.Response(200, json=list(self._admin_projects.values()))
+        if rest == "/projects" and method == "POST":
+            pid = self._admin_project_id
+            self._admin_project_id += 1
+            proj = {"id": pid, "name": body.get("name", ""), "description": body.get("description", "")}
+            self._admin_projects[pid] = proj
+            return httpx.Response(200, json=proj)
+        if rest == "/projects/risks" and method == "GET":
+            return httpx.Response(200, json=list(self._admin_risks.values()))
+        if rest.startswith("/dashboard"):
+            ss = {}
+            for t in self._tasks.values():
+                s = t.get("status", "unknown")
+                ss[s] = ss.get(s, 0) + 1
+            return httpx.Response(200, json={"total_tickets": len(self._tasks), "by_status": ss})
+        if rest in ("/users", "/users/") and method == "GET":
+            users = [{k: u[k] for k in ["id", "username", "name", "role"]} for u in self._users.values()]
+            return httpx.Response(200, json=users)
+        if rest in ("/roles", "/roles/") and method == "GET":
+            return httpx.Response(200, json=[{"id": 1, "name": "admin"}, {"id": 2, "name": "engineer"}])
+        return httpx.Response(404, json={"detail": "Admin route not found"})
+
 def create_mock_transport():
     backend = MockBackend()
     return httpx.MockTransport(backend.handle)
+
 
 
