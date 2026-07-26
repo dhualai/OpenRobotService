@@ -19,9 +19,6 @@ class RetryConfig(BaseModel):
     backoff_factor: float = Field(default=2.0, ge=1.0)
 
 
-_DEFAULT_RETRYABLE: Tuple[Type[Exception], ...] = (ConnectionError, TimeoutError)
-
-
 def _resolve_exceptions() -> Tuple[Type[Exception], ...]:
     from automation.clients.exceptions import ClientConnectionError, ClientTimeoutError
     return (ClientConnectionError, ClientTimeoutError)
@@ -48,6 +45,8 @@ def retry(
                         last_exc = e
                         if attempt < cfg.max_attempts:
                             delay = min(cfg.base_delay * (cfg.backoff_factor ** (attempt - 1)), cfg.max_delay)
+
+
                             sleep_fn(delay)
                 raise RetryExhaustedError(
                     "All %d retry attempts failed" % cfg.max_attempts,
@@ -65,6 +64,8 @@ def retry(
                         last_exc = e
                         if attempt < cfg.max_attempts:
                             delay = min(cfg.base_delay * (cfg.backoff_factor ** (attempt - 1)), cfg.max_delay)
+
+
                             await asyncio.sleep(delay)
                 raise RetryExhaustedError(
                     "All %d retry attempts failed" % cfg.max_attempts,

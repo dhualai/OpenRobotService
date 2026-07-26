@@ -50,3 +50,6 @@ htmlcov/
 
 # ===== MQTT =====
 mqtt_header_id.json
+# ===== Allure test report =====
+allure-results/
+allure-report/

@@ -1,4 +1,4 @@
-﻿from typing import List, Optional, Dict
+from typing import List, Optional, Dict
 from sqlalchemy import create_engine, or_, and_
 from sqlalchemy.orm import sessionmaker
 from app.modules.admin.models_das.models import Risk

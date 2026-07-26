@@ -1,4 +1,4 @@
-﻿"""admin 风险管理 API（承接 DAS risks）。
+"""admin 风险管理 API（承接 DAS risks）。
 
 MIGRATION.md 阶段 3：从 `app/modules/das/api/risks.py` 搬迁而来，
 路由前缀从 `/api/DAS/projects/risks` 迁移到 `/api/admin/projects/risks`。

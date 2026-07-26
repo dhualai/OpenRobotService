@@ -1,4 +1,4 @@
-﻿"""admin 数据导出 API（承接 DAS export）。
+"""admin 数据导出 API（承接 DAS export）。
 
 MIGRATION.md 阶段 3：从 `app/modules/das/api/export.py` 搬迁而来，
 路由前缀从 `/api/DAS/export` 迁移到 `/api/admin/export`。

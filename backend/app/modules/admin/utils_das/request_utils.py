@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 import time
 
 async def generate_request_id() -> str:

@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter
+from fastapi import APIRouter
 from app.wechat.schemas.message import ApiResponse
 import logging
 

@@ -78,3 +78,5 @@ ai/agents/AiTaskPlatform/log_analyzer/log_manual/
 
 # ===== 企业微信用户映射（含真实姓名/邮箱，不提交）=====
 ai/integrations/wecom/user_map.json
+# ===== Allure test report output =====
+output/

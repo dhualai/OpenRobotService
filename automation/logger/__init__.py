@@ -1,4 +1,4 @@
-﻿'''automation.logger - Unified logging module.
+'''automation.logger - Unified logging module.
 
 Provides logging infrastructure with support for:
 - Console output (with ANSI colors)

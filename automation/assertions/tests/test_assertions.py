@@ -1,4 +1,4 @@
-﻿"""Tests for the assertions module."""
+"""Tests for the assertions module."""
 
 from unittest.mock import MagicMock
 

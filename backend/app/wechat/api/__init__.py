@@ -1,4 +1,4 @@
-﻿from app.wechat.api.wechat import router as wechat_router
+from app.wechat.api.wechat import router as wechat_router
 from app.wechat.api.message import router as message_router
 from app.wechat.api.menu import router as menu_router
 from app.wechat.api.health import router as health_router
