@@ -5,7 +5,7 @@ import logging
 
 from automation.config import load_config
 from automation.clients.api_client import ApiClient
-from automation.framework.logger.handlers import AllureLogHandler
+from automation.logger.handlers import AllureLogHandler
 
 
 @pytest.fixture
@@ -52,4 +52,30 @@ def allure_flush():
     for h in root.handlers:
         if isinstance(h, AllureLogHandler):
             h.flush()
+
+
+
+# ===== Mock backend fixtures =====
+
+@pytest.fixture
+async def mock_api_client():
+    import httpx
+    from automation.mocks.backend_mock import create_mock_transport
+    transport = create_mock_transport()
+    async with httpx.AsyncClient(transport=transport, base_url='http://test') as client:
+        yield client
+
+
+@pytest.fixture
+async def mock_auth_token(mock_api_client):
+    login_data = {'username': 'testadmin', 'password': 'admin123'}
+    response = await mock_api_client.post('/auth/login', json=login_data)
+    assert response.status_code == 200
+    return response.json()
+
+
+@pytest.fixture
+def mock_auth_header(mock_auth_token):
+    return {'Authorization': 'Bearer ' + mock_auth_token['access_token']}
+
 
