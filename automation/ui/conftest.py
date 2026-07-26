@@ -1,6 +1,7 @@
-﻿"""UI test fixtures: Playwright browser and page objects."""
+"""UI test fixtures: Playwright browser and page objects."""
 
 import pytest
+import httpx
 from playwright.sync_api import sync_playwright
 
 FRONTEND_URL = "http://localhost:5173"
@@ -8,7 +9,8 @@ FRONTEND_URL = "http://localhost:5173"
 
 @pytest.fixture(scope="session")
 def browser():
-    """Session-scoped Chromium browser."""
+    """Session-scoped Chromium browser. Skip if Playwright not installed."""
+    pytest.importorskip("playwright")
     with sync_playwright() as p:
         b = p.chromium.launch(headless=True)
         yield b
@@ -17,12 +19,21 @@ def browser():
 
 @pytest.fixture
 def page(browser):
-    """Function-scoped Playwright page. Skip if frontend unavailable."""
+    """Function-scoped page with frontend availability check."""
+    try:
+        httpx.get(FRONTEND_URL, timeout=3)
+    except Exception:
+        pytest.skip(f"Frontend not available at {FRONTEND_URL}")
+
     context = browser.new_context()
     p = context.new_page()
     try:
         p.goto(FRONTEND_URL, timeout=5000, wait_until="domcontentloaded")
     except Exception as e:
-        pytest.skip(f"Frontend not available at {FRONTEND_URL}: {e}")
+        p.close()
+        context.close()
+        pytest.skip(f"Frontend unreachable: {e}")
+
     yield p
+    p.close()
     context.close()
