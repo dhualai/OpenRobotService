@@ -9,9 +9,10 @@
 | DB 测试 | [inventory-db.md](test-case-inventory-db.md) | [db-test-plan.md](db-test-plan.md) | 26 |
 | E2E 测试 | [inventory-e2e.md](test-case-inventory-e2e.md) | [e2e-test-plan.md](e2e-test-plan.md) | 6 |
 | AI 测试 | [inventory-ai.md](test-case-inventory-ai.md) | [ai-test-plan.md](ai-test-plan.md) | 21 |
-| **子模块合计** | | | **107** |
+| UI 测试 | [inventory-ui.md](test-case-inventory-ui.md) | [ui-test-plan.md](ui-test-plan.md) | 3 |
+| **子模块合计** | | | **110** |
 | 基础设施测试 | 见各模块 tests/ | — | 86 |
-| **总计** | | | **193** |
+| **总计** | | | **196** |
 
 ## 快速导航
 
@@ -29,9 +30,4 @@
 | E2E 全部 | [E2E #1-6](test-case-inventory-e2e.md) |
 | AI LLMClient | [AI #1-6](test-case-inventory-ai.md#llmclient7用例) |
 | AI Evaluators | [AI #7-21](test-case-inventory-ai.md#evaluators14用例) |
-
-## 待实现
-
-| 模块 | 说明 | 前置条件 |
-|------|------|----------|
-| UI 测试 | Playwright + Page Object | 后端运行中 + 浏览器 |
+| UI Login | [UI #1-3](test-case-inventory-ui.md) |
