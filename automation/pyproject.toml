@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = "openrobot-automation"
 version = "0.1.0"
 description = "OpenRobotService AI Automation Test Platform"
@@ -11,12 +11,12 @@ dependencies = [
     "allure-pytest",
     "factory-boy",
     "pyyaml",
-    "pydantic",
+    "pydantic", "pydantic-settings",
     "openai",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["api", "ui", "ai", "db", "e2e"]
+testpaths = ["config","api","ui","ai","db","e2e"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
