@@ -43,6 +43,7 @@ cd frontend && npm run test
 ### 2.4 提交阶段
 - 遵循 Conventional Commits：`feat:` / `fix:` / `test:` / `refactor:` / `docs:` / `chore:`
 - 提交前逐项检查 `docs/testing/review-checklist.md`
+- 如果更新了 docs/testing/ 下的 Markdown 用例清单，运行 python automation/scripts/generate_excel_report.py 同步 Excel 报告
 
 ---
 
