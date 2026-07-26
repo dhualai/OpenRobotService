@@ -2,7 +2,7 @@
 # Imports and re-exports all shared fixtures from framework/fixtures.
 # These fixtures are auto-discovered by all tests under automation/.
 
-from automation.framework.fixtures import (
+from automation.fixtures import (
     api_client,
     config,
     config_env,

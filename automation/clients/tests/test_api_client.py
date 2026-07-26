@@ -4,8 +4,8 @@ import httpx
 import pytest
 
 from automation.config.models import ApiConfig
-from automation.framework.clients.api_client import ApiClient
-from automation.framework.clients.exceptions import (
+from automation.clients.api_client import ApiClient
+from automation.clients.exceptions import (
     AuthenticationError,
     ConnectionError,
     TimeoutError,

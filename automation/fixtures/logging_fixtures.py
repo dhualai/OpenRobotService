@@ -1,7 +1,7 @@
 ﻿import pytest
 import logging
 
-from automation.framework.logger import LogConfig, get_logger, setup_logging
+from automation.logger import LogConfig, get_logger, setup_logging
 
 
 @pytest.fixture(scope="session", autouse=True)

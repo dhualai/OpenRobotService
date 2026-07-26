@@ -3,13 +3,13 @@ import time
 
 import pytest
 
-from automation.framework.clients.base import (
+from automation.clients.base import (
     BaseClient,
     RetryConfig,
     async_retry,
     sync_retry,
 )
-from automation.framework.clients.exceptions import (
+from automation.clients.exceptions import (
     ConnectionError,
     RetryExhaustedError,
 )

@@ -3,8 +3,8 @@
 import logging
 from typing import Optional
 
-from automation.framework.logger.config import LogConfig
-from automation.framework.logger.handlers import (
+from automation.logger.config import LogConfig
+from automation.logger.handlers import (
     AllureLogHandler,
     ConsoleColorHandler,
     RotatingFileHandler,

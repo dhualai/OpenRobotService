@@ -2,8 +2,8 @@
 
 from automation.config import load_config
 from automation.config.models import RedisConfig
-from automation.framework.clients.base import BaseClient, sync_retry, RetryConfig
-from automation.framework.clients.exceptions import ConnectionError, QueryError
+from automation.clients.base import BaseClient, sync_retry, RetryConfig
+from automation.clients.exceptions import ConnectionError, QueryError
 
 
 class RedisClient(BaseClient):
