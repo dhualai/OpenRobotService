@@ -59,6 +59,9 @@ class MockBackend:
         self._admin_project_id: int = 1
         self._admin_risks: dict = {}
         self._admin_risk_id: int = 1
+        self._integrations_sources: list = [{"name": "wecom", "status": "enabled", "last_sync": None}]
+        self._integrations_mappings: dict = {}
+        self._integration_mapping_id: int = 1
         self._setup_defaults()
 
     def _setup_defaults(self):
@@ -111,6 +114,8 @@ class MockBackend:
             return self._route_admin(path, method, body, request, params)
         if path.startswith("/api/conversations") or path.startswith("/api/qa") or path.startswith("/api/messages") or path.startswith("/api/my-tasks"):
             return self._route_call(path, method, body, request)
+        if path == "/api/integrations" and method == "GET":
+            return httpx.Response(200, json=self._integrations_sources)
         return httpx.Response(404, json={"detail": "Not found"})
 
     def _handle_login(self, body):
@@ -392,6 +397,14 @@ class MockBackend:
             return httpx.Response(200, json=users)
         if rest in ("/roles", "/roles/") and method == "GET":
             return httpx.Response(200, json=[{"id": 1, "name": "admin"}, {"id": 2, "name": "engineer"}])
+        if rest == "/task-user-mappings" and method == "GET":
+            return httpx.Response(200, json=list(self._integrations_mappings.values()))
+        if rest == "/task-user-mappings" and method == "POST":
+            mid = self._integration_mapping_id
+            self._integration_mapping_id += 1
+            m = {"id": mid, "source_task_id": body.get("source_task_id", ""), "local_task_id": body.get("local_task_id", None)}
+            self._integrations_mappings[mid] = m
+            return httpx.Response(200, json=m)
         return httpx.Response(404, json={"detail": "Admin route not found"})
 
 def create_mock_transport():
