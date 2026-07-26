@@ -58,9 +58,11 @@ API_V1_STR = /api
 | 27 | Tasks | POST /api/tasks/{id}/ai-assign | AI 自动分配 | P2 |
 | 28 | Tasks | POST /api/tasks/{id}/comments/attachments | 附件上传 | P2 |
 
-**状态**：⬜ 未开始，依赖 mocks/backend_mock.py
+**状态**：✅ 已完成
 
 ### Phase 2 — WeChat（6 用例）
+
+**状态**：✅ 已完成（4825635）
 
 | # | 模块 | 接口 | 测试点 | 优先级 |
 |---|------|------|--------|--------|
@@ -71,7 +73,9 @@ API_V1_STR = /api
 | 33 | WeChat | GET /api/wechat/tag | 标签管理 | P2 |
 | 34 | WeChat | POST /api/wechat/notify | 模板通知 | P2 |
 
-### Phase 3 — Call + QA + Stream（7 用例）
+### Phase 3 — Call + QA + Stream（10 用例）
+
+**状态**：✅ 已完成（f4f89ed）
 
 | # | 模块 | 接口 | 测试点 | 优先级 |
 |---|------|------|--------|--------|
@@ -85,6 +89,8 @@ API_V1_STR = /api
 
 ### Phase 4 — Admin（8 用例）
 
+**状态**：✅ 已完成（b094068）
+
 | # | 模块 | 接口 | 测试点 | 优先级 |
 |---|------|------|--------|--------|
 | 42 | Admin | GET /api/admin/tickets | 后台工单列表 | P1 |
@@ -96,7 +102,9 @@ API_V1_STR = /api
 | 48 | Admin | GET /api/admin/users | 用户管理 | P2 |
 | 49 | Admin | GET /api/admin/roles | 角色列表 | P2 |
 
-### Phase 5 — Integrations（3 用例）
+### Phase 5 — Integrations（2 用例）
+
+**状态**：✅ 已完成（082ff3d）
 
 | # | 模块 | 接口 | 测试点 | 优先级 |
 |---|------|------|--------|--------|
@@ -110,9 +118,9 @@ API_V1_STR = /api
 |------|------|------|
 | auth_token fixture | ✅ | conftest.py 已实现 |
 | auth_header fixture | ✅ | conftest.py 已实现 |
-| mock backend | ⬜ | 需要 mocks/backend_mock.py（httpx MockTransport）|
-| mock_api_client fixture | ⬜ | 挂载 MockTransport 的 ApiClient |
-| suite fixture | ⬜ | admin/engineer/customer 三种身份 |
+| mock backend | ✅ | mocks/backend_mock.py |
+| mock_api_client fixture | ✅ | conftest.py |
+| suite fixture | ✅ | e2e/conftest.py |
 
 ## 优先级分布
 
@@ -127,11 +135,11 @@ API_V1_STR = /api
 
 `
 Phase 0 (Auth+Health)  →  ✅ 已提交
-Phase 1 (Tasks)        →  等待 mocks/backend_mock.py
-Phase 2 (WeChat)       →  Phase 1 后
-Phase 3 (Call+QA)      →  Phase 2 后
-Phase 4 (Admin)        →  Phase 3 后
-Phase 5 (Integrations) →  Phase 4 后
+Phase 1 (Tasks)         →  ✅ 已提交（f4f89ed）
+Phase 2 (WeChat)        →  ✅ 已提交（4825635）
+Phase 3 (Call+QA+Stream) →  ✅ 已提交（f4f89ed）
+Phase 4 (Admin)         →  ✅ 已提交（b094068）
+Phase 5 (Integrations)  →  ✅ 已提交（082ff3d）
 CI 搭建                →  Phase 1-2 完成后
 `
 
