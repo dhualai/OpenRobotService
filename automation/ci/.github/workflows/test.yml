@@ -58,14 +58,14 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           AUTOMATION_ENV: ci
         run: |
-          pytest automation/config/tests/ automation/logger/tests/ automation/clients/tests/ automation/assertions/tests/ automation/fixtures/tests/ -v --alluredir=output/allure-results --junitxml=output/junit-infra.xml
+          pytest automation/config/tests/ automation/logger/tests/ automation/clients/tests/ automation/assertions/tests/ automation/fixtures/tests/ -v --alluredir=automation/output/allure-results --junitxml=automation/output/junit-infra.xml
 
       - name: Upload Allure results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: allure-results-infra
-          path: output/allure-results
+          path: automation/output/allure-results
 
   test-api:
     name: API tests (mock)
@@ -85,14 +85,14 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          pytest automation/api/tests/ -m api -v --alluredir=output/allure-results --junitxml=output/junit-api.xml
+          pytest automation/api/tests/ -m api -v --alluredir=automation/output/allure-results --junitxml=automation/output/junit-api.xml
 
       - name: Upload Allure results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: allure-results-api
-          path: output/allure-results
+          path: automation/output/allure-results
 
   test-auth:
     name: Auth tests (real backend)
@@ -146,14 +146,14 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           AUTOMATION_ENV: ci
         run: |
-          pytest automation/api/tests/test_health.py automation/api/tests/test_auth.py -v --alluredir=output/allure-results --junitxml=output/junit-auth.xml
+          pytest automation/api/tests/test_health.py automation/api/tests/test_auth.py -v --alluredir=automation/output/allure-results --junitxml=automation/output/junit-auth.xml
 
       - name: Upload Allure results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: allure-results-auth
-          path: output/allure-results
+          path: automation/output/allure-results
 
   report:
     name: Allure report
@@ -169,12 +169,12 @@ jobs:
         with:
           pattern: allure-results-*
           merge-multiple: true
-          path: output/allure-results
+          path: automation/output/allure-results
 
       - name: Generate Allure report
         uses: simple-elf/allure-report-action@v1.7
         with:
-          allure_results: output/allure-results
+          allure_results: automation/output/allure-results
           allure_history: allure-history
           keep_reports: 20
 

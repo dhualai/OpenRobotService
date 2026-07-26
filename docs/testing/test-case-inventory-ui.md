@@ -1,62 +1,24 @@
-# UI 测试用例清单
+# UI 测试
 
-> 格式按 [template-test-case.md](template-test-case.md)
+> 详细用例内容见 [automation/output/test-case-inventory.xlsx](../automation/output/test-case-inventory.xlsx) → **UI 测试** Sheet
 
----
+| 模块/分组 | 用例数 |
+|----------|--------|
+| Login Page | 3 |
+| **合计** | **3** |
 
-## Login Page
+## 列说明
 
-### UI-TC-001 — test_login_page_loads
+| 列名 | 说明 |
+|------|------|
+| 用例编号 | 模块+序号，如 API-TC-001 |
+| 功能点 | 测试功能描述 |
+| 优先级 | P0/P1/P2 |
+| 自动化 | 是否已自动化 |
+| 冒烟 | 是否冒烟测试 |
+| 测试点 | 测试目标简述 |
+| 前置条件 | 测试前必须满足的条件 |
+| 测试步骤 | 可执行的操作步骤 |
+| 预期结果 | 期望的输出或状态 |
+| 测试文件 | 自动化脚本路径 |
 
-**属性：** 优先级 P0 · 自动化 · 冒烟 是 · 功能点 登录页加载
-
-**测试点：** 验证登录页正常加载且 URL 含 /login
-
-**前置条件：** Playwright 浏览器可用；前端已启动
-
-**测试步骤：**
-1. page.goto(login_url)
-2. 验证 page.url 包含 /login
-3. 验证登录表单可见
-
-**结果：** PASS
-
----
-
-## Login Page
-
-### UI-TC-002 — test_login_empty_fields_stays_on_login
-
-**属性：** 优先级 P0 · 自动化 · 冒烟 是 · 功能点 空字段提交
-
-**测试点：** 验证空字段提交后页面不跳转，仍停留在登录页
-
-**前置条件：** Playwright 浏览器可用；前端已启动
-
-**测试步骤：**
-1. page.goto(login_url)
-2. 不填用户名/密码，点击登录
-3. 验证页面 URL 仍含 /login
-
-**结果：** PASS
-
----
-
-## Login Page
-
-### UI-TC-003 — test_login_invalid_credentials
-
-**属性：** 优先级 P0 · 自动化 · 冒烟 是 · 功能点 无效凭据
-
-**测试点：** 验证无效凭据提交后不跳转
-
-**前置条件：** Playwright 浏览器可用；前端已启动
-
-**测试步骤：**
-1. page.goto(login_url)
-2. 填入无效用户名/密码，点击登录
-3. 验证页面不跳转
-
-**结果：** PASS
-
----
