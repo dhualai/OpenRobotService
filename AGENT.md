@@ -13,7 +13,8 @@
 1. **`docs/project_architecture.md`** — 项目架构、模块划分、技术栈
 2. **`docs/testing/index.md`** — 自动化测试规范总览（入口）
 3. **`docs/business_rules.md`** — 业务约束、状态机、权限规则
-4. **如果涉及新增测试** → `docs/testing/development-workflow.md`
+4. **`docs/PRD.md`** — 产品需求文档（功能点规格、验收标准）
+5. **如果涉及新增测试** → `docs/testing/development-workflow.md`
 
 ---
 
