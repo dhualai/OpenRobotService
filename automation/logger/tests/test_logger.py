@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from automation.framework.logger import LogConfig, get_logger, reset_logging, setup_logging
-from automation.framework.logger.handlers import ConsoleColorHandler
+from automation.logger import LogConfig, get_logger, reset_logging, setup_logging
+from automation.logger.handlers import ConsoleColorHandler
 
 
 @pytest.fixture(autouse=True)
@@ -137,7 +137,7 @@ class TestAllureHandler:
         assert 'AllureLogHandler' in names
 
     def test_allure_handler_graceful(self):
-        from automation.framework.logger.handlers import AllureLogHandler
+        from automation.logger.handlers import AllureLogHandler
         h = AllureLogHandler()
         assert h._allure_available is True
         record = logging.LogRecord('test', logging.ERROR, '', 0, 'test msg', None, None)

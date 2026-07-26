@@ -3,8 +3,8 @@ from typing import Any, Dict, Optional
 
 from automation.config import load_config
 from automation.config.models import ApiConfig
-from automation.framework.clients.base import BaseClient, async_retry, RetryConfig
-from automation.framework.clients.exceptions import AuthenticationError, ConnectionError, TimeoutError
+from automation.clients.base import BaseClient, async_retry, RetryConfig
+from automation.clients.exceptions import AuthenticationError, ConnectionError, TimeoutError
 
 
 class ApiClient(BaseClient):

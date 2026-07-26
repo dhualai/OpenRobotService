@@ -2,11 +2,11 @@
 from typing import AsyncGenerator, Generator
 
 from automation.config import AutomationConfig
-from automation.framework.clients.api_client import ApiClient
-from automation.framework.clients.mysql_client import MySQLClient
-from automation.framework.clients.qdrant_client import QdrantClient
-from automation.framework.clients.redis_client import RedisClient
-from automation.framework.fixtures.config_fixtures import config
+from automation.clients.api_client import ApiClient
+from automation.clients.mysql_client import MySQLClient
+from automation.clients.qdrant_client import QdrantClient
+from automation.clients.redis_client import RedisClient
+from automation.fixtures.config_fixtures import config
 
 
 @pytest.fixture

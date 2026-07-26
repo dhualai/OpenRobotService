@@ -1,4 +1,4 @@
-﻿'''automation.framework.logger - Unified logging module.
+﻿'''automation.logger - Unified logging module.
 
 Provides logging infrastructure with support for:
 - Console output (with ANSI colors)
@@ -7,15 +7,15 @@ Provides logging infrastructure with support for:
 - Native pytest integration (via caplog)
 
 Usage:
-    from automation.framework.logger import setup_logging, get_logger
+    from automation.logger import setup_logging, get_logger
 
     setup_logging()
     log = get_logger(__name__)
     log.info('Test step starting...')
 '''
 
-from automation.framework.logger.config import LogConfig
-from automation.framework.logger.core import get_logger, reset_logging, setup_logging
+from automation.logger.config import LogConfig
+from automation.logger.core import get_logger, reset_logging, setup_logging
 
 __all__ = [
     'setup_logging',

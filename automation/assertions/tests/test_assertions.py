@@ -4,11 +4,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from automation.framework.assertions import (
+from automation.assertions import (
     assert_contains, assert_dict_contains_subset, assert_equals, assert_not_empty, assert_records_match, assert_status_code
 )
-from automation.framework.assertions.response import assert_error_response, assert_json_response
-from automation.framework.assertions.timing import assert_max_duration, assert_min_duration, assert_duration_between
+from automation.assertions.response import assert_error_response, assert_json_response
+from automation.assertions.timing import assert_max_duration, assert_min_duration, assert_duration_between
 
 
 class TestAssertEquals:

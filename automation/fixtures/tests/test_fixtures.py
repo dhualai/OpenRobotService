@@ -3,7 +3,7 @@
 import pytest
 
 from automation.config import ConfigEnv, load_config
-from automation.framework.logger import get_logger
+from automation.logger import get_logger
 
 
 @pytest.mark.usefixtures("setup_logger")
@@ -29,25 +29,25 @@ class TestClientFixtures:
     """Test that client classes can be instantiated with config."""
 
     def test_api_client_creates_with_config(self):
-        from automation.framework.clients import ApiClient
+        from automation.clients import ApiClient
         cfg = load_config()
         client = ApiClient(config=cfg.api)
         assert client._cfg.base_url is not None
 
     def test_mysql_client_creates_with_config(self):
-        from automation.framework.clients import MySQLClient
+        from automation.clients import MySQLClient
         cfg = load_config()
         client = MySQLClient(config=cfg.database)
         assert client._cfg.host is not None
 
     def test_redis_client_creates_with_config(self):
-        from automation.framework.clients import RedisClient
+        from automation.clients import RedisClient
         cfg = load_config()
         client = RedisClient(config=cfg.redis)
         assert client._cfg.host is not None
 
     def test_qdrant_client_creates_with_config(self):
-        from automation.framework.clients import QdrantClient
+        from automation.clients import QdrantClient
         cfg = load_config()
         client = QdrantClient(config=cfg.qdrant)
         assert client._cfg.host is not None

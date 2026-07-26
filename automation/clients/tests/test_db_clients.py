@@ -3,10 +3,10 @@
 import pytest
 
 from automation.config.models import DatabaseConfig, RedisConfig, QdrantConfig
-from automation.framework.clients.exceptions import ConnectionError
-from automation.framework.clients.mysql_client import MySQLClient
-from automation.framework.clients.qdrant_client import QdrantClient
-from automation.framework.clients.redis_client import RedisClient
+from automation.clients.exceptions import ConnectionError
+from automation.clients.mysql_client import MySQLClient
+from automation.clients.qdrant_client import QdrantClient
+from automation.clients.redis_client import RedisClient
 
 
 class TestMySQLClient:

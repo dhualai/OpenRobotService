@@ -5,14 +5,14 @@ from typing import Any, Callable, Optional, Tuple, Type
 
 from pydantic import BaseModel, Field
 
-from automation.framework.clients.exceptions import (
+from automation.clients.exceptions import (
     ClientError,
     ConnectionError,
     QueryError,
     RetryExhaustedError,
     TimeoutError,
 )
-from automation.framework.logger import get_logger
+from automation.logger import get_logger
 
 
 class RetryConfig(BaseModel):
