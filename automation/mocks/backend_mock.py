@@ -1,4 +1,4 @@
-﻿"""Mock backend server using httpx MockTransport.
+"""Mock backend server using httpx MockTransport.
 
 Provides an in-memory mock of the OpenRobotService backend for API tests.
 """
@@ -114,6 +114,8 @@ class MockBackend:
             return self._route_admin(path, method, body, request, params)
         if path.startswith("/api/conversations") or path.startswith("/api/qa") or path.startswith("/api/messages") or path.startswith("/api/my-tasks"):
             return self._route_call(path, method, body, request)
+        if path.startswith("/api/ai"):
+            return self._route_ai(path, method, body, request)
         if path == "/api/integrations" and method == "GET":
             return httpx.Response(200, json=self._integrations_sources)
         return httpx.Response(404, json={"detail": "Not found"})
@@ -405,7 +407,46 @@ class MockBackend:
             m = {"id": mid, "source_task_id": body.get("source_task_id", ""), "local_task_id": body.get("local_task_id", None)}
             self._integrations_mappings[mid] = m
             return httpx.Response(200, json=m)
+        # --- Admin extensions ---
+        if rest == "/daily-reports" and method == "POST":
+            return self._handle_daily_report(body)
+        if rest == "/export" and method == "POST":
+            return self._handle_export(body)
+        if rest.startswith("/resources"):
+            return self._handle_resources(path, method, body, request)
         return httpx.Response(404, json={"detail": "Admin route not found"})
+
+    def _handle_daily_report(self, body):
+        rtype = body.get("type", "daily")
+        return httpx.Response(200, json={"id": 1, "type": rtype, "status": "generated"})
+
+    def _handle_export(self, body):
+        return httpx.Response(200, json={"task_id": "exp-001", "status": "processing", "format": body.get("format", "xlsx")})
+
+    def _handle_resources(self, path, method, body, request):
+        rest = path[len("/api/admin/resources"):] or ""
+        parts = rest.strip("/").split("/") if rest else []
+        if len(parts) >= 1 and parts[0].isdigit():
+            rid = int(parts[0])
+            if method == "GET":
+                return httpx.Response(200, json={"id": rid, "name": "test-resource", "type": "file"})
+            if method in ("PUT", "PATCH"):
+                return httpx.Response(200, json={"id": rid, "name": body.get("name", "updated"), "type": "file"})
+        if method == "POST":
+            return httpx.Response(200, json={"id": 1, "name": body.get("name", ""), "type": body.get("type", "file")})
+        if method == "GET":
+            return httpx.Response(200, json={"items": [], "total": 0})
+        return httpx.Response(404)
+
+    def _route_ai(self, path, method, body, request):
+        rest = path[len("/api/ai"):] or ""
+        if rest == "/task/diagnose" and method == "POST":
+            return httpx.Response(200, json={"diagnosis": "Mock: sensor fault detected", "confidence": 0.85})
+        if rest == "/task/discuss" and method == "POST":
+            return httpx.Response(200, json={"reply": "Mock: check wiring and reboot", "suggestions": ["check cable", "reboot controller"]})
+        if rest == "/task/summarize" and method == "POST":
+            return httpx.Response(200, json={"summary": "Mock: issue resolved by replacing sensor module"})
+        return httpx.Response(404)
 
 def create_mock_transport():
     backend = MockBackend()
