@@ -1,34 +1,63 @@
-# Call Module - Task Analysis
+# 我要摇人模块 - 任务分析
 
-## 1. Business Overview
-Users submit fault reports and get AI-powered troubleshooting assistance through WeChat H5.
-Core flow: Submit issue -> AI QA conversation -> Convert to ticket -> Track resolution.
+## 1. 功能点
+| 功能 | 说明 | 优先级 |
+|------|------|--------|
+| 会话创建 | 用户创建新的咨询会话 | P0 |
+| 会话列表 | 查看历史会话列表 | P0 |
+| 会话详情 | 查看单个会话详情 | P0 |
+| QA同步问答 | 提交问题并获取AI回答 | P0 |
+| QA流式问答 | SSE实时流式回答 | P1 |
+| 消息创建 | 在会话中发送消息 | P1 |
+| 消息列表 | 查看会话消息列表 | P1 |
+| 我的工单列表 | 查看当前用户工单 | P1 |
+| 我的工单创建 | 创建新工单 | P1 |
 
-## 2. API Endpoints
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | /api/conversations | Create conversation |
-| GET | /api/conversations | List conversations |
-| GET | /api/conversations/{id} | Get conversation detail |
-| PUT | /api/conversations/{id} | Update conversation |
-| DELETE | /api/conversations/{id} | Delete conversation |
-| POST | /api/qa/ask | Send QA question |
-| POST | /api/qa/ask/stream | Streaming QA (SSE) |
-| POST | /api/messages | Send message |
-| GET | /api/messages | List messages |
-| GET | /api/my-tasks/ | List my tasks |
-| POST | /api/my-tasks/ | Create my task |
+## 2. 业务流程
+```
+微信用户 -> 登录 -> 创建咨询会话 -> 提交QA问题 -> 获取AI回答
+  -> 查看会话历史 -> 查看消息 -> 查看我的工单 -> 转工单处理
+```
 
-## 3. Business Flow
-User WX -> POST /auth/login -> POST /conversations -> POST /qa/ask -> GET /conversations/{id} -> ...
+## 3. 状态流转
+会话未定义状态机，会话创建后可添加消息。QA问答每次独立，不依赖会话状态。
 
-## 4. Key Business Rules
-- QA responses must be relevant to the question
-- Conversations have a 1:N relationship with messages
-- My-tasks shows user-scoped ticket list
-- SSE streaming supports real-time response display
+## 4. 权限控制
+| 接口 | 权限要求 |
+|------|------|
+| 所有API | 需要JWT Token |
+| 会话操作 | 只能查看自己的会话 |
+| QA问答 | 全局可访问 |
+| 我的工单 | 只显示当前用户创建的工单 |
 
-## 5. Risk Areas
-- SSE streaming connection handling
-- Conversation ownership validation
-- QA response with empty context
+## 5. 接口列表
+| 方法 | 路径 | 说明 | 版本 |
+|------|------|------|------|
+| POST | /api/conversations | 创建会话 | v1 |
+| GET | /api/conversations | 会话列表 | v1 |
+| GET | /api/conversations/{id} | 会话详情 | v1 |
+| POST | /api/qa/ask | QA同步问答 | v1 |
+| POST | /api/qa/ask/stream | QA流式问答 | v1 |
+| POST | /api/messages | 发送消息 | v1 |
+| GET | /api/messages | 消息列表 | v1 |
+| GET | /api/my-tasks/ | 我的工单列表 | v1 |
+| POST | /api/my-tasks/ | 创建我的工单 | v1 |
+
+## 6. 风险点
+| 风险 | 影响 | 建议处理 |
+|------|------|--------|
+| SSE流式连接异常 | 客户端无法显示回答 | 添加重试和超时机制 |
+| 空文本QA请求 | 服务器510或报错 | 前端校验+后端422 |
+| 会话ID不存在 | 用户看到错误信息 | 统一404响应 |
+| 大序列消息输入 | 性能下降或内存溢出 | 字数限制 |
+
+## 7. 边界条件
+| 条件 | 说明 | 预期行为 |
+|------|------|--------|
+| 会话标题为空 | 不传标题或为空字符串 | 200，使用默认标题 |
+| QA问题为空 | 参数缺失或为空 | 422 |
+| 会话ID为-1 | 非法ID值 | 404 |
+| 会话ID为0 | 边界值 | 404 |
+| 消息内容超长 | 10K+ 字符 | 422或截断 |
+| 并发会话创建 | 同时发起多个请求 | 创建成功，ID自增 |
+

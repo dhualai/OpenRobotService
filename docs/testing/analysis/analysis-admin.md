@@ -1,34 +1,68 @@
-# Admin Module - Task Analysis
+# 后台管理模块 - 任务分析
 
-## 1. Business Overview
-Backend management system for admins to manage projects, risks, users, resources, and generate reports.
+## 1. 功能点
+| 功能 | 说明 | 优先级 |
+|------|------|--------|
+| 工单管理 | 查看全部工单列表和统计 | P1 |
+| 项目管理 | 项目列表、创建、编辑 | P1 |
+| 风险管理 | 项目风险列表 | P2 |
+| 仪表盘 | 工单数据概览 | P2 |
+| 用户管理 | 用户列表查看 | P1 |
+| 角色管理 | 角色列表查看 | P1 |
+| 日报/周报 | 生成数据分析报表 | P1 |
+| 数据导出 | 工单数据导出为Excel | P2 |
+| 资源管理 | 资源列表、创建、查看详情 | P1 |
 
-## 2. API Endpoints
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | /api/admin/tickets | List all tickets |
-| GET | /api/admin/tickets/stats | Ticket statistics |
-| GET | /api/admin/projects | List projects |
-| POST | /api/admin/projects | Create project |
-| GET | /api/admin/projects/risks | List risks |
-| GET | /api/admin/dashboard/tickets/summary | Dashboard summary |
-| GET | /api/admin/users/ | List users |
-| GET | /api/admin/roles/ | List roles |
-| POST | /api/admin/daily-reports | Create daily/weekly report |
-| POST | /api/admin/export | Export data |
-| GET | /api/admin/resources | List resources |
-| POST | /api/admin/resources | Create resource |
-| GET | /api/admin/resources/{id} | Get resource |
-| PUT | /api/admin/resources/{id} | Update resource |
+## 2. 业务流程
+```
+管理员登录 -> 仪表盘概览 -> 工单管理 -> 项目管理 -> 日报生成 -> 数据导出
+  也可直接管理用户/角色/资源
+```
 
-## 3. Key Business Rules
-- Only admin role can access admin endpoints
-- Daily report requires valid type (daily/weekly)
-- Export supports multiple formats
-- Resources belong to projects
+## 3. 状态流转
+后台管理模块未定义状态机。项目、风险、资源等实体由后端管理。
 
-## 4. Risk Areas
-- Dashboard performance with large datasets
-- Export timeouts for large data
-- Resource ownership/permissions
-- Cross-admin concurrent modifications
+## 4. 权限控制
+| 角色 | 可操作 |
+|------|------|
+| admin | 全部后台接口可访问 |
+| engineer | 不可访问后台接口 |
+| customer | 不可访问后台接口 |
+
+## 5. 接口列表
+| 方法 | 路径 | 说明 | 版本 |
+|------|------|------|------|
+| GET | /api/admin/tickets | 工单列表 | v1 |
+| GET | /api/admin/tickets/stats | 工单统计 | v1 |
+| GET | /api/admin/projects | 项目列表 | v1 |
+| POST | /api/admin/projects | 创建项目 | v1 |
+| GET | /api/admin/projects/risks | 风险列表 | v1 |
+| GET | /api/admin/dashboard/tickets/summary | 仪表盘 | v1 |
+| GET | /api/admin/users/ | 用户列表 | v1 |
+| GET | /api/admin/roles/ | 角色列表 | v1 |
+| POST | /api/admin/daily-reports | 创建日报/周报 | v1 |
+| POST | /api/admin/export | 导出数据 | v1 |
+| GET | /api/admin/resources | 资源列表 | v1 |
+| POST | /api/admin/resources | 创建资源 | v1 |
+| GET | /api/admin/resources/{id} | 资源详情 | v1 |
+
+## 6. 风险点
+| 风险 | 影响 | 建议处理 |
+|------|------|--------|
+| 仪表盘数据性能 | 大数据量加载慢 | 分页加载或缓存 |
+| 导出超时 | 大数据导出超过HTTP超时 | 异步导出+通知下载 |
+| 重复项目名称 | 同名项目混淆 | 后端重复校验 |
+| 资源权限 | 非法访问他人资源 | 权限校验 |
+| 并发项目操作 | 多个管理员同时编辑 | 乐观锁 |
+
+## 7. 边界条件
+| 条件 | 说明 | 预期行为 |
+|------|------|--------|
+| 日报类型为空 | 不传type参数 | 200，默认为daily |
+| 日报类型无效 | 传递不支持的类型 | 422 |
+| 项目名称为空 | 必填字段缺失 | 422 |
+| 资源列表为空 | 没有资源时查询 | 返回空数组 |
+| 用户列表为空 | 无用户时查询 | 返回空数组 |
+| 导出数据为空 | 没有数据可导出 | 生成空文件 |
+| 资源ID不存在 | 获取不存在的资源 | 404 |
+
