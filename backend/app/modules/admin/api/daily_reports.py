@@ -1,4 +1,4 @@
-﻿"""admin 日报管理 API（承接 DAS daily-reports）。
+"""admin 日报管理 API（承接 DAS daily-reports）。
 
 MIGRATION.md 阶段 3：从 `app/modules/das/api/daily_reports.py` 搬迁而来，
 路由前缀从 `/api/DAS/daily-reports` 迁移到 `/api/admin/daily-reports`。

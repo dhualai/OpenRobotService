@@ -1,4 +1,4 @@
-﻿from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Type, TypeVar, Generic
 from sqlalchemy.orm import DeclarativeBase
 

@@ -1,0 +1,22 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+
+# Test output
+output/allure-results/
+output/allure-report/
+output/screenshots/
+output/logs/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp

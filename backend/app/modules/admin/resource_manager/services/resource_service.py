@@ -1,4 +1,4 @@
-﻿from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, and_
 from typing import List, Optional, Dict, Any
 from datetime import datetime

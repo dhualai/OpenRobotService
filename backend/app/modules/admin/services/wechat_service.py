@@ -1,4 +1,4 @@
-﻿import requests
+import requests
 import json
 from typing import Dict, Any, Optional
 from datetime import datetime

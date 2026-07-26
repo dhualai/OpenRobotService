@@ -1,4 +1,4 @@
-﻿from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 from typing import Optional, List, Dict
 from app.modules.call.models.message import Message, MessageRole, MessageType
