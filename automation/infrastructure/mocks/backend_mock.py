@@ -341,6 +341,8 @@ class MockBackend:
         # --- QA ---
         if path == "/api/qa/ask" and method == "POST":
             q = body.get("question", "")
+            if not q:
+                return httpx.Response(422, json={"detail": [{"loc": ["body", "question"], "msg": "field required"}]})
             import time
             return httpx.Response(200, json={"success": True, "question": q, "answer": "Mock: " + q, "conversation_id": 1, "action": "GENERAL_REPLY"})
         if path == "/api/qa/ask/stream" and method == "POST":
