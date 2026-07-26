@@ -56,6 +56,7 @@ cd frontend && npm run test
 | 生成 Allure 报告 | `allure generate ./allure-results -o ./allure-report --clean` | `allure-report.md` |
 | 运行前端 | `cd frontend && npm run test` | `quick-reference.md` |
 | 前端覆盖率 | `cd frontend && npm run test:coverage` | `quick-reference.md` |
+| 生成测试报告 | python automation/scripts/generate_excel_report.py | generate_excel_report.py |
 
 ---
 
@@ -70,6 +71,7 @@ cd frontend && npm run test
 | 新增故障排查经验 | `docs/troubleshooting.md` |
 | 新增业务规则 | `docs/business_rules.md` |
 | 新增测试命令 | `docs/testing/quick-reference.md` |
+| 更新 Markdown 用例清单 | 运行 python automation/scripts/generate_excel_report.py 刷新 Excel |
 | 本文流程变更 | `AGENT.md` |
 
 ---
