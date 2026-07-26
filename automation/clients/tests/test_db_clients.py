@@ -1,9 +1,9 @@
-﻿from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from automation.config.models import DatabaseConfig, RedisConfig, QdrantConfig
-from automation.clients.exceptions import ConnectionError
+from automation.clients.exceptions import ClientConnectionError
 from automation.clients.mysql_client import MySQLClient
 from automation.clients.qdrant_client import QdrantClient
 from automation.clients.redis_client import RedisClient
@@ -46,7 +46,7 @@ class TestMySQLClient:
 
     def test_execute_without_connect_raises(self):
         client = MySQLClient()
-        with pytest.raises(ConnectionError, match="MySQL not connected"):
+        with pytest.raises(ClientConnectionError, match="MySQL not connected"):
             client.execute("SELECT 1")
 
     @patch("pymysql.connect")
@@ -92,22 +92,22 @@ class TestRedisClient:
 
     def test_get_without_connect_raises(self):
         client = RedisClient()
-        with pytest.raises(ConnectionError, match="Redis not connected"):
+        with pytest.raises(ClientConnectionError, match="Redis not connected"):
             client.get("test_key")
 
     def test_set_without_connect_raises(self):
         client = RedisClient()
-        with pytest.raises(ConnectionError, match="Redis not connected"):
+        with pytest.raises(ClientConnectionError, match="Redis not connected"):
             client.set("key", "value")
 
     def test_delete_without_connect_raises(self):
         client = RedisClient()
-        with pytest.raises(ConnectionError, match="Redis not connected"):
+        with pytest.raises(ClientConnectionError, match="Redis not connected"):
             client.delete("key")
 
     def test_exists_without_connect_raises(self):
         client = RedisClient()
-        with pytest.raises(ConnectionError, match="Redis not connected"):
+        with pytest.raises(ClientConnectionError, match="Redis not connected"):
             client.exists("key")
 
 
@@ -129,12 +129,12 @@ class TestQdrantClient:
 
     def test_search_without_connect_raises(self):
         client = QdrantClient()
-        with pytest.raises(ConnectionError, match="Qdrant not connected"):
+        with pytest.raises(ClientConnectionError, match="Qdrant not connected"):
             client.search("test_collection", [0.1, 0.2])
 
     def test_upsert_without_connect_raises(self):
         client = QdrantClient()
-        with pytest.raises(ConnectionError, match="Qdrant not connected"):
+        with pytest.raises(ClientConnectionError, match="Qdrant not connected"):
             client.upsert("test_collection", [])
 
     def test_close(self):
@@ -160,3 +160,4 @@ class TestQdrantClient:
         client = QdrantClient()
         client._client = mock_client
         assert client.collection_exists("test") is False
+

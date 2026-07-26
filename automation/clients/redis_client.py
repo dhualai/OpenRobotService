@@ -1,9 +1,10 @@
-﻿from typing import Any, Optional
+from typing import Any, Optional
 
 from automation.config import load_config
 from automation.config.models import RedisConfig
-from automation.clients.base import BaseClient, sync_retry, RetryConfig
-from automation.clients.exceptions import ConnectionError, QueryError
+from automation.clients.base import BaseClient
+from automation.utils.retry import sync_retry, RetryConfig
+from automation.clients.exceptions import ClientConnectionError, QueryError
 
 
 class RedisClient(BaseClient):
@@ -58,11 +59,11 @@ class RedisClient(BaseClient):
         """Get a value by key.
 
         Raises:
-            ConnectionError: If not connected
+            ClientConnectionError: If not connected
             QueryError: If the operation fails
         """
         if not self._client:
-            raise ConnectionError("Redis not connected", host=self._cfg.host, port=self._cfg.port)
+            raise ClientConnectionError("Redis not connected", host=self._cfg.host, port=self._cfg.port)
         try:
             return self._get_with_retry(key)
         except Exception as e:
@@ -71,7 +72,7 @@ class RedisClient(BaseClient):
     def set(self, key: str, value: str, ex: Optional[int] = None) -> bool:
         """Set a key-value pair with optional expiry in seconds."""
         if not self._client:
-            raise ConnectionError("Redis not connected", host=self._cfg.host, port=self._cfg.port)
+            raise ClientConnectionError("Redis not connected", host=self._cfg.host, port=self._cfg.port)
         try:
             return self._set_with_retry(key, value, ex)
         except Exception as e:
@@ -80,7 +81,7 @@ class RedisClient(BaseClient):
     def delete(self, key: str) -> bool:
         """Delete a key."""
         if not self._client:
-            raise ConnectionError("Redis not connected", host=self._cfg.host, port=self._cfg.port)
+            raise ClientConnectionError("Redis not connected", host=self._cfg.host, port=self._cfg.port)
         try:
             result = self._delete_with_retry(key)
             return result > 0
@@ -90,7 +91,7 @@ class RedisClient(BaseClient):
     def exists(self, key: str) -> bool:
         """Check if a key exists."""
         if not self._client:
-            raise ConnectionError("Redis not connected", host=self._cfg.host, port=self._cfg.port)
+            raise ClientConnectionError("Redis not connected", host=self._cfg.host, port=self._cfg.port)
         try:
             result = self._exists_with_retry(key)
             return result > 0
@@ -112,3 +113,4 @@ class RedisClient(BaseClient):
     @sync_retry()
     def _exists_with_retry(self, key: str) -> int:
         return self._client.exists(key)
+

@@ -1,4 +1,4 @@
-﻿'''Tests for config.settings module (public API).'''
+'''Tests for config.settings module (public API).'''
 
 import os
 from pathlib import Path

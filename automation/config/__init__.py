@@ -1,4 +1,4 @@
-﻿'''automation.config - Configuration module for the automation framework.
+'''automation.config - Configuration module for the automation framework.
 
 This module provides environment-aware configuration loading from YAML profiles.
 It is the single source of truth for all framework configuration settings.

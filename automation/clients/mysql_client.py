@@ -1,9 +1,10 @@
-﻿from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from automation.config import load_config
 from automation.config.models import DatabaseConfig
-from automation.clients.base import BaseClient, sync_retry, RetryConfig
-from automation.clients.exceptions import ConnectionError, QueryError
+from automation.clients.base import BaseClient
+from automation.utils.retry import sync_retry, RetryConfig
+from automation.clients.exceptions import ClientConnectionError, QueryError
 
 
 class MySQLClient(BaseClient):
@@ -68,11 +69,11 @@ class MySQLClient(BaseClient):
             Number of affected rows
 
         Raises:
-            ConnectionError: If the database is not connected
+            ClientConnectionError: If the database is not connected
             QueryError: If the query fails
         """
         if not self._connection:
-            raise ConnectionError("MySQL not connected", host=self._cfg.host, port=self._cfg.port)
+            raise ClientConnectionError("MySQL not connected", host=self._cfg.host, port=self._cfg.port)
 
         self._log.debug("Execute: %s | params: %s", query[:100], params)
         try:
@@ -101,6 +102,7 @@ class MySQLClient(BaseClient):
     @sync_retry()
     def _execute_with_retry(self, query: str, params: Optional[Tuple[Any, ...]] = None) -> int:
         if not self._cursor:
-            raise ConnectionError("MySQL cursor not available", host=self._cfg.host, port=self._cfg.port)
+            raise ClientConnectionError("MySQL cursor not available", host=self._cfg.host, port=self._cfg.port)
         self._cursor.execute(query, params)
         return self._cursor.rowcount
+

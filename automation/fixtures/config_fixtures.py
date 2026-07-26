@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 from typing import Generator
 
 from automation.config import AutomationConfig, ConfigEnv, load_config

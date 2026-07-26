@@ -10,7 +10,7 @@ from automation.clients.base import (
     sync_retry,
 )
 from automation.clients.exceptions import (
-    ConnectionError,
+    ClientConnectionError,
     RetryExhaustedError,
 )
 
@@ -47,12 +47,12 @@ class TestSyncRetry:
     def test_retry_on_failure_then_success(self):
         call_count = 0
 
-        @sync_retry(RetryConfig(max_attempts=3, base_delay=0.01))
+        @sync_retry(RetryConfig(max_attempts=3, base_delay=0.01), retryable_exceptions=(ClientConnectionError,))
         def operation():
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise ConnectionError("temporary failure", host="test")
+                raise ClientConnectionError("temporary failure", host="test")
             return "recovered"
 
         result = operation()
@@ -62,18 +62,18 @@ class TestSyncRetry:
     def test_exhaust_retries(self):
         call_count = 0
 
-        @sync_retry(RetryConfig(max_attempts=3, base_delay=0.01))
+        @sync_retry(RetryConfig(max_attempts=3, base_delay=0.01), retryable_exceptions=(ClientConnectionError,))
         def operation():
             nonlocal call_count
             call_count += 1
-            raise ConnectionError("persistent failure", host="test")
+            raise ClientConnectionError("persistent failure", host="test")
 
         with pytest.raises(RetryExhaustedError):
             operation()
         assert call_count == 3
 
     def test_non_retryable_exception(self):
-        @sync_retry(retryable_exceptions=(ConnectionError,))
+        @sync_retry(retryable_exceptions=(ClientConnectionError,))
         def operation():
             raise ValueError("not retryable")
 
@@ -86,7 +86,7 @@ class TestAsyncRetry:
     async def test_async_success(self):
         call_count = 0
 
-        @async_retry(RetryConfig(max_attempts=3, base_delay=0.01))
+        @async_retry(RetryConfig(max_attempts=3, base_delay=0.01), retryable_exceptions=(ClientConnectionError,))
         async def operation():
             nonlocal call_count
             call_count += 1
@@ -99,12 +99,12 @@ class TestAsyncRetry:
     async def test_async_retry_then_success(self):
         call_count = 0
 
-        @async_retry(RetryConfig(max_attempts=3, base_delay=0.01))
+        @async_retry(RetryConfig(max_attempts=3, base_delay=0.01), retryable_exceptions=(ClientConnectionError,))
         async def operation():
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise ConnectionError("temp fail", host="test")
+                raise ClientConnectionError("temp fail", host="test")
             return "ok"
 
         result = await operation()
@@ -114,11 +114,11 @@ class TestAsyncRetry:
     async def test_async_exhaust(self):
         call_count = 0
 
-        @async_retry(RetryConfig(max_attempts=2, base_delay=0.01))
+        @async_retry(RetryConfig(max_attempts=2, base_delay=0.01), retryable_exceptions=(ClientConnectionError,))
         async def operation():
             nonlocal call_count
             call_count += 1
-            raise ConnectionError("fail", host="test")
+            raise ClientConnectionError("fail", host="test")
 
         with pytest.raises(RetryExhaustedError):
             await operation()
@@ -140,3 +140,5 @@ class TestBaseClient:
         client = BaseClient()
         with pytest.raises(NotImplementedError):
             client.close()
+
+

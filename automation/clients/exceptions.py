@@ -5,7 +5,7 @@ class ClientError(Exception):
     """Base exception for all client errors."""
 
 
-class ConnectionError(ClientError):
+class ClientConnectionError(ClientError):
     """Raised when a client cannot establish a connection."""
 
     def __init__(self, message: str, host: str = "", port: int = 0):
@@ -14,7 +14,7 @@ class ConnectionError(ClientError):
         super().__init__(message)
 
 
-class TimeoutError(ClientError):
+class ClientTimeoutError(ClientError):
     """Raised when a client operation times out."""
 
     def __init__(self, message: str, timeout: Optional[float] = None):
@@ -34,9 +34,5 @@ class QueryError(ClientError):
         super().__init__(message)
 
 
-class RetryExhaustedError(ClientError):
-    """Raised when all retry attempts are exhausted."""
+from automation.utils.retry import RetryExhaustedError  # noqa: F401
 
-    def __init__(self, message: str, attempt_count: int):
-        self.attempt_count = attempt_count
-        super().__init__(message)

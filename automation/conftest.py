@@ -1,4 +1,8 @@
-﻿# Root conftest for automation framework.
+def pytest_addoption(parser):
+    parser.addoption('--offline', action='store_true', default=False,
+        help='Skip tests that require real service connections')
+
+# Root conftest for automation framework.
 # Imports and re-exports all shared fixtures from framework/fixtures.
 # These fixtures are auto-discovered by all tests under automation/.
 
@@ -25,3 +29,4 @@ __all__ = [
     "redis_client",
     "qdrant_client",
 ]
+

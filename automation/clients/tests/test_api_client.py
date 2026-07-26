@@ -1,4 +1,4 @@
-﻿from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -7,8 +7,8 @@ from automation.config.models import ApiConfig
 from automation.clients.api_client import ApiClient
 from automation.clients.exceptions import (
     AuthenticationError,
-    ConnectionError,
-    TimeoutError,
+    ClientConnectionError,
+    ClientTimeoutError,
 )
 
 
@@ -41,7 +41,7 @@ class TestApiClient:
 
     async def test_request_without_connect_raises(self):
         client = ApiClient()
-        with pytest.raises(ConnectionError, match="Client not connected"):
+        with pytest.raises(ClientConnectionError, match="Client not connected"):
             await client.request("GET", "/test")
 
     async def test_successful_request(self):
@@ -83,7 +83,7 @@ class TestApiClient:
         client._client = mock_client
         client._connected = True
 
-        with pytest.raises(ConnectionError):
+        with pytest.raises(ClientConnectionError):
             await client.request("GET", "/api/test")
 
     async def test_request_timeout(self):
@@ -94,9 +94,10 @@ class TestApiClient:
         client._client = mock_client
         client._connected = True
 
-        with pytest.raises(TimeoutError):
+        with pytest.raises(ClientTimeoutError):
             await client.request("GET", "/api/test")
 
     async def test_config_loaded_from_defaults(self):
         client = ApiClient()
         assert client._cfg.base_url == "http://localhost:8000"
+
