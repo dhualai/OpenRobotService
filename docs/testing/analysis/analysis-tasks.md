@@ -1,38 +1,76 @@
-# Tasks Module - Task Analysis
+# 系统任务模块 - 任务分析
 
-## 1. Business Overview
-Core ticket management system. Engineers create, process, and resolve fault tickets through defined state machine.
+## 1. 功能点
+| 功能 | 说明 | 优先级 |
+|------|------|--------|
+| 工单创建 | 提交故障工单（必填标题+描述）| P0 |
+| 工单列表 | 获取工单列表（支持分页）| P0 |
+| 工单详情 | 查看单个工单详细信息 | P0 |
+| 工单更新 | 修改工单字段（标题/描述/优先级等）| P0 |
+| 状态转换 | 按状态机转换工单状态 | P0 |
+| 分配处理人 | 将工单分配给工程师 | P0 |
+| 工单删除 | 删除工单 | P1 |
+| 关键词筛选 | 按关键词筛选工单 | P1 |
+| 工单统计 | 获取工单统计数据 | P1 |
+| 评论管理 | 添加/查看工单评论 | P1 |
+| AI自动分派 | AI根据业务内容自动分配处理人 | P2 |
 
-## 2. API Endpoints
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | /api/tasks | Create ticket |
-| GET | /api/tasks | List tickets (with pagination) |
-| GET | /api/tasks/{id} | Get ticket detail |
-| PUT | /api/tasks/{id} | Update ticket |
-| PATCH | /api/tasks/{id}/status | Transition status |
-| PATCH | /api/tasks/{id}/assign | Assign engineer |
-| DELETE | /api/tasks/{id} | Delete ticket |
-| POST | /api/tasks/filter | Filter tickets |
-| GET | /api/tasks/stats/overview | Get statistics |
-| POST | /api/tasks/{id}/comments | Add comment |
-| GET | /api/tasks/{id}/comments | List comments |
-| POST | /api/tasks/{id}/ai-assign | AI auto-assign |
+## 2. 业务流程
+```
+客户提交故障 -> 创建工单(pending) -> 系统分配 -> 工程师接单(in_progress)
+  -> 工程师诊断+添加评论 -> 解决问题(resolved) -> 客户确认关闭(closed)
+  或 pending -> cancelled（取消）
+```
 
-## 3. Status Machine
+## 3. 状态流转
+```
 pending -> in_progress -> resolved -> closed
 pending -> cancelled
 in_progress -> cancelled
+```
+注意：closed和cancelled为终态，不可再次转变。
 
-## 4. Key Business Rules
-- Title and description are required for creation
-- Status transitions must follow state machine
-- Only assigner or admin can change assignment
-- Comments are immutable after creation
-- Deleted tickets are soft-deleted
+## 4. 权限控制
+| 角色 | 可操作 |
+|------|------|
+| admin | 全部权限（创建/分配/删除/查看全部）|
+| engineer | 创建工单、接单处理、添加评论 |
+| customer | 只能查看自己创建的工单 |
 
-## 5. Risk Areas
-- Invalid status transitions returning 400
-- Concurrent status updates
-- Large comment volumes on single ticket
-- AI-assign confidence scoring
+## 5. 接口列表
+| 方法 | 路径 | 说明 | 版本 |
+|------|------|------|------|
+| POST | /api/tasks | 创建工单 | v1 |
+| GET | /api/tasks | 工单列表 | v1 |
+| GET | /api/tasks/{id} | 工单详情 | v1 |
+| PUT | /api/tasks/{id} | 更新工单 | v1 |
+| PATCH | /api/tasks/{id}/status | 状态转换 | v1 |
+| PATCH | /api/tasks/{id}/assign | 分配处理人 | v1 |
+| DELETE | /api/tasks/{id} | 删除工单 | v1 |
+| POST | /api/tasks/filter | 筛选工单 | v1 |
+| GET | /api/tasks/stats/overview | 工单统计 | v1 |
+| POST | /api/tasks/{id}/comments | 添加评论 | v1 |
+| GET | /api/tasks/{id}/comments | 评论列表 | v1 |
+| POST | /api/tasks/{id}/ai-assign | AI自动分派 | v1 |
+
+## 6. 风险点
+| 风险 | 影响 | 建议处理 |
+|------|------|--------|
+| 非法状态转换 | 状态机被绕过 | 后端校验返回400 |
+| 并发状态更新 | 重复处理或状态丢失 | 乐观锁或版本号 |
+| 大序列评论输入 | 性能下降 | 字数限制 |
+| AI分派决策失败 | 高磦口置信度的错误分配 | 降级到规则匹配 |
+| 删除已分配工单 | 数据丢失 | 确认提示或软删除 |
+
+## 7. 边界条件
+| 条件 | 说明 | 预期行为 |
+|------|------|--------|
+| 工单标题为空 | 必填字段缺失 | 422 |
+| 工单ID不存在 | 获取更新删除不存在的工单 | 404 |
+| 状态值为空 | 传递空状态 | 400 |
+| 状态值无效 | 传递不存在的状态值 | 400 |
+| pending直接转closed | 跳过中间状态 | 400 |
+| 评论内容超长 | 10K+ 字符 | 422或截断 |
+| 分页size超限 | size>100 | 422或截断到100 |
+| 关键词筛选为空 | 不传参数 | 返回全部工单 |
+
