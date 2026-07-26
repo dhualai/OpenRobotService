@@ -1,20 +1,20 @@
-"""测试共用配置。
-
-项目当前 `app/__init__.py` 在 import 时即 `Base.metadata.create_all` 连 MySQL
-（见 CODEBASE_OVERVIEW.md 工程债 #1）。为让单元测试在无 DB 环境下运行，
-此处用占位 `app` / `app.models` / `app.core` 包跳过各自 `__init__.py` 的执行；
-它们的子模块（app.integrations.* / app.models.task / app.core.config 等）
-仍按真实目录路径加载。
-"""
-import os
-import sys
-import types
-
+from unittest.mock import MagicMock
+import sqlalchemy as _sa
+_sa.create_engine = MagicMock()
+_sa.engine.create_engine = MagicMock()
+import os, sys, types
 _BACKEND = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 _APP = os.path.join(_BACKEND, "app")
-
-for _name, _sub in (("app", None), ("app.models", "models"), ("app.core", "core")):
-    if _name not in sys.modules:
-        _m = types.ModuleType(_name)
-        _m.__path__ = [os.path.join(_APP, _sub)] if _sub else [_APP]
-        sys.modules[_name] = _m
+for _n, _s in [("app", None), ("app.core", "core")]:
+    if _n not in sys.modules:
+        _m = types.ModuleType(_n)
+        _m.__path__ = [os.path.join(_APP, _s)] if _s else [_APP]
+        sys.modules[_n] = _m
+if "app.core.database" not in sys.modules:
+    _d = types.ModuleType("app.core.database")
+    _d.db_manager = MagicMock()
+    _d.UserDB = MagicMock()
+    _d.init_users_db = MagicMock()
+    async def _g(): yield None
+    _d.get_async_db = _g
+    sys.modules["app.core.database"] = _d

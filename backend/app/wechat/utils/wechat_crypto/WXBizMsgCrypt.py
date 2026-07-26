@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 #-*- encoding:utf-8 -*-
 
 """ 对公众平台发送给公众账号的消息加解密示例代码.

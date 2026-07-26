@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 from typing import List, Dict, Optional, Union, AsyncGenerator
 from openai import AsyncOpenAI
 from app.core.config import settings

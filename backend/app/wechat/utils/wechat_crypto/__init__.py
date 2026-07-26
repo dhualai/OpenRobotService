@@ -1,2 +1,2 @@
-﻿from .WXBizMsgCrypt import WXBizMsgCrypt
+from .WXBizMsgCrypt import WXBizMsgCrypt
 from .ierror import *

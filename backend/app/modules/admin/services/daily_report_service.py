@@ -1,4 +1,4 @@
-﻿from typing import List, Optional, Dict
+from typing import List, Optional, Dict
 import json
 from datetime import datetime
 from sqlalchemy import create_engine

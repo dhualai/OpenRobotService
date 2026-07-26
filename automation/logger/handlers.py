@@ -1,4 +1,4 @@
-﻿'''Custom logging handlers for console, file, and Allure output.'''
+'''Custom logging handlers for console, file, and Allure output.'''
 
 import json
 import logging

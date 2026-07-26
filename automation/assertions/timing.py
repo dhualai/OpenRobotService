@@ -1,4 +1,4 @@
-﻿import time
+import time
 from typing import Any, Callable
 
 import pytest

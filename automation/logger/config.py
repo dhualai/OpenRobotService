@@ -1,4 +1,4 @@
-﻿'''Log configuration model.'''
+'''Log configuration model.'''
 
 from typing import Optional
 from pydantic import BaseModel, Field

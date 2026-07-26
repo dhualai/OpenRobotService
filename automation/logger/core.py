@@ -1,4 +1,4 @@
-﻿'''Core logging setup: factory functions for configuring and obtaining loggers.'''
+'''Core logging setup: factory functions for configuring and obtaining loggers.'''
 
 import logging
 from typing import Optional

@@ -1,4 +1,4 @@
-﻿"""再导出 shim（MIGRATION.md 阶段 1）。真实契约已迁至 `app/schemas/project.py`。"""
+"""再导出 shim（MIGRATION.md 阶段 1）。真实契约已迁至 `app/schemas/project.py`。"""
 from app.schemas.project import (
     ProjectBase, ProjectCreate, ProjectUpdate, Project, ProjectUserRoleAssignment,
 )

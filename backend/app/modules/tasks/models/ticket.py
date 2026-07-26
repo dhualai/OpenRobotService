@@ -1,4 +1,4 @@
-﻿"""任务模型——再导出 shim（MIGRATION.md Wave 2.2）。
+"""任务模型——再导出 shim（MIGRATION.md Wave 2.2）。
 
 真实 ORM 定义已从 `app/models/ticket.py` 迁至 `app/models/task.py`。
 保持旧导入路径可用，同时提供新命名的别名。

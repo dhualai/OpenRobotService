@@ -1,4 +1,4 @@
-﻿'''Tests for the unified logging module.'''
+'''Tests for the unified logging module.'''
 
 import json
 import logging
