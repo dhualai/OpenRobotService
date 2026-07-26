@@ -1,1 +1,40 @@
-﻿
+description: "RAG retrieval test scenarios for robot troubleshooting"
+
+scenarios:
+  - id: "rag-001"
+    name: "Basic error code query"
+    query: "What does error code E1001 mean?"
+    expected_keywords: ["E1001", "sensor", "fault", "error"]
+    evaluator:
+      accuracy: {min_score: 0.5}
+
+  - id: "rag-002"
+    name: "Reset procedure query"
+    query: "How do I reset the robot after a fault?"
+    expected_keywords: ["reset", "power", "restart"]
+    evaluator:
+      accuracy: {min_score: 0.6}
+
+  - id: "rag-003"
+    name: "Maintenance schedule query"
+    query: "When should I perform regular maintenance?"
+    expected_keywords: ["maintenance", "schedule", "check"]
+    evaluator:
+      accuracy: {min_score: 0.5}
+      hallucination: {max_uncertainty: 2}
+
+  - id: "rag-004"
+    name: "Empty or irrelevant query"
+    query: "Hello"
+    expected_keywords: []
+    evaluator:
+      accuracy: {min_score: 0.0}
+      hallucination: {max_uncertainty: 3}
+
+  - id: "rag-005"
+    name: "Multi-part diagnostic question"
+    query: "My robot shows error 2024 and won't move. What should I check first?"
+    expected_keywords: ["error", "check", "diagnostic"]
+    evaluator:
+      accuracy: {min_score: 0.5}
+      hallucination: {max_uncertainty: 2}
