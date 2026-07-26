@@ -1,0 +1,46 @@
+[project]
+name = "openrobot-automation"
+version = "0.1.0"
+description = "OpenRobotService AI Automation Test Platform"
+requires-python = ">=3.11"
+dependencies = [
+    "pytest>=8.0",
+    "pytest-asyncio",
+    "httpx",
+    "playwright",
+    "allure-pytest",
+    "factory-boy",
+    "pyyaml",
+    "pydantic", "pydantic-settings",
+    "openai",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["config","logger","clients","assertions","fixtures","api","ui","ai","db","e2e"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "api: API integration tests",
+    "ui: UI automation tests",
+    "ai: AI evaluation tests",
+    "db: Database validation tests",
+    "e2e: End-to-end workflow tests",
+    "slow: Tests that take longer than 30 seconds",
+    "smoke: Smoke tests (fast lane)",
+    "flaky: Known flaky tests",
+    "mock: Tests using mock services",
+]
+addopts = "-ra --strict-markers --alluredir=output/allure-results"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 WXBizMsgCrypt_OK = 0
 WXBizMsgCrypt_ValidateSignature_Error = -40001

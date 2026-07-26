@@ -1,4 +1,4 @@
-﻿from .user import User, UserCreate, UserUpdate, UserDetail, UserLogin, UserInDB
+from .user import User, UserCreate, UserUpdate, UserDetail, UserLogin, UserInDB
 from .token import Token, RefreshToken, TokenData
 from .role import Role, RoleCreate, RoleAssignment, RoleBatchRemoval
 from .project import Project, ProjectCreate, ProjectUpdate, ProjectUserRoleAssignment

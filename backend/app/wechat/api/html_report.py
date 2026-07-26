@@ -1,4 +1,4 @@
-﻿import json
+import json
 def generate_chart_data(agv_data):
     """生成图表所需的数据格式"""
     # 按机器人分组的数据（用于分组柱状图）

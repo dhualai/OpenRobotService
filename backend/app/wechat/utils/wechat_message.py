@@ -1,4 +1,4 @@
-﻿import time
+import time
 import logging
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Any, Optional

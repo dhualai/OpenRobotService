@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from app.utils.minio_client import minio_client
 from app.core.config import settings
 

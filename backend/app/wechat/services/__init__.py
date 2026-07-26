@@ -1,4 +1,4 @@
-﻿from app.wechat.services.wechat_service import wechat_service
+from app.wechat.services.wechat_service import wechat_service
 from app.wechat.services.auth_service import auth_service
 from app.wechat.services.data_service import data_service
 from app.wechat.services.project_ticket_service import project_ticket_service

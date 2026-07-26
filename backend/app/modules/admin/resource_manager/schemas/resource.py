@@ -1,4 +1,4 @@
-﻿from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from app.modules.admin.resource_manager.models.resource import ResourceType, ResourceStatus

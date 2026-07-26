@@ -1,4 +1,4 @@
-﻿import json
+import json
 import traceback
 from typing import Dict, Any, List
 from sqlalchemy import create_engine, desc

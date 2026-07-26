@@ -1,4 +1,4 @@
-﻿from fastapi import Request, Response, HTTPException
+from fastapi import Request, Response, HTTPException
 from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from datetime import datetime

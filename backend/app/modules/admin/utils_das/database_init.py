@@ -1,4 +1,4 @@
-﻿from sqlalchemy import create_engine
+from sqlalchemy import create_engine
 from app.modules.admin.models.models import Base
 from app.modules.admin.utils_das.config import DATABASE_URL
 import logging

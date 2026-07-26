@@ -1,4 +1,4 @@
-﻿"""资源管理路由——从 fqa/resource_manager 迁移而来。"""
+"""资源管理路由——从 fqa/resource_manager 迁移而来。"""
 from fastapi import APIRouter
 from app.modules.admin.resource_manager.api import resource, resource_folder, minio
 
