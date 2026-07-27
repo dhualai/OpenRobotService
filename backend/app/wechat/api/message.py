@@ -55,12 +55,13 @@ async def api_send_link_message(request: SendLinkMessageRequest, credentials: Op
         return ApiResponse(code=500, message=str(e))
 
 
-@router.post("/webnotify", response_model=NotificationResponse)
-async def api_send_notification(request: SendNotificationRequest, request_obj: Request, credentials: Optional = admin_auth):
+async def send_notification_core(payload: dict, token: str = None):
     try:
         import asyncio
         from datetime import datetime
-        token = request_obj.headers.get("Authorization", "").replace("Bearer ", "")
+        
+        request = SendNotificationRequest(**payload)
+        
         logger.info(token)
         
         users = await PermissionService.get_user_list(None, token)
@@ -183,18 +184,25 @@ async def api_send_notification(request: SendNotificationRequest, request_obj: R
             timestamp=datetime.now().isoformat()
         )
         
-        return response
+        return response.dict()
     except Exception as e:
-        logger.error(f'API发送通知异常: {e}', exc_info=True)
+        logger.error(f'发送通知异常: {e}', exc_info=True)
         from datetime import datetime
         return NotificationResponse(
             code=500,
             message=str(e),
-            message_id=request.message_id if hasattr(request, 'message_id') else "",
+            message_id=payload.get('message_id', ""),
             data={
                 "status": "failed",
                 "send_time": datetime.now().isoformat(),
                 "recipients": []
             },
             timestamp=datetime.now().isoformat()
-        )
+        ).dict()
+
+
+@router.post("/webnotify", response_model=NotificationResponse)
+async def api_send_notification(request: SendNotificationRequest, request_obj: Request, credentials: Optional = admin_auth):
+    token = request_obj.headers.get("Authorization", "").replace("Bearer ", "")
+    result = await send_notification_core(request.dict(), token)
+    return NotificationResponse(**result)
