@@ -39,6 +39,16 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+class User(Base):
+    """用户表（仅查询，字段对齐 backend/app/models/identity.py 的 UserDB）"""
+    __tablename__ = "users"
+
+    id = Column(String(64), primary_key=True)
+    username = Column(String(64), unique=True, nullable=False)
+    name = Column(String(128), nullable=True)
+    status = Column(String(32), default="inactive", nullable=False)
+
+
 class Ticket(Base):
     """工单表（仅查询，字段对齐 backend/app/models/ticket.py）"""
     __tablename__ = "tickets"
