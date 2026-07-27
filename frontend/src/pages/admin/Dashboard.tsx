@@ -74,7 +74,7 @@ export default function Dashboard() {
 
       <div style={{ padding: '16px 16px 32px' }}>
         {/* ============ 上：工单状态监测概览 ============ */}
-        <SectionTitle emoji="🎫" title="工单状态监测" onMore={() => navigate('/admin/ticket-monitor')} />
+        <SectionTitle emoji="🎫" title="工单状态监测" onMore={() => navigate('/tasks')} />
         <div className="dashboard-section">
           <div className="dashboard-section__row">
             <div className="dashboard-section__chart">

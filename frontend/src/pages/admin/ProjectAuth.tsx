@@ -10,8 +10,12 @@ interface Project { id?: string; code?: string; name: string; }
 
 // 关联人员可选角色列表
 const ASSOCIATE_ROLES = ['实施', '数据分析师', '数据查看', '研发项目经理', '管理员', '项目对接人'];
-// 用户列表占位：后续接入真实用户列表接口后替换为数字 1-9
-const PLACEHOLDER_USERS = Array.from({ length: 9 }, (_, i) => String(i + 1));
+// 用户列表占位：待接入后端项目人员绑定接口前，先用固定人员名单代替
+const PLACEHOLDER_USERS = [
+  '董华来', '张文星', '罗昊', '张俊磊', '胡健楠', '白永奇', '贾爽', '耿洪秀', '陈连鑫',
+  '姜钦阳', '刘青源', '毛梦晴', '齐子谦', '田树政', '汪海波', '王卓', '吴佳秀', '吴彦清',
+  '夏泽龙', '徐浩南', '张会丽', '朱珊珊',
+];
 
 interface AssociateItem { id: string; userId: string; role: string; }
 
@@ -185,7 +189,7 @@ export default function ProjectAuth() {
           {associateList.map((a) => (
             <div key={a.id} style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ fontSize: 13, color: '#666' }}>用户 {a.userId} - {a.role}</div>
+                <div style={{ fontSize: 13, color: '#666' }}>{a.userId} - {a.role}</div>
                 <Button
                   size="small"
                   theme="danger"
@@ -215,9 +219,9 @@ export default function ProjectAuth() {
                 key={uid}
                 onClick={() => setAssociateUserId(uid)}
                 style={{
-                  width: 40, height: 40, borderRadius: 8,
+                  height: 36, padding: '0 14px', borderRadius: 18,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  cursor: 'pointer', fontSize: 14, fontWeight: 500,
+                  cursor: 'pointer', fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap',
                   background: associateUserId === uid ? '#0052d9' : '#f5f5f5',
                   color: associateUserId === uid ? '#fff' : '#333',
                   border: associateUserId === uid ? '1px solid #0052d9' : '1px solid transparent',
