@@ -11,7 +11,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Tabs, TabPanel, Loading, Popup, Button, DateTimePicker } from 'tdesign-mobile-react';
 import ReactECharts from 'echarts-for-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
-import { generateReport, type ReportPeriod, type ReportResult, type ReportSection } from '@/api/report';
+import { generateReport, generateReportStream, readReportStream, type ReportPeriod, type ReportResult, type ReportSection } from '@/api/report';
 
 const CHART_COLORS = ['#0052d9', '#2ba471', '#e37318', '#d54941', '#8e5fd9', '#00a3c4', '#999999'];
 
@@ -109,26 +109,50 @@ export default function DailySummaryAgent() {
   const [report, setReport] = useState<ReportResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // 流式状态
+  const [useStream, setUseStream] = useState(true);
+  const [streamText, setStreamText] = useState('');
+  const [isStreaming, setIsStreaming] = useState(false);
 
-  const fetchReport = useCallback(async (p: ReportPeriod, d: string) => {
+  const fetchReport = useCallback(async (p: ReportPeriod, d: string, stream: boolean) => {
     setLoading(true);
     setError(null);
-    try {
-      const data = await generateReport({ period: p, date: d });
-      setReport(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setReport(null);
-    } finally {
-      setLoading(false);
+    setReport(null);
+    setStreamText('');
+
+    if (stream) {
+      // 流式模式：SSE 增量渲染
+      setIsStreaming(true);
+      try {
+        const response = await generateReportStream({ period: p, date: d });
+        await readReportStream(response, (text) => {
+          setStreamText(text);
+          setLoading(false); // 第一个 chunk 到达时关闭 loading
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setIsStreaming(false);
+        setLoading(false);
+      }
+    } else {
+      // 非流式模式：一次性返回结构化数据
+      try {
+        const data = await generateReport({ period: p, date: d });
+        setReport(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    fetchReport(period, date);
-  }, [period, date, fetchReport]);
+    fetchReport(period, date, useStream);
+  }, [period, date, useStream, fetchReport]);
 
-  const handleRefresh = () => fetchReport(period, date);
+  const handleRefresh = () => fetchReport(period, date, useStream);
 
   return (
     <div style={{ padding: 16 }}>
@@ -143,19 +167,53 @@ export default function DailySummaryAgent() {
         <Button theme="light" block onClick={() => setPickerVisible(true)}>
           📅 {date}
         </Button>
-        <Button theme="light" onClick={handleRefresh}>🔄 刷新</Button>
+        <Button theme="light" onClick={handleRefresh} disabled={isStreaming}>
+          {isStreaming ? '⏳ 生成中...' : '🔄 刷新'}
+        </Button>
+      </div>
+
+      {/* 流式/非流式切换 */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center', fontSize: 13, color: '#666' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={useStream}
+            onChange={(e) => setUseStream(e.target.checked)}
+            disabled={isStreaming}
+          />
+          流式输出
+        </label>
+        <span style={{ fontSize: 12, color: '#999' }}>
+          {useStream ? '实时显示生成过程' : '等待完成后一次性展示'}
+        </span>
       </div>
 
       {loading && <Loading text="AI 正在生成报告，请稍候..." />}
 
-      {!loading && error && (
+      {error && !loading && (
         <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>
           <p>报告生成失败：{error}</p>
           <Button theme="primary" onClick={handleRefresh} style={{ marginTop: 12 }}>重试</Button>
         </div>
       )}
 
-      {!loading && !error && report && (
+      {/* ─── 流式模式：增量 Markdown 渲染 ─── */}
+      {useStream && streamText && (
+        <div style={cardStyle()}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+            <span style={{ fontSize: 15, fontWeight: 600 }}>
+              {period === 'daily' ? '日报' : '周报'} · {date}
+            </span>
+            {isStreaming && (
+              <span style={{ fontSize: 11, color: '#0052d9', animation: 'pulse 1.5s infinite' }}>● 生成中</span>
+            )}
+          </div>
+          <MarkdownRenderer content={streamText} compact />
+        </div>
+      )}
+
+      {/* ─── 非流式模式：结构化展示 ─── */}
+      {!useStream && !loading && !error && report && (
         <>
           <div style={cardStyle()}>
             <Row label={period === 'daily' ? '报告日期' : '周报周期'} value={report.date_range} />
@@ -171,7 +229,7 @@ export default function DailySummaryAgent() {
         </>
       )}
 
-      {!loading && !error && report && report.sections.length === 0 && (
+      {!loading && !error && !useStream && report && report.sections.length === 0 && (
         <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>暂无报告数据</div>
       )}
 
