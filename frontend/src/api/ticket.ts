@@ -24,18 +24,18 @@ export interface TicketComment {
   updated_at: string;
 }
 
-/** 一键催办：通知处理人 */
-export const urgeTicket = (ticketId: number | string) =>
+/** 一键催办：通知指定用户 */
+export const urgeTicket = (ticketId: number | string, assignedTo: string) =>
   request('/cuiban-notification', {
     method: 'POST',
-    body: JSON.stringify({ ticket_id: Number(ticketId), notify_type: 1 }),
+    body: JSON.stringify({ ticket_id: Number(ticketId), notify_type: 1, assigned_to: assignedTo }),
   });
 
-/** 上报：通知上级/管理员（to_admin=true 区别于催办处理人） */
-export const reportTicket = (ticketId: number | string) =>
+/** 上报：通知指定用户 + 管理员 */
+export const reportTicket = (ticketId: number | string, assignedTo: string) =>
   request('/cuiban-notification', {
     method: 'POST',
-    body: JSON.stringify({ ticket_id: Number(ticketId), notify_type: 1, to_admin: true }),
+    body: JSON.stringify({ ticket_id: Number(ticketId), notify_type: 1, assigned_to: assignedTo, to_admin: true }),
   });
 
 /** 撤回：将工单状态置为已取消（Canceled）

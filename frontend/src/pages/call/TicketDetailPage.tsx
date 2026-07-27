@@ -3,15 +3,17 @@
 // 路由 /app/call/ticket/:id 中的 :id 即 AI 会话 session_id
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Navbar, Button, Toast, Loading, Tag } from 'tdesign-mobile-react';
+import { Navbar, Button, Toast, Loading, Tag, Popup } from 'tdesign-mobile-react';
 import { NotificationIcon, UploadIcon, RollbackIcon } from 'tdesign-icons-react';
 import { qaGetTicket } from '@/api/ai';
-import { cancelTicket, uploadCommentAttachment } from '@/api/ticket';
+import { cancelTicket, urgeTicket, reportTicket, uploadCommentAttachment } from '@/api/ticket';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import SafeHtml from '@/shared/components/SafeHtml';
+import UserSelect from '@/shared/components/UserSelect';
 import { useAuthStore } from '@/stores/auth';
 import { formatDateTime, formatTime } from '@/shared/utils/url';
+import type { UserItem } from '@/api/users';
 
 interface AiDiagnosis {
   problem_summary?: string;
@@ -93,31 +95,35 @@ export default function TicketDetailPage() {
     }
   }, [ticket?.comments?.length]);
 
-  const handleUrge = async () => {
-    if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法催办', theme: 'warning' }); return; }
-    try {
-      // 真实接口：后端任务服务催办通知（后端要求工单已设置截止时间且已分配处理人）
-      await request('/cuiban-notification', {
-        method: 'POST',
-        body: JSON.stringify({ ticket_id: Number(ticket.ticket_id), notify_type: 1 }),
-      });
-      Toast({ message: '已催办，已通知处理人', theme: 'success' });
-    } catch (err) {
-      Toast({ message: `催办失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    }
+  // 催办/上报：先选用户再调接口
+  const [actionType, setActionType] = useState<'urge' | 'report'>('urge');
+  const [actionUser, setActionUser] = useState<UserItem | null>(null);
+  const [showActionPopup, setShowActionPopup] = useState(false);
+  const [acting, setActing] = useState(false);
+
+  const openActionPopup = (type: 'urge' | 'report') => {
+    if (!ticket?.ticket_id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    setActionType(type);
+    setActionUser(null);
+    setShowActionPopup(true);
   };
 
-  // 上报：催办通知功能，上报给上级/管理员（to_admin=true 区别于催办处理人）
-  const handleReport = async () => {
-    if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法上报', theme: 'warning' }); return; }
+  const handleActionConfirm = async () => {
+    if (!ticket?.ticket_id || !actionUser) { Toast({ message: '请选择通知用户', theme: 'warning' }); return; }
+    setActing(true);
     try {
-      await request('/cuiban-notification', {
-        method: 'POST',
-        body: JSON.stringify({ ticket_id: Number(ticket.ticket_id), notify_type: 1, to_admin: true }),
-      });
-      Toast({ message: '已上报，已通知上级', theme: 'success' });
+      if (actionType === 'urge') {
+        await urgeTicket(ticket.ticket_id, actionUser.id);
+        Toast({ message: '已催办，已通知处理人', theme: 'success' });
+      } else {
+        await reportTicket(ticket.ticket_id, actionUser.id);
+        Toast({ message: '已上报，已通知上级', theme: 'success' });
+      }
+      setShowActionPopup(false);
     } catch (err) {
-      Toast({ message: `上报失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      Toast({ message: `${actionType === 'urge' ? '催办' : '上报'}失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setActing(false);
     }
   };
 
@@ -303,7 +309,7 @@ export default function TicketDetailPage() {
               value={commentText}
               onChange={(e) => setCommentText(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleAddComment(); }}
-              placeholder={ticket?.ticket_id ? '直接评论或者 @AI 进行讨论。' : '工单号缺失，无法评论'}
+              placeholder={ticket?.ticket_id ? '参与讨论…' : '工单号缺失，无法评论'}
               disabled={submittingComment || !ticket?.ticket_id}
             />
             <button type="button" className="detail-chat-attach" onClick={() => fileInputRef.current?.click()} disabled={submittingComment || !ticket?.ticket_id} aria-label="上传图片或文件">
@@ -324,12 +330,31 @@ export default function TicketDetailPage() {
         {/* 操作 */}
         <div className="detail-actions">
           <div className="detail-actions__btns">
-            <Button size="small" variant="outline" theme="default" icon={<NotificationIcon />} onClick={handleUrge}>催办</Button>
-            <Button size="small" variant="outline" theme="default" icon={<UploadIcon />} onClick={handleReport}>上报</Button>
+            <Button size="small" variant="outline" theme="default" icon={<NotificationIcon />} onClick={() => openActionPopup('urge')}>催办</Button>
+            <Button size="small" variant="outline" theme="default" icon={<UploadIcon />} onClick={() => openActionPopup('report')}>上报</Button>
             <Button size="small" variant="outline" theme="default" icon={<RollbackIcon />} onClick={handleCancel}>撤回</Button>
           </div>
         </div>
       </div>
+
+      {/* 催办/上报 用户选择弹窗 */}
+      <Popup visible={showActionPopup} onClose={() => setShowActionPopup(false)} placement="bottom" showOverlay>
+        <div className="conv-dialog">
+          <h4 className="conv-dialog__title">{actionType === 'urge' ? '催办 — 选择通知用户' : '上报 — 选择通知用户'}</h4>
+          <div style={{ marginBottom: 16 }}>
+            <UserSelect
+              value={actionUser?.id ?? null}
+              onChange={(u) => setActionUser(u)}
+              placeholder="选择通知对象"
+              title="选择通知用户"
+            />
+          </div>
+          <div className="conv-dialog__btns">
+            <Button block theme="default" onClick={() => setShowActionPopup(false)}>取消</Button>
+            <Button block theme="primary" loading={acting} onClick={handleActionConfirm}>确定</Button>
+          </div>
+        </div>
+      </Popup>
     </div>
   );
 }

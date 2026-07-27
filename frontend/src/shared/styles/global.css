@@ -2110,6 +2110,47 @@ html, body, #root {
   border: 2px solid #fff;
 }
 .user-panel__info { flex: 1; min-width: 0; }
+.user-panel__name-row { display: flex; align-items: center; gap: 6px; min-height: 24px; }
 .user-panel__name { font-size: 17px; font-weight: 600; color: #222; line-height: 1.4; word-break: break-all; }
+.user-panel__name-edit-btn {
+  flex-shrink: 0; width: 24px; height: 24px; border: none; background: none;
+  color: #bbb; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; padding: 0; border-radius: 4px;
+}
+.user-panel__name-edit-btn:active { color: #0052d9; }
+.user-panel__name-edit { display: flex; align-items: center; gap: 6px; min-height: 32px; }
+.user-panel__name-edit .t-input { flex: 1; min-width: 0; }
+.user-panel__name-action {
+  flex-shrink: 0; width: 30px; height: 30px; border: none; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; padding: 0; background: #f2f3f5; color: #555;
+}
+.user-panel__name-action--confirm { background: #0052d9; color: #fff; }
+.user-panel__name-action:disabled { opacity: 0.5; cursor: not-allowed; }
 .user-panel__id { font-size: 12px; color: #999; margin-top: 2px; word-break: break-all; }
 .user-panel__hint { font-size: 12px; color: #bbb; margin-bottom: 16px; }
+
+/* 头像全屏预览遮罩 */
+.avatar-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: avatar-fade-in 0.15s ease-out;
+  cursor: zoom-out;
+}
+.avatar-fullscreen__img {
+  max-width: 92vw;
+  max-height: 92vh;
+  border-radius: 8px;
+  object-fit: contain;
+  -webkit-user-select: none;
+  user-select: none;
+}
+@keyframes avatar-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

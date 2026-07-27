@@ -233,6 +233,12 @@ class ResourceService:
             resource_url = f"{settings.MINIO_BUCKET}/{object_name}"
             resource_url = re.sub(r'/+', '/', resource_url)
 
+            # 确保 bucket 存在（避免后端早于 MinIO 启动时漏建，上传落到不存在的 bucket）
+            try:
+                minio_client.create_bucket(settings.MINIO_BUCKET)
+            except Exception:
+                pass
+
             import asyncio
             upload_success = await asyncio.to_thread(
                 minio_client.upload_bytes, file_content, resource_url, content_type
@@ -264,6 +270,8 @@ class ResourceService:
                 "resource_hash_code": resource_hash_code,
                 "owner_id": sanitize_input(owner_id),
                 "resource_type": resource_type,
+                # 上传为同步流程，MinIO 写入成功后文件即就绪，直接置为 AVAILABLE，
+                # 否则 download 接口会因 is_available=False 返回 403，导致头像等无法回显。
                 "resource_status": ResourceStatus.AVAILABLE,
                 "resource_url": resource_url,
                 "resource_format": file_extension,

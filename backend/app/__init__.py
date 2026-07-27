@@ -57,6 +57,13 @@ async def startup_event():
     
     init_users_db()
 
+    # 确保对象存储 bucket 存在（MinIO 未启动仅告警，不阻塞启动）
+    try:
+        from app.utils.minio_client import ensure_minio_buckets
+        ensure_minio_buckets()
+    except Exception as e:  # noqa: BLE001
+        print(f"[MinIO] 初始化 bucket 失败: {e}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.BACKEND_CORS_ORIGINS,

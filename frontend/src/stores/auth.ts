@@ -53,7 +53,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     localStorage.setItem(STORAGE_KEYS.REFRESH_TOKEN, authData.refresh_token);
     localStorage.setItem(STORAGE_KEYS.TOKEN_EXPIRES_AT, String(expiresAt));
     localStorage.setItem(STORAGE_KEYS.USERNAME, user);
-    get().fetchUserDetails(user, authData.access_token);
+    // 登录后异步回填姓名/头像/角色，使 Navbar 头像在刷新/重登后持续展示
+    void get().fetchUserDetails(user, authData.access_token);
   },
 
   logout: () => {
