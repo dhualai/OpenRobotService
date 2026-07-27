@@ -554,6 +554,12 @@ class AiTaskAgent:
                 pass
 
         # 4. LLM
+        # 如果用户问了附件/日志/图片，但工单没有任何附件分析结果 → 明确告知 LLM
+        if not facultative and query:
+            att_mentions = ["日志", "附件", "图片", "截图", "log", "image", "photo"]
+            if any(kw in query.lower() for kw in att_mentions):
+                facultative = "⚠️ 当前工单没有日志、图片或任何可解析的附件。请如实告知工程师，不要编造。"
+
         diag_summary = f"推测: {' / '.join(ctx.hypotheses) if ctx.hypotheses else '无'}"
         prompt = DISCUSS_USER_TEMPLATE.format(
             title=ctx.title or "",
