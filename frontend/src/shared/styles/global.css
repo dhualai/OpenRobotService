@@ -1436,14 +1436,6 @@ html, body, #root {
 .dashboard-more-card__emoji { font-size: 22px; }
 .dashboard-more-card__label { font-size: 12px; color: #333; }
 
-/* ===== 项目管理二级页面（项目导入 + 项目授权 上下并列） ===== */
-.project-manage-section-title {
-  font-size: 17px;
-  font-weight: 600;
-  color: #1a1a1a;
-  padding: 16px 16px 4px;
-}
-.project-manage-section-title:first-child { padding-top: 4px; }
 
 .dashboard-section__subtitle { font-size: 13px; color: #666; margin: 0 0 8px; font-weight: 500; }
 .dashboard-section__row {
@@ -1668,47 +1660,28 @@ html, body, #root {
 }
 .detail-card__header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .detail-card__meta { display: flex; align-items: center; gap: 8px; }
-.detail-card__action-btn {
+.detail-card__action-btn,
+.detail-card__action-btn::before,
+.detail-card__action-btn::after,
+.detail-card__action-btn > * {
   padding: 3px 10px !important;
   border-radius: 10px !important;
   font-size: 12px !important;
   font-weight: 500 !important;
   transition: all 0.2s ease !important;
+  box-shadow: 0 1px 4px rgba(0, 82, 217, 0.1) !important;
   border: none !important;
   border-width: 0 !important;
   border-style: none !important;
   outline: none !important;
+  background-image: none !important;
 }
 .detail-card__action-btn:hover {
   transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 82, 217, 0.25) !important;
 }
 .detail-card__action-btn:active {
   transform: translateY(0);
-}
-.detail-card__action-btns {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-.detail-card__action-btn.t-button--theme-success,
-.detail-card__action-btn.t-button--theme-success > * {
-  background-color: #52c41a !important;
-  color: #fff !important;
-  box-shadow: 0 1px 4px rgba(82, 196, 26, 0.25) !important;
-  background-image: none !important;
-}
-.detail-card__action-btn.t-button--theme-warning,
-.detail-card__action-btn.t-button--theme-warning > * {
-  background-color: #faad14 !important;
-  color: #fff !important;
-  box-shadow: 0 1px 4px rgba(250, 173, 20, 0.25) !important;
-  background-image: none !important;
-}
-.detail-card__action-btn:not(.t-button--theme-success):not(.t-button--theme-warning) {
-  box-shadow: 0 1px 4px rgba(0, 82, 217, 0.1) !important;
-}
-.detail-card__action-btn:not(.t-button--theme-success):not(.t-button--theme-warning):hover {
-  box-shadow: 0 4px 12px rgba(0, 82, 217, 0.25) !important;
 }
 .detail-card__type { font-size: 12px; color: #888; }
 .detail-card__id { color: #bbb; font-size: 12px; }
@@ -2100,3 +2073,43 @@ html, body, #root {
 .conv-dialog__btns > button { flex: 1; }
 .conv-delete-confirm-btn { background: rgba(213, 73, 65, 0.1) !important; color: #d54941 !important; border: 1px solid rgba(213, 73, 65, 0.3) !important; }
 .navbar-menu-btn { background: none; border: none; padding: 4px 8px; color: inherit; cursor: pointer; display: flex; align-items: center; }
+
+/* ===== 个人信息中心（UserAvatarMenu）===== */
+.user-avatar-menu__trigger {
+  background: none; border: none; padding: 2px; margin: 0;
+  color: inherit; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 50%;
+}
+.user-avatar-menu__trigger:active { opacity: 0.7; }
+.user-avatar-menu__thumb {
+  width: 28px; height: 28px; border-radius: 50%;
+  object-fit: cover; display: block;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* 个人信息面板（顶部弹出） */
+.user-panel {
+  padding: 20px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  background: #fff; border-radius: 0 0 16px 16px;
+}
+.user-panel__profile { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+.user-panel__avatar {
+  position: relative; flex-shrink: 0;
+  width: 56px; height: 56px; border-radius: 50%;
+  border: none; background: #f2f3f5; color: #bbb;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; padding: 0; overflow: visible;
+}
+.user-panel__avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
+.user-panel__avatar-badge {
+  position: absolute; right: -2px; bottom: -2px;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: #0052d9; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid #fff;
+}
+.user-panel__info { flex: 1; min-width: 0; }
+.user-panel__name { font-size: 17px; font-weight: 600; color: #222; line-height: 1.4; word-break: break-all; }
+.user-panel__id { font-size: 12px; color: #999; margin-top: 2px; word-break: break-all; }
+.user-panel__hint { font-size: 12px; color: #bbb; margin-bottom: 16px; }

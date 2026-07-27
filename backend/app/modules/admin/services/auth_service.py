@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+﻿from typing import Dict, Any, Optional
 from datetime import timedelta
 
 from app.core.database import db_manager, get_user_with_roles

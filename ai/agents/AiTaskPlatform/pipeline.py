@@ -554,6 +554,12 @@ class AiTaskAgent:
                 pass
 
         # 4. LLM
+        # 如果用户问了附件/日志/图片，但工单没有任何附件分析结果 → 明确告知 LLM
+        if not facultative and query:
+            att_mentions = ["日志", "附件", "图片", "截图", "log", "image", "photo"]
+            if any(kw in query.lower() for kw in att_mentions):
+                facultative = "⚠️ 当前工单没有日志、图片或任何可解析的附件。请如实告知工程师，不要编造。"
+
         diag_summary = f"推测: {' / '.join(ctx.hypotheses) if ctx.hypotheses else '无'}"
         prompt = DISCUSS_USER_TEMPLATE.format(
             title=ctx.title or "",
@@ -608,61 +614,139 @@ class AiTaskAgent:
             db.close()
 
     # ============================================================
-    # summarize — 讨论摘要
+    # summarize — 讨论摘要（后端触发 → 扫描所有活跃工单 → 逐条判断生成）
     # ============================================================
 
-    async def summarize(
-        self, task_id: str, title: str = "", description: str = "",
-        diagnosis_summary: str = "", discussion_history: list = None,
-        previous_summary: str = "",
-    ) -> dict:
-        """纯摘要生成服务：后端传入工单信息+讨论记录 → LLM 生成摘要 → 返回。
+    _SUMMARY_MIN_NEW_COMMENTS = 2
+    _SUMMARY_ACTIVE_STATUSES = ("new", "pending", "in_progress")
 
-        如果 previous_summary 非空，做增量总结（融入新讨论到已有摘要）。
-        不做 DB 操作、不写 task_comments。后端决定触发时机和数据来源。
-        """
+    async def summarize_batch(self) -> dict:
+        """后端触发入口：扫描所有活跃工单 → 逐条判断是否需生成摘要 → 写 task_comments"""
+        from app.models.task import Task, TaskComment, TaskStatus
+        from app.core.database import SessionLocal
+
         t0 = time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
 
-        # 组装讨论文本
-        history_items = discussion_history or []
-        history_lines = []
-        for item in history_items[-20:]:
-            author = item.get("author", item.get("created_by", "?"))
-            content = str(item.get("content", ""))[:200]
-            history_lines.append(f"[{author}] {content}")
-        history_text = "\n".join(history_lines) if history_lines else "（暂无讨论）"
+        db = SessionLocal()
+        try:
+            # 获取所有活跃工单
+            tasks = db.query(Task).filter(
+                Task.status == TaskStatus.IN_PROGRESS
+            ).all()
+        finally:
+            db.close()
 
-        if previous_summary:
-            # 增量模式：只需上次摘要 + 新增讨论
+        results = []
+        for task in tasks:
+            try:
+                r = await self._summarize_one(str(task.id))
+                results.append(r)
+            except Exception as e:
+                logger.error(f"Summarize #{task.id} failed: {e}")
+                results.append({"task_id": str(task.id), "error": str(e)[:100]})
+
+        generated = sum(1 for r in results if not r.get("skipped") and not r.get("error"))
+        skipped = sum(1 for r in results if r.get("skipped"))
+        failed = sum(1 for r in results if r.get("error"))
+
+        total_ms = round((time.perf_counter() - t0) * 1000)
+        logger.info(f"Summarize batch done: {len(tasks)}工单, {generated}生成/{skipped}跳过/{failed}失败, {total_ms}ms")
+        return {
+            "total": len(tasks),
+            "generated": generated,
+            "skipped": skipped,
+            "failed": failed,
+            "items": results,
+            "_total_ms": total_ms,
+        }
+
+    async def _summarize_one(self, task_id: str) -> dict:
+        """单条工单摘要：读DB→判断→生成→写DB"""
+        from app.models.task import Task, TaskComment
+        from app.core.database import SessionLocal
+
+        t0 = time.perf_counter()
+        tid_int = int(task_id)
+
+        db = SessionLocal()
+        try:
+            comments = db.query(TaskComment).filter(
+                TaskComment.task_id == tid_int
+            ).order_by(TaskComment.created_at.asc()).all()
+
+            last_summary_at = None
+            last_summary_text = ""
+            for c in reversed(comments):
+                if c.created_by == "AI任务助手" and (c.content or "").startswith("📝 讨论摘要"):
+                    last_summary_at = c.created_at
+                    last_summary_text = c.content.replace("📝 讨论摘要\n\n", "").strip()
+                    break
+
+            new_comments = []
+            for c in comments:
+                if c.created_by == "AI任务助手":
+                    continue
+                if last_summary_at and c.created_at <= last_summary_at:
+                    continue
+                new_comments.append(c)
+
+            task = db.query(Task).filter(Task.id == tid_int).first()
+            task_title = task.title if task else ""
+            task_desc = task.description if task else ""
+            diag = (task.metadata_info or {}).get("diagnosis", {}) if task else {}
+            diag_summary = diag.get("problem_summary", "") or ""
+        finally:
+            db.close()
+
+        if len(new_comments) < self._SUMMARY_MIN_NEW_COMMENTS:
+            return {
+                "task_id": task_id,
+                "skipped": True,
+                "reason": f"新评论不足({len(new_comments)}/{self._SUMMARY_MIN_NEW_COMMENTS})",
+                "new_comments": len(new_comments),
+                "_total_ms": round((time.perf_counter() - t0) * 1000),
+            }
+
+        # 组装 Prompt
+        history_lines = []
+        for c in new_comments[-20:]:
+            author = c.created_by_name or c.created_by or "?"
+            content = (c.content or "")[:200]
+            history_lines.append(f"[{author}] {content}")
+        history_text = "\n".join(history_lines) if history_lines else ""
+
+        if last_summary_text:
             prompt = SUMMARIZE_INCREMENTAL_TEMPLATE.format(
-                previous_summary=previous_summary,
+                previous_summary=last_summary_text,
                 discussion_history=history_text,
             )
         else:
-            # 首次模式：完整工单上下文
             prompt = SUMMARIZE_FULL_TEMPLATE.format(
-                title=title or f"工单 #{task_id}",
-                description=description or "",
-                diagnosis_summary=diagnosis_summary or "无",
+                title=task_title or f"工单 #{task_id}",
+                description=task_desc or "",
+                diagnosis_summary=diag_summary or "无",
                 discussion_history=history_text,
             )
-        t_llm = time.perf_counter()
+
         summary = await self._llm_client.complete(
             prompt=prompt, system_prompt=SUMMARIZE_SYSTEM_PROMPT,
             max_tokens=300, temperature=0.3,
         )
-        self._add_trace(self.NODE_LLM, "ok",
-                        output={"summary_chars": len(summary)},
-                        elapsed_ms=round((time.perf_counter() - t_llm) * 1000))
 
-        total_ms = round((time.perf_counter() - t0) * 1000)
+        summary_text = summary.strip()
+        comment_content = f"📝 讨论摘要\n\n{summary_text}"
+        comment_id = self._add_diagnosis_comment_short(tid_int, comment_content)
+
+        logger.info(f"Summarize #{task_id}: 生成完成, new_comments={len(new_comments)}")
         return {
             "task_id": task_id,
-            "summary": summary.strip(),
-            "_trace": self._pop_trace(),
-            "_total_ms": total_ms,
+            "summary": summary_text,
+            "new_comments": len(new_comments),
+            "skipped": False,
+            "comment_id": comment_id,
+            "_total_ms": round((time.perf_counter() - t0) * 1000),
         }
 
     # submit — 方案提交

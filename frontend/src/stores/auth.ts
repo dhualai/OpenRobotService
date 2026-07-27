@@ -8,6 +8,8 @@ const STORAGE_KEYS = {
   REFRESH_TOKEN: 'refresh_token',
   TOKEN_EXPIRES_AT: 'token_expires_at',
   USERNAME: 'username',
+  NAME: 'profile_name',
+  AVATAR_RESOURCE_ID: 'profile_avatar_resource_id',
 };
 
 export interface AuthState {
@@ -41,7 +43,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   login: (authData, user) => {
     const expiresAt = Date.now() + authData.expires_in * 1000;
     setApiToken(authData.access_token);
-    console.log('[AuthStore] login: 设置username=', user, ', name暂为空');
     set({
       token: authData.access_token,
       username: user,
@@ -52,6 +53,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     localStorage.setItem(STORAGE_KEYS.REFRESH_TOKEN, authData.refresh_token);
     localStorage.setItem(STORAGE_KEYS.TOKEN_EXPIRES_AT, String(expiresAt));
     localStorage.setItem(STORAGE_KEYS.USERNAME, user);
+    get().fetchUserDetails(user, authData.access_token);
   },
 
   logout: () => {
@@ -103,22 +105,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const request = createRequest(API_CONFIG.ADMIN.BASE_URL, '用户中心');
     try {
       setApiToken(authToken);
-      console.log('[AuthStore] fetchUserDetails: 开始获取用户详情, user=', user);
       const userData = await request<{ roles?: { project_backend?: string[] }, name?: string, avatar_resource_id?: number | null }>(
         `/users/${user}/detail`
       );
-      console.log('[AuthStore] fetchUserDetails: 获取成功, name="', userData.name, '", roles=', JSON.stringify(userData.roles));
       const projectRoles = userData.roles?.project_backend || [];
       const hasAdminRole = projectRoles.includes('admin');
+      const name = userData.name || '';
+      const avatarResourceId = userData.avatar_resource_id ?? null;
       set({
         roles: (userData.roles as Record<string, string[]>) || null,
         isAdmin: hasAdminRole,
-        name: userData.name || '',
-        avatarResourceId: userData.avatar_resource_id ?? null,
+        name,
+        avatarResourceId,
       });
+      try {
+        localStorage.setItem(STORAGE_KEYS.NAME, name);
+        if (avatarResourceId === null) {
+          localStorage.removeItem(STORAGE_KEYS.AVATAR_RESOURCE_ID);
+        } else {
+          localStorage.setItem(STORAGE_KEYS.AVATAR_RESOURCE_ID, String(avatarResourceId));
+        }
+      } catch { /* SSR safe */ }
       return hasAdminRole;
-    } catch (e) {
-      console.error('[AuthStore] fetchUserDetails: 获取失败', e);
+    } catch {
       set({ isAdmin: false });
       return false;
     }
@@ -129,22 +138,36 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       name: name !== undefined ? name : state.name,
       avatarResourceId: avatarResourceId !== undefined ? avatarResourceId : state.avatarResourceId,
     }));
+    try {
+      if (name !== undefined) localStorage.setItem(STORAGE_KEYS.NAME, name);
+      if (avatarResourceId !== undefined) {
+        if (avatarResourceId === null) {
+          localStorage.removeItem(STORAGE_KEYS.AVATAR_RESOURCE_ID);
+        } else {
+          localStorage.setItem(STORAGE_KEYS.AVATAR_RESOURCE_ID, String(avatarResourceId));
+        }
+      }
+    } catch { /* SSR safe */ }
   },
 
   checkLoginStatus: () => {
     try {
       const savedToken = localStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
       const savedUsername = localStorage.getItem(STORAGE_KEYS.USERNAME);
-      console.log('[AuthStore] checkLoginStatus: token=', !!savedToken, ', username="', savedUsername, '"');
       if (savedToken && savedUsername) {
         setApiToken(savedToken);
-        console.log('[AuthStore] checkLoginStatus: 恢复登录状态, username=', savedUsername, ', name暂为空(需要后续fetchUserDetails)');
+        const savedName = localStorage.getItem(STORAGE_KEYS.NAME) || '';
+        const savedAvatarId = localStorage.getItem(STORAGE_KEYS.AVATAR_RESOURCE_ID);
         set({
           token: savedToken,
           username: savedUsername,
           isLoggedIn: true,
           isLoading: false,
+          name: savedName,
+          avatarResourceId: savedAvatarId ? Number(savedAvatarId) : null,
         });
+        // 本地缓存先行展示，避免闪回微信ID；随后静默刷新最新的姓名/头像
+        get().fetchUserDetails(savedUsername, savedToken);
         return;
       }
     } catch { /* SSR safe */ }

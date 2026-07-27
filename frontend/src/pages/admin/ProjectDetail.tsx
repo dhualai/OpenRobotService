@@ -133,12 +133,26 @@ function cardTitleStyle(): React.CSSProperties {
   return { fontSize: 12, color: '#999', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, paddingBottom: 10, borderBottom: '1px solid #f0f0f0', marginBottom: 14 };
 }
 
+// USP项目「新建」入口复用本页作为空白详情页：路由参数 id === 'new' 时不请求已有项目，
+// 而是以该空白对象作为起点，各字段编辑仅在本地暂存，直到点击右上角「创建」才 POST /projects/
+const BLANK_PROJECT: ProjectDetailData = {
+  id: '',
+  project_code: '',
+  name: '',
+  status: '售前方案',
+  category_basis: '重要紧急',
+  issues: 0,
+  risks: 0,
+};
+
 export default function ProjectDetail() {
   const { id = '' } = useParams<{ id: string }>();
+  const isNew = id === 'new';
   const navigate = useNavigate();
   const username = useAuthStore((s) => s.username);
   const [project, setProject] = useState<ProjectDetailData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
   const [activePicker, setActivePicker] = useState<PickerKey | null>(null);
   const [noteStage, setNoteStage] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState('');
@@ -157,10 +171,22 @@ export default function ProjectDetail() {
     } finally { setLoading(false); }
   }, [id]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (isNew) {
+      setProject({ ...BLANK_PROJECT });
+      setLoading(false);
+      return;
+    }
+    load();
+  }, [isNew, load]);
 
-  // 保存单个 Project 字段（真实列），仅回写发生变化的那一个字段
+  // 保存单个 Project 字段（真实列），仅回写发生变化的那一个字段；
+  // 新建模式下项目尚未落库，仅更新本地草稿，待「创建」时一并提交
   const saveField = async (key: keyof ProjectDetailData, value: unknown) => {
+    if (isNew) {
+      setProject((prev) => (prev ? { ...prev, [key]: value } : prev));
+      return;
+    }
     try {
       await request(`/projects/${id}`, { method: 'PUT', body: JSON.stringify({ [key]: value }) });
       setProject((prev) => (prev ? { ...prev, [key]: value } : prev));
@@ -169,6 +195,26 @@ export default function ProjectDetail() {
       Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
   };
+
+  const handleCreate = async () => {
+    if (!project) return;
+    if (!project.project_code.trim() || !project.name.trim()) {
+      Toast({ message: '请先填写项目编号和项目名称', theme: 'warning' });
+      return;
+    }
+    setCreating(true);
+    try {
+      const { id: _draftId, ...payload } = project;
+      const created = await request<ProjectDetailData>('/projects/', { method: 'POST', body: JSON.stringify(payload) });
+      Toast({ message: '创建成功', theme: 'success' });
+      navigate(`/admin/project-detail/${created.id}`, { replace: true });
+    } catch (err) {
+      Toast({ message: `创建失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setCreating(false);
+    }
+  };
+
 
   const handlePickSingle = (key: PickerKey, value: string) => {
     setActivePicker(null);
@@ -231,7 +277,7 @@ export default function ProjectDetail() {
   };
 
   if (loading) return <Loading text="加载项目详情..." />;
-  if (!project) return <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>项目不存在</div>;
+  if (!project) return <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>{isNew ? '初始化失败' : '项目不存在'}</div>;
 
   const lifecycleIndex = LIFECYCLE_STATUSES.indexOf(project.status);
   const progressPct = lifecycleIndex >= 0 ? Math.round((lifecycleIndex / (LIFECYCLE_STATUSES.length - 1)) * 100) : 0;
@@ -240,7 +286,17 @@ export default function ProjectDetail() {
 
   return (
     <div>
-      <Navbar title="项目详情" leftArrow onLeftClick={() => navigate(-1)} fixed />
+      <Navbar
+        title={isNew ? '新建USP项目' : '项目详情'}
+        leftArrow
+        onLeftClick={() => navigate(-1)}
+        right={isNew ? (
+          <span onClick={creating ? undefined : handleCreate} style={{ fontSize: 14, fontWeight: 500, color: creating ? '#999' : '#0052d9' }}>
+            {creating ? '创建中...' : '创建'}
+          </span>
+        ) : undefined}
+        fixed
+      />
       <div style={{ padding: 16, paddingTop: 64 }}>
         {/* 概要卡片 */}
         <div style={cardStyle()}>
