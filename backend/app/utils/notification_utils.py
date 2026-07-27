@@ -1,7 +1,6 @@
 from datetime import datetime
 import yaml
 import os
-import httpx
 import random
 import string
 import json
@@ -152,20 +151,11 @@ class NotificationUtils:
 
     @staticmethod
     async def send_notification(payload, token):
-        headers = {}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    settings.DATA_CENTER_BASE_URL + settings.NOTIFICATION_API_PATH,
-                    json=payload,
-                    headers=headers,
-                    timeout=30.0
-                )
-                response.raise_for_status()
-                return response.json()
-        except httpx.RequestError as e:
+            from app.wechat.api.message import send_notification_core
+            return await send_notification_core(payload, token)
+        except Exception as e:
+            logger.error(f"发送通知失败：{str(e)}")
             return {
                 "code": 500,
                 "message": f"请求失败: {str(e)}",
@@ -174,17 +164,6 @@ class NotificationUtils:
                     "error": str(e)
                 }
             }
-        except httpx.HTTPStatusError as e:
-            try:
-                return e.response.json()
-            except:
-                return {
-                    "code": e.response.status_code,
-                    "message": f"HTTP错误: {str(e)}",
-                    "data": {
-                        "status": "failed"
-                    }
-                }
 
     @staticmethod
     def instantiate_template(template_id: int, *params, **args) -> Dict[str, Any]:
