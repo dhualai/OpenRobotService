@@ -264,7 +264,7 @@ class ResourceService:
                 "resource_hash_code": resource_hash_code,
                 "owner_id": sanitize_input(owner_id),
                 "resource_type": resource_type,
-                "resource_status": ResourceStatus.PROCESSING,
+                "resource_status": ResourceStatus.AVAILABLE,
                 "resource_url": resource_url,
                 "resource_format": file_extension,
                 "resource_size": file_size_value,
