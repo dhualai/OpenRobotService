@@ -62,6 +62,7 @@ export default function TasksView() {
   const [sortOrder, setSortOrder] = useState('desc');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creatingTask, setCreatingTask] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [createForm, setCreateForm] = useState({
     title: '',
     description: '',
@@ -280,6 +281,22 @@ export default function TasksView() {
     return parts.length > 0 ? parts.join(' · ') : '筛选';
   };
 
+  const handleSyncExternalTasks = async () => {
+    setSyncing(true);
+    try {
+      await request('/sources/wecom/projects/sync', {
+        method: 'POST',
+      });
+      Toast({ message: '外部任务同步成功', theme: 'success' });
+      refreshTasks();
+      setPage(1);
+    } catch (err) {
+      Toast({ message: `同步失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const handleCreateTask = async () => {
     if (!createForm.title.trim()) {
       Toast({ message: '请输入工单标题', theme: 'warning' });
@@ -309,7 +326,27 @@ export default function TasksView() {
 
   return (
     <div className="tasks-view">
-      <Navbar title="系统任务" fixed />
+      <Navbar
+        title="系统任务"
+        fixed
+        right={
+          <button
+            className="tasks-view__sync-btn"
+            onClick={handleSyncExternalTasks}
+            disabled={syncing}
+            aria-label="同步外部任务"
+          >
+            {syncing ? (
+              <span className="tasks-view__sync-spinner" />
+            ) : (
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+              </svg>
+            )}
+            <span>{syncing ? '同步中…' : '同步外部任务'}</span>
+          </button>
+        }
+      />
 
       {/* 工单卡片列表 */}
       <div className="tasks-list-section">
