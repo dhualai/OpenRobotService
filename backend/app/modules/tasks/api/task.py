@@ -408,7 +408,8 @@ async def update_task_status(
     task_id: int,
     status: str = Body(..., embed=True, description="任务状态"),
     db: AsyncSession = Depends(get_db),
-    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+    request: Request = None
 ):
     ticket = await TicketService.get_ticket_by_id(db, task_id)
     if not ticket:
@@ -416,6 +417,7 @@ async def update_task_status(
 
     is_admin = current_user.get('is_admin', False)
     username = current_user.get('username', '')
+    token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
 
     # AI 工单（source='ai'）允许任何登录用户操作状态（created_by='system' 不是真实用户）
     if ticket.source == 'ai':
@@ -425,7 +427,7 @@ async def update_task_status(
 
     try:
         status_enum = TicketStatus(status)
-        updated_ticket = await TicketService.update_ticket_status(db, task_id, status_enum)
+        updated_ticket = await TicketService.update_ticket_status(db, task_id, status_enum, token=token, operator_id=username)
         return updated_ticket
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
