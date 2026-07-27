@@ -54,15 +54,17 @@ export default function UserProfile() {
   }, [nameDraft, username, setProfile]);
 
   const handleUploadAvatar = useCallback(
-    async (file: File) => {
+    async (file: File): Promise<{ status: 'success' | 'fail'; response: { url?: string } }> => {
       setUploading(true);
       try {
         const resource = await uploadAvatar(file, username);
         await updateMyProfile(username, { avatar_resource_id: resource.id });
         setProfile({ avatarResourceId: resource.id });
         Toast({ message: '头像已更新', theme: 'success' });
+        return { status: 'success', response: { url: avatarUrl(resource.id) } };
       } catch (err) {
         Toast({ message: `上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+        return { status: 'fail', response: {} };
       } finally {
         setUploading(false);
       }
@@ -104,9 +106,11 @@ export default function UserProfile() {
           accept=".png,.jpg,.jpeg"
           max={1}
           disabled={uploading}
-          onSuccess={({ fileList }) => {
-            const raw = fileList?.[0]?.raw;
-            if (raw) handleUploadAvatar(raw);
+          requestMethod={async (files) => {
+            const file = Array.isArray(files) ? files[0] : files;
+            const raw = file?.raw;
+            if (!raw) return { status: 'fail', response: {} };
+            return handleUploadAvatar(raw);
           }}
         >
           <Button theme="light" size="small" loading={uploading}>
