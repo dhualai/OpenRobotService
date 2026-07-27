@@ -2,6 +2,7 @@
 // 背景：微信登录用户默认 username 形如 wechat_xxxxxxxxxx（不可读），"我要摇人" 等处优先展示 name，
 // 但用户此前从未设置过 name。本页提供自助修改昵称/头像的入口；首次进入（name 为空）时弹窗提示设置。
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Avatar, Input, Button, Dialog, Upload, Toast } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
 import { getMyProfile, updateMyProfile, uploadAvatar, avatarUrl } from '@/api/profile';
@@ -9,7 +10,8 @@ import { getMyProfile, updateMyProfile, uploadAvatar, avatarUrl } from '@/api/pr
 const FIRST_VISIT_PROMPT_KEY = 'profile_prompt_shown';
 
 export default function UserProfile() {
-  const { username, name, avatarResourceId, setProfile } = useAuthStore();
+  const navigate = useNavigate();
+  const { username, name, avatarResourceId, setProfile, logout } = useAuthStore();
   const [nameDraft, setNameDraft] = useState(name);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -68,6 +70,17 @@ export default function UserProfile() {
     [username, setProfile],
   );
 
+  const handleLogout = useCallback(() => {
+    Dialog.confirm?.({
+      title: '确认登出',
+      content: '确定要退出登录吗？',
+      onConfirm: () => {
+        logout();
+        navigate('/login', { replace: true });
+      },
+    });
+  }, [logout, navigate]);
+
   return (
     <div style={{ padding: 16 }}>
       <div
@@ -122,6 +135,10 @@ export default function UserProfile() {
           保存
         </Button>
       </div>
+
+      <Button theme="danger" variant="outline" block style={{ marginTop: 16 }} onClick={handleLogout}>
+        登出
+      </Button>
 
       <Dialog
         visible={showPrompt}
