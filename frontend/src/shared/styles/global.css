@@ -298,6 +298,54 @@ html, body, #root {
   opacity: 0.8;
 }
 
+/* ===== 同步外部任务按钮样式 ===== */
+.tasks-view__sync-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 16px;
+  background: #fff;
+  color: #0052d9;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+.tasks-view__sync-btn:hover {
+  background: #f0f5ff;
+  box-shadow: 0 2px 6px rgba(0, 82, 217, 0.2);
+}
+
+.tasks-view__sync-btn:active {
+  transform: scale(0.95);
+}
+
+.tasks-view__sync-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.tasks-view__sync-btn svg {
+  flex-shrink: 0;
+}
+
+.tasks-view__sync-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #e5e5e5;
+  border-top-color: #0052d9;
+  border-radius: 50%;
+  animation: sync-spin 0.8s linear infinite;
+}
+
+@keyframes sync-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ===== 新建工单弹窗样式 ===== */
 .tasks-create-modal {
   padding: 20px;
