@@ -1,7 +1,11 @@
 // 个人信息管理 —— GET /api/auth/me + PUT /api/admin/users/{username} + 头像上传（资源管理中心）
 // 背景：微信登录用户默认 username 形如 wechat_xxxxxxxxxx（不可读），"我要摇人" 等处优先展示 name，
 // 但用户此前从未设置过 name。本页提供自助修改昵称/头像的入口；首次进入（name 为空）时弹窗提示设置。
+// 头像字段策略：进入页面时 /auth/me 返回的头像 id 不再覆盖 store（与登录/刷新时 fetchUserDetails 同源），
+// 避免接口偶发缺字段时把已显示的头像清成上传图标（本次修复根因之一见 backend/app/core/auth_service.py）。
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Input, Button, Dialog, Upload, Toast } from 'tdesign-mobile-react';
 import { UserCircleIcon } from 'tdesign-icons-react';
 import { useAuthStore } from '@/stores/auth';
 import { getMyProfile, updateMyProfile, uploadAvatar, avatarUrl } from '@/api/profile';
@@ -9,7 +13,8 @@ import { getMyProfile, updateMyProfile, uploadAvatar, avatarUrl } from '@/api/pr
 const FIRST_VISIT_PROMPT_KEY = 'profile_prompt_shown';
 
 export default function UserProfile() {
-  const { username, name, avatarResourceId, setProfile } = useAuthStore();
+  const navigate = useNavigate();
+  const { username, name, avatarResourceId, setProfile, logout } = useAuthStore();
   const [nameDraft, setNameDraft] = useState(name);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
