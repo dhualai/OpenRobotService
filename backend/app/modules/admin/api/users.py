@@ -149,7 +149,7 @@ async def create_user(
 @router.get("/{username}/detail", response_model=UserDetail, summary="获取用户详细信息")
 async def get_user_detail(
     username: str,
-    current_user: Dict[str, Any] = require_permission("backend:user:base:read")
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
     user = get_user_with_roles(username)
     if not user:
