@@ -26,6 +26,7 @@ export default function ProjectAuth() {
   const [items, setItems] = useState<AuthItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [projectLoading, setProjectLoading] = useState(true);
+  const [projectPickerVisible, setProjectPickerVisible] = useState(false);
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   // 添加关联人员弹窗（当前为前端占位实现：用户列表用数字 1-9 代替，待接入真实用户列表接口）
@@ -58,6 +59,7 @@ export default function ProjectAuth() {
   const handleProjectSelect = (project: Project) => {
     setSelectedProject(project);
     setProjectCodeInput('');
+    setProjectPickerVisible(false);
     const code = project.code || project.name; // 使用 code 或 name 作为 project_code
     fetchLicenses(code);
   };
@@ -115,9 +117,33 @@ export default function ProjectAuth() {
     <div style={{ padding: 16 }}>
       <h4 style={{ marginBottom: 12, fontSize: 15, fontWeight: 600 }}>选择项目查看授权</h4>
 
-      {/* 项目列表选择 */}
+      {/* 项目选择下拉：点击展开底部列表，避免项目过多时摊开占屏 */}
       {projectLoading ? <Loading text="加载项目..." /> : (
-        <div style={{ marginBottom: 16 }}>
+        <div
+          onClick={() => setProjectPickerVisible(true)}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            background: '#fff', borderRadius: 8, padding: '12px 14px', marginBottom: 16,
+            boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
+          }}
+        >
+          <div>
+            {selectedProject ? (
+              <>
+                <div style={{ fontWeight: 500 }}>{selectedProject.name}</div>
+                {selectedProject.code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{selectedProject.code}</div>}
+              </>
+            ) : (
+              <span style={{ color: '#bbb', fontSize: 14 }}>请选择项目</span>
+            )}
+          </div>
+          <span style={{ color: '#999' }}>›</span>
+        </div>
+      )}
+
+      <Popup visible={projectPickerVisible} onClose={() => setProjectPickerVisible(false)} placement="bottom" showOverlay>
+        <div style={{ padding: 20, maxHeight: '60vh', overflow: 'auto' }}>
+          <h4 style={{ marginBottom: 12 }}>选择项目</h4>
           {projects.map((p) => (
             <div
               key={p.id || p.name}
@@ -127,7 +153,6 @@ export default function ProjectAuth() {
                 borderRadius: 8,
                 padding: '12px 14px',
                 marginBottom: 8,
-                boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
                 cursor: 'pointer',
                 border: selectedProject?.name === p.name ? '1px solid #0052d9' : '1px solid transparent',
               }}
@@ -136,8 +161,11 @@ export default function ProjectAuth() {
               {p.code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{p.code}</div>}
             </div>
           ))}
+          {projects.length === 0 && (
+            <div style={{ textAlign: 'center', padding: 30, color: '#999' }}>暂无项目</div>
+          )}
         </div>
-      )}
+      </Popup>
 
       {/* 手动输入项目代码 */}
       <div style={{ marginBottom: 16, display: 'flex', gap: 8 }}>
