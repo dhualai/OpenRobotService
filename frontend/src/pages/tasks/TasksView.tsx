@@ -7,6 +7,7 @@ import { Navbar, Toast, Loading, Tag, Popup, Button, Input, Textarea, Form, Form
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import Pagination from '@/shared/components/Pagination';
+import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import { normalizeStatus, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
@@ -330,21 +331,24 @@ export default function TasksView() {
         title="系统任务"
         fixed
         right={
-          <button
-            className="tasks-view__sync-btn"
-            onClick={handleSyncExternalTasks}
-            disabled={syncing}
-            aria-label="同步外部任务"
-          >
-            {syncing ? (
-              <span className="tasks-view__sync-spinner" />
-            ) : (
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
-              </svg>
-            )}
-            <span>{syncing ? '同步中…' : '同步外部任务'}</span>
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              className="tasks-view__sync-btn"
+              onClick={handleSyncExternalTasks}
+              disabled={syncing}
+              aria-label="同步外部任务"
+            >
+              {syncing ? (
+                <span className="tasks-view__sync-spinner" />
+              ) : (
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+                </svg>
+              )}
+              <span>{syncing ? '同步中…' : '同步外部任务'}</span>
+            </button>
+            <UserAvatarMenu />
+          </div>
         }
       />
 

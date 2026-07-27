@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Navbar, Loading } from 'tdesign-mobile-react';
 import type { ReactNode } from 'react';
+import UserAvatarMenu from './UserAvatarMenu';
 
 interface AdminLayoutProps {
   children?: ReactNode;
@@ -34,6 +35,7 @@ const adminMenuItems: MenuItem[] = [
   // === 管理工具 ===
   { path: '/admin/users', label: '用户管理', emoji: '👤' },
   { path: '/admin/roles', label: '角色管理', emoji: '🏷️' },
+  { path: '/admin/assign-role', label: '分配角色', emoji: '👤' },
   { path: '/admin/permissions', label: '权限管理', emoji: '🔑' },
   { path: '/admin/wechat', label: '微信管理', emoji: '💬' },
   { path: '/admin/data-import', label: '数据导入', emoji: '📥' },
@@ -66,6 +68,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         title={currentLabel}
         leftArrow
         onLeftClick={() => navigate(-1)}
+        right={<UserAvatarMenu />}
         fixed
       />
 

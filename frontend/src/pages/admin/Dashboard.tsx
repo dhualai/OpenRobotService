@@ -16,6 +16,7 @@ import {
   fetchTicketSummary, fetchProjectStageSummary, fetchUrgencySummary, syncWecomProjects,
   type TicketSummary, type ProjectStageSummary, type UrgencySummary, type SyncResult,
 } from '@/api/dashboard';
+import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 
 interface MoreFunctionEntry { path: string; label: string; emoji: string; }
 
@@ -67,14 +68,13 @@ export default function Dashboard() {
     <div className="dashboard-page">
       <Navbar
         title="后台管理"
-        right={<span style={{ fontSize: 20 }}>👤</span>}
-        onRightClick={() => navigate('/admin/profile')}
+        right={<UserAvatarMenu />}
         fixed
       />
 
       <div style={{ padding: '16px 16px 32px' }}>
         {/* ============ 上：工单状态监测概览 ============ */}
-        <SectionTitle emoji="🎫" title="工单状态监测" onMore={() => navigate('/admin/ticket-monitor')} />
+        <SectionTitle emoji="🎫" title="工单状态监测" onMore={() => navigate('/tasks')} />
         <div className="dashboard-section">
           <div className="dashboard-section__row">
             <div className="dashboard-section__chart">
