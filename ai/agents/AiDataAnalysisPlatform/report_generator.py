@@ -22,7 +22,7 @@ from typing import AsyncIterator
 
 from sqlalchemy import func as sa_func
 
-from ai.core.database import SessionLocal, Ticket, Task, ProjectDelivery, Risk
+from ai.core.database import SessionLocal, Ticket, Task, ProjectDelivery, Risk, User
 
 from .llm_client import LLMClient
 from .config import AnalysisConfig
@@ -196,6 +196,17 @@ class ReportDataCollector:
 
     # ── 工单数据 ──────────────────────────────────────────────
 
+    def _get_user_name_map(self, db) -> dict[str, str]:
+        """查询 users 表，构建 user_id -> 姓名的映射（姓名为空时降级为 username）。"""
+        try:
+            return {
+                str(u.id): (u.name or u.username)
+                for u in db.query(User).all()
+            }
+        except Exception as exc:  # 用户表不可用时不阻断报告生成
+            logger.warning("查询用户表失败，接收人将以 ID 展示: %s", exc)
+            return {}
+
     def collect_ticket_data(
         self, start: datetime, end: datetime
     ) -> TicketStats:
@@ -210,6 +221,9 @@ class ReportDataCollector:
 
             all_tickets = q.all()
             total = len(all_tickets)
+
+            # 用户映射：将 assignee_id 解析为真实姓名
+            user_name_map = self._get_user_name_map(db)
 
             new_tickets = 0
             resolved = 0
@@ -248,6 +262,10 @@ class ReportDataCollector:
 
                 # 采集当日有变更的工单明细（最多50条）
                 if (is_new or (updated and start <= updated <= end)) and len(items) < 50:
+                    # 接收人：assignee_id 为 0/空视为未分配，否则解析为姓名（查不到时降级为 ID）
+                    assignee_name = None
+                    if t.assignee_id:
+                        assignee_name = user_name_map.get(str(t.assignee_id), str(t.assignee_id))
                     items.append({
                         "id": t.id,
                         "ticket_ai_id": t.ticket_ai_id,
@@ -256,6 +274,8 @@ class ReportDataCollector:
                         "status": status,
                         "type": ttype,
                         "priority": priority,
+                        "assignee_id": t.assignee_id,
+                        "assignee_name": assignee_name,
                         "created_at": created.isoformat() if created else None,
                         "updated_at": updated.isoformat() if updated else None,
                     })
