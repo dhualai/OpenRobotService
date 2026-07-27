@@ -35,6 +35,7 @@ const adminMenuItems: MenuItem[] = [
   // === 管理工具 ===
   { path: '/admin/users', label: '用户管理', emoji: '👤' },
   { path: '/admin/roles', label: '角色管理', emoji: '🏷️' },
+  { path: '/admin/assign-role', label: '分配角色', emoji: '👤' },
   { path: '/admin/permissions', label: '权限管理', emoji: '🔑' },
   { path: '/admin/wechat', label: '微信管理', emoji: '💬' },
   { path: '/admin/data-import', label: '数据导入', emoji: '📥' },
