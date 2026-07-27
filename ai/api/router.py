@@ -482,32 +482,12 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
 task_agent_router = APIRouter(prefix="/api/ai/task", tags=["AI任务助手"])
 
 
-class TaskAnalyzeAPIRequest(BaseModel):
-    task_id: str = Field(default="", description="工单 ID（仅 analyze 需要）")
-    session_id: str = Field(..., description="对话 session")
-    query: str = Field(default="", description="用户消息")
-    username: str = Field(default="", description="当前用户名（chat 模式用于获取用户工单）")
-    token: str = Field(default="", description="用户 JWT token（用于调后端 API 鉴权）")
-
-
-class TaskListAPIRequest(BaseModel):
-    username: str = Field(default="", description="当前用户")
-
 
 class TaskSubmitAPIRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
     session_id: str = Field(..., description="对话 session")
     final_solution: dict = Field(..., description="工程师编辑后的最终方案")
     resolution: str = Field(default="resolved")
-
-
-@task_agent_router.post("/list", summary="列出当前用户待处理工单")
-async def task_list(body: TaskListAPIRequest) -> dict:
-    """列出当前用户的待处理任务（从 tasks 表查询，source='ai'）。
-
-    查询策略：按 created_by 匹配用户名。
-    status 过滤：默认排除 resolved/closed，只看待处理。
-    """
 
 
 class SummarizeRequest(BaseModel):
@@ -554,54 +534,6 @@ async def task_discuss(body: TaskDiscussRequest) -> dict:
         return {"code": 1, "message": str(e)}
 
 
-@task_agent_router.post("/analyze", summary="分析工单（非流式）")
-async def task_analyze(body: TaskAnalyzeAPIRequest) -> dict:
-    try:
-        from ai.agents.AiTaskPlatform import get_task_agent, TaskAnalyzeRequest
-        agent = await get_task_agent()
-        draft = await agent.analyze(TaskAnalyzeRequest(
-            task_id=body.task_id, session_id=body.session_id))
-        resp_data = draft.model_dump()
-        resp_data.update({
-            "_trace": getattr(draft, "_trace", []),
-            "_total_ms": getattr(draft, "_total_ms", 0),
-        })
-        return {"code": 0, "data": resp_data}
-    except Exception as e:
-        return {"code": 1, "message": str(e)}
-
-
-@task_agent_router.post("/analyze/stream", summary="流式分析工单（SSE）")
-async def task_analyze_stream(body: TaskAnalyzeAPIRequest):
-    from ai.agents.AiTaskPlatform import get_task_agent, TaskAnalyzeRequest
-
-    async def sse():
-        t0 = time.perf_counter()
-        first = False
-        try:
-            agent = await get_task_agent()
-            async for event in agent.analyze_stream(TaskAnalyzeRequest(
-                task_id=body.task_id, session_id=body.session_id)):
-                ev_type = event["event"]
-                if ev_type == "token":
-                    if not first:
-                        first = True
-                        yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
-                elif ev_type == "result":
-                    yield f"event: result\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-                elif ev_type == "first_token":
-                    # 已在 token 分支处理 first，这里跳过
-                    pass
-                else:
-                    yield f"event: status\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-            yield f"event: done\ndata: {json.dumps({'total_ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
-        except Exception as e:
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
-
-    return StreamingResponse(sse(), media_type="text/event-stream")
-
-
 @task_agent_router.post("/summarize", summary="讨论摘要")
 async def task_summarize(body: SummarizeRequest = SummarizeRequest()) -> dict:
     """后端触发 → AI 模块自动扫描所有活跃工单 → 逐条生成摘要 → 写 task_comments"""
@@ -629,56 +561,6 @@ async def task_submit(request: Request, body: TaskSubmitAPIRequest) -> dict:
         return result
     except Exception as e:
         return {"code": 1, "message": str(e)}
-
-
-@task_agent_router.post("/chat", summary="自由问答（非流式）")
-async def task_chat(body: TaskAnalyzeAPIRequest) -> dict:
-    """v2.0 自由问答：感知用户所有工单 + 诊断状态"""
-    try:
-        from ai.agents.AiTaskPlatform import get_task_agent
-        agent = await get_task_agent()
-        response = await agent.chat(
-            session_id=body.session_id,
-            query=getattr(body, 'query', ''),
-            username=getattr(body, 'username', '') or "",
-            token=getattr(body, 'token', '') or "",
-        )
-        return {"code": 0, "data": {"reply": response}, "_trace": agent._pop_trace()}
-    except Exception as e:
-        return {"code": 1, "message": str(e)}
-
-
-@task_agent_router.post("/chat/stream", summary="自由问答（流式 SSE）")
-async def task_chat_stream(body: TaskAnalyzeAPIRequest):
-    """流式自由问答"""
-    from ai.agents.AiTaskPlatform import get_task_agent
-
-    async def sse():
-        t0 = time.perf_counter()
-        first = False
-        try:
-            agent = await get_task_agent()
-            async for event in agent.chat_stream(
-                session_id=body.session_id,
-                query=getattr(body, 'query', ''),
-                username=getattr(body, 'username', '') or "",
-                token=getattr(body, 'token', '') or "",
-            ):
-                ev_type = event["event"]
-                if ev_type == "token":
-                    if not first:
-                        first = True
-                        yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
-                elif ev_type == "first_token":
-                    pass
-                else:
-                    yield f"event: status\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-            yield f"event: done\ndata: {json.dumps({'total_ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
-        except Exception as e:
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
-
-    return StreamingResponse(sse(), media_type="text/event-stream")
 
 
 @task_agent_router.get("/health", summary="健康检查")
