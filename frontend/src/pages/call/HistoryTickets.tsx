@@ -4,11 +4,13 @@
 // 分页：每页 PAGE_SIZE 条，下拉刷新、触底加载更多。
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loading, Toast, Button } from 'tdesign-mobile-react';
+import { Loading, Toast, Button, Popup } from 'tdesign-mobile-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
 import { urgeTicket, reportTicket, cancelTicket } from '@/api/ticket';
 import { useWorkbenchStore } from '@/stores/workbench';
 import PullToRefresh from '@/shared/components/PullToRefresh';
+import UserSelect from '@/shared/components/UserSelect';
+import type { UserItem } from '@/api/users';
 
 const PAGE_SIZE = 20;
 
@@ -105,22 +107,42 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
 
   type ActionType = 'urge' | 'report' | 'cancel';
   const [acting, setActing] = useState<{ id: number; action: ActionType } | null>(null);
-  const handleUrge = async (e: React.MouseEvent, t: AiTicketBrief) => {
+
+  // 催办/上报：先选用户
+  const [actionTicket, setActionTicket] = useState<AiTicketBrief | null>(null);
+  const [actionType, setActionType] = useState<'urge' | 'report'>('urge');
+  const [actionUser, setActionUser] = useState<UserItem | null>(null);
+  const [showActionPopup, setShowActionPopup] = useState(false);
+
+  const openActionPopup = (e: React.MouseEvent, t: AiTicketBrief, type: 'urge' | 'report') => {
     e.stopPropagation();
     if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
-    setActing({ id: t.id, action: 'urge' });
-    try { await urgeTicket(t.id); Toast({ message: '已催办，已通知处理人', theme: 'success' }); }
-    catch (err) { Toast({ message: `催办失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }); }
-    finally { setActing(null); }
+    setActionTicket(t);
+    setActionType(type);
+    setActionUser(null);
+    setShowActionPopup(true);
   };
-  const handleReport = async (e: React.MouseEvent, t: AiTicketBrief) => {
-    e.stopPropagation();
-    if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
-    setActing({ id: t.id, action: 'report' });
-    try { await reportTicket(t.id); Toast({ message: '已上报，已通知上级', theme: 'success' }); }
-    catch (err) { Toast({ message: `上报失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }); }
-    finally { setActing(null); }
+
+  const handleActionConfirm = async () => {
+    if (!actionTicket?.id || !actionUser) { Toast({ message: '请选择通知用户', theme: 'warning' }); return; }
+    setActing({ id: actionTicket.id, action: actionType });
+    setActing(null); // 关闭按钮 loading 态由 popup loading 控制
+    try {
+      if (actionType === 'urge') {
+        await urgeTicket(actionTicket.id, actionUser.id);
+        Toast({ message: '已催办，已通知处理人', theme: 'success' });
+      } else {
+        await reportTicket(actionTicket.id, actionUser.id);
+        Toast({ message: '已上报，已通知上级', theme: 'success' });
+      }
+      setShowActionPopup(false);
+    } catch (err) {
+      Toast({ message: `${actionType === 'urge' ? '催办' : '上报'}失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setActing(null);
+    }
   };
+
   const handleCancel = async (e: React.MouseEvent, t: AiTicketBrief) => {
     e.stopPropagation();
     if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
@@ -201,8 +223,8 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                   <span className="history-row__status" style={{ color: statusMeta.color, background: statusMeta.bg }}>{statusMeta.label}</span>
                 )}
                 <div className="history-row__actions" onClick={(e) => e.stopPropagation()}>
-                  <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'urge'} onClick={(e) => handleUrge(e, t)}>催办</Button>
-                  <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'report'} onClick={(e) => handleReport(e, t)}>上报</Button>
+                  <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'urge'} onClick={(e) => openActionPopup(e, t, 'urge')}>催办</Button>
+                  <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'report'} onClick={(e) => openActionPopup(e, t, 'report')}>上报</Button>
                   <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'cancel'} onClick={(e) => handleCancel(e, t)}>撤回</Button>
                 </div>
               </div>
@@ -211,6 +233,25 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
           })
         )}
       </PullToRefresh>
+
+      {/* 催办/上报 用户选择弹窗 */}
+      <Popup visible={showActionPopup} onClose={() => setShowActionPopup(false)} placement="bottom" showOverlay>
+        <div className="conv-dialog">
+          <h4 className="conv-dialog__title">{actionType === 'urge' ? '催办 — 选择通知用户' : '上报 — 选择通知用户'}</h4>
+          <div style={{ marginBottom: 16 }}>
+            <UserSelect
+              value={actionUser?.id ?? null}
+              onChange={(u) => setActionUser(u)}
+              placeholder="选择通知对象"
+              title="选择通知用户"
+            />
+          </div>
+          <div className="conv-dialog__btns">
+            <Button block theme="default" onClick={() => setShowActionPopup(false)}>取消</Button>
+            <Button block theme="primary" disabled={!actionUser} loading={!!acting} onClick={handleActionConfirm}>确定</Button>
+          </div>
+        </div>
+      </Popup>
     </div>
   );
 }

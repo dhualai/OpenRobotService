@@ -18,9 +18,10 @@ async def get_presigned_url(
             object_path=object_path,
             expires_minutes=expires_minutes
         )
+        prefix = settings.MINIO_API_PREFIX or ''
         for bucket_name in [settings.MINIO_BUCKET, settings.COMMENT_BUCKET, settings.FILE_IMAGES]:
-            if bucket_name in presigned_url:
-                presigned_url = presigned_url.replace(bucket_name, f'minio-api/{bucket_name}')
+            if bucket_name in presigned_url and prefix:
+                presigned_url = presigned_url.replace(bucket_name, f'{prefix}/{bucket_name}')
 
         return {
             "presigned_url": presigned_url,
