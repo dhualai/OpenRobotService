@@ -16,6 +16,7 @@ import {
   fetchTicketSummary, fetchProjectStageSummary, fetchUrgencySummary, syncWecomProjects,
   type TicketSummary, type ProjectStageSummary, type UrgencySummary, type SyncResult,
 } from '@/api/dashboard';
+import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 
 interface MoreFunctionEntry { path: string; label: string; emoji: string; }
 
@@ -67,8 +68,7 @@ export default function Dashboard() {
     <div className="dashboard-page">
       <Navbar
         title="后台管理"
-        right={<span style={{ fontSize: 20 }}>👤</span>}
-        onRightClick={() => navigate('/admin/profile')}
+        right={<UserAvatarMenu />}
         fixed
       />
 

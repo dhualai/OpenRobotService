@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Navbar, Loading } from 'tdesign-mobile-react';
 import type { ReactNode } from 'react';
+import UserAvatarMenu from './UserAvatarMenu';
 
 interface AdminLayoutProps {
   children?: ReactNode;
@@ -66,6 +67,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         title={currentLabel}
         leftArrow
         onLeftClick={() => navigate(-1)}
+        right={<UserAvatarMenu />}
         fixed
       />
 
