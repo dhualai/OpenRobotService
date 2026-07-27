@@ -90,5 +90,6 @@ class AuthService:
             "permissions": user['permissions'],
             "projectPermissions": user.get('projectPermissions', {}),
             "roles": user['roles'],
-            "external_credentials": user.get('external_credentials', {})
+            "external_credentials": user.get('external_credentials', {}),
+            "avatar_resource_id": user.get('avatar_resource_id')
         }
