@@ -41,7 +41,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   login: (authData, user) => {
     const expiresAt = Date.now() + authData.expires_in * 1000;
     setApiToken(authData.access_token);
-    console.log('[AuthStore] login: 设置username=', user, ', name暂为空');
     set({
       token: authData.access_token,
       username: user,
@@ -103,11 +102,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const request = createRequest(API_CONFIG.ADMIN.BASE_URL, '用户中心');
     try {
       setApiToken(authToken);
-      console.log('[AuthStore] fetchUserDetails: 开始获取用户详情, user=', user);
       const userData = await request<{ roles?: { project_backend?: string[] }, name?: string, avatar_resource_id?: number | null }>(
         `/users/${user}/detail`
       );
-      console.log('[AuthStore] fetchUserDetails: 获取成功, name="', userData.name, '", roles=', JSON.stringify(userData.roles));
       const projectRoles = userData.roles?.project_backend || [];
       const hasAdminRole = projectRoles.includes('admin');
       set({
@@ -117,8 +114,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         avatarResourceId: userData.avatar_resource_id ?? null,
       });
       return hasAdminRole;
-    } catch (e) {
-      console.error('[AuthStore] fetchUserDetails: 获取失败', e);
+    } catch {
       set({ isAdmin: false });
       return false;
     }
@@ -135,10 +131,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       const savedToken = localStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
       const savedUsername = localStorage.getItem(STORAGE_KEYS.USERNAME);
-      console.log('[AuthStore] checkLoginStatus: token=', !!savedToken, ', username="', savedUsername, '"');
       if (savedToken && savedUsername) {
         setApiToken(savedToken);
-        console.log('[AuthStore] checkLoginStatus: 恢复登录状态, username=', savedUsername, ', name暂为空(需要后续fetchUserDetails)');
         set({
           token: savedToken,
           username: savedUsername,

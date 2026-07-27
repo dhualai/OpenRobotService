@@ -40,9 +40,14 @@ export default function ProjectManage() {
 
   return (
     <div style={{ padding: 16 }}>
-      <Button theme="primary" block style={{ marginBottom: 16 }} onClick={() => navigate('/admin/project-edit')}>
-        新建项目
-      </Button>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+        <Button theme="primary" block onClick={() => navigate('/admin/project-detail/new')}>
+          USP项目
+        </Button>
+        <Button theme="primary" variant="outline" block onClick={() => navigate('/admin/project-edit')}>
+          其他项目
+        </Button>
+      </div>
       {projects.map((p) => (
         <div
           key={p.id}
