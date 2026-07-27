@@ -511,12 +511,7 @@ async def task_list(body: TaskListAPIRequest) -> dict:
 
 
 class SummarizeRequest(BaseModel):
-    task_id: str = Field(..., description="工单 ID")
-    title: str = Field(default="", description="工单标题")
-    description: str = Field(default="", description="工单描述")
-    diagnosis_summary: str = Field(default="", description="提单Agent诊断摘要（从 metadata_info.diagnosis 拼接）")
-    discussion_history: list = Field(default_factory=list, description="近期讨论 [{author, content, time}, ...]")
-    previous_summary: str = Field(default="", description="上次摘要结果（有值时增量总结，空值时首次总结）")
+    """后端触发摘要扫描（无参数 — AI 模块自动扫描所有活跃工单）"""
 
 
 # ── v3.0 端点 ──
@@ -608,19 +603,12 @@ async def task_analyze_stream(body: TaskAnalyzeAPIRequest):
 
 
 @task_agent_router.post("/summarize", summary="讨论摘要")
-async def task_summarize(body: SummarizeRequest) -> dict:
-    """后端触发：传入工单信息+讨论记录 → 生成摘要 → 返回"""
+async def task_summarize(body: SummarizeRequest = SummarizeRequest()) -> dict:
+    """后端触发 → AI 模块自动扫描所有活跃工单 → 逐条生成摘要 → 写 task_comments"""
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
-        result = await agent.summarize(
-            task_id=body.task_id,
-            title=body.title,
-            description=body.description,
-            diagnosis_summary=body.diagnosis_summary,
-            discussion_history=body.discussion_history,
-            previous_summary=body.previous_summary,
-        )
+        result = await agent.summarize_batch()
         return {"code": 0, "data": result}
     except Exception as e:
         return {"code": 1, "message": str(e)}
