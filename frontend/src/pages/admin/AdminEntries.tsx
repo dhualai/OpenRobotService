@@ -8,6 +8,7 @@ interface Entry { path: string; label: string; emoji: string; desc: string; }
 const adminEntries: Entry[] = [
   { path: '/admin/roles', label: '角色管理', emoji: '🏷️', desc: '角色定义、权限绑定' },
   { path: '/admin/permissions', label: '权限管理', emoji: '🔑', desc: '权限项定义、分配' },
+  { path: '/admin/assign-role', label: '分配角色', emoji: '👤', desc: '为用户在项目中分配角色' },
   { path: '/admin/operation-logs', label: '操作记录', emoji: '📝', desc: '操作日志审计与追溯' },
 ];
 

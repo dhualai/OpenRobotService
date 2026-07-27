@@ -8,6 +8,8 @@ const STORAGE_KEYS = {
   REFRESH_TOKEN: 'refresh_token',
   TOKEN_EXPIRES_AT: 'token_expires_at',
   USERNAME: 'username',
+  NAME: 'profile_name',
+  AVATAR_RESOURCE_ID: 'profile_avatar_resource_id',
 };
 
 export interface AuthState {
@@ -51,6 +53,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     localStorage.setItem(STORAGE_KEYS.REFRESH_TOKEN, authData.refresh_token);
     localStorage.setItem(STORAGE_KEYS.TOKEN_EXPIRES_AT, String(expiresAt));
     localStorage.setItem(STORAGE_KEYS.USERNAME, user);
+    get().fetchUserDetails(user, authData.access_token);
   },
 
   logout: () => {
@@ -107,12 +110,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       );
       const projectRoles = userData.roles?.project_backend || [];
       const hasAdminRole = projectRoles.includes('admin');
+      const name = userData.name || '';
+      const avatarResourceId = userData.avatar_resource_id ?? null;
       set({
         roles: (userData.roles as Record<string, string[]>) || null,
         isAdmin: hasAdminRole,
-        name: userData.name || '',
-        avatarResourceId: userData.avatar_resource_id ?? null,
+        name,
+        avatarResourceId,
       });
+      try {
+        localStorage.setItem(STORAGE_KEYS.NAME, name);
+        if (avatarResourceId === null) {
+          localStorage.removeItem(STORAGE_KEYS.AVATAR_RESOURCE_ID);
+        } else {
+          localStorage.setItem(STORAGE_KEYS.AVATAR_RESOURCE_ID, String(avatarResourceId));
+        }
+      } catch { /* SSR safe */ }
       return hasAdminRole;
     } catch {
       set({ isAdmin: false });
@@ -125,6 +138,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       name: name !== undefined ? name : state.name,
       avatarResourceId: avatarResourceId !== undefined ? avatarResourceId : state.avatarResourceId,
     }));
+    try {
+      if (name !== undefined) localStorage.setItem(STORAGE_KEYS.NAME, name);
+      if (avatarResourceId !== undefined) {
+        if (avatarResourceId === null) {
+          localStorage.removeItem(STORAGE_KEYS.AVATAR_RESOURCE_ID);
+        } else {
+          localStorage.setItem(STORAGE_KEYS.AVATAR_RESOURCE_ID, String(avatarResourceId));
+        }
+      }
+    } catch { /* SSR safe */ }
   },
 
   checkLoginStatus: () => {
@@ -133,12 +156,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const savedUsername = localStorage.getItem(STORAGE_KEYS.USERNAME);
       if (savedToken && savedUsername) {
         setApiToken(savedToken);
+        const savedName = localStorage.getItem(STORAGE_KEYS.NAME) || '';
+        const savedAvatarId = localStorage.getItem(STORAGE_KEYS.AVATAR_RESOURCE_ID);
         set({
           token: savedToken,
           username: savedUsername,
           isLoggedIn: true,
           isLoading: false,
+          name: savedName,
+          avatarResourceId: savedAvatarId ? Number(savedAvatarId) : null,
         });
+        // 本地缓存先行展示，避免闪回微信ID；随后静默刷新最新的姓名/头像
+        get().fetchUserDetails(savedUsername, savedToken);
         return;
       }
     } catch { /* SSR safe */ }
