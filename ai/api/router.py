@@ -288,15 +288,39 @@ async def upload_files(
     files: List[UploadFile] = File(..., description="附件文件"),
 ):
     from app.utils.minio_client import minio_client
+    from app.core.config import settings
+
+    # ── 0. 确保目标 bucket 存在（AI 服务启动时不建桶，此处兜底，避免上传落到不存在的桶） ──
+    # create_bucket 内部先 bucket_exists 再 make_bucket，幂等；失败仅告警，不阻塞上传
+    # （若桶确不存在，后续 upload_bytes 会以 raise_on_error 透传真实错误）。
+    try:
+        minio_client.create_bucket(settings.MINIO_BUCKET)
+    except Exception as e:
+        logger.warning(f"确保 bucket {settings.MINIO_BUCKET} 存在失败: {e}（若桶实际存在可忽略）")
 
     # ── 1. 上传到 MinIO ──
+    # 注意：upload_bytes 默认吞掉 S3Error 返回 False，这里必须用 raise_on_error=True
+    # 让异常上抛并返回真实错误，避免“前端提示成功但文件未落 MinIO”的静默失败。
     saved = []
     raw_bytes: list[tuple] = []  # (filename, bytes) 暂存供 VLM
     for f in files:
         content = await f.read()
         raw_bytes.append((f.filename, content))
-        object_path = f"helpdesk/{session_id}/{f.filename}"
-        minio_client.upload_bytes(content, object_path, content_type=f.content_type)
+        # 对象路径：{bucket}/{session_id}/{文件名}，bucket 统一读取 settings.MINIO_BUCKET
+        object_path = f"{settings.MINIO_BUCKET}/{session_id}/{f.filename}"
+        try:
+            minio_client.upload_bytes(
+                content, object_path, content_type=f.content_type, raise_on_error=True
+            )
+        except Exception as e:
+            logger.error(f"附件上传到 MinIO 失败: {f.filename} -> {e}", exc_info=True)
+            return {
+                "code": 1,
+                "message": (
+                    f"文件「{f.filename}」上传失败：{e}。"
+                    f"请检查 MinIO 是否可达、桶 {settings.MINIO_BUCKET} 是否存在、凭据是否正确。"
+                ),
+            }
         url = minio_client.get_presigned_url(object_path, expires_minutes=1440)
         saved.append({"filename": f.filename, "size": len(content), "path": url})
     filenames = "、".join(s["filename"] for s in saved)
@@ -335,16 +359,19 @@ async def upload_files(
     except Exception as e:
         logger.warning(f"上传图片描述失败: {e}")
 
-    # ── 3. 写入会话记忆 ──
-    mgr = await get_memory_manager()
-    if image_desc:
-        await mgr.add_turn(session_id, "user",
-                           f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
-        await mgr.add_turn(session_id, "assistant",
-                           f"已收到 {len(saved)} 个文件，已附到本次会话中。")
-    else:
-        await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
-        await mgr.add_turn(session_id, "assistant", f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+    # ── 3. 写入会话记忆（失败不阻塞上传响应：文件已落 MinIO，记忆写入仅记告警） ──
+    try:
+        mgr = await get_memory_manager()
+        if image_desc:
+            await mgr.add_turn(session_id, "user",
+                               f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
+            await mgr.add_turn(session_id, "assistant",
+                               f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+        else:
+            await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
+            await mgr.add_turn(session_id, "assistant", f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+    except Exception as e:
+        logger.error(f"上传后写入会话记忆失败（不阻塞上传响应）: {e}", exc_info=True)
 
     # ── 4. agent_state.attachments + 追加到已提交工单 ──
     try:
@@ -569,7 +596,7 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
 # ============================================================
 # 任务 Agent (prefix /api/ai/task)
 # ============================================================
-task_agent_router = APIRouter(prefix="/api/ai/task", tags=["AI任务助手"])
+task_agent_router = APIRouter(prefix="/api/ai/task", tags=["小U"])
 
 
 

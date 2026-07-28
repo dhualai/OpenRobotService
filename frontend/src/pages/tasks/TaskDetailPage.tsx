@@ -23,7 +23,7 @@ interface Ticket {
   attachments?: Attachment[]; ai_summary?: string; comments?: Comment[];
 }
 
-const AI_NAME = 'AI任务助手';
+const AI_NAME = '小U';
 
 export default function TaskDetailPage() {
   const { id: detailId } = useParams<{ id: string }>();
@@ -46,7 +46,7 @@ export default function TaskDetailPage() {
   const [askingAI, setAskingAI] = useState(false);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
 
-  // AI 诊断
+  // 小U 诊断
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagnosisReport, setDiagnosisReport] = useState('');  // raw Markdown
   const [reportVisible, setReportVisible] = useState(false);
@@ -304,7 +304,7 @@ export default function TaskDetailPage() {
         setDiagnosisReport(d.report_md || d.root_cause_analysis || '');
         // 短链接预览取根因分析首行
         const preview = d.root_cause_analysis?.slice(0, 40) || '点击查看';
-        const shortLink = `📋 <a href="javascript:void(0)" class="diagnosis-link">AI 诊断报告 — ${preview}…</a>`;
+        const shortLink = `📋 <a href="javascript:void(0)" class="diagnosis-link">小U 诊断报告 — ${preview}…</a>`;
         setDetail((prev) => {
           if (!prev) return prev;
           const aiComment: Comment = {
@@ -529,7 +529,7 @@ export default function TaskDetailPage() {
 
       <Dialog
         visible={reportVisible}
-        title="🤖 AI 诊断报告"
+        title="🤖 小U 诊断报告"
         confirmBtn="关闭"
         onConfirm={() => setReportVisible(false)}
       >

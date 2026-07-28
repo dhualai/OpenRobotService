@@ -53,9 +53,11 @@ export interface WorkbenchState {
   // 会话管理
   conversations: Conversation[];
   conversationId: number | null;
+  conversationTitle: string;
   drawerOpen: boolean;
   refreshConversations: () => Promise<void>;
   setConversationId: (id: number | null) => void;
+  setConversationTitle: (title: string) => void;
   setDrawerOpen: (open: boolean) => void;
   deleteConversation: (id: number) => Promise<boolean>;
   renameConversation: (id: number, title: string) => Promise<void>;
@@ -100,6 +102,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   // 会话管理
   conversations: [],
   conversationId: null,
+  conversationTitle: '新建会话',
   drawerOpen: false,
   refreshConversations: async () => {
     try {
@@ -108,6 +111,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
     } catch { /* ignore */ }
   },
   setConversationId: (id) => set({ conversationId: id }),
+  setConversationTitle: (title) => set({ conversationTitle: title }),
   setDrawerOpen: (open) => set({ drawerOpen: open }),
   deleteConversation: async (id) => {
     let ok = false;
