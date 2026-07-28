@@ -2184,6 +2184,7 @@ html, body, #root {
 .ticket-confirm__btn--confirm { background: #0052d9; color: #fff; }
 .ticket-confirm__btn--confirm:active { background: #003cab; }
 .ticket-confirm__btn--confirm:disabled { opacity: 0.6; }
+.ticket-confirm__hint { font-size: 12px; color: #e34d59; margin-top: 4px; }
 
 /* ===== 历史工单搜索 + 状态快捷筛选 ===== */
 .history-toolbar { padding: 8px 12px 4px; flex-shrink: 0; }
