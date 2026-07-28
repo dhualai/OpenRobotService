@@ -85,7 +85,7 @@ export default function UserProfile() {
       content: '确定要退出登录吗？',
       onConfirm: () => {
         logout();
-        navigate('/login', { replace: true });
+        navigate('/login?reason=logout', { replace: true });
       },
     });
   }, [logout, navigate]);

@@ -121,6 +121,9 @@ def task_to_dict(task: Task) -> dict:
     meta = task.metadata_info or {}
     return {
         "id": task.id,
+        # 数字 Task.id 即任务服务（/api/tasks）的工单号，前端催办/上报/评论/撤回都依赖它。
+        # 此前缺失该字段，导致从 MySQL 降级的工单进入详情页时 ticket_id 为空、按钮报「工单号缺失」。
+        "ticket_id": task.id,
         "session_id": meta.get("session_id", ""),
         "ticket_ai_id": meta.get("ticket_ai_id", ""),
         "title": task.title or "",
