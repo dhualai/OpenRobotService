@@ -7,7 +7,7 @@
   - 逐工单异步诊断（不并行——避免 LLM 并发过载）
 
 "是否被诊断过"的判断依据：
-  SELECT 1 FROM task_comments WHERE task_id = X AND created_by = 'AI任务助手'
+  SELECT 1 FROM task_comments WHERE task_id = X AND created_by = '小U'
 """
 
 import asyncio
@@ -25,14 +25,14 @@ logger = get_logger("TASK_AGENT")
 
 
 def _is_diagnosed(task_id: int) -> bool:
-    """查询 task_comments 表：此工单是否已有 AI 诊断评论。"""
+    """查询 task_comments 表：此工单是否已有小U诊断评论。"""
     from app.models.task import TaskComment
     from app.core.db import SessionLocal
     db = SessionLocal()
     try:
         return db.query(TaskComment).filter(
             TaskComment.task_id == task_id,
-            TaskComment.created_by == "AI任务助手",
+            TaskComment.created_by == "小U",
         ).first() is not None
     finally:
         db.close()
