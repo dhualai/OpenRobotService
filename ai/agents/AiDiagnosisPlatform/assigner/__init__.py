@@ -1,19 +1,8 @@
 """Assigner（智能派单） — AiDiagnosisPlatform 子模块
 
 工单生成后自动推荐负责人。
-
-便捷入口：
-    from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket
-
-    result = await assign_ticket(
-        title="AGV小车无法启动",
-        problem_description="潜伏车上线后无法移动",
-    )
-    print(result.engineer_name, result.confidence_score)
 """
 
-import json
-from pathlib import Path
 from typing import Dict, List, Optional
 
 from ai.agents.AiDiagnosisPlatform.assigner.assigner import Assigner
@@ -38,8 +27,6 @@ __all__ = [
 ]
 
 
-# ── 一站式派单入口 ──────────────────────────────────────────
-
 async def assign_ticket(
     *,
     title: str,
@@ -62,23 +49,6 @@ async def assign_ticket(
     contact: Optional[str] = None,
     creator: Optional[str] = None,
 ) -> AssignmentResult:
-    """一站式派单：加载工程师 → 构建工单上下文 → 四层流水线派单。
-
-    调用方只需传工单信息，无需关心工程师数据加载和 Assigner 实例化。
-    失败时直接抛出异常，调用方自行 catch。
-
-    Args:
-        title: 工单标题
-        problem_description: 问题描述
-        ticket_id: 工单唯一标识（未提供时自动生成）
-        其余见 TicketContext 字段。
-
-    Returns:
-        AssignmentResult: 推荐的工程师及置信度。
-
-    Raises:
-        ValueError: 工程师画像未配置。
-    """
     engineers = load_engineers()
     if not engineers:
         raise ValueError("工程师画像为空，请检查 users 表人员数据是否就绪")

@@ -1,8 +1,4 @@
-"""用户契约（Pydantic）。
-
-底座认证/RBAC 契约集中于 `app/schemas/`（MIGRATION.md 阶段 1）。
-原定义于 `app/modules/aas/schemas/user.py`，现迁入此处；旧路径改为再导出 shim。
-"""
+"""用户契约（Pydantic）。"""
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, EmailStr
 
@@ -48,7 +44,6 @@ class UserInDB(UserBase):
     responsibility_modules: Optional[List[str]] = None
     job_level: Optional[int] = 1
     duty_text: Optional[str] = None
-
     class Config:
         from_attributes = True
 

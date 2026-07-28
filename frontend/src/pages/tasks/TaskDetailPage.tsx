@@ -304,7 +304,7 @@ export default function TaskDetailPage() {
         setDiagnosisReport(d.report_md || d.root_cause_analysis || '');
         // 短链接预览取根因分析首行
         const preview = d.root_cause_analysis?.slice(0, 40) || '点击查看';
-        const shortLink = `📋 <span class="diagnosis-link" style="color:#0052d9;cursor:pointer;text-decoration:underline">小U 诊断报告 — ${preview}…</span>`;
+        const shortLink = `📋 <a href="#diagnosis-report" class="diagnosis-link">小U 诊断报告 — ${preview}…</a>`;
         setDetail((prev) => {
           if (!prev) return prev;
           const aiComment: Comment = {
@@ -329,7 +329,8 @@ export default function TaskDetailPage() {
   // ── 点击诊断短链接 → 弹窗 ──
   const handleOpenReport = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
-    if (target.closest('.diagnosis-link')) {
+    const link = target.closest('a');
+    if (link && link.getAttribute('href') === '#diagnosis-report') {
       e.preventDefault();
       setReportVisible(true);
     }
