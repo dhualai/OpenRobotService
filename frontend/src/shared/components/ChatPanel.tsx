@@ -660,20 +660,18 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const setDraftField = (k: keyof TicketDraft, v: string) =>
     setTicketConfirm((s) => ({ ...s, overrides: { ...s.overrides, [k]: v } }));
 
-  /** 确认提交：校验 problem 必填 project → 调 confirm 入库 */
+  /** 确认提交：校验项目必填（所有类型） → 调 confirm 入库 */
   const handleConfirmTicket = async () => {
     const draft = ticketConfirm.draft;
     if (!draft || !sessionId) return;
-    const isProblem = draft.type === 'problem';
     const projectVal = draftField('project').trim();
-    if (isProblem && !projectVal) {
-      Toast({ message: '请填写项目/现场名称', theme: 'warning' });
+    if (!projectVal) {
+      Toast({ message: '请先填写绑定项目', theme: 'warning' });
       return;
     }
     setTicketConfirm((s) => ({ ...s, submitting: true }));
     try {
-      const overrides: Partial<TicketDraft> = { ...ticketConfirm.overrides };
-      if (isProblem) overrides.project = projectVal;
+      const overrides: Partial<TicketDraft> = { ...ticketConfirm.overrides, project: projectVal };
       const res = await qaConfirmTicket(sessionId, overrides);
       if (res?.code !== 0) {
         Toast({ message: res?.message || '提交工单失败', theme: 'error' });
@@ -1051,16 +1049,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   onChange={(e) => setDraftField('contact', e.target.value)}
                   placeholder="联系人（可选）"
                 />
-                {ticketConfirm.draft.type === 'problem' && (
-                  <>
-                    <label className="ticket-confirm__label">项目/现场名称 <span style={{ color: '#e34d59' }}>*</span></label>
-                    <input
-                      className="ticket-confirm__input"
-                      value={draftField('project')}
-                      onChange={(e) => setDraftField('project', e.target.value)}
-                      placeholder="请输入项目或现场名称"
-                    />
-                  </>
+                <label className="ticket-confirm__label">绑定项目 <span style={{ color: '#e34d59' }}>*</span></label>
+                <input
+                  className="ticket-confirm__input"
+                  value={draftField('project')}
+                  onChange={(e) => setDraftField('project', e.target.value)}
+                  placeholder="请输入项目或现场名称"
+                />
+                {!draftField('project').trim() && (
+                  <span className="ticket-confirm__hint">项目为必选项，未绑定项目无法提交</span>
                 )}
               </div>
             )}
@@ -1074,7 +1071,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 type="button"
                 className="ticket-confirm__btn ticket-confirm__btn--confirm"
                 onClick={handleConfirmTicket}
-                disabled={ticketConfirm.submitting}
+                disabled={ticketConfirm.submitting || !draftField('project').trim()}
               >{ticketConfirm.submitting ? '提交中…' : '确认提交'}</button>
             </div>
           </div>
