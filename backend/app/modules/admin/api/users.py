@@ -249,7 +249,7 @@ async def delete_user(
             detail="不能删除自己的账号"
         )
     
-    success = db_manager.delete_user(user.id)
+    success = db_manager.delete_user(user['id'])
     if not success:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -415,7 +415,9 @@ async def batch_assign_project_roles(
     role_data: ProjectUserRoleAssignment,
     current_user: Dict[str, Any] = require_permission("backend:user:role_project:write")
 ):
-    if not db_manager.get_project(role_data.project_id):
+    project_id = role_data.project_id.strip() if role_data.project_id else None
+    
+    if project_id and not db_manager.get_project(project_id):
         raise HTTPException(status_code=404, detail="项目不存在")
     
     if not role_data.organization_ids:
@@ -435,19 +437,20 @@ async def batch_assign_project_roles(
             if not role:
                 raise HTTPException(status_code=404, detail=f"角色 {item['role_id']} 不存在")
             
-            user_project_role_id = f"upr_{user.id}_{role_data.project_id}_{item['role_id']}"
+            user_project_role_id = f"upr_{user['id']}_{project_id or 'global'}_{item['role_id']}"
             
             roles_data.append({
                 "id": user_project_role_id,
-                "user_id": user.id,
-                "project_id": role_data.project_id,
+                "user_id": user['id'],
+                "project_id": project_id,
                 "role_id": item["role_id"],
                 "report_to_id": item.get("report_to_id")
             })
         
         assigned_count = db_manager.batch_add_user_project_roles(roles_data)
         
-        return SuccessResponse(message=f"成功为项目分配 {assigned_count} 个用户角色")
+        scope = f"项目 {project_id}" if project_id else "全局"
+        return SuccessResponse(message=f"成功为{scope}分配 {assigned_count} 个用户角色")
     except HTTPException:
         raise
     except Exception as e:
