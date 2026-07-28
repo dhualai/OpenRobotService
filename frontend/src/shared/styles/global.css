@@ -394,6 +394,16 @@ html, body, #root {
   margin-top: 8px;
 }
 
+/* 我要摇人：Navbar 标题随会话标题变化（新建会话为空），超长省略 */
+.call-navbar-title {
+  display: inline-block;
+  max-width: 60vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
 /* 我要摇人：全屏 AI 问答 + 历史工单入口 */
 .call-full-chat {
   flex: 1;
