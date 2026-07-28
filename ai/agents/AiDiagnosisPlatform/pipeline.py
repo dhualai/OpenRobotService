@@ -98,6 +98,22 @@ def _agent_state_summary(state: AgentState) -> dict:
     }
 
 
+def _check_required_fields(ticket: dict) -> dict:
+    """统一的前置校验：type=problem 时必须填写 project。
+    返回 {"ok": bool, "missing": [...], "prompt": "..."}
+    """
+    missing = []
+    if ticket.get("type") == "problem":
+        if not ticket.get("project", "").strip():
+            missing.append("project")
+    ok = len(missing) == 0
+    return {
+        "ok": ok,
+        "missing": missing,
+        "prompt": "" if ok else "请提供项目/现场名称，方便我们定位问题。",
+    }
+
+
 async def _generate_title(llm_client, memory) -> str:
     """第2轮对话结束后，用前两轮对话生成会话标题（中文不超过15字，英文不超过50字符）"""
     turns = memory.turns
@@ -566,16 +582,25 @@ class AiDiagnosisPlatform:
             logger.info(f"[agent] 服务端兜底提单: query={request.query[:40]}")
             parsed["action"] = "submit"
 
-        # ---- 自动提单：LLM 输出 action=submit 时直接生成工单 ----
+        # ---- 自动提单：LLM 输出 action=submit 时先校验必填字段，完整则直接提单 ----
         ticket_data = None
         if parsed["action"] == "submit":
             try:
-                ticket_data = await self.submit(request.session_id, created_by="")
-                logger.info(f"[agent] 自动提单成功: session={request.session_id[:8]}, "
-                            f"ticket={ticket_data.get('data', {}).get('ticket', {}).get('ticket_id', '?')}")
-                # submit() 已清空诊断状态并保存，刷新本地 state 避免 _finalize_diagnosis 覆写旧状态
-                memory = await self._memory_manager.get_memory(request.session_id)
-                state = _load_agent_state(memory.metadata) or state
+                draft = await self._build_ticket(request.session_id, state, memory)
+                check = _check_required_fields(draft)
+                if not check["ok"]:
+                    logger.info(f"[agent] 缺必填字段: {check['missing']}, 引导用户补充")
+                    memory.metadata["ticket_draft"] = draft
+                    await self._memory_manager.save_memory(memory)
+                    parsed["action"] = "answer"
+                    parsed["message"] = check["prompt"]
+                else:
+                    ticket_data = await self.submit(request.session_id, created_by="")
+                    logger.info(f"[agent] 自动提单成功: session={request.session_id[:8]}, "
+                                f"ticket={ticket_data.get('data', {}).get('ticket', {}).get('ticket_id', '?')}")
+                    # submit() 已清空诊断状态并保存，刷新本地 state 避免 _finalize_diagnosis 覆写旧状态
+                    memory = await self._memory_manager.get_memory(request.session_id)
+                    state = _load_agent_state(memory.metadata) or state
             except Exception as e:
                 logger.error(f"[agent] 自动提单失败: session={request.session_id[:8]}, error={e}", exc_info=True)
 
@@ -823,6 +848,7 @@ class AiDiagnosisPlatform:
             f'{{"type":"problem|bug|feature|support|other","title":"≤20字","description":"≤150字，含排查过程",'
             f'"priority":"紧急|高|中|低","contact":"从对话提取的联系人，没有则为空",'
             f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
+            f'"project":"仅type=problem时填，从对话提取的项目/现场名称，没有则为空",'
             f'"fault_code":"仅type=problem时填，故障码","special_notes":"仅type=problem时填，特殊说明",'
             f'"steps_to_reproduce":"仅type=bug时填","expected_result":"仅type=bug时填",'
             f'"actual_result":"仅type=bug时填","severity":"仅type=bug时填:阻塞/主要/次要/轻微",'
@@ -867,6 +893,7 @@ class AiDiagnosisPlatform:
         if ticket_type == "problem":
             result["location"] = analysis.get("location", "")
             result["robot_type"] = analysis.get("robot_type", "")
+            result["project"] = agent_state.collected_info.get("project") or analysis.get("project", "")
             result["fault_code"] = analysis.get("fault_code", "")
             result["special_notes"] = analysis.get("special_notes", "")
         elif ticket_type == "bug":
@@ -950,6 +977,82 @@ class AiDiagnosisPlatform:
             },
             "agent_state": _agent_state_summary(agent_state),
         }
+
+    async def prepare_ticket(self, session_id: str) -> dict:
+        """生成工单草稿（路径1：按钮转工单），含必填字段校验。"""
+        await self._ensure_clients()
+        memory = await self._memory_manager.get_memory(session_id)
+        agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
+        ticket = await self._build_ticket(session_id, agent_state, memory)
+        ticket["ticket_seq"] = agent_state.ticket_seq + 1
+        check = _check_required_fields(ticket)
+        ticket["missing_fields"] = check["missing"]
+        memory.metadata["ticket_draft"] = ticket
+        await self._memory_manager.save_memory(memory)
+        logger.info(f"[prepare] session={session_id[:8]}, stage={'draft_ready' if check['ok'] else 'need_fields'}, "
+                    f"missing={check['missing']}")
+        return {
+            "stage": "draft_ready" if check["ok"] else "need_fields",
+            "draft": ticket,
+            "missing_fields": check["missing"],
+            "prompt": check["prompt"],
+        }
+
+    async def confirm_submit(self, session_id: str, overrides: dict = None) -> dict:
+        """确认提交工单（路径1：弹窗确认后），再次校验必填字段后入库。"""
+        await self._ensure_clients()
+        memory = await self._memory_manager.get_memory(session_id)
+        draft = memory.metadata.get("ticket_draft")
+        if not draft:
+            return {"code": 1, "message": "没有待确认的工单草稿"}
+        if overrides:
+            draft.update(overrides)
+        check = _check_required_fields(draft)
+        if not check["ok"]:
+            return {"code": 1, "message": check["prompt"], "missing_fields": check["missing"]}
+
+        agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
+        ticket = await self._build_ticket(session_id, agent_state, memory)
+        # 用 draft 中用户编辑过的值覆盖 LLM 重新生成的字段
+        ticket.update({k: v for k, v in draft.items()
+                       if v and k not in ("ticket_id", "missing_fields", "confirm_prompt", "stage")})
+
+        from ai.core.task_adapter import upsert_task
+        ticket["ticket_seq"] = agent_state.ticket_seq + 1
+        record = upsert_task(ticket, created_by="")
+
+        agent_state.ticket_seq += 1
+        agent_state.phase = "resolved"
+        agent_state.last_submitted_ticket = {
+            "ticket_id": ticket.get("ticket_id", ""), "db_id": record.id,
+            "title": ticket.get("title", ""), "topic": agent_state.problem_summary,
+            "submitted_at": int(time.time()),
+        }
+        agent_state.problem_summary = ""
+        agent_state.ruled_out = []
+        agent_state.hypotheses = []
+        agent_state.collected_info = {}
+        agent_state.diagnosis_rounds = 0
+        agent_state.original_query = ""
+        _save_agent_state(memory, agent_state)
+        memory.metadata.pop("ticket_draft", None)
+        await self._memory_manager.save_memory(memory)
+
+        try:
+            await self._memory_manager.add_pending_ticket(session_id)
+        except Exception:
+            pass
+
+        logger.info(f"[confirm] 工单已提交: session={session_id[:8]}, db_id={record.id}")
+        return {"code": 0, "data": {"ticket": ticket, "db_id": record.id,
+                                     "notice": "工单已生成并保存，等待自动派单。"}}
+
+    async def get_draft(self, session_id: str) -> dict:
+        """获取待确认草稿（前端轮询兜底）。"""
+        await self._ensure_clients()
+        memory = await self._memory_manager.get_memory(session_id)
+        draft = memory.metadata.get("ticket_draft")
+        return {"code": 0, "data": {"draft": draft}} if draft else {"code": 0, "data": {"draft": None}}
 
     async def _append_to_ticket(self, session_id: str, text: str = "",
                                 attachments: list = None) -> bool:
@@ -1242,27 +1345,38 @@ class AiDiagnosisPlatform:
             logger.info(f"[stream] 服务端兜底提单: query={request.query[:40]}")
             parsed["action"] = "submit"
 
-        # ---- 自动提单：LLM 输出 action=submit 时直接生成工单 ----
+        # ---- 自动提单：LLM 输出 action=submit 时先校验必填字段，完整则直接提单 ----
         ticket_data = None
         if parsed["action"] == "submit":
             try:
-                yield {"event": "status", "data": {"stage": "submitting"}}
-                ticket_data = await self.submit(request.session_id, created_by="")
-                ticket_info = ticket_data.get('data', {}).get('ticket', {})
-                logger.info(f"[stream] 自动提单成功: session={request.session_id[:8]}, "
-                            f"ticket={ticket_info.get('ticket_id', '?')}")
-                # 生成醒目的提单成功提示，随流式输出
-                yield {"event": "status", "data": {
-                    "stage": "submitted",
-                    "ticket_id": ticket_info.get("ticket_id", ""),
-                    "title": ticket_info.get("title", ""),
-                    "db_id": ticket_data.get("data", {}).get("db_id", 0),
-                }}
-                # submit() 已清空诊断状态并保存，刷新本地 state 避免 _finalize_diagnosis 覆写旧状态
-                memory = await self._memory_manager.get_memory(request.session_id)
-                state = _load_agent_state(memory.metadata) or state
+                draft = await self._build_ticket(request.session_id, state, memory)
+                check = _check_required_fields(draft)
+                if not check["ok"]:
+                    logger.info(f"[stream] 缺必填字段: {check['missing']}, 引导用户补充")
+                    yield {"event": "status", "data": {
+                        "stage": "need_fields", "missing_fields": check["missing"], "prompt": check["prompt"],
+                    }}
+                    memory.metadata["ticket_draft"] = draft
+                    await self._memory_manager.save_memory(memory)
+                    parsed["action"] = "answer"
+                    parsed["message"] = check["prompt"]
+                else:
+                    yield {"event": "status", "data": {"stage": "submitting"}}
+                    ticket_data = await self.submit(request.session_id, created_by="")
+                    ticket_info = ticket_data.get('data', {}).get('ticket', {})
+                    logger.info(f"[stream] 自动提单成功: session={request.session_id[:8]}, "
+                                f"ticket={ticket_info.get('ticket_id', '?')}")
+                    yield {"event": "status", "data": {
+                        "stage": "submitted",
+                        "ticket_id": ticket_info.get("ticket_id", ""),
+                        "title": ticket_info.get("title", ""),
+                        "db_id": ticket_data.get("data", {}).get("db_id", 0),
+                    }}
+                    # submit() 已清空诊断状态并保存，刷新本地 state 避免 _finalize_diagnosis 覆写旧状态
+                    memory = await self._memory_manager.get_memory(request.session_id)
+                    state = _load_agent_state(memory.metadata) or state
             except Exception as e:
-                logger.error(f"[stream] 自动提单失败: session={request.session_id[:8]}, error={e}", exc_info=True)
+                logger.error(f"[stream] 提单失败: session={request.session_id[:8]}, error={e}", exc_info=True)
                 yield {"event": "status", "data": {"stage": "submit_failed", "error": str(e)}}
 
         # ---- 补充工单：post-submit 时判断是否为补充信息 → 更新 MySQL 工单 ----

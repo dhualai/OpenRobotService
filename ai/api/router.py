@@ -49,6 +49,11 @@ class TicketAckRequest(BaseModel):
     status: str = Field(default="dispatched", description="派单状态")
 
 
+class TicketConfirmRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=128)
+    overrides: dict = Field(default_factory=dict, description="用户修改后的字段")
+
+
 async def get_pipeline() -> AiDiagnosisPlatform:
     return await get_diagnosis_platform()
 
@@ -189,6 +194,47 @@ async def ack_ticket(request: TicketAckRequest):
         await mgr.save_memory(memory)
         return {"code": 0, "data": {"session_id": request.session_id, "message": "已确认"}}
     except Exception as e:
+        return {"code": 1, "message": str(e)}
+
+
+@qa_router.post("/ticket/prepare", summary="生成工单草稿（路径1：按钮转工单）")
+async def prepare_ticket(
+    request: Request,
+    body: QASubmitRequest,
+    pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
+) -> dict:
+    try:
+        result = await pipeline.prepare_ticket(session_id=body.session_id)
+        return {"code": 0, "data": result}
+    except Exception as e:
+        logger.error(f"prepare_ticket 异常: {e}", exc_info=True)
+        return {"code": 1, "message": str(e)}
+
+
+@qa_router.post("/ticket/confirm", summary="确认提交工单（路径1：弹窗确认后）")
+async def confirm_ticket(
+    request: Request,
+    body: TicketConfirmRequest,
+    pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
+) -> dict:
+    try:
+        return await pipeline.confirm_submit(
+            session_id=body.session_id, overrides=body.overrides,
+        )
+    except Exception as e:
+        logger.error(f"confirm_ticket 异常: {e}", exc_info=True)
+        return {"code": 1, "message": str(e)}
+
+
+@qa_router.get("/ticket/draft", summary="获取待确认草稿（前端轮询兜底）")
+async def get_draft(
+    session_id: str = Query(..., description="会话 ID"),
+    pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
+) -> dict:
+    try:
+        return await pipeline.get_draft(session_id)
+    except Exception as e:
+        logger.error(f"get_draft 异常: {e}", exc_info=True)
         return {"code": 1, "message": str(e)}
 
 
