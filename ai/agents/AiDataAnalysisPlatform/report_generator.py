@@ -1,6 +1,6 @@
 """AI 数据分析平台 · 日报/周报生成器
 
-从 MySQL 采集项目、风险、工单、任务数据，调用 LLM 生成结构化日报/周报。
+从 MySQL 采集项目、风险、工单数据（工单数据源为 tasks 表），调用 LLM 生成结构化日报/周报。
 
 用法::
 
@@ -22,7 +22,7 @@ from typing import AsyncIterator
 
 from sqlalchemy import func as sa_func
 
-from ai.core.database import SessionLocal, Ticket, Task, ProjectDelivery, Risk, User
+from ai.core.database import SessionLocal, Task, ProjectDelivery, Risk, User
 
 from .llm_client import LLMClient
 from .config import AnalysisConfig
@@ -36,7 +36,6 @@ from .report_schemas import (
     ProjectStats,
     RiskStats,
     TicketStats,
-    TaskStats,
     CollectedData,
 )
 
@@ -210,28 +209,29 @@ class ReportDataCollector:
     def collect_ticket_data(
         self, start: datetime, end: datetime
     ) -> TicketStats:
-        """查询 tickets 表，统计指定时间范围内的工单数据。"""
+        """查询 tasks 表（工单表），统计指定时间范围内的工单数据。"""
         db = self._get_db()
         try:
-            q = db.query(Ticket)
+            q = db.query(Task)
             if self._project_code:
-                # Ticket 没有 project_code 字段，通过 project_id 间接过滤
-                # 此处暂不支持按 project_code 过滤工单，仅全局统计
-                pass
+                q = q.filter(Task.project_id == self._project_code)
 
             all_tickets = q.all()
             total = len(all_tickets)
 
-            # 用户映射：将 assignee_id 解析为真实姓名
+            # 用户映射：将 assigned_to 解析为真实姓名
             user_name_map = self._get_user_name_map(db)
 
             new_tickets = 0
             resolved = 0
             closed = 0
+            overdue = 0
             by_status: dict[str, int] = {}
             by_priority: dict[str, int] = {}
             by_type: dict[str, int] = {}
             items: list[dict] = []
+
+            today = date.today()
 
             for t in all_tickets:
                 # 状态统计
@@ -239,11 +239,11 @@ class ReportDataCollector:
                 by_status[status] = by_status.get(status, 0) + 1
 
                 # 优先级统计
-                priority = t.priority or "中"
+                priority = t.priority or "medium"
                 by_priority[priority] = by_priority.get(priority, 0) + 1
 
                 # 类型统计
-                ttype = t.type or "other"
+                ttype = t.task_type or "other"
                 by_type[ttype] = by_type.get(ttype, 0) + 1
 
                 # 新增工单（created_at 在时间范围内）
@@ -253,135 +253,53 @@ class ReportDataCollector:
                     new_tickets += 1
                     is_new = True
 
-                # 已解决 / 已关闭
-                updated = t.updated_at
-                if status in ("resolved",) and updated and start <= updated <= end:
+                # 已解决 / 已关闭（resolved_at / closed_at 在时间范围内）
+                if t.resolved_at and start <= t.resolved_at <= end:
                     resolved += 1
-                if status in ("closed",) and updated and start <= updated <= end:
+                if t.closed_at and start <= t.closed_at <= end:
                     closed += 1
 
+                # 逾期工单（deadline_at < today 且状态未完结）
+                if t.deadline_at and t.deadline_at.date() < today:
+                    if status not in ("resolved", "closed", "canceled"):
+                        overdue += 1
+
                 # 采集当日有变更的工单明细（最多50条）
+                updated = t.updated_at
                 if (is_new or (updated and start <= updated <= end)) and len(items) < 50:
-                    # 接收人：assignee_id 为 0/空视为未分配，否则解析为姓名（查不到时降级为 ID）
+                    # 接收人：assigned_to 为空视为未分配，否则解析为姓名（查不到时降级为 ID）
                     assignee_name = None
-                    if t.assignee_id:
-                        assignee_name = user_name_map.get(str(t.assignee_id), str(t.assignee_id))
+                    if t.assigned_to:
+                        assignee_name = user_name_map.get(str(t.assigned_to), str(t.assigned_to))
                     items.append({
                         "id": t.id,
-                        "ticket_ai_id": t.ticket_ai_id,
                         "title": t.title,
                         "description": (t.description or "")[:80],
                         "status": status,
                         "type": ttype,
                         "priority": priority,
-                        "assignee_id": t.assignee_id,
+                        "project_name": t.project_name,
+                        "assigned_to": t.assigned_to,
                         "assignee_name": assignee_name,
                         "created_at": created.isoformat() if created else None,
                         "updated_at": updated.isoformat() if updated else None,
+                        "resolved_at": t.resolved_at.isoformat() if t.resolved_at else None,
                     })
+
+            # 工单解决率（全量口径：已解决 + 已关闭 / 总数）
+            done = by_status.get("resolved", 0) + by_status.get("closed", 0)
+            resolve_rate = (done / total * 100) if total > 0 else 0.0
 
             return TicketStats(
                 total=total,
                 new_tickets=new_tickets,
                 resolved=resolved,
                 closed=closed,
-                by_status=by_status,
-                by_priority=by_priority,
-                by_type=by_type,
-                items=items,
-            )
-        finally:
-            db.close()
-
-    # ── 任务数据 ──────────────────────────────────────────────
-
-    def collect_task_data(
-        self, start: datetime, end: datetime
-    ) -> TaskStats:
-        """查询 tasks 表，统计指定时间范围内的任务数据。"""
-        db = self._get_db()
-        try:
-            q = db.query(Task)
-            if self._project_code:
-                q = q.filter(Task.project_id == self._project_code)
-
-            all_tasks = q.all()
-            total = len(all_tasks)
-
-            new_tasks = 0
-            resolved = 0
-            closed = 0
-            overdue = 0
-            by_status: dict[str, int] = {}
-            by_type: dict[str, int] = {}
-            by_priority: dict[str, int] = {}
-            items: list[dict] = []
-
-            today = date.today()
-
-            for t in all_tasks:
-                # 状态统计
-                status = t.status or "unknown"
-                by_status[status] = by_status.get(status, 0) + 1
-
-                # 类型统计
-                ttype = t.task_type or "other"
-                by_type[ttype] = by_type.get(ttype, 0) + 1
-
-                # 优先级统计
-                priority = t.priority or "medium"
-                by_priority[priority] = by_priority.get(priority, 0) + 1
-
-                # 新增任务
-                created = t.created_at
-                is_new = False
-                if created and start <= created <= end:
-                    new_tasks += 1
-                    is_new = True
-
-                # 已解决
-                if status == "resolved":
-                    resolved += 1
-
-                # 已关闭
-                if status == "closed":
-                    closed += 1
-
-                # 逾期任务（deadline_at < today 且状态不是 resolved/closed）
-                if t.deadline_at and t.deadline_at.date() < today:
-                    if status not in ("resolved", "closed"):
-                        overdue += 1
-
-                # 采集当日有变更的任务明细（最多50条）
-                updated = t.updated_at
-                if (is_new or (updated and start <= updated <= end)) and len(items) < 50:
-                    items.append({
-                        "id": t.id,
-                        "title": t.title,
-                        "status": status,
-                        "task_type": ttype,
-                        "priority": priority,
-                        "project_name": t.project_name,
-                        "assigned_to": t.assigned_to,
-                        "created_at": created.isoformat() if created else None,
-                        "updated_at": updated.isoformat() if updated else None,
-                        "resolved_at": t.resolved_at.isoformat() if t.resolved_at else None,
-                    })
-
-            # 解决率
-            closed_or_resolved = resolved + closed
-            resolve_rate = (closed_or_resolved / total * 100) if total > 0 else 0.0
-
-            return TaskStats(
-                total=total,
-                new_tasks=new_tasks,
-                resolved=resolved,
-                closed=closed,
                 overdue=overdue,
                 resolve_rate=round(resolve_rate, 1),
                 by_status=by_status,
-                by_type=by_type,
                 by_priority=by_priority,
+                by_type=by_type,
                 items=items,
             )
         finally:
@@ -398,18 +316,16 @@ class ReportDataCollector:
         project = self.collect_project_data()
         risk = self.collect_risk_data(start, end)
         ticket = self.collect_ticket_data(start, end)
-        task = self.collect_task_data(start, end)
 
         data = CollectedData(
             date_range=date_range_str,
             project=project,
             risk=risk,
             ticket=ticket,
-            task=task,
         )
         logger.info(
-            "数据采集完成 projects=%d risks=%d tickets=%d tasks=%d",
-            project.total, risk.total, ticket.total, task.total,
+            "数据采集完成 projects=%d risks=%d tickets=%d",
+            project.total, risk.total, ticket.total,
         )
         return data
 
@@ -551,19 +467,10 @@ class ReportGenerator:
                     "new": collected.ticket.new_tickets,
                     "resolved": collected.ticket.resolved,
                     "closed": collected.ticket.closed,
+                    "overdue": collected.ticket.overdue,
+                    "resolve_rate": collected.ticket.resolve_rate,
                     "by_status": collected.ticket.by_status,
                     "by_type": collected.ticket.by_type,
-                }
-            elif "任务" in title_lower:
-                metrics = {
-                    "total": collected.task.total,
-                    "new": collected.task.new_tasks,
-                    "resolved": collected.task.resolved,
-                    "closed": collected.task.closed,
-                    "overdue": collected.task.overdue,
-                    "resolve_rate": collected.task.resolve_rate,
-                    "by_status": collected.task.by_status,
-                    "by_type": collected.task.by_type,
                 }
 
             sections.append(ReportSection(title=title, content=content, metrics=metrics))
