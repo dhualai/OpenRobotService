@@ -119,6 +119,7 @@ export interface RequestOptions {
   skipCache?: boolean;
   responseType?: 'json' | 'arrayBuffer';
   skipAuth?: boolean;  // 跳过Token校验（用于登录等无需认证的接口）
+  timeout?: number;    // 自定义超时（毫秒），覆盖默认 30s（如授权码申请需等待 MQTT 审批，耗时较长）
 }
 
 // createRequest 工厂函数
@@ -164,7 +165,7 @@ export function createRequest(baseUrl: string, _serviceName = 'API') {
     try {
       // 超时控制
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+      const timeoutId = setTimeout(() => controller.abort(), options.timeout ?? REQUEST_TIMEOUT);
 
       const response = await fetch(url, {
         ...requestOptions,
