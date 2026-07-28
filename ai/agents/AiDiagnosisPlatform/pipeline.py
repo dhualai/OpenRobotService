@@ -511,7 +511,11 @@ class AiDiagnosisPlatform:
     async def _agent_think(self, request: DiagnosisRequest, state: AgentState, memory) -> dict:
         t = {}  # timing 字典，所有值单位 ms
         t0 = time.perf_counter()
-        logger.info(f"[agent] 开始推理: session={request.session_id[:8]}, query={request.query[:50]}, round={state.diagnosis_rounds}")
+        turn_count = len(memory.turns)
+        has_image = any("图片主要内容为" in t.get("content", "") for t in memory.turns[-6:])
+        logger.info(f"[agent] 开始推理: session={request.session_id[:8]}, query={request.query[:50]}, "
+                    f"round={state.diagnosis_rounds}, turns={turn_count}, "
+                    f"has_recent_image={has_image}, phase={state.phase}")
 
         t1 = time.perf_counter()
         memory = await self._memory_manager.add_turn(request.session_id, "user", request.query)
@@ -1113,10 +1117,22 @@ class AiDiagnosisPlatform:
     def _format_conversation(self, memory, max_turns: int = 8) -> str:
         """只取最近 N 条，避免长对话撑大 prompt"""
         turns = memory.turns[-max_turns:] if len(memory.turns) > max_turns else memory.turns
-        return "\n".join(
+        formatted = "\n".join(
             f"{'用户' if t['role'] == 'user' else '助手'}：{t['content']}"
             for t in turns
         )
+        image_turns = [
+            (i, t) for i, t in enumerate(turns)
+            if "图片主要内容为" in t.get("content", "")
+            or "上传了" in t.get("content", "") and ("文件" in t.get("content", "") or "图片" in t.get("content", ""))
+        ]
+        if image_turns:
+            for idx, t in image_turns:
+                logger.info(
+                    f"[conv] 对话含图片描述: turn_idx={idx} (共{len(turns)}轮), "
+                    f"role={t['role']}, content前150字={t['content'][:150]}"
+                )
+        return formatted
 
     def _parse_agent_output(self, raw: str) -> dict:
         """
@@ -1236,7 +1252,11 @@ class AiDiagnosisPlatform:
         """Agent 推理流式版 —— 只流 === 之后的回复文本"""
         t_stream: dict = {}  # 流式路径 timing (ms)
         t0 = time.perf_counter()
-        logger.info(f"[stream] 开始流式推理: session={request.session_id[:8]}, query={request.query[:50]}, round={state.diagnosis_rounds}")
+        turn_count = len(memory.turns)
+        has_image = any("图片主要内容为" in t.get("content", "") for t in memory.turns[-6:])
+        logger.info(f"[stream] 开始流式推理: session={request.session_id[:8]}, query={request.query[:50]}, "
+                    f"round={state.diagnosis_rounds}, turns={turn_count}, "
+                    f"has_recent_image={has_image}, phase={state.phase}")
         memory = await self._memory_manager.add_turn(request.session_id, "user", request.query)
 
         state.diagnosis_rounds += 1
@@ -1313,7 +1333,13 @@ class AiDiagnosisPlatform:
                         t_first_llm = time.perf_counter()
                         t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
                     yield {"event": "token", "data": token}
-        except (AITimeoutError, ServiceUnavailableError, Exception):
+        except (AITimeoutError, ServiceUnavailableError, Exception) as e:
+            logger.error(
+                f"[stream] LLM流式调用失败: type={type(e).__name__}, "
+                f"session={request.session_id[:8]}, round={state.diagnosis_rounds}, "
+                f"turns={len(memory.turns)}, has_image={has_image}, error={e}",
+                exc_info=True,
+            )
             msg = "AI 诊断服务暂时不可用，请稍后再试。"
             for ch in msg:
                 yield {"event": "token", "data": ch}
