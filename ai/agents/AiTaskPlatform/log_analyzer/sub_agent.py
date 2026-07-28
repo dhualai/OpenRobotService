@@ -90,50 +90,19 @@ def _load_log_docs() -> str:
 
 # ── System Prompt ───────────────────────────────────────────
 
-def _make_system_prompt() -> str:
+def _make_system_prompt(log_date: str = "") -> str:
     docs = _load_log_docs()
-    return f"""你是 AGV 调度算法日志分析专家。你有两份信息源：
+    return f"""输出要求：只输出一行JSON，不要输出任何其他文字。
 
-## 信息源 1: 知识库（日志格式和故障排查指引）
-{docs}
+命令格式:
+query: {{"action":"query","query":{{"time_start":"2026-07-27 16:50","time_end":"2026-07-27 17:05","robot_filter":"XNA-169","task_filter":"1098000","error_only":false,"max_results":30}}}}
+conclude: {{"action":"conclude","conclusion":"根因总结，引用知识库场景号"}}
+fallback: {{"action":"fallback","reason":"无结果原因"}}
 
-## 信息源 2: 日志查询工具
-可以通过 JSON 命令从实际算法日志中查询数据。
+参数: task_filter部分匹配,传"1098000"可命中"I|1098000"。error_only=true只看异常。宽时间窗优先。最多query 3轮。日志日期={log_date}。
 
-### 查询命令格式
-{{"action": "query", "query": {{"time_start": "2026-07-21 11:01:40", "time_end": "2026-07-21 11:02:00", "robot_filter": "E-XQE-218", "task_filter": "", "path_filter": "", "error_only": false, "context_lines": 3, "max_results": 30}}, "analysis": "当前发现", "next_step": "下一轮要查什么"}}
-
-### 查询参数说明
-- time_start/end: 时间窗口（留空=不限）。格式: "YYYY-MM-DD HH:MM:SS"
-- robot_filter: 车辆ID（如 "E-XQE-218"）。留空=不限
-- task_filter: 任务ID。留空=不限
-- path_filter: 路径ID。留空=不限
-- error_only: true=只看ERROR/WARN行，false=看全部
-- context_lines: 上下文行数（默认3）
-- max_results: 最多匹配行数（默认30）
-
-## 推理策略（先看知识库，再查日志）
-
-1. **第一轮**：先看知识库的故障场景排查路径，找到匹配的症状 → 按知识库的 Step 指导写查询
-2. **查日志含义**：看到日志行的关键词，先回忆知识库里的含义（比如 "PATH_PLANNING_SINGLE_AGENT_NO_SOLUTION" 意味着什么）
-3. **追踪路径**：如果有车辆ID，追查它的路径分配历史和任务ID
-4. **找根因**：不只是报"出现了什么错误"，而要按知识库的排查路径一步步往下挖
-5. 如果匹配太多(>50行): 加 robot_filter 或缩小时间窗口
-6. 如果匹配太少或无结果: 扩大时间窗口或去掉过滤条件
-
-## 结束条件
-
-当找到关键线索时:
-{{"action": "conclude", "conclusion": "一句话总结日志发现，引用知识库的排查路径作为推理依据", "evidence_lines": ["L123: 具体发现", "L456: 具体发现"]}}
-
-当所有尝试都无结果时:
-{{"action": "fallback", "reason": "为什么没找到线索"}}
-
-## 铁律
-- 每轮只输出一个 JSON 对象，JSON 之前之后不输出任何文字
-- 先对知识库：每条日志行报了什么错在知识库里查含义
-- 每次 query 选最多 3 个过滤参数组合使用
-- 如果已经 query 了 3 轮还没线索，必须 conclude 或 fallback"""
+知识库:
+{docs}"""
 
 
 # ── 日志分析结论模型 ─────────────────────────────────────────
@@ -206,8 +175,17 @@ class LogSubAgent:
         await self._ensure_clients()
         result = LogAnalysisResult()
 
+        # 获取日志文件中第一行和最后一行的日期
+        log_date = "unknown"
+        with open(self.log_path, "r", encoding="utf-8", errors="replace") as f:
+            first = f.readline()
+            m = re.search(r"(\d{4}-\d{2}-\d{2})", first)
+            if m: log_date = m.group(1)
+
         context_text = _build_context(task_context, user_question)
-        system_prompt = _make_system_prompt()
+        context_text += f"\n\n**日志日期**: {log_date}"
+
+        system_prompt = _make_system_prompt(log_date)
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -217,11 +195,12 @@ class LogSubAgent:
 
         for round_num in range(1, self.MAX_ROUNDS + 1):
             response = await self._llm.chat(
-                messages=messages, max_tokens=500, temperature=0.2,
+                messages=messages, max_tokens=400, temperature=0.0,
             )
 
             cmd = _parse_llm_command(response)
             if cmd is None:
+                logger.warning(f"LogSubAgent R{round_num} parse failed, raw[:200]={response[:200]}")
                 result.conclusion = "日志子Agent输出解析失败"
                 result.fallback_used = True
                 break
@@ -313,12 +292,31 @@ def _build_context(task: Dict, question: str) -> str:
 
 
 def _parse_llm_command(raw: str) -> Optional[Dict]:
-    m = re.search(r'\{[^{}]*"action"[^{}]*\}', raw, re.DOTALL)
-    if m:
-        try: return json.loads(m.group())
-        except json.JSONDecodeError: pass
-    m = re.search(r'\{[\s\S]*\}', raw)
-    if m:
-        try: return json.loads(m.group())
-        except json.JSONDecodeError: pass
+    # 找第一个 { → 手动数括号取完整 JSON
+    start = raw.find('{')
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(raw)):
+        c = raw[i]
+        if escape:
+            escape = False; continue
+        if c == '\\':
+            escape = True; continue
+        if c == '"':
+            in_str = not in_str; continue
+        if in_str:
+            continue
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                block = raw[start:i+1]
+                try:
+                    return json.loads(block)
+                except json.JSONDecodeError:
+                    break
     return None
