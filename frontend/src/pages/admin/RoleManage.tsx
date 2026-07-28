@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Button, Toast, Loading, Dialog, Input, Popup, Form, FormItem, Checkbox } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -9,6 +9,7 @@ interface Role {
   name: string;
   description?: string;
   permissions?: string[];
+  _permDetails?: Permission[];
 }
 
 interface Permission {
@@ -49,11 +50,15 @@ export default function RoleManage() {
     role: null,
   });
 
-  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  const request = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressTriggeredRef = useRef(false);
+  const longPressRoleRef = useRef<Role | null>(null);
 
   const hideContextMenu = useCallback(() => {
     setContextMenu((prev) => ({ ...prev, visible: false }));
+    longPressTriggeredRef.current = false;
   }, []);
 
   const fetchRoles = useCallback(async () => {
@@ -71,7 +76,7 @@ export default function RoleManage() {
               ...role,
               permissions: perms.map((p) => p.id),
               _permDetails: perms,
-            } as Role & { _permDetails: Permission[] };
+            } as Role;
           } catch {
             return { ...role, permissions: [] };
           }
@@ -84,7 +89,7 @@ export default function RoleManage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [request]);
 
   const fetchAllPermissions = useCallback(async () => {
     try {
@@ -100,11 +105,17 @@ export default function RoleManage() {
     fetchAllPermissions();
 
     const handleGlobalClick = () => hideContextMenu();
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') hideContextMenu();
+    };
     window.addEventListener('click', handleGlobalClick);
     window.addEventListener('scroll', handleGlobalClick, true);
+    window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('click', handleGlobalClick);
       window.removeEventListener('scroll', handleGlobalClick, true);
+      window.removeEventListener('keydown', handleKeyDown);
+      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
     };
   }, [fetchRoles, fetchAllPermissions, hideContextMenu]);
 
@@ -116,6 +127,7 @@ export default function RoleManage() {
   };
 
   const openEdit = async (role: Role) => {
+    if (longPressTriggeredRef.current) return;
     setEditingRoleId(role.id);
     setEditVisible(true);
     setPermLoading(true);
@@ -188,7 +200,7 @@ export default function RoleManage() {
       }
 
       setEditVisible(false);
-      fetchRoles();
+      await fetchRoles();
     } catch (err) {
       Toast({
         message: `保存失败: ${err instanceof Error ? err.message : ''}`,
@@ -208,7 +220,7 @@ export default function RoleManage() {
         try {
           await request(`/roles/${role.id}`, { method: 'DELETE' });
           Toast({ message: '已删除', theme: 'success' });
-          fetchRoles();
+          await fetchRoles();
         } catch (err) {
           Toast({
             message: `删除失败: ${err instanceof Error ? err.message : ''}`,
@@ -219,31 +231,60 @@ export default function RoleManage() {
     });
   };
 
-  const handleCardContextMenu = (e: React.MouseEvent, role: Role) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    const card = cardRefs.current.get(role.id);
-    const cardRect = card?.getBoundingClientRect();
-
-    let x = e.clientX;
-    let y = e.clientY;
-
-    if (cardRect) {
-      const menuWidth = 120;
-      const menuHeight = 48;
-      if (x + menuWidth > cardRect.right) {
-        x = cardRect.right - menuWidth - 8;
-      }
-      if (y + menuHeight > cardRect.bottom) {
-        y = cardRect.bottom - menuHeight - 8;
-      }
+  const startLongPress = useCallback((role: Role, clientX: number, clientY: number) => {
+    longPressTriggeredRef.current = false;
+    longPressRoleRef.current = role;
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
     }
 
-    setContextMenu({ visible: true, x, y, role });
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTriggeredRef.current = true;
+      const card = cardRefs.current.get(role.id);
+      const cardRect = card?.getBoundingClientRect();
+
+      let x = clientX;
+      let y = clientY;
+
+      if (cardRect) {
+        const menuWidth = 120;
+        const menuHeight = 48;
+        if (x + menuWidth > cardRect.right) {
+          x = cardRect.right - menuWidth - 8;
+        }
+        if (y + menuHeight > cardRect.bottom) {
+          y = cardRect.bottom - menuHeight - 8;
+        }
+      }
+
+      setContextMenu({ visible: true, x, y, role });
+    }, 1000);
+  }, []);
+
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  const handleCardPointerDown = (e: React.PointerEvent, role: Role) => {
+    startLongPress(role, e.clientX, e.clientY);
+  };
+
+  const handleCardPointerMove = () => {
+    cancelLongPress();
+  };
+
+  const handleCardPointerUp = () => {
+    cancelLongPress();
   };
 
   const handleCardClick = (role: Role) => {
+    if (longPressTriggeredRef.current) {
+      longPressTriggeredRef.current = false;
+      return;
+    }
     if (contextMenu.visible) return;
     openEdit(role);
   };
@@ -255,15 +296,6 @@ export default function RoleManage() {
         ? prev.permissions.filter((p) => p !== permId)
         : [...prev.permissions, permId],
     }));
-  };
-
-  const getPermissionNames = (permIds: string[]): string[] => {
-    return permIds
-      .map((id) => {
-        const perm = allPermissions.find((p) => p.id === id);
-        return perm ? perm.name : id;
-      })
-      .filter(Boolean);
   };
 
   const getPermissionColor = (resourceType: string): string => {
@@ -287,8 +319,7 @@ export default function RoleManage() {
       </Button>
 
       {roles.map((role) => {
-        const permNames = getPermissionNames(role.permissions || []);
-        const permDetails = (role as Role & { _permDetails?: Permission[] })._permDetails;
+        const permDetails = role._permDetails;
 
         return (
           <div
@@ -297,8 +328,12 @@ export default function RoleManage() {
               if (el) cardRefs.current.set(role.id, el);
               else cardRefs.current.delete(role.id);
             }}
+            onPointerDown={(e) => handleCardPointerDown(e, role)}
+            onPointerMove={handleCardPointerMove}
+            onPointerUp={handleCardPointerUp}
+            onPointerLeave={handleCardPointerUp}
+            onPointerCancel={handleCardPointerUp}
             onClick={() => handleCardClick(role)}
-            onContextMenu={(e) => handleCardContextMenu(e, role)}
             style={{
               background: '#fff',
               borderRadius: 8,
@@ -307,6 +342,9 @@ export default function RoleManage() {
               boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
               cursor: 'pointer',
               transition: 'box-shadow 0.2s',
+              userSelect: 'none',
+              WebkitUserSelect: 'none',
+              WebkitTouchCallout: 'none',
             }}
             onMouseEnter={(e) => {
               (e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 12px rgba(0,0,0,0.12)';
@@ -351,40 +389,9 @@ export default function RoleManage() {
                         </span>
                       )}
                     </>
-                  ) : permNames.length > 0 ? (
-                    <>
-                      {permNames.slice(0, 6).map((name, idx) => (
-                        <span
-                          key={idx}
-                          style={{
-                            fontSize: 11,
-                            padding: '2px 8px',
-                            borderRadius: 4,
-                            background: '#ecf2fe',
-                            color: '#0052d9',
-                          }}
-                        >
-                          {name}
-                        </span>
-                      ))}
-                      {permNames.length > 6 && (
-                        <span style={{ fontSize: 11, padding: '2px 8px', color: '#999' }}>
-                          +{permNames.length - 6} 更多
-                        </span>
-                      )}
-                    </>
                   ) : (
                     <span style={{ fontSize: 11, color: '#bbb' }}>暂无权限</span>
                   )}
-                </div>
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: '#bbb',
-                    marginTop: 6,
-                  }}
-                >
-                  左键编辑 · 右键删除
                 </div>
               </div>
             </div>
