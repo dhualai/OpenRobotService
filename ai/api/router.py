@@ -479,7 +479,7 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
 # ============================================================
 # 任务 Agent (prefix /api/ai/task)
 # ============================================================
-task_agent_router = APIRouter(prefix="/api/ai/task", tags=["AI任务助手"])
+task_agent_router = APIRouter(prefix="/api/ai/task", tags=["小U"])
 
 
 

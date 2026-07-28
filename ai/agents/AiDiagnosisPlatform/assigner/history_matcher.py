@@ -6,7 +6,19 @@ from typing import Dict, List, Optional, Set
 
 from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
-from ai.utils.keywords import extract_keywords
+
+
+def _extract_keywords(text: str, keyword_dict: Dict[str, List[str]]) -> Set[str]:
+    """从文本中提取在 keyword_dict 中出现的词。"""
+    if not text:
+        return set()
+    text_lower = text.lower()
+    matched: Set[str] = set()
+    for keywords in keyword_dict.values():
+        for kw in keywords:
+            if kw.lower() in text_lower:
+                matched.add(kw)
+    return matched
 
 
 class HistoryMatcher:
@@ -37,7 +49,7 @@ class HistoryMatcher:
             return {}
 
         query_text = " ".join(filter(None, [ticket.title, ticket.problem_description]))
-        query_keywords = extract_keywords(query_text, {**self._config.module_keywords, **self._config.skill_keywords})
+        query_keywords = _extract_keywords(query_text, {**self._config.module_keywords, **self._config.skill_keywords})
 
         engineer_hits: Dict[str, int] = {}
         engineer_total: Dict[str, int] = {}
@@ -55,7 +67,7 @@ class HistoryMatcher:
 
             rec_keywords = set(rec.get("keywords", []))
             desc = rec.get("description", "")
-            desc_keywords = extract_keywords(desc, {**self._config.module_keywords, **self._config.skill_keywords})
+            desc_keywords = _extract_keywords(desc, {**self._config.module_keywords, **self._config.skill_keywords})
 
             keyword_hit = bool(query_keywords & rec_keywords)
             desc_hit = bool(query_keywords & desc_keywords)
