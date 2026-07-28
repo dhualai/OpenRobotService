@@ -103,7 +103,8 @@ export interface TicketDraft {
   priority?: string;   // 紧急|高|中|低
   status?: string;
   contact?: string;
-  project?: string;    // type=problem 时必填（现场/项目名称）
+  project?: string;    // 项目名称（落 Task.project_name）
+  project_id?: string; // 项目编码 project_code（落 Task.project_id，明确绑定关系）
   location?: string;
   robot_type?: string;
   fault_code?: string;
