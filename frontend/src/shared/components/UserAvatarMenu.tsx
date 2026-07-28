@@ -105,7 +105,7 @@ export default function UserAvatarMenu() {
   const handleLogout = () => {
     setVisible(false);
     logout();
-    navigate('/login', { replace: true });
+    navigate('/login?reason=logout', { replace: true });
   };
 
   const displayName = name || username || '用户';

@@ -258,6 +258,8 @@
 | 9 | 详情页支持「升级」：先下拉选择升级对象（带模糊搜索的用户列表），再创建并指派高优先级 task | 点击升级 → 弹出用户选择器 `UserSelect`（下拉列表 + 按姓名/账号模糊搜索，对接 `GET /api/tasks/assignable-users`）→ 选中后调用 `POST /api/tasks/`（`TicketCreate`：`title` 前缀【升级→姓名】、`priority=urgent`、`related_resource_id` 关联原工单、`assigned_to`=选中用户 id）创建并指派任务 + Toast；未选对象时拦截提示。注：选人走**独立业务接口** `GET /api/tasks/assignable-users`（仅需登录，字段最小化 `id/username/name/status`，不含凭据，与受权限管控的 admin 用户管理接口 `/api/admin/users` 解耦） | ✅ |
 | 10 | 详情页支持「讨论」入口，调用真实评论接口并跳转 | 点击讨论 → 调用真实接口 `POST /api/tasks/{id}/comments`（`content`+`is_public`）留存讨论记录 + Toast，随后 `setChatContext` + `goToTab('call')` + `navigate('/call')` 跳转 AI 会话继续沟通 | ✅ |
 
+> **已知缺陷修复（2026-07-28）**：此前从「历史工单」列表进入详情时，AI 服务 `GET /api/ai/qa/ticket` 在 Redis 降级路径（`task_to_dict`）未返回 `ticket_id`，主路径返回的 `ticket_id` 又是 `AI-...` 字符串而非数字 Task.id，导致详情页「催办/上报/评论/撤回」按钮点击时报「工单号缺失」、或 `Number(ticketId)` 得到 `NaN`。现已统一让两条路径均返回数字 `ticket_id=Task.id`，前端无需改动。
+
 ---
 
 ## 七、功能规格 · 系统任务（供给视角）
