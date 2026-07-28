@@ -26,23 +26,31 @@ class IdentityService:
         permissions: List[str],
         name: Optional[str] = None,
         status: str = "inactive",
-        external_credentials: Optional[Dict[str, Dict[str, str]]] = None
+        external_credentials: Optional[Dict[str, Dict[str, str]]] = None,
+        department: Optional[str] = None,
+        responsibility_modules: Optional[List[str]] = None,
+        job_level: Optional[int] = 1,
+        duty_text: Optional[str] = None,
     ) -> bool:
         db = IdentityService._get_db()
         try:
             existing_user = db.query(UserDB).filter(UserDB.username == username).first()
             if existing_user:
                 return False
-            
+
             external_credentials_json = json.dumps(external_credentials) if external_credentials else None
-            
+
             db_user = UserDB(
                 id=user_id,
                 username=username,
                 password_hash=hashed_password,
                 name=name,
                 status=status,
-                external_credentials=external_credentials_json
+                external_credentials=external_credentials_json,
+                department=department,
+                responsibility_modules=responsibility_modules or [],
+                job_level=job_level if job_level is not None else 1,
+                duty_text=duty_text,
             )
             db.add(db_user)
             db.commit()
@@ -75,7 +83,11 @@ class IdentityService:
                     'status': getattr(db_user, 'status', 'inactive'),
                     'external_credentials': external_credentials,
                     'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
-                    'permissions': ["admin"] if db_user.username == 'admin' else ["user"]
+                    'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
+                    'department': getattr(db_user, 'department', None),
+                    'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or [],
+                    'job_level': getattr(db_user, 'job_level', 1),
+                    'duty_text': getattr(db_user, 'duty_text', None),
                 }
             return None
         finally:
@@ -93,7 +105,7 @@ class IdentityService:
                         external_credentials = json.loads(db_user.external_credentials)
                     except:
                         external_credentials = {}
-                
+
                 return {
                     'id': db_user.id,
                     'username': db_user.username,
@@ -102,7 +114,11 @@ class IdentityService:
                     'status': getattr(db_user, 'status', 'inactive'),
                     'external_credentials': external_credentials,
                     'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
-                    'permissions': ["admin"] if db_user.username == 'admin' else ["user"]
+                    'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
+                    'department': getattr(db_user, 'department', None),
+                    'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or [],
+                    'job_level': getattr(db_user, 'job_level', 1),
+                    'duty_text': getattr(db_user, 'duty_text', None),
                 }
             return None
         finally:

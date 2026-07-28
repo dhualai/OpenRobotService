@@ -33,6 +33,8 @@ interface DiscussionPanelProps {
   enableAI?: boolean;
   /** 消息区点击（系统任务：点诊断报告链接打开弹窗） */
   onMessagesClick?: (e: React.MouseEvent<HTMLDivElement>) => void;
+  /** 标题右侧额外内容（如"帮我分析"按钮，仅系统任务用） */
+  headerRight?: React.ReactNode;
   /** 标题，默认“讨论（N）” */
   title?: string;
   className?: string;
@@ -47,6 +49,7 @@ export default function DiscussionPanel({
   enableAttach = false,
   enableAI = false,
   onMessagesClick,
+  headerRight,
   title,
   className = '',
 }: DiscussionPanelProps) {
@@ -97,7 +100,10 @@ export default function DiscussionPanel({
 
   return (
     <div className={`detail-card detail-chat-container ${className}`.trim()}>
-      <h4 className="detail-card__h">{title ?? `讨论（${comments.length}）`}</h4>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h4 className="detail-card__h">{title ?? `讨论（${comments.length}）`}</h4>
+        {headerRight}
+      </div>
       <div className="detail-chat-messages" ref={chatMessagesRef} onClick={onMessagesClick}>
         {comments.length > 0 ? (
           comments.map((c) => {

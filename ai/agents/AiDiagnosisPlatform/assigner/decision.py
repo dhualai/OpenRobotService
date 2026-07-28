@@ -75,8 +75,8 @@ class DecisionMaker:
             eng = engineer_map.get(eid)
             if eng:
                 lines.append(
-                    f"- {eng.name}({eid}): 置信度 {detail['total_score']:.2f}, "
-                    f"技能 {eng.skills}, 模块 {eng.responsibility_modules}"
+                    f"- {eng.name}({eid}): 置信度 {detail['total_score']:.2f} "
+                    f"(L{detail.get('job_level', '?')}), 模块 {eng.responsibility_modules}"
                 )
         return "\n".join(lines) if lines else "无其他候选"
 
@@ -89,7 +89,6 @@ class DecisionMaker:
         runner_up: str,
     ) -> str:
         """基于规则生成推荐理由。"""
-        skill = score_detail.get("skill_score", 0.0)
         module = score_detail.get("module_score", 0.0)
         history = score_detail.get("history_score", 0.0)
         semantic = score_detail.get("semantic_score", 0.0)
@@ -99,8 +98,6 @@ class DecisionMaker:
             reasons.append(
                 f"责任模块匹配({module:.2f}): {', '.join(engineer.responsibility_modules)}"
             )
-        if skill > 0:
-            reasons.append(f"技能标签匹配({skill:.2f}): {', '.join(engineer.skills)}")
         if history > 0:
             reasons.append(f"历史工单匹配({history:.2f})")
         if semantic > 0:

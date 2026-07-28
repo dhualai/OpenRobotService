@@ -19,6 +19,10 @@ class UserCreate(UserBase):
     name: Optional[str] = None
     status: Optional[str] = "inactive"
     external_credentials: Optional[Dict[str, Dict[str, str]]] = {}
+    department: Optional[str] = None
+    responsibility_modules: Optional[List[str]] = None
+    job_level: Optional[int] = 1
+    duty_text: Optional[str] = None
 
 class UserUpdate(BaseModel):
     password: Optional[str] = None
@@ -27,6 +31,10 @@ class UserUpdate(BaseModel):
     status: Optional[str] = None
     external_credentials: Optional[Dict[str, Dict[str, str]]] = None
     avatar_resource_id: Optional[int] = None
+    department: Optional[str] = None
+    responsibility_modules: Optional[List[str]] = None
+    job_level: Optional[int] = None
+    duty_text: Optional[str] = None
 
 class UserInDB(UserBase):
     id: str
@@ -36,6 +44,10 @@ class UserInDB(UserBase):
     name: Optional[str] = None
     status: str = "inactive"
     external_credentials: Dict[str, Dict[str, str]] = {}
+    department: Optional[str] = None
+    responsibility_modules: Optional[List[str]] = None
+    job_level: Optional[int] = 1
+    duty_text: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -48,6 +60,10 @@ class User(UserBase):
     name: Optional[str] = None
     status: str = "inactive"
     external_credentials: Dict[str, Dict[str, str]] = {}
+    department: Optional[str] = None
+    responsibility_modules: Optional[List[str]] = None
+    job_level: Optional[int] = 1
+    duty_text: Optional[str] = None
     class Config:
         from_attributes = True
 

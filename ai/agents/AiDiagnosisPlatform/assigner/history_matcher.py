@@ -1,11 +1,13 @@
-"""历史工单匹配器：基于 task_matching.json 计算历史匹配分数"""
+"""历史工单匹配器：基于 tasks 表历史分配记录计算匹配分数"""
 
-import json
-from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
+from ai.agents.AiDiagnosisPlatform.assigner.history_sync import load_history_records, invalidate_cache
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
+from ai.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def _extract_keywords(text: str, keyword_dict: Dict[str, List[str]]) -> Set[str]:
@@ -22,22 +24,16 @@ def _extract_keywords(text: str, keyword_dict: Dict[str, List[str]]) -> Set[str]
 
 
 class HistoryMatcher:
-    """历史工单匹配器（维度3）"""
+    """历史工单匹配器（维度3）
 
-    _DATA_DIR = Path(__file__).parent / "data"
+    数据源：DB tasks 表（status=resolved/closed）→ history_sync 缓存。
+    """
 
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
-        self._records: List[dict] = self._load_records()
 
     def _load_records(self) -> List[dict]:
-        path = self._DATA_DIR / "task_matching.json"
-        if not path.exists():
-            path = self._DATA_DIR / "task_matching.example.json"
-        if not path.exists():
-            return []
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return load_history_records(self._config.module_keywords)
 
     def match(
         self,
@@ -45,34 +41,32 @@ class HistoryMatcher:
         engineers: List[EngineerProfile],
     ) -> Dict[str, float]:
         """计算各工程师的历史匹配分数。"""
-        if not self._records:
+        records = self._load_records()
+        if not records:
             return {}
 
         query_text = " ".join(filter(None, [ticket.title, ticket.problem_description]))
-        query_keywords = _extract_keywords(query_text, {**self._config.module_keywords, **self._config.skill_keywords})
+        query_keywords = _extract_keywords(query_text, self._config.module_keywords)
 
         engineer_hits: Dict[str, int] = {}
         engineer_total: Dict[str, int] = {}
 
-        for rec in self._records:
-            eng_name = rec.get("engineer_name", "")
-            if not eng_name:
-                continue
-
-            eng_id = self._name_to_id(eng_name, engineers)
-            if eng_id is None:
+        for rec in records:
+            eng_id = rec.get("engineer_id", "").strip()
+            if not eng_id:
                 continue
 
             engineer_total[eng_id] = engineer_total.get(eng_id, 0) + 1
 
             rec_keywords = set(rec.get("keywords", []))
-            desc = rec.get("description", "")
-            desc_keywords = _extract_keywords(desc, {**self._config.module_keywords, **self._config.skill_keywords})
+            if not rec_keywords:
+                desc_text = " ".join(filter(None, [
+                    rec.get("title", ""),
+                    rec.get("description", ""),
+                ]))
+                rec_keywords = _extract_keywords(desc_text, self._config.module_keywords)
 
-            keyword_hit = bool(query_keywords & rec_keywords)
-            desc_hit = bool(query_keywords & desc_keywords)
-
-            if keyword_hit or desc_hit:
+            if query_keywords & rec_keywords:
                 engineer_hits[eng_id] = engineer_hits.get(eng_id, 0) + 1
 
         scores = {}
@@ -87,10 +81,3 @@ class HistoryMatcher:
                 scores = {k: min(v / max_score, 1.0) for k, v in scores.items()}
 
         return scores
-
-    def _name_to_id(self, name: str, engineers: List[EngineerProfile]) -> Optional[str]:
-        """根据姓名查找 engineer_id。"""
-        for eng in engineers:
-            if eng.name == name:
-                return eng.id
-        return None

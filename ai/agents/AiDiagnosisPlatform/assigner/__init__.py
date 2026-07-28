@@ -17,6 +17,10 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from ai.agents.AiDiagnosisPlatform.assigner.assigner import Assigner
+from ai.agents.AiDiagnosisPlatform.assigner.personnel_sync import (
+    load_engineers,
+    invalidate_cache as invalidate_personnel_cache,
+)
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     AssignmentResult,
     EngineerProfile,
@@ -29,39 +33,9 @@ __all__ = [
     "EngineerProfile",
     "TicketContext",
     "load_engineers",
+    "invalidate_personnel_cache",
     "assign_ticket",
 ]
-
-# ── 模块级缓存 ──────────────────────────────────────────────
-
-_engineers_cache: Optional[List[EngineerProfile]] = None
-_DATA_DIR = Path(__file__).parent / "data"
-
-
-def load_engineers(reload: bool = False) -> List[EngineerProfile]:
-    """加载工程师画像（模块级缓存）。
-
-    Priority: engineers.json → engineers.example.json → []
-
-    Args:
-        reload: True 时强制重新读取文件，否则复用缓存。
-    """
-    global _engineers_cache
-    if _engineers_cache is not None and not reload:
-        return _engineers_cache
-
-    path = _DATA_DIR / "engineers.json"
-    example_path = _DATA_DIR / "engineers.example.json"
-    chosen = path if path.exists() else (example_path if example_path.exists() else None)
-
-    if chosen is None:
-        _engineers_cache = []
-        return []
-
-    with open(chosen, "r", encoding="utf-8") as f:
-        raw = json.load(f)
-    _engineers_cache = [EngineerProfile(**item) for item in raw]
-    return _engineers_cache
 
 
 # ── 一站式派单入口 ──────────────────────────────────────────
@@ -107,7 +81,7 @@ async def assign_ticket(
     """
     engineers = load_engineers()
     if not engineers:
-        raise ValueError("工程师画像未配置，请检查 data/engineers.json")
+        raise ValueError("工程师画像为空，请检查 users 表人员数据是否就绪")
 
     if not ticket_id:
         import time

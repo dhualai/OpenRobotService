@@ -451,12 +451,12 @@ export default function TaskDetailPage() {
           sending={submittingComment || askingAI}
           enableAI
           onMessagesClick={handleOpenReport}
+          headerRight={
+            <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing}>
+              🤖 帮我分析
+            </Button>
+          }
         />
-        <div style={{ display: 'flex', justifyContent: 'center', margin: '8px 0' }}>
-          <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing}>
-            🤖 帮我分析
-          </Button>
-        </div>
 
         <div className="detail-actions">
           <div className="detail-actions__btns">

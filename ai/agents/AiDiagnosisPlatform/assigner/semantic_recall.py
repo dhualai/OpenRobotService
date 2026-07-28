@@ -8,14 +8,13 @@
 """
 
 import asyncio
-import json
 import math
-from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
 
 from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
+from ai.agents.AiDiagnosisPlatform.assigner.history_sync import load_history_records
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
 
 
@@ -42,8 +41,6 @@ class SemanticRecallResult:
 class SemanticRecaller:
     """基于 Embedding 的语义召回器"""
 
-    _DATA_DIR = Path(__file__).parent / "data"
-
     def __init__(
         self,
         config: Optional[AssignerConfig] = None,
@@ -58,7 +55,7 @@ class SemanticRecaller:
         """构造工程师画像文本列表。"""
         eng_texts = []
         for eng in engineers:
-            text = f"责任模块: {', '.join(eng.responsibility_modules)}。技能: {', '.join(eng.skills)}。"
+            text = f"责任模块: {', '.join(eng.responsibility_modules)}。"
             if eng.duty_text:
                 text += f"职责: {eng.duty_text}"
             eng_texts.append(text)
@@ -78,24 +75,18 @@ class SemanticRecaller:
             for eng, emb in zip(engineers, embeddings):
                 self._engineer_embeddings[eng.id] = emb.tolist() if isinstance(emb, np.ndarray) else emb
 
-        self._history_records = self._load_history_records()
+        self._history_records = load_history_records(self._config.module_keywords)
         if self._history_records:
-            hist_texts = [rec.get("description", "") for rec in self._history_records]
+            hist_texts = [
+                " ".join(filter(None, [rec.get("title", ""), rec.get("description", "")]))
+                for rec in self._history_records
+            ]
             self._history_embeddings = [
                 emb.tolist() if isinstance(emb, np.ndarray) else emb
                 for emb in await embed_client.embed_batch(hist_texts)
             ]
 
         self._precomputed = True
-
-    def _load_history_records(self) -> List[dict]:
-        path = self._DATA_DIR / "task_matching.json"
-        if not path.exists():
-            path = self._DATA_DIR / "task_matching.example.json"
-        if not path.exists():
-            return []
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
 
     async def arecall(
         self,
@@ -126,15 +117,12 @@ class SemanticRecaller:
             for rec, hist_emb in zip(self._history_records, self._history_embeddings):
                 sim = _cosine_similarity(query_emb, hist_emb)
                 if sim > 0.3:
-                    eng_name = rec.get("engineer_name", "")
-                    if eng_name:
-                        engineer_hits.setdefault(eng_name, []).append(sim)
+                    eid = rec.get("engineer_id", "").strip()
+                    if eid:
+                        engineer_hits.setdefault(eid, []).append(sim)
 
-            name_to_id = {e.name: e.id for e in engineers}
-            for name, sims in engineer_hits.items():
-                eid = name_to_id.get(name)
-                if eid:
-                    result.history_semantic[eid] = sum(sims) / len(sims)
+            for eid, sims in engineer_hits.items():
+                result.history_semantic[eid] = sum(sims) / len(sims)
 
         return result
 
