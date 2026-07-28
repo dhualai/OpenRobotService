@@ -73,6 +73,9 @@ ai/kb/.ingest_state/
 # =====生产同步的媒体文件（operation_doc 图片等），不入库====
 /docs/operation_doc/
 
+# ===== 本地调试文件（不入库）=====
+ai/core/minio_helper_local.py
+
 # ===== 日志排查文档（部署时从服务器拷贝）=====
 ai/agents/AiTaskPlatform/log_analyzer/log_manual/
 
