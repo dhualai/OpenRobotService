@@ -1,15 +1,16 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import SafeHtml from '@/shared/components/SafeHtml';
+import DiscussionPanel from '@/shared/components/DiscussionPanel';
 import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP } from '@/shared/constants/ticket';
-import { formatDateTime, formatTime } from '@/shared/utils/url';
+import { formatDateTime } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -41,10 +42,8 @@ export default function TaskDetailPage() {
   const [showEscalatePopup, setShowEscalatePopup] = useState(false);
   const [resumeUser, setResumeUser] = useState<UserItem | null>(null);
   const [showResumePopup, setShowResumePopup] = useState(false);
-  const [commentText, setCommentText] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
-  const chatMessagesRef = useRef<HTMLDivElement>(null);
 
   // 小U 诊断
   const [diagnosing, setDiagnosing] = useState(false);
@@ -70,14 +69,6 @@ export default function TaskDetailPage() {
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
   }, [detailId]);
-
-  useEffect(() => {
-    if (chatMessagesRef.current) {
-      chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
-    }
-  }, [detail?.comments?.length]);
-
-
 
   const getActionButtons = () => {
     const status = detail?.status?.toLowerCase();
@@ -196,16 +187,17 @@ export default function TaskDetailPage() {
     navigator.clipboard?.writeText(id).then(() => Toast({ message: '已复制工单号', theme: 'success' }));
   };
 
-  const handleAddComment = async () => {
-    if (!detail || !commentText.trim()) {
+  // ── 普通评论：POST /api/tasks/{id}/comments；返回 true=成功（组件清空输入） ──
+  const handleAddComment = async (text: string): Promise<boolean> => {
+    if (!detail) {
       Toast({ message: '请输入评论内容', theme: 'warning' });
-      return;
+      return false;
     }
     setSubmittingComment(true);
     try {
       const newComment = await request<Comment>(`/${detail.id}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ content: commentText.trim(), is_public: true }),
+        body: JSON.stringify({ content: text, is_public: true }),
       });
       const enrichedComment = {
         ...newComment,
@@ -217,27 +209,20 @@ export default function TaskDetailPage() {
         const updatedComments = prev.comments ? [...prev.comments, enrichedComment] : [enrichedComment];
         return { ...prev, comments: updatedComments };
       });
-      setCommentText('');
       Toast({ message: '评论已添加', theme: 'success' });
+      return true;
     } catch (err) {
       Toast({ message: `添加评论失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      return false;
     } finally {
       setSubmittingComment(false);
     }
   };
 
-  // ── @AI 按钮：在输入框填入 @AI 前缀 ──
-  const handleAIClick = () => {
-    if (!commentText.startsWith('@AI ')) {
-      setCommentText('@AI ' + commentText);
-    }
-  };
-
-  // ── 讨论发送时检测 @AI 前缀 → 调 POST /api/ai/task/discuss ──
-  const handleAIDiscuss = async () => {
-    if (!detail || !commentText.trim()) return;
-    const userMsg = commentText.trim();
-    setCommentText('');
+  // ── @AI 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
+  const handleAIDiscuss = async (text: string): Promise<boolean> => {
+    if (!detail) return false;
+    const userMsg = text;
     setAskingAI(true);
     try {
       // 1. 先保存用户的 @AI 消息到 task_comments
@@ -269,23 +254,25 @@ export default function TaskDetailPage() {
       if (data.code === 0) {
         Toast({ message: 'AI 已回复', theme: 'success' });
         loadDetail();  // 重新加载评论（含 AI 回复）
+        return true;
       } else {
         Toast({ message: data.message || 'AI 回复失败', theme: 'error' });
+        return false;
       }
     } catch (err) {
       Toast({ message: `AI 回复失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      return false;
     } finally {
       setAskingAI(false);
     }
   };
 
-  // ── 发送评论：检测 @AI 前缀决定走普通评论还是 AI 讨论 ──
-  const handleSendComment = async () => {
-    if (commentText.trim().startsWith('@AI ')) {
-      await handleAIDiscuss();
-    } else {
-      await handleAddComment();
+  // ── onSend：检测 @AI 前缀决定走普通评论还是 AI 讨论 ──
+  const handleSendComment = async (text: string, _files: File[]): Promise<boolean> => {
+    if (text.startsWith('@AI ')) {
+      return handleAIDiscuss(text);
     }
+    return handleAddComment(text);
   };
 
   // ── [帮我分析] → POST /api/ai/task/diagnose → 讨论区展示短链接 ──
@@ -432,56 +419,13 @@ export default function TaskDetailPage() {
           </div>
         )}
 
-        <div className="detail-card detail-chat-container">
-          <h4 className="detail-card__h">讨论（{detail.comments?.length || 0}）</h4>
-          <div className="detail-chat-messages" ref={chatMessagesRef} onClick={handleOpenReport}>
-            {detail.comments && detail.comments.length > 0 ? (
-              detail.comments.map((c) => {
-                const authorName = c.created_by_name || c.created_by || '未知用户';
-                const isCurrentUser = (c.created_by?.toLowerCase() === username?.toLowerCase()) ||
-                                     (c.created_by_name?.toLowerCase() === username?.toLowerCase()) ||
-                                     (c.created_by_name?.toLowerCase() === name?.toLowerCase());
-                return (
-                  <div key={c.id} className={`detail-chat-row ${isCurrentUser ? 'is-right' : ''}`}>
-                    <div className={`detail-chat-bubble ${isCurrentUser ? 'is-self' : ''}`}>
-                      <div className="detail-chat-name">{authorName}</div>
-                      <SafeHtml html={c.content} />
-                      <div className="detail-chat-time">{formatTime(c.created_at)}</div>
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="detail-chat-empty">暂无评论</div>
-            )}
-          </div>
-          <div className="detail-chat-input">
-            <input
-              className="detail-chat-input-field"
-              value={commentText}
-              onChange={(e) => setCommentText(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSendComment(); }}
-              placeholder="直接评论或者 @AI 进行讨论。"
-              disabled={submittingComment || askingAI}
-            />
-            <Button
-              size="small"
-              theme="default"
-              onClick={handleAIClick}
-              disabled={submittingComment || askingAI}
-            >
-              @AI
-            </Button>
-            <Button
-              size="small"
-              theme="primary"
-              onClick={handleSendComment}
-              disabled={(submittingComment || askingAI) || !commentText.trim()}
-            >
-              {submittingComment || askingAI ? '发送中' : '发送'}
-            </Button>
-          </div>
-        </div>
+        <DiscussionPanel
+          comments={detail.comments || []}
+          onSend={handleSendComment}
+          sending={submittingComment || askingAI}
+          enableAI
+          onMessagesClick={handleOpenReport}
+        />
 
         <div className="detail-actions">
           <div className="detail-actions__btns">
