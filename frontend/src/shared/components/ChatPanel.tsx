@@ -10,6 +10,8 @@ import { qaSubmit, qaUpload, generateSessionId, trackSession, fetchWithAuth } fr
 import { createConversation, getConversation, listMyConversations, appendMessage, readAiSessionId } from '@/api/conversation';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
+import SuggestedQuestions from '@/shared/components/SuggestedQuestions';
+import { pickRandomQuestions, matchQuestions } from '@/shared/data/suggestedQuestions';
 
 interface SpeechRecognitionResultEvent {
   resultIndex: number;
@@ -85,6 +87,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const [voiceWillCancel, setVoiceWillCancel] = useState(false);
   const [textareaFullscreen, setTextareaFullscreen] = useState(false);
   const [textareaMaxed, setTextareaMaxed] = useState(false);
+  // 「猜你想问」空输入随机推荐池（进入界面时生成，可「换一批」重新随机）
+  const [randomPool, setRandomPool] = useState<string[]>(() => pickRandomQuestions(5));
   const textareaContainerRef = useRef<HTMLDivElement>(null);
   const voiceStartYRef = useRef<number>(0);
   const voiceCancelRef = useRef(false);
@@ -616,6 +620,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
+  // 「猜你想问」：输入框无内容即浮现（随机 5 条，可换一批）；有输入 → 关键字检索匹配
+  const trimmedInput = input.trim();
+  const suggestedList: string[] = trimmedInput
+    ? matchQuestions(trimmedInput)
+    : randomPool;
+  const showSuggestedRefresh = !trimmedInput;
+
   return (
     <div className={`chat-panel${compact ? ' is-compact' : ''}`}>
 
@@ -689,6 +700,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input); }
         }}
       >
+        {suggestedList.length > 0 && (
+          <SuggestedQuestions
+            questions={suggestedList}
+            onPick={(q) => send(q)}
+            onRefresh={showSuggestedRefresh ? () => setRandomPool(pickRandomQuestions(5)) : undefined}
+          />
+        )}
         {isCall && (
           <div className="chat-panel__ticket-fab" title="转为工单">
             <button
@@ -773,6 +791,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             )}
             <div className="chat-input-bar__tools">
               <div className="chat-input-bar__tools-left">
+                {/* === 语音输入入口暂时隐藏（2026-07-28），voiceMode 相关逻辑保留以便后续恢复 ===
                 <button className="chat-input-btn" onClick={() => setVoiceMode(true)} title="语音输入" aria-label="语音输入">
                   <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="9" y="3" width="6" height="11" rx="3" />
@@ -781,6 +800,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                     <line x1="8" y1="21" x2="16" y2="21" />
                   </svg>
                 </button>
+                */}
                 <button className="chat-input-btn" onClick={() => setShowUploadMenu(true)} title="上传" aria-label="上传文件或拍照">
                   <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
                     <circle cx="12" cy="12" r="9.5" />
