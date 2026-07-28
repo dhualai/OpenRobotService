@@ -1,29 +1,34 @@
 template:
+# 催办工单模板, [工单名称, 提报时间, 催办原因, 催办方, 截止时间]
   1:
-    id: TukPKMkubGh-SRmWQjHxVwah8qoTd-EA1AYz8PDdNBQ
+    id: XunRkcg4B0VWhifMD087bf1XHQPIoEUE0_GYvEOn6lM
     data:
-      character_string1: ""
-      thing11: ""
-      thing23: ""
-      const17:
-        enum: [ "工单长时间未更新"]
-      time21: ""
-
+      thing15: ""
+      time8: ""
+      const13:
+        enum: [ "工单长时间未更新", "紧急工单"]
+      thing22: ""
+      time12: ""
+# 工单处理结果通知 [工单编号, 工单名称, 受理时间, 处理人, 处理结果]
   2:
     id: 7zjOnZPzoEiMTUUTTtn1XZlc-DmMAimFzFlZQod3h0k
     data:
-      number29: ""
-      character_string72: ""
-      character_string71: ""
-
+      character_string6: ""
+      thing7: ""
+      time5: ""
+      thing11: ""
+      const4: 
+        enum: [ "已解决"]
+# 工单状态变更提醒, [工单名称, 项目名称, 工单状态, 变更原因, 处理人]
   3:
-    id: ocgOylTcus7KtDJ-y_MT8epPdQEFWZt-bY0uSt4W4wk
+    id: sqoVSsxbTKMyFYWdyNnw16fhl6cfwN5EeN5g38-bgKQ
     data:
-      character_string9: ""
+      thing13: ""
       thing8: ""
       short_thing5: ""
+      thing15: ""
       thing14: ""
-      time24: ""
+# 
   4:
     id: y5Oh6AHXFrVUk5WLnGkCgUBN-Tk8QscEnRtZ10gU5P0
     data:
@@ -32,19 +37,21 @@ template:
       thing15: ""
       time2: ""
       time18: ""
+# 新建工单模板, [工单编号, 项目名称, 工单标题, 派单人, 期望完成时间]
   5:
-    id: -mAz5bQqKj8lw6dD2P3rIjnz2rKL7cdnMelE6fxYr8g
+    id: fCQaTl2YWka7MDPwJVT1zeOgnJGSmAQS11uOSgnsu1U
     data:
       character_string14: ""
       thing13: ""
       thing6: ""
       thing81: ""
-      time86: ""
+      time66: ""
+# 工单逾期提醒, [工单名称, 项目名称, 逾期天数, 派单时间, 逾期时间]
   6:
-    id: 5GQVjmi2phU5xuRLUOcvsLuJ9pUiKjXlkQ2XlkqRrK0
+    id: udCWnORuaOwBlh-i93jdBhWSg-Nwb2c58D_ttkQlLz0
     data:
-      character_string23: ""
       thing15: ""
+      thing10: ""
       character_string22: ""
       time4: ""
       time6: ""

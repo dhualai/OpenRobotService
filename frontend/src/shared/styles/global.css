@@ -394,6 +394,16 @@ html, body, #root {
   margin-top: 8px;
 }
 
+/* 我要摇人：Navbar 标题随会话标题变化（新建会话为空），超长省略 */
+.call-navbar-title {
+  display: inline-block;
+  max-width: 60vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
 /* 我要摇人：全屏 AI 问答 + 历史工单入口 */
 .call-full-chat {
   flex: 1;
@@ -550,6 +560,70 @@ html, body, #root {
   margin-bottom: 6px;
   display: block;
 }
+.chat-bubble__file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+}
+.chat-bubble__file-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.chat-bubble__file-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.chat-bubble__file-size {
+  font-size: 12px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+.chat-upload-progress {
+  margin: 0 12px 8px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 10px;
+}
+.chat-upload-progress__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.chat-upload-progress__name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-upload-progress__percent {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+.chat-upload-progress__track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+.chat-upload-progress__fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #4f8cff, #2f6bff);
+  transition: width 0.2s ease;
+}
 .chat-actions {
   display: flex;
   gap: 4px;
@@ -578,6 +652,90 @@ html, body, #root {
   border-radius: 16px;
   box-shadow: 0 2px 14px rgba(0, 0, 0, 0.08);
 }
+
+/* ===== 猜你想问（主流 AI 引导对话框式建议问题卡片，文档流内嵌于消息区与输入栏之间，不遮挡对话内容） ===== */
+.suggested-questions {
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  padding: 10px 8px 8px;
+  margin: 0 8px 8px;
+  max-height: 264px;
+  overflow: auto;
+  animation: suggested-questions-in 0.18s ease;
+}
+@keyframes suggested-questions-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.suggested-questions__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px 6px;
+}
+.suggested-questions__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0052d9;
+}
+.suggested-questions__title-icon { flex-shrink: 0; }
+.suggested-questions__refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: transparent;
+  border: none;
+  color: #999;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.suggested-questions__refresh:active { color: #0052d9; }
+.suggested-questions__list {
+  display: flex;
+  flex-direction: column;
+}
+.suggested-questions__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 9px 8px;
+  border-radius: 9px;
+  font-size: 14px;
+  color: #333;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.suggested-questions__item:hover,
+.suggested-questions__item:active {
+  background: #ecf2fe;
+  color: #0052d9;
+}
+.suggested-questions__item-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.suggested-questions__item-arrow {
+  flex-shrink: 0;
+  color: #ccc;
+  transition: color 0.15s ease;
+}
+.suggested-questions__item:hover .suggested-questions__item-arrow,
+.suggested-questions__item:active .suggested-questions__item-arrow { color: #0052d9; }
+
 .chat-input-bar__textarea {
   width: 100%;
 }
@@ -2110,6 +2268,47 @@ html, body, #root {
   border: 2px solid #fff;
 }
 .user-panel__info { flex: 1; min-width: 0; }
+.user-panel__name-row { display: flex; align-items: center; gap: 6px; min-height: 24px; }
 .user-panel__name { font-size: 17px; font-weight: 600; color: #222; line-height: 1.4; word-break: break-all; }
+.user-panel__name-edit-btn {
+  flex-shrink: 0; width: 24px; height: 24px; border: none; background: none;
+  color: #bbb; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; padding: 0; border-radius: 4px;
+}
+.user-panel__name-edit-btn:active { color: #0052d9; }
+.user-panel__name-edit { display: flex; align-items: center; gap: 6px; min-height: 32px; }
+.user-panel__name-edit .t-input { flex: 1; min-width: 0; }
+.user-panel__name-action {
+  flex-shrink: 0; width: 30px; height: 30px; border: none; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; padding: 0; background: #f2f3f5; color: #555;
+}
+.user-panel__name-action--confirm { background: #0052d9; color: #fff; }
+.user-panel__name-action:disabled { opacity: 0.5; cursor: not-allowed; }
 .user-panel__id { font-size: 12px; color: #999; margin-top: 2px; word-break: break-all; }
 .user-panel__hint { font-size: 12px; color: #bbb; margin-bottom: 16px; }
+
+/* 头像全屏预览遮罩 */
+.avatar-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: avatar-fade-in 0.15s ease-out;
+  cursor: zoom-out;
+}
+.avatar-fullscreen__img {
+  max-width: 92vw;
+  max-height: 92vh;
+  border-radius: 8px;
+  object-fit: contain;
+  -webkit-user-select: none;
+  user-select: none;
+}
+@keyframes avatar-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

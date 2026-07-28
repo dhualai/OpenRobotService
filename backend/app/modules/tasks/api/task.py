@@ -408,7 +408,8 @@ async def update_task_status(
     task_id: int,
     status: str = Body(..., embed=True, description="任务状态"),
     db: AsyncSession = Depends(get_db),
-    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+    request: Request = None
 ):
     ticket = await TicketService.get_ticket_by_id(db, task_id)
     if not ticket:
@@ -416,13 +417,17 @@ async def update_task_status(
 
     is_admin = current_user.get('is_admin', False)
     username = current_user.get('username', '')
+    token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
 
-    if ticket.created_by != username and ticket.assigned_to != username and not is_admin:
+    # AI 工单（source='ai'）允许任何登录用户操作状态（created_by='system' 不是真实用户）
+    if ticket.source == 'ai':
+        pass
+    elif ticket.created_by != username and ticket.assigned_to != username and not is_admin:
         raise HTTPException(status_code=403, detail="无权限更新任务状态")
 
     try:
         status_enum = TicketStatus(status)
-        updated_ticket = await TicketService.update_ticket_status(db, task_id, status_enum)
+        updated_ticket = await TicketService.update_ticket_status(db, task_id, status_enum, token=token, operator_id=username)
         return updated_ticket
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -543,13 +548,12 @@ async def send_cuiban_notification(
             if not ticket:
                 raise HTTPException(status_code=404, detail="任务未找到")
 
-            if not ticket.deadline_at:
-                raise HTTPException(status_code=400, detail="任务未设置截止时间，无法发送催办通知")
+            # 通知目标：优先用前端传的 assigned_to（用户选择），其次用工单的 assigned_to
+            target_user = notification_data.assigned_to or ticket.assigned_to
+            if not target_user:
+                raise HTTPException(status_code=400, detail="请选择通知对象")
 
-            if not ticket.assigned_to:
-                raise HTTPException(status_code=400, detail="任务未分配处理人，无法发送催办通知")
-
-            user_names = [ticket.assigned_to]
+            user_names = [target_user]
 
             if notification_data.to_admin:
                 user_names.extend(['wechat_oM1WF6jUTn', 'wechat_oM1WF6hHVK'])
@@ -564,7 +568,7 @@ async def send_cuiban_notification(
 
             token = current_user.get('token')
             user_map = await TicketService._get_user_map(token)
-            assigned_name = user_map.get(ticket.assigned_to, ticket.assigned_to)
+            assigned_name = user_map.get(target_user, target_user)
 
             result = await NotificationUtils.send_ticket_cuiban_notification(
                 ticket_id=ticket_id,

@@ -761,7 +761,7 @@ class TicketService:
         return True
 
     @staticmethod
-    async def update_ticket_status(db: AsyncSession, ticket_id: int, status: TicketStatus) -> Optional[Ticket]:
+    async def update_ticket_status(db: AsyncSession, ticket_id: int, status: TicketStatus, token: Optional[str] = None, operator_id: Optional[str] = None) -> Optional[Ticket]:
         ticket = await TicketService.get_ticket_by_id(db, ticket_id)
         if not ticket:
             return None
@@ -773,7 +773,39 @@ class TicketService:
         elif status == TicketStatus.CLOSED:
             ticket.closed_at = func.now()
         
+        ticket.updated_at = func.now()
+        
         await db.commit()
+        
+        try:
+            notify_users = []
+            if ticket.created_by:
+                notify_users.append(ticket.created_by)
+            if ticket.assigned_to:
+                notify_users.append(ticket.assigned_to)
+            if ticket.customer:
+                notify_users.append(ticket.customer)
+            notify_users = list(set(notify_users))
+            
+            if notify_users:
+                user_map = await TicketService._get_user_map(token)
+                operator_name = user_map.get(operator_id, operator_id or '系统')
+                update_content = f"status: {status.value}"
+                
+                await NotificationUtils.send_ticket_update_notification(
+                    ticket_id=ticket_id,
+                    title=ticket.title,
+                    operator=operator_name,
+                    project_name=ticket.project_name,
+                    update_content=update_content,
+                    user_names=notify_users,
+                    token=token
+                )
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to send notification for ticket {ticket_id}: {str(e)}")
+        
         result = await db.execute(
             select(Ticket)
             .where(Ticket.id == ticket_id)

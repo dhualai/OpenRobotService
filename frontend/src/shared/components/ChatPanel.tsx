@@ -10,6 +10,8 @@ import { qaSubmit, qaUpload, generateSessionId, trackSession, fetchWithAuth } fr
 import { createConversation, getConversation, listMyConversations, appendMessage, readAiSessionId } from '@/api/conversation';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
+import SuggestedQuestions from '@/shared/components/SuggestedQuestions';
+import { pickRandomQuestions, matchQuestions } from '@/shared/data/suggestedQuestions';
 
 interface SpeechRecognitionResultEvent {
   resultIndex: number;
@@ -41,6 +43,8 @@ interface Message {
   content: string;
   timestamp: string;
   imageUrl?: string;
+  // 非图片附件（zip/日志/文档等）：仅当次会话本地预览用，按文件名+大小展示文件卡片
+  attachment?: { name: string; size: number } | null;
   reaction?: 'like' | 'dislike' | null;
   // 任务 Agent 专属：结构化方案草稿
   subtype?: 'solution_draft';
@@ -68,7 +72,7 @@ const SCENE_CONFIG: Record<ChatScene, {
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
   const navigate = useNavigate();
   const { token, name, username } = useAuthStore();
-  const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, renameConversation, refreshConversations } = useWorkbenchStore();
+  const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations } = useWorkbenchStore();
   const isCall = scene === 'call';
   const cfg = SCENE_CONFIG[scene];
 
@@ -85,6 +89,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const [voiceWillCancel, setVoiceWillCancel] = useState(false);
   const [textareaFullscreen, setTextareaFullscreen] = useState(false);
   const [textareaMaxed, setTextareaMaxed] = useState(false);
+  // 「猜你想问」空输入随机推荐池（首次新建会话时展示 3 条，可「换一批」重新随机）
+  const [randomPool, setRandomPool] = useState<string[]>(() => pickRandomQuestions(3));
+  // 「猜你想问」防抖关键词：输入停顿 200ms 后才检索，避免每击键刷新列表造成抖动
+  const [debouncedKeyword, setDebouncedKeyword] = useState('');
   const textareaContainerRef = useRef<HTMLDivElement>(null);
   const voiceStartYRef = useRef<number>(0);
   const voiceCancelRef = useRef(false);
@@ -97,6 +105,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const albumInputRef = useRef<HTMLInputElement>(null);
+  // 文件上传大小上限：100MB
+  const MAX_FILE_SIZE = 100 * 1024 * 1024;
+  // 上传进度：{ name, percent(0~100) } | null，用于在输入栏上方展示进度条
+  const [uploading, setUploading] = useState<{ name: string; percent: number } | null>(null);
   const [showUploadMenu, setShowUploadMenu] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   // 语音 tap/hold 双模式 + 真实音量可视化
@@ -117,6 +129,17 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   useEffect(() => {
     const ta = textareaContainerRef.current?.querySelector('textarea');
     if (ta) setTextareaMaxed(ta.scrollHeight > ta.clientHeight + 2);
+  }, [input]);
+
+  // 「猜你想问」检索防抖：输入停顿 200ms 后更新关键词；清空输入立即恢复（不走防抖）
+  useEffect(() => {
+    const trimmed = input.trim();
+    if (!trimmed) {
+      setDebouncedKeyword('');
+      return;
+    }
+    const timer = setTimeout(() => setDebouncedKeyword(trimmed), 200);
+    return () => clearTimeout(timer);
   }, [input]);
 
   // 挂载时恢复最近一条会话 → 设置 conversationId（由下方 effect 加载消息）
@@ -140,10 +163,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   useEffect(() => {
     if (!convLoadedRef.current) { convLoadedRef.current = true; return; }
     if (conversationId === null) {
-      // 新建会话：清空消息 + sessionId
+      // 新建会话：清空消息 + sessionId，标题显示「新建会话」
       convRef.current = null;
       setMessages([]);
       setSessionId('');
+      setConversationTitle('新建会话');
       return;
     }
     // convRef 已是当前会话 → ensureConversation 刚设置的，不重复加载（避免覆盖正在进行的对话）
@@ -162,6 +186,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           timestamp: m.created_at,
         }));
         setMessages(restored);
+        setConversationTitle(full.title || '');
         const sid = readAiSessionId(full);
         if (sid) setSessionId(sid);
         else setSessionId('');
@@ -216,13 +241,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
-  /** 将图片上传到 AI 后端 */
-  const uploadImage = async (file: File): Promise<string> => {
+  /** 将附件上传到 AI 后端；onProgress 接收 0~100 的上传进度百分比 */
+  const uploadImage = async (file: File, onProgress?: (p: number) => void): Promise<string> => {
     const sid = ensureSessionId();
-    const res = await qaUpload(sid, [file]);
+    const res = await qaUpload(sid, [file], onProgress);
     if (!res.ok) throw new Error(`上传失败: ${res.status}`);
-    const data = await res.json();
-    if (data.code !== 0) throw new Error(data.message || '上传失败');
+    if (res.data?.code !== 0) throw new Error(res.data?.message || '上传失败');
     return file.name;
   };
 
@@ -234,14 +258,29 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     sendingRef.current = true;
 
     let imageTag = '';
+    let imageUrl: string | undefined;
+    let attachment: { name: string; size: number } | null = null;
     if (imageFile) {
+      // 按 MIME 区分图片与非图片：zip 等压缩包/文档不应被当作图片渲染
+      const isImage = imageFile.type.startsWith('image/');
+      setUploading({ name: imageFile.name, percent: 0 });
       try {
-        const name = await uploadImage(imageFile);
+        const name = await uploadImage(imageFile, (p) =>
+          setUploading((u) => (u ? { ...u, percent: p } : { name: imageFile.name, percent: p })),
+        );
         imageTag = `[上传了附件] ${name}\n`;
-        Toast({ message: '图片已上传', theme: 'success' });
+        if (isImage) {
+          imageUrl = URL.createObjectURL(imageFile);
+          Toast({ message: '图片已上传', theme: 'success' });
+        } else {
+          attachment = { name: imageFile.name, size: imageFile.size };
+          Toast({ message: '文件已上传', theme: 'success' });
+        }
       } catch (err) {
         Toast({ message: `上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
         return;
+      } finally {
+        setUploading(null);
       }
     }
 
@@ -251,7 +290,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       role: 'user',
       content: userContent,
       timestamp: new Date().toISOString(),
-      imageUrl: imageFile ? URL.createObjectURL(imageFile) : undefined,
+      imageUrl,
+      attachment,
     };
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
@@ -324,6 +364,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 首轮问答完成 → 同步会话到列表（标题=首轮提问），定位到新会话
       if (wasNew && convRef.current) {
         setConversationId(convRef.current);
+        setConversationTitle(userContent.slice(0, 40) || 'AI 对话');
         refreshConversations();
       }
       // 任务 Agent 方案草稿：注入 solution_draft 标记
@@ -559,6 +600,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > MAX_FILE_SIZE) {
+      const mb = (file.size / 1024 / 1024).toFixed(1);
+      Toast({ message: `「${file.name}」(${mb}MB) 超过 100MB 上限，请压缩或拆分后重试`, theme: 'error' });
+      e.target.value = '';
+      return;
+    }
     send(input, file);
     e.target.value = '';
   };
@@ -616,16 +663,22 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
+  // 「猜你想问」：仅首次新建会话（无消息）且输入为空 → 随机 3 条（可换一批）；有输入 → 基于防抖关键词检索（最多 3 条）
+  const suggestedList: string[] = debouncedKeyword
+    ? matchQuestions(debouncedKeyword, 3)
+    : (messages.length === 0 ? randomPool : []);
+  const showSuggestedRefresh = !debouncedKeyword;
+
   return (
     <div className={`chat-panel${compact ? ' is-compact' : ''}`}>
 
       <div className="chat-view__messages">
         {messages.length === 0 && (
           <div className="chat-view__empty">
-            <div className="chat-view__empty-emoji">{cfg.emptyEmoji}</div>
-            <p>{cfg.emptyTitle}</p>
+            {!isCall && <div className="chat-view__empty-emoji">{cfg.emptyEmoji}</div>}
+            {!isCall && <p>{cfg.emptyTitle}</p>}
             <p className="chat-view__empty-sub">
-              {isCall ? `你好${name || username ? `，${name || username}` : ''}，描述你的问题，AI 先帮你初步诊断。` : '关于系统任务的问题，可以随时问我。'}
+              {isCall ? `你好${name || username ? `，${name || username}` : ''}，请描述你的问题，小U先帮你初步诊断。` : '关于系统任务的问题，可以随时问我。'}
             </p>
           </div>
         )}
@@ -634,6 +687,17 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           <div key={msg.id} className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
             <div className={`chat-bubble ${msg.role === 'user' ? 'is-user' : 'is-ai'}`}>
               {msg.imageUrl && <img src={msg.imageUrl} alt="附件" className="chat-bubble__img" />}
+              {msg.attachment && (
+                <div className="chat-bubble__file">
+                  <span className="chat-bubble__file-icon">📎</span>
+                  <span className="chat-bubble__file-name">{msg.attachment.name}</span>
+                  <span className="chat-bubble__file-size">
+                    {msg.attachment.size >= 1024 * 1024
+                      ? `${(msg.attachment.size / 1024 / 1024).toFixed(1)} MB`
+                      : `${Math.max(1, Math.round(msg.attachment.size / 1024))} KB`}
+                  </span>
+                </div>
+              )}
               {editingId === msg.id ? (
                 <Textarea
                   value={msg.content}
@@ -681,6 +745,31 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         ))}
         <div ref={messagesEndRef} />
       </div>
+
+      {/* 上传进度条：大文件上传时展示百分比与动态进度，方便直观感受进度 */}
+      {uploading && (
+        <div className="chat-upload-progress">
+          <div className="chat-upload-progress__head">
+            <span className="chat-upload-progress__name">上传中 {uploading.name}…</span>
+            <span className="chat-upload-progress__percent">{uploading.percent}%</span>
+          </div>
+          <div className="chat-upload-progress__track">
+            <div
+              className="chat-upload-progress__fill"
+              style={{ width: `${uploading.percent}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* 「猜你想问」：文档流内嵌于消息区与输入栏之间（不遮挡对话内容） */}
+      {suggestedList.length > 0 && (
+        <SuggestedQuestions
+          questions={suggestedList}
+          onPick={(q) => send(q)}
+          onRefresh={showSuggestedRefresh ? () => setRandomPool(pickRandomQuestions(3)) : undefined}
+        />
+      )}
 
       {/* 输入区（千问风格卡片：上输入，下工具行） */}
       <div
@@ -773,6 +862,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             )}
             <div className="chat-input-bar__tools">
               <div className="chat-input-bar__tools-left">
+                {/* === 语音输入入口暂时隐藏（2026-07-28），voiceMode 相关逻辑保留以便后续恢复 ===
                 <button className="chat-input-btn" onClick={() => setVoiceMode(true)} title="语音输入" aria-label="语音输入">
                   <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="9" y="3" width="6" height="11" rx="3" />
@@ -781,6 +871,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                     <line x1="8" y1="21" x2="16" y2="21" />
                   </svg>
                 </button>
+                */}
                 <button className="chat-input-btn" onClick={() => setShowUploadMenu(true)} title="上传" aria-label="上传文件或拍照">
                   <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
                     <circle cx="12" cy="12" r="9.5" />

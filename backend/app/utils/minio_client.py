@@ -22,8 +22,10 @@ class MinIOClient:
                     if url.startswith(('http://', 'https://')):
                         parsed = urlparse(url)
                         path = parsed.path if parsed.path.startswith('/') else '/' + parsed.path
-                        new_path = '/minio-api' + path
-                        url = urlunparse(parsed._replace(path=new_path))
+                        prefix = settings.MINIO_API_PREFIX or ''
+                        new_path = (prefix + path) if prefix else path
+                        if new_path != parsed.path:
+                            url = urlunparse(parsed._replace(path=new_path))
                     return super().urlopen(method, url, **kwargs)
             
             cls._instance._client = Minio(
@@ -155,3 +157,17 @@ class MinIOClient:
 
 
 minio_client = MinIOClient()
+
+
+def ensure_minio_buckets(buckets: Optional[list] = None) -> None:
+    """应用启动时确保所需 bucket 存在。
+
+    若 MinIO 未启动或不可达，仅打印警告而不抛出异常，避免阻塞应用启动。
+    """
+    if buckets is None:
+        buckets = [settings.MINIO_BUCKET, settings.COMMENT_BUCKET, settings.FILE_IMAGES]
+    for name in buckets:
+        try:
+            minio_client.create_bucket(name)
+        except Exception as exc:  # noqa: BLE001 - 启动期容忍对象存储暂时不可用
+            print(f"[MinIO] 确保 bucket 失败（若 MinIO 尚未启动可忽略）: {name} -> {exc}")

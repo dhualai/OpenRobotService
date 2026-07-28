@@ -19,7 +19,7 @@ export default function CallView() {
     if ((location.state as { showHistory?: boolean })?.showHistory) setShowHistory(true);
   }, [location.state]);
   const [unread, setUnread] = useState(0);
-  const { tasksRefreshKey, drawerOpen, setDrawerOpen } = useWorkbenchStore();
+  const { tasksRefreshKey, drawerOpen, setDrawerOpen, conversationTitle } = useWorkbenchStore();
 
   useEffect(() => {
     (async () => {
@@ -48,7 +48,7 @@ export default function CallView() {
       <div className={`app-shell__content ${drawerOpen ? 'is-shifted' : ''}`}>
         <div className="chat-view">
           <Navbar
-            title="我要摇人"
+            title={<span className="call-navbar-title">{conversationTitle}</span>}
             fixed
             left={
               <button className="navbar-menu-btn" onClick={() => setDrawerOpen(!drawerOpen)} aria-label="会话列表">

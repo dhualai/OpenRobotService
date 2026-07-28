@@ -107,6 +107,7 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
         "status": TaskStatus.NEW,
         "created_by": created_by or "system",
         "source": AI_SOURCE,
+        "project_name": ticket.get("project", "") or "",
         "external_id": ext_id,
         "external_url": None,
         "attachments": ticket.get("attachments") or [],
@@ -120,6 +121,9 @@ def task_to_dict(task: Task) -> dict:
     meta = task.metadata_info or {}
     return {
         "id": task.id,
+        # 数字 Task.id 即任务服务（/api/tasks）的工单号，前端催办/上报/评论/撤回都依赖它。
+        # 此前缺失该字段，导致从 MySQL 降级的工单进入详情页时 ticket_id 为空、按钮报「工单号缺失」。
+        "ticket_id": task.id,
         "session_id": meta.get("session_id", ""),
         "ticket_ai_id": meta.get("ticket_ai_id", ""),
         "title": task.title or "",
@@ -142,6 +146,7 @@ def task_to_dict(task: Task) -> dict:
         "actual_result": meta.get("actual_result", ""),
         "version": meta.get("version", ""),
         "feature_source": meta.get("feature_source", ""),
+        "project": task.project_name or "",
         "attachments": task.attachments or [],
         "diagnosis": meta.get("diagnosis") or {},
         "source": task.source or AI_SOURCE,
