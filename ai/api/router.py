@@ -280,6 +280,13 @@ async def upload_files(
     from app.utils.minio_client import minio_client
     from app.core.config import settings
 
+    t_upload_start = time.perf_counter()
+    logger.info(
+        f"[upload] 收到上传请求: session={session_id[:12]}, "
+        f"file_count={len(files)}, "
+        f"filenames={'、'.join(f.filename for f in files)}"
+    )
+
     # ── 1. 上传到 MinIO ──
     saved = []
     raw_bytes: list[tuple] = []  # (filename, bytes) 暂存供 VLM
@@ -310,12 +317,23 @@ async def upload_files(
                     mime = _MIME_MAP.get(ext, "image/png")
                     b64 = base64.b64encode(raw).decode()
                     data_uris.append((fname, f"data:{mime};base64,{b64}"))
-                except Exception:
-                    pass
+                    logger.info(f"[upload] 图片编码: name={fname}, ext={ext}, raw_bytes={len(raw)}, b64_len={len(b64)}")
+                except Exception as e:
+                    logger.warning(f"[upload] 图片编码失败: name={fname}, error={e}")
+        logger.info(
+            f"[upload] 图片检测: session={session_id[:12]}, "
+            f"total_files={len(files)}, image_files={len(data_uris)}, "
+            f"non_image_files={len(files) - len(data_uris)}"
+        )
         if data_uris:
+            t_vlm = time.perf_counter()
             llm = await get_llm_client()
             names = ", ".join(n for n, _ in data_uris)
             uris = [u for _, u in data_uris]
+            logger.info(
+                f"[upload] 开始VLM调用: session={session_id[:12]}, "
+                f"image_count={len(data_uris)}, names={names}"
+            )
             desc = await llm.complete_vision(
                 prompt=f"描述图片 {names}。这是 AGV/AMR 调度系统的截图。请描述画面内容、关键数据、异常信号和人工标注。用工程师口吻，客观描述，不下结论。",
                 images=uris,
@@ -323,12 +341,32 @@ async def upload_files(
                 max_tokens=400,
                 temperature=0.2,
             )
+            vlm_ms = round((time.perf_counter() - t_vlm) * 1000)
             image_desc = desc.strip()
+            logger.info(
+                f"[upload] VLM调用完成: session={session_id[:12]}, "
+                f"elapsed={vlm_ms}ms, desc_len={len(image_desc)}, "
+                f"desc_empty={not image_desc}, desc前80字={image_desc[:80]}"
+            )
+        else:
+            logger.info(f"[upload] 无图片文件，跳过VLM: session={session_id[:12]}")
     except Exception as e:
-        logger.warning(f"上传图片描述失败: {e}")
+        logger.error(
+            f"[upload] VLM阶段异常: session={session_id[:12]}, "
+            f"type={type(e).__name__}, error={e}",
+            exc_info=True,
+        )
 
     # ── 3. 写入会话记忆 ──
     mgr = await get_memory_manager()
+    t_mem = time.perf_counter()
+    memory_before = await mgr.get_memory(session_id)
+    turn_count_before = len(memory_before.turns)
+    logger.info(
+        f"[upload] 注入记忆前: session={session_id[:12]}, "
+        f"turns={turn_count_before}, has_desc={bool(image_desc)}, "
+        f"desc_len={len(image_desc)}"
+    )
     if image_desc:
         await mgr.add_turn(session_id, "user",
                            f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
@@ -337,25 +375,49 @@ async def upload_files(
     else:
         await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
         await mgr.add_turn(session_id, "assistant", f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+    memory_after = await mgr.get_memory(session_id)
+    logger.info(
+        f"[upload] 注入记忆后: session={session_id[:12]}, "
+        f"turns_before={turn_count_before}, turns_after={len(memory_after.turns)}, "
+        f"mem_elapsed={(time.perf_counter() - t_mem) * 1000:.0f}ms"
+    )
 
     # ── 4. agent_state.attachments + 追加到已提交工单 ──
     try:
+        t_state = time.perf_counter()
         memory = await mgr.get_memory(session_id)
         state = memory.metadata.get("agent_state", {})
         existing = state.get("attachments", [])
         state["attachments"] = existing + saved
         memory.metadata["agent_state"] = state
         await mgr.save_memory(memory)
+        logger.info(
+            f"[upload] agent_state更新: session={session_id[:12]}, "
+            f"attachments_before={len(existing)}, attachments_after={len(state['attachments'])}, "
+            f"has_last_ticket={bool(state.get('last_submitted_ticket', {}).get('ticket_id'))}"
+        )
 
         last_ticket = state.get("last_submitted_ticket", {})
         if last_ticket and last_ticket.get("ticket_id"):
             pipeline = await get_pipeline()
             ok = await pipeline._append_to_ticket(session_id, attachments=saved)
-            if ok:
-                logger.info(f"上传附件已追加到工单: session={session_id[:8]}, files={filenames}")
+            logger.info(
+                f"[upload] 追加到工单: session={session_id[:12]}, "
+                f"ok={ok}, files={filenames}, "
+                f"elapsed={(time.perf_counter() - t_state) * 1000:.0f}ms"
+            )
     except Exception as e:
-        logger.warning(f"上传附件处理失败: {e}")
-    return {"code": 0, "data": {"saved": len(saved), "files": saved}}
+        logger.error(
+            f"[upload] 附件状态更新失败: session={session_id[:12]}, "
+            f"type={type(e).__name__}, error={e}",
+            exc_info=True,
+        )
+    total_ms = round((time.perf_counter() - t_upload_start) * 1000)
+    logger.info(
+        f"[upload] 上传完成: session={session_id[:12]}, "
+        f"total_files={len(saved)}, filenames={filenames}, "
+        f"has_image_desc={bool(image_desc)}, total_ms={total_ms}"
+    )
 
 
 @qa_router.get("/health", summary="健康检查")
