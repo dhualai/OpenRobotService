@@ -349,16 +349,19 @@ async def upload_files(
     except Exception as e:
         logger.warning(f"上传图片描述失败: {e}")
 
-    # ── 3. 写入会话记忆 ──
-    mgr = await get_memory_manager()
-    if image_desc:
-        await mgr.add_turn(session_id, "user",
-                           f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
-        await mgr.add_turn(session_id, "assistant",
-                           f"已收到 {len(saved)} 个文件，已附到本次会话中。")
-    else:
-        await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
-        await mgr.add_turn(session_id, "assistant", f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+    # ── 3. 写入会话记忆（失败不阻塞上传响应：文件已落 MinIO，记忆写入仅记告警） ──
+    try:
+        mgr = await get_memory_manager()
+        if image_desc:
+            await mgr.add_turn(session_id, "user",
+                               f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
+            await mgr.add_turn(session_id, "assistant",
+                               f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+        else:
+            await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
+            await mgr.add_turn(session_id, "assistant", f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+    except Exception as e:
+        logger.error(f"上传后写入会话记忆失败（不阻塞上传响应）: {e}", exc_info=True)
 
     # ── 4. agent_state.attachments + 追加到已提交工单 ──
     try:
