@@ -87,8 +87,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const [voiceWillCancel, setVoiceWillCancel] = useState(false);
   const [textareaFullscreen, setTextareaFullscreen] = useState(false);
   const [textareaMaxed, setTextareaMaxed] = useState(false);
-  // 「猜你想问」空输入随机推荐池（进入界面时生成，可「换一批」重新随机）
-  const [randomPool, setRandomPool] = useState<string[]>(() => pickRandomQuestions(5));
+  // 「猜你想问」空输入随机推荐池（首次新建会话时展示 3 条，可「换一批」重新随机）
+  const [randomPool, setRandomPool] = useState<string[]>(() => pickRandomQuestions(3));
+  // 「猜你想问」防抖关键词：输入停顿 200ms 后才检索，避免每击键刷新列表造成抖动
+  const [debouncedKeyword, setDebouncedKeyword] = useState('');
   const textareaContainerRef = useRef<HTMLDivElement>(null);
   const voiceStartYRef = useRef<number>(0);
   const voiceCancelRef = useRef(false);
@@ -121,6 +123,17 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   useEffect(() => {
     const ta = textareaContainerRef.current?.querySelector('textarea');
     if (ta) setTextareaMaxed(ta.scrollHeight > ta.clientHeight + 2);
+  }, [input]);
+
+  // 「猜你想问」检索防抖：输入停顿 200ms 后更新关键词；清空输入立即恢复（不走防抖）
+  useEffect(() => {
+    const trimmed = input.trim();
+    if (!trimmed) {
+      setDebouncedKeyword('');
+      return;
+    }
+    const timer = setTimeout(() => setDebouncedKeyword(trimmed), 200);
+    return () => clearTimeout(timer);
   }, [input]);
 
   // 挂载时恢复最近一条会话 → 设置 conversationId（由下方 effect 加载消息）
@@ -620,12 +633,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
-  // 「猜你想问」：输入框无内容即浮现（随机 5 条，可换一批）；有输入 → 关键字检索匹配
-  const trimmedInput = input.trim();
-  const suggestedList: string[] = trimmedInput
-    ? matchQuestions(trimmedInput)
-    : randomPool;
-  const showSuggestedRefresh = !trimmedInput;
+  // 「猜你想问」：仅首次新建会话（无消息）且输入为空 → 随机 3 条（可换一批）；有输入 → 基于防抖关键词检索（最多 3 条）
+  const suggestedList: string[] = debouncedKeyword
+    ? matchQuestions(debouncedKeyword, 3)
+    : (messages.length === 0 ? randomPool : []);
+  const showSuggestedRefresh = !debouncedKeyword;
 
   return (
     <div className={`chat-panel${compact ? ' is-compact' : ''}`}>
@@ -693,6 +705,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         <div ref={messagesEndRef} />
       </div>
 
+      {/* 「猜你想问」：文档流内嵌于消息区与输入栏之间（不遮挡对话内容） */}
+      {suggestedList.length > 0 && (
+        <SuggestedQuestions
+          questions={suggestedList}
+          onPick={(q) => send(q)}
+          onRefresh={showSuggestedRefresh ? () => setRandomPool(pickRandomQuestions(3)) : undefined}
+        />
+      )}
+
       {/* 输入区（千问风格卡片：上输入，下工具行） */}
       <div
         className="chat-input-bar"
@@ -700,13 +721,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input); }
         }}
       >
-        {suggestedList.length > 0 && (
-          <SuggestedQuestions
-            questions={suggestedList}
-            onPick={(q) => send(q)}
-            onRefresh={showSuggestedRefresh ? () => setRandomPool(pickRandomQuestions(5)) : undefined}
-          />
-        )}
         {isCall && (
           <div className="chat-panel__ticket-fab" title="转为工单">
             <button
