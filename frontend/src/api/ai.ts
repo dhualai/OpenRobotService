@@ -141,15 +141,41 @@ export const qaTicketAck = (sessionId: string, dispatchId = '', status = 'dispat
     status,
   });
 
-/** 上传附件（FormData） */
-export const qaUpload = async (sessionId: string, files: File[]): Promise<Response> => {
-  const formData = new FormData();
-  formData.append('session_id', sessionId);
-  files.forEach((f) => formData.append('files', f));
-  const token = useAuthStore.getState().token;
-  return fetch(`${BASE}/qa/upload`, {
-    method: 'POST',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    body: formData,
+/** 上传附件（FormData）。
+ * 使用 XMLHttpRequest 以支持上传进度回调（fetch 无法获取 upload 进度）。
+ * onProgress 接收 0~100 的整数百分比；需返回 ok/status/data 供调用方判断。
+ */
+export interface UploadResult {
+  ok: boolean;
+  status: number;
+  data: { code?: number; message?: string; [k: string]: unknown };
+}
+export const qaUpload = (
+  sessionId: string,
+  files: File[],
+  onProgress?: (percent: number) => void,
+): Promise<UploadResult> => {
+  return new Promise((resolve, reject) => {
+    const formData = new FormData();
+    formData.append('session_id', sessionId);
+    files.forEach((f) => formData.append('files', f));
+    const token = useAuthStore.getState().token;
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${BASE}/qa/upload`);
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.upload.onprogress = (e: ProgressEvent) => {
+      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      let data: UploadResult['data'] = {};
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch {
+        /* 非 JSON 响应，忽略解析 */
+      }
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, data });
+    };
+    xhr.onerror = () => reject(new Error('网络错误，上传失败'));
+    xhr.send(formData);
   });
 };
