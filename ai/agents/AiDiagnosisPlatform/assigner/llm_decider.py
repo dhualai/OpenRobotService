@@ -66,7 +66,6 @@ class LlmDecider:
 
         all_ids = set()
         all_ids.update(recall_result.module_recall.keys())
-        all_ids.update(recall_result.tag_recall.keys())
         all_ids.update(recall_result.external_history.keys())
         all_ids.update(recall_result.engineer_semantic.keys())
         all_ids.update(recall_result.history_semantic.keys())
@@ -82,17 +81,16 @@ class LlmDecider:
             detail = ranked_scores.get(eid, {})
             lines.append(f"工程师ID: {eng.id}")
             lines.append(f"  姓名: {eng.name}")
+            lines.append(f"  职级: L{eng.job_level}")
             lines.append(f"  责任模块: {', '.join(eng.responsibility_modules) if eng.responsibility_modules else '无'}")
-            lines.append(f"  技能标签: {', '.join(eng.skills) if eng.skills else '无'}")
             if eng.duty_text:
                 duty = eng.duty_text[:80] + "..." if len(eng.duty_text) > 80 else eng.duty_text
                 lines.append(f"  职责简述: {duty}")
             lines.append(
                 f"  召回分数: 模块={detail.get('module_score', 0):.2f} "
-                f"标签={detail.get('skill_score', 0):.2f} "
                 f"历史={detail.get('history_score', 0):.2f} "
                 f"语义={detail.get('semantic_score', 0):.2f} "
-                f"综合={detail.get('total_score', 0):.2f}"
+                f"综合(含职级折扣)={detail.get('total_score', 0):.2f}"
             )
             lines.append("")
 
