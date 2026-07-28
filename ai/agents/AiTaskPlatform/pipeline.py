@@ -157,7 +157,7 @@ class AiTaskAgent:
                         output={"confidence": draft.confidence, "actions_count": len(draft.suggested_actions)},
                         elapsed_ms=round((time.perf_counter() - t5) * 1000))
 
-        # 6. 诊断结果写入 task_comments（AI任务助手评论）
+        # 6. 诊断结果写入 task_comments（小U评论）
         t6 = time.perf_counter()
         try:
             task_id_int = int(request.task_id)
@@ -602,7 +602,7 @@ class AiTaskAgent:
         db = SessionLocal()
         try:
             comment = TaskComment(task_id=task_id, content=content,
-                                  created_by="AI任务助手", is_public=True)
+                                  created_by="小U", is_public=True)
             db.add(comment)
             db.commit()
             db.refresh(comment)
@@ -679,14 +679,14 @@ class AiTaskAgent:
             last_summary_at = None
             last_summary_text = ""
             for c in reversed(comments):
-                if c.created_by == "AI任务助手" and (c.content or "").startswith("📝 讨论摘要"):
+                if c.created_by == "小U" and (c.content or "").startswith("📝 讨论摘要"):
                     last_summary_at = c.created_at
                     last_summary_text = c.content.replace("📝 讨论摘要\n\n", "").strip()
                     break
 
             new_comments = []
             for c in comments:
-                if c.created_by == "AI任务助手":
+                if c.created_by == "小U":
                     continue
                 if last_summary_at and c.created_at <= last_summary_at:
                     continue
@@ -1127,16 +1127,16 @@ class AiTaskAgent:
             logger.warning(f"Solution index failed: {e}")
 
     @staticmethod
-    def _add_diagnosis_comment(task_id: int, draft: "SolutionDraft", created_by: str = "AI任务助手") -> bool:
-        """将 AI 诊断结果写入 task_comments 表。
+    def _add_diagnosis_comment(task_id: int, draft: "SolutionDraft", created_by: str = "小U") -> bool:
+        """将小U诊断结果写入 task_comments 表。
 
-        当前 created_by 固定为 \"AI任务助手\"。
+        当前 created_by 固定为 \"小U\"。
         TODO: 后续改为提单人的用户名（从工单 created_by 字段获取）。
         """
         from app.models.task import TaskComment
         from app.core.db import SessionLocal
         content_parts = [
-            f"## AI 诊断结果",
+            f"## 小U 诊断结果",
             f"",
             f"**根因分析**：{draft.root_cause_analysis}",
             f"",
