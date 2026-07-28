@@ -8,6 +8,8 @@
 - role_permissions / user_project_roles
 """
 from sqlalchemy import Column, String, Text, ForeignKey, Table, Integer
+from sqlalchemy.dialects.mysql import TINYINT
+from sqlalchemy import JSON
 
 from app.models.base import Base
 
@@ -33,14 +35,12 @@ user_project_roles = Table(
 
 class Role(Base):
     __tablename__ = "roles"
-
     id = Column(String(64), primary_key=True)
     name = Column(String(128), unique=True, nullable=False)
 
 
 class Permission(Base):
     __tablename__ = "permissions"
-
     id = Column(String(64), primary_key=True)
     code = Column(String(255), unique=True, nullable=False)
     name = Column(String(128), nullable=False)
@@ -60,3 +60,9 @@ class UserDB(Base):
     status = Column(String(32), default="inactive", nullable=False)
     external_credentials = Column(Text, nullable=True)
     avatar_resource_id = Column(Integer, nullable=True)
+
+    # === 派单人信息（与 AI Assigner 共享）===
+    department = Column(String(128), nullable=True, comment="部门/团队")
+    responsibility_modules = Column(JSON, nullable=True, comment='责任模块 ["车端","任务调度","地图编辑"...]')
+    job_level = Column(TINYINT, default=1, nullable=False, comment="职级，数值越高越不优先接单（1=一线, 2=管理/审核, 3=仅兜底...），默认1")
+    duty_text = Column(Text, nullable=True, comment="职责画像文本，供 AI 派单匹配参考")

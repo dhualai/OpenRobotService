@@ -27,8 +27,12 @@ Base.metadata.create_all(bind=engine)
 
 class DatabaseManager:
     def add_user(self, user_id: str, username: str, hashed_password: str, permissions: List[str],
-                 name: Optional[str] = None, status: str = "inactive", external_credentials: Optional[Dict[str, Dict[str, str]]] = None) -> bool:
-        return identity_service.add_user(user_id, username, hashed_password, permissions, name, status, external_credentials)
+                 name: Optional[str] = None, status: str = "inactive", external_credentials: Optional[Dict[str, Dict[str, str]]] = None,
+                 department: Optional[str] = None, responsibility_modules: Optional[List[str]] = None,
+                 job_level: Optional[int] = 1, duty_text: Optional[str] = None) -> bool:
+        return identity_service.add_user(user_id, username, hashed_password, permissions,
+                                          name, status, external_credentials,
+                                          department, responsibility_modules, job_level, duty_text)
 
     def get_user(self, username: str) -> Optional[Dict[str, Any]]:
         return identity_service.get_user(username)
