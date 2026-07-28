@@ -70,7 +70,7 @@ const SCENE_CONFIG: Record<ChatScene, {
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
   const navigate = useNavigate();
   const { token, name, username } = useAuthStore();
-  const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, renameConversation, refreshConversations } = useWorkbenchStore();
+  const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations } = useWorkbenchStore();
   const isCall = scene === 'call';
   const cfg = SCENE_CONFIG[scene];
 
@@ -157,10 +157,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   useEffect(() => {
     if (!convLoadedRef.current) { convLoadedRef.current = true; return; }
     if (conversationId === null) {
-      // 新建会话：清空消息 + sessionId
+      // 新建会话：清空消息 + sessionId，标题显示「新建会话」
       convRef.current = null;
       setMessages([]);
       setSessionId('');
+      setConversationTitle('新建会话');
       return;
     }
     // convRef 已是当前会话 → ensureConversation 刚设置的，不重复加载（避免覆盖正在进行的对话）
@@ -179,6 +180,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           timestamp: m.created_at,
         }));
         setMessages(restored);
+        setConversationTitle(full.title || '');
         const sid = readAiSessionId(full);
         if (sid) setSessionId(sid);
         else setSessionId('');
@@ -341,6 +343,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 首轮问答完成 → 同步会话到列表（标题=首轮提问），定位到新会话
       if (wasNew && convRef.current) {
         setConversationId(convRef.current);
+        setConversationTitle(userContent.slice(0, 40) || 'AI 对话');
         refreshConversations();
       }
       // 任务 Agent 方案草稿：注入 solution_draft 标记
