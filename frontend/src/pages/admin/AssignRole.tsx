@@ -7,7 +7,7 @@
 //   POST /users/project/assign-roles   批量授权（用户 × 角色 笛卡尔积）
 //   POST /users/{username}/roles/remove 批量移除
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Button, Toast, Loading, Popup, Tag, Checkbox, Input } from 'tdesign-mobile-react';
+import { Button, Toast, Loading, Popup, Tag, Input } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -312,9 +312,13 @@ export default function AssignRole() {
                 padding: '4px 4px 0',
               }}
             >
-              <Checkbox checked={allFilteredSelected} onChange={toggleSelectAll}>
+              <div
+                onClick={toggleSelectAll}
+                style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13, color: '#666' }}
+              >
+                <CheckDot checked={allFilteredSelected} />
                 全选（{filteredUsers.length} 人）
-              </Checkbox>
+              </div>
               <span style={{ fontSize: 12, color: '#999' }}>已选 {selectedCount} 人</span>
             </div>
 
@@ -333,7 +337,7 @@ export default function AssignRole() {
                     }}
                   >
                     <div style={{ paddingTop: 2 }} onClick={() => toggleUser(u.id)}>
-                      <Checkbox checked={checked} onChange={() => toggleUser(u.id)} />
+                      <CheckDot checked={checked} />
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }} onClick={() => toggleUser(u.id)}>
                       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
@@ -428,9 +432,13 @@ export default function AssignRole() {
                     return next;
                   })
                 }
-                style={{ padding: '10px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer' }}
+                style={{
+                  padding: '10px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 8, fontSize: 14,
+                }}
               >
-                <Checkbox checked={checkedRoleIds.has(r.id)}>{r.name}</Checkbox>
+                <CheckDot checked={checkedRoleIds.has(r.id)} />
+                {r.name}
               </div>
             ))}
           </div>
@@ -467,9 +475,13 @@ export default function AssignRole() {
                     return next;
                   })
                 }
-                style={{ padding: '10px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer' }}
+                style={{
+                  padding: '10px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 8, fontSize: 14,
+                }}
               >
-                <Checkbox checked={editingRoleIds.has(r.id)}>{r.name}</Checkbox>
+                <CheckDot checked={editingRoleIds.has(r.id)} />
+                {r.name}
               </div>
             ))}
           </div>
@@ -479,6 +491,23 @@ export default function AssignRole() {
         </div>
       </Popup>
     </div>
+  );
+}
+
+// 自绘勾选圆点：避免 tdesign Checkbox 默认白色背景块在卡片上显得突兀
+function CheckDot({ checked }: { checked: boolean }) {
+  return (
+    <span
+      style={{
+        width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
+        border: checked ? 'none' : '1.5px solid #ccc',
+        background: checked ? '#0052d9' : 'transparent',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        color: '#fff', fontSize: 12, lineHeight: 1, boxSizing: 'border-box',
+      }}
+    >
+      {checked ? '✓' : ''}
+    </span>
   );
 }
 
