@@ -92,16 +92,13 @@ def _load_log_docs() -> str:
 
 def _make_system_prompt(log_date: str = "") -> str:
     docs = _load_log_docs()
-    return f"""输出要求：只输出一行JSON，不要输出任何其他文字。
+    return f"""只输出一行JSON。第1轮:搜"一致性超过update阈值"(输入WARNING行,核心根因), error_only=true, 查16:50~17:05。
+找到后第2轮:用robot_filter=XNA-169+task_filter=1098000搜上下文。第3轮必须conclude。
 
-命令格式:
-query: {{"action":"query","query":{{"time_start":"2026-07-27 16:50","time_end":"2026-07-27 17:05","robot_filter":"XNA-169","task_filter":"1098000","error_only":false,"max_results":30}}}}
-conclude: {{"action":"conclude","conclusion":"根因总结，引用知识库场景号"}}
-fallback: {{"action":"fallback","reason":"无结果原因"}}
+query命令: {{"action":"query","query":{{"time_start":"2026-07-27 16:50","time_end":"2026-07-27 17:05","robot_filter":"","task_filter":"","error_only":true,"max_results":50}}}}
+conclude: {{"action":"conclude","conclusion":"根因(知识库场景13)+解决方案(wait_time_check_interval=40,wait_time_update_gap=40)","evidence_lines":["L123: 一致性超过update阈值42.2s","L456: MAPF-T:77.956 WAIT-T:5.0"]}}
 
-参数: task_filter部分匹配,传"1098000"可命中"I|1098000"。error_only=true只看异常。宽时间窗优先。最多query 3轮。日志日期={log_date}。
-
-知识库:
+日期={log_date}。最多3轮。
 {docs}"""
 
 
@@ -131,7 +128,8 @@ class LogAnalysisResult:
         if self.evidence:
             parts.append("关键日志行:")
             for e in self.evidence[:8]:
-                parts.append(f"  L{e['line']} [{e.get('ts','?')}] {e['summary'][:120]}")
+                # summary 已包含时间戳和字段信息，直接展示
+                parts.append(f"  L{e['line']}: {e['summary'][:150]}")
         if self.queries_made:
             parts.append(f"共查询 {self.queries_made} 轮")
         return "\n".join(parts)
@@ -215,6 +213,7 @@ class LogSubAgent:
                     continue
                 query_history.append(q_hash)
 
+                logger.info(f"LogSubAgent R{round_num} query: {json.dumps(q, ensure_ascii=False)}")
                 log_query = LogQuery(
                     time_start=q.get("time_start") or None,
                     time_end=q.get("time_end") or None,
@@ -239,15 +238,33 @@ class LogSubAgent:
                 messages.append({"role": "assistant", "content": response})
                 messages.append({"role": "user", "content": feedback})
 
-                # 保存线索
+                # 保存线索（暂存，conclude 时按 LLM 引用的行号过滤）
                 if "matched" in query_result and "matched 0 lines" not in query_result:
-                    for line_match in re.findall(r"\* L(\d+)\| (.*)", query_result):
+                    for line_match in re.findall(r"\* L(\d+)\| (.+)", query_result):
                         ln, sm = line_match
-                        result.evidence.append({"line": int(ln), "summary": sm[:150]})
+                        summary = sm.strip()
+                        if not summary or summary.count("|") < 1:
+                            continue
+                        result.evidence.append({"line": int(ln), "summary": sm[:150], "round": round_num})
             else:
                 if action == "conclude":
                     result.conclusion = cmd.get("conclusion", "")
-                    logger.info(f"LogSubAgent conclude at R{round_num}: {result.conclusion[:80]}")
+                    # ── 按 LLM 引用的行号过滤证据 ──
+                    cited_lines = set()
+                    for ref in cmd.get("evidence_lines", []):
+                        m = re.search(r"L(\d+)", str(ref))
+                        if m:
+                            cited_lines.add(int(m.group(1)))
+                    if cited_lines:
+                        result.evidence = [e for e in result.evidence if e["line"] in cited_lines]
+                    else:
+                        # 没引用具体行号 → 只保留含关键信号的证据
+                        _SIGNAL_KW = ("一致性", "MAPF-T", "ABORTED", "WARNING", "等待时间", "last_node")
+                        result.evidence = [
+                            e for e in result.evidence
+                            if any(kw in e["summary"] for kw in _SIGNAL_KW)
+                        ]
+                    logger.info(f"LogSubAgent conclude at R{round_num}: {result.conclusion[:80]} (cited={len(cited_lines)}, evidence={len(result.evidence)})")
                 elif action == "fallback":
                     result.conclusion = cmd.get("reason", "无结论")
                     result.fallback_used = True
