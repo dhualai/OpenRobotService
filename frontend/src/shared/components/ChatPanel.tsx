@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
 import { qaUpload, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, type TicketDraft } from '@/api/ai';
+import ProjectSelect from '@/shared/components/ProjectSelect';
 import { createConversation, getConversation, listMyConversations, appendMessage, readAiSessionId } from '@/api/conversation';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
@@ -660,18 +661,22 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const setDraftField = (k: keyof TicketDraft, v: string) =>
     setTicketConfirm((s) => ({ ...s, overrides: { ...s.overrides, [k]: v } }));
 
-  /** 确认提交：校验项目必填（所有类型） → 调 confirm 入库 */
+  /** 确认提交：校验项目必填（所有类型，需绑定 project_id） → 调 confirm 入库 */
   const handleConfirmTicket = async () => {
     const draft = ticketConfirm.draft;
     if (!draft || !sessionId) return;
-    const projectVal = draftField('project').trim();
-    if (!projectVal) {
-      Toast({ message: '请先填写绑定项目', theme: 'warning' });
+    const projectIdVal = draftField('project_id').trim();
+    if (!projectIdVal) {
+      Toast({ message: '请先选择绑定项目', theme: 'warning' });
       return;
     }
     setTicketConfirm((s) => ({ ...s, submitting: true }));
     try {
-      const overrides: Partial<TicketDraft> = { ...ticketConfirm.overrides, project: projectVal };
+      const overrides: Partial<TicketDraft> = {
+        ...ticketConfirm.overrides,
+        project: draftField('project'),
+        project_id: projectIdVal,
+      };
       const res = await qaConfirmTicket(sessionId, overrides);
       if (res?.code !== 0) {
         Toast({ message: res?.message || '提交工单失败', theme: 'error' });
@@ -1050,13 +1055,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   placeholder="联系人（可选）"
                 />
                 <label className="ticket-confirm__label">绑定项目 <span style={{ color: '#e34d59' }}>*</span></label>
-                <input
-                  className="ticket-confirm__input"
-                  value={draftField('project')}
-                  onChange={(e) => setDraftField('project', e.target.value)}
-                  placeholder="请输入项目或现场名称"
+                <ProjectSelect
+                  value={draftField('project_id') || null}
+                  onChange={(p) => {
+                    setDraftField('project', p.name);
+                    setDraftField('project_id', p.project_code);
+                  }}
                 />
-                {!draftField('project').trim() && (
+                {!draftField('project_id').trim() && (
                   <span className="ticket-confirm__hint">项目为必选项，未绑定项目无法提交</span>
                 )}
               </div>
@@ -1071,7 +1077,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 type="button"
                 className="ticket-confirm__btn ticket-confirm__btn--confirm"
                 onClick={handleConfirmTicket}
-                disabled={ticketConfirm.submitting || !draftField('project').trim()}
+                disabled={ticketConfirm.submitting || !draftField('project_id').trim()}
               >{ticketConfirm.submitting ? '提交中…' : '确认提交'}</button>
             </div>
           </div>
