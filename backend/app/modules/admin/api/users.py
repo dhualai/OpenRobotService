@@ -115,7 +115,11 @@ async def create_user(
         permissions=user_data.permissions,
         name=user_data.name,
         status=user_data.status,
-        external_credentials=user_data.external_credentials
+        external_credentials=user_data.external_credentials,
+        department=user_data.department,
+        responsibility_modules=user_data.responsibility_modules,
+        job_level=user_data.job_level,
+        duty_text=user_data.duty_text,
     )
     
     if not success:

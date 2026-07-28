@@ -44,7 +44,7 @@ class AssignmentWorker:
         # 启动时先检查工程师画像是否就绪
         engineers = load_engineers()
         if not engineers:
-            logger.warning("工程师画像为空，派单 Worker 将跳过所有工单（等待 engineers.json 就绪）")
+            logger.warning("工程师画像为空，派单 Worker 将跳过所有工单（等待 users 表人员数据就绪）")
         else:
             logger.info(f"工程师画像已加载: {len(engineers)} 人")
 
