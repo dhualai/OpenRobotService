@@ -2,11 +2,11 @@
 // 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Textarea, Toast, Popup } from 'tdesign-mobile-react';
+import { Textarea, Toast, Popup, Tag } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
-import { qaSubmit, qaUpload, generateSessionId, trackSession, fetchWithAuth } from '@/api/ai';
+import { qaUpload, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, type TicketDraft } from '@/api/ai';
 import { createConversation, getConversation, listMyConversations, appendMessage, readAiSessionId } from '@/api/conversation';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
@@ -69,6 +69,10 @@ const SCENE_CONFIG: Record<ChatScene, {
   tasks: { sceneType: 'task_assist', emptyEmoji: '🤖', emptyTitle: 'AI 任务助手' },
 };
 
+const TICKET_TYPE_LABEL: Record<string, string> = {
+  problem: '报障', bug: '缺陷', feature: '需求', support: '支持', other: '其他',
+};
+
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
   const navigate = useNavigate();
   const { token, name, username } = useAuthStore();
@@ -84,6 +88,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const [sessionId, setSessionId] = useState<string>('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submittingTicket, setSubmittingTicket] = useState(false);
+  // 转工单二次确认弹窗：prepare 生成草稿 → 用户核对/编辑/补字段 → confirm 入库
+  const [ticketConfirm, setTicketConfirm] = useState<{
+    visible: boolean;
+    draft: TicketDraft | null;
+    overrides: Partial<TicketDraft>;
+    submitting: boolean;
+  }>({ visible: false, draft: null, overrides: {}, submitting: false });
   const [isRecording, setIsRecording] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
   const [voiceWillCancel, setVoiceWillCancel] = useState(false);
@@ -618,23 +629,63 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     e.target.value = '';
   };
 
-  /** 转工单：调 AI 模块 /api/ai/qa/submit 生成工单（写 MySQL + 入待派单列表），刷新「历史工单」，留在摇人页 */
+  /** 转工单（二次确认）：prepare 生成草稿 → 弹窗核对/补字段 → confirm 入库 */
   const handleSubmitTicket = async () => {
-    if (submittingTicket || messages.length === 0) return;
+    if (submittingTicket || ticketConfirm.submitting) return;
+    if (messages.length === 0) { Toast({ message: '请先发送一条消息描述问题', theme: 'warning' }); return; }
     if (!sessionId) { Toast({ message: '会话未就绪，请先发送一条消息', theme: 'warning' }); return; }
     setSubmittingTicket(true);
     try {
-      const res = await qaSubmit(sessionId);
-      if (res?.code === 0) {
-        refreshTasks(); // 触发下方「历史工单」重新拉取 AI 待派单列表
-        Toast({ message: '工单已生成，可在右上角历史工单查看', theme: 'success' });
-      } else {
-        Toast({ message: (res as { message?: string })?.message || '生成工单失败', theme: 'error' });
+      const res = await qaPrepareTicket(sessionId);
+      if (res?.code !== 0 || !res.data) {
+        Toast({ message: res?.message || '生成工单草稿失败', theme: 'error' });
+        return;
+      }
+      const { draft, missing_fields, prompt } = res.data;
+      // 打开确认弹窗，让用户核对/编辑/补字段
+      setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false });
+      if (missing_fields?.length) {
+        Toast({ message: prompt || '请补全必填字段后提交', theme: 'warning' });
       }
     } catch (err) {
-      Toast({ message: `生成工单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      Toast({ message: `生成草稿失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setSubmittingTicket(false);
+    }
+  };
+
+  /** 弹窗字段读写 helper：优先取用户编辑值，回退草稿原值 */
+  const draftField = (k: keyof TicketDraft): string =>
+    String(ticketConfirm.overrides[k] ?? ticketConfirm.draft?.[k] ?? '');
+  const setDraftField = (k: keyof TicketDraft, v: string) =>
+    setTicketConfirm((s) => ({ ...s, overrides: { ...s.overrides, [k]: v } }));
+
+  /** 确认提交：校验 problem 必填 project → 调 confirm 入库 */
+  const handleConfirmTicket = async () => {
+    const draft = ticketConfirm.draft;
+    if (!draft || !sessionId) return;
+    const isProblem = draft.type === 'problem';
+    const projectVal = draftField('project').trim();
+    if (isProblem && !projectVal) {
+      Toast({ message: '请填写项目/现场名称', theme: 'warning' });
+      return;
+    }
+    setTicketConfirm((s) => ({ ...s, submitting: true }));
+    try {
+      const overrides: Partial<TicketDraft> = { ...ticketConfirm.overrides };
+      if (isProblem) overrides.project = projectVal;
+      const res = await qaConfirmTicket(sessionId, overrides);
+      if (res?.code !== 0) {
+        Toast({ message: res?.message || '提交工单失败', theme: 'error' });
+        return;
+      }
+      setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false });
+      refreshTasks(); // 刷新「历史工单」待派单列表
+      Toast({ message: res.data?.notice || '工单已生成，可在历史工单查看', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `提交工单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setTicketConfirm((s) => ({ ...s, submitting: false }));
     }
   };
 
@@ -954,6 +1005,78 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             <button type="button" className="upload-menu__item" onClick={() => { setShowUploadMenu(false); albumInputRef.current?.click(); }}>从相册选择</button>
             <button type="button" className="upload-menu__item" onClick={() => { setShowUploadMenu(false); fileInputRef.current?.click(); }}>上传文件</button>
             <button type="button" className="upload-menu__cancel" onClick={() => setShowUploadMenu(false)}>取消</button>
+          </div>
+        </Popup>
+
+        {/* 转工单二次确认弹窗：核对草稿字段，problem 类型必填 project */}
+        <Popup visible={ticketConfirm.visible} onClose={() => setTicketConfirm((s) => ({ ...s, visible: false }))} placement="bottom" showOverlay>
+          <div className="ticket-confirm">
+            <h4 className="ticket-confirm__title">确认工单信息</h4>
+            {ticketConfirm.draft && (
+              <div className="ticket-confirm__body">
+                <div className="ticket-confirm__tags">
+                  {ticketConfirm.draft.type && <Tag theme="primary">{TICKET_TYPE_LABEL[ticketConfirm.draft.type] || ticketConfirm.draft.type}</Tag>}
+                  {ticketConfirm.draft.priority && <Tag theme="warning">{ticketConfirm.draft.priority}</Tag>}
+                </div>
+                <label className="ticket-confirm__label">标题</label>
+                <input
+                  className="ticket-confirm__input"
+                  value={draftField('title')}
+                  onChange={(e) => setDraftField('title', e.target.value)}
+                  placeholder="工单标题"
+                />
+                <label className="ticket-confirm__label">描述</label>
+                <textarea
+                  className="ticket-confirm__textarea"
+                  value={draftField('description')}
+                  onChange={(e) => setDraftField('description', e.target.value)}
+                  placeholder="问题描述"
+                  rows={3}
+                />
+                <label className="ticket-confirm__label">优先级</label>
+                <select
+                  className="ticket-confirm__select"
+                  value={draftField('priority')}
+                  onChange={(e) => setDraftField('priority', e.target.value)}
+                >
+                  <option value="紧急">紧急</option>
+                  <option value="高">高</option>
+                  <option value="中">中</option>
+                  <option value="低">低</option>
+                </select>
+                <label className="ticket-confirm__label">联系人</label>
+                <input
+                  className="ticket-confirm__input"
+                  value={draftField('contact')}
+                  onChange={(e) => setDraftField('contact', e.target.value)}
+                  placeholder="联系人（可选）"
+                />
+                {ticketConfirm.draft.type === 'problem' && (
+                  <>
+                    <label className="ticket-confirm__label">项目/现场名称 <span style={{ color: '#e34d59' }}>*</span></label>
+                    <input
+                      className="ticket-confirm__input"
+                      value={draftField('project')}
+                      onChange={(e) => setDraftField('project', e.target.value)}
+                      placeholder="请输入项目或现场名称"
+                    />
+                  </>
+                )}
+              </div>
+            )}
+            <div className="ticket-confirm__btns">
+              <button
+                type="button"
+                className="ticket-confirm__btn ticket-confirm__btn--cancel"
+                onClick={() => setTicketConfirm((s) => ({ ...s, visible: false }))}
+              >取消</button>
+              <button
+                type="button"
+                className="ticket-confirm__btn ticket-confirm__btn--confirm"
+                onClick={handleConfirmTicket}
+                disabled={ticketConfirm.submitting}
+              >{ticketConfirm.submitting ? '提交中…' : '确认提交'}</button>
+            </div>
           </div>
         </Popup>
       </div>

@@ -88,6 +88,66 @@ export const qaAskStream = (body: QAAskRequest): Promise<Response> =>
 export const qaSubmit = (sessionId: string) =>
   aiPost<{ code: number; [key: string]: unknown }>('/qa/submit', { session_id: sessionId });
 
+// ---------------------------------------------------------------------------
+// 转工单二次确认（按钮路径1：prepare 生成草稿 → 弹窗核对/补字段 → confirm 入库）
+// 对应后端 ai/api/router.py 的 /qa/ticket/prepare、/confirm、/draft
+// ---------------------------------------------------------------------------
+
+/** 工单草稿字段（AI 诊断生成，二次确认时供用户核对/编辑） */
+export interface TicketDraft {
+  ticket_id?: string;
+  session_id?: string;
+  type?: string;       // problem|bug|feature|support|other
+  title?: string;
+  description?: string;
+  priority?: string;   // 紧急|高|中|低
+  status?: string;
+  contact?: string;
+  project?: string;    // type=problem 时必填（现场/项目名称）
+  location?: string;
+  robot_type?: string;
+  fault_code?: string;
+  special_notes?: string;
+  steps_to_reproduce?: string;
+  expected_result?: string;
+  actual_result?: string;
+  severity?: string;
+  version?: string;
+  scenario?: string;
+  expected_effect?: string;
+  source?: string;
+  support_type?: string;
+  preferred_response?: string;
+  missing_fields?: string[];
+  [k: string]: unknown;
+}
+
+export interface PrepareTicketResult {
+  stage: 'draft_ready' | 'need_fields';
+  draft: TicketDraft;
+  missing_fields: string[];
+  prompt: string;
+}
+
+/** 生成工单草稿（按钮转工单：第一次点击） */
+export const qaPrepareTicket = (sessionId: string) =>
+  aiPost<{ code: number; data?: PrepareTicketResult; message?: string }>(
+    '/qa/ticket/prepare', { session_id: sessionId },
+  );
+
+/** 确认提交工单（弹窗确认后：overrides 为用户编辑后的字段） */
+export const qaConfirmTicket = (sessionId: string, overrides: Partial<TicketDraft>) =>
+  aiPost<{
+    code: number;
+    data?: { ticket: TicketDraft; db_id: number; notice: string };
+    message?: string;
+    missing_fields?: string[];
+  }>('/qa/ticket/confirm', { session_id: sessionId, overrides });
+
+/** 获取待确认草稿（前端轮询兜底，如 SSE 中断后恢复） */
+export const qaGetDraft = (sessionId: string) =>
+  aiGet<{ code: number; data?: { draft: TicketDraft | null } }>('/qa/ticket/draft', { session_id: sessionId });
+
 /** 获取工单 */
 export const qaGetTicket = (sessionId: string) =>
   aiGet<{ code: number; data?: unknown; message?: string }>('/qa/ticket', { session_id: sessionId });
