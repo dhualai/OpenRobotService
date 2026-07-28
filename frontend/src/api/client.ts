@@ -29,6 +29,9 @@ let loggingOut = false;
 export function setLoggingOut(v: boolean): void {
   loggingOut = v;
 }
+export function isLoggingOut(): boolean {
+  return loggingOut;
+}
 
 export interface ApiErrorType {
   name: string;
