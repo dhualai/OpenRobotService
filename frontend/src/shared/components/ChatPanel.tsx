@@ -320,6 +320,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       let solutionDraft: Message['solution_draft'] | null = null;
       let ticketCreatedThisTurn = false;
       let currentEvent = '';
+      let streamError = ''; // 流式 event:error 的错误信息（之前静默吞掉 → 空气泡）
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -340,6 +341,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               acc += data.content;
               setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
             }
+            // 流式错误（如诊断 pipeline 抛错）：捕获错误信息，循环结束后抛出，避免静默空气泡
+            if (currentEvent === 'error' && data.error) {
+              streamError = data.error;
+            }
             // 任务 Agent result 事件：拿到结构化方案草稿
             if (currentEvent === 'result' && data.root_cause_analysis) {
               solutionDraft = {
@@ -358,6 +363,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           } catch { /* JSON 行解析出错则跳过 */ }
         }
       }
+
+      // 流式出错且无任何内容 → 抛出，由外层 catch 提示并移除空气泡（不再静默）
+      if (streamError && !acc) throw new Error(streamError);
 
       // 流式结束：持久化 AI 回复
       if (acc && convRef.current) appendMessage(convRef.current, 'assistant', acc).catch(() => {});
