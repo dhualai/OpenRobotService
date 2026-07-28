@@ -206,6 +206,7 @@ def register_builtin_parsers() -> None:
         "ai.ingestion.parsers.troubleshooting_json",
         "ai.ingestion.parsers.faq_multi",
         "ai.ingestion.parsers.platform_faq",
+        "ai.ingestion.parsers.usp_diagnosis_md",
     ]
 
     for mod_name in builtin_modules:

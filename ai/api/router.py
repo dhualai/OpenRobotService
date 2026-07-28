@@ -10,7 +10,7 @@ import time
 import os
 from pathlib import Path
 from typing import Dict, List
-from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -60,9 +60,14 @@ async def get_pipeline() -> AiDiagnosisPlatform:
 
 def _current_user(request: Request) -> tuple[str, bool]:
     """从 Authorization 头解出 (username, is_admin)；无效/缺失返回 ('', False)。"""
-    from app.core.security import decode_token  # 惰性：避免启动期触发 backend 装配
     auth = request.headers.get("Authorization", "")
-    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    return _current_user_from_header(auth)
+
+
+def _current_user_from_header(authorization: str) -> tuple[str, bool]:
+    """从 Authorization header 值解出 (username, is_admin)；无效/缺失返回 ('', False)。"""
+    from app.core.security import decode_token  # 惰性：避免启动期触发 backend 装配
+    token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
     if not token:
         return "", False
     payload = decode_token(token)
@@ -86,9 +91,11 @@ def _current_user(request: Request) -> tuple[str, bool]:
 async def ask_question(
     request: QAAskRequest,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
+    authorization: str = Header(default="", alias="Authorization"),
 ) -> dict:
+    username, _ = _current_user_from_header(authorization)
     qa_request = DiagnosisRequest(session_id=request.session_id, query=request.query,
-                           skip_retrieval=request.skip_retrieval)
+                           skip_retrieval=request.skip_retrieval, created_by=username)
     try:
         result = await pipeline.run_with_timeout(qa_request, timeout=30.0)
     except Exception as e:
@@ -102,11 +109,13 @@ async def ask_question(
 async def ask_question_stream(
     request: QAAskRequest,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
+    authorization: str = Header(default="", alias="Authorization"),
 ):
+    username, _ = _current_user_from_header(authorization)
     async def sse():
         t0 = time.perf_counter()
         qa_request = DiagnosisRequest(session_id=request.session_id, query=request.query,
-                           skip_retrieval=request.skip_retrieval)
+                           skip_retrieval=request.skip_retrieval, created_by=username)
         first = False
         try:
             async for event in pipeline.run_stream(qa_request):
@@ -252,8 +261,9 @@ async def confirm_ticket(
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
     try:
+        username, _ = _current_user(request)
         return await pipeline.confirm_submit(
-            session_id=body.session_id, overrides=body.overrides,
+            session_id=body.session_id, overrides=body.overrides, created_by=username,
         )
     except Exception as e:
         logger.error(f"confirm_ticket 异常: {e}", exc_info=True)

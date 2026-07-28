@@ -32,6 +32,7 @@ class DiagnosisRequest:
     query: str
     rewritten_query: Optional[str] = None
     skip_retrieval: bool = False  # 测试用：跳过 KB 检索
+    created_by: str = ""  # 提单人用户名，由 API 层从 Bearer token 解析后传入
 
 
 @dataclass
@@ -595,7 +596,7 @@ class AiDiagnosisPlatform:
                     parsed["action"] = "answer"
                     parsed["message"] = check["prompt"]
                 else:
-                    ticket_data = await self.submit(request.session_id, created_by="")
+                    ticket_data = await self.submit(request.session_id, created_by=request.created_by)
                     logger.info(f"[agent] 自动提单成功: session={request.session_id[:8]}, "
                                 f"ticket={ticket_data.get('data', {}).get('ticket', {}).get('ticket_id', '?')}")
                     # submit() 已清空诊断状态并保存，刷新本地 state 避免 _finalize_diagnosis 覆写旧状态
@@ -662,7 +663,7 @@ class AiDiagnosisPlatform:
                 logger.debug(f"[retrieve] cache hit: {(time.perf_counter() - t0) * 1000:.0f}ms")
                 return cached["result"]
 
-            # 正常检索流程：六路并行（含平台FAQ）
+            # 正常检索流程：七路并行（含平台FAQ + USP诊断）
             config = get_ai_config()
             manual_task = asyncio.wait_for(
                 self._retriever.retrieve(search_query, top_k=config.retrieval_top_k),
@@ -688,18 +689,23 @@ class AiDiagnosisPlatform:
                 self._retriever.retrieve_platform_faq(search_query, top_k=2),
                 timeout=10.0,
             )
+            usp_diagnosis_task = asyncio.wait_for(
+                self._retriever.retrieve_usp_diagnosis(search_query, top_k=3),
+                timeout=10.0,
+            )
 
-            logger.info(f"[retrieve] 开始六路并行检索: query={search_query[:60]}...")
+            logger.info(f"[retrieve] 开始七路并行检索: query={search_query[:60]}...")
             gathered = await asyncio.wait_for(
                 asyncio.gather(
                     manual_task, faq_task, troubleshooting_task,
                     cheduan_task, translation_task, platform_faq_task,
+                    usp_diagnosis_task,
                     return_exceptions=True,
                 ),
                 timeout=20.0,
             )
-            logger.info(f"[retrieve] 六路检索完成")
-            manual_results, faq_results, troubleshooting_results, cheduan_results, translation_results, platform_faq_results = gathered
+            logger.info(f"[retrieve] 七路检索完成")
+            manual_results, faq_results, troubleshooting_results, cheduan_results, translation_results, platform_faq_results, usp_diagnosis_results = gathered
 
             # 单路失败不拖垮全部：只丢弃异常的那一路
             if isinstance(manual_results, BaseException):
@@ -714,6 +720,8 @@ class AiDiagnosisPlatform:
                 translation_results = []
             if isinstance(platform_faq_results, BaseException):
                 platform_faq_results = []
+            if isinstance(usp_diagnosis_results, BaseException):
+                usp_diagnosis_results = []
 
             results, _ = manual_results  # unpack (results, top1_score)
 
@@ -765,6 +773,14 @@ class AiDiagnosisPlatform:
                 tree_text = r.content or ""
                 if tree_text.strip():
                     docs.append(f"---\n🔍 故障排查树 {idx}：{symptom}\n{tree_text}\n---")
+                    idx += 1
+
+            # USP 诊断知识库
+            for r in (usp_diagnosis_results or []):
+                title = r.title or ""
+                content = r.content or ""
+                if content.strip():
+                    docs.append(f"---\n🏭 USP诊断 {idx}：{title}\n{content}\n---")
                     idx += 1
 
             # 操作手册结果
@@ -998,7 +1014,7 @@ class AiDiagnosisPlatform:
             "prompt": check["prompt"],
         }
 
-    async def confirm_submit(self, session_id: str, overrides: dict = None) -> dict:
+    async def confirm_submit(self, session_id: str, overrides: dict = None, created_by: str = "") -> dict:
         """确认提交工单（路径1：弹窗确认后），再次校验必填字段后入库。"""
         await self._ensure_clients()
         memory = await self._memory_manager.get_memory(session_id)
@@ -1019,7 +1035,7 @@ class AiDiagnosisPlatform:
 
         from ai.core.task_adapter import upsert_task
         ticket["ticket_seq"] = agent_state.ticket_seq + 1
-        record = upsert_task(ticket, created_by="")
+        record = upsert_task(ticket, created_by=created_by)
 
         agent_state.ticket_seq += 1
         agent_state.phase = "resolved"
@@ -1362,7 +1378,7 @@ class AiDiagnosisPlatform:
                     parsed["message"] = check["prompt"]
                 else:
                     yield {"event": "status", "data": {"stage": "submitting"}}
-                    ticket_data = await self.submit(request.session_id, created_by="")
+                    ticket_data = await self.submit(request.session_id, created_by=request.created_by)
                     ticket_info = ticket_data.get('data', {}).get('ticket', {})
                     logger.info(f"[stream] 自动提单成功: session={request.session_id[:8]}, "
                                 f"ticket={ticket_info.get('ticket_id', '?')}")
