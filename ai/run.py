@@ -144,7 +144,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"诊断后台服务启动失败: {e}", exc_info=True)
 
-    # 5. 启动派单后台 Worker（定时扫描待派单池 → 自动指派）
+    # 5. 启动知识沉淀 Worker（扫描已解决工单 → Qdrant 回写）
+    knowledge_worker = None
+    knowledge_stop = None
+    try:
+        from ai.agents.AiTaskPlatform.services.diagnosis_worker import run_knowledge_worker
+        knowledge_stop = asyncio.Event()
+        knowledge_worker = asyncio.create_task(run_knowledge_worker(knowledge_stop))
+        logger.info(f"知识沉淀 Worker 已启动 (scan interval={get_ai_config().diagnosis_scan_interval}s)")
+    except Exception as e:
+        logger.error(f"知识沉淀 Worker 启动失败: {e}", exc_info=True)
+
+    # 7. 启动派单后台 Worker（定时扫描待派单池 → 自动指派）
     assign_worker = None
     assign_worker_task = None
     try:
@@ -157,7 +168,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"派单 Worker 启动失败: {e}", exc_info=True)
 
-    # 6. 企业微信 Smartsheet 集成状态
+    # 8. 企业微信 Smartsheet 集成状态
     try:
         _wcfg = get_ai_config()
         if _wcfg.wecom_corpid and _wcfg.wecom_corpsecret:
@@ -180,6 +191,13 @@ async def lifespan(app: FastAPI):
     # ── 关闭 ──
     if assign_worker:
         await assign_worker.stop()
+    if knowledge_stop:
+        knowledge_stop.set()
+        logger.info("知识沉淀 Worker 停止中...")
+        try:
+            await asyncio.wait_for(knowledge_worker, timeout=10)
+        except asyncio.TimeoutError:
+            logger.warning("知识沉淀 Worker 停止超时(10s)")
     if diag_stop:
         diag_stop.set()
         logger.info("诊断后台服务停止中...")
