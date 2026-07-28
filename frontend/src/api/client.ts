@@ -20,6 +20,16 @@ let userToken: string | null = null;
 let isRefreshing = false;
 let refreshSubscribers: Subscriber[] = [];
 
+// 登出流程标记：logout() 设 true、login() 设 false。
+// 用途：登出瞬间清空 token，在途请求会带旧 token 收到 401，刷新又因 refresh_token 被清而失败，
+// 若不拦截会整页跳微信静默授权=自动登录，覆盖 SPA 的 navigate('/login?reason=logout')，
+// 表现为"登出当下就跳走"。此标记让 401 失败分支在登出中放弃抢跳转。
+// 模块级变量随 webview 重载而复位（false），恰好符合"临时退出"语义：重开仍可自动登录。
+let loggingOut = false;
+export function setLoggingOut(v: boolean): void {
+  loggingOut = v;
+}
+
 export interface ApiErrorType {
   name: string;
   message: string;
@@ -176,6 +186,12 @@ export function createRequest(baseUrl: string, _serviceName = 'API') {
               return request<T>(endpoint, options, retries + 1);
             } catch (refreshError) {
               onRefreshFailed(refreshError);
+              // 登出流程中（userToken/refresh_token 已被 logout 清空）：
+              // 不抢跳转，登出动作本身会 navigate('/login?reason=logout')。
+              // 若这里再整页跳微信静默授权，会自动登录并覆盖 SPA 跳转，表现为"登出当下就跳走"。
+              if (loggingOut) {
+                throw refreshError;
+              }
               if (WECHAT_CONFIG.loginEnabled) {
                 const state = buildStateFromPath(window.location.pathname);
                 window.location.href = buildWechatAuthUrl(state);
