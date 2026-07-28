@@ -106,18 +106,18 @@ def _agent_state_summary(state: AgentState) -> dict:
 
 
 def _check_required_fields(ticket: dict) -> dict:
-    """统一的前置校验：type=problem 时必须填写 project。
+    """统一的前置校验：所有类型转工单都必须绑定项目（project_id 优先，回退 project 名称）。
+    与前端确认弹窗的「项目必选（所有类型）」规则对齐：未绑定项目时拒绝提交并给出提示。
     返回 {"ok": bool, "missing": [...], "prompt": "..."}
     """
     missing = []
-    if ticket.get("type") == "problem":
-        if not ticket.get("project", "").strip():
-            missing.append("project")
+    if not ticket.get("project_id", "").strip() and not ticket.get("project", "").strip():
+        missing.append("project")
     ok = len(missing) == 0
     return {
         "ok": ok,
         "missing": missing,
-        "prompt": "" if ok else "请提供项目/现场名称，方便我们定位问题。",
+        "prompt": "" if ok else "请先选择/填写绑定项目，未绑定项目无法提交工单。",
     }
 
 
