@@ -645,10 +645,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       <div className="chat-view__messages">
         {messages.length === 0 && (
           <div className="chat-view__empty">
-            <div className="chat-view__empty-emoji">{cfg.emptyEmoji}</div>
-            <p>{cfg.emptyTitle}</p>
+            {!isCall && <div className="chat-view__empty-emoji">{cfg.emptyEmoji}</div>}
+            {!isCall && <p>{cfg.emptyTitle}</p>}
             <p className="chat-view__empty-sub">
-              {isCall ? `你好${name || username ? `，${name || username}` : ''}，描述你的问题，AI 先帮你初步诊断。` : '关于系统任务的问题，可以随时问我。'}
+              {isCall ? `你好${name || username ? `，${name || username}` : ''}，请描述你的问题，小U先帮你初步诊断。` : '关于系统任务的问题，可以随时问我。'}
             </p>
           </div>
         )}
