@@ -60,6 +60,12 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = Field(default="")
     MINIO_BUCKET: str = Field(default="helpdesk")
     MINIO_SECURE: bool = Field(default=False)
+    # 对象存储请求路径前缀。
+    # - 本地直连 MinIO 时留空（""）；
+    # - 生产经 nginx 网关代理时设为 "/minio-api"（见 deploy/nginx/conf/nginx.conf）。
+    MINIO_API_PREFIX: str = Field(default="")
+    # 图片类资源专用 bucket（预签名 URL 路由会遍历匹配），默认与 MINIO_BUCKET 区分开。
+    FILE_IMAGES: str = Field(default="helpdesk-images")
     
     COMMENT_BUCKET: str = Field(default="helpdesk-comment")
     

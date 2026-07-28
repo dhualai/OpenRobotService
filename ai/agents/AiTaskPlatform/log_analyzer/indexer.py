@@ -25,10 +25,12 @@ from typing import Optional, Dict, List
 _RE_TS = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})")
 _RE_LVL = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} - (\w+) - ")
 _RE_ROBOT = re.compile(r"(?:robot_id[=:]\s*'?)([A-Z]+[-_][A-Z]*[-_]?\d+)", re.IGNORECASE)
-_RE_ROBOT2 = re.compile(r"Robot:([A-Z]+[-_][A-Z]*[-_]?\d+)", re.IGNORECASE)
+_RE_ROBOT2 = re.compile(r"Robot:\s*([A-Z]+[-_]\w+)", re.IGNORECASE)
+_RE_ROBOT3 = re.compile(r"'id':\s*'([A-Z]+[-_]\w+)'", re.IGNORECASE)
 _RE_TASK = re.compile(r"(?:task_id[=:]\s*'?)(\d{10,})", re.IGNORECASE)
 _RE_TASK2 = re.compile(r"Task Node Id:(\d+)")
 _RE_TASK3 = re.compile(r"taskNodeId:(\d+)")
+_RE_TASK4 = re.compile(r"'taskId':\s*'([^']+)'", re.IGNORECASE)  # I|xx 格式
 _RE_ERROR = re.compile(r"error_code[=:]\s*'([^']+)'")
 _RE_PATH = re.compile(r"Path:([A-Z]+[-_]\w+_\d+_\d+_\d+)", re.IGNORECASE)
 _RE_NODE = re.compile(r"Node:(\d+)")
@@ -36,6 +38,8 @@ _RE_POS = re.compile(r"Pos:\[([^\]]+)\]")
 _RE_IDX = re.compile(r"Index:(\d+)")
 _RE_DESC = re.compile(r"description[=:]\s*'([^']+)'")
 _RE_NUMNODES = re.compile(r"Num Of Node:(\d+)")
+_RE_MAPF_T = re.compile(r"MAPF-T:([\d.]+)")    # MAPF 规划耗时
+_RE_WAIT_T = re.compile(r"WAIT-T:([\d.]+)")     # 等待耗时
 
 
 def extract_fields(line: str) -> Dict:
@@ -48,12 +52,14 @@ def extract_fields(line: str) -> Dict:
     robots = set()
     for m in _RE_ROBOT.finditer(line): robots.add(m.group(1))
     for m in _RE_ROBOT2.finditer(line): robots.add(m.group(1))
+    for m in _RE_ROBOT3.finditer(line): robots.add(m.group(1))
     if robots: fld["robots"] = sorted(robots)
 
     tasks = set()
     for m in _RE_TASK.finditer(line): tasks.add(m.group(1))
     for m in _RE_TASK2.finditer(line): tasks.add(m.group(1))
     for m in _RE_TASK3.finditer(line): tasks.add(m.group(1))
+    for m in _RE_TASK4.finditer(line): tasks.add(m.group(1))
     if tasks: fld["tasks"] = sorted(tasks)
 
     m = _RE_ERROR.search(line)
@@ -70,13 +76,26 @@ def extract_fields(line: str) -> Dict:
 
     m = _RE_DESC.search(line)
     if m: fld["desc"] = m.group(1)[:100]
+
+    m = _RE_MAPF_T.search(line)
+    if m: fld["mapf_t"] = float(m.group(1))
+    m = _RE_WAIT_T.search(line)
+    if m: fld["wait_t"] = float(m.group(1))
+    # 执行预测一致性异常 → 路径截断 → 需要重新规划
+    if "一致性超过update阈值" in line:
+        fld["error"] = fld.get("error", "") + " 一致性超阈值-路径截断"
+    elif "一致性不满足" in line or "current Task一致性" in line:
+        fld["error"] = fld.get("error", "") + " 一致性校验失败"
     return fld
 
 
 def fields_summary(fld: Dict) -> str:
     parts = []
     ts = fld.get("ts", "")
-    if ts: parts.append("[{}]".format(ts.split(".")[0][-8:]))
+    if ts:
+        # 显示 HH:MM:SS,mmm（去掉日期部分）
+        ts_short = ts[-12:] if len(ts) > 12 else ts
+        parts.append("[{}]".format(ts_short))
     lv = fld.get("level", "")
     if lv: parts.append("[{}]".format(lv))
     for k, pfx in [("robots","R"), ("tasks","T"), ("paths","P")]:
@@ -90,6 +109,8 @@ def fields_summary(fld: Dict) -> str:
     if "pos" in fld: extra.append("Pos=[{}]".format(fld["pos"]))
     if "idx" in fld: extra.append("#{}".format(fld["idx"]))
     if "numnodes" in fld: extra.append("(/{} nodes)".format(fld["numnodes"]))
+    if "mapf_t" in fld: extra.append("MAPF-T={:.1f}s".format(fld["mapf_t"]))
+    if "wait_t" in fld: extra.append("WAIT-T={:.1f}s".format(fld["wait_t"]))
     if extra: parts.append("| "+" ".join(extra))
     return " ".join(parts)[:200]
 
@@ -121,6 +142,7 @@ class LogIndex:
         self._err_lines = []    # error/warn line numbers
         self._total = 0
         self._built = False
+        self._signal_lines = []  # 含关键信号的行号（一致性/MAPF-T/ABORTED等）
 
     def build(self) -> "LogIndex":
         t0 = _time.perf_counter()
@@ -133,8 +155,16 @@ class LogIndex:
                 for r in fld.get("robots", []): self._robot_idx.setdefault(r, []).append(n)
                 for t in fld.get("tasks", []): self._task_idx.setdefault(t, []).append(n)
                 for p in fld.get("paths", []): self._path_idx.setdefault(p, []).append(n)
-                if fld.get("level") in ("ERROR","WARN","FATAL") or "error" in fld:
+                if fld.get("level") in ("ERROR","WARN","WARNING","FATAL") or "error" in fld:
                     self._err_lines.append(n)
+                # 路径状态异常也是错误信号
+                if "ABORTED" in line or "CANCELED" in line:
+                    self._err_lines.append(n)
+                # 一致性校验失败 / 路径截断 / MAPF耗时
+                _SIGNAL_KW = ("一致性超过update阈值", "一致性不满足", "MAPF-T:", "WAIT-T:", "等待时间超限")
+                if any(kw in line for kw in _SIGNAL_KW):
+                    self._err_lines.append(n)
+                    self._signal_lines.append(n)
                 if n % 50000 == 0:
                     logger.info("{:,} lines indexed ({:.0f}s)".format(n, _time.perf_counter()-t0))
         elapsed = _time.perf_counter() - t0
@@ -158,7 +188,11 @@ class LogIndex:
                           (q.task_filter, self._task_idx),
                           (q.path_filter, self._path_idx)]:
             if fval:
-                s = set(idx.get(fval, []))
+                s = set()
+                # 部分匹配：LLM 可能只传 "1098000" 而索引 key 是 "I|1098000"
+                for key, lines in idx.items():
+                    if fval in key:
+                        s.update(lines)
                 if s: filters.append(s)
         if q.error_only: filters.append(set(self._err_lines))
 
@@ -169,11 +203,26 @@ class LogIndex:
             cand = set(self._err_lines[:q.max_results])
 
         if not cand:
-            return "(no match: time={}~{} robot={} task={})".format(
-                q.time_start, q.time_end, q.robot_filter, q.task_filter)
+            # 降级：把时间窗口行 + 错误行合并，给 LLM 一些数据
+            if q.time_start and q.time_end:
+                for ts, lines in self._ts_idx.items():
+                    if q.time_start <= ts <= q.time_end:
+                        cand.update(lines)
+            if not cand:
+                cand = set(range(1, min(self._total + 1, 200)))
+            if not cand:
+                return "(no match: time={}~{} robot={} task={})".format(
+                    q.time_start, q.time_end, q.robot_filter, q.task_filter)
 
-        ctx = set(cand)
-        for ln in list(cand)[:q.max_results]:
+        # 优先取信号行 + 尾行，再加上下文
+        all_cand = sorted(cand)
+        priority = [ln for ln in all_cand if ln in self._signal_lines]
+        rest = [ln for ln in all_cand if ln not in priority]
+        half = q.max_results // 2
+        selected = priority[:half] + rest[:half] + (rest[-half:] if len(rest) > half else [])
+
+        ctx = set(selected[:q.max_results * 2])
+        for ln in list(ctx):
             for d in range(1, q.context_before+1): ctx.add(max(1, ln-d))
             for d in range(1, q.context_after+1): ctx.add(min(self._total, ln+d))
 
@@ -193,7 +242,9 @@ class LogIndex:
                     if len(results) >= 200:
                         break
 
-        hdr = "log: {} | matched {} lines".format(os.path.basename(self.log_path), len(cand))
+        signal_cnt = sum(1 for ln in cand if ln in self._signal_lines)
+        hdr = "log: {} | matched {} lines ({} 含关键信号:一致性/MAPF-T/ABORTED)".format(
+            os.path.basename(self.log_path), len(cand), signal_cnt)
         if q.robot_filter: hdr += " | robot: {}".format(q.robot_filter)
         if q.task_filter: hdr += " | task: {}".format(q.task_filter)
         if q.time_start: hdr += " | time: {}~{}".format(q.time_start, q.time_end)

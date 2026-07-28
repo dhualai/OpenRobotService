@@ -1,7 +1,6 @@
 from datetime import datetime
 import yaml
 import os
-import httpx
 import random
 import string
 import json
@@ -152,20 +151,11 @@ class NotificationUtils:
 
     @staticmethod
     async def send_notification(payload, token):
-        headers = {}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    settings.DATA_CENTER_BASE_URL + settings.NOTIFICATION_API_PATH,
-                    json=payload,
-                    headers=headers,
-                    timeout=30.0
-                )
-                response.raise_for_status()
-                return response.json()
-        except httpx.RequestError as e:
+            from app.wechat.api.message import send_notification_core
+            return await send_notification_core(payload, token)
+        except Exception as e:
+            logger.error(f"发送通知失败：{str(e)}")
             return {
                 "code": 500,
                 "message": f"请求失败: {str(e)}",
@@ -174,17 +164,6 @@ class NotificationUtils:
                     "error": str(e)
                 }
             }
-        except httpx.HTTPStatusError as e:
-            try:
-                return e.response.json()
-            except:
-                return {
-                    "code": e.response.status_code,
-                    "message": f"HTTP错误: {str(e)}",
-                    "data": {
-                        "status": "failed"
-                    }
-                }
 
     @staticmethod
     def instantiate_template(template_id: int, *params, **args) -> Dict[str, Any]:
@@ -254,21 +233,6 @@ class NotificationUtils:
                     field = updated_fields[0]
                     value = update_lines[0].split(':', 1)[1].strip() if ':' in update_lines[0] else ''
 
-                    field_names = {
-                        'status': '状态',
-                        'priority': '优先级',
-                        'assigned_to': '受理人',
-                        'title': '标题',
-                        'description': '描述',
-                        'customer': '发起人',
-                        'team': '团队',
-                        'tags': '标签',
-                        'ticket_type': '类型',
-                        'project_name': '项目',
-                        'deadline_at': '截止日'
-                    }
-                    field_cn = field_names.get(field, field)
-
                     enum_value_mapping = {
                         'TicketType.PROBLEM': '问题',
                         'TicketType.FEATURE': '功能请求',
@@ -300,11 +264,10 @@ class NotificationUtils:
                         'urgent': '紧急'
                     }
 
-                    value_cn = enum_value_mapping.get(value, value)
-                    link_title = f"{field_cn}更新"
+                    link_title = enum_value_mapping.get(value, value)
 
                 if len(updated_fields) > 1:
-                    link_title = f"多项更新"
+                    link_title = "多项更新"
 
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
@@ -315,9 +278,8 @@ class NotificationUtils:
                 finally:
                     loop.close()
 
-                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 payload = NotificationUtils.instantiate_template(NotificationUtils.STATUS_CHANGE,
-                                                                 ticket_id, processed_project_name, link_title, operator, current_time,
+                                                                 title, processed_project_name or "无", link_title, "上一步已完成", operator,
                                                                  user_names=user_names, url=NotificationUtils.TICKET_HOST + f"?ticket_id={ticket_id}")
                 loop2 = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop2)

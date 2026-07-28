@@ -49,6 +49,11 @@ class TicketAckRequest(BaseModel):
     status: str = Field(default="dispatched", description="派单状态")
 
 
+class TicketConfirmRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=128)
+    overrides: dict = Field(default_factory=dict, description="用户修改后的字段")
+
+
 async def get_pipeline() -> AiDiagnosisPlatform:
     return await get_diagnosis_platform()
 
@@ -153,6 +158,11 @@ async def get_ticket(session_id: str = Query(..., description="会话 ID")):
         if agent_state.get("phase") in ("escalated", "resolved"):
             pipeline = await get_pipeline()
             ticket = await pipeline.get_ticket(session_id)
+            # ticket_id 默认是 "AI-..." 字符串，但前端催办/上报/评论/撤回依赖
+            # 任务服务的数字 Task.id。此处查库取真实 id 覆盖，避免按钮报「工单号缺失」。
+            task_id = _resolve_ai_task_id(session_id)
+            if task_id is not None:
+                ticket["ticket_id"] = task_id
             return {"code": 0, "data": ticket}
 
         # 降级：MySQL tasks 表中已有记录但 Redis 内存丢失（Redis 重启/过期等场景）
@@ -176,6 +186,35 @@ async def get_ticket(session_id: str = Query(..., description="会话 ID")):
         return {"code": 1, "message": str(e)}
 
 
+def _resolve_ai_task_id(session_id: str):
+    """按 session_id 查 ai 来源 Task，返回数字 id（供前端作为工单号）。
+
+    优先按 (source, external_id) 精确匹配；external_id 可能因 ticket_seq 带了
+    '#N' 后缀或超长走 sha1，故同时按 LIKE 兜底。
+    """
+    try:
+        from ai.core.task_adapter import _external_id_for
+        from app.models.task import Task
+        from app.core.db import SessionLocal
+        db = SessionLocal()
+        try:
+            exact = db.query(Task).filter(
+                Task.source == "ai",
+                Task.external_id == _external_id_for(session_id),
+            ).order_by(Task.id.desc()).first()
+            if exact:
+                return exact.id
+            like = db.query(Task).filter(
+                Task.source == "ai",
+                Task.external_id.like(f"{session_id[:64]}%"),
+            ).order_by(Task.id.desc()).first()
+            return like.id if like else None
+        finally:
+            db.close()
+    except Exception:
+        return None
+
+
 
 @qa_router.post("/ticket/ack", summary="派单确认回执")
 async def ack_ticket(request: TicketAckRequest):
@@ -192,12 +231,54 @@ async def ack_ticket(request: TicketAckRequest):
         return {"code": 1, "message": str(e)}
 
 
+@qa_router.post("/ticket/prepare", summary="生成工单草稿（路径1：按钮转工单）")
+async def prepare_ticket(
+    request: Request,
+    body: QASubmitRequest,
+    pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
+) -> dict:
+    try:
+        result = await pipeline.prepare_ticket(session_id=body.session_id)
+        return {"code": 0, "data": result}
+    except Exception as e:
+        logger.error(f"prepare_ticket 异常: {e}", exc_info=True)
+        return {"code": 1, "message": str(e)}
+
+
+@qa_router.post("/ticket/confirm", summary="确认提交工单（路径1：弹窗确认后）")
+async def confirm_ticket(
+    request: Request,
+    body: TicketConfirmRequest,
+    pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
+) -> dict:
+    try:
+        return await pipeline.confirm_submit(
+            session_id=body.session_id, overrides=body.overrides,
+        )
+    except Exception as e:
+        logger.error(f"confirm_ticket 异常: {e}", exc_info=True)
+        return {"code": 1, "message": str(e)}
+
+
+@qa_router.get("/ticket/draft", summary="获取待确认草稿（前端轮询兜底）")
+async def get_draft(
+    session_id: str = Query(..., description="会话 ID"),
+    pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
+) -> dict:
+    try:
+        return await pipeline.get_draft(session_id)
+    except Exception as e:
+        logger.error(f"get_draft 异常: {e}", exc_info=True)
+        return {"code": 1, "message": str(e)}
+
+
 @qa_router.post("/upload", summary="上传附件")
 async def upload_files(
     session_id: str = Form(..., description="会话 ID"),
     files: List[UploadFile] = File(..., description="附件文件"),
 ):
     from app.utils.minio_client import minio_client
+    from app.core.config import settings
 
     # ── 1. 上传到 MinIO ──
     saved = []
@@ -205,7 +286,8 @@ async def upload_files(
     for f in files:
         content = await f.read()
         raw_bytes.append((f.filename, content))
-        object_path = f"helpdesk/{session_id}/{f.filename}"
+        # 对象路径：{bucket}/{session_id}/{文件名}，bucket 统一读取 settings.MINIO_BUCKET
+        object_path = f"{settings.MINIO_BUCKET}/{session_id}/{f.filename}"
         minio_client.upload_bytes(content, object_path, content_type=f.content_type)
         url = minio_client.get_presigned_url(object_path, expires_minutes=1440)
         saved.append({"filename": f.filename, "size": len(content), "path": url})
@@ -479,7 +561,7 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
 # ============================================================
 # 任务 Agent (prefix /api/ai/task)
 # ============================================================
-task_agent_router = APIRouter(prefix="/api/ai/task", tags=["AI任务助手"])
+task_agent_router = APIRouter(prefix="/api/ai/task", tags=["小U"])
 
 
 

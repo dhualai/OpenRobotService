@@ -1,9 +1,12 @@
 // 个人信息管理 —— GET /api/auth/me + PUT /api/admin/users/{username} + 头像上传（资源管理中心）
 // 背景：微信登录用户默认 username 形如 wechat_xxxxxxxxxx（不可读），"我要摇人" 等处优先展示 name，
 // 但用户此前从未设置过 name。本页提供自助修改昵称/头像的入口；首次进入（name 为空）时弹窗提示设置。
+// 头像字段策略：进入页面时 /auth/me 返回的头像 id 不再覆盖 store（与登录/刷新时 fetchUserDetails 同源），
+// 避免接口偶发缺字段时把已显示的头像清成上传图标（本次修复根因之一见 backend/app/core/auth_service.py）。
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Avatar, Input, Button, Dialog, Upload, Toast } from 'tdesign-mobile-react';
+import { Input, Button, Dialog, Upload, Toast } from 'tdesign-mobile-react';
+import { UserCircleIcon } from 'tdesign-icons-react';
 import { useAuthStore } from '@/stores/auth';
 import { getMyProfile, updateMyProfile, uploadAvatar, avatarUrl } from '@/api/profile';
 
@@ -17,12 +20,15 @@ export default function UserProfile() {
   const [uploading, setUploading] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [avatarError, setAvatarError] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
         const profile = await getMyProfile();
-        setProfile({ name: profile.name || '', avatarResourceId: profile.avatar_resource_id ?? null });
+        // 仅刷新昵称；头像 id 已由登录/刷新时 fetchUserDetails 写入 store，
+        // 与 /auth/me 同源，无需重复覆盖（避免接口缺字段时把头像弄丢）。
+        setProfile({ name: profile.name || '' });
         setNameDraft(profile.name || '');
         if (!profile.name && !sessionStorage.getItem(FIRST_VISIT_PROMPT_KEY)) {
           sessionStorage.setItem(FIRST_VISIT_PROMPT_KEY, '1');
@@ -60,6 +66,7 @@ export default function UserProfile() {
         const resource = await uploadAvatar(file, username);
         await updateMyProfile(username, { avatar_resource_id: resource.id });
         setProfile({ avatarResourceId: resource.id });
+        setAvatarError(false);
         Toast({ message: '头像已更新', theme: 'success' });
         return { status: 'success', response: { url: avatarUrl(resource.id) } };
       } catch (err) {
@@ -78,7 +85,7 @@ export default function UserProfile() {
       content: '确定要退出登录吗？',
       onConfirm: () => {
         logout();
-        navigate('/login', { replace: true });
+        navigate('/login?reason=logout', { replace: true });
       },
     });
   }, [logout, navigate]);
@@ -97,11 +104,16 @@ export default function UserProfile() {
           marginBottom: 16,
         }}
       >
-        <Avatar
-          size="80px"
-          image={avatarResourceId ? avatarUrl(avatarResourceId) : undefined}
-          icon={<span style={{ fontSize: 36 }}>👤</span>}
-        />
+        {avatarResourceId && !avatarError ? (
+          <img
+            src={avatarUrl(avatarResourceId)}
+            alt="头像"
+            style={{ width: 80, height: 80, borderRadius: '50%', objectFit: 'cover' }}
+            onError={() => setAvatarError(true)}
+          />
+        ) : (
+          <UserCircleIcon size="80px" />
+        )}
         <Upload
           accept=".png,.jpg,.jpeg"
           max={1}

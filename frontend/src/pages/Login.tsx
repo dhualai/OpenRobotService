@@ -61,20 +61,26 @@ export default function Login() {
   const isLoggedIn = useAuthStore((s) => s.isLoggedIn);
   // debug=true 时强制显示账密登录表单（便于后台人员登录）；否则走微信登录
   const debugMode = params.get('debug') === 'true';
+  // reason=logout：来自「退出登录」，停留在登录页由用户手动重新登录
+  const reason = params.get('reason');
 
   // 与守卫页面保持一致的跳转策略：
-  // 已登录 → 直接回来源页；启用微信登录且非 debug → 跳微信授权；其余 → 显示账密表单
+  // 已登录且非登出 → 直接回来源页；登出(reason=logout) → 停留；
+  // 启用微信登录且非 debug 且非登出 → 跳微信授权；其余 → 显示账密表单
   useEffect(() => {
-    if (isLoggedIn) {
+    // 已登录且非「刚登出」场景：回到来源页（登录成功后的正常回跳）
+    if (isLoggedIn && reason !== 'logout') {
       navigate(from, { replace: true });
       return;
     }
+    // 登出后停留在登录页，由用户手动重新登录，避免自动跳微信 OAuth 导致「登出后又被自动登录」跳回原页面
+    if (reason === 'logout') return;
     if (WECHAT_CONFIG.loginEnabled && !debugMode) {
       // 携带完整来源地址（含部署前缀）的 base64url state，后端解码后原样回跳
       const state = buildStateFromPath(from);
       window.location.href = buildWechatAuthUrl(state);
     }
-  }, [isLoggedIn, debugMode, from, navigate]);
+  }, [isLoggedIn, debugMode, from, navigate, reason]);
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -146,10 +152,24 @@ export default function Login() {
             </button>
           </div>
 
-          <button className="login-btn" type="submit" disabled={loading}>
-            {loading ? <span className="login-btn__spinner" /> : '登录'}
+        <button className="login-btn" type="submit" disabled={loading}>
+          {loading ? <span className="login-btn__spinner" /> : '登录'}
+        </button>
+
+        {WECHAT_CONFIG.loginEnabled && (
+          <button
+            type="button"
+            className="login-btn"
+            style={{ marginTop: 12, background: '#07c160' }}
+            onClick={() => {
+              const state = buildStateFromPath(from);
+              window.location.href = buildWechatAuthUrl(state);
+            }}
+          >
+            使用微信登录
           </button>
-        </form>
+        )}
+      </form>
 
         <p className="login-card__foot">© OpenRobotService · 服务号 H5</p>
       </div>
