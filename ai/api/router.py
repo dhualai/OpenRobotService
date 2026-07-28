@@ -278,6 +278,7 @@ async def upload_files(
     files: List[UploadFile] = File(..., description="附件文件"),
 ):
     from app.utils.minio_client import minio_client
+    from app.core.config import settings
 
     # ── 1. 上传到 MinIO ──
     saved = []
@@ -285,7 +286,8 @@ async def upload_files(
     for f in files:
         content = await f.read()
         raw_bytes.append((f.filename, content))
-        object_path = f"helpdesk/{session_id}/{f.filename}"
+        # 对象路径：{bucket}/{session_id}/{文件名}，bucket 统一读取 settings.MINIO_BUCKET
+        object_path = f"{settings.MINIO_BUCKET}/{session_id}/{f.filename}"
         minio_client.upload_bytes(content, object_path, content_type=f.content_type)
         url = minio_client.get_presigned_url(object_path, expires_minutes=1440)
         saved.append({"filename": f.filename, "size": len(content), "path": url})
