@@ -37,7 +37,7 @@ interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
   ticket_type: string; project_name?: string; assignee_name?: string; reporter_name?: string;
   contact?: string; created_at: string; updated_at: string;
-  attachments?: Attachment[]; ai_summary?: string; comments?: Comment[];
+  attachments?: Attachment[]; metadata_info?: Record<string, unknown>; comments?: Comment[];
 }
 
 const AI_NAME = '小U';
@@ -75,12 +75,9 @@ export default function TaskDetailPage() {
     request<Ticket>(`/${detailId}?load_comments=true`, { skipCache: true })
       .then((t) => {
         setDetail(t);
-        // 后端 summarize 写入 task_comments，前端从评论中提取最新摘要展示
-        const aiComments = (t.comments || []).filter(
-          (c) => c.created_by_name === AI_NAME || c.created_by === AI_NAME
-        );
-        const lastSummary = aiComments.find((c) => c.content?.startsWith('📝 讨论摘要'));
-        if (lastSummary) setAiSummary(lastSummary.content.replace('📝 讨论摘要\n\n', ''));
+        // 摘要存 metadata_info.ai_summary（不混入讨论区）
+        const meta = t.metadata_info || {};
+        setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
       })
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
@@ -307,7 +304,7 @@ export default function TaskDetailPage() {
         setDiagnosisReport(d.report_md || d.root_cause_analysis || '');
         // 短链接预览取根因分析首行
         const preview = d.root_cause_analysis?.slice(0, 40) || '点击查看';
-        const shortLink = `📋 <a href="javascript:void(0)" class="diagnosis-link">小U 诊断报告 — ${preview}…</a>`;
+        const shortLink = `📋 <span class="diagnosis-link" style="color:#0052d9;cursor:pointer;text-decoration:underline">小U 诊断报告 — ${preview}…</span>`;
         setDetail((prev) => {
           if (!prev) return prev;
           const aiComment: Comment = {
@@ -344,11 +341,8 @@ export default function TaskDetailPage() {
     request<Ticket>(`/${detailId}?load_comments=true`, { skipCache: true })
       .then((t) => {
         setDetail(t);
-        const aiComments = (t.comments || []).filter(
-          (c) => c.created_by_name === AI_NAME || c.created_by === AI_NAME
-        );
-        const lastSummary = aiComments.find((c) => c.content?.startsWith('📝 讨论摘要'));
-        if (lastSummary) setAiSummary(lastSummary.content.replace('📝 讨论摘要\n\n', ''));
+        const meta = t.metadata_info || {};
+        setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
       })
       .catch(() => {});
   };
@@ -428,12 +422,7 @@ export default function TaskDetailPage() {
         </div>
 
         <div className="detail-card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h4 className="detail-card__h">🤖 小U 讨论摘要</h4>
-            <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing}>
-              🤖 帮我分析
-            </Button>
-          </div>
+          <h4 className="detail-card__h">🤖 AI 讨论摘要</h4>
           {aiSummary ? (
             <SafeHtml html={aiSummary} />
           ) : (
@@ -463,6 +452,11 @@ export default function TaskDetailPage() {
           enableAI
           onMessagesClick={handleOpenReport}
         />
+        <div style={{ display: 'flex', justifyContent: 'center', margin: '8px 0' }}>
+          <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing}>
+            🤖 帮我分析
+          </Button>
+        </div>
 
         <div className="detail-actions">
           <div className="detail-actions__btns">
