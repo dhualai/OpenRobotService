@@ -543,7 +543,21 @@ class AiTaskAgent:
                 except Exception:
                     pass
 
-        # ── 3c. 历史工单检索 ──
+        # ── 3c. 代码检索（关键词触发："代码" "源码" "怎么实现"）──
+        code_keywords = ["代码", "源码", "怎么实现", "源代码", "逻辑是什么", "find", "看代码", "实现细节"]
+        if query and any(kw in query.lower() for kw in code_keywords):
+            try:
+                from ai.agents.AiTaskPlatform.code_skill.skill import get_code_skill
+                skill = get_code_skill()
+                skill.ensure_index()
+                code_result = await skill.search(query)
+                code_text = code_result.to_prompt_text()
+                if code_text and "未找到" not in code_text:
+                    facultative += f"\n[代码检索结果]\n{code_text}\n"
+            except Exception as e:
+                logger.warning(f"CodeSkill 检索失败: {e}")
+
+        # ── 3d. 历史工单检索 ──
         if query and any(kw in query.lower() for kw in hist_keywords):
             try:
                 query_text = self._build_query(ctx)

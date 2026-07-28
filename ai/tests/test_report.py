@@ -2,7 +2,7 @@
 
 测试内容：
   1. 数据库连通性
-  2. 各表数据采集（project / risk / ticket / task）
+  2. 各表数据采集（project / risk / ticket，工单数据源为 tasks 表）
   3. 完整报告生成（需 LLM 服务可用）
 """
 import asyncio
@@ -95,7 +95,6 @@ async def test_data_collection():
     # 使用预加载的数据库模块
     db_mod = _preload_database_module()
     SessionLocal = db_mod.SessionLocal
-    Ticket = db_mod.Ticket
     Task = db_mod.Task
     ProjectDelivery = db_mod.ProjectDelivery
     Risk = db_mod.Risk
@@ -115,8 +114,7 @@ async def test_data_collection():
     tables = {
         "project (ProjectDelivery)": ProjectDelivery,
         "risk (Risk)": Risk,
-        "tickets (Ticket)": Ticket,
-        "tasks (Task)": Task,
+        "tasks (Task/工单)": Task,
     }
     for label, model in tables.items():
         try:
@@ -142,8 +140,7 @@ async def test_data_collection():
         print(f"[OK] 采集完成: {data.date_range}")
         print(f"  项目: total={data.project.total}, active={data.project.active}")
         print(f"  风险: total={data.risk.total}, new={data.risk.new_risks}, closed={data.risk.closed_risks}")
-        print(f"  工单: total={data.ticket.total}, new={data.ticket.new_tickets}, resolved={data.ticket.resolved}")
-        print(f"  任务: total={data.task.total}, new={data.task.new_tasks}, resolved={data.task.resolved}, overdue={data.task.overdue}")
+        print(f"  工单: total={data.ticket.total}, new={data.ticket.new_tickets}, resolved={data.ticket.resolved}, overdue={data.ticket.overdue}, resolve_rate={data.ticket.resolve_rate}%")
 
         # 输出 JSON 预览（截断）
         data_json = json.dumps(data.model_dump(), ensure_ascii=False, indent=2, default=str)

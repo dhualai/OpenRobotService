@@ -28,6 +28,7 @@ _ACTIVE_CHEDUAN_COLLECTION_POINTER = _KB_DIR / "active_cheduan_collection.txt"
 _ACTIVE_TRANSLATION_COLLECTION_POINTER = _KB_DIR / "active_translation_collection.txt"
 _ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER = _KB_DIR / "active_cheduan_manual_collection.txt"
 _ACTIVE_TASK_RESOLUTIONS_POINTER = _KB_DIR / "active_task_resolutions_collection.txt"
+_ACTIVE_USP_DIAGNOSIS_POINTER = _KB_DIR / "active_usp_diagnosis_collection.txt"
 
 
 class AIConfig(BaseModel):
@@ -96,6 +97,9 @@ class AIConfig(BaseModel):
 
     # ========== 文档路径 ==========
     docs_path: str = Field(default="", description="原始文档根目录，默认 ai/docs/")
+
+    # ========== CodeSkill 代码检索 ==========
+    code_skill_paths: str = Field(default="", description="代码索引根目录，逗号分隔")
     media_url_prefix: str = Field(default="/api/ai/media", description="媒体文件 URL 前缀，用于前端渲染图片")
 
 
@@ -247,6 +251,24 @@ def _write_active_task_resolutions_collection(name: str) -> None:
     _ACTIVE_TASK_RESOLUTIONS_POINTER.write_text(name, encoding="utf-8")
 
 
+def get_active_usp_diagnosis_collection() -> str:
+    """读取当前活跃的 USP 诊断知识库 Qdrant 集合名"""
+    try:
+        if _ACTIVE_USP_DIAGNOSIS_POINTER.exists():
+            name = _ACTIVE_USP_DIAGNOSIS_POINTER.read_text(encoding="utf-8").strip()
+            if name:
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def _write_active_usp_diagnosis_collection(name: str) -> None:
+    """写入活跃 USP 诊断知识库集合指针"""
+    _ACTIVE_USP_DIAGNOSIS_POINTER.parent.mkdir(parents=True, exist_ok=True)
+    _ACTIVE_USP_DIAGNOSIS_POINTER.write_text(name, encoding="utf-8")
+
+
 def get_docs_dir() -> Path:
     """
     获取文档根目录（知识库源文件所在目录）。
@@ -320,6 +342,7 @@ def get_ai_config() -> AIConfig:
         # 文档路径
         docs_path=os.getenv("DOCS_PATH", ""),
         media_url_prefix=os.getenv("MEDIA_URL_PREFIX", "/api/ai/media"),
+        code_skill_paths=os.getenv("CODE_SKILL_PATHS", ""),
         # 企业微信
         wecom_corpid=os.getenv("WECOM_CORPID", ""),
         wecom_corpsecret=os.getenv("WECOM_CORPSECRET", ""),

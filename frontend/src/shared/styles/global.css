@@ -2268,6 +2268,35 @@ html, body, #root {
   font-size: 16px; color: #999; cursor: pointer; margin-top: 8px;
 }
 
+/* ===== 转工单二次确认弹窗 ===== */
+.ticket-confirm { padding: 16px; max-height: 80vh; overflow-y: auto; }
+.ticket-confirm__title { margin: 0 0 12px; font-size: 16px; font-weight: 600; color: #333; }
+.ticket-confirm__body { display: flex; flex-direction: column; gap: 4px; }
+.ticket-confirm__tags { display: flex; gap: 8px; margin-bottom: 8px; }
+.ticket-confirm__label { font-size: 13px; color: #666; margin-top: 8px; }
+.ticket-confirm__input,
+.ticket-confirm__textarea,
+.ticket-confirm__select {
+  width: 100%; box-sizing: border-box; padding: 10px 12px;
+  border: 1px solid #e7e7e7; border-radius: 6px; font-size: 14px;
+  color: #333; background: #fff; outline: none;
+}
+.ticket-confirm__input:focus,
+.ticket-confirm__textarea:focus,
+.ticket-confirm__select:focus { border-color: #0052d9; }
+.ticket-confirm__textarea { resize: vertical; line-height: 1.5; font-family: inherit; }
+.ticket-confirm__btns { display: flex; gap: 12px; margin-top: 20px; }
+.ticket-confirm__btn {
+  flex: 1; padding: 12px; border: none; border-radius: 6px;
+  font-size: 15px; cursor: pointer;
+}
+.ticket-confirm__btn--cancel { background: #f2f3f5; color: #555; }
+.ticket-confirm__btn--cancel:active { background: #e7e8eb; }
+.ticket-confirm__btn--confirm { background: #0052d9; color: #fff; }
+.ticket-confirm__btn--confirm:active { background: #003cab; }
+.ticket-confirm__btn--confirm:disabled { opacity: 0.6; }
+.ticket-confirm__hint { font-size: 12px; color: #e34d59; margin-top: 4px; }
+
 /* ===== 历史工单搜索 + 状态快捷筛选 ===== */
 .history-toolbar { padding: 8px 12px 4px; flex-shrink: 0; }
 .history-search {

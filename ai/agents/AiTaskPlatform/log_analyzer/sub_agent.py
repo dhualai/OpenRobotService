@@ -281,6 +281,21 @@ class LogSubAgent:
                     ln, sm = line_match
                     result.evidence.append({"line": int(ln), "summary": sm[:150]})
                 result.fallback_used = True
+            # 最后一招：读代码找机制
+            if not result.conclusion or result.fallback_used:
+                try:
+                    code_q = f"{task_context.get('problem_summary', '')} {user_question}"[:200]
+                    from ai.agents.AiTaskPlatform.code_skill.skill import get_code_skill
+                    skill = get_code_skill()
+                    skill.ensure_index()
+                    code_result = await skill.search(code_q)
+                    code_text = code_result.to_prompt_text()
+                    if code_text and "未找到" not in code_text:
+                        result.conclusion = (
+                            (result.conclusion + "\n\n") if result.conclusion else ""
+                        ) + f"日志中线索有限，从代码中查到以下机制：\n{code_text}"
+                except Exception:
+                    pass
             result.queries_made += 1
 
         logger.info(f"LogSubAgent done: rounds={result.queries_made}, evidence={len(result.evidence)}, fallback={result.fallback_used}, elapsed={(_time.perf_counter()-t0)*1000:.0f}ms")
