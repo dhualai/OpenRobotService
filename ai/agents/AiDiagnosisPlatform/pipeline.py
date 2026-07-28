@@ -57,6 +57,12 @@ def _load_agent_state(metadata: dict) -> Optional[AgentState]:
     s = metadata.get("agent_state")
     if not s:
         return None
+    # 防御：agent_state 可能被上传接口（/qa/upload 第4段）写入不完整——
+    # 新会话首次动作是上传时，仅存了 {"attachments": [...]}、缺 session_id 等关键字段，
+    # 直接 s["session_id"] 会 KeyError 中断诊断。此时视为无状态，由 pipeline 重新初始化
+    # （attachments 仍会被 _save_agent_state 的 existing.get("attachments", []) 保留）。
+    if not s.get("session_id"):
+        return None
     return AgentState(
         session_id=s["session_id"],
         problem_summary=s.get("problem_summary", ""),
