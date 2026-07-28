@@ -96,6 +96,9 @@ class AIConfig(BaseModel):
 
     # ========== 文档路径 ==========
     docs_path: str = Field(default="", description="原始文档根目录，默认 ai/docs/")
+
+    # ========== CodeSkill 代码检索 ==========
+    code_skill_paths: str = Field(default="", description="代码索引根目录，逗号分隔")
     media_url_prefix: str = Field(default="/api/ai/media", description="媒体文件 URL 前缀，用于前端渲染图片")
 
 
@@ -320,6 +323,7 @@ def get_ai_config() -> AIConfig:
         # 文档路径
         docs_path=os.getenv("DOCS_PATH", ""),
         media_url_prefix=os.getenv("MEDIA_URL_PREFIX", "/api/ai/media"),
+        code_skill_paths=os.getenv("CODE_SKILL_PATHS", ""),
         # 企业微信
         wecom_corpid=os.getenv("WECOM_CORPID", ""),
         wecom_corpsecret=os.getenv("WECOM_CORPSECRET", ""),
