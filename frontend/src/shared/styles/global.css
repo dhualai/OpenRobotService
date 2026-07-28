@@ -560,6 +560,70 @@ html, body, #root {
   margin-bottom: 6px;
   display: block;
 }
+.chat-bubble__file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+}
+.chat-bubble__file-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.chat-bubble__file-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.chat-bubble__file-size {
+  font-size: 12px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+.chat-upload-progress {
+  margin: 0 12px 8px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 10px;
+}
+.chat-upload-progress__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.chat-upload-progress__name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-upload-progress__percent {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+.chat-upload-progress__track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+.chat-upload-progress__fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #4f8cff, #2f6bff);
+  transition: width 0.2s ease;
+}
 .chat-actions {
   display: flex;
   gap: 4px;

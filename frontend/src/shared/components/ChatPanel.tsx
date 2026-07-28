@@ -43,6 +43,8 @@ interface Message {
   content: string;
   timestamp: string;
   imageUrl?: string;
+  // 非图片附件（zip/日志/文档等）：仅当次会话本地预览用，按文件名+大小展示文件卡片
+  attachment?: { name: string; size: number } | null;
   reaction?: 'like' | 'dislike' | null;
   // 任务 Agent 专属：结构化方案草稿
   subtype?: 'solution_draft';
@@ -103,6 +105,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const albumInputRef = useRef<HTMLInputElement>(null);
+  // 文件上传大小上限：100MB
+  const MAX_FILE_SIZE = 100 * 1024 * 1024;
+  // 上传进度：{ name, percent(0~100) } | null，用于在输入栏上方展示进度条
+  const [uploading, setUploading] = useState<{ name: string; percent: number } | null>(null);
   const [showUploadMenu, setShowUploadMenu] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   // 语音 tap/hold 双模式 + 真实音量可视化
@@ -235,13 +241,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
-  /** 将图片上传到 AI 后端 */
-  const uploadImage = async (file: File): Promise<string> => {
+  /** 将附件上传到 AI 后端；onProgress 接收 0~100 的上传进度百分比 */
+  const uploadImage = async (file: File, onProgress?: (p: number) => void): Promise<string> => {
     const sid = ensureSessionId();
-    const res = await qaUpload(sid, [file]);
+    const res = await qaUpload(sid, [file], onProgress);
     if (!res.ok) throw new Error(`上传失败: ${res.status}`);
-    const data = await res.json();
-    if (data.code !== 0) throw new Error(data.message || '上传失败');
+    if (res.data?.code !== 0) throw new Error(res.data?.message || '上传失败');
     return file.name;
   };
 
@@ -253,14 +258,29 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     sendingRef.current = true;
 
     let imageTag = '';
+    let imageUrl: string | undefined;
+    let attachment: { name: string; size: number } | null = null;
     if (imageFile) {
+      // 按 MIME 区分图片与非图片：zip 等压缩包/文档不应被当作图片渲染
+      const isImage = imageFile.type.startsWith('image/');
+      setUploading({ name: imageFile.name, percent: 0 });
       try {
-        const name = await uploadImage(imageFile);
+        const name = await uploadImage(imageFile, (p) =>
+          setUploading((u) => (u ? { ...u, percent: p } : { name: imageFile.name, percent: p })),
+        );
         imageTag = `[上传了附件] ${name}\n`;
-        Toast({ message: '图片已上传', theme: 'success' });
+        if (isImage) {
+          imageUrl = URL.createObjectURL(imageFile);
+          Toast({ message: '图片已上传', theme: 'success' });
+        } else {
+          attachment = { name: imageFile.name, size: imageFile.size };
+          Toast({ message: '文件已上传', theme: 'success' });
+        }
       } catch (err) {
         Toast({ message: `上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
         return;
+      } finally {
+        setUploading(null);
       }
     }
 
@@ -270,7 +290,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       role: 'user',
       content: userContent,
       timestamp: new Date().toISOString(),
-      imageUrl: imageFile ? URL.createObjectURL(imageFile) : undefined,
+      imageUrl,
+      attachment,
     };
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
@@ -579,6 +600,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > MAX_FILE_SIZE) {
+      const mb = (file.size / 1024 / 1024).toFixed(1);
+      Toast({ message: `「${file.name}」(${mb}MB) 超过 100MB 上限，请压缩或拆分后重试`, theme: 'error' });
+      e.target.value = '';
+      return;
+    }
     send(input, file);
     e.target.value = '';
   };
@@ -660,6 +687,17 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           <div key={msg.id} className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
             <div className={`chat-bubble ${msg.role === 'user' ? 'is-user' : 'is-ai'}`}>
               {msg.imageUrl && <img src={msg.imageUrl} alt="附件" className="chat-bubble__img" />}
+              {msg.attachment && (
+                <div className="chat-bubble__file">
+                  <span className="chat-bubble__file-icon">📎</span>
+                  <span className="chat-bubble__file-name">{msg.attachment.name}</span>
+                  <span className="chat-bubble__file-size">
+                    {msg.attachment.size >= 1024 * 1024
+                      ? `${(msg.attachment.size / 1024 / 1024).toFixed(1)} MB`
+                      : `${Math.max(1, Math.round(msg.attachment.size / 1024))} KB`}
+                  </span>
+                </div>
+              )}
               {editingId === msg.id ? (
                 <Textarea
                   value={msg.content}
@@ -707,6 +745,22 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         ))}
         <div ref={messagesEndRef} />
       </div>
+
+      {/* 上传进度条：大文件上传时展示百分比与动态进度，方便直观感受进度 */}
+      {uploading && (
+        <div className="chat-upload-progress">
+          <div className="chat-upload-progress__head">
+            <span className="chat-upload-progress__name">上传中 {uploading.name}…</span>
+            <span className="chat-upload-progress__percent">{uploading.percent}%</span>
+          </div>
+          <div className="chat-upload-progress__track">
+            <div
+              className="chat-upload-progress__fill"
+              style={{ width: `${uploading.percent}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* 「猜你想问」：文档流内嵌于消息区与输入栏之间（不遮挡对话内容） */}
       {suggestedList.length > 0 && (
