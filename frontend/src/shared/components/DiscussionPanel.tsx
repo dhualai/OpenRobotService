@@ -2,7 +2,7 @@
 // 历史工单详情页（pages/call/TicketDetailPage）与系统任务工单详情页（pages/tasks/TaskDetailPage）复用。
 // 数据共享：两端都走 /api/tasks/{id}/comments（同一工单 → 同一评论流）。
 // 布局：当前用户消息靠右（is-right + is-self 蓝气泡），他人靠左。
-// 功能开关：enableAttach（附件上传，历史工单用）/ enableAI（@AI 讨论，系统任务用）。
+// 功能开关：enableAttach（附件上传，历史工单用）/ enableAI（@小U 讨论，系统任务用）。
 import { useState, useRef, useEffect } from 'react';
 import { Button, Toast } from 'tdesign-mobile-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
@@ -20,7 +20,7 @@ export interface DiscussionComment {
 interface DiscussionPanelProps {
   /** 评论列表（两端共用 /api/tasks/{id}/comments 数据） */
   comments: DiscussionComment[];
-  /** 发送：父级处理 POST 评论 / @AI 路由 / 附件上传；返回 true=成功（组件清空输入），false=失败（保留输入） */
+  /** 发送：父级处理 POST 评论 / @小U 路由 / 附件上传；返回 true=成功（组件清空输入），false=失败（保留输入） */
   onSend: (text: string, files: File[]) => Promise<boolean>;
   /** 发送中（禁用输入与按钮、按钮文案变“发送中”） */
   sending?: boolean;
@@ -29,7 +29,7 @@ interface DiscussionPanelProps {
   placeholder?: string;
   /** 附件上传（历史工单） */
   enableAttach?: boolean;
-  /** @AI 讨论（系统任务）：点击在输入框前缀 @AI */
+  /** @小U 讨论（系统任务）：点击在输入框前缀 @小U */
   enableAI?: boolean;
   /** 消息区点击（系统任务：点诊断报告链接打开弹窗） */
   onMessagesClick?: (e: React.MouseEvent<HTMLDivElement>) => void;
@@ -70,9 +70,9 @@ export default function DiscussionPanel({
   };
   const removeFile = (idx: number) => setPendingFiles((prev) => prev.filter((_, i) => i !== idx));
 
-  // @AI：在输入框前缀 @AI（父级 onSend 依此前缀路由到 AI 讨论）
+  // @小U：在输入框前缀 @小U（父级 onSend 依此前缀路由到 AI 讨论）
   const handleAIClick = () => {
-    if (!commentText.startsWith('@AI ')) setCommentText('@AI ' + commentText);
+    if (!commentText.startsWith('@小U ')) setCommentText('@小U ' + commentText);
   };
 
   const canSend = !sending && !disabled && (commentText.trim().length > 0 || pendingFiles.length > 0);
@@ -93,7 +93,7 @@ export default function DiscussionPanel({
     }
   };
 
-  const ph = placeholder ?? (enableAI ? '直接评论或者 @AI 进行讨论。' : '参与讨论…');
+  const ph = placeholder ?? (enableAI ? '直接评论或者 @小U 进行讨论。' : '参与讨论…');
 
   return (
     <div className={`detail-card detail-chat-container ${className}`.trim()}>
@@ -152,7 +152,7 @@ export default function DiscussionPanel({
         )}
         {enableAI && (
           <Button size="small" theme="default" onClick={handleAIClick} disabled={sending || disabled}>
-            @AI
+            @小U
           </Button>
         )}
         <Button size="small" theme="primary" onClick={handleSend} disabled={!canSend}>
