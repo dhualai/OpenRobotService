@@ -35,14 +35,12 @@ user_project_roles = Table(
 
 class Role(Base):
     __tablename__ = "roles"
-
     id = Column(String(64), primary_key=True)
     name = Column(String(128), unique=True, nullable=False)
 
 
 class Permission(Base):
     __tablename__ = "permissions"
-
     id = Column(String(64), primary_key=True)
     code = Column(String(255), unique=True, nullable=False)
     name = Column(String(128), nullable=False)

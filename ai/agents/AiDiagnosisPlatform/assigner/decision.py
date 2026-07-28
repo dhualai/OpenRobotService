@@ -7,123 +7,74 @@ from ai.agents.AiDiagnosisPlatform.assigner.schemas import AssignmentResult, Eng
 
 
 class DecisionMaker:
-    """第四层：决策与解释（纯规则回退）"""
-
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
 
-    def decide(
-        self,
-        ranked_scores: Dict[str, Dict[str, float]],
-        engineers: List[EngineerProfile],
-    ) -> AssignmentResult:
-        """根据精排结果做出最终决策（规则回退）。"""
+    def decide(self, ranked_scores, engineers):
         if not engineers:
-            raise ValueError("工程师列表为空，无法派单")
-
+            raise ValueError("工程师列表为空")
         if not ranked_scores:
-            return self._fallback_result(engineers[0], "无任何匹配，默认兜底")
+            return self._fallback(engineers[0], "无任何匹配，默认兜底")
 
         top_id = next(iter(ranked_scores))
         top_score = ranked_scores[top_id]["total_score"]
-
-        engineer_map = {e.id: e for e in engineers}
-        top_eng = engineer_map.get(top_id)
+        emap = {e.id: e for e in engineers}
+        top_eng = emap.get(top_id)
         if top_eng is None:
-            return self._fallback_result(
-                engineers[0], f"Top-1 工程师 {top_id} 不在候选列表，强制兜底"
-            )
+            return self._fallback(engineers[0], f"Top-1 工程师不在候选列表，强制兜底")
 
-        thresholds = self._config.decision_thresholds
-        auto_threshold = thresholds.get("auto", 0.8)
-        recommend_threshold = thresholds.get("recommend", 0.5)
-
-        if top_score >= auto_threshold:
-            decision_type = "auto"
-        elif top_score >= recommend_threshold:
-            decision_type = "recommend"
+        t = self._config.decision_thresholds
+        if top_score >= t.get("auto", 0.8):
+            dt = "auto"
+        elif top_score >= t.get("recommend", 0.5):
+            dt = "recommend"
         else:
-            decision_type = "fallback"
-
-        reasoning = self._rule_reasoning(
-            decision_type=decision_type,
-            engineer=top_eng,
-            score_detail=ranked_scores[top_id],
-            confidence=top_score,
-            runner_up=self._get_runner_up(ranked_scores, engineer_map),
-        )
+            dt = "fallback"
 
         return AssignmentResult(
-            engineer_id=top_eng.id,
-            engineer_name=top_eng.name,
+            engineer_id=top_eng.id, engineer_name=top_eng.name,
             confidence_score=round(top_score, 4),
-            reasoning=reasoning,
-            decision_type=decision_type,
+            reasoning=self._reasoning(dt, top_eng, ranked_scores[top_id], top_score,
+                                      self._runner_up(ranked_scores, emap)),
+            decision_type=dt,
         )
 
-    def _get_runner_up(
-        self,
-        ranked_scores: Dict[str, Dict[str, float]],
-        engineer_map: Dict[str, EngineerProfile],
-    ) -> str:
-        """获取 Top-2/3 候选信息，用于 recommend 模式。"""
-        items = list(ranked_scores.items())
+    def _runner_up(self, scores, emap):
+        items = list(scores.items())
         if len(items) < 2:
             return "无其他候选"
         lines = []
-        for eid, detail in items[1:3]:
-            eng = engineer_map.get(eid)
+        for eid, d in items[1:3]:
+            eng = emap.get(eid)
             if eng:
                 lines.append(
-                    f"- {eng.name}({eid}): 置信度 {detail['total_score']:.2f} "
-                    f"(L{detail.get('job_level', '?')}), 模块 {eng.responsibility_modules}"
+                    f"- {eng.name}({eid}): 置信度 {d['total_score']:.2f} "
+                    f"(L{d.get('job_level', '?')}), 模块 {eng.responsibility_modules}"
                 )
-        return "\n".join(lines) if lines else "无其他候选"
+        return "\n".join(lines) or "无其他候选"
 
-    def _rule_reasoning(
-        self,
-        decision_type: str,
-        engineer: EngineerProfile,
-        score_detail: Dict[str, float],
-        confidence: float,
-        runner_up: str,
-    ) -> str:
-        """基于规则生成推荐理由。"""
-        module = score_detail.get("module_score", 0.0)
-        history = score_detail.get("history_score", 0.0)
-        semantic = score_detail.get("semantic_score", 0.0)
-
+    def _reasoning(self, dt, eng, detail, conf, runner_up):
         reasons = []
-        if module > 0:
-            reasons.append(
-                f"责任模块匹配({module:.2f}): {', '.join(engineer.responsibility_modules)}"
-            )
-        if history > 0:
-            reasons.append(f"历史工单匹配({history:.2f})")
-        if semantic > 0:
-            reasons.append(f"语义相似度({semantic:.2f})")
-
-        base = f"推荐 {engineer.name}，综合置信度 {confidence:.2f}。"
+        m = detail.get("module_score", 0)
+        h = detail.get("history_score", 0)
+        s = detail.get("semantic_score", 0)
+        if m > 0:
+            reasons.append(f"责任模块匹配({m:.2f}): {', '.join(eng.responsibility_modules)}")
+        if h > 0:
+            reasons.append(f"历史工单匹配({h:.2f})")
+        if s > 0:
+            reasons.append(f"语义相似度({s:.2f})")
+        base = f"推荐 {eng.name}，综合置信度 {conf:.2f}。"
         if reasons:
             base += "依据: " + "; ".join(reasons) + "。"
-
-        if decision_type == "auto":
+        if dt == "auto":
             return base + "匹配度高，可直接派单。"
-        elif decision_type == "recommend":
+        elif dt == "recommend":
             return base + f"匹配度中等，建议确认。其他候选:\n{runner_up}"
-        else:
-            return (
-                base
-                + "匹配度较低，已做兜底派单，建议人工复核。其他候选:\n"
-                + runner_up
-            )
+        return base + "匹配度较低，已做兜底派单，建议人工复核。其他候选:\n" + runner_up
 
-    def _fallback_result(self, engineer: EngineerProfile, reason: str) -> AssignmentResult:
-        """兜底派单结果。"""
+    def _fallback(self, engineer, reason):
         return AssignmentResult(
-            engineer_id=engineer.id,
-            engineer_name=engineer.name,
-            confidence_score=0.0,
-            reasoning=reason,
-            decision_type="fallback",
+            engineer_id=engineer.id, engineer_name=engineer.name,
+            confidence_score=0.0, reasoning=reason, decision_type="fallback",
         )

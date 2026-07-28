@@ -24,8 +24,6 @@
     【第四层: 规则决策】
         ├── 基于 ranked_scores + 阈值判定
         └── auto(≥0.8) / recommend(≥0.5) / fallback(<0.5)
-
-所有外部依赖（LLM、Embedding）直接从 ai.core 获取单例。
 """
 
 from typing import Dict, List, Optional
@@ -53,22 +51,14 @@ class Assigner:
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
 
-        # 第一层：多路召回（LLM 推断 + 关键词 + 历史）
         self._module_inferencer = ModuleInferencer(config=self._config)
         self._recaller = MultiPathRecaller(
             module_inferencer=self._module_inferencer,
             config=self._config,
         )
-        # 语义召回（使用 ai.core Embedding 单例）
         self._semantic_recaller = SemanticRecaller(config=self._config)
-
-        # 第二层：精排评分 + 职级折扣
         self._ranker = Ranker(config=self._config)
-
-        # 第三层：LLM 综合分析
         self._llm_decider = LlmDecider(config=self._config)
-
-        # 第四层：规则决策（回退用）
         self._decision_maker = DecisionMaker(config=self._config)
 
     async def aassign(
@@ -77,60 +67,48 @@ class Assigner:
         engineer_profiles: List[EngineerProfile],
         historical_matches: Optional[Dict[str, float]] = None,
     ) -> AssignmentResult:
-        """异步根据工单上下文推荐唯一负责人。"""
         logger.info(f"派单开始: ticket={ticket_context.title[:40]}, engineers={len(engineer_profiles)}人")
-
         if not engineer_profiles:
             raise ValueError("工程师列表为空，无法派单。请检查 users 表人员数据是否就绪。")
-
         if not ticket_context.problem_description and not ticket_context.title:
             raise ValueError("问题描述和标题均为空，无法推断责任模块。")
 
-        # 第一层：多路召回（异步：LLM 推断 + 关键词 + 历史）
+        # L1 多路召回
         recall_result = await self._recaller.arecall(
-            ticket=ticket_context,
-            engineers=engineer_profiles,
+            ticket=ticket_context, engineers=engineer_profiles,
             historical_matches=historical_matches,
         )
-
-        # 语义召回（如果 Embedding 可用）
         try:
             semantic_result = await self._semantic_recaller.arecall(
-                ticket=ticket_context,
-                engineers=engineer_profiles,
+                ticket=ticket_context, engineers=engineer_profiles,
             )
             recall_result.engineer_semantic = semantic_result.engineer_semantic
             recall_result.history_semantic = semantic_result.history_semantic
-            logger.debug("派单 L1b 语义召回成功")
         except Exception:
-            logger.debug("派单 L1b 语义召回失败，跳过")
+            pass
 
-        # 第二层：精排评分 + 职级折扣
+        # L2 精排 + 职级折扣
         ranked_scores = self._ranker.rank(recall_result, engineers=engineer_profiles)
 
-        # 第三层：LLM 综合分析
+        # L3 LLM 决策
         try:
             llm_result = await self._llm_decider.adecide(
-                ticket=ticket_context,
-                engineers=engineer_profiles,
-                recall_result=recall_result,
-                ranked_scores=ranked_scores,
+                ticket=ticket_context, engineers=engineer_profiles,
+                recall_result=recall_result, ranked_scores=ranked_scores,
             )
             if llm_result is not None:
-                logger.info(f"派单 L2 LLM决策: {llm_result.engineer_name} ({llm_result.decision_type})")
+                logger.info(f"派单 LLM决策: {llm_result.engineer_name} ({llm_result.decision_type})")
                 return llm_result
         except Exception as e:
-            logger.warning(f"派单 L2 LLM决策失败,回退: {e}")
+            logger.warning(f"派单 LLM决策失败,回退: {e}")
 
-        # 第四层：规则兜底
+        # L4 规则兜底
         result = self._decision_maker.decide(
-            ranked_scores=ranked_scores,
-            engineers=engineer_profiles,
+            ranked_scores=ranked_scores, engineers=engineer_profiles,
         )
-        logger.info(f"派单 L3 规则兜底: {result.engineer_name} ({result.decision_type})")
+        logger.info(f"派单 规则兜底: {result.engineer_name} ({result.decision_type})")
         return result
 
     def reload_config(self):
-        """热加载配置（可在运行时更新关键词/权重/Prompt）。"""
         self._config.reload()
         self._semantic_recaller.reload()
