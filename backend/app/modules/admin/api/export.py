@@ -94,6 +94,7 @@ async def apply_project_license(
     if status.get('status') == 'approved':
         license_data = {
             "project_code": status.get("project_code", project_code),
+            "machine_code": mac,
             "apply_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "expire_time": end_date,
             "license_code": status.get("license_content", ""),

@@ -399,6 +399,7 @@ class ProjectService:
             license_dict = {
                 "id": db_license.id,
                 "project_code": db_license.project_code,
+                "machine_code": db_license.machine_code,
                 "apply_time": db_license.apply_time,
                 "expire_time": db_license.expire_time,
                 "license_code": db_license.license_code,
@@ -409,7 +410,7 @@ class ProjectService:
             return license_dict
         finally:
             db.close()
-    
+
     def _get_user_name_by_username(self, username: str) -> str:
         try:
             url = f"{AUTH_SERVICE_BASE_URL}/users/{username}/detail"
@@ -434,6 +435,7 @@ class ProjectService:
                     license_dict = {
                         "id": license.id,
                         "project_code": license.project_code,
+                        "machine_code": license.machine_code,
                         "apply_time": license.apply_time,
                         "expire_time": license.expire_time,
                         "license_code": license.license_code,
@@ -451,6 +453,7 @@ class ProjectService:
                     license_dict = {
                         "id": license.id,
                         "project_code": license.project_code,
+                        "machine_code": license.machine_code,
                         "apply_time": license.apply_time,
                         "expire_time": license.expire_time,
                         "license_code": license.license_code,
