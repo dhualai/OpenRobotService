@@ -1,4 +1,4 @@
-// 摇人 · 历史工单详情页（AI 诊断生成的工单）
+// 摇人 · 历史工单详情页（小U诊断生成的工单）
 // 数据源：AI 模块 GET /api/ai/qa/ticket?session_id=...；操作：催办 / 上报（任务服务通知）
 // 路由 /app/call/ticket/:id 中的 :id 即 AI 会话 session_id
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -225,7 +225,7 @@ export default function TicketDetailPage() {
         {/* 诊断过程 */}
         {dx && (
           <div className="detail-card">
-            <h4 className="detail-card__h">🤖 AI 诊断</h4>
+            <h4 className="detail-card__h">🤖 小U 诊断</h4>
             {dx.problem_summary && <DetailRow label="概述" value={dx.problem_summary} />}
             {dx.hypotheses?.length ? <DetailRow label="推测原因" value={dx.hypotheses.join('、')} /> : null}
             {dx.ruled_out?.length ? <DetailRow label="已排除" value={dx.ruled_out.join('、')} /> : null}
