@@ -158,6 +158,11 @@ async def get_ticket(session_id: str = Query(..., description="会话 ID")):
         if agent_state.get("phase") in ("escalated", "resolved"):
             pipeline = await get_pipeline()
             ticket = await pipeline.get_ticket(session_id)
+            # ticket_id 默认是 "AI-..." 字符串，但前端催办/上报/评论/撤回依赖
+            # 任务服务的数字 Task.id。此处查库取真实 id 覆盖，避免按钮报「工单号缺失」。
+            task_id = _resolve_ai_task_id(session_id)
+            if task_id is not None:
+                ticket["ticket_id"] = task_id
             return {"code": 0, "data": ticket}
 
         # 降级：MySQL tasks 表中已有记录但 Redis 内存丢失（Redis 重启/过期等场景）
@@ -179,6 +184,35 @@ async def get_ticket(session_id: str = Query(..., description="会话 ID")):
         return {"code": 1, "message": "该会话尚未生成工单"}
     except Exception as e:
         return {"code": 1, "message": str(e)}
+
+
+def _resolve_ai_task_id(session_id: str):
+    """按 session_id 查 ai 来源 Task，返回数字 id（供前端作为工单号）。
+
+    优先按 (source, external_id) 精确匹配；external_id 可能因 ticket_seq 带了
+    '#N' 后缀或超长走 sha1，故同时按 LIKE 兜底。
+    """
+    try:
+        from ai.core.task_adapter import _external_id_for
+        from app.models.task import Task
+        from app.core.db import SessionLocal
+        db = SessionLocal()
+        try:
+            exact = db.query(Task).filter(
+                Task.source == "ai",
+                Task.external_id == _external_id_for(session_id),
+            ).order_by(Task.id.desc()).first()
+            if exact:
+                return exact.id
+            like = db.query(Task).filter(
+                Task.source == "ai",
+                Task.external_id.like(f"{session_id[:64]}%"),
+            ).order_by(Task.id.desc()).first()
+            return like.id if like else None
+        finally:
+            db.close()
+    except Exception:
+        return None
 
 
 
