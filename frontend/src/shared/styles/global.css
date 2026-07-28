@@ -579,17 +579,13 @@ html, body, #root {
   box-shadow: 0 2px 14px rgba(0, 0, 0, 0.08);
 }
 
-/* ===== 猜你想问（主流 AI 引导对话框式建议问题悬浮框，悬浮于输入栏正上方） ===== */
+/* ===== 猜你想问（主流 AI 引导对话框式建议问题卡片，文档流内嵌于消息区与输入栏之间，不遮挡对话内容） ===== */
 .suggested-questions {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
-  right: 0;
   background: #fff;
   border-radius: 14px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
   padding: 10px 8px 8px;
-  z-index: 30;
+  margin: 0 8px 8px;
   max-height: 264px;
   overflow: auto;
   animation: suggested-questions-in 0.18s ease;
