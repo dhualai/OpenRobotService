@@ -4,6 +4,7 @@ import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog } from 'td
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import SafeHtml from '@/shared/components/SafeHtml';
+import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
@@ -405,7 +406,7 @@ export default function TaskDetailPage() {
 
         <div className="detail-card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h4 className="detail-card__h">🤖 AI 讨论摘要</h4>
+            <h4 className="detail-card__h">🤖 小U 讨论摘要</h4>
             <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing}>
               🤖 帮我分析
             </Button>
@@ -413,7 +414,7 @@ export default function TaskDetailPage() {
           {aiSummary ? (
             <SafeHtml html={aiSummary} />
           ) : (
-            <p style={{ color: '#999' }}>暂无摘要，AI 将自动总结讨论进展</p>
+            <p style={{ color: '#999' }}>暂无摘要，小U 将自动总结讨论进展</p>
           )}
         </div>
 
@@ -445,7 +446,7 @@ export default function TaskDetailPage() {
                   <div key={c.id} className={`detail-chat-row ${isCurrentUser ? 'is-right' : ''}`}>
                     <div className={`detail-chat-bubble ${isCurrentUser ? 'is-self' : ''}`}>
                       <div className="detail-chat-name">{authorName}</div>
-                      <SafeHtml html={c.content} />
+                      <MarkdownRenderer content={c.content} compact />
                       <div className="detail-chat-time">{formatTime(c.created_at)}</div>
                     </div>
                   </div>
@@ -461,7 +462,7 @@ export default function TaskDetailPage() {
               value={commentText}
               onChange={(e) => setCommentText(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleSendComment(); }}
-              placeholder="直接评论或者 @AI 进行讨论。"
+              placeholder="直接评论或者 @小U 进行讨论。"
               disabled={submittingComment || askingAI}
             />
             <Button
@@ -470,7 +471,7 @@ export default function TaskDetailPage() {
               onClick={handleAIClick}
               disabled={submittingComment || askingAI}
             >
-              @AI
+              @小U
             </Button>
             <Button
               size="small"

@@ -17,6 +17,8 @@ interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
   ticket_type: string; project_name?: string; assignee_name?: string; reporter_name?: string;
   contact?: string; created_at: string; updated_at: string;
+  created_by?: string; created_by_name?: string;
+  assigned_to?: string; assigned_to_name?: string;
 }
 
 const pageSize = 20;
@@ -48,7 +50,8 @@ export default function TasksView() {
     tasksRefreshKey, ticketDraft, consumeTicketDraft, refreshTasks,
   } = useWorkbenchStore();
 
-  const { username } = useAuthStore();
+  const { username, hasPermission } = useAuthStore();
+  const canManageTasks = hasPermission('frontend:develop');
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(false);
@@ -332,21 +335,23 @@ export default function TasksView() {
         fixed
         right={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button
-              className="tasks-view__sync-btn"
-              onClick={handleSyncExternalTasks}
-              disabled={syncing}
-              aria-label="同步外部任务"
-            >
-              {syncing ? (
-                <span className="tasks-view__sync-spinner" />
-              ) : (
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
-                </svg>
-              )}
-              <span>{syncing ? '同步中…' : '同步外部任务'}</span>
-            </button>
+            {canManageTasks && (
+              <button
+                className="tasks-view__sync-btn"
+                onClick={handleSyncExternalTasks}
+                disabled={syncing}
+                aria-label="同步外部任务"
+              >
+                {syncing ? (
+                  <span className="tasks-view__sync-spinner" />
+                ) : (
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+                  </svg>
+                )}
+                <span>{syncing ? '同步中…' : '同步外部任务'}</span>
+              </button>
+            )}
             <UserAvatarMenu />
           </div>
         }
@@ -456,17 +461,49 @@ export default function TasksView() {
           ) : tickets.map((t) => (
             <div key={t.id} className="task-card2" onClick={() => openDetail(t.id)}>
               <div className="task-card2__head">
-                <Tag theme={statusTheme(t.status)}>{normalizeStatus(t.status)}</Tag>
-                <Tag theme={priorityTheme(t.priority)} className="task-card2__priority">
-                  {PRIORITY_DISPLAY_MAP[t.priority] || t.priority}
-                </Tag>
+                <div className="task-card2__head-tags">
+                  <Tag theme={statusTheme(t.status)}>{normalizeStatus(t.status)}</Tag>
+                  <Tag theme={priorityTheme(t.priority)} className="task-card2__priority">
+                    {PRIORITY_DISPLAY_MAP[t.priority] || t.priority}
+                  </Tag>
+                </div>
                 <span className="task-card2__type">{TICKET_TYPE_DISPLAY_MAP[t.ticket_type] || t.ticket_type || '其他'}</span>
               </div>
               <div className="task-card2__title">{t.title}</div>
+
+              <div className="task-card2__divider" />
+
+              {/* 人员流转：发起人 → 处理人 */}
+              <div className="task-card2__people">
+                <div className="task-card2__person task-card2__person--creator" title={`发起人：${t.created_by_name || t.created_by || '-'}`}>
+                  <span className="task-card2__avatar">{(t.created_by_name || t.created_by || '?').slice(0, 1).toUpperCase()}</span>
+                  <span className="task-card2__person-text">
+                    <span className="task-card2__person-label">发起人</span>
+                    <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
+                  </span>
+                </div>
+                <span className="task-card2__person-arrow">➡️</span>
+                <div className="task-card2__person task-card2__person--assignee" title={`处理人：${t.assigned_to_name || t.assigned_to || '-'}`}>
+                  <span className="task-card2__avatar task-card2__avatar--assignee">{(t.assigned_to_name || t.assigned_to || '?').slice(0, 1).toUpperCase()}</span>
+                  <span className="task-card2__person-text">
+                    <span className="task-card2__person-label">处理人</span>
+                    <span className="task-card2__person-name">{t.assigned_to_name || t.assigned_to || '-'}</span>
+                  </span>
+                </div>
+              </div>
+
+              {/* 编号 · 项目 · 日期 */}
               <div className="task-card2__meta">
-                <span>#{String(t.id).slice(0, 8)}</span>
-                {t.project_name && <span>· {t.project_name}</span>}
-                <span>· {formatDateTime(t.created_at).slice(0, 10)}</span>
+                <span className="task-card2__meta-id">#{String(t.id).slice(0, 8)}</span>
+                {t.project_name && <span className="task-card2__meta-project">{t.project_name}</span>}
+                <span className="task-card2__meta-date">
+                  <span className="task-card2__meta-date-label">创建时间</span>
+                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="4" width="18" height="18" rx="2" />
+                    <path d="M16 2v4M8 2v4M3 10h18" />
+                  </svg>
+                  {formatDateTime(t.created_at).slice(0, 10)}
+                </span>
               </div>
             </div>
           ))}
@@ -538,25 +575,27 @@ export default function TasksView() {
       </Popup>
 
       {/* 新建工单悬浮按钮 */}
-      <div className="tasks-view__fab">
-        <button
-          className={`tasks-view__fab-btn${creatingTask ? ' is-submitting' : ''}`}
-          onClick={() => setShowCreateModal(true)}
-          disabled={creatingTask}
-          aria-label="新建工单"
-        >
-          {creatingTask ? (
-            <span className="chat-ticket-spinner" />
-          ) : (
-            <svg viewBox="0 0 24 24" width="18" height="24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path fill="currentColor" d="M16 1H8V5H16V1Z" />
-              <path fill="currentColor" d="M6 3H3V23H13.8762C13.0139 21.897 12.5 20.5085 12.5 19C12.5 15.4101 15.4101 12.5 19 12.5C19.6978 12.5 20.3699 12.61 21 12.8135V3H18V7H6V3Z" />
-              <path fill="currentColor" d="M24 20H20V24H18V20H14V18H18V14H20V18H24V20Z" />
-            </svg>
-          )}
-        </button>
-        <span className="tasks-view__fab-label">{creatingTask ? '提交中…' : '新建工单'}</span>
-      </div>
+      {canManageTasks && (
+        <div className="tasks-view__fab">
+          <button
+            className={`tasks-view__fab-btn${creatingTask ? ' is-submitting' : ''}`}
+            onClick={() => setShowCreateModal(true)}
+            disabled={creatingTask}
+            aria-label="新建工单"
+          >
+            {creatingTask ? (
+              <span className="chat-ticket-spinner" />
+            ) : (
+              <svg viewBox="0 0 24 24" width="18" height="24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path fill="currentColor" d="M16 1H8V5H16V1Z" />
+                <path fill="currentColor" d="M6 3H3V23H13.8762C13.0139 21.897 12.5 20.5085 12.5 19C12.5 15.4101 15.4101 12.5 19 12.5C19.6978 12.5 20.3699 12.61 21 12.8135V3H18V7H6V3Z" />
+                <path fill="currentColor" d="M24 20H20V24H18V20H14V18H18V14H20V18H24V20Z" />
+              </svg>
+            )}
+          </button>
+          <span className="tasks-view__fab-label">{creatingTask ? '提交中…' : '新建工单'}</span>
+        </div>
+      )}
 
       {/* 新建工单表单弹窗 */}
       <Popup visible={showCreateModal} onClose={() => setShowCreateModal(false)} placement="bottom" showOverlay>
