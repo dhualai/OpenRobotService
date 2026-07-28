@@ -22,8 +22,22 @@ interface Ticket {
 }
 
 const pageSize = 20;
-const statusTheme = (s: string): 'success' | 'primary' | 'warning' =>
-  s === 'closed' ? 'success' : s === 'new' ? 'primary' : 'warning';
+
+const STATUS_COLOR_MAP: Record<string, string> = {
+  new: '#0052d9',
+  in_progress: '#2ba471',
+  pending: '#e37318',
+  paused: '#e37318',
+  resolved: '#00a870',
+  closed: '#999999',
+  canceled: '#d54941',
+  cancelled: '#d54941',
+};
+
+const getStatusColor = (status: string): string => {
+  const key = (status || '').toLowerCase();
+  return STATUS_COLOR_MAP[key] || '#666666';
+};
 
 const priorityTheme = (p: string): 'success' | 'default' | 'warning' | 'danger' => {
   switch (p) {
@@ -462,7 +476,12 @@ export default function TasksView() {
             <div key={t.id} className="task-card2" onClick={() => openDetail(t.id)}>
               <div className="task-card2__head">
                 <div className="task-card2__head-tags">
-                  <Tag theme={statusTheme(t.status)}>{normalizeStatus(t.status)}</Tag>
+                  <span
+                    className="task-card2__status-tag"
+                    style={{ background: getStatusColor(t.status), color: '#fff' }}
+                  >
+                    {normalizeStatus(t.status)}
+                  </span>
                   <Tag theme={priorityTheme(t.priority)} className="task-card2__priority">
                     {PRIORITY_DISPLAY_MAP[t.priority] || t.priority}
                   </Tag>

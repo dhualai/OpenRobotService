@@ -15,6 +15,22 @@ import { fetchWithAuth } from '@/api/ai';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+const STATUS_COLOR_MAP: Record<string, string> = {
+  new: '#0052d9',
+  in_progress: '#2ba471',
+  pending: '#e37318',
+  paused: '#e37318',
+  resolved: '#00a870',
+  closed: '#999999',
+  canceled: '#d54941',
+  cancelled: '#d54941',
+};
+
+const getStatusColor = (status: string): string => {
+  const key = (status || '').toLowerCase();
+  return STATUS_COLOR_MAP[key] || '#666666';
+};
+
 interface Attachment { id: string; url: string; }
 interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; }
 interface Ticket {
@@ -219,13 +235,13 @@ export default function TaskDetailPage() {
     }
   };
 
-  // ── @AI 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
+  // ── @小U 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
   const handleAIDiscuss = async (text: string): Promise<boolean> => {
     if (!detail) return false;
     const userMsg = text;
     setAskingAI(true);
     try {
-      // 1. 先保存用户的 @AI 消息到 task_comments
+      // 1. 先保存用户的 @小U 消息到 task_comments
       try {
         const newComment = await request<Comment>(`/${detail.id}/comments`, {
           method: 'POST',
@@ -246,7 +262,7 @@ export default function TaskDetailPage() {
         method: 'POST',
         body: JSON.stringify({
           task_id: String(detail.id),
-          query: userMsg.replace(/^@AI\s*/, ''),
+          query: userMsg.replace(/^@小U\s*/, ''),
           context: { recent_comments: recentComments },
         }),
       });
@@ -267,9 +283,9 @@ export default function TaskDetailPage() {
     }
   };
 
-  // ── onSend：检测 @AI 前缀决定走普通评论还是 AI 讨论 ──
+  // ── onSend：检测 @小U 前缀决定走普通评论还是 AI 讨论 ──
   const handleSendComment = async (text: string, _files: File[]): Promise<boolean> => {
-    if (text.startsWith('@AI ')) {
+    if (text.startsWith('@小U ')) {
       return handleAIDiscuss(text);
     }
     return handleAddComment(text);
@@ -356,7 +372,28 @@ export default function TaskDetailPage() {
         <div className="detail-card">
           <div className="detail-card__header">
             <div className="detail-card__meta">
-              <Tag theme="primary">{TICKET_TYPE_DISPLAY_MAP[detail.ticket_type] || detail.ticket_type || '其他'}</Tag>
+              <Tag
+                theme="primary"
+                style={{
+                  background: getStatusColor(detail.status),
+                  color: '#fff',
+                  border: 'none',
+                  fontWeight: 500,
+                }}
+              >
+                {STATUS_DISPLAY_MAP[detail.status?.toLowerCase()] || detail.status}
+              </Tag>
+              <Tag
+                theme="primary"
+                style={{
+                  background: getStatusColor(detail.status),
+                  color: '#fff',
+                  border: 'none',
+                  fontWeight: 500,
+                }}
+              >
+                {TICKET_TYPE_DISPLAY_MAP[detail.ticket_type] || detail.ticket_type || '其他'}
+              </Tag>
               <span className="detail-card__id" onClick={() => copyId(detail.id)}>#${detail.id}</span>
             </div>
             <div className="detail-card__action-btns">
