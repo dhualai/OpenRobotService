@@ -578,6 +578,94 @@ html, body, #root {
   border-radius: 16px;
   box-shadow: 0 2px 14px rgba(0, 0, 0, 0.08);
 }
+
+/* ===== 猜你想问（主流 AI 引导对话框式建议问题悬浮框，悬浮于输入栏正上方） ===== */
+.suggested-questions {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  padding: 10px 8px 8px;
+  z-index: 30;
+  max-height: 264px;
+  overflow: auto;
+  animation: suggested-questions-in 0.18s ease;
+}
+@keyframes suggested-questions-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.suggested-questions__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px 6px;
+}
+.suggested-questions__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0052d9;
+}
+.suggested-questions__title-icon { flex-shrink: 0; }
+.suggested-questions__refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: transparent;
+  border: none;
+  color: #999;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.suggested-questions__refresh:active { color: #0052d9; }
+.suggested-questions__list {
+  display: flex;
+  flex-direction: column;
+}
+.suggested-questions__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 9px 8px;
+  border-radius: 9px;
+  font-size: 14px;
+  color: #333;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.suggested-questions__item:hover,
+.suggested-questions__item:active {
+  background: #ecf2fe;
+  color: #0052d9;
+}
+.suggested-questions__item-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.suggested-questions__item-arrow {
+  flex-shrink: 0;
+  color: #ccc;
+  transition: color 0.15s ease;
+}
+.suggested-questions__item:hover .suggested-questions__item-arrow,
+.suggested-questions__item:active .suggested-questions__item-arrow { color: #0052d9; }
+
 .chat-input-bar__textarea {
   width: 100%;
 }
