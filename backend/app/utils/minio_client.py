@@ -4,9 +4,12 @@ from datetime import timedelta
 from typing import Optional
 from app.core.config import settings
 from io import BytesIO
+import logging
 import urllib3
 from urllib3.util.retry import Retry
 from urllib.parse import urlparse, urlunparse
+
+logger = logging.getLogger(__name__)
 
 
 class MinIOClient:
@@ -100,7 +103,8 @@ class MinIOClient:
         self,
         file_bytes: bytes,
         object_path: str,
-        content_type: Optional[str] = None
+        content_type: Optional[str] = None,
+        raise_on_error: bool = False,
     ) -> bool:
         try:
             bucket_name = object_path.split('/')[0]
@@ -115,7 +119,12 @@ class MinIOClient:
             )
             return True
         except S3Error as e:
-            print(f"上传字节失败: {e}")
+            logger.error(
+                "上传字节失败: %s (bucket=%s, object=%s)",
+                e, object_path.split('/')[0], '/'.join(object_path.split('/')[1:]),
+            )
+            if raise_on_error:
+                raise
             return False
 
     def delete_file(self, object_path: str) -> bool:
