@@ -40,6 +40,8 @@ class AuthService:
             password = generate_wechat_user_password(openid)
             hashed_password = get_password_hash(password)
 
+            default_role_id = "role_e9351224"
+
             existing_user = db_manager.get_user(username)
             if existing_user:
                 logger.info(f"用户已存在，更新密码: {username}")
@@ -48,6 +50,13 @@ class AuthService:
                     success = db_manager.update_user(user_detail["id"], password_hash=hashed_password, status="active")
                     if success:
                         logger.info(f"成功更新用户密码: {username}")
+                        user_project_role_id = f"upr_{openid}_global_{default_role_id}"
+                        db_manager.add_user_project_role(
+                            user_project_role_id,
+                            openid,
+                            None,
+                            default_role_id
+                        )
                         return True
                     else:
                         logger.error(f"更新用户密码失败")
@@ -64,6 +73,13 @@ class AuthService:
 
             if success:
                 logger.info(f"成功注册微信用户: {username}, openid: {openid}")
+                user_project_role_id = f"upr_{openid}_global_{default_role_id}"
+                db_manager.add_user_project_role(
+                    user_project_role_id,
+                    openid,
+                    None,
+                    default_role_id
+                )
                 return True
             else:
                 logger.error(f"注册用户失败")

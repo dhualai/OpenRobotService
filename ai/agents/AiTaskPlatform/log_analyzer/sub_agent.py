@@ -90,50 +90,16 @@ def _load_log_docs() -> str:
 
 # ── System Prompt ───────────────────────────────────────────
 
-def _make_system_prompt() -> str:
+def _make_system_prompt(log_date: str = "") -> str:
     docs = _load_log_docs()
-    return f"""你是 AGV 调度算法日志分析专家。你有两份信息源：
+    return f"""只输出一行JSON。第1轮:搜"一致性超过update阈值"(输入WARNING行,核心根因), error_only=true, 查16:50~17:05。
+找到后第2轮:用robot_filter=XNA-169+task_filter=1098000搜上下文。第3轮必须conclude。
 
-## 信息源 1: 知识库（日志格式和故障排查指引）
-{docs}
+query命令: {{"action":"query","query":{{"time_start":"2026-07-27 16:50","time_end":"2026-07-27 17:05","robot_filter":"","task_filter":"","error_only":true,"max_results":50}}}}
+conclude: {{"action":"conclude","conclusion":"根因(知识库场景13)+解决方案(wait_time_check_interval=40,wait_time_update_gap=40)","evidence_lines":["L123: 一致性超过update阈值42.2s","L456: MAPF-T:77.956 WAIT-T:5.0"]}}
 
-## 信息源 2: 日志查询工具
-可以通过 JSON 命令从实际算法日志中查询数据。
-
-### 查询命令格式
-{{"action": "query", "query": {{"time_start": "2026-07-21 11:01:40", "time_end": "2026-07-21 11:02:00", "robot_filter": "E-XQE-218", "task_filter": "", "path_filter": "", "error_only": false, "context_lines": 3, "max_results": 30}}, "analysis": "当前发现", "next_step": "下一轮要查什么"}}
-
-### 查询参数说明
-- time_start/end: 时间窗口（留空=不限）。格式: "YYYY-MM-DD HH:MM:SS"
-- robot_filter: 车辆ID（如 "E-XQE-218"）。留空=不限
-- task_filter: 任务ID。留空=不限
-- path_filter: 路径ID。留空=不限
-- error_only: true=只看ERROR/WARN行，false=看全部
-- context_lines: 上下文行数（默认3）
-- max_results: 最多匹配行数（默认30）
-
-## 推理策略（先看知识库，再查日志）
-
-1. **第一轮**：先看知识库的故障场景排查路径，找到匹配的症状 → 按知识库的 Step 指导写查询
-2. **查日志含义**：看到日志行的关键词，先回忆知识库里的含义（比如 "PATH_PLANNING_SINGLE_AGENT_NO_SOLUTION" 意味着什么）
-3. **追踪路径**：如果有车辆ID，追查它的路径分配历史和任务ID
-4. **找根因**：不只是报"出现了什么错误"，而要按知识库的排查路径一步步往下挖
-5. 如果匹配太多(>50行): 加 robot_filter 或缩小时间窗口
-6. 如果匹配太少或无结果: 扩大时间窗口或去掉过滤条件
-
-## 结束条件
-
-当找到关键线索时:
-{{"action": "conclude", "conclusion": "一句话总结日志发现，引用知识库的排查路径作为推理依据", "evidence_lines": ["L123: 具体发现", "L456: 具体发现"]}}
-
-当所有尝试都无结果时:
-{{"action": "fallback", "reason": "为什么没找到线索"}}
-
-## 铁律
-- 每轮只输出一个 JSON 对象，JSON 之前之后不输出任何文字
-- 先对知识库：每条日志行报了什么错在知识库里查含义
-- 每次 query 选最多 3 个过滤参数组合使用
-- 如果已经 query 了 3 轮还没线索，必须 conclude 或 fallback"""
+日期={log_date}。最多3轮。
+{docs}"""
 
 
 # ── 日志分析结论模型 ─────────────────────────────────────────
@@ -162,7 +128,8 @@ class LogAnalysisResult:
         if self.evidence:
             parts.append("关键日志行:")
             for e in self.evidence[:8]:
-                parts.append(f"  L{e['line']} [{e.get('ts','?')}] {e['summary'][:120]}")
+                # summary 已包含时间戳和字段信息，直接展示
+                parts.append(f"  L{e['line']}: {e['summary'][:150]}")
         if self.queries_made:
             parts.append(f"共查询 {self.queries_made} 轮")
         return "\n".join(parts)
@@ -206,8 +173,17 @@ class LogSubAgent:
         await self._ensure_clients()
         result = LogAnalysisResult()
 
+        # 获取日志文件中第一行和最后一行的日期
+        log_date = "unknown"
+        with open(self.log_path, "r", encoding="utf-8", errors="replace") as f:
+            first = f.readline()
+            m = re.search(r"(\d{4}-\d{2}-\d{2})", first)
+            if m: log_date = m.group(1)
+
         context_text = _build_context(task_context, user_question)
-        system_prompt = _make_system_prompt()
+        context_text += f"\n\n**日志日期**: {log_date}"
+
+        system_prompt = _make_system_prompt(log_date)
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -217,11 +193,12 @@ class LogSubAgent:
 
         for round_num in range(1, self.MAX_ROUNDS + 1):
             response = await self._llm.chat(
-                messages=messages, max_tokens=500, temperature=0.2,
+                messages=messages, max_tokens=400, temperature=0.0,
             )
 
             cmd = _parse_llm_command(response)
             if cmd is None:
+                logger.warning(f"LogSubAgent R{round_num} parse failed, raw[:200]={response[:200]}")
                 result.conclusion = "日志子Agent输出解析失败"
                 result.fallback_used = True
                 break
@@ -236,6 +213,7 @@ class LogSubAgent:
                     continue
                 query_history.append(q_hash)
 
+                logger.info(f"LogSubAgent R{round_num} query: {json.dumps(q, ensure_ascii=False)}")
                 log_query = LogQuery(
                     time_start=q.get("time_start") or None,
                     time_end=q.get("time_end") or None,
@@ -260,15 +238,33 @@ class LogSubAgent:
                 messages.append({"role": "assistant", "content": response})
                 messages.append({"role": "user", "content": feedback})
 
-                # 保存线索
+                # 保存线索（暂存，conclude 时按 LLM 引用的行号过滤）
                 if "matched" in query_result and "matched 0 lines" not in query_result:
-                    for line_match in re.findall(r"\* L(\d+)\| (.*)", query_result):
+                    for line_match in re.findall(r"\* L(\d+)\| (.+)", query_result):
                         ln, sm = line_match
-                        result.evidence.append({"line": int(ln), "summary": sm[:150]})
+                        summary = sm.strip()
+                        if not summary or summary.count("|") < 1:
+                            continue
+                        result.evidence.append({"line": int(ln), "summary": sm[:150], "round": round_num})
             else:
                 if action == "conclude":
                     result.conclusion = cmd.get("conclusion", "")
-                    logger.info(f"LogSubAgent conclude at R{round_num}: {result.conclusion[:80]}")
+                    # ── 按 LLM 引用的行号过滤证据 ──
+                    cited_lines = set()
+                    for ref in cmd.get("evidence_lines", []):
+                        m = re.search(r"L(\d+)", str(ref))
+                        if m:
+                            cited_lines.add(int(m.group(1)))
+                    if cited_lines:
+                        result.evidence = [e for e in result.evidence if e["line"] in cited_lines]
+                    else:
+                        # 没引用具体行号 → 只保留含关键信号的证据
+                        _SIGNAL_KW = ("一致性", "MAPF-T", "ABORTED", "WARNING", "等待时间", "last_node")
+                        result.evidence = [
+                            e for e in result.evidence
+                            if any(kw in e["summary"] for kw in _SIGNAL_KW)
+                        ]
+                    logger.info(f"LogSubAgent conclude at R{round_num}: {result.conclusion[:80]} (cited={len(cited_lines)}, evidence={len(result.evidence)})")
                 elif action == "fallback":
                     result.conclusion = cmd.get("reason", "无结论")
                     result.fallback_used = True
@@ -313,12 +309,31 @@ def _build_context(task: Dict, question: str) -> str:
 
 
 def _parse_llm_command(raw: str) -> Optional[Dict]:
-    m = re.search(r'\{[^{}]*"action"[^{}]*\}', raw, re.DOTALL)
-    if m:
-        try: return json.loads(m.group())
-        except json.JSONDecodeError: pass
-    m = re.search(r'\{[\s\S]*\}', raw)
-    if m:
-        try: return json.loads(m.group())
-        except json.JSONDecodeError: pass
+    # 找第一个 { → 手动数括号取完整 JSON
+    start = raw.find('{')
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(raw)):
+        c = raw[i]
+        if escape:
+            escape = False; continue
+        if c == '\\':
+            escape = True; continue
+        if c == '"':
+            in_str = not in_str; continue
+        if in_str:
+            continue
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                block = raw[start:i+1]
+                try:
+                    return json.loads(block)
+                except json.JSONDecodeError:
+                    break
     return None

@@ -1,6 +1,6 @@
 // Zustand 认证状态管理 - 合并 HelpDesk AuthContext + BackgroundService auth.js
 import { create } from 'zustand';
-import { createRequest, setToken as setApiToken, clearToken as clearApiToken } from '@/api/client';
+import { createRequest, setToken as setApiToken, clearToken as clearApiToken, setLoggingOut } from '@/api/client';
 import API_CONFIG from '@/config/api';
 
 const STORAGE_KEYS = {
@@ -41,6 +41,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   roles: null,
 
   login: (authData, user) => {
+    setLoggingOut(false);
     const expiresAt = Date.now() + authData.expires_in * 1000;
     setApiToken(authData.access_token);
     set({
@@ -58,6 +59,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: () => {
+    // 先置登出标记，再清 token：在途请求 401 刷新失败时不抢跳转，
+    // 由调用方 navigate('/login?reason=logout') 把页面停在登录页。
+    setLoggingOut(true);
     clearApiToken();
     set({
       token: null,

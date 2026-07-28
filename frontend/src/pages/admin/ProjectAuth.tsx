@@ -22,7 +22,7 @@ interface AssociateItem { id: string; userId: string; role: string; }
 export default function ProjectAuth() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
-  const [projectCodeInput, setProjectCodeInput] = useState('');
+  const [projectSearch, setProjectSearch] = useState('');
   const [items, setItems] = useState<AuthItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [projectLoading, setProjectLoading] = useState(true);
@@ -58,17 +58,19 @@ export default function ProjectAuth() {
 
   const handleProjectSelect = (project: Project) => {
     setSelectedProject(project);
-    setProjectCodeInput('');
+    setProjectSearch('');
     setProjectPickerVisible(false);
     const code = project.code || project.name; // 使用 code 或 name 作为 project_code
     fetchLicenses(code);
   };
 
-  const handleCustomCodeSubmit = () => {
-    if (!projectCodeInput.trim()) return;
-    setSelectedProject({ name: projectCodeInput.trim() });
-    fetchLicenses(projectCodeInput.trim());
-  };
+  // 模糊匹配：按名称或代码任意关键词片段过滤（不要求项目代码，普通人记不住代码）
+  const filteredProjects = projectSearch.trim()
+    ? projects.filter((p) => {
+        const kw = projectSearch.trim().toLowerCase();
+        return p.name.toLowerCase().includes(kw) || (p.code || '').toLowerCase().includes(kw);
+      })
+    : projects;
 
   const handleRevoke = (item: AuthItem) => {
     Dialog.confirm?.({
@@ -142,9 +144,16 @@ export default function ProjectAuth() {
       )}
 
       <Popup visible={projectPickerVisible} onClose={() => setProjectPickerVisible(false)} placement="bottom" showOverlay>
-        <div style={{ padding: 20, maxHeight: '60vh', overflow: 'auto' }}>
+        <div style={{ padding: 20, maxHeight: '70vh', overflow: 'auto' }}>
           <h4 style={{ marginBottom: 12 }}>选择项目</h4>
-          {projects.map((p) => (
+          <Input
+            value={projectSearch}
+            onChange={(v) => setProjectSearch(String(v))}
+            placeholder="输入项目名称关键词模糊查找"
+            clearable
+            style={{ marginBottom: 12 }}
+          />
+          {filteredProjects.map((p) => (
             <div
               key={p.id || p.name}
               onClick={() => handleProjectSelect(p)}
@@ -161,25 +170,11 @@ export default function ProjectAuth() {
               {p.code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{p.code}</div>}
             </div>
           ))}
-          {projects.length === 0 && (
-            <div style={{ textAlign: 'center', padding: 30, color: '#999' }}>暂无项目</div>
+          {filteredProjects.length === 0 && (
+            <div style={{ textAlign: 'center', padding: 30, color: '#999' }}>未找到匹配的项目</div>
           )}
         </div>
       </Popup>
-
-      {/* 手动输入项目代码 */}
-      <div style={{ marginBottom: 16, display: 'flex', gap: 8 }}>
-        <Input
-          value={projectCodeInput}
-          onChange={(v) => setProjectCodeInput(String(v))}
-          placeholder="或输入项目代码查询"
-          clearable
-          style={{ flex: 1 }}
-        />
-        <Button size="small" theme="primary" onClick={handleCustomCodeSubmit} disabled={!projectCodeInput.trim()}>
-          查询
-        </Button>
-      </div>
 
       {/* 授权列表 */}
       {!selectedProject ? (
