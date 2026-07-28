@@ -5,7 +5,7 @@
 // 功能开关：enableAttach（附件上传，历史工单用）/ enableAI（@AI 讨论，系统任务用）。
 import { useState, useRef, useEffect } from 'react';
 import { Button, Toast } from 'tdesign-mobile-react';
-import SafeHtml from '@/shared/components/SafeHtml';
+import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import { useAuthStore } from '@/stores/auth';
 import { formatTime } from '@/shared/utils/url';
 
@@ -110,7 +110,7 @@ export default function DiscussionPanel({
               <div key={c.id} className={`detail-chat-row ${isCurrentUser ? 'is-right' : ''}`}>
                 <div className={`detail-chat-bubble ${isCurrentUser ? 'is-self' : ''}`}>
                   <div className="detail-chat-name">{authorName}</div>
-                  <SafeHtml html={c.content} />
+                  <MarkdownRenderer content={c.content} compact />
                   <div className="detail-chat-time">{formatTime(c.created_at)}</div>
                 </div>
               </div>

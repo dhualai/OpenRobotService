@@ -1021,6 +1021,13 @@ html, body, #root {
   gap: 6px;
   min-width: 0;
 }
+.task-card2__status-tag {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
 .task-card2__type {
   flex-shrink: 0;
   font-size: 12px;
