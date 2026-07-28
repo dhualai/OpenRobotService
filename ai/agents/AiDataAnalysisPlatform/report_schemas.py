@@ -86,31 +86,18 @@ class RiskStats(BaseModel):
 
 
 class TicketStats(BaseModel):
-    """工单维度统计数据。"""
+    """工单维度统计数据（数据源：tasks 表）。"""
 
     total: int = 0
     new_tickets: int = 0
     resolved: int = 0
     closed: int = 0
+    overdue: int = 0
+    resolve_rate: float = 0.0
     by_status: dict[str, int] = Field(default_factory=dict)
     by_priority: dict[str, int] = Field(default_factory=dict)
     by_type: dict[str, int] = Field(default_factory=dict)
     items: list[dict[str, Any]] = Field(default_factory=list, description="工单明细列表")
-
-
-class TaskStats(BaseModel):
-    """任务维度统计数据。"""
-
-    total: int = 0
-    new_tasks: int = 0
-    resolved: int = 0
-    closed: int = 0
-    overdue: int = 0
-    resolve_rate: float = 0.0
-    by_status: dict[str, int] = Field(default_factory=dict)
-    by_type: dict[str, int] = Field(default_factory=dict)
-    by_priority: dict[str, int] = Field(default_factory=dict)
-    items: list[dict[str, Any]] = Field(default_factory=list, description="任务明细列表")
 
 
 class CollectedData(BaseModel):
@@ -120,4 +107,3 @@ class CollectedData(BaseModel):
     project: ProjectStats = Field(default_factory=ProjectStats)
     risk: RiskStats = Field(default_factory=RiskStats)
     ticket: TicketStats = Field(default_factory=TicketStats)
-    task: TaskStats = Field(default_factory=TaskStats)

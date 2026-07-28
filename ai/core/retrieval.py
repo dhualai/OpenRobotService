@@ -837,6 +837,48 @@ class RetrievalService:
             ))
         return results
 
+    async def retrieve_usp_diagnosis(
+        self,
+        query: str,
+        top_k: int = 3,
+    ) -> List[RetrievalResult]:
+        """
+        USP 诊断知识库检索（仅向量检索）。
+
+        当用户询问 USP 调度系统相关问题（机器人不接任务、中途停滞、
+        掉线、地图报错等）时，通过此方法检索诊断知识。
+        """
+        from ai.config import get_active_usp_diagnosis_collection
+
+        usp_col = get_active_usp_diagnosis_collection()
+        if not usp_col:
+            return []
+
+        k = top_k or 3
+        await self._ensure_clients()
+
+        if self._qdrant.is_unavailable:
+            return []
+
+        query_vector = await self._embed_client.embed(query)
+        points = await self._qdrant.search_dense(
+            query_vector.tolist(),
+            top_k=k,
+            collection_name=usp_col,
+        )
+
+        results = []
+        for point in points:
+            payload = point.payload or {}
+            results.append(RetrievalResult(
+                id=str(point.id),
+                score=point.score,
+                title=payload.get("title", ""),
+                content=payload.get("content", ""),
+                vector_score=point.score,
+            ))
+        return results
+
     # ── 任务 Agent：历史工单方案检索 ───────────────────────────
 
     async def retrieve_task_resolutions(
