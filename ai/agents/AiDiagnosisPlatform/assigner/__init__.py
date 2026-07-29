@@ -5,8 +5,8 @@
 
 from typing import Dict, List, Optional
 
-from ai.agents.AiDiagnosisPlatform.assigner.assigner import Assigner
-from ai.agents.AiDiagnosisPlatform.assigner.personnel_sync import (
+from ai.agents.AiDiagnosisPlatform.assigner.pipeline.assigner import Assigner
+from ai.agents.AiDiagnosisPlatform.assigner.sync.personnel_sync import (
     load_engineers,
     invalidate_cache as invalidate_personnel_cache,
 )
