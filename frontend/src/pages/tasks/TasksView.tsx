@@ -2,7 +2,7 @@
 // 卡片样式与输入卡片审美一致（白底 + 阴影 + 圆角）。
 // 跨视图流转：消费 ticketDraft 自动建单；讨论按钮 → 带上下文跳回我要摇人。
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar, Toast, Loading, Tag, Popup, Button, Input, Textarea, Form, FormItem } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -56,8 +56,40 @@ const PRIORITY_WEIGHT_MAP: Record<string, number> = {
   low: 1,
 };
 
+// 从 URL 查询参数解析筛选状态的工具函数
+const parseFilterFromUrl = (params: URLSearchParams) => {
+  return {
+    search: params.get('q') || '',
+    statusFilter: params.get('status') || 'all',
+    priorityFilter: params.get('priority') || 'all',
+    relevanceFilter: params.get('relevance') || 'mine',
+    page: parseInt(params.get('page') || '1', 10),
+    sortBy: params.get('sort') || 'priority',
+    sortOrder: params.get('order') || 'desc',
+  };
+};
+
+// 将筛选状态同步到 URL 查询参数的工具函数
+const buildFilterParams = (filter: {
+  search: string; statusFilter: string; priorityFilter: string;
+  relevanceFilter: string; page: number; sortBy: string; sortOrder: string;
+}) => {
+  const params = new URLSearchParams();
+  if (filter.search) params.set('q', filter.search);
+  if (filter.statusFilter !== 'all') params.set('status', filter.statusFilter);
+  if (filter.priorityFilter !== 'all') params.set('priority', filter.priorityFilter);
+  if (filter.relevanceFilter !== 'mine') params.set('relevance', filter.relevanceFilter);
+  if (filter.page > 1) params.set('page', String(filter.page));
+  if (filter.sortBy !== 'priority') {
+    params.set('sort', filter.sortBy);
+    params.set('order', filter.sortOrder);
+  }
+  return params.toString();
+};
+
 export default function TasksView() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
 
   const {
@@ -67,17 +99,20 @@ export default function TasksView() {
   const { username, hasPermission } = useAuthStore();
   const canManageTasks = hasPermission('frontend:develop');
 
+  // 从 URL 初始化筛选状态
+  const initialFilter = useRef(parseFilterFromUrl(searchParams));
+
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(false);
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [priorityFilter, setPriorityFilter] = useState('all');
-  const [relevanceFilter, setRelevanceFilter] = useState('mine');
+  const [search, setSearch] = useState(() => initialFilter.current.search);
+  const [statusFilter, setStatusFilter] = useState(() => initialFilter.current.statusFilter);
+  const [priorityFilter, setPriorityFilter] = useState(() => initialFilter.current.priorityFilter);
+  const [relevanceFilter, setRelevanceFilter] = useState(() => initialFilter.current.relevanceFilter);
   const [showFilterMenu, setShowFilterMenu] = useState(false);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(() => initialFilter.current.page);
   const [total, setTotal] = useState(0);
-  const [sortBy, setSortBy] = useState('priority');
-  const [sortOrder, setSortOrder] = useState('desc');
+  const [sortBy, setSortBy] = useState(() => initialFilter.current.sortBy);
+  const [sortOrder, setSortOrder] = useState(() => initialFilter.current.sortOrder);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creatingTask, setCreatingTask] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -224,6 +259,17 @@ export default function TasksView() {
   }, [page, search, statusFilter, priorityFilter, relevanceFilter, username, sortBy, sortOrder]);
 
   fetchTicketsRef.current = fetchTickets;
+
+  // 筛选状态变化时同步到 URL
+  useEffect(() => {
+    const newParams = buildFilterParams({
+      search, statusFilter, priorityFilter,
+      relevanceFilter, page, sortBy, sortOrder,
+    });
+    if (newParams !== searchParams.toString()) {
+      setSearchParams(newParams, { replace: true });
+    }
+  }, [search, statusFilter, priorityFilter, relevanceFilter, page, sortBy, sortOrder]);
 
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
