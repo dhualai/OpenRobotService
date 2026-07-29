@@ -22,15 +22,14 @@ class DepartmentMatcher:
         self._config = config or AssignerConfig()
 
     def match_department(self, ticket: TicketContext) -> Tuple[str, list[str]]:
-        """根据工单内容匹配最佳部门。
+        """根据工单内容匹配最佳部门（计分制，差值 <2 倍时交 LLM 裁决）。
+
+        每个部门统计命中关键词数（不计重），得分最高的获胜。
+        冠亚差距不明显时返回空字符串，由外层 LLM 做最终决策。
 
         Returns:
             (department_name, product_keys): 部门名 + 该部门下的产品列表
-
-        匹配顺序:
-            1. 机器人事业部 — 高特异性关键词
-            2. 车端软件 — 中特异性关键词
-            3. 智能规划 — 兜底（调度 + 服务号全在上面）
+            空字符串 = 歧义，LLM 裁决
         """
         text = " ".join(filter(None, [
             ticket.title, ticket.problem_description,
@@ -41,20 +40,33 @@ class DepartmentMatcher:
         if not scopes:
             return "", []
 
-        # 按顺序匹配，命中即停止
-        priority_depts = ["机器人事业部", "车端软件", "智能规划"]
-        for dept in priority_depts:
-            scope = scopes.get(dept)
-            if not scope:
-                continue
-            keywords = scope.get("keywords", [])
-            if any(kw.lower() in text for kw in keywords):
-                products = scope.get("products", [])
-                logger.info(f"[dept_matcher] 部门匹配: {dept} (关键词命中)")
-                return dept, products
+        # 计分
+        scores: dict[str, int] = {}
+        for dept, scope in scopes.items():
+            hits = sum(1 for kw in scope.get("keywords", []) if kw.lower() in text)
+            if hits > 0:
+                scores[dept] = hits
 
-        # 什么都没命中 → 全量兜底
-        logger.info(f"[dept_matcher] 部门匹配: 未命中任何部门，全量兜底")
+        if not scores:
+            logger.info(f"[dept_matcher] 部门匹配: 未命中任何部门，全量兜底")
+            return "", []
+
+        # 排序取 Top-2
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        winner, win_hits = ranked[0]
+        runner_hits = ranked[1][1] if len(ranked) > 1 else 0
+
+        if runner_hits == 0 or win_hits >= runner_hits * 2:
+            # 明确获胜
+            products = scopes.get(winner, {}).get("products", [])
+            logger.info(f"[dept_matcher] 部门匹配: {winner} (hits={win_hits}, runner={runner_hits}, clear)")
+            return winner, products
+
+        # 歧义 — 交给 LLM
+        logger.info(
+            f"[dept_matcher] 部门匹配: 歧义 — top={winner}({win_hits}) "
+            f"vs runner={ranked[1][0]}({runner_hits}), 交 LLM 裁决"
+        )
         return "", []
 
     def match_products(self, ticket: TicketContext, department: str) -> List[str]:
@@ -130,10 +142,11 @@ class DepartmentMatcher:
         engineers: List[EngineerProfile],
         project_name: str = "",
     ) -> List[EngineerProfile]:
-        """一站式：工单 → 部门 → 产品（关键词精准匹配） → 候选人。
+        """一站式：工单 → 部门 → 候选人。
 
+        只做部门级硬过滤，不做产品级——
+        同一部门内所有人参与召回+排序，自然靠模块匹配和 LLM 区分。
         project_name 预留入口，暂不参与逻辑。
-        返回空列表时，外层负责回退到全量。
         """
         if not engineers:
             return []
@@ -142,11 +155,5 @@ class DepartmentMatcher:
 
         if dept:
             engineers = self.filter_by_department(engineers, dept)
-
-        # 用关键词精确匹配产品（而非部门全部产品），缩小范围
-        if dept and engineers:
-            products = self.match_products(ticket, dept)
-            if products:
-                engineers = self.filter_by_products(engineers, products)
 
         return engineers
