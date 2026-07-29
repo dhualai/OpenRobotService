@@ -3,7 +3,7 @@
 from typing import Dict, List, Optional
 
 from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
-from ai.agents.AiDiagnosisPlatform.assigner.recall import RecallResult
+from ai.agents.AiDiagnosisPlatform.assigner.recall.recall_result import RecallResult
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile
 
 
@@ -28,9 +28,14 @@ class Ranker:
         ids.update(recall_result.history_recall.keys())
 
         level_map: Dict[str, int] = {}
+        eng_map: Dict[str, EngineerProfile] = {}
+        dept_people: Dict[str, int] = {}
         if engineers:
             for e in engineers:
                 level_map[e.id] = e.job_level
+                eng_map[e.id] = e
+                dept = e.department or ""
+                dept_people[dept] = dept_people.get(dept, 0) + 1
 
         scores = {}
         for eid in ids:
@@ -40,8 +45,15 @@ class Ranker:
             his = recall_result.history_recall.get(eid, 0.0)
 
             raw = self._w_llm * llm + self._w_module * mod + self._w_semantic * sem + self._w_history * his
+
             lv = level_map.get(eid, 1)
-            mul = self._penalty.get(lv, self._penalty.get(99, 0.6))
+            dept = (eng_map.get(eid) or EngineerProfile(id=eid, name="")).department or ""
+            # 部门内只有一人时，不打折（如机器人事业部只有文永翔 L2）
+            only_one_in_dept = dept_people.get(dept, 0) <= 1
+            if only_one_in_dept and lv > 1:
+                mul = 0.90  # 轻微折扣，但不被其他部门的 L1 淹没
+            else:
+                mul = self._penalty.get(lv, self._penalty.get(99, 0.6))
 
             scores[eid] = {
                 "llm_score": llm, "module_score": mod, "semantic_score": sem,
