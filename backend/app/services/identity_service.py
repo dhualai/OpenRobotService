@@ -20,29 +20,23 @@ class IdentityService:
 
     @staticmethod
     def add_user(
-        user_id: str,
-        username: str,
-        hashed_password: str,
-        permissions: List[str],
-        name: Optional[str] = None,
-        status: str = "inactive",
-        external_credentials: Optional[Dict[str, Dict[str, str]]] = None
+        user_id: str, username: str, hashed_password: str, permissions: List[str],
+        name: Optional[str] = None, status: str = "inactive",
+        external_credentials: Optional[Dict[str, Dict[str, str]]] = None,
+        department: Optional[str] = None, responsibility_modules: Optional[List[str]] = None,
+        job_level: Optional[int] = 1, duty_text: Optional[str] = None,
     ) -> bool:
         db = IdentityService._get_db()
         try:
             existing_user = db.query(UserDB).filter(UserDB.username == username).first()
             if existing_user:
                 return False
-            
             external_credentials_json = json.dumps(external_credentials) if external_credentials else None
-            
             db_user = UserDB(
-                id=user_id,
-                username=username,
-                password_hash=hashed_password,
-                name=name,
-                status=status,
-                external_credentials=external_credentials_json
+                id=user_id, username=username, password_hash=hashed_password,
+                name=name, status=status, external_credentials=external_credentials_json,
+                department=department, responsibility_modules=responsibility_modules or [],
+                job_level=job_level if job_level is not None else 1, duty_text=duty_text,
             )
             db.add(db_user)
             db.commit()
@@ -60,22 +54,22 @@ class IdentityService:
         try:
             db_user = db.query(UserDB).filter(UserDB.username == username).first()
             if db_user:
-                external_credentials = {}
+                ec = {}
                 if hasattr(db_user, 'external_credentials') and db_user.external_credentials:
-                    try:
-                        external_credentials = json.loads(db_user.external_credentials)
-                    except:
-                        external_credentials = {}
-                
+                    try: ec = json.loads(db_user.external_credentials)
+                    except: ec = {}
                 return {
-                    'id': db_user.id,
-                    'username': db_user.username,
+                    'id': db_user.id, 'username': db_user.username,
                     'password_hash': db_user.password_hash,
                     'name': getattr(db_user, 'name', None),
                     'status': getattr(db_user, 'status', 'inactive'),
-                    'external_credentials': external_credentials,
+                    'external_credentials': ec,
                     'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
-                    'permissions': ["admin"] if db_user.username == 'admin' else ["user"]
+                    'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
+                    'department': getattr(db_user, 'department', None),
+                    'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or [],
+                    'job_level': getattr(db_user, 'job_level', 1),
+                    'duty_text': getattr(db_user, 'duty_text', None),
                 }
             return None
         finally:
@@ -87,22 +81,22 @@ class IdentityService:
         try:
             db_user = db.query(UserDB).filter(UserDB.id == user_id).first()
             if db_user:
-                external_credentials = {}
+                ec = {}
                 if hasattr(db_user, 'external_credentials') and db_user.external_credentials:
-                    try:
-                        external_credentials = json.loads(db_user.external_credentials)
-                    except:
-                        external_credentials = {}
-                
+                    try: ec = json.loads(db_user.external_credentials)
+                    except: ec = {}
                 return {
-                    'id': db_user.id,
-                    'username': db_user.username,
+                    'id': db_user.id, 'username': db_user.username,
                     'password_hash': db_user.password_hash,
                     'name': getattr(db_user, 'name', None),
                     'status': getattr(db_user, 'status', 'inactive'),
-                    'external_credentials': external_credentials,
+                    'external_credentials': ec,
                     'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
-                    'permissions': ["admin"] if db_user.username == 'admin' else ["user"]
+                    'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
+                    'department': getattr(db_user, 'department', None),
+                    'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or [],
+                    'job_level': getattr(db_user, 'job_level', 1),
+                    'duty_text': getattr(db_user, 'duty_text', None),
                 }
             return None
         finally:
@@ -115,13 +109,11 @@ class IdentityService:
             db_user = db.query(UserDB).filter(UserDB.id == user_id).first()
             if not db_user:
                 return False
-            
             for key, value in kwargs.items():
                 if key == 'external_credentials' and value is not None:
                     setattr(db_user, key, json.dumps(value))
                 elif hasattr(db_user, key):
                     setattr(db_user, key, value)
-            
             db.commit()
             return True
         except Exception as e:
@@ -152,14 +144,9 @@ class IdentityService:
     def add_role(role_id: str, role_name: str) -> bool:
         db = IdentityService._get_db()
         try:
-            existing_role = db.query(Role).filter(
-                (Role.id == role_id) | (Role.name == role_name)
-            ).first()
-            if existing_role:
+            if db.query(Role).filter((Role.id == role_id) | (Role.name == role_name)).first():
                 return False
-            
-            role = Role(id=role_id, name=role_name)
-            db.add(role)
+            db.add(Role(id=role_id, name=role_name))
             db.commit()
             return True
         except Exception as e:
@@ -174,9 +161,7 @@ class IdentityService:
         db = IdentityService._get_db()
         try:
             role = db.query(Role).filter(Role.id == role_id).first()
-            if role:
-                return {'id': role.id, 'name': role.name}
-            return None
+            return {'id': role.id, 'name': role.name} if role else None
         finally:
             db.close()
 
@@ -184,8 +169,7 @@ class IdentityService:
     def get_all_roles() -> List[Dict[str, str]]:
         db = IdentityService._get_db()
         try:
-            roles = db.query(Role).all()
-            return [{'id': role.id, 'name': role.name} for role in roles]
+            return [{'id': r.id, 'name': r.name} for r in db.query(Role).all()]
         finally:
             db.close()
 
@@ -196,7 +180,6 @@ class IdentityService:
             role = db.query(Role).filter(Role.id == role_id).first()
             if not role:
                 return False
-            
             db.delete(role)
             db.commit()
             return True
@@ -211,21 +194,108 @@ class IdentityService:
     def get_all_projects() -> List[Dict[str, str]]:
         db = IdentityService._get_db()
         try:
-            projects = db.query(Project).all()
-            return [{'id': project.id, 'code': project.code, 'name': project.name} for project in projects]
+            return [{'id': p.id, 'code': p.code, 'name': p.name} for p in db.query(Project).all()]
         finally:
             db.close()
 
     @staticmethod
-    def get_project(project_id: str) -> Optional[Dict[str, str]]:
+    def get_project(project_id: str) -> Optional[Dict[str, Any]]:
         db = IdentityService._get_db()
         try:
-            project = db.query(Project).filter(Project.id == project_id).first()
-            if project:
-                return {'id': project.id, 'code': project.code, 'name': project.name}
-            return None
+            p = db.query(Project).filter(Project.id == project_id).first()
+            return {'id': p.id, 'code': p.code, 'name': p.name} if p else None
         finally:
             db.close()
+
+    @staticmethod
+    def get_user_roles_all_projects(user_id: str) -> Dict[str, List[str]]:
+        db = IdentityService._get_db()
+        try:
+            roles = db.execute(user_project_roles.select().where(
+                user_project_roles.c.user_id == user_id)).fetchall()
+            rbp = {}
+            for r in roles:
+                pid = r.project_id or 'global'
+                rbp.setdefault(pid, []).append(r.role_id)
+            return rbp
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_all_users_roles_all_projects(user_ids: List[str]) -> Dict[str, Dict[str, List[str]]]:
+        db = IdentityService._get_db()
+        try:
+            roles = db.execute(user_project_roles.select().where(
+                user_project_roles.c.user_id.in_(user_ids))).fetchall()
+            ar = {}
+            for r in roles:
+                ar.setdefault(r.user_id, {}).setdefault(r.project_id or 'global', []).append(r.role_id)
+            for uid in user_ids:
+                ar.setdefault(uid, {})
+            return ar
+        finally:
+            db.close()
+
+    @staticmethod
+    def add_user_project_role(upid, uid, pid, rid, report_to_id=None) -> bool:
+        db = IdentityService._get_db()
+        try:
+            existing = db.execute(user_project_roles.select().where(
+                (user_project_roles.c.id == upid))).first()
+            if existing:
+                return False
+            vals = {"id": upid, "user_id": uid, "project_id": pid, "role_id": rid}
+            if report_to_id:
+                vals["report_to_id"] = report_to_id
+            db.execute(user_project_roles.insert().values(**vals))
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def batch_add_user_project_roles(roles_data: List[dict]) -> int:
+        db = IdentityService._get_db()
+        try:
+            count = 0
+            for rd in roles_data:
+                existing = db.execute(user_project_roles.select().where(
+                    user_project_roles.c.id == rd["id"])).first()
+                if existing:
+                    continue
+                db.execute(user_project_roles.insert().values(**rd))
+                count += 1
+            db.commit()
+            return count
+        except Exception as e:
+            db.rollback()
+            return 0
+        finally:
+            db.close()
+
+    @staticmethod
+    def remove_user_project_role(user_id, project_id, role_id) -> bool:
+        db = IdentityService._get_db()
+        try:
+            db.execute(user_project_roles.delete().where(
+                (user_project_roles.c.user_id == user_id) &
+                (user_project_roles.c.project_id == project_id) &
+                (user_project_roles.c.role_id == role_id)))
+            db.commit()
+            return True
+        except:
+            db.rollback()
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_all_reporters(username: str, project_id: str) -> List[Dict[str, Any]]:
+        from app.services.permission_service import permission_service
+        return permission_service.get_all_reporters(username, project_id)
 
     @staticmethod
     def add_project(project_id: str, project_code: str, project_name: str) -> bool:
@@ -236,7 +306,7 @@ class IdentityService:
             ).first()
             if existing_project:
                 return False
-            
+
             project = Project(id=project_id, code=project_code, name=project_name)
             db.add(project)
             db.commit()
@@ -255,13 +325,13 @@ class IdentityService:
             project = db.query(Project).filter(Project.id == project_id).first()
             if not project:
                 return False
-            
+
             existing_project = db.query(Project).filter(
                 Project.name == project_name, Project.id != project_id
             ).first()
             if existing_project:
                 return False
-            
+
             project.name = project_name
             db.commit()
             return True
@@ -279,11 +349,11 @@ class IdentityService:
             project = db.query(Project).filter(Project.id == project_id).first()
             if not project:
                 return False
-            
+
             db.execute(user_project_roles.delete().where(
                 user_project_roles.c.project_id == project_id
             ))
-            
+
             db.delete(project)
             db.commit()
             return True
@@ -302,10 +372,10 @@ class IdentityService:
                 (role_permissions.c.role_id == role_id) &
                 (role_permissions.c.permission_id == permission_id)
             )).first()
-            
+
             if existing_perm:
                 return False
-            
+
             db.execute(role_permissions.insert().values(
                 id=role_permission_id,
                 role_id=role_id,
@@ -333,95 +403,6 @@ class IdentityService:
         except Exception as e:
             db.rollback()
             print(f"删除角色权限失败: {str(e)}")
-            return False
-        finally:
-            db.close()
-
-    @staticmethod
-    def add_user_project_role(
-        user_project_role_id: str,
-        user_id: str,
-        project_id: Optional[str],
-        role_id: str,
-        report_to_id: Optional[str] = None
-    ) -> bool:
-        db = IdentityService._get_db()
-        try:
-            if project_id:
-                existing_upr = db.execute(user_project_roles.select().where(
-                    (user_project_roles.c.user_id == user_id) &
-                    (user_project_roles.c.project_id == project_id) &
-                    (user_project_roles.c.role_id == role_id)
-                )).first()
-            else:
-                existing_upr = db.execute(user_project_roles.select().where(
-                    (user_project_roles.c.user_id == user_id) &
-                    (user_project_roles.c.project_id.is_(None)) &
-                    (user_project_roles.c.role_id == role_id)
-                )).first()
-            
-            if existing_upr:
-                return False
-            
-            db.execute(user_project_roles.insert().values(
-                id=user_project_role_id,
-                user_id=user_id,
-                project_id=project_id,
-                role_id=role_id,
-                report_to_id=report_to_id
-            ))
-            db.commit()
-            return True
-        except Exception as e:
-            db.rollback()
-            print(f"添加用户-项目-角色关联失败: {str(e)}")
-            return False
-        finally:
-            db.close()
-
-    @staticmethod
-    def batch_add_user_project_roles(roles_data: List[Dict[str, str]]) -> int:
-        db = IdentityService._get_db()
-        try:
-            insert_data = []
-            
-            for data in roles_data:
-                existing_upr = db.execute(user_project_roles.select().where(
-                    (user_project_roles.c.user_id == data['user_id']) &
-                    (user_project_roles.c.project_id == data['project_id']) &
-                    (user_project_roles.c.role_id == data['role_id'])
-                )).first()
-                
-                if not existing_upr:
-                    insert_data.append(data)
-            
-            if insert_data:
-                db.execute(user_project_roles.insert(), insert_data)
-                db.commit()
-                return len(insert_data)
-            else:
-                return 0
-        except Exception as e:
-            db.rollback()
-            print(f"批量添加用户-项目-角色关联失败: {str(e)}")
-            return 0
-        finally:
-            db.close()
-
-    @staticmethod
-    def remove_user_project_role(user_id: str, project_id: str, role_id: str) -> bool:
-        db = IdentityService._get_db()
-        try:
-            result = db.execute(user_project_roles.delete().where(
-                (user_project_roles.c.user_id == user_id) &
-                (user_project_roles.c.project_id == project_id) &
-                (user_project_roles.c.role_id == role_id)
-            ))
-            db.commit()
-            return result.rowcount > 0
-        except Exception as e:
-            db.rollback()
-            print(f"移除用户-项目-角色关联失败: {str(e)}")
             return False
         finally:
             db.close()
@@ -459,7 +440,7 @@ class IdentityService:
             ).first()
             if existing_permission:
                 return False
-            
+
             permission = Permission(
                 id=permission_id,
                 code=code,
@@ -485,11 +466,11 @@ class IdentityService:
             permission = db.query(Permission).filter(Permission.id == permission_id).first()
             if not permission:
                 return False
-            
+
             db.execute(role_permissions.delete().where(
                 role_permissions.c.permission_id == permission_id
             ))
-            
+
             db.delete(permission)
             db.commit()
             return True
@@ -507,7 +488,7 @@ class IdentityService:
             permission = db.query(Permission).filter(Permission.id == permission_id).first()
             if not permission:
                 return False
-            
+
             update_fields = {}
             for key, value in kwargs.items():
                 if key in ['name', 'description', 'resource_type', 'action', 'enabled'] and value is not None:
@@ -515,10 +496,10 @@ class IdentityService:
                         update_fields[key] = "true" if value else "false"
                     else:
                         update_fields[key] = value
-            
+
             if not update_fields:
                 return True
-            
+
             db.query(Permission).filter(Permission.id == permission_id).update(update_fields)
             db.commit()
             return True
@@ -536,7 +517,7 @@ class IdentityService:
             report_to_subquery = select(UserDB.username).where(
                 UserDB.username == user_project_roles.c.report_to_id
             ).correlate(user_project_roles).scalar_subquery()
-            
+
             if include_usp:
                 stmt = select(
                     Role.name.label('role_name'),
@@ -564,14 +545,14 @@ class IdentityService:
                 ).join(
                     UserDB, user_project_roles.c.user_id == UserDB.id
                 ).where(user_project_roles.c.project_id == project_id)
-            
+
             try:
                 results = db.execute(stmt).fetchall()
             except Exception as e:
                 import traceback
                 print(f"查询项目成员失败: {traceback.format_exc()}")
                 return []
-            
+
             members = []
             for result in results:
                 member = {
@@ -584,7 +565,7 @@ class IdentityService:
                     'external_credentials': json.loads(result.external_credentials) if hasattr(result, 'external_credentials') and result.external_credentials else []
                 }
                 members.append(member)
-            
+
             return members
         finally:
             db.close()
@@ -596,9 +577,9 @@ class IdentityService:
             user_roles = db.execute(user_project_roles.select().where(
                 user_project_roles.c.role_id == role_id
             )).fetchall()
-            
+
             unique_user_ids = set(ur.user_id for ur in user_roles)
-            
+
             users = []
             for user_id in unique_user_ids:
                 user = IdentityService.get_user_by_id(user_id)
@@ -607,7 +588,7 @@ class IdentityService:
                         'id': user_id,
                         'username': user['username']
                     })
-            
+
             return users
         finally:
             db.close()

@@ -115,7 +115,11 @@ async def create_user(
         permissions=user_data.permissions,
         name=user_data.name,
         status=user_data.status,
-        external_credentials=user_data.external_credentials
+        external_credentials=user_data.external_credentials,
+        department=user_data.department,
+        responsibility_modules=user_data.responsibility_modules,
+        job_level=user_data.job_level,
+        duty_text=user_data.duty_text,
     )
     
     if not success:
@@ -211,6 +215,14 @@ async def update_user(
         update_data["external_credentials"] = external_creds
     if user_data.avatar_resource_id is not None:
         update_data["avatar_resource_id"] = user_data.avatar_resource_id
+    if user_data.department is not None:
+        update_data["department"] = user_data.department
+    if user_data.responsibility_modules is not None:
+        update_data["responsibility_modules"] = user_data.responsibility_modules
+    if user_data.job_level is not None:
+        update_data["job_level"] = user_data.job_level
+    if user_data.duty_text is not None:
+        update_data["duty_text"] = user_data.duty_text
 
     success = db_manager.update_user(user['id'], **update_data)
     if not success:
