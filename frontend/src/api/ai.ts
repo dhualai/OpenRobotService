@@ -202,23 +202,36 @@ export const qaTicketAck = (sessionId: string, dispatchId = '', status = 'dispat
     status,
   });
 
+/** 上传接口响应的 data 字段（后端 /api/ai/qa/upload 返回） */
+export interface UploadData {
+  saved: number;
+  files: Array<{ filename: string; size: number; path: string }>;
+  /** 后端确认回执：只传图片=VLM 初步诊断；只传非图片=「暂不支持解析」提示 */
+  ack_message?: string;
+  /** 仅附带 message 文字非空时有值：完整诊断的 AI 回复（含提单 ticket） */
+  ai_response?: { message?: string; action?: string; thinking?: string; ticket?: unknown } | null;
+}
+
 /** 上传附件（FormData）。
- * 使用 XMLHttpRequest 以支持上传进度回调（fetch 无法获取 upload 进度）。
- * onProgress 接收 0~100 的整数百分比；需返回 ok/status/data 供调用方判断。
+ * message 为可选的附带文字：非空时后端在上传后顺带跑完整诊断并返回 ai_response；
+ * 为空时后端只返回确认回执 ack_message。使用 XMLHttpRequest 以支持上传进度回调
+ * （fetch 无法获取 upload 进度）。onProgress 接收 0~100 的整数百分比。
  */
 export interface UploadResult {
   ok: boolean;
   status: number;
-  data: { code?: number; message?: string; [k: string]: unknown };
+  data: { code?: number; message?: string; data?: UploadData; [k: string]: unknown };
 }
 export const qaUpload = (
   sessionId: string,
   files: File[],
+  message = '',
   onProgress?: (percent: number) => void,
 ): Promise<UploadResult> => {
   return new Promise((resolve, reject) => {
     const formData = new FormData();
     formData.append('session_id', sessionId);
+    if (message.trim()) formData.append('message', message.trim());
     files.forEach((f) => formData.append('files', f));
     const token = useAuthStore.getState().token;
     const xhr = new XMLHttpRequest();
