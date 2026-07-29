@@ -53,8 +53,13 @@ _IMAGE_EXTS    = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
 _LOG_EXTS      = {".txt", ".log", ".csv"}
 _DOC_EXTS      = {".docx", ".pdf", ".xlsx", ".md"}
 _STRUCT_EXTS   = {".json", ".xml", ".yaml", ".yml"}
-_TEXTABLE_EXTS = _LOG_EXTS | _DOC_EXTS | _STRUCT_EXTS  # 可以当文本读的
+_TEXTABLE_EXTS = _LOG_EXTS | _DOC_EXTS | _STRUCT_EXTS
 _ARCHIVE_EXTS  = {".zip", ".tar", ".tgz", ".gz"}
+
+
+def _is_image_file(filename: str, path: str = "") -> bool:
+    """判断文件是否为图片类型（保留旧接口，供 router.py upload 端点使用）。"""
+    return _ext(filename, path) in _IMAGE_EXTS
 
 
 # ============================================================
