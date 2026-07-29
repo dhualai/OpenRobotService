@@ -18,6 +18,7 @@ from ai.config import get_ai_config
 from ai.exceptions import AITimeoutError, LowConfidenceError, ServiceUnavailableError, RetrieveEmptyError
 from ai.core import get_llm_client, get_retrieval_service, get_memory_manager
 from ai.core.logging import get_logger
+from ai.core.project_matcher import get_project_matcher
 
 logger = get_logger(__name__)
 
@@ -209,10 +210,19 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在�
 
 ## ⛔ 转工单规则（优先级最高，优先于所有意图判断）
 
-用户消息中含"转工单""转单""转人工""生成工单""提交工单""提单""不想排查""算了""不用了"等关键词时：
-→ **立即执行**：action 必须设为 "submit"，不要设为 "answer"。
-→ 回复只需一句话："收到，正在提交工单…"（不要自己说"已生成"，系统会在提交成功后自动确认）
-→ 禁止做任何其他事：不要描述工单内容、不要总结排查结果、不要反问、不要排查、不要给建议。
+用户消息中含"转工单""转单""生成工单""提交工单""提单"时：
+→ action 设为 "submit"，message 写"好的"即可（系统会自动生成提单确认消息）。
+
+用户消息中含"不想排查""算了""不用了"时：
+→ 表示用户不想继续排查了。action 设为 "answer"，回复简短收尾（如"好的，有需要随时找我"），
+  不要追问、不要继续排查。
+
+## 🧑‍💼 转人工规则
+
+用户消息中含"转人工"时（不等同于转工单）：
+→ 告知用户："目前没有在线人工客服，但我可以帮您排查问题或生成工单。"
+→ action 设为 "answer"（不是 "submit"，也不是 "ask"）。
+→ 不要追问项目信息——如果用户后续真想提单，会说"转工单"进入标准提单流程。
 
 ## 意图判断（决定回复风格，不影响知识源选择）
 - **howto（操作咨询）**：用户问"怎么做/怎么上线/怎么配置/步骤/流程"等。直接 answer，不追问不假设故障。
@@ -323,6 +333,17 @@ class AiDiagnosisPlatform:
         self._retriever = None
         self._memory_manager = None
         self._retrieval_cache: dict = {}  # 实例级缓存，不跨 session 串味
+
+    def _rewrite_images(self, r) -> str:
+        """把本地图片路径 ./media/xxx → 完整 CDN URL（跳过外链）"""
+        _dm = r.domain or "team"
+        _sd = r.sub_domain or "faq"
+        _mu = f"{self.config.media_url_prefix}/kb/{_dm}/{_sd}"
+        return re.sub(
+            r'!\[([^\]]*)\]\((?:\./)?media/([^)]+)\)',
+            rf'![\1]({_mu}/media/\2)',
+            r.content,
+        )
 
     async def _ensure_clients(self):
         if self._llm_client is None:
@@ -457,6 +478,27 @@ class AiDiagnosisPlatform:
         elif action == "submit":
             state.phase = "escalated"
 
+    async def _resolve_project(self, raw_name: str) -> str:
+        """将用户输入的项目名匹配到 helpdesk_724.project 标准名。
+
+        匹配成功返回标准名，失败返回原始输入。
+        """
+        if not raw_name or not raw_name.strip():
+            return raw_name
+        try:
+            matcher = get_project_matcher()
+            if not await matcher.ensure_loaded():
+                logger.warning("[pipeline] project DB unavailable, using raw input")
+                return raw_name.strip()
+            match = matcher.match(raw_name.strip())
+            if match:
+                return match.name
+            # 无匹配 → 保留原始输入
+            return raw_name.strip()
+        except Exception as e:
+            logger.warning(f"[pipeline] project matching failed: {e}")
+            return raw_name.strip()
+
     async def _finalize_diagnosis(self, session_id: str, state: AgentState,
                                     thinking: str, action: str, message: str,
                                     streaming: bool = False) -> dict:
@@ -510,7 +552,7 @@ class AiDiagnosisPlatform:
 
         # ---- 转工单关键词 → 直接拦截常见情况，不调 LLM ----
         # 注意：必须在 state.phase = "diagnosing" 之前，否则 _can_submit 拿不到真实 phase
-        _short_kw = ("转工单", "转单", "转人工", "生成工单", "提交工单", "提单", "帮我转", "我要转", "不想排查")
+        _short_kw = ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转", "不想排查")
         if any(kw in request.query for kw in _short_kw):
             _can, _reason = _can_submit(state)
             if not _can:
@@ -537,14 +579,17 @@ class AiDiagnosisPlatform:
             state.pending_submit = False
             state.diagnosis_rounds += 1
             state.phase = "diagnosing"
-            state.collected_info["project"] = request.query.strip()
-            logger.info(f"[agent] pending_submit 直接提单: project={state.collected_info['project']}")
+            raw_project = request.query.strip()
+            state.collected_info["project"] = await self._resolve_project(raw_project)
+            logger.info(f"[agent] pending_submit 直接提单: raw={raw_project} -> project={state.collected_info['project']}")
             try:
                 ticket_data = await self.submit(request.session_id, created_by=request.created_by)
+                proj = state.collected_info.get("project", "")
+                confirm_msg = f"好的，已为「{proj}」生成工单，工程师会尽快处理。" if proj else "好的，已为你生成工单，工程师会尽快处理。"
                 result = await self._finalize_diagnosis(
                     request.session_id, state,
                     thinking="", action="answer",
-                    message="好的，已为你生成工单，工程师会尽快处理。",
+                    message=confirm_msg,
                     streaming=False)
                 result["ticket"] = ticket_data
                 return result
@@ -634,8 +679,12 @@ class AiDiagnosisPlatform:
         if state.pending_submit and _can and parsed["action"] != "submit":
             if state.collected_info.get("project", "").strip() or state.collected_info.get("project_id", "").strip():
                 state.pending_submit = False
+                # 匹配项目名到数据库标准名
+                raw_proj = state.collected_info.get("project", "")
+                if raw_proj.strip():
+                    state.collected_info["project"] = await self._resolve_project(raw_proj)
+                    logger.info(f"[agent] pending_submit 自动提单: raw={raw_proj} -> project={state.collected_info['project']}")
                 parsed["action"] = "submit"
-                logger.info(f"[agent] pending_submit 自动提单: project={state.collected_info.get('project', '')}")
 
         # ---- Step 3: 应用 action → phase 转换 ----
         self._apply_action_phase(state, parsed["action"])
@@ -670,7 +719,8 @@ class AiDiagnosisPlatform:
                     ticket_data = await self.submit(request.session_id, created_by=request.created_by)
                     logger.info(f"[agent] 自动提单成功: session={request.session_id[:8]}, "
                                 f"ticket={ticket_data.get('data', {}).get('ticket', {}).get('ticket_id', '?')}")
-                    parsed["message"] = "好的，已为你生成工单，工程师会尽快处理。"
+                    proj = state.collected_info.get("project", "")
+                    parsed["message"] = f"好的，已为「{proj}」生成工单，工程师会尽快处理。" if proj else "好的，已为你生成工单，工程师会尽快处理。"
                     # submit() 已清空诊断状态并保存，刷新本地 state 避免 _finalize_diagnosis 覆写旧状态
                     memory = await self._memory_manager.get_memory(request.session_id)
                     state = _load_agent_state(memory.metadata) or state
@@ -739,14 +789,15 @@ class AiDiagnosisPlatform:
                 logger.debug(f"[retrieve] cache hit: {(time.perf_counter() - t0) * 1000:.0f}ms")
                 return cached["result"]
 
-            # 正常检索流程：七路并行（含平台FAQ + USP诊断）
+            # 正常检索流程：五路并行（FAQ + 车端错误码 + 翻译表 + USP诊断 + 通用知识库）
+            # 平台 FAQ 已合并入 team/faq，不再单独检索
             config = get_ai_config()
             manual_task = asyncio.wait_for(
                 self._retriever.retrieve(search_query, top_k=config.retrieval_top_k),
                 timeout=15.0,
             )
             faq_task = asyncio.wait_for(
-                self._retriever.retrieve_faq(search_query, top_k=max(2, config.retrieval_top_k - 1)),
+                self._retriever.retrieve_faq(search_query, top_k=4),  # 含产品FAQ + 平台FAQ
                 timeout=10.0,
             )
             cheduan_task = asyncio.wait_for(
@@ -757,27 +808,23 @@ class AiDiagnosisPlatform:
                 self._retriever.retrieve_translation(search_query, top_k=2),
                 timeout=10.0,
             )
-            platform_faq_task = asyncio.wait_for(
-                self._retriever.retrieve_platform_faq(search_query, top_k=2),
-                timeout=10.0,
-            )
             usp_diagnosis_task = asyncio.wait_for(
                 self._retriever.retrieve_usp_diagnosis(search_query, top_k=3),
                 timeout=10.0,
             )
 
-            logger.info(f"[retrieve] 开始六路并行检索: query={search_query[:60]}...")
+            logger.info(f"[retrieve] 开始五路并行检索: query={search_query[:60]}...")
             gathered = await asyncio.wait_for(
                 asyncio.gather(
                     manual_task, faq_task,
-                    cheduan_task, translation_task, platform_faq_task,
+                    cheduan_task, translation_task,
                     usp_diagnosis_task,
                     return_exceptions=True,
                 ),
                 timeout=20.0,
             )
-            logger.info(f"[retrieve] 六路检索完成")
-            manual_results, faq_results, cheduan_results, translation_results, platform_faq_results, usp_diagnosis_results = gathered
+            logger.info(f"[retrieve] 五路检索完成")
+            manual_results, faq_results, cheduan_results, translation_results, usp_diagnosis_results = gathered
 
             # 单路失败不拖垮全部：只丢弃异常的那一路
             if isinstance(manual_results, BaseException):
@@ -788,8 +835,6 @@ class AiDiagnosisPlatform:
                 cheduan_results = []
             if isinstance(translation_results, BaseException):
                 translation_results = []
-            if isinstance(platform_faq_results, BaseException):
-                platform_faq_results = []
             if isinstance(usp_diagnosis_results, BaseException):
                 usp_diagnosis_results = []
 
@@ -798,28 +843,21 @@ class AiDiagnosisPlatform:
             docs = []
             idx = 1
 
-            # FAQ 最优先（直接答案）
+            # FAQ 最优先（直接答案，含产品FAQ + 平台FAQ）
             for r in (faq_results or []):
                 q = r.title or ""
-                a = r.content or ""
+                a = self._rewrite_images(r) if r.content else ""
                 if a.strip():
-                    docs.append(f"---\nFAQ {idx}：{q}\n{a}\n---")
-                    idx += 1
-
-            # 平台 FAQ（服务号自身介绍，如工单类型/角色/流转等）
-            for r in (platform_faq_results or []):
-                q = r.title or ""
-                a = r.content or ""
-                if a.strip():
-                    docs.append(f"---\n📋 平台FAQ {idx}：{q}\n{a}\n---")
+                    docs.append(f"---\n📋 FAQ {idx}：{q}\n{a}\n---")
                     idx += 1
 
             # 车端错误码
             cheduan_found = False
             for r in (cheduan_results or []):
-                if r.content.strip():
+                c = self._rewrite_images(r) if r.content else ""
+                if c.strip():
                     cheduan_found = True
-                    docs.append(f"---\n🚗 车端错误码 {idx}：{r.title}\n{r.content}\n---")
+                    docs.append(f"---\n🚗 车端错误码 {idx}：{r.title}\n{c}\n---")
                     idx += 1
 
             # 关键：用户明确问了错误码，但车端知识库没匹配到 → 显式告知 LLM
@@ -833,27 +871,29 @@ class AiDiagnosisPlatform:
 
             # 翻译表
             for r in (translation_results or []):
-                if r.content.strip():
-                    docs.append(f"---\n🌐 翻译表 {idx}：{r.title}\n{r.content}\n---")
+                c = self._rewrite_images(r) if r.content else ""
+                if c.strip():
+                    docs.append(f"---\n🌐 翻译表 {idx}：{r.title}\n{c}\n---")
                     idx += 1
 
             # USP 诊断知识库
             for r in (usp_diagnosis_results or []):
                 title = r.title or ""
-                content = r.content or ""
+                content = self._rewrite_images(r) if r.content else ""
                 if content.strip():
                     docs.append(f"---\n🏭 USP诊断 {idx}：{title}\n{content}\n---")
                     idx += 1
 
             # 操作手册结果
             for r in (results or []):
+                if not r.content or not r.content.strip():
+                    continue
                 title = f"（{r.title}）" if r.title else ""
-                media_url = f"{config.media_url_prefix}/operation_doc"
-                raw = re.sub(
-                    r'!\[([^\]]*)\]\((?:\./)?media/([^)]+)\)',
-                    rf'![\1]({media_url}/\2)',
-                    r.content,
-                )
+                raw = self._rewrite_images(r)
+                # media_url 用于下方 images 兜底
+                _domain = r.domain or "team"
+                _sub = r.sub_domain or "faq"
+                media_url = f"{config.media_url_prefix}/kb/{_domain}/{_sub}"
                 # 保序压缩：每张图保留前文 200 字上下文，确保每个步骤都有文字
                 img_sep = re.compile(r'(!\[[^\]]*\]\([^)]+\))')
                 parts = img_sep.split(raw)
@@ -869,14 +909,13 @@ class AiDiagnosisPlatform:
                 # 最后一段纯文本（尾部没有图片的），只截开头
                 if len(parts) % 2 == 1 and len(parts[-1]) > ctx_budget:
                     compact[-1] = parts[-1][:ctx_budget] + "…"
-                # payload images 兜底：追回 content 中漏掉的
+                # payload images 兜底：content 中漏掉的图片从 payload 追回
                 content = "".join(compact)
                 if r.images:
                     extra = []
                     for img in r.images:
-                        img_name = img.replace("media/", "")
-                        if img_name not in content:
-                            extra.append(f"![示意图]({media_url}/{img_name})")
+                        if img not in content:
+                            extra.append(f"![示意图]({media_url}/{img})")
                     if extra:
                         content += "\n\n" + "\n".join(extra)
                 docs.append(f"---\n知识库 {idx}{title}：\n{content}\n---")
@@ -1321,7 +1360,7 @@ class AiDiagnosisPlatform:
 
         # ---- 转工单关键词 → 直接拦截常见情况，不调 LLM ----
         # 注意：必须在 state.phase = "diagnosing" 之前，否则 _can_submit 拿不到真实 phase
-        _short_kw = ("转工单", "转单", "转人工", "生成工单", "提交工单", "提单", "帮我转", "我要转", "不想排查")
+        _short_kw = ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转", "不想排查")
         if any(kw in request.query for kw in _short_kw):
             _can, _reason = _can_submit(state)
             if not _can:
@@ -1354,8 +1393,9 @@ class AiDiagnosisPlatform:
             state.pending_submit = False
             state.diagnosis_rounds += 1
             state.phase = "diagnosing"
-            state.collected_info["project"] = request.query.strip()
-            logger.info(f"[stream] pending_submit 直接提单: project={state.collected_info['project']}")
+            raw_project = request.query.strip()
+            state.collected_info["project"] = await self._resolve_project(raw_project)
+            logger.info(f"[stream] pending_submit 直接提单: raw={raw_project} -> project={state.collected_info['project']}")
             try:
                 yield {"event": "status", "data": {"stage": "submitting"}}
                 ticket_data = await self.submit(request.session_id, created_by=request.created_by)
@@ -1366,7 +1406,8 @@ class AiDiagnosisPlatform:
                     "title": ticket_info.get("title", ""),
                     "db_id": ticket_data.get("data", {}).get("db_id", 0),
                 }}
-                short_msg = "好的，已为你生成工单，工程师会尽快处理。"
+                proj = state.collected_info.get("project", "")
+                short_msg = f"好的，已为「{proj}」生成工单，工程师会尽快处理。" if proj else "好的，已为你生成工单，工程师会尽快处理。"
                 for ch in short_msg:
                     yield {"event": "token", "data": ch}
                 result = await self._finalize_diagnosis(
@@ -1507,8 +1548,12 @@ class AiDiagnosisPlatform:
         if state.pending_submit and _can and parsed["action"] != "submit":
             if state.collected_info.get("project", "").strip() or state.collected_info.get("project_id", "").strip():
                 state.pending_submit = False
+                # 匹配项目名到数据库标准名
+                raw_proj = state.collected_info.get("project", "")
+                if raw_proj.strip():
+                    state.collected_info["project"] = await self._resolve_project(raw_proj)
+                    logger.info(f"[stream] pending_submit 自动提单: raw={raw_proj} -> project={state.collected_info['project']}")
                 parsed["action"] = "submit"
-                logger.info(f"[stream] pending_submit 自动提单: project={state.collected_info.get('project', '')}")
 
         # ---- Step 3: 应用 action → phase 转换 ----
         self._apply_action_phase(state, parsed["action"])
@@ -1547,7 +1592,8 @@ class AiDiagnosisPlatform:
                     ticket_info = ticket_data.get('data', {}).get('ticket', {})
                     logger.info(f"[stream] 自动提单成功: session={request.session_id[:8]}, "
                                 f"ticket={ticket_info.get('ticket_id', '?')}")
-                    parsed["message"] = "好的，已为你生成工单，工程师会尽快处理。"
+                    proj = state.collected_info.get("project", "")
+                    parsed["message"] = f"好的，已为「{proj}」生成工单，工程师会尽快处理。" if proj else "好的，已为你生成工单，工程师会尽快处理。"
                     yield {"event": "status", "data": {
                         "stage": "submitted",
                         "ticket_id": ticket_info.get("ticket_id", ""),

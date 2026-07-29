@@ -264,6 +264,15 @@ if _cheduan_media_dir.is_dir():
         name="media_cheduan_doc",
     )
 
+# 五层 domain KB 媒体文件（kb/{domain}/{sub_domain}/media/）
+from ai.config import _KB_DIR as _kb_root
+if _kb_root.is_dir():
+    app.mount(
+        f"{_media_prefix}/kb",
+        StaticFiles(directory=str(_kb_root)),
+        name="media_kb",
+    )
+
 
 @app.get("/health")
 async def health_check():
