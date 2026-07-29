@@ -21,120 +21,41 @@ class DepartmentMatcher:
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
 
-    def match_department(self, ticket: TicketContext) -> Tuple[str, list[str]]:
-        """根据工单内容匹配最佳部门（计分制，差值 <2 倍时交 LLM 裁决）。
+    def match_department(self, ticket: TicketContext) -> str:
+        """极保守部门匹配——只在 100% 确定时才过滤。
 
-        每个部门统计命中关键词数（不计重），得分最高的获胜。
-        冠亚差距不明显时返回空字符串，由外层 LLM 做最终决策。
+        唯一明确信号:
+          - 服务号相关 → 智能规划（100%）
+          - 车体硬件故障（开不了机/雷达坏/车体损坏） → 不过滤，全量参与
+            因为"车卡住不动"可能车端可能调度，分不清楚
 
-        Returns:
-            (department_name, product_keys): 部门名 + 该部门下的产品列表
-            空字符串 = 歧义，LLM 裁决
+        其他所有情况：不过滤。让召回+LLM 在全员中根据 duty_text/modules 选择。
         """
         text = " ".join(filter(None, [
             ticket.title, ticket.problem_description,
-            ticket.robot_type or "", ticket.fault_code or "",
         ])).lower()
 
-        scopes = self._config.department_scopes
-        if not scopes:
-            return "", []
+        # 服务号: 100% 智能规划
+        service_kw = ["服务号", "微信", "我要摇人", "工单系统", "智能问答"]
+        if any(kw in text for kw in service_kw):
+            logger.info(f"[dept_matcher] 服务号信号 → 智能规划")
+            return "智能规划"
 
-        # 计分
-        scores: dict[str, int] = {}
-        for dept, scope in scopes.items():
-            hits = sum(1 for kw in scope.get("keywords", []) if kw.lower() in text)
-            if hits > 0:
-                scores[dept] = hits
-
-        if not scores:
-            logger.info(f"[dept_matcher] 部门匹配: 未命中任何部门，全量兜底")
-            return "", []
-
-        # 排序取 Top-2
-        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-        winner, win_hits = ranked[0]
-        runner_hits = ranked[1][1] if len(ranked) > 1 else 0
-
-        if runner_hits == 0 or win_hits >= runner_hits * 2:
-            # 明确获胜
-            products = scopes.get(winner, {}).get("products", [])
-            logger.info(f"[dept_matcher] 部门匹配: {winner} (hits={win_hits}, runner={runner_hits}, clear)")
-            return winner, products
-
-        # 歧义 — 交给 LLM
-        logger.info(
-            f"[dept_matcher] 部门匹配: 歧义 — top={winner}({win_hits}) "
-            f"vs runner={ranked[1][0]}({runner_hits}), 交 LLM 裁决"
-        )
-        return "", []
-
-    def match_products(self, ticket: TicketContext, department: str) -> List[str]:
-        """在部门内匹配产品（基于 product_keywords）。
-
-        Returns:
-            命中的产品 key 列表（可能多个，如调度USP的工单也可能涉及服务号）。
-        """
-        scope = self._config.department_scopes.get(department)
-        if not scope:
-            return []
-
-        candidate_products = scope.get("products", [])
-        if not candidate_products:
-            return []
-
-        text = " ".join(filter(None, [
-            ticket.title, ticket.problem_description,
-            ticket.robot_type or "", ticket.fault_code or "",
-        ])).lower()
-
-        product_kw = self._config.product_keywords
-        matched = []
-        for prod in candidate_products:
-            keywords = product_kw.get(prod, [])
-            if any(kw.lower() in text for kw in keywords):
-                matched.append(prod)
-
-        if matched:
-            logger.info(f"[dept_matcher] 产品匹配: {matched}")
-        else:
-            # 部门内的所有产品都参与（部门匹配已确保相关性）
-            matched = candidate_products
-            logger.info(f"[dept_matcher] 产品匹配: 未精确命中，全产品={matched}")
-
-        return matched
+        # 其他: 不过滤
+        logger.info(f"[dept_matcher] 非服务号，不过滤（全量参与）")
+        return ""
 
     def filter_by_department(
         self,
         engineers: List[EngineerProfile],
         department: str,
     ) -> List[EngineerProfile]:
-        """按部门过滤工程师列表。"""
+        """按部门过滤工程师列表。空字符串 = 不过滤。"""
         if not department:
             return list(engineers)
         filtered = [e for e in engineers if e.department == department]
         logger.info(f"[dept_matcher] 部门过滤: {len(engineers)}→{len(filtered)} ({department})")
         return filtered
-
-    def filter_by_products(
-        self,
-        engineers: List[EngineerProfile],
-        products: List[str],
-    ) -> List[EngineerProfile]:
-        """只保留 responsibility_modules 中包含指定产品 key 的工程师。
-
-        一个工程师的 responsibility_modules 是 {"调度USP": [...], "服务号": [...]}
-        只要 keys 与 products 有交集就保留。
-        """
-        if not products:
-            return list(engineers)
-        product_set = set(products)
-        filtered = [
-            e for e in engineers
-            if product_set & set(e.responsibility_modules.keys())
-        ]
-        logger.info(f"[dept_matcher] 产品过滤: {len(engineers)}→{len(filtered)} (products={products})")
-        return filtered if filtered else list(engineers)  # 过滤光了就不过滤
 
     def filter(
         self,
@@ -144,16 +65,18 @@ class DepartmentMatcher:
     ) -> List[EngineerProfile]:
         """一站式：工单 → 部门 → 候选人。
 
-        只做部门级硬过滤，不做产品级——
-        同一部门内所有人参与召回+排序，自然靠模块匹配和 LLM 区分。
+        极保守：仅服务号→智能规划（100%确定），其余全量参与。
         project_name 预留入口，暂不参与逻辑。
         """
         if not engineers:
             return []
 
-        dept, _ = self.match_department(ticket)
+        dept = self.match_department(ticket)
 
         if dept:
             engineers = self.filter_by_department(engineers, dept)
+            if not engineers:
+                logger.warning(f"[dept_matcher] 部门 {dept} 无可用工程师，回退全量")
+                return []
 
         return engineers
