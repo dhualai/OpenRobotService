@@ -54,15 +54,38 @@ def _fetch_from_users_table() -> list[dict]:
 
 def _build_profiles(rows: list[dict]) -> List[EngineerProfile]:
     profiles = []
+    skipped = 0
     for row in rows:
+        # ── 准入校验：三个必填字段 ──
+        dept = (row.get("department") or "").strip()
+        modules = row.get("responsibility_modules") or {}
+        # responsibility_modules 不能是空 dict
+        if isinstance(modules, dict):
+            modules = {k: v for k, v in modules.items() if v}  # 去掉空列表的 key
+            has_modules = any(modules.values())
+        else:
+            has_modules = bool(modules)
+
+        if not dept:
+            logger.debug(f"[personnel_sync] 跳过 {row.get('name')}: 缺少 department")
+            skipped += 1
+            continue
+        if not has_modules:
+            logger.debug(f"[personnel_sync] 跳过 {row.get('name')}: responsibility_modules 为空")
+            skipped += 1
+            continue
+
         profiles.append(EngineerProfile(
             id=row["id"],
             name=row["name"],
-            department=row["department"],
-            responsibility_modules=row["responsibility_modules"],
-            job_level=row["job_level"],
-            duty_text=row["duty_text"],
+            department=dept,
+            responsibility_modules=modules,
+            job_level=row.get("job_level", 1),
+            duty_text=row.get("duty_text"),  # 有更好，没有也行
         ))
+
+    if skipped:
+        logger.info(f"[personnel_sync] 准入校验: 跳过 {skipped} 人 (缺 department/modules)")
     return profiles
 
 
