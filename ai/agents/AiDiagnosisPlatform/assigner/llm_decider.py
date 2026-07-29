@@ -57,7 +57,7 @@ class LlmDecider:
             lines.append(f"工程师ID: {eng.id}")
             lines.append(f"  姓名: {eng.name}")
             lines.append(f"  职级: L{eng.job_level}")
-            lines.append(f"  责任模块: {', '.join(eng.responsibility_modules) if eng.responsibility_modules else '无'}")
+            lines.append(f"  责任模块: {', '.join(eng.all_modules()) if eng.all_modules() else '无'}")
             if eng.duty_text:
                 duty = eng.duty_text[:80] + "..." if len(eng.duty_text) > 80 else eng.duty_text
                 lines.append(f"  职责简述: {duty}")

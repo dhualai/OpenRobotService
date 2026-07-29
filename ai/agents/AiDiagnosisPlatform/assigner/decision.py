@@ -49,7 +49,7 @@ class DecisionMaker:
             if eng:
                 lines.append(
                     f"- {eng.name}({eid}): 置信度 {d['total_score']:.2f} "
-                    f"(L{d.get('job_level', '?')}), 模块 {eng.responsibility_modules}"
+                    f"(L{d.get('job_level', '?')}), 模块 {eng.all_modules()}"
                 )
         return "\n".join(lines) or "无其他候选"
 
@@ -59,7 +59,7 @@ class DecisionMaker:
         h = detail.get("history_score", 0)
         s = detail.get("semantic_score", 0)
         if m > 0:
-            reasons.append(f"责任模块匹配({m:.2f}): {', '.join(eng.responsibility_modules)}")
+            reasons.append(f"责任模块匹配({m:.2f}): {', '.join(eng.all_modules())}")
         if h > 0:
             reasons.append(f"历史工单匹配({h:.2f})")
         if s > 0:
