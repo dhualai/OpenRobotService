@@ -27,6 +27,38 @@ function todayStr(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+// 生成结果本地缓存：每日首次生成后写入，当天内再次查看（切换视图/日期/流式开关）直接读取，
+// 不重复调用 LLM；仅点击「刷新」按钮才强制重新生成并覆盖缓存。
+// key = period:date:模式（流式/结构化内容形态不同，分开缓存）。
+const REPORT_CACHE_KEY = 'admin_daily_summary_report_cache_v1';
+
+interface CachedReportEntry {
+  generatedOnDay: string;
+  report: ReportResult | null;
+  streamText: string;
+}
+
+function loadReportCacheMap(): Record<string, CachedReportEntry> {
+  try {
+    const raw = localStorage.getItem(REPORT_CACHE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveReportCacheEntry(key: string, entry: CachedReportEntry): void {
+  try {
+    const map = loadReportCacheMap();
+    map[key] = entry;
+    localStorage.setItem(REPORT_CACHE_KEY, JSON.stringify(map));
+  } catch { /* 本地存储不可用（如隐私模式）不影响本次展示 */ }
+}
+
+function reportCacheKey(p: ReportPeriod, d: string, stream: boolean): string {
+  return `${p}:${d}:${stream ? 'stream' : 'struct'}`;
+}
+
 function formatDateTime(iso: string): string {
   if (!iso) return '';
   const d = new Date(iso);
@@ -142,7 +174,20 @@ export default function DailySummaryAgent() {
   const [streamText, setStreamText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
 
-  const fetchReport = useCallback(async (p: ReportPeriod, d: string, stream: boolean) => {
+  const fetchReport = useCallback(async (p: ReportPeriod, d: string, stream: boolean, force: boolean) => {
+    const key = reportCacheKey(p, d, stream);
+
+    if (!force) {
+      const cached = loadReportCacheMap()[key];
+      if (cached && cached.generatedOnDay === todayStr()) {
+        setReport(cached.report);
+        setStreamText(cached.streamText);
+        setError(null);
+        setLoading(false);
+        return;
+      }
+    }
+
     setLoading(true);
     setError(null);
     setReport(null);
@@ -153,10 +198,11 @@ export default function DailySummaryAgent() {
       setIsStreaming(true);
       try {
         const response = await generateReportStream({ period: p, date: d });
-        await readReportStream(response, (text) => {
+        const fullText = await readReportStream(response, (text) => {
           setStreamText(text);
           setLoading(false); // 第一个 chunk 到达时关闭 loading
         });
+        saveReportCacheEntry(key, { generatedOnDay: todayStr(), report: null, streamText: fullText });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -168,6 +214,7 @@ export default function DailySummaryAgent() {
       try {
         const data = await generateReport({ period: p, date: d });
         setReport(data);
+        saveReportCacheEntry(key, { generatedOnDay: todayStr(), report: data, streamText: '' });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -177,10 +224,10 @@ export default function DailySummaryAgent() {
   }, []);
 
   useEffect(() => {
-    fetchReport(period, date, useStream);
+    fetchReport(period, date, useStream, false);
   }, [period, date, useStream, fetchReport]);
 
-  const handleRefresh = () => fetchReport(period, date, useStream);
+  const handleRefresh = () => fetchReport(period, date, useStream, true);
 
   return (
     <div style={{ padding: 16 }}>
