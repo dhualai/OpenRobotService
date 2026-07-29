@@ -190,9 +190,9 @@ category_module_map:
 # 3. 精排评分权重
 # ==========================
 ranker_weights:
-  module_match: 0.40
-  history_match: 0.35
-  semantic_match: 0.25
+  module_match: 0.50
+  history_match: 0.10
+  semantic_match: 0.40
 
 # ==========================
 # 4. 职级惩罚系数
