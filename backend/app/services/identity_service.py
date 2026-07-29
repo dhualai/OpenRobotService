@@ -296,3 +296,302 @@ class IdentityService:
     def get_all_reporters(username: str, project_id: str) -> List[Dict[str, Any]]:
         from app.services.permission_service import permission_service
         return permission_service.get_all_reporters(username, project_id)
+
+    @staticmethod
+    def add_project(project_id: str, project_code: str, project_name: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            existing_project = db.query(Project).filter(
+                (Project.id == project_id) | (Project.code == project_code) | (Project.name == project_name)
+            ).first()
+            if existing_project:
+                return False
+
+            project = Project(id=project_id, code=project_code, name=project_name)
+            db.add(project)
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"添加项目失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def update_project(project_id: str, project_name: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if not project:
+                return False
+
+            existing_project = db.query(Project).filter(
+                Project.name == project_name, Project.id != project_id
+            ).first()
+            if existing_project:
+                return False
+
+            project.name = project_name
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"更新项目失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def delete_project(project_id: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if not project:
+                return False
+
+            db.execute(user_project_roles.delete().where(
+                user_project_roles.c.project_id == project_id
+            ))
+
+            db.delete(project)
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"删除项目失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def add_role_permission(role_permission_id: str, role_id: str, permission_id: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            existing_perm = db.execute(role_permissions.select().where(
+                (role_permissions.c.role_id == role_id) &
+                (role_permissions.c.permission_id == permission_id)
+            )).first()
+
+            if existing_perm:
+                return False
+
+            db.execute(role_permissions.insert().values(
+                id=role_permission_id,
+                role_id=role_id,
+                permission_id=permission_id
+            ))
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"添加角色权限失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def remove_role_permission(role_id: str, permission_id: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            result = db.execute(role_permissions.delete().where(
+                (role_permissions.c.role_id == role_id) &
+                (role_permissions.c.permission_id == permission_id)
+            ))
+            db.commit()
+            return result.rowcount > 0
+        except Exception as e:
+            db.rollback()
+            print(f"删除角色权限失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_all_permissions() -> List[Dict[str, Any]]:
+        db = IdentityService._get_db()
+        try:
+            permissions = db.query(Permission).all()
+            return [{
+                'id': permission.id,
+                'code': permission.code,
+                'name': permission.name,
+                'description': permission.description,
+                'resource_type': permission.resource_type,
+                'action': permission.action,
+                'enabled': permission.enabled == "true"
+            } for permission in permissions]
+        finally:
+            db.close()
+
+    @staticmethod
+    def add_permission(
+        permission_id: str,
+        code: str,
+        name: str,
+        resource_type: str,
+        action: str,
+        description: Optional[str] = None
+    ) -> bool:
+        db = IdentityService._get_db()
+        try:
+            existing_permission = db.query(Permission).filter(
+                (Permission.id == permission_id) | (Permission.code == code)
+            ).first()
+            if existing_permission:
+                return False
+
+            permission = Permission(
+                id=permission_id,
+                code=code,
+                name=name,
+                resource_type=resource_type,
+                action=action,
+                description=description
+            )
+            db.add(permission)
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"添加权限失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def delete_permission(permission_id: str) -> bool:
+        db = IdentityService._get_db()
+        try:
+            permission = db.query(Permission).filter(Permission.id == permission_id).first()
+            if not permission:
+                return False
+
+            db.execute(role_permissions.delete().where(
+                role_permissions.c.permission_id == permission_id
+            ))
+
+            db.delete(permission)
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"删除权限失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def update_permission(permission_id: str, **kwargs) -> bool:
+        db = IdentityService._get_db()
+        try:
+            permission = db.query(Permission).filter(Permission.id == permission_id).first()
+            if not permission:
+                return False
+
+            update_fields = {}
+            for key, value in kwargs.items():
+                if key in ['name', 'description', 'resource_type', 'action', 'enabled'] and value is not None:
+                    if key == 'enabled':
+                        update_fields[key] = "true" if value else "false"
+                    else:
+                        update_fields[key] = value
+
+            if not update_fields:
+                return True
+
+            db.query(Permission).filter(Permission.id == permission_id).update(update_fields)
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"更新权限失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_project_members(project_id: str, include_usp: bool = False) -> List[Dict[str, Any]]:
+        db = IdentityService._get_db()
+        try:
+            report_to_subquery = select(UserDB.username).where(
+                UserDB.username == user_project_roles.c.report_to_id
+            ).correlate(user_project_roles).scalar_subquery()
+
+            if include_usp:
+                stmt = select(
+                    Role.name.label('role_name'),
+                    UserDB.username,
+                    UserDB.name,
+                    UserDB.external_credentials,
+                    user_project_roles.c.project_id,
+                    user_project_roles.c.role_id,
+                    report_to_subquery.label('report_to_name')
+                ).select_from(user_project_roles).join(
+                    Role, user_project_roles.c.role_id == Role.id
+                ).join(
+                    UserDB, user_project_roles.c.user_id == UserDB.id
+                ).where(user_project_roles.c.project_id == project_id)
+            else:
+                stmt = select(
+                    Role.name.label('role_name'),
+                    UserDB.username,
+                    UserDB.name,
+                    user_project_roles.c.project_id,
+                    user_project_roles.c.role_id,
+                    report_to_subquery.label('report_to_name')
+                ).select_from(user_project_roles).join(
+                    Role, user_project_roles.c.role_id == Role.id
+                ).join(
+                    UserDB, user_project_roles.c.user_id == UserDB.id
+                ).where(user_project_roles.c.project_id == project_id)
+
+            try:
+                results = db.execute(stmt).fetchall()
+            except Exception as e:
+                import traceback
+                print(f"查询项目成员失败: {traceback.format_exc()}")
+                return []
+
+            members = []
+            for result in results:
+                member = {
+                    'role_name': result.role_name,
+                    'username': result.username,
+                    'name': result.name,
+                    'project_id': result.project_id,
+                    'role_id': result.role_id,
+                    'report_to_name': result.report_to_name,
+                    'external_credentials': json.loads(result.external_credentials) if hasattr(result, 'external_credentials') and result.external_credentials else []
+                }
+                members.append(member)
+
+            return members
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_users_by_role(role_id: str) -> List[Dict[str, str]]:
+        db = IdentityService._get_db()
+        try:
+            user_roles = db.execute(user_project_roles.select().where(
+                user_project_roles.c.role_id == role_id
+            )).fetchall()
+
+            unique_user_ids = set(ur.user_id for ur in user_roles)
+
+            users = []
+            for user_id in unique_user_ids:
+                user = IdentityService.get_user_by_id(user_id)
+                if user:
+                    users.append({
+                        'id': user_id,
+                        'username': user['username']
+                    })
+
+            return users
+        finally:
+            db.close()
+
+
+identity_service = IdentityService()
