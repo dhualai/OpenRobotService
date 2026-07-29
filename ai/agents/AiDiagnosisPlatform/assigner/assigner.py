@@ -32,7 +32,7 @@ from ai.agents.AiDiagnosisPlatform.assigner.department_matcher import Department
 from ai.agents.AiDiagnosisPlatform.assigner.llm_decider import LlmDecider
 from ai.agents.AiDiagnosisPlatform.assigner.llm_recaller import LlmRecaller
 from ai.agents.AiDiagnosisPlatform.assigner.ranker import Ranker
-from ai.agents.AiDiagnosisPlatform.assigner.recall import MultiPathRecaller
+from ai.agents.AiDiagnosisPlatform.assigner.recall import RecallResult
 from ai.agents.AiDiagnosisPlatform.assigner.semantic_recall import SemanticRecaller
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     AssignmentResult, EngineerProfile, TicketContext,
@@ -46,7 +46,6 @@ class Assigner:
         self._config = config or AssignerConfig()
         self._dept_matcher = DepartmentMatcher(config=self._config)
         self._llm_recaller = LlmRecaller(config=self._config)
-        self._recaller = MultiPathRecaller()
         self._semantic_recaller = SemanticRecaller(config=self._config)
         self._ranker = Ranker(config=self._config)
         self._llm_decider = LlmDecider(config=self._config)
@@ -75,8 +74,8 @@ class Assigner:
         logger.info(f"派单 Step 0 部门过滤: {len(engineer_profiles)}→{len(candidates)}人")
 
         # ── Step 1: 三路召回 ──
+        recall_result = RecallResult()
         # L1 纯LLM 召回
-        recall_result = await self._recaller.arecall(ticket=ticket_context, engineers=candidates)
         try:
             recall_result.llm_recall = await self._llm_recaller.arecall(
                 ticket=ticket_context, engineers=candidates,

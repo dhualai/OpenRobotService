@@ -1,6 +1,5 @@
 """配置加载器：统一加载 assigner/config/ 下的配置"""
 
-import re
 from pathlib import Path
 from typing import Any, Dict
 
@@ -13,15 +12,6 @@ except ImportError:
     raise RuntimeError("PyYAML 是必要依赖，请安装: pip install pyyaml")
 
 
-def _load_prompts_txt(path):
-    with open(path, "r", encoding="utf-8") as f:
-        content = f.read()
-    prompts = {}
-    for match in re.finditer(r"^===\s*(.+?)\s*===(.*?)(?=^===|\Z)", content, re.MULTILINE | re.DOTALL):
-        prompts[match.group(1).strip()] = match.group(2).strip()
-    return prompts
-
-
 class AssignerConfig:
     _CONFIG_DIR = Path(__file__).parent / "config"
 
@@ -31,7 +21,6 @@ class AssignerConfig:
         self.job_level_penalty: Dict[int, float] = {}
         self.department_scopes: Dict[str, dict] = {}
         self.decision_thresholds: Dict[str, float] = {}
-        self.prompts: Dict[str, str] = {}
         self._load_all()
 
     def _load_all(self):
@@ -42,7 +31,6 @@ class AssignerConfig:
         self.job_level_penalty = {int(k): v for k, v in raw.items()}
         self.department_scopes = config.get("department_scopes", {})
         self.decision_thresholds = config.get("decision_thresholds", {})
-        self.prompts = _load_prompts_txt(self._CONFIG_DIR / "prompts.txt")
 
     def reload(self):
         self._load_all()
