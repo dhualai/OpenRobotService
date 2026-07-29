@@ -27,13 +27,15 @@ from typing import Dict, List, Optional
 
 from ai.core.logging import get_logger
 from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
-from ai.agents.AiDiagnosisPlatform.assigner.decision import DecisionMaker
-from ai.agents.AiDiagnosisPlatform.assigner.department_matcher import DepartmentMatcher
-from ai.agents.AiDiagnosisPlatform.assigner.llm_decider import LlmDecider
-from ai.agents.AiDiagnosisPlatform.assigner.llm_recaller import LlmRecaller
-from ai.agents.AiDiagnosisPlatform.assigner.ranker import Ranker
-from ai.agents.AiDiagnosisPlatform.assigner.recall import RecallResult
-from ai.agents.AiDiagnosisPlatform.assigner.semantic_recall import SemanticRecaller
+from ai.agents.AiDiagnosisPlatform.assigner.ranking.decision import DecisionMaker
+from ai.agents.AiDiagnosisPlatform.assigner.filtering.department_matcher import DepartmentMatcher
+from ai.agents.AiDiagnosisPlatform.assigner.ranking.llm_decider import LlmDecider
+from ai.agents.AiDiagnosisPlatform.assigner.recall.llm_recaller import LlmRecaller
+from ai.agents.AiDiagnosisPlatform.assigner.ranking.ranker import Ranker
+from ai.agents.AiDiagnosisPlatform.assigner.recall.recall_result import RecallResult
+from ai.agents.AiDiagnosisPlatform.assigner.recall.semantic_recaller import (
+    SemanticRecaller, invalidate_semantic_cache,
+)
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     AssignmentResult, EngineerProfile, TicketContext,
 )
@@ -116,4 +118,4 @@ class Assigner:
 
     def reload_config(self):
         self._config.reload()
-        self._semantic_recaller.reload()
+        invalidate_semantic_cache()
