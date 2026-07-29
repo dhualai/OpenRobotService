@@ -1,10 +1,15 @@
-"""L3 语义召回：Embedding 向量相似度"""
+"""L3/L4 语义+历史召回：共享 Embedding，一次查询返回两路分数
+
+- semantic_score: cos(工单嵌入, 工程师画像嵌入)
+- history_score: cos(工单嵌入, 历史已解决工单嵌入) → 按 engineer_id 聚合
+"""
 
 from typing import Dict, List, Optional
 
 import numpy as np
 
 from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
+from ai.agents.AiDiagnosisPlatform.assigner.history_sync import load_history_records
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
 
 
@@ -15,9 +20,12 @@ def _cos(u, v):
 
 
 class SemanticRecaller:
+
     def __init__(self, config=None):
         self._config = config or AssignerConfig()
         self._eng_embs: Dict[str, List[float]] = {}
+        self._hist_recs: List[dict] = []
+        self._hist_embs: List[List[float]] = []
         self._pre = False
 
     def _build_eng_texts(self, engineers):
@@ -40,28 +48,58 @@ class SemanticRecaller:
             return
         from ai.core import get_embed_client
         ec = await get_embed_client()
+
+        # 工程师画像
         texts = self._build_eng_texts(engineers)
         if texts:
             embs = await ec.embed_batch(texts)
             for eng, emb in zip(engineers, embs):
                 self._eng_embs[eng.id] = emb.tolist() if isinstance(emb, np.ndarray) else emb
+
+        # 历史已解决工单
+        self._hist_recs = load_history_records(self._config.module_keywords)
+        if self._hist_recs:
+            htexts = [" ".join(filter(None, [r.get("title", ""), r.get("description", "")]))
+                      for r in self._hist_recs]
+            self._hist_embs = [emb.tolist() if isinstance(emb, np.ndarray) else emb
+                               for emb in await ec.embed_batch(htexts)]
+
         self._pre = True
 
-    async def arecall(self, ticket, engineers) -> Dict[str, float]:
+    async def arecall(self, ticket, engineers
+                      ) -> tuple[Dict[str, float], Dict[str, float]]:
+        """返回 (semantic_score, history_score)。"""
         if not self._pre:
             await self.aprecompute(engineers)
         from ai.core import get_embed_client
         ec = await get_embed_client()
         q = " ".join(filter(None, [ticket.title, ticket.problem_description, ticket.robot_type]))
         qe = (await ec.embed(q)).tolist()
-        scores = {}
+
+        # 画像语义
+        sem = {}
         for eng in engineers:
             emb = self._eng_embs.get(eng.id)
             if emb:
                 s = _cos(qe, emb)
                 if s > 0:
-                    scores[eng.id] = s
-        return scores
+                    sem[eng.id] = s
+
+        # 历史工单语义 → 按 engineer_id 聚合
+        his = {}
+        if self._hist_recs and self._hist_embs:
+            hits: Dict[str, list] = {}
+            for rec, he in zip(self._hist_recs, self._hist_embs):
+                s = _cos(qe, he)
+                if s > 0.3:
+                    eid = rec.get("engineer_id", "").strip()
+                    if eid:
+                        hits.setdefault(eid, []).append(s)
+            for eid, sims in hits.items():
+                his[eid] = sum(sims) / len(sims)
+
+        return sem, his
 
     def reload(self):
-        self._eng_embs.clear(); self._pre = False
+        self._eng_embs.clear(); self._hist_recs.clear(); self._hist_embs.clear()
+        self._pre = False

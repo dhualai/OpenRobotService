@@ -31,7 +31,6 @@ from ai.agents.AiDiagnosisPlatform.assigner.decision import DecisionMaker
 from ai.agents.AiDiagnosisPlatform.assigner.department_matcher import DepartmentMatcher
 from ai.agents.AiDiagnosisPlatform.assigner.llm_decider import LlmDecider
 from ai.agents.AiDiagnosisPlatform.assigner.llm_recaller import LlmRecaller
-from ai.agents.AiDiagnosisPlatform.assigner.module_inferencer import ModuleInferencer
 from ai.agents.AiDiagnosisPlatform.assigner.ranker import Ranker
 from ai.agents.AiDiagnosisPlatform.assigner.recall import MultiPathRecaller
 from ai.agents.AiDiagnosisPlatform.assigner.semantic_recall import SemanticRecaller
@@ -47,10 +46,7 @@ class Assigner:
         self._config = config or AssignerConfig()
         self._dept_matcher = DepartmentMatcher(config=self._config)
         self._llm_recaller = LlmRecaller(config=self._config)
-        self._recaller = MultiPathRecaller(
-            module_inferencer=ModuleInferencer(config=self._config),
-            config=self._config,
-        )
+        self._recaller = MultiPathRecaller()
         self._semantic_recaller = SemanticRecaller(config=self._config)
         self._ranker = Ranker(config=self._config)
         self._llm_decider = LlmDecider(config=self._config)
@@ -88,12 +84,14 @@ class Assigner:
             logger.debug(f"派单 L1 LLM召回: {len(recall_result.llm_recall)} 人")
         except Exception:
             pass
-        # L3 语义召回
+        # L3 语义 + L4 历史（共享一次 Embedding）
         try:
-            recall_result.semantic_recall = await self._semantic_recaller.arecall(
+            sem, his = await self._semantic_recaller.arecall(
                 ticket=ticket_context, engineers=candidates,
             )
-            logger.debug(f"派单 L3 语义召回: {len(recall_result.semantic_recall)} 人")
+            recall_result.semantic_recall = sem
+            recall_result.history_recall = his
+            logger.debug(f"派单 L3语义:{len(sem)}人 L4历史:{len(his)}人")
         except Exception:
             pass
 
