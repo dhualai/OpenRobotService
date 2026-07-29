@@ -52,11 +52,12 @@ class SolutionDraft(BaseModel):
 
 class AttachmentAnalysis(BaseModel):
     """附件分析摘要"""
-    has_logs: bool = False
+    has_logs: bool = False           # 日志/文本/文档/结构化文件
     log_summary: str = ""
     has_replay: bool = False
     replay_summary: str = ""
-    has_screenshots: bool = False
+    has_screenshots: bool = False    # 图片
+    file_count: int = 0              # 已解析的文件/附件数
 
 
 class TaskContext(BaseModel):
