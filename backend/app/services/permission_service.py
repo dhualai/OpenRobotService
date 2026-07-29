@@ -280,7 +280,7 @@ class PermissionService:
                 'external_credentials': external_credentials,
                 'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
                 'department': getattr(db_user, 'department', None),
-                'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or [],
+                'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or {},
                 'job_level': getattr(db_user, 'job_level', 1),
                 'duty_text': getattr(db_user, 'duty_text', None),
             }
