@@ -467,6 +467,18 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     setLoading(true);
 
     const assistantId = uid();
+    // 节流渲染相关变量提升到函数作用域：try 块内的 const/let 对 finally 不可见，必须外提
+    let acc = '';
+    let lastFlush = 0;
+    const FLUSH_MS = 90;
+    const renderAcc = () => setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
+    const scheduleRender = () => {
+      const now = Date.now();
+      if (now - lastFlush >= FLUSH_MS) {
+        lastFlush = now;
+        renderAcc();
+      }
+    };
     try {
       const sid = ensureSessionId();
       const wasNew = !convRef.current; // 新会话：首轮问答完成后才同步到列表
@@ -485,7 +497,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
-      let acc = '';
       let solutionDraft: Message['solution_draft'] | null = null;
       let ticketCreatedThisTurn = false;
       let currentEvent = '';
@@ -505,10 +516,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             const data = JSON.parse(line.slice(6));
             if (data.token) {
               acc += data.token;
-              setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
+              scheduleRender();
             } else if (data.content) {
               acc += data.content;
-              setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
+              scheduleRender();
             }
             // 流式错误（如诊断 pipeline 抛错）：捕获错误信息，循环结束后抛出，避免静默空气泡
             if (currentEvent === 'error' && data.error) {
@@ -563,8 +574,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       }
       setMessages((prev) => prev.filter((m) => m.id !== assistantId));
     } finally {
+      // 先释放发送锁与 loading，再强制刷新最终内容，避免刷新异常时再次卡死发送
       setLoading(false);
       sendingRef.current = false;
+      // 强制刷新最终完整内容：流式结束前最后一次 flush 可能早于 90ms 窗口，确保末态不丢字
+      renderAcc();
     }
   };
 
