@@ -1,6 +1,6 @@
 // 可复用 AI 对话面板 — 提单 Agent（/api/ai/qa/ask/stream）
 // 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { memo, useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Textarea, Toast, Popup, Tag } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
@@ -66,6 +66,110 @@ interface Message {
 }
 
 const uid = () => Date.now().toString() + Math.random().toString(36).slice(2, 6);
+
+// 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
+const MessageBubble = memo(function MessageBubble({
+  msg, editingId, compact, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave, onEditCancel,
+}: {
+  msg: Message;
+  editingId: string | null;
+  compact: boolean;
+  onToggleReaction: (id: string, type: 'like' | 'dislike') => void;
+  onCopy: (content: string) => void;
+  onEditStart: (id: string) => void;
+  onEditChange: (id: string, value: string) => void;
+  onEditSave: (msg: Message) => void;
+  onEditCancel: () => void;
+}) {
+  return (
+    <div className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
+      <div className={`chat-bubble ${msg.role === 'user' ? 'is-user' : 'is-ai'}`}>
+        {msg.imageUrl && (
+          <div className="chat-bubble__media">
+            <img src={msg.imageUrl} alt="附件" className="chat-bubble__img" />
+            {msg.uploading && (
+              <div className="chat-bubble__media-overlay">
+                <span className="chat-bubble__media-spinner" />
+                <span className="chat-bubble__media-percent">{msg.percent ?? 0}%</span>
+              </div>
+            )}
+            {msg.failed && (
+              <div className="chat-bubble__media-overlay is-failed">
+                <span className="chat-bubble__media-failtext">上传失败</span>
+              </div>
+            )}
+          </div>
+        )}
+        {msg.attachment && (
+          <div className={`chat-bubble__file${msg.failed ? ' is-failed' : ''}`}>
+            <span className="chat-bubble__file-icon">📎</span>
+            <span className="chat-bubble__file-name">{msg.attachment.name}</span>
+            {msg.failed ? (
+              <span className="chat-bubble__file-fail">上传失败</span>
+            ) : msg.uploading ? (
+              <span className="chat-bubble__file-percent">{msg.percent ?? 0}%</span>
+            ) : (
+              <span className="chat-bubble__file-size">
+                {msg.attachment.size >= 1024 * 1024
+                  ? `${(msg.attachment.size / 1024 / 1024).toFixed(1)} MB`
+                  : `${Math.max(1, Math.round(msg.attachment.size / 1024))} KB`}
+              </span>
+            )}
+            {msg.uploading && (
+              <div className="chat-bubble__file-track">
+                <div className="chat-bubble__file-fill" style={{ width: `${msg.percent ?? 0}%` }} />
+              </div>
+            )}
+          </div>
+        )}
+        {editingId === msg.id ? (
+          <Textarea
+            value={msg.content}
+            autosize={{ minRows: 1, maxRows: 6 }}
+            onChange={(v) => onEditChange(msg.id, String(v))}
+          />
+        ) : msg.role === 'assistant' ? (
+          msg.content ? (
+            msg.streaming ? (
+              <div className="chat-bubble__text" style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+            ) : (
+              <MarkdownRenderer content={msg.content} compact={compact} />
+            )
+          ) : (
+            <div className="chat-bubble__typing" aria-label="AI 正在分析">
+              <span /><span /><span />
+            </div>
+          )
+        ) : (
+          <div className="chat-bubble__text">{msg.content}</div>
+        )}
+      </div>
+
+      <div className="chat-actions">
+        {msg.role === 'assistant' && (
+          <>
+            <button className={`chat-action ${msg.reaction === 'like' ? 'is-active' : ''}`} onClick={() => onToggleReaction(msg.id, 'like')}>👍</button>
+            <button className={`chat-action ${msg.reaction === 'dislike' ? 'is-active' : ''}`} onClick={() => onToggleReaction(msg.id, 'dislike')}>👎</button>
+            <button className="chat-action" onClick={() => onCopy(msg.content)}>📋</button>
+          </>
+        )}
+        {msg.role === 'user' && (
+          <>
+            <button className="chat-action" onClick={() => onCopy(msg.content)}>📋</button>
+            {editingId === msg.id ? (
+              <>
+                <button className="chat-action" onClick={() => onEditSave(msg)}>✅</button>
+                <button className="chat-action" onClick={onEditCancel}>✖️</button>
+              </>
+            ) : (
+              <button className="chat-action" onClick={() => onEditStart(msg.id)}>✏️</button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+});
 
 const SCENE_CONFIG: Record<ChatScene, {
   sceneType: string;
@@ -148,7 +252,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     if (!atBottomRef.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   }, []);
-  useEffect(() => { scrollToBottom(); }, [messages]);
+  useEffect(() => { scrollToBottom(); }, [messages, scrollToBottom]);
   // 监听用户滚动，判断是否贴底（上滑看历史时不强制拉回）
   useEffect(() => {
     const el = messagesContainerRef.current;
@@ -469,6 +573,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     setEditingId(null);
     send(msg.content);
   };
+  // 用 ref 持有最新 editAndResend，向 memo 气泡提供稳定 onEditSave，避免编辑态频繁重渲染所有消息
+  const editAndResendRef = useRef(editAndResend);
+  editAndResendRef.current = editAndResend;
+  const handleEditSave = useCallback((msg: Message) => editAndResendRef.current(msg), []);
 
   // voiceWillCancelRef 在 handleMove 中直接同步写入，不再通过 useEffect 异步同步
 
@@ -756,11 +864,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
-  const toggleReaction = (id: string, type: 'like' | 'dislike') => {
+  const toggleReaction = useCallback((id: string, type: 'like' | 'dislike') => {
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, reaction: m.reaction === type ? null : type } : m)));
-  };
+  }, []);
 
-  const copyContent = (content: string) => {
+  const copyContent = useCallback((content: string) => {
     // Clipboard API（安全上下文可用），否则降级 execCommand
     if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard.writeText(content).then(
@@ -770,7 +878,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       return;
     }
     fallbackCopy(content);
-  };
+  }, []);
 
   const fallbackCopy = (content: string) => {
     const ta = document.createElement('textarea');
@@ -798,7 +906,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   return (
     <div className={`chat-panel${compact ? ' is-compact' : ''}`}>
 
-      <div className="chat-view__messages">
+      <div className="chat-view__messages" ref={messagesContainerRef}>
         {messages.length === 0 && (
           <div className="chat-view__empty">
             {!isCall && <div className="chat-view__empty-emoji">{cfg.emptyEmoji}</div>}
@@ -810,94 +918,18 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         )}
 
         {messages.map((msg) => (
-          <div key={msg.id} className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
-            <div className={`chat-bubble ${msg.role === 'user' ? 'is-user' : 'is-ai'}`}>
-              {msg.imageUrl && (
-                <div className="chat-bubble__media">
-                  <img src={msg.imageUrl} alt="附件" className="chat-bubble__img" />
-                  {msg.uploading && (
-                    <div className="chat-bubble__media-overlay">
-                      <span className="chat-bubble__media-spinner" />
-                      <span className="chat-bubble__media-percent">{msg.percent ?? 0}%</span>
-                    </div>
-                  )}
-                  {msg.failed && (
-                    <div className="chat-bubble__media-overlay is-failed">
-                      <span className="chat-bubble__media-failtext">上传失败</span>
-                    </div>
-                  )}
-                </div>
-              )}
-              {msg.attachment && (
-                <div className={`chat-bubble__file${msg.failed ? ' is-failed' : ''}`}>
-                  <span className="chat-bubble__file-icon">📎</span>
-                  <span className="chat-bubble__file-name">{msg.attachment.name}</span>
-                  {msg.failed ? (
-                    <span className="chat-bubble__file-fail">上传失败</span>
-                  ) : msg.uploading ? (
-                    <span className="chat-bubble__file-percent">{msg.percent ?? 0}%</span>
-                  ) : (
-                    <span className="chat-bubble__file-size">
-                      {msg.attachment.size >= 1024 * 1024
-                        ? `${(msg.attachment.size / 1024 / 1024).toFixed(1)} MB`
-                        : `${Math.max(1, Math.round(msg.attachment.size / 1024))} KB`}
-                    </span>
-                  )}
-                  {msg.uploading && (
-                    <div className="chat-bubble__file-track">
-                      <div className="chat-bubble__file-fill" style={{ width: `${msg.percent ?? 0}%` }} />
-                    </div>
-                  )}
-                </div>
-              )}
-              {editingId === msg.id ? (
-                <Textarea
-                  value={msg.content}
-                  autosize={{ minRows: 1, maxRows: 6 }}
-                  onChange={(v) =>
-                    setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, content: String(v) } : m)))
-                  }
-                />
-              ) : msg.role === 'assistant' ? (
-                msg.content ? (
-                  <MarkdownRenderer content={msg.content} compact={compact} />
-                ) : (
-                  loading ? (
-                    <div className="chat-bubble__typing" aria-label="AI 正在分析">
-                      <span /><span /><span />
-                    </div>
-                  ) : null
-                )
-              ) : (
-                <div className="chat-bubble__text">
-                  {msg.content}
-                </div>
-              )}
-            </div>
-
-            <div className="chat-actions">
-              {msg.role === 'assistant' && (
-                <>
-                  <button className={`chat-action ${msg.reaction === 'like' ? 'is-active' : ''}`} onClick={() => toggleReaction(msg.id, 'like')}>👍</button>
-                  <button className={`chat-action ${msg.reaction === 'dislike' ? 'is-active' : ''}`} onClick={() => toggleReaction(msg.id, 'dislike')}>👎</button>
-                  <button className="chat-action" onClick={() => copyContent(msg.content)}>📋</button>
-                </>
-              )}
-              {msg.role === 'user' && (
-                <>
-                  <button className="chat-action" onClick={() => copyContent(msg.content)}>📋</button>
-                  {editingId === msg.id ? (
-                    <>
-                      <button className="chat-action" onClick={() => editAndResend(msg)}>✅</button>
-                      <button className="chat-action" onClick={() => setEditingId(null)}>✖️</button>
-                    </>
-                  ) : (
-                    <button className="chat-action" onClick={() => setEditingId(msg.id)}>✏️</button>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
+          <MessageBubble
+            key={msg.id}
+            msg={msg}
+            editingId={editingId}
+            compact={compact}
+            onToggleReaction={toggleReaction}
+            onCopy={copyContent}
+            onEditStart={setEditingId}
+            onEditChange={(id, v) => setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: v } : m)))}
+            onEditSave={handleEditSave}
+            onEditCancel={() => setEditingId(null)}
+          />
         ))}
         <div ref={messagesEndRef} />
       </div>
