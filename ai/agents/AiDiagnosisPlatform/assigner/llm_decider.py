@@ -4,7 +4,6 @@ import json, re
 from typing import Dict, List, Optional
 
 from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
-from ai.agents.AiDiagnosisPlatform.assigner.recall import RecallResult
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     AssignmentResult, EngineerProfile, TicketContext,
 )
