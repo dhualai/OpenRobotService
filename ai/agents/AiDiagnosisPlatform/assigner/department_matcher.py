@@ -24,16 +24,22 @@ class DepartmentMatcher:
     def match_department(self, ticket: TicketContext) -> str:
         """极保守部门匹配——只在 100% 确定时才过滤。
 
-        唯一明确信号:
-          - 服务号相关 → 智能规划（100%）
-          - 车体硬件故障（开不了机/雷达坏/车体损坏） → 不过滤，全量参与
-            因为"车卡住不动"可能车端可能调度，分不清楚
+        确定信号:
+          - 车体硬件故障（开不了机/雷达坏/车体损坏/硬件） → 机器人事业部
+          - 服务号相关 → 智能规划
 
-        其他所有情况：不过滤。让召回+LLM 在全员中根据 duty_text/modules 选择。
+        其他所有情况：不过滤。让召回+LLM 在全员中选择。
         """
         text = " ".join(filter(None, [
             ticket.title, ticket.problem_description,
         ])).lower()
+
+        # 硬件: 100% 机器人事业部
+        hardware_kw = ["开不了机", "雷达", "车体损坏", "车体硬件", "硬件故障",
+                       "激光", "传感器硬件", "电机", "电池", "车轮", "底盘"]
+        if any(kw in text for kw in hardware_kw):
+            logger.info(f"[dept_matcher] 硬件信号 → 机器人事业部")
+            return "机器人事业部"
 
         # 服务号: 100% 智能规划
         service_kw = ["服务号", "微信", "我要摇人", "工单系统", "智能问答"]
@@ -42,7 +48,7 @@ class DepartmentMatcher:
             return "智能规划"
 
         # 其他: 不过滤
-        logger.info(f"[dept_matcher] 非服务号，不过滤（全量参与）")
+        logger.info(f"[dept_matcher] 无强信号，不过滤（全量参与）")
         return ""
 
     def filter_by_department(
