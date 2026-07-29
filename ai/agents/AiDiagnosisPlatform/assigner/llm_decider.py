@@ -1,7 +1,6 @@
-"""LLM 综合分析层：召回结果 + 工单信息 + 工程师画像 → LLM 直接决策"""
+"""LLM 综合决策层：三路召回分数 + 全员画像 → LLM 拍板"""
 
-import json
-import re
+import json, re
 from typing import Dict, List, Optional
 
 from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
@@ -20,68 +19,52 @@ class LlmDecider:
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()
-            response = await llm.complete(prompt)
+            response = await llm.complete(prompt, max_tokens=400, temperature=0.3)
             return self._parse(response, engineers)
         except Exception:
             return None
 
     def _build_prompt(self, ticket, engineers, recall_result, ranked_scores):
         lines = [
-            "你是一名智能派单系统的决策专家。请根据以下工单信息、工程师画像和多路召回分数，推荐最适合处理该工单的工程师。",
-            "", "【工单信息】",
+            "你是派单决策专家。根据工单、工程师画像和三路召回分数，推荐最合适的人。",
+            "",
+            "【工单】",
             f"标题: {ticket.title or '无'}",
-            f"问题描述: {ticket.problem_description}",
+            f"描述: {ticket.problem_description}",
         ]
         if ticket.robot_type:
             lines.append(f"车型: {ticket.robot_type}")
-        if ticket.required_skills:
-            lines.append(f"所需技能: {', '.join(ticket.required_skills)}")
-        if ticket.priority:
-            lines.append(f"优先级: {ticket.priority}")
+        if ticket.fault_code:
+            lines.append(f"故障码: {ticket.fault_code}")
 
-        lines.extend(["", "【候选工程师画像及召回分数】"])
-        all_ids = set()
-        all_ids.update(recall_result.module_recall.keys())
-        all_ids.update(recall_result.external_history.keys())
-        all_ids.update(recall_result.engineer_semantic.keys())
-        all_ids.update(recall_result.history_semantic.keys())
-        for eid in list(ranked_scores.keys())[:3]:
-            all_ids.add(eid)
+        lines.extend(["", "【候选人排名（已含职级折扣）】"])
 
         emap = {e.id: e for e in engineers}
-        for eid in sorted(all_ids):
+        for rank, (eid, d) in enumerate(list(ranked_scores.items())[:5], 1):
             eng = emap.get(eid)
             if not eng:
                 continue
-            d = ranked_scores.get(eid, {})
-            # 分产品描述模块
             prod_parts = []
-            for prod, mods in eng.responsibility_modules.items():
-                prod_parts.append(f"[{prod}] {', '.join(mods) if mods else '管理'}")
-            mod_text = " | ".join(prod_parts) if prod_parts else "无"
-            lines.append(f"工程师ID: {eng.id}")
-            lines.append(f"  姓名: {eng.name}")
-            lines.append(f"  部门: {eng.department or '未分配'}")
-            lines.append(f"  职级: L{eng.job_level}")
-            lines.append(f"  产品模块: {mod_text}")
-            if eng.duty_text:
-                duty = eng.duty_text[:80] + "..." if len(eng.duty_text) > 80 else eng.duty_text
-                lines.append(f"  职责简述: {duty}")
+            for p, mods in eng.responsibility_modules.items():
+                prod_parts.append(f"[{p}]{','.join(mods)}" if mods else f"[{p}]")
+            duty = (eng.duty_text or "")[:100]
+            dep = f"({eng.department})" if eng.department else ""
             lines.append(
-                f"  召回分数: 模块={d.get('module_score', 0):.2f} "
-                f"历史={d.get('history_score', 0):.2f} "
-                f"语义={d.get('semantic_score', 0):.2f} "
-                f"综合(含职级折扣)={d.get('total_score', 0):.2f}"
+                f"#{rank} {eng.name} {dep} L{eng.job_level} "
+                f"|{'|'.join(prod_parts)}"
             )
-            lines.append("")
+            lines.append(
+                f"   分数: 总={d.get('total_score',0):.2f} "
+                f"LLM={d.get('llm_score',0):.2f} 模块={d.get('module_score',0):.2f} 语义={d.get('semantic_score',0):.2f}"
+            )
+            if duty:
+                lines.append(f"   职责: {duty}")
 
         lines.extend([
-            "【要求】",
-            "1. 综合考虑工单内容、工程师技能、历史经验、语义相似度，推荐最合适的工程师",
-            "2. 如果匹配度高可直接拍板，如果匹配度中等建议确认，如果匹配度低请标注兜底",
-            "3. 输出必须是 JSON 格式",
-            "", '{"engineer_id": "ID", "confidence_score": 0.85, "reasoning": "理由", "decision_type": "auto"}',
-            "", "判定标准: >=0.8→auto, 0.5-0.8→recommend, <0.5→fallback",
+            "",
+            "输出 JSON:",
+            '{"engineer_id":"...", "confidence_score":0.85, "reasoning":"理由", "decision_type":"auto"}',
+            "decision_type: auto(>=0.8) / recommend(0.5-0.8) / fallback(<0.5)",
         ])
         return "\n".join(lines)
 
