@@ -192,6 +192,7 @@ class ProjectLicense(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     project_code = Column(String(50), nullable=False, comment='项目代码')
+    machine_code = Column(String(200), nullable=True, comment='机器码/MAC地址')
     apply_time = Column(String(30), nullable=False, comment='申请时间')
     expire_time = Column(String(30), nullable=False, comment='过期时间')
     license_code = Column(String(100), nullable=False, comment='授权码')

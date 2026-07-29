@@ -45,7 +45,6 @@ from .report_schemas import (
     ProjectStats,
     RiskStats,
     TicketStats,
-    TaskStats,
     CollectedData,
 )
 from .report_generator import ReportGenerator, generate_report, generate_report_stream
@@ -81,7 +80,6 @@ __all__ = [
     "ProjectStats",
     "RiskStats",
     "TicketStats",
-    "TaskStats",
     "CollectedData",
     "ReportGenerator",
     "generate_report",

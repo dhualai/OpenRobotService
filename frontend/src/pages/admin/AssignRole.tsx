@@ -77,7 +77,8 @@ export default function AssignRole() {
 
   const reloadUsers = useCallback(async () => {
     try {
-      const usersData = await request<UserItem[]>('/users/?limit=1000');
+      // client.ts 会按 URL 缓存 GET 响应，授权后必须跳过缓存才能拿到最新角色
+      const usersData = await request<UserItem[]>('/users/?limit=1000', { skipCache: true });
       setUsers(normalizeList<UserItem>(usersData));
     } catch (err) {
       Toast({ message: `刷新用户失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });

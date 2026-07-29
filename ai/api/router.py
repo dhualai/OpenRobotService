@@ -10,7 +10,7 @@ import time
 import os
 from pathlib import Path
 from typing import Dict, List
-from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -60,9 +60,14 @@ async def get_pipeline() -> AiDiagnosisPlatform:
 
 def _current_user(request: Request) -> tuple[str, bool]:
     """从 Authorization 头解出 (username, is_admin)；无效/缺失返回 ('', False)。"""
-    from app.core.security import decode_token  # 惰性：避免启动期触发 backend 装配
     auth = request.headers.get("Authorization", "")
-    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    return _current_user_from_header(auth)
+
+
+def _current_user_from_header(authorization: str) -> tuple[str, bool]:
+    """从 Authorization header 值解出 (username, is_admin)；无效/缺失返回 ('', False)。"""
+    from app.core.security import decode_token  # 惰性：避免启动期触发 backend 装配
+    token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
     if not token:
         return "", False
     payload = decode_token(token)
@@ -86,9 +91,11 @@ def _current_user(request: Request) -> tuple[str, bool]:
 async def ask_question(
     request: QAAskRequest,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
+    authorization: str = Header(default="", alias="Authorization"),
 ) -> dict:
+    username, _ = _current_user_from_header(authorization)
     qa_request = DiagnosisRequest(session_id=request.session_id, query=request.query,
-                           skip_retrieval=request.skip_retrieval)
+                           skip_retrieval=request.skip_retrieval, created_by=username)
     try:
         result = await pipeline.run_with_timeout(qa_request, timeout=30.0)
     except Exception as e:
@@ -102,11 +109,13 @@ async def ask_question(
 async def ask_question_stream(
     request: QAAskRequest,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
+    authorization: str = Header(default="", alias="Authorization"),
 ):
+    username, _ = _current_user_from_header(authorization)
     async def sse():
         t0 = time.perf_counter()
         qa_request = DiagnosisRequest(session_id=request.session_id, query=request.query,
-                           skip_retrieval=request.skip_retrieval)
+                           skip_retrieval=request.skip_retrieval, created_by=username)
         first = False
         try:
             async for event in pipeline.run_stream(qa_request):
@@ -252,8 +261,9 @@ async def confirm_ticket(
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
     try:
+        username, _ = _current_user(request)
         return await pipeline.confirm_submit(
-            session_id=body.session_id, overrides=body.overrides,
+            session_id=body.session_id, overrides=body.overrides, created_by=username,
         )
     except Exception as e:
         logger.error(f"confirm_ticket 异常: {e}", exc_info=True)
@@ -287,7 +297,15 @@ async def upload_files(
         f"filenames={'、'.join(f.filename for f in files)}"
     )
 
+    # ── 0. 确保目标 bucket 存在（AI 服务启动时不建桶，此处兜底，避免上传落到不存在的桶） ──
+    try:
+        minio_client.create_bucket(settings.MINIO_BUCKET)
+    except Exception as e:
+        logger.warning(f"确保 bucket {settings.MINIO_BUCKET} 存在失败: {e}（若桶实际存在可忽略）")
+
     # ── 1. 上传到 MinIO ──
+    # 注意：upload_bytes 默认吞掉 S3Error 返回 False，这里必须用 raise_on_error=True
+    # 让异常上抛并返回真实错误，避免“前端提示成功但文件未落 MinIO”的静默失败。
     saved = []
     raw_bytes: list[tuple] = []  # (filename, bytes) 暂存供 VLM
     for f in files:
@@ -295,7 +313,19 @@ async def upload_files(
         raw_bytes.append((f.filename, content))
         # 对象路径：{bucket}/{session_id}/{文件名}，bucket 统一读取 settings.MINIO_BUCKET
         object_path = f"{settings.MINIO_BUCKET}/{session_id}/{f.filename}"
-        minio_client.upload_bytes(content, object_path, content_type=f.content_type)
+        try:
+            minio_client.upload_bytes(
+                content, object_path, content_type=f.content_type, raise_on_error=True
+            )
+        except Exception as e:
+            logger.error(f"附件上传到 MinIO 失败: {f.filename} -> {e}", exc_info=True)
+            return {
+                "code": 1,
+                "message": (
+                    f"文件「{f.filename}」上传失败：{e}。"
+                    f"请检查 MinIO 是否可达、桶 {settings.MINIO_BUCKET} 是否存在、凭据是否正确。"
+                ),
+            }
         url = minio_client.get_presigned_url(object_path, expires_minutes=1440)
         saved.append({"filename": f.filename, "size": len(content), "path": url})
     filenames = "、".join(s["filename"] for s in saved)
@@ -357,30 +387,33 @@ async def upload_files(
             exc_info=True,
         )
 
-    # ── 3. 写入会话记忆 ──
-    mgr = await get_memory_manager()
-    t_mem = time.perf_counter()
-    memory_before = await mgr.get_memory(session_id)
-    turn_count_before = len(memory_before.turns)
-    logger.info(
-        f"[upload] 注入记忆前: session={session_id[:12]}, "
-        f"turns={turn_count_before}, has_desc={bool(image_desc)}, "
-        f"desc_len={len(image_desc)}"
-    )
-    if image_desc:
-        await mgr.add_turn(session_id, "user",
-                           f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
-        await mgr.add_turn(session_id, "assistant",
-                           f"已收到 {len(saved)} 个文件，已附到本次会话中。")
-    else:
-        await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
-        await mgr.add_turn(session_id, "assistant", f"已收到 {len(saved)} 个文件，已附到本次会话中。")
-    memory_after = await mgr.get_memory(session_id)
-    logger.info(
-        f"[upload] 注入记忆后: session={session_id[:12]}, "
-        f"turns_before={turn_count_before}, turns_after={len(memory_after.turns)}, "
-        f"mem_elapsed={(time.perf_counter() - t_mem) * 1000:.0f}ms"
-    )
+    # ── 3. 写入会话记忆（失败不阻塞上传响应：文件已落 MinIO，记忆写入仅记告警） ──
+    try:
+        mgr = await get_memory_manager()
+        t_mem = time.perf_counter()
+        memory_before = await mgr.get_memory(session_id)
+        turn_count_before = len(memory_before.turns)
+        logger.info(
+            f"[upload] 注入记忆前: session={session_id[:12]}, "
+            f"turns={turn_count_before}, has_desc={bool(image_desc)}, "
+            f"desc_len={len(image_desc)}"
+        )
+        if image_desc:
+            await mgr.add_turn(session_id, "user",
+                               f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
+            await mgr.add_turn(session_id, "assistant",
+                               f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+        else:
+            await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
+            await mgr.add_turn(session_id, "assistant", f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+        memory_after = await mgr.get_memory(session_id)
+        logger.info(
+            f"[upload] 注入记忆后: session={session_id[:12]}, "
+            f"turns_before={turn_count_before}, turns_after={len(memory_after.turns)}, "
+            f"mem_elapsed={(time.perf_counter() - t_mem) * 1000:.0f}ms"
+        )
+    except Exception as e:
+        logger.error(f"上传后写入会话记忆失败（不阻塞上传响应）: {e}", exc_info=True)
 
     # ── 4. agent_state.attachments + 追加到已提交工单 ──
     try:

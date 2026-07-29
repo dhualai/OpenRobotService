@@ -39,46 +39,18 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
-class Ticket(Base):
-    """工单表（仅查询，字段对齐 backend/app/models/ticket.py）"""
-    __tablename__ = "tickets"
+class User(Base):
+    """用户表（仅查询，字段对齐 backend/app/models/identity.py 的 UserDB）"""
+    __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    session_id = Column(String(128), index=True)
-    ticket_ai_id = Column(String(32))
-    title = Column(String(20))
-    description = Column(String(150))
-    status = Column(String(20), default="pending_dispatch", comment="待派单/已派单/处理中/已解决/已关闭")
-    type = Column(String(20))
-    priority = Column(String(10), default="中")
-    contact = Column(String(50), default="")
-    location = Column(String(200), default="")
-    robot_type = Column(String(50), default="")
-    fault_code = Column(String(100), default="")
-    special_notes = Column(Text, default="")
-    steps_to_reproduce = Column(Text, default="")
-    expected_result = Column(String(150), default="")
-    actual_result = Column(String(150), default="")
-    severity = Column(String(10), default="")
-    version = Column(String(30), default="")
-    scenario = Column(Text, default="")
-    expected_effect = Column(String(150), default="")
-    source = Column(String(20), default="")
-    support_type = Column(String(30), default="")
-    preferred_response = Column(String(10), default="")
-    attachments = Column(JSON, default=list)
-    diagnosis = Column(JSON, default=dict)
-    project_id = Column(Integer, default=0)
-    creator_id = Column(Integer, default=0)
-    created_by = Column(String(64), default="", index=True)
-    assignee_id = Column(Integer, default=0)
-    planned_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime)
-    updated_at = Column(DateTime)
+    id = Column(String(64), primary_key=True)
+    username = Column(String(64), unique=True, nullable=False)
+    name = Column(String(128), nullable=True)
+    status = Column(String(32), default="inactive", nullable=False)
 
 
 class Task(Base):
-    """任务表（仅查询，字段对齐 backend/app/models/task.py）"""
+    """工单表（仅查询，字段对齐 backend/app/models/task.py；tickets 表已废弃，tasks 表即工单表）"""
     __tablename__ = "tasks"
 
     id = Column(BigInteger, primary_key=True, index=True, comment="任务ID")
