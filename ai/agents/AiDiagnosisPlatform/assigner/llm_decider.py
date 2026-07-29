@@ -54,10 +54,16 @@ class LlmDecider:
             if not eng:
                 continue
             d = ranked_scores.get(eid, {})
+            # 分产品描述模块
+            prod_parts = []
+            for prod, mods in eng.responsibility_modules.items():
+                prod_parts.append(f"[{prod}] {', '.join(mods) if mods else '管理'}")
+            mod_text = " | ".join(prod_parts) if prod_parts else "无"
             lines.append(f"工程师ID: {eng.id}")
             lines.append(f"  姓名: {eng.name}")
+            lines.append(f"  部门: {eng.department or '未分配'}")
             lines.append(f"  职级: L{eng.job_level}")
-            lines.append(f"  责任模块: {', '.join(eng.all_modules()) if eng.all_modules() else '无'}")
+            lines.append(f"  产品模块: {mod_text}")
             if eng.duty_text:
                 duty = eng.duty_text[:80] + "..." if len(eng.duty_text) > 80 else eng.duty_text
                 lines.append(f"  职责简述: {duty}")

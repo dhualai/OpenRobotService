@@ -47,9 +47,10 @@ class DecisionMaker:
         for eid, d in items[1:3]:
             eng = emap.get(eid)
             if eng:
+                prod_parts = [f"[{p}]{','.join(m) if m else ''}" for p, m in eng.responsibility_modules.items()]
                 lines.append(
                     f"- {eng.name}({eid}): 置信度 {d['total_score']:.2f} "
-                    f"(L{d.get('job_level', '?')}), 模块 {eng.all_modules()}"
+                    f"(L{d.get('job_level', '?')}), {'|'.join(prod_parts)}"
                 )
         return "\n".join(lines) or "无其他候选"
 
