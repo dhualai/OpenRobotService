@@ -65,7 +65,7 @@ v3.0（新）:
 |------|------|------|
 | **@AI 讨论** | 前端输入框 + @ 按钮 | 任务 Agent 基于讨论历史 + 工单上下文回复 |
 | **诊断报告** | [帮我分析] 按钮 | 调用全能力（日志解析 / 图片分析 / 排查树 / 历史方案）→ 输出结构化报告 |
-| **讨论摘要** | AI 后台定时扫描 | 检测讨论更新 → 总结新讨论的摘要 → 写 task_comments |
+| **讨论摘要** | AI 后台定时扫描 | 检测讨论更新 → 总结新讨论的摘要 → 写 `tasks.metadata_info.ai_summary` |
 
 ### 与前端完全解耦
 
@@ -87,7 +87,7 @@ v3.0（新）:
   │  描述: ...                                 │
   │                                            │
   │  ── 🤖 AI 讨论摘要 ── [🤖 帮我分析] ──   │
-  │  📝 摘要内容（后端定时写入，前端从评论提取） │
+  │  📝 摘要内容（后端定时写入 `metadata_info.ai_summary`，前端读取展示） │
   │                                            │
   │  ── 讨论区 ────────────────────────────   │
   │  👤 张工: 日志拿到了，帮我看看             │
@@ -102,7 +102,7 @@ v3.0（新）:
   - [@AI] 按钮 → 自动在输入框填入 "@AI " 前缀 → 工程师补充问题 → [发送]
   - 讨论区发送时检测 @AI 前缀 → 调 /discuss；否则普通评论
   - 点击诊断短链接 → Dialog 弹窗展示完整报告
-  - AI 摘要纯展示，后端定时触发 /summarize 写入 task_comments
+  - ✅ 目标字段改为 `tasks.metadata_info.ai_summary`，前端从 metadata_info 读取，不再从评论提取摘要
 ```
 
 ### 2.2 工程师点击 [帮我分析]（v3.1 实际流程）
@@ -135,7 +135,7 @@ POST /api/ai/task/diagnose { task_id }
             ├─ 加载讨论历史（最近 10 条 task_comments）
             ├─ 加载工单上下文
             ├─ 按需调 LogSubAgent / 附件分析 / 历史工单（关键词匹配）
-            ├─ LLM 基于讨论+上下文回复 → 写 task_comments（AI任务助手）
+            ├─ LLM 基于讨论+上下文回复 → 写 task_comments（created_by = "小U"）
             └─ 前端 loadDetail() 刷新评论列表
 ```
 
@@ -149,7 +149,7 @@ POST /api/ai/task/diagnose { task_id }
 |------|------|------|------|:---:|
 | POST | `/api/ai/task/diagnose` | 全能力诊断 → 即时返回报告 | [帮我分析] 按钮 | ❌ 不落库 |
 | POST | `/api/ai/task/discuss` | @AI 讨论回复 → 写 task_comments | 讨论区 @AI | ✅ AI 回复写评论 |
-| POST | `/api/ai/task/summarize` | 检测新讨论 → 生成摘要 → 写 task_comments | 后台定时 | ✅ 摘要写评论 |
+| POST | `/api/ai/task/summarize` | 检测新讨论 → 生成摘要 → 写 `tasks.metadata_info` | 后台定时 | :white_check_mark: `ai_summary` + `ai_summary_at` |
 | POST | `/api/ai/task/submit` | 提交方案 → 更新工单 + Qdrant 回写 | 工程师确认 | ✅ |
 | GET | `/api/ai/task/health` | 健康检查 | 运维 | - |
 
@@ -431,7 +431,7 @@ MAPF v1.1.2 避让算法在特定场景下为被避让车生成起点=终点的�
 
 ### 存储
 
-**不存库**。诊断报告即时生成，直接返回 JSON 给前端渲染为弹窗。工程师可以根据报告内容自行决定后续操作（在讨论区讨论、手动复制等）。讨论区的 @AI 回复和讨论摘要才会写入 `task_comments` 留存。
+**不存库**。诊断报告即时生成，直接返回 JSON 给前端渲染为弹窗。讨论区的 @AI 回复写入 `task_comments`，讨论摘要写入 `tasks.metadata_info.ai_summary` 留存。
 
 ---
 
@@ -477,13 +477,15 @@ MAPF v1.1.2 避让算法在特定场景下为被避让车生成起点=终点的�
 后端定时（如每 3 分钟）调用 `POST /api/ai/task/summarize {}`，**无需传参数**。
 AI 模块自行扫描所有 `status = in_progress` 的工单，逐条判断是否需要生成摘要。
 
-### 判断"有新讨论"
+### 判断"有新讨论"（v3.3 实际实现）
 
 AI 模块内部逻辑：
-- 读 task_comments，找到最近一条 `📝 讨论摘要`（created_by = "AI任务助手"）
-- 计算上次摘要后的新人类评论数
-- **≥2 条** → 生成摘要 → 写 task_comments
+- 从 `tasks.metadata_info.ai_summary_at` 读取上次摘要时间
+- 计算 `ai_summary_at` 之后的新人类评论数（排除 `created_by = "小U"`）
+- **≥2 条** → 生成摘要 → 写入 `tasks.metadata_info.ai_summary` + `ai_summary_at`
 - **<2 条** → 跳过
+
+不再读/写 `task_comments` 来判断或存储摘要。
 
 ### 摘要 Prompt
 
@@ -513,16 +515,19 @@ AI 模块内部逻辑：
 | 提交解决方案 | `POST /api/ai/task/submit` | ✅ |
 | 查看诊断报告 | 前端 Dialog 弹窗（本地 state，不写后端） | ✅ |
 
-### 工单详情页数据（v3.1 实际）
+### 工单详情页数据（v3.3 实际）
 
-前端从业务后端 `GET /api/tasks/{id}?load_comments=true` 获取：
+前端从业务后端 `GET /api/tasks/{id}` 获取：
 - 工单基本信息（title/description/status/priority）
+- `metadata_info`（含 `ai_summary` / `ai_summary_at` / `diagnosis` 等 AI 字段）
 - 附件列表
-- 所有评论（包括 "AI任务助手" 的 AI 回复和摘要）
+- 所有评论（含 "小U" 的 AI 回复）
 
 **AI 摘要提取逻辑**（前端）：
-- 筛选 `created_by === 'AI任务助手'` 的评论
-- 取最新一条 `content` 以 `📝 讨论摘要` 开头的 → 展示在 AI 摘要卡片
+- 从 `metadata_info.ai_summary` 读取最新摘要文本 → 展示在 AI 摘要卡片
+- `metadata_info.ai_summary_at` 为上次摘要生成时间
+- 筛选 `created_by === '小U'` 的评论 → AI 讨论回复
+- 从 `metadata_info.ai_summary` 读取最新摘要文本 → 展示在 AI 摘要卡片
 
 **AI 模块不负责提供工单详情页数据**——全部由业务后端返回。
 
@@ -532,7 +537,7 @@ AI 模块内部逻辑：
 工单详情页（TaskDetailPage.tsx）
 ├── 工单信息（从 GET /api/tasks/{id}）
 ├── AI 摘要卡片 → 右上角 [🤖 帮我分析] → POST /api/ai/task/diagnose
-│   └── 摘要内容（从评论中提取 📝 讨论摘要）
+│   └── 摘要内容（从 metadata_info.ai_summary 读取）
 ├── 讨论区
 │   ├── 评论列表（含 AI 诊断短链接）
 │   │   └── 诊断短链接：📋 <a class="diagnosis-link"> → 点击 → Dialog 弹窗
@@ -548,7 +553,7 @@ AI 模块内部逻辑：
 2. **@AI 用户体验**：@AI 按钮只负责在输入框填前缀，工程师可继续打字，点发送才调 API
 3. **@AI 消息双写**：用户 @AI 消息先写入 task_comments（普通评论），再调 /discuss，AI 回复也写入
 4. **诊断短链接**：纯前端本地 state，不写 task_comments；只存活在当前会话
-5. **摘要**：后端定时 summarize → 写入 comments → 前端 loadDetail 时自动提取
+5. **摘要**：后端定时 summarize → 写入 `tasks.metadata_info.ai_summary` → 前端从 metadata_info 读取展示
 
 ---
 
@@ -608,7 +613,7 @@ AI 模块内部逻辑：
 ### Phase 2: 三大新功能 ✅
 - [x] `diagnose()` — 全能力诊断，即时返回报告
 - [x] `discuss()` — @AI 讨论回复（写 task_comments）
-- [x] `summarize()` — 讨论摘要（写 task_comments）
+- [x] `summarize()` — 讨论摘要（写 `tasks.metadata_info.ai_summary` + `ai_summary_at`）
 - [x] 新增 3 个 Prompt + 3 个端点
 - [x] router: 修复 `/diagnose`（原为错误的工单列表代码），新增 `/discuss`
 
@@ -617,7 +622,7 @@ AI 模块内部逻辑：
 - [x] [🤖 帮我分析] 按钮放在 AI 摘要卡片右上角
 - [x] [@AI] 按钮自动填入前缀，不直接调 API
 - [x] 诊断报告以短链接形式插入讨论区 → 点击弹 Dialog
-- [x] AI 摘要从评论中提取 `📝 讨论摘要` 展示
+- [x] AI 摘要从 `metadata_info.ai_summary` 读取展示
 - [x] fix: task_id String() 转换避免 Pydantic 422
 
 ### 已知问题 / 注意事项
