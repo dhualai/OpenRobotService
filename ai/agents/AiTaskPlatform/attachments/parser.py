@@ -31,10 +31,11 @@ logger = get_logger("TASK_AGENT")
 
 # ── 常量 ──────────────────────────────────────────────────────
 
-_TEXT_CHUNK_LIMIT = 100_000       # 单个文本文件最大字节
-_EXTRACT_SUMMARY_LIMIT = 2000    # 日志摘要最多 2000 字
-_ARCHIVE_MAX_FILES = 50           # 压缩包最多遍历文件数
-_DIR_MAX_FILES = 50               # 文件夹最多遍历文件数
+_TEXT_CHUNK_LIMIT = 100_000        # 单个文本文件最大字节
+_EXTRACT_SUMMARY_LIMIT = 2000     # 日志摘要最多 2000 字
+_ARCHIVE_MAX_FILES = 50            # 压缩包最多遍历文件数
+_ARCHIVE_INNER_FILE_MAX = 100 * 1024 * 1024  # 压缩包内非日志文件最大解压大小 100MB
+_DIR_MAX_FILES = 50                # 文件夹最多遍历文件数
 
 # 单次最多分析几张图片（控制 token/时间）
 _VISION_MAX_IMAGES = 3
@@ -181,11 +182,27 @@ async def parse_attachments(attachments: list) -> AttachmentAnalysis:
 # ============================================================
 
 def _ext(filename: str, path: str) -> str:
+    """识别文件扩展名，支持多段后缀（如 .tar.gz → .tgz, .log.1 → .log）。"""
+    import re
     name = (filename or path).lower()
-    # tgz 可能是 .tar.gz
+    # tar.gz 特殊处理
     if name.endswith(".tar.gz"):
         return ".tgz"
-    return Path(name).suffix
+    suffixes = Path(name).suffixes
+    # 日志轮转: app.log.1 / server.log.10 / syslog.1 → .log
+    if re.search(r"\.(?:log|txt|csv)\.\d+$", name):
+        return "." + name.rsplit(".", 2)[-2]  # 返回 .log / .txt / .csv
+    if suffixes and re.match(r"^\.\d+$", suffixes[-1]):
+        # 纯数字后缀，检查前面的 body 是否包含 log 关键字
+        body = Path(name).stem
+        if "log" in body.lower():
+            return ".log"
+    # 多段后缀合并: .tar.gz
+    if len(suffixes) >= 2:
+        combined = "".join(suffixes[-2:])
+        if combined in (".tar.gz",):
+            return ".tgz"
+    return suffixes[-1] if suffixes else ""
 
 
 def _is_directory(path: str) -> bool:
@@ -225,14 +242,19 @@ def _parse_zip_bytes(raw: bytes) -> list[str]:
     results = []
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
         count = 0
-        for name in zf.namelist():
+        for info in zf.infolist():
             if count >= _ARCHIVE_MAX_FILES:
                 results.append(f"--- ZIP({len(zf.namelist())}文件,仅展示前{_ARCHIVE_MAX_FILES}) ---")
                 break
-            count += 1
-            if name.endswith("/"):
+            if info.is_dir():
                 continue
-            results.extend(_extract_inner_file(name, zf.read(name)))
+            count += 1
+            # 非日志文件过大时跳过（日志文件允许任意大小，_TEXT_CHUNK_LIMIT 截断）
+            if _should_skip_large(info.filename, info.file_size):
+                size_mb = info.file_size / (1024 * 1024)
+                results.append(f"--- {info.filename} ({size_mb:.0f}MB，过大，跳过) ---")
+                continue
+            results.extend(_extract_inner_file(info.filename, zf.read(info.filename)))
     return results
 
 
@@ -255,6 +277,10 @@ def _parse_tar_bytes(raw: bytes, ext: str) -> list[str]:
                 count += 1
                 if member.isdir():
                     continue
+                if _should_skip_large(member.name, member.size):
+                    size_mb = member.size / (1024 * 1024)
+                    results.append(f"--- {member.name} ({size_mb:.0f}MB，过大，跳过) ---")
+                    continue
                 try:
                     f = tf.extractfile(member)
                     if f:
@@ -268,11 +294,20 @@ def _parse_tar_bytes(raw: bytes, ext: str) -> list[str]:
     return results
 
 
+def _should_skip_large(filename: str, size: int) -> bool:
+    """非日志文件超过阈值时跳过，防止大 docx/pdf/xlsx 撑爆内存。
+    日志文件不受此限制——解压后 500MB+ 正常，由 _TEXT_CHUNK_LIMIT 截断。
+    """
+    ext = _ext(filename, "")
+    if ext in _LOG_EXTS:
+        return False  # 日志文件不限大小
+    return size > _ARCHIVE_INNER_FILE_MAX
+
+
 def _extract_inner_file(name: str, data: bytes) -> list[str]:
     """压缩包内单文件按类型提取。"""
     fname = Path(name).name
-    ext = Path(name).suffix.lower()
-    # .tar.gz 二次检测
+    ext = _ext(name, "")
     if name.lower().endswith(".tar.gz"):
         return _parse_tar_bytes(data, ".tgz")
 
@@ -503,7 +538,7 @@ def _traverse_directory(dir_path: str) -> Tuple[list[str], list[str], list[str]]
             continue
         count += 1
 
-        ext = entry.suffix.lower()
+        ext = _ext(entry.name, "")
         label = f"--- {entry.relative_to(root)} ---"
         try:
             if ext in _LOG_EXTS:
