@@ -7,7 +7,6 @@
 人员变更时调 invalidate() 或等 engineers 列表变化自动刷新。
 """
 
-import hashlib, json
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -23,10 +22,10 @@ def _cos(u, v):
     return float(dot / (na * nb)) if na > 0 and nb > 0 else 0.0
 
 
-def _eng_texts_hash(engineers: List[EngineerProfile]) -> str:
-    """用人员列表的 id+模块指纹做缓存键，人员变更时自动失效。"""
-    key = [(e.id, sorted(k for k in e.responsibility_modules.keys())) for e in engineers]
-    return hashlib.md5(json.dumps(key, sort_keys=True).encode()).hexdigest()
+def _eng_fingerprint(engineers: List[EngineerProfile]) -> str:
+    """用人员 ID 排序拼接做缓存指纹，人员变更时自动失效。"""
+    ids = sorted(e.id for e in engineers)
+    return ",".join(ids)
 
 
 # ── 模块级单例缓存 ──
