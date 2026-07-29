@@ -4,8 +4,9 @@
     TicketContext + EngineerProfile
         │
         ▼
-    【Step 0: 部门+产品硬过滤】keyword → 部门 → 产品key → 缩小候选人
-        │ 部门内无候选人 → 回退全量
+    【Step 0: 极保守部门过滤】仅服务号→智能规划（100%确定），其余全量参与
+        │ 宁可不过滤，不可过滤错
+        │ "车卡住不动"可能车端可能调度 → 不过滤
         ▼
     【Step 1: 多路召回（规则 + LLM 推断 + Embedding）】
         ├── 模块召回: LLM 推断工单模块 → Jaccard 匹配工程师责任模块
