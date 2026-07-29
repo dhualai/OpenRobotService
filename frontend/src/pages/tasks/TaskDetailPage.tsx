@@ -353,17 +353,26 @@ export default function TaskDetailPage() {
       .catch(() => {});
   };
 
+  // 返回任务列表，优先使用浏览器历史记录以保留筛选状态
+  const handleBack = () => {
+    if (window.history.length > 1) {
+      navigate(-1);
+    } else {
+      navigate('/tasks');
+    }
+  };
+
   if (detailLoading) return <Loading text="加载中…" />;
   if (!detail) return (
     <div>
-      <Navbar title="工单详情" fixed leftArrow onLeftClick={() => navigate('/tasks')} />
+      <Navbar title="工单详情" fixed leftArrow onLeftClick={handleBack} />
       <div style={{ padding: 32, textAlign: 'center', color: '#999', marginTop: 56 }}>工单不存在</div>
     </div>
   );
 
   return (
     <div className="task-detail-page" style={{ paddingBottom: 72 }}>
-      <Navbar title="工单详情" fixed leftArrow onLeftClick={() => navigate('/tasks')} />
+      <Navbar title="工单详情" fixed leftArrow onLeftClick={handleBack} />
       <div className="page-container" style={{ paddingTop: 56 }}>
         {detail.attachments?.[0] && (
           <img src={detail.attachments[0].url} alt="附件" className="ticket-detail__cover" />
