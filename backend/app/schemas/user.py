@@ -16,7 +16,7 @@ class UserCreate(UserBase):
     status: Optional[str] = "inactive"
     external_credentials: Optional[Dict[str, Dict[str, str]]] = {}
     department: Optional[str] = None
-    responsibility_modules: Optional[List[str]] = None
+    responsibility_modules: Optional[Dict[str, List[str]]] = None
     job_level: Optional[int] = 1
     duty_text: Optional[str] = None
 
@@ -28,7 +28,7 @@ class UserUpdate(BaseModel):
     external_credentials: Optional[Dict[str, Dict[str, str]]] = None
     avatar_resource_id: Optional[int] = None
     department: Optional[str] = None
-    responsibility_modules: Optional[List[str]] = None
+    responsibility_modules: Optional[Dict[str, List[str]]] = None
     job_level: Optional[int] = None
     duty_text: Optional[str] = None
 
@@ -41,7 +41,7 @@ class UserInDB(UserBase):
     status: str = "inactive"
     external_credentials: Dict[str, Dict[str, str]] = {}
     department: Optional[str] = None
-    responsibility_modules: Optional[List[str]] = None
+    responsibility_modules: Optional[Dict[str, List[str]]] = None
     job_level: Optional[int] = 1
     duty_text: Optional[str] = None
     class Config:
@@ -56,7 +56,7 @@ class User(UserBase):
     status: str = "inactive"
     external_credentials: Dict[str, Dict[str, str]] = {}
     department: Optional[str] = None
-    responsibility_modules: Optional[List[str]] = None
+    responsibility_modules: Optional[Dict[str, List[str]]] = None
     job_level: Optional[int] = 1
     duty_text: Optional[str] = None
     class Config:
