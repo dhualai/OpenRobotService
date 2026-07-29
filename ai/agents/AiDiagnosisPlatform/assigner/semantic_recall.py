@@ -33,9 +33,16 @@ class SemanticRecaller:
     def _build_eng_texts(self, engineers):
         out = []
         for e in engineers:
-            t = f"责任模块: {', '.join(e.all_modules())}。"
+            # 分产品描述：让 Embedding 区分"调度USP的车端"和"车端软件的车端"
+            parts = []
+            for prod, mods in e.responsibility_modules.items():
+                if mods:
+                    parts.append(f"[{prod}] {', '.join(mods)}")
+                else:
+                    parts.append(f"[{prod}]")
+            t = " | ".join(parts) if parts else "无责任模块"
             if e.duty_text:
-                t += f"职责: {e.duty_text}"
+                t += f" [职责] {e.duty_text}"
             out.append(t)
         return out
 
