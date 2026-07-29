@@ -161,15 +161,17 @@ module_keywords:
     - 休息任务
 
 # ==========================
-# 2. 三路召回权重
+# 2. 四路召回权重
 # ==========================
-# L1 纯LLM: LLM 看到全员画像直接打分（语义理解最强）
-# L2 关键词: LLM推断模块 → Jaccard匹配（精确匹配）
-# L3 语义:   Embedding余弦相似度（语义泛化）
+# L1 纯LLM:   LLM 看到全员画像直接打分（语义理解最强）
+# L2 关键词:   LLM推断模块 → Jaccard匹配（当前关闭,权重0）
+# L3 语义:     Embedding余弦相似度（语义泛化）
+# L4 历史派单: 已解决工单关键词命中（数据积累中,权重0.10）
 ranker_weights:
-  llm_match: 0.30
-  module_match: 0.35
-  semantic_match: 0.35
+  llm_match: 0.50
+  module_match: 0.00
+  semantic_match: 0.40
+  history_match: 0.10
 
 # ==========================
 # 3. 职级惩罚系数

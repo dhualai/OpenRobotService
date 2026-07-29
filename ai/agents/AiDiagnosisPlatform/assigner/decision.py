@@ -56,7 +56,7 @@ class DecisionMaker:
 
     def _reasoning(self, dt, eng, detail, conf, runner_up):
         reasons = []
-        for key, label in [("llm_score", "LLM"), ("module_score", "模块"), ("semantic_score", "语义")]:
+        for key, label in [("llm_score", "LLM"), ("semantic_score", "语义"), ("history_score", "历史")]:
             v = detail.get(key, 0)
             if v > 0:
                 reasons.append(f"{label}({v:.2f})")

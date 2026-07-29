@@ -55,7 +55,8 @@ class LlmDecider:
             )
             lines.append(
                 f"   分数: 总={d.get('total_score',0):.2f} "
-                f"LLM={d.get('llm_score',0):.2f} 模块={d.get('module_score',0):.2f} 语义={d.get('semantic_score',0):.2f}"
+                f"LLM={d.get('llm_score',0):.2f} 语义={d.get('semantic_score',0):.2f} "
+                f"历史={d.get('history_score',0):.2f}"
             )
             if duty:
                 lines.append(f"   职责: {duty}")
