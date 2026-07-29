@@ -1,6 +1,6 @@
 // 可复用 AI 对话面板 — 提单 Agent（/api/ai/qa/ask/stream）
 // 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { memo, useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Textarea, Toast, Popup, Tag } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
@@ -46,7 +46,13 @@ interface Message {
   imageUrl?: string;
   // 非图片附件（zip/日志/文档等）：仅当次会话本地预览用，按文件名+大小展示文件卡片
   attachment?: { name: string; size: number } | null;
+  // 乐观上传进度：附件气泡内嵌进度遮罩；failed=上传失败红色遮罩
+  uploading?: boolean;
+  percent?: number;
+  failed?: boolean;
   reaction?: 'like' | 'dislike' | null;
+  // 流式输出进行中标记：true 时气泡用纯文本渲染（避免 Markdown 全量重解析造成抖动），完成后置 false
+  streaming?: boolean;
   // 任务 Agent 专属：结构化方案草稿
   subtype?: 'solution_draft';
   solution_draft?: {
@@ -60,6 +66,110 @@ interface Message {
 }
 
 const uid = () => Date.now().toString() + Math.random().toString(36).slice(2, 6);
+
+// 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
+const MessageBubble = memo(function MessageBubble({
+  msg, editingId, compact, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave, onEditCancel,
+}: {
+  msg: Message;
+  editingId: string | null;
+  compact: boolean;
+  onToggleReaction: (id: string, type: 'like' | 'dislike') => void;
+  onCopy: (content: string) => void;
+  onEditStart: (id: string) => void;
+  onEditChange: (id: string, value: string) => void;
+  onEditSave: (msg: Message) => void;
+  onEditCancel: () => void;
+}) {
+  return (
+    <div className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
+      <div className={`chat-bubble ${msg.role === 'user' ? 'is-user' : 'is-ai'}`}>
+        {msg.imageUrl && (
+          <div className="chat-bubble__media">
+            <img src={msg.imageUrl} alt="附件" className="chat-bubble__img" />
+            {msg.uploading && (
+              <div className="chat-bubble__media-overlay">
+                <span className="chat-bubble__media-spinner" />
+                <span className="chat-bubble__media-percent">{msg.percent ?? 0}%</span>
+              </div>
+            )}
+            {msg.failed && (
+              <div className="chat-bubble__media-overlay is-failed">
+                <span className="chat-bubble__media-failtext">上传失败</span>
+              </div>
+            )}
+          </div>
+        )}
+        {msg.attachment && (
+          <div className={`chat-bubble__file${msg.failed ? ' is-failed' : ''}`}>
+            <span className="chat-bubble__file-icon">📎</span>
+            <span className="chat-bubble__file-name">{msg.attachment.name}</span>
+            {msg.failed ? (
+              <span className="chat-bubble__file-fail">上传失败</span>
+            ) : msg.uploading ? (
+              <span className="chat-bubble__file-percent">{msg.percent ?? 0}%</span>
+            ) : (
+              <span className="chat-bubble__file-size">
+                {msg.attachment.size >= 1024 * 1024
+                  ? `${(msg.attachment.size / 1024 / 1024).toFixed(1)} MB`
+                  : `${Math.max(1, Math.round(msg.attachment.size / 1024))} KB`}
+              </span>
+            )}
+            {msg.uploading && (
+              <div className="chat-bubble__file-track">
+                <div className="chat-bubble__file-fill" style={{ width: `${msg.percent ?? 0}%` }} />
+              </div>
+            )}
+          </div>
+        )}
+        {editingId === msg.id ? (
+          <Textarea
+            value={msg.content}
+            autosize={{ minRows: 1, maxRows: 6 }}
+            onChange={(v) => onEditChange(msg.id, String(v))}
+          />
+        ) : msg.role === 'assistant' ? (
+          msg.content ? (
+            msg.streaming ? (
+              <div className="chat-bubble__text" style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+            ) : (
+              <MarkdownRenderer content={msg.content} compact={compact} />
+            )
+          ) : (
+            <div className="chat-bubble__typing" aria-label="AI 正在分析">
+              <span /><span /><span />
+            </div>
+          )
+        ) : (
+          <div className="chat-bubble__text">{msg.content}</div>
+        )}
+      </div>
+
+      <div className="chat-actions">
+        {msg.role === 'assistant' && (
+          <>
+            <button className={`chat-action ${msg.reaction === 'like' ? 'is-active' : ''}`} onClick={() => onToggleReaction(msg.id, 'like')}>👍</button>
+            <button className={`chat-action ${msg.reaction === 'dislike' ? 'is-active' : ''}`} onClick={() => onToggleReaction(msg.id, 'dislike')}>👎</button>
+            <button className="chat-action" onClick={() => onCopy(msg.content)}>📋</button>
+          </>
+        )}
+        {msg.role === 'user' && (
+          <>
+            <button className="chat-action" onClick={() => onCopy(msg.content)}>📋</button>
+            {editingId === msg.id ? (
+              <>
+                <button className="chat-action" onClick={() => onEditSave(msg)}>✅</button>
+                <button className="chat-action" onClick={onEditCancel}>✖️</button>
+              </>
+            ) : (
+              <button className="chat-action" onClick={() => onEditStart(msg.id)}>✏️</button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+});
 
 const SCENE_CONFIG: Record<ChatScene, {
   sceneType: string;
@@ -119,9 +229,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const albumInputRef = useRef<HTMLInputElement>(null);
   // 文件上传大小上限：100MB
   const MAX_FILE_SIZE = 100 * 1024 * 1024;
-  // 上传进度：{ name, percent(0~100) } | null，用于在输入栏上方展示进度条
-  const [uploading, setUploading] = useState<{ name: string; percent: number } | null>(null);
   const [showUploadMenu, setShowUploadMenu] = useState(false);
+  // 待发送附件：选中文件先挂起（不立即发送），用户可继续打字，发送时随 message 一起上传
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingImageUrl, setPendingImageUrl] = useState<string | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   // 语音 tap/hold 双模式 + 真实音量可视化
   const voiceInteractionModeRef = useRef<'tap' | 'hold' | null>(null);
@@ -134,8 +245,24 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const convRef = useRef<number | null>(null); // 当前 DB 会话 id，跨 send 复用
   const sendingRef = useRef(false); // 防双发（Enter + click 竞态）
 
-  const scrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); };
-  useEffect(() => { scrollToBottom(); }, [messages]);
+  // 滚动跟随：仅在用户贴底时自动跟随；流式中瞬时置底（behavior:'auto'）避免 smooth 动画排队抖动
+  const atBottomRef = useRef(true);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const scrollToBottom = useCallback(() => {
+    if (!atBottomRef.current) return;
+    messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+  }, []);
+  useEffect(() => { scrollToBottom(); }, [messages, scrollToBottom]);
+  // 监听用户滚动，判断是否贴底（上滑看历史时不强制拉回）
+  useEffect(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
 
   // 检测 textarea 是否达到最大高度，显示全屏按钮
   useEffect(() => {
@@ -253,74 +380,116 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
-  /** 将附件上传到 AI 后端；onProgress 接收 0~100 的上传进度百分比 */
-  const uploadImage = async (file: File, onProgress?: (p: number) => void): Promise<string> => {
-    const sid = ensureSessionId();
-    const res = await qaUpload(sid, [file], onProgress);
-    if (!res.ok) throw new Error(`上传失败: ${res.status}`);
-    if (res.data?.code !== 0) throw new Error(res.data?.message || '上传失败');
-    return file.name;
+  /** 带附件发送：文件(可附文字)一起上传 /qa/upload，由后端返回 ack/ai_response（非流式）。
+   * 方案一（乐观渲染）：点发送即插入用户气泡（附件+文字，内嵌上传进度遮罩）+ AI 分析占位气泡，
+   * 上传进度实时更新到用户气泡，完成后遮罩消失、AI 回复填入占位气泡。文件名不拼进文字上下文。 */
+  const sendWithFile = async (file: File, content: string) => {
+    const isImage = file.type.startsWith('image/');
+    const imageUrl = isImage ? URL.createObjectURL(file) : undefined;
+    const attachment = isImage ? null : { name: file.name, size: file.size };
+    const userId = uid();
+    const assistantId = uid();
+    // 乐观渲染：立即插入用户气泡（带进度遮罩）+ AI「正在分析」占位气泡
+    setMessages((prev) => [
+      ...prev,
+      { id: userId, role: 'user', content, timestamp: new Date().toISOString(), imageUrl, attachment, uploading: true, percent: 0 },
+      { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() },
+    ]);
+    setInput('');
+    clearPendingFile();
+    setLoading(true);
+    try {
+      const sid = ensureSessionId();
+      // 上传进度实时更新到用户气泡遮罩
+      const res = await qaUpload(sid, [file], content, (p) =>
+        setMessages((prev) => prev.map((m) => (m.id === userId ? { ...m, percent: p } : m))),
+      );
+      if (!res.ok) throw new Error(`上传失败: ${res.status}`);
+      if (res.data?.code !== 0) throw new Error(res.data?.message || '上传失败');
+      const data = res.data?.data;
+
+      // 上传完成：用户气泡进度遮罩消失
+      setMessages((prev) => prev.map((m) => (m.id === userId ? { ...m, uploading: false, percent: 100 } : m)));
+
+      // 持久化用户消息（无文字时以附件说明兜底，便于会话列表/历史展示）
+      const convId = await ensureConversation(sid, content || `[发送了附件] ${file.name}`);
+      if (convId) appendMessage(convId, 'user', content || `[发送了附件] ${file.name}`).catch(() => {});
+
+      // AI 回复填入占位气泡：文件+文字=完整诊断(ai_response.message)；只传文件=确认回执(ack_message)
+      const aiResp = data?.ai_response;
+      const assistantContent = (aiResp && aiResp.message) || data?.ack_message || '';
+      if (assistantContent) {
+        setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: assistantContent } : m)));
+        if (convRef.current) appendMessage(convRef.current, 'assistant', assistantContent).catch(() => {});
+      } else {
+        // 无回复：移除 AI 占位气泡，避免空气泡
+        setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+      }
+      // 若本次顺带触发了提单，刷新待派单计数
+      if (aiResp?.ticket) refreshTasks();
+    } catch (err) {
+      // 失败：用户气泡标记失败态（红色遮罩），移除 AI 占位气泡
+      setMessages((prev) => prev.map((m) => (m.id === userId ? { ...m, uploading: false, failed: true } : m)));
+      setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+      Toast({ message: `发送失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const send = async (text: string, imageFile?: File) => {
+  const send = async (text: string) => {
     const content = text.trim();
-    if (!content && !imageFile) return;
+    const file = pendingFile;
+    if (!content && !file) return;
     if (!token) { kickToLogin('请先登录'); return; }
     if (sendingRef.current) return; // 防双发
     sendingRef.current = true;
 
-    let imageTag = '';
-    let imageUrl: string | undefined;
-    let attachment: { name: string; size: number } | null = null;
-    if (imageFile) {
-      // 按 MIME 区分图片与非图片：zip 等压缩包/文档不应被当作图片渲染
-      const isImage = imageFile.type.startsWith('image/');
-      setUploading({ name: imageFile.name, percent: 0 });
+    // 带附件：走 /qa/upload（非流式），由后端返回 ack/ai_response
+    if (file) {
       try {
-        const name = await uploadImage(imageFile, (p) =>
-          setUploading((u) => (u ? { ...u, percent: p } : { name: imageFile.name, percent: p })),
-        );
-        imageTag = `[上传了附件] ${name}\n`;
-        if (isImage) {
-          imageUrl = URL.createObjectURL(imageFile);
-          Toast({ message: '图片已上传', theme: 'success' });
-        } else {
-          attachment = { name: imageFile.name, size: imageFile.size };
-          Toast({ message: '文件已上传', theme: 'success' });
-        }
-      } catch (err) {
-        Toast({ message: `上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-        return;
+        await sendWithFile(file, content);
       } finally {
-        setUploading(null);
+        sendingRef.current = false;
       }
+      return;
     }
 
-    const userContent = imageTag ? imageTag + content : content;
+    // 纯文字：走 /qa/ask/stream 流式
     const userMessage: Message = {
       id: uid(),
       role: 'user',
-      content: userContent,
+      content,
       timestamp: new Date().toISOString(),
-      imageUrl,
-      attachment,
     };
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
     setLoading(true);
 
     const assistantId = uid();
+    // 节流渲染相关变量提升到函数作用域：try 块内的 const/let 对 finally 不可见，必须外提
+    let acc = '';
+    let lastFlush = 0;
+    const FLUSH_MS = 90;
+    const renderAcc = () => setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
+    const scheduleRender = () => {
+      const now = Date.now();
+      if (now - lastFlush >= FLUSH_MS) {
+        lastFlush = now;
+        renderAcc();
+      }
+    };
     try {
       const sid = ensureSessionId();
       const wasNew = !convRef.current; // 新会话：首轮问答完成后才同步到列表
       // 持久化用户消息（首条会顺带建会话）
-      const convId = await ensureConversation(sid, userContent);
-      if (convId) appendMessage(convId, 'user', userContent).catch(() => {});
+      const convId = await ensureConversation(sid, content);
+      if (convId) appendMessage(convId, 'user', content).catch(() => {});
       setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() }]);
 
       // 提单 Agent
       const apiPath = `${API_CONFIG.AI.BASE_URL}/qa/ask/stream`;
-      const apiBody = JSON.stringify({ session_id: sid, query: userContent });
+      const apiBody = JSON.stringify({ session_id: sid, query: content });
 
       const response = await fetchWithAuth(apiPath, { method: 'POST', body: apiBody });
 
@@ -328,7 +497,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
-      let acc = '';
       let solutionDraft: Message['solution_draft'] | null = null;
       let ticketCreatedThisTurn = false;
       let currentEvent = '';
@@ -348,10 +516,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             const data = JSON.parse(line.slice(6));
             if (data.token) {
               acc += data.token;
-              setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
+              scheduleRender();
             } else if (data.content) {
               acc += data.content;
-              setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
+              scheduleRender();
             }
             // 流式错误（如诊断 pipeline 抛错）：捕获错误信息，循环结束后抛出，避免静默空气泡
             if (currentEvent === 'error' && data.error) {
@@ -384,7 +552,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 首轮问答完成 → 同步会话到列表（标题=首轮提问），定位到新会话
       if (wasNew && convRef.current) {
         setConversationId(convRef.current);
-        setConversationTitle(userContent.slice(0, 40) || 'AI 对话');
+        setConversationTitle(content.slice(0, 40) || 'AI 对话');
         refreshConversations();
       }
       // 任务 Agent 方案草稿：注入 solution_draft 标记
@@ -406,8 +574,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       }
       setMessages((prev) => prev.filter((m) => m.id !== assistantId));
     } finally {
+      // 先释放发送锁与 loading，再强制刷新最终内容，避免刷新异常时再次卡死发送
       setLoading(false);
       sendingRef.current = false;
+      // 强制刷新最终完整内容：流式结束前最后一次 flush 可能早于 90ms 窗口，确保末态不丢字
+      renderAcc();
     }
   };
 
@@ -416,6 +587,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     setEditingId(null);
     send(msg.content);
   };
+  // 用 ref 持有最新 editAndResend，向 memo 气泡提供稳定 onEditSave，避免编辑态频繁重渲染所有消息
+  const editAndResendRef = useRef(editAndResend);
+  editAndResendRef.current = editAndResend;
+  const handleEditSave = useCallback((msg: Message) => editAndResendRef.current(msg), []);
 
   // voiceWillCancelRef 在 handleMove 中直接同步写入，不再通过 useEffect 异步同步
 
@@ -617,17 +792,28 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     setVoiceMode(false);
   };
 
+  /** 清空待发送附件（释放图片预览 objectURL） */
+  const clearPendingFile = () => {
+    if (pendingImageUrl) URL.revokeObjectURL(pendingImageUrl);
+    setPendingFile(null);
+    setPendingImageUrl(null);
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
     if (file.size > MAX_FILE_SIZE) {
       const mb = (file.size / 1024 / 1024).toFixed(1);
       Toast({ message: `「${file.name}」(${mb}MB) 超过 100MB 上限，请压缩或拆分后重试`, theme: 'error' });
-      e.target.value = '';
       return;
     }
-    send(input, file);
-    e.target.value = '';
+    // 选中后不立即发送：挂到输入栏，用户可继续打字，发送时随 message 一起上传
+    clearPendingFile();
+    setPendingFile(file);
+    if (file.type.startsWith('image/')) {
+      setPendingImageUrl(URL.createObjectURL(file));
+    }
   };
 
   /** 转工单（二次确认）：prepare 生成草稿 → 弹窗核对/补字段 → confirm 入库 */
@@ -692,11 +878,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
-  const toggleReaction = (id: string, type: 'like' | 'dislike') => {
+  const toggleReaction = useCallback((id: string, type: 'like' | 'dislike') => {
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, reaction: m.reaction === type ? null : type } : m)));
-  };
+  }, []);
 
-  const copyContent = (content: string) => {
+  const copyContent = useCallback((content: string) => {
     // Clipboard API（安全上下文可用），否则降级 execCommand
     if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard.writeText(content).then(
@@ -706,7 +892,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       return;
     }
     fallbackCopy(content);
-  };
+  }, []);
 
   const fallbackCopy = (content: string) => {
     const ta = document.createElement('textarea');
@@ -734,7 +920,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   return (
     <div className={`chat-panel${compact ? ' is-compact' : ''}`}>
 
-      <div className="chat-view__messages">
+      <div className="chat-view__messages" ref={messagesContainerRef}>
         {messages.length === 0 && (
           <div className="chat-view__empty">
             {!isCall && <div className="chat-view__empty-emoji">{cfg.emptyEmoji}</div>}
@@ -746,83 +932,21 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         )}
 
         {messages.map((msg) => (
-          <div key={msg.id} className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
-            <div className={`chat-bubble ${msg.role === 'user' ? 'is-user' : 'is-ai'}`}>
-              {msg.imageUrl && <img src={msg.imageUrl} alt="附件" className="chat-bubble__img" />}
-              {msg.attachment && (
-                <div className="chat-bubble__file">
-                  <span className="chat-bubble__file-icon">📎</span>
-                  <span className="chat-bubble__file-name">{msg.attachment.name}</span>
-                  <span className="chat-bubble__file-size">
-                    {msg.attachment.size >= 1024 * 1024
-                      ? `${(msg.attachment.size / 1024 / 1024).toFixed(1)} MB`
-                      : `${Math.max(1, Math.round(msg.attachment.size / 1024))} KB`}
-                  </span>
-                </div>
-              )}
-              {editingId === msg.id ? (
-                <Textarea
-                  value={msg.content}
-                  autosize={{ minRows: 1, maxRows: 6 }}
-                  onChange={(v) =>
-                    setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, content: String(v) } : m)))
-                  }
-                />
-              ) : msg.role === 'assistant' ? (
-                msg.content ? (
-                  <MarkdownRenderer content={msg.content} compact={compact} />
-                ) : (
-                  loading ? <div className="chat-bubble__text">思考中…</div> : null
-                )
-              ) : (
-                <div className="chat-bubble__text">
-                  {msg.content}
-                </div>
-              )}
-            </div>
-
-            <div className="chat-actions">
-              {msg.role === 'assistant' && (
-                <>
-                  <button className={`chat-action ${msg.reaction === 'like' ? 'is-active' : ''}`} onClick={() => toggleReaction(msg.id, 'like')}>👍</button>
-                  <button className={`chat-action ${msg.reaction === 'dislike' ? 'is-active' : ''}`} onClick={() => toggleReaction(msg.id, 'dislike')}>👎</button>
-                  <button className="chat-action" onClick={() => copyContent(msg.content)}>📋</button>
-                </>
-              )}
-              {msg.role === 'user' && (
-                <>
-                  <button className="chat-action" onClick={() => copyContent(msg.content)}>📋</button>
-                  {editingId === msg.id ? (
-                    <>
-                      <button className="chat-action" onClick={() => editAndResend(msg)}>✅</button>
-                      <button className="chat-action" onClick={() => setEditingId(null)}>✖️</button>
-                    </>
-                  ) : (
-                    <button className="chat-action" onClick={() => setEditingId(msg.id)}>✏️</button>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
+          <MessageBubble
+            key={msg.id}
+            msg={msg}
+            editingId={editingId}
+            compact={compact}
+            onToggleReaction={toggleReaction}
+            onCopy={copyContent}
+            onEditStart={setEditingId}
+            onEditChange={(id, v) => setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: v } : m)))}
+            onEditSave={handleEditSave}
+            onEditCancel={() => setEditingId(null)}
+          />
         ))}
         <div ref={messagesEndRef} />
       </div>
-
-      {/* 上传进度条：大文件上传时展示百分比与动态进度，方便直观感受进度 */}
-      {uploading && (
-        <div className="chat-upload-progress">
-          <div className="chat-upload-progress__head">
-            <span className="chat-upload-progress__name">上传中 {uploading.name}…</span>
-            <span className="chat-upload-progress__percent">{uploading.percent}%</span>
-          </div>
-          <div className="chat-upload-progress__track">
-            <div
-              className="chat-upload-progress__fill"
-              style={{ width: `${uploading.percent}%` }}
-            />
-          </div>
-        </div>
-      )}
 
       {/* 「猜你想问」：文档流内嵌于消息区与输入栏之间（不遮挡对话内容） */}
       {suggestedList.length > 0 && (
@@ -859,6 +983,17 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               )}
             </button>
             <span className="chat-ticket-btn__label">{submittingTicket ? '提交中…' : '转工单'}</span>
+          </div>
+        )}
+        {pendingFile && (
+          <div className="chat-pending-file">
+            {pendingImageUrl ? (
+              <img src={pendingImageUrl} alt="附件预览" className="chat-pending-file__thumb" />
+            ) : (
+              <span className="chat-pending-file__icon">📎</span>
+            )}
+            <span className="chat-pending-file__name">{pendingFile.name}</span>
+            <button type="button" className="chat-pending-file__remove" onClick={clearPendingFile} aria-label="移除附件">✕</button>
           </div>
         )}
         {voiceMode ? (
@@ -942,7 +1077,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   </svg>
                 </button>
               </div>
-              <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={!input.trim() || loading} aria-label="发送">
+              <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={(!input.trim() && !pendingFile) || loading} aria-label="发送">
                 {loading ? (
                   <span className="chat-send-btn__spinner" />
                 ) : (
@@ -988,7 +1123,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 autoFocus
               />
               <div className="chat-input-bar__fullscreen-footer">
-                <button type="button" className="chat-send-btn" onClick={() => { send(input); setTextareaFullscreen(false); }} disabled={!input.trim() || loading} aria-label="发送">
+                <button type="button" className="chat-send-btn" onClick={() => { send(input); setTextareaFullscreen(false); }} disabled={(!input.trim() && !pendingFile) || loading} aria-label="发送">
                   {loading ? (
                     <span className="chat-send-btn__spinner" />
                   ) : (

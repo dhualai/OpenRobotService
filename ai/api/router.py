@@ -286,9 +286,12 @@ async def get_draft(
 async def upload_files(
     session_id: str = Form(..., description="会话 ID"),
     files: List[UploadFile] = File(..., description="附件文件"),
+    message: str = Form("", description="附带文字（可选，有则直接走诊断）"),
+    authorization: str = Header(default="", alias="Authorization"),
 ):
     from app.utils.minio_client import minio_client
     from app.core.config import settings
+    from pathlib import Path
 
     t_upload_start = time.perf_counter()
     logger.info(
@@ -297,21 +300,18 @@ async def upload_files(
         f"filenames={'、'.join(f.filename for f in files)}"
     )
 
-    # ── 0. 确保目标 bucket 存在（AI 服务启动时不建桶，此处兜底，避免上传落到不存在的桶） ──
+    # ── 0. 确保目标 bucket 存在 ──
     try:
         minio_client.create_bucket(settings.MINIO_BUCKET)
     except Exception as e:
         logger.warning(f"确保 bucket {settings.MINIO_BUCKET} 存在失败: {e}（若桶实际存在可忽略）")
 
     # ── 1. 上传到 MinIO ──
-    # 注意：upload_bytes 默认吞掉 S3Error 返回 False，这里必须用 raise_on_error=True
-    # 让异常上抛并返回真实错误，避免“前端提示成功但文件未落 MinIO”的静默失败。
     saved = []
     raw_bytes: list[tuple] = []  # (filename, bytes) 暂存供 VLM
     for f in files:
         content = await f.read()
         raw_bytes.append((f.filename, content))
-        # 对象路径：{bucket}/{session_id}/{文件名}，bucket 统一读取 settings.MINIO_BUCKET
         object_path = f"{settings.MINIO_BUCKET}/{session_id}/{f.filename}"
         try:
             minio_client.upload_bytes(
@@ -330,7 +330,7 @@ async def upload_files(
         saved.append({"filename": f.filename, "size": len(content), "path": url})
     filenames = "、".join(s["filename"] for s in saved)
 
-    # ── 2. 图片描述：VLM 看图层 → 注入会话上下文 ──
+    # ── 2. 图片描述：VLM 看图层 ──
     image_desc = ""
     try:
         from ai.agents.AiTaskPlatform.attachments.parser import _is_image_file
@@ -365,11 +365,23 @@ async def upload_files(
                 f"image_count={len(data_uris)}, names={names}"
             )
             desc = await llm.complete_vision(
-                prompt=f"描述图片 {names}。这是 AGV/AMR 调度系统的截图。请描述画面内容、关键数据、异常信号和人工标注。用工程师口吻，客观描述，不下结论。",
+                prompt=(
+                    f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。"
+                    f"请：\n"
+                    f"1. 描述画面中的关键信息（界面状态、数据、错误提示、人工标注等）\n"
+                    f"2. 如果发现异常或错误码，解释其含义并指出可能的故障方向"
+                    f"（不下最终结论，用'可能''疑似'等措辞）\n"
+                    f"3. 如果没有明显异常，说明画面看起来正常\n"
+                    f"用工程师口吻，给出有参考价值的初步分析。"
+                ),
                 images=uris,
-                system_prompt="你是 AGV/AMR 调度系统的操作专家。仔细看图，客观描述。不诊断，不下结论。",
-                max_tokens=400,
-                temperature=0.2,
+                system_prompt=(
+                    "你是 AGV/AMR 调度系统的运维专家。仔细分析图片，"
+                    "给出有参考价值的初步判断。使用'可能''疑似''建议关注'等措辞，"
+                    "不下最终结论。"
+                ),
+                max_tokens=500,
+                temperature=0.3,
             )
             vlm_ms = round((time.perf_counter() - t_vlm) * 1000)
             image_desc = desc.strip()
@@ -387,7 +399,10 @@ async def upload_files(
             exc_info=True,
         )
 
-    # ── 3. 写入会话记忆（失败不阻塞上传响应：文件已落 MinIO，记忆写入仅记告警） ──
+    # ── 3. 生成确认回复 + 写 metadata ──
+    # 只加 assistant turn 确认，不加 user turn（避免文件名数字污染 LLM 上下文）
+    ack_message = ""
+    # ── 3. 写入会话记忆（失败不阻塞上传响应） ──
     try:
         mgr = await get_memory_manager()
         t_mem = time.perf_counter()
@@ -420,8 +435,28 @@ async def upload_files(
         t_state = time.perf_counter()
         memory = await mgr.get_memory(session_id)
         state = memory.metadata.get("agent_state", {})
+        # 附件列表
         existing = state.get("attachments", [])
         state["attachments"] = existing + saved
+        # 图片描述 → collected_info
+        if image_desc:
+            ci = state.get("collected_info", {}) or {}
+            prev = ci.get("image_description", "")
+            ci["image_description"] = (prev + "\n" + image_desc).strip() if prev else image_desc
+            state["collected_info"] = ci
+            # 图片：VLM 分析直接作为回复
+            ack_message = image_desc
+        else:
+            # 非图片文件：暂不支持解析
+            exts = {Path(f["filename"]).suffix.lower() for f in saved}
+            ext_str = "、".join(exts)
+            ack_message = (
+                f"已收到 {len(saved)} 个文件（{filenames}），"
+                f"文件格式 {ext_str}。\n"
+                f"我们暂不支持解析除图片以外的文件类型，"
+                f"但如果您后续提单，这些文件将作为接单人处理工单的参考依据。"
+            )
+        # 写 metadata
         memory.metadata["agent_state"] = state
         await mgr.save_memory(memory)
         logger.info(
@@ -430,6 +465,7 @@ async def upload_files(
             f"has_last_ticket={bool(state.get('last_submitted_ticket', {}).get('ticket_id'))}"
         )
 
+        # 追加到已提交工单
         last_ticket = state.get("last_submitted_ticket", {})
         if last_ticket and last_ticket.get("ticket_id"):
             pipeline = await get_pipeline()
@@ -451,6 +487,46 @@ async def upload_files(
         f"total_files={len(saved)}, filenames={filenames}, "
         f"has_image_desc={bool(image_desc)}, total_ms={total_ms}"
     )
+
+    # ── 5. 如果附带文字 → 顺手跑诊断 ──
+    ai_response = None
+    if message.strip():
+        try:
+            username, _ = _current_user_from_header(authorization)
+            pipeline = await get_pipeline()
+            request = DiagnosisRequest(
+                session_id=session_id,
+                query=message.strip(),
+                created_by=username,
+            )
+            result = await pipeline.run(request)
+            ai_response = {
+                "message": result.get("message", ""),
+                "action": result.get("action", ""),
+                "thinking": result.get("thinking", ""),
+                "ticket": result.get("ticket"),
+            }
+        except Exception as e:
+            logger.error(f"上传附带文字诊断失败: {e}", exc_info=True)
+            ai_response = {"error": str(e)}
+    else:
+        if ack_message:
+            try:
+                mgr = await get_memory_manager()
+                await mgr.add_turn(session_id, "assistant", ack_message)
+                logger.info(f"上传确认回执已写入: session={session_id[:8]}, "
+                            f"files={filenames}, image={bool(image_desc)}")
+            except Exception as e:
+                logger.warning(f"写入上传确认回执失败: {e}")
+
+    return {
+        "code": 0,
+        "data": {
+            "saved": len(saved), "files": saved,
+            "ack_message": ack_message,
+            "ai_response": ai_response,
+        },
+    }
 
 
 @qa_router.get("/health", summary="健康检查")

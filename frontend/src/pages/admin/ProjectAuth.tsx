@@ -16,6 +16,19 @@ interface AuthItem {
 }
 interface Project { id?: string; code?: string; name: string; }
 
+const maskCode = (code: string): string => {
+  if (!code) return '';
+  return code.slice(0, 30) + '*'.repeat(10);
+};
+
+const todayStr = (): string => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
 // 关联人员可选角色列表
 const ASSOCIATE_ROLES = ['实施', '数据分析师', '数据查看', '研发项目经理', '管理员', '项目对接人'];
 // 用户列表占位：待接入后端项目人员绑定接口前，先用固定人员名单代替
@@ -45,8 +58,8 @@ export default function ProjectAuth() {
 
   // 申请授权码：机器码 + 开始/结束日期，调用 POST /export/apply_project_license（经 MQTT 审批）
   const [machineCode, setMachineCode] = useState('');
-  const [licenseStartDate, setLicenseStartDate] = useState('');
-  const [licenseEndDate, setLicenseEndDate] = useState('');
+  const [licenseStartDate, setLicenseStartDate] = useState(todayStr());
+  const [licenseEndDate, setLicenseEndDate] = useState(todayStr());
   const [startDatePickerVisible, setStartDatePickerVisible] = useState(false);
   const [endDatePickerVisible, setEndDatePickerVisible] = useState(false);
   const [applyingLicense, setApplyingLicense] = useState(false);
@@ -115,8 +128,8 @@ export default function ProjectAuth() {
       if (status?.status === 'approved') {
         Toast({ message: `授权码申请成功：${status.license_content || ''}`, theme: 'success' });
         setMachineCode('');
-        setLicenseStartDate('');
-        setLicenseEndDate('');
+        setLicenseStartDate(todayStr());
+        setLicenseEndDate(todayStr());
         fetchLicenses(projectCode);
       } else if (status?.status === 'rejected') {
         Toast({ message: `申请被拒绝${status.message ? '：' + status.message : ''}`, theme: 'error' });
@@ -246,8 +259,8 @@ export default function ProjectAuth() {
             <div key={item.id} style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div>
-                  <div style={{ fontWeight: 500 }}>{item.license_code}</div>
-                  {item.machine_code && <div style={{ fontSize: 12, color: '#999' }}>机器码：{item.machine_code}</div>}
+                  <div style={{ fontWeight: 500 }}>{maskCode(item.license_code)}</div>
+                  {item.machine_code && <div style={{ fontSize: 12, color: '#999' }}>机器码：{maskCode(item.machine_code)}</div>}
                   <div style={{ fontSize: 13, color: '#666' }}>有效期：{item.apply_time} ～ {item.expire_time}</div>
                   <div style={{ fontSize: 12, color: '#999' }}>申请人：{item.applicant}</div>
                 </div>
