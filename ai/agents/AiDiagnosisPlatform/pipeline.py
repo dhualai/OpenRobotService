@@ -48,6 +48,7 @@ class AgentState:
     original_query: str = ""
     last_submitted_ticket: dict = field(default_factory=dict)  # 上一个已提交工单的摘要
     ticket_seq: int = 0  # 工单序号，同一会话多次转单时自增，确保 external_id 唯一
+    pending_submit: bool = False  # 用户说了转工单但缺项目 → 等用户补完项目后自动提单
 
 
 # ============================================================
@@ -75,6 +76,7 @@ def _load_agent_state(metadata: dict) -> Optional[AgentState]:
         original_query=s.get("original_query", ""),
         last_submitted_ticket=s.get("last_submitted_ticket", {}),
         ticket_seq=s.get("ticket_seq", 0),
+        pending_submit=s.get("pending_submit", False),
     )
 
 
@@ -91,6 +93,7 @@ def _save_agent_state(memory, state: AgentState) -> None:
         "original_query": state.original_query,
         "last_submitted_ticket": state.last_submitted_ticket,
         "ticket_seq": state.ticket_seq,
+        "pending_submit": state.pending_submit,
         "attachments": existing.get("attachments", []),  # 保留上传的附件
     }
 
@@ -200,16 +203,15 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在�
    你**必须**在回复中明确告知用户"该错误码未收录"，**绝对禁止**根据其他知识库内容、翻译表或自身知识编造该错误码的含义。
    用户问的是具体数字错误码，不等于问"车端有什么常见报警"。
 3. **🌐 翻译表（标题含「翻译表」）**：用户问某个字段/标签/错误码的中英文含义时，从翻译表查找。也可辅助理解车端错误码的英文描述。
-4. **🔍 故障排查树**：用户描述了故障现象，以上来源没有直接覆盖时，用排查树按步骤引导。
-5. **知识库（操作手册）**：howto 类操作问题走这里，按前提→操作→预期结果给出步骤。
+4. **知识库（操作手册）**：howto 类操作问题走这里，按前提→操作→预期结果给出步骤。
 
-⚠️ **关键**：各知识源不互斥！先看 FAQ/车端错误码有没有现成答案，有就直接用；都没有的故障才走排查树。
+⚠️ **关键**：各知识源不互斥！先看 FAQ/车端错误码有没有现成答案，有就直接用。
 
 ## ⛔ 转工单规则（优先级最高，优先于所有意图判断）
 
-用户消息中含"转工单""转单""生成工单""提交工单""提单""不想排查"等关键词时：
+用户消息中含"转工单""转单""转人工""生成工单""提交工单""提单""不想排查""算了""不用了"等关键词时：
 → **立即执行**：action 必须设为 "submit"，不要设为 "answer"。
-→ 回复只需一句话："好的，已为你生成工单，工程师会尽快处理。"
+→ 回复只需一句话："收到，正在提交工单…"（不要自己说"已生成"，系统会在提交成功后自动确认）
 → 禁止做任何其他事：不要描述工单内容、不要总结排查结果、不要反问、不要排查、不要给建议。
 
 ## 意图判断（决定回复风格，不影响知识源选择）
@@ -222,47 +224,16 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在�
 
 - **troubleshoot（故障排查）**：用户描述了异常现象（离线、报错、不动、卡住、异常等）。
   **先查 FAQ**：如果 FAQ 中有对应错误码/问题的直接答案，优先引用 FAQ 回答。
-  **FAQ 没覆盖 + 有排查树**：严格按排查树逐步骤引导（见下方详细规则）。
-  **都没有时**：列出可能原因，引导用户逐项验证。看 hypotheses/collected_info/ruled_out 推进排查。有明确怀疑直接让用户试（如"重启一下控制器看是否恢复"）。排查不出转工单。
+  **FAQ 没覆盖时**：列出可能原因，引导用户逐项验证。看 hypotheses/collected_info/ruled_out 推进排查。有明确怀疑直接让用户试（如"重启一下控制器看是否恢复"）。排查不出转工单。
   ⚠️ 知识库中有相关截图/示意图时，**必须引用**到回答中帮助用户定位。
 
 - **chat（闲聊/问候）**：简单回应，不要追问技术问题。用户说"好的""谢谢""感谢"是对话收尾，回复"不客气，有问题随时找我"即可。禁止顺势开始排查或反问用户。
 
 ## 重要规则
-- 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：`、`FAQ N：`、`🔍 故障排查树 N：`、`🚗 车端错误码 N：` 或 `🌐 翻译表 N：` 中标明。
+- 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：`、`FAQ N：`、`🚗 车端错误码 N：` 或 `🌐 翻译表 N：` 中标明。
   **只引用与用户问题直接相关的 chunk 内容**，无关 chunk 的内容和图片一律忽略。
-- **禁止在回复中暴露知识来源**：不要说"根据排查树""根据知识库""检索结果显示"等话术。
+- **禁止在回复中暴露知识来源**：不要说"根据知识库""检索结果显示"等话术。
   直接给出步骤/答案，用户不需要知道你查了什么。
-
-## 🔍 故障排查树使用规则（极其重要）
-- 排查树用于 FAQ 无法直接覆盖的故障场景。如果用户问题在 FAQ 中已有现成答案（如错误码解释），直接用 FAQ，不走排查树。
-
-⚠️ **铁律（违反将导致错误诊断）**：
-  - **绝对禁止**自己编造排查树中没有的检查项、原因或方案
-  - **绝对禁止**跳过排查树的步骤顺序，或合并多步为一步
-  - 你只能问排查树中明确列出的分支选项，不能自己添加选项
-  - 每一轮排查你只能说排查树中**当前这一步**的内容，不能提前透露后续步骤
-
-1. **分流判断**（命中多个排查树 / 用户描述模糊时）：
-   - **不要**直接开始走某一棵树的步骤！
-   - 把命中的故障场景列出来让用户确认是哪一个，如：
-     "🔍 排查树匹配到以下几种情况，请确认你的具体现象：
-     1. <场景A的症状名称>
-     2. <场景B的症状名称>
-     3. <场景C的症状名称>
-     请问你的任务界面显示的是哪种状态？"
-   - **用户确认后再**进入该树的逐步骤排查。
-
-2. **逐步骤排查**（用户确认 / 只有一棵树命中时）：
-   - 严格按树的顺序，**一次只问一步**，把该步的分支选项列出来让用户选
-   - 根据用户回答跳转到对应分支（结论或下一步）
-   - 到达「【结论】」时输出原因+方案
-   - 如果某步有「以上都不是」分支但用户描述不在选项中，走「以上都不是」继续
-
-3. **排查树中的结论引用**：
-   - 排查树里的「原因」和「方案」是经验总结，输出时引用它们
-   - 如果【结论】涉及操作步骤（如"急停→推车→RESET"），展开为可执行的步骤
-   - 排查树某一步走完后，下一轮继续按树往下走，不要回到自由发挥模式
 
 ## 对话
 {conversation}
@@ -537,6 +508,57 @@ class AiDiagnosisPlatform:
         memory = await self._memory_manager.add_turn(request.session_id, "user", request.query)
         t["add_turn"] = round((time.perf_counter() - t1) * 1000)
 
+        # ---- 转工单关键词 → 直接拦截常见情况，不调 LLM ----
+        # 注意：必须在 state.phase = "diagnosing" 之前，否则 _can_submit 拿不到真实 phase
+        _short_kw = ("转工单", "转单", "转人工", "生成工单", "提交工单", "提单", "帮我转", "我要转", "不想排查")
+        if any(kw in request.query for kw in _short_kw):
+            _can, _reason = _can_submit(state)
+            if not _can:
+                # 已提交且无新问题 → 直接拒绝
+                logger.info(f"[agent] _can_submit 拦截: session={request.session_id[:8]}, phase={state.phase}")
+                result = await self._finalize_diagnosis(
+                    request.session_id, state,
+                    thinking="", action="answer", message=_reason,
+                    streaming=False)
+                return result
+            if not state.collected_info.get("project", "").strip() and not state.collected_info.get("project_id", "").strip():
+                # 缺项目 → 引导补充，记住"在等提单"，下一轮用户补完自动触发
+                logger.info(f"[agent] 缺项目直接拦截: session={request.session_id[:8]}")
+                state.pending_submit = True
+                result = await self._finalize_diagnosis(
+                    request.session_id, state,
+                    thinking="", action="answer",
+                    message="请先选择/填写绑定项目，未绑定项目无法提交工单。",
+                    streaming=False)
+                return result
+
+        # ---- pending_submit 快捷提单：上一轮缺项目被拦截，本轮直接提单 ----
+        if state.pending_submit:
+            state.pending_submit = False
+            state.diagnosis_rounds += 1
+            state.phase = "diagnosing"
+            state.collected_info["project"] = request.query.strip()
+            logger.info(f"[agent] pending_submit 直接提单: project={state.collected_info['project']}")
+            try:
+                ticket_data = await self.submit(request.session_id, created_by=request.created_by)
+                result = await self._finalize_diagnosis(
+                    request.session_id, state,
+                    thinking="", action="answer",
+                    message="好的，已为你生成工单，工程师会尽快处理。",
+                    streaming=False)
+                result["ticket"] = ticket_data
+                return result
+            except Exception as e:
+                logger.error(f"[agent] pending_submit 提单失败: {e}", exc_info=True)
+                result = await self._finalize_diagnosis(
+                    request.session_id, state,
+                    thinking="", action="answer",
+                    message="提单过程中出现异常，请稍后重试或联系管理员。",
+                    streaming=False)
+                return result
+
+        # 不是转工单关键词 → 清除 pending_submit
+        state.pending_submit = False
         state.diagnosis_rounds += 1
         state.phase = "diagnosing"
 
@@ -608,6 +630,13 @@ class AiDiagnosisPlatform:
             parsed["message"] = _reason
             logger.info(f"[agent] LLM submit 被闭环拦截: phase={state.phase}")
 
+        # ---- pending_submit 自动提单：上一轮缺项目被拦截，本轮补了项目 → 触发提单 ----
+        if state.pending_submit and _can and parsed["action"] != "submit":
+            if state.collected_info.get("project", "").strip() or state.collected_info.get("project_id", "").strip():
+                state.pending_submit = False
+                parsed["action"] = "submit"
+                logger.info(f"[agent] pending_submit 自动提单: project={state.collected_info.get('project', '')}")
+
         # ---- Step 3: 应用 action → phase 转换 ----
         self._apply_action_phase(state, parsed["action"])
         t["parse_output"] = round((time.perf_counter() - t_parse_start) * 1000)
@@ -628,19 +657,29 @@ class AiDiagnosisPlatform:
                 check = _check_required_fields(draft)
                 if not check["ok"]:
                     logger.info(f"[agent] 缺必填字段: {check['missing']}, 引导用户补充")
-                    memory.metadata["ticket_draft"] = draft
-                    await self._memory_manager.save_memory(memory)
+                    # 先改 action/message 再写 memory：避免 save_memory 抛异常时
+                    # 前端看到 LLM role-play 的"已生成工单"但实际没提单
                     parsed["action"] = "answer"
                     parsed["message"] = check["prompt"]
+                    try:
+                        memory.metadata["ticket_draft"] = draft
+                        await self._memory_manager.save_memory(memory)
+                    except Exception:
+                        logger.warning(f"[agent] 草稿保存失败: session={request.session_id[:8]}", exc_info=True)
                 else:
                     ticket_data = await self.submit(request.session_id, created_by=request.created_by)
                     logger.info(f"[agent] 自动提单成功: session={request.session_id[:8]}, "
                                 f"ticket={ticket_data.get('data', {}).get('ticket', {}).get('ticket_id', '?')}")
+                    parsed["message"] = "好的，已为你生成工单，工程师会尽快处理。"
                     # submit() 已清空诊断状态并保存，刷新本地 state 避免 _finalize_diagnosis 覆写旧状态
                     memory = await self._memory_manager.get_memory(request.session_id)
                     state = _load_agent_state(memory.metadata) or state
             except Exception as e:
                 logger.error(f"[agent] 自动提单失败: session={request.session_id[:8]}, error={e}", exc_info=True)
+                # 兜底：防止 LLM role-play "已生成工单" 但实际提单失败
+                if parsed["action"] == "submit":
+                    parsed["action"] = "answer"
+                    parsed["message"] = "提单过程中出现异常，请稍后重试或联系管理员。"
 
         # ---- 补充工单：post-submit 时判断是否为补充信息 → 更新 MySQL 工单 ----
         _is_follow_up = parsed.get("intent") == "follow_up" or (
@@ -710,10 +749,6 @@ class AiDiagnosisPlatform:
                 self._retriever.retrieve_faq(search_query, top_k=max(2, config.retrieval_top_k - 1)),
                 timeout=10.0,
             )
-            troubleshooting_task = asyncio.wait_for(
-                self._retriever.retrieve_troubleshooting(search_query, top_k=3),
-                timeout=10.0,
-            )
             cheduan_task = asyncio.wait_for(
                 self._retriever.retrieve_cheduan(search_query, top_k=3),
                 timeout=10.0,
@@ -731,26 +766,24 @@ class AiDiagnosisPlatform:
                 timeout=10.0,
             )
 
-            logger.info(f"[retrieve] 开始七路并行检索: query={search_query[:60]}...")
+            logger.info(f"[retrieve] 开始六路并行检索: query={search_query[:60]}...")
             gathered = await asyncio.wait_for(
                 asyncio.gather(
-                    manual_task, faq_task, troubleshooting_task,
+                    manual_task, faq_task,
                     cheduan_task, translation_task, platform_faq_task,
                     usp_diagnosis_task,
                     return_exceptions=True,
                 ),
                 timeout=20.0,
             )
-            logger.info(f"[retrieve] 七路检索完成")
-            manual_results, faq_results, troubleshooting_results, cheduan_results, translation_results, platform_faq_results, usp_diagnosis_results = gathered
+            logger.info(f"[retrieve] 六路检索完成")
+            manual_results, faq_results, cheduan_results, translation_results, platform_faq_results, usp_diagnosis_results = gathered
 
             # 单路失败不拖垮全部：只丢弃异常的那一路
             if isinstance(manual_results, BaseException):
                 manual_results = ([], 0.0)
             if isinstance(faq_results, BaseException):
                 faq_results = []
-            if isinstance(troubleshooting_results, BaseException):
-                troubleshooting_results = []
             if isinstance(cheduan_results, BaseException):
                 cheduan_results = []
             if isinstance(translation_results, BaseException):
@@ -790,7 +823,7 @@ class AiDiagnosisPlatform:
                     idx += 1
 
             # 关键：用户明确问了错误码，但车端知识库没匹配到 → 显式告知 LLM
-            # 防止 LLM 根据其他渠道（FAQ/排查树）的无关内容编造答案
+            # 防止 LLM 根据其他渠道的无关内容编造答案
             _query_codes = self._retriever._extract_error_codes(search_query)
             if _query_codes and not cheduan_found:
                 codes_str = "、".join(_query_codes)
@@ -802,14 +835,6 @@ class AiDiagnosisPlatform:
             for r in (translation_results or []):
                 if r.content.strip():
                     docs.append(f"---\n🌐 翻译表 {idx}：{r.title}\n{r.content}\n---")
-                    idx += 1
-
-            # 排查树
-            for r in (troubleshooting_results or []):
-                symptom = r.title or ""
-                tree_text = r.content or ""
-                if tree_text.strip():
-                    docs.append(f"---\n🔍 故障排查树 {idx}：{symptom}\n{tree_text}\n---")
                     idx += 1
 
             # USP 诊断知识库
@@ -946,7 +971,7 @@ class AiDiagnosisPlatform:
         if ticket_type == "problem":
             result["location"] = analysis.get("location", "")
             result["robot_type"] = analysis.get("robot_type", "")
-            result["project"] = agent_state.collected_info.get("project") or analysis.get("project", "")
+            result["project"] = agent_state.collected_info.get("project") or ""
             result["fault_code"] = analysis.get("fault_code", "")
             result["special_notes"] = analysis.get("special_notes", "")
         elif ticket_type == "bug":
@@ -983,17 +1008,12 @@ class AiDiagnosisPlatform:
         ticket["ticket_seq"] = agent_state.ticket_seq
 
         # ---- 存储到 tasks 表（source='ai'，按 (source, external_id) 幂等 upsert）----
-        db_id = 0
-        try:
-            from ai.core.task_adapter import upsert_task
-            record = upsert_task(ticket, created_by=created_by)
-            db_id = record.id
-            ticket["db_id"] = db_id
-            logger.info(f"工单已入库: session_id={session_id}, db_id={db_id}, seq={agent_state.ticket_seq}, "
-                        f"title={ticket.get('title', '')}, type={ticket.get('type', '')}")
-        except Exception as e:
-            logger.error(f"MySQL 工单写入失败: session_id={session_id}, error={e}", exc_info=True)
-            print(f"  ⚠️ MySQL 写入失败: {e}")
+        from ai.core.task_adapter import upsert_task
+        record = upsert_task(ticket, created_by=created_by)
+        db_id = record.id
+        ticket["db_id"] = db_id
+        logger.info(f"工单已入库: session_id={session_id}, db_id={db_id}, seq={agent_state.ticket_seq}, "
+                    f"title={ticket.get('title', '')}, type={ticket.get('type', '')}")
 
         agent_state.phase = "resolved"
         # 记住上一个工单（供后续对话判断"补充信息"还是"新话题"）
@@ -1299,6 +1319,78 @@ class AiDiagnosisPlatform:
         logger.info(f"[stream] 开始流式推理: session={request.session_id[:8]}, query={request.query[:50]}, round={state.diagnosis_rounds}")
         memory = await self._memory_manager.add_turn(request.session_id, "user", request.query)
 
+        # ---- 转工单关键词 → 直接拦截常见情况，不调 LLM ----
+        # 注意：必须在 state.phase = "diagnosing" 之前，否则 _can_submit 拿不到真实 phase
+        _short_kw = ("转工单", "转单", "转人工", "生成工单", "提交工单", "提单", "帮我转", "我要转", "不想排查")
+        if any(kw in request.query for kw in _short_kw):
+            _can, _reason = _can_submit(state)
+            if not _can:
+                # 已提交且无新问题 → 直接拒绝
+                logger.info(f"[stream] _can_submit 拦截: session={request.session_id[:8]}, phase={state.phase}")
+                for ch in _reason:
+                    yield {"event": "token", "data": ch}
+                result = await self._finalize_diagnosis(
+                    request.session_id, state,
+                    thinking="", action="answer", message=_reason,
+                    streaming=True)
+                yield {"event": "result", "data": result}
+                return
+            if not state.collected_info.get("project", "").strip() and not state.collected_info.get("project_id", "").strip():
+                # 缺项目 → 引导补充，记住"在等提单"，下一轮用户补完自动触发
+                logger.info(f"[stream] 缺项目直接拦截: session={request.session_id[:8]}")
+                state.pending_submit = True
+                short_msg = "请先选择/填写绑定项目，未绑定项目无法提交工单。"
+                for ch in short_msg:
+                    yield {"event": "token", "data": ch}
+                result = await self._finalize_diagnosis(
+                    request.session_id, state,
+                    thinking="", action="answer", message=short_msg,
+                    streaming=True)
+                yield {"event": "result", "data": result}
+                return
+
+        # ---- pending_submit 快捷提单：上一轮缺项目被拦截，本轮直接提单 ----
+        if state.pending_submit:
+            state.pending_submit = False
+            state.diagnosis_rounds += 1
+            state.phase = "diagnosing"
+            state.collected_info["project"] = request.query.strip()
+            logger.info(f"[stream] pending_submit 直接提单: project={state.collected_info['project']}")
+            try:
+                yield {"event": "status", "data": {"stage": "submitting"}}
+                ticket_data = await self.submit(request.session_id, created_by=request.created_by)
+                ticket_info = ticket_data.get('data', {}).get('ticket', {})
+                yield {"event": "status", "data": {
+                    "stage": "submitted",
+                    "ticket_id": ticket_info.get("ticket_id", ""),
+                    "title": ticket_info.get("title", ""),
+                    "db_id": ticket_data.get("data", {}).get("db_id", 0),
+                }}
+                short_msg = "好的，已为你生成工单，工程师会尽快处理。"
+                for ch in short_msg:
+                    yield {"event": "token", "data": ch}
+                result = await self._finalize_diagnosis(
+                    request.session_id, state,
+                    thinking="", action="answer", message=short_msg,
+                    streaming=True)
+                result["ticket"] = ticket_data
+                yield {"event": "result", "data": result}
+                return
+            except Exception as e:
+                logger.error(f"[stream] pending_submit 提单失败: {e}", exc_info=True)
+                yield {"event": "status", "data": {"stage": "submit_failed", "error": str(e)}}
+                short_msg = "提单过程中出现异常，请稍后重试或联系管理员。"
+                for ch in short_msg:
+                    yield {"event": "token", "data": ch}
+                result = await self._finalize_diagnosis(
+                    request.session_id, state,
+                    thinking="", action="answer", message=short_msg,
+                    streaming=True)
+                yield {"event": "result", "data": result}
+                return
+
+        # 不是转工单关键词 → 清除 pending_submit
+        state.pending_submit = False
         state.diagnosis_rounds += 1
         state.phase = "diagnosing"
 
@@ -1411,6 +1503,13 @@ class AiDiagnosisPlatform:
             parsed["message"] = _reason
             logger.info(f"[stream] LLM submit 被闭环拦截: phase={state.phase}")
 
+        # ---- pending_submit 自动提单：上一轮缺项目被拦截，本轮补了项目 → 触发提单 ----
+        if state.pending_submit and _can and parsed["action"] != "submit":
+            if state.collected_info.get("project", "").strip() or state.collected_info.get("project_id", "").strip():
+                state.pending_submit = False
+                parsed["action"] = "submit"
+                logger.info(f"[stream] pending_submit 自动提单: project={state.collected_info.get('project', '')}")
+
         # ---- Step 3: 应用 action → phase 转换 ----
         self._apply_action_phase(state, parsed["action"])
 
@@ -1430,19 +1529,25 @@ class AiDiagnosisPlatform:
                 check = _check_required_fields(draft)
                 if not check["ok"]:
                     logger.info(f"[stream] 缺必填字段: {check['missing']}, 引导用户补充")
+                    # 先改 action/message + 发 status 再写 memory：避免 save_memory
+                    # 抛异常时前端看到 LLM role-play 的"已生成工单"但实际没提单
+                    parsed["action"] = "answer"
+                    parsed["message"] = check["prompt"]
                     yield {"event": "status", "data": {
                         "stage": "need_fields", "missing_fields": check["missing"], "prompt": check["prompt"],
                     }}
-                    memory.metadata["ticket_draft"] = draft
-                    await self._memory_manager.save_memory(memory)
-                    parsed["action"] = "answer"
-                    parsed["message"] = check["prompt"]
+                    try:
+                        memory.metadata["ticket_draft"] = draft
+                        await self._memory_manager.save_memory(memory)
+                    except Exception:
+                        logger.warning(f"[stream] 草稿保存失败: session={request.session_id[:8]}", exc_info=True)
                 else:
                     yield {"event": "status", "data": {"stage": "submitting"}}
                     ticket_data = await self.submit(request.session_id, created_by=request.created_by)
                     ticket_info = ticket_data.get('data', {}).get('ticket', {})
                     logger.info(f"[stream] 自动提单成功: session={request.session_id[:8]}, "
                                 f"ticket={ticket_info.get('ticket_id', '?')}")
+                    parsed["message"] = "好的，已为你生成工单，工程师会尽快处理。"
                     yield {"event": "status", "data": {
                         "stage": "submitted",
                         "ticket_id": ticket_info.get("ticket_id", ""),
@@ -1455,6 +1560,10 @@ class AiDiagnosisPlatform:
             except Exception as e:
                 logger.error(f"[stream] 提单失败: session={request.session_id[:8]}, error={e}", exc_info=True)
                 yield {"event": "status", "data": {"stage": "submit_failed", "error": str(e)}}
+                # 兜底：防止 LLM role-play "已生成工单" 但实际提单失败
+                if parsed["action"] == "submit":
+                    parsed["action"] = "answer"
+                    parsed["message"] = "提单过程中出现异常，请稍后重试或联系管理员。"
 
         # ---- 补充工单：post-submit 时判断是否为补充信息 → 更新 MySQL 工单 ----
         # 双层检测：① LLM 明确输出 intent=follow_up ② 兜底：action=answer 且非 howto/troubleshoot
