@@ -6,6 +6,7 @@ import { Navbar } from 'tdesign-mobile-react';
 interface Entry { path: string; label: string; emoji: string; desc: string; }
 
 const adminEntries: Entry[] = [
+  { path: '/admin/users', label: '用户管理', emoji: '👥', desc: '用户账号CRUD、派单画像' },
   { path: '/admin/roles', label: '角色管理', emoji: '🏷️', desc: '角色定义、权限绑定' },
   { path: '/admin/permissions', label: '权限管理', emoji: '🔑', desc: '权限项定义、分配' },
   { path: '/admin/assign-role', label: '分配角色', emoji: '👤', desc: '为用户在项目中分配角色' },
