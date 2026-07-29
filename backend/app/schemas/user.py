@@ -1,8 +1,4 @@
-"""用户契约（Pydantic）。
-
-底座认证/RBAC 契约集中于 `app/schemas/`（MIGRATION.md 阶段 1）。
-原定义于 `app/modules/aas/schemas/user.py`，现迁入此处；旧路径改为再导出 shim。
-"""
+"""用户契约（Pydantic）。"""
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, EmailStr
 
@@ -19,6 +15,10 @@ class UserCreate(UserBase):
     name: Optional[str] = None
     status: Optional[str] = "inactive"
     external_credentials: Optional[Dict[str, Dict[str, str]]] = {}
+    department: Optional[str] = None
+    responsibility_modules: Optional[List[str]] = None
+    job_level: Optional[int] = 1
+    duty_text: Optional[str] = None
 
 class UserUpdate(BaseModel):
     password: Optional[str] = None
@@ -27,6 +27,10 @@ class UserUpdate(BaseModel):
     status: Optional[str] = None
     external_credentials: Optional[Dict[str, Dict[str, str]]] = None
     avatar_resource_id: Optional[int] = None
+    department: Optional[str] = None
+    responsibility_modules: Optional[List[str]] = None
+    job_level: Optional[int] = None
+    duty_text: Optional[str] = None
 
 class UserInDB(UserBase):
     id: str
@@ -36,7 +40,10 @@ class UserInDB(UserBase):
     name: Optional[str] = None
     status: str = "inactive"
     external_credentials: Dict[str, Dict[str, str]] = {}
-
+    department: Optional[str] = None
+    responsibility_modules: Optional[List[str]] = None
+    job_level: Optional[int] = 1
+    duty_text: Optional[str] = None
     class Config:
         from_attributes = True
 
@@ -48,6 +55,10 @@ class User(UserBase):
     name: Optional[str] = None
     status: str = "inactive"
     external_credentials: Dict[str, Dict[str, str]] = {}
+    department: Optional[str] = None
+    responsibility_modules: Optional[List[str]] = None
+    job_level: Optional[int] = 1
+    duty_text: Optional[str] = None
     class Config:
         from_attributes = True
 

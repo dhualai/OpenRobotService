@@ -690,27 +690,31 @@ class AiTaskAgent:
                 TaskComment.task_id == tid_int
             ).order_by(TaskComment.created_at.asc()).all()
 
+            task = db.query(Task).filter(Task.id == tid_int).first()
+            task_title = task.title if task else ""
+            task_desc = task.description if task else ""
+            meta = dict(task.metadata_info or {}) if task else {}
+            diag = meta.get("diagnosis", {})
+            diag_summary = diag.get("problem_summary", "") or ""
+
+            # 上次摘要从 metadata_info 读取（不再从评论中找 📝 前缀）
+            last_summary_at_str = meta.get("ai_summary_at", "")
+            last_summary_text = meta.get("ai_summary", "") or ""
             last_summary_at = None
-            last_summary_text = ""
-            for c in reversed(comments):
-                if c.created_by == "小U" and (c.content or "").startswith("📝 讨论摘要"):
-                    last_summary_at = c.created_at
-                    last_summary_text = c.content.replace("📝 讨论摘要\n\n", "").strip()
-                    break
+            if last_summary_at_str:
+                try:
+                    from datetime import datetime as dt
+                    last_summary_at = dt.strptime(last_summary_at_str, "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    pass
 
             new_comments = []
             for c in comments:
                 if c.created_by == "小U":
                     continue
-                if last_summary_at and c.created_at <= last_summary_at:
+                if last_summary_at and c.created_at and c.created_at <= last_summary_at:
                     continue
                 new_comments.append(c)
-
-            task = db.query(Task).filter(Task.id == tid_int).first()
-            task_title = task.title if task else ""
-            task_desc = task.description if task else ""
-            diag = (task.metadata_info or {}).get("diagnosis", {}) if task else {}
-            diag_summary = diag.get("problem_summary", "") or ""
         finally:
             db.close()
 
@@ -726,7 +730,7 @@ class AiTaskAgent:
         # 组装 Prompt
         history_lines = []
         for c in new_comments[-20:]:
-            author = c.created_by_name or c.created_by or "?"
+            author = getattr(c, 'created_by_name', None) or c.created_by or "?"
             content = (c.content or "")[:200]
             history_lines.append(f"[{author}] {content}")
         history_text = "\n".join(history_lines) if history_lines else ""
@@ -750,8 +754,21 @@ class AiTaskAgent:
         )
 
         summary_text = summary.strip()
-        comment_content = f"📝 讨论摘要\n\n{summary_text}"
-        comment_id = self._add_diagnosis_comment_short(tid_int, comment_content)
+
+        # ── 存入 metadata_info.ai_summary（不写 task_comments）──
+        from app.models.task import Task
+        from app.core.database import SessionLocal
+        db2 = SessionLocal()
+        try:
+            task = db2.query(Task).filter(Task.id == tid_int).first()
+            if task:
+                meta = dict(task.metadata_info or {})
+                meta["ai_summary"] = summary_text
+                meta["ai_summary_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                task.metadata_info = meta
+                db2.commit()
+        finally:
+            db2.close()
 
         logger.info(f"Summarize #{task_id}: 生成完成, new_comments={len(new_comments)}")
         return {
@@ -759,7 +776,7 @@ class AiTaskAgent:
             "summary": summary_text,
             "new_comments": len(new_comments),
             "skipped": False,
-            "comment_id": comment_id,
+            "stored_in": "metadata_info.ai_summary",
             "_total_ms": round((time.perf_counter() - t0) * 1000),
         }
 

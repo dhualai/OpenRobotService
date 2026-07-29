@@ -105,6 +105,19 @@ def _agent_state_summary(state: AgentState) -> dict:
     }
 
 
+def _can_submit(state: AgentState) -> tuple[bool, str]:
+    """检查当前会话是否允许提单（闭环：防止重复提交）。
+
+    resolved / escalated 且没有活跃问题描述时拦截；
+    如果有新的 problem_summary（用户描述了新故障），则允许提单。
+    """
+    if state.phase in ("resolved", "escalated") and not state.problem_summary:
+        if state.phase == "escalated":
+            return False, "工单已提交处理中，请耐心等待工程师回复。如有新问题请先描述现象。"
+        return False, "当前没有待处理的故障，无需重复提交工单。如有新问题请先描述现象。"
+    return True, ""
+
+
 def _check_required_fields(ticket: dict) -> dict:
     """统一的前置校验：所有类型转工单都必须绑定项目（project_id 优先，回退 project 名称）。
     与前端确认弹窗的「项目必选（所有类型）」规则对齐：未绑定项目时拒绝提交并给出提示。
@@ -380,7 +393,7 @@ class AiDiagnosisPlatform:
             )
             _save_agent_state(memory, agent_state)
             await self._memory_manager.save_memory(memory)
-        elif agent_state.phase in ("idle", "resolved") and not agent_state.problem_summary:
+        elif agent_state.phase in ("idle", "resolved", "escalated") and not agent_state.problem_summary:
             # 上一轮工单已提交、诊断状态已清空 → 全新话题
             agent_state.phase = "idle"
             agent_state.original_query = request.query
@@ -577,13 +590,31 @@ class AiDiagnosisPlatform:
         parsed = self._parse_agent_output(raw)
         logger.info(f"[agent] 解析结果: action={parsed['action']}, message_len={len(parsed['message'])}, "
                     f"message前50字={parsed['message'][:50]}")
+
+        # ---- Step 1: 先应用 LLM 提炼的 state_update（含 problem_summary），
+        #     让 _can_submit 基于 LLM 判断后的有效问题描述做决策 ----
         self._apply_state_update(state, parsed["state_update"])
+
+        # ---- Step 2: 闭环保护（基于 LLM 提炼后的 problem_summary）----
+        _can, _reason = _can_submit(state)
+        if any(kw in request.query for kw in ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转")) and not _can:
+            logger.info(f"[agent] 重复提单拦截: phase={state.phase}, problem_summary={state.problem_summary[:30] if state.problem_summary else ''}")
+            parsed["action"] = "answer"
+            parsed["message"] = _reason
+
+        # ---- LLM 输出 action=submit → 同样受闭环保护 ----
+        if parsed["action"] == "submit" and not _can:
+            parsed["action"] = "answer"
+            parsed["message"] = _reason
+            logger.info(f"[agent] LLM submit 被闭环拦截: phase={state.phase}")
+
+        # ---- Step 3: 应用 action → phase 转换 ----
         self._apply_action_phase(state, parsed["action"])
         t["parse_output"] = round((time.perf_counter() - t_parse_start) * 1000)
 
-        # ---- 服务端兜底：用户消息含转工单关键词 → 强制提单 ----
+        # ---- 服务端兜底：用户消息含转工单关键词 → 强制提单（闭环保护拦截的除外）----
         _force_submit_kw = ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转")
-        if parsed["action"] != "submit" and any(
+        if _can and parsed["action"] != "submit" and any(
             kw in request.query for kw in _force_submit_kw
         ):
             logger.info(f"[agent] 服务端兜底提单: query={request.query[:40]}")
@@ -1005,6 +1036,13 @@ class AiDiagnosisPlatform:
         await self._ensure_clients()
         memory = await self._memory_manager.get_memory(session_id)
         agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
+
+        # 闭环保护：已提交的会话不允许重复提单
+        can_submit, reason = _can_submit(agent_state)
+        if not can_submit:
+            logger.info(f"[prepare] 重复提单拦截: phase={agent_state.phase}")
+            return {"code": 1, "message": reason}
+
         ticket = await self._build_ticket(session_id, agent_state, memory)
         ticket["ticket_seq"] = agent_state.ticket_seq + 1
         check = _check_required_fields(ticket)
@@ -1243,7 +1281,7 @@ class AiDiagnosisPlatform:
             )
             _save_agent_state(memory, agent_state)
             await self._memory_manager.save_memory(memory)
-        elif agent_state.phase in ("idle", "resolved") and not agent_state.problem_summary:
+        elif agent_state.phase in ("idle", "resolved", "escalated") and not agent_state.problem_summary:
             # 上一轮工单已提交、诊断状态已清空 → 全新话题
             agent_state.phase = "idle"
             agent_state.original_query = request.query
@@ -1356,12 +1394,29 @@ class AiDiagnosisPlatform:
 
         parsed = self._parse_agent_output(raw)
 
+        # ---- Step 1: 先应用 LLM 提炼的 state_update（含 problem_summary），
+        #     让 _can_submit 基于 LLM 判断后的有效问题描述做决策 ----
         self._apply_state_update(state, parsed["state_update"])
+
+        # ---- Step 2: 闭环保护（基于 LLM 提炼后的 problem_summary）----
+        _can, _reason = _can_submit(state)
+        if any(kw in request.query for kw in ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转")) and not _can:
+            logger.info(f"[stream] 重复提单拦截: phase={state.phase}")
+            parsed["action"] = "answer"
+            parsed["message"] = _reason
+
+        # ---- LLM 输出 action=submit → 同样受闭环保护 ----
+        if parsed["action"] == "submit" and not _can:
+            parsed["action"] = "answer"
+            parsed["message"] = _reason
+            logger.info(f"[stream] LLM submit 被闭环拦截: phase={state.phase}")
+
+        # ---- Step 3: 应用 action → phase 转换 ----
         self._apply_action_phase(state, parsed["action"])
 
-        # ---- 服务端兜底：用户消息含转工单关键词 → 强制提单，不依赖 LLM ----
+        # ---- 服务端兜底：用户消息含转工单关键词 → 强制提单（闭环保护拦截的除外）----
         _force_submit_kw = ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转")
-        if parsed["action"] != "submit" and any(
+        if _can and parsed["action"] != "submit" and any(
             kw in request.query for kw in _force_submit_kw
         ):
             logger.info(f"[stream] 服务端兜底提单: query={request.query[:40]}")

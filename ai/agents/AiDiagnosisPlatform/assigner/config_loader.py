@@ -6,40 +6,30 @@ from typing import Any, Dict
 
 try:
     import yaml
-
-    def _load_yaml(path: Path) -> Any:
+    def _load_yaml(path):
         with open(path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
 except ImportError:
-    raise RuntimeError(
-        "PyYAML 是必要依赖，请安装: pip install pyyaml"
-    )
+    raise RuntimeError("PyYAML 是必要依赖，请安装: pip install pyyaml")
 
 
-def _load_prompts_txt(path: Path) -> Dict[str, str]:
-    """加载 prompts.txt，格式为 === name === 分隔的文本块。"""
+def _load_prompts_txt(path):
     with open(path, "r", encoding="utf-8") as f:
         content = f.read()
-
     prompts = {}
-    pattern = re.compile(r"^===\s*(.+?)\s*===(.*?)(?=^===|\Z)", re.MULTILINE | re.DOTALL)
-    for match in pattern.finditer(content):
-        name = match.group(1).strip()
-        text = match.group(2).strip()
-        prompts[name] = text
+    for match in re.finditer(r"^===\s*(.+?)\s*===(.*?)(?=^===|\Z)", content, re.MULTILINE | re.DOTALL):
+        prompts[match.group(1).strip()] = match.group(2).strip()
     return prompts
 
 
 class AssignerConfig:
-    """Assigner 配置容器，支持热加载。"""
-
     _CONFIG_DIR = Path(__file__).parent / "config"
 
     def __init__(self):
         self.module_keywords: Dict[str, list] = {}
         self.category_module_map: Dict[str, list] = {}
-        self.skill_keywords: Dict[str, list] = {}
         self.ranker_weights: Dict[str, Any] = {}
+        self.job_level_penalty: Dict[int, float] = {}
         self.decision_thresholds: Dict[str, float] = {}
         self.prompts: Dict[str, str] = {}
         self._load_all()
@@ -48,11 +38,11 @@ class AssignerConfig:
         config = _load_yaml(self._CONFIG_DIR / "assigner_config.yaml") or {}
         self.module_keywords = config.get("module_keywords", {})
         self.category_module_map = config.get("category_module_map", {})
-        self.skill_keywords = config.get("skill_keywords", {})
         self.ranker_weights = config.get("ranker_weights", {})
+        raw = config.get("job_level_penalty", {})
+        self.job_level_penalty = {int(k): v for k, v in raw.items()}
         self.decision_thresholds = config.get("decision_thresholds", {})
         self.prompts = _load_prompts_txt(self._CONFIG_DIR / "prompts.txt")
 
     def reload(self):
-        """热加载配置（可在不重启服务的情况下更新）。"""
         self._load_all()

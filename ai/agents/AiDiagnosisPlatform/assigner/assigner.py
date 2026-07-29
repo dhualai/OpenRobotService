@@ -4,25 +4,26 @@
     TicketContext + EngineerProfile
         │
         ▼
-    【第一层: 规则过滤】默认只保留 level=1 的一线工程师
-        │
-        ▼
-    【第二层: 多路召回（规则 + LLM 推断，无 Embedding 也可工作）】
-        ├── 关键词召回: 模块召回 + 标签召回 + 历史召回
+    【第一层: 多路召回（规则 + LLM 推断 + Embedding）】
+        ├── 模块召回: LLM 推断工单模块 → Jaccard 匹配工程师责任模块
+        ├── 历史召回: tasks 表已解决工单关键词命中
         └── 语义召回: Embedding 向量匹配工程师画像 + 历史任务
         │
         ▼
+    【第二层: 精排评分 + 职级折扣】
+        ├── 模块 0.40 + 历史 0.35 + 语义 0.25 → raw_total
+        └── raw_total × job_level 惩罚系数 → total_score
+        │
+        ▼
     【第三层: LLM 综合分析】
-        ├── 输入: 工单信息 + 工程师画像 + 各路召回分数
+        ├── 输入: 工单信息 + 工程师画像 + 各路召回分数 + 职级折扣
         ├── LLM 输出: engineer_id, confidence_score, reasoning, decision_type
-        └── 成功则直接返回，失败则触发回退
+        └── 成功则直接返回，失败则触发规则回退
         │
         ▼（回退路径）
-    【第四层: 规则精排 + 决策】
-        ├── 精排评分: 固定权重多维度
-        └── 决策: 基于阈值判定
-
-所有外部依赖（LLM、Embedding）直接从 ai.core 获取单例。
+    【第四层: 规则决策】
+        ├── 基于 ranked_scores + 阈值判定
+        └── auto(≥0.8) / recommend(≥0.5) / fallback(<0.5)
 """
 
 from typing import Dict, List, Optional
@@ -34,7 +35,6 @@ from ai.agents.AiDiagnosisPlatform.assigner.llm_decider import LlmDecider
 from ai.agents.AiDiagnosisPlatform.assigner.module_inferencer import ModuleInferencer
 from ai.agents.AiDiagnosisPlatform.assigner.ranker import Ranker
 from ai.agents.AiDiagnosisPlatform.assigner.recall import MultiPathRecaller, RecallResult
-from ai.agents.AiDiagnosisPlatform.assigner.rule_filter import RuleFilter
 from ai.agents.AiDiagnosisPlatform.assigner.semantic_recall import SemanticRecaller
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     AssignmentResult,
@@ -50,22 +50,15 @@ class Assigner:
 
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
-        self._rule_filter = RuleFilter()
 
-        # 第二层：多路召回（LLM 推断 + 规则，不依赖 Embedding）
         self._module_inferencer = ModuleInferencer(config=self._config)
         self._recaller = MultiPathRecaller(
             module_inferencer=self._module_inferencer,
             config=self._config,
         )
-        # 语义召回（使用 ai.core Embedding 单例）
         self._semantic_recaller = SemanticRecaller(config=self._config)
-
-        # 第三层：LLM 综合分析
-        self._llm_decider = LlmDecider(config=self._config)
-
-        # 第四层：规则精排 + 决策（回退用）
         self._ranker = Ranker(config=self._config)
+        self._llm_decider = LlmDecider(config=self._config)
         self._decision_maker = DecisionMaker(config=self._config)
 
     async def aassign(
@@ -74,72 +67,48 @@ class Assigner:
         engineer_profiles: List[EngineerProfile],
         historical_matches: Optional[Dict[str, float]] = None,
     ) -> AssignmentResult:
-        """异步根据工单上下文推荐唯一负责人。"""
-        logger.info(f"派单开始: ticket={ticket_context.title[:40]}")
-
+        logger.info(f"派单开始: ticket={ticket_context.title[:40]}, engineers={len(engineer_profiles)}人")
         if not engineer_profiles:
-            raise ValueError("工程师列表为空，无法派单。请检查 engineers.json 是否加载成功。")
-
+            raise ValueError("工程师列表为空，无法派单。请检查 users 表人员数据是否就绪。")
         if not ticket_context.problem_description and not ticket_context.title:
             raise ValueError("问题描述和标题均为空，无法推断责任模块。")
 
-        # 第一层：规则过滤
-        filtered = self._rule_filter.filter(
-            ticket=ticket_context,
-            engineers=engineer_profiles,
-        )
-        logger.info(f"派单 L1 规则过滤: {len(engineer_profiles)}→{len(filtered)}")
-
-        if not filtered:
-            logger.warning("派单: 规则过滤后无可用工程师，兜底")
-            return self._decision_maker._fallback_result(
-                engineer_profiles[0], "规则过滤后无可用工程师，强制兜底"
-            )
-
-        # 第二层：多路召回（异步：LLM 推断 + 关键词 + 历史）
+        # L1 多路召回
         recall_result = await self._recaller.arecall(
-            ticket=ticket_context,
-            engineers=filtered,
+            ticket=ticket_context, engineers=engineer_profiles,
             historical_matches=historical_matches,
         )
-
-        # 语义召回（如果 Embedding 可用）
         try:
             semantic_result = await self._semantic_recaller.arecall(
-                ticket=ticket_context,
-                engineers=filtered,
+                ticket=ticket_context, engineers=engineer_profiles,
             )
             recall_result.engineer_semantic = semantic_result.engineer_semantic
             recall_result.history_semantic = semantic_result.history_semantic
-            logger.debug("派单 L2b 语义召回成功")
         except Exception:
-            logger.debug("派单 L2b 语义召回失败，跳过")
+            pass
 
-        # 第三层：LLM 综合分析（异步）
+        # L2 精排 + 职级折扣
+        ranked_scores = self._ranker.rank(recall_result, engineers=engineer_profiles)
+
+        # L3 LLM 决策
         try:
-            ranked_scores = self._ranker.rank(recall_result)
             llm_result = await self._llm_decider.adecide(
-                ticket=ticket_context,
-                engineers=filtered,
-                recall_result=recall_result,
-                ranked_scores=ranked_scores,
+                ticket=ticket_context, engineers=engineer_profiles,
+                recall_result=recall_result, ranked_scores=ranked_scores,
             )
             if llm_result is not None:
-                logger.info(f"派单 L3 LLM决策: {llm_result.engineer_name} ({llm_result.decision_type})")
+                logger.info(f"派单 LLM决策: {llm_result.engineer_name} ({llm_result.decision_type})")
                 return llm_result
         except Exception as e:
-            logger.warning(f"派单 L3 LLM决策失败,回退: {e}")
+            logger.warning(f"派单 LLM决策失败,回退: {e}")
 
-        # 第四层：回退到规则精排 + 决策
-        ranked_scores = self._ranker.rank(recall_result)
+        # L4 规则兜底
         result = self._decision_maker.decide(
-            ranked_scores=ranked_scores,
-            engineers=filtered,
+            ranked_scores=ranked_scores, engineers=engineer_profiles,
         )
-        logger.info(f"派单 L4 规则兜底: {result.engineer_name} ({result.decision_type})")
+        logger.info(f"派单 规则兜底: {result.engineer_name} ({result.decision_type})")
         return result
 
     def reload_config(self):
-        """热加载配置（可在运行时更新关键词/权重/Prompt）。"""
         self._config.reload()
         self._semantic_recaller.reload()

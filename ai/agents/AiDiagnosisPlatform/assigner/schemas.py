@@ -66,24 +66,23 @@ class TicketContext(BaseModel):
 
 
 class EngineerProfile(BaseModel):
-    """工程师画像"""
+    """工程师画像（数据源自后端 users 表）"""
 
-    id: str = Field(..., description="工程师唯一标识")
-    name: str = Field(..., description="工程师姓名")
-    level: int = Field(
-        default=1,
-        description="工程师层级: 1=一线工程师, 2=上级/管理者",
+    id: str = Field(..., description="工程师唯一标识（users.id）")
+    name: str = Field(..., description="工程师姓名（users.name）")
+    department: Optional[str] = Field(
+        None, description="部门/团队"
     )
     responsibility_modules: List[str] = Field(
         default_factory=list,
         description="责任模块，如 [车端, 地图, 调度]",
     )
-    skills: List[str] = Field(
-        default_factory=list,
-        description="技能标签，如 [潜伏车, 定位, 导航]",
+    job_level: int = Field(
+        default=1,
+        description="职级，数值越高越不优先接单（1=一线, 2=管理/审核, 3=仅兜底...）",
     )
     duty_text: Optional[str] = Field(
-        None, description="原始职责画像文本，供 LLM 参考"
+        None, description="职责画像文本，供 LLM 匹配参考"
     )
 
 
