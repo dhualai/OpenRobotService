@@ -7,7 +7,7 @@
 //     渲染（含其中的示例编号、排行等），不在前端二次编造或裁剪。
 //   - 趋势折线图（如工单/任务/项目数量的逐日走势）因接口仅返回整段周期的聚合值、无逐日序列，
 //     暂不绘制，避免编造数据；分布类图表（状态/类型占比）有 metrics 字典支撑，予以保留。
-import { useState, useEffect, useCallback } from 'react';
+import { memo, useState, useEffect, useCallback } from 'react';
 import { Tabs, TabPanel, Loading, Popup, Button, DateTimePicker } from 'tdesign-mobile-react';
 import ReactECharts from 'echarts-for-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
@@ -101,6 +101,34 @@ function SectionBlock({ section, highlight }: { section: ReportSection; highligh
     </div>
   );
 }
+
+// 流式报告卡片（React.memo）：进行中用纯文本增量渲染，避免 Markdown 全量重解析卡顿；完成后转 Markdown 全量渲染
+const ReportStreamCard = memo(function ReportStreamCard({
+  text, streaming, period, date,
+}: {
+  text: string;
+  streaming: boolean;
+  period: ReportPeriod;
+  date: string;
+}) {
+  return (
+    <div style={cardStyle()}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+        <span style={{ fontSize: 15, fontWeight: 600 }}>
+          {period === 'daily' ? '日报' : '周报'} · {date}
+        </span>
+        {streaming && (
+          <span style={{ fontSize: 11, color: '#0052d9', animation: 'pulse 1.5s infinite' }}>● 生成中</span>
+        )}
+      </div>
+      {streaming ? (
+        <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.7, fontSize: 14, color: '#333' }}>{text}</div>
+      ) : (
+        <MarkdownRenderer content={text} compact />
+      )}
+    </div>
+  );
+});
 
 export default function DailySummaryAgent() {
   const [period, setPeriod] = useState<ReportPeriod>('daily');
@@ -197,19 +225,9 @@ export default function DailySummaryAgent() {
         </div>
       )}
 
-      {/* ─── 流式模式：增量 Markdown 渲染 ─── */}
+      {/* ─── 流式模式：增量渲染（进行中用纯文本，完成用 Markdown） ─── */}
       {useStream && streamText && (
-        <div style={cardStyle()}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-            <span style={{ fontSize: 15, fontWeight: 600 }}>
-              {period === 'daily' ? '日报' : '周报'} · {date}
-            </span>
-            {isStreaming && (
-              <span style={{ fontSize: 11, color: '#0052d9', animation: 'pulse 1.5s infinite' }}>● 生成中</span>
-            )}
-          </div>
-          <MarkdownRenderer content={streamText} compact />
-        </div>
+        <ReportStreamCard text={streamText} streaming={isStreaming} period={period} date={date} />
       )}
 
       {/* ─── 非流式模式：结构化展示 ─── */}
