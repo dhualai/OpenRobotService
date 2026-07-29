@@ -587,42 +587,147 @@ html, body, #root {
   opacity: 0.6;
   flex-shrink: 0;
 }
-.chat-upload-progress {
-  margin: 0 12px 8px;
-  padding: 10px 12px;
-  background: rgba(0, 0, 0, 0.04);
-  border-radius: 10px;
-}
-.chat-upload-progress__head {
+/* 待发送附件预览 chip（输入栏顶部，选中文件挂起待发送） */
+.chat-pending-file {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
+  gap: 8px;
+  margin: 0 12px 8px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
 }
-.chat-upload-progress__name {
+.chat-pending-file__thumb {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.chat-pending-file__icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+.chat-pending-file__name {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chat-upload-progress__percent {
-  font-size: 13px;
+.chat-pending-file__remove {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: rgba(0, 0, 0, 0.08);
+  color: inherit;
+  border-radius: 50%;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+/* 附件气泡内嵌上传进度遮罩（方案一：乐观渲染） */
+.chat-bubble__media {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+.chat-bubble__media-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 8px;
+  color: #fff;
+}
+.chat-bubble__media-overlay.is-failed {
+  background: rgba(220, 38, 38, 0.55);
+}
+.chat-bubble__media-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2.5px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: chat-media-spin 0.8s linear infinite;
+}
+.chat-bubble__media-percent {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.chat-bubble__media-failtext {
+  font-size: 12px;
+  font-weight: 600;
+}
+@keyframes chat-media-spin {
+  to { transform: rotate(360deg); }
+}
+/* 文件卡片上传进度（底部细进度条）与失败态 */
+.chat-bubble__file {
+  position: relative;
+}
+.chat-bubble__file-percent {
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   flex-shrink: 0;
-  margin-left: 8px;
 }
-.chat-upload-progress__track {
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.1);
+.chat-bubble__file-fail {
+  font-size: 12px;
+  color: #e34d59;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.chat-bubble__file.is-failed {
+  outline: 1px solid rgba(227, 77, 89, 0.5);
+}
+.chat-bubble__file-track {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 4px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.12);
   overflow: hidden;
 }
-.chat-upload-progress__fill {
+.chat-bubble__file-fill {
   height: 100%;
-  border-radius: 3px;
+  border-radius: 2px;
   background: linear-gradient(90deg, #4f8cff, #2f6bff);
   transition: width 0.2s ease;
+}
+/* AI 占位：呼吸点动画 */
+.chat-bubble__typing {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 2px;
+}
+.chat-bubble__typing span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #9aa4b2;
+  animation: chat-typing-bounce 1.2s infinite ease-in-out;
+}
+.chat-bubble__typing span:nth-child(2) { animation-delay: 0.15s; }
+.chat-bubble__typing span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes chat-typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-4px); opacity: 1; }
 }
 .chat-actions {
   display: flex;

@@ -701,6 +701,8 @@ POST /api/ai/analysis/analyze
 | POST | `/api/ai/qa/upload` | 上传附件 |
 | GET | `/api/ai/qa/health` | 健康检查 |
 
+**`/api/ai/qa/upload`（multipart/form-data）字段**：`session_id`（必填）、`files`（必填，`File[]`）、`message`（可选，附带文字）。响应 `data` 字段：`saved`/`files`（`{filename,size,path}`）、`ack_message`（后端确认回执：只传图片=VLM 初步诊断；只传非图片=「暂不支持解析除图片以外的文件类型，提单后将作为参考」）、`ai_response`（仅 `message` 非空时有值：`{message, action, thinking, ticket}`，含完整诊断回复，若触发提单带 `ticket`）。文件名不注入对话上下文（后端只写 assistant turn，避免文件名数字误导 LLM）。
+
 **请求示例**：
 
 ```json
