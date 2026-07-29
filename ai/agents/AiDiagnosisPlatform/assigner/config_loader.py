@@ -30,6 +30,8 @@ class AssignerConfig:
         self.category_module_map: Dict[str, list] = {}
         self.ranker_weights: Dict[str, Any] = {}
         self.job_level_penalty: Dict[int, float] = {}
+        self.department_scopes: Dict[str, dict] = {}
+        self.product_keywords: Dict[str, list] = {}
         self.decision_thresholds: Dict[str, float] = {}
         self.prompts: Dict[str, str] = {}
         self._load_all()
@@ -41,6 +43,8 @@ class AssignerConfig:
         self.ranker_weights = config.get("ranker_weights", {})
         raw = config.get("job_level_penalty", {})
         self.job_level_penalty = {int(k): v for k, v in raw.items()}
+        self.department_scopes = config.get("department_scopes", {})
+        self.product_keywords = config.get("product_keywords", {})
         self.decision_thresholds = config.get("decision_thresholds", {})
         self.prompts = _load_prompts_txt(self._CONFIG_DIR / "prompts.txt")
 

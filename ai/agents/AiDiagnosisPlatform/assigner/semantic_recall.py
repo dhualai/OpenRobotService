@@ -33,7 +33,7 @@ class SemanticRecaller:
     def _build_eng_texts(self, engineers):
         out = []
         for e in engineers:
-            t = f"责任模块: {', '.join(e.responsibility_modules)}。"
+            t = f"责任模块: {', '.join(e.all_modules())}。"
             if e.duty_text:
                 t += f"职责: {e.duty_text}"
             out.append(t)

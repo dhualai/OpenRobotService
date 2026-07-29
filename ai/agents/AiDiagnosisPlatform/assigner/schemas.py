@@ -73,9 +73,9 @@ class EngineerProfile(BaseModel):
     department: Optional[str] = Field(
         None, description="部门/团队"
     )
-    responsibility_modules: List[str] = Field(
-        default_factory=list,
-        description="责任模块，如 [车端, 地图, 调度]",
+    responsibility_modules: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description="按产品组织的责任模块，如 {'调度USP': ['车端','任务调度'], '服务号': ['后端']}",
     )
     job_level: int = Field(
         default=1,
@@ -84,6 +84,17 @@ class EngineerProfile(BaseModel):
     duty_text: Optional[str] = Field(
         None, description="职责画像文本，供 LLM 匹配参考"
     )
+
+    def all_modules(self) -> List[str]:
+        """返回所有产品下模块的扁平去重列表（供召回/排序使用）。"""
+        seen = set()
+        flat = []
+        for mods in self.responsibility_modules.values():
+            for m in mods:
+                if m not in seen:
+                    seen.add(m)
+                    flat.append(m)
+        return flat
 
 
 class AssignmentResult(BaseModel):

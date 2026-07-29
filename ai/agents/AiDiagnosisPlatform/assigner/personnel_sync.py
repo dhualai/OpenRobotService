@@ -33,7 +33,12 @@ def _fetch_from_users_table() -> list[dict]:
                 try:
                     modules = json.loads(modules)
                 except Exception:
-                    modules = []
+                    modules = {}
+            # 兼容旧格式：扁平列表 → {"其他": [...]}
+            if isinstance(modules, list):
+                modules = {"其他": modules}
+            if not isinstance(modules, dict):
+                modules = {}
             results.append({
                 "id": u.id,
                 "name": getattr(u, "name", None) or u.username,

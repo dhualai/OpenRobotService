@@ -33,7 +33,7 @@ class MultiPathRecaller:
         # ① 模块召回
         inferred = await self._module_inferencer.ainfer(text, ticket.robot_type)
         for eng in engineers:
-            s = self._jaccard(inferred, eng.responsibility_modules)
+            s = self._jaccard(inferred, eng.all_modules())
             if s > 0:
                 result.module_recall[eng.id] = s
         # ② 历史匹配
