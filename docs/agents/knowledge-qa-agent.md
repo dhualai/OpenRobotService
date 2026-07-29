@@ -9,6 +9,32 @@
 
 ## 提单 Agent 主线
 
+### v1.6 · 2026-07-28 ~ 2026-07-29
+
+- **变更类型**：流程逻辑变更 + 闭环保护 + 修复 + 接口变更
+- **变更内容**：
+  - **闭环保护（防重复提单）**：新增 `_can_submit(state)` 函数，在 `_agent_think` / `_agent_think_stream` / `prepare_ticket`（按钮路径）三处统一拦截——已提交（resolved）且无新问题描述时拒绝再次提单。`_apply_state_update` 移至 `_can_submit` 之前执行，优先用 LLM 提炼后的 `problem_summary` 判断内容有效性，避免字数/关键词等简单规则误判。
+  - **escalated 不再无条件拦截**：`escalated` 与 `resolved` 统一逻辑——有新 `problem_summary` 即放行（允许处理中新问题另起工单），仅空问题才拦截。`run()` / `run_stream()` 中 phase 重置列表同步加上 `"escalated"`。
+  - **提单人（created_by）修复**：所有提单路径（`/ask`、`/ask/stream`、`/ticket/confirm`、`/upload`）统一从 `Authorization: Bearer <JWT>` 解析 `payload["sub"]` → `username`，传入 `DiagnosisRequest.created_by` → `upsert_task(created_by=username)`。不再使用 `debug_test_user` 或 `system` 硬编码。
+  - **上传附件重构**：
+    - **不再污染对话上下文**：删除上传后虚假 `add_turn("user", ...)`（此前 `[上传了附件] jpg_8805.jpg` 会被 LLM 误读为错误码 8805 去知识库检索）。附件列表存入 `agent_state.attachments`，VLM 图片描述存入 `collected_info.image_description`，诊断 prompt 自然展示。
+    - **单传附件回复**：只传文件时后端生成确认回执（`ack_message`），以 **assistant turn**（非 user turn）写入对话。图片经 VLM 分析后直接输出初步诊断（prompt 从"客观描述不下结论"改为"分析异常/错误码，给出初步判断"）；非图片返回"暂不支持解析除图片以外的文件类型，提单后将作为参考依据"。
+    - **附件+文字一次请求**：`/upload` 新增可选 `message` 字段，传入时在上传完成后立即调用 `pipeline.run()`，VLM 图片分析作为 `collected_info` 参考上下文随 prompt 进入诊断，返回 `ai_response`（含 message/action/thinking/ticket）。
+  - **测试覆盖**：新增 75 个单元测试（`test_can_submit.py` 65 个 + `test_upload_no_pollution.py` 10 个），覆盖闭环保护全路径（对话/按钮/混合）、LLM 提炼 chitchat 拦截、必填字段校验、上传不污染对话、附件元数据正确落盘。
+- **变更原因**：
+  - 产品要求：用户提交工单后再点按钮/说"转工单"不能重复生成工单，两条路径都要闭环
+  - 提单人无法追溯——前端此前未传 Bearer token 导致所有工单创建者显示 `debug_test_user`
+  - 上传 `jpg_8805.jpg` → LLM 看到 `8805` → 当成错误码在知识库中搜索 → 搜不到开始胡说
+  - 产品要求上传附件有回复（"能解析的立即解析解答，不能解析的说给接单人参考"），且支持上传同时附带文字
+- **效果对比**：
+  - 闭环：resolved/escalated + 空问题 → 拦截；有新故障描述 → 放行；LLM 判断"好的谢谢"为废话 → 清空 problem → 拦截
+  - 提单人：有 token → `hu_jiannan`；无 token → 空字符串（不影响功能）
+  - 上传：文件名不再出现在 LLM 上下文；图片上传返回 VLM 初步分析；附件+文字一次请求完成上传+诊断
+  - 75 个测试全部通过，零回归
+- **回滚方式**：`git revert a4122c0`；或单独回退：`_can_submit` 函数改为 `return True, ""` 关闭闭环；`/upload` 恢复旧的 `add_turn` 逻辑
+
+---
+
 ### v1.5 · 2026-07-24
 
 - **变更类型**：新功能 + 修复 + 仓库清理
