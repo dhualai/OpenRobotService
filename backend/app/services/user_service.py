@@ -41,7 +41,7 @@ class UserService:
                     'status': getattr(user_record, 'status', 'inactive'),
                     'external_credentials': external_credentials,
                     'department': getattr(user_record, 'department', None),
-                    'responsibility_modules': getattr(user_record, 'responsibility_modules', None) or [],
+                    'responsibility_modules': getattr(user_record, 'responsibility_modules', None) or {},
                     'job_level': getattr(user_record, 'job_level', 1),
                     'duty_text': getattr(user_record, 'duty_text', None),
                 }
@@ -70,7 +70,7 @@ class UserService:
             'status': user_with_roles.get('status', 'inactive'),
             'external_credentials': user_with_roles.get('external_credentials', {}),
             'department': user_with_roles.get('department'),
-            'responsibility_modules': user_with_roles.get('responsibility_modules') or [],
+            'responsibility_modules': user_with_roles.get('responsibility_modules') or {},
             'job_level': user_with_roles.get('job_level', 1),
             'duty_text': user_with_roles.get('duty_text'),
         }
@@ -155,7 +155,7 @@ class UserService:
             user_data['external_credentials'] = {}
 
         user_data.setdefault('department', None)
-        user_data.setdefault('responsibility_modules', [])
+        user_data.setdefault('responsibility_modules', {})
         user_data.setdefault('job_level', 1)
         user_data.setdefault('duty_text', None)
 
