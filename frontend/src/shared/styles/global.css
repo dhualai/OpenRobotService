@@ -1011,10 +1011,25 @@ html, body, #root {
 .task-card2__head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+}
+.task-card2__head-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.task-card2__status-tag {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 .task-card2__type {
+  flex-shrink: 0;
   font-size: 12px;
   color: #888;
   background: #f2f3f5;
@@ -1025,30 +1040,133 @@ html, body, #root {
   font-size: 12px;
   font-weight: 600;
 }
-.task-card2__more {
-  margin-left: auto;
-  color: #aaa;
-  font-size: 18px;
-  padding: 0 4px;
-}
 .task-card2__title {
   font-size: 15px;
   font-weight: 600;
   color: #222;
   line-height: 1.4;
-  margin-bottom: 6px;
+  margin-bottom: 10px;
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
+/* 分隔线：把标题与人员/元信息区分开 */
+.task-card2__divider {
+  height: 1px;
+  background: #f0f0f0;
+  margin: 0 -2px 10px;
+}
+/* 人员流转行：创建人 → 处理人 */
+.task-card2__people {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  position: relative;
+}
+.task-card2__person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.task-card2__person--creator {
+  flex: 0 1 auto;
+  padding-right: 30px;
+}
+.task-card2__person--assignee {
+  margin-left: auto;
+  flex: 0 1 auto;
+  padding-left: 30px;
+}
+.task-card2__avatar {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, #8a94a6, #5b6477);
+}
+.task-card2__avatar--assignee {
+  background: linear-gradient(135deg, #4a90e2, #2f6fc0);
+}
+.task-card2__person-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.2;
+}
+.task-card2__person-label {
+  font-size: 10px;
+  color: #aaa;
+  margin-bottom: 1px;
+}
+.task-card2__person-name {
+  font-size: 12px;
+  color: #444;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.task-card2__person-arrow {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: #5b6477;
+  font-size: 16px;
+  font-weight: bold;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* 元信息行：工单编号 · 项目 · 创建日期 */
 .task-card2__meta {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  font-size: 12px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
   color: #999;
+}
+.task-card2__meta-id {
+  flex-shrink: 0;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 11px;
+  color: #a8a8a8;
+  background: #f5f5f5;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.2px;
+}
+.task-card2__meta-project {
+  color: #999;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.task-card2__meta-date {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  flex-shrink: 0;
+  color: #aaa;
+}
+.task-card2__meta-date-label {
+  font-size: 10px;
+  color: #bbb;
+  margin-right: 2px;
+}
+.task-card2__meta-date svg {
+  opacity: 0.7;
 }
 .tasks-view__filters {
   position: sticky;
@@ -2156,6 +2274,35 @@ html, body, #root {
   width: 100%; padding: 14px; border: none; background: #fff;
   font-size: 16px; color: #999; cursor: pointer; margin-top: 8px;
 }
+
+/* ===== 转工单二次确认弹窗 ===== */
+.ticket-confirm { padding: 16px; max-height: 80vh; overflow-y: auto; }
+.ticket-confirm__title { margin: 0 0 12px; font-size: 16px; font-weight: 600; color: #333; }
+.ticket-confirm__body { display: flex; flex-direction: column; gap: 4px; }
+.ticket-confirm__tags { display: flex; gap: 8px; margin-bottom: 8px; }
+.ticket-confirm__label { font-size: 13px; color: #666; margin-top: 8px; }
+.ticket-confirm__input,
+.ticket-confirm__textarea,
+.ticket-confirm__select {
+  width: 100%; box-sizing: border-box; padding: 10px 12px;
+  border: 1px solid #e7e7e7; border-radius: 6px; font-size: 14px;
+  color: #333; background: #fff; outline: none;
+}
+.ticket-confirm__input:focus,
+.ticket-confirm__textarea:focus,
+.ticket-confirm__select:focus { border-color: #0052d9; }
+.ticket-confirm__textarea { resize: vertical; line-height: 1.5; font-family: inherit; }
+.ticket-confirm__btns { display: flex; gap: 12px; margin-top: 20px; }
+.ticket-confirm__btn {
+  flex: 1; padding: 12px; border: none; border-radius: 6px;
+  font-size: 15px; cursor: pointer;
+}
+.ticket-confirm__btn--cancel { background: #f2f3f5; color: #555; }
+.ticket-confirm__btn--cancel:active { background: #e7e8eb; }
+.ticket-confirm__btn--confirm { background: #0052d9; color: #fff; }
+.ticket-confirm__btn--confirm:active { background: #003cab; }
+.ticket-confirm__btn--confirm:disabled { opacity: 0.6; }
+.ticket-confirm__hint { font-size: 12px; color: #e34d59; margin-top: 4px; }
 
 /* ===== 历史工单搜索 + 状态快捷筛选 ===== */
 .history-toolbar { padding: 8px 12px 4px; flex-shrink: 0; }

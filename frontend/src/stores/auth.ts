@@ -21,6 +21,7 @@ export interface AuthState {
   isLoading: boolean;
   isAdmin: boolean;
   roles: Record<string, string[]> | null;
+  permissions: string[];
 
   login: (authData: { access_token: string; refresh_token: string; expires_in: number }, user: string) => void;
   logout: () => void;
@@ -28,6 +29,7 @@ export interface AuthState {
   fetchUserDetails: (user: string, authToken: string) => Promise<boolean>;
   checkLoginStatus: () => void;
   setProfile: (data: { name?: string; avatarResourceId?: number | null }) => void;
+  hasPermission: (prefix: string) => boolean;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -39,6 +41,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isLoading: true,
   isAdmin: false,
   roles: null,
+  permissions: [],
 
   login: (authData, user) => {
     setLoggingOut(false);
@@ -72,6 +75,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       isLoading: false,
       isAdmin: false,
       roles: null,
+      permissions: [],
     });
     Object.values(STORAGE_KEYS).forEach((key) => localStorage.removeItem(key));
   },
@@ -110,18 +114,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const request = createRequest(API_CONFIG.ADMIN.BASE_URL, '用户中心');
     try {
       setApiToken(authToken);
-      const userData = await request<{ roles?: { project_backend?: string[] }, name?: string, avatar_resource_id?: number | null }>(
+      const userData = await request<{ roles?: { project_backend?: string[] }, name?: string, avatar_resource_id?: number | null, permissions?: string[] }>(
         `/users/${user}/detail`
       );
       const projectRoles = userData.roles?.project_backend || [];
       const hasAdminRole = projectRoles.includes('admin');
       const name = userData.name || '';
       const avatarResourceId = userData.avatar_resource_id ?? null;
+      const permissions = userData.permissions || [];
       set({
         roles: (userData.roles as Record<string, string[]>) || null,
         isAdmin: hasAdminRole,
         name,
         avatarResourceId,
+        permissions,
       });
       try {
         localStorage.setItem(STORAGE_KEYS.NAME, name);
@@ -177,5 +183,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       }
     } catch { /* SSR safe */ }
     set({ isLoading: false });
+  },
+
+  hasPermission: (prefix: string) => {
+    const { permissions } = get();
+    if (!permissions || permissions.length === 0) return false;
+    return permissions.some(p => p.startsWith(prefix) || p === `${prefix}:*` || p === '*');
   },
 }));
