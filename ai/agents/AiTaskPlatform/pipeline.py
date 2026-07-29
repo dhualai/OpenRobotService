@@ -305,14 +305,65 @@ class AiTaskAgent:
         try:
             if context.attachments:
                 # 2a. 找到日志文件 → 用 LogSubAgent 多轮推理
+                #     压缩包先解压到临时目录，提取内层日志文件路径
                 log_paths = []
+                _tmp_dirs = []  # 临时目录列表，分析完成后清理
+
                 for att in context.attachments:
                     if not isinstance(att, dict):
                         continue
                     path = att.get("path") or att.get("url") or ""
                     name = (att.get("filename") or att.get("name") or "").lower()
-                    if path and (name.endswith((".log", ".txt")) or "log" in name):
+
+                    if not path:
+                        continue
+
+                    # 直接日志文件
+                    if name.endswith((".log", ".txt", ".csv")) or (".log." in name):
                         log_paths.append(path)
+                        continue
+
+                    # 压缩包 → 解压到临时目录 → 提取内层日志路径
+                    if name.endswith((".zip", ".tar", ".tgz", ".gz")) and os.path.isfile(path):
+                        try:
+                            import tempfile, zipfile, tarfile, gzip, io
+                            tmp_dir = tempfile.mkdtemp(prefix="log_extract_")
+                            _tmp_dirs.append(tmp_dir)
+                            _ARCHIVE_MAX = 50
+
+                            if name.endswith(".zip"):
+                                with zipfile.ZipFile(path) as zf:
+                                    for info in zf.infolist()[: _ARCHIVE_MAX]:
+                                        if info.is_dir():
+                                            continue
+                                        if name.endswith(".tar.gz"):
+                                            continue  # 嵌套 tar.gz 跳过
+                                        zf.extract(info, tmp_dir)
+                                        inner = os.path.join(tmp_dir, info.filename)
+                                        iname = info.filename.lower()
+                                        if iname.endswith((".log", ".txt", ".csv")) or (".log." in iname):
+                                            log_paths.append(inner)
+
+                            elif name.endswith((".tar", ".tgz", ".gz")):
+                                bio = io.BytesIO(open(path, "rb").read())
+                                if name.endswith((".tgz", ".gz")):
+                                    bio = io.BytesIO(gzip.decompress(bio.read()))
+                                with tarfile.open(fileobj=bio, mode="r:*") as tf:
+                                    for member in tf.getmembers()[: _ARCHIVE_MAX]:
+                                        if member.isdir():
+                                            continue
+                                        tf.extract(member, tmp_dir)
+                                        inner = os.path.join(tmp_dir, member.name)
+                                        iname = member.name.lower()
+                                        if iname.endswith((".log", ".txt", ".csv")) or (".log." in iname):
+                                            log_paths.append(inner)
+
+                            logger.info(
+                                f"[diagnose] 压缩包解压完成: {name} → tmp={tmp_dir}, "
+                                f"日志文件={len(log_paths)}个"
+                            )
+                        except Exception as e:
+                            logger.warning(f"[diagnose] 压缩包解压失败: {name}, error={e}")
 
                 if log_paths:
                     from ai.agents.AiTaskPlatform.log_analyzer.sub_agent import LogSubAgent
@@ -345,9 +396,18 @@ class AiTaskAgent:
                                             "evidence_count": len(log_sub_result.evidence)},
                                     elapsed_ms=round((time.perf_counter() - t2) * 1000))
 
-                # 2b. 非日志附件 → 旧 parser（图片/ZIP/文件夹等）
+                    # 清理临时解压目录
+                    import shutil
+                    for td in _tmp_dirs:
+                        try:
+                            shutil.rmtree(td, ignore_errors=True)
+                        except Exception:
+                            pass
+
+                # 2b. 非日志附件 → parser（图片/文档/结构化文件等，不含压缩包和日志）
+                _PIPED_EXTS = (".log", ".txt", ".csv", ".zip", ".tar", ".tgz", ".gz")
                 non_log_atts = [a for a in context.attachments
-                                if not ((a.get("filename") or a.get("name") or "").lower().endswith((".log", ".txt")))]
+                                if not (a.get("filename") or a.get("name") or "").lower().endswith(_PIPED_EXTS)]
                 if non_log_atts and not att_has_logs:
                     from ai.agents.AiTaskPlatform.attachments.parser import parse_attachments
                     att_analysis = await parse_attachments(non_log_atts)
