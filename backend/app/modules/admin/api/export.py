@@ -10,7 +10,7 @@ from app.modules.admin.utils_das.config import security, DEBUG_MODE
 from app.modules.admin.services.project_service import project_service
 from app.modules.admin.services.permission_service import PermissionService
 from app.modules.admin.utils_das.mqtt import publish_to_mqtt
-from app.modules.admin.utils_das.security import decode_token
+from app.core.security import decode_token
 from fastapi.responses import StreamingResponse
 import gzip
 import io
