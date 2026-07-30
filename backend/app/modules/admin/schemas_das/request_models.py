@@ -151,6 +151,7 @@ class ProjectBase(BaseModel):
     controller_vendor: Optional[ControllerVendor] = None
     system_integration: Optional[List[SystemIntegrationType]] = None
     server_deployment_status: Optional[ServerDeploymentStatus] = None
+    settlement_period: Optional[str] = None
 
 
 class ProjectCreate(ProjectBase):
@@ -196,6 +197,7 @@ class ProjectUpdate(BaseModel):
     controller_vendor: Optional[ControllerVendor] = None
     system_integration: Optional[List[SystemIntegrationType]] = None
     server_deployment_status: Optional[ServerDeploymentStatus] = None
+    settlement_period: Optional[str] = None
 
 
 class ProjectResponse(ProjectBase):

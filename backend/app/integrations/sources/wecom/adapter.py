@@ -71,6 +71,7 @@ def map_wecom_record_to_project(record: Dict[str, Any]) -> Dict[str, Any]:
         "category_basis": CATEGORY_MAP.get(values.get("项目类型", ""), "重要紧急"),
         "project_type": values.get("项目类型") or None,
         "system_id": record.get("record_id", ""),
+        "settlement_period": values.get("业绩核算期") or None,
     }
 
 
