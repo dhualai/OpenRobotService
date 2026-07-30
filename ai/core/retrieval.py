@@ -54,6 +54,48 @@ class RetrievalResult:
 
 
 # ============================================================
+# BM25 稀疏向量生成（入库和检索共用）
+# ============================================================
+
+def generate_bm25_sparse(text: str, max_index: int = 10000) -> Dict[int, float]:
+    """字符级 n-gram → BM25 稀疏向量。
+
+    tokenization: unigram + bigram 字符，hash 取模映射到固定维度。
+    入库和检索使用完全相同的函数，保证 hash 一致。
+    """
+    text = re.sub(r'[^\w\s一-鿿]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    if not text:
+        return {}
+
+    tokens = []
+    for i in range(len(text)):
+        tokens.append(text[i])
+        if i < len(text) - 1:
+            tokens.append(text[i:i+2])
+
+    tf: Dict[str, int] = {}
+    for token in tokens:
+        tf[token] = tf.get(token, 0) + 1
+
+    if not tf:
+        return {}
+
+    import hashlib
+
+    max_tf = max(tf.values())
+    sparse = {}
+    for token, freq in tf.items():
+        # 用 md5 替代 Python 内置 hash()——后者跨进程不一致（PYTHONHASHSEED），
+        # 导致入库和查询的稀疏索引对不上，BM25 永远为空。
+        idx = int.from_bytes(hashlib.md5(token.encode()).digest()[:4], 'big') % max_index
+        sparse[idx] = freq / max_tf
+
+    return sparse
+
+
+# ============================================================
 # Qdrant 客户端封装
 # ============================================================
 
@@ -249,23 +291,30 @@ class QdrantClientWrapper:
             return []
         client = await self._ensure_client()
         col = collection_name or self.collection_name
-        try:
-            # qdrant_client >=1.18: search() → query_points()
-            kwargs = dict(
-                collection_name=col,
-                query=vector,
-                limit=top_k,
-                score_threshold=score_threshold,
-                with_payload=True,
-            )
-            if query_filter is not None:
-                kwargs["query_filter"] = query_filter
-            result = await self._to_thread(client.query_points, **kwargs)
-            return result.points
-        except ServiceUnavailableError:
-            return []
-        except Exception as e:
-            raise ServiceUnavailableError("Qdrant", f"向量检索失败: {str(e)}")
+        # 优先使用命名向量 "dense"（新集合格式），失败时回退到未命名向量（旧集合格式）
+        for using in ("dense", None):
+            try:
+                kwargs = dict(
+                    collection_name=col,
+                    query=vector,
+                    limit=top_k,
+                    score_threshold=score_threshold,
+                    with_payload=True,
+                )
+                if using is not None:
+                    kwargs["using"] = using
+                if query_filter is not None:
+                    kwargs["query_filter"] = query_filter
+                result = await self._to_thread(client.query_points, **kwargs)
+                return result.points
+            except ServiceUnavailableError:
+                return []
+            except Exception as e:
+                if using == "dense":
+                    # 可能是旧集合没有命名向量，回退到未命名向量再试一次
+                    logger.debug(f"[Qdrant] dense 命名向量检索失败 ({e})，回退未命名向量")
+                    continue
+                raise ServiceUnavailableError("Qdrant", f"向量检索失败: {str(e)}")
 
     async def search_sparse(
         self,
@@ -292,7 +341,8 @@ class QdrantClientWrapper:
             result = await self._to_thread(
                 client.query_points,
                 collection_name=col,
-                query=("sparse", sv),
+                query=sv,
+                using="sparse",
                 limit=top_k,
                 score_threshold=score_threshold,
                 with_payload=True,
@@ -413,33 +463,8 @@ class RetrievalService:
         query: str,
         max_index: int = 10000,
     ) -> Dict[int, float]:
-        """生成 BM25 稀疏向量（字符级 n-gram）"""
-        text = re.sub(r'[^\w\s一-鿿]', ' ', query)
-        text = re.sub(r'\s+', ' ', text).strip()
-
-        if not text:
-            return {}
-
-        tokens = []
-        for i in range(len(text)):
-            tokens.append(text[i])
-            if i < len(text) - 1:
-                tokens.append(text[i:i+2])
-
-        tf: Dict[str, int] = {}
-        for token in tokens:
-            tf[token] = tf.get(token, 0) + 1
-
-        if not tf:
-            return {}
-
-        max_tf = max(tf.values())
-        sparse = {}
-        for token, freq in tf.items():
-            idx = hash(token) % max_index
-            sparse[abs(idx)] = freq / max_tf
-
-        return sparse
+        """生成 BM25 稀疏向量（委托给模块级函数）"""
+        return generate_bm25_sparse(query, max_index)
 
     def _rrf_fusion(
         self,
@@ -756,12 +781,13 @@ class RetrievalService:
                     collection_name=cd_col,
                     query_filter=code_filter,
                 )
-            except Exception:
+            except Exception as e:
+                logger.warning(f"[cheduan] 错误码精确匹配失败: {e}")
                 exact_points = []
 
-        # ── 第二路：sub_domain 过滤 + 向量检索 ──
+        # ── 第二路：sub_domain 过滤 + 向量检索（精确匹配不够 k 条时补充）──
         vector_points: list = []
-        if not codes:
+        if len(exact_points) < k:
             from qdrant_client.models import Filter as QFilter, FieldCondition, MatchValue
             sd_filter = QFilter(
                 must=[FieldCondition(key="sub_domain", match=MatchValue(value="cheduan_errors"))]
@@ -773,7 +799,8 @@ class RetrievalService:
                     collection_name=cd_col,
                     query_filter=sd_filter,
                 )
-            except Exception:
+            except Exception as e:
+                logger.warning(f"[cheduan] sub_domain 语义检索失败: {e}")
                 vector_points = []
 
         # ── 合并：精确匹配优先，向量结果去重补充 ──

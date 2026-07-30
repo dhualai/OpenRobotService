@@ -89,13 +89,13 @@ def _current_user_from_header(authorization: str) -> tuple[str, bool]:
 
 @qa_router.post("/ask", summary="统一问答（含诊断追问与提单）")
 async def ask_question(
-    request: QAAskRequest,
+    qa_req: QAAskRequest,
+    http_req: Request,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
-    authorization: str = Header(default="", alias="Authorization"),
 ) -> dict:
-    username, _ = _current_user_from_header(authorization)
-    qa_request = DiagnosisRequest(session_id=request.session_id, query=request.query,
-                           skip_retrieval=request.skip_retrieval, created_by=username)
+    username, _ = _current_user(http_req)
+    qa_request = DiagnosisRequest(session_id=qa_req.session_id, query=qa_req.query,
+                           skip_retrieval=qa_req.skip_retrieval, created_by=username)
     try:
         result = await pipeline.run_with_timeout(qa_request, timeout=30.0)
     except Exception as e:
@@ -107,15 +107,15 @@ async def ask_question(
 
 @qa_router.post("/ask/stream", summary="流式问答（SSE）")
 async def ask_question_stream(
-    request: QAAskRequest,
+    qa_req: QAAskRequest,
+    http_req: Request,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
-    authorization: str = Header(default="", alias="Authorization"),
 ):
-    username, _ = _current_user_from_header(authorization)
+    username, _ = _current_user(http_req)
     async def sse():
         t0 = time.perf_counter()
-        qa_request = DiagnosisRequest(session_id=request.session_id, query=request.query,
-                           skip_retrieval=request.skip_retrieval, created_by=username)
+        qa_request = DiagnosisRequest(session_id=qa_req.session_id, query=qa_req.query,
+                           skip_retrieval=qa_req.skip_retrieval, created_by=username)
         first = False
         try:
             async for event in pipeline.run_stream(qa_request):
@@ -364,11 +364,27 @@ async def upload_files(
                 f"[upload] 开始VLM调用: session={session_id[:12]}, "
                 f"image_count={len(data_uris)}, names={names}"
             )
+            # 拉取最近对话上下文，让 VLM 知道图片是在什么排查场景下截的
+            vlm_context = ""
+            try:
+                mgr = await get_memory_manager()
+                mem = await mgr.get_memory(session_id)
+                recent = [t for t in mem.turns[-6:] if t.get("role") in ("user", "assistant")]
+                if recent:
+                    lines = []
+                    for t in recent:
+                        role = "用户" if t["role"] == "user" else "AI"
+                        c = t.get("content", "")[:200]
+                        lines.append(f"{role}：{c}")
+                    vlm_context = "以下是最近的对话记录，供你理解图片背景：\n" + "\n".join(lines) + "\n"
+            except Exception:
+                pass
             desc = await llm.complete_vision(
                 prompt=(
-                    f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。"
+                    f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。\n"
+                    f"{vlm_context}"
                     f"请：\n"
-                    f"1. 描述画面中的关键信息（界面状态、数据、错误提示、人工标注等）\n"
+                    f"1. 结合对话上下文，描述画面中的关键信息（界面状态、数据、错误提示、人工标注等）\n"
                     f"2. 如果发现异常或错误码，解释其含义并指出可能的故障方向"
                     f"（不下最终结论，用'可能''疑似'等措辞）\n"
                     f"3. 如果没有明显异常，说明画面看起来正常\n"
