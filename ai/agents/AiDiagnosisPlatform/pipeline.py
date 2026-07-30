@@ -134,7 +134,7 @@ def _check_required_fields(ticket: dict) -> dict:
     return {
         "ok": ok,
         "missing": missing,
-        "prompt": "" if ok else "请先选择/填写绑定项目，未绑定项目无法提交工单。",
+        "prompt": "" if ok else "请给出工单关联的项目名称，我好帮你提交工单。",
     }
 
 
@@ -169,8 +169,11 @@ async def _generate_title(llm_client, memory) -> str:
 # Agent 推理 Prompt
 # ============================================================
 
-DIAGNOSIS_PROMPT = """你是「摇人吧」微信服务号的 AI 诊断助手，面向 AGV/AMR（工业移动机器人）行业的技术支持专家。
+DIAGNOSIS_PROMPT = """你是 U老师，是「摇人吧」微信服务号的 AI 诊断助手，面向 AGV/AMR（工业移动机器人）行业的技术支持专家。
 你的服务对象是现场工程师、客户和项目管理人员。
+
+你的名字是"U老师"，严禁自称其他名字（如"小U""AI助手""智能助手"等）。
+只在用户问"你是谁"或首次对话打招呼时才说"我是U老师"，其他情况不要重复自我介绍。
 
 所服务的产品是 USP（Universal Scheduling Platform）大调度系统，用于 AGV/AMR 的调度管理、车辆管理、设备管理、地图编辑与监控运维。
 USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在操作指引中提及"手机""移动端""APP"等概念——USP 只有 PC 浏览器版。
@@ -210,11 +213,11 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在�
 
 ## ⛔ 转工单规则（优先级最高，优先于所有意图判断）
 
-用户消息中含"转工单""转单""生成工单""提交工单""提单"时：
+用户表示要创建/提交工单时（不管措辞如何，包括"提工单""提单""帮我转""下工单""创建工单""给我提一个"等）：
 → action 设为 "submit"，message 写"好的"即可（系统会自动生成提单确认消息）。
 
-用户消息中含"不想排查""算了""不用了"时：
-→ 表示用户不想继续排查了。action 设为 "answer"，回复简短收尾（如"好的，有需要随时找我"），
+用户表示不想继续排查时（如"不想排查""算了""不用了"等）：
+→ action 设为 "answer"，回复简短收尾（如"好的，有需要随时找我"），
   不要追问、不要继续排查。
 
 ## 🧑‍💼 转人工规则
@@ -244,6 +247,8 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在�
   **只引用与用户问题直接相关的 chunk 内容**，无关 chunk 的内容和图片一律忽略。
 - **禁止在回复中暴露知识来源**：不要说"根据知识库""检索结果显示"等话术。
   直接给出步骤/答案，用户不需要知道你查了什么。
+- **产品/车型介绍时，知识库中若有该产品的图片，必须用 ![说明](url) 格式引用到回复中**。
+  图片是产品外观、参数表、尺寸图等，对用户极其重要，不要省略。
 
 ## 对话
 {conversation}
@@ -460,7 +465,10 @@ class AiDiagnosisPlatform:
             state.hypotheses = state_update["hypotheses"]
         if "collected_info" in state_update:
             # 合并新字段，空值/无 视为清除
+            # project 只能由用户显式输入经 _resolve_project 设置，LLM 无权改动
             for k, v in state_update["collected_info"].items():
+                if k == "project":
+                    continue
                 if v is None:
                     state.collected_info.pop(k, None)
                     continue
@@ -481,7 +489,7 @@ class AiDiagnosisPlatform:
     async def _resolve_project(self, raw_name: str) -> str:
         """将用户输入的项目名匹配到 helpdesk_724.project 标准名。
 
-        匹配成功返回标准名，失败返回原始输入。
+        单候选直接返回，多候选调 LLM 裁决，无匹配返回原始输入。
         """
         if not raw_name or not raw_name.strip():
             return raw_name
@@ -490,11 +498,29 @@ class AiDiagnosisPlatform:
             if not await matcher.ensure_loaded():
                 logger.warning("[pipeline] project DB unavailable, using raw input")
                 return raw_name.strip()
-            match = matcher.match(raw_name.strip())
-            if match:
-                return match.name
-            # 无匹配 → 保留原始输入
-            return raw_name.strip()
+            user = raw_name.strip()
+            candidates = matcher.get_candidates(user, min_score=0.7)
+            if not candidates:
+                return user
+            if len(candidates) == 1:
+                return candidates[0].name
+            # 多个候选 → LLM 裁决
+            await self._ensure_clients()
+            lines = [f"{i+1}. {c.name}（编号: {c.code}）" for i, c in enumerate(candidates)]
+            prompt = (
+                f"用户输入的项目名：{user}\n\n"
+                f"候选项目列表：\n" + "\n".join(lines) + "\n\n"
+                f"请判断用户最可能指的是哪个项目。只输出数字序号（如 1），"
+                f"如果都不匹配则输出 0。只输出一个数字，不要其他内容。"
+            )
+            raw = await self._llm_client.complete(prompt=prompt, max_tokens=5, temperature=0)
+            choice = re.search(r'\d+', raw)
+            idx = int(choice.group()) if choice else 0
+            if 1 <= idx <= len(candidates):
+                logger.info(f"[pipeline] LLM 裁决项目: '{user}' → #{idx} '{candidates[idx-1].name}'")
+                return candidates[idx - 1].name
+            logger.info(f"[pipeline] LLM 无法裁决项目 '{user}'，使用原始输入")
+            return user
         except Exception as e:
             logger.warning(f"[pipeline] project matching failed: {e}")
             return raw_name.strip()
@@ -556,7 +582,7 @@ class AiDiagnosisPlatform:
 
         # ---- 转工单关键词 → 直接拦截常见情况，不调 LLM ----
         # 注意：必须在 state.phase = "diagnosing" 之前，否则 _can_submit 拿不到真实 phase
-        _short_kw = ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转", "不想排查")
+        _short_kw = ("转工单", "转单", "生成工单", "提交工单", "提单", "提个工单", "提工单", "帮我转", "我要转", "帮我提单")
         if any(kw in request.query for kw in _short_kw):
             _can, _reason = _can_submit(state)
             if not _can:
@@ -574,7 +600,30 @@ class AiDiagnosisPlatform:
                 result = await self._finalize_diagnosis(
                     request.session_id, state,
                     thinking="", action="answer",
-                    message="请先选择/填写绑定项目，未绑定项目无法提交工单。",
+                    message="请给出工单关联的项目名称，我好帮你提交工单。",
+                    streaming=False)
+                return result
+            # 条件满足 → 直接提单，不调 LLM
+            logger.info(f"[agent] 关键词直接提单: query={request.query[:40]}, created_by={request.created_by}")
+            state.diagnosis_rounds += 1
+            state.phase = "diagnosing"
+            try:
+                ticket_data = await self.submit(request.session_id, created_by=request.created_by)
+                proj = state.collected_info.get("project", "")
+                confirm_msg = f"好的，已为「{proj}」生成工单，工程师会尽快处理。" if proj else "好的，已为你生成工单，工程师会尽快处理。"
+                result = await self._finalize_diagnosis(
+                    request.session_id, state,
+                    thinking="", action="answer",
+                    message=confirm_msg,
+                    streaming=False)
+                result["ticket"] = ticket_data
+                return result
+            except Exception as e:
+                logger.error(f"[agent] 关键词直接提单失败: {e}", exc_info=True)
+                result = await self._finalize_diagnosis(
+                    request.session_id, state,
+                    thinking="", action="answer",
+                    message="提单过程中出现异常，请稍后重试或联系管理员。",
                     streaming=False)
                 return result
 
@@ -668,7 +717,7 @@ class AiDiagnosisPlatform:
 
         # ---- Step 2: 闭环保护（基于 LLM 提炼后的 problem_summary）----
         _can, _reason = _can_submit(state)
-        if any(kw in request.query for kw in ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转")) and not _can:
+        if any(kw in request.query for kw in ("转工单", "转单", "生成工单", "提交工单", "提单", "提个工单", "提工单", "帮我转", "我要转", "帮我提单")) and not _can:
             logger.info(f"[agent] 重复提单拦截: phase={state.phase}, problem_summary={state.problem_summary[:30] if state.problem_summary else ''}")
             parsed["action"] = "answer"
             parsed["message"] = _reason
@@ -694,12 +743,13 @@ class AiDiagnosisPlatform:
         self._apply_action_phase(state, parsed["action"])
         t["parse_output"] = round((time.perf_counter() - t_parse_start) * 1000)
 
-        # ---- 服务端兜底：用户消息含转工单关键词 → 强制提单（闭环保护拦截的除外）----
-        _force_submit_kw = ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转")
-        if _can and parsed["action"] != "submit" and any(
-            kw in request.query for kw in _force_submit_kw
-        ):
-            logger.info(f"[agent] 服务端兜底提单: query={request.query[:40]}")
+        # ---- 服务端兜底：LLM 嘴嗨说"已生成工单"但 action 没设 submit → 强制提单
+        #  或用户消息含工单意图但 LLM 没识别 → 强制提单
+        _msg = parsed.get("message", "")
+        _llm_claimed_submit = bool(re.search(r'已(生成|提交|创建)|工单已|已为你', _msg))
+        _user_wants_submit = bool(re.search(r'(提|转|生成|提交|下|创建|开|帮我|给我).{0,4}(工单|单子)|(工单|单子).{0,4}(提|转|生成|提交|下|创建)', request.query))
+        if _can and parsed["action"] != "submit" and (_llm_claimed_submit or _user_wants_submit):
+            logger.info(f"[agent] 服务端兜底提单: query={request.query[:40]}, llm_claimed={_llm_claimed_submit}, user_wants={_user_wants_submit}")
             parsed["action"] = "submit"
 
         # ---- 自动提单：LLM 输出 action=submit 时先校验必填字段，完整则直接提单 ----
@@ -837,27 +887,35 @@ class AiDiagnosisPlatform:
             def _label(r) -> str:
                 return _sub_labels.get(r.sub_domain, f"📄 {r.sub_domain or '知识库'}")
 
-            # error code extraction for cheduan "not found" warning
+            # error code extraction + targeted cheduan retrieval
             _query_codes = self._retriever._extract_error_codes(search_query)
+            _cheduan_exact: list = []
+            if _query_codes:
+                try:
+                    _cheduan_exact = await asyncio.wait_for(
+                        self._retriever.retrieve_cheduan(search_query, top_k=3),
+                        timeout=10.0,
+                    )
+                except Exception:
+                    _cheduan_exact = []
             _cheduan_found = any(
                 (r.sub_domain or "") in ("cheduan_errors", "cheduan_implementation")
-                for r in (team_results + company_results + industry_results)
+                for r in _cheduan_exact
             )
 
             docs = []
             idx = 1
 
-            # cheduan error code not found → explicit warning to LLM
+            # cheduan error code not found → note for LLM (not a mandatory denial)
             if _query_codes and not _cheduan_found:
                 codes_str = "、".join(_query_codes)
                 docs.insert(0,
-                    f"---\n🚗 车端错误码（重要）：用户查询的错误码 [{codes_str}] "
-                    f"在所有域知识库中**均未找到匹配项**。"
-                    f"这意味着该错误码不在系统收录范围内。你必须在回复中明确告知用户该错误码未收录，"
-                    f"**绝对禁止**根据其他知识库内容或自身知识编造该错误码的含义。\n---")
+                    f"---\n🚗 提示：从查询中提取的数字 [{codes_str}] "
+                    f"在车端错误码库中未找到。如果检索结果中包含产品型号、文档编号等包含该数字的内容，"
+                    f"则这些是相关知识而非错误码，请正常引用，不要告知用户\"未收录\"。\n---")
 
-            # unified formatting: all results from all 3 domains, labelled by sub_domain
-            all_results = list(team_results) + list(company_results) + list(industry_results)
+            # unified formatting: cheduan exact match first, then all 3-domain results
+            all_results = list(_cheduan_exact) + list(team_results) + list(company_results) + list(industry_results)
             for r in all_results:
                 content = self._rewrite_images(r) if r.content else ""
                 if not content.strip():
@@ -1321,7 +1379,7 @@ class AiDiagnosisPlatform:
 
         # ---- 转工单关键词 → 直接拦截常见情况，不调 LLM ----
         # 注意：必须在 state.phase = "diagnosing" 之前，否则 _can_submit 拿不到真实 phase
-        _short_kw = ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转", "不想排查")
+        _short_kw = ("转工单", "转单", "生成工单", "提交工单", "提单", "提个工单", "提工单", "帮我转", "我要转", "帮我提单")
         if any(kw in request.query for kw in _short_kw):
             _can, _reason = _can_submit(state)
             if not _can:
@@ -1339,7 +1397,44 @@ class AiDiagnosisPlatform:
                 # 缺项目 → 引导补充，记住"在等提单"，下一轮用户补完自动触发
                 logger.info(f"[stream] 缺项目直接拦截: session={request.session_id[:8]}")
                 state.pending_submit = True
-                short_msg = "请先选择/填写绑定项目，未绑定项目无法提交工单。"
+                short_msg = "请给出工单关联的项目名称，我好帮你提交工单。"
+                for ch in short_msg:
+                    yield {"event": "token", "data": ch}
+                result = await self._finalize_diagnosis(
+                    request.session_id, state,
+                    thinking="", action="answer", message=short_msg,
+                    streaming=True)
+                yield {"event": "result", "data": result}
+                return
+            # 条件满足 → 直接提单，不调 LLM
+            logger.info(f"[stream] 关键词直接提单: query={request.query[:40]}, created_by={request.created_by}")
+            state.diagnosis_rounds += 1
+            state.phase = "diagnosing"
+            try:
+                yield {"event": "status", "data": {"stage": "submitting"}}
+                ticket_data = await self.submit(request.session_id, created_by=request.created_by)
+                ticket_info = ticket_data.get('data', {}).get('ticket', {})
+                yield {"event": "status", "data": {
+                    "stage": "submitted",
+                    "ticket_id": ticket_info.get("ticket_id", ""),
+                    "title": ticket_info.get("title", ""),
+                    "db_id": ticket_data.get("data", {}).get("db_id", 0),
+                }}
+                proj = state.collected_info.get("project", "")
+                short_msg = f"好的，已为「{proj}」生成工单，工程师会尽快处理。" if proj else "好的，已为你生成工单，工程师会尽快处理。"
+                for ch in short_msg:
+                    yield {"event": "token", "data": ch}
+                result = await self._finalize_diagnosis(
+                    request.session_id, state,
+                    thinking="", action="answer", message=short_msg,
+                    streaming=True)
+                result["ticket"] = ticket_data
+                yield {"event": "result", "data": result}
+                return
+            except Exception as e:
+                logger.error(f"[stream] 关键词直接提单失败: {e}", exc_info=True)
+                yield {"event": "status", "data": {"stage": "submit_failed", "error": str(e)}}
+                short_msg = "提单过程中出现异常，请稍后重试或联系管理员。"
                 for ch in short_msg:
                     yield {"event": "token", "data": ch}
                 result = await self._finalize_diagnosis(
@@ -1500,7 +1595,7 @@ class AiDiagnosisPlatform:
 
         # ---- Step 2: 闭环保护（基于 LLM 提炼后的 problem_summary）----
         _can, _reason = _can_submit(state)
-        if any(kw in request.query for kw in ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转")) and not _can:
+        if any(kw in request.query for kw in ("转工单", "转单", "生成工单", "提交工单", "提单", "提个工单", "提工单", "帮我转", "我要转", "帮我提单")) and not _can:
             logger.info(f"[stream] 重复提单拦截: phase={state.phase}")
             parsed["action"] = "answer"
             parsed["message"] = _reason
@@ -1525,12 +1620,13 @@ class AiDiagnosisPlatform:
         # ---- Step 3: 应用 action → phase 转换 ----
         self._apply_action_phase(state, parsed["action"])
 
-        # ---- 服务端兜底：用户消息含转工单关键词 → 强制提单（闭环保护拦截的除外）----
-        _force_submit_kw = ("转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转")
-        if _can and parsed["action"] != "submit" and any(
-            kw in request.query for kw in _force_submit_kw
-        ):
-            logger.info(f"[stream] 服务端兜底提单: query={request.query[:40]}")
+        # ---- 服务端兜底：LLM 嘴嗨说"已生成工单"但 action 没设 submit → 强制提单
+        #  或用户消息含工单意图但 LLM 没识别 → 强制提单
+        _msg = parsed.get("message", "")
+        _llm_claimed_submit = bool(re.search(r'已(生成|提交|创建)|工单已|已为你', _msg))
+        _user_wants_submit = bool(re.search(r'(提|转|生成|提交|下|创建|开|帮我|给我).{0,4}(工单|单子)|(工单|单子).{0,4}(提|转|生成|提交|下|创建)', request.query))
+        if _can and parsed["action"] != "submit" and (_llm_claimed_submit or _user_wants_submit):
+            logger.info(f"[stream] 服务端兜底提单: query={request.query[:40]}, llm_claimed={_llm_claimed_submit}, user_wants={_user_wants_submit}")
             parsed["action"] = "submit"
 
         # ---- 自动提单：LLM 输出 action=submit 时先校验必填字段，完整则直接提单 ----
