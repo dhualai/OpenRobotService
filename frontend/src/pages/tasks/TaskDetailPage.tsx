@@ -9,6 +9,7 @@ import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
+import { uploadCommentAttachment } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { formatDateTime } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
@@ -407,16 +408,21 @@ export default function TaskDetailPage() {
   };
 
   // ── 普通评论：POST /api/tasks/{id}/comments；返回 true=成功（组件清空输入） ──
-  const handleAddComment = async (text: string): Promise<boolean> => {
+  const handleAddComment = async (text: string, files: File[] = []): Promise<boolean> => {
     if (!detail) {
       Toast({ message: '请输入评论内容', theme: 'warning' });
       return false;
     }
     setSubmittingComment(true);
     try {
+      // 上传附件
+      const tempId = crypto.randomUUID();
+      for (const f of files) {
+        await uploadCommentAttachment(f, tempId);
+      }
       const newComment = await request<Comment>(`/${detail.id}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ content: text, is_public: true }),
+        body: JSON.stringify({ content: text, is_public: true, attachments: files.length ? [tempId] : [] }),
       });
       const enrichedComment = {
         ...newComment,
@@ -428,7 +434,7 @@ export default function TaskDetailPage() {
         const updatedComments = prev.comments ? [...prev.comments, enrichedComment] : [enrichedComment];
         return { ...prev, comments: updatedComments };
       });
-      Toast({ message: '评论已添加', theme: 'success' });
+      Toast({ message: files.length ? '评论和附件已添加' : '评论已添加', theme: 'success' });
       return true;
     } catch (err) {
       Toast({ message: `添加评论失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -439,16 +445,21 @@ export default function TaskDetailPage() {
   };
 
   // ── @U老师 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
-  const handleAIDiscuss = async (text: string): Promise<boolean> => {
+  const handleAIDiscuss = async (text: string, files: File[] = []): Promise<boolean> => {
     if (!detail) return false;
     const userMsg = text;
     setAskingAI(true);
     try {
+      // 上传附件
+      const tempId = crypto.randomUUID();
+      for (const f of files) {
+        await uploadCommentAttachment(f, tempId);
+      }
       // 1. 先保存用户的 @U老师 消息到 task_comments
       try {
         const newComment = await request<Comment>(`/${detail.id}/comments`, {
           method: 'POST',
-          body: JSON.stringify({ content: userMsg, is_public: true }),
+          body: JSON.stringify({ content: userMsg, is_public: true, attachments: files.length ? [tempId] : [] }),
         });
         setDetail((prev) => {
           if (!prev) return prev;
@@ -487,11 +498,11 @@ export default function TaskDetailPage() {
   };
 
   // ── onSend：检测 @U老师 前缀决定走普通评论还是 AI 讨论 ──
-  const handleSendComment = async (text: string, _files: File[]): Promise<boolean> => {
+  const handleSendComment = async (text: string, files: File[]): Promise<boolean> => {
     if (text.startsWith('@U老师 ')) {
-      return handleAIDiscuss(text);
+      return handleAIDiscuss(text, files);
     }
-    return handleAddComment(text);
+    return handleAddComment(text, files);
   };
 
   // ── [帮我分析] → POST /api/ai/task/diagnose → 讨论区展示短链接 ──
@@ -768,6 +779,7 @@ export default function TaskDetailPage() {
           onSend={handleSendComment}
           sending={submittingComment || askingAI}
           enableAI
+          enableAttach
           mentionUsers={projectMembers}
           onMessagesClick={handleOpenReport}
           headerRight={
