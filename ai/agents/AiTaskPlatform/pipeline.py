@@ -157,7 +157,7 @@ class AiTaskAgent:
                         output={"confidence": draft.confidence, "actions_count": len(draft.suggested_actions)},
                         elapsed_ms=round((time.perf_counter() - t5) * 1000))
 
-        # 6. 诊断结果写入 task_comments（小U评论）
+        # 6. 诊断结果写入 task_comments（U老师评论）
         t6 = time.perf_counter()
         try:
             task_id_int = int(request.task_id)
@@ -619,7 +619,7 @@ class AiTaskAgent:
         db = SessionLocal()
         try:
             comment = TaskComment(task_id=task_id, content=content,
-                                  created_by="小U", is_public=True)
+                                  created_by="U老师", is_public=True)
             db.add(comment)
             db.commit()
             db.refresh(comment)
@@ -713,7 +713,7 @@ class AiTaskAgent:
 
             new_comments = []
             for c in comments:
-                if c.created_by == "小U":
+                if c.created_by == "U老师":
                     continue
                 if last_summary_at and c.created_at and c.created_at <= last_summary_at:
                     continue
@@ -1265,30 +1265,24 @@ class AiTaskAgent:
             logger.warning(f"Solution index failed: {e}")
 
     @staticmethod
-    def _add_diagnosis_comment(task_id: int, draft: "SolutionDraft", created_by: str = "小U") -> bool:
-        """将小U诊断结果写入 task_comments 表。
+    def _add_diagnosis_comment(task_id: int, draft: "SolutionDraft", created_by: str = "U老师") -> bool:
+        """将U老师诊断结果写入 task_comments 表。
 
-        当前 created_by 固定为 \"小U\"。
+        当前 created_by 固定为 \"U老师\"。
         TODO: 后续改为提单人的用户名（从工单 created_by 字段获取）。
         """
         from app.models.task import TaskComment
         from app.core.db import SessionLocal
-        content_parts = [
-            f"## 小U 诊断结果",
-            f"",
-            f"**根因分析**：{draft.root_cause_analysis}",
-            f"",
-            f"**建议步骤**：",
-        ]
-        for i, action in enumerate(draft.suggested_actions, 1):
-            content_parts.append(f"{i}. {action}")
-        if draft.references:
-            content_parts.append(f"")
-            content_parts.append(f"**参考来源**：")
-            for ref in draft.references:
-                content_parts.append(f"- {ref}")
-        content_parts.append(f"")
-        content_parts.append(f"置信度：{draft.confidence:.0%}")
+        content_parts = []
+        if draft.root_cause_analysis:
+            content_parts.append(draft.root_cause_analysis)
+        if draft.suggested_actions:
+            content_parts.append("")
+            if len(draft.suggested_actions) == 1:
+                content_parts.append(f"> {draft.suggested_actions[0]}")
+            else:
+                for action in draft.suggested_actions:
+                    content_parts.append(f"- {action}")
 
         db = SessionLocal()
         try:
