@@ -35,22 +35,14 @@ export default function CallView() {
     })();
   }, [tasksRefreshKey, username, isAdmin]);
 
-  if (showHistory) {
-    return (
-      <div className="chat-view">
-        <Navbar title="历史工单" fixed leftArrow onLeftClick={() => setShowHistory(false)} />
-        <div className="page-container" style={{ paddingTop: 16, height: 'calc(100vh - 16px)', display: 'flex', flexDirection: 'column' }}>
-          <HistoryTickets showHeader={false} />
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="app-shell">
-      {/* 内容区（抽屉打开时右挤） */}
+      {/* 内容区（抽屉打开时右挤）。
+          ChatPanel 始终 mounted（showHistory 时 display:none 隐藏而非卸载，
+          避免切历史后回来消息丢失 */}
       <div className={`app-shell__content ${drawerOpen ? 'is-shifted' : ''}`}>
-        <div className="chat-view">
+        {/* 对话区（始终 mounted，showHistory 时隐藏） */}
+        <div className="chat-view" style={showHistory ? { display: 'none' } : undefined}>
           <Navbar
             title={<span className="call-navbar-title">{conversationTitle}</span>}
             fixed
@@ -82,6 +74,16 @@ export default function CallView() {
             <ChatPanel scene="call" />
           </div>
         </div>
+
+        {/* 历史工单区（showHistory 时显示，覆盖在对话区上方） */}
+        {showHistory && (
+          <div className="chat-view" style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 50, background: '#f5f5f5' }}>
+            <Navbar title="历史工单" fixed leftArrow onLeftClick={() => setShowHistory(false)} />
+            <div className="page-container" style={{ paddingTop: 16, height: 'calc(100vh - 16px)', display: 'flex', flexDirection: 'column' }}>
+              <HistoryTickets showHeader={false} />
+            </div>
+          </div>
+        )}
       </div>
       {/* 会话抽屉 + 遮罩 */}
       <ConversationDrawer visible={drawerOpen} onClose={() => setDrawerOpen(false)} />
