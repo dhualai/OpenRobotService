@@ -789,136 +789,77 @@ class AiDiagnosisPlatform:
                 logger.debug(f"[retrieve] cache hit: {(time.perf_counter() - t0) * 1000:.0f}ms")
                 return cached["result"]
 
-            # 正常检索流程：五路并行（FAQ + 车端错误码 + 翻译表 + USP诊断 + 通用知识库）
-            # 平台 FAQ 已合并入 team/faq，不再单独检索
+            # 三路并行域检索（team / company / industry）
+            # chunk 自带 sub_domain 字段，按 sub_domain 自动贴标签
             config = get_ai_config()
-            manual_task = asyncio.wait_for(
-                self._retriever.retrieve(search_query, top_k=config.retrieval_top_k),
+            team_task = asyncio.wait_for(
+                self._retriever.retrieve_domain(search_query, "team", top_k=6),
                 timeout=15.0,
             )
-            faq_task = asyncio.wait_for(
-                self._retriever.retrieve_faq(search_query, top_k=4),  # 含产品FAQ + 平台FAQ
+            company_task = asyncio.wait_for(
+                self._retriever.retrieve_domain(search_query, "company", top_k=4),
                 timeout=10.0,
             )
-            cheduan_task = asyncio.wait_for(
-                self._retriever.retrieve_cheduan(search_query, top_k=3),
-                timeout=10.0,
-            )
-            translation_task = asyncio.wait_for(
-                self._retriever.retrieve_translation(search_query, top_k=2),
-                timeout=10.0,
-            )
-            usp_diagnosis_task = asyncio.wait_for(
-                self._retriever.retrieve_usp_diagnosis(search_query, top_k=3),
+            industry_task = asyncio.wait_for(
+                self._retriever.retrieve_domain(search_query, "industry", top_k=3),
                 timeout=10.0,
             )
 
-            logger.info(f"[retrieve] 开始五路并行检索: query={search_query[:60]}...")
+            logger.info(f"[retrieve] 三路域检索: query={search_query[:60]}...")
             gathered = await asyncio.wait_for(
-                asyncio.gather(
-                    manual_task, faq_task,
-                    cheduan_task, translation_task,
-                    usp_diagnosis_task,
-                    return_exceptions=True,
-                ),
+                asyncio.gather(team_task, company_task, industry_task, return_exceptions=True),
                 timeout=20.0,
             )
-            logger.info(f"[retrieve] 五路检索完成")
-            manual_results, faq_results, cheduan_results, translation_results, usp_diagnosis_results = gathered
+            logger.info(f"[retrieve] 三路检索完成")
+            team_results, company_results, industry_results = gathered
+            if isinstance(team_results, BaseException):
+                team_results = []
+            if isinstance(company_results, BaseException):
+                company_results = []
+            if isinstance(industry_results, BaseException):
+                industry_results = []
 
-            # 单路失败不拖垮全部：只丢弃异常的那一路
-            if isinstance(manual_results, BaseException):
-                manual_results = ([], 0.0)
-            if isinstance(faq_results, BaseException):
-                faq_results = []
-            if isinstance(cheduan_results, BaseException):
-                cheduan_results = []
-            if isinstance(translation_results, BaseException):
-                translation_results = []
-            if isinstance(usp_diagnosis_results, BaseException):
-                usp_diagnosis_results = []
+            # sub_domain → 标签映射
+            _sub_labels = {
+                "faq": "📋 FAQ", "usp_faq": "📋 FAQ",
+                "cheduan_errors": "🚗 车端", "cheduan_implementation": "🚗 车端",
+                "translation": "🌐 翻译",
+                "diagnosis": "🏭 诊断",
+                "usp_manual": "📖 手册", "usp_product": "📖 产品",
+                "product_catalog": "🏢 产品", "vda5050_protocol": "🏢 协议",
+                "navigation": "📐 导航", "standards": "📐 标准",
+            }
 
-            results, _ = manual_results  # unpack (results, top1_score)
+            def _label(r) -> str:
+                return _sub_labels.get(r.sub_domain, f"📄 {r.sub_domain or '知识库'}")
+
+            # error code extraction for cheduan "not found" warning
+            _query_codes = self._retriever._extract_error_codes(search_query)
+            _cheduan_found = any(
+                (r.sub_domain or "") in ("cheduan_errors", "cheduan_implementation")
+                for r in (team_results + company_results + industry_results)
+            )
 
             docs = []
             idx = 1
 
-            # FAQ 最优先（直接答案，含产品FAQ + 平台FAQ）
-            for r in (faq_results or []):
-                q = r.title or ""
-                a = self._rewrite_images(r) if r.content else ""
-                if a.strip():
-                    docs.append(f"---\n📋 FAQ {idx}：{q}\n{a}\n---")
-                    idx += 1
-
-            # 车端错误码
-            cheduan_found = False
-            for r in (cheduan_results or []):
-                c = self._rewrite_images(r) if r.content else ""
-                if c.strip():
-                    cheduan_found = True
-                    docs.append(f"---\n🚗 车端错误码 {idx}：{r.title}\n{c}\n---")
-                    idx += 1
-
-            # 关键：用户明确问了错误码，但车端知识库没匹配到 → 显式告知 LLM
-            # 防止 LLM 根据其他渠道的无关内容编造答案
-            _query_codes = self._retriever._extract_error_codes(search_query)
-            if _query_codes and not cheduan_found:
+            # cheduan error code not found → explicit warning to LLM
+            if _query_codes and not _cheduan_found:
                 codes_str = "、".join(_query_codes)
-                docs.insert(0, f"---\n🚗 车端错误码（重要）：用户查询的错误码 [{codes_str}] 在车端知识库中**未找到匹配项**。"
-                                 f"这意味着该错误码不在系统收录范围内。你必须在回复中明确告知用户该错误码未收录，"
-                                 f"**绝对禁止**根据其他知识库内容或自身知识编造该错误码的含义。\n---")
+                docs.insert(0,
+                    f"---\n🚗 车端错误码（重要）：用户查询的错误码 [{codes_str}] "
+                    f"在所有域知识库中**均未找到匹配项**。"
+                    f"这意味着该错误码不在系统收录范围内。你必须在回复中明确告知用户该错误码未收录，"
+                    f"**绝对禁止**根据其他知识库内容或自身知识编造该错误码的含义。\n---")
 
-            # 翻译表
-            for r in (translation_results or []):
-                c = self._rewrite_images(r) if r.content else ""
-                if c.strip():
-                    docs.append(f"---\n🌐 翻译表 {idx}：{r.title}\n{c}\n---")
-                    idx += 1
-
-            # USP 诊断知识库
-            for r in (usp_diagnosis_results or []):
-                title = r.title or ""
+            # unified formatting: all results from all 3 domains, labelled by sub_domain
+            all_results = list(team_results) + list(company_results) + list(industry_results)
+            for r in all_results:
                 content = self._rewrite_images(r) if r.content else ""
-                if content.strip():
-                    docs.append(f"---\n🏭 USP诊断 {idx}：{title}\n{content}\n---")
-                    idx += 1
-
-            # 操作手册结果
-            for r in (results or []):
-                if not r.content or not r.content.strip():
+                if not content.strip():
                     continue
                 title = f"（{r.title}）" if r.title else ""
-                raw = self._rewrite_images(r)
-                # media_url 用于下方 images 兜底
-                _domain = r.domain or "team"
-                _sub = r.sub_domain or "faq"
-                media_url = f"{config.media_url_prefix}/kb/{_domain}/{_sub}"
-                # 保序压缩：每张图保留前文 200 字上下文，确保每个步骤都有文字
-                img_sep = re.compile(r'(!\[[^\]]*\]\([^)]+\))')
-                parts = img_sep.split(raw)
-                compact: list[str] = []
-                ctx_budget = 200  # 每张图前面的文本预算
-                for i, part in enumerate(parts):
-                    if i % 2 == 0:  # 文本段 → 保留尾部（紧贴下一张图的部分）
-                        if len(part) > ctx_budget:
-                            part = "…" + part[-ctx_budget:]
-                        compact.append(part)
-                    else:  # 图片，原位置保留
-                        compact.append(part)
-                # 最后一段纯文本（尾部没有图片的），只截开头
-                if len(parts) % 2 == 1 and len(parts[-1]) > ctx_budget:
-                    compact[-1] = parts[-1][:ctx_budget] + "…"
-                # payload images 兜底：content 中漏掉的图片从 payload 追回
-                content = "".join(compact)
-                if r.images:
-                    extra = []
-                    for img in r.images:
-                        if img not in content:
-                            extra.append(f"![示意图]({media_url}/{img})")
-                    if extra:
-                        content += "\n\n" + "\n".join(extra)
-                docs.append(f"---\n知识库 {idx}{title}：\n{content}\n---")
+                docs.append(f"---\n{_label(r)} {idx}{title}：\n{content}\n---")
                 idx += 1
 
             result = "\n".join(docs) if docs else "（知识库暂无匹配文档，请告知用户当前手册未覆盖此问题，建议转工单处理，不要自己编造答案。）"
