@@ -21,6 +21,9 @@ export interface ConvMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   created_at: string;
+  /** JSON 字符串：附件列表 [{filename,url,size,isImage}]，恢复时解析重建图片/文件卡片 */
+  file_urls?: string | null;
+  message_type?: string;
 }
 
 export interface Conversation {
@@ -82,14 +85,22 @@ export const renameConversation = (id: number, title: string) =>
 /** 会话详情（含 messages） */
 export const getConversation = (id: number) => request<Conversation>(`/conversations/${id}`);
 
-/** 追加一条消息（user/assistant） */
-export const appendMessage = (conversationId: number, role: 'user' | 'assistant', content: string) =>
+/** 追加一条消息（user/assistant）。
+ *  options.fileUrls：JSON 字符串（附件列表），写入 DB messages.file_urls，刷新/切会话后可恢复图片/文件卡片。
+ *  options.messageType：text(默认)/image/file，写入 DB messages.message_type。 */
+export const appendMessage = (
+  conversationId: number,
+  role: 'user' | 'assistant',
+  content: string,
+  options?: { fileUrls?: string; messageType?: string },
+) =>
   request<ConvMessage>('/messages', {
     method: 'POST',
     body: JSON.stringify({
       conversation_id: conversationId,
       role,
       content,
-      message_type: 'text',
+      message_type: options?.messageType ?? 'text',
+      file_urls: options?.fileUrls ?? null,
     }),
   });
