@@ -2102,6 +2102,47 @@ html, body, #root {
 .detail-row { display: flex; padding: 6px 0; }
 .detail-row__label { color: #999; width: 64px; flex-shrink: 0; font-size: 13px; }
 .detail-row__value { flex: 1; font-size: 13px; color: #333; word-break: break-word; }
+.detail-card__info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 8px;
+}
+.detail-info-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #f7f8fa;
+  border-radius: 8px;
+  min-width: 0;
+}
+.detail-info-item__icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+.detail-info-item__content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.detail-info-item__label {
+  font-size: 11px;
+  color: #999;
+  line-height: 1.2;
+  margin-bottom: 2px;
+}
+.detail-info-item__value {
+  font-size: 13px;
+  color: #333;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .detail-actions {
   display: flex;
   flex-wrap: wrap;

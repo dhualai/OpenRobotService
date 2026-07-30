@@ -503,11 +503,11 @@ class TicketService:
             user_map = await TicketService._get_user_map(token)
             setattr(ticket, "created_by_name", user_map.get(ticket.created_by, ticket.created_by))
             setattr(ticket, "reporter_name", user_map.get(ticket.created_by, ticket.created_by))
-            setattr(ticket, "reporter_name", user_map.get(ticket.created_by, ticket.created_by))
             if ticket.assigned_to:
                 setattr(ticket, "assigned_to_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
                 setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
-                setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
+            if ticket.customer:
+                setattr(ticket, "customer_name", user_map.get(ticket.customer, ticket.customer))
         
         if ticket and load_comments:
             logger.info(f"开始加载评论: ticket_id={ticket_id}")
