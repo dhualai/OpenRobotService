@@ -5,8 +5,8 @@
 
 from typing import Dict, List, Optional
 
-from ai.agents.AiDiagnosisPlatform.assigner.assigner import Assigner
-from ai.agents.AiDiagnosisPlatform.assigner.personnel_sync import (
+from ai.agents.AiDiagnosisPlatform.assigner.pipeline.assigner import Assigner
+from ai.agents.AiDiagnosisPlatform.assigner.sync.personnel_sync import (
     load_engineers,
     invalidate_cache as invalidate_personnel_cache,
 )
@@ -41,6 +41,7 @@ async def assign_ticket(
     robot_type: Optional[str] = None,
     fault_code: Optional[str] = None,
     special_notes: Optional[str] = None,
+    project_name: Optional[str] = None,  # 预留：未来按项目缩小范围
     required_skills: Optional[List[str]] = None,
     diagnosis_hypotheses: Optional[List[str]] = None,
     diagnosis_ruled_out: Optional[List[str]] = None,
@@ -70,6 +71,7 @@ async def assign_ticket(
         robot_type=robot_type,
         fault_code=fault_code,
         special_notes=special_notes,
+        project_name=project_name,
         required_skills=required_skills or [],
         diagnosis_hypotheses=diagnosis_hypotheses,
         diagnosis_ruled_out=diagnosis_ruled_out,

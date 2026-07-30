@@ -159,7 +159,7 @@ async def lifespan(app: FastAPI):
     assign_worker = None
     assign_worker_task = None
     try:
-        from ai.agents.AiDiagnosisPlatform.assigner.worker import AssignmentWorker
+        from ai.agents.AiDiagnosisPlatform.assigner.pipeline.worker import AssignmentWorker
         _cfg = get_ai_config()
         assign_worker = AssignmentWorker(interval=_cfg.assign_scan_interval)
         assign_worker_task = asyncio.create_task(assign_worker.run())

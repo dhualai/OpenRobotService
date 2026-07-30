@@ -293,6 +293,19 @@ class LLMClient:
     ) -> str:
         """多模态补全：文本 + 图片 → 视觉 LLM（独立客户端，不走 DeepSeek）"""
         cfg = self.config
+        t_start = time.perf_counter()
+
+        img_sizes = []
+        for img in images:
+            if "base64," in img:
+                b64_part = img.split("base64,", 1)[1] if "base64," in img else img
+                img_sizes.append(len(b64_part))
+            else:
+                img_sizes.append(len(img))
+        logger.info(
+            f"[vision] 开始请求: model={cfg.vision_model}, images={len(images)}, "
+            f"img_sizes={img_sizes}, prompt_len={len(prompt)}"
+        )
 
         content_parts: list = [{"type": "text", "text": prompt}]
         for img in images:
@@ -311,6 +324,7 @@ class LLMClient:
         }
 
         try:
+            t_conn = time.perf_counter()
             async with httpx.AsyncClient(
                 headers={
                     "Authorization": f"Bearer {cfg.vision_api_key}",
@@ -320,18 +334,43 @@ class LLMClient:
             ) as client:
                 url = f"{cfg.vision_base_url}/v1/chat/completions"
                 resp = await client.post(url, json=payload)
+                t_resp = time.perf_counter()
+                logger.info(
+                    f"[vision] HTTP响应: status={resp.status_code}, "
+                    f"elapsed={(t_resp - t_start) * 1000:.0f}ms, resp_size={len(resp.text)}"
+                )
                 if resp.status_code != 200:
+                    logger.error(
+                        f"[vision] API错误: status={resp.status_code}, body前300字={resp.text[:300]}"
+                    )
                     raise ServiceUnavailableError("Vision", f"API {resp.status_code}: {resp.text[:200]}")
                 data = resp.json()
-                return data["choices"][0]["message"].get("content", "")
+                content = data["choices"][0]["message"].get("content", "")
+                finish_reason = data["choices"][0].get("finish_reason", "?")
+                usage = data.get("usage", {})
+                logger.info(
+                    f"[vision] 请求成功: content_len={len(content)}, "
+                    f"finish_reason={finish_reason}, "
+                    f"usage={json.dumps(usage, ensure_ascii=False) if usage else 'N/A'}, "
+                    f"total={(time.perf_counter() - t_start) * 1000:.0f}ms"
+                )
+                if not content:
+                    logger.warning(
+                        f"[vision] ⚠️ 返回空内容! finish_reason={finish_reason}, "
+                        f"choices={json.dumps(data.get('choices', []), ensure_ascii=False)[:500]}"
+                    )
+                return content
 
         except httpx.TimeoutException as e:
-            logger.error(f"Vision 超时: {e}", exc_info=True)
+            elapsed = (time.perf_counter() - t_start) * 1000
+            logger.error(f"[vision] 超时: elapsed={elapsed:.0f}ms, error={e}", exc_info=True)
             raise AITimeoutError(f"Vision 超时: {str(e)}")
         except Exception as e:
+            elapsed = (time.perf_counter() - t_start) * 1000
             if isinstance(e, (AITimeoutError, ServiceUnavailableError)):
+                logger.error(f"[vision] 已知异常: type={type(e).__name__}, elapsed={elapsed:.0f}ms, error={e}")
                 raise
-            logger.error(f"Vision 失败: {e}", exc_info=True)
+            logger.error(f"[vision] 未知失败: type={type(e).__name__}, elapsed={elapsed:.0f}ms, error={e}", exc_info=True)
             raise ServiceUnavailableError("Vision", str(e)[:100])
 
     async def chat(
