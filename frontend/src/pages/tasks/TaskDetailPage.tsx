@@ -12,6 +12,8 @@ import { useAuthStore } from '@/stores/auth';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { formatDateTime } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
+import { getProjectMembers } from '@/api/projects';
+import type { ProjectMember } from '@/api/projects';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -85,7 +87,7 @@ interface Attachment { path: string; size?: number; filename?: string; url?: str
 interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; }
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
-  ticket_type: string; project_name?: string;
+  ticket_type: string; project_name?: string; project_id?: string;
   created_by?: string; created_by_name?: string;
   assigned_to?: string; assigned_to_name?: string;
   reporter_name?: string; assignee_name?: string;
@@ -122,6 +124,9 @@ export default function TaskDetailPage() {
   // AI 摘要（后端定时写入评论，前端从评论提取展示）
   const [aiSummary, setAiSummary] = useState('');
 
+  // 项目成员（用于讨论区 @ 提及）
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+
   useEffect(() => {
     if (!detailId) { setDetail(null); return; }
     setDetailLoading(true);
@@ -131,6 +136,23 @@ export default function TaskDetailPage() {
         // 摘要存 metadata_info.ai_summary（不混入讨论区）
         const meta = t.metadata_info || {};
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
+
+        // 获取项目成员用于 @ 提及，提单人排第一
+        if (t.project_id) {
+          getProjectMembers(detailId)
+            .then((members) => {
+              const reporterUsername = t.created_by;
+              const sorted = [...members].sort((a, b) => {
+                if (a.username === reporterUsername) return -1;
+                if (b.username === reporterUsername) return 1;
+                return 0;
+              });
+              setProjectMembers(sorted);
+            })
+            .catch(() => setProjectMembers([]));
+        } else {
+          setProjectMembers([]);
+        }
       })
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
@@ -647,6 +669,7 @@ export default function TaskDetailPage() {
           onSend={handleSendComment}
           sending={submittingComment || askingAI}
           enableAI
+          mentionUsers={projectMembers}
           onMessagesClick={handleOpenReport}
           headerRight={
             <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing}>
