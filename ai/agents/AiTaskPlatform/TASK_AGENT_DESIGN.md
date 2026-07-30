@@ -1,6 +1,6 @@
 # AiTaskPlatform — 任务 Agent 设计文档
 
-> 版本：3.0 | 日期：2026-07-22
+> 版本：3.3 | 日期：2026-07-29
 >
 > **本文件是 AiTaskPlatform 的权威设计文档**，供开发时参考和每次新对话恢复上下文。
 >
@@ -12,6 +12,7 @@
 
 | 日期 | 版本 | 变更摘要 |
 |------|:---:|------|
+| 2026-07-29 | 3.3 | **附件解析器全类型扩展**：新增 tar/tgz/gz/docx/pdf/xlsx/md/json/xml/yaml/yml 支持；压缩包解压后送 LogSubAgent（非直接传二进制）；日志轮转后缀识别(.log.1/.log.16)；共享 `_extract_log_paths` 方法；新增 trace_attachments.py 全链路测试 |
 | 2026-07-27 | 3.2 | **summarize 重构**：改为后端触发 + AI 自扫描模式（无参）；图片分析两阶段流水线（VLM+文本）；反幻觉约束；派单+日志子Agent 日志 |
 | 2026-07-23 | 3.1 | **前端接入完成**：「帮我分析」→ 短链接 → Dialog；@AI 按钮自动填前缀；摘要纯展示；修复 task_id 422 + /diagnose router |
 | 2026-07-22 | 3.0 | **架构重构**：砍掉大聊天；Agent 聚焦工单详情页；新增 诊断报告 + @AI 讨论 + 讨论摘要。诊断报告为即时生成不落库。 |
@@ -64,7 +65,7 @@ v3.0（新）:
 |------|------|------|
 | **@AI 讨论** | 前端输入框 + @ 按钮 | 任务 Agent 基于讨论历史 + 工单上下文回复 |
 | **诊断报告** | [帮我分析] 按钮 | 调用全能力（日志解析 / 图片分析 / 排查树 / 历史方案）→ 输出结构化报告 |
-| **讨论摘要** | AI 后台定时扫描 | 检测讨论更新 → 总结新讨论的摘要 → 写 task_comments |
+| **讨论摘要** | AI 后台定时扫描 | 检测讨论更新 → 总结新讨论的摘要 → 写 `tasks.metadata_info.ai_summary` |
 
 ### 与前端完全解耦
 
@@ -86,7 +87,7 @@ v3.0（新）:
   │  描述: ...                                 │
   │                                            │
   │  ── 🤖 AI 讨论摘要 ── [🤖 帮我分析] ──   │
-  │  📝 摘要内容（后端定时写入，前端从评论提取） │
+  │  📝 摘要内容（后端定时写入 `metadata_info.ai_summary`，前端读取展示） │
   │                                            │
   │  ── 讨论区 ────────────────────────────   │
   │  👤 张工: 日志拿到了，帮我看看             │
@@ -101,7 +102,7 @@ v3.0（新）:
   - [@AI] 按钮 → 自动在输入框填入 "@AI " 前缀 → 工程师补充问题 → [发送]
   - 讨论区发送时检测 @AI 前缀 → 调 /discuss；否则普通评论
   - 点击诊断短链接 → Dialog 弹窗展示完整报告
-  - AI 摘要纯展示，后端定时触发 /summarize 写入 task_comments
+  - ✅ 目标字段改为 `tasks.metadata_info.ai_summary`，前端从 metadata_info 读取，不再从评论提取摘要
 ```
 
 ### 2.2 工程师点击 [帮我分析]（v3.1 实际流程）
@@ -134,7 +135,7 @@ POST /api/ai/task/diagnose { task_id }
             ├─ 加载讨论历史（最近 10 条 task_comments）
             ├─ 加载工单上下文
             ├─ 按需调 LogSubAgent / 附件分析 / 历史工单（关键词匹配）
-            ├─ LLM 基于讨论+上下文回复 → 写 task_comments（AI任务助手）
+            ├─ LLM 基于讨论+上下文回复 → 写 task_comments（created_by = "小U"）
             └─ 前端 loadDetail() 刷新评论列表
 ```
 
@@ -148,7 +149,7 @@ POST /api/ai/task/diagnose { task_id }
 |------|------|------|------|:---:|
 | POST | `/api/ai/task/diagnose` | 全能力诊断 → 即时返回报告 | [帮我分析] 按钮 | ❌ 不落库 |
 | POST | `/api/ai/task/discuss` | @AI 讨论回复 → 写 task_comments | 讨论区 @AI | ✅ AI 回复写评论 |
-| POST | `/api/ai/task/summarize` | 检测新讨论 → 生成摘要 → 写 task_comments | 后台定时 | ✅ 摘要写评论 |
+| POST | `/api/ai/task/summarize` | 检测新讨论 → 生成摘要 → 写 `tasks.metadata_info` | 后台定时 | :white_check_mark: `ai_summary` + `ai_summary_at` |
 | POST | `/api/ai/task/submit` | 提交方案 → 更新工单 + Qdrant 回写 | 工程师确认 | ✅ |
 | GET | `/api/ai/task/health` | 健康检查 | 运维 | - |
 
@@ -271,19 +272,47 @@ POST /api/ai/task/diagnose { task_id }
 
 ---
 
-### 4.2 能力一：附件分析
+### 4.2 能力一：附件分析 + 日志子Agent
 
-**用途**：诊断报告生成时，分析工单附带的文件。@AI 讨论和讨论摘要不需要。
+**用途**：诊断报告生成时，分析工单附带的文件。@AI 讨论也按需调用。
 
-**分类依据**：当前附件处理的"深度"还不够——日志也就是提取 ERROR 行，图片也就是列出文件名，ZIP 就是解压遍历。它们本质上都是"读附件 → 提取文本摘要"，往后继续各自升级（比如图片走 OCR）才值得拆开。现阶段统一为附件分析，用一个入口函数对附件列表做分派。
+**附件类型覆盖**（v3.3 全量）：
 
-| 函数 | 说明 | 触发条件 | 状态 |
-|------|------|------|:---:|
-| `analyze_attachments(attachments)` | 入口：遍历附件列表 → 按类型分派 | 有附件时自动调用 | ✅ |
-| └ `_extract_log_text(file)` | 日志/文本：ERROR/WARN 提取 + 时间线 | 附件为 .txt/.log/.csv | ✅ 已有 |
-| └ `_extract_zip_text(file)` | ZIP：内存解压 → 识别内部日志文件 | 附件为 .zip | ✅ 已有 |
-| └ `_traverse_dir_text(path)` | 文件夹：遍历目录树 → 识别日志文件 | 路径为本地目录 | ✅ 已有 |
-| └ `_list_image_info(files)` | 图片：提取文件名列表（暂不做 OCR） | 附件为 .jpg/.png 等 | ✅ 已有 |
+| 类别 | 扩展名 | 解析方式 |
+|------|--------|---------|
+| 压缩包 | `.zip` `.tar` `.tgz` `.gz` | 解压到临时目录 → 遍历内层文件 → 按类型提取 |
+| 日志/文本 | `.txt` `.log` `.csv` `.log.1` `.log.16`… | ERROR/WARN 提取 + 时间戳范围（截断 100KB） |
+| 文档 | `.docx` `.pdf` `.xlsx` `.md` | python-docx / pdfplumber→PyPDF2 / openpyxl→xml fallback / 纯文本 |
+| 工程文件 | `.json` `.xml` `.yaml` `.yml` | 文本提取 + 结构摘要（顶层键/主要标签） |
+| 图片 | `.jpg` `.jpeg` `.png` `.webp` `.bmp` `.gif` | 两阶段：VLM 看图描述 → 文本模型推理 |
+
+**压缩包内文件保护**：非日志文件超过 100MB 自动跳过；日志文件不限大小（`_TEXT_CHUNK_LIMIT` 截断到 100KB）。
+
+**管道拆分**（diagnose/discuss 共用）：
+
+```
+附件列表
+  │
+  ├── 日志组 (.log .txt .csv .log.1 / .zip .tar .tgz .gz)
+  │     └── _extract_log_paths() → 解压到 tmpdir → 取内层日志路径
+  │           └── LogSubAgent 多轮推理 → 结论注入 Prompt
+  │           └── 完成后清理 tmpdir
+  │
+  ├── 非日志组 (docx/pdf/xlsx/md/json/xml/yaml/yml/图片等)
+  │     └── parse_attachments() → AttachmentAnalysis
+  │
+  └── 图片 (.jpg/.png/.webp)
+        └── analyze_images() → VLM 描述 + 文本推理
+```
+
+**关键函数**：
+
+| 函数 | 说明 | 位置 |
+|------|------|------|
+| `_extract_log_paths(attachments)` | 共享方法：从附件列表提取日志路径（压缩包先解压） | `pipeline.py` |
+| `parse_attachments(attachments)` | 入口：全类型附件 → `AttachmentAnalysis` | `attachments/parser.py` |
+| `analyze_images(attachments, ctx)` | 图片两阶段分析（VLM+文本） | `attachments/parser.py` |
+| `LogSubAgent.analyze(log_file, task_ctx)` | 日志多轮推理（知识库指引 + LogIndex 查询） | `log_analyzer/sub_agent.py` |
 
 ---
 
@@ -312,42 +341,57 @@ POST /api/ai/task/diagnose { task_id }
 
 ---
 
-### 4.5 三功能能力对照
+### 4.5 三功能能力对照（v3.3）
 
 ```
-               附件分析    历史工单检索  讨论区理解
-诊断报告         ✅          ✅          ✗
-@AI 讨论         ✅          ✅          ✅
-讨论摘要         ✗          ✗          ✅
+               附件分析    历史工单检索  讨论区理解  日志子Agent  代码检索
+诊断报告         ✅          ✅          ✗          ✅          ✗
+@AI 讨论         ✅          ✅          ✅          ✅          ✅
+讨论摘要         ✗          ✗          ✅          ✗          ✗
 ```
 
-各功能入口：
+**附件解析触发条件**（v3.3 实际实现）：
+- diagnose：总是调用（全能力分析）
+- discuss：仅当 query 含关键词时按需调用（日志/附件/图片/截图/屏幕等），且压缩包自动解压取内层日志路径
+- summarize：不调用
+
+各功能入口（v3.3 实际）：
 
 ```python
 # 诊断报告
 async def diagnose(task_id):
     ctx = load_task_context(task_id)
-    attachments_result = await analyze_attachments(ctx.attachments)  # 能力一
-    history_result = await retrieve_task_resolutions(ctx.query_text) # 能力二
-    return await llm.generate_report(ctx, attachments_result, history_result)
+    log_paths, tmp_dirs = _extract_log_paths(ctx.attachments)  # 自动解压
+    log_result = await LogSubAgent(log_paths[0]).analyze(...)   # 日志子Agent
+    att_result = await parse_attachments(non_log_atts)          # 非日志附件
+    img_result = await analyze_images(ctx.attachments)          # 图片VLM
+    hist_result = await retrieve_task_resolutions(query)        # 历史工单
+    shutil.rmtree(tmp_dirs)                                     # 清理临时目录
+    return await llm.generate_report(ctx, log_result, att_result, img_result, hist_result)
 
 # @AI 讨论 — 按需调用全能力
-async def discuss(task_id, query):
+async def discuss(task_id, query, context):
     ctx = load_task_context(task_id)
-    history = await load_recent_comments(task_id)                # 能力三：必调
-    # 能力一、二按需：工程师可能问附件或历史工单
-    attachments_result = None
-    history_result = None
-    if _query_mentions_attachment(query, history):
-        attachments_result = await analyze_attachments(ctx.attachments)
-    if _query_mentions_history(query, history):
-        history_result = await retrieve_task_resolutions(ctx.query_text)
-    return await llm.respond_to_discussion(ctx, history, query, attachments_result, history_result)
+    history = await load_recent_comments(task_id)               # 能力三：必调
+    facultative = ""
+    # 能力一、日志子Agent：按关键词匹配
+    if any(kw in query for kw in log_keywords):
+        log_paths, tmp_dirs = _extract_log_paths(ctx.attachments)
+        log_result = await LogSubAgent(log_paths[0]).analyze(...)
+        facultative += log_result.to_prompt_text()
+        shutil.rmtree(tmp_dirs)
+    if any(kw in query for kw in img_keywords):
+        facultative += await analyze_images(ctx.attachments)
+    if any(kw in query for kw in code_keywords):
+        facultative += await code_skill.search(query)
+    if any(kw in query for kw in hist_keywords):
+        facultative += await retrieve_task_resolutions(query)
+    return await llm.respond_to_discussion(ctx, history, query, facultative)
 
 # 讨论摘要
 async def summarize(task_id):
     ctx = load_task_context(task_id)
-    new_comments = await load_new_comments_since(task_id, last_summary) # 能力三
+    new_comments = await load_new_comments_since(task_id, last_summary)  # 能力三
     return await llm.summarize_discussion(ctx, new_comments)
 ```
 
@@ -387,7 +431,7 @@ MAPF v1.1.2 避让算法在特定场景下为被避让车生成起点=终点的�
 
 ### 存储
 
-**不存库**。诊断报告即时生成，直接返回 JSON 给前端渲染为弹窗。工程师可以根据报告内容自行决定后续操作（在讨论区讨论、手动复制等）。讨论区的 @AI 回复和讨论摘要才会写入 `task_comments` 留存。
+**不存库**。诊断报告即时生成，直接返回 JSON 给前端渲染为弹窗。讨论区的 @AI 回复写入 `task_comments`，讨论摘要写入 `tasks.metadata_info.ai_summary` 留存。
 
 ---
 
@@ -433,13 +477,15 @@ MAPF v1.1.2 避让算法在特定场景下为被避让车生成起点=终点的�
 后端定时（如每 3 分钟）调用 `POST /api/ai/task/summarize {}`，**无需传参数**。
 AI 模块自行扫描所有 `status = in_progress` 的工单，逐条判断是否需要生成摘要。
 
-### 判断"有新讨论"
+### 判断"有新讨论"（v3.3 实际实现）
 
 AI 模块内部逻辑：
-- 读 task_comments，找到最近一条 `📝 讨论摘要`（created_by = "AI任务助手"）
-- 计算上次摘要后的新人类评论数
-- **≥2 条** → 生成摘要 → 写 task_comments
+- 从 `tasks.metadata_info.ai_summary_at` 读取上次摘要时间
+- 计算 `ai_summary_at` 之后的新人类评论数（排除 `created_by = "小U"`）
+- **≥2 条** → 生成摘要 → 写入 `tasks.metadata_info.ai_summary` + `ai_summary_at`
 - **<2 条** → 跳过
+
+不再读/写 `task_comments` 来判断或存储摘要。
 
 ### 摘要 Prompt
 
@@ -469,16 +515,19 @@ AI 模块内部逻辑：
 | 提交解决方案 | `POST /api/ai/task/submit` | ✅ |
 | 查看诊断报告 | 前端 Dialog 弹窗（本地 state，不写后端） | ✅ |
 
-### 工单详情页数据（v3.1 实际）
+### 工单详情页数据（v3.3 实际）
 
-前端从业务后端 `GET /api/tasks/{id}?load_comments=true` 获取：
+前端从业务后端 `GET /api/tasks/{id}` 获取：
 - 工单基本信息（title/description/status/priority）
+- `metadata_info`（含 `ai_summary` / `ai_summary_at` / `diagnosis` 等 AI 字段）
 - 附件列表
-- 所有评论（包括 "AI任务助手" 的 AI 回复和摘要）
+- 所有评论（含 "小U" 的 AI 回复）
 
 **AI 摘要提取逻辑**（前端）：
-- 筛选 `created_by === 'AI任务助手'` 的评论
-- 取最新一条 `content` 以 `📝 讨论摘要` 开头的 → 展示在 AI 摘要卡片
+- 从 `metadata_info.ai_summary` 读取最新摘要文本 → 展示在 AI 摘要卡片
+- `metadata_info.ai_summary_at` 为上次摘要生成时间
+- 筛选 `created_by === '小U'` 的评论 → AI 讨论回复
+- 从 `metadata_info.ai_summary` 读取最新摘要文本 → 展示在 AI 摘要卡片
 
 **AI 模块不负责提供工单详情页数据**——全部由业务后端返回。
 
@@ -488,7 +537,7 @@ AI 模块内部逻辑：
 工单详情页（TaskDetailPage.tsx）
 ├── 工单信息（从 GET /api/tasks/{id}）
 ├── AI 摘要卡片 → 右上角 [🤖 帮我分析] → POST /api/ai/task/diagnose
-│   └── 摘要内容（从评论中提取 📝 讨论摘要）
+│   └── 摘要内容（从 metadata_info.ai_summary 读取）
 ├── 讨论区
 │   ├── 评论列表（含 AI 诊断短链接）
 │   │   └── 诊断短链接：📋 <a class="diagnosis-link"> → 点击 → Dialog 弹窗
@@ -504,7 +553,7 @@ AI 模块内部逻辑：
 2. **@AI 用户体验**：@AI 按钮只负责在输入框填前缀，工程师可继续打字，点发送才调 API
 3. **@AI 消息双写**：用户 @AI 消息先写入 task_comments（普通评论），再调 /discuss，AI 回复也写入
 4. **诊断短链接**：纯前端本地 state，不写 task_comments；只存活在当前会话
-5. **摘要**：后端定时 summarize → 写入 comments → 前端 loadDetail 时自动提取
+5. **摘要**：后端定时 summarize → 写入 `tasks.metadata_info.ai_summary` → 前端从 metadata_info 读取展示
 
 ---
 
@@ -564,7 +613,7 @@ AI 模块内部逻辑：
 ### Phase 2: 三大新功能 ✅
 - [x] `diagnose()` — 全能力诊断，即时返回报告
 - [x] `discuss()` — @AI 讨论回复（写 task_comments）
-- [x] `summarize()` — 讨论摘要（写 task_comments）
+- [x] `summarize()` — 讨论摘要（写 `tasks.metadata_info.ai_summary` + `ai_summary_at`）
 - [x] 新增 3 个 Prompt + 3 个端点
 - [x] router: 修复 `/diagnose`（原为错误的工单列表代码），新增 `/discuss`
 
@@ -573,10 +622,13 @@ AI 模块内部逻辑：
 - [x] [🤖 帮我分析] 按钮放在 AI 摘要卡片右上角
 - [x] [@AI] 按钮自动填入前缀，不直接调 API
 - [x] 诊断报告以短链接形式插入讨论区 → 点击弹 Dialog
-- [x] AI 摘要从评论中提取 `📝 讨论摘要` 展示
+- [x] AI 摘要从 `metadata_info.ai_summary` 读取展示
 - [x] fix: task_id String() 转换避免 Pydantic 422
 
 ### 已知问题 / 注意事项
 - `/diagnose` 使用的 router 代码在 merge 前是工单列表逻辑，已修复
 - 前端 `detail.id` 是 number，发给 AI 服务必须 `String()` 否则 422
 - 诊断短链接是前端本地 state，刷新页面后消失（预期行为）
+- 压缩包附件先解压到 tmpdir 再送 LogSubAgent，不直接传二进制 zip
+- 日志轮转文件 `.log.1` / `.log.16` 等后缀由 `_ext()` 统一识别为 `.log`
+- 全链路测试脚本：`ai/tests/trace_attachments.py`

@@ -1,4 +1,4 @@
-"""决策与解释层：Top-1 输出 + decision_type 判定（纯规则，无 LLM）"""
+"""决策与解释层：纯规则兜底"""
 
 from typing import Dict, List, Optional
 
@@ -21,7 +21,7 @@ class DecisionMaker:
         emap = {e.id: e for e in engineers}
         top_eng = emap.get(top_id)
         if top_eng is None:
-            return self._fallback(engineers[0], f"Top-1 工程师不在候选列表，强制兜底")
+            return self._fallback(engineers[0], f"Top-1 不在候选列表，强制兜底")
 
         t = self._config.decision_thresholds
         if top_score >= t.get("auto", 0.8):
@@ -47,31 +47,27 @@ class DecisionMaker:
         for eid, d in items[1:3]:
             eng = emap.get(eid)
             if eng:
+                prod_parts = [f"[{p}]{','.join(m) if m else ''}" for p, m in eng.responsibility_modules.items()]
                 lines.append(
-                    f"- {eng.name}({eid}): 置信度 {d['total_score']:.2f} "
-                    f"(L{d.get('job_level', '?')}), 模块 {eng.responsibility_modules}"
+                    f"- {eng.name}(L{d.get('job_level','?')}): "
+                    f"{d['total_score']:.2f} {'|'.join(prod_parts)}"
                 )
         return "\n".join(lines) or "无其他候选"
 
     def _reasoning(self, dt, eng, detail, conf, runner_up):
         reasons = []
-        m = detail.get("module_score", 0)
-        h = detail.get("history_score", 0)
-        s = detail.get("semantic_score", 0)
-        if m > 0:
-            reasons.append(f"责任模块匹配({m:.2f}): {', '.join(eng.responsibility_modules)}")
-        if h > 0:
-            reasons.append(f"历史工单匹配({h:.2f})")
-        if s > 0:
-            reasons.append(f"语义相似度({s:.2f})")
-        base = f"推荐 {eng.name}，综合置信度 {conf:.2f}。"
+        for key, label in [("llm_score", "LLM"), ("semantic_score", "语义"), ("history_score", "历史")]:
+            v = detail.get(key, 0)
+            if v > 0:
+                reasons.append(f"{label}({v:.2f})")
+        base = f"推荐 {eng.name}，置信度 {conf:.2f}。"
         if reasons:
-            base += "依据: " + "; ".join(reasons) + "。"
+            base += f" 维度: {'/'.join(reasons)}。"
         if dt == "auto":
-            return base + "匹配度高，可直接派单。"
+            return base + "可直接派单。"
         elif dt == "recommend":
-            return base + f"匹配度中等，建议确认。其他候选:\n{runner_up}"
-        return base + "匹配度较低，已做兜底派单，建议人工复核。其他候选:\n" + runner_up
+            return base + f"建议确认。候选:\n{runner_up}"
+        return base + "兜底派单，建议复核。候选:\n" + runner_up
 
     def _fallback(self, engineer, reason):
         return AssignmentResult(
