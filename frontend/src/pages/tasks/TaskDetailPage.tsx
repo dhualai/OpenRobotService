@@ -111,6 +111,9 @@ export default function TaskDetailPage() {
   const [showEscalatePopup, setShowEscalatePopup] = useState(false);
   const [resumeUser, setResumeUser] = useState<UserItem | null>(null);
   const [showResumePopup, setShowResumePopup] = useState(false);
+  const [reassignUser, setReassignUser] = useState<UserItem | null>(null);
+  const [showReassignPopup, setShowReassignPopup] = useState(false);
+  const [showReturnConfirmPopup, setShowReturnConfirmPopup] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
 
@@ -188,7 +191,10 @@ export default function TaskDetailPage() {
       });
       setDetail(updated);
       refreshTasks();
-      Toast({ message: `状态已更新为${STATUS_DISPLAY_MAP[action.nextStatus] || action.nextStatus}`, theme: 'success' });
+      const operator = getOperatorLabel();
+      const statusLabel = STATUS_DISPLAY_MAP[action.nextStatus] || action.nextStatus;
+      await addOperationComment(`${operator} 将工单状态变更为「${statusLabel}」`);
+      Toast({ message: `状态已更新为${statusLabel}`, theme: 'success' });
     } catch (err) {
       Toast({ message: `状态更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
@@ -210,11 +216,13 @@ export default function TaskDetailPage() {
         });
       }
 
-      const refreshed = await request<Ticket>(`/${detail.id}?load_comments=true`, { skipCache: true });
-      setDetail(refreshed);
-      refreshTasks();
-      
+      const operator = getOperatorLabel();
       const target = resumeUser?.name || resumeUser?.username || '原处理人';
+      const actionDesc = resumeUser
+        ? `${operator} 继续处理工单，处理人变更为 ${target}`
+        : `${operator} 继续处理工单`;
+      await addOperationComment(actionDesc);
+      await refreshDetail();
       Toast({ message: `已继续处理，处理人${resumeUser ? `变更为 ${target}` : '保持不变'}`, theme: 'success' });
       setResumeUser(null);
       setShowResumePopup(false);
@@ -237,22 +245,83 @@ export default function TaskDetailPage() {
         }),
       });
 
-      await request(`/${t.id}/comments`, {
-        method: 'POST',
-        body: JSON.stringify({
-          content: `工单已升级，处理人变更为 ${target}`,
-          is_public: true,
-        }),
-      });
+      const operator = getOperatorLabel();
+      await addOperationComment(`${operator} 将工单升级，处理人变更为 ${target}`);
 
-      const refreshed = await request<Ticket>(`/${t.id}?load_comments=true`, { skipCache: true });
-      setDetail(refreshed);
-      refreshTasks();
+      await refreshDetail();
       Toast({ message: `已升级，处理人已变更为 ${target}`, theme: 'success' });
       setEscalateUser(null);
       setShowEscalatePopup(false);
     } catch (err) {
       Toast({ message: `升级失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
+
+  const getOperatorLabel = (): string => {
+    return name || username || '当前用户';
+  };
+
+  const addOperationComment = async (content: string) => {
+    if (!detail) return;
+    try {
+      await request(`/${detail.id}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ content, is_public: true }),
+      });
+    } catch { /* 评论记录失败不阻塞主流程 */ }
+  };
+
+  const refreshDetail = async () => {
+    if (!detailId) return;
+    const refreshed = await request<Ticket>(`/${detailId}?load_comments=true`, { skipCache: true });
+    setDetail(refreshed);
+    refreshTasks();
+  };
+
+  const handleReturn = async () => {
+    if (!detail) return;
+    try {
+      const operator = getOperatorLabel();
+      const returnTo = detail.created_by_name || detail.reporter_name || detail.created_by || '创建人';
+
+      await request(`/${detail.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'pending' }),
+      });
+
+      if (detail.created_by) {
+        await request(`/${detail.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({ assigned_to: detail.created_by }),
+        });
+      }
+
+      await addOperationComment(`${operator} 将工单退回，状态变更为挂起，处理人变更为 ${returnTo}`);
+      await refreshDetail();
+      Toast({ message: `已退回工单，处理人变更为 ${returnTo}`, theme: 'success' });
+      setShowReturnConfirmPopup(false);
+    } catch (err) {
+      Toast({ message: `退回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
+
+  const handleReassign = async () => {
+    if (!detail || !reassignUser) return;
+    const target = reassignUser.name || reassignUser.username;
+    try {
+      await request(`/${detail.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ assigned_to: reassignUser.id }),
+      });
+
+      const operator = getOperatorLabel();
+      await addOperationComment(`${operator} 将工单重新指派给 ${target}`);
+      await refreshDetail();
+      Toast({ message: `已重新指派给 ${target}`, theme: 'success' });
+      setReassignUser(null);
+      setShowReassignPopup(false);
+    } catch (err) {
+      Toast({ message: `重新指派失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
   };
 
@@ -298,6 +367,8 @@ export default function TaskDetailPage() {
     if (!detail) return;
     try {
       const updated = await request<Ticket>(`/${detail.id}`, { method: 'PUT', body: JSON.stringify(editForm) });
+      const operator = getOperatorLabel();
+      await addOperationComment(`${operator} 修改了工单信息`);
       Toast({ message: '修改成功', theme: 'success' });
       setEditing(false);
       refreshTasks();
@@ -531,8 +602,36 @@ export default function TaskDetailPage() {
             </div>
           </div>
           <h2 className="detail-card__title">{detail.title}</h2>
-          <DetailRow label="创建时间" value={formatDateTime(detail.created_at)} />
-          <DetailRow label="更新时间" value={formatDateTime(detail.updated_at)} />
+          <div className="detail-card__info-grid">
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon">👤</span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">创建人</span>
+                <span className="detail-info-item__value">{detail.created_by_name || detail.reporter_name || detail.created_by || '-'}</span>
+              </div>
+            </div>
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon">🎯</span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">处理人</span>
+                <span className="detail-info-item__value">{detail.assignee_name || detail.assigned_to_name || detail.assigned_to || '-'}</span>
+              </div>
+            </div>
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon">🕐</span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">创建时间</span>
+                <span className="detail-info-item__value">{formatDateTime(detail.created_at)}</span>
+              </div>
+            </div>
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon">🔄</span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">更新时间</span>
+                <span className="detail-info-item__value">{formatDateTime(detail.updated_at)}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="detail-card">
@@ -664,6 +763,8 @@ export default function TaskDetailPage() {
               <div className="detail-actions__btns">
                 <Button size="small" theme="default" onClick={startEdit}>修改工单</Button>
                 <Button size="small" theme="danger" onClick={() => setShowEscalatePopup(true)}>升级上报</Button>
+                <Button size="small" theme="warning" onClick={() => setShowReturnConfirmPopup(true)}>退回工单</Button>
+                <Button size="small" theme="primary" onClick={() => setShowReassignPopup(true)}>重新指派</Button>
               </div>
             </div>
           );
@@ -702,6 +803,32 @@ export default function TaskDetailPage() {
           <div className="ticket-edit__btns">
             <Button theme="default" onClick={() => { setShowResumePopup(false); setResumeUser(null); }}>取消</Button>
             <Button theme="primary" onClick={handleResume}>确认继续</Button>
+          </div>
+        </div>
+      </Popup>
+
+      <Popup visible={showReassignPopup} onClose={() => { setShowReassignPopup(false); setReassignUser(null); }} placement="bottom" showOverlay>
+        <div className="ticket-edit">
+          <h4>重新指派</h4>
+          <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>选择新的处理人</p>
+          <UserSelect value={reassignUser?.id ?? null} onChange={setReassignUser} placeholder="请选择处理人" title="选择处理人" />
+          <div className="ticket-edit__btns">
+            <Button theme="default" onClick={() => { setShowReassignPopup(false); setReassignUser(null); }}>取消</Button>
+            <Button theme="primary" onClick={handleReassign} disabled={!reassignUser}>确认指派</Button>
+          </div>
+        </div>
+      </Popup>
+
+      <Popup visible={showReturnConfirmPopup} onClose={() => setShowReturnConfirmPopup(false)} placement="bottom" showOverlay>
+        <div className="ticket-edit">
+          <h4>退回工单</h4>
+          <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
+            确定要将此工单退回吗？<br />
+            退回后工单状态将变更为<span style={{ color: '#faad14', fontWeight: 500 }}>挂起</span>，处理人变更为创建人。
+          </p>
+          <div className="ticket-edit__btns">
+            <Button theme="default" onClick={() => setShowReturnConfirmPopup(false)}>取消</Button>
+            <Button theme="warning" onClick={handleReturn}>确认退回</Button>
           </div>
         </div>
       </Popup>

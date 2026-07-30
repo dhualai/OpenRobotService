@@ -193,10 +193,10 @@ class ProjectService:
         }
         return project_dict
     
-    def get_projects(self, skip: int = 0, limit: int = 100) -> List[Dict]:
+    def get_projects(self, skip: int = 0, limit: int = 999999999) -> List[Dict]:
         db = SessionLocal()
         try:
-            projects = db.query(Project).offset(skip).limit(limit).all()
+            projects = db.query(Project).filter(Project.id != None, Project.id != "").offset(skip).limit(limit).all()
             return [self._convert_to_dict(project) for project in projects]
         finally:
             db.close()
