@@ -192,25 +192,14 @@ def register_builtin_parsers() -> None:
     """
     显式注册所有内置 parser（不依赖自动发现）。
 
-    每个 parser 模块被导入后，通过 register() 函数注册。
-    这是最可靠的注册方式——不依赖文件系统扫描。
+    当前只有统一的 kb_markdown 解析器。
     """
-    # 尝试导入每个已知的 parser 模块
     builtin_modules = [
-        "ai.ingestion.parsers.cheduan_pdf",
-        "ai.ingestion.parsers.cheduan_docx",
-        "ai.ingestion.parsers.translation_xlsx",
-        "ai.ingestion.parsers.translation_docx",
-        "ai.ingestion.parsers.operation_docx",
-        "ai.ingestion.parsers.operation_prose_docx",
-        "ai.ingestion.parsers.troubleshooting_json",
-        "ai.ingestion.parsers.faq_multi",
-        "ai.ingestion.parsers.platform_faq",
-        "ai.ingestion.parsers.usp_diagnosis_md",
+        "ai.ingestion.parsers.kb_markdown",
     ]
 
     for mod_name in builtin_modules:
         try:
-            __import__(mod_name)  # module-level register_all() handles registration
+            __import__(mod_name)
         except ImportError:
             pass  # parser 模块可能尚未创建
