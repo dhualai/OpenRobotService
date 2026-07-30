@@ -207,7 +207,7 @@ export const qaTicketAck = (sessionId: string, dispatchId = '', status = 'dispat
 /** 上传接口响应的 data 字段（后端 /api/ai/qa/upload 返回） */
 export interface UploadData {
   saved: number;
-  files: Array<{ filename: string; size: number; path: string }>;
+  files: Array<{ filename: string; size: number; path: string; object_path?: string }>;
   /** 后端确认回执：只传图片=VLM 初步诊断；只传非图片=「暂不支持解析」提示 */
   ack_message?: string;
   /** 仅附带 message 文字非空时有值：完整诊断的 AI 回复（含提单 ticket） */

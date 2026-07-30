@@ -1,6 +1,6 @@
 # AiTaskPlatform — 任务 Agent 设计文档
 
-> 版本：3.3 | 日期：2026-07-29
+> 版本：3.4 | 日期：2026-07-29
 >
 > **本文件是 AiTaskPlatform 的权威设计文档**，供开发时参考和每次新对话恢复上下文。
 >
@@ -12,7 +12,8 @@
 
 | 日期 | 版本 | 变更摘要 |
 |------|:---:|------|
-| 2026-07-29 | 3.3 | **附件解析器全类型扩展**：新增 tar/tgz/gz/docx/pdf/xlsx/md/json/xml/yaml/yml 支持；压缩包解压后送 LogSubAgent（非直接传二进制）；日志轮转后缀识别(.log.1/.log.16)；共享 `_extract_log_paths` 方法；新增 trace_attachments.py 全链路测试 |
+| 2026-07-29 | 3.4 | **派单系统全量重构**：智能派单(AiDiagnosisPlatform.assigner)从静态JSON→DB驱动；人员信息合并至users表(+4字段)；部门三大类硬过滤(硬件/车端软件/调度)；三路召回(纯LLM+语义Embedding+历史)；独苗部门L2不打折；召回层分产品描述 `[调度USP]车端,后端\|[服务号]算法`；personnel_sync准入校验 |
+| 2026-07-29 | 3.3 | **附件解析器全类型扩展**：tar/tgz/gz/docx/pdf/xlsx/md/json/xml/yaml/yml；压缩包→临时目录→LogSubAgent；日志轮转后缀(.log.1/.log.16)；共享 `_extract_log_paths`；大日志不限大小；trace_attachments.py |
 | 2026-07-27 | 3.2 | **summarize 重构**：改为后端触发 + AI 自扫描模式（无参）；图片分析两阶段流水线（VLM+文本）；反幻觉约束；派单+日志子Agent 日志 |
 | 2026-07-23 | 3.1 | **前端接入完成**：「帮我分析」→ 短链接 → Dialog；@AI 按钮自动填前缀；摘要纯展示；修复 task_id 422 + /diagnose router |
 | 2026-07-22 | 3.0 | **架构重构**：砍掉大聊天；Agent 聚焦工单详情页；新增 诊断报告 + @AI 讨论 + 讨论摘要。诊断报告为即时生成不落库。 |
@@ -626,9 +627,11 @@ AI 模块内部逻辑：
 - [x] fix: task_id String() 转换避免 Pydantic 422
 
 ### 已知问题 / 注意事项
-- `/diagnose` 使用的 router 代码在 merge 前是工单列表逻辑，已修复
-- 前端 `detail.id` 是 number，发给 AI 服务必须 `String()` 否则 422
-- 诊断短链接是前端本地 state，刷新页面后消失（预期行为）
-- 压缩包附件先解压到 tmpdir 再送 LogSubAgent，不直接传二进制 zip
-- 日志轮转文件 `.log.1` / `.log.16` 等后缀由 `_ext()` 统一识别为 `.log`
-- 全链路测试脚本：`ai/tests/trace_attachments.py`
+- 压缩包附件先解压到 tmpdir 再送 LogSubAgent,分析完自动清理
+- 日志轮转文件 `.log.1`/`.log.16` 由 `_ext()` 统一识别,管道同步适配
+- 压缩包内大文件(非日志>100MB)自动跳过;日志文件不限大小,由 `_TEXT_CHUNK_LIMIT` 截断
+- `/diagnose` + `/discuss` 两条路径通过共享 `_extract_log_paths` 统一附件提取
+- 全链路测试脚本: `ai/tests/trace_attachments.py`
+- 上传附带文字: `POST /api/ai/qa/upload` 支持 `message` 字段,附加文字后自动跑诊断
+- summarize 写入 `tasks.metadata_info.ai_summary` + `ai_summary_at`
+- AI 身份: `created_by = "小U"`

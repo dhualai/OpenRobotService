@@ -327,7 +327,7 @@ async def upload_files(
                 ),
             }
         url = minio_client.get_presigned_url(object_path, expires_minutes=1440)
-        saved.append({"filename": f.filename, "size": len(content), "path": url})
+        saved.append({"filename": f.filename, "size": len(content), "path": url, "object_path": object_path})
     filenames = "、".join(s["filename"] for s in saved)
 
     # ── 2. 图片描述：VLM 看图层 ──

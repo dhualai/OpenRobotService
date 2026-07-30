@@ -15,7 +15,7 @@ from typing import Optional
 from ai.core.logging import get_logger
 from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket, load_engineers
 
-logger = get_logger(__name__)
+logger = get_logger("ASSIGNER")
 
 
 class AssignmentWorker:
@@ -65,6 +65,12 @@ class AssignmentWorker:
 
     async def _scan_and_assign(self):
         """扫描待派单工单并逐条指派"""
+        # 每轮扫描前检查工程师画像缓存（10分钟 TTL，过期自动重拉）
+        engineers = load_engineers()
+        if not engineers:
+            logger.debug("工程师画像为空，跳过本轮派单扫描")
+            return
+
         tickets = self._get_pending_tickets()
         if not tickets:
             return
@@ -158,6 +164,7 @@ class AssignmentWorker:
         """将派单结果写回 tasks 表"""
         try:
             from app.models.task import Task, TaskStatus
+            from app.models.identity import UserDB
             from app.core.db import SessionLocal
 
             db = SessionLocal()
@@ -167,8 +174,27 @@ class AssignmentWorker:
                     logger.warning(f"派单结果写回失败: task_id={task_id} 不存在")
                     return False
 
-                task.assigned_to = result.engineer_id or result.engineer_name
-                if result.engineer_id or result.engineer_name:
+                # 通过 engineer_id（users.id）查 username
+                username = None
+                if result.engineer_id:
+                    user = db.query(UserDB).filter(UserDB.id == result.engineer_id).first()
+                    if user:
+                        username = user.username
+                        logger.debug(
+                            f"派单 username 查询: engineer_id={result.engineer_id} "
+                            f"→ username={username}"
+                        )
+                    else:
+                        logger.warning(
+                            f"派单 username 查询失败: engineer_id={result.engineer_id} "
+                            f"在 users 表中未找到, 兜底用 engineer_name={result.engineer_name}"
+                        )
+                else:
+                    logger.warning(
+                        f"派单 engineer_id 为空, 兜底用 engineer_name={result.engineer_name}"
+                    )
+                task.assigned_to = username or result.engineer_name
+                if task.assigned_to:
                     task.status = TaskStatus.IN_PROGRESS
                 task.updated_at = datetime.utcnow()
 
@@ -176,6 +202,7 @@ class AssignmentWorker:
                 meta = task.metadata_info or {}
                 meta["assignee_name"] = result.engineer_name
                 meta["assignee_id"] = result.engineer_id
+                meta["assignee_username"] = username or ""
                 meta["assign_confidence"] = result.confidence_score
                 meta["assign_reasoning"] = result.reasoning
                 meta["assign_decision_type"] = result.decision_type

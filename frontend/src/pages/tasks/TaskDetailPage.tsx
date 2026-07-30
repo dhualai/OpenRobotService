@@ -93,7 +93,7 @@ interface Ticket {
   attachments?: Attachment[]; metadata_info?: Record<string, unknown>; comments?: Comment[];
 }
 
-const AI_NAME = '小U';
+const AI_NAME = 'U老师';
 
 export default function TaskDetailPage() {
   const { id: detailId } = useParams<{ id: string }>();
@@ -114,7 +114,7 @@ export default function TaskDetailPage() {
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
 
-  // 小U 诊断
+  // U老师 诊断
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagnosisReport, setDiagnosisReport] = useState('');  // raw Markdown
   const [reportVisible, setReportVisible] = useState(false);
@@ -345,13 +345,13 @@ export default function TaskDetailPage() {
     }
   };
 
-  // ── @小U 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
+  // ── @U老师 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
   const handleAIDiscuss = async (text: string): Promise<boolean> => {
     if (!detail) return false;
     const userMsg = text;
     setAskingAI(true);
     try {
-      // 1. 先保存用户的 @小U 消息到 task_comments
+      // 1. 先保存用户的 @U老师 消息到 task_comments
       try {
         const newComment = await request<Comment>(`/${detail.id}/comments`, {
           method: 'POST',
@@ -372,7 +372,7 @@ export default function TaskDetailPage() {
         method: 'POST',
         body: JSON.stringify({
           task_id: String(detail.id),
-          query: userMsg.replace(/^@小U\s*/, ''),
+          query: userMsg.replace(/^@U老师\s*/, ''),
           context: { recent_comments: recentComments },
         }),
       });
@@ -393,9 +393,9 @@ export default function TaskDetailPage() {
     }
   };
 
-  // ── onSend：检测 @小U 前缀决定走普通评论还是 AI 讨论 ──
+  // ── onSend：检测 @U老师 前缀决定走普通评论还是 AI 讨论 ──
   const handleSendComment = async (text: string, _files: File[]): Promise<boolean> => {
-    if (text.startsWith('@小U ')) {
+    if (text.startsWith('@U老师 ')) {
       return handleAIDiscuss(text);
     }
     return handleAddComment(text);
@@ -417,7 +417,7 @@ export default function TaskDetailPage() {
         setDiagnosisReport(d.report_md || d.root_cause_analysis || '');
         // 短链接预览取根因分析首行
         const preview = d.root_cause_analysis?.slice(0, 40) || '点击查看';
-        const shortLink = `📋 <a href="#diagnosis-report" class="diagnosis-link">小U 诊断报告 — ${preview}…</a>`;
+        const shortLink = `📋 <a href="#diagnosis-report" class="diagnosis-link">U老师 诊断报告 — ${preview}…</a>`;
         setDetail((prev) => {
           if (!prev) return prev;
           const aiComment: Comment = {
@@ -541,11 +541,11 @@ export default function TaskDetailPage() {
         </div>
 
         <div className="detail-card">
-          <h4 className="detail-card__h">🤖 AI 讨论摘要</h4>
+          <h4 className="detail-card__h">讨论摘要</h4>
           {aiSummary ? (
             <SafeHtml html={aiSummary} />
           ) : (
-            <p style={{ color: '#999' }}>暂无摘要，小U 将自动总结讨论进展</p>
+            <p style={{ color: '#999' }}>暂无摘要，U老师 将自动总结讨论进展</p>
           )}
         </div>
 
@@ -708,7 +708,7 @@ export default function TaskDetailPage() {
 
       <Dialog
         visible={reportVisible}
-        title="🤖 小U 诊断报告"
+        title="🤖 U老师 诊断报告"
         confirmBtn="关闭"
         onConfirm={() => setReportVisible(false)}
       >
