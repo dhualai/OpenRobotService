@@ -598,3 +598,82 @@ async def send_cuiban_notification(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"发送催办通知失败: {str(e)}")
+
+
+@router.get("/attachments/download")
+async def download_attachment(
+    path: str = Query(..., description="MinIO 对象路径，如 bucket/object_key"),
+    filename: Optional[str] = Query(None, description="下载时的文件名"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
+):
+    """代理下载 MinIO 文件：从 MinIO 读取文件流，通过后端返回给前端下载。"""
+    from fastapi.responses import StreamingResponse
+    from io import BytesIO
+    from urllib.parse import unquote
+    import os
+
+    try:
+        decoded_path = unquote(path)
+
+        if decoded_path.startswith('http://') or decoded_path.startswith('https://'):
+            from urllib.parse import urlparse
+            parsed = urlparse(decoded_path)
+            decoded_path = parsed.path.lstrip('/')
+
+        parts = decoded_path.split('/', 1)
+        if len(parts) != 2:
+            raise HTTPException(status_code=400, detail=f"无效的文件路径: {path}")
+
+        bucket_name, object_name = parts
+
+        known_buckets = [settings.MINIO_BUCKET, settings.COMMENT_BUCKET, settings.FILE_IMAGES]
+
+        found = False
+        for bucket in [bucket_name] + known_buckets:
+            try:
+                if not minio_client.check_bucket_exists(bucket):
+                    continue
+
+                stat = minio_client.get_file_info(f"{bucket}/{object_name}")
+                if not stat:
+                    continue
+
+                data = minio_client.client.get_object(bucket, object_name)
+                file_data = data.read()
+                data.close()
+
+                download_name = filename or os.path.basename(object_name)
+                encoded_name = f"UTF-8''{download_name}"
+
+                media_type = stat.content_type or 'application/octet-stream'
+                if download_name.endswith('.zip'):
+                    media_type = 'application/zip'
+                elif download_name.endswith('.json'):
+                    media_type = 'application/json'
+                elif download_name.endswith('.pdf'):
+                    media_type = 'application/pdf'
+                elif download_name.endswith('.png'):
+                    media_type = 'image/png'
+                elif download_name.endswith('.jpg') or download_name.endswith('.jpeg'):
+                    media_type = 'image/jpeg'
+
+                return StreamingResponse(
+                    BytesIO(file_data),
+                    media_type=media_type,
+                    headers={
+                        'Content-Disposition': f"attachment; filename*={encoded_name}",
+                        'Content-Length': str(len(file_data)),
+                        'Access-Control-Expose-Headers': 'Content-Disposition',
+                    }
+                )
+            except HTTPException:
+                raise
+            except Exception:
+                continue
+
+        raise HTTPException(status_code=404, detail=f"文件不存在: {bucket_name}/{object_name}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"下载文件失败: {str(e)}")

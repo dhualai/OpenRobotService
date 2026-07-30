@@ -14,7 +14,18 @@ router = APIRouter()
 
 async def get_current_active_user_from_token(request: Request) -> Dict[str, Any]:
     token = request.headers.get("Authorization", "")
-    token = token[7:]
+    if token.startswith("Bearer "):
+        token = token[7:]
+    elif not token:
+        token = request.query_params.get("token", "")
+    
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的认证凭据",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
     payload = decode_token(token)
     if payload is None:
         raise HTTPException(

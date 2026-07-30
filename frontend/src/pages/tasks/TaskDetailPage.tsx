@@ -31,11 +31,64 @@ const getStatusColor = (status: string): string => {
   return STATUS_COLOR_MAP[key] || '#666666';
 };
 
-interface Attachment { id: string; url: string; }
+const formatFileSize = (bytes?: number): string => {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+};
+
+const getFileIcon = (filename?: string): string => {
+  const ext = (filename || '').split('.').pop()?.toLowerCase() || '';
+  const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'];
+  const docExts = ['pdf', 'doc', 'docx', 'txt', 'md'];
+  const sheetExts = ['xls', 'xlsx', 'csv'];
+  const codeExts = ['json', 'js', 'ts', 'py', 'html', 'css'];
+  const archiveExts = ['zip', 'rar', '7z', 'tar', 'gz'];
+  if (imageExts.includes(ext)) return '🖼️';
+  if (docExts.includes(ext)) return '📄';
+  if (sheetExts.includes(ext)) return '📊';
+  if (codeExts.includes(ext)) return '💻';
+  if (archiveExts.includes(ext)) return '📦';
+  return '📎';
+};
+
+const isImageFile = (filename?: string): boolean => {
+  const ext = (filename || '').split('.').pop()?.toLowerCase() || '';
+  return ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'].includes(ext);
+};
+
+interface MinioPathInfo { bucket: string; objectKey: string; }
+
+const parseMinioPath = (rawPath: string): MinioPathInfo | null => {
+  try {
+    const url = new URL(rawPath);
+    const parts = decodeURIComponent(url.pathname).replace(/^\//, '').split('/');
+    if (parts.length < 2) return null;
+    const bucket = parts[0];
+    const objectKey = parts.slice(1).join('/');
+    if (!bucket || !objectKey) return null;
+    return { bucket, objectKey };
+  } catch {
+    const idx = rawPath.indexOf('://');
+    if (idx === -1) return null;
+    const pathPart = rawPath.slice(rawPath.indexOf('/', idx + 3));
+    const cleaned = decodeURIComponent(pathPart.replace(/^\//, ''));
+    const slashIdx = cleaned.indexOf('/');
+    if (slashIdx === -1) return null;
+    return { bucket: cleaned.slice(0, slashIdx), objectKey: cleaned.slice(slashIdx + 1) };
+  }
+};
+
+interface Attachment { path: string; size?: number; filename?: string; url?: string; id?: string; }
 interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; }
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
-  ticket_type: string; project_name?: string; assignee_name?: string; reporter_name?: string;
+  ticket_type: string; project_name?: string;
+  created_by?: string; created_by_name?: string;
+  assigned_to?: string; assigned_to_name?: string;
+  reporter_name?: string; assignee_name?: string;
   contact?: string; created_at: string; updated_at: string;
   attachments?: Attachment[]; metadata_info?: Record<string, unknown>; comments?: Comment[];
 }
@@ -86,7 +139,31 @@ export default function TaskDetailPage() {
   const getActionButtons = () => {
     const status = detail?.status?.toLowerCase();
     if (!status) return [];
-    
+
+    const isClosed = status === 'closed';
+    const isCanceled = status === 'canceled' || status === 'cancelled';
+    if (isClosed || isCanceled) return [];
+
+    const currentUsername = username;
+    const currentName = name || username;
+
+    const isAssignee = !!(
+      (detail?.assigned_to && detail.assigned_to === currentUsername) ||
+      (detail?.assignee_name && (detail.assignee_name === currentUsername || detail.assignee_name === currentName)) ||
+      (detail?.assigned_to_name && (detail.assigned_to_name === currentUsername || detail.assigned_to_name === currentName))
+    );
+
+    const isReporter = !!(
+      (detail?.created_by && detail.created_by === currentUsername) ||
+      (detail?.reporter_name && (detail.reporter_name === currentUsername || detail.reporter_name === currentName)) ||
+      (detail?.created_by_name && (detail.created_by_name === currentUsername || detail.created_by_name === currentName))
+    );
+
+    const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
+    if (assigneeOnlyStatuses.includes(status) && !isAssignee) return [];
+
+    if (status === 'resolved' && !isReporter) return [];
+
     const actions: Record<string, { label: string; nextStatus: string; theme: string; actionType?: string; customStyle?: Record<string, string> }[]> = {
       new: [{ label: '开始处理', nextStatus: 'in_progress', theme: 'primary' }],
       in_progress: [
@@ -97,7 +174,7 @@ export default function TaskDetailPage() {
       resolved: [{ label: '确认关闭', nextStatus: 'closed', theme: 'default' }],
       canceled: [{ label: '重新打开', nextStatus: 'new', theme: 'primary' }],
     };
-    
+
     return actions[status] || [];
   };
 
@@ -176,6 +253,42 @@ export default function TaskDetailPage() {
       setShowEscalatePopup(false);
     } catch (err) {
       Toast({ message: `升级失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
+
+  const [downloadingIdx, setDownloadingIdx] = useState<number | null>(null);
+
+  const handleAttachmentDownload = async (att: Attachment, idx: number) => {
+    const rawPath = att.path || att.url || '';
+    if (!rawPath) { Toast({ message: '附件路径无效', theme: 'error' }); return; }
+
+    setDownloadingIdx(idx);
+    try {
+      let minioPath = rawPath;
+      if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
+        const parsed = parseMinioPath(rawPath);
+        if (parsed) {
+          minioPath = `${parsed.bucket}/${parsed.objectKey}`;
+        } else {
+          Toast({ message: '无法解析附件路径', theme: 'error' });
+          return;
+        }
+      }
+
+      const authToken = localStorage.getItem('auth_token') || '';
+      const downloadUrl = `${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
+
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = att.filename || '';
+      a.target = '_blank';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err) {
+      Toast({ message: `下载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setDownloadingIdx(null);
     }
   };
 
@@ -369,10 +482,6 @@ export default function TaskDetailPage() {
     <div className="task-detail-page" style={{ paddingBottom: 72 }}>
       <Navbar title="工单详情" fixed leftArrow onLeftClick={handleBack} />
       <div className="page-container" style={{ paddingTop: 56 }}>
-        {detail.attachments?.[0] && (
-          <img src={detail.attachments[0].url} alt="附件" className="ticket-detail__cover" />
-        )}
-
         <div className="detail-card">
           <div className="detail-card__header">
             <div className="detail-card__meta">
@@ -440,12 +549,90 @@ export default function TaskDetailPage() {
           )}
         </div>
 
-        {(detail.contact || detail.reporter_name || detail.assignee_name) && (
+        {(detail.contact || detail.reporter_name || detail.assignee_name || detail.created_by_name || detail.assigned_to_name) && (
           <div className="detail-card">
             <h4 className="detail-card__h">联系方式</h4>
             {detail.contact && <DetailRow label="联系电话" value={detail.contact} />}
-            {detail.reporter_name && <DetailRow label="提交人" value={detail.reporter_name} />}
-            {detail.assignee_name && <DetailRow label="处理人" value={detail.assignee_name} />}
+            <DetailRow label="提交人" value={detail.reporter_name || detail.created_by_name || detail.created_by || '-'} />
+            <DetailRow label="处理人" value={detail.assignee_name || detail.assigned_to_name || detail.assigned_to || '-'} />
+          </div>
+        )}
+
+        {detail.attachments && detail.attachments.length > 0 && (
+          <div className="detail-card">
+            <h4 className="detail-card__h">📎 附件 ({detail.attachments.length})</h4>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {detail.attachments.map((att, idx) => {
+                const url = att.path || att.url || '';
+                const filename = att.filename || '未命名文件';
+                const size = att.size ?? 0;
+                const isImg = isImageFile(filename);
+                const icon = getFileIcon(filename);
+                const sizeLabel = formatFileSize(size);
+                const isDownloading = downloadingIdx === idx;
+                return (
+                  <div
+                    key={idx}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleAttachmentDownload(att, idx)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleAttachmentDownload(att, idx); }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '10px 12px',
+                      borderRadius: 8,
+                      border: '1px solid #e5e5e5',
+                      background: '#fafafa',
+                      color: 'inherit',
+                      cursor: 'pointer',
+                      transition: 'background 0.15s',
+                      opacity: isDownloading ? 0.6 : 1,
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#f0f7ff'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#fafafa'; }}
+                  >
+                    {isImg ? (
+                      <img
+                        src={url}
+                        alt={filename}
+                        style={{
+                          width: 40,
+                          height: 40,
+                          objectFit: 'cover',
+                          borderRadius: 4,
+                          marginRight: 10,
+                          flexShrink: 0,
+                        }}
+                        onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+                      />
+                    ) : (
+                      <span style={{ fontSize: 22, marginRight: 10, flexShrink: 0 }}>{icon}</span>
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 500,
+                          color: '#333',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {filename}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
+                        {sizeLabel || '未知大小'}
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 16, color: '#0052d9', marginLeft: 8, flexShrink: 0 }}>
+                      {isDownloading ? '⏳' : '⬇'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -468,12 +655,19 @@ export default function TaskDetailPage() {
           }
         />
 
-        <div className="detail-actions">
-          <div className="detail-actions__btns">
-            <Button size="small" theme="default" onClick={startEdit}>修改工单</Button>
-            <Button size="small" theme="danger" onClick={() => setShowEscalatePopup(true)}>升级上报</Button>
-          </div>
-        </div>
+        {(() => {
+          const status = detail.status?.toLowerCase();
+          const isClosedOrCanceled = status === 'closed' || status === 'canceled' || status === 'cancelled';
+          if (isClosedOrCanceled) return null;
+          return (
+            <div className="detail-actions">
+              <div className="detail-actions__btns">
+                <Button size="small" theme="default" onClick={startEdit}>修改工单</Button>
+                <Button size="small" theme="danger" onClick={() => setShowEscalatePopup(true)}>升级上报</Button>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       <Popup visible={editing} onClose={() => setEditing(false)} placement="bottom" showOverlay>

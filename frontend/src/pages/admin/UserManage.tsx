@@ -837,7 +837,7 @@ export default function UserManage() {
                   <div style={{ fontSize: 13, fontWeight: 500, color: '#333', marginBottom: 8 }}>
                     📂 项目角色
                   </div>
-                  {Object.entries(detailUser.projectPermissions).map(([projectId, roles]) => (
+                  {Object.entries(detailUser.projectPermissions).map(([projectId, rolesMap]) => (
                     <div
                       key={projectId}
                       style={{
@@ -852,18 +852,19 @@ export default function UserManage() {
                         项目 {projectId}
                       </span>
                       <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                        {roles.map((role) => (
+                        {Object.entries(rolesMap).map(([roleKey, perms]) => (
                           <span
-                            key={role}
+                            key={roleKey}
                             style={{
                               fontSize: 11,
                               padding: '2px 6px',
                               borderRadius: 3,
                               background: '#fff',
                               color: '#0050b3',
+                              marginRight: 4,
                             }}
                           >
-                            {role}
+                            {roleKey}
                           </span>
                         ))}
                       </div>
