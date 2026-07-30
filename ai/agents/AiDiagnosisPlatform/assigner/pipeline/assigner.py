@@ -1,0 +1,121 @@
+"""Assigner 核心逻辑：智能派单
+
+流程:
+    TicketContext + EngineerProfile
+        │
+        ▼
+    【Step 0 部门过滤】(极保守:仅服务号→智能规划)
+        │
+        ▼
+    【Step 1 四路召回】
+        ├── L1 纯LLM召回(0.50): LLM 看全员画像 → 直接打分
+        ├── L2 关键词召回(0.00): LLM推断模块 → Jaccard(已关闭)
+        ├── L3 语义召回(0.40):   Embedding 向量余弦相似度
+        └── L4 历史召回(0.10):   tasks 表已解决工单匹配(数据积累中)
+        │
+        ▼
+    【Step 2 精排 + 职级折扣】 raw_total × job_level 惩罚系数
+        │
+        ▼
+    【Step 3 LLM 综合决策】成功→返回 / 失败→Step 4
+        │
+        ▼ (回退)
+    【Step 4 规则决策】阈值判定: auto/recommend/fallback
+"""
+
+from typing import Dict, List, Optional
+
+from ai.core.logging import get_logger
+from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
+from ai.agents.AiDiagnosisPlatform.assigner.ranking.decision import DecisionMaker
+from ai.agents.AiDiagnosisPlatform.assigner.filtering.department_matcher import DepartmentMatcher
+from ai.agents.AiDiagnosisPlatform.assigner.ranking.llm_decider import LlmDecider
+from ai.agents.AiDiagnosisPlatform.assigner.recall.llm_recaller import LlmRecaller
+from ai.agents.AiDiagnosisPlatform.assigner.ranking.ranker import Ranker
+from ai.agents.AiDiagnosisPlatform.assigner.recall.recall_result import RecallResult
+from ai.agents.AiDiagnosisPlatform.assigner.recall.semantic_recaller import (
+    SemanticRecaller, invalidate_semantic_cache,
+)
+from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
+    AssignmentResult, EngineerProfile, TicketContext,
+)
+
+logger = get_logger("assigner")
+
+
+class Assigner:
+    def __init__(self, config: Optional[AssignerConfig] = None):
+        self._config = config or AssignerConfig()
+        self._dept_matcher = DepartmentMatcher(config=self._config)
+        self._llm_recaller = LlmRecaller(config=self._config)
+        self._semantic_recaller = SemanticRecaller(config=self._config)
+        self._ranker = Ranker(config=self._config)
+        self._llm_decider = LlmDecider(config=self._config)
+        self._decision_maker = DecisionMaker(config=self._config)
+
+    async def aassign(
+        self,
+        ticket_context: TicketContext,
+        engineer_profiles: List[EngineerProfile],
+        historical_matches: Optional[Dict[str, float]] = None,
+    ) -> AssignmentResult:
+        logger.info(f"派单开始: ticket={ticket_context.title[:40]}, engineers={len(engineer_profiles)}人")
+        if not engineer_profiles:
+            raise ValueError("工程师列表为空。请检查 users 表人员数据是否就绪。")
+        if not ticket_context.problem_description and not ticket_context.title:
+            raise ValueError("问题描述和标题均为空，无法推断责任模块。")
+
+        # ── Step 0: 极保守部门过滤 ──
+        candidates = self._dept_matcher.filter(
+            ticket=ticket_context, engineers=engineer_profiles,
+            project_name=ticket_context.project_name or "",
+        )
+        if not candidates:
+            logger.warning("派单 Step 0: 过滤后无候选人，回退全量")
+            candidates = engineer_profiles
+        logger.info(f"派单 Step 0 部门过滤: {len(engineer_profiles)}→{len(candidates)}人")
+
+        # ── Step 1: 三路召回 ──
+        recall_result = RecallResult()
+        # L1 纯LLM 召回
+        try:
+            recall_result.llm_recall = await self._llm_recaller.arecall(
+                ticket=ticket_context, engineers=candidates,
+            )
+            logger.debug(f"派单 L1 LLM召回: {len(recall_result.llm_recall)} 人")
+        except Exception:
+            pass
+        # L3 语义 + L4 历史（共享一次 Embedding）
+        try:
+            sem, his = await self._semantic_recaller.arecall(
+                ticket=ticket_context, engineers=candidates,
+            )
+            recall_result.semantic_recall = sem
+            recall_result.history_recall = his
+            logger.debug(f"派单 L3语义:{len(sem)}人 L4历史:{len(his)}人")
+        except Exception:
+            pass
+
+        # ── Step 2: 精排 + 职级折扣 ──
+        ranked_scores = self._ranker.rank(recall_result, engineers=candidates)
+
+        # ── Step 3: LLM 综合决策 ──
+        try:
+            llm_result = await self._llm_decider.adecide(
+                ticket=ticket_context, engineers=candidates,
+                recall_result=recall_result, ranked_scores=ranked_scores,
+            )
+            if llm_result is not None:
+                logger.info(f"派单 Step 3 LLM决策: {llm_result.engineer_name} ({llm_result.decision_type})")
+                return llm_result
+        except Exception as e:
+            logger.warning(f"派单 Step 3 LLM决策失败,回退: {e}")
+
+        # ── Step 4: 规则兜底 ──
+        result = self._decision_maker.decide(ranked_scores=ranked_scores, engineers=candidates)
+        logger.info(f"派单 Step 4 规则兜底: {result.engineer_name} ({result.decision_type})")
+        return result
+
+    def reload_config(self):
+        self._config.reload()
+        invalidate_semantic_cache()
