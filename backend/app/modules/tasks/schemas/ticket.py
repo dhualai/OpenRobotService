@@ -199,3 +199,11 @@ class TicketFilterRequest(BaseModel):
     sorts: Optional[List[TicketSort]] = Field(default_factory=list, description="排序条件列表")
     page: int = Field(default=1, ge=1, description="页码")
     size: int = Field(default=10, ge=1, le=100, description="每页数量")
+
+
+class ProjectMemberResponse(BaseModel):
+    """项目成员（用于 @ 提及选择），复用 user_project_roles 表数据。"""
+    id: str
+    username: str
+    name: Optional[str] = None
+    role_name: Optional[str] = None
