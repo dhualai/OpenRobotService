@@ -15,7 +15,7 @@ from typing import Optional
 from ai.core.logging import get_logger
 from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket, load_engineers
 
-logger = get_logger(__name__)
+logger = get_logger("ASSIGNER")
 
 
 class AssignmentWorker:
@@ -180,6 +180,19 @@ class AssignmentWorker:
                     user = db.query(UserDB).filter(UserDB.id == result.engineer_id).first()
                     if user:
                         username = user.username
+                        logger.debug(
+                            f"派单 username 查询: engineer_id={result.engineer_id} "
+                            f"→ username={username}"
+                        )
+                    else:
+                        logger.warning(
+                            f"派单 username 查询失败: engineer_id={result.engineer_id} "
+                            f"在 users 表中未找到, 兜底用 engineer_name={result.engineer_name}"
+                        )
+                else:
+                    logger.warning(
+                        f"派单 engineer_id 为空, 兜底用 engineer_name={result.engineer_name}"
+                    )
                 task.assigned_to = username or result.engineer_name
                 if task.assigned_to:
                     task.status = TaskStatus.IN_PROGRESS
