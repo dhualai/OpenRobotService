@@ -1,7 +1,7 @@
 // 日报周报分析 —— 对接 POST /api/ai/analysis/report/generate（流式 SSE）
 // 数据来源：ai/agents/AiDataAnalysisPlatform/report_generator.py 实时采集 MySQL 中的
 // 项目/风险/工单/任务数据并调用 LLM 生成报告文本。
-import { memo, useState, useEffect, useCallback } from 'react';
+import { memo, useState, useEffect, useCallback, useRef } from 'react';
 import { Tabs, TabPanel, Loading, Popup, Button, DateTimePicker } from 'tdesign-mobile-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import { generateReportStream, readReportStream, type ReportPeriod } from '@/api/report';
@@ -82,6 +82,21 @@ export default function DailySummaryAgent() {
   const [error, setError] = useState<string | null>(null);
   const [streamText, setStreamText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // 进入页面时滚动到最上端（AdminLayout 的滚动容器是外层 overflow:auto 的 div，非 window）
+  useEffect(() => {
+    let el: HTMLElement | null = rootRef.current;
+    while (el) {
+      const style = window.getComputedStyle(el);
+      if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+        el.scrollTop = 0;
+        break;
+      }
+      el = el.parentElement;
+    }
+    window.scrollTo(0, 0);
+  }, []);
 
   const fetchReport = useCallback(async (p: ReportPeriod, d: string, force: boolean) => {
     const key = reportCacheKey(p, d);
@@ -122,7 +137,7 @@ export default function DailySummaryAgent() {
   const handleRefresh = () => fetchReport(period, date, true);
 
   return (
-    <div style={{ padding: 16 }}>
+    <div ref={rootRef} style={{ padding: 16 }}>
       <div style={{ background: '#eef1f4', borderRadius: 999, padding: 4, display: 'flex', marginBottom: 16 }}>
         <Tabs value={period} onChange={(v) => setPeriod(v as ReportPeriod)} style={{ flex: 1 }}>
           <TabPanel value="daily" label="日报视图" />

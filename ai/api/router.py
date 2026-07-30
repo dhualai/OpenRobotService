@@ -289,9 +289,10 @@ async def upload_files(
     message: str = Form("", description="附带文字（可选，有则直接走诊断）"),
     authorization: str = Header(default="", alias="Authorization"),
 ):
-    from app.utils.minio_client import minio_client
-    from app.core.config import settings
+    from ai.core.minio_client import minio_client
     from pathlib import Path
+
+    _bucket = get_ai_config().minio_bucket
 
     t_upload_start = time.perf_counter()
     logger.info(
@@ -302,9 +303,9 @@ async def upload_files(
 
     # ── 0. 确保目标 bucket 存在 ──
     try:
-        minio_client.create_bucket(settings.MINIO_BUCKET)
+        minio_client.create_bucket(_bucket)
     except Exception as e:
-        logger.warning(f"确保 bucket {settings.MINIO_BUCKET} 存在失败: {e}（若桶实际存在可忽略）")
+        logger.warning(f"确保 bucket {_bucket} 存在失败: {e}（若桶实际存在可忽略）")
 
     # ── 1. 上传到 MinIO ──
     saved = []
@@ -312,7 +313,7 @@ async def upload_files(
     for f in files:
         content = await f.read()
         raw_bytes.append((f.filename, content))
-        object_path = f"{settings.MINIO_BUCKET}/{session_id}/{f.filename}"
+        object_path = f"{_bucket}/{session_id}/{f.filename}"
         try:
             minio_client.upload_bytes(
                 content, object_path, content_type=f.content_type, raise_on_error=True
@@ -323,7 +324,7 @@ async def upload_files(
                 "code": 1,
                 "message": (
                     f"文件「{f.filename}」上传失败：{e}。"
-                    f"请检查 MinIO 是否可达、桶 {settings.MINIO_BUCKET} 是否存在、凭据是否正确。"
+                    f"请检查 MinIO 是否可达、桶 {_bucket} 是否存在、凭据是否正确。"
                 ),
             }
         url = minio_client.get_presigned_url(object_path, expires_minutes=1440)
