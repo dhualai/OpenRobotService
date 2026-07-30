@@ -194,6 +194,24 @@ export default function DiscussionPanel({
     }
   };
 
+  // ── 粘贴图片：从剪贴板提取图片文件，加入待发送列表 ──
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageFiles: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) imageFiles.push(file);
+      }
+    }
+    if (imageFiles.length > 0) {
+      e.preventDefault(); // 不把图片二进制插入 textarea
+      setPendingFiles((prev) => [...prev, ...imageFiles]);
+    }
+  };
+
   const canSend = !sending && !disabled && (commentText.trim().length > 0 || pendingFiles.length > 0);
 
   const handleSend = async () => {
@@ -274,6 +292,7 @@ export default function DiscussionPanel({
           value={commentText}
           onChange={handleInputChange}
           onKeyDown={handleInputKeyDown}
+          onPaste={handlePaste}
           placeholder={disabled ? '工单号缺失，无法评论' : ph}
           disabled={sending || disabled}
           rows={1}

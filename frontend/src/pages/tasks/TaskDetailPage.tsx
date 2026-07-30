@@ -874,7 +874,7 @@ export default function TaskDetailPage() {
         confirmBtn="关闭"
         onConfirm={() => setReportVisible(false)}
       >
-        <div style={{ maxHeight: '60vh', overflowY: 'auto', textAlign: 'left', fontSize: 14, lineHeight: 1.8 }}>
+        <div className="markdown-body" style={{ maxHeight: '60vh', overflowY: 'auto', textAlign: 'left', fontSize: 14, lineHeight: 1.8 }}>
           {diagnosisReport ? (
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
               {diagnosisReport}
