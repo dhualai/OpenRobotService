@@ -272,14 +272,16 @@ class QdrantClientWrapper:
         sparse_vector: Dict[int, float],
         top_k: int = 3,
         score_threshold: Optional[float] = None,
+        collection_name: Optional[str] = None,
     ) -> List[Any]:
-        """稀疏向量检索"""
+        """稀疏向量检索，可指定 collection（默认使用活跃集合）。"""
         if self.is_unavailable:
             return []
         # 本地模式不支持稀疏检索，跳过
         if self._is_local:
             return []
         client = await self._ensure_client()
+        col = collection_name or self.collection_name
         try:
             # qdrant_client >=1.10: sparse vector 需要 SparseVector 对象
             indices = sorted(sparse_vector.keys())
@@ -289,7 +291,7 @@ class QdrantClientWrapper:
             # qdrant_client >=1.18: search() → query_points()
             result = await self._to_thread(
                 client.query_points,
-                collection_name=self.collection_name,
+                collection_name=col,
                 query=("sparse", sv),
                 limit=top_k,
                 score_threshold=score_threshold,
@@ -620,28 +622,31 @@ class RetrievalService:
             else:
                 query_filter = sd_filter
 
+        # hybrid search: dense + sparse 并行 → RRF 融合
         query_vector = await self._embed_client.embed(query)
-        points = await self._qdrant.search_dense(
+        bm25_sparse = self._generate_bm25_sparse(query)
+
+        dense_task = self._qdrant.search_dense(
             query_vector.tolist(),
-            top_k=top_k,
+            top_k=top_k * 2,
             collection_name=col,
             query_filter=query_filter,
         )
+        sparse_task = self._qdrant.search_sparse(
+            bm25_sparse,
+            top_k=top_k * 2,
+            collection_name=col,
+        ) if bm25_sparse else asyncio.sleep(0)
 
-        results = []
-        for point in points:
-            payload = point.payload or {}
-            results.append(RetrievalResult(
-                id=str(point.id),
-                score=point.score,
-                title=payload.get("title", ""),
-                content=payload.get("content", ""),
-                vector_score=point.score,
-                images=payload.get("images", []),
-                sub_domain=payload.get("sub_domain", ""),
-                domain=payload.get("domain", ""),
-            ))
-        return results
+        dense_res, sparse_list = await asyncio.gather(dense_task, sparse_task)
+
+        # 清理异常（local Qdrant 上 sparse 返回空列表，抛异常时降级）
+        if isinstance(sparse_list, BaseException):
+            sparse_list = []
+        if not isinstance(sparse_list, list):
+            sparse_list = []
+
+        return self._rrf_fusion(dense_res, sparse_list, top_k=top_k)
 
     async def retrieve_faq(
         self,
@@ -649,27 +654,45 @@ class RetrievalService:
         top_k: Optional[int] = None,
     ) -> List[RetrievalResult]:
         """
-        FAQ 知识库检索（委托到 team domain，sub_domain="faq"）。
+        FAQ 知识库检索（team domain，匹配 sub_domain="faq" 或 "usp_faq"）。
         """
+        from qdrant_client.models import Filter, FieldCondition, MatchAny
+        faq_filter = Filter(
+            must=[FieldCondition(
+                key="sub_domain",
+                match=MatchAny(any=["faq", "usp_faq"]),
+            )]
+        )
         return await self.retrieve_domain(
             query, "team",
             top_k=top_k or self.top_k,
-            sub_domain="faq",
+            query_filter=faq_filter,
         )
 
-    async def retrieve_platform_faq(
+    async def retrieve_company(
         self,
         query: str,
         top_k: Optional[int] = None,
     ) -> List[RetrievalResult]:
         """
-        平台 FAQ 检索（委托到 team domain，sub_domain="faq"）。
-        平台 FAQ 已合并入 faq.md 中。
+        company 域全量检索（产品目录、车端错误码、VDA5050协议等）。
         """
         return await self.retrieve_domain(
-            query, "team",
+            query, "company",
             top_k=top_k or self.top_k,
-            sub_domain="faq",
+        )
+
+    async def retrieve_industry(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+    ) -> List[RetrievalResult]:
+        """
+        industry 域全量检索（行业标准、导航规范等）。
+        """
+        return await self.retrieve_domain(
+            query, "industry",
+            top_k=top_k or self.top_k,
         )
 
     async def retrieve_troubleshooting(
