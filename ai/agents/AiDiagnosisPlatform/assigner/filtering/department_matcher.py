@@ -15,7 +15,7 @@ from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
 from ai.core.logging import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("ASSIGNER")
 
 # ── 三类确定信号 ──
 

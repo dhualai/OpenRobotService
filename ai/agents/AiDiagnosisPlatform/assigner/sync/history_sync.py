@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Set
 
 from ai.core.logging import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("ASSIGNER")
 
 _history_cache: Optional[List[dict]] = None
 _history_ts: Optional[float] = None
