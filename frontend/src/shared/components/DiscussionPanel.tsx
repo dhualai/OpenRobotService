@@ -61,6 +61,7 @@ export default function DiscussionPanel({
   headerRight,
   title,
   className = '',
+  mentionUsers,
 }: DiscussionPanelProps) {
   const { username, name } = useAuthStore();
   const [commentText, setCommentText] = useState('');
