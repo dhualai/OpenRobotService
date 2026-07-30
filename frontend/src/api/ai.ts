@@ -174,11 +174,12 @@ export interface AiTicketBrief {
   updated_at?: string; // ISO
 }
 
-/** 历史工单列表筛选参数（留空 = 不筛选，后端按当前角色返回：admin 全部 / 其余仅本人） */
+/** 历史工单列表筛选参数 */
 export interface AiTicketListFilters {
-  status?: string; // pending|dispatched|in_progress|resolved|closed
-  type?: string;   // problem|bug|feature|support|other
-  keyword?: string; // 模糊搜索标题/描述
+  status?: string;   // pending|dispatched|in_progress|resolved|closed
+  type?: string;     // problem|bug|feature|support|other
+  keyword?: string;  // 模糊搜索标题/描述
+  username?: string; // 按创建者用户名过滤
 }
 
 /** 历史工单列表（GET /api/ai/memory/tickets/all） */
@@ -187,6 +188,7 @@ export const qaListTickets = (skip = 0, limit = 50, filters?: AiTicketListFilter
   if (filters?.status) params.status = filters.status;
   if (filters?.type) params.type = filters.type;
   if (filters?.keyword) params.keyword = filters.keyword;
+  if (filters?.username) params.username = filters.username;
   return aiGet<{
     code: number;
     data?: { items: AiTicketBrief[]; total: number; skip?: number; limit?: number };

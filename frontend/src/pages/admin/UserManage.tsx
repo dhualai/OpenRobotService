@@ -13,6 +13,11 @@ interface User {
   responsibility_modules?: Record<string, string[]> | null;
   job_level?: number;
   duty_text?: string | null;
+  permissions?: string[];
+  roles?: Record<string, string[]>;
+  projectPermissions?: Record<string, Record<string, string[]>>;
+  external_credentials?: Record<string, Record<string, string>>;
+  avatar_resource_id?: number | null;
 }
 
 interface UserCreateData {
@@ -98,6 +103,11 @@ export default function UserManage() {
 
   const [keyword, setKeyword] = useState('');
 
+  const [editLoading, setEditLoading] = useState(false);
+  const [detailVisible, setDetailVisible] = useState(false);
+  const [detailUser, setDetailUser] = useState<User | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
   const request = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
 
   const fetchUsers = useCallback(async () => {
@@ -150,7 +160,7 @@ export default function UserManage() {
 
   const openEdit = async (user: User) => {
     setEditingUsername(user.username);
-    setEditVisible(true);
+    setEditLoading(true);
 
     try {
       const detail = await request<User>(`/users/${user.username}/detail`);
@@ -179,6 +189,22 @@ export default function UserManage() {
       setModuleEntries(modulesToEntries(user.responsibility_modules));
     }
     setKeywordInputs({});
+    setEditLoading(false);
+    setEditVisible(true);
+  };
+
+  const openDetail = async (user: User) => {
+    setDetailUser(user);
+    setDetailVisible(true);
+    setDetailLoading(true);
+    try {
+      const detail = await request<User>(`/users/${user.username}/detail`);
+      setDetailUser(detail);
+    } catch {
+      Toast({ message: '加载详情失败', theme: 'error' });
+    } finally {
+      setDetailLoading(false);
+    }
   };
 
   const handleSave = async () => {
@@ -340,12 +366,14 @@ export default function UserManage() {
         filteredUsers.map((user) => (
           <div
             key={user.id}
+            onClick={() => openDetail(user)}
             style={{
               background: '#fff',
               borderRadius: 8,
               padding: 14,
               marginBottom: 10,
               boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+              cursor: 'pointer',
             }}
           >
             <div
@@ -458,14 +486,14 @@ export default function UserManage() {
               </div>
 
               <div style={{ display: 'flex', gap: 6, marginLeft: 8, flexShrink: 0 }}>
-                <Button size="small" variant="outline" onClick={() => openEdit(user)}>
+                <Button size="small" variant="outline" onClick={(e) => { e.stopPropagation(); openEdit(user); }}>
                   编辑
                 </Button>
                 <Button
                   size="small"
                   theme="danger"
                   variant="outline"
-                  onClick={() => handleDelete(user)}
+                  onClick={(e) => { e.stopPropagation(); handleDelete(user); }}
                 >
                   删除
                 </Button>
@@ -479,6 +507,11 @@ export default function UserManage() {
         <div style={{ padding: 20, maxHeight: '85vh', overflow: 'auto' }}>
           <h4 style={{ marginBottom: 16 }}>{editingUsername ? '编辑用户' : '新建用户'}</h4>
 
+          {editLoading ? (
+            <div style={{ textAlign: 'center', padding: 40 }}>
+              <Loading text="加载用户信息..." />
+            </div>
+          ) : (
           <Form>
             {!editingUsername && (
               <>
@@ -649,6 +682,260 @@ export default function UserManage() {
               </div>
             </FormItem>
           </Form>
+          )}
+        </div>
+      </Popup>
+
+      <Popup visible={detailVisible} onClose={() => setDetailVisible(false)} placement="bottom" showOverlay>
+        <div style={{ padding: 20, maxHeight: '85vh', overflow: 'auto' }}>
+          <h4 style={{ marginBottom: 16 }}>用户详情</h4>
+
+          {detailLoading ? (
+            <div style={{ textAlign: 'center', padding: 40 }}>
+              <Loading text="加载详情..." />
+            </div>
+          ) : detailUser ? (
+            <>
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontWeight: 600, fontSize: 17 }}>{detailUser.name || detailUser.username}</span>
+                  {detailUser.name && detailUser.name !== detailUser.username && (
+                    <span style={{ fontSize: 14, color: '#888' }}>@{detailUser.username}</span>
+                  )}
+                  <span
+                    style={{
+                      fontSize: 12,
+                      padding: '2px 8px',
+                      borderRadius: 4,
+                      background: detailUser.status === 'active' ? '#e8f5e9' : '#f5f5f5',
+                      color: detailUser.status === 'active' ? '#2ba471' : '#999',
+                    }}
+                  >
+                    {detailUser.status === 'active' ? '活跃' : '未激活'}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                  <span
+                    style={{
+                      fontSize: 12,
+                      padding: '3px 10px',
+                      borderRadius: 4,
+                      background: `${getJobLevelColor(detailUser.job_level)}15`,
+                      color: getJobLevelColor(detailUser.job_level),
+                      border: `1px solid ${getJobLevelColor(detailUser.job_level)}30`,
+                    }}
+                  >
+                    {getJobLevelLabel(detailUser.job_level)}
+                  </span>
+                  {detailUser.department && (
+                    <span
+                      style={{
+                        fontSize: 12,
+                        padding: '3px 10px',
+                        borderRadius: 4,
+                        background: '#e8f0fe',
+                        color: '#0052d9',
+                      }}
+                    >
+                      🏢 {detailUser.department}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {detailUser.responsibility_modules && Object.keys(detailUser.responsibility_modules).length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: '#333', marginBottom: 8 }}>
+                    📌 责任模块
+                  </div>
+                  {Object.entries(detailUser.responsibility_modules).map(([mod, keywords]) => (
+                    <div
+                      key={mod}
+                      style={{
+                        border: '1px solid #eee',
+                        borderRadius: 6,
+                        padding: '8px 10px',
+                        marginBottom: 6,
+                        background: '#fafafa',
+                      }}
+                    >
+                      <span style={{ fontSize: 12, fontWeight: 500, color: '#d46b08', marginRight: 6 }}>
+                        {mod}
+                      </span>
+                      {keywords.map((kw) => (
+                        <span
+                          key={kw}
+                          style={{
+                            fontSize: 11,
+                            padding: '1px 6px',
+                            borderRadius: 3,
+                            background: '#fff',
+                            color: '#666',
+                            marginRight: 4,
+                          }}
+                        >
+                          {kw}
+                        </span>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {detailUser.duty_text && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: '#333', marginBottom: 6 }}>
+                    📋 职责画像
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      color: '#555',
+                      lineHeight: 1.6,
+                      background: '#f8f8f8',
+                      padding: '10px 12px',
+                      borderRadius: 6,
+                    }}
+                  >
+                    {detailUser.duty_text}
+                  </div>
+                </div>
+              )}
+
+              {detailUser.roles && Object.keys(detailUser.roles).length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: '#333', marginBottom: 8 }}>
+                    🎯 全局角色
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {Object.entries(detailUser.roles).map(([projectId, roleIds]) => (
+                      <div key={projectId}>
+                        {roleIds.map((roleId) => (
+                          <span
+                            key={roleId}
+                            style={{
+                              fontSize: 12,
+                              padding: '3px 10px',
+                              borderRadius: 4,
+                              background: '#e6f7ff',
+                              color: '#0050b3',
+                              marginRight: 4,
+                            }}
+                          >
+                            {roleId}
+                          </span>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {detailUser.projectPermissions && Object.keys(detailUser.projectPermissions).length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: '#333', marginBottom: 8 }}>
+                    📂 项目角色
+                  </div>
+                  {Object.entries(detailUser.projectPermissions).map(([projectId, roles]) => (
+                    <div
+                      key={projectId}
+                      style={{
+                        border: '1px solid #e6f7ff',
+                        borderRadius: 6,
+                        padding: '8px 10px',
+                        marginBottom: 6,
+                        background: '#f0faff',
+                      }}
+                    >
+                      <span style={{ fontSize: 12, fontWeight: 500, color: '#0050b3' }}>
+                        项目 {projectId}
+                      </span>
+                      <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {roles.map((role) => (
+                          <span
+                            key={role}
+                            style={{
+                              fontSize: 11,
+                              padding: '2px 6px',
+                              borderRadius: 3,
+                              background: '#fff',
+                              color: '#0050b3',
+                            }}
+                          >
+                            {role}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {detailUser.permissions && detailUser.permissions.length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: '#333', marginBottom: 8 }}>
+                    🔐 权限列表
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {detailUser.permissions.map((perm) => (
+                      <span
+                        key={perm}
+                        style={{
+                          fontSize: 11,
+                          padding: '2px 8px',
+                          borderRadius: 3,
+                          background: '#fff0f0',
+                          color: '#cf1322',
+                          fontFamily: 'monospace',
+                        }}
+                      >
+                        {perm}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {detailUser.external_credentials && Object.keys(detailUser.external_credentials).length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: '#333', marginBottom: 8 }}>
+                    🔗 外部凭据
+                  </div>
+                  {Object.entries(detailUser.external_credentials).map(([key, cred]) => (
+                    <div
+                      key={key}
+                      style={{
+                        border: '1px solid #f0e6ff',
+                        borderRadius: 6,
+                        padding: '8px 10px',
+                        marginBottom: 6,
+                        background: '#f9f0ff',
+                      }}
+                    >
+                      <div style={{ fontSize: 12, fontWeight: 500, color: '#531dab', marginBottom: 4 }}>
+                        {key.toUpperCase()}
+                      </div>
+                      {Object.entries(cred).map(([credKey, credValue]) => (
+                        <div key={credKey} style={{ fontSize: 12, color: '#555' }}>
+                          <span style={{ color: '#888' }}>{credKey}：</span>
+                          <span style={{ fontFamily: 'monospace' }}>
+                            {credKey === 'password' ? '••••••' : credValue}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : null}
+
+          <div style={{ marginTop: 16 }}>
+            <Button theme="default" block onClick={() => setDetailVisible(false)}>
+              关闭
+            </Button>
+          </div>
         </div>
       </Popup>
     </div>
