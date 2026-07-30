@@ -65,6 +65,12 @@ class AssignmentWorker:
 
     async def _scan_and_assign(self):
         """扫描待派单工单并逐条指派"""
+        # 每轮扫描前检查工程师画像缓存（10分钟 TTL，过期自动重拉）
+        engineers = load_engineers()
+        if not engineers:
+            logger.debug("工程师画像为空，跳过本轮派单扫描")
+            return
+
         tickets = self._get_pending_tickets()
         if not tickets:
             return
