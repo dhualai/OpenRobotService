@@ -293,6 +293,13 @@ async def upload_files(
     from app.core.config import settings
     from pathlib import Path
 
+    t_upload_start = time.perf_counter()
+    logger.info(
+        f"[upload] 收到上传请求: session={session_id[:12]}, "
+        f"file_count={len(files)}, "
+        f"filenames={'、'.join(f.filename for f in files)}"
+    )
+
     # ── 0. 确保目标 bucket 存在 ──
     try:
         minio_client.create_bucket(settings.MINIO_BUCKET)
@@ -340,12 +347,23 @@ async def upload_files(
                     mime = _MIME_MAP.get(ext, "image/png")
                     b64 = base64.b64encode(raw).decode()
                     data_uris.append((fname, f"data:{mime};base64,{b64}"))
-                except Exception:
-                    pass
+                    logger.info(f"[upload] 图片编码: name={fname}, ext={ext}, raw_bytes={len(raw)}, b64_len={len(b64)}")
+                except Exception as e:
+                    logger.warning(f"[upload] 图片编码失败: name={fname}, error={e}")
+        logger.info(
+            f"[upload] 图片检测: session={session_id[:12]}, "
+            f"total_files={len(files)}, image_files={len(data_uris)}, "
+            f"non_image_files={len(files) - len(data_uris)}"
+        )
         if data_uris:
+            t_vlm = time.perf_counter()
             llm = await get_llm_client()
             names = ", ".join(n for n, _ in data_uris)
             uris = [u for _, u in data_uris]
+            logger.info(
+                f"[upload] 开始VLM调用: session={session_id[:12]}, "
+                f"image_count={len(data_uris)}, names={names}"
+            )
             desc = await llm.complete_vision(
                 prompt=(
                     f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。"
@@ -365,15 +383,56 @@ async def upload_files(
                 max_tokens=500,
                 temperature=0.3,
             )
+            vlm_ms = round((time.perf_counter() - t_vlm) * 1000)
             image_desc = desc.strip()
+            logger.info(
+                f"[upload] VLM调用完成: session={session_id[:12]}, "
+                f"elapsed={vlm_ms}ms, desc_len={len(image_desc)}, "
+                f"desc_empty={not image_desc}, desc前80字={image_desc[:80]}"
+            )
+        else:
+            logger.info(f"[upload] 无图片文件，跳过VLM: session={session_id[:12]}")
     except Exception as e:
-        logger.warning(f"上传图片描述失败: {e}")
+        logger.error(
+            f"[upload] VLM阶段异常: session={session_id[:12]}, "
+            f"type={type(e).__name__}, error={e}",
+            exc_info=True,
+        )
 
     # ── 3. 生成确认回复 + 写 metadata ──
     # 只加 assistant turn 确认，不加 user turn（避免文件名数字污染 LLM 上下文）
     ack_message = ""
+    # ── 3. 写入会话记忆（失败不阻塞上传响应） ──
     try:
         mgr = await get_memory_manager()
+        t_mem = time.perf_counter()
+        memory_before = await mgr.get_memory(session_id)
+        turn_count_before = len(memory_before.turns)
+        logger.info(
+            f"[upload] 注入记忆前: session={session_id[:12]}, "
+            f"turns={turn_count_before}, has_desc={bool(image_desc)}, "
+            f"desc_len={len(image_desc)}"
+        )
+        if image_desc:
+            await mgr.add_turn(session_id, "user",
+                               f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
+            await mgr.add_turn(session_id, "assistant",
+                               f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+        else:
+            await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
+            await mgr.add_turn(session_id, "assistant", f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+        memory_after = await mgr.get_memory(session_id)
+        logger.info(
+            f"[upload] 注入记忆后: session={session_id[:12]}, "
+            f"turns_before={turn_count_before}, turns_after={len(memory_after.turns)}, "
+            f"mem_elapsed={(time.perf_counter() - t_mem) * 1000:.0f}ms"
+        )
+    except Exception as e:
+        logger.error(f"上传后写入会话记忆失败（不阻塞上传响应）: {e}", exc_info=True)
+
+    # ── 4. agent_state.attachments + 追加到已提交工单 ──
+    try:
+        t_state = time.perf_counter()
         memory = await mgr.get_memory(session_id)
         state = memory.metadata.get("agent_state", {})
         # 附件列表
@@ -400,18 +459,36 @@ async def upload_files(
         # 写 metadata
         memory.metadata["agent_state"] = state
         await mgr.save_memory(memory)
+        logger.info(
+            f"[upload] agent_state更新: session={session_id[:12]}, "
+            f"attachments_before={len(existing)}, attachments_after={len(state['attachments'])}, "
+            f"has_last_ticket={bool(state.get('last_submitted_ticket', {}).get('ticket_id'))}"
+        )
 
         # 追加到已提交工单
         last_ticket = state.get("last_submitted_ticket", {})
         if last_ticket and last_ticket.get("ticket_id"):
             pipeline = await get_pipeline()
             ok = await pipeline._append_to_ticket(session_id, attachments=saved)
-            if ok:
-                logger.info(f"上传附件已追加到工单: session={session_id[:8]}, files={filenames}")
+            logger.info(
+                f"[upload] 追加到工单: session={session_id[:12]}, "
+                f"ok={ok}, files={filenames}, "
+                f"elapsed={(time.perf_counter() - t_state) * 1000:.0f}ms"
+            )
     except Exception as e:
-        logger.warning(f"上传附件处理失败: {e}")
+        logger.error(
+            f"[upload] 附件状态更新失败: session={session_id[:12]}, "
+            f"type={type(e).__name__}, error={e}",
+            exc_info=True,
+        )
+    total_ms = round((time.perf_counter() - t_upload_start) * 1000)
+    logger.info(
+        f"[upload] 上传完成: session={session_id[:12]}, "
+        f"total_files={len(saved)}, filenames={filenames}, "
+        f"has_image_desc={bool(image_desc)}, total_ms={total_ms}"
+    )
 
-    # ── 4. 如果附带文字 → 顺手跑诊断 ──
+    # ── 5. 如果附带文字 → 顺手跑诊断 ──
     ai_response = None
     if message.strip():
         try:
@@ -429,12 +506,10 @@ async def upload_files(
                 "thinking": result.get("thinking", ""),
                 "ticket": result.get("ticket"),
             }
-            # 不用再手动加 turn —— pipeline.run() 已经通过 _finalize_diagnosis 写入了 assistant turn
         except Exception as e:
             logger.error(f"上传附带文字诊断失败: {e}", exc_info=True)
             ai_response = {"error": str(e)}
     else:
-        # 只传附件：写确认回执作为 assistant turn
         if ack_message:
             try:
                 mgr = await get_memory_manager()
@@ -588,8 +663,12 @@ async def list_all_tickets(
     status: str = Query("", description="按状态筛选: pending / in_progress / resolved / closed"),
     type_: str = Query("", alias="type", description="按类型筛选"),
     keyword: str = Query("", description="模糊搜索标题/描述"),
+    username: str = Query("", description="按创建者用户名过滤"),
 ) -> dict:
-    """查询 tasks 表（source='ai'），分页返回所有历史工单"""
+    """查询 tasks 表（source='ai'），分页返回所有历史工单
+    
+    当 username 参数不为空时，只返回该用户创建的工单（created_by 字段匹配）。
+    """
     try:
         from ai.core.task_adapter import task_to_dict
         from app.models.task import Task, TaskStatus, TaskType
@@ -599,6 +678,9 @@ async def list_all_tickets(
         db = SessionLocal()
         try:
             q = db.query(Task).filter(Task.source == "ai")
+            # 按创建者过滤
+            if username:
+                q = q.filter(Task.created_by == username)
             # status/type 字符串 → 枚举；非法值（如旧值 dispatched）降级为不过滤
             if status:
                 try:
