@@ -18,7 +18,9 @@ class MessageService:
         message_data = message.dict()
         message_data["sequence"] = (max_sequence or 0) + 1
         
-        if message_data.get("file_urls") is not None:
+        # file_urls：前端可能传 JSON 字符串（已序列化）或结构（list/dict）。
+        # 仅对非字符串做 safe_json_dumps，避免对已序列化字符串二次 dumps 导致双重编码。
+        if message_data.get("file_urls") is not None and not isinstance(message_data["file_urls"], str):
             message_data["file_urls"] = safe_json_dumps(message_data["file_urls"])
         if message_data.get("metadata_") is not None:
             message_data["metadata_"] = safe_json_dumps(message_data["metadata_"])

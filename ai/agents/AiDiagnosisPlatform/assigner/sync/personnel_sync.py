@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile
 from ai.core.logging import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("ASSIGNER")
 
 _sync_cache: Optional[List[EngineerProfile]] = None
 _sync_ts: Optional[float] = None

@@ -44,8 +44,8 @@ interface Message {
   content: string;
   timestamp: string;
   imageUrl?: string;
-  // 非图片附件（zip/日志/文档等）：仅当次会话本地预览用，按文件名+大小展示文件卡片
-  attachment?: { name: string; size: number } | null;
+  // 非图片附件（zip/日志/文档等）：url 为后端返回的预签名 URL（上传成功后回填/恢复时带），上传中无 url
+  attachment?: { name: string; size: number; url?: string } | null;
   // 乐观上传进度：附件气泡内嵌进度遮罩；failed=上传失败红色遮罩
   uploading?: boolean;
   percent?: number;
@@ -69,7 +69,7 @@ const uid = () => Date.now().toString() + Math.random().toString(36).slice(2, 6)
 
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
-  msg, editingId, compact, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave, onEditCancel,
+  msg, editingId, compact, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave, onEditCancel, onImageClick,
 }: {
   msg: Message;
   editingId: string | null;
@@ -80,13 +80,19 @@ const MessageBubble = memo(function MessageBubble({
   onEditChange: (id: string, value: string) => void;
   onEditSave: (msg: Message) => void;
   onEditCancel: () => void;
+  onImageClick: (url: string) => void;
 }) {
   return (
     <div className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
       <div className={`chat-bubble ${msg.role === 'user' ? 'is-user' : 'is-ai'}`}>
         {msg.imageUrl && (
           <div className="chat-bubble__media">
-            <img src={msg.imageUrl} alt="附件" className="chat-bubble__img" />
+            <img
+              src={msg.imageUrl}
+              alt="附件"
+              className="chat-bubble__img"
+              onClick={() => { if (!msg.uploading && !msg.failed && msg.imageUrl) onImageClick(msg.imageUrl); }}
+            />
             {msg.uploading && (
               <div className="chat-bubble__media-overlay">
                 <span className="chat-bubble__media-spinner" />
@@ -101,7 +107,12 @@ const MessageBubble = memo(function MessageBubble({
           </div>
         )}
         {msg.attachment && (
-          <div className={`chat-bubble__file${msg.failed ? ' is-failed' : ''}`}>
+          <div
+            className={`chat-bubble__file${msg.failed ? ' is-failed' : ''}`}
+            onClick={() => { if (!msg.uploading && !msg.failed && msg.attachment?.url) window.open(msg.attachment.url, '_blank', 'noopener,noreferrer'); }}
+            role={msg.attachment?.url && !msg.uploading && !msg.failed ? 'button' : undefined}
+            style={{ cursor: msg.attachment?.url && !msg.uploading && !msg.failed ? 'pointer' : 'default' }}
+          >
             <span className="chat-bubble__file-icon">📎</span>
             <span className="chat-bubble__file-name">{msg.attachment.name}</span>
             {msg.failed ? (
@@ -194,6 +205,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   console.log('[ChatPanel] 用户信息: name="', name, '", username="', username, '", token=', !!token);
 
   const [messages, setMessages] = useState<Message[]>([]);
+  // 图片预览：点击用户气泡图片 → 全屏遮罩放大查看
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string>('');
@@ -318,12 +331,26 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         const full = await getConversation(conversationId);
         if (cancelled) return;
         convRef.current = full.id;
-        const restored = (full.messages || []).map((m) => ({
-          id: String(m.id),
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-          timestamp: m.created_at,
-        }));
+        const restored: Message[] = (full.messages || []).map((m) => {
+          const msg: Message = {
+            id: String(m.id),
+            role: m.role as 'user' | 'assistant',
+            content: m.content,
+            timestamp: m.created_at,
+          };
+          // 解析 file_urls 恢复图片/文件卡片（预签名 URL，24h 内有效）
+          if (m.file_urls) {
+            try {
+              const files = JSON.parse(m.file_urls) as Array<{ filename: string; url: string; size?: number; isImage?: boolean }>;
+              const f = files[0];
+              if (f) {
+                if (f.isImage) msg.imageUrl = f.url;
+                else msg.attachment = { name: f.filename, size: f.size ?? 0, url: f.url };
+              }
+            } catch { /* ignore */ }
+          }
+          return msg;
+        });
         setMessages(restored);
         setConversationTitle(full.title || '');
         const sid = readAiSessionId(full);
@@ -408,12 +435,28 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (res.data?.code !== 0) throw new Error(res.data?.message || '上传失败');
       const data = res.data?.data;
 
-      // 上传完成：用户气泡进度遮罩消失
-      setMessages((prev) => prev.map((m) => (m.id === userId ? { ...m, uploading: false, percent: 100 } : m)));
+      // 上传完成：回填预签名 URL 到用户气泡（图片换掉临时 blob URL；非图片补 url），进度遮罩消失
+      const uploaded = data?.files?.[0];
+      const presignedUrl = uploaded?.path;
+      setMessages((prev) => prev.map((m) => {
+        if (m.id !== userId) return m;
+        const updated: Message = { ...m, uploading: false, percent: 100 };
+        if (isImage && presignedUrl) {
+          if (m.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(m.imageUrl);
+          updated.imageUrl = presignedUrl;
+        } else if (!isImage && presignedUrl && m.attachment) {
+          updated.attachment = { ...m.attachment, url: presignedUrl };
+        }
+        return updated;
+      }));
 
-      // 持久化用户消息（无文字时以附件说明兜底，便于会话列表/历史展示）
+      // 持久化用户消息（存对象路径 object_path，后端 getConversation 返回时重签预签名 URL，避免 24h 过期）
       const convId = await ensureConversation(sid, content || `[发送了附件] ${file.name}`);
-      if (convId) appendMessage(convId, 'user', content || `[发送了附件] ${file.name}`).catch(() => {});
+      if (convId) {
+        const objectPath = uploaded?.object_path;
+        const fileUrls = objectPath ? JSON.stringify([{ filename: file.name, object_path: objectPath, size: file.size, isImage }]) : undefined;
+        appendMessage(convId, 'user', content || `[发送了附件] ${file.name}`, { fileUrls, messageType: isImage ? 'image' : 'file' }).catch(() => {});
+      }
 
       // AI 回复填入占位气泡：文件+文字=完整诊断(ai_response.message)；只传文件=确认回执(ack_message)
       const aiResp = data?.ai_response;
@@ -485,7 +528,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 持久化用户消息（首条会顺带建会话）
       const convId = await ensureConversation(sid, content);
       if (convId) appendMessage(convId, 'user', content).catch(() => {});
-      setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() }]);
+      setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', streaming: true, timestamp: new Date().toISOString() }]);
 
       // 提单 Agent
       const apiPath = `${API_CONFIG.AI.BASE_URL}/qa/ask/stream`;
@@ -579,6 +622,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       sendingRef.current = false;
       // 强制刷新最终完整内容：流式结束前最后一次 flush 可能早于 90ms 窗口，确保末态不丢字
       renderAcc();
+      // 置 streaming:false：流式结束，气泡由纯文本降级渲染切换为最终 MarkdownRenderer 渲染
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)));
     }
   };
 
@@ -926,7 +971,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             {!isCall && <div className="chat-view__empty-emoji">{cfg.emptyEmoji}</div>}
             {!isCall && <p>{cfg.emptyTitle}</p>}
             <p className="chat-view__empty-sub">
-              {isCall ? `你好${name || username ? `，${name || username}` : ''}，请描述你的问题，小U先帮你初步诊断。` : '关于系统任务的问题，可以随时问我。'}
+              {isCall ? `你好${name || username ? `，${name || username}` : ''}，请描述你的问题，U老师先帮你初步诊断。` : '关于系统任务的问题，可以随时问我。'}
             </p>
           </div>
         )}
@@ -943,6 +988,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             onEditChange={(id, v) => setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: v } : m)))}
             onEditSave={handleEditSave}
             onEditCancel={() => setEditingId(null)}
+            onImageClick={setPreviewUrl}
           />
         ))}
         <div ref={messagesEndRef} />
@@ -1217,6 +1263,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             </div>
           </div>
         </Popup>
+
+        {/* 图片预览：点击用户气泡图片放大查看，点击遮罩或关闭按钮关闭 */}
+        {previewUrl && (
+          <div className="chat-image-preview" onClick={() => setPreviewUrl(null)}>
+            <img src={previewUrl} alt="预览" className="chat-image-preview__img" onClick={(e) => e.stopPropagation()} />
+            <span className="chat-image-preview__close" onClick={() => setPreviewUrl(null)}>✕</span>
+          </div>
+        )}
       </div>
     </div>
   );

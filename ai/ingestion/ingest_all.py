@@ -1,15 +1,15 @@
 """
-一键入库：自动发现并运行所有已注册的知识库入库脚本
+一键入库：按五层 domain 架构批量入库 kb/ 下的所有 markdown 知识库
 
 使用方法：
-    python -m ai.ingestion.ingest_all                     # 全部入库
+    python -m ai.ingestion.ingest_all                     # 全部 5 个 domain 入库
     python -m ai.ingestion.ingest_all --dry-run            # 预览所有源
-    python -m ai.ingestion.ingest_all --skip cheduan       # 跳过指定类型
-    python -m ai.ingestion.ingest_all --only faq           # 仅入库指定类型
-    python -m ai.ingestion.ingest_all --list               # 列出已注册的 parser
+    python -m ai.ingestion.ingest_all --domain team        # 仅入库 team
+    python -m ai.ingestion.ingest_all --skip industry      # 跳过 industry
+    python -m ai.ingestion.ingest_all --list               # 列出各 domain 文件统计
 
-collection_type 可选值：
-    operation, faq, troubleshooting, cheduan, translation
+domain:
+    industry, company, team, project, personal
 """
 import sys
 import asyncio
@@ -24,89 +24,90 @@ load_dotenv(_project_root / "ai" / ".env")
 
 
 async def ingest_all(
-    skip_types: set = None,
-    only_type: str = "",
+    skip_domains: set = None,
+    only_domain: str = "",
     dry_run: bool = False,
 ) -> dict:
     """
-    运行所有已注册的 Ingester。
+    运行所有 domain 的 KBDomainIngester。
 
     Args:
-        skip_types: 跳过的 collection_type 集合
-        only_type: 仅运行此类型（空 = 全部运行）
+        skip_domains: 跳过的 domain 集合
+        only_domain: 仅运行此 domain（空 = 全部运行）
         dry_run: 预览模式，不写入 Qdrant
 
     Returns:
         {"success": N, "failed": [...], "skipped": [...]}
     """
-    skip_types = skip_types or set()
+    skip_domains = skip_domains or set()
 
-    # 导入所有 parser 模块（触发 register_all()）
-    _import_all_parsers()
+    from ai.config import KB_DOMAINS
+    from ai.ingestion.parsers.kb_markdown import KBDomainIngester
+    from ai.config import get_ai_config
+    from ai.ingestion.base import BaseIngester
 
-    from ai.ingestion.registry import list_registered
+    # 确定要运行的 domain 列表
+    if only_domain:
+        if only_domain not in KB_DOMAINS:
+            print(f"[ERR] 未知 domain: {only_domain}. 可选: {', '.join(KB_DOMAINS)}")
+            return {"success": 0, "failed": [f"unknown_domain:{only_domain}"], "skipped": []}
+        domains = [only_domain]
+    else:
+        domains = [d for d in KB_DOMAINS if d not in skip_domains]
 
-    registered = list_registered()
-    if not registered:
-        print("[ERR] 未找到任何已注册的 Ingester")
-        return {"success": 0, "failed": ["no_parsers_found"], "skipped": []}
+    print(f"[INFO] Domain 列表: {', '.join(domains)}")
+    print()
 
     succeeded = []
     failed = []
     skipped = []
 
-    # 关键排序：rebuild=True 的先执行（创建新集合），rebuild=False 的后执行（追加到新集合）
-    registered.sort(key=lambda m: (m.collection_type, not m.ingester_cls.rebuild))
-
-    # 本地文件模式：整个 ingest_all 过程共享一个 QdrantClient，避免文件锁冲突
+    # 本地文件模式：整个 ingest_all 过程共享一个 QdrantClient
     shared_client = None
     try:
-        from ai.config import get_ai_config
-        from ai.ingestion.base import BaseIngester
         config = get_ai_config()
-        if config.qdrant_local_path:
+        if config.qdrant_local_path and not dry_run:
             shared_client = BaseIngester._make_qdrant_client(config)
             resolved = Path(config.qdrant_local_path)
             if not resolved.is_absolute():
                 from ai.ingestion.base import _project_root as base_root
                 resolved = base_root / resolved
             print(f"[INFO] 本地文件模式: {resolved}")
-            print(f"[INFO] 目录存在: {resolved.is_dir()}, collections: {[c.name for c in shared_client.get_collections().collections]}")
+            if resolved.is_dir():
+                cols = [c.name for c in shared_client.get_collections().collections]
+                print(f"[INFO] 已有 collections: {cols}")
 
-        for meta in registered:
-            ct = meta.collection_type
+        for domain in domains:
+            ingester = KBDomainIngester(domain=domain)
 
-            if only_type and ct != only_type:
-                skipped.append(meta.name)
-                continue
-            if ct in skip_types:
-                skipped.append(meta.name)
+            if not ingester.source_paths:
+                print(f"\n{'=' * 60}")
+                print(f"[SKIP] kb/{domain}/ — 无 .md 文件")
+                print(f"{'=' * 60}")
+                skipped.append(domain)
                 continue
 
             print(f"\n{'=' * 60}")
-            print(f"[INGEST] {meta.description or meta.name}")
-            print(f"   类型: {ct}, 源文件: {meta.source_patterns}")
+            print(f"[INGEST] kb/{domain}/ — {len(ingester.source_paths)} 个 .md 文件")
             print(f"{'=' * 60}")
 
-            try:
-                ingester = meta.ingester_cls()
-
-                if dry_run:
-                    ingester.run_dry_run()
-                    succeeded.append(meta.name)
-                else:
+            if dry_run:
+                ingester.run_dry_run()
+                succeeded.append(domain)
+            else:
+                try:
                     ok = await ingester.auto_ingest(client=shared_client)
                     if ok:
-                        print(f"[OK] {meta.name} 入库完成")
-                        succeeded.append(meta.name)
+                        print(f"[OK] kb/{domain}/ 入库完成")
+                        succeeded.append(domain)
                     else:
-                        print(f"[FAIL] {meta.name} 入库失败")
-                        failed.append(meta.name)
-            except Exception as e:
-                print(f"[ERR] {meta.name} 入库异常: {e}")
-                import traceback
-                traceback.print_exc()
-                failed.append(meta.name)
+                        print(f"[FAIL] kb/{domain}/ 入库失败")
+                        failed.append(domain)
+                except Exception as e:
+                    print(f"[ERR] kb/{domain}/ 入库异常: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    failed.append(domain)
     finally:
         if shared_client is not None:
             try:
@@ -115,7 +116,9 @@ async def ingest_all(
                 pass
 
     print(f"\n{'=' * 60}")
-    print(f"[DONE] 成功: {len(succeeded)}/{len(registered)}")
+    print(f"[DONE] 成功: {len(succeeded)}/{len(domains)}")
+    if succeeded:
+        print(f"       已入库: {', '.join(succeeded)}")
     if failed:
         print(f"[FAIL] 失败: {', '.join(failed)}")
     if skipped:
@@ -125,55 +128,51 @@ async def ingest_all(
     return {"success": succeeded, "failed": failed, "skipped": skipped}
 
 
-def _import_all_parsers():
-    """触发所有 parser 模块的 register_all()"""
-    # 自动发现模式：扫描 parsers/ 目录
-    from ai.ingestion.registry import discover_parsers
-    discovered = discover_parsers()
+def list_domains():
+    """列出各 domain 的文件统计"""
+    from ai.config import KB_DOMAINS
+    from ai.ingestion.parsers.kb_markdown import KBDomainIngester
 
-    if not discovered:
-        # Fallback: 显式导入已知模块
-        from ai.ingestion.registry import register_builtin_parsers
-        register_builtin_parsers()
+    print("五层 Domain 知识库文件统计:\n")
+    total_files = 0
+    for domain in KB_DOMAINS:
+        ingester = KBDomainIngester(domain=domain)
+        n = len(ingester.source_paths)
+        total_files += n
+        status = "[OK]" if n > 0 else "(empty)"
+        print(f"  [{domain:10s}] {n:4d} files  {status}")
+        if n > 0 and n <= 10:
+            for f in ingester.source_paths:
+                rel = f.relative_to(ingester._domain_dir)
+                print(f"              ├─ {rel}")
+    print(f"\n  合计: {total_files} 个 .md 文件")
 
 
 async def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="一键入库：自动发现并运行所有知识库 parser",
+        description="一键入库：按五层 domain 架构批量入库 kb/ 下所有 markdown 知识库",
     )
     parser.add_argument("--dry-run", "-n", action="store_true",
                         help="预览模式，不写入 Qdrant")
+    parser.add_argument("--domain", default="",
+                        choices=["", "industry", "company", "team", "project", "personal"],
+                        help="仅入库指定 domain")
     parser.add_argument("--skip", action="append", default=[],
-                        choices=["operation", "faq", "troubleshooting", "cheduan", "translation"],
-                        help="跳过指定类型的知识库")
-    parser.add_argument("--only", default="",
-                        choices=["", "operation", "faq", "troubleshooting", "cheduan", "translation"],
-                        help="仅入库指定类型")
+                        choices=["industry", "company", "team", "project", "personal"],
+                        help="跳过指定 domain")
     parser.add_argument("--list", action="store_true",
-                        help="列出所有已注册的 parser")
+                        help="列出各 domain 文件统计")
     args = parser.parse_args()
 
-    _import_all_parsers()
-
     if args.list:
-        from ai.ingestion.registry import list_registered
-        registered = list_registered()
-        if not registered:
-            print("（没有已注册的 parser — 请检查 ai/ingestion/parsers/ 目录）")
-        else:
-            for meta in registered:
-                srcs = ", ".join(meta.source_patterns)
-                print(f"  [{meta.collection_type or '?'}] {meta.name}")
-                print(f"       源文件: {srcs}")
-                if meta.description:
-                    print(f"       描述: {meta.description}")
+        list_domains()
         return
 
     await ingest_all(
-        skip_types=set(args.skip),
-        only_type=args.only,
+        skip_domains=set(args.skip),
+        only_domain=args.domain,
         dry_run=args.dry_run,
     )
 

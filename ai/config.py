@@ -18,17 +18,17 @@ from pathlib import Path
 from functools import lru_cache
 from pydantic import BaseModel, Field
 
-# 指针文件：记录当前活跃的 Qdrant 集合名（位于 ai/kb/ 下）
-_KB_DIR = Path(__file__).resolve().parent / "kb"
-_ACTIVE_COLLECTION_POINTER = _KB_DIR / "active_collection.txt"
-_ACTIVE_FAQ_COLLECTION_POINTER = _KB_DIR / "active_faq_collection.txt"
-_ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER = _KB_DIR / "active_troubleshooting_collection.txt"
-_ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER = _KB_DIR / "active_platform_faq_collection.txt"
-_ACTIVE_CHEDUAN_COLLECTION_POINTER = _KB_DIR / "active_cheduan_collection.txt"
-_ACTIVE_TRANSLATION_COLLECTION_POINTER = _KB_DIR / "active_translation_collection.txt"
-_ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER = _KB_DIR / "active_cheduan_manual_collection.txt"
-_ACTIVE_TASK_RESOLUTIONS_POINTER = _KB_DIR / "active_task_resolutions_collection.txt"
-_ACTIVE_USP_DIAGNOSIS_POINTER = _KB_DIR / "active_usp_diagnosis_collection.txt"
+# 指针文件：记录当前活跃的 Qdrant 集合名
+# 放在 OpenRobotService_Data/kb/ 下，与知识库 md 文件同级
+_KB_DIR = (Path(__file__).resolve().parent.parent.parent / "OpenRobotService_Data" / "kb").resolve()
+
+# 五层 domain 架构：industry / company / team / project / personal
+KB_DOMAINS = ["industry", "company", "team", "project", "personal"]
+
+_KB_POINTERS = {
+    d: _KB_DIR / f"active_{d}_collection.txt"
+    for d in KB_DOMAINS
+}
 
 
 class AIConfig(BaseModel):
@@ -103,170 +103,78 @@ class AIConfig(BaseModel):
     media_url_prefix: str = Field(default="/api/ai/media", description="媒体文件 URL 前缀，用于前端渲染图片")
 
 
-def get_active_collection() -> str:
-    """
-    读取当前活跃的 Qdrant 集合名。
-    优先读指针文件（入库脚本写入），文件不存在时回退到 .env。
-    此函数不缓存，每次调用都读文件，保证热更新。
-    """
+# ── Domain-based active collection pointers ─────────────────────
+
+def get_active_collection_for(domain: str) -> str:
+    """读取指定 domain 的活跃 Qdrant 集合名"""
     try:
-        if _ACTIVE_COLLECTION_POINTER.exists():
-            name = _ACTIVE_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
+        p = _KB_POINTERS.get(domain)
+        if p and p.exists():
+            name = p.read_text(encoding="utf-8").strip()
             if name:
                 return name
     except Exception:
         pass
-    return os.getenv("QDRANT_COLLECTION", "operation_docs")
+    return ""
 
 
-def _write_active_collection(name: str) -> None:
-    """写入活跃集合指针（入库脚本调用）"""
-    _ACTIVE_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
-    _ACTIVE_COLLECTION_POINTER.write_text(name, encoding="utf-8")
+def write_active_collection_for(domain: str, name: str) -> None:
+    """写入指定 domain 的活跃集合指针（入库脚本调用）"""
+    p = _KB_POINTERS.get(domain)
+    if p:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(name, encoding="utf-8")
+
+
+# ── 向后兼容别名（retrieval.py / pipeline.py / task agent 都在用）──
+
+def get_active_collection() -> str:
+    """向后兼容：读取 team domain 的活跃集合名"""
+    return get_active_collection_for("team") or os.getenv("QDRANT_COLLECTION", "operation_docs")
 
 
 def get_active_faq_collection() -> str:
-    """读取当前活跃的 FAQ Qdrant 集合名"""
-    try:
-        if _ACTIVE_FAQ_COLLECTION_POINTER.exists():
-            name = _ACTIVE_FAQ_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
-            if name:
-                return name
-    except Exception:
-        pass
-    return ""
-
-
-def _write_active_faq_collection(name: str) -> None:
-    """写入活跃 FAQ 集合指针（入库脚本调用）"""
-    _ACTIVE_FAQ_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
-    _ACTIVE_FAQ_COLLECTION_POINTER.write_text(name, encoding="utf-8")
+    return get_active_collection_for("team")
 
 
 def get_active_platform_faq_collection() -> str:
-    """读取当前活跃的 platform FAQ Qdrant 集合名"""
-    try:
-        if _ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER.exists():
-            name = _ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
-            if name:
-                return name
-    except Exception:
-        pass
-    return ""
-
-
-def _write_active_platform_faq_collection(name: str) -> None:
-    """写入活跃 platform FAQ 集合指针（入库脚本调用）"""
-    _ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
-    _ACTIVE_PLATFORM_FAQ_COLLECTION_POINTER.write_text(name, encoding="utf-8")
-
-
-def get_active_troubleshooting_collection() -> str:
-    """读取当前活跃的 troubleshooting Qdrant 集合名"""
-    try:
-        if _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER.exists():
-            name = _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
-            if name:
-                return name
-    except Exception:
-        pass
-    return ""
-
-
-def _write_active_troubleshooting_collection(name: str) -> None:
-    """写入活跃 troubleshooting 集合指针（入库脚本调用）"""
-    _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
-    _ACTIVE_TROUBLESHOOTING_COLLECTION_POINTER.write_text(name, encoding="utf-8")
+    return get_active_collection_for("team")
 
 
 def get_active_cheduan_collection() -> str:
-    """读取当前活跃的车端错误码 Qdrant 集合名"""
-    try:
-        if _ACTIVE_CHEDUAN_COLLECTION_POINTER.exists():
-            name = _ACTIVE_CHEDUAN_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
-            if name:
-                return name
-    except Exception:
-        pass
-    return ""
-
-
-def _write_active_cheduan_collection(name: str) -> None:
-    """写入活跃车端错误码集合指针"""
-    _ACTIVE_CHEDUAN_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
-    _ACTIVE_CHEDUAN_COLLECTION_POINTER.write_text(name, encoding="utf-8")
+    return get_active_collection_for("company")
 
 
 def get_active_translation_collection() -> str:
-    """读取当前活跃的翻译表 Qdrant 集合名"""
-    try:
-        if _ACTIVE_TRANSLATION_COLLECTION_POINTER.exists():
-            name = _ACTIVE_TRANSLATION_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
-            if name:
-                return name
-    except Exception:
-        pass
-    return ""
-
-
-def _write_active_translation_collection(name: str) -> None:
-    """写入活跃翻译表集合指针"""
-    _ACTIVE_TRANSLATION_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
-    _ACTIVE_TRANSLATION_COLLECTION_POINTER.write_text(name, encoding="utf-8")
-
-
-def get_active_cheduan_manual_collection() -> str:
-    """读取当前活跃的车端实施手册 Qdrant 集合名"""
-    try:
-        if _ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER.exists():
-            name = _ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER.read_text(encoding="utf-8").strip()
-            if name:
-                return name
-    except Exception:
-        pass
-    return ""
-
-
-def _write_active_cheduan_manual_collection(name: str) -> None:
-    """写入活跃车端实施手册集合指针"""
-    _ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER.parent.mkdir(parents=True, exist_ok=True)
-    _ACTIVE_CHEDUAN_MANUAL_COLLECTION_POINTER.write_text(name, encoding="utf-8")
-
-
-def get_active_task_resolutions_collection() -> str:
-    """读取当前活跃的任务解决方案 Qdrant 集合名"""
-    try:
-        if _ACTIVE_TASK_RESOLUTIONS_POINTER.exists():
-            name = _ACTIVE_TASK_RESOLUTIONS_POINTER.read_text(encoding="utf-8").strip()
-            if name:
-                return name
-    except Exception:
-        pass
-    return ""
-
-
-def _write_active_task_resolutions_collection(name: str) -> None:
-    """写入活跃任务解决方案集合指针"""
-    _ACTIVE_TASK_RESOLUTIONS_POINTER.parent.mkdir(parents=True, exist_ok=True)
-    _ACTIVE_TASK_RESOLUTIONS_POINTER.write_text(name, encoding="utf-8")
+    return get_active_collection_for("team")
 
 
 def get_active_usp_diagnosis_collection() -> str:
-    """读取当前活跃的 USP 诊断知识库 Qdrant 集合名"""
-    try:
-        if _ACTIVE_USP_DIAGNOSIS_POINTER.exists():
-            name = _ACTIVE_USP_DIAGNOSIS_POINTER.read_text(encoding="utf-8").strip()
-            if name:
-                return name
-    except Exception:
-        pass
-    return ""
+    return get_active_collection_for("team")
 
 
-def _write_active_usp_diagnosis_collection(name: str) -> None:
-    """写入活跃 USP 诊断知识库集合指针"""
-    _ACTIVE_USP_DIAGNOSIS_POINTER.parent.mkdir(parents=True, exist_ok=True)
-    _ACTIVE_USP_DIAGNOSIS_POINTER.write_text(name, encoding="utf-8")
+def get_active_troubleshooting_collection() -> str:
+    return get_active_collection_for("team")
+
+
+def get_active_cheduan_manual_collection() -> str:
+    return get_active_collection_for("company")
+
+
+def get_active_task_resolutions_collection() -> str:
+    return get_active_collection_for("project")
+
+
+# writer 别名（lambda 实现，避免重复 try/except 逻辑）
+_write_active_collection = lambda n: write_active_collection_for("team", n)
+_write_active_faq_collection = lambda n: write_active_collection_for("team", n)
+_write_active_platform_faq_collection = lambda n: write_active_collection_for("team", n)
+_write_active_cheduan_collection = lambda n: write_active_collection_for("company", n)
+_write_active_translation_collection = lambda n: write_active_collection_for("team", n)
+_write_active_usp_diagnosis_collection = lambda n: write_active_collection_for("team", n)
+_write_active_troubleshooting_collection = lambda n: write_active_collection_for("team", n)
+_write_active_cheduan_manual_collection = lambda n: write_active_collection_for("company", n)
+_write_active_task_resolutions_collection = lambda n: write_active_collection_for("project", n)
 
 
 def get_docs_dir() -> Path:

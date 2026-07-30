@@ -1,4 +1,4 @@
-// 摇人 · 历史工单详情页（小U诊断生成的工单）
+// 摇人 · 历史工单详情页（U老师诊断生成的工单）
 // 数据源：AI 模块 GET /api/ai/qa/ticket?session_id=...；操作：催办 / 上报（任务服务通知）
 // 路由 /app/call/ticket/:id 中的 :id 即 AI 会话 session_id
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -11,6 +11,7 @@ import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
 import UserSelect from '@/shared/components/UserSelect';
+import SafeHtml from '@/shared/components/SafeHtml';
 import { useAuthStore } from '@/stores/auth';
 import { formatDateTime } from '@/shared/utils/url';
 import type { UserItem } from '@/api/users';
@@ -57,6 +58,7 @@ export default function TicketDetailPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
+  const [aiSummary, setAiSummary] = useState('');
   const tempIdRef = useRef<string>(typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `t_${Date.now()}_${Math.random().toString(36).slice(2)}`);
 
   const fetchDetail = useCallback(async () => {
@@ -69,8 +71,9 @@ export default function TicketDetailPage() {
         setTicket(aiTicket);
         if (aiTicket.ticket_id) {
           try {
-            const taskDetail = await request<{ comments: Comment[] }>(`/${aiTicket.ticket_id}?load_comments=true`);
+            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string } }>(`/${aiTicket.ticket_id}?load_comments=true`);
             setTicket((prev) => prev ? { ...prev, comments: taskDetail.comments || [] } : prev);
+            setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
           } catch { /* 评论加载失败不阻塞主流程 */ }
         }
       } else {
@@ -206,17 +209,6 @@ export default function TicketDetailPage() {
           </div>
         )}
 
-        {/* 诊断过程 */}
-        {dx && (
-          <div className="detail-card">
-            <h4 className="detail-card__h">🤖 小U 诊断</h4>
-            {dx.problem_summary && <DetailRow label="概述" value={dx.problem_summary} />}
-            {dx.hypotheses?.length ? <DetailRow label="推测原因" value={dx.hypotheses.join('、')} /> : null}
-            {dx.ruled_out?.length ? <DetailRow label="已排除" value={dx.ruled_out.join('、')} /> : null}
-            {dx.rounds != null && <DetailRow label="诊断轮数" value={String(dx.rounds)} />}
-          </div>
-        )}
-
         {/* 类型专属字段 */}
         {(isProblem || isBug || isFeature || isSupport) && (
           <div className="detail-card">
@@ -250,6 +242,18 @@ export default function TicketDetailPage() {
                 {ticket.support_type && <DetailRow label="支持类型" value={ticket.support_type} />}
                 {ticket.preferred_response && <DetailRow label="期望响应" value={ticket.preferred_response} />}
               </>
+            )}
+          </div>
+        )}
+
+        {/* AI 讨论摘要（与系统任务共用 tasks 表 metadata_info.ai_summary）*/}
+        {ticket?.ticket_id && (
+          <div className="detail-card">
+            <h4 className="detail-card__h">讨论摘要</h4>
+            {aiSummary ? (
+              <SafeHtml html={aiSummary} />
+            ) : (
+              <p style={{ color: '#999' }}>暂无摘要，U老师 将自动总结讨论进展</p>
             )}
           </div>
         )}
