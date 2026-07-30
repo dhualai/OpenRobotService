@@ -485,7 +485,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 持久化用户消息（首条会顺带建会话）
       const convId = await ensureConversation(sid, content);
       if (convId) appendMessage(convId, 'user', content).catch(() => {});
-      setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() }]);
+      setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', streaming: true, timestamp: new Date().toISOString() }]);
 
       // 提单 Agent
       const apiPath = `${API_CONFIG.AI.BASE_URL}/qa/ask/stream`;
@@ -579,6 +579,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       sendingRef.current = false;
       // 强制刷新最终完整内容：流式结束前最后一次 flush 可能早于 90ms 窗口，确保末态不丢字
       renderAcc();
+      // 置 streaming:false：流式结束，气泡由纯文本降级渲染切换为最终 MarkdownRenderer 渲染
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)));
     }
   };
 
