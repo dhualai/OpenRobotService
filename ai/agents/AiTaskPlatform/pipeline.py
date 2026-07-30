@@ -1010,6 +1010,44 @@ class AiTaskAgent:
         return "\n".join(summary_lines)[:2000]
 
     @staticmethod
+    def _materialize_path(raw_path: str, tmp_dirs: list[str]) -> str:
+        """path 归一化：本地路径原样返回；MinIO 预签名 URL 解析出桶名 + 资源路径，
+        通过后端 minio_client 下载到本地临时目录后返回本地文件路径。
+
+        解析或下载失败返回 ""。
+        """
+        if not raw_path:
+            return ""
+        # 已是本地路径 → 原样返回
+        if not raw_path.startswith(("http://", "https://")):
+            return raw_path
+
+        # 1. 正则匹配桶名 + 资源路径（path 段截止于 ? 查询串）
+        import re
+        from urllib.parse import unquote
+        m = re.match(r"https?://[^/]+/([^/]+)/(.+?)(?:\?|$)", raw_path)
+        if not m:
+            logger.warning(f"无法从 URL 解析 bucket/object: {raw_path[:120]}")
+            return ""
+        bucket_name = unquote(m.group(1))
+        object_name = unquote(m.group(2))
+
+        # 2. 调用 AI 本地 MinIO 客户端下载到本地临时目录
+        import os, tempfile
+        try:
+            from ai.core.minio_client import minio_client
+            tmp_dir = tempfile.mkdtemp(prefix="log_dl_")
+            tmp_dirs.append(tmp_dir)  # 复用调用方已有的 rmtree 清理
+            local_name = os.path.basename(object_name) or "download.bin"
+            local_path = os.path.join(tmp_dir, local_name)
+            minio_client.client.fget_object(bucket_name, object_name, local_path)
+            logger.info(f"附件下载完成: {bucket_name}/{object_name} -> {local_path}")
+            return local_path
+        except Exception as e:
+            logger.warning(f"MinIO 下载失败 {bucket_name}/{object_name}: {e}")
+            return ""
+
+    @staticmethod
     def _extract_log_paths(attachments: list) -> tuple[list[str], list[str]]:
         """从附件列表中提取日志文件路径（压缩包先解压到临时目录）。
 
@@ -1025,8 +1063,13 @@ class AiTaskAgent:
         for att in attachments:
             if not isinstance(att, dict):
                 continue
-            path = att.get("path") or att.get("url") or ""
+            raw_path = att.get("path") or att.get("url") or ""
             name = (att.get("filename") or att.get("name") or "").lower()
+            if not raw_path:
+                continue
+
+            # path 归一化：http(s) 预签名 URL → 后端 minio_client 下载到本地临时目录
+            path = AiTaskAgent._materialize_path(raw_path, tmp_dirs)
             if not path:
                 continue
 

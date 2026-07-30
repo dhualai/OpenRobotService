@@ -417,7 +417,7 @@ export default function TaskDetailPage() {
         setDiagnosisReport(d.report_md || d.root_cause_analysis || '');
         // 短链接预览取根因分析首行
         const preview = d.root_cause_analysis?.slice(0, 40) || '点击查看';
-        const shortLink = `📋 <a href="#diagnosis-report" class="diagnosis-link">U老师 诊断报告 — ${preview}…</a>`;
+        const shortLink = `📋 [U老师 诊断报告 — ${preview}…](#diagnosis-report)`;
         setDetail((prev) => {
           if (!prev) return prev;
           const aiComment: Comment = {
