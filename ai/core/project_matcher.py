@@ -81,30 +81,15 @@ class ProjectMatcher:
     # ── 匹配 ──────────────────────────────────────────────
 
     def match(self, user_input: str, min_score: float = 0.5) -> Optional[ProjectMatch]:
-        """匹配用户输入 → 最佳项目。返回 None 表示无匹配（用原始输入）。
-
-        匹配策略（按优先级）：
-          1. 精确匹配（忽略大小写）→ score 1.0
-          2. 用户输入完整包含在项目名中 → score 0.9
-          3. 项目名完整包含在用户输入中 → score 0.85
-          4. 关键词重叠（Jaccard on bigrams）→ score 0.5~0.8
-        """
+        """匹配用户输入 → 最佳项目。返回 None 表示无匹配（用原始输入）。"""
         user = user_input.strip()
         if not user or not self._projects:
             return None
 
-        candidates: List[ProjectMatch] = []
-
-        for proj in self._projects:
-            name = proj["name"]
-            score = self._score(user, name)
-            if score is not None:
-                candidates.append(ProjectMatch(name=name, code=proj["code"], score=score))
-
+        candidates = self._get_candidates(user)
         if not candidates:
             return None
 
-        candidates.sort(key=lambda x: x.score, reverse=True)
         best = candidates[0]
 
         if best.score >= min_score:
@@ -122,6 +107,28 @@ class ProjectMatcher:
             return best
 
         logger.info(f"[ProjectMatcher] no match for '{user}' (best={best.score:.2f})")
+        return None
+
+    def get_candidates(
+        self, user_input: str, min_score: float = 0.7, top_n: int = 5
+    ) -> List[ProjectMatch]:
+        """返回所有 ≥ min_score 的候选（按得分降序），供 LLM 二次裁决。"""
+        user = user_input.strip()
+        if not user or not self._projects:
+            return []
+        candidates = self._get_candidates(user)
+        return [c for c in candidates if c.score >= min_score][:top_n]
+
+    def _get_candidates(self, user: str) -> List[ProjectMatch]:
+        """内部：计算所有候选并降序排列"""
+        candidates: List[ProjectMatch] = []
+        for proj in self._projects:
+            name = proj["name"]
+            score = self._score(user, name)
+            if score is not None:
+                candidates.append(ProjectMatch(name=name, code=proj["code"], score=score))
+        candidates.sort(key=lambda x: x.score, reverse=True)
+        return candidates
         return None
 
     def _score(self, user: str, project_name: str) -> Optional[float]:

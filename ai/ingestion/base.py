@@ -168,7 +168,11 @@ class BaseIngester(ABC, Generic[T]):
         """
         from ai.core.embed import get_embed_client
         from ai.config import get_ai_config
-        from qdrant_client.models import PointStruct, Distance, VectorParams
+        from ai.core.retrieval import generate_bm25_sparse
+        from qdrant_client.models import (
+            PointStruct, Distance, VectorParams,
+            SparseVectorParams, SparseIndexParams, SparseVector,
+        )
 
         config = get_ai_config()
         embed_client = await get_embed_client()
@@ -202,20 +206,36 @@ class BaseIngester(ABC, Generic[T]):
             except Exception:
                 pass
 
-        # 4. 确保集合存在
+        # 4. 确保集合存在（named vectors: dense + sparse）
         if not client.collection_exists(collection_name):
             self._log(f"[CREATE] 创建集合 '{collection_name}'...")
             client.create_collection(
                 collection_name=collection_name,
-                vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+                vectors_config={
+                    "dense": VectorParams(size=dim, distance=Distance.COSINE),
+                },
+                sparse_vectors_config={
+                    "sparse": SparseVectorParams(
+                        index=SparseIndexParams(on_disk=False)
+                    )
+                },
             )
 
-        # 5. 写入
+        # 5. 写入（named vectors: dense + sparse）
         self._log(f"[WRITE] upserting {len(chunks)} points...")
-        points = [
-            PointStruct(id=c.id, vector=v.tolist(), payload=c.payload)
-            for c, v in zip(chunks, vectors)
-        ]
+        points = []
+        for c, v in zip(chunks, vectors):
+            sparse_vec = generate_bm25_sparse(c.text)
+            sparse_indices = sorted(sparse_vec.keys())
+            sparse_values = [sparse_vec[i] for i in sparse_indices]
+            points.append(PointStruct(
+                id=c.id,
+                vector={
+                    "dense": v.tolist(),
+                    "sparse": SparseVector(indices=sparse_indices, values=sparse_values),
+                },
+                payload=c.payload,
+            ))
 
         batch_size = 50
         for i in range(0, len(points), batch_size):
