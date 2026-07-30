@@ -15,7 +15,7 @@ from typing import Optional
 from ai.core.logging import get_logger
 from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket, load_engineers
 
-logger = get_logger(__name__)
+logger = get_logger("ASSIGNER")
 
 
 class AssignmentWorker:

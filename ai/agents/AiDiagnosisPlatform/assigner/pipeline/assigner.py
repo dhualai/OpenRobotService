@@ -40,7 +40,7 @@ from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     AssignmentResult, EngineerProfile, TicketContext,
 )
 
-logger = get_logger("assigner")
+logger = get_logger("ASSIGNER")
 
 
 class Assigner:

@@ -11,7 +11,7 @@ from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
 from ai.core.logging import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("ASSIGNER")
 
 _MAX_ENGINEERS = 30  # 超过此人数据截断防止 token 溢出
 
