@@ -164,6 +164,7 @@ class AssignmentWorker:
         """将派单结果写回 tasks 表"""
         try:
             from app.models.task import Task, TaskStatus
+            from app.models.identity import UserDB
             from app.core.db import SessionLocal
 
             db = SessionLocal()
@@ -173,8 +174,14 @@ class AssignmentWorker:
                     logger.warning(f"派单结果写回失败: task_id={task_id} 不存在")
                     return False
 
-                task.assigned_to = result.engineer_id or result.engineer_name
-                if result.engineer_id or result.engineer_name:
+                # 通过 engineer_id（users.id）查 username
+                username = None
+                if result.engineer_id:
+                    user = db.query(UserDB).filter(UserDB.id == result.engineer_id).first()
+                    if user:
+                        username = user.username
+                task.assigned_to = username or result.engineer_name
+                if task.assigned_to:
                     task.status = TaskStatus.IN_PROGRESS
                 task.updated_at = datetime.utcnow()
 
@@ -182,6 +189,7 @@ class AssignmentWorker:
                 meta = task.metadata_info or {}
                 meta["assignee_name"] = result.engineer_name
                 meta["assignee_id"] = result.engineer_id
+                meta["assignee_username"] = username or ""
                 meta["assign_confidence"] = result.confidence_score
                 meta["assign_reasoning"] = result.reasoning
                 meta["assign_decision_type"] = result.decision_type
