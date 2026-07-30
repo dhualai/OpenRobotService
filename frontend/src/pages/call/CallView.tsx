@@ -9,6 +9,7 @@ import ConversationDrawer from '@/shared/components/ConversationDrawer';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import { qaListTickets } from '@/api/ai';
 import { useWorkbenchStore } from '@/stores/workbench';
+import { useAuthStore } from '@/stores/auth';
 
 const ACTIVE_STATUSES = ['new', 'in_progress', 'pending'];
 
@@ -20,16 +21,19 @@ export default function CallView() {
   }, [location.state]);
   const [unread, setUnread] = useState(0);
   const { tasksRefreshKey, drawerOpen, setDrawerOpen, conversationTitle } = useWorkbenchStore();
+  const username = useAuthStore((s) => s.username);
+  const isAdmin = useAuthStore((s) => s.isAdmin);
 
   useEffect(() => {
     (async () => {
       try {
-        const res = await qaListTickets(0, 200);
+        const filters = !isAdmin && username ? { username } : undefined;
+        const res = await qaListTickets(0, 200, filters);
         const items = res?.data?.items || [];
         setUnread(items.filter((t) => ACTIVE_STATUSES.includes(t.status || '')).length);
       } catch { /* ignore */ }
     })();
-  }, [tasksRefreshKey]);
+  }, [tasksRefreshKey, username, isAdmin]);
 
   if (showHistory) {
     return (

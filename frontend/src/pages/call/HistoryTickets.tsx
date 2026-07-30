@@ -1,5 +1,5 @@
 // 我要摇人：历史工单列表（右上角 ≡ 入口）
-// 数据源：AI 模块 GET /api/ai/memory/tickets/all（admin 全部，其余仅本人创建）
+// 数据源：AI 模块 GET /api/ai/memory/tickets/all（按当前用户过滤）
 // 搜索：前端模糊过滤（title/description）；状态筛选：qaListTickets status filter（后端）
 // 分页：每页 PAGE_SIZE 条，下拉刷新、触底加载更多。
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
@@ -8,6 +8,7 @@ import { Loading, Toast, Button, Popup } from 'tdesign-mobile-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
 import { urgeTicket, reportTicket, cancelTicket } from '@/api/ticket';
 import { useWorkbenchStore } from '@/stores/workbench';
+import { useAuthStore } from '@/stores/auth';
 import PullToRefresh from '@/shared/components/PullToRefresh';
 import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
@@ -43,6 +44,8 @@ const STATUS_META: Record<string, { label: string; color: string; bg: string }> 
 export default function HistoryTickets({ showHeader = true }: { showHeader?: boolean }) {
   const navigate = useNavigate();
   const tasksRefreshKey = useWorkbenchStore((s) => s.tasksRefreshKey);
+  const username = useAuthStore((s) => s.username);
+  const isAdmin = useAuthStore((s) => s.isAdmin);
 
   const [tickets, setTickets] = useState<AiTicketBrief[]>([]);
   const [loading, setLoading] = useState(false);
@@ -51,13 +54,14 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
 
-  // 构造筛选参数（status + keyword 后端 SQL LIKE 搜索，搜全部不只已加载）
+  // 构造筛选参数：admin 不过滤，其余按当前用户过滤
   const buildFilters = useCallback(() => {
-    const f: { status?: string; keyword?: string } = {};
+    const f: { status?: string; keyword?: string; username?: string } = {};
     if (statusFilter) f.status = statusFilter;
     if (search.trim()) f.keyword = search.trim();
+    if (!isAdmin && username) f.username = username;
     return Object.keys(f).length ? f : undefined;
-  }, [statusFilter, search]);
+  }, [statusFilter, search, username, isAdmin]);
 
   // 首屏 / 下拉刷新：重置分页
   const loadInitial = useCallback(async () => {

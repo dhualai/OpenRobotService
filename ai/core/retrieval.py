@@ -49,6 +49,8 @@ class RetrievalResult:
     vector_score: float = 0.0
     sparse_score: float = 0.0
     images: List[str] = field(default_factory=list)
+    sub_domain: str = ""
+    domain: str = ""
 
 
 # ============================================================
@@ -270,14 +272,16 @@ class QdrantClientWrapper:
         sparse_vector: Dict[int, float],
         top_k: int = 3,
         score_threshold: Optional[float] = None,
+        collection_name: Optional[str] = None,
     ) -> List[Any]:
-        """稀疏向量检索"""
+        """稀疏向量检索，可指定 collection（默认使用活跃集合）。"""
         if self.is_unavailable:
             return []
         # 本地模式不支持稀疏检索，跳过
         if self._is_local:
             return []
         client = await self._ensure_client()
+        col = collection_name or self.collection_name
         try:
             # qdrant_client >=1.10: sparse vector 需要 SparseVector 对象
             indices = sorted(sparse_vector.keys())
@@ -287,7 +291,7 @@ class QdrantClientWrapper:
             # qdrant_client >=1.18: search() → query_points()
             result = await self._to_thread(
                 client.query_points,
-                collection_name=self.collection_name,
+                collection_name=col,
                 query=("sparse", sv),
                 limit=top_k,
                 score_threshold=score_threshold,
@@ -454,6 +458,7 @@ class RetrievalService:
                     "dense": 0.0, "sparse": 0.0,
                     "title": "", "content": "", "images": [],
                     "vector_score": 0.0, "sparse_score": 0.0,
+                    "sub_domain": "", "domain": "",
                 }
             doc_scores[doc_id]["dense"] = 1.0 / (rrf_k + rank + 1)
             doc_scores[doc_id]["vector_score"] = point.score
@@ -461,6 +466,8 @@ class RetrievalService:
                 doc_scores[doc_id]["title"] = point.payload.get("title", "")
                 doc_scores[doc_id]["content"] = point.payload.get("content", "")
                 doc_scores[doc_id]["images"] = point.payload.get("images", [])
+                doc_scores[doc_id]["sub_domain"] = point.payload.get("sub_domain", "")
+                doc_scores[doc_id]["domain"] = point.payload.get("domain", "")
 
         for rank, point in enumerate(sparse_results):
             doc_id = str(point.id)
@@ -469,6 +476,7 @@ class RetrievalService:
                     "dense": 0.0, "sparse": 0.0,
                     "title": "", "content": "", "images": [],
                     "vector_score": 0.0, "sparse_score": 0.0,
+                    "sub_domain": "", "domain": "",
                 }
             doc_scores[doc_id]["sparse"] = 1.0 / (rrf_k + rank + 1)
             doc_scores[doc_id]["sparse_score"] = point.score
@@ -476,6 +484,8 @@ class RetrievalService:
                 doc_scores[doc_id]["title"] = point.payload.get("title", "")
                 doc_scores[doc_id]["content"] = point.payload.get("content", "")
                 doc_scores[doc_id]["images"] = point.payload.get("images", [])
+                doc_scores[doc_id]["sub_domain"] = point.payload.get("sub_domain", "")
+                doc_scores[doc_id]["domain"] = point.payload.get("domain", "")
 
         rrf_scores = [
             (doc_id, scores["dense"] + scores["sparse"], scores)
@@ -493,7 +503,8 @@ class RetrievalService:
                 vector_score=scores["vector_score"],
                 sparse_score=scores["sparse_score"],
                 images=scores.get("images", []),
-
+                sub_domain=scores.get("sub_domain", ""),
+                domain=scores.get("domain", ""),
             ))
 
         return results
@@ -562,89 +573,127 @@ class RetrievalService:
 
         return results, top1_score
 
+    async def retrieve_domain(
+        self,
+        query: str,
+        domain: str,
+        top_k: int = 3,
+        sub_domain: Optional[str] = None,
+        query_filter=None,
+    ) -> List[RetrievalResult]:
+        """
+        通用 domain 检索：给定 domain 和可选 sub_domain，从对应 Qdrant 集合中检索。
+
+        Args:
+            query: 查询文本
+            domain: 五层 domain（industry/company/team/project/personal）
+            top_k: 返回数量
+            sub_domain: 可选的子域过滤（如 "faq", "cheduan_errors"），
+                        设置后通过 Qdrant payload filter 只返回该子域的 chunks
+            query_filter: 额外的 Qdrant Filter（用于高级场景如错误码精确匹配）
+
+        Returns:
+            List[RetrievalResult]
+        """
+        from ai.config import get_active_collection_for
+
+        col = get_active_collection_for(domain)
+        if not col:
+            return []
+
+        await self._ensure_clients()
+        if self._qdrant.is_unavailable:
+            return []
+
+        # 构建 payload filter
+        if sub_domain:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            sd_filter = Filter(
+                must=[FieldCondition(key="sub_domain", match=MatchValue(value=sub_domain))]
+            )
+            if query_filter is not None:
+                # 合并 sub_domain filter 和外部 filter（AND 关系）
+                from qdrant_client.models import Filter
+                if hasattr(query_filter, 'must') and query_filter.must:
+                    combined_must = list(query_filter.must) + list(sd_filter.must)
+                    query_filter = Filter(must=combined_must)
+                else:
+                    query_filter = sd_filter
+            else:
+                query_filter = sd_filter
+
+        # hybrid search: dense + sparse 并行 → RRF 融合
+        query_vector = await self._embed_client.embed(query)
+        bm25_sparse = self._generate_bm25_sparse(query)
+
+        dense_task = self._qdrant.search_dense(
+            query_vector.tolist(),
+            top_k=top_k * 2,
+            collection_name=col,
+            query_filter=query_filter,
+        )
+        sparse_task = self._qdrant.search_sparse(
+            bm25_sparse,
+            top_k=top_k * 2,
+            collection_name=col,
+        ) if bm25_sparse else asyncio.sleep(0)
+
+        dense_res, sparse_list = await asyncio.gather(dense_task, sparse_task)
+
+        # 清理异常（local Qdrant 上 sparse 返回空列表，抛异常时降级）
+        if isinstance(sparse_list, BaseException):
+            sparse_list = []
+        if not isinstance(sparse_list, list):
+            sparse_list = []
+
+        return self._rrf_fusion(dense_res, sparse_list, top_k=top_k)
+
     async def retrieve_faq(
         self,
         query: str,
         top_k: Optional[int] = None,
     ) -> List[RetrievalResult]:
         """
-        FAQ 知识库检索（仅向量检索，不做置信度检查）。
-
-        FAQ 条目通常较短，向量相似度足够区分，不需要 BM25。
-        使用独立的 FAQ 指针文件热切换集合。
+        FAQ 知识库检索（team domain，匹配 sub_domain="faq" 或 "usp_faq"）。
         """
-        from ai.config import get_active_faq_collection
-
-        faq_col = get_active_faq_collection()
-        if not faq_col:
-            return []  # FAQ 集合尚未入库
-
-        k = top_k or self.top_k
-        await self._ensure_clients()
-
-        if self._qdrant.is_unavailable:
-            return []
-
-        query_vector = await self._embed_client.embed(query)
-        points = await self._qdrant.search_dense(
-            query_vector.tolist(),
-            top_k=k,
-            collection_name=faq_col,
+        from qdrant_client.models import Filter, FieldCondition, MatchAny
+        faq_filter = Filter(
+            must=[FieldCondition(
+                key="sub_domain",
+                match=MatchAny(any=["faq", "usp_faq"]),
+            )]
+        )
+        return await self.retrieve_domain(
+            query, "team",
+            top_k=top_k or self.top_k,
+            query_filter=faq_filter,
         )
 
-        results = []
-        for point in points:
-            payload = point.payload or {}
-            results.append(RetrievalResult(
-                id=str(point.id),
-                score=point.score,
-                title=payload.get("question", ""),
-                content=payload.get("answer", ""),
-                vector_score=point.score,
-            ))
-        return results
-
-    async def retrieve_platform_faq(
+    async def retrieve_company(
         self,
         query: str,
         top_k: Optional[int] = None,
     ) -> List[RetrievalResult]:
         """
-        平台 FAQ 检索（摇人吧服务号自身介绍）。
-
-        当用户问"支持什么工单类型""有哪些角色""工单流转是怎样的"等
-        关于服务号本身的问题时，通过此方法检索。
+        company 域全量检索（产品目录、车端错误码、VDA5050协议等）。
         """
-        from ai.config import get_active_platform_faq_collection
-
-        pf_col = get_active_platform_faq_collection()
-        if not pf_col:
-            return []
-
-        k = top_k or self.top_k
-        await self._ensure_clients()
-
-        if self._qdrant.is_unavailable:
-            return []
-
-        query_vector = await self._embed_client.embed(query)
-        points = await self._qdrant.search_dense(
-            query_vector.tolist(),
-            top_k=k,
-            collection_name=pf_col,
+        return await self.retrieve_domain(
+            query, "company",
+            top_k=top_k or self.top_k,
         )
 
-        results = []
-        for point in points:
-            payload = point.payload or {}
-            results.append(RetrievalResult(
-                id=str(point.id),
-                score=point.score,
-                title=payload.get("question", ""),
-                content=payload.get("answer", ""),
-                vector_score=point.score,
-            ))
-        return results
+    async def retrieve_industry(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+    ) -> List[RetrievalResult]:
+        """
+        industry 域全量检索（行业标准、导航规范等）。
+        """
+        return await self.retrieve_domain(
+            query, "industry",
+            top_k=top_k or self.top_k,
+        )
 
     async def retrieve_troubleshooting(
         self,
@@ -652,42 +701,13 @@ class RetrievalService:
         top_k: int = 3,
     ) -> List[RetrievalResult]:
         """
-        问题排查树检索（仅向量检索，不做置信度检查）。
-
-        排查树条目是结构化的步骤文本，向量相似度足够，不需要 BM25。
-        使用独立的排查树指针文件热切换集合。
-        top_k 默认为 3（比 FAQ 多 1），因为模糊查询需多返回候选项做分流。
+        问题排查树/诊断参考检索（委托到 team domain，sub_domain="diagnosis"）。
         """
-        from ai.config import get_active_troubleshooting_collection
-
-        ts_col = get_active_troubleshooting_collection()
-        if not ts_col:
-            return []  # 排查树集合尚未入库
-
-        k = top_k or 3
-        await self._ensure_clients()
-
-        if self._qdrant.is_unavailable:
-            return []
-
-        query_vector = await self._embed_client.embed(query)
-        points = await self._qdrant.search_dense(
-            query_vector.tolist(),
-            top_k=k,
-            collection_name=ts_col,
+        return await self.retrieve_domain(
+            query, "team",
+            top_k=top_k or 3,
+            sub_domain="diagnosis",
         )
-
-        results = []
-        for point in points:
-            payload = point.payload or {}
-            results.append(RetrievalResult(
-                id=str(point.id),
-                score=point.score,
-                title=payload.get("symptom_name", ""),
-                content=payload.get("linearized_tree", ""),
-                vector_score=point.score,
-            ))
-        return results
 
     @staticmethod
     def _extract_error_codes(query: str) -> List[str]:
@@ -701,14 +721,14 @@ class RetrievalService:
         top_k: int = 3,
     ) -> List[RetrievalResult]:
         """
-        车端错误码检索。
+        车端错误码检索（委托到 company domain，sub_domain="cheduan_errors"）。
 
         策略：先从 query 中提取数字错误码做 payload filter 精确匹配，
         再叠加纯向量检索补充语义匹配结果（去重合并）。
         """
-        from ai.config import get_active_cheduan_collection
+        from ai.config import get_active_collection_for
 
-        cd_col = get_active_cheduan_collection()
+        cd_col = get_active_collection_for("company")
         if not cd_col:
             return []
 
@@ -732,25 +752,26 @@ class RetrievalService:
             try:
                 exact_points = await self._qdrant.search_dense(
                     query_vector.tolist(),
-                    top_k=len(codes) * 2,  # 每个码至少拿 2 个候选
+                    top_k=len(codes) * 2,
                     collection_name=cd_col,
                     query_filter=code_filter,
                 )
             except Exception:
                 exact_points = []
 
-        # ── 第二路：纯向量检索（语义兜底）──
-        # 关键：当用户明确指出错误码但精确匹配无结果时，向量兜底极其危险——
-        # 数字的 embedding 权重极低，很容易误匹配到不相关的错误码，导致 LLM
-        # 把错误码 A 的描述当作用户问的 B 来回答。
+        # ── 第二路：sub_domain 过滤 + 向量检索 ──
         vector_points: list = []
         if not codes:
-            # 无明确错误码 → 用户描述性提问，向量检索可用
+            from qdrant_client.models import Filter as QFilter, FieldCondition, MatchValue
+            sd_filter = QFilter(
+                must=[FieldCondition(key="sub_domain", match=MatchValue(value="cheduan_errors"))]
+            )
             try:
                 vector_points = await self._qdrant.search_dense(
                     query_vector.tolist(),
                     top_k=k,
                     collection_name=cd_col,
+                    query_filter=sd_filter,
                 )
             except Exception:
                 vector_points = []
@@ -758,19 +779,33 @@ class RetrievalService:
         # ── 合并：精确匹配优先，向量结果去重补充 ──
         def _make_result(point) -> RetrievalResult:
             payload = point.payload or {}
-            return RetrievalResult(
-                id=str(point.id),
-                score=point.score,
-                title=f"车端错误码 {payload.get('error_code', '')}",
-                content=(
-                    f"错误码：{payload.get('error_code', '')}\n"
-                    f"类别：{payload.get('category', '')}\n"
-                    f"等级：{payload.get('level', '')}\n"
-                    f"描述：{payload.get('description_cn', '')}\n"
-                    f"方案：{payload.get('solution_cn', '')}"
-                ),
-                vector_score=point.score,
-            )
+            # 新格式：payload 有 title/content 和可能的 error_code
+            ec = payload.get("error_code", "")
+            title = payload.get("title", "")
+            content = payload.get("content", "")
+            # 如果 payload 有 error_code，使用结构化格式；否则直接用 title/content
+            if ec:
+                return RetrievalResult(
+                    id=str(point.id),
+                    score=point.score,
+                    title=f"车端错误码 {ec}",
+                    content=(
+                        f"错误码：{ec}\n"
+                        f"类别：{payload.get('category', '')}\n"
+                        f"等级：{payload.get('level', '')}\n"
+                        f"描述：{payload.get('description_cn', '')}\n"
+                        f"方案：{payload.get('solution_cn', '')}"
+                    ),
+                    vector_score=point.score,
+                )
+            else:
+                return RetrievalResult(
+                    id=str(point.id),
+                    score=point.score,
+                    title=title,
+                    content=content,
+                    vector_score=point.score,
+                )
 
         results: List[RetrievalResult] = []
         for pt in exact_points:
@@ -793,49 +828,13 @@ class RetrievalService:
         top_k: int = 2,
     ) -> List[RetrievalResult]:
         """
-        USP 翻译表检索（仅向量检索）。
-
-        读取翻译表集合，匹配 UI 标签、错误码说明等。
+        USP 翻译表检索（委托到 team domain，sub_domain="translation"）。
         """
-        from ai.config import get_active_translation_collection
-
-        tr_col = get_active_translation_collection()
-        if not tr_col:
-            return []
-
-        k = top_k or 2
-        await self._ensure_clients()
-
-        if self._qdrant.is_unavailable:
-            return []
-
-        query_vector = await self._embed_client.embed(query)
-        points = await self._qdrant.search_dense(
-            query_vector.tolist(),
-            top_k=k,
-            collection_name=tr_col,
+        return await self.retrieve_domain(
+            query, "team",
+            top_k=top_k or 2,
+            sub_domain="translation",
         )
-
-        results = []
-        for point in points:
-            payload = point.payload or {}
-            samples = payload.get("sample_entries", [])
-            sample_text = "\n".join(
-                f"  {s['cn']} | {s['en']}"
-                for s in samples[:10]
-            )
-            results.append(RetrievalResult(
-                id=str(point.id),
-                score=point.score,
-                title=f"翻译表 [{payload.get('namespace', '')}]",
-                content=(
-                    f"namespace: {payload.get('namespace', '')}\n"
-                    f"共 {payload.get('entry_count', 0)} 条\n"
-                    f"示例：\n{sample_text}"
-                ),
-                vector_score=point.score,
-            ))
-        return results
 
     async def retrieve_usp_diagnosis(
         self,
@@ -843,41 +842,13 @@ class RetrievalService:
         top_k: int = 3,
     ) -> List[RetrievalResult]:
         """
-        USP 诊断知识库检索（仅向量检索）。
-
-        当用户询问 USP 调度系统相关问题（机器人不接任务、中途停滞、
-        掉线、地图报错等）时，通过此方法检索诊断知识。
+        USP 诊断知识库检索（委托到 team domain，sub_domain="usp_product"）。
         """
-        from ai.config import get_active_usp_diagnosis_collection
-
-        usp_col = get_active_usp_diagnosis_collection()
-        if not usp_col:
-            return []
-
-        k = top_k or 3
-        await self._ensure_clients()
-
-        if self._qdrant.is_unavailable:
-            return []
-
-        query_vector = await self._embed_client.embed(query)
-        points = await self._qdrant.search_dense(
-            query_vector.tolist(),
-            top_k=k,
-            collection_name=usp_col,
+        return await self.retrieve_domain(
+            query, "team",
+            top_k=top_k or 3,
+            sub_domain="usp_product",
         )
-
-        results = []
-        for point in points:
-            payload = point.payload or {}
-            results.append(RetrievalResult(
-                id=str(point.id),
-                score=point.score,
-                title=payload.get("title", ""),
-                content=payload.get("content", ""),
-                vector_score=point.score,
-            ))
-        return results
 
     # ── 任务 Agent：历史工单方案检索 ───────────────────────────
 
@@ -887,62 +858,25 @@ class RetrievalService:
         top_k: int = 3,
     ) -> List[RetrievalResult]:
         """
-        历史工单方案检索：从 Qdrant task_resolutions collection 中语义检索
-        相似已解决工单的最终方案。
+        历史工单方案检索（委托到 project domain）。
 
         查询文本建议：problem_summary + hypotheses + fault_code + robot_type。
-
-        如果 collection 不存在，自动创建并返回空列表。
         """
-        from ai.config import get_active_task_resolutions_collection
-
-        tr_col = get_active_task_resolutions_collection()
-        if not tr_col:
-            return []
-
-        k = top_k or 3
-        await self._ensure_clients()
-
-        if self._qdrant.is_unavailable:
-            return []
-
-        query_vector = await self._embed_client.embed(query)
-        try:
-            points = await self._qdrant.search_dense(
-                query_vector.tolist(),
-                top_k=k,
-                collection_name=tr_col,
-            )
-        except Exception:
-            return []
-
-        results = []
-        for point in points:
-            payload = point.payload or {}
-            results.append(RetrievalResult(
-                id=str(point.id),
-                score=point.score,
-                title=payload.get('title', f'工单 #{point.id}'),
-                content=(
-                    f"根因: {payload.get('root_cause', '')}\n"
-                    f"方案: {payload.get('solution_steps', '')}\n"
-                    f"备注: {payload.get('engineer_note', '')}\n"
-                    f"解决时间: {payload.get('resolved_at', '')}"
-                ),
-                vector_score=point.score,
-            ))
-        return results
+        return await self.retrieve_domain(
+            query, "project",
+            top_k=top_k or 3,
+        )
 
     async def ensure_task_resolutions_collection(self) -> str:
-        """确保 task_resolutions collection 存在，不存在则创建。
+        """确保 project domain collection 存在，不存在则创建。
 
         Returns:
             collection 名称，创建失败返回空字符串。
         """
-        from ai.config import get_active_task_resolutions_collection
+        from ai.config import get_active_collection_for, write_active_collection_for
         import time as _time
 
-        tr_col = get_active_task_resolutions_collection()
+        tr_col = get_active_collection_for("project")
         if tr_col:
             try:
                 client = await self._qdrant._ensure_client()
@@ -954,7 +888,7 @@ class RetrievalService:
         await self._ensure_clients()
         try:
             vec_dim = await self._embed_client.get_dimension()
-            name = f"task_resolutions_{_time.strftime('%Y%m%d_%H%M%S')}"
+            name = f"project_{_time.strftime('%Y%m%d_%H%M%S')}"
             client = await self._qdrant._ensure_client()
             from qdrant_client.models import Distance, VectorParams
             await self._to_thread(
@@ -962,13 +896,12 @@ class RetrievalService:
                 collection_name=name,
                 vectors_config=VectorParams(size=vec_dim, distance=Distance.COSINE),
             )
-            from ai.config import _write_active_task_resolutions_collection
-            _write_active_task_resolutions_collection(name)
-            print(f"  [retrieval] Created task_resolutions collection: {name}")
+            write_active_collection_for("project", name)
+            print(f"  [retrieval] Created project collection: {name}")
             return name
         except Exception as e:
-            logger.error(f"创建 task_resolutions 集合失败: {e}", exc_info=True)
-            print(f"  [retrieval] Failed to create task_resolutions collection: {e}")
+            logger.error(f"创建 project 集合失败: {e}", exc_info=True)
+            print(f"  [retrieval] Failed to create project collection: {e}")
             return ""
 
     async def index_task_resolution(
@@ -982,11 +915,11 @@ class RetrievalService:
         robot_type: str = "",
         problem_summary: str = "",
     ) -> bool:
-        """向量化并写入一条工单解决方案到 Qdrant。"""
-        from ai.config import get_active_task_resolutions_collection
+        """向量化并写入一条工单解决方案到 Qdrant（project domain）。"""
+        from ai.config import get_active_collection_for
         import uuid
 
-        col = get_active_task_resolutions_collection()
+        col = get_active_collection_for("project")
         if not col:
             col = await self.ensure_task_resolutions_collection()
         if not col:
@@ -1004,6 +937,7 @@ class RetrievalService:
             "problem_summary": problem_summary, "root_cause": root_cause,
             "solution_steps": solution_steps, "engineer_note": engineer_note,
             "fault_code": fault_code, "robot_type": robot_type,
+            "domain": "project",
             "resolved_at": __import__("time").strftime("%Y-%m-%d %H:%M:%S"),
         }
 
