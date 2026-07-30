@@ -82,6 +82,7 @@ class AIConfig(BaseModel):
     minio_secret_key: str = Field(default="")
     minio_bucket: str = Field(default="helpdesk")
     minio_secure: bool = Field(default=False)
+    minio_api_prefix: str = Field(default="", description="MinIO 反向代理路径前缀（如 /minio），为空则直连")
 
     # ========== 企业微信 ==========
     wecom_corpid: str = Field(default="", description="企业微信 企业ID")
@@ -217,6 +218,7 @@ def get_ai_config() -> AIConfig:
         minio_secret_key=os.getenv("MINIO_SECRET_KEY", ""),
         minio_bucket=os.getenv("MINIO_BUCKET", "helpdesk"),
         minio_secure=os.getenv("MINIO_SECURE", "false").lower() in ("1", "true", "yes"),
+        minio_api_prefix=os.getenv("MINIO_API_PREFIX", ""),
         # Qdrant
         qdrant_host=os.getenv("QDRANT_HOST", "localhost"),
         qdrant_port=int(os.getenv("QDRANT_PORT", "6333")),
