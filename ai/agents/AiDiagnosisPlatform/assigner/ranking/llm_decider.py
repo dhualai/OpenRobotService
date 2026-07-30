@@ -76,7 +76,7 @@ class LlmDecider:
             data = json.loads(m.group())
         except json.JSONDecodeError:
             return None
-        eid = data.get("engineer_id", "")
+        eid = data.get("engineer_id", "").strip()
         eng = next((e for e in engineers if e.id == eid), None)
         if not eng:
             return None
