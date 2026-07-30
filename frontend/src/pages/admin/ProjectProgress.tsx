@@ -74,7 +74,7 @@ export default function ProjectProgress() {
                 boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
                 borderLeft: hasRisk ? '3px solid #d54941' : '3px solid transparent',
               }}
-              onClick={() => navigate(`/admin/project-progress-detail/${p.id}`)}
+              onClick={() => navigate(`/admin/project-detail/${p.id}`)}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
