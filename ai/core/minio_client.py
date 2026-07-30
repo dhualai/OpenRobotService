@@ -40,7 +40,8 @@ class AIMinIOClient:
                     if url.startswith(('http://', 'https://')):
                         parsed = urlparse(url)
                         path = parsed.path if parsed.path.startswith('/') else '/' + parsed.path
-                        prefix = cfg.minio_api_prefix or ''
+                        # getattr 兜底：旧版 config.py 无此字段时不崩，降级为直连（无前缀）
+                        prefix = getattr(cfg, "minio_api_prefix", "") or ""
                         new_path = (prefix + path) if prefix else path
                         if new_path != parsed.path:
                             url = urlunparse(parsed._replace(path=new_path))

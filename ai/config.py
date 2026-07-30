@@ -18,15 +18,17 @@ from pathlib import Path
 from functools import lru_cache
 from pydantic import BaseModel, Field
 
-# 指针文件：记录当前活跃的 Qdrant 集合名
-# 放在 OpenRobotService_Data/kb/ 下，与知识库 md 文件同级
+# .md 源文件目录（OpenRobotService_Data/kb/）
 _KB_DIR = (Path(__file__).resolve().parent.parent.parent / "OpenRobotService_Data" / "kb").resolve()
+
+# 活跃集合指针目录（ai/kb/）
+_POINTER_DIR = (Path(__file__).resolve().parent / "kb").resolve()
 
 # 五层 domain 架构：industry / company / team / project / personal
 KB_DOMAINS = ["industry", "company", "team", "project", "personal"]
 
 _KB_POINTERS = {
-    d: _KB_DIR / f"active_{d}_collection.txt"
+    d: _POINTER_DIR / f"active_{d}_collection.txt"
     for d in KB_DOMAINS
 }
 

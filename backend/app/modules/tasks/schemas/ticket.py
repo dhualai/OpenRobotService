@@ -81,8 +81,13 @@ class TicketResponse(TicketBase):
     id: int
     status: TicketStatus
     created_by: str
+    created_by_name: Optional[str] = None
     assigned_to: Optional[str]
+    assigned_to_name: Optional[str] = None
+    reporter_name: Optional[str] = None
+    assignee_name: Optional[str] = None
     customer: Optional[str]
+    customer_name: Optional[str] = None
     team: Optional[str]
     project_name: Optional[str]
     created_at: datetime
