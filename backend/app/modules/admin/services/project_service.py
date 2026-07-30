@@ -189,6 +189,7 @@ class ProjectService:
             "controller_vendor": project.controller_vendor,
             "system_integration": json.loads(project.system_integration) if project.system_integration else None,
             "server_deployment_status": project.server_deployment_status,
+            "settlement_period": project.settlement_period,
         }
         return project_dict
     
