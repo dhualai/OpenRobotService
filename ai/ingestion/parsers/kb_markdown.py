@@ -166,10 +166,13 @@ class KBDomainIngester(BaseIngester[KBEntry]):
 
         # ── 有 ##：两层切分 ──
         sections = re.split(r'\n(?=## )', content)
+        lead_in = ""
         for section in sections:
             h2_match = re.match(r'^##\s+(.+)$', section, re.MULTILINE)
             if not h2_match:
-                # 第一个 ## 之前的内容（H1 + metadata），跳过
+                # 第一个 ## 之前的内容（H1 标题 + 简介 + 图片等）
+                # 去掉 H1 标题行，保留图片和正文，附加到首个 chunk
+                lead_in = re.sub(r'^#\s+.+\n', '', section, count=1).strip()
                 continue
 
             section_title = h2_match.group(1).strip()
@@ -177,6 +180,11 @@ class KBDomainIngester(BaseIngester[KBEntry]):
 
             if not body:
                 continue
+
+            # 将 lead-in 内容（图片、简介等）附加到第一个 chunk 开头
+            if lead_in:
+                body = lead_in + "\n\n" + body
+                lead_in = ""
 
             # 按 ### 切 QA
             qa_sections = re.split(r'\n(?=### )', body)
