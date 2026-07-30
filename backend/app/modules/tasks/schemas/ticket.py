@@ -81,8 +81,13 @@ class TicketResponse(TicketBase):
     id: int
     status: TicketStatus
     created_by: str
+    created_by_name: Optional[str] = None
     assigned_to: Optional[str]
+    assigned_to_name: Optional[str] = None
+    reporter_name: Optional[str] = None
+    assignee_name: Optional[str] = None
     customer: Optional[str]
+    customer_name: Optional[str] = None
     team: Optional[str]
     project_name: Optional[str]
     created_at: datetime
@@ -199,3 +204,11 @@ class TicketFilterRequest(BaseModel):
     sorts: Optional[List[TicketSort]] = Field(default_factory=list, description="排序条件列表")
     page: int = Field(default=1, ge=1, description="页码")
     size: int = Field(default=10, ge=1, le=100, description="每页数量")
+
+
+class ProjectMemberResponse(BaseModel):
+    """项目成员（用于 @ 提及选择），复用 user_project_roles 表数据。"""
+    id: str
+    username: str
+    name: Optional[str] = None
+    role_name: Optional[str] = None

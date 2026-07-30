@@ -17,6 +17,20 @@ import {
   type TicketSummary, type ProjectStageSummary, type UrgencySummary, type SyncResult,
 } from '@/api/dashboard';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
+import { createRequest } from '@/api/client';
+import API_CONFIG from '@/config/api';
+import { normalizeList } from '@/shared/utils/list';
+
+interface ProjectListItem {
+  risks: number;
+  contact_person: string;
+  settlement_period?: string | null;
+}
+
+function currentYearMonth(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
 
 interface MoreFunctionEntry { path: string; label: string; emoji: string; }
 
@@ -32,20 +46,24 @@ export default function Dashboard() {
   const [ticketSummary, setTicketSummary] = useState<TicketSummary | null>(null);
   const [stageSummary, setStageSummary] = useState<ProjectStageSummary | null>(null);
   const [urgencySummary, setUrgencySummary] = useState<UrgencySummary | null>(null);
+  const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [tickets, stages, urgency] = await Promise.all([
+    const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+    const [tickets, stages, urgency, projectList] = await Promise.all([
       fetchTicketSummary(),
       fetchProjectStageSummary(),
       fetchUrgencySummary(),
+      adminRequest<ProjectListItem[]>('/projects/?include_analysis=true').catch(() => []),
     ]);
     setTicketSummary(tickets);
     setStageSummary(stages);
     setUrgencySummary(urgency);
+    setProjects(normalizeList<ProjectListItem>(projectList));
     setLoading(false);
   }, []);
 
@@ -119,6 +137,12 @@ export default function Dashboard() {
             <div className="dashboard-section__chart">
               <ProjectStagePie data={stageSummary} onSliceClick={(key) => navigate(`/admin/dashboard/projects/stage/${key}`)} />
             </div>
+            <div className="dashboard-section__stats">
+              <StatItem label="项目总数" value={projects.length} color="#0052d9" onClick={() => navigate('/admin/project-progress')} />
+              <StatItem label="本月新增" value={projects.filter((p) => p.settlement_period === currentYearMonth()).length} color="#2ba471" onClick={() => navigate('/admin/project-progress?filter=new')} />
+              <StatItem label="风险项目" value={projects.filter((p) => p.risks > 0).length} color="#d54941" onClick={() => navigate('/admin/project-progress?filter=risk')} />
+              <StatItem label="对接人缺省" value={projects.filter((p) => !p.contact_person).length} color="#e37318" onClick={() => navigate('/admin/project-progress?filter=no_contact')} />
+            </div>
           </div>
           <div className="dashboard-tag-row">
             {PROJECT_STAGE_LIST.map((s) => (
@@ -181,9 +205,9 @@ function SectionTitle({ emoji, title, onMore, children }: { emoji: string; title
   );
 }
 
-function StatItem({ label, value, color }: { label: string; value: number | string; color: string }) {
+function StatItem({ label, value, color, onClick }: { label: string; value: number | string; color: string; onClick?: () => void }) {
   return (
-    <div className="dashboard-stat-item">
+    <div className="dashboard-stat-item" style={onClick ? { cursor: 'pointer' } : undefined} onClick={onClick}>
       <div className="dashboard-stat-item__value" style={{ color }}>{value}</div>
       <div className="dashboard-stat-item__label">{label}</div>
     </div>

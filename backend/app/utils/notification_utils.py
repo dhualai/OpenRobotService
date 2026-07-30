@@ -50,7 +50,7 @@ class NotificationUtils:
     DAYILY_TICKET = 2
     YUQU_TICKET = 4
     YUQU_TICKET_STATUS_CHANGE = 6
-    TICKET_HOST = "https://usp.ep-zl.com/wechat/HelpDesk/tickets/"
+    TICKET_HOST = "https://usp.ep-zl.com/p/app/tasks"
 
     @classmethod
     def _initialize_mqtt(cls):
@@ -200,7 +200,7 @@ class NotificationUtils:
             "template": {
                 "id": template['id'],
                 "data": data,
-                "url": args.get('url', "https://usp.ep-zl.com/wechat/HelpDesk/tickets/")
+                "url": args.get('url', "https://usp.ep-zl.com/p/app/tasks")
             },
             "at": {
                 "user_names": list(set(args.get('user_names', []))),
@@ -222,52 +222,95 @@ class NotificationUtils:
     ) -> Dict[str, Any]:
         def _send():
             try:
-                update_lines = update_content.split('\n')
-                updated_fields = []
-                for line in update_lines:
+                # 枚举值 → 中文映射（兼容枚举全名和 .value 两种格式）
+                enum_value_mapping = {
+                    'TicketType.PROBLEM': '问题',
+                    'TicketType.FEATURE': '功能请求',
+                    'TicketType.BUG': 'Bug 报告',
+                    'TicketType.SUPPORT': '技术支持',
+                    'TicketType.OTHER': '其他',
+                    'problem': '问题',
+                    'feature': '功能请求',
+                    'bug': 'Bug 报告',
+                    'support': '技术支持',
+                    'other': '其他',
+                    'TicketStatus.NEW': '新建',
+                    'TicketStatus.IN_PROGRESS': '处理中',
+                    'TicketStatus.PENDING': '待处理',
+                    'TicketStatus.RESOLVED': '已解决',
+                    'TicketStatus.CANCELED': '已取消',
+                    'TicketStatus.CLOSED': '已关闭',
+                    'new': '新建',
+                    'in_progress': '处理中',
+                    'pending': '待处理',
+                    'resolved': '已解决',
+                    'canceled': '已取消',
+                    'closed': '已关闭',
+                    'TicketPriority.LOW': '低',
+                    'TicketPriority.MEDIUM': '中',
+                    'TicketPriority.HIGH': '高',
+                    'TicketPriority.URGENT': '紧急',
+                    'low': '低',
+                    'medium': '中',
+                    'high': '高',
+                    'urgent': '紧急',
+                }
+
+                # 可读的字段中文名
+                field_display_names = {
+                    'status': '工单状态',
+                    'assigned_to': '处理人',
+                    'customer': '客户',
+                    'priority': '优先级',
+                    'type': '工单类型',
+                    'title': '工单标题',
+                    'description': '工单描述',
+                    'project_name': '所属项目',
+                    'deadline_at': '截止时间',
+                }
+
+                # 1. 解析 update_content → {field: raw_value}
+                field_values: Dict[str, str] = {}
+                for line in update_content.split('\n'):
                     if ':' in line:
-                        field_name = line.split(':')[0].strip()
-                        updated_fields.append(field_name)
-                link_title = ""
-                if len(updated_fields) == 1:
-                    field = updated_fields[0]
-                    value = update_lines[0].split(':', 1)[1].strip() if ':' in update_lines[0] else ''
+                        k, v = line.split(':', 1)
+                        field_values[k.strip()] = v.strip()
 
-                    enum_value_mapping = {
-                        'TicketType.PROBLEM': '问题',
-                        'TicketType.FEATURE': '功能请求',
-                        'TicketType.BUG': 'Bug 报告',
-                        'TicketType.SUPPORT': '技术支持',
-                        'TicketType.OTHER': '其他',
-                        'problem': '问题',
-                        'feature': '功能请求',
-                        'bug': 'Bug 报告',
-                        'support': '技术支持',
-                        'other': '其他',
-                        'TicketStatus.NEW': '新建',
-                        'TicketStatus.IN_PROGRESS': '处理中',
-                        'TicketStatus.PENDING': '待处理',
-                        'TicketStatus.RESOLVED': '已解决',
-                        'TicketStatus.CLOSED': '已关闭',
-                        'new': '新建',
-                        'in_progress': '处理中',
-                        'pending': '待处理',
-                        'resolved': '已解决',
-                        'closed': '已关闭',
-                        'TicketPriority.LOW': '低',
-                        'TicketPriority.MEDIUM': '中',
-                        'TicketPriority.HIGH': '高',
-                        'TicketPriority.URGENT': '紧急',
-                        'low': '低',
-                        'medium': '中',
-                        'high': '高',
-                        'urgent': '紧急'
-                    }
+                updated_fields = list(field_values.keys())
 
-                    link_title = enum_value_mapping.get(value, value)
+                # 2. 根据 status 字段决定「工单状态」展示值
+                if 'status' in field_values:
+                    raw_status = field_values['status']
+                    link_title = enum_value_mapping.get(raw_status, raw_status)
+                else:
+                    # 非状态类更新：用核心字段概览
+                    if 'priority' in field_values:
+                        link_title = '优先级调整'
+                    elif 'assigned_to' in field_values:
+                        link_title = '重新派单'
+                    elif 'customer' in field_values:
+                        link_title = '客户变更'
+                    elif len(updated_fields) == 0:
+                        link_title = '-'
+                    else:
+                        link_title = '信息更新'
 
-                if len(updated_fields) > 1:
-                    link_title = "多项更新"
+                # 3. 生成「变更原因」——基于具体变更字段动态描述
+                status_only = (updated_fields == ['status'])
+                other_fields = [f for f in updated_fields if f != 'status']
+
+                if status_only and 'status' in field_values:
+                    status_label = enum_value_mapping.get(field_values['status'], field_values['status'])
+                    reason = f"状态变更为「{status_label}」"
+                elif 'status' in field_values and other_fields:
+                    status_label = enum_value_mapping.get(field_values['status'], field_values['status'])
+                    other_labels = [field_display_names.get(f, f) for f in other_fields]
+                    reason = f"状态变更为「{status_label}」，同步更新了{len(other_fields)}项：{'、'.join(other_labels)}"
+                elif other_fields:
+                    labels = [field_display_names.get(f, f) for f in updated_fields]
+                    reason = f"{'、'.join(labels)}等{len(updated_fields)}项信息已更新"
+                else:
+                    reason = "工单信息已更新"
 
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
@@ -279,8 +322,8 @@ class NotificationUtils:
                     loop.close()
 
                 payload = NotificationUtils.instantiate_template(NotificationUtils.STATUS_CHANGE,
-                                                                 title, processed_project_name or "无", link_title, "上一步已完成", operator,
-                                                                 user_names=user_names, url=NotificationUtils.TICKET_HOST + f"?ticket_id={ticket_id}")
+                                                                 title, processed_project_name or "无", link_title, reason, operator,
+                                                                 user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 loop2 = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop2)
                 try:
@@ -319,7 +362,7 @@ class NotificationUtils:
                 current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 payload = NotificationUtils.instantiate_template(NotificationUtils.NEW_TICKET,
                                                                  ticket_id, processed_project_name, processed_title, operator, current_time,
-                                                                 user_names=user_names, url=NotificationUtils.TICKET_HOST + f"?ticket_id={ticket_id}")
+                                                                 user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 loop2 = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop2)
                 try:
@@ -368,7 +411,7 @@ class NotificationUtils:
                     
                     payload = NotificationUtils.instantiate_template(NotificationUtils.YUQU_TICKET_STATUS_CHANGE,
                                                                      ticket_id, processed_ticket_name, yuqi_day, create_str, deadline_str,
-                                                                     user_names=user_names, url=NotificationUtils.TICKET_HOST + f"?ticket_id={ticket_id}")
+                                                                     user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 else:
                     reason = "工单长时间未更新"
                     loop = asyncio.new_event_loop()
@@ -389,11 +432,11 @@ class NotificationUtils:
                     if notify_type == 1:
                         payload = NotificationUtils.instantiate_template(NotificationUtils.CUIBAN_TICKET,
                                                                          ticket_id, processed_project_name, assigned_name, reason, deadline_str,
-                                                                         user_names=user_names, url=NotificationUtils.TICKET_HOST + f"?ticket_id={ticket_id}")
+                                                                         user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                     elif notify_type == 3:
                         payload = NotificationUtils.instantiate_template(NotificationUtils.YUQU_TICKET, ticket_id,
                                                                          processed_project_name, processed_ticket_name, create_str, deadline_str,
-                                                                         user_names=user_names, url=NotificationUtils.TICKET_HOST + f"?ticket_id={ticket_id}")
+                                                                         user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 
                 loop2 = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop2)
