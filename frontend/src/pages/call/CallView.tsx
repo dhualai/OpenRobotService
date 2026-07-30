@@ -1,6 +1,6 @@
 // 我要摇人 —— 全屏 AI 对话 + 左侧会话抽屉 + 右上角历史工单入口
 import { useState, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Navbar } from 'tdesign-mobile-react';
 
 import ChatPanel from '@/shared/components/ChatPanel';
@@ -16,9 +16,15 @@ const ACTIVE_STATUSES = ['new', 'in_progress', 'pending'];
 export default function CallView() {
   const [showHistory, setShowHistory] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
   useEffect(() => {
-    if ((location.state as { showHistory?: boolean })?.showHistory) setShowHistory(true);
-  }, [location.state]);
+    if ((location.state as { showHistory?: boolean })?.showHistory) {
+      setShowHistory(true);
+      // 消费后立即清空 location.state：React Router 的 state 底层是 history.state，
+      // 页面刷新后会残留，导致首屏一直停在历史工单列表（看起来像异常跳转）。
+      navigate(location.pathname, { replace: true, state: null });
+    }
+  }, [location.state, location.pathname, navigate]);
   const [unread, setUnread] = useState(0);
   const { tasksRefreshKey, drawerOpen, setDrawerOpen, conversationTitle } = useWorkbenchStore();
   const username = useAuthStore((s) => s.username);
