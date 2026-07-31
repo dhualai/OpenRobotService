@@ -2,6 +2,7 @@ from typing import List, Dict, Optional, Any
 from app.core.database import db_manager, UserDB
 from app.schemas.user import User, UserInDB
 from app.services.permission_service import permission_service
+from app.models import role_permissions
 import json
 import time
 
@@ -94,7 +95,7 @@ class UserService:
             db = db_manager.get_db()
             try:
                 from sqlalchemy import select
-                stmt = select(permission_service.role_permissions).where(permission_service.role_permissions.c.role_id.in_(all_role_ids))
+                stmt = select(role_permissions).where(role_permissions.c.role_id.in_(all_role_ids))
                 role_permissions_results = db.execute(stmt).fetchall()
                 
                 for result in role_permissions_results:
