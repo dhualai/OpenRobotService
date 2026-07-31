@@ -410,8 +410,10 @@ export default function RoleManage() {
     );
   };
 
-  const systemRoles = roles.filter((r) => r.role_type === 'system');
-  const projectRoles = roles.filter((r) => r.role_type === 'project');
+  const SYSTEM_ROLE_NAMES = new Set(['开发者', '超级管理员', '用户']);
+
+  const systemRoles = roles.filter((r) => r.role_type === 'system' || SYSTEM_ROLE_NAMES.has(r.name));
+  const projectRoles = roles.filter((r) => r.role_type === 'project' && !SYSTEM_ROLE_NAMES.has(r.name));
 
   return (
     <div style={{ padding: 16, position: 'relative' }}>
