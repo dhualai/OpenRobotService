@@ -7,6 +7,7 @@ import { normalizeList } from '@/shared/utils/list';
 interface Role {
   id: string;
   name: string;
+  role_type: 'system' | 'project';
   description?: string;
   permissions?: string[];
   _permDetails?: Permission[];
@@ -34,8 +35,9 @@ export default function RoleManage() {
 
   const [editVisible, setEditVisible] = useState(false);
   const [editingRoleId, setEditingRoleId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<{ name: string; permissions: string[] }>({
+  const [editForm, setEditForm] = useState<{ name: string; role_type: 'system' | 'project'; permissions: string[] }>({
     name: '',
+    role_type: 'project',
     permissions: [],
   });
   const [editOriginalPermissions, setEditOriginalPermissions] = useState<string[]>([]);
@@ -121,7 +123,7 @@ export default function RoleManage() {
 
   const openCreate = () => {
     setEditingRoleId(null);
-    setEditForm({ name: '', permissions: [] });
+    setEditForm({ name: '', role_type: 'project', permissions: [] });
     setEditOriginalPermissions([]);
     setEditVisible(true);
   };
@@ -147,7 +149,7 @@ export default function RoleManage() {
         // use existing permissions from role
       }
 
-      setEditForm({ name: role.name, permissions: [...perms] });
+      setEditForm({ name: role.name, role_type: role.role_type, permissions: [...perms] });
       setEditOriginalPermissions([...perms]);
     } catch (e) {
       Toast({ message: `加载角色权限失败: ${String(e)}`, theme: 'error' });
@@ -193,7 +195,7 @@ export default function RoleManage() {
       } else {
         await request('/roles/', {
           method: 'POST',
-          body: JSON.stringify({ name: editForm.name }),
+          body: JSON.stringify({ name: editForm.name, role_type: editForm.role_type }),
         });
 
         Toast({ message: '角色已创建', theme: 'success' });
@@ -312,92 +314,109 @@ export default function RoleManage() {
 
   if (loading) return <Loading text="加载角色列表..." />;
 
+  const renderRoleCard = (role: Role) => {
+    const permDetails = role._permDetails;
+
+    return (
+      <div
+        key={role.id}
+        ref={(el) => {
+          if (el) cardRefs.current.set(role.id, el);
+          else cardRefs.current.delete(role.id);
+        }}
+        onPointerDown={(e) => handleCardPointerDown(e, role)}
+        onPointerMove={handleCardPointerMove}
+        onPointerUp={handleCardPointerUp}
+        onPointerLeave={handleCardPointerUp}
+        onPointerCancel={handleCardPointerUp}
+        onClick={() => handleCardClick(role)}
+        style={{
+          background: '#fff',
+          borderRadius: 8,
+          padding: 14,
+          marginBottom: 10,
+          boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+          cursor: 'pointer',
+          transition: 'box-shadow 0.2s',
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
+          WebkitTouchCallout: 'none',
+        }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 12px rgba(0,0,0,0.12)';
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLDivElement).style.boxShadow = '0 1px 3px rgba(0,0,0,0.06)';
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 500, marginBottom: 4 }}>{role.name}</div>
+            {role.description && (
+              <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>{role.description}</div>
+            )}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {permDetails && permDetails.length > 0 ? (
+                <>
+                  {permDetails.slice(0, 6).map((p) => (
+                    <span
+                      key={p.id}
+                      style={{
+                        fontSize: 11,
+                        padding: '2px 8px',
+                        borderRadius: 4,
+                        background: `${getPermissionColor(p.resource_type)}15`,
+                        color: getPermissionColor(p.resource_type),
+                        border: `1px solid ${getPermissionColor(p.resource_type)}30`,
+                      }}
+                    >
+                      {p.name}
+                    </span>
+                  ))}
+                  {permDetails.length > 6 && (
+                    <span
+                      style={{
+                        fontSize: 11,
+                        padding: '2px 8px',
+                        color: '#999',
+                      }}
+                    >
+                      +{permDetails.length - 6} 更多
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span style={{ fontSize: 11, color: '#bbb' }}>暂无权限</span>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const systemRoles = roles.filter((r) => r.role_type === 'system');
+  const projectRoles = roles.filter((r) => r.role_type === 'project');
+
   return (
     <div style={{ padding: 16, position: 'relative' }}>
       <Button theme="primary" block style={{ marginBottom: 16 }} onClick={openCreate}>
         新建角色
       </Button>
 
-      {roles.map((role) => {
-        const permDetails = role._permDetails;
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: '#333' }}>系统角色</div>
+      {systemRoles.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 20, color: '#999', fontSize: 13 }}>暂无系统角色</div>
+      ) : (
+        systemRoles.map(renderRoleCard)
+      )}
 
-        return (
-          <div
-            key={role.id}
-            ref={(el) => {
-              if (el) cardRefs.current.set(role.id, el);
-              else cardRefs.current.delete(role.id);
-            }}
-            onPointerDown={(e) => handleCardPointerDown(e, role)}
-            onPointerMove={handleCardPointerMove}
-            onPointerUp={handleCardPointerUp}
-            onPointerLeave={handleCardPointerUp}
-            onPointerCancel={handleCardPointerUp}
-            onClick={() => handleCardClick(role)}
-            style={{
-              background: '#fff',
-              borderRadius: 8,
-              padding: 14,
-              marginBottom: 10,
-              boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-              cursor: 'pointer',
-              transition: 'box-shadow 0.2s',
-              userSelect: 'none',
-              WebkitUserSelect: 'none',
-              WebkitTouchCallout: 'none',
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 12px rgba(0,0,0,0.12)';
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLDivElement).style.boxShadow = '0 1px 3px rgba(0,0,0,0.06)';
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 500, marginBottom: 4 }}>{role.name}</div>
-                {role.description && (
-                  <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>{role.description}</div>
-                )}
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                  {permDetails && permDetails.length > 0 ? (
-                    <>
-                      {permDetails.slice(0, 6).map((p) => (
-                        <span
-                          key={p.id}
-                          style={{
-                            fontSize: 11,
-                            padding: '2px 8px',
-                            borderRadius: 4,
-                            background: `${getPermissionColor(p.resource_type)}15`,
-                            color: getPermissionColor(p.resource_type),
-                            border: `1px solid ${getPermissionColor(p.resource_type)}30`,
-                          }}
-                        >
-                          {p.name}
-                        </span>
-                      ))}
-                      {permDetails.length > 6 && (
-                        <span
-                          style={{
-                            fontSize: 11,
-                            padding: '2px 8px',
-                            color: '#999',
-                          }}
-                        >
-                          +{permDetails.length - 6} 更多
-                        </span>
-                      )}
-                    </>
-                  ) : (
-                    <span style={{ fontSize: 11, color: '#bbb' }}>暂无权限</span>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      })}
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, marginTop: 20, color: '#333' }}>项目角色</div>
+      {projectRoles.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 20, color: '#999', fontSize: 13 }}>暂无项目角色</div>
+      ) : (
+        projectRoles.map(renderRoleCard)
+      )}
 
       {contextMenu.visible && contextMenu.role && (
         <div
@@ -458,6 +477,33 @@ export default function RoleManage() {
                 clearable
               />
             </FormItem>
+
+            {!editingRoleId ? (
+              <FormItem label="角色类型">
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {(['project', 'system'] as const).map((t) => (
+                    <div
+                      key={t}
+                      onClick={() => setEditForm((p) => ({ ...p, role_type: t }))}
+                      style={{
+                        flex: 1, textAlign: 'center', padding: '8px 0', borderRadius: 6, cursor: 'pointer',
+                        fontSize: 13,
+                        background: editForm.role_type === t ? '#0052d9' : '#f5f5f5',
+                        color: editForm.role_type === t ? '#fff' : '#666',
+                      }}
+                    >
+                      {t === 'project' ? '项目角色' : '系统角色'}
+                    </div>
+                  ))}
+                </div>
+              </FormItem>
+            ) : (
+              <FormItem label="角色类型">
+                <span style={{ fontSize: 13, color: '#999' }}>
+                  {editForm.role_type === 'system' ? '系统角色' : '项目角色'}（创建后不可更改）
+                </span>
+              </FormItem>
+            )}
 
             {editingRoleId && (
               <FormItem label="权限配置">

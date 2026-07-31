@@ -20,7 +20,28 @@ interface Project { id?: string; code?: string; name: string; }
 
 const maskCode = (code: string): string => {
   if (!code) return '';
-  return code.slice(0, 30) + '*'.repeat(10);
+  return code.length > 10 ? `${code.slice(0, 10)}...` : code;
+};
+
+const handleCopyCode = async (text: string) => {
+  if (!text) return;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    Toast({ message: '已复制', theme: 'success' });
+  } catch {
+    Toast({ message: '复制失败，请手动复制', theme: 'error' });
+  }
 };
 
 const todayStr = (): string => {
@@ -31,8 +52,7 @@ const todayStr = (): string => {
   return `${y}-${m}-${day}`;
 };
 
-// 关联人员可选角色列表
-const ASSOCIATE_ROLES = ['实施', '数据分析师', '数据查看', '研发项目经理', '管理员', '项目对接人'];
+interface RoleItem { id: string; name: string; role_type?: string; }
 
 interface AssociateItem { id: string; userId: string; userName: string; role: string; }
 
@@ -44,6 +64,7 @@ export default function ProjectAuth() {
   const [loading, setLoading] = useState(false);
   const [projectLoading, setProjectLoading] = useState(true);
   const [projectPickerVisible, setProjectPickerVisible] = useState(false);
+  const [authListExpanded, setAuthListExpanded] = useState(false);
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   // 添加关联人员弹窗：用户列表接入真实的可指派人员接口 GET /api/tasks/assignable-users
@@ -51,6 +72,10 @@ export default function ProjectAuth() {
   const [associateUser, setAssociateUser] = useState<UserItem | null>(null);
   const [associateRole, setAssociateRole] = useState<string | null>(null);
   const [associateList, setAssociateList] = useState<AssociateItem[]>([]);
+
+  // 角色列表接入角色管理接口 GET /api/admin/roles/
+  const [roles, setRoles] = useState<RoleItem[]>([]);
+  const [rolesLoading, setRolesLoading] = useState(false);
 
   // 申请授权码：机器码 + 开始/结束日期，调用 POST /export/apply_project_license（经 MQTT 审批）
   const [machineCode, setMachineCode] = useState('');
@@ -72,6 +97,7 @@ export default function ProjectAuth() {
   const fetchLicenses = async (projectCode: string) => {
     if (!projectCode) return;
     setLoading(true);
+    setAuthListExpanded(false);
     try {
       const data = await request(`/projects/licenses/${encodeURIComponent(projectCode)}`);
       setItems(normalizeList<AuthItem>(data));
@@ -79,6 +105,19 @@ export default function ProjectAuth() {
       Toast({ message: `加载授权失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
       setItems([]);
     } finally { setLoading(false); }
+  };
+
+  // 加载角色列表供关联人员选择角色使用（仅项目角色，系统权限角色不应出现在此选择器）
+  const fetchRoles = async () => {
+    setRolesLoading(true);
+    try {
+      const data = await request<RoleItem[]>('/roles/');
+      setRoles(normalizeList<RoleItem>(data).filter((r) => r.role_type === 'project'));
+    } catch (err) {
+      Toast({ message: `加载角色列表失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setRolesLoading(false);
+    }
   };
 
   const handleProjectSelect = (project: Project) => {
@@ -168,6 +207,7 @@ export default function ProjectAuth() {
     setAssociateUser(null);
     setAssociateRole(null);
     setAssociateVisible(true);
+    if (roles.length === 0) fetchRoles();
   };
 
   // 保存关联人员（前端占位：暂存于本地列表，待接入后端项目人员绑定接口）
@@ -251,19 +291,47 @@ export default function ProjectAuth() {
           <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12, color: '#0052d9' }}>
             {selectedProject.name} - 授权记录 ({items.length})
           </div>
-          {items.map((item) => (
+          {items.map((item, idx) => (
+            (authListExpanded || idx < 2) && (
             <div key={item.id} style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                <div style={{ fontWeight: 500, wordBreak: 'break-all' }}>{maskCode(item.license_code)}</div>
+                <span
+                  onClick={() => handleCopyCode(item.license_code)}
+                  style={{ flexShrink: 0, fontSize: 12, color: '#0052d9', cursor: 'pointer' }}
+                >
+                  复制
+                </span>
+              </div>
+              {item.machine_code && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                  <div style={{ fontSize: 12, color: '#999', wordBreak: 'break-all' }}>机器码：{maskCode(item.machine_code)}</div>
+                  <span
+                    onClick={() => handleCopyCode(item.machine_code!)}
+                    style={{ flexShrink: 0, fontSize: 12, color: '#0052d9', cursor: 'pointer' }}
+                  >
+                    复制
+                  </span>
+                </div>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginTop: 4 }}>
                 <div>
-                  <div style={{ fontWeight: 500 }}>{maskCode(item.license_code)}</div>
-                  {item.machine_code && <div style={{ fontSize: 12, color: '#999' }}>机器码：{maskCode(item.machine_code)}</div>}
                   <div style={{ fontSize: 13, color: '#666' }}>有效期：{item.apply_time} ～ {item.expire_time}</div>
                   <div style={{ fontSize: 12, color: '#999' }}>申请人：{item.applicant}</div>
                 </div>
                 <Button size="small" theme="danger" variant="outline" onClick={() => handleRevoke(item)}>撤销</Button>
               </div>
             </div>
+            )
           ))}
+          {items.length > 2 && (
+            <div
+              style={{ textAlign: 'center', padding: '8px 0', color: '#0052d9', fontSize: 13, cursor: 'pointer' }}
+              onClick={() => setAuthListExpanded((v) => !v)}
+            >
+              {authListExpanded ? '收起 ∧' : `展开全部 ${items.length} 条 ∨`}
+            </div>
+          )}
           {items.length === 0 && (
             <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>该项目暂无授权记录</div>
           )}
@@ -366,10 +434,15 @@ export default function ProjectAuth() {
 
           <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>选择角色</div>
           <div style={{ marginBottom: 20 }}>
-            {ASSOCIATE_ROLES.map((role) => (
+            {rolesLoading ? (
+              <Loading text="加载角色..." />
+            ) : roles.length === 0 ? (
+              <div style={{ padding: '10px 0', color: '#999', fontSize: 13 }}>暂无可选角色，请先在角色管理中创建</div>
+            ) : (
+              roles.map((role) => (
               <div
-                key={role}
-                onClick={() => setAssociateRole(role)}
+                key={role.id}
+                onClick={() => setAssociateRole(role.name)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 10,
                   padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
@@ -378,17 +451,18 @@ export default function ProjectAuth() {
                 <div
                   style={{
                     width: 16, height: 16, borderRadius: '50%',
-                    border: `1px solid ${associateRole === role ? '#0052d9' : '#ccc'}`,
+                    border: `1px solid ${associateRole === role.name ? '#0052d9' : '#ccc'}`,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                   }}
                 >
-                  {associateRole === role && (
+                  {associateRole === role.name && (
                     <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />
                   )}
                 </div>
-                <div style={{ fontSize: 14 }}>{role}</div>
+                <div style={{ fontSize: 14 }}>{role.name}</div>
               </div>
-            ))}
+              ))
+            )}
           </div>
 
           <div style={{ display: 'flex', gap: 8 }}>

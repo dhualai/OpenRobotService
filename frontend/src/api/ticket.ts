@@ -38,11 +38,12 @@ export const reportTicket = (ticketId: number | string, assignedTo: string) =>
   });
 
 /** 撤回：将工单状态置为已取消（Canceled）
- *  后端 PATCH /{task_id}/status 的 status 参数是 Body(...)（请求体），不是 Query */
+ *  后端 PATCH /{task_id}/status 的 status 参数用 Body(..., embed=True) 声明，
+ *  因此请求体必须是 JSON 对象 { status: "canceled" }（不能是裸字符串），否则 FastAPI 报 422 Field required。 */
 export const cancelTicket = (ticketId: number | string) =>
   request(`/${Number(ticketId)}/status`, {
     method: 'PATCH',
-    body: JSON.stringify('canceled'),
+    body: JSON.stringify({ status: 'canceled' }),
   });
 
 /** 评论列表（按工单绑定） */

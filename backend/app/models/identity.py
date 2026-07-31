@@ -37,6 +37,7 @@ class Role(Base):
     __tablename__ = "roles"
     id = Column(String(64), primary_key=True)
     name = Column(String(128), unique=True, nullable=False)
+    role_type = Column(String(20), nullable=False, server_default='project', comment="角色类型：system=系统角色，project=项目角色")
 
 
 class Permission(Base):
