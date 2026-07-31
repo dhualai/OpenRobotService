@@ -200,6 +200,7 @@ class ProjectLicense(Base):
     license_code = Column(Text, nullable=False, comment='授权码')
     applicant = Column(String(50), nullable=False, comment='申请人')
     applicant_id = Column(String(20), nullable=False, comment='申请人ID')
+    max_vehicles = Column(Integer, nullable=True, comment='允许最大车数，为空表示不限制')
     created_at = Column(String(30), nullable=False, comment='创建时间')
 
     __table_args__ = (
