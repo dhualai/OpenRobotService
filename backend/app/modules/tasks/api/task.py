@@ -242,31 +242,41 @@ async def get_task_project_members(
         result = []
         seen = set()
 
-        # ── 1. 工单处理人始终排第一 ──
+        project_id = getattr(ticket, "project_id", None)
+
+        # ── 1. 提单人和被指派人始终排在最前面 ──
+        key_users = []
         assigned_to = getattr(ticket, "assigned_to", None)
+        created_by = getattr(ticket, "created_by", None)
         if assigned_to:
+            key_users.append((assigned_to, "处理人"))
+        if created_by and created_by != assigned_to:
+            key_users.append((created_by, "提单人"))
+
+        if key_users:
             from app.core.db import SessionLocal
             from app.models.identity import UserDB
             sync_db = SessionLocal()
             try:
-                assignee = sync_db.query(UserDB).filter(
-                    (UserDB.username == assigned_to) | (UserDB.id == assigned_to)
-                ).first()
-                if assignee:
-                    uname = assignee.username or ""
-                    if uname:
-                        seen.add(uname)
-                        result.append(ProjectMemberResponse(
-                            id=uname,
-                            username=uname,
-                            name=assignee.name or uname,
-                            role_name="处理人",
-                        ))
+                for uid_or_username, role_label in key_users:
+                    user = sync_db.query(UserDB).filter(
+                        (UserDB.username == uid_or_username) | (UserDB.id == uid_or_username)
+                    ).first()
+                    if user:
+                        uname = user.username or ""
+                        if uname and uname not in seen:
+                            seen.add(uname)
+                            result.append(ProjectMemberResponse(
+                                id=uname,
+                                username=uname,
+                                name=user.name or uname,
+                                role_name=role_label,
+                            ))
             finally:
                 sync_db.close()
 
-        # ── 2. 项目成员 ──
-        project_id = getattr(ticket, "project_id", None)
+        # ── 2. 提单人/处理人 + 项目成员 ──
+        # 即使没有项目也能 @ 提单人和处理人
         if project_id:
             members = db_manager.get_project_members(project_id, include_usp=False)
             for m in members:
