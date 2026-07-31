@@ -188,11 +188,7 @@ export default function TicketDetailPage() {
     </div>
   );
 
-  const dx = ticket.diagnosis;
-  const isProblem = ticket.type === 'problem';
-  const isBug = ticket.type === 'bug';
-  const isFeature = ticket.type === 'feature';
-  const isSupport = ticket.type === 'support';
+
 
   return (
     <div className="ticket-detail-page" style={{ paddingBottom: 72 }}>
@@ -219,42 +215,7 @@ export default function TicketDetailPage() {
           </div>
         )}
 
-        {/* 类型专属字段 */}
-        {(isProblem || isBug || isFeature || isSupport) && (
-          <div className="detail-card">
-            <h4 className="detail-card__h">补充信息</h4>
-            {isProblem && (
-              <>
-                {ticket.location && <DetailRow label="位置" value={ticket.location} />}
-                {ticket.robot_type && <DetailRow label="机器人型号" value={ticket.robot_type} />}
-                {ticket.fault_code && <DetailRow label="故障码" value={ticket.fault_code} />}
-                {ticket.special_notes && <DetailRow label="特殊说明" value={ticket.special_notes} />}
-              </>
-            )}
-            {isBug && (
-              <>
-                {ticket.severity && <DetailRow label="严重程度" value={ticket.severity} />}
-                {ticket.version && <DetailRow label="版本" value={ticket.version} />}
-                {ticket.steps_to_reproduce && <DetailRow label="复现步骤" value={ticket.steps_to_reproduce} />}
-                {ticket.expected_result && <DetailRow label="预期结果" value={ticket.expected_result} />}
-                {ticket.actual_result && <DetailRow label="实际结果" value={ticket.actual_result} />}
-              </>
-            )}
-            {isFeature && (
-              <>
-                {ticket.scenario && <DetailRow label="场景" value={ticket.scenario} />}
-                {ticket.expected_effect && <DetailRow label="期望效果" value={ticket.expected_effect} />}
-                {ticket.source && <DetailRow label="来源" value={ticket.source} />}
-              </>
-            )}
-            {isSupport && (
-              <>
-                {ticket.support_type && <DetailRow label="支持类型" value={ticket.support_type} />}
-                {ticket.preferred_response && <DetailRow label="期望响应" value={ticket.preferred_response} />}
-              </>
-            )}
-          </div>
-        )}
+
 
         {/* AI 讨论摘要（与系统任务共用 tasks 表 metadata_info.ai_summary）*/}
         {ticket?.ticket_id && (
