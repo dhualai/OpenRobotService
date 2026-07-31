@@ -36,7 +36,7 @@ async def create_role(
     role_id = f"role_{uuid.uuid4().hex[:8]}"
     
     try:
-        result = db_manager.add_role(role_id, role_data.name)
+        result = db_manager.add_role(role_id, role_data.name, role_data.role_type)
         if not result:
             raise HTTPException(status_code=400, detail="角色创建失败，可能已存在")
         
