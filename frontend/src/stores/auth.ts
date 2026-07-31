@@ -13,6 +13,28 @@ const STORAGE_KEYS = {
   PROJECT_IDS: 'profile_project_ids',
 };
 
+/**
+ * 「手动登出」持久标记（sessionStorage）。
+ *
+ * 用途：登出后禁止微信静默 OAuth 自动登录、把用户固定在 /login。
+ * - 模块级 loggingOut 标记只在当前 SPA 会话内存有效，刷新即复位；
+ *   且 AuthGuard 的 redirectUnauthenticated 此前未识别它，登出瞬间仍会整页跳微信 OAuth。
+ * - 改用 sessionStorage 持久化「已手动登出」意图：
+ *   守卫与 Login 页据此跳过自动微信登录，停留在登录页由用户手动重新登录。
+ * - sessionStorage 随微信 webview 关闭/新开会话复位：新会话首次访问仍可自动登录，
+ *   仅在「同一会话内登出后」生效，符合「登出后固定在登录页」诉求。
+ */
+const MANUAL_LOGOUT_KEY = 'manual_logout';
+
+/** 是否处于「手动登出」状态（同一会话内登出后、未重新登录前为 true） */
+export function isManualLogout(): boolean {
+  try {
+    return sessionStorage.getItem(MANUAL_LOGOUT_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 export interface AuthState {
   isLoggedIn: boolean;
   username: string;
@@ -49,6 +71,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   login: (authData, user) => {
     setLoggingOut(false);
+    // 重新登录清除「手动登出」标记，恢复自动登录能力
+    try { sessionStorage.removeItem(MANUAL_LOGOUT_KEY); } catch { /* SSR safe */ }
     const expiresAt = Date.now() + authData.expires_in * 1000;
     setApiToken(authData.access_token);
     set({
@@ -70,6 +94,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // 由调用方 navigate('/login?reason=logout') 把页面停在登录页。
     setLoggingOut(true);
     clearApiToken();
+    // 标记「手动登出」：同一会话内禁止微信静默 OAuth 自动登录，固定在 /login
+    try { sessionStorage.setItem(MANUAL_LOGOUT_KEY, '1'); } catch { /* SSR safe */ }
     set({
       token: null,
       username: '',
