@@ -97,7 +97,7 @@ def _default_config() -> dict:
                 "propagate": False,
             },
             _ASSIGNER_LOGGER: {
-                "level": "DEBUG",
+                "level": "INFO",
                 "handlers": ["console", "assigner_file"],
                 "propagate": False,
             },
