@@ -10,6 +10,7 @@ const STORAGE_KEYS = {
   USERNAME: 'username',
   NAME: 'profile_name',
   AVATAR_RESOURCE_ID: 'profile_avatar_resource_id',
+  PROJECT_IDS: 'profile_project_ids',
 };
 
 export interface AuthState {
@@ -22,6 +23,8 @@ export interface AuthState {
   isAdmin: boolean;
   roles: Record<string, string[]> | null;
   permissions: string[];
+  // 当前用户关联的项目 ID（取自 projectPermissions 的 keys），用于按项目过滤任务
+  projectIds: string[];
 
   login: (authData: { access_token: string; refresh_token: string; expires_in: number }, user: string) => void;
   logout: () => void;
@@ -42,6 +45,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isAdmin: false,
   roles: null,
   permissions: [],
+  projectIds: [],
 
   login: (authData, user) => {
     setLoggingOut(false);
@@ -76,6 +80,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       isAdmin: false,
       roles: null,
       permissions: [],
+      projectIds: [],
     });
     Object.values(STORAGE_KEYS).forEach((key) => localStorage.removeItem(key));
   },
@@ -114,7 +119,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const request = createRequest(API_CONFIG.ADMIN.BASE_URL, '用户中心');
     try {
       setApiToken(authToken);
-      const userData = await request<{ roles?: { project_backend?: string[] }, name?: string, avatar_resource_id?: number | null, permissions?: string[] }>(
+      const userData = await request<{ roles?: { project_backend?: string[] }, name?: string, avatar_resource_id?: number | null, permissions?: string[], projectPermissions?: Record<string, unknown> }>(
         `/users/${user}/detail`
       );
       const projectRoles = userData.roles?.project_backend || [];
@@ -122,12 +127,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const name = userData.name || '';
       const avatarResourceId = userData.avatar_resource_id ?? null;
       const permissions = userData.permissions || [];
+      // projectPermissions 的 keys 即当前用户关联的项目 ID（与 task.project_id 同源）
+      const projectIds = Object.keys(userData.projectPermissions || {});
       set({
         roles: (userData.roles as Record<string, string[]>) || null,
         isAdmin: hasAdminRole,
         name,
         avatarResourceId,
         permissions,
+        projectIds,
       });
       try {
         localStorage.setItem(STORAGE_KEYS.NAME, name);
@@ -136,6 +144,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         } else {
           localStorage.setItem(STORAGE_KEYS.AVATAR_RESOURCE_ID, String(avatarResourceId));
         }
+        localStorage.setItem(STORAGE_KEYS.PROJECT_IDS, JSON.stringify(projectIds));
       } catch { /* SSR safe */ }
       return hasAdminRole;
     } catch {
@@ -169,6 +178,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         setApiToken(savedToken);
         const savedName = localStorage.getItem(STORAGE_KEYS.NAME) || '';
         const savedAvatarId = localStorage.getItem(STORAGE_KEYS.AVATAR_RESOURCE_ID);
+        const savedProjectIdsRaw = localStorage.getItem(STORAGE_KEYS.PROJECT_IDS);
+        let savedProjectIds: string[] = [];
+        try {
+          savedProjectIds = savedProjectIdsRaw ? JSON.parse(savedProjectIdsRaw) : [];
+        } catch { savedProjectIds = []; }
         set({
           token: savedToken,
           username: savedUsername,
@@ -176,6 +190,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           isLoading: false,
           name: savedName,
           avatarResourceId: savedAvatarId ? Number(savedAvatarId) : null,
+          projectIds: savedProjectIds,
         });
         // 本地缓存先行展示，避免闪回微信ID；随后静默刷新最新的姓名/头像
         get().fetchUserDetails(savedUsername, savedToken);
