@@ -1,10 +1,9 @@
-"""L3/L4 语义+历史召回：共享 Embedding，一次查询返回两路分数
+"""L2/L3 模块+历史召回
 
-- semantic_score: cos(工单嵌入, 工程师画像嵌入)
-- history_score: cos(工单嵌入, 历史已解决工单嵌入) → 按 engineer_id 聚合
+- L2 semantic_score: cos(工单, 模块锚文本) → 按工程师 responsibility_modules 反查
+- L3 history_score:  cos(工单, 历史已解决工单) → 按 engineer_id 聚合
 
-模块级单例 _cache — Embedding 在首次请求时计算，后续复用。
-人员变更时调 invalidate() 或等 engineers 列表变化自动刷新。
+模块锚文本配置在 assigner_config.yaml 的 module_anchor_texts 字段。
 """
 
 from typing import Dict, List, Optional
@@ -22,18 +21,13 @@ def _cos(u, v):
     return float(dot / (na * nb)) if na > 0 and nb > 0 else 0.0
 
 
-def _eng_fingerprint(engineers: List[EngineerProfile]) -> str:
-    """用人员 ID 排序拼接做缓存指纹，人员变更时自动失效。"""
-    ids = sorted(e.id for e in engineers)
-    return ",".join(ids)
-
-
-# ── 模块级单例缓存 ──
+# ── 模块级缓存 ──
 _cache = {
-    "hash": "",                  # 人员指纹
-    "eng_embs": {},
+    "module_embeddings": {},    # {模块名: embedding}
+    "anchor_hash": "",          # 锚文本变更检测
     "hist_recs": [],
     "hist_embs": [],
+    "hist_hash": "",
 }
 
 
@@ -42,68 +36,100 @@ class SemanticRecaller:
     def __init__(self, config=None):
         self._config = config or AssignerConfig()
 
-    def _build_eng_texts(self, engineers):
-        out = []
-        for e in engineers:
-            parts = []
-            for prod, mods in e.responsibility_modules.items():
-                if mods:
-                    parts.append(f"[{prod}] {', '.join(mods)}")
-                else:
-                    parts.append(f"[{prod}]")
-            t = " | ".join(parts) if parts else "无责任模块"
-            if e.duty_text:
-                t += f" [职责] {e.duty_text}"
-            out.append(t)
-        return out
+    def _build_module_tickets(
+        self, ticket: TicketContext
+    ) -> str:
+        """工单文本 → Embedding 查询用"""
+        return " ".join(filter(None, [
+            ticket.title or "",
+            ticket.problem_description or "",
+            ticket.robot_type or "",
+            ticket.fault_code or "",
+        ]))
 
-    async def _ensure_precomputed(self, engineers):
+    async def _ensure_module_cache(self):
+        """预计算模块锚文本 embedding（锚文本变更时重算）"""
         global _cache
-        h = _eng_texts_hash(engineers)
-        if _cache["hash"] == h and _cache["eng_embs"]:
-            return  # 缓存命中
+        anchors = self._config.module_anchor_texts or {}
+        if not anchors:
+            return
+
+        import hashlib, json
+        h = hashlib.md5(json.dumps(anchors, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        if _cache["anchor_hash"] == h and _cache["module_embeddings"]:
+            return
 
         from ai.core import get_embed_client
         ec = await get_embed_client()
 
-        texts = self._build_eng_texts(engineers)
-        if texts:
-            embs = await ec.embed_batch(texts)
-            _cache["eng_embs"] = {}
-            for eng, emb in zip(engineers, embs):
-                _cache["eng_embs"][eng.id] = emb.tolist() if isinstance(emb, np.ndarray) else emb
+        mod_names = list(anchors.keys())
+        mod_texts = [anchors[n] for n in mod_names]
+        embs = await ec.embed_batch(mod_texts)
+        _cache["module_embeddings"] = {}
+        for name, emb in zip(mod_names, embs):
+            _cache["module_embeddings"][name] = emb.tolist() if isinstance(emb, np.ndarray) else emb
+        _cache["anchor_hash"] = h
 
-        _cache["hist_recs"] = load_history_records(self._config.module_keywords)
-        if _cache["hist_recs"]:
-            htexts = [" ".join(filter(None, [r.get("title", ""), r.get("description", "")]))
-                      for r in _cache["hist_recs"]]
-            _cache["hist_embs"] = [emb.tolist() if isinstance(emb, np.ndarray) else emb
-                                   for emb in await ec.embed_batch(htexts)]
-        else:
-            _cache["hist_embs"] = []
+    async def _ensure_history_cache(self):
+        """预计算历史工单 embedding"""
+        global _cache
+        recs = load_history_records(self._config.module_keywords)
+        if not recs:
+            return
 
-        _cache["hash"] = h
-
-    async def arecall(self, ticket, engineers
-                      ) -> tuple[Dict[str, float], Dict[str, float]]:
-        await self._ensure_precomputed(engineers)
+        import hashlib, json
+        h = hashlib.md5(json.dumps(recs, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+        if _cache["hist_hash"] == h and _cache["hist_embs"]:
+            return
 
         from ai.core import get_embed_client
         ec = await get_embed_client()
-        q = " ".join(filter(None, [ticket.title, ticket.problem_description, ticket.robot_type]))
+        htexts = [" ".join(filter(None, [r.get("title", ""), r.get("description", "")]))
+                  for r in recs]
+        _cache["hist_recs"] = recs
+        _cache["hist_embs"] = [emb.tolist() if isinstance(emb, np.ndarray) else emb
+                               for emb in await ec.embed_batch(htexts)]
+        _cache["hist_hash"] = h
+
+    async def arecall(
+        self, ticket: TicketContext, engineers: List[EngineerProfile],
+    ) -> tuple[Dict[str, float], Dict[str, float]]:
+        """
+        Returns:
+            sem: {engineer_id: score} — 模块匹配分数
+            his: {engineer_id: score} — 历史工单匹配分数
+        """
+        await self._ensure_module_cache()
+        await self._ensure_history_cache()
+
+        from ai.core import get_embed_client
+        ec = await get_embed_client()
+        q = self._build_module_tickets(ticket)
         qe = (await ec.embed(q)).tolist()
 
-        # 画像语义
-        sem = {}
-        for eng in engineers:
-            emb = _cache["eng_embs"].get(eng.id)
-            if emb:
-                s = _cos(qe, emb)
-                if s > 0:
-                    sem[eng.id] = s
+        # ── L2 模块召回 ──
+        sem: Dict[str, float] = {}
+        module_embs = _cache["module_embeddings"]
+        if module_embs:
+            # 工单 vs 每个模块锚文本 → 取匹配分数
+            module_scores: Dict[str, float] = {}
+            for mod_name, memb in module_embs.items():
+                s = _cos(qe, memb)
+                if s > 0.3:
+                    module_scores[mod_name] = s
 
-        # 历史工单语义 → 按 engineer_id 聚合
-        his = {}
+            # 按模块分数反查工程师 → 加权累计
+            for eng in engineers:
+                score = 0.0
+                for prod, mods in eng.responsibility_modules.items():
+                    for mod in mods:
+                        if mod in module_scores:
+                            score = max(score, module_scores[mod])
+                if score > 0:
+                    sem[eng.id] = score
+
+        # ── L3 历史召回 ──
+        his: Dict[str, float] = {}
         his_recs = _cache["hist_recs"]
         his_embs = _cache["hist_embs"]
         if his_recs and his_embs:
@@ -122,7 +148,8 @@ class SemanticRecaller:
 
 def invalidate_semantic_cache():
     global _cache
-    _cache["hash"] = ""
-    _cache["eng_embs"] = {}
+    _cache["module_embeddings"] = {}
+    _cache["anchor_hash"] = ""
     _cache["hist_recs"] = []
     _cache["hist_embs"] = []
+    _cache["hist_hash"] = ""

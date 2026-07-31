@@ -1,10 +1,16 @@
 // 项目进度管理 —— 聚合项目列表 + 风险状态，侧重视觉化项目进度
 import { useState, useEffect, useCallback } from 'react';
-import { Button, Toast, Loading } from 'tdesign-mobile-react';
+import { Button, Toast, Loading, Input } from 'tdesign-mobile-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+
+interface TaskExecutionStats {
+  total_tasks: number;
+  finished_tasks: number;
+  completion_rate: number | null;
+}
 
 interface ProjectItem {
   id: string;
@@ -12,9 +18,12 @@ interface ProjectItem {
   name: string;
   status: string;
   contact_person: string;
+  project_manager?: string | null;
   risks: number;
   project_summary: string;
   task_execution_status: string;
+  task_execution_stats?: TaskExecutionStats | null;
+  latest_manual_switch_count?: number | null;
   settlement_period?: string | null; // 业绩核算期，格式 YYYY-MM，来自企业微信同步
 }
 
@@ -44,6 +53,7 @@ export default function ProjectProgress() {
   const filter = (searchParams.get('filter') as ProjectFilter | null) || null;
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [keyword, setKeyword] = useState('');
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   const fetchProjects = useCallback(async () => {
@@ -67,13 +77,20 @@ export default function ProjectProgress() {
   ).length;
 
   const displayProjects = (() => {
+    let list = projects;
     if (filter === 'new') {
       const ym = currentYearMonth();
-      return projects.filter((p) => p.settlement_period === ym);
+      list = list.filter((p) => p.settlement_period === ym);
+    } else if (filter === 'risk') {
+      list = list.filter((p) => p.risks > 0);
+    } else if (filter === 'no_contact') {
+      list = list.filter((p) => !p.contact_person);
     }
-    if (filter === 'risk') return projects.filter((p) => p.risks > 0);
-    if (filter === 'no_contact') return projects.filter((p) => !p.contact_person);
-    return projects;
+    if (keyword.trim()) {
+      const kw = keyword.trim().toLowerCase();
+      list = list.filter((p) => p.name && p.name.toLowerCase().includes(kw));
+    }
+    return list;
   })();
 
   return (
@@ -82,6 +99,16 @@ export default function ProjectProgress() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 16 }}>
         <StatCard label="项目总数" value={projects.length} color="#0052d9" />
         <StatCard label="活跃项目" value={activeCount} color="#2ba471" />
+      </div>
+
+      {/* 项目名称搜索 */}
+      <div style={{ marginBottom: 12 }}>
+        <Input
+          value={keyword}
+          onChange={(v) => setKeyword(String(v))}
+          placeholder="搜索项目名称"
+          clearable
+        />
       </div>
 
       {/* 筛选提示条：从跨项目看板某个统计数字点进来时显示，可点击返回全部项目 */}
@@ -121,26 +148,24 @@ export default function ProjectProgress() {
               }}
               onClick={() => navigate(`/admin/project-detail/${p.id}`)}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 15 }}>{p.name}</div>
-                  <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
-                    {p.project_code} · 对接人: {p.contact_person || '未指定'}
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: 8 }}>
-                  <span style={{
-                    fontSize: 11, padding: '2px 8px', borderRadius: 10,
-                    background: '#f0f0f0', color: '#666',
-                  }}>
-                    {p.status}
+              <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600, fontSize: 15 }}>
+                {p.name}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                <span style={{
+                  fontSize: 11, padding: '2px 8px', borderRadius: 10,
+                  background: '#f0f0f0', color: '#666',
+                }}>
+                  {p.status}
+                </span>
+                {execStatus && (
+                  <span style={{ fontSize: 11, color: execColor, fontWeight: 500 }}>
+                    ● {execStatus}
                   </span>
-                  {execStatus && (
-                    <div style={{ fontSize: 11, color: execColor, marginTop: 4, fontWeight: 500 }}>
-                      ● {execStatus}
-                    </div>
-                  )}
-                </div>
+                )}
+              </div>
+              <div style={{ fontSize: 12, color: '#999', marginTop: 6 }}>
+                {p.project_code} · 项目经理: {p.project_manager || '未指定'}
               </div>
 
               {/* 进度条简易展示 */}
@@ -149,11 +174,24 @@ export default function ProjectProgress() {
                   <span style={{ fontSize: 12, color: '#d54941' }}>⚠ {p.risks} 项未关闭风险</span>
                 </div>
               )}
-              {!hasRisk && p.project_summary && p.project_summary !== '无风险' && (
-                <div style={{ marginTop: 8, fontSize: 12, color: '#666', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {p.project_summary}
-                </div>
-              )}
+
+              {/* 任务统计：任务总数 / 已完成任务 / 任务完成率 / 切手动次数 */}
+              <div style={{
+                marginTop: 10, paddingTop: 10, borderTop: '1px solid #f0f0f0',
+                display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6,
+              }}>
+                <MiniStat label="任务总数" value={p.task_execution_stats?.total_tasks ?? '-'} />
+                <MiniStat label="已完成任务" value={p.task_execution_stats?.finished_tasks ?? '-'} />
+                <MiniStat
+                  label="任务完成率"
+                  value={
+                    p.task_execution_stats?.completion_rate != null
+                      ? `${Math.round(p.task_execution_stats.completion_rate * 100)}%`
+                      : '-'
+                  }
+                />
+                <MiniStat label="切手动次数" value={p.latest_manual_switch_count ?? '-'} />
+              </div>
             </div>
           );
         })
@@ -174,6 +212,15 @@ function StatCard({ label, value, color }: { label: string; value: number; color
     <div style={{ background: '#fff', borderRadius: 8, padding: '14px 12px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)', textAlign: 'center' }}>
       <div style={{ fontSize: 26, fontWeight: 700, color }}>{value}</div>
       <div style={{ fontSize: 13, color: '#999', marginTop: 2 }}>{label}</div>
+    </div>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div style={{ background: '#f7f8fa', borderRadius: 6, padding: '6px 4px', textAlign: 'center' }}>
+      <div style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>{value}</div>
+      <div style={{ fontSize: 10, color: '#999', marginTop: 2 }}>{label}</div>
     </div>
   );
 }
