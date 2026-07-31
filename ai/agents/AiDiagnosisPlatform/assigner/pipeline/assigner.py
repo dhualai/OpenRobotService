@@ -4,14 +4,16 @@
     TicketContext + EngineerProfile
         │
         ▼
-    【Step 0 部门过滤】(极保守:仅服务号→智能规划)
+    【Step -1 提单人指定】(LLM 检测"转给张三" → 直接指派)
+        │ (未指定)
+        ▼
+    【Step 0 部门过滤】(关键词匹配 → 过滤非本部门候选人)
         │
         ▼
-    【Step 1 四路召回】
-        ├── L1 纯LLM召回(0.50): LLM 看全员画像 → 直接打分
-        ├── L2 关键词召回(0.00): LLM推断模块 → Jaccard(已关闭)
-        ├── L3 语义召回(0.40):   Embedding 向量余弦相似度
-        └── L4 历史召回(0.10):   tasks 表已解决工单匹配(数据积累中)
+    【Step 1 三路召回】
+        ├── L1 纯LLM召回(0.70): LLM 看全员画像 → 直接打分
+        ├── L2 语义召回(0.20):   Embedding 工单 → 模块锚文本 → 反查工程师
+        └── L3 历史召回(0.10):   tasks 表已解决工单匹配(数据积累中)
         │
         ▼
     【Step 2 精排 + 职级折扣】 raw_total × job_level 惩罚系数
@@ -82,7 +84,7 @@ class Assigner:
             )
             return preferred
 
-        # ── Step 0: 极保守部门过滤 ──
+        # ── Step 0: 部门过滤 ──
         candidates = self._dept_matcher.filter(
             ticket=ticket_context, engineers=engineer_profiles,
             project_name=ticket_context.project_name or "",
@@ -102,14 +104,14 @@ class Assigner:
             logger.debug(f"派单 L1 LLM召回: {len(recall_result.llm_recall)} 人")
         except Exception as e:
             logger.warning(f"派单 L1 LLM召回异常: {e}")
-        # L3 语义 + L4 历史（共享一次 Embedding）
+        # L2 语义 + L3 历史（共享一次 Embedding）
         try:
             sem, his = await self._semantic_recaller.arecall(
                 ticket=ticket_context, engineers=candidates,
             )
             recall_result.semantic_recall = sem
             recall_result.history_recall = his
-            logger.debug(f"派单 L3语义:{len(sem)}人 L4历史:{len(his)}人")
+            logger.debug(f"派单 L2语义:{len(sem)}人 L3历史:{len(his)}人")
         except Exception:
             pass
 
@@ -213,17 +215,17 @@ class Assigner:
         """
         text = f"标题: {ticket.title or ''}\n描述: {ticket.problem_description or ''}"
         prompt = (
-            "分析以下工单内容，判断提单人是否明确表达了"希望由谁处理"的意图。\n"
-            "\n"
-            "典型表达（不限于此）：\n"
-            "- "这个给张三看一下" / "让李四处理" / "请王五帮忙看看"\n"
-            "- "转给赵六" / "最好是钱七来搞" / "这个问题周八比较熟"\n"
-            "- "找某某某" / "某某某有空吗" / "安排给某某某"\n"
-            "\n"
-            f"{text}\n"
-            "\n"
+            '分析以下工单内容，判断提单人是否明确表达了"希望由谁处理"的意图。\n'
+            '\n'
+            '典型表达（不限于此）：\n'
+            '- “这个给张三看一下” / “让李四处理” / “请王五帮忙看看”\n'
+            '- “转给赵六” / “最好是钱七来搞” / “这个问题周八比较熟”\n'
+            '- “找某某某” / “某某某有空吗” / “安排给某某某”\n'
+            '\n'
+            f'{text}\n'
+            '\n'
             '输出 JSON：{"has_preference": true/false, "preferred_name": "姓名"}\n'
-            "has_preference=false 时 preferred_name 填 null。"
+            'has_preference=false 时 preferred_name 填 null。'
         )
 
         try:
