@@ -49,6 +49,7 @@ _TYPE_TO_ENUM = {
 _TICKET_META_FIELD_MAP = {
     "location": "location", "robot_type": "robot_type",
     "fault_code": "fault_code", "special_notes": "special_notes",
+    "occurrence_time": "occurrence_time", "frequency": "frequency",
     "steps_to_reproduce": "steps_to_reproduce",
     "expected_result": "expected_result", "actual_result": "actual_result",
     "severity": "severity", "version": "version",
@@ -136,6 +137,8 @@ def task_to_dict(task: Task) -> dict:
         "location": meta.get("location", ""),
         "robot_type": meta.get("robot_type", ""),
         "fault_code": meta.get("fault_code", ""),
+        "occurrence_time": meta.get("occurrence_time", ""),
+        "frequency": meta.get("frequency", ""),
         "severity": meta.get("severity", ""),
         "scenario": meta.get("scenario", ""),
         "expected_effect": meta.get("expected_effect", ""),

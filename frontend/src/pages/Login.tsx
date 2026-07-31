@@ -4,7 +4,7 @@ import { useState, useEffect, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Toast } from 'tdesign-mobile-react';
 import { RobotIcon } from 'tdesign-icons-react';
-import { useAuthStore } from '@/stores/auth';
+import { useAuthStore, isManualLogout } from '@/stores/auth';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { WECHAT_CONFIG } from '@/config/wechat';
@@ -65,16 +65,16 @@ export default function Login() {
   const reason = params.get('reason');
 
   // 与守卫页面保持一致的跳转策略：
-  // 已登录且非登出 → 直接回来源页；登出(reason=logout) → 停留；
+  // 已登录且非登出 → 直接回来源页；登出(reason=logout)或同会话已手动登出 → 停留；
   // 启用微信登录且非 debug 且非登出 → 跳微信授权；其余 → 显示账密表单
   useEffect(() => {
     // 已登录且非「刚登出」场景：回到来源页（登录成功后的正常回跳）
-    if (isLoggedIn && reason !== 'logout') {
+    if (isLoggedIn && reason !== 'logout' && !isManualLogout()) {
       navigate(from, { replace: true });
       return;
     }
     // 登出后停留在登录页，由用户手动重新登录，避免自动跳微信 OAuth 导致「登出后又被自动登录」跳回原页面
-    if (reason === 'logout') return;
+    if (reason === 'logout' || isManualLogout()) return;
     if (WECHAT_CONFIG.loginEnabled && !debugMode) {
       // 携带完整来源地址（含部署前缀）的 base64url state，后端解码后原样回跳
       const state = buildStateFromPath(from);
