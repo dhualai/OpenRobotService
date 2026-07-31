@@ -734,7 +734,7 @@ class TicketService:
             else:
                 processed_attachments.append(attachment)
 
-        comment.updated_at = datetime.now()
+        comment.updated_at = func.now()
         comment.attachments = processed_attachments
         comment.content = update_data["content"]
 

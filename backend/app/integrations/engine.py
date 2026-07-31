@@ -6,10 +6,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.base import ExternalTask, SyncResult
@@ -119,7 +118,7 @@ class SyncEngine:
             description=ext.description,
             status=ext.status,                       # 新建：直接采用映射后状态
             created_by="system",                     # 兜底；_apply_common_fields 有映射则覆盖
-            created_at=ext.created_at or datetime.now(),
+            created_at=ext.created_at or func.now(),
         )
         await self._apply_common_fields(task, source, ext)
         self.db.add(task)
@@ -132,11 +131,11 @@ class SyncEngine:
         if new_status is not None:
             local.status = new_status
             if new_status == TaskStatus.RESOLVED and local.resolved_at is None:
-                local.resolved_at = datetime.now()
+                local.resolved_at = func.now()
             elif new_status == TaskStatus.CANCELED and local.canceled_at is None:
-                local.canceled_at = datetime.now()
+                local.canceled_at = func.now()
             elif new_status == TaskStatus.CLOSED and local.closed_at is None:
-                local.closed_at = datetime.now()
-        local.updated_at = datetime.now()
+                local.closed_at = func.now()
+        local.updated_at = func.now()
         await self.db.flush()
         result.mark_updated()

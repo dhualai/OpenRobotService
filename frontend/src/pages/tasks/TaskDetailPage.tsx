@@ -247,7 +247,7 @@ export default function TaskDetailPage() {
       if (resumeUser) {
         await request(`/${detail.id}`, {
           method: 'PUT',
-          body: JSON.stringify({ assigned_to: resumeUser.id }),
+          body: JSON.stringify({ assigned_to: resumeUser.username }),
         });
       }
 
@@ -280,7 +280,7 @@ export default function TaskDetailPage() {
       await request(`/${t.id}`, {
         method: 'PUT',
         body: JSON.stringify({
-          assigned_to: escalateUser.id,
+          assigned_to: escalateUser.username,
         }),
       });
 
@@ -360,7 +360,7 @@ export default function TaskDetailPage() {
     try {
       await request(`/${detail.id}`, {
         method: 'PUT',
-        body: JSON.stringify({ assigned_to: reassignUser.id }),
+        body: JSON.stringify({ assigned_to: reassignUser.username }),
       });
 
       const operator = getOperatorLabel();
