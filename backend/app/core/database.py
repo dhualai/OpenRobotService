@@ -109,6 +109,9 @@ class DatabaseManager:
     def get_all_users_roles_all_projects(self, user_ids: List[str]) -> Dict[str, Dict[str, List[str]]]:
         return permission_service.get_all_users_roles_all_projects(user_ids)
 
+    def get_all_users_project_role_relations(self, user_ids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+        return permission_service.get_all_users_project_role_relations(user_ids)
+
     def get_user_report_to(self, user_id: str, project_id: str) -> Optional[str]:
         return permission_service.get_user_report_to(user_id, project_id)
 

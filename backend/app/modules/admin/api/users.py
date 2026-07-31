@@ -60,10 +60,11 @@ async def get_users(
         result = []
         user_ids = [user_record.id for user_record in paginated_user_records]
         all_users_roles = db_manager.get_all_users_roles_all_projects(user_ids)
-        
+        all_users_relations = db_manager.get_all_users_project_role_relations(user_ids)
+
         for user_record in paginated_user_records:
             user_roles = all_users_roles.get(user_record.id, {})
-            
+
             import json
             external_credentials = {}
             if hasattr(user_record, 'external_credentials') and user_record.external_credentials:
@@ -71,7 +72,7 @@ async def get_users(
                     external_credentials = json.loads(user_record.external_credentials)
                 except:
                     external_credentials = {}
-            
+
             user_response = User(
                 id=user_record.id,
                 username=user_record.username,
@@ -80,9 +81,10 @@ async def get_users(
                 name=getattr(user_record, 'name', None),
                 status=getattr(user_record, 'status', 'inactive'),
                 external_credentials=external_credentials,
-                avatar_resource_id=getattr(user_record, 'avatar_resource_id', None)
+                avatar_resource_id=getattr(user_record, 'avatar_resource_id', None),
+                project_role_relations=all_users_relations.get(user_record.id, []),
             )
-            
+
             result.append(user_response)
         
         return result
@@ -468,6 +470,19 @@ async def batch_assign_project_roles(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"角色分配失败: {str(e)}")
+
+@router.delete("/project/role", response_model=SuccessResponse, summary="移除用户在项目中的角色绑定")
+async def remove_user_project_role(
+    user_id: str = Query(..., description="用户ID"),
+    project_id: str = Query(..., description="项目ID（全局角色传 global）"),
+    role_id: str = Query(..., description="角色ID"),
+    current_user: Dict[str, Any] = require_permission("backend:user:role_project:write")
+):
+    # 'global' 是列表接口的占位值，底层存储用 None
+    actual_project_id = None if project_id == 'global' else project_id
+    if not db_manager.remove_user_project_role(user_id, actual_project_id, role_id):
+        raise HTTPException(status_code=500, detail="移除用户项目角色失败")
+    return SuccessResponse(message="已移除用户项目角色")
 
 @router.post("/migrate-user", response_model=SuccessResponse, summary="迁移用户数据并删除源用户")
 async def migrate_user(
