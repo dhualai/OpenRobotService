@@ -15,6 +15,7 @@ interface AuthItem {
   expire_time: string;
   license_code: string;
   applicant: string;
+  max_vehicles?: number | null;
 }
 interface Project { id?: string; code?: string; name: string; }
 
@@ -54,7 +55,7 @@ const todayStr = (): string => {
 
 interface RoleItem { id: string; name: string; role_type?: string; }
 
-interface AssociateItem { id: string; userId: string; userName: string; role: string; }
+interface AssociateItem { id: string; userId: string; userName: string; role: string; superiorId?: string | null; }
 
 export default function ProjectAuth() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -71,16 +72,18 @@ export default function ProjectAuth() {
   const [associateVisible, setAssociateVisible] = useState(false);
   const [associateUser, setAssociateUser] = useState<UserItem | null>(null);
   const [associateRole, setAssociateRole] = useState<string | null>(null);
+  const [associateSuperiorId, setAssociateSuperiorId] = useState<string | null>(null);
   const [associateList, setAssociateList] = useState<AssociateItem[]>([]);
 
   // 角色列表接入角色管理接口 GET /api/admin/roles/
   const [roles, setRoles] = useState<RoleItem[]>([]);
   const [rolesLoading, setRolesLoading] = useState(false);
 
-  // 申请授权码：机器码 + 开始/结束日期，调用 POST /export/apply_project_license（经 MQTT 审批）
+  // 申请授权码：机器码 + 开始/结束日期 + 允许最大车数，调用 POST /export/apply_project_license（经 MQTT 审批）
   const [machineCode, setMachineCode] = useState('');
   const [licenseStartDate, setLicenseStartDate] = useState(todayStr());
   const [licenseEndDate, setLicenseEndDate] = useState(todayStr());
+  const [maxVehicles, setMaxVehicles] = useState('');
   const [startDatePickerVisible, setStartDatePickerVisible] = useState(false);
   const [endDatePickerVisible, setEndDatePickerVisible] = useState(false);
   const [applyingLicense, setApplyingLicense] = useState(false);
@@ -155,6 +158,7 @@ export default function ProjectAuth() {
             mac: machineCode.trim(),
             start_date: licenseStartDate,
             end_date: licenseEndDate,
+            max_vehicles: maxVehicles.trim() ? Number(maxVehicles.trim()) : null,
           }),
           timeout: 65000, // 后端需等待 MQTT 审批结果，最长约 60 秒，长于默认的 30 秒超时
         },
@@ -165,6 +169,7 @@ export default function ProjectAuth() {
         setMachineCode('');
         setLicenseStartDate(todayStr());
         setLicenseEndDate(todayStr());
+        setMaxVehicles('');
         fetchLicenses(projectCode);
       } else if (status?.status === 'rejected') {
         Toast({ message: `申请被拒绝${status.message ? '：' + status.message : ''}`, theme: 'error' });
@@ -206,6 +211,7 @@ export default function ProjectAuth() {
     }
     setAssociateUser(null);
     setAssociateRole(null);
+    setAssociateSuperiorId(null);
     setAssociateVisible(true);
     if (roles.length === 0) fetchRoles();
   };
@@ -216,11 +222,61 @@ export default function ProjectAuth() {
     if (!associateRole) { Toast({ message: '请选择角色', theme: 'warning' }); return; }
     setAssociateList((prev) => [
       ...prev,
-      { id: `${associateUser.id}_${associateRole}_${Date.now()}`, userId: associateUser.id, userName: associateUser.name || associateUser.username, role: associateRole },
+      {
+        id: `${associateUser.id}_${associateRole}_${Date.now()}`,
+        userId: associateUser.id,
+        userName: associateUser.name || associateUser.username,
+        role: associateRole,
+        superiorId: associateSuperiorId,
+      },
     ]);
     Toast({ message: '已添加关联人员', theme: 'success' });
     setAssociateVisible(false);
   };
+
+  // 按上下层关系构建树：无上级或上级已被移除的人员作为顶层节点
+  const buildAssociateTree = (list: AssociateItem[]) => {
+    const idSet = new Set(list.map((a) => a.id));
+    const childrenMap = new Map<string, AssociateItem[]>();
+    const roots: AssociateItem[] = [];
+    list.forEach((a) => {
+      if (a.superiorId && idSet.has(a.superiorId)) {
+        const siblings = childrenMap.get(a.superiorId) || [];
+        siblings.push(a);
+        childrenMap.set(a.superiorId, siblings);
+      } else {
+        roots.push(a);
+      }
+    });
+    return { roots, childrenMap };
+  };
+
+  const renderAssociateNode = (item: AssociateItem, depth: number, childrenMap: Map<string, AssociateItem[]>) => (
+    <div key={item.id}>
+      <div
+        style={{
+          background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10,
+          boxShadow: '0 1px 3px rgba(0,0,0,0.06)', marginLeft: depth * 20,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: 13, color: '#666' }}>
+            {depth > 0 && <span style={{ color: '#bbb', marginRight: 4 }}>└</span>}
+            {item.userName} - {item.role}
+          </div>
+          <Button
+            size="small"
+            theme="danger"
+            variant="outline"
+            onClick={() => setAssociateList((prev) => prev.filter((x) => x.id !== item.id && x.superiorId !== item.id))}
+          >
+            移除
+          </Button>
+        </div>
+      </div>
+      {(childrenMap.get(item.id) || []).map((child) => renderAssociateNode(child, depth + 1, childrenMap))}
+    </div>
+  );
 
   return (
     <div style={{ padding: 16 }}>
@@ -318,6 +374,7 @@ export default function ProjectAuth() {
                 <div>
                   <div style={{ fontSize: 13, color: '#666' }}>有效期：{item.apply_time} ～ {item.expire_time}</div>
                   <div style={{ fontSize: 12, color: '#999' }}>申请人：{item.applicant}</div>
+                  <div style={{ fontSize: 12, color: '#999' }}>允许最大车数：{item.max_vehicles != null ? item.max_vehicles : '不限制'}</div>
                 </div>
                 <Button size="small" theme="danger" variant="outline" onClick={() => handleRevoke(item)}>撤销</Button>
               </div>
@@ -360,6 +417,15 @@ export default function ProjectAuth() {
                 {licenseEndDate || '结束日期'}
               </div>
             </div>
+            <div style={{ fontSize: 13, color: '#666', marginBottom: 6 }}>允许最大车数</div>
+            <Input
+              value={maxVehicles}
+              onChange={(v) => setMaxVehicles(String(v).replace(/[^\d]/g, ''))}
+              type="number"
+              placeholder="可选，留空表示不限制"
+              clearable
+              style={{ marginBottom: 12 }}
+            />
             <Button theme="primary" block loading={applyingLicense} onClick={handleApplyLicense}>
               申请授权码
             </Button>
@@ -395,22 +461,11 @@ export default function ProjectAuth() {
 
       {associateList.length > 0 && (
         <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 13, color: '#999', marginBottom: 8 }}>本次已添加的关联人员</div>
-          {associateList.map((a) => (
-            <div key={a.id} style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ fontSize: 13, color: '#666' }}>{a.userName} - {a.role}</div>
-                <Button
-                  size="small"
-                  theme="danger"
-                  variant="outline"
-                  onClick={() => setAssociateList((prev) => prev.filter((x) => x.id !== a.id))}
-                >
-                  移除
-                </Button>
-              </div>
-            </div>
-          ))}
+          <div style={{ fontSize: 13, color: '#999', marginBottom: 8 }}>本次已添加的关联人员（含上下层关系）</div>
+          {(() => {
+            const { roots, childrenMap } = buildAssociateTree(associateList);
+            return roots.map((root) => renderAssociateNode(root, 0, childrenMap));
+          })()}
         </div>
       )}
 
@@ -461,6 +516,53 @@ export default function ProjectAuth() {
                 </div>
                 <div style={{ fontSize: 14 }}>{role.name}</div>
               </div>
+              ))
+            )}
+          </div>
+
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>上级人员（可选，用于展示上下层关系）</div>
+          <div style={{ marginBottom: 20 }}>
+            <div
+              onClick={() => setAssociateSuperiorId(null)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
+              }}
+            >
+              <div
+                style={{
+                  width: 16, height: 16, borderRadius: '50%',
+                  border: `1px solid ${!associateSuperiorId ? '#0052d9' : '#ccc'}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}
+              >
+                {!associateSuperiorId && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />}
+              </div>
+              <div style={{ fontSize: 14 }}>无（顶层）</div>
+            </div>
+            {associateList.length === 0 ? (
+              <div style={{ padding: '10px 0', color: '#999', fontSize: 13 }}>暂无已添加人员可选为上级</div>
+            ) : (
+              associateList.map((a) => (
+                <div
+                  key={a.id}
+                  onClick={() => setAssociateSuperiorId(a.id)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 16, height: 16, borderRadius: '50%',
+                      border: `1px solid ${associateSuperiorId === a.id ? '#0052d9' : '#ccc'}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}
+                  >
+                    {associateSuperiorId === a.id && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />}
+                  </div>
+                  <div style={{ fontSize: 14 }}>{a.userName} - {a.role}</div>
+                </div>
               ))
             )}
           </div>
