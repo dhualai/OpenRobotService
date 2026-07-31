@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
+﻿from fastapi import APIRouter, Depends, HTTPException, Request, status, Query, Body
 from typing import List, Dict, Any
 import uuid
 import traceback
@@ -13,6 +13,7 @@ from app.modules.admin.schemas.project import ProjectUserRoleAssignment
 from app.modules.admin.schemas.response import SuccessResponse
 from app.modules.admin.api.auth import get_current_active_user_from_token, require_permission
 from app.services.hmac_utils import generate_password, chinese_to_pinyin
+from app.models.task import Task
 
 router = APIRouter(prefix="/users", tags=["admin-users"])
 
@@ -460,10 +461,88 @@ async def batch_assign_project_roles(
             })
         
         assigned_count = db_manager.batch_add_user_project_roles(roles_data)
-        
+
         scope = f"项目 {project_id}" if project_id else "全局"
         return SuccessResponse(message=f"成功为{scope}分配 {assigned_count} 个用户角色")
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"角色分配失败: {str(e)}")
+
+@router.post("/migrate-user", response_model=SuccessResponse, summary="迁移用户数据并删除源用户")
+async def migrate_user(
+    payload: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = require_permission("backend:user:base:write")
+):
+    """迁移用户数据：
+    入参 source_user_id（A用户）和 target_user_id（B用户）。
+    1. 将assigned_to为A用户username的task改为B用户的username
+    2. 将A用户的 department / responsibility_modules / job_level / duty_text 字段拷贝给B用户
+    3. 删除A用户
+    """
+    source_user_id = payload.get("source_user_id")
+    target_user_id = payload.get("target_user_id")
+
+    if not source_user_id or not target_user_id:
+        raise HTTPException(status_code=400, detail="source_user_id 和 target_user_id 不能为空")
+    if source_user_id == target_user_id:
+        raise HTTPException(status_code=400, detail="源用户和目标用户不能相同")
+
+    db = db_manager.get_db()
+    try:
+        # 1. 查询A用户和B用户
+        user_a = db.query(UserDB).filter(UserDB.id == source_user_id).first()
+        user_b = db.query(UserDB).filter(UserDB.id == target_user_id).first()
+
+        if not user_a:
+            raise HTTPException(status_code=404, detail=f"源用户不存在: {source_user_id}")
+        if not user_b:
+            raise HTTPException(status_code=404, detail=f"目标用户不存在: {target_user_id}")
+
+        # 2. 查询assigned_to为A用户username的tasks并迁移
+        tasks_to_migrate = db.query(Task).filter(
+            Task.assigned_to == user_a.username
+        ).all()
+
+        migrated_count = 0
+        if tasks_to_migrate:
+            for task in tasks_to_migrate:
+                task.assigned_to = user_b.username
+            migrated_count = len(tasks_to_migrate)
+
+        # 3. 将A用户的字段拷贝给B用户
+        fields_copied = {}
+        if user_a.department:
+            user_b.department = user_a.department
+            fields_copied["department"] = True
+        if user_a.responsibility_modules:
+            user_b.responsibility_modules = user_a.responsibility_modules
+            fields_copied["responsibility_modules"] = True
+        if user_a.job_level:
+            user_b.job_level = user_a.job_level
+            fields_copied["job_level"] = True
+        if user_a.duty_text:
+            user_b.duty_text = user_a.duty_text
+            fields_copied["duty_text"] = True
+
+        # 4. 删除A用户
+        db.delete(user_a)
+        db.commit()
+
+        return SuccessResponse(
+            message=f"成功迁移用户 {user_a.username} → {user_b.username}，"
+                    f"迁移任务 {migrated_count} 个，拷贝字段 {len(fields_copied)} 项，已删除源用户"
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"迁移用户失败:{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"迁移用户失败: {str(e)}"
+        )
+    finally:
+        db.close()

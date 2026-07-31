@@ -220,15 +220,15 @@ export default function TaskDetailPage() {
     if (!detail) return;
     
     try {
-      const updated = await request<Ticket>(`/${detail.id}/status`, {
+      await request<Ticket>(`/${detail.id}/status`, {
         method: 'PATCH',
         body: JSON.stringify({ status: action.nextStatus }),
       });
-      setDetail(updated);
       refreshTasks();
       const operator = getOperatorLabel();
       const statusLabel = STATUS_DISPLAY_MAP[action.nextStatus] || action.nextStatus;
       await addOperationComment(`${operator} 将工单状态变更为「${statusLabel}」`);
+      await refreshDetail();
       Toast({ message: `状态已更新为${statusLabel}`, theme: 'success' });
     } catch (err) {
       Toast({ message: `状态更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -416,13 +416,12 @@ export default function TaskDetailPage() {
   const saveEdit = async () => {
     if (!detail) return;
     try {
-      const updated = await request<Ticket>(`/${detail.id}`, { method: 'PUT', body: JSON.stringify(editForm) });
+      await request<Ticket>(`/${detail.id}`, { method: 'PUT', body: JSON.stringify(editForm) });
       const operator = getOperatorLabel();
       await addOperationComment(`${operator} 修改了工单信息`);
+      await refreshDetail();
       Toast({ message: '修改成功', theme: 'success' });
       setEditing(false);
-      refreshTasks();
-      setDetail(updated);
     } catch (err) {
       Toast({ message: `修改失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
@@ -819,9 +818,9 @@ export default function TaskDetailPage() {
           return (
             <div className="detail-actions">
               <div className="detail-actions__btns">
-                <Button size="small" theme="default" style={{ backgroundColor: '#333333', color: '#fff', border: 'none' }} onClick={startEdit}>修改工单</Button>
                 {showRoleActions && (
                   <>
+                    <Button size="small" theme="default" style={{ backgroundColor: '#333333', color: '#fff', border: 'none' }} onClick={startEdit}>修改工单</Button>
                     <Button size="small" theme="default" style={{ backgroundColor: '#faad14', color: '#fff', border: 'none' }} onClick={() => setShowReturnConfirmPopup(true)}>退回工单</Button>
                     <Button size="small" theme="default" style={{ backgroundColor: '#0052d9', color: '#fff', border: 'none' }} onClick={() => setShowReassignPopup(true)}>重新指派</Button>
                     <Button size="small" theme="default" style={{ backgroundColor: '#d54941', color: '#fff', border: 'none' }} onClick={() => setShowEscalatePopup(true)}>升级上报</Button>
