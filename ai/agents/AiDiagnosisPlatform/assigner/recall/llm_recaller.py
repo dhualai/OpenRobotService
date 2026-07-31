@@ -61,19 +61,15 @@ class LlmRecaller:
                 prod_parts.append(f"[{p}]{','.join(mods)}" if mods else f"[{p}]")
             duty = (e.duty_text or "")[:120]
             dep = f"({e.department})" if e.department else ""
-            lines.append(f"{i+1}. {e.name} {dep} L{e.job_level}")
+            lines.append(f"候选ID: {e.id} | L{e.job_level} | {dep}")
             lines.append(f"   产品:{'|'.join(prod_parts)}")
             if duty:
                 lines.append(f"   职责:{duty}")
 
         lines.extend([
             "",
-            "【职级说明】",
-            "L1=一线优先接单, L2=管理/审核(模块匹配才加分), L3=仅兜底。",
-            "同模块情况下 L1 优先，但部门内无 L1 时必须推 L2/L3。",
-            "",
-            "输出 JSON。字段 engineer_id 填字符串，confidence 填 0~1 的浮点数。",
-            '{"rankings":[{"engineer_id":"id1","confidence":0.85},{"engineer_id":"id2","confidence":0.70},...]}',
+            "输出 JSON。engineer_id 必须填写候选列表中对应的 id 值（精确复制）。confidence 填 0~1 的浮点数。",
+            '{"rankings":[{"engineer_id":"oD5oY3RN...","confidence":0.85},...]}',
         ])
         return "\n".join(lines)
 
