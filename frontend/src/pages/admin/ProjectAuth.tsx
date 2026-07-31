@@ -55,9 +55,23 @@ const todayStr = (): string => {
 
 interface RoleItem { id: string; name: string; role_type?: string; }
 
-interface AssociateItem { id: string; userId: string; userName: string; role: string; superiorId?: string | null; }
+interface AssociateItem {
+  id: string;            // 本地临时 id（仅用于 React key 与本地移除）
+  userId: string;        // 用户 id（对应后端 report_to_id）
+  username: string;      // 登录名（对应后端 user_name）
+  userName: string;      // 显示名
+  roleId: string;        // 角色 id（对应后端 role_id）
+  roleName: string;      // 角色名（仅用于显示）
+  superiorId?: string | null; // 上级的 userId（对应后端 report_to_id）
+}
 
-interface ExistingProjectUser { id: string; name: string; username: string; roleIds: string[]; }
+interface ExistingProjectUser {
+  id: string;            // = userId
+  name: string;
+  username: string;
+  roleIds: string[];
+  reportToId?: string | null; // 在该项目下的汇报人 userId
+}
 
 export default function ProjectAuth() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -75,6 +89,7 @@ export default function ProjectAuth() {
   const [associateRole, setAssociateRole] = useState<string | null>(null);
   const [associateSuperiorId, setAssociateSuperiorId] = useState<string | null>(null);
   const [associateList, setAssociateList] = useState<AssociateItem[]>([]);
+  const [submittingAssociates, setSubmittingAssociates] = useState(false);
 
   // 角色列表接入角色管理接口 GET /api/admin/roles/
   const [roles, setRoles] = useState<RoleItem[]>([]);
@@ -83,6 +98,10 @@ export default function ProjectAuth() {
   // 项目已关联人员
   const [existingUsers, setExistingUsers] = useState<ExistingProjectUser[]>([]);
   const [existingUsersLoading, setExistingUsersLoading] = useState(false);
+  // 已关联人员树：折叠状态 + 右键移除菜单
+  const [collapsedUserIds, setCollapsedUserIds] = useState<Set<string>>(new Set());
+  const [contextMenu, setContextMenu] = useState<{ userId: string; x: number; y: number } | null>(null);
+  const [removingUserId, setRemovingUserId] = useState<string | null>(null);
 
   // 申请授权码：机器码 + 开始/结束日期 + 允许最大车数，调用 POST /export/apply_project_license（经 MQTT 审批）
   const [machineCode, setMachineCode] = useState('');
@@ -127,31 +146,36 @@ export default function ProjectAuth() {
     }
   };
 
-  // 加载项目已关联的人员（从用户列表按 project_code 筛选）
-  const fetchExistingUsers = async (projectCode: string) => {
+  // 加载项目已关联的人员：基于后端 project_role_relations（含 report_to_id）按 project.id 筛选
+  const fetchExistingUsers = async (project: Project) => {
     setExistingUsersLoading(true);
     try {
       const [usersData, rolesData] = await Promise.all([
-        request<{ id: string; username: string; name?: string | null; roles?: Record<string, string[]> }[]>('/users/?limit=1000'),
+        request<{
+          id: string;
+          username: string;
+          name?: string | null;
+          project_role_relations?: Array<{ project_id: string; role_id: string; report_to_id?: string | null }>;
+        }[]>('/users/?limit=1000'),
         request<RoleItem[]>('/roles/'),
       ]);
-      const allUsers = normalizeList<{ id: string; username: string; name?: string | null; roles?: Record<string, string[]> }>(usersData);
-      const allRoles = normalizeList<RoleItem>(rolesData);
+      const allUsers = normalizeList(usersData);
+      const allRoles = normalizeList(rolesData);
       setRoles((prev) => (prev.length === 0 ? allRoles.filter((r) => r.role_type === 'project') : prev));
 
+      const pid = project.id;
       const matched: ExistingProjectUser[] = [];
       for (const u of allUsers) {
-        const userRoles = u.roles;
-        if (!userRoles) continue;
-        const roleIds = userRoles[projectCode];
-        if (roleIds && roleIds.length > 0) {
-          matched.push({
-            id: u.id,
-            name: u.name || u.username,
-            username: u.username,
-            roleIds,
-          });
-        }
+        const rels = u.project_role_relations || [];
+        const projRels = pid ? rels.filter((r) => r.project_id === pid) : [];
+        if (projRels.length === 0) continue;
+        matched.push({
+          id: u.id,
+          name: u.name || u.username,
+          username: u.username,
+          roleIds: projRels.map((r) => r.role_id),
+          reportToId: projRels.find((r) => r.report_to_id)?.report_to_id || null,
+        });
       }
       setExistingUsers(matched);
     } catch {
@@ -161,13 +185,56 @@ export default function ProjectAuth() {
     }
   };
 
+  // 按汇报关系（reportToId）构建已关联人员树：上级不在本项目内则作为根节点
+  const buildExistingUserTree = (list: ExistingProjectUser[]) => {
+    const idSet = new Set(list.map((u) => u.id));
+    const childrenMap = new Map<string, ExistingProjectUser[]>();
+    const roots: ExistingProjectUser[] = [];
+    list.forEach((u) => {
+      const parent = u.reportToId;
+      if (parent && idSet.has(parent)) {
+        const siblings = childrenMap.get(parent) || [];
+        siblings.push(u);
+        childrenMap.set(parent, siblings);
+      } else {
+        roots.push(u);
+      }
+    });
+    return { roots, childrenMap };
+  };
+
+  // 移除人员：删除该用户在当前项目下的所有角色绑定（逐条调用 DELETE /users/project/role）
+  const handleRemoveExistingUser = async (userId: string) => {
+    if (!selectedProject?.id) { Toast({ message: '当前项目缺少 id', theme: 'warning' }); return; }
+    const user = existingUsers.find((u) => u.id === userId);
+    if (!user) return;
+    setRemovingUserId(userId);
+    try {
+      for (const roleId of user.roleIds) {
+        const qs = new URLSearchParams({
+          user_id: userId,
+          project_id: selectedProject.id,
+          role_id: roleId,
+        }).toString();
+        await request(`/users/project/role?${qs}`, { method: 'DELETE' });
+      }
+      Toast({ message: '已移除人员', theme: 'success' });
+      await fetchExistingUsers(selectedProject);
+    } catch (err) {
+      Toast({ message: `移除失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setRemovingUserId(null);
+      setContextMenu(null);
+    }
+  };
+
   const handleProjectSelect = (project: Project) => {
     setSelectedProject(project);
     setProjectSearch('');
     setProjectPickerVisible(false);
     const code = project.code || project.name;
     fetchLicenses(code);
-    fetchExistingUsers(code);
+    fetchExistingUsers(project);
   };
 
   // 模糊匹配：按名称或代码任意关键词片段过滤（不要求项目代码，普通人记不住代码）
@@ -255,22 +322,51 @@ export default function ProjectAuth() {
     if (roles.length === 0) fetchRoles();
   };
 
-  // 保存关联人员（前端占位：暂存于本地列表，待接入后端项目人员绑定接口）
-  const handleSaveAssociate = () => {
+  // 保存关联人员：单条立即提交到后端 POST /users/project/assign-roles
+  // 后端字段：user_name=username, role_id=roleId, report_to_id=superiorId(=上级 userId，为空则不传)
+  const handleSaveAssociate = async () => {
+    if (!selectedProject) { Toast({ message: '请先选择一个项目', theme: 'warning' }); return; }
+    if (!selectedProject.id) { Toast({ message: '当前项目缺少 id，无法提交', theme: 'warning' }); return; }
     if (!associateUser) { Toast({ message: '请选择用户', theme: 'warning' }); return; }
     if (!associateRole) { Toast({ message: '请选择角色', theme: 'warning' }); return; }
-    setAssociateList((prev) => [
-      ...prev,
-      {
-        id: `${associateUser.id}_${associateRole}_${Date.now()}`,
-        userId: associateUser.id,
-        userName: associateUser.name || associateUser.username,
-        role: associateRole,
-        superiorId: associateSuperiorId,
-      },
-    ]);
-    Toast({ message: '已添加关联人员', theme: 'success' });
-    setAssociateVisible(false);
+
+    const roleObj = roles.find((r) => r.id === associateRole);
+    const payload: Record<string, string> = {
+      user_name: associateUser.username,
+      role_id: associateRole,
+    };
+    if (associateSuperiorId) payload.report_to_id = associateSuperiorId;
+
+    setSubmittingAssociates(true);
+    try {
+      await request('/users/project/assign-roles', {
+        method: 'POST',
+        body: JSON.stringify({
+          project_id: selectedProject.id,
+          organization_ids: [payload],
+        }),
+      });
+      // 落库成功后同步加入本地列表（用于本次会话内的上下层关系展示与上级选择）
+      setAssociateList((prev) => [
+        ...prev,
+        {
+          id: `${associateUser.id}_${associateRole}_${Date.now()}`,
+          userId: associateUser.id,
+          username: associateUser.username,
+          userName: associateUser.name || associateUser.username,
+          roleId: associateRole,
+          roleName: roleObj?.name || associateRole,
+          superiorId: associateSuperiorId,
+        },
+      ]);
+      Toast({ message: '已添加关联人员', theme: 'success' });
+      setAssociateVisible(false);
+      fetchExistingUsers(selectedProject);
+    } catch (err) {
+      Toast({ message: `添加失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setSubmittingAssociates(false);
+    }
   };
 
   // 按上下层关系构建树：无上级或上级已被移除的人员作为顶层节点
@@ -301,13 +397,13 @@ export default function ProjectAuth() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ fontSize: 13, color: '#666' }}>
             {depth > 0 && <span style={{ color: '#bbb', marginRight: 4 }}>└</span>}
-            {item.userName} - {item.role}
+            {item.userName} - {item.roleName}
           </div>
           <Button
             size="small"
             theme="danger"
             variant="outline"
-            onClick={() => setAssociateList((prev) => prev.filter((x) => x.id !== item.id && x.superiorId !== item.id))}
+            onClick={() => setAssociateList((prev) => prev.filter((x) => x.id !== item.id && x.superiorId !== item.userId))}
           >
             移除
           </Button>
@@ -422,34 +518,64 @@ export default function ProjectAuth() {
             <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>该项目暂无授权记录</div>
           )}
 
-          {/* 项目已关联人员 */}
+          {/* 项目已关联人员：可折叠树形 + 右键移除 */}
           <div style={{ background: '#fff', borderRadius: 8, padding: 14, marginTop: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>已关联人员</div>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+              已关联人员（{existingUsers.length}）<span style={{ fontSize: 12, color: '#999', fontWeight: 400, marginLeft: 6 }}>右键卡片可移除</span>
+            </div>
             {existingUsersLoading ? (
               <Loading text="加载中..." />
             ) : existingUsers.length === 0 ? (
               <div style={{ fontSize: 13, color: '#999', padding: '8px 0' }}>该项目暂无已关联人员</div>
             ) : (
-              existingUsers.map((u) => {
-                const roleNames = u.roleIds.map((rid) => {
-                  const role = roles.find((r) => r.id === rid);
-                  return role ? role.name : rid;
-                }).join('、');
-                return (
-                  <div
-                    key={u.id}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 10,
-                      padding: '8px 0', borderBottom: '1px solid #f5f5f5',
-                    }}
-                  >
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 14, fontWeight: 500 }}>{u.name}</div>
-                      <div style={{ fontSize: 12, color: '#999' }}>{u.username} · {roleNames}</div>
+              (() => {
+                const { roots, childrenMap } = buildExistingUserTree(existingUsers);
+                const renderNode = (u: ExistingProjectUser, depth: number) => {
+                  const children = childrenMap.get(u.id) || [];
+                  const collapsed = collapsedUserIds.has(u.id);
+                  const roleNames = u.roleIds.map((rid) => roles.find((r) => r.id === rid)?.name || rid).join('、');
+                  return (
+                    <div key={u.id}>
+                      <div
+                        style={{
+                          background: removingUserId === u.id ? '#fff1f0' : '#fafafa',
+                          borderRadius: 8, padding: 14, marginBottom: 10, marginLeft: depth * 20,
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'context-menu',
+                        }}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setContextMenu({ userId: u.id, x: e.clientX, y: e.clientY });
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                          <div style={{ fontSize: 14, fontWeight: 500 }}>
+                            {depth > 0 && <span style={{ color: '#bbb', marginRight: 4 }}>└</span>}
+                            {u.name}
+                            {children.length > 0 && (
+                              <span
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setCollapsedUserIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(u.id)) next.delete(u.id); else next.add(u.id);
+                                    return next;
+                                  });
+                                }}
+                                style={{ marginLeft: 8, fontSize: 12, color: '#0052d9', cursor: 'pointer' }}
+                              >
+                                {collapsed ? `展开(${children.length})` : '收起'}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 12, color: '#999' }}>{u.username} · {roleNames}</div>
+                        </div>
+                      </div>
+                      {!collapsed && children.map((c) => renderNode(c, depth + 1))}
                     </div>
-                  </div>
-                );
-              })
+                  );
+                };
+                return roots.map((root) => renderNode(root, 0));
+              })()
             )}
           </div>
 
@@ -557,7 +683,7 @@ export default function ProjectAuth() {
               roles.map((role) => (
               <div
                 key={role.id}
-                onClick={() => setAssociateRole(role.name)}
+                onClick={() => setAssociateRole(role.id)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 10,
                   padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
@@ -566,11 +692,11 @@ export default function ProjectAuth() {
                 <div
                   style={{
                     width: 16, height: 16, borderRadius: '50%',
-                    border: `1px solid ${associateRole === role.name ? '#0052d9' : '#ccc'}`,
+                    border: `1px solid ${associateRole === role.id ? '#0052d9' : '#ccc'}`,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                   }}
                 >
-                  {associateRole === role.name && (
+                  {associateRole === role.id && (
                     <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />
                   )}
                 </div>
@@ -606,7 +732,7 @@ export default function ProjectAuth() {
               associateList.map((a) => (
                 <div
                   key={a.id}
-                  onClick={() => setAssociateSuperiorId(a.id)}
+                  onClick={() => setAssociateSuperiorId(a.userId)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10,
                     padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
@@ -615,13 +741,13 @@ export default function ProjectAuth() {
                   <div
                     style={{
                       width: 16, height: 16, borderRadius: '50%',
-                      border: `1px solid ${associateSuperiorId === a.id ? '#0052d9' : '#ccc'}`,
+                      border: `1px solid ${associateSuperiorId === a.userId ? '#0052d9' : '#ccc'}`,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}
                   >
-                    {associateSuperiorId === a.id && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />}
+                    {associateSuperiorId === a.userId && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />}
                   </div>
-                  <div style={{ fontSize: 14 }}>{a.userName} - {a.role}</div>
+                  <div style={{ fontSize: 14 }}>{a.userName} - {a.roleName}</div>
                 </div>
               ))
             )}
@@ -629,10 +755,41 @@ export default function ProjectAuth() {
 
           <div style={{ display: 'flex', gap: 8 }}>
             <Button theme="default" block onClick={() => setAssociateVisible(false)}>取消</Button>
-            <Button theme="primary" block onClick={handleSaveAssociate}>保存</Button>
+            <Button theme="primary" block loading={submittingAssociates} onClick={handleSaveAssociate}>保存</Button>
           </div>
         </div>
       </Popup>
+
+      {/* 右键移除菜单：点击遮罩关闭 */}
+      {contextMenu && (
+        <>
+          <div
+            onClick={() => setContextMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }}
+            style={{ position: 'fixed', inset: 0, zIndex: 1000 }}
+          />
+          <div
+            style={{
+              position: 'fixed',
+              left: Math.min(contextMenu.x, window.innerWidth - 140),
+              top: Math.min(contextMenu.y, window.innerHeight - 60),
+              zIndex: 1001,
+              background: '#fff', borderRadius: 6, padding: 4, minWidth: 120,
+              boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+            }}
+          >
+            <div
+              onClick={() => handleRemoveExistingUser(contextMenu.userId)}
+              style={{
+                padding: '8px 12px', fontSize: 14, color: '#e34d59',
+                cursor: 'pointer', borderRadius: 4, userSelect: 'none',
+              }}
+            >
+              {removingUserId === contextMenu.userId ? '移除中...' : '移除人员'}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
