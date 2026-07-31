@@ -71,6 +71,7 @@ async def apply_project_license(
     mac: str = Body(..., description="MAC 地址"),
     start_date: str = Body(..., description="开始日期"),
     end_date: str = Body(..., description="结束日期"),
+    max_vehicles: Optional[int] = Body(None, description="允许最大车数，为空表示不限制"),
     credentials: Optional = Depends(security),
     request: Request = None
 ):
@@ -86,11 +87,12 @@ async def apply_project_license(
         "mac": mac,
         "user": user,
         "start_date": start_date,
-        "end_date": end_date
+        "end_date": end_date,
+        "max_vehicles": max_vehicles
     }
-    
+
     status = publish_to_mqtt(data, wait_for_status=True, timeout=60)
-    
+
     if status.get('status') == 'approved':
         license_data = {
             "project_code": status.get("project_code", project_code),
@@ -99,7 +101,8 @@ async def apply_project_license(
             "expire_time": end_date,
             "license_code": status.get("license_content", ""),
             "applicant": user,
-            "applicant_id": user
+            "applicant_id": user,
+            "max_vehicles": max_vehicles
         }
         project_service.create_license(license_data)
     
