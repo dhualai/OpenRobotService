@@ -5,9 +5,8 @@
  * - 评论：GET/POST /{ticket_id}/comments（现成，评论绑定 ticket_id）
  * - 附件：POST /comments/attachments（temp_id 关联，MinIO 存储，发评论时一并入库）
  */
-import { createRequest } from '@/api/client';
+import { createRequest, getToken } from '@/api/client';
 import API_CONFIG from '@/config/api';
-import { useAuthStore } from '@/stores/auth';
 
 const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单');
 
@@ -67,10 +66,11 @@ export const uploadCommentAttachment = async (file: File, tempId: string): Promi
   const formData = new FormData();
   formData.append('file', file);
   formData.append('temp_id', tempId);
-  const token = useAuthStore.getState().token;
+  // 优先取 client.ts 内存 token，其次 localStorage；确保与 createRequest 使用同一个 token
+  const token = getToken() || localStorage.getItem('auth_token') || '';
   const res = await fetch(`${API_CONFIG.TASKS.BASE_URL}/comments/attachments`, {
     method: 'POST',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: { Authorization: `Bearer ${token}` },
     body: formData,
   });
   if (!res.ok) throw new Error(`附件上传失败: ${res.status}`);

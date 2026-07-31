@@ -1626,6 +1626,12 @@ html, body, #root {
   margin: 0 0 10px;
   padding-left: 20px;
 }
+.markdown-body ol {
+  list-style-type: decimal;
+}
+.markdown-body ul {
+  list-style-type: disc;
+}
 .markdown-body li { margin-bottom: 4px; }
 .markdown-body li:last-child { margin-bottom: 0; }
 
@@ -2252,15 +2258,61 @@ html, body, #root {
   flex: 1;
   padding: 8px 12px;
   border: 1px solid #e0e0e0;
-  border-radius: 20px;
+  border-radius: 12px;
   font-size: 14px;
   outline: none;
+  resize: none;
+  line-height: 1.5;
+  min-height: 36px;
+  max-height: 160px;
+  overflow-y: auto;
+  font-family: inherit;
 }
 .detail-chat-input-field:focus {
   border-color: #0052d9;
 }
 .detail-chat-input-field:disabled {
   background: #f5f5f5;
+  color: #999;
+}
+
+/* ===== @ 提及建议面板 ===== */
+.detail-chat-mention-panel {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px 12px 0 0;
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.1);
+  margin-bottom: 4px;
+  z-index: 100;
+}
+.detail-chat-mention-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.detail-chat-mention-item:first-child {
+  border-radius: 12px 12px 0 0;
+}
+.detail-chat-mention-item:hover,
+.detail-chat-mention-item.is-active {
+  background: #ecf2fe;
+}
+.detail-chat-mention-name {
+  font-weight: 500;
+  color: #333;
+}
+.detail-chat-mention-role {
+  font-size: 12px;
   color: #999;
 }
 

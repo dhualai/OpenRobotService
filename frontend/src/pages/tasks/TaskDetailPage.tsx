@@ -9,9 +9,12 @@ import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
+import { uploadCommentAttachment } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { formatDateTime } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
+import { getProjectMembers } from '@/api/projects';
+import type { ProjectMember } from '@/api/projects';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -85,7 +88,7 @@ interface Attachment { path: string; size?: number; filename?: string; url?: str
 interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; }
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
-  ticket_type: string; project_name?: string;
+  ticket_type: string; project_name?: string; project_id?: string;
   created_by?: string; created_by_name?: string;
   assigned_to?: string; assigned_to_name?: string;
   reporter_name?: string; assignee_name?: string;
@@ -125,6 +128,9 @@ export default function TaskDetailPage() {
   // AI 摘要（后端定时写入评论，前端从评论提取展示）
   const [aiSummary, setAiSummary] = useState('');
 
+  // 项目成员（用于讨论区 @ 提及）
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+
   useEffect(() => {
     if (!detailId) { setDetail(null); return; }
     setDetailLoading(true);
@@ -134,6 +140,23 @@ export default function TaskDetailPage() {
         // 摘要存 metadata_info.ai_summary（不混入讨论区）
         const meta = t.metadata_info || {};
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
+
+        // 获取项目成员用于 @ 提及，提单人排第一
+        if (t.project_id) {
+          getProjectMembers(detailId)
+            .then((members) => {
+              const reporterUsername = t.created_by;
+              const sorted = [...members].sort((a, b) => {
+                if (a.username === reporterUsername) return -1;
+                if (b.username === reporterUsername) return 1;
+                return 0;
+              });
+              setProjectMembers(sorted);
+            })
+            .catch(() => setProjectMembers([]));
+        } else {
+          setProjectMembers([]);
+        }
       })
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
@@ -385,16 +408,21 @@ export default function TaskDetailPage() {
   };
 
   // ── 普通评论：POST /api/tasks/{id}/comments；返回 true=成功（组件清空输入） ──
-  const handleAddComment = async (text: string): Promise<boolean> => {
+  const handleAddComment = async (text: string, files: File[] = []): Promise<boolean> => {
     if (!detail) {
       Toast({ message: '请输入评论内容', theme: 'warning' });
       return false;
     }
     setSubmittingComment(true);
     try {
+      // 上传附件
+      const tempId = crypto.randomUUID();
+      for (const f of files) {
+        await uploadCommentAttachment(f, tempId);
+      }
       const newComment = await request<Comment>(`/${detail.id}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ content: text, is_public: true }),
+        body: JSON.stringify({ content: text, is_public: true, attachments: files.length ? [tempId] : [] }),
       });
       const enrichedComment = {
         ...newComment,
@@ -406,7 +434,7 @@ export default function TaskDetailPage() {
         const updatedComments = prev.comments ? [...prev.comments, enrichedComment] : [enrichedComment];
         return { ...prev, comments: updatedComments };
       });
-      Toast({ message: '评论已添加', theme: 'success' });
+      Toast({ message: files.length ? '评论和附件已添加' : '评论已添加', theme: 'success' });
       return true;
     } catch (err) {
       Toast({ message: `添加评论失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -417,16 +445,21 @@ export default function TaskDetailPage() {
   };
 
   // ── @U老师 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
-  const handleAIDiscuss = async (text: string): Promise<boolean> => {
+  const handleAIDiscuss = async (text: string, files: File[] = []): Promise<boolean> => {
     if (!detail) return false;
     const userMsg = text;
     setAskingAI(true);
     try {
+      // 上传附件
+      const tempId = crypto.randomUUID();
+      for (const f of files) {
+        await uploadCommentAttachment(f, tempId);
+      }
       // 1. 先保存用户的 @U老师 消息到 task_comments
       try {
         const newComment = await request<Comment>(`/${detail.id}/comments`, {
           method: 'POST',
-          body: JSON.stringify({ content: userMsg, is_public: true }),
+          body: JSON.stringify({ content: userMsg, is_public: true, attachments: files.length ? [tempId] : [] }),
         });
         setDetail((prev) => {
           if (!prev) return prev;
@@ -465,11 +498,11 @@ export default function TaskDetailPage() {
   };
 
   // ── onSend：检测 @U老师 前缀决定走普通评论还是 AI 讨论 ──
-  const handleSendComment = async (text: string, _files: File[]): Promise<boolean> => {
+  const handleSendComment = async (text: string, files: File[]): Promise<boolean> => {
     if (text.startsWith('@U老师 ')) {
-      return handleAIDiscuss(text);
+      return handleAIDiscuss(text, files);
     }
-    return handleAddComment(text);
+    return handleAddComment(text, files);
   };
 
   // ── [帮我分析] → POST /api/ai/task/diagnose → 讨论区展示短链接 ──
@@ -746,6 +779,8 @@ export default function TaskDetailPage() {
           onSend={handleSendComment}
           sending={submittingComment || askingAI}
           enableAI
+          enableAttach
+          mentionUsers={projectMembers}
           onMessagesClick={handleOpenReport}
           headerRight={
             <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing}>
@@ -839,7 +874,7 @@ export default function TaskDetailPage() {
         confirmBtn="关闭"
         onConfirm={() => setReportVisible(false)}
       >
-        <div style={{ maxHeight: '60vh', overflowY: 'auto', textAlign: 'left', fontSize: 14, lineHeight: 1.8 }}>
+        <div className="markdown-body" style={{ maxHeight: '60vh', overflowY: 'auto', textAlign: 'left', fontSize: 14, lineHeight: 1.8 }}>
           {diagnosisReport ? (
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
               {diagnosisReport}

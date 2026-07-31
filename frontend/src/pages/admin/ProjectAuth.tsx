@@ -4,6 +4,8 @@ import { Button, Toast, Loading, Dialog, Input, Popup, DateTimePicker } from 'td
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import UserSelect from '@/shared/components/UserSelect';
+import type { UserItem } from '@/api/users';
 
 interface AuthItem {
   id: string;
@@ -31,14 +33,8 @@ const todayStr = (): string => {
 
 // 关联人员可选角色列表
 const ASSOCIATE_ROLES = ['实施', '数据分析师', '数据查看', '研发项目经理', '管理员', '项目对接人'];
-// 用户列表占位：待接入后端项目人员绑定接口前，先用固定人员名单代替
-const PLACEHOLDER_USERS = [
-  '董华来', '张文星', '罗昊', '张俊磊', '胡健楠', '白永奇', '贾爽', '耿洪秀', '陈连鑫',
-  '姜钦阳', '刘青源', '毛梦晴', '齐子谦', '田树政', '汪海波', '王卓', '吴佳秀', '吴彦清',
-  '夏泽龙', '徐浩南', '张会丽', '朱珊珊',
-];
 
-interface AssociateItem { id: string; userId: string; role: string; }
+interface AssociateItem { id: string; userId: string; userName: string; role: string; }
 
 export default function ProjectAuth() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -50,9 +46,9 @@ export default function ProjectAuth() {
   const [projectPickerVisible, setProjectPickerVisible] = useState(false);
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
-  // 添加关联人员弹窗（当前为前端占位实现：用户列表用数字 1-9 代替，待接入真实用户列表接口）
+  // 添加关联人员弹窗：用户列表接入真实的可指派人员接口 GET /api/tasks/assignable-users
   const [associateVisible, setAssociateVisible] = useState(false);
-  const [associateUserId, setAssociateUserId] = useState<string | null>(null);
+  const [associateUser, setAssociateUser] = useState<UserItem | null>(null);
   const [associateRole, setAssociateRole] = useState<string | null>(null);
   const [associateList, setAssociateList] = useState<AssociateItem[]>([]);
 
@@ -169,18 +165,18 @@ export default function ProjectAuth() {
       Toast({ message: '请先选择一个项目', theme: 'warning' });
       return;
     }
-    setAssociateUserId(null);
+    setAssociateUser(null);
     setAssociateRole(null);
     setAssociateVisible(true);
   };
 
   // 保存关联人员（前端占位：暂存于本地列表，待接入后端项目人员绑定接口）
   const handleSaveAssociate = () => {
-    if (!associateUserId) { Toast({ message: '请选择用户', theme: 'warning' }); return; }
+    if (!associateUser) { Toast({ message: '请选择用户', theme: 'warning' }); return; }
     if (!associateRole) { Toast({ message: '请选择角色', theme: 'warning' }); return; }
     setAssociateList((prev) => [
       ...prev,
-      { id: `${associateUserId}_${associateRole}_${Date.now()}`, userId: associateUserId, role: associateRole },
+      { id: `${associateUser.id}_${associateRole}_${Date.now()}`, userId: associateUser.id, userName: associateUser.name || associateUser.username, role: associateRole },
     ]);
     Toast({ message: '已添加关联人员', theme: 'success' });
     setAssociateVisible(false);
@@ -335,7 +331,7 @@ export default function ProjectAuth() {
           {associateList.map((a) => (
             <div key={a.id} style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ fontSize: 13, color: '#666' }}>{a.userId} - {a.role}</div>
+                <div style={{ fontSize: 13, color: '#666' }}>{a.userName} - {a.role}</div>
                 <Button
                   size="small"
                   theme="danger"
@@ -359,23 +355,13 @@ export default function ProjectAuth() {
           </div>
 
           <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>选择用户</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
-            {PLACEHOLDER_USERS.map((uid) => (
-              <div
-                key={uid}
-                onClick={() => setAssociateUserId(uid)}
-                style={{
-                  height: 36, padding: '0 14px', borderRadius: 18,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  cursor: 'pointer', fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap',
-                  background: associateUserId === uid ? '#0052d9' : '#f5f5f5',
-                  color: associateUserId === uid ? '#fff' : '#333',
-                  border: associateUserId === uid ? '1px solid #0052d9' : '1px solid transparent',
-                }}
-              >
-                {uid}
-              </div>
-            ))}
+          <div style={{ marginBottom: 20 }}>
+            <UserSelect
+              value={associateUser?.id}
+              onChange={setAssociateUser}
+              placeholder="请选择用户"
+              title="选择用户"
+            />
           </div>
 
           <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>选择角色</div>
