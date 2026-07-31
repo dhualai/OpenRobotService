@@ -145,7 +145,8 @@ async def submit_ticket(
 ) -> dict:
     username, _ = _current_user(request)
     if not username:
-        username = "unknown"  # token 过期/缺失时的兜底；不改为 system 避免与 keyword 路径混淆
+        # token 过期/无效 → 401，前端 fetchWithAuth 会刷新 token 重试，避免 created_by 为空
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
     try:
         result = await pipeline.submit(session_id=body.session_id, created_by=username)
         if "code" not in result:
@@ -259,8 +260,11 @@ async def confirm_ticket(
     body: TicketConfirmRequest,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
+    username, _ = _current_user(request)
+    if not username:
+        # token 过期/无效 → 401，前端 fetchWithAuth 会刷新 token 重试，避免 created_by 为空
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
     try:
-        username, _ = _current_user(request)
         return await pipeline.confirm_submit(
             session_id=body.session_id, overrides=body.overrides, created_by=username,
         )
