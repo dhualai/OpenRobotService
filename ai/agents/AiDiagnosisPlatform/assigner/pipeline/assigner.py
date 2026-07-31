@@ -89,8 +89,8 @@ class Assigner:
                 ticket=ticket_context, engineers=candidates,
             )
             logger.debug(f"派单 L1 LLM召回: {len(recall_result.llm_recall)} 人")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"派单 L1 LLM召回异常: {e}")
         # L3 语义 + L4 历史（共享一次 Embedding）
         try:
             sem, his = await self._semantic_recaller.arecall(
