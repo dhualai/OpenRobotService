@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog } from 'tdesign-mobile-react';
+import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Input, Form, FormItem } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import SafeHtml from '@/shared/components/SafeHtml';
@@ -117,6 +117,9 @@ export default function TaskDetailPage() {
   const [reassignUser, setReassignUser] = useState<UserItem | null>(null);
   const [showReassignPopup, setShowReassignPopup] = useState(false);
   const [showReturnConfirmPopup, setShowReturnConfirmPopup] = useState(false);
+  const [escalateReason, setEscalateReason] = useState('');
+  const [returnReason, setReturnReason] = useState('');
+  const [reassignReason, setReassignReason] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
 
@@ -197,7 +200,10 @@ export default function TaskDetailPage() {
         { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: { backgroundColor: '#52c41a', color: '#fff', borderRadius: '10px', border: 'none' } },
       ],
       pending: [{ label: '继续处理', nextStatus: 'in_progress', theme: 'primary', actionType: 'resume' }],
-      resolved: [{ label: '确认关闭', nextStatus: 'closed', theme: 'default' }],
+      resolved: [
+        { label: '确认关闭', nextStatus: 'closed', theme: 'default' },
+        { label: '未解决', nextStatus: 'in_progress', theme: 'warning' },
+      ],
       canceled: [{ label: '重新打开', nextStatus: 'new', theme: 'primary' }],
     };
 
@@ -259,6 +265,10 @@ export default function TaskDetailPage() {
       Toast({ message: '请先选择升级对象', theme: 'warning' });
       return;
     }
+    if (!escalateReason.trim()) {
+      Toast({ message: '请填写变更原因', theme: 'warning' });
+      return;
+    }
     const target = escalateUser.name || escalateUser.username;
     try {
       await request(`/${t.id}`, {
@@ -269,11 +279,12 @@ export default function TaskDetailPage() {
       });
 
       const operator = getOperatorLabel();
-      await addOperationComment(`${operator} 将工单升级，处理人变更为 ${target}`);
+      await addOperationComment(`${operator} 将工单升级给 ${target}，原因：${escalateReason.trim()}`);
 
       await refreshDetail();
       Toast({ message: `已升级，处理人已变更为 ${target}`, theme: 'success' });
       setEscalateUser(null);
+      setEscalateReason('');
       setShowEscalatePopup(false);
     } catch (err) {
       Toast({ message: `升级失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -303,6 +314,10 @@ export default function TaskDetailPage() {
 
   const handleReturn = async () => {
     if (!detail) return;
+    if (!returnReason.trim()) {
+      Toast({ message: '请填写变更原因', theme: 'warning' });
+      return;
+    }
     try {
       const operator = getOperatorLabel();
       const returnTo = detail.created_by_name || detail.reporter_name || detail.created_by || '创建人';
@@ -319,9 +334,10 @@ export default function TaskDetailPage() {
         });
       }
 
-      await addOperationComment(`${operator} 将工单退回，状态变更为挂起，处理人变更为 ${returnTo}`);
+      await addOperationComment(`${operator} 将工单退回，原因：${returnReason.trim()}`);
       await refreshDetail();
       Toast({ message: `已退回工单，处理人变更为 ${returnTo}`, theme: 'success' });
+      setReturnReason('');
       setShowReturnConfirmPopup(false);
     } catch (err) {
       Toast({ message: `退回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -330,6 +346,10 @@ export default function TaskDetailPage() {
 
   const handleReassign = async () => {
     if (!detail || !reassignUser) return;
+    if (!reassignReason.trim()) {
+      Toast({ message: '请填写变更原因', theme: 'warning' });
+      return;
+    }
     const target = reassignUser.name || reassignUser.username;
     try {
       await request(`/${detail.id}`, {
@@ -338,10 +358,11 @@ export default function TaskDetailPage() {
       });
 
       const operator = getOperatorLabel();
-      await addOperationComment(`${operator} 将工单重新指派给 ${target}`);
+      await addOperationComment(`${operator} 将工单重新指派给 ${target}，原因：${reassignReason.trim()}`);
       await refreshDetail();
       Toast({ message: `已重新指派给 ${target}`, theme: 'success' });
       setReassignUser(null);
+      setReassignReason('');
       setShowReassignPopup(false);
     } catch (err) {
       Toast({ message: `重新指派失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -681,15 +702,6 @@ export default function TaskDetailPage() {
           )}
         </div>
 
-        {(detail.contact || detail.reporter_name || detail.assignee_name || detail.created_by_name || detail.assigned_to_name) && (
-          <div className="detail-card">
-            <h4 className="detail-card__h">联系方式</h4>
-            {detail.contact && <DetailRow label="联系电话" value={detail.contact} />}
-            <DetailRow label="提交人" value={detail.reporter_name || detail.created_by_name || detail.created_by || '-'} />
-            <DetailRow label="处理人" value={detail.assignee_name || detail.assigned_to_name || detail.assigned_to || '-'} />
-          </div>
-        )}
-
         {detail.attachments && detail.attachments.length > 0 && (
           <div className="detail-card">
             <h4 className="detail-card__h">📎 附件 ({detail.attachments.length})</h4>
@@ -796,10 +808,10 @@ export default function TaskDetailPage() {
           return (
             <div className="detail-actions">
               <div className="detail-actions__btns">
-                <Button size="small" theme="default" onClick={startEdit}>修改工单</Button>
-                <Button size="small" theme="danger" onClick={() => setShowEscalatePopup(true)}>升级上报</Button>
-                <Button size="small" theme="danger" onClick={() => setShowReturnConfirmPopup(true)}>退回工单</Button>
-                <Button size="small" theme="primary" onClick={() => setShowReassignPopup(true)}>重新指派</Button>
+                <Button size="small" theme="default" style={{ backgroundColor: '#f5f5f5', color: '#555', border: 'none' }} onClick={startEdit}>修改工单</Button>
+                <Button size="small" theme="default" style={{ backgroundColor: '#faad14', color: '#fff', border: 'none' }} onClick={() => setShowReturnConfirmPopup(true)}>退回工单</Button>
+                <Button size="small" theme="default" style={{ backgroundColor: '#0052d9', color: '#fff', border: 'none' }} onClick={() => setShowReassignPopup(true)}>重新指派</Button>
+                <Button size="small" theme="default" style={{ backgroundColor: '#d54941', color: '#fff', border: 'none' }} onClick={() => setShowEscalatePopup(true)}>升级上报</Button>
               </div>
             </div>
           );
@@ -808,9 +820,26 @@ export default function TaskDetailPage() {
 
       <Popup visible={editing} onClose={() => setEditing(false)} placement="bottom" showOverlay>
         <div className="ticket-edit">
-          <h4>修改工单</h4>
-          <input className="tasks-search" value={editForm.title} onChange={(e) => setEditForm((p) => ({ ...p, title: e.target.value }))} placeholder="标题" />
-          <Textarea value={editForm.description} onChange={(v) => setEditForm((p) => ({ ...p, description: String(v) }))} autosize={{ minRows: 4, maxRows: 10 }} placeholder="描述" />
+          <h4 className="ticket-edit__title">修改工单</h4>
+          <Form initialData={{ title: editForm.title, description: editForm.description }}>
+            <FormItem label="标题" name="title" labelAlign="top">
+              <Input
+                value={editForm.title}
+                onChange={(v) => setEditForm((p) => ({ ...p, title: String(v) }))}
+                placeholder="请输入工单标题"
+                clearable
+              />
+            </FormItem>
+            <FormItem label="问题描述" name="description" labelAlign="top">
+              <Textarea
+                value={editForm.description}
+                onChange={(v) => setEditForm((p) => ({ ...p, description: String(v) }))}
+                placeholder="请详细描述问题..."
+                autosize={{ minRows: 4, maxRows: 10 }}
+                maxlength={2000}
+              />
+            </FormItem>
+          </Form>
           <div className="ticket-edit__btns">
             <Button theme="default" onClick={() => setEditing(false)}>取消</Button>
             <Button theme="primary" onClick={saveEdit}>保存</Button>
@@ -818,14 +847,25 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      <Popup visible={showEscalatePopup} onClose={() => setShowEscalatePopup(false)} placement="bottom" showOverlay>
+      <Popup visible={showEscalatePopup} onClose={() => { setShowEscalatePopup(false); setEscalateReason(''); }} placement="bottom" showOverlay>
         <div className="ticket-edit">
-          <h4>升级上报</h4>
+          <h4 className="ticket-edit__title">升级上报</h4>
           <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>请选择升级对象</p>
           <UserSelect value={escalateUser?.id ?? null} onChange={setEscalateUser} title="选择升级对象" />
+          <Form initialData={{}}>
+            <FormItem label="变更原因" name="escalateReason" labelAlign="top" requiredMark>
+              <Textarea
+                value={escalateReason}
+                onChange={(v) => setEscalateReason(String(v))}
+                placeholder="请输入升级原因（必填）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
           <div className="ticket-edit__btns">
-            <Button theme="default" onClick={() => setShowEscalatePopup(false)}>取消</Button>
-            <Button theme="danger" onClick={() => handleEscalate(detail!)}>确认升级</Button>
+            <Button theme="default" onClick={() => { setShowEscalatePopup(false); setEscalateReason(''); }}>取消</Button>
+            <Button theme="danger" onClick={() => handleEscalate(detail!)} disabled={!escalateUser || !escalateReason.trim()}>确认升级</Button>
           </div>
         </div>
       </Popup>
@@ -842,28 +882,50 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      <Popup visible={showReassignPopup} onClose={() => { setShowReassignPopup(false); setReassignUser(null); }} placement="bottom" showOverlay>
+      <Popup visible={showReassignPopup} onClose={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); }} placement="bottom" showOverlay>
         <div className="ticket-edit">
-          <h4>重新指派</h4>
+          <h4 className="ticket-edit__title">重新指派</h4>
           <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>选择新的处理人</p>
           <UserSelect value={reassignUser?.id ?? null} onChange={setReassignUser} placeholder="请选择处理人" title="选择处理人" />
+          <Form initialData={{}}>
+            <FormItem label="变更原因" name="reassignReason" labelAlign="top" requiredMark>
+              <Textarea
+                value={reassignReason}
+                onChange={(v) => setReassignReason(String(v))}
+                placeholder="请输入重新指派原因（必填）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
           <div className="ticket-edit__btns">
-            <Button theme="default" onClick={() => { setShowReassignPopup(false); setReassignUser(null); }}>取消</Button>
-            <Button theme="primary" onClick={handleReassign} disabled={!reassignUser}>确认指派</Button>
+            <Button theme="default" onClick={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); }}>取消</Button>
+            <Button theme="primary" onClick={handleReassign} disabled={!reassignUser || !reassignReason.trim()}>确认指派</Button>
           </div>
         </div>
       </Popup>
 
-      <Popup visible={showReturnConfirmPopup} onClose={() => setShowReturnConfirmPopup(false)} placement="bottom" showOverlay>
+      <Popup visible={showReturnConfirmPopup} onClose={() => { setShowReturnConfirmPopup(false); setReturnReason(''); }} placement="bottom" showOverlay>
         <div className="ticket-edit">
-          <h4>退回工单</h4>
+          <h4 className="ticket-edit__title">退回工单</h4>
           <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
             确定要将此工单退回吗？<br />
             退回后工单状态将变更为<span style={{ color: '#faad14', fontWeight: 500 }}>挂起</span>，处理人变更为创建人。
           </p>
+          <Form initialData={{}}>
+            <FormItem label="变更原因" name="returnReason" labelAlign="top" requiredMark>
+              <Textarea
+                value={returnReason}
+                onChange={(v) => setReturnReason(String(v))}
+                placeholder="请输入退回原因（必填）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
           <div className="ticket-edit__btns">
-            <Button theme="default" onClick={() => setShowReturnConfirmPopup(false)}>取消</Button>
-            <Button theme="danger" onClick={handleReturn}>确认退回</Button>
+            <Button theme="default" onClick={() => { setShowReturnConfirmPopup(false); setReturnReason(''); }}>取消</Button>
+            <Button theme="danger" onClick={handleReturn} disabled={!returnReason.trim()}>确认退回</Button>
           </div>
         </div>
       </Popup>
