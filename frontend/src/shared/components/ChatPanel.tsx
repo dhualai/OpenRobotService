@@ -870,7 +870,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     try {
       const res = await qaPrepareTicket(sessionId);
       if (res?.code !== 0 || !res.data) {
-        Toast({ message: res?.message || '生成工单草稿失败', theme: 'error' });
+        // 保底必填字段不足（stage=not_ready）→ warning 提示回对话补充；其他失败 → error
+        Toast({
+          message: res?.message || '生成工单草稿失败',
+          theme: res?.stage === 'not_ready' ? 'warning' : 'error',
+          duration: res?.stage === 'not_ready' ? 5000 : 3000,
+        });
         return;
       }
       const { draft, missing_fields, prompt } = res.data;

@@ -124,15 +124,26 @@ export interface TicketDraft {
 }
 
 export interface PrepareTicketResult {
-  stage: 'draft_ready' | 'need_fields';
+  stage: 'draft_ready' | 'need_fields' | 'not_ready';
   draft: TicketDraft;
   missing_fields: string[];
+  /** 保底必填字段缺失项（stage=not_ready 时返回，面向用户的中文名） */
+  missing_info?: string[];
   prompt: string;
+  ticket_ready?: boolean;
 }
 
-/** 生成工单草稿（按钮转工单：第一次点击） */
+/** 生成工单草稿（按钮转工单：第一次点击）
+ *  保底必填字段不足时返回 code=1 + stage='not_ready' + missing_info（不生成草稿，
+ *  用户需回对话补充后再点） */
 export const qaPrepareTicket = (sessionId: string) =>
-  aiPost<{ code: number; data?: PrepareTicketResult; message?: string }>(
+  aiPost<{
+    code: number;
+    data?: PrepareTicketResult;
+    message?: string;
+    stage?: string;
+    missing_info?: string[];
+  }>(
     '/qa/ticket/prepare', { session_id: sessionId },
   );
 

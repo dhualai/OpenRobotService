@@ -94,6 +94,9 @@ def mock_llm():
         return _DIAGNOSIS_RESPONSE
 
     mock.complete = AsyncMock(side_effect=_llm_side_effect)
+    # MagicMock 会自动造出 truthy 的 .stream 属性，导致 pipeline 误判 LLM 支持流式
+    # （async for 迭代 MagicMock 抛 TypeError → 走到异常分支）。显式置 None 走 complete()。
+    mock.stream = None
     return mock
 
 
