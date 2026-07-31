@@ -310,7 +310,7 @@ export default function ProjectDetail() {
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
               <span
                 onClick={() => navigate(`/admin/project-detail/${id}/transport-efficiency`)}
-                style={{ padding: '2px 10px', borderRadius: 999, fontSize: 12, fontWeight: 500, color: '#fff', background: STATUS_COLOR[project.status] || '#999', cursor: 'pointer' }}
+                style={{ padding: '2px 10px', borderRadius: 999, fontSize: 12, fontWeight: 500, color: '#fff', background: '#808080', cursor: 'pointer' }}
               >
                 搬运效率分析 ›
               </span>
