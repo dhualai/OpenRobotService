@@ -29,7 +29,7 @@ interface AiDiagnosis {
   collected_info?: Record<string, unknown>;
   rounds?: number;
 }
-interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; }
+interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; }
 interface AiTicket {
   ticket_id?: string;
   session_id: string;

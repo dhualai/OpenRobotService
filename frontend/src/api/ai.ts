@@ -129,6 +129,8 @@ export interface PrepareTicketResult {
   missing_fields: string[];
   /** 保底必填字段缺失项（stage=not_ready 时返回，面向用户的中文名） */
   missing_info?: string[];
+  /** stage=not_ready 时返回的面向用户的引导话术 */
+  message?: string;
   prompt: string;
   ticket_ready?: boolean;
 }

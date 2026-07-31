@@ -68,6 +68,10 @@ interface Message {
 
 const uid = () => Date.now().toString() + Math.random().toString(36).slice(2, 6);
 
+/** 附件代理下载 URL：前端通过后端代理读取 MinIO 对象（/api/call/files/{object_path}），
+ *  不用预签名 URL（其 host=MINIO_ENDPOINT=localhost:9000，生产浏览器访问不了 → 碎图）。 */
+const attachmentUrl = (objectPath: string) => `${API_CONFIG.CALL.BASE_URL}/files/${objectPath}`;
+
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
   msg, editingId, compact, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave, onEditCancel, onImageClick,
@@ -225,6 +229,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     overrides: Partial<TicketDraft>;
     submitting: boolean;
   }>({ visible: false, draft: null, overrides: {}, submitting: false });
+  // 转工单信息不足引导（方案A）：prepare 返回 not_ready 时，
+  // 在输入框上方常驻「待补充清单」卡片 + 转工单按钮角标，引导用户回对话补全
+  const [ticketMissing, setTicketMissing] = useState<{ info: string[]; message: string } | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
   const [voiceWillCancel, setVoiceWillCancel] = useState(false);
@@ -385,14 +392,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             content: m.content,
             timestamp: m.created_at,
           };
-          // 解析 file_urls 恢复图片/文件卡片（预签名 URL，24h 内有效）
+          // 解析 file_urls 恢复图片/文件卡片（object_path → 后端代理路径，永久有效）
           if (m.file_urls) {
             try {
-              const files = JSON.parse(m.file_urls) as Array<{ filename: string; url: string; size?: number; isImage?: boolean }>;
+              const files = JSON.parse(m.file_urls) as Array<{ filename: string; object_path?: string; size?: number; isImage?: boolean }>;
               const f = files[0];
-              if (f) {
-                if (f.isImage) msg.imageUrl = f.url;
-                else msg.attachment = { name: f.filename, size: f.size ?? 0, url: f.url };
+              if (f && f.object_path) {
+                const url = attachmentUrl(f.object_path);
+                if (f.isImage) msg.imageUrl = url;
+                else msg.attachment = { name: f.filename, size: f.size ?? 0, url };
               }
             } catch { /* ignore */ }
           }
@@ -409,6 +417,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
+
+  // 切换会话时清掉「待补充清单」卡片：缺口属于具体会话，换会话即失效
+  useEffect(() => { setTicketMissing(null); }, [conversationId]);
 
   // 切走前把当前会话的最新 messages 写入内存缓存（按会话 id），供切回时立即恢复。
   // 用 prevConvIdRef 记录上一轮会话 id，确保写入的是「旧会话」而非已切换的「新会话」，
@@ -494,22 +505,23 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (res.data?.code !== 0) throw new Error(res.data?.message || '上传失败');
       const data = res.data?.data;
 
-      // 上传完成：回填预签名 URL 到用户气泡（图片换掉临时 blob URL；非图片补 url），进度遮罩消失
+      // 上传完成：回填代理 URL 到用户气泡（图片换掉临时 blob URL；非图片补 url），进度遮罩消失
+      // 用后端代理路径 /api/call/files/{object_path} 而非预签名 URL（预签名 host=localhost 生产浏览器访问不了）
       const uploaded = data?.files?.[0];
-      const presignedUrl = uploaded?.path;
+      const fileUrl = uploaded?.object_path ? attachmentUrl(uploaded.object_path) : undefined;
       setMessages((prev) => prev.map((m) => {
         if (m.id !== userId) return m;
         const updated: Message = { ...m, uploading: false, percent: 100 };
-        if (isImage && presignedUrl) {
+        if (isImage && fileUrl) {
           if (m.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(m.imageUrl);
-          updated.imageUrl = presignedUrl;
-        } else if (!isImage && presignedUrl && m.attachment) {
-          updated.attachment = { ...m.attachment, url: presignedUrl };
+          updated.imageUrl = fileUrl;
+        } else if (!isImage && fileUrl && m.attachment) {
+          updated.attachment = { ...m.attachment, url: fileUrl };
         }
         return updated;
       }));
 
-      // 持久化用户消息（存对象路径 object_path，后端 getConversation 返回时重签预签名 URL，避免 24h 过期）
+      // 持久化用户消息（存 object_path，前端恢复时拼后端代理路径 /api/call/files/{object_path}）
       const convId = await ensureConversation(sid, content || `[发送了附件] ${file.name}`);
       if (convId) {
         const objectPath = uploaded?.object_path;
@@ -546,6 +558,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     if (!token) { kickToLogin('请先登录'); return; }
     if (sendingRef.current) return; // 防双发
     sendingRef.current = true;
+    // 用户开始补充信息：清掉待补充清单卡片（新一轮对话后再 prepare 会重新给出最新缺口）
+    setTicketMissing(null);
 
     // 带附件：走 /qa/upload（非流式），由后端返回 ack/ai_response
     if (file) {
@@ -959,8 +973,28 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     setSubmittingTicket(true);
     try {
       const res = await qaPrepareTicket(sessionId);
+      // 保底必填字段不足 → stage=not_ready：不进弹窗，在对话区列出缺失项引导补充
+      if (res?.code === 0 && res.data?.stage === 'not_ready') {
+        const missing = res.data.missing_info ?? [];
+        const msg = res.data.message || (missing.length
+          ? `工单信息不足，还差：${missing.join('、')}。请直接在对话中告诉我，补全后再点转工单。`
+          : '工单信息不足，请补充后再点转工单。');
+        // 1) 作为 assistant 消息渲染气泡（与流式 AI 回复一致的持久化方式，刷新/切回仍可见）
+        setMessages((prev) => [...prev, {
+          id: uid(),
+          role: 'assistant',
+          content: msg,
+          timestamp: new Date().toISOString(),
+        }]);
+        scrollToBottomNow();
+        if (convRef.current) appendMessage(convRef.current, 'assistant', msg).catch(() => {});
+        // 2) 输入框上方常驻「待补充清单」卡片 + 转工单按钮角标
+        setTicketMissing({ info: missing, message: msg });
+        // 3) 短提示（移动端友好，toast 转瞬即逝，卡片是主载体）
+        Toast({ message: missing.length ? `还差 ${missing.length} 项信息，已在对话中列出` : '信息不足，请补充', theme: 'warning' });
+        return;
+      }
       if (res?.code !== 0 || !res.data) {
-        // 保底必填字段不足（stage=not_ready）→ warning 提示回对话补充；其他失败 → error
         Toast({
           message: res?.message || '生成工单草稿失败',
           theme: res?.stage === 'not_ready' ? 'warning' : 'error',
@@ -970,6 +1004,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       }
       const { draft, missing_fields, prompt } = res.data;
       // 打开确认弹窗，让用户核对/编辑/补字段
+      setTicketMissing(null); // 已就绪，清掉待补充清单
       setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false });
       if (missing_fields?.length) {
         Toast({ message: prompt || '请补全必填字段后提交', theme: 'warning' });
@@ -1098,6 +1133,35 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         />
       )}
 
+      {/* 转工单信息不足引导卡片（方案A）：常驻输入区上方，列出缺失项，点按钮重试 prepare */}
+      {isCall && ticketMissing && ticketMissing.info.length > 0 && (
+        <div className="chat-ticket-missing" role="status">
+          <div className="chat-ticket-missing__title">
+            <span className="chat-ticket-missing__badge">缺 {ticketMissing.info.length} 项</span>
+            <span>转工单前请补全以下信息</span>
+            <button
+              type="button"
+              className="chat-ticket-missing__close"
+              onClick={() => setTicketMissing(null)}
+              aria-label="关闭"
+            >✕</button>
+          </div>
+          <ul className="chat-ticket-missing__list">
+            {ticketMissing.info.map((item) => (
+              <li key={item} className="chat-ticket-missing__item">{item}</li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            className="chat-ticket-missing__retry"
+            onClick={handleSubmitTicket}
+            disabled={submittingTicket}
+          >
+            {submittingTicket ? '检查中…' : '重新检测转工单'}
+          </button>
+        </div>
+      )}
+
       {/* 输入区（千问风格卡片：上输入，下工具行） */}
       <div
         className="chat-input-bar"
@@ -1108,7 +1172,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         {isCall && (
           <div className="chat-panel__ticket-fab" title="转为工单">
             <button
-              className={`chat-ticket-btn${messages.length > 0 ? ' has-content' : ''}${submittingTicket ? ' is-submitting' : ''}`}
+              className={`chat-ticket-btn${messages.length > 0 ? ' has-content' : ''}${submittingTicket ? ' is-submitting' : ''}${ticketMissing && ticketMissing.info.length ? ' has-missing' : ''}`}
               onClick={handleSubmitTicket}
               disabled={submittingTicket}
               aria-label="转工单"
@@ -1121,6 +1185,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 <path fill="currentColor" d="M6 3H3V23H13.8762C13.0139 21.897 12.5 20.5085 12.5 19C12.5 15.4101 15.4101 12.5 19 12.5C19.6978 12.5 20.3699 12.61 21 12.8135V3H18V7H6V3Z" />
                 <path fill="currentColor" d="M24 20H20V24H18V20H14V18H18V14H20V18H24V20Z" />
               </svg>
+              )}
+              {ticketMissing && ticketMissing.info.length > 0 && (
+                <span className="chat-ticket-btn__badge">{ticketMissing.info.length}</span>
               )}
             </button>
             <span className="chat-ticket-btn__label">{submittingTicket ? '提交中…' : '转工单'}</span>
