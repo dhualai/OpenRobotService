@@ -426,7 +426,7 @@ def _maybe_notify_mentions(
                     ticket_id=task_id,
                     title=ticket_title,
                     project_name=ticket_project,
-                    update_content=f"comment_mentioned",
+                    update_content=f"status:工单讨论中@了您",
                     operator=operator,
                     user_names=notified_usernames,
                     token=token,
