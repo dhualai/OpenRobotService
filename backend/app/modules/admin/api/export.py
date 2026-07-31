@@ -6,7 +6,7 @@ MIGRATION.md 阶段 3：从 `app/modules/das/api/export.py` 搬迁而来，
 from fastapi import APIRouter, Depends, Query, HTTPException, Request, Body
 from typing import Optional, Dict, List
 from pydantic import BaseModel
-from app.modules.admin.utils_das.config import security, DEBUG_MODE
+from app.modules.admin.utils_das.config import security, DEBUG_MODE, AUTH_SERVICE_BASE_URL
 from app.modules.admin.services.project_service import project_service
 from app.modules.admin.services.permission_service import PermissionService
 from app.modules.admin.utils_das.mqtt import publish_to_mqtt
@@ -16,6 +16,7 @@ import gzip
 import io
 import json
 from datetime import datetime
+import requests
 
 export_router = APIRouter(prefix="/export", tags=["admin-export"])
 
@@ -76,11 +77,27 @@ async def apply_project_license(
     request: Request = None
 ):
     user = ""
+    user_name = ""
     token = None
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
     payload = decode_token(token)
     if payload:
         user = payload.get("sub", "")
+
+    if user and token:
+        try:
+            url = f"{AUTH_SERVICE_BASE_URL}/users/{user}/detail"
+            headers = {"Authorization": f"Bearer {token}"}
+            response = requests.get(url, headers=headers, timeout=5)
+            if response.status_code == 200:
+                user_data = response.json()
+                user_name = user_data.get("name", user)
+            else:
+                user_name = user
+        except Exception:
+            user_name = user
+    else:
+        user_name = user
 
     data = {
         "project_code": project_code,
@@ -100,7 +117,7 @@ async def apply_project_license(
             "apply_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "expire_time": end_date,
             "license_code": status.get("license_content", ""),
-            "applicant": user,
+            "applicant": user_name,
             "applicant_id": user,
             "max_vehicles": max_vehicles
         }
