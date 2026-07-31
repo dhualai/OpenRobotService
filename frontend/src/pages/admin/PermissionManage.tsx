@@ -24,6 +24,7 @@ export default function PermissionManage() {
   const [submitting, setSubmitting] = useState(false);
   // 用于强制 Form 重新挂载，使 initialData 在每次打开时重新读取
   const [formKey, setFormKey] = useState(0);
+  const [formOriginal, setFormOriginal] = useState<{ code: string; name: string; resource_type: string; action: string }>(EMPTY_FORM);
 
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
@@ -48,13 +49,16 @@ export default function PermissionManage() {
   const openCreate = () => {
     setEditingId(null);
     setForm(EMPTY_FORM);
+    setFormOriginal(EMPTY_FORM);
     setFormKey((k) => k + 1);
     setDialogVisible(true);
   };
 
   const openEdit = (perm: Permission) => {
     setEditingId(perm.id);
-    setForm({ code: perm.code, name: perm.name, resource_type: perm.resource_type, action: perm.action });
+    const nextForm = { code: perm.code, name: perm.name, resource_type: perm.resource_type, action: perm.action };
+    setForm(nextForm);
+    setFormOriginal(nextForm);
     setFormKey((k) => k + 1);
     setDialogVisible(true);
   };
@@ -67,7 +71,18 @@ export default function PermissionManage() {
     setSubmitting(true);
     try {
       if (editingId) {
-        await request(`/permissions/${editingId}`, { method: 'PUT', body: JSON.stringify(form) });
+        const changedFields: Record<string, string> = {};
+        (Object.keys(form) as (keyof typeof form)[]).forEach((key) => {
+          if (form[key] !== formOriginal[key]) {
+            changedFields[key] = form[key];
+          }
+        });
+        if (Object.keys(changedFields).length === 0) {
+          Toast({ message: '未检测到修改', theme: 'info' });
+          setDialogVisible(false);
+          return;
+        }
+        await request(`/permissions/${editingId}`, { method: 'PUT', body: JSON.stringify(changedFields) });
         Toast({ message: '权限已更新', theme: 'success' });
       } else {
         await request('/permissions/', { method: 'POST', body: JSON.stringify(form) });
