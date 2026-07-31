@@ -401,6 +401,53 @@ class WechatService:
             print(f'请求openid异常: {e}')
             return None
 
+    async def get_sns_userinfo(self, access_token: str, openid: str, lang: str = 'zh_CN') -> Optional[Dict]:
+        """网页授权获取用户基本信息（sns/userinfo）。
+
+        注意：这里的 access_token 是「网页授权接口调用凭证」，即 sns/oauth2/access_token
+        返回的 access_token，**不是** get_access_token() 取到的基础支持 access_token。
+        且 OAuth scope 必须为 snsapi_userinfo 才能拿到 nickname/headimgurl。
+        """
+        url = f"https://api.weixin.qq.com/sns/userinfo?access_token={access_token}&openid={openid}&lang={lang}"
+
+        try:
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.session.get(url, timeout=5)
+            )
+            result = response.json()
+
+            if 'openid' in result:
+                return result
+            else:
+                print(f'获取微信用户信息失败: {result}')
+                return result
+        except Exception as e:
+            print(f'请求微信用户信息异常: {e}')
+            return None
+
+    async def download_avatar(self, url: str) -> Optional[tuple]:
+        """下载微信头像图片字节。
+
+        成功返回 (image_bytes, content_type)，content_type 取响应头、兜底 image/jpeg；
+        失败返回 None。
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.session.get(url, timeout=10)
+            )
+            if response.status_code == 200:
+                content_type = response.headers.get('Content-Type') or 'image/jpeg'
+                return response.content, content_type
+            print(f'下载微信头像失败: HTTP {response.status_code}')
+            return None
+        except Exception as e:
+            print(f'下载微信头像异常: {e}')
+            return None
+
     def get_jsapi_ticket(self) -> Optional[str]:
         now = int(time.time())
 

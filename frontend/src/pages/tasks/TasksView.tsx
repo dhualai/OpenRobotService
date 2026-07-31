@@ -96,7 +96,7 @@ export default function TasksView() {
     tasksRefreshKey, ticketDraft, consumeTicketDraft, refreshTasks,
   } = useWorkbenchStore();
 
-  const { username, hasPermission } = useAuthStore();
+  const { username, hasPermission, projectIds } = useAuthStore();
   const canManageTasks = hasPermission('frontend:develop');
 
   // 从 URL 初始化筛选状态
@@ -226,16 +226,36 @@ export default function TasksView() {
           skipCache: true,
         });
       } else {
-        const params = new URLSearchParams({
-          page: String(page), size: String(pageSize),
-          ...(search && { keyword: search }),
-          ...(statusFilter !== 'all' && { status: statusFilter }),
-          ...(priorityFilter !== 'all' && { priority: priorityFilter }),
-          sort_by: sortBy,
-          sort_order: sortOrder,
+        // “全部”：仅展示与当前用户关联的项目（projectPermissions keys）下的工单，
+        // 按 task.project_id 过滤；项目列表为空时（未加载/无项目）回退为不限制。
+        const filters: any[] = [];
+        if (projectIds.length > 0) {
+          filters.push({ or: projectIds.map((pid) => ({ field: 'projectId', op: 'eq', value: pid })) });
+        }
+        if (search) {
+          filters.push({ field: 'title', op: 'contains', value: search });
+        }
+        if (statusFilter !== 'all') {
+          filters.push({ field: 'status', op: 'eq', value: statusFilter });
+        }
+        if (priorityFilter !== 'all') {
+          filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
+        }
+
+        const sorts = sortBy === 'priority'
+          ? []
+          : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
+
+        data = await request<{ items: Ticket[]; total: number }>('/filter', {
+          method: 'POST',
+          body: JSON.stringify({
+            filters,
+            sorts,
+            page,
+            size: pageSize,
+          }),
+          skipCache: true,
         });
-        
-        data = await request<{ items: Ticket[]; total: number }>(`/?${params.toString()}`, { skipCache: true });
       }
       
       let sortedItems = data.items || [];
@@ -256,7 +276,7 @@ export default function TasksView() {
       isFetchingRef.current = false;
       if (!silent) setLoading(false);
     }
-  }, [page, search, statusFilter, priorityFilter, relevanceFilter, username, sortBy, sortOrder]);
+  }, [page, search, statusFilter, priorityFilter, relevanceFilter, username, projectIds, sortBy, sortOrder]);
 
   fetchTicketsRef.current = fetchTickets;
 

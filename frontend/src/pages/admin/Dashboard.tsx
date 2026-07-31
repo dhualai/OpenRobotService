@@ -20,6 +20,7 @@ import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import { useAuthStore } from '@/stores/auth';
 
 interface ProjectListItem {
   risks: number;
@@ -43,6 +44,8 @@ const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { hasPermission } = useAuthStore();
+  const canAccessAdminEntries = hasPermission('frontend:admin');
   const [ticketSummary, setTicketSummary] = useState<TicketSummary | null>(null);
   const [stageSummary, setStageSummary] = useState<ProjectStageSummary | null>(null);
   const [urgencySummary, setUrgencySummary] = useState<UrgencySummary | null>(null);
@@ -180,7 +183,9 @@ export default function Dashboard() {
         <SectionTitle emoji="📋" title="更多功能" />
         <div className="dashboard-section">
           <div className="dashboard-more-grid">
-            {MORE_FUNCTION_ENTRIES.map((e) => (
+            {MORE_FUNCTION_ENTRIES
+              .filter((e) => e.path !== '/admin/entries' || canAccessAdminEntries)
+              .map((e) => (
               <div key={e.path} className="dashboard-more-card" onClick={() => navigate(e.path)}>
                 <span className="dashboard-more-card__emoji">{e.emoji}</span>
                 <span className="dashboard-more-card__label">{e.label}</span>
