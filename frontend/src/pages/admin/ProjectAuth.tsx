@@ -20,7 +20,28 @@ interface Project { id?: string; code?: string; name: string; }
 
 const maskCode = (code: string): string => {
   if (!code) return '';
-  return code.slice(0, 30) + '*'.repeat(10);
+  return code.length > 10 ? `${code.slice(0, 10)}...` : code;
+};
+
+const handleCopyCode = async (text: string) => {
+  if (!text) return;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    Toast({ message: '已复制', theme: 'success' });
+  } catch {
+    Toast({ message: '复制失败，请手动复制', theme: 'error' });
+  }
 };
 
 const todayStr = (): string => {
@@ -273,10 +294,28 @@ export default function ProjectAuth() {
           {items.map((item, idx) => (
             (authListExpanded || idx < 2) && (
             <div key={item.id} style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                <div style={{ fontWeight: 500, wordBreak: 'break-all' }}>{maskCode(item.license_code)}</div>
+                <span
+                  onClick={() => handleCopyCode(item.license_code)}
+                  style={{ flexShrink: 0, fontSize: 12, color: '#0052d9', cursor: 'pointer' }}
+                >
+                  复制
+                </span>
+              </div>
+              {item.machine_code && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                  <div style={{ fontSize: 12, color: '#999', wordBreak: 'break-all' }}>机器码：{maskCode(item.machine_code)}</div>
+                  <span
+                    onClick={() => handleCopyCode(item.machine_code!)}
+                    style={{ flexShrink: 0, fontSize: 12, color: '#0052d9', cursor: 'pointer' }}
+                  >
+                    复制
+                  </span>
+                </div>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginTop: 4 }}>
                 <div>
-                  <div style={{ fontWeight: 500 }}>{maskCode(item.license_code)}</div>
-                  {item.machine_code && <div style={{ fontSize: 12, color: '#999' }}>机器码：{maskCode(item.machine_code)}</div>}
                   <div style={{ fontSize: 13, color: '#666' }}>有效期：{item.apply_time} ～ {item.expire_time}</div>
                   <div style={{ fontSize: 12, color: '#999' }}>申请人：{item.applicant}</div>
                 </div>
