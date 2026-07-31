@@ -110,6 +110,7 @@ const AdminLayout = lazyImport(() => import('@/shared/components/AdminLayout'));
 const TicketStatusDetail = lazyImport(() => import('@/pages/admin/TicketStatusDetail'));
 const ProjectCategoryDetail = lazyImport(() => import('@/pages/admin/ProjectCategoryDetail'));
 const ProjectDetail = lazyImport(() => import('@/pages/admin/ProjectDetail'));
+const TransportEfficiency = lazyImport(() => import('@/pages/admin/TransportEfficiency'));
 
 // 三大核心功能（明细列表页）
 const TicketMonitor = lazyImport(() => import('@/pages/admin/TicketMonitor'));
@@ -169,6 +170,7 @@ const router = createBrowserRouter([
               { path: 'dashboard/projects/:dimension/:key', element: <ProjectCategoryDetail /> },
               // 项目详情：点击项目管理列表条目后展示（原样复用项目详情设计稿，见 pages/admin/ProjectDetail.tsx）
               { path: 'project-detail/:id', element: <ProjectDetail /> },
+              { path: 'project-detail/:id/transport-efficiency', element: <TransportEfficiency /> },
               // 次级入口：三大功能传统列表页 + 管理员工具
               { path: 'entries', element: <AdminEntries /> },
               {
