@@ -194,17 +194,17 @@ export default function TaskDetailPage() {
     if (status === 'resolved' && !isReporter) return [];
 
     const actions: Record<string, { label: string; nextStatus: string; theme: string; actionType?: string; customStyle?: Record<string, string> }[]> = {
-      new: [{ label: '开始处理', nextStatus: 'in_progress', theme: 'primary' }],
+      new: [{ label: '开始处理', nextStatus: 'in_progress', theme: 'primary', customStyle: { backgroundColor: '#0052d9', color: '#fff', borderRadius: '10px', border: 'none' } }],
       in_progress: [
         { label: '暂停任务', nextStatus: 'pending', theme: 'warning', customStyle: { backgroundColor: '#faad14', color: '#fff', borderRadius: '10px', border: 'none' } },
         { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: { backgroundColor: '#52c41a', color: '#fff', borderRadius: '10px', border: 'none' } },
       ],
-      pending: [{ label: '继续处理', nextStatus: 'in_progress', theme: 'primary', actionType: 'resume' }],
+      pending: [{ label: '继续处理', nextStatus: 'in_progress', theme: 'primary', actionType: 'resume', customStyle: { backgroundColor: '#0052d9', color: '#fff', borderRadius: '10px', border: 'none' } }],
       resolved: [
-        { label: '确认关闭', nextStatus: 'closed', theme: 'default' },
-        { label: '未解决', nextStatus: 'in_progress', theme: 'warning' },
+        { label: '未解决', nextStatus: 'in_progress', theme: 'warning', customStyle: { backgroundColor: '#faad14', color: '#fff', borderRadius: '10px', border: 'none' } },
+        { label: '确认关闭', nextStatus: 'closed', theme: 'default', customStyle: { backgroundColor: '#1a1a1a', color: '#fff', borderRadius: '10px', border: 'none' } },
       ],
-      canceled: [{ label: '重新打开', nextStatus: 'new', theme: 'primary' }],
+      canceled: [{ label: '重新打开', nextStatus: 'new', theme: 'primary', customStyle: { backgroundColor: '#0052d9', color: '#fff', borderRadius: '10px', border: 'none' } }],
     };
 
     return actions[status] || [];
@@ -821,7 +821,7 @@ export default function TaskDetailPage() {
       <Popup visible={editing} onClose={() => setEditing(false)} placement="bottom" showOverlay>
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">修改工单</h4>
-          <Form initialData={{ title: editForm.title, description: editForm.description }}>
+          <Form key={`edit-${editing}`} initialData={{ title: editForm.title, description: editForm.description }}>
             <FormItem label="标题" name="title" labelAlign="top">
               <Input
                 value={editForm.title}
