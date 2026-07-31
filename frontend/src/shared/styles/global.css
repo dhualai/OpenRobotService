@@ -2264,9 +2264,27 @@ html, body, #root {
 }
 .detail-chat-input {
   display: flex;
+  flex-direction: column;
   gap: 8px;
   padding-top: 8px;
   border-top: 1px solid #f0f0f0;
+}
+.detail-chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.detail-chat-input-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.detail-chat-input-row .t-button {
+  padding: 0 10px;
+  font-size: 13px;
+  height: 32px;
+  min-width: auto;
 }
 .detail-chat-input-field {
   flex: 1;
@@ -2482,7 +2500,7 @@ html, body, #root {
 .history-row__actions .t-button { font-weight: 400; font-size: 12px; }
 
 /* ===== TicketDetailPage 评论附件上传 ===== */
-.detail-chat-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.detail-chat-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .detail-chat-file {
   display: inline-flex; align-items: center; gap: 4px;
   background: #f2f3f5; border-radius: 6px; padding: 4px 8px; font-size: 12px; color: #333;
