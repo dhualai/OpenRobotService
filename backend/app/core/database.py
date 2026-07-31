@@ -55,6 +55,12 @@ class DatabaseManager:
     def get_all_roles(self) -> List[Dict[str, str]]:
         return identity_service.get_all_roles()
 
+    def update_role(self, role_id: str, name: Optional[str] = None, role_type: Optional[str] = None) -> bool:
+        return identity_service.update_role(role_id, name, role_type)
+
+    def auto_classify_roles(self) -> List[Dict[str, str]]:
+        return identity_service.auto_classify_roles()
+
     def delete_role(self, role_id: str) -> bool:
         return identity_service.delete_role(role_id)
 
