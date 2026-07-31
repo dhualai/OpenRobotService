@@ -80,6 +80,17 @@ export default function TransportEfficiency() {
   const [datePickerVisible, setDatePickerVisible] = useState(false);
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<EfficiencyResponse | null>(null);
+  const [projectName, setProjectName] = useState('');
+
+  const fetchProjectName = useCallback(async () => {
+    if (!id) return;
+    try {
+      const project = await request<{ name: string }>(`/projects/${encodeURIComponent(id)}`);
+      setProjectName(project.name || '');
+    } catch {
+      setProjectName('');
+    }
+  }, [id]);
 
   const fetchData = useCallback(async () => {
     if (!id || !date) return;
@@ -98,6 +109,7 @@ export default function TransportEfficiency() {
   }, [id, date]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { fetchProjectName(); }, [fetchProjectName]);
 
   const hasData = !!(data?.summary || (data?.robots && data.robots.length > 0));
 
@@ -105,6 +117,11 @@ export default function TransportEfficiency() {
     <div>
       <Navbar title="搬运效率分析" leftArrow onLeftClick={() => navigate(-1)} fixed />
       <div style={{ padding: 16, paddingTop: 64 }}>
+        {projectName && (
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 16, color: '#1a1a1a' }}>
+            {projectName}
+          </div>
+        )}
         <div
           onClick={() => setDatePickerVisible(true)}
           style={{
