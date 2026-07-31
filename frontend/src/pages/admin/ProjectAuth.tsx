@@ -67,7 +67,6 @@ export default function ProjectAuth() {
   const [loading, setLoading] = useState(false);
   const [projectLoading, setProjectLoading] = useState(true);
   const [projectPickerVisible, setProjectPickerVisible] = useState(false);
-  const [authListExpanded, setAuthListExpanded] = useState(false);
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   // 添加关联人员弹窗：用户列表接入真实的可指派人员接口 GET /api/tasks/assignable-users
@@ -102,13 +101,12 @@ export default function ProjectAuth() {
       .finally(() => setProjectLoading(false));
   }, []);
 
-  // 根据选中的项目代码获取授权信息
+  // 根据选中的项目代码获取授权信息（传 type=all 获取全部授权记录）
   const fetchLicenses = async (projectCode: string) => {
     if (!projectCode) return;
     setLoading(true);
-    setAuthListExpanded(false);
     try {
-      const data = await request(`/projects/licenses/${encodeURIComponent(projectCode)}`);
+      const data = await request(`/projects/licenses/${encodeURIComponent(projectCode)}?type=all`);
       setItems(normalizeList<AuthItem>(data));
     } catch (err) {
       Toast({ message: `加载授权失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -388,8 +386,7 @@ export default function ProjectAuth() {
           <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12, color: '#0052d9' }}>
             {selectedProject.name} - 授权记录 ({items.length})
           </div>
-          {items.map((item, idx) => (
-            (authListExpanded || idx < 2) && (
+          {items.map((item) => (
             <div key={item.id} style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                 <div style={{ fontWeight: 500, wordBreak: 'break-all' }}>{maskCode(item.license_code)}</div>
@@ -420,16 +417,7 @@ export default function ProjectAuth() {
                 <Button size="small" theme="danger" variant="outline" onClick={() => handleRevoke(item)}>撤销</Button>
               </div>
             </div>
-            )
           ))}
-          {items.length > 2 && (
-            <div
-              style={{ textAlign: 'center', padding: '8px 0', color: '#0052d9', fontSize: 13, cursor: 'pointer' }}
-              onClick={() => setAuthListExpanded((v) => !v)}
-            >
-              {authListExpanded ? '收起 ∧' : `展开全部 ${items.length} 条 ∨`}
-            </div>
-          )}
           {items.length === 0 && (
             <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>该项目暂无授权记录</div>
           )}
