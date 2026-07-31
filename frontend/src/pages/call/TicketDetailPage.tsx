@@ -8,7 +8,6 @@ import { NotificationIcon, UploadIcon, RollbackIcon } from 'tdesign-icons-react'
 import { qaGetTicket } from '@/api/ai';
 import { cancelTicket, urgeTicket, reportTicket, uploadCommentAttachment } from '@/api/ticket';
 import {
-  STATUS_DISPLAY_MAP,
   isTerminalTicketStatus,
   canUrgeTicket,
   canReportTicket,
@@ -99,7 +98,8 @@ export default function TicketDetailPage() {
   const [actionType, setActionType] = useState<'urge' | 'report'>('urge');
   const [actionUser, setActionUser] = useState<UserItem | null>(null);
   const [showActionPopup, setShowActionPopup] = useState(false);
-  const [acting, setActing] = useState(false);
+  type DetailActionType = 'urge' | 'report' | 'cancel';
+  const [acting, setActing] = useState<DetailActionType | null>(null);
 
   const openActionPopup = (type: 'urge' | 'report') => {
     if (!ticket?.ticket_id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
@@ -110,7 +110,7 @@ export default function TicketDetailPage() {
 
   const handleActionConfirm = async () => {
     if (!ticket?.ticket_id || !actionUser) { Toast({ message: '请选择通知用户', theme: 'warning' }); return; }
-    setActing(true);
+    setActing(actionType);
     try {
       if (actionType === 'urge') {
         await urgeTicket(ticket.ticket_id, actionUser.id);
@@ -123,19 +123,22 @@ export default function TicketDetailPage() {
     } catch (err) {
       Toast({ message: `${actionType === 'urge' ? '催办' : '上报'}失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
-      setActing(false);
+      setActing(null);
     }
   };
 
   // 撤回：将工单状态置为已取消（Canceled）
   const handleCancel = async () => {
     if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法撤回', theme: 'warning' }); return; }
+    setActing('cancel');
     try {
       await cancelTicket(ticket.ticket_id);
       Toast({ message: '已撤回，工单已取消', theme: 'success' });
       fetchDetail();
     } catch (err) {
       Toast({ message: `撤回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setActing(null);
     }
   };
 
@@ -273,36 +276,31 @@ export default function TicketDetailPage() {
           enableAttach
         />
 
-        {/* 操作：已解决/已取消/已关闭（终态）三个按钮不显示，改为状态提示；
-            新建/待处理可催办、撤回；处理中仅可上报；不可用按钮禁用 */}
-        <div className="detail-actions">
-          {isTerminalTicketStatus(ticket.status) ? (
-            <p className="detail-actions__tip">
-              工单{STATUS_DISPLAY_MAP[(ticket.status || '').trim().toLowerCase()] || ticket.status}，无需催办 / 上报 / 撤回
-            </p>
-          ) : (
-            <div className="detail-actions__btns">
-              <Button
-                size="small" variant="outline" theme="default" icon={<NotificationIcon />}
-                disabled={!canUrgeTicket(ticket.status) || acting}
-                title={canUrgeTicket(ticket.status) ? undefined : '仅新建/待处理工单可催办'}
-                onClick={() => openActionPopup('urge')}
-              >催办</Button>
-              <Button
-                size="small" variant="outline" theme="default" icon={<UploadIcon />}
-                disabled={!canReportTicket(ticket.status) || acting}
-                title={canReportTicket(ticket.status) ? undefined : '仅处理中工单可上报'}
-                onClick={() => openActionPopup('report')}
-              >上报</Button>
-              <Button
-                size="small" variant="outline" theme="default" icon={<RollbackIcon />}
-                disabled={!canCancelTicket(ticket.status) || acting}
-                title={canCancelTicket(ticket.status) ? undefined : '仅新建/待处理工单可撤回'}
-                onClick={handleCancel}
-              >撤回</Button>
-            </div>
-          )}
-        </div>
+        {/* 操作：与历史工单列表页完全一致 —— 终态（已解决/已取消/已关闭）整组不显示；
+            新建/待处理可催办、撤回；处理中仅可上报；不可用按钮禁用；
+            正在操作的按钮单独禁用（acting 标记当前动作） */}
+        {!isTerminalTicketStatus(ticket.status) && (
+          <div className="detail-actions__btns">
+            <Button
+              size="small" variant="outline" theme="default" icon={<NotificationIcon />}
+              disabled={!canUrgeTicket(ticket.status) || acting === 'urge'}
+              title={canUrgeTicket(ticket.status) ? undefined : '仅新建/待处理工单可催办'}
+              onClick={() => openActionPopup('urge')}
+            >催办</Button>
+            <Button
+              size="small" variant="outline" theme="default" icon={<UploadIcon />}
+              disabled={!canReportTicket(ticket.status) || acting === 'report'}
+              title={canReportTicket(ticket.status) ? undefined : '仅处理中工单可上报'}
+              onClick={() => openActionPopup('report')}
+            >上报</Button>
+            <Button
+              size="small" variant="outline" theme="default" icon={<RollbackIcon />}
+              disabled={!canCancelTicket(ticket.status) || acting === 'cancel'}
+              title={canCancelTicket(ticket.status) ? undefined : '仅新建/待处理工单可撤回'}
+              onClick={handleCancel}
+            >撤回</Button>
+          </div>
+        )}
       </div>
 
       {/* 催办/上报 用户选择弹窗 */}
@@ -319,7 +317,7 @@ export default function TicketDetailPage() {
           </div>
           <div className="conv-dialog__btns">
             <Button block theme="default" onClick={() => setShowActionPopup(false)}>取消</Button>
-            <Button block theme="primary" loading={acting} onClick={handleActionConfirm}>确定</Button>
+            <Button block theme="primary" loading={!!acting} onClick={handleActionConfirm}>确定</Button>
           </div>
         </div>
       </Popup>
