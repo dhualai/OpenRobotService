@@ -144,9 +144,8 @@ async def submit_ticket(
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
     username, _ = _current_user(request)
-    # 本地测试 / 无 token 时用 debug 用户名
-    if not username and get_ai_config().debug_assign_to_admin:
-        username = "debug_test_user"
+    if not username:
+        username = "unknown"
     try:
         result = await pipeline.submit(session_id=body.session_id, created_by=username)
         if "code" not in result:
@@ -690,7 +689,11 @@ async def list_all_tickets(
         from ai.core.task_adapter import task_to_dict
         from app.models.task import Task, TaskStatus, TaskType
         from app.core.db import SessionLocal
+        from app.services.user_service import UserService
         from sqlalchemy import desc
+
+        # username → 展示名（与任务服务 /api/tasks 一致的解析口径）
+        user_map = UserService.get_user_map()
 
         db = SessionLocal()
         try:
@@ -716,6 +719,8 @@ async def list_all_tickets(
             items = []
             for r in rows:
                 d = task_to_dict(r)
+                created_by = r.created_by or ""
+                assigned_to = r.assigned_to or ""
                 items.append({
                     "id": d["id"], "session_id": d["session_id"], "ticket_ai_id": d["ticket_ai_id"],
                     "title": d["title"], "description": d["description"], "type": d["type"],
@@ -725,6 +730,11 @@ async def list_all_tickets(
                     "attachments": d["attachments"], "diagnosis": d["diagnosis"],
                     "created_at": d["created_at"].isoformat() if d["created_at"] else None,
                     "updated_at": d["updated_at"].isoformat() if d["updated_at"] else None,
+                    # 提单人 / 接单人（username + 展示名），供前端「提单人 → 接单人」指向性 UI 渲染
+                    "created_by": created_by,
+                    "created_by_name": user_map.get(created_by, created_by) if created_by else "",
+                    "assigned_to": assigned_to,
+                    "assigned_to_name": user_map.get(assigned_to, assigned_to) if assigned_to else "",
                 })
             return {"code": 0, "data": {"total": total, "skip": skip, "limit": limit, "items": items}}
         finally:

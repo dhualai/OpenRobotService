@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { Loading, Toast, Button, Popup } from 'tdesign-mobile-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
 import { urgeTicket, reportTicket, cancelTicket } from '@/api/ticket';
+import { isTerminalTicketStatus, canUrgeTicket, canReportTicket, canCancelTicket } from '@/shared/constants/ticket';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import PullToRefresh from '@/shared/components/PullToRefresh';
@@ -222,15 +223,37 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                 <span className="history-row__date">{(t.created_at || '').slice(0, 10)}</span>
               </div>
               {t.description && <span className="history-row__summary">{t.description}</span>}
+              {/* 人员流转：发起人 → 处理人（照搬系统任务卡片 task-card2__people 样式） */}
+              <div className="task-card2__people">
+                <div className="task-card2__person task-card2__person--creator" title={`发起人：${t.created_by_name || t.created_by || '-'}`}>
+                  <span className="task-card2__avatar">{(t.created_by_name || t.created_by || '?').slice(0, 1).toUpperCase()}</span>
+                  <span className="task-card2__person-text">
+                    <span className="task-card2__person-label">发起人</span>
+                    <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
+                  </span>
+                </div>
+                <span className="task-card2__person-arrow">➡️</span>
+                <div className="task-card2__person task-card2__person--assignee" title={`处理人：${t.assigned_to_name || t.assigned_to || '-'}`}>
+                  <span className="task-card2__avatar task-card2__avatar--assignee">{(t.assigned_to_name || t.assigned_to || '?').slice(0, 1).toUpperCase()}</span>
+                  <span className="task-card2__person-text">
+                    <span className="task-card2__person-label">处理人</span>
+                    <span className="task-card2__person-name">{t.assigned_to_name || t.assigned_to || '-'}</span>
+                  </span>
+                </div>
+              </div>
               <div className="history-row__bottom">
                 {statusMeta.label && (
                   <span className="history-row__status" style={{ color: statusMeta.color, background: statusMeta.bg }}>{statusMeta.label}</span>
                 )}
-                <div className="history-row__actions" onClick={(e) => e.stopPropagation()}>
-                  <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'urge'} onClick={(e) => openActionPopup(e, t, 'urge')}>催办</Button>
-                  <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'report'} onClick={(e) => openActionPopup(e, t, 'report')}>上报</Button>
-                  <Button size="extra-small" variant="outline" theme="default" disabled={acting?.id === t.id && acting?.action === 'cancel'} onClick={(e) => handleCancel(e, t)}>撤回</Button>
-                </div>
+                {/* 操作按钮：已解决/已取消/已关闭（终态）整组不显示；
+                    新建/待处理可催办、撤回；处理中仅可上报；不可用按钮禁用 */}
+                {!isTerminalTicketStatus(t.status) && (
+                  <div className="history-row__actions" onClick={(e) => e.stopPropagation()}>
+                    <Button size="extra-small" variant="outline" theme="default" disabled={!canUrgeTicket(t.status) || (acting?.id === t.id && acting?.action === 'urge')} title={canUrgeTicket(t.status) ? undefined : '仅新建/待处理工单可催办'} onClick={(e) => openActionPopup(e, t, 'urge')}>催办</Button>
+                    <Button size="extra-small" variant="outline" theme="default" disabled={!canReportTicket(t.status) || (acting?.id === t.id && acting?.action === 'report')} title={canReportTicket(t.status) ? undefined : '仅处理中工单可上报'} onClick={(e) => openActionPopup(e, t, 'report')}>上报</Button>
+                    <Button size="extra-small" variant="outline" theme="default" disabled={!canCancelTicket(t.status) || (acting?.id === t.id && acting?.action === 'cancel')} title={canCancelTicket(t.status) ? undefined : '仅新建/待处理工单可撤回'} onClick={(e) => handleCancel(e, t)}>撤回</Button>
+                  </div>
+                )}
               </div>
             </div>
             );
