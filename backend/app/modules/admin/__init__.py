@@ -7,6 +7,7 @@ from app.modules.admin.api.projects import project_router
 from app.modules.admin.api.risks import risk_router
 from app.modules.admin.api.daily_reports import daily_report_router
 from app.modules.admin.api.export import export_router
+from app.modules.admin.api.transport_efficiency import transport_efficiency_router
 from app.modules.admin.api.users import router as user_router
 from app.modules.admin.api.roles import router as role_router
 from app.modules.admin.api.permissions import router as permission_router
@@ -20,6 +21,7 @@ admin_router.include_router(project_router)
 admin_router.include_router(risk_router)
 admin_router.include_router(daily_report_router)
 admin_router.include_router(export_router)
+admin_router.include_router(transport_efficiency_router)
 admin_router.include_router(user_router)
 admin_router.include_router(role_router)
 admin_router.include_router(permission_router)
