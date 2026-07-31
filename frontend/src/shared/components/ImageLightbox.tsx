@@ -13,8 +13,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 interface ImageLightboxProps {
-  /** 最终展示地址：blob:（已鉴权）或外部绝对地址 / 同域相对地址 / data URI */
-  src: string;
+  /** 最终展示地址：blob:（已鉴权）或外部绝对地址 / 同域相对地址 / data URI。open 为 true 时必然有值 */
+  src?: string;
   alt?: string;
   open: boolean;
   onClose: () => void;
@@ -71,7 +71,8 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
   /** 取回 Blob：blob: 直接 fetch 回原 blob；其余带凭据请求（同域鉴权图） */
   const getBlob = useCallback(async (): Promise<Blob | null> => {
     try {
-      const res = await fetch(src.startsWith('blob:') ? src : src, {
+      const target = src ?? '';
+    const res = await fetch(target, {
         credentials: 'include',
       });
       if (!res.ok) return null;
@@ -94,7 +95,7 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
     }
     const a = document.createElement('a');
     a.href = url;
-    a.download = deriveFilename(src, alt);
+    a.download = deriveFilename(src ?? '', alt);
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -149,7 +150,7 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
       </div>
       <img
         className="img-lightbox__img"
-        src={src}
+        src={src ?? ''}
         alt={alt || '图片'}
         onClick={(e) => e.stopPropagation()}
       />
