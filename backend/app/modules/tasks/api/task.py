@@ -418,20 +418,23 @@ def _maybe_notify_mentions(
         )
 
         from app.utils.notification_utils import NotificationUtils
-        # 在后台线程发通知，不阻塞主请求
         import asyncio
-        asyncio.ensure_future(
-            NotificationUtils.send_ticket_update_notification(
-                ticket_id=task_id,
-                title=ticket_title,
-                project_name=ticket_project,
-                update_content=f"operator:{operator}\n"
-                              f"mentioned:{','.join(notified_usernames)}",
-                operator=operator,
-                user_names=notified_usernames,
-                token=token,
-            )
-        )
+
+        async def _notify():
+            try:
+                await NotificationUtils.send_ticket_update_notification(
+                    ticket_id=task_id,
+                    title=ticket_title,
+                    project_name=ticket_project,
+                    update_content=f"comment_mentioned",
+                    operator=operator,
+                    user_names=notified_usernames,
+                    token=token,
+                )
+            except Exception as e:
+                logger.error(f"@mention 通知发送异常: {e}")
+
+        asyncio.create_task(_notify())
     finally:
         db.close()
 
