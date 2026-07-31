@@ -46,8 +46,8 @@ class DatabaseManager:
     def delete_user(self, user_id: str) -> bool:
         return identity_service.delete_user(user_id)
 
-    def add_role(self, role_id: str, role_name: str) -> bool:
-        return identity_service.add_role(role_id, role_name)
+    def add_role(self, role_id: str, role_name: str, role_type: str = 'project') -> bool:
+        return identity_service.add_role(role_id, role_name, role_type)
 
     def get_role(self, role_id: str) -> Optional[Dict[str, str]]:
         return identity_service.get_role(role_id)

@@ -141,12 +141,12 @@ class IdentityService:
             db.close()
 
     @staticmethod
-    def add_role(role_id: str, role_name: str) -> bool:
+    def add_role(role_id: str, role_name: str, role_type: str = 'project') -> bool:
         db = IdentityService._get_db()
         try:
             if db.query(Role).filter((Role.id == role_id) | (Role.name == role_name)).first():
                 return False
-            db.add(Role(id=role_id, name=role_name))
+            db.add(Role(id=role_id, name=role_name, role_type=role_type))
             db.commit()
             return True
         except Exception as e:
@@ -161,7 +161,7 @@ class IdentityService:
         db = IdentityService._get_db()
         try:
             role = db.query(Role).filter(Role.id == role_id).first()
-            return {'id': role.id, 'name': role.name} if role else None
+            return {'id': role.id, 'name': role.name, 'role_type': role.role_type} if role else None
         finally:
             db.close()
 
@@ -169,7 +169,7 @@ class IdentityService:
     def get_all_roles() -> List[Dict[str, str]]:
         db = IdentityService._get_db()
         try:
-            return [{'id': r.id, 'name': r.name} for r in db.query(Role).all()]
+            return [{'id': r.id, 'name': r.name, 'role_type': r.role_type} for r in db.query(Role).all()]
         finally:
             db.close()
 
