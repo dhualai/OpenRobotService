@@ -139,7 +139,7 @@ export default function ProjectAuth() {
       ]);
       const allUsers = normalizeList<{ id: string; username: string; name?: string | null; roles?: Record<string, string[]> }>(usersData);
       const allRoles = normalizeList<RoleItem>(rolesData);
-      setRoles((prev) => (prev.length === 0 ? allRoles : prev));
+      setRoles((prev) => (prev.length === 0 ? allRoles.filter((r) => r.role_type === 'project') : prev));
 
       const matched: ExistingProjectUser[] = [];
       for (const u of allUsers) {
