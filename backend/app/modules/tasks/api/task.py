@@ -10,12 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-from app.core.database import get_async_db as get_db
+from app.core.database import get_async_db as get_db, db_manager
 from app.core.auth_routes import get_current_active_user_from_token
 from app.modules.tasks.schemas.ticket import (
     TicketCreate, TicketUpdate, TicketResponse, TicketListResponse,
     TicketCommentCreate, TicketCommentUpdate, TicketCommentResponse,
-    TicketQueryParams, TicketCuibanNotification, TicketFilterRequest
+    TicketQueryParams, TicketCuibanNotification, TicketFilterRequest,
+    ProjectMemberResponse
 )
 from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, TicketType
 from app.modules.tasks.services.ticket_service import TicketService
@@ -221,6 +222,43 @@ async def get_task(
     except Exception as e:
         logger.error(f"获取任务详情失败: task_id={task_id}, load_comments={load_comments}, error={str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取任务详情失败: {str(e)}")
+
+
+@router.get("/{task_id}/project-members", response_model=List[ProjectMemberResponse])
+async def get_task_project_members(
+    task_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
+):
+    """获取任务关联项目的成员列表（用于讨论区 @ 提及）。"""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        ticket = await TicketService.get_ticket_by_id(db, task_id)
+        if not ticket:
+            raise HTTPException(status_code=404, detail="任务未找到")
+        project_id = getattr(ticket, "project_id", None)
+        if not project_id:
+            raise HTTPException(status_code=404, detail="任务未关联项目")
+
+        # 复用已有的 identity_service 查询（同步调用，数据量小可接受）
+        members = db_manager.get_project_members(project_id, include_usp=False)
+        result = [
+            ProjectMemberResponse(
+                id=m.get("username", ""),
+                username=m.get("username", ""),
+                name=m.get("name"),
+                role_name=m.get("role_name"),
+            )
+            for m in members
+        ]
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取项目成员失败: task_id={task_id}, error={str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取项目成员失败: {str(e)}")
 
 
 @router.put("/{task_id}")
