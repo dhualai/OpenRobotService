@@ -416,7 +416,10 @@ class WechatService:
                 None,
                 lambda: self.session.get(url, timeout=5)
             )
-            result = response.json()
+            # 微信该接口返回 Content-Type 多为 text/plain 且常不带 charset，
+            # requests 会默认按 ISO-8859-1 解码 → 汉字昵称变乱码（如「四叉大哥」→「åå²å¤§å¥」）。
+            # 直接从原始字节解析 JSON，强制 UTF-8，避开编码猜测。
+            result = json.loads(response.content)
 
             if 'openid' in result:
                 return result
