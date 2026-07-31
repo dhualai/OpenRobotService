@@ -57,6 +57,8 @@ interface RoleItem { id: string; name: string; role_type?: string; }
 
 interface AssociateItem { id: string; userId: string; userName: string; role: string; superiorId?: string | null; }
 
+interface ExistingProjectUser { id: string; name: string; username: string; roleIds: string[]; }
+
 export default function ProjectAuth() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
@@ -78,6 +80,10 @@ export default function ProjectAuth() {
   // 角色列表接入角色管理接口 GET /api/admin/roles/
   const [roles, setRoles] = useState<RoleItem[]>([]);
   const [rolesLoading, setRolesLoading] = useState(false);
+
+  // 项目已关联人员
+  const [existingUsers, setExistingUsers] = useState<ExistingProjectUser[]>([]);
+  const [existingUsersLoading, setExistingUsersLoading] = useState(false);
 
   // 申请授权码：机器码 + 开始/结束日期 + 允许最大车数，调用 POST /export/apply_project_license（经 MQTT 审批）
   const [machineCode, setMachineCode] = useState('');
@@ -123,12 +129,47 @@ export default function ProjectAuth() {
     }
   };
 
+  // 加载项目已关联的人员（从用户列表按 project_code 筛选）
+  const fetchExistingUsers = async (projectCode: string) => {
+    setExistingUsersLoading(true);
+    try {
+      const [usersData, rolesData] = await Promise.all([
+        request<{ id: string; username: string; name?: string | null; roles?: Record<string, string[]> }[]>('/users/?limit=1000'),
+        request<RoleItem[]>('/roles/'),
+      ]);
+      const allUsers = normalizeList<{ id: string; username: string; name?: string | null; roles?: Record<string, string[]> }>(usersData);
+      const allRoles = normalizeList<RoleItem>(rolesData);
+      setRoles((prev) => (prev.length === 0 ? allRoles : prev));
+
+      const matched: ExistingProjectUser[] = [];
+      for (const u of allUsers) {
+        const userRoles = u.roles;
+        if (!userRoles) continue;
+        const roleIds = userRoles[projectCode];
+        if (roleIds && roleIds.length > 0) {
+          matched.push({
+            id: u.id,
+            name: u.name || u.username,
+            username: u.username,
+            roleIds,
+          });
+        }
+      }
+      setExistingUsers(matched);
+    } catch {
+      setExistingUsers([]);
+    } finally {
+      setExistingUsersLoading(false);
+    }
+  };
+
   const handleProjectSelect = (project: Project) => {
     setSelectedProject(project);
     setProjectSearch('');
     setProjectPickerVisible(false);
-    const code = project.code || project.name; // 使用 code 或 name 作为 project_code
+    const code = project.code || project.name;
     fetchLicenses(code);
+    fetchExistingUsers(code);
   };
 
   // 模糊匹配：按名称或代码任意关键词片段过滤（不要求项目代码，普通人记不住代码）
@@ -392,6 +433,37 @@ export default function ProjectAuth() {
           {items.length === 0 && (
             <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>该项目暂无授权记录</div>
           )}
+
+          {/* 项目已关联人员 */}
+          <div style={{ background: '#fff', borderRadius: 8, padding: 14, marginTop: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>已关联人员</div>
+            {existingUsersLoading ? (
+              <Loading text="加载中..." />
+            ) : existingUsers.length === 0 ? (
+              <div style={{ fontSize: 13, color: '#999', padding: '8px 0' }}>该项目暂无已关联人员</div>
+            ) : (
+              existingUsers.map((u) => {
+                const roleNames = u.roleIds.map((rid) => {
+                  const role = roles.find((r) => r.id === rid);
+                  return role ? role.name : rid;
+                }).join('、');
+                return (
+                  <div
+                    key={u.id}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '8px 0', borderBottom: '1px solid #f5f5f5',
+                    }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 14, fontWeight: 500 }}>{u.name}</div>
+                      <div style={{ fontSize: 12, color: '#999' }}>{u.username} · {roleNames}</div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
 
           {/* 申请授权码：输入机器码 + 开始/结束日期，经 MQTT 向设备端申请授权 */}
           <div style={{ background: '#fff', borderRadius: 8, padding: 14, marginTop: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
