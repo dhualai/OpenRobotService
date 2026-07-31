@@ -196,6 +196,11 @@ const TICKET_TYPE_LABEL: Record<string, string> = {
   problem: '报障', bug: '缺陷', feature: '需求', support: '支持', other: '其他',
 };
 
+// 按会话 id 的内存消息缓存（模块级）：切走前把当前会话最新 messages（含未落库的乐观消息）存入，
+// 切回时优先从此同步恢复。提升到模块级以跨 ChatPanel 卸载/重挂载（切 Tab）存活——
+// 否则切 Tab 卸载后 ref 丢失，切回只能落库重拉（且 appendMessage 落库竞态会丢新消息）。
+const convMessagesCache: Record<number, Message[]> = {};
+
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
   const navigate = useNavigate();
   const { token, name, username } = useAuthStore();
@@ -257,9 +262,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const voiceRafRef = useRef<number | null>(null);
   const [voiceLevels, setVoiceLevels] = useState<number[]>([0, 0, 0, 0, 0]);
   const convRef = useRef<number | null>(null); // 当前 DB 会话 id，跨 send 复用
-  // 按会话 id 的内存消息缓存：切走前把当前会话最新 messages（含未落库的乐观消息）存入，
-  // 切回时优先从此同步恢复，根除 getConversation 早于 appendMessage 落库 / 竞态导致新消息丢失。
-  const convMessagesCache = useRef<Record<number, Message[]>>({});
+  // convMessagesCache 已提升为模块级（见组件定义上方），跨 ChatPanel 卸载/重挂载（切 Tab）存活
   const prevConvIdRef = useRef<number | null>(null); // 记录上一轮会话 id，确保切走时写到「旧会话」而非已切换的「新会话」
   const sendingRef = useRef(false); // 防双发（Enter + click 竞态）
 
@@ -341,10 +344,16 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, username, scene]);
 
-  // conversationId 变化 → 加载会话（切换）或清空（新建）。首次跳过（等上面的恢复）
+  // conversationId 变化 → 加载会话（切换）或清空（新建）。
+  // 注意：首次挂载时若 conversationId 已有值（切 Tab 重挂载、store 保留选中），必须从这里恢复，
+  // 否则消息为空。仅在「首次挂载且尚未选中会话(null)」时跳过，交给上方 [token,username,scene] effect 选最近会话。
+  // （旧实现无条件首次跳过，开发态靠 React StrictMode 二次执行 effect 掩盖了该 bug；
+  //  生产无 StrictMode 二次执行 → 切 Tab 回来消息丢失。）
   const convLoadedRef = useRef(false);
   useEffect(() => {
-    if (!convLoadedRef.current) { convLoadedRef.current = true; return; }
+    const firstMountNoSelection = !convLoadedRef.current && conversationId === null;
+    convLoadedRef.current = true;
+    if (firstMountNoSelection) return;
     if (conversationId === null) {
       // 新建会话：清空消息 + sessionId，标题显示「新建会话」
       convRef.current = null;
@@ -355,7 +364,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
     // 优先从内存缓存恢复：切回已有会话时可零延迟还原（含未落库的乐观消息），
     // 根除 getConversation 早于 appendMessage 落库 / 切回竞态导致的新消息丢失。
-    const cached = convMessagesCache.current[conversationId];
+    const cached = convMessagesCache[conversationId];
     if (cached) {
       convRef.current = conversationId;
       setMessages(cached);
@@ -407,7 +416,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   useEffect(() => {
     const prev = prevConvIdRef.current;
     if (prev != null && messages.length > 0) {
-      convMessagesCache.current[prev] = messages;
+      convMessagesCache[prev] = messages;
     }
     prevConvIdRef.current = conversationId;
   }, [conversationId, messages]);
