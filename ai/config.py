@@ -92,6 +92,13 @@ class AIConfig(BaseModel):
     wecom_docid: str = Field(default="", description="企业微信 Smartsheet 文档ID")
     wecom_sheet_id: str = Field(default="", description="企业微信 Smartsheet 子表ID")
 
+    # ========== Meilisearch 全文检索（项目匹配）==========
+    meili_enabled: bool = Field(default=True, description="是否启用 Meilisearch 项目匹配")
+    meili_host_url: str = Field(default="http://localhost:7700")
+    meili_master_key: str = Field(default="", description="开发模式为空字符串时跳过 Authorization 头")
+
+    # ========== Debug ==========
+    debug_assign_to_admin: bool = Field(default=False, description="开发模式：所有工单直接分配给 admin，跳过 AI 派单")
     # ========== 超时 ==========
     ai_chain_timeout: float = Field(default=2.5)
 
@@ -243,6 +250,12 @@ def get_ai_config() -> AIConfig:
         diagnosis_scan_interval=int(os.getenv("DIAGNOSIS_SCAN_INTERVAL", "60")),
         # 派单后台
         assign_scan_interval=int(os.getenv("ASSIGN_SCAN_INTERVAL", "60")),
+        # Debug
+        debug_assign_to_admin=os.getenv("DEBUG_ASSIGN_TO_ADMIN", "false").lower() in ("1", "true", "yes"),
+        # Meilisearch
+        meili_enabled=os.getenv("MEILI_ENABLED", "true").lower() in ("1", "true", "yes"),
+        meili_host_url=os.getenv("MEILI_HOST_URL", "http://localhost:7700"),
+        meili_master_key=os.getenv("MEILI_MASTER_KEY", ""),
         # 派单
         dispatch_api_url=os.getenv("DISPATCH_API_URL", ""),
         upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),

@@ -271,6 +271,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     if (!atBottomRef.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   }, []);
+  // 强制滚动到底部（无视 atBottomRef）：加载历史会话后调用，确保「进入即见最新消息」。
+  const scrollToBottomNow = useCallback(() => {
+    atBottomRef.current = true;
+    requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    });
+  }, []);
   useEffect(() => {
     // 新消息追加（条数增加：用户发送 / AI 占位气泡）→ 强制置底，让最新消息进入视野；
     // 仅内容增长（流式 token / 编辑）→ 仅贴底时跟随，不打扰上滑看历史的用户。
@@ -311,11 +318,26 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     return () => clearTimeout(timer);
   }, [input]);
 
-  // 进入页默认起「新会话」：不再自动续接最近会话（旧会话改由左侧会话抽屉显式选择进入）。
-  // 挂载时把 conversationId 置 null → 下方加载 effect 走「新建会话」分支（清空消息、标题「新建会话」）。
+  // 进入页默认恢复「最近会话」：不再强制新建（新建会话仅由抽屉「新建会话」按钮触发）。
+  // 挂载/重新进入 我要摇人（登录、点服务号、切回 Tab 等）时：
+  //   - 若用户显式点了「新建会话」(pendingNewConversation)，保持空白新会话，不做自动选择；
+  //   - 否则若当前未选定会话(conversationId===null)，自动选最近一条历史会话并滚动到底部。
   useEffect(() => {
     if (!token || !username) return;
-    setConversationId(null);
+    (async () => {
+      await refreshConversations();
+      const {
+        conversationId: current,
+        conversations: list,
+        pendingNewConversation,
+      } = useWorkbenchStore.getState();
+      if (pendingNewConversation) return; // 保持空白新会话，不自动选
+      if (current === null && list.length > 0) {
+        // list 已由后端按更新时间倒序返回，list[0] 即最近会话
+        setConversationTitle(list[0].title || '');
+        setConversationId(list[0].id);
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, username, scene]);
 
@@ -337,6 +359,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     if (cached) {
       convRef.current = conversationId;
       setMessages(cached);
+      scrollToBottomNow();
       return;
     }
     // 缓存为空（首次进入 / 刷新后）→ 从后端加载
@@ -371,6 +394,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         const sid = readAiSessionId(full);
         if (sid) setSessionId(sid);
         else setSessionId('');
+        scrollToBottomNow();
       } catch { /* ignore */ }
     })();
     return () => { cancelled = true; };
@@ -927,7 +951,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     try {
       const res = await qaPrepareTicket(sessionId);
       if (res?.code !== 0 || !res.data) {
-        Toast({ message: res?.message || '生成工单草稿失败', theme: 'error' });
+        // 保底必填字段不足（stage=not_ready）→ warning 提示回对话补充；其他失败 → error
+        Toast({
+          message: res?.message || '生成工单草稿失败',
+          theme: res?.stage === 'not_ready' ? 'warning' : 'error',
+          duration: res?.stage === 'not_ready' ? 5000 : 3000,
+        });
         return;
       }
       const { draft, missing_fields, prompt } = res.data;
