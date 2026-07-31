@@ -85,7 +85,7 @@ const parseMinioPath = (rawPath: string): MinioPathInfo | null => {
 };
 
 interface Attachment { path: string; size?: number; filename?: string; url?: string; id?: string; }
-interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; }
+interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; }
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
   ticket_type: string; project_name?: string; project_id?: string;
