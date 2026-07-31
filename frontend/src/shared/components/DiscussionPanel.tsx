@@ -194,21 +194,27 @@ export default function DiscussionPanel({
     }
   };
 
-  // ── 粘贴图片：从剪贴板提取图片文件，加入待发送列表 ──
+  // ── 粘贴文件/图片：从剪贴板提取文件，加入待发送列表 ──
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items;
     if (!items) return;
-    const imageFiles: File[] = [];
+    const pastedFiles: File[] = [];
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      if (item.type.startsWith('image/')) {
+      if (item.kind === 'file') {
         const file = item.getAsFile();
-        if (file) imageFiles.push(file);
+        if (file) pastedFiles.push(file);
       }
     }
-    if (imageFiles.length > 0) {
-      e.preventDefault(); // 不把图片二进制插入 textarea
-      setPendingFiles((prev) => [...prev, ...imageFiles]);
+    // 优先从 files 属性获取（文件管理器复制场景）
+    if (pastedFiles.length === 0 && e.clipboardData.files.length > 0) {
+      for (let i = 0; i < e.clipboardData.files.length; i++) {
+        pastedFiles.push(e.clipboardData.files[i]);
+      }
+    }
+    if (pastedFiles.length > 0) {
+      e.preventDefault();
+      setPendingFiles((prev) => [...prev, ...pastedFiles]);
     }
   };
 
