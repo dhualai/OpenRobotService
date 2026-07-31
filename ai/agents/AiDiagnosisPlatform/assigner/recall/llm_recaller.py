@@ -13,8 +13,6 @@ from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER")
 
-_MAX_ENGINEERS = 30  # 超过此人数据截断防止 token 溢出
-
 
 class LlmRecaller:
     """纯 LLM 召回——让模型直接看全员画像做第一轮排序"""
@@ -25,7 +23,7 @@ class LlmRecaller:
     async def arecall(
         self, ticket: TicketContext, engineers: List[EngineerProfile],
     ) -> Dict[str, float]:
-        """LLM 直接评估所有候选人并返回置信度分数。"""
+        """LLM 直接评估候选人并返回置信度分数。"""
         if not engineers:
             return {}
 
@@ -34,7 +32,7 @@ class LlmRecaller:
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()
-            response = await llm.complete(prompt, max_tokens=600, temperature=0.3)
+            response = await llm.complete(prompt, max_tokens=1200, temperature=0.3)
             return self._parse(response, engineers)
         except Exception as e:
             logger.warning(f"[llm_recall] LLM召回失败: {e}")
@@ -55,7 +53,7 @@ class LlmRecaller:
             lines.append(f"故障码: {ticket.fault_code}")
 
         lines.extend(["", "【候选工程师】"])
-        for i, e in enumerate(engineers[:_MAX_ENGINEERS]):
+        for i, e in enumerate(engineers):
             prod_parts = []
             for p, mods in e.responsibility_modules.items():
                 prod_parts.append(f"[{p}]{','.join(mods)}" if mods else f"[{p}]")
@@ -76,22 +74,29 @@ class LlmRecaller:
     def _parse(self, response: str, engineers: List[EngineerProfile]) -> Dict[str, float]:
         m = re.search(r"\{.*\}", response, re.DOTALL)
         if not m:
+            logger.debug(f"[llm_recall] LLM 返回无 JSON，raw: {response[:200]}")
             return {}
         try:
             data = json.loads(m.group())
         except json.JSONDecodeError:
+            logger.debug(f"[llm_recall] JSON 解析失败，raw: {response[:300]}")
             return {}
 
         rankings = data.get("rankings", [])
-        if not isinstance(rankings, list):
+        if not isinstance(rankings, list) or not rankings:
+            logger.debug(f"[llm_recall] rankings 为空或非列表: {rankings}")
             return {}
 
         id_map = {e.id: e for e in engineers}
         scores = {}
+        not_found = []
         for r in rankings:
             eid = r.get("engineer_id", "").strip()
             conf = float(r.get("confidence", 0.0))
             if eid in id_map and conf > 0:
                 scores[eid] = min(conf, 1.0)
-
+            else:
+                not_found.append(f"{eid}(conf={conf})")
+        if not_found:
+            logger.debug(f"[llm_recall] ID 未匹配 {len(not_found)}: {not_found[:5]}")
         return scores
