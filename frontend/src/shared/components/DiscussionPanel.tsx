@@ -144,13 +144,14 @@ export default function DiscussionPanel({
     }
   };
 
-  // ── @mention: 选中用户 → 替换 @filter 为 @username  ──
+  // ── @mention: 选中用户 → 替换 @filter 为 @名字  ──
   const handleMentionSelect = (user: ProjectMember) => {
     const cursorPos = inputRef.current?.selectionStart ?? commentText.length;
     const textBeforeCursor = commentText.slice(0, cursorPos);
     const textAfterCursor = commentText.slice(cursorPos);
 
-    const newBefore = textBeforeCursor.replace(/@([\w一-鿿]*)$/, `@${user.username} `);
+    const displayName = user.name || user.username;
+    const newBefore = textBeforeCursor.replace(/@([\w一-鿿]*)$/, `@${displayName} `);
     const newText = newBefore + textAfterCursor;
 
     setCommentText(newText);

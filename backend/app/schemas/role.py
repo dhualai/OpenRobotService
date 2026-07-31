@@ -9,6 +9,10 @@ class RoleBase(BaseModel):
 class RoleCreate(RoleBase):
     pass
 
+class RoleUpdate(BaseModel):
+    name: Optional[str] = None
+    role_type: Optional[Literal['system', 'project']] = None
+
 class Role(RoleBase):
     id: str
 

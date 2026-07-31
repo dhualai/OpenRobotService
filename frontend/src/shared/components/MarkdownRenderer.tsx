@@ -321,8 +321,10 @@ function AuthImage({ src, alt = '' }: AuthImageProps) {
   }, []);
 
   // ---- 渲染 ----
-  // 预览地址：已生成的 blob URL 优先，否则用完整地址（灯箱内会按需再取 blob）
-  const previewSrc = imgState.blobUrl || urlInfo.fullUrl;
+  // 预览地址：优先用真实 URL（fullUrl），不用 blob —— 微信内置浏览器长按「保存图片」
+  // 会对 URL 二次下载，blob: 无法解析必失败。AI 媒体接口（/api/ai/media/*）是公开
+  // 静态资源（StaticFiles 挂载，无鉴权），灯箱内直接以真实 URL 加载即可。
+  const previewSrc = urlInfo.fullUrl || imgState.blobUrl || '';
   const openPreview = () => setPreviewOpen(true);
 
   if (!src || urlInfo.type === 'empty') {

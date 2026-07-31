@@ -145,7 +145,7 @@ async def submit_ticket(
 ) -> dict:
     username, _ = _current_user(request)
     if not username:
-        username = "unknown"
+        username = "unknown"  # token 过期/缺失时的兜底；不改为 system 避免与 keyword 路径混淆
     try:
         result = await pipeline.submit(session_id=body.session_id, created_by=username)
         if "code" not in result:
@@ -698,7 +698,7 @@ async def list_all_tickets(
         db = SessionLocal()
         try:
             q = db.query(Task).filter(Task.source == "ai")
-            # 按创建者过滤
+            # 按创建者过滤（非 admin 只看自己的）
             if username:
                 q = q.filter(Task.created_by == username)
             # status/type 字符串 → 枚举；非法值（如旧值 dispatched）降级为不过滤

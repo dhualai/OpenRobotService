@@ -27,6 +27,8 @@ from app.models.delivery import (
     Risk,
     ProjectDailyReport,
     ProjectLicense,
+    ProjectTransportEfficiency,
+    ProjectTransportEfficiencyRobot,
 )
 
 # 任务（承工单语义升格）
@@ -69,6 +71,7 @@ __all__ = [
     "Project",
     "RealtimeData", "HistoryData", "CollectionData",
     "Risk", "ProjectDailyReport", "ProjectLicense",
+    "ProjectTransportEfficiency", "ProjectTransportEfficiencyRobot",
     # task
     "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping",
     # conversation

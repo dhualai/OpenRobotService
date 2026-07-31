@@ -1,19 +1,25 @@
 /**
- * ImageLightbox —— 通用图片预览灯箱（点击放大查看 + 复制 + 下载）
+ * ImageLightbox —— 通用图片预览灯箱（双指缩放 / 双击缩放 / 拖拽平移 + 复制 + 下载）
  *
  * 设计目标：
- *  - 点击聊天/文档里的图片 → 全屏遮罩放大预览，移动端 / PC 端均可用
- *  - 提供「复制」「下载」按钮；复制走 ClipboardItem（需安全上下文），
+ *  - 点击聊天/文档里的图片 → 全屏预览，移动端 / PC 端均可用
+ *  - 交互层复用 tdesign-mobile-react 的 ImageViewer（成熟的移动端方案：
+ *    双指缩放、双击缩放、缩放后拖拽平移、单击/遮罩/关闭按钮退出），
+ *    不再自研手势逻辑
+ *  - 自定义工具条保留「复制」「下载」；复制走 ClipboardItem（需安全上下文），
  *    不支持时降级提示「长按保存」
- *  - 依赖零外部 UI 库，通过 Portal 挂载到 body，避免被父级 overflow 裁剪
+ *  - 微信内置浏览器「长按 → 保存图片」可用，前提是 src 为真实 http(s)/同域 URL；
+ *    blob: / data: URL 微信无法二次下载，会提示保存失败（调用方需保证这一点）
+ *  - 通过 Portal 挂载到 body，避免被父级 overflow 裁剪
  *
  * 适用场景：MarkdownRenderer 中 AI 回复图片、ChatPanel 用户气泡图片等。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { ImageViewer } from 'tdesign-mobile-react';
 
 interface ImageLightboxProps {
-  /** 最终展示地址：blob:（已鉴权）或外部绝对地址 / 同域相对地址 / data URI。open 为 true 时必然有值 */
+  /** 最终展示地址：真实 http(s)/同域地址（推荐，微信可长按保存）或 blob:/data URI。open 为 true 时必然有值 */
   src?: string;
   alt?: string;
   open: boolean;
@@ -26,7 +32,7 @@ function deriveFilename(src: string, alt?: string): string {
     if (src.startsWith('data:')) return `${alt || 'image'}.svg`;
     const url = new URL(src, window.location.href);
     const seg = url.pathname.split('/').filter(Boolean).pop();
-    if (seg && /\.\w{2,5}$/.test(seg)) return seg;
+    if (seg && /\.\w{2,5}$/.test(seg)) return decodeURIComponent(seg);
   } catch {
     /* 解析失败忽略 */
   }
@@ -72,7 +78,7 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
   const getBlob = useCallback(async (): Promise<Blob | null> => {
     try {
       const target = src ?? '';
-    const res = await fetch(target, {
+      const res = await fetch(target, {
         credentials: 'include',
       });
       if (!res.ok) return null;
@@ -131,31 +137,25 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
   if (!open) return null;
 
   return createPortal(
-    <div className="img-lightbox" onClick={onClose} role="dialog" aria-modal="true">
-      <div className="img-lightbox__toolbar" onClick={(e) => e.stopPropagation()}>
+    <>
+      {/* 交互主体：双指缩放 / 双击缩放 / 拖拽平移 / 单击关闭（TDesign ImageViewer） */}
+      <ImageViewer
+        images={[src ?? '']}
+        visible={open}
+        maxZoom={3}
+        onClose={() => onClose()}
+      />
+      {/* 自定义工具条：复制 / 下载（关闭按钮用 ImageViewer 自带的） */}
+      <div className="img-lightbox__toolbar">
         <button type="button" className="img-lightbox__btn" onClick={handleCopy}>
           复制
         </button>
         <button type="button" className="img-lightbox__btn" onClick={handleDownload}>
           下载
         </button>
-        <button
-          type="button"
-          className="img-lightbox__btn img-lightbox__btn--close"
-          onClick={onClose}
-          aria-label="关闭"
-        >
-          ✕
-        </button>
       </div>
-      <img
-        className="img-lightbox__img"
-        src={src ?? ''}
-        alt={alt || '图片'}
-        onClick={(e) => e.stopPropagation()}
-      />
       {feedback && <div className="img-lightbox__feedback">{feedback}</div>}
-    </div>,
+    </>,
     document.body,
   );
 }
