@@ -8,6 +8,7 @@ from app.modules.call.api.qa import router as qa_router
 from app.modules.call.api.conversation import router as conversation_router
 from app.modules.call.api.my_tasks import router as my_tasks_router
 from app.modules.call.api.message import router as message_router
+from app.modules.call.api.attachment import router as attachment_router
 
 call_router = APIRouter(prefix="/call", tags=["call"])
 
@@ -15,3 +16,4 @@ call_router.include_router(qa_router)
 call_router.include_router(conversation_router)
 call_router.include_router(message_router)
 call_router.include_router(my_tasks_router)
+call_router.include_router(attachment_router)
