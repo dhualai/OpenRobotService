@@ -466,13 +466,15 @@ def _maybe_notify_mentions(
                     ticket_id=task_id,
                     title=ticket_title,
                     project_name=ticket_project,
-                    update_content=f"status:工单讨论中@了您",
+                    update_content="status:被提及",
                     operator=operator,
                     user_names=notified_usernames,
                     token=token,
                 )
             except Exception as e:
-                logger.error(f"@mention 通知发送异常: {e}")
+                import logging
+                _logger = logging.getLogger(__name__)
+                _logger.error(f"@mention 通知发送异常: {e}")
 
         asyncio.create_task(_notify())
     finally:
