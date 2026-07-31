@@ -60,11 +60,13 @@ class TestStateTransitions:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_submit_escalates(self, platform, make_state, make_request):
-        """LLM action=submit 且有 project → phase 变为 escalated，ticket 生成"""
+        """LLM action=submit 且有 project + 保底必填字段 → phase 变为 escalated，ticket 生成"""
         state = make_state(
             phase="idle",
             problem_summary="机器人离线",
-            collected_info={"project": "华大制造基地"},
+            ticket_type="problem",
+            collected_info={"project": "华大制造基地", "robot_type": "XP1152",
+                            "occurrence_time": "昨天下午", "frequency": "每次"},
         )
         request = make_request(query="帮我提交工单")
         platform._llm_client.complete.side_effect = None
@@ -84,7 +86,10 @@ class TestStateTransitions:
         result = await platform._agent_think(request, state, memory)
 
         assert result["action"] in ("answer", "submit")
-        assert state.phase in ("resolved", "escalated")
+        # submit() 成功后会刷新并以持久化的 state 为准（局部传入的 state 对象不再更新）
+        from ai.agents.AiDiagnosisPlatform.pipeline import _load_agent_state
+        persisted = _load_agent_state(memory.metadata)
+        assert persisted.phase in ("resolved", "escalated")
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -291,15 +296,16 @@ class TestStateUpdate:
         assert state.problem_summary == "新的问题摘要"
 
     def test_update_filter_useless_values(self, updater):
-        """collected_info 含 "无"/"不清楚"/"不知道" → 对应 key 被移除"""
+        """collected_info 含 "无"/"不清楚"/"不知道" → 对应 key 被移除
+        （注意：project 键由用户显式输入设置，LLM 的 state_update 无权改动，这里用 location 验证保留逻辑）"""
         state = AgentState(session_id="test")
         updater(state, {"collected_info": {
-            "project": "华大",
+            "location": "华大",
             "robot_type": "无",
             "error_code": "不清楚",
             "fault": "不知道",
         }})
-        assert state.collected_info.get("project") == "华大"
+        assert state.collected_info.get("location") == "华大"
         assert "robot_type" not in state.collected_info
         assert "error_code" not in state.collected_info
         assert "fault" not in state.collected_info
