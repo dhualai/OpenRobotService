@@ -99,7 +99,6 @@ class AIConfig(BaseModel):
 
     # ========== Debug ==========
     debug_assign_to_admin: bool = Field(default=False, description="开发模式：所有工单直接分配给 admin，跳过 AI 派单")
-
     # ========== 超时 ==========
     ai_chain_timeout: float = Field(default=2.5)
 

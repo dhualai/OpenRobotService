@@ -8,9 +8,10 @@ import { useWorkbenchStore } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
 import { qaUpload, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, type TicketDraft } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
-import { createConversation, getConversation, listMyConversations, appendMessage, readAiSessionId } from '@/api/conversation';
+import { createConversation, getConversation, appendMessage, readAiSessionId } from '@/api/conversation';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
+import ImageLightbox from '@/shared/components/ImageLightbox';
 import SuggestedQuestions from '@/shared/components/SuggestedQuestions';
 import { pickRandomQuestions, matchQuestions } from '@/shared/data/suggestedQuestions';
 
@@ -256,16 +257,39 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const voiceRafRef = useRef<number | null>(null);
   const [voiceLevels, setVoiceLevels] = useState<number[]>([0, 0, 0, 0, 0]);
   const convRef = useRef<number | null>(null); // 当前 DB 会话 id，跨 send 复用
+  // 按会话 id 的内存消息缓存：切走前把当前会话最新 messages（含未落库的乐观消息）存入，
+  // 切回时优先从此同步恢复，根除 getConversation 早于 appendMessage 落库 / 竞态导致新消息丢失。
+  const convMessagesCache = useRef<Record<number, Message[]>>({});
+  const prevConvIdRef = useRef<number | null>(null); // 记录上一轮会话 id，确保切走时写到「旧会话」而非已切换的「新会话」
   const sendingRef = useRef(false); // 防双发（Enter + click 竞态）
 
   // 滚动跟随：仅在用户贴底时自动跟随；流式中瞬时置底（behavior:'auto'）避免 smooth 动画排队抖动
   const atBottomRef = useRef(true);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const prevCountRef = useRef(0); // 上一次消息条数：区分「新消息追加」与「内容增长」
   const scrollToBottom = useCallback(() => {
     if (!atBottomRef.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   }, []);
-  useEffect(() => { scrollToBottom(); }, [messages, scrollToBottom]);
+  // 强制滚动到底部（无视 atBottomRef）：加载历史会话后调用，确保「进入即见最新消息」。
+  const scrollToBottomNow = useCallback(() => {
+    atBottomRef.current = true;
+    requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    });
+  }, []);
+  useEffect(() => {
+    // 新消息追加（条数增加：用户发送 / AI 占位气泡）→ 强制置底，让最新消息进入视野；
+    // 仅内容增长（流式 token / 编辑）→ 仅贴底时跟随，不打扰上滑看历史的用户。
+    const appended = messages.length > prevCountRef.current;
+    prevCountRef.current = messages.length;
+    if (appended) {
+      atBottomRef.current = true;
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    } else {
+      scrollToBottom();
+    }
+  }, [messages, scrollToBottom]);
   // 监听用户滚动，判断是否贴底（上滑看历史时不强制拉回）
   useEffect(() => {
     const el = messagesContainerRef.current;
@@ -294,19 +318,26 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     return () => clearTimeout(timer);
   }, [input]);
 
-  // 挂载时恢复最近一条会话 → 设置 conversationId（由下方 effect 加载消息）
+  // 进入页默认恢复「最近会话」：不再强制新建（新建会话仅由抽屉「新建会话」按钮触发）。
+  // 挂载/重新进入 我要摇人（登录、点服务号、切回 Tab 等）时：
+  //   - 若用户显式点了「新建会话」(pendingNewConversation)，保持空白新会话，不做自动选择；
+  //   - 否则若当前未选定会话(conversationId===null)，自动选最近一条历史会话并滚动到底部。
   useEffect(() => {
     if (!token || !username) return;
-    if (chatContext) return;
-    let cancelled = false;
     (async () => {
-      try {
-        const list = await listMyConversations(scene, 1);
-        if (cancelled || !list.length) return;
+      await refreshConversations();
+      const {
+        conversationId: current,
+        conversations: list,
+        pendingNewConversation,
+      } = useWorkbenchStore.getState();
+      if (pendingNewConversation) return; // 保持空白新会话，不自动选
+      if (current === null && list.length > 0) {
+        // list 已由后端按更新时间倒序返回，list[0] 即最近会话
+        setConversationTitle(list[0].title || '');
         setConversationId(list[0].id);
-      } catch { /* ignore */ }
+      }
     })();
-    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, username, scene]);
 
@@ -322,9 +353,16 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       setConversationTitle('新建会话');
       return;
     }
-    // convRef 已是当前会话 → ensureConversation 刚设置的，不重复加载（避免覆盖正在进行的对话）
-    if (convRef.current === conversationId) return;
-    if (!conversationId) return;
+    // 优先从内存缓存恢复：切回已有会话时可零延迟还原（含未落库的乐观消息），
+    // 根除 getConversation 早于 appendMessage 落库 / 切回竞态导致的新消息丢失。
+    const cached = convMessagesCache.current[conversationId];
+    if (cached) {
+      convRef.current = conversationId;
+      setMessages(cached);
+      scrollToBottomNow();
+      return;
+    }
+    // 缓存为空（首次进入 / 刷新后）→ 从后端加载
     let cancelled = false;
     (async () => {
       try {
@@ -356,11 +394,23 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         const sid = readAiSessionId(full);
         if (sid) setSessionId(sid);
         else setSessionId('');
+        scrollToBottomNow();
       } catch { /* ignore */ }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
+
+  // 切走前把当前会话的最新 messages 写入内存缓存（按会话 id），供切回时立即恢复。
+  // 用 prevConvIdRef 记录上一轮会话 id，确保写入的是「旧会话」而非已切换的「新会话」，
+  // 避免 conversationId 已变但 messages 尚未被新会话覆盖时把旧消息错存到新会话 key。
+  useEffect(() => {
+    const prev = prevConvIdRef.current;
+    if (prev != null && messages.length > 0) {
+      convMessagesCache.current[prev] = messages;
+    }
+    prevConvIdRef.current = conversationId;
+  }, [conversationId, messages]);
 
   // call 场景：进入时若带工单讨论上下文，注入引导消息（一次性消费）
   useEffect(() => {
@@ -620,6 +670,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 先释放发送锁与 loading，再强制刷新最终内容，避免刷新异常时再次卡死发送
       setLoading(false);
       sendingRef.current = false;
+      // 回复完成：强制贴底，确保流式结束（Markdown 切换）后视图定位到最新消息，无需手动滑动
+      atBottomRef.current = true;
       // 强制刷新最终完整内容：流式结束前最后一次 flush 可能早于 90ms 窗口，确保末态不丢字
       renderAcc();
       // 置 streaming:false：流式结束，气泡由纯文本降级渲染切换为最终 MarkdownRenderer 渲染
@@ -636,6 +688,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const editAndResendRef = useRef(editAndResend);
   editAndResendRef.current = editAndResend;
   const handleEditSave = useCallback((msg: Message) => editAndResendRef.current(msg), []);
+  // 稳定 onEditChange / onEditCancel：内联箭头会让 MessageBubble 的 React.memo 失效（每次渲染新引用），
+  // 导致流式 flush 时整列表重渲染、页面闪烁。包成 useCallback 后历史气泡可跳过重渲染。
+  const handleEditChange = useCallback((id: string, v: string) => {
+    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: v } : m)));
+  }, []);
+  const handleEditCancel = useCallback(() => setEditingId(null), []);
 
   // voiceWillCancelRef 在 handleMove 中直接同步写入，不再通过 useEffect 异步同步
 
@@ -861,6 +919,29 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
+  /** PC 端粘贴图片：从剪贴板取 image/* 文件，走与「选择文件」一致的待发送附件流程（预览后可随消息上传） */
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind !== 'file' || !item.type.startsWith('image/')) continue;
+      const file = item.getAsFile();
+      if (!file) continue;
+      e.preventDefault(); // 阻止图片被当作 base64/文本塞进输入框
+      if (file.size > MAX_FILE_SIZE) {
+        const mb = (file.size / 1024 / 1024).toFixed(1);
+        Toast({ message: `「${file.name}」(${mb}MB) 超过 100MB 上限，请压缩后重试`, theme: 'error' });
+        return;
+      }
+      clearPendingFile();
+      setPendingFile(file);
+      setPendingImageUrl(URL.createObjectURL(file));
+      Toast({ message: '已粘贴图片，可直接发送', theme: 'success' });
+      return; // 只处理第一张图片
+    }
+  };
+
   /** 转工单（二次确认）：prepare 生成草稿 → 弹窗核对/补字段 → confirm 入库 */
   const handleSubmitTicket = async () => {
     if (submittingTicket || ticketConfirm.submitting) return;
@@ -990,9 +1071,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             onToggleReaction={toggleReaction}
             onCopy={copyContent}
             onEditStart={setEditingId}
-            onEditChange={(id, v) => setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: v } : m)))}
+            onEditChange={handleEditChange}
             onEditSave={handleEditSave}
-            onEditCancel={() => setEditingId(null)}
+            onEditCancel={handleEditCancel}
             onImageClick={setPreviewUrl}
           />
         ))}
@@ -1085,7 +1166,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           </div>
         ) : (
           <>
-            <div ref={textareaContainerRef} className="chat-input-bar__textarea">
+            <div ref={textareaContainerRef} className="chat-input-bar__textarea" onPaste={handlePaste}>
               <Textarea
                 value={input}
                 onChange={(v) => setInput(String(v))}
@@ -1170,6 +1251,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 className="chat-input-bar__fullscreen-textarea"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onPaste={handlePaste}
                 placeholder="发消息..."
                 autoFocus
               />
@@ -1269,13 +1351,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           </div>
         </Popup>
 
-        {/* 图片预览：点击用户气泡图片放大查看，点击遮罩或关闭按钮关闭 */}
-        {previewUrl && (
-          <div className="chat-image-preview" onClick={() => setPreviewUrl(null)}>
-            <img src={previewUrl} alt="预览" className="chat-image-preview__img" onClick={(e) => e.stopPropagation()} />
-            <span className="chat-image-preview__close" onClick={() => setPreviewUrl(null)}>✕</span>
-          </div>
-        )}
+        {/* 图片预览：点击用户气泡图片放大查看 + 复制/下载 */}
+        <ImageLightbox
+          src={previewUrl || ''}
+          alt="预览"
+          open={!!previewUrl}
+          onClose={() => setPreviewUrl(null)}
+        />
       </div>
     </div>
   );

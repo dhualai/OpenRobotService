@@ -4,7 +4,7 @@ import uuid
 
 from typing import Dict, Any
 from app.core.database import db_manager
-from app.modules.admin.schemas.role import Role, RoleCreate, RolePermissionCreate
+from app.modules.admin.schemas.role import Role, RoleCreate, RoleUpdate, RolePermissionCreate
 from app.modules.admin.schemas.response import SuccessResponse
 from app.modules.admin.api.auth import get_current_active_user_from_token, require_permission
 
@@ -36,13 +36,46 @@ async def create_role(
     role_id = f"role_{uuid.uuid4().hex[:8]}"
     
     try:
-        result = db_manager.add_role(role_id, role_data.name)
+        result = db_manager.add_role(role_id, role_data.name, role_data.role_type)
         if not result:
             raise HTTPException(status_code=400, detail="角色创建失败，可能已存在")
         
         return SuccessResponse(message=f"角色创建成功: {role_data.name}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"创建角色时出错: {str(e)}")
+
+@router.post("/auto-classify", response_model=Dict[str, Any], summary="按名称关键词自动重新分类角色的系统/项目类型")
+async def auto_classify_roles(
+    current_user: Dict[str, Any] = require_permission("backend:role:base:write")
+):
+    try:
+        changed = db_manager.auto_classify_roles()
+        return {"changed_count": len(changed), "changed": changed}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"自动分类角色时出错: {str(e)}")
+
+@router.put("/{role_id}", response_model=SuccessResponse, summary="更新角色名称/类型")
+async def update_role(
+    role_id: str,
+    role_data: RoleUpdate,
+    current_user: Dict[str, Any] = require_permission("backend:role:base:write")
+):
+    role = db_manager.get_role(role_id)
+    if not role:
+        raise HTTPException(status_code=404, detail="角色不存在")
+
+    if role_data.name is None and role_data.role_type is None:
+        raise HTTPException(status_code=400, detail="没有需要更新的字段")
+
+    try:
+        result = db_manager.update_role(role_id, name=role_data.name, role_type=role_data.role_type)
+        if not result:
+            raise HTTPException(status_code=400, detail="角色更新失败")
+        return SuccessResponse(message="角色已更新")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新角色时出错: {str(e)}")
 
 @router.get("/{role_id}/permissions", response_model=List[Dict[str, Any]], summary="获取角色权限详情")
 async def get_role_all_permissions(

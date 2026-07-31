@@ -103,7 +103,10 @@ async def update_permission(
             if "admin" not in user_permissions and "backend:permission:base:write" not in user_permissions:
                 raise HTTPException(status_code=403, detail="没有权限更新")
 
-        updatable_fields = ['name', 'action', 'description', 'enabled']
+        if 'code' in permission_data and not str(permission_data['code']).strip():
+            raise HTTPException(status_code=400, detail="权限编码不能为空")
+
+        updatable_fields = ['code', 'name', 'resource_type', 'action', 'description', 'enabled']
         update_data = {}
         for field in updatable_fields:
             if field in permission_data:

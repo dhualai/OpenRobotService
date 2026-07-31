@@ -183,6 +183,11 @@ export interface AiTicketBrief {
   diagnosis?: unknown;
   created_at?: string; // ISO
   updated_at?: string; // ISO
+  // 提单人 / 接单人（username + 展示名），后端 list_all_tickets 返回
+  created_by?: string;
+  created_by_name?: string;
+  assigned_to?: string;
+  assigned_to_name?: string;
 }
 
 /** 历史工单列表筛选参数 */

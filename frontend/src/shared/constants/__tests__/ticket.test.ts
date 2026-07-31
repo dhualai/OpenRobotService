@@ -7,6 +7,10 @@ import {
   TICKET_TYPE_DISPLAY_MAP,
   TICKET_TYPE_VALUE_MAP,
   normalizeStatus,
+  isTerminalTicketStatus,
+  canUrgeTicket,
+  canReportTicket,
+  canCancelTicket,
 } from '../ticket';
 
 describe('STATUS_DISPLAY_MAP', () => {
@@ -87,5 +91,53 @@ describe('normalizeStatus', () => {
   it('should return original value for unknown status', () => {
     expect(normalizeStatus('unknown_status')).toBe('unknown_status');
     expect(normalizeStatus('weird-value')).toBe('weird-value');
+  });
+});
+
+describe('工单操作状态约束（催办/上报/撤回）', () => {
+  it('终态（已解决/已取消/已关闭）判定', () => {
+    expect(isTerminalTicketStatus('resolved')).toBe(true);
+    expect(isTerminalTicketStatus('canceled')).toBe(true);
+    expect(isTerminalTicketStatus('cancelled')).toBe(true);
+    expect(isTerminalTicketStatus('closed')).toBe(true);
+    expect(isTerminalTicketStatus('CLOSED')).toBe(true);
+    expect(isTerminalTicketStatus('new')).toBe(false);
+    expect(isTerminalTicketStatus('pending')).toBe(false);
+    expect(isTerminalTicketStatus('in_progress')).toBe(false);
+    expect(isTerminalTicketStatus('')).toBe(false);
+    expect(isTerminalTicketStatus(null)).toBe(false);
+    expect(isTerminalTicketStatus(undefined)).toBe(false);
+  });
+
+  it('催办：新建/待处理可用，处理中禁用，终态禁用', () => {
+    expect(canUrgeTicket('new')).toBe(true);
+    expect(canUrgeTicket('pending')).toBe(true);
+    // 历史值：待派单/已派单按「新建/待处理」处理
+    expect(canUrgeTicket('pending_dispatch')).toBe(true);
+    expect(canUrgeTicket('dispatched')).toBe(true);
+    expect(canUrgeTicket('')).toBe(true);
+    expect(canUrgeTicket('in_progress')).toBe(false);
+    expect(canUrgeTicket('resolved')).toBe(false);
+    expect(canUrgeTicket('canceled')).toBe(false);
+    expect(canUrgeTicket('closed')).toBe(false);
+  });
+
+  it('上报：仅处理中可用', () => {
+    expect(canReportTicket('in_progress')).toBe(true);
+    expect(canReportTicket('new')).toBe(false);
+    expect(canReportTicket('pending')).toBe(false);
+    expect(canReportTicket('resolved')).toBe(false);
+    expect(canReportTicket('canceled')).toBe(false);
+    expect(canReportTicket('closed')).toBe(false);
+  });
+
+  it('撤回：新建/待处理可用，其余禁用（规则同催办）', () => {
+    expect(canCancelTicket('new')).toBe(true);
+    expect(canCancelTicket('pending')).toBe(true);
+    expect(canCancelTicket('dispatched')).toBe(true);
+    expect(canCancelTicket('in_progress')).toBe(false);
+    expect(canCancelTicket('resolved')).toBe(false);
+    expect(canCancelTicket('canceled')).toBe(false);
+    expect(canCancelTicket('closed')).toBe(false);
   });
 });

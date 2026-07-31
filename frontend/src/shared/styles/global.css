@@ -740,6 +740,64 @@ html, body, #root {
   font-size: 20px;
   cursor: pointer;
 }
+
+/* markdown 内图片：可点击放大预览 */
+.markdown-body .md-image--clickable {
+  cursor: zoom-in;
+}
+
+/* 通用图片灯箱（TDesign ImageViewer + 自定义工具条）：移动端 / PC 端通用
+   交互（双指缩放/双击缩放/拖拽/单击关闭）由 .t-image-viewer 提供（其遮罩 z-index 1000~1006），
+   自定义工具条/提示需 fixed 且 z-index 更高才能浮在其上。 */
+.img-lightbox__toolbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 16px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0));
+}
+.img-lightbox__btn {
+  appearance: none;
+  border: none;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font-size: 15px;
+  line-height: 1;
+  padding: 10px 18px;
+  border-radius: 22px;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  -webkit-tap-highlight-color: transparent;
+}
+.img-lightbox__btn:active {
+  background: rgba(255, 255, 255, 0.3);
+}
+.img-lightbox__feedback {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1100;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 14px;
+  padding: 8px 16px;
+  border-radius: 18px;
+  white-space: nowrap;
+}
+/* 微信内置浏览器长按「保存图片」：图片需保持默认 callout（不得设为 none），
+   且预览地址必须是真实 http(s)/同域 URL（blob:/data: 微信无法二次下载会提示失败） */
+.t-image-viewer__img,
+.chat-bubble__img,
+.markdown-body .md-image {
+  -webkit-touch-callout: default;
+}
 /* AI 占位：呼吸点动画 */
 .chat-bubble__typing {
   display: flex;
@@ -1581,10 +1639,13 @@ html, body, #root {
   color: #999;
   margin-bottom: 4px;
 }
-.ticket-edit { padding: 16px; }
-.ticket-edit h4 { margin-bottom: 12px; }
-.ticket-edit .tasks-search { margin-bottom: 12px; }
-.ticket-edit__btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.ticket-edit { padding: 20px 16px; max-height: 85vh; overflow: auto; }
+.ticket-edit__title { margin: 0 0 16px; font-size: 16px; font-weight: 600; color: #222; padding-bottom: 12px; border-bottom: 1px solid #f0f0f0; }
+.ticket-edit .t-form { padding: 0; }
+.ticket-edit .t-form__item { margin-bottom: 4px; }
+.ticket-edit .t-form__item::after { display: none !important; }
+.ticket-edit .t-button::after { display: none !important; content: none !important; }
+.ticket-edit__btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; padding-top: 12px; border-top: 1px solid #f0f0f0; }
 
 /* ===== Markdown 渲染样式 ===== */
 .markdown-body {
@@ -1625,6 +1686,12 @@ html, body, #root {
 .markdown-body ol {
   margin: 0 0 10px;
   padding-left: 20px;
+}
+.markdown-body ol {
+  list-style-type: decimal;
+}
+.markdown-body ul {
+  list-style-type: disc;
 }
 .markdown-body li { margin-bottom: 4px; }
 .markdown-body li:last-child { margin-bottom: 0; }
@@ -2072,21 +2139,28 @@ html, body, #root {
 }
 .detail-card__header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .detail-card__meta { display: flex; align-items: center; gap: 8px; }
+.detail-card__action-btns { display: flex; gap: 10px; flex-wrap: wrap; }
 .detail-card__action-btn,
 .detail-card__action-btn::before,
 .detail-card__action-btn::after,
 .detail-card__action-btn > * {
-  padding: 3px 10px !important;
+  padding: 2px 8px !important;
   border-radius: 10px !important;
   font-size: 12px !important;
   font-weight: 500 !important;
   transition: all 0.2s ease !important;
-  box-shadow: 0 1px 4px rgba(0, 82, 217, 0.1) !important;
+  box-shadow: none !important;
   border: none !important;
   border-width: 0 !important;
   border-style: none !important;
   outline: none !important;
   background-image: none !important;
+}
+.detail-card__action-btn::after {
+  display: none !important;
+  content: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 .detail-card__action-btn:hover {
   transform: translateY(-1px);
@@ -2102,6 +2176,47 @@ html, body, #root {
 .detail-row { display: flex; padding: 6px 0; }
 .detail-row__label { color: #999; width: 64px; flex-shrink: 0; font-size: 13px; }
 .detail-row__value { flex: 1; font-size: 13px; color: #333; word-break: break-word; }
+.detail-card__info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 8px;
+}
+.detail-info-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #f7f8fa;
+  border-radius: 8px;
+  min-width: 0;
+}
+.detail-info-item__icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+.detail-info-item__content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.detail-info-item__label {
+  font-size: 11px;
+  color: #999;
+  line-height: 1.2;
+  margin-bottom: 2px;
+}
+.detail-info-item__value {
+  font-size: 13px;
+  color: #333;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .detail-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2118,6 +2233,7 @@ html, body, #root {
   width: 100%;
 }
 .detail-actions__btns .t-button { color: #1a1a1a; font-size: 12px; font-weight: 400; background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+.detail-actions__btns .t-button::after { display: none !important; content: none !important; }
 .detail-actions__btns .t-button .t-icon,
 .detail-actions__btns .t-button svg { font-size: 12px; width: 12px; height: 12px; }
 }
@@ -2173,9 +2289,12 @@ html, body, #root {
   word-break: break-word;
 }
 .detail-chat-bubble.is-self {
-  background: #0052d9;
-  color: #fff;
+  background: #e6f4ff;
+  color: #1a1a1a;
   border-radius: 12px 12px 0 12px;
+}
+.detail-chat-bubble.is-self * {
+  color: #1a1a1a;
 }
 .detail-chat-row:not(.is-right) .detail-chat-bubble {
   border-radius: 12px 12px 12px 0;
@@ -2187,7 +2306,7 @@ html, body, #root {
   opacity: 0.7;
 }
 .detail-chat-bubble.is-self .detail-chat-name {
-  color: rgba(255, 255, 255, 0.8);
+  color: #0052d9;
 }
 .detail-chat-time {
   font-size: 10px;
@@ -2203,23 +2322,87 @@ html, body, #root {
 }
 .detail-chat-input {
   display: flex;
+  flex-direction: column;
   gap: 8px;
   padding-top: 8px;
   border-top: 1px solid #f0f0f0;
+}
+.detail-chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.detail-chat-input-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.detail-chat-input-row .t-button {
+  padding: 0 10px;
+  font-size: 13px;
+  height: 32px;
+  min-width: auto;
 }
 .detail-chat-input-field {
   flex: 1;
   padding: 8px 12px;
   border: 1px solid #e0e0e0;
-  border-radius: 20px;
+  border-radius: 12px;
   font-size: 14px;
   outline: none;
+  resize: none;
+  line-height: 1.5;
+  min-height: 36px;
+  max-height: 160px;
+  overflow-y: auto;
+  font-family: inherit;
 }
 .detail-chat-input-field:focus {
   border-color: #0052d9;
 }
 .detail-chat-input-field:disabled {
   background: #f5f5f5;
+  color: #999;
+}
+
+/* ===== @ 提及建议面板 ===== */
+.detail-chat-mention-panel {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px 12px 0 0;
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.1);
+  margin-bottom: 4px;
+  z-index: 100;
+}
+.detail-chat-mention-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.detail-chat-mention-item:first-child {
+  border-radius: 12px 12px 0 0;
+}
+.detail-chat-mention-item:hover,
+.detail-chat-mention-item.is-active {
+  background: #ecf2fe;
+}
+.detail-chat-mention-name {
+  font-weight: 500;
+  color: #333;
+}
+.detail-chat-mention-role {
+  font-size: 12px;
   color: #999;
 }
 
@@ -2375,7 +2558,7 @@ html, body, #root {
 .history-row__actions .t-button { font-weight: 400; font-size: 12px; }
 
 /* ===== TicketDetailPage 评论附件上传 ===== */
-.detail-chat-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.detail-chat-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .detail-chat-file {
   display: inline-flex; align-items: center; gap: 4px;
   background: #f2f3f5; border-radius: 6px; padding: 4px 8px; font-size: 12px; color: #333;

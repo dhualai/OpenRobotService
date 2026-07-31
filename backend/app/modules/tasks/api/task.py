@@ -10,12 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-from app.core.database import get_async_db as get_db
+from app.core.database import get_async_db as get_db, db_manager
 from app.core.auth_routes import get_current_active_user_from_token
 from app.modules.tasks.schemas.ticket import (
     TicketCreate, TicketUpdate, TicketResponse, TicketListResponse,
     TicketCommentCreate, TicketCommentUpdate, TicketCommentResponse,
-    TicketQueryParams, TicketCuibanNotification, TicketFilterRequest
+    TicketQueryParams, TicketCuibanNotification, TicketFilterRequest,
+    ProjectMemberResponse
 )
 from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, TicketType
 from app.modules.tasks.services.ticket_service import TicketService
@@ -223,6 +224,48 @@ async def get_task(
         raise HTTPException(status_code=500, detail=f"获取任务详情失败: {str(e)}")
 
 
+@router.get("/{task_id}/project-members", response_model=List[ProjectMemberResponse])
+async def get_task_project_members(
+    task_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
+):
+    """获取任务关联项目的成员列表（用于讨论区 @ 提及）。"""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        ticket = await TicketService.get_ticket_by_id(db, task_id)
+        if not ticket:
+            raise HTTPException(status_code=404, detail="任务未找到")
+        project_id = getattr(ticket, "project_id", None)
+        if not project_id:
+            raise HTTPException(status_code=404, detail="任务未关联项目")
+
+        # 复用已有的 identity_service 查询（同步调用，数据量小可接受）
+        members = db_manager.get_project_members(project_id, include_usp=False)
+        seen = set()
+        result = []
+        for m in members:
+            uname = (m.get("username") or "").strip()
+            if not uname or uname in seen:
+                continue
+            seen.add(uname)
+            name = m.get("name")
+            result.append(ProjectMemberResponse(
+                id=uname,
+                username=uname,
+                name=name if name else uname,  # name 为空时兜底显示 username
+                role_name=m.get("role_name"),
+            ))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取项目成员失败: task_id={task_id}, error={str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取项目成员失败: {str(e)}")
+
+
 @router.put("/{task_id}")
 async def update_task(
     task_id: int,
@@ -302,6 +345,7 @@ async def add_comment(
 ):
     try:
         username = current_user.get('username') if current_user else "system"
+        operator = current_user.get('name') or username
         comment = await TicketService.add_comment(db, task_id, comment_data, username, comment_attachment_map)
         if not comment:
             raise HTTPException(status_code=404, detail="任务未找到")
@@ -317,9 +361,87 @@ async def add_comment(
         )
         await db.commit()
 
+        # ── @mention 通知：检测评论中的 @用户名，排除 @U老师 ──
+        _maybe_notify_mentions(
+            task_id=task_id, content=comment_data.content,
+            operator=operator, token=current_user.get("token"),
+        )
+
         return comment
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"添加评论失败: {str(e)}")
+
+
+def _maybe_notify_mentions(
+    task_id: int, content: str, operator: str, token: Optional[str] = None,
+):
+    """检测评论中 @ 的用户名（排除 AI），发送通知"""
+    import re
+    import logging
+
+    ai_names = {"U老师", "小U", "AI助手"}
+    mentioned = set()
+    for m in re.finditer(r"@([\w一-鿿]+)", content):
+        name = m.group(1)
+        if name not in ai_names:
+            mentioned.add(name)
+    if not mentioned:
+        return
+
+    # 查本地 users 表解析 username
+    from app.core.db import SessionLocal
+    from app.models.identity import UserDB
+    from app.models.task import Task  # 同步 ORM 模型（非异步 session）
+
+    db = SessionLocal()
+    try:
+        ticket = db.query(Task).filter(Task.id == task_id).first()
+        if not ticket:
+            return
+        ticket_title = ticket.title or ""
+        ticket_project = ticket.project_name or ""
+
+        # 按 @内容 匹配用户 → 先按 name 查，再按 username 查
+        notified_usernames = []
+        for mentioned_name in mentioned:
+            # 先按中文名匹配
+            user = db.query(UserDB).filter(UserDB.name == mentioned_name).first()
+            if not user:
+                # 回退按 username 匹配（前端可能插入的是 @username）
+                user = db.query(UserDB).filter(UserDB.username == mentioned_name).first()
+            if user:
+                if user.username not in notified_usernames:
+                    notified_usernames.append(user.username)
+
+        if not notified_usernames:
+            return
+
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"@mention 通知: task_id={task_id}, operator={operator}, "
+            f"mentioned={list(mentioned)}, notified={notified_usernames}"
+        )
+
+        from app.utils.notification_utils import NotificationUtils
+        import asyncio
+
+        async def _notify():
+            try:
+                await NotificationUtils.send_ticket_update_notification(
+                    ticket_id=task_id,
+                    title=ticket_title,
+                    project_name=ticket_project,
+                    update_content=f"comment_mentioned",
+                    operator=operator,
+                    user_names=notified_usernames,
+                    token=token,
+                )
+            except Exception as e:
+                logger.error(f"@mention 通知发送异常: {e}")
+
+        asyncio.create_task(_notify())
+    finally:
+        db.close()
 
 
 @router.get("/{task_id}/comments", response_model=List[TicketCommentResponse])

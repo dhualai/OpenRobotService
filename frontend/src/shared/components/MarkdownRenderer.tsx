@@ -16,6 +16,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useAuthStore } from '@/stores/auth';
 import { ENV_PREFIX } from '@/config/api';
+import ImageLightbox from '@/shared/components/ImageLightbox';
 
 // ---------------------------------------------------------------------------
 // 媒体 URL 检测正则
@@ -229,6 +230,7 @@ function AuthImage({ src, alt = '' }: AuthImageProps) {
     status: 'idle' | 'loading' | 'loaded' | 'direct' | 'error';
     blobUrl?: string;
   }>({ status: 'idle' });
+  const [previewOpen, setPreviewOpen] = useState(false);
   const blobUrlRef = useRef<string | null>(null);
 
   // 同步解析 URL 类型
@@ -319,6 +321,12 @@ function AuthImage({ src, alt = '' }: AuthImageProps) {
   }, []);
 
   // ---- 渲染 ----
+  // 预览地址：优先用真实 URL（fullUrl），不用 blob —— 微信内置浏览器长按「保存图片」
+  // 会对 URL 二次下载，blob: 无法解析必失败。AI 媒体接口（/api/ai/media/*）是公开
+  // 静态资源（StaticFiles 挂载，无鉴权），灯箱内直接以真实 URL 加载即可。
+  const previewSrc = urlInfo.fullUrl || imgState.blobUrl || '';
+  const openPreview = () => setPreviewOpen(true);
+
   if (!src || urlInfo.type === 'empty') {
     return null;
   }
@@ -326,14 +334,18 @@ function AuthImage({ src, alt = '' }: AuthImageProps) {
   if (imgState.status === 'idle') {
     if (urlInfo.type === 'direct') {
       return (
-        <img
-          src={urlInfo.url}
-          alt={alt}
-          className="md-image"
-          loading="lazy"
-          onError={handleImgError}
-          style={{ maxWidth: '100%', borderRadius: 8, margin: '8px 0', display: 'block' }}
-        />
+        <>
+          <img
+            src={urlInfo.url}
+            alt={alt}
+            className="md-image md-image--clickable"
+            loading="lazy"
+            onClick={openPreview}
+            onError={handleImgError}
+            style={{ maxWidth: '100%', borderRadius: 8, margin: '8px 0', display: 'block' }}
+          />
+          <ImageLightbox src={previewSrc} alt={alt} open={previewOpen} onClose={() => setPreviewOpen(false)} />
+        </>
       );
     }
     return (
@@ -362,14 +374,18 @@ function AuthImage({ src, alt = '' }: AuthImageProps) {
   const finalSrc = imgState.blobUrl || urlInfo.fullUrl;
 
   return (
-    <img
-      src={finalSrc}
-      alt={alt}
-      className="md-image"
-      loading="lazy"
-      onError={handleImgError}
-      style={{ maxWidth: '100%', borderRadius: 8, margin: '8px 0', display: 'block' }}
-    />
+    <>
+      <img
+        src={finalSrc}
+        alt={alt}
+        className="md-image md-image--clickable"
+        loading="lazy"
+        onClick={openPreview}
+        onError={handleImgError}
+        style={{ maxWidth: '100%', borderRadius: 8, margin: '8px 0', display: 'block' }}
+      />
+      <ImageLightbox src={previewSrc} alt={alt} open={previewOpen} onClose={() => setPreviewOpen(false)} />
+    </>
   );
 }
 

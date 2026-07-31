@@ -46,14 +46,20 @@ class DatabaseManager:
     def delete_user(self, user_id: str) -> bool:
         return identity_service.delete_user(user_id)
 
-    def add_role(self, role_id: str, role_name: str) -> bool:
-        return identity_service.add_role(role_id, role_name)
+    def add_role(self, role_id: str, role_name: str, role_type: str = 'project') -> bool:
+        return identity_service.add_role(role_id, role_name, role_type)
 
     def get_role(self, role_id: str) -> Optional[Dict[str, str]]:
         return identity_service.get_role(role_id)
 
     def get_all_roles(self) -> List[Dict[str, str]]:
         return identity_service.get_all_roles()
+
+    def update_role(self, role_id: str, name: Optional[str] = None, role_type: Optional[str] = None) -> bool:
+        return identity_service.update_role(role_id, name, role_type)
+
+    def auto_classify_roles(self) -> List[Dict[str, str]]:
+        return identity_service.auto_classify_roles()
 
     def delete_role(self, role_id: str) -> bool:
         return identity_service.delete_role(role_id)
