@@ -27,11 +27,6 @@ interface ProjectItem {
   settlement_period?: string | null; // 业绩核算期，格式 YYYY-MM，来自企业微信同步
 }
 
-const STATUS_COLOR: Record<string, string> = {
-  '正常': '#00a870',
-  '延迟': '#e37318',
-  '阻塞': '#d54941',
-};
 
 // 与跨项目看板的四个统计数字（项目总数/本月新增项目数/风险项目数/缺少对接人项目数）对应的筛选类型
 type ProjectFilter = 'new' | 'risk' | 'no_contact';
@@ -134,8 +129,6 @@ export default function ProjectProgress() {
         </div>
       ) : (
         displayProjects.map((p) => {
-          const execStatus = p.task_execution_status || '';
-          const execColor = STATUS_COLOR[execStatus] || '#999';
           const hasRisk = p.risks > 0;
 
           return (
@@ -158,11 +151,6 @@ export default function ProjectProgress() {
                 }}>
                   {p.status}
                 </span>
-                {execStatus && (
-                  <span style={{ fontSize: 11, color: execColor, fontWeight: 500 }}>
-                    ● {execStatus}
-                  </span>
-                )}
               </div>
               <div style={{ fontSize: 12, color: '#999', marginTop: 6 }}>
                 {p.project_code} · 项目经理: {p.project_manager || '未指定'}

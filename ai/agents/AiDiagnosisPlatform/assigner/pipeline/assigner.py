@@ -281,18 +281,16 @@ class Assigner:
     def _match_engineer_by_name(
         name: str, engineers: List[EngineerProfile],
     ) -> Optional[EngineerProfile]:
-        """按姓名匹配工程师：精确 > 包含/被包含 > username"""
+        """按姓名匹配工程师：精确 > 包含/被包含"""
+        if not name:
+            return None
         # 1. 精确匹配 name
         for e in engineers:
             if e.name == name:
                 return e
         # 2. 包含匹配（"张三" 在 "张三丰" 里，或 "张三丰" 包含 "张三"）
         for e in engineers:
-            if name in e.name or e.name in name:
-                return e
-        # 3. username 匹配
-        for e in engineers:
-            if e.username and name in e.username:
+            if name in (e.name or "") or (e.name or "") in name:
                 return e
         return None
 
