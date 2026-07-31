@@ -383,7 +383,43 @@ class ProjectService:
                 return "无数据"
         finally:
             db.close()
-    
+
+    def get_task_execution_stats_7d(self, project_code: str) -> Dict:
+        db = SessionLocal()
+        try:
+            sql = """
+            SELECT
+                SUM(
+                    JSON_EXTRACT(
+                        JSON_EXTRACT(`data`, '$.data[0].dataIndicators.taskNumber'),
+                        '$.totalTasks'
+                    )
+                ) AS total_totalTasks,
+                SUM(
+                    JSON_EXTRACT(
+                        JSON_EXTRACT(`data`, '$.data[0].dataIndicators.taskNumber'),
+                        '$.finishedTasks'
+                    )
+                ) AS total_finishedTasks
+            FROM collection_data
+            WHERE project = :project
+            AND indicator = 'GroupEfficiency'
+            AND start_time_int >= UNIX_TIMESTAMP(NOW() - INTERVAL 7 DAY)
+            """
+            result = db.execute(text(sql), {"project": project_code}).fetchone()
+
+            total_tasks = int(result.total_totalTasks or 0) if result else 0
+            finished_tasks = int(result.total_finishedTasks or 0) if result else 0
+            completion_rate = round(finished_tasks / total_tasks, 4) if total_tasks else None
+
+            return {
+                "total_tasks": total_tasks,
+                "finished_tasks": finished_tasks,
+                "completion_rate": completion_rate,
+            }
+        finally:
+            db.close()
+
     def create_license(self, license_data: Dict) -> Dict:
         from app.modules.admin.models_das.models import ProjectLicense
         from datetime import datetime
