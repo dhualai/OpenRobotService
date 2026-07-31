@@ -244,15 +244,20 @@ async def get_task_project_members(
 
         # 复用已有的 identity_service 查询（同步调用，数据量小可接受）
         members = db_manager.get_project_members(project_id, include_usp=False)
-        result = [
-            ProjectMemberResponse(
-                id=m.get("username", ""),
-                username=m.get("username", ""),
-                name=m.get("name"),
+        seen = set()
+        result = []
+        for m in members:
+            uname = (m.get("username") or "").strip()
+            if not uname or uname in seen:
+                continue
+            seen.add(uname)
+            name = m.get("name")
+            result.append(ProjectMemberResponse(
+                id=uname,
+                username=uname,
+                name=name if name else uname,  # name 为空时兜底显示 username
                 role_name=m.get("role_name"),
-            )
-            for m in members
-        ]
+            ))
         return result
     except HTTPException:
         raise
