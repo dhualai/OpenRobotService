@@ -2,9 +2,29 @@ import logging
 import logging.config
 import json
 import os
+import sys
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from typing import Dict, Any
+
+
+class _WindowsSafeRotatingHandler(TimedRotatingFileHandler):
+    """Windows 下日志轮转可能因文件被占用（旧进程/编辑器）而报 PermissionError。
+    该 handler 捕获异常后继续写原文件，不中断服务。"""
+
+    def doRollover(self):
+        if sys.platform != "win32":
+            super().doRollover()
+            return
+        if self.stream:
+            self.stream.close()
+            self.stream = None
+        try:
+            super().doRollover()
+        except PermissionError:
+            # 文件被占用，跳过轮转，重新打开原文件继续写
+            self.mode = "a"
+            self.stream = self._open()
 
 LOG_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logging_config.json')
 
@@ -25,7 +45,7 @@ DEFAULT_LOG_CONFIG = {
             "stream": "ext://sys.stdout"
         },
         "file": {
-            "class": "logging.handlers.TimedRotatingFileHandler",
+            "class": "backend.app.services.logging._WindowsSafeRotatingHandler",
             "level": "INFO",
             "formatter": "standard",
             "filename": os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs', 'backend.log'),

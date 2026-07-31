@@ -14,12 +14,17 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 
+import httpx
 from sqlalchemy import text
+
+from ai.config import get_ai_config
 
 logger = logging.getLogger(__name__)
 
 # ── 项目列表缓存 ──────────────────────────────────────────
 _CACHE_TTL = 3600  # 1 小时，项目列表变动不频繁
+_MEILI_INDEX = "projects"  # Meilisearch 索引名
+_MEILI_TIMEOUT = 2.0  # Meili HTTP 超时（秒）
 
 
 @dataclass
@@ -36,6 +41,8 @@ class ProjectMatcher:
         self._projects: List[Dict] = []  # [{"name": ..., "code": ...}, ...]
         self._loaded_at: float = 0.0
         self._lock = asyncio.Lock()
+        self._meili_ok: bool = False  # Meili 同步成功标记
+        self._client: Optional[httpx.AsyncClient] = None
 
     # ── 加载 ──────────────────────────────────────────────
 
@@ -55,6 +62,8 @@ class ProjectMatcher:
                 logger.info(
                     f"[ProjectMatcher] loaded {len(self._projects)} projects from DB"
                 )
+                # 同步到 Meilisearch（失败不阻塞——内存降级可用）
+                self._meili_ok = await self._sync_to_meili()
             except Exception as e:
                 logger.warning(f"[ProjectMatcher] failed to load projects: {e}")
                 # 不清空旧缓存，下次继续用
@@ -118,6 +127,116 @@ class ProjectMatcher:
             return []
         candidates = self._get_candidates(user)
         return [c for c in candidates if c.score >= min_score][:top_n]
+
+    async def get_candidates_async(
+        self, user_input: str, min_score: float = 0.7, top_n: int = 5
+    ) -> List[ProjectMatch]:
+        """异步查询：优先 Meilisearch，不可用时降级到内存打分。"""
+        if self._meili_ok:
+            try:
+                hits = await self._meili_search(user_input, top_n)
+                if hits is not None:
+                    candidates = [
+                        ProjectMatch(name=h["name"], code=h["code"], score=h.get("_rankingScore", 0))
+                        for h in hits
+                    ]
+                    result = [c for c in candidates if c.score >= min_score]
+                    logger.info(
+                        f"[ProjectMatcher] meili search: '{user_input}' -> "
+                        f"{len(result)}/{len(candidates)} candidates"
+                    )
+                    return result
+            except Exception as e:
+                logger.warning(f"[ProjectMatcher] meili search failed, fallback to memory: {e}")
+        # 降级：内存打分
+        return self.get_candidates(user_input, min_score, top_n)
+
+    async def _meili_search(self, query: str, limit: int = 5) -> Optional[List[dict]]:
+        """调 Meilisearch 搜索。失败返回 None（不抛异常）。"""
+        if not self._client:
+            return None
+        config = get_ai_config()
+        headers = {"Content-Type": "application/json"}
+        if config.meili_master_key:
+            headers["Authorization"] = f"Bearer {config.meili_master_key}"
+        try:
+            resp = await self._client.post(
+                f"{config.meili_host_url}/indexes/{_MEILI_INDEX}/search",
+                json={
+                    "q": query,
+                    "limit": limit,
+                    "attributesToRetrieve": ["name", "code"],
+                    "showRankingScore": True,
+                },
+                headers=headers,
+                timeout=_MEILI_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("hits", [])
+            logger.warning(
+                f"[ProjectMatcher] meili search HTTP {resp.status_code}: {resp.text[:200]}"
+            )
+            return None
+        except Exception as e:
+            logger.warning(f"[ProjectMatcher] meili search error: {e}")
+            return None
+
+    async def _sync_to_meili(self) -> bool:
+        """将内存项目列表全量同步到 Meilisearch projects 索引。返回是否同步成功。"""
+        config = get_ai_config()
+        if not config.meili_enabled:
+            return False
+        if not self._projects:
+            return False
+        try:
+            if not self._client:
+                self._client = httpx.AsyncClient(timeout=_MEILI_TIMEOUT)
+            headers = {"Content-Type": "application/json"}
+            if config.meili_master_key:
+                headers["Authorization"] = f"Bearer {config.meili_master_key}"
+            host = config.meili_host_url
+
+            # 1. 确保索引存在（不存在则创建，已存在 PUT 忽略）
+            await self._client.put(
+                f"{host}/indexes/{_MEILI_INDEX}",
+                json={"uid": _MEILI_INDEX, "primaryKey": "id"},
+                headers=headers,
+            )
+            # 2. 设置 searchableAttributes（code 也搜得到）
+            await self._client.patch(
+                f"{host}/indexes/{_MEILI_INDEX}/settings",
+                json={"searchableAttributes": ["name", "code"]},
+                headers=headers,
+            )
+            # 3. 全量替换文档
+            docs = [
+                {"id": i, "name": p["name"], "code": p["code"]}
+                for i, p in enumerate(self._projects)
+            ]
+            await self._client.delete(
+                f"{host}/indexes/{_MEILI_INDEX}/documents",
+                headers=headers,
+            )
+            resp = await self._client.put(
+                f"{host}/indexes/{_MEILI_INDEX}/documents",
+                json=docs,
+                headers=headers,
+            )
+            ok = resp.status_code in (200, 201, 202)
+            if ok:
+                logger.info(
+                    f"[ProjectMatcher] synced {len(docs)} projects to meilisearch "
+                    f"({host}/indexes/{_MEILI_INDEX})"
+                )
+                return True
+            logger.warning(
+                f"[ProjectMatcher] meili sync HTTP {resp.status_code}: {resp.text[:200]}"
+            )
+            return False
+        except Exception as e:
+            logger.warning(f"[ProjectMatcher] meili sync failed: {e}")
+            return False
 
     def _get_candidates(self, user: str) -> List[ProjectMatch]:
         """内部：计算所有候选并降序排列"""
