@@ -512,10 +512,10 @@ export default function UserManage() {
               <Loading text="加载用户信息..." />
             </div>
           ) : (
-          <Form>
+          <Form initialData={form}>
             {!editingUsername && (
               <>
-                <FormItem label="用户名">
+                <FormItem label="用户名" name="username">
                   <Input
                     value={form.username}
                     onChange={(v) => setForm((p) => ({ ...p, username: String(v) }))}
@@ -524,7 +524,7 @@ export default function UserManage() {
                   />
                 </FormItem>
 
-                <FormItem label="密码">
+                <FormItem label="密码" name="password">
                   <Input
                     value={form.password}
                     onChange={(v) => setForm((p) => ({ ...p, password: String(v) }))}
@@ -536,7 +536,7 @@ export default function UserManage() {
               </>
             )}
 
-            <FormItem label="姓名">
+            <FormItem label="姓名" name="name">
               <Input
                 value={form.name || ''}
                 onChange={(v) => setForm((p) => ({ ...p, name: String(v) }))}
@@ -545,7 +545,7 @@ export default function UserManage() {
               />
             </FormItem>
 
-            <FormItem label="部门">
+            <FormItem label="部门" name="department">
               <Input
                 value={form.department || ''}
                 onChange={(v) => setForm((p) => ({ ...p, department: String(v) }))}
@@ -554,7 +554,7 @@ export default function UserManage() {
               />
             </FormItem>
 
-            <FormItem label="职级">
+            <FormItem label="职级" name="job_level">
               <RadioGroup
                 value={form.job_level}
                 onChange={(v) => setForm((p) => ({ ...p, job_level: v as number }))}
@@ -563,7 +563,7 @@ export default function UserManage() {
             </FormItem>
 
             {!editingUsername && (
-              <FormItem label="状态">
+              <FormItem label="状态" name="status">
                 <RadioGroup
                   value={form.status}
                   onChange={(v) => setForm((p) => ({ ...p, status: v as string }))}
@@ -572,7 +572,7 @@ export default function UserManage() {
               </FormItem>
             )}
 
-            <FormItem label="责任模块">
+            <FormItem label="责任模块" name="responsibility_modules">
               <div style={{ marginBottom: 8 }}>
                 {moduleEntries.length === 0 && (
                   <div style={{ fontSize: 12, color: '#bbb', marginBottom: 8 }}>
@@ -661,7 +661,7 @@ export default function UserManage() {
               </div>
             </FormItem>
 
-            <FormItem label="职责画像">
+            <FormItem label="职责画像" name="duty_text">
               <Textarea
                 value={form.duty_text || ''}
                 onChange={(v) => setForm((p) => ({ ...p, duty_text: String(v) }))}
