@@ -77,8 +77,11 @@ export default function TicketDetailPage() {
         setTicket(aiTicket);
         if (aiTicket.ticket_id) {
           try {
-            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string } }>(`/${aiTicket.ticket_id}?load_comments=true`);
-            setTicket((prev) => prev ? { ...prev, comments: taskDetail.comments || [] } : prev);
+            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string }>(`/${aiTicket.ticket_id}?load_comments=true`);
+            // 用 DB 的 status 覆盖 AI 的 status：AI(qaGetTicket) 返回 dispatched/escalated 等 AI 内部状态，
+            // DB(tasks 表) 是 new/in_progress 等标准枚举。列表(qaListTickets)也来自 DB，
+            // 覆盖后详情页按钮置灰(canUrgeTicket/canReportTicket)与列表一致。
+            setTicket((prev) => prev ? { ...prev, comments: taskDetail.comments || [], status: taskDetail.status || prev.status } : prev);
             setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
           } catch { /* 评论加载失败不阻塞主流程 */ }
         }
