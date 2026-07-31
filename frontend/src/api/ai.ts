@@ -32,19 +32,27 @@ export const trackSession = (sessionId: string): void => {
 
 /** 带 token 的 fetch 封装（用于 SSE 流式请求） */
 export const fetchWithAuth = async (url: string, init: RequestInit = {}) => {
-  const token = useAuthStore.getState().token;
-  const res = await fetch(url, {
+  const doFetch = (tok: string | null) => fetch(url, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
       ...(init.headers as Record<string, string>),
     },
   });
-  // 401：鉴权失效 → 统一提示并跳登录页（AI 模块不走 client.ts，需自行处理）
+  let res = await doFetch(useAuthStore.getState().token);
+  // 401：token 过期 → 刷新后重试一次（对齐业务后端 createRequest 的刷新能力）。
+  // AI 接口（/qa/submit、/qa/ticket/confirm）token 失效时返回 401（而非 200+空 created_by），
+  // 此处刷新重试，避免转工单 created_by 为空。
   if (res.status === 401) {
-    kickToLogin('登录已过期，请重新登录');
-    throw new Error('UNAUTHORIZED');
+    const ok = await useAuthStore.getState().refreshAuthToken();
+    if (ok) {
+      res = await doFetch(useAuthStore.getState().token);
+    }
+    if (res.status === 401) {
+      kickToLogin('登录已过期，请重新登录');
+      throw new Error('UNAUTHORIZED');
+    }
   }
   return res;
 };
