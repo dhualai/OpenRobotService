@@ -116,6 +116,7 @@ html, body, #root {
   transform: translateY(0);
 }
 .chat-ticket-btn {
+  position: relative;
   width: 36px;
   height: 36px;
   border: none;
@@ -208,6 +209,107 @@ html, body, #root {
 }
 .chat-ticket-btn:disabled {
   pointer-events: none;
+}
+
+/* 信息不足：按钮红点角标 + 微弱警示色 */
+.chat-ticket-btn.has-missing {
+  animation: ticket-fab-enter 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both,
+             ticket-missing-pulse 1.8s ease-in-out 0.5s infinite;
+}
+.chat-ticket-btn__badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #e34d59;
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-weight: 600;
+  box-shadow: 0 0 0 2px #fff;
+}
+@keyframes ticket-missing-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(227, 77, 89, 0.12); }
+  50% { box-shadow: 0 0 0 6px rgba(227, 77, 89, 0.22); }
+}
+
+/* 信息不足引导卡片：常驻输入区上方 */
+.chat-ticket-missing {
+  margin: 0 12px 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fff7f0;
+  border: 1px solid #ffd4c2;
+  box-shadow: 0 2px 10px rgba(227, 77, 89, 0.08);
+  font-size: 13px;
+  color: #333;
+  animation: ticket-missing-enter 0.3s ease both;
+}
+@keyframes ticket-missing-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.chat-ticket-missing__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #d6392f;
+}
+.chat-ticket-missing__badge {
+  background: #e34d59;
+  color: #fff;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-weight: 600;
+}
+.chat-ticket-missing__close {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: #999;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  -webkit-tap-highlight-color: transparent;
+}
+.chat-ticket-missing__list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chat-ticket-missing__item {
+  background: #fff;
+  border: 1px solid #ffd4c2;
+  color: #b03b2f;
+  padding: 3px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+.chat-ticket-missing__retry {
+  margin-top: 8px;
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  background: #0052d9;
+  color: #fff;
+  font-size: 13px;
+  padding: 8px 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.chat-ticket-missing__retry:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 /* 提交中旋转圆环 */
