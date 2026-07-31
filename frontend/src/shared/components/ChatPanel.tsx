@@ -257,6 +257,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const voiceRafRef = useRef<number | null>(null);
   const [voiceLevels, setVoiceLevels] = useState<number[]>([0, 0, 0, 0, 0]);
   const convRef = useRef<number | null>(null); // 当前 DB 会话 id，跨 send 复用
+  // 按会话 id 的内存消息缓存：切走前把当前会话最新 messages（含未落库的乐观消息）存入，
+  // 切回时优先从此同步恢复，根除 getConversation 早于 appendMessage 落库 / 竞态导致新消息丢失。
+  const convMessagesCache = useRef<Record<number, Message[]>>({});
+  const prevConvIdRef = useRef<number | null>(null); // 记录上一轮会话 id，确保切走时写到「旧会话」而非已切换的「新会话」
   const sendingRef = useRef(false); // 防双发（Enter + click 竞态）
 
   // 滚动跟随：仅在用户贴底时自动跟随；流式中瞬时置底（behavior:'auto'）避免 smooth 动画排队抖动
@@ -327,9 +331,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       setConversationTitle('新建会话');
       return;
     }
-    // convRef 已是当前会话 → ensureConversation 刚设置的，不重复加载（避免覆盖正在进行的对话）
-    if (convRef.current === conversationId) return;
-    if (!conversationId) return;
+    // 优先从内存缓存恢复：切回已有会话时可零延迟还原（含未落库的乐观消息），
+    // 根除 getConversation 早于 appendMessage 落库 / 切回竞态导致的新消息丢失。
+    const cached = convMessagesCache.current[conversationId];
+    if (cached) {
+      convRef.current = conversationId;
+      setMessages(cached);
+      return;
+    }
+    // 缓存为空（首次进入 / 刷新后）→ 从后端加载
     let cancelled = false;
     (async () => {
       try {
@@ -366,6 +376,17 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
+
+  // 切走前把当前会话的最新 messages 写入内存缓存（按会话 id），供切回时立即恢复。
+  // 用 prevConvIdRef 记录上一轮会话 id，确保写入的是「旧会话」而非已切换的「新会话」，
+  // 避免 conversationId 已变但 messages 尚未被新会话覆盖时把旧消息错存到新会话 key。
+  useEffect(() => {
+    const prev = prevConvIdRef.current;
+    if (prev != null && messages.length > 0) {
+      convMessagesCache.current[prev] = messages;
+    }
+    prevConvIdRef.current = conversationId;
+  }, [conversationId, messages]);
 
   // call 场景：进入时若带工单讨论上下文，注入引导消息（一次性消费）
   useEffect(() => {

@@ -41,9 +41,11 @@ export default function RoleManage() {
     permissions: [],
   });
   const [editOriginalPermissions, setEditOriginalPermissions] = useState<string[]>([]);
+  const [editOriginalRole, setEditOriginalRole] = useState<{ name: string; role_type: 'system' | 'project' } | null>(null);
   const [allPermissions, setAllPermissions] = useState<Permission[]>([]);
   const [permLoading, setPermLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [autoClassifying, setAutoClassifying] = useState(false);
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
     visible: false,
@@ -125,6 +127,7 @@ export default function RoleManage() {
     setEditingRoleId(null);
     setEditForm({ name: '', role_type: 'project', permissions: [] });
     setEditOriginalPermissions([]);
+    setEditOriginalRole(null);
     setEditVisible(true);
   };
 
@@ -151,6 +154,7 @@ export default function RoleManage() {
 
       setEditForm({ name: role.name, role_type: role.role_type, permissions: [...perms] });
       setEditOriginalPermissions([...perms]);
+      setEditOriginalRole({ name: role.name, role_type: role.role_type });
     } catch (e) {
       Toast({ message: `加载角色权限失败: ${String(e)}`, theme: 'error' });
     } finally {
@@ -167,6 +171,19 @@ export default function RoleManage() {
     setSubmitting(true);
     try {
       if (editingRoleId) {
+        const nameChanged = editOriginalRole && editForm.name !== editOriginalRole.name;
+        const typeChanged = editOriginalRole && editForm.role_type !== editOriginalRole.role_type;
+
+        if (nameChanged || typeChanged) {
+          await request(`/roles/${editingRoleId}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              ...(nameChanged ? { name: editForm.name } : {}),
+              ...(typeChanged ? { role_type: editForm.role_type } : {}),
+            }),
+          });
+        }
+
         const newPerms = editForm.permissions;
         const originalPerms = editOriginalPermissions;
 
@@ -210,6 +227,19 @@ export default function RoleManage() {
       });
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleAutoClassify = async () => {
+    setAutoClassifying(true);
+    try {
+      const result = await request<{ changed_count: number }>('/roles/auto-classify', { method: 'POST' });
+      Toast({ message: `已自动分类，共调整 ${result.changed_count} 个角色`, theme: 'success' });
+      await fetchRoles();
+    } catch (err) {
+      Toast({ message: `自动分类失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setAutoClassifying(false);
     }
   };
 
@@ -400,8 +430,11 @@ export default function RoleManage() {
 
   return (
     <div style={{ padding: 16, position: 'relative' }}>
-      <Button theme="primary" block style={{ marginBottom: 16 }} onClick={openCreate}>
+      <Button theme="primary" block style={{ marginBottom: 12 }} onClick={openCreate}>
         新建角色
+      </Button>
+      <Button theme="default" block style={{ marginBottom: 16 }} loading={autoClassifying} onClick={handleAutoClassify}>
+        按名称自动分类系统/项目角色
       </Button>
 
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: '#333' }}>系统角色</div>
@@ -478,32 +511,24 @@ export default function RoleManage() {
               />
             </FormItem>
 
-            {!editingRoleId ? (
-              <FormItem label="角色类型">
-                <div style={{ display: 'flex', gap: 8 }}>
-                  {(['project', 'system'] as const).map((t) => (
-                    <div
-                      key={t}
-                      onClick={() => setEditForm((p) => ({ ...p, role_type: t }))}
-                      style={{
-                        flex: 1, textAlign: 'center', padding: '8px 0', borderRadius: 6, cursor: 'pointer',
-                        fontSize: 13,
-                        background: editForm.role_type === t ? '#0052d9' : '#f5f5f5',
-                        color: editForm.role_type === t ? '#fff' : '#666',
-                      }}
-                    >
-                      {t === 'project' ? '项目角色' : '系统角色'}
-                    </div>
-                  ))}
-                </div>
-              </FormItem>
-            ) : (
-              <FormItem label="角色类型">
-                <span style={{ fontSize: 13, color: '#999' }}>
-                  {editForm.role_type === 'system' ? '系统角色' : '项目角色'}（创建后不可更改）
-                </span>
-              </FormItem>
-            )}
+            <FormItem label="角色类型">
+              <div style={{ display: 'flex', gap: 8 }}>
+                {(['project', 'system'] as const).map((t) => (
+                  <div
+                    key={t}
+                    onClick={() => setEditForm((p) => ({ ...p, role_type: t }))}
+                    style={{
+                      flex: 1, textAlign: 'center', padding: '8px 0', borderRadius: 6, cursor: 'pointer',
+                      fontSize: 13,
+                      background: editForm.role_type === t ? '#0052d9' : '#f5f5f5',
+                      color: editForm.role_type === t ? '#fff' : '#666',
+                    }}
+                  >
+                    {t === 'project' ? '项目角色' : '系统角色'}
+                  </div>
+                ))}
+              </div>
+            </FormItem>
 
             {editingRoleId && (
               <FormItem label="权限配置">
