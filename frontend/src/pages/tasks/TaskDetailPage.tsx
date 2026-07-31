@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog } from 'tdesign-mobile-react';
+import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Input, Form, FormItem } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import SafeHtml from '@/shared/components/SafeHtml';
@@ -9,9 +9,12 @@ import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
+import { uploadCommentAttachment } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { formatDateTime } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
+import { getProjectMembers } from '@/api/projects';
+import type { ProjectMember } from '@/api/projects';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -85,7 +88,7 @@ interface Attachment { path: string; size?: number; filename?: string; url?: str
 interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; }
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
-  ticket_type: string; project_name?: string;
+  ticket_type: string; project_name?: string; project_id?: string;
   created_by?: string; created_by_name?: string;
   assigned_to?: string; assigned_to_name?: string;
   reporter_name?: string; assignee_name?: string;
@@ -111,6 +114,12 @@ export default function TaskDetailPage() {
   const [showEscalatePopup, setShowEscalatePopup] = useState(false);
   const [resumeUser, setResumeUser] = useState<UserItem | null>(null);
   const [showResumePopup, setShowResumePopup] = useState(false);
+  const [reassignUser, setReassignUser] = useState<UserItem | null>(null);
+  const [showReassignPopup, setShowReassignPopup] = useState(false);
+  const [showReturnConfirmPopup, setShowReturnConfirmPopup] = useState(false);
+  const [escalateReason, setEscalateReason] = useState('');
+  const [returnReason, setReturnReason] = useState('');
+  const [reassignReason, setReassignReason] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
 
@@ -122,6 +131,9 @@ export default function TaskDetailPage() {
   // AI 摘要（后端定时写入评论，前端从评论提取展示）
   const [aiSummary, setAiSummary] = useState('');
 
+  // 项目成员（用于讨论区 @ 提及）
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+
   useEffect(() => {
     if (!detailId) { setDetail(null); return; }
     setDetailLoading(true);
@@ -131,19 +143,29 @@ export default function TaskDetailPage() {
         // 摘要存 metadata_info.ai_summary（不混入讨论区）
         const meta = t.metadata_info || {};
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
+
+        // 获取项目成员用于 @ 提及，提单人排第一
+        if (t.project_id) {
+          getProjectMembers(detailId)
+            .then((members) => {
+              const reporterUsername = t.created_by;
+              const sorted = [...members].sort((a, b) => {
+                if (a.username === reporterUsername) return -1;
+                if (b.username === reporterUsername) return 1;
+                return 0;
+              });
+              setProjectMembers(sorted);
+            })
+            .catch(() => setProjectMembers([]));
+        } else {
+          setProjectMembers([]);
+        }
       })
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
   }, [detailId]);
 
-  const getActionButtons = () => {
-    const status = detail?.status?.toLowerCase();
-    if (!status) return [];
-
-    const isClosed = status === 'closed';
-    const isCanceled = status === 'canceled' || status === 'cancelled';
-    if (isClosed || isCanceled) return [];
-
+  const getCurrentUserRoles = () => {
     const currentUsername = username;
     const currentName = name || username;
 
@@ -159,20 +181,36 @@ export default function TaskDetailPage() {
       (detail?.created_by_name && (detail.created_by_name === currentUsername || detail.created_by_name === currentName))
     );
 
+    return { isAssignee, isReporter };
+  };
+
+  const getActionButtons = () => {
+    const status = detail?.status?.toLowerCase();
+    if (!status) return [];
+
+    const isClosed = status === 'closed';
+    const isCanceled = status === 'canceled' || status === 'cancelled';
+    if (isClosed || isCanceled) return [];
+
+    const { isAssignee, isReporter } = getCurrentUserRoles();
+
     const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
     if (assigneeOnlyStatuses.includes(status) && !isAssignee) return [];
 
     if (status === 'resolved' && !isReporter) return [];
 
     const actions: Record<string, { label: string; nextStatus: string; theme: string; actionType?: string; customStyle?: Record<string, string> }[]> = {
-      new: [{ label: '开始处理', nextStatus: 'in_progress', theme: 'primary' }],
+      new: [{ label: '开始处理', nextStatus: 'in_progress', theme: 'primary', customStyle: { backgroundColor: '#0052d9', color: '#fff', borderRadius: '10px', border: 'none' } }],
       in_progress: [
         { label: '暂停任务', nextStatus: 'pending', theme: 'warning', customStyle: { backgroundColor: '#faad14', color: '#fff', borderRadius: '10px', border: 'none' } },
         { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: { backgroundColor: '#52c41a', color: '#fff', borderRadius: '10px', border: 'none' } },
       ],
-      pending: [{ label: '继续处理', nextStatus: 'in_progress', theme: 'primary', actionType: 'resume' }],
-      resolved: [{ label: '确认关闭', nextStatus: 'closed', theme: 'default' }],
-      canceled: [{ label: '重新打开', nextStatus: 'new', theme: 'primary' }],
+      pending: [{ label: '继续处理', nextStatus: 'in_progress', theme: 'primary', actionType: 'resume', customStyle: { backgroundColor: '#0052d9', color: '#fff', borderRadius: '10px', border: 'none' } }],
+      resolved: [
+        { label: '未解决', nextStatus: 'in_progress', theme: 'warning', customStyle: { backgroundColor: '#faad14', color: '#fff', borderRadius: '10px', border: 'none' } },
+        { label: '确认关闭', nextStatus: 'closed', theme: 'default', customStyle: { backgroundColor: '#1a1a1a', color: '#fff', borderRadius: '10px', border: 'none' } },
+      ],
+      canceled: [{ label: '重新打开', nextStatus: 'new', theme: 'primary', customStyle: { backgroundColor: '#0052d9', color: '#fff', borderRadius: '10px', border: 'none' } }],
     };
 
     return actions[status] || [];
@@ -188,7 +226,10 @@ export default function TaskDetailPage() {
       });
       setDetail(updated);
       refreshTasks();
-      Toast({ message: `状态已更新为${STATUS_DISPLAY_MAP[action.nextStatus] || action.nextStatus}`, theme: 'success' });
+      const operator = getOperatorLabel();
+      const statusLabel = STATUS_DISPLAY_MAP[action.nextStatus] || action.nextStatus;
+      await addOperationComment(`${operator} 将工单状态变更为「${statusLabel}」`);
+      Toast({ message: `状态已更新为${statusLabel}`, theme: 'success' });
     } catch (err) {
       Toast({ message: `状态更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
@@ -210,11 +251,13 @@ export default function TaskDetailPage() {
         });
       }
 
-      const refreshed = await request<Ticket>(`/${detail.id}?load_comments=true`, { skipCache: true });
-      setDetail(refreshed);
-      refreshTasks();
-      
+      const operator = getOperatorLabel();
       const target = resumeUser?.name || resumeUser?.username || '原处理人';
+      const actionDesc = resumeUser
+        ? `${operator} 继续处理工单，处理人变更为 ${target}`
+        : `${operator} 继续处理工单`;
+      await addOperationComment(actionDesc);
+      await refreshDetail();
       Toast({ message: `已继续处理，处理人${resumeUser ? `变更为 ${target}` : '保持不变'}`, theme: 'success' });
       setResumeUser(null);
       setShowResumePopup(false);
@@ -228,6 +271,10 @@ export default function TaskDetailPage() {
       Toast({ message: '请先选择升级对象', theme: 'warning' });
       return;
     }
+    if (!escalateReason.trim()) {
+      Toast({ message: '请填写变更原因', theme: 'warning' });
+      return;
+    }
     const target = escalateUser.name || escalateUser.username;
     try {
       await request(`/${t.id}`, {
@@ -237,22 +284,94 @@ export default function TaskDetailPage() {
         }),
       });
 
-      await request(`/${t.id}/comments`, {
-        method: 'POST',
-        body: JSON.stringify({
-          content: `工单已升级，处理人变更为 ${target}`,
-          is_public: true,
-        }),
-      });
+      const operator = getOperatorLabel();
+      await addOperationComment(`${operator} 将工单升级给 ${target}，原因：${escalateReason.trim()}`);
 
-      const refreshed = await request<Ticket>(`/${t.id}?load_comments=true`, { skipCache: true });
-      setDetail(refreshed);
-      refreshTasks();
+      await refreshDetail();
       Toast({ message: `已升级，处理人已变更为 ${target}`, theme: 'success' });
       setEscalateUser(null);
+      setEscalateReason('');
       setShowEscalatePopup(false);
     } catch (err) {
       Toast({ message: `升级失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
+
+  const getOperatorLabel = (): string => {
+    return name || username || '当前用户';
+  };
+
+  const addOperationComment = async (content: string) => {
+    if (!detail) return;
+    try {
+      await request(`/${detail.id}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ content, is_public: true }),
+      });
+    } catch { /* 评论记录失败不阻塞主流程 */ }
+  };
+
+  const refreshDetail = async () => {
+    if (!detailId) return;
+    const refreshed = await request<Ticket>(`/${detailId}?load_comments=true`, { skipCache: true });
+    setDetail(refreshed);
+    refreshTasks();
+  };
+
+  const handleReturn = async () => {
+    if (!detail) return;
+    if (!returnReason.trim()) {
+      Toast({ message: '请填写变更原因', theme: 'warning' });
+      return;
+    }
+    try {
+      const operator = getOperatorLabel();
+      const returnTo = detail.created_by_name || detail.reporter_name || detail.created_by || '创建人';
+
+      await request(`/${detail.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'pending' }),
+      });
+
+      if (detail.created_by) {
+        await request(`/${detail.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({ assigned_to: detail.created_by }),
+        });
+      }
+
+      await addOperationComment(`${operator} 将工单退回，原因：${returnReason.trim()}`);
+      await refreshDetail();
+      Toast({ message: `已退回工单，处理人变更为 ${returnTo}`, theme: 'success' });
+      setReturnReason('');
+      setShowReturnConfirmPopup(false);
+    } catch (err) {
+      Toast({ message: `退回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
+
+  const handleReassign = async () => {
+    if (!detail || !reassignUser) return;
+    if (!reassignReason.trim()) {
+      Toast({ message: '请填写变更原因', theme: 'warning' });
+      return;
+    }
+    const target = reassignUser.name || reassignUser.username;
+    try {
+      await request(`/${detail.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ assigned_to: reassignUser.id }),
+      });
+
+      const operator = getOperatorLabel();
+      await addOperationComment(`${operator} 将工单重新指派给 ${target}，原因：${reassignReason.trim()}`);
+      await refreshDetail();
+      Toast({ message: `已重新指派给 ${target}`, theme: 'success' });
+      setReassignUser(null);
+      setReassignReason('');
+      setShowReassignPopup(false);
+    } catch (err) {
+      Toast({ message: `重新指派失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
   };
 
@@ -298,6 +417,8 @@ export default function TaskDetailPage() {
     if (!detail) return;
     try {
       const updated = await request<Ticket>(`/${detail.id}`, { method: 'PUT', body: JSON.stringify(editForm) });
+      const operator = getOperatorLabel();
+      await addOperationComment(`${operator} 修改了工单信息`);
       Toast({ message: '修改成功', theme: 'success' });
       setEditing(false);
       refreshTasks();
@@ -314,16 +435,21 @@ export default function TaskDetailPage() {
   };
 
   // ── 普通评论：POST /api/tasks/{id}/comments；返回 true=成功（组件清空输入） ──
-  const handleAddComment = async (text: string): Promise<boolean> => {
+  const handleAddComment = async (text: string, files: File[] = []): Promise<boolean> => {
     if (!detail) {
       Toast({ message: '请输入评论内容', theme: 'warning' });
       return false;
     }
     setSubmittingComment(true);
     try {
+      // 上传附件
+      const tempId = crypto.randomUUID();
+      for (const f of files) {
+        await uploadCommentAttachment(f, tempId);
+      }
       const newComment = await request<Comment>(`/${detail.id}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ content: text, is_public: true }),
+        body: JSON.stringify({ content: text, is_public: true, attachments: files.length ? [tempId] : [] }),
       });
       const enrichedComment = {
         ...newComment,
@@ -335,7 +461,7 @@ export default function TaskDetailPage() {
         const updatedComments = prev.comments ? [...prev.comments, enrichedComment] : [enrichedComment];
         return { ...prev, comments: updatedComments };
       });
-      Toast({ message: '评论已添加', theme: 'success' });
+      Toast({ message: files.length ? '评论和附件已添加' : '评论已添加', theme: 'success' });
       return true;
     } catch (err) {
       Toast({ message: `添加评论失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -346,16 +472,21 @@ export default function TaskDetailPage() {
   };
 
   // ── @U老师 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
-  const handleAIDiscuss = async (text: string): Promise<boolean> => {
+  const handleAIDiscuss = async (text: string, files: File[] = []): Promise<boolean> => {
     if (!detail) return false;
     const userMsg = text;
     setAskingAI(true);
     try {
+      // 上传附件
+      const tempId = crypto.randomUUID();
+      for (const f of files) {
+        await uploadCommentAttachment(f, tempId);
+      }
       // 1. 先保存用户的 @U老师 消息到 task_comments
       try {
         const newComment = await request<Comment>(`/${detail.id}/comments`, {
           method: 'POST',
-          body: JSON.stringify({ content: userMsg, is_public: true }),
+          body: JSON.stringify({ content: userMsg, is_public: true, attachments: files.length ? [tempId] : [] }),
         });
         setDetail((prev) => {
           if (!prev) return prev;
@@ -394,11 +525,11 @@ export default function TaskDetailPage() {
   };
 
   // ── onSend：检测 @U老师 前缀决定走普通评论还是 AI 讨论 ──
-  const handleSendComment = async (text: string, _files: File[]): Promise<boolean> => {
+  const handleSendComment = async (text: string, files: File[]): Promise<boolean> => {
     if (text.startsWith('@U老师 ')) {
-      return handleAIDiscuss(text);
+      return handleAIDiscuss(text, files);
     }
-    return handleAddComment(text);
+    return handleAddComment(text, files);
   };
 
   // ── [帮我分析] → POST /api/ai/task/diagnose → 讨论区展示短链接 ──
@@ -531,8 +662,36 @@ export default function TaskDetailPage() {
             </div>
           </div>
           <h2 className="detail-card__title">{detail.title}</h2>
-          <DetailRow label="创建时间" value={formatDateTime(detail.created_at)} />
-          <DetailRow label="更新时间" value={formatDateTime(detail.updated_at)} />
+          <div className="detail-card__info-grid">
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon">👤</span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">创建人</span>
+                <span className="detail-info-item__value">{detail.created_by_name || detail.reporter_name || detail.created_by || '-'}</span>
+              </div>
+            </div>
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon">🎯</span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">处理人</span>
+                <span className="detail-info-item__value">{detail.assignee_name || detail.assigned_to_name || detail.assigned_to || '-'}</span>
+              </div>
+            </div>
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon">🕐</span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">创建时间</span>
+                <span className="detail-info-item__value">{formatDateTime(detail.created_at)}</span>
+              </div>
+            </div>
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon">🔄</span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">更新时间</span>
+                <span className="detail-info-item__value">{formatDateTime(detail.updated_at)}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="detail-card">
@@ -548,15 +707,6 @@ export default function TaskDetailPage() {
             <p style={{ color: '#999' }}>暂无摘要，U老师 将自动总结讨论进展</p>
           )}
         </div>
-
-        {(detail.contact || detail.reporter_name || detail.assignee_name || detail.created_by_name || detail.assigned_to_name) && (
-          <div className="detail-card">
-            <h4 className="detail-card__h">联系方式</h4>
-            {detail.contact && <DetailRow label="联系电话" value={detail.contact} />}
-            <DetailRow label="提交人" value={detail.reporter_name || detail.created_by_name || detail.created_by || '-'} />
-            <DetailRow label="处理人" value={detail.assignee_name || detail.assigned_to_name || detail.assigned_to || '-'} />
-          </div>
-        )}
 
         {detail.attachments && detail.attachments.length > 0 && (
           <div className="detail-card">
@@ -647,6 +797,8 @@ export default function TaskDetailPage() {
           onSend={handleSendComment}
           sending={submittingComment || askingAI}
           enableAI
+          enableAttach
+          mentionUsers={projectMembers}
           onMessagesClick={handleOpenReport}
           headerRight={
             <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing}>
@@ -659,11 +811,22 @@ export default function TaskDetailPage() {
           const status = detail.status?.toLowerCase();
           const isClosedOrCanceled = status === 'closed' || status === 'canceled' || status === 'cancelled';
           if (isClosedOrCanceled) return null;
+
+          const { isAssignee, isReporter } = getCurrentUserRoles();
+          const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
+          const showRoleActions = assigneeOnlyStatuses.includes(status) ? isAssignee : (status === 'resolved' ? isReporter : false);
+
           return (
             <div className="detail-actions">
               <div className="detail-actions__btns">
-                <Button size="small" theme="default" onClick={startEdit}>修改工单</Button>
-                <Button size="small" theme="danger" onClick={() => setShowEscalatePopup(true)}>升级上报</Button>
+                <Button size="small" theme="default" style={{ backgroundColor: '#333333', color: '#fff', border: 'none' }} onClick={startEdit}>修改工单</Button>
+                {showRoleActions && (
+                  <>
+                    <Button size="small" theme="default" style={{ backgroundColor: '#faad14', color: '#fff', border: 'none' }} onClick={() => setShowReturnConfirmPopup(true)}>退回工单</Button>
+                    <Button size="small" theme="default" style={{ backgroundColor: '#0052d9', color: '#fff', border: 'none' }} onClick={() => setShowReassignPopup(true)}>重新指派</Button>
+                    <Button size="small" theme="default" style={{ backgroundColor: '#d54941', color: '#fff', border: 'none' }} onClick={() => setShowEscalatePopup(true)}>升级上报</Button>
+                  </>
+                )}
               </div>
             </div>
           );
@@ -672,9 +835,26 @@ export default function TaskDetailPage() {
 
       <Popup visible={editing} onClose={() => setEditing(false)} placement="bottom" showOverlay>
         <div className="ticket-edit">
-          <h4>修改工单</h4>
-          <input className="tasks-search" value={editForm.title} onChange={(e) => setEditForm((p) => ({ ...p, title: e.target.value }))} placeholder="标题" />
-          <Textarea value={editForm.description} onChange={(v) => setEditForm((p) => ({ ...p, description: String(v) }))} autosize={{ minRows: 4, maxRows: 10 }} placeholder="描述" />
+          <h4 className="ticket-edit__title">修改工单</h4>
+          <Form key={`edit-${editing}`} initialData={{ title: editForm.title, description: editForm.description }}>
+            <FormItem label="标题" name="title" labelAlign="top">
+              <Input
+                value={editForm.title}
+                onChange={(v) => setEditForm((p) => ({ ...p, title: String(v) }))}
+                placeholder="请输入工单标题"
+                clearable
+              />
+            </FormItem>
+            <FormItem label="问题描述" name="description" labelAlign="top">
+              <Textarea
+                value={editForm.description}
+                onChange={(v) => setEditForm((p) => ({ ...p, description: String(v) }))}
+                placeholder="请详细描述问题..."
+                autosize={{ minRows: 4, maxRows: 10 }}
+                maxlength={2000}
+              />
+            </FormItem>
+          </Form>
           <div className="ticket-edit__btns">
             <Button theme="default" onClick={() => setEditing(false)}>取消</Button>
             <Button theme="primary" onClick={saveEdit}>保存</Button>
@@ -682,14 +862,25 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      <Popup visible={showEscalatePopup} onClose={() => setShowEscalatePopup(false)} placement="bottom" showOverlay>
+      <Popup visible={showEscalatePopup} onClose={() => { setShowEscalatePopup(false); setEscalateReason(''); }} placement="bottom" showOverlay>
         <div className="ticket-edit">
-          <h4>升级上报</h4>
+          <h4 className="ticket-edit__title">升级上报</h4>
           <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>请选择升级对象</p>
           <UserSelect value={escalateUser?.id ?? null} onChange={setEscalateUser} title="选择升级对象" />
+          <Form initialData={{}}>
+            <FormItem label="变更原因" name="escalateReason" labelAlign="top" requiredMark>
+              <Textarea
+                value={escalateReason}
+                onChange={(v) => setEscalateReason(String(v))}
+                placeholder="请输入升级原因（必填）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
           <div className="ticket-edit__btns">
-            <Button theme="default" onClick={() => setShowEscalatePopup(false)}>取消</Button>
-            <Button theme="danger" onClick={() => handleEscalate(detail!)}>确认升级</Button>
+            <Button theme="default" onClick={() => { setShowEscalatePopup(false); setEscalateReason(''); }}>取消</Button>
+            <Button theme="danger" onClick={() => handleEscalate(detail!)} disabled={!escalateUser || !escalateReason.trim()}>确认升级</Button>
           </div>
         </div>
       </Popup>
@@ -706,13 +897,61 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
+      <Popup visible={showReassignPopup} onClose={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); }} placement="bottom" showOverlay>
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">重新指派</h4>
+          <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>选择新的处理人</p>
+          <UserSelect value={reassignUser?.id ?? null} onChange={setReassignUser} placeholder="请选择处理人" title="选择处理人" />
+          <Form initialData={{}}>
+            <FormItem label="变更原因" name="reassignReason" labelAlign="top" requiredMark>
+              <Textarea
+                value={reassignReason}
+                onChange={(v) => setReassignReason(String(v))}
+                placeholder="请输入重新指派原因（必填）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
+          <div className="ticket-edit__btns">
+            <Button theme="default" onClick={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); }}>取消</Button>
+            <Button theme="primary" onClick={handleReassign} disabled={!reassignUser || !reassignReason.trim()}>确认指派</Button>
+          </div>
+        </div>
+      </Popup>
+
+      <Popup visible={showReturnConfirmPopup} onClose={() => { setShowReturnConfirmPopup(false); setReturnReason(''); }} placement="bottom" showOverlay>
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">退回工单</h4>
+          <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
+            确定要将此工单退回吗？<br />
+            退回后工单状态将变更为<span style={{ color: '#faad14', fontWeight: 500 }}>挂起</span>，处理人变更为创建人。
+          </p>
+          <Form initialData={{}}>
+            <FormItem label="变更原因" name="returnReason" labelAlign="top" requiredMark>
+              <Textarea
+                value={returnReason}
+                onChange={(v) => setReturnReason(String(v))}
+                placeholder="请输入退回原因（必填）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
+          <div className="ticket-edit__btns">
+            <Button theme="default" onClick={() => { setShowReturnConfirmPopup(false); setReturnReason(''); }}>取消</Button>
+            <Button theme="danger" onClick={handleReturn} disabled={!returnReason.trim()}>确认退回</Button>
+          </div>
+        </div>
+      </Popup>
+
       <Dialog
         visible={reportVisible}
         title="🤖 U老师 诊断报告"
         confirmBtn="关闭"
         onConfirm={() => setReportVisible(false)}
       >
-        <div style={{ maxHeight: '60vh', overflowY: 'auto', textAlign: 'left', fontSize: 14, lineHeight: 1.8 }}>
+        <div className="markdown-body" style={{ maxHeight: '60vh', overflowY: 'auto', textAlign: 'left', fontSize: 14, lineHeight: 1.8 }}>
           {diagnosisReport ? (
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
               {diagnosisReport}

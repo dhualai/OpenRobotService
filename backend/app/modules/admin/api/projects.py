@@ -8,6 +8,7 @@ from typing import Optional, Dict, List
 from app.modules.admin.schemas_das.request_models import ProjectCreate, ProjectUpdate, ProjectResponse
 from app.modules.admin.services.project_service import project_service
 from app.modules.admin.services.risk_service import risk_service
+from app.modules.admin.services.transport_efficiency_service import transport_efficiency_service
 from app.modules.admin.services.permission_service import PermissionService
 from app.modules.admin.utils_das.config import security, DEBUG_MODE
 import logging
@@ -20,7 +21,7 @@ project_router = APIRouter(prefix="/projects", tags=["admin-projects"])
 @project_router.get("/", summary="获取项目列表")
 async def get_projects(
     skip: int = Query(0, ge=0, description="跳过的项目数"),
-    limit: int = Query(100, ge=1, le=1000, description="返回的项目数"),
+    limit: int = Query(999999999, ge=1, le=999999999, description="返回的项目数"),
     keyword: Optional[str] = Query(None, description="搜索关键词"),
     status: Optional[str] = Query(None, description="按状态过滤"),
     execution_status: Optional[str] = Query(None, description="按执行状态过滤"),
@@ -62,7 +63,9 @@ async def get_projects(
             
             task_execution_status = project_service.get_task_execution_status_7d(project_code)
             project["task_execution_status"] = task_execution_status
-            
+            project["task_execution_stats"] = project_service.get_task_execution_stats_7d(project_code)
+            project["latest_manual_switch_count"] = transport_efficiency_service.get_latest_manual_switch_count(project_code)
+
             for category, risks in custom_categories.items():
                 risk_summary.append(f"\n{category} ：{len(risks)}项")
                 for risk in risks:
@@ -153,7 +156,9 @@ async def get_my_projects(
             
             task_execution_status = project_service.get_task_execution_status_7d(project_code)
             project["task_execution_status"] = task_execution_status
-            
+            project["task_execution_stats"] = project_service.get_task_execution_stats_7d(project_code)
+            project["latest_manual_switch_count"] = transport_efficiency_service.get_latest_manual_switch_count(project_code)
+
             for category, risks in custom_categories.items():
                 risk_summary.append(f"\n{category} ：{len(risks)}项")
                 for risk in risks:

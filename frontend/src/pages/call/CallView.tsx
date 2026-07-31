@@ -1,6 +1,6 @@
 // 我要摇人 —— 全屏 AI 对话 + 左侧会话抽屉 + 右上角历史工单入口
 import { useState, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Navbar } from 'tdesign-mobile-react';
 
 import ChatPanel from '@/shared/components/ChatPanel';
@@ -16,9 +16,15 @@ const ACTIVE_STATUSES = ['new', 'in_progress', 'pending'];
 export default function CallView() {
   const [showHistory, setShowHistory] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
   useEffect(() => {
-    if ((location.state as { showHistory?: boolean })?.showHistory) setShowHistory(true);
-  }, [location.state]);
+    if ((location.state as { showHistory?: boolean })?.showHistory) {
+      setShowHistory(true);
+      // 消费后立即清空 location.state：React Router 的 state 底层是 history.state，
+      // 页面刷新后会残留，导致首屏一直停在历史工单列表（看起来像异常跳转）。
+      navigate(location.pathname, { replace: true, state: null });
+    }
+  }, [location.state, location.pathname, navigate]);
   const [unread, setUnread] = useState(0);
   const { tasksRefreshKey, drawerOpen, setDrawerOpen, conversationTitle } = useWorkbenchStore();
   const username = useAuthStore((s) => s.username);
@@ -35,22 +41,14 @@ export default function CallView() {
     })();
   }, [tasksRefreshKey, username, isAdmin]);
 
-  if (showHistory) {
-    return (
-      <div className="chat-view">
-        <Navbar title="历史工单" fixed leftArrow onLeftClick={() => setShowHistory(false)} />
-        <div className="page-container" style={{ paddingTop: 16, height: 'calc(100vh - 16px)', display: 'flex', flexDirection: 'column' }}>
-          <HistoryTickets showHeader={false} />
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="app-shell">
-      {/* 内容区（抽屉打开时右挤） */}
+      {/* 内容区（抽屉打开时右挤）。
+          ChatPanel 始终 mounted（showHistory 时 display:none 隐藏而非卸载，
+          避免切历史后回来消息丢失 */}
       <div className={`app-shell__content ${drawerOpen ? 'is-shifted' : ''}`}>
-        <div className="chat-view">
+        {/* 对话区（始终 mounted，showHistory 时隐藏） */}
+        <div className="chat-view" style={showHistory ? { display: 'none' } : undefined}>
           <Navbar
             title={<span className="call-navbar-title">{conversationTitle}</span>}
             fixed
@@ -82,6 +80,16 @@ export default function CallView() {
             <ChatPanel scene="call" />
           </div>
         </div>
+
+        {/* 历史工单区（showHistory 时显示，覆盖在对话区上方） */}
+        {showHistory && (
+          <div className="chat-view" style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 50, background: '#f5f5f5' }}>
+            <Navbar title="历史工单" fixed leftArrow onLeftClick={() => setShowHistory(false)} />
+            <div className="page-container" style={{ paddingTop: 16, height: 'calc(100vh - 16px)', display: 'flex', flexDirection: 'column' }}>
+              <HistoryTickets showHeader={false} />
+            </div>
+          </div>
+        )}
       </div>
       {/* 会话抽屉 + 遮罩 */}
       <ConversationDrawer visible={drawerOpen} onClose={() => setDrawerOpen(false)} />

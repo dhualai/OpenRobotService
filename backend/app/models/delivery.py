@@ -10,7 +10,7 @@
 含 7 张表：realtime_data / history_data / collection_data / project / risk /
 project_daily_report / project_license
 """
-from sqlalchemy import Column, Integer, BigInteger, String, Text, Index
+from sqlalchemy import Column, Integer, BigInteger, String, Text, Float, Index
 
 from app.models.base import Base
 
@@ -124,10 +124,12 @@ class Project(Base):
     controller_vendor = Column(String(30), nullable=True, comment='控制器选择')
     system_integration = Column(Text, nullable=True, comment='系统/外设对接(JSON数组)')
     server_deployment_status = Column(String(30), nullable=True, comment='服务器部署')
+    settlement_period = Column(String(20), nullable=True, comment='业绩核算期，格式YYYY-MM')
 
     __table_args__ = (
         Index('idx_project_code', 'code', unique=True),
         Index('idx_project_status', 'status'),
+        Index('idx_project_settlement_period', 'settlement_period'),
     )
 
     def __repr__(self):
@@ -198,6 +200,7 @@ class ProjectLicense(Base):
     license_code = Column(Text, nullable=False, comment='授权码')
     applicant = Column(String(50), nullable=False, comment='申请人')
     applicant_id = Column(String(20), nullable=False, comment='申请人ID')
+    max_vehicles = Column(Integer, nullable=True, comment='允许最大车数，为空表示不限制')
     created_at = Column(String(30), nullable=False, comment='创建时间')
 
     __table_args__ = (
@@ -208,3 +211,54 @@ class ProjectLicense(Base):
 
     def __repr__(self):
         return f"<ProjectLicense(id={self.id}, project_code='{self.project_code}', license_code='{self.license_code}')>"
+
+
+class ProjectTransportEfficiency(Base):
+    __tablename__ = 'project_transport_efficiency'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_code = Column(String(50), nullable=False, comment='项目代码')
+    report_date = Column(String(20), nullable=False, comment='数据日期')
+    total_tasks = Column(Integer, nullable=True, comment='总任务数')
+    carry_task_count = Column(Integer, nullable=True, comment='搬运任务数量')
+    effective_work_hours = Column(Float, nullable=True, comment='有效工作时长(小时)')
+    fault_hours = Column(Float, nullable=True, comment='机器人故障时长(小时)')
+    idle_hours = Column(Float, nullable=True, comment='空闲无任务时间(小时)')
+    avg_error_count = Column(Float, nullable=True, comment='平均错误次数')
+    avg_fault_duration_minutes = Column(Float, nullable=True, comment='平均单次故障时间(分钟)')
+    avg_carry_duration_minutes = Column(Float, nullable=True, comment='平均单次搬运任务时间(分钟)')
+    avg_manual_switch_count = Column(Float, nullable=True, comment='平均切手动次数')
+    manual_intervention_rate = Column(Float, nullable=True, comment='人工干预率(0-1小数)')
+    created_at = Column(String(30), nullable=False, comment='创建时间')
+    updated_at = Column(String(30), nullable=True, comment='更新时间')
+
+    __table_args__ = (
+        Index('idx_te_project_date', 'project_code', 'report_date', unique=True),
+    )
+
+    def __repr__(self):
+        return f"<ProjectTransportEfficiency(id={self.id}, project_code='{self.project_code}', report_date='{self.report_date}')>"
+
+
+class ProjectTransportEfficiencyRobot(Base):
+    __tablename__ = 'project_transport_efficiency_robot'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_code = Column(String(50), nullable=False, comment='项目代码')
+    report_date = Column(String(20), nullable=False, comment='数据日期')
+    robot_model = Column(String(50), nullable=False, comment='AGV机器人型号')
+    carry_task_total = Column(Integer, nullable=True, comment='搬运任务总数(个)')
+    effective_work_hours = Column(Float, nullable=True, comment='有效工作时长(h)')
+    effective_efficiency = Column(Float, nullable=True, comment='有效搬运效率(小时/个)')
+    fault_hours = Column(Float, nullable=True, comment='机器人故障时间(小时)')
+    idle_hours = Column(Float, nullable=True, comment='无工作时间(小时)')
+    avg_fault_duration_minutes = Column(Float, nullable=True, comment='平均单次故障(分钟)')
+    avg_carry_duration_minutes = Column(Float, nullable=True, comment='平均单次搬运时间(分钟)')
+    created_at = Column(String(30), nullable=False, comment='创建时间')
+
+    __table_args__ = (
+        Index('idx_ter_project_date_model', 'project_code', 'report_date', 'robot_model', unique=True),
+    )
+
+    def __repr__(self):
+        return f"<ProjectTransportEfficiencyRobot(id={self.id}, project_code='{self.project_code}', report_date='{self.report_date}', robot_model='{self.robot_model}')>"

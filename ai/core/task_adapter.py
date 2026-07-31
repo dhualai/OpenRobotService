@@ -180,6 +180,9 @@ def upsert_task(ticket: dict, created_by: str = "") -> Task:
             existing.priority = fields["priority"]
             existing.attachments = fields["attachments"]
             existing.metadata_info = fields["metadata_info"]
+            # 如果传入的 created_by 非空且比已有值更准确（非 system/unknown），则更新
+            if created_by and existing.created_by in ("system", "unknown", ""):
+                existing.created_by = created_by
             db.commit()
             db.refresh(existing)
             return existing

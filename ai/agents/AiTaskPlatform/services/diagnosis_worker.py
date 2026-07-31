@@ -7,7 +7,7 @@
   - 逐工单异步诊断（不并行——避免 LLM 并发过载）
 
 "是否被诊断过"的判断依据：
-  SELECT 1 FROM task_comments WHERE task_id = X AND created_by = '小U'
+  SELECT 1 FROM task_comments WHERE task_id = X AND created_by = 'U老师'
 """
 
 import asyncio
@@ -26,14 +26,14 @@ logger = get_logger("TASK_AGENT")
 
 
 def _is_diagnosed(task_id: int) -> bool:
-    """查询 task_comments 表：此工单是否已有小U诊断评论。"""
+    """查询 task_comments 表：此工单是否已有U老师诊断评论。"""
     from app.models.task import TaskComment
     from app.core.db import SessionLocal
     db = SessionLocal()
     try:
         return db.query(TaskComment).filter(
             TaskComment.task_id == task_id,
-            TaskComment.created_by == "小U",
+            TaskComment.created_by == "U老师",
         ).first() is not None
     finally:
         db.close()
@@ -184,13 +184,13 @@ def _extract_solution_text(task_id: int) -> tuple[str, str]:
         solution_steps = ""
         for c in comments:
             content = c.content or ""
-            # 取小U诊断评论作为根因
-            if c.created_by == "小U" and "根因分析" in content and not root_cause:
+            # 取U老师诊断评论作为根因
+            if c.created_by == "U老师" and "根因分析" in content and not root_cause:
                 m = re.search(r"\*\*根因分析[：:]\*\*\s*(.+?)(?=\n\*\*|\n##|$)", content, re.DOTALL)
                 if m:
                     root_cause = m.group(1).strip()[:500]
             # 取最后的人类评论（可能的解决描述）
-            if c.created_by != "小U" and not solution_steps:
+            if c.created_by != "U老师" and not solution_steps:
                 if len(content) > 10:
                     solution_steps = content[:500]
         return root_cause or "无", solution_steps or "无"
