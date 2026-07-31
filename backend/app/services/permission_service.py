@@ -54,7 +54,7 @@ class PermissionService:
             roles = db.execute(user_project_roles.select().where(
                 user_project_roles.c.user_id.in_(user_ids)
             )).fetchall()
-            
+
             all_roles = {}
             for role in roles:
                 if role.user_id not in all_roles:
@@ -63,12 +63,33 @@ class PermissionService:
                 if project_id not in all_roles[role.user_id]:
                     all_roles[role.user_id][project_id] = []
                 all_roles[role.user_id][project_id].append(role.role_id)
-            
+
             for user_id in user_ids:
                 if user_id not in all_roles:
                     all_roles[user_id] = {}
-            
+
             return all_roles
+        finally:
+            db.close()
+
+    @staticmethod
+    def get_all_users_project_role_relations(user_ids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+        """批量返回用户的项目角色关系（含 report_to_id），供前端构建汇报树。"""
+        db = PermissionService._get_db()
+        try:
+            roles = db.execute(user_project_roles.select().where(
+                user_project_roles.c.user_id.in_(user_ids)
+            )).fetchall()
+            relations: Dict[str, List[Dict[str, Any]]] = {}
+            for role in roles:
+                relations.setdefault(role.user_id, []).append({
+                    'project_id': role.project_id or 'global',
+                    'role_id': role.role_id,
+                    'report_to_id': getattr(role, 'report_to_id', None),
+                })
+            for user_id in user_ids:
+                relations.setdefault(user_id, [])
+            return relations
         finally:
             db.close()
 
