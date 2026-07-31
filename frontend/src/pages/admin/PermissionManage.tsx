@@ -78,7 +78,7 @@ export default function PermissionManage() {
           }
         });
         if (Object.keys(changedFields).length === 0) {
-          Toast({ message: '未检测到修改', theme: 'info' });
+          Toast({ message: '未检测到修改', theme: 'warning' });
           setDialogVisible(false);
           return;
         }
