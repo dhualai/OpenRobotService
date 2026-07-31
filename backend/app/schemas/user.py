@@ -59,6 +59,8 @@ class User(UserBase):
     responsibility_modules: Optional[Dict[str, List[str]]] = None
     job_level: Optional[int] = 1
     duty_text: Optional[str] = None
+    # 用户在项目中的角色关系（含汇报人 report_to_id），用于前端构建汇报树
+    project_role_relations: List[Dict[str, Any]] = []
     class Config:
         from_attributes = True
 
