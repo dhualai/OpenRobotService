@@ -13,16 +13,17 @@ interface Props {
 }
 
 export default function ConversationDrawer({ visible, onClose }: Props) {
-  const { conversations, conversationId, refreshConversations, deleteConversation, renameConversation, setConversationId } = useWorkbenchStore();
+  const { conversations, conversationId, refreshConversations, deleteConversation, renameConversation, setConversationId, requestNewConversation } = useWorkbenchStore();
   const [renaming, setRenaming] = useState<Conversation | null>(null);
   const [renameText, setRenameText] = useState('');
   const [deleting, setDeleting] = useState<Conversation | null>(null);
 
   useEffect(() => { if (visible) refreshConversations(); }, [visible, refreshConversations]);
 
-  // 新建会话：清空当前 → ChatPanel 新建（延迟创建，首条消息时入库）
+  // 新建会话：清空当前 → ChatPanel 新建（延迟创建，首条消息时入库）。
+  // 用 requestNewConversation 标记「显式新建」，使进入页逻辑不会把空白新会话覆盖成最近会话。
   const handleNew = () => {
-    setConversationId(null);
+    requestNewConversation();
     onClose();
   };
 
