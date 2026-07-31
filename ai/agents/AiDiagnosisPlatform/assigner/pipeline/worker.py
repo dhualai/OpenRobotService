@@ -166,6 +166,7 @@ class AssignmentWorker:
             from app.models.task import Task, TaskStatus
             from app.models.identity import UserDB
             from app.core.db import SessionLocal
+            from sqlalchemy import func
 
             db = SessionLocal()
             try:
@@ -196,7 +197,7 @@ class AssignmentWorker:
                 task.assigned_to = username or result.engineer_name
                 if task.assigned_to:
                     task.status = TaskStatus.IN_PROGRESS
-                task.updated_at = datetime.utcnow()
+                task.updated_at = func.now()
 
                 # 派单详情写入 metadata_info
                 meta = task.metadata_info or {}

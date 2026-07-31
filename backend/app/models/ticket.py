@@ -1,6 +1,6 @@
 """工单 ORM 模型"""
 from datetime import datetime
-from sqlalchemy import String, Integer, Text, DateTime, Enum, JSON
+from sqlalchemy import String, Integer, Text, DateTime, Enum, JSON, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base
 
@@ -52,5 +52,5 @@ class Ticket(Base):
     preferred_response: Mapped[str] = mapped_column(String(10), default="", comment="电话/现场/线上")
 
     # ── 时间戳 ──
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
