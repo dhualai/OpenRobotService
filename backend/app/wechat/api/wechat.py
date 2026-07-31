@@ -26,6 +26,8 @@ from app.wechat.services.project_ticket_service import project_ticket_service
 from app.wechat.utils.qrcode import process_qrcode_content, decompress_data
 from app.wechat.utils.opt_logger import log_operation
 from app.services.hmac_utils import generate_password, chinese_to_pinyin, get_password_hash, verify_password
+from app.services.user_service import user_service
+from app.core.database import db_manager
 from app.wechat.services.permission_service import PermissionService
 from app.wechat.api.match_report import parse_daily_report
 from app.modules.admin.services.daily_report_service import daily_report_service
@@ -64,6 +66,103 @@ def resolve_callback_target(state: Optional[str], scheme: str, netloc: str) -> s
     else:
         processed_path = '/app/call'
     return f"{scheme}://{netloc}{processed_path}"
+
+
+class _InMemoryUploadFile:
+    """适配 ResourceService.create_resource 的内存文件对象（模拟 starlette UploadFile）。
+
+    create_resource 仅读取 file.filename / file.content_type / await file.read()，
+    用这个轻量包装即可把下载到的头像字节喂给它，无需走真实 multipart 上传。
+    """
+
+    def __init__(self, content: bytes, filename: str, content_type: str):
+        self._content = content
+        self.filename = filename
+        self.content_type = content_type
+
+    async def read(self):
+        return self._content
+
+
+async def _create_avatar_resource(openid: str, image_bytes: bytes, content_type: str, nickname: Optional[str]) -> Optional[int]:
+    """把头像字节建成一条 resources 记录，返回资源 id；失败返回 None。"""
+    try:
+        from app.core.db import AsyncSessionLocal
+        from app.modules.admin.resource_manager.services.resource_service import ResourceService
+        from app.modules.admin.resource_manager.models.resource import ResourceType
+
+        ext_map = {'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png',
+                   'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp'}
+        ext = ext_map.get(content_type.split(';')[0].strip().lower(), 'jpg')
+        filename = f"{openid}_avatar.{ext}"
+
+        upload_file = _InMemoryUploadFile(image_bytes, filename, content_type)
+        async with AsyncSessionLocal() as db:
+            resource = await ResourceService.create_resource(
+                db,
+                file=upload_file,
+                owner_id=openid,
+                resource_type=ResourceType.IMAGE,
+                category='avatar',
+                description=f'微信头像：{nickname or openid}',
+            )
+        return getattr(resource, 'id', None)
+    except Exception as e:
+        logger.error(f'创建微信头像资源失败: {e}', exc_info=True)
+        return None
+
+
+async def fetch_and_persist_wechat_user_profile(openid: str, sns_access_token: Optional[str]):
+    """拉取微信网页授权用户信息，昵称写入 users.name（仅当当前为空），头像下载后建资源写入 users.avatar_resource_id。
+
+    纯辅助流程：任何环节失败仅记日志，不影响主登录链路。
+    """
+    try:
+        if not sns_access_token:
+            logger.warning('未拿到网页授权 access_token，跳过微信用户资料拉取')
+            return
+
+        userinfo = await wechat_service.get_sns_userinfo(sns_access_token, openid)
+        if not userinfo or 'openid' not in userinfo:
+            logger.warning(f'拉取微信用户信息失败（可能 OAuth scope 非 snsapi_userinfo）: {userinfo}')
+            return
+
+        nickname = userinfo.get('nickname')
+        headimgurl = userinfo.get('headimgurl')
+
+        username = generate_wechat_username(openid)
+        user_detail = user_service.get_user_detail(username)
+        if not user_detail:
+            logger.warning(f'更新微信用户资料失败：用户不存在 {username}')
+            return
+
+        update_fields = {}
+        # 仅当用户尚未设置真实姓名时才用微信昵称填充，避免覆盖「@张三」手动绑定的姓名
+        if nickname and not (user_detail.get('name') or '').strip():
+            update_fields['name'] = nickname
+
+        if headimgurl:
+            download_result = await wechat_service.download_avatar(headimgurl)
+            if download_result:
+                image_bytes, content_type = download_result
+                resource_id = await _create_avatar_resource(openid, image_bytes, content_type, nickname)
+                if resource_id:
+                    update_fields['avatar_resource_id'] = resource_id
+                else:
+                    logger.warning(f'微信头像资源创建失败，跳过头像更新: {openid}')
+            else:
+                logger.warning(f'微信头像下载失败，跳过头像更新: {openid}')
+
+        if update_fields:
+            success = db_manager.update_user(user_detail['id'], **update_fields)
+            if success:
+                logger.info(f'已更新微信用户资料 {openid}: {list(update_fields.keys())}')
+            else:
+                logger.warning(f'更新微信用户资料失败 {openid}: {list(update_fields.keys())}')
+        else:
+            logger.info(f'微信用户资料无需更新 {openid}')
+    except Exception as e:
+        logger.error(f'拉取并保存微信用户资料异常: {e}', exc_info=True)
 
 
 @router.get("", response_class=PlainTextResponse)
@@ -490,7 +589,11 @@ async def wechat_callback(
         
         openid = auth_result['openid']
         logger.info(f"成功获取openid: {openid}")
-        
+
+        # 网页授权 access_token（sns/oauth2/access_token 返回，区别于基础 access_token），
+        # 用于后续 sns/userinfo 拉取昵称/头像；此处令牌最新，先缓存下来。
+        sns_access_token = auth_result.get('access_token')
+
         logger.info("开始创建用户登录态")
         
         token_result = auth_service.get_wechat_user_token(openid)
@@ -521,7 +624,10 @@ async def wechat_callback(
                 return templates.TemplateResponse("error.html", {"request": request, "error": "register_failed"})
         
         logger.info(f"成功获取用户token: {token}")
-        
+
+        # 用户已落库，best-effort 拉取并保存微信昵称/头像（失败不影响登录）
+        await fetch_and_persist_wechat_user_profile(openid, sns_access_token)
+
         logger.info("开始检查用户权限")
         permissions = auth_service.get_user_permissions(openid)
         

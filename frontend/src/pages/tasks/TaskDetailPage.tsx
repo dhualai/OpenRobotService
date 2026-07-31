@@ -165,14 +165,7 @@ export default function TaskDetailPage() {
       .finally(() => setDetailLoading(false));
   }, [detailId]);
 
-  const getActionButtons = () => {
-    const status = detail?.status?.toLowerCase();
-    if (!status) return [];
-
-    const isClosed = status === 'closed';
-    const isCanceled = status === 'canceled' || status === 'cancelled';
-    if (isClosed || isCanceled) return [];
-
+  const getCurrentUserRoles = () => {
     const currentUsername = username;
     const currentName = name || username;
 
@@ -187,6 +180,19 @@ export default function TaskDetailPage() {
       (detail?.reporter_name && (detail.reporter_name === currentUsername || detail.reporter_name === currentName)) ||
       (detail?.created_by_name && (detail.created_by_name === currentUsername || detail.created_by_name === currentName))
     );
+
+    return { isAssignee, isReporter };
+  };
+
+  const getActionButtons = () => {
+    const status = detail?.status?.toLowerCase();
+    if (!status) return [];
+
+    const isClosed = status === 'closed';
+    const isCanceled = status === 'canceled' || status === 'cancelled';
+    if (isClosed || isCanceled) return [];
+
+    const { isAssignee, isReporter } = getCurrentUserRoles();
 
     const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
     if (assigneeOnlyStatuses.includes(status) && !isAssignee) return [];
@@ -805,13 +811,22 @@ export default function TaskDetailPage() {
           const status = detail.status?.toLowerCase();
           const isClosedOrCanceled = status === 'closed' || status === 'canceled' || status === 'cancelled';
           if (isClosedOrCanceled) return null;
+
+          const { isAssignee, isReporter } = getCurrentUserRoles();
+          const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
+          const showRoleActions = assigneeOnlyStatuses.includes(status) ? isAssignee : (status === 'resolved' ? isReporter : false);
+
           return (
             <div className="detail-actions">
               <div className="detail-actions__btns">
-                <Button size="small" theme="default" style={{ backgroundColor: '#f5f5f5', color: '#555', border: 'none' }} onClick={startEdit}>修改工单</Button>
-                <Button size="small" theme="default" style={{ backgroundColor: '#faad14', color: '#fff', border: 'none' }} onClick={() => setShowReturnConfirmPopup(true)}>退回工单</Button>
-                <Button size="small" theme="default" style={{ backgroundColor: '#0052d9', color: '#fff', border: 'none' }} onClick={() => setShowReassignPopup(true)}>重新指派</Button>
-                <Button size="small" theme="default" style={{ backgroundColor: '#d54941', color: '#fff', border: 'none' }} onClick={() => setShowEscalatePopup(true)}>升级上报</Button>
+                <Button size="small" theme="default" style={{ backgroundColor: '#333333', color: '#fff', border: 'none' }} onClick={startEdit}>修改工单</Button>
+                {showRoleActions && (
+                  <>
+                    <Button size="small" theme="default" style={{ backgroundColor: '#faad14', color: '#fff', border: 'none' }} onClick={() => setShowReturnConfirmPopup(true)}>退回工单</Button>
+                    <Button size="small" theme="default" style={{ backgroundColor: '#0052d9', color: '#fff', border: 'none' }} onClick={() => setShowReassignPopup(true)}>重新指派</Button>
+                    <Button size="small" theme="default" style={{ backgroundColor: '#d54941', color: '#fff', border: 'none' }} onClick={() => setShowEscalatePopup(true)}>升级上报</Button>
+                  </>
+                )}
               </div>
             </div>
           );
