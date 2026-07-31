@@ -174,6 +174,70 @@ class IdentityService:
             db.close()
 
     @staticmethod
+    def update_role(role_id: str, name: Optional[str] = None, role_type: Optional[str] = None) -> bool:
+        db = IdentityService._get_db()
+        try:
+            role = db.query(Role).filter(Role.id == role_id).first()
+            if not role:
+                return False
+            if name is not None:
+                role.name = name
+            if role_type is not None:
+                role.role_type = role_type
+            db.commit()
+            return True
+        except Exception as e:
+            db.rollback()
+            print(f"更新角色失败: {str(e)}")
+            return False
+        finally:
+            db.close()
+
+    # 按角色名称关键词自动判断类型：系统角色（跨项目/平台级）优先匹配，其次项目角色；
+    # 未命中任何关键词的角色保持原有分类不变，避免误判。
+    _SYSTEM_ROLE_KEYWORDS = [
+        '管理员', '超级', '超管', 'admin', '运维', '系统', '平台', 'devops', '技术支持', '后台',
+    ]
+    _PROJECT_ROLE_KEYWORDS = [
+        '项目经理', '项目负责人', '现场', '实施', '工程师', '客户', '售后', '组长', '专员', '项目', 'pm',
+    ]
+
+    @staticmethod
+    def classify_role_type(name: str) -> Optional[str]:
+        lowered = (name or '').lower()
+        for kw in IdentityService._SYSTEM_ROLE_KEYWORDS:
+            if kw.lower() in lowered:
+                return 'system'
+        for kw in IdentityService._PROJECT_ROLE_KEYWORDS:
+            if kw.lower() in lowered:
+                return 'project'
+        return None
+
+    @staticmethod
+    def auto_classify_roles() -> List[Dict[str, str]]:
+        """按名称关键词批量重新分类所有角色，返回发生变更的角色列表（含 old_type/new_type）。"""
+        db = IdentityService._get_db()
+        changed: List[Dict[str, str]] = []
+        try:
+            for role in db.query(Role).all():
+                suggested = IdentityService.classify_role_type(role.name)
+                if suggested and suggested != role.role_type:
+                    changed.append({
+                        'id': role.id, 'name': role.name,
+                        'old_type': role.role_type, 'new_type': suggested,
+                    })
+                    role.role_type = suggested
+            if changed:
+                db.commit()
+            return changed
+        except Exception as e:
+            db.rollback()
+            print(f"自动分类角色失败: {str(e)}")
+            return []
+        finally:
+            db.close()
+
+    @staticmethod
     def delete_role(role_id: str) -> bool:
         db = IdentityService._get_db()
         try:
