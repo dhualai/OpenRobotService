@@ -401,12 +401,17 @@ def _maybe_notify_mentions(
         ticket_title = ticket.title or ""
         ticket_project = ticket.project_name or ""
 
-        # 按 name 匹配 → 拿到 username
+        # 按 @内容 匹配用户 → 先按 name 查，再按 username 查
         notified_usernames = []
-        for name in mentioned:
-            user = db.query(UserDB).filter(UserDB.name == name).first()
+        for mentioned_name in mentioned:
+            # 先按中文名匹配
+            user = db.query(UserDB).filter(UserDB.name == mentioned_name).first()
+            if not user:
+                # 回退按 username 匹配（前端可能插入的是 @username）
+                user = db.query(UserDB).filter(UserDB.username == mentioned_name).first()
             if user:
-                notified_usernames.append(user.username)
+                if user.username not in notified_usernames:
+                    notified_usernames.append(user.username)
 
         if not notified_usernames:
             return
@@ -418,20 +423,23 @@ def _maybe_notify_mentions(
         )
 
         from app.utils.notification_utils import NotificationUtils
-        # 在后台线程发通知，不阻塞主请求
         import asyncio
-        asyncio.ensure_future(
-            NotificationUtils.send_ticket_update_notification(
-                ticket_id=task_id,
-                title=ticket_title,
-                project_name=ticket_project,
-                update_content=f"operator:{operator}\n"
-                              f"mentioned:{','.join(notified_usernames)}",
-                operator=operator,
-                user_names=notified_usernames,
-                token=token,
-            )
-        )
+
+        async def _notify():
+            try:
+                await NotificationUtils.send_ticket_update_notification(
+                    ticket_id=task_id,
+                    title=ticket_title,
+                    project_name=ticket_project,
+                    update_content=f"comment_mentioned",
+                    operator=operator,
+                    user_names=notified_usernames,
+                    token=token,
+                )
+            except Exception as e:
+                logger.error(f"@mention 通知发送异常: {e}")
+
+        asyncio.create_task(_notify())
     finally:
         db.close()
 
