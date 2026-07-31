@@ -230,7 +230,7 @@ async def get_task_project_members(
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
-    """获取任务关联项目的成员列表（用于讨论区 @ 提及）。"""
+    """获取任务关联项目的成员列表 + 工单处理人（用于讨论区 @ 提及）。"""
     import logging
     logger = logging.getLogger(__name__)
 
@@ -238,26 +238,61 @@ async def get_task_project_members(
         ticket = await TicketService.get_ticket_by_id(db, task_id)
         if not ticket:
             raise HTTPException(status_code=404, detail="任务未找到")
-        project_id = getattr(ticket, "project_id", None)
-        if not project_id:
-            raise HTTPException(status_code=404, detail="任务未关联项目")
 
-        # 复用已有的 identity_service 查询（同步调用，数据量小可接受）
-        members = db_manager.get_project_members(project_id, include_usp=False)
-        seen = set()
         result = []
-        for m in members:
-            uname = (m.get("username") or "").strip()
-            if not uname or uname in seen:
-                continue
-            seen.add(uname)
-            name = m.get("name")
-            result.append(ProjectMemberResponse(
-                id=uname,
-                username=uname,
-                name=name if name else uname,  # name 为空时兜底显示 username
-                role_name=m.get("role_name"),
-            ))
+        seen = set()
+
+        project_id = getattr(ticket, "project_id", None)
+
+        # ── 1. 提单人和被指派人始终排在最前面 ──
+        key_users = []
+        assigned_to = getattr(ticket, "assigned_to", None)
+        created_by = getattr(ticket, "created_by", None)
+        if assigned_to:
+            key_users.append((assigned_to, "处理人"))
+        if created_by and created_by != assigned_to:
+            key_users.append((created_by, "提单人"))
+
+        if key_users:
+            from app.core.db import SessionLocal
+            from app.models.identity import UserDB
+            sync_db = SessionLocal()
+            try:
+                for uid_or_username, role_label in key_users:
+                    user = sync_db.query(UserDB).filter(
+                        (UserDB.username == uid_or_username) | (UserDB.id == uid_or_username)
+                    ).first()
+                    if user:
+                        uname = user.username or ""
+                        if uname and uname not in seen:
+                            seen.add(uname)
+                            result.append(ProjectMemberResponse(
+                                id=uname,
+                                username=uname,
+                                name=user.name or uname,
+                                role_name=role_label,
+                            ))
+            finally:
+                sync_db.close()
+
+        # ── 2. 提单人/处理人 + 项目成员 ──
+        # 即使没有项目也能 @ 提单人和处理人
+        if project_id:
+            members = db_manager.get_project_members(project_id, include_usp=False)
+            for m in members:
+                uname = (m.get("username") or "").strip()
+                if not uname or uname in seen:
+                    continue
+                seen.add(uname)
+                name = m.get("name")
+                result.append(ProjectMemberResponse(
+                    id=uname,
+                    username=uname,
+                    name=name if name else uname,
+                    role_name=m.get("role_name"),
+                ))
+
+        # 即使没有项目也能 @ 处理人
         return result
     except HTTPException:
         raise
