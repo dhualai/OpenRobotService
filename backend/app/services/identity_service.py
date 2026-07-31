@@ -555,7 +555,7 @@ class IdentityService:
 
             update_fields = {}
             for key, value in kwargs.items():
-                if key in ['name', 'description', 'resource_type', 'action', 'enabled'] and value is not None:
+                if key in ['code', 'name', 'description', 'resource_type', 'action', 'enabled'] and value is not None:
                     if key == 'enabled':
                         update_fields[key] = "true" if value else "false"
                     else:
