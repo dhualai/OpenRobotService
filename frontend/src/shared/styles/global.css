@@ -2081,11 +2081,12 @@ html, body, #root {
 }
 .detail-card__header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .detail-card__meta { display: flex; align-items: center; gap: 8px; }
+.detail-card__action-btns { display: flex; gap: 10px; flex-wrap: wrap; }
 .detail-card__action-btn,
 .detail-card__action-btn::before,
 .detail-card__action-btn::after,
 .detail-card__action-btn > * {
-  padding: 3px 10px !important;
+  padding: 2px 8px !important;
   border-radius: 10px !important;
   font-size: 12px !important;
   font-weight: 500 !important;
@@ -2230,9 +2231,12 @@ html, body, #root {
   word-break: break-word;
 }
 .detail-chat-bubble.is-self {
-  background: #0052d9;
-  color: #fff;
+  background: #e6f4ff;
+  color: #1a1a1a;
   border-radius: 12px 12px 0 12px;
+}
+.detail-chat-bubble.is-self * {
+  color: #1a1a1a;
 }
 .detail-chat-row:not(.is-right) .detail-chat-bubble {
   border-radius: 12px 12px 12px 0;
@@ -2244,7 +2248,7 @@ html, body, #root {
   opacity: 0.7;
 }
 .detail-chat-bubble.is-self .detail-chat-name {
-  color: rgba(255, 255, 255, 0.8);
+  color: #0052d9;
 }
 .detail-chat-time {
   font-size: 10px;
