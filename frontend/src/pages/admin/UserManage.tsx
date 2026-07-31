@@ -108,6 +108,11 @@ export default function UserManage() {
   const [detailUser, setDetailUser] = useState<User | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
+  // 名称查找表：把详情里的 id/code 解析成可读名称
+  const [roleNameMap, setRoleNameMap] = useState<Map<string, string>>(new Map());
+  const [projectNameMap, setProjectNameMap] = useState<Map<string, string>>(new Map());
+  const [permNameMap, setPermNameMap] = useState<Map<string, string>>(new Map());
+
   const request = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
 
   const fetchUsers = useCallback(async () => {
@@ -125,6 +130,33 @@ export default function UserManage() {
   useEffect(() => {
     fetchUsers();
   }, [fetchUsers]);
+
+  // 加载角色 / 项目 / 权限名称查找表（只读、可复用接口缓存）
+  useEffect(() => {
+    (async () => {
+      try {
+        const [rolesData, projectsData, permsData] = await Promise.all([
+          request<{ id: string; name: string }[]>('/roles/'),
+          request<{ id?: string; project_code: string; name: string }[]>('/projects/?limit=1000&include_analysis=false'),
+          request<{ id: string; code: string; name: string }[]>('/permissions/'),
+        ]);
+        const rMap = new Map<string, string>();
+        normalizeList<{ id: string; name: string }>(rolesData).forEach((r) => rMap.set(r.id, r.name));
+        const pMap = new Map<string, string>();
+        normalizeList<{ id?: string; project_code: string; name: string }>(projectsData).forEach((p) => {
+          pMap.set(p.project_code, p.name);
+          if (p.id) pMap.set(p.id, p.name);
+        });
+        const permMap = new Map<string, string>();
+        normalizeList<{ id: string; code: string; name: string }>(permsData).forEach((p) => permMap.set(p.code, p.name));
+        setRoleNameMap(rMap);
+        setProjectNameMap(pMap);
+        setPermNameMap(permMap);
+      } catch {
+        // 查找表加载失败时回退为显示原始 id/code
+      }
+    })();
+  }, [request]);
 
   const handleSearch = () => {
     setKeyword(keyword.trim());
@@ -823,7 +855,7 @@ export default function UserManage() {
                               marginRight: 4,
                             }}
                           >
-                            {roleId}
+                            {roleNameMap.get(roleId) || roleId}
                           </span>
                         ))}
                       </div>
@@ -849,7 +881,7 @@ export default function UserManage() {
                       }}
                     >
                       <span style={{ fontSize: 12, fontWeight: 500, color: '#0050b3' }}>
-                        项目 {projectId}
+                        项目 {projectNameMap.get(projectId) || projectId}
                       </span>
                       <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                         {Object.entries(rolesMap).map(([roleKey, perms]) => (
@@ -864,7 +896,7 @@ export default function UserManage() {
                               marginRight: 4,
                             }}
                           >
-                            {roleKey}
+                            {roleNameMap.get(roleKey) || roleKey}
                           </span>
                         ))}
                       </div>
@@ -888,10 +920,9 @@ export default function UserManage() {
                           borderRadius: 3,
                           background: '#fff0f0',
                           color: '#cf1322',
-                          fontFamily: 'monospace',
                         }}
                       >
-                        {perm}
+                        {permNameMap.get(perm) || perm}
                       </span>
                     ))}
                   </div>

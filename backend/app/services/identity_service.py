@@ -115,6 +115,8 @@ class IdentityService:
                 elif hasattr(db_user, key):
                     setattr(db_user, key, value)
             db.commit()
+            from app.services.user_service import UserService
+            UserService.invalidate_cache()
             return True
         except Exception as e:
             db.rollback()
