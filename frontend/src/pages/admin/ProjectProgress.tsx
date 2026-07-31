@@ -6,6 +6,12 @@ import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
 
+interface TaskExecutionStats {
+  total_tasks: number;
+  finished_tasks: number;
+  completion_rate: number | null;
+}
+
 interface ProjectItem {
   id: string;
   project_code: string;
@@ -16,6 +22,8 @@ interface ProjectItem {
   risks: number;
   project_summary: string;
   task_execution_status: string;
+  task_execution_stats?: TaskExecutionStats | null;
+  latest_manual_switch_count?: number | null;
   settlement_period?: string | null; // 业绩核算期，格式 YYYY-MM，来自企业微信同步
 }
 
@@ -160,6 +168,24 @@ export default function ProjectProgress() {
                 {p.project_code} · 项目经理: {p.project_manager || '未指定'}
               </div>
 
+              {/* 任务统计：任务总数 / 已完成任务 / 任务完成率 / 切手动次数 */}
+              <div style={{
+                marginTop: 10,
+                display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6,
+              }}>
+                <MiniStat label="任务总数" value={p.task_execution_stats?.total_tasks ?? '-'} />
+                <MiniStat label="已完成任务" value={p.task_execution_stats?.finished_tasks ?? '-'} />
+                <MiniStat
+                  label="任务完成率"
+                  value={
+                    p.task_execution_stats?.completion_rate != null
+                      ? `${Math.round(p.task_execution_stats.completion_rate * 100)}%`
+                      : '-'
+                  }
+                />
+                <MiniStat label="切手动次数" value={p.latest_manual_switch_count ?? '-'} />
+              </div>
+
               {/* 进度条简易展示 */}
               {hasRisk && (
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #f0f0f0' }}>
@@ -186,6 +212,15 @@ function StatCard({ label, value, color }: { label: string; value: number; color
     <div style={{ background: '#fff', borderRadius: 8, padding: '14px 12px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)', textAlign: 'center' }}>
       <div style={{ fontSize: 26, fontWeight: 700, color }}>{value}</div>
       <div style={{ fontSize: 13, color: '#999', marginTop: 2 }}>{label}</div>
+    </div>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div style={{ background: '#f7f8fa', borderRadius: 6, padding: '6px 4px', textAlign: 'center' }}>
+      <div style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>{value}</div>
+      <div style={{ fontSize: 10, color: '#999', marginTop: 2 }}>{label}</div>
     </div>
   );
 }
