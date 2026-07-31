@@ -53,6 +53,24 @@ class MinIOClient:
     def client(self) -> Minio:
         return self._client
 
+    @staticmethod
+    def _with_api_prefix(url: str) -> str:
+        """给预签名 URL 补上对象存储网关前缀（如生产的 /minio-api）。
+
+        预签名 URL 由 SDK 在本地签名生成，不经过上方 PoolManager 的路径重写，
+        因此生产环境下返回给浏览器的 URL 会缺 /minio-api 前缀，
+        直接访问被 nginx 404（图片裂图/文件下载失败）。此处显式补上。
+        签名仍然有效：nginx `location /minio-api/ { proxy_pass http://minio_api/; }`
+        会把前缀剥掉，MinIO 看到的仍是签名时的 /{bucket}/{object} 路径。
+        本地直连（MINIO_API_PREFIX 为空）时原样返回。
+        """
+        prefix = settings.MINIO_API_PREFIX or ''
+        if not prefix:
+            return url
+        parsed = urlparse(url)
+        path = parsed.path if parsed.path.startswith('/') else '/' + parsed.path
+        return urlunparse(parsed._replace(path=prefix + path))
+
     def get_presigned_url(
         self,
         object_path: str,
@@ -60,11 +78,11 @@ class MinIOClient:
     ) -> str:
         bucket_name = object_path.split('/')[0]
         object_name = '/'.join(object_path.split('/')[1:])
-        return self.client.presigned_get_object(
+        return self._with_api_prefix(self.client.presigned_get_object(
             bucket_name,
             object_name,
             expires=timedelta(minutes=expires_minutes)
-        )
+        ))
 
     def get_presigned_put_url(
         self,
@@ -73,11 +91,11 @@ class MinIOClient:
     ) -> str:
         bucket_name = object_path.split('/')[0]
         object_name = '/'.join(object_path.split('/')[1:])
-        return self.client.presigned_put_object(
+        return self._with_api_prefix(self.client.presigned_put_object(
             bucket_name,
             object_name,
             expires=timedelta(minutes=expires_minutes)
-        )
+        ))
 
     def upload_file(
         self,

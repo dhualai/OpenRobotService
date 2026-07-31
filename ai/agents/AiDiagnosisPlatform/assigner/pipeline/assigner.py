@@ -23,6 +23,7 @@
     【Step 4 规则决策】阈值判定: auto/recommend/fallback
 """
 
+import json, re
 from typing import Dict, List, Optional
 
 from ai.core.logging import get_logger
@@ -70,6 +71,16 @@ class Assigner:
             raise ValueError("工程师列表为空。请检查 users 表人员数据是否就绪。")
         if not ticket_context.problem_description and not ticket_context.title:
             raise ValueError("问题描述和标题均为空，无法推断责任模块。")
+
+        # ── Step -1: LLM 识别提单人是否指定了期望接单人 ──
+        preferred = await self._detect_preferred_assignee(ticket_context, engineer_profiles)
+        if preferred is not None:
+            self._log_assignment_result(
+                ticket=ticket_context, result=preferred,
+                candidates=engineer_profiles, ranked_scores={},
+                source="提单人指定",
+            )
+            return preferred
 
         # ── Step 0: 极保守部门过滤 ──
         candidates = self._dept_matcher.filter(
@@ -187,6 +198,98 @@ class Assigner:
             logger.info(f"派单排名 Top3: {' | '.join(rank_lines)}")
         else:
             logger.info("派单排名: 无候选排名数据")
+
+    # ── Step -1 实现: LLM 识别提单人期望 + 姓名匹配 ──
+    async def _detect_preferred_assignee(
+        self, ticket: TicketContext, engineers: List[EngineerProfile],
+    ) -> Optional[AssignmentResult]:
+        """LLM 识别提单人是否明确指定了期望接单人。
+
+        工单描述中常见表达：
+        - "这个给张三看一下" / "让李四处理" / "请王五帮忙看看"
+        - "转给赵六" / "最好是钱七来搞" / "这个问题周八比较熟"
+
+        Returns: 匹配成功返回 AssignmentResult，未指定/未匹配返回 None（继续走正常派单）。
+        """
+        text = f"标题: {ticket.title or ''}\n描述: {ticket.problem_description or ''}"
+        prompt = (
+            "分析以下工单内容，判断提单人是否明确表达了"希望由谁处理"的意图。\n"
+            "\n"
+            "典型表达（不限于此）：\n"
+            "- "这个给张三看一下" / "让李四处理" / "请王五帮忙看看"\n"
+            "- "转给赵六" / "最好是钱七来搞" / "这个问题周八比较熟"\n"
+            "- "找某某某" / "某某某有空吗" / "安排给某某某"\n"
+            "\n"
+            f"{text}\n"
+            "\n"
+            '输出 JSON：{"has_preference": true/false, "preferred_name": "姓名"}\n'
+            "has_preference=false 时 preferred_name 填 null。"
+        )
+
+        try:
+            from ai.core import get_llm_client
+            llm = await get_llm_client()
+            response = await llm.complete(prompt, max_tokens=120, temperature=0.1)
+        except Exception as e:
+            logger.warning(f"派单 Step -1 LLM 识别失败: {e}")
+            return None
+
+        m = re.search(r"\{.*\}", response, re.DOTALL)
+        if not m:
+            logger.debug(f"派单 Step -1 无 JSON，raw: {response[:150]}")
+            return None
+        try:
+            data = json.loads(m.group())
+        except json.JSONDecodeError:
+            logger.debug(f"派单 Step -1 JSON 解析失败，raw: {response[:200]}")
+            return None
+
+        if not data.get("has_preference"):
+            return None
+
+        preferred_name = (data.get("preferred_name") or "").strip()
+        if not preferred_name:
+            return None
+
+        # 匹配工程师名
+        matched = self._match_engineer_by_name(preferred_name, engineers)
+        if not matched:
+            logger.info(
+                f"派单 Step -1: 提单人指定 '{preferred_name}'，"
+                f"未匹配到工程师，走正常派单"
+            )
+            return None
+
+        logger.info(
+            f"派单 Step -1 [提单人指定]: '{preferred_name}'"
+            f" → {matched.name}({matched.id})"
+        )
+        return AssignmentResult(
+            engineer_id=matched.id,
+            engineer_name=matched.name,
+            confidence_score=0.95,
+            reasoning=f"提单人指定接单人: {preferred_name} → 匹配 {matched.name}",
+            decision_type="auto",
+        )
+
+    @staticmethod
+    def _match_engineer_by_name(
+        name: str, engineers: List[EngineerProfile],
+    ) -> Optional[EngineerProfile]:
+        """按姓名匹配工程师：精确 > 包含/被包含 > username"""
+        # 1. 精确匹配 name
+        for e in engineers:
+            if e.name == name:
+                return e
+        # 2. 包含匹配（"张三" 在 "张三丰" 里，或 "张三丰" 包含 "张三"）
+        for e in engineers:
+            if name in e.name or e.name in name:
+                return e
+        # 3. username 匹配
+        for e in engineers:
+            if e.username and name in e.username:
+                return e
+        return None
 
     def reload_config(self):
         self._config.reload()

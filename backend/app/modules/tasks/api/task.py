@@ -340,6 +340,7 @@ async def add_comment(
 ):
     try:
         username = current_user.get('username') if current_user else "system"
+        operator = current_user.get('name') or username
         comment = await TicketService.add_comment(db, task_id, comment_data, username, comment_attachment_map)
         if not comment:
             raise HTTPException(status_code=404, detail="任务未找到")
@@ -355,9 +356,79 @@ async def add_comment(
         )
         await db.commit()
 
+        # ── @mention 通知：检测评论中的 @用户名，排除 @U老师 ──
+        _maybe_notify_mentions(
+            task_id=task_id, content=comment_data.content,
+            operator=operator, token=current_user.get("token"),
+        )
+
         return comment
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"添加评论失败: {str(e)}")
+
+
+def _maybe_notify_mentions(
+    task_id: int, content: str, operator: str, token: Optional[str] = None,
+):
+    """检测评论中 @ 的用户名（排除 AI），发送通知"""
+    import re
+    import logging
+
+    ai_names = {"U老师", "小U", "AI助手"}
+    mentioned = set()
+    for m in re.finditer(r"@([\w一-鿿]+)", content):
+        name = m.group(1)
+        if name not in ai_names:
+            mentioned.add(name)
+    if not mentioned:
+        return
+
+    # 查本地 users 表解析 username
+    from app.core.db import SessionLocal
+    from app.models.identity import UserDB
+    from app.models.task import Task  # 同步 ORM 模型（非异步 session）
+
+    db = SessionLocal()
+    try:
+        ticket = db.query(Task).filter(Task.id == task_id).first()
+        if not ticket:
+            return
+        ticket_title = ticket.title or ""
+        ticket_project = ticket.project_name or ""
+
+        # 按 name 匹配 → 拿到 username
+        notified_usernames = []
+        for name in mentioned:
+            user = db.query(UserDB).filter(UserDB.name == name).first()
+            if user:
+                notified_usernames.append(user.username)
+
+        if not notified_usernames:
+            return
+
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"@mention 通知: task_id={task_id}, operator={operator}, "
+            f"mentioned={list(mentioned)}, notified={notified_usernames}"
+        )
+
+        from app.utils.notification_utils import NotificationUtils
+        # 在后台线程发通知，不阻塞主请求
+        import asyncio
+        asyncio.ensure_future(
+            NotificationUtils.send_ticket_update_notification(
+                ticket_id=task_id,
+                title=ticket_title,
+                project_name=ticket_project,
+                update_content=f"operator:{operator}\n"
+                              f"mentioned:{','.join(notified_usernames)}",
+                operator=operator,
+                user_names=notified_usernames,
+                token=token,
+            )
+        )
+    finally:
+        db.close()
 
 
 @router.get("/{task_id}/comments", response_model=List[TicketCommentResponse])
