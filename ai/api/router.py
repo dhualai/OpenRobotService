@@ -144,9 +144,8 @@ async def submit_ticket(
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
     username, _ = _current_user(request)
-    # 本地测试 / 无 token 时用 debug 用户名
-    if not username and get_ai_config().debug_assign_to_admin:
-        username = "debug_test_user"
+    if not username:
+        username = "unknown"
     try:
         result = await pipeline.submit(session_id=body.session_id, created_by=username)
         if "code" not in result:

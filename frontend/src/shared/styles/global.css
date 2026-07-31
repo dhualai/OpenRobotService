@@ -746,31 +746,15 @@ html, body, #root {
   cursor: zoom-in;
 }
 
-/* 通用图片灯箱（点击放大 + 复制 + 下载）：移动端 / PC 端通用 */
-.img-lightbox {
-  position: fixed;
-  inset: 0;
-  z-index: 3000;
-  background: rgba(0, 0, 0, 0.92);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  box-sizing: border-box;
-}
-.img-lightbox__img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  border-radius: 6px;
-  -webkit-user-select: none;
-  user-select: none;
-}
+/* 通用图片灯箱（TDesign ImageViewer + 自定义工具条）：移动端 / PC 端通用
+   交互（双指缩放/双击缩放/拖拽/单击关闭）由 .t-image-viewer 提供（其遮罩 z-index 1000~1006），
+   自定义工具条/提示需 fixed 且 z-index 更高才能浮在其上。 */
 .img-lightbox__toolbar {
-  position: absolute;
+  position: fixed;
   top: 0;
   left: 0;
   right: 0;
+  z-index: 1100;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -794,21 +778,25 @@ html, body, #root {
 .img-lightbox__btn:active {
   background: rgba(255, 255, 255, 0.3);
 }
-.img-lightbox__btn--close {
-  font-size: 18px;
-  padding: 9px 14px;
-}
 .img-lightbox__feedback {
-  position: absolute;
+  position: fixed;
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
+  z-index: 1100;
   background: rgba(0, 0, 0, 0.7);
   color: #fff;
   font-size: 14px;
   padding: 8px 16px;
   border-radius: 18px;
   white-space: nowrap;
+}
+/* 微信内置浏览器长按「保存图片」：图片需保持默认 callout（不得设为 none），
+   且预览地址必须是真实 http(s)/同域 URL（blob:/data: 微信无法二次下载会提示失败） */
+.t-image-viewer__img,
+.chat-bubble__img,
+.markdown-body .md-image {
+  -webkit-touch-callout: default;
 }
 /* AI 占位：呼吸点动画 */
 .chat-bubble__typing {
@@ -2244,17 +2232,6 @@ html, body, #root {
   flex-wrap: wrap;
   width: 100%;
 }
-/* 工单终态（已解决/已取消/已关闭）时替代操作按钮的提示行 */
-.detail-actions__tip {
-  width: 100%;
-  margin: 0;
-  padding: 10px 12px;
-  font-size: 12px;
-  color: #999;
-  text-align: center;
-  background: #f7f8fa;
-  border-radius: 8px;
-}
 .detail-actions__btns .t-button { color: #1a1a1a; font-size: 12px; font-weight: 400; background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
 .detail-actions__btns .t-button::after { display: none !important; content: none !important; }
 .detail-actions__btns .t-button .t-icon,
@@ -2345,9 +2322,27 @@ html, body, #root {
 }
 .detail-chat-input {
   display: flex;
+  flex-direction: column;
   gap: 8px;
   padding-top: 8px;
   border-top: 1px solid #f0f0f0;
+}
+.detail-chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.detail-chat-input-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.detail-chat-input-row .t-button {
+  padding: 0 10px;
+  font-size: 13px;
+  height: 32px;
+  min-width: auto;
 }
 .detail-chat-input-field {
   flex: 1;
@@ -2563,7 +2558,7 @@ html, body, #root {
 .history-row__actions .t-button { font-weight: 400; font-size: 12px; }
 
 /* ===== TicketDetailPage 评论附件上传 ===== */
-.detail-chat-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.detail-chat-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .detail-chat-file {
   display: inline-flex; align-items: center; gap: 4px;
   background: #f2f3f5; border-radius: 6px; padding: 4px 8px; font-size: 12px; color: #333;
