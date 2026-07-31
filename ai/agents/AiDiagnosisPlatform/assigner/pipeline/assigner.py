@@ -215,17 +215,17 @@ class Assigner:
         """
         text = f"标题: {ticket.title or ''}\n描述: {ticket.problem_description or ''}"
         prompt = (
-            "分析以下工单内容，判断提单人是否明确表达了"希望由谁处理"的意图。\n"
-            "\n"
-            "典型表达（不限于此）：\n"
-            "- "这个给张三看一下" / "让李四处理" / "请王五帮忙看看"\n"
-            "- "转给赵六" / "最好是钱七来搞" / "这个问题周八比较熟"\n"
-            "- "找某某某" / "某某某有空吗" / "安排给某某某"\n"
-            "\n"
-            f"{text}\n"
-            "\n"
+            '分析以下工单内容，判断提单人是否明确表达了"希望由谁处理"的意图。\n'
+            '\n'
+            '典型表达（不限于此）：\n'
+            '- “这个给张三看一下” / “让李四处理” / “请王五帮忙看看”\n'
+            '- “转给赵六” / “最好是钱七来搞” / “这个问题周八比较熟”\n'
+            '- “找某某某” / “某某某有空吗” / “安排给某某某”\n'
+            '\n'
+            f'{text}\n'
+            '\n'
             '输出 JSON：{"has_preference": true/false, "preferred_name": "姓名"}\n'
-            "has_preference=false 时 preferred_name 填 null。"
+            'has_preference=false 时 preferred_name 填 null。'
         )
 
         try:
