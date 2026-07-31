@@ -34,11 +34,20 @@ if str(_backend_dir) not in sys.path:
 from dotenv import load_dotenv
 load_dotenv(_project_root / "ai" / ".env")
 
-# ── SECRET_KEY/ALGORITHM 兜底 ──────────────────────────────────
+# ── SECRET_KEY/ALGORITHM 强制从 backend/.env 读（签发源）────────
 # decode_token（app.core.security）用 backend Settings.SECRET_KEY 验签 JWT（不是 ai/config.py 的 AIConfig）。
-# ai/.env 若未配或被部署覆盖成空，JWT 解析失败 → _current_user 返回空 → created_by=system。
-# 此处强制兜底（值与 backend/.env 一致），确保 JWT 可解析。
-# 注意：必须在 Settings 实例化（首次 decode_token 调用，惰性）前执行——此处是启动期，早于任何请求。
+# ai/.env 可能被部署覆盖成空/错误值，此处强制从 backend/.env（签发 token 的密钥源）读取覆盖，
+# 确保 decode_token 验签与后端签发一致（否则 _current_user 返回空 → created_by=空）。
+# 必须在 Settings 实例化（首次 decode_token 调用，惰性）前执行——此处是启动期，早于任何请求。
+from dotenv import dotenv_values
+_backend_env = _project_root / "backend" / ".env"
+if _backend_env.exists():
+    _vals = dotenv_values(_backend_env)
+    if _vals.get("SECRET_KEY"):
+        os.environ["SECRET_KEY"] = _vals["SECRET_KEY"]
+    if _vals.get("ALGORITHM"):
+        os.environ["ALGORITHM"] = _vals["ALGORITHM"]
+# 硬编码兜底（backend/.env 也不存在时）
 if not os.environ.get("SECRET_KEY"):
     os.environ["SECRET_KEY"] = "change-me-to-a-random-long-secret"
 if not os.environ.get("ALGORITHM"):
