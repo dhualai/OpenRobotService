@@ -763,7 +763,7 @@ export default function TaskDetailPage() {
               <div className="detail-actions__btns">
                 <Button size="small" theme="default" onClick={startEdit}>修改工单</Button>
                 <Button size="small" theme="danger" onClick={() => setShowEscalatePopup(true)}>升级上报</Button>
-                <Button size="small" theme="warning" onClick={() => setShowReturnConfirmPopup(true)}>退回工单</Button>
+                <Button size="small" theme="danger" onClick={() => setShowReturnConfirmPopup(true)}>退回工单</Button>
                 <Button size="small" theme="primary" onClick={() => setShowReassignPopup(true)}>重新指派</Button>
               </div>
             </div>
@@ -828,7 +828,7 @@ export default function TaskDetailPage() {
           </p>
           <div className="ticket-edit__btns">
             <Button theme="default" onClick={() => setShowReturnConfirmPopup(false)}>取消</Button>
-            <Button theme="warning" onClick={handleReturn}>确认退回</Button>
+            <Button theme="danger" onClick={handleReturn}>确认退回</Button>
           </div>
         </div>
       </Popup>
