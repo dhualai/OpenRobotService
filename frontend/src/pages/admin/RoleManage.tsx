@@ -45,8 +45,6 @@ export default function RoleManage() {
   const [allPermissions, setAllPermissions] = useState<Permission[]>([]);
   const [permLoading, setPermLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [autoClassifying, setAutoClassifying] = useState(false);
-
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({
     visible: false,
     x: 0,
@@ -227,19 +225,6 @@ export default function RoleManage() {
       });
     } finally {
       setSubmitting(false);
-    }
-  };
-
-  const handleAutoClassify = async () => {
-    setAutoClassifying(true);
-    try {
-      const result = await request<{ changed_count: number }>('/roles/auto-classify', { method: 'POST' });
-      Toast({ message: `已自动分类，共调整 ${result.changed_count} 个角色`, theme: 'success' });
-      await fetchRoles();
-    } catch (err) {
-      Toast({ message: `自动分类失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    } finally {
-      setAutoClassifying(false);
     }
   };
 
@@ -433,10 +418,6 @@ export default function RoleManage() {
       <Button theme="primary" block style={{ marginBottom: 12 }} onClick={openCreate}>
         新建角色
       </Button>
-      <Button theme="default" block style={{ marginBottom: 16 }} loading={autoClassifying} onClick={handleAutoClassify}>
-        按名称自动分类系统/项目角色
-      </Button>
-
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: '#333' }}>系统角色</div>
       {systemRoles.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 20, color: '#999', fontSize: 13 }}>暂无系统角色</div>
