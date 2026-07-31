@@ -55,10 +55,14 @@ export interface WorkbenchState {
   conversationId: number | null;
   conversationTitle: string;
   drawerOpen: boolean;
+  /** 用户是否显式点了「新建会话」——为 true 时进入页不自动选最近会话（保持其空白新会话） */
+  pendingNewConversation: boolean;
   refreshConversations: () => Promise<void>;
   setConversationId: (id: number | null) => void;
   setConversationTitle: (title: string) => void;
   setDrawerOpen: (open: boolean) => void;
+  /** 显式新建会话：清空当前并标记 pendingNewConversation（区别于「登录/进入页无选择」） */
+  requestNewConversation: () => void;
   deleteConversation: (id: number) => Promise<boolean>;
   renameConversation: (id: number, title: string) => Promise<void>;
 }
@@ -104,15 +108,19 @@ export const useWorkbenchStore = create<WorkbenchState>((set, get) => ({
   conversationId: null,
   conversationTitle: '新建会话',
   drawerOpen: false,
+  pendingNewConversation: false,
   refreshConversations: async () => {
     try {
       const list = await listMyConversations('call', 50);
       set({ conversations: list });
     } catch { /* ignore */ }
   },
-  setConversationId: (id) => set({ conversationId: id }),
+  // 设定当前会话：一旦选定具体会话（id 非 null），即视为离开「新建会话」态，清除 pending 标记；
+  // id 为 null 时保留原 pending 值（仅 requestNewConversation 会置 true）。
+  setConversationId: (id) => set((s) => ({ conversationId: id, pendingNewConversation: id === null ? s.pendingNewConversation : false })),
   setConversationTitle: (title) => set({ conversationTitle: title }),
   setDrawerOpen: (open) => set({ drawerOpen: open }),
+  requestNewConversation: () => set({ conversationId: null, pendingNewConversation: true, conversationTitle: '新建会话' }),
   deleteConversation: async (id) => {
     let ok = false;
     try { await apiDeleteConv(id); ok = true; } catch { /* ignore */ }
