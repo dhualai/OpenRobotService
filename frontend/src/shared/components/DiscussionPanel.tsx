@@ -194,21 +194,27 @@ export default function DiscussionPanel({
     }
   };
 
-  // ── 粘贴图片：从剪贴板提取图片文件，加入待发送列表 ──
+  // ── 粘贴文件/图片：从剪贴板提取文件，加入待发送列表 ──
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items;
     if (!items) return;
-    const imageFiles: File[] = [];
+    const pastedFiles: File[] = [];
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      if (item.type.startsWith('image/')) {
+      if (item.kind === 'file') {
         const file = item.getAsFile();
-        if (file) imageFiles.push(file);
+        if (file) pastedFiles.push(file);
       }
     }
-    if (imageFiles.length > 0) {
-      e.preventDefault(); // 不把图片二进制插入 textarea
-      setPendingFiles((prev) => [...prev, ...imageFiles]);
+    // 优先从 files 属性获取（文件管理器复制场景）
+    if (pastedFiles.length === 0 && e.clipboardData.files.length > 0) {
+      for (let i = 0; i < e.clipboardData.files.length; i++) {
+        pastedFiles.push(e.clipboardData.files[i]);
+      }
+    }
+    if (pastedFiles.length > 0) {
+      e.preventDefault();
+      setPendingFiles((prev) => [...prev, ...pastedFiles]);
     }
   };
 
@@ -276,49 +282,55 @@ export default function DiscussionPanel({
             ))}
           </div>
         )}
-        {enableAttach && pendingFiles.length > 0 && (
-          <div className="detail-chat-files">
-            {pendingFiles.map((f, i) => (
-              <span key={i} className="detail-chat-file">
-                <span className="detail-chat-file__name">{f.name}</span>
-                <button type="button" onClick={() => removeFile(i)} aria-label="移除">×</button>
-              </span>
-            ))}
+        {(enableAI || (enableAttach && pendingFiles.length > 0)) && (
+          <div className="detail-chat-toolbar">
+            {enableAI && (
+              <Button size="small" theme="default" onClick={handleAIClick} disabled={sending || disabled}>
+                @U老师
+              </Button>
+            )}
+            {enableAttach && pendingFiles.length > 0 && (
+              <div className="detail-chat-files">
+                {pendingFiles.map((f, i) => (
+                  <span key={i} className="detail-chat-file">
+                    <span className="detail-chat-file__name">{f.name}</span>
+                    <button type="button" onClick={() => removeFile(i)} aria-label="移除">×</button>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         )}
-        <textarea
-          ref={inputRef}
-          className="detail-chat-input-field"
-          value={commentText}
-          onChange={handleInputChange}
-          onKeyDown={handleInputKeyDown}
-          onPaste={handlePaste}
-          placeholder={disabled ? '工单号缺失，无法评论' : ph}
-          disabled={sending || disabled}
-          rows={1}
-        />
-        {enableAttach && (
-          <button
-            type="button"
-            className="detail-chat-attach"
-            onClick={() => fileInputRef.current?.click()}
+        <div className="detail-chat-input-row">
+          <textarea
+            ref={inputRef}
+            className="detail-chat-input-field"
+            value={commentText}
+            onChange={handleInputChange}
+            onKeyDown={handleInputKeyDown}
+            onPaste={handlePaste}
+            placeholder={disabled ? '工单号缺失，无法评论' : ph}
             disabled={sending || disabled}
-            aria-label="上传图片或文件"
-          >
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
-          </button>
-        )}
-        {enableAI && (
-          <Button size="small" theme="default" onClick={handleAIClick} disabled={sending || disabled}>
-            @U老师
+            rows={1}
+          />
+          {enableAttach && (
+            <button
+              type="button"
+              className="detail-chat-attach"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={sending || disabled}
+              aria-label="上传图片或文件"
+            >
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
+            </button>
+          )}
+          <Button size="small" theme="primary" onClick={handleSend} disabled={!canSend}>
+            {sending ? '发送中' : '发送'}
           </Button>
-        )}
-        <Button size="small" theme="primary" onClick={handleSend} disabled={!canSend}>
-          {sending ? '发送中' : '发送'}
-        </Button>
-        {enableAttach && (
-          <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={handleSelectFile} />
-        )}
+          {enableAttach && (
+            <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={handleSelectFile} />
+          )}
+        </div>
       </div>
     </div>
   );

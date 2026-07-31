@@ -8,9 +8,10 @@ import { useWorkbenchStore } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
 import { qaUpload, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, type TicketDraft } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
-import { createConversation, getConversation, listMyConversations, appendMessage, readAiSessionId } from '@/api/conversation';
+import { createConversation, getConversation, appendMessage, readAiSessionId } from '@/api/conversation';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
+import ImageLightbox from '@/shared/components/ImageLightbox';
 import SuggestedQuestions from '@/shared/components/SuggestedQuestions';
 import { pickRandomQuestions, matchQuestions } from '@/shared/data/suggestedQuestions';
 
@@ -261,11 +262,23 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 滚动跟随：仅在用户贴底时自动跟随；流式中瞬时置底（behavior:'auto'）避免 smooth 动画排队抖动
   const atBottomRef = useRef(true);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const prevCountRef = useRef(0); // 上一次消息条数：区分「新消息追加」与「内容增长」
   const scrollToBottom = useCallback(() => {
     if (!atBottomRef.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
   }, []);
-  useEffect(() => { scrollToBottom(); }, [messages, scrollToBottom]);
+  useEffect(() => {
+    // 新消息追加（条数增加：用户发送 / AI 占位气泡）→ 强制置底，让最新消息进入视野；
+    // 仅内容增长（流式 token / 编辑）→ 仅贴底时跟随，不打扰上滑看历史的用户。
+    const appended = messages.length > prevCountRef.current;
+    prevCountRef.current = messages.length;
+    if (appended) {
+      atBottomRef.current = true;
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+    } else {
+      scrollToBottom();
+    }
+  }, [messages, scrollToBottom]);
   // 监听用户滚动，判断是否贴底（上滑看历史时不强制拉回）
   useEffect(() => {
     const el = messagesContainerRef.current;
@@ -294,19 +307,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     return () => clearTimeout(timer);
   }, [input]);
 
-  // 挂载时恢复最近一条会话 → 设置 conversationId（由下方 effect 加载消息）
+  // 进入页默认起「新会话」：不再自动续接最近会话（旧会话改由左侧会话抽屉显式选择进入）。
+  // 挂载时把 conversationId 置 null → 下方加载 effect 走「新建会话」分支（清空消息、标题「新建会话」）。
   useEffect(() => {
     if (!token || !username) return;
-    if (chatContext) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const list = await listMyConversations(scene, 1);
-        if (cancelled || !list.length) return;
-        setConversationId(list[0].id);
-      } catch { /* ignore */ }
-    })();
-    return () => { cancelled = true; };
+    setConversationId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, username, scene]);
 
@@ -620,6 +625,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 先释放发送锁与 loading，再强制刷新最终内容，避免刷新异常时再次卡死发送
       setLoading(false);
       sendingRef.current = false;
+      // 回复完成：强制贴底，确保流式结束（Markdown 切换）后视图定位到最新消息，无需手动滑动
+      atBottomRef.current = true;
       // 强制刷新最终完整内容：流式结束前最后一次 flush 可能早于 90ms 窗口，确保末态不丢字
       renderAcc();
       // 置 streaming:false：流式结束，气泡由纯文本降级渲染切换为最终 MarkdownRenderer 渲染
@@ -636,6 +643,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const editAndResendRef = useRef(editAndResend);
   editAndResendRef.current = editAndResend;
   const handleEditSave = useCallback((msg: Message) => editAndResendRef.current(msg), []);
+  // 稳定 onEditChange / onEditCancel：内联箭头会让 MessageBubble 的 React.memo 失效（每次渲染新引用），
+  // 导致流式 flush 时整列表重渲染、页面闪烁。包成 useCallback 后历史气泡可跳过重渲染。
+  const handleEditChange = useCallback((id: string, v: string) => {
+    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: v } : m)));
+  }, []);
+  const handleEditCancel = useCallback(() => setEditingId(null), []);
 
   // voiceWillCancelRef 在 handleMove 中直接同步写入，不再通过 useEffect 异步同步
 
@@ -861,6 +874,29 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
+  /** PC 端粘贴图片：从剪贴板取 image/* 文件，走与「选择文件」一致的待发送附件流程（预览后可随消息上传） */
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind !== 'file' || !item.type.startsWith('image/')) continue;
+      const file = item.getAsFile();
+      if (!file) continue;
+      e.preventDefault(); // 阻止图片被当作 base64/文本塞进输入框
+      if (file.size > MAX_FILE_SIZE) {
+        const mb = (file.size / 1024 / 1024).toFixed(1);
+        Toast({ message: `「${file.name}」(${mb}MB) 超过 100MB 上限，请压缩后重试`, theme: 'error' });
+        return;
+      }
+      clearPendingFile();
+      setPendingFile(file);
+      setPendingImageUrl(URL.createObjectURL(file));
+      Toast({ message: '已粘贴图片，可直接发送', theme: 'success' });
+      return; // 只处理第一张图片
+    }
+  };
+
   /** 转工单（二次确认）：prepare 生成草稿 → 弹窗核对/补字段 → confirm 入库 */
   const handleSubmitTicket = async () => {
     if (submittingTicket || ticketConfirm.submitting) return;
@@ -985,9 +1021,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             onToggleReaction={toggleReaction}
             onCopy={copyContent}
             onEditStart={setEditingId}
-            onEditChange={(id, v) => setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: v } : m)))}
+            onEditChange={handleEditChange}
             onEditSave={handleEditSave}
-            onEditCancel={() => setEditingId(null)}
+            onEditCancel={handleEditCancel}
             onImageClick={setPreviewUrl}
           />
         ))}
@@ -1080,7 +1116,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           </div>
         ) : (
           <>
-            <div ref={textareaContainerRef} className="chat-input-bar__textarea">
+            <div ref={textareaContainerRef} className="chat-input-bar__textarea" onPaste={handlePaste}>
               <Textarea
                 value={input}
                 onChange={(v) => setInput(String(v))}
@@ -1165,6 +1201,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 className="chat-input-bar__fullscreen-textarea"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onPaste={handlePaste}
                 placeholder="发消息..."
                 autoFocus
               />
@@ -1264,13 +1301,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           </div>
         </Popup>
 
-        {/* 图片预览：点击用户气泡图片放大查看，点击遮罩或关闭按钮关闭 */}
-        {previewUrl && (
-          <div className="chat-image-preview" onClick={() => setPreviewUrl(null)}>
-            <img src={previewUrl} alt="预览" className="chat-image-preview__img" onClick={(e) => e.stopPropagation()} />
-            <span className="chat-image-preview__close" onClick={() => setPreviewUrl(null)}>✕</span>
-          </div>
-        )}
+        {/* 图片预览：点击用户气泡图片放大查看 + 复制/下载 */}
+        <ImageLightbox
+          src={previewUrl || ''}
+          alt="预览"
+          open={!!previewUrl}
+          onClose={() => setPreviewUrl(null)}
+        />
       </div>
     </div>
   );

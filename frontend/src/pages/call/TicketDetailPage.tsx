@@ -7,6 +7,13 @@ import { Navbar, Button, Toast, Loading, Tag, Popup } from 'tdesign-mobile-react
 import { NotificationIcon, UploadIcon, RollbackIcon } from 'tdesign-icons-react';
 import { qaGetTicket } from '@/api/ai';
 import { cancelTicket, urgeTicket, reportTicket, uploadCommentAttachment } from '@/api/ticket';
+import {
+  STATUS_DISPLAY_MAP,
+  isTerminalTicketStatus,
+  canUrgeTicket,
+  canReportTicket,
+  canCancelTicket,
+} from '@/shared/constants/ticket';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
@@ -266,13 +273,35 @@ export default function TicketDetailPage() {
           enableAttach
         />
 
-        {/* 操作 */}
+        {/* 操作：已解决/已取消/已关闭（终态）三个按钮不显示，改为状态提示；
+            新建/待处理可催办、撤回；处理中仅可上报；不可用按钮禁用 */}
         <div className="detail-actions">
-          <div className="detail-actions__btns">
-            <Button size="small" variant="outline" theme="default" icon={<NotificationIcon />} onClick={() => openActionPopup('urge')}>催办</Button>
-            <Button size="small" variant="outline" theme="default" icon={<UploadIcon />} onClick={() => openActionPopup('report')}>上报</Button>
-            <Button size="small" variant="outline" theme="default" icon={<RollbackIcon />} onClick={handleCancel}>撤回</Button>
-          </div>
+          {isTerminalTicketStatus(ticket.status) ? (
+            <p className="detail-actions__tip">
+              工单{STATUS_DISPLAY_MAP[(ticket.status || '').trim().toLowerCase()] || ticket.status}，无需催办 / 上报 / 撤回
+            </p>
+          ) : (
+            <div className="detail-actions__btns">
+              <Button
+                size="small" variant="outline" theme="default" icon={<NotificationIcon />}
+                disabled={!canUrgeTicket(ticket.status) || acting}
+                title={canUrgeTicket(ticket.status) ? undefined : '仅新建/待处理工单可催办'}
+                onClick={() => openActionPopup('urge')}
+              >催办</Button>
+              <Button
+                size="small" variant="outline" theme="default" icon={<UploadIcon />}
+                disabled={!canReportTicket(ticket.status) || acting}
+                title={canReportTicket(ticket.status) ? undefined : '仅处理中工单可上报'}
+                onClick={() => openActionPopup('report')}
+              >上报</Button>
+              <Button
+                size="small" variant="outline" theme="default" icon={<RollbackIcon />}
+                disabled={!canCancelTicket(ticket.status) || acting}
+                title={canCancelTicket(ticket.status) ? undefined : '仅新建/待处理工单可撤回'}
+                onClick={handleCancel}
+              >撤回</Button>
+            </div>
+          )}
         </div>
       </div>
 

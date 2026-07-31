@@ -406,6 +406,7 @@ class ProjectService:
                 "license_code": db_license.license_code,
                 "applicant": db_license.applicant,
                 "applicant_id": db_license.applicant_id,
+                "max_vehicles": db_license.max_vehicles,
                 "created_at": db_license.created_at
             }
             return license_dict
@@ -442,6 +443,7 @@ class ProjectService:
                         "license_code": license.license_code,
                         "applicant": license.applicant,
                         "applicant_id": license.applicant_id,
+                        "max_vehicles": license.max_vehicles,
                         "created_at": license.created_at
                     }
                     return [license_dict]
@@ -460,6 +462,7 @@ class ProjectService:
                         "license_code": license.license_code,
                         "applicant": license.applicant,
                         "applicant_id": license.applicant_id,
+                        "max_vehicles": license.max_vehicles,
                         "created_at": license.created_at
                     }
                     license_list.append(license_dict)

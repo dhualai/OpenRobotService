@@ -49,7 +49,7 @@ class LlmDecider:
             duty = (eng.duty_text or "")[:100]
             dep = f"({eng.department})" if eng.department else ""
             lines.append(
-                f"#{rank} {eng.name} {dep} L{eng.job_level} "
+                f"#{rank} ID:{eng.id} | L{eng.job_level} | {dep} "
                 f"|{'|'.join(prod_parts)}"
             )
             lines.append(
@@ -62,8 +62,8 @@ class LlmDecider:
 
         lines.extend([
             "",
-            "输出 JSON:",
-            '{"engineer_id":"...", "confidence_score":0.85, "reasoning":"理由", "decision_type":"auto"}',
+            "输出 JSON。engineer_id 必须填写候选人列表中对应的 id 值（精确复制）。",
+            '{"engineer_id":"oD5oY3RN...", "confidence_score":0.85, "reasoning":"理由", "decision_type":"auto"}',
             "decision_type: auto(>=0.8) / recommend(0.5-0.8) / fallback(<0.5)",
         ])
         return "\n".join(lines)
