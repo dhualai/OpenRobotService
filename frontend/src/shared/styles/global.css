@@ -900,6 +900,11 @@ html, body, #root {
 .markdown-body .md-image {
   -webkit-touch-callout: default;
 }
+/* 讨论区评论附件（图片缩略图 / 文件卡片） */
+.detail-chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+.detail-chat-attachment-img { max-width: 140px; max-height: 140px; border-radius: 6px; cursor: pointer; object-fit: cover; }
+.detail-chat-attachment-file { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; background: rgba(0,0,0,0.05); border-radius: 6px; font-size: 13px; cursor: pointer; }
+.detail-chat-attachment-file:hover { background: rgba(0,0,0,0.1); }
 /* AI 占位：呼吸点动画 */
 .chat-bubble__typing {
   display: flex;

@@ -8,6 +8,7 @@ import { Button, Toast } from 'tdesign-mobile-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import { useAuthStore } from '@/stores/auth';
 import { formatTime } from '@/shared/utils/url';
+import API_CONFIG from '@/config/api';
 
 export interface DiscussionComment {
   id: string | number;
@@ -15,7 +16,19 @@ export interface DiscussionComment {
   created_by_name?: string;
   created_by?: string;
   created_at: string;
+  /** 附件列表：object_path 字符串 或 {path,filename,size} 字典（后端 task_comments.attachments JSON 列两种格式并存） */
+  attachments?: Array<string | { path?: string; filename?: string; size?: number }>;
 }
+
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
+/** 解析评论附件（字符串 object_path 或字典），提取 object_path/filename/isImage */
+const parseAttachment = (a: string | { path?: string; filename?: string; size?: number }) => {
+  const objectPath = typeof a === 'string' ? a : (a.path || '');
+  const filename = typeof a === 'string'
+    ? (a.split('/').pop() || a)
+    : (a.filename || objectPath.split('/').pop() || '文件');
+  return { objectPath, filename, isImage: IMAGE_EXT.test(filename) };
+};
 
 export interface ProjectMember {
   id: string;
@@ -66,6 +79,7 @@ export default function DiscussionPanel({
   const { username, name } = useAuthStore();
   const [commentText, setCommentText] = useState('');
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
@@ -258,6 +272,35 @@ export default function DiscussionPanel({
                 <div className={`detail-chat-bubble ${isCurrentUser ? 'is-self' : ''}`}>
                   <div className="detail-chat-name">{authorName}</div>
                   <MarkdownRenderer content={c.content} compact />
+                  {c.attachments && c.attachments.length > 0 && (
+                    <div className="detail-chat-attachments">
+                      {c.attachments.map((a, i) => {
+                        const att = parseAttachment(a);
+                        if (!att.objectPath) return null;
+                        const url = `${API_CONFIG.TASKS.BASE_URL}/files/${att.objectPath}`;
+                        if (att.isImage) {
+                          return (
+                            <img
+                              key={i}
+                              src={url}
+                              alt={att.filename}
+                              className="detail-chat-attachment-img"
+                              onClick={() => setPreviewUrl(url)}
+                            />
+                          );
+                        }
+                        return (
+                          <div
+                            key={i}
+                            className="detail-chat-attachment-file"
+                            onClick={() => window.open(url, '_blank', 'noopener,noreferrer')}
+                          >
+                            📎 {att.filename}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   <div className="detail-chat-time">{formatTime(c.created_at)}</div>
                 </div>
               </div>
@@ -333,6 +376,14 @@ export default function DiscussionPanel({
           )}
         </div>
       </div>
+
+      {/* 图片预览：点击评论附件图片放大查看 */}
+      {previewUrl && (
+        <div className="chat-image-preview" onClick={() => setPreviewUrl(null)}>
+          <img src={previewUrl} alt="预览" className="chat-image-preview__img" onClick={(e) => e.stopPropagation()} />
+          <span className="chat-image-preview__close" onClick={() => setPreviewUrl(null)}>✕</span>
+        </div>
+      )}
     </div>
   );
 }
