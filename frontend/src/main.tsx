@@ -133,6 +133,7 @@ const ReportsAnalytics = lazyImport(() => import('@/pages/admin/ReportsAnalytics
 const UserManage = lazyImport(() => import('@/pages/admin/UserManage'));
 const RoleManage = lazyImport(() => import('@/pages/admin/RoleManage'));
 const AssignRole = lazyImport(() => import('@/pages/admin/AssignRole'));
+const UserSetup = lazyImport(() => import('@/pages/admin/UserSetup'));
 const PermissionManage = lazyImport(() => import('@/pages/admin/PermissionManage'));
 const ResourceManage = lazyImport(() => import('@/pages/admin/ResourceManage'));
 const DailyReportManage = lazyImport(() => import('@/pages/admin/DailyReportManage'));
@@ -198,6 +199,7 @@ const router = createBrowserRouter([
                   { path: 'users', element: <UserManage /> },
                   { path: 'roles', element: <RoleManage /> },
                   { path: 'assign-role', element: <AssignRole /> },
+                  { path: 'user-setup', element: <UserSetup /> },
                   { path: 'permissions', element: <PermissionManage /> },
                   { path: 'resources', element: <ResourceManage /> },
                   { path: 'wechat', element: <WechatManage /> },
