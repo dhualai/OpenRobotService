@@ -587,6 +587,7 @@ class IdentityService:
             if include_usp:
                 stmt = select(
                     Role.name.label('role_name'),
+                    UserDB.id.label('user_id'),
                     UserDB.username,
                     UserDB.name,
                     UserDB.external_credentials,
@@ -601,6 +602,7 @@ class IdentityService:
             else:
                 stmt = select(
                     Role.name.label('role_name'),
+                    UserDB.id.label('user_id'),
                     UserDB.username,
                     UserDB.name,
                     user_project_roles.c.project_id,
@@ -622,6 +624,7 @@ class IdentityService:
             members = []
             for result in results:
                 member = {
+                    'user_id': result.user_id,
                     'role_name': result.role_name,
                     'username': result.username,
                     'name': result.name,
