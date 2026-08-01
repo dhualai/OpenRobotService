@@ -833,30 +833,35 @@ export default function TaskDetailPage() {
       </div>
 
       <Popup visible={editing} onClose={() => setEditing(false)} placement="bottom" showOverlay>
-        <div className="ticket-edit">
-          <h4 className="ticket-edit__title">修改工单</h4>
-          <Form key={`edit-${editing}`} initialData={{ title: editForm.title, description: editForm.description }}>
-            <FormItem label="标题" name="title" labelAlign="top">
+        <div className="ticket-edit-form">
+          <div className="ticket-edit-form__header">
+            <span className="ticket-edit-form__title">修改工单</span>
+            <span className="ticket-edit-form__close" onClick={() => setEditing(false)}>×</span>
+          </div>
+          <div className="ticket-edit-form__body">
+            <div className="ticket-edit-form__field">
+              <label className="ticket-edit-form__label">标题</label>
               <Input
                 value={editForm.title}
                 onChange={(v) => setEditForm((p) => ({ ...p, title: String(v) }))}
                 placeholder="请输入工单标题"
                 clearable
               />
-            </FormItem>
-            <FormItem label="问题描述" name="description" labelAlign="top">
+            </div>
+            <div className="ticket-edit-form__field">
+              <label className="ticket-edit-form__label">问题描述</label>
               <Textarea
                 value={editForm.description}
                 onChange={(v) => setEditForm((p) => ({ ...p, description: String(v) }))}
                 placeholder="请详细描述问题..."
-                autosize={{ minRows: 4, maxRows: 10 }}
+                autosize={{ minRows: 5, maxRows: 12 }}
                 maxlength={2000}
               />
-            </FormItem>
-          </Form>
-          <div className="ticket-edit__btns">
-            <Button theme="default" onClick={() => setEditing(false)}>取消</Button>
-            <Button theme="primary" onClick={saveEdit}>保存</Button>
+            </div>
+          </div>
+          <div className="ticket-edit-form__footer">
+            <Button theme="default" block onClick={() => setEditing(false)}>取消</Button>
+            <Button theme="primary" block onClick={saveEdit}>保存</Button>
           </div>
         </div>
       </Popup>

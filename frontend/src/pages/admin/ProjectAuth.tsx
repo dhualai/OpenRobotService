@@ -159,8 +159,13 @@ export default function ProjectAuth() {
         }[]>('/users/?limit=1000'),
         request<RoleItem[]>('/roles/'),
       ]);
-      const allUsers = normalizeList(usersData);
-      const allRoles = normalizeList(rolesData);
+      const allUsers = normalizeList<{
+        id: string;
+        username: string;
+        name?: string | null;
+        project_role_relations?: Array<{ project_id: string; role_id: string; report_to_id?: string | null }>;
+      }>(usersData);
+      const allRoles = normalizeList<RoleItem>(rolesData);
       setRoles((prev) => (prev.length === 0 ? allRoles.filter((r) => r.role_type === 'project') : prev));
 
       const pid = project.id;
