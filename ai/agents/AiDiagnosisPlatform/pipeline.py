@@ -896,6 +896,18 @@ class AiDiagnosisPlatform:
         title = ""
         if state.diagnosis_rounds == 2 and "title" not in memory.metadata:
             title = await _generate_title(self._llm_client, memory)
+            # 同步到 DB：会话列表 / 切回 / 刷新都读 DB title，否则始终是默认「新会话」。
+            # 防覆盖：若用户已手动重命名（DB title 非「新会话」），则不覆盖 DB 与前端，
+            # 仅 memory.metadata 已记录（_generate_title 内部写入）防止下轮重复生成。
+            if title:
+                try:
+                    from ai.core.conversation_store import get_conversation_title, rename_conversation
+                    if get_conversation_title(memory.session_id) == "新会话":
+                        rename_conversation(memory.session_id, title)
+                    else:
+                        title = ""  # 用户已重命名 → 不发 event、不改 DB
+                except Exception as e:
+                    logger.warning(f"[title] DB 同步失败: {e}")
 
         return {
             "type": "diagnosis",
