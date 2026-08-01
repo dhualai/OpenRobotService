@@ -20,7 +20,7 @@ import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
-import { useAuthStore } from '@/stores/auth';
+import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
 
 interface ProjectListItem {
   risks: number;
@@ -46,6 +46,8 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { hasPermission, projectIds } = useAuthStore();
   const canAccessAdminEntries = hasPermission('frontend:admin');
+  // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
+  const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
   const [ticketSummary, setTicketSummary] = useState<TicketSummary | null>(null);
   const [stageSummary, setStageSummary] = useState<ProjectStageSummary | null>(null);
   const [urgencySummary, setUrgencySummary] = useState<UrgencySummary | null>(null);
@@ -57,20 +59,22 @@ export default function Dashboard() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
-    // 工单/项目统计接口均传入 projectIds，仅统计当前用户关联项目内的数据；
-    // 项目列表走 /projects/me 由后端按 token 自动过滤当前用户关联项目
+    // canViewAll 时不传 projectIds（后端不过滤，返回全部）；否则仅统计当前用户关联项目
+    // 项目列表同理：canViewAll 走 /projects/，否则走 /projects/me 由后端按 token 过滤
+    const filterIds = canViewAll ? undefined : projectIds;
+    const projectsUrl = canViewAll ? '/projects/?include_analysis=true' : '/projects/me?include_analysis=true';
     const [tickets, stages, urgency, projectList] = await Promise.all([
-      fetchTicketSummary(projectIds),
-      fetchProjectStageSummary(projectIds),
-      fetchUrgencySummary(projectIds),
-      adminRequest<ProjectListItem[]>('/projects/me?include_analysis=true').catch(() => []),
+      fetchTicketSummary(filterIds),
+      fetchProjectStageSummary(filterIds),
+      fetchUrgencySummary(filterIds),
+      adminRequest<ProjectListItem[]>(projectsUrl).catch(() => []),
     ]);
     setTicketSummary(tickets);
     setStageSummary(stages);
     setUrgencySummary(urgency);
     setProjects(normalizeList<ProjectListItem>(projectList));
     setLoading(false);
-  }, [projectIds]);
+  }, [projectIds, canViewAll]);
 
   const handleSync = useCallback(async () => {
     setSyncing(true);

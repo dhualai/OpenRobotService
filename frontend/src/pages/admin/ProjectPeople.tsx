@@ -143,7 +143,7 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
     if (longPressTimer.current) clearTimeout(longPressTimer.current);
     longPressTimer.current = setTimeout(() => {
       setContextMenu({ username, x, y });
-    }, 1000);
+    }, 500);
   };
   const cancelLongPress = () => {
     if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; }
