@@ -617,49 +617,58 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       let ticketCreatedThisTurn = false;
       let currentEvent = '';
       let streamError = ''; // 流式 event:error 的错误信息（之前静默吞掉 → 空气泡）
+      // SSE 按行解析：chunk 边界可能切开一行（如 data: {"token":"部 + 分"}），
+      // 用 buffer 拼接，pop() 保留最后不完整行到下个 chunk，避免 JSON.parse 失败丢 token（空白）。
+      const processLine = (line: string) => {
+        if (line.startsWith('event: ')) {
+          currentEvent = line.slice(7);
+          return;
+        }
+        if (!line.startsWith('data: ')) return;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.token) {
+            acc += data.token;
+            scheduleRender();
+          } else if (data.content) {
+            acc += data.content;
+            scheduleRender();
+          }
+          // 流式错误（如诊断 pipeline 抛错）：捕获错误信息，循环结束后抛出，避免静默空气泡
+          if (currentEvent === 'error' && data.error) {
+            streamError = data.error;
+          }
+          // 任务 Agent result 事件：拿到结构化方案草稿
+          if (currentEvent === 'result' && data.root_cause_analysis) {
+            solutionDraft = {
+              _task_id: data._task_id,
+              root_cause_analysis: data.root_cause_analysis,
+              suggested_actions: data.suggested_actions || [],
+              references: data.references || [],
+              confidence: data.confidence ?? 0,
+              needs_more_info: data.needs_more_info ?? false,
+            };
+          }
+          // AI 自动建单（对话中输入「转工单」等）：result 事件携带 ticket，标记本轮已建单
+          if (currentEvent === 'result' && data.ticket) {
+            ticketCreatedThisTurn = true;
+          }
+        } catch { /* JSON 行解析出错则跳过 */ }
+      };
+      let buffer = '';
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const text = decoder.decode(value, { stream: true });
-        for (const line of text.split('\n')) {
-          if (line.startsWith('event: ')) {
-            currentEvent = line.slice(7);
-            if (currentEvent === 'error') continue;
-            continue;
-          }
-          if (!line.startsWith('data: ')) continue;
-          try {
-            const data = JSON.parse(line.slice(6));
-            if (data.token) {
-              acc += data.token;
-              scheduleRender();
-            } else if (data.content) {
-              acc += data.content;
-              scheduleRender();
-            }
-            // 流式错误（如诊断 pipeline 抛错）：捕获错误信息，循环结束后抛出，避免静默空气泡
-            if (currentEvent === 'error' && data.error) {
-              streamError = data.error;
-            }
-            // 任务 Agent result 事件：拿到结构化方案草稿
-            if (currentEvent === 'result' && data.root_cause_analysis) {
-              solutionDraft = {
-                _task_id: data._task_id,
-                root_cause_analysis: data.root_cause_analysis,
-                suggested_actions: data.suggested_actions || [],
-                references: data.references || [],
-                confidence: data.confidence ?? 0,
-                needs_more_info: data.needs_more_info ?? false,
-              };
-            }
-            // AI 自动建单（对话中输入「转工单」等）：result 事件携带 ticket，标记本轮已建单
-            if (currentEvent === 'result' && data.ticket) {
-              ticketCreatedThisTurn = true;
-            }
-          } catch { /* JSON 行解析出错则跳过 */ }
-        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';  // 最后可能不完整的行留 buffer，下个 chunk 拼接
+        for (const line of lines) processLine(line);
       }
+      // 流结束处理 buffer 末尾剩余行（最后 data 未跟换行的情况）
+      if (buffer) processLine(buffer);
 
+      // 前端空回复兜底：流式结束无任何内容（后端无 token 或前端解析丢字）→ 显示缺省，而非空气泡
+      if (!acc && !streamError) acc = '[未收到 AI 回复，请重试]';
       // 流式出错且无任何内容 → 抛出，由外层 catch 提示并移除空气泡（不再静默）
       if (streamError && !acc) throw new Error(streamError);
 
@@ -675,7 +684,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (solutionDraft && !isCall) {
         setMessages((prev) => prev.map((m) =>
           m.id === assistantId
-            ? { ...m, subtype: 'solution_draft' as const, solution_draft: solutionDraft }
+            ? { ...m, subtype: 'solution_draft' as const, solution_draft: solutionDraft ?? undefined }
             : m
         ));
       }
@@ -973,13 +982,26 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     setSubmittingTicket(true);
     try {
       const res = await qaPrepareTicket(sessionId);
-      // 保底必填字段不足 → stage=not_ready：不进弹窗，在对话区列出缺失项引导补充
-      if (res?.code === 0 && res.data?.stage === 'not_ready') {
+      // prepare 两层 code 规范：
+      //   外层 code=1 → pipeline 抛异常，message 为异常信息；
+      //   外层 code=0 → 正常返回，再按内层 data.code / stage 分流：
+      //     ① data.code=1 + stage=not_ready → 信息不足，对话区追问；
+      //     ② data.code=1 + 无 stage → 重复提单（_can_submit 拦截），友好提示；
+      //     ③ stage=draft_ready / need_fields → 草稿就绪/缺字段，弹确认窗。
+      if (res?.code !== 0) {
+        Toast({ message: res?.message || '生成工单草稿失败', theme: 'error' });
+        return;
+      }
+      if (!res.data) {
+        Toast({ message: '生成工单草稿失败', theme: 'error' });
+        return;
+      }
+      // ① 信息不足：stage=not_ready → 对话区列出缺失项引导补充，不弹窗
+      if (res.data.stage === 'not_ready') {
         const missing = res.data.missing_info ?? [];
         const msg = res.data.message || (missing.length
           ? `工单信息不足，还差：${missing.join('、')}。请直接在对话中告诉我，补全后再点转工单。`
           : '工单信息不足，请补充后再点转工单。');
-        // 1) 作为 assistant 消息渲染气泡（与流式 AI 回复一致的持久化方式，刷新/切回仍可见）
         setMessages((prev) => [...prev, {
           id: uid(),
           role: 'assistant',
@@ -988,20 +1010,25 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         }]);
         scrollToBottomNow();
         if (convRef.current) appendMessage(convRef.current, 'assistant', msg).catch(() => {});
-        // 2) 输入框上方常驻「待补充清单」卡片 + 转工单按钮角标
         setTicketMissing({ info: missing, message: msg });
-        // 3) 短提示（移动端友好，toast 转瞬即逝，卡片是主载体）
         Toast({ message: missing.length ? `还差 ${missing.length} 项信息，已在对话中列出` : '信息不足，请补充', theme: 'warning' });
         return;
       }
-      if (res?.code !== 0 || !res.data) {
-        Toast({
-          message: res?.message || '生成工单草稿失败',
-          theme: res?.stage === 'not_ready' ? 'warning' : 'error',
-          duration: res?.stage === 'not_ready' ? 5000 : 3000,
-        });
+      // ② 重复提单：data.code=1 + 无 stage（_can_submit 拦截）→ 友好提示，不弹窗
+      if (res.data.code === 1) {
+        const msg = res.data.message || '当前会话无需重复提交工单';
+        setMessages((prev) => [...prev, {
+          id: uid(),
+          role: 'assistant',
+          content: msg,
+          timestamp: new Date().toISOString(),
+        }]);
+        scrollToBottomNow();
+        if (convRef.current) appendMessage(convRef.current, 'assistant', msg).catch(() => {});
+        Toast({ message: msg, theme: 'warning', duration: 4000 });
         return;
       }
+      // ③ 草稿就绪 / 缺字段：stage=draft_ready | need_fields → 弹确认窗
       const { draft, missing_fields, prompt } = res.data;
       // 打开确认弹窗，让用户核对/编辑/补字段
       setTicketMissing(null); // 已就绪，清掉待补充清单

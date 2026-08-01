@@ -92,9 +92,9 @@ export const qaAskStream = (body: QAAskRequest): Promise<Response> =>
     body: JSON.stringify(body),
   });
 
-/** 提交工单 */
+/** 提交工单（显式传 username，token 失效时后端兜底绑定真实用户） */
 export const qaSubmit = (sessionId: string) =>
-  aiPost<{ code: number; [key: string]: unknown }>('/qa/submit', { session_id: sessionId });
+  aiPost<{ code: number; [key: string]: unknown }>('/qa/submit', { session_id: sessionId, username: useAuthStore.getState().username });
 
 // ---------------------------------------------------------------------------
 // 转工单二次确认（按钮路径1：prepare 生成草稿 → 弹窗核对/补字段 → confirm 入库）
@@ -132,6 +132,8 @@ export interface TicketDraft {
 }
 
 export interface PrepareTicketResult {
+  /** 业务码：0=草稿就绪/需补字段；1=无需重复提交等提示（已建单会话再次转工单等，仅返回 message、无草稿） */
+  code?: number;
   stage: 'draft_ready' | 'need_fields' | 'not_ready';
   draft: TicketDraft;
   missing_fields: string[];
@@ -157,14 +159,14 @@ export const qaPrepareTicket = (sessionId: string) =>
     '/qa/ticket/prepare', { session_id: sessionId },
   );
 
-/** 确认提交工单（弹窗确认后：overrides 为用户编辑后的字段） */
+/** 确认提交工单（弹窗确认后：overrides 为用户编辑后的字段；显式传 username，token 失效时后端兜底绑定真实用户） */
 export const qaConfirmTicket = (sessionId: string, overrides: Partial<TicketDraft>) =>
   aiPost<{
     code: number;
     data?: { ticket: TicketDraft; db_id: number; notice: string };
     message?: string;
     missing_fields?: string[];
-  }>('/qa/ticket/confirm', { session_id: sessionId, overrides });
+  }>('/qa/ticket/confirm', { session_id: sessionId, overrides, username: useAuthStore.getState().username });
 
 /** 获取待确认草稿（前端轮询兜底，如 SSE 中断后恢复） */
 export const qaGetDraft = (sessionId: string) =>
@@ -198,6 +200,8 @@ export interface AiTicketBrief {
   created_by_name?: string;
   assigned_to?: string;
   assigned_to_name?: string;
+  // 项目名称（tasks.project_name，list_all_tickets 返回）
+  project?: string;
 }
 
 /** 历史工单列表筛选参数 */

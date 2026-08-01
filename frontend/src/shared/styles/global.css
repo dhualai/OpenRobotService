@@ -900,6 +900,40 @@ html, body, #root {
 .markdown-body .md-image {
   -webkit-touch-callout: default;
 }
+/* 派单中呼吸动效（AI 单 status=new 且处理人未写入，Worker 60s 轮询派单期间展示） */
+.task-card2__avatar--dispatching {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ecf2fe;
+}
+.dispatch-pulse {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #0052d9;
+  animation: dispatch-pulse 1.2s ease-in-out infinite;
+}
+.dispatch-pulse--inline {
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.task-card2__person-name--dispatching {
+  color: #0052d9;
+  font-weight: 500;
+}
+@keyframes dispatch-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+/* 历史工单卡片项目名 */
+.history-row__project {
+  font-size: 12px;
+  color: #999;
+  margin-top: 2px;
+}
 /* 讨论区评论附件（图片缩略图 / 文件卡片） */
 .detail-chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
 .detail-chat-attachment-img { max-width: 140px; max-height: 140px; border-radius: 6px; cursor: pointer; object-fit: cover; }
