@@ -5,6 +5,7 @@ import { Suspense, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { TabBar, TabBarItem, Loading } from 'tdesign-mobile-react';
 import { useWorkbenchStore, type WorkbenchTab } from '@/stores/workbench';
+import { useWechatBackGuard } from '@/shared/utils/backGuard';
 
 const TAB_PATHS: Record<WorkbenchTab, string> = {
   call: '/call',
@@ -22,6 +23,8 @@ function pathToTab(pathname: string): WorkbenchTab {
 export default function MainLayout() {
   const navigate = useNavigate();
   const location = useLocation();
+  // 拦截微信内置浏览器的系统级右滑返回，避免从一级 Tab 直接退出到服务号会话
+  useWechatBackGuard();
   const activeTab = useWorkbenchStore((s) => s.activeTab);
   const setActiveTab = useWorkbenchStore((s) => s.setActiveTab);
 

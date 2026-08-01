@@ -617,49 +617,58 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       let ticketCreatedThisTurn = false;
       let currentEvent = '';
       let streamError = ''; // 流式 event:error 的错误信息（之前静默吞掉 → 空气泡）
+      // SSE 按行解析：chunk 边界可能切开一行（如 data: {"token":"部 + 分"}），
+      // 用 buffer 拼接，pop() 保留最后不完整行到下个 chunk，避免 JSON.parse 失败丢 token（空白）。
+      const processLine = (line: string) => {
+        if (line.startsWith('event: ')) {
+          currentEvent = line.slice(7);
+          return;
+        }
+        if (!line.startsWith('data: ')) return;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.token) {
+            acc += data.token;
+            scheduleRender();
+          } else if (data.content) {
+            acc += data.content;
+            scheduleRender();
+          }
+          // 流式错误（如诊断 pipeline 抛错）：捕获错误信息，循环结束后抛出，避免静默空气泡
+          if (currentEvent === 'error' && data.error) {
+            streamError = data.error;
+          }
+          // 任务 Agent result 事件：拿到结构化方案草稿
+          if (currentEvent === 'result' && data.root_cause_analysis) {
+            solutionDraft = {
+              _task_id: data._task_id,
+              root_cause_analysis: data.root_cause_analysis,
+              suggested_actions: data.suggested_actions || [],
+              references: data.references || [],
+              confidence: data.confidence ?? 0,
+              needs_more_info: data.needs_more_info ?? false,
+            };
+          }
+          // AI 自动建单（对话中输入「转工单」等）：result 事件携带 ticket，标记本轮已建单
+          if (currentEvent === 'result' && data.ticket) {
+            ticketCreatedThisTurn = true;
+          }
+        } catch { /* JSON 行解析出错则跳过 */ }
+      };
+      let buffer = '';
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const text = decoder.decode(value, { stream: true });
-        for (const line of text.split('\n')) {
-          if (line.startsWith('event: ')) {
-            currentEvent = line.slice(7);
-            if (currentEvent === 'error') continue;
-            continue;
-          }
-          if (!line.startsWith('data: ')) continue;
-          try {
-            const data = JSON.parse(line.slice(6));
-            if (data.token) {
-              acc += data.token;
-              scheduleRender();
-            } else if (data.content) {
-              acc += data.content;
-              scheduleRender();
-            }
-            // 流式错误（如诊断 pipeline 抛错）：捕获错误信息，循环结束后抛出，避免静默空气泡
-            if (currentEvent === 'error' && data.error) {
-              streamError = data.error;
-            }
-            // 任务 Agent result 事件：拿到结构化方案草稿
-            if (currentEvent === 'result' && data.root_cause_analysis) {
-              solutionDraft = {
-                _task_id: data._task_id,
-                root_cause_analysis: data.root_cause_analysis,
-                suggested_actions: data.suggested_actions || [],
-                references: data.references || [],
-                confidence: data.confidence ?? 0,
-                needs_more_info: data.needs_more_info ?? false,
-              };
-            }
-            // AI 自动建单（对话中输入「转工单」等）：result 事件携带 ticket，标记本轮已建单
-            if (currentEvent === 'result' && data.ticket) {
-              ticketCreatedThisTurn = true;
-            }
-          } catch { /* JSON 行解析出错则跳过 */ }
-        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';  // 最后可能不完整的行留 buffer，下个 chunk 拼接
+        for (const line of lines) processLine(line);
       }
+      // 流结束处理 buffer 末尾剩余行（最后 data 未跟换行的情况）
+      if (buffer) processLine(buffer);
 
+      // 前端空回复兜底：流式结束无任何内容（后端无 token 或前端解析丢字）→ 显示缺省，而非空气泡
+      if (!acc && !streamError) acc = '[未收到 AI 回复，请重试]';
       // 流式出错且无任何内容 → 抛出，由外层 catch 提示并移除空气泡（不再静默）
       if (streamError && !acc) throw new Error(streamError);
 
