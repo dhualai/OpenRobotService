@@ -132,6 +132,8 @@ export interface TicketDraft {
 }
 
 export interface PrepareTicketResult {
+  /** 业务码：0=草稿就绪/需补字段；1=无需重复提交等提示（已建单会话再次转工单等，仅返回 message、无草稿） */
+  code?: number;
   stage: 'draft_ready' | 'need_fields' | 'not_ready';
   draft: TicketDraft;
   missing_fields: string[];
