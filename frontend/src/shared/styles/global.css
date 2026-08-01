@@ -1753,6 +1753,28 @@ html, body, #root {
 .ticket-edit .t-form__item::after { display: none !important; }
 .ticket-edit .t-button::after { display: none !important; content: none !important; }
 .ticket-edit__btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; padding-top: 12px; border-top: 1px solid #f0f0f0; }
+/* 让 FormItem 内的输入控件撑满宽度（修复变更原因等只占左半屏） */
+.ticket-edit .t-form__controls { width: 100%; }
+.ticket-edit .t-input,
+.ticket-edit .t-textarea,
+.ticket-edit .t-textarea__wrapper,
+.ticket-edit .t-textarea__wrapper-inner { width: 100%; }
+
+/* ===== 修改工单弹窗：卡片化分区 + 撑满宽度 ===== */
+.ticket-edit-form { display: flex; flex-direction: column; max-height: 88vh; background: #f5f7fa; }
+.ticket-edit-form__header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: #fff; border-bottom: 1px solid #eee; border-radius: 16px 16px 0 0; }
+.ticket-edit-form__title { font-size: 16px; font-weight: 600; color: #222; }
+.ticket-edit-form__close { font-size: 22px; color: #999; line-height: 1; padding: 2px 8px; cursor: pointer; }
+.ticket-edit-form__body { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.ticket-edit-form__field { background: #fff; border-radius: 10px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+.ticket-edit-form__label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 8px; }
+.ticket-edit-form__field .t-input,
+.ticket-edit-form__field .t-textarea,
+.ticket-edit-form__field .t-textarea__wrapper,
+.ticket-edit-form__field .t-textarea__wrapper-inner { width: 100%; }
+.ticket-edit-form__footer { display: flex; gap: 8px; padding: 12px 20px; background: #fff; border-top: 1px solid #eee; position: sticky; bottom: 0; }
+.ticket-edit-form__footer .t-button { flex: 1; }
+.ticket-edit-form .t-button::after { display: none !important; content: none !important; }
 
 /* ===== Markdown 渲染样式 ===== */
 .markdown-body {
