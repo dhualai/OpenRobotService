@@ -92,9 +92,9 @@ export const qaAskStream = (body: QAAskRequest): Promise<Response> =>
     body: JSON.stringify(body),
   });
 
-/** 提交工单 */
+/** 提交工单（显式传 username，token 失效时后端兜底绑定真实用户） */
 export const qaSubmit = (sessionId: string) =>
-  aiPost<{ code: number; [key: string]: unknown }>('/qa/submit', { session_id: sessionId });
+  aiPost<{ code: number; [key: string]: unknown }>('/qa/submit', { session_id: sessionId, username: useAuthStore.getState().username });
 
 // ---------------------------------------------------------------------------
 // 转工单二次确认（按钮路径1：prepare 生成草稿 → 弹窗核对/补字段 → confirm 入库）
@@ -157,14 +157,14 @@ export const qaPrepareTicket = (sessionId: string) =>
     '/qa/ticket/prepare', { session_id: sessionId },
   );
 
-/** 确认提交工单（弹窗确认后：overrides 为用户编辑后的字段） */
+/** 确认提交工单（弹窗确认后：overrides 为用户编辑后的字段；显式传 username，token 失效时后端兜底绑定真实用户） */
 export const qaConfirmTicket = (sessionId: string, overrides: Partial<TicketDraft>) =>
   aiPost<{
     code: number;
     data?: { ticket: TicketDraft; db_id: number; notice: string };
     message?: string;
     missing_fields?: string[];
-  }>('/qa/ticket/confirm', { session_id: sessionId, overrides });
+  }>('/qa/ticket/confirm', { session_id: sessionId, overrides, username: useAuthStore.getState().username });
 
 /** 获取待确认草稿（前端轮询兜底，如 SSE 中断后恢复） */
 export const qaGetDraft = (sessionId: string) =>

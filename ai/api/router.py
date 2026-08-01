@@ -41,6 +41,7 @@ class QAAskRequest(BaseModel):
 
 class QASubmitRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=128, description="会话 ID")
+    username: str = Field(default="", description="前端显式传的当前登录用户（兜底：token 失效时用，token 有效则以 token sub 为准防伪造）")
 
 
 class TicketAckRequest(BaseModel):
@@ -52,6 +53,7 @@ class TicketAckRequest(BaseModel):
 class TicketConfirmRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=128)
     overrides: dict = Field(default_factory=dict, description="用户修改后的字段")
+    username: str = Field(default="", description="前端显式传的当前登录用户（兜底：token 失效时用）")
 
 
 async def get_pipeline() -> AiDiagnosisPlatform:
@@ -145,9 +147,10 @@ async def submit_ticket(
     body: QASubmitRequest,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
-    username, _ = _current_user(request)
+    username, _ = _current_user(request)  # token 解析（有效时权威，防伪造）
     if not username:
-        # token 过期/无效 → 401，前端 fetchWithAuth 会刷新 token 重试，避免 created_by 为空
+        username = (getattr(body, "username", "") or "").strip()  # token 失效 → 用前端显式传的兜底
+    if not username:
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
     try:
         result = await pipeline.submit(session_id=body.session_id, created_by=username)
@@ -262,9 +265,10 @@ async def confirm_ticket(
     body: TicketConfirmRequest,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
-    username, _ = _current_user(request)
+    username, _ = _current_user(request)  # token 解析（有效时权威，防伪造）
     if not username:
-        # token 过期/无效 → 401，前端 fetchWithAuth 会刷新 token 重试，避免 created_by 为空
+        username = (getattr(body, "username", "") or "").strip()  # token 失效 → 用前端显式传的兜底
+    if not username:
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
     try:
         return await pipeline.confirm_submit(
