@@ -1,5 +1,5 @@
 // 项目授权管理 - 基于接口文档 GET /api/admin/projects/licenses/{project_code}
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { Button, Toast, Loading, Dialog, Input, Popup, DateTimePicker } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -73,6 +73,25 @@ interface ExistingProjectUser {
   reportToUsername?: string | null; // 在该项目下的汇报人 username（对应后端 report_to_id）
 }
 
+// 可折叠区域：点击标题切换展开/收起，默认展开由父组件控制
+const CollapsibleSection = ({ title, open, onToggle, children }: { title: string; open: boolean; onToggle: () => void; children: ReactNode }) => (
+  <div style={{ marginBottom: 16 }}>
+    <div
+      onClick={onToggle}
+      style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '12px 14px', background: '#fff', borderRadius: 8,
+        boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
+        fontWeight: 600, fontSize: 15,
+      }}
+    >
+      <span>{title}</span>
+      <span style={{ color: '#999', display: 'inline-block', transition: 'transform 0.2s', transform: open ? 'rotate(90deg)' : 'none' }}>›</span>
+    </div>
+    {open && <div style={{ marginTop: 12 }}>{children}</div>}
+  </div>
+);
+
 export default function ProjectAuth() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
@@ -104,6 +123,11 @@ export default function ProjectAuth() {
   const [removingUsername, setRemovingUsername] = useState<string | null>(null);
   // 长按卡片 1s 触发移除弹窗的定时器
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 三个区域折叠状态（默认展开）
+  const [sectionImportOpen, setSectionImportOpen] = useState(true);
+  const [sectionAuthOpen, setSectionAuthOpen] = useState(true);
+  const [sectionPeopleOpen, setSectionPeopleOpen] = useState(true);
 
   // 申请授权码：机器码 + 开始/结束日期 + 允许最大车数，调用 POST /export/apply_project_license（经 MQTT 审批）
   const [machineCode, setMachineCode] = useState('');
@@ -442,7 +466,8 @@ export default function ProjectAuth() {
 
   return (
     <div style={{ padding: 16 }}>
-      <h4 style={{ marginBottom: 12, fontSize: 15, fontWeight: 600 }}>选择项目查看授权</h4>
+      {/* 区域一：项目导入 */}
+      <CollapsibleSection title="项目导入" open={sectionImportOpen} onToggle={() => setSectionImportOpen((v) => !v)}>
 
       {/* 项目选择下拉：点击展开底部列表，避免项目过多时摊开占屏 */}
       {projectLoading ? <Loading text="加载项目..." /> : (
@@ -500,9 +525,11 @@ export default function ProjectAuth() {
           )}
         </div>
       </Popup>
+      </CollapsibleSection>
 
-      {/* 授权列表 */}
-      {!selectedProject ? (
+      {/* 区域二：项目授权 */}
+      <CollapsibleSection title="项目授权" open={sectionAuthOpen} onToggle={() => setSectionAuthOpen((v) => !v)}>
+        {!selectedProject ? (
         <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>请选择一个项目查看授权信息</div>
       ) : loading ? <Loading text="加载授权..." /> : (
         <>
@@ -544,69 +571,6 @@ export default function ProjectAuth() {
           {items.length === 0 && (
             <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>该项目暂无授权记录</div>
           )}
-
-          {/* 项目已关联人员：可折叠树形 + 长按移除 */}
-          <div style={{ background: '#fff', borderRadius: 8, padding: 14, marginTop: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
-              已关联人员（{existingUsers.length}）<span style={{ fontSize: 12, color: '#999', fontWeight: 400, marginLeft: 6 }}>长按卡片可移除</span>
-            </div>
-            {existingUsersLoading ? (
-              <Loading text="加载中..." />
-            ) : existingUsers.length === 0 ? (
-              <div style={{ fontSize: 13, color: '#999', padding: '8px 0' }}>该项目暂无已关联人员</div>
-            ) : (
-              (() => {
-                const { roots, childrenMap } = buildExistingUserTree(existingUsers);
-                const renderNode = (u: ExistingProjectUser, depth: number) => {
-                  const children = childrenMap.get(u.username) || [];
-                  const collapsed = collapsedUsernames.has(u.username);
-                  const roleNames = u.roleNames.join('、');
-                  return (
-                    <div key={u.username}>
-                      <div
-                        style={{
-                          background: removingUsername === u.username ? '#fff1f0' : '#fafafa',
-                          borderRadius: 8, padding: 14, marginBottom: 10, marginLeft: depth * 20,
-                          boxShadow: '0 1px 3px rgba(0,0,0,0.06)', userSelect: 'none', WebkitUserSelect: 'none',
-                        }}
-                        onTouchStart={(e) => beginLongPress(e.touches[0].clientX, e.touches[0].clientY, u.username)}
-                        onTouchEnd={cancelLongPress}
-                        onTouchMove={cancelLongPress}
-                        onMouseDown={(e) => beginLongPress(e.clientX, e.clientY, u.username)}
-                        onMouseUp={cancelLongPress}
-                        onMouseLeave={cancelLongPress}
-                      >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                          <div style={{ fontSize: 14, fontWeight: 500 }}>
-                            {depth > 0 && <span style={{ color: '#bbb', marginRight: 4 }}>└</span>}
-                            {u.name}
-                            {children.length > 0 && (
-                              <span
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setCollapsedUsernames((prev) => {
-                                    const next = new Set(prev);
-                                    if (next.has(u.username)) next.delete(u.username); else next.add(u.username);
-                                    return next;
-                                  });
-                                }}
-                                style={{ marginLeft: 8, fontSize: 12, color: '#0052d9', cursor: 'pointer' }}
-                              >
-                                {collapsed ? `展开(${children.length})` : '收起'}
-                              </span>
-                            )}
-                          </div>
-                          <div style={{ fontSize: 12, color: '#999' }}>{u.username} · {roleNames}</div>
-                        </div>
-                      </div>
-                      {!collapsed && children.map((c) => renderNode(c, depth + 1))}
-                    </div>
-                  );
-                };
-                return roots.map((root) => renderNode(root, 0));
-              })()
-            )}
-          </div>
 
           {/* 申请授权码：输入机器码 + 开始/结束日期，经 MQTT 向设备端申请授权 */}
           <div style={{ background: '#fff', borderRadius: 8, padding: 14, marginTop: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
@@ -668,21 +632,93 @@ export default function ProjectAuth() {
           </Popup>
         </>
       )}
+      </CollapsibleSection>
 
-      {/* 添加关联人员 */}
-      <Button theme="primary" variant="outline" block style={{ marginTop: 16 }} onClick={openAssociate}>
-        + 添加关联人员
-      </Button>
+      {/* 区域三：项目人员关联 */}
+      <CollapsibleSection title="项目人员关联" open={sectionPeopleOpen} onToggle={() => setSectionPeopleOpen((v) => !v)}>
+        {!selectedProject ? (
+          <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>请先选择项目</div>
+        ) : (
+          <>
+            {/* 项目已关联人员：可折叠树形 + 长按移除，右上角为添加关联人员入口 */}
+            <div style={{ background: '#fff', borderRadius: 8, padding: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, flex: 1, minWidth: 0 }}>
+                  已关联人员（{existingUsers.length}）
+                  <span style={{ fontSize: 12, color: '#999', fontWeight: 400, marginLeft: 6 }}>长按卡片可移除</span>
+                </div>
+                <Button size="small" theme="primary" variant="outline" style={{ flexShrink: 0 }} onClick={openAssociate}>+ 添加关联人员</Button>
+              </div>
+              {existingUsersLoading ? (
+                <Loading text="加载中..." />
+              ) : existingUsers.length === 0 ? (
+                <div style={{ fontSize: 13, color: '#999', padding: '8px 0' }}>该项目暂无已关联人员</div>
+              ) : (
+                (() => {
+                  const { roots, childrenMap } = buildExistingUserTree(existingUsers);
+                  const renderNode = (u: ExistingProjectUser, depth: number) => {
+                    const children = childrenMap.get(u.username) || [];
+                    const collapsed = collapsedUsernames.has(u.username);
+                    const roleNames = u.roleNames.join('、');
+                    return (
+                      <div key={u.username}>
+                        <div
+                          style={{
+                            background: removingUsername === u.username ? '#fff1f0' : '#fafafa',
+                            borderRadius: 8, padding: 14, marginBottom: 10, marginLeft: depth * 20,
+                            boxShadow: '0 1px 3px rgba(0,0,0,0.06)', userSelect: 'none', WebkitUserSelect: 'none',
+                          }}
+                          onTouchStart={(e) => beginLongPress(e.touches[0].clientX, e.touches[0].clientY, u.username)}
+                          onTouchEnd={cancelLongPress}
+                          onTouchMove={cancelLongPress}
+                          onMouseDown={(e) => beginLongPress(e.clientX, e.clientY, u.username)}
+                          onMouseUp={cancelLongPress}
+                          onMouseLeave={cancelLongPress}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                            <div style={{ fontSize: 14, fontWeight: 500 }}>
+                              {depth > 0 && <span style={{ color: '#bbb', marginRight: 4 }}>└</span>}
+                              {u.name}
+                              {children.length > 0 && (
+                                <span
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setCollapsedUsernames((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(u.username)) next.delete(u.username); else next.add(u.username);
+                                      return next;
+                                    });
+                                  }}
+                                  style={{ marginLeft: 8, fontSize: 12, color: '#0052d9', cursor: 'pointer' }}
+                                >
+                                  {collapsed ? `展开(${children.length})` : '收起'}
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: 12, color: '#999' }}>{u.username} · {roleNames}</div>
+                          </div>
+                        </div>
+                        {!collapsed && children.map((c) => renderNode(c, depth + 1))}
+                      </div>
+                    );
+                  };
+                  return roots.map((root) => renderNode(root, 0));
+                })()
+              )}
+            </div>
 
-      {associateList.length > 0 && (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 13, color: '#999', marginBottom: 8 }}>本次已添加的关联人员（含上下层关系）</div>
-          {(() => {
-            const { roots, childrenMap } = buildAssociateTree(associateList);
-            return roots.map((root) => renderAssociateNode(root, 0, childrenMap));
-          })()}
-        </div>
-      )}
+            {associateList.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 13, color: '#999', marginBottom: 8 }}>本次已添加的关联人员（含上下层关系）</div>
+                {(() => {
+                  const { roots, childrenMap } = buildAssociateTree(associateList);
+                  return roots.map((root) => renderAssociateNode(root, 0, childrenMap));
+                })()}
+              </div>
+            )}
+          </>
+        )}
+      </CollapsibleSection>
 
       {/* 添加关联人员弹窗 */}
       <Popup visible={associateVisible} onClose={() => setAssociateVisible(false)} placement="bottom" showOverlay>
@@ -789,7 +825,7 @@ export default function ProjectAuth() {
         </div>
       </Popup>
 
-      {/* 右键移除菜单：点击遮罩关闭 */}
+      {/* 长按移除菜单：点击遮罩关闭 */}
       {contextMenu && (
         <>
           <div
