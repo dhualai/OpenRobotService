@@ -41,7 +41,7 @@ export default function UserSetup() {
   const loadUsers = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await request<UserItem[]>('/users/?limit=999999', { skipCache: true });
+      const data = await request<UserItem[]>('/users/?limit=999', { skipCache: true });
       setUsers(normalizeList<UserItem>(data));
     } catch (err) {
       Toast({ message: `加载用户列表失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
