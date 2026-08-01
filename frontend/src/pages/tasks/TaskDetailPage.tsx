@@ -10,7 +10,7 @@ import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import { uploadCommentAttachment } from '@/api/ticket';
-import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP } from '@/shared/constants/ticket';
+import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { formatDateTime } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
@@ -92,7 +92,7 @@ interface Ticket {
   created_by?: string; created_by_name?: string;
   assigned_to?: string; assigned_to_name?: string;
   reporter_name?: string; assignee_name?: string;
-  contact?: string; created_at: string; updated_at: string;
+  contact?: string; customer?: string; created_at: string; updated_at: string;
   attachments?: Attachment[]; metadata_info?: Record<string, unknown>; comments?: Comment[];
 }
 
@@ -109,7 +109,7 @@ export default function TaskDetailPage() {
   const [detail, setDetail] = useState<Ticket | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [editForm, setEditForm] = useState({ title: '', description: '' });
+  const [editForm, setEditForm] = useState({ title: '', description: '', priority: 'medium', ticket_type: 'problem', customer: '' });
   const [escalateUser, setEscalateUser] = useState<UserItem | null>(null);
   const [showEscalatePopup, setShowEscalatePopup] = useState(false);
   const [resumeUser, setResumeUser] = useState<UserItem | null>(null);
@@ -407,7 +407,17 @@ export default function TaskDetailPage() {
     }
   };
 
-  const startEdit = () => { if (!detail) return; setEditForm({ title: detail.title, description: detail.description }); setEditing(true); };
+  const startEdit = () => {
+    if (!detail) return;
+    setEditForm({
+      title: detail.title,
+      description: detail.description,
+      priority: detail.priority || 'medium',
+      ticket_type: detail.ticket_type || 'problem',
+      customer: detail.customer || '',
+    });
+    setEditing(true);
+  };
 
   const saveEdit = async () => {
     if (!detail) return;
@@ -669,7 +679,24 @@ export default function TaskDetailPage() {
               <span className="detail-info-item__icon">🎯</span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">处理人</span>
-                <span className="detail-info-item__value">{detail.assignee_name || detail.assigned_to_name || detail.assigned_to || '-'}</span>
+                {/* AI 单派单中（status=new 且处理人未写入，Worker 60s 轮询派单）→ 呼吸动效「派单中」；
+                    手动单未指派 → 「未指派」 */}
+                {(() => {
+                  const noAssignee = !detail.assignee_name && !detail.assigned_to_name && !detail.assigned_to;
+                  const isAiTicket = !!detail.metadata_info?.session_id;
+                  if (noAssignee && isAiTicket && detail.status === 'new') {
+                    return (
+                      <span className="detail-info-item__value task-card2__person-name--dispatching">
+                        <i className="dispatch-pulse dispatch-pulse--inline" />派单中
+                      </span>
+                    );
+                  }
+                  return (
+                    <span className="detail-info-item__value">
+                      {detail.assignee_name || detail.assigned_to_name || detail.assigned_to || (noAssignee ? '未指派' : '-')}
+                    </span>
+                  );
+                })()}
               </div>
             </div>
             <div className="detail-info-item">
@@ -852,6 +879,41 @@ export default function TaskDetailPage() {
                 placeholder="请详细描述问题..."
                 autosize={{ minRows: 5, maxRows: 12 }}
                 maxlength={2000}
+              />
+            </div>
+            <div className="ticket-edit-form__field">
+              <label className="ticket-edit-form__label">优先级</label>
+              <div className="tasks-create-modal__radio-group">
+                {Object.entries(PRIORITY_DISPLAY_MAP).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`tasks-create-modal__radio-btn ${editForm.priority === value ? 'is-active' : ''}`}
+                    onClick={() => setEditForm((p) => ({ ...p, priority: value }))}
+                  >{label}</button>
+                ))}
+              </div>
+            </div>
+            <div className="ticket-edit-form__field">
+              <label className="ticket-edit-form__label">类型</label>
+              <div className="tasks-create-modal__radio-group">
+                {Object.entries(TICKET_TYPE_DISPLAY_MAP).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`tasks-create-modal__radio-btn ${editForm.ticket_type === value ? 'is-active' : ''}`}
+                    onClick={() => setEditForm((p) => ({ ...p, ticket_type: value }))}
+                  >{label}</button>
+                ))}
+              </div>
+            </div>
+            <div className="ticket-edit-form__field">
+              <label className="ticket-edit-form__label">联系人</label>
+              <Input
+                value={editForm.customer}
+                onChange={(v) => setEditForm((p) => ({ ...p, customer: String(v) }))}
+                placeholder="联系人 / 联系方式"
+                clearable
               />
             </div>
           </div>

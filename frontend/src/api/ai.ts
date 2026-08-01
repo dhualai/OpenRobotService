@@ -198,6 +198,8 @@ export interface AiTicketBrief {
   created_by_name?: string;
   assigned_to?: string;
   assigned_to_name?: string;
+  // 项目名称（tasks.project_name，list_all_tickets 返回）
+  project?: string;
 }
 
 /** 历史工单列表筛选参数 */

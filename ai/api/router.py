@@ -174,9 +174,20 @@ async def get_ticket(session_id: str = Query(..., description="会话 ID")):
             ticket = await pipeline.get_ticket(session_id)
             # ticket_id 默认是 "AI-..." 字符串，但前端催办/上报/评论/撤回依赖
             # 任务服务的数字 Task.id。此处查库取真实 id 覆盖，避免按钮报「工单号缺失」。
-            task_id = _resolve_ai_task_id(session_id)
-            if task_id is not None:
-                ticket["ticket_id"] = task_id
+            # 同时从 DB 补充发起人/处理人（Redis 路径的 _build_ticket 不含人名字段，
+            # 与列表接口 /memory/tickets/all 口径对齐）。
+            task = _resolve_ai_task(session_id)
+            if task is not None:
+                ticket["ticket_id"] = task.id
+                try:
+                    from app.services.user_service import UserService
+                    user_map = UserService.get_user_map()
+                    ticket["created_by"] = task.created_by or ""
+                    ticket["created_by_name"] = user_map.get(task.created_by, task.created_by) if task.created_by else ""
+                    ticket["assigned_to"] = task.assigned_to or ""
+                    ticket["assigned_to_name"] = user_map.get(task.assigned_to, task.assigned_to) if task.assigned_to else ""
+                except Exception:
+                    pass
             return {"code": 0, "data": ticket}
 
         # 降级：MySQL tasks 表中已有记录但 Redis 内存丢失（Redis 重启/过期等场景）
@@ -200,8 +211,8 @@ async def get_ticket(session_id: str = Query(..., description="会话 ID")):
         return {"code": 1, "message": str(e)}
 
 
-def _resolve_ai_task_id(session_id: str):
-    """按 session_id 查 ai 来源 Task，返回数字 id（供前端作为工单号）。
+def _resolve_ai_task(session_id: str):
+    """按 session_id 查 ai 来源 Task，返回 Task 对象（供取数字 id + 发起人/处理人）。
 
     优先按 (source, external_id) 精确匹配；external_id 可能因 ticket_seq 带了
     '#N' 后缀或超长走 sha1，故同时按 LIKE 兜底。
@@ -217,12 +228,11 @@ def _resolve_ai_task_id(session_id: str):
                 Task.external_id == _external_id_for(session_id),
             ).order_by(Task.id.desc()).first()
             if exact:
-                return exact.id
-            like = db.query(Task).filter(
+                return exact
+            return db.query(Task).filter(
                 Task.source == "ai",
                 Task.external_id.like(f"{session_id[:64]}%"),
             ).order_by(Task.id.desc()).first()
-            return like.id if like else None
         finally:
             db.close()
     except Exception:
@@ -737,6 +747,7 @@ async def list_all_tickets(
                     "id": d["id"], "session_id": d["session_id"], "ticket_ai_id": d["ticket_ai_id"],
                     "title": d["title"], "description": d["description"], "type": d["type"],
                     "priority": d["priority"], "status": d["status"], "contact": d["contact"],
+                    "project": d["project"],
                     "location": d["location"], "robot_type": d["robot_type"],
                     "fault_code": d["fault_code"], "severity": d["severity"],
                     "attachments": d["attachments"], "diagnosis": d["diagnosis"],
