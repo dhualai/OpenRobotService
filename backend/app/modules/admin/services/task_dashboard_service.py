@@ -3,7 +3,7 @@
 直接查询 app.models.task.Task（系统任务表 tasks），与 AI 服务 tickets 表统计
 （见 app/modules/admin/api/tickets.py）是不同数据源，不可混用。
 """
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 from sqlalchemy import select, func, and_
@@ -28,27 +28,47 @@ OPEN_STATUSES = [TaskStatus.NEW, TaskStatus.IN_PROGRESS, TaskStatus.PENDING]
 
 class TaskDashboardService:
     @staticmethod
-    async def get_ticket_summary(db: AsyncSession) -> Dict[str, Any]:
+    async def get_ticket_summary(
+        db: AsyncSession,
+        project_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        # project_ids 为 None 表示不过滤；为空列表表示当前用户无关联项目，直接返回空统计
+        if project_ids is not None and len(project_ids) == 0:
+            return {
+                "total": 0,
+                "pending_count": 0,
+                "overdue_count": 0,
+                "resolved_rate": 0.0,
+                "by_status": {key: 0 for key in FRONTEND_STATUS_MAP},
+            }
+
         by_status: Dict[str, int] = {}
         for key, status_enum in FRONTEND_STATUS_MAP.items():
-            result = await db.execute(select(func.count(Task.id)).where(Task.status == status_enum))
+            query = select(func.count(Task.id)).where(Task.status == status_enum)
+            if project_ids is not None:
+                query = query.where(Task.project_id.in_(project_ids))
+            result = await db.execute(query)
             by_status[key] = result.scalar() or 0
 
-        total_result = await db.execute(select(func.count(Task.id)))
+        total_query = select(func.count(Task.id))
+        if project_ids is not None:
+            total_query = total_query.where(Task.project_id.in_(project_ids))
+        total_result = await db.execute(total_query)
         total = total_result.scalar() or 0
 
         pending_count = by_status["new"] + by_status["in_progress"] + by_status["paused"]
 
         now = datetime.now()
-        overdue_result = await db.execute(
-            select(func.count(Task.id)).where(
-                and_(
-                    Task.deadline_at.isnot(None),
-                    Task.deadline_at < now,
-                    Task.status.in_(OPEN_STATUSES),
-                )
+        overdue_query = select(func.count(Task.id)).where(
+            and_(
+                Task.deadline_at.isnot(None),
+                Task.deadline_at < now,
+                Task.status.in_(OPEN_STATUSES),
             )
         )
+        if project_ids is not None:
+            overdue_query = overdue_query.where(Task.project_id.in_(project_ids))
+        overdue_result = await db.execute(overdue_query)
         overdue_count = overdue_result.scalar() or 0
 
         resolved_rate = round(by_status["resolved"] / total, 4) if total else 0.0
@@ -62,20 +82,31 @@ class TaskDashboardService:
         }
 
     @staticmethod
-    async def get_tickets_by_status(db: AsyncSession, status_key: str, skip: int = 0, limit: int = 20) -> Dict[str, Any]:
+    async def get_tickets_by_status(
+        db: AsyncSession,
+        status_key: str,
+        skip: int = 0,
+        limit: int = 20,
+        project_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         status_enum = FRONTEND_STATUS_MAP.get(status_key)
         if status_enum is None:
             return {"items": [], "total": 0}
 
-        count_result = await db.execute(select(func.count(Task.id)).where(Task.status == status_enum))
+        if project_ids is not None and len(project_ids) == 0:
+            return {"items": [], "total": 0}
+
+        count_query = select(func.count(Task.id)).where(Task.status == status_enum)
+        if project_ids is not None:
+            count_query = count_query.where(Task.project_id.in_(project_ids))
+        count_result = await db.execute(count_query)
         total = count_result.scalar() or 0
 
+        list_query = select(Task).where(Task.status == status_enum)
+        if project_ids is not None:
+            list_query = list_query.where(Task.project_id.in_(project_ids))
         result = await db.execute(
-            select(Task)
-            .where(Task.status == status_enum)
-            .order_by(Task.created_at.desc())
-            .offset(skip)
-            .limit(limit)
+            list_query.order_by(Task.created_at.desc()).offset(skip).limit(limit)
         )
         tasks = result.scalars().all()
 

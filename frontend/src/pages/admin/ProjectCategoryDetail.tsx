@@ -5,10 +5,12 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Loading } from 'tdesign-mobile-react';
 import { fetchProjectsByStage, fetchProjectsByUrgency, type ProjectListItem } from '@/api/dashboard';
 import { PROJECT_STAGE_MAP, URGENCY_MAP } from '@/shared/constants/dashboard';
+import { useAuthStore } from '@/stores/auth';
 
 export default function ProjectCategoryDetail() {
   const { dimension = 'stage', key = '' } = useParams<{ dimension: string; key: string }>();
   const navigate = useNavigate();
+  const { projectIds } = useAuthStore();
   const [items, setItems] = useState<ProjectListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -19,11 +21,11 @@ export default function ProjectCategoryDetail() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = isUrgency ? await fetchProjectsByUrgency(key) : await fetchProjectsByStage(key);
+    const res = isUrgency ? await fetchProjectsByUrgency(key, projectIds) : await fetchProjectsByStage(key, projectIds);
     setItems(res.items);
     setTotal(res.total);
     setLoading(false);
-  }, [key, isUrgency]);
+  }, [key, isUrgency, projectIds]);
 
   useEffect(() => { load(); }, [load]);
 

@@ -4,10 +4,12 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Loading } from 'tdesign-mobile-react';
 import { fetchTicketsByStatus, type TicketListItem } from '@/api/dashboard';
 import { TICKET_STATUS_MAP } from '@/shared/constants/dashboard';
+import { useAuthStore } from '@/stores/auth';
 
 export default function TicketStatusDetail() {
   const { status = '' } = useParams<{ status: string }>();
   const navigate = useNavigate();
+  const { projectIds } = useAuthStore();
   const [items, setItems] = useState<TicketListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -16,11 +18,11 @@ export default function TicketStatusDetail() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = await fetchTicketsByStatus(status);
+    const res = await fetchTicketsByStatus(status, projectIds);
     setItems(res.items);
     setTotal(res.total);
     setLoading(false);
-  }, [status]);
+  }, [status, projectIds]);
 
   useEffect(() => { load(); }, [load]);
 

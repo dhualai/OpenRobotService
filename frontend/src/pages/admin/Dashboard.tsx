@@ -44,7 +44,7 @@ const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { hasPermission } = useAuthStore();
+  const { hasPermission, projectIds } = useAuthStore();
   const canAccessAdminEntries = hasPermission('frontend:admin');
   const [ticketSummary, setTicketSummary] = useState<TicketSummary | null>(null);
   const [stageSummary, setStageSummary] = useState<ProjectStageSummary | null>(null);
@@ -57,18 +57,20 @@ export default function Dashboard() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+    // 工单/项目统计接口均传入 projectIds，仅统计当前用户关联项目内的数据；
+    // 项目列表走 /projects/me 由后端按 token 自动过滤当前用户关联项目
     const [tickets, stages, urgency, projectList] = await Promise.all([
-      fetchTicketSummary(),
-      fetchProjectStageSummary(),
-      fetchUrgencySummary(),
-      adminRequest<ProjectListItem[]>('/projects/?include_analysis=true').catch(() => []),
+      fetchTicketSummary(projectIds),
+      fetchProjectStageSummary(projectIds),
+      fetchUrgencySummary(projectIds),
+      adminRequest<ProjectListItem[]>('/projects/me?include_analysis=true').catch(() => []),
     ]);
     setTicketSummary(tickets);
     setStageSummary(stages);
     setUrgencySummary(urgency);
     setProjects(normalizeList<ProjectListItem>(projectList));
     setLoading(false);
-  }, []);
+  }, [projectIds]);
 
   const handleSync = useCallback(async () => {
     setSyncing(true);

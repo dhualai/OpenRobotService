@@ -11,22 +11,13 @@ interface Project { id?: string; code?: string; name: string; }
 
 interface RoleItem { id: string; name: string; role_type?: string; }
 
-interface AssociateItem {
-  id: string;
-  username: string;
-  userName: string;
-  roleId: string;
-  roleName: string;
-  superiorUsername?: string | null;
-}
-
 interface ExistingProjectUser {
   id: string;
   name: string;
   username: string;
   roleIds: string[];
   roleNames: string[];
-  reportToUsername?: string | null;
+  reportToId?: string | null;
 }
 
 export default function ProjectPeople({ selectedProject }: { selectedProject: Project | null }) {
@@ -36,7 +27,6 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
   const [associateUser, setAssociateUser] = useState<UserItem | null>(null);
   const [associateRole, setAssociateRole] = useState<string | null>(null);
   const [associateSuperiorUsername, setAssociateSuperiorUsername] = useState<string | null>(null);
-  const [associateList, setAssociateList] = useState<AssociateItem[]>([]);
   const [submittingAssociates, setSubmittingAssociates] = useState(false);
 
   const [roles, setRoles] = useState<RoleItem[]>([]);
@@ -67,11 +57,11 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
     try {
       const rows = await request<Array<{
         user_id: string; username: string; name?: string | null;
-        role_id: string; role_name: string; report_to_name?: string | null;
+        role_id: string; role_name: string; report_to_id?: string | null;
       }>>(`/projects/${project.id}/members`);
       const list = normalizeList<{
         user_id: string; username: string; name?: string | null;
-        role_id: string; role_name: string; report_to_name?: string | null;
+        role_id: string; role_name: string; report_to_id?: string | null;
       }>(rows);
       const byUsername = new Map<string, ExistingProjectUser>();
       for (const r of list) {
@@ -81,8 +71,8 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
             existing.roleIds.push(r.role_id);
             existing.roleNames.push(r.role_name);
           }
-          if (!existing.reportToUsername && r.report_to_name) {
-            existing.reportToUsername = r.report_to_name;
+          if (!existing.reportToId && r.report_to_id) {
+            existing.reportToId = r.report_to_id;
           }
         } else {
           byUsername.set(r.username, {
@@ -91,7 +81,7 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
             username: r.username,
             roleIds: [r.role_id],
             roleNames: [r.role_name],
-            reportToUsername: r.report_to_name || null,
+            reportToId: r.report_to_id || null,
           });
         }
       }
@@ -109,12 +99,12 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
   }, [selectedProject?.id]);
 
   const buildExistingUserTree = (list: ExistingProjectUser[]) => {
-    const usernameSet = new Set(list.map((u) => u.username));
+    const idSet = new Set(list.map((u) => u.id));
     const childrenMap = new Map<string, ExistingProjectUser[]>();
     const roots: ExistingProjectUser[] = [];
     list.forEach((u) => {
-      const parent = u.reportToUsername;
-      if (parent && usernameSet.has(parent)) {
+      const parent = u.reportToId;
+      if (parent && idSet.has(parent)) {
         const siblings = childrenMap.get(parent) || [];
         siblings.push(u);
         childrenMap.set(parent, siblings);
@@ -193,20 +183,10 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
           organization_ids: [payload],
         }),
       });
-      setAssociateList((prev) => [
-        ...prev,
-        {
-          id: `${associateUser.id}_${associateRole}_${Date.now()}`,
-          username: associateUser.username,
-          userName: associateUser.name || associateUser.username,
-          roleId: associateRole,
-          roleName: roleObj?.name || associateRole,
-          superiorUsername: associateSuperiorUsername,
-        },
-      ]);
       Toast({ message: '已添加关联人员', theme: 'success' });
       setAssociateVisible(false);
-      fetchExistingUsers(selectedProject);
+      // await 刷新：保存后立即拉取最新已关联人员，连续添加时上级候选也能即时看到上一个添加的人员
+      await fetchExistingUsers(selectedProject);
     } catch (err) {
       Toast({ message: `添加失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
@@ -214,59 +194,11 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
     }
   };
 
-  const buildAssociateTree = (list: AssociateItem[]) => {
-    const usernameSet = new Set(list.map((a) => a.username));
-    const childrenMap = new Map<string, AssociateItem[]>();
-    const roots: AssociateItem[] = [];
-    list.forEach((a) => {
-      if (a.superiorUsername && usernameSet.has(a.superiorUsername)) {
-        const siblings = childrenMap.get(a.superiorUsername) || [];
-        siblings.push(a);
-        childrenMap.set(a.superiorUsername, siblings);
-      } else {
-        roots.push(a);
-      }
-    });
-    return { roots, childrenMap };
-  };
-
-  const renderAssociateNode = (item: AssociateItem, depth: number, childrenMap: Map<string, AssociateItem[]>) => (
-    <div key={item.id}>
-      <div
-        style={{
-          background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10,
-          boxShadow: '0 1px 3px rgba(0,0,0,0.06)', marginLeft: depth * 20,
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontSize: 13, color: '#666' }}>
-            {depth > 0 && <span style={{ color: '#bbb', marginRight: 4 }}>└</span>}
-            {item.userName} - {item.roleName}
-          </div>
-          <Button
-            size="small"
-            theme="danger"
-            variant="outline"
-            onClick={() => setAssociateList((prev) => prev.filter((x) => x.id !== item.id && x.superiorUsername !== item.username))}
-          >
-            移除
-          </Button>
-        </div>
-      </div>
-      {(childrenMap.get(item.username) || []).map((child) => renderAssociateNode(child, depth + 1, childrenMap))}
-    </div>
-  );
-
-  // 上级人员候选 = 已关联人员 + 本次待提交的添加（按 username 去重，排除当前正要添加的用户自身）
+  // 上级人员候选 = 已关联人员（按 username 去重，排除当前正要添加的用户自身）
   const superiorCandidates = (() => {
     const map = new Map<string, { username: string; label: string }>();
     existingUsers.forEach((u) => {
       map.set(u.username, { username: u.username, label: `${u.name}${u.roleNames.length ? ' - ' + u.roleNames.join('/') : ''}` });
-    });
-    associateList.forEach((a) => {
-      if (!map.has(a.username)) {
-        map.set(a.username, { username: a.username, label: `${a.userName} - ${a.roleName}` });
-      }
     });
     return Array.from(map.values()).filter((c) => c.username !== associateUser?.username);
   })();
@@ -294,7 +226,7 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
           (() => {
             const { roots, childrenMap } = buildExistingUserTree(existingUsers);
             const renderNode = (u: ExistingProjectUser, depth: number) => {
-              const children = childrenMap.get(u.username) || [];
+              const children = childrenMap.get(u.id) || [];
               const collapsed = collapsedUsernames.has(u.username);
               const roleNames = u.roleNames.join('、');
               return (
@@ -343,17 +275,6 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
           })()
         )}
       </div>
-
-      {/* 本次添加预览 */}
-      {associateList.length > 0 && (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 13, color: '#999', marginBottom: 8 }}>本次已添加的关联人员（含上下层关系）</div>
-          {(() => {
-            const { roots, childrenMap } = buildAssociateTree(associateList);
-            return roots.map((root) => renderAssociateNode(root, 0, childrenMap));
-          })()}
-        </div>
-      )}
 
       {/* 添加关联人员弹窗 */}
       <Popup visible={associateVisible} onClose={() => setAssociateVisible(false)} placement="bottom" showOverlay>
