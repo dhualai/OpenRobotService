@@ -466,24 +466,66 @@ JSON 之后直接写回复。语气像工程师。引用图片时用 ![说明](u
 
 def _find_json_end(buffer: str) -> int:
     """
-    在 LLM 原始输出中定位 JSON 结束、自然语言开始的位置。
+    在 LLM 原始输出中定位「JSON 状态块结束 / 正文开始」的位置。
 
-    支持三种格式：
-      ```json\\n{...}\\n```\\n\\n<message>
-      ```json\\n{...}\\n```<message>
-      {\\n...}\\n\\n<message>
+    Returns:
+      >=0 : JSON 区域结束位置，正文从此处开始（0 表示无 JSON 头，整段即正文）。
+      -1  : JSON 尚未结束（fence/协议字段未到达、JSON 未闭合），需继续缓冲。
 
-    Returns: message 起始位置，-1 表示 JSON 尚未结束。
+    设计要点（修复三类边界异常）：
+      - 无 JSON 头（LLM 未遵守协议直接出正文）：第一个非空白字符既非 ``` 也非 { → 返回 0，
+        流式分支立即放行正文，避免「憋着不放 → 末尾一次性吐全文」（F1）。
+      - 裸 { 开头但非协议 JSON（正文里的花括号，如示例配置）：{ 后 200 字符内无协议字段
+        （action/state_update/thinking/intent）→ 返回 0，不把正文花括号当 JSON 头吞掉（F2）。
+      - fenced JSON：只等闭合 ``` 判定边界，不 fallthrough 到括号深度（避免结尾 ``` 未到达时
+        提前判定、把 fence 残留 ``` 当正文流出）（D）。
+      - ```python 等带语言标记的代码块：非 JSON 头 → 返回 0。
     """
     if not buffer:
         return -1
 
-    # Case 1: Fenced JSON — 找闭合的 ``` 出现在 } 之后
-    m = re.search(r'\}\s*```\s*', buffer)
-    if m:
-        return m.end()
+    stripped = buffer.lstrip()
+    if not stripped:
+        return -1  # 全空白，继续缓冲
 
-    # Case 2: Bare JSON — 跟踪括号深度，找顶层 }
+    # fence 前缀（1-2 个反引号）→ fence 还在传输，继续缓冲（避免首 token ` 被当正文泄漏）
+    if stripped.startswith('`') and not stripped.startswith('```'):
+        return -1
+
+    is_fenced = stripped.startswith('```')
+    is_bare = stripped.startswith('{')
+
+    # 1) 既非 ``` 也非 { 开头 → 无 JSON 头，正文从头开始
+    if not is_fenced and not is_bare:
+        return 0
+
+    # 2) 裸 { 开头：须确认是协议 JSON 头，否则视为正文里的花括号
+    if is_bare:
+        head = stripped[:200]
+        if not any(k in head for k in ('"action"', '"state_update"', '"thinking"', '"intent"')):
+            # 缓冲不足 200：协议字段可能还在传输，继续等
+            if len(stripped) < 200:
+                return -1
+            # 超 200 仍无协议字段 → 判定正文花括号，非 JSON 头
+            return 0
+
+    # 3) fenced 开头：区分 ```json JSON 头 与 ```python 等代码块
+    if is_fenced:
+        # ```json 或 ``` 后跟 { → 确认 JSON 头
+        if not re.match(r'```(?:json)?\s*\{', stripped):
+            # 还没到 {：可能是 ```json/```{ 还在传，或 ```python 代码块。
+            # 短缓冲继续等（容忍 ```j 这类 json 前缀，避免误判为代码块）；超 16 字符仍无 { → 非 JSON 头
+            if len(stripped) < 16:
+                return -1
+            return 0
+
+    # 4) 确认是 JSON 头 → 找边界
+    if is_fenced:
+        # fenced：只等闭合 ```（不 fallthrough 括号深度，避免 fence 残留泄漏）
+        m = re.search(r'\}\s*```\s*', buffer)
+        return m.end() if m else -1
+
+    # bare 协议 JSON：括号深度找顶层闭合
     depth = 0
     in_string = False
     escape = False
@@ -1688,16 +1730,19 @@ class AiDiagnosisPlatform:
                 if t_first_llm is None:
                     t_first_llm = time.perf_counter()
                     t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
-                # 拆出 JSON 区域和消息区域，只流式输出消息正文
+                # 拆出 JSON 区域和消息区域，只把消息正文送入 _msg_buf（节流输出）
                 _msg_start = _find_json_end(raw)
                 if _msg_start >= 0:
-                    raw_tokens.append(raw[:_msg_start])  # JSON 部分
+                    _suppress_msg = self._suppress_doomed_submit(state, raw[:_msg_start])
                     msg_body = raw[_msg_start:]
                 else:
-                    msg_body = raw
-                for ch in msg_body:
-                    _msg_buf.append(ch)
-                raw_tokens.append(msg_body)
+                    # JSON 未闭合（max_tokens 截断/格式异常）：不输出残破 JSON，
+                    # 交由 _parse_agent_output 兜底提取正文或给默认回复
+                    msg_body = ''
+                raw_tokens.append(raw)  # 完整 raw 供 _parse_agent_output 解析
+                if not _suppress_msg and msg_body:
+                    for ch in msg_body:
+                        _msg_buf.append(ch)
             else:
                 async for token in _stream(prompt=prompt, max_tokens=8000, temperature=0.5):
                     raw_tokens.append(token)
