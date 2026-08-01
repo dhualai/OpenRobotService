@@ -112,10 +112,14 @@ const sanitizeAiText = (raw: string): string => {
   return result;
 };
 
-/** 流式中间态判定：疑似 LLM 协议 JSON 头泄漏（以 { / ``` 开头），流式期间以占位代替上屏 */
+/** 流式中间态判定：疑似 LLM 协议 JSON 头泄漏，流式期间以占位代替上屏。
+ *  判定与 sanitizeAiText 对齐，避免误伤正常回复：
+ *  - 裸 JSON 头：{ 开头且前 400 字符含 "action" 字段（正文里 { 举例不含 action，不误判）
+ *  - fenced JSON 头：```json / 无语言标记 ``` 紧跟 {（```python 等带语言标记的代码块属正常回复，不占位） */
 const looksLikeJsonHead = (text: string): boolean => {
   const t = text.trimStart();
-  return t.startsWith('{') || t.startsWith('```');
+  if (t.startsWith('{') && t.slice(0, 400).includes('"action"')) return true;
+  return /^```(?:json)?\s*\{/.test(t);
 };
 
 /** DB 会话消息 → 前端 Message：附件恢复 + AI 文本清洗 + 空白 AI 气泡过滤（历史异常数据不上屏） */
@@ -418,7 +422,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (pendingNewConversation) return; // 保持空白新会话，不自动选
       if (current === null && list.length > 0) {
         // list 已由后端按更新时间倒序返回，list[0] 即最近会话
-        setConversationTitle(list[0].title || '');
+        setConversationTitle(list[0].title && list[0].title !== '新会话' ? list[0].title : '新建会话');
         setConversationId(list[0].id);
       }
     })();
@@ -451,17 +455,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       setMessages(cached);
       scrollToBottomNow();
       // 后台静默校正：缓存可能是乐观消息/流式中间态快照，DB 为最终一致源。
-      // 仅当 DB 内容确实更新（条数或末条内容不同）才覆盖，避免无意义重渲染与旧数据回滚。
+      // 仅当 DB 条数更多（有新落库的消息）才覆盖：appendMessage 是 fire-and-forget，
+      // 切回瞬间 DB 可能还少于缓存（乐观用户消息 / AI 回复尚未落库），双向不等会把这些
+      // 未落库消息覆盖丢失。会话消息只增不改，条数相同即一致，无需回滚。
       getConversation(conversationId).then((full) => {
         if (convRef.current !== conversationId) return; // 校正期间又切走了，丢弃
         const fresh = mapDbMessages(full);
-        setMessages((prev) => {
-          const lastPrev = prev[prev.length - 1];
-          const lastFresh = fresh[fresh.length - 1];
-          const changed = fresh.length !== prev.length
-            || (!!lastFresh && !!lastPrev && lastFresh.content !== lastPrev.content);
-          return changed ? fresh : prev;
-        });
+        setMessages((prev) => (fresh.length > prev.length ? fresh : prev));
       }).catch(() => {});
       return;
     }
@@ -475,7 +475,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         // mapDbMessages 统一做：附件恢复 + AI 文本清洗（带 }/JSON 残留）+ 空白 AI 气泡过滤
         const restored: Message[] = mapDbMessages(full);
         setMessages(restored);
-        setConversationTitle(full.title || '');
+        setConversationTitle(full.title && full.title !== '新会话' ? full.title : '新建会话');
         const sid = readAiSessionId(full);
         if (sid) setSessionId(sid);
         else setSessionId('');
@@ -733,6 +733,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           if (currentEvent === 'result' && data.ticket) {
             ticketCreatedThisTurn = true;
           }
+          // 第2轮 AI 生成会话标题：更新当前标题 + 刷新左侧列表（DB 已由后端同步）
+          if (currentEvent === 'title' && data.title) {
+            setConversationTitle(data.title);
+            refreshConversations();
+          }
         } catch { /* JSON 行解析出错则跳过 */ }
       };
       let buffer = '';
@@ -757,11 +762,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
       // 流式结束：持久化 AI 回复到发送时的会话（快照）——切会话后 convRef 已指向新会话，不能再用
       if (acc && sentConvId) appendMessage(sentConvId, 'assistant', acc).catch(() => {});
-      // 首轮问答完成 → 同步会话到列表（标题=首轮提问），定位到新会话；
+      // 首轮问答完成 → 同步会话到列表、定位到新会话。
+      // 标题保持「新建会话」：标题由 AI 在第2轮回复时生成（event: title），在此之前都叫「新建会话」。
       // 仅当用户未切走（仍在发送时的会话）才执行跳转，避免把用户从别的会话拽回来
       if (wasNew && sentConvId && convRef.current === sentConvId) {
         setConversationId(sentConvId);
-        setConversationTitle(content.slice(0, 40) || 'AI 对话');
         refreshConversations();
       }
       // 任务 Agent 方案草稿：注入 solution_draft 标记

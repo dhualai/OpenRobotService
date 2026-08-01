@@ -71,8 +71,8 @@ class TestChatSubmit:
 
         result = await platform._agent_think(request, state, memory)
 
-        # submit 被拦截 → action 改为 answer，提示补项目
-        assert result["action"] == "answer"
+        # submit 被拦截 → action 改为 ask，提示补项目
+        assert result["action"] == "ask"
         assert "项目" in result["message"]
 
     @pytest.mark.unit
@@ -157,14 +157,18 @@ class TestButtonSubmit:
 
         result = await platform.prepare_ticket(session_id)
 
-        assert result["stage"] == "need_fields"
-        assert "project" in result["missing_fields"]
+        # 缺 project → prepare 在 _assess 阶段返回 not_ready（不发弹窗，回对话补充）
+        assert result["stage"] == "not_ready"
+        assert "项目名称" in result["missing_info"]
 
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_button_prepare_blocked(self, platform, make_state):
-        """resolved + 空 problem → prepare 返回 code=1"""
-        state = make_state(phase="resolved", problem_summary="")
+        """刚提完单（last_submitted_ticket）+ 无新 problem → prepare 闭环拦截 code=1"""
+        state = make_state(
+            phase="resolved", problem_summary="",
+            last_submitted_ticket={"ticket_id": "T-1", "db_id": 1, "title": "旧工单", "topic": "旧问题"},
+        )
         session_id = state.session_id
 
         from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
@@ -175,7 +179,7 @@ class TestButtonSubmit:
         result = await platform.prepare_ticket(session_id)
 
         assert result["code"] == 1
-        assert "无需重复提交" in result["message"] or "请先描述现象" in result["message"]
+        assert "新问题" in result["message"] or "新现象" in result["message"]
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -239,8 +243,10 @@ class TestButtonSubmit:
         _save_agent_state(memory, state)
         await platform._memory_manager.save_memory(memory)
 
-        # prepare 创建 draft（缺 project）
-        await platform.prepare_ticket(session_id)
+        # prepare 在缺 project 时不建草稿（返回 not_ready），手动注入一个缺 project 的草稿
+        memory = await platform._memory_manager.get_memory(session_id)
+        memory.metadata["ticket_draft"] = {"project": ""}
+        await platform._memory_manager.save_memory(memory)
 
         # confirm 不补 project
         result = await platform.confirm_submit(session_id)
@@ -370,14 +376,25 @@ class TestMixedPaths:
         memory = await platform._memory_manager.get_memory(session_id)
         request = make_request(query="转工单", session_id=session_id)
 
-        # 创建一个空问题 state 模拟 resolved 状态（mock confirm 已清理）
+        # mock confirm 已清理：last_submitted_ticket 已设，problem 清空
         from ai.agents.AiDiagnosisPlatform.pipeline import _load_agent_state
         loaded_state = _load_agent_state(memory.metadata) or make_state(phase="resolved", problem_summary="")
+
+        # 让 LLM 输出 submit + 空 state_update（无新问题），触发闭环拦截
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = (
+            '```json\n'
+            + json.dumps({
+                "thinking": "用户要求提单", "action": "submit", "intent": "troubleshoot",
+                "message": "好的，已为你生成工单。", "state_update": {},
+            }, ensure_ascii=False)
+            + '\n```\n好的，已为你生成工单。'
+        )
 
         result = await platform._agent_think(request, loaded_state, memory)
 
         assert result["action"] == "answer"
-        assert "无需重复提交" in result["message"] or "请先描述现象" in result["message"]
+        assert "新问题" in result["message"] or "新现象" in result["message"]
 
 
 # ================================================================
@@ -385,12 +402,12 @@ class TestMixedPaths:
 # ================================================================
 
 class TestPostSubmitFollowUp:
-    """提单后判断是否为补充信息 → 追加到工单"""
+    """提单后状态重置 + 新问题处理"""
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_was_post_submit_flag_set(self, platform, make_state, make_request):
-        """提单后 → was_post_submit 标志生效"""
+    async def test_state_reset_after_submit(self, platform, make_state, make_request):
+        """提单后 state 重置：last_submitted_ticket 设、诊断状态清空"""
         state = make_state(
             phase="idle",
             problem_summary="机器人离线",
