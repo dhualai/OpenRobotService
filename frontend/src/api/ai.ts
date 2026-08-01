@@ -260,15 +260,16 @@ export const qaUpload = (
   message = '',
   onProgress?: (percent: number) => void,
 ): Promise<UploadResult> => {
-  return new Promise((resolve, reject) => {
+  // 401 刷新重试一次（对齐 fetchWithAuth）：上传+文字时后端会跑诊断可能触发提单，
+  // token 失效后端返回 401（而非 200+空 created_by），此处刷新重试避免上传失败。
+  const doUpload = (tok: string | null): Promise<UploadResult> => new Promise((resolve, reject) => {
     const formData = new FormData();
     formData.append('session_id', sessionId);
     if (message.trim()) formData.append('message', message.trim());
     files.forEach((f) => formData.append('files', f));
-    const token = useAuthStore.getState().token;
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${BASE}/qa/upload`);
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    if (tok) xhr.setRequestHeader('Authorization', `Bearer ${tok}`);
     xhr.upload.onprogress = (e: ProgressEvent) => {
       if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
     };
@@ -284,4 +285,18 @@ export const qaUpload = (
     xhr.onerror = () => reject(new Error('网络错误，上传失败'));
     xhr.send(formData);
   });
+  return (async () => {
+    let res = await doUpload(useAuthStore.getState().token);
+    if (res.status === 401) {
+      const ok = await useAuthStore.getState().refreshAuthToken();
+      if (ok) {
+        res = await doUpload(useAuthStore.getState().token);
+      }
+      if (res.status === 401) {
+        kickToLogin('登录已过期，请重新登录');
+        throw new Error('UNAUTHORIZED');
+      }
+    }
+    return res;
+  })();
 };

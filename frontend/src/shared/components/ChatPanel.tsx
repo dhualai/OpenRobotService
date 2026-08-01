@@ -545,7 +545,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 失败：用户气泡标记失败态（红色遮罩），移除 AI 占位气泡
       setMessages((prev) => prev.map((m) => (m.id === userId ? { ...m, uploading: false, failed: true } : m)));
       setMessages((prev) => prev.filter((m) => m.id !== assistantId));
-      Toast({ message: `发送失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      // 鉴权失效已由 kickToLogin 统一提示并跳转，此处不重复弹错误（与 send 一致）
+      if (!isKickingToLogin()) {
+        Toast({ message: `发送失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      }
     } finally {
       setLoading(false);
     }
