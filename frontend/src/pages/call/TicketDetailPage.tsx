@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Toast, Loading, Tag, Popup, Input, Textarea } from 'tdesign-mobile-react';
-import { NotificationIcon, UploadIcon, RollbackIcon, EditIcon, ChevronRightIcon } from 'tdesign-icons-react';
+import { NotificationIcon, UploadIcon, RollbackIcon, EditIcon } from 'tdesign-icons-react';
 import { qaGetTicket } from '@/api/ai';
 import { cancelTicket, urgeTicket, reportTicket, uploadCommentAttachment } from '@/api/ticket';
 import {
@@ -12,6 +12,8 @@ import {
   canUrgeTicket,
   canReportTicket,
   canCancelTicket,
+  STATUS_DISPLAY_MAP,
+  getStatusColor,
 } from '@/shared/constants/ticket';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -288,7 +290,12 @@ export default function TicketDetailPage() {
           <div className="detail-card__meta">
             {ticket.type && <Tag theme="primary">{TYPE_LABEL[ticket.type] || ticket.type}</Tag>}
             {ticket.priority && <Tag theme="warning">{displayPriority(ticket.priority)}</Tag>}
-            <span className="detail-card__type">{ticket.status || 'pending_dispatch'}</span>
+            <Tag
+              theme="primary"
+              style={{ background: getStatusColor(ticket.status), color: '#fff', border: 'none', fontWeight: 500 }}
+            >
+              {STATUS_DISPLAY_MAP[(ticket.status || '').toLowerCase()] || ticket.status || '待派单'}
+            </Tag>
             <span className="detail-card__id">{ticket.ticket_id || ''}</span>
           </div>
           <h2 className="detail-card__title">{ticket.title || '(无标题)'}</h2>
@@ -296,20 +303,6 @@ export default function TicketDetailPage() {
           {ticket.contact && <DetailRow label="联系人" value={ticket.contact} />}
           <DetailRow label="创建时间" value={ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''} />
         </div>
-
-        {/* 跳转「系统任务工单详情」引导条：与 /tasks/:id 详情同源（同一 ticket_id 拉取 tasks 服务）。
-            AI 未生成工单（无 ticket_id）时隐藏；独立于底部操作区，终态工单仍保留入口。 */}
-        {ticket.ticket_id && (
-          <div
-            className="detail-card"
-            role="button"
-            onClick={() => navigate(`/tasks/${ticket.ticket_id}`)}
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}
-          >
-            <span style={{ fontSize: 14, color: '#0052d9', fontWeight: 500 }}>查看系统任务工单详情</span>
-            <ChevronRightIcon size="18" style={{ color: '#0052d9' }} />
-          </div>
-        )}
 
         {/* 人员流转：发起人 → 处理人（与历史工单列表页同款 task-card2__people 样式）
             人员信息来自 tasks 服务 GET /{ticket_id}；AI 未生成工单(无 ticket_id)时该字段缺失则不显示。
