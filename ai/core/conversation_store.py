@@ -68,6 +68,41 @@ def ensure_conversation(
         db.close()
 
 
+def rename_conversation(session_id: str, title: str) -> None:
+    """更新会话标题。
+
+    AI 在第2轮生成标题后调用，同步到 DB conversations.title，供会话列表 / 切回读取，
+    保证标题在「当前显示 / 列表 / 刷新后」三处一致。
+    """
+    if not title:
+        return
+    from ai.core.database import Conversation
+    db = _get_session()
+    try:
+        row = db.query(Conversation).filter(
+            Conversation.service_ticket_id == session_id
+        ).first()
+        if row:
+            row.title = title
+            row.updated_at = _now()
+            db.commit()
+    finally:
+        db.close()
+
+
+def get_conversation_title(session_id: str) -> str:
+    """读取会话当前 DB 标题。用于 AI 生成标题前判断用户是否已手动重命名（避免覆盖）。"""
+    from ai.core.database import Conversation
+    db = _get_session()
+    try:
+        row = db.query(Conversation).filter(
+            Conversation.service_ticket_id == session_id
+        ).first()
+        return row.title if row else ""
+    finally:
+        db.close()
+
+
 def save_message(
     session_id: str,
     role: str,        # "user" / "assistant"
