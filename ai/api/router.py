@@ -133,6 +133,8 @@ async def ask_question_stream(
                     yield f"event: status\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
             yield f"event: done\ndata: {json.dumps({'total_ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
         except Exception as e:
+            # 先 yield 缺省 token（前端可见），方便定位是后端异常（而非前端空白）
+            yield f"data: {json.dumps({'token': f'[AI 服务异常: {str(e)[:80]}]'}, ensure_ascii=False)}\n\n"
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
     return StreamingResponse(sse(), media_type="text/event-stream")
 
@@ -646,6 +648,8 @@ async def chat_stream(request: ChatRequest):
             total_ms = round((time.perf_counter() - t0) * 1000)
             yield f"event: done\ndata: {json.dumps({'total_ms': total_ms})}\n\n"
         except Exception as e:
+            # 先 yield 缺省 token（前端可见），方便定位是后端异常（而非前端空白）
+            yield f"data: {json.dumps({'token': f'[AI 服务异常: {str(e)[:80]}]'}, ensure_ascii=False)}\n\n"
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
     return StreamingResponse(sse(), media_type="text/event-stream")
 
