@@ -39,7 +39,8 @@ interface AiTicket {
   priority?: string;
   status?: string;
   contact?: string;
-  created_at?: number;
+  // AI 接口返回 Unix 秒（number）；DB TicketResponse 返回 ISO 字符串（string），两者都支持
+  created_at?: number | string;
   diagnosis?: AiDiagnosis;
   attachments?: Array<Record<string, unknown>>;
   comments?: Comment[];
@@ -93,7 +94,7 @@ export default function TicketDetailPage() {
         if (!silent) setTicket(aiTicket);
         if (aiTicket.ticket_id) {
           try {
-            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
+            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; created_at?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
             // 用 DB 的 status 覆盖 AI 的 status：AI(qaGetTicket) 返回 dispatched/escalated 等 AI 内部状态，
             // DB(tasks 表) 是 new/in_progress 等标准枚举。列表(qaListTickets)也来自 DB，
             // 覆盖后详情页按钮置灰(canUrgeTicket/canReportTicket)与列表一致。
@@ -107,6 +108,9 @@ export default function TicketDetailPage() {
               created_by_name: taskDetail.created_by_name || prev.created_by_name,
               assigned_to: taskDetail.assigned_to || prev.assigned_to,
               assigned_to_name: taskDetail.assigned_to_name || prev.assigned_to_name,
+              // 创建时间以 DB 真实创建时间为准：AI 接口 get_ticket 每次读取都用 int(time.time()) 重写，
+              // 并非工单真实创建时间，故用 DB 的 created_at 覆盖（与 status/created_by 同口径）。
+              created_at: taskDetail.created_at ?? prev.created_at,
               title: taskDetail.title || prev.title,
               description: taskDetail.description ?? prev.description,
               priority: taskDetail.priority || prev.priority,
