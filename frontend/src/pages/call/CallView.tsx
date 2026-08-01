@@ -81,11 +81,13 @@ export default function CallView() {
           </div>
         </div>
 
-        {/* 历史工单区（showHistory 时显示，覆盖在对话区上方） */}
+        {/* 历史工单区（showHistory 时显示，覆盖在对话区上方）。
+            用 absolute 相对 .app-shell(内容区，已排除底部 TabBar) 定位，
+            而非 fixed 全屏，避免盖住底部模块入口 TabBar（详情页是独立路由天然不盖）。 */}
         {showHistory && (
-          <div className="chat-view" style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 50, background: '#f5f5f5' }}>
+          <div className="chat-view" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 50, background: '#f5f5f5' }}>
             <Navbar title="历史工单" fixed leftArrow onLeftClick={() => setShowHistory(false)} />
-            <div className="page-container" style={{ paddingTop: 16, height: 'calc(100vh - 16px)', display: 'flex', flexDirection: 'column' }}>
+            <div className="page-container" style={{ paddingTop: 16, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
               <HistoryTickets showHeader={false} />
             </div>
           </div>
