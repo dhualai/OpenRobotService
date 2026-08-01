@@ -57,20 +57,20 @@ interface RoleItem { id: string; name: string; role_type?: string; }
 
 interface AssociateItem {
   id: string;            // 本地临时 id（仅用于 React key 与本地移除）
-  userId: string;        // 用户 id（对应后端 report_to_id）
-  username: string;      // 登录名（对应后端 user_name）
-  userName: string;      // 显示名
+  username: string;      // 登录名（唯一标识，对应后端 user_name / report_to_id）
+  userName: string;      // 显示名（user.name）
   roleId: string;        // 角色 id（对应后端 role_id）
   roleName: string;      // 角色名（仅用于显示）
-  superiorId?: string | null; // 上级的 userId（对应后端 report_to_id）
+  superiorUsername?: string | null; // 上级的 username（对应后端 report_to_id）
 }
 
 interface ExistingProjectUser {
-  id: string;            // = userId
-  name: string;
-  username: string;
+  id: string;            // 用户 id（仅用于移除接口 DELETE /users/project/role）
+  name: string;          // 显示名（user.name）
+  username: string;      // 登录名（唯一标识，建树与汇报关系均按 username 关联）
   roleIds: string[];
-  reportToId?: string | null; // 在该项目下的汇报人 userId
+  roleNames: string[];   // 角色名列表（用于显示，直接取自后端 role_name）
+  reportToUsername?: string | null; // 在该项目下的汇报人 username（对应后端 report_to_id）
 }
 
 export default function ProjectAuth() {
@@ -87,7 +87,7 @@ export default function ProjectAuth() {
   const [associateVisible, setAssociateVisible] = useState(false);
   const [associateUser, setAssociateUser] = useState<UserItem | null>(null);
   const [associateRole, setAssociateRole] = useState<string | null>(null);
-  const [associateSuperiorId, setAssociateSuperiorId] = useState<string | null>(null);
+  const [associateSuperiorUsername, setAssociateSuperiorUsername] = useState<string | null>(null);
   const [associateList, setAssociateList] = useState<AssociateItem[]>([]);
   const [submittingAssociates, setSubmittingAssociates] = useState(false);
 
@@ -99,9 +99,9 @@ export default function ProjectAuth() {
   const [existingUsers, setExistingUsers] = useState<ExistingProjectUser[]>([]);
   const [existingUsersLoading, setExistingUsersLoading] = useState(false);
   // 已关联人员树：折叠状态 + 右键移除菜单
-  const [collapsedUserIds, setCollapsedUserIds] = useState<Set<string>>(new Set());
-  const [contextMenu, setContextMenu] = useState<{ userId: string; x: number; y: number } | null>(null);
-  const [removingUserId, setRemovingUserId] = useState<string | null>(null);
+  const [collapsedUsernames, setCollapsedUsernames] = useState<Set<string>>(new Set());
+  const [contextMenu, setContextMenu] = useState<{ username: string; x: number; y: number } | null>(null);
+  const [removingUsername, setRemovingUsername] = useState<string | null>(null);
 
   // 申请授权码：机器码 + 开始/结束日期 + 允许最大车数，调用 POST /export/apply_project_license（经 MQTT 审批）
   const [machineCode, setMachineCode] = useState('');
@@ -146,43 +146,52 @@ export default function ProjectAuth() {
     }
   };
 
-  // 加载项目已关联的人员：基于后端 project_role_relations（含 report_to_id）按 project.id 筛选
+  // 加载项目已关联的人员：直接调用后端 GET /projects/{project_id}/members
+  // 后端按 project_id 过滤返回每个(用户,角色)绑定行，前端按 username 聚合成 ExistingProjectUser[]
   const fetchExistingUsers = async (project: Project) => {
+    if (!project.id) { setExistingUsers([]); return; }
     setExistingUsersLoading(true);
     try {
-      const [usersData, rolesData] = await Promise.all([
-        request<{
-          id: string;
-          username: string;
-          name?: string | null;
-          project_role_relations?: Array<{ project_id: string; role_id: string; report_to_id?: string | null }>;
-        }[]>('/users/?limit=1000'),
-        request<RoleItem[]>('/roles/'),
-      ]);
-      const allUsers = normalizeList<{
-        id: string;
+      const rows = await request<Array<{
+        user_id: string;
         username: string;
         name?: string | null;
-        project_role_relations?: Array<{ project_id: string; role_id: string; report_to_id?: string | null }>;
-      }>(usersData);
-      const allRoles = normalizeList<RoleItem>(rolesData);
-      setRoles((prev) => (prev.length === 0 ? allRoles.filter((r) => r.role_type === 'project') : prev));
-
-      const pid = project.id;
-      const matched: ExistingProjectUser[] = [];
-      for (const u of allUsers) {
-        const rels = u.project_role_relations || [];
-        const projRels = pid ? rels.filter((r) => r.project_id === pid) : [];
-        if (projRels.length === 0) continue;
-        matched.push({
-          id: u.id,
-          name: u.name || u.username,
-          username: u.username,
-          roleIds: projRels.map((r) => r.role_id),
-          reportToId: projRels.find((r) => r.report_to_id)?.report_to_id || null,
-        });
+        role_id: string;
+        role_name: string;
+        report_to_name?: string | null;
+      }>>(`/projects/${project.id}/members`);
+      const list = normalizeList<{
+        user_id: string;
+        username: string;
+        name?: string | null;
+        role_id: string;
+        role_name: string;
+        report_to_name?: string | null;
+      }>(rows);
+      // 一个用户在该项目下可能有多个角色（多行），按 username 聚合
+      const byUsername = new Map<string, ExistingProjectUser>();
+      for (const r of list) {
+        const existing = byUsername.get(r.username);
+        if (existing) {
+          if (!existing.roleIds.includes(r.role_id)) {
+            existing.roleIds.push(r.role_id);
+            existing.roleNames.push(r.role_name);
+          }
+          if (!existing.reportToUsername && r.report_to_name) {
+            existing.reportToUsername = r.report_to_name;
+          }
+        } else {
+          byUsername.set(r.username, {
+            id: r.user_id,
+            name: r.name || r.username,
+            username: r.username,
+            roleIds: [r.role_id],
+            roleNames: [r.role_name],
+            reportToUsername: r.report_to_name || null,
+          });
+        }
       }
-      setExistingUsers(matched);
+      setExistingUsers(Array.from(byUsername.values()));
     } catch {
       setExistingUsers([]);
     } finally {
@@ -190,14 +199,14 @@ export default function ProjectAuth() {
     }
   };
 
-  // 按汇报关系（reportToId）构建已关联人员树：上级不在本项目内则作为根节点
+  // 按汇报关系（reportToUsername）构建已关联人员树：上级不在本项目内则作为根节点
   const buildExistingUserTree = (list: ExistingProjectUser[]) => {
-    const idSet = new Set(list.map((u) => u.id));
+    const usernameSet = new Set(list.map((u) => u.username));
     const childrenMap = new Map<string, ExistingProjectUser[]>();
     const roots: ExistingProjectUser[] = [];
     list.forEach((u) => {
-      const parent = u.reportToId;
-      if (parent && idSet.has(parent)) {
+      const parent = u.reportToUsername;
+      if (parent && usernameSet.has(parent)) {
         const siblings = childrenMap.get(parent) || [];
         siblings.push(u);
         childrenMap.set(parent, siblings);
@@ -209,15 +218,16 @@ export default function ProjectAuth() {
   };
 
   // 移除人员：删除该用户在当前项目下的所有角色绑定（逐条调用 DELETE /users/project/role）
-  const handleRemoveExistingUser = async (userId: string) => {
+  // 按 username 定位用户，取其 user.id 作为 DELETE 接口的 user_id
+  const handleRemoveExistingUser = async (username: string) => {
     if (!selectedProject?.id) { Toast({ message: '当前项目缺少 id', theme: 'warning' }); return; }
-    const user = existingUsers.find((u) => u.id === userId);
+    const user = existingUsers.find((u) => u.username === username);
     if (!user) return;
-    setRemovingUserId(userId);
+    setRemovingUsername(username);
     try {
       for (const roleId of user.roleIds) {
         const qs = new URLSearchParams({
-          user_id: userId,
+          user_id: user.id,
           project_id: selectedProject.id,
           role_id: roleId,
         }).toString();
@@ -228,7 +238,7 @@ export default function ProjectAuth() {
     } catch (err) {
       Toast({ message: `移除失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
-      setRemovingUserId(null);
+      setRemovingUsername(null);
       setContextMenu(null);
     }
   };
@@ -322,13 +332,13 @@ export default function ProjectAuth() {
     }
     setAssociateUser(null);
     setAssociateRole(null);
-    setAssociateSuperiorId(null);
+    setAssociateSuperiorUsername(null);
     setAssociateVisible(true);
     if (roles.length === 0) fetchRoles();
   };
 
   // 保存关联人员：单条立即提交到后端 POST /users/project/assign-roles
-  // 后端字段：user_name=username, role_id=roleId, report_to_id=superiorId(=上级 userId，为空则不传)
+  // 后端字段：user_name=username, role_id=roleId, report_to_id=superiorUsername(=上级 username，为空则不传)
   const handleSaveAssociate = async () => {
     if (!selectedProject) { Toast({ message: '请先选择一个项目', theme: 'warning' }); return; }
     if (!selectedProject.id) { Toast({ message: '当前项目缺少 id，无法提交', theme: 'warning' }); return; }
@@ -340,7 +350,7 @@ export default function ProjectAuth() {
       user_name: associateUser.username,
       role_id: associateRole,
     };
-    if (associateSuperiorId) payload.report_to_id = associateSuperiorId;
+    if (associateSuperiorUsername) payload.report_to_id = associateSuperiorUsername;
 
     setSubmittingAssociates(true);
     try {
@@ -356,12 +366,11 @@ export default function ProjectAuth() {
         ...prev,
         {
           id: `${associateUser.id}_${associateRole}_${Date.now()}`,
-          userId: associateUser.id,
           username: associateUser.username,
           userName: associateUser.name || associateUser.username,
           roleId: associateRole,
           roleName: roleObj?.name || associateRole,
-          superiorId: associateSuperiorId,
+          superiorUsername: associateSuperiorUsername,
         },
       ]);
       Toast({ message: '已添加关联人员', theme: 'success' });
@@ -374,16 +383,16 @@ export default function ProjectAuth() {
     }
   };
 
-  // 按上下层关系构建树：无上级或上级已被移除的人员作为顶层节点
+  // 按上下层关系构建树：无上级或上级已被移除的人员作为顶层节点（按 username 关联）
   const buildAssociateTree = (list: AssociateItem[]) => {
-    const idSet = new Set(list.map((a) => a.id));
+    const usernameSet = new Set(list.map((a) => a.username));
     const childrenMap = new Map<string, AssociateItem[]>();
     const roots: AssociateItem[] = [];
     list.forEach((a) => {
-      if (a.superiorId && idSet.has(a.superiorId)) {
-        const siblings = childrenMap.get(a.superiorId) || [];
+      if (a.superiorUsername && usernameSet.has(a.superiorUsername)) {
+        const siblings = childrenMap.get(a.superiorUsername) || [];
         siblings.push(a);
-        childrenMap.set(a.superiorId, siblings);
+        childrenMap.set(a.superiorUsername, siblings);
       } else {
         roots.push(a);
       }
@@ -408,13 +417,13 @@ export default function ProjectAuth() {
             size="small"
             theme="danger"
             variant="outline"
-            onClick={() => setAssociateList((prev) => prev.filter((x) => x.id !== item.id && x.superiorId !== item.userId))}
+            onClick={() => setAssociateList((prev) => prev.filter((x) => x.id !== item.id && x.superiorUsername !== item.username))}
           >
             移除
           </Button>
         </div>
       </div>
-      {(childrenMap.get(item.id) || []).map((child) => renderAssociateNode(child, depth + 1, childrenMap))}
+      {(childrenMap.get(item.username) || []).map((child) => renderAssociateNode(child, depth + 1, childrenMap))}
     </div>
   );
 
@@ -536,20 +545,20 @@ export default function ProjectAuth() {
               (() => {
                 const { roots, childrenMap } = buildExistingUserTree(existingUsers);
                 const renderNode = (u: ExistingProjectUser, depth: number) => {
-                  const children = childrenMap.get(u.id) || [];
-                  const collapsed = collapsedUserIds.has(u.id);
-                  const roleNames = u.roleIds.map((rid) => roles.find((r) => r.id === rid)?.name || rid).join('、');
+                  const children = childrenMap.get(u.username) || [];
+                  const collapsed = collapsedUsernames.has(u.username);
+                  const roleNames = u.roleNames.join('、');
                   return (
-                    <div key={u.id}>
+                    <div key={u.username}>
                       <div
                         style={{
-                          background: removingUserId === u.id ? '#fff1f0' : '#fafafa',
+                          background: removingUsername === u.username ? '#fff1f0' : '#fafafa',
                           borderRadius: 8, padding: 14, marginBottom: 10, marginLeft: depth * 20,
                           boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'context-menu',
                         }}
                         onContextMenu={(e) => {
                           e.preventDefault();
-                          setContextMenu({ userId: u.id, x: e.clientX, y: e.clientY });
+                          setContextMenu({ username: u.username, x: e.clientX, y: e.clientY });
                         }}
                       >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
@@ -560,9 +569,9 @@ export default function ProjectAuth() {
                               <span
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setCollapsedUserIds((prev) => {
+                                  setCollapsedUsernames((prev) => {
                                     const next = new Set(prev);
-                                    if (next.has(u.id)) next.delete(u.id); else next.add(u.id);
+                                    if (next.has(u.username)) next.delete(u.username); else next.add(u.username);
                                     return next;
                                   });
                                 }}
@@ -714,7 +723,7 @@ export default function ProjectAuth() {
           <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>上级人员（可选，用于展示上下层关系）</div>
           <div style={{ marginBottom: 20 }}>
             <div
-              onClick={() => setAssociateSuperiorId(null)}
+              onClick={() => setAssociateSuperiorUsername(null)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10,
                 padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
@@ -723,11 +732,11 @@ export default function ProjectAuth() {
               <div
                 style={{
                   width: 16, height: 16, borderRadius: '50%',
-                  border: `1px solid ${!associateSuperiorId ? '#0052d9' : '#ccc'}`,
+                  border: `1px solid ${!associateSuperiorUsername ? '#0052d9' : '#ccc'}`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}
               >
-                {!associateSuperiorId && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />}
+                {!associateSuperiorUsername && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />}
               </div>
               <div style={{ fontSize: 14 }}>无（顶层）</div>
             </div>
@@ -737,7 +746,7 @@ export default function ProjectAuth() {
               associateList.map((a) => (
                 <div
                   key={a.id}
-                  onClick={() => setAssociateSuperiorId(a.userId)}
+                  onClick={() => setAssociateSuperiorUsername(a.username)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10,
                     padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
@@ -746,11 +755,11 @@ export default function ProjectAuth() {
                   <div
                     style={{
                       width: 16, height: 16, borderRadius: '50%',
-                      border: `1px solid ${associateSuperiorId === a.userId ? '#0052d9' : '#ccc'}`,
+                      border: `1px solid ${associateSuperiorUsername === a.username ? '#0052d9' : '#ccc'}`,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}
                   >
-                    {associateSuperiorId === a.userId && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />}
+                    {associateSuperiorUsername === a.username && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />}
                   </div>
                   <div style={{ fontSize: 14 }}>{a.userName} - {a.roleName}</div>
                 </div>
@@ -784,13 +793,13 @@ export default function ProjectAuth() {
             }}
           >
             <div
-              onClick={() => handleRemoveExistingUser(contextMenu.userId)}
+              onClick={() => handleRemoveExistingUser(contextMenu.username)}
               style={{
                 padding: '8px 12px', fontSize: 14, color: '#e34d59',
                 cursor: 'pointer', borderRadius: 4, userSelect: 'none',
               }}
             >
-              {removingUserId === contextMenu.userId ? '移除中...' : '移除人员'}
+              {removingUsername === contextMenu.username ? '移除中...' : '移除人员'}
             </div>
           </div>
         </>

@@ -4,13 +4,15 @@ MIGRATION.md 阶段 3：从 `app/modules/das/api/projects.py` 搬迁而来，
 路由前缀从 `/api/DAS/projects` 迁移到 `/api/admin/projects`。
 """
 from fastapi import APIRouter, Depends, Query, HTTPException, Request
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from app.modules.admin.schemas_das.request_models import ProjectCreate, ProjectUpdate, ProjectResponse
 from app.modules.admin.services.project_service import project_service
 from app.modules.admin.services.risk_service import risk_service
 from app.modules.admin.services.transport_efficiency_service import transport_efficiency_service
 from app.modules.admin.services.permission_service import PermissionService
 from app.modules.admin.utils_das.config import security, DEBUG_MODE
+from app.core.database import db_manager
+from app.modules.admin.api.auth import require_permission
 import logging
 
 logger = logging.getLogger("admin")
@@ -233,6 +235,27 @@ async def get_project(
         project["risk_list"] = "无"
     
     return project
+
+
+@project_router.get("/{project_id}/members", response_model=List[Dict[str, Any]], summary="获取项目已关联人员")
+async def get_project_members(
+    project_id: str,
+    include_usp: bool = Query(False, description="是否包含外部凭证(usp)信息"),
+    current_user: Dict[str, Any] = require_permission("backend:user:base:read")
+):
+    """返回指定项目下已关联的人员列表（含角色与汇报人信息）。
+
+    底层调用 db_manager.get_project_members：按 user_project_roles 表中 project_id 过滤，
+    关联 users 与 roles，逐行返回 role_name / username / name / project_id / role_id /
+    report_to_name（include_usp=True 时额外返回 external_credentials）。
+    一个用户在该项目下绑定多个角色时会出现多行。
+    """
+    try:
+        members = db_manager.get_project_members(project_id, include_usp=include_usp)
+        return members
+    except Exception as e:
+        logger.error(f"获取项目已关联人员失败: project_id={project_id}, error={str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取项目已关联人员失败: {str(e)}")
 
 
 @project_router.post("/", summary="创建项目")
