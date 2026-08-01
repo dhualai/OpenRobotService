@@ -484,7 +484,7 @@ def _maybe_notify_mentions(
                         },
                         "url": f"https://usp.ep-zl.com/p/app/tasks/{task_id}",
                     },
-                    "at": {"user_names": notified_usernames},
+                    "at": {"user_names": notified_usernames, "is_all": False},
                 }
                 from app.utils.notification_utils import NotificationUtils
                 await NotificationUtils.send_notification(payload, token)
