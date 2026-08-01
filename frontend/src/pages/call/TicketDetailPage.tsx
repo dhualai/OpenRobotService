@@ -1,10 +1,11 @@
 // 摇人 · 历史工单详情页（U老师诊断生成的工单）
 // 数据源：AI 模块 GET /api/ai/qa/ticket?session_id=...；操作：催办 / 上报（任务服务通知）
 // 路由 /app/call/ticket/:id 中的 :id 即 AI 会话 session_id
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Toast, Loading, Tag, Popup, Input, Textarea } from 'tdesign-mobile-react';
 import { NotificationIcon, UploadIcon, RollbackIcon, EditIcon } from 'tdesign-icons-react';
+import { getMyProjects, type ProjectItem } from '@/api/projects';
 import { qaGetTicket } from '@/api/ai';
 import { cancelTicket, urgeTicket, reportTicket, uploadCommentAttachment } from '@/api/ticket';
 import {
@@ -193,8 +194,37 @@ export default function TicketDetailPage() {
 
   // 编辑工单（标题/描述/优先级/类型/联系人；权限与后端对齐：admin/创建人/处理人，终态不可编辑）
   const [showEdit, setShowEdit] = useState(false);
-  const [editForm, setEditForm] = useState({ title: '', description: '', priority: '中', ticket_type: 'problem', customer: '' });
+  const [editForm, setEditForm] = useState({ title: '', description: '', priority: '中', ticket_type: 'problem', customer: '', project_id: '', project_name: '' });
   const [savingEdit, setSavingEdit] = useState(false);
+  // 所属项目下拉（当前用户名下项目，GET /api/admin/projects/me；支持关键词模糊搜索）
+  const [showProjectPicker, setShowProjectPicker] = useState(false);
+  const [projectKeyword, setProjectKeyword] = useState('');
+  const [projectOptions, setProjectOptions] = useState<ProjectItem[]>([]);
+  const [projectLoading, setProjectLoading] = useState(false);
+  const loadMyProjects = async () => {
+    try { setProjectLoading(true); setProjectOptions(await getMyProjects()); }
+    catch { setProjectOptions([]); }
+    finally { setProjectLoading(false); }
+  };
+  // 当前工单的 project_id 可能不在“名下项目”里（异常工单/老数据），始终置顶保证回显可见
+  const projectList = useMemo(() => {
+    const base = [...projectOptions];
+    if (editForm.project_id && !base.some((p) => p.project_code === editForm.project_id)) {
+      base.unshift({ id: editForm.project_id, project_code: editForm.project_id, name: editForm.project_name || editForm.project_id });
+    }
+    return base;
+  }, [projectOptions, editForm.project_id, editForm.project_name]);
+  const filteredProjects = useMemo(() => {
+    const kw = projectKeyword.trim().toLowerCase();
+    if (!kw) return projectList;
+    return projectList.filter((p) => p.name.toLowerCase().includes(kw) || p.project_code.toLowerCase().includes(kw));
+  }, [projectList, projectKeyword]);
+  const openProjectPicker = () => { setShowProjectPicker(true); if (projectOptions.length === 0) loadMyProjects(); };
+  const selectProject = (p: ProjectItem) => {
+    setEditForm((prev) => ({ ...prev, project_id: p.project_code, project_name: p.name }));
+    setShowProjectPicker(false);
+    setProjectKeyword('');
+  };
   const canEdit = !!ticket?.ticket_id && !isTerminalTicketStatus(ticket.status)
     && (isAdmin || username === ticket.created_by || username === ticket.assigned_to);
   const openEdit = () => {
@@ -205,6 +235,8 @@ export default function TicketDetailPage() {
       priority: toEnPriority(ticket.priority),
       ticket_type: ticket.type || 'problem',
       customer: ticket.contact || '',
+      project_id: ticket.project_id || '',
+      project_name: ticket.project_name || ticket.project || '',
     });
     setShowEdit(true);
   };
@@ -221,6 +253,8 @@ export default function TicketDetailPage() {
           priority: editForm.priority,
           ticket_type: editForm.ticket_type,
           customer: editForm.customer,
+          project_name: editForm.project_name,
+          project_id: editForm.project_id,
         }),
       });
       Toast({ message: '已保存', theme: 'success' });
@@ -292,7 +326,7 @@ export default function TicketDetailPage() {
             {ticket.priority && <Tag theme="warning">{displayPriority(ticket.priority)}</Tag>}
             <Tag
               theme="primary"
-              style={{ background: getStatusColor(ticket.status), color: '#fff', border: 'none', fontWeight: 500 }}
+              style={{ background: getStatusColor(ticket.status || ''), color: '#fff', border: 'none', fontWeight: 500 }}
             >
               {STATUS_DISPLAY_MAP[(ticket.status || '').toLowerCase()] || ticket.status || '待派单'}
             </Tag>
@@ -476,6 +510,15 @@ export default function TicketDetailPage() {
               </div>
             </div>
             <div className="ticket-edit-form__field">
+              <label className="ticket-edit-form__label">所属项目</label>
+              <div className="ticket-edit-form__select" onClick={openProjectPicker}>
+                <span className={editForm.project_name ? 'ticket-edit-form__select-value' : 'ticket-edit-form__select-value is-placeholder'}>
+                  {editForm.project_name || '请选择所属项目'}
+                </span>
+                <span className="ticket-edit-form__select-arrow">▾</span>
+              </div>
+            </div>
+            <div className="ticket-edit-form__field">
               <label className="ticket-edit-form__label">联系人</label>
               <Input
                 value={editForm.customer}
@@ -488,6 +531,42 @@ export default function TicketDetailPage() {
           <div className="ticket-edit-form__footer">
             <Button theme="default" block onClick={() => setShowEdit(false)}>取消</Button>
             <Button theme="primary" block loading={savingEdit} onClick={handleEditSave}>保存</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 所属项目选择弹层：当前用户名下项目 + 关键词模糊搜索 */}
+      <Popup visible={showProjectPicker} placement="bottom" onClose={() => setShowProjectPicker(false)} showOverlay>
+        <div className="project-picker">
+          <div className="project-picker__header">
+            <span className="project-picker__title">选择所属项目</span>
+            <span className="project-picker__close" onClick={() => setShowProjectPicker(false)}>×</span>
+          </div>
+          <div className="project-picker__search">
+            <Input
+              value={projectKeyword}
+              onChange={(v) => setProjectKeyword(String(v))}
+              placeholder="搜索项目名称 / 编码"
+              clearable
+            />
+          </div>
+          <div className="project-picker__list">
+            {projectLoading ? (
+              <div className="project-picker__empty">加载中...</div>
+            ) : filteredProjects.length === 0 ? (
+              <div className="project-picker__empty">无匹配项目</div>
+            ) : (
+              filteredProjects.map((p) => (
+                <div
+                  key={p.project_code}
+                  className={`project-picker__item ${editForm.project_id === p.project_code ? 'is-active' : ''}`}
+                  onClick={() => selectProject(p)}
+                >
+                  <span className="project-picker__name">{p.name}</span>
+                  <span className="project-picker__code">{p.project_code}</span>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </Popup>
