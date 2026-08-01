@@ -684,7 +684,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (solutionDraft && !isCall) {
         setMessages((prev) => prev.map((m) =>
           m.id === assistantId
-            ? { ...m, subtype: 'solution_draft' as const, solution_draft: solutionDraft }
+            ? { ...m, subtype: 'solution_draft' as const, solution_draft: solutionDraft ?? undefined }
             : m
         ));
       }
