@@ -826,7 +826,13 @@ class AiDiagnosisPlatform:
                 )
                 return ""
             if len(candidates) == 1:
-                logger.info(f"[pipeline] 项目直配: '{user}' → '{candidates[0].name}'")
+                # 展示全部接近候选，方便理解为什么选了这个而非其他
+                _nearby = matcher.get_candidates(user, min_score=0.3, top_n=5)
+                _all_scored = [(c.name, c.code, f"{c.score:.3f}") for c in _nearby]
+                logger.info(
+                    f"[pipeline] 项目直配: '{user}' → '{candidates[0].name}' "
+                    f"(≥0.7候选={len(candidates)}, ≥0.3候选={_all_scored})"
+                )
                 return candidates[0].name
             # 多个候选 → LLM 裁决
             await self._ensure_clients()
@@ -841,7 +847,11 @@ class AiDiagnosisPlatform:
             choice = re.search(r'\d+', raw)
             idx = int(choice.group()) if choice else 0
             if 1 <= idx <= len(candidates):
-                logger.info(f"[pipeline] LLM 裁决项目: '{user}' → #{idx} '{candidates[idx-1].name}'")
+                _scored = [(c.name, c.code, f"{c.score:.3f}") for c in candidates]
+                logger.info(
+                    f"[pipeline] LLM 裁决项目: '{user}' → #{idx} '{candidates[idx-1].name}' "
+                    f"(≥0.7候选={_scored})"
+                )
                 return candidates[idx - 1].name
             logger.info(f"[pipeline] LLM 无法裁决项目 '{user}'")
             return ""
