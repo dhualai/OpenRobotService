@@ -267,6 +267,7 @@ class NotificationUtils:
                     'description': '工单描述',
                     'project_name': '所属项目',
                     'deadline_at': '截止时间',
+                    'mentioned': '在工单内@了您',
                 }
 
                 # 1. 解析 update_content → {field: raw_value}
