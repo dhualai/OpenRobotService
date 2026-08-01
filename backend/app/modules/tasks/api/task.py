@@ -457,30 +457,20 @@ def _maybe_notify_mentions(
             f"mentioned={list(mentioned)}, notified={notified_usernames}"
         )
 
+        from app.utils.notification_utils import NotificationUtils
         import asyncio
 
         async def _notify():
             try:
-                # 模板 #3 字段映射（thing13=工单名, thing8=项目名, short_thing5=状态, thing15=原因, thing14=操作人）
-                TICKET_URL = "https://usp.ep-zl.com/p/app/tasks"
-                payload = {
-                    "message_id": f"mention_{task_id}_{hash(tuple(notified_usernames))}",
-                    "msg_type": "template",
-                    "template": {
-                        "id": "sqoVSsxbTKMyFYWdyNnw16fhl6cfwN5EeN5g38-bgKQ",
-                        "data": {
-                            "thing13": {"value": ticket_title[:20] or f"工单#{task_id}"},
-                            "thing8": {"value": (ticket_project or "未关联项目")[:20]},
-                            "short_thing5": {"value": "讨论@提醒"},
-                            "thing15": {"value": f"{operator} 在工单#{task_id} 中@了您"},
-                            "thing14": {"value": operator},
-                        },
-                        "url": f"{TICKET_URL}/{task_id}",
-                    },
-                    "at": {"user_names": notified_usernames},
-                }
-                from app.utils.notification_utils import NotificationUtils
-                await NotificationUtils.send_notification(payload, token)
+                await NotificationUtils.send_ticket_update_notification(
+                    ticket_id=task_id,
+                    title=ticket_title,
+                    project_name=ticket_project,
+                    update_content="mentioned:在工单内@了您",
+                    operator=operator,
+                    user_names=notified_usernames,
+                    token=token,
+                )
             except Exception as e:
                 import logging
                 _logger = logging.getLogger(__name__)
