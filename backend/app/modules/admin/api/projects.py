@@ -396,36 +396,20 @@ async def get_project_licenses(
     licenses = project_service.get_licenses_by_project_code(project_code, type)
     logger.info(f"从数据库获取到 {len(licenses)} 条授权信息")
     
-    import requests
-    from app.modules.admin.utils_das.config import AUTH_SERVICE_BASE_URL
-    
-    def get_user_name_by_username(username: str, token: str) -> str:
-        try:
-            url = f"{AUTH_SERVICE_BASE_URL}/users/{username}/detail"
-            headers = {"Authorization": f"Bearer {token}"}
-            logger.debug(f"调用AAS服务获取用户姓名 - 用户名: {username}, URL: {url}")
-            response = requests.get(url, headers=headers, timeout=5)
-            logger.debug(f"AAS服务响应状态码: {response.status_code}")
-            if response.status_code == 200:
-                user_data = response.json()
-                user_name = user_data.get("name", username)
-                logger.info(f"成功获取用户姓名 - 用户名: {username}, 姓名: {user_name}")
-                return user_name
-            else:
-                logger.warning(f"AAS服务返回非200状态码 - 用户名: {username}, 状态码: {response.status_code}")
-        except Exception as e:
-            logger.warning(f"获取用户 {username} 姓名失败: {str(e)}")
-        return username
-    
-    token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    logger.debug(f"Token获取状态: {'成功' if token else '失败'}, Token长度: {len(token) if token else 0}")
-    
+    from app.core.database import get_user_with_roles
+
+    # 将 applicant（DB 存的是 username）解析为用户真实姓名。
+    # 直接查库，避免服务间 HTTP 调用（原走 AUTH_SERVICE_BASE_URL）失败时回退为 username。
     for license_item in licenses:
-        if license_item.get("applicant") and token:
-            logger.debug(f"开始获取申请人姓名 - 申请人: {license_item['applicant']}")
-            license_item["applicant"] = get_user_name_by_username(license_item["applicant"], token)
-        elif not token:
-            logger.warning(f"无token，跳过获取申请人姓名 - 申请人: {license_item.get('applicant')}")
-    
+        applicant_username = license_item.get("applicant")
+        if not applicant_username:
+            continue
+        try:
+            applicant_user = get_user_with_roles(applicant_username)
+            if applicant_user and applicant_user.get("name"):
+                license_item["applicant"] = applicant_user["name"]
+        except Exception as e:
+            logger.warning(f"解析申请人姓名失败 - username: {applicant_username}, 错误: {str(e)}")
+
     logger.info(f"返回授权信息 - 项目代码: {project_code}, 授权数量: {len(licenses)}")
     return licenses

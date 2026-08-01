@@ -1,7 +1,6 @@
-// 项目管理（二级页面）—— 「项目导入」「项目授权」「项目人员关联」三部分
+// 项目管理（二级页面）—— 「项目导入」「项目授权」两部分
 // ProjectImport: 项目增删改查
-// ProjectAuth:  授权记录查看与申请
-// ProjectPeople:项目人员关联（添加/移除）
+// 项目授权区：项目选择器 + ProjectAuth 授权记录 + ProjectPeople 人员关联
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Loading, Toast, Input, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
@@ -43,10 +42,12 @@ export default function ProjectManage() {
   const [projectLoading, setProjectLoading] = useState(true);
   const [projectPickerVisible, setProjectPickerVisible] = useState(false);
 
-  // 三个区域折叠状态（默认展开）
+  // 两个区域折叠状态（默认展开）
   const [sectionImportOpen, setSectionImportOpen] = useState(true);
   const [sectionAuthOpen, setSectionAuthOpen] = useState(true);
-  const [sectionPeopleOpen, setSectionPeopleOpen] = useState(true);
+  // 「项目授权」内部两个子区域折叠状态（默认展开）
+  const [subLicensesOpen, setSubLicensesOpen] = useState(true);
+  const [subPeopleOpen, setSubPeopleOpen] = useState(true);
 
   // 加载项目列表
   useEffect(() => {
@@ -88,74 +89,82 @@ export default function ProjectManage() {
 
   return (
     <div ref={rootRef} style={{ padding: '16px 16px 24px' }}>
-      {/* 共享项目选择器 */}
-      <div style={{ padding: '8px 0 0' }}>
-        {projectLoading ? <Loading text="加载项目..." /> : (
-          <div
-            onClick={() => setProjectPickerVisible(true)}
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              background: '#fff', borderRadius: 8, padding: '12px 14px',
-              boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
-            }}
-          >
-            <div>
-              {selectedProject ? (
-                <>
-                  <div style={{ fontWeight: 500 }}>{selectedProject.name}</div>
-                  {selectedProject.code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{selectedProject.code}</div>}
-                </>
-              ) : (
-                <span style={{ color: '#bbb', fontSize: 14 }}>请选择项目</span>
-              )}
-            </div>
-            <span style={{ color: '#999' }}>›</span>
-          </div>
-        )}
-
-        <Popup visible={projectPickerVisible} onClose={() => setProjectPickerVisible(false)} placement="bottom" showOverlay>
-          <div style={{ padding: 20, maxHeight: '70vh', overflow: 'auto' }}>
-            <h4 style={{ marginBottom: 12 }}>选择项目</h4>
-            <Input
-              value={projectSearch}
-              onChange={(v) => setProjectSearch(String(v))}
-              placeholder="输入项目名称关键词模糊查找"
-              clearable
-              style={{ marginBottom: 12 }}
-            />
-            {filteredProjects.map((p) => (
-              <div
-                key={p.id || p.name}
-                onClick={() => handleProjectSelect(p)}
-                style={{
-                  background: selectedProject?.name === p.name ? '#e8f2ff' : '#fff',
-                  borderRadius: 8,
-                  padding: '12px 14px',
-                  marginBottom: 8,
-                  cursor: 'pointer',
-                  border: selectedProject?.name === p.name ? '1px solid #0052d9' : '1px solid transparent',
-                }}
-              >
-                <div style={{ fontWeight: 500 }}>{p.name}</div>
-                {p.code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{p.code}</div>}
-              </div>
-            ))}
-            {filteredProjects.length === 0 && (
-              <div style={{ textAlign: 'center', padding: 30, color: '#999' }}>未找到匹配的项目</div>
-            )}
-          </div>
-        </Popup>
-      </div>
-
-      {/* 三个可折叠区域 */}
+      {/* 可折叠区域：项目导入 */}
       <CollapsibleSection icon="📁" title="项目导入" open={sectionImportOpen} onToggle={() => setSectionImportOpen((v) => !v)}>
         <ProjectImport />
       </CollapsibleSection>
+
+      {/* 可折叠区域：项目授权（含项目选择器 + 授权记录 + 人员关联） */}
       <CollapsibleSection icon="🔐" title="项目授权" open={sectionAuthOpen} onToggle={() => setSectionAuthOpen((v) => !v)}>
-        <ProjectAuth selectedProject={selectedProject} />
-      </CollapsibleSection>
-      <CollapsibleSection icon="👥" title="项目人员关联" open={sectionPeopleOpen} onToggle={() => setSectionPeopleOpen((v) => !v)}>
-        <ProjectPeople selectedProject={selectedProject} />
+        {/* 项目选择器（已从页面顶部下移至此） */}
+        <div style={{ padding: '4px 0 12px' }}>
+          {projectLoading ? <Loading text="加载项目..." /> : (
+            <div
+              onClick={() => setProjectPickerVisible(true)}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                background: '#fff', borderRadius: 8, padding: '12px 14px',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
+              }}
+            >
+              <div>
+                {selectedProject ? (
+                  <>
+                    <div style={{ fontWeight: 500 }}>{selectedProject.name}</div>
+                    {selectedProject.code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{selectedProject.code}</div>}
+                  </>
+                ) : (
+                  <span style={{ color: '#bbb', fontSize: 14 }}>请选择项目</span>
+                )}
+              </div>
+              <span style={{ color: '#999' }}>›</span>
+            </div>
+          )}
+
+          <Popup visible={projectPickerVisible} onClose={() => setProjectPickerVisible(false)} placement="bottom" showOverlay>
+            <div style={{ padding: 20, maxHeight: '70vh', overflow: 'auto' }}>
+              <h4 style={{ marginBottom: 12 }}>选择项目</h4>
+              <Input
+                value={projectSearch}
+                onChange={(v) => setProjectSearch(String(v))}
+                placeholder="输入项目名称关键词模糊查找"
+                clearable
+                style={{ marginBottom: 12 }}
+              />
+              {filteredProjects.map((p) => (
+                <div
+                  key={p.id || p.name}
+                  onClick={() => handleProjectSelect(p)}
+                  style={{
+                    background: selectedProject?.name === p.name ? '#e8f2ff' : '#fff',
+                    borderRadius: 8,
+                    padding: '12px 14px',
+                    marginBottom: 8,
+                    cursor: 'pointer',
+                    border: selectedProject?.name === p.name ? '1px solid #0052d9' : '1px solid transparent',
+                  }}
+                >
+                  <div style={{ fontWeight: 500 }}>{p.name}</div>
+                  {p.code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{p.code}</div>}
+                </div>
+              ))}
+              {filteredProjects.length === 0 && (
+                <div style={{ textAlign: 'center', padding: 30, color: '#999' }}>未找到匹配的项目</div>
+              )}
+            </div>
+          </Popup>
+        </div>
+
+        {/* 两个子区域整体左缩进，体现层级 */}
+        <div style={{ paddingLeft: 12 }}>
+          <CollapsibleSection icon="🔑" title="项目licences授权" open={subLicensesOpen} onToggle={() => setSubLicensesOpen((v) => !v)}>
+            <ProjectAuth selectedProject={selectedProject} />
+          </CollapsibleSection>
+
+          <CollapsibleSection icon="👥" title="项目人员授权" open={subPeopleOpen} onToggle={() => setSubPeopleOpen((v) => !v)}>
+            <ProjectPeople selectedProject={selectedProject} />
+          </CollapsibleSection>
+        </div>
       </CollapsibleSection>
     </div>
   );
