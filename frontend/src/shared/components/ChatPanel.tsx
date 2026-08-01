@@ -1003,6 +1003,20 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         Toast({ message: missing.length ? `还差 ${missing.length} 项信息，已在对话中列出` : '信息不足，请补充', theme: 'warning' });
         return;
       }
+      // 重复提交等业务提示：data.code=1（已建单会话再次转工单，无草稿）→ 友好提示，不弹空确认窗
+      if (res.data?.code === 1) {
+        const msg = res.data?.message || res.message || '当前会话无需重复提交工单';
+        setMessages((prev) => [...prev, {
+          id: uid(),
+          role: 'assistant',
+          content: msg,
+          timestamp: new Date().toISOString(),
+        }]);
+        scrollToBottomNow();
+        if (convRef.current) appendMessage(convRef.current, 'assistant', msg).catch(() => {});
+        Toast({ message: msg, theme: 'warning', duration: 4000 });
+        return;
+      }
       if (res?.code !== 0 || !res.data) {
         Toast({
           message: res?.message || '生成工单草稿失败',
