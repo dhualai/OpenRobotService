@@ -121,6 +121,19 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
 def task_to_dict(task: Task) -> dict:
     """Task → 兼容老 tickets 表字段名的字典（priority 反向映射回中文）。"""
     meta = task.metadata_info or {}
+    # 发起人/处理人 + 显示名（与列表接口 /memory/tickets/all 口径一致）；
+    # user_map 查询失败时降级为空，不影响主流程。
+    created_by = task.created_by or ""
+    assigned_to = task.assigned_to or ""
+    created_by_name = created_by
+    assigned_to_name = assigned_to
+    try:
+        from app.services.user_service import UserService
+        user_map = UserService.get_user_map()
+        created_by_name = user_map.get(created_by, created_by) if created_by else ""
+        assigned_to_name = user_map.get(assigned_to, assigned_to) if assigned_to else ""
+    except Exception:
+        pass
     return {
         "id": task.id,
         # 数字 Task.id 即任务服务（/api/tasks）的工单号，前端催办/上报/评论/撤回都依赖它。
@@ -155,6 +168,10 @@ def task_to_dict(task: Task) -> dict:
         "attachments": task.attachments or [],
         "diagnosis": meta.get("diagnosis") or {},
         "source": task.source or AI_SOURCE,
+        "created_by": created_by,
+        "created_by_name": created_by_name,
+        "assigned_to": assigned_to,
+        "assigned_to_name": assigned_to_name,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
     }
