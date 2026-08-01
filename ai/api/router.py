@@ -117,6 +117,13 @@ async def ask_question_stream(
         qa_request = DiagnosisRequest(session_id=qa_req.session_id, query=qa_req.query,
                            skip_retrieval=qa_req.skip_retrieval, created_by=username)
         first = False
+        _sse_trace: list[str] = []
+        _sse_token_count = 0
+        def _flush_tokens():
+            nonlocal _sse_token_count
+            if _sse_token_count > 0:
+                _sse_trace.append(f"token({_sse_token_count}c)")
+                _sse_token_count = 0
         try:
             async for event in pipeline.run_stream(qa_request):
                 ev_type = event["event"]
@@ -124,15 +131,28 @@ async def ask_question_stream(
                     if not first:
                         first = True
                         yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)}, ensure_ascii=False)}\n\n"
+                    _sse_token_count += len(event['data'])
                     yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
                 elif ev_type == "result":
+                    _flush_tokens()
+                    _sse_trace.append(f"result")
                     yield f"event: result\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
                 elif ev_type == "title":
                     yield f"event: title\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
                 else:
+                    _flush_tokens()
+                    stage = event.get('data', {}).get('stage', '?')
+                    _sse_trace.append(f"status{{{stage}}}")
                     yield f"event: status\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-            yield f"event: done\ndata: {json.dumps({'total_ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
+            _flush_tokens()
+            total_ms = round((time.perf_counter() - t0) * 1000)
+            logger.info(f"[sse] sid={qa_req.session_id[:8]} q={qa_req.query[:80]} "
+                        f"→ {' | '.join(_sse_trace)} | done({total_ms}ms)")
+            yield f"event: done\ndata: {json.dumps({'total_ms': total_ms})}\n\n"
         except Exception as e:
+            _flush_tokens()
+            logger.error(f"[sse] sid={qa_req.session_id[:8]} q={qa_req.query[:80]} "
+                         f"→ {' | '.join(_sse_trace)} | ERROR: {e}", exc_info=True)
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
     return StreamingResponse(sse(), media_type="text/event-stream")
 
@@ -480,17 +500,6 @@ async def upload_files(
             f"attachments_before={len(existing)}, attachments_after={len(state['attachments'])}, "
             f"has_last_ticket={bool(state.get('last_submitted_ticket', {}).get('ticket_id'))}"
         )
-
-        # 追加到已提交工单
-        last_ticket = state.get("last_submitted_ticket", {})
-        if last_ticket and last_ticket.get("ticket_id"):
-            pipeline = await get_pipeline()
-            ok = await pipeline._append_to_ticket(session_id, attachments=saved)
-            logger.info(
-                f"[upload] 追加到工单: session={session_id[:12]}, "
-                f"ok={ok}, files={filenames}, "
-                f"elapsed={(time.perf_counter() - t_state) * 1000:.0f}ms"
-            )
     except Exception as e:
         logger.error(
             f"[upload] 附件状态更新失败: session={session_id[:12]}, "
