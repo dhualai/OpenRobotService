@@ -144,22 +144,18 @@ export default function TaskDetailPage() {
         const meta = t.metadata_info || {};
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
 
-        // 获取项目成员用于 @ 提及，提单人排第一
-        if (t.project_id) {
-          getProjectMembers(detailId)
-            .then((members) => {
-              const reporterUsername = t.created_by;
-              const sorted = [...members].sort((a, b) => {
-                if (a.username === reporterUsername) return -1;
-                if (b.username === reporterUsername) return 1;
-                return 0;
-              });
-              setProjectMembers(sorted);
-            })
-            .catch(() => setProjectMembers([]));
-        } else {
-          setProjectMembers([]);
-        }
+        // 获取项目成员用于 @ 提及（无项目时也能拉到提单人和被指派人）
+        getProjectMembers(detailId)
+          .then((members) => {
+            const reporterUsername = t.created_by;
+            const sorted = [...members].sort((a, b) => {
+              if (a.username === reporterUsername) return -1;
+              if (b.username === reporterUsername) return 1;
+              return 0;
+            });
+            setProjectMembers(sorted);
+          })
+          .catch(() => setProjectMembers([]));
       })
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
