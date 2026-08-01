@@ -640,6 +640,27 @@ class IdentityService:
             db.close()
 
     @staticmethod
+    def get_report_to_map(project_id: str) -> Dict[str, str]:
+        """批量查询项目成员的 report_to_id 映射 {user_id: report_to_id}。
+
+        get_project_members 的 report_to_name 子查询用 username 匹配 user_id 存在 bug，
+        此方法直接取 user_project_roles.report_to_id 列，供路由层覆盖 report_to_name 字段。
+        """
+        db = IdentityService._get_db()
+        try:
+            stmt = select(
+                user_project_roles.c.user_id,
+                user_project_roles.c.report_to_id,
+            ).where(
+                user_project_roles.c.project_id == project_id,
+                user_project_roles.c.report_to_id.isnot(None),
+            )
+            results = db.execute(stmt).fetchall()
+            return {r.user_id: r.report_to_id for r in results}
+        finally:
+            db.close()
+
+    @staticmethod
     def get_users_by_role(role_id: str) -> List[Dict[str, str]]:
         db = IdentityService._get_db()
         try:

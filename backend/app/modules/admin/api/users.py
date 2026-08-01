@@ -453,13 +453,22 @@ async def batch_assign_project_roles(
                 raise HTTPException(status_code=404, detail=f"角色 {item['role_id']} 不存在")
             
             user_project_role_id = f"upr_{user['id']}_{project_id or 'global'}_{item['role_id']}"
-            
+
+            # report_to_id 前端传的是 username，需解析为 user_id 以满足外键约束 ForeignKey('users.id')
+            report_to_username = item.get("report_to_id")
+            report_to_id = None
+            if report_to_username:
+                superior = db_manager.get_user(report_to_username)
+                if not superior:
+                    raise HTTPException(status_code=404, detail=f"上级用户 {report_to_username} 不存在")
+                report_to_id = superior['id']
+
             roles_data.append({
                 "id": user_project_role_id,
                 "user_id": user['id'],
                 "project_id": project_id,
                 "role_id": item["role_id"],
-                "report_to_id": item.get("report_to_id")
+                "report_to_id": report_to_id,
             })
         
         assigned_count = db_manager.batch_add_user_project_roles(roles_data)
