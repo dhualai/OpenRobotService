@@ -96,6 +96,9 @@ async def ask_question(
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
     username, _ = _current_user(http_req)
+    # token 失效 → 返回 401，触发前端 fetchWithAuth 刷新重试，避免自动提单 created_by=""
+    if not username:
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
     qa_request = DiagnosisRequest(session_id=qa_req.session_id, query=qa_req.query,
                            skip_retrieval=qa_req.skip_retrieval, created_by=username)
     try:
@@ -114,6 +117,10 @@ async def ask_question_stream(
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ):
     username, _ = _current_user(http_req)
+    # token 失效 → 在 SSE 流开启前返回 401，触发前端 fetchWithAuth 刷新重试。
+    # 若放进 sse() 内部抛出，HTTP 状态已是 200，前端刷新逻辑无法触发 → 自动提单 created_by=""。
+    if not username:
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
     async def sse():
         t0 = time.perf_counter()
         qa_request = DiagnosisRequest(session_id=qa_req.session_id, query=qa_req.query,
@@ -527,8 +534,12 @@ async def upload_files(
     # ── 5. 如果附带文字 → 顺手跑诊断 ──
     ai_response = None
     if message.strip():
+        username, _ = _current_user_from_header(authorization)
+        # token 失效 → 返回 401，触发前端 fetchWithAuth 刷新重试，避免自动提单 created_by=""
+        # 必须放在 try/except 之外：HTTPException 是 Exception 子类，被捕获会被吞掉成 ai_response.error
+        if not username:
+            raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
         try:
-            username, _ = _current_user_from_header(authorization)
             pipeline = await get_pipeline()
             request = DiagnosisRequest(
                 session_id=session_id,
