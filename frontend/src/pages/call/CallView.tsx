@@ -28,6 +28,20 @@ export default function CallView() {
       navigate(location.pathname, { replace: true, state: null });
     }
   }, [location.state, location.pathname, navigate]);
+
+  // 历史工单浮层打开期间，拦截 iOS 微信屏幕最左边缘的系统级右滑返回：
+  // 压一层占位 history（复制 react-router 当前 state 保持兼容），使边缘右滑先 pop 占位层
+  // （触发 popstate）而非退出 webview；popstate 时关闭浮层，占位层被自然消费、history 深度恢复。
+  // （浮层区域内非边缘的 touch 右滑另由 useSwipeToClose 处理，二者互补。）
+  useEffect(() => {
+    if (!showHistory) return;
+    const seedState = window.history.state ?? null;
+    window.history.pushState(seedState, '', window.location.href);
+    const onPop = () => setShowHistory(false);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [showHistory]);
+
   const [unread, setUnread] = useState(0);
   const { tasksRefreshKey, drawerOpen, setDrawerOpen, conversationTitle } = useWorkbenchStore();
   const username = useAuthStore((s) => s.username);
