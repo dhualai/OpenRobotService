@@ -457,20 +457,37 @@ def _maybe_notify_mentions(
             f"mentioned={list(mentioned)}, notified={notified_usernames}"
         )
 
-        from app.utils.notification_utils import NotificationUtils
         import asyncio
 
         async def _notify():
             try:
-                await NotificationUtils.send_ticket_update_notification(
-                    ticket_id=task_id,
-                    title=ticket_title,
-                    project_name=ticket_project,
-                    update_content="status:被提及",
-                    operator=operator,
-                    user_names=notified_usernames,
-                    token=token,
-                )
+                # 取工单真实状态的中文名
+                status_text_map = {
+                    "new": "新建", "in_progress": "处理中", "pending": "待处理",
+                    "resolved": "已解决", "closed": "已关闭", "canceled": "已取消",
+                }
+                raw_status = (ticket.status.value if hasattr(ticket.status, 'value')
+                              else str(ticket.status or "")).lower()
+                status_text = status_text_map.get(raw_status, raw_status)
+
+                payload = {
+                    "message_id": f"mention_{task_id}_{hash(tuple(notified_usernames))}",
+                    "msg_type": "template",
+                    "template": {
+                        "id": "sqoVSsxbTKMyFYWdyNnw16fhl6cfwN5EeN5g38-bgKQ",
+                        "data": {
+                            "thing13": {"value": ticket_title[:20] or f"工单#{task_id}"},
+                            "thing8": {"value": (ticket_project or "未关联项目")[:20]},
+                            "short_thing5": {"value": status_text},
+                            "thing15": {"value": f"{operator} 在工单中@了您"},
+                            "thing14": {"value": operator},
+                        },
+                        "url": f"https://usp.ep-zl.com/p/app/tasks/{task_id}",
+                    },
+                    "at": {"user_names": notified_usernames, "is_all": False},
+                }
+                from app.utils.notification_utils import NotificationUtils
+                await NotificationUtils.send_notification(payload, token)
             except Exception as e:
                 import logging
                 _logger = logging.getLogger(__name__)
