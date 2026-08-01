@@ -155,3 +155,28 @@ cpolar http 8000
 - 前置 Nginx 反向代理，配置 HTTPS（微信服务号要求 HTTPS）
 - 微信服务器配置 URL 指向 `https://your.domain/api/wechat/callback`
 - 前端 `npm run build` 后由 Nginx 托管 `dist/`
+
+## 8. 数据修复脚本
+
+### fix_task_created_by.py — 修复 AI 工单 created_by 异常（空/system/unknown）
+
+背景：AI 服务 token 解析失败（SECRET_KEY 缺失 / token 过期）的历史期间，转工单 `created_by`
+被写成空串或旧兜底值 `system`/`unknown`，导致历史工单列表按用户过滤查不到、提单人显示异常。
+（新工单的根治见 git 历史：`ai/run.py` 强制读 backend/.env 密钥 + token 失效返回 401 +
+前端显式传 username。）
+
+修复链路：`tasks.metadata_info.session_id` → `conversations.metadata_.ai_session_id`
+→ `conversations.user_id`（= users.id）→ `users.username` → 回填 `tasks.created_by`。
+显示名无需单独修（列表 `created_by_name` 由 user_map 按 username 解析）。
+
+用法（生产项目根目录，需能连生产 MySQL，读 `backend/.env` 的 `DATABASE_URL`）：
+
+```bash
+python scripts/fix_task_created_by.py                            # dry-run：只打印，不写库
+python scripts/fix_task_created_by.py --apply                    # 写库（仅自动可定位的）
+python scripts/fix_task_created_by.py --apply --default-user=xx  # 无法定位的统一归给指定用户
+```
+
+- 先 dry-run 核对映射无误，再 `--apply`。
+- `--default-user` 兜底「会话已删/未入库」导致无法自动定位的工单（生产使用者少时人工确认后批量指定）。
+- 单条人工修复：`UPDATE tasks SET created_by='<username>' WHERE id=<task_id>;`

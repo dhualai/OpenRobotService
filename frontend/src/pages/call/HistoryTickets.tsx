@@ -223,7 +223,9 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                 <span className="history-row__date">{(t.created_at || '').slice(0, 10)}</span>
               </div>
               {t.description && <span className="history-row__summary">{t.description}</span>}
-              {/* 人员流转：发起人 → 处理人（照搬系统任务卡片 task-card2__people 样式） */}
+              {t.project && <span className="history-row__project">所属项目：{t.project}</span>}
+              {/* 人员流转：发起人 → 处理人（照搬系统任务卡片 task-card2__people 样式）。
+                  派单中（status=new 且处理人未写入，AI 派单 Worker 60s 轮询中）：显示「派单中」呼吸动效 */}
               <div className="task-card2__people">
                 <div className="task-card2__person task-card2__person--creator" title={`发起人：${t.created_by_name || t.created_by || '-'}`}>
                   <span className="task-card2__avatar">{(t.created_by_name || t.created_by || '?').slice(0, 1).toUpperCase()}</span>
@@ -233,13 +235,23 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                   </span>
                 </div>
                 <span className="task-card2__person-arrow">➡️</span>
-                <div className="task-card2__person task-card2__person--assignee" title={`处理人：${t.assigned_to_name || t.assigned_to || '-'}`}>
-                  <span className="task-card2__avatar task-card2__avatar--assignee">{(t.assigned_to_name || t.assigned_to || '?').slice(0, 1).toUpperCase()}</span>
-                  <span className="task-card2__person-text">
-                    <span className="task-card2__person-label">处理人</span>
-                    <span className="task-card2__person-name">{t.assigned_to_name || t.assigned_to || '-'}</span>
-                  </span>
-                </div>
+                {(t.status === 'new' && !t.assigned_to && !t.assigned_to_name) ? (
+                  <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单">
+                    <span className="task-card2__avatar task-card2__avatar--assignee task-card2__avatar--dispatching"><i className="dispatch-pulse" /></span>
+                    <span className="task-card2__person-text">
+                      <span className="task-card2__person-label">处理人</span>
+                      <span className="task-card2__person-name task-card2__person-name--dispatching">派单中</span>
+                    </span>
+                  </div>
+                ) : (
+                  <div className="task-card2__person task-card2__person--assignee" title={`处理人：${t.assigned_to_name || t.assigned_to || '-'}`}>
+                    <span className="task-card2__avatar task-card2__avatar--assignee">{(t.assigned_to_name || t.assigned_to || '?').slice(0, 1).toUpperCase()}</span>
+                    <span className="task-card2__person-text">
+                      <span className="task-card2__person-label">处理人</span>
+                      <span className="task-card2__person-name">{t.assigned_to_name || t.assigned_to || '-'}</span>
+                    </span>
+                  </div>
+                )}
               </div>
               <div className="history-row__bottom">
                 {statusMeta.label && (
