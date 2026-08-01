@@ -477,7 +477,7 @@ def _maybe_notify_mentions(
                         "id": "sqoVSsxbTKMyFYWdyNnw16fhl6cfwN5EeN5g38-bgKQ",
                         "data": {
                             "thing13": {"value": ticket_title[:20] or f"工单#{task_id}"},
-                            "thing8": {"value": (ticket_project or "")[:20]},
+                            "thing8": {"value": (ticket_project or "未关联项目")[:20]},
                             "short_thing5": {"value": status_text},
                             "thing15": {"value": f"{operator} 在工单中@了您"},
                             "thing14": {"value": operator},
