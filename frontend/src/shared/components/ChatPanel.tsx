@@ -112,10 +112,14 @@ const sanitizeAiText = (raw: string): string => {
   return result;
 };
 
-/** 流式中间态判定：疑似 LLM 协议 JSON 头泄漏（以 { / ``` 开头），流式期间以占位代替上屏 */
+/** 流式中间态判定：疑似 LLM 协议 JSON 头泄漏，流式期间以占位代替上屏。
+ *  判定与 sanitizeAiText 对齐，避免误伤正常回复：
+ *  - 裸 JSON 头：{ 开头且前 400 字符含 "action" 字段（正文里 { 举例不含 action，不误判）
+ *  - fenced JSON 头：```json / 无语言标记 ``` 紧跟 {（```python 等带语言标记的代码块属正常回复，不占位） */
 const looksLikeJsonHead = (text: string): boolean => {
   const t = text.trimStart();
-  return t.startsWith('{') || t.startsWith('```');
+  if (t.startsWith('{') && t.slice(0, 400).includes('"action"')) return true;
+  return /^```(?:json)?\s*\{/.test(t);
 };
 
 /** DB 会话消息 → 前端 Message：附件恢复 + AI 文本清洗 + 空白 AI 气泡过滤（历史异常数据不上屏） */
@@ -451,17 +455,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       setMessages(cached);
       scrollToBottomNow();
       // 后台静默校正：缓存可能是乐观消息/流式中间态快照，DB 为最终一致源。
-      // 仅当 DB 内容确实更新（条数或末条内容不同）才覆盖，避免无意义重渲染与旧数据回滚。
+      // 仅当 DB 条数更多（有新落库的消息）才覆盖：appendMessage 是 fire-and-forget，
+      // 切回瞬间 DB 可能还少于缓存（乐观用户消息 / AI 回复尚未落库），双向不等会把这些
+      // 未落库消息覆盖丢失。会话消息只增不改，条数相同即一致，无需回滚。
       getConversation(conversationId).then((full) => {
         if (convRef.current !== conversationId) return; // 校正期间又切走了，丢弃
         const fresh = mapDbMessages(full);
-        setMessages((prev) => {
-          const lastPrev = prev[prev.length - 1];
-          const lastFresh = fresh[fresh.length - 1];
-          const changed = fresh.length !== prev.length
-            || (!!lastFresh && !!lastPrev && lastFresh.content !== lastPrev.content);
-          return changed ? fresh : prev;
-        });
+        setMessages((prev) => (fresh.length > prev.length ? fresh : prev));
       }).catch(() => {});
       return;
     }
