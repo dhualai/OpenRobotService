@@ -72,6 +72,80 @@ const uid = () => Date.now().toString() + Math.random().toString(36).slice(2, 6)
  *  不用预签名 URL（其 host=MINIO_ENDPOINT=localhost:9000，生产浏览器访问不了 → 碎图）。 */
 const attachmentUrl = (objectPath: string) => `${API_CONFIG.CALL.BASE_URL}/files/${objectPath}`;
 
+/**
+ * AI 回复文本清洗（流式定稿 / 持久化 / 历史恢复统一入口）。
+ * LLM 输出协议为「JSON 状态块 + 正文」，后端按边界切流；边界判定失败 / max_tokens 截断时
+ * JSON 残片（{"action":...}、``` 围栏、游离 }）会泄漏进正文。此处统一剥除：
+ * 剥不出正文 → 返回 ''（交由空内容兜底），杜绝残破 JSON / 带 } 的回复上屏。
+ * 检出异常时 console.warn 抛出，便于排查后端边界问题。
+ */
+const sanitizeAiText = (raw: string): string => {
+  let t = (raw ?? '').trim();
+  if (!t) return '';
+  // 1) 剥 fenced JSON 头：```json {...} ``` / ``` {...} ```
+  t = t.replace(/^```(?:json)?\s*\{[\s\S]*?\}\s*```/, '').trim();
+  // 2) 剥裸 JSON 头：{"action":...}（括号深度跟踪，容错嵌套与字符串内括号）
+  if (t.startsWith('{') && t.slice(0, 400).includes('"action"')) {
+    let depth = 0, inStr = false, esc = false, end = -1;
+    for (let i = 0; i < t.length; i++) {
+      const ch = t[i];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\' && inStr) { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) { end = i; break; } }
+    }
+    if (end >= 0) {
+      t = t.slice(end + 1).trim();
+    } else {
+      // JSON 未闭合（LLM 截断泄漏）：整体视为异常，不显示残破 JSON
+      console.warn('[ChatPanel] 拦截未闭合 JSON 泄漏:', raw.slice(0, 80));
+      return '';
+    }
+  }
+  // 3) 剥游离残留前缀：} （LLM 多输出的闭合括号）
+  const strippedBraces = t.replace(/^(?:\s*\}\s*)+/, '');
+  // 剥孤立 fence 残留行：``` 单独出现（后无语言标记，非代码块）
+  const result = strippedBraces.replace(/^```\s*\n?(?![a-zA-Z])/, '').trim();
+  if (result !== t.trim()) console.warn('[ChatPanel] 剥离 JSON 残留:', t.slice(0, 40));
+  return result;
+};
+
+/** 流式中间态判定：疑似 LLM 协议 JSON 头泄漏（以 { / ``` 开头），流式期间以占位代替上屏 */
+const looksLikeJsonHead = (text: string): boolean => {
+  const t = text.trimStart();
+  return t.startsWith('{') || t.startsWith('```');
+};
+
+/** DB 会话消息 → 前端 Message：附件恢复 + AI 文本清洗 + 空白 AI 气泡过滤（历史异常数据不上屏） */
+const mapDbMessages = (
+  full: { messages?: Array<{ id: number; role: string; content: string; created_at: string; file_urls?: string | null }> },
+): Message[] =>
+  (full.messages || [])
+    .map((m) => {
+      const msg: Message = {
+        id: String(m.id),
+        role: m.role as 'user' | 'assistant',
+        content: m.role === 'assistant' ? sanitizeAiText(m.content) : m.content,
+        timestamp: m.created_at,
+      };
+      if (m.file_urls) {
+        try {
+          const files = JSON.parse(m.file_urls) as Array<{ filename: string; object_path?: string; size?: number; isImage?: boolean }>;
+          const f = files[0];
+          if (f && f.object_path) {
+            const url = attachmentUrl(f.object_path);
+            if (f.isImage) msg.imageUrl = url;
+            else msg.attachment = { name: f.filename, size: f.size ?? 0, url };
+          }
+        } catch { /* ignore */ }
+      }
+      return msg;
+    })
+    // 空白 AI 气泡（历史异常落库的空内容/纯空白）不恢复显示
+    .filter((m) => m.role !== 'assistant' || m.content.trim().length > 0);
+
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
   msg, editingId, compact, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave, onEditCancel, onImageClick,
@@ -376,6 +450,19 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       convRef.current = conversationId;
       setMessages(cached);
       scrollToBottomNow();
+      // 后台静默校正：缓存可能是乐观消息/流式中间态快照，DB 为最终一致源。
+      // 仅当 DB 内容确实更新（条数或末条内容不同）才覆盖，避免无意义重渲染与旧数据回滚。
+      getConversation(conversationId).then((full) => {
+        if (convRef.current !== conversationId) return; // 校正期间又切走了，丢弃
+        const fresh = mapDbMessages(full);
+        setMessages((prev) => {
+          const lastPrev = prev[prev.length - 1];
+          const lastFresh = fresh[fresh.length - 1];
+          const changed = fresh.length !== prev.length
+            || (!!lastFresh && !!lastPrev && lastFresh.content !== lastPrev.content);
+          return changed ? fresh : prev;
+        });
+      }).catch(() => {});
       return;
     }
     // 缓存为空（首次进入 / 刷新后）→ 从后端加载
@@ -385,27 +472,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         const full = await getConversation(conversationId);
         if (cancelled) return;
         convRef.current = full.id;
-        const restored: Message[] = (full.messages || []).map((m) => {
-          const msg: Message = {
-            id: String(m.id),
-            role: m.role as 'user' | 'assistant',
-            content: m.content,
-            timestamp: m.created_at,
-          };
-          // 解析 file_urls 恢复图片/文件卡片（object_path → 后端代理路径，永久有效）
-          if (m.file_urls) {
-            try {
-              const files = JSON.parse(m.file_urls) as Array<{ filename: string; object_path?: string; size?: number; isImage?: boolean }>;
-              const f = files[0];
-              if (f && f.object_path) {
-                const url = attachmentUrl(f.object_path);
-                if (f.isImage) msg.imageUrl = url;
-                else msg.attachment = { name: f.filename, size: f.size ?? 0, url };
-              }
-            } catch { /* ignore */ }
-          }
-          return msg;
-        });
+        // mapDbMessages 统一做：附件恢复 + AI 文本清洗（带 }/JSON 残留）+ 空白 AI 气泡过滤
+        const restored: Message[] = mapDbMessages(full);
         setMessages(restored);
         setConversationTitle(full.title || '');
         const sid = readAiSessionId(full);
@@ -427,7 +495,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   useEffect(() => {
     const prev = prevConvIdRef.current;
     if (prev != null && messages.length > 0) {
-      convMessagesCache[prev] = messages;
+      // 剔除流式中间态气泡：半截内容不缓存（流式完成后的最终内容由 DB/后台校正兜底），
+      // 避免切回时恢复出"过时"的流式快照。
+      const stable = messages.filter((m) => !m.streaming);
+      if (stable.length > 0) convMessagesCache[prev] = stable;
     }
     prevConvIdRef.current = conversationId;
   }, [conversationId, messages]);
@@ -530,11 +601,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       }
 
       // AI 回复填入占位气泡：文件+文字=完整诊断(ai_response.message)；只传文件=确认回执(ack_message)
+      // 内容统一过清洗（防 JSON 泄漏/带 } 回复）；持久化用局部 convId 快照——发送期间用户
+      // 可能已切换会话，convRef 已指向新会话，直接用会把本会话回复错写进新会话（过时/错位回复）。
       const aiResp = data?.ai_response;
-      const assistantContent = (aiResp && aiResp.message) || data?.ack_message || '';
+      const assistantContent = sanitizeAiText((aiResp && aiResp.message) || data?.ack_message || '');
       if (assistantContent) {
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: assistantContent } : m)));
-        if (convRef.current) appendMessage(convRef.current, 'assistant', assistantContent).catch(() => {});
+        if (convId) appendMessage(convId, 'assistant', assistantContent).catch(() => {});
       } else {
         // 无回复：移除 AI 占位气泡，避免空气泡
         setMessages((prev) => prev.filter((m) => m.id !== assistantId));
@@ -590,7 +663,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     let acc = '';
     let lastFlush = 0;
     const FLUSH_MS = 90;
-    const renderAcc = () => setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: acc } : m)));
+    // 流式中间渲染：疑似 LLM 协议 JSON 头泄漏（{ / ``` 开头）时以占位代替，避免残破 JSON 闪现上屏
+    const renderAcc = () => setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: looksLikeJsonHead(acc) ? '正在思考…' : acc } : m)));
     const scheduleRender = () => {
       const now = Date.now();
       if (now - lastFlush >= FLUSH_MS) {
@@ -604,6 +678,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 持久化用户消息（首条会顺带建会话）
       const convId = await ensureConversation(sid, content);
       if (convId) appendMessage(convId, 'user', content).catch(() => {});
+      // 发送时会话快照：流式期间用户可能切换会话，convRef 会被 effect 改写指向新会话。
+      // 后续 AI 回复持久化/首轮会话同步必须用此快照，否则回复会错写进新会话（表现为"过时/错位回复"）。
+      const sentConvId = convRef.current;
       setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', streaming: true, timestamp: new Date().toISOString() }]);
 
       // 提单 Agent
@@ -670,16 +747,20 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 流结束处理 buffer 末尾剩余行（最后 data 未跟换行的情况）
       if (buffer) processLine(buffer);
 
+      // 流式定稿：清洗 JSON 泄漏/围栏/游离残留（带 } 回复）；纯空白（含仅空格/换行）→ ''，
+      // 再统一走空回复兜底，杜绝空白气泡与残破 JSON 上屏、落库
+      acc = sanitizeAiText(acc);
       // 前端空回复兜底：流式结束无任何内容（后端无 token 或前端解析丢字）→ 显示缺省，而非空气泡
       if (!acc && !streamError) acc = '[未收到 AI 回复，请重试]';
       // 流式出错且无任何内容 → 抛出，由外层 catch 提示并移除空气泡（不再静默）
       if (streamError && !acc) throw new Error(streamError);
 
-      // 流式结束：持久化 AI 回复
-      if (acc && convRef.current) appendMessage(convRef.current, 'assistant', acc).catch(() => {});
-      // 首轮问答完成 → 同步会话到列表（标题=首轮提问），定位到新会话
-      if (wasNew && convRef.current) {
-        setConversationId(convRef.current);
+      // 流式结束：持久化 AI 回复到发送时的会话（快照）——切会话后 convRef 已指向新会话，不能再用
+      if (acc && sentConvId) appendMessage(sentConvId, 'assistant', acc).catch(() => {});
+      // 首轮问答完成 → 同步会话到列表（标题=首轮提问），定位到新会话；
+      // 仅当用户未切走（仍在发送时的会话）才执行跳转，避免把用户从别的会话拽回来
+      if (wasNew && sentConvId && convRef.current === sentConvId) {
+        setConversationId(sentConvId);
         setConversationTitle(content.slice(0, 40) || 'AI 对话');
         refreshConversations();
       }
@@ -707,8 +788,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       sendingRef.current = false;
       // 回复完成：强制贴底，确保流式结束（Markdown 切换）后视图定位到最新消息，无需手动滑动
       atBottomRef.current = true;
-      // 强制刷新最终完整内容：流式结束前最后一次 flush 可能早于 90ms 窗口，确保末态不丢字
-      renderAcc();
+      // 强制刷新最终完整内容：流式结束前最后一次 flush 可能早于 90ms 窗口，确保末态不丢字；
+      // 中间态可能显示"正在思考…"占位（JSON 头泄漏防护），此处以清洗后内容统一定稿
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: sanitizeAiText(acc) || acc } : m)));
       // 置 streaming:false：流式结束，气泡由纯文本降级渲染切换为最终 MarkdownRenderer 渲染
       setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)));
     }
@@ -1136,7 +1218,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           </div>
         )}
 
-        {messages.map((msg) => (
+        {messages
+          // 渲染层兜底：空白 AI 气泡（空内容/纯空白，且非流式占位、无附件）不渲染
+          .filter((m) => m.role !== 'assistant' || !!m.streaming || m.content.trim().length > 0 || !!m.imageUrl || !!m.attachment)
+          .map((msg) => (
           <MessageBubble
             key={msg.id}
             msg={msg}

@@ -1,4 +1,5 @@
 // 搬运效率分析 —— 按日期查看某项目的搬运效率汇总指标 + AGV型号对比表
+// 参考 DAS 项目指标页（ProjectMetricsList）：顶部信息卡片 + 10 个指标卡片 + 各组数据对比表格
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Loading, Toast, Popup, DateTimePicker } from 'tdesign-mobile-react';
@@ -16,6 +17,8 @@ interface EfficiencySummary {
   avg_carry_duration_minutes: number | null;
   avg_manual_switch_count: number | null;
   manual_intervention_rate: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 interface RobotEfficiency {
@@ -27,6 +30,7 @@ interface RobotEfficiency {
   idle_hours: number | null;
   avg_fault_duration_minutes: number | null;
   avg_carry_duration_minutes: number | null;
+  created_at?: string | null;
 }
 
 interface EfficiencyResponse {
@@ -34,20 +38,26 @@ interface EfficiencyResponse {
   robots: RobotEfficiency[];
 }
 
-const SUMMARY_METRICS: Array<{ key: keyof EfficiencySummary; label: string; unit?: string; percent?: boolean }> = [
-  { key: 'total_tasks', label: '总任务数' },
-  { key: 'carry_task_count', label: '搬运任务数量' },
-  { key: 'effective_work_hours', label: '有效工作时长', unit: 'h' },
-  { key: 'fault_hours', label: '机器人故障时长', unit: 'h' },
-  { key: 'idle_hours', label: '空闲无任务时间', unit: 'h' },
-  { key: 'avg_error_count', label: '平均错误次数' },
-  { key: 'avg_fault_duration_minutes', label: '平均单次故障时间', unit: '分钟' },
-  { key: 'avg_carry_duration_minutes', label: '平均单次搬运任务时间', unit: '分钟' },
-  { key: 'avg_manual_switch_count', label: '平均切手动次数' },
-  { key: 'manual_intervention_rate', label: '人工干预率', percent: true },
+// 仅数值型指标字段（排除时间字段），用于指标卡片与型号对比表的 key
+type SummaryMetricKey = Exclude<keyof EfficiencySummary, 'created_at' | 'updated_at'>;
+type RobotMetricKey = Exclude<keyof RobotEfficiency, 'robot_model' | 'created_at'>;
+
+// 10 个指标卡片：中文标签 + 单位 + 主题色 + 图标
+const SUMMARY_METRICS: Array<{ key: SummaryMetricKey; label: string; unit: string; color: string; icon: string; percent?: boolean }> = [
+  { key: 'total_tasks', label: '总任务数', unit: '个', color: '#0052d9', icon: '📋' },
+  { key: 'carry_task_count', label: '搬运任务数量', unit: '个', color: '#0891b2', icon: '🚚' },
+  { key: 'effective_work_hours', label: '有效工作时长', unit: '小时', color: '#059669', icon: '⏱️' },
+  { key: 'fault_hours', label: '机器人故障时长', unit: '小时', color: '#dc2626', icon: '⚠️' },
+  { key: 'idle_hours', label: '空闲无任务时间', unit: '小时', color: '#d97706', icon: '🕐' },
+  { key: 'avg_error_count', label: '平均错误次数', unit: '次', color: '#e11d48', icon: '❌' },
+  { key: 'avg_fault_duration_minutes', label: '平均单次故障时间', unit: '分钟', color: '#dc2626', icon: '🔧' },
+  { key: 'avg_carry_duration_minutes', label: '平均单次搬运任务时间', unit: '分钟', color: '#7c3aed', icon: '🎯' },
+  { key: 'avg_manual_switch_count', label: '平均切手动次数', unit: '次', color: '#ea580c', icon: '✋' },
+  { key: 'manual_intervention_rate', label: '人工干预率', unit: '百分比', color: '#db2777', icon: '📊', percent: true },
 ];
 
-const ROBOT_ROWS: Array<{ key: keyof RobotEfficiency; label: string }> = [
+// 各组数据对比表：指标行（列 = AGV 型号/机器人组）
+const ROBOT_ROWS: Array<{ key: RobotMetricKey; label: string }> = [
   { key: 'carry_task_total', label: '搬运任务总数(个)' },
   { key: 'effective_work_hours', label: '有效工作时长(h)' },
   { key: 'effective_efficiency', label: '有效搬运效率(小时/个)' },
@@ -65,10 +75,13 @@ const todayStr = (): string => {
   return `${y}-${m}-${day}`;
 };
 
-const formatValue = (value: number | null | undefined, unit?: string, percent?: boolean): string => {
+// 数值格式化：保留两位小数；percent 转换为百分比
+const formatValue = (value: number | null | undefined, percent?: boolean): string => {
   if (value == null) return '-';
-  if (percent) return `${Math.round(value * 100)}%`;
-  return unit ? `${value}${unit}` : String(value);
+  const num = Number(value);
+  if (percent) return `${Math.round(num * 100)}%`;
+  const rounded = Number.isInteger(num) ? num : Math.round(num * 100) / 100;
+  return String(rounded);
 };
 
 export default function TransportEfficiency() {
@@ -113,15 +126,21 @@ export default function TransportEfficiency() {
 
   const hasData = !!(data?.summary || (data?.robots && data.robots.length > 0));
 
+  // 数据采集时间：取汇总记录最后更新时间（无汇总记录时退回到型号明细的创建时间）
+  const collectionTime = data?.summary?.updated_at || data?.summary?.created_at || data?.robots?.[0]?.created_at || null;
+
   return (
     <div>
       <Navbar title="搬运效率分析" leftArrow onLeftClick={() => navigate(-1)} fixed />
       <div style={{ padding: 16, paddingTop: 64 }}>
-        {projectName && (
-          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 16, color: '#1a1a1a' }}>
-            {projectName}
-          </div>
-        )}
+        {/* 信息卡片：项目名称 / 指标标签 / 数据采集时间 / 数据时间范围 */}
+        <div style={{ background: '#fff', borderRadius: 8, padding: '10px 16px', marginBottom: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+          <InfoRow label="项目名称" value={projectName || '-'} />
+          <InfoRow label="指标标签" value="搬运效率" />
+          <InfoRow label="数据采集时间" value={collectionTime || '-'} />
+          <InfoRow label="数据时间范围" value={`${date} 00:00:00 ~ ${date} 23:59:59`} />
+        </div>
+
         <div
           onClick={() => setDatePickerVisible(true)}
           style={{
@@ -154,11 +173,20 @@ export default function TransportEfficiency() {
             {data?.summary && (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 16 }}>
                 {SUMMARY_METRICS.map((m) => (
-                  <div key={m.key} style={{ background: '#fff', borderRadius: 8, padding: '12px 10px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)', textAlign: 'center' }}>
-                    <div style={{ fontSize: 18, fontWeight: 700, color: '#0052d9' }}>
-                      {formatValue(data.summary![m.key], m.unit, m.percent)}
+                  <div key={m.key} style={{ background: '#fff', borderRadius: 8, padding: '12px 10px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div style={{ fontSize: 12, color: '#999' }}>{m.label}</div>
+                      <div style={{
+                        width: 26, height: 26, borderRadius: '50%', flexShrink: 0,
+                        background: `${m.color}1a`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13,
+                      }}>
+                        {m.icon}
+                      </div>
                     </div>
-                    <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>{m.label}</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: m.color, marginTop: 6 }}>
+                      {formatValue(data.summary![m.key], m.percent)}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>{m.unit}</div>
                   </div>
                 ))}
               </div>
@@ -166,7 +194,7 @@ export default function TransportEfficiency() {
 
             {data?.robots && data.robots.length > 0 && (
               <div style={{ background: '#fff', borderRadius: 8, padding: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>AGV型号对比</div>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>各组数据对比</div>
                 <div style={{ overflowX: 'auto' }}>
                   <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
                     <thead>
@@ -185,7 +213,7 @@ export default function TransportEfficiency() {
                           <td style={{ padding: '6px 10px', borderBottom: '1px solid #f5f5f5', color: '#666', whiteSpace: 'nowrap' }}>{row.label}</td>
                           {data.robots.map((r) => (
                             <td key={r.robot_model} style={{ textAlign: 'right', padding: '6px 10px', borderBottom: '1px solid #f5f5f5', whiteSpace: 'nowrap' }}>
-                              {r[row.key] ?? '-'}
+                              {formatValue(r[row.key])}
                             </td>
                           ))}
                         </tr>
@@ -198,6 +226,16 @@ export default function TransportEfficiency() {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// 信息卡片中的一行：灰色标签 + 右侧数值
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 0', fontSize: 13 }}>
+      <span style={{ color: '#999', flexShrink: 0 }}>{label}</span>
+      <span style={{ color: '#1a1a1a', fontWeight: 500, textAlign: 'right' }}>{value}</span>
     </div>
   );
 }

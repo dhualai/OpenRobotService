@@ -83,3 +83,6 @@ ai/agents/AiTaskPlatform/log_analyzer/log_manual/
 ai/integrations/wecom/user_map.json
 # ===== Allure test report output =====
 output/
+
+# ===== 项目数据（本地数据文件，不入库）=====
+/项目数据/
