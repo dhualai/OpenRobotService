@@ -1,5 +1,5 @@
 // 项目授权管理 - 基于接口文档 GET /api/admin/projects/licenses/{project_code}
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Button, Toast, Loading, Dialog, Input, Popup, DateTimePicker } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -102,6 +102,8 @@ export default function ProjectAuth() {
   const [collapsedUsernames, setCollapsedUsernames] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<{ username: string; x: number; y: number } | null>(null);
   const [removingUsername, setRemovingUsername] = useState<string | null>(null);
+  // 长按卡片 1s 触发移除弹窗的定时器
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 申请授权码：机器码 + 开始/结束日期 + 允许最大车数，调用 POST /export/apply_project_license（经 MQTT 审批）
   const [machineCode, setMachineCode] = useState('');
@@ -241,6 +243,17 @@ export default function ProjectAuth() {
       setRemovingUsername(null);
       setContextMenu(null);
     }
+  };
+
+  // 长按 1s 弹出移除按钮（触屏与鼠标均支持）
+  const beginLongPress = (x: number, y: number, username: string) => {
+    if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    longPressTimer.current = setTimeout(() => {
+      setContextMenu({ username, x, y });
+    }, 1000);
+  };
+  const cancelLongPress = () => {
+    if (longPressTimer.current) { clearTimeout(longPressTimer.current); longPressTimer.current = null; }
   };
 
   const handleProjectSelect = (project: Project) => {
@@ -532,10 +545,10 @@ export default function ProjectAuth() {
             <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>该项目暂无授权记录</div>
           )}
 
-          {/* 项目已关联人员：可折叠树形 + 右键移除 */}
+          {/* 项目已关联人员：可折叠树形 + 长按移除 */}
           <div style={{ background: '#fff', borderRadius: 8, padding: 14, marginTop: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
-              已关联人员（{existingUsers.length}）<span style={{ fontSize: 12, color: '#999', fontWeight: 400, marginLeft: 6 }}>右键卡片可移除</span>
+              已关联人员（{existingUsers.length}）<span style={{ fontSize: 12, color: '#999', fontWeight: 400, marginLeft: 6 }}>长按卡片可移除</span>
             </div>
             {existingUsersLoading ? (
               <Loading text="加载中..." />
@@ -554,12 +567,14 @@ export default function ProjectAuth() {
                         style={{
                           background: removingUsername === u.username ? '#fff1f0' : '#fafafa',
                           borderRadius: 8, padding: 14, marginBottom: 10, marginLeft: depth * 20,
-                          boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'context-menu',
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.06)', userSelect: 'none', WebkitUserSelect: 'none',
                         }}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          setContextMenu({ username: u.username, x: e.clientX, y: e.clientY });
-                        }}
+                        onTouchStart={(e) => beginLongPress(e.touches[0].clientX, e.touches[0].clientY, u.username)}
+                        onTouchEnd={cancelLongPress}
+                        onTouchMove={cancelLongPress}
+                        onMouseDown={(e) => beginLongPress(e.clientX, e.clientY, u.username)}
+                        onMouseUp={cancelLongPress}
+                        onMouseLeave={cancelLongPress}
                       >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                           <div style={{ fontSize: 14, fontWeight: 500 }}>
