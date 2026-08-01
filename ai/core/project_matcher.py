@@ -85,7 +85,11 @@ class ProjectMatcher:
             finally:
                 session.close()
 
-        return await loop.run_in_executor(None, _query)
+        result = await loop.run_in_executor(None, _query)
+        # 每次查库都打印完整列表，方便确认拉到的项目匹配库内容
+        _sample = [f"{p['code']}:{p['name']}" for p in result]
+        logger.info(f"[ProjectMatcher] fetched {len(result)} projects: {_sample}")
+        return result
 
     # ── 匹配 ──────────────────────────────────────────────
 
@@ -131,25 +135,36 @@ class ProjectMatcher:
     async def get_candidates_async(
         self, user_input: str, min_score: float = 0.7, top_n: int = 5
     ) -> List[ProjectMatch]:
-        """异步查询：优先 Meilisearch，不可用时降级到内存打分。"""
+        """异步查询：Meilisearch 做召回，内存 _score() 做统一打分。
+
+        Meilisearch 的 _rankingScore 和内存 bigram/Jaccard 打分量纲不同，
+        但共用同一个 min_score 阈值 → 同一 query 在 Meili 在线/离线时结果不同。
+        现在统一用 _score() 打分，Meili 仅负责快速召回候选。
+        """
+        candidates: List[ProjectMatch] = []
+        # Meilisearch 召回（快速全文本搜索）
         if self._meili_ok:
             try:
-                hits = await self._meili_search(user_input, top_n)
+                hits = await self._meili_search(user_input, top_n * 3)
                 if hits is not None:
-                    candidates = [
-                        ProjectMatch(name=h["name"], code=h["code"], score=h.get("_rankingScore", 0))
-                        for h in hits
-                    ]
-                    result = [c for c in candidates if c.score >= min_score]
+                    # 用统一的 _score() 重新打分，不再信任 Meili 的 _rankingScore
+                    for h in hits:
+                        s = self._score(user_input, h["name"])
+                        if s is not None:
+                            candidates.append(ProjectMatch(name=h["name"], code=h["code"], score=s))
                     logger.info(
-                        f"[ProjectMatcher] meili search: '{user_input}' -> "
-                        f"{len(result)}/{len(candidates)} candidates"
+                        f"[ProjectMatcher] meili recall: '{user_input}' -> "
+                        f"{len(hits)} hits, {len(candidates)} scored>0"
                     )
-                    return result
             except Exception as e:
                 logger.warning(f"[ProjectMatcher] meili search failed, fallback to memory: {e}")
-        # 降级：内存打分
-        return self.get_candidates(user_input, min_score, top_n)
+        # 内存打分（Meili 不可用或没召回结果时兜底）
+        if not candidates:
+            candidates = self._get_candidates(user_input)
+        # 统一按 _score() 打分排序
+        candidates.sort(key=lambda x: x.score, reverse=True)
+        result = [c for c in candidates if c.score >= min_score][:top_n]
+        return result
 
     async def _meili_search(self, query: str, limit: int = 5) -> Optional[List[dict]]:
         """调 Meilisearch 搜索。失败返回 None（不抛异常）。"""
