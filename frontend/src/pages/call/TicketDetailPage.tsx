@@ -88,7 +88,9 @@ export default function TicketDetailPage() {
       const res = await qaGetTicket(sessionId);
       if (res?.code === 0 && res.data) {
         const aiTicket = res.data as AiTicket;
-        setTicket(aiTicket);
+        // silent 刷新（编辑后 / 派单轮询）不重置 ticket：避免被 AI 滞后的 Redis 副本覆盖，
+        // 仅由下方 DB 覆盖可编辑字段；diagnosis 等 AI 特有数据保持现有值不动。
+        if (!silent) setTicket(aiTicket);
         if (aiTicket.ticket_id) {
           try {
             const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
@@ -217,7 +219,7 @@ export default function TicketDetailPage() {
       });
       Toast({ message: '已保存', theme: 'success' });
       setShowEdit(false);
-      fetchDetail(true);  // 静默刷新，展示端以 DB 为准，编辑后立即可见
+      await fetchDetail(true);  // 静默刷新，展示端以 DB 为准，编辑后立即可见（await 确保 DB 新值落定）
     } catch (err) {
       Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
