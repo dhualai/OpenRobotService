@@ -69,7 +69,7 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
     if (!projectCode) return;
     setLoading(true);
     try {
-      const data = await request(`/projects/licenses/${encodeURIComponent(projectCode)}?type=all`);
+      const data = await request(`/projects/licenses/${encodeURIComponent(projectCode)}?type=all`, { skipCache: true });
       setItems(normalizeList<AuthItem>(data));
     } catch (err) {
       Toast({ message: `加载授权失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });

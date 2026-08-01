@@ -3,6 +3,7 @@ import { Button, Toast, Loading, Dialog, Input, Popup, Form, FormItem, Textarea,
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import { useAuthStore } from '@/stores/auth';
 
 interface User {
   id: string;
@@ -112,8 +113,17 @@ export default function UserManage() {
   const [roleNameMap, setRoleNameMap] = useState<Map<string, string>>(new Map());
   const [projectNameMap, setProjectNameMap] = useState<Map<string, string>>(new Map());
   const [permNameMap, setPermNameMap] = useState<Map<string, string>>(new Map());
+  // 系统角色（role_type='system'），用于全局角色编辑弹窗的可选列表
+  const [systemRoles, setSystemRoles] = useState<{ id: string; name: string }[]>([]);
+  const [globalRoleEditVisible, setGlobalRoleEditVisible] = useState(false);
+  const [globalRoleChecked, setGlobalRoleChecked] = useState<Set<string>>(new Set());
+  const [globalRoleSaving, setGlobalRoleSaving] = useState(false);
 
   const request = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
+
+  const { hasPermission } = useAuthStore();
+  // 仅当当前管理员持有 backend:roles:system 权限时，才允许编辑他人全局角色
+  const canManageSystemRoles = hasPermission('backend:role:system');
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -136,12 +146,17 @@ export default function UserManage() {
     (async () => {
       try {
         const [rolesData, projectsData, permsData] = await Promise.all([
-          request<{ id: string; name: string }[]>('/roles/'),
+          request<{ id: string; name: string; role_type?: string }[]>('/roles/'),
           request<{ id?: string; project_code: string; name: string }[]>('/projects/?limit=1000&include_analysis=false'),
           request<{ id: string; code: string; name: string }[]>('/permissions/'),
         ]);
         const rMap = new Map<string, string>();
-        normalizeList<{ id: string; name: string }>(rolesData).forEach((r) => rMap.set(r.id, r.name));
+        const sysRoles: { id: string; name: string }[] = [];
+        normalizeList<{ id: string; name: string; role_type?: string }>(rolesData).forEach((r) => {
+          rMap.set(r.id, r.name);
+          if (r.role_type === 'system') sysRoles.push({ id: r.id, name: r.name });
+        });
+        setSystemRoles(sysRoles);
         const pMap = new Map<string, string>();
         normalizeList<{ id?: string; project_code: string; name: string }>(projectsData).forEach((p) => {
           pMap.set(p.project_code, p.name);
@@ -236,6 +251,61 @@ export default function UserManage() {
       Toast({ message: '加载详情失败', theme: 'error' });
     } finally {
       setDetailLoading(false);
+    }
+  };
+
+  const reloadDetail = async (username: string) => {
+    const detail = await request<User>(`/users/${username}/detail`);
+    setDetailUser(detail);
+  };
+
+  // 打开全局角色编辑弹窗：用当前已有的全局角色（roles['global']）预勾选
+  const openGlobalRoleEditor = (user: User) => {
+    setGlobalRoleChecked(new Set(user.roles?.['global'] || []));
+    setGlobalRoleEditVisible(true);
+  };
+
+  // 保存全局角色：对比差集，新增走 assign-roles（project_id 留空=全局），移除走 DELETE /project/role?project_id=global
+  const handleSaveGlobalRoles = async () => {
+    if (!detailUser) return;
+    const { username, id: userId } = detailUser;
+    const before = new Set(detailUser.roles?.['global'] || []);
+    const added = Array.from(globalRoleChecked).filter((rid) => !before.has(rid));
+    const removed = Array.from(before).filter((rid) => !globalRoleChecked.has(rid));
+    if (added.length === 0 && removed.length === 0) {
+      setGlobalRoleEditVisible(false);
+      return;
+    }
+    setGlobalRoleSaving(true);
+    try {
+      const tasks: Promise<unknown>[] = [];
+      if (added.length > 0) {
+        tasks.push(
+          request('/users/project/assign-roles', {
+            method: 'POST',
+            body: JSON.stringify({
+              project_id: '',
+              organization_ids: added.map((rid) => ({ user_name: username, role_id: rid })),
+            }),
+          }),
+        );
+      }
+      removed.forEach((rid) => {
+        tasks.push(
+          request(
+            `/users/project/role?user_id=${encodeURIComponent(userId)}&project_id=global&role_id=${encodeURIComponent(rid)}`,
+            { method: 'DELETE' },
+          ),
+        );
+      });
+      await Promise.all(tasks);
+      Toast({ message: '全局角色已更新', theme: 'success' });
+      setGlobalRoleEditVisible(false);
+      await reloadDetail(username);
+    } catch (err) {
+      Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setGlobalRoleSaving(false);
     }
   };
 
@@ -835,15 +905,27 @@ export default function UserManage() {
                 </div>
               )}
 
-              {detailUser.roles && Object.keys(detailUser.roles).length > 0 && (
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: '#333', marginBottom: 8 }}>
-                    🎯 全局角色
-                  </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {Object.entries(detailUser.roles).map(([projectId, roleIds]) => (
-                      <div key={projectId}>
-                        {roleIds.map((roleId) => (
+              {(() => {
+                const globalRoleIds = detailUser.roles?.['global'] ?? [];
+                if (globalRoleIds.length === 0 && !canManageSystemRoles) return null;
+                return (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: '#333' }}>🎯 全局角色</div>
+                      {canManageSystemRoles && (
+                        <Button
+                          size="small"
+                          variant="outline"
+                          theme="primary"
+                          onClick={() => openGlobalRoleEditor(detailUser)}
+                        >
+                          编辑
+                        </Button>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {globalRoleIds.length > 0 ? (
+                        globalRoleIds.map((roleId) => (
                           <span
                             key={roleId}
                             style={{
@@ -852,17 +934,18 @@ export default function UserManage() {
                               borderRadius: 4,
                               background: '#e6f7ff',
                               color: '#0050b3',
-                              marginRight: 4,
                             }}
                           >
                             {roleNameMap.get(roleId) || roleId}
                           </span>
-                        ))}
-                      </div>
-                    ))}
+                        ))
+                      ) : (
+                        <span style={{ fontSize: 12, color: '#ccc' }}>暂无全局角色</span>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {detailUser.projectPermissions && Object.keys(detailUser.projectPermissions).length > 0 && (
                 <div style={{ marginBottom: 16 }}>
@@ -970,6 +1053,72 @@ export default function UserManage() {
           </div>
         </div>
       </Popup>
+
+      {/* 全局角色编辑弹窗：仅列出系统角色，勾选即赋予/取消全局角色 */}
+      <Popup visible={globalRoleEditVisible} onClose={() => setGlobalRoleEditVisible(false)} placement="bottom" showOverlay>
+        <div style={{ padding: 20, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
+          <h4 style={{ marginBottom: 4 }}>
+            编辑全局角色：{detailUser?.name || detailUser?.username}
+          </h4>
+          <p style={{ fontSize: 12, color: '#999', marginBottom: 12 }}>
+            勾选即赋予系统级全局角色，取消即移除
+          </p>
+          <div style={{ overflow: 'auto', flex: 1 }}>
+            {systemRoles.length === 0 && (
+              <div style={{ textAlign: 'center', padding: 30, color: '#999' }}>暂无可分配的系统角色</div>
+            )}
+            {systemRoles.map((r) => {
+              const checked = globalRoleChecked.has(r.id);
+              return (
+                <div
+                  key={r.id}
+                  onClick={() =>
+                    setGlobalRoleChecked((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(r.id)) next.delete(r.id);
+                      else next.add(r.id);
+                      return next;
+                    })
+                  }
+                  style={{
+                    padding: '10px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 8, fontSize: 14,
+                  }}
+                >
+                  <CheckDot checked={checked} />
+                  {r.name}
+                </div>
+              );
+            })}
+          </div>
+          <Button
+            theme="primary"
+            block
+            style={{ marginTop: 16 }}
+            loading={globalRoleSaving}
+            onClick={handleSaveGlobalRoles}
+          >
+            保存
+          </Button>
+        </div>
+      </Popup>
     </div>
+  );
+}
+
+// 自绘勾选圆点：与 AssignRole 页一致，避免 Checkbox 默认白底在卡片上突兀
+function CheckDot({ checked }: { checked: boolean }) {
+  return (
+    <span
+      style={{
+        width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
+        border: checked ? 'none' : '1.5px solid #ccc',
+        background: checked ? '#0052d9' : 'transparent',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        color: '#fff', fontSize: 12, lineHeight: 1, boxSizing: 'border-box',
+      }}
+    >
+      {checked ? '✓' : ''}
+    </span>
   );
 }

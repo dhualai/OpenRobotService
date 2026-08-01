@@ -257,6 +257,20 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
     </div>
   );
 
+  // 上级人员候选 = 已关联人员 + 本次待提交的添加（按 username 去重，排除当前正要添加的用户自身）
+  const superiorCandidates = (() => {
+    const map = new Map<string, { username: string; label: string }>();
+    existingUsers.forEach((u) => {
+      map.set(u.username, { username: u.username, label: `${u.name}${u.roleNames.length ? ' - ' + u.roleNames.join('/') : ''}` });
+    });
+    associateList.forEach((a) => {
+      if (!map.has(a.username)) {
+        map.set(a.username, { username: a.username, label: `${a.userName} - ${a.roleName}` });
+      }
+    });
+    return Array.from(map.values()).filter((c) => c.username !== associateUser?.username);
+  })();
+
   if (!selectedProject) {
     return <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>请先选择项目</div>;
   }
@@ -412,13 +426,13 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
               </div>
               <div style={{ fontSize: 14 }}>无（顶层）</div>
             </div>
-            {associateList.length === 0 ? (
+            {superiorCandidates.length === 0 ? (
               <div style={{ padding: '10px 0', color: '#999', fontSize: 13 }}>暂无已添加人员可选为上级</div>
             ) : (
-              associateList.map((a) => (
+              superiorCandidates.map((c) => (
                 <div
-                  key={a.id}
-                  onClick={() => setAssociateSuperiorUsername(a.username)}
+                  key={c.username}
+                  onClick={() => setAssociateSuperiorUsername(c.username)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10,
                     padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
@@ -427,13 +441,13 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
                   <div
                     style={{
                       width: 16, height: 16, borderRadius: '50%',
-                      border: `1px solid ${associateSuperiorUsername === a.username ? '#0052d9' : '#ccc'}`,
+                      border: `1px solid ${associateSuperiorUsername === c.username ? '#0052d9' : '#ccc'}`,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}
                   >
-                    {associateSuperiorUsername === a.username && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />}
+                    {associateSuperiorUsername === c.username && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />}
                   </div>
-                  <div style={{ fontSize: 14 }}>{a.userName} - {a.roleName}</div>
+                  <div style={{ fontSize: 14 }}>{c.label}</div>
                 </div>
               ))
             )}
