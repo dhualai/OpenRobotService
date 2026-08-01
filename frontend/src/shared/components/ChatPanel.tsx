@@ -982,13 +982,26 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     setSubmittingTicket(true);
     try {
       const res = await qaPrepareTicket(sessionId);
-      // 保底必填字段不足 → stage=not_ready：不进弹窗，在对话区列出缺失项引导补充
-      if (res?.code === 0 && res.data?.stage === 'not_ready') {
+      // prepare 两层 code 规范：
+      //   外层 code=1 → pipeline 抛异常，message 为异常信息；
+      //   外层 code=0 → 正常返回，再按内层 data.code / stage 分流：
+      //     ① data.code=1 + stage=not_ready → 信息不足，对话区追问；
+      //     ② data.code=1 + 无 stage → 重复提单（_can_submit 拦截），友好提示；
+      //     ③ stage=draft_ready / need_fields → 草稿就绪/缺字段，弹确认窗。
+      if (res?.code !== 0) {
+        Toast({ message: res?.message || '生成工单草稿失败', theme: 'error' });
+        return;
+      }
+      if (!res.data) {
+        Toast({ message: '生成工单草稿失败', theme: 'error' });
+        return;
+      }
+      // ① 信息不足：stage=not_ready → 对话区列出缺失项引导补充，不弹窗
+      if (res.data.stage === 'not_ready') {
         const missing = res.data.missing_info ?? [];
         const msg = res.data.message || (missing.length
           ? `工单信息不足，还差：${missing.join('、')}。请直接在对话中告诉我，补全后再点转工单。`
           : '工单信息不足，请补充后再点转工单。');
-        // 1) 作为 assistant 消息渲染气泡（与流式 AI 回复一致的持久化方式，刷新/切回仍可见）
         setMessages((prev) => [...prev, {
           id: uid(),
           role: 'assistant',
@@ -997,15 +1010,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         }]);
         scrollToBottomNow();
         if (convRef.current) appendMessage(convRef.current, 'assistant', msg).catch(() => {});
-        // 2) 输入框上方常驻「待补充清单」卡片 + 转工单按钮角标
         setTicketMissing({ info: missing, message: msg });
-        // 3) 短提示（移动端友好，toast 转瞬即逝，卡片是主载体）
         Toast({ message: missing.length ? `还差 ${missing.length} 项信息，已在对话中列出` : '信息不足，请补充', theme: 'warning' });
         return;
       }
-      // 重复提交等业务提示：data.code=1（已建单会话再次转工单，无草稿）→ 友好提示，不弹空确认窗
-      if (res.data?.code === 1) {
-        const msg = res.data?.message || res.message || '当前会话无需重复提交工单';
+      // ② 重复提单：data.code=1 + 无 stage（_can_submit 拦截）→ 友好提示，不弹窗
+      if (res.data.code === 1) {
+        const msg = res.data.message || '当前会话无需重复提交工单';
         setMessages((prev) => [...prev, {
           id: uid(),
           role: 'assistant',
@@ -1017,14 +1028,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         Toast({ message: msg, theme: 'warning', duration: 4000 });
         return;
       }
-      if (res?.code !== 0 || !res.data) {
-        Toast({
-          message: res?.message || '生成工单草稿失败',
-          theme: res?.stage === 'not_ready' ? 'warning' : 'error',
-          duration: res?.stage === 'not_ready' ? 5000 : 3000,
-        });
-        return;
-      }
+      // ③ 草稿就绪 / 缺字段：stage=draft_ready | need_fields → 弹确认窗
       const { draft, missing_fields, prompt } = res.data;
       // 打开确认弹窗，让用户核对/编辑/补字段
       setTicketMissing(null); // 已就绪，清掉待补充清单
