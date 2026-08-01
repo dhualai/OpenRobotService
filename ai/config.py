@@ -72,7 +72,7 @@ class AIConfig(BaseModel):
 
     # ========== 派单 ==========
     dispatch_api_url: str = Field(default="", description="派单系统推送地址")
-    assign_scan_interval: int = Field(default=60, description="派单 Worker 扫描待派单工单间隔（秒）")
+    assign_scan_interval: int = Field(default=5, description="派单 Worker 扫描待派单工单间隔（秒）")
     upload_dir: str = Field(default="./uploads", description="附件上传目录")
 
     # ========== 诊断服务 ==========
