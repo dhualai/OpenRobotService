@@ -1053,7 +1053,14 @@ class AiDiagnosisPlatform:
         await self._ensure_clients()
         memory = await self._memory_manager.get_memory(session_id)
         agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
-        return await self._build_ticket(session_id, agent_state, memory)
+        ticket = await self._build_ticket(session_id, agent_state, memory)
+        # 彻底根治：_build_ticket 每次都用 int(time.time()) 重写 created_at（读取时刻），并非工单真实创建时间。
+        # 提交时（submit / confirm_submit）已把真实创建时间持久化到 last_submitted_ticket.submitted_at，
+        # 这里用持久化的真实创建时间覆盖，避免详情页显示「打开详情那一刻」的时间。
+        submitted_at = (agent_state.last_submitted_ticket or {}).get("submitted_at")
+        if submitted_at:
+            ticket["created_at"] = submitted_at
+        return ticket
 
     async def submit(self, session_id: str, created_by: str = "") -> dict:
         await self._ensure_clients()
