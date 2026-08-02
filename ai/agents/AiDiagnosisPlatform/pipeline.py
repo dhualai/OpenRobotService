@@ -18,7 +18,7 @@ from ai.config import get_ai_config
 from ai.exceptions import AITimeoutError, LowConfidenceError, ServiceUnavailableError, RetrieveEmptyError
 from ai.core import get_llm_client, get_retrieval_service, get_memory_manager
 from ai.core.logging import get_logger
-from ai.core.project_matcher import get_project_matcher
+from ai.core.project_matcher import get_project_matcher, ProjectMatch
 
 logger = get_logger("AI")
 
@@ -266,14 +266,16 @@ def _log_ticket_state(state: AgentState, event: str, **extra) -> None:
 async def _generate_title(llm_client, memory) -> str:
     """第2轮对话结束后，用前两轮对话生成会话标题（中文不超过15字，英文不超过50字符）"""
     turns = memory.turns
-    if len(turns) < 4 or "title" in memory.metadata:
+    if len(turns) < 2 or "title" in memory.metadata:
         return ""
+    # 动态取可用 turns（最多前4条）构造对话，避免 Redis 降级 turns 不全时索引越界/直接放弃
+    dialog = "\n".join(
+        f"{'用户' if t.get('role') == 'user' else '助手'}：{t.get('content', '')}"
+        for t in turns[:4]
+    )
     prompt = (
         "根据以下对话生成一个简短标题（中文不超过15字，英文不超过50字符）：\n\n"
-        f"用户：{turns[0]['content']}\n"
-        f"助手：{turns[1]['content']}\n"
-        f"用户：{turns[2]['content']}\n"
-        f"助手：{turns[3]['content']}\n\n"
+        f"{dialog}\n\n"
         "只输出标题，不要引号或任何额外内容。"
     )
     try:
@@ -802,18 +804,19 @@ class AiDiagnosisPlatform:
         elif action == "submit":
             state.phase = "escalated"
 
-    async def _resolve_project(self, raw_name: str) -> str:
+    async def _resolve_project(self, raw_name: str) -> Optional[ProjectMatch]:
         """将用户输入的项目名匹配到 helpdesk_724.project 标准名。
 
-        单候选直接返回，多候选调 LLM 裁决，无匹配返回空字符串。
+        单候选直接返回，多候选调 LLM 裁决，无匹配返回 None。
+        返回 ProjectMatch（含 .name 和 .code），方便上游同时拿到项目名和 project_id。
         """
         if not raw_name or not raw_name.strip():
-            return ""
+            return None
         try:
             matcher = get_project_matcher()
             if not await matcher.ensure_loaded():
                 logger.warning("[pipeline] project DB unavailable")
-                return ""
+                return None
             user = raw_name.strip()
             candidates = await matcher.get_candidates_async(user, min_score=0.7)
             if not candidates:
@@ -824,7 +827,7 @@ class AiDiagnosisPlatform:
                     f"[pipeline] 无匹配项目(≥0.7): '{user}' "
                     f"(项目库共 {len(matcher._projects)} 条, top5候选={_top})"
                 )
-                return ""
+                return None
             if len(candidates) == 1:
                 # 展示全部接近候选，方便理解为什么选了这个而非其他
                 _nearby = matcher.get_candidates(user, min_score=0.3, top_n=5)
@@ -833,7 +836,7 @@ class AiDiagnosisPlatform:
                     f"[pipeline] 项目直配: '{user}' → '{candidates[0].name}' "
                     f"(≥0.7候选={len(candidates)}, ≥0.3候选={_all_scored})"
                 )
-                return candidates[0].name
+                return candidates[0]
             # 多个候选 → LLM 裁决
             await self._ensure_clients()
             lines = [f"{i+1}. {c.name}（编号: {c.code}）" for i, c in enumerate(candidates)]
@@ -852,12 +855,12 @@ class AiDiagnosisPlatform:
                     f"[pipeline] LLM 裁决项目: '{user}' → #{idx} '{candidates[idx-1].name}' "
                     f"(≥0.7候选={_scored})"
                 )
-                return candidates[idx - 1].name
+                return candidates[idx - 1]
             logger.info(f"[pipeline] LLM 无法裁决项目 '{user}'")
-            return ""
+            return None
         except Exception as e:
             logger.warning(f"[pipeline] project matching failed: {e}")
-            return ""
+            return None
 
     async def _finalize_diagnosis(self, session_id: str, state: AgentState,
                                     thinking: str, action: str, message: str,
@@ -892,20 +895,20 @@ class AiDiagnosisPlatform:
         # except Exception as e:
         #     logger.error(f"[persist] MySQL 写入失败: session={session_id[:16]}, error={e}", exc_info=True)
 
-        # 第2轮对话结束后生成标题（fire-and-forget 方式，不阻塞结果返回）
+        # 第2轮及以后对话结束生成标题（fire-and-forget，不阻塞结果返回）。
+        # 门槛放宽到 >=2：防第2轮因 LLM 抖动未生成时，后续轮还能补上；
+        # 防重复靠 memory.metadata["title"]（_generate_title 内部写入，"title" not in 判定拦住重复生成）。
         title = ""
-        if state.diagnosis_rounds == 2 and "title" not in memory.metadata:
+        if state.diagnosis_rounds >= 2 and "title" not in memory.metadata:
+            logger.info(f"[title] 尝试生成: round={state.diagnosis_rounds}, turns={len(memory.turns)}")
             title = await _generate_title(self._llm_client, memory)
-            # 同步到 DB：会话列表 / 切回 / 刷新都读 DB title，否则始终是默认「新会话」。
-            # 防覆盖：若用户已手动重命名（DB title 非「新会话」），则不覆盖 DB 与前端，
-            # 仅 memory.metadata 已记录（_generate_title 内部写入）防止下轮重复生成。
+            logger.info(f"[title] 生成结果: {title!r}")
+            # 同步到 DB：会话列表 / 切回 / 刷新都读 DB title，否则始终是默认「新会话」
             if title:
                 try:
-                    from ai.core.conversation_store import get_conversation_title, rename_conversation
-                    if get_conversation_title(memory.session_id) == "新会话":
-                        rename_conversation(memory.session_id, title)
-                    else:
-                        title = ""  # 用户已重命名 → 不发 event、不改 DB
+                    from ai.core.conversation_store import rename_conversation
+                    rename_conversation(memory.session_id, title)
+                    logger.info(f"[title] DB 已同步: session={memory.session_id}, title={title}")
                 except Exception as e:
                     logger.warning(f"[title] DB 同步失败: {e}")
 
@@ -1239,10 +1242,12 @@ class AiDiagnosisPlatform:
         # 匹配不上 → 兜底"摇人吧服务号提单"（同时更新 result 和 collected_info，保证一致性）
         _raw_proj = (agent_state.collected_info.get("project", "") or analysis.get("project", "")).strip()
         if _raw_proj:
-            _resolved = await self._resolve_project(_raw_proj)
-            if _resolved:
-                agent_state.collected_info["project"] = _resolved  # 回写全名，后续一致
-                _raw_proj = _resolved
+            match = await self._resolve_project(_raw_proj)
+            if match:
+                agent_state.collected_info["project"] = match.name      # 回写全名，后续一致
+                agent_state.collected_info["project_id"] = match.code   # 回写 project_id
+                _raw_proj = match.name
+                result["project_id"] = match.code
             else:
                 # 项目库匹配不上（如用户说了"摇人吧"但 DB 里没有对应项目）
                 agent_state.collected_info["project"] = "摇人吧服务号提单"
@@ -1325,12 +1330,17 @@ class AiDiagnosisPlatform:
         _reset_state_after_submit(agent_state, memory, ticket, db_id)
         await self._memory_manager.save_memory(memory)
 
-        # ---- 加入待派单池（后台 Worker 定时扫描并派单）----
+        # ---- 加入待派单池 + 通知 Worker 立即派单 ----
         try:
             await self._memory_manager.add_pending_ticket(session_id)
             logger.info(f"工单已加入待派单池: session_id={session_id}, db_id={db_id}")
         except Exception as e:
             logger.warning(f"加入待派单池失败: session_id={session_id}, error={e}")
+        try:
+            await self._memory_manager.publish_new_ticket(db_id)
+            logger.info(f"已发布派单事件: db_id={db_id}")
+        except Exception as e:
+            logger.warning(f"发布派单事件失败: db_id={db_id}, error={e}")
 
         return {
             "type": "ticket",
@@ -1427,6 +1437,14 @@ class AiDiagnosisPlatform:
         ticket.update({k: v for k, v in draft.items()
                        if v and k not in ("ticket_id", "missing_fields", "confirm_prompt", "stage")})
 
+        # 用户在弹窗里改了项目名 → 重新匹配 project_id，否则 project_id 还是旧的
+        _final_project = ticket.get("project", "")
+        if _final_project and _final_project != agent_state.collected_info.get("project", ""):
+            match = await self._resolve_project(_final_project)
+            if match:
+                ticket["project"] = match.name
+                ticket["project_id"] = match.code
+
         from ai.core.task_adapter import upsert_task
         ticket["ticket_seq"] = agent_state.ticket_seq + 1
         record = upsert_task(ticket, created_by=created_by)
@@ -1438,6 +1456,10 @@ class AiDiagnosisPlatform:
 
         try:
             await self._memory_manager.add_pending_ticket(session_id)
+        except Exception:
+            pass
+        try:
+            await self._memory_manager.publish_new_ticket(record.id)
         except Exception:
             pass
 
@@ -1734,6 +1756,7 @@ class AiDiagnosisPlatform:
         _buf = ""          # 累积缓冲区，用于检测 JSON→消息边界
         _json_done = False # True 表示已越过 JSON 区域
         _msg_yielded = False   # 是否已向用户流出消息正文（末尾兜底输出用）
+        _suppress_msg = False  # 默认不抑制；complete 分支 JSON 未闭合(else)路径也读取，必须在此初始化避免 UnboundLocalError
         _msg_buf: list[str] = []  # 缓冲短消息（如 submit 的"好的"），超阈值再流式输出
         _MSG_BUF_FLUSH = 20       # 超过此字符数才流式，避免短消息先出去再卡等后续处理
         def _flush_msg_buf():
@@ -1748,14 +1771,14 @@ class AiDiagnosisPlatform:
         try:
             if _stream is None:
                 # 非流式 LLM，用 complete() + 逐字输出模拟
-                raw = await self._llm_client.complete(prompt=prompt, max_tokens=1500, temperature=0.5)
+                raw = await self._llm_client.complete(prompt=prompt, max_tokens=8000, temperature=0.5)
                 if t_first_llm is None:
                     t_first_llm = time.perf_counter()
                     t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
                 # 拆出 JSON 区域和消息区域，只把消息正文送入 _msg_buf（节流输出）
                 _msg_start = _find_json_end(raw)
                 if _msg_start >= 0:
-                    _suppress_msg = self._suppress_doomed_submit(state, raw[:_msg_start])
+                    _suppress_msg = False  # _suppress_doomed_submit 未实现；submit 覆盖由前端 status 清空 acc 处理
                     msg_body = raw[_msg_start:]
                 else:
                     # JSON 未闭合（max_tokens 截断/格式异常）：不输出残破 JSON，
@@ -1764,31 +1787,32 @@ class AiDiagnosisPlatform:
                 raw_tokens.append(raw)  # 完整 raw 供 _parse_agent_output 解析
                 if not _suppress_msg and msg_body:
                     for ch in msg_body:
-                        _msg_buf.append(ch)
+                        _msg_yielded = True
+                        yield {"event": "token", "data": ch}
             else:
                 async for token in _stream(prompt=prompt, max_tokens=8000, temperature=0.5):
                     raw_tokens.append(token)
-
                     if not _json_done:
                         _buf += token
                         msg_start = _find_json_end(_buf)
                         if msg_start >= 0:
                             _json_done = True
+                            _suppress_msg = False  # _suppress_doomed_submit 未实现；submit 覆盖由前端 status 清空 acc 处理
                             tail = _buf[msg_start:]
-                            if tail:
+                            # 严格流式：token 直接 yield，不进 _msg_buf 缓冲（避免短消息积攒到流结束才一次性吐→"突然一大片"）
+                            if tail and not _suppress_msg:
                                 if t_first_llm is None:
                                     t_first_llm = time.perf_counter()
                                     t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
-                                _msg_buf.append(tail)
+                                _msg_yielded = True
+                                yield {"event": "token", "data": tail}
                     else:
-                        if t_first_llm is None:
-                            t_first_llm = time.perf_counter()
-                            t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
-                        _msg_buf.append(token)
-                    # 缓冲超阈值 → 切换为流式输出（诊断长消息不受影响）
-                    if len("".join(_msg_buf)) > _MSG_BUF_FLUSH:
-                        for ev in _flush_msg_buf():
-                            yield ev
+                        if not _suppress_msg:
+                            if t_first_llm is None:
+                                t_first_llm = time.perf_counter()
+                                t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
+                            _msg_yielded = True
+                            yield {"event": "token", "data": token}
         except (AITimeoutError, ServiceUnavailableError, Exception) as e:
             logger.error(
                 f"[stream] LLM流式调用失败: type={type(e).__name__}, "
@@ -1919,30 +1943,45 @@ class AiDiagnosisPlatform:
                     except Exception:
                         logger.warning(f"[stream] 草稿保存失败: session={request.session_id}", exc_info=True)
                 else:
-                    yield {"event": "status", "data": {"stage": "submitting"}}
-                    ticket_data = await self.submit(request.session_id, created_by=request.created_by, force=_force_submit)
-                    ticket_info = ticket_data.get('data', {}).get('ticket', {})
-                    logger.info(f"[stream] 自动提单成功: session={request.session_id}, "
-                                f"ticket={ticket_info.get('ticket_id', '?')}")
-                    proj = state.collected_info.get("project", "")
-                    parsed["message"] = f"好的，已为「{proj}」生成工单，工程师会尽快处理。" if proj else "好的，已为你生成工单，工程师会尽快处理。"
-                    yield {"event": "status", "data": {
-                        "stage": "submitted",
-                        "ticket_id": ticket_info.get("ticket_id", ""),
-                        "title": ticket_info.get("title", ""),
-                        "db_id": ticket_data.get("data", {}).get("db_id", 0),
-                    }}
-                    # 提单成功 → 丢弃 LLM 缓冲的"好的"（如有），一次性发送完整确认消息，
-                    # 避免 LLM token 先出去、系统确认后追加造成的两条 token 间卡顿。
-                    _msg_buf.clear()
-                    _msg_yielded = True  # 抑制末尾兜底输出
-                    yield {"event": "token", "data": parsed["message"]}
-                    # submit() 已清空诊断状态并保存，刷新本地 state 避免 _finalize_diagnosis 覆写旧状态
-                    memory = await self._memory_manager.get_memory(request.session_id)
-                    state = _load_agent_state(memory.metadata) or state
-                    # context_start 往后挪一位，跨过 _finalize_diagnosis 即将追加的"已生成工单"
-                    # 成功消息——否则下一轮 LLM 会从该消息重新提取 project/problem、绕过闭环保护。
-                    state.context_start = len(memory.turns) + 1
+                    # 字段齐全 → 不自动提单，弹窗让用户核对/修改后确认
+                    # 幂等：上一轮已发 review 未确认（ticket_draft 已存在）→ 不重复发 review，只提示
+                    existing_draft = memory.metadata.get("ticket_draft")
+                    if existing_draft:
+                        logger.info(f"[stream] 复用待确认草稿(未确认),不重复弹窗: session={request.session_id}")
+                        parsed["action"] = "answer"
+                        state.ticket_collecting = []
+                        parsed["message"] = "您有待确认的工单，请先在弹窗中确认或修改后提交。"
+                        _msg_buf.clear()
+                        _msg_yielded = True
+                        yield {"event": "token", "data": parsed["message"]}
+                    else:
+                        memory.metadata["ticket_draft"] = draft
+                        # review 阶段工单未建：回退 _apply_action_phase 误置的 escalated → diagnosing，
+                        # 清空 ticket_collecting 退出工单填写模式，一并持久化（原代码只改局部 state 未 save）
+                        state.phase = "diagnosing"
+                        state.ticket_collecting = []
+                        _save_agent_state(memory, state)
+                        await self._memory_manager.save_memory(memory)
+                        logger.info(f"[stream] 字段齐全，弹窗确认: session={request.session_id}, force={_force_submit}")
+                        yield {"event": "status", "data": {
+                            "stage": "review",
+                            "draft": draft,
+                            "missing_fields": check["missing"],
+                            "force_submit": _force_submit,
+                        }}
+                        # 由于不在这里提单，parsed action 改回 answer（避免 _finalize_diagnosis
+                        # 以 escalated 追加 system turn 污染对话），同时不调 submit() 清空状态。
+                        parsed["action"] = "answer"
+                        proj = state.collected_info.get("project", "")
+                        if _force_submit:
+                            parsed["message"] = "信息收集超限，请核对工单信息后提交。"
+                        elif proj:
+                            parsed["message"] = f"已为「{proj}」生成工单草稿，请核对信息后确认提交。"
+                        else:
+                            parsed["message"] = "已生成工单草稿，请核对信息后确认提交。"
+                        _msg_buf.clear()
+                        _msg_yielded = True  # 抑制末尾兜底输出
+                        yield {"event": "token", "data": parsed["message"]}
             except Exception as e:
                 logger.error(f"[stream] 提单失败: session={request.session_id}, error={e}", exc_info=True)
                 yield {"event": "status", "data": {"stage": "submit_failed", "error": str(e)}}

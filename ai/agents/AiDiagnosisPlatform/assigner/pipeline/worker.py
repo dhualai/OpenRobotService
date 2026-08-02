@@ -1,10 +1,9 @@
 """
-派单后台 Worker — 定时扫描待派单工单并自动指派
+派单后台 Worker — Redis Pub/Sub 事件驱动 + 定时扫描兜底
 
 设计原则：
-  - 派单不需要 HTTP 接口，是纯内部后台任务
-  - 每隔 N 秒扫描 tasks 表中未指派的工单，逐条派单
-  - 单条派单失败不影响其他工单，不影响下一轮扫描
+  - Redis Pub/Sub 监听 "usp:new_ticket" 通道，新工单立即派单（事件驱动）
+  - 每 N 秒定时扫描 MySQL 兜底，防止 Pub/Sub 丢消息或 Worker 重启期间的工单遗漏
   - 派单结果直接写入数据库（assigned_to + metadata_info）
 """
 
@@ -17,9 +16,15 @@ from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket, load_engineers
 
 logger = get_logger("ASSIGNER")
 
+CHANNEL_NEW_TICKET = "usp:new_ticket"
+
 
 class AssignmentWorker:
     """后台派单 Worker
+
+    双通道：
+      - 发布订阅：Redis SUBSCRIBE usp:new_ticket → 收到消息立即派单
+      - 定时扫描：每 interval 秒扫 MySQL，捡漏（防 Pub/Sub 消息丢失）
 
     使用方式:
         worker = AssignmentWorker(interval=30)
@@ -29,39 +34,112 @@ class AssignmentWorker:
     """
 
     def __init__(self, interval: int = 60):
-        """
-        Args:
-            interval: 扫描间隔（秒），默认 60
-        """
         self.interval = interval
         self._stop = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
+        self._redis = None  # 用于 stop() 时主动断开连接，唤醒 listen()
 
     async def run(self):
-        """主循环：定时扫描 → 逐条派单"""
+        """启动：订阅通道 + 定时扫描 并行"""
         logger.info(f"派单 Worker 启动，扫描间隔={self.interval}s")
 
-        # 启动时先检查工程师画像是否就绪
         engineers = load_engineers()
         if not engineers:
             logger.warning("工程师画像为空，派单 Worker 将跳过所有工单（等待 users 表人员数据就绪）")
         else:
             logger.info(f"工程师画像已加载: {len(engineers)} 人")
 
+        # 两路并行：事件驱动 + 定时兜底
+        await asyncio.gather(
+            self._listen_pubsub(),
+            self._poll_loop(),
+        )
+
+    async def _listen_pubsub(self):
+        """订阅 Redis pub/sub 通道，收到新工单消息立即派单"""
+        try:
+            import redis.asyncio as aioredis
+            from ai.config import get_ai_config
+            cfg = get_ai_config()
+            self._redis = aioredis.from_url(cfg.redis_url or "redis://localhost:6379/0")
+            pubsub = self._redis.pubsub()
+            await pubsub.subscribe(CHANNEL_NEW_TICKET)
+            logger.info(f"派单 Worker 已订阅 Redis 通道: {CHANNEL_NEW_TICKET}")
+
+            async for msg in pubsub.listen():
+                if self._stop.is_set():
+                    break
+                if msg["type"] != "message":
+                    continue
+                try:
+                    task_id = int(msg["data"])
+                except (ValueError, TypeError):
+                    logger.warning(f"派单 PubSub 收到无效 task_id: {msg['data']}")
+                    continue
+
+                ticket = self._get_ticket_by_id(task_id)
+                if ticket is None:
+                    logger.debug(f"派单 PubSub: task_id={task_id} 不存在或已指派，跳过")
+                    continue
+                try:
+                    await self._assign_one(ticket)
+                except Exception as e:
+                    logger.error(f"派单 PubSub 失败: task_id={task_id}, error={e}", exc_info=True)
+
+            await pubsub.unsubscribe(CHANNEL_NEW_TICKET)
+            await self._redis.aclose()
+        except Exception as e:
+            logger.error(f"派单 PubSub 监听异常，退化为仅轮询模式: {e}", exc_info=True)
+
+    async def _poll_loop(self):
+        """定时扫描兜底：防 Pub/Sub 丢消息或重启期间遗漏"""
         while not self._stop.is_set():
             try:
                 await self._scan_and_assign()
             except Exception as e:
                 logger.error(f"派单扫描轮次异常: {e}", exc_info=True)
 
-            # 等待下一轮（支持提前退出）
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self.interval)
-                break  # stop 被设置，退出循环
+                break
             except asyncio.TimeoutError:
-                pass  # 超时 = 正常，继续下一轮
+                pass
 
-        logger.info("派单 Worker 已停止")
+        logger.info("派单 Worker 定时扫描已停止")
+
+    @staticmethod
+    def _get_ticket_by_id(task_id: int) -> Optional[dict]:
+        """按 ID 查单条待派单工单（已被指派或不存在返回 None）"""
+        try:
+            from app.models.task import Task
+            from app.core.db import SessionLocal
+            db = SessionLocal()
+            try:
+                task = db.query(Task).filter(
+                    Task.id == task_id,
+                    Task.source == "ai",
+                    Task.status == "new",
+                ).first()
+                if not task:
+                    return None
+                if task.assigned_to and task.assigned_to != "":
+                    return None  # 已被其他途径指派，跳过
+                return {
+                    "id": task.id,
+                    "title": task.title or "",
+                    "description": task.description or "",
+                    "priority": (task.priority.value if hasattr(task.priority, 'value') else str(task.priority or "中")),
+                    "task_type": (task.task_type.value if hasattr(task.task_type, 'value') else str(task.task_type or "other")),
+                    "session_id": (task.metadata_info or {}).get("session_id", "") if task.metadata_info else "",
+                    "location": (task.metadata_info or {}).get("location", "") if task.metadata_info else "",
+                    "robot_type": (task.metadata_info or {}).get("robot_type", "") if task.metadata_info else "",
+                    "fault_code": (task.metadata_info or {}).get("fault_code", "") if task.metadata_info else "",
+                }
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"按 ID 查工单失败: task_id={task_id}, error={e}", exc_info=True)
+            return None
 
     async def _scan_and_assign(self):
         """扫描待派单工单并逐条指派"""
@@ -222,6 +300,12 @@ class AssignmentWorker:
         """优雅停止 Worker"""
         logger.info("派单 Worker 正在停止...")
         self._stop.set()
+        # 断开 Redis 连接，唤醒 pubsub.listen()
+        if self._redis:
+            try:
+                await self._redis.aclose()
+            except Exception:
+                pass
         if self._task:
             try:
                 await asyncio.wait_for(self._task, timeout=timeout)

@@ -40,6 +40,7 @@ class AIConfig(BaseModel):
     deepseek_api_key: str = Field(default="", description="DeepSeek API Key")
     deepseek_base_url: str = Field(default="https://api.deepseek.com", description="API 地址")
     deepseek_model: str = Field(default="deepseek-v4-flash", description="模型名")
+    llm_reasoning_effort: str = Field(default="low", description="思考强度: low/high/max/off")
     llm_connect_timeout: float = Field(default=3.0)
     llm_read_timeout: float = Field(default=30.0)  # Agent 回复可能较长
 
@@ -72,7 +73,7 @@ class AIConfig(BaseModel):
 
     # ========== 派单 ==========
     dispatch_api_url: str = Field(default="", description="派单系统推送地址")
-    assign_scan_interval: int = Field(default=60, description="派单 Worker 扫描待派单工单间隔（秒）")
+    assign_scan_interval: int = Field(default=120, description="派单 Worker 兜底扫描间隔（秒），Pub/Sub 事件触发已覆盖主路径")
     upload_dir: str = Field(default="./uploads", description="附件上传目录")
 
     # ========== 诊断服务 ==========
@@ -212,6 +213,7 @@ def get_ai_config() -> AIConfig:
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
         deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        llm_reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "low"),
         llm_connect_timeout=float(os.getenv("LLM_CONNECT_TIMEOUT", "3.0")),
         llm_read_timeout=float(os.getenv("LLM_READ_TIMEOUT", "30.0")),
 
@@ -249,7 +251,7 @@ def get_ai_config() -> AIConfig:
         # 诊断服务
         diagnosis_scan_interval=int(os.getenv("DIAGNOSIS_SCAN_INTERVAL", "60")),
         # 派单后台
-        assign_scan_interval=int(os.getenv("ASSIGN_SCAN_INTERVAL", "60")),
+        assign_scan_interval=int(os.getenv("ASSIGN_SCAN_INTERVAL", "120")),
         # Debug
         debug_assign_to_admin=os.getenv("DEBUG_ASSIGN_TO_ADMIN", "false").lower() in ("1", "true", "yes"),
         # Meilisearch

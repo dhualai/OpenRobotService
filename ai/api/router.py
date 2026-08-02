@@ -195,27 +195,24 @@ async def get_ticket(session_id: str = Query(..., description="会话 ID")):
         mgr = await get_memory_manager()
         memory = await mgr.get_memory(session_id)
         agent_state = memory.metadata.get("agent_state", {})
-        # 主路径：Redis/内存中 agent_state 有效 → 直接组装工单
+        # 主路径：已提交工单(phase=escalated/resolved)——历史工单详情全部命中此分支。
+        # DB(tasks 表)在 submit 时已通过 upsert_task 持久化完整工单快照(含 diagnosis/
+        # 类型专属字段/special_notes/attachments/发起人/处理人等)，task_to_dict 一次查库
+        # 即可还原全部字段，ticket_id 即数字 Task.id(前端催办/上报/评论/撤回依赖)。
+        # 不再调 pipeline.get_ticket→_build_ticket：后者每次都用 LLM 重新生成工单(单次
+        # 推理 2-3s，占 TTFB 98%)，且 submit 后 _reset_state_after_submit 已清空诊断状态，
+        # 重跑出的 diagnosis 反而为空；其生成结果几乎全被 DB 字段覆盖，纯冗余。
         if agent_state.get("phase") in ("escalated", "resolved"):
-            pipeline = await get_pipeline()
-            ticket = await pipeline.get_ticket(session_id)
-            # ticket_id 默认是 "AI-..." 字符串，但前端催办/上报/评论/撤回依赖
-            # 任务服务的数字 Task.id。此处查库取真实 id 覆盖，避免按钮报「工单号缺失」。
-            # 同时从 DB 补充发起人/处理人（Redis 路径的 _build_ticket 不含人名字段，
-            # 与列表接口 /memory/tickets/all 口径对齐）。
+            from ai.core.task_adapter import task_to_dict
             task = _resolve_ai_task(session_id)
             if task is not None:
-                ticket["ticket_id"] = task.id
-                try:
-                    from app.services.user_service import UserService
-                    user_map = UserService.get_user_map()
-                    ticket["created_by"] = task.created_by or ""
-                    ticket["created_by_name"] = user_map.get(task.created_by, task.created_by) if task.created_by else ""
-                    ticket["assigned_to"] = task.assigned_to or ""
-                    ticket["assigned_to_name"] = user_map.get(task.assigned_to, task.assigned_to) if task.assigned_to else ""
-                except Exception:
-                    pass
-            return {"code": 0, "data": ticket}
+                logger.info(f"工单详情命中 DB 快照(跳过 LLM 生成): session_id={session_id[:20]}, task_id={task.id}")
+                return {"code": 0, "data": task_to_dict(task)}
+            # phase 标记已提交但 DB 行缺失：数据异常(submit 必然写过 DB)。
+            # 不再用 LLM 兜底——submit 后诊断状态已清空、Redis 会话可能已过期，
+            # LLM 现编出的工单既残缺又与真实数据不一致，反而误导。直接报错。
+            logger.warning(f"工单详情异常: phase 标记已提交但 DB 无行, session_id={session_id[:20]}")
+            return {"code": 1, "message": "工单数据异常（未在系统中找到对应记录），请联系管理员核查"}
 
         # 降级：MySQL tasks 表中已有记录但 Redis 内存丢失（Redis 重启/过期等场景）
         from ai.core.task_adapter import task_to_dict
