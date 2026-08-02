@@ -6,6 +6,7 @@ import { Tabs, TabPanel, Button, Upload, Toast, Loading, Popup, Input } from 'td
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
 
 interface Project { id?: string; code?: string; name: string; }
 
@@ -94,14 +95,16 @@ export default function DataImport() {
   const [tab, setTab] = useState('file');
   const [loading, setLoading] = useState(false);
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  const { hasPermission } = useAuthStore();
+  const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
 
   const [projects, setProjects] = useState<Project[]>([]);
 
   useEffect(() => {
-    request('/projects/')
+    request(canViewAll ? '/projects/' : '/projects/me')
       .then((data) => setProjects(normalizeList<Project>(data)))
       .catch(() => { /* 静默失败，切到各 Tab 时不强制要求项目列表已加载 */ });
-  }, []);
+  }, [canViewAll]);
 
   // 整页共用：项目，两个 Tab（文件导入 / JSON导入）都是提交搬运效率数据的方式
   const [project, setProject] = useState<Project | null>(null);

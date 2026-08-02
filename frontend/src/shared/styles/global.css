@@ -934,6 +934,52 @@ html, body, #root {
   color: #999;
   margin-top: 2px;
 }
+/* 编辑弹窗-所属项目选择（仿下拉，点击弹出搜索层） */
+.ticket-edit-form__select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 0 12px;
+  background: #f3f4f6;
+  border-radius: 8px;
+}
+.ticket-edit-form__select-value { color: #1a1a1a; font-size: 14px; flex: 1; }
+.ticket-edit-form__select-value.is-placeholder { color: #bbb; }
+.ticket-edit-form__select-arrow { color: #999; font-size: 14px; margin-left: 8px; }
+/* 项目搜索选择弹层 */
+.project-picker {
+  background: #fff;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+}
+.project-picker__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+.project-picker__title { font-size: 16px; font-weight: 600; color: #1a1a1a; }
+.project-picker__close { font-size: 22px; color: #999; line-height: 1; }
+.project-picker__search { padding: 10px 12px; }
+.project-picker__list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 0 8px 12px; }
+.project-picker__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px;
+  border-radius: 8px;
+  margin-top: 6px;
+  background: #f7f8fa;
+}
+.project-picker__item.is-active { background: #ecf2fe; }
+.project-picker__item.is-active .project-picker__name { color: #0052d9; font-weight: 600; }
+.project-picker__name { font-size: 14px; color: #1a1a1a; }
+.project-picker__code { font-size: 12px; color: #999; margin-left: 8px; }
+.project-picker__empty { text-align: center; color: #bbb; font-size: 13px; padding: 32px 0; }
+
 /* 讨论区评论附件（图片缩略图 / 文件卡片） */
 .detail-chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
 .detail-chat-attachment-img { max-width: 140px; max-height: 140px; border-radius: 6px; cursor: pointer; object-fit: cover; }

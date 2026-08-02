@@ -597,6 +597,19 @@ export default function TaskDetailPage() {
       .catch(() => {});
   };
 
+  useEffect(() => {
+    if (!detailId) return;
+    // AI 工单派单中（status=new 且无处理人）→ 每 5 秒刷新，直到派单完成
+    const isDispatching = detail?.status === 'new'
+      && !!detail?.metadata_info?.session_id
+      && !detail?.assigned_to && !detail?.assigned_to_name && !detail?.assignee_name;
+    if (!isDispatching) return;
+    const timer = setInterval(() => {
+      refreshDetail();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [detailId, detail?.status, detail?.assigned_to, detail?.assigned_to_name, detail?.assignee_name, detail?.metadata_info?.session_id]);
+
   // 返回任务列表，优先使用浏览器历史记录以保留筛选状态
   const handleBack = () => {
     if (window.history.length > 1) {
