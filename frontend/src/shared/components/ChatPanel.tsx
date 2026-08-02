@@ -744,6 +744,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             setConversationTitle(data.title);
             refreshConversations();
           }
+          // submit 相关分支（need_info/need_fields/review/submit_failed）：后端已 _msg_buf.clear()
+          // 改用干净系统话术，但流式期间已 flush 的 LLM 片段收不回 → 前端 acc 会拼接成
+          // 「LLM 片段 + 系统话术」混乱。此处清空 acc，丢弃闪现的 LLM 片段，只接收后续系统话术。
+          if (currentEvent === 'status' && ['need_info', 'need_fields', 'review', 'submit_failed'].includes(data.stage)) {
+            acc = '';
+          }
           // 转工单确认弹窗（对话路径）：后端字段齐全 → event:status + stage:review → 弹窗，
           // 复用 ticketConfirm（与按钮路径 handleSubmitTicket 殊途同归）。
           // 幂等：弹窗已打开则不覆盖（保留用户正在编辑的 overrides），防后端重复发 review 重弹。
