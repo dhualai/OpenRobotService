@@ -1325,12 +1325,17 @@ class AiDiagnosisPlatform:
         _reset_state_after_submit(agent_state, memory, ticket, db_id)
         await self._memory_manager.save_memory(memory)
 
-        # ---- 加入待派单池（后台 Worker 定时扫描并派单）----
+        # ---- 加入待派单池 + 通知 Worker 立即派单 ----
         try:
             await self._memory_manager.add_pending_ticket(session_id)
             logger.info(f"工单已加入待派单池: session_id={session_id}, db_id={db_id}")
         except Exception as e:
             logger.warning(f"加入待派单池失败: session_id={session_id}, error={e}")
+        try:
+            await self._memory_manager.publish_new_ticket(db_id)
+            logger.info(f"已发布派单事件: db_id={db_id}")
+        except Exception as e:
+            logger.warning(f"发布派单事件失败: db_id={db_id}, error={e}")
 
         return {
             "type": "ticket",
@@ -1438,6 +1443,10 @@ class AiDiagnosisPlatform:
 
         try:
             await self._memory_manager.add_pending_ticket(session_id)
+        except Exception:
+            pass
+        try:
+            await self._memory_manager.publish_new_ticket(record.id)
         except Exception:
             pass
 
