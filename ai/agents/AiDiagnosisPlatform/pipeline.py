@@ -1907,30 +1907,28 @@ class AiDiagnosisPlatform:
                     except Exception:
                         logger.warning(f"[stream] 草稿保存失败: session={request.session_id}", exc_info=True)
                 else:
-                    yield {"event": "status", "data": {"stage": "submitting"}}
-                    ticket_data = await self.submit(request.session_id, created_by=request.created_by, force=_force_submit)
-                    ticket_info = ticket_data.get('data', {}).get('ticket', {})
-                    logger.info(f"[stream] 自动提单成功: session={request.session_id}, "
-                                f"ticket={ticket_info.get('ticket_id', '?')}")
-                    proj = state.collected_info.get("project", "")
-                    parsed["message"] = f"好的，已为「{proj}」生成工单，工程师会尽快处理。" if proj else "好的，已为你生成工单，工程师会尽快处理。"
+                    # 字段齐全 → 不自动提单，弹窗让用户核对/修改后确认
+                    memory.metadata["ticket_draft"] = draft
+                    await self._memory_manager.save_memory(memory)
+                    logger.info(f"[stream] 字段齐全，弹窗确认: session={request.session_id}")
                     yield {"event": "status", "data": {
-                        "stage": "submitted",
-                        "ticket_id": ticket_info.get("ticket_id", ""),
-                        "title": ticket_info.get("title", ""),
-                        "db_id": ticket_data.get("data", {}).get("db_id", 0),
+                        "stage": "review",
+                        "draft": draft,
+                        "missing_fields": check["missing"],
                     }}
-                    # 提单成功 → 丢弃 LLM 缓冲的"好的"（如有），一次性发送完整确认消息，
-                    # 避免 LLM token 先出去、系统确认后追加造成的两条 token 间卡顿。
+                    # 由于不在这里提单，parsed action 改回 answer（避免 _finalize_diagnosis
+                    # 以 escalated 追加 system turn 污染对话），同时不调 submit() 清空状态。
+                    parsed["action"] = "answer"
+                    # 清空 ticket_collecting（如果有），退出工单填写模式
+                    state.ticket_collecting = []
+                    proj = state.collected_info.get("project", "")
+                    parsed["message"] = (
+                        f"已为「{proj}」生成工单草稿，请核对信息后确认提交。"
+                        if proj else "已生成工单草稿，请核对信息后确认提交。"
+                    )
                     _msg_buf.clear()
                     _msg_yielded = True  # 抑制末尾兜底输出
                     yield {"event": "token", "data": parsed["message"]}
-                    # submit() 已清空诊断状态并保存，刷新本地 state 避免 _finalize_diagnosis 覆写旧状态
-                    memory = await self._memory_manager.get_memory(request.session_id)
-                    state = _load_agent_state(memory.metadata) or state
-                    # context_start 往后挪一位，跨过 _finalize_diagnosis 即将追加的"已生成工单"
-                    # 成功消息——否则下一轮 LLM 会从该消息重新提取 project/problem、绕过闭环保护。
-                    state.context_start = len(memory.turns) + 1
             except Exception as e:
                 logger.error(f"[stream] 提单失败: session={request.session_id}, error={e}", exc_info=True)
                 yield {"event": "status", "data": {"stage": "submit_failed", "error": str(e)}}
