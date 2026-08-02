@@ -1548,6 +1548,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 <label className="ticket-confirm__label">绑定项目 <span style={{ color: '#e34d59' }}>*</span></label>
                 <ProjectSelect
                   value={draftField('project_id') || null}
+                  nameHint={draftField('project') || null}
                   onChange={(p) => {
                     setDraftField('project', p.name);
                     setDraftField('project_id', p.project_code);
