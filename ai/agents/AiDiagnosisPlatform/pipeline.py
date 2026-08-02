@@ -892,20 +892,20 @@ class AiDiagnosisPlatform:
         # except Exception as e:
         #     logger.error(f"[persist] MySQL 写入失败: session={session_id[:16]}, error={e}", exc_info=True)
 
-        # 第2轮对话结束后生成标题（fire-and-forget 方式，不阻塞结果返回）
+        # 第2轮及以后对话结束生成标题（fire-and-forget，不阻塞结果返回）。
+        # 门槛放宽到 >=2：防第2轮因 LLM 抖动未生成时，后续轮还能补上；
+        # 防重复靠 memory.metadata["title"]（_generate_title 内部写入，"title" not in 判定拦住重复生成）。
         title = ""
-        if state.diagnosis_rounds == 2 and "title" not in memory.metadata:
+        if state.diagnosis_rounds >= 2 and "title" not in memory.metadata:
+            logger.info(f"[title] 尝试生成: round={state.diagnosis_rounds}, turns={len(memory.turns)}")
             title = await _generate_title(self._llm_client, memory)
-            # 同步到 DB：会话列表 / 切回 / 刷新都读 DB title，否则始终是默认「新会话」。
-            # 防覆盖：若用户已手动重命名（DB title 非「新会话」），则不覆盖 DB 与前端，
-            # 仅 memory.metadata 已记录（_generate_title 内部写入）防止下轮重复生成。
+            logger.info(f"[title] 生成结果: {title!r}")
+            # 同步到 DB：会话列表 / 切回 / 刷新都读 DB title，否则始终是默认「新会话」
             if title:
                 try:
-                    from ai.core.conversation_store import get_conversation_title, rename_conversation
-                    if get_conversation_title(memory.session_id) == "新会话":
-                        rename_conversation(memory.session_id, title)
-                    else:
-                        title = ""  # 用户已重命名 → 不发 event、不改 DB
+                    from ai.core.conversation_store import rename_conversation
+                    rename_conversation(memory.session_id, title)
+                    logger.info(f"[title] DB 已同步: session={memory.session_id}, title={title}")
                 except Exception as e:
                     logger.warning(f"[title] DB 同步失败: {e}")
 
