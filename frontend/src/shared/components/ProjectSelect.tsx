@@ -63,10 +63,15 @@ export default function ProjectSelect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
-  // AI 项目名预填：value(project_code) 为空且 AI 给了项目名 → 按名称在名下项目里匹配，替用户预选
+  // AI 项目名预填：value(project_code) 为空且 AI 给了项目名 → 按名称在名下项目里匹配，替用户预选。
+  // 匹配策略：① 忽略大小写/首尾空格精确等值；② 互为包含（AI 名可能带"项目"后缀或简写）；命中即预选。
   useEffect(() => {
     if (value || !nameHint || projects.length === 0) return;
-    const hit = projects.find((p) => (p.name || '').trim() === nameHint.trim());
+    const hint = nameHint.trim().toLowerCase();
+    const hit = projects.find((p) => {
+      const n = (p.name || '').trim().toLowerCase();
+      return n && (n === hint || n.includes(hint) || hint.includes(n));
+    });
     if (hit) onChange?.(hit);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects, value, nameHint]);
