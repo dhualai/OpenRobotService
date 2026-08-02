@@ -396,6 +396,16 @@ class AiTaskAgent:
                             input={"error": str(e)},
                             elapsed_ms=round((time.perf_counter() - t3) * 1000))
 
+        # 3b. 平台参考文档检索（仅服务号/平台问题启用）
+        platform_ref = ""
+        try:
+            if self._is_platform_ticket(context):
+                platform_text = await self._retrieve_platform_reference(self._build_query(context))
+                if platform_text and "无" not in platform_text[:10]:
+                    platform_ref = platform_text[:1000]
+        except Exception:
+            pass
+
         # 4. LLM 综合分析
         t4 = time.perf_counter()
         att_text = att_log_summary if att_has_logs else "（无附件或无可解析内容）"
@@ -421,6 +431,7 @@ class AiTaskAgent:
             collected_info=json.dumps(context.collected_info, ensure_ascii=False) if context.collected_info else "（无）",
             rounds=context.diagnosis_rounds,
             fault_info=fault_info,
+            platform_reference=platform_ref or "（非平台问题，跳过平台参考文档检索）",
             attachment_analysis=att_text,
             historical_solutions=hist_text,
         )
@@ -867,9 +878,30 @@ class AiTaskAgent:
     # 私有：三路分析
     # ============================================================
 
+    # ── 平台问题关键词（命中 → 启用平台参考文档检索，跳过排查树）──
+    _PLATFORM_ISSUE_KW = [
+        "服务号", "摇人", "登录", "通知", "页面", "附件", "@", "派单",
+        "created_by", "SECRET_KEY", "MinIO", "数据库", "部署", "构建",
+        "配置", "接口404", "接口 404", "token", "权限", "角色",
+        "工单流转不了", "工单创建", "二维码", "注册不了", "清理缓存",
+        "白屏", "掉线", "收不到", "打不开", "点不了", "上传失败",
+        "LLM召回", "embedding", "embed", "Qdrant", "redis", "mysql",
+    ]
+
+    @classmethod
+    def _is_platform_ticket(cls, context: TaskContext) -> bool:
+        """判断工单是否属于服务号平台自身问题（非 AGV/USP 调度问题）。"""
+        text = " ".join(filter(None, [
+            context.title or "",
+            context.description or "",
+            context.problem_summary or "",
+        ])).lower()
+        return any(kw.lower() in text for kw in cls._PLATFORM_ISSUE_KW)
+
     async def _run_analysis(self, context: TaskContext) -> dict:
-        """三路并行分析：排查树结论 + 历史工单方案 + 附件解析"""
-        results = {"attachment_analysis": {}}
+        """条件并行分析：服务号问题查平台文档 → 跳过排查树；
+                        AGV/USP 问题查排查树 → 跳过平台文档。"""
+        results = {"attachment_analysis": {}, "platform_reference": "", "troubleshooting": ""}
 
         # 构建检索查询文本
         query_text = context.problem_summary or context.description
@@ -880,15 +912,26 @@ class AiTaskAgent:
         if context.robot_type:
             query_text += " " + context.robot_type
 
-        # 并行执行三路
-        troubleshooting_task = self._retrieve_troubleshooting_conclusions(query_text)
+        is_platform = self._is_platform_ticket(context)
+
+        # 并行执行：历史工单(始终) + 附件(始终) + (排查树 或 平台文档)
         history_task = self._retrieve_task_resolutions(query_text)
         attachment_task = self._parse_attachments(context.attachments)
+        if is_platform:
+            platform_task = self._retrieve_platform_reference(query_text)
+            troubleshooting_task = asyncio.sleep(0)  # no-op，不查排查树
+        else:
+            troubleshooting_task = self._retrieve_troubleshooting_conclusions(query_text)
+            platform_task = asyncio.sleep(0)
 
         try:
-            results["troubleshooting"], results["history"], results["attachment_analysis"] = (
-                await asyncio.gather(troubleshooting_task, history_task, attachment_task)
+            gathered = await asyncio.gather(
+                troubleshooting_task, history_task, attachment_task, platform_task,
             )
+            results["troubleshooting"] = gathered[0] if isinstance(gathered[0], str) else "（非调度问题，跳过排查树检索）"
+            results["history"] = gathered[1]
+            results["attachment_analysis"] = gathered[2]
+            results["platform_reference"] = gathered[3] if isinstance(gathered[3], str) else ""
         except Exception as e:
             logger.warning(f"Partial analysis failure: {e}")
             if "troubleshooting" not in results:
@@ -934,6 +977,30 @@ class AiTaskAgent:
             return "\n".join(lines) if lines else "（无相似的历史工单方案）"
         except Exception:
             return "（历史方案检索失败）"
+
+    async def _retrieve_platform_reference(self, query: str) -> str:
+        """检索平台参考文档（team domain, sub_domain="product"）。
+
+        覆盖 platform_manual.md（技术架构）和 engineer_guide.md（代码排查）。
+        仅在服务号/平台自身问题时启用。
+        """
+        if not hasattr(self._retriever, "retrieve_platform_reference"):
+            return "（平台参考文档检索通道未就绪）"
+
+        try:
+            results = await self._retriever.retrieve_platform_reference(query, top_k=3)
+            if not results:
+                return "（无匹配的平台参考文档）"
+
+            lines = []
+            for i, r in enumerate(results, 1):
+                title = r.title or ""
+                content = r.content or ""
+                if content.strip():
+                    lines.append(f"平台参考 {i}：{title}\n{content}\n---")
+            return "\n".join(lines) if lines else "（无匹配的平台参考文档）"
+        except Exception:
+            return "（平台参考文档检索失败）"
 
     async def _parse_attachments(self, attachments: list) -> AttachmentAnalysis:
         """解析附件：日志 → 关键错误 + 回放 → 路径分析。
@@ -1154,6 +1221,8 @@ class AiTaskAgent:
             if context.collected_info else "（无）",
             rounds=context.diagnosis_rounds,
             fault_info=fault_info,
+            platform_reference=retrieval.get("platform_reference")
+            or "（服务号平台参考文档检索未执行，非平台问题跳过）",
             troubleshooting_conclusions=retrieval.get("troubleshooting", "（排查树检索未执行）"),
             historical_solutions=retrieval.get("history", "（历史方案检索未执行）"),
             attachment_analysis=attachment_text,
