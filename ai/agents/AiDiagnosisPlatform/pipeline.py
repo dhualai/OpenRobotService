@@ -198,15 +198,7 @@ def _reset_state_after_submit(agent_state: AgentState, memory, ticket: dict, db_
 # 鬼打墙防护：诊断/收集轮次上限
 _MAX_DIAGNOSIS_ROUNDS = 6   # 诊断超过此轮数 → prompt 提示 LLM 收尾或建议转工单
 _MAX_COLLECT_ROUNDS = 4     # 工单填写超过此轮数仍不齐 → 强制提单（project 缺则用"摇人吧服务号提单"兜底）
-
-# 真实工单字段词表：_decide_ticket_fields 只能要求这些字段（_build_ticket 实际使用的），
-# 防止 LLM 凭空发明 error_location 等野字段卡住提单。
-_TICKET_FIELD_VOCAB = frozenset({
-    "robot_type", "occurrence_time", "frequency", "fault_code", "location",  # problem
-    "version", "steps_to_reproduce",  # bug
-    "scenario", "expected_effect",  # feature
-    "support_type",  # support
-})
+_MAX_RETRIEVAL_DOCS = 6     # 三路检索合并后按 score 排序，只保留 top N 个 chunk 进 prompt
 
 
 def _assess_ticket_readiness(state: AgentState) -> tuple[bool, list[str]]:
@@ -687,11 +679,13 @@ class AiDiagnosisPlatform:
                 f"⚠️ 当前处于**工单填写模式**，请不要再排查故障。\n"
                 f"已收集：{collected_summary}\n"
                 f"缺失字段：{fields}{field_map_hint}\n"
-                f"用户接下来的发言都是补充工单所需信息，请逐项确认并记录到 collected_info，"
-                f"缺什么就问什么（一次只问一个）。\n"
-                f"当所有缺失字段补齐后，如果你觉得有必要（比如还缺关键上下文、错误码、具体现象等），"
-                f"可以追问最多一个可选问题，但不要在用户回答后继续追问第二个。"
-                f"如果用户回答不上来或不想回答，直接设置 action='submit' 提交工单。\n"
+                f"用户接下来的发言都是补充工单所需信息，请逐项确认并记录到 collected_info。\n"
+                f"规则：\n"
+                f"1. 缺 1-2 个字段时：一次只问一个\n"
+                f"2. 用户已顺利回答 2+ 个字段后：可以把剩余缺失字段一次性列出询问\n"
+                f"3. 用户说【没有】【不知道】【不清楚】等 → 该字段直接记录为'无'，立即跳过，不得再问\n"
+                f"4. 🚫 禁止对同一字段追问两次。任何字段最多只问一次，用户说没有就直接过\n"
+                f"5. 所有缺失字段（含'无'）都补齐后 → 立即 action='submit'，message 只写'好的'\n"
                 f"⚠️ 已收集的字段不要再问（比如上面已收集里已经有 project，就不要再追问项目）。"
             )
         else:
@@ -785,10 +779,8 @@ class AiDiagnosisPlatform:
                 if isinstance(v, (dict, list)):
                     v = json.dumps(v, ensure_ascii=False)
                 v = str(v).strip()
-                if v and v not in ("无", "无无", "不清楚", "不知道", "暂无", "未知"):
+                if v:
                     state.collected_info[k] = v
-                else:
-                    state.collected_info.pop(k, None)
         # ---- 服务端硬校验：按工单类型的保底必填清单复核，缺项强制打回 ----
         #  不信 LLM 的 ticket_ready 自评，也不看 problem_summary（LLM 可编造）——
         #  只认 collected_info 里的结构化字段。
@@ -1031,9 +1023,16 @@ class AiDiagnosisPlatform:
                     f"在车端错误码库中未找到。如果检索结果中包含产品型号、文档编号等包含该数字的内容，"
                     f"则这些是相关知识而非错误码，请正常引用，不要告知用户\"未收录\"。\n---")
 
-            # unified formatting: cheduan exact match first, then all 3-domain results
+            # 三路结果合并 → 按 score 降序 → 取 top N（避免 13+ 个 chunk 撑爆 prompt）
             all_results = list(_cheduan_exact) + list(team_results) + list(company_results) + list(industry_results)
-            for r in all_results:
+            # 去重（同 id 只保留最高分）
+            seen = set()
+            uniq = []
+            for r in sorted(all_results, key=lambda r: r.score, reverse=True):
+                if r.id not in seen:
+                    seen.add(r.id)
+                    uniq.append(r)
+            for r in uniq[:_MAX_RETRIEVAL_DOCS]:
                 content = self._rewrite_images(r) if r.content else ""
                 if not content.strip():
                     continue
@@ -1097,7 +1096,7 @@ class AiDiagnosisPlatform:
                 if not v or k in agent_state.collected_info:
                     continue
                 v = str(v).strip()
-                if v and v not in ("无", "不清楚", "不知道", "暂无", "未知"):
+                if v:
                     agent_state.collected_info[k] = v
                     filled.append(k)
             if filled:
@@ -1121,20 +1120,22 @@ class AiDiagnosisPlatform:
             )
             prompt = (
                 "根据以下对话，判断工单类型，并决定生成有效工单还需向用户确认哪 2-3 个关键字段。\n"
-                "⚠️ 只能从下列字段里选（key 必须完全一致），不得发明新字段：\n"
-                "  robot_type(车型/编号) occurrence_time(发生时间) frequency(出现频率) "
-                "fault_code(故障码) location(现场位置) version(版本) steps_to_reproduce(复现步骤) "
-                "scenario(需求场景) expected_effect(期望效果) support_type(支持类型)\n"
-                "对话里已经明确给过的字段不要再要求。不要用'错误显示位置/车端还是USP'这类可选细节卡提单。\n"
+                "字段由你根据问题类型自主决定，key 用英文（如 error_message/occurrence_time/robot_type 等），"
+                "value 写中文说明。\n"
+                "参考字段（不限，按需选用）：\n"
+                "  robot_type(车型/编号) occurrence_time(发生时间) frequency(出现频率)\n"
+                "  fault_code(故障码) location(现场位置) version(版本) steps_to_reproduce(复现步骤)\n"
+                "  scenario(需求场景) expected_effect(期望效果) support_type(支持类型)\n"
+                "  error_message(错误信息/现象描述)\n"
+                "对话里已经明确给过的字段不要再要求。不要用可选细节卡提单——只问真正缺的关键信息。\n"
                 "⚠️ project（项目名称）系统已强制要求，**不要写进 required_fields**。\n"
-                "🔴 关键：如果问题不涉及具体车辆/机器人（如平台功能、软件问题、知识问答），"
+                "🔴 如果问题不涉及具体车辆/机器人（如平台功能、登录问题、软件配置），"
                 "不要要求 robot_type、fault_code、location。只选和问题实际相关的字段。\n"
-                "只返回 JSON，无多余文字。示例——problem(涉及车)："
-                '{"ticket_type":"problem","required_fields":{"robot_type":"具体车型/编号",'
-                '"occurrence_time":"发生时间"}}；problem(不涉及车)：'
-                '{"ticket_type":"problem","required_fields":{"occurrence_time":"发生时间",'
-                '"frequency":"出现频率（每次/偶尔/首次）"}}；'
-                'support：{"ticket_type":"support","required_fields":{"support_type":"支持类型"}}\n\n'
+                "只返回 JSON，无多余文字。示例——\n"
+                "报障(涉及车)：{\"ticket_type\":\"problem\",\"required_fields\":{\"robot_type\":\"具体车型/编号\","
+                "\"occurrence_time\":\"发生时间\"}}\n"
+                "报障(登录/平台)：{\"ticket_type\":\"problem\",\"required_fields\":{\"error_message\":\"登录问题的具体现象\"}}\n"
+                "support：{\"ticket_type\":\"support\",\"required_fields\":{\"support_type\":\"支持类型\"}}\n\n"
                 f"## 对话\n{conv}"
             )
             raw = await self._llm_client.complete(prompt=prompt, max_tokens=300, temperature=0)
@@ -1145,12 +1146,12 @@ class AiDiagnosisPlatform:
                 agent_state.ticket_type = tt
             rf = data.get("required_fields") or {}
             if isinstance(rf, dict):
-                # 只接受真实工单字段词表，过滤掉 LLM 凭空发明的野字段（如 error_location），
-                # 否则它会用"错误显示位置/车端还是USP"这类可选细节卡住提单。
+                # 不再用固定词表限制——LLM 根据问题类型自主选字段，
+                # 只做基本合理性过滤（key 长度、非空、不重复收集已存在的字段）
                 agent_state.required_fields = {
                     k: str(v) for k, v in rf.items()
                     if str(v).strip()
-                    and k in _TICKET_FIELD_VOCAB
+                    and len(str(k)) <= 40
                     and not (agent_state.collected_info.get(k) or "").strip()
                 }
             logger.info(f"[decide_fields] type={agent_state.ticket_type} "
@@ -1247,6 +1248,7 @@ class AiDiagnosisPlatform:
                 agent_state.collected_info["project"] = match.name      # 回写全名，后续一致
                 agent_state.collected_info["project_id"] = match.code   # 回写 project_id
                 _raw_proj = match.name
+                result["project"] = match.name          # 弹窗展示用全名（之前漏了，导致显示用户原话）
                 result["project_id"] = match.code
             else:
                 # 项目库匹配不上（如用户说了"摇人吧"但 DB 里没有对应项目）
@@ -1737,8 +1739,10 @@ class AiDiagnosisPlatform:
         yield {"event": "status", "data": {"stage": "retrieving", "round": state.diagnosis_rounds}}
         t_ret = time.perf_counter()
         logger.info(f"[stream] 开始检索: session={request.session_id}")
+        # 工单填写模式不需要知识库——用户只是在填表字段，不走诊断检索；
+        # 跳过检索可大幅缩小 prompt，降低 thinking 长度，提升收集轮响应速度。
         reference_docs = (
-            "（跳过检索）" if request.skip_retrieval
+            "（跳过检索）" if request.skip_retrieval or state.ticket_collecting
             else await self._retrieve_with_context(request.session_id, state, resolved_query)
 )
         t_stream["retrieve"] = round((time.perf_counter() - t_ret) * 1000)
@@ -1886,6 +1890,10 @@ class AiDiagnosisPlatform:
                 state.ticket_collecting = []
                 _force_submit = True
                 parsed["action"] = "submit"
+            else:
+                # 字段尚未收齐：刷新 ticket_collecting 为当前仍缺失的字段
+                # （上一轮可能缺 project，这轮用户给了 project 后缺 error_message）
+                state.ticket_collecting = _tc_missing
 
         # ---- 提单就绪门槛：project 铁律 + LLM 决定的 required_fields 全非空 ----
         #  放在 phase 转换之前：action 改 ask 后 phase 不会被置为 escalated
@@ -1907,6 +1915,17 @@ class AiDiagnosisPlatform:
                 _msg_buf.clear()
                 _msg_yielded = True  # 抑制末尾兜底输出
                 yield {"event": "token", "data": parsed["message"]}
+
+        # ---- 提前进入收集模式：LLM 说 ask 但 required_fields 已设定且有缺失 ——
+        #   原逻辑只在 submit 被拦截时设 ticket_collecting（line 1905），但 LLM
+        #   经常直接说 ask 逐个收集字段，导致下一轮仍跑完整检索+思考。
+        #   这里提前设好，下一轮就能跳过检索、prompt 减半。
+        if parsed["action"] == "ask" and not state.ticket_collecting and state.required_fields:
+            await self._backfill_collected_info(request.session_id, state, memory)
+            _, _tc_missing = _assess_ticket_readiness(state)
+            if _tc_missing:
+                state.ticket_collecting = _tc_missing
+                logger.info(f"[stream] 提前进入收集模式(ask→collect): missing={_tc_missing}")
 
         # ---- Step 3: 应用 action → phase 转换 ----
         self._apply_action_phase(state, parsed["action"])
