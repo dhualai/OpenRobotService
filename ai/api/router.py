@@ -836,18 +836,33 @@ class TaskDiscussRequest(BaseModel):
 @task_agent_router.post("/diagnose", summary="诊断报告（[帮我分析] 按钮）")
 async def task_diagnose(body: TaskDiagnoseRequest) -> dict:
     """全能力诊断 → 即时返回报告（不存库）"""
+    import logging, time
+    logger = logging.getLogger("TASK_AGENT")
+    t_start = time.perf_counter()
+    logger.info(f"[diagnose] 入口: task_id={body.task_id}")
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
         result = await agent.diagnose(task_id=body.task_id)
+        elapsed = (time.perf_counter() - t_start) * 1000
+        report_len = len(result.get("report_md", ""))
+        logger.info(f"[diagnose] 完成: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
+                    f"report_len={report_len}, confidence={result.get('confidence', 0):.0%}")
         return {"code": 0, "data": result}
     except Exception as e:
+        elapsed = (time.perf_counter() - t_start) * 1000
+        logger.error(f"[diagnose] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms, error={e}")
         return {"code": 1, "message": str(e)}
 
 
 @task_agent_router.post("/discuss", summary="@AI 讨论")
 async def task_discuss(body: TaskDiscussRequest) -> dict:
     """@AI 讨论回复（带讨论上下文，按需调日志子Agent）→ 写 task_comments"""
+    import logging, time
+    logger = logging.getLogger("TASK_AGENT")
+    t_start = time.perf_counter()
+    query_preview = (body.query or "")[:60]
+    logger.info(f"[discuss] 入口: task_id={body.task_id}, query={query_preview}")
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
@@ -856,8 +871,15 @@ async def task_discuss(body: TaskDiscussRequest) -> dict:
             query=body.query,
             context=body.context,
         )
+        elapsed = (time.perf_counter() - t_start) * 1000
+        reply_len = len(result.get("reply", ""))
+        logger.info(f"[discuss] 完成: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
+                    f"reply_len={reply_len}")
         return {"code": 0, "data": result}
     except Exception as e:
+        elapsed = (time.perf_counter() - t_start) * 1000
+        logger.error(f"[discuss] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
+                     f"query={query_preview}, error={e}")
         return {"code": 1, "message": str(e)}
 
 
