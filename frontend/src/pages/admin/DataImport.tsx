@@ -1,6 +1,8 @@
 // 数据导入页 - 从 BackgroundService DataImport 迁移
-// 说明：本页只承载"搬运效率"数据的导入 —— 文件导入(Excel)和JSON导入是同一份数据的两种提交方式，
-// 因此项目、日期选择是整页共用的，不再按 Tab 各自维护。
+// 说明：本页承载两类数据导入 ——
+//   1) 文件导入：DAS 数据包文件（.bz2 / .json），解析后按天切分入库 CollectionData；
+//   2) JSON导入：搬运效率汇总 {summary, robots}，直接写入 ProjectTransportEfficiency。
+// 项目、日期选择是整页共用的。
 import { useState, useEffect } from 'react';
 import { Tabs, TabPanel, Button, Upload, Toast, Loading, Popup, Input } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
@@ -114,13 +116,16 @@ export default function DataImport() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('project_code', project.code || project.name);
-      formData.append('report_date', todayStr());
-      await request('/transport-efficiency/import/file', {
+      formData.append('project', project.code || project.name);
+      const data = await request<{ success?: boolean; message?: string }>('/data/upload-file', {
         method: 'POST',
         body: formData,
       });
-      Toast({ message: '搬运效率数据导入成功', theme: 'success' });
+      if (data.success === false) {
+        Toast({ message: data.message || '导入失败', theme: 'error' });
+      } else {
+        Toast({ message: '数据包解析导入成功', theme: 'success' });
+      }
     } catch (err) {
       Toast({ message: `导入失败: ${err instanceof Error ? err.message : '未知错误'}`, theme: 'error' });
     } finally {
@@ -167,14 +172,14 @@ export default function DataImport() {
         <TabPanel value="file" label="文件导入">
           <div style={{ padding: '24px 0' }}>
             <Upload
-              accept=".xlsx"
+              accept=".json,.bz2"
               max={1}
               onSuccess={({ fileList }) => {
                 if (fileList?.[0]?.raw) handleFileUpload(fileList[0].raw);
               }}
             />
             <p style={{ color: '#999', fontSize: 13, marginTop: 12, textAlign: 'center' }}>
-              上传搬运效率 Excel（含"汇总"与"机型明细"工作表），选定项目后上传
+              上传 DAS 数据包文件（.bz2 或 .json，含 GroupEfficiency 等指标数据），选定项目后上传
             </p>
           </div>
         </TabPanel>
