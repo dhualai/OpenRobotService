@@ -1221,40 +1221,51 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // ── 工单概览气泡 + 派单轮询 ──────────────────────────────────
   const tasksReq = useMemo(() => createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务'), []);
   const pollTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const pollingRef = useRef<Set<string>>(new Set()); // 正在轮询的 msgId（含 await 期间，防恢复 useEffect 重复启动）
+  const cancelledRef = useRef(false); // 组件卸载标记（防卸载后 setMessages 产生 React warning）
 
   const pollDispatch = useCallback(async (msgId: string, dbId: number, attempt: number) => {
-    delete pollTimeoutsRef.current[msgId]; // 本次 timeout 已触发，清除标记
-    if (attempt >= 12) return; // 60s 超时（5s × 12）
+    if (attempt >= 12) { pollingRef.current.delete(msgId); return; } // 60s 超时（5s × 12）
     try {
       const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string }>(`/${dbId}`);
       if (task.assigned_to) {
-        setMessages((prev) => prev.map((m) =>
-          m.id === msgId && m.ticket_overview
-            ? { ...m, ticket_overview: { ...m.ticket_overview!, assigned_to_name: task.assigned_to_name || task.assigned_to } }
-            : m
-        ));
+        if (!cancelledRef.current) {
+          setMessages((prev) => prev.map((m) =>
+            m.id === msgId && m.ticket_overview
+              ? { ...m, ticket_overview: { ...m.ticket_overview!, assigned_to_name: task.assigned_to_name || task.assigned_to } }
+              : m
+          ));
+        }
+        pollingRef.current.delete(msgId);
         return; // 已派单，停止
       }
     } catch { /* 单次失败继续 */ }
-    pollTimeoutsRef.current[msgId] = setTimeout(() => pollDispatch(msgId, dbId, attempt + 1), 5000);
+    pollTimeoutsRef.current[msgId] = setTimeout(() => {
+      delete pollTimeoutsRef.current[msgId]; // timeout 触发后清除 id，递归由 pollingRef 防重
+      pollDispatch(msgId, dbId, attempt + 1);
+    }, 5000);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasksReq]);
 
   const startDispatchPoll = useCallback((msgId: string, dbId: number) => {
-    if (pollTimeoutsRef.current[msgId]) return; // 已在轮询
-    pollTimeoutsRef.current[msgId] = setTimeout(() => pollDispatch(msgId, dbId, 0), 0);
+    if (pollingRef.current.has(msgId)) return; // 已在轮询（含 await 期间）
+    pollingRef.current.add(msgId);
+    pollDispatch(msgId, dbId, 0);
   }, [pollDispatch]);
 
   // 卸载清理所有轮询
   useEffect(() => () => {
+    cancelledRef.current = true;
     Object.values(pollTimeoutsRef.current).forEach(clearTimeout);
     pollTimeoutsRef.current = {};
+    pollingRef.current.clear();
   }, []);
 
   // 切会话清理轮询
   useEffect(() => {
     Object.values(pollTimeoutsRef.current).forEach(clearTimeout);
     pollTimeoutsRef.current = {};
+    pollingRef.current.clear();
   }, [conversationId]);
 
   // 恢复后：对派单中的 ticket_overview 气泡启动轮询
