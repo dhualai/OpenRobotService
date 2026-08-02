@@ -1,8 +1,9 @@
 // 项目选择器：下拉展开项目列表 + 模糊搜索（按名称/编码过滤）
+// 数据源：当前登录用户（提单人）名下项目（GET /api/admin/projects/me），非全量；支持按 AI 项目名预填匹配。
 // 用于工单草稿确认页绑定项目。复用 UserSelect 的浮层结构与样式（user-select__*）。
 import { useEffect, useMemo, useState } from 'react';
 import { Toast } from 'tdesign-mobile-react';
-import { getProjects } from '@/api/projects';
+import { getMyProjects } from '@/api/projects';
 import type { ProjectItem } from '@/api/projects';
 
 interface Props {
@@ -10,6 +11,8 @@ interface Props {
   onChange?: (project: ProjectItem) => void;
   placeholder?: string;
   title?: string;
+  /** AI 给的项目名：value(project_code) 为空时按名称在名下项目里匹配预填，减少用户手选 */
+  nameHint?: string | null;
 }
 
 // 模块级缓存，5 分钟内复用，减少重复请求
@@ -21,6 +24,7 @@ export default function ProjectSelect({
   onChange,
   placeholder = '请选择绑定项目',
   title = '选择项目',
+  nameHint = null,
 }: Props) {
   const [visible, setVisible] = useState(false);
   const [projects, setProjects] = useState<ProjectItem[]>(projectCache || []);
@@ -42,7 +46,7 @@ export default function ProjectSelect({
     setLoading(true);
     setError('');
     try {
-      const list = await getProjects();
+      const list = await getMyProjects();
       projectCache = list;
       projectCacheTs = now;
       setProjects(list);
@@ -58,6 +62,19 @@ export default function ProjectSelect({
     if (visible) loadProjects();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
+
+  // AI 项目名预填：value(project_code) 为空且 AI 给了项目名 → 按名称在名下项目里匹配，替用户预选。
+  // 匹配策略：① 忽略大小写/首尾空格精确等值；② 互为包含（AI 名可能带"项目"后缀或简写）；命中即预选。
+  useEffect(() => {
+    if (value || !nameHint || projects.length === 0) return;
+    const hint = nameHint.trim().toLowerCase();
+    const hit = projects.find((p) => {
+      const n = (p.name || '').trim().toLowerCase();
+      return n && (n === hint || n.includes(hint) || hint.includes(n));
+    });
+    if (hit) onChange?.(hit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects, value, nameHint]);
 
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
@@ -81,8 +98,9 @@ export default function ProjectSelect({
       <button type="button" className="user-select__trigger" onClick={() => setVisible(true)}>
         {selected ? (
           <span className="user-select__trigger-text">{selected.name}</span>
-        ) : value ? (
-          <span className="user-select__trigger-text">{value}</span>
+        ) : value || nameHint ? (
+          // selected 匹配不到（项目不在名下/列表未加载完）时，优先显示 AI 给的项目名称而非 project_id 编码
+          <span className="user-select__trigger-text">{nameHint || value}</span>
         ) : (
           <span className="user-select__trigger-placeholder">{placeholder}</span>
         )}

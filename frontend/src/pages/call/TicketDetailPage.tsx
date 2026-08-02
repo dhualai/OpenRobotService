@@ -1,10 +1,11 @@
 // 摇人 · 历史工单详情页（U老师诊断生成的工单）
 // 数据源：AI 模块 GET /api/ai/qa/ticket?session_id=...；操作：催办 / 上报（任务服务通知）
 // 路由 /app/call/ticket/:id 中的 :id 即 AI 会话 session_id
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Toast, Loading, Tag, Popup, Input, Textarea } from 'tdesign-mobile-react';
-import { NotificationIcon, UploadIcon, RollbackIcon, EditIcon, ChevronRightIcon } from 'tdesign-icons-react';
+import { NotificationIcon, UploadIcon, RollbackIcon, EditIcon } from 'tdesign-icons-react';
+import { getMyProjects, type ProjectItem } from '@/api/projects';
 import { qaGetTicket } from '@/api/ai';
 import { cancelTicket, urgeTicket, reportTicket, uploadCommentAttachment } from '@/api/ticket';
 import {
@@ -12,6 +13,8 @@ import {
   canUrgeTicket,
   canReportTicket,
   canCancelTicket,
+  STATUS_DISPLAY_MAP,
+  getStatusColor,
 } from '@/shared/constants/ticket';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -52,6 +55,8 @@ interface AiTicket {
   // 项目（AI 接口返回 project；DB TicketResponse 返回 project_name，展示以 DB 为准）
   project?: string;
   project_name?: string;
+  // 项目编码（DB TicketResponse 返回，编辑回显与提交用）
+  project_id?: string;
   // 类型专属
   location?: string; robot_type?: string; fault_code?: string; special_notes?: string;
   steps_to_reproduce?: string; expected_result?: string; actual_result?: string; severity?: string; version?: string;
@@ -94,7 +99,7 @@ export default function TicketDetailPage() {
         if (!silent) setTicket(aiTicket);
         if (aiTicket.ticket_id) {
           try {
-            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; created_at?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
+            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
             // 用 DB 的 status 覆盖 AI 的 status：AI(qaGetTicket) 返回 dispatched/escalated 等 AI 内部状态，
             // DB(tasks 表) 是 new/in_progress 等标准枚举。列表(qaListTickets)也来自 DB，
             // 覆盖后详情页按钮置灰(canUrgeTicket/canReportTicket)与列表一致。
@@ -117,6 +122,8 @@ export default function TicketDetailPage() {
               type: taskDetail.ticket_type || prev.type,
               contact: taskDetail.customer || prev.contact,
               project_name: taskDetail.project_name || prev.project_name || prev.project,
+              // 项目编码以 DB 为准（编辑回显与提交用），AI 接口不返回该字段
+              project_id: taskDetail.project_id || prev.project_id,
             } : prev);
             setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
           } catch { /* 评论加载失败不阻塞主流程 */ }
@@ -191,8 +198,37 @@ export default function TicketDetailPage() {
 
   // 编辑工单（标题/描述/优先级/类型/联系人；权限与后端对齐：admin/创建人/处理人，终态不可编辑）
   const [showEdit, setShowEdit] = useState(false);
-  const [editForm, setEditForm] = useState({ title: '', description: '', priority: '中', ticket_type: 'problem', customer: '' });
+  const [editForm, setEditForm] = useState({ title: '', description: '', priority: '中', ticket_type: 'problem', customer: '', project_id: '', project_name: '' });
   const [savingEdit, setSavingEdit] = useState(false);
+  // 所属项目下拉（当前用户名下项目，GET /api/admin/projects/me；支持关键词模糊搜索）
+  const [showProjectPicker, setShowProjectPicker] = useState(false);
+  const [projectKeyword, setProjectKeyword] = useState('');
+  const [projectOptions, setProjectOptions] = useState<ProjectItem[]>([]);
+  const [projectLoading, setProjectLoading] = useState(false);
+  const loadMyProjects = async () => {
+    try { setProjectLoading(true); setProjectOptions(await getMyProjects()); }
+    catch { setProjectOptions([]); }
+    finally { setProjectLoading(false); }
+  };
+  // 当前工单的 project_id 可能不在“名下项目”里（异常工单/老数据），始终置顶保证回显可见
+  const projectList = useMemo(() => {
+    const base = [...projectOptions];
+    if (editForm.project_id && !base.some((p) => p.project_code === editForm.project_id)) {
+      base.unshift({ id: editForm.project_id, project_code: editForm.project_id, name: editForm.project_name || editForm.project_id });
+    }
+    return base;
+  }, [projectOptions, editForm.project_id, editForm.project_name]);
+  const filteredProjects = useMemo(() => {
+    const kw = projectKeyword.trim().toLowerCase();
+    if (!kw) return projectList;
+    return projectList.filter((p) => p.name.toLowerCase().includes(kw) || p.project_code.toLowerCase().includes(kw));
+  }, [projectList, projectKeyword]);
+  const openProjectPicker = () => { setShowProjectPicker(true); if (projectOptions.length === 0) loadMyProjects(); };
+  const selectProject = (p: ProjectItem) => {
+    setEditForm((prev) => ({ ...prev, project_id: p.project_code, project_name: p.name }));
+    setShowProjectPicker(false);
+    setProjectKeyword('');
+  };
   const canEdit = !!ticket?.ticket_id && !isTerminalTicketStatus(ticket.status)
     && (isAdmin || username === ticket.created_by || username === ticket.assigned_to);
   const openEdit = () => {
@@ -203,6 +239,8 @@ export default function TicketDetailPage() {
       priority: toEnPriority(ticket.priority),
       ticket_type: ticket.type || 'problem',
       customer: ticket.contact || '',
+      project_id: ticket.project_id || '',
+      project_name: ticket.project_name || ticket.project || '',
     });
     setShowEdit(true);
   };
@@ -219,6 +257,8 @@ export default function TicketDetailPage() {
           priority: editForm.priority,
           ticket_type: editForm.ticket_type,
           customer: editForm.customer,
+          project_name: editForm.project_name,
+          project_id: editForm.project_id,
         }),
       });
       Toast({ message: '已保存', theme: 'success' });
@@ -288,7 +328,12 @@ export default function TicketDetailPage() {
           <div className="detail-card__meta">
             {ticket.type && <Tag theme="primary">{TYPE_LABEL[ticket.type] || ticket.type}</Tag>}
             {ticket.priority && <Tag theme="warning">{displayPriority(ticket.priority)}</Tag>}
-            <span className="detail-card__type">{ticket.status || 'pending_dispatch'}</span>
+            <Tag
+              theme="primary"
+              style={{ background: getStatusColor(ticket.status || ''), color: '#fff', border: 'none', fontWeight: 500 }}
+            >
+              {STATUS_DISPLAY_MAP[(ticket.status || '').toLowerCase()] || ticket.status || '待派单'}
+            </Tag>
             <span className="detail-card__id">{ticket.ticket_id || ''}</span>
           </div>
           <h2 className="detail-card__title">{ticket.title || '(无标题)'}</h2>
@@ -296,20 +341,6 @@ export default function TicketDetailPage() {
           {ticket.contact && <DetailRow label="联系人" value={ticket.contact} />}
           <DetailRow label="创建时间" value={ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''} />
         </div>
-
-        {/* 跳转「系统任务工单详情」引导条：与 /tasks/:id 详情同源（同一 ticket_id 拉取 tasks 服务）。
-            AI 未生成工单（无 ticket_id）时隐藏；独立于底部操作区，终态工单仍保留入口。 */}
-        {ticket.ticket_id && (
-          <div
-            className="detail-card"
-            role="button"
-            onClick={() => navigate(`/tasks/${ticket.ticket_id}`)}
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', userSelect: 'none' }}
-          >
-            <span style={{ fontSize: 14, color: '#0052d9', fontWeight: 500 }}>查看系统任务工单详情</span>
-            <ChevronRightIcon size="18" style={{ color: '#0052d9' }} />
-          </div>
-        )}
 
         {/* 人员流转：发起人 → 处理人（与历史工单列表页同款 task-card2__people 样式）
             人员信息来自 tasks 服务 GET /{ticket_id}；AI 未生成工单(无 ticket_id)时该字段缺失则不显示。
@@ -483,6 +514,15 @@ export default function TicketDetailPage() {
               </div>
             </div>
             <div className="ticket-edit-form__field">
+              <label className="ticket-edit-form__label">所属项目</label>
+              <div className="ticket-edit-form__select" onClick={openProjectPicker}>
+                <span className={editForm.project_name ? 'ticket-edit-form__select-value' : 'ticket-edit-form__select-value is-placeholder'}>
+                  {editForm.project_name || '请选择所属项目'}
+                </span>
+                <span className="ticket-edit-form__select-arrow">▾</span>
+              </div>
+            </div>
+            <div className="ticket-edit-form__field">
               <label className="ticket-edit-form__label">联系人</label>
               <Input
                 value={editForm.customer}
@@ -495,6 +535,42 @@ export default function TicketDetailPage() {
           <div className="ticket-edit-form__footer">
             <Button theme="default" block onClick={() => setShowEdit(false)}>取消</Button>
             <Button theme="primary" block loading={savingEdit} onClick={handleEditSave}>保存</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 所属项目选择弹层：当前用户名下项目 + 关键词模糊搜索 */}
+      <Popup visible={showProjectPicker} placement="bottom" onClose={() => setShowProjectPicker(false)} showOverlay>
+        <div className="project-picker">
+          <div className="project-picker__header">
+            <span className="project-picker__title">选择所属项目</span>
+            <span className="project-picker__close" onClick={() => setShowProjectPicker(false)}>×</span>
+          </div>
+          <div className="project-picker__search">
+            <Input
+              value={projectKeyword}
+              onChange={(v) => setProjectKeyword(String(v))}
+              placeholder="搜索项目名称 / 编码"
+              clearable
+            />
+          </div>
+          <div className="project-picker__list">
+            {projectLoading ? (
+              <div className="project-picker__empty">加载中...</div>
+            ) : filteredProjects.length === 0 ? (
+              <div className="project-picker__empty">无匹配项目</div>
+            ) : (
+              filteredProjects.map((p) => (
+                <div
+                  key={p.project_code}
+                  className={`project-picker__item ${editForm.project_id === p.project_code ? 'is-active' : ''}`}
+                  onClick={() => selectProject(p)}
+                >
+                  <span className="project-picker__name">{p.name}</span>
+                  <span className="project-picker__code">{p.project_code}</span>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </Popup>

@@ -92,3 +92,20 @@ export function canReportTicket(status: TicketStatusLike): boolean {
 export function canCancelTicket(status: TicketStatusLike): boolean {
   return canUrgeTicket(status);
 }
+
+// ===== 状态颜色（TaskDetailPage / TasksView / TicketDetailPage 共用）=====
+export const STATUS_COLOR_MAP: Record<string, string> = {
+  new: '#0052d9',
+  in_progress: '#2ba471',
+  pending: '#e37318',
+  paused: '#e37318',
+  resolved: '#00a870',
+  closed: '#999999',
+  canceled: '#d54941',
+  cancelled: '#d54941',
+};
+
+export const getStatusColor = (status: string): string => {
+  const key = (status || '').toLowerCase();
+  return STATUS_COLOR_MAP[key] || '#666666';
+};

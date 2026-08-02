@@ -170,14 +170,21 @@ class LLMClient:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        reasoning_effort: Optional[str] = "low",
+        reasoning_effort: Optional[str] = None,
     ):
         self.config = get_ai_config()
         self.provider = provider
         self.api_key = api_key or self.config.deepseek_api_key
         self.base_url = base_url or self._get_default_base_url()
         self.model = model or self._get_default_model()
-        self.reasoning_effort = reasoning_effort
+        # 思考强度：显式传参 > .env 配置；off/disabled 表示关闭思考
+        _effort = reasoning_effort if reasoning_effort is not None else self.config.llm_reasoning_effort
+        if _effort and _effort.lower() in ("off", "disabled", ""):
+            self.reasoning_effort = None
+            self._thinking_default = False
+        else:
+            self.reasoning_effort = _effort or "low"
+            self._thinking_default = True
         self._provider_impl = _PROVIDERS[provider]
         self._client: Optional[httpx.AsyncClient] = None
 
@@ -283,7 +290,7 @@ class LLMClient:
             system_prompt: 系统提示
             max_tokens: 最大 token 数
             temperature: 温度参数
-            thinking: 是否开启思考模式（默认关闭，工具类调用不需要）
+            thinking: 是否开启思考模式（工具调用默认关闭）
         """
         messages: List[Dict[str, str]] = []
         if system_prompt:
@@ -427,7 +434,7 @@ class LLMClient:
             messages: 消息列表 [{"role": "user", "content": "..."}]
             max_tokens: 最大 token 数
             temperature: 温度参数
-            thinking: 是否开启思考模式（默认关闭，工具类调用不需要）
+            thinking: 是否开启思考模式（工具调用默认关闭）
         """
         try:
             response = await self._make_request(
@@ -460,7 +467,7 @@ class LLMClient:
         system_prompt: Optional[str] = None,
         max_tokens: int = 8000,
         temperature: float = 0.1,
-        thinking: bool = True,
+        thinking: Optional[bool] = None,
     ):
         """
         流式补全 — 开启 stream:true，逐 token yield
@@ -473,6 +480,8 @@ class LLMClient:
         注意：流式 SSE 无法在已开始产出 token 后安全重试（会导致重复输出），
         因此仅在连接建立阶段（无 token 产出时）尝试重试，最多 3 次。
         """
+        if thinking is None:
+            thinking = self._thinking_default
         messages: List[Dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
