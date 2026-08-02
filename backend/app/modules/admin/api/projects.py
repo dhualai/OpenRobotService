@@ -252,6 +252,12 @@ async def get_project_members(
     """
     try:
         members = db_manager.get_project_members(project_id, include_usp=include_usp)
+        # get_project_members 的 report_to_name 子查询用 username 匹配 user_id 存在 bug 返回 null，
+        # 此处直接查 user_project_roles.report_to_id 列覆盖，前端用 user_id == report_to_id 建树。
+        report_to_map = db_manager.get_report_to_map(project_id)
+        for m in members:
+            m['report_to_id'] = report_to_map.get(m['user_id'])
+            m.pop('report_to_name', None)
         return members
     except Exception as e:
         logger.error(f"获取项目已关联人员失败: project_id={project_id}, error={str(e)}", exc_info=True)

@@ -126,6 +126,13 @@ async def ask_question_stream(
         qa_request = DiagnosisRequest(session_id=qa_req.session_id, query=qa_req.query,
                            skip_retrieval=qa_req.skip_retrieval, created_by=username)
         first = False
+        _sse_trace: list[str] = []
+        _sse_token_count = 0
+        def _flush_tokens():
+            nonlocal _sse_token_count
+            if _sse_token_count > 0:
+                _sse_trace.append(f"token({_sse_token_count}c)")
+                _sse_token_count = 0
         try:
             async for event in pipeline.run_stream(qa_request):
                 ev_type = event["event"]
@@ -133,17 +140,30 @@ async def ask_question_stream(
                     if not first:
                         first = True
                         yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)}, ensure_ascii=False)}\n\n"
+                    _sse_token_count += len(event['data'])
                     yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
                 elif ev_type == "result":
+                    _flush_tokens()
+                    _sse_trace.append(f"result")
                     yield f"event: result\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
                 elif ev_type == "title":
                     yield f"event: title\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
                 else:
+                    _flush_tokens()
+                    stage = event.get('data', {}).get('stage', '?')
+                    _sse_trace.append(f"status{{{stage}}}")
                     yield f"event: status\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-            yield f"event: done\ndata: {json.dumps({'total_ms': round((time.perf_counter() - t0) * 1000)})}\n\n"
+            _flush_tokens()
+            total_ms = round((time.perf_counter() - t0) * 1000)
+            logger.info(f"[sse] sid={qa_req.session_id[:8]} q={qa_req.query[:80]} "
+                        f"→ {' | '.join(_sse_trace)} | done({total_ms}ms)")
+            yield f"event: done\ndata: {json.dumps({'total_ms': total_ms})}\n\n"
         except Exception as e:
             # 先 yield 缺省 token（前端可见），方便定位是后端异常（而非前端空白）
             yield f"data: {json.dumps({'token': f'[AI 服务异常: {str(e)[:80]}]'}, ensure_ascii=False)}\n\n"
+            _flush_tokens()
+            logger.error(f"[sse] sid={qa_req.session_id[:8]} q={qa_req.query[:80]} "
+                         f"→ {' | '.join(_sse_trace)} | ERROR: {e}", exc_info=True)
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
     return StreamingResponse(sse(), media_type="text/event-stream")
 
@@ -175,27 +195,24 @@ async def get_ticket(session_id: str = Query(..., description="会话 ID")):
         mgr = await get_memory_manager()
         memory = await mgr.get_memory(session_id)
         agent_state = memory.metadata.get("agent_state", {})
-        # 主路径：Redis/内存中 agent_state 有效 → 直接组装工单
+        # 主路径：已提交工单(phase=escalated/resolved)——历史工单详情全部命中此分支。
+        # DB(tasks 表)在 submit 时已通过 upsert_task 持久化完整工单快照(含 diagnosis/
+        # 类型专属字段/special_notes/attachments/发起人/处理人等)，task_to_dict 一次查库
+        # 即可还原全部字段，ticket_id 即数字 Task.id(前端催办/上报/评论/撤回依赖)。
+        # 不再调 pipeline.get_ticket→_build_ticket：后者每次都用 LLM 重新生成工单(单次
+        # 推理 2-3s，占 TTFB 98%)，且 submit 后 _reset_state_after_submit 已清空诊断状态，
+        # 重跑出的 diagnosis 反而为空；其生成结果几乎全被 DB 字段覆盖，纯冗余。
         if agent_state.get("phase") in ("escalated", "resolved"):
-            pipeline = await get_pipeline()
-            ticket = await pipeline.get_ticket(session_id)
-            # ticket_id 默认是 "AI-..." 字符串，但前端催办/上报/评论/撤回依赖
-            # 任务服务的数字 Task.id。此处查库取真实 id 覆盖，避免按钮报「工单号缺失」。
-            # 同时从 DB 补充发起人/处理人（Redis 路径的 _build_ticket 不含人名字段，
-            # 与列表接口 /memory/tickets/all 口径对齐）。
+            from ai.core.task_adapter import task_to_dict
             task = _resolve_ai_task(session_id)
             if task is not None:
-                ticket["ticket_id"] = task.id
-                try:
-                    from app.services.user_service import UserService
-                    user_map = UserService.get_user_map()
-                    ticket["created_by"] = task.created_by or ""
-                    ticket["created_by_name"] = user_map.get(task.created_by, task.created_by) if task.created_by else ""
-                    ticket["assigned_to"] = task.assigned_to or ""
-                    ticket["assigned_to_name"] = user_map.get(task.assigned_to, task.assigned_to) if task.assigned_to else ""
-                except Exception:
-                    pass
-            return {"code": 0, "data": ticket}
+                logger.info(f"工单详情命中 DB 快照(跳过 LLM 生成): session_id={session_id[:20]}, task_id={task.id}")
+                return {"code": 0, "data": task_to_dict(task)}
+            # phase 标记已提交但 DB 行缺失：数据异常(submit 必然写过 DB)。
+            # 不再用 LLM 兜底——submit 后诊断状态已清空、Redis 会话可能已过期，
+            # LLM 现编出的工单既残缺又与真实数据不一致，反而误导。直接报错。
+            logger.warning(f"工单详情异常: phase 标记已提交但 DB 无行, session_id={session_id[:20]}")
+            return {"code": 1, "message": "工单数据异常（未在系统中找到对应记录），请联系管理员核查"}
 
         # 降级：MySQL tasks 表中已有记录但 Redis 内存丢失（Redis 重启/过期等场景）
         from ai.core.task_adapter import task_to_dict
@@ -507,17 +524,6 @@ async def upload_files(
             f"attachments_before={len(existing)}, attachments_after={len(state['attachments'])}, "
             f"has_last_ticket={bool(state.get('last_submitted_ticket', {}).get('ticket_id'))}"
         )
-
-        # 追加到已提交工单
-        last_ticket = state.get("last_submitted_ticket", {})
-        if last_ticket and last_ticket.get("ticket_id"):
-            pipeline = await get_pipeline()
-            ok = await pipeline._append_to_ticket(session_id, attachments=saved)
-            logger.info(
-                f"[upload] 追加到工单: session={session_id[:12]}, "
-                f"ok={ok}, files={filenames}, "
-                f"elapsed={(time.perf_counter() - t_state) * 1000:.0f}ms"
-            )
     except Exception as e:
         logger.error(
             f"[upload] 附件状态更新失败: session={session_id[:12]}, "

@@ -877,6 +877,24 @@ class RetrievalService:
             sub_domain="usp_product",
         )
 
+    # ── 任务 Agent：平台参考文档检索 ───────────────────────────
+
+    async def retrieve_platform_reference(
+        self,
+        query: str,
+        top_k: int = 3,
+    ) -> List[RetrievalResult]:
+        """
+        平台部署/配置/代码排查参考文档检索（委托到 team domain，sub_domain="product"）。
+
+        目标文件：platform_manual.md（技术架构）、engineer_guide.md（代码排查）。
+        """
+        return await self.retrieve_domain(
+            query, "team",
+            top_k=top_k or 3,
+            sub_domain="product",
+        )
+
     # ── 任务 Agent：历史工单方案检索 ───────────────────────────
 
     async def retrieve_task_resolutions(

@@ -1,14 +1,15 @@
 // 可复用 AI 对话面板 — 提单 Agent（/api/ai/qa/ask/stream）
 // 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
-import { memo, useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Textarea, Toast, Popup, Tag } from 'tdesign-mobile-react';
+import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+
+import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
 import { qaUpload, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, type TicketDraft } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
-import { createConversation, getConversation, appendMessage, readAiSessionId } from '@/api/conversation';
+import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
+import { createRequest } from '@/api/client';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import ImageLightbox from '@/shared/components/ImageLightbox';
@@ -54,8 +55,8 @@ interface Message {
   reaction?: 'like' | 'dislike' | null;
   // 流式输出进行中标记：true 时气泡用纯文本渲染（避免 Markdown 全量重解析造成抖动），完成后置 false
   streaming?: boolean;
-  // 任务 Agent 专属：结构化方案草稿
-  subtype?: 'solution_draft';
+  // 任务 Agent 专属：结构化方案草稿 / 工单概览
+  subtype?: 'solution_draft' | 'ticket_overview';
   solution_draft?: {
     _task_id?: string;
     root_cause_analysis: string;
@@ -63,6 +64,19 @@ interface Message {
     references: string[];
     confidence: number;
     needs_more_info: boolean;
+  };
+  // 工单确认后的概览气泡：confirm 成功时构造，DB 持久化（metadata_.kind='ticket_overview'）
+  ticket_overview?: {
+    db_id: number;
+    ticket_id: string;
+    title: string;
+    type?: string;
+    priority?: string;
+    project?: string;
+    contact?: string;
+    description?: string;
+    created_at?: string;
+    assigned_to_name?: string; // 派单完成后轮询填充 + 回写 DB
   };
 }
 
@@ -112,18 +126,46 @@ const sanitizeAiText = (raw: string): string => {
   return result;
 };
 
-/** 流式中间态判定：疑似 LLM 协议 JSON 头泄漏（以 { / ``` 开头），流式期间以占位代替上屏 */
+/** 流式中间态判定：疑似 LLM 协议 JSON 头泄漏，流式期间以占位代替上屏。
+ *  判定与 sanitizeAiText 对齐，避免误伤正常回复：
+ *  - 裸 JSON 头：{ 开头且前 400 字符含 "action" 字段（正文里 { 举例不含 action，不误判）
+ *  - fenced JSON 头：```json / 无语言标记 ``` 紧跟 {（```python 等带语言标记的代码块属正常回复，不占位） */
 const looksLikeJsonHead = (text: string): boolean => {
   const t = text.trimStart();
-  return t.startsWith('{') || t.startsWith('```');
+  if (t.startsWith('{') && t.slice(0, 400).includes('"action"')) return true;
+  return /^```(?:json)?\s*\{/.test(t);
 };
 
 /** DB 会话消息 → 前端 Message：附件恢复 + AI 文本清洗 + 空白 AI 气泡过滤（历史异常数据不上屏） */
 const mapDbMessages = (
-  full: { messages?: Array<{ id: number; role: string; content: string; created_at: string; file_urls?: string | null }> },
-): Message[] =>
-  (full.messages || [])
+  full: { messages?: Array<{ id: number; role: string; content: string; created_at: string; file_urls?: string | null; message_type?: string; metadata_?: string | null }> },
+): Message[] => {
+  // metadata_ 经后端 safe_json_dumps 二次编码：可能是 对象 或 嵌套字符串，统一解析两次得到对象
+  const parseMeta = (s?: string | null): Record<string, unknown> | null => {
+    if (!s) return null;
+    try {
+      let v: unknown = JSON.parse(s);
+      if (typeof v === 'string') v = JSON.parse(v);
+      return (v && typeof v === 'object') ? (v as Record<string, unknown>) : null;
+    } catch { return null; }
+  };
+  return (full.messages || [])
     .map((m) => {
+      // 工单概览气泡：metadata_.kind==='ticket_overview'（content 存工单 JSON）
+      const meta = parseMeta(m.metadata_);
+      if (meta?.kind === 'ticket_overview') {
+        try {
+          const ov = JSON.parse(m.content) as NonNullable<Message['ticket_overview']>;
+          return {
+            id: String(m.id),
+            role: 'assistant' as const,
+            content: '',
+            timestamp: m.created_at,
+            subtype: 'ticket_overview' as const,
+            ticket_overview: ov,
+          };
+        } catch { /* 解析失败降级为普通文本 */ }
+      }
       const msg: Message = {
         id: String(m.id),
         role: m.role as 'user' | 'assistant',
@@ -144,11 +186,12 @@ const mapDbMessages = (
       return msg;
     })
     // 空白 AI 气泡（历史异常落库的空内容/纯空白）不恢复显示
-    .filter((m) => m.role !== 'assistant' || m.content.trim().length > 0);
+    .filter((m) => m.role !== 'assistant' || m.subtype === 'ticket_overview' || m.content.trim().length > 0);
+};
 
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
-  msg, editingId, compact, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave, onEditCancel, onImageClick,
+  msg, editingId, compact, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick,
 }: {
   msg: Message;
   editingId: string | null;
@@ -219,7 +262,30 @@ const MessageBubble = memo(function MessageBubble({
             onChange={(v) => onEditChange(msg.id, String(v))}
           />
         ) : msg.role === 'assistant' ? (
-          msg.content ? (
+          msg.subtype === 'ticket_overview' && msg.ticket_overview ? (
+            // 工单概览气泡：confirm 成功后插入，展示工单详情 + 派单状态（纯展示，不跳转）
+            <div className="chat-ticket-overview">
+              <div className="chat-ticket-overview__header">
+                <span className="chat-ticket-overview__emoji">🎫</span>
+                <span className="chat-ticket-overview__id">工单 #{msg.ticket_overview.db_id}</span>
+                {msg.ticket_overview.type && <Tag theme="primary">{TICKET_TYPE_LABEL[msg.ticket_overview.type] || msg.ticket_overview.type}</Tag>}
+                {msg.ticket_overview.priority && <Tag theme="warning">{msg.ticket_overview.priority}</Tag>}
+              </div>
+              <div className="chat-ticket-overview__title">{msg.ticket_overview.title}</div>
+              {msg.ticket_overview.project && <div className="chat-ticket-overview__row">📁 {msg.ticket_overview.project}</div>}
+              {msg.ticket_overview.contact && <div className="chat-ticket-overview__row">👤 {msg.ticket_overview.contact}</div>}
+              {msg.ticket_overview.description && <div className="chat-ticket-overview__desc">{msg.ticket_overview.description}</div>}
+              <div className="chat-ticket-overview__footer">
+                {msg.ticket_overview.assigned_to_name ? (
+                  <span className="chat-ticket-overview__assigned">✅ 已派单 · {msg.ticket_overview.assigned_to_name}</span>
+                ) : (
+                  <span className="chat-ticket-overview__dispatching">
+                    <i className="dispatch-pulse dispatch-pulse--inline" />派单中…
+                  </span>
+                )}
+              </div>
+            </div>
+          ) : msg.content ? (
             msg.streaming ? (
               <div className="chat-bubble__text" style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
             ) : (
@@ -227,7 +293,10 @@ const MessageBubble = memo(function MessageBubble({
             )
           ) : (
             <div className="chat-bubble__typing" aria-label="AI 正在分析">
-              <span /><span /><span />
+              <Loading size="small" />
+              <span className="chat-bubble__typing-char">思</span>
+              <span className="chat-bubble__typing-char">考</span>
+              <span className="chat-bubble__typing-char">中</span>
             </div>
           )
         ) : (
@@ -280,7 +349,7 @@ const TICKET_TYPE_LABEL: Record<string, string> = {
 const convMessagesCache: Record<number, Message[]> = {};
 
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
-  const navigate = useNavigate();
+
   const { token, name, username } = useAuthStore();
   const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations } = useWorkbenchStore();
   const isCall = scene === 'call';
@@ -302,7 +371,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     draft: TicketDraft | null;
     overrides: Partial<TicketDraft>;
     submitting: boolean;
-  }>({ visible: false, draft: null, overrides: {}, submitting: false });
+    force_submit?: boolean;  // 收集超限强制提单时为 true，弹窗顶部黄色 banner 提示用户重点核对
+  }>({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false });
   // 转工单信息不足引导（方案A）：prepare 返回 not_ready 时，
   // 在输入框上方常驻「待补充清单」卡片 + 转工单按钮角标，引导用户回对话补全
   const [ticketMissing, setTicketMissing] = useState<{ info: string[]; message: string } | null>(null);
@@ -418,7 +488,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (pendingNewConversation) return; // 保持空白新会话，不自动选
       if (current === null && list.length > 0) {
         // list 已由后端按更新时间倒序返回，list[0] 即最近会话
-        setConversationTitle(list[0].title || '');
+        setConversationTitle(list[0].title && list[0].title !== '新会话' ? list[0].title : '新建会话');
         setConversationId(list[0].id);
       }
     })();
@@ -451,17 +521,31 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       setMessages(cached);
       scrollToBottomNow();
       // 后台静默校正：缓存可能是乐观消息/流式中间态快照，DB 为最终一致源。
-      // 仅当 DB 内容确实更新（条数或末条内容不同）才覆盖，避免无意义重渲染与旧数据回滚。
+      // 仅当 DB 条数更多（有新落库的消息）才覆盖：appendMessage 是 fire-and-forget，
+      // 切回瞬间 DB 可能还少于缓存（乐观用户消息 / AI 回复尚未落库），双向不等会把这些
+      // 未落库消息覆盖丢失。会话消息只增不改，条数相同即一致，无需回滚。
       getConversation(conversationId).then((full) => {
         if (convRef.current !== conversationId) return; // 校正期间又切走了，丢弃
         const fresh = mapDbMessages(full);
         setMessages((prev) => {
-          const lastPrev = prev[prev.length - 1];
-          const lastFresh = fresh[fresh.length - 1];
-          const changed = fresh.length !== prev.length
-            || (!!lastFresh && !!lastPrev && lastFresh.content !== lastPrev.content);
-          return changed ? fresh : prev;
+          if (fresh.length > prev.length) return fresh;
+          // 长度未增加：不整体替换（防丢未落库的乐观消息），但以 DB 为准同步工单概览气泡的派单状态——
+          // 否则切走期间已派单并回写 DB 后，长度相同不覆盖，气泡仍停留在"派单中"。
+          return prev.map((m) => {
+            if (m.subtype === 'ticket_overview' && m.ticket_overview && !m.ticket_overview.assigned_to_name) {
+              const f = fresh.find((x) => x.ticket_overview?.db_id === m.ticket_overview!.db_id);
+              if (f?.ticket_overview?.assigned_to_name) {
+                return { ...m, ticket_overview: { ...m.ticket_overview, assigned_to_name: f.ticket_overview.assigned_to_name } };
+              }
+            }
+            return m;
+          });
         });
+        // 恢复 sessionId / 标题：缓存恢复分支跳过了 getConversation，这里补上，
+        // 否则切回后 sessionId 仍为上一会话的/空，发送时 ensureSessionId 会重新生成 → sessionId 漂移
+        const sid = readAiSessionId(full);
+        if (sid) setSessionId(sid);
+        setConversationTitle(full.title && full.title !== '新会话' ? full.title : '新建会话');
       }).catch(() => {});
       return;
     }
@@ -475,7 +559,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         // mapDbMessages 统一做：附件恢复 + AI 文本清洗（带 }/JSON 残留）+ 空白 AI 气泡过滤
         const restored: Message[] = mapDbMessages(full);
         setMessages(restored);
-        setConversationTitle(full.title || '');
+        setConversationTitle(full.title && full.title !== '新会话' ? full.title : '新建会话');
         const sid = readAiSessionId(full);
         if (sid) setSessionId(sid);
         else setSessionId('');
@@ -532,12 +616,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     return sessionId;
   }, [sessionId]);
 
-  /** 确保 DB 会话存在：首条消息时创建（title 取首句），后续复用 convRef */
+  /** 确保 DB 会话存在：首条消息时创建（title 用占位「新会话」，第2轮由 AI 生成后同步），后续复用 convRef */
   const ensureConversation = async (sid: string, firstContent: string): Promise<number | null> => {
     if (convRef.current) return convRef.current;
     try {
       const conv = await createConversation({
-        title: firstContent.slice(0, 40) || 'AI 对话',
+        title: '新会话',
         scene,
         aiSessionId: sid,
       });
@@ -733,6 +817,29 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           if (currentEvent === 'result' && data.ticket) {
             ticketCreatedThisTurn = true;
           }
+          // 第2轮 AI 生成会话标题：更新当前标题 + 刷新左侧列表（DB 已由后端同步）
+          if (currentEvent === 'title' && data.title) {
+            setConversationTitle(data.title);
+            refreshConversations();
+          }
+          // submit 相关分支（need_info/need_fields/review/submit_failed）：后端已 _msg_buf.clear()
+          // 改用干净系统话术，但流式期间已 flush 的 LLM 片段收不回 → 前端 acc 会拼接成
+          // 「LLM 片段 + 系统话术」混乱。此处清空 acc，丢弃闪现的 LLM 片段，只接收后续系统话术。
+          if (currentEvent === 'status' && ['need_info', 'need_fields', 'review', 'submit_failed'].includes(data.stage)) {
+            acc = '';
+          }
+          // 转工单确认弹窗（对话路径）：后端字段齐全 → event:status + stage:review → 弹窗，
+          // 复用 ticketConfirm（与按钮路径 handleSubmitTicket 殊途同归）。
+          // 幂等：弹窗已打开则不覆盖（保留用户正在编辑的 overrides），防后端重复发 review 重弹。
+          if (currentEvent === 'status' && data.stage === 'review' && data.draft) {
+            setTicketConfirm((s) => s.visible ? s : {
+              visible: true,
+              draft: data.draft as TicketDraft,
+              overrides: {},
+              submitting: false,
+              force_submit: !!data.force_submit,
+            });
+          }
         } catch { /* JSON 行解析出错则跳过 */ }
       };
       let buffer = '';
@@ -757,11 +864,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
       // 流式结束：持久化 AI 回复到发送时的会话（快照）——切会话后 convRef 已指向新会话，不能再用
       if (acc && sentConvId) appendMessage(sentConvId, 'assistant', acc).catch(() => {});
-      // 首轮问答完成 → 同步会话到列表（标题=首轮提问），定位到新会话；
+      // 首轮问答完成 → 同步会话到列表、定位到新会话。
+      // 标题保持「新建会话」：标题由 AI 在第2轮回复时生成（event: title），在此之前都叫「新建会话」。
       // 仅当用户未切走（仍在发送时的会话）才执行跳转，避免把用户从别的会话拽回来
       if (wasNew && sentConvId && convRef.current === sentConvId) {
         setConversationId(sentConvId);
-        setConversationTitle(content.slice(0, 40) || 'AI 对话');
         refreshConversations();
       }
       // 任务 Agent 方案草稿：注入 solution_draft 标记
@@ -1117,7 +1224,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const { draft, missing_fields, prompt } = res.data;
       // 打开确认弹窗，让用户核对/编辑/补字段
       setTicketMissing(null); // 已就绪，清掉待补充清单
-      setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false });
+      setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false, force_submit: false });
       if (missing_fields?.length) {
         Toast({ message: prompt || '请补全必填字段后提交', theme: 'warning' });
       }
@@ -1134,13 +1241,91 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const setDraftField = (k: keyof TicketDraft, v: string) =>
     setTicketConfirm((s) => ({ ...s, overrides: { ...s.overrides, [k]: v } }));
 
-  /** 确认提交：校验项目必填（所有类型，需绑定 project_id） → 调 confirm 入库 */
+  // ── 工单概览气泡 + 派单轮询 ──────────────────────────────────
+  const tasksReq = useMemo(() => createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务'), []);
+  const pollTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const pollingRef = useRef<Set<string>>(new Set()); // 正在轮询的 msgId（含 await 期间，防恢复 useEffect 重复启动）
+  const cancelledRef = useRef(false); // 组件卸载标记（防卸载后 setMessages 产生 React warning）
+
+  const pollDispatch = useCallback(async (msgId: string, dbId: number, ov: NonNullable<Message['ticket_overview']>, attempt: number) => {
+    if (attempt >= 12) { pollingRef.current.delete(msgId); return; } // 60s 超时（5s × 12）
+    try {
+      // 必须 skipCache：createRequest 的 GET 默认缓存 5 分钟，否则第二次轮询起命中缓存返回旧 assigned_to，
+      // 控制台看不到请求、气泡永远显示"派单中"（只有刷新清空模块级 requestCache 后才真正请求）。
+      const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string }>(`/${dbId}`, { skipCache: true });
+      if (task.assigned_to) {
+        const assignedName = task.assigned_to_name || task.assigned_to;
+        const newOv = { ...ov, assigned_to_name: assignedName };
+        if (!cancelledRef.current) {
+          setMessages((prev) => prev.map((m) =>
+            m.id === msgId && m.ticket_overview
+              ? { ...m, ticket_overview: newOv }
+              : m
+          ));
+        }
+        // 回写 DB：派单状态持久化。切换/刷新/历史会话切走后从 DB 读到即显示"已派单"，
+        // 不再依赖内存轮询跨切换存活（此前状态只在内存，切换后丢失→气泡停在"派单中"）。
+        // 回写句柄 = 气泡 id：confirm 用 String(appendMessage 返回的 DB id)，恢复用 String(m.id)，均为 DB message id。
+        const dbMsgId = Number(msgId);
+        if (Number.isFinite(dbMsgId) && dbMsgId > 0) {
+          updateMessageContent(dbMsgId, JSON.stringify(newOv)).catch(() => {});
+        }
+        pollingRef.current.delete(msgId);
+        return; // 已派单，停止
+      }
+    } catch { /* 单次失败继续 */ }
+    pollTimeoutsRef.current[msgId] = setTimeout(() => {
+      delete pollTimeoutsRef.current[msgId]; // timeout 触发后清除 id，递归由 pollingRef 防重
+      pollDispatch(msgId, dbId, ov, attempt + 1);
+    }, 5000);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasksReq]);
+
+  const startDispatchPoll = useCallback((msgId: string, dbId: number, ov: NonNullable<Message['ticket_overview']>) => {
+    if (pollingRef.current.has(msgId)) return; // 已在轮询（含 await 期间）
+    pollingRef.current.add(msgId);
+    pollDispatch(msgId, dbId, ov, 0);
+  }, [pollDispatch]);
+
+  // 卸载清理所有轮询
+  useEffect(() => () => {
+    cancelledRef.current = true;
+    Object.values(pollTimeoutsRef.current).forEach(clearTimeout);
+    pollTimeoutsRef.current = {};
+    pollingRef.current.clear();
+  }, []);
+
+  // 切会话清理轮询
+  useEffect(() => {
+    Object.values(pollTimeoutsRef.current).forEach(clearTimeout);
+    pollTimeoutsRef.current = {};
+    pollingRef.current.clear();
+  }, [conversationId]);
+
+  // 恢复后：对派单中的 ticket_overview 气泡启动轮询（传完整 ov，供查到后回写 DB）
+  useEffect(() => {
+    messages.forEach((m) => {
+      if (m.subtype === 'ticket_overview' && m.ticket_overview && !m.ticket_overview.assigned_to_name && m.ticket_overview.db_id) {
+        startDispatchPoll(m.id, m.ticket_overview.db_id, m.ticket_overview);
+      }
+    });
+  }, [messages, startDispatchPoll]);
+
+  /** 确认提交：校验项目必填（所有类型，需绑定 project_id） → 调 confirm 入库 → 插入工单概览气泡 */
   const handleConfirmTicket = async () => {
     const draft = ticketConfirm.draft;
     if (!draft || !sessionId) return;
     const projectIdVal = draftField('project_id').trim();
+    const projectNameVal = draftField('project').trim();
     if (!projectIdVal) {
-      Toast({ message: '请先选择绑定项目', theme: 'warning' });
+      // 项目名有但 project_id 空 → 多半是 AI 给的项目不在提单人名下，无法自动绑定
+      Toast({
+        message: projectNameVal
+          ? `项目「${projectNameVal}」不在你的名下，请在下拉中选择一个你所属的项目`
+          : '请先选择绑定项目',
+        theme: 'warning',
+        duration: 4000,
+      });
       return;
     }
     setTicketConfirm((s) => ({ ...s, submitting: true }));
@@ -1156,8 +1341,47 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         return;
       }
       setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false });
+
+      // 构造工单概览气泡插入对话流
+      const ticket = res.data?.ticket as Record<string, unknown> | undefined;
+      const ov: NonNullable<Message['ticket_overview']> = {
+        db_id: (res.data?.db_id as number) ?? 0,
+        ticket_id: (ticket?.ticket_id as string) || draft.ticket_id || '',
+        title: draftField('title') || draft.title || '工单',
+        type: draftField('type') || draft.type,
+        priority: draftField('priority') || draft.priority,
+        project: draftField('project'),
+        contact: draftField('contact') || undefined,
+        description: draftField('description') || draft.description,
+        created_at: new Date().toISOString(),
+      };
+      // 先落库拿 DB 消息 id：作为气泡稳定 id + 轮询回写 DB 的句柄（db_msg_id）。
+      // 避免此前用临时 uid 当气泡 id，被内存缓存/后台校正改成 DB id 后，进行中的轮询 msgId 匹配不到 → 状态更新丢失。
+      // 用 metadata_.kind 标记（message_type 是受限枚举，不能存 ticket_overview），落库 message_type='text' 合法值。
+      let dbMsgId: number | null = null;
+      if (convRef.current) {
+        try {
+          const saved = await appendMessage(convRef.current, 'assistant', JSON.stringify(ov), {
+            messageType: 'text',
+            metadata: JSON.stringify({ kind: 'ticket_overview' }),
+          });
+          dbMsgId = saved.id;
+        } catch { /* 落库失败也插入气泡（临时 id），仅不回写 DB */ }
+      }
+      const ovMsg: Message = {
+        id: dbMsgId != null ? String(dbMsgId) : uid(),
+        role: 'assistant',
+        content: '',
+        timestamp: new Date().toISOString(),
+        subtype: 'ticket_overview',
+        ticket_overview: ov,
+      };
+      setMessages((prev) => [...prev, ovMsg]);
+      // 启动派单轮询（传完整 ov，供查到后回写 DB）
+      if (ov.db_id) startDispatchPoll(ovMsg.id, ov.db_id, ov);
+
       refreshTasks(); // 刷新「历史工单」待派单列表
-      Toast({ message: res.data?.notice || '工单已生成，可在历史工单查看', theme: 'success' });
+      Toast({ message: '工单已生成', theme: 'success' });
     } catch (err) {
       Toast({ message: `提交工单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
@@ -1219,8 +1443,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         )}
 
         {messages
-          // 渲染层兜底：空白 AI 气泡（空内容/纯空白，且非流式占位、无附件）不渲染
-          .filter((m) => m.role !== 'assistant' || !!m.streaming || m.content.trim().length > 0 || !!m.imageUrl || !!m.attachment)
+          // 渲染层兜底：空白 AI 气泡（空内容/纯空白，且非流式占位、无附件、非工单概览）不渲染
+          .filter((m) => m.role !== 'assistant' || !!m.streaming || m.content.trim().length > 0 || !!m.imageUrl || !!m.attachment || m.subtype === 'ticket_overview')
           .map((msg) => (
           <MessageBubble
             key={msg.id}
@@ -1480,6 +1704,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   {ticketConfirm.draft.type && <Tag theme="primary">{TICKET_TYPE_LABEL[ticketConfirm.draft.type] || ticketConfirm.draft.type}</Tag>}
                   {ticketConfirm.draft.priority && <Tag theme="warning">{ticketConfirm.draft.priority}</Tag>}
                 </div>
+                {ticketConfirm.force_submit && (
+                  <div className="ticket-confirm__banner">⚠️ 信息收集超限，请重点核对项目、车型等关键字段</div>
+                )}
                 <label className="ticket-confirm__label">标题</label>
                 <input
                   className="ticket-confirm__input"
@@ -1516,6 +1743,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 <label className="ticket-confirm__label">绑定项目 <span style={{ color: '#e34d59' }}>*</span></label>
                 <ProjectSelect
                   value={draftField('project_id') || null}
+                  nameHint={draftField('project') || null}
                   onChange={(p) => {
                     setDraftField('project', p.name);
                     setDraftField('project_id', p.project_code);
@@ -1536,7 +1764,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 type="button"
                 className="ticket-confirm__btn ticket-confirm__btn--confirm"
                 onClick={handleConfirmTicket}
-                disabled={ticketConfirm.submitting || !draftField('project_id').trim()}
+                disabled={ticketConfirm.submitting}
               >{ticketConfirm.submitting ? '提交中…' : '确认提交'}</button>
             </div>
           </div>

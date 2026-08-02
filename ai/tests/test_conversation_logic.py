@@ -34,7 +34,8 @@ class TestStateTransitions:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_answer_resolves_session(self, platform, make_state, make_request):
-        """LLM 返回 action=answer → phase 变为 resolved"""
+        """LLM 返回 action=answer → phase 保持 diagnosing（answer 不再设 resolved；
+        resolved 只由 _reset_state_after_submit 在提单成功后设置，避免与诊断完成语义混淆）"""
         state = make_state(phase="idle")
         request = make_request(query="怎么处理激光报错")
         # 清除 side_effect 再设 return_value（side_effect 优先级更高）
@@ -55,7 +56,7 @@ class TestStateTransitions:
         result = await platform._agent_think(request, state, memory)
 
         assert result["action"] == "answer"
-        assert state.phase == "resolved"
+        assert state.phase == "diagnosing"
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -118,102 +119,103 @@ class TestStateTransitions:
 
         # 不拦截：有新 problem_summary 时 _can_submit 返回 True
         assert result["action"] == "answer"
-        assert state.phase == "resolved"
+        assert state.phase == "diagnosing"  # answer 不再设 resolved（resolved 仅提单后设置）
 
 
 # ================================================================
-# 2. 关键词快捷路径（不调 LLM，直接 return）
+# 2. 转工单意图识别（统一走 LLM，不再用关键词字符串匹配）
 # ================================================================
 
-class TestKeywordShortCircuit:
-    """转工单关键词 → 提前拦截/引导，不调 LLM"""
+class TestTicketIntent:
+    """转工单意图由 LLM 判断，后处理链（_can_submit / _assess_ticket_readiness）兜底"""
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_keyword_blocked_when_resolved_empty(self, platform, make_state, make_request):
-        """resolved + 空 problem_summary + "转工单" → 直接拦截，不调 LLM"""
-        state = make_state(phase="resolved", problem_summary="")
-        request = make_request(query="转工单")
+    async def test_submit_blocked_when_just_submitted(self, platform, make_state, make_request):
+        """刚提完单（last_submitted_ticket）+ 无新 problem + LLM 输出 submit → 闭环拦截"""
+        state = make_state(
+            phase="resolved", problem_summary="",
+            last_submitted_ticket={"ticket_id": "T-1", "db_id": 1, "title": "旧工单", "topic": "旧问题"},
+        )
+        request = make_request(query="帮我转工单")
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = (
+            '```json\n'
+            + json.dumps({
+                "thinking": "用户要求提单",
+                "action": "submit",
+                "intent": "troubleshoot",
+                "message": "好的，已为你生成工单。",
+                "state_update": {},
+            }, ensure_ascii=False)
+            + '\n```\n好的，已为你生成工单。'
+        )
         memory = await platform._memory_manager.get_memory(request.session_id)
 
         result = await platform._agent_think(request, state, memory)
 
-        assert "无需重复提交" in result["message"] or "请先描述现象" in result["message"]
-        # 关键词被拦截 → 不应该调用 LLM
-        platform._llm_client.complete.assert_not_called()
+        assert "新问题" in result["message"] or "新现象" in result["message"]
+        # LLM 被调用，由闭环保护（last_submitted_ticket + 无新问题）拦截
+        platform._llm_client.complete.assert_called()
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_keyword_asks_project_when_missing(self, platform, make_state, make_request):
-        """idle + 无 project + "转工单" → pending_submit=True，引导补项目"""
+    async def test_submit_sets_ticket_collecting_when_fields_missing(self, platform, make_state, make_request):
+        """idle + 无必填字段 + LLM 输出 submit → 拦截为 ask + ticket_collecting 激活"""
         state = make_state(phase="idle", problem_summary="机器人报错")
-        request = make_request(query="转工单")
+        request = make_request(query="给我下个工单")
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = (
+            '```json\n'
+            + json.dumps({
+                "thinking": "用户要提单",
+                "action": "submit",
+                "intent": "troubleshoot",
+                "message": "好的，让我帮你提交。",
+                "state_update": {},
+            }, ensure_ascii=False)
+            + '\n```\n好的，让我帮你提交。'
+        )
         memory = await platform._memory_manager.get_memory(request.session_id)
 
         result = await platform._agent_think(request, state, memory)
 
-        assert state.pending_submit is True
-        assert "项目" in result["message"]
-        # 同样不调 LLM
-        platform._llm_client.complete.assert_not_called()
+        # 字段不齐 → ticket_collecting 被设置（提交拦截 + 状态机保持工单填写模式）
+        assert len(state.ticket_collecting) > 0
+        assert platform._llm_client.complete.call_count >= 1
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_normal_query_not_short_circuited(self, platform, make_state, make_request):
-        """普通查询 → 正常走 LLM 路径"""
+    async def test_normal_query_not_blocked(self, platform, make_state, make_request):
+        """普通查询 → LLM 正常应答，不被拦截"""
         state = make_state(phase="idle")
         request = make_request(query="怎么调试激光传感器")
         memory = await platform._memory_manager.get_memory(request.session_id)
 
         result = await platform._agent_think(request, state, memory)
 
-        # 应该调用了 LLM
+        # 正常走 LLM
+        platform._llm_client.complete.assert_called_once()
+        assert result["action"] in ("answer", "ask")
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_negation_not_mistaken_for_submit(self, platform, make_state, make_request):
+        """"我不转工单就问问" → LLM 识别为否定，不输出 submit"""
+        state = make_state(phase="idle")
+        request = make_request(query="我不转工单，就问问这个报错什么意思")
+        # 使用默认 mock（action=answer），模拟 LLM 正确识别非提单意图
+        memory = await platform._memory_manager.get_memory(request.session_id)
+
+        result = await platform._agent_think(request, state, memory)
+
+        # 不被拦截，正常走 LLM 回答
+        assert result["action"] in ("answer", "ask")
         platform._llm_client.complete.assert_called_once()
 
-    @pytest.mark.unit
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("kw", ["转工单", "转单", "生成工单", "提交工单", "提单", "帮我转", "我要转"])
-    async def test_all_keywords_detected_in_resolved(self, platform, make_state, make_request, kw):
-        """resolved + 空问题 + 任意转工单关键词 → 被拦截"""
-        state = make_state(phase="resolved", problem_summary="")
-        request = make_request(query=kw)
-        memory = await platform._memory_manager.get_memory(request.session_id)
-
-        result = await platform._agent_think(request, state, memory)
-
-        assert result["action"] == "answer"
-        platform._llm_client.complete.assert_not_called()
-
 
 # ================================================================
-# 3. pending_submit 自动提单
-# ================================================================
-
-class TestPendingSubmit:
-    """pending_submit=True 时，下一轮用户输入自动作为 project 提单"""
-
-    @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_pending_submit_auto_triggers(self, platform, make_state, make_request):
-        """pending_submit=True → 用户输入 "现场A" → 直接提单"""
-        state = make_state(
-            phase="idle",
-            problem_summary="机器人报错",
-            pending_submit=True,
-        )
-        request = make_request(query="华大制造基地")
-        memory = await platform._memory_manager.get_memory(request.session_id)
-
-        result = await platform._agent_think(request, state, memory)
-
-        # pending_submit 提单成功 → message 含提单确认
-        assert "工单" in result["message"] or state.pending_submit is False
-        # project 已被设置
-        assert state.collected_info.get("project") == "华大制造基地"
-
-
-# ================================================================
-# 4. LLM 输出解析（_parse_agent_output 纯同步方法）
+# 3. LLM 输出解析（_parse_agent_output 纯同步方法）
 # ================================================================
 
 class TestParseAgentOutput:

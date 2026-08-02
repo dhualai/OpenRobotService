@@ -5,10 +5,13 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Loading } from 'tdesign-mobile-react';
 import { fetchProjectsByStage, fetchProjectsByUrgency, type ProjectListItem } from '@/api/dashboard';
 import { PROJECT_STAGE_MAP, URGENCY_MAP } from '@/shared/constants/dashboard';
+import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
 
 export default function ProjectCategoryDetail() {
   const { dimension = 'stage', key = '' } = useParams<{ dimension: string; key: string }>();
   const navigate = useNavigate();
+  const { projectIds, hasPermission } = useAuthStore();
+  const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
   const [items, setItems] = useState<ProjectListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -19,11 +22,12 @@ export default function ProjectCategoryDetail() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = isUrgency ? await fetchProjectsByUrgency(key) : await fetchProjectsByStage(key);
+    const filterIds = canViewAll ? undefined : projectIds;
+    const res = isUrgency ? await fetchProjectsByUrgency(key, filterIds) : await fetchProjectsByStage(key, filterIds);
     setItems(res.items);
     setTotal(res.total);
     setLoading(false);
-  }, [key, isUrgency]);
+  }, [key, isUrgency, projectIds, canViewAll]);
 
   useEffect(() => { load(); }, [load]);
 
