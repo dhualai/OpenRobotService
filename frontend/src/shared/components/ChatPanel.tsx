@@ -9,6 +9,7 @@ import API_CONFIG from '@/config/api';
 import { qaUpload, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, type TicketDraft } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import { createConversation, getConversation, appendMessage, readAiSessionId } from '@/api/conversation';
+import { createRequest } from '@/api/client';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import ImageLightbox from '@/shared/components/ImageLightbox';
@@ -54,8 +55,8 @@ interface Message {
   reaction?: 'like' | 'dislike' | null;
   // 流式输出进行中标记：true 时气泡用纯文本渲染（避免 Markdown 全量重解析造成抖动），完成后置 false
   streaming?: boolean;
-  // 任务 Agent 专属：结构化方案草稿
-  subtype?: 'solution_draft';
+  // 任务 Agent 专属：结构化方案草稿 / 工单概览
+  subtype?: 'solution_draft' | 'ticket_overview';
   solution_draft?: {
     _task_id?: string;
     root_cause_analysis: string;
@@ -63,6 +64,19 @@ interface Message {
     references: string[];
     confidence: number;
     needs_more_info: boolean;
+  };
+  // 工单确认后的概览气泡：confirm 成功时构造，DB 持久化（messageType='ticket_overview'）
+  ticket_overview?: {
+    db_id: number;
+    ticket_id: string;
+    title: string;
+    type?: string;
+    priority?: string;
+    project?: string;
+    contact?: string;
+    description?: string;
+    created_at?: string;
+    assigned_to_name?: string; // 派单完成后轮询填充
   };
 }
 
@@ -124,10 +138,24 @@ const looksLikeJsonHead = (text: string): boolean => {
 
 /** DB 会话消息 → 前端 Message：附件恢复 + AI 文本清洗 + 空白 AI 气泡过滤（历史异常数据不上屏） */
 const mapDbMessages = (
-  full: { messages?: Array<{ id: number; role: string; content: string; created_at: string; file_urls?: string | null }> },
+  full: { messages?: Array<{ id: number; role: string; content: string; created_at: string; file_urls?: string | null; message_type?: string }> },
 ): Message[] =>
   (full.messages || [])
     .map((m) => {
+      // 工单概览气泡：messageType='ticket_overview'，content 存工单 JSON
+      if (m.message_type === 'ticket_overview') {
+        try {
+          const ov = JSON.parse(m.content) as NonNullable<Message['ticket_overview']>;
+          return {
+            id: String(m.id),
+            role: 'assistant' as const,
+            content: '',
+            timestamp: m.created_at,
+            subtype: 'ticket_overview' as const,
+            ticket_overview: ov,
+          };
+        } catch { /* 解析失败降级为普通文本 */ }
+      }
       const msg: Message = {
         id: String(m.id),
         role: m.role as 'user' | 'assistant',
@@ -148,11 +176,11 @@ const mapDbMessages = (
       return msg;
     })
     // 空白 AI 气泡（历史异常落库的空内容/纯空白）不恢复显示
-    .filter((m) => m.role !== 'assistant' || m.content.trim().length > 0);
+    .filter((m) => m.role !== 'assistant' || m.subtype === 'ticket_overview' || m.content.trim().length > 0);
 
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
-  msg, editingId, compact, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave, onEditCancel, onImageClick,
+  msg, editingId, compact, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave, onEditCancel, onImageClick, onTicketClick,
 }: {
   msg: Message;
   editingId: string | null;
@@ -164,6 +192,7 @@ const MessageBubble = memo(function MessageBubble({
   onEditSave: (msg: Message) => void;
   onEditCancel: () => void;
   onImageClick: (url: string) => void;
+  onTicketClick?: (ov: NonNullable<Message['ticket_overview']>) => void;
 }) {
   return (
     <div className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
@@ -223,7 +252,30 @@ const MessageBubble = memo(function MessageBubble({
             onChange={(v) => onEditChange(msg.id, String(v))}
           />
         ) : msg.role === 'assistant' ? (
-          msg.content ? (
+          msg.subtype === 'ticket_overview' && msg.ticket_overview ? (
+            // 工单概览气泡：confirm 成功后插入，展示工单详情 + 派单状态
+            <div className="chat-ticket-overview" onClick={() => onTicketClick?.(msg.ticket_overview!)} role="button" aria-label="查看工单详情">
+              <div className="chat-ticket-overview__header">
+                <span className="chat-ticket-overview__emoji">🎫</span>
+                <span className="chat-ticket-overview__id">工单 #{msg.ticket_overview.db_id}</span>
+                {msg.ticket_overview.type && <Tag theme="primary">{TICKET_TYPE_LABEL[msg.ticket_overview.type] || msg.ticket_overview.type}</Tag>}
+                {msg.ticket_overview.priority && <Tag theme="warning">{msg.ticket_overview.priority}</Tag>}
+              </div>
+              <div className="chat-ticket-overview__title">{msg.ticket_overview.title}</div>
+              {msg.ticket_overview.project && <div className="chat-ticket-overview__row">📁 {msg.ticket_overview.project}</div>}
+              {msg.ticket_overview.contact && <div className="chat-ticket-overview__row">👤 {msg.ticket_overview.contact}</div>}
+              {msg.ticket_overview.description && <div className="chat-ticket-overview__desc">{msg.ticket_overview.description}</div>}
+              <div className="chat-ticket-overview__footer">
+                {msg.ticket_overview.assigned_to_name ? (
+                  <span className="chat-ticket-overview__assigned">✅ 已派单 · {msg.ticket_overview.assigned_to_name}</span>
+                ) : (
+                  <span className="chat-ticket-overview__dispatching">
+                    <i className="dispatch-pulse dispatch-pulse--inline" />派单中…
+                  </span>
+                )}
+              </div>
+            </div>
+          ) : msg.content ? (
             msg.streaming ? (
               <div className="chat-bubble__text" style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
             ) : (
@@ -1166,7 +1218,55 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const setDraftField = (k: keyof TicketDraft, v: string) =>
     setTicketConfirm((s) => ({ ...s, overrides: { ...s.overrides, [k]: v } }));
 
-  /** 确认提交：校验项目必填（所有类型，需绑定 project_id） → 调 confirm 入库 */
+  // ── 工单概览气泡 + 派单轮询 ──────────────────────────────────
+  const tasksReq = useMemo(() => createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务'), []);
+  const pollTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  const pollDispatch = useCallback(async (msgId: string, dbId: number, attempt: number) => {
+    delete pollTimeoutsRef.current[msgId]; // 本次 timeout 已触发，清除标记
+    if (attempt >= 12) return; // 60s 超时（5s × 12）
+    try {
+      const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string }>(`/${dbId}`);
+      if (task.assigned_to) {
+        setMessages((prev) => prev.map((m) =>
+          m.id === msgId && m.ticket_overview
+            ? { ...m, ticket_overview: { ...m.ticket_overview!, assigned_to_name: task.assigned_to_name || task.assigned_to } }
+            : m
+        ));
+        return; // 已派单，停止
+      }
+    } catch { /* 单次失败继续 */ }
+    pollTimeoutsRef.current[msgId] = setTimeout(() => pollDispatch(msgId, dbId, attempt + 1), 5000);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasksReq]);
+
+  const startDispatchPoll = useCallback((msgId: string, dbId: number) => {
+    if (pollTimeoutsRef.current[msgId]) return; // 已在轮询
+    pollTimeoutsRef.current[msgId] = setTimeout(() => pollDispatch(msgId, dbId, 0), 0);
+  }, [pollDispatch]);
+
+  // 卸载清理所有轮询
+  useEffect(() => () => {
+    Object.values(pollTimeoutsRef.current).forEach(clearTimeout);
+    pollTimeoutsRef.current = {};
+  }, []);
+
+  // 切会话清理轮询
+  useEffect(() => {
+    Object.values(pollTimeoutsRef.current).forEach(clearTimeout);
+    pollTimeoutsRef.current = {};
+  }, [conversationId]);
+
+  // 恢复后：对派单中的 ticket_overview 气泡启动轮询
+  useEffect(() => {
+    messages.forEach((m) => {
+      if (m.subtype === 'ticket_overview' && m.ticket_overview && !m.ticket_overview.assigned_to_name && m.ticket_overview.db_id) {
+        startDispatchPoll(m.id, m.ticket_overview.db_id);
+      }
+    });
+  }, [messages, startDispatchPoll]);
+
+  /** 确认提交：校验项目必填（所有类型，需绑定 project_id） → 调 confirm 入库 → 插入工单概览气泡 */
   const handleConfirmTicket = async () => {
     const draft = ticketConfirm.draft;
     if (!draft || !sessionId) return;
@@ -1188,8 +1288,38 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         return;
       }
       setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false });
+
+      // 构造工单概览气泡插入对话流
+      const ticket = res.data?.ticket as Record<string, unknown> | undefined;
+      const ov: NonNullable<Message['ticket_overview']> = {
+        db_id: (res.data?.db_id as number) ?? 0,
+        ticket_id: (ticket?.ticket_id as string) || draft.ticket_id || '',
+        title: draftField('title') || draft.title || '工单',
+        type: draftField('type') || draft.type,
+        priority: draftField('priority') || draft.priority,
+        project: draftField('project'),
+        contact: draftField('contact') || undefined,
+        description: draftField('description') || draft.description,
+        created_at: new Date().toISOString(),
+      };
+      const ovMsg: Message = {
+        id: uid(),
+        role: 'assistant',
+        content: '',
+        timestamp: new Date().toISOString(),
+        subtype: 'ticket_overview',
+        ticket_overview: ov,
+      };
+      setMessages((prev) => [...prev, ovMsg]);
+      // 持久化到 DB（刷新/切会话后可恢复）
+      if (convRef.current) {
+        appendMessage(convRef.current, 'assistant', JSON.stringify(ov), { messageType: 'ticket_overview' }).catch(() => {});
+      }
+      // 启动派单轮询
+      if (ov.db_id) startDispatchPoll(ovMsg.id, ov.db_id);
+
       refreshTasks(); // 刷新「历史工单」待派单列表
-      Toast({ message: res.data?.notice || '工单已生成，可在历史工单查看', theme: 'success' });
+      Toast({ message: '工单已生成', theme: 'success' });
     } catch (err) {
       Toast({ message: `提交工单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
@@ -1251,8 +1381,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         )}
 
         {messages
-          // 渲染层兜底：空白 AI 气泡（空内容/纯空白，且非流式占位、无附件）不渲染
-          .filter((m) => m.role !== 'assistant' || !!m.streaming || m.content.trim().length > 0 || !!m.imageUrl || !!m.attachment)
+          // 渲染层兜底：空白 AI 气泡（空内容/纯空白，且非流式占位、无附件、非工单概览）不渲染
+          .filter((m) => m.role !== 'assistant' || !!m.streaming || m.content.trim().length > 0 || !!m.imageUrl || !!m.attachment || m.subtype === 'ticket_overview')
           .map((msg) => (
           <MessageBubble
             key={msg.id}
@@ -1266,6 +1396,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             onEditSave={handleEditSave}
             onEditCancel={handleEditCancel}
             onImageClick={setPreviewUrl}
+            onTicketClick={() => navigate(`/app/call/ticket/${sessionId}`)}
           />
         ))}
         <div ref={messagesEndRef} />
