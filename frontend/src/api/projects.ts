@@ -24,6 +24,15 @@ export async function getProjects(keyword = '', skip = 0, limit = 200): Promise<
   return Array.isArray(data) ? data : [];
 }
 
+// 当前登录用户名下项目（GET /api/admin/projects/me）；接口从 token 解码 username →
+// 查 user_project_roles 得到关联项目。include_analysis=false 跳过风险计算，仅基础字段。
+// 供「历史工单详情-编辑」绑定所属项目下拉使用。
+export async function getMyProjects(includeAnalysis = false): Promise<ProjectItem[]> {
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, '项目服务');
+  const data = await request<ProjectItem[]>(`/projects/me?include_analysis=${includeAnalysis}`);
+  return Array.isArray(data) ? data : [];
+}
+
 // ── 项目成员（用于讨论区 @ 提及）──────────────────────────────
 
 export interface ProjectMember {
