@@ -92,7 +92,7 @@ def _default_config() -> dict:
                 "propagate": False,
             },
             _TASK_AGENT_LOGGER: {
-                "level": "DEBUG",
+                "level": "INFO",
                 "handlers": ["console", "task_agent_file"],
                 "propagate": False,
             },
