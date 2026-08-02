@@ -86,14 +86,25 @@ export const renameConversation = (id: number, title: string) =>
 /** 会话详情（含 messages） */
 export const getConversation = (id: number) => request<Conversation>(`/conversations/${id}`);
 
+/** 更新消息内容（PUT /messages/{id}）。
+ *  用途：工单概览气泡派单状态回写——轮询查到 assigned_to 后，把 assigned_to_name 写进该消息 content JSON，
+ *  实现派单状态持久化到 DB（切换/刷新后从 DB 读到即显示"已派单"，不依赖内存轮询跨切换存活）。 */
+export const updateMessageContent = (messageId: number, content: string) =>
+  request<ConvMessage>(`/messages/${messageId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ content }),
+  });
+
 /** 追加一条消息（user/assistant）。
  *  options.fileUrls：JSON 字符串（附件列表），写入 DB messages.file_urls，刷新/切会话后可恢复图片/文件卡片。
- *  options.messageType：text(默认)/image/file，写入 DB messages.message_type。 */
+ *  options.messageType：text(默认)/image/file，写入 DB messages.message_type（受后端 MessageType 枚举约束）。
+ *  options.metadata：自由 JSON 字符串，写入 DB messages.metadata_（不受枚举约束），用于持久化自定义气泡标记
+ *    （如工单概览：{kind:'ticket_overview'}）。注意 metadata 经后端 safe_json_dumps 会二次编码，恢复时需 parse 两次。 */
 export const appendMessage = (
   conversationId: number,
   role: 'user' | 'assistant',
   content: string,
-  options?: { fileUrls?: string; messageType?: string },
+  options?: { fileUrls?: string; messageType?: string; metadata?: string },
 ) =>
   request<ConvMessage>('/messages', {
     method: 'POST',
@@ -103,5 +114,6 @@ export const appendMessage = (
       content,
       message_type: options?.messageType ?? 'text',
       file_urls: options?.fileUrls ?? null,
+      metadata_: options?.metadata ?? null,
     }),
   });
