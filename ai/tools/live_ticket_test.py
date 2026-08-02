@@ -140,13 +140,70 @@ SCENARIOS = [
     {"id": "I3", "group": "I", "name": "多轮排查后才转单",
      "turns": ["X1152在安吉北区不动了", "重启没用", "网络也正常", "那就转工单吧"],
      "expect": "turn1-3 排查 -> turn4 转单(已有project+车型) -> 追问时间/频率或直接submit"},
+
+    # -- J. 真实 Bug 回归（2026-08-02 测试暴露的问题）--
+    # J1: 提单后问新问题（非转工单）→ 应正常回答，不得复读拦截话术
+    #   Bug: prompt "不要自行诊断" 太强，LLM 看到"安吉北区车不跑了"也不敢处理
+    #   Fix: last_ticket_context 区分"有新问题→正常诊断"和"无新问题→拦截提单"
+    {"id": "J1", "group": "J", "name": "提单后新问题不卡死：问操作方法",
+     "turns": ["华大基地X1152报404昨天开始每次都有，转工单",
+               "如何在地图编辑中配置充电桩点位？"],
+     "expect": "turn1 提单成功；turn2 新问题(howto) -> 正常回答/诊断，不回复拦截话术"},
+    {"id": "J2", "group": "J", "name": "提单后新问题不卡死：描述新故障",
+     "turns": ["华大基地X1152报404昨天开始每次都有，转工单",
+               "安吉北区车不跑了"],
+     "expect": "turn1 提单成功；turn2 新故障 -> 正常排查(提取project=安吉北区)，不回复拦截话术"},
+    # J3: 连续提单——提单后描述新故障+转工单 → 第二张工单
+    #   Bug: _can_submit 基于 problem_summary，但 state 残留旧话题导致误拦
+    #   Fix: 同上 last_ticket_context 修复 + query 纯净（不加旧 problem_summary）
+    {"id": "J3", "group": "J", "name": "连续提单：提单后新故障+转工单",
+     "turns": ["华大基地X1152报404昨天开始每次都有，转工单",
+               "安吉北区那边车也出问题了，突然启动不了，今天早上开始的，转工单"],
+     "expect": "turn1 提单(华大基地)；turn2 新故障(安吉北区)+转单 -> 第二张工单"},
+    # J4: 用户说"没有"/"不知道"不鬼打墙
+    #   Bug: _apply_state_update 过滤掉"无"值，LLM 反复追问同一字段
+    #   Fix: "无"值接受并记录，ticket_collecting prompt 禁止重复追问
+    {"id": "J4", "group": "J", "name": "说没有不鬼打墙：不知道故障码",
+     "turns": ["转工单", "安吉北区", "不知道", "今天早上", "偶尔"],
+     "expect": "turn2 给project；turn3 说不知道 -> 不再追问该字段，继续下一个；不重复问'故障码是什么'"},
+    # J5: 话题切换后检索不污染
+    #   Bug: problem_summary 残留上一话题关键词，embedding 被带偏
+    #   Fix: 用户查询≥10字时不拼 problem_summary
+    {"id": "J5", "group": "J", "name": "话题切换检索不污染",
+     "turns": ["如何验收充电功能？", "如何验收自动门对接？"],
+     "expect": "turn1 回答充电验收；turn2 回答自动门对接(不被'充电'污染)"},
+    # J6: 收集轮跳过检索（速度验证）
+    #   Bug: ticket_collecting 只在 submit 被拦截时设，LLM 说 ask 时不设 → 检索照跑
+    #   Fix: LLM 说 ask 且 required_fields 非空时提前设 ticket_collecting
+    {"id": "J6", "group": "J", "name": "收集轮跳过检索",
+     "turns": ["转工单", "南京本川", "页面打不开，昨天开始"],
+     "expect": "turn2-3 收集轮不跑检索(docs_len≈0)，响应速度明显快于 turn1"},
+    # J7: 非车端问题不用 robot_type/fault_code
+    #   Bug: _TICKET_FIELD_VOCAB 固定词表限制，登录问题被要求 robot_type
+    #   Fix: 删除词表，LLM 自由选字段
+    {"id": "J7", "group": "J", "name": "非车端问题字段合适：登录问题不提车型",
+     "turns": ["摇人吧登录有问题，页面打不开，转工单", "南京本川"],
+     "expect": "required_fields 不含 robot_type/fault_code/location；收集 error_message 等合理字段"},
+    # J8: 弹窗显示匹配后的项目全名
+    #   Bug: result["project"] 漏设 match.name，弹窗显示用户原话"南京本川"
+    #   Fix: 补 result["project"] = match.name
+    {"id": "J8", "group": "J", "name": "弹窗项目名：显示匹配全名",
+     "turns": ["南京本川车不跑了，转工单"],
+     "expect": "review draft 中 project='江苏南京本川XSC仓储项目'，非'南京本川'"},
+    # J9: _decide_ticket_fields 标签不过长
+    #   Bug: LLM 把 value 写成一整句话（"需要工程师协助取消正在执行的任务或充电操作"）
+    #   Fix: prompt 限 ≤8字 + 代码截断 [:12]
+    {"id": "J9", "group": "J", "name": "字段标签简短：不过长",
+     "turns": ["如何取消正在执行的任务？转工单"],
+     "expect": "required_fields value 为简短标签(≤8字)，非整句话；missing 提示清晰"},
 ]
 
 # 应当最终提单的场景（用于多轮稳定性自动判定）
 # 注：I 系列（多轮主流流程）flash 模型下偶发单轮不提交，由人工判断，不参与自动判定
-SHOULD_SUBMIT = {"A1", "A2", "B2", "C2", "D2", "H1", "H2", "H7", "F1"}
+SHOULD_SUBMIT = {"A1", "A2", "B2", "C2", "D2", "H1", "H2", "H7", "F1",
+                 "J3", "J4", "J6", "J7", "J8", "J9"}
 # 应当【不】提单的场景
-SHOULD_NOT_SUBMIT = {"C3", "D1", "D3", "H3", "H5"}
+SHOULD_NOT_SUBMIT = {"C3", "D1", "D3", "H3", "H5", "J1", "J2", "J5"}
 
 
 # ============================================================
