@@ -200,7 +200,22 @@ class ProjectService:
             return [self._convert_to_dict(project) for project in projects]
         finally:
             db.close()
-    
+
+    def get_projects_by_ids(self, project_ids: List[str]) -> List[Dict]:
+        """按项目 ID 列表批量查询项目，用于仪表盘按当前用户关联项目过滤统计。"""
+        if not project_ids:
+            return []
+        db = SessionLocal()
+        try:
+            projects = db.query(Project).filter(
+                Project.id != None,
+                Project.id != "",
+                Project.id.in_(project_ids),
+            ).all()
+            return [self._convert_to_dict(project) for project in projects]
+        finally:
+            db.close()
+
     def get_project(self, project_id: int) -> Optional[Dict]:
         db = SessionLocal()
         try:

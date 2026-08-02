@@ -9,11 +9,14 @@
 数据来源：
 - 工单统计：系统任务模块 tasks 表（app.models.task.Task）
 - 项目统计：admin 模块 projects 表（app.modules.admin.models_das.models.Project）
+
+所有接口支持 project_ids 查询参数（逗号分隔），用于按当前用户关联项目过滤：
+- 不传 project_ids：不过滤（向后兼容）
+- 传 project_ids（即使为空）：仅统计指定项目内的数据
 """
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Dict, Any, Optional
-from datetime import datetime
+from typing import Dict, Any, Optional, List
 
 from app.core.database import get_async_db as get_db
 from app.modules.admin.services.task_dashboard_service import task_dashboard_service
@@ -47,10 +50,26 @@ URGENCY_MAP = {
 }
 
 
+def _parse_project_ids(raw: Optional[str]) -> Optional[List[str]]:
+    """解析 project_ids 查询参数。
+
+    返回值约定：
+    - None：未传该参数，表示不限制（向后兼容）
+    - 空列表：传了参数但为空，表示当前用户无关联项目
+    - 非空列表：按这些项目 ID 过滤
+    """
+    if raw is None:
+        return None
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
 @dashboard_router.get("/tickets/summary", response_model=Dict[str, Any])
-async def get_ticket_summary(db: AsyncSession = Depends(get_db)):
+async def get_ticket_summary(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目内的工单"),
+    db: AsyncSession = Depends(get_db),
+):
     """工单状态汇总 —— 供仪表盘「工单状态监测」饼图和统计卡使用。
-    
+
     响应结构：
     {
         "code": 0,
@@ -63,17 +82,19 @@ async def get_ticket_summary(db: AsyncSession = Depends(get_db)):
         }
     }
     """
-    stats = await task_dashboard_service.get_ticket_summary(db)
+    pid_list = _parse_project_ids(project_ids)
+    stats = await task_dashboard_service.get_ticket_summary(db, pid_list)
     return {"code": 0, "data": stats}
 
 
 @dashboard_router.get("/tickets", response_model=Dict[str, Any])
 async def get_tickets_by_status(
     status: Optional[str] = Query(None, description="工单状态key"),
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅返回这些项目内的工单"),
     db: AsyncSession = Depends(get_db),
 ):
     """按状态筛选工单列表 —— 点击状态标签下钻时调用。
-    
+
     响应结构：
     {
         "code": 0,
@@ -85,15 +106,18 @@ async def get_tickets_by_status(
     """
     if not status:
         return {"code": 0, "data": {"items": [], "total": 0}}
-    
-    result = await task_dashboard_service.get_tickets_by_status(db, status)
+
+    pid_list = _parse_project_ids(project_ids)
+    result = await task_dashboard_service.get_tickets_by_status(db, status, project_ids=pid_list)
     return {"code": 0, "data": result}
 
 
 @dashboard_router.get("/projects/summary", response_model=Dict[str, Any])
-async def get_project_stage_summary():
+async def get_project_stage_summary(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),
+):
     """项目阶段汇总 —— 供仪表盘「跨项目看板」阶段饼图使用。
-    
+
     响应结构：
     {
         "code": 0,
@@ -103,18 +127,22 @@ async def get_project_stage_summary():
         }
     }
     """
-    projects = project_service.get_projects(0, 1000)
-    
+    pid_list = _parse_project_ids(project_ids)
+    if pid_list is not None:
+        projects = project_service.get_projects_by_ids(pid_list)
+    else:
+        projects = project_service.get_projects(0, 1000)
+
     by_stage: Dict[str, int] = {key: 0 for key in PROJECT_STAGE_MAP.keys()}
     total = len(projects)
-    
+
     for project in projects:
         project_status = project.get("status", "")
         for stage_key, status_labels in PROJECT_STAGE_MAP.items():
             if project_status in status_labels:
                 by_stage[stage_key] += 1
                 break
-    
+
     return {
         "code": 0,
         "data": {
@@ -125,9 +153,11 @@ async def get_project_stage_summary():
 
 
 @dashboard_router.get("/projects/urgency", response_model=Dict[str, Any])
-async def get_project_urgency_summary():
+async def get_project_urgency_summary(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),
+):
     """项目紧急度汇总 —— 供仪表盘「跨项目看板」紧急度四象限使用。
-    
+
     响应结构：
     {
         "code": 0,
@@ -136,17 +166,21 @@ async def get_project_urgency_summary():
         }
     }
     """
-    projects = project_service.get_projects(0, 1000)
-    
+    pid_list = _parse_project_ids(project_ids)
+    if pid_list is not None:
+        projects = project_service.get_projects_by_ids(pid_list)
+    else:
+        projects = project_service.get_projects(0, 1000)
+
     by_urgency: Dict[str, int] = {key: 0 for key in URGENCY_MAP.keys()}
-    
+
     for project in projects:
         category = project.get("category_basis", "")
         for urgency_key, category_labels in URGENCY_MAP.items():
             if category in category_labels:
                 by_urgency[urgency_key] += 1
                 break
-    
+
     return {
         "code": 0,
         "data": {
@@ -159,9 +193,10 @@ async def get_project_urgency_summary():
 async def get_projects_by_stage_or_urgency(
     stage: Optional[str] = Query(None, description="项目阶段key"),
     urgency: Optional[str] = Query(None, description="紧急度key"),
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅返回这些项目"),
 ):
     """按阶段或紧急度筛选项目列表 —— 点击阶段/紧急度标签下钻时调用。
-    
+
     响应结构：
     {
         "code": 0,
@@ -171,9 +206,12 @@ async def get_projects_by_stage_or_urgency(
         }
     }
     """
-    all_projects = project_service.get_projects(0, 1000)
-    filtered_projects = []
-    
+    pid_list = _parse_project_ids(project_ids)
+    if pid_list is not None:
+        all_projects = project_service.get_projects_by_ids(pid_list)
+    else:
+        all_projects = project_service.get_projects(0, 1000)
+
     if stage:
         status_labels = PROJECT_STAGE_MAP.get(stage, [])
         filtered_projects = [
@@ -188,7 +226,7 @@ async def get_projects_by_stage_or_urgency(
         ]
     else:
         filtered_projects = all_projects
-    
+
     items = [
         {
             "id": str(p["id"]),
@@ -199,7 +237,7 @@ async def get_projects_by_stage_or_urgency(
         }
         for p in filtered_projects
     ]
-    
+
     return {
         "code": 0,
         "data": {

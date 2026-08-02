@@ -142,6 +142,9 @@ class DatabaseManager:
     def get_project_members(self, project_id: str, include_usp: bool = False) -> List[Dict[str, Any]]:
         return identity_service.get_project_members(project_id, include_usp)
 
+    def get_report_to_map(self, project_id: str) -> Dict[str, str]:
+        return identity_service.get_report_to_map(project_id)
+
     def get_db(self):
         return SessionLocal()
 

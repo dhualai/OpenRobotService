@@ -15,7 +15,7 @@ import httpx
 
 from ai.core.logging import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("AI")
 
 from tenacity import (
     retry,
@@ -76,19 +76,30 @@ class DeepSeekProvider(BaseLLMProvider):
         messages: List[Dict[str, str]],
         **kwargs
     ) -> Dict[str, Any]:
+        # 内部参数，不透传 API
+        _thinking = kwargs.pop("thinking", None)
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             **kwargs,
         }
-        # 关闭思考模式加速首 token（deepseek、miMo 均支持）
+        # DeepSeek/miMo 思考模式（默认开启，传 thinking=False 显式关闭）
         if any(x in model.lower() for x in ("deepseek", "mimo")):
-            payload["thinking"] = {"type": "disabled"}
+            if _thinking is False:
+                payload["thinking"] = {"type": "disabled"}
+            else:
+                payload["thinking"] = {"type": "enabled"}
         return payload
 
     def extract_content(self, response: Dict[str, Any]) -> str:
         msg = response["choices"][0]["message"]
         return msg.get("content") or msg.get("reasoning_content", "")
+
+    @staticmethod
+    def extract_reasoning(response: Dict[str, Any]) -> str:
+        """提取思考过程（reasoning_content），可能为空"""
+        msg = response["choices"][0]["message"]
+        return msg.get("reasoning_content", "")
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -103,19 +114,30 @@ class OpenAIProvider(BaseLLMProvider):
         messages: List[Dict[str, str]],
         **kwargs
     ) -> Dict[str, Any]:
+        # 内部参数，不透传 API
+        _thinking = kwargs.pop("thinking", None)
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             **kwargs,
         }
-        # 关闭思考模式加速首 token（deepseek、miMo 均支持）
+        # DeepSeek/miMo 思考模式（默认开启，传 thinking=False 显式关闭）
         if any(x in model.lower() for x in ("deepseek", "mimo")):
-            payload["thinking"] = {"type": "disabled"}
+            if _thinking is False:
+                payload["thinking"] = {"type": "disabled"}
+            else:
+                payload["thinking"] = {"type": "enabled"}
         return payload
 
     def extract_content(self, response: Dict[str, Any]) -> str:
         msg = response["choices"][0]["message"]
         return msg.get("content") or msg.get("reasoning_content", "")
+
+    @staticmethod
+    def extract_reasoning(response: Dict[str, Any]) -> str:
+        """提取思考过程（reasoning_content），可能为空"""
+        msg = response["choices"][0]["message"]
+        return msg.get("reasoning_content", "")
 
 
 # Provider 注册表
@@ -148,12 +170,21 @@ class LLMClient:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
     ):
         self.config = get_ai_config()
         self.provider = provider
         self.api_key = api_key or self.config.deepseek_api_key
         self.base_url = base_url or self._get_default_base_url()
         self.model = model or self._get_default_model()
+        # 思考强度：显式传参 > .env 配置；off/disabled 表示关闭思考
+        _effort = reasoning_effort if reasoning_effort is not None else self.config.llm_reasoning_effort
+        if _effort and _effort.lower() in ("off", "disabled", ""):
+            self.reasoning_effort = None
+            self._thinking_default = False
+        else:
+            self.reasoning_effort = _effort or "low"
+            self._thinking_default = True
         self._provider_impl = _PROVIDERS[provider]
         self._client: Optional[httpx.AsyncClient] = None
 
@@ -219,6 +250,7 @@ class LLMClient:
         payload = self._provider_impl.build_payload(
             model=self.model,
             messages=messages,
+            reasoning_effort=self.reasoning_effort,
             **kwargs,
         )
 
@@ -248,6 +280,7 @@ class LLMClient:
         system_prompt: Optional[str] = None,
         max_tokens: int = 2000,
         temperature: float = 0.1,
+        thinking: bool = False,
     ) -> str:
         """
         同步补全（单轮对话）
@@ -257,9 +290,7 @@ class LLMClient:
             system_prompt: 系统提示
             max_tokens: 最大 token 数
             temperature: 温度参数
-
-        Returns:
-            LLM 生成的文本
+            thinking: 是否开启思考模式（工具调用默认关闭）
         """
         messages: List[Dict[str, str]] = []
         if system_prompt:
@@ -271,7 +302,23 @@ class LLMClient:
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                thinking=thinking,
             )
+            # 记录思考过程
+            reasoning = self._provider_impl.extract_reasoning(response)
+            if reasoning:
+                logger.info(
+                    f"[llm-reasoning] {len(reasoning)}chars: {reasoning[:500]}"
+                    f"{'…' if len(reasoning) > 500 else ''}"
+                )
+            else:
+                # 调试：检查消息级别是否有其他字段
+                _msg = response.get("choices", [{}])[0].get("message", {})
+                logger.info(
+                    f"[llm-debug] no reasoning_content, "
+                    f"msg_keys={list(_msg.keys())}, "
+                    f"content_len={len(_msg.get('content', '') or '')}"
+                )
             return self._provider_impl.extract_content(response)
 
         except RetryError as e:
@@ -378,6 +425,7 @@ class LLMClient:
         messages: List[Dict[str, str]],
         max_tokens: int = 2000,
         temperature: float = 0.1,
+        thinking: bool = False,
     ) -> str:
         """
         多轮对话
@@ -386,16 +434,22 @@ class LLMClient:
             messages: 消息列表 [{"role": "user", "content": "..."}]
             max_tokens: 最大 token 数
             temperature: 温度参数
-
-        Returns:
-            LLM 生成的文本
+            thinking: 是否开启思考模式（工具调用默认关闭）
         """
         try:
             response = await self._make_request(
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                thinking=thinking,
             )
+            # 记录思考过程
+            reasoning = self._provider_impl.extract_reasoning(response)
+            if reasoning:
+                logger.info(
+                    f"[llm-reasoning] {len(reasoning)}chars: {reasoning[:500]}"
+                    f"{'…' if len(reasoning) > 500 else ''}"
+                )
             return self._provider_impl.extract_content(response)
 
         except RetryError as e:
@@ -411,8 +465,9 @@ class LLMClient:
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
-        max_tokens: int = 2000,
+        max_tokens: int = 8000,
         temperature: float = 0.1,
+        thinking: Optional[bool] = None,
     ):
         """
         流式补全 — 开启 stream:true，逐 token yield
@@ -425,6 +480,8 @@ class LLMClient:
         注意：流式 SSE 无法在已开始产出 token 后安全重试（会导致重复输出），
         因此仅在连接建立阶段（无 token 产出时）尝试重试，最多 3 次。
         """
+        if thinking is None:
+            thinking = self._thinking_default
         messages: List[Dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -433,11 +490,14 @@ class LLMClient:
         payload = self._provider_impl.build_payload(
             model=self.model, messages=messages,
             max_tokens=max_tokens, temperature=temperature, stream=True,
+            reasoning_effort=self.reasoning_effort, thinking=thinking,
         )
 
         t_stream_start = time.perf_counter()
         has_yielded = False
         last_error = None
+        reasoning_parts: list[str] = []
+        _debug_first_delta = True
         for attempt in range(3):
             try:
                 client = await self._get_client()
@@ -462,8 +522,19 @@ class LLMClient:
                                 choices = chunk.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
-                                    # 优先取 content，思考模式下取 reasoning_content
-                                    content = delta.get("content") or delta.get("reasoning_content", "")
+                                    # 调试：首 chunk 打印 delta 所有字段名
+                                    if _debug_first_delta:
+                                        _debug_first_delta = False
+                                        logger.info(
+                                            f"[llm-stream-debug] first_delta_keys={list(delta.keys())} "
+                                            f"sample={str(delta)[:300]}"
+                                        )
+                                    # 思考内容：只记录不输出
+                                    reasoning_token = delta.get("reasoning_content", "")
+                                    if reasoning_token:
+                                        reasoning_parts.append(reasoning_token)
+                                    # 正式回复内容：输出给调用方
+                                    content = delta.get("content", "")
                                     if content:
                                         if t_first_content is None:
                                             t_first_content = time.perf_counter()
@@ -472,6 +543,14 @@ class LLMClient:
                                         yield content
                             except (json.JSONDecodeError, KeyError, IndexError):
                                 continue
+                    # 流正常结束，记录思考过程
+                    if reasoning_parts:
+                        full_reasoning = "".join(reasoning_parts)
+                        logger.info(
+                            f"[llm-reasoning-stream] {len(full_reasoning)}chars: "
+                            f"{full_reasoning[:500]}"
+                            f"{'…' if len(full_reasoning) > 500 else ''}"
+                        )
                 return  # 正常结束
             except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException) as e:
                 last_error = e

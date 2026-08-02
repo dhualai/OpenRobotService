@@ -4,10 +4,13 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Loading } from 'tdesign-mobile-react';
 import { fetchTicketsByStatus, type TicketListItem } from '@/api/dashboard';
 import { TICKET_STATUS_MAP } from '@/shared/constants/dashboard';
+import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
 
 export default function TicketStatusDetail() {
   const { status = '' } = useParams<{ status: string }>();
   const navigate = useNavigate();
+  const { projectIds, hasPermission } = useAuthStore();
+  const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
   const [items, setItems] = useState<TicketListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -16,11 +19,11 @@ export default function TicketStatusDetail() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = await fetchTicketsByStatus(status);
+    const res = await fetchTicketsByStatus(status, canViewAll ? undefined : projectIds);
     setItems(res.items);
     setTotal(res.total);
     setLoading(false);
-  }, [status]);
+  }, [status, projectIds, canViewAll]);
 
   useEffect(() => { load(); }, [load]);
 
