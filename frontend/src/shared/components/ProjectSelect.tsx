@@ -24,6 +24,7 @@ export default function ProjectSelect({
   onChange,
   placeholder = '请选择绑定项目',
   title = '选择项目',
+  nameHint = null,
 }: Props) {
   const [visible, setVisible] = useState(false);
   const [projects, setProjects] = useState<ProjectItem[]>(projectCache || []);
