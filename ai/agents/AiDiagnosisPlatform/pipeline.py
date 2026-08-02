@@ -1775,31 +1775,32 @@ class AiDiagnosisPlatform:
                 raw_tokens.append(raw)  # 完整 raw 供 _parse_agent_output 解析
                 if not _suppress_msg and msg_body:
                     for ch in msg_body:
-                        _msg_buf.append(ch)
+                        _msg_yielded = True
+                        yield {"event": "token", "data": ch}
             else:
                 async for token in _stream(prompt=prompt, max_tokens=8000, temperature=0.5):
                     raw_tokens.append(token)
-
                     if not _json_done:
                         _buf += token
                         msg_start = _find_json_end(_buf)
                         if msg_start >= 0:
                             _json_done = True
+                            _suppress_msg = self._suppress_doomed_submit(state, _buf[:msg_start])
                             tail = _buf[msg_start:]
-                            if tail:
+                            # 严格流式：token 直接 yield，不进 _msg_buf 缓冲（避免短消息积攒到流结束才一次性吐→"突然一大片"）
+                            if tail and not _suppress_msg:
                                 if t_first_llm is None:
                                     t_first_llm = time.perf_counter()
                                     t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
-                                _msg_buf.append(tail)
+                                _msg_yielded = True
+                                yield {"event": "token", "data": tail}
                     else:
-                        if t_first_llm is None:
-                            t_first_llm = time.perf_counter()
-                            t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
-                        _msg_buf.append(token)
-                    # 缓冲超阈值 → 切换为流式输出（诊断长消息不受影响）
-                    if len("".join(_msg_buf)) > _MSG_BUF_FLUSH:
-                        for ev in _flush_msg_buf():
-                            yield ev
+                        if not _suppress_msg:
+                            if t_first_llm is None:
+                                t_first_llm = time.perf_counter()
+                                t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
+                            _msg_yielded = True
+                            yield {"event": "token", "data": token}
         except (AITimeoutError, ServiceUnavailableError, Exception) as e:
             logger.error(
                 f"[stream] LLM流式调用失败: type={type(e).__name__}, "
