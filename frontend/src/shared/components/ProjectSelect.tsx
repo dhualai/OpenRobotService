@@ -93,8 +93,9 @@ export default function ProjectSelect({
       <button type="button" className="user-select__trigger" onClick={() => setVisible(true)}>
         {selected ? (
           <span className="user-select__trigger-text">{selected.name}</span>
-        ) : value ? (
-          <span className="user-select__trigger-text">{value}</span>
+        ) : value || nameHint ? (
+          // selected 匹配不到（项目不在名下/列表未加载完）时，优先显示 AI 给的项目名称而非 project_id 编码
+          <span className="user-select__trigger-text">{nameHint || value}</span>
         ) : (
           <span className="user-select__trigger-placeholder">{placeholder}</span>
         )}
