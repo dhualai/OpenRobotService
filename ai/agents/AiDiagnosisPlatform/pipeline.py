@@ -892,10 +892,22 @@ class AiDiagnosisPlatform:
         # except Exception as e:
         #     logger.error(f"[persist] MySQL 写入失败: session={session_id[:16]}, error={e}", exc_info=True)
 
-        # 第2轮对话结束后生成标题（fire-and-forget 方式，不阻塞结果返回）
+        # 第2轮及以后对话结束生成标题（fire-and-forget，不阻塞结果返回）。
+        # 门槛放宽到 >=2：防第2轮因 LLM 抖动未生成时，后续轮还能补上；
+        # 防重复靠 memory.metadata["title"]（_generate_title 内部写入，"title" not in 判定拦住重复生成）。
         title = ""
-        if state.diagnosis_rounds == 2 and "title" not in memory.metadata:
+        if state.diagnosis_rounds >= 2 and "title" not in memory.metadata:
+            logger.info(f"[title] 尝试生成: round={state.diagnosis_rounds}, turns={len(memory.turns)}")
             title = await _generate_title(self._llm_client, memory)
+            logger.info(f"[title] 生成结果: {title!r}")
+            # 同步到 DB：会话列表 / 切回 / 刷新都读 DB title，否则始终是默认「新会话」
+            if title:
+                try:
+                    from ai.core.conversation_store import rename_conversation
+                    rename_conversation(memory.session_id, title)
+                    logger.info(f"[title] DB 已同步: session={memory.session_id}, title={title}")
+                except Exception as e:
+                    logger.warning(f"[title] DB 同步失败: {e}")
 
         return {
             "type": "diagnosis",
@@ -1313,12 +1325,17 @@ class AiDiagnosisPlatform:
         _reset_state_after_submit(agent_state, memory, ticket, db_id)
         await self._memory_manager.save_memory(memory)
 
-        # ---- 加入待派单池（后台 Worker 定时扫描并派单）----
+        # ---- 加入待派单池 + 通知 Worker 立即派单 ----
         try:
             await self._memory_manager.add_pending_ticket(session_id)
             logger.info(f"工单已加入待派单池: session_id={session_id}, db_id={db_id}")
         except Exception as e:
             logger.warning(f"加入待派单池失败: session_id={session_id}, error={e}")
+        try:
+            await self._memory_manager.publish_new_ticket(db_id)
+            logger.info(f"已发布派单事件: db_id={db_id}")
+        except Exception as e:
+            logger.warning(f"发布派单事件失败: db_id={db_id}, error={e}")
 
         return {
             "type": "ticket",
@@ -1426,6 +1443,10 @@ class AiDiagnosisPlatform:
 
         try:
             await self._memory_manager.add_pending_ticket(session_id)
+        except Exception:
+            pass
+        try:
+            await self._memory_manager.publish_new_ticket(record.id)
         except Exception:
             pass
 

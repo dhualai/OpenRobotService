@@ -6,6 +6,7 @@ import { Loading, Toast, Input, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
 import ProjectImport from './ProjectImport';
 import ProjectAuth from './ProjectAuth';
 import ProjectPeople from './ProjectPeople';
@@ -34,6 +35,8 @@ const CollapsibleSection = ({ icon, title, open, onToggle, children }: { icon: s
 export default function ProjectManage() {
   const rootRef = useRef<HTMLDivElement>(null);
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  const { hasPermission } = useAuthStore();
+  const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
 
   // 共享状态：当前选中的项目（供授权、人员关联两个子模块使用）
   const [projects, setProjects] = useState<Project[]>([]);
@@ -49,13 +52,13 @@ export default function ProjectManage() {
   const [subLicensesOpen, setSubLicensesOpen] = useState(true);
   const [subPeopleOpen, setSubPeopleOpen] = useState(true);
 
-  // 加载项目列表
+  // 加载项目列表：canViewAll 时获取全部项目，否则仅当前用户关联项目（/projects/me 按 token 过滤）
   useEffect(() => {
-    request('/projects/')
+    request(canViewAll ? '/projects/' : '/projects/me')
       .then((data) => setProjects(normalizeList<Project>(data)))
       .catch((err) => Toast({ message: `加载项目失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setProjectLoading(false));
-  }, []);
+  }, [canViewAll]);
 
   // 进入页面时滚动到最上端（延迟到下一帧，确保布局已完成）
   useEffect(() => {

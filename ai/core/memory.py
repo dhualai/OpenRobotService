@@ -260,6 +260,16 @@ class MemoryManager:
             return list(await client.smembers("usp:pending_tickets"))
         return list(self._fallback_pending)
 
+    async def publish_new_ticket(self, task_id: int) -> None:
+        """发布新工单事件到 Redis pub/sub 通道，通知 Worker 立即派单。
+
+        仅发布 task_id 整数，Worker 收到后按 ID 查库补全工单信息再派单，
+        避免在消息体中传输可能过期的工单快照。
+        """
+        client = await self._ensure_redis()
+        if client:
+            await client.publish("usp:new_ticket", str(task_id))
+
     async def health_check(self) -> bool:
         client = await self._ensure_redis()
         return client is not None

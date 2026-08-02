@@ -118,6 +118,13 @@ export default function UserManage() {
   const [globalRoleEditVisible, setGlobalRoleEditVisible] = useState(false);
   const [globalRoleChecked, setGlobalRoleChecked] = useState<Set<string>>(new Set());
   const [globalRoleSaving, setGlobalRoleSaving] = useState(false);
+  // 项目角色（role_type='project'）+ 全部项目列表，用于项目角色编辑弹窗
+  const [projectRoles, setProjectRoles] = useState<{ id: string; name: string }[]>([]);
+  const [allProjects, setAllProjects] = useState<{ id: string; name: string }[]>([]);
+  const [projectRoleEditVisible, setProjectRoleEditVisible] = useState(false);
+  const [projectRoleChecked, setProjectRoleChecked] = useState<Set<string>>(new Set());
+  const [projectRoleSelProject, setProjectRoleSelProject] = useState<string>('');
+  const [projectRoleSaving, setProjectRoleSaving] = useState(false);
 
   const request = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
 
@@ -152,16 +159,24 @@ export default function UserManage() {
         ]);
         const rMap = new Map<string, string>();
         const sysRoles: { id: string; name: string }[] = [];
+        const projRoles: { id: string; name: string }[] = [];
         normalizeList<{ id: string; name: string; role_type?: string }>(rolesData).forEach((r) => {
           rMap.set(r.id, r.name);
           if (r.role_type === 'system') sysRoles.push({ id: r.id, name: r.name });
+          if (r.role_type === 'project') projRoles.push({ id: r.id, name: r.name });
         });
         setSystemRoles(sysRoles);
+        setProjectRoles(projRoles);
         const pMap = new Map<string, string>();
+        const projList: { id: string; name: string }[] = [];
         normalizeList<{ id?: string; project_code: string; name: string }>(projectsData).forEach((p) => {
           pMap.set(p.project_code, p.name);
-          if (p.id) pMap.set(p.id, p.name);
+          if (p.id) {
+            pMap.set(p.id, p.name);
+            projList.push({ id: p.id, name: p.name });
+          }
         });
+        setAllProjects(projList);
         const permMap = new Map<string, string>();
         normalizeList<{ id: string; code: string; name: string }>(permsData).forEach((p) => permMap.set(p.code, p.name));
         setRoleNameMap(rMap);
@@ -306,6 +321,72 @@ export default function UserManage() {
       Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setGlobalRoleSaving(false);
+    }
+  };
+
+  // 打开项目角色编辑弹窗：直接编辑指定项目的角色，预勾选该项目已有角色
+  const openProjectRoleEditor = (user: User, projectId: string) => {
+    setProjectRoleSelProject(projectId);
+    const existingRoles = Object.keys(user.projectPermissions?.[projectId] || {});
+    setProjectRoleChecked(new Set(existingRoles));
+    setProjectRoleEditVisible(true);
+  };
+
+  // 打开项目角色添加弹窗：选择新项目后勾选角色
+  const openProjectRoleEditorNew = () => {
+    setProjectRoleSelProject('');
+    setProjectRoleChecked(new Set());
+    setProjectRoleEditVisible(true);
+  };
+
+  // 项目选择切换时（仅添加模式），更新勾选状态为该项目的现有角色
+  const handleProjectRoleProjectChange = (projectId: string) => {
+    setProjectRoleSelProject(projectId);
+    const existingRoles = Object.keys(detailUser?.projectPermissions?.[projectId] || {});
+    setProjectRoleChecked(new Set(existingRoles));
+  };
+
+  // 保存项目角色：对比差集，新增走 assign-roles（project_id=实际项目ID），移除走 DELETE
+  const handleSaveProjectRoles = async () => {
+    if (!detailUser || !projectRoleSelProject) return;
+    const { username, id: userId } = detailUser;
+    const before = new Set(Object.keys(detailUser.projectPermissions?.[projectRoleSelProject] || {}));
+    const added = Array.from(projectRoleChecked).filter((rid) => !before.has(rid));
+    const removed = Array.from(before).filter((rid) => !projectRoleChecked.has(rid));
+    if (added.length === 0 && removed.length === 0) {
+      setProjectRoleEditVisible(false);
+      return;
+    }
+    setProjectRoleSaving(true);
+    try {
+      const tasks: Promise<unknown>[] = [];
+      if (added.length > 0) {
+        tasks.push(
+          request('/users/project/assign-roles', {
+            method: 'POST',
+            body: JSON.stringify({
+              project_id: projectRoleSelProject,
+              organization_ids: added.map((rid) => ({ user_name: username, role_id: rid })),
+            }),
+          }),
+        );
+      }
+      removed.forEach((rid) => {
+        tasks.push(
+          request(
+            `/users/project/role?user_id=${encodeURIComponent(userId)}&project_id=${encodeURIComponent(projectRoleSelProject)}&role_id=${encodeURIComponent(rid)}`,
+            { method: 'DELETE' },
+          ),
+        );
+      });
+      await Promise.all(tasks);
+      Toast({ message: '项目角色已更新', theme: 'success' });
+      setProjectRoleEditVisible(false);
+      await reloadDetail(username);
+    } catch (err) {
+      Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setProjectRoleSaving(false);
     }
   };
 
@@ -947,46 +1028,76 @@ export default function UserManage() {
                 );
               })()}
 
-              {detailUser.projectPermissions && Object.keys(detailUser.projectPermissions).length > 0 && (
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: '#333', marginBottom: 8 }}>
-                    📂 项目角色
-                  </div>
-                  {Object.entries(detailUser.projectPermissions).map(([projectId, rolesMap]) => (
-                    <div
-                      key={projectId}
-                      style={{
-                        border: '1px solid #e6f7ff',
-                        borderRadius: 6,
-                        padding: '8px 10px',
-                        marginBottom: 6,
-                        background: '#f0faff',
-                      }}
-                    >
-                      <span style={{ fontSize: 12, fontWeight: 500, color: '#0050b3' }}>
-                        项目 {projectNameMap.get(projectId) || projectId}
-                      </span>
-                      <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                        {Object.entries(rolesMap).map(([roleKey, perms]) => (
-                          <span
-                            key={roleKey}
-                            style={{
-                              fontSize: 11,
-                              padding: '2px 6px',
-                              borderRadius: 3,
-                              background: '#fff',
-                              color: '#0050b3',
-                              marginRight: 4,
-                            }}
-                          >
-                            {roleNameMap.get(roleKey) || roleKey}
-                          </span>
-                        ))}
-                      </div>
+              {(() => {
+                const projectPermCount = detailUser.projectPermissions ? Object.keys(detailUser.projectPermissions).length : 0;
+                if (projectPermCount === 0 && !canManageSystemRoles) return null;
+                return (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: '#333' }}>📂 项目角色</div>
+                      {canManageSystemRoles && (
+                        <Button
+                          size="small"
+                          variant="outline"
+                          theme="primary"
+                          onClick={openProjectRoleEditorNew}
+                        >
+                          + 添加项目
+                        </Button>
+                      )}
                     </div>
-                  ))}
-                </div>
-              )}
+                    {projectPermCount > 0 ? (
+                      Object.entries(detailUser.projectPermissions!).map(([projectId, rolesMap]) => (
+                        <div
+                          key={projectId}
+                          style={{
+                            border: '1px solid #e6f7ff',
+                            borderRadius: 6,
+                            padding: '8px 10px',
+                            marginBottom: 6,
+                            background: '#f0faff',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <span style={{ fontSize: 12, fontWeight: 500, color: '#0050b3' }}>
+                              项目 {projectNameMap.get(projectId) || projectId}
+                            </span>
+                            {canManageSystemRoles && (
+                              <Button
+                                size="small"
+                                variant="outline"
+                                theme="primary"
+                                onClick={() => openProjectRoleEditor(detailUser, projectId)}
+                              >
+                                编辑
+                              </Button>
+                            )}
+                          </div>
+                          <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                            {Object.entries(rolesMap).map(([roleKey]) => (
+                              <span
+                                key={roleKey}
+                                style={{
+                                  fontSize: 11,
+                                  padding: '2px 6px',
+                                  borderRadius: 3,
+                                  background: '#fff',
+                                  color: '#0050b3',
+                                  marginRight: 4,
+                                }}
+                              >
+                                {roleNameMap.get(roleKey) || roleKey}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <span style={{ fontSize: 12, color: '#ccc' }}>暂无项目角色</span>
+                    )}
+                  </div>
+                );
+              })()}
 
               {detailUser.permissions && detailUser.permissions.length > 0 && (
                 <div style={{ marginBottom: 16 }}>
@@ -1097,6 +1208,75 @@ export default function UserManage() {
             style={{ marginTop: 16 }}
             loading={globalRoleSaving}
             onClick={handleSaveGlobalRoles}
+          >
+            保存
+          </Button>
+        </div>
+      </Popup>
+
+      {/* 项目角色编辑弹窗：编辑已有项目角色（直接显示角色勾选），或添加新项目关联（需先选项目） */}
+      <Popup visible={projectRoleEditVisible} onClose={() => setProjectRoleEditVisible(false)} placement="bottom" showOverlay>
+        <div style={{ padding: 20, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
+          <h4 style={{ marginBottom: 4 }}>
+            编辑项目角色：{detailUser?.name || detailUser?.username}
+          </h4>
+          {projectRoleSelProject ? (
+            <p style={{ fontSize: 13, color: '#0050b3', marginBottom: 12 }}>
+              项目：{projectNameMap.get(projectRoleSelProject) || projectRoleSelProject}
+            </p>
+          ) : (
+            <>
+              <p style={{ fontSize: 12, color: '#999', marginBottom: 12 }}>
+                选择项目后勾选角色，取消勾选即移除
+              </p>
+              <select
+                value={projectRoleSelProject}
+                onChange={(e) => handleProjectRoleProjectChange(e.target.value)}
+                style={{ marginBottom: 12, padding: '8px', borderRadius: 6, border: '1px solid #dcdcdc', fontSize: 14 }}
+              >
+                <option value="">请选择项目</option>
+                {allProjects.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </>
+          )}
+          {/* 项目角色勾选列表 */}
+          <div style={{ overflow: 'auto', flex: 1 }}>
+            {projectRoles.length === 0 && (
+              <div style={{ textAlign: 'center', padding: 30, color: '#999' }}>暂无可分配的项目角色</div>
+            )}
+            {projectRoles.map((r) => {
+              const checked = projectRoleChecked.has(r.id);
+              return (
+                <div
+                  key={r.id}
+                  onClick={() =>
+                    setProjectRoleChecked((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(r.id)) next.delete(r.id);
+                      else next.add(r.id);
+                      return next;
+                    })
+                  }
+                  style={{
+                    padding: '10px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 8, fontSize: 14,
+                  }}
+                >
+                  <CheckDot checked={checked} />
+                  {r.name}
+                </div>
+              );
+            })}
+          </div>
+          <Button
+            theme="primary"
+            block
+            style={{ marginTop: 16 }}
+            loading={projectRoleSaving}
+            disabled={!projectRoleSelProject}
+            onClick={handleSaveProjectRoles}
           >
             保存
           </Button>

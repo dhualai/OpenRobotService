@@ -5,6 +5,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
 
 interface TaskExecutionStats {
   total_tasks: number;
@@ -50,18 +51,21 @@ export default function ProjectProgress() {
   const [loading, setLoading] = useState(true);
   const [keyword, setKeyword] = useState('');
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  const { hasPermission } = useAuthStore();
+  const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
 
   const fetchProjects = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await request<ProjectItem[]>('/projects/?include_analysis=true');
+      const url = canViewAll ? '/projects/?include_analysis=true' : '/projects/me?include_analysis=true';
+      const data = await request<ProjectItem[]>(url);
       setProjects(normalizeList<ProjectItem>(data));
     } catch (err) {
       Toast({ message: String(err), theme: 'error' });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [canViewAll]);
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
 

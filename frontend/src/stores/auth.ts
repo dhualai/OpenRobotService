@@ -35,6 +35,9 @@ export function isManualLogout(): boolean {
   }
 }
 
+/** 拥有此权限的用户可查看全部项目和工单数据，不受「仅看自己关联项目」限制 */
+export const PERMISSION_VIEW_ALL = 'backend:project:all';
+
 export interface AuthState {
   isLoggedIn: boolean;
   username: string;
