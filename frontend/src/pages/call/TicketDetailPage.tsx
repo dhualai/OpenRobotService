@@ -55,6 +55,8 @@ interface AiTicket {
   // 项目（AI 接口返回 project；DB TicketResponse 返回 project_name，展示以 DB 为准）
   project?: string;
   project_name?: string;
+  // 项目编码（DB TicketResponse 返回，编辑回显与提交用）
+  project_id?: string;
   // 类型专属
   location?: string; robot_type?: string; fault_code?: string; special_notes?: string;
   steps_to_reproduce?: string; expected_result?: string; actual_result?: string; severity?: string; version?: string;
@@ -97,7 +99,7 @@ export default function TicketDetailPage() {
         if (!silent) setTicket(aiTicket);
         if (aiTicket.ticket_id) {
           try {
-            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; created_at?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
+            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
             // 用 DB 的 status 覆盖 AI 的 status：AI(qaGetTicket) 返回 dispatched/escalated 等 AI 内部状态，
             // DB(tasks 表) 是 new/in_progress 等标准枚举。列表(qaListTickets)也来自 DB，
             // 覆盖后详情页按钮置灰(canUrgeTicket/canReportTicket)与列表一致。
@@ -120,6 +122,8 @@ export default function TicketDetailPage() {
               type: taskDetail.ticket_type || prev.type,
               contact: taskDetail.customer || prev.contact,
               project_name: taskDetail.project_name || prev.project_name || prev.project,
+              // 项目编码以 DB 为准（编辑回显与提交用），AI 接口不返回该字段
+              project_id: taskDetail.project_id || prev.project_id,
             } : prev);
             setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
           } catch { /* 评论加载失败不阻塞主流程 */ }
