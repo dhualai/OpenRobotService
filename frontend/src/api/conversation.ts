@@ -38,18 +38,19 @@ export interface Conversation {
   messages?: ConvMessage[];
 }
 
-/** 读取会话 metadata_ 里的 ai_session_id（恢复 AI 上下文用） */
-export function readAiSessionId(conv: { metadata_: string | null }): string {
-  if (!conv.metadata_) return '';
-  try {
-    // 兼容后端 safe_json_dumps 对已 stringify 的 metadata_ 再次 dumps 导致的「双重 JSON 编码」：
-    // parse 一次后若拿到的还是字符串，需再 parse 一次才能得到对象。后端根治前以此兜底。
-    let obj = JSON.parse(conv.metadata_);
-    if (typeof obj === 'string') obj = JSON.parse(obj);
-    return obj?.ai_session_id || '';
-  } catch {
-    return '';
+/** 读取会话的 ai_session_id（恢复 AI 上下文用）。
+ *  优先从 metadata_.ai_session_id 读；兜底 service_ticket_id（createConversation 已把 aiSessionId 写入）。 */
+export function readAiSessionId(conv: { metadata_: string | null; service_ticket_id?: string | null }): string {
+  if (conv.metadata_) {
+    try {
+      // 兼容后端 safe_json_dumps 对已 stringify 的 metadata_ 再次 dumps 导致的「双重 JSON 编码」：
+      // parse 一次后若拿到的还是字符串，需再 parse 一次才能得到对象。后端根治前以此兜底。
+      let obj = JSON.parse(conv.metadata_);
+      if (typeof obj === 'string') obj = JSON.parse(obj);
+      if (obj?.ai_session_id) return obj.ai_session_id;
+    } catch { /* fallthrough 到 service_ticket_id 兜底 */ }
   }
+  return conv.service_ticket_id || '';
 }
 
 /** 创建会话 */
@@ -60,7 +61,7 @@ export const createConversation = (params: { title: string; scene: ChatScene; ai
     body: JSON.stringify({
       title: params.title,
       user_id: '', // 后端按 token 覆盖
-      service_ticket_id: '', // 纯聊天无关联工单
+      service_ticket_id: params.aiSessionId || '', // 纯聊天会话用 aiSessionId 占位，建立会话↔session 映射（rename_conversation 按此查）
       scene_type: SCENE_TO_DB[params.scene],
       metadata_: params.aiSessionId ? JSON.stringify({ ai_session_id: params.aiSessionId }) : null,
     }),
