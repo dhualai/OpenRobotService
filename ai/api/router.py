@@ -806,7 +806,7 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
 # ============================================================
 # 任务 Agent (prefix /api/ai/task)
 # ============================================================
-task_agent_router = APIRouter(prefix="/api/ai/task", tags=["小U"])
+task_agent_router = APIRouter(prefix="/api/ai/task", tags=["U老师"])
 
 
 
@@ -818,7 +818,7 @@ class TaskSubmitAPIRequest(BaseModel):
 
 
 class SummarizeRequest(BaseModel):
-    """后端触发摘要扫描（无参数 — AI 模块自动扫描所有活跃工单）"""
+    """后端触发摘要扫描（无参数 — U老师 自动扫描所有活跃工单）"""
 
 
 # ── v3.0 端点 ──
@@ -829,7 +829,7 @@ class TaskDiagnoseRequest(BaseModel):
 
 class TaskDiscussRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
-    query: str = Field(..., description="用户问题（如 @AI 帮我分析这个日志）")
+    query: str = Field(..., description="用户问题（如 @U老师 帮我分析这个日志）")
     context: dict = Field(default_factory=dict, description="讨论上下文 {recent_comments: [{author, content}]}")
 
 
@@ -855,9 +855,9 @@ async def task_diagnose(body: TaskDiagnoseRequest) -> dict:
         return {"code": 1, "message": str(e)}
 
 
-@task_agent_router.post("/discuss", summary="@AI 讨论")
+@task_agent_router.post("/discuss", summary="@U老师 讨论")
 async def task_discuss(body: TaskDiscussRequest) -> dict:
-    """@AI 讨论回复（带讨论上下文，按需调日志子Agent）→ 写 task_comments"""
+    """@U老师 讨论回复（带讨论上下文，按需调日志子Agent）→ 写 task_comments"""
     import logging, time
     logger = logging.getLogger("TASK_AGENT")
     t_start = time.perf_counter()
@@ -885,7 +885,7 @@ async def task_discuss(body: TaskDiscussRequest) -> dict:
 
 @task_agent_router.post("/summarize", summary="讨论摘要")
 async def task_summarize(body: SummarizeRequest = SummarizeRequest()) -> dict:
-    """后端触发 → AI 模块自动扫描所有活跃工单 → 逐条生成摘要 → 写 task_comments"""
+    """后端触发 → U老师 自动扫描所有活跃工单 → 逐条生成摘要 → 写 task_comments"""
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
