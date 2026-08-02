@@ -254,7 +254,7 @@ class AiDiagnosisPlatform:
     async def run(request: DiagnosisRequest) → dict          # 非流式入口
     async def run_stream(request: DiagnosisRequest) → SSE    # 流式入口
     async def submit(session_id: str) → dict                  # 生成工单 + 写 MySQL + 智能派单
-    async def get_ticket(session_id: str) → dict              # 只读获取工单数据
+    async def get_ticket(session_id: str) → dict              # 只读获取工单数据（走 LLM，仅历史遗留方法，路由已不调用）
 ```
 
 ### 4.2 请求/状态数据结构
@@ -696,7 +696,7 @@ POST /api/ai/analysis/analyze
 | POST | `/api/ai/qa/ask` | 非流式问答（含诊断追问与提单） |
 | POST | `/api/ai/qa/ask/stream` | SSE 流式问答 |
 | POST | `/api/ai/qa/submit` | 生成工单并存库 |
-| GET | `/api/ai/qa/ticket?session_id=` | 获取工单数据 |
+| GET | `/api/ai/qa/ticket?session_id=` | 获取工单数据（已提交工单走 DB 快照，不跑 LLM） |
 | POST | `/api/ai/qa/ticket/ack` | 派单确认回执 |
 | POST | `/api/ai/qa/upload` | 上传附件 |
 | GET | `/api/ai/qa/health` | 健康检查 |
