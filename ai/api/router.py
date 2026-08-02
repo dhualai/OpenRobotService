@@ -806,7 +806,7 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
 # ============================================================
 # 任务 Agent (prefix /api/ai/task)
 # ============================================================
-task_agent_router = APIRouter(prefix="/api/ai/task", tags=["小U"])
+task_agent_router = APIRouter(prefix="/api/ai/task", tags=["U老师"])
 
 
 
@@ -818,7 +818,7 @@ class TaskSubmitAPIRequest(BaseModel):
 
 
 class SummarizeRequest(BaseModel):
-    """后端触发摘要扫描（无参数 — AI 模块自动扫描所有活跃工单）"""
+    """后端触发摘要扫描（无参数 — U老师 自动扫描所有活跃工单）"""
 
 
 # ── v3.0 端点 ──
@@ -829,25 +829,40 @@ class TaskDiagnoseRequest(BaseModel):
 
 class TaskDiscussRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
-    query: str = Field(..., description="用户问题（如 @AI 帮我分析这个日志）")
+    query: str = Field(..., description="用户问题（如 @U老师 帮我分析这个日志）")
     context: dict = Field(default_factory=dict, description="讨论上下文 {recent_comments: [{author, content}]}")
 
 
 @task_agent_router.post("/diagnose", summary="诊断报告（[帮我分析] 按钮）")
 async def task_diagnose(body: TaskDiagnoseRequest) -> dict:
     """全能力诊断 → 即时返回报告（不存库）"""
+    import logging, time
+    logger = logging.getLogger("TASK_AGENT")
+    t_start = time.perf_counter()
+    logger.info(f"[diagnose] 入口: task_id={body.task_id}")
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
         result = await agent.diagnose(task_id=body.task_id)
+        elapsed = (time.perf_counter() - t_start) * 1000
+        report_len = len(result.get("report_md", ""))
+        logger.info(f"[diagnose] 完成: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
+                    f"report_len={report_len}, confidence={result.get('confidence', 0):.0%}")
         return {"code": 0, "data": result}
     except Exception as e:
+        elapsed = (time.perf_counter() - t_start) * 1000
+        logger.error(f"[diagnose] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms, error={e}")
         return {"code": 1, "message": str(e)}
 
 
-@task_agent_router.post("/discuss", summary="@AI 讨论")
+@task_agent_router.post("/discuss", summary="@U老师 讨论")
 async def task_discuss(body: TaskDiscussRequest) -> dict:
-    """@AI 讨论回复（带讨论上下文，按需调日志子Agent）→ 写 task_comments"""
+    """@U老师 讨论回复（带讨论上下文，按需调日志子Agent）→ 写 task_comments"""
+    import logging, time
+    logger = logging.getLogger("TASK_AGENT")
+    t_start = time.perf_counter()
+    query_preview = (body.query or "")[:60]
+    logger.info(f"[discuss] 入口: task_id={body.task_id}, query={query_preview}")
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
@@ -856,14 +871,21 @@ async def task_discuss(body: TaskDiscussRequest) -> dict:
             query=body.query,
             context=body.context,
         )
+        elapsed = (time.perf_counter() - t_start) * 1000
+        reply_len = len(result.get("reply", ""))
+        logger.info(f"[discuss] 完成: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
+                    f"reply_len={reply_len}")
         return {"code": 0, "data": result}
     except Exception as e:
+        elapsed = (time.perf_counter() - t_start) * 1000
+        logger.error(f"[discuss] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
+                     f"query={query_preview}, error={e}")
         return {"code": 1, "message": str(e)}
 
 
 @task_agent_router.post("/summarize", summary="讨论摘要")
 async def task_summarize(body: SummarizeRequest = SummarizeRequest()) -> dict:
-    """后端触发 → AI 模块自动扫描所有活跃工单 → 逐条生成摘要 → 写 task_comments"""
+    """后端触发 → U老师 自动扫描所有活跃工单 → 逐条生成摘要 → 写 task_comments"""
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()

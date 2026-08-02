@@ -34,7 +34,8 @@ class TestStateTransitions:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_answer_resolves_session(self, platform, make_state, make_request):
-        """LLM 返回 action=answer → phase 变为 resolved"""
+        """LLM 返回 action=answer → phase 保持 diagnosing（answer 不再设 resolved；
+        resolved 只由 _reset_state_after_submit 在提单成功后设置，避免与诊断完成语义混淆）"""
         state = make_state(phase="idle")
         request = make_request(query="怎么处理激光报错")
         # 清除 side_effect 再设 return_value（side_effect 优先级更高）
@@ -55,7 +56,7 @@ class TestStateTransitions:
         result = await platform._agent_think(request, state, memory)
 
         assert result["action"] == "answer"
-        assert state.phase == "resolved"
+        assert state.phase == "diagnosing"
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -118,7 +119,7 @@ class TestStateTransitions:
 
         # 不拦截：有新 problem_summary 时 _can_submit 返回 True
         assert result["action"] == "answer"
-        assert state.phase == "resolved"
+        assert state.phase == "diagnosing"  # answer 不再设 resolved（resolved 仅提单后设置）
 
 
 # ================================================================

@@ -62,6 +62,9 @@ DIAGNOSE_USER_TEMPLATE = """## 工单信息
 
 {fault_info}
 
+## 平台参考文档（部署配置 / 代码排查，仅服务号问题有内容）
+{platform_reference}
+
 ## 附件分析摘要
 {attachment_analysis}
 
@@ -201,6 +204,9 @@ USER_PROMPT_TEMPLATE = """## 工单信息
 诊断轮数: {rounds}
 
 {fault_info}
+
+## 平台参考文档（部署配置 / 代码排查，仅服务号平台问题有内容）
+{platform_reference}
 
 ## 排查树匹配的结论节点（根因 + 方案）
 {troubleshooting_conclusions}
