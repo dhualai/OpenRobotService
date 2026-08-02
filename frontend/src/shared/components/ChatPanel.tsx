@@ -2,7 +2,7 @@
 // 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
 import { memo, useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Textarea, Toast, Popup, Tag } from 'tdesign-mobile-react';
+import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
@@ -231,7 +231,10 @@ const MessageBubble = memo(function MessageBubble({
             )
           ) : (
             <div className="chat-bubble__typing" aria-label="AI 正在分析">
-              <span /><span /><span />
+              <Loading size="small" />
+              <span className="chat-bubble__typing-char">思</span>
+              <span className="chat-bubble__typing-char">考</span>
+              <span className="chat-bubble__typing-char">中</span>
             </div>
           )
         ) : (

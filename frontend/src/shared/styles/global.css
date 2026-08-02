@@ -985,25 +985,34 @@ html, body, #root {
 .detail-chat-attachment-img { max-width: 140px; max-height: 140px; border-radius: 6px; cursor: pointer; object-fit: cover; }
 .detail-chat-attachment-file { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; background: rgba(0,0,0,0.05); border-radius: 6px; font-size: 13px; cursor: pointer; }
 .detail-chat-attachment-file:hover { background: rgba(0,0,0,0.1); }
-/* AI 占位：呼吸点动画 */
+/* AI 占位：组件库 Loading 图标 + 「思考中」逐字跳动（简洁无卡片，纯黑加粗） */
 .chat-bubble__typing {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 6px 2px;
+  gap: 6px;
+  padding: 4px 2px;
+  color: #000; /* Loading 圆圈用 currentColor 继承纯黑 */
 }
-.chat-bubble__typing span {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #9aa4b2;
-  animation: chat-typing-bounce 1.2s infinite ease-in-out;
+/* TDesign Loading 圆圈：覆盖默认品牌色为纯黑（含 gradient/circular 内部） */
+.chat-bubble__typing .t-loading,
+.chat-bubble__typing .t-loading .t-loading__gradient,
+.chat-bubble__typing .t-loading .t-loading__spinner {
+  color: #000;
 }
-.chat-bubble__typing span:nth-child(2) { animation-delay: 0.15s; }
-.chat-bubble__typing span:nth-child(3) { animation-delay: 0.3s; }
-@keyframes chat-typing-bounce {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
-  30% { transform: translateY(-4px); opacity: 1; }
+/* 「思考中」逐字跳动：纯黑 + 轻微上下浮动，生动不刺眼 */
+.chat-bubble__typing .chat-bubble__typing-char {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  color: #000;
+  animation: typing-char-bounce 1.2s infinite ease-in-out;
+}
+.chat-bubble__typing .chat-bubble__typing-char:nth-of-type(1) { animation-delay: 0s; }
+.chat-bubble__typing .chat-bubble__typing-char:nth-of-type(2) { animation-delay: 0.15s; }
+.chat-bubble__typing .chat-bubble__typing-char:nth-of-type(3) { animation-delay: 0.3s; }
+@keyframes typing-char-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.7; }
+  30% { transform: translateY(-3px); opacity: 1; }
 }
 .chat-actions {
   display: flex;
