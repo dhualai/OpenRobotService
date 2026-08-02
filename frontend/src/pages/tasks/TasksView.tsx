@@ -98,6 +98,7 @@ export default function TasksView() {
 
   const { username, hasPermission, projectIds } = useAuthStore();
   const canManageTasks = hasPermission('frontend:develop');
+  const canViewAllTasks = hasPermission('frontend:task:all');
 
   // 从 URL 初始化筛选状态
   const initialFilter = useRef(parseFilterFromUrl(searchParams));
@@ -133,7 +134,34 @@ export default function TasksView() {
     try {
       let data;
       
-      if (relevanceFilter === 'mine' && username) {
+      if (relevanceFilter === 'global' && canViewAllTasks) {
+        // 「全部」：有权限时不过滤项目、人员相关性，直接拉全量
+        const filters: any[] = [];
+        if (search) {
+          filters.push({ field: 'title', op: 'contains', value: search });
+        }
+        if (statusFilter !== 'all') {
+          filters.push({ field: 'status', op: 'eq', value: statusFilter });
+        }
+        if (priorityFilter !== 'all') {
+          filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
+        }
+
+        const sorts = sortBy === 'priority'
+          ? []
+          : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
+
+        data = await request<{ items: Ticket[]; total: number }>('/filter', {
+          method: 'POST',
+          body: JSON.stringify({
+            filters,
+            sorts,
+            page,
+            size: pageSize,
+          }),
+          skipCache: true,
+        });
+      } else if (relevanceFilter === 'mine' && username) {
         const filters: any[] = [];
         
         const workingStatusFilters = [
@@ -322,6 +350,7 @@ export default function TasksView() {
   
 
   const relevanceOptions = [
+    ...(canViewAllTasks ? [{ value: 'global', label: '全部' }] : []),
     { value: 'all', label: '项目相关' },
     { value: 'mine', label: '待我处理' },
     { value: 'related', label: '与我相关' },
