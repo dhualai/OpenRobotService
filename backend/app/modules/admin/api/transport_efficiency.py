@@ -59,6 +59,14 @@ async def get_transport_efficiency(
     date: str = Query(..., description="数据日期，格式YYYY-MM-DD"),
     credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
 ) -> Dict:
+    # 优先从数据导入（文件导入 .bz2/.json → CollectionData）读取并计算搬运效率汇总；
+    # 无当日数据时回退到汇总表（JSON 导入 / 旧 Excel 导入落库的 ProjectTransportEfficiency）。
+    summary, robots, collection_time = transport_efficiency_service.get_collection_summary_and_robots(project_code, date)
+    if summary is not None or robots:
+        if summary is not None and collection_time:
+            summary["updated_at"] = collection_time  # 数据采集时间（供前端信息卡片展示）
+        return {"summary": summary, "robots": robots}
+
     summary = transport_efficiency_service.get_daily_efficiency(project_code, date)
     robots = transport_efficiency_service.get_robot_efficiency(project_code, date)
     return {"summary": summary, "robots": robots}
