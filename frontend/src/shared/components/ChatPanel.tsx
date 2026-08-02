@@ -1237,7 +1237,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const pollDispatch = useCallback(async (msgId: string, dbId: number, attempt: number) => {
     if (attempt >= 12) { pollingRef.current.delete(msgId); return; } // 60s 超时（5s × 12）
     try {
-      const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string }>(`/${dbId}`);
+      // 必须 skipCache：createRequest 的 GET 默认缓存 5 分钟，否则第二次轮询起命中缓存返回旧 assigned_to，
+      // 控制台看不到请求、气泡永远显示"派单中"（只有刷新清空模块级 requestCache 后才真正请求）。
+      const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string }>(`/${dbId}`, { skipCache: true });
       if (task.assigned_to) {
         if (!cancelledRef.current) {
           setMessages((prev) => prev.map((m) =>
