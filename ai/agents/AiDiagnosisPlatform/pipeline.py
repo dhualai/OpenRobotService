@@ -18,7 +18,7 @@ from ai.config import get_ai_config
 from ai.exceptions import AITimeoutError, LowConfidenceError, ServiceUnavailableError, RetrieveEmptyError
 from ai.core import get_llm_client, get_retrieval_service, get_memory_manager
 from ai.core.logging import get_logger
-from ai.core.project_matcher import get_project_matcher
+from ai.core.project_matcher import get_project_matcher, ProjectMatch
 
 logger = get_logger("AI")
 
@@ -804,18 +804,19 @@ class AiDiagnosisPlatform:
         elif action == "submit":
             state.phase = "escalated"
 
-    async def _resolve_project(self, raw_name: str) -> str:
+    async def _resolve_project(self, raw_name: str) -> Optional[ProjectMatch]:
         """将用户输入的项目名匹配到 helpdesk_724.project 标准名。
 
-        单候选直接返回，多候选调 LLM 裁决，无匹配返回空字符串。
+        单候选直接返回，多候选调 LLM 裁决，无匹配返回 None。
+        返回 ProjectMatch（含 .name 和 .code），方便上游同时拿到项目名和 project_id。
         """
         if not raw_name or not raw_name.strip():
-            return ""
+            return None
         try:
             matcher = get_project_matcher()
             if not await matcher.ensure_loaded():
                 logger.warning("[pipeline] project DB unavailable")
-                return ""
+                return None
             user = raw_name.strip()
             candidates = await matcher.get_candidates_async(user, min_score=0.7)
             if not candidates:
@@ -826,7 +827,7 @@ class AiDiagnosisPlatform:
                     f"[pipeline] 无匹配项目(≥0.7): '{user}' "
                     f"(项目库共 {len(matcher._projects)} 条, top5候选={_top})"
                 )
-                return ""
+                return None
             if len(candidates) == 1:
                 # 展示全部接近候选，方便理解为什么选了这个而非其他
                 _nearby = matcher.get_candidates(user, min_score=0.3, top_n=5)
@@ -835,7 +836,7 @@ class AiDiagnosisPlatform:
                     f"[pipeline] 项目直配: '{user}' → '{candidates[0].name}' "
                     f"(≥0.7候选={len(candidates)}, ≥0.3候选={_all_scored})"
                 )
-                return candidates[0].name
+                return candidates[0]
             # 多个候选 → LLM 裁决
             await self._ensure_clients()
             lines = [f"{i+1}. {c.name}（编号: {c.code}）" for i, c in enumerate(candidates)]
@@ -854,12 +855,12 @@ class AiDiagnosisPlatform:
                     f"[pipeline] LLM 裁决项目: '{user}' → #{idx} '{candidates[idx-1].name}' "
                     f"(≥0.7候选={_scored})"
                 )
-                return candidates[idx - 1].name
+                return candidates[idx - 1]
             logger.info(f"[pipeline] LLM 无法裁决项目 '{user}'")
-            return ""
+            return None
         except Exception as e:
             logger.warning(f"[pipeline] project matching failed: {e}")
-            return ""
+            return None
 
     async def _finalize_diagnosis(self, session_id: str, state: AgentState,
                                     thinking: str, action: str, message: str,
@@ -1241,10 +1242,12 @@ class AiDiagnosisPlatform:
         # 匹配不上 → 兜底"摇人吧服务号提单"（同时更新 result 和 collected_info，保证一致性）
         _raw_proj = (agent_state.collected_info.get("project", "") or analysis.get("project", "")).strip()
         if _raw_proj:
-            _resolved = await self._resolve_project(_raw_proj)
-            if _resolved:
-                agent_state.collected_info["project"] = _resolved  # 回写全名，后续一致
-                _raw_proj = _resolved
+            match = await self._resolve_project(_raw_proj)
+            if match:
+                agent_state.collected_info["project"] = match.name      # 回写全名，后续一致
+                agent_state.collected_info["project_id"] = match.code   # 回写 project_id
+                _raw_proj = match.name
+                result["project_id"] = match.code
             else:
                 # 项目库匹配不上（如用户说了"摇人吧"但 DB 里没有对应项目）
                 agent_state.collected_info["project"] = "摇人吧服务号提单"
@@ -1433,6 +1436,14 @@ class AiDiagnosisPlatform:
         # 用 draft 中用户编辑过的值覆盖 LLM 重新生成的字段
         ticket.update({k: v for k, v in draft.items()
                        if v and k not in ("ticket_id", "missing_fields", "confirm_prompt", "stage")})
+
+        # 用户在弹窗里改了项目名 → 重新匹配 project_id，否则 project_id 还是旧的
+        _final_project = ticket.get("project", "")
+        if _final_project and _final_project != agent_state.collected_info.get("project", ""):
+            match = await self._resolve_project(_final_project)
+            if match:
+                ticket["project"] = match.name
+                ticket["project_id"] = match.code
 
         from ai.core.task_adapter import upsert_task
         ticket["ticket_seq"] = agent_state.ticket_seq + 1
@@ -1759,7 +1770,7 @@ class AiDiagnosisPlatform:
         try:
             if _stream is None:
                 # 非流式 LLM，用 complete() + 逐字输出模拟
-                raw = await self._llm_client.complete(prompt=prompt, max_tokens=1500, temperature=0.5)
+                raw = await self._llm_client.complete(prompt=prompt, max_tokens=8000, temperature=0.5)
                 if t_first_llm is None:
                     t_first_llm = time.perf_counter()
                     t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
