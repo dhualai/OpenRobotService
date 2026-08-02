@@ -365,6 +365,8 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在�
   （报障类：occurrence_time/robot_type/frequency；软件问题：version/steps_to_reproduce；
   需求类：scenario/expected_effect）。写入 state_update.required_fields（格式 {{字段key: 中文名}}）。
   **project 永远必填，不写进 required_fields。**
+- 🔴 **action=submit 时必须在 state_update 中同时写入 required_fields**（格式见下方示例）。
+  不要留空等服务端兜底——服务端的兜底判断没有你的完整对话上下文准确，可能误判工单类型导致字段错配。
 - 收齐 = project 非空 + required_fields 每项非空。收齐就 submit。
 - **服务端铁律**：project 必须非空，否则 submit 会被拦截追问；其他字段是否齐全信任你的判断。
 
@@ -648,7 +650,14 @@ class AiDiagnosisPlatform:
         return s.replace("{", "{{").replace("}", "}}")
 
     def _build_diagnosis_prompt(self, state: AgentState, memory, reference_docs: str) -> str:
-        conversation_text = self._format_conversation(memory, from_turn=state.context_start)
+        # Guard: context_start 可能因 turn buffer 截断（max_turns）而越界。
+        # 场景：提单时 context_start=len(turns)=10，下一轮 add_turn 后 buffer 满截断，
+        # turns 仍为 10 → turns[10:] 返回空 → LLM 看不到对话 → 输出问候语。
+        # 回退时取最近 4 条（≈2 轮对话），足够 LLM 理解上下文，不撑 prompt。
+        _from = state.context_start
+        if _from >= len(memory.turns):
+            _from = max(0, len(memory.turns) - 4)
+        conversation_text = self._format_conversation(memory, from_turn=_from)
         # 上一个工单上下文：只告诉 LLM"刚提过单"这个事实，不透露 project/问题主题——
         # 否则 flash 等模型会从主题里重新挖出 project/problem 写回 state_update，
         # 绕过闭环保护（_can_submit 误判"有新问题"）导致重复提单。服务端 _can_submit 才是裁判。
@@ -658,9 +667,11 @@ class AiDiagnosisPlatform:
         _can, _block_msg = _can_submit(state)
         if _lt.get("ticket_id") and not _can:
             last_ticket_context = (
-                f"⚠️ 系统判定：刚提交过工单且没有新问题描述，不允许提单。"
-                f"如果用户请求转工单/提单但未描述新问题，你必须严格回复「{_block_msg}」，"
-                f"不要自行诊断、不要闲聊、不要问项目名称。"
+                f"⚠️ 刚提交过工单，不允许无新问题直接提单。\n"
+                f"规则：如果用户描述了新故障/新问题（如【车不跑了】【配置怎么弄】），"
+                f"请正常诊断、回答、提取 problem_summary，就像新会话一样。\n"
+                f"只有当用户说【转工单/提单】但**本轮及之前没有任何新问题描述**时，"
+                f"才回复「{_block_msg}」，不诊断不闲聊。"
             )
         elif _lt.get("ticket_id"):
             last_ticket_context = "刚提交过工单。除非用户描述了新的问题，否则不要重复提单。"
@@ -791,9 +802,9 @@ class AiDiagnosisPlatform:
                 logger.info(f"[state] LLM 设 ticket_ready=true 但缺必填项，强制打回: "
                             f"type={state.ticket_type or '(未判定,按problem)'}, missing={_missing}")
     def _apply_action_phase(self, state: AgentState, action: str) -> None:
-        if action == "answer":
-            state.phase = "resolved"
-        elif action == "submit":
+        # answer 不再设 resolved：resolved 只由 _reset_state_after_submit 在提单成功后设置，
+        # 避免"刚答完诊断"和"刚提完工单"共用同一 phase 导致 _apply_state_update guard 误拦。
+        if action == "submit":
             state.phase = "escalated"
 
     async def _resolve_project(self, raw_name: str) -> Optional[ProjectMatch]:
@@ -936,13 +947,15 @@ class AiDiagnosisPlatform:
         t0 = time.perf_counter()
         logger.info(f"[retrieve] 进入检索: session={session_id}")
         try:
-            # ⚠️ 不使用原始用户消息拼接检索 query——旧话题关键词会污染新话题检索
-            # 只用指代消解后的当前查询 + LLM 提炼的问题概述 + 推测
+            # 检索查询：用户当前输入为主，problem_summary/hypotheses 仅辅助短查询补全。
+            # 用户查询≥10字且具体 → 不加任何旧 state 信息，防止旧话题污染（如查"自动门对接"
+            # 但 state 残留"充电验证"，导致 embedding 偏航、正确 chunk 排不进 top N）。
             search_query = resolved_query if resolved_query else state.original_query
-            if state.problem_summary:
-                search_query = search_query + " " + state.problem_summary
-            if state.hypotheses:
-                search_query = search_query + " " + " ".join(state.hypotheses)
+            _need_context = len(search_query) < 10  # 极短查询（"怎么办""这是啥"）才需要上下文
+            if state.problem_summary and _need_context:
+                search_query = search_query + " " + state.problem_summary[:30]
+            if state.hypotheses and _need_context:
+                search_query = search_query + " " + " ".join(state.hypotheses)[:50]
 
             # 缓存命中：同一查询 60 秒内复用结果
             cache_key = search_query[:200]
@@ -1120,8 +1133,7 @@ class AiDiagnosisPlatform:
             )
             prompt = (
                 "根据以下对话，判断工单类型，并决定生成有效工单还需向用户确认哪 2-3 个关键字段。\n"
-                "字段由你根据问题类型自主决定，key 用英文（如 error_message/occurrence_time/robot_type 等），"
-                "value 写中文说明。\n"
+                "key 用英文，value 写简短中文标签（≤8字，如【错误现象】【发生时间】，不要写整句话）。\n"
                 "参考字段（不限，按需选用）：\n"
                 "  robot_type(车型/编号) occurrence_time(发生时间) frequency(出现频率)\n"
                 "  fault_code(故障码) location(现场位置) version(版本) steps_to_reproduce(复现步骤)\n"
@@ -1135,21 +1147,25 @@ class AiDiagnosisPlatform:
                 "报障(涉及车)：{\"ticket_type\":\"problem\",\"required_fields\":{\"robot_type\":\"具体车型/编号\","
                 "\"occurrence_time\":\"发生时间\"}}\n"
                 "报障(登录/平台)：{\"ticket_type\":\"problem\",\"required_fields\":{\"error_message\":\"登录问题的具体现象\"}}\n"
-                "support：{\"ticket_type\":\"support\",\"required_fields\":{\"support_type\":\"支持类型\"}}\n\n"
+                "support：{\"ticket_type\":\"support\",\"required_fields\":{\"support_type\":\"所需支持\"}}\n\n"
                 f"## 对话\n{conv}"
             )
             raw = await self._llm_client.complete(prompt=prompt, max_tokens=300, temperature=0)
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
             data = json.loads(clean)
-            tt = (data.get("ticket_type") or "").strip()
-            if tt in ("problem", "bug", "feature", "support", "other") and tt:
-                agent_state.ticket_type = tt
+            # 只有主 LLM 还没定 ticket_type 时才设。主 LLM 有完整对话上下文，
+            # 判断比这里的独立 LLM 调用更准。覆盖会导致报障被错标为 support，
+            # 后续 required_fields 与实际故障不匹配，LLM 陷入收集死循环。
+            if not agent_state.ticket_type:
+                tt = (data.get("ticket_type") or "").strip()
+                if tt in ("problem", "bug", "feature", "support", "other") and tt:
+                    agent_state.ticket_type = tt
             rf = data.get("required_fields") or {}
             if isinstance(rf, dict):
                 # 不再用固定词表限制——LLM 根据问题类型自主选字段，
-                # 只做基本合理性过滤（key 长度、非空、不重复收集已存在的字段）
+                # 只做基本合理性过滤（key 长度、value 简短标签、非空、不重复收集）
                 agent_state.required_fields = {
-                    k: str(v) for k, v in rf.items()
+                    k: str(v)[:12] for k, v in rf.items()
                     if str(v).strip()
                     and len(str(k)) <= 40
                     and not (agent_state.collected_info.get(k) or "").strip()
@@ -1772,10 +1788,15 @@ class AiDiagnosisPlatform:
             _msg_buf.clear()
         # 流式调用，如果没有 stream 方法则回退到 complete()
         _stream = getattr(self._llm_client, "stream", None)
+        _collect_mode = bool(state.ticket_collecting)  # 收集轮关 thinking，提速
+        t_stream["thinking"] = "off" if _collect_mode else "on"
+        logger.info(f"[stream] LLM 调用: thinking={t_stream['thinking']}, prompt_chars={t_stream['prompt_chars']}")
         try:
             if _stream is None:
                 # 非流式 LLM，用 complete() + 逐字输出模拟
-                raw = await self._llm_client.complete(prompt=prompt, max_tokens=8000, temperature=0.5)
+                raw = await self._llm_client.complete(
+                    prompt=prompt, max_tokens=8000, temperature=0.5,
+                    thinking=not _collect_mode)
                 if t_first_llm is None:
                     t_first_llm = time.perf_counter()
                     t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
@@ -1794,7 +1815,9 @@ class AiDiagnosisPlatform:
                         _msg_yielded = True
                         yield {"event": "token", "data": ch}
             else:
-                async for token in _stream(prompt=prompt, max_tokens=8000, temperature=0.5):
+                async for token in _stream(
+                    prompt=prompt, max_tokens=8000, temperature=0.5,
+                    thinking=not _collect_mode):
                     raw_tokens.append(token)
                     if not _json_done:
                         _buf += token
