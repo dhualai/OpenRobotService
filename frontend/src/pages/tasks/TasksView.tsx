@@ -322,7 +322,7 @@ export default function TasksView() {
   
 
   const relevanceOptions = [
-    { value: 'all', label: '全部' },
+    { value: 'all', label: '项目相关' },
     { value: 'mine', label: '待我处理' },
     { value: 'related', label: '与我相关' },
   ];
