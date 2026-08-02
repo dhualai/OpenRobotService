@@ -2808,6 +2808,7 @@ html, body, #root {
 .ticket-confirm__title { margin: 0 0 12px; font-size: 16px; font-weight: 600; color: #333; }
 .ticket-confirm__body { display: flex; flex-direction: column; gap: 4px; }
 .ticket-confirm__tags { display: flex; gap: 8px; margin-bottom: 8px; }
+.ticket-confirm__banner { background: #fff3e0; border: 1px solid #ffb74d; color: #b26500; font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-bottom: 8px; line-height: 1.4; }
 .ticket-confirm__label { font-size: 13px; color: #666; margin-top: 8px; }
 .ticket-confirm__input,
 .ticket-confirm__textarea,

@@ -1931,27 +1931,44 @@ class AiDiagnosisPlatform:
                         logger.warning(f"[stream] 草稿保存失败: session={request.session_id}", exc_info=True)
                 else:
                     # 字段齐全 → 不自动提单，弹窗让用户核对/修改后确认
-                    memory.metadata["ticket_draft"] = draft
-                    await self._memory_manager.save_memory(memory)
-                    logger.info(f"[stream] 字段齐全，弹窗确认: session={request.session_id}")
-                    yield {"event": "status", "data": {
-                        "stage": "review",
-                        "draft": draft,
-                        "missing_fields": check["missing"],
-                    }}
-                    # 由于不在这里提单，parsed action 改回 answer（避免 _finalize_diagnosis
-                    # 以 escalated 追加 system turn 污染对话），同时不调 submit() 清空状态。
-                    parsed["action"] = "answer"
-                    # 清空 ticket_collecting（如果有），退出工单填写模式
-                    state.ticket_collecting = []
-                    proj = state.collected_info.get("project", "")
-                    parsed["message"] = (
-                        f"已为「{proj}」生成工单草稿，请核对信息后确认提交。"
-                        if proj else "已生成工单草稿，请核对信息后确认提交。"
-                    )
-                    _msg_buf.clear()
-                    _msg_yielded = True  # 抑制末尾兜底输出
-                    yield {"event": "token", "data": parsed["message"]}
+                    # 幂等：上一轮已发 review 未确认（ticket_draft 已存在）→ 不重复发 review，只提示
+                    existing_draft = memory.metadata.get("ticket_draft")
+                    if existing_draft:
+                        logger.info(f"[stream] 复用待确认草稿(未确认),不重复弹窗: session={request.session_id}")
+                        parsed["action"] = "answer"
+                        state.ticket_collecting = []
+                        parsed["message"] = "您有待确认的工单，请先在弹窗中确认或修改后提交。"
+                        _msg_buf.clear()
+                        _msg_yielded = True
+                        yield {"event": "token", "data": parsed["message"]}
+                    else:
+                        memory.metadata["ticket_draft"] = draft
+                        # review 阶段工单未建：回退 _apply_action_phase 误置的 escalated → diagnosing，
+                        # 清空 ticket_collecting 退出工单填写模式，一并持久化（原代码只改局部 state 未 save）
+                        state.phase = "diagnosing"
+                        state.ticket_collecting = []
+                        _save_agent_state(memory, state)
+                        await self._memory_manager.save_memory(memory)
+                        logger.info(f"[stream] 字段齐全，弹窗确认: session={request.session_id}, force={_force_submit}")
+                        yield {"event": "status", "data": {
+                            "stage": "review",
+                            "draft": draft,
+                            "missing_fields": check["missing"],
+                            "force_submit": _force_submit,
+                        }}
+                        # 由于不在这里提单，parsed action 改回 answer（避免 _finalize_diagnosis
+                        # 以 escalated 追加 system turn 污染对话），同时不调 submit() 清空状态。
+                        parsed["action"] = "answer"
+                        proj = state.collected_info.get("project", "")
+                        if _force_submit:
+                            parsed["message"] = "信息收集超限，请核对工单信息后提交。"
+                        elif proj:
+                            parsed["message"] = f"已为「{proj}」生成工单草稿，请核对信息后确认提交。"
+                        else:
+                            parsed["message"] = "已生成工单草稿，请核对信息后确认提交。"
+                        _msg_buf.clear()
+                        _msg_yielded = True  # 抑制末尾兜底输出
+                        yield {"event": "token", "data": parsed["message"]}
             except Exception as e:
                 logger.error(f"[stream] 提单失败: session={request.session_id}, error={e}", exc_info=True)
                 yield {"event": "status", "data": {"stage": "submit_failed", "error": str(e)}}
