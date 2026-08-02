@@ -1,7 +1,7 @@
 // 可复用 AI 对话面板 — 提单 Agent（/api/ai/qa/ask/stream）
 // 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
 import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+
 import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore } from '@/stores/workbench';
@@ -138,12 +138,22 @@ const looksLikeJsonHead = (text: string): boolean => {
 
 /** DB 会话消息 → 前端 Message：附件恢复 + AI 文本清洗 + 空白 AI 气泡过滤（历史异常数据不上屏） */
 const mapDbMessages = (
-  full: { messages?: Array<{ id: number; role: string; content: string; created_at: string; file_urls?: string | null; message_type?: string }> },
-): Message[] =>
-  (full.messages || [])
+  full: { messages?: Array<{ id: number; role: string; content: string; created_at: string; file_urls?: string | null; message_type?: string; metadata_?: string | null }> },
+): Message[] => {
+  // metadata_ 经后端 safe_json_dumps 二次编码：可能是 对象 或 嵌套字符串，统一解析两次得到对象
+  const parseMeta = (s?: string | null): Record<string, unknown> | null => {
+    if (!s) return null;
+    try {
+      let v: unknown = JSON.parse(s);
+      if (typeof v === 'string') v = JSON.parse(v);
+      return (v && typeof v === 'object') ? (v as Record<string, unknown>) : null;
+    } catch { return null; }
+  };
+  return (full.messages || [])
     .map((m) => {
-      // 工单概览气泡：messageType='ticket_overview'，content 存工单 JSON
-      if (m.message_type === 'ticket_overview') {
+      // 工单概览气泡：metadata_.kind==='ticket_overview'（content 存工单 JSON）
+      const meta = parseMeta(m.metadata_);
+      if (meta?.kind === 'ticket_overview') {
         try {
           const ov = JSON.parse(m.content) as NonNullable<Message['ticket_overview']>;
           return {
@@ -177,10 +187,11 @@ const mapDbMessages = (
     })
     // 空白 AI 气泡（历史异常落库的空内容/纯空白）不恢复显示
     .filter((m) => m.role !== 'assistant' || m.subtype === 'ticket_overview' || m.content.trim().length > 0);
+};
 
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
-  msg, editingId, compact, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave, onEditCancel, onImageClick, onTicketClick,
+  msg, editingId, compact, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick,
 }: {
   msg: Message;
   editingId: string | null;
@@ -192,7 +203,6 @@ const MessageBubble = memo(function MessageBubble({
   onEditSave: (msg: Message) => void;
   onEditCancel: () => void;
   onImageClick: (url: string) => void;
-  onTicketClick?: (ov: NonNullable<Message['ticket_overview']>) => void;
 }) {
   return (
     <div className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
@@ -253,8 +263,8 @@ const MessageBubble = memo(function MessageBubble({
           />
         ) : msg.role === 'assistant' ? (
           msg.subtype === 'ticket_overview' && msg.ticket_overview ? (
-            // 工单概览气泡：confirm 成功后插入，展示工单详情 + 派单状态
-            <div className="chat-ticket-overview" onClick={() => onTicketClick?.(msg.ticket_overview!)} role="button" aria-label="查看工单详情">
+            // 工单概览气泡：confirm 成功后插入，展示工单详情 + 派单状态（纯展示，不跳转）
+            <div className="chat-ticket-overview">
               <div className="chat-ticket-overview__header">
                 <span className="chat-ticket-overview__emoji">🎫</span>
                 <span className="chat-ticket-overview__id">工单 #{msg.ticket_overview.db_id}</span>
@@ -339,7 +349,7 @@ const TICKET_TYPE_LABEL: Record<string, string> = {
 const convMessagesCache: Record<number, Message[]> = {};
 
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
-  const navigate = useNavigate();
+
   const { token, name, username } = useAuthStore();
   const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations } = useWorkbenchStore();
   const isCall = scene === 'call';
@@ -1322,9 +1332,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         ticket_overview: ov,
       };
       setMessages((prev) => [...prev, ovMsg]);
-      // 持久化到 DB（刷新/切会话后可恢复）
+      // 持久化到 DB（刷新/切会话后可恢复）。用 metadata_.kind 标记（message_type 是受限枚举，不能存 ticket_overview），
+      // message_type 落库为合法值 'text'，避免被后端枚举校验拒绝（此前用 ticket_overview 被拒 → 气泡丢失）。
       if (convRef.current) {
-        appendMessage(convRef.current, 'assistant', JSON.stringify(ov), { messageType: 'ticket_overview' }).catch(() => {});
+        appendMessage(convRef.current, 'assistant', JSON.stringify(ov), {
+          messageType: 'text',
+          metadata: JSON.stringify({ kind: 'ticket_overview' }),
+        }).catch(() => {});
       }
       // 启动派单轮询
       if (ov.db_id) startDispatchPoll(ovMsg.id, ov.db_id);
@@ -1407,7 +1421,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             onEditSave={handleEditSave}
             onEditCancel={handleEditCancel}
             onImageClick={setPreviewUrl}
-            onTicketClick={() => navigate(`/app/call/ticket/${sessionId}`)}
           />
         ))}
         <div ref={messagesEndRef} />
