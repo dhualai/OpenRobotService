@@ -1766,7 +1766,7 @@ class AiDiagnosisPlatform:
                 # 拆出 JSON 区域和消息区域，只把消息正文送入 _msg_buf（节流输出）
                 _msg_start = _find_json_end(raw)
                 if _msg_start >= 0:
-                    _suppress_msg = self._suppress_doomed_submit(state, raw[:_msg_start])
+                    _suppress_msg = False  # _suppress_doomed_submit 未实现；submit 覆盖由前端 status 清空 acc 处理
                     msg_body = raw[_msg_start:]
                 else:
                     # JSON 未闭合（max_tokens 截断/格式异常）：不输出残破 JSON，
@@ -1785,7 +1785,7 @@ class AiDiagnosisPlatform:
                         msg_start = _find_json_end(_buf)
                         if msg_start >= 0:
                             _json_done = True
-                            _suppress_msg = self._suppress_doomed_submit(state, _buf[:msg_start])
+                            _suppress_msg = False  # _suppress_doomed_submit 未实现；submit 覆盖由前端 status 清空 acc 处理
                             tail = _buf[msg_start:]
                             # 严格流式：token 直接 yield，不进 _msg_buf 缓冲（避免短消息积攒到流结束才一次性吐→"突然一大片"）
                             if tail and not _suppress_msg:
