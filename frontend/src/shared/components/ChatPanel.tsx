@@ -306,7 +306,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     draft: TicketDraft | null;
     overrides: Partial<TicketDraft>;
     submitting: boolean;
-  }>({ visible: false, draft: null, overrides: {}, submitting: false });
+    force_submit?: boolean;  // 收集超限强制提单时为 true，弹窗顶部黄色 banner 提示用户重点核对
+  }>({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false });
   // 转工单信息不足引导（方案A）：prepare 返回 not_ready 时，
   // 在输入框上方常驻「待补充清单」卡片 + 转工单按钮角标，引导用户回对话补全
   const [ticketMissing, setTicketMissing] = useState<{ info: string[]; message: string } | null>(null);
@@ -743,6 +744,18 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             setConversationTitle(data.title);
             refreshConversations();
           }
+          // 转工单确认弹窗（对话路径）：后端字段齐全 → event:status + stage:review → 弹窗，
+          // 复用 ticketConfirm（与按钮路径 handleSubmitTicket 殊途同归）。
+          // 幂等：弹窗已打开则不覆盖（保留用户正在编辑的 overrides），防后端重复发 review 重弹。
+          if (currentEvent === 'status' && data.stage === 'review' && data.draft) {
+            setTicketConfirm((s) => s.visible ? s : {
+              visible: true,
+              draft: data.draft as TicketDraft,
+              overrides: {},
+              submitting: false,
+              force_submit: !!data.force_submit,
+            });
+          }
         } catch { /* JSON 行解析出错则跳过 */ }
       };
       let buffer = '';
@@ -1127,7 +1140,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const { draft, missing_fields, prompt } = res.data;
       // 打开确认弹窗，让用户核对/编辑/补字段
       setTicketMissing(null); // 已就绪，清掉待补充清单
-      setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false });
+      setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false, force_submit: false });
       if (missing_fields?.length) {
         Toast({ message: prompt || '请补全必填字段后提交', theme: 'warning' });
       }
@@ -1490,6 +1503,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   {ticketConfirm.draft.type && <Tag theme="primary">{TICKET_TYPE_LABEL[ticketConfirm.draft.type] || ticketConfirm.draft.type}</Tag>}
                   {ticketConfirm.draft.priority && <Tag theme="warning">{ticketConfirm.draft.priority}</Tag>}
                 </div>
+                {ticketConfirm.force_submit && (
+                  <div className="ticket-confirm__banner">⚠️ 信息收集超限，请重点核对项目、车型等关键字段</div>
+                )}
                 <label className="ticket-confirm__label">标题</label>
                 <input
                   className="ticket-confirm__input"
