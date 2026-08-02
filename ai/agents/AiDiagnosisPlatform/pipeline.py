@@ -1760,6 +1760,7 @@ class AiDiagnosisPlatform:
         _buf = ""          # 累积缓冲区，用于检测 JSON→消息边界
         _json_done = False # True 表示已越过 JSON 区域
         _msg_yielded = False   # 是否已向用户流出消息正文（末尾兜底输出用）
+        _suppress_msg = False  # 默认不抑制；complete 分支 JSON 未闭合(else)路径也读取，必须在此初始化避免 UnboundLocalError
         _msg_buf: list[str] = []  # 缓冲短消息（如 submit 的"好的"），超阈值再流式输出
         _MSG_BUF_FLUSH = 20       # 超过此字符数才流式，避免短消息先出去再卡等后续处理
         def _flush_msg_buf():
