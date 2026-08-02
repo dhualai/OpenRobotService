@@ -462,6 +462,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         if (convRef.current !== conversationId) return; // 校正期间又切走了，丢弃
         const fresh = mapDbMessages(full);
         setMessages((prev) => (fresh.length > prev.length ? fresh : prev));
+        // 恢复 sessionId / 标题：缓存恢复分支跳过了 getConversation，这里补上，
+        // 否则切回后 sessionId 仍为上一会话的/空，发送时 ensureSessionId 会重新生成 → sessionId 漂移
+        const sid = readAiSessionId(full);
+        if (sid) setSessionId(sid);
+        setConversationTitle(full.title && full.title !== '新会话' ? full.title : '新建会话');
       }).catch(() => {});
       return;
     }
@@ -532,12 +537,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     return sessionId;
   }, [sessionId]);
 
-  /** 确保 DB 会话存在：首条消息时创建（title 取首句），后续复用 convRef */
+  /** 确保 DB 会话存在：首条消息时创建（title 用占位「新会话」，第2轮由 AI 生成后同步），后续复用 convRef */
   const ensureConversation = async (sid: string, firstContent: string): Promise<number | null> => {
     if (convRef.current) return convRef.current;
     try {
       const conv = await createConversation({
-        title: firstContent.slice(0, 40) || 'AI 对话',
+        title: '新会话',
         scene,
         aiSessionId: sid,
       });

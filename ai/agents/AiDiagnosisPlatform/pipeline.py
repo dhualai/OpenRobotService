@@ -266,14 +266,16 @@ def _log_ticket_state(state: AgentState, event: str, **extra) -> None:
 async def _generate_title(llm_client, memory) -> str:
     """第2轮对话结束后，用前两轮对话生成会话标题（中文不超过15字，英文不超过50字符）"""
     turns = memory.turns
-    if len(turns) < 4 or "title" in memory.metadata:
+    if len(turns) < 2 or "title" in memory.metadata:
         return ""
+    # 动态取可用 turns（最多前4条）构造对话，避免 Redis 降级 turns 不全时索引越界/直接放弃
+    dialog = "\n".join(
+        f"{'用户' if t.get('role') == 'user' else '助手'}：{t.get('content', '')}"
+        for t in turns[:4]
+    )
     prompt = (
         "根据以下对话生成一个简短标题（中文不超过15字，英文不超过50字符）：\n\n"
-        f"用户：{turns[0]['content']}\n"
-        f"助手：{turns[1]['content']}\n"
-        f"用户：{turns[2]['content']}\n"
-        f"助手：{turns[3]['content']}\n\n"
+        f"{dialog}\n\n"
         "只输出标题，不要引号或任何额外内容。"
     )
     try:
