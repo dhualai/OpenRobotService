@@ -1292,8 +1292,16 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const draft = ticketConfirm.draft;
     if (!draft || !sessionId) return;
     const projectIdVal = draftField('project_id').trim();
+    const projectNameVal = draftField('project').trim();
     if (!projectIdVal) {
-      Toast({ message: '请先选择绑定项目', theme: 'warning' });
+      // 项目名有但 project_id 空 → 多半是 AI 给的项目不在提单人名下，无法自动绑定
+      Toast({
+        message: projectNameVal
+          ? `项目「${projectNameVal}」不在你的名下，请在下拉中选择一个你所属的项目`
+          : '请先选择绑定项目',
+        theme: 'warning',
+        duration: 4000,
+      });
       return;
     }
     setTicketConfirm((s) => ({ ...s, submitting: true }));
@@ -1727,7 +1735,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 type="button"
                 className="ticket-confirm__btn ticket-confirm__btn--confirm"
                 onClick={handleConfirmTicket}
-                disabled={ticketConfirm.submitting || !draftField('project_id').trim()}
+                disabled={ticketConfirm.submitting}
               >{ticketConfirm.submitting ? '提交中…' : '确认提交'}</button>
             </div>
           </div>
