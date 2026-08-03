@@ -174,6 +174,9 @@ async def ask_question_stream(
                             role="assistant",
                             content="",
                             message_type="text",
+                            # 标记流式占位：刷新/切会话恢复时，前端按此标记把空内容气泡还原为「思考中」，
+                            # 不被 mapDbMessages 的空白 AI 气泡过滤丢弃。
+                            metadata_=json.dumps({"kind": "streaming"}),
                         ))
                         persist_msg_id = msg.id
                         # 通知前端 assistant 消息的 DB id（前端用于降级回写/排重）
