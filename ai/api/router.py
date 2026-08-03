@@ -794,9 +794,10 @@ async def list_all_tickets(
     keyword: str = Query("", description="模糊搜索标题/描述"),
     username: str = Query("", description="按创建者用户名过滤"),
 ) -> dict:
-    """查询 tasks 表（source='ai'），分页返回所有历史工单
+    """查询 tasks 表，分页返回所有历史工单（含 AI 生成与系统手动创建）
     
     当 username 参数不为空时，只返回该用户创建的工单（created_by 字段匹配）。
+    支持 source='ai'（AI 生成）和 source='manual'（系统任务手动创建）两类工单。
     """
     try:
         from ai.core.task_adapter import task_to_dict
@@ -810,7 +811,7 @@ async def list_all_tickets(
 
         db = SessionLocal()
         try:
-            q = db.query(Task).filter(Task.source == "ai")
+            q = db.query(Task).filter(Task.source.in_(["ai", "manual"]))
             # 按创建者过滤（非 admin 只看自己的）
             if username:
                 q = q.filter(Task.created_by == username)
