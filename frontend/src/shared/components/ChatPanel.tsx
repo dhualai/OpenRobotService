@@ -1839,7 +1839,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   onChange={(e) => setDraftField('contact', e.target.value)}
                   placeholder="联系人（可选）"
                 />
-                <label className="ticket-confirm__label">绑定项目 <span style={{ color: '#e34d59' }}>*</span></label>
+                <label className="ticket-confirm__label">绑定项目 {!ticketConfirm.dualTicket && <span style={{ color: '#e34d59' }}>*</span>}</label>
                 <ProjectSelect
                   value={draftField('project_id') || null}
                   nameHint={draftField('project') || null}
@@ -1848,8 +1848,31 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                     setDraftField('project_id', p.project_code);
                   }}
                 />
-                {!draftField('project_id').trim() && (
+                {!draftField('project_id').trim() && !ticketConfirm.dualTicket && (
                   <span className="ticket-confirm__hint">项目为必选项，未绑定项目无法提交</span>
+                )}
+                {/* 兜底双工单：项目不在项目集时勾选，生成申请单派给项目负责人 */}
+                <label className="ticket-confirm__checkbox">
+                  <input
+                    type="checkbox"
+                    checked={ticketConfirm.dualTicket}
+                    onChange={(e) => setTicketConfirm((s) => ({ ...s, dualTicket: e.target.checked, projectOwner: e.target.checked ? s.projectOwner : null }))}
+                  />
+                  <span>我的项目不在所属项目集中，向项目负责人发送申请工单</span>
+                </label>
+                {ticketConfirm.dualTicket && (
+                  <>
+                    <div className="ticket-confirm__banner ticket-confirm__banner--info">
+                      项目不在项目集中，将默认提单至「摇人吧服务号提单」项目，同时向项目负责人发送申请工单
+                    </div>
+                    <label className="ticket-confirm__label">项目负责人 <span style={{ color: '#e34d59' }}>*</span></label>
+                    <UserSelect
+                      value={ticketConfirm.projectOwner?.id ?? null}
+                      onChange={(u) => setTicketConfirm((s) => ({ ...s, projectOwner: u }))}
+                      placeholder="请选择项目负责人"
+                      title="选择项目负责人"
+                    />
+                  </>
                 )}
               </div>
             )}
