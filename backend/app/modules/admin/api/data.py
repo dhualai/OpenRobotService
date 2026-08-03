@@ -1,18 +1,23 @@
-"""admin 数据包导入 API。
+"""admin 数据包导入与数据访问 API。
 
 数据来源：DAS 导出的数据包文件（.bz2 压缩或 .json），承载 GroupEfficiency 等指标数据。
 上传后解析（data_import_service.parse_packet_file）→ 按天切分（transform_data）
 → 落库 CollectionData（DataHandler._insert_data / DataService.insert_batch_collection_data）。
 
-参考实现：项目数据/DAS/api/data.py 的 upload_file。
+同时迁移 DAS「数据访问服务」（项目数据/DAS/api/data.py）：
+- POST /data/access       数据访问（读取 CollectionData）
+- POST /data/history/access 历史数据访问（指定时间范围读取）
+- POST /data/insert       统一数据插入
 """
-from typing import Optional
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
+from app.modules.admin.schemas_das.request_models import DataAccessRequest
 from app.modules.admin.services.data_import_service import (
     MAX_FILE_SIZE,
     parse_packet_file,
+    summarize_content,
     validate_and_prepare_import_data,
 )
 from app.modules.admin.services.routing_service import DataHandler
@@ -60,6 +65,7 @@ async def upload_file(
             "project": insert_data.get("project"),
             "indicator": insert_data.get("indicator"),
             "chunk_count": len(insert_data.get("content", [])),
+            "chunks": summarize_content(insert_data.get("content", [])),
             "api_response": result,
         }
     except ValueError as e:
@@ -68,3 +74,46 @@ async def upload_file(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"系统错误: {str(e)}")
+
+
+@data_router.post("/access/", summary="数据访问接口")
+async def access_data_route(
+    request_data: DataAccessRequest,
+    request: Request,
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None),
+) -> Dict[str, Any]:
+    """读取 CollectionData 数据（实时/当天）。
+
+    与 DAS /data/access/ 一致：按 project + tag 读取，indicator 传 '*' 表示取全部指标。
+    """
+    handler = DataHandler()
+    return await handler._get_data(request_data)
+
+
+@data_router.post("/history/access/", summary="历史数据访问接口")
+async def access_history_data_route(
+    request_data: DataAccessRequest,
+    request: Request,
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None),
+) -> Dict[str, Any]:
+    """读取 CollectionData 历史数据（按 start_time/end_time 过滤）。
+
+    与 DAS /data/history/access/ 一致。
+    """
+    handler = DataHandler()
+    return await handler._get_data(request_data)
+
+
+@data_router.post("/insert/", summary="统一数据插入接口")
+async def insert_data_route(
+    request_data: Dict[str, Any],
+    request: Request,
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None),
+) -> Dict[str, Any]:
+    """批量插入 CollectionData 数据。
+
+    请求体结构：{project, indicator, content: [{data, start_time, end_time}], collection_time}，
+    与 DAS /data/insert/ 一致。
+    """
+    handler = DataHandler()
+    return await handler._insert_data(request_data)

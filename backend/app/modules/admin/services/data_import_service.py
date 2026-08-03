@@ -10,7 +10,7 @@ import bz2
 import json
 import os
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 # 允许的上传文件扩展名
 ALLOWED_EXTENSIONS = {'.json', '.bz2'}
@@ -148,3 +148,30 @@ def validate_and_prepare_import_data(data: dict, project: str = None) -> dict:
     data.setdefault("collection_time", datetime.now().isoformat())
 
     return transform_data(data)
+
+
+def summarize_content(content: list) -> List[dict]:
+    """提取切分后的数据块摘要，供前端展示导入成功的条目。
+
+    每个数据块返回时间范围（start_time/end_time），并尽量从 GroupEfficiency
+    数据中提取组名列表（effectWorkTime 的键）。
+    """
+    chunks: List[dict] = []
+    for item in content or []:
+        start = item.get("start_time", "")
+        end = item.get("end_time", "")
+        groups: List[str] = []
+        data = item.get("data")
+        if isinstance(data, list):
+            for d in data:
+                if isinstance(d, dict):
+                    eff = d.get("effectWorkTime") or {}
+                    if isinstance(eff, dict) and eff:
+                        groups = list(eff.keys())
+                        break
+        chunks.append({
+            "start_time": start,
+            "end_time": end,
+            "groups": groups,
+        })
+    return chunks
