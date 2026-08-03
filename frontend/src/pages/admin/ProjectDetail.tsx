@@ -301,10 +301,11 @@ export default function ProjectDetail() {
         {/* 概要卡片 */}
         <div style={cardStyle()}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              <div style={{ fontSize: 17, fontWeight: 600 }}>{project.name || '未命名项目'}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <EditableField label="项目名称" value={project.name || '未命名项目'} placeholder="未命名项目" onSave={(v) => saveField('name', v)} compact title />
               <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
-                项目编号: {project.project_code}{project.system_id ? ` · 企业微信记录ID: ${project.system_id}` : ''}
+                <EditableField label="项目编号" value={project.project_code || '未填写'} placeholder="未填写" onSave={(v) => saveField('project_code', v)} compact inlineLabel="项目编号" />
+                {project.system_id ? ` · 企业微信记录ID: ${project.system_id}` : ''}
               </div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
@@ -323,9 +324,9 @@ export default function ProjectDetail() {
             </div>
           </div>
 
-          {/* 项目对接人 —— 位于项目编号与项目进度之间，可编辑 */}
+          {/* 项目经理 —— 位于项目编号与项目进度之间，可编辑 */}
           <div style={{ marginTop: 12 }}>
-            <EditableField label="项目对接人" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} compact />
+            <EditableField label="项目经理" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} compact />
           </div>
 
           <div style={{ height: 1, background: '#f0f0f0', margin: '14px 0' }} />
@@ -601,7 +602,7 @@ function PickerField({ label, value, onClick }: { label: string; value: string; 
   );
 }
 
-function EditableField({ label, value, placeholder, multiline, compact, type, onSave }: { label: string; value: string; placeholder?: string; multiline?: boolean; compact?: boolean; type?: 'text' | 'number'; onSave: (v: string) => void }) {
+function EditableField({ label, value, placeholder, multiline, compact, type, title, inlineLabel, onSave }: { label: string; value: string; placeholder?: string; multiline?: boolean; compact?: boolean; type?: 'text' | 'number'; title?: boolean; inlineLabel?: string; onSave: (v: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
 
@@ -616,7 +617,7 @@ function EditableField({ label, value, placeholder, multiline, compact, type, on
     const Field = multiline ? Textarea : Input;
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <label style={{ fontSize: 12, color: '#999' }}>{label}</label>
+        {!inlineLabel && <label style={{ fontSize: 12, color: '#999' }}>{label}</label>}
         <Field
           value={draft}
           onChange={(v: string | number) => setDraft(String(v))}
@@ -631,17 +632,22 @@ function EditableField({ label, value, placeholder, multiline, compact, type, on
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <label style={{ fontSize: 12, color: '#999' }}>{label}</label>
+      {!inlineLabel && <label style={{ fontSize: 12, color: '#999' }}>{label}</label>}
       <div
         onClick={() => setEditing(true)}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-          fontSize: 14, color: value ? '#1a1a1a' : '#999',
+          fontSize: title ? 17 : 14,
+          fontWeight: title ? 600 : 'normal',
+          color: value ? '#1a1a1a' : '#999',
           background: compact ? 'transparent' : '#f8fafc', borderRadius: 8, padding: compact ? '2px 0' : '10px 12px', cursor: 'pointer',
           whiteSpace: multiline ? 'pre-wrap' : 'nowrap', overflow: multiline ? 'visible' : 'hidden', textOverflow: 'ellipsis',
         }}
       >
-        <span>{value || placeholder}</span>
+        <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
+          {inlineLabel && <span style={{ fontSize: 12, color: '#999', fontWeight: 'normal', flexShrink: 0 }}>{inlineLabel}: </span>}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{value || placeholder}</span>
+        </span>
         <span style={{ color: '#ccc', flexShrink: 0 }}>✎</span>
       </div>
     </div>
