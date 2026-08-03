@@ -51,48 +51,6 @@ async def create_task(
         raise HTTPException(status_code=500, detail=f"创建任务失败: {str(e)}")
 
 
-@router.post("/quick-create", response_model=TicketResponse, summary="快速建单 — 按客户名称指定处理人")
-async def quick_create_task(
-    ticket_data: TicketCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
-):
-    """快速建单：根据 customer（中文姓名）查 users 表，直接指定为处理人。
-
-    不经过派单 Worker。customer 必填且必须能匹配到 users.name。
-    """
-    import logging
-    logger = logging.getLogger(__name__)
-
-    try:
-        username = current_user.get('username') if current_user else "system"
-        token = current_user.get('token')
-
-        customer_name = (ticket_data.customer or "").strip()
-        if not customer_name:
-            raise HTTPException(status_code=400, detail="customer（客户姓名）为必填字段")
-
-        logger.info(f"快速建单: title={ticket_data.title[:50] if ticket_data.title else '无标题'}, "
-                    f"customer={customer_name}, created_by={username}")
-
-        ticket = await TicketService.create_customer_ticket(
-            db, ticket_data, username, comment_attachment_map, token,
-        )
-        if ticket is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"未找到姓名为「{customer_name}」的用户，请确认客户姓名正确",
-            )
-
-        logger.info(f"快速建单成功: task_id={ticket.id}, assigned_to={ticket.assigned_to}")
-        return ticket
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"快速建单失败: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"快速建单失败: {str(e)}")
-
-
 @router.get("/", response_model=TicketListResponse)
 async def get_tasks(
     request: Request,
