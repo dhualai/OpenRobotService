@@ -17,6 +17,7 @@ from app.modules.admin.schemas_das.request_models import DataAccessRequest
 from app.modules.admin.services.data_import_service import (
     MAX_FILE_SIZE,
     parse_packet_file,
+    summarize_content,
     validate_and_prepare_import_data,
 )
 from app.modules.admin.services.routing_service import DataHandler
@@ -64,6 +65,7 @@ async def upload_file(
             "project": insert_data.get("project"),
             "indicator": insert_data.get("indicator"),
             "chunk_count": len(insert_data.get("content", [])),
+            "chunks": summarize_content(insert_data.get("content", [])),
             "api_response": result,
         }
     except ValueError as e:
