@@ -101,6 +101,90 @@ class TicketService:
         return ticket
 
     @staticmethod
+    async def create_customer_ticket(
+        db: AsyncSession,
+        ticket_data: TicketCreate,
+        created_by: str,
+        comment_attachment_map: dict,
+        token: Optional[str] = None,
+    ) -> Optional[Ticket]:
+        """快速建单 — 按 customer（中文姓名）查找 users 表，指定为处理人。
+
+        customer 必填，对应 users.name。找不到匹配用户时返回 None。
+        不走派单 Worker：处理人直接写为 customer 对应的 username。
+        """
+        customer_name = (ticket_data.customer or "").strip()
+        if not customer_name:
+            return None
+
+        # 同步查 users 表，按 name 匹配 → 取 username
+        from app.core.db import SessionLocal
+        from app.models.identity import UserDB
+        assignee_username = None
+        assignee_display_name = None
+        sync_db = SessionLocal()
+        try:
+            user = sync_db.query(UserDB).filter(UserDB.name == customer_name).first()
+            if user:
+                assignee_username = user.username
+                assignee_display_name = user.name or user.username
+        finally:
+            sync_db.close()
+
+        if not assignee_username:
+            return None
+
+        # 以下逻辑与 create_ticket() 一致，仅 assigned_to 改用匹配到的用户
+        processed_attachments = []
+        for attachment in ticket_data.attachments or []:
+            if attachment in comment_attachment_map:
+                processed_attachments.extend(comment_attachment_map[attachment])
+                comment_attachment_map[attachment].clear()
+            else:
+                processed_attachments.append(attachment)
+
+        processed_description, _ = ImageProcessor.process_content_for_storage(
+            ticket_data.description, 0, 0,
+        )
+
+        user_map = await TicketService._get_user_map(token)
+        created_by_name = user_map.get(created_by, created_by)
+
+        async with db.begin():
+            db_ticket = Ticket(
+                title=ticket_data.title,
+                description=processed_description,
+                ticket_type=ticket_data.ticket_type,
+                priority=ticket_data.priority,
+                related_resource_id=ticket_data.related_resource_id,
+                created_by=created_by,
+                assigned_to=assignee_username,
+                tags=ticket_data.tags,
+                metadata_info=ticket_data.metadata_info,
+                project_name=ticket_data.project_name,
+                project_id=ticket_data.project_id,
+                deadline_at=convert_to_shanghai_time(ticket_data.deadline_at),
+                customer=customer_name,
+                status=TicketStatus.NEW,
+            )
+            db.add(db_ticket)
+            await db.flush()
+            ticket_id = db_ticket.id
+
+        result = await db.execute(
+            select(Ticket)
+            .where(Ticket.id == db_ticket.id)
+            .options(joinedload(Ticket.comments))
+        )
+        ticket = result.unique().scalar_one()
+        setattr(ticket, "created_by_name", created_by_name)
+        setattr(ticket, "reporter_name", created_by_name)
+        setattr(ticket, "assigned_to_name", assignee_display_name)
+        setattr(ticket, "assignee_name", assignee_display_name)
+
+        return ticket
+
+    @staticmethod
     def _apply_string_op(query, column, value: str, op: Optional[str], default_op: str = 'equals'):
         effective_op = op or default_op
         if effective_op == 'contains':
