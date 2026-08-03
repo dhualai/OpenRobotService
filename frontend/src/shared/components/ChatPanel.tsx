@@ -8,6 +8,9 @@ import { useWorkbenchStore } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
 import { qaUpload, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, type TicketDraft } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
+import UserSelect from '@/shared/components/UserSelect';
+import { createTicket } from '@/api/ticket';
+import type { UserItem } from '@/api/users';
 import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
 import { createRequest } from '@/api/client';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
@@ -916,6 +919,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               overrides: {},
               submitting: false,
               force_submit: !!data.force_submit,
+              dualTicket: false,
+              projectOwner: null,
             });
           }
         } catch { /* JSON 行解析出错则跳过 */ }
