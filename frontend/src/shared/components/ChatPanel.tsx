@@ -55,8 +55,8 @@ interface Message {
   reaction?: 'like' | 'dislike' | null;
   // 流式输出进行中标记：true 时气泡用纯文本渲染（避免 Markdown 全量重解析造成抖动），完成后置 false
   streaming?: boolean;
-  // 任务 Agent 专属：结构化方案草稿 / 工单概览
-  subtype?: 'solution_draft' | 'ticket_overview';
+  // 任务 Agent 专属：结构化方案草稿 / 工单概览 / 信息不足提示（长文本可展开）
+  subtype?: 'solution_draft' | 'ticket_overview' | 'missing_hint';
   solution_draft?: {
     _task_id?: string;
     root_cause_analysis: string;
@@ -191,11 +191,13 @@ const mapDbMessages = (
 
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
-  msg, editingId, compact, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick,
+  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick,
 }: {
   msg: Message;
   editingId: string | null;
   compact: boolean;
+  expandedDesc: boolean;
+  onToggleDesc: (id: string) => void;
   onToggleReaction: (id: string, type: 'like' | 'dislike') => void;
   onCopy: (content: string) => void;
   onEditStart: (id: string) => void;
@@ -262,7 +264,15 @@ const MessageBubble = memo(function MessageBubble({
             onChange={(v) => onEditChange(msg.id, String(v))}
           />
         ) : msg.role === 'assistant' ? (
-          msg.subtype === 'ticket_overview' && msg.ticket_overview ? (
+          msg.subtype === 'missing_hint' ? (
+            // 信息不足提示气泡（not_ready）：长文本折叠，提供「展开/收起」
+            <div className="chat-missing-hint">
+              <div className={`chat-missing-hint__text chat-clamp${expandedDesc ? ' is-expanded' : ''}`} style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+              <button type="button" className="chat-missing-hint__toggle" onClick={() => onToggleDesc(msg.id)}>
+                {expandedDesc ? '收起 ▴' : '展开 ▾'}
+              </button>
+            </div>
+          ) : msg.subtype === 'ticket_overview' && msg.ticket_overview ? (
             // 工单概览气泡：confirm 成功后插入，展示工单详情 + 派单状态（纯展示，不跳转）
             <div className="chat-ticket-overview">
               <div className="chat-ticket-overview__header">
@@ -274,7 +284,14 @@ const MessageBubble = memo(function MessageBubble({
               <div className="chat-ticket-overview__title">{msg.ticket_overview.title}</div>
               {msg.ticket_overview.project && <div className="chat-ticket-overview__row">📁 {msg.ticket_overview.project}</div>}
               {msg.ticket_overview.contact && <div className="chat-ticket-overview__row">👤 {msg.ticket_overview.contact}</div>}
-              {msg.ticket_overview.description && <div className="chat-ticket-overview__desc">{msg.ticket_overview.description}</div>}
+              {msg.ticket_overview.description && (
+                <>
+                  <div className={`chat-ticket-overview__desc chat-clamp${expandedDesc ? ' is-expanded' : ''}`}>{msg.ticket_overview.description}</div>
+                  <button type="button" className="chat-ticket-overview__toggle" onClick={() => onToggleDesc(msg.id)}>
+                    {expandedDesc ? '收起 ▴' : '展开 ▾'}
+                  </button>
+                </>
+              )}
               <div className="chat-ticket-overview__footer">
                 {msg.ticket_overview.assigned_to_name ? (
                   <span className="chat-ticket-overview__assigned">✅ 已派单 · {msg.ticket_overview.assigned_to_name}</span>
@@ -376,6 +393,16 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 转工单信息不足引导（方案A）：prepare 返回 not_ready 时，
   // 在输入框上方常驻「待补充清单」卡片 + 转工单按钮角标，引导用户回对话补全
   const [ticketMissing, setTicketMissing] = useState<{ info: string[]; message: string } | null>(null);
+  // 气泡长文本「展开/收起」：记录已展开的消息 id（工单概览描述、缺失提示气泡共用）
+  const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set());
+  const toggleMsgExpanded = useCallback((id: string) => {
+    setExpandedMsgIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
   const [isRecording, setIsRecording] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
   const [voiceWillCancel, setVoiceWillCancel] = useState(false);
@@ -416,6 +443,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // convMessagesCache 已提升为模块级（见组件定义上方），跨 ChatPanel 卸载/重挂载（切 Tab）存活
   const prevConvIdRef = useRef<number | null>(null); // 记录上一轮会话 id，确保切走时写到「旧会话」而非已切换的「新会话」
   const sendingRef = useRef(false); // 防双发（Enter + click 竞态）
+  // 流式中断控制：切换会话/卸载时 abort 正在进行的流式请求，避免后台 setMessages 串台到新会话导致回复丢失
+  const abortRef = useRef<AbortController | null>(null);
 
   // 滚动跟随：仅在用户贴底时自动跟随；流式中瞬时置底（behavior:'auto'）避免 smooth 动画排队抖动
   const atBottomRef = useRef(true);
@@ -502,6 +531,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   //  生产无 StrictMode 二次执行 → 切 Tab 回来消息丢失。）
   const convLoadedRef = useRef(false);
   useEffect(() => {
+    // 切换会话：中断上一个会话正在进行的流式回复。否则流式后台继续 setMessages，
+    // 但 messages 已被新会话替换，旧会话回复会串台丢失（表现为"回复闪一下就没了"）。
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
     const firstMountNoSelection = !convLoadedRef.current && conversationId === null;
     convLoadedRef.current = true;
     if (firstMountNoSelection) return;
@@ -564,7 +599,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         if (sid) setSessionId(sid);
         else setSessionId('');
         scrollToBottomNow();
-      } catch { /* ignore */ }
+      } catch (e) {
+        console.warn('[ChatPanel] 历史消息加载失败:', e);
+        Toast({ message: '历史消息加载失败，请刷新重试', theme: 'error' });
+      }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -745,6 +783,38 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const assistantId = uid();
     // 节流渲染相关变量提升到函数作用域：try 块内的 const/let 对 finally 不可见，必须外提
     let acc = '';
+    // sentConvId 同样外提：catch/finally 需用它落库（中断/错误时保留已接收内容）
+    let sentConvId: number | null = null;
+    // 增量落库：流式开始即把 assistant 消息写入 DB 并持有 messageId，流式中节流更新 content。
+    // 解决「仅流式结束才落库」导致的切换/刷新丢失——中断时 DB 已有已接收内容，切回即可恢复。
+    let assistantDbId: number | null = null; // 已落库 assistant 消息 id（首个 token 懒创建）
+    let creatingMsg = false;                  // 防并发重复创建（appendMessage 异步期间）
+    let lastSave = 0;
+    const SAVE_MS = 1500;                     // 节流：最多每 1.5s 落库一次，控 DB 写入频率
+    const saveAssistant = async (content: string, createIfMissing: boolean) => {
+      const c = sanitizeAiText(content);
+      if (!c || !sentConvId) return;
+      if (assistantDbId != null) {
+        await updateMessageContent(assistantDbId, c).catch((e) => console.warn('[ChatPanel] AI 回复更新失败:', e));
+        return;
+      }
+      if (!createIfMissing || creatingMsg) return;
+      creatingMsg = true;
+      try {
+        const m = await appendMessage(sentConvId, 'assistant', c).catch((e) => { console.warn('[ChatPanel] AI 回复落库失败:', e); return null; });
+        assistantDbId = m ? m.id : null;
+      } finally {
+        creatingMsg = false;
+      }
+    };
+    // 节流落库（不阻塞流式）：仅消息已创建后更新；首个 token 的创建由 saveAssistant 内部兜底
+    const maybeSave = () => {
+      const now = Date.now();
+      if (now - lastSave >= SAVE_MS && assistantDbId != null) {
+        lastSave = now;
+        void saveAssistant(acc, false);
+      }
+    };
     let lastFlush = 0;
     const FLUSH_MS = 90;
     // 流式中间渲染：疑似 LLM 协议 JSON 头泄漏（{ / ``` 开头）时以占位代替，避免残破 JSON 闪现上屏
@@ -761,17 +831,20 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const wasNew = !convRef.current; // 新会话：首轮问答完成后才同步到列表
       // 持久化用户消息（首条会顺带建会话）
       const convId = await ensureConversation(sid, content);
-      if (convId) appendMessage(convId, 'user', content).catch(() => {});
+      if (convId) appendMessage(convId, 'user', content).catch((e) => console.warn('[ChatPanel] 用户消息落库失败:', e));
       // 发送时会话快照：流式期间用户可能切换会话，convRef 会被 effect 改写指向新会话。
       // 后续 AI 回复持久化/首轮会话同步必须用此快照，否则回复会错写进新会话（表现为"过时/错位回复"）。
-      const sentConvId = convRef.current;
+      sentConvId = convRef.current;
       setMessages((prev) => [...prev, { id: assistantId, role: 'assistant', content: '', streaming: true, timestamp: new Date().toISOString() }]);
 
       // 提单 Agent
       const apiPath = `${API_CONFIG.AI.BASE_URL}/qa/ask/stream`;
       const apiBody = JSON.stringify({ session_id: sid, query: content });
 
-      const response = await fetchWithAuth(apiPath, { method: 'POST', body: apiBody });
+      // AbortController：切换会话/卸载时主动中断流式，避免后台 setMessages 串台丢消息
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const response = await fetchWithAuth(apiPath, { method: 'POST', body: apiBody, signal: controller.signal });
 
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
@@ -793,9 +866,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           const data = JSON.parse(line.slice(6));
           if (data.token) {
             acc += data.token;
+            // 首个 token 懒创建 DB 消息（避免空消息）；之后节流更新增量内容
+            if (assistantDbId == null) void saveAssistant(acc, true);
+            else maybeSave();
             scheduleRender();
           } else if (data.content) {
             acc += data.content;
+            if (assistantDbId == null) void saveAssistant(acc, true);
+            else maybeSave();
             scheduleRender();
           }
           // 流式错误（如诊断 pipeline 抛错）：捕获错误信息，循环结束后抛出，避免静默空气泡
@@ -863,7 +941,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (streamError && !acc) throw new Error(streamError);
 
       // 流式结束：持久化 AI 回复到发送时的会话（快照）——切会话后 convRef 已指向新会话，不能再用
-      if (acc && sentConvId) appendMessage(sentConvId, 'assistant', acc).catch(() => {});
+      if (acc && sentConvId) appendMessage(sentConvId, 'assistant', acc).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
       // 首轮问答完成 → 同步会话到列表、定位到新会话。
       // 标题保持「新建会话」：标题由 AI 在第2轮回复时生成（event: title），在此之前都叫「新建会话」。
       // 仅当用户未切走（仍在发送时的会话）才执行跳转，避免把用户从别的会话拽回来
@@ -884,22 +962,35 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         refreshTasks();
       }
     } catch (err) {
-      // 鉴权失效已由 kickToLogin 统一提示并跳转，此处不重复弹错误
-      if (!isKickingToLogin()) {
+      // 主动中断 = AbortController 触发（fetch/reader 抛 AbortError）；其余视为真错误
+      const aborted = err instanceof DOMException && err.name === 'AbortError';
+      const finalAcc = sanitizeAiText(acc);
+      if (aborted) {
+        // 主动中断（切换会话/卸载）：有内容则增量落库保留（切回原会话从 DB 恢复）；无内容则移除空气泡
+        if (finalAcc) {
+          await saveAssistant(finalAcc, true);
+        } else {
+          setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+        }
+      } else if (!isKickingToLogin()) {
+        // 真错误：不再删除气泡（避免"闪烁后丢失"）。有内容则保留+落库；无内容则给占位提示
         Toast({ message: `发送失败: ${err instanceof Error ? err.message : '未知错误'}`, theme: 'error' });
+        if (finalAcc) {
+          await saveAssistant(finalAcc, true);
+        } else {
+          acc = '[回复中断，请重试]';
+        }
       }
-      setMessages((prev) => prev.filter((m) => m.id !== assistantId));
     } finally {
       // 先释放发送锁与 loading，再强制刷新最终内容，避免刷新异常时再次卡死发送
       setLoading(false);
       sendingRef.current = false;
+      abortRef.current = null;
       // 回复完成：强制贴底，确保流式结束（Markdown 切换）后视图定位到最新消息，无需手动滑动
       atBottomRef.current = true;
-      // 强制刷新最终完整内容：流式结束前最后一次 flush 可能早于 90ms 窗口，确保末态不丢字；
-      // 中间态可能显示"正在思考…"占位（JSON 头泄漏防护），此处以清洗后内容统一定稿
-      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: sanitizeAiText(acc) || acc } : m)));
-      // 置 streaming:false：流式结束，气泡由纯文本降级渲染切换为最终 MarkdownRenderer 渲染
-      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)));
+      // 定稿：合并为单次 setMessages。错误/中断时不再删除气泡，保留已接收内容（或占位提示），
+      // 杜绝"闪烁一下就消失"。气泡已被 filter 删除时（中断且无内容）map 找不到，无操作。
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: sanitizeAiText(acc) || acc, streaming: false } : m)));
     }
   };
 
@@ -1197,6 +1288,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         setMessages((prev) => [...prev, {
           id: uid(),
           role: 'assistant',
+          subtype: 'missing_hint',
           content: msg,
           timestamp: new Date().toISOString(),
         }]);
@@ -1226,7 +1318,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       setTicketMissing(null); // 已就绪，清掉待补充清单
       setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false, force_submit: false });
       if (missing_fields?.length) {
-        Toast({ message: prompt || '请补全必填字段后提交', theme: 'warning' });
+        // 缺失字段明细已在确认弹窗内逐字段展示，Toast 仅作短提示（避免长 prompt 被截断/喧宾夺主）
+        Toast({ message: '请补全必填字段后提交', theme: 'warning', duration: 3000 });
       }
     } catch (err) {
       Toast({ message: `生成草稿失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -1287,9 +1380,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     pollDispatch(msgId, dbId, ov, 0);
   }, [pollDispatch]);
 
-  // 卸载清理所有轮询
+  // 卸载清理所有轮询 + 中断流式（避免组件卸载后后台 setMessages 报错/串台）
   useEffect(() => () => {
     cancelledRef.current = true;
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
     Object.values(pollTimeoutsRef.current).forEach(clearTimeout);
     pollTimeoutsRef.current = {};
     pollingRef.current.clear();
@@ -1458,6 +1555,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             onEditSave={handleEditSave}
             onEditCancel={handleEditCancel}
             onImageClick={setPreviewUrl}
+            expandedDesc={expandedMsgIds.has(msg.id)}
+            onToggleDesc={toggleMsgExpanded}
           />
         ))}
         <div ref={messagesEndRef} />
