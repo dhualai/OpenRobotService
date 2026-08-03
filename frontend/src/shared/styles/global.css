@@ -247,6 +247,7 @@ html, body, #root {
   box-shadow: 0 2px 10px rgba(227, 77, 89, 0.08);
   font-size: 13px;
   color: #333;
+  overflow: visible;
   animation: ticket-missing-enter 0.3s ease both;
 }
 @keyframes ticket-missing-enter {
@@ -294,6 +295,11 @@ html, body, #root {
   padding: 3px 8px;
   border-radius: 8px;
   font-size: 12px;
+  /* 方案A：超长缺失字段名在自身框内折行，不再撑破卡片被祖先 overflow 裁掉 */
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .chat-ticket-missing__retry {
   margin-top: 8px;
@@ -355,6 +361,36 @@ html, body, #root {
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+/* 通用长文本折叠：与 is-expanded 配合实现「展开/收起」（工单概览描述、缺失提示气泡共用） */
+.chat-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.chat-clamp.is-expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+/* 展开/收起按钮（工单概览描述、缺失提示气泡共用） */
+.chat-ticket-overview__toggle,
+.chat-missing-hint__toggle {
+  margin-top: 6px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: #0052d9;
+  font-size: 12px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+/* 信息不足提示气泡（not_ready）：与对话气泡同底的文本块 */
+.chat-missing-hint__text {
+  font-size: 13px;
+  color: #333;
+  line-height: 1.6;
 }
 .chat-ticket-overview__footer {
   margin-top: 12px;
@@ -2097,6 +2133,17 @@ html, body, #root {
   color: #999;
   font-size: 13px;
   margin: 8px 0;
+}
+
+/* ===== Toast 提示：放宽宽度并去掉行截断，确保较长提示（如缺失字段）完整可见 =====
+   覆盖 tdesign-mobile-react 默认（max-width:185px + line-clamp:3）。
+   global.css 在 main.tsx 中于 tdesign 样式之后导入，故此处无需 !important 即可生效。 */
+.t-toast {
+  max-width: 70vw;
+}
+.t-toast__text {
+  -webkit-line-clamp: unset;
+  overflow: visible;
 }
 
 /* 删除线 */
