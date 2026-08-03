@@ -12,6 +12,24 @@ import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
 
 interface Project { id?: string; code?: string; name: string; }
 
+// 文件导入结果 —— 后端 /data/upload-file 返回，用于展示导入成功的条目
+interface ImportChunk {
+  start_time: string;
+  end_time: string;
+  groups?: string[];
+}
+
+interface FileImportResult {
+  success?: boolean;
+  message?: string;
+  filename?: string;
+  file_size?: string;
+  project?: string;
+  indicator?: string;
+  chunk_count?: number;
+  chunks?: ImportChunk[];
+}
+
 const todayStr = (): string => {
   const d = new Date();
   const y = d.getFullYear();
@@ -113,23 +131,31 @@ export default function DataImport() {
 
   const [jsonText, setJsonText] = useState('');
 
+  // 文件导入结果：成功时展示条目，失败时展示错误提示
+  const [fileResult, setFileResult] = useState<FileImportResult | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+
   const handleFileUpload = async (file: File) => {
     if (!project) { Toast({ message: '请先选择项目', theme: 'warning' }); return; }
     setLoading(true);
+    setFileResult(null);
+    setFileError(null);
     try {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('project', project.code || project.name);
-      const data = await request<{ success?: boolean; message?: string }>('/data/upload-file', {
+      const data = await request<FileImportResult>('/data/upload-file', {
         method: 'POST',
         body: formData,
       });
       if (data.success === false) {
-        Toast({ message: data.message || '导入失败', theme: 'error' });
+        setFileError(data.message || '导入失败');
       } else {
-        Toast({ message: '数据包解析导入成功', theme: 'success' });
+        setFileResult(data);
+        Toast({ message: data.message || '数据包解析导入成功', theme: 'success' });
       }
     } catch (err) {
+      setFileError(err instanceof Error ? err.message : '未知错误');
       Toast({ message: `导入失败: ${err instanceof Error ? err.message : '未知错误'}`, theme: 'error' });
     } finally {
       setLoading(false);
@@ -184,6 +210,56 @@ export default function DataImport() {
             <p style={{ color: '#999', fontSize: 13, marginTop: 12, textAlign: 'center' }}>
               上传 DAS 数据包文件（.bz2 或 .json，含 GroupEfficiency 等指标数据），选定项目后上传
             </p>
+
+            {/* 导入失败提示 */}
+            {fileError && (
+              <div style={{
+                background: '#fff1f0', border: '1px solid #ffccc7', borderRadius: 8,
+                padding: 12, color: '#f5222d', marginTop: 16, fontSize: 13,
+              }}>
+                <div style={{ fontWeight: 600 }}>✗ 导入失败</div>
+                <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{fileError}</div>
+              </div>
+            )}
+
+            {/* 导入成功：信息卡片 + 导入条目列表 */}
+            {fileResult && fileResult.success !== false && (
+              <div style={{ marginTop: 16 }}>
+                {/* 成功提示条 */}
+                <div style={{
+                  background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 8,
+                  padding: '10px 14px', color: '#52c41a', fontSize: 13, fontWeight: 500, marginBottom: 12,
+                }}>
+                  ✓ {fileResult.message || '导入成功'}
+                </div>
+
+                {/* 信息卡片（参考 ProjectMetricsList 的 header-info） */}
+                <div style={{ background: '#f9f9f9', borderRadius: 8, padding: '12px 16px', border: '1px solid #e8e8e8', marginBottom: 12 }}>
+                  <InfoLine label="项目名称" value={project?.name || fileResult.project || '-'} />
+                  <InfoLine label="指标标签" value={fileResult.indicator || '-'} />
+                  <InfoLine label="文件名称" value={fileResult.filename || '-'} />
+                  <InfoLine label="文件大小" value={fileResult.file_size || '-'} />
+                  <InfoLine label="导入条目数" value={String(fileResult.chunk_count ?? 0)} />
+                </div>
+
+                {/* 导入的数据条目列表 */}
+                {fileResult.chunks && fileResult.chunks.length > 0 && (
+                  <div style={{ background: '#fff', borderRadius: 8, padding: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>导入的数据条目</div>
+                    {fileResult.chunks.map((c, idx) => (
+                      <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #f5f5f5', fontSize: 13, gap: 8 }}>
+                        <span style={{ color: '#1a1a1a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {c.start_time} ~ {c.end_time}
+                        </span>
+                        <span style={{ color: '#999', flexShrink: 0 }}>
+                          {c.groups && c.groups.length ? c.groups.join('、') : '—'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </TabPanel>
         <TabPanel value="json" label="JSON导入">
@@ -202,6 +278,16 @@ export default function DataImport() {
         </TabPanel>
       </Tabs>
       {loading && <Loading text="导入中..." />}
+    </div>
+  );
+}
+
+// 信息卡片的一行：左侧灰色标签 + 右侧数值（参考 ProjectMetricsList 的 header-info）
+function InfoLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0', fontSize: 13, gap: 12 }}>
+      <span style={{ color: '#666', flexShrink: 0 }}>{label}</span>
+      <span style={{ color: '#1a1a1a', fontWeight: 500, textAlign: 'right' }}>{value}</span>
     </div>
   );
 }
