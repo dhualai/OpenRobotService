@@ -1408,77 +1408,137 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     });
   }, [messages, startDispatchPoll]);
 
-  /** 确认提交：校验项目必填（所有类型，需绑定 project_id） → 调 confirm 入库 → 插入工单概览气泡 */
+  /** 确认提交：校验项目/项目负责人 → 工单1 confirm_submit + 工单2(双工单) createTicket → 两个概览气泡 */
   const handleConfirmTicket = async () => {
     const draft = ticketConfirm.draft;
     if (!draft || !sessionId) return;
     const projectIdVal = draftField('project_id').trim();
     const projectNameVal = draftField('project').trim();
-    if (!projectIdVal) {
-      // 项目名有但 project_id 空 → 多半是 AI 给的项目不在提单人名下，无法自动绑定
+    const isDual = ticketConfirm.dualTicket;
+
+    // 校验：非双工单要求 project_id；双工单要求项目负责人
+    if (!isDual && !projectIdVal) {
       Toast({
         message: projectNameVal
-          ? `项目「${projectNameVal}」不在你的名下，请在下拉中选择一个你所属的项目`
+          ? `项目「${projectNameVal}」不在你的名下，请在下拉中选择一个你所属的项目；或勾选「项目不在项目集中」走兜底`
           : '请先选择绑定项目',
         theme: 'warning',
         duration: 4000,
       });
       return;
     }
+    if (isDual && !ticketConfirm.projectOwner) {
+      Toast({ message: '请选择项目负责人', theme: 'warning' });
+      return;
+    }
+
     setTicketConfirm((s) => ({ ...s, submitting: true }));
     try {
+      // ── 工单1（正常工单）：confirm_submit。双工单模式强制 project=摇人吧服务号提单（兜底） ──
       const overrides: Partial<TicketDraft> = {
         ...ticketConfirm.overrides,
-        project: draftField('project'),
-        project_id: projectIdVal,
+        project: isDual ? '摇人吧服务号提单' : draftField('project'),
+        project_id: isDual ? '' : projectIdVal,
       };
       const res = await qaConfirmTicket(sessionId, overrides);
       if (res?.code !== 0) {
         Toast({ message: res?.message || '提交工单失败', theme: 'error' });
         return;
       }
-      setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false });
 
-      // 构造工单概览气泡插入对话流
+      // 工单1 概览气泡数据
       const ticket = res.data?.ticket as Record<string, unknown> | undefined;
-      const ov: NonNullable<Message['ticket_overview']> = {
+      const ov1: NonNullable<Message['ticket_overview']> = {
         db_id: (res.data?.db_id as number) ?? 0,
         ticket_id: (ticket?.ticket_id as string) || draft.ticket_id || '',
         title: draftField('title') || draft.title || '工单',
         type: draftField('type') || draft.type,
         priority: draftField('priority') || draft.priority,
-        project: draftField('project'),
+        project: overrides.project || '摇人吧服务号提单',
         contact: draftField('contact') || undefined,
         description: draftField('description') || draft.description,
         created_at: new Date().toISOString(),
       };
-      // 先落库拿 DB 消息 id：作为气泡稳定 id + 轮询回写 DB 的句柄（db_msg_id）。
-      // 避免此前用临时 uid 当气泡 id，被内存缓存/后台校正改成 DB id 后，进行中的轮询 msgId 匹配不到 → 状态更新丢失。
-      // 用 metadata_.kind 标记（message_type 是受限枚举，不能存 ticket_overview），落库 message_type='text' 合法值。
-      let dbMsgId: number | null = null;
+
+      // ── 工单2（申请单，仅双工单）：POST /api/tasks/，直接指定 assigned_to=项目负责人 ──
+      let ov2: NonNullable<Message['ticket_overview']> | null = null;
+      if (isDual && ticketConfirm.projectOwner) {
+        const owner = ticketConfirm.projectOwner;
+        const expectedProj = draftField('project') || projectNameVal || '（未填写）';
+        try {
+          const created = await createTicket({
+            title: '【项目申请】请求新建项目/添加用户',
+            description: `用户提单时项目「${expectedProj}」不在系统项目集中，请处理：1）新建项目；2）将用户加入对应项目。`,
+            ticket_type: 'support',
+            priority: 'medium',
+            project_name: '摇人吧服务号提单',
+            assigned_to: owner.username,
+          });
+          ov2 = {
+            db_id: created.id,
+            ticket_id: '',
+            title: '【项目申请】请求新建项目/添加用户',
+            type: 'support',
+            priority: '中',
+            project: '摇人吧服务号提单',
+            description: `已向项目负责人「${owner.name || owner.username}」发送申请工单`,
+            created_at: new Date().toISOString(),
+          };
+        } catch (err) {
+          Toast({ message: `申请工单创建失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+        }
+      }
+
+      setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
+
+      // 工单1 落库 + 气泡 + 轮询
+      let dbMsgId1: number | null = null;
       if (convRef.current) {
         try {
-          const saved = await appendMessage(convRef.current, 'assistant', JSON.stringify(ov), {
+          const saved = await appendMessage(convRef.current, 'assistant', JSON.stringify(ov1), {
             messageType: 'text',
             metadata: JSON.stringify({ kind: 'ticket_overview' }),
           });
-          dbMsgId = saved.id;
+          dbMsgId1 = saved.id;
         } catch { /* 落库失败也插入气泡（临时 id），仅不回写 DB */ }
       }
-      const ovMsg: Message = {
-        id: dbMsgId != null ? String(dbMsgId) : uid(),
+      const ovMsg1: Message = {
+        id: dbMsgId1 != null ? String(dbMsgId1) : uid(),
         role: 'assistant',
         content: '',
         timestamp: new Date().toISOString(),
         subtype: 'ticket_overview',
-        ticket_overview: ov,
+        ticket_overview: ov1,
       };
-      setMessages((prev) => [...prev, ovMsg]);
-      // 启动派单轮询（传完整 ov，供查到后回写 DB）
-      if (ov.db_id) startDispatchPoll(ovMsg.id, ov.db_id, ov);
+      setMessages((prev) => [...prev, ovMsg1]);
+      if (ov1.db_id) startDispatchPoll(ovMsg1.id, ov1.db_id, ov1);
+
+      // 工单2 落库 + 气泡 + 轮询（与工单1同处理，刷新/切会话后可恢复）
+      if (ov2) {
+        let dbMsgId2: number | null = null;
+        if (convRef.current) {
+          try {
+            const saved2 = await appendMessage(convRef.current, 'assistant', JSON.stringify(ov2), {
+              messageType: 'text',
+              metadata: JSON.stringify({ kind: 'ticket_overview' }),
+            });
+            dbMsgId2 = saved2.id;
+          } catch { /* ignore */ }
+        }
+        const ovMsg2: Message = {
+          id: dbMsgId2 != null ? String(dbMsgId2) : uid(),
+          role: 'assistant',
+          content: '',
+          timestamp: new Date().toISOString(),
+          subtype: 'ticket_overview',
+          ticket_overview: ov2,
+        };
+        setMessages((prev) => [...prev, ovMsg2]);
+        if (ov2.db_id) startDispatchPoll(ovMsg2.id, ov2.db_id, ov2);
+      }
 
       refreshTasks(); // 刷新「历史工单」待派单列表
-      Toast({ message: '工单已生成', theme: 'success' });
+      Toast({ message: isDual ? '双工单已生成' : '工单已生成', theme: 'success' });
     } catch (err) {
       Toast({ message: `提交工单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
