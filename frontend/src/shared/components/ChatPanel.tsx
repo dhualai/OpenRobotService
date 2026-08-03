@@ -152,7 +152,7 @@ const mapDbMessages = (
       return (v && typeof v === 'object') ? (v as Record<string, unknown>) : null;
     } catch { return null; }
   };
-  return (full.messages || [])
+  const mapped = (full.messages || [])
     .map((m) => {
       // 工单概览气泡：metadata_.kind==='ticket_overview'（content 存工单 JSON）
       const meta = parseMeta(m.metadata_);
@@ -187,9 +187,19 @@ const mapDbMessages = (
         } catch { /* ignore */ }
       }
       return msg;
-    })
-    // 空白 AI 气泡（历史异常落库的空内容/纯空白）不恢复显示
-    .filter((m) => m.role !== 'assistant' || m.subtype === 'ticket_overview' || m.content.trim().length > 0);
+    });
+  // producer 后台生成中：最后一条 assistant content 空（首 token 前），标记 streaming 保留显示。
+  // 配合会话加载后的轮询，producer 完成后 content 非空，轮询自动更新为完整回复。
+  for (let i = mapped.length - 1; i >= 0; i--) {
+    if (mapped[i].role === 'assistant') {
+      if (!mapped[i].content.trim() && !mapped[i].subtype) {
+        mapped[i] = { ...mapped[i], streaming: true };
+      }
+      break;
+    }
+  }
+  // 空白 AI 气泡（历史异常落库的空内容/纯空白）不恢复显示；但 streaming 占位（producer 生成中）保留
+  return mapped.filter((m) => m.role !== 'assistant' || m.subtype === 'ticket_overview' || m.content.trim().length > 0 || m.streaming);
 };
 
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
@@ -591,6 +601,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
     // 缓存为空（首次进入 / 刷新后）→ 从后端加载
     let cancelled = false;
+    let pollId: ReturnType<typeof setInterval> | null = null;
     (async () => {
       try {
         const full = await getConversation(conversationId);
@@ -604,12 +615,37 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         if (sid) setSessionId(sid);
         else setSessionId('');
         scrollToBottomNow();
+        // producer 后台生成中（最后一条 assistant 标记 streaming）：轮询 DB 等 producer 落库完整回复。
+        // 刷新打断 SSE 后后端 producer 仍在独立生成，此处轮询拿到 content 后自动替换占位气泡。
+        const last = restored[restored.length - 1];
+        if (last && last.role === 'assistant' && last.streaming) {
+          pollId = setInterval(async () => {
+            if (cancelled || convRef.current !== conversationId) {
+              if (pollId) clearInterval(pollId);
+              return;
+            }
+            try {
+              const fresh = await getConversation(conversationId);
+              if (cancelled || convRef.current !== conversationId) {
+                if (pollId) clearInterval(pollId);
+                return;
+              }
+              const freshMsgs = mapDbMessages(fresh);
+              const newLast = freshMsgs[freshMsgs.length - 1];
+              if (newLast && newLast.role === 'assistant' && newLast.content.trim()) {
+                setMessages(freshMsgs);
+                scrollToBottomNow();
+                if (pollId) clearInterval(pollId);
+              }
+            } catch { /* 轮询失败忽略，下次重试 */ }
+          }, 2000);
+        }
       } catch (e) {
         console.warn('[ChatPanel] 历史消息加载失败:', e);
         Toast({ message: '历史消息加载失败，请刷新重试', theme: 'error' });
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; if (pollId) clearInterval(pollId); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
