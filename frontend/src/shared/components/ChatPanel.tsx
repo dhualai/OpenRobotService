@@ -169,17 +169,6 @@ const mapDbMessages = (
           };
         } catch { /* 解析失败降级为普通文本 */ }
       }
-      // 流式占位气泡（后端 SSE 创建的 assistant 消息，标记 kind=streaming）：
-      // 刷新/切会话恢复时，content 有值则显示已生成内容；为空（首 token 前刷新）则还原「思考中」占位，
-      // 不被下方空白 AI 气泡过滤丢弃。流式已中断不会自动续接，用户可重新提问。
-      if (meta?.kind === 'streaming') {
-        return {
-          id: String(m.id),
-          role: 'assistant' as const,
-          content: m.content.trim() ? sanitizeAiText(m.content) : 'AI 正在思考…',
-          timestamp: m.created_at,
-        };
-      }
       const msg: Message = {
         id: String(m.id),
         role: m.role as 'user' | 'assistant',
