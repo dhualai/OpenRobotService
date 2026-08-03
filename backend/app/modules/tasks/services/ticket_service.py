@@ -77,9 +77,12 @@ class TicketService:
                 project_name=ticket_data.project_name,
                 project_id=ticket_data.project_id,
                 deadline_at=convert_to_shanghai_time(ticket_data.deadline_at),
-                assigned_to=created_by,
+                # 接单人：尊重前端传入的 assigned_to（兜底双工单场景下工单2 直接指定项目负责人）；
+                # 未传时回退为创建人（原有行为）。传了 assigned_to 说明已明确派单，状态置为 IN_PROGRESS，
+                # 否则工单会留在 NEW 被派单 Worker 再次派单。
+                assigned_to=ticket_data.assigned_to or created_by,
                 customer=ticket_data.customer,
-                status=TicketStatus.NEW
+                status=TicketStatus.IN_PROGRESS if ticket_data.assigned_to else TicketStatus.NEW
             )
             db.add(db_ticket)
             await db.flush()
