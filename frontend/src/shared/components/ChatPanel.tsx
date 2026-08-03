@@ -1466,10 +1466,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (isDual && ticketConfirm.projectOwner) {
         const owner = ticketConfirm.projectOwner;
         const expectedProj = draftField('project') || projectNameVal || '（未填写）';
+        // 工单2（申请单）描述与工单1（AI 派单）保持一致：复用用户在确认窗看到/编辑的 AI 总结描述，
+        // 项目负责人既能看到申请目的，又能看到用户实际问题（车型/故障/场景等），避免空泛固定模板。
+        const issueDesc = (draftField('description') || draft.description || '（无问题描述）').trim();
         try {
           const created = await createTicket({
             title: '【项目申请】请求新建项目/添加用户',
-            description: `用户提单时项目「${expectedProj}」不在系统项目集中，请处理：1）新建项目；2）将用户加入对应项目。`,
+            description: `用户提单时项目「${expectedProj}」不在系统项目集中，请处理：1）新建项目；2）将用户加入对应项目。\n\n【用户问题描述】\n${issueDesc}`,
             ticket_type: 'support',
             priority: 'medium',
             project_name: '摇人吧服务号提单',
