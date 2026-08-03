@@ -46,7 +46,7 @@ export default function ProjectSelect({
     setLoading(true);
     setError('');
     try {
-      const list = await getMyProjects();
+      const list = await getProjects();
       projectCache = list;
       projectCacheTs = now;
       setProjects(list);

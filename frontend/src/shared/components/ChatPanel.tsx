@@ -392,7 +392,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     overrides: Partial<TicketDraft>;
     submitting: boolean;
     force_submit?: boolean;  // 收集超限强制提单时为 true，弹窗顶部黄色 banner 提示用户重点核对
-  }>({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false });
+    dualTicket: boolean;      // 兜底双工单：项目不在项目集时勾选，生成申请单派给项目负责人
+    projectOwner: UserItem | null;  // 双工单场景下选中的项目负责人
+  }>({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
   // 转工单信息不足引导（方案A）：prepare 返回 not_ready 时，
   // 在输入框上方常驻「待补充清单」卡片 + 转工单按钮角标，引导用户回对话补全
   const [ticketMissing, setTicketMissing] = useState<{ info: string[]; message: string } | null>(null);
@@ -772,7 +774,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       return;
     }
 
-    // 纯文字：走 /qa/ask/stream 流式
+      // 纯文字：走 /qa/ask/stream 流式
     const userMessage: Message = {
       id: uid(),
       role: 'user',
@@ -786,38 +788,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const assistantId = uid();
     // 节流渲染相关变量提升到函数作用域：try 块内的 const/let 对 finally 不可见，必须外提
     let acc = '';
-    // sentConvId 同样外提：catch/finally 需用它落库（中断/错误时保留已接收内容）
+    // sentConvId 快照：流式期间用户可能切换会话，convRef 会被 effect 改写指向新会话；
+    // 后续 AI 回复落库/首轮会话同步必须用此快照，否则回复会错写进新会话（表现为"过时/错位回复"）
     let sentConvId: number | null = null;
-    // 增量落库：流式开始即把 assistant 消息写入 DB 并持有 messageId，流式中节流更新 content。
-    // 解决「仅流式结束才落库」导致的切换/刷新丢失——中断时 DB 已有已接收内容，切回即可恢复。
-    let assistantDbId: number | null = null; // 已落库 assistant 消息 id（首个 token 懒创建）
-    let creatingMsg = false;                  // 防并发重复创建（appendMessage 异步期间）
-    let lastSave = 0;
-    const SAVE_MS = 1500;                     // 节流：最多每 1.5s 落库一次，控 DB 写入频率
-    const saveAssistant = async (content: string, createIfMissing: boolean) => {
-      const c = sanitizeAiText(content);
-      if (!c || !sentConvId) return;
-      if (assistantDbId != null) {
-        await updateMessageContent(assistantDbId, c).catch((e) => console.warn('[ChatPanel] AI 回复更新失败:', e));
-        return;
-      }
-      if (!createIfMissing || creatingMsg) return;
-      creatingMsg = true;
-      try {
-        const m = await appendMessage(sentConvId, 'assistant', c).catch((e) => { console.warn('[ChatPanel] AI 回复落库失败:', e); return null; });
-        assistantDbId = m ? m.id : null;
-      } finally {
-        creatingMsg = false;
-      }
-    };
-    // 节流落库（不阻塞流式）：仅消息已创建后更新；首个 token 的创建由 saveAssistant 内部兜底
-    const maybeSave = () => {
-      const now = Date.now();
-      if (now - lastSave >= SAVE_MS && assistantDbId != null) {
-        lastSave = now;
-        void saveAssistant(acc, false);
-      }
-    };
+    // 后端增量落库写出的 assistant 消息 DB id：由流式 event:message_created 回传。
+    // 命中即说明后端已接管落库，前端不再重复写（避免重复消息）；未命中(老后端/建消息失败)则前端兜底落库。
+    let assistantDbId: number | null = null;
     let lastFlush = 0;
     const FLUSH_MS = 90;
     // 流式中间渲染：疑似 LLM 协议 JSON 头泄漏（{ / ``` 开头）时以占位代替，避免残破 JSON 闪现上屏
@@ -842,7 +818,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
       // 提单 Agent
       const apiPath = `${API_CONFIG.AI.BASE_URL}/qa/ask/stream`;
-      const apiBody = JSON.stringify({ session_id: sid, query: content });
+      // 把已落库的会话 id 传给后端，由后端在流式中增量落库 assistant 回复（刷新/切 Tab 可从 DB 恢复）
+      const apiBody = JSON.stringify({ session_id: sid, query: content, conversation_id: sentConvId });
 
       // AbortController：切换会话/卸载时主动中断流式，避免后台 setMessages 串台丢消息
       const controller = new AbortController();
@@ -867,16 +844,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         if (!line.startsWith('data: ')) return;
         try {
           const data = JSON.parse(line.slice(6));
+          // 后端建好的 assistant 消息 DB id（后端 SSE 侧落库接管后回传）
+          if (currentEvent === 'message_created' && data.message_id) {
+            assistantDbId = data.message_id;
+          }
           if (data.token) {
             acc += data.token;
-            // 首个 token 懒创建 DB 消息（避免空消息）；之后节流更新增量内容
-            if (assistantDbId == null) void saveAssistant(acc, true);
-            else maybeSave();
             scheduleRender();
           } else if (data.content) {
             acc += data.content;
-            if (assistantDbId == null) void saveAssistant(acc, true);
-            else maybeSave();
             scheduleRender();
           }
           // 流式错误（如诊断 pipeline 抛错）：捕获错误信息，循环结束后抛出，避免静默空气泡
@@ -945,8 +921,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 流式出错且无任何内容 → 抛出，由外层 catch 提示并移除空气泡（不再静默）
       if (streamError && !acc) throw new Error(streamError);
 
-      // 流式结束：持久化 AI 回复到发送时的会话（快照）——切会话后 convRef 已指向新会话，不能再用
-      if (acc && sentConvId) appendMessage(sentConvId, 'assistant', acc).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
+      // 流式结束：后端已在流式中增量落库完整内容（event:message_created 接管）。
+      // 仅当后端未接管（老后端未回传 message_id / 建消息失败）时，前端兜底落库一次，避免丢字。
+      if (acc && assistantDbId == null && sentConvId) {
+        appendMessage(sentConvId, 'assistant', acc).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
+      }
       // 首轮问答完成 → 同步会话到列表、定位到新会话。
       // 标题保持「新建会话」：标题由 AI 在第2轮回复时生成（event: title），在此之前都叫「新建会话」。
       // 仅当用户未切走（仍在发送时的会话）才执行跳转，避免把用户从别的会话拽回来
@@ -971,17 +950,23 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const aborted = err instanceof DOMException && err.name === 'AbortError';
       const finalAcc = sanitizeAiText(acc);
       if (aborted) {
-        // 主动中断（切换会话/卸载）：有内容则增量落库保留（切回原会话从 DB 恢复）；无内容则移除空气泡
+        // 主动中断（切换会话/卸载）：后端已在流式中增量落库（≤0.8s 残差），切回原会话从 DB 恢复；
+        // 仅后端未接管时前端兜底落库。无内容则移除空气泡（避免闪烁残留）。
         if (finalAcc) {
-          await saveAssistant(finalAcc, true);
+          if (assistantDbId == null && sentConvId) {
+            appendMessage(sentConvId, 'assistant', finalAcc).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
+          }
         } else {
           setMessages((prev) => prev.filter((m) => m.id !== assistantId));
         }
       } else if (!isKickingToLogin()) {
-        // 真错误：不再删除气泡（避免"闪烁后丢失"）。有内容则保留+落库；无内容则给占位提示
+        // 真错误：不再删除气泡（避免"闪烁后丢失"）。后端已落库部分内容时直接保留；
+        // 仅后端未接管时前端兜底落库。无内容则给占位提示。
         Toast({ message: `发送失败: ${err instanceof Error ? err.message : '未知错误'}`, theme: 'error' });
         if (finalAcc) {
-          await saveAssistant(finalAcc, true);
+          if (assistantDbId == null && sentConvId) {
+            appendMessage(sentConvId, 'assistant', finalAcc).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
+          }
         } else {
           acc = '[回复中断，请重试]';
         }
@@ -1321,7 +1306,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const { draft, missing_fields, prompt } = res.data;
       // 打开确认弹窗，让用户核对/编辑/补字段
       setTicketMissing(null); // 已就绪，清掉待补充清单
-      setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false, force_submit: false });
+      setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
       if (missing_fields?.length) {
         // 缺失字段明细已在确认弹窗内逐字段展示，Toast 仅作短提示（避免长 prompt 被截断/喧宾夺主）
         Toast({ message: '请补全必填字段后提交', theme: 'warning', duration: 3000 });

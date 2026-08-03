@@ -9,7 +9,7 @@ import json
 import time
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -37,6 +37,10 @@ class QAAskRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=128, description="会话 ID")
     query: str = Field(..., min_length=1, max_length=500, description="用户输入")
     skip_retrieval: bool = Field(default=False, description="测试用：跳过 KB 检索")
+    # 增量落库（后端 SSE 侧持久化 assistant 回复）：前端把已落库的会话 id 传进来，
+    # 后端在流式中把 assistant 回复节流写入同会话 messages 表，刷新/切 Tab 也能从 DB 恢复。
+    conversation_id: Optional[int] = Field(default=None, description="前端 call 会话 id（传了才启用后端落库）")
+    assistant_message_id: Optional[int] = Field(default=None, description="已预建的 assistant 占位消息 id；不传则由后端创建")
 
 
 class QASubmitRequest(BaseModel):
@@ -122,26 +126,74 @@ async def ask_question_stream(
     if not username:
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
     async def sse():
+        from app.core.db import AsyncSessionLocal
+        from app.modules.call.schemas.message import MessageCreate, MessageUpdate
+        from app.modules.call.services.message_service import MessageService
+
         t0 = time.perf_counter()
         qa_request = DiagnosisRequest(session_id=qa_req.session_id, query=qa_req.query,
                            skip_retrieval=qa_req.skip_retrieval, created_by=username)
         first = False
         _sse_trace: list[str] = []
         _sse_token_count = 0
+        acc = ""  # 流式累积文本，后端增量落库用（刷新/中断时 DB 已是最新内容，前端无需在内存持有）
+
         def _flush_tokens():
             nonlocal _sse_token_count
             if _sse_token_count > 0:
                 _sse_trace.append(f"token({_sse_token_count}c)")
                 _sse_token_count = 0
+
+        # ── 后端增量落库准备（仅当前端传入 conversation_id 时启用）──
+        # 前端把本轮 user 消息落库后会话 id 传给流式端点；后端在流式中把 assistant 回复
+        # 节流写入同会话 messages 表，从根本上解决「仅前端在内存持有 → 刷新/切 Tab 即丢字」。
+        persist_msg_id = qa_req.assistant_message_id
+        db = None
+        last_persist = 0.0
+        PERSIST_MS = 0.8  # 节流：最多每 0.8s 写一次 DB（残留丢失窗口 ≤0.8s）
+
+        async def _persist(content: str, force: bool = False):
+            nonlocal last_persist
+            now = time.perf_counter()
+            if not force and (now - last_persist) < PERSIST_MS:
+                return
+            try:
+                await MessageService.update_message(
+                    db, persist_msg_id, MessageUpdate(content=content))
+                last_persist = now
+            except Exception as e:
+                logger.warning(f"[sse] 增量落库失败 sid={qa_req.session_id[:8]}: {e}")
+
         try:
+            if qa_req.conversation_id:
+                try:
+                    db = AsyncSessionLocal()
+                    if persist_msg_id is None:
+                        msg = await MessageService.create_message(db, MessageCreate(
+                            conversation_id=qa_req.conversation_id,
+                            role="assistant",
+                            content="",
+                            message_type="text",
+                        ))
+                        persist_msg_id = msg.id
+                        # 通知前端 assistant 消息的 DB id（前端用于降级回写/排重）
+                        yield f"event: message_created\ndata: {json.dumps({'message_id': persist_msg_id}, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    logger.warning(f"[sse] 建 assistant 消息失败（降级为不持久化） sid={qa_req.session_id[:8]}: {e}")
+                    db = None
+                    persist_msg_id = None
+
             async for event in pipeline.run_stream(qa_request):
                 ev_type = event["event"]
                 if ev_type == "token":
                     if not first:
                         first = True
                         yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)}, ensure_ascii=False)}\n\n"
+                    acc += event['data']
                     _sse_token_count += len(event['data'])
                     yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
+                    if db is not None and persist_msg_id is not None:
+                        await _persist(acc)
                 elif ev_type == "result":
                     _flush_tokens()
                     _sse_trace.append(f"result")
@@ -152,19 +204,38 @@ async def ask_question_stream(
                     _flush_tokens()
                     stage = event.get('data', {}).get('stage', '?')
                     _sse_trace.append(f"status{{{stage}}}")
+                    # 镜像前端：提交/补信息阶段清空 acc（系统话术会重新流式），保证 DB 与前端展示一致
+                    if stage in ('need_info', 'need_fields', 'review', 'submit_failed'):
+                        acc = ""
                     yield f"event: status\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+
+            # 流结束：最终落库（完整内容），确保正常结束时 DB 与展示完全一致
+            if db is not None and persist_msg_id is not None:
+                try:
+                    await _persist(acc, force=True)
+                except Exception:
+                    pass
             _flush_tokens()
             total_ms = round((time.perf_counter() - t0) * 1000)
             logger.info(f"[sse] sid={qa_req.session_id[:8]} q={qa_req.query[:80]} "
                         f"→ {' | '.join(_sse_trace)} | done({total_ms}ms)")
             yield f"event: done\ndata: {json.dumps({'total_ms': total_ms})}\n\n"
         except Exception as e:
-            # 先 yield 缺省 token（前端可见），方便定位是后端异常（而非前端空白）
+            # 异常：先保留已接收内容（避免刷新/中断丢字），再 yield 缺省 token 以便前端可见
+            if db is not None and persist_msg_id is not None and acc:
+                try:
+                    await _persist(acc, force=True)
+                except Exception:
+                    pass
             yield f"data: {json.dumps({'token': f'[AI 服务异常: {str(e)[:80]}]'}, ensure_ascii=False)}\n\n"
             _flush_tokens()
             logger.error(f"[sse] sid={qa_req.session_id[:8]} q={qa_req.query[:80]} "
                          f"→ {' | '.join(_sse_trace)} | ERROR: {e}", exc_info=True)
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            if db is not None:
+                await db.close()
+
     return StreamingResponse(sse(), media_type="text/event-stream")
 
 
