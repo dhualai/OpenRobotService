@@ -1473,6 +1473,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             ticket_type: 'support',
             priority: 'medium',
             project_name: '摇人吧服务号提单',
+            project_id: projectIdVal || '',
             assigned_to: owner.username,
           });
           ov2 = {
