@@ -4,13 +4,17 @@
 //   2) JSON导入：搬运效率汇总 {summary, robots}，直接写入 ProjectTransportEfficiency。
 // 项目、日期选择是整页共用的。
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Tabs, TabPanel, Button, Upload, Toast, Loading, Popup, Input } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
 import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
 
-interface Project { id?: string; code?: string; name: string; }
+// 与 /projects/、/projects/me 实际返回字段对齐（ProjectResponse）：项目标识是 project_code（与 id 同值），
+// 没有 code 字段 —— 之前用 project.code 取标识，永远取不到值会静默回退成 project.name（中文项目名），
+// 导致导入数据落库的 project key 与「项目详情页-搬运效率分析」按 project_code 查询的 key 对不上，同项目的数据传不过去。
+interface Project { id?: string; project_code?: string; name: string; }
 
 // 文件导入结果 —— 后端 /data/upload-file 返回，用于展示导入成功的条目
 interface ImportChunk {
@@ -51,7 +55,7 @@ function ProjectPickerField({ projects, value, onChange }: ProjectPickerFieldPro
   const filtered = search.trim()
     ? projects.filter((p) => {
         const kw = search.trim().toLowerCase();
-        return p.name.toLowerCase().includes(kw) || (p.code || '').toLowerCase().includes(kw);
+        return p.name.toLowerCase().includes(kw) || (p.project_code || '').toLowerCase().includes(kw);
       })
     : projects;
 
@@ -99,7 +103,7 @@ function ProjectPickerField({ projects, value, onChange }: ProjectPickerFieldPro
               }}
             >
               <div style={{ fontWeight: 500 }}>{p.name}</div>
-              {p.code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{p.code}</div>}
+              {p.project_code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{p.project_code}</div>}
             </div>
           ))}
           {filtered.length === 0 && (
@@ -117,6 +121,7 @@ export default function DataImport() {
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
   const { hasPermission } = useAuthStore();
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
+  const navigate = useNavigate();
 
   const [projects, setProjects] = useState<Project[]>([]);
 
@@ -131,6 +136,10 @@ export default function DataImport() {
 
   const [jsonText, setJsonText] = useState('');
 
+  // JSON导入结果：与文件导入一致，展示成功/失败反馈（此前只有 Toast，刷新或切页后无迹可循）
+  const [jsonResult, setJsonResult] = useState<{ summary?: unknown; robots?: unknown[] } | null>(null);
+  const [jsonError, setJsonError] = useState<string | null>(null);
+
   // 文件导入结果：成功时展示条目，失败时展示错误提示
   const [fileResult, setFileResult] = useState<FileImportResult | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -143,7 +152,7 @@ export default function DataImport() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('project', project.code || project.name);
+      formData.append('project', project.project_code || project.id || project.name);
       const data = await request<FileImportResult>('/data/upload-file', {
         method: 'POST',
         body: formData,
@@ -175,19 +184,24 @@ export default function DataImport() {
     }
 
     setLoading(true);
+    setJsonResult(null);
+    setJsonError(null);
     try {
-      const data = await request<{ message: string }>('/transport-efficiency/import/json', {
+      const data = await request<{ message: string; summary?: unknown; robots?: unknown[] }>('/transport-efficiency/import/json', {
         method: 'POST',
         body: JSON.stringify({
-          project_code: project.code || project.name,
+          project_code: project.project_code || project.id || project.name,
           report_date: todayStr(),
           summary: parsed.summary || {},
           robots: parsed.robots || [],
         }),
       });
+      setJsonResult({ summary: data.summary, robots: data.robots });
       Toast({ message: data.message || '导入成功', theme: 'success' });
     } catch (err) {
-      Toast({ message: `导入失败: ${err instanceof Error ? err.message : '未知错误'}`, theme: 'error' });
+      const msg = err instanceof Error ? err.message : '未知错误';
+      setJsonError(msg);
+      Toast({ message: `导入失败: ${msg}`, theme: 'error' });
     } finally {
       setLoading(false);
     }
@@ -195,7 +209,18 @@ export default function DataImport() {
 
   return (
     <div style={{ padding: 16 }}>
-      <ProjectPickerField projects={projects} value={project} onChange={setProject} />
+      <ProjectPickerField
+        projects={projects}
+        value={project}
+        onChange={(p) => {
+          // 切换项目后清空上一个项目的导入结果展示，避免误认为是当前项目的导入反馈
+          setProject(p);
+          setFileResult(null);
+          setFileError(null);
+          setJsonResult(null);
+          setJsonError(null);
+        }}
+      />
 
       <Tabs value={tab} onChange={(v) => setTab(String(v))}>
         <TabPanel value="file" label="文件导入">
@@ -258,6 +283,19 @@ export default function DataImport() {
                     ))}
                   </div>
                 )}
+
+                {/* 跳转到同一项目的搬运效率分析页，验证数据已生效 */}
+                {project?.id && (
+                  <Button
+                    theme="primary"
+                    variant="outline"
+                    block
+                    style={{ marginTop: 12 }}
+                    onClick={() => navigate(`/admin/project-detail/${project.id}/transport-efficiency`)}
+                  >
+                    查看该项目搬运效率分析 ›
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -274,6 +312,39 @@ export default function DataImport() {
             <Button theme="primary" block style={{ marginTop: 16 }} onClick={handleJsonImport}>
               导入JSON数据
             </Button>
+
+            {/* 导入失败提示 */}
+            {jsonError && (
+              <div style={{
+                background: '#fff1f0', border: '1px solid #ffccc7', borderRadius: 8,
+                padding: 12, color: '#f5222d', marginTop: 16, fontSize: 13,
+              }}>
+                <div style={{ fontWeight: 600 }}>✗ 导入失败</div>
+                <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{jsonError}</div>
+              </div>
+            )}
+
+            {/* 导入成功提示 + 跳转搬运效率分析 */}
+            {jsonResult && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{
+                  background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 8,
+                  padding: '10px 14px', color: '#52c41a', fontSize: 13, fontWeight: 500, marginBottom: 12,
+                }}>
+                  ✓ 导入成功（项目：{project?.name || '-'}，日期：{todayStr()}）
+                </div>
+                {project?.id && (
+                  <Button
+                    theme="primary"
+                    variant="outline"
+                    block
+                    onClick={() => navigate(`/admin/project-detail/${project.id}/transport-efficiency`)}
+                  >
+                    查看该项目搬运效率分析 ›
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
         </TabPanel>
       </Tabs>
