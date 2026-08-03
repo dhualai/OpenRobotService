@@ -2927,6 +2927,9 @@ html, body, #root {
 .ticket-confirm__body { display: flex; flex-direction: column; gap: 4px; }
 .ticket-confirm__tags { display: flex; gap: 8px; margin-bottom: 8px; }
 .ticket-confirm__banner { background: #fff3e0; border: 1px solid #ffb74d; color: #b26500; font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-bottom: 8px; line-height: 1.4; }
+.ticket-confirm__banner--info { background: #e8f3ff; border-color: #9fc2ff; color: #0052d9; }
+.ticket-confirm__checkbox { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; font-size: 13px; color: #333; cursor: pointer; }
+.ticket-confirm__checkbox input { margin-top: 2px; cursor: pointer; }
 .ticket-confirm__label { font-size: 13px; color: #666; margin-top: 8px; }
 .ticket-confirm__input,
 .ticket-confirm__textarea,
