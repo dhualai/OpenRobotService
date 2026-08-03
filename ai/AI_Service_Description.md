@@ -351,6 +351,7 @@ SSE 事件流：
   event: status    → {stage: "analyzing", round: N}      # LLM 推理中
   event: first_token → {ms: 1234}                         # 首个 token 到达
   data: {token: "..."}  × N                               # 逐 token 流式输出
+  event: message_created → {message_id: N}               # 后端为 assistant 回复在 call 表建的 DB 消息 id（增量落库接管）
   event: result    → {type, thinking, action, message, ...} # 完整结果
   event: done      → {total_ms: 5678}                     # 结束
 ```
@@ -731,6 +732,8 @@ POST /api/ai/qa/ask
 }
 ```
 
+**`/api/ai/qa/ask/stream`（后端增量落库）**：请求体新增可选 `conversation_id`（前端已落库的 `call` 会话 id）与 `assistant_message_id`（已预建消息 id）。传入 `conversation_id` 时，后端在流式中把 assistant 回复**增量写同会话 messages 表**（`PERSIST_MS=0.8s`）：首 token 创建消息、回传 `event: message_created → {message_id}`、流结束/异常 `force` 落库最终内容。前端刷新/切会话即可从 DB 恢复（最多丢最后 <0.8s），不再依赖前端内存。`conversation_id` 为空或建消息失败则降级不持久化，由前端兜底。
+
 ### 8.2 LLM 对话 (`/api/ai/chat`)
 
 | 方法 | 路径 | 说明 |
@@ -1038,6 +1041,7 @@ POST /api/ai/qa/ask/stream
 │   └── token 透传          │  event: token × N
 │                          │
 │ event: first_token       │  {ms: 1234}
+│ event: message_created   │  {message_id: N}   # 后端为 assistant 回复建的 DB 消息 id（增量落库）
 │ event: result            │  完整结果 JSON
 │ event: done              │  {total_ms: 5678}
 └──────────────────────────┘
