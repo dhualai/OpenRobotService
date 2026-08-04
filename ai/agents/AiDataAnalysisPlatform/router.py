@@ -170,6 +170,7 @@ async def generate_report_api(request: ReportRequest):
                     period=request.period,
                     target_date=target_date,
                     project_code=request.project_code,
+                    user_id=request.user_id,
                 ):
                     payload = json.dumps(
                         {"content": chunk}, ensure_ascii=False
@@ -193,6 +194,7 @@ async def generate_report_api(request: ReportRequest):
             period=request.period,
             target_date=target_date,
             project_code=request.project_code,
+            user_id=request.user_id,
         )
         return {"code": 0, "data": result.model_dump()}
     except ValueError as exc:

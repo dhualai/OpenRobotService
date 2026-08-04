@@ -854,6 +854,10 @@ class AiDiagnosisPlatform:
                     f"[pipeline] 项目直配: '{user}' → '{candidates[0].name}' "
                     f"(≥0.7候选={len(candidates)}, ≥0.3候选={_all_scored})"
                 )
+                # code 为空 → 无效条目（如 DB 里的占位行），不算有效匹配
+                if not (candidates[0].code or "").strip():
+                    logger.info(f"[pipeline] 匹配到的 '{candidates[0].name}' code 为空，视为无效匹配")
+                    return None
                 return candidates[0]
             # 多个候选 → LLM 裁决
             await self._ensure_clients()
@@ -1201,11 +1205,14 @@ class AiDiagnosisPlatform:
         _raw_proj = (agent_state.collected_info.get("project") or "").strip()
         if _raw_proj:
             match = await self._resolve_project(_raw_proj)
-            if match:
+            if match and (match.code or "").strip():  # code 为空不算有效匹配
                 agent_state.collected_info["project"] = match.name
                 agent_state.collected_info["project_id"] = match.code
 
         conversation_text = self._format_conversation(memory)
+        # 项目名已在上方解析，直接注入 prompt，不让 LLM 从对话里"找"项目名
+        # （对话里可能有用户说的简称/旧项目名，LLM 会优先用对话里的而非 collected_info）
+        _ticket_proj = agent_state.collected_info.get("project", "").strip() or "项目"
         reasoning = (
             f"问题概述：{agent_state.problem_summary}\n"
             f"推测原因：{'、'.join(str(h) if not isinstance(h, str) else h for h in agent_state.hypotheses) if agent_state.hypotheses else '无'}\n"
@@ -1220,7 +1227,7 @@ class AiDiagnosisPlatform:
             f"## Agent 推理链\n{reasoning}\n\n"
             f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
             f"然后以 JSON 格式返回：\n"
-            f'{{"type":"problem|bug|feature|support|other","title":"≤20字","description":"≤150字，必须以【项目名】开头，简述问题和排查过程",'
+            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目已单独记录在project字段）","description":"≤150字，以【{_ticket_proj}】开头，简述问题和排查过程",'
             f'"priority":"紧急|高|中|低","contact":"从对话提取的联系人，没有则为空",'
             f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
             f'"project":"所有类型必填，从对话提取的项目/现场名称，没有则为空",'
@@ -1490,9 +1497,16 @@ class AiDiagnosisPlatform:
             agent_state.collected_info["project"] = _draft_proj
 
         ticket = await self._build_ticket(session_id, agent_state, memory)
-        # 用 draft 中用户编辑过的值覆盖 LLM 重新生成的字段
-        ticket.update({k: v for k, v in draft.items()
-                       if v and k not in ("ticket_id", "missing_fields", "confirm_prompt", "stage")})
+        # 只应用用户在弹窗中显式修改的字段（overrides），不用整个 draft 覆盖。
+        # draft 里的 description/project 等是上一轮 _build_ticket 用旧上下文生成的，
+        # 覆盖会把用户改过项目名后 LLM 重新生成的正确内容冲掉。
+        # 🔴 title 和 description 必须排除：它们是 LLM 根据上下文自动生成的，
+        # 弹窗前生成的旧值含旧项目名，用户不会手动编辑，前端却可能带回旧值。
+        if overrides:
+            for k, v in overrides.items():
+                if v and k not in ("ticket_id", "missing_fields", "confirm_prompt", "stage",
+                                   "title", "description"):
+                    ticket[k] = v
 
         # 用户在弹窗里改了项目名 → 重新匹配 project_id，否则 project_id 还是旧的
         _final_project = ticket.get("project", "")
