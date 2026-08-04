@@ -91,6 +91,36 @@ export default function TicketDetailPage() {
     if (!sessionId) return;
     if (!silent) setLoading(true);
     try {
+      // 手动工单（无 session_id，URL 形如 /call/ticket/db_<数字id>）：直接按 DB 工单 id 查询，
+      // 跳过 qaGetTicket（AI 接口仅支持 session_id 查询，手动工单没有 session_id）。
+      const dbIdMatch = /^db_(\d+)$/.exec(sessionId);
+      if (dbIdMatch) {
+        const dbId = dbIdMatch[1];
+        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${dbId}?load_comments=true`, { skipCache: true });
+        setTicket({
+          ticket_id: String(dbId),
+          session_id: '',
+          title: taskDetail.title || '',
+          description: taskDetail.description ?? '',
+          status: taskDetail.status || '',
+          priority: taskDetail.priority || '',
+          type: taskDetail.ticket_type || '',
+          contact: taskDetail.customer || '',
+          comments: taskDetail.comments || [],
+          created_by: taskDetail.created_by || '',
+          created_by_name: taskDetail.created_by_name || '',
+          assigned_to: taskDetail.assigned_to || '',
+          assigned_to_name: taskDetail.assigned_to_name || '',
+          project_name: taskDetail.project_name || '',
+          project_id: taskDetail.project_id || '',
+          created_at: taskDetail.created_at || '',
+          // 手动工单无 AI 诊断数据
+          diagnosis: undefined,
+          attachments: [],
+        });
+        setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
+        return;
+      }
       const res = await qaGetTicket(sessionId);
       if (res?.code === 0 && res.data) {
         const aiTicket = res.data as AiTicket;

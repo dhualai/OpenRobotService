@@ -346,13 +346,14 @@ class AgentState:           # 持久化在 Redis session.metadata 中
 ### 4.6 流式输出 (`_agent_think_stream`)
 
 ```
-SSE 事件流：
-  event: status    → {stage: "retrieving", round: N}     # 检索中
-  event: status    → {stage: "analyzing", round: N}      # LLM 推理中
+SSE 事件流（producer-consumer 解耦：pipeline 在后台任务运行，SSE 断连不取消生成）：
+  event: message_created → {message_id: N}               # 流式开始前先建占位 assistant 消息（consumer 侧）
+  event: status    → {stage: "retrieving", round: N}     # 检索中（producer）
+  event: status    → {stage: "analyzing", round: N}      # LLM 推理中（producer）
   event: first_token → {ms: 1234}                         # 首个 token 到达
-  data: {token: "..."}  × N                               # 逐 token 流式输出
+  data: {token: "..."}  × N                               # 逐 token 流式输出（producer 增量落库 PERSIST_MS=0.8s）
   event: result    → {type, thinking, action, message, ...} # 完整结果
-  event: done      → {total_ms: 5678}                     # 结束
+  event: done      → {total_ms: 5678}                     # 结束（producer force 落库最终内容）
 ```
 
 流式路径在 JSON 结束前静默缓冲（`_find_json_end`），越过 JSON 边界后立即逐 token 透传，前端获得打字机效果。
@@ -731,6 +732,8 @@ POST /api/ai/qa/ask
 }
 ```
 
+**`/api/ai/qa/ask/stream`（后端增量落库 + producer-consumer 解耦）**：请求体新增可选 `conversation_id`（前端已落库的 `call` 会话 id）与 `assistant_message_id`（已预建消息 id）。传入 `conversation_id` 时，后端先建占位 assistant 消息并回传 `event: message_created → {message_id}`，随后将 `pipeline.run_stream` 放入**独立后台任务（producer）**运行——SSE generator（consumer）仅从 `asyncio.Queue` 转发事件给前端。客户端刷新/断连时 consumer 被取消，但 **producer 不受影响，继续在后台生成 + 增量落库**（`PERSIST_MS=0.8s` 节流），流结束/异常 `force` 落库最终内容。前端刷新后从 DB 恢复：若 producer 已完成则直接显示完整回复；若仍在生成（首 token 前 content 空），`mapDbMessages` 标记 `streaming` 占位并**每 2s 轮询** `getConversation`，producer 落库内容后自动替换为完整回复。`conversation_id` 为空或建消息失败则降级不持久化，由前端兜底。
+
 ### 8.2 LLM 对话 (`/api/ai/chat`)
 
 | 方法 | 路径 | 说明 |
@@ -1027,20 +1030,20 @@ POST /api/ai/qa/ask/stream
         │
         ▼
 ┌──────────────────────────┐
-│ run_stream               │
+│ sse() consumer           │  ← SSE generator，客户端断连时取消
+│   ├─ 建占位消息           │  event: message_created {message_id}
+│   ├─ asyncio.Queue.get() │  ← 从 producer 取事件
+│   └─ yield SSE 给前端     │  event: first_token / token × N / result / done
 │                          │
-│ event: status            │  "retrieving"
-│ ... 检索（同非流式）...   │
-│ event: status            │  "analyzing"
-│                          │
-│ LLM.stream               │
-│   ├── 缓冲 JSON 部分      │  _find_json_end 定位边界
-│   └── token 透传          │  event: token × N
-│                          │
-│ event: first_token       │  {ms: 1234}
-│ event: result            │  完整结果 JSON
-│ event: done              │  {total_ms: 5678}
+│  producer (后台任务)      │  ← 独立运行，不受 SSE 断连取消
+│   ├─ pipeline.run_stream │
+│   │   event: status      │  "retrieving" → "analyzing"
+│   │   LLM.stream         │  token 透传 × N（增量落库 PERSIST_MS=0.8s）
+│   ├─ force 落库最终内容   │
+│   └─ put SENTINEL        │  通知 consumer 结束
 └──────────────────────────┘
+客户端刷新/断连 → consumer 取消，producer 后台继续生成+落库
+前端刷新后轮询 getConversation → producer 完成后自动显示完整回复
 ```
 
 ---

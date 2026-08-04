@@ -1,9 +1,9 @@
 // 项目选择器：下拉展开项目列表 + 模糊搜索（按名称/编码过滤）
-// 数据源：当前登录用户（提单人）名下项目（GET /api/admin/projects/me），非全量；支持按 AI 项目名预填匹配。
-// 用于工单草稿确认页绑定项目。复用 UserSelect 的浮层结构与样式（user-select__*）。
+// 数据源：全量项目（GET /api/admin/projects/），用于兜底双工单场景——需对比用户项目是否在全量列表。
+// 支持按 AI 项目名预填匹配。复用 UserSelect 的浮层结构与样式（user-select__*）。
 import { useEffect, useMemo, useState } from 'react';
 import { Toast } from 'tdesign-mobile-react';
-import { getMyProjects } from '@/api/projects';
+import { getProjects } from '@/api/projects';
 import type { ProjectItem } from '@/api/projects';
 
 interface Props {
@@ -46,7 +46,7 @@ export default function ProjectSelect({
     setLoading(true);
     setError('');
     try {
-      const list = await getMyProjects();
+      const list = await getProjects();
       projectCache = list;
       projectCacheTs = now;
       setProjects(list);

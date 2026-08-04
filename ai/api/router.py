@@ -9,7 +9,7 @@ import json
 import time
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -37,6 +37,10 @@ class QAAskRequest(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=128, description="会话 ID")
     query: str = Field(..., min_length=1, max_length=500, description="用户输入")
     skip_retrieval: bool = Field(default=False, description="测试用：跳过 KB 检索")
+    # 增量落库（后端 SSE 侧持久化 assistant 回复）：前端把已落库的会话 id 传进来，
+    # 后端在流式中把 assistant 回复节流写入同会话 messages 表，刷新/切 Tab 也能从 DB 恢复。
+    conversation_id: Optional[int] = Field(default=None, description="前端 call 会话 id（传了才启用后端落库）")
+    assistant_message_id: Optional[int] = Field(default=None, description="已预建的 assistant 占位消息 id；不传则由后端创建")
 
 
 class QASubmitRequest(BaseModel):
@@ -122,25 +126,124 @@ async def ask_question_stream(
     if not username:
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
     async def sse():
+        from app.core.db import AsyncSessionLocal
+        from app.modules.call.schemas.message import MessageCreate, MessageUpdate
+        from app.modules.call.services.message_service import MessageService
+
         t0 = time.perf_counter()
         qa_request = DiagnosisRequest(session_id=qa_req.session_id, query=qa_req.query,
                            skip_retrieval=qa_req.skip_retrieval, created_by=username)
         first = False
         _sse_trace: list[str] = []
         _sse_token_count = 0
+        import asyncio  # producer-consumer 解耦：Queue/create_task/CancelledError
+
         def _flush_tokens():
             nonlocal _sse_token_count
             if _sse_token_count > 0:
                 _sse_trace.append(f"token({_sse_token_count}c)")
                 _sse_token_count = 0
+
+        # ── 后端增量落库准备（仅当前端传入 conversation_id 时启用）──
+        persist_msg_id = qa_req.assistant_message_id
+        db = None
+
+        # 先建占位 assistant 消息并通知前端（需在 consumer 侧 yield message_created）。
+        # db 随后交给 producer 独占使用与关闭。
+        if qa_req.conversation_id:
+            try:
+                db = AsyncSessionLocal()
+                if persist_msg_id is None:
+                    msg = await MessageService.create_message(db, MessageCreate(
+                        conversation_id=qa_req.conversation_id,
+                        role="assistant",
+                        content="",
+                        message_type="text",
+                    ))
+                    persist_msg_id = msg.id
+                    yield f"event: message_created\ndata: {json.dumps({'message_id': persist_msg_id}, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                logger.warning(f"[sse] 建 assistant 消息失败（降级为不持久化） sid={qa_req.session_id[:8]}: {e}")
+                if db is not None:
+                    await db.close()
+                db = None
+                persist_msg_id = None
+
+        # ── producer-consumer 解耦 ──
+        # pipeline 放到独立后台任务（producer），不受 SSE 客户端断连取消。
+        # 客户端刷新/关页时 consumer 被取消，producer 仍在后台继续生成 + 增量落库，
+        # 刷新后前端从 DB 即可读到完整回复（首 token 前断连也有占位消息兜底）。
+        queue = asyncio.Queue()
+        _SENTINEL = object()
+
+        async def producer():
+            acc = ""
+            last_persist = 0.0
+            PERSIST_MS = 0.8
+            async def _persist(content: str, force: bool = False):
+                nonlocal last_persist
+                now = time.perf_counter()
+                if not force and (now - last_persist) < PERSIST_MS:
+                    return
+                try:
+                    await MessageService.update_message(
+                        db, persist_msg_id, MessageUpdate(content=content))
+                    last_persist = now
+                except Exception as e:
+                    logger.warning(f"[sse] 增量落库失败 sid={qa_req.session_id[:8]}: {e}")
+            try:
+                async for event in pipeline.run_stream(qa_request):
+                    ev_type = event.get("event")
+                    if ev_type == "token":
+                        acc += event.get('data', '')
+                        if db is not None and persist_msg_id is not None:
+                            await _persist(acc)
+                    elif ev_type == "status":
+                        # 提交/补信息阶段清空 acc（系统话术会重新流式），保证 DB 与前端展示一致
+                        stage = event.get('data', {}).get('stage', '?')
+                        if stage in ('need_info', 'need_fields', 'review', 'submit_failed'):
+                            acc = ""
+                    await queue.put(event)
+                # 流结束：最终落库（完整内容）
+                if db is not None and persist_msg_id is not None:
+                    try:
+                        await _persist(acc, force=True)
+                    except Exception:
+                        pass
+                await queue.put(_SENTINEL)
+            except Exception as e:
+                # 异常：保留已接收内容
+                if db is not None and persist_msg_id is not None and acc:
+                    try:
+                        await _persist(acc, force=True)
+                    except Exception:
+                        pass
+                await queue.put(("__error__", str(e)))
+            finally:
+                if db is not None:
+                    await db.close()
+
+        producer_task = asyncio.create_task(producer())
+
         try:
-            async for event in pipeline.run_stream(qa_request):
-                ev_type = event["event"]
+            while True:
+                event = await queue.get()
+                if event is _SENTINEL:
+                    break
+                if isinstance(event, tuple) and len(event) == 2 and event[0] == "__error__":
+                    err_msg = event[1]
+                    yield f"data: {json.dumps({'token': f'[AI 服务异常: {err_msg[:80]}]'}, ensure_ascii=False)}\n\n"
+                    _flush_tokens()
+                    logger.error(f"[sse] sid={qa_req.session_id[:8]} q={qa_req.query[:80]} "
+                                 f"→ {' | '.join(_sse_trace)} | ERROR: {err_msg}")
+                    yield f"event: error\ndata: {json.dumps({'error': err_msg})}\n\n"
+                    break
+                ev_type = event.get("event")
                 if ev_type == "token":
                     if not first:
                         first = True
                         yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)}, ensure_ascii=False)}\n\n"
-                    _sse_token_count += len(event['data'])
+                    _sse_token_count += len(event.get('data', ''))
                     yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
                 elif ev_type == "result":
                     _flush_tokens()
@@ -158,13 +261,12 @@ async def ask_question_stream(
             logger.info(f"[sse] sid={qa_req.session_id[:8]} q={qa_req.query[:80]} "
                         f"→ {' | '.join(_sse_trace)} | done({total_ms}ms)")
             yield f"event: done\ndata: {json.dumps({'total_ms': total_ms})}\n\n"
-        except Exception as e:
-            # 先 yield 缺省 token（前端可见），方便定位是后端异常（而非前端空白）
-            yield f"data: {json.dumps({'token': f'[AI 服务异常: {str(e)[:80]}]'}, ensure_ascii=False)}\n\n"
-            _flush_tokens()
-            logger.error(f"[sse] sid={qa_req.session_id[:8]} q={qa_req.query[:80]} "
-                         f"→ {' | '.join(_sse_trace)} | ERROR: {e}", exc_info=True)
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+        except asyncio.CancelledError:
+            # 客户端断连（刷新/关页）：consumer 取消，但 producer 后台继续生成 + 落库。
+            # 不 await producer_task（会被取消），让它独立完成；刷新后前端从 DB 读到完整回复。
+            logger.info(f"[sse] 客户端断连，producer 后台继续 sid={qa_req.session_id[:8]}")
+            raise
+
     return StreamingResponse(sse(), media_type="text/event-stream")
 
 
@@ -720,9 +822,10 @@ async def list_all_tickets(
     keyword: str = Query("", description="模糊搜索标题/描述"),
     username: str = Query("", description="按创建者用户名过滤"),
 ) -> dict:
-    """查询 tasks 表（source='ai'），分页返回所有历史工单
+    """查询 tasks 表，分页返回所有历史工单（含 AI 生成与系统手动创建）
     
     当 username 参数不为空时，只返回该用户创建的工单（created_by 字段匹配）。
+    支持 source='ai'（AI 生成）和 source='manual'（系统任务手动创建）两类工单。
     """
     try:
         from ai.core.task_adapter import task_to_dict
@@ -736,7 +839,7 @@ async def list_all_tickets(
 
         db = SessionLocal()
         try:
-            q = db.query(Task).filter(Task.source == "ai")
+            q = db.query(Task).filter(Task.source.in_(["ai", "manual"]))
             # 按创建者过滤（非 admin 只看自己的）
             if username:
                 q = q.filter(Task.created_by == username)
@@ -806,7 +909,7 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
 # ============================================================
 # 任务 Agent (prefix /api/ai/task)
 # ============================================================
-task_agent_router = APIRouter(prefix="/api/ai/task", tags=["小U"])
+task_agent_router = APIRouter(prefix="/api/ai/task", tags=["U老师"])
 
 
 
@@ -818,7 +921,7 @@ class TaskSubmitAPIRequest(BaseModel):
 
 
 class SummarizeRequest(BaseModel):
-    """后端触发摘要扫描（无参数 — AI 模块自动扫描所有活跃工单）"""
+    """后端触发摘要扫描（无参数 — U老师 自动扫描所有活跃工单）"""
 
 
 # ── v3.0 端点 ──
@@ -829,25 +932,40 @@ class TaskDiagnoseRequest(BaseModel):
 
 class TaskDiscussRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
-    query: str = Field(..., description="用户问题（如 @AI 帮我分析这个日志）")
+    query: str = Field(..., description="用户问题（如 @U老师 帮我分析这个日志）")
     context: dict = Field(default_factory=dict, description="讨论上下文 {recent_comments: [{author, content}]}")
 
 
 @task_agent_router.post("/diagnose", summary="诊断报告（[帮我分析] 按钮）")
 async def task_diagnose(body: TaskDiagnoseRequest) -> dict:
     """全能力诊断 → 即时返回报告（不存库）"""
+    import logging, time
+    logger = logging.getLogger("TASK_AGENT")
+    t_start = time.perf_counter()
+    logger.info(f"[diagnose] 入口: task_id={body.task_id}")
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
         result = await agent.diagnose(task_id=body.task_id)
+        elapsed = (time.perf_counter() - t_start) * 1000
+        report_len = len(result.get("report_md", ""))
+        logger.info(f"[diagnose] 完成: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
+                    f"report_len={report_len}, confidence={result.get('confidence', 0):.0%}")
         return {"code": 0, "data": result}
     except Exception as e:
+        elapsed = (time.perf_counter() - t_start) * 1000
+        logger.error(f"[diagnose] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms, error={e}")
         return {"code": 1, "message": str(e)}
 
 
-@task_agent_router.post("/discuss", summary="@AI 讨论")
+@task_agent_router.post("/discuss", summary="@U老师 讨论")
 async def task_discuss(body: TaskDiscussRequest) -> dict:
-    """@AI 讨论回复（带讨论上下文，按需调日志子Agent）→ 写 task_comments"""
+    """@U老师 讨论回复（带讨论上下文，按需调日志子Agent）→ 写 task_comments"""
+    import logging, time
+    logger = logging.getLogger("TASK_AGENT")
+    t_start = time.perf_counter()
+    query_preview = (body.query or "")[:60]
+    logger.info(f"[discuss] 入口: task_id={body.task_id}, query={query_preview}")
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
@@ -856,14 +974,21 @@ async def task_discuss(body: TaskDiscussRequest) -> dict:
             query=body.query,
             context=body.context,
         )
+        elapsed = (time.perf_counter() - t_start) * 1000
+        reply_len = len(result.get("reply", ""))
+        logger.info(f"[discuss] 完成: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
+                    f"reply_len={reply_len}")
         return {"code": 0, "data": result}
     except Exception as e:
+        elapsed = (time.perf_counter() - t_start) * 1000
+        logger.error(f"[discuss] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
+                     f"query={query_preview}, error={e}")
         return {"code": 1, "message": str(e)}
 
 
 @task_agent_router.post("/summarize", summary="讨论摘要")
 async def task_summarize(body: SummarizeRequest = SummarizeRequest()) -> dict:
-    """后端触发 → AI 模块自动扫描所有活跃工单 → 逐条生成摘要 → 写 task_comments"""
+    """后端触发 → U老师 自动扫描所有活跃工单 → 逐条生成摘要 → 写 task_comments"""
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()

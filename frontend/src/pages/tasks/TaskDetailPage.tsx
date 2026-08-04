@@ -96,6 +96,11 @@ interface Ticket {
   attachments?: Attachment[]; metadata_info?: Record<string, unknown>; comments?: Comment[];
 }
 
+const generateTempId = () =>
+  typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `t_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+
 const AI_NAME = 'U老师';
 
 export default function TaskDetailPage() {
@@ -448,7 +453,7 @@ export default function TaskDetailPage() {
     setSubmittingComment(true);
     try {
       // 上传附件
-      const tempId = crypto.randomUUID();
+      const tempId = generateTempId();
       for (const f of files) {
         await uploadCommentAttachment(f, tempId);
       }
@@ -483,7 +488,7 @@ export default function TaskDetailPage() {
     setAskingAI(true);
     try {
       // 上传附件
-      const tempId = crypto.randomUUID();
+      const tempId = generateTempId();
       for (const f of files) {
         await uploadCommentAttachment(f, tempId);
       }

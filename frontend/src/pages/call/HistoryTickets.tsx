@@ -211,7 +211,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
             <div
               key={t.id}
               className="history-row"
-              onClick={() => navigate(`/call/ticket/${t.session_id}`)}
+              onClick={() => navigate(`/call/ticket/${t.session_id || `db_${t.id}`}`)}
             >
               <div className="history-row__top">
                 <span className="history-row__dot" style={{ background: PRIORITY_COLOR[t.priority || ''] || '#999' }} />
