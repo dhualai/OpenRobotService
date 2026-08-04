@@ -148,6 +148,17 @@ class Risk(Base):
     )
 
 
+class UserProjectRole(Base):
+    """用户-项目-角色关联表（仅查询，字段对齐 backend/app/models/identity.py）"""
+    __tablename__ = "user_project_roles"
+
+    id = Column(String(64), primary_key=True)
+    user_id = Column(String(64), nullable=False, index=True)
+    project_id = Column(String(64), nullable=True, index=True)
+    role_id = Column(String(64), nullable=True)
+    report_to_id = Column(String(64), nullable=True)
+
+
 class Conversation(Base):
     """会话表（对齐 backend/app/models/conversation.py）"""
     __tablename__ = "conversations"
