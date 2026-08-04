@@ -650,13 +650,14 @@ class AiDiagnosisPlatform:
         return s.replace("{", "{{").replace("}", "}}")
 
     def _build_diagnosis_prompt(self, state: AgentState, memory, reference_docs: str) -> str:
-        # Guard: context_start 可能因 turn buffer 截断（max_turns）而越界。
+        # Guard: context_start 可能因 turn buffer 截断（max_turns=10）而越界。
         # 场景：提单时 context_start=len(turns)=10，下一轮 add_turn 后 buffer 满截断，
         # turns 仍为 10 → turns[10:] 返回空 → LLM 看不到对话 → 输出问候语。
-        # 回退时取最近 4 条（≈2 轮对话），足够 LLM 理解上下文，不撑 prompt。
+        # 回退时取全量 10 条——用户提单后可能说"同一个项目/还是那个问题"，
+        # 需要足够上下文让 LLM 理解指代，4 条太少。
         _from = state.context_start
         if _from >= len(memory.turns):
-            _from = max(0, len(memory.turns) - 4)
+            _from = max(0, len(memory.turns) - 10)
         conversation_text = self._format_conversation(memory, from_turn=_from)
         # 上一个工单上下文：只告诉 LLM"刚提过单"这个事实，不透露 project/问题主题——
         # 否则 flash 等模型会从主题里重新挖出 project/problem 写回 state_update，
@@ -698,6 +699,20 @@ class AiDiagnosisPlatform:
                 f"4. 🚫 禁止对同一字段追问两次。任何字段最多只问一次，用户说没有就直接过\n"
                 f"5. 所有缺失字段（含'无'）都补齐后 → 立即 action='submit'，message 只写'好的'\n"
                 f"⚠️ 已收集的字段不要再问（比如上面已收集里已经有 project，就不要再追问项目）。"
+            )
+            # 收集模式用极简 prompt：砍掉 DIAGNOSIS_PROMPT 的 165 行人设/知识库/诊断规则，
+            # LLM 只需提取字段值 + 自然确认，大幅减少无关思考，提升收集轮响应速度。
+            return (
+                f"你是工单填写助手。用户正在补充工单所需信息，请逐字段记录到 collected_info。\n\n"
+                f"{ticket_collecting_context}\n\n"
+                f"## 对话\n{conversation_text}\n\n"
+                f"---\n"
+                f"输出 JSON（字段齐就 submit，message 只写「好的」）：\n"
+                f'```json\n'
+                f'{{"action":"ask|submit","intent":"troubleshoot",'
+                f'"state_update":{{"collected_info":{{}},"ticket_ready":false}}}}\n'
+                f'```\n'
+                f"JSON 之后直接写回复。语气像工程师。"
             )
         else:
             ticket_collecting_context = "（正常诊断模式）"
@@ -770,9 +785,9 @@ class AiDiagnosisPlatform:
             else:
                 state.problem_summary = new_ps
         if "ruled_out" in state_update:
-            state.ruled_out = state_update["ruled_out"]
+            state.ruled_out = [str(x) if not isinstance(x, str) else x for x in state_update["ruled_out"]]
         if "hypotheses" in state_update:
-            state.hypotheses = state_update["hypotheses"]
+            state.hypotheses = [str(x) if not isinstance(x, str) else x for x in state_update["hypotheses"]]
         if "ticket_ready" in state_update:
             # LLM 可能输出 bool 或字符串 "true"/"false"
             tr = state_update["ticket_ready"]
@@ -821,7 +836,7 @@ class AiDiagnosisPlatform:
                 logger.warning("[pipeline] project DB unavailable")
                 return None
             user = raw_name.strip()
-            candidates = await matcher.get_candidates_async(user, min_score=0.7)
+            candidates = await matcher.get_candidates_async(user, min_score=0.55)
             if not candidates:
                 # 诊断：看下所有项目的得分情况（阈值降到 0.3 拉候选）
                 _all = matcher.get_candidates(user, min_score=0.3, top_n=5)
@@ -955,7 +970,9 @@ class AiDiagnosisPlatform:
             if state.problem_summary and _need_context:
                 search_query = search_query + " " + state.problem_summary[:30]
             if state.hypotheses and _need_context:
-                search_query = search_query + " " + " ".join(state.hypotheses)[:50]
+                # LLM 可能输出 dict 而非纯字符串列表，先展平确保 join 不炸
+                _hyps = [str(h) if not isinstance(h, str) else h for h in state.hypotheses]
+                search_query = search_query + " " + " ".join(_hyps)[:50]
 
             # 缓存命中：同一查询 60 秒内复用结果
             cache_key = search_query[:200]
@@ -1134,6 +1151,8 @@ class AiDiagnosisPlatform:
             prompt = (
                 "根据以下对话，判断工单类型，并决定生成有效工单还需向用户确认哪 2-3 个关键字段。\n"
                 "key 用英文，value 写简短中文标签（≤8字，如【错误现象】【发生时间】，不要写整句话）。\n"
+                "🔴 value 必须写**通用简短标签**（「具体现象」「发生时间」「复现步骤」），"
+                "严禁把用户的问题描述写进 value（如「提单找不到项目」）——这会被截断成乱码显示给用户。\n"
                 "参考字段（不限，按需选用）：\n"
                 "  robot_type(车型/编号) occurrence_time(发生时间) frequency(出现频率)\n"
                 "  fault_code(故障码) location(现场位置) version(版本) steps_to_reproduce(复现步骤)\n"
@@ -1146,7 +1165,7 @@ class AiDiagnosisPlatform:
                 "只返回 JSON，无多余文字。示例——\n"
                 "报障(涉及车)：{\"ticket_type\":\"problem\",\"required_fields\":{\"robot_type\":\"具体车型/编号\","
                 "\"occurrence_time\":\"发生时间\"}}\n"
-                "报障(登录/平台)：{\"ticket_type\":\"problem\",\"required_fields\":{\"error_message\":\"登录问题的具体现象\"}}\n"
+                "报障(登录/平台)：{\"ticket_type\":\"problem\",\"required_fields\":{\"error_message\":\"具体现象\"}}\n"
                 "support：{\"ticket_type\":\"support\",\"required_fields\":{\"support_type\":\"所需支持\"}}\n\n"
                 f"## 对话\n{conv}"
             )
@@ -1165,7 +1184,7 @@ class AiDiagnosisPlatform:
                 # 不再用固定词表限制——LLM 根据问题类型自主选字段，
                 # 只做基本合理性过滤（key 长度、value 简短标签、非空、不重复收集）
                 agent_state.required_fields = {
-                    k: str(v)[:12] for k, v in rf.items()
+                    k: str(v)[:20] for k, v in rf.items()
                     if str(v).strip()
                     and len(str(k)) <= 40
                     and not (agent_state.collected_info.get(k) or "").strip()
@@ -1180,8 +1199,8 @@ class AiDiagnosisPlatform:
         conversation_text = self._format_conversation(memory)
         reasoning = (
             f"问题概述：{agent_state.problem_summary}\n"
-            f"推测原因：{'、'.join(agent_state.hypotheses) if agent_state.hypotheses else '无'}\n"
-            f"已排除：{'、'.join(agent_state.ruled_out) if agent_state.ruled_out else '无'}\n"
+            f"推测原因：{'、'.join(str(h) if not isinstance(h, str) else h for h in agent_state.hypotheses) if agent_state.hypotheses else '无'}\n"
+            f"已排除：{'、'.join(str(r) if not isinstance(r, str) else r for r in agent_state.ruled_out) if agent_state.ruled_out else '无'}\n"
             f"已收集信息：{json.dumps(agent_state.collected_info, ensure_ascii=False)}\n"
             f"诊断轮数：{agent_state.diagnosis_rounds}"
         )
@@ -1192,7 +1211,7 @@ class AiDiagnosisPlatform:
             f"## Agent 推理链\n{reasoning}\n\n"
             f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
             f"然后以 JSON 格式返回：\n"
-            f'{{"type":"problem|bug|feature|support|other","title":"≤20字","description":"≤150字，含排查过程",'
+            f'{{"type":"problem|bug|feature|support|other","title":"≤20字","description":"≤150字，必须以【项目名】开头，简述问题和排查过程",'
             f'"priority":"紧急|高|中|低","contact":"从对话提取的联系人，没有则为空",'
             f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
             f'"project":"所有类型必填，从对话提取的项目/现场名称，没有则为空",'
@@ -1449,6 +1468,12 @@ class AiDiagnosisPlatform:
             logger.info(f"[confirm] 信息不足拦截: session={session_id}, missing={missing}")
             return {"code": 1, "stage": "not_ready", "missing_info": missing,
                     "message": f"工单信息不足，还差：{'、'.join(missing)}。请先在对话中补充后再提交。"}
+
+        # 用户在弹窗里可能改了项目名 → 提前注入 collected_info，_build_ticket 的
+        # LLM 才能在 description 里自然带上正确的项目名。
+        _draft_proj = (draft.get("project") or "").strip()
+        if _draft_proj and _draft_proj != agent_state.collected_info.get("project", ""):
+            agent_state.collected_info["project"] = _draft_proj
 
         ticket = await self._build_ticket(session_id, agent_state, memory)
         # 用 draft 中用户编辑过的值覆盖 LLM 重新生成的字段
@@ -1788,15 +1813,10 @@ class AiDiagnosisPlatform:
             _msg_buf.clear()
         # 流式调用，如果没有 stream 方法则回退到 complete()
         _stream = getattr(self._llm_client, "stream", None)
-        _collect_mode = bool(state.ticket_collecting)  # 收集轮关 thinking，提速
-        t_stream["thinking"] = "off" if _collect_mode else "on"
-        logger.info(f"[stream] LLM 调用: thinking={t_stream['thinking']}, prompt_chars={t_stream['prompt_chars']}")
         try:
             if _stream is None:
                 # 非流式 LLM，用 complete() + 逐字输出模拟
-                raw = await self._llm_client.complete(
-                    prompt=prompt, max_tokens=8000, temperature=0.5,
-                    thinking=not _collect_mode)
+                raw = await self._llm_client.complete(prompt=prompt, max_tokens=8000, temperature=0.5)
                 if t_first_llm is None:
                     t_first_llm = time.perf_counter()
                     t_stream["llm_first_token"] = round((t_first_llm - t_llm) * 1000)
@@ -1815,9 +1835,7 @@ class AiDiagnosisPlatform:
                         _msg_yielded = True
                         yield {"event": "token", "data": ch}
             else:
-                async for token in _stream(
-                    prompt=prompt, max_tokens=8000, temperature=0.5,
-                    thinking=not _collect_mode):
+                async for token in _stream(prompt=prompt, max_tokens=8000, temperature=0.5):
                     raw_tokens.append(token)
                     if not _json_done:
                         _buf += token
