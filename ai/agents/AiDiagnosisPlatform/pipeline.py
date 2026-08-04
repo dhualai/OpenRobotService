@@ -1196,6 +1196,15 @@ class AiDiagnosisPlatform:
                            exc_info=True)
 
     async def _build_ticket(self, session_id: str, agent_state: AgentState, memory) -> dict:
+        # 项目名提前解析：LLM 生成 description 时需要看到全名，
+        # 不能等 LLM 调用完再解析——否则 description 里用的还是用户简称。
+        _raw_proj = (agent_state.collected_info.get("project") or "").strip()
+        if _raw_proj:
+            match = await self._resolve_project(_raw_proj)
+            if match:
+                agent_state.collected_info["project"] = match.name
+                agent_state.collected_info["project_id"] = match.code
+
         conversation_text = self._format_conversation(memory)
         reasoning = (
             f"问题概述：{agent_state.problem_summary}\n"
@@ -1274,20 +1283,25 @@ class AiDiagnosisPlatform:
             _notes = f"指定处理人：{_assignee}" + (f"；{_notes}" if _notes else "")
         result["special_notes"] = _notes
 
-        # 项目名 normalize：把用户原话里的简称（如"安吉北区"）匹配成项目库里的真实全名。
-        # 匹配不上 → 兜底"摇人吧服务号提单"（同时更新 result 和 collected_info，保证一致性）
-        _raw_proj = (agent_state.collected_info.get("project", "") or analysis.get("project", "")).strip()
-        if _raw_proj:
-            match = await self._resolve_project(_raw_proj)
-            if match:
-                agent_state.collected_info["project"] = match.name      # 回写全名，后续一致
-                agent_state.collected_info["project_id"] = match.code   # 回写 project_id
-                _raw_proj = match.name
-                result["project"] = match.name          # 弹窗展示用全名（之前漏了，导致显示用户原话）
-                result["project_id"] = match.code
+        # 项目名：已在 LLM 调用前解析（collected_info 中即为全名）。
+        # 这里处理 result 的 project/project_id；只有 collected_info 无项目时才兜底匹配。
+        _proj = (agent_state.collected_info.get("project") or "").strip()
+        _pid = agent_state.collected_info.get("project_id") or ""
+        if _proj:
+            result["project"] = _proj
+            result["project_id"] = _pid
+        else:
+            _llm_proj = (analysis.get("project") or "").strip()
+            if _llm_proj:
+                match = await self._resolve_project(_llm_proj)
+                if match:
+                    agent_state.collected_info["project"] = match.name
+                    agent_state.collected_info["project_id"] = match.code
+                    result["project"] = match.name
+                    result["project_id"] = match.code
+                else:
+                    result["project"] = "摇人吧服务号提单"
             else:
-                # 项目库匹配不上（如用户说了"摇人吧"但 DB 里没有对应项目）
-                agent_state.collected_info["project"] = "摇人吧服务号提单"
                 result["project"] = "摇人吧服务号提单"
 
         # 类型专属字段
