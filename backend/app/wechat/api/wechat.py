@@ -244,21 +244,14 @@ async def handle_text_message(message: dict):
         user_name = content[1:]
         logger.info(f'用户 {from_user_name} 输入的名字是: {user_name}')
 
-        save_success = auth_service.save_user_name(from_user_name, user_name)
-        
-        user_info = auth_service.get_user_permissions(from_user_name)
+        # save_user_name 哈希存储后，明文凭证仅通过返回值一次性返回
+        usp_credentials = auth_service.save_user_name(from_user_name, user_name)
         usp_name = ""
         usp_password = ""
-        
-        try:
-            if user_info and "external_credentials" in user_info:
-                external_credentials = user_info.get('external_credentials', None)
-                if external_credentials and "usp" in external_credentials:
-                    usp_credentials = external_credentials["usp"]
-                    usp_name = usp_credentials.get("username", "")
-                    usp_password = usp_credentials.get("password", "")
-        except Exception as e:
-            logger.error(f'获取用户信息失败: {traceback.format_exc()}')
+
+        if usp_credentials:
+            usp_name = usp_credentials.get("username", "")
+            usp_password = usp_credentials.get("password", "")
             
         log_operation(
             timestamp=datetime.now().astimezone().isoformat(timespec='milliseconds'),

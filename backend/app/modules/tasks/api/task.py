@@ -618,10 +618,7 @@ async def assign_task(
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
-    is_admin = current_user.get('is_admin', False)
-    if not is_admin:
-        raise HTTPException(status_code=403, detail="无权限分配任务")
-
+    # 放开 admin 限制：允许任何已登录用户改派（兜底双工单场景下提单人需将工单派给项目负责人）。
     try:
         ticket = await TicketService.assign_ticket(db, task_id, user_id)
         if not ticket:
