@@ -7,4 +7,4 @@ class RecallResult:
     def __init__(self):
         self.llm_recall: Dict[str, float] = {}       # L1 纯LLM (0.70)
         self.semantic_recall: Dict[str, float] = {}   # L2 语义 (0.20)
-        self.history_recall: Dict[str, float] = {}    # L3 历史 (0.10,与L2共享Embedding)
+        self.history_recall: Dict[str, float] = {}    # L3 历史 (0.10)

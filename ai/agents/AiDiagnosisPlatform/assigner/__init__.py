@@ -5,8 +5,8 @@
 
 from typing import Dict, List, Optional
 
-from ai.agents.AiDiagnosisPlatform.assigner.pipeline.assigner import Assigner
-from ai.agents.AiDiagnosisPlatform.assigner.sync.personnel_sync import (
+from ai.agents.AiDiagnosisPlatform.assigner.pipeline.dispatch_flow import DispatchFlow
+from ai.agents.AiDiagnosisPlatform.assigner.sync.engineers_sync import (
     load_engineers,
     invalidate_cache as invalidate_personnel_cache,
 )
@@ -17,7 +17,7 @@ from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
 )
 
 __all__ = [
-    "Assigner",
+    "DispatchFlow",
     "AssignmentResult",
     "EngineerProfile",
     "TicketContext",
@@ -81,5 +81,5 @@ async def assign_ticket(
         creator=creator,
     )
 
-    assigner = Assigner()
-    return await assigner.aassign(ctx, engineers)
+    dispatch = DispatchFlow()
+    return await dispatch.aassign(ctx, engineers)

@@ -94,10 +94,12 @@ ai/                          ← 一级目录，与 backend/、frontend/ 并列
 │   ├── AiDiagnosisPlatform/
 │   │   ├── pipeline.py      # 诊断 Agent：推理 + 5 路检索 + 工单生成
 │   │   └── assigner/        # 智能派单子模块（工单生成后自动推荐负责人）
-│   │       ├── assigner.py      # 核心派单逻辑（四层流水线）
+│   │       ├── pipeline/         # 主流程编排 + 后台 Worker
+│   │       │   ├── dispatch_flow.py  # 核心派单逻辑（四层流水线）
+│   │       │   └── worker.py         # 后台派单 Worker（Redis Pub/Sub + 定时扫描）
 │   │       ├── schemas.py       # TicketContext / EngineerProfile / AssignmentResult
-│   │       ├── config_loader.py # 配置加载（YAML + prompts.txt）
-│   │       ├── config/          # assigner_config.yaml + prompts.txt
+│   │       ├── settings.py      # 配置加载（YAML）
+│   │       ├── config/          # config.yaml（模块关键词/锚文本/权重/阈值）
 │   │       ├── data/            # 结构化参考数据（engineers.json + task_matching.json）
 │   │       ├── recall.py        # 多路召回（模块 + 标签 + 历史）
 │   │       ├── semantic_recall.py  # 语义召回（Embedding 向量匹配）
