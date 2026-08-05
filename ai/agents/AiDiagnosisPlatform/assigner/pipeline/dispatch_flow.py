@@ -19,6 +19,9 @@
     【Step 2 精排 + 职级折扣】 raw_total × job_level 惩罚系数
         │
         ▼
+    【Step 2.5 负载均衡】(仅算法工程师：按在途工单数打折，避免单点堆积)
+        │
+        ▼
     【Step 3 LLM 综合决策】成功→返回 / 失败→Step 4
         │
         ▼ (回退)
@@ -127,6 +130,9 @@ class DispatchFlow:
         # ── Step 2: 精排 + 职级折扣 ──
         ranked_scores = self._ranker.rank(recall_result, engineers=candidates)
 
+        # ── Step 2.5: 负载均衡（仅算法工程师，按在途工单数打折）──
+        ranked_scores = self._apply_load_balance(ranked_scores, engineers=candidates)
+
         # ── Step 3: LLM 综合决策 ──
         result: Optional[AssignmentResult] = None
         decision_source = ""
@@ -209,6 +215,82 @@ class DispatchFlow:
             logger.info(f"派单排名 Top3: {' | '.join(rank_lines)}")
         else:
             logger.info("派单排名: 无候选排名数据")
+
+    # ── Step 2.5 实现: 负载均衡（仅算法工程师，按在途工单数打折）──
+    def _apply_load_balance(
+        self, ranked_scores: Dict[str, Dict[str, float]],
+        engineers: List[EngineerProfile],
+    ) -> Dict[str, Dict[str, float]]:
+        """对算法工程师按在途工单数打折，避免单子集中在少数人。
+
+        负载系数 = 1 / (1 + 在途数 × step)。只作用于 load_balance.algorithm_engineers
+        名单内的人，其他候选人不动。
+        """
+        lb_cfg = self._config.load_balance or {}
+        if not lb_cfg.get("enabled", True):
+            return ranked_scores
+
+        step = float(lb_cfg.get("step", 0.15))
+        algo_names = set(lb_cfg.get("algorithm_engineers") or [])
+        if not algo_names or not ranked_scores:
+            return ranked_scores
+
+        # 收集算法工程师的 id
+        algo_ids = {e.id for e in engineers if e.name in algo_names}
+        if not algo_ids:
+            return ranked_scores
+
+        # 查询这些工程师的在途工单数
+        workload = self._query_workload(algo_ids)
+        if not workload:
+            return ranked_scores
+
+        for eid in algo_ids:
+            if eid not in ranked_scores:
+                continue
+            count = workload.get(eid, 0)
+            factor = 1.0 / (1.0 + count * step)
+            old_total = ranked_scores[eid].get("total_score", 0.0)
+            ranked_scores[eid]["load_factor"] = factor
+            ranked_scores[eid]["load_count"] = count
+            ranked_scores[eid]["total_score"] = round(old_total * factor, 4)
+            logger.debug(
+                f"派单 Step 2.5 负载均衡: {eid} 在途={count} 系数={factor:.2f} "
+                f"分={old_total:.2f}→{ranked_scores[eid]['total_score']:.2f}"
+            )
+
+        return dict(sorted(ranked_scores.items(), key=lambda x: x[1]["total_score"], reverse=True))
+
+    @staticmethod
+    def _query_workload(engineer_ids: set) -> Dict[str, int]:
+        """查询指定工程师的在途工单数（tasks 表 assigned_to 统计，status 非 closed）。
+
+        Returns: {engineer_id: 在途数}；查询失败返回空 dict（不阻断派单）。
+        """
+        if not engineer_ids:
+            return {}
+        try:
+            from app.models.task import Task
+            from app.core.db import SessionLocal
+            from sqlalchemy import func
+
+            db = SessionLocal()
+            try:
+                rows = (
+                    db.query(Task.assigned_to, func.count(Task.id))
+                    .filter(
+                        Task.assigned_to.in_(list(engineer_ids)),
+                        Task.status != "closed",
+                    )
+                    .group_by(Task.assigned_to)
+                    .all()
+                )
+                return {uid: cnt for uid, cnt in rows if uid}
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"派单 Step 2.5 查询在途工单失败，跳过负载均衡: {e}")
+            return {}
 
     # ── Step -1 实现: LLM 识别提单人期望 + 姓名匹配 ──
     async def _detect_preferred_assignee(

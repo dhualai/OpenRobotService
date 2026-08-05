@@ -31,6 +31,7 @@ class AssignerConfig:
     - job_level_penalty:    {职级: 惩罚系数}，精排后按职级打折
     - department_keywords:  {部门: [关键词]}，供部门过滤匹配工单归属部门
     - decision_thresholds:  {auto, recommend}，规则兜底决策的置信度阈值
+    - load_balance:         {enabled, step, algorithm_engineers}，算法工程师负载均衡
     """
 
     _CONFIG_DIR = Path(__file__).parent / "config"
@@ -42,6 +43,7 @@ class AssignerConfig:
         self.job_level_penalty: Dict[int, float] = {}
         self.department_keywords: Dict[str, list] = {}
         self.decision_thresholds: Dict[str, float] = {}
+        self.load_balance: Dict[str, Any] = {}
         self._load_all()
 
     def _load_all(self):
@@ -55,6 +57,7 @@ class AssignerConfig:
         self.job_level_penalty = {int(k): v for k, v in raw.items()}
         self.department_keywords = config.get("department_keywords", {})
         self.decision_thresholds = config.get("decision_thresholds", {})
+        self.load_balance = config.get("load_balance", {})
 
     def reload(self):
         """重新加载配置（配置热更新入口，配合派单缓存失效使用）。"""

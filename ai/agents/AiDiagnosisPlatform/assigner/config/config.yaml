@@ -9,6 +9,7 @@
 #   job_level_penalty    → ranking/ranker.py（职级折扣）
 #   department_keywords  → filtering/department_filter.py（部门过滤关键词）
 #   decision_thresholds  → ranking/fallback_decision.py（兜底置信度阈值）
+#   load_balance         → pipeline/dispatch_flow.py（算法工程师负载均衡）
 # ══════════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════════
@@ -396,3 +397,20 @@ department_keywords:
 decision_thresholds:
   auto: 0.8
   recommend: 0.5
+
+# ══════════════════════════════════════════════════════════════════
+# 7. 负载均衡（仅对算法工程师生效，其余候选人不受影响）
+#    用途：按在途工单数对算法工程师精排分数打折，在途越多系数越低，
+#          避免单子集中在少数人（如原"主力"徐浩南）。
+#    消费方：pipeline/dispatch_flow.py
+#    负载系数 = 1 / (1 + 在途数 × step)
+# ══════════════════════════════════════════════════════════════════
+load_balance:
+  enabled: true
+  step: 0.15
+  algorithm_engineers:
+    - 徐浩南
+    - 贾爽
+    - 胡健楠
+    - 吴彦清
+    - 夏泽龙
