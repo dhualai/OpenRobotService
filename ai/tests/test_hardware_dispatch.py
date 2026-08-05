@@ -30,7 +30,7 @@ print()
 
 # ── 构建 EngineerProfile ──
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
-from ai.agents.AiDiagnosisPlatform.assigner.filtering.department_matcher import DepartmentMatcher
+from ai.agents.AiDiagnosisPlatform.assigner.filtering.department_filter import DepartmentFilter
 
 profiles = []
 for item in raw:
@@ -68,7 +68,7 @@ print(f"  {ticket.problem_description}")
 # ── Step 0: 部门过滤 ──
 print(f"\n{'─' * 60}")
 print("Step 0: 部门过滤")
-dm = DepartmentMatcher()
+dm = DepartmentFilter()
 dept = dm.match_department(ticket)
 print(f"  匹配结果: \"{dept}\"")
 candidates = dm.filter(ticket, profiles)

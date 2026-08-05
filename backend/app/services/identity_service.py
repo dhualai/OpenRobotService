@@ -1,11 +1,14 @@
 from typing import Dict, List, Optional, Any
 import json
+import logging
 import uuid
 from sqlalchemy.orm import Session
 from sqlalchemy import select, text
 from app.core.db import SessionLocal
 from app.models import UserDB, Role, Permission, Project, role_permissions, user_project_roles
 from app.core.security import get_password_hash, verify_password
+
+logger = logging.getLogger(__name__)
 
 
 class IdentityService:
@@ -318,6 +321,7 @@ class IdentityService:
             return True
         except Exception as e:
             db.rollback()
+            logger.error(f"添加用户项目角色失败 (upid={upid}, uid={uid}, pid={pid}, rid={rid}): {e}", exc_info=True)
             return False
         finally:
             db.close()
@@ -338,6 +342,7 @@ class IdentityService:
             return count
         except Exception as e:
             db.rollback()
+            logger.error(f"批量添加用户项目角色失败 (roles_data={roles_data}): {e}", exc_info=True)
             return 0
         finally:
             db.close()

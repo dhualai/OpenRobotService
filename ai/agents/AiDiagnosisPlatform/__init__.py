@@ -5,7 +5,7 @@ from ai.agents.AiDiagnosisPlatform.pipeline import (
     get_diagnosis_platform,
 )
 from ai.agents.AiDiagnosisPlatform.assigner import (
-    Assigner,
+    DispatchFlow,
     AssignmentResult,
     EngineerProfile,
     TicketContext,
@@ -16,7 +16,7 @@ __all__ = [
     "DiagnosisRequest",
     "AgentState",
     "get_diagnosis_platform",
-    "Assigner",
+    "DispatchFlow",
     "AssignmentResult",
     "EngineerProfile",
     "TicketContext",

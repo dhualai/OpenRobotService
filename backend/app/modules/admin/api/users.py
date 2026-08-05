@@ -14,6 +14,7 @@ from app.modules.admin.schemas.response import SuccessResponse
 from app.modules.admin.api.auth import get_current_active_user_from_token, require_permission
 from app.services.hmac_utils import generate_password, chinese_to_pinyin
 from app.models.task import Task
+from app.models.identity import user_project_roles
 
 router = APIRouter(prefix="/users", tags=["admin-users"])
 
@@ -549,13 +550,66 @@ async def migrate_user(
             user_b.duty_text = user_a.duty_text
             fields_copied["duty_text"] = True
 
-        # 4. 删除A用户
+        # 4. 迁移A用户的项目角色关联：
+        #    a) user_id 为 A 的行（A 在各项目中的角色）→ 迁移到 B
+        #       使用 INSERT ... ON DUPLICATE KEY UPDATE 处理 (user_id, project_id, role_id) 唯一约束冲突：
+        #       若 B 已有相同 (project_id, role_id) 的角色行，则合并（用 A 的 report_to_id 补充），否则插入新行。
+        #       注意：需在 DB 层存在 (user_id, project_id, role_id) 唯一索引，ON DUPLICATE KEY 才会触发合并。
+        #    b) report_to_id 为 A 的行（原本向 A 汇报的人）→ 更新为 B 的 id
+        a_role_rows = db.execute(
+            user_project_roles.select().where(
+                user_project_roles.c.user_id == source_user_id
+            )
+        ).fetchall()
+
+        role_rows_migrated = 0   # 新插入到 B 的行数
+        role_rows_merged = 0     # 合并到 B 已有行的数量
+        for row in a_role_rows:
+            new_id = str(uuid.uuid4())
+            result = db.execute(
+                text("""
+                    INSERT INTO user_project_roles (id, user_id, project_id, role_id, report_to_id)
+                    VALUES (:id, :user_id, :project_id, :role_id, :report_to_id)
+                    ON DUPLICATE KEY UPDATE
+                        report_to_id = COALESCE(VALUES(report_to_id), report_to_id)
+                """),
+                {
+                    "id": new_id,
+                    "user_id": target_user_id,
+                    "project_id": row.project_id,
+                    "role_id": row.role_id,
+                    "report_to_id": row.report_to_id,
+                }
+            )
+            # MySQL ON DUPLICATE KEY UPDATE: rowcount=1 → 新插入, 2 → 更新已有行, 0 → 无变化
+            if result.rowcount == 1:
+                role_rows_migrated += 1
+            else:
+                role_rows_merged += 1
+
+        # 删除 A 的原始角色行（已迁移到 B 或合并到 B 已有行）
+        db.execute(
+            user_project_roles.delete().where(
+                user_project_roles.c.user_id == source_user_id
+            )
+        )
+
+        report_to_result = db.execute(
+            user_project_roles.update().where(
+                user_project_roles.c.report_to_id == source_user_id
+            ).values(report_to_id=target_user_id)
+        )
+        report_to_rows_migrated = report_to_result.rowcount
+
+        # 5. 删除A用户
         db.delete(user_a)
         db.commit()
 
         return SuccessResponse(
             message=f"成功迁移用户 {user_a.username} → {user_b.username}，"
-                    f"迁移任务 {migrated_count} 个，拷贝字段 {len(fields_copied)} 项，已删除源用户"
+                    f"迁移任务 {migrated_count} 个，拷贝字段 {len(fields_copied)} 项，"
+                    f"迁移项目角色 {role_rows_migrated} 项、合并 {role_rows_merged} 项、"
+                    f"汇报关系 {report_to_rows_migrated} 项，已删除源用户"
         )
 
     except HTTPException:

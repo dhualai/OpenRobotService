@@ -40,7 +40,7 @@ class AuthService:
             password = generate_wechat_user_password(openid)
             hashed_password = get_password_hash(password)
 
-            default_role_id = "role_e9351224"
+            default_role_id = "user"
 
             existing_user = db_manager.get_user(username)
             if existing_user:
