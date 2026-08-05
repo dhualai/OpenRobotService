@@ -17,6 +17,7 @@ class AssignerConfig:
 
     def __init__(self):
         self.module_keywords: Dict[str, list] = {}
+        self.module_anchor_texts: Dict[str, str] = {}
         self.ranker_weights: Dict[str, Any] = {}
         self.job_level_penalty: Dict[int, float] = {}
         self.department_scopes: Dict[str, dict] = {}
@@ -26,6 +27,7 @@ class AssignerConfig:
     def _load_all(self):
         config = _load_yaml(self._CONFIG_DIR / "assigner_config.yaml") or {}
         self.module_keywords = config.get("module_keywords", {})
+        self.module_anchor_texts = config.get("module_anchor_texts", {})
         self.ranker_weights = config.get("ranker_weights", {})
         raw = config.get("job_level_penalty", {})
         self.job_level_penalty = {int(k): v for k, v in raw.items()}
