@@ -1,4 +1,4 @@
-import { Suspense } from 'react';
+import { Suspense, useEffect, useRef } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Navbar, Loading } from 'tdesign-mobile-react';
 import type { ReactNode } from 'react';
@@ -59,6 +59,14 @@ function matchMenuPath(items: MenuItem[], currentPath: string): string {
 export default function AdminLayout({ children }: AdminLayoutProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  // 内容滚动容器：路由切换时 React 复用同一个 div，scrollTop 会被保留，
+  // 导致从长页面跳到短页面（如数据导入）时仍停在底部，需要手动上滑。
+  // 这里在 pathname 变化时把滚动位置重置到顶部。
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [location.pathname]);
 
   const activePath = matchMenuPath(adminMenuItems, location.pathname);
   const currentLabel = adminMenuItems.find((item) => item.path === activePath)?.label || '后台管理';
@@ -73,7 +81,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         fixed
       />
 
-      <div style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 16 }}>
+      <div ref={scrollRef} style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 16 }}>
         <Suspense fallback={<Loading text="加载中..." />}>
           {children || <Outlet />}
         </Suspense>

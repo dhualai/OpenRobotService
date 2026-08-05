@@ -145,7 +145,12 @@ export default function DataImport() {
   const [fileError, setFileError] = useState<string | null>(null);
 
   const handleFileUpload = async (file: File) => {
-    if (!project) { Toast({ message: '请先选择项目', theme: 'warning' }); return; }
+    console.log('[DataImport] handleFileUpload 开始, project:', project, 'file:', file?.name, 'size:', file?.size);
+    if (!project) {
+      console.warn('[DataImport] 未选择项目，中断上传');
+      Toast({ message: '请先选择项目', theme: 'warning' });
+      return;
+    }
     setLoading(true);
     setFileResult(null);
     setFileError(null);
@@ -153,10 +158,12 @@ export default function DataImport() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('project', project.project_code || project.id || project.name);
+      console.log('[DataImport] 发起 POST /data/upload-file, project:', project.project_code || project.id);
       const data = await request<FileImportResult>('/data/upload-file', {
         method: 'POST',
         body: formData,
       });
+      console.log('[DataImport] 上传响应:', data);
       if (data.success === false) {
         setFileError(data.message || '导入失败');
       } else {
@@ -164,6 +171,7 @@ export default function DataImport() {
         Toast({ message: data.message || '数据包解析导入成功', theme: 'success' });
       }
     } catch (err) {
+      console.error('[DataImport] 上传失败:', err);
       setFileError(err instanceof Error ? err.message : '未知错误');
       Toast({ message: `导入失败: ${err instanceof Error ? err.message : '未知错误'}`, theme: 'error' });
     } finally {
@@ -228,12 +236,19 @@ export default function DataImport() {
             <Upload
               accept=".json,.bz2"
               max={1}
-              onSuccess={({ fileList }) => {
-                if (fileList?.[0]?.raw) handleFileUpload(fileList[0].raw);
+              autoUpload={false}
+              onSelectChange={(files) => {
+                console.log('[DataImport] onSelectChange files:', files);
+                if (files?.[0]) {
+                  console.log('[DataImport] 触发 handleFileUpload, file:', files[0].name, 'size:', files[0].size);
+                  handleFileUpload(files[0]);
+                } else {
+                  console.warn('[DataImport] onSelectChange 未取到文件');
+                }
               }}
             />
             <p style={{ color: '#999', fontSize: 13, marginTop: 12, textAlign: 'center' }}>
-              上传 DAS 数据包文件（.bz2 或 .json，含 GroupEfficiency 等指标数据），选定项目后上传
+              上传 数据包文件（.bz2 或 .json，含 GroupEfficiency 等指标数据），选定项目后上传
             </p>
 
             {/* 导入失败提示 */}

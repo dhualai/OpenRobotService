@@ -1,8 +1,8 @@
 // 项目管理（二级页面）—— 「项目导入」「项目授权」两部分
 // ProjectImport: 项目增删改查
 // 项目授权区：项目选择器 + ProjectAuth 授权记录 + ProjectPeople 人员关联
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Loading, Toast, Input, Popup } from 'tdesign-mobile-react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { Loading, Toast, Input, Popup, Button } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -33,7 +33,6 @@ const CollapsibleSection = ({ icon, title, open, onToggle, children }: { icon: s
 );
 
 export default function ProjectManage() {
-  const rootRef = useRef<HTMLDivElement>(null);
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
   const { hasPermission } = useAuthStore();
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
@@ -52,6 +51,9 @@ export default function ProjectManage() {
   const [subLicensesOpen, setSubLicensesOpen] = useState(true);
   const [subPeopleOpen, setSubPeopleOpen] = useState(true);
 
+  // 导出按钮加载状态
+  const [exportLoading, setExportLoading] = useState<string | null>(null);
+
   // 加载项目列表：canViewAll 时获取全部项目，否则仅当前用户关联项目（/projects/me 按 token 过滤）
   useEffect(() => {
     request(canViewAll ? '/projects/' : '/projects/me')
@@ -59,23 +61,6 @@ export default function ProjectManage() {
       .catch((err) => Toast({ message: `加载项目失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setProjectLoading(false));
   }, [canViewAll]);
-
-  // 进入页面时滚动到最上端（延迟到下一帧，确保布局已完成）
-  useEffect(() => {
-    const raf = requestAnimationFrame(() => {
-      let el: HTMLElement | null = rootRef.current;
-      while (el) {
-        const style = window.getComputedStyle(el);
-        if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
-          el.scrollTop = 0;
-          break;
-        }
-        el = el.parentElement;
-      }
-      window.scrollTo(0, 0);
-    });
-    return () => cancelAnimationFrame(raf);
-  }, []);
 
   const handleProjectSelect = (project: Project) => {
     setSelectedProject(project);
@@ -90,8 +75,41 @@ export default function ProjectManage() {
       })
     : projects;
 
+  const handleExport = async (type: 'license' | 'users' | 'all') => {
+    if (!selectedProject) {
+      Toast({ message: '请先选择项目', theme: 'warning' });
+      return;
+    }
+    const projectCode = selectedProject.code || selectedProject.id || selectedProject.name;
+    const labels: Record<string, string> = { license: 'licence授权', users: '人员授权', all: '完整授权' };
+    setExportLoading(type);
+    try {
+      const buffer = await request<ArrayBuffer>(
+        `/export/project/${encodeURIComponent(projectCode)}?type=${type}`,
+        { method: 'POST', responseType: 'arrayBuffer', timeout: 60000 },
+      );
+      const blob = new Blob([buffer], { type: 'application/gzip' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `project_${projectCode}_${type}_export.gz`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      Toast({ message: `${labels[type]}导出成功`, theme: 'success' });
+    } catch (err) {
+      Toast({
+        message: `导出失败: ${err instanceof Error ? err.message : '未知错误'}`,
+        theme: 'error',
+      });
+    } finally {
+      setExportLoading(null);
+    }
+  };
+
   return (
-    <div ref={rootRef} style={{ padding: '16px 16px 24px' }}>
+    <div style={{ padding: '16px 16px 24px' }}>
       {/* 可折叠区域：项目导入 */}
       <CollapsibleSection icon="📁" title="项目导入" open={sectionImportOpen} onToggle={() => setSectionImportOpen((v) => !v)}>
         <ProjectImport />
@@ -167,7 +185,41 @@ export default function ProjectManage() {
           <CollapsibleSection icon="👥" title="项目人员授权" open={subPeopleOpen} onToggle={() => setSubPeopleOpen((v) => !v)}>
             <ProjectPeople selectedProject={selectedProject} />
           </CollapsibleSection>
+
+          {/* 导出按钮组 */}
+          <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Button
+              theme="primary"
+              variant="outline"
+              block
+              loading={exportLoading === 'license'}
+              disabled={!selectedProject || exportLoading !== null}
+              onClick={() => handleExport('license')}
+            >
+              导出licence授权
+            </Button>
+            <Button
+              theme="primary"
+              variant="outline"
+              block
+              loading={exportLoading === 'users'}
+              disabled={!selectedProject || exportLoading !== null}
+              onClick={() => handleExport('users')}
+            >
+              导出人员授权
+            </Button>
+            <Button
+              theme="primary"
+              block
+              loading={exportLoading === 'all'}
+              disabled={!selectedProject || exportLoading !== null}
+              onClick={() => handleExport('all')}
+            >
+              导出完整授权
+            </Button>
+          </div>
         </div>
+        
       </CollapsibleSection>
     </div>
   );
