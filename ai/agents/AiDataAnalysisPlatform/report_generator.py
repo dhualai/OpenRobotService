@@ -22,7 +22,7 @@ from typing import AsyncIterator
 
 from sqlalchemy import func as sa_func
 
-from ai.core.database import SessionLocal, Task, ProjectDelivery, Risk, User
+from ai.core.database import SessionLocal, Task, ProjectDelivery, Risk, User, UserProjectRole
 
 from .llm_client import LLMClient
 from .config import AnalysisConfig
@@ -73,10 +73,13 @@ def _get_weekly_range(target: date) -> tuple[datetime, datetime]:
 # ── 数据采集 ──────────────────────────────────────────────────────
 
 class ReportDataCollector:
-    """从 MySQL 采集报告所需的统计数据。"""
+    """从 MySQL 采集报告所需的统计数据。
 
-    def __init__(self, project_code: str | None = None) -> None:
-        self._project_code = project_code
+    project_codes 为 None 时不过滤（全局统计），为非空列表时按项目代码过滤。
+    """
+
+    def __init__(self, project_codes: list[str] | None = None) -> None:
+        self._project_codes = project_codes
 
     def _get_db(self):
         return SessionLocal()
@@ -88,8 +91,8 @@ class ReportDataCollector:
         db = self._get_db()
         try:
             q = db.query(ProjectDelivery)
-            if self._project_code:
-                q = q.filter(ProjectDelivery.code == self._project_code)
+            if self._project_codes:
+                q = q.filter(ProjectDelivery.code.in_(self._project_codes))
 
             projects = q.all()
             total = len(projects)
@@ -134,8 +137,8 @@ class ReportDataCollector:
         db = self._get_db()
         try:
             q = db.query(Risk)
-            if self._project_code:
-                q = q.filter(Risk.project_code == self._project_code)
+            if self._project_codes:
+                q = q.filter(Risk.project_code.in_(self._project_codes))
 
             all_risks = q.all()
             total = len(all_risks)
@@ -213,8 +216,8 @@ class ReportDataCollector:
         db = self._get_db()
         try:
             q = db.query(Task)
-            if self._project_code:
-                q = q.filter(Task.project_id == self._project_code)
+            if self._project_codes:
+                q = q.filter(Task.project_id.in_(self._project_codes))
 
             all_tickets = q.all()
             total = len(all_tickets)
@@ -311,7 +314,7 @@ class ReportDataCollector:
         self, start: datetime, end: datetime, date_range_str: str
     ) -> CollectedData:
         """汇总采集所有维度数据。"""
-        logger.info("开始采集报告数据 range=%s project=%s", date_range_str, self._project_code)
+        logger.info("开始采集报告数据 range=%s projects=%s", date_range_str, self._project_codes)
 
         project = self.collect_project_data()
         risk = self.collect_risk_data(start, end)
@@ -341,13 +344,38 @@ class ReportGenerator:
     def __init__(self, llm_client: LLMClient) -> None:
         self._llm = llm_client
 
+    @staticmethod
+    def _resolve_project_codes_by_user(user_id: str) -> list[str]:
+        """查询 user_project_roles 表，获取该用户关联的全部 project_id。
+
+        project_id 即 project.id（与 project.code 一致），可直接用于
+        ProjectDelivery.code / Risk.project_code / Task.project_id 过滤。
+        """
+        db = SessionLocal()
+        try:
+            rows = db.query(UserProjectRole).filter(
+                UserProjectRole.user_id == user_id
+            ).all()
+            codes = [r.project_id for r in rows if r.project_id]
+            logger.info("user_id=%s 关联项目 %d 个: %s", user_id, len(codes), codes)
+            return codes
+        finally:
+            db.close()
+
     async def generate(
         self,
         period: ReportPeriod,
         target_date: date,
         project_code: str | None = None,
+        user_id: str | None = None,
     ) -> ReportResult:
-        """生成日报或周报。"""
+        """生成日报或周报。
+
+        过滤逻辑：
+        - project_code 和 user_id 同时传 → 仅查 project_code 对应项目
+        - 仅 user_id → 查该用户在 user_project_roles 中的全部项目
+        - 均不传 → 全局统计
+        """
         # 1. 计算时间范围
         if period == ReportPeriod.DAILY:
             start, end = _get_daily_range(target_date)
@@ -358,27 +386,36 @@ class ReportGenerator:
             sunday = monday + timedelta(days=6)
             date_range_str = f"{monday.strftime('%Y-%m-%d')} ~ {sunday.strftime('%Y-%m-%d')}"
 
-        # 2. 采集数据
-        collector = ReportDataCollector(project_code=project_code)
+        # 2. 解析项目过滤范围
+        if project_code:
+            project_codes: list[str] | None = [project_code]
+        elif user_id:
+            project_codes = self._resolve_project_codes_by_user(user_id)
+        else:
+            project_codes = None
+
+        # 3. 采集数据
+        collector = ReportDataCollector(project_codes=project_codes)
         collected = collector.collect_all(start, end, date_range_str)
 
-        # 3. 序列化为 JSON 文本
+        # 4. 序列化为 JSON 文本
         data_text = json.dumps(collected.model_dump(), ensure_ascii=False, indent=2, default=str)
 
-        # 4. 构建 prompt
+        # 5. 构建 prompt
         system_prompt = build_report_system_prompt(period)
         user_prompt = build_report_user_prompt(
             data_text=data_text,
             date_range=date_range_str,
             period=period,
             project_code=project_code,
+            user_id=user_id,
         )
 
-        # 5. 调用 LLM
+        # 6. 调用 LLM
         logger.info("开始生成%s date_range=%s", period.value, date_range_str)
         raw_response, usage = await self._llm.chat(system_prompt, user_prompt)
 
-        # 6. 解析结果
+        # 7. 解析结果
         sections = self._parse_sections(raw_response, collected)
         summary = self._extract_summary(raw_response)
 
@@ -397,6 +434,7 @@ class ReportGenerator:
         period: ReportPeriod,
         target_date: date,
         project_code: str | None = None,
+        user_id: str | None = None,
     ) -> AsyncIterator[str]:
         """流式生成报告，逐 chunk 返回文本。"""
         # 1. 计算时间范围
@@ -409,23 +447,32 @@ class ReportGenerator:
             sunday = monday + timedelta(days=6)
             date_range_str = f"{monday.strftime('%Y-%m-%d')} ~ {sunday.strftime('%Y-%m-%d')}"
 
-        # 2. 采集数据
-        collector = ReportDataCollector(project_code=project_code)
+        # 2. 解析项目过滤范围
+        if project_code:
+            project_codes: list[str] | None = [project_code]
+        elif user_id:
+            project_codes = self._resolve_project_codes_by_user(user_id)
+        else:
+            project_codes = None
+
+        # 3. 采集数据
+        collector = ReportDataCollector(project_codes=project_codes)
         collected = collector.collect_all(start, end, date_range_str)
 
-        # 3. 序列化
+        # 4. 序列化
         data_text = json.dumps(collected.model_dump(), ensure_ascii=False, indent=2, default=str)
 
-        # 4. 构建 prompt
+        # 5. 构建 prompt
         system_prompt = build_report_system_prompt(period)
         user_prompt = build_report_user_prompt(
             data_text=data_text,
             date_range=date_range_str,
             period=period,
             project_code=project_code,
+            user_id=user_id,
         )
 
-        # 5. 流式调用 LLM
+        # 6. 流式调用 LLM
         async for chunk in self._llm.chat_stream(system_prompt, user_prompt):
             yield chunk
 
@@ -503,6 +550,7 @@ async def generate_report(
     period: str = "daily",
     date: str | None = None,
     project_code: str | None = None,
+    user_id: str | None = None,
 ) -> ReportResult:
     """顶层报告生成入口。
 
@@ -512,7 +560,8 @@ async def generate_report(
     Args:
         period: "daily" 或 "weekly"
         date: 目标日期 YYYY-MM-DD，默认今天
-        project_code: 项目代码过滤（可选）
+        project_code: 项目代码过滤（可选，与 user_id 同时传时以 project_code 为准）
+        user_id: 用户ID，用于查询该用户关联的全部项目（可选）
 
     Returns:
         ReportResult 结构化报告结果
@@ -530,6 +579,7 @@ async def generate_report(
         period=report_period,
         target_date=target,
         project_code=project_code,
+        user_id=user_id,
     )
 
 
@@ -537,6 +587,7 @@ async def generate_report_stream(
     period: str = "daily",
     date: str | None = None,
     project_code: str | None = None,
+    user_id: str | None = None,
 ) -> AsyncIterator[str]:
     """顶层流式报告生成入口。"""
     from .config import AnalysisConfig
@@ -552,5 +603,6 @@ async def generate_report_stream(
         period=report_period,
         target_date=target,
         project_code=project_code,
+        user_id=user_id,
     ):
         yield chunk

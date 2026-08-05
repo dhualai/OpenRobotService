@@ -29,6 +29,8 @@ export interface GenerateReportParams {
   /** 指定日期 YYYY-MM-DD，默认今天（日报）或本周一（周报） */
   date?: string;
   project_code?: string;
+  /** 用户ID，用于查询该用户关联的全部项目；与 project_code 同时传时以 project_code 为准 */
+  user_id?: string;
 }
 
 /** POST /api/ai/analysis/report/generate （非流式，返回结构化 ReportResult） */
@@ -37,6 +39,7 @@ export async function generateReport(params: GenerateReportParams): Promise<Repo
     period: params.period,
     date: params.date,
     project_code: params.project_code,
+    user_id: params.user_id,
     stream: false,
   });
   if (res.code !== 0 || !res.data) throw new Error('报告生成失败');
@@ -58,6 +61,7 @@ export async function generateReportStream(params: GenerateReportParams): Promis
       period: params.period,
       date: params.date,
       project_code: params.project_code,
+      user_id: params.user_id,
       stream: true,
     }),
   });
