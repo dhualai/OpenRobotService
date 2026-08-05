@@ -3,13 +3,13 @@
 import json, re
 from typing import Dict, List, Optional
 
-from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
+from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     AssignmentResult, EngineerProfile, TicketContext,
 )
 
 
-class LlmDecider:
+class LlmDecision:
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
 

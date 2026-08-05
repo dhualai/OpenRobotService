@@ -8,7 +8,7 @@
 """
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from ai.core.logging import get_logger
@@ -285,7 +285,7 @@ class AssignmentWorker:
                 meta["assign_confidence"] = result.confidence_score
                 meta["assign_reasoning"] = result.reasoning
                 meta["assign_decision_type"] = result.decision_type
-                meta["assigned_at"] = datetime.utcnow().isoformat()
+                meta["assigned_at"] = datetime.now(timezone.utc).isoformat()
                 task.metadata_info = meta
 
                 db.commit()

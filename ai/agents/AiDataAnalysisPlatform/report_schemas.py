@@ -31,7 +31,11 @@ class ReportRequest(BaseModel):
         description="指定日期 YYYY-MM-DD，默认今天（日报）或本周一（周报）",
     )
     project_code: str | None = Field(
-        default=None, description="按项目代码过滤（可选，为空则全局统计）"
+        default=None, description="按项目代码过滤（可选，与 user_id 同时传时以 project_code 为准）"
+    )
+    user_id: str | None = Field(
+        default=None,
+        description="用户ID，用于查询该用户关联的全部项目（可选，为空时不按用户过滤）",
     )
     stream: bool = Field(default=False, description="是否流式输出")
 

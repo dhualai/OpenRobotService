@@ -7,14 +7,14 @@
 import json, re
 from typing import Dict, List, Optional
 
-from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
+from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
 from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER")
 
 
-class LlmRecaller:
+class LlmRecall:
     """纯 LLM 召回——让模型直接看全员画像做第一轮排序"""
 
     def __init__(self, config: Optional[AssignerConfig] = None):

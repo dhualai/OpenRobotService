@@ -1,4 +1,4 @@
-"""Assigner 核心逻辑：智能派单
+"""DispatchFlow 核心逻辑：智能派单主流程
 
 流程:
     TicketContext + EngineerProfile
@@ -19,6 +19,9 @@
     【Step 2 精排 + 职级折扣】 raw_total × job_level 惩罚系数
         │
         ▼
+    【Step 2.5 负载均衡】(仅算法工程师：按在途工单数打折，避免单点堆积)
+        │
+        ▼
     【Step 3 LLM 综合决策】成功→返回 / 失败→Step 4
         │
         ▼ (回退)
@@ -29,15 +32,18 @@ import json, re
 from typing import Dict, List, Optional
 
 from ai.core.logging import get_logger
-from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
-from ai.agents.AiDiagnosisPlatform.assigner.ranking.decision import DecisionMaker
-from ai.agents.AiDiagnosisPlatform.assigner.filtering.department_matcher import DepartmentMatcher
-from ai.agents.AiDiagnosisPlatform.assigner.ranking.llm_decider import LlmDecider
-from ai.agents.AiDiagnosisPlatform.assigner.recall.llm_recaller import LlmRecaller
+from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
+from ai.agents.AiDiagnosisPlatform.assigner.ranking.fallback_decision import FallbackDecision
+from ai.agents.AiDiagnosisPlatform.assigner.filtering.department_filter import DepartmentFilter
+from ai.agents.AiDiagnosisPlatform.assigner.ranking.llm_decision import LlmDecision
+from ai.agents.AiDiagnosisPlatform.assigner.recall.llm_recall import LlmRecall
 from ai.agents.AiDiagnosisPlatform.assigner.ranking.ranker import Ranker
 from ai.agents.AiDiagnosisPlatform.assigner.recall.recall_result import RecallResult
-from ai.agents.AiDiagnosisPlatform.assigner.recall.semantic_recaller import (
-    SemanticRecaller, invalidate_semantic_cache,
+from ai.agents.AiDiagnosisPlatform.assigner.recall.semantic_recall import (
+    SemanticRecall, invalidate_semantic_cache,
+)
+from ai.agents.AiDiagnosisPlatform.assigner.recall.history_recall import (
+    HistoryRecall, invalidate_history_cache,
 )
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     AssignmentResult, EngineerProfile, TicketContext,
@@ -46,21 +52,21 @@ from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
 logger = get_logger("ASSIGNER")
 
 
-class Assigner:
+class DispatchFlow:
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
-        self._dept_matcher = DepartmentMatcher(config=self._config)
-        self._llm_recaller = LlmRecaller(config=self._config)
-        self._semantic_recaller = SemanticRecaller(config=self._config)
+        self._dept_filter = DepartmentFilter(config=self._config)
+        self._llm_recall = LlmRecall(config=self._config)
+        self._semantic_recall = SemanticRecall(config=self._config)
+        self._history_recall = HistoryRecall(config=self._config)
         self._ranker = Ranker(config=self._config)
-        self._llm_decider = LlmDecider(config=self._config)
-        self._decision_maker = DecisionMaker(config=self._config)
+        self._llm_decision = LlmDecision(config=self._config)
+        self._fallback_decision = FallbackDecision(config=self._config)
 
     async def aassign(
         self,
         ticket_context: TicketContext,
         engineer_profiles: List[EngineerProfile],
-        historical_matches: Optional[Dict[str, float]] = None,
     ) -> AssignmentResult:
         desc_preview = (ticket_context.problem_description or "")[:100].replace("\n", " ")
         logger.info(
@@ -85,7 +91,7 @@ class Assigner:
             return preferred
 
         # ── Step 0: 部门过滤 ──
-        candidates = self._dept_matcher.filter(
+        candidates = self._dept_filter.filter(
             ticket=ticket_context, engineers=engineer_profiles,
             project_name=ticket_context.project_name or "",
         )
@@ -98,31 +104,40 @@ class Assigner:
         recall_result = RecallResult()
         # L1 纯LLM 召回
         try:
-            recall_result.llm_recall = await self._llm_recaller.arecall(
+            recall_result.llm_recall = await self._llm_recall.arecall(
                 ticket=ticket_context, engineers=candidates,
             )
             logger.debug(f"派单 L1 LLM召回: {len(recall_result.llm_recall)} 人")
         except Exception as e:
             logger.warning(f"派单 L1 LLM召回异常: {e}")
-        # L2 语义 + L3 历史（共享一次 Embedding）
+        # L2 语义召回
         try:
-            sem, his = await self._semantic_recaller.arecall(
+            recall_result.semantic_recall = await self._semantic_recall.arecall(
                 ticket=ticket_context, engineers=candidates,
             )
-            recall_result.semantic_recall = sem
-            recall_result.history_recall = his
-            logger.debug(f"派单 L2语义:{len(sem)}人 L3历史:{len(his)}人")
+            logger.debug(f"派单 L2语义召回: {len(recall_result.semantic_recall)} 人")
+        except Exception:
+            pass
+        # L3 历史召回
+        try:
+            recall_result.history_recall = await self._history_recall.arecall(
+                ticket=ticket_context,
+            )
+            logger.debug(f"派单 L3历史召回: {len(recall_result.history_recall)} 人")
         except Exception:
             pass
 
         # ── Step 2: 精排 + 职级折扣 ──
         ranked_scores = self._ranker.rank(recall_result, engineers=candidates)
 
+        # ── Step 2.5: 负载均衡（仅算法工程师，按在途工单数打折）──
+        ranked_scores = self._apply_load_balance(ranked_scores, engineers=candidates)
+
         # ── Step 3: LLM 综合决策 ──
         result: Optional[AssignmentResult] = None
         decision_source = ""
         try:
-            llm_result = await self._llm_decider.adecide(
+            llm_result = await self._llm_decision.adecide(
                 ticket=ticket_context, engineers=candidates,
                 recall_result=recall_result, ranked_scores=ranked_scores,
             )
@@ -134,7 +149,7 @@ class Assigner:
 
         # ── Step 4: 规则兜底 ──
         if result is None:
-            result = self._decision_maker.decide(ranked_scores=ranked_scores, engineers=candidates)
+            result = self._fallback_decision.decide(ranked_scores=ranked_scores, engineers=candidates)
             decision_source = "规则兜底"
 
         # ── 结果汇总日志（含工单描述 + 被派人完整画像）──
@@ -200,6 +215,82 @@ class Assigner:
             logger.info(f"派单排名 Top3: {' | '.join(rank_lines)}")
         else:
             logger.info("派单排名: 无候选排名数据")
+
+    # ── Step 2.5 实现: 负载均衡（仅算法工程师，按在途工单数打折）──
+    def _apply_load_balance(
+        self, ranked_scores: Dict[str, Dict[str, float]],
+        engineers: List[EngineerProfile],
+    ) -> Dict[str, Dict[str, float]]:
+        """对算法工程师按在途工单数打折，避免单子集中在少数人。
+
+        负载系数 = 1 / (1 + 在途数 × step)。只作用于 load_balance.algorithm_engineers
+        名单内的人，其他候选人不动。
+        """
+        lb_cfg = self._config.load_balance or {}
+        if not lb_cfg.get("enabled", True):
+            return ranked_scores
+
+        step = float(lb_cfg.get("step", 0.15))
+        algo_names = set(lb_cfg.get("algorithm_engineers") or [])
+        if not algo_names or not ranked_scores:
+            return ranked_scores
+
+        # 收集算法工程师的 id
+        algo_ids = {e.id for e in engineers if e.name in algo_names}
+        if not algo_ids:
+            return ranked_scores
+
+        # 查询这些工程师的在途工单数
+        workload = self._query_workload(algo_ids)
+        if not workload:
+            return ranked_scores
+
+        for eid in algo_ids:
+            if eid not in ranked_scores:
+                continue
+            count = workload.get(eid, 0)
+            factor = 1.0 / (1.0 + count * step)
+            old_total = ranked_scores[eid].get("total_score", 0.0)
+            ranked_scores[eid]["load_factor"] = factor
+            ranked_scores[eid]["load_count"] = count
+            ranked_scores[eid]["total_score"] = round(old_total * factor, 4)
+            logger.debug(
+                f"派单 Step 2.5 负载均衡: {eid} 在途={count} 系数={factor:.2f} "
+                f"分={old_total:.2f}→{ranked_scores[eid]['total_score']:.2f}"
+            )
+
+        return dict(sorted(ranked_scores.items(), key=lambda x: x[1]["total_score"], reverse=True))
+
+    @staticmethod
+    def _query_workload(engineer_ids: set) -> Dict[str, int]:
+        """查询指定工程师的在途工单数（tasks 表 assigned_to 统计，status 非 closed）。
+
+        Returns: {engineer_id: 在途数}；查询失败返回空 dict（不阻断派单）。
+        """
+        if not engineer_ids:
+            return {}
+        try:
+            from app.models.task import Task
+            from app.core.db import SessionLocal
+            from sqlalchemy import func
+
+            db = SessionLocal()
+            try:
+                rows = (
+                    db.query(Task.assigned_to, func.count(Task.id))
+                    .filter(
+                        Task.assigned_to.in_(list(engineer_ids)),
+                        Task.status != "closed",
+                    )
+                    .group_by(Task.assigned_to)
+                    .all()
+                )
+                return {uid: cnt for uid, cnt in rows if uid}
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"派单 Step 2.5 查询在途工单失败，跳过负载均衡: {e}")
+            return {}
 
     # ── Step -1 实现: LLM 识别提单人期望 + 姓名匹配 ──
     async def _detect_preferred_assignee(
@@ -297,3 +388,4 @@ class Assigner:
     def reload_config(self):
         self._config.reload()
         invalidate_semantic_cache()
+        invalidate_history_cache()
