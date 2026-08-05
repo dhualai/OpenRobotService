@@ -2,6 +2,7 @@ from fastapi import Request, HTTPException
 from typing import Dict, Any, List, Optional
 from app.core.database import db_manager
 from app.services.identity_service import IdentityService
+from app.services.user_service import user_service
 
 class PermissionService:
     @staticmethod
@@ -24,16 +25,14 @@ class PermissionService:
     @staticmethod
     async def get_users_list(request: Request, token: str) -> List[Dict[str, Any]]:
         try:
-            users = db_manager.get_all_users()
+            # db_manager 没有 get_all_users 方法，改用 user_service.get_user_list()
+            # （已统一处理 external_credentials 的 JSON 解析与 null 兜底）
+            # limit 用 999999999 以列出全部用户，与项目列表等接口的约定一致
+            users = user_service.get_user_list(0, 999999999)
             result = []
             for user in users:
-                import json
-                external_credentials = {}
-                if user.get('external_credentials'):
-                    try:
-                        external_credentials = json.loads(user['external_credentials'])
-                    except:
-                        external_credentials = {}
+                # user_service 返回的 external_credentials 已经是 dict（null → {}）
+                external_credentials = user.get('external_credentials') or {}
                 result.append({
                     "id": user['id'],
                     "username": user['username'],
@@ -105,19 +104,16 @@ class PermissionService:
     @staticmethod
     async def get_project_uspinfo(request: Request, token: str, project_code: str) -> Dict[str, List[Dict[str, str]]]:
         try:
-            users = db_manager.get_all_users()
+            # db_manager 没有 get_all_users 方法，改用 user_service.get_user_list()
+            # （已统一处理 external_credentials 的 JSON 解析与 null 兜底）
+            # limit 用 999999999 以列出全部用户，与项目列表等接口的约定一致
+            users = user_service.get_user_list(0, 999999999)
             user_list = []
             user_key = []
-            
+
             for user in users:
-                import json
-                external_credentials = {}
-                if user.get('external_credentials'):
-                    try:
-                        external_credentials = json.loads(user['external_credentials'])
-                    except:
-                        external_credentials = {}
-                
+                # user_service 返回的 external_credentials 已经是 dict（null → {}）
+                external_credentials = user.get('external_credentials') or {}
                 usp_info = external_credentials.get("usp", {})
                 username = usp_info.get("username", "")
                 if username and username not in user_key:
@@ -127,7 +123,7 @@ class PermissionService:
                         "password": usp_info.get("password", "")
                     })
                     user_key.append(username)
-            
+
             return {"user_list": user_list, "user_key": user_key}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"获取USP信息失败: {str(e)}")

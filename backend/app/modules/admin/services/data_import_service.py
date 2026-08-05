@@ -9,8 +9,11 @@
 import bz2
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
+
+# 东八区时区常量
+_BEIJING_TZ = timezone(timedelta(hours=8))
 
 # 允许的上传文件扩展名
 ALLOWED_EXTENSIONS = {'.json', '.bz2'}
@@ -44,17 +47,32 @@ def parse_packet_file(file_bytes: bytes, filename: str) -> dict:
 
 
 def _parse_time(time_str) -> Optional[datetime]:
-    """解析时间字符串为 datetime（UTC）。Z 后缀归一化为 +00:00。"""
+    """解析时间字符串为带时区的 datetime。
+
+    - Z 后缀归一化为 +00:00（UTC）
+    - 保留原始时区信息，不进行时区换算
+    - 无时区信息时按东八区处理
+    """
     try:
         if isinstance(time_str, str) and time_str.endswith('Z'):
             time_str = time_str[:-1] + '+00:00'
-        return datetime.fromisoformat(time_str.replace('+08:00', '+00:00'))
+        dt = datetime.fromisoformat(time_str)
+        # 若时间字符串无时区信息，按东八区处理
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_BEIJING_TZ)
+        return dt
     except (ValueError, TypeError):
         return None
 
 
 def _format_time(dt: datetime) -> str:
-    """格式化 datetime 为 DAS 数据包的时间字符串（东八区）。"""
+    """格式化 datetime 为 DAS 数据包的时间字符串（东八区）。
+
+    将 datetime 转换为东八区后格式化，避免时区混用导致的日期偏移。
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_BEIJING_TZ)
+    dt = dt.astimezone(_BEIJING_TZ)
     return dt.strftime('%Y-%m-%dT%H:%M:%S+08:00')
 
 
@@ -112,9 +130,13 @@ def transform_data(data: dict) -> dict:
     }
 
     for item in timestamp_data:
-        # 计算时间范围（该时间戳所在日期 00:00:00 到 23:59:59）
-        day_start = item['timestamp'].replace(hour=0, minute=0, second=0)
-        day_end = item['timestamp'].replace(hour=23, minute=59, second=59)
+        # 先转换为东八区，再取当天 00:00:00 ~ 23:59:59，避免时区混用导致日期偏移
+        ts = item['timestamp']
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_BEIJING_TZ)
+        ts = ts.astimezone(_BEIJING_TZ)
+        day_start = ts.replace(hour=0, minute=0, second=0)
+        day_end = ts.replace(hour=23, minute=59, second=59)
         trans_data['content'].append({
             "data": [item['data']],
             "start_time": _format_time(day_start),
