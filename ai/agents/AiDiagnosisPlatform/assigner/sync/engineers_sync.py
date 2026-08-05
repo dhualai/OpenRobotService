@@ -67,11 +67,11 @@ def _build_profiles(rows: list[dict]) -> List[EngineerProfile]:
             has_modules = bool(modules)
 
         if not dept:
-            logger.debug(f"[personnel_sync] 跳过 {row.get('name')}: 缺少 department")
+            logger.debug(f"[engineers_sync] 跳过 {row.get('name')}: 缺少 department")
             skipped += 1
             continue
         if not has_modules:
-            logger.debug(f"[personnel_sync] 跳过 {row.get('name')}: responsibility_modules 为空")
+            logger.debug(f"[engineers_sync] 跳过 {row.get('name')}: responsibility_modules 为空")
             skipped += 1
             continue
 
@@ -85,7 +85,7 @@ def _build_profiles(rows: list[dict]) -> List[EngineerProfile]:
         ))
 
     if skipped:
-        logger.info(f"[personnel_sync] 准入校验: 跳过 {skipped} 人 (缺 department/modules)")
+        logger.info(f"[engineers_sync] 准入校验: 跳过 {skipped} 人 (缺 department/modules)")
     return profiles
 
 
@@ -99,7 +99,7 @@ def load_engineers(reload: bool = False) -> List[EngineerProfile]:
     rows = _fetch_from_users_table()
     _sync_cache = _build_profiles(rows)
     _sync_ts = time.time()
-    logger.info(f"[personnel_sync] 同步完成: {len(_sync_cache)} 人, {(time.perf_counter() - t0) * 1000:.0f}ms")
+    logger.info(f"[engineers_sync] 同步完成: {len(_sync_cache)} 人, {(time.perf_counter() - t0) * 1000:.0f}ms")
     return _sync_cache
 
 

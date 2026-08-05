@@ -1,4 +1,4 @@
-"""Assigner 核心逻辑：智能派单
+"""DispatchFlow 核心逻辑：智能派单主流程
 
 流程:
     TicketContext + EngineerProfile
@@ -29,15 +29,18 @@ import json, re
 from typing import Dict, List, Optional
 
 from ai.core.logging import get_logger
-from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
-from ai.agents.AiDiagnosisPlatform.assigner.ranking.decision import DecisionMaker
-from ai.agents.AiDiagnosisPlatform.assigner.filtering.department_matcher import DepartmentMatcher
-from ai.agents.AiDiagnosisPlatform.assigner.ranking.llm_decider import LlmDecider
-from ai.agents.AiDiagnosisPlatform.assigner.recall.llm_recaller import LlmRecaller
+from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
+from ai.agents.AiDiagnosisPlatform.assigner.ranking.fallback_decision import FallbackDecision
+from ai.agents.AiDiagnosisPlatform.assigner.filtering.department_filter import DepartmentFilter
+from ai.agents.AiDiagnosisPlatform.assigner.ranking.llm_decision import LlmDecision
+from ai.agents.AiDiagnosisPlatform.assigner.recall.llm_recall import LlmRecall
 from ai.agents.AiDiagnosisPlatform.assigner.ranking.ranker import Ranker
 from ai.agents.AiDiagnosisPlatform.assigner.recall.recall_result import RecallResult
-from ai.agents.AiDiagnosisPlatform.assigner.recall.semantic_recaller import (
-    SemanticRecaller, invalidate_semantic_cache,
+from ai.agents.AiDiagnosisPlatform.assigner.recall.semantic_recall import (
+    SemanticRecall, invalidate_semantic_cache,
+)
+from ai.agents.AiDiagnosisPlatform.assigner.recall.history_recall import (
+    HistoryRecall, invalidate_history_cache,
 )
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     AssignmentResult, EngineerProfile, TicketContext,
@@ -46,21 +49,21 @@ from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
 logger = get_logger("ASSIGNER")
 
 
-class Assigner:
+class DispatchFlow:
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
-        self._dept_matcher = DepartmentMatcher(config=self._config)
-        self._llm_recaller = LlmRecaller(config=self._config)
-        self._semantic_recaller = SemanticRecaller(config=self._config)
+        self._dept_filter = DepartmentFilter(config=self._config)
+        self._llm_recall = LlmRecall(config=self._config)
+        self._semantic_recall = SemanticRecall(config=self._config)
+        self._history_recall = HistoryRecall(config=self._config)
         self._ranker = Ranker(config=self._config)
-        self._llm_decider = LlmDecider(config=self._config)
-        self._decision_maker = DecisionMaker(config=self._config)
+        self._llm_decision = LlmDecision(config=self._config)
+        self._fallback_decision = FallbackDecision(config=self._config)
 
     async def aassign(
         self,
         ticket_context: TicketContext,
         engineer_profiles: List[EngineerProfile],
-        historical_matches: Optional[Dict[str, float]] = None,
     ) -> AssignmentResult:
         desc_preview = (ticket_context.problem_description or "")[:100].replace("\n", " ")
         logger.info(
@@ -85,7 +88,7 @@ class Assigner:
             return preferred
 
         # ── Step 0: 部门过滤 ──
-        candidates = self._dept_matcher.filter(
+        candidates = self._dept_filter.filter(
             ticket=ticket_context, engineers=engineer_profiles,
             project_name=ticket_context.project_name or "",
         )
@@ -98,20 +101,26 @@ class Assigner:
         recall_result = RecallResult()
         # L1 纯LLM 召回
         try:
-            recall_result.llm_recall = await self._llm_recaller.arecall(
+            recall_result.llm_recall = await self._llm_recall.arecall(
                 ticket=ticket_context, engineers=candidates,
             )
             logger.debug(f"派单 L1 LLM召回: {len(recall_result.llm_recall)} 人")
         except Exception as e:
             logger.warning(f"派单 L1 LLM召回异常: {e}")
-        # L2 语义 + L3 历史（共享一次 Embedding）
+        # L2 语义召回
         try:
-            sem, his = await self._semantic_recaller.arecall(
+            recall_result.semantic_recall = await self._semantic_recall.arecall(
                 ticket=ticket_context, engineers=candidates,
             )
-            recall_result.semantic_recall = sem
-            recall_result.history_recall = his
-            logger.debug(f"派单 L2语义:{len(sem)}人 L3历史:{len(his)}人")
+            logger.debug(f"派单 L2语义召回: {len(recall_result.semantic_recall)} 人")
+        except Exception:
+            pass
+        # L3 历史召回
+        try:
+            recall_result.history_recall = await self._history_recall.arecall(
+                ticket=ticket_context,
+            )
+            logger.debug(f"派单 L3历史召回: {len(recall_result.history_recall)} 人")
         except Exception:
             pass
 
@@ -122,7 +131,7 @@ class Assigner:
         result: Optional[AssignmentResult] = None
         decision_source = ""
         try:
-            llm_result = await self._llm_decider.adecide(
+            llm_result = await self._llm_decision.adecide(
                 ticket=ticket_context, engineers=candidates,
                 recall_result=recall_result, ranked_scores=ranked_scores,
             )
@@ -134,7 +143,7 @@ class Assigner:
 
         # ── Step 4: 规则兜底 ──
         if result is None:
-            result = self._decision_maker.decide(ranked_scores=ranked_scores, engineers=candidates)
+            result = self._fallback_decision.decide(ranked_scores=ranked_scores, engineers=candidates)
             decision_source = "规则兜底"
 
         # ── 结果汇总日志（含工单描述 + 被派人完整画像）──
@@ -297,3 +306,4 @@ class Assigner:
     def reload_config(self):
         self._config.reload()
         invalidate_semantic_cache()
+        invalidate_history_cache()

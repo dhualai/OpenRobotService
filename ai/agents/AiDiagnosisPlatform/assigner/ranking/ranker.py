@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Optional
 
-from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
+from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.recall.recall_result import RecallResult
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile
 

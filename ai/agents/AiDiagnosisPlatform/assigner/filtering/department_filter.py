@@ -1,4 +1,4 @@
-"""部门匹配器：工单 → 部门
+"""部门过滤器：工单 → 部门
 
 三大类问题 → 三个部门，分不清的不分。
 
@@ -11,7 +11,7 @@
 
 from typing import Dict, List, Optional
 
-from ai.agents.AiDiagnosisPlatform.assigner.config_loader import AssignerConfig
+from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
 from ai.core.logging import get_logger
 
@@ -69,7 +69,7 @@ _SCHEDULING = [
 ]
 
 
-class DepartmentMatcher:
+class DepartmentFilter:
 
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
@@ -86,30 +86,30 @@ class DepartmentMatcher:
         sources = sum([bool(robot_hits), bool(car_hits), bool(sched_hits)])
 
         if sources >= 2:
-            logger.info(f"[dept_matcher] 跨部门歧义 → 不过滤 "
+            logger.info(f"[dept_filter] 跨部门歧义 → 不过滤 "
                         f"(hw={robot_hits[:2]}, sw={car_hits[:2]}, sched={sched_hits[:2]})")
             return ""
 
         if robot_hits:
-            logger.info(f"[dept_matcher] 硬件({robot_hits[:3]}) → 机器人事业部")
+            logger.info(f"[dept_filter] 硬件({robot_hits[:3]}) → 机器人事业部")
             return "机器人事业部"
 
         if car_hits:
-            logger.info(f"[dept_matcher] 车端软件({car_hits[:3]}) → 车端软件")
+            logger.info(f"[dept_filter] 车端软件({car_hits[:3]}) → 车端软件")
             return "车端软件"
 
         if sched_hits:
-            logger.info(f"[dept_matcher] 调度({sched_hits[:3]}) → 智能规划")
+            logger.info(f"[dept_filter] 调度({sched_hits[:3]}) → 智能规划")
             return "智能规划"
 
-        logger.info(f"[dept_matcher] 无匹配 → 不过滤")
+        logger.info(f"[dept_filter] 无匹配 → 不过滤")
         return ""
 
     def filter_by_department(self, engineers, department):
         if not department:
             return list(engineers)
         filtered = [e for e in engineers if e.department == department]
-        logger.info(f"[dept_matcher] 部门过滤: {len(engineers)}→{len(filtered)} ({department})")
+        logger.info(f"[dept_filter] 部门过滤: {len(engineers)}→{len(filtered)} ({department})")
         return filtered
 
     def filter(self, ticket, engineers, project_name=""):
