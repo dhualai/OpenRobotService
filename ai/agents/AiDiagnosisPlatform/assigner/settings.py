@@ -5,7 +5,7 @@
 - module_anchor_texts  → recall/semantic_recall.py（L2 语义召回：Embedding 锚文本）
 - ranker_weights       → ranking/ranker.py（三路召回加权）
 - job_level_penalty    → ranking/ranker.py（职级折扣）
-- department_scopes    →（当前未启用，保留备用）
+- department_keywords  → filtering/department_filter.py（部门过滤关键词）
 - decision_thresholds  → ranking/fallback_decision.py（兜底置信度阈值）
 """
 
@@ -29,7 +29,7 @@ class AssignerConfig:
     - module_anchor_texts:  {模块名: 锚文本}，供 L2 语义召回做 Embedding 比对
     - ranker_weights:       {llm_match, semantic_match, history_match} 三路权重
     - job_level_penalty:    {职级: 惩罚系数}，精排后按职级打折
-    - department_scopes:    {部门: {keywords}}，⚠️ 当前未启用，保留备用
+    - department_keywords:  {部门: [关键词]}，供部门过滤匹配工单归属部门
     - decision_thresholds:  {auto, recommend}，规则兜底决策的置信度阈值
     """
 
@@ -40,7 +40,7 @@ class AssignerConfig:
         self.module_anchor_texts: Dict[str, str] = {}
         self.ranker_weights: Dict[str, Any] = {}
         self.job_level_penalty: Dict[int, float] = {}
-        self.department_scopes: Dict[str, dict] = {}
+        self.department_keywords: Dict[str, list] = {}
         self.decision_thresholds: Dict[str, float] = {}
         self._load_all()
 
@@ -53,7 +53,7 @@ class AssignerConfig:
         # job_level_penalty 的 key 在 YAML 中是整数，需显式转 int
         raw = config.get("job_level_penalty", {})
         self.job_level_penalty = {int(k): v for k, v in raw.items()}
-        self.department_scopes = config.get("department_scopes", {})
+        self.department_keywords = config.get("department_keywords", {})
         self.decision_thresholds = config.get("decision_thresholds", {})
 
     def reload(self):
