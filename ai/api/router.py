@@ -136,7 +136,7 @@ async def ask_question_stream(
         first = False
         _sse_trace: list[str] = []
         _sse_token_count = 0
-        acc = ""  # 流式累积文本，后端增量落库用（刷新/中断时 DB 已是最新内容，前端无需在内存持有）
+        import asyncio  # producer-consumer 解耦：Queue/create_task/CancelledError
 
         def _flush_tokens():
             nonlocal _sse_token_count
@@ -145,58 +145,106 @@ async def ask_question_stream(
                 _sse_token_count = 0
 
         # ── 后端增量落库准备（仅当前端传入 conversation_id 时启用）──
-        # 前端把本轮 user 消息落库后会话 id 传给流式端点；后端在流式中把 assistant 回复
-        # 节流写入同会话 messages 表，从根本上解决「仅前端在内存持有 → 刷新/切 Tab 即丢字」。
         persist_msg_id = qa_req.assistant_message_id
         db = None
-        last_persist = 0.0
-        PERSIST_MS = 0.8  # 节流：最多每 0.8s 写一次 DB（残留丢失窗口 ≤0.8s）
 
-        async def _persist(content: str, force: bool = False):
-            nonlocal last_persist
-            now = time.perf_counter()
-            if not force and (now - last_persist) < PERSIST_MS:
-                return
+        # 先建占位 assistant 消息并通知前端（需在 consumer 侧 yield message_created）。
+        # db 随后交给 producer 独占使用与关闭。
+        if qa_req.conversation_id:
             try:
-                await MessageService.update_message(
-                    db, persist_msg_id, MessageUpdate(content=content))
-                last_persist = now
+                db = AsyncSessionLocal()
+                if persist_msg_id is None:
+                    msg = await MessageService.create_message(db, MessageCreate(
+                        conversation_id=qa_req.conversation_id,
+                        role="assistant",
+                        content="",
+                        message_type="text",
+                    ))
+                    persist_msg_id = msg.id
+                    yield f"event: message_created\ndata: {json.dumps({'message_id': persist_msg_id}, ensure_ascii=False)}\n\n"
             except Exception as e:
-                logger.warning(f"[sse] 增量落库失败 sid={qa_req.session_id[:8]}: {e}")
+                logger.warning(f"[sse] 建 assistant 消息失败（降级为不持久化） sid={qa_req.session_id[:8]}: {e}")
+                if db is not None:
+                    await db.close()
+                db = None
+                persist_msg_id = None
+
+        # ── producer-consumer 解耦 ──
+        # pipeline 放到独立后台任务（producer），不受 SSE 客户端断连取消。
+        # 客户端刷新/关页时 consumer 被取消，producer 仍在后台继续生成 + 增量落库，
+        # 刷新后前端从 DB 即可读到完整回复（首 token 前断连也有占位消息兜底）。
+        queue = asyncio.Queue()
+        _SENTINEL = object()
+
+        async def producer():
+            acc = ""
+            last_persist = 0.0
+            PERSIST_MS = 0.8
+            async def _persist(content: str, force: bool = False):
+                nonlocal last_persist
+                now = time.perf_counter()
+                if not force and (now - last_persist) < PERSIST_MS:
+                    return
+                try:
+                    await MessageService.update_message(
+                        db, persist_msg_id, MessageUpdate(content=content))
+                    last_persist = now
+                except Exception as e:
+                    logger.warning(f"[sse] 增量落库失败 sid={qa_req.session_id[:8]}: {e}")
+            try:
+                async for event in pipeline.run_stream(qa_request):
+                    ev_type = event.get("event")
+                    if ev_type == "token":
+                        acc += event.get('data', '')
+                        if db is not None and persist_msg_id is not None:
+                            await _persist(acc)
+                    elif ev_type == "status":
+                        # 提交/补信息阶段清空 acc（系统话术会重新流式），保证 DB 与前端展示一致
+                        stage = event.get('data', {}).get('stage', '?')
+                        if stage in ('need_info', 'need_fields', 'review', 'submit_failed'):
+                            acc = ""
+                    await queue.put(event)
+                # 流结束：最终落库（完整内容）
+                if db is not None and persist_msg_id is not None:
+                    try:
+                        await _persist(acc, force=True)
+                    except Exception:
+                        pass
+                await queue.put(_SENTINEL)
+            except Exception as e:
+                # 异常：保留已接收内容
+                if db is not None and persist_msg_id is not None and acc:
+                    try:
+                        await _persist(acc, force=True)
+                    except Exception:
+                        pass
+                await queue.put(("__error__", str(e)))
+            finally:
+                if db is not None:
+                    await db.close()
+
+        producer_task = asyncio.create_task(producer())
 
         try:
-            if qa_req.conversation_id:
-                try:
-                    db = AsyncSessionLocal()
-                    if persist_msg_id is None:
-                        msg = await MessageService.create_message(db, MessageCreate(
-                            conversation_id=qa_req.conversation_id,
-                            role="assistant",
-                            content="",
-                            message_type="text",
-                            # 标记流式占位：刷新/切会话恢复时，前端按此标记把空内容气泡还原为「思考中」，
-                            # 不被 mapDbMessages 的空白 AI 气泡过滤丢弃。
-                            metadata_=json.dumps({"kind": "streaming"}),
-                        ))
-                        persist_msg_id = msg.id
-                        # 通知前端 assistant 消息的 DB id（前端用于降级回写/排重）
-                        yield f"event: message_created\ndata: {json.dumps({'message_id': persist_msg_id}, ensure_ascii=False)}\n\n"
-                except Exception as e:
-                    logger.warning(f"[sse] 建 assistant 消息失败（降级为不持久化） sid={qa_req.session_id[:8]}: {e}")
-                    db = None
-                    persist_msg_id = None
-
-            async for event in pipeline.run_stream(qa_request):
-                ev_type = event["event"]
+            while True:
+                event = await queue.get()
+                if event is _SENTINEL:
+                    break
+                if isinstance(event, tuple) and len(event) == 2 and event[0] == "__error__":
+                    err_msg = event[1]
+                    yield f"data: {json.dumps({'token': f'[AI 服务异常: {err_msg[:80]}]'}, ensure_ascii=False)}\n\n"
+                    _flush_tokens()
+                    logger.error(f"[sse] sid={qa_req.session_id[:8]} q={qa_req.query[:80]} "
+                                 f"→ {' | '.join(_sse_trace)} | ERROR: {err_msg}")
+                    yield f"event: error\ndata: {json.dumps({'error': err_msg})}\n\n"
+                    break
+                ev_type = event.get("event")
                 if ev_type == "token":
                     if not first:
                         first = True
                         yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)}, ensure_ascii=False)}\n\n"
-                    acc += event['data']
-                    _sse_token_count += len(event['data'])
+                    _sse_token_count += len(event.get('data', ''))
                     yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
-                    if db is not None and persist_msg_id is not None:
-                        await _persist(acc)
                 elif ev_type == "result":
                     _flush_tokens()
                     _sse_trace.append(f"result")
@@ -207,37 +255,17 @@ async def ask_question_stream(
                     _flush_tokens()
                     stage = event.get('data', {}).get('stage', '?')
                     _sse_trace.append(f"status{{{stage}}}")
-                    # 镜像前端：提交/补信息阶段清空 acc（系统话术会重新流式），保证 DB 与前端展示一致
-                    if stage in ('need_info', 'need_fields', 'review', 'submit_failed'):
-                        acc = ""
                     yield f"event: status\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-
-            # 流结束：最终落库（完整内容），确保正常结束时 DB 与展示完全一致
-            if db is not None and persist_msg_id is not None:
-                try:
-                    await _persist(acc, force=True)
-                except Exception:
-                    pass
             _flush_tokens()
             total_ms = round((time.perf_counter() - t0) * 1000)
             logger.info(f"[sse] sid={qa_req.session_id[:8]} q={qa_req.query[:80]} "
                         f"→ {' | '.join(_sse_trace)} | done({total_ms}ms)")
             yield f"event: done\ndata: {json.dumps({'total_ms': total_ms})}\n\n"
-        except Exception as e:
-            # 异常：先保留已接收内容（避免刷新/中断丢字），再 yield 缺省 token 以便前端可见
-            if db is not None and persist_msg_id is not None and acc:
-                try:
-                    await _persist(acc, force=True)
-                except Exception:
-                    pass
-            yield f"data: {json.dumps({'token': f'[AI 服务异常: {str(e)[:80]}]'}, ensure_ascii=False)}\n\n"
-            _flush_tokens()
-            logger.error(f"[sse] sid={qa_req.session_id[:8]} q={qa_req.query[:80]} "
-                         f"→ {' | '.join(_sse_trace)} | ERROR: {e}", exc_info=True)
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
-        finally:
-            if db is not None:
-                await db.close()
+        except asyncio.CancelledError:
+            # 客户端断连（刷新/关页）：consumer 取消，但 producer 后台继续生成 + 落库。
+            # 不 await producer_task（会被取消），让它独立完成；刷新后前端从 DB 读到完整回复。
+            logger.info(f"[sse] 客户端断连，producer 后台继续 sid={qa_req.session_id[:8]}")
+            raise
 
     return StreamingResponse(sse(), media_type="text/event-stream")
 
