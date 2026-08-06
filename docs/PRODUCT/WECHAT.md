@@ -121,6 +121,7 @@ python -m app.wechat.menu_setup
 - 进页面 `useEffect`（依赖工单 id）自动调用 `setupWechatShare`：复用既有 `GET /api/wechat/config/js-sdk-config` 做 JS-SDK 签名（`initWechatJsSdk` 已封装）→ 调 `updateAppMessageShareData` 设置卡片元信息，全程无 UI、不打扰用户。
 - JS-SDK 分享只是「配置卡片」，**用户需在微信内点右上角「…」实际转发**，前端不能主动发出（微信禁止前端调起转发面板）；预置在进页面时已完成，故点「…」即见工单卡片。
 - 缩略图 `imgUrl` 取 `WECHAT_CONFIG.shareImgUrl`（`VITE_WECHAT_SHARE_IMG_URL`），留空则用微信默认图。
+- 分享描述 `desc` 无官方硬字数上限，但微信客户端会显示截断：会话列表预览约显示前 30 字、点开卡片详情约显示前 54 字，超出以「…」收尾；**朋友圈（`updateTimelineShareData`）不展示 `desc`、仅展示 `title`**，故关键信息应前置（前端按约 120 字传入，由调用方 `slice` 控制）。
 
 ### 7.2 必配项（否则卡片异常）
 - **JS 接口安全域名**：公众平台「公众号设置 → 功能设置 → JS 接口安全域名」填前端域名（不带 `https://`）。未配会 `invalid signature` 或分享无效。
