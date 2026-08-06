@@ -177,7 +177,7 @@ export default function TicketDetailPage() {
     if (!ticket?.ticket_id) return;
     setupWechatShare({
       title: ticket.title || '工单详情',
-      desc: (ticket.description || '').slice(0, 60) || `工单 ${ticket.ticket_id}`,
+      desc: (ticket.description || '').slice(0, 120) || `工单 ${ticket.ticket_id}`,
       link: window.location.href,
       imgUrl: WECHAT_CONFIG.shareImgUrl,
     });
