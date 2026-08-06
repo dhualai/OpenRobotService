@@ -101,6 +101,27 @@ class TicketService:
         setattr(ticket, "assigned_to_name", created_by_name)
         setattr(ticket, "assignee_name", created_by_name)
 
+        # 新建工单通知：显式指派受理人时（双工单工单2 / 直接指派），通知受理人
+        import logging
+        logger = logging.getLogger(__name__)
+        if ticket_data.assigned_to:
+            logger.info(f"准备发送新建工单通知: ticket_id={ticket.id}, assignee={ticket_data.assigned_to}, operator={created_by}")
+            try:
+                await NotificationUtils.send_ticket_create_notification(
+                    ticket_id=ticket.id,
+                    title=ticket.title or "",
+                    project_name=ticket.project_name or "",
+                    operator=created_by,
+                    deadline_at=ticket.deadline_at,
+                    user_names=[ticket_data.assigned_to],
+                    token=token,
+                )
+                logger.info(f"新建工单通知已发送: ticket_id={ticket.id}, assignee={ticket_data.assigned_to}")
+            except Exception as e:
+                logger.warning(f"新建工单通知发送失败 ticket_id={ticket.id}: {e}")
+        else:
+            logger.info(f"工单未显式指派受理人，跳过新建通知: ticket_id={ticket.id}, assigned_to={ticket.assigned_to}")
+
         return ticket
 
     @staticmethod
@@ -978,8 +999,9 @@ class TicketService:
                     ticket.assigned_to = ai_assigned_id
                     ticket.status = TicketStatus.IN_PROGRESS
                     await db.commit()
+                    operator = user_map.get(ticket.created_by, ticket.created_by)
                     await NotificationUtils.send_ticket_create_notification(
-                        ticket.id, ticket.title, ticket.project_name, "AI自动派单", ticket.deadline_at, [ai_assigned_id], token)
+                        ticket.id, ticket.title, ticket.project_name, operator, ticket.deadline_at, [ai_assigned_id], token)
                     return {"code": 200, "message": "AI分配处理人成功", "data": {"assigned_to": ai_assigned_id, "assigned_to_name": ai_assigned_name}}
             
             return {"code": 400, "message": "AI分配处理人失败", "data": {}}

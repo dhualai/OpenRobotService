@@ -37,15 +37,15 @@ template:
       thing15: ""
       time2: ""
       time18: ""
-# 新建工单模板, [工单编号, 项目名称, 工单标题, 派单人, 期望完成时间]
+# 新建工单模板, [工单编号, 项目名称, 工单标题, 发起人, 工单截止时间]
   5:
-    id: fCQaTl2YWka7MDPwJVT1zeOgnJGSmAQS11uOSgnsu1U
+    id: fCQaTl2YWka7MDPwJVT1zdolmNTRwPkaIPW0cZbk_mE
     data:
       character_string14: ""
       thing13: ""
       thing6: ""
-      thing81: ""
-      time66: ""
+      thing53: ""
+      time91: ""
 # 工单逾期提醒, [工单名称, 项目名称, 逾期天数, 派单时间, 逾期时间]
   6:
     id: udCWnORuaOwBlh-i93jdBhWSg-Nwb2c58D_ttkQlLz0

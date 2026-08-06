@@ -24,6 +24,7 @@ import DiscussionPanel from '@/shared/components/DiscussionPanel';
 import UserSelect from '@/shared/components/UserSelect';
 import SafeHtml from '@/shared/components/SafeHtml';
 import { useAuthStore } from '@/stores/auth';
+import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
 import { formatDateTime } from '@/shared/utils/url';
 import type { UserItem } from '@/api/users';
 
@@ -76,6 +77,63 @@ const displayPriority = (p?: string) => (p ? PRIORITY_CN[p] || p : '');
 /** priority 统一转英文枚举 value（编辑表单用）：英文原样，中文映射，缺省 medium */
 const toEnPriority = (p?: string) => (p && PRIORITY_CN[p] ? p : PRIORITY_EN[p || ''] || 'medium');
 
+// 附件相关工具：与系统任务详情页 TaskDetailPage 同款逻辑，保证两处体验一致
+const formatFileSize = (bytes?: number): string => {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+};
+const getFileIcon = (filename?: string): string => {
+  const ext = (filename || '').split('.').pop()?.toLowerCase() || '';
+  const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'];
+  const docExts = ['pdf', 'doc', 'docx', 'txt', 'md'];
+  const sheetExts = ['xls', 'xlsx', 'csv'];
+  const codeExts = ['json', 'js', 'ts', 'py', 'html', 'css'];
+  const archiveExts = ['zip', 'rar', '7z', 'tar', 'gz'];
+  if (imageExts.includes(ext)) return '🖼️';
+  if (docExts.includes(ext)) return '📄';
+  if (sheetExts.includes(ext)) return '📊';
+  if (codeExts.includes(ext)) return '💻';
+  if (archiveExts.includes(ext)) return '📦';
+  return '📎';
+};
+const isImageFile = (filename?: string): boolean => {
+  const ext = (filename || '').split('.').pop()?.toLowerCase() || '';
+  return ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'].includes(ext);
+};
+interface MinioPathInfo { bucket: string; objectKey: string; }
+const parseMinioPath = (rawPath: string): MinioPathInfo | null => {
+  try {
+    const url = new URL(rawPath);
+    const parts = decodeURIComponent(url.pathname).replace(/^\//, '').split('/');
+    if (parts.length < 2) return null;
+    const bucket = parts[0];
+    const objectKey = parts.slice(1).join('/');
+    if (!bucket || !objectKey) return null;
+    return { bucket, objectKey };
+  } catch { return null; }
+};
+// AI/DB 返回的 attachments 可能是 object_path 字符串，或 {path,url,filename,size} 字典，统一归一化
+interface NormalizedAttachment { path?: string; url?: string; filename?: string; size?: number; }
+const normalizeAttachment = (a: unknown): NormalizedAttachment | null => {
+  if (typeof a === 'string') {
+    const segs = a.split('/');
+    return { path: a, filename: segs[segs.length - 1] || '未命名文件' };
+  }
+  if (a && typeof a === 'object') {
+    const o = a as Record<string, unknown>;
+    return {
+      path: typeof o.path === 'string' ? o.path : undefined,
+      url: typeof o.url === 'string' ? o.url : undefined,
+      filename: typeof o.filename === 'string' ? o.filename : undefined,
+      size: typeof o.size === 'number' ? o.size : undefined,
+    };
+  }
+  return null;
+};
+
 export default function TicketDetailPage() {
   const { id: sessionId = '' } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -88,6 +146,7 @@ export default function TicketDetailPage() {
   const [submittingComment, setSubmittingComment] = useState(false);
   const [aiSummary, setAiSummary] = useState('');
   const tempIdRef = useRef<string>(typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `t_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+  const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
 
   const fetchDetail = useCallback(async (silent = false) => {
     if (!sessionId) return;
@@ -118,7 +177,8 @@ export default function TicketDetailPage() {
           created_at: taskDetail.created_at || '',
           // 手动工单无 AI 诊断数据
           diagnosis: undefined,
-          attachments: [],
+          // 手动工单附件来自 tasks 服务 GET /{dbId} 的 attachments 字段（object_path 或字典数组）
+          attachments: ((taskDetail as unknown as { attachments?: unknown[] }).attachments as Array<Record<string, unknown>> | undefined) ?? [],
         });
         setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
         return;
@@ -362,6 +422,38 @@ export default function TicketDetailPage() {
 
 
 
+  // 附件下载/预览（复用系统任务页同款逻辑；AI 上传的附件落在同一 MinIO 路径体系）
+  const buildAttachmentDownloadUrl = (att: NormalizedAttachment): string | null => {
+    const rawPath = att.path || att.url || '';
+    if (!rawPath) return null;
+    let minioPath = rawPath;
+    if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
+      const parsed = parseMinioPath(rawPath);
+      if (!parsed) return null;
+      minioPath = `${parsed.bucket}/${parsed.objectKey}`;
+    }
+    const authToken = localStorage.getItem('auth_token') || '';
+    return `${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
+  };
+
+  const openAttachmentViewer = (att: NormalizedAttachment) => {
+    const rawPath = att.path || att.url || '';
+    if (!rawPath) { Toast({ message: '附件路径无效', theme: 'error' }); return; }
+    let minioPath = rawPath;
+    if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
+      const parsed = parseMinioPath(rawPath);
+      if (!parsed) { Toast({ message: '无法解析附件路径', theme: 'error' }); return; }
+      minioPath = `${parsed.bucket}/${parsed.objectKey}`;
+    }
+    const previewUrl = `${API_CONFIG.TASKS.BASE_URL}/files/${encodeURIComponent(minioPath)}`;
+    setViewer({
+      filename: att.filename || '未命名文件',
+      size: att.size,
+      previewUrl,
+      downloadUrl: buildAttachmentDownloadUrl(att) || previewUrl,
+    });
+  };
+
   return (
     <div className="ticket-detail-page" style={{ paddingBottom: 72 }}>
       <Navbar
@@ -434,6 +526,89 @@ export default function TicketDetailPage() {
         )}
 
 
+
+        {/* 工单附件（图片/PDF/Markdown 预览、其它格式下载；复用统一 AttachmentViewer，与系统任务页一致）*/}
+        {ticket.attachments && ticket.attachments.length > 0 && (
+          <div className="detail-card">
+            <h4 className="detail-card__h">📎 附件 ({ticket.attachments.length})</h4>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {ticket.attachments.map((rawAtt, idx) => {
+                const att = normalizeAttachment(rawAtt);
+                if (!att) return null;
+                const url = att.path || att.url || '';
+                const filename = att.filename || '未命名文件';
+                const size = att.size ?? 0;
+                const isImg = isImageFile(filename);
+                const icon = getFileIcon(filename);
+                const sizeLabel = formatFileSize(size);
+                const dl = buildAttachmentDownloadUrl(att);
+                return (
+                  <div
+                    key={idx}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openAttachmentViewer(att)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openAttachmentViewer(att); }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '10px 12px',
+                      borderRadius: 8,
+                      border: '1px solid #e5e5e5',
+                      background: '#fafafa',
+                      color: 'inherit',
+                      cursor: 'pointer',
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#f0f7ff'; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#fafafa'; }}
+                  >
+                    {isImg && url ? (
+                      <img
+                        src={url}
+                        alt={filename}
+                        style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 4, marginRight: 10, flexShrink: 0 }}
+                        onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+                      />
+                    ) : (
+                      <span style={{ fontSize: 22, marginRight: 10, flexShrink: 0 }}>{icon}</span>
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: '#333', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {filename}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
+                        {sizeLabel || '未知大小'}
+                      </div>
+                    </div>
+                    <span
+                      role="button"
+                      aria-label="下载附件"
+                      title="下载"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (dl) {
+                          const a = document.createElement('a');
+                          a.href = dl;
+                          a.download = filename;
+                          a.target = '_blank';
+                          document.body.appendChild(a);
+                          a.click();
+                          document.body.removeChild(a);
+                        } else {
+                          Toast({ message: '附件路径无效', theme: 'error' });
+                        }
+                      }}
+                      style={{ fontSize: 16, color: '#0052d9', marginLeft: 8, flexShrink: 0, cursor: 'pointer' }}
+                    >
+                      ⬇
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* AI 讨论摘要（与系统任务共用 tasks 表 metadata_info.ai_summary）*/}
         {ticket?.ticket_id && (
@@ -623,6 +798,9 @@ export default function TicketDetailPage() {
           </div>
         </div>
       </Popup>
+
+      {/* 附件预览：图片灯箱 / PDF 内联 / Markdown 渲染（与系统任务详情页共用统一组件）*/}
+      <AttachmentViewer item={viewer} onClose={() => setViewer(null)} />
     </div>
   );
 }
