@@ -478,7 +478,9 @@ function ProjectFirstAssign({
       {/* 项目选择弹窗 */}
       <Popup visible={projectPickerVisible} onClose={() => setProjectPickerVisible(false)} placement="bottom" showOverlay>
         <PickerList
+          key={`project-picker-${projectPickerVisible}`}
           title="选择项目"
+          searchable
           items={projects.map((p) => ({ key: p.project_code, label: p.name, sub: p.project_code }))}
           onSelect={(key) => {
             const p = projects.find((x) => x.project_code === key);
@@ -881,26 +883,50 @@ function PickerField({ label, value, placeholder, onClick }: { label: string; va
   );
 }
 
-function PickerList({ title, items, onSelect }: { title: string; items: { key: string; label: string; sub?: string }[]; onSelect: (key: string) => void }) {
+function PickerList({ title, items, onSelect, searchable }: { title: string; items: { key: string; label: string; sub?: string }[]; onSelect: (key: string) => void; searchable?: boolean }) {
+  const [keyword, setKeyword] = useState('');
+
+  const filteredItems = useMemo(() => {
+    if (!keyword.trim()) return items;
+    const kw = keyword.trim().toLowerCase();
+    return items.filter((item) => {
+      const text = `${item.label} ${item.sub || ''}`.toLowerCase();
+      return text.includes(kw);
+    });
+  }, [items, keyword]);
+
   return (
-    <div style={{ padding: 20, maxHeight: '60vh', overflow: 'auto' }}>
+    <div style={{ padding: 20, maxHeight: '60vh', display: 'flex', flexDirection: 'column' }}>
       <h4 style={{ marginBottom: 12 }}>{title}</h4>
-      {items.map((item) => (
-        <div
-          key={item.key}
-          onClick={() => onSelect(item.key)}
-          style={{
-            padding: '12px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
-            display: 'flex', flexDirection: 'column', gap: 2,
-          }}
-        >
-          <span style={{ fontSize: 14, fontWeight: 500 }}>{item.label}</span>
-          {item.sub && <span style={{ fontSize: 12, color: '#999' }}>{item.sub}</span>}
-        </div>
-      ))}
-      {items.length === 0 && (
-        <div style={{ textAlign: 'center', padding: 30, color: '#999' }}>暂无数据</div>
+      {searchable && (
+        <Input
+          value={keyword}
+          onChange={(v) => setKeyword(String(v))}
+          placeholder="输入关键字搜索项目"
+          clearable
+          style={{ marginBottom: 8 }}
+        />
       )}
+      <div style={{ overflow: 'auto', flex: 1 }}>
+        {filteredItems.map((item) => (
+          <div
+            key={item.key}
+            onClick={() => onSelect(item.key)}
+            style={{
+              padding: '12px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
+              display: 'flex', flexDirection: 'column', gap: 2,
+            }}
+          >
+            <span style={{ fontSize: 14, fontWeight: 500 }}>{item.label}</span>
+            {item.sub && <span style={{ fontSize: 12, color: '#999' }}>{item.sub}</span>}
+          </div>
+        ))}
+        {filteredItems.length === 0 && (
+          <div style={{ textAlign: 'center', padding: 30, color: '#999' }}>
+            {keyword ? '暂无匹配结果' : '暂无数据'}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

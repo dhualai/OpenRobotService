@@ -76,6 +76,10 @@ class AIConfig(BaseModel):
     assign_scan_interval: int = Field(default=120, description="派单 Worker 兜底扫描间隔（秒），Pub/Sub 事件触发已覆盖主路径")
     upload_dir: str = Field(default="./uploads", description="附件上传目录")
 
+    # ========== 后端内部 API（派单后回调通知等）==========
+    backend_base_url: str = Field(default="http://localhost:8400", description="后端服务基址，用于 AI 回调后端内部接口")
+    internal_api_key: str = Field(default="zentao", description="内部服务间调用 X-API-Key，需与后端 HELPDESK_SYNC_API_KEY 一致")
+
     # ========== 诊断服务 ==========
     diagnosis_scan_interval: int = Field(default=60, description="诊断服务扫描新工单间隔（秒）")
 
@@ -261,6 +265,9 @@ def get_ai_config() -> AIConfig:
         # 派单
         dispatch_api_url=os.getenv("DISPATCH_API_URL", ""),
         upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),
+        # 后端内部 API（派单后回调通知等）
+        backend_base_url=os.getenv("BACKEND_BASE_URL", "http://localhost:8000"),
+        internal_api_key=os.getenv("INTERNAL_API_KEY", ""),
         # 文档路径
         docs_path=os.getenv("DOCS_PATH", ""),
         media_url_prefix=os.getenv("MEDIA_URL_PREFIX", "/api/ai/media"),

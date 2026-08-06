@@ -343,6 +343,7 @@ class NotificationUtils:
         title: str,
         project_name: str,
         operator: str,
+        deadline_at: Optional[datetime] = None,
         user_names: List[str] = None,
         token: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -360,9 +361,9 @@ class NotificationUtils:
                 finally:
                     loop.close()
 
-                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else ''
                 payload = NotificationUtils.instantiate_template(NotificationUtils.NEW_TICKET,
-                                                                 ticket_id, processed_project_name, processed_title, operator, current_time,
+                                                                 ticket_id, processed_project_name, processed_title, operator, deadline_str,
                                                                  user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 loop2 = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop2)
