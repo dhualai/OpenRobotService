@@ -117,7 +117,7 @@ export default function TaskDetailPage() {
   const [detail, setDetail] = useState<Ticket | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [editForm, setEditForm] = useState({ title: '', description: '', priority: 'medium', ticket_type: 'problem', customer: '' });
+  const [editForm, setEditForm] = useState({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
   const [escalateUser, setEscalateUser] = useState<UserItem | null>(null);
   const [showEscalatePopup, setShowEscalatePopup] = useState(false);
   const [resumeUser, setResumeUser] = useState<UserItem | null>(null);
@@ -452,7 +452,6 @@ export default function TaskDetailPage() {
       description: detail.description,
       priority: detail.priority || 'medium',
       ticket_type: detail.ticket_type || 'problem',
-      customer: detail.customer || '',
     });
     setEditing(true);
   };
@@ -968,15 +967,6 @@ export default function TaskDetailPage() {
                   >{label}</button>
                 ))}
               </div>
-            </div>
-            <div className="ticket-edit-form__field">
-              <label className="ticket-edit-form__label">联系人</label>
-              <Input
-                value={editForm.customer}
-                onChange={(v) => setEditForm((p) => ({ ...p, customer: String(v) }))}
-                placeholder="联系人 / 联系方式"
-                clearable
-              />
             </div>
           </div>
           <div className="ticket-edit-form__footer">
