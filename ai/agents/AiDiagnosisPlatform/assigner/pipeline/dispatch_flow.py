@@ -10,6 +10,9 @@
     【Step 0 部门过滤】(关键词匹配 → 过滤非本部门候选人)
         │
         ▼
+    【Step 0.6 排除提单人】(常规派单不派给自己；提单人指定走 Step -1 不受影响)
+        │
+        ▼
     【Step 1 三路召回】
         ├── L1 纯LLM召回(0.70): LLM 看全员画像 → 直接打分
         ├── L2 语义召回(0.20):   Embedding 工单 → 模块锚文本 → 反查工程师
@@ -100,6 +103,12 @@ class DispatchFlow:
             candidates = engineer_profiles
         logger.info(f"派单 Step 0 部门过滤: {len(engineer_profiles)}→{len(candidates)}人")
 
+        # ── Step 0.6: 排除提单人（常规派单不派给自己；Step -1 指定自己不受影响）──
+        candidates = self._exclude_creator(ticket_context, candidates)
+        if not candidates:
+            logger.warning("派单 Step 0.6: 排除提单人后无候选人，回退全量")
+            candidates = engineer_profiles
+
         # ── Step 1: 三路召回 ──
         recall_result = RecallResult()
         # L1 纯LLM 召回
@@ -186,7 +195,7 @@ class DispatchFlow:
                 f"描述: {(ticket.problem_description or '')[:120].replace(chr(10), ' ')} | "
                 f"故障码={ticket.fault_code or '-'} 车型={ticket.robot_type or '-'} | "
                 f"→ 指派: {winner.name} "
-                f"users.id={winner.id} "
+                f"users.username={winner.id} "
                 f"部门={winner.department or '-'} "
                 f"职级=L{winner.job_level} "
                 f"模块=[{modules_str}] "
@@ -215,6 +224,27 @@ class DispatchFlow:
             logger.info(f"派单排名 Top3: {' | '.join(rank_lines)}")
         else:
             logger.info("派单排名: 无候选排名数据")
+
+    # ── Step 0.6 实现: 排除提单人（常规派单不派给自己）──
+    @staticmethod
+    def _exclude_creator(
+        ticket: TicketContext, engineers: List[EngineerProfile],
+    ) -> List[EngineerProfile]:
+        """把提单人从候选人中排除（避免常规派单派给自己）。
+
+        - 提单人 = TicketContext.creator（存 users.username，如 wechat_oD5oY3...）
+        - 工程师标识 EngineerProfile.id 已统一为 username，直接精确匹配
+        - 匹配不到提单人（如提单人不是工程师）则不过滤，正常派单
+        - Step -1（提单人指定）在 Step 0 之前已直接返回，不受本规则影响
+        """
+        creator = (ticket.creator or "").strip()
+        if not creator:
+            return list(engineers)
+
+        excluded = [e for e in engineers if e.id != creator]
+        if len(excluded) < len(engineers):
+            logger.info(f"派单 Step 0.6 排除提单人: {creator} 已从候选移除 ({len(engineers)}→{len(excluded)})")
+        return excluded
 
     # ── Step 2.5 实现: 负载均衡（仅算法工程师，按在途工单数打折）──
     def _apply_load_balance(

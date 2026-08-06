@@ -187,7 +187,6 @@ class TicketCreateNotificationRequest(BaseModel):
     """新建工单通知请求（内部接口，供 AI 派单服务调用）。
     调用方只传 task_id，后端查库组装标题/项目/截止时间/受理人等完整字段后发通知。"""
     task_id: int = Field(..., description="工单ID")
-    operator: str = Field("AI自动派单", description="派单人")
 
 
 class TicketFilter(BaseModel):

@@ -157,6 +157,7 @@ class ProjectService:
             "description": project.description,
             "contact_person": project.contact_person,
             "contact_person_id": project.contact_person_id,
+            "project_contact": project.project_contact,
             "status": project.status,
             "expected_trend": project.expected_trend,
             "issues": project.issues,

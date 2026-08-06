@@ -6,6 +6,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { Button, Toast } from 'tdesign-mobile-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
+import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
 import { useAuthStore } from '@/stores/auth';
 import { formatTime } from '@/shared/utils/url';
 import API_CONFIG from '@/config/api';
@@ -79,7 +80,7 @@ export default function DiscussionPanel({
   const { username, name } = useAuthStore();
   const [commentText, setCommentText] = useState('');
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
@@ -278,6 +279,13 @@ export default function DiscussionPanel({
                         const att = parseAttachment(a);
                         if (!att.objectPath) return null;
                         const url = `${API_CONFIG.TASKS.BASE_URL}/files/${att.objectPath}`;
+                        const openViewer = () =>
+                          setViewer({
+                            filename: att.filename || 'file',
+                            size: typeof a === 'object' ? a.size : undefined,
+                            previewUrl: url,
+                            downloadUrl: url,
+                          });
                         if (att.isImage) {
                           return (
                             <img
@@ -285,16 +293,12 @@ export default function DiscussionPanel({
                               src={url}
                               alt={att.filename}
                               className="detail-chat-attachment-img"
-                              onClick={() => setPreviewUrl(url)}
+                              onClick={openViewer}
                             />
                           );
                         }
                         return (
-                          <div
-                            key={i}
-                            className="detail-chat-attachment-file"
-                            onClick={() => window.open(url, '_blank', 'noopener,noreferrer')}
-                          >
+                          <div key={i} className="detail-chat-attachment-file" onClick={openViewer}>
                             📎 {att.filename}
                           </div>
                         );
@@ -377,13 +381,8 @@ export default function DiscussionPanel({
         </div>
       </div>
 
-      {/* 图片预览：点击评论附件图片放大查看 */}
-      {previewUrl && (
-        <div className="chat-image-preview" onClick={() => setPreviewUrl(null)}>
-          <img src={previewUrl} alt="预览" className="chat-image-preview__img" onClick={(e) => e.stopPropagation()} />
-          <span className="chat-image-preview__close" onClick={() => setPreviewUrl(null)}>✕</span>
-        </div>
-      )}
+      {/* 附件预览：图片灯箱 / PDF 内联 / Markdown 渲染 */}
+      <AttachmentViewer item={viewer} onClose={() => setViewer(null)} />
     </div>
   );
 }
