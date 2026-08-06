@@ -795,16 +795,20 @@ async def send_ticket_create_notification(
         if not ticket.assigned_to:
             raise HTTPException(status_code=400, detail="工单尚未指派受理人，无法发送新建通知")
 
+        # 派单人 = 工单创建人（发起人），从 created_by 转换为用户名
+        user_map = await TicketService._get_user_map(None)
+        operator = user_map.get(ticket.created_by, ticket.created_by)
+
         result = await NotificationUtils.send_ticket_create_notification(
             ticket_id=ticket.id,
             title=ticket.title or "",
             project_name=ticket.project_name or "",
-            operator=body.operator,
+            operator=operator,
             deadline_at=ticket.deadline_at,
             user_names=[ticket.assigned_to],
             token=None,
         )
-        logger.info(f"新建工单通知已发送: task_id={body.task_id}, assignee={ticket.assigned_to}")
+        logger.info(f"新建工单通知已发送: task_id={body.task_id}, assignee={ticket.assigned_to}, operator={operator}")
         return result
     except HTTPException:
         raise
