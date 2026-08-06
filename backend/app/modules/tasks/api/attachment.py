@@ -28,6 +28,8 @@ async def download_attachment(file_path: str):
         stat = minio_client.get_file_info(f"{bucket_name}/{object_name}")
         if stat is None:
             raise HTTPException(status_code=404, detail="附件不存在")
+        response = minio_client.client.get_object(bucket_name, object_name)
+        filename = object_name.rsplit('/', 1)[-1]
         # 微信原生查看器（wx.previewImage）要求严格的 image/* MIME，而 MinIO 元数据常为
         # application/octet-stream 导致微信端图片不显示；浏览器 <img> 会内容嗅探故正常。
         # 故优先按扩展名推断 MIME，回退 MinIO 元数据，再回退 octet-stream。
@@ -36,8 +38,6 @@ async def download_attachment(file_path: str):
             or getattr(stat, 'content_type', None)
             or 'application/octet-stream'
         )
-        response = minio_client.client.get_object(bucket_name, object_name)
-        filename = object_name.rsplit('/', 1)[-1]
         disposition = f"inline; filename*=UTF-8''{quote(filename)}"
 
         def iter_stream():
