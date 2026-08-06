@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import ImageLightbox from './ImageLightbox';
+import PdfViewer from './PdfViewer';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { setupWechatFilePreview } from '@/shared/utils/wechatJsSdk';
@@ -79,13 +80,15 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
     }
   }, [item, kind, loadMd]);
 
-  // 微信内：图片/PDF/Office 改走 JS-SDK 原生预览（wx.previewImage / wx.previewFile）；
+  // 微信内：图片/Office 改走 JS-SDK 原生预览（wx.previewImage / wx.previewFile）；
+  // PDF 不走原生——微信内置文档查看器（wx.previewFile）兼容性差，改由前端 pdf.js 在 H5 内
+  // 渲染（canvas 在微信 WebView 支持良好），保证微信端也能直接预览。
   // 调起成功则由微信接管并关闭本 H5 弹窗，失败回退下方 H5 预览（已内置「在浏览器打开」提示）。
   const onCloseRef = useRef(onClose);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
   const [wxHandled, setWxHandled] = useState(false);
-  const wxPreviewable = kind === 'image' || kind === 'pdf' || kind === 'office';
+  const wxPreviewable = kind === 'image' || kind === 'office';
 
   useEffect(() => {
     setWxHandled(false);
@@ -141,14 +144,16 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
           </div>
         </div>
         <div className="attachment-viewer__body">
-          {kind === 'pdf' && <iframe className="attachment-viewer__frame" src={item.previewUrl} title={item.filename} />}
+          {kind === 'pdf' && <PdfViewer url={item.previewUrl} name={item.filename} />}
           {kind === 'md' &&
             (mdLoading ? (
               <div className="attachment-viewer__hint">加载中…</div>
             ) : mdError ? (
               <div className="attachment-viewer__hint attachment-viewer__hint--error">预览失败：{mdError}</div>
             ) : (
-              <div className="md-content attachment-viewer__md">{mdText}</div>
+              <div className="markdown-body md-content attachment-viewer__md">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{mdText}</ReactMarkdown>
+              </div>
             ))}
           {(kind === 'other' || kind === 'office') && (
             <div className="attachment-viewer__hint">

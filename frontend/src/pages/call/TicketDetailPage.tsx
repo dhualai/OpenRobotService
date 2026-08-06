@@ -301,7 +301,7 @@ export default function TicketDetailPage() {
 
   // 编辑工单（标题/描述/优先级/类型/联系人；权限与后端对齐：admin/创建人/处理人，终态不可编辑）
   const [showEdit, setShowEdit] = useState(false);
-  const [editForm, setEditForm] = useState({ title: '', description: '', priority: '中', ticket_type: 'problem', customer: '', project_id: '', project_name: '' });
+  const [editForm, setEditForm] = useState({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
   const [savingEdit, setSavingEdit] = useState(false);
   // 所属项目下拉（当前用户名下项目，GET /api/admin/projects/me；支持关键词模糊搜索）
   const [showProjectPicker, setShowProjectPicker] = useState(false);
@@ -341,7 +341,6 @@ export default function TicketDetailPage() {
       description: ticket.description || '',
       priority: toEnPriority(ticket.priority),
       ticket_type: ticket.type || 'problem',
-      customer: ticket.contact || '',
       project_id: ticket.project_id || '',
       project_name: ticket.project_name || ticket.project || '',
     });
@@ -359,7 +358,6 @@ export default function TicketDetailPage() {
           description: editForm.description,
           priority: editForm.priority,
           ticket_type: editForm.ticket_type,
-          customer: editForm.customer,
           project_name: editForm.project_name,
           project_id: editForm.project_id,
         }),
@@ -745,15 +743,6 @@ export default function TicketDetailPage() {
                 </span>
                 <span className="ticket-edit-form__select-arrow">▾</span>
               </div>
-            </div>
-            <div className="ticket-edit-form__field">
-              <label className="ticket-edit-form__label">联系人</label>
-              <Input
-                value={editForm.customer}
-                onChange={(v) => setEditForm((p) => ({ ...p, customer: String(v) }))}
-                placeholder="联系人 / 联系方式"
-                clearable
-              />
             </div>
           </div>
           <div className="ticket-edit-form__footer">
