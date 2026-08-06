@@ -55,7 +55,6 @@ export function readAiSessionId(conv: { metadata_: string | null; service_ticket
 
 /** 创建会话 */
 export const createConversation = (params: { title: string; scene: ChatScene; aiSessionId?: string }) => {
-  console.trace('[DEBUG] createConversation', params);
   return request<Conversation>('/conversations', {
     method: 'POST',
     body: JSON.stringify({
