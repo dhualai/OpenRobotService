@@ -174,7 +174,7 @@ export default function TaskDetailPage() {
     if (!detail?.id) return;
     setupWechatShare({
       title: detail.title || '工单详情',
-      desc: (detail.description || '').slice(0, 60) || `工单 #${detail.id}`,
+      desc: (detail.description || '').slice(0, 120) || `工单 #${detail.id}`,
       link: window.location.href,
       imgUrl: WECHAT_CONFIG.shareImgUrl,
     });
