@@ -47,6 +47,7 @@ interface ProjectDetailData {
   sales?: string | null;
   pre_sales?: string | null;
   project_manager?: string | null;
+  project_contact?: string | null;
   field_engineer?: string | null;
   internal_code?: string | null;
   project_region?: string | null;
@@ -327,6 +328,11 @@ export default function ProjectDetail() {
           {/* 项目经理 —— 位于项目编号与项目进度之间，可编辑 */}
           <div style={{ marginTop: 12 }}>
             <EditableField label="项目经理" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} compact />
+          </div>
+
+          {/* 对接人 —— 位于项目经理下方，可编辑 */}
+          <div style={{ marginTop: 8 }}>
+            <EditableField label="对接人" value={project.project_contact || ''} placeholder="未指定" onSave={(v) => saveField('project_contact', v)} compact />
           </div>
 
           <div style={{ height: 1, background: '#f0f0f0', margin: '14px 0' }} />

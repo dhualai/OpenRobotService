@@ -9,6 +9,7 @@
 //   VITE_WECHAT_APP_ID          微信公众号 AppID（启用登录/JS-SDK 时必填）
 //   VITE_WECHAT_OAUTH_SCOPE     授权作用域，snsapi_base（静默）| snsapi_userinfo（默认 snsapi_base）
 //   VITE_WECHAT_REDIRECT_PATH   OAuth 回调路径（默认 /api/wechat/callback）
+//   VITE_WECHAT_SHARE_IMG_URL   分享卡片默认缩略图（公网可访问 URL；留空则用微信默认图）
 
 const flag = (v: string | undefined): boolean => v === 'true';
 
@@ -25,6 +26,8 @@ export const WECHAT_CONFIG = {
   redirectPath: import.meta.env.VITE_WECHAT_REDIRECT_PATH || '/api/wechat/callback',
   /** 完整 OAuth 回调地址（可选）。填了则直接作为 redirect_uri；留空则自动用 origin + redirectPath 推导 */
   redirectUri: import.meta.env.VITE_WECHAT_REDIRECT_URI || '',
+  /** 微信分享卡片默认缩略图（公网可访问 URL）。留空则分享卡片用微信默认图 */
+  shareImgUrl: import.meta.env.VITE_WECHAT_SHARE_IMG_URL || '',
 } as const;
 
 export default WECHAT_CONFIG;
