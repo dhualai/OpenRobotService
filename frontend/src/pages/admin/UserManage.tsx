@@ -327,7 +327,7 @@ export default function UserManage() {
   // 打开项目角色编辑弹窗：直接编辑指定项目的角色，预勾选该项目已有角色
   const openProjectRoleEditor = (user: User, projectId: string) => {
     setProjectRoleSelProject(projectId);
-    const existingRoles = Object.keys(user.projectPermissions?.[projectId] || {});
+    const existingRoles = user.roles?.[projectId] || [];
     setProjectRoleChecked(new Set(existingRoles));
     setProjectRoleEditVisible(true);
   };
@@ -342,7 +342,7 @@ export default function UserManage() {
   // 项目选择切换时（仅添加模式），更新勾选状态为该项目的现有角色
   const handleProjectRoleProjectChange = (projectId: string) => {
     setProjectRoleSelProject(projectId);
-    const existingRoles = Object.keys(detailUser?.projectPermissions?.[projectId] || {});
+    const existingRoles = detailUser?.roles?.[projectId] || [];
     setProjectRoleChecked(new Set(existingRoles));
   };
 
@@ -350,7 +350,7 @@ export default function UserManage() {
   const handleSaveProjectRoles = async () => {
     if (!detailUser || !projectRoleSelProject) return;
     const { username, id: userId } = detailUser;
-    const before = new Set(Object.keys(detailUser.projectPermissions?.[projectRoleSelProject] || {}));
+    const before = new Set(detailUser.roles?.[projectRoleSelProject] || []);
     const added = Array.from(projectRoleChecked).filter((rid) => !before.has(rid));
     const removed = Array.from(before).filter((rid) => !projectRoleChecked.has(rid));
     if (added.length === 0 && removed.length === 0) {
@@ -1029,7 +1029,10 @@ export default function UserManage() {
               })()}
 
               {(() => {
-                const projectPermCount = detailUser.projectPermissions ? Object.keys(detailUser.projectPermissions).length : 0;
+                const projectRolesEntries = detailUser.roles
+                  ? Object.entries(detailUser.roles).filter(([pid]) => pid !== 'global')
+                  : [];
+                const projectPermCount = projectRolesEntries.length;
                 if (projectPermCount === 0 && !canManageSystemRoles) return null;
                 return (
                   <div style={{ marginBottom: 16 }}>
@@ -1047,7 +1050,7 @@ export default function UserManage() {
                       )}
                     </div>
                     {projectPermCount > 0 ? (
-                      Object.entries(detailUser.projectPermissions!).map(([projectId, rolesMap]) => (
+                      projectRolesEntries.map(([projectId, roleIds]) => (
                         <div
                           key={projectId}
                           style={{
@@ -1074,9 +1077,9 @@ export default function UserManage() {
                             )}
                           </div>
                           <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                            {Object.entries(rolesMap).map(([roleKey]) => (
+                            {roleIds.map((roleId) => (
                               <span
-                                key={roleKey}
+                                key={roleId}
                                 style={{
                                   fontSize: 11,
                                   padding: '2px 6px',
@@ -1086,7 +1089,7 @@ export default function UserManage() {
                                   marginRight: 4,
                                 }}
                               >
-                                {roleNameMap.get(roleKey) || roleKey}
+                                {roleNameMap.get(roleId) || roleId}
                               </span>
                             ))}
                           </div>

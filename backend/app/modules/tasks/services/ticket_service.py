@@ -979,7 +979,7 @@ class TicketService:
                     ticket.status = TicketStatus.IN_PROGRESS
                     await db.commit()
                     await NotificationUtils.send_ticket_create_notification(
-                        ticket.id, ticket.title, ticket.project_name, "AI自动派单", [ai_assigned_id], token)
+                        ticket.id, ticket.title, ticket.project_name, "AI自动派单", ticket.deadline_at, [ai_assigned_id], token)
                     return {"code": 200, "message": "AI分配处理人成功", "data": {"assigned_to": ai_assigned_id, "assigned_to_name": ai_assigned_name}}
             
             return {"code": 400, "message": "AI分配处理人失败", "data": {}}

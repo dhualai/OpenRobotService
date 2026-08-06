@@ -220,7 +220,7 @@ class AssignmentWorker:
         )
 
         # 派单结果写回数据库
-        self._update_task_assignee(t_id, result)
+        ok = self._update_task_assignee(t_id, result)
 
         # 同时从 Redis 待派单集合中移除
         try:
@@ -231,6 +231,29 @@ class AssignmentWorker:
                 await mgr.remove_pending_ticket(session_id)
         except Exception:
             pass
+
+        # 新建工单通知：派单写回成功后，回调后端内部接口（仅传 task_id，
+        # 后端按 task_id 查库组装标题/项目/截止时间/受理人后发通知）。
+        # 失败仅告警，不影响派单主流程。
+        if ok:
+            try:
+                import httpx
+                from ai.config import get_ai_config
+                cfg = get_ai_config()
+                if cfg.backend_base_url and cfg.internal_api_key:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+                        resp = await client.post(
+                            f"{cfg.backend_base_url}/api/tasks/ticket-create-notification",
+                            headers={"X-API-Key": cfg.internal_api_key},
+                            json={"task_id": t_id, "operator": "AI自动派单"},
+                        )
+                        if resp.status_code >= 300:
+                            logger.warning(
+                                f"新建工单通知回调非 2xx: task_id={t_id}, "
+                                f"status={resp.status_code}, body={resp.text[:200]}"
+                            )
+            except Exception as e:
+                logger.warning(f"新建工单通知发送失败 task_id={t_id}: {e}")
 
         logger.info(
             f"派单完成: task_id={t_id}, assignee={result.engineer_name}, "

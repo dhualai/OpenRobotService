@@ -16,12 +16,13 @@ from app.modules.tasks.schemas.ticket import (
     TicketCreate, TicketUpdate, TicketResponse, TicketListResponse,
     TicketCommentCreate, TicketCommentUpdate, TicketCommentResponse,
     TicketQueryParams, TicketCuibanNotification, TicketFilterRequest,
-    ProjectMemberResponse
+    TicketCreateNotificationRequest, ProjectMemberResponse
 )
 from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, TicketType
 from app.modules.tasks.services.ticket_service import TicketService
 from app.utils.minio_client import minio_client
 from app.utils.notification_utils import NotificationUtils
+from app.integrations.api import verify_sync_api_key
 from app.core.config import settings
 
 router = APIRouter(tags=["tasks"])
@@ -771,6 +772,45 @@ async def send_cuiban_notification(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"发送催办通知失败: {str(e)}")
+
+
+@router.post("/ticket-create-notification")
+async def send_ticket_create_notification(
+    body: TicketCreateNotificationRequest,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_sync_api_key),
+):
+    """新建工单通知（内部接口，供 AI 派单服务调用）。
+
+    调用方仅传入 task_id（+ 可选 operator），后端按 task_id 查询完整工单后，
+    组装标题/项目/截止时间/受理人等字段，向受理人发起「新建工单」通知。
+    鉴权走 X-API-Key（与用户 JWT 分离），需与后端 HELPDESK_SYNC_API_KEY 一致。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        ticket = await TicketService.get_ticket_by_id(db, body.task_id)
+        if not ticket:
+            raise HTTPException(status_code=404, detail="工单不存在")
+        if not ticket.assigned_to:
+            raise HTTPException(status_code=400, detail="工单尚未指派受理人，无法发送新建通知")
+
+        result = await NotificationUtils.send_ticket_create_notification(
+            ticket_id=ticket.id,
+            title=ticket.title or "",
+            project_name=ticket.project_name or "",
+            operator=body.operator,
+            deadline_at=ticket.deadline_at,
+            user_names=[ticket.assigned_to],
+            token=None,
+        )
+        logger.info(f"新建工单通知已发送: task_id={body.task_id}, assignee={ticket.assigned_to}")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"发送新建工单通知失败 task_id={body.task_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"发送新建工单通知失败: {str(e)}")
 
 
 @router.get("/attachments/download")
