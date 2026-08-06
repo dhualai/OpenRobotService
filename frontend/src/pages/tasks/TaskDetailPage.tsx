@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Input, Form, FormItem } from 'tdesign-mobile-react';
+import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
+import { WECHAT_CONFIG } from '@/config/wechat';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import SafeHtml from '@/shared/components/SafeHtml';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
+import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
 import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
@@ -165,6 +168,17 @@ export default function TaskDetailPage() {
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
   }, [detailId]);
+
+  // 进入详情页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈，无需额外按钮
+  useEffect(() => {
+    if (!detail?.id) return;
+    setupWechatShare({
+      title: detail.title || '工单详情',
+      desc: (detail.description || '').slice(0, 120) || `工单 #${detail.id}`,
+      link: window.location.href,
+      imgUrl: WECHAT_CONFIG.shareImgUrl,
+    });
+  }, [detail?.id]);
 
   const getCurrentUserRoles = () => {
     const currentUsername = username;
@@ -377,27 +391,27 @@ export default function TaskDetailPage() {
   };
 
   const [downloadingIdx, setDownloadingIdx] = useState<number | null>(null);
+  const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
+
+  const buildAttachmentDownloadUrl = (att: Attachment): string | null => {
+    const rawPath = att.path || att.url || '';
+    if (!rawPath) return null;
+    let minioPath = rawPath;
+    if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
+      const parsed = parseMinioPath(rawPath);
+      if (!parsed) return null;
+      minioPath = `${parsed.bucket}/${parsed.objectKey}`;
+    }
+    const authToken = localStorage.getItem('auth_token') || '';
+    return `${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
+  };
 
   const handleAttachmentDownload = async (att: Attachment, idx: number) => {
-    const rawPath = att.path || att.url || '';
-    if (!rawPath) { Toast({ message: '附件路径无效', theme: 'error' }); return; }
+    const downloadUrl = buildAttachmentDownloadUrl(att);
+    if (!downloadUrl) { Toast({ message: '附件路径无效', theme: 'error' }); return; }
 
     setDownloadingIdx(idx);
     try {
-      let minioPath = rawPath;
-      if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
-        const parsed = parseMinioPath(rawPath);
-        if (parsed) {
-          minioPath = `${parsed.bucket}/${parsed.objectKey}`;
-        } else {
-          Toast({ message: '无法解析附件路径', theme: 'error' });
-          return;
-        }
-      }
-
-      const authToken = localStorage.getItem('auth_token') || '';
-      const downloadUrl = `${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
-
       const a = document.createElement('a');
       a.href = downloadUrl;
       a.download = att.filename || '';
@@ -410,6 +424,25 @@ export default function TaskDetailPage() {
     } finally {
       setDownloadingIdx(null);
     }
+  };
+
+  /** 打开附件预览（图片走灯箱、PDF/Markdown 内联渲染） */
+  const openAttachmentViewer = (att: Attachment) => {
+    const rawPath = att.path || att.url || '';
+    if (!rawPath) { Toast({ message: '附件路径无效', theme: 'error' }); return; }
+    let minioPath = rawPath;
+    if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
+      const parsed = parseMinioPath(rawPath);
+      if (!parsed) { Toast({ message: '无法解析附件路径', theme: 'error' }); return; }
+      minioPath = `${parsed.bucket}/${parsed.objectKey}`;
+    }
+    const previewUrl = `${API_CONFIG.TASKS.BASE_URL}/files/${encodeURIComponent(minioPath)}`;
+    setViewer({
+      filename: att.filename || '未命名文件',
+      size: att.size,
+      previewUrl,
+      downloadUrl: buildAttachmentDownloadUrl(att) || previewUrl,
+    });
   };
 
   const startEdit = () => {
@@ -634,7 +667,12 @@ export default function TaskDetailPage() {
 
   return (
     <div className="task-detail-page" style={{ paddingBottom: 72 }}>
-      <Navbar title="工单详情" fixed leftArrow onLeftClick={handleBack} />
+      <Navbar
+        title="工单详情"
+        fixed
+        leftArrow
+        onLeftClick={handleBack}
+      />
       <div className="page-container" style={{ paddingTop: 56 }}>
         <div className="detail-card">
           <div className="detail-card__header">
@@ -765,8 +803,8 @@ export default function TaskDetailPage() {
                     key={idx}
                     role="button"
                     tabIndex={0}
-                    onClick={() => handleAttachmentDownload(att, idx)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleAttachmentDownload(att, idx); }}
+                    onClick={() => openAttachmentViewer(att)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openAttachmentViewer(att); }}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
@@ -816,7 +854,13 @@ export default function TaskDetailPage() {
                         {sizeLabel || '未知大小'}
                       </div>
                     </div>
-                    <span style={{ fontSize: 16, color: '#0052d9', marginLeft: 8, flexShrink: 0 }}>
+                    <span
+                      role="button"
+                      aria-label="下载附件"
+                      title="下载"
+                      onClick={(e) => { e.stopPropagation(); handleAttachmentDownload(att, idx); }}
+                      style={{ fontSize: 16, color: '#0052d9', marginLeft: 8, flexShrink: 0, cursor: 'pointer' }}
+                    >
                       {isDownloading ? '⏳' : '⬇'}
                     </span>
                   </div>
@@ -1041,6 +1085,9 @@ export default function TaskDetailPage() {
           )}
         </div>
       </Dialog>
+
+      {/* 附件预览：图片灯箱 / PDF 内联 / Markdown 渲染 */}
+      <AttachmentViewer item={viewer} onClose={() => setViewer(null)} />
     </div>
   );
 }
