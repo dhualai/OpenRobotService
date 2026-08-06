@@ -119,6 +119,7 @@ class ProjectBase(BaseModel):
     description: Optional[str] = None
     contact_person: Optional[str] = None
     contact_person_id: Optional[str] = None
+    project_contact: Optional[str] = None
     status: ProjectStatus = ProjectStatus.PRE_SALES_SCHEME
     expected_trend: Optional[ProjectStatus] = None
     issues: int = 0
@@ -167,6 +168,7 @@ class ProjectUpdate(BaseModel):
     description: Optional[str] = None
     contact_person: Optional[str] = None
     contact_person_id: Optional[str] = None
+    project_contact: Optional[str] = None
     status: Optional[ProjectStatus] = None
     expected_trend: Optional[str] = None
     issues: Optional[int] = None
