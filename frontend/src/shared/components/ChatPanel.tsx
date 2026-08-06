@@ -94,7 +94,6 @@ const attachmentUrl = (objectPath: string) => `${API_CONFIG.CALL.BASE_URL}/files
  * LLM 输出协议为「JSON 状态块 + 正文」，后端按边界切流；边界判定失败 / max_tokens 截断时
  * JSON 残片（{"action":...}、``` 围栏、游离 }）会泄漏进正文。此处统一剥除：
  * 剥不出正文 → 返回 ''（交由空内容兜底），杜绝残破 JSON / 带 } 的回复上屏。
- * 检出异常时 console.warn 抛出，便于排查后端边界问题。
  */
 const sanitizeAiText = (raw: string): string => {
   let t = (raw ?? '').trim();
@@ -117,7 +116,6 @@ const sanitizeAiText = (raw: string): string => {
       t = t.slice(end + 1).trim();
     } else {
       // JSON 未闭合（LLM 截断泄漏）：整体视为异常，不显示残破 JSON
-      console.warn('[ChatPanel] 拦截未闭合 JSON 泄漏:', raw.slice(0, 80));
       return '';
     }
   }
@@ -125,7 +123,6 @@ const sanitizeAiText = (raw: string): string => {
   const strippedBraces = t.replace(/^(?:\s*\}\s*)+/, '');
   // 剥孤立 fence 残留行：``` 单独出现（后无语言标记，非代码块）
   const result = strippedBraces.replace(/^```\s*\n?(?![a-zA-Z])/, '').trim();
-  if (result !== t.trim()) console.warn('[ChatPanel] 剥离 JSON 残留:', t.slice(0, 40));
   return result;
 };
 
@@ -384,8 +381,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations } = useWorkbenchStore();
   const isCall = scene === 'call';
   const cfg = SCENE_CONFIG[scene];
-
-  console.log('[ChatPanel] 用户信息: name="', name, '", username="', username, '", token=', !!token);
 
   const [messages, setMessages] = useState<Message[]>([]);
   // 图片预览：点击用户气泡图片 → 全屏遮罩放大查看
