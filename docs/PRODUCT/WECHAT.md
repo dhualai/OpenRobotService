@@ -115,7 +115,7 @@ python -m app.wechat.menu_setup
 
 ## 7. 分享到微信群（JS-SDK 自定义分享卡片）
 
-工单详情页提供「转发到微信群」按钮（历史工单详情页 `pages/call/TicketDetailPage.tsx`、系统任务详情页 `pages/tasks/TaskDetailPage.tsx`），基于微信 JS-SDK 的 `updateAppMessageShareData` / `updateTimelineShareData`，把当前工单预置成一张可转发到群/好友/朋友圈的卡片（含标题、描述、缩略图、回跳链接）。此为「辅推」方案（轻量卡片），区别于后续可做的「主推：html2canvas 生成工单长图 → 长按转发」。
+工单详情页在导航栏**右上角**提供「转发」图标按钮（历史工单详情页 `pages/call/TicketDetailPage.tsx`、系统任务详情页 `pages/tasks/TaskDetailPage.tsx`），基于微信 JS-SDK 的 `updateAppMessageShareData` / `updateTimelineShareData`，把当前工单预置成一张可转发到群/好友/朋友圈的卡片（含标题、描述、缩略图、回跳链接）。此为「辅推」方案（轻量卡片），区别于后续可做的「主推：html2canvas 生成工单长图 → 长按转发」。
 
 ### 7.1 工作原理
 - 点击按钮 → 前端复用既有 `GET /api/wechat/config/js-sdk-config` 做 JS-SDK 签名（`initWechatJsSdk` 已封装）→ 调 `updateAppMessageShareData` 设置卡片元信息。

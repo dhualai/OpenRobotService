@@ -11,9 +11,32 @@ interface WechatShareButtonProps {
   imgUrl?: string;
   /** 点击卡片跳转地址。留空则取当前页面 URL（需在公众号 JS 接口安全域名内） */
   link?: string;
-  /** 按钮文案 */
+  /** 展示形态：button=文字按钮（默认，用于操作区）；icon=仅图标（用于导航栏右上角） */
+  variant?: 'button' | 'icon';
+  /** 按钮文案（仅 button 形态使用） */
   label?: string;
 }
+
+/** 转发（分享）图标：三个节点的连接图形，内联 SVG 不依赖图标库 */
+const ShareIcon = () => (
+  <svg
+    width="20"
+    height="20"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <circle cx="18" cy="5" r="3" />
+    <circle cx="6" cy="12" r="3" />
+    <circle cx="18" cy="19" r="3" />
+    <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+    <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+  </svg>
+);
 
 /**
  * 微信分享按钮（辅推方案：JS-SDK 自定义分享卡片）。
@@ -26,6 +49,7 @@ export default function WechatShareButton({
   desc,
   imgUrl,
   link,
+  variant = 'button',
   label = '转发到微信群',
 }: WechatShareButtonProps) {
   const handleShare = async () => {
@@ -42,6 +66,26 @@ export default function WechatShareButton({
       Toast({ message: '请在微信中打开本页面后转发', theme: 'warning' });
     }
   };
+
+  if (variant === 'icon') {
+    return (
+      <span
+        className="wechat-share-icon"
+        role="button"
+        tabIndex={0}
+        aria-label={label}
+        onClick={handleShare}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleShare();
+          }
+        }}
+      >
+        <ShareIcon />
+      </span>
+    );
+  }
 
   return (
     <Button size="small" variant="outline" theme="default" onClick={handleShare}>
