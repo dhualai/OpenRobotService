@@ -574,7 +574,10 @@ class AiDiagnosisPlatform:
         """把本地图片路径 ./media/xxx → 完整 CDN URL（跳过外链）"""
         _dm = r.domain or "team"
         _sd = r.sub_domain or "faq"
-        _mu = f"{self.config.media_url_prefix}/kb/{_dm}/{_sd}"
+        # images are in shared parent directory (e.g., usp/media/), not per-sub_domain
+        # sub_domain like "usp\faq" → parent is "usp"
+        _sd_parent = _sd.replace('\\', '/').split('/')[0]
+        _mu = f"{self.config.media_url_prefix}/kb/{_dm}/{_sd_parent}"
         return re.sub(
             r'!\[([^\]]*)\]\((?:\./)?media/([^)]+)\)',
             rf'![\1]({_mu}/media/\2)',
