@@ -5,8 +5,6 @@ import * as pdfjsLib from 'pdfjs-dist';
 // 而 pdf.worker.min.mjs 内部有 import，复制后依赖 404 会导致 worker 起不来（白屏）。
 import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker';
 
-pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker();
-
 /**
  * PDF 前端预览（pdf.js）：把 PDF 每页渲染到 canvas，全端（含微信 WebView）可用。
  * 用 canvas 渲染绕开浏览器/微信原生 PDF 查看器的兼容性差异——微信内置 WebView
@@ -21,12 +19,19 @@ export default function PdfViewer({ url, name }: { url: string; name: string }) 
   const canvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
 
   // 1) 加载 PDF 文档
+  // 每次加载都新建一个独立 worker 并设置到 GlobalWorkerOptions.workerPort，
+  // 用完（task 彻底销毁后）再 terminate。这样可彻底避免「共享单个 worker +
+  // 异步 destroy 期间 _pendingDestroy 竞态」导致的 "worker is being destroyed" 错误
+  //（React 严格模式双挂载、错误边界重建、快速重开都会触发该竞态）。
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError('');
     setNumPages(0);
     setPdf(null);
+
+    const worker = new PdfWorker();
+    pdfjsLib.GlobalWorkerOptions.workerPort = worker;
     const task = pdfjsLib.getDocument(url);
     task.promise
       .then((doc) => {
@@ -43,9 +48,21 @@ export default function PdfViewer({ url, name }: { url: string; name: string }) 
         setError(e instanceof Error ? e.message : String(e));
         setLoading(false);
       });
+
     return () => {
       cancelled = true;
-      task.destroy();
+      // task.destroy() 内部异步：先置 _pendingDestroy，再 await 传输层销毁。
+      // 必须等它彻底结束后再 terminate 本 worker，否则会中断仍在进行中的消息。
+      task
+        .destroy()
+        .catch(() => {})
+        .finally(() => {
+          try {
+            worker.terminate();
+          } catch {
+            /* noop */
+          }
+        });
     };
   }, [url]);
 
