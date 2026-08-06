@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Input, Form, FormItem } from 'tdesign-mobile-react';
-import WechatShareButton from '@/shared/components/WechatShareButton';
+import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
+import { WECHAT_CONFIG } from '@/config/wechat';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import SafeHtml from '@/shared/components/SafeHtml';
@@ -167,6 +168,17 @@ export default function TaskDetailPage() {
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
   }, [detailId]);
+
+  // 进入详情页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈，无需额外按钮
+  useEffect(() => {
+    if (!detail?.id) return;
+    setupWechatShare({
+      title: detail.title || '工单详情',
+      desc: (detail.description || '').slice(0, 60) || `工单 #${detail.id}`,
+      link: window.location.href,
+      imgUrl: WECHAT_CONFIG.shareImgUrl,
+    });
+  }, [detail?.id]);
 
   const getCurrentUserRoles = () => {
     const currentUsername = username;
@@ -660,13 +672,6 @@ export default function TaskDetailPage() {
         fixed
         leftArrow
         onLeftClick={handleBack}
-        right={
-          <WechatShareButton
-            variant="icon"
-            title={detail.title || '工单详情'}
-            desc={(detail.description || '').slice(0, 60) || `工单 #${detail.id}`}
-          />
-        }
       />
       <div className="page-container" style={{ paddingTop: 56 }}>
         <div className="detail-card">
