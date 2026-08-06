@@ -1,7 +1,8 @@
 """人员信息同步服务：从后端 users 表拉取派单人数据。
 
 缓存策略：首次请求或缓存过期时全量同步，TTL 10 分钟。
-用户标识使用 users.id（唯一且稳定），避免同名冲突。
+用户标识使用 users.username（唯一且稳定，真实环境为 wechat_ 前缀），
+与 tasks.created_by / assigned_to 保持一致，避免反复查表。
 """
 
 import time
@@ -40,7 +41,7 @@ def _fetch_from_users_table() -> list[dict]:
             if not isinstance(modules, dict):
                 modules = {}
             results.append({
-                "id": u.id,
+                "id": getattr(u, "username", None),  # 统一用 username 作为工程师标识（真实环境为 wechat_ 前缀）
                 "name": getattr(u, "name", None) or u.username,
                 "department": getattr(u, "department", None),
                 "responsibility_modules": modules or [],
