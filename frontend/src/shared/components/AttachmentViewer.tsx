@@ -1,8 +1,9 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import ImageLightbox from './ImageLightbox';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { setupWechatFilePreview } from '@/shared/utils/wechatJsSdk';
 
 export interface AttachmentViewItem {
   filename: string;
@@ -14,18 +15,20 @@ export interface AttachmentViewItem {
 }
 
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'];
+const OFFICE_EXTS = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
 
 function extOf(name: string): string {
   const i = name.lastIndexOf('.');
   return i >= 0 ? name.slice(i + 1).toLowerCase() : '';
 }
 
-type Kind = 'image' | 'pdf' | 'md' | 'other';
+type Kind = 'image' | 'pdf' | 'office' | 'md' | 'other';
 
 function kindOf(name: string): Kind {
   const ext = extOf(name);
   if (IMAGE_EXTS.includes(ext)) return 'image';
   if (ext === 'pdf') return 'pdf';
+  if (OFFICE_EXTS.includes(ext)) return 'office';
   if (ext === 'md' || ext === 'markdown') return 'md';
   return 'other';
 }
@@ -76,7 +79,39 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
     }
   }, [item, kind, loadMd]);
 
+  // 微信内：图片/PDF/Office 改走 JS-SDK 原生预览（wx.previewImage / wx.previewFile）；
+  // 调起成功则由微信接管并关闭本 H5 弹窗，失败回退下方 H5 预览（已内置「在浏览器打开」提示）。
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+
+  const [wxHandled, setWxHandled] = useState(false);
+  const wxPreviewable = kind === 'image' || kind === 'pdf' || kind === 'office';
+
+  useEffect(() => {
+    setWxHandled(false);
+    if (item && wxPreviewable && isWeChat() && window.wx) {
+      let cancelled = false;
+      const absUrl = item.previewUrl.startsWith('http')
+        ? item.previewUrl
+        : `${window.location.origin}${item.previewUrl}`;
+      setupWechatFilePreview({
+        kind: kind as 'image' | 'pdf' | 'office',
+        url: absUrl,
+        name: item.filename,
+        size: item.size,
+      }).then((ok) => {
+        if (ok && !cancelled) {
+          setWxHandled(true);
+          onCloseRef.current();
+        }
+      });
+      return () => { cancelled = true; };
+    }
+  }, [item, kind, wxPreviewable]);
+
   if (!item) return null;
+  // 微信原生预览已接管，无需再渲染 H5 弹窗
+  if (wxHandled) return null;
 
   // 图片：使用全屏灯箱（自带缩放 / 长按照片保存 / 下载）
   if (kind === 'image') {
@@ -115,14 +150,14 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
             ) : (
               <div className="md-content attachment-viewer__md">{mdText}</div>
             ))}
-          {kind === 'other' && (
+          {(kind === 'other' || kind === 'office') && (
             <div className="attachment-viewer__hint">
               该文件格式暂不支持在线预览。
               <br />
               请点击右上角「下载」后在本地打开。
             </div>
           )}
-          {kind !== 'other' && wechat && (
+          {kind !== 'other' && kind !== 'office' && wechat && (
             <div className="attachment-viewer__wechat">
               微信内如无法预览，请点击右上角「···」选择「在浏览器打开」
             </div>
