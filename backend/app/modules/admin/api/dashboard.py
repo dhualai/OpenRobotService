@@ -21,6 +21,8 @@ from typing import Dict, Any, Optional, List
 from app.core.database import get_async_db as get_db
 from app.modules.admin.services.task_dashboard_service import task_dashboard_service
 from app.modules.admin.services.project_service import project_service
+from app.modules.admin.services.risk_service import risk_service
+from app.modules.admin.services.transport_efficiency_service import transport_efficiency_service
 
 dashboard_router = APIRouter(prefix="/dashboard", tags=["admin-dashboard"])
 
@@ -61,6 +63,28 @@ def _parse_project_ids(raw: Optional[str]) -> Optional[List[str]]:
     if raw is None:
         return None
     return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def _enrich_projects_with_analysis(projects: List[Dict]) -> None:
+    """为项目列表就地补充分析字段，供下钻列表卡片展示。
+
+    与 /projects/ 接口 include_analysis 逻辑保持一致：
+    - risks：未关闭风险数（status != 关闭 计 1）
+    - task_execution_stats：近 7 天任务统计
+    - latest_manual_switch_count：最近切手动次数
+    """
+    project_codes = [p["project_code"] for p in projects]
+    if not project_codes:
+        return
+
+    detailed_risks = risk_service.get_detailed_open_risks_by_project_codes(project_codes)
+
+    for project in projects:
+        project_code = project["project_code"]
+        project_risks = detailed_risks.get(project_code, [])
+        project["risks"] = sum(1 for risk in project_risks if risk.get("status") != "关闭")
+        project["task_execution_stats"] = project_service.get_task_execution_stats_7d(project_code)
+        project["latest_manual_switch_count"] = transport_efficiency_service.get_latest_manual_switch_count(project_code)
 
 
 @dashboard_router.get("/tickets/summary", response_model=Dict[str, Any])
@@ -227,6 +251,8 @@ async def get_projects_by_stage_or_urgency(
     else:
         filtered_projects = all_projects
 
+    _enrich_projects_with_analysis(filtered_projects)
+
     items = [
         {
             "id": str(p["id"]),
@@ -234,6 +260,12 @@ async def get_projects_by_stage_or_urgency(
             "name": p["name"],
             "status": p["status"],
             "contact_person": p.get("contact_person", ""),
+            "project_manager": p.get("project_manager", ""),
+            "project_contact": p.get("project_contact", ""),
+            "risks": p.get("risks", 0),
+            "task_execution_stats": p.get("task_execution_stats"),
+            "latest_manual_switch_count": p.get("latest_manual_switch_count"),
+            "settlement_period": p.get("settlement_period"),
         }
         for p in filtered_projects
     ]
