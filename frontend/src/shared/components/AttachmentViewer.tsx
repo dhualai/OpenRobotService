@@ -148,7 +148,9 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
             ) : mdError ? (
               <div className="attachment-viewer__hint attachment-viewer__hint--error">预览失败：{mdError}</div>
             ) : (
-              <div className="md-content attachment-viewer__md">{mdText}</div>
+              <div className="markdown-body md-content attachment-viewer__md">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{mdText}</ReactMarkdown>
+              </div>
             ))}
           {(kind === 'other' || kind === 'office') && (
             <div className="attachment-viewer__hint">
