@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+// 用 Vite 的 ?worker 导入：Vite 会把 worker 及其内部 import 依赖一起打包，
+// 并以 module worker 正确实例化。这比 ?url 更稳——?url 只复制单个文件，
+// 而 pdf.worker.min.mjs 内部有 import，复制后依赖 404 会导致 worker 起不来（白屏）。
+import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker';
 
-// 全局只需配置一次 worker；使用 ?url 让 Vite 在构建期产出同源 worker，避免跨域/路径问题。
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker();
 
 /**
  * PDF 前端预览（pdf.js）：把 PDF 每页渲染到 canvas，全端（含微信 WebView）可用。
@@ -47,19 +49,38 @@ export default function PdfViewer({ url, name }: { url: string; name: string }) 
     };
   }, [url]);
 
-  // 2) 渲染全部页到 canvas（按 DPR 高清 + 适配宽度）
+  // 2) 渲染全部页到 canvas（按 DPR 高清 + 适配宽度）；任一一页失败则给出可见提示
   useEffect(() => {
     if (!pdf) return;
     let cancelled = false;
     const outputScale = Math.min(window.devicePixelRatio || 1, 2);
-    canvasRefs.current = [];
+    // 注意：不要重置 canvasRefs，ref 回调在 commit 阶段已填好，清空会导致读取为 undefined 而整篇白屏
+    let done = 0;
+    let failed = 0;
+    const checkFinish = () => {
+      if (done + failed < pdf.numPages) return;
+      if (!cancelled) {
+        if (done === 0 && pdf.numPages > 0) {
+          setError('PDF 渲染失败（worker 未就绪或文件损坏），请在浏览器打开下载。');
+        }
+        setLoading(false);
+      }
+    };
     (async () => {
       for (let i = 1; i <= pdf.numPages; i++) {
         if (cancelled) return;
         const canvas = canvasRefs.current[i - 1];
-        if (!canvas) continue;
+        if (!canvas) {
+          failed += 1;
+          checkFinish();
+          continue;
+        }
         const ctx = canvas.getContext('2d');
-        if (!ctx) continue;
+        if (!ctx) {
+          failed += 1;
+          checkFinish();
+          continue;
+        }
         try {
           const page = await pdf.getPage(i);
           const viewport = page.getViewport({ scale: scale * outputScale });
@@ -68,9 +89,12 @@ export default function PdfViewer({ url, name }: { url: string; name: string }) 
           canvas.style.width = `${Math.floor(viewport.width / outputScale)}px`;
           canvas.style.height = `${Math.floor(viewport.height / outputScale)}px`;
           await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+          done += 1;
         } catch (e) {
-          if (!cancelled) console.warn('[PdfViewer] 渲染第', i, '页失败:', e);
+          console.warn('[PdfViewer] 渲染第', i, '页失败:', e);
+          failed += 1;
         }
+        checkFinish();
       }
     })();
     return () => {
@@ -106,11 +130,17 @@ export default function PdfViewer({ url, name }: { url: string; name: string }) 
       <div className="pdf-viewer__scroll">
         {error ? (
           <div className="attachment-viewer__hint attachment-viewer__hint--error">
-            PDF 加载失败：{error}
+            {error}
           </div>
         ) : (
           Array.from({ length: numPages }, (_, i) => (
-            <canvas key={i} ref={(el) => { canvasRefs.current[i] = el; }} className="pdf-viewer__page" />
+            <canvas
+              key={i}
+              ref={(el) => {
+                canvasRefs.current[i] = el;
+              }}
+              className="pdf-viewer__page"
+            />
           ))
         )}
         {loading && !error && <div className="attachment-viewer__hint">PDF 渲染中…</div>}
