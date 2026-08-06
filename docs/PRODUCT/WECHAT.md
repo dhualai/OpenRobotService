@@ -128,7 +128,7 @@ python -m app.wechat.menu_setup
 - **缩略图 `imgUrl`**：必须**公网可访问**的 HTTPS URL（建议 ≤32KB、约 200×200 或 5:4），否则不显示。
 
 ### 7.3 环境变量
-- 前端 `.env.[mode]`：`VITE_WECHAT_JSSDK_ENABLED`（复用，开启 JS-SDK 初始化）、`VITE_WECHAT_SHARE_IMG_URL`（可选，分享卡片默认缩略图）。
+- 前端 `.env.[mode]`：`VITE_WECHAT_JSSDK_ENABLED`（复用，开启 JS-SDK 初始化）、`VITE_WECHAT_SHARE_IMG_URL`（可选，分享卡片默认缩略图；**已内置默认图** `frontend/public/share-thumb.png`＝品牌 logo 压缩版 200×200、≤32KB，构建后随 base 落到 `/p/app/share-thumb.png`(prod)/`/t/app/share-thumb.png`(staging)，prod/staging 的 env 已分别填好该 URL，域名与 JS 接口安全域名 `usp.ep-zl.com` 一致）。
 - 后端无需新增接口，签名复用既有 `GET /api/wechat/config/js-sdk-config?url=<当前页URL>`。
 
 ### 7.4 展示信息自定义
