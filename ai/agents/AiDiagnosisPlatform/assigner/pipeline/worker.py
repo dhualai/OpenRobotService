@@ -245,7 +245,7 @@ class AssignmentWorker:
                         resp = await client.post(
                             f"{cfg.backend_base_url}/api/tasks/ticket-create-notification",
                             headers={"X-API-Key": cfg.internal_api_key},
-                            json={"task_id": t_id, "operator": "AI自动派单"},
+                            json={"task_id": t_id},
                         )
                         if resp.status_code >= 300:
                             logger.warning(

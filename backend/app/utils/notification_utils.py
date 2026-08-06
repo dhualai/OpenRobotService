@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import yaml
 import os
 import random
@@ -361,7 +361,7 @@ class NotificationUtils:
                 finally:
                     loop.close()
 
-                deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else ''
+                deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
                 payload = NotificationUtils.instantiate_template(NotificationUtils.NEW_TICKET,
                                                                  ticket_id, processed_project_name, processed_title, operator, deadline_str,
                                                                  user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
