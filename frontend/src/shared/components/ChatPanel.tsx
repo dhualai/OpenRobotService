@@ -1481,7 +1481,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         type: draftField('type') || draft.type,
         priority: draftField('priority') || draft.priority,
         project: overrides.project || '摇人吧服务号提单',
-        contact: draftField('contact') || undefined,
         description: draftField('description') || draft.description,
         created_at: new Date().toISOString(),
       };
@@ -1922,13 +1921,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   <option value="中">中</option>
                   <option value="低">低</option>
                 </select>
-                <label className="ticket-confirm__label">联系人</label>
-                <input
-                  className="ticket-confirm__input"
-                  value={draftField('contact')}
-                  onChange={(e) => setDraftField('contact', e.target.value)}
-                  placeholder="联系人（可选）"
-                />
                 <label className="ticket-confirm__label">绑定项目 {!ticketConfirm.dualTicket && <span style={{ color: '#e34d59' }}>*</span>}</label>
                 <ProjectSelect
                   value={draftField('project_id') || null}

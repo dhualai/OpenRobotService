@@ -128,6 +128,7 @@ class AssignmentWorker:
                     "id": task.id,
                     "title": task.title or "",
                     "description": task.description or "",
+                    "created_by": task.created_by or "",
                     "priority": (task.priority.value if hasattr(task.priority, 'value') else str(task.priority or "中")),
                     "task_type": (task.task_type.value if hasattr(task.task_type, 'value') else str(task.task_type or "other")),
                     "session_id": (task.metadata_info or {}).get("session_id", "") if task.metadata_info else "",
@@ -188,6 +189,7 @@ class AssignmentWorker:
                         "id": r.id,
                         "title": r.title or "",
                         "description": r.description or "",
+                        "created_by": r.created_by or "",
                         "priority": (r.priority.value if hasattr(r.priority, 'value') else str(r.priority or "中")),
                         "task_type": (r.task_type.value if hasattr(r.task_type, 'value') else str(r.task_type or "other")),
                         "session_id": (r.metadata_info or {}).get("session_id", "") if r.metadata_info else "",
@@ -217,6 +219,7 @@ class AssignmentWorker:
             location=ticket.get("location", ""),
             robot_type=ticket.get("robot_type", ""),
             fault_code=ticket.get("fault_code", ""),
+            creator=ticket.get("created_by", ""),
         )
 
         # 派单结果写回数据库
@@ -265,7 +268,6 @@ class AssignmentWorker:
         """将派单结果写回 tasks 表"""
         try:
             from app.models.task import Task, TaskStatus
-            from app.models.identity import UserDB
             from app.core.db import SessionLocal
             from sqlalchemy import func
 
@@ -276,26 +278,8 @@ class AssignmentWorker:
                     logger.warning(f"派单结果写回失败: task_id={task_id} 不存在")
                     return False
 
-                # 通过 engineer_id（users.id）查 username
-                username = None
-                if result.engineer_id:
-                    user = db.query(UserDB).filter(UserDB.id == result.engineer_id).first()
-                    if user:
-                        username = user.username
-                        logger.debug(
-                            f"派单 username 查询: engineer_id={result.engineer_id} "
-                            f"→ username={username}"
-                        )
-                    else:
-                        logger.warning(
-                            f"派单 username 查询失败: engineer_id={result.engineer_id} "
-                            f"在 users 表中未找到, 兜底用 engineer_name={result.engineer_name}"
-                        )
-                else:
-                    logger.warning(
-                        f"派单 engineer_id 为空, 兜底用 engineer_name={result.engineer_name}"
-                    )
-                task.assigned_to = username or result.engineer_name
+                # engineer_id 已统一为 users.username（与 assigned_to 一致），无需反查
+                task.assigned_to = result.engineer_id or result.engineer_name
                 if task.assigned_to:
                     task.status = TaskStatus.IN_PROGRESS
                 task.updated_at = func.now()
@@ -303,8 +287,7 @@ class AssignmentWorker:
                 # 派单详情写入 metadata_info
                 meta = task.metadata_info or {}
                 meta["assignee_name"] = result.engineer_name
-                meta["assignee_id"] = result.engineer_id
-                meta["assignee_username"] = username or ""
+                meta["assignee_username"] = result.engineer_id or ""
                 meta["assign_confidence"] = result.confidence_score
                 meta["assign_reasoning"] = result.reasoning
                 meta["assign_decision_type"] = result.decision_type
