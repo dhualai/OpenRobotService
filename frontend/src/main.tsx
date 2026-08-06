@@ -1,3 +1,8 @@
+// 必须在所有依赖（React / pdf.js / DOMPurify 等）加载前注入运行时兼容垫片，
+// 补齐旧版微信 WebView / Chromium 内核缺失的现代 JS API
+// （Promise.withResolvers、Array/String/TypedArray.prototype.at 等），
+// 否则 PDF 预览会在 getDocument 时抛 "undefined is not a function"。
+import '@/shared/polyfills';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { RouterProvider, createBrowserRouter, Navigate, Outlet, useRouteError } from 'react-router-dom';

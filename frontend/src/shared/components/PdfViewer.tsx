@@ -3,7 +3,12 @@ import * as pdfjsLib from 'pdfjs-dist';
 // 用 Vite 的 ?worker 导入：Vite 会把 worker 及其内部 import 依赖一起打包，
 // 并以 module worker 正确实例化。这比 ?url 更稳——?url 只复制单个文件，
 // 而 pdf.worker.min.mjs 内部有 import，复制后依赖 404 会导致 worker 起不来（白屏）。
-import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker';
+// 用 Vite 的 ?worker 导入：Vite 会把 worker 及其内部 import 依赖一起打包，
+// 并以 module worker 正确实例化。本入口（pdf.worker.entry.ts）会先注入运行时
+// 兼容垫片（Array/String.prototype.at、Promise.withResolvers 等），再加载 pdf worker，
+// 以兼容较旧的微信 WebView / Chromium 内核（否则会静默崩溃报 "t.at is not a function"
+// 或 "undefined is not a function"）。
+import PdfWorker from '../pdf.worker.entry?worker';
 
 /**
  * PDF 前端预览（pdf.js）：把 PDF 每页渲染到 canvas，全端（含微信 WebView）可用。

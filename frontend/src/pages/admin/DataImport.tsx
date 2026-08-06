@@ -145,9 +145,7 @@ export default function DataImport() {
   const [fileError, setFileError] = useState<string | null>(null);
 
   const handleFileUpload = async (file: File) => {
-    console.log('[DataImport] handleFileUpload 开始, project:', project, 'file:', file?.name, 'size:', file?.size);
     if (!project) {
-      console.warn('[DataImport] 未选择项目，中断上传');
       Toast({ message: '请先选择项目', theme: 'warning' });
       return;
     }
@@ -158,12 +156,10 @@ export default function DataImport() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('project', project.project_code || project.id || project.name);
-      console.log('[DataImport] 发起 POST /data/upload-file, project:', project.project_code || project.id);
       const data = await request<FileImportResult>('/data/upload-file', {
         method: 'POST',
         body: formData,
       });
-      console.log('[DataImport] 上传响应:', data);
       if (data.success === false) {
         setFileError(data.message || '导入失败');
       } else {
@@ -238,12 +234,8 @@ export default function DataImport() {
               max={1}
               autoUpload={false}
               onSelectChange={(files) => {
-                console.log('[DataImport] onSelectChange files:', files);
                 if (files?.[0]) {
-                  console.log('[DataImport] 触发 handleFileUpload, file:', files[0].name, 'size:', files[0].size);
                   handleFileUpload(files[0]);
-                } else {
-                  console.warn('[DataImport] onSelectChange 未取到文件');
                 }
               }}
             />
