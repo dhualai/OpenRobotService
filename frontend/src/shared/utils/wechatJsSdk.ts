@@ -21,6 +21,8 @@ interface WxSdk {
   error(cb: (err: unknown) => void): void;
   updateAppMessageShareData(data: WxShareData): void;
   updateTimelineShareData(data: { title: string; link: string; imgUrl?: string }): void;
+  previewImage(data: { urls: string[]; current?: string }): void;
+  previewFile(data: { url: string; name?: string; size?: number }): void;
 }
 
 declare global {
@@ -35,6 +37,9 @@ export interface WxJsSdkConfig {
   nonceStr: string;
   signature: string;
 }
+
+/** 工单详情页 / 附件预览所需 JS 接口（分享卡片 + 微信原生文件预览），初始化时一次性注入 */
+export const TASK_JS_API_LIST = ['updateAppMessageShareData', 'updateTimelineShareData', 'previewImage', 'previewFile'];
 
 let sdkLoading: Promise<void> | null = null;
 
@@ -125,7 +130,7 @@ export interface WechatShareData {
  * @returns 是否配置成功（未启用/非微信环境/签名失败均返回 false）
  */
 export async function setupWechatShare(data: WechatShareData): Promise<boolean> {
-  const ok = await initWechatJsSdk(['updateAppMessageShareData', 'updateTimelineShareData']);
+  const ok = await initWechatJsSdk(TASK_JS_API_LIST);
   if (!ok || !window.wx) return false;
   try {
     window.wx.updateAppMessageShareData({
@@ -142,6 +147,39 @@ export async function setupWechatShare(data: WechatShareData): Promise<boolean> 
     return true;
   } catch (e) {
     console.warn('[wechatJsSdk] 配置分享失败:', e);
+    return false;
+  }
+}
+
+export interface WechatFilePreviewOptions {
+  /** image → wx.previewImage；pdf / office → wx.previewFile */
+  kind: 'image' | 'pdf' | 'office';
+  /** 公网可访问的附件 URL（建议用后端 /api/tasks/files/{path} 代理地址，Absolute） */
+  url: string;
+  name?: string;
+  size?: number;
+}
+
+/**
+ * 微信内调起原生文件预览：图片用 wx.previewImage（全屏 / 滑动 / 长按保存），
+ * pdf/office 用 wx.previewFile（微信内置文档查看器，可下载/转发）。
+ * 失败（未启用 / 非微信 / 域名未配 / API 缺失）返回 false，调用方应回退 H5 预览。
+ */
+export async function setupWechatFilePreview(opts: WechatFilePreviewOptions): Promise<boolean> {
+  if (!WECHAT_CONFIG.jsSdkEnabled) return false;
+  if (typeof navigator === 'undefined' || !/MicroMessenger/i.test(navigator.userAgent)) return false;
+  try {
+    const ok = await initWechatJsSdk(TASK_JS_API_LIST);
+    if (!ok || !window.wx) return false;
+    const wx = window.wx;
+    if (opts.kind === 'image') {
+      wx.previewImage({ urls: [opts.url], current: opts.url });
+    } else {
+      wx.previewFile({ url: opts.url, name: opts.name || '', size: opts.size || 0 });
+    }
+    return true;
+  } catch (e) {
+    console.warn('[wechatJsSdk] 文件预览调起失败，回退 H5:', e);
     return false;
   }
 }
