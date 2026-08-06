@@ -90,6 +90,7 @@ class Project(Base):
     description = Column(Text, nullable=True, comment='项目描述')
     contact_person = Column(String(50), nullable=True, comment='对接人')
     contact_person_id = Column(String(20), nullable=True, comment='对接人ID')
+    project_contact = Column(String(50), nullable=True, comment='对接人')
     status = Column(String(20), nullable=False, default='active', comment='状态')
     expected_trend = Column(String(20), nullable=True, comment='预计走向')
     issues = Column(Integer, nullable=False, default=0, comment='问题数')
