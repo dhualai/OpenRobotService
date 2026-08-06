@@ -655,7 +655,19 @@ export default function TaskDetailPage() {
 
   return (
     <div className="task-detail-page" style={{ paddingBottom: 72 }}>
-      <Navbar title="工单详情" fixed leftArrow onLeftClick={handleBack} />
+      <Navbar
+        title="工单详情"
+        fixed
+        leftArrow
+        onLeftClick={handleBack}
+        right={
+          <WechatShareButton
+            variant="icon"
+            title={detail.title || '工单详情'}
+            desc={(detail.description || '').slice(0, 60) || `工单 #${detail.id}`}
+          />
+        }
+      />
       <div className="page-container" style={{ paddingTop: 56 }}>
         <div className="detail-card">
           <div className="detail-card__header">
@@ -703,11 +715,6 @@ export default function TaskDetailPage() {
                   {action.label}
                 </Button>
               ))}
-              {/* 转发到微信群（JS-SDK 分享卡片；任何状态可用） */}
-              <WechatShareButton
-                title={detail.title || '工单详情'}
-                desc={(detail.description || '').slice(0, 60) || `工单 #${detail.id}`}
-              />
             </div>
           </div>
           <h2 className="detail-card__title">{detail.title}</h2>

@@ -352,7 +352,19 @@ export default function TicketDetailPage() {
 
   return (
     <div className="ticket-detail-page" style={{ paddingBottom: 72 }}>
-      <Navbar title="工单详情" fixed leftArrow onLeftClick={() => navigate('/call', { state: { showHistory: true } })} />
+      <Navbar
+        title="工单详情"
+        fixed
+        leftArrow
+        onLeftClick={() => navigate('/call', { state: { showHistory: true } })}
+        right={
+          <WechatShareButton
+            variant="icon"
+            title={ticket.title || '工单详情'}
+            desc={(ticket.description || '').slice(0, 60) || `工单 ${ticket.ticket_id || ''}`}
+          />
+        }
+      />
       <div className="page-container" style={{ paddingTop: 56 }}>
         {/* 标题 + 基本信息 */}
         <div className="detail-card">
@@ -471,13 +483,6 @@ export default function TicketDetailPage() {
           </div>
         )}
 
-        {/* 转发到微信群（任何状态可用，JS-SDK 分享卡片；非微信环境给提示） */}
-        <div className="detail-actions__btns" style={{ marginTop: 12 }}>
-          <WechatShareButton
-            title={ticket.title || '工单详情'}
-            desc={(ticket.description || '').slice(0, 60) || `工单 ${ticket.ticket_id || ''}`}
-          />
-        </div>
       </div>
 
       {/* 催办/上报 用户选择弹窗 */}
