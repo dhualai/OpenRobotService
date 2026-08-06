@@ -210,7 +210,8 @@ def _assess_ticket_readiness(state: AgentState) -> tuple[bool, list[str]]:
     """
     missing = []
     has_project = bool((state.collected_info.get("project") or "").strip()
-                       or (state.collected_info.get("project_id") or "").strip())
+                       or (state.collected_info.get("project_id") or "").strip()
+                       or (state.collected_info.get("project_name") or "").strip())
     if not has_project:
         missing.append("项目名称")
     for field_key, label in (state.required_fields or {}).items():
@@ -798,15 +799,21 @@ class AiDiagnosisPlatform:
         if "collected_info" in state_update:
             # 合并新字段，空值/无 视为清除。project 由 LLM 提取用户提到的地点/客户名，
             # 提单时 _build_ticket 会调 _resolve_project 把它匹配成真实项目全名。
-            for k, v in state_update["collected_info"].items():
+            # 🔴 LLM 可能用 project_name / projectName 等变体，统一归一化为 "project"
+            for k, v in list(state_update["collected_info"].items()):
                 if v is None:
                     state.collected_info.pop(k, None)
                     continue
                 if isinstance(v, (dict, list)):
                     v = json.dumps(v, ensure_ascii=False)
                 v = str(v).strip()
-                if v:
-                    state.collected_info[k] = v
+                if not v:
+                    continue
+                # 归一化项目名称 key：LLM 可能输出 project_name / projectName / project 等
+                _key = k
+                if k in ("project_name", "projectName", "projectname"):
+                    _key = "project"
+                state.collected_info[_key] = v
         # ---- 服务端硬校验：按工单类型的保底必填清单复核，缺项强制打回 ----
         #  不信 LLM 的 ticket_ready 自评，也不看 problem_summary（LLM 可编造）——
         #  只认 collected_info 里的结构化字段。
@@ -1131,8 +1138,10 @@ class AiDiagnosisPlatform:
                     continue
                 v = str(v).strip()
                 if v:
-                    agent_state.collected_info[k] = v
-                    filled.append(k)
+                    # 归一化：LLM 可能输出 project_name 等变体
+                    _key = "project" if k in ("project_name", "projectName", "projectname") else k
+                    agent_state.collected_info[_key] = v
+                    filled.append(_key)
             if filled:
                 logger.info(f"[backfill] 从对话回填 collected_info: session={session_id}, fields={filled}")
         except Exception:
