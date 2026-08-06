@@ -145,8 +145,11 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
         maxZoom={3}
         onClose={() => onClose()}
       />
-      {/* 自定义工具条：复制 / 下载（关闭按钮用 ImageViewer 自带的） */}
+      {/* 自定义工具条：左上角关闭 + 复制 / 下载（关闭按钮自绘，直接调 onClose，避免被工具栏覆盖 / 受控失效） */}
       <div className="img-lightbox__toolbar">
+        <button type="button" className="img-lightbox__btn img-lightbox__close" onClick={onClose} aria-label="关闭">
+          ✕
+        </button>
         <button type="button" className="img-lightbox__btn" onClick={handleCopy}>
           复制
         </button>
