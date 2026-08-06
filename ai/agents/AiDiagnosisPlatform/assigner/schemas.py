@@ -84,7 +84,7 @@ class EngineerProfile(BaseModel):
     数据同步入口：assigner/sync/engineers_sync.py::load_engineers()
     """
 
-    id: str = Field(..., description="工程师唯一标识 ↔ users.id")
+    id: str = Field(..., description="工程师唯一标识 ↔ users.username（真实环境为 wechat_ 前缀，与 tasks.created_by/assigned_to 一致）")
     name: str = Field(..., description="工程师姓名 ↔ users.name")
     department: Optional[str] = Field(
         None, description="部门/团队 ↔ users.department"
@@ -118,12 +118,12 @@ class AssignmentResult(BaseModel):
     """智能派单结果
 
     落库对应（见 pipeline/worker.py 写回逻辑）：
-    - engineer_id → tasks.assigned_to（处理者ID）
-    - engineer_name → 派单后由 users 表反查姓名（tasks 不冗余存姓名）
+    - engineer_id → tasks.assigned_to（统一为 users.username，无需反查）
+    - engineer_name → 工程师姓名（users.name）
     - confidence_score / reasoning / decision_type → 建议存入 tasks.metadata_info 供日志/前端展示
     """
 
-    engineer_id: str = Field(..., description="推荐工程师 ID → 写入 tasks.assigned_to")
+    engineer_id: str = Field(..., description="推荐工程师标识（users.username）→ 直接写入 tasks.assigned_to")
     engineer_name: str = Field(..., description="推荐工程师姓名（对应 users.name）")
     confidence_score: float = Field(..., description="置信度分数（0~1），建议存 tasks.metadata_info.confidence_score")
     reasoning: str = Field(..., description="推荐理由，用于日志或前端展示 → tasks.metadata_info.reasoning")
