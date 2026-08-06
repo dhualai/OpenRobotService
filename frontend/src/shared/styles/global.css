@@ -10,28 +10,6 @@
   --td-font-size-body-medium: 15px;
 }
 
-/* 工单详情页 · 导航栏右上角转发图标（JS-SDK 分享卡片入口） */
-.wechat-share-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  margin-right: 4px;
-  color: inherit;
-  cursor: pointer;
-  border-radius: 50%;
-  transition: background-color 0.15s ease;
-}
-.wechat-share-icon:hover,
-.wechat-share-icon:active {
-  background-color: rgba(0, 0, 0, 0.06);
-}
-.wechat-share-icon:focus-visible {
-  outline: 2px solid #07c160;
-  outline-offset: 1px;
-}
-
 * {
   margin: 0;
   padding: 0;

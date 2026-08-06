@@ -115,11 +115,11 @@ python -m app.wechat.menu_setup
 
 ## 7. 分享到微信群（JS-SDK 自定义分享卡片）
 
-工单详情页在导航栏**右上角**提供「转发」图标按钮（历史工单详情页 `pages/call/TicketDetailPage.tsx`、系统任务详情页 `pages/tasks/TaskDetailPage.tsx`），基于微信 JS-SDK 的 `updateAppMessageShareData` / `updateTimelineShareData`，把当前工单预置成一张可转发到群/好友/朋友圈的卡片（含标题、描述、缩略图、回跳链接）。此为「辅推」方案（轻量卡片），区别于后续可做的「主推：html2canvas 生成工单长图 → 长按转发」。
+工单详情页（历史工单 `pages/call/TicketDetailPage.tsx`、系统任务 `pages/tasks/TaskDetailPage.tsx`）进入页面后**自动静默预置**微信分享卡片（基于 JS-SDK 的 `updateAppMessageShareData` / `updateTimelineShareData`），把当前工单预置成可转发到群/好友/朋友圈的卡片（含标题、描述、缩略图、回跳链接）。页面上**不再有独立转发按钮**——用户直接在微信内点右上角「…」即可转发。此为「辅推」方案（轻量卡片），区别于后续可做的「主推：html2canvas 生成工单长图」。
 
 ### 7.1 工作原理
-- 点击按钮 → 前端复用既有 `GET /api/wechat/config/js-sdk-config` 做 JS-SDK 签名（`initWechatJsSdk` 已封装）→ 调 `updateAppMessageShareData` 设置卡片元信息。
-- JS-SDK 分享只是「配置卡片」，**用户需在微信内点右上角「…」实际转发**（按钮仅完成预置 + `Toast` 引导），前端不能主动发出。
+- 进页面 `useEffect`（依赖工单 id）自动调用 `setupWechatShare`：复用既有 `GET /api/wechat/config/js-sdk-config` 做 JS-SDK 签名（`initWechatJsSdk` 已封装）→ 调 `updateAppMessageShareData` 设置卡片元信息，全程无 UI、不打扰用户。
+- JS-SDK 分享只是「配置卡片」，**用户需在微信内点右上角「…」实际转发**，前端不能主动发出（微信禁止前端调起转发面板）；预置在进页面时已完成，故点「…」即见工单卡片。
 - 缩略图 `imgUrl` 取 `WECHAT_CONFIG.shareImgUrl`（`VITE_WECHAT_SHARE_IMG_URL`），留空则用微信默认图。
 
 ### 7.2 必配项（否则卡片异常）

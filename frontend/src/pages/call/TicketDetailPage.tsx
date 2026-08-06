@@ -4,7 +4,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Toast, Loading, Tag, Popup, Input, Textarea } from 'tdesign-mobile-react';
-import WechatShareButton from '@/shared/components/WechatShareButton';
+import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
+import { WECHAT_CONFIG } from '@/config/wechat';
 import { NotificationIcon, UploadIcon, RollbackIcon, EditIcon } from 'tdesign-icons-react';
 import { getMyProjects, type ProjectItem } from '@/api/projects';
 import { qaGetTicket } from '@/api/ai';
@@ -170,6 +171,17 @@ export default function TicketDetailPage() {
   }, [sessionId]);
 
   useEffect(() => { fetchDetail(); }, [fetchDetail]);
+
+  // 进入详情页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈，无需额外按钮
+  useEffect(() => {
+    if (!ticket?.ticket_id) return;
+    setupWechatShare({
+      title: ticket.title || '工单详情',
+      desc: (ticket.description || '').slice(0, 60) || `工单 ${ticket.ticket_id}`,
+      link: window.location.href,
+      imgUrl: WECHAT_CONFIG.shareImgUrl,
+    });
+  }, [ticket?.ticket_id]);
 
   // 催办/上报：先选用户再调接口
   const [actionType, setActionType] = useState<'urge' | 'report'>('urge');
@@ -357,13 +369,6 @@ export default function TicketDetailPage() {
         fixed
         leftArrow
         onLeftClick={() => navigate('/call', { state: { showHistory: true } })}
-        right={
-          <WechatShareButton
-            variant="icon"
-            title={ticket.title || '工单详情'}
-            desc={(ticket.description || '').slice(0, 60) || `工单 ${ticket.ticket_id || ''}`}
-          />
-        }
       />
       <div className="page-container" style={{ paddingTop: 56 }}>
         {/* 标题 + 基本信息 */}
