@@ -104,7 +104,13 @@ export const isWechatJsSdkEnabled = (): boolean => WECHAT_CONFIG.jsSdkEnabled;
 export interface WechatShareData {
   /** 分享卡片标题 */
   title: string;
-  /** 分享卡片描述 */
+  /**
+   * 分享卡片描述（转发给好友/群时展示）。
+   * 注意：微信对 desc 无官方硬字数上限，但客户端会显示截断——
+   * 会话列表预览约显示前 30 字、点开卡片详情约显示前 54 字，超出以「…」收尾；
+   * 朋友圈（updateTimelineShareData）不展示 desc，仅看 title。
+   * 因此建议把关键信息前置，并传入约 120 字以内的文本即可（由调用方 slice 控制）。
+   */
   desc: string;
   /** 点击卡片跳转地址（需在公众号 JS 接口安全域名内） */
   link: string;
