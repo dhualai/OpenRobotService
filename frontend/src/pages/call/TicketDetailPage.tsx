@@ -4,6 +4,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Toast, Loading, Tag, Popup, Input, Textarea } from 'tdesign-mobile-react';
+import WechatShareButton from '@/shared/components/WechatShareButton';
 import { NotificationIcon, UploadIcon, RollbackIcon, EditIcon } from 'tdesign-icons-react';
 import { getMyProjects, type ProjectItem } from '@/api/projects';
 import { qaGetTicket } from '@/api/ai';
@@ -469,6 +470,14 @@ export default function TicketDetailPage() {
             )}
           </div>
         )}
+
+        {/* 转发到微信群（任何状态可用，JS-SDK 分享卡片；非微信环境给提示） */}
+        <div className="detail-actions__btns" style={{ marginTop: 12 }}>
+          <WechatShareButton
+            title={ticket.title || '工单详情'}
+            desc={(ticket.description || '').slice(0, 60) || `工单 ${ticket.ticket_id || ''}`}
+          />
+        </div>
       </div>
 
       {/* 催办/上报 用户选择弹窗 */}
