@@ -112,3 +112,24 @@ python -m app.wechat.menu_setup
 ## 6. 没有微信环境也能开发
 
 若 `.env` 未配置微信参数，系统进入**开发降级模式**（详见 [SETUP.md](./SETUP.md#本地开发联调)）：消息回调 / OAuth / 模板消息不会真正调用微信，通知打印到日志，可用 `POST /api/auth/dev-login` 以任意角色获取 JWT 联调全部业务流程。
+
+## 7. 分享到微信群（JS-SDK 自定义分享卡片）
+
+工单详情页提供「转发到微信群」按钮（历史工单详情页 `pages/call/TicketDetailPage.tsx`、系统任务详情页 `pages/tasks/TaskDetailPage.tsx`），基于微信 JS-SDK 的 `updateAppMessageShareData` / `updateTimelineShareData`，把当前工单预置成一张可转发到群/好友/朋友圈的卡片（含标题、描述、缩略图、回跳链接）。此为「辅推」方案（轻量卡片），区别于后续可做的「主推：html2canvas 生成工单长图 → 长按转发」。
+
+### 7.1 工作原理
+- 点击按钮 → 前端复用既有 `GET /api/wechat/config/js-sdk-config` 做 JS-SDK 签名（`initWechatJsSdk` 已封装）→ 调 `updateAppMessageShareData` 设置卡片元信息。
+- JS-SDK 分享只是「配置卡片」，**用户需在微信内点右上角「…」实际转发**（按钮仅完成预置 + `Toast` 引导），前端不能主动发出。
+- 缩略图 `imgUrl` 取 `WECHAT_CONFIG.shareImgUrl`（`VITE_WECHAT_SHARE_IMG_URL`），留空则用微信默认图。
+
+### 7.2 必配项（否则卡片异常）
+- **JS 接口安全域名**：公众平台「公众号设置 → 功能设置 → JS 接口安全域名」填前端域名（不带 `https://`）。未配会 `invalid signature` 或分享无效。
+- **分享回链 `link` 域名**：必须与网页授权 / JS 安全域名一致，否则点不开或签名失败。
+- **缩略图 `imgUrl`**：必须**公网可访问**的 HTTPS URL（建议 ≤32KB、约 200×200 或 5:4），否则不显示。
+
+### 7.3 环境变量
+- 前端 `.env.[mode]`：`VITE_WECHAT_JSSDK_ENABLED`（复用，开启 JS-SDK 初始化）、`VITE_WECHAT_SHARE_IMG_URL`（可选，分享卡片默认缩略图）。
+- 后端无需新增接口，签名复用既有 `GET /api/wechat/config/js-sdk-config?url=<当前页URL>`。
+
+### 7.4 展示信息自定义
+卡片标题/描述/缩略图由前端用详情页数据拼（`title=ticket.title`、`desc=ticket.description.slice(0,60)`、`link`=当前页 URL）。若需"后台可配分享模板"，后续可在 `/api/wechat/config/js-sdk-config` 之外新增分享模板配置与 `GET /tickets/{id}/share` 数据接口，前端按模板渲染。
