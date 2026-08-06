@@ -2,13 +2,14 @@
 // 该项目数据经 backend/app/integrations/sources/wecom/adapter.py 从企业微信项目表同步而来，
 // 落库为 backend/app/models/delivery.py 的 Project；本页每一项都直接对应 Project 的一个真实列，
 // 不再使用 field_links 承载编造的扩展字段。system_id 即企业微信原始记录 record_id，用于溯源。
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Loading, Toast, Popup, Upload, Checkbox } from 'tdesign-mobile-react';
 import { Input, Textarea } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
+import { aiGet } from '@/api/ai';
 
 interface ProjectDocument {
   name: string;
@@ -47,6 +48,7 @@ interface ProjectDetailData {
   sales?: string | null;
   pre_sales?: string | null;
   project_manager?: string | null;
+  project_contact?: string | null;
   field_engineer?: string | null;
   internal_code?: string | null;
   project_region?: string | null;
@@ -54,6 +56,18 @@ interface ProjectDetailData {
   controller_vendor?: string | null;
   system_integration?: string[] | null;
   server_deployment_status?: string | null;
+  settlement_period?: string | null;
+}
+
+// 企业微信台账记录（GET /api/ai/wecom/projects 返回，values 的键为企业微信智能表格列名）
+interface WecomProjectRecord {
+  record_id: string;
+  values?: Record<string, unknown>;
+}
+interface WecomProjectsResponse {
+  code: number;
+  data?: { records?: WecomProjectRecord[] };
+  message?: string;
 }
 
 // 与 backend ProjectStatus 枚举严格一致（顺序即生命周期顺序），"项目中止"为终止分支单独处理
@@ -101,6 +115,50 @@ const SYSTEM_INTEGRATION_OPTIONS = [
   '输送线/辊筒线', '自动门', '红绿灯', '呼叫器', '机械臂', '其他外设', '其他',
   '码垛机/叠盘机', '缠膜机',
 ];
+
+// 企业微信台账列 → 项目详情字段 映射（页面实时展示用；列不存在或为空时回退本地值）
+const WECOM_VALUE_MAP: Record<string, keyof ProjectDetailData> = {
+  '项目编号': 'project_code',
+  '项目名称': 'name',
+  '承接描述': 'description',
+  '调度对接人': 'contact_person',
+  '项目生命周期': 'status',
+  '预计AGV下线时间': 'deployment_date',
+  '更新时间': 'recent_delivery_date',
+  '车型&车数': 'recent_delivery_content',
+  '项目类型': 'project_type',
+  '业绩核算期': 'settlement_period',
+  '方案项目命名': 'project_summary',
+  '销售': 'sales',
+  '售前': 'pre_sales',
+  '项目经理': 'project_manager',
+  '实施工程师': 'field_engineer',
+  '内部编号': 'internal_code',
+  '项目区域/地点': 'project_region',
+  '项目区域': 'project_region',
+  '总车数': 'total_vehicle_count',
+  '控制器选择': 'controller_vendor',
+  '服务器部署': 'server_deployment_status',
+  '部署版本': 'deployment_version',
+  '最终交付时间': 'final_delivery_date',
+  '预计走向': 'expected_trend',
+  '人员计划': 'personnel_plan',
+  '特别关注': 'special_attention',
+  '风险和任务描述': 'risk_task_description',
+  '项目管理策略': 'management_strategy',
+  '风险承接': 'risk_carrying_type',
+  '任务执行情况': 'task_execution_status',
+};
+
+// 企业微信「项目类型」列 → 项目类别（与后端 adapter 的 CATEGORY_MAP 一致）
+const WECOM_CATEGORY_MAP: Record<string, string> = {
+  '受关注项目': '重要紧急',
+  '普通项目': '重要不紧急',
+  '一般项目': '紧急不重要',
+  '其他': '不紧急不重要',
+};
+
+const AUTO_SYNC_INTERVAL = 5 * 60 * 1000; // 5 分钟自动刷新同步
 
 const STATUS_COLOR: Record<string, string> = {
   '售前方案': '#8e5fd9', '签单洽谈': '#0052d9', '已签合同': '#0089ff', '出厂测试': '#00a3c4',
@@ -159,6 +217,11 @@ export default function ProjectDetail() {
   const [systemIntegrationOpen, setSystemIntegrationOpen] = useState(false);
   const [systemIntegrationDraft, setSystemIntegrationDraft] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [liveValues, setLiveValues] = useState<Record<string, unknown> | null>(null);
+  const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
+  const [syncFailed, setSyncFailed] = useState(false);
+  const liveInFlight = useRef(false);
+  const overriddenRef = useRef<Set<keyof ProjectDetailData>>(new Set());
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 
   const load = useCallback(async () => {
@@ -180,9 +243,66 @@ export default function ProjectDetail() {
     load();
   }, [isNew, load]);
 
+  // 将企业微信台账实时值合并进 project（仅覆盖映射列；用户手动编辑过的字段不再被覆盖）
+  const applyLiveToProject = useCallback((values: Record<string, unknown>) => {
+    setProject((prev) => {
+      if (!prev) return prev;
+      const patch: Partial<ProjectDetailData> = {};
+      const raw = (k: string) => { const v = values[k]; return v == null ? '' : String(v).trim(); };
+      for (const [col, field] of Object.entries(WECOM_VALUE_MAP) as [string, keyof ProjectDetailData][]) {
+        if (overriddenRef.current.has(field)) continue;
+        const v = raw(col);
+        if (!v) continue;
+        if (field === 'total_vehicle_count') { const n = Number(v); if (Number.isFinite(n)) { (patch as Record<string, unknown>)[field] = n; } continue; }
+        (patch as Record<string, unknown>)[field] = v;
+      }
+      if (!overriddenRef.current.has('category_basis')) {
+        const t = raw('项目类型');
+        if (t && WECOM_CATEGORY_MAP[t]) patch.category_basis = WECOM_CATEGORY_MAP[t];
+      }
+      return Object.keys(patch).length ? { ...prev, ...patch } : prev;
+    });
+  }, []);
+
+  // 拉取企业微信台账实时数据（GET /api/ai/wecom/projects），按 项目编号/record_id 匹配；
+  // 用户正在输入时跳过本轮，避免打断编辑
+  const fetchLiveWecom = useCallback(async (code: string, systemId?: string | null) => {
+    const active = document.activeElement;
+    if (liveInFlight.current || (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA'))) return;
+    liveInFlight.current = true;
+    try {
+      const res = await aiGet<WecomProjectsResponse>('/wecom/projects');
+      const records = res?.data?.records || [];
+      const match = records.find((r) =>
+        String(r.values?.['项目编号'] ?? '') === code || (systemId && r.record_id === systemId),
+      );
+      if (match?.values) {
+        setLiveValues(match.values);
+        applyLiveToProject(match.values);
+        setSyncFailed(false);
+      }
+      setLastSyncTime(new Date().toLocaleTimeString());
+    } catch {
+      setSyncFailed(true);
+    } finally {
+      liveInFlight.current = false;
+    }
+  }, [applyLiveToProject]);
+
+  // 首次进入 + 每 5 分钟自动刷新同步（后台标签页暂停轮询）
+  useEffect(() => {
+    if (isNew || !project?.project_code) return;
+    fetchLiveWecom(project.project_code, project.system_id);
+    const timer = setInterval(() => {
+      if (!document.hidden) fetchLiveWecom(project.project_code, project.system_id);
+    }, AUTO_SYNC_INTERVAL);
+    return () => clearInterval(timer);
+  }, [isNew, project?.project_code, project?.system_id, fetchLiveWecom]);
+
   // 保存单个 Project 字段（真实列），仅回写发生变化的那一个字段；
   // 新建模式下项目尚未落库，仅更新本地草稿，待「创建」时一并提交
   const saveField = async (key: keyof ProjectDetailData, value: unknown) => {
+    overriddenRef.current.add(key); // 用户手动编辑的字段不再被企业微信实时同步覆盖
     if (isNew) {
       setProject((prev) => (prev ? { ...prev, [key]: value } : prev));
       return;
@@ -298,6 +418,21 @@ export default function ProjectDetail() {
         fixed
       />
       <div style={{ padding: 16, paddingTop: 64 }}>
+        {/* 企业微信实时同步状态条 */}
+        {!isNew && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#f0f7ff', borderRadius: 8, padding: '8px 12px', marginBottom: 12, fontSize: 12 }}>
+            <span style={{ color: '#0052d9', fontWeight: 500 }}>⏱ 企业微信实时数据</span>
+            <span style={{ color: syncFailed ? '#d54941' : '#999', flex: 1 }}>
+              {syncFailed ? '同步失败，将自动重试' : lastSyncTime ? `上次同步 ${lastSyncTime} · 每5分钟自动刷新` : '同步中…'}
+            </span>
+            <span
+              style={{ color: '#0052d9', cursor: 'pointer' }}
+              onClick={() => project?.project_code && fetchLiveWecom(project.project_code, project.system_id)}
+            >
+              立即同步
+            </span>
+          </div>
+        )}
         {/* 概要卡片 */}
         <div style={cardStyle()}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -327,6 +462,11 @@ export default function ProjectDetail() {
           {/* 项目经理 —— 位于项目编号与项目进度之间，可编辑 */}
           <div style={{ marginTop: 12 }}>
             <EditableField label="项目经理" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} compact />
+          </div>
+
+          {/* 对接人 —— 位于项目经理下方，可编辑 */}
+          <div style={{ marginTop: 8 }}>
+            <EditableField label="对接人" value={project.project_contact || ''} placeholder="未指定" onSave={(v) => saveField('project_contact', v)} compact />
           </div>
 
           <div style={{ height: 1, background: '#f0f0f0', margin: '14px 0' }} />
@@ -505,6 +645,23 @@ export default function ProjectDetail() {
             <EditableField label="人员计划" value={project.personnel_plan || ''} placeholder="无" multiline onSave={(v) => saveField('personnel_plan', v)} />
           </div>
         </div>
+
+        {/* 企业微信台账原文（实时）—— 展示智能表格全部列，未映射到结构化字段的列也在此可见 */}
+        {!isNew && liveValues && Object.keys(liveValues).length > 0 && (
+          <div style={cardStyle()}>
+            <h3 style={cardTitleStyle()}>企业微信台账 · 实时</h3>
+            {Object.entries(liveValues).map(([k, v]) => {
+              const text = v == null ? '' : String(v).trim();
+              if (!text) return null;
+              return (
+                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '9px 0', borderBottom: '1px solid #f5f5f5', fontSize: 13 }}>
+                  <span style={{ color: '#999', flexShrink: 0 }}>{k}</span>
+                  <span style={{ color: '#333', textAlign: 'right', wordBreak: 'break-all' }}>{text}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* 项目阶段 / 项目类别 / 项目类型 / 风险承接 —— 单选弹窗（真实枚举，与 backend 对应 Enum 一致） */}

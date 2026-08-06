@@ -121,8 +121,20 @@ export async function fetchProjectStageSummary(projectIds?: string[]): Promise<P
   }
 }
 
+export interface TaskExecutionStats {
+  total_tasks: number;
+  finished_tasks: number;
+  completion_rate: number | null;
+}
+
 export interface ProjectListItem {
   id: string; project_code: string; name: string; status: string; contact_person: string;
+  project_manager?: string | null;
+  project_contact?: string | null;
+  risks?: number;
+  task_execution_stats?: TaskExecutionStats | null;
+  latest_manual_switch_count?: number | null;
+  settlement_period?: string | null;
 }
 
 /**

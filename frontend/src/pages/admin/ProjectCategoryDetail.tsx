@@ -48,24 +48,72 @@ export default function ProjectCategoryDetail() {
               )}
             </div>
           ) : (
-            items.map((p) => (
-              <div
-                key={p.id}
-                style={{
-                  background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10,
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
-                }}
-                onClick={() => navigate(`/admin/project-detail/${p.id}`)}
-              >
-                <div style={{ fontWeight: 600, fontSize: 15 }}>{p.name}</div>
-                <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
-                  {p.project_code} · 对接人: {p.contact_person || '未指定'}
+            items.map((p) => {
+              const hasRisk = (p.risks ?? 0) > 0;
+
+              return (
+                <div
+                  key={p.id}
+                  style={{
+                    background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10,
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
+                    borderLeft: hasRisk ? '3px solid #d54941' : '3px solid transparent',
+                  }}
+                  onClick={() => navigate(`/admin/project-detail/${p.id}`)}
+                >
+                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600, fontSize: 15 }}>
+                    {p.name}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                    <span style={{
+                      fontSize: 11, padding: '2px 8px', borderRadius: 10,
+                      background: '#f0f0f0', color: '#666',
+                    }}>
+                      {p.status}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#999', marginTop: 6 }}>
+                    {p.project_code} · 项目经理: {p.project_manager || '未指定'}
+                  </div>
+
+                  {/* 任务统计：任务总数 / 已完成任务 / 任务完成率 / 切手动次数 */}
+                  <div style={{
+                    marginTop: 10,
+                    display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6,
+                  }}>
+                    <MiniStat label="任务总数" value={p.task_execution_stats?.total_tasks ?? '-'} />
+                    <MiniStat label="已完成任务" value={p.task_execution_stats?.finished_tasks ?? '-'} />
+                    <MiniStat
+                      label="任务完成率"
+                      value={
+                        p.task_execution_stats?.completion_rate != null
+                          ? `${Math.round(p.task_execution_stats.completion_rate * 100)}%`
+                          : '-'
+                      }
+                    />
+                    <MiniStat label="切手动次数" value={p.latest_manual_switch_count ?? '-'} />
+                  </div>
+
+                  {hasRisk && (
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #f0f0f0' }}>
+                      <span style={{ fontSize: 12, color: '#d54941' }}>⚠ {p.risks} 项未关闭风险</span>
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))
+              );
+            })
           )
         )}
       </div>
+    </div>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div style={{ background: '#f7f8fa', borderRadius: 6, padding: '6px 4px', textAlign: 'center' }}>
+      <div style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>{value}</div>
+      <div style={{ fontSize: 10, color: '#999', marginTop: 2 }}>{label}</div>
     </div>
   );
 }

@@ -112,3 +112,25 @@ python -m app.wechat.menu_setup
 ## 6. 没有微信环境也能开发
 
 若 `.env` 未配置微信参数，系统进入**开发降级模式**（详见 [SETUP.md](./SETUP.md#本地开发联调)）：消息回调 / OAuth / 模板消息不会真正调用微信，通知打印到日志，可用 `POST /api/auth/dev-login` 以任意角色获取 JWT 联调全部业务流程。
+
+## 7. 分享到微信群（JS-SDK 自定义分享卡片）
+
+工单详情页（历史工单 `pages/call/TicketDetailPage.tsx`、系统任务 `pages/tasks/TaskDetailPage.tsx`）进入页面后**自动静默预置**微信分享卡片（基于 JS-SDK 的 `updateAppMessageShareData` / `updateTimelineShareData`），把当前工单预置成可转发到群/好友/朋友圈的卡片（含标题、描述、缩略图、回跳链接）。页面上**不再有独立转发按钮**——用户直接在微信内点右上角「…」即可转发。此为「辅推」方案（轻量卡片），区别于后续可做的「主推：html2canvas 生成工单长图」。
+
+### 7.1 工作原理
+- 进页面 `useEffect`（依赖工单 id）自动调用 `setupWechatShare`：复用既有 `GET /api/wechat/config/js-sdk-config` 做 JS-SDK 签名（`initWechatJsSdk` 已封装）→ 调 `updateAppMessageShareData` 设置卡片元信息，全程无 UI、不打扰用户。
+- JS-SDK 分享只是「配置卡片」，**用户需在微信内点右上角「…」实际转发**，前端不能主动发出（微信禁止前端调起转发面板）；预置在进页面时已完成，故点「…」即见工单卡片。
+- 缩略图 `imgUrl` 取 `WECHAT_CONFIG.shareImgUrl`（`VITE_WECHAT_SHARE_IMG_URL`），留空则用微信默认图。
+- 分享描述 `desc` 无官方硬字数上限，但微信客户端会显示截断：会话列表预览约显示前 30 字、点开卡片详情约显示前 54 字，超出以「…」收尾；**朋友圈（`updateTimelineShareData`）不展示 `desc`、仅展示 `title`**，故关键信息应前置（前端按约 120 字传入，由调用方 `slice` 控制）。
+
+### 7.2 必配项（否则卡片异常）
+- **JS 接口安全域名**：公众平台「公众号设置 → 功能设置 → JS 接口安全域名」填前端域名（不带 `https://`）。未配会 `invalid signature` 或分享无效。
+- **分享回链 `link` 域名**：必须与网页授权 / JS 安全域名一致，否则点不开或签名失败。
+- **缩略图 `imgUrl`**：必须**公网可访问**的 HTTPS URL（建议 ≤32KB、约 200×200 或 5:4），否则不显示。
+
+### 7.3 环境变量
+- 前端 `.env.[mode]`：`VITE_WECHAT_JSSDK_ENABLED`（复用，开启 JS-SDK 初始化）、`VITE_WECHAT_SHARE_IMG_URL`（可选，分享卡片默认缩略图；**已内置默认图** `frontend/public/share-thumb.png`＝品牌 logo 压缩版 200×200、≤32KB，构建后随 base 落到 `/p/app/share-thumb.png`(prod)/`/t/app/share-thumb.png`(staging)，prod/staging 的 env 已分别填好该 URL，域名与 JS 接口安全域名 `usp.ep-zl.com` 一致）。
+- 后端无需新增接口，签名复用既有 `GET /api/wechat/config/js-sdk-config?url=<当前页URL>`。
+
+### 7.4 展示信息自定义
+卡片标题/描述/缩略图由前端用详情页数据拼（`title=ticket.title`、`desc=ticket.description.slice(0,60)`、`link`=当前页 URL）。若需"后台可配分享模板"，后续可在 `/api/wechat/config/js-sdk-config` 之外新增分享模板配置与 `GET /tickets/{id}/share` 数据接口，前端按模板渲染。
