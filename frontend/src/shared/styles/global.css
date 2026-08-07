@@ -1162,17 +1162,17 @@ html, body, #root {
 .img-lightbox__btn:active {
   background: rgba(255, 255, 255, 0.3);
 }
-/* 图片加载中遮罩：imgReady=false 期间显示（纯黑 + 居中转圈），就绪后切换到 ImageViewer。
-   与 ImageViewer 同层（z-index 1100），点击可关闭；缓存图片近乎瞬时（loading 几乎不可见） */
-.img-lightbox__loading {
+/* 图片加载中 overlay 叠加层：imgReady=false 时叠加在 ImageViewer 之上（不替换 DOM）。
+   pointer-events:none 让 ImageViewer 的 mask 处理点击关闭。
+   缓存图片 imgReady 瞬时 true（overlay 几乎不可见）；非缓存图片显示 spinner 直到就绪 */
+.img-lightbox__loading-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1100;
-  background: #000;
+  z-index: 1101;
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: zoom-out;
+  pointer-events: none;
 }
 .img-lightbox__loading-spinner {
   width: 32px;

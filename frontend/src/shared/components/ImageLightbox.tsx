@@ -44,8 +44,9 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   // 图片预加载就绪标记：ImageViewer 的 mask 是半透明（rgba 0,0,0,0.6），挂载时若 <img> 未
   // 就绪会先透出底层页面再跳出图片 → 闪烁。这里先用 new Image() + decode() 预加载，解码
-  // 完成后再挂载 ImageViewer（缓存图片 decode 近乎瞬时，挂载后 <img> 同步从缓存渲染，无闪烁）。
-  // 预载期间不渲染任何层（点击即显，无 loading 遮罩）；非缓存图片加超时兜底避免久等。
+  // 完成后置 imgReady=true（移除 loading overlay）。ImageViewer 始终挂载（纯黑 mask 兜底），
+  // loading spinner 只作为 overlay 叠加——不切换 DOM，消除 DOM 替换造成的闪烁。
+  // 缓存图片 decode 近乎瞬时（overlay 几乎不可见）；非缓存图片显示 spinner 直到就绪。
   const [imgReady, setImgReady] = useState(false);
 
   // ESC 关闭 + 锁定背景滚动
@@ -166,36 +167,35 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
 
   return createPortal(
     <>
-      {/* 图片未加载/未解码完成时显示 loading 遮罩（纯黑 + 转圈），就绪后切换到 ImageViewer。
-          缓存图片 decode 近乎瞬时（loading 几乎不可见）；非缓存图片显示 loading 直到就绪。 */}
+      {/* ImageViewer 始终挂载（不再用 imgReady 条件渲染切换 DOM）：
+          纯黑 mask 兜底（.t-image-viewer__mask 已改 #000），图片未加载时显示纯黑，
+          加载完直接显示——无 DOM 替换造成的闪烁。
+          loading spinner 改为 overlay 叠加（下方），不替换 ImageViewer DOM。 */}
+      <ImageViewer
+        images={[src ?? '']}
+        visible={open}
+        maxZoom={3}
+        onClose={() => onClose()}
+      />
+      {/* 自定义工具条：左上角关闭 + 复制 / 下载 */}
+      <div className="img-lightbox__toolbar">
+        <button type="button" className="img-lightbox__btn img-lightbox__close" onClick={onClose} aria-label="关闭">
+          ✕
+        </button>
+        <button type="button" className="img-lightbox__btn" onClick={handleCopy}>
+          复制
+        </button>
+        <button type="button" className="img-lightbox__btn" onClick={handleDownload}>
+          下载
+        </button>
+      </div>
+      {/* loading spinner 叠加层（imgReady=false 时）：不替换 DOM，只叠加在 ImageViewer 之上。
+          pointer-events:none 让 ImageViewer 的 mask 处理点击关闭，不拦截交互。
+          缓存图片 imgReady 瞬时 true（spinner 几乎不可见）；非缓存图片显示 spinner 直到就绪。 */}
       {!imgReady && (
-        <div className="img-lightbox__loading" role="status" aria-label="图片加载中" onClick={onClose}>
+        <div className="img-lightbox__loading-overlay" role="status" aria-label="图片加载中">
           <span className="img-lightbox__loading-spinner" />
         </div>
-      )}
-      {/* 图片预加载就绪后才挂载 ImageViewer + 工具栏：避免半透明 mask 先透出底层、图片后跳出导致的闪烁 */}
-      {imgReady && (
-        <>
-          {/* 交互主体：双指缩放 / 双击缩放 / 拖拽平移 / 单击关闭（TDesign ImageViewer） */}
-          <ImageViewer
-            images={[src ?? '']}
-            visible={open}
-            maxZoom={3}
-            onClose={() => onClose()}
-          />
-          {/* 自定义工具条：左上角关闭 + 复制 / 下载（关闭按钮自绘，直接调 onClose，避免被工具栏覆盖 / 受控失效） */}
-          <div className="img-lightbox__toolbar">
-            <button type="button" className="img-lightbox__btn img-lightbox__close" onClick={onClose} aria-label="关闭">
-              ✕
-            </button>
-            <button type="button" className="img-lightbox__btn" onClick={handleCopy}>
-              复制
-            </button>
-            <button type="button" className="img-lightbox__btn" onClick={handleDownload}>
-              下载
-            </button>
-          </div>
-        </>
       )}
       {feedback && <div className="img-lightbox__feedback">{feedback}</div>}
     </>,
