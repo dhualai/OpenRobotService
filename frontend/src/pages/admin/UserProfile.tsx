@@ -3,18 +3,20 @@
 // 但用户此前从未设置过 name。本页提供自助修改昵称/头像的入口；首次进入（name 为空）时弹窗提示设置。
 // 头像字段策略：进入页面时 /auth/me 返回的头像 id 不再覆盖 store（与登录/刷新时 fetchUserDetails 同源），
 // 避免接口偶发缺字段时把已显示的头像清成上传图标（本次修复根因之一见 backend/app/core/auth_service.py）。
-// 个人中心可编辑字段：姓名 / 公司 / 部门 / USP 账户(external_credentials.usp.username) / USP 密码。
-// username 为系统内用户标识，只读展示；USP 密码在后端以 pbkdf2_sha256 哈希存储，前端不回显，留空表示不修改。
-import { useState, useEffect, useCallback } from 'react';
+// 个人中心可编辑字段：姓名 / 公司 / 部门 / USP 密码。
+// username 为系统内用户标识，只读展示；USP 账号根据姓名拼音自动生成（只读）；USP 密码以哈希存储，前端不回显，留空表示不修改。
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Input, Button, Dialog, Upload, Toast, Popup } from 'tdesign-mobile-react';
 import { UserCircleIcon, AddIcon } from 'tdesign-icons-react';
 import { useAuthStore } from '@/stores/auth';
-import { getMyProfile, getProfileOptions, updateMyProfile, uploadAvatar, avatarUrl, type MyProfile } from '@/api/profile';
+import { getMyProfile, getProfileOptions, generateUspUsername, updateMyProfile, uploadAvatar, avatarUrl, type MyProfile } from '@/api/profile';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
+import { buildWechatAuthUrl, buildStateFromPath } from '@/shared/utils/url';
 
-const FIRST_VISIT_PROMPT_KEY = 'profile_prompt_shown';
+// 防止「首次进入 → 微信 OAuth → 回跳」死循环：标记本次会话已尝试过一次
+const WECHAT_PROFILE_OAUTH_KEY = 'profile_wechat_oauth_attempted';
 
 // 原生 select 样式，与 TDesign Input 视觉对齐
 const selectStyle: React.CSSProperties = {
@@ -33,7 +35,7 @@ const selectStyle: React.CSSProperties = {
 
 export default function UserProfile() {
   const navigate = useNavigate();
-  const { username, name, avatarResourceId, setProfile, logout } = useAuthStore();
+  const { username, name, avatarResourceId, setProfile, logout, hasPermission } = useAuthStore();
 
   // 表单草稿
   const [nameDraft, setNameDraft] = useState(name);
@@ -60,7 +62,6 @@ export default function UserProfile() {
 
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [showPrompt, setShowPrompt] = useState(false);
   const [loading, setLoading] = useState(true);
   const [avatarError, setAvatarError] = useState(false);
 
@@ -87,9 +88,13 @@ export default function UserProfile() {
         const depts = Array.from(new Set([...(options.departments || []), snapshot.department].filter(Boolean))) as string[];
         setCompanyOptions(cos);
         setDepartmentOptions(depts);
-        if (!profile.name && !sessionStorage.getItem(FIRST_VISIT_PROMPT_KEY)) {
-          sessionStorage.setItem(FIRST_VISIT_PROMPT_KEY, '1');
-          setShowPrompt(true);
+        // 首次进入且未设置姓名：自动走微信 OAuth 拉取昵称和头像（后端 snsapi_userinfo 回调写入 name/avatar_resource_id）
+        // 用 sessionStorage 防死循环：同一会话只尝试一次
+        if (!profile.name && WECHAT_CONFIG.loginEnabled && !sessionStorage.getItem(WECHAT_PROFILE_OAUTH_KEY)) {
+          sessionStorage.setItem(WECHAT_PROFILE_OAUTH_KEY, '1');
+          const state = buildStateFromPath('/admin/profile');
+          window.location.href = buildWechatAuthUrl(state);
+          return; // 页面即将跳转，不再执行后续逻辑
         }
       } finally {
         setLoading(false);
@@ -98,24 +103,41 @@ export default function UserProfile() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 姓名变更时自动生成 USP 账户名（拼音去重），防抖 500ms
+  const uspDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (loading) return;
+    const trimmed = (nameDraft || '').trim();
+    if (!trimmed) {
+      setUspUsernameDraft('');
+      return;
+    }
+    // 姓名未变化（初始加载）时不重新生成
+    if (trimmed === original.name) return;
+    if (uspDebounceRef.current) clearTimeout(uspDebounceRef.current);
+    uspDebounceRef.current = setTimeout(async () => {
+      try {
+        const uspName = await generateUspUsername(trimmed);
+        setUspUsernameDraft(uspName);
+      } catch {
+        // 生成失败时静默，保留原值
+      }
+    }, 500);
+    return () => {
+      if (uspDebounceRef.current) clearTimeout(uspDebounceRef.current);
+    };
+  }, [nameDraft, loading, original.name]);
+
   // 进入个人中心页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈
   useEffect(() => {
     if (loading) return;
-    const displayName = (original.name || '').trim() || username || '同事';
-    const company = (original.company || '').trim();
-    const dept = (original.department || '').trim();
-    const title = `${displayName} 的个人资料`;
-    const descParts = [company, dept].filter(Boolean);
-    const desc = descParts.length
-      ? `公司：${company || '-'} · 部门：${dept || '-'}`
-      : '点击查看该同事的详细资料';
     setupWechatShare({
-      title,
-      desc,
+      title: '设置你的个人信息',
+      desc: '设置你的真实姓名，公司，部门等， 为你开发全部功能！',
       link: window.location.href,
-      imgUrl: avatarResourceId ? avatarUrl(avatarResourceId) : (WECHAT_CONFIG.shareImgUrl || ''),
+      imgUrl: WECHAT_CONFIG.shareImgUrl,
     });
-  }, [loading, original.name, original.company, original.department, username, avatarResourceId]);
+  }, [loading]);
 
   const isDirty = useCallback((): boolean => {
     if ((nameDraft || '').trim() !== original.name) return true;
@@ -309,15 +331,17 @@ export default function UserProfile() {
                 <option key={c} value={c}>{c}</option>
               ))}
             </select>
-            <Button
-              theme="primary"
-              variant="outline"
-              size="small"
-              icon={<AddIcon size="16px" />}
-              onClick={() => openAddDialog('company')}
-            >
-              添加公司
-            </Button>
+            {hasPermission('backend:company:add') && (
+              <Button
+                theme="primary"
+                variant="outline"
+                size="small"
+                icon={<AddIcon size="16px" />}
+                onClick={() => openAddDialog('company')}
+              >
+                添加公司
+              </Button>
+            )}
           </div>
         </Field>
 
@@ -333,15 +357,17 @@ export default function UserProfile() {
                 <option key={d} value={d}>{d}</option>
               ))}
             </select>
-            <Button
-              theme="primary"
-              variant="outline"
-              size="small"
-              icon={<AddIcon size="16px" />}
-              onClick={() => openAddDialog('department')}
-            >
-              添加部门
-            </Button>
+            {hasPermission('backend:part:add') && (
+              <Button
+                theme="primary"
+                variant="outline"
+                size="small"
+                icon={<AddIcon size="16px" />}
+                onClick={() => openAddDialog('department')}
+              >
+                添加部门
+              </Button>
+            )}
           </div>
         </Field>
       </div>
@@ -351,16 +377,13 @@ export default function UserProfile() {
           USP 账户
         </div>
         <div style={{ fontSize: 12, color: '#999', marginBottom: 12 }}>
-          用于派单系统登录；密码以哈希存储，留空表示不修改。
         </div>
 
-        <Field label="USP 账号">
+        <Field label="USP 账号" hint="根据姓名拼音自动生成，不可手动修改">
           <Input
             value={uspUsernameDraft}
-            onChange={(v) => setUspUsernameDraft(String(v))}
-            placeholder="请输入 USP 账号"
-            maxlength={64}
-            clearable
+            readonly
+            placeholder="输入姓名后自动生成"
           />
         </Field>
 
@@ -389,17 +412,6 @@ export default function UserProfile() {
       <Button theme="danger" variant="outline" block style={{ marginTop: 16 }} onClick={handleLogout}>
         登出
       </Button>
-
-      <Dialog
-        visible={showPrompt}
-        title="完善个人信息"
-        content="检测到您还未设置姓名和头像，设置后同事在「我要摇人」等场景能更容易认出您，是否现在设置？"
-        confirmBtn="去设置"
-        cancelBtn="稍后再说"
-        onConfirm={() => setShowPrompt(false)}
-        onCancel={() => setShowPrompt(false)}
-        onClose={() => setShowPrompt(false)}
-      />
 
       {/* 添加公司/部门 自定义输入弹层 */}
       <Popup

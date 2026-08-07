@@ -52,6 +52,15 @@ export async function getProfileOptions(): Promise<ProfileFieldOptions> {
   return adminRequest<ProfileFieldOptions>('/users/options', { skipCache: true });
 }
 
+/** 根据中文姓名生成去重的 USP 账户名 */
+export async function generateUspUsername(name: string): Promise<string> {
+  const query = new URLSearchParams({ name }).toString();
+  const res = await adminRequest<{ usp_username: string }>(`/users/usp-username?${query}`, {
+    skipCache: true,
+  });
+  return res.usp_username;
+}
+
 export async function updateMyProfile(
   username: string,
   data: MyProfileUpdate,
