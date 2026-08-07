@@ -29,7 +29,8 @@ class AssignerConfig:
     - module_anchor_texts:  {模块名: 锚文本}，供 L2 语义召回做 Embedding 比对
     - ranker_weights:       {llm_match, semantic_match, history_match} 三路权重
     - job_level_penalty:    {职级: 惩罚系数}，精排后按职级打折
-    - department_keywords:  {部门: [关键词]}，供部门过滤匹配工单归属部门
+    - department_keywords:  {部门: {strong, medium, weak}}，供部门过滤分级匹配
+    - department_scenes:    {部门: {场景: 描述}}，供部门过滤 embedding 语义补漏
     - decision_thresholds:  {auto, recommend}，规则兜底决策的置信度阈值
     - load_balance:         {enabled, step, algorithm_engineers}，算法工程师负载均衡
     """
@@ -41,7 +42,8 @@ class AssignerConfig:
         self.module_anchor_texts: Dict[str, str] = {}
         self.ranker_weights: Dict[str, Any] = {}
         self.job_level_penalty: Dict[int, float] = {}
-        self.department_keywords: Dict[str, list] = {}
+        self.department_keywords: Dict[str, dict] = {}
+        self.department_scenes: Dict[str, dict] = {}
         self.decision_thresholds: Dict[str, float] = {}
         self.load_balance: Dict[str, Any] = {}
         self._load_all()
@@ -56,6 +58,7 @@ class AssignerConfig:
         raw = config.get("job_level_penalty", {})
         self.job_level_penalty = {int(k): v for k, v in raw.items()}
         self.department_keywords = config.get("department_keywords", {})
+        self.department_scenes = config.get("department_scenes", {})
         self.decision_thresholds = config.get("decision_thresholds", {})
         self.load_balance = config.get("load_balance", {})
 

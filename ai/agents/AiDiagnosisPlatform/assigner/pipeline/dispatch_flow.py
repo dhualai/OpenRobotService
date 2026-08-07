@@ -94,7 +94,7 @@ class DispatchFlow:
             return preferred
 
         # ── Step 0: 部门过滤 ──
-        candidates = self._dept_filter.filter(
+        candidates = await self._dept_filter.filter(
             ticket=ticket_context, engineers=engineer_profiles,
             project_name=ticket_context.project_name or "",
         )
