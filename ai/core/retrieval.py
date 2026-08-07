@@ -462,20 +462,29 @@ class RetrievalService:
         results: List[RetrievalResult],
         top_k: int,
     ) -> List[RetrievalResult]:
-        """用 cross-encoder 对候选结果精排，返回 top_k"""
+        """用 cross-encoder 对候选结果精排，返回 top_k。
+
+        CPU 推理瓶颈：bge-reranker-v2-m3 在 CPU 上约 700ms/pair，
+        候选数封顶在 15，避免单次检索耗时超过 10 秒。
+        """
+        _MAX_RERANK_CANDIDATES = 8
         if not self._reranker or len(results) <= top_k:
             return results[:top_k]
 
-        # 截取内容前 400 字符用于重排序（长文档取首段即可）
-        docs = [r.content[:400] for r in results]
+        capped = results[:_MAX_RERANK_CANDIDATES]
+        docs = [r.content[:400] for r in capped]
         try:
+            import time as _time
+            _t0 = _time.perf_counter()
             scores = await self._reranker.rerank(query, docs, top_k)
+            _elapsed = _time.perf_counter() - _t0
+            if _elapsed > 1.0:
+                logger.info(f"[reranker] {len(capped)} 对耗时 {_elapsed:.1f}s")
         except Exception:
-            # reranker 失败时降级为原始排序
+            logger.warning(f"[reranker] 推理失败，降级为原始排序", exc_info=True)
             return results[:top_k]
 
-        # 按 reranker 分数重排
-        scored = list(zip(results, scores))
+        scored = list(zip(capped, scores))
         scored.sort(key=lambda x: x[1], reverse=True)
         return [r for r, _ in scored[:top_k]]
 
@@ -593,8 +602,9 @@ class RetrievalService:
         query_vector = await self._embed_client.embed(query)
         bm25_sparse = self._generate_bm25_sparse(query)
 
-        # 2. 并行检索（拉更多候选给 reranker）
-        candidate_k = max(k * 3, k + 10) if self._reranker else k * 2
+        # 2. 并行检索（reranker 候选数收窄，CPU 推理开销大）
+        _rerank_margin = min(k + 4, 15)
+        candidate_k = _rerank_margin if self._reranker else k * 2
         dense_task = self._qdrant.search_dense(
             query_vector.tolist(),
             top_k=candidate_k,
@@ -682,8 +692,9 @@ class RetrievalService:
                 query_filter = sd_filter
 
         # hybrid search: dense + sparse 并行 → RRF 融合
-        # 拉 3x 候选用于 reranker 精排（无 reranker 时 2x 即可）
-        candidate_k = max(top_k * 5, top_k + 20) if self._reranker else top_k * 2
+        # reranker 候选数收窄：top_k + margin，硬封顶 15（CPU 推理太慢，每 pair ~700ms）
+        _rerank_margin = min(top_k + 4, 8)
+        candidate_k = _rerank_margin if self._reranker else top_k * 2
         query_vector = await self._embed_client.embed(query)
         bm25_sparse = self._generate_bm25_sparse(query)
 
