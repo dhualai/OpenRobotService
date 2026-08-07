@@ -1190,6 +1190,34 @@ html, body, #root {
 .t-image-viewer__mask {
   background-color: #000 !important;
 }
+/* 图片加载失败提示（new Image() onerror 且 fetch fallback 也失败时） */
+.img-lightbox__error {
+  position: fixed;
+  inset: 0;
+  z-index: 1102;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 15px;
+  background: #000;
+}
+.img-lightbox__error-icon {
+  font-size: 36px;
+  color: rgba(255, 255, 255, 0.4);
+}
+.img-lightbox__error-retry {
+  margin-top: 8px;
+  padding: 6px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  background: transparent;
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
 .img-lightbox__feedback {
   position: fixed;
   bottom: 24px;
