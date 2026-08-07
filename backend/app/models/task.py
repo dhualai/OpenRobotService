@@ -132,6 +132,7 @@ class TaskComment(Base):
 
     is_public = Column(Boolean, nullable=False, default=True, comment="是否公开")
     attachments = Column(JSON, nullable=True, comment="附件列表")
+    reply_to = Column(BigInteger, nullable=True, index=True, comment="引用的评论ID（消息引用/回复）")
 
     task = relationship("Task", backref="comments", order_by=lambda: desc(TaskComment.created_at))
 

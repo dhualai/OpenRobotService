@@ -35,7 +35,7 @@ interface AiDiagnosis {
   collected_info?: Record<string, unknown>;
   rounds?: number;
 }
-interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; }
+interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; reply_to?: string | number; quoted?: { id: string | number; content: string; created_by_name?: string }; }
 interface AiTicket {
   ticket_id?: string;
   session_id: string;
@@ -435,7 +435,7 @@ export default function TicketDetailPage() {
 
   // ── @U老师 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
   // 与系统任务详情页同款逻辑，用 ticket.ticket_id 代替 detail.id，fetchDetail(true) 代替 loadDetail()
-  const handleAIDiscuss = async (text: string, files: File[] = []): Promise<boolean> => {
+  const handleAIDiscuss = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
     if (!ticket?.ticket_id) return false;
     const userMsg = text;
     setAskingAI(true);
@@ -449,7 +449,7 @@ export default function TicketDetailPage() {
       try {
         const newComment = await request<Comment>(`/${ticket.ticket_id}/comments`, {
           method: 'POST',
-          body: JSON.stringify({ content: userMsg, is_public: true, attachments: files.length ? [tempId] : [] }),
+          body: JSON.stringify({ content: userMsg, is_public: true, attachments: files.length ? [tempId] : [], reply_to: options?.replyTo }),
         });
         setTicket((prev) => {
           if (!prev) return prev;
@@ -489,9 +489,9 @@ export default function TicketDetailPage() {
 
   // 发送评论（附件上传 + POST /api/tasks/{ticket_id}/comments）；返回 true=成功（组件清空输入）
   // 检测 @U老师 前缀：走 AI 讨论而非普通评论（与系统任务详情页同款逻辑）
-  const handleSendComment = async (text: string, files: File[]): Promise<boolean> => {
+  const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number }): Promise<boolean> => {
     if (text.startsWith('@U老师 ')) {
-      return handleAIDiscuss(text, files);
+      return handleAIDiscuss(text, files, options);
     }
     if (!ticket?.ticket_id) {
       Toast({ message: '工单号缺失，无法评论', theme: 'warning' });
@@ -506,7 +506,7 @@ export default function TicketDetailPage() {
       }
       const newComment = await request<Comment>(`/${ticket.ticket_id}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ content: text, is_public: true, attachments: files.length ? [tempId] : [] }),
+        body: JSON.stringify({ content: text, is_public: true, attachments: files.length ? [tempId] : [], reply_to: options?.replyTo }),
       });
       const enrichedComment = {
         ...newComment,
@@ -527,6 +527,17 @@ export default function TicketDetailPage() {
     } finally {
       setSubmittingComment(false);
     }
+  };
+
+  // 删除评论（后端按创建人鉴权）：成功后从本地列表移除
+  const handleDeleteComment = async (id: string | number): Promise<void> => {
+    if (!ticket?.ticket_id) return;
+    await request(`/comments/${id}`, { method: 'DELETE' });
+    setTicket((prev) => {
+      if (!prev) return prev;
+      return { ...prev, comments: (prev.comments || []).filter((c) => String(c.id) !== String(id)) };
+    });
+    Toast({ message: '评论已删除', theme: 'success' });
   };
 
   if (loading) return <Loading text="加载中..." />;
@@ -768,6 +779,7 @@ export default function TicketDetailPage() {
         <DiscussionPanel
           comments={ticket.comments || []}
           onSend={handleSendComment}
+          onDeleteComment={handleDeleteComment}
           sending={submittingComment || askingAI}
           disabled={!ticket?.ticket_id}
           enableAttach

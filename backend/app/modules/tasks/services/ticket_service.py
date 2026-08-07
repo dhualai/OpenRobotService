@@ -665,11 +665,35 @@ class TicketService:
         return True
 
     @staticmethod
-    async def add_comment(db: AsyncSession, ticket_id: int, comment_data: TicketCommentCreate, created_by: str, comment_attachment_map: dict) -> Optional[TicketComment]:
+    async def _attach_comment_meta(db: AsyncSession, comment: TicketComment, user_map: Dict[str, str]) -> TicketComment:
+        """为评论附加展示用元数据：创建人姓名、引用评论摘要、响应态内容。"""
+        setattr(comment, "created_by_name", user_map.get(comment.created_by, comment.created_by))
+        try:
+            comment.content = ImageProcessor.process_content_for_response(comment.content)
+        except Exception:
+            pass
+        reply_to = getattr(comment, "reply_to", None)
+        if reply_to:
+            try:
+                res = await db.execute(select(TicketComment).where(TicketComment.id == reply_to))
+                qc = res.scalar_one_or_none()
+                if qc:
+                    qname = user_map.get(qc.created_by, qc.created_by)
+                    setattr(comment, "quoted", QuotedComment(
+                        id=qc.id,
+                        content=qc.content or "",
+                        created_by_name=qname,
+                    ))
+            except Exception:
+                pass
+        return comment
+
+    @staticmethod
+    async def add_comment(db: AsyncSession, ticket_id: int, comment_data: TicketCommentCreate, created_by: str, comment_attachment_map: dict, token: Optional[str] = None) -> Optional[TicketComment]:
         ticket = await TicketService.get_ticket_by_id(db, ticket_id)
         if not ticket:
             return None
-        
+
         processed_content, _ = ImageProcessor.process_content_for_storage(
             comment_data.content,
             ticket_id,
@@ -688,23 +712,27 @@ class TicketService:
             content=processed_content,
             is_public=comment_data.is_public,
             attachments=processed_attachments,
-            created_by=created_by
+            created_by=created_by,
+            reply_to=comment_data.reply_to
         )
-        
+
         ticket.reply_count = ticket.reply_count + 1
-        
+
         db.add(comment)
         await db.commit()
         await db.refresh(comment)
         await db.refresh(ticket)
-        
+
+        user_map = await TicketService._get_user_map(token)
+        await TicketService._attach_comment_meta(db, comment, user_map)
+
         return comment
 
     @staticmethod
     async def get_comments(db: AsyncSession, ticket_id: int, token: Optional[str] = None) -> List[TicketComment]:
         import logging
         logger = logging.getLogger(__name__)
-        
+
         result = await db.execute(
             select(TicketComment)
             .where(TicketComment.task_id == ticket_id)
@@ -713,21 +741,12 @@ class TicketService:
         )
         comments = list(result.scalars().all())
         logger.info(f"查询到评论数: ticket_id={ticket_id}, count={len(comments)}")
-        
+
         user_map = await TicketService._get_user_map(token)
-        
+
         for comment in comments:
-            setattr(comment, "created_by_name", user_map.get(comment.created_by, comment.created_by))
-            try:
-                content = comment.content
-                logger.info(f"开始处理评论内容: comment_id={comment.id}, content_length={len(content) if content else 0}")
-                processed_content = ImageProcessor.process_content_for_response(content)
-                comment.content = processed_content
-                logger.info(f"评论内容处理成功: comment_id={comment.id}")
-            except Exception as e:
-                logger.error(f"评论内容处理失败: comment_id={comment.id}, error={str(e)}", exc_info=True)
-                raise
-        
+            await TicketService._attach_comment_meta(db, comment, user_map)
+
         return comments
 
     @staticmethod
