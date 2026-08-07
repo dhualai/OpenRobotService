@@ -382,7 +382,7 @@ async def add_comment(
     try:
         username = current_user.get('username') if current_user else "system"
         operator = current_user.get('name') or username
-        comment = await TicketService.add_comment(db, task_id, comment_data, username, comment_attachment_map)
+        comment = await TicketService.add_comment(db, task_id, comment_data, username, comment_attachment_map, token=current_user.get("token"))
         if not comment:
             raise HTTPException(status_code=404, detail="任务未找到")
 
