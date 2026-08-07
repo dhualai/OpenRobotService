@@ -7,7 +7,7 @@
 // username 为系统内用户标识，只读展示；USP 账号根据姓名拼音自动生成（只读）；USP 密码以哈希存储，前端不回显，留空表示不修改。
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Input, Button, Dialog, Upload, Toast, Popup } from 'tdesign-mobile-react';
+import { Input, Button, Dialog, Toast, Popup } from 'tdesign-mobile-react';
 import { UserCircleIcon, AddIcon } from 'tdesign-icons-react';
 import { useAuthStore } from '@/stores/auth';
 import { getMyProfile, getProfileOptions, generateUspUsername, updateMyProfile, uploadAvatar, avatarUrl, type MyProfile } from '@/api/profile';
@@ -44,6 +44,8 @@ export default function UserProfile() {
   const [uspUsernameDraft, setUspUsernameDraft] = useState('');
   // USP 密码：仅用于「设置新密码」，留空表示不修改；后端存储的是哈希，前端不回显
   const [uspPasswordDraft, setUspPasswordDraft] = useState('');
+  // USP 密码确认：需与密码一致
+  const [uspPasswordConfirmDraft, setUspPasswordConfirmDraft] = useState('');
 
   // 公司/部门下拉可选项（来自 users 表去重值，点「添加」可自定义新值）
   const [companyOptions, setCompanyOptions] = useState<string[]>([]);
@@ -103,30 +105,22 @@ export default function UserProfile() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 姓名变更时自动生成 USP 账户名（拼音去重），防抖 500ms
-  const uspDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (loading) return;
+  // 姓名失焦时自动生成 USP 账户名（拼音去重）
+  const handleNameBlur = useCallback(async () => {
     const trimmed = (nameDraft || '').trim();
     if (!trimmed) {
       setUspUsernameDraft('');
       return;
     }
-    // 姓名未变化（初始加载）时不重新生成
+    // 姓名未变化时不重新生成
     if (trimmed === original.name) return;
-    if (uspDebounceRef.current) clearTimeout(uspDebounceRef.current);
-    uspDebounceRef.current = setTimeout(async () => {
-      try {
-        const uspName = await generateUspUsername(trimmed);
-        setUspUsernameDraft(uspName);
-      } catch {
-        // 生成失败时静默，保留原值
-      }
-    }, 500);
-    return () => {
-      if (uspDebounceRef.current) clearTimeout(uspDebounceRef.current);
-    };
-  }, [nameDraft, loading, original.name]);
+    try {
+      const uspName = await generateUspUsername(trimmed);
+      setUspUsernameDraft(uspName);
+    } catch {
+      // 生成失败时静默，保留原值
+    }
+  }, [nameDraft, original.name]);
 
   // 进入个人中心页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈
   useEffect(() => {
@@ -144,9 +138,9 @@ export default function UserProfile() {
     if ((companyDraft || '').trim() !== original.company) return true;
     if ((departmentDraft || '').trim() !== original.department) return true;
     if ((uspUsernameDraft || '').trim() !== original.uspUsername) return true;
-    if (uspPasswordDraft) return true;
+    if (uspPasswordDraft || uspPasswordConfirmDraft) return true;
     return false;
-  }, [nameDraft, companyDraft, departmentDraft, uspUsernameDraft, uspPasswordDraft, original]);
+  }, [nameDraft, companyDraft, departmentDraft, uspUsernameDraft, uspPasswordDraft, uspPasswordConfirmDraft, original]);
 
   // 打开「添加」弹窗
   const openAddDialog = useCallback((field: 'company' | 'department') => {
@@ -180,7 +174,25 @@ export default function UserProfile() {
     }
     if (!isDirty()) {
       Toast({ message: '资料无变更', theme: 'success' });
+      setTimeout(() => navigate('/app/call', { replace: true }), 1000);
       return;
+    }
+
+    // USP 密码强度校验：留空表示不修改，填了则需满足强度要求
+    const hasNewPassword = !!uspPasswordDraft;
+    if (hasNewPassword) {
+      if (uspPasswordDraft.length < 8) {
+        Toast({ message: '密码至少8位，至少包括字母、数字、特殊字符', theme: 'error' });
+        return;
+      }
+      if (!/[a-zA-Z]/.test(uspPasswordDraft) || !/\d/.test(uspPasswordDraft) || !/[^a-zA-Z0-9]/.test(uspPasswordDraft)) {
+        Toast({ message: '密码至少8位，至少包括字母、数字、特殊字符', theme: 'error' });
+        return;
+      }
+      if (uspPasswordDraft !== uspPasswordConfirmDraft) {
+        Toast({ message: '两次输入的密码不一致', theme: 'error' });
+        return;
+      }
     }
 
     // 仅发送有变更的字段
@@ -198,7 +210,6 @@ export default function UserProfile() {
 
     const trimmedUspUsername = (uspUsernameDraft || '').trim();
     const uspUsernameChanged = trimmedUspUsername !== original.uspUsername;
-    const hasNewPassword = !!uspPasswordDraft;
     if (uspUsernameChanged || hasNewPassword) {
       const usp: { username?: string; password?: string } = {};
       if (uspUsernameChanged) usp.username = trimmedUspUsername;
@@ -219,14 +230,16 @@ export default function UserProfile() {
       setOriginal(nextSnapshot);
       setUspUsernameDraft(nextSnapshot.uspUsername);
       setUspPasswordDraft('');
+      setUspPasswordConfirmDraft('');
       if (trimmedName !== name) setProfile({ name: trimmedName });
       Toast({ message: '保存成功', theme: 'success' });
+      navigate('/app/call', { replace: true });
     } catch (err) {
       Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setSaving(false);
     }
-  }, [nameDraft, companyDraft, departmentDraft, uspUsernameDraft, uspPasswordDraft, original, username, name, setProfile, isDirty]);
+  }, [nameDraft, companyDraft, departmentDraft, uspUsernameDraft, uspPasswordDraft, uspPasswordConfirmDraft, original, username, name, setProfile, isDirty, navigate]);
 
   const handleUploadAvatar = useCallback(
     async (file: File): Promise<{ status: 'success' | 'fail'; response: { url?: string } }> => {
@@ -248,6 +261,19 @@ export default function UserProfile() {
     [username, setProfile],
   );
 
+  // 隐藏的原生 file input，点击头像触发选择
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const handleFileChange = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      await handleUploadAvatar(file);
+      // 重置 value 允许重复选择同一文件
+      e.target.value = '';
+    },
+    [handleUploadAvatar],
+  );
+
   const handleLogout = useCallback(() => {
     Dialog.confirm?.({
       title: '确认登出',
@@ -266,38 +292,60 @@ export default function UserProfile() {
           background: '#fff',
           borderRadius: 12,
           padding: 24,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: 12,
+          textAlign: 'center',
           marginBottom: 16,
         }}
       >
-        {avatarResourceId && !avatarError ? (
-          <img
-            src={avatarUrl(avatarResourceId)}
-            alt="头像"
-            style={{ width: 80, height: 80, borderRadius: '50%', objectFit: 'cover' }}
-            onError={() => setAvatarError(true)}
-          />
-        ) : (
-          <UserCircleIcon size="80px" />
-        )}
-        <Upload
+        <input
+          ref={fileInputRef}
+          type="file"
           accept=".png,.jpg,.jpeg"
-          max={1}
-          disabled={uploading}
-          requestMethod={async (files) => {
-            const file = Array.isArray(files) ? files[0] : files;
-            const raw = file?.raw;
-            if (!raw) return { status: 'fail', response: {} };
-            return handleUploadAvatar(raw);
+          onChange={handleFileChange}
+          style={{ display: 'none' }}
+        />
+        <div
+          onClick={() => !uploading && fileInputRef.current?.click()}
+          style={{
+            position: 'relative',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: uploading ? 'wait' : 'pointer',
+            width: 80,
+            height: 80,
+            borderRadius: '50%',
+            overflow: 'hidden',
+            background: '#f5f5f5',
           }}
         >
-          <Button theme="light" size="small" loading={uploading}>
-            {uploading ? '上传中...' : '更换头像'}
-          </Button>
-        </Upload>
+          {avatarResourceId && !avatarError ? (
+            <img
+              src={avatarUrl(avatarResourceId)}
+              alt="头像"
+              style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+              onError={() => setAvatarError(true)}
+            />
+          ) : (
+            <UserCircleIcon size="80px" />
+          )}
+          {uploading && (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'rgba(0,0,0,0.4)',
+                color: '#fff',
+                fontSize: 12,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              上传中
+            </div>
+          )}
+        </div>
+        <div style={{ fontSize: 12, color: '#999', marginTop: 8 }}>点击编辑</div>
       </div>
 
       <div style={{ background: '#fff', borderRadius: 12, padding: 16 }}>
@@ -313,6 +361,7 @@ export default function UserProfile() {
           <Input
             value={nameDraft}
             onChange={(v) => setNameDraft(String(v))}
+            onBlur={handleNameBlur}
             placeholder="请输入姓名，便于同事识别"
             maxlength={20}
             clearable
@@ -387,11 +436,21 @@ export default function UserProfile() {
           />
         </Field>
 
-        <Field label="USP 密码">
+        <Field label="USP 密码" hint="至少8位，含字母、数字、特殊字符">
           <Input
             value={uspPasswordDraft}
             onChange={(v) => setUspPasswordDraft(String(v))}
             placeholder="留空则不修改"
+            type="password"
+            clearable
+          />
+        </Field>
+
+        <Field label="确认密码">
+          <Input
+            value={uspPasswordConfirmDraft}
+            onChange={(v) => setUspPasswordConfirmDraft(String(v))}
+            placeholder="再次输入新密码"
             type="password"
             clearable
           />
