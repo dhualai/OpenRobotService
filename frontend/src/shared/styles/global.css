@@ -1162,13 +1162,61 @@ html, body, #root {
 .img-lightbox__btn:active {
   background: rgba(255, 255, 255, 0.3);
 }
-/* 禁用 TDesign ImageViewer 自带淡入/淡出动画：点击即显（缩略图场景图片已缓存，
-   无需 300ms 渐入；渐入会表现为「闪烁」）。限定在 image-viewer 根节点，避免影响其他 fade 组件 */
-.t-image-viewer.fade-enter-active,
-.t-image-viewer.fade-leave-active {
-  opacity: 1 !important;
-  transition: none !important;
-  animation: none !important;
+/* 图片加载中 overlay 叠加层：imgReady=false 时叠加在 ImageViewer 之上（不替换 DOM）。
+   pointer-events:none 让 ImageViewer 的 mask 处理点击关闭。
+   缓存图片 imgReady 瞬时 true（overlay 几乎不可见）；非缓存图片显示 spinner 直到就绪 */
+.img-lightbox__loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1101;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.img-lightbox__loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: img-lightbox-spin 0.8s linear infinite;
+}
+@keyframes img-lightbox-spin {
+  to { transform: rotate(360deg); }
+}
+/* ImageViewer 遮罩改纯黑：预加载兜底（300ms）期间 <img> 未就绪时不透出底层页面，
+   避免半透明 mask 透底层 + 图片后跳出造成的闪烁（tdesign 默认 mask 为 rgba(0,0,0,0.6)） */
+.t-image-viewer__mask {
+  background-color: #000 !important;
+}
+/* 图片加载失败提示（new Image() onerror 且 fetch fallback 也失败时） */
+.img-lightbox__error {
+  position: fixed;
+  inset: 0;
+  z-index: 1102;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 15px;
+  background: #000;
+}
+.img-lightbox__error-icon {
+  font-size: 36px;
+  color: rgba(255, 255, 255, 0.4);
+}
+.img-lightbox__error-retry {
+  margin-top: 8px;
+  padding: 6px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  background: transparent;
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
 }
 .img-lightbox__feedback {
   position: fixed;

@@ -66,13 +66,12 @@ async def main():
         ("storage_platform", "库位数据改了但机器人还在用旧配置"),
     ]
 
-    SUB_DOMAIN = r'usp\overview'
     total = len(QUERIES)
     hits = 0
     misses = []
 
     for expected, query in QUERIES:
-        results = await service.retrieve_domain(query, domain='team', top_k=3, sub_domain=SUB_DOMAIN)
+        results = await service.retrieve_domain(query, domain='team', top_k=5)
         expected_title = EXPECTED_TITLES.get(expected, expected)
         hit = False
         for r in results:

@@ -431,8 +431,12 @@ project 不用写在 required_fields 里（系统强制要求）。
 ## 重要规则
 - 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：`、`FAQ N：`、`🎫 服务号 N：`、`🚗 车端错误码 N：` 或 `🌐 翻译表 N：` 中标明。
   **只引用与用户问题直接相关的 chunk 内容**，无关 chunk 的内容和图片一律忽略。
+- 🔴 **方向一致性铁律（极其重要）**：知识库检索可能召回**行为方向与用户问题相反**的排查段落。典型场景——用户问"没做该做的"（如车电量低了却不生成充电任务、任务取消了但车还在跑），检索到的却是"做了不该做的/已完成未同步"（如电量够但不打断充电、任务实际已完成但状态没更新）。**方向相反 ≠ 相关知识，必须直接忽略，绝对禁止引用到回复中误导用户**。判断方向：看用户描述的异常现象与 chunk 描述的排查对象是否指向同一动作方向的异常。若方向相反，宁可答"手册未覆盖、建议转工单"，也不用反向内容硬套。
 - **禁止在回复中暴露知识来源**：不要说"根据知识库""检索结果显示"等话术。
   直接给出步骤/答案，用户不需要知道你查了什么。
+- 🔴 **禁止使用开发内部术语**：你的服务对象是现场工程师和客户，不是开发人员。
+  严禁在回复中出现代码级词汇——`commit`/`diff`/`分支`/`回滚`/`发版`/`代码`/`函数`/`参数名(task_priority/can_interrupt等)`/`模块名`。
+  用现场人员能理解的语言替代：不说"代码改了哪个函数"，说"调度系统的行为变了"；不说"commit 记录"，说"版本变更记录"；不说"回滚"，说"恢复到改动前的状态"。
 - **产品/车型介绍时，知识库中若有该产品的图片，必须用 ![说明](url) 格式引用到回复中**。
   图片是产品外观、参数表、尺寸图等，对用户极其重要，不要省略。
 
@@ -1076,13 +1080,16 @@ class AiDiagnosisPlatform:
                 if r.id not in seen:
                     seen.add(r.id)
                     uniq.append(r)
+            hit_logs = []  # 送入 prompt 的 chunk 摘要（标题@分数，用于生产排查检索效果）
             for r in uniq[:_MAX_RETRIEVAL_DOCS]:
                 content = self._rewrite_images(r) if r.content else ""
                 if not content.strip():
                     continue
                 title = f"（{r.title}）" if r.title else ""
                 docs.append(f"---\n{_label(r)} {idx}{title}：\n{content}\n---")
+                hit_logs.append(f"[{r.sub_domain or '-'}]{r.title or '(无标题)'}@{r.score:.4f}")
                 idx += 1
+            logger.info(f"[retrieve] 命中{len(all_results)}去重{len(uniq)}送prompt{len(hit_logs)}: {' | '.join(hit_logs)}")
 
             result = "\n".join(docs) if docs else "（知识库暂无匹配文档，请告知用户当前手册未覆盖此问题，建议转工单处理，不要自己编造答案。）"
 
