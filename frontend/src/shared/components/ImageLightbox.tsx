@@ -42,10 +42,6 @@ function deriveFilename(src: string, alt?: string): string {
 export default function ImageLightbox({ src, alt, open, onClose }: ImageLightboxProps) {
   const [feedback, setFeedback] = useState('');
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  // 图片预加载：ImageViewer 淡入动画（300ms）与图片网络加载时序错位会导致闪烁——
-  // 先用 new Image() 预加载 src，加载完成后再挂载 ImageViewer（此时浏览器已缓存，
-  // ImageViewer 内 <img> 瞬间显示，淡入平滑无闪烁）。预加载期间显示轻量 loading。
-  const [imgReady, setImgReady] = useState(false);
 
   // ESC 关闭 + 锁定背景滚动
   useEffect(() => {
@@ -66,28 +62,12 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
   useEffect(() => {
     if (!open) {
       setFeedback('');
-      setImgReady(false);
       setBlobUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
         return null;
       });
     }
   }, [open]);
-
-  // 预加载图片：open 且 src 有值时触发；就绪后置 imgReady=true
-  useEffect(() => {
-    if (!open || !src) {
-      setImgReady(false);
-      return;
-    }
-    setImgReady(false);
-    let cancelled = false;
-    const img = new Image();
-    img.onload = () => { if (!cancelled) setImgReady(true); };
-    img.onerror = () => { if (!cancelled) setImgReady(true); }; // 加载失败也放行，由 ImageViewer 显示裂图
-    img.src = src;
-    return () => { cancelled = true; };
-  }, [open, src]);
 
   const flash = useCallback((msg: string) => {
     setFeedback(msg);
@@ -158,22 +138,14 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
 
   return createPortal(
     <>
-      {/* 预加载期间 loading 遮罩（图片就绪后由 ImageViewer 接管，避免淡入闪烁） */}
-      {!imgReady && (
-        <div className="img-lightbox__loading" role="status" aria-label="图片加载中">
-          <span className="img-lightbox__loading-spinner" />
-        </div>
-      )}
       {/* 交互主体：双指缩放 / 双击缩放 / 拖拽平移 / 单击关闭（TDesign ImageViewer）
-          图片预加载就绪后再挂载，此时浏览器已缓存，ImageViewer 内 <img> 瞬间显示，淡入无闪烁 */}
-      {imgReady && (
-        <ImageViewer
-          images={[src ?? '']}
-          visible={open}
-          maxZoom={3}
-          onClose={() => onClose()}
-        />
-      )}
+          淡入动画已由 CSS 禁用（点击即显；缩略图场景图片已缓存，无需渐入等待） */}
+      <ImageViewer
+        images={[src ?? '']}
+        visible={open}
+        maxZoom={3}
+        onClose={() => onClose()}
+      />
       {/* 自定义工具条：左上角关闭 + 复制 / 下载（关闭按钮自绘，直接调 onClose，避免被工具栏覆盖 / 受控失效） */}
       <div className="img-lightbox__toolbar">
         <button type="button" className="img-lightbox__btn img-lightbox__close" onClick={onClose} aria-label="关闭">
