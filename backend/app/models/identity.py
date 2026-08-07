@@ -63,6 +63,7 @@ class UserDB(Base):
     avatar_resource_id = Column(Integer, nullable=True)
 
     # === 派单人信息（与 AI Assigner 共享）===
+    company = Column(String(128), nullable=True, comment="公司")
     department = Column(String(128), nullable=True, comment="部门/团队")
     responsibility_modules = Column(JSON, nullable=True, comment='责任模块 ["车端","任务调度","地图编辑"...]')
     job_level = Column(TINYINT, default=1, nullable=False, comment="职级，数值越高越不优先接单（1=一线, 2=管理/审核, 3=仅兜底...），默认1")

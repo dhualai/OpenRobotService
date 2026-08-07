@@ -300,6 +300,7 @@ class PermissionService:
                 'status': getattr(db_user, 'status', 'inactive'),
                 'external_credentials': external_credentials,
                 'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
+                'company': getattr(db_user, 'company', None),
                 'department': getattr(db_user, 'department', None),
                 'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or {},
                 'job_level': getattr(db_user, 'job_level', 1),

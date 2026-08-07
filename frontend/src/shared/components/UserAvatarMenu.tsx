@@ -212,6 +212,19 @@ export default function UserAvatarMenu() {
 
           <Button
             block
+            theme="primary"
+            variant="outline"
+            style={{ marginBottom: 8 }}
+            onClick={() => {
+              setVisible(false);
+              navigate('/admin/profile');
+            }}
+          >
+            完善个人资料
+          </Button>
+
+          <Button
+            block
             theme="danger"
             variant="outline"
             icon={<LogoutIcon size="18px" />}

@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, Depends, HTTPException, Request, status, Query, Body
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Query, Body
 from typing import List, Dict, Any
 import uuid
 import traceback
@@ -120,6 +120,7 @@ async def create_user(
         name=user_data.name,
         status=user_data.status,
         external_credentials=user_data.external_credentials,
+        company=user_data.company,
         department=user_data.department,
         responsibility_modules=user_data.responsibility_modules,
         job_level=user_data.job_level,
@@ -151,7 +152,9 @@ async def create_user(
         name=created_user.get('name'),
         status=created_user.get('status', 'inactive'),
         external_credentials=created_user.get('external_credentials', {}),
-        avatar_resource_id=created_user.get('avatar_resource_id')
+        avatar_resource_id=created_user.get('avatar_resource_id'),
+        company=created_user.get('company'),
+        department=created_user.get('department'),
     )
 
 @router.get("/{username}/detail", response_model=UserDetail, summary="获取用户详细信息")
@@ -175,7 +178,12 @@ async def get_user_detail(
         name=user.get('name'),
         status=user.get('status', 'inactive'),
         external_credentials=user.get('external_credentials', {}),
-        avatar_resource_id=user.get('avatar_resource_id')
+        avatar_resource_id=user.get('avatar_resource_id'),
+        company=user.get('company'),
+        department=user.get('department'),
+        responsibility_modules=user.get('responsibility_modules', {}),
+        job_level=user.get('job_level', 1),
+        duty_text=user.get('duty_text'),
     )
 
 @router.put("/{username}", response_model=User)
@@ -213,12 +221,22 @@ async def update_user(
         update_data["status"] = user_data.status
     if user_data.external_credentials is not None:
         external_creds = user_data.external_credentials
-        if "usp" in external_creds and "password" in external_creds["usp"]:
-            usp_password = external_creds["usp"]["password"]
-            external_creds["usp"]["password"] = get_password_hash(usp_password)
+        if "usp" in external_creds:
+            # 个人中心编辑 USP 账户时，未提供的字段需保留旧值，避免只改用户名却把已存储的密码哈希清空
+            existing_ec = user.get('external_credentials', {}) or {}
+            existing_usp = existing_ec.get('usp', {}) or {}
+            if not external_creds["usp"].get("username"):
+                external_creds["usp"]["username"] = existing_usp.get("username")
+            new_password = external_creds["usp"].get("password")
+            if new_password:  # 提供新明文密码 → 哈希后存储
+                external_creds["usp"]["password"] = get_password_hash(new_password)
+            elif "password" in existing_usp:  # 未提供新密码 → 保留旧密码哈希
+                external_creds["usp"]["password"] = existing_usp["password"]
         update_data["external_credentials"] = external_creds
     if user_data.avatar_resource_id is not None:
         update_data["avatar_resource_id"] = user_data.avatar_resource_id
+    if user_data.company is not None:
+        update_data["company"] = user_data.company
     if user_data.department is not None:
         update_data["department"] = user_data.department
     if user_data.responsibility_modules is not None:
@@ -244,7 +262,12 @@ async def update_user(
         name=updated_user.get('name'),
         status=updated_user.get('status', 'inactive'),
         external_credentials=updated_user.get('external_credentials', {}),
-        avatar_resource_id=updated_user.get('avatar_resource_id')
+        avatar_resource_id=updated_user.get('avatar_resource_id'),
+        company=updated_user.get('company'),
+        department=updated_user.get('department'),
+        responsibility_modules=updated_user.get('responsibility_modules', {}),
+        job_level=updated_user.get('job_level', 1),
+        duty_text=updated_user.get('duty_text'),
     )
 
 @router.delete("/{username}", response_model=SuccessResponse)
