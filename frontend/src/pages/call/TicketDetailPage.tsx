@@ -278,18 +278,37 @@ export default function TicketDetailPage() {
     setShowActionPopup(true);
   };
 
+  // 操作人标签（与系统任务详情页同款）
+  const getOperatorLabel = (): string => name || username || '当前用户';
+
+  // 操作日志评论：记录到 task_comments，工单处理过程可追溯（与系统任务详情页同款逻辑）
+  const addOperationComment = async (content: string) => {
+    if (!ticket?.ticket_id) return;
+    try {
+      await request(`/${ticket.ticket_id}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ content, is_public: true }),
+      });
+    } catch { /* 评论记录失败不阻塞主流程 */ }
+  };
+
   const handleActionConfirm = async () => {
     if (!ticket?.ticket_id || !actionUser) { Toast({ message: '请选择通知用户', theme: 'warning' }); return; }
     setActing(actionType);
     try {
+      const operator = getOperatorLabel();
+      const target = actionUser.name || actionUser.username;
       if (actionType === 'urge') {
         await urgeTicket(ticket.ticket_id, actionUser.id);
+        await addOperationComment(`${operator} 催办了工单，通知 ${target}`);
         Toast({ message: '已催办，已通知处理人', theme: 'success' });
       } else {
         await reportTicket(ticket.ticket_id, actionUser.id);
+        await addOperationComment(`${operator} 上报了工单，通知 ${target}`);
         Toast({ message: '已上报，已通知上级', theme: 'success' });
       }
       setShowActionPopup(false);
+      await fetchDetail(true);
     } catch (err) {
       Toast({ message: `${actionType === 'urge' ? '催办' : '上报'}失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
@@ -303,6 +322,8 @@ export default function TicketDetailPage() {
     setActing('cancel');
     try {
       await cancelTicket(ticket.ticket_id);
+      const operator = getOperatorLabel();
+      await addOperationComment(`${operator} 撤回了工单`);
       Toast({ message: '已撤回，工单已取消', theme: 'success' });
       fetchDetail();
     } catch (err) {
@@ -383,6 +404,8 @@ export default function TicketDetailPage() {
           project_id: editForm.project_id,
         }),
       });
+      const operator = getOperatorLabel();
+      await addOperationComment(`${operator} 修改了工单信息`);
       Toast({ message: '已保存', theme: 'success' });
       setShowEdit(false);
       await fetchDetail(true);  // 静默刷新，展示端以 DB 为准，编辑后立即可见（await 确保 DB 新值落定）
