@@ -42,6 +42,11 @@ function deriveFilename(src: string, alt?: string): string {
 export default function ImageLightbox({ src, alt, open, onClose }: ImageLightboxProps) {
   const [feedback, setFeedback] = useState('');
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  // 图片预加载就绪标记：ImageViewer 的 mask 是半透明（rgba 0,0,0,0.6），挂载时若 <img> 未
+  // 就绪会先透出底层页面再跳出图片 → 闪烁。这里先用 new Image() + decode() 预加载，解码
+  // 完成后再挂载 ImageViewer（缓存图片 decode 近乎瞬时，挂载后 <img> 同步从缓存渲染，无闪烁）。
+  // 预载期间不渲染任何层（点击即显，无 loading 遮罩）；非缓存图片加超时兜底避免久等。
+  const [imgReady, setImgReady] = useState(false);
 
   // ESC 关闭 + 锁定背景滚动
   useEffect(() => {
@@ -62,12 +67,35 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
   useEffect(() => {
     if (!open) {
       setFeedback('');
+      setImgReady(false);
       setBlobUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
         return null;
       });
     }
   }, [open]);
+
+  // 预加载图片：open 且 src 有值时触发，解码就绪后置 imgReady=true
+  useEffect(() => {
+    if (!open || !src) {
+      setImgReady(false);
+      return;
+    }
+    setImgReady(false);
+    let cancelled = false;
+    const img = new Image();
+    const done = () => { if (!cancelled) setImgReady(true); };
+    img.onload = done;
+    img.onerror = done; // 加载失败也放行，由 ImageViewer 显示裂图
+    img.src = src;
+    // decode 确保解码完成（缓存图片近乎瞬时），进一步降低挂载后渲染延迟
+    if (img.decode) {
+      img.decode().then(done).catch(done);
+    }
+    // 非缓存图片兜底：300ms 后无论是否完成都挂载（此时 mask 显示加载中，纯黑无透出）
+    const timeoutId = window.setTimeout(done, 300);
+    return () => { cancelled = true; window.clearTimeout(timeoutId); };
+  }, [open, src]);
 
   const flash = useCallback((msg: string) => {
     setFeedback(msg);
@@ -138,26 +166,30 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
 
   return createPortal(
     <>
-      {/* 交互主体：双指缩放 / 双击缩放 / 拖拽平移 / 单击关闭（TDesign ImageViewer）
-          淡入动画已由 CSS 禁用（点击即显；缩略图场景图片已缓存，无需渐入等待） */}
-      <ImageViewer
-        images={[src ?? '']}
-        visible={open}
-        maxZoom={3}
-        onClose={() => onClose()}
-      />
-      {/* 自定义工具条：左上角关闭 + 复制 / 下载（关闭按钮自绘，直接调 onClose，避免被工具栏覆盖 / 受控失效） */}
-      <div className="img-lightbox__toolbar">
-        <button type="button" className="img-lightbox__btn img-lightbox__close" onClick={onClose} aria-label="关闭">
-          ✕
-        </button>
-        <button type="button" className="img-lightbox__btn" onClick={handleCopy}>
-          复制
-        </button>
-        <button type="button" className="img-lightbox__btn" onClick={handleDownload}>
-          下载
-        </button>
-      </div>
+      {/* 图片预加载就绪后才挂载 ImageViewer + 工具栏：避免半透明 mask 先透出底层、图片后跳出导致的闪烁 */}
+      {imgReady && (
+        <>
+          {/* 交互主体：双指缩放 / 双击缩放 / 拖拽平移 / 单击关闭（TDesign ImageViewer） */}
+          <ImageViewer
+            images={[src ?? '']}
+            visible={open}
+            maxZoom={3}
+            onClose={() => onClose()}
+          />
+          {/* 自定义工具条：左上角关闭 + 复制 / 下载（关闭按钮自绘，直接调 onClose，避免被工具栏覆盖 / 受控失效） */}
+          <div className="img-lightbox__toolbar">
+            <button type="button" className="img-lightbox__btn img-lightbox__close" onClick={onClose} aria-label="关闭">
+              ✕
+            </button>
+            <button type="button" className="img-lightbox__btn" onClick={handleCopy}>
+              复制
+            </button>
+            <button type="button" className="img-lightbox__btn" onClick={handleDownload}>
+              下载
+            </button>
+          </div>
+        </>
+      )}
       {feedback && <div className="img-lightbox__feedback">{feedback}</div>}
     </>,
     document.body,

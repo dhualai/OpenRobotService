@@ -1162,13 +1162,10 @@ html, body, #root {
 .img-lightbox__btn:active {
   background: rgba(255, 255, 255, 0.3);
 }
-/* 禁用 TDesign ImageViewer 自带淡入/淡出动画：点击即显（缩略图场景图片已缓存，
-   无需 300ms 渐入；渐入会表现为「闪烁」）。限定在 image-viewer 根节点，避免影响其他 fade 组件 */
-.t-image-viewer.fade-enter-active,
-.t-image-viewer.fade-leave-active {
-  opacity: 1 !important;
-  transition: none !important;
-  animation: none !important;
+/* ImageViewer 遮罩改纯黑：预加载兜底（300ms）期间 <img> 未就绪时不透出底层页面，
+   避免半透明 mask 透底层 + 图片后跳出造成的闪烁（tdesign 默认 mask 为 rgba(0,0,0,0.6)） */
+.t-image-viewer__mask {
+  background-color: #000 !important;
 }
 .img-lightbox__feedback {
   position: fixed;
