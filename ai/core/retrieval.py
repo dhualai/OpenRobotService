@@ -435,6 +435,7 @@ class RetrievalService:
         self.score_threshold = score_threshold
         self._qdrant: Optional[QdrantClientWrapper] = None
         self._embed_client = None
+        self._reranker = None  # cross-encoder reranker, loaded lazily
 
     async def _ensure_clients(self):
         """确保客户端已初始化"""
@@ -450,6 +451,33 @@ class RetrievalService:
         if self._embed_client is None:
             from ai.core.embed import get_embed_client
             self._embed_client = await get_embed_client()
+
+        if self._reranker is None:
+            from ai.core.reranker import get_reranker_client
+            self._reranker = await get_reranker_client()
+
+    async def _rerank_results(
+        self,
+        query: str,
+        results: List[RetrievalResult],
+        top_k: int,
+    ) -> List[RetrievalResult]:
+        """用 cross-encoder 对候选结果精排，返回 top_k"""
+        if not self._reranker or len(results) <= top_k:
+            return results[:top_k]
+
+        # 截取内容前 400 字符用于重排序（长文档取首段即可）
+        docs = [r.content[:400] for r in results]
+        try:
+            scores = await self._reranker.rerank(query, docs, top_k)
+        except Exception:
+            # reranker 失败时降级为原始排序
+            return results[:top_k]
+
+        # 按 reranker 分数重排
+        scored = list(zip(results, scores))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [r for r, _ in scored[:top_k]]
 
     @property
     def is_qdrant_unavailable(self) -> bool:
@@ -565,23 +593,29 @@ class RetrievalService:
         query_vector = await self._embed_client.embed(query)
         bm25_sparse = self._generate_bm25_sparse(query)
 
-        # 2. 并行检索
+        # 2. 并行检索（拉更多候选给 reranker）
+        candidate_k = max(k * 3, k + 10) if self._reranker else k * 2
         dense_task = self._qdrant.search_dense(
             query_vector.tolist(),
-            top_k=k * 2,
+            top_k=candidate_k,
         )
         sparse_task = self._qdrant.search_sparse(
             bm25_sparse,
-            top_k=k * 2,
+            top_k=candidate_k,
         ) if bm25_sparse else asyncio.sleep(0)
 
         dense_results, sparse_results = await asyncio.gather(dense_task, sparse_task)
         # 3. RRF 融合
+        fuse_k = candidate_k if self._reranker else k
         results = self._rrf_fusion(
             dense_results,
             sparse_results if bm25_sparse else [],
-            top_k=k,
+            top_k=fuse_k,
         )
+
+        # 4. cross-encoder 重排序
+        if self._reranker and len(results) > k:
+            results = await self._rerank_results(query, results, k)
 
         if not results:
             raise RetrieveEmptyError("未找到相关文档")
@@ -648,18 +682,20 @@ class RetrievalService:
                 query_filter = sd_filter
 
         # hybrid search: dense + sparse 并行 → RRF 融合
+        # 拉 3x 候选用于 reranker 精排（无 reranker 时 2x 即可）
+        candidate_k = max(top_k * 5, top_k + 20) if self._reranker else top_k * 2
         query_vector = await self._embed_client.embed(query)
         bm25_sparse = self._generate_bm25_sparse(query)
 
         dense_task = self._qdrant.search_dense(
             query_vector.tolist(),
-            top_k=top_k * 2,
+            top_k=candidate_k,
             collection_name=col,
             query_filter=query_filter,
         )
         sparse_task = self._qdrant.search_sparse(
             bm25_sparse,
-            top_k=top_k * 2,
+            top_k=candidate_k,
             collection_name=col,
         ) if bm25_sparse else asyncio.sleep(0)
 
@@ -671,7 +707,15 @@ class RetrievalService:
         if not isinstance(sparse_list, list):
             sparse_list = []
 
-        return self._rrf_fusion(dense_res, sparse_list, top_k=top_k)
+        # RRF 融合（保留足够候选给 reranker）
+        fuse_k = candidate_k if self._reranker else top_k
+        results = self._rrf_fusion(dense_res, sparse_list, top_k=fuse_k)
+
+        # cross-encoder 重排序
+        if self._reranker and len(results) > top_k:
+            results = await self._rerank_results(query, results, top_k)
+
+        return results
 
     async def retrieve_faq(
         self,

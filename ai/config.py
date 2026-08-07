@@ -62,10 +62,13 @@ class AIConfig(BaseModel):
     redis_ttl: int = Field(default=0, description="0=永久，>0=秒")
 
     # ========== Embedding ==========
-    embedding_model_name: str = Field(default="BAAI/bge-small-zh-v1.5")
+    embedding_model_name: str = Field(default="BAAI/bge-base-zh-v1.5")
     embedding_device: str = Field(default="cpu")
     embedding_batch_size: int = Field(default=32)
     embedding_cache_size: int = Field(default=10000)
+
+    # ========== Reranker ==========
+    reranker_model_path: str = Field(default="", description="Cross-encoder reranker 本地路径，空=禁用")
 
     # ========== 检索 ==========
     retrieval_top_k: int = Field(default=3)
@@ -242,10 +245,12 @@ def get_ai_config() -> AIConfig:
         redis_max_context_turns=int(os.getenv("REDIS_MAX_CONTEXT_TURNS", "3")),
         redis_ttl=int(os.getenv("REDIS_TTL", "0")),
         # Embedding
-        embedding_model_name=os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-small-zh-v1.5"),
+        embedding_model_name=os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-base-zh-v1.5"),
         embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu"),
         embedding_batch_size=int(os.getenv("EMBEDDING_BATCH_SIZE", "32")),
         embedding_cache_size=int(os.getenv("EMBEDDING_CACHE_SIZE", "10000")),
+        # Reranker
+        reranker_model_path=os.getenv("RERANKER_MODEL_PATH", ""),
         # 检索
         retrieval_top_k=int(os.getenv("RETRIEVAL_TOP_K", "3")),
         retrieval_score_threshold=float(os.getenv("RETRIEVAL_SCORE_THRESHOLD", "0.65")),
