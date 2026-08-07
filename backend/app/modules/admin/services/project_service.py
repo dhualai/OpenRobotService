@@ -477,12 +477,19 @@ class ProjectService:
         return username
     
     def get_licenses_by_project_code(self, project_code: str, type: str = 'last') -> List[Dict]:
-        from app.modules.admin.models_das.models import ProjectLicense
-        
+        from app.modules.admin.models_das.models import ProjectLicense, Project
+
         db = SessionLocal()
         try:
-            query = db.query(ProjectLicense).filter(ProjectLicense.project_code == project_code)
-            
+            # 兼容历史数据：project_license.project_code 早期可能存的是项目名称而非项目代码，
+            # 因此按项目代码查出项目名称后，同时匹配 code 与 name。
+            match_values = [project_code]
+            project = db.query(Project).filter(Project.code == project_code).first()
+            if project and project.name and project.name != project_code:
+                match_values.append(project.name)
+
+            query = db.query(ProjectLicense).filter(ProjectLicense.project_code.in_(match_values))
+
             if type == 'last':
                 license = query.order_by(ProjectLicense.created_at.desc()).first()
                 if license:

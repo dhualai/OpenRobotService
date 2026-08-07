@@ -434,16 +434,22 @@ export default function TicketDetailPage() {
     return `${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
   };
 
-  const openAttachmentViewer = (att: NormalizedAttachment) => {
+  /** 构造附件内联预览 URL（/api/tasks/files/{minioPath}），供缩略图 <img> src 与 AttachmentViewer 共用 */
+  const buildPreviewUrl = (att: NormalizedAttachment): string | null => {
     const rawPath = att.path || att.url || '';
-    if (!rawPath) { Toast({ message: '附件路径无效', theme: 'error' }); return; }
+    if (!rawPath) return null;
     let minioPath = rawPath;
     if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
       const parsed = parseMinioPath(rawPath);
-      if (!parsed) { Toast({ message: '无法解析附件路径', theme: 'error' }); return; }
+      if (!parsed) return null;
       minioPath = `${parsed.bucket}/${parsed.objectKey}`;
     }
-    const previewUrl = `${API_CONFIG.TASKS.BASE_URL}/files/${encodeURIComponent(minioPath)}`;
+    return `${API_CONFIG.TASKS.BASE_URL}/files/${encodeURIComponent(minioPath)}`;
+  };
+
+  const openAttachmentViewer = (att: NormalizedAttachment) => {
+    const previewUrl = buildPreviewUrl(att);
+    if (!previewUrl) { Toast({ message: '附件路径无效', theme: 'error' }); return; }
     setViewer({
       filename: att.filename || '未命名文件',
       size: att.size,
@@ -525,86 +531,106 @@ export default function TicketDetailPage() {
 
 
 
-        {/* 工单附件（图片/PDF/Markdown 预览、其它格式下载；复用统一 AttachmentViewer，与系统任务页一致）*/}
+        {/* 工单附件（图片缩略图网格 + 非图片文件卡片；复用统一 AttachmentViewer，与系统任务页一致）*/}
         {ticket.attachments && ticket.attachments.length > 0 && (
           <div className="detail-card">
             <h4 className="detail-card__h">📎 附件 ({ticket.attachments.length})</h4>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {ticket.attachments.map((rawAtt, idx) => {
-                const att = normalizeAttachment(rawAtt);
-                if (!att) return null;
-                const url = att.path || att.url || '';
-                const filename = att.filename || '未命名文件';
-                const size = att.size ?? 0;
-                const isImg = isImageFile(filename);
-                const icon = getFileIcon(filename);
-                const sizeLabel = formatFileSize(size);
-                const dl = buildAttachmentDownloadUrl(att);
-                return (
-                  <div
-                    key={idx}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => openAttachmentViewer(att)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openAttachmentViewer(att); }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      padding: '10px 12px',
-                      borderRadius: 8,
-                      border: '1px solid #e5e5e5',
-                      background: '#fafafa',
-                      color: 'inherit',
-                      cursor: 'pointer',
-                      transition: 'background 0.15s',
-                    }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#f0f7ff'; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#fafafa'; }}
-                  >
-                    {isImg && url ? (
-                      <img
-                        src={url}
-                        alt={filename}
-                        style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 4, marginRight: 10, flexShrink: 0 }}
-                        onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
-                      />
-                    ) : (
-                      <span style={{ fontSize: 22, marginRight: 10, flexShrink: 0 }}>{icon}</span>
-                    )}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 500, color: '#333', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {filename}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
-                        {sizeLabel || '未知大小'}
-                      </div>
+            {(() => {
+              const items = ticket.attachments
+                .map((rawAtt) => normalizeAttachment(rawAtt))
+                .filter((a): a is NormalizedAttachment => a !== null);
+              const imgItems = items.filter((a) => isImageFile(a.filename || ''));
+              const fileItems = items.filter((a) => !isImageFile(a.filename || ''));
+              return (
+                <>
+                  {/* 图片缩略图网格：直接可见，点击放大（src 用代理 URL，避免 object_path 直链 404） */}
+                  {imgItems.length > 0 && (
+                    <div className="detail-attachment-thumbs">
+                      {imgItems.map((att, i) => {
+                        const thumbSrc = buildPreviewUrl(att);
+                        if (!thumbSrc) return null;
+                        return (
+                          <img
+                            key={`img-${i}`}
+                            src={thumbSrc}
+                            alt={att.filename || '图片'}
+                            className="detail-attachment-thumb"
+                            loading="lazy"
+                            onClick={() => openAttachmentViewer(att)}
+                          />
+                        );
+                      })}
                     </div>
-                    <span
-                      role="button"
-                      aria-label="下载附件"
-                      title="下载"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (dl) {
-                          const a = document.createElement('a');
-                          a.href = dl;
-                          a.download = filename;
-                          a.target = '_blank';
-                          document.body.appendChild(a);
-                          a.click();
-                          document.body.removeChild(a);
-                        } else {
-                          Toast({ message: '附件路径无效', theme: 'error' });
-                        }
-                      }}
-                      style={{ fontSize: 16, color: '#0052d9', marginLeft: 8, flexShrink: 0, cursor: 'pointer' }}
-                    >
-                      ⬇
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+                  )}
+                  {/* 非图片文件卡片（图标 + 文件名 + 下载） */}
+                  {fileItems.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {fileItems.map((att, idx) => {
+                        const filename = att.filename || '未命名文件';
+                        const size = att.size ?? 0;
+                        const icon = getFileIcon(filename);
+                        const sizeLabel = formatFileSize(size);
+                        const dl = buildAttachmentDownloadUrl(att);
+                        return (
+                          <div
+                            key={`file-${idx}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => openAttachmentViewer(att)}
+                            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openAttachmentViewer(att); }}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              padding: '10px 12px',
+                              borderRadius: 8,
+                              border: '1px solid #e5e5e5',
+                              background: '#fafafa',
+                              color: 'inherit',
+                              cursor: 'pointer',
+                              transition: 'background 0.15s',
+                            }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#f0f7ff'; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#fafafa'; }}
+                          >
+                            <span style={{ fontSize: 22, marginRight: 10, flexShrink: 0 }}>{icon}</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 500, color: '#333', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {filename}
+                              </div>
+                              <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
+                                {sizeLabel || '未知大小'}
+                              </div>
+                            </div>
+                            <span
+                              role="button"
+                              aria-label="下载附件"
+                              title="下载"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (dl) {
+                                  const a = document.createElement('a');
+                                  a.href = dl;
+                                  a.download = filename;
+                                  a.target = '_blank';
+                                  document.body.appendChild(a);
+                                  a.click();
+                                  document.body.removeChild(a);
+                                } else {
+                                  Toast({ message: '附件路径无效', theme: 'error' });
+                                }
+                              }}
+                              style={{ fontSize: 16, color: '#0052d9', marginLeft: 8, flexShrink: 0, cursor: 'pointer' }}
+                            >
+                              ⬇
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         )}
 

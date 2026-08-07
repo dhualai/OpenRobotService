@@ -3,12 +3,36 @@
 import { createRequest } from './client';
 import API_CONFIG from '@/config/api';
 
+/** external_credentials 中的 USP 凭据片段 */
+export interface UspCredentials {
+  username?: string;
+  /** 仅用于提交新明文密码；从后端取回时这里是已存储的哈希，前端不应展示 */
+  password?: string;
+}
+
+export interface ExternalCredentials {
+  usp?: UspCredentials;
+  [provider: string]: unknown;
+}
+
 export interface MyProfile {
   id: string;
   username: string;
   name?: string | null;
   status: string;
   avatar_resource_id?: number | null;
+  company?: string | null;
+  department?: string | null;
+  external_credentials?: ExternalCredentials | null;
+}
+
+/** 个人中心可提交更新的字段（仅发送有变更的字段） */
+export interface MyProfileUpdate {
+  name?: string;
+  avatar_resource_id?: number;
+  company?: string;
+  department?: string;
+  external_credentials?: ExternalCredentials;
 }
 
 const authRequest = createRequest(API_CONFIG.AUTH.BASE_URL, '认证服务');
@@ -20,7 +44,7 @@ export async function getMyProfile(): Promise<MyProfile> {
 
 export async function updateMyProfile(
   username: string,
-  data: { name?: string; avatar_resource_id?: number },
+  data: MyProfileUpdate,
 ): Promise<MyProfile> {
   return adminRequest<MyProfile>(`/users/${username}`, {
     method: 'PUT',

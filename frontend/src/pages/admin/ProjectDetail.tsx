@@ -459,14 +459,14 @@ export default function ProjectDetail() {
             </div>
           </div>
 
-          {/* 项目经理 —— 位于项目编号与项目进度之间，可编辑 */}
+          {/* 项目经理 —— 位于项目编号与项目进度之间，可编辑；绑定 project_manager（企业微信「项目经理」列实时同步） */}
           <div style={{ marginTop: 12 }}>
-            <EditableField label="项目经理" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} compact />
+            <EditableField label="项目经理" value={project.project_manager || ''} placeholder="未指定" onSave={(v) => saveField('project_manager', v)} compact />
           </div>
 
-          {/* 对接人 —— 位于项目经理下方，可编辑 */}
+          {/* 对接人 —— 位于项目经理下方，可编辑；绑定 contact_person（企业微信「调度对接人」列实时同步，与项目进度列表的对接人缺省口径一致） */}
           <div style={{ marginTop: 8 }}>
-            <EditableField label="对接人" value={project.project_contact || ''} placeholder="未指定" onSave={(v) => saveField('project_contact', v)} compact />
+            <EditableField label="对接人" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} compact />
           </div>
 
           <div style={{ height: 1, background: '#f0f0f0', margin: '14px 0' }} />
