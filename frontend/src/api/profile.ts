@@ -42,6 +42,16 @@ export async function getMyProfile(): Promise<MyProfile> {
   return authRequest<MyProfile>('/me', { skipCache: true });
 }
 
+/** 公司/部门下拉可选项（来自 users 表去重值） */
+export interface ProfileFieldOptions {
+  companies: string[];
+  departments: string[];
+}
+
+export async function getProfileOptions(): Promise<ProfileFieldOptions> {
+  return adminRequest<ProfileFieldOptions>('/users/options', { skipCache: true });
+}
+
 export async function updateMyProfile(
   username: string,
   data: MyProfileUpdate,

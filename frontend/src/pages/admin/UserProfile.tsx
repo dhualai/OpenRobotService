@@ -7,12 +7,27 @@
 // username 为系统内用户标识，只读展示；USP 密码在后端以 pbkdf2_sha256 哈希存储，前端不回显，留空表示不修改。
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Input, Button, Dialog, Upload, Toast } from 'tdesign-mobile-react';
-import { UserCircleIcon } from 'tdesign-icons-react';
+import { Input, Button, Dialog, Upload, Toast, Popup } from 'tdesign-mobile-react';
+import { UserCircleIcon, AddIcon } from 'tdesign-icons-react';
 import { useAuthStore } from '@/stores/auth';
-import { getMyProfile, updateMyProfile, uploadAvatar, avatarUrl, type MyProfile } from '@/api/profile';
+import { getMyProfile, getProfileOptions, updateMyProfile, uploadAvatar, avatarUrl, type MyProfile } from '@/api/profile';
 
 const FIRST_VISIT_PROMPT_KEY = 'profile_prompt_shown';
+
+// 原生 select 样式，与 TDesign Input 视觉对齐
+const selectStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  height: 40,
+  padding: '0 12px',
+  fontSize: 14,
+  border: '1px solid #e7e7e7',
+  borderRadius: 6,
+  background: '#fff',
+  color: '#333',
+  appearance: 'none',
+  WebkitAppearance: 'none',
+};
 
 export default function UserProfile() {
   const navigate = useNavigate();
@@ -25,6 +40,13 @@ export default function UserProfile() {
   const [uspUsernameDraft, setUspUsernameDraft] = useState('');
   // USP 密码：仅用于「设置新密码」，留空表示不修改；后端存储的是哈希，前端不回显
   const [uspPasswordDraft, setUspPasswordDraft] = useState('');
+
+  // 公司/部门下拉可选项（来自 users 表去重值，点「添加」可自定义新值）
+  const [companyOptions, setCompanyOptions] = useState<string[]>([]);
+  const [departmentOptions, setDepartmentOptions] = useState<string[]>([]);
+  // 「添加」弹窗：addingField 标记当前在添加哪个字段
+  const [addingField, setAddingField] = useState<'company' | 'department' | null>(null);
+  const [addInputValue, setAddInputValue] = useState('');
 
   // 进入页面时从 /me 拉取的原始值，用于判断哪些字段发生变更
   const [original, setOriginal] = useState<{
@@ -43,7 +65,7 @@ export default function UserProfile() {
   useEffect(() => {
     (async () => {
       try {
-        const profile = await getMyProfile();
+        const [profile, options] = await Promise.all([getMyProfile(), getProfileOptions().catch(() => ({ companies: [], departments: [] }))]);
         // 仅刷新昵称；头像 id 已由登录/刷新时 fetchUserDetails 写入 store，
         // 与 /auth/me 同源，无需重复覆盖（避免接口缺字段时把头像弄丢）。
         setProfile({ name: profile.name || '' });
@@ -58,6 +80,11 @@ export default function UserProfile() {
         setCompanyDraft(snapshot.company);
         setDepartmentDraft(snapshot.department);
         setUspUsernameDraft(snapshot.uspUsername);
+        // 初始化下拉选项；若当前值不在去重列表中（如刚自定义），补进去保证可选中
+        const cos = Array.from(new Set([...(options.companies || []), snapshot.company].filter(Boolean))) as string[];
+        const depts = Array.from(new Set([...(options.departments || []), snapshot.department].filter(Boolean))) as string[];
+        setCompanyOptions(cos);
+        setDepartmentOptions(depts);
         if (!profile.name && !sessionStorage.getItem(FIRST_VISIT_PROMPT_KEY)) {
           sessionStorage.setItem(FIRST_VISIT_PROMPT_KEY, '1');
           setShowPrompt(true);
@@ -77,6 +104,30 @@ export default function UserProfile() {
     if (uspPasswordDraft) return true;
     return false;
   }, [nameDraft, companyDraft, departmentDraft, uspUsernameDraft, uspPasswordDraft, original]);
+
+  // 打开「添加」弹窗
+  const openAddDialog = useCallback((field: 'company' | 'department') => {
+    setAddingField(field);
+    setAddInputValue('');
+  }, []);
+
+  // 确认添加：去重后写入选项列表并选中
+  const confirmAdd = useCallback(() => {
+    const val = (addInputValue || '').trim();
+    if (!val) {
+      Toast({ message: '请输入内容', theme: 'warning' });
+      return;
+    }
+    if (addingField === 'company') {
+      setCompanyOptions((prev) => (prev.includes(val) ? prev : [...prev, val]));
+      setCompanyDraft(val);
+    } else if (addingField === 'department') {
+      setDepartmentOptions((prev) => (prev.includes(val) ? prev : [...prev, val]));
+      setDepartmentDraft(val);
+    }
+    setAddingField(null);
+    setAddInputValue('');
+  }, [addInputValue, addingField]);
 
   const saveProfile = useCallback(async () => {
     const trimmedName = (nameDraft || '').trim();
@@ -226,23 +277,51 @@ export default function UserProfile() {
         </Field>
 
         <Field label="公司">
-          <Input
-            value={companyDraft}
-            onChange={(v) => setCompanyDraft(String(v))}
-            placeholder="请输入公司"
-            maxlength={64}
-            clearable
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select
+              value={companyDraft}
+              onChange={(e) => setCompanyDraft(e.target.value)}
+              style={selectStyle}
+            >
+              <option value="">请选择公司</option>
+              {companyOptions.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+            <Button
+              theme="primary"
+              variant="outline"
+              size="small"
+              icon={<AddIcon size="16px" />}
+              onClick={() => openAddDialog('company')}
+            >
+              添加公司
+            </Button>
+          </div>
         </Field>
 
         <Field label="部门">
-          <Input
-            value={departmentDraft}
-            onChange={(v) => setDepartmentDraft(String(v))}
-            placeholder="请输入部门/团队"
-            maxlength={64}
-            clearable
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <select
+              value={departmentDraft}
+              onChange={(e) => setDepartmentDraft(e.target.value)}
+              style={selectStyle}
+            >
+              <option value="">请选择部门</option>
+              {departmentOptions.map((d) => (
+                <option key={d} value={d}>{d}</option>
+              ))}
+            </select>
+            <Button
+              theme="primary"
+              variant="outline"
+              size="small"
+              icon={<AddIcon size="16px" />}
+              onClick={() => openAddDialog('department')}
+            >
+              添加部门
+            </Button>
+          </div>
         </Field>
       </div>
 
@@ -300,6 +379,35 @@ export default function UserProfile() {
         onCancel={() => setShowPrompt(false)}
         onClose={() => setShowPrompt(false)}
       />
+
+      {/* 添加公司/部门 自定义输入弹层 */}
+      <Popup
+        visible={addingField !== null}
+        placement="center"
+        onClose={() => setAddingField(null)}
+      >
+        <div style={{ width: '80vw', maxWidth: 360, padding: 20, boxSizing: 'border-box' }}>
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>
+            {addingField === 'company' ? '添加公司' : '添加部门'}
+          </div>
+          <Input
+            value={addInputValue}
+            onChange={(v) => setAddInputValue(String(v))}
+            placeholder={addingField === 'company' ? '请输入公司名称' : '请输入部门/团队名称'}
+            maxlength={64}
+            clearable
+            autofocus
+          />
+          <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
+            <Button block theme="default" variant="outline" onClick={() => setAddingField(null)}>
+              取消
+            </Button>
+            <Button block theme="primary" onClick={confirmAdd}>
+              确定
+            </Button>
+          </div>
+        </div>
+      </Popup>
     </div>
   );
 }
