@@ -1,6 +1,6 @@
 // 项目授权管理 - 展示授权记录、申请授权码
 import { useState, useEffect } from 'react';
-import { Button, Toast, Loading, Dialog, Input, Popup, DateTimePicker } from 'tdesign-mobile-react';
+import { Button, Toast, Loading, Dialog, Input } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -60,8 +60,6 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
   const [licenseStartDate, setLicenseStartDate] = useState(todayStr());
   const [licenseEndDate, setLicenseEndDate] = useState(todayStr());
   const [maxVehicles, setMaxVehicles] = useState('');
-  const [startDatePickerVisible, setStartDatePickerVisible] = useState(false);
-  const [endDatePickerVisible, setEndDatePickerVisible] = useState(false);
   const [applyingLicense, setApplyingLicense] = useState(false);
 
   // 根据选中的项目代码获取授权信息（传 type=all 获取全部授权记录）
@@ -207,18 +205,18 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
               style={{ marginBottom: 10 }}
             />
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-              <div
-                onClick={() => setStartDatePickerVisible(true)}
-                style={{ flex: 1, border: '1px solid #dcdcdc', borderRadius: 6, padding: '10px 12px', color: licenseStartDate ? '#333' : '#bbb', fontSize: 14, cursor: 'pointer' }}
-              >
-                {licenseStartDate || '开始日期'}
-              </div>
-              <div
-                onClick={() => setEndDatePickerVisible(true)}
-                style={{ flex: 1, border: '1px solid #dcdcdc', borderRadius: 6, padding: '10px 12px', color: licenseEndDate ? '#333' : '#bbb', fontSize: 14, cursor: 'pointer' }}
-              >
-                {licenseEndDate || '结束日期'}
-              </div>
+              <input
+                type="date"
+                value={licenseStartDate}
+                onChange={(e) => setLicenseStartDate(e.target.value)}
+                style={{ flex: 1, border: '1px solid #dcdcdc', borderRadius: 6, padding: '10px 12px', color: licenseStartDate ? '#333' : '#bbb', fontSize: 14, outline: 'none', backgroundColor: '#fff' }}
+              />
+              <input
+                type="date"
+                value={licenseEndDate}
+                onChange={(e) => setLicenseEndDate(e.target.value)}
+                style={{ flex: 1, border: '1px solid #dcdcdc', borderRadius: 6, padding: '10px 12px', color: licenseEndDate ? '#333' : '#bbb', fontSize: 14, outline: 'none', backgroundColor: '#fff' }}
+              />
             </div>
             <div style={{ fontSize: 13, color: '#666', marginBottom: 6 }}>允许最大车数</div>
             <Input
@@ -234,27 +232,6 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
             </Button>
           </div>
 
-          {/* 日期选择浮层 */}
-          <Popup visible={startDatePickerVisible} onClose={() => setStartDatePickerVisible(false)} placement="bottom">
-            <DateTimePicker
-              mode="date"
-              title="选择开始日期"
-              format="YYYY-MM-DD"
-              value={licenseStartDate || undefined}
-              onConfirm={(v) => { setLicenseStartDate(String(v)); setStartDatePickerVisible(false); }}
-              onCancel={() => setStartDatePickerVisible(false)}
-            />
-          </Popup>
-          <Popup visible={endDatePickerVisible} onClose={() => setEndDatePickerVisible(false)} placement="bottom">
-            <DateTimePicker
-              mode="date"
-              title="选择结束日期"
-              format="YYYY-MM-DD"
-              value={licenseEndDate || undefined}
-              onConfirm={(v) => { setLicenseEndDate(String(v)); setEndDatePickerVisible(false); }}
-              onCancel={() => setEndDatePickerVisible(false)}
-            />
-          </Popup>
         </>
       )}
     </div>
