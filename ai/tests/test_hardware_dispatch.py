@@ -69,14 +69,18 @@ print(f"  {ticket.problem_description}")
 print(f"\n{'─' * 60}")
 print("Step 0: 部门过滤")
 dm = DepartmentFilter()
-dept = dm.match_department(ticket)
-print(f"  匹配结果: \"{dept}\"")
-candidates = dm.filter(ticket, profiles)
-print(f"  候选人数: {len(candidates)}")
 
-for c in candidates:
-    prods = list(c.responsibility_modules.keys())
-    print(f"    {c.name} L{c.job_level} {c.department} products={prods}")
+async def _dept_step():
+    dept = await dm.match_department(ticket)
+    print(f"  匹配结果: \"{dept}\"")
+    candidates = await dm.filter(ticket, profiles)
+    print(f"  候选人数: {len(candidates)}")
+    for c in candidates:
+        prods = list(c.responsibility_modules.keys())
+        print(f"    {c.name} L{c.job_level} {c.department} products={prods}")
+    return dept, candidates
+
+dept, candidates = asyncio.run(_dept_step())
 
 if not candidates:
     print("  ⚠️ 部门过滤后无候选人！回退全量")
@@ -157,7 +161,7 @@ if len(ranked) > 1:
     print(f"\n  Top-2: {top2_eng.name} ({top2_eng.department} L{top2_eng.job_level}) "
           f"score={ranked[top2_id]['total_score']:.3f}")
     if top2_eng.department != robot_dept:
-        print(f"  ✅ Top-2 是其他部门，文永翔独占机器人事业部")
+        print(f"  ✅ Top-2 是其他部门")
     else:
         print(f"  ⚠️ Top-2 也是机器人事业部")
 
