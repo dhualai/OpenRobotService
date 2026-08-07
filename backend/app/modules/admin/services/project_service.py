@@ -238,7 +238,31 @@ class ProjectService:
             return project.code if project else None
         finally:
             db.close()
-    
+
+    def check_project_duplicate(self, project_code: str, name: str, exclude_id: Optional[str] = None) -> Optional[str]:
+        """校验项目编号/项目名称是否已存在（两者均为唯一 key）。
+
+        返回冲突字段的中文描述；无冲突返回 None。
+        exclude_id 用于更新场景：排除当前项目自身，避免自比较命中。
+        """
+        db = SessionLocal()
+        try:
+            query = db.query(Project)
+            code_query = query.filter(Project.code == project_code)
+            if exclude_id:
+                code_query = code_query.filter(Project.id != exclude_id)
+            if code_query.first():
+                return f"项目编号「{project_code}」已存在"
+
+            name_query = query.filter(Project.name == name)
+            if exclude_id:
+                name_query = name_query.filter(Project.id != exclude_id)
+            if name_query.first():
+                return f"项目名称「{name}」已存在"
+            return None
+        finally:
+            db.close()
+
     def create_project(self, project_data: Dict) -> Dict:
         db = SessionLocal()
         try:
