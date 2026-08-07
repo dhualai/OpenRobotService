@@ -88,12 +88,18 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
   const [wxHandled, setWxHandled] = useState(false);
+  // 微信原生预览调起期间（异步）标记：此时若直接渲染 H5 灯箱会先闪现「带复制下载的灯箱」，
+  // 待微信接管后灯箱才消失——表现为「灯箱闪一下再显示原生预览」。故该期间不渲染 H5 弹窗，
+  // 调起成功后由微信接管（wxHandled），失败才回退 H5 灯箱。
+  const [wxPending, setWxPending] = useState(false);
   const wxPreviewable = kind === 'image' || kind === 'office';
 
   useEffect(() => {
     setWxHandled(false);
+    setWxPending(false);
     if (item && wxPreviewable && isWeChat() && window.wx) {
       let cancelled = false;
+      setWxPending(true);
       const absUrl = item.previewUrl.startsWith('http')
         ? item.previewUrl
         : `${window.location.origin}${item.previewUrl}`;
@@ -103,7 +109,9 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
         name: item.filename,
         size: item.size,
       }).then((ok) => {
-        if (ok && !cancelled) {
+        if (cancelled) return;
+        setWxPending(false);
+        if (ok) {
           setWxHandled(true);
           onCloseRef.current();
         }
@@ -115,6 +123,8 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
   if (!item) return null;
   // 微信原生预览已接管，无需再渲染 H5 弹窗
   if (wxHandled) return null;
+  // 微信原生预览调起中：暂不渲染 H5 灯箱，避免「灯箱闪现后切原生预览」的闪烁
+  if (wxPending) return null;
 
   // 图片：使用全屏灯箱（自带缩放 / 长按照片保存 / 下载）
   if (kind === 'image') {
