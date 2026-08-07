@@ -485,7 +485,7 @@ export default function DiscussionPanel({
       {menu && (
         <>
           <div className="detail-chat-menu-mask" onClick={() => setMenu(null)} onTouchStart={() => setMenu(null)} />
-          <div className="detail-chat-menu" style={menuStyle} ref={(el) => { if (el) {/* 高度测量后可后续用于更精确定位 */} }}>
+          <div className="detail-chat-menu" style={menuStyle}>
             <button type="button" className="detail-chat-menu__item" onClick={handleQuote}>引用</button>
             <button type="button" className="detail-chat-menu__item" onClick={handleCopy}>复制</button>
             {onDeleteComment && (
