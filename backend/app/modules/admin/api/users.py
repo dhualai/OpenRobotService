@@ -98,6 +98,32 @@ async def get_users(
     finally:
         db.close()
 
+@router.get("/options", response_model=Dict[str, List[str]], summary="获取公司/部门可选项（去重）")
+async def get_user_field_options(
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """返回 users 表中已有的非空 company / department 去重列表，供个人中心下拉选择。"""
+    db = db_manager.get_db()
+    try:
+        companies = [
+            r[0] for r in db.query(UserDB.company)
+            .filter(UserDB.company.isnot(None), UserDB.company != '')
+            .distinct().order_by(UserDB.company).all()
+        ]
+        departments = [
+            r[0] for r in db.query(UserDB.department)
+            .filter(UserDB.department.isnot(None), UserDB.department != '')
+            .distinct().order_by(UserDB.department).all()
+        ]
+        return {"companies": companies, "departments": departments}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取可选项失败: {str(e)}"
+        )
+    finally:
+        db.close()
+
 @router.post("/", response_model=User)
 async def create_user(
     user_data: UserCreate,
