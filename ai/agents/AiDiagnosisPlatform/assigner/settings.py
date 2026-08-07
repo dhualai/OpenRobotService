@@ -31,6 +31,7 @@ class AssignerConfig:
     - job_level_penalty:    {职级: 惩罚系数}，精排后按职级打折
     - department_keywords:  {部门: {strong, medium, weak}}，供部门过滤分级匹配
     - department_scenes:    {部门: {场景: 描述}}，供部门过滤 embedding 语义补漏
+    - department_filter:    {embed_threshold}，部门过滤参数（embedding 匹配阈值）
     - decision_thresholds:  {auto, recommend}，规则兜底决策的置信度阈值
     - load_balance:         {enabled, step, algorithm_engineers}，算法工程师负载均衡
     """
@@ -44,6 +45,7 @@ class AssignerConfig:
         self.job_level_penalty: Dict[int, float] = {}
         self.department_keywords: Dict[str, dict] = {}
         self.department_scenes: Dict[str, dict] = {}
+        self.department_filter: Dict[str, Any] = {}
         self.decision_thresholds: Dict[str, float] = {}
         self.load_balance: Dict[str, Any] = {}
         self._load_all()
@@ -59,6 +61,7 @@ class AssignerConfig:
         self.job_level_penalty = {int(k): v for k, v in raw.items()}
         self.department_keywords = config.get("department_keywords", {})
         self.department_scenes = config.get("department_scenes", {})
+        self.department_filter = config.get("department_filter", {})
         self.decision_thresholds = config.get("decision_thresholds", {})
         self.load_balance = config.get("load_balance", {})
 

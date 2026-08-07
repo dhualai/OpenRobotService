@@ -7,7 +7,9 @@
 #   module_anchor_texts  → recall/semantic_recall.py（L2 语义召回：Embedding 锚文本）
 #   ranker_weights       → ranking/ranker.py（三路召回加权）
 #   job_level_penalty    → ranking/ranker.py（职级折扣）
-#   department_keywords  → filtering/department_filter.py（部门过滤关键词）
+#   department_keywords  → filtering/department_filter.py（部门过滤关键词：strong/medium/weak 三级）
+#   department_scenes    → filtering/department_filter.py（部门故障场景库，embedding 语义补漏）
+#   department_filter    → filtering/department_filter.py（部门过滤参数，如 embedding 阈值）
 #   decision_thresholds  → ranking/fallback_decision.py（兜底置信度阈值）
 #   load_balance         → pipeline/dispatch_flow.py（算法工程师负载均衡）
 # ══════════════════════════════════════════════════════════════════
@@ -234,8 +236,6 @@ job_level_penalty:
   99: 0.60   # 未知职级兜底值
 
 # ══════════════════════════════════════════════════════════════════
-# 5. 部门过滤关键词
-# ══════════════════════════════════════════════════════════════════
 # 5. 部门过滤关键词（三级：strong 直接判定 / medium 结合 weak / weak 走 embedding）
 #    用途：按关键词把工单归到部门，过滤非本部门候选人。
 #    消费方：filtering/department_filter.py
@@ -425,7 +425,7 @@ department_keywords:
       - 问题
 
 # ══════════════════════════════════════════════════════════════════
-# 5b. 部门故障场景库（embedding 语义补漏用）
+# 6. 部门故障场景库（embedding 语义补漏用）
 #     用途：关键词未命中时，用工单文本 embedding 匹配各场景描述，
 #           命中阈值 ≥0.65 则归入对应部门。
 #     消费方：filtering/department_filter.py
@@ -448,7 +448,17 @@ department_scenes:
     平台系统问题: "服务号无法使用，微信功能异常，后台管理报错，数据看板加载失败"
 
 # ══════════════════════════════════════════════════════════════════
-# 6. 置信度阈值（规则兜底决策用）
+# 7. 部门过滤参数
+#     用途：部门过滤 embedding 语义补漏的匹配阈值。
+#           embedding 分数 ≥ embed_threshold 才归入对应部门；
+#           否则不过滤（保留全部候选，交给后续召回+LLM 决策选人）。
+#     消费方：filtering/department_filter.py
+# ══════════════════════════════════════════════════════════════════
+department_filter:
+  embed_threshold: 0.65
+
+# ══════════════════════════════════════════════════════════════════
+# 8. 置信度阈值（规则兜底决策用）
 #    消费方：ranking/fallback_decision.py
 #    auto ≥ 0.8 直接派单；recommend 0.5~0.8 建议确认；< 0.5 fallback
 # ══════════════════════════════════════════════════════════════════
@@ -457,7 +467,7 @@ decision_thresholds:
   recommend: 0.5
 
 # ══════════════════════════════════════════════════════════════════
-# 7. 负载均衡（仅对算法工程师生效，其余候选人不受影响）
+# 9. 负载均衡（仅对算法工程师生效，其余候选人不受影响）
 #    用途：按在途工单数对算法工程师精排分数打折，在途越多系数越低，
 #          避免单子集中在少数人（如原"主力"徐浩南）。
 #    消费方：pipeline/dispatch_flow.py
