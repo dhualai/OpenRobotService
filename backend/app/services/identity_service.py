@@ -26,7 +26,7 @@ class IdentityService:
         user_id: str, username: str, hashed_password: str, permissions: List[str],
         name: Optional[str] = None, status: str = "inactive",
         external_credentials: Optional[Dict[str, Dict[str, str]]] = None,
-        department: Optional[str] = None, responsibility_modules: Optional[Dict[str, List[str]]] = None,
+        company: Optional[str] = None, department: Optional[str] = None, responsibility_modules: Optional[Dict[str, List[str]]] = None,
         job_level: Optional[int] = 1, duty_text: Optional[str] = None,
     ) -> bool:
         db = IdentityService._get_db()
@@ -38,7 +38,7 @@ class IdentityService:
             db_user = UserDB(
                 id=user_id, username=username, password_hash=hashed_password,
                 name=name, status=status, external_credentials=external_credentials_json,
-                department=department, responsibility_modules=responsibility_modules or {},
+                company=company, department=department, responsibility_modules=responsibility_modules or {},
                 job_level=job_level if job_level is not None else 1, duty_text=duty_text,
             )
             db.add(db_user)
@@ -69,6 +69,7 @@ class IdentityService:
                     'external_credentials': ec,
                     'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
                     'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
+                    'company': getattr(db_user, 'company', None),
                     'department': getattr(db_user, 'department', None),
                     'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or {},
                     'job_level': getattr(db_user, 'job_level', 1),
@@ -96,6 +97,7 @@ class IdentityService:
                     'external_credentials': ec,
                     'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
                     'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
+                    'company': getattr(db_user, 'company', None),
                     'department': getattr(db_user, 'department', None),
                     'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or {},
                     'job_level': getattr(db_user, 'job_level', 1),

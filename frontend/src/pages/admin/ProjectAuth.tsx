@@ -15,7 +15,7 @@ interface AuthItem {
   applicant: string;
   max_vehicles?: number | null;
 }
-interface Project { id?: string; code?: string; name: string; }
+interface Project { id?: string; project_code?: string; name: string; }
 
 const maskCode = (code: string): string => {
   if (!code) return '';
@@ -80,7 +80,7 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
   // 选中项目变化时重新拉取授权
   useEffect(() => {
     if (selectedProject) {
-      const code = selectedProject.code || selectedProject.name;
+      const code = selectedProject.project_code || selectedProject.name;
       fetchLicenses(code);
     } else {
       setItems([]);
@@ -93,7 +93,7 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
     if (!licenseStartDate || !licenseEndDate) { Toast({ message: '请选择开始和结束日期', theme: 'warning' }); return; }
     if (licenseStartDate > licenseEndDate) { Toast({ message: '开始日期不能晚于结束日期', theme: 'warning' }); return; }
 
-    const projectCode = selectedProject.code || selectedProject.name;
+    const projectCode = selectedProject.project_code || selectedProject.name;
     setApplyingLicense(true);
     try {
       const status = await request<{ status?: string; message?: string; license_content?: string }>(
@@ -139,7 +139,7 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
           await request(`/project/auth/${item.id}`, { method: 'DELETE' });
           Toast({ message: '授权已撤销', theme: 'success' });
           if (selectedProject) {
-            const code = selectedProject.code || selectedProject.name;
+            const code = selectedProject.project_code || selectedProject.name;
             fetchLicenses(code);
           }
         } catch (err) {
