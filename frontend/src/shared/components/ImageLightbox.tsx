@@ -138,7 +138,8 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
 
   return createPortal(
     <>
-      {/* 交互主体：双指缩放 / 双击缩放 / 拖拽平移 / 单击关闭（TDesign ImageViewer） */}
+      {/* 交互主体：双指缩放 / 双击缩放 / 拖拽平移 / 单击关闭（TDesign ImageViewer）
+          淡入动画已由 CSS 禁用（点击即显；缩略图场景图片已缓存，无需渐入等待） */}
       <ImageViewer
         images={[src ?? '']}
         visible={open}

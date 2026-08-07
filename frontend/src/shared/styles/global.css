@@ -1162,6 +1162,14 @@ html, body, #root {
 .img-lightbox__btn:active {
   background: rgba(255, 255, 255, 0.3);
 }
+/* 禁用 TDesign ImageViewer 自带淡入/淡出动画：点击即显（缩略图场景图片已缓存，
+   无需 300ms 渐入；渐入会表现为「闪烁」）。限定在 image-viewer 根节点，避免影响其他 fade 组件 */
+.t-image-viewer.fade-enter-active,
+.t-image-viewer.fade-leave-active {
+  opacity: 1 !important;
+  transition: none !important;
+  animation: none !important;
+}
 .img-lightbox__feedback {
   position: fixed;
   bottom: 24px;
@@ -1267,6 +1275,18 @@ html, body, #root {
 .detail-chat-attachment-img { max-width: 140px; max-height: 140px; border-radius: 6px; cursor: pointer; object-fit: cover; }
 .detail-chat-attachment-file { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; background: rgba(0,0,0,0.05); border-radius: 6px; font-size: 13px; cursor: pointer; }
 .detail-chat-attachment-file:hover { background: rgba(0,0,0,0.1); }
+/* 工单详情页附件列表：图片缩略图网格（直接可见，点击放大） */
+.detail-attachment-thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.detail-attachment-thumb {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 8px;
+  cursor: zoom-in;
+  background: #f2f3f5;
+  border: 1px solid #e5e5e5;
+  -webkit-tap-highlight-color: transparent;
+}
 /* AI 占位：组件库 Loading 图标 + 「思考中」逐字跳动（简洁无卡片，纯黑加粗） */
 .chat-bubble__typing {
   display: inline-flex;
