@@ -11,6 +11,8 @@ import { Input, Button, Dialog, Upload, Toast, Popup } from 'tdesign-mobile-reac
 import { UserCircleIcon, AddIcon } from 'tdesign-icons-react';
 import { useAuthStore } from '@/stores/auth';
 import { getMyProfile, getProfileOptions, updateMyProfile, uploadAvatar, avatarUrl, type MyProfile } from '@/api/profile';
+import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
+import { WECHAT_CONFIG } from '@/config/wechat';
 
 const FIRST_VISIT_PROMPT_KEY = 'profile_prompt_shown';
 
@@ -95,6 +97,25 @@ export default function UserProfile() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 进入个人中心页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈
+  useEffect(() => {
+    if (loading) return;
+    const displayName = (original.name || '').trim() || username || '同事';
+    const company = (original.company || '').trim();
+    const dept = (original.department || '').trim();
+    const title = `${displayName} 的个人资料`;
+    const descParts = [company, dept].filter(Boolean);
+    const desc = descParts.length
+      ? `公司：${company || '-'} · 部门：${dept || '-'}`
+      : '点击查看该同事的详细资料';
+    setupWechatShare({
+      title,
+      desc,
+      link: window.location.href,
+      imgUrl: avatarResourceId ? avatarUrl(avatarResourceId) : (WECHAT_CONFIG.shareImgUrl || ''),
+    });
+  }, [loading, original.name, original.company, original.department, username, avatarResourceId]);
 
   const isDirty = useCallback((): boolean => {
     if ((nameDraft || '').trim() !== original.name) return true;

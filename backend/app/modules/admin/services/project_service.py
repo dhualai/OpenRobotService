@@ -1,7 +1,7 @@
 from typing import List, Optional, Dict
 import json
 import requests
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import sessionmaker
 from app.modules.admin.schemas_das.request_models import ProjectBase, ProjectCreate, ProjectUpdate
 from app.modules.admin.models_das.models import Project
@@ -9,6 +9,11 @@ from app.modules.admin.utils_das.config import DATABASE_URL, AUTH_SERVICE_BASE_U
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+_PROJECT_COLUMNS = {c.key for c in inspect(Project).mapper.column_attrs}
+
+def _filter_project_fields(data: Dict) -> Dict:
+    return {k: v for k, v in data.items() if k in _PROJECT_COLUMNS}
 
 def get_db():
     db = SessionLocal()
@@ -143,6 +148,7 @@ class ProjectService:
             
             existing_project = db.query(Project).filter(Project.code == project_data["code"]).first()
             if not existing_project:
+                project_data = _filter_project_fields(project_data)
                 db_project = Project(**project_data)
                 db.add(db_project)
         db.commit()
@@ -254,6 +260,8 @@ class ProjectService:
             if project_data.get("system_integration"):
                 project_data["system_integration"] = json.dumps(project_data["system_integration"])
 
+            project_data = _filter_project_fields(project_data)
+
             db_project = Project(**project_data)
             db.add(db_project)
             db.commit()
@@ -295,6 +303,8 @@ class ProjectService:
                     update_data["system_integration"] = json.dumps(update_data["system_integration"])
                 else:
                     update_data["system_integration"] = None
+
+            update_data = _filter_project_fields(update_data)
 
             for field, value in update_data.items():
                 setattr(project, field, value)
