@@ -100,14 +100,13 @@ class KBDomainIngester(BaseIngester[KBEntry]):
                 self._log(f"[WARN] 无法读取 {md_file}: {e}")
                 continue
 
-            # 按 sub_domain 选择切分策略
-            if sub_domain == "faq":
+            # 按文件名模式选择切分策略（兼容新旧目录结构）
+            _rel = source_file.lower()
+            if "faq" in _rel:
                 file_entries = self._split_faq(content, sub_domain, source_file)
-            elif sub_domain == "usp_faq":
-                file_entries = self._split_faq(content, sub_domain, source_file)
-            elif sub_domain == "usp_manual":
+            elif "manual" in _rel:
                 file_entries = self._split_manual(content, sub_domain, source_file)
-            elif sub_domain == "cheduan_errors":
+            elif sub_domain in ("cheduan_errors",) or "cheduan_errors" in _rel:
                 file_entries = self._split_cheduan_errors(content, sub_domain, source_file)
             else:
                 file_entries = self._split_generic(content, sub_domain, source_file)

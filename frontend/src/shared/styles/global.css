@@ -469,6 +469,69 @@ html, body, #root {
   background: #fff8e6;
   border-top: 1px solid #ffe2a8;
 }
+/* 前端 PDF 预览（pdf.js 渲染，全端含微信 WebView 可用） */
+.pdf-viewer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #525659;
+}
+.pdf-viewer__toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: #3a3d40;
+  color: #eee;
+  font-size: 13px;
+}
+.pdf-viewer__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdf-viewer__meta {
+  flex-shrink: 0;
+  color: #bdbdbd;
+}
+.pdf-viewer__zoom {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pdf-viewer__zoom button {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 4px;
+  background: #5a5e62;
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.pdf-viewer__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  background: #525659;
+}
+.pdf-viewer__page {
+  max-width: 100%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
 /* 通用长文本折叠：与 is-expanded 配合实现「展开/收起」（工单概览描述、缺失提示气泡共用） */
 .chat-clamp {
   display: -webkit-box;
@@ -1068,6 +1131,8 @@ html, body, #root {
   gap: 10px;
   padding: 12px 16px;
   background: linear-gradient(to bottom, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0));
+  /* 容器不拦截点击：顶部空白区穿透回 ImageViewer（点击遮罩/图片仍可关闭）；按钮单独开启 */
+  pointer-events: none;
 }
 .img-lightbox__btn {
   appearance: none;
@@ -1081,6 +1146,18 @@ html, body, #root {
   cursor: pointer;
   backdrop-filter: blur(4px);
   -webkit-tap-highlight-color: transparent;
+  /* 工具栏容器为 none，按钮需重新开启点击 */
+  pointer-events: auto;
+}
+/* 左上角关闭按钮：推到最左，与右上角复制/下载对齐 */
+.img-lightbox__close {
+  margin-right: auto;
+  font-size: 18px;
+  padding: 8px 14px;
+}
+/* 隐藏 TDesign ImageViewer 自带关闭按钮（改由上方自绘按钮接管，避免重叠 / 受控失效） */
+.t-image-viewer__nav-close {
+  display: none;
 }
 .img-lightbox__btn:active {
   background: rgba(255, 255, 255, 0.3);
