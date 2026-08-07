@@ -75,7 +75,9 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
     }
   }, [open]);
 
-  // 预加载图片：open 且 src 有值时触发，解码就绪后置 imgReady=true
+  // 预加载图片：open 且 src 有值时触发，解码就绪后置 imgReady=true。
+  // 缓存图片 decode 近乎瞬时（loading 一闪即过）；非缓存图片则持续显示 loading 直至就绪，
+  // 加载失败（onerror）也放行，由 ImageViewer 显示裂图。移除强制超时：避免未就绪就挂载造成闪烁。
   useEffect(() => {
     if (!open || !src) {
       setImgReady(false);
@@ -92,9 +94,7 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
     if (img.decode) {
       img.decode().then(done).catch(done);
     }
-    // 非缓存图片兜底：300ms 后无论是否完成都挂载（此时 mask 显示加载中，纯黑无透出）
-    const timeoutId = window.setTimeout(done, 300);
-    return () => { cancelled = true; window.clearTimeout(timeoutId); };
+    return () => { cancelled = true; };
   }, [open, src]);
 
   const flash = useCallback((msg: string) => {
@@ -166,6 +166,13 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
 
   return createPortal(
     <>
+      {/* 图片未加载/未解码完成时显示 loading 遮罩（纯黑 + 转圈），就绪后切换到 ImageViewer。
+          缓存图片 decode 近乎瞬时（loading 几乎不可见）；非缓存图片显示 loading 直到就绪。 */}
+      {!imgReady && (
+        <div className="img-lightbox__loading" role="status" aria-label="图片加载中" onClick={onClose}>
+          <span className="img-lightbox__loading-spinner" />
+        </div>
+      )}
       {/* 图片预加载就绪后才挂载 ImageViewer + 工具栏：避免半透明 mask 先透出底层、图片后跳出导致的闪烁 */}
       {imgReady && (
         <>
