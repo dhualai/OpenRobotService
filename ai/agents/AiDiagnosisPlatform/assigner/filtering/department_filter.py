@@ -25,7 +25,7 @@ from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER")
 
-# embedding 语义匹配阈值（关键词未命中时使用）
+# 默认 embedding 语义匹配阈值（实际值从 config.yaml 的 department_filter.embed_threshold 读取）
 _DEFAULT_EMBED_THRESHOLD = 0.65
 
 # ── 场景 embedding 缓存 ──
@@ -49,6 +49,9 @@ class DepartmentFilter:
         self._dept_keywords: Dict[str, dict] = self._config.department_keywords or {}
         # 部门 → {场景: 描述}（embedding 语义补漏用）
         self._dept_scenes: Dict[str, dict] = self._config.department_scenes or {}
+        # 部门过滤参数（从 config.yaml 的 department_filter 读取）
+        df_cfg = self._config.department_filter or {}
+        self._embed_threshold = float(df_cfg.get("embed_threshold", _DEFAULT_EMBED_THRESHOLD))
 
     # ── 三级关键词匹配 ──
     def _strong_match(self, text: str) -> List[Tuple[str, List[str]]]:
@@ -73,6 +76,23 @@ class DepartmentFilter:
             if med_hits and weak_hits:
                 hits.append((dept, med_hits + weak_hits))
         return hits
+
+    def _medium_only_depts(self, text: str) -> set:
+        """找出单独命中 medium（无 weak 组合判定）的部门集合。
+
+        作用：为 embedding 缩小候选范围——medium 命中说明领域明确，
+        让 embedding 只在该部门场景内匹配，避免误匹配到其他部门。
+        """
+        depts = set()
+        for dept, levels in self._dept_keywords.items():
+            medium = levels.get("medium") or []
+            weak = levels.get("weak") or []
+            med_hits = [kw for kw in medium if kw.lower() in text]
+            weak_hits = [kw for kw in weak if kw.lower() in text]
+            # medium 命中 但 无 weak（无法组合判定）→ 仅缩小 embedding 范围
+            if med_hits and not weak_hits:
+                depts.add(dept)
+        return depts
 
     # ── embedding 语义匹配 ──
     async def _ensure_scene_cache(self):
@@ -101,8 +121,14 @@ class DepartmentFilter:
         }
         _scene_cache["scene_hash"] = h
 
-    async def _embedding_match(self, text: str) -> Tuple[str, str, float]:
-        """embedding 匹配：返回 (部门, 场景, 最高相似度)"""
+    async def _embedding_match(
+        self, text: str, candidate_depts: Optional[set] = None,
+    ) -> Tuple[str, str, float]:
+        """embedding 匹配：返回 (部门, 场景, 最高相似度)。
+
+        candidate_depts: 限定候选部门集合（medium 单独命中时缩小范围），
+                         为 None 时全部门场景匹配。
+        """
         await self._ensure_scene_cache()
         if not _scene_cache["scene_embeddings"] or not text:
             return "", "", 0.0
@@ -113,6 +139,8 @@ class DepartmentFilter:
 
         best_dept, best_scene, best_score = "", "", 0.0
         for (dept, scene), memb in _scene_cache["scene_embeddings"].items():
+            if candidate_depts is not None and dept not in candidate_depts:
+                continue
             s = _cos(qe, memb)
             if s > best_score:
                 best_dept, best_scene, best_score = dept, scene, s
@@ -147,9 +175,12 @@ class DepartmentFilter:
             return ""
 
         # ── 第三优先级：embedding 语义补漏 ──
-        dept, scene, score = await self._embedding_match(text)
-        if dept and score >= _DEFAULT_EMBED_THRESHOLD:
-            logger.info(f"[dept_filter] embedding({scene}:{score:.2f}) → {dept}")
+        # medium 单独命中 → 缩小 embedding 候选部门范围（领域明确但是否故障不确定）
+        candidate_depts = self._medium_only_depts(text) or None
+        dept, scene, score = await self._embedding_match(text, candidate_depts)
+        if dept and score >= self._embed_threshold:
+            scope = "medium缩小" if candidate_depts else "全场景"
+            logger.info(f"[dept_filter] embedding[{scope}]({scene}:{score:.2f}) → {dept}")
             return dept
 
         logger.info(f"[dept_filter] 未命中(关键词+embedding) → 不过滤")
