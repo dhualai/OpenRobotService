@@ -534,7 +534,6 @@ export default function ProjectDetail() {
             <EditableField label="项目描述" value={project.description || ''} placeholder="未填写" multiline onSave={(v) => saveField('description', v)} />
             <PickerField label="项目类型" value={project.project_type || '未设置'} onClick={() => setActivePicker('project_type')} />
             <PickerField label="项目区域/地点" value={project.project_region || '未设置'} onClick={() => setActivePicker('project_region')} />
-            <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} required={isNew} />
             <EditableField
               label="总车数"
               type="number"
@@ -611,6 +610,12 @@ export default function ProjectDetail() {
               })}
             </div>
           )}
+        </div>
+
+        {/* 项目阶段 —— 位于项目生命周期下方，可编辑当前阶段；绑定 status（企业微信「项目生命周期」列实时同步） */}
+        <div style={cardStyle()}>
+          <h3 style={cardTitleStyle()}>项目阶段</h3>
+          <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} required={isNew} />
         </div>
 
         {/* 风险管理 */}
