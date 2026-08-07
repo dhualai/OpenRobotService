@@ -88,11 +88,11 @@ export default function ProjectManage() {
         `/export/project/${encodeURIComponent(projectCode)}?type=${type}`,
         { method: 'POST', responseType: 'arrayBuffer', timeout: 60000 },
       );
-      const blob = new Blob([buffer], { type: 'application/gzip' });
+      const blob = new Blob([buffer], { type: 'application/x-bzip2' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `project_${projectCode}_${type}_export.gz`;
+      a.download = `project_${projectCode}_${type}_export.bz2`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
