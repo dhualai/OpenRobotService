@@ -2861,11 +2861,19 @@ html, body, #root {
   justify-content: flex-end;
 }
 .detail-chat-bubble {
+  position: relative;
   max-width: 75%;
   padding: 10px 14px;
   border-radius: 12px;
-  background: #f5f7fa;
+  background: #ffffff;
+  border: 1px solid #eef0f3;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   word-break: break-word;
+  line-height: 1.5;
+  transition: filter 0.12s, box-shadow 0.12s;
+}
+.detail-chat-bubble:active {
+  filter: brightness(0.97);
 }
 .detail-chat-bubble.is-self {
   background: #e6f4ff;
@@ -2899,6 +2907,134 @@ html, body, #root {
   font-size: 13px;
   padding: 20px 0;
 }
+
+/* ===== 微信化：引用块（气泡内）、引用条（输入上方）、长按菜单 ===== */
+/* 气泡内引用块：顶部高亮，点击定位原消息 */
+.detail-chat-quote {
+  display: block;
+  margin: -2px 0 6px;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.06);
+  border-left: 3px solid #0052d9;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.detail-chat-bubble.is-self .detail-chat-quote {
+  background: rgba(255, 255, 255, 0.4);
+  border-left-color: #fff;
+}
+.detail-chat-quote:hover { background: rgba(0, 0, 0, 0.1); }
+.detail-chat-bubble.is-self .detail-chat-quote:hover { background: rgba(255, 255, 255, 0.55); }
+.detail-chat-quote__name {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0052d9;
+  opacity: 0.85;
+}
+.detail-chat-bubble.is-self .detail-chat-quote__name { color: #073a99; }
+.detail-chat-quote__text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #555;
+  opacity: 0.9;
+}
+.detail-chat-bubble.is-self .detail-chat-quote__text { color: #1a1a1a; }
+
+/* 引用条：引用某条消息后显示在输入框上方 */
+.detail-chat-quote-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  background: #f3f5f9;
+  border-radius: 8px;
+  border-left: 3px solid #0052d9;
+}
+.detail-chat-quote-bar__body { flex: 1; min-width: 0; cursor: pointer; }
+.detail-chat-quote-bar__name { font-size: 12px; font-weight: 600; color: #0052d9; margin-right: 6px; }
+.detail-chat-quote-bar__text {
+  font-size: 13px;
+  color: #555;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.detail-chat-quote-bar__close {
+  background: none;
+  border: none;
+  color: #999;
+  font-size: 14px;
+  cursor: pointer;
+  align-self: flex-start;
+  padding: 0 2px;
+  line-height: 1;
+}
+.detail-chat-quote-bar__close:hover { color: #e34d59; }
+
+/* 长按操作菜单（微信式弹出菜单，锚定气泡上方） */
+.detail-chat-menu-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: transparent;
+}
+.detail-chat-menu {
+  min-width: 156px;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.detail-chat-menu__item {
+  display: block;
+  width: 100%;
+  text-align: center;
+  padding: 11px 12px;
+  background: none;
+  border: none;
+  font-size: 14px;
+  color: #333;
+  cursor: pointer;
+  border-bottom: 1px solid #f0f0f0;
+}
+.detail-chat-menu__item:last-child { border-bottom: none; }
+.detail-chat-menu__item:active { background: #f2f3f5; }
+.detail-chat-menu__item.is-danger { color: #e34d59; }
+
+/* 气泡删除按钮（仅自己消息，hover/长按显示） */
+.detail-chat-bubble__del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: none;
+  background: rgba(0, 0, 0, 0.04);
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 4px;
+  cursor: pointer;
+  color: #999;
+}
+.detail-chat-bubble:hover .detail-chat-bubble__del { display: block; }
+.detail-chat-bubble__del:hover { background: rgba(227, 77, 89, 0.12); color: #e34d59; }
+
+/* 引用定位高亮动画 */
+@keyframes chatFlash {
+  0% { box-shadow: 0 0 0 2px #0052d9; }
+  100% { box-shadow: 0 0 0 2px rgba(0, 82, 217, 0); }
+}
+.detail-chat-bubble.is-flash { animation: chatFlash 1.2s ease-out; }
 .detail-chat-input {
   display: flex;
   flex-direction: column;

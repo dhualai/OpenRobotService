@@ -152,8 +152,19 @@ export default function TicketDetailPage() {
   // @U老师 AI 讨论中标记
   const [askingAI, setAskingAI] = useState(false);
 
+  // 竞态保护：fetchDetail 是异步多段 await，切换工单（sessionId 变化）时上一个工单的请求可能仍在飞行中，
+  // 其响应若晚于新工单返回，会 setTicket 覆盖新工单、或用 setTicket((prev)=>...) 把旧工单字段合并进新工单，
+  // 表现为「点的是当前工单，显示/接口却是别的工单」。用 ref 跟踪最新 sessionId，await 后比对发起时的快照，
+  // 不一致即视为 stale 请求丢弃结果（不 setTicket/setMsg/setLoading）。同 sessionId 下的 silent 刷新
+  // （编辑后 / 派单轮询）不受影响——仅当真正切换工单时才使旧请求失效。
+  const latestSessionIdRef = useRef(sessionId);
+  latestSessionIdRef.current = sessionId;
+
   const fetchDetail = useCallback(async (silent = false) => {
     if (!sessionId) return;
+    // 捕获本次请求发起时的 sessionId；后续每个 await 后用它对比最新值，判定是否已被新工单取代
+    const mySessionId = sessionId;
+    const isStale = () => latestSessionIdRef.current !== mySessionId;
     if (!silent) setLoading(true);
     try {
       // 手动工单（无 session_id，URL 形如 /call/ticket/db_<数字id>）：直接按 DB 工单 id 查询，
@@ -162,6 +173,7 @@ export default function TicketDetailPage() {
       if (dbIdMatch) {
         const dbId = dbIdMatch[1];
         const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${dbId}?load_comments=true`, { skipCache: true });
+        if (isStale()) return; // 已切换到别的工单，丢弃本次（旧工单）结果，避免覆盖
         setTicket({
           ticket_id: String(dbId),
           session_id: '',
@@ -188,6 +200,7 @@ export default function TicketDetailPage() {
         return;
       }
       const res = await qaGetTicket(sessionId);
+      if (isStale()) return; // 已切换到别的工单，丢弃本次（旧工单）结果，避免覆盖
       if (res?.code === 0 && res.data) {
         const aiTicket = res.data as AiTicket;
         // silent 刷新（编辑后 / 派单轮询）不重置 ticket：避免被 AI 滞后的 Redis 副本覆盖，
@@ -196,6 +209,7 @@ export default function TicketDetailPage() {
         if (aiTicket.ticket_id) {
           try {
             const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
+            if (isStale()) return; // 已切换工单：prev 可能已是新工单，不可把旧工单的 DB 字段合并进去
             // 用 DB 的 status 覆盖 AI 的 status：AI(qaGetTicket) 返回 dispatched/escalated 等 AI 内部状态，
             // DB(tasks 表) 是 new/in_progress 等标准枚举。列表(qaListTickets)也来自 DB，
             // 覆盖后详情页按钮置灰(canUrgeTicket/canReportTicket)与列表一致。
@@ -225,12 +239,15 @@ export default function TicketDetailPage() {
           } catch { /* 评论加载失败不阻塞主流程 */ }
         }
       } else {
+        if (isStale()) return; // 已切换工单，不覆盖新工单的 msg 状态
         setMsg(res?.message || '该会话尚未生成工单');
       }
     } catch (err) {
+      if (isStale()) return; // 已切换工单，旧工单的报错不覆盖新工单状态
       setMsg(err instanceof Error ? err.message : '加载失败');
     } finally {
-      if (!silent) setLoading(false);
+      // 仅当本次请求仍是最新工单时才结束 loading，避免 stale 请求把新工单的 loading 提前置 false
+      if (!silent && !isStale()) setLoading(false);
     }
   }, [sessionId]);
 
