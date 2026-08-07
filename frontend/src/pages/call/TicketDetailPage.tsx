@@ -7,8 +7,8 @@ import { Navbar, Button, Toast, Loading, Tag, Popup, Input, Textarea } from 'tde
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { NotificationIcon, UploadIcon, RollbackIcon, EditIcon } from 'tdesign-icons-react';
-import { getMyProjects, type ProjectItem } from '@/api/projects';
-import { qaGetTicket } from '@/api/ai';
+import { getMyProjects, getProjectMembers, type ProjectItem, type ProjectMember } from '@/api/projects';
+import { qaGetTicket, fetchWithAuth } from '@/api/ai';
 import { cancelTicket, urgeTicket, reportTicket, uploadCommentAttachment } from '@/api/ticket';
 import {
   isTerminalTicketStatus,
@@ -147,6 +147,10 @@ export default function TicketDetailPage() {
   const [aiSummary, setAiSummary] = useState('');
   const tempIdRef = useRef<string>(typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `t_${Date.now()}_${Math.random().toString(36).slice(2)}`);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
+  // 项目成员（用于讨论区 @ 提及）
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  // @U老师 AI 讨论中标记
+  const [askingAI, setAskingAI] = useState(false);
 
   const fetchDetail = useCallback(async (silent = false) => {
     if (!sessionId) return;
@@ -231,6 +235,23 @@ export default function TicketDetailPage() {
   }, [sessionId]);
 
   useEffect(() => { fetchDetail(); }, [fetchDetail]);
+
+  // 获取项目成员用于 @ 提及（与系统任务详情页同款逻辑）
+  useEffect(() => {
+    const tid = ticket?.ticket_id;
+    if (!tid) { setProjectMembers([]); return; }
+    getProjectMembers(tid)
+      .then((members) => {
+        const reporterUsername = ticket?.created_by || '';
+        const sorted = [...members].sort((a, b) => {
+          if (a.username === reporterUsername) return -1;
+          if (b.username === reporterUsername) return 1;
+          return 0;
+        });
+        setProjectMembers(sorted);
+      })
+      .catch(() => setProjectMembers([]));
+  }, [ticket?.ticket_id, ticket?.created_by]);
 
   // 进入详情页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈，无需额外按钮
   useEffect(() => {
@@ -372,8 +393,66 @@ export default function TicketDetailPage() {
     }
   };
 
+  // ── @U老师 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
+  // 与系统任务详情页同款逻辑，用 ticket.ticket_id 代替 detail.id，fetchDetail(true) 代替 loadDetail()
+  const handleAIDiscuss = async (text: string, files: File[] = []): Promise<boolean> => {
+    if (!ticket?.ticket_id) return false;
+    const userMsg = text;
+    setAskingAI(true);
+    try {
+      // 上传附件
+      const tempId = tempIdRef.current;
+      for (const f of files) {
+        await uploadCommentAttachment(f, tempId);
+      }
+      // 1. 先保存用户的 @U老师 消息到 task_comments
+      try {
+        const newComment = await request<Comment>(`/${ticket.ticket_id}/comments`, {
+          method: 'POST',
+          body: JSON.stringify({ content: userMsg, is_public: true, attachments: files.length ? [tempId] : [] }),
+        });
+        setTicket((prev) => {
+          if (!prev) return prev;
+          const updatedComments = prev.comments ? [...prev.comments, newComment] : [newComment];
+          return { ...prev, comments: updatedComments };
+        });
+      } catch { /* 保存用户消息失败不阻塞 AI 调用 */ }
+      // 2. 调 AI 讨论
+      const recentComments = (ticket.comments || []).slice(-10).map((c) => ({
+        author: c.created_by_name || c.created_by || '?',
+        content: c.content,
+      }));
+      const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/task/discuss`, {
+        method: 'POST',
+        body: JSON.stringify({
+          task_id: String(ticket.ticket_id),
+          query: userMsg.replace(/^@U老师\s*/, ''),
+          context: { recent_comments: recentComments },
+        }),
+      });
+      const data = await res.json();
+      if (data.code === 0) {
+        Toast({ message: 'AI 已回复', theme: 'success' });
+        await fetchDetail(true);  // 静默刷新评论（含 AI 回复）
+        return true;
+      } else {
+        Toast({ message: data.message || 'AI 回复失败', theme: 'error' });
+        return false;
+      }
+    } catch (err) {
+      Toast({ message: `AI 回复失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      return false;
+    } finally {
+      setAskingAI(false);
+    }
+  };
+
   // 发送评论（附件上传 + POST /api/tasks/{ticket_id}/comments）；返回 true=成功（组件清空输入）
+  // 检测 @U老师 前缀：走 AI 讨论而非普通评论（与系统任务详情页同款逻辑）
   const handleSendComment = async (text: string, files: File[]): Promise<boolean> => {
+    if (text.startsWith('@U老师 ')) {
+      return handleAIDiscuss(text, files);
+    }
     if (!ticket?.ticket_id) {
       Toast({ message: '工单号缺失，无法评论', theme: 'warning' });
       return false;
@@ -649,9 +728,11 @@ export default function TicketDetailPage() {
         <DiscussionPanel
           comments={ticket.comments || []}
           onSend={handleSendComment}
-          sending={submittingComment}
+          sending={submittingComment || askingAI}
           disabled={!ticket?.ticket_id}
           enableAttach
+          enableAI
+          mentionUsers={projectMembers}
         />
 
         {/* 操作：与历史工单列表页完全一致 —— 终态（已解决/已取消/已关闭）整组不显示；
