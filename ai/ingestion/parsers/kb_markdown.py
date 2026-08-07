@@ -422,7 +422,12 @@ class KBDomainIngester(BaseIngester[KBEntry]):
     # ═══════════════════════════════════════════════════════════
 
     def _split_generic(self, content: str, sub_domain: str, source_file: str) -> List[KBEntry]:
-        """通用切分：按 ## 切块，超长段落（>3000 字符）按 ### 细切"""
+        """通用切分：按 ## 切块，超长段落（>3000 字符）按 ### 细切
+
+        交叉引用段落（## 你可能还需要查）不独立入库——它只是"问题→模块"索引，
+        单独成 chunk 会以高向量分抢占 top-k 却无排查内容。
+        改为合并到前一个真实 chunk 的末尾，附加 ## 相关模块 标记，保留跨模块指引。
+        """
         h1_match = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
         doc_title = h1_match.group(1).strip() if h1_match else ""
 
@@ -449,6 +454,15 @@ class KBDomainIngester(BaseIngester[KBEntry]):
                 body = section.strip()
 
             if not body:
+                continue
+
+            # ── 交叉引用段落：合并到前一个 chunk，不独立入库 ──
+            if section_title.startswith("你可能还需要查"):
+                if entries:
+                    prev = entries[-1]
+                    prev.content = (prev.content.rstrip()
+                                    + "\n\n## 相关模块\n"
+                                    + body)
                 continue
 
             # 超长段落按 ### 进一步切分
