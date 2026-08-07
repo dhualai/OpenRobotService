@@ -1162,6 +1162,29 @@ html, body, #root {
 .img-lightbox__btn:active {
   background: rgba(255, 255, 255, 0.3);
 }
+/* 图片加载中遮罩：imgReady=false 期间显示（纯黑 + 居中转圈），就绪后切换到 ImageViewer。
+   与 ImageViewer 同层（z-index 1100），点击可关闭；缓存图片近乎瞬时（loading 几乎不可见） */
+.img-lightbox__loading {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+}
+.img-lightbox__loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: img-lightbox-spin 0.8s linear infinite;
+}
+@keyframes img-lightbox-spin {
+  to { transform: rotate(360deg); }
+}
 /* ImageViewer 遮罩改纯黑：预加载兜底（300ms）期间 <img> 未就绪时不透出底层页面，
    避免半透明 mask 透底层 + 图片后跳出造成的闪烁（tdesign 默认 mask 为 rgba(0,0,0,0.6)） */
 .t-image-viewer__mask {
