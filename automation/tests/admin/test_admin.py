@@ -1,0 +1,11 @@
+"""Data-driven API tests."""
+import pytest
+from automation.src.runner import load_cases, run_case
+
+CASES = load_cases("admin")
+
+@pytest.mark.api
+class TestAdminApi:
+    @pytest.mark.parametrize("case", CASES, ids=lambda c: c["id"])
+    async def test_api(self, mock_api_client, mock_auth_header, case):
+        await run_case(mock_api_client, mock_auth_header, case)
