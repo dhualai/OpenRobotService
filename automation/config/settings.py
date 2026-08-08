@@ -18,22 +18,23 @@ def _detect_env() -> str:
 
 def load_config(
     env: Optional[str] = None,
-    profiles_dir: Optional[Path] = None,
+    config_dir: Optional[Path] = None,
 ) -> AutomationConfig:
     '''Load automation config for the given (or detected) environment.
 
     Args:
         env: Environment name (local/sit/uat). Defaults to AUTOMATION_ENV env var or 'local'.
-        profiles_dir: Override profiles directory. Defaults to config/profiles/.
+        config_dir: Override config root directory. Defaults to config/.
+            Layout: <config_dir>/{env}/config.yaml.
 
     Returns:
         Fully populated AutomationConfig instance.
 
     Raises:
-        FileNotFoundError: If profile YAML for the environment does not exist.
+        FileNotFoundError: If the environment config file does not exist.
     '''
     target_env = (env or _detect_env()).lower()
-    loader = ConfigLoader(env=target_env, profiles_dir=profiles_dir)
+    loader = ConfigLoader(env=target_env, config_dir=config_dir)
     return loader.load()
 
 

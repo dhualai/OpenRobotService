@@ -218,8 +218,8 @@ vitest 测试失败，错误信息：
 项目信息：
 - 后端：Python/FastAPI + pytest
 - 前端：React/TypeScript + vitest
-- 测试规范：docs/testing_guidelines.md
-- 测试策略：docs/automation_strategy.md
+- 测试规范：automation/docs/testing/testing_guidelines.md
+- 测试策略：automation/docs/automation_strategy.md
 
 模块路径：backend/app/modules/{模块名}/
 模块文件清单：
@@ -238,9 +238,9 @@ vitest 测试失败，错误信息：
 
 | 文档 | 路径 |
 |------|------|
-| 测试开发规范 | `docs/testing_guidelines.md` |
-| 自动化测试方案 | `docs/automation_strategy.md` |
-| Code Review 清单 | `docs/review_checklist.md` |
-| 功能完成标准 | `docs/done_definition.md` |
+| 测试开发规范 | `automation/docs/testing/testing_guidelines.md` |
+| 自动化测试方案 | `automation/docs/automation_strategy.md` |
+| Code Review 清单 | `automation/docs/testing/code-review-checklist.md` |
+| 功能完成标准 | `automation/docs/testing/done-definition.md` |
 | 项目架构说明 | `docs/project_architecture.md` |
 | 业务规则 | `docs/business_rules.md` |
