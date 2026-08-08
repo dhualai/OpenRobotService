@@ -1,0 +1,127 @@
+name: AI Test Generation
+
+on:
+  push:
+    branches: [hxg, develop]
+    paths:
+      - 'backend/**'
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'backend/**'
+
+env:
+  PYTHON_VERSION: "3.11"
+  RUN_ID: ${{ github.sha }}-${{ github.run_number }}
+
+jobs:
+  ai-testgen:
+    name: AI generate + execute tests
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: openrobot
+        ports:
+          - "3306:3306"
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - "6379:6379"
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      qdrant:
+        image: qdrant/qdrant:v1.10
+        ports:
+          - "6333:6333"
+          - "6334:6334"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -e automation/
+
+      - name: Extract OpenAPI spec
+        run: |
+          python automation/ci_ai_gen/extract_api.py \
+            --out test-gen/spec \
+            --backend-path backend \
+            --prd automation/references/prd
+
+      - name: Generate changed-files summary
+        id: changes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const fs = require('fs');
+            const diff = execSync('git diff HEAD~1 --name-only 2>/dev/null || true', { encoding: 'utf8' })
+              .split('\n').filter(Boolean).join('\n') || '（首次运行，全量变更）';
+            fs.mkdirSync('test-gen/spec', { recursive: true });
+            fs.writeFileSync('test-gen/spec/changes.txt', diff);
+
+      - name: AI analyze + generate cases + scripts (gate loop)
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          python automation/ci_ai_gen/run_pipeline.py \
+            --spec-dir test-gen/spec \
+            --out-dir test-gen \
+            --run-id ${{ env.RUN_ID }}
+
+      - name: Execute generated tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          if [ -f "test-gen/${{ env.RUN_ID }}/test_gen.py" ]; then
+            pytest test-gen/${{ env.RUN_ID }}/test_gen.py -v \
+              --alluredir=automation/output/allure-results \
+              --junitxml=automation/output/junit-ai-gen.xml || true
+          else
+            echo "No generated script (gate failed), skipping execution"
+          fi
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results-ai-gen
+          path: automation/output/allure-results
+
+      - name: Comment summary on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = `test-gen/${{ env.RUN_ID }}/summary.md`;
+            let body = '### 🤖 AI 测试生成摘要\n';
+            try {
+              body += fs.readFileSync(path, 'utf8');
+            } catch (e) {
+              body += '流水线未产出摘要（查看 workflow 日志）。';
+            }
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });

@@ -2,7 +2,7 @@
 
 > 本文件定义 AI Agent 在 OpenRobotService 项目中执行任务时的行为规范。
 > **职责分工**：本文件只描述工作流程，不包含业务知识。
-> 详细测试规范见 `docs/testing/` 合集，业务规则见 `docs/business_rules.md`。
+> 自动化测试框架见 `automation/AGENTS.md`，测试规范见 `automation/docs/testing/testing_guidelines.md`，业务规则见 `docs/business_rules.md`。
 
 ---
 
@@ -11,10 +11,11 @@
 在编辑任何代码前，按以下顺序加载上下文：
 
 1. **`docs/project_architecture.md`** — 项目架构、模块划分、技术栈
-2. **`docs/testing/index.md`** — 自动化测试规范总览（入口）
-3. **`docs/business_rules.md`** — 业务约束、状态机、权限规则
-4. **`docs/PRD.md`** — 产品需求文档（功能点规格、验收标准）
-5. **如果涉及新增测试** → `docs/testing/development-workflow.md`
+2. **`automation/AGENTS.md`** — 自动化测试框架 Agent（框架结构、命令、报告）
+3. **`automation/docs/automation_strategy.md`** — 自动化测试方案总览
+4. **`automation/docs/testing/testing_guidelines.md`** — 测试开发规范（命名、断言、夹具等）
+5. **`docs/business_rules.md`** — 业务约束、状态机、权限规则
+6. **`docs/PRD.md`** — 产品需求文档（功能点规格、验收标准）
 
 ---
 
@@ -27,14 +28,17 @@
 ### 2.2 实现阶段
 - 遵循现有代码风格（类型注解、导入顺序、命名约定）
 - 新增逻辑必须附带对应的单元测试或集成测试
-- 测试文件位置按 `docs/testing/directory-structure.md` 放置
-- 命名规范按 `docs/testing/naming-conventions.md` 执行
-- Mock 和 Fixture 按 `docs/testing/fixture-and-mock.md` 执行
-- 测试数据按 `docs/testing/test-data.md` 管理
+- 测试框架结构与命令参考 `automation/AGENTS.md`（工作流入口见 `.agents/skills/automation-testing/SKILL.md`）
+- 测试编写规范参考 `automation/docs/testing/testing_guidelines.md`
+- Mock 和 Fixture 参考 `automation/src/mocks/backend_mock.py` 的现有模式
+- 测试数据在 `automation/testdata/cases/api-test-cases.xlsx` 中管理
 
 ### 2.3 验证阶段
 ```powershell
-# 后端测试
+# 自动化框架测试
+cd automation && pytest -v
+
+# 后端测试（如涉及 backend/ 改动）
 cd backend && pytest --ignore=tests/tasks
 
 # 前端测试（如涉及前端改动）
@@ -43,22 +47,26 @@ cd frontend && npm run test
 
 ### 2.4 提交阶段
 - 遵循 Conventional Commits：`feat:` / `fix:` / `test:` / `refactor:` / `docs:` / `chore:`
-- 提交前逐项检查 `docs/testing/review-checklist.md`
-- 如果更新了 docs/testing/ 下的 Markdown 用例清单，运行 python automation/scripts/generate_excel_report.py 同步 Excel 报告
+- 提交前逐项检查 `automation/docs/testing/code-review-checklist.md`
+- 如果更新了测试用例 Excel，同步更新文档；运行 `python automation/scripts/cli-generate-report.py` 生成报告
 
 ---
 
 ## 三、测试操作速查
 
-| 操作 | 命令 | 参考文档 |
-|------|------|----------|
-| 运行后端全部 | `cd backend && pytest --ignore=tests/tasks` | `quick-reference.md` |
-| 运行后端指定文件 | `cd backend && pytest tests/integrations/test_mapper.py -v` | `quick-reference.md` |
-| 运行后端 + Allure | `cd backend && pytest --alluredir=./allure-results --ignore=tests/tasks` | `allure-report.md` |
-| 生成 Allure 报告 | `allure generate ./allure-results -o ./allure-report --clean` | `allure-report.md` |
-| 运行前端 | `cd frontend && npm run test` | `quick-reference.md` |
-| 前端覆盖率 | `cd frontend && npm run test:coverage` | `quick-reference.md` |
-| 生成测试报告 | python automation/scripts/generate_excel_report.py | generate_excel_report.py |
+| 操作 | 命令 | 参考 |
+|------|------|-------|
+| 运行自动化框架全部 | `cd automation && pytest` | `automation/AGENTS.md` |
+| 运行框架库测试 | `cd automation && pytest src/ config/` | `automation/AGENTS.md` |
+| 运行 API Mock 测试 | `cd automation && pytest tests/ -m api` | `automation/AGENTS.md` |
+| 带 Allure 运行 | `cd automation && pytest --alluredir=output/allure-results` | `automation/AGENTS.md` |
+| 生成 Allure 报告 | `cd automation && allure generate output/allure-results -o output/allure-report --clean` | `automation/AGENTS.md` |
+| 打开 Allure 报告 | `cd automation && python -m http.server 8080 -d output/allure-report` | `automation/AGENTS.md` |
+| 一键测试+报告 | `automation/ci/scripts/run-full-lane.bat` | `automation/AGENTS.md` |
+| 运行后端后端 | `cd backend && pytest --ignore=tests/tasks` | 后端 README |
+| 运行前端 | `cd frontend && npm run test` | 前端 README |
+| 前端覆盖率 | `cd frontend && npm run test:coverage` | 前端 README |
+| 生成 Excel 测试报告 | `python automation/scripts/cli-generate-report.py` | `scripts/` |
 
 ---
 
@@ -66,14 +74,14 @@ cd frontend && npm run test
 
 | 变更场景 | 需更新的文档 |
 |----------|-------------|
-| 新增测试模式或工具 | `docs/testing/utilities.md` |
-| 新增测试类型 | `docs/testing/directory-structure.md` |
-| 调整命名规范 | `docs/testing/naming-conventions.md` |
-| 新增 Mock 策略 | `docs/testing/fixture-and-mock.md` |
+| 新增测试模式或工具 | `automation/AGENTS.md` |
+| 调整测试框架结构 | `automation/AGENTS.md` |
+| 调整命名/断言/夹具规范 | `automation/docs/testing/testing_guidelines.md` |
+| 调整测试策略 | `automation/docs/automation_strategy.md` |
 | 新增故障排查经验 | `docs/troubleshooting.md` |
 | 新增业务规则 | `docs/business_rules.md` |
-| 新增测试命令 | `docs/testing/quick-reference.md` |
-| 更新 Markdown 用例清单 | 运行 python automation/scripts/generate_excel_report.py 刷新 Excel |
+| 新增测试命令 | `automation/AGENTS.md` |
+| 更新 Excel 用例清单 | 运行 python automation/scripts/cli-generate-report.py 刷新 |
 | 本文流程变更 | `AGENT.md` |
 
 ---
@@ -82,17 +90,12 @@ cd frontend && npm run test
 
 | 文档 | 用途 |
 |------|------|
-| **测试规范合集** | |
-| `docs/testing/index.md` | 测试规范总览入口 |
-| `docs/testing/directory-structure.md` | 三模块 tests 目录结构标准 |
-| `docs/testing/naming-conventions.md` | 测试文件/函数/类命名规范 |
-| `docs/testing/fixture-and-mock.md` | Fixture 定义与 Mock 策略 |
-| `docs/testing/test-data.md` | 测试数据管理规范 |
-| `docs/testing/utilities.md` | 公共测试工具函数集合 |
-| `docs/testing/allure-report.md` | Allure 报告集成规范 |
-| `docs/testing/review-checklist.md` | 代码 Review 清单 |
-| `docs/testing/development-workflow.md` | 新增测试开发流程 |
-| `docs/testing/quick-reference.md` | 命令行速查表 |
+| **测试相关** | |
+| `automation/AGENTS.md` | 自动化测试框架 Agent（命令/结构/报告） |
+| `automation/docs/automation_strategy.md` | 自动化测试方案（分层/策略/CI） |
+| `automation/docs/testing/testing_guidelines.md` | 测试开发规范（命名/断言/夹具） |
+| `automation/docs/testing/test_report_guideline.md` | 报告规范（Allure/pytest-html） |
+| `automation/docs/testing/code-review-checklist.md` | 代码 Review 清单 |
 | **业务文档** | |
 | `docs/project_architecture.md` | 项目架构说明 |
 | `docs/business_rules.md` | 业务规则 |

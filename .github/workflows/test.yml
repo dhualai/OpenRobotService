@@ -58,7 +58,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           AUTOMATION_ENV: ci
         run: |
-          pytest automation/config/tests/ automation/logger/tests/ automation/clients/tests/ automation/assertions/tests/ automation/fixtures/tests/ -v --alluredir=automation/output/allure-results --junitxml=automation/output/junit-infra.xml
+          pytest automation/config/tests/ automation/src/logger/tests/ automation/src/clients/tests/ automation/src/assertions/tests/ automation/src/fixtures/tests/ automation/src/runner/tests/ -v --alluredir=automation/output/allure-results --junitxml=automation/output/junit-infra.xml
 
       - name: Upload Allure results
         if: always()
@@ -85,7 +85,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          pytest automation/api/tests/ -m api -v --alluredir=automation/output/allure-results --junitxml=automation/output/junit-api.xml
+          pytest automation/tests/ -m api -v --alluredir=automation/output/allure-results --junitxml=automation/output/junit-api.xml
 
       - name: Upload Allure results
         if: always()
@@ -146,7 +146,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           AUTOMATION_ENV: ci
         run: |
-          pytest automation/api/tests/test_health.py automation/api/tests/test_auth.py -v --alluredir=automation/output/allure-results --junitxml=automation/output/junit-auth.xml
+          pytest automation/tests/auth/ -v --alluredir=automation/output/allure-results --junitxml=automation/output/junit-auth.xml
 
       - name: Upload Allure results
         if: always()

@@ -80,3 +80,9 @@ ai/agents/AiTaskPlatform/log_analyzer/log_manual/
 ai/integrations/wecom/user_map.json
 # ===== Allure test report output =====
 output/
+
+# ===== AI 测试生成流水线产物（每次 CI 重新生成，不入库）=====
+/test-gen/
+
+# ===== AI 生成用例归档（审阅确认后手动转正入库）=====
+automation/references/generated-cases/

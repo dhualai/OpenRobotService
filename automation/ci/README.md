@@ -25,7 +25,7 @@ automation\ci\scripts\generate-allure-report.bat  :: 单独生成报告
 
 ## GitHub Actions
 
-`.github/workflows/test.yml`（已复制到项目根）定义了 CI 流水线：
+GitHub Actions workflow 定义在**仓库根** `.github/workflows/test.yml`（GitHub 只发现根目录的 workflow），`ci/` 下不再保留副本：
 
 1. **test-infra** — 基础设施测试 + Upload allure-results
 2. **test-api** — API Mock 测试 + Upload allure-results
@@ -39,7 +39,6 @@ automation\ci\scripts\generate-allure-report.bat  :: 单独生成报告
 
 ```
 ci/
-+-- .github/workflows/test.yml       # GitHub Actions workflow 定义（原始副本）
 +-- scripts/
 |   +-- setup-env.bat                 # Docker 环境启动
 |   +-- run-fast-lane.bat             # 快速测试 + Allure 报告
@@ -47,6 +46,3 @@ ci/
 |   +-- generate-allure-report.bat    # Allure 报告生成工具
 +-- README.md
 ```
-
-根目录 `.github/workflows/test.yml` 是 GitHub Actions 自动发现的入口。
-`automation/ci/.github/workflows/test.yml` 是设计文档副本，两者应保持同步。
