@@ -1,6 +1,6 @@
 """Data-driven API tests."""
 import pytest
-from automation.tests.common.test_runner import load_cases, run_case
+from automation.src.runner import load_cases, run_case
 
 CASES = load_cases("tasks")
 

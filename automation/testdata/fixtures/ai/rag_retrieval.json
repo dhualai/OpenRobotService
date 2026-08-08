@@ -1,0 +1,73 @@
+{
+  "suite": "rag_retrieval",
+  "description": "5-route RAG retrieval recall golden cases (L2). expect_hits maps collection -> terms expected to appear in retrieved docs. Executed via ai.core.retrieval (requires AI runtime deps); skipped when unavailable.",
+  "cases": [
+    {
+      "id": "RAG-001",
+      "queries": ["E1601 是什么错误码"],
+      "expect_hits": {
+        "retrieve_cheduan": ["E1601"]
+      },
+      "note": "车端错误码：query 含错误码字面量，cheduan 集合应命中"
+    },
+    {
+      "id": "RAG-002",
+      "queries": ["车子不动了，任务状态一直显示调度中"],
+      "expect_hits": {
+        "retrieve_troubleshooting": ["调度中", "车不动"],
+        "retrieve": ["任务状态"]
+      },
+      "note": "排查树：调度中/车不动类症状应命中排查树与操作手册"
+    },
+    {
+      "id": "RAG-003",
+      "queries": ["如何更换充电桩"],
+      "expect_hits": {
+        "retrieve": ["充电桩"]
+      },
+      "note": "操作手册 howto：操作类问题命中操作手册集合"
+    },
+    {
+      "id": "RAG-004",
+      "queries": ["车走到一半停住了，任务状态显示执行中"],
+      "expect_hits": {
+        "retrieve_troubleshooting": ["执行中", "停住"],
+        "retrieve": ["任务状态", "执行中"]
+      },
+      "note": "运行中断：排查树 + 操作手册双命中"
+    },
+    {
+      "id": "RAG-005",
+      "queries": ["定位丢失，无法建图"],
+      "expect_hits": {
+        "retrieve": ["定位"],
+        "retrieve_troubleshooting": ["定位"]
+      },
+      "note": "定位类故障：操作手册 + 排查树"
+    },
+    {
+      "id": "RAG-006",
+      "queries": ["路径规划界面报错"],
+      "expect_hits": {
+        "retrieve_troubleshooting": ["路径规划"]
+      },
+      "note": "路径规划报错：排查树症状命中"
+    },
+    {
+      "id": "RAG-007",
+      "queries": ["界面显示的中文和英文怎么切换"],
+      "expect_hits": {
+        "retrieve_translation": ["翻译", "界面"]
+      },
+      "note": "翻译表：界面文案类查询命中 translation 集合"
+    },
+    {
+      "id": "RAG-008",
+      "queries": ["充电桩充电时提示故障怎么处理"],
+      "expect_hits": {
+        "retrieve_faq": ["充电桩"]
+      },
+      "note": "FAQ：常见问答类问题命中 FAQ 集合"
+    }
+  ]
+}

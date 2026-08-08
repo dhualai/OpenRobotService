@@ -17,7 +17,7 @@ dependencies = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["infrastructure","tests"]
+testpaths = ["src", "config", "ci_ai_gen", "tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -31,8 +31,9 @@ markers = [
     "smoke: Smoke tests (fast lane)",
     "flaky: Known flaky tests",
     "mock: Tests using mock services",
+    "judge: Tests that invoke the LLM judge (L3, higher cost)",
 ]
-addopts = "-ra --strict-markers --alluredir=output/allure-results"
+addopts = "-ra --strict-markers"
 
 [tool.ruff]
 line-length = 100

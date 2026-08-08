@@ -176,5 +176,5 @@ Vitest 使用 jsdom 模拟浏览器环境，无需真实 DOM 或浏览器：
 | 产品形态设计 | `docs/PRODUCT/PRODUCT.md` |
 | 本地部署指南 | `docs/PRODUCT/SETUP.md` |
 | 微信服务号配置 | `docs/PRODUCT/WECHAT.md` |
-| 测试开发规范 | `docs/testing_guidelines.md` |
-| 自动化测试方案 | `docs/automation_strategy.md` |
+| 测试开发规范 | `automation/docs/testing/testing_guidelines.md` |
+| 自动化测试方案 | `automation/docs/automation_strategy.md` |
