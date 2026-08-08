@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Button, Toast, Loading, Input } from 'tdesign-mobile-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { aiGet } from '@/api/ai';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -16,6 +17,7 @@ interface TaskExecutionStats {
 interface ProjectItem {
   id: string;
   project_code: string;
+  system_id?: string | null;
   name: string;
   status: string;
   contact_person: string;
@@ -26,6 +28,12 @@ interface ProjectItem {
   task_execution_stats?: TaskExecutionStats | null;
   latest_manual_switch_count?: number | null;
   settlement_period?: string | null; // 业绩核算期，格式 YYYY-MM，来自企业微信同步
+}
+
+// 企业微信实时台账记录（GET /api/ai/wecom/projects 返回，values 的键为企业微信智能表格列名）
+interface WecomProjectRecord {
+  record_id: string;
+  values?: Record<string, unknown>;
 }
 
 
@@ -68,6 +76,46 @@ export default function ProjectProgress() {
   }, [canViewAll]);
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
+
+  // 企业微信实时台账的项目经理名单（GET /api/ai/wecom/projects，AI 服务）；
+  // 卡片项目经理优先用台账值（按 项目编号 / record_id 匹配），台账不可用时回退本地 project_manager
+  const [wecomManagerByCode, setWecomManagerByCode] = useState<Map<string, string>>(new Map());
+  const [wecomManagerByRecord, setWecomManagerByRecord] = useState<Map<string, string>>(new Map());
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await aiGet<{ code: number; data?: { records?: WecomProjectRecord[] }; message?: string }>('/wecom/projects');
+        if (!alive) return;
+        const records = res?.data?.records || [];
+        const byCode = new Map<string, string>();
+        const byRecord = new Map<string, string>();
+        for (const r of records) {
+          const manager = String(r.values?.['项目经理'] ?? '').trim();
+          if (!manager) continue;
+          const code = String(r.values?.['项目编号'] ?? '').trim();
+          if (code) byCode.set(code, manager);
+          if (r.record_id) byRecord.set(r.record_id, manager);
+        }
+        setWecomManagerByCode(byCode);
+        setWecomManagerByRecord(byRecord);
+      } catch {
+        // wecom 台账接口不可用时静默降级：沿用本地 project_manager
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const wecomManagerOf = (p: ProjectItem): string | null => {
+    const byCode = wecomManagerByCode.get(String(p.project_code ?? '').trim());
+    if (byCode) return byCode;
+    if (p.system_id) {
+      const byRecord = wecomManagerByRecord.get(String(p.system_id).trim());
+      if (byRecord) return byRecord;
+    }
+    return null;
+  };
 
   if (loading) return <Loading text="加载项目..." />;
 
@@ -134,6 +182,7 @@ export default function ProjectProgress() {
       ) : (
         displayProjects.map((p) => {
           const hasRisk = p.risks > 0;
+          const wecomManager = wecomManagerOf(p);
 
           return (
             <div
@@ -157,7 +206,7 @@ export default function ProjectProgress() {
                 </span>
               </div>
               <div style={{ fontSize: 12, color: '#999', marginTop: 6 }}>
-                {p.project_code} · 项目经理: {p.project_manager || '未指定'}
+                {p.project_code} · 项目经理: {wecomManager || p.project_manager || '未指定'}
               </div>
 
               {/* 任务统计：任务总数 / 已完成任务 / 任务完成率 / 切手动次数 */}

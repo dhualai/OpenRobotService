@@ -42,6 +42,16 @@ function deriveFilename(src: string, alt?: string): string {
 export default function ImageLightbox({ src, alt, open, onClose }: ImageLightboxProps) {
   const [feedback, setFeedback] = useState('');
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  // 图片预加载就绪标记：ImageViewer 的 mask 是半透明（rgba 0,0,0,0.6），挂载时若 <img> 未
+  // 就绪会先透出底层页面再跳出图片 → 闪烁。这里先用 new Image() + decode() 预加载，解码
+  // 完成后置 imgReady=true（移除 loading overlay）。ImageViewer 始终挂载（纯黑 mask 兜底），
+  // loading spinner 只作为 overlay 叠加——不切换 DOM，消除 DOM 替换造成的闪烁。
+  // 缓存图片 decode 近乎瞬时（overlay 几乎不可见）；非缓存图片显示 spinner 直到就绪。
+  const [imgReady, setImgReady] = useState(false);
+  // 图片加载失败标记：new Image() onerror 且 fetch fallback 也失败时置 true，显示错误提示。
+  // 根因：ImageViewer 的 <img> 不带 Authorization header，需鉴权的图片 URL 加载失败 → 黑屏无提示。
+  // fallback：onerror 时用 fetch + credentials 重试生成 blobUrl 供 ImageViewer 显示。
+  const [imgError, setImgError] = useState(false);
 
   // ESC 关闭 + 锁定背景滚动
   useEffect(() => {
@@ -62,12 +72,58 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
   useEffect(() => {
     if (!open) {
       setFeedback('');
+      setImgReady(false);
+      setImgError(false);
       setBlobUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
         return null;
       });
     }
   }, [open]);
+
+  // 预加载图片：open 且 src 有值时触发。
+  // ① new Image() 直接加载（公开图片 / 已缓存 → onload 瞬时）
+  // ② onload 后 decode 确保解码完成，进一步降低挂载后渲染延迟
+  // ③ onerror 时（ImageViewer <img> 不带 Authorization header，需鉴权的图片会失败）
+  //    用 fetch + credentials 重试生成 blobUrl，让 ImageViewer 用 blob 显示
+  // ④ fetch 也失败 → imgError=true，显示错误提示（不再黑屏无反馈）
+  useEffect(() => {
+    if (!open || !src) {
+      setImgReady(false);
+      setImgError(false);
+      return;
+    }
+    setImgReady(false);
+    setImgError(false);
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled) return;
+      if (img.decode) {
+        img.decode().then(() => { if (!cancelled) setImgReady(true); }).catch(() => { if (!cancelled) setImgReady(true); });
+      } else {
+        setImgReady(true);
+      }
+    };
+    img.onerror = async () => {
+      if (cancelled) return;
+      // 直接 <img> 加载失败（可能需要鉴权 header）：尝试 fetch + credentials 生成 blobUrl
+      try {
+        const res = await fetch(src, { credentials: 'include' });
+        if (!res.ok) throw new Error(String(res.status));
+        const blob = await res.blob();
+        if (cancelled) return;
+        setBlobUrl(URL.createObjectURL(blob));
+        setImgReady(true);
+      } catch {
+        if (cancelled) return;
+        setImgError(true);
+        setImgReady(true); // 放行，移除 loading overlay，显示错误提示
+      }
+    };
+    img.src = src;
+    return () => { cancelled = true; };
+  }, [open, src]);
 
   const flash = useCallback((msg: string) => {
     setFeedback(msg);
@@ -136,17 +192,26 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
 
   if (!open) return null;
 
+  // ImageViewer 优先用 blobUrl（需鉴权的图片经 fetch fallback 生成），否则用原始 src
+  const displaySrc = blobUrl || src;
+
   return createPortal(
     <>
-      {/* 交互主体：双指缩放 / 双击缩放 / 拖拽平移 / 单击关闭（TDesign ImageViewer） */}
+      {/* ImageViewer 始终挂载（不再用 imgReady 条件渲染切换 DOM）：
+          纯黑 mask 兜底（.t-image-viewer__mask 已改 #000），图片未加载时显示纯黑，
+          加载完直接显示——无 DOM 替换造成的闪烁。
+          loading spinner 改为 overlay 叠加（下方），不替换 ImageViewer DOM。 */}
       <ImageViewer
-        images={[src ?? '']}
+        images={[displaySrc ?? '']}
         visible={open}
         maxZoom={3}
         onClose={() => onClose()}
       />
-      {/* 自定义工具条：复制 / 下载（关闭按钮用 ImageViewer 自带的） */}
+      {/* 自定义工具条：左上角关闭 + 复制 / 下载 */}
       <div className="img-lightbox__toolbar">
+        <button type="button" className="img-lightbox__btn img-lightbox__close" onClick={onClose} aria-label="关闭">
+          ✕
+        </button>
         <button type="button" className="img-lightbox__btn" onClick={handleCopy}>
           复制
         </button>
@@ -154,6 +219,24 @@ export default function ImageLightbox({ src, alt, open, onClose }: ImageLightbox
           下载
         </button>
       </div>
+      {/* loading spinner 叠加层（imgReady=false 时）：不替换 DOM，只叠加在 ImageViewer 之上。
+          pointer-events:none 让 ImageViewer 的 mask 处理点击关闭，不拦截交互。
+          缓存图片 imgReady 瞬时 true（spinner 几乎不可见）；非缓存图片显示 spinner 直到就绪。 */}
+      {!imgReady && (
+        <div className="img-lightbox__loading-overlay" role="status" aria-label="图片加载中">
+          <span className="img-lightbox__loading-spinner" />
+        </div>
+      )}
+      {/* 图片加载失败提示（new Image() onerror 且 fetch fallback 也失败时） */}
+      {imgReady && imgError && (
+        <div className="img-lightbox__error" role="alert">
+          <span className="img-lightbox__error-icon">⚠</span>
+          <span>图片加载失败</span>
+          <button type="button" className="img-lightbox__error-retry" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+      )}
       {feedback && <div className="img-lightbox__feedback">{feedback}</div>}
     </>,
     document.body,

@@ -100,14 +100,13 @@ class KBDomainIngester(BaseIngester[KBEntry]):
                 self._log(f"[WARN] 无法读取 {md_file}: {e}")
                 continue
 
-            # 按 sub_domain 选择切分策略
-            if sub_domain == "faq":
+            # 按文件名模式选择切分策略（兼容新旧目录结构）
+            _rel = source_file.lower()
+            if "faq" in _rel:
                 file_entries = self._split_faq(content, sub_domain, source_file)
-            elif sub_domain == "usp_faq":
-                file_entries = self._split_faq(content, sub_domain, source_file)
-            elif sub_domain == "usp_manual":
+            elif "manual" in _rel:
                 file_entries = self._split_manual(content, sub_domain, source_file)
-            elif sub_domain == "cheduan_errors":
+            elif sub_domain in ("cheduan_errors",) or "cheduan_errors" in _rel:
                 file_entries = self._split_cheduan_errors(content, sub_domain, source_file)
             else:
                 file_entries = self._split_generic(content, sub_domain, source_file)
@@ -423,7 +422,12 @@ class KBDomainIngester(BaseIngester[KBEntry]):
     # ═══════════════════════════════════════════════════════════
 
     def _split_generic(self, content: str, sub_domain: str, source_file: str) -> List[KBEntry]:
-        """通用切分：按 ## 切块，超长段落（>3000 字符）按 ### 细切"""
+        """通用切分：按 ## 切块，超长段落（>3000 字符）按 ### 细切
+
+        交叉引用段落（## 你可能还需要查）不独立入库——它只是"问题→模块"索引，
+        单独成 chunk 会以高向量分抢占 top-k 却无排查内容。
+        改为合并到前一个真实 chunk 的末尾，附加 ## 相关模块 标记，保留跨模块指引。
+        """
         h1_match = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
         doc_title = h1_match.group(1).strip() if h1_match else ""
 
@@ -450,6 +454,15 @@ class KBDomainIngester(BaseIngester[KBEntry]):
                 body = section.strip()
 
             if not body:
+                continue
+
+            # ── 交叉引用段落：合并到前一个 chunk，不独立入库 ──
+            if section_title.startswith("你可能还需要查"):
+                if entries:
+                    prev = entries[-1]
+                    prev.content = (prev.content.rstrip()
+                                    + "\n\n## 相关模块\n"
+                                    + body)
                 continue
 
             # 超长段落按 ### 进一步切分

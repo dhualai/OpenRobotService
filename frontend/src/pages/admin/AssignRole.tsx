@@ -590,6 +590,8 @@ function UserFirstAssign({
   reloadUsers: () => Promise<void>;
 }) {
   const [keyword, setKeyword] = useState('');
+  const [roleKeyword, setRoleKeyword] = useState('');
+  const [projectKeyword, setProjectKeyword] = useState('');
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
   const [selectedRoleIds, setSelectedRoleIds] = useState<Set<string>>(new Set());
   const [selectedProjectCodes, setSelectedProjectCodes] = useState<Set<string>>(new Set());
@@ -603,6 +605,21 @@ function UserFirstAssign({
       return text.includes(kw);
     });
   }, [users, keyword]);
+
+  const filteredRoles = useMemo(() => {
+    const kw = roleKeyword.trim().toLowerCase();
+    if (!kw) return roles;
+    return roles.filter((r) => r.name.toLowerCase().includes(kw));
+  }, [roles, roleKeyword]);
+
+  const filteredProjects = useMemo(() => {
+    const kw = projectKeyword.trim().toLowerCase();
+    if (!kw) return projects;
+    return projects.filter((p) => {
+      const text = `${p.name} ${p.project_code}`.toLowerCase();
+      return text.includes(kw);
+    });
+  }, [projects, projectKeyword]);
 
   const toggleUser = (id: string) => {
     setSelectedUserIds((prev) => {
@@ -641,22 +658,22 @@ function UserFirstAssign({
     });
   };
 
-  const allRolesSelected = roles.length > 0 && roles.every((r) => selectedRoleIds.has(r.id));
+  const allRolesSelected = filteredRoles.length > 0 && filteredRoles.every((r) => selectedRoleIds.has(r.id));
   const toggleSelectAllRoles = () => {
     setSelectedRoleIds((prev) => {
       const next = new Set(prev);
-      if (allRolesSelected) roles.forEach((r) => next.delete(r.id));
-      else roles.forEach((r) => next.add(r.id));
+      if (allRolesSelected) filteredRoles.forEach((r) => next.delete(r.id));
+      else filteredRoles.forEach((r) => next.add(r.id));
       return next;
     });
   };
 
-  const allProjectsSelected = projects.length > 0 && projects.every((p) => selectedProjectCodes.has(p.project_code));
+  const allProjectsSelected = filteredProjects.length > 0 && filteredProjects.every((p) => selectedProjectCodes.has(p.project_code));
   const toggleSelectAllProjects = () => {
     setSelectedProjectCodes((prev) => {
       const next = new Set(prev);
-      if (allProjectsSelected) projects.forEach((p) => next.delete(p.project_code));
-      else projects.forEach((p) => next.add(p.project_code));
+      if (allProjectsSelected) filteredProjects.forEach((p) => next.delete(p.project_code));
+      else filteredProjects.forEach((p) => next.add(p.project_code));
       return next;
     });
   };
@@ -756,15 +773,22 @@ function UserFirstAssign({
 
         {/* 选择角色 */}
         <SectionCard title="选择角色" count={selectedRoleIds.size}>
+          <Input
+            value={roleKeyword}
+            onChange={(v) => setRoleKeyword(String(v))}
+            placeholder="搜索角色名称"
+            clearable
+            style={{ marginBottom: 8 }}
+          />
           <div
             onClick={toggleSelectAllRoles}
             style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', padding: '6px 0', fontSize: 13, color: '#666' }}
           >
             <CheckDot checked={allRolesSelected} />
-            全选（{roles.length} 个角色）
+            全选（{filteredRoles.length} 个角色）
           </div>
           <div style={{ maxHeight: 200, overflow: 'auto' }}>
-            {roles.map((r) => {
+            {filteredRoles.map((r) => {
               const checked = selectedRoleIds.has(r.id);
               return (
                 <div
@@ -781,20 +805,30 @@ function UserFirstAssign({
                 </div>
               );
             })}
+            {filteredRoles.length === 0 && (
+              <div style={{ textAlign: 'center', padding: 20, color: '#999' }}>暂无匹配角色</div>
+            )}
           </div>
         </SectionCard>
 
         {/* 选择项目 */}
         <SectionCard title="选择项目" count={selectedProjectCodes.size}>
+          <Input
+            value={projectKeyword}
+            onChange={(v) => setProjectKeyword(String(v))}
+            placeholder="搜索项目名称 / 编码"
+            clearable
+            style={{ marginBottom: 8 }}
+          />
           <div
             onClick={toggleSelectAllProjects}
             style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', padding: '6px 0', fontSize: 13, color: '#666' }}
           >
             <CheckDot checked={allProjectsSelected} />
-            全选（{projects.length} 个项目）
+            全选（{filteredProjects.length} 个项目）
           </div>
           <div style={{ maxHeight: 260, overflow: 'auto' }}>
-            {projects.map((p) => {
+            {filteredProjects.map((p) => {
               const checked = selectedProjectCodes.has(p.project_code);
               return (
                 <div
@@ -814,6 +848,9 @@ function UserFirstAssign({
                 </div>
               );
             })}
+            {filteredProjects.length === 0 && (
+              <div style={{ textAlign: 'center', padding: 20, color: '#999' }}>暂无匹配项目</div>
+            )}
           </div>
         </SectionCard>
       </div>

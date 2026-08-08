@@ -4,6 +4,7 @@ MIGRATION.md 阶段 3：从 `app/modules/das/api/projects.py` 搬迁而来，
 路由前缀从 `/api/DAS/projects` 迁移到 `/api/admin/projects`。
 """
 from fastapi import APIRouter, Depends, Query, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
 from typing import Optional, Dict, List, Any
 from app.modules.admin.schemas_das.request_models import ProjectCreate, ProjectUpdate, ProjectResponse
 from app.modules.admin.services.project_service import project_service
@@ -272,7 +273,12 @@ async def create_project(
 ) -> ProjectResponse:
     token = request.headers.get("Authorization", "")
     token = token[7:]
-    
+
+    # 项目编号/项目名称均为唯一 key：创建前比对库中已存在项目，命中即拒绝并提示用户重输。
+    duplicate_msg = project_service.check_project_duplicate(project_data.project_code, project_data.name)
+    if duplicate_msg:
+        raise HTTPException(status_code=409, detail=f"{duplicate_msg}，请重新输入")
+
     if project_data.contact_person and project_data.contact_person_id:
         try:
             existing_projects = await PermissionService.get_projects(request, token)
@@ -306,7 +312,11 @@ async def create_project(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"权限服务操作失败: {str(e)}")
     
-    project = project_service.create_project(project_data.model_dump())
+    try:
+        project = project_service.create_project(project_data.model_dump())
+    except IntegrityError:
+        # 并发提交兜底：唯一约束（项目编号）冲突时同样按“项目已存在”处理
+        raise HTTPException(status_code=409, detail="项目已存在，请重新输入")
     return project
 
 
@@ -352,8 +362,16 @@ async def update_project(
             content = f"{current_user_name} 给您设置为项目 '{existing_project['name']}' 的对接人"
             WeChatService.send_notification(contact_user["id"], content, url='https://usp.ep-zl.com/wechat/projects')
     
+    # 项目编号/项目名称是唯一 key：更新时若改动这两个字段，同样校验库中是否已被其他项目占用
+    if update_data.project_code or update_data.name:
+        new_code = update_data.project_code or existing_project["project_code"]
+        new_name = update_data.name or existing_project["name"]
+        duplicate_msg = project_service.check_project_duplicate(new_code, new_name, exclude_id=project_id)
+        if duplicate_msg:
+            raise HTTPException(status_code=409, detail=f"{duplicate_msg}，请重新输入")
+
     update_dict = {k: v for k, v in update_data.model_dump().items() if v is not None}
-    
+
     project = project_service.update_project(project_id, update_dict)
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
