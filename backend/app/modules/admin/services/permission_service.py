@@ -104,6 +104,14 @@ class PermissionService:
     @staticmethod
     async def get_project_uspinfo(request: Request, token: str, project_code: str) -> Dict[str, List[Dict[str, str]]]:
         try:
+            # 仅导出本项目已关联人员：通过 user_project_roles 表过滤，
+            # project_code 与 Project.id 一致（见 delivery.py Project 定义），
+            # 亦即 user_project_roles.project_id 列所存值。
+            members = db_manager.get_project_members(project_code, include_usp=False)
+            member_user_ids = {m.get('user_id') for m in members if m.get('user_id')}
+            if not member_user_ids:
+                return {"user_list": [], "user_key": []}
+
             # db_manager 没有 get_all_users 方法，改用 user_service.get_user_list()
             # （已统一处理 external_credentials 的 JSON 解析与 null 兜底）
             # limit 用 999999999 以列出全部用户，与项目列表等接口的约定一致
@@ -112,6 +120,9 @@ class PermissionService:
             user_key = []
 
             for user in users:
+                # 仅保留本项目已关联人员
+                if user.get('id') not in member_user_ids:
+                    continue
                 # user_service 返回的 external_credentials 已经是 dict（null → {}）
                 external_credentials = user.get('external_credentials') or {}
                 usp_info = external_credentials.get("usp", {})

@@ -210,7 +210,8 @@ def _assess_ticket_readiness(state: AgentState) -> tuple[bool, list[str]]:
     """
     missing = []
     has_project = bool((state.collected_info.get("project") or "").strip()
-                       or (state.collected_info.get("project_id") or "").strip())
+                       or (state.collected_info.get("project_id") or "").strip()
+                       or (state.collected_info.get("project_name") or "").strip())
     if not has_project:
         missing.append("项目名称")
     for field_key, label in (state.required_fields or {}).items():
@@ -430,8 +431,12 @@ project 不用写在 required_fields 里（系统强制要求）。
 ## 重要规则
 - 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：`、`FAQ N：`、`🎫 服务号 N：`、`🚗 车端错误码 N：` 或 `🌐 翻译表 N：` 中标明。
   **只引用与用户问题直接相关的 chunk 内容**，无关 chunk 的内容和图片一律忽略。
+- 🔴 **方向一致性铁律（极其重要）**：知识库检索可能召回**行为方向与用户问题相反**的排查段落。典型场景——用户问"没做该做的"（如车电量低了却不生成充电任务、任务取消了但车还在跑），检索到的却是"做了不该做的/已完成未同步"（如电量够但不打断充电、任务实际已完成但状态没更新）。**方向相反 ≠ 相关知识，必须直接忽略，绝对禁止引用到回复中误导用户**。判断方向：看用户描述的异常现象与 chunk 描述的排查对象是否指向同一动作方向的异常。若方向相反，宁可答"手册未覆盖、建议转工单"，也不用反向内容硬套。
 - **禁止在回复中暴露知识来源**：不要说"根据知识库""检索结果显示"等话术。
   直接给出步骤/答案，用户不需要知道你查了什么。
+- 🔴 **禁止使用开发内部术语**：你的服务对象是现场工程师和客户，不是开发人员。
+  严禁在回复中出现代码级词汇——`commit`/`diff`/`分支`/`回滚`/`发版`/`代码`/`函数`/`参数名(task_priority/can_interrupt等)`/`模块名`。
+  用现场人员能理解的语言替代：不说"代码改了哪个函数"，说"调度系统的行为变了"；不说"commit 记录"，说"版本变更记录"；不说"回滚"，说"恢复到改动前的状态"。
 - **产品/车型介绍时，知识库中若有该产品的图片，必须用 ![说明](url) 格式引用到回复中**。
   图片是产品外观、参数表、尺寸图等，对用户极其重要，不要省略。
 
@@ -573,7 +578,10 @@ class AiDiagnosisPlatform:
         """把本地图片路径 ./media/xxx → 完整 CDN URL（跳过外链）"""
         _dm = r.domain or "team"
         _sd = r.sub_domain or "faq"
-        _mu = f"{self.config.media_url_prefix}/kb/{_dm}/{_sd}"
+        # images are in shared parent directory (e.g., usp/media/), not per-sub_domain
+        # sub_domain like "usp\faq" → parent is "usp"
+        _sd_parent = _sd.replace('\\', '/').split('/')[0]
+        _mu = f"{self.config.media_url_prefix}/kb/{_dm}/{_sd_parent}"
         return re.sub(
             r'!\[([^\]]*)\]\((?:\./)?media/([^)]+)\)',
             rf'![\1]({_mu}/media/\2)',
@@ -798,15 +806,21 @@ class AiDiagnosisPlatform:
         if "collected_info" in state_update:
             # 合并新字段，空值/无 视为清除。project 由 LLM 提取用户提到的地点/客户名，
             # 提单时 _build_ticket 会调 _resolve_project 把它匹配成真实项目全名。
-            for k, v in state_update["collected_info"].items():
+            # 🔴 LLM 可能用 project_name / projectName 等变体，统一归一化为 "project"
+            for k, v in list(state_update["collected_info"].items()):
                 if v is None:
                     state.collected_info.pop(k, None)
                     continue
                 if isinstance(v, (dict, list)):
                     v = json.dumps(v, ensure_ascii=False)
                 v = str(v).strip()
-                if v:
-                    state.collected_info[k] = v
+                if not v:
+                    continue
+                # 归一化项目名称 key：LLM 可能输出 project_name / projectName / project 等
+                _key = k
+                if k in ("project_name", "projectName", "projectname"):
+                    _key = "project"
+                state.collected_info[_key] = v
         # ---- 服务端硬校验：按工单类型的保底必填清单复核，缺项强制打回 ----
         #  不信 LLM 的 ticket_ready 自评，也不看 problem_summary（LLM 可编造）——
         #  只认 collected_info 里的结构化字段。
@@ -1066,13 +1080,16 @@ class AiDiagnosisPlatform:
                 if r.id not in seen:
                     seen.add(r.id)
                     uniq.append(r)
+            hit_logs = []  # 送入 prompt 的 chunk 摘要（标题@分数，用于生产排查检索效果）
             for r in uniq[:_MAX_RETRIEVAL_DOCS]:
                 content = self._rewrite_images(r) if r.content else ""
                 if not content.strip():
                     continue
                 title = f"（{r.title}）" if r.title else ""
                 docs.append(f"---\n{_label(r)} {idx}{title}：\n{content}\n---")
+                hit_logs.append(f"[{r.sub_domain or '-'}]{r.title or '(无标题)'}@{r.score:.4f}")
                 idx += 1
+            logger.info(f"[retrieve] 命中{len(all_results)}去重{len(uniq)}送prompt{len(hit_logs)}: {' | '.join(hit_logs)}")
 
             result = "\n".join(docs) if docs else "（知识库暂无匹配文档，请告知用户当前手册未覆盖此问题，建议转工单处理，不要自己编造答案。）"
 
@@ -1131,8 +1148,10 @@ class AiDiagnosisPlatform:
                     continue
                 v = str(v).strip()
                 if v:
-                    agent_state.collected_info[k] = v
-                    filled.append(k)
+                    # 归一化：LLM 可能输出 project_name 等变体
+                    _key = "project" if k in ("project_name", "projectName", "projectname") else k
+                    agent_state.collected_info[_key] = v
+                    filled.append(_key)
             if filled:
                 logger.info(f"[backfill] 从对话回填 collected_info: session={session_id}, fields={filled}")
         except Exception:

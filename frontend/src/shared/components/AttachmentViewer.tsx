@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import ImageLightbox from './ImageLightbox';
+import PdfViewer from './PdfViewer';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { setupWechatFilePreview } from '@/shared/utils/wechatJsSdk';
@@ -79,18 +80,26 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
     }
   }, [item, kind, loadMd]);
 
-  // 微信内：图片/PDF/Office 改走 JS-SDK 原生预览（wx.previewImage / wx.previewFile）；
+  // 微信内：图片/Office 改走 JS-SDK 原生预览（wx.previewImage / wx.previewFile）；
+  // PDF 不走原生——微信内置文档查看器（wx.previewFile）兼容性差，改由前端 pdf.js 在 H5 内
+  // 渲染（canvas 在微信 WebView 支持良好），保证微信端也能直接预览。
   // 调起成功则由微信接管并关闭本 H5 弹窗，失败回退下方 H5 预览（已内置「在浏览器打开」提示）。
   const onCloseRef = useRef(onClose);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
   const [wxHandled, setWxHandled] = useState(false);
-  const wxPreviewable = kind === 'image' || kind === 'pdf' || kind === 'office';
+  // 微信原生预览调起期间（异步）标记：此时若直接渲染 H5 灯箱会先闪现「带复制下载的灯箱」，
+  // 待微信接管后灯箱才消失——表现为「灯箱闪一下再显示原生预览」。故该期间不渲染 H5 弹窗，
+  // 调起成功后由微信接管（wxHandled），失败才回退 H5 灯箱。
+  const [wxPending, setWxPending] = useState(false);
+  const wxPreviewable = kind === 'image' || kind === 'office';
 
   useEffect(() => {
     setWxHandled(false);
+    setWxPending(false);
     if (item && wxPreviewable && isWeChat() && window.wx) {
       let cancelled = false;
+      setWxPending(true);
       const absUrl = item.previewUrl.startsWith('http')
         ? item.previewUrl
         : `${window.location.origin}${item.previewUrl}`;
@@ -100,7 +109,9 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
         name: item.filename,
         size: item.size,
       }).then((ok) => {
-        if (ok && !cancelled) {
+        if (cancelled) return;
+        setWxPending(false);
+        if (ok) {
           setWxHandled(true);
           onCloseRef.current();
         }
@@ -112,6 +123,8 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
   if (!item) return null;
   // 微信原生预览已接管，无需再渲染 H5 弹窗
   if (wxHandled) return null;
+  // 微信原生预览调起中：暂不渲染 H5 灯箱，避免「灯箱闪现后切原生预览」的闪烁
+  if (wxPending) return null;
 
   // 图片：使用全屏灯箱（自带缩放 / 长按照片保存 / 下载）
   if (kind === 'image') {
@@ -141,14 +154,16 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
           </div>
         </div>
         <div className="attachment-viewer__body">
-          {kind === 'pdf' && <iframe className="attachment-viewer__frame" src={item.previewUrl} title={item.filename} />}
+          {kind === 'pdf' && <PdfViewer url={item.previewUrl} name={item.filename} />}
           {kind === 'md' &&
             (mdLoading ? (
               <div className="attachment-viewer__hint">加载中…</div>
             ) : mdError ? (
               <div className="attachment-viewer__hint attachment-viewer__hint--error">预览失败：{mdError}</div>
             ) : (
-              <div className="md-content attachment-viewer__md">{mdText}</div>
+              <div className="markdown-body md-content attachment-viewer__md">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{mdText}</ReactMarkdown>
+              </div>
             ))}
           {(kind === 'other' || kind === 'office') && (
             <div className="attachment-viewer__hint">

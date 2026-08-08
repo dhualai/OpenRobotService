@@ -26,7 +26,7 @@ class IdentityService:
         user_id: str, username: str, hashed_password: str, permissions: List[str],
         name: Optional[str] = None, status: str = "inactive",
         external_credentials: Optional[Dict[str, Dict[str, str]]] = None,
-        department: Optional[str] = None, responsibility_modules: Optional[Dict[str, List[str]]] = None,
+        company: Optional[str] = None, department: Optional[str] = None, responsibility_modules: Optional[Dict[str, List[str]]] = None,
         job_level: Optional[int] = 1, duty_text: Optional[str] = None,
     ) -> bool:
         db = IdentityService._get_db()
@@ -38,7 +38,7 @@ class IdentityService:
             db_user = UserDB(
                 id=user_id, username=username, password_hash=hashed_password,
                 name=name, status=status, external_credentials=external_credentials_json,
-                department=department, responsibility_modules=responsibility_modules or {},
+                company=company, department=department, responsibility_modules=responsibility_modules or {},
                 job_level=job_level if job_level is not None else 1, duty_text=duty_text,
             )
             db.add(db_user)
@@ -61,6 +61,11 @@ class IdentityService:
                 if hasattr(db_user, 'external_credentials') and db_user.external_credentials:
                     try: ec = json.loads(db_user.external_credentials)
                     except: ec = {}
+                rm = getattr(db_user, 'responsibility_modules', None)
+                # 历史数据可能因 add_user 包装层参数错位被写入非法值（如 int 1 / 字符串 "1"），
+                # 此处强制归一为 dict，避免 Pydantic Dict 校验失败导致接口 500
+                if not isinstance(rm, dict):
+                    rm = {}
                 return {
                     'id': db_user.id, 'username': db_user.username,
                     'password_hash': db_user.password_hash,
@@ -69,9 +74,10 @@ class IdentityService:
                     'external_credentials': ec,
                     'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
                     'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
+                    'company': getattr(db_user, 'company', None),
                     'department': getattr(db_user, 'department', None),
-                    'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or {},
-                    'job_level': getattr(db_user, 'job_level', 1),
+                    'responsibility_modules': rm,
+                    'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),
                 }
             return None
@@ -88,6 +94,9 @@ class IdentityService:
                 if hasattr(db_user, 'external_credentials') and db_user.external_credentials:
                     try: ec = json.loads(db_user.external_credentials)
                     except: ec = {}
+                rm = getattr(db_user, 'responsibility_modules', None)
+                if not isinstance(rm, dict):
+                    rm = {}
                 return {
                     'id': db_user.id, 'username': db_user.username,
                     'password_hash': db_user.password_hash,
@@ -96,9 +105,10 @@ class IdentityService:
                     'external_credentials': ec,
                     'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
                     'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
+                    'company': getattr(db_user, 'company', None),
                     'department': getattr(db_user, 'department', None),
-                    'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or {},
-                    'job_level': getattr(db_user, 'job_level', 1),
+                    'responsibility_modules': rm,
+                    'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),
                 }
             return None
