@@ -38,7 +38,7 @@ class PipelineConfig:
     prompts_dir: Path = field(default_factory=lambda: Path(__file__).parent / "prompts")
     max_fix_rounds: int = 2
     verify_runtime: bool = True
-    base_url: str = "http://localhost:8000"
+    base_url: str = "http://localhost:8400"
     prd_path: Optional[Path] = None
     archive_dir: Optional[Path] = None
     max_tokens: int = 8192

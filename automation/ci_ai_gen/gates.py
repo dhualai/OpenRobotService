@@ -9,7 +9,14 @@ from typing import Any, Dict, List, Optional
 
 _ANALYSIS_HEADINGS = ["需求概述", "测试范围", "测试重点", "测试策略"]
 _PRD_ANALYSIS_HEADINGS = ["需求概述", "功能点清单", "状态流转", "权限矩阵", "测试策略"]
-_REQ_LINE = re.compile(r'requests\.(get|post|put|patch|delete)\s*\(\s*(?:f|rf)?(["\'])(.*?)\2', re.DOTALL)
+_REQ_LINE = re.compile(
+    r'(?:'
+    r'requests\.(get|post|put|patch|delete)\s*\(\s*(?:f|rf)?(["\'])(.*?)\2'
+    r'|'
+    r'_api\(\s*[\w.]+\s*,\s*(["\'])(get|post|put|patch|delete)\4\s*,\s*(["\'])(.*?)\6'
+    r')',
+    re.DOTALL,
+)
 _PATH_PLACEHOLDER = re.compile(r"\{[^{}]+\}")
 _STEP_PLACEHOLDER = re.compile(r"\{\{\s*step(\d+)\s*\.")
 
@@ -134,10 +141,10 @@ def spec_path_set(spec: dict) -> set:
 
 
 def extract_script_paths(text: str) -> List[str]:
-    """Extract URL path literals used in requests calls."""
+    """Extract URL path literals used in requests / _api calls."""
     paths = []
     for match in _REQ_LINE.finditer(text):
-        literal = match.group(3)
+        literal = match.group(3) or match.group(7)
         literal = literal.replace("{BASE_URL}", "")
         literal = literal.strip()
         if not literal.startswith("/"):
@@ -181,14 +188,24 @@ def check_script_paths(script_text: str, spec: dict) -> List[str]:
 
 
 def check_script(script_text: str, spec: dict) -> List[str]:
-    """Structural script checks (paths + minimum content)."""
+    """Structural script checks (framework-standard shape: httpx + _api + allure + assertions)."""
     if not script_text or not script_text.strip():
         return ["script output is empty"]
     issues = check_script_paths(script_text, spec)
     if "def test_" not in script_text:
         issues.append("script has no test functions (missing 'def test_')")
-    if "requests" not in script_text:
-        issues.append("script does not use requests")
+    if "httpx" not in script_text:
+        issues.append("script does not use httpx (framework standard client)")
+    if "async def _api" not in script_text:
+        issues.append("script is missing the _api() step helper")
+    if "allure.step" not in script_text:
+        issues.append("script has no allure step integration")
+    if "assert_status_code" not in script_text:
+        issues.append("script does not use framework assertions (assert_status_code)")
+    if "@allure.feature" not in script_text:
+        issues.append("script is missing @allure.feature decorator")
+    if "requests" in script_text:
+        issues.append("script uses requests; framework standard is httpx")
     return issues
 
 
