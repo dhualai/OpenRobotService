@@ -1,5 +1,9 @@
+import json
+
 import pytest
 from typing import Any, Dict, Optional
+
+from automation.src.assertions.report import record
 
 
 def assert_status_code(response: Any, expected: int, msg: str = "") -> None:
@@ -13,6 +17,10 @@ def assert_status_code(response: Any, expected: int, msg: str = "") -> None:
     actual = getattr(response, "status_code", None)
     if actual is None:
         pytest.fail(f"Response object has no status_code attribute: {type(response)}")
+    try:
+        record({"断言": f"状态码 == {expected}", "期望值": expected, "实际值": actual})
+    except Exception:
+        pass
     if actual != expected:
         detail = msg or f"Expected status {expected}, got {actual}"
         body = getattr(response, "text", "") or str(getattr(response, "content", b""))

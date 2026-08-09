@@ -33,26 +33,25 @@
 ```
 automation/
 ├── src/                 # 框架库（import 调用）
-│   ├── runner/          # 数据驱动执行器 load_cases / run_case
 │   ├── clients/         # ApiClient / MySQL / Redis / Qdrant
 │   ├── fixtures/        # pytest 夹具
-│   ├── assertions/      # 断言工具
+│   ├── assertions/      # 断言工具（含报告聚合）
 │   ├── logger/          # 日志（控制台/文件/Allure）
 │   ├── mocks/           # MockBackend（httpx.MockTransport）
 │   ├── ai_metrics/      # AI 评估指标
+│   ├── reporting/       # Allure 元数据（environment/executor/categories）
 │   ├── utils/           # retry / timer / helpers
 │   └── conftest.py      # 框架库测试共享夹具
 ├── config/              # 配置（环境隔离：local/sit/uat 各含 config.yaml）
-├── tests/               # 按业务模块
+├── tests/               # 按业务模块（代码驱动用例 test_{module}_code.py）
 │   ├── call/            # 我要摇人
 │   ├── tasks/           # 系统任务
 │   ├── admin/           # 后台管理
 │   ├── auth/            # 认证
 │   ├── ai/              # AI 评估
 │   └── conftest.py      # Mock 后端 + 共享夹具
-├── references/         # 原始文档库（PRD / 接口文档 / 原始测试用例，格式不限）
+├── references/         # 原始文档库（PRD / 接口文档 / 归档用例，格式不限）
 ├── testdata/
-│   ├── cases/           # Excel 测试用例（数据驱动核心）
 │   ├── fixtures/        # 静态测试数据
 │   └── templates/       # 用例模板
 ├── scripts/             # CLI 工具（cli-*.py）+ templates/ 脚本模板
@@ -178,7 +177,7 @@ automation/docs/
 必须输出到 `automation/docs/`，内容包括：
 - 涉及的文件列表（路径）
 - 模块职责划分
-- 测试数据变更（Excel sheet / 行）
+- 测试用例变更（新增测试函数清单）
 - Mock 变更（如有）
 - 实现步骤（按顺序）
 - 风险分析
@@ -199,7 +198,7 @@ automation/docs/
 
 例如：
 ```
-✔ Excel 新增 task 催办接口测试数据
+✔ 新增 test_cuiban 催办测试函数
 ✔ 修改 MockBackend 支持催办接口
 ✔ 运行 pytest 验证
 ```
@@ -214,70 +213,67 @@ automation/docs/
 
 # 标准测试用例规范
 
-每个场景必须生成一条标准测试用例，统一写入 Excel。
+每个场景必须生成一条标准测试用例，**以代码驱动自由函数形式写入测试文件**（`tests/{module}/test_{module}_code.py`）。
 
 ## 输出位置
 
-`automation/testdata/cases/api-test-cases.xlsx`，每个模块一个 sheet。
+`automation/tests/{module}/test_{module}_code.py`，按功能用 class 分组。
 
-## 用例字段
+## 用例模板
 
-| 字段 | 说明 | 示例 |
-|------|------|------|
-| 用例ID | 模块前缀 + 编号，如 `CALL-001`、`TASK-001` | `CALL-001` |
-| 模块 | 所属模块名 | call / tasks / admin / auth |
-| 功能 | 对应业务功能点名称 | 转工单 |
-| 标题 | 用例一句话描述 | 正常流程：提交完整工单 |
-| 前置条件 | 测试前必须满足的条件 | 已登录、已创建会话 |
-| 测试步骤 | 操作步骤（可多步，用 `\n` 分隔） | 1. POST /api/ai/qa/submit\n2. 验证返回 |
-| 预期结果 | 期望的响应结果 | status=200, body.success=true |
-| 优先级 | P0 / P1 / P2 | P0 |
-| 是否自动化 | Y / N | Y |
-| 备注 | 补充说明、关联 bug、已知限制 | 依赖 mock 后端 |
+```python
+@allure.feature('系统任务')              # 模块（class 级）
+class TestTaskCrud:
+    """工单 CRUD"""
 
-> **steps 列（全链路用例）**：Excel 可选列，JSON 数组表达多步链路：
-> `[{"method": "POST", "path": "/api/tasks", "payload": {...}, "expected_status": 200, "expected_fields": {}}, ...]`
-> - 有 `steps` 时执行多步串联，每步独立断言；`method/path/payload` 顶层列作为首步冗余
-> - 占位符 `{{stepN.body.<字段>}}`（整串保持原类型）与 `{{stepN.status}}` 引用前步响应，只允许引用已执行步骤
-> - 无 `steps` 时走单请求路径（既有用例零改动）
+    @allure.story('创建工单')             # 场景组
+    @allure.title('正常：创建完整工单')    # 用例标题（报告显示名）
+    @pytest.mark.api
+    async def test_create_task_ok(self, mock_api_client, mock_auth_header):
+        """正常流程：创建完整工单"""      # 第一行 = 覆盖类型：说明（清单生成器提取）
+        await _api(mock_api_client, 'post', '/api/tasks', headers=mock_auth_header,
+                   json={'title': 'Error E1001'}, expected_status=200,
+                   expected_fields={'status': 'pending'})
+```
 
-## Excel 映射规则
+## 规范约定
 
-自动化执行时，Excel 字段映射到测试框架字段：
-
-| 标准用例字段 | 映射到 Excel 字段 | 说明 |
-|-------------|------------------|------|
-| 用例ID → | `id` | |
-| 模块 → | `module` | 对应 sheet 名 |
-| 前置条件 → | 无（隐式） | 由测试夹具 `mock_api_client` 保证 |
-| 测试步骤 → | `method` + `path` + `payload` | HTTP 方法和路径 |
-| 预期结果 → | `expected_status` + `expected_fields` | 状态码 + JSON 校验 |
-| 是否自动化 → | 无 | 仅 `Y` 的写入 Excel |
-| 其余字段 → | `note` | 辅助阅读，不参与断言 |
+| 项 | 要求 |
+|----|------|
+| 函数名 | `test_{功能}_{场景}`，class 名 `Test{功能组}` |
+| 装饰器 | `@allure.feature`（class）、`@allure.story` + `@allure.title`（函数）、`@pytest.mark.api` |
+| docstring | 第一行 = 覆盖类型：说明（正常流程/异常流程/权限/状态流转/数据校验/全链路/Redis/AI/数据库） |
+| 请求 | 必须通过 `_api()` helper（自动生成步骤树 + 附件 + 断言信息） |
+| 断言 | `expected_status=`（状态码）+ `expected_fields=`（字段）参数，断言在步骤内执行 |
+| 多角色 | `_auth_for_role(client, 'engineer')` 获取对应角色 token |
+| 全链路 | 用 `_api(..., step='Step 1: 创建工单')` 语义化步骤名 |
 
 ## 覆盖要求
 
-每个场景的 8 种覆盖类型都必须转化为标准用例写入 Excel，**不得遗漏边界条件和异常场景**：
+每个场景的 8 种覆盖类型都必须转化为用例，**不得遗漏边界条件和异常场景**：
 
 | 覆盖类型 | 用例示例 |
 |----------|---------|
-| 正常流程 | `CALL-005: POST /api/qa/ask -> 200` |
-| 异常流程 | `CALL-006: POST /api/qa/ask(空question) -> 422` |
-| 权限 | `AUTH-002: GET /api/auth/me(无token) -> 401` |
-| 状态流转 | `TASK-010: PATCH /api/tasks/1/status(非法) -> 400` |
-| 全链路(flow) | `TASK-032: 建单→处理中→已解决→已关闭 (steps 列多步串联)` |
-| 数据校验 | `TASK-003: POST /api/tasks(缺title) -> 422` |
-| Redis | 字段留 `note` 标注缓存场景 |
-| AI | 字段在 `note` 标注 SSE/超时/降级 |
-| 数据库 | 字段在 `note` 标注约束冲突/事务 |
+| 正常流程 | `test_create_task_ok: POST /api/tasks -> 200` |
+| 异常流程 | `test_get_task_not_found: GET /api/tasks/99999 -> 404` |
+| 权限 | `test_me_invalid_token: GET /api/auth/me(无token) -> 401` |
+| 状态流转 | `test_status_transition_closed_invalid: PATCH /api/tasks/1/status(非法) -> 400` |
+| 全链路(flow) | `test_full_flow_create_to_closed: 建单→处理中→已解决→已关闭` |
+| 数据校验 | `test_create_task_missing_title: POST /api/tasks(缺title) -> 422` |
+| Redis | docstring 前缀 `Redis：` |
+| AI | docstring 前缀 `AI：`（SSE/超时/降级） |
+| 数据库 | docstring 前缀 `数据库：`（约束冲突/事务） |
 
 ## 添加新用例流程
 
 1. **Mock 后端**：确认 `src/mocks/backend_mock.py` 已支持该接口
-2. **场景设计**：确认场景已输出到 `automation/docs/testing/scenarios/`
-3. **Excel 写入**：在对应 sheet 新增一行，填写完整 10 个字段
-4. **测试代码**：如已有 `test_{module}.py` 则无需改动（`load_cases` + `parametrize` 自动加载）
-5. **验证**：`cd automation && pytest tests/{module}/ -v`
+2. **测试文件**：在 `tests/{module}/test_{module}_code.py` 对应 class 新增测试函数（按上述模板）
+3. **用例清单**：运行 `python scripts/cli-gen-case-inventory.py --module {module}` 刷新清单文档
+4. **验证**：`cd automation && pytest tests/{module}/ -v`
+
+## Excel 归档
+
+历史 Excel 用例库（`api-test-cases.xlsx`）已退役并归档至 `automation/references/archived-cases/`，仅作只读参考，不再维护。
 
 ---
 
@@ -285,7 +281,7 @@ automation/docs/
 
 测试必须覆盖异常路径。
 
-Excel case 中 `expected_status` 可以是 4xx/5xx：
+用例中 `expected_status` 可以是 4xx/5xx：
 
 ```
 TASK-003: POST /api/tasks -> 422   # 缺字段
@@ -364,7 +360,7 @@ Mock 后端位于 `automation/src/mocks/backend_mock.py`。
 
 ### 目标切换（Mock ↔ 真实后端）
 
-同一套 Excel 用例可通过环境变量切换测试目标：
+同一套用例可通过环境变量切换测试目标：
 
 ```powershell
 # 默认：Mock 后端（幂等、无外部依赖）
@@ -426,7 +422,7 @@ $env:USE_MOCK = "0"; pytest tests/ -m api
 | AI | SSE 流式超时/断连/空回复/知识库无命中降级 | 风险点 + 接口契约 |
 | 数据库 | 唯一约束冲突、外键不存在、事务回滚 | 边界条件 + 风险点 |
 
-每个场景 = Excel 中的一条测试用例（一行数据），按 `testdata/cases/api-test-cases.xlsx` 格式填写。
+每个场景 = 一个测试函数，按「标准测试用例规范」的 Python 模板编写。
 
 设计完成后输出到 `automation/docs/testing/scenarios/`。
 
@@ -451,8 +447,8 @@ $env:USE_MOCK = "0"; pytest tests/ -m api
 
 - [ ] 是否符合目录规范（未误改 `ai/` / `backend/` / `frontend/`）
 - [ ] 未重复造轮子（是否已有现成工具/夹具）
-- [ ] Excel 数据格式正确（JSON 字段可解析）
-- [ ] Mock 与 Excel 用例一致
+- [ ] 测试函数按规范模板编写（装饰器/docstring/_api）
+- [ ] Mock 与测试用例一致
 - [ ] 无硬编码敏感信息
 - [ ] 已运行 `pytest -v` 并全部通过
 - [ ] 已生成 Allure 报告并确认无异常
@@ -464,7 +460,7 @@ $env:USE_MOCK = "0"; pytest tests/ -m api
 
 | 优先级 | 类型 | 说明 |
 |--------|------|------|
-| P0 | API | Mock 后端 + Excel 数据驱动，覆盖核心业务链路 |
+| P0 | API | Mock 后端 + 代码驱动，覆盖核心业务链路 |
 | P1 | Database | MySQL/Redis/Qdrant 客户端集成测试 |
 | P2 | AI | AI Agent 接口测试 |
 | P3 | UI/E2E | Playwright 端到端测试（待建设） |
@@ -550,8 +546,8 @@ automation/docs/worklog/task-12-ci-setup.md
 
 目标是持续建设一套：
 - 企业级
-- 可维护（Excel 数据驱动，用例与代码分离）
-- 可扩展（Mock 后端 + 参数化，新接口只需加 Excel 行）
+- 可维护（代码驱动，用例与框架分层）
+- 可扩展（Mock 后端 + 模板化，新接口只需新增测试函数）
 - 可持续演进
 
 的 AI 自动化测试平台。

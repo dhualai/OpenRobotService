@@ -2,6 +2,8 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
+from automation.src.assertions.report import record
+
 
 def assert_equals(actual: Any, expected: Any, msg: str = "") -> None:
     """Assert two values are equal with descriptive message."""
@@ -42,6 +44,10 @@ def assert_dict_contains_subset(superset: Dict[str, Any], subset: Dict[str, Any]
         current_path = f"{path}.{key}" if path else str(key)
         assert_contains(superset, key, path=current_path)
         actual_value = superset[key]
+        try:
+            record({"断言": f"字段 {current_path}", "期望值": expected_value, "实际值": actual_value})
+        except Exception:
+            pass
         if isinstance(expected_value, dict) and isinstance(actual_value, dict):
             assert_dict_contains_subset(actual_value, expected_value, path=current_path)
         else:
