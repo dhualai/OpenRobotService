@@ -126,112 +126,81 @@ class ApiClient(BaseClient):
     # ── Allure attachments ──────────────────────────────────────────────
 
     def _allure_attach_request(self, method: str, url: str, **kwargs: Any) -> None:
-        """Attach request details to Allure report."""
+        """Attach the full request (url/headers/params/body) as a single attachment."""
         full_url = f"{self._cfg.base_url.rstrip('/')}/{url}"
-
-        allure.attach(
-            json.dumps({"method": method.upper(), "url": full_url}, indent=2, ensure_ascii=False),
-            name="Request URL",
-            attachment_type=allure.attachment_type.JSON,
-        )
-
+        detail: Dict[str, Any] = {
+            "method": method.upper(),
+            "url": full_url,
+        }
         headers = kwargs.get("headers", {})
         if headers:
             try:
-                allure.attach(
-                    json.dumps(dict(headers), indent=2, ensure_ascii=False, default=str),
-                    name="Request Headers",
-                    attachment_type=allure.attachment_type.JSON,
-                )
+                detail["headers"] = dict(headers)
             except Exception:
                 pass
-
         params = kwargs.get("params", {})
         if params:
             try:
-                allure.attach(
-                    json.dumps(dict(params), indent=2, ensure_ascii=False, default=str),
-                    name="Request Params",
-                    attachment_type=allure.attachment_type.JSON,
-                )
+                detail["params"] = dict(params)
             except Exception:
                 pass
-
         json_body = kwargs.get("json")
         if json_body is not None:
-            try:
-                allure.attach(
-                    json.dumps(json_body, indent=2, ensure_ascii=False, default=str),
-                    name="Request Body (JSON)",
-                    attachment_type=allure.attachment_type.JSON,
-                )
-            except Exception:
-                pass
+            detail["body"] = json_body
         else:
             data_body = kwargs.get("data")
             if data_body is not None:
                 try:
-                    allure.attach(
-                        json.dumps(dict(data_body), indent=2, ensure_ascii=False, default=str),
-                        name="Request Body (Form)",
-                        attachment_type=allure.attachment_type.JSON,
-                    )
+                    detail["body"] = dict(data_body)
                 except Exception:
                     pass
-
-    def _allure_attach_response(self, response: httpx.Response) -> None:
-        """Attach response details to Allure report."""
-        try:
-            status_code = response.status_code
-        except Exception:
-            status_code = 0
-
-        response_info: Dict[str, Any] = {
-            "status_code": status_code,
-            "url": str(getattr(response, "url", "")),
-        }
-        try:
-            response_info["reason"] = str(response.reason_phrase)
-        except Exception:
-            pass
-
-        try:
-            resp_headers = dict(response.headers)
-            if resp_headers:
-                response_info["headers"] = resp_headers
-        except Exception:
-            pass
-
         try:
             allure.attach(
-                json.dumps(response_info, indent=2, ensure_ascii=False, default=str),
-                name="Response",
+                json.dumps(detail, indent=2, ensure_ascii=False, default=str),
+                name="Request",
                 attachment_type=allure.attachment_type.JSON,
             )
         except Exception:
             pass
 
+    def _allure_attach_response(self, response: httpx.Response) -> None:
+        """Attach the full response (status/headers/body) as a single attachment."""
+        try:
+            status_code = response.status_code
+        except Exception:
+            status_code = 0
+
+        detail: Dict[str, Any] = {
+            "status_code": status_code,
+            "url": str(getattr(response, "url", "")),
+        }
+        try:
+            detail["reason"] = str(response.reason_phrase)
+        except Exception:
+            pass
+        try:
+            resp_headers = dict(response.headers)
+            if resp_headers:
+                detail["headers"] = resp_headers
+        except Exception:
+            pass
         try:
             body_text = response.text
         except Exception:
             body_text = ""
-
         if body_text:
             try:
-                body = response.json()
-                allure.attach(
-                    json.dumps(body, indent=2, ensure_ascii=False, default=str),
-                    name="Response Body (JSON)",
-                    attachment_type=allure.attachment_type.JSON,
-                )
+                detail["body"] = response.json()
             except (json.JSONDecodeError, ValueError, TypeError):
-                allure.attach(
-                    body_text,
-                    name="Response Body (Text)",
-                    attachment_type=allure.attachment_type.TEXT,
-                )
-            except Exception:
-                pass
+                detail["body"] = body_text
+        try:
+            allure.attach(
+                json.dumps(detail, indent=2, ensure_ascii=False, default=str),
+                name="Response",
+                attachment_type=allure.attachment_type.JSON,
+            )
+        except Exception:
+            pass
 
     def _allure_attach_error(self, error_type: str, message: str) -> None:
         """Attach error details to Allure report."""
