@@ -61,23 +61,44 @@ ANALYSIS_PRD = """# 需求概述
 - 黑盒
 """
 
-SCRIPT_OK = '''import requests
+SCRIPT_OK = '''import httpx
+import allure
+import pytest
+from automation.src.assertions import assert_dict_contains_subset, assert_status_code
+from automation.src.assertions.report import flush_assert_attachment
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:8400"
 
-def parse_response(r):
-    return r.json()
+async def _api(client, method, path, step='', headers=None, expected_status=None, expected_fields=None, **kwargs):
+    with allure.step(step or f'{method.upper()} {path}'):
+        r = await client.request(method, path, headers=headers, **kwargs)
+        if expected_status is not None:
+            assert_status_code(r, expected_status)
+        if expected_fields:
+            assert_dict_contains_subset(r.json(), expected_fields)
+        flush_assert_attachment()
+        return r
 
+@pytest.fixture
+async def client():
+    async with httpx.AsyncClient(base_url=BASE_URL) as c:
+        yield c
+
+@allure.feature('系统任务')
 class TestGeneratedAPI:
-    def test_tc001(self):
-        """获取任务"""
-        resp = requests.get(f"{BASE_URL}/api/v1/tasks/1", verify=False)
-        assert resp.status_code == 200
+    @allure.story('任务')
+    @allure.title('获取任务')
+    @pytest.mark.api
+    async def test_tc001(self, client):
+        """正常流程：获取任务"""
+        await _api(client, 'get', '/api/v1/tasks/1', expected_status=200)
 
-    def test_tc002(self):
-        """创建任务"""
-        resp = requests.post(f"{BASE_URL}/api/v1/tasks", json={}, verify=False)
-        assert resp.status_code == 422
+    @allure.story('任务')
+    @allure.title('创建任务')
+    @pytest.mark.api
+    async def test_tc002(self, client):
+        """数据校验：创建任务"""
+        await _api(client, 'post', '/api/v1/tasks', json={}, expected_status=422)
 '''
 
 
