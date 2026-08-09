@@ -5,7 +5,7 @@
 
 import allure
 import pytest
-from automation.src.assertions import assert_dict_contains_subset, assert_status_code
+from automation.src.assertions import assert_contains, assert_dict_contains_subset, assert_equals, assert_status_code
 from automation.src.assertions.report import flush_assert_attachment
 
 
@@ -118,16 +118,34 @@ class TestWechat:
                    expected_status=200, expected_fields={'code': 200})
 
     @allure.story('微信')
-    @allure.title('正常：微信标签列表')
+    @allure.title('正常：微信回调验签成功')
     @pytest.mark.api
-    async def test_wechat_tags(self, mock_api_client):
-        """正常流程：微信标签列表"""
-        await _api(mock_api_client, 'get', '/api/wechat', expected_status=200)
+    async def test_wechat_signature_ok(self, mock_api_client):
+        """正常流程：回调验签成功返回 echostr"""
+        import hashlib
+        token, timestamp, nonce, echostr = "local_token", "1234567890", "nonce123", "echo-str-42"
+        signature = hashlib.sha1("".join(sorted([token, timestamp, nonce])).encode("utf-8")).hexdigest()
+        r = await mock_api_client.get(
+            "/api/wechat", params={"signature": signature, "timestamp": timestamp,
+                                   "nonce": nonce, "echostr": echostr})
+        assert_status_code(r, 200)
+        assert_equals(r.text, echostr)
 
     @allure.story('微信')
-    @allure.title('正常：微信回调 POST')
+    @allure.title('异常：回调验签失败 403')
+    @pytest.mark.api
+    async def test_wechat_signature_invalid(self, mock_api_client):
+        """异常流程：验签失败返回 403"""
+        await _api(mock_api_client, 'get', '/api/wechat',
+                   params={"signature": "bad", "timestamp": "1", "nonce": "2", "echostr": "x"},
+                   expected_status=403)
+
+    @allure.story('微信')
+    @allure.title('正常：微信消息回调 POST')
     @pytest.mark.api
     async def test_wechat_callback(self, mock_api_client):
-        """正常流程：微信回调 POST"""
-        await _api(mock_api_client, 'post', '/api/wechat', json={'xml': '<xml/>'},
-                   expected_status=200)
+        """正常流程：消息回调返回 XML"""
+        r = await mock_api_client.post('/api/wechat', content='<xml><MsgType>text</MsgType></xml>',
+                                       headers={'Content-Type': 'text/xml'})
+        assert_status_code(r, 200)
+        assert_contains(r.text, '<xml>')
