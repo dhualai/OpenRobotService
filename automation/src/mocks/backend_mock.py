@@ -1007,6 +1007,8 @@ class MockBackend:
                 self._admin_roles[rid]["permissions"] = body["permissions"]
             return httpx.Response(200, json={"id": rid, "name": self._admin_roles[rid]["name"]})
         if method == "DELETE":
+            if rid in (1, 2):
+                return httpx.Response(400, json={"detail": "Role is assigned to users"})
             del self._admin_roles[rid]
             return httpx.Response(204)
 
@@ -1014,9 +1016,12 @@ class MockBackend:
         return httpx.Response(200, json=list(self._admin_projects.values()))
 
     def _handle_admin_projects_create(self, body):
+        if not body.get("name") or not body.get("project_code"):
+            return httpx.Response(422, json={"detail": [{"loc": ["body", "name"], "msg": "field required"}]})
         pid = self._admin_project_id
         self._admin_project_id += 1
-        proj = {"id": pid, "name": body.get("name", ""), "description": body.get("description", "")}
+        proj = {"id": pid, "name": body.get("name", ""), "project_code": body.get("project_code", ""),
+                "description": body.get("description", "")}
         self._admin_projects[pid] = proj
         return httpx.Response(200, json=proj)
 

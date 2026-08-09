@@ -434,3 +434,61 @@ class TestAuthMatrix:
     async def test_permissions_unauthorized(self, mock_api_client):
         """权限：无 token 访问权限 401"""
         await _api(mock_api_client, 'get', '/api/admin/permissions/', expected_status=401)
+
+
+@allure.feature('后台管理')
+class TestDashboardExtra:
+    """跨项目看板"""
+
+    @allure.story('看板')
+    @allure.title('正常：工单状态监测看板')
+    @pytest.mark.api
+    async def test_dashboard_tickets(self, mock_api_client, mock_auth_header):
+        """正常流程：工单状态监测看板"""
+        await _api(mock_api_client, 'get', '/api/admin/dashboard/tickets', headers=mock_auth_header,
+                   expected_status=200)
+
+    @allure.story('看板')
+    @allure.title('正常：项目汇总看板')
+    @pytest.mark.api
+    async def test_dashboard_projects_summary(self, mock_api_client, mock_auth_header):
+        """正常流程：项目汇总看板"""
+        await _api(mock_api_client, 'get', '/api/admin/dashboard/projects/summary',
+                   headers=mock_auth_header, expected_status=200)
+
+    @allure.story('看板')
+    @allure.title('正常：项目紧急度看板')
+    @pytest.mark.api
+    async def test_dashboard_projects_urgency(self, mock_api_client, mock_auth_header):
+        """正常流程：项目紧急度看板"""
+        await _api(mock_api_client, 'get', '/api/admin/dashboard/projects/urgency',
+                   headers=mock_auth_header, expected_status=200)
+
+    @allure.story('看板')
+    @allure.title('正常：项目阶段看板')
+    @pytest.mark.api
+    async def test_dashboard_projects(self, mock_api_client, mock_auth_header):
+        """正常流程：项目阶段看板"""
+        await _api(mock_api_client, 'get', '/api/admin/dashboard/projects',
+                   headers=mock_auth_header, expected_status=200)
+
+
+@allure.feature('后台管理')
+class TestValidationExtra:
+    """补充校验分支"""
+
+    @allure.story('校验')
+    @allure.title('数据校验：创建项目缺名称')
+    @pytest.mark.api
+    async def test_projects_create_missing_name(self, mock_api_client, mock_auth_header):
+        """数据校验：创建项目缺名称"""
+        await _api(mock_api_client, 'post', '/api/admin/projects', headers=mock_auth_header,
+                   json={'project_code': 'P003'}, expected_status=422)
+
+    @allure.story('校验')
+    @allure.title('异常：删除内置角色 400')
+    @pytest.mark.api
+    async def test_roles_delete_builtin(self, mock_api_client, mock_auth_header):
+        """异常流程：删除内置角色（有用户使用）"""
+        await _api(mock_api_client, 'delete', '/api/admin/roles/1', headers=mock_auth_header,
+                   expected_status=400)

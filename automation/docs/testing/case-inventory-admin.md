@@ -1,6 +1,6 @@
 # admin 模块 - 用例清单（代码驱动）
 
-> 由 `automation/scripts/cli-gen-case-inventory.py` 从测试代码自动生成，共 120 条。
+> 由 `automation/scripts/cli-gen-case-inventory.py` 从测试代码自动生成，共 126 条。
 
 | 用例 | 功能组 | 场景 | 标题 | 覆盖类型 | 接口 |
 |------|--------|------|------|----------|------|
@@ -14,7 +14,11 @@
 | test_daily_report_update | 后台管理 | 日报 | 正常：更新日报 | 正常流程 | `-` |
 | test_daily_reports_list | 后台管理 | 日报 | 正常：日报列表 | 正常流程 | `-` |
 | test_daily_reports_unauthorized | 后台管理 | 认证 | 权限：无 token 访问日报 401 | 权限 | `-` |
+| test_dashboard_projects | 后台管理 | 看板 | 正常：项目阶段看板 | 正常流程 | `-` |
+| test_dashboard_projects_summary | 后台管理 | 看板 | 正常：项目汇总看板 | 正常流程 | `-` |
+| test_dashboard_projects_urgency | 后台管理 | 看板 | 正常：项目紧急度看板 | 正常流程 | `-` |
 | test_dashboard_summary | 后台管理 | 看板 | 正常：看板汇总 | 正常流程 | `-` |
+| test_dashboard_tickets | 后台管理 | 看板 | 正常：工单状态监测看板 | 正常流程 | `-` |
 | test_export | 后台管理 | 导出 | 正常：导出数据 | 正常流程 | `-` |
 | test_export_report | 后台管理 | 导出 | 正常：导出报表 | 正常流程 | `-` |
 | test_folders_create_missing_name | 后台管理 | 文件夹 | 数据校验：创建文件夹缺名称 | 数据校验 | `-` |
@@ -38,6 +42,7 @@
 | test_presigned_missing_params | 后台管理 | MinIO | 数据校验：预签名 URL 缺参数 | 数据校验 | `-` |
 | test_presigned_ok | 后台管理 | MinIO | 正常：生成预签名 URL | 正常流程 | `-` |
 | test_projects_create | 后台管理 | 项目 | 正常：创建项目 | 正常流程 | `-` |
+| test_projects_create_missing_name | 后台管理 | 校验 | 数据校验：创建项目缺名称 | 数据校验 | `-` |
 | test_projects_delete | 后台管理 | 项目 | 正常：删除项目 | 正常流程 | `-` |
 | test_projects_delete_not_found | 后台管理 | 项目 | 异常：删除项目不存在 | 异常流程 | `-` |
 | test_projects_detail_not_found | 后台管理 | 项目 | 异常：项目详情不存在 | 异常流程 | `-` |
@@ -90,6 +95,7 @@
 | test_roles_create_duplicate | 后台管理 | 角色 | 异常：角色已存在 | 异常流程 | `-` |
 | test_roles_create_missing_name | 后台管理 | 角色 | 数据校验：缺 name | 数据校验 | `-` |
 | test_roles_delete | 后台管理 | 角色 | 正常：删除角色 | 正常流程 | `-` |
+| test_roles_delete_builtin | 后台管理 | 校验 | 异常：删除内置角色 400 | 异常流程 | `-` |
 | test_roles_forbidden | 后台管理 | 认证 | 权限：非 admin 访问角色 403 | 权限 | `-` |
 | test_roles_list | 后台管理 | 角色 | 正常：角色列表 | 正常流程 | `-` |
 | test_roles_list_cache | 后台管理 | 角色 | Redis：角色缓存失效 | Redis | `-` |

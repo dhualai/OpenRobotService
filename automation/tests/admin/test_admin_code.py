@@ -77,7 +77,7 @@ class TestProjects:
     async def test_projects_create(self, mock_api_client, mock_auth_header):
         """正常流程：创建项目"""
         await _api(mock_api_client, 'post', '/api/admin/projects', headers=mock_auth_header,
-                   json={'name': 'Test Project'}, expected_status=200,
+                   json={'name': 'Test Project', 'project_code': 'P002'}, expected_status=200,
                    expected_fields={'name': 'Test Project'})
 
     @allure.story('项目')
@@ -317,8 +317,11 @@ class TestRoles:
     @allure.title('正常：删除角色')
     @pytest.mark.api
     async def test_roles_delete(self, mock_api_client, mock_auth_header):
-        """正常流程：删除角色"""
-        await _api(mock_api_client, 'delete', '/api/admin/roles/1', headers=mock_auth_header,
+        """正常流程：删除自定义角色"""
+        r = await _api(mock_api_client, 'post', '/api/admin/roles', headers=mock_auth_header,
+                       json={'name': 'temp-role'}, expected_status=201)
+        rid = r.json()['id']
+        await _api(mock_api_client, 'delete', f'/api/admin/roles/{rid}', headers=mock_auth_header,
                    expected_status=204)
 
     @allure.story('角色')

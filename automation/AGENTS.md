@@ -69,7 +69,7 @@ automation/
 
 ## 3. 文档唯一来源
 
-所有自动化测试相关的文档统一保存到 `automation/docs/`，包括方案（`automation/docs/automation_strategy.md`）、规范（`automation/docs/testing/testing_guidelines.md`、`test_report_guideline.md`、`code-review-checklist.md`、`done-definition.md`）、分析、设计、场景、记录。
+所有自动化测试相关的文档统一保存到 `automation/docs/`，包括方案（`automation/docs/automation_strategy.md`）、CI 闭环（`automation/docs/ci-automation-loop.md`）、规范（`automation/docs/testing/testing_guidelines.md`、`test_report_guideline.md`、`code-review-checklist.md`、`done-definition.md`）、分析、设计、场景、记录。
 
 禁止：
 - 仅输出到聊天窗口不落文件
