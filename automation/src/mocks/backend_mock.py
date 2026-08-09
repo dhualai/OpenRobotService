@@ -64,7 +64,10 @@ class MockBackend:
         self._ticket_id_counter: int = 1
         self._admin_roles: dict = {}
         self._admin_role_id: int = 1
-        self._integrations_sources: list = [{"name": "wecom", "status": "enabled", "last_sync": None}]
+        self._integrations_sources: list = [
+            {"name": "wecom", "display_name": "企业微信", "status": "enabled", "last_sync": None},
+            {"name": "zentao", "display_name": "禅道", "status": "enabled", "last_sync": None},
+        ]
         self._integrations_mappings: dict = {}
         self._integration_mapping_id: int = 1
         self._setup_defaults()
@@ -112,6 +115,8 @@ class MockBackend:
             return self._handle_login(body)
         if path == "/api/auth/me" and method == "GET":
             return self._handle_me(request)
+        if path.startswith("/api/tasks/sources"):
+            return self._route_sources(path, method, body, request)
         if path.startswith("/api/tasks"):
             return self._route_tasks(path, method, body, params, request)
         if path.startswith("/api/wechat"):
@@ -122,8 +127,38 @@ class MockBackend:
             return self._route_call(path, method, body, request)
         if path.startswith("/api/ai"):
             return self._route_ai(path, method, body, request)
-        if path == "/api/integrations" and method == "GET":
+        return httpx.Response(404, json={"detail": "Not found"})
+
+    def _require_api_key(self, request):
+        key = request.headers.get("x-api-key", "") or request.headers.get("X-API-Key", "")
+        if key != "test-api-key":
+            return httpx.Response(401, json={"detail": "Invalid API key"})
+        return None
+
+    def _route_sources(self, path, method, body, request):
+        rest = path[len("/api/tasks/sources"):] or ""
+        if rest.startswith("/wecom/projects/sync") and method == "POST":
+            e = self._require_auth(request)
+            return e if e else httpx.Response(200, json={
+                "code": 200, "message": "ok",
+                "data": {"fetched": 0, "filtered": 0, "created": 0, "updated": 0,
+                         "skipped": 0, "errors": 0},
+            })
+        e = self._require_api_key(request)
+        if e:
+            return e
+        if not rest and method == "GET":
             return httpx.Response(200, json=self._integrations_sources)
+        if rest.startswith("/") and method == "POST":
+            import re as _re
+            m = _re.match(r"^/([^/]+)/sync$", rest)
+            if not m:
+                return httpx.Response(404, json={"detail": "Not found"})
+            source = m.group(1)
+            if source not in {s["name"] for s in self._integrations_sources}:
+                return httpx.Response(404, json={"detail": f"Source not registered: {source}"})
+            return httpx.Response(200, json={"code": 200, "message": "ok",
+                                             "data": {"source": source, "synced": 1, "upserted": 0}})
         return httpx.Response(404, json={"detail": "Not found"})
 
     def _handle_login(self, body):
@@ -410,23 +445,129 @@ class MockBackend:
         rest = path[len("/api/wechat"):] or ""
         if rest == "/health" and method == "GET":
             return httpx.Response(200, json={"code": 200, "message": "服务运行正常"})
+        if not rest:
+            return self._handle_callback(path, method, body, request)
+        if rest == "/login" and method == "POST":
+            openid = body.get("openid", "")
+            if not openid:
+                return httpx.Response(400, json={"detail": "openid is required"})
+            return httpx.Response(200, json={
+                "token": _make_token(openid), "refresh_token": _make_token(openid + ":refresh"),
+            })
+        if rest == "/permissions" and method == "GET":
+            openid = request.url.params.get("openid", "")
+            if not openid:
+                return httpx.Response(404, json={"detail": "user not found"})
+            return httpx.Response(200, json={"openid": openid, "permissions": ["task:read"]})
         if rest == "/get_menu" and method == "GET":
-            return httpx.Response(200, json={"menu": self._wechat_menu})
+            return httpx.Response(200, json={"code": 200, "message": "ok", "data": self._wechat_menu})
         if rest == "/create_menu" and method == "POST":
-            self._wechat_menu = body
-            return httpx.Response(200, json={"errcode": 0, "errmsg": "ok"})
+            return httpx.Response(200, json={"code": 0, "message": "ok"})
+        if rest == "/delete_menu" and method == "DELETE":
+            return httpx.Response(200, json={"code": 0, "message": "ok"})
         if rest == "/send_message" and method == "POST":
-            return httpx.Response(200, json={"errcode": 0, "errmsg": "ok"})
-        if not rest and method == "GET":
+            if not body.get("open_id"):
+                return httpx.Response(422, json={"detail": [{"loc": ["body", "open_id"], "msg": "field required"}]})
+            return httpx.Response(200, json={"code": 200, "message": "ok"})
+        if rest == "/broadcast_message" and method == "POST":
+            if not body.get("content"):
+                return httpx.Response(422, json={"detail": [{"loc": ["body", "content"], "msg": "field required"}]})
+            return httpx.Response(200, json={"code": 200, "message": "ok"})
+        if rest == "/send_link_message" and method == "POST":
+            if not body.get("url"):
+                return httpx.Response(422, json={"detail": [{"loc": ["body", "url"], "msg": "field required"}]})
+            return httpx.Response(200, json={"code": 200, "message": "ok"})
+        if rest == "/webnotify" and method == "POST":
+            msg_type = body.get("msg_type", "")
+            if msg_type == "link" and not body.get("link"):
+                return httpx.Response(422, json={"detail": [{"loc": ["body", "link"], "msg": "field required"}]})
+            at = body.get("at") or {}
+            if at.get("is_all"):
+                return httpx.Response(400, json={"detail": "@all is not allowed"})
+            return httpx.Response(200, json={"code": 200, "message": "ok",
+                                             "message_id": "mock-msg-1",
+                                             "data": {"status": "success", "recipients": []},
+                                             "timestamp": int(time.time())})
+        if rest == "/import-data" and method == "POST":
+            for field in ("project", "indicator", "content"):
+                if field not in body:
+                    return httpx.Response(400, json={"detail": f"{field} is required"})
+            if not isinstance(body["content"], list):
+                return httpx.Response(400, json={"detail": "content must be a list"})
+            return httpx.Response(200, json={"success": True, "message": "ok", "content": body["content"],
+                                             "api_status": "success", "api_response": {}})
+        if rest == "/backend/notify/" and method == "POST":
+            at = body.get("at") or {}
+            if at.get("is_all"):
+                return httpx.Response(400, json={"detail": "@all is not allowed"})
+            return httpx.Response(200, json={"status": "success", "message": "ok"})
+        if rest.startswith("/tag"):
+            return self._route_wechat_tag(rest, method, body, request)
+        return httpx.Response(404, json={"detail": "WeChat route not found"})
+
+    def _handle_callback(self, path, method, body, request):
+        """GET: signature check (local sha1, echostr roundtrip). POST: XML message callback."""
+        token = "local_token"
+        if method == "GET":
+            signature = request.url.params.get("signature", "")
+            timestamp = request.url.params.get("timestamp", "")
+            nonce = request.url.params.get("nonce", "")
+            echostr = request.url.params.get("echostr", "")
+            if not all((signature, timestamp, nonce, echostr)):
+                return httpx.Response(403, json={"detail": "invalid signature"})
+            import hashlib
+            raw = "".join(sorted([token, timestamp, nonce]))
+            if hashlib.sha1(raw.encode("utf-8")).hexdigest() == signature:
+                return httpx.Response(200, text=echostr)
+            return httpx.Response(403, json={"detail": "invalid signature"})
+        if method == "POST":
+            return httpx.Response(200, text="<xml><MsgType>text</MsgType><Content>mock reply</Content></xml>")
+        return httpx.Response(404, json={"detail": "WeChat route not found"})
+
+    def _route_wechat_tag(self, rest, method, body, request):
+        sub = rest[len("/tag"):] or ""
+        if not sub and method == "GET":
             tags = [{"id": k, "name": v} for k, v in self._wechat_tags.items()]
-            return httpx.Response(200, json={"tags": tags})
-        if not rest and method == "POST":
+            return httpx.Response(200, json={"code": 0, "message": "ok", "data": tags})
+        if not sub and method == "POST":
+            name = body.get("name", "")
+            if not name:
+                return httpx.Response(422, json={"detail": [{"loc": ["body", "name"], "msg": "field required"}]})
             tid = self._wechat_tag_id_counter
             self._wechat_tag_id_counter += 1
-            name = body.get("name", "")
             self._wechat_tags[tid] = name
-            return httpx.Response(200, json={"tag": {"id": tid, "name": name}})
-        return httpx.Response(404, json={"detail": "WeChat route not found"})
+            return httpx.Response(200, json={"code": 0, "message": "ok", "data": {"id": tid, "name": name}})
+        if sub == "/batch-tagging" and method == "POST":
+            openid_list = body.get("openid_list", [])
+            if len(openid_list) > 100:
+                return httpx.Response(400, json={"detail": "openid_list exceeds 100"})
+            return httpx.Response(200, json={"code": 0, "message": "ok"})
+        if sub == "/batch-untagging" and method == "POST":
+            openid_list = body.get("openid_list", [])
+            if len(openid_list) > 100:
+                return httpx.Response(400, json={"detail": "openid_list exceeds 100"})
+            return httpx.Response(200, json={"code": 0, "message": "ok"})
+        parts = sub.strip("/").split("/") if sub else []
+        if parts and parts[0].isdigit():
+            tid = int(parts[0])
+            if tid not in self._wechat_tags:
+                return httpx.Response(404, json={"detail": "Tag not found"})
+            if method == "PUT":
+                if "name" in body and not body["name"]:
+                    return httpx.Response(422, json={"detail": [{"loc": ["body", "name"], "msg": "field required"}]})
+                if "name" in body:
+                    self._wechat_tags[tid] = body["name"]
+                return httpx.Response(200, json={"code": 0, "message": "ok"})
+            if method == "DELETE":
+                del self._wechat_tags[tid]
+                return httpx.Response(200, json={"code": 0, "message": "ok"})
+            if len(parts) >= 2 and parts[1] == "fans" and method == "GET":
+                return httpx.Response(200, json={"code": 0, "message": "ok", "data": []})
+        if sub.startswith("/user/") and method == "GET":
+            openid = sub[len("/user/"):]
+            return httpx.Response(200, json={"code": 0, "message": "ok",
+                                             "data": {"openid": openid, "tagid_list": []}})
+        return httpx.Response(404, json={"detail": "WeChat tag route not found"})
 
     def _route_call(self, path, method, body, request):
         # --- Conversations ---
@@ -530,18 +671,39 @@ class MockBackend:
             return self._handle_admin_tickets_stats()
         if rest.startswith("/dashboard"):
             return self._handle_admin_dashboard()
+        # ---- permissions ----
+        if rest.startswith("/permissions"):
+            return self._route_admin_permissions(rest, method, body)
+        # ---- users ----
+        if rest == "/users/usp-username" and method == "GET":
+            return self._handle_admin_user_usp_username(params)
+        if rest == "/users/options" and method == "GET":
+            return httpx.Response(200, json={"companies": [], "departments": []})
         if rest in ("/users", "/users/") and method == "GET":
             return self._handle_admin_users_list()
         if rest == "/users" and method == "POST":
             return self._handle_admin_users_create(body)
         if rest.startswith("/users/") and len(rest) > 7:
-            return self._handle_admin_users_detail(rest, method, body)
+            return self._route_admin_user_detail(rest, method, body, params)
+        # ---- roles ----
+        if rest == "/roles/auto-classify" and method == "POST":
+            return httpx.Response(200, json={"code": 0, "message": "ok", "data": {"count": 0}})
         if rest in ("/roles", "/roles/") and method == "GET":
             return self._handle_admin_roles_list()
         if rest == "/roles" and method == "POST":
             return self._handle_admin_roles_create(body)
         if rest.startswith("/roles/") and len(rest) > 7:
-            return self._handle_admin_roles_detail(rest, method, body)
+            return self._route_admin_role_detail(rest, method, body)
+        # ---- projects ----
+        if rest == "/projects/me" and method == "GET":
+            return httpx.Response(200, json=[])
+        if rest == "/projects/licenses" and method == "POST":
+            for field in ("project_code", "apply_time", "expire_time", "license_code", "applicant", "applicant_id"):
+                if field not in body:
+                    return httpx.Response(400, json={"detail": f"{field} is required"})
+            return httpx.Response(200, json={"code": 0, "message": "ok", "data": body})
+        if rest.startswith("/projects/licenses/") and method == "GET":
+            return self._handle_admin_project_licenses(rest[len("/projects/licenses/"):], params)
         if rest.startswith("/projects/risks") and method == "GET":
             return self._handle_admin_risks_list()
         if rest.startswith("/projects/risks/") and method in ("PUT", "DELETE"):
@@ -554,17 +716,212 @@ class MockBackend:
             return self._handle_admin_projects_list()
         if rest == "/projects" and method == "POST":
             return self._handle_admin_projects_create(body)
+        # ---- task-user-mappings ----
         if rest == "/task-user-mappings" and method == "GET":
-            return self._handle_admin_mappings_list()
+            return self._handle_admin_mappings_list(params)
         if rest == "/task-user-mappings" and method == "POST":
             return self._handle_admin_mappings_create(body)
-        if rest == "/daily-reports" and method == "POST":
+        if rest.startswith("/task-user-mappings/") and len(rest) > len("/task-user-mappings/"):
+            try:
+                mid = int(rest[len("/task-user-mappings/"):])
+            except ValueError:
+                return httpx.Response(404, json={"detail": "Mapping not found"})
+            return self._handle_admin_mappings_detail(mid, method, body)
+        # ---- daily-reports ----
+        if rest.startswith("/daily-reports/by-date/"):
+            return self._handle_admin_daily_report_by_date(rest[len("/daily-reports/by-date/"):])
+        if rest.startswith("/daily-reports/search/"):
+            return httpx.Response(200, json={"items": [], "total": 0})
+        if rest in ("/daily-reports", "/daily-reports/") and method == "GET":
+            return httpx.Response(200, json={"items": [], "total": 0})
+        if rest in ("/daily-reports", "/daily-reports/") and method == "POST":
             return self._handle_daily_report(body)
+        if rest.startswith("/daily-reports/"):
+            return self._route_admin_daily_report(rest, method, body)
+        # ---- export / resources ----
         if rest.startswith("/export/project/") and method == "POST":
             return self._handle_export(body)
+        if rest.startswith("/resource-manager/resource-folders"):
+            return self._route_resource_folders(path, method, body, request)
         if rest.startswith("/resource-manager/resources"):
             return self._handle_resources(path, method, body, request)
+        if rest.startswith("/resource-manager/minio/presigned-url") and method == "GET":
+            return self._handle_minio_presigned(path, method, body, request)
         return httpx.Response(404, json={"detail": "Admin route not found"})
+
+    def _route_admin_permissions(self, rest, method, body):
+        if not hasattr(self, "_permissions"):
+            self._permissions = {}
+            self._permission_id = 0
+            self._seed_permissions()
+        if rest in ("/permissions", "/permissions/") and method == "GET":
+            return httpx.Response(200, json=list(self._permissions.values()))
+        if rest in ("/permissions", "/permissions/") and method == "POST":
+            for field in ("code", "name", "resource_type", "action"):
+                if field not in body:
+                    return httpx.Response(400, json={"detail": f"{field} is required"})
+            if any(p["code"] == body["code"] for p in self._permissions.values()):
+                return httpx.Response(400, json={"detail": "Permission code already exists"})
+            self._permission_id += 1
+            p = {"id": self._permission_id, "code": body["code"], "name": body["name"],
+                 "resource_type": body["resource_type"], "action": body["action"]}
+            self._permissions[self._permission_id] = p
+            return httpx.Response(200, json=p)
+        if rest.startswith("/permissions/"):
+            try:
+                pid = int(rest[len("/permissions/"):])
+            except ValueError:
+                return httpx.Response(404, json={"detail": "Permission not found"})
+            if pid not in self._permissions:
+                return httpx.Response(404, json={"detail": "Permission not found"})
+            if method == "GET":
+                return httpx.Response(200, json=self._permissions[pid])
+            if method == "PUT":
+                if "code" in body and not body["code"]:
+                    return httpx.Response(400, json={"detail": "code is required"})
+                p = self._permissions[pid]
+                for k in ("code", "name", "resource_type", "action"):
+                    if k in body:
+                        p[k] = body[k]
+                return httpx.Response(200, json=p)
+            if method == "DELETE":
+                del self._permissions[pid]
+                return httpx.Response(200, json={"message": "删除成功"})
+        return httpx.Response(404, json={"detail": "Admin route not found"})
+
+    def _seed_permissions(self):
+        for i, code in enumerate(("task:read", "task:write", "user:read"), start=1):
+            self._permissions[i] = {"id": i, "code": code, "name": code, "resource_type": "base", "action": "read"}
+
+    def _route_admin_user_detail(self, rest, method, body, params):
+        sub = rest[len("/users/"):]
+        if sub == "usp-username" or sub == "options":
+            return httpx.Response(404, json={"detail": "Admin route not found"})
+        if sub.endswith("/roles/remove") and method == "POST":
+            username = sub[: -len("/roles/remove")]
+            return self._handle_admin_user_roles(username, method="remove", body=body)
+        if "/roles" in sub and method == "POST":
+            username = sub[: sub.index("/roles")]
+            return self._handle_admin_user_roles(username, method="assign", body=body)
+        if sub.endswith("/reporters") and method == "GET":
+            username = sub[: -len("/reporters")]
+            return self._handle_admin_user_reporters(username, params)
+        if sub.endswith("/uspinfo") and method == "POST":
+            username = sub[: -len("/uspinfo")]
+            return self._handle_admin_user_uspinfo(username, body)
+        if sub.endswith("/detail") and method == "GET":
+            username = sub[: -len("/detail")]
+            return self._handle_admin_user_detail(username)
+        return self._handle_admin_users_detail(rest, method, body)
+
+    def _handle_admin_user_detail(self, username):
+        user = self._users.get(username)
+        if user is None:
+            return httpx.Response(404, json={"detail": "User not found"})
+        return httpx.Response(200, json=user)
+
+    def _handle_admin_user_roles(self, username, method, body):
+        if username not in self._users:
+            return httpx.Response(404, json={"detail": "User not found"})
+        if method == "assign":
+            role_ids = body.get("role_ids") or []
+            if not body.get("project_id"):
+                return httpx.Response(400, json={"detail": "project_id is required"})
+            if not role_ids:
+                return httpx.Response(400, json={"detail": "role_ids is required"})
+            return httpx.Response(200, json={"message": "ok"})
+        role_ids = body.get("role_ids") or []
+        if not body.get("project_id") or not role_ids:
+            return httpx.Response(400, json={"detail": "project_id and role_ids are required"})
+        return httpx.Response(200, json={"message": "ok"})
+
+    def _handle_admin_user_reporters(self, username, params):
+        if username not in self._users:
+            return httpx.Response(404, json={"detail": "User not found"})
+        if not params.get("project_id"):
+            return httpx.Response(400, json={"detail": "project_id is required"})
+        return httpx.Response(200, json=[])
+
+    def _handle_admin_user_uspinfo(self, username, body):
+        if username not in self._users:
+            return httpx.Response(404, json={"detail": "User not found"})
+        if not body.get("name"):
+            return httpx.Response(400, json={"detail": "name is required"})
+        return httpx.Response(200, json={"username": username, "name": body["name"], "usp_password": "mock"})
+
+    def _handle_admin_user_usp_username(self, params):
+        name = params.get("name", "")
+        if not name:
+            return httpx.Response(400, json={"detail": "name is required"})
+        return httpx.Response(200, json={"usp_username": name})
+
+    def _route_admin_role_detail(self, rest, method, body):
+        if rest.startswith("/roles/auto-classify"):
+            return httpx.Response(404, json={"detail": "Admin route not found"})
+        if "/permissions" in rest or rest.endswith("/all-permissions"):
+            return self._route_admin_role_permissions(rest, method, body)
+        return self._handle_admin_roles_detail(rest, method, body)
+
+    def _route_admin_role_permissions(self, rest, method, body):
+        core = rest.split("/all-permissions")[0].split("/permissions")[0]
+        try:
+            rid = int(core[len("/roles/"):])
+        except ValueError:
+            return httpx.Response(404, json={"detail": "Role not found"})
+        if rid not in self._admin_roles:
+            return httpx.Response(404, json={"detail": "Role not found"})
+        role = self._admin_roles[rid]
+        if rest.endswith("/all-permissions") and method == "GET":
+            return httpx.Response(200, json=role.get("permissions", []))
+        if method == "GET":
+            return httpx.Response(200, json=role.get("permissions", []))
+        if method == "POST":
+            permission_ids = body.get("permission_ids") or []
+            if not permission_ids:
+                return httpx.Response(400, json={"detail": "permission_ids is required"})
+            existing = set(role.get("permissions", []))
+            if any(pid in existing for pid in permission_ids):
+                return httpx.Response(400, json={"detail": "permission already assigned"})
+            role["permissions"] = list(existing | set(permission_ids))
+            return httpx.Response(200, json={"message": "ok"})
+        if method == "DELETE":
+            permission_ids = body.get("permission_ids") or []
+            if not permission_ids:
+                return httpx.Response(400, json={"detail": "permission_ids is required"})
+            role["permissions"] = [p for p in role.get("permissions", []) if p not in permission_ids]
+            return httpx.Response(200, json={"message": "ok"})
+        return httpx.Response(404, json={"detail": "Admin route not found"})
+
+    def _route_admin_daily_report(self, rest, method, body):
+        sub = rest[len("/daily-reports/"):]
+        try:
+            rid = int(sub)
+        except ValueError:
+            return httpx.Response(404, json={"detail": "Report not found"})
+        if rid != 1:
+            return httpx.Response(404, json={"detail": "Report not found"})
+        if method == "GET":
+            return httpx.Response(200, json={"id": rid, "project_code": "P001",
+                                             "report_date": "2026-08-01", "report_content": "mock"})
+        if method == "PUT":
+            return httpx.Response(200, json={"id": rid, **body})
+        if method == "DELETE":
+            return httpx.Response(200, json={"message": "删除成功"})
+        return httpx.Response(404, json={"detail": "Admin route not found"})
+
+    def _handle_admin_daily_report_by_date(self, path):
+        parts = path.strip("/").split("/")
+        if len(parts) < 2:
+            return httpx.Response(404, json={"detail": "Report not found"})
+        return httpx.Response(200, json={"id": 1, "project_code": parts[0],
+                                         "report_date": parts[1], "report_content": "mock"})
+
+    def _handle_admin_project_licenses(self, code, params):
+        ptype = params.get("type", "last")
+        if ptype not in ("last", "all"):
+            return httpx.Response(400, json={"detail": "invalid type"})
+        return httpx.Response(200, json={"code": 0, "message": "ok",
+                                         "data": {"project_code": code, "licenses": []}})
 
     def _handle_admin_tickets_list(self):
         items = list(self._tasks.values())
@@ -713,15 +1070,38 @@ class MockBackend:
             return httpx.Response(204)
         return httpx.Response(404, json={"detail": "Admin route not found"})
 
-    def _handle_admin_mappings_list(self):
+    def _handle_admin_mappings_list(self, params):
         return httpx.Response(200, json=list(self._integrations_mappings.values()))
 
     def _handle_admin_mappings_create(self, body):
+        source = body.get("source", "")
+        external_account = body.get("external_account", "")
+        if not source or not external_account:
+            return httpx.Response(422, json={"detail": [{"loc": ["body", "source"], "msg": "field required"}]})
+        if any(m["source"] == source and m["external_account"] == external_account
+               for m in self._integrations_mappings.values()):
+            return httpx.Response(409, json={"detail": "Mapping already exists"})
         mid = self._integration_mapping_id
         self._integration_mapping_id += 1
-        m = {"id": mid, "source_task_id": body.get("source_task_id", ""), "local_task_id": body.get("local_task_id", None)}
+        m = {"id": mid, "source": source, "external_account": external_account,
+             "external_realname": body.get("external_realname", ""),
+             "local_user_id": body.get("local_user_id", None)}
         self._integrations_mappings[mid] = m
-        return httpx.Response(200, json=m)
+        return httpx.Response(201, json=m)
+
+    def _handle_admin_mappings_detail(self, mid, method, body):
+        if mid not in self._integrations_mappings:
+            return httpx.Response(404, json={"detail": "Mapping not found"})
+        if method == "PUT":
+            m = self._integrations_mappings[mid]
+            for k in ("external_realname", "local_user_id"):
+                if k in body:
+                    m[k] = body[k]
+            return httpx.Response(200, json=m)
+        if method == "DELETE":
+            del self._integrations_mappings[mid]
+            return httpx.Response(200, json={"message": "删除成功"})
+        return httpx.Response(404, json={"detail": "Not found"})
 
     def _handle_daily_report(self, body):
         rtype = body.get("type", "daily")
@@ -732,18 +1112,88 @@ class MockBackend:
 
     def _handle_resources(self, path, method, body, request):
         rest = path[len("/api/admin/resource-manager/resources"):] or ""
-        parts = rest.strip("/").split("/") if rest else []
-        if len(parts) >= 1 and parts[0].isdigit():
-            rid = int(parts[0])
+        if rest in ("", "/"):
             if method == "GET":
-                return httpx.Response(200, json={"id": rid, "name": "test-resource", "type": "file"})
-            if method in ("PUT", "PATCH"):
-                return httpx.Response(200, json={"id": rid, "name": body.get("name", "updated"), "type": "file"})
-        if method == "POST":
-            return httpx.Response(200, json={"id": 1, "name": body.get("name", ""), "type": body.get("type", "file")})
-        if method == "GET":
+                return httpx.Response(200, json={"items": [], "total": 0})
+            if method == "POST":
+                return httpx.Response(200, json={"id": 1, "name": body.get("name", ""), "type": body.get("type", "file")})
+            return httpx.Response(404)
+        parts = rest.strip("/").split("/") if rest else []
+        if parts[0] == "recent" and method == "GET":
             return httpx.Response(200, json={"items": [], "total": 0})
+        if parts[0] == "stats" and method == "GET":
+            if len(parts) >= 2 and parts[1] == "summary":
+                return httpx.Response(200, json={"total": 0, "by_type": {}, "storage_used": 0})
+            if len(parts) >= 2 and parts[1] == "daily":
+                return httpx.Response(200, json={"items": []})
+            return httpx.Response(404)
+        if parts[0] == "hash" and method == "GET":
+            return httpx.Response(404, json={"detail": "Resource not found"})
+        if parts[0] == "owner" and method == "GET":
+            return httpx.Response(200, json={"items": [], "total": 0})
+        if parts[0] == "type" and method == "GET":
+            if parts[1] not in ("file", "image", "video", "audio", "document", "archive", "other"):
+                return httpx.Response(422, json={"detail": "invalid resource_type"})
+            return httpx.Response(200, json={"items": [], "total": 0})
+        if parts[0] == "category" and method == "GET":
+            return httpx.Response(200, json={"items": [], "total": 0})
+        if parts[0] == "search" and method == "GET":
+            return httpx.Response(200, json={"items": [], "total": 0})
+        if parts[0] == "sync-build-deploy" and method == "POST":
+            return httpx.Response(200, json={"code": 0, "message": "ok"})
+        if parts[0] == "sync-oss" and method == "POST":
+            return httpx.Response(200, json={"code": 0, "message": "ok"})
+        if parts[0].isdigit():
+            rid = int(parts[0])
+            if method == "GET" and len(parts) == 1:
+                return httpx.Response(200, json={"id": rid, "name": "test-resource", "type": "file",
+                                                 "resource_status": "available"})
+            if method in ("PUT", "PATCH") and len(parts) == 1:
+                return httpx.Response(200, json={"id": rid, "name": body.get("name", "updated"), "type": "file"})
+            if method == "DELETE" and len(parts) == 1:
+                return httpx.Response(200, json={"message": "删除成功"})
+            if method == "POST" and parts[1] == "like":
+                return httpx.Response(200, json={"id": rid, "liked": True})
+            if method == "GET" and parts[1] == "download":
+                return httpx.Response(403, json={"detail": "resource unavailable"})
+            if method == "GET" and parts[1] in ("download-url", "thumbnail-url", "preview-url"):
+                return httpx.Response(404, json={"detail": "url not available"})
+            if method == "POST" and parts[1] == "download-count":
+                return httpx.Response(200, json={"id": rid, "download_count": 1})
         return httpx.Response(404)
+
+    def _route_resource_folders(self, path, method, body, request):
+        rest = path[len("/api/admin/resource-manager/resource-folders"):] or ""
+        if rest in ("", "/") and method == "GET":
+            return httpx.Response(200, json={"items": [], "total": 0})
+        if rest in ("", "/") and method == "POST":
+            if not body.get("folder_name"):
+                return httpx.Response(400, json={"detail": "folder_name is required"})
+            return httpx.Response(201, json={"id": 1, "folder_name": body["folder_name"]})
+        if rest == "/root" and method == "GET":
+            return httpx.Response(200, json=[])
+        if rest == "/root/children" and method == "GET":
+            return httpx.Response(200, json={"items": [], "total": 0})
+        if rest.startswith("/") and rest[1:].isdigit():
+            fid = int(rest[1:])
+            if method == "GET":
+                return httpx.Response(200, json={"id": fid, "folder_name": f"folder-{fid}"})
+            if method == "PUT":
+                return httpx.Response(200, json={"id": fid, **body})
+            if method == "DELETE":
+                return httpx.Response(200, json={"message": "删除成功"})
+            if method == "GET" and rest.endswith("/children"):
+                return httpx.Response(200, json={"items": [], "total": 0})
+        if rest.endswith("/children") and method == "GET":
+            return httpx.Response(200, json={"items": [], "total": 0})
+        return httpx.Response(404, json={"detail": "Folder not found"})
+
+    def _handle_minio_presigned(self, path, method, body, request):
+        params = request.url.params
+        if not params.get("bucket_name") or not params.get("object_name"):
+            return httpx.Response(422, json={"detail": "bucket_name and object_name are required"})
+        return httpx.Response(200, json={"url": f"http://mock-minio/{params['bucket_name']}/{params['object_name']}",
+                                         "expires_minutes": params.get("expires_minutes", 5)})
 
     def _route_ai(self, path, method, body, request):
         rest = path[len("/api/ai"):] or ""
@@ -806,6 +1256,8 @@ class MockBackend:
         self._admin_roles[2] = {"id": 2, "name": "engineer", "permissions": ["task:read", "task:write"]}
         self._admin_role_id = 3
         self._admin_risks["R1"] = {"risk_code": "R1", "name": "Seed Risk", "level": "high"}
+        self._wechat_tags[1] = "Default tag"
+        self._wechat_tag_id_counter = 2
 
 def create_mock_transport():
     backend = MockBackend()
