@@ -2923,9 +2923,9 @@ html, body, #root {
   filter: brightness(0.97);
 }
 .detail-chat-bubble.is-self {
-  background: #95EC69;
+  background: #e6f4ff;
   color: #1a1a1a;
-  border-color: #8ad85f;
+  border-color: #c8e3f7;
   border-radius: 6px 6px 0 6px;
 }
 .detail-chat-bubble.is-self * {
@@ -3016,6 +3016,11 @@ html, body, #root {
 }
 .detail-chat-quote:hover { background: rgba(0, 0, 0, 0.1); }
 .detail-chat-bubble.is-self .detail-chat-quote:hover { background: rgba(255, 255, 255, 0.55); }
+/* 被引用消息已删除：灰色占位，不可点击 */
+.detail-chat-quote.is-deleted { cursor: default; opacity: 0.7; }
+.detail-chat-quote.is-deleted:hover { background: rgba(0, 0, 0, 0.04); }
+.detail-chat-bubble.is-self .detail-chat-quote.is-deleted:hover { background: rgba(255, 255, 255, 0.4); }
+.detail-chat-quote.is-deleted .detail-chat-quote__text { font-style: italic; opacity: 0.6; }
 .detail-chat-quote__name {
   display: block;
   font-size: 12px;

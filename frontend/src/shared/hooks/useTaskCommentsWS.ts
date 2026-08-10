@@ -50,18 +50,21 @@ export function useTaskCommentsWS(
   readMap: Record<string, number>;
   sendTyping: (value: boolean) => void;
   sendRead: (lastReadCommentId: number) => void;
+  deletedIds: Set<string>;
 } {
   const [displayComments, setDisplayComments] = useState<DiscussionComment[]>(baseComments);
   const [online, setOnline] = useState<OnlineMember[]>([]);
   const [typingUser, setTypingUser] = useState<string | null>(null);
   const [readMap, setReadMap] = useState<Record<string, number>>({});
+  // 已删除评论 id 集合（WS comment.deleted / 本地删除记录）。
+  // 同步维护 ref（合并基线时用，避免闭包旧值）+ state（驱动引用块「已删除」展示重渲染）。
+  const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
+  const deletedIdsRef = useRef<Set<string>>(new Set());
 
   const socketRef = useRef<TaskRoomSocket | null>(null);
   const currentUserRef = useRef(options?.currentUser);
   currentUserRef.current = options?.currentUser;
   const onTaskUpdatedRef = useRef(options?.onTaskUpdated);
-  // 已删除评论 id 集合（WS comment.deleted / 本地删除记录），合并基线时排除，避免删除后又被基线补回
-  const deletedIdsRef = useRef<Set<string>>(new Set());
 
   // 父级基线变化（GET/POST/DELETE 乐观更新）→ 以基线为权威源合并 WS 增量：
   // 基线已有的按基线更新；基线没有但 WS 新增的保留；已删除的（deletedIdsRef）一律排除。
@@ -112,10 +115,13 @@ export function useTaskCommentsWS(
           });
           break;
         }
-        case 'comment.deleted':
-          deletedIdsRef.current.add(String(e.id));
-          setDisplayComments((prev) => prev.filter((c) => String(c.id) !== String(e.id)));
+        case 'comment.deleted': {
+          const delId = String(e.id);
+          deletedIdsRef.current.add(delId);
+          setDeletedIds((prev) => (prev.has(delId) ? prev : new Set(prev).add(delId)));
+          setDisplayComments((prev) => prev.filter((c) => String(c.id) !== delId));
           break;
+        }
         case 'typing':
           if (e.username && e.username !== currentUserRef.current) {
             setTypingUser(e.value ? e.username : null);
@@ -151,5 +157,5 @@ export function useTaskCommentsWS(
     socketRef.current?.sendRead(lastReadCommentId);
   }, []);
 
-  return { displayComments, online, typingUser, readMap, sendTyping, sendRead };
+  return { displayComments, online, typingUser, readMap, sendTyping, sendRead, deletedIds };
 }
