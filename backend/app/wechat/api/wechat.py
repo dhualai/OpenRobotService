@@ -699,7 +699,7 @@ async def handle_subscribe_event(message: dict):
         wechat_service.send_news_message_to_user(
             open_id=from_user_name,
             title="设置你的个人信息",
-            description="设置你的真实姓名，公司，部门等， 为你开发全部功能！",
+            description="设置你的真实姓名，公司，部门等， 为你开放全部功能！",
             url=profile_url,
             picurl=share_img,
         )
