@@ -184,6 +184,9 @@ export default function DiscussionPanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
+  // 消息内容容器：用 ResizeObserver 监听其高度变化（图片加载/Markdown 渲染/消息追加撑高），
+  // 用户处于贴底态时自动跟随滚到底，避免进入后停在顶部或最新消息被截断在边框。
+  const chatContentRef = useRef<HTMLDivElement>(null);
 
   // @mention state
   const [showMentions, setShowMentions] = useState(false);
@@ -240,6 +243,19 @@ export default function DiscussionPanel({
       }
     }
   }, [displayComments, sendRead, scrollToBottom]);
+
+  // 内容高度变化跟随（图片加载/Markdown 渲染/消息追加撑高）：贴底态自动滚到底，
+  // 解决进入后停在顶部、最新消息被截断在边框等问题。仅监听内容容器尺寸，不干扰用户主动滚动。
+  useEffect(() => {
+    const content = chatContentRef.current;
+    const el = chatMessagesRef.current;
+    if (!content || !el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (isAtBottomRef.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, []);
 
   // commentText 变化时自适应高度（覆盖 @U老师 按钮 / mention 选择等程序化修改）
   useEffect(() => {
@@ -559,6 +575,7 @@ export default function DiscussionPanel({
           onMessagesClick?.(e);
         }}
       >
+        <div ref={chatContentRef} className="detail-chat-messages__inner">
         {displayComments.length > 0 ? (
           displayComments.map((c, idx) => {
             const authorName = c.created_by_name || c.created_by || '未知用户';
@@ -692,6 +709,7 @@ export default function DiscussionPanel({
         ) : (
           <div className="detail-chat-empty">暂无评论</div>
         )}
+        </div>
       </div>
 
       {/* 新消息提示条（微信式）：滚在历史区时收到新消息，显示悬浮条，点击跳底 */}

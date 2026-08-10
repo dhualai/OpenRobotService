@@ -95,10 +95,5 @@ output/
 # ===== AI 生成用例归档（审阅确认后手动转正入库）=====
 automation/references/generated-cases/
 
-# ===== 临时脚本（不入库）=====
-_fix_msg.py
-_msg.py
-_msgidx
-_seq.py
-_commit-msg-tmp.txt
-_commit_msg.txt
+# ===== 本地脚本（不入库）=====
+scripts/start-minio.ps1

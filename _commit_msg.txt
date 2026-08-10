@@ -1,7 +1,0 @@
-fix(chat): 讨论区进入即显示最新消息并贴底跟随，修复停在顶部与已读消息卡边框
-
-- 消息列表外包一层 chatContentRef 内容容器，用 ResizeObserver 监听高度变化
-- 贴底态（含初始进入）内容撑高（图片加载/Markdown渲染/消息追加）自动滚到底
-- 用户主动上滚阅读历史不打断，仅显示新消息提示条
-- 根因：scrollToBottom 在 useEffect 同步执行时异步内容未撑高 scrollHeight
-- 同步更新实时评论WebSocket设计方案文档
