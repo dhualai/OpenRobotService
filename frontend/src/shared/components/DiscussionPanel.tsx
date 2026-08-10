@@ -361,13 +361,24 @@ export default function DiscussionPanel({
 
   const ph = placeholder ?? (enableAI ? '直接评论或者 @U老师 进行讨论。' : '参与讨论…');
 
-  // 菜单定位（固定在视口，置于气泡上方并居中，避免溢出）
+  // 菜单定位（固定在视口，横向布局）：水平居中于气泡中心；垂直方向依气泡距讨论区容器顶部的
+  // 距离动态选择上方/下方——上方空间不足（贴近容器顶部）则翻到气泡下方，避免菜单被遮挡。
   const menuStyle: React.CSSProperties | undefined = menu
     ? (() => {
-        const MENU_W = 156;
-        const left = Math.min(Math.max(menu.rect.left, 8), window.innerWidth - MENU_W - 8);
-        const top = Math.max(menu.rect.top - 8, 8);
-        return { position: 'fixed', left, top, transform: 'translateY(-100%)', zIndex: 1000 };
+        const MENU_W = 168; // 横向三按钮预估宽度（引用/复制/删除）
+        const MENU_H = 44;  // 横向单行高度（含 padding）
+        const GAP = 8;
+        // 水平：居中于气泡中心，左右 clamp 到视口，避免溢出
+        const bubbleCenterX = menu.rect.left + menu.rect.width / 2;
+        const left = Math.min(Math.max(bubbleCenterX - MENU_W / 2, 8), window.innerWidth - MENU_W - 8);
+        // 垂直：气泡顶部到讨论区容器可见顶部的距离 = 上方可用空间；
+        // 不足放下菜单（贴近容器顶部/导航栏）则翻到气泡下方，避免被遮挡
+        const containerRect = chatMessagesRef.current?.getBoundingClientRect();
+        const spaceAbove = containerRect ? menu.rect.top - containerRect.top : menu.rect.top;
+        const placeAbove = spaceAbove >= MENU_H + GAP;
+        const top = placeAbove ? menu.rect.top - GAP : menu.rect.bottom + GAP;
+        const transform = placeAbove ? 'translateY(-100%)' : 'none';
+        return { position: 'fixed', left, top, transform, zIndex: 1000 };
       })()
     : undefined;
 

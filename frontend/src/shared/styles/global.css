@@ -2871,6 +2871,11 @@ html, body, #root {
   word-break: break-word;
   line-height: 1.5;
   transition: filter 0.12s, box-shadow 0.12s;
+  /* 长按唤起自定义菜单（引用/复制/删除），抑制系统级长按弹窗与文本选取；
+     复制能力由菜单「复制」项提供，不依赖手动选取 */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .detail-chat-bubble:active {
   filter: brightness(0.97);
@@ -2987,7 +2992,9 @@ html, body, #root {
   background: transparent;
 }
 .detail-chat-menu {
-  min-width: 156px;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
   background: #fff;
   border-radius: 10px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
@@ -2996,18 +3003,19 @@ html, body, #root {
   -webkit-user-select: none;
 }
 .detail-chat-menu__item {
-  display: block;
-  width: 100%;
-  text-align: center;
-  padding: 11px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 11px 16px;
   background: none;
   border: none;
   font-size: 14px;
   color: #333;
   cursor: pointer;
-  border-bottom: 1px solid #f0f0f0;
+  border-right: 1px solid #f0f0f0;
+  white-space: nowrap;
 }
-.detail-chat-menu__item:last-child { border-bottom: none; }
+.detail-chat-menu__item:last-child { border-right: none; }
 .detail-chat-menu__item:active { background: #f2f3f5; }
 .detail-chat-menu__item.is-danger { color: #e34d59; }
 
