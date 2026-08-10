@@ -145,6 +145,7 @@ export default function DiscussionPanel({
     readMap,
     sendTyping,
     sendRead,
+    deletedIds,
   } = useTaskCommentsWS(taskId, comments, { currentUser: username, onTaskUpdated });
 
   // username → 展示名 映射（用于在线头像 / 输入中提示）
@@ -604,16 +605,19 @@ export default function DiscussionPanel({
                       openMenu(c, e.currentTarget.getBoundingClientRect());
                     }}
                   >
-                    {/* 引用块（微信式：气泡内顶部高亮，点击定位原消息） */}
-                    {c.quoted && (
-                      <div
-                        className="detail-chat-quote"
-                        onClick={(e) => { e.stopPropagation(); locateComment(c.quoted!.id); }}
-                      >
-                        <span className="detail-chat-quote__name">{c.quoted.created_by_name || '用户'}</span>
-                        <span className="detail-chat-quote__text">{stripHtml(c.quoted.content)}</span>
-                      </div>
-                    )}
+                    {/* 引用块（微信式：气泡内顶部高亮，点击定位原消息；被引用消息已删除则显示占位） */}
+                    {c.quoted && (() => {
+                      const qDeleted = deletedIds.has(String(c.quoted.id));
+                      return (
+                        <div
+                          className={`detail-chat-quote${qDeleted ? ' is-deleted' : ''}`}
+                          onClick={qDeleted ? undefined : (e) => { e.stopPropagation(); locateComment(c.quoted!.id); }}
+                        >
+                          <span className="detail-chat-quote__name">{c.quoted.created_by_name || '用户'}</span>
+                          <span className="detail-chat-quote__text">{qDeleted ? '该消息已被删除' : stripHtml(c.quoted.content)}</span>
+                        </div>
+                      );
+                    })()}
                     {!isCurrentUser && !isContinued && (
                       <div className="detail-chat-name">
                         <span className="detail-chat-name__text">{authorName}</span>
