@@ -20,6 +20,7 @@ from app.modules.tasks.schemas.ticket import (
 )
 from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, TicketType
 from app.modules.tasks.services.ticket_service import TicketService
+from app.modules.tasks.api.ws import ws_broadcast_comment, ws_broadcast_comment_deleted, ws_broadcast_task_updated
 from app.utils.minio_client import minio_client
 from app.utils.notification_utils import NotificationUtils
 from app.integrations.api import verify_sync_api_key
@@ -332,6 +333,13 @@ async def update_task(
     try:
         token = current_user.get('token')
         result = await TicketService.update_ticket(db, task_id, ticket_update, token=token, operator_id=username)
+        # ── WS 实时广播：工单字段更新（标题/描述/处理人等）──
+        try:
+            t = result.get("ticket")
+            if t:
+                await ws_broadcast_task_updated(task_id, t)
+        except Exception:
+            pass
 
         if result["ticket"] is None:
             raise HTTPException(status_code=404, detail="任务未找到")
@@ -402,6 +410,12 @@ async def add_comment(
             task_id=task_id, content=comment_data.content,
             operator=operator, token=current_user.get("token"),
         )
+
+        # ── WS 实时广播：评论创建（失败不影响主流程）──
+        try:
+            await ws_broadcast_comment("comment.created", task_id, comment)
+        except Exception:
+            pass
 
         return comment
     except Exception as e:
@@ -538,6 +552,12 @@ async def update_comment(
 
     updated_comment = await TicketService.update_comment(db, comment_id, comment_update, comment_attachment_map)
 
+    # ── WS 实时广播：评论编辑 ──
+    try:
+        await ws_broadcast_comment("comment.updated", comment.ticket_id, updated_comment)
+    except Exception:
+        pass
+
     from sqlalchemy import update
     from app.modules.tasks.models.ticket import Ticket
     from sqlalchemy.sql import func
@@ -575,6 +595,11 @@ async def delete_comment(
         success = await TicketService.delete_comment(db, comment_id)
         if not success:
             raise HTTPException(status_code=404, detail="评论未找到")
+        # ── WS 实时广播：评论删除 ──
+        try:
+            await ws_broadcast_comment_deleted(comment.ticket_id, comment_id)
+        except Exception:
+            pass
         return {"message": "评论删除成功"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"删除评论失败: {str(e)}")
@@ -605,6 +630,11 @@ async def update_task_status(
     try:
         status_enum = TicketStatus(status)
         updated_ticket = await TicketService.update_ticket_status(db, task_id, status_enum, token=token, operator_id=username)
+        # ── WS 实时广播：工单状态变更 ──
+        try:
+            await ws_broadcast_task_updated(task_id, updated_ticket)
+        except Exception:
+            pass
         return updated_ticket
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -622,6 +652,11 @@ async def assign_task(
     # 放开 admin 限制：允许任何已登录用户改派（兜底双工单场景下提单人需将工单派给项目负责人）。
     try:
         ticket = await TicketService.assign_ticket(db, task_id, user_id)
+        # ── WS 实时广播：工单改派 ──
+        try:
+            await ws_broadcast_task_updated(task_id, ticket)
+        except Exception:
+            pass
         if not ticket:
             raise HTTPException(status_code=404, detail="任务未找到")
         return ticket
@@ -815,6 +850,32 @@ async def send_ticket_create_notification(
     except Exception as e:
         logger.error(f"发送新建工单通知失败 task_id={body.task_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"发送新建工单通知失败: {str(e)}")
+
+
+@router.post("/{task_id}/internal/broadcast-comment")
+async def internal_broadcast_comment(
+    task_id: int,
+    comment_id: int = Body(..., embed=True),
+    _: str = Depends(verify_sync_api_key),
+):
+    """AI 服务写库后回调：把指定评论实时广播到 WS 房间（跨进程 pub-sub）。
+
+    AI 服务是独立进程，持有 DB 连接但不持有后端 WS 连接；故它在 task_comments 写库后
+    best-effort 回调此端点，由后端按 comment_id 加载评论并广播 comment.created，
+    使在线客户端实时上屏 AI 回复（讨论/摘要/诊断）。
+    鉴权走 X-API-Key（与用户 JWT 分离），需与后端 HELPDESK_SYNC_API_KEY 一致。
+    """
+    from app.models.task import TaskComment
+    from app.core.db import SessionLocal
+    db = SessionLocal()
+    try:
+        comment = db.get(TaskComment, comment_id)
+    finally:
+        db.close()
+    if not comment or comment.task_id != task_id:
+        raise HTTPException(status_code=404, detail="评论不存在")
+    await ws_broadcast_comment("comment.created", task_id, comment)
+    return {"code": 0, "message": "broadcasted"}
 
 
 @router.get("/attachments/download")
