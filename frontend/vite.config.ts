@@ -32,7 +32,9 @@ export default defineConfig(({ command }) => {
     '/api': {
       target: DEV_BACKEND_TARGET,
       changeOrigin: true,
-      ws: false,
+      // 开启 WebSocket 转发，使 dev 下评论区实时 WS（/api/tasks/{id}/ws）可连后端 8400；
+      // 生产不走 vite，由 nginx 的 Upgrade 透传处理（见 deploy/nginx/conf/nginx.conf）。
+      ws: true,
     },
   } : {};
 

@@ -5,11 +5,12 @@
 // 功能开关：enableAttach（附件上传，历史工单用）/ enableAI（@U老师 讨论，系统任务用）。
 // 微信化交互：消息引用（长按→引用；气泡内引用块可点击定位原消息）、长按操作菜单（引用/复制/删除）、气泡样式优化。
 import { useState, useRef, useEffect, useMemo, useCallback, Fragment } from 'react';
-import { Button, Toast } from 'tdesign-mobile-react';
+import { Button, Toast, Popover } from 'tdesign-mobile-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
 import { useAuthStore } from '@/stores/auth';
 import API_CONFIG from '@/config/api';
+import { useTaskCommentsWS } from '@/shared/hooks/useTaskCommentsWS';
 
 export interface DiscussionComment {
   id: string | number;
@@ -109,6 +110,10 @@ interface DiscussionPanelProps {
   mentionUsers?: ProjectMember[];
   /** 删除评论（按创建人鉴权由后端把关）；不传则不显示删除菜单项 */
   onDeleteComment?: (id: string | number) => Promise<void> | void;
+  /** 订阅用 taskId（传入即启用 WS 实时评论 / 在线状态 / 输入中 / 已读回执） */
+  taskId?: string | number;
+  /** 工单状态变更（WS task.updated 推送）：父级据此更新工单字段，替代派单轮询 */
+  onTaskUpdated?: (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null }) => void;
 }
 
 export default function DiscussionPanel({
@@ -125,8 +130,32 @@ export default function DiscussionPanel({
   className = '',
   mentionUsers,
   onDeleteComment,
+  taskId,
+  onTaskUpdated,
 }: DiscussionPanelProps) {
   const { username, name } = useAuthStore();
+  // 长按操作菜单的浮层由 TDesign Mobile <Popover> 承载（自带箭头/动画/外点关闭）；
+  // 通过「透明、pointer-events:none 的代理锚点」定位到被长按气泡的 rect，避免覆盖气泡交互。
+  // ── WS 实时订阅：合并基线评论与增量事件，含在线/输入中/已读 ──
+  const {
+    displayComments,
+    online,
+    typingUser,
+    readMap,
+    sendTyping,
+    sendRead,
+  } = useTaskCommentsWS(taskId, comments, { currentUser: username, onTaskUpdated });
+
+  // username → 展示名 映射（用于在线头像 / 输入中提示）
+  const nameMap = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const c of displayComments) {
+      if (c.created_by) m[c.created_by] = c.created_by_name || c.created_by;
+    }
+    return m;
+  }, [displayComments]);
+  const initialOf = (u?: string) => (u ? (nameMap[u] || u).slice(0, 1).toUpperCase() : '?');
+  const typingName = typingUser ? (nameMap[typingUser] || typingUser) : '';
   const [commentText, setCommentText] = useState('');
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
@@ -147,12 +176,21 @@ export default function DiscussionPanel({
   // 长按后抑制紧随的 click（避免误触容器诊断链接等）
   const suppressClickRef = useRef(false);
 
-  // 新消息到达 → 滚到底部
+  const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastReadRef = useRef<number | null>(null);
+
+  // 新消息到达 → 滚到底部，并上报已读到最新一条（节流：仅在最新 id 变化时发送）
   useEffect(() => {
-    if (chatMessagesRef.current) {
-      chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
+    const el = chatMessagesRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    if (displayComments.length) {
+      const lid = Number(displayComments[displayComments.length - 1].id);
+      if (lid && lid !== lastReadRef.current) {
+        lastReadRef.current = lid;
+        sendRead(lid);
+      }
     }
-  }, [comments]);
+  }, [displayComments, sendRead]);
 
   // commentText 变化时自适应高度（覆盖 @U老师 按钮 / mention 选择等程序化修改）
   useEffect(() => {
@@ -213,6 +251,15 @@ export default function DiscussionPanel({
       setShowMentions(true);
     } else {
       setShowMentions(false);
+    }
+
+    // ── 输入中实时提示：有内容时通知房间，停输 3s 自动结束 ──
+    if (val.trim()) {
+      sendTyping(true);
+      if (typingTimer.current) clearTimeout(typingTimer.current);
+      typingTimer.current = setTimeout(() => sendTyping(false), 3000);
+    } else {
+      sendTyping(false);
     }
   };
 
@@ -321,6 +368,9 @@ export default function DiscussionPanel({
 
   const openMenu = useCallback((comment: DiscussionComment, rect: DOMRect) => {
     setMenu({ comment, rect });
+    // 清除系统已选文本（长按可能触发原生选取），避免与自定义菜单叠加显示
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) sel.removeAllRanges();
     // 标记“刚长按”，抑制随后触摸屏 click 冒泡到容器（误触诊断链接等）
     suppressClickRef.current = true;
     setTimeout(() => { suppressClickRef.current = false; }, 350);
@@ -393,33 +443,44 @@ export default function DiscussionPanel({
 
   const ph = placeholder ?? (enableAI ? '直接评论或者 @U老师 进行讨论。' : '参与讨论…');
 
-  // 菜单定位（固定在视口，横向布局）：水平居中于气泡中心；垂直方向依气泡距讨论区容器顶部的
-  // 距离动态选择上方/下方——上方空间不足（贴近容器顶部）则翻到气泡下方，避免菜单被遮挡。
-  const menuStyle: React.CSSProperties | undefined = menu
+  // 长按菜单浮层交给 TDesign <Popover>（popper 定位 + 箭头 + 动画 + 外点关闭）承载。
+  // 用一个「透明、pointer-events:none 的代理锚点」定位到被长按气泡的 rect：
+  // 既让 popper 以气泡为基准绘制箭头与上下位置，又不拦截气泡本身的交互/滚动。
+  const menuAnchorStyle: React.CSSProperties = menu
+    ? {
+        position: 'fixed',
+        left: menu.rect.left,
+        top: menu.rect.top,
+        width: menu.rect.width,
+        height: menu.rect.height,
+        pointerEvents: 'none',
+        background: 'transparent',
+      }
+    : { display: 'none' };
+  // 垂直方向依气泡距讨论区容器顶部距离动态选择上方/下方，避免贴近顶部时被遮挡
+  const menuPlacement: 'top' | 'bottom' = menu
     ? (() => {
-        const MENU_W = 168; // 横向三按钮预估宽度（引用/复制/删除）
-        const MENU_H = 44;  // 横向单行高度（含 padding）
-        const GAP = 8;
-        // 水平：居中于气泡中心，左右 clamp 到视口，避免溢出
-        const bubbleCenterX = menu.rect.left + menu.rect.width / 2;
-        const left = Math.min(Math.max(bubbleCenterX - MENU_W / 2, 8), window.innerWidth - MENU_W - 8);
-        // 垂直：气泡顶部到讨论区容器可见顶部的距离 = 上方可用空间；
-        // 不足放下菜单（贴近容器顶部/导航栏）则翻到气泡下方，避免被遮挡
-        const containerRect = chatMessagesRef.current?.getBoundingClientRect();
-        const spaceAbove = containerRect ? menu.rect.top - containerRect.top : menu.rect.top;
-        const placeAbove = spaceAbove >= MENU_H + GAP;
-        const top = placeAbove ? menu.rect.top - GAP : menu.rect.bottom + GAP;
-        const transform = placeAbove ? 'translateY(-100%)' : 'none';
-        return { position: 'fixed', left, top, transform, zIndex: 1000 };
+        const containerTop = chatMessagesRef.current?.getBoundingClientRect().top ?? 0;
+        const spaceAbove = menu.rect.top - containerTop;
+        return spaceAbove >= 64 ? 'top' : 'bottom';
       })()
-    : undefined;
+    : 'top';
 
   return (
     <div className={`detail-card detail-chat-container ${className}`.trim()}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h4 className="detail-card__h">{title ?? `讨论（${comments.length}）`}</h4>
+        <h4 className="detail-card__h">{title ?? `讨论（${displayComments.length}）`}</h4>
         {headerRight}
       </div>
+      {/* 在线成员（实时） */}
+      {taskId !== undefined && online.length > 0 && (
+        <div className="detail-chat-presence">
+          {online.map((u) => (
+            <span key={u} className="detail-chat-presence__avatar" title={nameMap[u] || u}>{initialOf(u)}</span>
+          ))}
+          <span className="detail-chat-presence__text">{online.length} 人在线</span>
+        </div>
+      )}
       <div
         className="detail-chat-messages"
         ref={chatMessagesRef}
@@ -432,8 +493,8 @@ export default function DiscussionPanel({
           onMessagesClick?.(e);
         }}
       >
-        {comments.length > 0 ? (
-          comments.map((c, idx) => {
+        {displayComments.length > 0 ? (
+          displayComments.map((c, idx) => {
             const authorName = c.created_by_name || c.created_by || '未知用户';
             const isCurrentUser =
               (c.created_by?.toLowerCase() === username?.toLowerCase()) ||
@@ -441,7 +502,7 @@ export default function DiscussionPanel({
               (c.created_by_name?.toLowerCase() === name?.toLowerCase());
             const canDelete = !!onDeleteComment && isCurrentUser;
             // 聊天历史记录模式：首条消息或与上一条间隔≥5分钟，插入居中时间分隔
-            const prevCreatedAt = idx > 0 ? comments[idx - 1].created_at : undefined;
+            const prevCreatedAt = idx > 0 ? displayComments[idx - 1].created_at : undefined;
             const showDivider = shouldShowTimeDivider(c.created_at, prevCreatedAt);
             return (
               <Fragment key={c.id}>
@@ -515,6 +576,12 @@ export default function DiscussionPanel({
                         })}
                       </div>
                     )}
+                    {isCurrentUser && (() => {
+                      const readCount = Object.entries(readMap).filter(
+                        ([u, rid]) => u !== c.created_by && Number(rid) >= Number(c.id),
+                      ).length;
+                      return readCount > 0 ? <span className="detail-chat-read">已读</span> : null;
+                    })()}
                     {canDelete && (
                       <button
                         type="button"
@@ -538,20 +605,31 @@ export default function DiscussionPanel({
         )}
       </div>
 
-      {/* 长按操作菜单（微信式弹出菜单，锚定气泡上方） */}
-      {menu && (
-        <>
-          <div className="detail-chat-menu-mask" onClick={() => setMenu(null)} onTouchStart={() => setMenu(null)} />
-          <div className="detail-chat-menu" style={menuStyle}>
-            <button type="button" className="detail-chat-menu__item" onClick={handleQuote}>引用</button>
-            <button type="button" className="detail-chat-menu__item" onClick={handleCopy}>复制</button>
-            {onDeleteComment && (
-              <button type="button" className="detail-chat-menu__item is-danger" onClick={handleDelete}>删除</button>
-            )}
-          </div>
-        </>
-      )}
+      {/* 长按操作菜单：TDesign Popover（自带箭头/动画/外点关闭），代理锚点定位到被长按气泡 */}
+      <Popover
+        visible={!!menu}
+        placement={menuPlacement}
+        showArrow
+        theme="light"
+        closeOnClickOutside
+        onVisibleChange={(v) => { if (!v) setMenu(null); }}
+        style={menuAnchorStyle}
+        content={
+          menu ? (
+            <div className="detail-chat-menu">
+              <button type="button" className="detail-chat-menu__item" onClick={handleQuote}>引用</button>
+              <button type="button" className="detail-chat-menu__item" onClick={handleCopy}>复制</button>
+              {onDeleteComment && (
+                <button type="button" className="detail-chat-menu__item is-danger" onClick={handleDelete}>删除</button>
+              )}
+            </div>
+          ) : null
+        }
+      />
 
+      {typingUser && (
+        <div className="detail-chat-typing">{typingName} 正在输入…</div>
+      )}
       <div className="detail-chat-input" style={{ position: 'relative' }}>
         {/* 引用条：引用某条消息后显示在输入框上方，可点击定位/取消 */}
         {quoted && (
