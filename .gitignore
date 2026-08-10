@@ -94,3 +94,6 @@ output/
 
 # ===== AI 生成用例归档（审阅确认后手动转正入库）=====
 automation/references/generated-cases/
+
+# ===== 临时脚本（不入库）=====
+_fix_msg.py
