@@ -130,7 +130,7 @@ const WECOM_VALUE_MAP: Record<string, keyof ProjectDetailData> = {
   '业绩核算期': 'settlement_period',
   '方案项目命名': 'project_summary',
   '销售': 'sales',
-  '售前': 'pre_sales',
+  '售前方案': 'pre_sales',
   '项目经理': 'project_manager',
   '实施工程师': 'field_engineer',
   '内部编号': 'internal_code',

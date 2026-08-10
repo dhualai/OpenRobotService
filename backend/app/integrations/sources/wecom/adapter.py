@@ -72,6 +72,7 @@ def map_wecom_record_to_project(record: Dict[str, Any]) -> Dict[str, Any]:
         "project_type": values.get("项目类型") or None,
         "system_id": record.get("record_id", ""),
         "settlement_period": values.get("业绩核算期") or None,
+        "pre_sales": values.get("售前方案") or None,
     }
 
 
