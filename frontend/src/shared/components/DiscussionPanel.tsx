@@ -4,12 +4,11 @@
 // 布局：当前用户消息靠右（is-right + is-self 蓝气泡），他人靠左。
 // 功能开关：enableAttach（附件上传，历史工单用）/ enableAI（@U老师 讨论，系统任务用）。
 // 微信化交互：消息引用（长按→引用；气泡内引用块可点击定位原消息）、长按操作菜单（引用/复制/删除）、气泡样式优化。
-import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback, Fragment } from 'react';
 import { Button, Toast, Popover } from 'tdesign-mobile-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
 import { useAuthStore } from '@/stores/auth';
-import { formatTime } from '@/shared/utils/url';
 import API_CONFIG from '@/config/api';
 import { useTaskCommentsWS } from '@/shared/hooks/useTaskCommentsWS';
 
@@ -43,6 +42,39 @@ const stripHtml = (html: string): string => {
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
   return (tmp.textContent || tmp.innerText || '').replace(/\s+/g, ' ').trim();
+};
+
+/** 聊天时间分隔格式化：当天显示 HH:MM，非当天显示 M月D日 HH:MM */
+const formatChatDividerTime = (dateString: string): string => {
+  const date = new Date(dateString);
+  if (isNaN(date.getTime())) return '';
+  const now = new Date();
+  const isSameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const hh = pad(date.getHours());
+  const mm = pad(date.getMinutes());
+  if (isSameDay) return `${hh}:${mm}`;
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${hh}:${mm}`;
+};
+
+/** 是否在当前评论前插入居中时间分隔：首条消息或与上一条间隔≥5分钟 */
+const shouldShowTimeDivider = (cur: string, prev?: string): boolean => {
+  if (!prev) return true;
+  const curDate = new Date(cur);
+  const prevDate = new Date(prev);
+  if (isNaN(curDate.getTime()) || isNaN(prevDate.getTime())) return true;
+  return curDate.getTime() - prevDate.getTime() >= 5 * 60 * 1000;
+};
+
+/** 评论时间格式化（姓名旁，非本人消息）：X月X日 HH:MM:SS */
+const formatCommentTime = (dateString: string): string => {
+  const date = new Date(dateString);
+  if (isNaN(date.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 };
 
 export interface ProjectMember {
@@ -462,96 +494,110 @@ export default function DiscussionPanel({
         }}
       >
         {displayComments.length > 0 ? (
-          displayComments.map((c) => {
+          displayComments.map((c, idx) => {
             const authorName = c.created_by_name || c.created_by || '未知用户';
             const isCurrentUser =
               (c.created_by?.toLowerCase() === username?.toLowerCase()) ||
               (c.created_by_name?.toLowerCase() === username?.toLowerCase()) ||
               (c.created_by_name?.toLowerCase() === name?.toLowerCase());
             const canDelete = !!onDeleteComment && isCurrentUser;
+            // 聊天历史记录模式：首条消息或与上一条间隔≥5分钟，插入居中时间分隔
+            const prevCreatedAt = idx > 0 ? displayComments[idx - 1].created_at : undefined;
+            const showDivider = shouldShowTimeDivider(c.created_at, prevCreatedAt);
             return (
-              <div key={c.id} className={`detail-chat-row ${isCurrentUser ? 'is-right' : ''}`}>
-                <div
-                  id={`comment-${c.id}`}
-                  className={`detail-chat-bubble ${isCurrentUser ? 'is-self' : ''}`}
-                  onTouchStart={(e) => startLongPress(c, e)}
-                  onTouchEnd={cancelLongPress}
-                  onTouchMove={cancelLongPress}
-                  onMouseDown={(e) => { if (e.button === 0) startLongPress(c, e); }}
-                  onMouseUp={cancelLongPress}
-                  onMouseLeave={cancelLongPress}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    cancelLongPress();
-                    openMenu(c, e.currentTarget.getBoundingClientRect());
-                  }}
-                >
-                  {/* 引用块（微信式：气泡内顶部高亮，点击定位原消息） */}
-                  {c.quoted && (
-                    <div
-                      className="detail-chat-quote"
-                      onClick={(e) => { e.stopPropagation(); locateComment(c.quoted!.id); }}
-                    >
-                      <span className="detail-chat-quote__name">{c.quoted.created_by_name || '用户'}</span>
-                      <span className="detail-chat-quote__text">{stripHtml(c.quoted.content)}</span>
-                    </div>
-                  )}
-                  {!isCurrentUser && <div className="detail-chat-name">{authorName}</div>}
-                  <MarkdownRenderer content={c.content} compact />
-                  {c.attachments && c.attachments.length > 0 && (
-                    <div className="detail-chat-attachments">
-                      {c.attachments.map((a, i) => {
-                        const att = parseAttachment(a);
-                        if (!att.objectPath) return null;
-                        const url = `${API_CONFIG.TASKS.BASE_URL}/files/${att.objectPath}`;
-                        const openViewer = () =>
-                          setViewer({
-                            filename: att.filename || 'file',
-                            size: typeof a === 'object' ? a.size : undefined,
-                            previewUrl: url,
-                            downloadUrl: url,
-                          });
-                        if (att.isImage) {
+              <Fragment key={c.id}>
+                {showDivider && (
+                  <div className="detail-chat-time-divider">
+                    {formatChatDividerTime(c.created_at)}
+                  </div>
+                )}
+                <div className={`detail-chat-row ${isCurrentUser ? 'is-right' : ''}`}>
+                  <div
+                    id={`comment-${c.id}`}
+                    className={`detail-chat-bubble ${isCurrentUser ? 'is-self' : ''}`}
+                    onTouchStart={(e) => startLongPress(c, e)}
+                    onTouchEnd={cancelLongPress}
+                    onTouchMove={cancelLongPress}
+                    onMouseDown={(e) => { if (e.button === 0) startLongPress(c, e); }}
+                    onMouseUp={cancelLongPress}
+                    onMouseLeave={cancelLongPress}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      cancelLongPress();
+                      openMenu(c, e.currentTarget.getBoundingClientRect());
+                    }}
+                  >
+                    {/* 引用块（微信式：气泡内顶部高亮，点击定位原消息） */}
+                    {c.quoted && (
+                      <div
+                        className="detail-chat-quote"
+                        onClick={(e) => { e.stopPropagation(); locateComment(c.quoted!.id); }}
+                      >
+                        <span className="detail-chat-quote__name">{c.quoted.created_by_name || '用户'}</span>
+                        <span className="detail-chat-quote__text">{stripHtml(c.quoted.content)}</span>
+                      </div>
+                    )}
+                    {!isCurrentUser && (
+                      <div className="detail-chat-name">
+                        <span className="detail-chat-name__text">{authorName}</span>
+                        <span className="detail-chat-name__time">{formatCommentTime(c.created_at)}</span>
+                      </div>
+                    )}
+                    <MarkdownRenderer content={c.content} compact />
+                    {c.attachments && c.attachments.length > 0 && (
+                      <div className="detail-chat-attachments">
+                        {c.attachments.map((a, i) => {
+                          const att = parseAttachment(a);
+                          if (!att.objectPath) return null;
+                          const url = `${API_CONFIG.TASKS.BASE_URL}/files/${att.objectPath}`;
+                          const openViewer = () =>
+                            setViewer({
+                              filename: att.filename || 'file',
+                              size: typeof a === 'object' ? a.size : undefined,
+                              previewUrl: url,
+                              downloadUrl: url,
+                            });
+                          if (att.isImage) {
+                            return (
+                              <img
+                                key={i}
+                                src={url}
+                                alt={att.filename}
+                                className="detail-chat-attachment-img"
+                                onClick={openViewer}
+                              />
+                            );
+                          }
                           return (
-                            <img
-                              key={i}
-                              src={url}
-                              alt={att.filename}
-                              className="detail-chat-attachment-img"
-                              onClick={openViewer}
-                            />
+                            <div key={i} className="detail-chat-attachment-file" onClick={openViewer}>
+                              📎 {att.filename}
+                            </div>
                           );
-                        }
-                        return (
-                          <div key={i} className="detail-chat-attachment-file" onClick={openViewer}>
-                            📎 {att.filename}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                  <div className="detail-chat-time">{formatTime(c.created_at)}</div>
-                  {isCurrentUser && (() => {
-                    const readCount = Object.entries(readMap).filter(
-                      ([u, rid]) => u !== c.created_by && Number(rid) >= Number(c.id),
-                    ).length;
-                    return readCount > 0 ? <span className="detail-chat-read">已读</span> : null;
-                  })()}
-                  {canDelete && (
-                    <button
-                      type="button"
-                      className="detail-chat-bubble__del"
-                      title="删除"
-                      aria-label="删除"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        cancelLongPress();
-                        openMenu(c, e.currentTarget.getBoundingClientRect());
-                      }}
-                    >🗑</button>
-                  )}
+                        })}
+                      </div>
+                    )}
+                    {isCurrentUser && (() => {
+                      const readCount = Object.entries(readMap).filter(
+                        ([u, rid]) => u !== c.created_by && Number(rid) >= Number(c.id),
+                      ).length;
+                      return readCount > 0 ? <span className="detail-chat-read">已读</span> : null;
+                    })()}
+                    {canDelete && (
+                      <button
+                        type="button"
+                        className="detail-chat-bubble__del"
+                        title="删除"
+                        aria-label="删除"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          cancelLongPress();
+                          openMenu(c, e.currentTarget.getBoundingClientRect());
+                        }}
+                      >🗑</button>
+                    )}
+                  </div>
                 </div>
-              </div>
+              </Fragment>
             );
           })
         ) : (
