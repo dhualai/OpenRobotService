@@ -316,6 +316,19 @@ export default function TaskDetailPage() {
     return name || username || '当前用户';
   };
 
+  // WS 工单状态变更（派单完成/改派/状态流转）实时更新详情，替代轮询
+  const handleWsTaskUpdated = (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null }) => {
+    setDetail((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.assigned_to !== undefined ? { assigned_to: patch.assigned_to } : {}),
+        ...(patch.assigned_to_name !== undefined ? { assigned_to_name: patch.assigned_to_name } : {}),
+      };
+    });
+  };
+
   const addOperationComment = async (content: string) => {
     if (!detail) return;
     try {
@@ -651,18 +664,7 @@ export default function TaskDetailPage() {
       .catch(() => {});
   };
 
-  useEffect(() => {
-    if (!detailId) return;
-    // AI 工单派单中（status=new 且无处理人）→ 每 5 秒刷新，直到派单完成
-    const isDispatching = detail?.status === 'new'
-      && !!detail?.metadata_info?.session_id
-      && !detail?.assigned_to && !detail?.assigned_to_name && !detail?.assignee_name;
-    if (!isDispatching) return;
-    const timer = setInterval(() => {
-      refreshDetail();
-    }, 5000);
-    return () => clearInterval(timer);
-  }, [detailId, detail?.status, detail?.assigned_to, detail?.assigned_to_name, detail?.assignee_name, detail?.metadata_info?.session_id]);
+  // 派单完成 / 状态变更由 WS task.updated 实时推送（见 DiscussionPanel onTaskUpdated），不再轮询。
 
   // 返回任务列表，优先使用浏览器历史记录以保留筛选状态
   const handleBack = () => {
@@ -905,6 +907,8 @@ export default function TaskDetailPage() {
           enableAI
           enableAttach
           mentionUsers={projectMembers}
+          taskId={detail?.id}
+          onTaskUpdated={handleWsTaskUpdated}
           onMessagesClick={handleOpenReport}
           headerRight={
             <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing}>
