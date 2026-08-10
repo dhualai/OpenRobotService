@@ -7,7 +7,7 @@
 // 设计：自动重连（指数退避）+ 心跳 ping/pong；断线期间消息由重连后的全量 GET 对齐兜底。
 
 import { getToken } from '@/api/client';
-import { API_CONFIG } from '@/config/api';
+import API_CONFIG from '@/config/api';
 
 /** 由 REST base（/api/tasks 等）推导 WS URL（协议 http→ws，https→wss） */
 export function buildWsUrl(path: string): string {
