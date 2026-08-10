@@ -703,6 +703,22 @@ export default function TicketDetailPage() {
                             className="detail-attachment-thumb"
                             loading="lazy"
                             onClick={() => openAttachmentViewer(att)}
+                            onError={(e) => {
+                              // 微信 WebView 偶发 img 静默渲染失败（HTTP 200 但白屏）：破缓存重试一次，仍失败换文件名占位
+                              const el = e.currentTarget;
+                              if (!el.dataset.retried) {
+                                el.dataset.retried = '1';
+                                const sep = thumbSrc.includes('?') ? '&' : '?';
+                                el.src = `${thumbSrc}${sep}_r=${Date.now()}`;
+                              } else {
+                                el.style.display = 'none';
+                                const ph = document.createElement('div');
+                                ph.className = 'detail-attachment-thumb detail-attachment-thumb--fallback';
+                                ph.textContent = '🖼️';
+                                ph.onclick = () => openAttachmentViewer(att);
+                                el.parentNode?.appendChild(ph);
+                              }
+                            }}
                           />
                         );
                       })}

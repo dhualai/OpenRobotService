@@ -33,12 +33,13 @@ MAX_CONN_PER_USER = 5
 
 
 class WsConnection:
-    __slots__ = ("ws", "username", "name", "task_id", "last_ping")
+    __slots__ = ("ws", "username", "name", "avatar_resource_id", "task_id", "last_ping")
 
-    def __init__(self, ws: WebSocket, username: str, name: str, task_id: int) -> None:
+    def __init__(self, ws: WebSocket, username: str, name: str, task_id: int, avatar_resource_id: Optional[int] = None) -> None:
         self.ws = ws
         self.username = username
         self.name = name
+        self.avatar_resource_id = avatar_resource_id
         self.task_id = task_id
         self.last_ping = time.monotonic()
 
@@ -67,8 +68,20 @@ class ConnectionManager:
                 self.typing.pop(task_id, None)
         await self._broadcast_presence(task_id)
 
-    def online_members(self, task_id: int) -> list[str]:
-        return [c.username for c in self.rooms.get(task_id, set())]
+    def online_members(self, task_id: int) -> list[dict]:
+        """按 username 去重（多客户端同用户算一人），返回 [{username, name, avatar_resource_id}]。"""
+        seen: set[str] = set()
+        result: list[dict] = []
+        for c in self.rooms.get(task_id, set()):
+            if c.username in seen:
+                continue
+            seen.add(c.username)
+            result.append({
+                "username": c.username,
+                "name": c.name,
+                "avatar_resource_id": c.avatar_resource_id,
+            })
+        return result
 
     async def broadcast(self, task_id: int, payload: dict) -> None:
         for conn in list(self.rooms.get(task_id, set())):
@@ -126,10 +139,11 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
         await websocket.close(code=4404)
         return
     name = user.get("name") or username
+    avatar_resource_id = user.get("avatar_resource_id")
 
     # 2. 接受连接 + 加入房间
     await websocket.accept()
-    conn = WsConnection(websocket, username, name, task_id)
+    conn = WsConnection(websocket, username, name, task_id, avatar_resource_id)
     await manager.connect(task_id, conn)
 
     # 单个连接生命周期内复用同一同步 session（与 task.py 既有模式一致）

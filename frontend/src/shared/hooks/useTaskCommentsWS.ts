@@ -19,6 +19,13 @@ export interface TaskUpdatedPatch {
   assigned_to_name?: string | null;
 }
 
+/** 在线成员（按用户去重，含头像） */
+export interface OnlineMember {
+  username: string;
+  name?: string | null;
+  avatar_resource_id?: number | null;
+}
+
 interface Options {
   currentUser?: string;
   onTaskUpdated?: (patch: TaskUpdatedPatch) => void;
@@ -38,14 +45,14 @@ export function useTaskCommentsWS(
   options?: Options,
 ): {
   displayComments: DiscussionComment[];
-  online: string[];
+  online: OnlineMember[];
   typingUser: string | null;
   readMap: Record<string, number>;
   sendTyping: (value: boolean) => void;
   sendRead: (lastReadCommentId: number) => void;
 } {
   const [displayComments, setDisplayComments] = useState<DiscussionComment[]>(baseComments);
-  const [online, setOnline] = useState<string[]>([]);
+  const [online, setOnline] = useState<OnlineMember[]>([]);
   const [typingUser, setTypingUser] = useState<string | null>(null);
   const [readMap, setReadMap] = useState<Record<string, number>>({});
 
@@ -53,15 +60,22 @@ export function useTaskCommentsWS(
   const currentUserRef = useRef(options?.currentUser);
   currentUserRef.current = options?.currentUser;
   const onTaskUpdatedRef = useRef(options?.onTaskUpdated);
-  onTaskUpdatedRef.current = options?.onTaskUpdated;
+  // 已删除评论 id 集合（WS comment.deleted / 本地删除记录），合并基线时排除，避免删除后又被基线补回
+  const deletedIdsRef = useRef<Set<string>>(new Set());
 
-  // 父级基线变化（GET/POST 乐观更新）→ 合并 WS 增量（按 id 去重），保持排序
+  // 父级基线变化（GET/POST/DELETE 乐观更新）→ 以基线为权威源合并 WS 增量：
+  // 基线已有的按基线更新；基线没有但 WS 新增的保留；已删除的（deletedIdsRef）一律排除。
   useEffect(() => {
     setDisplayComments((prev) => {
       const map = new Map<string, DiscussionComment>();
-      for (const c of baseComments) map.set(String(c.id), c);
+      for (const c of baseComments) {
+        const id = String(c.id);
+        if (!deletedIdsRef.current.has(id)) map.set(id, c);
+      }
+      // 补充 WS 增量新增的（基线没有的），排除已删除
       for (const c of prev) {
-        if (!map.has(String(c.id))) map.set(String(c.id), c);
+        const id = String(c.id);
+        if (!map.has(id) && !deletedIdsRef.current.has(id)) map.set(id, c);
       }
       return sortComments(Array.from(map.values()));
     });
@@ -99,6 +113,7 @@ export function useTaskCommentsWS(
           break;
         }
         case 'comment.deleted':
+          deletedIdsRef.current.add(String(e.id));
           setDisplayComments((prev) => prev.filter((c) => String(c.id) !== String(e.id)));
           break;
         case 'typing':
