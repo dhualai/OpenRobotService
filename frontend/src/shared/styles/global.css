@@ -2896,10 +2896,19 @@ html, body, #root {
   border-radius: 12px 12px 12px 0;
 }
 .detail-chat-name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   font-size: 12px;
   font-weight: 600;
   margin-bottom: 4px;
   opacity: 0.7;
+}
+.detail-chat-name__time {
+  font-size: 10px;
+  font-weight: 400;
+  color: #999;
+  white-space: nowrap;
 }
 .detail-chat-bubble.is-self .detail-chat-name {
   color: #0052d9;
@@ -2909,6 +2918,16 @@ html, body, #root {
   opacity: 0.5;
   margin-top: 4px;
   text-align: right;
+}
+/* 聊天历史记录模式：居中时间分隔（首条消息或与上一条间隔≥5分钟时插入） */
+.detail-chat-time-divider {
+  align-self: center;
+  font-size: 11px;
+  color: #999;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 2px 10px;
+  border-radius: 4px;
+  white-space: nowrap;
 }
 .detail-chat-empty {
   text-align: center;

@@ -310,8 +310,8 @@ export default function TicketDetailPage() {
       return {
         ...prev,
         ...(patch.status ? { status: patch.status } : {}),
-        ...(patch.assigned_to !== undefined ? { assigned_to: patch.assigned_to } : {}),
-        ...(patch.assigned_to_name !== undefined ? { assigned_to_name: patch.assigned_to_name } : {}),
+        ...(patch.assigned_to !== undefined ? { assigned_to: patch.assigned_to ?? undefined } : {}),
+        ...(patch.assigned_to_name !== undefined ? { assigned_to_name: patch.assigned_to_name ?? undefined } : {}),
       };
     });
   };
