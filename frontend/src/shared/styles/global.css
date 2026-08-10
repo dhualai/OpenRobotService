@@ -2999,27 +2999,30 @@ html, body, #root {
 }
 
 /* ===== 微信化：引用块（气泡内）、引用条（输入上方）、长按菜单 ===== */
-/* 气泡内引用块：顶部高亮，点击定位原消息 */
+/* 气泡内引用块：左侧品牌蓝竖条 + 浅蓝灰底，点击定位原消息。
+   左直角 + 右圆角：竖条成为干净利落的引用条，避免圆角把竖条切成白边。 */
 .detail-chat-quote {
   display: block;
   margin: -2px 0 6px;
-  padding: 6px 8px;
-  background: rgba(0, 0, 0, 0.06);
-  border-left: 3px solid #0052d9;
-  border-radius: 6px;
+  padding: 6px 10px;
+  background: #eef2f7;              /* 浅蓝灰底，比纯灰更通透，与品牌蓝竖条协调 */
+  border-left: 3px solid #0052d9;   /* 品牌蓝竖条，与引用条/引用者名字同色 */
+  border-radius: 0 6px 6px 0;       /* 左侧与竖条齐平，右侧圆角 */
   cursor: pointer;
   transition: background 0.15s;
 }
+/* 自己（浅蓝）气泡内：用品牌蓝淡底，而非半透明白——半透明白叠在浅蓝上会脏成蓝灰，
+   白色竖条又会露出白边；改为品牌蓝竖条 + 蓝淡底，协调干净。 */
 .detail-chat-bubble.is-self .detail-chat-quote {
-  background: rgba(255, 255, 255, 0.4);
-  border-left-color: #fff;
+  background: rgba(0, 82, 217, 0.10);
+  border-left-color: #0052d9;
 }
-.detail-chat-quote:hover { background: rgba(0, 0, 0, 0.1); }
-.detail-chat-bubble.is-self .detail-chat-quote:hover { background: rgba(255, 255, 255, 0.55); }
+.detail-chat-quote:hover { background: #e4ebf4; }
+.detail-chat-bubble.is-self .detail-chat-quote:hover { background: rgba(0, 82, 217, 0.16); }
 /* 被引用消息已删除：灰色占位，不可点击 */
 .detail-chat-quote.is-deleted { cursor: default; opacity: 0.7; }
-.detail-chat-quote.is-deleted:hover { background: rgba(0, 0, 0, 0.04); }
-.detail-chat-bubble.is-self .detail-chat-quote.is-deleted:hover { background: rgba(255, 255, 255, 0.4); }
+.detail-chat-quote.is-deleted:hover { background: #eef2f7; }
+.detail-chat-bubble.is-self .detail-chat-quote.is-deleted:hover { background: rgba(0, 82, 217, 0.10); }
 .detail-chat-quote.is-deleted .detail-chat-quote__text { font-style: italic; opacity: 0.6; }
 .detail-chat-quote__name {
   display: block;
