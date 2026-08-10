@@ -565,6 +565,9 @@ export default function ProjectDetail() {
         {/* 项目生命周期 */}
         <div style={cardStyle()}>
           <h3 style={cardTitleStyle()}>项目生命周期</h3>
+          {/* 项目阶段 —— 位于生命周期标题下方，便于直接查看/修改当前阶段；绑定 status（企业微信「项目生命周期」列实时同步） */}
+          <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} required={isNew} />
+          <div style={{ height: 16 }} />
           {isAborted ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 12, background: '#fef2f2', borderRadius: 8, border: '1px solid #fecaca' }}>
               <span>⛔</span>
@@ -610,12 +613,6 @@ export default function ProjectDetail() {
               })}
             </div>
           )}
-        </div>
-
-        {/* 项目阶段 —— 位于项目生命周期下方，可编辑当前阶段；绑定 status（企业微信「项目生命周期」列实时同步） */}
-        <div style={cardStyle()}>
-          <h3 style={cardTitleStyle()}>项目阶段</h3>
-          <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} required={isNew} />
         </div>
 
         {/* 风险管理 */}
