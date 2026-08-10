@@ -53,6 +53,7 @@ class TicketCommentBase(BaseModel):
     content: str = Field(..., description="评论内容")
     is_public: bool = Field(default=True, description="是否公开")
     attachments: Optional[List[AttachmentItem]] = Field(None, description="附件列表")
+    reply_to: Optional[int] = Field(None, description="引用的评论ID（消息引用/回复）")
 
 
 class TicketCommentCreate(TicketCommentBase):
@@ -65,6 +66,12 @@ class TicketCommentUpdate(BaseModel):
     attachments: Optional[List[AttachmentItem]] = Field(None, description="附件列表")
 
 
+class QuotedComment(BaseModel):
+    id: int
+    content: str
+    created_by_name: Optional[str] = None
+
+
 class TicketCommentResponse(TicketCommentBase):
     id: int
     ticket_id: int
@@ -72,6 +79,7 @@ class TicketCommentResponse(TicketCommentBase):
     created_by_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    quoted: Optional[QuotedComment] = Field(None, description="被引用评论的简要信息")
 
     class Config:
         from_attributes = True

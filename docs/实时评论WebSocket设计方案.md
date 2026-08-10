@@ -1,0 +1,329 @@
+# 实时评论 WebSocket 设计方案（轻量 IM 模式）
+
+> 状态：**设计文档（未实现）**。本文描述将「工单/任务详情页评论区」改造为类聊天软件实时体验的完整方案。
+> 适用范围：历史工单详情页（`frontend/src/pages/call/TicketDetailPage.tsx`）+ 系统任务详情页（`frontend/src/pages/tasks/TaskDetailPage.tsx`）。
+> 技术选型：**FastAPI 原生 WebSocket**（零额外重依赖）。实时范围：**评论 CRUD 实时推送 + 在线状态 + 输入中提示 + 已读回执 + 工单状态变更推送**。
+
+---
+
+## 1. 背景与现状
+
+### 1.1 现状痛点
+
+当前两个详情页的评论区都是**拉取模式**：
+
+- 进入页面：`GET /api/tasks/{id}?load_comments=true` 拉历史；
+- 发评论：`POST /api/tasks/{id}/comments` → 成功后再 `GET` 全量刷新（`fetchComments` / `fetchDetail(true)`）；
+- 别人的新评论**不会自动出现**，必须手动刷新或重进页面；
+- 「派单中」状态靠前端 `setInterval(() => fetchDetail(true), 5000)` 轮询轮询，浪费请求。
+
+这与「把评论区打造成轻量聊天软件」的目标不符。
+
+### 1.2 目标
+
+建立**消息订阅（发布-订阅）模式**：
+
+- 进入详情页即订阅该工单/任务的 WebSocket 房间；
+- 任何人在房间里发评论/编辑/删除，房间内所有人**实时收到**并自动上屏；
+- 显示**谁在线**、**谁正在输入**、**消息已读回执**；
+- 工单状态流转（派单完成、状态变更）也通过 WS 实时推送，替代 5s 轮询。
+
+### 1.3 关键事实（决定设计走向）
+
+- 两个详情页**共用同一个 `DiscussionPanel` 组件**（`TaskDetailPage.tsx:9/900`、`TicketDetailPage.tsx:23/784`）。
+  → **只需改造 `DiscussionPanel` 一处，两页同时生效**，无需分别改两个详情页。
+- 前端 REST base 路径：`/api/tasks`（dev）、`/t/api/tasks`（测试）、`/p/api/tasks`（生产），由 `frontend/src/config/api.ts` 的 `ENV_PREFIX` 自动推导。
+  → WS 复用**同一前缀**，仅协议由 `http(s)` 换为 `ws(s)`，由 nginx 透传 `Upgrade`。
+- 后端当前为**单进程** `uvicorn.run("app:app", ...)`（`backend/main.py`），内存房间广播即可；多实例扩展见 §9 前瞻。
+
+---
+
+## 2. 总体架构
+
+```
+┌─────────────── 浏览器 A（工单详情页） ───────────────┐        ┌─────────────── 浏览器 B（同一工单） ───────────────┐
+│  DiscussionPanel                                      │        │  DiscussionPanel                                     │
+│    └─ useTaskCommentsWS(taskId)                        │        │    └─ useTaskCommentsWS(taskId)                       │
+│         └─ WebSocket(`/api/tasks/{id}/ws?token=...`)   │        │         └─ WebSocket(`/api/tasks/{id}/ws?token=...`)  │
+└───────────────────────────────┬───────────────────────┘        └──────────────────────────────┬───────────────────────┘
+                                 │  wss                                    wss                   │
+                                 ▼                                                  ▼
+=====================  nginx（/t/api/、/p/api/ 增加 Upgrade 透传）  =====================
+                                 │ 透传（Connection: upgrade）
+                                 ▼
+=================  业务后端 FastAPI（单进程）  =================
+│  ConnectionManager（按 task_id 分房间：连接集合 / 在线成员 / typing 态）          │
+│  WebSocket 端点 /api/tasks/{task_id}/ws                                          │
+│  REST 评论接口插入广播：                                                          │
+│    POST /{id}/comments  → broadcast(comment.created)                             │
+│    PUT  /comments/{id}  → broadcast(comment.updated)                             │
+│    DEL  /comments/{id}  → broadcast(comment.deleted)                             │
+│    PATCH /{id}/status、POST /{id}/assign → broadcast(task.updated)              │
+│  AI 讨论回复落库 → broadcast(comment.created)  ← 替代 fetchDetail(true) 轮询      │
+└==================================================================================┘
+```
+
+**数据流原则**：评论本身仍 **POST 写库**（持久化不变），WS 只承担「变更通知 + 实时状态」。客户端收到通知后**增量更新**，不再全量 `GET` 刷新（首屏仍用一次 `GET` 拉历史 + 在线快照）。
+
+---
+
+## 3. 后端设计
+
+### 3.1 新增文件 `backend/app/modules/tasks/api/ws.py`
+
+负责 WebSocket 端点与 `ConnectionManager` 实例（模块级单例，随 app 进程存活）。
+
+### 3.2 ConnectionManager（内存房间模型）
+
+```python
+class WsConnection:
+    ws: WebSocket
+    username: str
+    name: str
+    last_ping: float
+
+class ConnectionManager:
+    # task_id -> 连接集合（同一用户多端可多条连接）
+    rooms: dict[int, set[WsConnection]]
+    # task_id -> typing 中的 username 集合（内存态，不持久化）
+    typing: dict[int, set[str]]
+
+    async def connect(self, task_id, conn): ...      # 加入房间
+    def disconnect(self, task_id, conn): ...         # 移出房间 + 触发离线广播
+    async def broadcast(self, task_id, payload): ... # 给房间内所有连接发 JSON
+    def online_members(self, task_id) -> list[str]: ...  # 当前在线 username 列表
+```
+
+- **在线状态**：连接建立即「在线」，断开即「离线」；内存维护 `online_members(task_id)`。
+- **输入中**：`typing[task_id]` 内存集合，超时（如 5s 无新 typing 事件）自动清除。
+- **心跳**：客户端每 25s 发 `ping`，服务端回 `pong`；超过 60s 未收到 ping 判为掉线，触发 `disconnect`。
+
+### 3.3 鉴权
+
+浏览器原生 `WebSocket` **不支持自定义 Header**，token 走 **query 参数**：
+
+```
+GET /api/tasks/{task_id}/ws?token=<JWT>
+```
+
+服务端在 `websocket_endpoint` 内复用现有 JWT 解析逻辑（与 `get_current_active_user_from_token` 同源）校验；失败则 `await ws.close(code=4401)` 并拒绝。
+**安全注意**：token 会出现在 URL，但全程走 `wss`（TLS），与现有 `Authorization: Bearer` 同等级别；同时服务端应对单用户连接数做上限（如 ≤5），防滥用。
+
+### 3.4 WebSocket 端点
+
+```python
+@router.websocket("/{task_id}/ws")
+async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(None)):
+    # 1. 校验 token → 解析 username/name
+    # 2. 校验 task 存在（否则 4404）
+    # 3. await websocket.accept()
+    # 4. manager.connect(task_id, conn)
+    # 5. 发送 welcome + 在线成员快照 + 最新已读游标
+    # 6. 循环接收客户端帧（见 §3.5），按类型处理
+    # 7. 异常/断开 → manager.disconnect + broadcast(presence 离线)
+```
+
+### 3.5 消息协议（JSON 帧）
+
+#### 客户端 → 服务端
+
+| type | 字段 | 说明 |
+|------|------|------|
+| `ping` | — | 心跳，服务端回 `pong` |
+| `typing` | `value: bool` | 开始/停止输入；停止或 5s 未续则自动清除 |
+| `read` | `last_read_comment_id: int` | 上报已读到的最后一条评论 id |
+| `fetch_history` | `after_id?: int` | （可选）断线重连后增量拉取缺失评论 |
+
+#### 服务端 → 客户端
+
+| type | 字段 | 说明 |
+|------|------|------|
+| `welcome` | `you`, `online: string[]`, `last_read: {username:comment_id}` | 连接成功快照 |
+| `comment.created` | `comment: {...}` | 新评论（含附件/引用/创建人） |
+| `comment.updated` | `comment: {...}` | 评论编辑 |
+| `comment.deleted` | `id: int` | 评论删除 |
+| `presence` | `online: string[]`, `joined?, left?` | 在线成员变化 |
+| `typing` | `username: string`, `value: bool` | 某人输入中 |
+| `read_receipt` | `username: string`, `last_read_comment_id: int` | 已读回执 |
+| `task.updated` | `status`, `assigned_to`, `assigned_to_name`, ... | 工单字段变更（替代 5s 轮询） |
+| `pong` | — | 心跳回应 |
+| `error` | `code`, `message` | 错误（鉴权失败/房间不存在等） |
+
+> `comment.created/updated/deleted` 的 `comment` 结构与现有 `TicketCommentResponse` 完全一致，前端零转换成本。
+
+### 3.6 在 REST 接口插入广播（改写点）
+
+在 `backend/app/modules/tasks/api/task.py` 的现有接口**成功后**追加一行广播：
+
+- `add_comment`（第 375 行之后）：`await manager.broadcast(task_id, {"type":"comment.created","comment": comment.model_dump()})`
+- `update_comment`（第 519 行）：广播 `comment.updated`
+- `delete_comment`（第 555 行）：广播 `comment.deleted`
+- `update_task_status`（第 583 行）/ `assign_task`（第 615 行）/ `update_task`（第 305 行）：广播 `task.updated`
+- **AI 讨论回复落库**：当 `POST /api/ai/task/discuss` 的 AI 回复写进 `task_comments` 后，同样广播 `comment.created`（替代前端 `fetchDetail(true)` 轮询拉 AI 回复）。
+
+> 广播调用需 `try/except` 包裹，WS 异常**不得影响主流程**（REST 已返回 200）。
+
+### 3.7 数据模型（仅已读回执需持久化）
+
+新增表 `task_comment_read`（typing / presence 为内存态，不落库）：
+
+```python
+class TaskCommentRead(Base):
+    __tablename__ = "task_comment_read"
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, index=True)
+    username = Column(String(64), index=True)
+    last_read_comment_id = Column(Integer)
+    updated_at = Column(DateTime, default=func.now())
+    __table_args__ = (UniqueConstraint("task_id", "username", name="uq_task_user_read"),)
+```
+
+- 客户端发 `read` → upsert `(task_id, username, last_read_comment_id)` → 广播 `read_receipt` 给房间。
+- 评论项展示：根据各成员 `last_read_comment_id` 计算「N 人已读」/ 双勾「已读」。
+
+---
+
+## 4. 前端设计
+
+### 4.1 WS 客户端封装 `frontend/src/api/ws.ts`
+
+```ts
+export function buildWsUrl(path: string): string {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const root = API_ROOT; // '/api' | '/t/api' | '/p/api'
+  const token = getToken();
+  return `${proto}://${location.host}${root}${path}?token=${encodeURIComponent(token || '')}`;
+}
+
+export class TaskRoomSocket {
+  // 连接 /{task_id}/ws，自动重连（指数退避 1s→2s→4s…≤10s），心跳 ping/pong
+  // 事件分发：on(event, handler)；send(obj)
+  // 暴露 sendTyping(value)、sendRead(commentId)
+}
+```
+
+- **自动重连**：断线后指数退避重连；重连成功后发 `fetch_history`（带本地最新 `comment.id`）增量补齐，并全量 `GET` 一次历史做最终对齐（防丢消息）。
+- **鉴权**：token 取自 `client.ts` 的 `getToken()`，随 URL 传递；token 刷新后重连即用新 token。
+
+### 4.2 `useTaskCommentsWS(taskId)` Hook
+
+```ts
+function useTaskCommentsWS(taskId: string | number) {
+  // 返回 { online: string[], typingUser: string|null, readMap, sendTyping, sendRead, onRemoteEvent }
+  // 内部维护 TaskRoomSocket 生命周期（mount 建连 / unmount 关连）
+}
+```
+
+### 4.3 DiscussionPanel 改造（核心，两页共用）
+
+文件：`frontend/src/shared/components/DiscussionPanel.tsx`
+
+改动点：
+
+1. **首屏**：保留 `GET /api/tasks/{id}/comments` 拉历史（作为基线）。
+2. **订阅**：进入即 `useTaskCommentsWS(taskId)` 建连。
+3. **增量更新（去重关键）**：
+   - 收到 `comment.created` → 若 `comments` 中**不存在该 id** 则 append；已存在则忽略（防止自己乐观更新 + 广播重复）。
+   - 收到 `comment.updated` → 按 id 替换；`comment.deleted` → 按 id 过滤。
+   - 自己发评论：`POST` 成功后**乐观更新**（本地插入返回的真实 id 记录），WS 广播到达因 id 已存在而被忽略 → 天然去重，无重复气泡。
+4. **在线状态条**：讨论区顶部展示在线成员头像（`online` 列表），离线/上线经 `presence` 事件实时更新。
+5. **输入中提示**：评论输入框 `onChange` 时 `sendTyping(true)`，停 3s 自动 `sendTyping(false)`；收到他人 `typing` 事件显示「XXX 正在输入…」。
+6. **已读回执**：
+   - 列表滚动到底 / 新消息到达时，自动 `sendRead(最新comment.id)`；
+   - 每条评论根据 `readMap` 显示「已读」双勾或「N 人已读」。
+7. **工单状态实时**：收到 `task.updated` → 回调上层更新 `ticket.status / assigned_to / assigned_to_name`，**移除现有的 5s 派单轮询**（TicketDetailPage.tsx:360-364）。
+8. **卸载**：关闭 socket，清定时器。
+
+> 设计约束：WS 仅做「增量通知」，不替代首屏 `GET`；任何 WS 异常都**降级**为现有轮询/手动刷新，保证功能不回退。
+
+### 4.4 两个详情页接入
+
+- `TicketDetailPage` 与 `TaskDetailPage` 均通过 `DiscussionPanel` 渲染评论区，**无需各自改动**；
+- 仅需把 `task.updated` 事件回调接到各自已有的 `setTicket` 逻辑（一行的 `onTaskUpdated` prop）。
+
+---
+
+## 5. nginx 配置改动
+
+当前 `deploy/nginx/conf/nginx.conf` 的 `/t/api/`、`/p/api/` **未开启 WebSocket 透传**。需增加标准 `Upgrade` 处理（参考文件内已有 `/minio/ws/`、`/airflow/` 写法）：
+
+```nginx
+# 在 http {} 顶部增加
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+# 修改 /t/api/ 与 /p/api/ 两个 location，增加：
+location /t/api/ {
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 3600s;   # WS 长连接，延长读超时
+    proxy_pass http://test_backend/api/;
+}
+# /p/api/ 同理改为 prod_backend
+```
+
+> `map` 让普通 REST 请求（`Connection: ''` → `close`）与 WS 请求（`Connection: upgrade`）共存，不影响现有接口。
+
+---
+
+## 6. 鉴权与安全
+
+- token 经 `wss` 加密传输，与 `Bearer` 等价；服务端复用现有 JWT 校验，失败直接关闭。
+- 单用户连接数上限（如 ≤5），防连接耗尽。
+- 广播内容**不含 token/密码**等敏感字段，仅评论与状态数据。
+- 评论增删改的**写权限仍由 REST 接口的现有鉴权保证**（WS 只推送，不接收写操作）。
+
+---
+
+## 7. 边界与风险
+
+| 风险 | 处理 |
+|------|------|
+| 消息重复（乐观更新 + 广播） | 以服务端评论 `id` 去重，已存在则忽略 |
+| 断线期间漏消息 | 重连后 `fetch_history`（after_id 增量）+ 全量 `GET` 对齐 |
+| AI 讨论回复实时性 | AI 回复落库时广播 `comment.created`，替代 `fetchDetail(true)` 轮询 |
+| WS 服务异常 | 降级为现有 `GET` 刷新 / 手动刷新，功能不回退 |
+| 派单轮询去留 | `task.updated` 推送稳定后移除 5s 轮询，先双轨并存再切 |
+| 单进程内存房间重启丢失 | 重启后客户端自动重连 + 首屏 `GET` 重建状态，可接受 |
+| 心跳误判离线 | 25s ping / 60s 超时，弱网下退避重连 |
+
+---
+
+## 8. 实施阶段（建议顺序）
+
+- **Phase 0 — 基础设施**：`ws.py`（ConnectionManager + 端点）、`task_comment_read` 表 + Alembic 迁移、nginx `Upgrade` 配置。
+- **Phase 1 — 评论实时**：REST 三接口插入广播；前端 `ws.ts` + `useTaskCommentsWS` + DiscussionPanel 增量更新（去重）。**此阶段即可获得核心聊天体验。**
+- **Phase 2 — 在线状态 + 输入中**：presence / typing 广播与 UI。
+- **Phase 3 — 已读回执**：`task_comment_read` 读写 + 回执 UI。
+- **Phase 4 — 状态变更推送**：`task.updated` 广播，移除 5s 派单轮询。
+
+---
+
+## 9. 未来扩展（多实例/多 worker）
+
+当前单进程内存房间够用。若日后 `uvicorn --workers N` 或多副本部署：
+
+- `ConnectionManager` 抽象为接口，后端实现切换为 **Redis pub/sub**（每个进程订阅 `task:{id}` channel，本地内存仅维护本进程连接）；
+- 在线/typing 状态可放 Redis（带 TTL），实现跨进程一致；
+- 前端与单实例方案完全兼容，无需改动。
+
+---
+
+## 10. 测试要点
+
+- 单浏览器开两个标签页同一工单：A 发评论，B 实时出现；A 删除，B 实时消失。
+- 输入中：A 输入，B 显示「A 正在输入…」；停 3s 消失。
+- 在线：A 进入，B 在线列表出现 A；A 关闭，B 列表移除 A。
+- 已读：A 滚动到底，B 的对应评论显示「A 已读」。
+- 派单：后台 assign 后，前端 `task.updated` 实时刷新处理人，5s 轮询被移除。
+- 断网重连：断网期间 B 发的评论，A 重连后补齐不丢失、不重复。
+- 鉴权：无 token / 错误 token 连接被拒（4401）。
+```
+

@@ -86,3 +86,8 @@ output/
 
 # ===== 项目数据（本地数据文件，不入库）=====
 /项目数据/
+# ===== AI 测试生成流水线产物（每次 CI 重新生成，不入库）=====
+/test-gen/
+
+# ===== AI 生成用例归档（审阅确认后手动转正入库）=====
+automation/references/generated-cases/
