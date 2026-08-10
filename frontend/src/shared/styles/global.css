@@ -2957,7 +2957,7 @@ html, body, #root {
   bottom: 8px;
   border-width: 5px 0 5px 6px;
   border-style: solid;
-  border-color: transparent transparent transparent #95EC69;
+  border-color: transparent transparent transparent #e6f4ff;
 }
 /* 连续消息不显示尾巴 */
 .detail-chat-row.is-continued .detail-chat-bubble::before {
