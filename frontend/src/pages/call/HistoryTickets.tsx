@@ -208,13 +208,13 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
           displayedTickets.map((t) => {
             const statusMeta = STATUS_META[t.status || ''] || { label: t.status || '', color: '#666', bg: '#f2f3f5' };
             return (
+            /* 用 DB id（Task.id）导航：同一会话多次转单时 session_id 会重复
+               （external_id 靠 ticket_seq 区分，DB 唯一约束在 (source, external_id) 而非 session_id），
+               用 session_id 导航会让详情页 qaGetTicket 命中歧义结果——点的是当前工单，
+               显示却是同 session 的另一条。DB id 唯一定位，彻底消除歧义。 */
             <div
               key={t.id}
               className="history-row"
-              {/* 用 DB id（Task.id）导航：同一会话多次转单时 session_id 会重复
-                  （external_id 靠 ticket_seq 区分，DB 唯一约束在 (source, external_id) 而非 session_id），
-                  用 session_id 导航会让详情页 qaGetTicket 命中歧义结果——点的是当前工单，
-                  显示却是同 session 的另一条。DB id 唯一定位，彻底消除歧义。 */}
               onClick={() => navigate(`/call/ticket/db_${t.id}`)}
             >
               <div className="history-row__top">
