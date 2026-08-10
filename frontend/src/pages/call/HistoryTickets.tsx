@@ -178,7 +178,14 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
             <button type="button" className="history-search__clear" onClick={() => setSearch('')} aria-label="清空">×</button>
           )}
         </div>
-        <div className="history-tabs">
+        {/* 横向滚动容器：阻止 touch 事件冒泡到外层 swipeToClose，
+            避免左滑切换 tab 时误触发浮层关闭（手势由本容器独占横向滑动） */}
+        <div
+          className="history-tabs"
+          onTouchStart={(e) => e.stopPropagation()}
+          onTouchMove={(e) => e.stopPropagation()}
+          onTouchEnd={(e) => e.stopPropagation()}
+        >
           {STATUS_TABS.map((tab) => (
             <button
               key={tab.value}

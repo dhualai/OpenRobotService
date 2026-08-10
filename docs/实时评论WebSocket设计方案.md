@@ -91,10 +91,10 @@ class ConnectionManager:
     async def connect(self, task_id, conn): ...      # 加入房间
     def disconnect(self, task_id, conn): ...         # 移出房间 + 触发离线广播
     async def broadcast(self, task_id, payload): ... # 给房间内所有连接发 JSON
-    def online_members(self, task_id) -> list[str]: ...  # 当前在线 username 列表
+    def online_members(self, task_id) -> list[dict]: ...  # 按用户去重的在线成员 [{username, name, avatar_resource_id}]
 ```
 
-- **在线状态**：连接建立即「在线」，断开即「离线」；内存维护 `online_members(task_id)`。
+- **在线状态**：连接建立即「在线」，断开即「离线」；内存维护 `online_members(task_id)`，**按 username 去重**（同一用户多客户端算一人），返回 `[{username, name, avatar_resource_id}]` 供前端渲染头像。
 - **输入中**：`typing[task_id]` 内存集合，超时（如 5s 无新 typing 事件）自动清除。
 - **心跳**：客户端每 25s 发 `ping`，服务端回 `pong`；超过 60s 未收到 ping 判为掉线，触发 `disconnect`。
 
@@ -142,7 +142,7 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
 | `comment.created` | `comment: {...}` | 新评论（含附件/引用/创建人） |
 | `comment.updated` | `comment: {...}` | 评论编辑 |
 | `comment.deleted` | `id: int` | 评论删除 |
-| `presence` | `online: string[]`, `joined?, left?` | 在线成员变化 |
+| `presence` | `online: [{username, name, avatar_resource_id}]`（按用户去重） | 在线成员变化 |
 | `typing` | `username: string`, `value: bool` | 某人输入中 |
 | `read_receipt` | `username: string`, `last_read_comment_id: int` | 已读回执 |
 | `task.updated` | `status`, `assigned_to`, `assigned_to_name`, ... | 工单字段变更（替代 5s 轮询） |
@@ -226,7 +226,8 @@ function useTaskCommentsWS(taskId: string | number) {
    - 收到 `comment.created` → 若 `comments` 中**不存在该 id** 则 append；已存在则忽略（防止自己乐观更新 + 广播重复）。
    - 收到 `comment.updated` → 按 id 替换；`comment.deleted` → 按 id 过滤。
    - 自己发评论：`POST` 成功后**乐观更新**（本地插入返回的真实 id 记录），WS 广播到达因 id 已存在而被忽略 → 天然去重，无重复气泡。
-4. **在线状态条**：讨论区顶部展示在线成员头像（`online` 列表），离线/上线经 `presence` 事件实时更新。
+4. **在线状态条**：讨论区顶部展示在线成员头像（`online` 列表，按用户去重），有 `avatar_resource_id` 渲染图片头像，无则回退首字母；离线/上线经 `presence` 事件实时更新。
+4a. **微信化消息 UI**：每条消息带头像（他人左/自己右，从 `online` 携带的 `avatar_resource_id` 或当前用户 `authStore.avatarResourceId` 取，无图回退首字母）；同作者连续消息（间隔 < 5min）省略头像/姓名/尾巴并缩小间距；气泡带 CSS 小尾巴三角；自己消息改微信绿 `#95EC69`；消息区高度改为弹性 `flex:1`（最大 60vh）；新消息提示条——滚在历史区时不强制跳底，改为显示「↓N 条新消息」悬浮条，点击跳底。
 5. **输入中提示**：评论输入框 `onChange` 时 `sendTyping(true)`，停 3s 自动 `sendTyping(false)`；收到他人 `typing` 事件显示「XXX 正在输入…」。
 6. **已读回执**：
    - 列表滚动到底 / 新消息到达时，自动 `sendRead(最新comment.id)`；
@@ -354,9 +355,11 @@ location /t/api/ {
 - **单用户连接数上限**（`MAX_CONN_PER_USER = 5`）已在 `ws.py` 预留常量，但当前未在 `connect` 处强制拦截（单进程场景风险低，后续可加）。
 - **AI 讨论回复落地广播（✅ 已接入）**：AI 服务写 `task_comments` 是独立进程，不持有后端 WS 连接。改为在写库复用方法 `_add_diagnosis_comment_short` 中 best-effort 回调后端内部端点 `POST /api/tasks/{id}/internal/broadcast-comment`（复用 `X-API-Key` = `HELPDESK_SYNC_API_KEY`，与派单通知同源），由后端加载评论并广播 `comment.created`，讨论/摘要/诊断三类 AI 评论一处全覆盖。在线客户端无需 `fetchDetail(true)` 等全量刷新即可实时上屏 AI 回复。
 - **typing 超时自动清除**：当前依赖前端 3s 后主动 `sendTyping(false)`，服务端不额外做超时兜底（见 §7 风险表）。
+- **删除即时消失**：前端 `useTaskCommentsWS` 维护 `deletedIdsRef`（已删除评论 id 集合），WS `comment.deleted` 事件到达即从 `displayComments` 移除并记入 `deletedIdsRef`；基线（父级 comments）刷新合并时一律排除 `deletedIdsRef` 中的 id，避免「删除后基线未更新又被补回」导致需刷新页面才消失。长按菜单的「删除」为唯一删除入口（已移除气泡右上角垃圾桶图标，避免与长按菜单重复）。
+- **进入即显示最新消息（贴底跟随）**：`DiscussionPanel` 在消息列表外层 `.detail-chat-messages`（滚动容器）内包一层 `.detail-chat-messages__inner`（内容容器，`chatContentRef`），用 `ResizeObserver` 监听其高度变化。用户处于贴底态（含初始进入，`isAtBottomRef` 初值 `true`）时，内容增高（图片附件加载、Markdown 渲染、消息追加等撑高）自动 `scrollTop = scrollHeight` 跟随滚到底；用户主动上滚阅读历史时不打断，仅显示「↓N 条新消息」提示条。解决此前「进入后停在顶部」「已读消息卡在底部边框被截断」等问题——根因是 `scrollToBottom()` 在 `useEffect` 同步执行时图片/Markdown 等异步内容尚未撑高 `scrollHeight`，导致滚不到底。
 
 ### 11.3 验证建议
 
-按 §10 测试要点回归：双标签页实时收发、输入中、在线上下线、已读回执、派单 `task.updated` 实时刷新、断网重连补齐不重复、无 token 拒绝（4401）。
+按 §10 测试要点回归：双标签页实时收发、输入中、在线上下线、已读回执、派单 `task.updated` 实时刷新、断网重连补齐不重复、无 token 拒绝（4401）。微信化 UI 回归：每条消息头像正确（自己/他人）、连续消息合并省略、气泡尾巴与绿色配色、滚历史时新消息提示条出现且点击跳底、贴底时自动跟随。
 ```
 

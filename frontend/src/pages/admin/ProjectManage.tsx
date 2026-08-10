@@ -1,8 +1,9 @@
 // 项目管理（二级页面）—— 「项目导入」「项目授权」两部分
 // ProjectImport: 项目增删改查
 // 项目授权区：项目选择器 + ProjectAuth 授权记录 + ProjectPeople 人员关联
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, useRef, type ReactNode } from 'react';
 import { Loading, Toast, Input, Popup, Button } from 'tdesign-mobile-react';
+import { CloseCircleFilledIcon } from 'tdesign-icons-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -43,6 +44,8 @@ export default function ProjectManage() {
   const [projectSearch, setProjectSearch] = useState('');
   const [projectLoading, setProjectLoading] = useState(true);
   const [projectPickerVisible, setProjectPickerVisible] = useState(false);
+  // 项目选择搜索框 ref：清空后保持焦点，方便继续输入（tdesign Input ref 暴露 focus/blur）
+  const searchInputRef = useRef<{ focus: () => void; blur: () => void } | null>(null);
 
   // 两个区域折叠状态（默认展开）
   const [sectionImportOpen, setSectionImportOpen] = useState(true);
@@ -146,10 +149,27 @@ export default function ProjectManage() {
             <div style={{ padding: 20, maxHeight: '70vh', overflow: 'auto' }}>
               <h4 style={{ marginBottom: 12 }}>选择项目</h4>
               <Input
+                ref={searchInputRef}
                 value={projectSearch}
                 onChange={(v) => setProjectSearch(String(v))}
                 placeholder="输入项目名称关键词模糊查找"
-                clearable
+                // 不用内置 clearable：tdesign-mobile 的清除图标只绑 onTouchEnd（移动端事件），
+                // 电脑端鼠标点击不触发；改用 suffix 自定义 ×，绑定 onClick 且带弹出/按压动画。
+                suffix={
+                  projectSearch ? (
+                    <span
+                      className="project-picker-clear"
+                      role="button"
+                      aria-label="清空搜索关键词"
+                      onClick={() => {
+                        setProjectSearch('');
+                        searchInputRef.current?.focus();
+                      }}
+                    >
+                      <CloseCircleFilledIcon />
+                    </span>
+                  ) : undefined
+                }
                 style={{ marginBottom: 12 }}
               />
               {filteredProjects.map((p) => (

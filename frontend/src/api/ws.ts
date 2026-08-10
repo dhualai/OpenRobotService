@@ -17,12 +17,18 @@ export function buildWsUrl(path: string): string {
   return `${proto}://${location.host}${path}${sep}token=${encodeURIComponent(token)}`;
 }
 
+export interface OnlineMember {
+  username: string;
+  name?: string | null;
+  avatar_resource_id?: number | null;
+}
+
 export type WsEvent =
-  | { type: 'welcome'; you: string; online: string[]; read_map: Record<string, number> }
+  | { type: 'welcome'; you: string; online: OnlineMember[]; read_map: Record<string, number> }
   | { type: 'comment.created'; comment: CommentPayload }
   | { type: 'comment.updated'; comment: CommentPayload }
   | { type: 'comment.deleted'; id: number }
-  | { type: 'presence'; online: string[] }
+  | { type: 'presence'; online: OnlineMember[] }
   | { type: 'typing'; username: string; value: boolean }
   | { type: 'read_receipt'; username: string; last_read_comment_id: number }
   | { type: 'task.updated'; task_id: number; status?: string; assigned_to?: string | null; assigned_to_name?: string | null; updated_at?: string | null }

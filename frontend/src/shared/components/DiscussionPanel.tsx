@@ -10,7 +10,8 @@ import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
 import { useAuthStore } from '@/stores/auth';
 import API_CONFIG from '@/config/api';
-import { useTaskCommentsWS } from '@/shared/hooks/useTaskCommentsWS';
+import { avatarUrl } from '@/api/profile';
+import { useTaskCommentsWS, type OnlineMember } from '@/shared/hooks/useTaskCommentsWS';
 
 export interface DiscussionComment {
   id: string | number;
@@ -133,7 +134,7 @@ export default function DiscussionPanel({
   taskId,
   onTaskUpdated,
 }: DiscussionPanelProps) {
-  const { username, name } = useAuthStore();
+  const { username, name, avatarResourceId } = useAuthStore();
   // 长按操作菜单的浮层由 TDesign Mobile <Popover> 承载（自带箭头/动画/外点关闭）；
   // 通过「透明、pointer-events:none 的代理锚点」定位到被长按气泡的 rect，避免覆盖气泡交互。
   // ── WS 实时订阅：合并基线评论与增量事件，含在线/输入中/已读 ──
@@ -144,6 +145,7 @@ export default function DiscussionPanel({
     readMap,
     sendTyping,
     sendRead,
+    deletedIds,
   } = useTaskCommentsWS(taskId, comments, { currentUser: username, onTaskUpdated });
 
   // username → 展示名 映射（用于在线头像 / 输入中提示）
@@ -152,16 +154,39 @@ export default function DiscussionPanel({
     for (const c of displayComments) {
       if (c.created_by) m[c.created_by] = c.created_by_name || c.created_by;
     }
+    // 补充在线成员的名字
+    for (const o of online) {
+      if (o.username && !m[o.username]) m[o.username] = o.name || o.username;
+    }
     return m;
-  }, [displayComments]);
+  }, [displayComments, online]);
   const initialOf = (u?: string) => (u ? (nameMap[u] || u).slice(0, 1).toUpperCase() : '?');
   const typingName = typingUser ? (nameMap[typingUser] || typingUser) : '';
+
+  // username → 头像资源 id 映射：在线成员携带 avatar_resource_id；自己用 authStore 的 avatarResourceId
+  const avatarMap = useMemo(() => {
+    const m: Record<string, number | null> = {};
+    for (const o of online) {
+      if (o.username) m[o.username] = o.avatar_resource_id ?? null;
+    }
+    if (username) m[username] = avatarResourceId;
+    return m;
+  }, [online, username, avatarResourceId]);
+  const avatarSrcOf = (u?: string): string => {
+    if (!u) return '';
+    const rid = avatarMap[u];
+    return rid ? avatarUrl(rid) : '';
+  };
+
   const [commentText, setCommentText] = useState('');
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
+  // 消息内容容器：用 ResizeObserver 监听其高度变化（图片加载/Markdown 渲染/消息追加撑高），
+  // 用户处于贴底态时自动跟随滚到底，避免进入后停在顶部或最新消息被截断在边框。
+  const chatContentRef = useRef<HTMLDivElement>(null);
 
   // @mention state
   const [showMentions, setShowMentions] = useState(false);
@@ -179,18 +204,58 @@ export default function DiscussionPanel({
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastReadRef = useRef<number | null>(null);
 
-  // 新消息到达 → 滚到底部，并上报已读到最新一条（节流：仅在最新 id 变化时发送）
-  useEffect(() => {
+  // ── 滚动管理（微信式）：仅在贴底时自动滚动；非贴底时累计新消息数并提示 ──
+  const isAtBottomRef = useRef(true);
+  const [newCount, setNewCount] = useState(0);
+  const checkAtBottom = useCallback(() => {
+    const el = chatMessagesRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  }, []);
+  const scrollToBottom = useCallback(() => {
     const el = chatMessagesRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-    if (displayComments.length) {
-      const lid = Number(displayComments[displayComments.length - 1].id);
-      if (lid && lid !== lastReadRef.current) {
-        lastReadRef.current = lid;
-        sendRead(lid);
+    setNewCount(0);
+  }, []);
+  const handleScroll = useCallback(() => {
+    isAtBottomRef.current = checkAtBottom();
+    if (isAtBottomRef.current) setNewCount(0);
+  }, [checkAtBottom]);
+
+  // 新消息到达：贴底则跟随滚动 + 上报已读；非贴底则累计提示数（不强制打断阅读历史）
+  const lastMsgIdRef = useRef<string | number | null>(null);
+  useEffect(() => {
+    if (!displayComments.length) return;
+    const last = displayComments[displayComments.length - 1];
+    const lid = last.id;
+    if (lid !== lastMsgIdRef.current) {
+      const isPrevInit = lastMsgIdRef.current === null;
+      lastMsgIdRef.current = lid;
+      if (isPrevInit || isAtBottomRef.current) {
+        scrollToBottom();
+        const numId = Number(lid);
+        if (numId && numId !== lastReadRef.current) {
+          lastReadRef.current = numId;
+          sendRead(numId);
+        }
+      } else {
+        setNewCount((n) => n + 1);
       }
     }
-  }, [displayComments, sendRead]);
+  }, [displayComments, sendRead, scrollToBottom]);
+
+  // 内容高度变化跟随（图片加载/Markdown 渲染/消息追加撑高）：贴底态自动滚到底，
+  // 解决进入后停在顶部、最新消息被截断在边框等问题。仅监听内容容器尺寸，不干扰用户主动滚动。
+  useEffect(() => {
+    const content = chatContentRef.current;
+    const el = chatMessagesRef.current;
+    if (!content || !el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (isAtBottomRef.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, []);
 
   // commentText 变化时自适应高度（覆盖 @U老师 按钮 / mention 选择等程序化修改）
   useEffect(() => {
@@ -356,6 +421,9 @@ export default function DiscussionPanel({
       setPendingFiles([]);
       setQuoted(null);
     }
+    // 发送完成（无论成功/失败）焦点回到输入框，避免点「发送」按钮夺焦后需手动点回，支持连续输入；
+    // textarea 始终挂载，下一帧渲染（sending 解除 disabled）后 focus 生效。
+    setTimeout(() => { inputRef.current?.focus(); }, 0);
   };
 
   // ── 长按操作菜单（微信式）：长按 400ms 或右键唤起 ──
@@ -472,18 +540,32 @@ export default function DiscussionPanel({
         <h4 className="detail-card__h">{title ?? `讨论（${displayComments.length}）`}</h4>
         {headerRight}
       </div>
-      {/* 在线成员（实时） */}
+      {/* 在线成员（实时，按用户去重） */}
       {taskId !== undefined && online.length > 0 && (
         <div className="detail-chat-presence">
-          {online.map((u) => (
-            <span key={u} className="detail-chat-presence__avatar" title={nameMap[u] || u}>{initialOf(u)}</span>
-          ))}
+          {online.map((o) => {
+            const av = o.avatar_resource_id ? avatarUrl(o.avatar_resource_id) : '';
+            return av ? (
+              <img
+                key={o.username}
+                className="detail-chat-presence__avatar detail-chat-presence__avatar--img"
+                src={av}
+                alt={o.name || o.username}
+                title={o.name || o.username}
+              />
+            ) : (
+              <span key={o.username} className="detail-chat-presence__avatar" title={o.name || o.username}>
+                {initialOf(o.username)}
+              </span>
+            );
+          })}
           <span className="detail-chat-presence__text">{online.length} 人在线</span>
         </div>
       )}
       <div
         className="detail-chat-messages"
         ref={chatMessagesRef}
+        onScroll={handleScroll}
         onClick={(e) => {
           // 长按释放后的 click 抑制，避免误触容器诊断链接
           if (suppressClickRef.current) {
@@ -493,6 +575,7 @@ export default function DiscussionPanel({
           onMessagesClick?.(e);
         }}
       >
+        <div ref={chatContentRef} className="detail-chat-messages__inner">
         {displayComments.length > 0 ? (
           displayComments.map((c, idx) => {
             const authorName = c.created_by_name || c.created_by || '未知用户';
@@ -500,10 +583,20 @@ export default function DiscussionPanel({
               (c.created_by?.toLowerCase() === username?.toLowerCase()) ||
               (c.created_by_name?.toLowerCase() === username?.toLowerCase()) ||
               (c.created_by_name?.toLowerCase() === name?.toLowerCase());
-            const canDelete = !!onDeleteComment && isCurrentUser;
             // 聊天历史记录模式：首条消息或与上一条间隔≥5分钟，插入居中时间分隔
             const prevCreatedAt = idx > 0 ? displayComments[idx - 1].created_at : undefined;
             const showDivider = shouldShowTimeDivider(c.created_at, prevCreatedAt);
+            // 连续消息合并：与上一条同一作者且无需时间分隔时，省略头像/姓名（微信式）
+            const prev = idx > 0 ? displayComments[idx - 1] : null;
+            const isContinued = !!prev
+              && !showDivider
+              && (prev.created_by?.toLowerCase() === c.created_by?.toLowerCase());
+            const avSrc = avatarSrcOf(c.created_by);
+            const avatarEl = avSrc ? (
+              <img className="detail-chat-avatar detail-chat-avatar--img" src={avSrc} alt={authorName} />
+            ) : (
+              <span className="detail-chat-avatar">{initialOf(c.created_by)}</span>
+            );
             return (
               <Fragment key={c.id}>
                 {showDivider && (
@@ -511,7 +604,9 @@ export default function DiscussionPanel({
                     {formatChatDividerTime(c.created_at)}
                   </div>
                 )}
-                <div className={`detail-chat-row ${isCurrentUser ? 'is-right' : ''}`}>
+                <div className={`detail-chat-row ${isCurrentUser ? 'is-right' : ''} ${isContinued ? 'is-continued' : ''}`}>
+                  {/* 头像列：连续消息省略（占位保持对齐） */}
+                  {!isCurrentUser && (isContinued ? <span className="detail-chat-avatar-ph" /> : avatarEl)}
                   <div
                     id={`comment-${c.id}`}
                     className={`detail-chat-bubble ${isCurrentUser ? 'is-self' : ''}`}
@@ -527,17 +622,20 @@ export default function DiscussionPanel({
                       openMenu(c, e.currentTarget.getBoundingClientRect());
                     }}
                   >
-                    {/* 引用块（微信式：气泡内顶部高亮，点击定位原消息） */}
-                    {c.quoted && (
-                      <div
-                        className="detail-chat-quote"
-                        onClick={(e) => { e.stopPropagation(); locateComment(c.quoted!.id); }}
-                      >
-                        <span className="detail-chat-quote__name">{c.quoted.created_by_name || '用户'}</span>
-                        <span className="detail-chat-quote__text">{stripHtml(c.quoted.content)}</span>
-                      </div>
-                    )}
-                    {!isCurrentUser && (
+                    {/* 引用块（微信式：气泡内顶部高亮，点击定位原消息；被引用消息已删除则显示占位） */}
+                    {c.quoted && (() => {
+                      const qDeleted = deletedIds.has(String(c.quoted.id));
+                      return (
+                        <div
+                          className={`detail-chat-quote${qDeleted ? ' is-deleted' : ''}`}
+                          onClick={qDeleted ? undefined : (e) => { e.stopPropagation(); locateComment(c.quoted!.id); }}
+                        >
+                          <span className="detail-chat-quote__name">{c.quoted.created_by_name || '用户'}</span>
+                          <span className="detail-chat-quote__text">{qDeleted ? '该消息已被删除' : stripHtml(c.quoted.content)}</span>
+                        </div>
+                      );
+                    })()}
+                    {!isCurrentUser && !isContinued && (
                       <div className="detail-chat-name">
                         <span className="detail-chat-name__text">{authorName}</span>
                         <span className="detail-chat-name__time">{formatCommentTime(c.created_at)}</span>
@@ -564,7 +662,26 @@ export default function DiscussionPanel({
                                 src={url}
                                 alt={att.filename}
                                 className="detail-chat-attachment-img"
+                                loading="lazy"
+                                decoding="async"
                                 onClick={openViewer}
+                                onError={(e) => {
+                                  // 微信 WebView 偶发 img 静默渲染失败（HTTP 200 但白屏，多见于大图/缓存损坏）。
+                                  // 加时间戳破缓存重试一次；仍失败则换成文件名占位，避免纯白方框无反馈。
+                                  const el = e.currentTarget;
+                                  if (!el.dataset.retried) {
+                                    el.dataset.retried = '1';
+                                    const sep = url.includes('?') ? '&' : '?';
+                                    el.src = `${url}${sep}_r=${Date.now()}`;
+                                  } else {
+                                    el.style.display = 'none';
+                                    const ph = document.createElement('div');
+                                    ph.className = 'detail-chat-attachment-file';
+                                    ph.textContent = `📎 ${att.filename}`;
+                                    ph.onclick = openViewer;
+                                    el.parentNode?.appendChild(ph);
+                                  }
+                                }}
                               />
                             );
                           }
@@ -582,20 +699,9 @@ export default function DiscussionPanel({
                       ).length;
                       return readCount > 0 ? <span className="detail-chat-read">已读</span> : null;
                     })()}
-                    {canDelete && (
-                      <button
-                        type="button"
-                        className="detail-chat-bubble__del"
-                        title="删除"
-                        aria-label="删除"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          cancelLongPress();
-                          openMenu(c, e.currentTarget.getBoundingClientRect());
-                        }}
-                      >🗑</button>
-                    )}
                   </div>
+                  {/* 自己消息头像列（右侧）：连续消息省略（占位保持对齐） */}
+                  {isCurrentUser && (isContinued ? <span className="detail-chat-avatar-ph" /> : avatarEl)}
                 </div>
               </Fragment>
             );
@@ -603,7 +709,16 @@ export default function DiscussionPanel({
         ) : (
           <div className="detail-chat-empty">暂无评论</div>
         )}
+        </div>
       </div>
+
+      {/* 新消息提示条（微信式）：滚在历史区时收到新消息，显示悬浮条，点击跳底 */}
+      {newCount > 0 && (
+        <div className="detail-chat-newmsg" onClick={scrollToBottom}>
+          <span>{newCount} 条新消息</span>
+          <span className="detail-chat-newmsg__arrow">↓</span>
+        </div>
+      )}
 
       {/* 长按操作菜单：TDesign Popover（自带箭头/动画/外点关闭），代理锚点定位到被长按气泡 */}
       <Popover

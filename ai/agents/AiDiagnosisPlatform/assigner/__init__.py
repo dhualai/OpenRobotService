@@ -15,6 +15,9 @@ from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     EngineerProfile,
     TicketContext,
 )
+from ai.core.logging import get_logger
+
+logger = get_logger("ASSIGNER")
 
 __all__ = [
     "DispatchFlow",
@@ -24,7 +27,25 @@ __all__ = [
     "load_engineers",
     "invalidate_personnel_cache",
     "assign_ticket",
+    "ensure_dispatch_ready",
 ]
+
+# 进程级 DispatchFlow 单例（避免每张工单重复加载配置/构建流水线）
+_dispatch_singleton: Optional[DispatchFlow] = None
+
+
+def ensure_dispatch_ready() -> DispatchFlow:
+    """预热并返回进程级 DispatchFlow 单例（Worker 启动时调用，避免首单卡顿）。
+
+    首次调用会加载配置 + 构建整个派单流水线（部门过滤/召回/精排/决策），
+    之后复用单例。支持配置热更新后调用 reload_config() 刷新。
+    """
+    global _dispatch_singleton
+    if _dispatch_singleton is None:
+        _dispatch_singleton = DispatchFlow()
+        logger.info("派单 DispatchFlow 预热完成（配置 + 流水线就绪）")
+    return _dispatch_singleton
+
 
 # 外部调用函数
 async def assign_ticket(
@@ -50,6 +71,7 @@ async def assign_ticket(
     contact: Optional[str] = None,
     creator: Optional[str] = None,
 ) -> AssignmentResult:
+    global _dispatch_singleton
     engineers = load_engineers()
     if not engineers:
         raise ValueError("工程师画像为空，请检查 users 表人员数据是否就绪")
@@ -81,5 +103,6 @@ async def assign_ticket(
         creator=creator,
     )
 
-    dispatch = DispatchFlow()
+    # 复用进程级 DispatchFlow 单例（由 ensure_dispatch_ready 懒加载/预热）
+    dispatch = ensure_dispatch_ready()
     return await dispatch.aassign(ctx, engineers)

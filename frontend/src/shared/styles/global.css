@@ -972,7 +972,7 @@ html, body, #root {
 .chat-pending-file__thumb {
   width: 40px;
   height: 40px;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 6px;
   flex-shrink: 0;
 }
@@ -1320,7 +1320,7 @@ html, body, #root {
 
 /* 讨论区评论附件（图片缩略图 / 文件卡片） */
 .detail-chat-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
-.detail-chat-attachment-img { max-width: 140px; max-height: 140px; border-radius: 6px; cursor: pointer; object-fit: cover; }
+.detail-chat-attachment-img { max-width: 140px; max-height: 140px; border-radius: 6px; cursor: pointer; object-fit: contain; background: #f2f3f5; }
 .detail-chat-attachment-file { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; background: rgba(0,0,0,0.05); border-radius: 6px; font-size: 13px; cursor: pointer; }
 .detail-chat-attachment-file:hover { background: rgba(0,0,0,0.1); }
 /* 工单详情页附件列表：图片缩略图网格（直接可见，点击放大） */
@@ -1328,12 +1328,17 @@ html, body, #root {
 .detail-attachment-thumb {
   width: 96px;
   height: 96px;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 8px;
   cursor: zoom-in;
   background: #f2f3f5;
   border: 1px solid #e5e5e5;
   -webkit-tap-highlight-color: transparent;
+}
+/* img onError 兜底占位（微信 WebView 偶发白屏时替换） */
+.detail-attachment-thumb--fallback {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28px; color: #999;
 }
 /* AI 占位：组件库 Loading 图标 + 「思考中」逐字跳动（简洁无卡片，纯黑加粗） */
 .chat-bubble__typing {
@@ -2145,7 +2150,7 @@ html, body, #root {
 .ticket-detail__cover {
   width: 100%;
   max-height: 200px;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 8px;
   margin-bottom: 12px;
 }
@@ -2844,21 +2849,60 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 420px;
 }
 .detail-chat-messages {
-  max-height: 300px;
+  flex: 1;
+  min-height: 240px;
+  max-height: 60vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding-right: 4px;
 }
+/* 消息内容容器：承载消息流，供 ResizeObserver 监听高度变化（图片加载/Markdown 渲染撑高时贴底跟随） */
+.detail-chat-messages__inner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 .detail-chat-row {
   display: flex;
   width: 100%;
+  gap: 8px;
+  align-items: flex-end;
 }
 .detail-chat-row.is-right {
   justify-content: flex-end;
+}
+/* 连续消息（同作者）：缩小间距 */
+.detail-chat-row.is-continued {
+  margin-top: -6px;
+}
+/* 消息头像 */
+.detail-chat-avatar {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  border-radius: 6px;
+  background: #0052d9;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #eef0f3;
+}
+.detail-chat-avatar--img {
+  object-fit: cover;
+  background: #eef1f5;
+}
+/* 连续消息头像占位（保持气泡对齐） */
+.detail-chat-avatar-ph {
+  width: 34px;
+  min-width: 34px;
 }
 /* 长按唤起自定义菜单（引用/复制/删除），抑制系统级长按弹窗与文本选取。
    关键：-webkit-touch-callout 不继承，须用 * 覆盖气泡内 MarkdownRenderer 渲染的
@@ -2873,7 +2917,7 @@ html, body, #root {
   position: relative;
   max-width: 75%;
   padding: 10px 14px;
-  border-radius: 12px;
+  border-radius: 6px;
   background: #ffffff;
   border: 1px solid #eef0f3;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -2887,13 +2931,37 @@ html, body, #root {
 .detail-chat-bubble.is-self {
   background: #e6f4ff;
   color: #1a1a1a;
-  border-radius: 12px 12px 0 12px;
+  border-color: #c8e3f7;
+  border-radius: 6px 6px 0 6px;
 }
 .detail-chat-bubble.is-self * {
   color: #1a1a1a;
 }
 .detail-chat-row:not(.is-right) .detail-chat-bubble {
-  border-radius: 12px 12px 12px 0;
+  border-radius: 6px 6px 6px 0;
+}
+/* 气泡小尾巴（CSS 三角，指向头像侧） */
+.detail-chat-row:not(.is-right) .detail-chat-bubble::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  bottom: 8px;
+  border-width: 5px 6px 5px 0;
+  border-style: solid;
+  border-color: transparent #ffffff transparent transparent;
+}
+.detail-chat-row.is-right .detail-chat-bubble.is-self::before {
+  content: '';
+  position: absolute;
+  right: -5px;
+  bottom: 8px;
+  border-width: 5px 0 5px 6px;
+  border-style: solid;
+  border-color: transparent transparent transparent #95EC69;
+}
+/* 连续消息不显示尾巴 */
+.detail-chat-row.is-continued .detail-chat-bubble::before {
+  display: none;
 }
 .detail-chat-name {
   display: flex;
@@ -2937,23 +3005,31 @@ html, body, #root {
 }
 
 /* ===== 微信化：引用块（气泡内）、引用条（输入上方）、长按菜单 ===== */
-/* 气泡内引用块：顶部高亮，点击定位原消息 */
+/* 气泡内引用块：左侧品牌蓝竖条 + 浅蓝灰底，点击定位原消息。
+   左直角 + 右圆角：竖条成为干净利落的引用条，避免圆角把竖条切成白边。 */
 .detail-chat-quote {
   display: block;
   margin: -2px 0 6px;
-  padding: 6px 8px;
-  background: rgba(0, 0, 0, 0.06);
-  border-left: 3px solid #0052d9;
-  border-radius: 6px;
+  padding: 6px 10px;
+  background: #eef2f7;              /* 浅蓝灰底，比纯灰更通透，与品牌蓝竖条协调 */
+  border-left: 3px solid #0052d9;   /* 品牌蓝竖条，与引用条/引用者名字同色 */
+  border-radius: 0 6px 6px 0;       /* 左侧与竖条齐平，右侧圆角 */
   cursor: pointer;
   transition: background 0.15s;
 }
+/* 自己（浅蓝）气泡内：用品牌蓝淡底，而非半透明白——半透明白叠在浅蓝上会脏成蓝灰，
+   白色竖条又会露出白边；改为品牌蓝竖条 + 蓝淡底，协调干净。 */
 .detail-chat-bubble.is-self .detail-chat-quote {
-  background: rgba(255, 255, 255, 0.4);
-  border-left-color: #fff;
+  background: rgba(0, 82, 217, 0.10);
+  border-left-color: #0052d9;
 }
-.detail-chat-quote:hover { background: rgba(0, 0, 0, 0.1); }
-.detail-chat-bubble.is-self .detail-chat-quote:hover { background: rgba(255, 255, 255, 0.55); }
+.detail-chat-quote:hover { background: #e4ebf4; }
+.detail-chat-bubble.is-self .detail-chat-quote:hover { background: rgba(0, 82, 217, 0.16); }
+/* 被引用消息已删除：灰色占位，不可点击 */
+.detail-chat-quote.is-deleted { cursor: default; opacity: 0.7; }
+.detail-chat-quote.is-deleted:hover { background: #eef2f7; }
+.detail-chat-bubble.is-self .detail-chat-quote.is-deleted:hover { background: rgba(0, 82, 217, 0.10); }
+.detail-chat-quote.is-deleted .detail-chat-quote__text { font-style: italic; opacity: 0.6; }
 .detail-chat-quote__name {
   display: block;
   font-size: 12px;
@@ -3128,6 +3204,7 @@ html, body, #root {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 .detail-chat-presence__avatar:first-child { margin-left: 0; }
+.detail-chat-presence__avatar--img { object-fit: cover; background: #eef1f5; }
 .detail-chat-presence__text {
   margin-left: 6px;
   font-size: 11px;
@@ -3154,10 +3231,34 @@ html, body, #root {
 @keyframes chatTyping {
   to { transform: rotate(360deg); }
 }
+
+/* 新消息提示条（微信式）：滚在历史区时收到新消息，悬浮在消息区底部居中 */
+.detail-chat-newmsg {
+  position: relative;
+  margin: -28px auto 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 14px;
+  background: #0052d9;
+  color: #fff;
+  font-size: 12px;
+  border-radius: 16px;
+  box-shadow: 0 2px 8px rgba(0, 82, 217, 0.3);
+  cursor: pointer;
+  z-index: 5;
+  align-self: center;
+  animation: chatNewmsgIn 0.2s ease-out;
+}
+.detail-chat-newmsg__arrow { font-size: 13px; }
+@keyframes chatNewmsgIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 .detail-chat-read {
   margin-left: 6px;
   font-size: 11px;
-  color: #00a870;
+  color: #0052d9;
   font-weight: 500;
 }
 
@@ -3576,4 +3677,34 @@ html, body, #root {
 @keyframes avatar-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+/* 项目选择搜索框 · 清空按钮（×）
+   tdesign-mobile 内置 clearable 的图标只绑 onTouchEnd，电脑端鼠标点击无效，
+   此处为自定义 ×（suffix 插槽渲染，onClick 触发），带弹出动画 + 悬停/按压动态效果。 */
+.project-picker-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--td-text-color-placeholder, #bbb);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 50%;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.2s ease, background 0.2s ease, transform 0.15s ease;
+  animation: project-picker-clear-in 0.22s ease-out;
+}
+.project-picker-clear:hover {
+  color: #0052d9;
+  background: rgba(0, 82, 217, 0.1);
+}
+.project-picker-clear:active {
+  transform: scale(0.78) rotate(-12deg);
+}
+@keyframes project-picker-clear-in {
+  from { opacity: 0; transform: scale(0.5); }
+  to { opacity: 1; transform: scale(1); }
 }
