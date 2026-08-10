@@ -356,6 +356,7 @@ location /t/api/ {
 - **AI 讨论回复落地广播（✅ 已接入）**：AI 服务写 `task_comments` 是独立进程，不持有后端 WS 连接。改为在写库复用方法 `_add_diagnosis_comment_short` 中 best-effort 回调后端内部端点 `POST /api/tasks/{id}/internal/broadcast-comment`（复用 `X-API-Key` = `HELPDESK_SYNC_API_KEY`，与派单通知同源），由后端加载评论并广播 `comment.created`，讨论/摘要/诊断三类 AI 评论一处全覆盖。在线客户端无需 `fetchDetail(true)` 等全量刷新即可实时上屏 AI 回复。
 - **typing 超时自动清除**：当前依赖前端 3s 后主动 `sendTyping(false)`，服务端不额外做超时兜底（见 §7 风险表）。
 - **删除即时消失**：前端 `useTaskCommentsWS` 维护 `deletedIdsRef`（已删除评论 id 集合），WS `comment.deleted` 事件到达即从 `displayComments` 移除并记入 `deletedIdsRef`；基线（父级 comments）刷新合并时一律排除 `deletedIdsRef` 中的 id，避免「删除后基线未更新又被补回」导致需刷新页面才消失。长按菜单的「删除」为唯一删除入口（已移除气泡右上角垃圾桶图标，避免与长按菜单重复）。
+- **进入即显示最新消息（贴底跟随）**：`DiscussionPanel` 在消息列表外层 `.detail-chat-messages`（滚动容器）内包一层 `.detail-chat-messages__inner`（内容容器，`chatContentRef`），用 `ResizeObserver` 监听其高度变化。用户处于贴底态（含初始进入，`isAtBottomRef` 初值 `true`）时，内容增高（图片附件加载、Markdown 渲染、消息追加等撑高）自动 `scrollTop = scrollHeight` 跟随滚到底；用户主动上滚阅读历史时不打断，仅显示「↓N 条新消息」提示条。解决此前「进入后停在顶部」「已读消息卡在底部边框被截断」等问题——根因是 `scrollToBottom()` 在 `useEffect` 同步执行时图片/Markdown 等异步内容尚未撑高 `scrollHeight`，导致滚不到底。
 
 ### 11.3 验证建议
 
