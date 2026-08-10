@@ -46,19 +46,49 @@ def _notify_backend_comment_broadcast(task_id: int, comment_id: int) -> None:
     后端进程持有 WebSocket 连接，AI 服务进程不持有；故 AI 写入 task_comments 后，
     由后端按 comment_id 加载并广播 comment.created，使在线客户端实时上屏 AI 回复。
     与派单通知共用同一套 X-API-Key（ai.internal_api_key ↔ 后端 HELPDESK_SYNC_API_KEY）。
+
+    注：本函数保持同步签名（调用方无需改动），但实际 HTTP 请求通过
+    asyncio.to_thread 放到线程池执行，避免阻塞事件循环。
     """
     try:
         cfg = get_ai_config()
         if not cfg.backend_base_url or not cfg.internal_api_key:
             return
-        httpx.post(
-            f"{cfg.backend_base_url.rstrip('/')}/api/tasks/{task_id}/internal/broadcast-comment",
-            json={"comment_id": comment_id},
-            headers={"X-API-Key": cfg.internal_api_key},
-            timeout=2.0,
-        )
+        url = f"{cfg.backend_base_url.rstrip('/')}/api/tasks/{task_id}/internal/broadcast-comment"
+        headers = {"X-API-Key": cfg.internal_api_key}
+        _fire_and_forget_async(url, comment_id, headers)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"AI 评论广播回调失败 task_id={task_id} comment_id={comment_id}: {e}")
+
+
+def _fire_and_forget_async(url: str, comment_id: int, headers: dict) -> None:
+    """在线程池中执行一次异步 HTTP POST（fire-and-forget，不阻塞调用方）。"""
+    import asyncio
+
+    async def _post() -> None:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            await client.post(
+                url,
+                json={"comment_id": comment_id},
+                headers=headers,
+            )
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # 无运行中的事件循环（被同步代码调用）→ 直接发起一个独立协程任务
+        loop = None
+
+    def _run() -> None:
+        asyncio.run(_post())
+
+    if loop is not None:
+        # 已有运行中的事件循环 → 放到线程池，避免阻塞事件循环
+        loop.run_in_executor(None, _run)
+    else:
+        # 无事件循环（纯同步上下文）→ 直接在线程中执行
+        import threading
+        threading.Thread(target=_run, daemon=True).start()
 
 
 # ============================================================
