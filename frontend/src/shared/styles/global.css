@@ -3577,3 +3577,33 @@ html, body, #root {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* 项目选择搜索框 · 清空按钮（×）
+   tdesign-mobile 内置 clearable 的图标只绑 onTouchEnd，电脑端鼠标点击无效，
+   此处为自定义 ×（suffix 插槽渲染，onClick 触发），带弹出动画 + 悬停/按压动态效果。 */
+.project-picker-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--td-text-color-placeholder, #bbb);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 50%;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.2s ease, background 0.2s ease, transform 0.15s ease;
+  animation: project-picker-clear-in 0.22s ease-out;
+}
+.project-picker-clear:hover {
+  color: #0052d9;
+  background: rgba(0, 82, 217, 0.1);
+}
+.project-picker-clear:active {
+  transform: scale(0.78) rotate(-12deg);
+}
+@keyframes project-picker-clear-in {
+  from { opacity: 0; transform: scale(0.5); }
+  to { opacity: 1; transform: scale(1); }
+}
