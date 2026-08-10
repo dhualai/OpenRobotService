@@ -144,7 +144,21 @@
 
 ---
 
-## 六、相关文档
+## 六、项目管理规则
+
+### 6.1 项目唯一键约束
+
+- **项目编号**（`project_code` / `project.code`）与 **项目名称**（`name`）均为项目的唯一 key。
+- 后台「项目管理 → 项目导入 → USP 项目」新建项目时，以下字段为必填：**项目名称、项目编号、项目状态**。
+- 创建（`POST /api/admin/projects/`）与更新（`PUT /api/admin/projects/{id}`）时，后端会先与库中已有项目比对：
+  - 项目编号或项目名称已存在 → 返回 `409 Conflict`，提示「项目编号/项目名称『xxx』已存在，请重新输入」。
+  - 更新时排除当前项目自身（`exclude_id`），避免自比较误判。
+- 并发提交兜底：即使绕过前端校验，数据库 `project.code` 唯一索引冲突也会被转换为 `409` 提示，而非 500。
+- 前端新建页对三个必填字段做提交前校验，并把后端的 409 提示原样展示给客户（Toast 警告）。
+
+---
+
+## 七、相关文档
 
 | 文档 | 路径 |
 |------|------|
@@ -152,5 +166,5 @@
 | 架构设计蓝图 | `docs/PRODUCT/ARCHITECTURE.md` |
 | 外部任务源集成设计 | `backend/INTEGRATION_DESIGN.md` |
 | 后端代码结构总览 | `backend/CODEBASE_OVERVIEW.md` |
-| 测试开发规范 | `docs/testing_guidelines.md` |
-| 自动化测试方案 | `docs/automation_strategy.md` |
+| 测试开发规范 | `automation/docs/testing/testing_guidelines.md` |
+| 自动化测试方案 | `automation/docs/automation_strategy.md` |

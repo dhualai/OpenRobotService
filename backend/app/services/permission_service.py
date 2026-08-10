@@ -289,6 +289,10 @@ class PermissionService:
                 if resource_perms:
                     project_permissions_dict[project_id] = resource_perms
             
+            rm = getattr(db_user, 'responsibility_modules', None)
+            # 历史脏数据（非 dict）归一为 {}，避免 Pydantic 校验失败
+            if not isinstance(rm, dict):
+                rm = {}
             return {
                 'id': db_user.id,
                 'username': db_user.username,
@@ -300,9 +304,10 @@ class PermissionService:
                 'status': getattr(db_user, 'status', 'inactive'),
                 'external_credentials': external_credentials,
                 'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
+                'company': getattr(db_user, 'company', None),
                 'department': getattr(db_user, 'department', None),
-                'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or {},
-                'job_level': getattr(db_user, 'job_level', 1),
+                'responsibility_modules': rm,
+                'job_level': getattr(db_user, 'job_level', 1) or 1,
                 'duty_text': getattr(db_user, 'duty_text', None),
             }
         finally:

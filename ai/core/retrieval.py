@@ -435,6 +435,7 @@ class RetrievalService:
         self.score_threshold = score_threshold
         self._qdrant: Optional[QdrantClientWrapper] = None
         self._embed_client = None
+        self._reranker = None  # cross-encoder reranker, loaded lazily
 
     async def _ensure_clients(self):
         """确保客户端已初始化"""
@@ -450,6 +451,42 @@ class RetrievalService:
         if self._embed_client is None:
             from ai.core.embed import get_embed_client
             self._embed_client = await get_embed_client()
+
+        if self._reranker is None:
+            from ai.core.reranker import get_reranker_client
+            self._reranker = await get_reranker_client()
+
+    async def _rerank_results(
+        self,
+        query: str,
+        results: List[RetrievalResult],
+        top_k: int,
+    ) -> List[RetrievalResult]:
+        """用 cross-encoder 对候选结果精排，返回 top_k。
+
+        CPU 推理瓶颈：bge-reranker-v2-m3 在 CPU 上约 700ms/pair，
+        候选数封顶在 15，避免单次检索耗时超过 10 秒。
+        """
+        _MAX_RERANK_CANDIDATES = 8
+        if not self._reranker or len(results) <= top_k:
+            return results[:top_k]
+
+        capped = results[:_MAX_RERANK_CANDIDATES]
+        docs = [r.content[:400] for r in capped]
+        try:
+            import time as _time
+            _t0 = _time.perf_counter()
+            scores = await self._reranker.rerank(query, docs, top_k)
+            _elapsed = _time.perf_counter() - _t0
+            if _elapsed > 1.0:
+                logger.info(f"[reranker] {len(capped)} 对耗时 {_elapsed:.1f}s")
+        except Exception:
+            logger.warning(f"[reranker] 推理失败，降级为原始排序", exc_info=True)
+            return results[:top_k]
+
+        scored = list(zip(capped, scores))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [r for r, _ in scored[:top_k]]
 
     @property
     def is_qdrant_unavailable(self) -> bool:
@@ -565,23 +602,30 @@ class RetrievalService:
         query_vector = await self._embed_client.embed(query)
         bm25_sparse = self._generate_bm25_sparse(query)
 
-        # 2. 并行检索
+        # 2. 并行检索（reranker 候选数收窄，CPU 推理开销大）
+        _rerank_margin = min(k + 4, 15)
+        candidate_k = _rerank_margin if self._reranker else k * 2
         dense_task = self._qdrant.search_dense(
             query_vector.tolist(),
-            top_k=k * 2,
+            top_k=candidate_k,
         )
         sparse_task = self._qdrant.search_sparse(
             bm25_sparse,
-            top_k=k * 2,
+            top_k=candidate_k,
         ) if bm25_sparse else asyncio.sleep(0)
 
         dense_results, sparse_results = await asyncio.gather(dense_task, sparse_task)
         # 3. RRF 融合
+        fuse_k = candidate_k if self._reranker else k
         results = self._rrf_fusion(
             dense_results,
             sparse_results if bm25_sparse else [],
-            top_k=k,
+            top_k=fuse_k,
         )
+
+        # 4. cross-encoder 重排序
+        if self._reranker and len(results) > k:
+            results = await self._rerank_results(query, results, k)
 
         if not results:
             raise RetrieveEmptyError("未找到相关文档")
@@ -648,18 +692,21 @@ class RetrievalService:
                 query_filter = sd_filter
 
         # hybrid search: dense + sparse 并行 → RRF 融合
+        # reranker 候选数收窄：top_k + margin，硬封顶 15（CPU 推理太慢，每 pair ~700ms）
+        _rerank_margin = min(top_k + 4, 8)
+        candidate_k = _rerank_margin if self._reranker else top_k * 2
         query_vector = await self._embed_client.embed(query)
         bm25_sparse = self._generate_bm25_sparse(query)
 
         dense_task = self._qdrant.search_dense(
             query_vector.tolist(),
-            top_k=top_k * 2,
+            top_k=candidate_k,
             collection_name=col,
             query_filter=query_filter,
         )
         sparse_task = self._qdrant.search_sparse(
             bm25_sparse,
-            top_k=top_k * 2,
+            top_k=candidate_k,
             collection_name=col,
         ) if bm25_sparse else asyncio.sleep(0)
 
@@ -671,7 +718,15 @@ class RetrievalService:
         if not isinstance(sparse_list, list):
             sparse_list = []
 
-        return self._rrf_fusion(dense_res, sparse_list, top_k=top_k)
+        # RRF 融合（保留足够候选给 reranker）
+        fuse_k = candidate_k if self._reranker else top_k
+        results = self._rrf_fusion(dense_res, sparse_list, top_k=fuse_k)
+
+        # cross-encoder 重排序
+        if self._reranker and len(results) > top_k:
+            results = await self._rerank_results(query, results, top_k)
+
+        return results
 
     async def retrieve_faq(
         self,

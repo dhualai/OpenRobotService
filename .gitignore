@@ -75,6 +75,9 @@ ai/kb/.ingest_state/
 
 # ===== 本地调试文件（不入库）=====
 ai/core/minio_helper_local.py
+scripts/start-minio.ps1
+# 数据库 schema 同步工具：仅本地开发环境对齐模型与库，生产环境不同，切勿入库
+scripts/sync_db_schema.py
 
 # ===== 日志排查文档（部署时从服务器拷贝）=====
 ai/agents/AiTaskPlatform/log_analyzer/log_manual/
@@ -86,3 +89,8 @@ output/
 
 # ===== 项目数据（本地数据文件，不入库）=====
 /项目数据/
+# ===== AI 测试生成流水线产物（每次 CI 重新生成，不入库）=====
+/test-gen/
+
+# ===== AI 生成用例归档（审阅确认后手动转正入库）=====
+automation/references/generated-cases/

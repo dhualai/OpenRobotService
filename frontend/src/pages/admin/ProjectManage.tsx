@@ -11,7 +11,7 @@ import ProjectImport from './ProjectImport';
 import ProjectAuth from './ProjectAuth';
 import ProjectPeople from './ProjectPeople';
 
-interface Project { id?: string; code?: string; name: string; }
+interface Project { id?: string; project_code?: string; name: string; }
 
 // 可折叠区域：点击标题切换展开/收起，默认展开
 const CollapsibleSection = ({ icon, title, open, onToggle, children }: { icon: string; title: string; open: boolean; onToggle: () => void; children: ReactNode }) => (
@@ -71,7 +71,7 @@ export default function ProjectManage() {
   const filteredProjects = projectSearch.trim()
     ? projects.filter((p) => {
         const kw = projectSearch.trim().toLowerCase();
-        return p.name.toLowerCase().includes(kw) || (p.code || '').toLowerCase().includes(kw);
+        return p.name.toLowerCase().includes(kw) || (p.project_code || '').toLowerCase().includes(kw);
       })
     : projects;
 
@@ -80,7 +80,7 @@ export default function ProjectManage() {
       Toast({ message: '请先选择项目', theme: 'warning' });
       return;
     }
-    const projectCode = selectedProject.code || selectedProject.id || selectedProject.name;
+    const projectCode = selectedProject.project_code || selectedProject.name;
     const labels: Record<string, string> = { license: 'licence授权', users: '人员授权', all: '完整授权' };
     setExportLoading(type);
     try {
@@ -88,11 +88,11 @@ export default function ProjectManage() {
         `/export/project/${encodeURIComponent(projectCode)}?type=${type}`,
         { method: 'POST', responseType: 'arrayBuffer', timeout: 60000 },
       );
-      const blob = new Blob([buffer], { type: 'application/gzip' });
+      const blob = new Blob([buffer], { type: 'application/x-bzip2' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `project_${projectCode}_${type}_export.gz`;
+      a.download = `project_${projectCode}_${type}_export.bz2`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -132,7 +132,7 @@ export default function ProjectManage() {
                 {selectedProject ? (
                   <>
                     <div style={{ fontWeight: 500 }}>{selectedProject.name}</div>
-                    {selectedProject.code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{selectedProject.code}</div>}
+                    {selectedProject.project_code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{selectedProject.project_code}</div>}
                   </>
                 ) : (
                   <span style={{ color: '#bbb', fontSize: 14 }}>请选择项目</span>
@@ -166,7 +166,7 @@ export default function ProjectManage() {
                   }}
                 >
                   <div style={{ fontWeight: 500 }}>{p.name}</div>
-                  {p.code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{p.code}</div>}
+                  {p.project_code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{p.project_code}</div>}
                 </div>
               ))}
               {filteredProjects.length === 0 && (
