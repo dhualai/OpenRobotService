@@ -14,37 +14,39 @@ class TestLoadConfig:
     '''Test the public load_config() API.'''
 
     @pytest.fixture
-    def temp_profiles(self):
+    def temp_config_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             p = Path(tmpdir)
+            env_dir = p / 'custom'
+            env_dir.mkdir()
             data = {
                 'api': {'base_url': 'http://custom.test', 'timeout': 99},
                 'database': {'host': 'test-db'},
             }
-            with open(p / 'custom.yaml', 'w', encoding='utf-8') as f:
+            with open(env_dir / 'config.yaml', 'w', encoding='utf-8') as f:
                 yaml.dump(data, f)
             yield p
 
-    def test_load_config_with_env(self, temp_profiles):
-        config = load_config(env='custom', profiles_dir=temp_profiles)
+    def test_load_config_with_env(self, temp_config_dir):
+        config = load_config(env='custom', config_dir=temp_config_dir)
         assert config.env == 'custom'
         assert config.api.base_url == 'http://custom.test'
         assert config.api.timeout == 99
 
-    def test_load_config_uses_env_var(self, temp_profiles, monkeypatch):
+    def test_load_config_uses_env_var(self, temp_config_dir, monkeypatch):
         monkeypatch.setenv('AUTOMATION_ENV', 'custom')
-        config = load_config(profiles_dir=temp_profiles)
+        config = load_config(config_dir=temp_config_dir)
         assert config.env == 'custom'
 
     def test_load_config_defaults_to_local(self, monkeypatch):
         monkeypatch.delenv('AUTOMATION_ENV', raising=False)
         config = load_config()
         assert config.env == 'local'
-        assert config.api.base_url == 'http://localhost:8000'
+        assert config.api.base_url == 'http://localhost:8400'
 
-    def test_load_config_with_env_override(self, temp_profiles, monkeypatch):
+    def test_load_config_with_env_override(self, temp_config_dir, monkeypatch):
         monkeypatch.setenv('AUTOMATION_ENV', 'local')
-        config = load_config(env='custom', profiles_dir=temp_profiles)
+        config = load_config(env='custom', config_dir=temp_config_dir)
         assert config.env == 'custom'
 
     def test_load_config_not_found(self):

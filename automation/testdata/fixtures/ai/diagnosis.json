@@ -1,0 +1,206 @@
+{
+  "suite": "diagnosis",
+  "description": "AiDiagnosisPlatform golden cases (L1 deterministic layer). Sources: API contracts from AI_Service_Description.md section 8.1/12.1.",
+  "cases": [
+    {
+      "id": "DIAG-001",
+      "mode": "skip_retrieval",
+      "session_id": "eval-diag-001",
+      "turns": ["车子不动了，任务状态一直显示调度中"],
+      "expect": {
+        "l1": {
+          "code": 0,
+          "actions": ["ask", "answer"],
+          "phase": "diagnosing",
+          "summary_contains": "调度中",
+          "schema": {
+            "message": "str",
+            "type": "str",
+            "agent_state.phase": "str",
+            "agent_state.diagnosis_rounds": "int"
+          }
+        },
+        "l2": {
+          "faithfulness_min": 0.7,
+          "reference_docs": [
+            "{车不动了，原子任务状态路径规划中} 第1步：请确认路径规划界面是否有红色报错 → 用户说有 → 【结论】原因：路径被障碍物堵塞。方案：清除障碍后重试 → 用户说没有 → 进入第2步",
+            "{车不动了，原子任务状态调度中} 第1步：请确认车辆是否在等待任务下发 → 检查调度服务器连接"
+          ]
+        },
+        "l3": {
+          "min_score": 3,
+          "rubric": "回复应引导用户确认具体现象（如路径规划界面状态、定位状态），不得凭空编造具体故障结论，不得跳过排查步骤"
+        }
+      },
+      "note": "正常流程：报障现象，Agent 进入诊断状态并引导确认"
+    },
+    {
+      "id": "DIAG-002",
+      "mode": "skip_retrieval",
+      "session_id": "eval-diag-002",
+      "turns": ["转工单"],
+      "expect": {
+        "l1": {
+          "code": 0,
+          "actions": ["ask", "answer", "submit"],
+          "phase": ["diagnosing", "resolved"],
+          "message_contains": ["工单"],
+          "schema": {"message": "str", "agent_state.phase": "str"}
+        },
+        "l3": {
+          "min_score": 4,
+          "rubric": "用户说转工单时，回复必须明确告知工单已生成/生成流程，且不开始新的故障排查，不追问排查问题"
+        }
+      },
+      "note": "转工单识别：prompt 契约——用户说转工单时直接告知生成，不开始新排查"
+    },
+    {
+      "id": "DIAG-003",
+      "mode": "skip_retrieval",
+      "session_id": "eval-diag-003",
+      "turns": [
+        "车不动了，任务状态一直显示调度中",
+        "是的，路径规划界面没有红色报错"
+      ],
+      "expect": {
+        "l1": {
+          "code": 0,
+          "actions": ["ask", "answer"],
+          "phase": "diagnosing",
+          "rounds_min": 2,
+          "schema": {
+            "message": "str",
+            "agent_state.problem_summary": "str",
+            "agent_state.diagnosis_rounds": "int"
+          }
+        }
+      },
+      "note": "多轮对话：第二轮诊断轮数递增，问题概述持续"
+    },
+    {
+      "id": "DIAG-004",
+      "mode": "skip_retrieval",
+      "session_id": "eval-diag-004",
+      "turns": ["AGV 无法启动"],
+      "expect": {
+        "l1": {
+          "code": 0,
+          "actions": ["ask", "answer"],
+          "phase": "diagnosing",
+          "schema": {"message": "str", "agent_state.hypotheses": "list"}
+        }
+      },
+      "note": "异常流程：现象描述笼统，Agent 应追问细节而非直接给结论"
+    },
+    {
+      "id": "DIAG-005",
+      "mode": "full",
+      "session_id": "eval-diag-005",
+      "turns": ["E1601 是什么错误码？"],
+      "expect": {
+        "l1": {
+          "code": 0,
+          "actions": ["answer", "ask"],
+          "phase": "diagnosing",
+          "schema": {"message": "str", "agent_state.phase": "str"}
+        },
+        "l2": {
+          "expect_hits": {"retrieve_cheduan": ["E1601"]},
+          "faithfulness_min": 0.7,
+          "reference_docs": [
+            "E1601：通讯超时错误码。含义：车端与调度系统通讯超时。排查建议：检查网络连接、检查调度服务器状态"
+          ]
+        }
+      },
+      "note": "车端错误码查询：全链路应命中 cheduan 知识库（L2 在知识库可用时校验）"
+    },
+    {
+      "id": "DIAG-006",
+      "mode": "skip_retrieval",
+      "session_id": "eval-diag-006",
+      "turns": ["AGV 无法启动", "转工单"],
+      "expect": {
+        "l1": {
+          "code": 0,
+          "actions": ["ask", "answer", "submit"],
+          "phase": ["diagnosing", "resolved"],
+          "message_contains": ["工单"],
+          "schema": {"message": "str", "agent_state.diagnosis_rounds": "int"}
+        }
+      },
+      "note": "多轮后转单：诊断中可随时转工单"
+    },
+    {
+      "id": "DIAG-007",
+      "mode": "full",
+      "session_id": "eval-diag-007",
+      "turns": ["如何更换充电桩？"],
+      "expect": {
+        "l1": {
+          "code": 0,
+          "actions": ["answer", "ask"],
+          "phase": "diagnosing",
+          "schema": {"message": "str", "agent_state.phase": "str"}
+        },
+        "l2": {
+          "expect_hits": {"retrieve": ["充电桩"]}
+        }
+      },
+      "note": "操作手册 howto：全链路应命中操作手册库（L2 在知识库可用时校验）"
+    },
+    {
+      "id": "DIAG-008",
+      "mode": "skip_retrieval",
+      "session_id": "eval-diag-008",
+      "turns": ["你好"],
+      "expect": {
+        "l1": {
+          "code": 0,
+          "actions": ["answer", "ask"],
+          "phase": "diagnosing",
+          "summary_contains": "你好",
+          "schema": {"message": "str", "agent_state.problem_summary": "str"}
+        }
+      },
+      "note": "问候语：新会话 problem_summary 初始化为原始输入（契约 12.1）"
+    },
+    {
+      "id": "DIAG-009",
+      "mode": "full",
+      "session_id": "eval-diag-009",
+      "turns": ["车走到一半停住了，任务状态显示执行中"],
+      "expect": {
+        "l1": {
+          "code": 0,
+          "actions": ["ask", "answer"],
+          "phase": "diagnosing",
+          "schema": {"message": "str", "agent_state.problem_summary": "str"}
+        },
+        "l2": {
+          "expect_hits": {"retrieve": ["任务状态"]}
+        }
+      },
+      "note": "运行中断故障：全链路检索任务/调度相关文档"
+    },
+    {
+      "id": "DIAG-010",
+      "mode": "skip_retrieval",
+      "session_id": "eval-diag-010",
+      "turns": [
+        "车子不动了，任务状态一直显示调度中",
+        "转工单",
+        "换个问题：定位精度一般是多少"
+      ],
+      "expect": {
+        "l1": {
+          "code": 0,
+          "actions": ["answer", "ask"],
+          "phase": ["diagnosing", "resolved"],
+          "rounds_min": 3,
+          "schema": {"message": "str", "agent_state.diagnosis_rounds": "int"}
+        }
+      },
+      "note": "新话题切换：上一工单结束后按新问题处理，不误触发工单补充流程"
+    }
+  ]
+}

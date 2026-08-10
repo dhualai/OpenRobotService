@@ -1,6 +1,6 @@
 // 摇人 · 历史工单详情页（U老师诊断生成的工单）
-// 数据源：AI 模块 GET /api/ai/qa/ticket?session_id=...；操作：催办 / 上报（任务服务通知）
-// 路由 /app/call/ticket/:id 中的 :id 即 AI 会话 session_id
+// 数据源：tasks 服务 GET /api/tasks/{dbId}?load_comments=true（DB id 唯一定位，AI 诊断数据从 metadata_info 提取）；操作：催办 / 上报（任务服务通知）
+// 路由 /app/call/ticket/:id 中的 :id 形如 db_<数字id>（Task.id）；session_id 直链仅作旧链接兼容
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Toast, Loading, Tag, Popup, Input, Textarea } from 'tdesign-mobile-react';
@@ -35,7 +35,7 @@ interface AiDiagnosis {
   collected_info?: Record<string, unknown>;
   rounds?: number;
 }
-interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; }
+interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; reply_to?: string | number; quoted?: { id: string | number; content: string; created_by_name?: string }; }
 interface AiTicket {
   ticket_id?: string;
   session_id: string;
@@ -152,19 +152,36 @@ export default function TicketDetailPage() {
   // @U老师 AI 讨论中标记
   const [askingAI, setAskingAI] = useState(false);
 
+  // 竞态保护：fetchDetail 是异步多段 await，切换工单（sessionId 变化）时上一个工单的请求可能仍在飞行中，
+  // 其响应若晚于新工单返回，会 setTicket 覆盖新工单、或用 setTicket((prev)=>...) 把旧工单字段合并进新工单，
+  // 表现为「点的是当前工单，显示/接口却是别的工单」。用 ref 跟踪最新 sessionId，await 后比对发起时的快照，
+  // 不一致即视为 stale 请求丢弃结果（不 setTicket/setMsg/setLoading）。同 sessionId 下的 silent 刷新
+  // （编辑后 / 派单轮询）不受影响——仅当真正切换工单时才使旧请求失效。
+  const latestSessionIdRef = useRef(sessionId);
+  latestSessionIdRef.current = sessionId;
+
   const fetchDetail = useCallback(async (silent = false) => {
     if (!sessionId) return;
+    // 捕获本次请求发起时的 sessionId；后续每个 await 后用它对比最新值，判定是否已被新工单取代
+    const mySessionId = sessionId;
+    const isStale = () => latestSessionIdRef.current !== mySessionId;
     if (!silent) setLoading(true);
     try {
-      // 手动工单（无 session_id，URL 形如 /call/ticket/db_<数字id>）：直接按 DB 工单 id 查询，
-      // 跳过 qaGetTicket（AI 接口仅支持 session_id 查询，手动工单没有 session_id）。
+      // 统一按 DB 工单 id 查询（URL 形如 /call/ticket/db_<数字id>）。
+      // 列表点击一律用 db_<Task.id> 导航：session_id 在同一会话多次转单时会重复
+      // （external_id 用 ticket_seq 区分，DB 唯一约束在 (source, external_id) 而非 session_id），
+      // 用 session_id 导航会命中 qaGetTicket 的歧义返回（精确匹配取首条 / LIKE 兜底取最新），
+      // 表现为「点的是当前工单，显示却是别的工单」。DB id 唯一定位，彻底消除歧义。
+      // AI 工单的 session_id / diagnosis / ai_summary 等存在 metadata_info JSON 列，从此处提取；
+      // 下方 qaGetTicket 分支仅作旧链接（session_id 直链）兼容，主流程不再走它。
       const dbIdMatch = /^db_(\d+)$/.exec(sessionId);
       if (dbIdMatch) {
         const dbId = dbIdMatch[1];
-        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${dbId}?load_comments=true`, { skipCache: true });
+        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string; session_id?: string; diagnosis?: AiDiagnosis }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${dbId}?load_comments=true`, { skipCache: true });
+        if (isStale()) return; // 已切换到别的工单，丢弃本次（旧工单）结果，避免覆盖
         setTicket({
           ticket_id: String(dbId),
-          session_id: '',
+          session_id: taskDetail.metadata_info?.session_id || '',
           title: taskDetail.title || '',
           description: taskDetail.description ?? '',
           status: taskDetail.status || '',
@@ -179,15 +196,16 @@ export default function TicketDetailPage() {
           project_name: taskDetail.project_name || '',
           project_id: taskDetail.project_id || '',
           created_at: taskDetail.created_at || '',
-          // 手动工单无 AI 诊断数据
-          diagnosis: undefined,
-          // 手动工单附件来自 tasks 服务 GET /{dbId} 的 attachments 字段（object_path 或字典数组）
+          // AI 诊断数据存在 metadata_info.diagnosis（task_adapter 平铺入库）；手动工单无此字段
+          diagnosis: taskDetail.metadata_info?.diagnosis,
+          // 附件来自 tasks 服务 GET /{dbId} 的 attachments 字段（object_path 或字典数组）
           attachments: ((taskDetail as unknown as { attachments?: unknown[] }).attachments as Array<Record<string, unknown>> | undefined) ?? [],
         });
         setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
         return;
       }
       const res = await qaGetTicket(sessionId);
+      if (isStale()) return; // 已切换到别的工单，丢弃本次（旧工单）结果，避免覆盖
       if (res?.code === 0 && res.data) {
         const aiTicket = res.data as AiTicket;
         // silent 刷新（编辑后 / 派单轮询）不重置 ticket：避免被 AI 滞后的 Redis 副本覆盖，
@@ -196,6 +214,7 @@ export default function TicketDetailPage() {
         if (aiTicket.ticket_id) {
           try {
             const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
+            if (isStale()) return; // 已切换工单：prev 可能已是新工单，不可把旧工单的 DB 字段合并进去
             // 用 DB 的 status 覆盖 AI 的 status：AI(qaGetTicket) 返回 dispatched/escalated 等 AI 内部状态，
             // DB(tasks 表) 是 new/in_progress 等标准枚举。列表(qaListTickets)也来自 DB，
             // 覆盖后详情页按钮置灰(canUrgeTicket/canReportTicket)与列表一致。
@@ -225,12 +244,15 @@ export default function TicketDetailPage() {
           } catch { /* 评论加载失败不阻塞主流程 */ }
         }
       } else {
+        if (isStale()) return; // 已切换工单，不覆盖新工单的 msg 状态
         setMsg(res?.message || '该会话尚未生成工单');
       }
     } catch (err) {
+      if (isStale()) return; // 已切换工单，旧工单的报错不覆盖新工单状态
       setMsg(err instanceof Error ? err.message : '加载失败');
     } finally {
-      if (!silent) setLoading(false);
+      // 仅当本次请求仍是最新工单时才结束 loading，避免 stale 请求把新工单的 loading 提前置 false
+      if (!silent && !isStale()) setLoading(false);
     }
   }, [sessionId]);
 
@@ -278,18 +300,37 @@ export default function TicketDetailPage() {
     setShowActionPopup(true);
   };
 
+  // 操作人标签（与系统任务详情页同款）
+  const getOperatorLabel = (): string => name || username || '当前用户';
+
+  // 操作日志评论：记录到 task_comments，工单处理过程可追溯（与系统任务详情页同款逻辑）
+  const addOperationComment = async (content: string) => {
+    if (!ticket?.ticket_id) return;
+    try {
+      await request(`/${ticket.ticket_id}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ content, is_public: true }),
+      });
+    } catch { /* 评论记录失败不阻塞主流程 */ }
+  };
+
   const handleActionConfirm = async () => {
     if (!ticket?.ticket_id || !actionUser) { Toast({ message: '请选择通知用户', theme: 'warning' }); return; }
     setActing(actionType);
     try {
+      const operator = getOperatorLabel();
+      const target = actionUser.name || actionUser.username;
       if (actionType === 'urge') {
         await urgeTicket(ticket.ticket_id, actionUser.id);
+        await addOperationComment(`${operator} 催办了工单，通知 ${target}`);
         Toast({ message: '已催办，已通知处理人', theme: 'success' });
       } else {
         await reportTicket(ticket.ticket_id, actionUser.id);
+        await addOperationComment(`${operator} 上报了工单，通知 ${target}`);
         Toast({ message: '已上报，已通知上级', theme: 'success' });
       }
       setShowActionPopup(false);
+      await fetchDetail(true);
     } catch (err) {
       Toast({ message: `${actionType === 'urge' ? '催办' : '上报'}失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
@@ -303,6 +344,8 @@ export default function TicketDetailPage() {
     setActing('cancel');
     try {
       await cancelTicket(ticket.ticket_id);
+      const operator = getOperatorLabel();
+      await addOperationComment(`${operator} 撤回了工单`);
       Toast({ message: '已撤回，工单已取消', theme: 'success' });
       fetchDetail();
     } catch (err) {
@@ -383,6 +426,8 @@ export default function TicketDetailPage() {
           project_id: editForm.project_id,
         }),
       });
+      const operator = getOperatorLabel();
+      await addOperationComment(`${operator} 修改了工单信息`);
       Toast({ message: '已保存', theme: 'success' });
       setShowEdit(false);
       await fetchDetail(true);  // 静默刷新，展示端以 DB 为准，编辑后立即可见（await 确保 DB 新值落定）
@@ -395,7 +440,7 @@ export default function TicketDetailPage() {
 
   // ── @U老师 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
   // 与系统任务详情页同款逻辑，用 ticket.ticket_id 代替 detail.id，fetchDetail(true) 代替 loadDetail()
-  const handleAIDiscuss = async (text: string, files: File[] = []): Promise<boolean> => {
+  const handleAIDiscuss = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
     if (!ticket?.ticket_id) return false;
     const userMsg = text;
     setAskingAI(true);
@@ -409,7 +454,7 @@ export default function TicketDetailPage() {
       try {
         const newComment = await request<Comment>(`/${ticket.ticket_id}/comments`, {
           method: 'POST',
-          body: JSON.stringify({ content: userMsg, is_public: true, attachments: files.length ? [tempId] : [] }),
+          body: JSON.stringify({ content: userMsg, is_public: true, attachments: files.length ? [tempId] : [], reply_to: options?.replyTo }),
         });
         setTicket((prev) => {
           if (!prev) return prev;
@@ -449,9 +494,9 @@ export default function TicketDetailPage() {
 
   // 发送评论（附件上传 + POST /api/tasks/{ticket_id}/comments）；返回 true=成功（组件清空输入）
   // 检测 @U老师 前缀：走 AI 讨论而非普通评论（与系统任务详情页同款逻辑）
-  const handleSendComment = async (text: string, files: File[]): Promise<boolean> => {
+  const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number }): Promise<boolean> => {
     if (text.startsWith('@U老师 ')) {
-      return handleAIDiscuss(text, files);
+      return handleAIDiscuss(text, files, options);
     }
     if (!ticket?.ticket_id) {
       Toast({ message: '工单号缺失，无法评论', theme: 'warning' });
@@ -466,7 +511,7 @@ export default function TicketDetailPage() {
       }
       const newComment = await request<Comment>(`/${ticket.ticket_id}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ content: text, is_public: true, attachments: files.length ? [tempId] : [] }),
+        body: JSON.stringify({ content: text, is_public: true, attachments: files.length ? [tempId] : [], reply_to: options?.replyTo }),
       });
       const enrichedComment = {
         ...newComment,
@@ -487,6 +532,17 @@ export default function TicketDetailPage() {
     } finally {
       setSubmittingComment(false);
     }
+  };
+
+  // 删除评论（后端按创建人鉴权）：成功后从本地列表移除
+  const handleDeleteComment = async (id: string | number): Promise<void> => {
+    if (!ticket?.ticket_id) return;
+    await request(`/comments/${id}`, { method: 'DELETE' });
+    setTicket((prev) => {
+      if (!prev) return prev;
+      return { ...prev, comments: (prev.comments || []).filter((c) => String(c.id) !== String(id)) };
+    });
+    Toast({ message: '评论已删除', theme: 'success' });
   };
 
   if (loading) return <Loading text="加载中..." />;
@@ -728,6 +784,7 @@ export default function TicketDetailPage() {
         <DiscussionPanel
           comments={ticket.comments || []}
           onSend={handleSendComment}
+          onDeleteComment={handleDeleteComment}
           sending={submittingComment || askingAI}
           disabled={!ticket?.ticket_id}
           enableAttach

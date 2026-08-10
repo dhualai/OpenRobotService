@@ -9,11 +9,14 @@ from automation.config.models import AutomationConfig
 
 
 class ConfigLoader:
-    '''Load YAML config profiles by environment.'''
+    '''Load YAML config files by environment.
 
-    def __init__(self, env: Optional[str] = None, profiles_dir: Optional[Path] = None):
+    Layout: <config_dir>/{env}/config.yaml (e.g. config/sit/config.yaml).
+    '''
+
+    def __init__(self, env: Optional[str] = None, config_dir: Optional[Path] = None):
         self._env = (env or os.getenv('AUTOMATION_ENV', 'local')).lower()
-        self._profiles_dir = profiles_dir or (Path(__file__).parent / 'profiles')
+        self._config_dir = config_dir or Path(__file__).resolve().parent
         self._raw: dict = {}
         self._config: Optional[AutomationConfig] = None
 
@@ -25,8 +28,8 @@ class ConfigLoader:
         return ConfigEnv.from_str(self._env)
 
     def load_raw(self) -> dict:
-        '''Load raw YAML dict from the environment profile file.'''
-        path = self._find_profile()
+        '''Load raw YAML dict from the environment config file.'''
+        path = self._find_config_file()
         with open(path, 'r', encoding='utf-8') as f:
             self._raw = yaml.safe_load(f) or {}
         return self._raw
@@ -47,8 +50,8 @@ class ConfigLoader:
             return self.load()
         return self._config
 
-    def _find_profile(self) -> Path:
-        path = self._profiles_dir / f'{self._env}.yaml'
+    def _find_config_file(self) -> Path:
+        path = self._config_dir / self._env / 'config.yaml'
         if not path.exists():
             valid = [e.value for e in ConfigEnv]
             raise FileNotFoundError(

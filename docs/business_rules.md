@@ -166,5 +166,5 @@
 | 架构设计蓝图 | `docs/PRODUCT/ARCHITECTURE.md` |
 | 外部任务源集成设计 | `backend/INTEGRATION_DESIGN.md` |
 | 后端代码结构总览 | `backend/CODEBASE_OVERVIEW.md` |
-| 测试开发规范 | `docs/testing_guidelines.md` |
-| 自动化测试方案 | `docs/automation_strategy.md` |
+| 测试开发规范 | `automation/docs/testing/testing_guidelines.md` |
+| 自动化测试方案 | `automation/docs/automation_strategy.md` |

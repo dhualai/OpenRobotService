@@ -689,8 +689,23 @@ async def handle_subscribe_event(message: dict):
     
     auth_service.register_wechat_user(from_user_name)
     
-    welcome_message = "👋 欢迎关注我们！\n\n请输入您的姓名，以便我们为您提供个性化服务。\n\n例如：\r\r@张三"
+    welcome_message = "👋 欢迎关注我们！请点击连接完成个人信息录入。"
     reply_xml = build_reply_text(from_user_name, to_user_name, welcome_message)
+    
+    # 追加推送个人中心分享卡片（news 类型图文消息）
+    try:
+        profile_url = f"{settings.FRONTEND_BASE_URL}/admin/profile"
+        share_img = f"{settings.FRONTEND_BASE_URL}/share-thumb.png"
+        wechat_service.send_news_message_to_user(
+            open_id=from_user_name,
+            title="设置你的个人信息",
+            description="设置你的真实姓名，公司，部门等， 为你开发全部功能！",
+            url=profile_url,
+            picurl=share_img,
+        )
+    except Exception as e:
+        logger.error(f"推送个人中心卡片失败: {e}")
+    
     return Response(content=reply_xml, media_type="text/xml")
 
 
