@@ -307,6 +307,8 @@ export default function TicketDetailPage() {
   const handleWsTaskUpdated = (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null }) => {
     setTicket((prev) => {
       if (!prev) return prev;
+      // WS 推送的 assigned_to 可能为 null（退单/清空处理人），状态类型为 string | undefined，
+      // null → undefined 以兼容类型，展示层有 || 兜底，null 与 undefined 表现一致。
       return {
         ...prev,
         ...(patch.status ? { status: patch.status } : {}),
