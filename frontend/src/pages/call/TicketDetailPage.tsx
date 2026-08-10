@@ -1,6 +1,6 @@
 // 摇人 · 历史工单详情页（U老师诊断生成的工单）
-// 数据源：AI 模块 GET /api/ai/qa/ticket?session_id=...；操作：催办 / 上报（任务服务通知）
-// 路由 /app/call/ticket/:id 中的 :id 即 AI 会话 session_id
+// 数据源：tasks 服务 GET /api/tasks/{dbId}?load_comments=true（DB id 唯一定位，AI 诊断数据从 metadata_info 提取）；操作：催办 / 上报（任务服务通知）
+// 路由 /app/call/ticket/:id 中的 :id 形如 db_<数字id>（Task.id）；session_id 直链仅作旧链接兼容
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Toast, Loading, Tag, Popup, Input, Textarea } from 'tdesign-mobile-react';
@@ -167,16 +167,21 @@ export default function TicketDetailPage() {
     const isStale = () => latestSessionIdRef.current !== mySessionId;
     if (!silent) setLoading(true);
     try {
-      // 手动工单（无 session_id，URL 形如 /call/ticket/db_<数字id>）：直接按 DB 工单 id 查询，
-      // 跳过 qaGetTicket（AI 接口仅支持 session_id 查询，手动工单没有 session_id）。
+      // 统一按 DB 工单 id 查询（URL 形如 /call/ticket/db_<数字id>）。
+      // 列表点击一律用 db_<Task.id> 导航：session_id 在同一会话多次转单时会重复
+      // （external_id 用 ticket_seq 区分，DB 唯一约束在 (source, external_id) 而非 session_id），
+      // 用 session_id 导航会命中 qaGetTicket 的歧义返回（精确匹配取首条 / LIKE 兜底取最新），
+      // 表现为「点的是当前工单，显示却是别的工单」。DB id 唯一定位，彻底消除歧义。
+      // AI 工单的 session_id / diagnosis / ai_summary 等存在 metadata_info JSON 列，从此处提取；
+      // 下方 qaGetTicket 分支仅作旧链接（session_id 直链）兼容，主流程不再走它。
       const dbIdMatch = /^db_(\d+)$/.exec(sessionId);
       if (dbIdMatch) {
         const dbId = dbIdMatch[1];
-        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${dbId}?load_comments=true`, { skipCache: true });
+        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string; session_id?: string; diagnosis?: AiDiagnosis }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${dbId}?load_comments=true`, { skipCache: true });
         if (isStale()) return; // 已切换到别的工单，丢弃本次（旧工单）结果，避免覆盖
         setTicket({
           ticket_id: String(dbId),
-          session_id: '',
+          session_id: taskDetail.metadata_info?.session_id || '',
           title: taskDetail.title || '',
           description: taskDetail.description ?? '',
           status: taskDetail.status || '',
@@ -191,9 +196,9 @@ export default function TicketDetailPage() {
           project_name: taskDetail.project_name || '',
           project_id: taskDetail.project_id || '',
           created_at: taskDetail.created_at || '',
-          // 手动工单无 AI 诊断数据
-          diagnosis: undefined,
-          // 手动工单附件来自 tasks 服务 GET /{dbId} 的 attachments 字段（object_path 或字典数组）
+          // AI 诊断数据存在 metadata_info.diagnosis（task_adapter 平铺入库）；手动工单无此字段
+          diagnosis: taskDetail.metadata_info?.diagnosis,
+          // 附件来自 tasks 服务 GET /{dbId} 的 attachments 字段（object_path 或字典数组）
           attachments: ((taskDetail as unknown as { attachments?: unknown[] }).attachments as Array<Record<string, unknown>> | undefined) ?? [],
         });
         setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
