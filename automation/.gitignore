@@ -9,11 +9,8 @@ build/
 .env
 .env.local
 
-# Test output
-output/allure-results/
-output/allure-report/
-output/screenshots/
-output/logs/
+# Test output (all generated artifacts)
+output/
 .pytest_cache/
 
 # IDE

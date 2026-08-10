@@ -40,6 +40,27 @@ from ai.agents.AiTaskPlatform.prompts import (
 logger = get_logger("TASK_AGENT")
 
 
+def _notify_backend_comment_broadcast(task_id: int, comment_id: int) -> None:
+    """写库后回调后端 WS 广播端点（跨进程 pub-sub，best-effort 不阻塞主流程）。
+
+    后端进程持有 WebSocket 连接，AI 服务进程不持有；故 AI 写入 task_comments 后，
+    由后端按 comment_id 加载并广播 comment.created，使在线客户端实时上屏 AI 回复。
+    与派单通知共用同一套 X-API-Key（ai.internal_api_key ↔ 后端 HELPDESK_SYNC_API_KEY）。
+    """
+    try:
+        cfg = get_ai_config()
+        if not cfg.backend_base_url or not cfg.internal_api_key:
+            return
+        httpx.post(
+            f"{cfg.backend_base_url.rstrip('/')}/api/tasks/{task_id}/internal/broadcast-comment",
+            json={"comment_id": comment_id},
+            headers={"X-API-Key": cfg.internal_api_key},
+            timeout=2.0,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"AI 评论广播回调失败 task_id={task_id} comment_id={comment_id}: {e}")
+
+
 # ============================================================
 # 核心类
 # ============================================================
@@ -624,7 +645,7 @@ class AiTaskAgent:
 
     @staticmethod
     def _add_diagnosis_comment_short(task_id: int, content: str) -> Optional[int]:
-        """简短回复写入 task_comments（用于 @AI 讨论/摘要），返回 comment_id"""
+        """简短回复写入 task_comments（用于 @AI 讨论/摘要/诊断），返回 comment_id"""
         from app.models.task import TaskComment
         from app.core.database import SessionLocal
         db = SessionLocal()
@@ -634,12 +655,18 @@ class AiTaskAgent:
             db.add(comment)
             db.commit()
             db.refresh(comment)
-            return comment.id
+            cid = comment.id
         except Exception:
             db.rollback()
             return None
         finally:
             db.close()
+        # 实时推送：写库后回调后端 WS 广播（跨进程 pub-sub，best-effort 不阻塞主流程）
+        try:
+            _notify_backend_comment_broadcast(task_id, cid)
+        except Exception:
+            pass
+        return cid
 
     # ============================================================
     # summarize — 讨论摘要（后端触发 → 扫描所有活跃工单 → 逐条判断生成）

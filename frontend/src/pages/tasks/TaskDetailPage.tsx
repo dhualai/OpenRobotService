@@ -88,7 +88,7 @@ const parseMinioPath = (rawPath: string): MinioPathInfo | null => {
 };
 
 interface Attachment { path: string; size?: number; filename?: string; url?: string; id?: string; }
-interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; }
+interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; reply_to?: string | number; quoted?: { id: string | number; content: string; created_by_name?: string }; }
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
   ticket_type: string; project_name?: string; project_id?: string;
@@ -316,6 +316,19 @@ export default function TaskDetailPage() {
     return name || username || '当前用户';
   };
 
+  // WS 工单状态变更（派单完成/改派/状态流转）实时更新详情，替代轮询
+  const handleWsTaskUpdated = (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null }) => {
+    setDetail((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.assigned_to !== undefined ? { assigned_to: patch.assigned_to } : {}),
+        ...(patch.assigned_to_name !== undefined ? { assigned_to_name: patch.assigned_to_name } : {}),
+      };
+    });
+  };
+
   const addOperationComment = async (content: string) => {
     if (!detail) return;
     try {
@@ -426,17 +439,23 @@ export default function TaskDetailPage() {
     }
   };
 
-  /** 打开附件预览（图片走灯箱、PDF/Markdown 内联渲染） */
-  const openAttachmentViewer = (att: Attachment) => {
+  /** 构造附件内联预览 URL（/api/tasks/files/{minioPath}），供缩略图 <img> src 与 AttachmentViewer 共用 */
+  const buildPreviewUrl = (att: Attachment): string | null => {
     const rawPath = att.path || att.url || '';
-    if (!rawPath) { Toast({ message: '附件路径无效', theme: 'error' }); return; }
+    if (!rawPath) return null;
     let minioPath = rawPath;
     if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
       const parsed = parseMinioPath(rawPath);
-      if (!parsed) { Toast({ message: '无法解析附件路径', theme: 'error' }); return; }
+      if (!parsed) return null;
       minioPath = `${parsed.bucket}/${parsed.objectKey}`;
     }
-    const previewUrl = `${API_CONFIG.TASKS.BASE_URL}/files/${encodeURIComponent(minioPath)}`;
+    return `${API_CONFIG.TASKS.BASE_URL}/files/${encodeURIComponent(minioPath)}`;
+  };
+
+  /** 打开附件预览（图片走灯箱、PDF/Markdown 内联渲染） */
+  const openAttachmentViewer = (att: Attachment) => {
+    const previewUrl = buildPreviewUrl(att);
+    if (!previewUrl) { Toast({ message: '附件路径无效', theme: 'error' }); return; }
     setViewer({
       filename: att.filename || '未命名文件',
       size: att.size,
@@ -477,7 +496,7 @@ export default function TaskDetailPage() {
   };
 
   // ── 普通评论：POST /api/tasks/{id}/comments；返回 true=成功（组件清空输入） ──
-  const handleAddComment = async (text: string, files: File[] = []): Promise<boolean> => {
+  const handleAddComment = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
     if (!detail) {
       Toast({ message: '请输入评论内容', theme: 'warning' });
       return false;
@@ -491,7 +510,7 @@ export default function TaskDetailPage() {
       }
       const newComment = await request<Comment>(`/${detail.id}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ content: text, is_public: true, attachments: files.length ? [tempId] : [] }),
+        body: JSON.stringify({ content: text, is_public: true, attachments: files.length ? [tempId] : [], reply_to: options?.replyTo }),
       });
       const enrichedComment = {
         ...newComment,
@@ -513,8 +532,19 @@ export default function TaskDetailPage() {
     }
   };
 
+  // 删除评论（后端按创建人鉴权）：成功后从本地列表移除
+  const handleDeleteComment = async (id: string | number): Promise<void> => {
+    if (!detail) return;
+    await request(`/comments/${id}`, { method: 'DELETE' });
+    setDetail((prev) => {
+      if (!prev) return prev;
+      return { ...prev, comments: (prev.comments || []).filter((c) => String(c.id) !== String(id)) };
+    });
+    Toast({ message: '评论已删除', theme: 'success' });
+  };
+
   // ── @U老师 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
-  const handleAIDiscuss = async (text: string, files: File[] = []): Promise<boolean> => {
+  const handleAIDiscuss = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
     if (!detail) return false;
     const userMsg = text;
     setAskingAI(true);
@@ -528,7 +558,7 @@ export default function TaskDetailPage() {
       try {
         const newComment = await request<Comment>(`/${detail.id}/comments`, {
           method: 'POST',
-          body: JSON.stringify({ content: userMsg, is_public: true, attachments: files.length ? [tempId] : [] }),
+          body: JSON.stringify({ content: userMsg, is_public: true, attachments: files.length ? [tempId] : [], reply_to: options?.replyTo }),
         });
         setDetail((prev) => {
           if (!prev) return prev;
@@ -567,11 +597,11 @@ export default function TaskDetailPage() {
   };
 
   // ── onSend：检测 @U老师 前缀决定走普通评论还是 AI 讨论 ──
-  const handleSendComment = async (text: string, files: File[]): Promise<boolean> => {
+  const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number }): Promise<boolean> => {
     if (text.startsWith('@U老师 ')) {
-      return handleAIDiscuss(text, files);
+      return handleAIDiscuss(text, files, options);
     }
-    return handleAddComment(text, files);
+    return handleAddComment(text, files, options);
   };
 
   // ── [帮我分析] → POST /api/ai/task/diagnose → 讨论区展示短链接 ──
@@ -634,18 +664,7 @@ export default function TaskDetailPage() {
       .catch(() => {});
   };
 
-  useEffect(() => {
-    if (!detailId) return;
-    // AI 工单派单中（status=new 且无处理人）→ 每 5 秒刷新，直到派单完成
-    const isDispatching = detail?.status === 'new'
-      && !!detail?.metadata_info?.session_id
-      && !detail?.assigned_to && !detail?.assigned_to_name && !detail?.assignee_name;
-    if (!isDispatching) return;
-    const timer = setInterval(() => {
-      refreshDetail();
-    }, 5000);
-    return () => clearInterval(timer);
-  }, [detailId, detail?.status, detail?.assigned_to, detail?.assigned_to_name, detail?.assignee_name, detail?.metadata_info?.session_id]);
+  // 派单完成 / 状态变更由 WS task.updated 实时推送（见 DiscussionPanel onTaskUpdated），不再轮询。
 
   // 返回任务列表，优先使用浏览器历史记录以保留筛选状态
   const handleBack = () => {
@@ -788,84 +807,89 @@ export default function TaskDetailPage() {
         {detail.attachments && detail.attachments.length > 0 && (
           <div className="detail-card">
             <h4 className="detail-card__h">📎 附件 ({detail.attachments.length})</h4>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {detail.attachments.map((att, idx) => {
-                const url = att.path || att.url || '';
-                const filename = att.filename || '未命名文件';
-                const size = att.size ?? 0;
-                const isImg = isImageFile(filename);
-                const icon = getFileIcon(filename);
-                const sizeLabel = formatFileSize(size);
-                const isDownloading = downloadingIdx === idx;
-                return (
-                  <div
-                    key={idx}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => openAttachmentViewer(att)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openAttachmentViewer(att); }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      padding: '10px 12px',
-                      borderRadius: 8,
-                      border: '1px solid #e5e5e5',
-                      background: '#fafafa',
-                      color: 'inherit',
-                      cursor: 'pointer',
-                      transition: 'background 0.15s',
-                      opacity: isDownloading ? 0.6 : 1,
-                    }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#f0f7ff'; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#fafafa'; }}
-                  >
-                    {isImg ? (
-                      <img
-                        src={url}
-                        alt={filename}
-                        style={{
-                          width: 40,
-                          height: 40,
-                          objectFit: 'cover',
-                          borderRadius: 4,
-                          marginRight: 10,
-                          flexShrink: 0,
-                        }}
-                        onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
-                      />
-                    ) : (
-                      <span style={{ fontSize: 22, marginRight: 10, flexShrink: 0 }}>{icon}</span>
-                    )}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontSize: 13,
-                          fontWeight: 500,
-                          color: '#333',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {filename}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
-                        {sizeLabel || '未知大小'}
-                      </div>
+            {(() => {
+              const imgItems = detail.attachments.filter((a) => isImageFile(a.filename || ''));
+              const fileItems = detail.attachments
+                .map((a, i) => ({ att: a, origIdx: i }))
+                .filter(({ att }) => !isImageFile(att.filename || ''));
+              return (
+                <>
+                  {/* 图片缩略图网格：直接可见，点击放大（src 用代理 URL，避免 object_path 直链 404） */}
+                  {imgItems.length > 0 && (
+                    <div className="detail-attachment-thumbs">
+                      {imgItems.map((att, i) => {
+                        const thumbSrc = buildPreviewUrl(att);
+                        if (!thumbSrc) return null;
+                        return (
+                          <img
+                            key={`img-${i}`}
+                            src={thumbSrc}
+                            alt={att.filename || '图片'}
+                            className="detail-attachment-thumb"
+                            loading="lazy"
+                            onClick={() => openAttachmentViewer(att)}
+                          />
+                        );
+                      })}
                     </div>
-                    <span
-                      role="button"
-                      aria-label="下载附件"
-                      title="下载"
-                      onClick={(e) => { e.stopPropagation(); handleAttachmentDownload(att, idx); }}
-                      style={{ fontSize: 16, color: '#0052d9', marginLeft: 8, flexShrink: 0, cursor: 'pointer' }}
-                    >
-                      {isDownloading ? '⏳' : '⬇'}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+                  )}
+                  {/* 非图片文件卡片（图标 + 文件名 + 下载，保留下载进度态） */}
+                  {fileItems.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {fileItems.map(({ att, origIdx }) => {
+                        const filename = att.filename || '未命名文件';
+                        const size = att.size ?? 0;
+                        const icon = getFileIcon(filename);
+                        const sizeLabel = formatFileSize(size);
+                        const isDownloading = downloadingIdx === origIdx;
+                        return (
+                          <div
+                            key={`file-${origIdx}`}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => openAttachmentViewer(att)}
+                            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openAttachmentViewer(att); }}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              padding: '10px 12px',
+                              borderRadius: 8,
+                              border: '1px solid #e5e5e5',
+                              background: '#fafafa',
+                              color: 'inherit',
+                              cursor: 'pointer',
+                              transition: 'background 0.15s',
+                              opacity: isDownloading ? 0.6 : 1,
+                            }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#f0f7ff'; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#fafafa'; }}
+                          >
+                            <span style={{ fontSize: 22, marginRight: 10, flexShrink: 0 }}>{icon}</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 500, color: '#333', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {filename}
+                              </div>
+                              <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
+                                {sizeLabel || '未知大小'}
+                              </div>
+                            </div>
+                            <span
+                              role="button"
+                              aria-label="下载附件"
+                              title="下载"
+                              onClick={(e) => { e.stopPropagation(); handleAttachmentDownload(att, origIdx); }}
+                              style={{ fontSize: 16, color: '#0052d9', marginLeft: 8, flexShrink: 0, cursor: 'pointer' }}
+                            >
+                              {isDownloading ? '⏳' : '⬇'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         )}
 
@@ -878,10 +902,13 @@ export default function TaskDetailPage() {
         <DiscussionPanel
           comments={detail.comments || []}
           onSend={handleSendComment}
+          onDeleteComment={handleDeleteComment}
           sending={submittingComment || askingAI}
           enableAI
           enableAttach
           mentionUsers={projectMembers}
+          taskId={detail?.id}
+          onTaskUpdated={handleWsTaskUpdated}
           onMessagesClick={handleOpenReport}
           headerRight={
             <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing}>

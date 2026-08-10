@@ -57,7 +57,14 @@ async def download_attachment(file_path: str):
         return StreamingResponse(
             iter_stream(),
             media_type=content_type,
-            headers={"Content-Disposition": disposition},
+            headers={
+                "Content-Disposition": disposition,
+                # 附件 object_path 不可猜测（含 session_id 随机串），可安全缓存；
+                # 缺少 Cache-Control 时浏览器不缓存，前端 ImageLightbox 预加载 new Image()
+                # 每次都重新请求 → imgReady 延迟 → loading 遮罩可见 → 预览闪烁。
+                # 加缓存后缩略图已加载则预加载命中缓存，imgReady 瞬时，无闪烁（与 /api/ai/media StaticFiles 一致）。
+                "Cache-Control": "public, max-age=86400",
+            },
         )
     except HTTPException:
         raise
