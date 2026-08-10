@@ -2860,6 +2860,15 @@ html, body, #root {
 .detail-chat-row.is-right {
   justify-content: flex-end;
 }
+/* 长按唤起自定义菜单（引用/复制/删除），抑制系统级长按弹窗与文本选取。
+   关键：-webkit-touch-callout 不继承，须用 * 覆盖气泡内 MarkdownRenderer 渲染的
+   img / a / code 等子元素（这些默认会弹系统「复制/保存」菜单）；复制能力由菜单「复制」项提供。 */
+.detail-chat-bubble,
+.detail-chat-bubble * {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .detail-chat-bubble {
   position: relative;
   max-width: 75%;
@@ -2871,11 +2880,6 @@ html, body, #root {
   word-break: break-word;
   line-height: 1.5;
   transition: filter 0.12s, box-shadow 0.12s;
-  /* 长按唤起自定义菜单（引用/复制/删除），抑制系统级长按弹窗与文本选取；
-     复制能力由菜单「复制」项提供，不依赖手动选取 */
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
 }
 .detail-chat-bubble:active {
   filter: brightness(0.97);
@@ -3003,21 +3007,14 @@ html, body, #root {
 }
 .detail-chat-quote-bar__close:hover { color: #e34d59; }
 
-/* 长按操作菜单（微信式弹出菜单，锚定气泡上方） */
-.detail-chat-menu-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 999;
-  background: transparent;
-}
+/* 长按操作菜单：浮层由 TDesign <Popover> 承载（自带卡片/箭头/动画/外点关闭），
+   仅此处定义内部横向按钮组，卡片外观由 .t-popover__content--light 提供。
+   清零 TDesign 弹层默认 12px 内边距，让按钮铺满卡片、分隔线到边，更接近微信式。 */
+.detail-chat-container .t-popover__content { padding: 0; }
 .detail-chat-menu {
   display: flex;
   flex-direction: row;
   align-items: stretch;
-  background: #fff;
-  border-radius: 10px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
-  overflow: hidden;
   user-select: none;
   -webkit-user-select: none;
 }
@@ -3106,6 +3103,62 @@ html, body, #root {
 .detail-chat-input-field:disabled {
   background: #f5f5f5;
   color: #999;
+}
+
+/* ===== 实时评论（WS）在线状态 / 输入中 / 已读回执 ===== */
+.detail-chat-presence {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 2px 2px;
+}
+.detail-chat-presence__avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #0052d9;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid #fff;
+  margin-left: -6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.detail-chat-presence__avatar:first-child { margin-left: 0; }
+.detail-chat-presence__text {
+  margin-left: 6px;
+  font-size: 11px;
+  color: #999;
+}
+.detail-chat-typing {
+  padding: 2px 4px 6px;
+  font-size: 12px;
+  color: #0052d9;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.detail-chat-typing::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  border: 2px solid #0052d9;
+  border-top-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  animation: chatTyping 0.8s linear infinite;
+}
+@keyframes chatTyping {
+  to { transform: rotate(360deg); }
+}
+.detail-chat-read {
+  margin-left: 6px;
+  font-size: 11px;
+  color: #00a870;
+  font-weight: 500;
 }
 
 /* ===== @ 提及建议面板 ===== */

@@ -303,6 +303,19 @@ export default function TicketDetailPage() {
   // 操作人标签（与系统任务详情页同款）
   const getOperatorLabel = (): string => name || username || '当前用户';
 
+  // WS 工单状态变更（派单完成/改派/状态流转）实时更新详情，替代轮询
+  const handleWsTaskUpdated = (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null }) => {
+    setTicket((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.assigned_to !== undefined ? { assigned_to: patch.assigned_to ?? undefined } : {}),
+        ...(patch.assigned_to_name !== undefined ? { assigned_to_name: patch.assigned_to_name ?? undefined } : {}),
+      };
+    });
+  };
+
   // 操作日志评论：记录到 task_comments，工单处理过程可追溯（与系统任务详情页同款逻辑）
   const addOperationComment = async (content: string) => {
     if (!ticket?.ticket_id) return;
@@ -357,11 +370,7 @@ export default function TicketDetailPage() {
 
   // 派单中：AI 单 status=new 且处理人未写入（Worker 60s 轮询派单，期间 5s 轮询自动刷新）
   const isDispatching = !!ticket && ticket.status === 'new' && !ticket.assigned_to && !ticket.assigned_to_name;
-  useEffect(() => {
-    if (!isDispatching) return;
-    const timer = setInterval(() => { fetchDetail(true); }, 5000);
-    return () => clearInterval(timer);
-  }, [isDispatching, fetchDetail]);
+  // 派单完成 / 状态变更由 WS task.updated 实时推送（见 DiscussionPanel onTaskUpdated），不再轮询。
 
   // 编辑工单（标题/描述/优先级/类型/联系人；权限与后端对齐：admin/创建人/处理人，终态不可编辑）
   const [showEdit, setShowEdit] = useState(false);
@@ -790,6 +799,8 @@ export default function TicketDetailPage() {
           enableAttach
           enableAI
           mentionUsers={projectMembers}
+          taskId={ticket?.ticket_id}
+          onTaskUpdated={handleWsTaskUpdated}
         />
 
         {/* 操作：与历史工单列表页完全一致 —— 终态（已解决/已取消/已关闭）整组不显示；

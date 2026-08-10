@@ -1,6 +1,6 @@
 # 实时评论 WebSocket 设计方案（轻量 IM 模式）
 
-> 状态：**设计文档（未实现）**。本文描述将「工单/任务详情页评论区」改造为类聊天软件实时体验的完整方案。
+> 状态：**已落地（Phase 0-4 全部实现）**。本文描述将「工单/任务详情页评论区」改造为类聊天软件实时体验的完整方案。
 > 适用范围：历史工单详情页（`frontend/src/pages/call/TicketDetailPage.tsx`）+ 系统任务详情页（`frontend/src/pages/tasks/TaskDetailPage.tsx`）。
 > 技术选型：**FastAPI 原生 WebSocket**（零额外重依赖）。实时范围：**评论 CRUD 实时推送 + 在线状态 + 输入中提示 + 已读回执 + 工单状态变更推送**。
 
@@ -59,7 +59,7 @@
 │    PUT  /comments/{id}  → broadcast(comment.updated)                             │
 │    DEL  /comments/{id}  → broadcast(comment.deleted)                             │
 │    PATCH /{id}/status、POST /{id}/assign → broadcast(task.updated)              │
-│  AI 讨论回复落库 → broadcast(comment.created)  ← 替代 fetchDetail(true) 轮询      │
+│  AI 讨论回复落库 → broadcast(comment.created)  ← 替代 fetchDetail(true) 轮询      │  （✅ 已接入，见 §11.2）
 └==================================================================================┘
 ```
 
@@ -159,7 +159,7 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
 - `update_comment`（第 519 行）：广播 `comment.updated`
 - `delete_comment`（第 555 行）：广播 `comment.deleted`
 - `update_task_status`（第 583 行）/ `assign_task`（第 615 行）/ `update_task`（第 305 行）：广播 `task.updated`
-- **AI 讨论回复落库**：当 `POST /api/ai/task/discuss` 的 AI 回复写进 `task_comments` 后，同样广播 `comment.created`（替代前端 `fetchDetail(true)` 轮询拉 AI 回复）。
+- **AI 讨论回复落地广播（✅ 已接入）**：AI 回复由独立 AI 服务进程写库，写库后经后端内部端点 `POST /api/tasks/{id}/internal/broadcast-comment`（复用 `X-API-Key` = `HELPDESK_SYNC_API_KEY`，与派单通知同源）回推 `comment.created`，使在线客户端实时收到 AI 回复（替代前端 `fetchDetail(true)` 全量刷新）。详见 §11.2。
 
 > 广播调用需 `try/except` 包裹，WS 异常**不得影响主流程**（REST 已返回 200）。
 
@@ -298,11 +298,11 @@ location /t/api/ {
 
 ## 8. 实施阶段（建议顺序）
 
-- **Phase 0 — 基础设施**：`ws.py`（ConnectionManager + 端点）、`task_comment_read` 表 + Alembic 迁移、nginx `Upgrade` 配置。
-- **Phase 1 — 评论实时**：REST 三接口插入广播；前端 `ws.ts` + `useTaskCommentsWS` + DiscussionPanel 增量更新（去重）。**此阶段即可获得核心聊天体验。**
-- **Phase 2 — 在线状态 + 输入中**：presence / typing 广播与 UI。
-- **Phase 3 — 已读回执**：`task_comment_read` 读写 + 回执 UI。
-- **Phase 4 — 状态变更推送**：`task.updated` 广播，移除 5s 派单轮询。
+- **Phase 0 — 基础设施（✅ 已落地）**：`ws.py`（ConnectionManager + 端点）、`TaskCommentRead` 模型 + Alembic 迁移（`9f3b7c2a1d40`）、nginx `Upgrade` 配置。
+- **Phase 1 — 评论实时（✅ 已落地）**：REST 三接口（`add_comment`/`update_comment`/`delete_comment`）插入广播；前端 `ws.ts` + `useTaskCommentsWS` + DiscussionPanel 增量更新（按 id 去重）。**核心聊天体验已可用。**
+- **Phase 2 — 在线状态 + 输入中（✅ 已落地）**：presence / typing 广播与 UI（在线成员条 + 「XXX 正在输入…」）。
+- **Phase 3 — 已读回执（✅ 已落地）**：`task_comment_read` upsert 读写 + `read_receipt` 广播 + 回执 UI（自己的消息「已读」标记）。
+- **Phase 4 — 状态变更推送（✅ 已落地）**：`task.updated` 广播（`update_task_status`/`assign_ticket`/`update_task`），**已移除**两详情页 5s 派单轮询。
 
 ---
 
@@ -325,5 +325,38 @@ location /t/api/ {
 - 派单：后台 assign 后，前端 `task.updated` 实时刷新处理人，5s 轮询被移除。
 - 断网重连：断网期间 B 发的评论，A 重连后补齐不丢失、不重复。
 - 鉴权：无 token / 错误 token 连接被拒（4401）。
+
+---
+
+## 11. 落地状态（实现记录）
+
+### 11.1 已交付文件
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `backend/app/modules/tasks/api/ws.py` | 新增 | WebSocket 端点 + `ConnectionManager`（内存房间）+ 广播封装 `ws_broadcast_*` |
+| `backend/app/models/task.py` | 修改 | 新增 `TaskCommentRead`（`task_comment_read` 表） |
+| `backend/alembic/versions/9f3b7c2a1d40_add_task_comment_read.py` | 新增 | 建表迁移（down_revision `1120f2c12ed6`） |
+| `backend/app/modules/tasks/__init__.py` | 修改 | 挂载 `ws_router` |
+| `backend/app/modules/tasks/api/task.py` | 修改 | 6 个 REST 接口成功后插入广播（try/except 包裹） |
+| `frontend/src/api/ws.ts` | 新增 | `buildWsUrl` + `TaskRoomSocket`（指数退避重连 + 心跳 ping/pong） |
+| `frontend/src/shared/hooks/useTaskCommentsWS.ts` | 新增 | WS 订阅 hook（去重合并 + 在线/输入中/已读/状态变更） |
+| `frontend/src/shared/components/DiscussionPanel.tsx` | 修改 | 接入 WS（在线条/输入中/已读标记），两详情页共用 |
+| `frontend/src/pages/tasks/TaskDetailPage.tsx` / `TicketDetailPage.tsx` | 修改 | 移除 5s 轮询，接 `onTaskUpdated` |
+| `frontend/src/shared/styles/global.css` | 修改 | 在线条/输入中/已读 样式 |
+| `deploy/nginx/conf/nginx.conf` | 修改 | `map $http_upgrade` + `/t/api`、`/p/api` Upgrade 透传 |
+| `backend/app/modules/tasks/api/task.py` | 修改 | 新增内部端点 `POST /{id}/internal/broadcast-comment`（X-API-Key 鉴权），供 AI 服务回调广播 AI 评论 |
+| `ai/agents/AiTaskPlatform/pipeline.py` | 修改 | AI 写评论复用方法写库后 best-effort 回调上述端点（跨进程 pub-sub，讨论/摘要/诊断全覆盖） |
+| `backend/apply_task_comment_read_migration.py` | 新增 | 生产一键幂等建表脚本（替代 `alembic upgrade head`，规避多 head 问题） |
+
+### 11.2 与设计的偏差
+
+- **单用户连接数上限**（`MAX_CONN_PER_USER = 5`）已在 `ws.py` 预留常量，但当前未在 `connect` 处强制拦截（单进程场景风险低，后续可加）。
+- **AI 讨论回复落地广播（✅ 已接入）**：AI 服务写 `task_comments` 是独立进程，不持有后端 WS 连接。改为在写库复用方法 `_add_diagnosis_comment_short` 中 best-effort 回调后端内部端点 `POST /api/tasks/{id}/internal/broadcast-comment`（复用 `X-API-Key` = `HELPDESK_SYNC_API_KEY`，与派单通知同源），由后端加载评论并广播 `comment.created`，讨论/摘要/诊断三类 AI 评论一处全覆盖。在线客户端无需 `fetchDetail(true)` 等全量刷新即可实时上屏 AI 回复。
+- **typing 超时自动清除**：当前依赖前端 3s 后主动 `sendTyping(false)`，服务端不额外做超时兜底（见 §7 风险表）。
+
+### 11.3 验证建议
+
+按 §10 测试要点回归：双标签页实时收发、输入中、在线上下线、已读回执、派单 `task.updated` 实时刷新、断网重连补齐不重复、无 token 拒绝（4401）。
 ```
 
