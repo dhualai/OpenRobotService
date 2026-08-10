@@ -2861,6 +2861,12 @@ html, body, #root {
   gap: 12px;
   padding-right: 4px;
 }
+/* 消息内容容器：承载消息流，供 ResizeObserver 监听高度变化（图片加载/Markdown 渲染撑高时贴底跟随） */
+.detail-chat-messages__inner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 .detail-chat-row {
   display: flex;
   width: 100%;
