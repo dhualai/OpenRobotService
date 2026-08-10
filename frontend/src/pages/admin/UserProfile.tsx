@@ -127,7 +127,7 @@ export default function UserProfile() {
     if (loading) return;
     setupWechatShare({
       title: '设置你的个人信息',
-      desc: '设置你的真实姓名，公司，部门等， 为你开发全部功能！',
+      desc: '设置你的真实姓名，公司，部门等， 为你开放全部功能！',
       link: window.location.href,
       imgUrl: WECHAT_CONFIG.shareImgUrl,
     });
