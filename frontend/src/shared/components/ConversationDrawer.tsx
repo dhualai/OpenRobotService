@@ -82,7 +82,7 @@ export default function ConversationDrawer({ visible, onClose }: Props) {
             >
               <div className="conv-item__main">
                 <div className="conv-item__title">{conv.title || '未命名会话'}</div>
-                <div className="conv-item__time">{formatDateTime(conv.updated_at || conv.created_at).slice(0, 16)}</div>
+                <div className="conv-item__time">{formatDateTime(conv.created_at).slice(0, 16)}</div>
               </div>
               <div className="conv-item__actions">
                 <button type="button" onClick={(e) => { e.stopPropagation(); openRename(conv); }} aria-label="编辑标题">

@@ -46,6 +46,21 @@ class TaskType(str, enum.Enum):
     OTHER = "other"
 
 
+class OperationType(str, enum.Enum):
+    """工单操作类型"""
+    CREATE = "create"              # 创建工单
+    STATUS_CHANGE = "status_change"  # 状态变更（主节点）
+    ASSIGN = "assign"              # 派单/改派
+    ESCALATE = "escalate"          # 升级
+    RETURN = "return"              # 退回
+    REASSIGN = "reassign"          # 重新指派
+    UPDATE = "update"              # 修改字段
+    COMMENT = "comment"            # 添加评论
+    VIEW = "view"                  # 查看工单
+    AI_DIAGNOSE = "ai_diagnose"    # AI 诊断
+    AI_ASSIGN = "ai_assign"        # AI 派单
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -188,3 +203,35 @@ class TaskUserMapping(Base):
 
     def __repr__(self):
         return f"<TaskUserMapping(source={self.source}, {self.external_account} -> {self.local_user_id})>"
+
+
+class TaskOperationLog(Base):
+    """工单操作日志表"""
+    __tablename__ = "task_operation_logs"
+
+    id = Column(BigInteger, primary_key=True, index=True, comment="日志ID")
+    task_id = Column(BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"),
+                     nullable=False, index=True, comment="任务ID")
+    operation_type = Column(SQLEnum(OperationType), nullable=False,
+                            index=True, comment="操作类型")
+    operator = Column(String(50), nullable=False, index=True,
+                      comment="操作人 username")
+    operator_name = Column(String(128), nullable=True, comment="操作人显示名")
+
+    # 状态变更专属：记录目标状态（用于主节点分组）
+    to_status = Column(String(32), nullable=True, index=True,
+                       comment="目标状态（仅 STATUS_CHANGE 有值）")
+
+    # 通用详情：JSON 存储操作快照
+    # 如 {"from": "new", "to": "in_progress"} 或 {"fields": ["title","priority"]}
+    detail = Column(JSON, nullable=True, comment="操作详情快照")
+    description = Column(String(500), nullable=True,
+                         comment="人类可读描述，如：将工单状态变更为「处理中」")
+
+    created_at = Column(DateTime, server_default=func.now(),
+                        nullable=False, index=True, comment="操作时间")
+
+    task = relationship("Task", backref="operation_logs")
+
+    def __repr__(self):
+        return f"<TaskOperationLog(id={self.id}, task_id={self.task_id}, op={self.operation_type})>"

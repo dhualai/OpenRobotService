@@ -1,0 +1,10 @@
+.operation-logs-page {
+  min-height: 100vh;
+  background: #f5f5f5;
+}
+
+.operation-logs-page__content {
+  padding: 12px 16px;
+  max-width: 600px;
+  margin: 0 auto;
+}
