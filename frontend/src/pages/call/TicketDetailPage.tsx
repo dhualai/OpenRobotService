@@ -15,7 +15,7 @@ import {
   isTerminalTicketStatus,
   canUrgeTicket,
   canReportTicket,
-  canCancelTicket,
+  canShowCancelButton,
   STATUS_DISPLAY_MAP,
   getStatusColor,
 } from '@/shared/constants/ticket';
@@ -843,12 +843,13 @@ export default function TicketDetailPage() {
               title={canReportTicket(ticket.status) ? undefined : '仅处理中工单可上报'}
               onClick={() => openActionPopup('report')}
             >上报</Button>
+            {canShowCancelButton(ticket.status) && (
             <Button
               size="small" variant="outline" theme="default" icon={<RollbackIcon />}
-              disabled={!canCancelTicket(ticket.status) || acting === 'cancel'}
-              title={canCancelTicket(ticket.status) ? undefined : '仅新建/待处理工单可撤回'}
+              disabled={acting === 'cancel'}
               onClick={handleCancel}
             >撤回</Button>
+            )}
             {canEdit && (
               <Button
                 size="small" variant="outline" theme="primary" icon={<EditIcon />}
