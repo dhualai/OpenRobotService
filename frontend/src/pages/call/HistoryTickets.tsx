@@ -7,7 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { Loading, Toast, Button, Popup } from 'tdesign-mobile-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
 import { urgeTicket, reportTicket, cancelTicket } from '@/api/ticket';
-import { isTerminalTicketStatus, canUrgeTicket, canReportTicket, canCancelTicket } from '@/shared/constants/ticket';
+import { isTerminalTicketStatus, canUrgeTicket, canReportTicket, canShowCancelButton } from '@/shared/constants/ticket';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import PullToRefresh from '@/shared/components/PullToRefresh';
@@ -274,7 +274,9 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                   <div className="history-row__actions" onClick={(e) => e.stopPropagation()}>
                     <Button size="extra-small" variant="outline" theme="default" disabled={!canUrgeTicket(t.status) || (acting?.id === t.id && acting?.action === 'urge')} title={canUrgeTicket(t.status) ? undefined : '仅新建/待处理工单可催办'} onClick={(e) => openActionPopup(e, t, 'urge')}>催办</Button>
                     <Button size="extra-small" variant="outline" theme="default" disabled={!canReportTicket(t.status) || (acting?.id === t.id && acting?.action === 'report')} title={canReportTicket(t.status) ? undefined : '仅处理中工单可上报'} onClick={(e) => openActionPopup(e, t, 'report')}>上报</Button>
-                    <Button size="extra-small" variant="outline" theme="default" disabled={!canCancelTicket(t.status) || (acting?.id === t.id && acting?.action === 'cancel')} title={canCancelTicket(t.status) ? undefined : '仅新建/待处理工单可撤回'} onClick={(e) => handleCancel(e, t)}>撤回</Button>
+                    {canShowCancelButton(t.status) && (
+                    <Button size="extra-small" variant="outline" theme="default" loading={acting?.id === t.id && acting?.action === 'cancel'} disabled={acting?.id === t.id && acting?.action === 'cancel'} onClick={(e) => handleCancel(e, t)}>撤回</Button>
+                    )}
                   </div>
                 )}
               </div>
