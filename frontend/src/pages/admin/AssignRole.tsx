@@ -9,7 +9,8 @@
 //   POST /users/{username}/roles/remove 批量移除
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
-import { Button, Toast, Loading, Popup, Tag, Input } from 'tdesign-mobile-react';
+import { Button, Toast, Loading, Popup, Tag } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -360,11 +361,10 @@ function ProjectFirstAssign({
           <>
             {/* 搜索 + 状态筛选 */}
             <div style={{ background: '#fff', borderRadius: 12, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <Input
+              <ClearableInput
                 value={keyword}
                 onChange={(v) => setKeyword(String(v))}
                 placeholder="搜索姓名 / 用户名"
-                clearable
               />
               <div style={{ display: 'flex', gap: 8 }}>
                 {([
@@ -730,11 +730,10 @@ function UserFirstAssign({
       <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
         {/* 选择用户 */}
         <SectionCard title="选择用户" count={selectedUserIds.size}>
-          <Input
+          <ClearableInput
             value={keyword}
             onChange={(v) => setKeyword(String(v))}
             placeholder="搜索姓名 / 用户名"
-            clearable
             style={{ marginBottom: 8 }}
           />
           <div
@@ -773,11 +772,10 @@ function UserFirstAssign({
 
         {/* 选择角色 */}
         <SectionCard title="选择角色" count={selectedRoleIds.size}>
-          <Input
+          <ClearableInput
             value={roleKeyword}
             onChange={(v) => setRoleKeyword(String(v))}
             placeholder="搜索角色名称"
-            clearable
             style={{ marginBottom: 8 }}
           />
           <div
@@ -813,11 +811,10 @@ function UserFirstAssign({
 
         {/* 选择项目 */}
         <SectionCard title="选择项目" count={selectedProjectCodes.size}>
-          <Input
+          <ClearableInput
             value={projectKeyword}
             onChange={(v) => setProjectKeyword(String(v))}
             placeholder="搜索项目名称 / 编码"
-            clearable
             style={{ marginBottom: 8 }}
           />
           <div
@@ -936,11 +933,10 @@ function PickerList({ title, items, onSelect, searchable }: { title: string; ite
     <div style={{ padding: 20, maxHeight: '60vh', display: 'flex', flexDirection: 'column' }}>
       <h4 style={{ marginBottom: 12 }}>{title}</h4>
       {searchable && (
-        <Input
+        <ClearableInput
           value={keyword}
           onChange={(v) => setKeyword(String(v))}
           placeholder="输入关键字搜索项目"
-          clearable
           style={{ marginBottom: 8 }}
         />
       )}

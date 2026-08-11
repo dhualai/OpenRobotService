@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Button, Toast, Loading, Dialog, Input, Popup, Form, FormItem, Checkbox } from 'tdesign-mobile-react';
+import { Button, Toast, Loading, Dialog, Popup, Form, FormItem, Checkbox } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -486,11 +487,10 @@ export default function RoleManage() {
           </h4>
           <Form onSubmit={handleSaveRole}>
             <FormItem label="角色名称">
-              <Input
+              <ClearableInput
                 value={editForm.name}
                 onChange={(v) => setEditForm((p) => ({ ...p, name: String(v) }))}
                 placeholder="如 admin, editor"
-                clearable
               />
             </FormItem>
 

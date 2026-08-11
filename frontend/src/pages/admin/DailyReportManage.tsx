@@ -1,6 +1,7 @@
 // 日报管理 - 基于接口文档 /api/admin/daily-reports
 import { useState, useEffect, useCallback } from 'react';
-import { Button, Toast, Loading, Dialog, Input, Textarea, Popup, Form, FormItem } from 'tdesign-mobile-react';
+import { Button, Toast, Loading, Dialog, Textarea, Popup, Form, FormItem } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -114,11 +115,10 @@ export default function DailyReportManage() {
     <div style={{ padding: 16 }}>
       {/* 搜索栏 */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        <Input
+        <ClearableInput
           value={keyword}
           onChange={(v) => setKeyword(String(v))}
           placeholder="搜索日报…"
-          clearable
           style={{ flex: 1 }}
         />
         <Button size="small" theme="primary" onClick={handleSearch}>搜索</Button>
@@ -167,16 +167,16 @@ export default function DailyReportManage() {
           {formLoading ? <Loading text="加载中..." /> : (
             <Form onSubmit={handleSave}>
               <FormItem label="标题">
-                <Input value={form.title} onChange={(v) => setForm((p) => ({ ...p, title: String(v) }))} placeholder="日报标题" clearable />
+                <ClearableInput value={form.title} onChange={(v) => setForm((p) => ({ ...p, title: String(v) }))} placeholder="日报标题" />
               </FormItem>
               <FormItem label="内容">
                 <Textarea value={form.content} onChange={(v) => setForm((p) => ({ ...p, content: String(v) }))} placeholder="日报内容" autosize={{ minRows: 4, maxRows: 10 }} />
               </FormItem>
               <FormItem label="项目代码">
-                <Input value={form.project_code} onChange={(v) => setForm((p) => ({ ...p, project_code: String(v) }))} placeholder="关联项目代码" clearable />
+                <ClearableInput value={form.project_code} onChange={(v) => setForm((p) => ({ ...p, project_code: String(v) }))} placeholder="关联项目代码" />
               </FormItem>
               <FormItem label="日期">
-                <Input value={form.report_date} onChange={(v) => setForm((p) => ({ ...p, report_date: String(v) }))} placeholder="2024-01-01" clearable />
+                <ClearableInput value={form.report_date} onChange={(v) => setForm((p) => ({ ...p, report_date: String(v) }))} placeholder="2024-01-01" />
               </FormItem>
               <FormItem>
                 <div style={{ display: 'flex', gap: 8 }}>

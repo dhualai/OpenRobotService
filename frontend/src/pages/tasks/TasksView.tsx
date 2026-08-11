@@ -3,7 +3,8 @@
 // 跨视图流转：消费 ticketDraft 自动建单；讨论按钮 → 带上下文跳回我要摇人。
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Navbar, Toast, Loading, Tag, Popup, Button, Input, Textarea, Form, FormItem } from 'tdesign-mobile-react';
+import { Navbar, Toast, Loading, Tag, Popup, Button, Textarea, Form, FormItem } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import Pagination from '@/shared/components/Pagination';
@@ -717,11 +718,10 @@ export default function TasksView() {
           <h4 className="tasks-create-modal__title">新建工单</h4>
           <Form onSubmit={handleCreateTask}>
             <FormItem label="标题">
-              <Input
+              <ClearableInput
                 value={createForm.title}
                 onChange={(v) => setCreateForm((p) => ({ ...p, title: String(v) }))}
                 placeholder="请输入工单标题"
-                clearable
               />
             </FormItem>
             <FormItem label="类型">

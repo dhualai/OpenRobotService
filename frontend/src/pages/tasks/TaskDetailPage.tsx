@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Input, Form, FormItem } from 'tdesign-mobile-react';
+import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { createRequest } from '@/api/client';
@@ -974,11 +975,10 @@ export default function TaskDetailPage() {
           <div className="ticket-edit-form__body">
             <div className="ticket-edit-form__field">
               <label className="ticket-edit-form__label">标题</label>
-              <Input
+              <ClearableInput
                 value={editForm.title}
                 onChange={(v) => setEditForm((p) => ({ ...p, title: String(v) }))}
                 placeholder="请输入工单标题"
-                clearable
               />
             </div>
             <div className="ticket-edit-form__field">
