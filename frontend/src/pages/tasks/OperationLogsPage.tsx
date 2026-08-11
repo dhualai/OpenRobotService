@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Loading, Toast } from 'tdesign-mobile-react';
-import { getOperationLogs } from '@/api/ticket';
-import type { OperationLog } from '@/api/ticket';
+import { getOperationLogs, type OperationLog } from '@/api/ticket';
 import OperationTimeline from '@/shared/components/OperationTimeline';
 import './OperationLogsPage.css';
 

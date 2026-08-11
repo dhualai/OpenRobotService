@@ -476,43 +476,13 @@ export default function TaskDetailPage() {
     }
   };
 
-  // ── 最晚解决时间（截止时间）：编辑弹窗按优先级分档的拖拽进度条 ──
-  // 紧急/高 → 0-24h 按小时（每 2h）；中 → 1-3天 按天；低 → 3-7天 按天
-  // 与转工单弹窗同款刻度规则；编辑时拖拽回显已有 deadline_at，日期选择器只读展示
-  const DEADLINE_SCALES_EDIT: Record<string, { unit: 'h' | 'd'; min: number; max: number; step: number; defaultHours: number; marks: number[] }> = {
-    urgent: { unit: 'h', min: 0, max: 24, step: 2, defaultHours: 8, marks: [0, 2, 4, 6, 8, 12, 16, 20, 24] },
-    high: { unit: 'h', min: 0, max: 24, step: 2, defaultHours: 8, marks: [0, 2, 4, 6, 8, 12, 16, 20, 24] },
-    medium: { unit: 'd', min: 1, max: 3, step: 1, defaultHours: 48, marks: [24, 48, 72] },
-    low: { unit: 'd', min: 3, max: 7, step: 1, defaultHours: 120, marks: [72, 96, 120, 144, 168] },
-  };
-  const getEditDeadlineScale = (priority: string) => DEADLINE_SCALES_EDIT[priority] || DEADLINE_SCALES_EDIT.medium;
-  const getEditDeadlineHours = (): number => {
-    const iso = editForm.deadline_at;
-    if (iso) {
-      const diff = (new Date(iso).getTime() - Date.now()) / 3600000;
-      if (Number.isFinite(diff) && diff >= 0) return Math.round(diff);
-    }
-    return getEditDeadlineScale(editForm.priority).defaultHours;
-  };
-  const formatEditDeadlineRel = (hours: number): string => {
-    if (hours <= 0) return '立即';
-    if (hours < 24) return `${hours} 小时后`;
-    return `${Math.round(hours / 24)} 天后`;
-  };
-  const setEditDeadlineByHours = (hours: number) => {
-    const dt = new Date(Date.now() + hours * 3600000);
-    setEditForm((p) => ({ ...p, deadline_at: dt.toISOString() }));
-  };
+  // ── 最晚解决时间（截止时间）：编辑页只读回显已有 deadline_at，进度条仅提单时用 ──
   const formatEditDeadlineAbs = (iso?: string): string => {
     if (!iso) return '未设置';
     const d = new Date(iso);
     if (isNaN(d.getTime())) return '未设置';
     const pad = (n: number) => String(n).padStart(2, '0');
     return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())} 前`;
-  };
-  const handleEditPriorityForDeadline = (newPriority: string) => {
-    const scale = getEditDeadlineScale(newPriority);
-    setEditForm((p) => ({ ...p, priority: newPriority, deadline_at: new Date(Date.now() + scale.defaultHours * 3600000).toISOString() }));
   };
 
 
@@ -1035,7 +1005,7 @@ export default function TaskDetailPage() {
                     key={value}
                     type="button"
                     className={`tasks-create-modal__radio-btn ${editForm.priority === value ? 'is-active' : ''}`}
-                    onClick={() => handleEditPriorityForDeadline(value)}
+                    onClick={() => setEditForm((p) => ({ ...p, priority: value }))}
                   >{label}</button>
                 ))}
               </div>
@@ -1053,47 +1023,24 @@ export default function TaskDetailPage() {
                 ))}
               </div>
             </div>
-            {/* 最晚解决时间：按优先级分档的拖拽进度条（紧急/高=0-1天按小时；中=1-3天；低=3-7天） */}
-            {(() => {
-              const scale = getEditDeadlineScale(editForm.priority);
-              const hours = getEditDeadlineHours();
-              return (
-                <div className="ticket-edit-form__field">
-                  <label className="ticket-edit-form__label">最晚解决时间</label>
-                  <div className="ticket-confirm__deadline">
-                    <div className="ticket-confirm__deadline-slider">
-                      <input
-                        type="range"
-                        min={scale.unit === 'h' ? scale.min : scale.min * 24}
-                        max={scale.unit === 'h' ? scale.max : scale.max * 24}
-                        step={scale.unit === 'h' ? scale.step : 24}
-                        value={hours}
-                        onChange={(e) => setEditDeadlineByHours(Number(e.target.value))}
-                        className="ticket-confirm__deadline-range"
-                      />
-                      <div className="ticket-confirm__deadline-marks">
-                        {scale.marks.map((m) => (
-                          <span key={m} className="ticket-confirm__deadline-mark">
-                            {scale.unit === 'h' ? `${m}h` : `${m / 24}d`}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="ticket-confirm__deadline-preview">
-                      <span className="ticket-confirm__deadline-rel">{formatEditDeadlineRel(hours)}</span>
-                      <span className="ticket-confirm__deadline-abs">{formatEditDeadlineAbs(editForm.deadline_at)}</span>
-                    </div>
-                    {editForm.deadline_at && (
-                      <button
-                        type="button"
-                        className="ticket-confirm__deadline-clear"
-                        onClick={() => setEditForm((p) => ({ ...p, deadline_at: undefined }))}
-                      >清除截止时间</button>
-                    )}
-                  </div>
+            {/* 最晚解决时间：编辑页只读回显已有值（不回显进度条，进度条仅提单时用） */}
+            <div className="ticket-edit-form__field">
+              <label className="ticket-edit-form__label">最晚解决时间</label>
+              <div className="ticket-confirm__deadline">
+                <div className="ticket-confirm__deadline-preview">
+                  <span className="ticket-confirm__deadline-abs">
+                    {editForm.deadline_at ? formatEditDeadlineAbs(editForm.deadline_at) : '未设置'}
+                  </span>
                 </div>
-              );
-            })()}
+                {editForm.deadline_at && (
+                  <button
+                    type="button"
+                    className="ticket-confirm__deadline-clear"
+                    onClick={() => setEditForm((p) => ({ ...p, deadline_at: undefined }))}
+                  >清除截止时间</button>
+                )}
+              </div>
+            </div>
           </div>
           <div className="ticket-edit-form__footer">
             <Button theme="default" block onClick={() => setEditing(false)}>取消</Button>

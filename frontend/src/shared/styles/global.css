@@ -325,6 +325,32 @@ html, body, #root {
   border-radius: 12px;
   padding: 14px 16px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+  outline: none;
+}
+.chat-ticket-overview:hover {
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  border-color: #d4e3ff;
+}
+.chat-ticket-overview:active {
+  transform: scale(0.992);
+}
+.chat-ticket-overview:focus-visible {
+  border-color: #0052d9;
+  box-shadow: 0 0 0 2px rgba(0, 82, 217, 0.18);
+}
+.chat-ticket-overview__arrow {
+  margin-left: auto;
+  font-size: 20px;
+  line-height: 1;
+  color: #c5c5c5;
+  font-weight: 600;
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+.chat-ticket-overview:hover .chat-ticket-overview__arrow {
+  color: #0052d9;
+  transform: translateX(2px);
 }
 .chat-ticket-overview__header {
   display: flex;

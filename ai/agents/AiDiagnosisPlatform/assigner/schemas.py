@@ -92,7 +92,7 @@ class EngineerProfile(BaseModel):
     responsibility_modules: Dict[str, List[str]] = Field(
         default_factory=dict,
         description="按产品组织的责任模块 ↔ users.responsibility_modules(JSON)，"
-                    "如 {'调度USP': ['车端','任务调度'], '服务号': ['后端']}",
+                    "如 {'调度USP': ['车端','任务调度'], '摇人吧服务号': ['后端']}",
     )
     job_level: int = Field(
         default=1,
