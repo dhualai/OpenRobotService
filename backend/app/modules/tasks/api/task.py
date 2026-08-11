@@ -12,6 +12,7 @@ from datetime import datetime
 
 from app.core.database import get_async_db as get_db, db_manager
 from app.core.auth_routes import get_current_active_user_from_token
+from pydantic import BaseModel
 from app.modules.tasks.schemas.ticket import (
     TicketCreate, TicketUpdate, TicketResponse, TicketListResponse,
     TicketCommentCreate, TicketCommentUpdate, TicketCommentResponse,
@@ -1045,11 +1046,29 @@ async def download_attachment(
     filename: Optional[str] = Query(None, description="下载时的文件名"),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
-    """代理下载 MinIO 文件：从 MinIO 读取文件流，通过后端返回给前端下载。"""
+    """代理下载 MinIO 文件：从 MinIO 读取文件流，通过后端返回给前端下载。
+
+    支持任意格式下载；查找策略：
+    1) 严格按存储路径 bucket/object 查找；
+    2) 跨已知 bucket 兜底（同一 object 名可能落在不同 bucket）；
+    3) 对 object 名做 URL 编码后再试一次（兼容个别上传把中文名编码存储的情况）。
+    不再静默吞掉 S3Error，便于定位 404。
+    """
+    import logging
     from fastapi.responses import StreamingResponse
     from io import BytesIO
-    from urllib.parse import unquote
+    from urllib.parse import unquote, quote
     import os
+
+    logger = logging.getLogger(__name__)
+
+    # 二进制 / 办公 / 压缩等无法在浏览器内联渲染的格式：强制 octet-stream，
+    # 避免浏览器把压缩包等当「文档」尝试渲染（控制台 "interpreted as Document" 警告）而走下载。
+    BINARY_EXTS = {
+        '.zip', '.bz2', '.gz', '.tar', '.tgz', '.rar', '.7z', '.xz',
+        '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+        '.exe', '.dmg', '.apk', '.bin', '.iso',
+    }
 
     try:
         decoded_path = unquote(path)
@@ -1064,37 +1083,42 @@ async def download_attachment(
             raise HTTPException(status_code=400, detail=f"无效的文件路径: {path}")
 
         bucket_name, object_name = parts
+        download_name = filename or os.path.basename(object_name)
+        encoded_name = f"UTF-8''{quote(download_name)}"
 
         known_buckets = [settings.MINIO_BUCKET, settings.COMMENT_BUCKET, settings.FILE_IMAGES]
 
-        found = False
-        for bucket in [bucket_name] + known_buckets:
+        # 候选 (bucket, object) 组合：严格路径 → 跨 bucket 兜底 → 编码 object 名再各试一次
+        candidates = [(bucket_name, object_name)]
+        for b in known_buckets:
+            candidates.append((b, object_name))
+        candidates.append((bucket_name, quote(object_name)))
+        for b in known_buckets:
+            candidates.append((b, quote(object_name)))
+
+        last_err: Optional[Exception] = None
+        for bucket, obj in candidates:
             try:
                 if not minio_client.check_bucket_exists(bucket):
                     continue
 
-                stat = minio_client.get_file_info(f"{bucket}/{object_name}")
+                stat = minio_client.get_file_info(f"{bucket}/{obj}")
                 if not stat:
                     continue
 
-                data = minio_client.client.get_object(bucket, object_name)
+                data = minio_client.client.get_object(bucket, obj)
                 file_data = data.read()
                 data.close()
 
-                download_name = filename or os.path.basename(object_name)
-                encoded_name = f"UTF-8''{download_name}"
-
-                media_type = stat.content_type or 'application/octet-stream'
-                if download_name.endswith('.zip'):
-                    media_type = 'application/zip'
-                elif download_name.endswith('.json'):
-                    media_type = 'application/json'
-                elif download_name.endswith('.pdf'):
+                ext = os.path.splitext(download_name)[1].lower()
+                if ext in BINARY_EXTS:
+                    media_type = 'application/octet-stream'
+                elif ext == '.pdf':
                     media_type = 'application/pdf'
-                elif download_name.endswith('.png'):
-                    media_type = 'image/png'
-                elif download_name.endswith('.jpg') or download_name.endswith('.jpeg'):
-                    media_type = 'image/jpeg'
+                elif ext == '.json':
+                    media_type = 'application/json'
+                else:
+                    media_type = stat.content_type or 'application/octet-stream'
 
                 return StreamingResponse(
                     BytesIO(file_data),
@@ -1103,16 +1127,225 @@ async def download_attachment(
                         'Content-Disposition': f"attachment; filename*={encoded_name}",
                         'Content-Length': str(len(file_data)),
                         'Access-Control-Expose-Headers': 'Content-Disposition',
+                        'Cache-Control': 'no-store',
                     }
                 )
             except HTTPException:
                 raise
-            except Exception:
+            except Exception as e:  # noqa: BLE001 - 记录真实原因而非静默跳过
+                last_err = e
+                logger.warning('[attachments/download] 候选 (%s/%s) 失败: %s', bucket, obj, e)
                 continue
 
-        raise HTTPException(status_code=404, detail=f"文件不存在: {bucket_name}/{object_name}")
+        detail = f"文件不存在: {bucket_name}/{object_name}"
+        if last_err:
+            detail += f"（末次错误: {last_err}）"
+        raise HTTPException(status_code=404, detail=detail)
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"下载文件失败: {str(e)}")
+
+
+# ==================== 讨论区消息转发到微信（公众号客服消息）====================
+# 初版范围：单条文本/链接转发到自己或他人微信（接收人需已绑定 open_id）。
+# 合并转发（长图）、图片/文件素材、企业微信/微信群 留待后续阶段。
+# 限制：公众号客服消息有 48 小时互动窗口（errcode 45015），超时接收人收不到。
+import re as _re
+import asyncio
+
+_FORWARD_IMAGE_EXT = _re.compile(r"\.(png|jpe?g|gif|webp|bmp)$", _re.IGNORECASE)
+
+
+def _describe_attachments_for_wechat(attachments) -> str:
+    """把评论附件描述为微信文本可用的占位（[图片: xxx] / [文件: xxx]）。
+    Phase 1 仅转发文字 + 附件名占位，图片/文件本体暂不转发（Phase 2 补素材上传）。"""
+    if not attachments:
+        return ""
+    parts = []
+    for a in attachments:
+        if isinstance(a, str):
+            fn = a.split("/")[-1] or a
+        elif isinstance(a, dict):
+            path = a.get("path", "") or ""
+            fn = a.get("filename") or (path.split("/")[-1] if path else "附件")
+        else:
+            fn = "附件"
+        tag = "图片" if _FORWARD_IMAGE_EXT.search(fn) else "文件"
+        parts.append(f"[{tag}: {fn}]")
+    return "  ".join(parts)
+
+
+def _resolve_wechat_openid(user_record) -> Optional[str]:
+    """解析用户的微信 open_id：
+    - 优先取绑定的 wechat_openid（业务账号绑定后填入）；
+    - 微信登录用户（username 形如 wechat_xxx）的 users.id 即原始 open_id，无需绑定。
+    两者皆无返回 None（该用户不可作为转发接收人）。
+    """
+    bound = getattr(user_record, "wechat_openid", None)
+    if bound:
+        return bound
+    username = getattr(user_record, "username", "") or ""
+    if username.startswith("wechat_"):
+        return getattr(user_record, "id", None)
+    return None
+
+
+def _strip_html_for_wechat(content: str) -> str:
+    """去除 HTML 标签与多余空白，得到微信文本消息可用的纯文本。"""
+    if not content:
+        return ""
+    text = _re.sub(r"<[^>]+>", "", content)
+    return _re.sub(r"\s+", " ", text).strip()
+
+
+def _build_task_detail_url(task_id: int) -> str:
+    base = (getattr(settings, "FRONTEND_BASE_URL", "") or "").rstrip("/")
+    return f"{base}/app/tasks/{task_id}"
+
+
+class ForwardTarget(BaseModel):
+    id: str
+    username: str
+    name: Optional[str] = None
+    is_self: bool = False
+    wechat_bound: bool = False
+
+
+class ForwardToWechatRequest(BaseModel):
+    comment_id: int
+    target_usernames: List[str]
+    as_link: bool = False
+
+
+@router.get(
+    "/{task_id}/comments/forward-targets",
+    response_model=List[ForwardTarget],
+    summary="转发到微信·接收人列表（自己+同事，标注是否已绑定微信）",
+)
+async def list_forward_targets(
+    task_id: int,
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    from app.models.identity import UserDB
+
+    db = db_manager.get_db()
+    try:
+        records = db.query(UserDB).all()
+        self_username = current_user.get("username")
+        result = [
+            ForwardTarget(
+                id=r.id,
+                username=r.username,
+                name=getattr(r, "name", None),
+                is_self=(r.username == self_username),
+                wechat_bound=bool(_resolve_wechat_openid(r)),
+            )
+            for r in records
+        ]
+        # 自己置顶，其余按用户名排序
+        result.sort(key=lambda x: (not x.is_self, x.username))
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取转发接收人列表失败: {str(e)}")
+    finally:
+        db.close()
+
+
+@router.post(
+    "/{task_id}/comments/forward-to-wechat",
+    summary="转发单条评论到微信（公众号客服消息）",
+)
+async def forward_comment_to_wechat(
+    task_id: int,
+    body: ForwardToWechatRequest,
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    from app.models.identity import UserDB
+    from app.models.task import TaskComment
+    from app.core.db import SessionLocal
+    from app.wechat.services.wechat_service import wechat_service
+
+    # 1. 取评论（校验归属本工单）
+    sdb = SessionLocal()
+    try:
+        comment = sdb.get(TaskComment, body.comment_id)
+    finally:
+        sdb.close()
+    if not comment or comment.task_id != task_id:
+        raise HTTPException(status_code=404, detail="评论不存在")
+
+    # 2. 解析接收人 open_id（按 username 查 users）
+    db = db_manager.get_db()
+    try:
+        users = db.query(UserDB).filter(UserDB.username.in_(body.target_usernames)).all()
+        # 顺便查评论作者名（可能不在接收人里）
+        author_user = db.query(UserDB).filter(UserDB.username == comment.created_by).first()
+    finally:
+        db.close()
+    if not users:
+        raise HTTPException(status_code=400, detail="未找到有效的接收人")
+
+    name_map = {u.username: (u.name or u.username) for u in users}
+    author_name = (author_user.name if author_user else None) or comment.created_by
+
+    # 3. 构造消息内容（微信文本消息约 2048 字上限，截断到 600 留余量）
+    plain = _strip_html_for_wechat(comment.content)
+    # 带附件的消息（content 可能为空/纯图片标签）：附加附件名占位，
+    # Phase 1 仅转发文字 + 附件名，图片/文件本体待 Phase 2 补素材上传
+    att_desc = _describe_attachments_for_wechat(getattr(comment, "attachments", None))
+    if att_desc:
+        plain = f"{plain}\n{att_desc}" if plain else att_desc
+    if not plain:
+        plain = "[空消息]"
+    if len(plain) > 600:
+        plain = plain[:600] + "…"
+    task_url = _build_task_detail_url(task_id)
+    operator = current_user.get("name") or current_user.get("username") or "用户"
+
+    # 4. 并发发送：用 asyncio.to_thread 把同步 requests 调用丢到线程池，
+    #    避免阻塞 FastAPI 事件循环导致整个后端卡死（多接收人 gather 并发）
+    async def _send_one(u):
+        openid = _resolve_wechat_openid(u)
+        target_name = name_map.get(u.username, u.username)
+        if not openid:
+            return {
+                "username": u.username, "name": target_name,
+                "status": "skipped", "reason": "未绑定微信",
+            }
+        try:
+            if body.as_link:
+                title = f"{author_name} 的讨论消息"
+                ok, err = await asyncio.to_thread(
+                    wechat_service.send_link_message_to_user,
+                    openid, title, plain, task_url,
+                )
+            else:
+                text = (
+                    f"{operator} 转发了 {author_name} 的讨论消息：\n\n"
+                    f"{plain}\n\n查看工单：{task_url}"
+                )
+                ok = await asyncio.to_thread(
+                    wechat_service.send_message_to_user, openid, text
+                )
+                err = None
+            return {
+                "username": u.username, "name": target_name,
+                "status": "delivered" if ok else "failed",
+                "error": err.get("errmsg") if isinstance(err, dict) else (str(err) if err else None),
+            }
+        except Exception as e:
+            return {
+                "username": u.username, "name": target_name,
+                "status": "failed", "error": str(e),
+            }
+
+    results = await asyncio.gather(*[_send_one(u) for u in users])
+
+    delivered = sum(1 for r in results if r["status"] == "delivered")
+    return {
+        "code": 0,
+        "message": f"已送达 {delivered}/{len(results)}",
+        "results": results,
+    }

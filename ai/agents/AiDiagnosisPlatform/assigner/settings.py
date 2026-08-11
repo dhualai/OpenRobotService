@@ -34,6 +34,7 @@ class AssignerConfig:
     - department_filter:    {embed_threshold}，部门过滤参数（embedding 匹配阈值）
     - decision_thresholds:  {auto, recommend}，规则兜底决策的置信度阈值
     - load_balance:         {enabled, step, algorithm_engineers}，算法工程师负载均衡
+    - history_recall:       {top_k, half_life_days, sim_threshold, fault_code_boost, robot_type_boost, decay_weight}，L3 历史召回增强参数
     """
 
     _CONFIG_DIR = Path(__file__).parent / "config"
@@ -48,6 +49,7 @@ class AssignerConfig:
         self.department_filter: Dict[str, Any] = {}
         self.decision_thresholds: Dict[str, float] = {}
         self.load_balance: Dict[str, Any] = {}
+        self.history_recall: Dict[str, Any] = {}
         self._load_all()
 
     def _load_all(self):
@@ -64,6 +66,7 @@ class AssignerConfig:
         self.department_filter = config.get("department_filter", {})
         self.decision_thresholds = config.get("decision_thresholds", {})
         self.load_balance = config.get("load_balance", {})
+        self.history_recall = config.get("history_recall", {})
 
     def reload(self):
         """重新加载配置（配置热更新入口，配合派单缓存失效使用）。"""

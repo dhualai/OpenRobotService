@@ -25,7 +25,8 @@ _KB_DIR = (Path(__file__).resolve().parent.parent.parent / "OpenRobotService_Dat
 _POINTER_DIR = (Path(__file__).resolve().parent / "kb").resolve()
 
 # 五层 domain 架构：industry / company / team / project / personal
-KB_DOMAINS = ["industry", "company", "team", "project", "personal"]
+# 另加 "dispatch"：派单模块历史工单向量库（L3-A 路，独立集合，避免与诊断方案混用）
+KB_DOMAINS = ["industry", "company", "team", "project", "personal", "dispatch"]
 
 _KB_POINTERS = {
     d: _POINTER_DIR / f"active_{d}_collection.txt"
@@ -180,6 +181,11 @@ def get_active_task_resolutions_collection() -> str:
     return get_active_collection_for("project")
 
 
+def get_active_dispatch_history_collection() -> str:
+    """派单历史工单向量库活跃集合（L3-A 路，独立 domain "dispatch"）。"""
+    return get_active_collection_for("dispatch")
+
+
 # writer 别名（lambda 实现，避免重复 try/except 逻辑）
 _write_active_collection = lambda n: write_active_collection_for("team", n)
 _write_active_faq_collection = lambda n: write_active_collection_for("team", n)
@@ -190,6 +196,7 @@ _write_active_usp_diagnosis_collection = lambda n: write_active_collection_for("
 _write_active_troubleshooting_collection = lambda n: write_active_collection_for("team", n)
 _write_active_cheduan_manual_collection = lambda n: write_active_collection_for("company", n)
 _write_active_task_resolutions_collection = lambda n: write_active_collection_for("project", n)
+_write_active_dispatch_history_collection = lambda n: write_active_collection_for("dispatch", n)
 
 
 def get_docs_dir() -> Path:

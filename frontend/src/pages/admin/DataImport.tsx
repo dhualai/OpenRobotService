@@ -5,7 +5,8 @@
 // 项目、日期选择是整页共用的。
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Tabs, TabPanel, Button, Upload, Toast, Loading, Popup, Input } from 'tdesign-mobile-react';
+import { Tabs, TabPanel, Button, Upload, Toast, Loading, Popup } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -82,11 +83,10 @@ function ProjectPickerField({ projects, value, onChange }: ProjectPickerFieldPro
       <Popup visible={visible} onClose={() => setVisible(false)} placement="bottom" showOverlay>
         <div style={{ padding: 20, maxHeight: '70vh', overflow: 'auto' }}>
           <h4 style={{ marginBottom: 12 }}>选择项目</h4>
-          <Input
+          <ClearableInput
             value={search}
             onChange={(v) => setSearch(String(v))}
             placeholder="输入项目名称关键词模糊查找"
-            clearable
             style={{ marginBottom: 12 }}
           />
           {filtered.map((p) => (

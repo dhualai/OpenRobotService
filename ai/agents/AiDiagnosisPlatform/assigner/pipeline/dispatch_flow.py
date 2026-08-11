@@ -32,6 +32,7 @@
 """
 
 import json, re
+import asyncio
 from typing import Dict, List, Optional
 
 from ai.core.logging import get_logger
@@ -48,6 +49,9 @@ from ai.agents.AiDiagnosisPlatform.assigner.recall.semantic_recall import (
 from ai.agents.AiDiagnosisPlatform.assigner.recall.history_recall import (
     HistoryRecall, invalidate_history_cache,
 )
+from ai.agents.AiDiagnosisPlatform.assigner.recall.expertise_recall import (
+    ExpertiseRecall, invalidate_expertise_cache,
+)
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     AssignmentResult, EngineerProfile, TicketContext,
 )
@@ -61,7 +65,8 @@ class DispatchFlow:
         self._dept_filter = DepartmentFilter(config=self._config)
         self._llm_recall = LlmRecall(config=self._config)
         self._semantic_recall = SemanticRecall(config=self._config)
-        self._history_recall = HistoryRecall(config=self._config)
+        self._history_recall = HistoryRecall(config=self._config)      # L3-A：相似工单聚人
+        self._expertise_recall = ExpertiseRecall(config=self._config)   # L3-B：问题域聚人
         self._ranker = Ranker(config=self._config)
         self._llm_decision = LlmDecision(config=self._config)
         self._fallback_decision = FallbackDecision(config=self._config)
@@ -127,12 +132,22 @@ class DispatchFlow:
             logger.debug(f"派单 L2语义召回: {len(recall_result.semantic_recall)} 人")
         except Exception:
             pass
-        # L3 历史召回
+        # L3 历史召回（双路并行：A路相似工单聚人 + B路问题域聚人）
         try:
-            recall_result.history_recall = await self._history_recall.arecall(
-                ticket=ticket_context,
+            his_a, his_b = await asyncio.gather(
+                self._history_recall.arecall(ticket=ticket_context),
+                self._expertise_recall.arecall(ticket=ticket_context),
+                return_exceptions=True,
             )
-            logger.debug(f"派单 L3历史召回: {len(recall_result.history_recall)} 人")
+            if isinstance(his_a, Exception):
+                his_a = {}
+            if isinstance(his_b, Exception):
+                his_b = {}
+            recall_result.history_recall = self._merge_history(his_a, his_b)
+            logger.debug(
+                f"派单 L3历史召回: A路{len(his_a)}人 B路{len(his_b)}人 "
+                f"→ 融合{len(recall_result.history_recall)}人"
+            )
         except Exception:
             pass
 
@@ -224,6 +239,39 @@ class DispatchFlow:
             logger.info(f"派单排名 Top3: {' | '.join(rank_lines)}")
         else:
             logger.info("派单排名: 无候选排名数据")
+
+    # ── L3 双路融合: A路(相似工单聚人) + B路(问题域聚人) ──
+    def _merge_history(
+        self, his_a: Dict[str, float], his_b: Dict[str, float],
+    ) -> Dict[str, float]:
+        """将 A路 与 B路 历史召回结果融合成单一 history_recall 分数。
+
+        策略：两路各自归一化到 0-1，再按 weight_a / weight_b 加权相加。
+        权重从 config.yaml 的 history_recall 读取（默认各 0.5）。
+        """
+        hc = self._config.history_recall or {}
+        w_a = float(hc.get("weight_a", 0.5))
+        w_b = float(hc.get("weight_b", 0.5))
+
+        merged: Dict[str, float] = {}
+
+        # A路归一化
+        norm_a: Dict[str, float] = {}
+        if his_a:
+            maxv = max(his_a.values()) or 1.0
+            norm_a = {k: v / maxv for k, v in his_a.items()}
+        # B路归一化（B路本身已是 0-1，但保险起见也归一）
+        norm_b: Dict[str, float] = {}
+        if his_b:
+            maxv = max(his_b.values()) or 1.0
+            norm_b = {k: v / maxv for k, v in his_b.items()}
+
+        for eid in set(norm_a) | set(norm_b):
+            merged[eid] = round(
+                w_a * norm_a.get(eid, 0.0) + w_b * norm_b.get(eid, 0.0)
+                , 4
+            )
+        return merged
 
     # ── Step 0.6 实现: 排除提单人（常规派单不派给自己）──
     @staticmethod
@@ -419,3 +467,4 @@ class DispatchFlow:
         self._config.reload()
         invalidate_semantic_cache()
         invalidate_history_cache()
+        invalidate_expertise_cache()

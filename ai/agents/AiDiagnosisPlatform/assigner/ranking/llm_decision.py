@@ -1,4 +1,4 @@
-"""LLM 综合决策层：三路召回分数 + 全员画像 → LLM 拍板"""
+"""LLM 综合决策层：先判断工单技术归属（前端/后端/算法...），再结合精排分数选人"""
 
 import json, re
 from typing import Dict, List, Optional
@@ -25,18 +25,35 @@ class LlmDecision:
 
     def _build_prompt(self, ticket, engineers, recall_result, ranked_scores):
         lines = [
-            "你是派单决策专家。根据工单、工程师画像和三路召回分数，推荐最合适的人。",
+            "你是派单决策专家。请先判断工单的技术归属（前端/后端/算法等）与业务模块，",
+            "再结合精排分数与候选人画像，推荐最合适的人。",
             "",
-            "【工单】",
-            f"标题: {ticket.title or '无'}",
-            f"描述: {ticket.problem_description}",
+            "【第一维度：技术归属（判断问题属于哪个技术层）】",
+            "- 前端/界面类：页面、UI、显示、展示、时区显示、标题显示、交互、列表、表单、样式、渲染",
+            "- 后端/接口类：接口、服务端逻辑、数据存储、数据库、MQTT 通信、任务下发、业务逻辑处理",
+            "- 算法类：路径规划、调度算法、地图生成、定位、避障、AI 模型、强化学习",
+            "- 其他：产品/需求、数据分析、运维部署等",
+            "注意：涉及「页面/显示/时区/标题展示」等表现层问题时，应归类为前端，除非描述明确指向后端数据或逻辑层。",
+            "",
+            "【第二维度：候选人负责的产品与模块】",
+            "候选人 responsibility_modules = {产品: [该产品下此人负责的模块列表]}，",
+            "例如张俊磊 {'服务号': ['前端','我要摇人']} 表示他负责「服务号」产品下的「前端」「我要摇人」两个模块。",
+            "模块名（如 前端/后端/我要摇人/系统任务/后台管理/算法 等）都是此人负责的功能模块，",
+            "它们是平级的模块清单，不代表「前端问题找前端、后端问题找后端」这种技术分层。",
+            "判断工单归属应看工单内容本身（页面/显示类 → 界面相关模块；接口/数据类 → 服务端相关模块），",
+            "再匹配候选人负责的模块中是否有相关项，而非按模块名硬套前端/后端。",
+            "选人时：①工单涉及的产品/模块尽量匹配候选人负责的模块；②在匹配者中优先排名靠前的。",
+            "",
+            "【第三维度：工单类型（决定由谁承接）】",
+            "先判断工单是：需求/产品建议、故障、咨询、还是其他。",
+            "- 需求/产品建议类（含「建议新增」「需要支持」「希望增加」「需求」等）：应优先派给「产品设计/产品经理」类的候选人，",
+            "  由其进行需求梳理与排期，而不是直接派给具体的开发/后端。",
+            "- 故障/缺陷/修复类：派给对应技术的开发（前端问题→负责该产品前端模块的人；后端→负责服务端模块的人）。",
+            "- 咨询/排查类：派给问题域最相关、总分最高者。",
+            "候选人若负责「产品设计」模块，即为该产品的产品经理；名单可能有多名 PM，须按工单所属产品区分。",
+            "",
+            "【候选人排名（已含职级折扣；#1 为总分最高，默认应优先考虑）】",
         ]
-        if ticket.robot_type:
-            lines.append(f"车型: {ticket.robot_type}")
-        if ticket.fault_code:
-            lines.append(f"故障码: {ticket.fault_code}")
-
-        lines.extend(["", "【候选人排名（已含职级折扣）】"])
 
         emap = {e.id: e for e in engineers}
         for rank, (eid, d) in enumerate(list(ranked_scores.items())[:5], 1):
@@ -62,8 +79,25 @@ class LlmDecision:
 
         lines.extend([
             "",
+            "【工单】",
+            f"标题: {ticket.title or '无'}",
+            f"描述: {ticket.problem_description}",
+        ])
+        if ticket.robot_type:
+            lines.append(f"车型: {ticket.robot_type}")
+        if ticket.fault_code:
+            lines.append(f"故障码: {ticket.fault_code}")
+
+        lines.extend([
+            "",
+            "【选人规则】",
+            "1. 先判断 ticket_category（需求/故障/咨询/其他）与 problem_domain，以及工单涉及的产品。",
+            "2. 需求/产品建议类：优先找负责「产品设计」模块、且归属产品与工单一致的候选人（产品经理）。",
+            "3. 故障/缺陷类：按工单涉及的模块（页面→界面类；逻辑->服务端类）匹配候选人负责的模块。",
+            "4. 在匹配范围内，优先总分高者（#1 默认优先）；仅当 #1 产品/模块明显不匹配时才选下一个更相关者，并在 reasoning 说明。",
+            "",
             "输出 JSON。engineer_id 必须填写候选人列表中对应的 id 值（精确复制）。",
-            '{"engineer_id":"oD5oY3RN...", "confidence_score":0.85, "reasoning":"理由", "decision_type":"auto"}',
+            '{"ticket_category":"需求", "problem_domain":"产品", "product":"服务号", "engineer_id":"oD5oY3RN...", "confidence_score":0.85, "reasoning":"理由(说明类型/产品/模块判断)", "decision_type":"auto"}',
             "decision_type: auto(>=0.8) / recommend(0.5-0.8) / fallback(<0.5)",
         ])
         return "\n".join(lines)
@@ -81,9 +115,17 @@ class LlmDecision:
         if not eng:
             return None
         dt = data.get("decision_type", "fallback").strip().lower()
+        # ticket_category / problem_domain / product 为审计字段：纳入 reasoning 便于排查
+        cat = data.get("ticket_category", "")
+        dom = data.get("problem_domain", "")
+        prod = data.get("product", "")
+        reason = data.get("reasoning", "").strip()
+        audit = "/".join(filter(None, [cat, dom, prod]))
+        if audit and reason:
+            reason = f"[{audit}] {reason}"
         return AssignmentResult(
             engineer_id=eng.id, engineer_name=eng.name,
             confidence_score=round(float(data.get("confidence_score", 0.0)), 4),
-            reasoning=data.get("reasoning", "").strip(),
+            reasoning=reason,
             decision_type=dt if dt in ("auto", "recommend", "fallback") else "fallback",
         )

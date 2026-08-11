@@ -1,6 +1,7 @@
 // 操作记录查询 - 从 BackgroundService OperationLogs 迁移
 import { useState, useEffect, useCallback } from 'react';
-import { Input, Loading, Toast } from 'tdesign-mobile-react';
+import { Loading, Toast } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import Pagination from '@/shared/components/Pagination';
@@ -43,7 +44,7 @@ export default function OperationLogs() {
 
   return (
     <div style={{ padding: 16 }}>
-      <Input placeholder="搜索操作记录..." value={search} onChange={(v) => { setSearch(String(v)); setPage(1); }} clearable style={{ marginBottom: 16 }} />
+      <ClearableInput placeholder="搜索操作记录..." value={search} onChange={(v) => { setSearch(String(v)); setPage(1); }} style={{ marginBottom: 16 }} />
       {loading ? <Loading text="加载中..." /> : logs.map((log) => (
         <div key={log.id} style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>

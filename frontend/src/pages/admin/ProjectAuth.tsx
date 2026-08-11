@@ -1,6 +1,7 @@
 // 项目授权管理 - 展示授权记录、申请授权码
 import { useState, useEffect } from 'react';
-import { Button, Toast, Loading, Dialog, Input } from 'tdesign-mobile-react';
+import { Button, Toast, Loading, Dialog } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -200,11 +201,10 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
           {/* 申请授权码 */}
           <div style={{ background: '#fff', borderRadius: 8, padding: 14, marginTop: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>申请授权码</div>
-            <Input
+            <ClearableInput
               value={machineCode}
               onChange={(v) => setMachineCode(String(v))}
               placeholder="请输入机器码"
-              clearable
               style={{ marginBottom: 10 }}
             />
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
@@ -222,7 +222,7 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
               />
             </div>
             <div style={{ fontSize: 13, color: '#666', marginBottom: 6 }}>允许最大车数 <span style={{ color: '#d54941' }}>*</span></div>
-            <Input
+            <ClearableInput
               value={maxVehicles}
               onChange={(v) => setMaxVehicles(String(v).replace(/[^\d]/g, ''))}
               type="number"
