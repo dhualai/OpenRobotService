@@ -1,5 +1,5 @@
 import React from 'react';
-import { OperationLog, OperationType } from '@/api/ticket';
+import type { OperationLog, OperationType } from '@/api/ticket';
 import { Loading, Empty } from 'tdesign-mobile-react';
 import './OperationTimeline.css';
 
@@ -123,7 +123,7 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
   if (loading) {
     return (
       <div className="op-timeline__loading">
-        <Loading theme="circular" size={24} />
+        <Loading theme="circular" size="24" />
       </div>
     );
   }
@@ -189,7 +189,6 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
           )}
         </div>
       ))}
-    ))}
     </div>
   );
 };
