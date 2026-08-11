@@ -47,7 +47,7 @@ class LlmRecall:
             response = await llm.complete(prompt, max_tokens=1200, temperature=0.3)
             return self._parse(response, engineers)
         except Exception as e:
-            logger.warning(f"[llm_recall] LLM召回失败: {e}")
+            logger.warning(f"[派单:{ticket.id}] Step3-L1 LLM召回失败: {e}")
             return {}
 
     async def arecall(
@@ -67,7 +67,7 @@ class LlmRecall:
             scores = await self._llm_score_batch(
                 ticket, engineers, top_k=n,  # 要求评估全部 n 位
             )
-            logger.debug(f"[llm_recall] 单轮全量评估 人数={n} 输出={len(scores)}人")
+            logger.debug(f"[派单:{ticket.id}] Step3-L1 单轮全量评估 人数={n} 输出={len(scores)}人")
             return scores
 
         # ── 候选人数多：分批初选 + 合并决选 ──
@@ -77,7 +77,7 @@ class LlmRecall:
             for i in range(0, n, self.BATCH_SIZE)
         ]
         logger.info(
-            f"[llm_recall] L1分批初选 总人数={n} 分{len(batches)}批 每批取Top{self.ROUND1_TOP_K}"
+            f"[派单:{ticket.id}] Step3-L1 分批初选 总人数={n} 分{len(batches)}批 每批取Top{self.ROUND1_TOP_K}"
         )
         for bi, batch in enumerate(batches, 1):
             scores = await self._llm_score_batch(ticket, batch, top_k=self.ROUND1_TOP_K)
@@ -88,25 +88,25 @@ class LlmRecall:
                 for eid, sc in top
             ]
             logger.debug(
-                f"[llm_recall]   批次{bi}/{len(batches)} 人数={len(batch)} "
+                f"[派单:{ticket.id}] Step3-L1   批次{bi}/{len(batches)} 人数={len(batch)} "
                 f"命中={len(top)}人 [{', '.join(top_names)}]"
             )
-        logger.debug(f"[llm_recall] 分批初选汇总: {n}→{len(stage1)} 人")
+        logger.debug(f"[派单:{ticket.id}] Step3-L1 分批初选汇总: {n}→{len(stage1)} 人")
 
         winners = [e for e in engineers if e.id in stage1]
         if not winners:
-            logger.warning("[llm_recall] 分批初选无胜者，返回空")
+            logger.warning(f"[派单:{ticket.id}] Step3-L1 分批初选无胜者，返回空")
             return {}
 
         # 第二层决选（胜者数仍偏多才触发）
         if len(winners) <= self.ROUND2_MAX:
             logger.debug(
-                f"[llm_recall] 胜者{len(winners)}≤ROUND2_MAX，不再决选返回"
+                f"[派单:{ticket.id}] Step3-L1 胜者{len(winners)}≤ROUND2_MAX，不再决选返回"
             )
             return {k: stage1[k] for k in winners if k in stage1}
         final = await self._llm_score_batch(ticket, winners, top_k=self.ROUND2_MAX)
         logger.info(
-            f"[llm_recall] L1合并决选 胜者={len(winners)}人 → 决选出={len(final)}人"
+            f"[派单:{ticket.id}] Step3-L1 合并决选 胜者={len(winners)}人 → 决选出={len(final)}人"
         )
         return final
 
@@ -159,17 +159,17 @@ class LlmRecall:
     def _parse(self, response: str, engineers: List[EngineerProfile]) -> Dict[str, float]:
         m = re.search(r"\{.*\}", response, re.DOTALL)
         if not m:
-            logger.debug(f"[llm_recall] LLM 返回无 JSON，raw: {response[:200]}")
+            logger.debug(f"Step3-L1 LLM 返回无 JSON，raw: {response[:200]}")
             return {}
         try:
             data = json.loads(m.group())
         except json.JSONDecodeError:
-            logger.debug(f"[llm_recall] JSON 解析失败，raw: {response[:300]}")
+            logger.debug(f"Step3-L1 JSON 解析失败，raw: {response[:300]}")
             return {}
 
         rankings = data.get("rankings", [])
         if not isinstance(rankings, list) or not rankings:
-            logger.debug(f"[llm_recall] rankings 为空或非列表: {rankings}")
+            logger.debug(f"Step3-L1 rankings 为空或非列表: {rankings}")
             return {}
 
         id_map = {e.id: e for e in engineers}
@@ -183,5 +183,5 @@ class LlmRecall:
             else:
                 not_found.append(f"{eid}(conf={conf})")
         if not_found:
-            logger.debug(f"[llm_recall] ID 未匹配 {len(not_found)}: {not_found[:5]}")
+            logger.debug(f"Step3-L1 ID 未匹配 {len(not_found)}: {not_found[:5]}")
         return scores

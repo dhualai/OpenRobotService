@@ -94,11 +94,11 @@ class SemanticRecall:
             if module_scores:
                 hit_mods = sorted(module_scores.items(), key=lambda x: x[1], reverse=True)
                 logger.debug(
-                    "[semantic_recall] L2命中模块锚: "
+                    f"[派单:{ticket.id}] Step3-L2 命中模块锚: "
                     + " | ".join(f"{k}={v:.2f}" for k, v in hit_mods[:10])
                 )
             else:
-                logger.debug("[semantic_recall] L2语义召回: 无模块锚命中（相似度均≤0.3）")
+                logger.debug(f"[派单:{ticket.id}] Step3-L2 无模块锚命中（相似度均≤0.3）")
 
             # 按模块分数反查工程师 → 加权累计
             # 细分模块名 → module_classify 映射到类别 → 组「产品-类别」锚 key 匹配
@@ -116,7 +116,7 @@ class SemanticRecall:
                     sem[eng.id] = score
 
         if sem:
-            logger.debug(f"[semantic_recall] L2语义召回 命中={len(sem)}人")
+            logger.debug(f"[派单:{ticket.id}] Step3-L2 语义召回 命中={len(sem)}人")
         return sem
 
 
