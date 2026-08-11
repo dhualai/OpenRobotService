@@ -174,6 +174,14 @@ export const qaConfirmTicket = (sessionId: string, overrides: Partial<TicketDraf
 export const qaGetDraft = (sessionId: string) =>
   aiGet<{ code: number; data?: { draft: TicketDraft | null } }>('/qa/ticket/draft', { session_id: sessionId });
 
+/** 取消确认：清除待确认草稿（用户关闭确认弹窗/放弃提单时调用）。
+ * 若不清除，后端 review 幂等分支（pipeline.py existing_draft 已存在）不再发 review 事件，
+ * 前端确认弹窗无法再次弹出，提单卡死。清掉后下次对话字段齐全会重新弹窗。 */
+export const qaClearDraft = (sessionId: string): Promise<{ code: number; message?: string }> =>
+  fetchWithAuth(`${BASE}/qa/ticket/draft?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' }).then(
+    (r) => r.json(),
+  );
+
 /** 获取工单 */
 export const qaGetTicket = (sessionId: string) =>
   aiGet<{ code: number; data?: unknown; message?: string }>('/qa/ticket', { session_id: sessionId });
