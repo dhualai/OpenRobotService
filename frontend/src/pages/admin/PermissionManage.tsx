@@ -1,7 +1,8 @@
 // 权限管理 - 增强版：创建/编辑/删除权限 + 启用开关 + 搜索
 // 基于接口文档 /api/admin/permissions
 import { useState, useEffect, useCallback } from 'react';
-import { Button, Switch, Toast, Loading, Dialog, Input, Popup, Form, FormItem } from 'tdesign-mobile-react';
+import { Button, Switch, Toast, Loading, Dialog, Popup, Form, FormItem } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -129,11 +130,10 @@ export default function PermissionManage() {
         新建权限
       </Button>
 
-      <Input
+      <ClearableInput
         value={keyword}
         onChange={(v) => setKeyword(String(v))}
         placeholder="搜索权限名称或编码"
-        clearable
         style={{ marginBottom: 12 }}
       />
 
@@ -167,16 +167,16 @@ export default function PermissionManage() {
           <h4 style={{ marginBottom: 16 }}>{editingId ? '编辑权限' : '新建权限'}</h4>
           <Form key={formKey} initialData={form}>
             <FormItem label="权限编码" name="code">
-              <Input value={form.code} onChange={(v) => setForm((p) => ({ ...p, code: String(v) }))} placeholder="如 backend:permission:base:read" clearable />
+              <ClearableInput value={form.code} onChange={(v) => setForm((p) => ({ ...p, code: String(v) }))} placeholder="如 backend:permission:base:read" />
             </FormItem>
             <FormItem label="权限名称" name="name">
-              <Input value={form.name} onChange={(v) => setForm((p) => ({ ...p, name: String(v) }))} placeholder="如 基础权限" clearable />
+              <ClearableInput value={form.name} onChange={(v) => setForm((p) => ({ ...p, name: String(v) }))} placeholder="如 基础权限" />
             </FormItem>
             <FormItem label="资源类型" name="resource_type">
-              <Input value={form.resource_type} onChange={(v) => setForm((p) => ({ ...p, resource_type: String(v) }))} placeholder="如 backend" clearable />
+              <ClearableInput value={form.resource_type} onChange={(v) => setForm((p) => ({ ...p, resource_type: String(v) }))} placeholder="如 backend" />
             </FormItem>
             <FormItem label="操作" name="action">
-              <Input value={form.action} onChange={(v) => setForm((p) => ({ ...p, action: String(v) }))} placeholder="如 read, write" clearable />
+              <ClearableInput value={form.action} onChange={(v) => setForm((p) => ({ ...p, action: String(v) }))} placeholder="如 read, write" />
             </FormItem>
             <FormItem>
               <div style={{ display: 'flex', gap: 8 }}>
