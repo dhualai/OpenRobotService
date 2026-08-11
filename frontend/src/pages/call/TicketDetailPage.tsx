@@ -3,7 +3,7 @@
 // 路由 /app/call/ticket/:id 中的 :id 形如 db_<数字id>（Task.id）；session_id 直链仅作旧链接兼容
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea } from 'tdesign-mobile-react';
+import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea, DateTimePicker } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
@@ -180,7 +180,7 @@ export default function TicketDetailPage() {
       const dbIdMatch = /^db_(\d+)$/.exec(sessionId);
       if (dbIdMatch) {
         const dbId = dbIdMatch[1];
-        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string; session_id?: string; diagnosis?: AiDiagnosis }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${dbId}?load_comments=true`, { skipCache: true });
+        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string; session_id?: string; diagnosis?: AiDiagnosis }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; deadline_at?: string }>(`/${dbId}?load_comments=true`, { skipCache: true });
         if (isStale()) return; // 已切换到别的工单，丢弃本次（旧工单）结果，避免覆盖
         setTicket({
           ticket_id: String(dbId),
@@ -199,6 +199,7 @@ export default function TicketDetailPage() {
           project_name: taskDetail.project_name || '',
           project_id: taskDetail.project_id || '',
           created_at: taskDetail.created_at || '',
+          deadline_at: taskDetail.deadline_at || null,
           // AI 诊断数据存在 metadata_info.diagnosis（task_adapter 平铺入库）；手动工单无此字段
           diagnosis: taskDetail.metadata_info?.diagnosis,
           // 附件来自 tasks 服务 GET /{dbId} 的 attachments 字段（object_path 或字典数组）
@@ -216,7 +217,7 @@ export default function TicketDetailPage() {
         if (!silent) setTicket(aiTicket);
         if (aiTicket.ticket_id) {
           try {
-            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
+            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; deadline_at?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
             if (isStale()) return; // 已切换工单：prev 可能已是新工单，不可把旧工单的 DB 字段合并进去
             // 用 DB 的 status 覆盖 AI 的 status：AI(qaGetTicket) 返回 dispatched/escalated 等 AI 内部状态，
             // DB(tasks 表) 是 new/in_progress 等标准枚举。列表(qaListTickets)也来自 DB，
@@ -242,6 +243,7 @@ export default function TicketDetailPage() {
               project_name: taskDetail.project_name || prev.project_name || prev.project,
               // 项目编码以 DB 为准（编辑回显与提交用），AI 接口不返回该字段
               project_id: taskDetail.project_id || prev.project_id,
+              deadline_at: taskDetail.deadline_at ?? prev.deadline_at,
             } : prev);
             setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
           } catch { /* 评论加载失败不阻塞主流程 */ }
@@ -380,6 +382,7 @@ export default function TicketDetailPage() {
   // 编辑工单（标题/描述/优先级/类型/联系人；权限与后端对齐：admin/创建人/处理人，终态不可编辑）
   const [showEdit, setShowEdit] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; project_id: string; project_name: string; deadline_at?: string }>({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
+  const [editDeadlinePickerVisible, setEditDeadlinePickerVisible] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
   // 所属项目下拉（当前用户名下项目，GET /api/admin/projects/me；支持关键词模糊搜索）
   const [showProjectPicker, setShowProjectPicker] = useState(false);
@@ -647,9 +650,7 @@ export default function TicketDetailPage() {
           {(ticket.project_name || ticket.project) && <DetailRow label="所属项目" value={ticket.project_name || ticket.project || ''} />}
           {ticket.contact && <DetailRow label="联系人" value={ticket.contact} />}
           <DetailRow label="创建时间" value={ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''} />
-          {ticket.deadline_at && (
-            <DetailRow label="最晚解决时间" value={formatDateTime(String(ticket.deadline_at))} />
-          )}
+          <DetailRow label="最晚解决时间" value={ticket.deadline_at ? formatDateTime(String(ticket.deadline_at)) : '未设置'} />
         </div>
 
         {/* 人员流转：发起人 → 处理人（与历史工单列表页同款 task-card2__people 样式）
@@ -957,21 +958,25 @@ export default function TicketDetailPage() {
                 <span className="ticket-edit-form__select-arrow">▾</span>
               </div>
             </div>
-            {/* 最晚解决时间：编辑页只读回显已有值（不回显进度条，进度条仅提单时用） */}
+            {/* 最晚解决时间：DateTimePicker 选择，最小单位小时 */}
             <div className="ticket-edit-form__field">
               <label className="ticket-edit-form__label">最晚解决时间</label>
               <div className="ticket-confirm__deadline">
-                <div className="ticket-confirm__deadline-preview">
-                  <span className="ticket-confirm__deadline-abs">
-                    {editForm.deadline_at ? formatEditDeadlineAbs(editForm.deadline_at) : '未设置'}
+                <div
+                  className="ticket-confirm__deadline-field"
+                  onClick={() => setEditDeadlinePickerVisible(true)}
+                >
+                  <span className={editForm.deadline_at ? 'ticket-confirm__deadline-value' : 'ticket-confirm__deadline-placeholder'}>
+                    {editForm.deadline_at ? formatEditDeadlineAbs(editForm.deadline_at) : '点击选择'}
                   </span>
+                  <span className="ticket-confirm__deadline-arrow">›</span>
                 </div>
                 {editForm.deadline_at && (
                   <button
                     type="button"
                     className="ticket-confirm__deadline-clear"
                     onClick={() => setEditForm((p) => ({ ...p, deadline_at: undefined }))}
-                  >清除截止时间</button>
+                  >清除</button>
                 )}
               </div>
             </div>
@@ -981,6 +986,25 @@ export default function TicketDetailPage() {
             <Button theme="primary" block loading={savingEdit} onClick={handleEditSave}>保存</Button>
           </div>
         </div>
+      </Popup>
+
+      {/* 最晚解决时间选择器：mode=hour 最小单位小时 */}
+      <Popup visible={editDeadlinePickerVisible} onClose={() => setEditDeadlinePickerVisible(false)} placement="bottom">
+        <DateTimePicker
+          mode="hour"
+          title="选择最晚解决时间"
+          format="YYYY-MM-DD HH:00"
+          value={editForm.deadline_at || undefined}
+          onConfirm={(v) => {
+            const d = new Date(typeof v === 'number' ? v : String(v));
+            if (!isNaN(d.getTime())) {
+              d.setMinutes(0, 0, 0);
+              setEditForm((p) => ({ ...p, deadline_at: d.toISOString() }));
+            }
+            setEditDeadlinePickerVisible(false);
+          }}
+          onCancel={() => setEditDeadlinePickerVisible(false)}
+        />
       </Popup>
 
       {/* 所属项目选择弹层：当前用户名下项目 + 关键词模糊搜索 */}

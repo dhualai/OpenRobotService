@@ -166,11 +166,11 @@ class ExpertiseRecall:
 
         # 归一化到 0-1（除以最大值）
         if not raw:
-            logger.debug(f"[expertise_recall] L3-B 问题域: 域{domains} 无命中")
+            logger.debug(f"[派单:{ticket.id}] Step3-L3-B 问题域: 域{domains} 无命中")
             return {}
         maxv = max(raw.values()) or 1.0
         logger.debug(
-            f"[expertise_recall] L3-B 问题域: 域={domains} 聚人={len(raw)}人"
+            f"[派单:{ticket.id}] Step3-L3-B 问题域: 域={domains} 聚人={len(raw)}人"
         )
         return {eid: round(v / maxv, 4) for eid, v in raw.items()}
 

@@ -838,6 +838,30 @@ async def upload_files_stream(
             except Exception as e:
                 logger.warning(f"[upload-stream] 写记忆失败（不阻塞）: {e}")
 
+            # ── 3.5 写附件到 agent_state.attachments（供后续转工单落库 tasks.attachments）──
+            # 旧 /upload 有此步骤；/upload/stream 此前缺失，导致 UI 流式上传的附件
+            # 永远进不了 agent_state → 转工单后 tasks.attachments 为空。此处对齐补上。
+            try:
+                mgr = await get_memory_manager()
+                memory = await mgr.get_memory(session_id)
+                state = memory.metadata.get("agent_state", {})
+                existing = state.get("attachments", [])
+                state["attachments"] = existing + saved
+                # 图片描述 → collected_info（供诊断/转工单读取）
+                if image_desc:
+                    ci = state.get("collected_info", {}) or {}
+                    prev = ci.get("image_description", "")
+                    ci["image_description"] = (prev + "\n" + image_desc).strip() if prev else image_desc
+                    state["collected_info"] = ci
+                memory.metadata["agent_state"] = state
+                await mgr.save_memory(memory)
+                logger.info(
+                    f"[upload-stream] agent_state.attachments更新: session={session_id[:12]}, "
+                    f"attachments_before={len(existing)}, attachments_after={len(state['attachments'])}"
+                )
+            except Exception as e:
+                logger.warning(f"[upload-stream] 写 agent_state.attachments 失败（不阻塞）: {e}")
+
             # ── 4. 附带文字 → 流式诊断；否则回执即可 ──
             if message.strip():
                 username, _ = _current_user_from_header(authorization)

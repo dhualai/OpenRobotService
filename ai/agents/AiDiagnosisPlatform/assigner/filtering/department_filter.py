@@ -157,22 +157,22 @@ class DepartmentFilter:
         strong_hits = self._strong_match(text)
         if len(strong_hits) == 1:
             dept, kws = strong_hits[0]
-            logger.info(f"[dept_filter] strong({kws[:3]}) → {dept}")
+            logger.info(f"[派单:{ticket.id}] Step1-部门匹配 strong({kws[:3]}) → {dept}")
             return dept
         if len(strong_hits) >= 2:
             details = ", ".join(f"{d}={k[:2]}" for d, k in strong_hits)
-            logger.info(f"[dept_filter] strong 跨部门歧义 → 不过滤 ({details})")
+            logger.info(f"[派单:{ticket.id}] Step1-部门匹配 strong 跨部门歧义 → 不过滤 ({details})")
             return ""
 
         # ── 第二优先级：medium + weak 组合判定 ──
         medium_hits = self._medium_weak_match(text)
         if len(medium_hits) == 1:
             dept, kws = medium_hits[0]
-            logger.info(f"[dept_filter] medium+weak({kws[:3]}) → {dept}")
+            logger.info(f"[派单:{ticket.id}] Step1-部门匹配 medium+weak({kws[:3]}) → {dept}")
             return dept
         if len(medium_hits) >= 2:
             details = ", ".join(f"{d}={k[:2]}" for d, k in medium_hits)
-            logger.info(f"[dept_filter] medium+weak 跨部门歧义 → 不过滤 ({details})")
+            logger.info(f"[派单:{ticket.id}] Step1-部门匹配 medium+weak 跨部门歧义 → 不过滤 ({details})")
             return ""
 
         # ── 第三优先级：embedding 语义补漏 ──
@@ -181,17 +181,18 @@ class DepartmentFilter:
         dept, scene, score = await self._embedding_match(text, candidate_depts)
         if dept and score >= self._embed_threshold:
             scope = "medium缩小" if candidate_depts else "全场景"
-            logger.info(f"[dept_filter] embedding[{scope}]({scene}:{score:.2f}) → {dept}")
+            logger.info(f"[派单:{ticket.id}] Step1-部门匹配 embedding[{scope}]({scene}:{score:.2f}) → {dept}")
             return dept
 
-        logger.info(f"[dept_filter] 未命中(关键词+embedding) → 不过滤")
+        logger.info(f"[派单:{ticket.id}] Step1-部门匹配 未命中(关键词+embedding) → 不过滤")
         return ""
 
-    def filter_by_department(self, engineers, department):
+    def filter_by_department(self, engineers, department, ticket=None):
         if not department:
             return list(engineers)
         filtered = [e for e in engineers if e.department == department]
-        logger.info(f"[dept_filter] 部门过滤: {len(engineers)}→{len(filtered)} ({department})")
+        tag = f"[派单:{ticket.id}]" if ticket is not None else "[dept_filter]"
+        logger.info(f"{tag} Step1-部门过滤: {len(engineers)}→{len(filtered)} ({department})")
         return filtered
 
     async def filter(self, ticket, engineers, project_name=""):
@@ -199,5 +200,5 @@ class DepartmentFilter:
             return []
         dept = await self.match_department(ticket)
         if dept:
-            return self.filter_by_department(engineers, dept)
+            return self.filter_by_department(engineers, dept, ticket)
         return list(engineers)
