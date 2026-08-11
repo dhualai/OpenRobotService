@@ -1389,6 +1389,58 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const setDraftField = (k: keyof TicketDraft, v: string) =>
     setTicketConfirm((s) => ({ ...s, overrides: { ...s.overrides, [k]: v } }));
 
+  // ── 最晚解决时间（截止时间）：按优先级分档的拖拽进度条 ──
+  // 紧急/高 → 0-24h 按小时（每 2h 一档）；中 → 1-3天 按天；低 → 3-7天 按天
+  // 刻度值统一为「小时数」（天数 ×24），展示时再换算回人类可读
+  type DeadlineScale = { unit: 'h' | 'd'; min: number; max: number; step: number; defaultHours: number; marks: number[] };
+  const DEADLINE_SCALES: Record<string, DeadlineScale> = {
+    urgent: { unit: 'h', min: 0, max: 24, step: 2, defaultHours: 8, marks: [0, 2, 4, 6, 8, 12, 16, 20, 24] },
+    high: { unit: 'h', min: 0, max: 24, step: 2, defaultHours: 8, marks: [0, 2, 4, 6, 8, 12, 16, 20, 24] },
+    medium: { unit: 'd', min: 1, max: 3, step: 1, defaultHours: 48, marks: [24, 48, 72] },
+    low: { unit: 'd', min: 3, max: 7, step: 1, defaultHours: 120, marks: [72, 96, 120, 144, 168] },
+  };
+  const PRIORITY_TO_SCALE: Record<string, keyof typeof DEADLINE_SCALES> = {
+    '紧急': 'urgent', '高': 'high', '中': 'medium', '低': 'low',
+  };
+  const getDeadlineScale = (priority: string): DeadlineScale =>
+    DEADLINE_SCALES[PRIORITY_TO_SCALE[priority] || 'medium'];
+
+  /** 当前刻度值（小时）：优先取 overrides.deadline_at 反推，否则用刻度默认值 */
+  const getDeadlineHours = (): number => {
+    const iso = draftField('deadline_at');
+    if (iso) {
+      const diff = (new Date(iso).getTime() - Date.now()) / 3600000;
+      if (Number.isFinite(diff) && diff >= 0) return Math.round(diff);
+    }
+    return getDeadlineScale(draftField('priority')).defaultHours;
+  };
+  /** 把小时数格式化为「8 小时后」/「2 天后」 */
+  const formatDeadlineRelative = (hours: number): string => {
+    if (hours <= 0) return '立即';
+    if (hours < 24) return `${hours} 小时后`;
+    const days = Math.round(hours / 24);
+    return `${days} 天后`;
+  };
+  /** 拖拽刻度 → 写入 deadline_at（ISO 字符串，立即生效） */
+  const setDeadlineByHours = (hours: number) => {
+    const dt = new Date(Date.now() + hours * 3600000);
+    setDraftField('deadline_at', dt.toISOString());
+  };
+  /** 格式化绝对截止时间展示「8月12日 18:00 前」 */
+  const formatDeadlineAbsolute = (iso: string): string => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())} 前`;
+  };
+  /** 优先级变化时联动重置刻度默认值（刻度范围变了，旧值可能越界） */
+  const handlePriorityChangeForDeadline = (newPriority: string) => {
+    setDraftField('priority', newPriority);
+    const scale = getDeadlineScale(newPriority);
+    setDeadlineByHours(scale.defaultHours);
+  };
+
   // ── 工单概览气泡 + 派单轮询 ──────────────────────────────────
   const tasksReq = useMemo(() => createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务'), []);
   const pollTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -1943,13 +1995,48 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 <select
                   className="ticket-confirm__select"
                   value={draftField('priority')}
-                  onChange={(e) => setDraftField('priority', e.target.value)}
+                  onChange={(e) => handlePriorityChangeForDeadline(e.target.value)}
                 >
                   <option value="紧急">紧急</option>
                   <option value="高">高</option>
                   <option value="中">中</option>
                   <option value="低">低</option>
                 </select>
+                {/* 最晚解决时间：按优先级分档的拖拽进度条（紧急/高=0-1天按小时；中=1-3天；低=3-7天） */}
+                {(() => {
+                  const scale = getDeadlineScale(draftField('priority'));
+                  const hours = getDeadlineHours();
+                  const iso = draftField('deadline_at');
+                  return (
+                    <div className="ticket-confirm__deadline">
+                      <label className="ticket-confirm__label">最晚解决时间</label>
+                      <div className="ticket-confirm__deadline-slider">
+                        <input
+                          type="range"
+                          min={scale.unit === 'h' ? scale.min : scale.min * 24}
+                          max={scale.unit === 'h' ? scale.max : scale.max * 24}
+                          step={scale.unit === 'h' ? scale.step : 24}
+                          value={hours}
+                          onChange={(e) => setDeadlineByHours(Number(e.target.value))}
+                          className="ticket-confirm__deadline-range"
+                        />
+                        <div className="ticket-confirm__deadline-marks">
+                          {scale.marks.map((m) => (
+                            <span key={m} className="ticket-confirm__deadline-mark">
+                              {scale.unit === 'h' ? `${m}h` : `${m / 24}d`}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="ticket-confirm__deadline-preview">
+                        <span className="ticket-confirm__deadline-rel">{formatDeadlineRelative(hours)}</span>
+                        <span className="ticket-confirm__deadline-abs">
+                          {iso ? formatDeadlineAbsolute(iso) : '（未设置）'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
                 <label className="ticket-confirm__label">绑定项目 {!ticketConfirm.dualTicket && <span style={{ color: '#e34d59' }}>*</span>}</label>
                 <ProjectSelect
                   value={draftField('project_id') || null}
