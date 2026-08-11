@@ -603,7 +603,7 @@ class RetrievalService:
         bm25_sparse = self._generate_bm25_sparse(query)
 
         # 2. 并行检索（reranker 候选数收窄，CPU 推理开销大）
-        _rerank_margin = min(k + 4, 15)
+        _rerank_margin = min(k + 4, 8)
         candidate_k = _rerank_margin if self._reranker else k * 2
         dense_task = self._qdrant.search_dense(
             query_vector.tolist(),
