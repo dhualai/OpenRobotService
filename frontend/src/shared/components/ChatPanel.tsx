@@ -202,7 +202,7 @@ const mapDbMessages = (
 
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
-  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick,
+  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket,
 }: {
   msg: Message;
   editingId: string | null;
@@ -216,6 +216,7 @@ const MessageBubble = memo(function MessageBubble({
   onEditSave: (msg: Message) => void;
   onEditCancel: () => void;
   onImageClick: (url: string) => void;
+  onOpenTicket: (dbId: number) => void;
 }) {
   return (
     <div className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
@@ -290,11 +291,11 @@ const MessageBubble = memo(function MessageBubble({
               role="button"
               tabIndex={0}
               title="点击查看工单详情"
-              onClick={() => navigate(`/call/ticket/db_${msg.ticket_overview!.db_id}`)}
+              onClick={() => onOpenTicket(msg.ticket_overview!.db_id)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
-                  navigate(`/call/ticket/db_${msg.ticket_overview!.db_id}`);
+                  onOpenTicket(msg.ticket_overview!.db_id);
                 }
               }}
             >
@@ -1079,6 +1080,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: v } : m)));
   }, []);
   const handleEditCancel = useCallback(() => setEditingId(null), []);
+  // 稳定的工单跳转回调：传给 MessageBubble 保持 memo 不失效；点击对话内派单卡片跳历史工单详情页
+  const handleOpenTicket = useCallback((dbId: number) => {
+    navigate(`/call/ticket/db_${dbId}`);
+  }, [navigate]);
 
   // voiceWillCancelRef 在 handleMove 中直接同步写入，不再通过 useEffect 异步同步
 
@@ -1751,6 +1756,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             onEditSave={handleEditSave}
             onEditCancel={handleEditCancel}
             onImageClick={setPreviewUrl}
+            onOpenTicket={handleOpenTicket}
             expandedDesc={expandedMsgIds.has(msg.id)}
             onToggleDesc={toggleMsgExpanded}
           />

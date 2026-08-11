@@ -27,13 +27,14 @@ class AssignerConfig:
     各属性含义：
     - module_keywords:      {模块名: [关键词]}，供 L3 历史召回提取历史工单标签
     - module_anchor_texts:  {模块名: 锚文本}，供 L2 语义召回做 Embedding 比对
+    - module_classify:      {产品: {细分模块: 类别}}，供 L2 语义召回把细分模块映射到「产品-类别」锚
     - ranker_weights:       {llm_match, semantic_match, history_match} 三路权重
     - job_level_penalty:    {职级: 惩罚系数}，精排后按职级打折
     - department_keywords:  {部门: {strong, medium, weak}}，供部门过滤分级匹配
     - department_scenes:    {部门: {场景: 描述}}，供部门过滤 embedding 语义补漏
     - department_filter:    {embed_threshold}，部门过滤参数（embedding 匹配阈值）
     - decision_thresholds:  {auto, recommend}，规则兜底决策的置信度阈值
-    - load_balance:         {enabled, step, algorithm_engineers}，算法工程师负载均衡
+    - load_balance:         {enabled, step}，全体候选人按在途工单数负载均衡（查询带缓存）
     - history_recall:       {top_k, half_life_days, sim_threshold, fault_code_boost, robot_type_boost, decay_weight}，L3 历史召回增强参数
     """
 
@@ -42,6 +43,7 @@ class AssignerConfig:
     def __init__(self):
         self.module_keywords: Dict[str, list] = {}
         self.module_anchor_texts: Dict[str, str] = {}
+        self.module_classify: Dict[str, Dict[str, str]] = {}
         self.ranker_weights: Dict[str, Any] = {}
         self.job_level_penalty: Dict[int, float] = {}
         self.department_keywords: Dict[str, dict] = {}
@@ -57,6 +59,7 @@ class AssignerConfig:
         config = _load_yaml(self._CONFIG_DIR / "config.yaml") or {}
         self.module_keywords = config.get("module_keywords", {})
         self.module_anchor_texts = config.get("module_anchor_texts", {})
+        self.module_classify = config.get("module_classify", {})
         self.ranker_weights = config.get("ranker_weights", {})
         # job_level_penalty 的 key 在 YAML 中是整数，需显式转 int
         raw = config.get("job_level_penalty", {})
