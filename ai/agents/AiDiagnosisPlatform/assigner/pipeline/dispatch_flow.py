@@ -77,11 +77,13 @@ class DispatchFlow:
         engineer_profiles: List[EngineerProfile],
     ) -> AssignmentResult:
         desc_preview = (ticket_context.problem_description or "")[:100].replace("\n", " ")
+        # 统一派单日志前缀：便于按工单关联整条派单链路日志
+        ltag = f"[派单:{ticket_context.id}]"
         logger.info(
-            f"派单开始: [{ticket_context.title[:50]}] "
-            f"desc={desc_preview} "
+            f"{ltag} START 工单={ticket_context.title[:50]!r} "
+            f"desc={desc_preview!r} "
             f"fault={ticket_context.fault_code or '-'} robot={ticket_context.robot_type or '-'} "
-            f"engineers={len(engineer_profiles)}人"
+            f"候选={len(engineer_profiles)}人"
         )
         if not engineer_profiles:
             raise ValueError("工程师列表为空。请检查 users 表人员数据是否就绪。")
@@ -91,10 +93,14 @@ class DispatchFlow:
         # ── Step -1: LLM 识别提单人是否指定了期望接单人 ──
         preferred = await self._detect_preferred_assignee(ticket_context, engineer_profiles)
         if preferred is not None:
+            logger.info(
+                f"{ltag} STEP-1 提单人指定 → {preferred.engineer_name}"
+                f"({preferred.engineer_id}) 置信={preferred.confidence_score:.2f}"
+            )
             self._log_assignment_result(
                 ticket=ticket_context, result=preferred,
                 candidates=engineer_profiles, ranked_scores={},
-                source="提单人指定",
+                source="提单人指定", ltag=ltag,
             )
             return preferred
 
@@ -104,14 +110,14 @@ class DispatchFlow:
             project_name=ticket_context.project_name or "",
         )
         if not candidates:
-            logger.warning("派单 Step 0: 过滤后无候选人，回退全量")
+            logger.warning(f"{ltag} STEP0 部门过滤后无候选人，回退全量")
             candidates = engineer_profiles
-        logger.info(f"派单 Step 0 部门过滤: {len(engineer_profiles)}→{len(candidates)}人")
+        logger.info(f"{ltag} STEP0 部门过滤 {len(engineer_profiles)}→{len(candidates)}人")
 
         # ── Step 0.6: 排除提单人（常规派单不派给自己；Step -1 指定自己不受影响）──
         candidates = self._exclude_creator(ticket_context, candidates)
         if not candidates:
-            logger.warning("派单 Step 0.6: 排除提单人后无候选人，回退全量")
+            logger.warning(f"{ltag} STEP0.6 排除提单人后无候选人，回退全量")
             candidates = engineer_profiles
 
         # ── Step 1: 三路召回（L1/L2/L3 互不依赖，并行执行提升吞吐）──
@@ -124,36 +130,43 @@ class DispatchFlow:
                 return_exceptions=True,
             )
         except Exception as e:
-            logger.warning(f"派单 Step 1 并行召回批次异常: {e}")
+            logger.warning(f"{ltag} STEP1 并行召回批次异常: {e}")
             l1_fut = l2_fut = l3_fut = {}
 
         # L1 纯LLM 召回
         if isinstance(l1_fut, Exception):
-            logger.warning(f"派单 L1 LLM召回异常: {l1_fut}")
+            logger.warning(f"{ltag} STEP1 L1召回异常: {l1_fut}")
             recall_result.llm_recall = {}
         else:
             recall_result.llm_recall = l1_fut or {}
-            logger.debug(f"派单 L1 LLM召回: {len(recall_result.llm_recall)} 人")
+            self._log_recall_top(
+                ltag, "L1", recall_result.llm_recall, candidates, "LLM召回(逐人置信)", count=8,
+            )
         # L2 语义召回
         if isinstance(l2_fut, Exception):
-            logger.warning(f"派单 L2 语义召回异常: {l2_fut}")
+            logger.warning(f"{ltag} STEP1 L2召回异常: {l2_fut}")
             recall_result.semantic_recall = {}
         else:
             recall_result.semantic_recall = l2_fut or {}
-            logger.debug(f"派单 L2语义召回: {len(recall_result.semantic_recall)} 人")
+            self._log_recall_top(
+                ltag, "L2", recall_result.semantic_recall, candidates, "语义召回(命中模块分)", count=8,
+            )
         # L3 历史召回（A路相似工单 + B路问题域），已合并成单个 dict
         if isinstance(l3_fut, Exception):
-            logger.warning(f"派单 L3 历史召回异常: {l3_fut}")
+            logger.warning(f"{ltag} STEP1 L3召回异常: {l3_fut}")
             recall_result.history_recall = {}
         else:
             recall_result.history_recall = l3_fut or {}
-            logger.debug(f"派单 L3历史召回: 融合{len(recall_result.history_recall)}人")
+            self._log_recall_top(
+                ltag, "L3", recall_result.history_recall, candidates, "历史召回(融合)", count=8,
+            )
 
         # ── Step 2: 精排 + 职级折扣 ──
         ranked_scores = self._ranker.rank(recall_result, engineers=candidates)
 
         # ── Step 2.5: 负载均衡（按在途工单数打折，避免单子集中在少数人）──
         ranked_scores = self._apply_load_balance(ranked_scores)
+        self._log_ranked(ltag, ranked_scores, candidates, prefix="STEP2.5 负载均衡后Top")
 
         # ── Step 3: LLM 综合决策 ──
         result: Optional[AssignmentResult] = None
@@ -166,13 +179,18 @@ class DispatchFlow:
             if llm_result is not None:
                 result = llm_result
                 decision_source = "LLM决策"
+                logger.info(
+                    f"{ltag} STEP3 LLM决策 → {result.engineer_name}({result.engineer_id}) "
+                    f"置信={result.confidence_score:.2f} 类型={result.decision_type}"
+                )
         except Exception as e:
-            logger.warning(f"派单 Step 3 LLM决策失败,回退: {e}")
+            logger.warning(f"{ltag} STEP3 LLM决策失败,回退规则: {e}")
 
         # ── Step 4: 规则兜底 ──
         if result is None:
             result = self._fallback_decision.decide(ranked_scores=ranked_scores, engineers=candidates)
             decision_source = "规则兜底"
+            logger.info(f"{ltag} STEP4 规则兜底 → {result.engineer_name}({result.engineer_id})")
 
         # ── 结果汇总日志（含工单描述 + 被派人完整画像）──
         self._log_assignment_result(
@@ -181,8 +199,51 @@ class DispatchFlow:
             candidates=candidates,
             ranked_scores=ranked_scores,
             source=decision_source,
+            ltag=ltag,
         )
         return result
+
+    def _log_recall_top(self, ltag, name, scores, candidates, tag_desc, count=8):
+        """记录一路召回的结果：人数 + Top-N 候选（名 + 分数 + 归属模块）。"""
+        if not scores:
+            logger.info(f"{ltag} STEP1 {name}召回 命中=0人（{tag_desc} 无命中）")
+            return
+        emap = {e.id: e for e in candidates}
+        top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:count]
+        parts = []
+        for eid, sc in top:
+            eng = emap.get(eid)
+            nm = eng.name if eng else eid[:10]
+            mod = ""
+            if eng:
+                flat = []
+                for p, ms in eng.responsibility_modules.items():
+                    flat.append(f"{p}:{','.join(ms[:3])}")
+                mod = "[" + ";".join(flat) + "]"
+            parts.append(f"{nm}={sc:.2f}{mod}")
+        logger.info(
+            f"{ltag} STEP1 {name}召回 命中={len(scores)}人（{tag_desc}）: " + " | ".join(parts)
+        )
+
+    def _log_ranked(self, ltag, ranked_scores, candidates, count=5, prefix="精排Top"):
+        """记录精排后的 Top 候选（含各维度分与总分）。"""
+        if not ranked_scores:
+            logger.info(f"{ltag} {prefix}: 无排名数据")
+            return
+        emap = {e.id: e for e in candidates}
+        parts = []
+        for rank, (eid, d) in enumerate(list(ranked_scores.items())[:count], 1):
+            eng = emap.get(eid)
+            nm = eng.name if eng else eid[:10]
+            parts.append(
+                f"#{rank}{nm}(L{d.get('job_level','?')}) "
+                f"总={d.get('total_score',0):.2f} "
+                f"LLM={d.get('llm_score',0):.2f} "
+                f"语义={d.get('semantic_score',0):.2f} "
+                f"历史={d.get('history_score',0):.2f}"
+                f"{' 在途=' + str(d.get('load_count','')) if 'load_count' in d else ''}"
+            )
+        logger.info(f"{ltag} {prefix}: " + " | ".join(parts))
 
     def _log_assignment_result(
         self,
@@ -191,6 +252,7 @@ class DispatchFlow:
         candidates: List[EngineerProfile],
         ranked_scores: Dict[str, Dict[str, float]],
         source: str,
+        ltag: str = "[派单]",
     ):
         """打印派单结果汇总日志（工单 + 被派人完整画像 + Top3 排名）"""
         # ── 被派人完整画像 ──
@@ -203,14 +265,11 @@ class DispatchFlow:
             duty = (winner.duty_text or "")[:120].replace("\n", " ")
             scores = ranked_scores.get(winner.id, {})
             logger.info(
-                f"派单结果 [{source}] | "
-                f"工单: {ticket.title[:60]} | "
-                f"描述: {(ticket.problem_description or '')[:120].replace(chr(10), ' ')} | "
+                f"{ltag} FINAL 派单结果[{source}] | "
+                f"工单={ticket.title[:60]!r} | "
                 f"故障码={ticket.fault_code or '-'} 车型={ticket.robot_type or '-'} | "
-                f"→ 指派: {winner.name} "
-                f"users.username={winner.id} "
-                f"部门={winner.department or '-'} "
-                f"职级=L{winner.job_level} "
+                f"→ 指派: {winner.name}({winner.id}) "
+                f"部门={winner.department or '-'} 职级=L{winner.job_level} "
                 f"模块=[{modules_str}] "
                 f"职责={duty} | "
                 f"置信度={result.confidence_score:.0%} "
@@ -219,6 +278,7 @@ class DispatchFlow:
                 f"语义分={scores.get('semantic_score', 0):.2f} "
                 f"历史分={scores.get('history_score', 0):.2f} "
                 f"总分={scores.get('total_score', 0):.2f}"
+                f"{' 在途=' + str(scores.get('load_count','')) if 'load_count' in scores else ''}"
             )
 
         # ── Top3 排名 ──
@@ -234,9 +294,9 @@ class DispatchFlow:
                     f"LLM={d.get('llm_score',0):.2f} "
                     f"语义={d.get('semantic_score',0):.2f}"
                 )
-            logger.info(f"派单排名 Top3: {' | '.join(rank_lines)}")
+            logger.info(f"{ltag} FINAL 排名Top3: {' | '.join(rank_lines)}")
         else:
-            logger.info("派单排名: 无候选排名数据")
+            logger.info(f"{ltag} FINAL 排名: 无候选排名数据")
 
     # ── L3 双路融合: A路(相似工单聚人) + B路(问题域聚人) ──
     async def _history_pair(self, ticket) -> Dict[str, float]:
@@ -244,6 +304,7 @@ class DispatchFlow:
 
         供 Step 1 三路并行 gather 使用；任一异常返回空 dict 不阻断。
         """
+        ltag = f"[派单:{ticket.id}]"
         try:
             his_a, his_b = await asyncio.gather(
                 self._history_recall.arecall(ticket=ticket),
@@ -251,13 +312,19 @@ class DispatchFlow:
                 return_exceptions=True,
             )
             if isinstance(his_a, Exception):
+                logger.warning(f"{ltag} STEP1 L3-A 相似工单召回异常: {his_a}")
                 his_a = {}
             if isinstance(his_b, Exception):
+                logger.warning(f"{ltag} STEP1 L3-B 问题域召回异常: {his_b}")
                 his_b = {}
-            logger.debug(f"派单 L3历史召回: A路{len(his_a)}人 B路{len(his_b)}人")
-            return self._merge_history(his_a, his_b)
+            merged = self._merge_history(his_a, his_b)
+            logger.info(
+                f"{ltag} STEP1 L3历史召回: A路相似工单={len(his_a)}人 "
+                f"B路问题域={len(his_b)}人 融合={len(merged)}人"
+            )
+            return merged
         except Exception as e:
-            logger.warning(f"派单 L3 历史召回异常: {e}")
+            logger.warning(f"{ltag} STEP1 L3 历史召回异常: {e}")
             return {}
 
     def _merge_history(
