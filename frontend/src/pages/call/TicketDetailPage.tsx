@@ -3,7 +3,8 @@
 // 路由 /app/call/ticket/:id 中的 :id 形如 db_<数字id>（Task.id）；session_id 直链仅作旧链接兼容
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Navbar, Button, Toast, Loading, Tag, Popup, Input, Textarea } from 'tdesign-mobile-react';
+import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { NotificationIcon, UploadIcon, RollbackIcon, EditIcon } from 'tdesign-icons-react';
@@ -889,11 +890,10 @@ export default function TicketDetailPage() {
           <div className="ticket-edit-form__body">
             <div className="ticket-edit-form__field">
               <label className="ticket-edit-form__label">标题</label>
-              <Input
+              <ClearableInput
                 value={editForm.title}
                 onChange={(v) => setEditForm((p) => ({ ...p, title: String(v) }))}
                 placeholder="请输入工单标题"
-                clearable
               />
             </div>
             <div className="ticket-edit-form__field">
@@ -957,11 +957,10 @@ export default function TicketDetailPage() {
             <span className="project-picker__close" onClick={() => setShowProjectPicker(false)}>×</span>
           </div>
           <div className="project-picker__search">
-            <Input
+            <ClearableInput
               value={projectKeyword}
               onChange={(v) => setProjectKeyword(String(v))}
               placeholder="搜索项目名称 / 编码"
-              clearable
             />
           </div>
           <div className="project-picker__list">

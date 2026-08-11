@@ -4,7 +4,8 @@
 //   GET  /users/?limit=999999   用户列表
 //   POST /users/migrate-user    迁移用户数据（task assigned_to + 派单字段 + 删除源用户）
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Button, Toast, Loading, Popup, Input, Tag, Dialog } from 'tdesign-mobile-react';
+import { Button, Toast, Loading, Popup, Tag, Dialog } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -174,11 +175,10 @@ export default function UserSetup() {
       <Popup visible={sourcePickerVisible} onClose={() => setSourcePickerVisible(false)} placement="bottom" showOverlay>
         <div style={{ padding: 20, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
           <h4 style={{ marginBottom: 12 }}>选择源用户（将被删除）</h4>
-          <Input
+          <ClearableInput
             value={searchKeyword}
             onChange={(v) => setSearchKeyword(String(v))}
             placeholder="搜索姓名 / 用户名"
-            clearable
             style={{ marginBottom: 12 }}
           />
           <div style={{ overflow: 'auto', flex: 1 }}>
@@ -211,11 +211,10 @@ export default function UserSetup() {
       <Popup visible={targetPickerVisible} onClose={() => setTargetPickerVisible(false)} placement="bottom" showOverlay>
         <div style={{ padding: 20, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
           <h4 style={{ marginBottom: 12 }}>选择目标用户（保留账号）</h4>
-          <Input
+          <ClearableInput
             value={searchKeyword}
             onChange={(v) => setSearchKeyword(String(v))}
             placeholder="搜索姓名 / 用户名"
-            clearable
             style={{ marginBottom: 12 }}
           />
           <div style={{ overflow: 'auto', flex: 1 }}>
