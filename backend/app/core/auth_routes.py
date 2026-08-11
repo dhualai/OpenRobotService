@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from typing import Dict, Any
+from pydantic import BaseModel
 import uuid
 
 from app.core.database import db_manager, get_user_with_roles
@@ -173,3 +174,84 @@ async def get_current_user(request: Request):
         return User(**result)
     except AuthServiceError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+# ==================== 微信 open_id 绑定（讨论区消息转发到微信用）====================
+# 业务账号绑定自己的微信 open_id 后，才能作为"转发到微信"的接收人。
+# 微信登录用户（username=wechat_xxx）本身 id 即 open_id，无需绑定。
+
+class BindWechatOpenidRequest(BaseModel):
+    open_id: str
+
+
+@router.post("/me/wechat-openid", summary="绑定当前账号的微信 open_id（转发到微信用）")
+async def bind_my_wechat_openid(
+    body: BindWechatOpenidRequest,
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    from app.models.identity import UserDB
+
+    username = current_user.get("username")
+    if not username:
+        raise HTTPException(status_code=401, detail="无法识别当前用户")
+    open_id = (body.open_id or "").strip()
+    if not open_id:
+        raise HTTPException(status_code=400, detail="open_id 不能为空")
+
+    db = db_manager.get_db()
+    try:
+        user = db.query(UserDB).filter(UserDB.username == username).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        user.wechat_openid = open_id
+        db.commit()
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"绑定失败: {str(e)}")
+    finally:
+        db.close()
+    return {"code": 0, "message": "绑定成功", "open_id": open_id}
+
+
+@router.get("/me/wechat-openid", summary="查询当前账号的微信 open_id 绑定状态")
+async def get_my_wechat_openid(
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    from app.models.identity import UserDB
+
+    username = current_user.get("username")
+    db = db_manager.get_db()
+    try:
+        user = db.query(UserDB).filter(UserDB.username == username).first()
+    finally:
+        db.close()
+    bound = bool(user and user.wechat_openid)
+    # 出于隐私，仅返回是否绑定与脱敏后的 open_id 片段
+    masked = None
+    if user and user.wechat_openid:
+        oid = user.wechat_openid
+        masked = (oid[:4] + "***" + oid[-4:]) if len(oid) > 8 else "***"
+    return {"bound": bound, "open_id_masked": masked}
+
+
+@router.delete("/me/wechat-openid", summary="解绑当前账号的微信 open_id")
+async def unbind_my_wechat_openid(
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    from app.models.identity import UserDB
+
+    username = current_user.get("username")
+    db = db_manager.get_db()
+    try:
+        user = db.query(UserDB).filter(UserDB.username == username).first()
+        if user:
+            user.wechat_openid = None
+            db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"解绑失败: {str(e)}")
+    finally:
+        db.close()
+    return {"code": 0, "message": "已解绑"}
