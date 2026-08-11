@@ -68,11 +68,11 @@ describe('MainLayout', () => {
     expect(screen.getByTestId('tabitem-admin')).toBeInTheDocument();
   });
 
-  it('should display tabs with emoji icon and text labels', () => {
+  it('should display icon-only tabs with aria labels', () => {
     renderLayout();
-    expect(screen.getByText('我要摇人')).toBeInTheDocument();
-    expect(screen.getByText('系统任务')).toBeInTheDocument();
-    expect(screen.getByText('后台管理')).toBeInTheDocument();
+    expect(screen.getByTestId('tabitem-call')).toHaveAttribute('data-aria-label', '我要摇人');
+    expect(screen.getByTestId('tabitem-tasks')).toHaveAttribute('data-aria-label', '系统任务');
+    expect(screen.getByTestId('tabitem-admin')).toHaveAttribute('data-aria-label', '后台管理');
   });
 
   it('should render Outlet for child routes', () => {
