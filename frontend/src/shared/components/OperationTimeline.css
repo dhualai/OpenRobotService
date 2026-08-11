@@ -1,7 +1,7 @@
-/* 工单操作日志时间线组件样式 */
+/* 工单操作日志时间线组件样式 - 进度条式状态段 */
 
 .op-timeline {
-  padding: 16px 0;
+  padding: 8px 0 24px;
   position: relative;
 }
 
@@ -16,163 +16,210 @@
   padding: 40px 0;
 }
 
-.op-timeline__group {
-  position: relative;
-  padding-bottom: 16px;
-}
-
-.op-timeline__connector {
-  position: absolute;
-  left: 11px;
-  top: 32px;
-  bottom: -8px;
-  width: 2px;
-  background: linear-gradient(
-    to bottom,
-    #e5e7eb 0%,
-    #e5e7eb 50%,
-    transparent 100%
-  );
-}
-
-/* 主节点样式 */
-.op-timeline__main {
+/* 单个状态段：左侧彩色条 + 右侧内容 */
+.op-segment {
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 12px;
-  padding: 8px 0 16px 0;
   position: relative;
+  /* 状态段之间留间距，避免交界点重叠 */
+  margin-bottom: 6px;
 }
 
-.op-timeline__dot {
+/* 左侧轨道容器 */
+.op-segment__track {
   flex-shrink: 0;
   width: 24px;
-  height: 24px;
-  border-radius: 50%;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center; /* 圆点和竖条全部水平居中对齐 */
+  justify-content: flex-start;
+  position: relative;
+}
+
+/* 顶部/底部圆点（状态起点/终点） */
+.op-segment__dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 3px solid;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.8);
   z-index: 1;
+  flex-shrink: 0;
+  /* 圆点与竖条之间的小间距，避免视觉重叠 */
+  margin: 2px 0;
 }
 
-.op-timeline__dot--main {
-  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
-  border: 3px solid #dbeafe;
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+.op-segment__dot--start {
+  /* 保持居中 */
 }
 
-.op-timeline__dot--sub {
-  width: 22px;
-  height: 22px;
-  background: #fff;
-  border: 2px solid #d1d5db;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+.op-segment__dot--end {
+  /* 保持居中 */
 }
 
-.op-timeline__icon {
-  font-size: 12px;
-  line-height: 1;
+/* 彩色条主体 - 填满两端圆点之间，水平居中与圆点对齐 */
+.op-segment__bar {
+  width: 4px;
+  flex: 1;
+  min-height: 24px;
+  border-radius: 2px;
+  margin: 0; /* 去掉 margin-left，依靠 track 的 align-items:center 对齐 */
+  opacity: 0.85;
 }
 
-.op-timeline__content {
+/* 右侧内容区 */
+.op-segment__content {
   flex: 1;
   min-width: 0;
+  padding-bottom: 20px;
+  display: flex;
+  flex-direction: column;
 }
 
-.op-timeline__header {
+/* 状态起点标签 */
+.op-segment__start {
+  margin-bottom: 4px;
+}
+
+.op-segment__start-row {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
 
-.op-timeline__status {
+.op-segment__status {
   font-size: 15px;
   font-weight: 600;
-  color: #111827;
 }
 
-.op-timeline__time {
+.op-segment__time {
   font-size: 12px;
   color: #6b7280;
   font-variant-numeric: tabular-nums;
 }
 
-.op-timeline__operator {
+.op-segment__operator {
   font-size: 12px;
-  color: #6b7280;
+  color: #9ca3af;
   margin-top: 2px;
 }
 
-/* 子节点样式 */
-.op-timeline__sub {
+/* 子节点操作区 */
+.op-segment__children {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 12px 0;
-  position: relative;
-  margin-left: 0;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+  padding-left: 4px;
 }
 
-.op-timeline__sub .op-timeline__content {
+.op-segment__sub {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
   background: #f9fafb;
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 1px solid #f3f4f6;
 }
 
-.op-timeline__action {
+.op-segment__sub-dot {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.op-segment__sub-icon {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.op-segment__sub-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.op-segment__action {
   font-size: 13px;
   color: #374151;
   line-height: 1.5;
   word-break: break-all;
 }
 
-.op-timeline__meta {
+.op-segment__sub-meta {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.op-segment__sub-operator {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+/* 状态终点提示 */
+.op-segment__end {
   margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #e5e7eb;
 }
 
-/* 主节点连接线 */
-.op-timeline__group:not(:last-child)::after {
-  content: '';
-  position: absolute;
-  left: 11px;
-  top: 32px;
-  bottom: -8px;
-  width: 2px;
-  background: #e5e7eb;
-  z-index: 0;
+.op-segment__end-current {
+  font-size: 12px;
+  color: #10b981;
+  font-weight: 500;
 }
 
-/* 最后一个分组的连接线 */
-.op-timeline__group:last-child::after {
-  display: none;
+.op-segment__end-next {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.op-segment__end-time {
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
 }
 
 /* 响应式调整 */
 @media (max-width: 480px) {
   .op-timeline {
-    padding: 12px 8px;
+    padding: 8px 4px 16px;
   }
 
-  .op-timeline__dot--main {
-    width: 22px;
-    height: 22px;
-  }
-
-  .op-timeline__dot--sub {
+  .op-segment__track {
     width: 20px;
-    height: 20px;
   }
 
-  .op-timeline__status {
+  .op-segment__dot {
+    width: 12px;
+    height: 12px;
+    border-width: 2px;
+  }
+
+  .op-segment__bar {
+    width: 3px;
+  }
+
+  .op-segment__status {
     font-size: 14px;
   }
 
-  .op-timeline__action {
+  .op-segment__action {
     font-size: 12px;
+  }
+
+  .op-segment__sub {
+    padding: 6px 8px;
   }
 }

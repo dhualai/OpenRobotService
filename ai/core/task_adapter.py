@@ -16,6 +16,18 @@ import hashlib
 
 from app.core.db import SessionLocal
 from app.models.task import Task, TaskStatus, TaskPriority, TaskType, TaskOperationLog, OperationType
+from app.core.database import db_manager
+
+
+def _resolve_operator_name(operator: str) -> str:
+    """通过 username 解析显示名（查用户表兜底）。"""
+    try:
+        user = db_manager.get_user(operator)
+        if user and user.get("name"):
+            return user["name"]
+    except Exception:
+        pass
+    return operator
 
 
 AI_SOURCE = "ai"
@@ -221,22 +233,23 @@ def _log_task_creation(db, task: Task, created_by: str) -> None:
     """
     try:
         operator = created_by or "system"
+        resolved_name = _resolve_operator_name(operator)
         status_val = task.status.value if hasattr(task.status, 'value') else str(task.status)
         # create 操作日志
         db.add(TaskOperationLog(
             task_id=task.id,
             operation_type=OperationType.CREATE,
             operator=operator,
-            operator_name=operator,
+            operator_name=resolved_name,
             to_status=status_val,
-            description=f"{operator} 创建了工单（AI 诊断）",
+            description=f"{resolved_name} 创建了工单（AI 诊断）",
         ))
         # status_change 主节点：状态从无 → new
         db.add(TaskOperationLog(
             task_id=task.id,
             operation_type=OperationType.STATUS_CHANGE,
             operator=operator,
-            operator_name=operator,
+            operator_name=resolved_name,
             to_status=status_val,
             detail={"from": None, "to": status_val},
             description=f"工单状态变更为「{status_val}」",
