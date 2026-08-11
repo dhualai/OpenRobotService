@@ -647,9 +647,7 @@ export default function TicketDetailPage() {
           {(ticket.project_name || ticket.project) && <DetailRow label="所属项目" value={ticket.project_name || ticket.project || ''} />}
           {ticket.contact && <DetailRow label="联系人" value={ticket.contact} />}
           <DetailRow label="创建时间" value={ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''} />
-          {ticket.deadline_at && (
-            <DetailRow label="最晚解决时间" value={formatDateTime(String(ticket.deadline_at))} />
-          )}
+          <DetailRow label="最晚解决时间" value={ticket.deadline_at ? formatDateTime(String(ticket.deadline_at)) : '未设置'} />
         </div>
 
         {/* 人员流转：发起人 → 处理人（与历史工单列表页同款 task-card2__people 样式）

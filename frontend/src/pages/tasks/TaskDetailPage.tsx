@@ -784,15 +784,13 @@ export default function TaskDetailPage() {
                 <span className="detail-info-item__value">{formatDateTime(detail.created_at)}</span>
               </div>
             </div>
-            {detail.deadline_at && (
-              <div className="detail-info-item">
-                <span className="detail-info-item__icon">⏰</span>
-                <div className="detail-info-item__content">
-                  <span className="detail-info-item__label">最晚解决时间</span>
-                  <span className="detail-info-item__value">{formatDateTime(detail.deadline_at)}</span>
-                </div>
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon">⏰</span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">最晚解决时间</span>
+                <span className="detail-info-item__value">{detail.deadline_at ? formatDateTime(detail.deadline_at) : '未设置'}</span>
               </div>
-            )}
+            </div>
             <div className="detail-info-item">
               <span className="detail-info-item__icon">🔄</span>
               <div className="detail-info-item__content">
