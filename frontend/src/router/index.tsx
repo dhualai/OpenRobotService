@@ -10,6 +10,7 @@ const CallView = lazy(() => import('@/pages/call/CallView'));
 const TicketDetailPage = lazy(() => import('@/pages/call/TicketDetailPage'));
 const TasksView = lazy(() => import('@/pages/tasks/TasksView'));
 const TaskDetailPage = lazy(() => import('@/pages/tasks/TaskDetailPage'));
+const OperationLogsPage = lazy(() => import('@/pages/tasks/OperationLogsPage'));
 
 // Admin
 const Dashboard = lazy(() => import('@/pages/admin/Dashboard'));
@@ -63,6 +64,7 @@ export const router = createBrowserRouter([
       { path: 'call/ticket/:id', element: <TicketDetailPage /> },
       { path: 'tasks', element: <TasksView /> },
       { path: 'tasks/:id', element: <TaskDetailPage /> },
+      { path: 'tasks/:id/operations', element: <OperationLogsPage /> },
       {
         path: 'admin',
         element: <Outlet />,

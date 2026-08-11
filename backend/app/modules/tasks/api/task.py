@@ -21,6 +21,8 @@ from app.modules.tasks.schemas.ticket import (
 )
 from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, TicketType
 from app.modules.tasks.services.ticket_service import TicketService
+from app.modules.tasks.services.operation_log_service import OperationLogService
+from app.models.task import OperationType
 from app.modules.tasks.api.ws import ws_broadcast_comment, ws_broadcast_comment_deleted, ws_broadcast_task_updated
 from app.utils.minio_client import minio_client
 from app.utils.notification_utils import NotificationUtils
@@ -48,6 +50,29 @@ async def create_task(
         
         ticket = await TicketService.create_ticket(db, ticket_data, username, comment_attachment_map, token)
         logger.info(f"创建任务成功: task_id={ticket.id}, title={ticket.title[:50] if ticket.title else '无标题'}")
+        
+        # 记录创建操作日志
+        user_name = current_user.get('name') or current_user.get('username') if current_user else None
+        await OperationLogService.log(
+            db=db,
+            task_id=ticket.id,
+            op_type=OperationType.CREATE,
+            operator=username,
+            operator_name=user_name,
+            to_status=ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status),
+            description=f"{user_name or username} 创建了工单",
+        )
+        await OperationLogService.log(
+            db=db,
+            task_id=ticket.id,
+            op_type=OperationType.STATUS_CHANGE,
+            operator=username,
+            operator_name=user_name,
+            to_status=ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status),
+            detail={"from": None, "to": ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)},
+            description=f"工单状态变更为「{ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)}」",
+        )
+        
         return ticket
     except Exception as e:
         logger.error(f"创建任务失败: title={ticket_data.title[:50] if ticket_data.title else '无标题'}, error={str(e)}", exc_info=True)
@@ -219,6 +244,24 @@ async def get_task(
             logger.warning(f"任务未找到: task_id={task_id}")
             raise HTTPException(status_code=404, detail="任务未找到")
         logger.info(f"获取任务详情成功: task_id={task_id}, load_comments={load_comments}")
+        
+        # 记录查看操作日志（带5分钟去重）
+        if token:
+            try:
+                from app.core.security import decode_token
+                payload = decode_token(token)
+                username = payload.get("sub") if payload else None
+                if username:
+                    user_name = payload.get("name", username) if payload else username
+                    await OperationLogService.log_view(
+                        db=db,
+                        task_id=task_id,
+                        username=username,
+                        user_name=user_name,
+                    )
+            except Exception as view_err:
+                logger.warning(f"Failed to log view for task {task_id}: {view_err}")
+        
         return ticket
     except HTTPException:
         raise
@@ -317,6 +360,7 @@ async def update_task(
 
     is_admin = current_user.get('is_admin', False)
     username = current_user.get('username', '')
+    user_name = current_user.get('name', username)
 
     if not is_admin:
         if username not in [ticket.assigned_to, ticket.customer, ticket.created_by]:
@@ -344,6 +388,65 @@ async def update_task(
 
         if result["ticket"] is None:
             raise HTTPException(status_code=404, detail="任务未找到")
+
+        # ── 记录操作日志 ──
+        # 1. 状态变更日志
+        if ticket_update.status:
+            new_status = ticket_update.status.value if hasattr(ticket_update.status, 'value') else str(ticket_update.status)
+            old_status = ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)
+            await OperationLogService.log(
+                db=db,
+                task_id=task_id,
+                op_type=OperationType.STATUS_CHANGE,
+                operator=username,
+                operator_name=user_name,
+                to_status=new_status,
+                detail={"from": old_status, "to": new_status},
+                description=f"{user_name} 将工单状态变更为「{new_status}」",
+            )
+        
+        # 2. 其他操作日志（根据 operation_type 或字段变更推断）
+        op_type_str = ticket_update.operation_type
+        changed_fields = []
+        update_data = ticket_update.model_dump(exclude={'operation_type'}, exclude_unset=True)
+        for key, value in update_data.items():
+            if value is not None and key != 'status':
+                changed_fields.append(key)
+        
+        if op_type_str == 'escalate':
+            await OperationLogService.log(
+                db=db, task_id=task_id, op_type=OperationType.ESCALATE,
+                operator=username, operator_name=user_name,
+                description=f"{user_name} 升级了工单",
+            )
+        elif op_type_str == 'return':
+            await OperationLogService.log(
+                db=db, task_id=task_id, op_type=OperationType.RETURN,
+                operator=username, operator_name=user_name,
+                description=f"{user_name} 退回了工单",
+            )
+        elif op_type_str == 'reassign':
+            new_assignee = update_data.get('assigned_to', '')
+            await OperationLogService.log(
+                db=db, task_id=task_id, op_type=OperationType.REASSIGN,
+                operator=username, operator_name=user_name,
+                detail={"new_assignee": new_assignee},
+                description=f"{user_name} 将工单重新指派给 {new_assignee}",
+            )
+        elif changed_fields:
+            # 普通字段更新
+            field_labels = {
+                'title': '标题', 'description': '描述', 'priority': '优先级',
+                'ticket_type': '类型', 'customer': '客户', 'team': '团队',
+                'project_name': '项目名称', 'project_id': '项目ID',
+            }
+            label_list = [field_labels.get(f, f) for f in changed_fields]
+            await OperationLogService.log(
+                db=db, task_id=task_id, op_type=OperationType.UPDATE,
+                operator=username, operator_name=user_name,
+                detail={"fields": changed_fields},
+                description=f"{user_name} 修改了工单的「{'、'.join(label_list)}」",
+            )
 
         return result
     except ValueError as ve:
@@ -405,6 +508,17 @@ async def add_comment(
             .values(updated_at=func.now())
         )
         await db.commit()
+
+        # ── 记录评论操作日志 ──
+        content_summary = comment_data.content[:100] + ('...' if len(comment_data.content) > 100 else '')
+        await OperationLogService.log(
+            db=db,
+            task_id=task_id,
+            op_type=OperationType.COMMENT,
+            operator=username,
+            operator_name=operator,
+            description=f"{operator} 添加了评论：{content_summary}",
+        )
 
         # ── @mention 通知：检测评论中的 @用户名，排除 @U老师 ──
         _maybe_notify_mentions(
@@ -652,6 +766,9 @@ async def assign_task(
 ):
     # 放开 admin 限制：允许任何已登录用户改派（兜底双工单场景下提单人需将工单派给项目负责人）。
     try:
+        username = current_user.get('username', 'system')
+        user_name = current_user.get('name', username)
+        
         ticket = await TicketService.assign_ticket(db, task_id, user_id)
         # ── WS 实时广播：工单改派 ──
         try:
@@ -660,6 +777,18 @@ async def assign_task(
             pass
         if not ticket:
             raise HTTPException(status_code=404, detail="任务未找到")
+        
+        # ── 记录改派操作日志 ──
+        await OperationLogService.log(
+            db=db,
+            task_id=task_id,
+            op_type=OperationType.ASSIGN,
+            operator=username,
+            operator_name=user_name,
+            detail={"new_assignee": user_id},
+            description=f"{user_name} 将工单指派给 {user_id}",
+        )
+        
         return ticket
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"分配任务失败: {str(e)}")
@@ -682,6 +811,38 @@ async def trigger_ai_assignment(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"触发AI分配处理人失败: {str(e)}")
+
+
+@router.get("/{task_id}/operation-logs", response_model=List[dict])
+async def get_task_operation_logs(
+    task_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
+):
+    """获取工单操作日志列表（按时间倒序）"""
+    try:
+        logs = await OperationLogService.list_by_task(db, task_id)
+        
+        # 转换为前端需要的格式
+        result = []
+        for log in logs:
+            result.append({
+                "id": log.id,
+                "task_id": log.task_id,
+                "operation_type": log.operation_type.value if hasattr(log.operation_type, 'value') else str(log.operation_type),
+                "operator": log.operator,
+                "operator_name": log.operator_name,
+                "to_status": log.to_status,
+                "detail": log.detail,
+                "description": log.description,
+                "created_at": log.created_at.isoformat() if log.created_at else None,
+            })
+        return result
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"获取工单操作日志失败: task_id={task_id}, error={str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取工单操作日志失败: {str(e)}")
 
 
 @router.post("/comments/attachments")

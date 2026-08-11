@@ -4,7 +4,6 @@
 import { Suspense, useEffect, useRef } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { TabBar, TabBarItem, Loading } from 'tdesign-mobile-react';
-import { CallIcon, TaskIcon, SettingIcon } from 'tdesign-icons-react';
 import { useWorkbenchStore, type WorkbenchTab } from '@/stores/workbench';
 
 const TAB_PATHS: Record<WorkbenchTab, string> = {
@@ -54,11 +53,17 @@ export default function MainLayout() {
           <Outlet />
         </Suspense>
       </div>
-      {/* 极简图标导航（描边几何风，与全站 tdesign-icons 统一）：Call=摇人(呼叫) Task=任务 Setting=管理 */}
+      {/* 底部三 Tab：emoji 图标 + 文字（非简约风，原设计） */}
       <TabBar value={activeTab} onChange={handleChange} placeholder>
-        <TabBarItem value="call" icon={<CallIcon size="24px" />} aria-label="我要摇人" />
-        <TabBarItem value="tasks" icon={<TaskIcon size="24px" />} aria-label="系统任务" />
-        <TabBarItem value="admin" icon={<SettingIcon size="24px" />} aria-label="后台管理" />
+        <TabBarItem value="call" icon={<span>🆘</span>}>
+          我要摇人
+        </TabBarItem>
+        <TabBarItem value="tasks" icon={<span>📥</span>}>
+          系统任务
+        </TabBarItem>
+        <TabBarItem value="admin" icon={<span>📊</span>}>
+          后台管理
+        </TabBarItem>
       </TabBar>
     </div>
   );
