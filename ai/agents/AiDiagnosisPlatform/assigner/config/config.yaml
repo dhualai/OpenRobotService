@@ -6,6 +6,7 @@
 #   module_keywords      → recall/history_recall.py（L3 历史召回：历史工单标签提取）
 #   module_anchor_texts  → recall/semantic_recall.py（L2 语义召回：Embedding 锚文本）
 #   ranker_weights       → ranking/ranker.py（三路召回加权）
+#   history_recall       → recall/history_recall.py（L3 历史召回增强：时间衰减 + Top-K + 故障码）
 #   job_level_penalty    → ranking/ranker.py（职级折扣）
 #   department_keywords  → filtering/department_filter.py（部门过滤关键词：strong/medium/weak 三级）
 #   department_scenes    → filtering/department_filter.py（部门故障场景库，embedding 语义补漏）
@@ -223,6 +224,28 @@ ranker_weights:
   llm_match: 0.70        # L1 纯LLM：LLM 看全员画像直接打分（权重最大，主导派单）
   semantic_match: 0.20   # L2 语义：Embedding 工单 → 模块锚文本 → 过滤工程师
   history_match: 0.10    # L3 历史：相似历史工单 → 按解决人聚合（数据积累中，暂低权重）
+
+# ══════════════════════════════════════════════════════════════════
+# 3.2 L3 历史召回增强参数（双路并行）
+#    消费方：recall/history_recall.py（A路）+ recall/expertise_recall.py（B路）
+#    - top_k:             每人取最高的前 K 条历史记录参与聚合（A路）
+#    - half_life_days:    时间衰减半衰期（天），越大历史越不易被遗忘（A/B 共用）
+#    - sim_threshold:     历史工单相似度阈值（A路）
+#    - fault_code_boost:  历史同故障码的加分（A路）
+#    - robot_type_boost:  历史同车型的加分（A路）
+#    - decay_weight:      时间衰减在最终分中的占比（剩余部分给相似度）
+#    - weight_a:          A路（相似工单聚人）融合权重
+#    - weight_b:          B路（问题域聚人）融合权重
+# ══════════════════════════════════════════════════════════════════
+history_recall:
+  top_k: 5
+  half_life_days: 90        # 半衰期90天：90天后经验仍保留 ~37%，半年后仍保留 ~14%
+  sim_threshold: 0.3
+  fault_code_boost: 0.15
+  robot_type_boost: 0.10
+  decay_weight: 0.5
+  weight_a: 0.5             # A路（相似工单聚人）
+  weight_b: 0.5             # B路（问题域聚人）
 
 # ══════════════════════════════════════════════════════════════════
 # 4. 职级惩罚系数
