@@ -729,6 +729,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     let acc = '';
     let convId: number | null = null; // 局部快照：发送期间用户可能切会话，落库必须用快照
     let hasResult = false;
+    let streamError = ''; // 后端 SSE event:error 的真实错误（非流解析问题）
     let lastFlush = 0;
     const FLUSH_MS = 90;
     const paint = () => setMessages((prev) => prev.map((m) =>
@@ -743,26 +744,33 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
       await qaUploadStream(sid, [file], content, {
         // 文件已保存：回填文件 URL、进度遮罩消失、持久化用户消息
+        // 注意：此回调必须自身捕获所有异常——它发生在 SSE 读流循环内，
+        // 一旦前抛错会中断整个流，导致"后端成功却显示上传失败"。
         onFileSaved: async (d) => {
-          const uploaded = d.saved?.[0];
-          const fileUrl = uploaded?.object_path ? attachmentUrl(uploaded.object_path) : undefined;
-          setMessages((prev) => prev.map((m) => {
-            if (m.id !== userId) return m;
-            const updated: Message = { ...m, uploading: false, percent: 100 };
-            if (isImage && fileUrl) {
-              if (m.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(m.imageUrl);
-              updated.imageUrl = fileUrl;
-            } else if (!isImage && fileUrl && m.attachment) {
-              updated.attachment = { ...m.attachment, url: fileUrl };
+          try {
+            const uploaded = d.saved?.[0];
+            const fileUrl = uploaded?.object_path ? attachmentUrl(uploaded.object_path) : undefined;
+            setMessages((prev) => prev.map((m) => {
+              if (m.id !== userId) return m;
+              const updated: Message = { ...m, uploading: false, percent: 100 };
+              if (isImage && fileUrl) {
+                if (m.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(m.imageUrl);
+                updated.imageUrl = fileUrl;
+              } else if (!isImage && fileUrl && m.attachment) {
+                updated.attachment = { ...m.attachment, url: fileUrl };
+              }
+              return updated;
+            }));
+            // 持久化用户消息（存 object_path，前端恢复时拼后端代理路径 /api/call/files/{object_path}）
+            convId = await ensureConversation(sid, content || `[发送了附件] ${file.name}`);
+            if (convId) {
+              const objectPath = uploaded?.object_path;
+              const fileUrls = objectPath ? JSON.stringify([{ filename: file.name, object_path: objectPath, size: file.size, isImage }]) : undefined;
+              appendMessage(convId, 'user', content || `[发送了附件] ${file.name}`, { fileUrls, messageType: isImage ? 'image' : 'file' }).catch(() => {});
             }
-            return updated;
-          }));
-          // 持久化用户消息（存 object_path，前端恢复时拼后端代理路径 /api/call/files/{object_path}）
-          convId = await ensureConversation(sid, content || `[发送了附件] ${file.name}`);
-          if (convId) {
-            const objectPath = uploaded?.object_path;
-            const fileUrls = objectPath ? JSON.stringify([{ filename: file.name, object_path: objectPath, size: file.size, isImage }]) : undefined;
-            appendMessage(convId, 'user', content || `[发送了附件] ${file.name}`, { fileUrls, messageType: isImage ? 'image' : 'file' }).catch(() => {});
+          } catch (e) {
+            // 落库/建会话失败不阻塞上传与 AI 流式回复
+            console.warn('[ChatPanel] 上传文件已保存，但持久化会话失败:', e);
           }
         },
         // VLM 描述 &（附带文字时的）诊断文字都在此累计
@@ -776,9 +784,16 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           if (data.ticket) refreshTasks();
         },
         onError: (msg) => {
-          throw new Error(msg);
+          // 记录真实错误（qaUploadStream 已安全包装，不会中断流）。
+          // 流结束后若没有内容则据此标记上传失败。
+          streamError = msg;
         },
       });
+
+      // 流结束：若确实是后端报错且未产出任何回复 → 按失败处理
+      if (streamError && !acc) {
+        throw new Error(streamError);
+      }
 
       // 流结束：清洗并写入最终回复，持久化 assistant
       const finalContent = sanitizeAiText(acc);
