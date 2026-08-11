@@ -331,6 +331,20 @@ export const qaUploadStream = async (
   message: string,
   cb: UploadStreamCallbacks,
 ): Promise<void> => {
+  // 安全包装：回调在 SSE 读流循环内被调用，任何回调抛错都会中断整个流，
+  // 导致"后端成功却前台显示失败"。这里统一吞掉回调异常，让流正常读完。
+  const safe = <A extends unknown[]>(fn?: (...args: A) => void | Promise<void>) =>
+    (...args: A) => {
+      try {
+        const r = fn?.(...args);
+        if (r && typeof (r as Promise<void>).catch === 'function') {
+          (r as Promise<void>).catch((e) => console.warn('[upload-stream] 回调异常已忽略:', e));
+        }
+      } catch (e) {
+        console.warn('[upload-stream] 回调异常已忽略:', e);
+      }
+    };
+
   const doStream = async (tok: string | null): Promise<boolean> => {
     const formData = new FormData();
     formData.append('session_id', sessionId);
@@ -347,11 +361,11 @@ export const qaUploadStream = async (
     if (resp.status === 401) return false;
 
     if (!resp.ok) {
-      cb.onError?.(`上传失败: HTTP ${resp.status}`);
+      safe(cb.onError)(`上传失败: HTTP ${resp.status}`);
       return true;
     }
     if (!resp.body) {
-      cb.onError?.('流式响应为空');
+      safe(cb.onError)('流式响应为空');
       return true;
     }
 
@@ -383,17 +397,17 @@ export const qaUploadStream = async (
             continue;
           }
           if (currentEvent === 'file_saved') {
-            cb.onFileSaved?.(data as unknown as { saved: never[]; filenames: string });
+            safe(cb.onFileSaved)(data as unknown as Parameters<NonNullable<UploadStreamCallbacks['onFileSaved']>>[0]);
           } else if (data.token) {
-            cb.onToken?.(String(data.token));
+            safe(cb.onToken)(String(data.token));
           } else if (currentEvent === 'vision_done' && typeof data.desc === 'string') {
-            cb.onVisionDone?.(data.desc);
+            safe(cb.onVisionDone)(data.desc);
           } else if (currentEvent === 'result') {
-            cb.onResult?.(data);
+            safe(cb.onResult)(data);
           } else if (currentEvent === 'done') {
-            cb.onDone?.(data as { total_ms?: number });
+            safe(cb.onDone)(data as { total_ms?: number });
           } else if (currentEvent === 'error' && data.error) {
-            cb.onError?.(String(data.error));
+            safe(cb.onError)(String(data.error));
           }
         }
       }
@@ -411,7 +425,7 @@ export const qaUploadStream = async (
     }
     if (!ok) {
       kickToLogin('登录已过期，请重新登录');
-      cb.onError?.('登录已过期，请重新登录');
+      safe(cb.onError)('登录已过期，请重新登录');
     }
   }
 };
