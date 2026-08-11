@@ -1390,14 +1390,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     setTicketConfirm((s) => ({ ...s, overrides: { ...s.overrides, [k]: v } }));
 
   // ── 最晚解决时间（截止时间）：按优先级分档的拖拽进度条 ──
-  // 紧急/高 → 0-24h 按小时（每 2h 一档）；中 → 1-3天 按天；低 → 3-7天 按天
+  // 紧急 → 2-24h 按小时（每 2h）；高 → 1-3天；中 → 3-5天；低 → 5-7天
   // 刻度值统一为「小时数」（天数 ×24），展示时再换算回人类可读
   type DeadlineScale = { unit: 'h' | 'd'; min: number; max: number; step: number; defaultHours: number; marks: number[] };
   const DEADLINE_SCALES: Record<string, DeadlineScale> = {
-    urgent: { unit: 'h', min: 0, max: 24, step: 2, defaultHours: 8, marks: [0, 2, 4, 6, 8, 12, 16, 20, 24] },
-    high: { unit: 'h', min: 0, max: 24, step: 2, defaultHours: 8, marks: [0, 2, 4, 6, 8, 12, 16, 20, 24] },
-    medium: { unit: 'd', min: 1, max: 3, step: 1, defaultHours: 48, marks: [24, 48, 72] },
-    low: { unit: 'd', min: 3, max: 7, step: 1, defaultHours: 120, marks: [72, 96, 120, 144, 168] },
+    urgent: { unit: 'h', min: 2, max: 24, step: 2, defaultHours: 14, marks: [2, 4, 6, 8, 12, 16, 20, 24] },
+    high:   { unit: 'd', min: 1, max: 3,  step: 1, defaultHours: 48, marks: [24, 48, 72] },
+    medium: { unit: 'd', min: 3, max: 5,  step: 1, defaultHours: 96, marks: [72, 96, 120] },
+    low:    { unit: 'd', min: 5, max: 7,  step: 1, defaultHours: 144, marks: [120, 144, 168] },
   };
   const PRIORITY_TO_SCALE: Record<string, keyof typeof DEADLINE_SCALES> = {
     '紧急': 'urgent', '高': 'high', '中': 'medium', '低': 'low',
