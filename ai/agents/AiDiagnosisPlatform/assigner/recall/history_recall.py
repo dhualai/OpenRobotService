@@ -24,6 +24,9 @@ import numpy as np
 
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import TicketContext
+from ai.core.logging import get_logger
+
+logger = get_logger("ASSIGNER")
 
 
 # 兼容：旧实现用的缓存（Qdrant 化后不再用，保留惰性清理）
@@ -112,6 +115,7 @@ class HistoryRecall:
         # 从 Qdrant 检索相似历史工单（返回带 engineer_id 的原始 points）
         hits = await retriever.retrieve_dispatch_history(q, top_k=30)
         if not hits:
+            logger.debug("[history_recall] L3-A 相似工单: 无检索命中")
             return {}
 
         # 逐条算最终分：sim×融合 + 故障码/车型 boost，再按 engineer_id 聚合
@@ -149,6 +153,10 @@ class HistoryRecall:
             # 峰值加权：Top1 占主导，其余仅轻微补充
             his[eid] = round(0.7 * top1 + 0.3 * avg_rest, 4)
 
+        logger.debug(
+            f"[history_recall] L3-A 相似工单: 检索{len(hits)}条(过阈值{sum(1 for h in hits if float(h.get('score',0)) >= self._sim_threshold)}) "
+            f"聚人={len(his)}人"
+        )
         return his
 
 

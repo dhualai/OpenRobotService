@@ -64,9 +64,11 @@ class LlmRecall:
 
         # ── 候选人数少：单轮一次性全量评估，不分批 ──
         if n <= self.SINGLE_ROUND_MAX:
-            return await self._llm_score_batch(
+            scores = await self._llm_score_batch(
                 ticket, engineers, top_k=n,  # 要求评估全部 n 位
             )
+            logger.debug(f"[llm_recall] 单轮全量评估 人数={n} 输出={len(scores)}人")
+            return scores
 
         # ── 候选人数多：分批初选 + 合并决选 ──
         stage1: Dict[str, float] = {}
@@ -74,21 +76,38 @@ class LlmRecall:
             engineers[i:i + self.BATCH_SIZE]
             for i in range(0, n, self.BATCH_SIZE)
         ]
-        for batch in batches:
+        logger.info(
+            f"[llm_recall] L1分批初选 总人数={n} 分{len(batches)}批 每批取Top{self.ROUND1_TOP_K}"
+        )
+        for bi, batch in enumerate(batches, 1):
             scores = await self._llm_score_batch(ticket, batch, top_k=self.ROUND1_TOP_K)
             top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[: self.ROUND1_TOP_K]
             stage1.update(dict(top))
-        logger.debug(f"[llm_recall] 分批初选: {n}→{len(stage1)} 人")
+            top_names = [
+                f"{next((e.name for e in batch if e.id == eid), eid[:8])}:{sc:.2f}"
+                for eid, sc in top
+            ]
+            logger.debug(
+                f"[llm_recall]   批次{bi}/{len(batches)} 人数={len(batch)} "
+                f"命中={len(top)}人 [{', '.join(top_names)}]"
+            )
+        logger.debug(f"[llm_recall] 分批初选汇总: {n}→{len(stage1)} 人")
 
         winners = [e for e in engineers if e.id in stage1]
         if not winners:
+            logger.warning("[llm_recall] 分批初选无胜者，返回空")
             return {}
 
         # 第二层决选（胜者数仍偏多才触发）
         if len(winners) <= self.ROUND2_MAX:
+            logger.debug(
+                f"[llm_recall] 胜者{len(winners)}≤ROUND2_MAX，不再决选返回"
+            )
             return {k: stage1[k] for k in winners if k in stage1}
         final = await self._llm_score_batch(ticket, winners, top_k=self.ROUND2_MAX)
-        logger.debug(f"[llm_recall] 合并决选: {len(winners)}→{len(final)} 人")
+        logger.info(
+            f"[llm_recall] L1合并决选 胜者={len(winners)}人 → 决选出={len(final)}人"
+        )
         return final
 
     def _build_prompt(self, ticket, engineers, top_k: int = 5):
