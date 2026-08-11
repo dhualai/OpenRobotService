@@ -1117,11 +1117,10 @@ class AiDiagnosisPlatform:
     # 工单生成
     # ================================================================
     async def _backfill_collected_info(self, session_id: str, agent_state: AgentState, memory) -> None:
-        """提单前专用回填：主对话 LLM 经常嘴上"已记录"但没写进 collected_info，
-        这里对当前问题的对话做一次聚焦提取，把提到的字段补齐（不覆盖已有值）。
-        仅在 submit/prepare 等提单关口调用，一轮一次 LLM 调用。
-        只取 context_start 之后的 turns——上一张工单提交前的旧对话不参与，
-        防止已清空的 collected_info 被旧轮次重新填满、绕过闭环保护。"""
+        """提单前回填：基于 required_fields 清单从对话中提取用户已给出的信息，
+        补入 collected_info（不覆盖已有值）。仅提取 required_fields 中指定的字段——
+        key 名必须与 required_fields 一致，保证后续 _assess_ticket_readiness 能对上。
+        required_fields 为空时退化为仅提取 project。"""
         try:
             turns = memory.turns[agent_state.context_start:]
             if not turns:
@@ -1130,28 +1129,49 @@ class AiDiagnosisPlatform:
                 f"{'用户' if t['role'] == 'user' else '助手'}：{t['content']}"
                 for t in turns[-20:]
             )
-            prompt = (
-                "请从以下对话中提取工单字段，只提取对话中明确出现的信息，不要推测、不要编造。\n"
-                "⚠️ **铁律**：scenario 和 expected_effect 字段**永远留空**（这两个字段只能由主对话 LLM 在需求类对话中填写，backfill 不准填）。\n"
-                "以 JSON 返回，没提到的字段给空字符串：\n"
-                '{"project":"项目/现场名称","occurrence_time":"故障发生时间","robot_type":"具体车型/编号（AGV、机器人这类泛称留空）",'
-                '"frequency":"出现频率（每次/偶尔/首次）","scenario":"","expected_effect":"",'
-                '"version":"软件版本号","steps_to_reproduce":"复现步骤","support_type":"支持类型"}\n\n'
-                f"## 对话\n{conversation_text}"
-            )
+            rf = agent_state.required_fields or {}
+            if rf:
+                field_list = "\n".join(f"  - {k}（{label}）" for k, label in rf.items())
+                prompt = (
+                    "从以下对话中提取指定字段的值，仅提取对话中直接提及的内容，不推测、不编造。\n\n"
+                    "## 目标字段\n"
+                    f"{field_list}\n"
+                    "## 输出规范\n"
+                    "- 以 JSON 对象返回，key 必须使用目标字段中给定的英文标识，不要改名\n"
+                    "- 同时提取 project（项目/现场/厂区名称，非空时输出）\n"
+                    "- 对话中未提及的字段不输出\n\n"
+                    f"## 对话\n{conversation_text}\n"
+                )
+            else:
+                prompt = (
+                    "从以下对话中提取 project（项目/现场/厂区名称），仅提取对话中直接提及的内容。\n"
+                    "以 JSON 返回：{\"project\":\"名称\"}，未提及返回 {}。\n\n"
+                    f"## 对话\n{conversation_text}\n"
+                )
             raw = await self._llm_client.complete(prompt=prompt, max_tokens=400, temperature=0)
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
             data = json.loads(clean)
             filled = []
+            # 只接受 required_fields 中定义的 key + project
+            valid_keys = set(rf.keys())
+            valid_keys.add("project")
+            valid_aliases = {"project_name", "projectName", "projectname"}
             for k, v in data.items():
-                if not v or k in agent_state.collected_info:
+                if not v:
                     continue
                 v = str(v).strip()
-                if v:
-                    # 归一化：LLM 可能输出 project_name 等变体
-                    _key = "project" if k in ("project_name", "projectName", "projectname") else k
-                    agent_state.collected_info[_key] = v
-                    filled.append(_key)
+                if not v:
+                    continue
+                # 别名归一化
+                if k in valid_aliases:
+                    k = "project"
+                if k not in valid_keys:
+                    logger.debug(f"[backfill] 忽略非目标字段: {k}={v[:30]}")
+                    continue
+                if k in agent_state.collected_info:
+                    continue
+                agent_state.collected_info[k] = v
+                filled.append(k)
             if filled:
                 logger.info(f"[backfill] 从对话回填 collected_info: session={session_id}, fields={filled}")
         except Exception:
@@ -1172,25 +1192,16 @@ class AiDiagnosisPlatform:
                 for t in turns[-20:]
             )
             prompt = (
-                "根据以下对话，判断工单类型，并决定生成有效工单还需向用户确认哪 2-3 个关键字段。\n"
-                "key 用英文，value 写简短中文标签（≤8字，如【错误现象】【发生时间】，不要写整句话）。\n"
-                "🔴 value 必须写**通用简短标签**（「具体现象」「发生时间」「复现步骤」），"
-                "严禁把用户的问题描述写进 value（如「提单找不到项目」）——这会被截断成乱码显示给用户。\n"
-                "参考字段（不限，按需选用）：\n"
-                "  robot_type(车型/编号) occurrence_time(发生时间) frequency(出现频率)\n"
-                "  fault_code(故障码) location(现场位置) version(版本) steps_to_reproduce(复现步骤)\n"
-                "  scenario(需求场景) expected_effect(期望效果) support_type(支持类型)\n"
-                "  error_message(错误信息/现象描述)\n"
-                "对话里已经明确给过的字段不要再要求。不要用可选细节卡提单——只问真正缺的关键信息。\n"
-                "⚠️ project（项目名称）系统已强制要求，**不要写进 required_fields**。\n"
-                "🔴 如果问题不涉及具体车辆/机器人（如平台功能、登录问题、软件配置），"
-                "不要要求 robot_type、fault_code、location。只选和问题实际相关的字段。\n"
-                "只返回 JSON，无多余文字。示例——\n"
-                "报障(涉及车)：{\"ticket_type\":\"problem\",\"required_fields\":{\"robot_type\":\"具体车型/编号\","
-                "\"occurrence_time\":\"发生时间\"}}\n"
-                "报障(登录/平台)：{\"ticket_type\":\"problem\",\"required_fields\":{\"error_message\":\"具体现象\"}}\n"
-                "support：{\"ticket_type\":\"support\",\"required_fields\":{\"support_type\":\"所需支持\"}}\n\n"
-                f"## 对话\n{conv}"
+                "分析以下对话，判定工单类型（problem/bug/feature/support/other），"
+                "并识别要解决该工单还需向用户收集的 2-3 个关键信息项。\n\n"
+                "## 输出规范\n"
+                "- ticket_type：从 problem/bug/feature/support/other 中选取\n"
+                "- required_fields：JSON 对象，key 为英文标识，value 为中文简短标签（≤8 字）\n"
+                "- 字段应基于对话内容推导——不同问题的信息缺口不同，无固定词表\n"
+                "- 对话中已明确的信息不再列入\n"
+                "- project（项目名称）为系统级必填项，不要写入 required_fields\n"
+                "- 仅输出 JSON，无额外文字\n\n"
+                f"## 对话\n{conv}\n"
             )
             raw = await self._llm_client.complete(prompt=prompt, max_tokens=300, temperature=0)
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
@@ -1381,6 +1392,9 @@ class AiDiagnosisPlatform:
         can_submit, reason = _can_submit(agent_state)
         if not can_submit:
             raise ValueError(reason)
+        # 若尚未决定所需字段，先决定（确保 backfill 有目标字段清单可用）
+        if not agent_state.required_fields:
+            await self._decide_ticket_fields(session_id, agent_state, memory)
         # 提单关口回填：主对话 LLM 可能没把用户说过的字段写进 collected_info
         await self._backfill_collected_info(session_id, agent_state, memory)
         if not agent_state.collected_info.get("project", "").strip() and not agent_state.collected_info.get("project_id", "").strip():
@@ -1444,12 +1458,10 @@ class AiDiagnosisPlatform:
             return {"code": 1, "message": reason}
 
         # 保底必填字段校验（与对话路径同标准）——不足则不开弹窗，回对话补充
-        # 先回填：主对话 LLM 可能没把用户说过的字段写进 collected_info
-        await self._backfill_collected_info(session_id, agent_state, memory)
-        # 首次转单：动态决定工单类型和必补字段（与 stream 路径一致），
-        # 避免第一次只拦 project、第二次又问 robot_type 的"分批追问"
+        # 首次转单：先 decide 决定字段清单，再 backfill 从对话补齐
         if not agent_state.required_fields:
             await self._decide_ticket_fields(session_id, agent_state, memory)
+        await self._backfill_collected_info(session_id, agent_state, memory)
         ready, missing = _assess_ticket_readiness(agent_state)
         if not ready:
             logger.info(f"[prepare] 信息不足拦截: session={session_id}, "
@@ -1501,7 +1513,9 @@ class AiDiagnosisPlatform:
 
         agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
         # 服务端兜底：保底必填字段必须已在对话中收集（弹窗不承载这些字段，防直调 API 绕过）
-        # 先回填：主对话 LLM 可能没把用户说过的字段写进 collected_info
+        # 先 decide 决定字段清单，再 backfill 从对话补齐
+        if not agent_state.required_fields:
+            await self._decide_ticket_fields(session_id, agent_state, memory)
         await self._backfill_collected_info(session_id, agent_state, memory)
         ready, missing = _assess_ticket_readiness(agent_state)
         if not ready:
