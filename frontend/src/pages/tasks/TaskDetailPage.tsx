@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
+import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem, DateTimePicker } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
@@ -119,6 +119,7 @@ export default function TaskDetailPage() {
   const [detail, setDetail] = useState<Ticket | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [editDeadlinePickerVisible, setEditDeadlinePickerVisible] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; deadline_at?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
   const [escalateUser, setEscalateUser] = useState<UserItem | null>(null);
   const [showEscalatePopup, setShowEscalatePopup] = useState(false);
@@ -1021,21 +1022,25 @@ export default function TaskDetailPage() {
                 ))}
               </div>
             </div>
-            {/* 最晚解决时间：编辑页只读回显已有值（不回显进度条，进度条仅提单时用） */}
+            {/* 最晚解决时间：DateTimePicker 选择，最小单位小时 */}
             <div className="ticket-edit-form__field">
               <label className="ticket-edit-form__label">最晚解决时间</label>
               <div className="ticket-confirm__deadline">
-                <div className="ticket-confirm__deadline-preview">
-                  <span className="ticket-confirm__deadline-abs">
-                    {editForm.deadline_at ? formatEditDeadlineAbs(editForm.deadline_at) : '未设置'}
+                <div
+                  className="ticket-confirm__deadline-field"
+                  onClick={() => setEditDeadlinePickerVisible(true)}
+                >
+                  <span className={editForm.deadline_at ? 'ticket-confirm__deadline-value' : 'ticket-confirm__deadline-placeholder'}>
+                    {editForm.deadline_at ? formatEditDeadlineAbs(editForm.deadline_at) : '点击选择'}
                   </span>
+                  <span className="ticket-confirm__deadline-arrow">›</span>
                 </div>
                 {editForm.deadline_at && (
                   <button
                     type="button"
                     className="ticket-confirm__deadline-clear"
                     onClick={() => setEditForm((p) => ({ ...p, deadline_at: undefined }))}
-                  >清除截止时间</button>
+                  >清除</button>
                 )}
               </div>
             </div>
@@ -1045,6 +1050,25 @@ export default function TaskDetailPage() {
             <Button theme="primary" block onClick={saveEdit}>保存</Button>
           </div>
         </div>
+      </Popup>
+
+      {/* 最晚解决时间选择器：mode=hour 最小单位小时 */}
+      <Popup visible={editDeadlinePickerVisible} onClose={() => setEditDeadlinePickerVisible(false)} placement="bottom">
+        <DateTimePicker
+          mode="hour"
+          title="选择最晚解决时间"
+          format="YYYY-MM-DD HH:00"
+          value={editForm.deadline_at || undefined}
+          onConfirm={(v) => {
+            const d = new Date(typeof v === 'number' ? v : String(v));
+            if (!isNaN(d.getTime())) {
+              d.setMinutes(0, 0, 0);
+              setEditForm((p) => ({ ...p, deadline_at: d.toISOString() }));
+            }
+            setEditDeadlinePickerVisible(false);
+          }}
+          onCancel={() => setEditDeadlinePickerVisible(false)}
+        />
       </Popup>
 
       <Popup visible={showEscalatePopup} onClose={() => { setShowEscalatePopup(false); setEscalateReason(''); }} placement="bottom" showOverlay>
