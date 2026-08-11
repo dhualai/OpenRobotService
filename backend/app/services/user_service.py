@@ -25,14 +25,19 @@ class UserService:
             
             for user_record in paginated_user_records:
                 user_roles = all_users_roles.get(user_record.id, {})
-                
+
                 external_credentials = {}
                 if hasattr(user_record, 'external_credentials') and user_record.external_credentials:
                     try:
                         external_credentials = json.loads(user_record.external_credentials)
                     except:
                         external_credentials = {}
-                
+
+                rm = getattr(user_record, 'responsibility_modules', None)
+                # 历史脏数据（非 dict）归一为 {}，避免 Pydantic 校验失败
+                if not isinstance(rm, dict):
+                    rm = {}
+
                 user_response = {
                     'id': user_record.id,
                     'username': user_record.username,
@@ -41,9 +46,10 @@ class UserService:
                     'name': getattr(user_record, 'name', None),
                     'status': getattr(user_record, 'status', 'inactive'),
                     'external_credentials': external_credentials,
+                    'company': getattr(user_record, 'company', None),
                     'department': getattr(user_record, 'department', None),
-                    'responsibility_modules': getattr(user_record, 'responsibility_modules', None) or {},
-                    'job_level': getattr(user_record, 'job_level', 1),
+                    'responsibility_modules': rm,
+                    'job_level': getattr(user_record, 'job_level', 1) or 1,
                     'duty_text': getattr(user_record, 'duty_text', None),
                 }
                 

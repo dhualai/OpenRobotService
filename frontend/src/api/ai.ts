@@ -300,3 +300,118 @@ export const qaUpload = (
     return res;
   })();
 };
+
+
+// ---------------------------------------------------------------------------
+// 流式上传（SSE）—— /qa/upload/stream
+// ---------------------------------------------------------------------------
+
+export interface UploadStreamCallbacks {
+  /** 文件已保存到后端（saved 列表 + filenames） */
+  onFileSaved?: (data: { saved: Array<{ filename: string; size: number; path: string; object_path?: string }>; filenames: string }) => void;
+  /** 流式 token：VLM 图片描述 +（附带文字时的）诊断文字都会触发，按顺序拼接 */
+  onToken?: (token: string) => void;
+  /** VLM 图片分析完成（desc 为完整描述） */
+  onVisionDone?: (desc: string) => void;
+  /** 最终结果（不含附带文字时 = 确认回执；含文字时 = 诊断结果 {action, thinking, ticket}） */
+  onResult?: (data: Record<string, unknown>) => void;
+  /** 流结束 */
+  onDone?: (data: { total_ms?: number }) => void;
+  /** 错误（HTTP / SSE event:error） */
+  onError?: (msg: string) => void;
+}
+
+/**
+ * 流式上传附件（FormData + SSE）。与 /upload 非流式并存：文件保存、VLM 图片分析、
+ * 附带文字的完整诊断均通过 SSE 逐步推送，前端可实时渲染。
+ */
+export const qaUploadStream = async (
+  sessionId: string,
+  files: File[],
+  message: string,
+  cb: UploadStreamCallbacks,
+): Promise<void> => {
+  const doStream = async (tok: string | null): Promise<boolean> => {
+    const formData = new FormData();
+    formData.append('session_id', sessionId);
+    if (message.trim()) formData.append('message', message.trim());
+    files.forEach((f) => formData.append('files', f));
+
+    const controller = new AbortController();
+    const resp = await fetch(`${BASE}/qa/upload/stream`, {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal,
+      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+    });
+    if (resp.status === 401) return false;
+
+    if (!resp.ok) {
+      cb.onError?.(`上传失败: HTTP ${resp.status}`);
+      return true;
+    }
+    if (!resp.body) {
+      cb.onError?.('流式响应为空');
+      return true;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let currentEvent = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // 按行切分；pop 保留可能不完整的一行
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const rawLine of lines) {
+          const line = rawLine.trimEnd();
+          if (!line) continue;
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7);
+            continue;
+          }
+          if (!line.startsWith('data: ')) continue;
+          let data: Record<string, unknown>;
+          try {
+            data = JSON.parse(line.slice(6));
+          } catch {
+            continue;
+          }
+          if (currentEvent === 'file_saved') {
+            cb.onFileSaved?.(data as unknown as { saved: never[]; filenames: string });
+          } else if (data.token) {
+            cb.onToken?.(String(data.token));
+          } else if (currentEvent === 'vision_done' && typeof data.desc === 'string') {
+            cb.onVisionDone?.(data.desc);
+          } else if (currentEvent === 'result') {
+            cb.onResult?.(data);
+          } else if (currentEvent === 'done') {
+            cb.onDone?.(data as { total_ms?: number });
+          } else if (currentEvent === 'error' && data.error) {
+            cb.onError?.(String(data.error));
+          }
+        }
+      }
+    } finally {
+      controller.abort();
+    }
+    return true;
+  };
+
+  let ok = await doStream(useAuthStore.getState().token);
+  if (!ok) {
+    const refreshed = await useAuthStore.getState().refreshAuthToken();
+    if (refreshed) {
+      ok = await doStream(useAuthStore.getState().token);
+    }
+    if (!ok) {
+      kickToLogin('登录已过期，请重新登录');
+      cb.onError?.('登录已过期，请重新登录');
+    }
+  }
+};

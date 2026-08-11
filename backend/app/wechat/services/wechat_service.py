@@ -5,8 +5,11 @@ import asyncio
 import hashlib
 import random
 import os
+import logging
 from typing import Dict, List, Optional
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class WechatService:
@@ -106,6 +109,44 @@ class WechatService:
         except Exception as e:
             print(f'请求推送链接消息异常: {e}')
             return False, {'errcode': -1, 'errmsg': str(e)}
+
+    def send_news_message_to_user(self, open_id: str, title: str, description: str, url: str, picurl: str = '') -> bool:
+        """通过客服消息接口推送图文卡片（news 类型），带标题、描述、缩略图和跳转链接。"""
+        access_token = self.get_access_token()
+        if not access_token:
+            return False
+
+        url_endpoint = f'{settings.WECHAT_SEND_MESSAGE_URL}?access_token={access_token}'
+
+        articles = [{
+            'title': title,
+            'description': description,
+            'url': url,
+        }]
+        if picurl:
+            articles[0]['picurl'] = picurl
+
+        data = {
+            'touser': open_id,
+            'msgtype': 'news',
+            'news': {
+                'articles': articles,
+            }
+        }
+        try:
+            headers = {'Content-Type': 'application/json'}
+            response = self.session.post(url_endpoint, data=json.dumps(data, ensure_ascii=False).encode('utf-8'), headers=headers, timeout=5)
+            result = response.json()
+
+            if result.get('errcode') == 0:
+                logger.info(f'成功推送图文消息给用户 {open_id}')
+                return True
+            else:
+                logger.warning(f'推送图文消息失败: {result}')
+                return False
+        except Exception as e:
+            logger.error(f'请求推送图文消息异常: {e}')
+            return False
 
     def send_template_message(self, open_id: str, data: Dict, link_url: Optional[str] = None, template_id: str = None) -> bool:
         if template_id is None:

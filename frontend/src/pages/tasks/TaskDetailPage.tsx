@@ -88,7 +88,7 @@ const parseMinioPath = (rawPath: string): MinioPathInfo | null => {
 };
 
 interface Attachment { path: string; size?: number; filename?: string; url?: string; id?: string; }
-interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; }
+interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; reply_to?: string | number; quoted?: { id: string | number; content: string; created_by_name?: string }; }
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
   ticket_type: string; project_name?: string; project_id?: string;
@@ -316,6 +316,21 @@ export default function TaskDetailPage() {
     return name || username || '当前用户';
   };
 
+  // WS 工单状态变更（派单完成/改派/状态流转）实时更新详情，替代轮询
+  const handleWsTaskUpdated = (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null }) => {
+    setDetail((prev) => {
+      if (!prev) return prev;
+      // WS 推送的 assigned_to 可能为 null（退单/清空处理人），状态类型为 string | undefined，
+      // null → undefined 以兼容类型，展示层有 || 兜底，null 与 undefined 表现一致。
+      return {
+        ...prev,
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.assigned_to !== undefined ? { assigned_to: patch.assigned_to ?? undefined } : {}),
+        ...(patch.assigned_to_name !== undefined ? { assigned_to_name: patch.assigned_to_name ?? undefined } : {}),
+      };
+    });
+  };
+
   const addOperationComment = async (content: string) => {
     if (!detail) return;
     try {
@@ -403,7 +418,11 @@ export default function TaskDetailPage() {
       minioPath = `${parsed.bucket}/${parsed.objectKey}`;
     }
     const authToken = localStorage.getItem('auth_token') || '';
-    return `${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
+    // 必须拼成绝对 URL：微信内 window.open(相对URL) 打开的是微信内置 WebView，无法下载；
+    // 用户「在浏览器打开」后相对路径在外部浏览器解析失败会落到 SPA 404 → 未登录重定向微信 OAuth
+    // （表现为「提示跳转到微信客户端」）。绝对 URL 携带 token，在外部浏览器可直接下载。
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    return `${origin}${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
   };
 
   const handleAttachmentDownload = async (att: Attachment, idx: number) => {
@@ -483,7 +502,7 @@ export default function TaskDetailPage() {
   };
 
   // ── 普通评论：POST /api/tasks/{id}/comments；返回 true=成功（组件清空输入） ──
-  const handleAddComment = async (text: string, files: File[] = []): Promise<boolean> => {
+  const handleAddComment = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
     if (!detail) {
       Toast({ message: '请输入评论内容', theme: 'warning' });
       return false;
@@ -497,7 +516,7 @@ export default function TaskDetailPage() {
       }
       const newComment = await request<Comment>(`/${detail.id}/comments`, {
         method: 'POST',
-        body: JSON.stringify({ content: text, is_public: true, attachments: files.length ? [tempId] : [] }),
+        body: JSON.stringify({ content: text, is_public: true, attachments: files.length ? [tempId] : [], reply_to: options?.replyTo }),
       });
       const enrichedComment = {
         ...newComment,
@@ -519,8 +538,19 @@ export default function TaskDetailPage() {
     }
   };
 
+  // 删除评论（后端按创建人鉴权）：成功后从本地列表移除
+  const handleDeleteComment = async (id: string | number): Promise<void> => {
+    if (!detail) return;
+    await request(`/comments/${id}`, { method: 'DELETE' });
+    setDetail((prev) => {
+      if (!prev) return prev;
+      return { ...prev, comments: (prev.comments || []).filter((c) => String(c.id) !== String(id)) };
+    });
+    Toast({ message: '评论已删除', theme: 'success' });
+  };
+
   // ── @U老师 讨论：先存用户消息 → 调 POST /api/ai/task/discuss → 重新加载评论；返回 true=成功 ──
-  const handleAIDiscuss = async (text: string, files: File[] = []): Promise<boolean> => {
+  const handleAIDiscuss = async (text: string, files: File[] = [], options?: { replyTo?: string | number }): Promise<boolean> => {
     if (!detail) return false;
     const userMsg = text;
     setAskingAI(true);
@@ -534,7 +564,7 @@ export default function TaskDetailPage() {
       try {
         const newComment = await request<Comment>(`/${detail.id}/comments`, {
           method: 'POST',
-          body: JSON.stringify({ content: userMsg, is_public: true, attachments: files.length ? [tempId] : [] }),
+          body: JSON.stringify({ content: userMsg, is_public: true, attachments: files.length ? [tempId] : [], reply_to: options?.replyTo }),
         });
         setDetail((prev) => {
           if (!prev) return prev;
@@ -573,11 +603,11 @@ export default function TaskDetailPage() {
   };
 
   // ── onSend：检测 @U老师 前缀决定走普通评论还是 AI 讨论 ──
-  const handleSendComment = async (text: string, files: File[]): Promise<boolean> => {
+  const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number }): Promise<boolean> => {
     if (text.startsWith('@U老师 ')) {
-      return handleAIDiscuss(text, files);
+      return handleAIDiscuss(text, files, options);
     }
-    return handleAddComment(text, files);
+    return handleAddComment(text, files, options);
   };
 
   // ── [帮我分析] → POST /api/ai/task/diagnose → 讨论区展示短链接 ──
@@ -640,18 +670,7 @@ export default function TaskDetailPage() {
       .catch(() => {});
   };
 
-  useEffect(() => {
-    if (!detailId) return;
-    // AI 工单派单中（status=new 且无处理人）→ 每 5 秒刷新，直到派单完成
-    const isDispatching = detail?.status === 'new'
-      && !!detail?.metadata_info?.session_id
-      && !detail?.assigned_to && !detail?.assigned_to_name && !detail?.assignee_name;
-    if (!isDispatching) return;
-    const timer = setInterval(() => {
-      refreshDetail();
-    }, 5000);
-    return () => clearInterval(timer);
-  }, [detailId, detail?.status, detail?.assigned_to, detail?.assigned_to_name, detail?.assignee_name, detail?.metadata_info?.session_id]);
+  // 派单完成 / 状态变更由 WS task.updated 实时推送（见 DiscussionPanel onTaskUpdated），不再轮询。
 
   // 返回任务列表，优先使用浏览器历史记录以保留筛选状态
   const handleBack = () => {
@@ -815,6 +834,22 @@ export default function TaskDetailPage() {
                             className="detail-attachment-thumb"
                             loading="lazy"
                             onClick={() => openAttachmentViewer(att)}
+                            onError={(e) => {
+                              // 微信 WebView 偶发 img 静默渲染失败（HTTP 200 但白屏）：破缓存重试一次，仍失败换文件名占位
+                              const el = e.currentTarget;
+                              if (!el.dataset.retried) {
+                                el.dataset.retried = '1';
+                                const sep = thumbSrc.includes('?') ? '&' : '?';
+                                el.src = `${thumbSrc}${sep}_r=${Date.now()}`;
+                              } else {
+                                el.style.display = 'none';
+                                const ph = document.createElement('div');
+                                ph.className = 'detail-attachment-thumb detail-attachment-thumb--fallback';
+                                ph.textContent = '🖼️';
+                                ph.onclick = () => openAttachmentViewer(att);
+                                el.parentNode?.appendChild(ph);
+                              }
+                            }}
                           />
                         );
                       })}
@@ -889,10 +924,13 @@ export default function TaskDetailPage() {
         <DiscussionPanel
           comments={detail.comments || []}
           onSend={handleSendComment}
+          onDeleteComment={handleDeleteComment}
           sending={submittingComment || askingAI}
           enableAI
           enableAttach
           mentionUsers={projectMembers}
+          taskId={detail?.id}
+          onTaskUpdated={handleWsTaskUpdated}
           onMessagesClick={handleOpenReport}
           headerRight={
             <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing}>

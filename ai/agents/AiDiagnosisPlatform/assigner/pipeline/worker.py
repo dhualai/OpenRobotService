@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from ai.core.logging import get_logger
-from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket, load_engineers
+from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket, load_engineers, ensure_dispatch_ready
 
 logger = get_logger("ASSIGNER")
 
@@ -49,6 +49,12 @@ class AssignmentWorker:
         else:
             logger.info(f"工程师画像已加载: {len(engineers)} 人")
 
+        # 预热派单流水线（首次加载配置 + 构建组件），避免重启后首单卡顿
+        try:
+            ensure_dispatch_ready()
+        except Exception as e:
+            logger.warning(f"派单流水线预热失败（将随首单懒加载）: {e}")
+
         # 两路并行：事件驱动 + 定时兜底
         await asyncio.gather(
             self._listen_pubsub(),
@@ -56,40 +62,54 @@ class AssignmentWorker:
         )
 
     async def _listen_pubsub(self):
-        """订阅 Redis pub/sub 通道，收到新工单消息立即派单"""
-        try:
-            import redis.asyncio as aioredis
-            from ai.config import get_ai_config
-            cfg = get_ai_config()
-            self._redis = aioredis.from_url(cfg.redis_url or "redis://localhost:6379/0")
-            pubsub = self._redis.pubsub()
-            await pubsub.subscribe(CHANNEL_NEW_TICKET)
-            logger.info(f"派单 Worker 已订阅 Redis 通道: {CHANNEL_NEW_TICKET}")
+        """订阅 Redis pub/sub 通道，收到新工单消息立即派单。
 
-            async for msg in pubsub.listen():
+        Redis 断开/重启时自动重连（退化为仅轮询期间由定时扫描兜底）。
+        """
+        retry_interval = 5  # 重连间隔（秒）
+
+        while not self._stop.is_set():
+            try:
+                import redis.asyncio as aioredis
+                from ai.config import get_ai_config
+                cfg = get_ai_config()
+                self._redis = aioredis.from_url(cfg.redis_url or "redis://localhost:6379/0")
+                pubsub = self._redis.pubsub()
+                await pubsub.subscribe(CHANNEL_NEW_TICKET)
+                logger.info(f"派单 Worker 已订阅 Redis 通道: {CHANNEL_NEW_TICKET}")
+
+                async for msg in pubsub.listen():
+                    if self._stop.is_set():
+                        break
+                    if msg["type"] != "message":
+                        continue
+                    try:
+                        task_id = int(msg["data"])
+                    except (ValueError, TypeError):
+                        logger.warning(f"派单 PubSub 收到无效 task_id: {msg['data']}")
+                        continue
+
+                    ticket = self._get_ticket_by_id(task_id)
+                    if ticket is None:
+                        logger.debug(f"派单 PubSub: task_id={task_id} 不存在或已指派，跳过")
+                        continue
+                    try:
+                        await self._assign_one(ticket)
+                    except Exception as e:
+                        logger.error(f"派单 PubSub 失败: task_id={task_id}, error={e}", exc_info=True)
+
+                await pubsub.unsubscribe(CHANNEL_NEW_TICKET)
+                await self._redis.aclose()
+                # 正常退出（收到停止信号）则退出重试循环
+                break
+            except Exception as e:
+                logger.error(f"派单 PubSub 监听异常，{retry_interval}s 后自动重连: {e}", exc_info=True)
                 if self._stop.is_set():
                     break
-                if msg["type"] != "message":
-                    continue
                 try:
-                    task_id = int(msg["data"])
-                except (ValueError, TypeError):
-                    logger.warning(f"派单 PubSub 收到无效 task_id: {msg['data']}")
-                    continue
-
-                ticket = self._get_ticket_by_id(task_id)
-                if ticket is None:
-                    logger.debug(f"派单 PubSub: task_id={task_id} 不存在或已指派，跳过")
-                    continue
-                try:
-                    await self._assign_one(ticket)
-                except Exception as e:
-                    logger.error(f"派单 PubSub 失败: task_id={task_id}, error={e}", exc_info=True)
-
-            await pubsub.unsubscribe(CHANNEL_NEW_TICKET)
-            await self._redis.aclose()
-        except Exception as e:
-            logger.error(f"派单 PubSub 监听异常，退化为仅轮询模式: {e}", exc_info=True)
+                    await asyncio.sleep(retry_interval)
+                except Exception:
+                    break
 
     async def _poll_loop(self):
         """定时扫描兜底：防 Pub/Sub 丢消息或重启期间遗漏"""

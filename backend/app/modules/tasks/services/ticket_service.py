@@ -6,7 +6,7 @@ from sqlalchemy.orm import joinedload
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.modules.tasks.models.ticket import Ticket, TicketComment, TicketStatus, TicketPriority, TicketType
-from app.modules.tasks.schemas.ticket import TicketCreate, TicketUpdate, TicketCommentCreate, TicketCommentUpdate, TicketQueryParams, TicketFilterRequest
+from app.modules.tasks.schemas.ticket import TicketCreate, TicketUpdate, TicketCommentCreate, TicketCommentUpdate, TicketQueryParams, TicketFilterRequest, QuotedComment
 from app.core.config import settings
 from app.utils.notification_utils import NotificationUtils
 from app.utils.image_processor import ImageProcessor
@@ -536,29 +536,28 @@ class TicketService:
         if ticket and load_comments:
             logger.info(f"开始加载评论: ticket_id={ticket_id}")
             try:
-                from sqlalchemy.orm import joinedload
-                result = await db.execute(
-                    select(Ticket)
-                    .where(Ticket.id == ticket_id)
-                    .options(joinedload(Ticket.comments))
+                # 手动查询评论列表，避免 async session 下关系懒加载触发 MissingGreenlet
+                # （getattr(ticket, 'comments') 在关系未 eager 填充时会走同步 IO → greenlet 报错）
+                comments_result = await db.execute(
+                    select(TicketComment)
+                    .where(TicketComment.task_id == ticket_id)
+                    .order_by(TicketComment.created_at.desc())
                 )
-                ticket = result.unique().scalar_one_or_none()
+                comments = comments_result.scalars().all()
 
-                if ticket:
-                    user_map = await TicketService._get_user_map(token)
-                    for comment in ticket.comments:
-                        setattr(comment, "created_by_name", user_map.get(comment.created_by, comment.created_by))
-                        content = comment.content
-                        comment.content = ImageProcessor.process_content_for_response(content)
+                user_map = await TicketService._get_user_map(token)
+                for comment in comments:
+                    # 复用 _attach_comment_meta：统一拼装 created_by_name / 图片处理 / 引用块 quoted
+                    # （修复刷新后引用消息丢失：原仅设 created_by_name 未拼 quoted）
+                    await TicketService._attach_comment_meta(db, comment, user_map)
 
-                logger.info(f"评论加载成功: ticket_id={ticket_id}, comment_count={len(ticket.comments) if ticket else 0}")
+                # 将评论列表固化为已提交值：response_model 序列化发生在 db session 关闭后，
+                # 直接访问 ticket.comments 会触发懒加载 → async 下 MissingGreenlet。
+                set_committed_value(ticket, 'comments', list(comments))
+                logger.info(f"评论加载成功: ticket_id={ticket_id}, comment_count={len(comments)}")
             except Exception as e:
                 logger.error(f"评论加载失败: ticket_id={ticket_id}, error={str(e)}", exc_info=True)
                 raise
-            finally:
-                # 评论加载完成后设 committed_value，避免后续序列化时触发 lazy load → MissingGreenlet
-                if ticket:
-                    set_committed_value(ticket, 'comments', getattr(ticket, 'comments', []))
         elif ticket:
             # 未请求评论时也设空列表，避免序列化时触发 lazy load → MissingGreenlet
             set_committed_value(ticket, 'comments', [])
@@ -665,11 +664,35 @@ class TicketService:
         return True
 
     @staticmethod
-    async def add_comment(db: AsyncSession, ticket_id: int, comment_data: TicketCommentCreate, created_by: str, comment_attachment_map: dict) -> Optional[TicketComment]:
+    async def _attach_comment_meta(db: AsyncSession, comment: TicketComment, user_map: Dict[str, str]) -> TicketComment:
+        """为评论附加展示用元数据：创建人姓名、引用评论摘要、响应态内容。"""
+        setattr(comment, "created_by_name", user_map.get(comment.created_by, comment.created_by))
+        try:
+            comment.content = ImageProcessor.process_content_for_response(comment.content)
+        except Exception:
+            pass
+        reply_to = getattr(comment, "reply_to", None)
+        if reply_to:
+            try:
+                res = await db.execute(select(TicketComment).where(TicketComment.id == reply_to))
+                qc = res.scalar_one_or_none()
+                if qc:
+                    qname = user_map.get(qc.created_by, qc.created_by)
+                    setattr(comment, "quoted", QuotedComment(
+                        id=qc.id,
+                        content=qc.content or "",
+                        created_by_name=qname,
+                    ))
+            except Exception:
+                pass
+        return comment
+
+    @staticmethod
+    async def add_comment(db: AsyncSession, ticket_id: int, comment_data: TicketCommentCreate, created_by: str, comment_attachment_map: dict, token: Optional[str] = None) -> Optional[TicketComment]:
         ticket = await TicketService.get_ticket_by_id(db, ticket_id)
         if not ticket:
             return None
-        
+
         processed_content, _ = ImageProcessor.process_content_for_storage(
             comment_data.content,
             ticket_id,
@@ -688,23 +711,27 @@ class TicketService:
             content=processed_content,
             is_public=comment_data.is_public,
             attachments=processed_attachments,
-            created_by=created_by
+            created_by=created_by,
+            reply_to=comment_data.reply_to
         )
-        
+
         ticket.reply_count = ticket.reply_count + 1
-        
+
         db.add(comment)
         await db.commit()
         await db.refresh(comment)
         await db.refresh(ticket)
-        
+
+        user_map = await TicketService._get_user_map(token)
+        await TicketService._attach_comment_meta(db, comment, user_map)
+
         return comment
 
     @staticmethod
     async def get_comments(db: AsyncSession, ticket_id: int, token: Optional[str] = None) -> List[TicketComment]:
         import logging
         logger = logging.getLogger(__name__)
-        
+
         result = await db.execute(
             select(TicketComment)
             .where(TicketComment.task_id == ticket_id)
@@ -713,21 +740,12 @@ class TicketService:
         )
         comments = list(result.scalars().all())
         logger.info(f"查询到评论数: ticket_id={ticket_id}, count={len(comments)}")
-        
+
         user_map = await TicketService._get_user_map(token)
-        
+
         for comment in comments:
-            setattr(comment, "created_by_name", user_map.get(comment.created_by, comment.created_by))
-            try:
-                content = comment.content
-                logger.info(f"开始处理评论内容: comment_id={comment.id}, content_length={len(content) if content else 0}")
-                processed_content = ImageProcessor.process_content_for_response(content)
-                comment.content = processed_content
-                logger.info(f"评论内容处理成功: comment_id={comment.id}")
-            except Exception as e:
-                logger.error(f"评论内容处理失败: comment_id={comment.id}, error={str(e)}", exc_info=True)
-                raise
-        
+            await TicketService._attach_comment_meta(db, comment, user_map)
+
         return comments
 
     @staticmethod

@@ -251,8 +251,8 @@ git commit --amend -m "feat: 正确的提交信息"
 
 | 文档 | 路径 |
 |------|------|
-| 测试开发规范 | `docs/testing_guidelines.md` |
-| 自动化测试方案 | `docs/automation_strategy.md` |
+| 测试开发规范 | `automation/docs/testing/testing_guidelines.md` |
+| 自动化测试方案 | `automation/docs/automation_strategy.md` |
 | 项目架构说明 | `docs/project_architecture.md` |
 | 本地部署指南 | `docs/PRODUCT/SETUP.md` |
 | 后端代码结构总览 | `backend/CODEBASE_OVERVIEW.md` |

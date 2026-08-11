@@ -178,7 +178,14 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
             <button type="button" className="history-search__clear" onClick={() => setSearch('')} aria-label="清空">×</button>
           )}
         </div>
-        <div className="history-tabs">
+        {/* 横向滚动容器：阻止 touch 事件冒泡到外层 swipeToClose，
+            避免左滑切换 tab 时误触发浮层关闭（手势由本容器独占横向滑动） */}
+        <div
+          className="history-tabs"
+          onTouchStart={(e) => e.stopPropagation()}
+          onTouchMove={(e) => e.stopPropagation()}
+          onTouchEnd={(e) => e.stopPropagation()}
+        >
           {STATUS_TABS.map((tab) => (
             <button
               key={tab.value}
@@ -208,10 +215,14 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
           displayedTickets.map((t) => {
             const statusMeta = STATUS_META[t.status || ''] || { label: t.status || '', color: '#666', bg: '#f2f3f5' };
             return (
+            /* 用 DB id（Task.id）导航：同一会话多次转单时 session_id 会重复
+               （external_id 靠 ticket_seq 区分，DB 唯一约束在 (source, external_id) 而非 session_id），
+               用 session_id 导航会让详情页 qaGetTicket 命中歧义结果——点的是当前工单，
+               显示却是同 session 的另一条。DB id 唯一定位，彻底消除歧义。 */
             <div
               key={t.id}
               className="history-row"
-              onClick={() => navigate(`/call/ticket/${t.session_id || `db_${t.id}`}`)}
+              onClick={() => navigate(`/call/ticket/db_${t.id}`)}
             >
               <div className="history-row__top">
                 <span className="history-row__dot" style={{ background: PRIORITY_COLOR[t.priority || ''] || '#999' }} />

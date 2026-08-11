@@ -59,6 +59,9 @@
 | POST | `/api/admin/projects/licenses` | `security` (DEBUG 下跳过) | 创建项目授权 |
 | GET | `/api/admin/projects/licenses/{project_code}` | `security` (DEBUG 下跳过) | 获取项目授权信息 |
 
+> **项目唯一键约束**：创建（POST）与更新（PUT）项目时，`project_code`/`name` 均须全局唯一。
+> 已存在其他项目占用时返回 `409 Conflict`，`detail` 形如 `项目编号「xxx」已存在，请重新输入`；并发命中数据库唯一索引也统一转为 409。
+
 ### 2.3 Admin - 风险管理（`/api/admin/projects/risks`）
 
 | 方法 | 路径 | 权限要求 | 说明 |

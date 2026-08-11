@@ -127,7 +127,7 @@ class Settings(BaseSettings):
             'token': self.WECHAT_TOKEN,
             'app_id': self.WECHAT_APP_ID,
             'app_secret': self.WECHAT_APP_SECRET,
-            'encoding_aes_key': self.WECHAT_ENCODING_AES_KEY
+            'encoding_aes_key': self.WECHAT_ENCODING_AES_KEY,
         }
     
     @property

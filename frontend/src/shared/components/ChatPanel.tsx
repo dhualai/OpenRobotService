@@ -6,7 +6,7 @@ import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
-import { qaUpload, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, type TicketDraft } from '@/api/ai';
+import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, type TicketDraft } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import UserSelect from '@/shared/components/UserSelect';
 import { createTicket } from '@/api/ticket';
@@ -719,59 +719,78 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     setMessages((prev) => [
       ...prev,
       { id: userId, role: 'user', content, timestamp: new Date().toISOString(), imageUrl, attachment, uploading: true, percent: 0 },
-      { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() },
+      { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString(), streaming: true },
     ]);
     setInput('');
     clearPendingFile();
     setLoading(true);
+
+    // 流式累计 + 节流渲染（对齐 send 的流式体验）
+    let acc = '';
+    let convId: number | null = null; // 局部快照：发送期间用户可能切会话，落库必须用快照
+    let hasResult = false;
+    let lastFlush = 0;
+    const FLUSH_MS = 90;
+    const paint = () => setMessages((prev) => prev.map((m) =>
+      m.id === assistantId ? { ...m, content: looksLikeJsonHead(acc) ? '正在思考…' : acc } : m));
+    const schedulePaint = () => {
+      const now = Date.now();
+      if (now - lastFlush >= FLUSH_MS) { lastFlush = now; paint(); }
+    };
+
     try {
       const sid = ensureSessionId();
-      // 上传进度实时更新到用户气泡遮罩
-      const res = await qaUpload(sid, [file], content, (p) =>
-        setMessages((prev) => prev.map((m) => (m.id === userId ? { ...m, percent: p } : m))),
-      );
-      if (!res.ok) throw new Error(`上传失败: ${res.status}`);
-      if (res.data?.code !== 0) throw new Error(res.data?.message || '上传失败');
-      const data = res.data?.data;
 
-      // 上传完成：回填代理 URL 到用户气泡（图片换掉临时 blob URL；非图片补 url），进度遮罩消失
-      // 用后端代理路径 /api/call/files/{object_path} 而非预签名 URL（预签名 host=localhost 生产浏览器访问不了）
-      const uploaded = data?.files?.[0];
-      const fileUrl = uploaded?.object_path ? attachmentUrl(uploaded.object_path) : undefined;
-      setMessages((prev) => prev.map((m) => {
-        if (m.id !== userId) return m;
-        const updated: Message = { ...m, uploading: false, percent: 100 };
-        if (isImage && fileUrl) {
-          if (m.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(m.imageUrl);
-          updated.imageUrl = fileUrl;
-        } else if (!isImage && fileUrl && m.attachment) {
-          updated.attachment = { ...m.attachment, url: fileUrl };
-        }
-        return updated;
-      }));
+      await qaUploadStream(sid, [file], content, {
+        // 文件已保存：回填文件 URL、进度遮罩消失、持久化用户消息
+        onFileSaved: async (d) => {
+          const uploaded = d.saved?.[0];
+          const fileUrl = uploaded?.object_path ? attachmentUrl(uploaded.object_path) : undefined;
+          setMessages((prev) => prev.map((m) => {
+            if (m.id !== userId) return m;
+            const updated: Message = { ...m, uploading: false, percent: 100 };
+            if (isImage && fileUrl) {
+              if (m.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(m.imageUrl);
+              updated.imageUrl = fileUrl;
+            } else if (!isImage && fileUrl && m.attachment) {
+              updated.attachment = { ...m.attachment, url: fileUrl };
+            }
+            return updated;
+          }));
+          // 持久化用户消息（存 object_path，前端恢复时拼后端代理路径 /api/call/files/{object_path}）
+          convId = await ensureConversation(sid, content || `[发送了附件] ${file.name}`);
+          if (convId) {
+            const objectPath = uploaded?.object_path;
+            const fileUrls = objectPath ? JSON.stringify([{ filename: file.name, object_path: objectPath, size: file.size, isImage }]) : undefined;
+            appendMessage(convId, 'user', content || `[发送了附件] ${file.name}`, { fileUrls, messageType: isImage ? 'image' : 'file' }).catch(() => {});
+          }
+        },
+        // VLM 描述 &（附带文字时的）诊断文字都在此累计
+        onToken: (tok) => {
+          acc += tok;
+          schedulePaint();
+        },
+        onResult: (data) => {
+          hasResult = true;
+          // 附带文字触发了提单 → 刷新待派单计数
+          if (data.ticket) refreshTasks();
+        },
+        onError: (msg) => {
+          throw new Error(msg);
+        },
+      });
 
-      // 持久化用户消息（存 object_path，前端恢复时拼后端代理路径 /api/call/files/{object_path}）
-      const convId = await ensureConversation(sid, content || `[发送了附件] ${file.name}`);
-      if (convId) {
-        const objectPath = uploaded?.object_path;
-        const fileUrls = objectPath ? JSON.stringify([{ filename: file.name, object_path: objectPath, size: file.size, isImage }]) : undefined;
-        appendMessage(convId, 'user', content || `[发送了附件] ${file.name}`, { fileUrls, messageType: isImage ? 'image' : 'file' }).catch(() => {});
-      }
-
-      // AI 回复填入占位气泡：文件+文字=完整诊断(ai_response.message)；只传文件=确认回执(ack_message)
-      // 内容统一过清洗（防 JSON 泄漏/带 } 回复）；持久化用局部 convId 快照——发送期间用户
-      // 可能已切换会话，convRef 已指向新会话，直接用会把本会话回复错写进新会话（过时/错位回复）。
-      const aiResp = data?.ai_response;
-      const assistantContent = sanitizeAiText((aiResp && aiResp.message) || data?.ack_message || '');
-      if (assistantContent) {
-        setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: assistantContent } : m)));
-        if (convId) appendMessage(convId, 'assistant', assistantContent).catch(() => {});
-      } else {
+      // 流结束：清洗并写入最终回复，持久化 assistant
+      const finalContent = sanitizeAiText(acc);
+      if (finalContent) {
+        setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: finalContent, streaming: false } : m)));
+        if (convId) appendMessage(convId, 'assistant', finalContent).catch(() => {});
+      } else if (!hasResult) {
         // 无回复：移除 AI 占位气泡，避免空气泡
         setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+      } else {
+        setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)));
       }
-      // 若本次顺带触发了提单，刷新待派单计数
-      if (aiResp?.ticket) refreshTasks();
     } catch (err) {
       // 失败：用户气泡标记失败态（红色遮罩），移除 AI 占位气泡
       setMessages((prev) => prev.map((m) => (m.id === userId ? { ...m, uploading: false, failed: true } : m)));
