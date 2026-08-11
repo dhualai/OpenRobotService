@@ -884,11 +884,29 @@ async def download_attachment(
     filename: Optional[str] = Query(None, description="下载时的文件名"),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
-    """代理下载 MinIO 文件：从 MinIO 读取文件流，通过后端返回给前端下载。"""
+    """代理下载 MinIO 文件：从 MinIO 读取文件流，通过后端返回给前端下载。
+
+    支持任意格式下载；查找策略：
+    1) 严格按存储路径 bucket/object 查找；
+    2) 跨已知 bucket 兜底（同一 object 名可能落在不同 bucket）；
+    3) 对 object 名做 URL 编码后再试一次（兼容个别上传把中文名编码存储的情况）。
+    不再静默吞掉 S3Error，便于定位 404。
+    """
+    import logging
     from fastapi.responses import StreamingResponse
     from io import BytesIO
-    from urllib.parse import unquote
+    from urllib.parse import unquote, quote
     import os
+
+    logger = logging.getLogger(__name__)
+
+    # 二进制 / 办公 / 压缩等无法在浏览器内联渲染的格式：强制 octet-stream，
+    # 避免浏览器把压缩包等当「文档」尝试渲染（控制台 "interpreted as Document" 警告）而走下载。
+    BINARY_EXTS = {
+        '.zip', '.bz2', '.gz', '.tar', '.tgz', '.rar', '.7z', '.xz',
+        '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+        '.exe', '.dmg', '.apk', '.bin', '.iso',
+    }
 
     try:
         decoded_path = unquote(path)
@@ -903,37 +921,42 @@ async def download_attachment(
             raise HTTPException(status_code=400, detail=f"无效的文件路径: {path}")
 
         bucket_name, object_name = parts
+        download_name = filename or os.path.basename(object_name)
+        encoded_name = f"UTF-8''{quote(download_name)}"
 
         known_buckets = [settings.MINIO_BUCKET, settings.COMMENT_BUCKET, settings.FILE_IMAGES]
 
-        found = False
-        for bucket in [bucket_name] + known_buckets:
+        # 候选 (bucket, object) 组合：严格路径 → 跨 bucket 兜底 → 编码 object 名再各试一次
+        candidates = [(bucket_name, object_name)]
+        for b in known_buckets:
+            candidates.append((b, object_name))
+        candidates.append((bucket_name, quote(object_name)))
+        for b in known_buckets:
+            candidates.append((b, quote(object_name)))
+
+        last_err: Optional[Exception] = None
+        for bucket, obj in candidates:
             try:
                 if not minio_client.check_bucket_exists(bucket):
                     continue
 
-                stat = minio_client.get_file_info(f"{bucket}/{object_name}")
+                stat = minio_client.get_file_info(f"{bucket}/{obj}")
                 if not stat:
                     continue
 
-                data = minio_client.client.get_object(bucket, object_name)
+                data = minio_client.client.get_object(bucket, obj)
                 file_data = data.read()
                 data.close()
 
-                download_name = filename or os.path.basename(object_name)
-                encoded_name = f"UTF-8''{download_name}"
-
-                media_type = stat.content_type or 'application/octet-stream'
-                if download_name.endswith('.zip'):
-                    media_type = 'application/zip'
-                elif download_name.endswith('.json'):
-                    media_type = 'application/json'
-                elif download_name.endswith('.pdf'):
+                ext = os.path.splitext(download_name)[1].lower()
+                if ext in BINARY_EXTS:
+                    media_type = 'application/octet-stream'
+                elif ext == '.pdf':
                     media_type = 'application/pdf'
-                elif download_name.endswith('.png'):
-                    media_type = 'image/png'
-                elif download_name.endswith('.jpg') or download_name.endswith('.jpeg'):
-                    media_type = 'image/jpeg'
+                elif ext == '.json':
+                    media_type = 'application/json'
+                else:
+                    media_type = stat.content_type or 'application/octet-stream'
 
                 return StreamingResponse(
                     BytesIO(file_data),
@@ -942,14 +965,20 @@ async def download_attachment(
                         'Content-Disposition': f"attachment; filename*={encoded_name}",
                         'Content-Length': str(len(file_data)),
                         'Access-Control-Expose-Headers': 'Content-Disposition',
+                        'Cache-Control': 'no-store',
                     }
                 )
             except HTTPException:
                 raise
-            except Exception:
+            except Exception as e:  # noqa: BLE001 - 记录真实原因而非静默跳过
+                last_err = e
+                logger.warning('[attachments/download] 候选 (%s/%s) 失败: %s', bucket, obj, e)
                 continue
 
-        raise HTTPException(status_code=404, detail=f"文件不存在: {bucket_name}/{object_name}")
+        detail = f"文件不存在: {bucket_name}/{object_name}"
+        if last_err:
+            detail += f"（末次错误: {last_err}）"
+        raise HTTPException(status_code=404, detail=detail)
 
     except HTTPException:
         raise
