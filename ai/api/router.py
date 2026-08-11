@@ -131,13 +131,6 @@ async def ask_question_stream(
         from app.modules.call.schemas.message import MessageCreate, MessageUpdate
         from app.modules.call.services.message_service import MessageService
 
-        async def _persist_impl(db_session, msg_id: int, content: str):
-            try:
-                await MessageService.update_message(
-                    db_session, msg_id, MessageUpdate(content=content))
-            except Exception as e:
-                logger.warning(f"[sse] 增量落库失败 sid={qa_req.session_id[:8]}: {e}")
-
         t0 = time.perf_counter()
         qa_request = DiagnosisRequest(session_id=qa_req.session_id, query=qa_req.query,
                            skip_retrieval=qa_req.skip_retrieval, created_by=username)
@@ -145,8 +138,6 @@ async def ask_question_stream(
         _sse_trace: list[str] = []
         _sse_token_count = 0
         import asyncio  # producer-consumer 解耦：Queue/create_task/CancelledError
-        from concurrent.futures import ThreadPoolExecutor
-        _persist_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sse_persist")
 
         def _flush_tokens():
             nonlocal _sse_token_count
@@ -191,29 +182,30 @@ async def ask_question_stream(
             last_persist = 0.0
             PERSIST_MS = 0.8
             async def _persist(content: str, force: bool = False):
-                """增量落库——改为 fire-and-forget 任务，不阻塞 producer 主循环。
-                旧实现同步 await update_message，若 MySQL 延迟抖动会导致 producer 的 for 循环停顿，
-                Queue 出队间隔不均匀 → 前端 token 一阵快一阵卡。"""
+                """增量落库——producer 主协程内同步 await。
+
+                注意：早期版本曾改为「线程池 + asyncio.ensure_future」的 fire-and-forget，
+                但 ThreadPoolExecutor 工作线程里 get_event_loop() 抛 RuntimeError 被吞，
+                导致落库实际从未执行 → 前端实时能看到、刷新后回复丢失。
+                此处恢复为可靠的 await 落库，保证 DB 有完整内容。
+                """
                 nonlocal last_persist
                 now = time.perf_counter()
                 if not force and (now - last_persist) < PERSIST_MS:
                     return
-                last_persist = now
-                def _do():
-                    try:
-                        import asyncio as _asyncio
-                        loop = _asyncio.get_event_loop()
-                    except RuntimeError:
-                        return
-                    asyncio.ensure_future(_persist_impl(db, persist_msg_id, content))
-                _persist_executor.submit(_do)
+                try:
+                    await MessageService.update_message(
+                        db, persist_msg_id, MessageUpdate(content=content))
+                    last_persist = now
+                except Exception as e:
+                    logger.warning(f"[sse] 增量落库失败 sid={qa_req.session_id[:8]}: {e}")
             try:
                 async for event in pipeline.run_stream(qa_request):
                     ev_type = event.get("event")
                     if ev_type == "token":
                         acc += event.get('data', '')
                         if db is not None and persist_msg_id is not None:
-                            _persist(acc)
+                            await _persist(acc)
                     elif ev_type == "status":
                         # 提交/补信息阶段清空 acc（系统话术会重新流式），保证 DB 与前端展示一致
                         stage = event.get('data', {}).get('stage', '?')
@@ -222,17 +214,22 @@ async def ask_question_stream(
                     await queue.put(event)
                 # 流结束：最终落库（完整内容）
                 if db is not None and persist_msg_id is not None:
-                    _persist(acc, force=True)
+                    try:
+                        await _persist(acc, force=True)
+                    except Exception:
+                        pass
                 await queue.put(_SENTINEL)
             except Exception as e:
                 # 异常：保留已接收内容
                 if db is not None and persist_msg_id is not None and acc:
-                    _persist(acc, force=True)
+                    try:
+                        await _persist(acc, force=True)
+                    except Exception:
+                        pass
                 await queue.put(("__error__", str(e)))
             finally:
                 if db is not None:
                     await db.close()
-                _persist_executor.shutdown(wait=False)
 
         producer_task = asyncio.create_task(producer())
 
