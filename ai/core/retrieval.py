@@ -1048,6 +1048,151 @@ class RetrievalService:
             payloads=[payload],
         )
 
+    # ── 派单模块（Assigner）：历史工单向量库 dispatch_history ──
+
+    async def ensure_dispatch_history_collection(self) -> str:
+        """确保 dispatch domain collection（派单历史工单）存在，不存在则创建。
+
+        Returns:
+            collection 名称，创建失败返回空字符串。
+        """
+        from ai.config import get_active_collection_for, write_active_collection_for
+        import time as _time
+
+        col = get_active_collection_for("dispatch")
+        if col:
+            try:
+                client = await self._qdrant._ensure_client()
+                if await self._qdrant._to_thread(client.collection_exists, col):
+                    return col
+            except Exception:
+                pass
+
+        await self._ensure_clients()
+        try:
+            vec_dim = await self._embed_client.get_dimension()
+            name = f"dispatch_{_time.strftime('%Y%m%d_%H%M%S')}"
+            client = await self._qdrant._ensure_client()
+            from qdrant_client.models import Distance, VectorParams
+            await self._qdrant._to_thread(
+                client.create_collection,
+                collection_name=name,
+                vectors_config=VectorParams(size=vec_dim, distance=Distance.COSINE),
+            )
+            write_active_collection_for("dispatch", name)
+            print(f"  [retrieval] Created dispatch collection: {name}")
+            return name
+        except Exception as e:
+            logger.error(f"创建 dispatch 集合失败: {e}", exc_info=True)
+            print(f"  [retrieval] Failed to create dispatch collection: {e}")
+            return ""
+
+    async def index_dispatch_history(
+        self,
+        *,
+        engineer_id: str,
+        title: str,
+        description: str,
+        modules: Optional[List[str]] = None,
+        task_type: str = "problem",
+        fault_code: str = "",
+        robot_type: str = "",
+        closed_at: Optional[str] = None,
+    ) -> bool:
+        """向量化并写入一条派单历史工单到 Qdrant（dispatch domain）。
+
+        Payload 特别带上 engineer_id（解决人），供 L3-A 路按人聚合。
+        查询/向量文本 = 标题+描述+故障码+车型（与派单召回语义一致）。
+        """
+        from ai.config import get_active_collection_for
+        import uuid
+
+        col = get_active_collection_for("dispatch")
+        if not col:
+            col = await self.ensure_dispatch_history_collection()
+        if not col:
+            return False
+
+        await self._ensure_clients()
+        if self._qdrant.is_unavailable:
+            return False
+
+        index_text = " ".join(filter(None, [
+            title, description, robot_type, fault_code,
+        ]))
+        query_vector = await self._embed_client.embed(index_text)
+
+        payload = {
+            "engineer_id": engineer_id,     # 解决人（核心）
+            "title": title,
+            "description": description,
+            "modules": modules or [],       # 问题域标签（模块）
+            "task_type": task_type,
+            "fault_code": fault_code,
+            "robot_type": robot_type,
+            "closed_at": closed_at or "",
+            "domain": "dispatch",
+        }
+
+        return await self._qdrant.upsert_to_collection(
+            collection_name=col,
+            vectors=[query_vector.tolist()],
+            ids=[str(uuid.uuid4())],
+            payloads=[payload],
+        )
+
+    async def retrieve_dispatch_history(
+        self,
+        query: str,
+        top_k: int = 10,
+        score_threshold: Optional[float] = None,
+    ) -> List[dict]:
+        """检索派单相似历史工单（dispatch domain）。
+
+        返回原始 Qdrant points（含 payload.engineer_id），供 L3-A 路按解决人聚合。
+        与 retrieve_task_resolutions 不同：这里返回原始 point 而非 RetrievalResult，
+        因为 L3 需要 engineer_id（RetrievalResult 不暴露 payload 自定义字段）。
+
+        Returns:
+            每个元素 = {"engineer_id", "score", "payload", ...}（无结果返回空列表）。
+        """
+        from ai.config import get_active_collection_for
+
+        col = get_active_collection_for("dispatch")
+        if not col:
+            return []
+
+        await self._ensure_clients()
+        if self._qdrant.is_unavailable:
+            return []
+
+        try:
+            qe = await self._embed_client.embed(query)
+            points = await self._qdrant.search_dense(
+                qe.tolist(),
+                top_k=top_k,
+                score_threshold=score_threshold,
+                collection_name=col,
+            )
+            results = []
+            for p in points:
+                pl = p.payload or {}
+                results.append({
+                    "engineer_id": pl.get("engineer_id", ""),
+                    "score": float(p.score) if p.score is not None else 0.0,
+                    "title": pl.get("title", ""),
+                    "description": pl.get("description", ""),
+                    "modules": pl.get("modules", []),
+                    "task_type": pl.get("task_type", ""),
+                    "fault_code": pl.get("fault_code", ""),
+                    "robot_type": pl.get("robot_type", ""),
+                    "closed_at": pl.get("closed_at", ""),
+                })
+            return results
+        except Exception as e:
+            logger.warning(f"[retrieval] 派单历史检索失败: {e}")
+            return []
+
     async def ensure_collection(self, vector_size: int) -> None:
         """确保集合存在"""
         await self._ensure_clients()
