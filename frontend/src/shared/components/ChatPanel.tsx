@@ -743,17 +743,36 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
     // 流式累计 + 节流渲染（对齐 send 的流式体验）
     let acc = '';
+    // VLM 图片描述是否已完成。onToken 会收到两段 token：vision_done 前的 VLM 描述 + 之后的诊断正文。
+    // VLM 描述是给模型看图用的中间产物（诊断回复已复述图片内容），不上屏——只留「正在分析…」占位。
+    let visionDone = false;
+    // 是否带附带文字：纯图片上传（无文字）时 VLM 描述就是回复，需保留；带文字时 VLM 描述才抑制
+    const hasMessage = content.trim().length > 0;
     let convId: number | null = null; // 局部快照：发送期间用户可能切会话，落库必须用快照
     let hasResult = false;
     let streamError = ''; // 后端 SSE event:error 的真实错误（非流解析问题）
     let lastFlush = 0;
     const FLUSH_MS = 90;
-    const paint = () => setMessages((prev) => prev.map((m) =>
-      m.id === assistantId ? { ...m, content: looksLikeJsonHead(acc) ? '正在思考…' : acc } : m));
+    const paint = () => setMessages((prev) => prev.map((m) => {
+      if (m.id !== assistantId) return m;
+      let content: string;
+      if (acc) {
+        content = looksLikeJsonHead(acc) ? '正在思考…' : acc;
+      } else if (hasMessage) {
+        // 带文字：VLM 描述抑制，显示占位直到诊断正文开始
+        content = visionDone ? '正在思考…' : (isImage ? '正在分析图片…' : '正在分析文件…');
+      } else {
+        // 纯图片：VLM 描述就是回复，等待其 token 上屏
+        content = isImage ? '正在分析图片…' : '正在分析文件…';
+      }
+      return { ...m, content };
+    }));
     const schedulePaint = () => {
       const now = Date.now();
       if (now - lastFlush >= FLUSH_MS) { lastFlush = now; paint(); }
     };
+    // 上传后立即显示占位（VLM 阶段 acc 为空且不触发 schedulePaint，需主动刷一次）
+    paint();
 
     try {
       const sid = ensureSessionId();
@@ -789,15 +808,32 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             console.warn('[ChatPanel] 上传文件已保存，但持久化会话失败:', e);
           }
         },
-        // VLM 描述 &（附带文字时的）诊断文字都在此累计
+        // onToken 会收到两段 token：vision_done 前的 VLM 描述 + 之后的诊断正文。
+        // 带文字时 VLM 描述是中间产物，抑制不上屏；纯图片时保留（描述就是回复）。
         onToken: (tok) => {
+          if (!visionDone && hasMessage) {
+            // VLM 描述阶段：抑制，不累计不上屏（诊断正文会复述图片内容）
+            return;
+          }
           acc += tok;
           schedulePaint();
+        },
+        // VLM 完成：带文字时刷新占位为「正在思考…」（onVisionDone 触发后 acc 仍为空，
+        // 需 paint 一次把占位从「正在分析图片…」切到「正在思考…」）
+        onVisionDone: () => {
+          visionDone = true;
+          if (hasMessage) paint();
         },
         onResult: (data) => {
           hasResult = true;
           // 附带文字触发了提单 → 刷新待派单计数
           if (data.ticket) refreshTasks();
+          // 纯文件/纯图片且无描述 token（如非图片附件、VLM 失败）：result 的 message 是给用户的回执，
+          // 此时 acc 为空，回填上屏，避免「正在分析…」占位残留（否则气泡停在占位不显示实际回执）
+          if (!acc && typeof data.message === 'string' && data.message) {
+            acc = data.message;
+            paint();
+          }
         },
         onError: (msg) => {
           // 记录真实错误（qaUploadStream 已安全包装，不会中断流）。
