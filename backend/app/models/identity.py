@@ -68,3 +68,9 @@ class UserDB(Base):
     responsibility_modules = Column(JSON, nullable=True, comment='责任模块 ["车端","任务调度","地图编辑"...]')
     job_level = Column(TINYINT, default=1, nullable=False, comment="职级，数值越高越不优先接单（1=一线, 2=管理/审核, 3=仅兜底...），默认1")
     duty_text = Column(Text, nullable=True, comment="职责画像文本，供 AI 派单匹配参考")
+
+    # === 微信转发绑定 ===
+    # 业务账号绑定的微信 open_id（讨论区消息转发到微信公众号客服消息用）。
+    # 微信登录用户（username 形如 wechat_xxx）本身 id 即为 open_id，无需绑定；
+    # 业务账号（如 zhangsan）需绑定后才能作为转发接收人。
+    wechat_openid = Column(String(128), nullable=True, index=True, comment="绑定的微信open_id（讨论区消息转发到微信用）")
