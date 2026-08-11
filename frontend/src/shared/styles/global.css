@@ -3633,6 +3633,12 @@ html, body, #root {
 }
 .ticket-confirm__deadline-rel { font-size: 15px; font-weight: 600; color: #0052d9; }
 .ticket-confirm__deadline-abs { font-size: 12px; color: #666; }
+.ticket-confirm__deadline-clear {
+  margin-top: 6px; background: none; border: none;
+  color: #999; font-size: 12px; cursor: pointer; padding: 2px 0;
+  text-decoration: underline;
+}
+.ticket-confirm__deadline-clear:active { color: #e34d59; }
 .ticket-confirm__btns { display: flex; gap: 12px; margin-top: 20px; }
 .ticket-confirm__btn {
   flex: 1; padding: 12px; border: none; border-radius: 6px;
