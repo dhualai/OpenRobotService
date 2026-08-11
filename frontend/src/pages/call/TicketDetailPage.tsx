@@ -59,8 +59,10 @@ interface AiTicket {
   // 项目（AI 接口返回 project；DB TicketResponse 返回 project_name，展示以 DB 为准）
   project?: string;
   project_name?: string;
-  // 项目编码（DB TicketResponse 返回，编辑回显与提交用）
+  // 所属项目编码（DB TicketResponse 返回，编辑回显与提交用）
   project_id?: string;
+  // 最晚解决时间（ISO 字符串，编辑弹窗拖拽进度条回显/编辑；详情页只读展示）
+  deadline_at?: string | null;
   // 类型专属
   location?: string; robot_type?: string; fault_code?: string; special_notes?: string;
   steps_to_reproduce?: string; expected_result?: string; actual_result?: string; severity?: string; version?: string;
@@ -377,7 +379,7 @@ export default function TicketDetailPage() {
 
   // 编辑工单（标题/描述/优先级/类型/联系人；权限与后端对齐：admin/创建人/处理人，终态不可编辑）
   const [showEdit, setShowEdit] = useState(false);
-  const [editForm, setEditForm] = useState({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
+  const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; project_id: string; project_name: string; deadline_at?: string }>({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
   const [savingEdit, setSavingEdit] = useState(false);
   // 所属项目下拉（当前用户名下项目，GET /api/admin/projects/me；支持关键词模糊搜索）
   const [showProjectPicker, setShowProjectPicker] = useState(false);
@@ -419,8 +421,47 @@ export default function TicketDetailPage() {
       ticket_type: ticket.type || 'problem',
       project_id: ticket.project_id || '',
       project_name: ticket.project_name || ticket.project || '',
+      deadline_at: ticket.deadline_at || undefined,
     });
     setShowEdit(true);
+  };
+  // ── 最晚解决时间（截止时间）：编辑弹窗按优先级分档的拖拽进度条 ──
+  // 紧急/高 → 0-24h 按小时（每 2h）；中 → 1-3天 按天；低 → 3-7天 按天
+  // 与转工单弹窗同款刻度规则；编辑时拖拽回显已有 deadline_at，日期选择器只读展示
+  const DEADLINE_SCALES_EDIT: Record<string, { unit: 'h' | 'd'; min: number; max: number; step: number; defaultHours: number; marks: number[] }> = {
+    urgent: { unit: 'h', min: 0, max: 24, step: 2, defaultHours: 8, marks: [0, 2, 4, 6, 8, 12, 16, 20, 24] },
+    high: { unit: 'h', min: 0, max: 24, step: 2, defaultHours: 8, marks: [0, 2, 4, 6, 8, 12, 16, 20, 24] },
+    medium: { unit: 'd', min: 1, max: 3, step: 1, defaultHours: 48, marks: [24, 48, 72] },
+    low: { unit: 'd', min: 3, max: 7, step: 1, defaultHours: 120, marks: [72, 96, 120, 144, 168] },
+  };
+  const getEditDeadlineScale = (priority: string) => DEADLINE_SCALES_EDIT[priority] || DEADLINE_SCALES_EDIT.medium;
+  const getEditDeadlineHours = (): number => {
+    const iso = editForm.deadline_at;
+    if (iso) {
+      const diff = (new Date(iso).getTime() - Date.now()) / 3600000;
+      if (Number.isFinite(diff) && diff >= 0) return Math.round(diff);
+    }
+    return getEditDeadlineScale(editForm.priority).defaultHours;
+  };
+  const formatEditDeadlineRel = (hours: number): string => {
+    if (hours <= 0) return '立即';
+    if (hours < 24) return `${hours} 小时后`;
+    return `${Math.round(hours / 24)} 天后`;
+  };
+  const setEditDeadlineByHours = (hours: number) => {
+    const dt = new Date(Date.now() + hours * 3600000);
+    setEditForm((p) => ({ ...p, deadline_at: dt.toISOString() }));
+  };
+  const formatEditDeadlineAbs = (iso?: string): string => {
+    if (!iso) return '未设置';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '未设置';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())} 前`;
+  };
+  const handleEditPriorityForDeadline = (newPriority: string) => {
+    const scale = getEditDeadlineScale(newPriority);
+    setEditForm((p) => ({ ...p, priority: newPriority, deadline_at: new Date(Date.now() + scale.defaultHours * 3600000).toISOString() }));
   };
   const handleEditSave = async () => {
     if (!ticket?.ticket_id) return;
@@ -436,6 +477,7 @@ export default function TicketDetailPage() {
           ticket_type: editForm.ticket_type,
           project_name: editForm.project_name,
           project_id: editForm.project_id,
+          deadline_at: editForm.deadline_at || null,
         }),
       });
       const operator = getOperatorLabel();
@@ -635,6 +677,9 @@ export default function TicketDetailPage() {
           {(ticket.project_name || ticket.project) && <DetailRow label="所属项目" value={ticket.project_name || ticket.project || ''} />}
           {ticket.contact && <DetailRow label="联系人" value={ticket.contact} />}
           <DetailRow label="创建时间" value={ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''} />
+          {ticket.deadline_at && (
+            <DetailRow label="最晚解决时间" value={formatDateTime(String(ticket.deadline_at))} />
+          )}
         </div>
 
         {/* 人员流转：发起人 → 处理人（与历史工单列表页同款 task-card2__people 样式）
@@ -915,7 +960,7 @@ export default function TicketDetailPage() {
                     key={label}
                     type="button"
                     className={`tasks-create-modal__radio-btn ${editForm.priority === PRIORITY_EN[label] ? 'is-active' : ''}`}
-                    onClick={() => setEditForm((prev) => ({ ...prev, priority: PRIORITY_EN[label] }))}
+                    onClick={() => handleEditPriorityForDeadline(PRIORITY_EN[label])}
                   >{label}</button>
                 ))}
               </div>
@@ -942,6 +987,47 @@ export default function TicketDetailPage() {
                 <span className="ticket-edit-form__select-arrow">▾</span>
               </div>
             </div>
+            {/* 最晚解决时间：按优先级分档的拖拽进度条（紧急/高=0-1天按小时；中=1-3天；低=3-7天） */}
+            {(() => {
+              const scale = getEditDeadlineScale(editForm.priority);
+              const hours = getEditDeadlineHours();
+              return (
+                <div className="ticket-edit-form__field">
+                  <label className="ticket-edit-form__label">最晚解决时间</label>
+                  <div className="ticket-confirm__deadline">
+                    <div className="ticket-confirm__deadline-slider">
+                      <input
+                        type="range"
+                        min={scale.unit === 'h' ? scale.min : scale.min * 24}
+                        max={scale.unit === 'h' ? scale.max : scale.max * 24}
+                        step={scale.unit === 'h' ? scale.step : 24}
+                        value={hours}
+                        onChange={(e) => setEditDeadlineByHours(Number(e.target.value))}
+                        className="ticket-confirm__deadline-range"
+                      />
+                      <div className="ticket-confirm__deadline-marks">
+                        {scale.marks.map((m) => (
+                          <span key={m} className="ticket-confirm__deadline-mark">
+                            {scale.unit === 'h' ? `${m}h` : `${m / 24}d`}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="ticket-confirm__deadline-preview">
+                      <span className="ticket-confirm__deadline-rel">{formatEditDeadlineRel(hours)}</span>
+                      <span className="ticket-confirm__deadline-abs">{formatEditDeadlineAbs(editForm.deadline_at)}</span>
+                    </div>
+                    {editForm.deadline_at && (
+                      <button
+                        type="button"
+                        className="ticket-confirm__deadline-clear"
+                        onClick={() => setEditForm((p) => ({ ...p, deadline_at: undefined }))}
+                      >清除截止时间</button>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
           <div className="ticket-edit-form__footer">
             <Button theme="default" block onClick={() => setShowEdit(false)}>取消</Button>
