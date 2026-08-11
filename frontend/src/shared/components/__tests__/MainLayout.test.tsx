@@ -36,8 +36,8 @@ vi.mock('tdesign-mobile-react', () => ({
       {children}
     </div>
   ),
-  TabBarItem: ({ value, children }: { value?: string; children?: ReactNode }) => (
-    <div data-testid={`tabitem-${value}`}>{children}</div>
+  TabBarItem: ({ value, children, 'aria-label': ariaLabel }: { value?: string; children?: ReactNode; 'aria-label'?: string }) => (
+    <div data-testid={`tabitem-${value}`} data-aria-label={ariaLabel}>{children}</div>
   ),
   Loading: ({ text }: { text?: string }) => <div data-testid="loading">{text}</div>,
 }));
@@ -68,11 +68,11 @@ describe('MainLayout', () => {
     expect(screen.getByTestId('tabitem-admin')).toBeInTheDocument();
   });
 
-  it('should display correct tab labels', () => {
+  it('should display icon-only tabs with aria labels', () => {
     renderLayout();
-    expect(screen.getByTestId('tabitem-call')).toHaveTextContent('我要摇人');
-    expect(screen.getByTestId('tabitem-tasks')).toHaveTextContent('系统任务');
-    expect(screen.getByTestId('tabitem-admin')).toHaveTextContent('后台管理');
+    expect(screen.getByTestId('tabitem-call')).toHaveAttribute('data-aria-label', '我要摇人');
+    expect(screen.getByTestId('tabitem-tasks')).toHaveAttribute('data-aria-label', '系统任务');
+    expect(screen.getByTestId('tabitem-admin')).toHaveAttribute('data-aria-label', '后台管理');
   });
 
   it('should render Outlet for child routes', () => {

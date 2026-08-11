@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Loading, Toast, Popup, Upload, Checkbox } from 'tdesign-mobile-react';
 import { Input, Textarea } from 'tdesign-mobile-react';
-import { createRequest } from '@/api/client';
+import { createRequest, ApiError } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
 import { aiGet } from '@/api/ai';
@@ -130,7 +130,7 @@ const WECOM_VALUE_MAP: Record<string, keyof ProjectDetailData> = {
   '业绩核算期': 'settlement_period',
   '方案项目命名': 'project_summary',
   '销售': 'sales',
-  '售前': 'pre_sales',
+  '售前方案': 'pre_sales',
   '项目经理': 'project_manager',
   '实施工程师': 'field_engineer',
   '内部编号': 'internal_code',
@@ -312,14 +312,28 @@ export default function ProjectDetail() {
       setProject((prev) => (prev ? { ...prev, [key]: value } : prev));
       Toast({ message: '已保存', theme: 'success' });
     } catch (err) {
-      Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      // 唯一键冲突（项目编号/项目名称已被其他项目占用）返回 409，直接提示原始信息
+      if (err instanceof ApiError && err.statusCode === 409) {
+        Toast({ message: err.message, theme: 'warning' });
+      } else {
+        Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      }
     }
   };
 
   const handleCreate = async () => {
     if (!project) return;
-    if (!project.project_code.trim() || !project.name.trim()) {
-      Toast({ message: '请先填写项目编号和项目名称', theme: 'warning' });
+    // 必填字段：项目名称 / 项目编号 / 项目状态
+    if (!project.name.trim()) {
+      Toast({ message: '请填写项目名称', theme: 'warning' });
+      return;
+    }
+    if (!project.project_code.trim()) {
+      Toast({ message: '请填写项目编号', theme: 'warning' });
+      return;
+    }
+    if (!project.status.trim()) {
+      Toast({ message: '请选择项目状态', theme: 'warning' });
       return;
     }
     setCreating(true);
@@ -329,7 +343,12 @@ export default function ProjectDetail() {
       Toast({ message: '创建成功', theme: 'success' });
       navigate(`/admin/project-detail/${created.id}`, { replace: true });
     } catch (err) {
-      Toast({ message: `创建失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      // 后端唯一键校验（项目编号/项目名称已存在）返回 409，直接提示用户重新输入
+      if (err instanceof ApiError && err.statusCode === 409) {
+        Toast({ message: err.message, theme: 'warning' });
+      } else {
+        Toast({ message: `创建失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      }
     } finally {
       setCreating(false);
     }
@@ -437,9 +456,9 @@ export default function ProjectDetail() {
         <div style={cardStyle()}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <EditableField label="项目名称" value={project.name || '未命名项目'} placeholder="未命名项目" onSave={(v) => saveField('name', v)} compact title />
+              <EditableField label="项目名称" value={project.name || '未命名项目'} placeholder="未命名项目" onSave={(v) => saveField('name', v)} compact title required={isNew} />
               <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
-                <EditableField label="项目编号" value={project.project_code || '未填写'} placeholder="未填写" onSave={(v) => saveField('project_code', v)} compact inlineLabel="项目编号" />
+                <EditableField label="项目编号" value={project.project_code || '未填写'} placeholder="未填写" onSave={(v) => saveField('project_code', v)} compact inlineLabel="项目编号" required={isNew} />
                 {project.system_id ? ` · 企业微信记录ID: ${project.system_id}` : ''}
               </div>
             </div>
@@ -509,13 +528,12 @@ export default function ProjectDetail() {
         <div style={cardStyle()}>
           <h3 style={cardTitleStyle()}>项目基础画像</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <EditableField label="项目名称" value={project.name} onSave={(v) => saveField('name', v)} />
-            <EditableField label="项目编号" value={project.project_code} onSave={(v) => saveField('project_code', v)} />
+            <EditableField label="项目名称" value={project.name} onSave={(v) => saveField('name', v)} required={isNew} />
+            <EditableField label="项目编号" value={project.project_code} onSave={(v) => saveField('project_code', v)} required={isNew} />
             <EditableField label="内部编号" value={project.internal_code || ''} placeholder="未填写" onSave={(v) => saveField('internal_code', v)} />
             <EditableField label="项目描述" value={project.description || ''} placeholder="未填写" multiline onSave={(v) => saveField('description', v)} />
             <PickerField label="项目类型" value={project.project_type || '未设置'} onClick={() => setActivePicker('project_type')} />
             <PickerField label="项目区域/地点" value={project.project_region || '未设置'} onClick={() => setActivePicker('project_region')} />
-            <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} />
             <EditableField
               label="总车数"
               type="number"
@@ -547,6 +565,9 @@ export default function ProjectDetail() {
         {/* 项目生命周期 */}
         <div style={cardStyle()}>
           <h3 style={cardTitleStyle()}>项目生命周期</h3>
+          {/* 项目阶段 —— 位于生命周期标题下方，便于直接查看/修改当前阶段；绑定 status（企业微信「项目生命周期」列实时同步） */}
+          <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} required={isNew} />
+          <div style={{ height: 16 }} />
           {isAborted ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 12, background: '#fef2f2', borderRadius: 8, border: '1px solid #fecaca' }}>
               <span>⛔</span>
@@ -741,10 +762,10 @@ function ReadonlyField({ label, value, multiline }: { label: string; value: stri
   );
 }
 
-function PickerField({ label, value, onClick }: { label: string; value: string; onClick: () => void }) {
+function PickerField({ label, value, onClick, required }: { label: string; value: string; onClick: () => void; required?: boolean }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <label style={{ fontSize: 12, color: '#999' }}>{label}</label>
+      <label style={{ fontSize: 12, color: '#999' }}>{label}{required && <span style={{ color: '#d54941', marginLeft: 2 }}>*</span>}</label>
       <div
         onClick={onClick}
         style={{
@@ -759,7 +780,7 @@ function PickerField({ label, value, onClick }: { label: string; value: string; 
   );
 }
 
-function EditableField({ label, value, placeholder, multiline, compact, type, title, inlineLabel, onSave }: { label: string; value: string; placeholder?: string; multiline?: boolean; compact?: boolean; type?: 'text' | 'number'; title?: boolean; inlineLabel?: string; onSave: (v: string) => void }) {
+function EditableField({ label, value, placeholder, multiline, compact, type, title, inlineLabel, required, onSave }: { label: string; value: string; placeholder?: string; multiline?: boolean; compact?: boolean; type?: 'text' | 'number'; title?: boolean; inlineLabel?: string; required?: boolean; onSave: (v: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
 
@@ -770,11 +791,13 @@ function EditableField({ label, value, placeholder, multiline, compact, type, ti
     if (draft !== value) onSave(draft);
   };
 
+  const requiredMark = <span style={{ color: '#d54941', marginLeft: 2 }}>*</span>;
+
   if (editing) {
     const Field = multiline ? Textarea : Input;
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {!inlineLabel && <label style={{ fontSize: 12, color: '#999' }}>{label}</label>}
+        {!inlineLabel && <label style={{ fontSize: 12, color: '#999' }}>{label}{required && requiredMark}</label>}
         <Field
           value={draft}
           onChange={(v: string | number) => setDraft(String(v))}
@@ -789,7 +812,7 @@ function EditableField({ label, value, placeholder, multiline, compact, type, ti
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      {!inlineLabel && <label style={{ fontSize: 12, color: '#999' }}>{label}</label>}
+      {!inlineLabel && <label style={{ fontSize: 12, color: '#999' }}>{label}{required && requiredMark}</label>}
       <div
         onClick={() => setEditing(true)}
         style={{
@@ -802,7 +825,7 @@ function EditableField({ label, value, placeholder, multiline, compact, type, ti
         }}
       >
         <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
-          {inlineLabel && <span style={{ fontSize: 12, color: '#999', fontWeight: 'normal', flexShrink: 0 }}>{inlineLabel}: </span>}
+          {inlineLabel && <span style={{ fontSize: 12, color: '#999', fontWeight: 'normal', flexShrink: 0 }}>{inlineLabel}:{required && <span style={{ color: '#d54941' }}>*</span>} </span>}
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{value || placeholder}</span>
         </span>
         <span style={{ color: '#ccc', flexShrink: 0 }}>✎</span>

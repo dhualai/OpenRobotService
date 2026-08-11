@@ -98,6 +98,93 @@ async def get_users(
     finally:
         db.close()
 
+@router.get("/usp-username", summary="根据姓名生成去重的 USP 账户名")
+async def generate_usp_username(
+    name: str = Query(..., description="用户真实姓名"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """将中文姓名转为拼音，与已有 USP 账户去重后返回合法账户名。"""
+    name = name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="姓名不能为空")
+    usp_username = chinese_to_pinyin(name)
+    if not usp_username:
+        raise HTTPException(status_code=400, detail="无法从姓名生成拼音")
+
+    db = db_manager.get_db()
+    try:
+        existing_usernames = set()
+        rows = db.query(UserDB.external_credentials).all()
+        for (ec_json,) in rows:
+            if not ec_json:
+                continue
+            try:
+                import json
+                ec = json.loads(ec_json)
+                usp = ec.get("usp", {})
+                if usp.get("username"):
+                    existing_usernames.add(usp["username"])
+            except Exception:
+                continue
+
+        # 排除当前用户已有的 USP 账户名（编辑自己资料时不视为冲突）
+        # current_user 是 admin/api/auth 模块返回的 dict
+        current_username = current_user.get("username", "") if isinstance(current_user, dict) else ""
+        # 查当前用户已有的 USP 账户名
+        current_usp = ""
+        if current_username:
+            current_db_user = db.query(UserDB).filter(UserDB.username == current_username).first()
+            if current_db_user and current_db_user.external_credentials:
+                try:
+                    import json
+                    ec = json.loads(current_db_user.external_credentials)
+                    current_usp = ec.get("usp", {}).get("username", "")
+                except Exception:
+                    pass
+        if current_usp and current_usp in existing_usernames:
+            existing_usernames.discard(current_usp)
+
+        if usp_username in existing_usernames:
+            suffix = 2
+            while f"{usp_username}{suffix}" in existing_usernames:
+                suffix += 1
+            usp_username = f"{usp_username}{suffix}"
+
+        return {"usp_username": usp_username}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"生成 USP 账户名失败: {str(e)}"
+        )
+    finally:
+        db.close()
+
+@router.get("/options", response_model=Dict[str, List[str]], summary="获取公司/部门可选项（去重）")
+async def get_user_field_options(
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """返回 users 表中已有的非空 company / department 去重列表，供个人中心下拉选择。"""
+    db = db_manager.get_db()
+    try:
+        companies = [
+            r[0] for r in db.query(UserDB.company)
+            .filter(UserDB.company.isnot(None), UserDB.company != '')
+            .distinct().order_by(UserDB.company).all()
+        ]
+        departments = [
+            r[0] for r in db.query(UserDB.department)
+            .filter(UserDB.department.isnot(None), UserDB.department != '')
+            .distinct().order_by(UserDB.department).all()
+        ]
+        return {"companies": companies, "departments": departments}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取可选项失败: {str(e)}"
+        )
+    finally:
+        db.close()
+
 @router.post("/", response_model=User)
 async def create_user(
     user_data: UserCreate,

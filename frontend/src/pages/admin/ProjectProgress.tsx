@@ -1,6 +1,6 @@
 // 项目进度管理 —— 聚合项目列表 + 风险状态，侧重视觉化项目进度
-import { useState, useEffect, useCallback } from 'react';
-import { Button, Toast, Loading, Input } from 'tdesign-mobile-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Button, Toast, Loading, Input, Popup, Dialog } from 'tdesign-mobile-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { aiGet } from '@/api/ai';
 import { createRequest } from '@/api/client';
@@ -76,6 +76,42 @@ export default function ProjectProgress() {
   }, [canViewAll]);
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
+
+  // ── 长按删除项目 ──
+  // 长按项目卡片 → 弹出「删除项目」操作卡片；再次点击「删除项目」→ 二次确认对话框 → 真实删除
+  const longPressTimer = useRef<number | null>(null);
+  // 长按已触发后，抑制紧随其后的 onClick 导航到详情页
+  const longPressFired = useRef(false);
+  const [longPressProject, setLongPressProject] = useState<ProjectItem | null>(null);
+  const [deleteConfirmProject, setDeleteConfirmProject] = useState<ProjectItem | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const startLongPress = (p: ProjectItem) => () => {
+    longPressFired.current = false;
+    longPressTimer.current = window.setTimeout(() => {
+      longPressFired.current = true;
+      setLongPressProject(p);
+    }, 600);
+  };
+  const cancelLongPress = () => {
+    if (longPressTimer.current !== null) { clearTimeout(longPressTimer.current); longPressTimer.current = null; }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteConfirmProject || deleting) return;
+    setDeleting(true);
+    try {
+      await request(`/projects/${deleteConfirmProject.id}`, { method: 'DELETE' });
+      Toast({ message: '项目已删除', theme: 'success' });
+      setDeleteConfirmProject(null);
+      setLongPressProject(null);
+      await fetchProjects(); // 重新拉取，列表同步移除
+    } catch (err) {
+      Toast({ message: `删除失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   // 企业微信实时台账的项目经理名单（GET /api/ai/wecom/projects，AI 服务）；
   // 卡片项目经理优先用台账值（按 项目编号 / record_id 匹配），台账不可用时回退本地 project_manager
@@ -153,7 +189,7 @@ export default function ProjectProgress() {
         <Input
           value={keyword}
           onChange={(v) => setKeyword(String(v))}
-          placeholder="搜索项目名称"
+          placeholder="搜索项目名称 · 长按删除项目"
           clearable
         />
       </div>
@@ -191,8 +227,19 @@ export default function ProjectProgress() {
                 background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10,
                 boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
                 borderLeft: hasRisk ? '3px solid #d54941' : '3px solid transparent',
+                userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'manipulation',
               }}
-              onClick={() => navigate(`/admin/project-detail/${p.id}`)}
+              onClick={() => {
+                // 长按刚触发时不再进入详情页，避免删除操作被导航打断
+                if (longPressFired.current) { longPressFired.current = false; return; }
+                navigate(`/admin/project-detail/${p.id}`);
+              }}
+              onTouchStart={startLongPress(p)}
+              onTouchEnd={cancelLongPress}
+              onTouchMove={cancelLongPress}
+              onMouseDown={startLongPress(p)}
+              onMouseUp={cancelLongPress}
+              onMouseLeave={cancelLongPress}
             >
               <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600, fontSize: 15 }}>
                 {p.name}
@@ -244,6 +291,53 @@ export default function ProjectProgress() {
           📁 全部项目管理
         </Button>
       </div>
+
+      {/* 长按项目 → 「删除项目」操作卡片 */}
+      <Popup visible={!!longPressProject} onClose={() => setLongPressProject(null)} placement="bottom" showOverlay>
+        <div style={{ padding: 20 }}>
+          <h4 style={{ marginBottom: 16, fontSize: 15, fontWeight: 600 }}>
+            {longPressProject?.name}
+          </h4>
+          <div
+            onClick={() => {
+              setDeleteConfirmProject(longPressProject);
+              setLongPressProject(null);
+            }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '12px 14px', borderRadius: 8,
+              background: '#fef2f2', color: '#d54941',
+              fontWeight: 500, fontSize: 14, cursor: 'pointer',
+            }}
+          >
+            <span>🗑</span>
+            <span>删除项目</span>
+          </div>
+          <div style={{ textAlign: 'right', marginTop: 16 }}>
+            <span
+              onClick={() => setLongPressProject(null)}
+              style={{ fontSize: 13, color: '#999', cursor: 'pointer', padding: 4 }}
+            >
+              取消
+            </span>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 二次确认对话框：确认删除项目 */}
+      <Dialog
+        visible={!!deleteConfirmProject}
+        title="确认删除项目"
+        confirmBtn={deleting ? '删除中...' : '删除'}
+        cancelBtn="取消"
+        onConfirm={confirmDelete}
+        onCancel={() => setDeleteConfirmProject(null)}
+        onClose={() => setDeleteConfirmProject(null)}
+      >
+        <p style={{ fontSize: 14, lineHeight: 1.7, color: '#333' }}>
+          确定要删除项目「<strong>{deleteConfirmProject?.name}</strong>」吗？此操作不可恢复。
+        </p>
+      </Dialog>
     </div>
   );
 }

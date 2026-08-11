@@ -61,6 +61,11 @@ class IdentityService:
                 if hasattr(db_user, 'external_credentials') and db_user.external_credentials:
                     try: ec = json.loads(db_user.external_credentials)
                     except: ec = {}
+                rm = getattr(db_user, 'responsibility_modules', None)
+                # 历史数据可能因 add_user 包装层参数错位被写入非法值（如 int 1 / 字符串 "1"），
+                # 此处强制归一为 dict，避免 Pydantic Dict 校验失败导致接口 500
+                if not isinstance(rm, dict):
+                    rm = {}
                 return {
                     'id': db_user.id, 'username': db_user.username,
                     'password_hash': db_user.password_hash,
@@ -71,8 +76,8 @@ class IdentityService:
                     'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
                     'company': getattr(db_user, 'company', None),
                     'department': getattr(db_user, 'department', None),
-                    'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or {},
-                    'job_level': getattr(db_user, 'job_level', 1),
+                    'responsibility_modules': rm,
+                    'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),
                 }
             return None
@@ -89,6 +94,9 @@ class IdentityService:
                 if hasattr(db_user, 'external_credentials') and db_user.external_credentials:
                     try: ec = json.loads(db_user.external_credentials)
                     except: ec = {}
+                rm = getattr(db_user, 'responsibility_modules', None)
+                if not isinstance(rm, dict):
+                    rm = {}
                 return {
                     'id': db_user.id, 'username': db_user.username,
                     'password_hash': db_user.password_hash,
@@ -99,8 +107,8 @@ class IdentityService:
                     'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
                     'company': getattr(db_user, 'company', None),
                     'department': getattr(db_user, 'department', None),
-                    'responsibility_modules': getattr(db_user, 'responsibility_modules', None) or {},
-                    'job_level': getattr(db_user, 'job_level', 1),
+                    'responsibility_modules': rm,
+                    'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),
                 }
             return None

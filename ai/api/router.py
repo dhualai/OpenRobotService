@@ -8,6 +8,7 @@
 import json
 import time
 import os
+import asyncio
 from pathlib import Path
 from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, Header, HTTPException
@@ -542,7 +543,7 @@ async def upload_files(
                     "给出有参考价值的初步判断。使用'可能''疑似''建议关注'等措辞，"
                     "不下最终结论。"
                 ),
-                max_tokens=500,
+                max_tokens=3072,
                 temperature=0.3,
             )
             vlm_ms = round((time.perf_counter() - t_vlm) * 1000)
@@ -682,6 +683,194 @@ async def upload_files(
             "ai_response": ai_response,
         },
     }
+
+
+@qa_router.post("/upload/stream", summary="上传附件（流式 SSE）")
+async def upload_files_stream(
+    session_id: str = Form(..., description="会话 ID"),
+    files: List[UploadFile] = File(..., description="附件文件"),
+    message: str = Form("", description="附带文字（可选，有则直接走诊断）"),
+    authorization: str = Header(default="", alias="Authorization"),
+):
+    """流式上传：先回执文件已保存 → 流式推送 VLM 图片分析 → 附带文字时再流式推送完整诊断。
+
+    与旧 /upload 兼容并存；SSE 事件：
+      event: file_saved   data={saved, filenames}
+      event: vision_start / vision_token(data={token}) / vision_done(data={desc})
+      event: token        ——诊断文字（仅附带文字时）
+      event: result       data={action, thinking, ticket}
+      event: error / done
+    """
+    from ai.core.minio_client import minio_client
+    from pathlib import Path
+
+    _bucket = get_ai_config().minio_bucket
+    t_upload_start = time.perf_counter()
+    logger.info(
+        f"[upload-stream] 收到请求: session={session_id[:12]}, "
+        f"file_count={len(files)}"
+    )
+
+    async def sse():
+        try:
+            # ── 0. bucket ──
+            try:
+                minio_client.create_bucket(_bucket)
+            except Exception as e:
+                logger.warning(f"确保 bucket {_bucket} 存在失败: {e}")
+
+            # ── 1. 上传到 MinIO，先回执 ──
+            saved = []
+            raw_bytes: list[tuple] = []
+            for f in files:
+                content = await f.read()
+                raw_bytes.append((f.filename, content))
+                object_path = f"{_bucket}/{session_id}/{f.filename}"
+                try:
+                    minio_client.upload_bytes(
+                        content, object_path, content_type=f.content_type, raise_on_error=True
+                    )
+                except Exception as e:
+                    logger.error(f"附件上传到 MinIO 失败: {f.filename} -> {e}", exc_info=True)
+                    yield f"event: error\ndata: {json.dumps({'error': f'文件「{f.filename}」上传失败'}, ensure_ascii=False)}\n\n"
+                    return
+                url = minio_client.get_presigned_url(object_path, expires_minutes=1440)
+                saved.append({"filename": f.filename, "size": len(content), "path": url, "object_path": object_path})
+            filenames = "、".join(s["filename"] for s in saved)
+            logger.info(f"[upload-stream] 文件已保存: session={session_id[:12]}, saved={len(saved)}")
+            # 先推送文件已保存，让前端立即展示
+            yield f"event: file_saved\ndata: {json.dumps({'saved': saved, 'filenames': filenames}, ensure_ascii=False)}\n\n"
+
+            # ── 2. 图片描述：VLM 流式看图 ──
+            image_desc = ""
+            from ai.agents.AiTaskPlatform.attachments.parser import _is_image_file
+            from ai.core import get_llm_client
+            import base64
+            _MIME_MAP = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                         ".png": "image/png", ".bmp": "image/bmp",
+                         ".gif": "image/gif", ".webp": "image/webp"}
+            data_uris = []
+            for fname, raw in raw_bytes:
+                if _is_image_file(fname, fname):
+                    ext = Path(fname).suffix.lower()
+                    mime = _MIME_MAP.get(ext, "image/png")
+                    b64 = base64.b64encode(raw).decode()
+                    data_uris.append((fname, f"data:{mime};base64,{b64}"))
+            if data_uris:
+                llm = await get_llm_client()
+                names = ", ".join(n for n, _ in data_uris)
+                uris = [u for _, u in data_uris]
+                vlm_context = ""
+                try:
+                    mgr = await get_memory_manager()
+                    mem = await mgr.get_memory(session_id)
+                    recent = [t for t in mem.turns[-6:] if t.get("role") in ("user", "assistant")]
+                    if recent:
+                        lines = []
+                        for t in recent:
+                            role = "用户" if t["role"] == "user" else "AI"
+                            lines.append(f"{role}：{t.get('content', '')[:200]}")
+                        vlm_context = "以下是最近的对话记录，供你理解图片背景：\n" + "\n".join(lines) + "\n"
+                except Exception:
+                    pass
+                yield f"event: vision_start\ndata: {json.dumps({'names': names}, ensure_ascii=False)}\n\n"
+                prompt = (
+                    f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。\n"
+                    f"{vlm_context}"
+                    f"请：\n"
+                    f"1. 结合对话上下文，描述画面中的关键信息（界面状态、数据、错误提示、人工标注等）\n"
+                    f"2. 如果发现异常或错误码，解释其含义并指出可能的故障方向"
+                    f"（不下最终结论，用'可能''疑似'等措辞）\n"
+                    f"3. 如果没有明显异常，说明画面看起来正常\n"
+                    f"用工程师口吻，给出有参考价值的初步分析。"
+                )
+                try:
+                    async for tok in llm.stream_vision(
+                        prompt=prompt,
+                        images=uris,
+                        system_prompt=(
+                            "你是 AGV/AMR 调度系统的运维专家。仔细分析图片，"
+                            "给出有参考价值的初步判断。使用'可能''疑似''建议关注'等措辞，不下最终结论。"
+                        ),
+                        max_tokens=3072,
+                        temperature=0.3,
+                    ):
+                        image_desc += tok
+                        yield f"data: {json.dumps({'token': tok}, ensure_ascii=False)}\n\n"
+                    image_desc = image_desc.strip()
+                    logger.info(f"[upload-stream] VLM完成: session={session_id[:12]}, desc_len={len(image_desc)}")
+                except Exception as e:
+                    logger.error(f"[upload-stream] VLM失败: {e}", exc_info=True)
+                    yield f"event: vision_error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+                yield f"event: vision_done\ndata: {json.dumps({'desc': image_desc}, ensure_ascii=False)}\n\n"
+            else:
+                image_desc = ""
+                yield f"event: vision_done\ndata: {json.dumps({'desc': ''}, ensure_ascii=False)}\n\n"
+
+            # ── 3. 写图片描述到记忆（供诊断感知图片），失败不阻塞 ──
+            try:
+                mgr = await get_memory_manager()
+                if image_desc:
+                    await mgr.add_turn(session_id, "user",
+                                       f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
+                    await mgr.add_turn(session_id, "assistant", f"已收到 {len(saved)} 个文件，已附到本次会话中。")
+                else:
+                    await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
+            except Exception as e:
+                logger.warning(f"[upload-stream] 写记忆失败（不阻塞）: {e}")
+
+            # ── 4. 附带文字 → 流式诊断；否则回执即可 ──
+            if message.strip():
+                username, _ = _current_user_from_header(authorization)
+                if not username:
+                    yield f"event: error\ndata: {json.dumps({'error': '登录已过期'}, ensure_ascii=False)}\n\n"
+                    return
+                pipeline = await get_pipeline()
+                qa_request = DiagnosisRequest(
+                    session_id=session_id, query=message.strip(), created_by=username,
+                )
+                result_payload = None
+                try:
+                    async for event in pipeline.run_stream(qa_request):
+                        ev_type = event.get("event")
+                        if ev_type == "token":
+                            yield f"data: {json.dumps({'token': event.get('data', '')}, ensure_ascii=False)}\n\n"
+                        elif ev_type == "result":
+                            result_payload = event.get("data", {})
+                        elif ev_type == "status":
+                            yield f"event: status\ndata: {json.dumps(event.get('data', {}), ensure_ascii=False)}\n\n"
+                    if result_payload is None:
+                        result_payload = {}
+                    # 若有 ticket 刷新计数
+                    if result_payload.get("ticket"):
+                        logger.info(f"[upload-stream] 触发提单: session={session_id[:12]}")
+                    yield f"event: result\ndata: {json.dumps(result_payload, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    logger.error(f"[upload-stream] 诊断失败: {e}", exc_info=True)
+                    yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+            else:
+                ack = image_desc if image_desc else (
+                    f"已收到 {len(saved)} 个文件（{filenames}）。"
+                )
+                if ack:
+                    try:
+                        mgr = await get_memory_manager()
+                        await mgr.add_turn(session_id, "assistant", ack)
+                    except Exception:
+                        pass
+                yield f"event: result\ndata: {json.dumps({'message': ack}, ensure_ascii=False)}\n\n"
+
+            total_ms = round((time.perf_counter() - t_upload_start) * 1000)
+            logger.info(f"[upload-stream] 完成: session={session_id[:12]}, total_ms={total_ms}")
+            yield f"event: done\ndata: {json.dumps({'total_ms': total_ms}, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            logger.info(f"[upload-stream] 客户端断连: session={session_id[:12]}")
+            raise
+        except Exception as e:
+            logger.error(f"[upload-stream] 未知异常: {e}", exc_info=True)
+            yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(sse(), media_type="text/event-stream")
 
 
 @qa_router.get("/health", summary="健康检查")

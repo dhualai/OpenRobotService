@@ -101,8 +101,8 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
           body: JSON.stringify({
             project_code: projectCode,
             mac: machineCode.trim(),
-            start_date: licenseStartDate,
-            end_date: licenseEndDate,
+            start_date: `${licenseStartDate} 00:00:00`,
+            end_date: `${licenseEndDate} 23:59:59`,
             max_vehicles: maxVehicles.trim() ? Number(maxVehicles.trim()) : null,
           }),
           timeout: 65000,

@@ -187,6 +187,7 @@ class LLMClient:
             self._thinking_default = True
         self._provider_impl = _PROVIDERS[provider]
         self._client: Optional[httpx.AsyncClient] = None
+        self._vision_client: Optional[httpx.AsyncClient] = None
 
     def _get_default_base_url(self) -> str:
         """获取默认 base URL"""
@@ -223,11 +224,38 @@ class LLMClient:
             )
         return self._client
 
+    def _get_vision_client(self) -> httpx.AsyncClient:
+        """获取或创建视觉客户端（复用连接池，避免每次请求重新建连）。
+
+        与普通对话客户端不同，视觉请求可能并发执行（多图片/多会话），
+        因此连接池上限放宽以支持多路复用；客户端常驻复用，减少重复 TCP+TLS 握手。
+        """
+        if self._vision_client is None or self._vision_client.is_closed:
+            self._vision_client = httpx.AsyncClient(
+                headers={
+                    "Authorization": f"Bearer {self.config.vision_api_key}",
+                    "Content-Type": "application/json",
+                },
+                # connect/read 超时给足：大图 + 慢服务端一次请求常需数十秒
+                timeout=httpx.Timeout(connect=45.0, read=90.0, write=60.0, pool=15.0),
+                trust_env=False,
+                # 维护多个 keepalive 连接，供并发视觉请求复用
+                limits=httpx.Limits(
+                    max_keepalive_connections=16,
+                    max_connections=32,
+                    keepalive_expiry=300.0,
+                ),
+            )
+        return self._vision_client
+
     async def close(self) -> None:
         """关闭客户端"""
         if self._client and not self._client.is_closed:
             await self._client.aclose()
             self._client = None
+        if self._vision_client and not self._vision_client.is_closed:
+            await self._vision_client.aclose()
+            self._vision_client = None
 
     @retry(
         stop=stop_after_attempt(3),
@@ -335,7 +363,7 @@ class LLMClient:
         prompt: str,
         images: List[str],
         system_prompt: Optional[str] = None,
-        max_tokens: int = 500,
+        max_tokens: int = 3072,
         temperature: float = 0.3,
     ) -> str:
         """多模态补全：文本 + 图片 → 视觉 LLM（独立客户端，不走 DeepSeek）"""
@@ -369,49 +397,33 @@ class LLMClient:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        url = f"{cfg.vision_base_url}/v1/chat/completions"
 
         try:
-            t_conn = time.perf_counter()
-            async with httpx.AsyncClient(
-                headers={
-                    "Authorization": f"Bearer {cfg.vision_api_key}",
-                    "Content-Type": "application/json",
-                },
-                timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0),
-            ) as client:
-                url = f"{cfg.vision_base_url}/v1/chat/completions"
-                resp = await client.post(url, json=payload)
-                t_resp = time.perf_counter()
-                logger.info(
-                    f"[vision] HTTP响应: status={resp.status_code}, "
-                    f"elapsed={(t_resp - t_start) * 1000:.0f}ms, resp_size={len(resp.text)}"
+            data = await self._vision_request(cfg, url=url, payload=payload, t_start=t_start)
+            content = data["choices"][0]["message"].get("content", "")
+            finish_reason = data["choices"][0].get("finish_reason", "?")
+            usage = data.get("usage", {})
+            logger.info(
+                f"[vision] 请求成功: content_len={len(content)}, "
+                f"finish_reason={finish_reason}, "
+                f"usage={json.dumps(usage, ensure_ascii=False) if usage else 'N/A'}, "
+                f"total={(time.perf_counter() - t_start) * 1000:.0f}ms"
+            )
+            if not content:
+                logger.warning(
+                    f"[vision] ⚠️ 返回空内容! finish_reason={finish_reason}, "
+                    f"choices={json.dumps(data.get('choices', []), ensure_ascii=False)[:500]}"
                 )
-                if resp.status_code != 200:
-                    logger.error(
-                        f"[vision] API错误: status={resp.status_code}, body前300字={resp.text[:300]}"
-                    )
-                    raise ServiceUnavailableError("Vision", f"API {resp.status_code}: {resp.text[:200]}")
-                data = resp.json()
-                content = data["choices"][0]["message"].get("content", "")
-                finish_reason = data["choices"][0].get("finish_reason", "?")
-                usage = data.get("usage", {})
-                logger.info(
-                    f"[vision] 请求成功: content_len={len(content)}, "
-                    f"finish_reason={finish_reason}, "
-                    f"usage={json.dumps(usage, ensure_ascii=False) if usage else 'N/A'}, "
-                    f"total={(time.perf_counter() - t_start) * 1000:.0f}ms"
-                )
-                if not content:
-                    logger.warning(
-                        f"[vision] ⚠️ 返回空内容! finish_reason={finish_reason}, "
-                        f"choices={json.dumps(data.get('choices', []), ensure_ascii=False)[:500]}"
-                    )
-                return content
+            return content
 
-        except httpx.TimeoutException as e:
+        except RetryError as e:
             elapsed = (time.perf_counter() - t_start) * 1000
-            logger.error(f"[vision] 超时: elapsed={elapsed:.0f}ms, error={e}", exc_info=True)
-            raise AITimeoutError(f"Vision 超时: {str(e)}")
+            logger.error(
+                f"[vision] 重试耗尽: elapsed={elapsed:.0f}ms, error={e}",
+                exc_info=True,
+            )
+            raise AITimeoutError(f"Vision 服务响应超时: {str(e)}")
         except Exception as e:
             elapsed = (time.perf_counter() - t_start) * 1000
             if isinstance(e, (AITimeoutError, ServiceUnavailableError)):
@@ -419,6 +431,128 @@ class LLMClient:
                 raise
             logger.error(f"[vision] 未知失败: type={type(e).__name__}, elapsed={elapsed:.0f}ms, error={e}", exc_info=True)
             raise ServiceUnavailableError("Vision", str(e)[:100])
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=5, max=30),
+        retry=retry_if_exception_type((
+            httpx.TimeoutException,
+            httpx.ConnectError,
+            httpx.RemoteProtocolError,
+        )),
+        reraise=True,
+    )
+    async def _vision_request(
+        self,
+        cfg,
+        url: str,
+        payload: dict,
+        t_start: float,
+    ) -> dict:
+        """带重试的 Vision HTTP 请求（仅对瞬时网络错误重试）。
+
+        复用常驻的视觉客户端连接池：多个 keepalive 连接可被并发请求复用，
+        大幅降低每次请求重新 TCP+TLS 建连导致的 ConnectTimeout。
+        """
+        client = self._get_vision_client()
+        resp = await client.post(url, json=payload)
+        t_resp = time.perf_counter()
+        logger.info(
+            f"[vision] HTTP响应: status={resp.status_code}, "
+            f"elapsed={(t_resp - t_start) * 1000:.0f}ms, resp_size={len(resp.text)}"
+        )
+        if resp.status_code != 200:
+            logger.error(
+                f"[vision] API错误: status={resp.status_code}, body前300字={resp.text[:300]}"
+            )
+            raise ServiceUnavailableError("Vision", f"API {resp.status_code}: {resp.text[:200]}")
+        return resp.json()
+
+    async def stream_vision(
+        self,
+        prompt: str,
+        images: List[str],
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 3072,
+        temperature: float = 0.3,
+    ):
+        """流式多模态补全：文本 + 图片 → 视觉 LLM，逐 token yield。
+
+        复用常驻视觉客户端连接池；仅在连接阶段（未产出 token 前）尝试重试，
+        避免已产出 token 后重试导致重复输出。
+        """
+        cfg = self.config
+        t_start = time.perf_counter()
+
+        content_parts: list = [{"type": "text", "text": prompt}]
+        for img in images:
+            content_parts.append({"type": "image_url", "image_url": {"url": img}})
+
+        messages: list = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": content_parts})
+
+        payload = {
+            "model": cfg.vision_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+        }
+        url = f"{cfg.vision_base_url}/v1/chat/completions"
+
+        client = self._get_vision_client()
+        has_yielded = False
+        last_error = None
+        acc = []
+
+        for attempt in range(3):
+            try:
+                async with client.stream("POST", url, json=payload) as response:
+                    if response.status_code != 200:
+                        raise ServiceUnavailableError(
+                            "Vision", f"流式响应失败: {response.status_code}: {response.text[:200]}"
+                        )
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data)
+                                for choice in chunk.get("choices", []):
+                                    delta = choice.get("delta", {})
+                                    content = delta.get("content", "")
+                                    if content:
+                                        has_yielded = True
+                                        acc.append(content)
+                                        yield content
+                            except (json.JSONDecodeError, KeyError, IndexError):
+                                continue
+                # 正常结束
+                logger.info(
+                    f"[vision-stream] 完成: content_len={sum(len(c) for c in acc)}, "
+                    f"total={(time.perf_counter() - t_start) * 1000:.0f}ms"
+                )
+                return
+            except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException) as e:
+                last_error = e
+                logger.warning(
+                    f"[vision-stream] 重试: attempt={attempt + 1}, "
+                    f"error={type(e).__name__}: {str(e)[:200]}"
+                )
+                if has_yielded or attempt == 2:
+                    raise AITimeoutError(f"Vision 流式连接失败（重试{attempt + 1}次）: {str(e)}")
+                await asyncio.sleep(min(5 * (2 ** attempt), 20))
+            except Exception as e:
+                if isinstance(e, (AITimeoutError, ServiceUnavailableError)):
+                    raise
+                logger.error(f"[vision-stream] 未知失败: type={type(e).__name__}, error={e}", exc_info=True)
+                raise ServiceUnavailableError("Vision", str(e)[:100])
+
+        if last_error:
+            raise AITimeoutError(f"Vision 流式连接失败（重试3次）: {str(last_error)}")
 
     async def chat(
         self,

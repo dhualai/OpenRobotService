@@ -132,6 +132,7 @@ class TaskComment(Base):
 
     is_public = Column(Boolean, nullable=False, default=True, comment="是否公开")
     attachments = Column(JSON, nullable=True, comment="附件列表")
+    reply_to = Column(BigInteger, nullable=True, index=True, comment="引用的评论ID（消息引用/回复）")
 
     task = relationship("Task", backref="comments", order_by=lambda: desc(TaskComment.created_at))
 
@@ -145,6 +146,24 @@ class TaskComment(Base):
 
     def __repr__(self):
         return f"<TaskComment(id={self.id}, task_id={self.task_id}, created_by='{self.created_by}')>"
+
+
+class TaskCommentRead(Base):
+    """评论已读游标（轻量 IM 已读回执）：每用户每工单记录已读到的最后一条评论 id。"""
+    __tablename__ = "task_comment_read"
+
+    id = Column(BigInteger, primary_key=True, index=True, comment="已读记录ID")
+    task_id = Column(BigInteger, nullable=False, index=True, comment="任务ID")
+    username = Column(String(50), nullable=False, index=True, comment="用户username")
+    last_read_comment_id = Column(BigInteger, nullable=False, comment="已读到的最后一条评论ID")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间")
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "username", name="uq_task_read_user"),
+    )
+
+    def __repr__(self):
+        return f"<TaskCommentRead(task_id={self.task_id}, username='{self.username}', last_read={self.last_read_comment_id})>"
 
 
 class TaskUserMapping(Base):
