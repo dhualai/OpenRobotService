@@ -1,12 +1,13 @@
 // 可复用 AI 对话面板 — 提单 Agent（/api/ai/qa/ask/stream）
 // 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
 import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
 import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
-import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, type TicketDraft } from '@/api/ai';
+import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, qaClearDraft, type TicketDraft } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import UserSelect from '@/shared/components/UserSelect';
 import { createTicket } from '@/api/ticket';
@@ -283,13 +284,26 @@ const MessageBubble = memo(function MessageBubble({
               </button>
             </div>
           ) : msg.subtype === 'ticket_overview' && msg.ticket_overview ? (
-            // 工单概览气泡：confirm 成功后插入，展示工单详情 + 派单状态（纯展示，不跳转）
-            <div className="chat-ticket-overview">
+            // 工单概览气泡：confirm 成功后插入，展示工单详情 + 派单状态，点击进入工单详情页
+            <div
+              className="chat-ticket-overview"
+              role="button"
+              tabIndex={0}
+              title="点击查看工单详情"
+              onClick={() => navigate(`/call/ticket/db_${msg.ticket_overview!.db_id}`)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  navigate(`/call/ticket/db_${msg.ticket_overview!.db_id}`);
+                }
+              }}
+            >
               <div className="chat-ticket-overview__header">
                 <span className="chat-ticket-overview__emoji">🎫</span>
                 <span className="chat-ticket-overview__id">工单 #{msg.ticket_overview.db_id}</span>
                 {msg.ticket_overview.type && <Tag theme="primary">{TICKET_TYPE_LABEL[msg.ticket_overview.type] || msg.ticket_overview.type}</Tag>}
                 {msg.ticket_overview.priority && <Tag theme="warning">{msg.ticket_overview.priority}</Tag>}
+                <span className="chat-ticket-overview__arrow" aria-hidden>›</span>
               </div>
               <div className="chat-ticket-overview__title">{msg.ticket_overview.title}</div>
               {msg.ticket_overview.project && <div className="chat-ticket-overview__row">📁 {msg.ticket_overview.project}</div>}
@@ -297,7 +311,7 @@ const MessageBubble = memo(function MessageBubble({
               {msg.ticket_overview.description && (
                 <>
                   <div className={`chat-ticket-overview__desc chat-clamp${expandedDesc ? ' is-expanded' : ''}`}>{msg.ticket_overview.description}</div>
-                  <button type="button" className="chat-ticket-overview__toggle" onClick={() => onToggleDesc(msg.id)}>
+                  <button type="button" className="chat-ticket-overview__toggle" onClick={(e) => { e.stopPropagation(); onToggleDesc(msg.id); }}>
                     {expandedDesc ? '收起 ▴' : '展开 ▾'}
                   </button>
                 </>
@@ -381,6 +395,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations } = useWorkbenchStore();
   const isCall = scene === 'call';
   const cfg = SCENE_CONFIG[scene];
+  const navigate = useNavigate();
 
   const [messages, setMessages] = useState<Message[]>([]);
   // 图片预览：点击用户气泡图片 → 全屏遮罩放大查看
@@ -1516,6 +1531,17 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   }, [messages, startDispatchPoll]);
 
   /** 确认提交：校验项目/项目负责人 → 工单1 confirm_submit + 工单2(双工单) createTicket → 两个概览气泡 */
+  // 取消确认（关闭弹窗/放弃提单）：彻底清空本地草稿，并通知后端清除 ticket_draft。
+  // 关键：不清后端则 review 幂等分支（pipeline.py existing_draft 已存在）不再发 review 事件，
+  // 前端确认弹窗无法再次弹出，提单卡死。清掉后下次对话字段齐全会重新弹窗。
+  const handleCancelTicketConfirm = () => {
+    const sid = ticketConfirm.draft?.source_conversation_id ?? sessionId;
+    setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
+    if (sid) {
+      qaClearDraft(String(sid)).catch(() => { /* 清草稿失败不阻塞，本地已重置 */ });
+    }
+  };
+
   const handleConfirmTicket = async () => {
     const draft = ticketConfirm.draft;
     if (!draft || !sessionId) return;
@@ -1964,7 +1990,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         </Popup>
 
         {/* 转工单二次确认弹窗：核对草稿字段，problem 类型必填 project */}
-        <Popup visible={ticketConfirm.visible} onClose={() => setTicketConfirm((s) => ({ ...s, visible: false }))} placement="bottom" showOverlay>
+        <Popup visible={ticketConfirm.visible} onClose={handleCancelTicketConfirm} placement="bottom" showOverlay closeOnOverlayClick={false}>
           <div className="ticket-confirm">
             <h4 className="ticket-confirm__title">确认工单信息</h4>
             {ticketConfirm.draft && (
@@ -2078,7 +2104,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               <button
                 type="button"
                 className="ticket-confirm__btn ticket-confirm__btn--cancel"
-                onClick={() => setTicketConfirm((s) => ({ ...s, visible: false }))}
+                onClick={handleCancelTicketConfirm}
               >取消</button>
               <button
                 type="button"
