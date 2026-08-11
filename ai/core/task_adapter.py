@@ -15,7 +15,7 @@ legacy tickets 表，本模块让 AI 改为读写 tasks 表，与 backend 工单
 import hashlib
 
 from app.core.db import SessionLocal
-from app.models.task import Task, TaskStatus, TaskPriority, TaskType
+from app.models.task import Task, TaskStatus, TaskPriority, TaskType, TaskOperationLog, OperationType
 
 
 AI_SOURCE = "ai"
@@ -207,9 +207,51 @@ def upsert_task(ticket: dict, created_by: str = "") -> Task:
         db.add(rec)
         db.commit()
         db.refresh(rec)
+        # 写入操作日志：创建工单 + 初始状态变更（source='ai' 的工单也补日志）
+        _log_task_creation(db, rec, created_by)
         return rec
     finally:
         db.close()
+
+
+def _log_task_creation(db, task: Task, created_by: str) -> None:
+    """AI 创建工单后补写操作日志（create + status_change 初始主节点）。
+
+    失败不阻塞主流程（工单已入库），仅记日志。
+    """
+    try:
+        operator = created_by or "system"
+        status_val = task.status.value if hasattr(task.status, 'value') else str(task.status)
+        # create 操作日志
+        db.add(TaskOperationLog(
+            task_id=task.id,
+            operation_type=OperationType.CREATE,
+            operator=operator,
+            operator_name=operator,
+            to_status=status_val,
+            description=f"{operator} 创建了工单（AI 诊断）",
+        ))
+        # status_change 主节点：状态从无 → new
+        db.add(TaskOperationLog(
+            task_id=task.id,
+            operation_type=OperationType.STATUS_CHANGE,
+            operator=operator,
+            operator_name=operator,
+            to_status=status_val,
+            detail={"from": None, "to": status_val},
+            description=f"工单状态变更为「{status_val}」",
+        ))
+        db.commit()
+    except Exception as e:
+        # 日志失败不回滚工单（已 commit），仅记错误
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Failed to log task creation for task {task.id}: {e}"
+        )
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 def update_task_resolution(task_id, solution: dict, resolution: str = "resolved") -> bool:

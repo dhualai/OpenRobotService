@@ -31,6 +31,16 @@ from app.core.config import settings
 
 router = APIRouter(tags=["tasks"])
 
+# 状态中文映射（用于操作日志描述）
+STATUS_LABEL = {
+    "new": "新建",
+    "in_progress": "处理中",
+    "pending": "待处理",
+    "resolved": "已解决",
+    "canceled": "已取消",
+    "closed": "已关闭",
+}
+
 comment_attachment_map = {}
 
 
@@ -744,12 +754,27 @@ async def update_task_status(
 
     try:
         status_enum = TicketStatus(status)
+        old_status = ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)
         updated_ticket = await TicketService.update_ticket_status(db, task_id, status_enum, token=token, operator_id=username)
         # ── WS 实时广播：工单状态变更 ──
         try:
             await ws_broadcast_task_updated(task_id, updated_ticket)
         except Exception:
             pass
+
+        # ── 记录状态变更操作日志 ──
+        user_name = current_user.get('name', username)
+        await OperationLogService.log(
+            db=db,
+            task_id=task_id,
+            op_type=OperationType.STATUS_CHANGE,
+            operator=username,
+            operator_name=user_name,
+            to_status=status,
+            detail={"from": old_status, "to": status},
+            description=f"{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」",
+        )
+
         return updated_ticket
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

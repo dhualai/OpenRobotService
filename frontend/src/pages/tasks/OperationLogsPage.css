@@ -5,6 +5,7 @@
 
 .operation-logs-page__content {
   padding: 12px 16px;
+  padding-top: 60px;
   max-width: 600px;
   margin: 0 auto;
 }

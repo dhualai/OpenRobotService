@@ -718,7 +718,7 @@ export default function TaskDetailPage() {
         onLeftClick={handleBack}
         right={
           <span
-            onClick={() => navigate(`/tasks/${id}/operations`)}
+            onClick={() => navigate(`/tasks/${detailId}/operations`)}
             style={{ fontSize: 14, color: '#0052d9', cursor: 'pointer', fontWeight: 500 }}
           >
             流转记录
