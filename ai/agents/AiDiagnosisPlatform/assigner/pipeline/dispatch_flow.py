@@ -114,42 +114,40 @@ class DispatchFlow:
             logger.warning("派单 Step 0.6: 排除提单人后无候选人，回退全量")
             candidates = engineer_profiles
 
-        # ── Step 1: 三路召回 ──
+        # ── Step 1: 三路召回（L1/L2/L3 互不依赖，并行执行提升吞吐）──
         recall_result = RecallResult()
-        # L1 纯LLM 召回
         try:
-            recall_result.llm_recall = await self._llm_recall.arecall(
-                ticket=ticket_context, engineers=candidates,
-            )
-            logger.debug(f"派单 L1 LLM召回: {len(recall_result.llm_recall)} 人")
-        except Exception as e:
-            logger.warning(f"派单 L1 LLM召回异常: {e}")
-        # L2 语义召回
-        try:
-            recall_result.semantic_recall = await self._semantic_recall.arecall(
-                ticket=ticket_context, engineers=candidates,
-            )
-            logger.debug(f"派单 L2语义召回: {len(recall_result.semantic_recall)} 人")
-        except Exception:
-            pass
-        # L3 历史召回（双路并行：A路相似工单聚人 + B路问题域聚人）
-        try:
-            his_a, his_b = await asyncio.gather(
-                self._history_recall.arecall(ticket=ticket_context),
-                self._expertise_recall.arecall(ticket=ticket_context),
+            l1_fut, l2_fut, l3_fut = await asyncio.gather(
+                self._llm_recall.arecall(ticket=ticket_context, engineers=candidates),
+                self._semantic_recall.arecall(ticket=ticket_context, engineers=candidates),
+                self._history_pair(ticket_context),
                 return_exceptions=True,
             )
-            if isinstance(his_a, Exception):
-                his_a = {}
-            if isinstance(his_b, Exception):
-                his_b = {}
-            recall_result.history_recall = self._merge_history(his_a, his_b)
-            logger.debug(
-                f"派单 L3历史召回: A路{len(his_a)}人 B路{len(his_b)}人 "
-                f"→ 融合{len(recall_result.history_recall)}人"
-            )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"派单 Step 1 并行召回批次异常: {e}")
+            l1_fut = l2_fut = l3_fut = {}
+
+        # L1 纯LLM 召回
+        if isinstance(l1_fut, Exception):
+            logger.warning(f"派单 L1 LLM召回异常: {l1_fut}")
+            recall_result.llm_recall = {}
+        else:
+            recall_result.llm_recall = l1_fut or {}
+            logger.debug(f"派单 L1 LLM召回: {len(recall_result.llm_recall)} 人")
+        # L2 语义召回
+        if isinstance(l2_fut, Exception):
+            logger.warning(f"派单 L2 语义召回异常: {l2_fut}")
+            recall_result.semantic_recall = {}
+        else:
+            recall_result.semantic_recall = l2_fut or {}
+            logger.debug(f"派单 L2语义召回: {len(recall_result.semantic_recall)} 人")
+        # L3 历史召回（A路相似工单 + B路问题域），已合并成单个 dict
+        if isinstance(l3_fut, Exception):
+            logger.warning(f"派单 L3 历史召回异常: {l3_fut}")
+            recall_result.history_recall = {}
+        else:
+            recall_result.history_recall = l3_fut or {}
+            logger.debug(f"派单 L3历史召回: 融合{len(recall_result.history_recall)}人")
 
         # ── Step 2: 精排 + 职级折扣 ──
         ranked_scores = self._ranker.rank(recall_result, engineers=candidates)
@@ -241,6 +239,27 @@ class DispatchFlow:
             logger.info("派单排名: 无候选排名数据")
 
     # ── L3 双路融合: A路(相似工单聚人) + B路(问题域聚人) ──
+    async def _history_pair(self, ticket) -> Dict[str, float]:
+        """并行执行 L3-A（相似工单）与 L3-B（问题域），融合成单一 history_recall dict。
+
+        供 Step 1 三路并行 gather 使用；任一异常返回空 dict 不阻断。
+        """
+        try:
+            his_a, his_b = await asyncio.gather(
+                self._history_recall.arecall(ticket=ticket),
+                self._expertise_recall.arecall(ticket=ticket),
+                return_exceptions=True,
+            )
+            if isinstance(his_a, Exception):
+                his_a = {}
+            if isinstance(his_b, Exception):
+                his_b = {}
+            logger.debug(f"派单 L3历史召回: A路{len(his_a)}人 B路{len(his_b)}人")
+            return self._merge_history(his_a, his_b)
+        except Exception as e:
+            logger.warning(f"派单 L3 历史召回异常: {e}")
+            return {}
+
     def _merge_history(
         self, his_a: Dict[str, float], his_b: Dict[str, float],
     ) -> Dict[str, float]:
