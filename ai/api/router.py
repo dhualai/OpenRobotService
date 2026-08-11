@@ -182,6 +182,13 @@ async def ask_question_stream(
             last_persist = 0.0
             PERSIST_MS = 0.8
             async def _persist(content: str, force: bool = False):
+                """增量落库——producer 主协程内同步 await。
+
+                注意：早期版本曾改为「线程池 + asyncio.ensure_future」的 fire-and-forget，
+                但 ThreadPoolExecutor 工作线程里 get_event_loop() 抛 RuntimeError 被吞，
+                导致落库实际从未执行 → 前端实时能看到、刷新后回复丢失。
+                此处恢复为可靠的 await 落库，保证 DB 有完整内容。
+                """
                 nonlocal last_persist
                 now = time.perf_counter()
                 if not force and (now - last_persist) < PERSIST_MS:

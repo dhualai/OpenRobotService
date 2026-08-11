@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Input, Button, Dialog, Toast, Popup } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { UserCircleIcon, AddIcon } from 'tdesign-icons-react';
 import { useAuthStore } from '@/stores/auth';
 import { getMyProfile, getProfileOptions, generateUspUsername, updateMyProfile, uploadAvatar, avatarUrl, type MyProfile } from '@/api/profile';
@@ -356,13 +357,12 @@ export default function UserProfile() {
         </Field>
 
         <Field label="姓名">
-          <Input
+          <ClearableInput
             value={nameDraft}
             onChange={(v) => setNameDraft(String(v))}
             onBlur={handleNameBlur}
             placeholder="请输入姓名，便于同事识别"
             maxlength={20}
-            clearable
           />
         </Field>
 
@@ -435,22 +435,20 @@ export default function UserProfile() {
         </Field>
 
         <Field label="USP 密码" hint="至少8位，含字母、数字、特殊字符">
-          <Input
+          <ClearableInput
             value={uspPasswordDraft}
             onChange={(v) => setUspPasswordDraft(String(v))}
             placeholder="留空则不修改"
             type="password"
-            clearable
           />
         </Field>
 
         <Field label="确认密码">
-          <Input
+          <ClearableInput
             value={uspPasswordConfirmDraft}
             onChange={(v) => setUspPasswordConfirmDraft(String(v))}
             placeholder="再次输入新密码"
             type="password"
-            clearable
           />
         </Field>
       </div>
@@ -480,12 +478,11 @@ export default function UserProfile() {
           <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>
             {addingField === 'company' ? '添加公司' : '添加部门'}
           </div>
-          <Input
+          <ClearableInput
             value={addInputValue}
             onChange={(v) => setAddInputValue(String(v))}
             placeholder={addingField === 'company' ? '请输入公司名称' : '请输入部门/团队名称'}
             maxlength={64}
-            clearable
             autofocus
           />
           <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>

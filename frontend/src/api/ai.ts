@@ -128,6 +128,8 @@ export interface TicketDraft {
   support_type?: string;
   preferred_response?: string;
   missing_fields?: string[];
+  /** 最晚解决时间（ISO 字符串，转工单弹窗拖拽进度条生成 → overrides → confirm_submit 入库 → 落 Task.deadline_at） */
+  deadline_at?: string;
   [k: string]: unknown;
 }
 

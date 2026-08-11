@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Button, Toast, Loading, Dialog, Input, Popup, Form, FormItem, Textarea, RadioGroup } from 'tdesign-mobile-react';
+import { Button, Toast, Loading, Dialog, Popup, Form, FormItem, Textarea, RadioGroup } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -531,11 +532,10 @@ export default function UserManage() {
       </Button>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <Input
+        <ClearableInput
           value={keyword}
           onChange={(v) => setKeyword(String(v))}
           placeholder="搜索用户名/姓名/部门…"
-          clearable
           style={{ flex: 1 }}
         />
         <Button size="small" theme="primary" onClick={handleSearch}>搜索</Button>
@@ -699,41 +699,37 @@ export default function UserManage() {
             {!editingUsername && (
               <>
                 <FormItem label="用户名" name="username">
-                  <Input
+                  <ClearableInput
                     value={form.username}
                     onChange={(v) => setForm((p) => ({ ...p, username: String(v) }))}
                     placeholder="登录账号"
-                    clearable
                   />
                 </FormItem>
 
                 <FormItem label="密码" name="password">
-                  <Input
+                  <ClearableInput
                     value={form.password}
                     onChange={(v) => setForm((p) => ({ ...p, password: String(v) }))}
                     placeholder="初始密码"
                     type="password"
-                    clearable
                   />
                 </FormItem>
               </>
             )}
 
             <FormItem label="姓名" name="name">
-              <Input
+              <ClearableInput
                 value={form.name || ''}
                 onChange={(v) => setForm((p) => ({ ...p, name: String(v) }))}
                 placeholder="真实姓名"
-                clearable
               />
             </FormItem>
 
             <FormItem label="部门" name="department">
-              <Input
+              <ClearableInput
                 value={form.department || ''}
                 onChange={(v) => setForm((p) => ({ ...p, department: String(v) }))}
                 placeholder="部门/团队"
-                clearable
               />
             </FormItem>
 
@@ -778,11 +774,10 @@ export default function UserManage() {
                       <span style={{ fontSize: 12, color: '#666', whiteSpace: 'nowrap', minWidth: 48 }}>
                         模块 {idx + 1}
                       </span>
-                      <Input
+                      <ClearableInput
                         value={entry.module}
                         onChange={(v) => updateModuleName(idx, String(v))}
                         placeholder="模块名，如：调度USP"
-                        clearable
                         style={{ flex: 1 }}
                       />
                       <Button
@@ -824,11 +819,10 @@ export default function UserManage() {
                     )}
 
                     <div style={{ display: 'flex', gap: 6 }}>
-                      <Input
+                      <ClearableInput
                         value={keywordInputs[idx] || ''}
                         onChange={(v) => updateKeywordInput(idx, String(v))}
                         placeholder="输入职责关键字"
-                        clearable
                         style={{ flex: 1 }}
                       />
                       <Button size="small" variant="outline" onClick={() => addKeyword(idx)}>

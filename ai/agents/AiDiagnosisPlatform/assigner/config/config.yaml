@@ -6,6 +6,7 @@
 #   module_keywords      → recall/history_recall.py（L3 历史召回：历史工单标签提取）
 #   module_anchor_texts  → recall/semantic_recall.py（L2 语义召回：Embedding 锚文本）
 #   ranker_weights       → ranking/ranker.py（三路召回加权）
+#   history_recall       → recall/history_recall.py（L3 历史召回增强：时间衰减 + Top-K + 故障码）
 #   job_level_penalty    → ranking/ranker.py（职级折扣）
 #   department_keywords  → filtering/department_filter.py（部门过滤关键词：strong/medium/weak 三级）
 #   department_scenes    → filtering/department_filter.py（部门故障场景库，embedding 语义补漏）
@@ -225,6 +226,28 @@ ranker_weights:
   history_match: 0.10    # L3 历史：相似历史工单 → 按解决人聚合（数据积累中，暂低权重）
 
 # ══════════════════════════════════════════════════════════════════
+# 3.2 L3 历史召回增强参数（双路并行）
+#    消费方：recall/history_recall.py（A路）+ recall/expertise_recall.py（B路）
+#    - top_k:             每人取最高的前 K 条历史记录参与聚合（A路）
+#    - half_life_days:    时间衰减半衰期（天），越大历史越不易被遗忘（A/B 共用）
+#    - sim_threshold:     历史工单相似度阈值（A路）
+#    - fault_code_boost:  历史同故障码的加分（A路）
+#    - robot_type_boost:  历史同车型的加分（A路）
+#    - decay_weight:      时间衰减在最终分中的占比（剩余部分给相似度）
+#    - weight_a:          A路（相似工单聚人）融合权重
+#    - weight_b:          B路（问题域聚人）融合权重
+# ══════════════════════════════════════════════════════════════════
+history_recall:
+  top_k: 5
+  half_life_days: 90        # 半衰期90天：90天后经验仍保留 ~37%，半年后仍保留 ~14%
+  sim_threshold: 0.3
+  fault_code_boost: 0.15
+  robot_type_boost: 0.10
+  decay_weight: 0.5
+  weight_a: 0.5             # A路（相似工单聚人）
+  weight_b: 0.5             # B路（问题域聚人）
+
+# ══════════════════════════════════════════════════════════════════
 # 4. 职级惩罚系数
 #    用途：职级越高越不优先接单，精排后按职级打折。
 #    消费方：ranking/ranker.py
@@ -297,7 +320,7 @@ department_keywords:
       - 坏了
       - 异常
       - 破损
-  车端软件:
+  智能移动研究院:
     strong:
       - 雷达故障
       - 雷达数据异常
@@ -347,7 +370,7 @@ department_keywords:
       - 错误
       - 失败
       - 失效
-  智能规划:
+  智能规划研究院:
     strong:
       - 调度系统
       - 调度平台
@@ -437,11 +460,11 @@ department_scenes:
     电机驱动问题: "机器人电机不转，电机异响，驱动轮不动，行走电机故障"
     轮子底盘问题: "机器人轮子脱落、卡死，底盘变形，车体损坏，行走机构异常"
     机械结构问题: "机械臂不动，货叉卡住，升降机构异常，传送带故障"
-  车端软件:
+  智能移动研究院:
     定位感知问题: "机器人定位异常，定位漂移，定位不准，车辆跑偏，位置和实际不一致，激光雷达异常，传感器数据异常，SLAM失败，重定位失败"
     控制驱动问题: "控制器异常，车辆控制失效，运动控制出错，底盘控制无响应"
     通信网关问题: "车载网关通信异常，传感器数据不上报，控制器连接断开"
-  智能规划:
+  智能规划研究院:
     任务调度问题: "机器人任务无法执行，调度失败，任务无法下发，任务阻塞，任务分配异常"
     路径规划问题: "路径规划失败，机器人不会避让，锁区无法通行，交通管制异常"
     地图编辑问题: "地图编辑失败，路网异常，背景图加载失败，地图预处理出错，地图数据不对，编辑地图保存失败"
