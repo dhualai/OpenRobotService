@@ -799,13 +799,27 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             // 持久化用户消息（存 object_path，前端恢复时拼后端代理路径 /api/call/files/{object_path}）
             convId = await ensureConversation(sid, content || `[发送了附件] ${file.name}`);
             if (convId) {
+              const cid: number = convId; // 非空快照：递归 persist 中 TS 无法收窄外层 nullable convId
               const objectPath = uploaded?.object_path;
               const fileUrls = objectPath ? JSON.stringify([{ filename: file.name, object_path: objectPath, size: file.size, isImage }]) : undefined;
-              appendMessage(convId, 'user', content || `[发送了附件] ${file.name}`, { fileUrls, messageType: isImage ? 'image' : 'file' }).catch(() => {});
+              // 附件落库带 2 次重试；失败仅告警（不抛出，避免中断 SSE 读流导致"后端成功却显示上传失败"）。
+              // 此前 .catch(()=>{}) 静默吞错，用户"上传成功但 DB 无附件记录"且无任何提示，此处改为可观测。
+              const persist = async (attempt: number): Promise<void> => {
+                try {
+                  await appendMessage(cid, 'user', content || `[发送了附件] ${file.name}`, { fileUrls, messageType: isImage ? 'image' : 'file' });
+                } catch (e) {
+                  if (attempt < 3) {
+                    await new Promise((r) => setTimeout(r, 300 * attempt)); // 300ms/600ms 退避
+                    return persist(attempt + 1);
+                  }
+                  console.warn('[ChatPanel] 附件消息落库失败（已重试3次）仍失败，DB 中将无该附件记录:', e);
+                }
+              };
+              void persist(1);
             }
           } catch (e) {
             // 落库/建会话失败不阻塞上传与 AI 流式回复
-            console.warn('[ChatPanel] 上传文件已保存，但持久化会话失败:', e);
+            console.warn('[ChatPanel] 上传文件已保存，但持久化会话失败（DB 可能缺失该附件记录）:', e);
           }
         },
         // onToken 会收到两段 token：vision_done 前的 VLM 描述 + 之后的诊断正文。
