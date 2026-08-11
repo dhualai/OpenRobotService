@@ -123,6 +123,7 @@ class KBDomainIngester(BaseIngester[KBEntry]):
         """FAQ：先按 ## 分大节，每节内按 ### 切 QA（一 QA 一 chunk）
 
         如果全文没有 ##，则退化为直接按 ### 切分。
+        每个 ### QA 块内如果包含多个 #### 子标题且内容较长，按 #### 进一步拆分。
         """
         h1_match = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
         doc_title = h1_match.group(1).strip() if h1_match else ""
@@ -155,12 +156,19 @@ class KBDomainIngester(BaseIngester[KBEntry]):
                     continue
                 # 合并连续的 #### 子节（如 #### 1.1 / #### 1.2）
                 full_title = f"{doc_title} / {q_title_clean}"
-                entries.append(KBEntry(
-                    title=full_title,
-                    content=q_body,
-                    sub_domain=sub_domain, source_file=source_file, order=order,
-                ))
-                order += 1
+                # 如果 body 有多层 ####，按 h4 拆分
+                sub_entries = self._maybe_split_h4(q_body, full_title,
+                                                   sub_domain, source_file, order)
+                if sub_entries:
+                    entries.extend(sub_entries)
+                    order += len(sub_entries)
+                else:
+                    entries.append(KBEntry(
+                        title=full_title,
+                        content=q_body,
+                        sub_domain=sub_domain, source_file=source_file, order=order,
+                    ))
+                    order += 1
             return entries
 
         # ── 有 ##：两层切分 ──
@@ -214,13 +222,61 @@ class KBDomainIngester(BaseIngester[KBEntry]):
 
                 full_title = f"{doc_title} / {section_title} / {q_title}"
 
-                entries.append(KBEntry(
-                    title=full_title,
-                    content=q_body,
-                    sub_domain=sub_domain, source_file=source_file, order=order,
-                ))
-                order += 1
+                # 如果 q_body 有多层 ####，按 h4 拆分
+                sub_entries = self._maybe_split_h4(q_body, full_title,
+                                                   sub_domain, source_file, order)
+                if sub_entries:
+                    entries.extend(sub_entries)
+                    order += len(sub_entries)
+                else:
+                    entries.append(KBEntry(
+                        title=full_title,
+                        content=q_body,
+                        sub_domain=sub_domain, source_file=source_file, order=order,
+                    ))
+                    order += 1
 
+        return entries
+
+    def _maybe_split_h4(self, body: str, title_prefix: str, sub_domain: str,
+                        source_file: str, order: int) -> List:
+        """如果 body 中包含多个 #### 子标题且内容较长（>=200 字符），按 #### 拆分为多个 chunk。
+
+        否则返回空列表（调用方继续用原来的整块 chunk）。
+        """
+        # 检测是否有 #### 子标题
+        h4_sections = re.split(r'\n(?=#### )', body)
+        if len(h4_sections) <= 1:
+            return []
+
+        # 判断是否值得拆分：至少有一个 #### 块内容 >= 200 字符
+        worthwhile = False
+        for sec in h4_sections:
+            if not re.match(r'^#### ', sec):
+                continue
+            sec_body = re.sub(r'^####\s+.+\n', '', sec, count=1).strip()
+            if len(sec_body) >= 200:
+                worthwhile = True
+                break
+        if not worthwhile:
+            return []
+
+        entries = []
+        for sec in h4_sections:
+            h4_match = re.match(r'^####\s+(.+)$', sec, re.MULTILINE)
+            if not h4_match:
+                # h4 之前的 lead-in（如大段说明文字），跳过
+                continue
+            h4_title = h4_match.group(1).strip()
+            h4_body = re.sub(r'^####\s+.+\n', '', sec, count=1).strip()
+            if not h4_body:
+                continue
+            title = f"{title_prefix} / {h4_title}"
+            entries.append(KBEntry(
+                title=title, content=h4_body,
+                sub_domain=sub_domain, source_file=source_file, order=order,
+            ))
+            order += 1
         return entries
 
     # ═══════════════════════════════════════════════════════════
