@@ -115,7 +115,7 @@ class HistoryRecall:
         # 从 Qdrant 检索相似历史工单（返回带 engineer_id 的原始 points）
         hits = await retriever.retrieve_dispatch_history(q, top_k=30)
         if not hits:
-            logger.debug("[history_recall] L3-A 相似工单: 无检索命中")
+            logger.debug(f"[派单:{ticket.id}] Step3-L3-A 相似工单: 无检索命中")
             return {}
 
         # 逐条算最终分：sim×融合 + 故障码/车型 boost，再按 engineer_id 聚合
@@ -154,7 +154,7 @@ class HistoryRecall:
             his[eid] = round(0.7 * top1 + 0.3 * avg_rest, 4)
 
         logger.debug(
-            f"[history_recall] L3-A 相似工单: 检索{len(hits)}条(过阈值{sum(1 for h in hits if float(h.get('score',0)) >= self._sim_threshold)}) "
+            f"[派单:{ticket.id}] Step3-L3-A 相似工单: 检索{len(hits)}条(过阈值{sum(1 for h in hits if float(h.get('score',0)) >= self._sim_threshold)}) "
             f"聚人={len(his)}人"
         )
         return his
