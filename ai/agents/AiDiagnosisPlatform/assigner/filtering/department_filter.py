@@ -181,7 +181,7 @@ class DepartmentFilter:
         dept, scene, score = await self._embedding_match(text, candidate_depts)
         if dept and score >= self._embed_threshold:
             scope = "medium缩小" if candidate_depts else "全场景"
-        logger.info(f"[派单:{ticket.id}] Step1-部门匹配 embedding[{scope}]({scene}:{score:.2f}) → {dept}")
+            logger.info(f"[派单:{ticket.id}] Step1-部门匹配 embedding[{scope}]({scene}:{score:.2f}) → {dept}")
             return dept
 
         logger.info(f"[派单:{ticket.id}] Step1-部门匹配 未命中(关键词+embedding) → 不过滤")
