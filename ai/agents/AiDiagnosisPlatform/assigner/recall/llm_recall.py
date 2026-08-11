@@ -66,8 +66,8 @@ class LlmRecall:
 
         lines.extend([
             "",
-            "输出 JSON。engineer_id 必须填写候选列表中对应的 id 值（精确复制）。confidence 填 0~1 的浮点数。",
-            '{"rankings":[{"engineer_id":"oD5oY3RN...","confidence":0.85},...]}',
+            "输出 JSON。engineer_id 必须是候选人列表中该人选对应的完整 username（以 wechat_ 开头，如 wechat_oD5oY3xxx），必须保留 wechat_ 前缀、精确复制，不要去掉前缀或填姓名。confidence 填 0~1 的浮点数。",
+            '{"rankings":[{"engineer_id":"wechat_oD5oY3RN...","confidence":0.85},...]}',
         ])
         return "\n".join(lines)
 
