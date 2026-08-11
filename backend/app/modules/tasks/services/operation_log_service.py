@@ -11,11 +11,25 @@ from sqlalchemy import select, desc, and_
 from sqlalchemy.sql import func
 
 from app.models.task import TaskOperationLog, OperationType
+from app.core.database import db_manager
 
 logger = logging.getLogger(__name__)
 
 # 查看记录去重时间窗口（秒）
 VIEW_DEDUP_WINDOW = 300  # 5 分钟
+
+
+def _resolve_operator_name(operator: str, operator_name: Optional[str]) -> str:
+    """通过 username 解析显示名（已传则用传入的，否则查用户表兜底）。"""
+    if operator_name:
+        return operator_name
+    try:
+        user = db_manager.get_user(operator)
+        if user and user.get("name"):
+            return user["name"]
+    except Exception as e:
+        logger.warning(f"Failed to resolve operator name for {operator}: {e}")
+    return operator
 
 
 class OperationLogService:
@@ -40,7 +54,7 @@ class OperationLogService:
             task_id: 工单 ID
             op_type: 操作类型
             operator: 操作人 username
-            operator_name: 操作人显示名
+            operator_name: 操作人显示名（未传时自动查用户表补全）
             to_status: 目标状态（仅 STATUS_CHANGE 有值）
             detail: 操作详情快照（JSON 可序列化的 dict）
             description: 人类可读描述
@@ -49,14 +63,15 @@ class OperationLogService:
             创建的 TaskOperationLog 实例，失败返回 None
         """
         try:
+            resolved_name = _resolve_operator_name(operator, operator_name)
             log_entry = TaskOperationLog(
                 task_id=task_id,
                 operation_type=op_type,
                 operator=operator,
-                operator_name=operator_name,
+                operator_name=resolved_name,
                 to_status=to_status,
                 detail=detail,
-                description=description,
+                description=description or f"{resolved_name} {op_type.value}",
             )
             db.add(log_entry)
             await db.commit()
@@ -132,14 +147,15 @@ class OperationLogService:
                 )
                 return None  # 去重，不重复记录
 
-            # 写入新的查看记录
+            # 写入新的查看记录（log 内部会自动补全 operator_name）
+            resolved = _resolve_operator_name(username, user_name)
             return await OperationLogService.log(
                 db=db,
                 task_id=task_id,
                 op_type=OperationType.VIEW,
                 operator=username,
                 operator_name=user_name,
-                description=f"{user_name or username} 查看了工单",
+                description=f"{resolved} 查看了工单",
             )
         except Exception as e:
             logger.error(f"Failed to log view for task {task_id}: {str(e)}", exc_info=True)

@@ -1,4 +1,4 @@
-﻿from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional
 from datetime import timedelta
 
 from app.core.database import db_manager, get_user_with_roles
@@ -25,7 +25,7 @@ class AuthService:
 
         access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": user['username']}, expires_delta=access_token_expires
+            data={"sub": user['username'], "name": user.get('name') or user['username']}, expires_delta=access_token_expires
         )
 
         refresh_token = create_refresh_token(data={"sub": user['username']})
@@ -56,7 +56,7 @@ class AuthService:
 
         access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": user['username']}, expires_delta=access_token_expires
+            data={"sub": user['username'], "name": user.get('name') or user['username']}, expires_delta=access_token_expires
         )
 
         new_refresh_token = create_refresh_token(data={"sub": user['username']})
