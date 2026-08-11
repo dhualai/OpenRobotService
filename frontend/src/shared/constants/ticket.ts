@@ -93,6 +93,14 @@ export function canCancelTicket(status: TicketStatusLike): boolean {
   return canUrgeTicket(status);
 }
 
+/** 撤回按钮「显示」规则：仅「新建」组（new / 待派单 / 已派单）展示，其余状态隐藏。
+ * 与 canCancelTicket（操作权限）区分——权限判定仍允许一定范围，但 UI 选择在非新建时直接隐藏按钮，
+ * 避免在微信端出现「不可点击但未置灰」的禁用态。 */
+export function canShowCancelButton(status?: string | null): boolean {
+  const key = normalizeKey(status);
+  return key === 'new' || key === 'pending_dispatch' || key === 'dispatched';
+}
+
 // ===== 状态颜色（TaskDetailPage / TasksView / TicketDetailPage 共用）=====
 export const STATUS_COLOR_MAP: Record<string, string> = {
   new: '#0052d9',

@@ -11,13 +11,14 @@ import {
   canUrgeTicket,
   canReportTicket,
   canCancelTicket,
+  canShowCancelButton,
 } from '../ticket';
 
 describe('STATUS_DISPLAY_MAP', () => {
   it('should map all statuses to Chinese display', () => {
     expect(STATUS_DISPLAY_MAP['new']).toBe('新建');
     expect(STATUS_DISPLAY_MAP['in_progress']).toBe('进行中');
-    expect(STATUS_DISPLAY_MAP['pending']).toBe('待处理');
+    expect(STATUS_DISPLAY_MAP['pending']).toBe('已挂起');
     expect(STATUS_DISPLAY_MAP['resolved']).toBe('已解决');
     expect(STATUS_DISPLAY_MAP['closed']).toBe('已关闭');
   });
@@ -27,7 +28,7 @@ describe('STATUS_VALUE_MAP', () => {
   it('should map Chinese display back to values', () => {
     expect(STATUS_VALUE_MAP['新建']).toBe('new');
     expect(STATUS_VALUE_MAP['进行中']).toBe('in_progress');
-    expect(STATUS_VALUE_MAP['待处理']).toBe('pending');
+    expect(STATUS_VALUE_MAP['已挂起']).toBe('pending');
     expect(STATUS_VALUE_MAP['已解决']).toBe('resolved');
     expect(STATUS_VALUE_MAP['已关闭']).toBe('closed');
   });
@@ -139,5 +140,20 @@ describe('工单操作状态约束（催办/上报/撤回）', () => {
     expect(canCancelTicket('resolved')).toBe(false);
     expect(canCancelTicket('canceled')).toBe(false);
     expect(canCancelTicket('closed')).toBe(false);
+  });
+});
+
+describe('canShowCancelButton（撤回按钮显示规则：仅新建展示，非新建隐藏）', () => {
+  it('新建/待派单/已派单展示', () => {
+    expect(canShowCancelButton('new')).toBe(true);
+    expect(canShowCancelButton('pending_dispatch')).toBe(true);
+    expect(canShowCancelButton('dispatched')).toBe(true);
+  });
+  it('待处理/处理中/终态隐藏', () => {
+    expect(canShowCancelButton('pending')).toBe(false);
+    expect(canShowCancelButton('in_progress')).toBe(false);
+    expect(canShowCancelButton('resolved')).toBe(false);
+    expect(canShowCancelButton('canceled')).toBe(false);
+    expect(canShowCancelButton('closed')).toBe(false);
   });
 });
