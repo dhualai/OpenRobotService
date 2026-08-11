@@ -98,6 +98,7 @@ interface Ticket {
   reporter_name?: string; assignee_name?: string;
   contact?: string; customer?: string; created_at: string; updated_at: string;
   attachments?: Attachment[]; metadata_info?: Record<string, unknown>; comments?: Comment[];
+  deadline_at?: string | null;
 }
 
 const generateTempId = () =>
@@ -118,7 +119,7 @@ export default function TaskDetailPage() {
   const [detail, setDetail] = useState<Ticket | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [editForm, setEditForm] = useState({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
+  const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; deadline_at?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
   const [escalateUser, setEscalateUser] = useState<UserItem | null>(null);
   const [showEscalatePopup, setShowEscalatePopup] = useState(false);
   const [resumeUser, setResumeUser] = useState<UserItem | null>(null);
@@ -241,9 +242,7 @@ export default function TaskDetailPage() {
         body: JSON.stringify({ status: action.nextStatus }),
       });
       refreshTasks();
-      const operator = getOperatorLabel();
       const statusLabel = STATUS_DISPLAY_MAP[action.nextStatus] || action.nextStatus;
-      await addOperationComment(`${operator} 将工单状态变更为「${statusLabel}」`);
       await refreshDetail();
       Toast({ message: `状态已更新为${statusLabel}`, theme: 'success' });
     } catch (err) {
@@ -263,16 +262,11 @@ export default function TaskDetailPage() {
       if (resumeUser) {
         await request(`/${detail.id}`, {
           method: 'PUT',
-          body: JSON.stringify({ assigned_to: resumeUser.username }),
+          body: JSON.stringify({ assigned_to: resumeUser.username, operation_type: 'reassign' }),
         });
       }
 
-      const operator = getOperatorLabel();
       const target = resumeUser?.name || resumeUser?.username || '原处理人';
-      const actionDesc = resumeUser
-        ? `${operator} 继续处理工单，处理人变更为 ${target}`
-        : `${operator} 继续处理工单`;
-      await addOperationComment(actionDesc);
       await refreshDetail();
       Toast({ message: `已继续处理，处理人${resumeUser ? `变更为 ${target}` : '保持不变'}`, theme: 'success' });
       setResumeUser(null);
@@ -297,11 +291,9 @@ export default function TaskDetailPage() {
         method: 'PUT',
         body: JSON.stringify({
           assigned_to: escalateUser.username,
+          operation_type: 'escalate',
         }),
       });
-
-      const operator = getOperatorLabel();
-      await addOperationComment(`${operator} 将工单升级给 ${target}，原因：${escalateReason.trim()}`);
 
       await refreshDetail();
       Toast({ message: `已升级，处理人已变更为 ${target}`, theme: 'success' });
@@ -332,16 +324,6 @@ export default function TaskDetailPage() {
     });
   };
 
-  const addOperationComment = async (content: string) => {
-    if (!detail) return;
-    try {
-      await request(`/${detail.id}/comments`, {
-        method: 'POST',
-        body: JSON.stringify({ content, is_public: true }),
-      });
-    } catch { /* 评论记录失败不阻塞主流程 */ }
-  };
-
   const refreshDetail = async () => {
     if (!detailId) return;
     const refreshed = await request<Ticket>(`/${detailId}?load_comments=true`, { skipCache: true });
@@ -356,7 +338,6 @@ export default function TaskDetailPage() {
       return;
     }
     try {
-      const operator = getOperatorLabel();
       const returnTo = detail.created_by_name || detail.reporter_name || detail.created_by || '创建人';
 
       await request(`/${detail.id}/status`, {
@@ -367,11 +348,10 @@ export default function TaskDetailPage() {
       if (detail.created_by) {
         await request(`/${detail.id}`, {
           method: 'PUT',
-          body: JSON.stringify({ assigned_to: detail.created_by }),
+          body: JSON.stringify({ assigned_to: detail.created_by, operation_type: 'return' }),
         });
       }
 
-      await addOperationComment(`${operator} 将工单退回，原因：${returnReason.trim()}`);
       await refreshDetail();
       Toast({ message: `已退回工单，处理人变更为 ${returnTo}`, theme: 'success' });
       setReturnReason('');
@@ -391,11 +371,9 @@ export default function TaskDetailPage() {
     try {
       await request(`/${detail.id}`, {
         method: 'PUT',
-        body: JSON.stringify({ assigned_to: reassignUser.username }),
+        body: JSON.stringify({ assigned_to: reassignUser.username, operation_type: 'reassign' }),
       });
 
-      const operator = getOperatorLabel();
-      await addOperationComment(`${operator} 将工单重新指派给 ${target}，原因：${reassignReason.trim()}`);
       await refreshDetail();
       Toast({ message: `已重新指派给 ${target}`, theme: 'success' });
       setReassignUser(null);
@@ -478,6 +456,7 @@ export default function TaskDetailPage() {
       description: detail.description,
       priority: detail.priority || 'medium',
       ticket_type: detail.ticket_type || 'problem',
+      deadline_at: detail.deadline_at || undefined,
     });
     setEditing(true);
   };
@@ -485,15 +464,25 @@ export default function TaskDetailPage() {
   const saveEdit = async () => {
     if (!detail) return;
     try {
-      await request<Ticket>(`/${detail.id}`, { method: 'PUT', body: JSON.stringify(editForm) });
-      const operator = getOperatorLabel();
-      await addOperationComment(`${operator} 修改了工单信息`);
+      await request<Ticket>(`/${detail.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ ...editForm, operation_type: 'update' }),
+      });
       await refreshDetail();
       Toast({ message: '修改成功', theme: 'success' });
       setEditing(false);
     } catch (err) {
       Toast({ message: `修改失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
+  };
+
+  // ── 最晚解决时间（截止时间）：编辑页只读回显已有 deadline_at，进度条仅提单时用 ──
+  const formatEditDeadlineAbs = (iso?: string): string => {
+    if (!iso) return '未设置';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '未设置';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())} 前`;
   };
 
 
@@ -697,6 +686,14 @@ export default function TaskDetailPage() {
         fixed
         leftArrow
         onLeftClick={handleBack}
+        right={
+          <span
+            onClick={() => navigate(`/tasks/${detailId}/operations`)}
+            style={{ fontSize: 14, color: '#0052d9', cursor: 'pointer', fontWeight: 500 }}
+          >
+            流转记录
+          </span>
+        }
       />
       <div className="page-container" style={{ paddingTop: 56 }}>
         <div className="detail-card">
@@ -787,6 +784,15 @@ export default function TaskDetailPage() {
                 <span className="detail-info-item__value">{formatDateTime(detail.created_at)}</span>
               </div>
             </div>
+            {detail.deadline_at && (
+              <div className="detail-info-item">
+                <span className="detail-info-item__icon">⏰</span>
+                <div className="detail-info-item__content">
+                  <span className="detail-info-item__label">最晚解决时间</span>
+                  <span className="detail-info-item__value">{formatDateTime(detail.deadline_at)}</span>
+                </div>
+              </div>
+            )}
             <div className="detail-info-item">
               <span className="detail-info-item__icon">🔄</span>
               <div className="detail-info-item__content">
@@ -1015,6 +1021,24 @@ export default function TaskDetailPage() {
                     onClick={() => setEditForm((p) => ({ ...p, ticket_type: value }))}
                   >{label}</button>
                 ))}
+              </div>
+            </div>
+            {/* 最晚解决时间：编辑页只读回显已有值（不回显进度条，进度条仅提单时用） */}
+            <div className="ticket-edit-form__field">
+              <label className="ticket-edit-form__label">最晚解决时间</label>
+              <div className="ticket-confirm__deadline">
+                <div className="ticket-confirm__deadline-preview">
+                  <span className="ticket-confirm__deadline-abs">
+                    {editForm.deadline_at ? formatEditDeadlineAbs(editForm.deadline_at) : '未设置'}
+                  </span>
+                </div>
+                {editForm.deadline_at && (
+                  <button
+                    type="button"
+                    className="ticket-confirm__deadline-clear"
+                    onClick={() => setEditForm((p) => ({ ...p, deadline_at: undefined }))}
+                  >清除截止时间</button>
+                )}
               </div>
             </div>
           </div>

@@ -1578,6 +1578,18 @@ class AiDiagnosisPlatform:
         draft = memory.metadata.get("ticket_draft")
         return {"code": 0, "data": {"draft": draft}} if draft else {"code": 0, "data": {"draft": None}}
 
+    async def clear_draft(self, session_id: str) -> dict:
+        """取消确认：清除待确认草稿（用户关闭确认弹窗/放弃提单时调用）。
+
+        若不清，memory.ticket_draft 残留会导致后续对话走到 review 幂等分支
+        （pipeline.py:2070 existing_draft 已存在 → 不发 review 事件），前端再也收不到
+        review 事件、确认弹窗无法再次弹出，提单彻底卡死。清掉后下次对话字段齐全会重新发 review。"""
+        await self._ensure_clients()
+        memory = await self._memory_manager.get_memory(session_id)
+        memory.metadata.pop("ticket_draft", None)
+        await self._memory_manager.save_memory(memory)
+        return {"code": 0, "message": "已取消待确认工单"}
+
     async def _push_to_dispatch(self, ticket: dict) -> bool:
         dispatch_url = getattr(self.config, 'dispatch_api_url', '')
         if not dispatch_url:

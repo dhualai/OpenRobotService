@@ -59,8 +59,10 @@ interface AiTicket {
   // 项目（AI 接口返回 project；DB TicketResponse 返回 project_name，展示以 DB 为准）
   project?: string;
   project_name?: string;
-  // 项目编码（DB TicketResponse 返回，编辑回显与提交用）
+  // 所属项目编码（DB TicketResponse 返回，编辑回显与提交用）
   project_id?: string;
+  // 最晚解决时间（ISO 字符串，编辑弹窗拖拽进度条回显/编辑；详情页只读展示）
+  deadline_at?: string | null;
   // 类型专属
   location?: string; robot_type?: string; fault_code?: string; special_notes?: string;
   steps_to_reproduce?: string; expected_result?: string; actual_result?: string; severity?: string; version?: string;
@@ -377,7 +379,7 @@ export default function TicketDetailPage() {
 
   // 编辑工单（标题/描述/优先级/类型/联系人；权限与后端对齐：admin/创建人/处理人，终态不可编辑）
   const [showEdit, setShowEdit] = useState(false);
-  const [editForm, setEditForm] = useState({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
+  const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; project_id: string; project_name: string; deadline_at?: string }>({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
   const [savingEdit, setSavingEdit] = useState(false);
   // 所属项目下拉（当前用户名下项目，GET /api/admin/projects/me；支持关键词模糊搜索）
   const [showProjectPicker, setShowProjectPicker] = useState(false);
@@ -419,8 +421,17 @@ export default function TicketDetailPage() {
       ticket_type: ticket.type || 'problem',
       project_id: ticket.project_id || '',
       project_name: ticket.project_name || ticket.project || '',
+      deadline_at: ticket.deadline_at || undefined,
     });
     setShowEdit(true);
+  };
+  // ── 最晚解决时间（截止时间）：编辑页只读回显已有 deadline_at，进度条仅提单时用 ──
+  const formatEditDeadlineAbs = (iso?: string): string => {
+    if (!iso) return '未设置';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '未设置';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())} 前`;
   };
   const handleEditSave = async () => {
     if (!ticket?.ticket_id) return;
@@ -436,6 +447,7 @@ export default function TicketDetailPage() {
           ticket_type: editForm.ticket_type,
           project_name: editForm.project_name,
           project_id: editForm.project_id,
+          deadline_at: editForm.deadline_at || null,
         }),
       });
       const operator = getOperatorLabel();
@@ -635,6 +647,9 @@ export default function TicketDetailPage() {
           {(ticket.project_name || ticket.project) && <DetailRow label="所属项目" value={ticket.project_name || ticket.project || ''} />}
           {ticket.contact && <DetailRow label="联系人" value={ticket.contact} />}
           <DetailRow label="创建时间" value={ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''} />
+          {ticket.deadline_at && (
+            <DetailRow label="最晚解决时间" value={formatDateTime(String(ticket.deadline_at))} />
+          )}
         </div>
 
         {/* 人员流转：发起人 → 处理人（与历史工单列表页同款 task-card2__people 样式）
@@ -940,6 +955,24 @@ export default function TicketDetailPage() {
                   {editForm.project_name || '请选择所属项目'}
                 </span>
                 <span className="ticket-edit-form__select-arrow">▾</span>
+              </div>
+            </div>
+            {/* 最晚解决时间：编辑页只读回显已有值（不回显进度条，进度条仅提单时用） */}
+            <div className="ticket-edit-form__field">
+              <label className="ticket-edit-form__label">最晚解决时间</label>
+              <div className="ticket-confirm__deadline">
+                <div className="ticket-confirm__deadline-preview">
+                  <span className="ticket-confirm__deadline-abs">
+                    {editForm.deadline_at ? formatEditDeadlineAbs(editForm.deadline_at) : '未设置'}
+                  </span>
+                </div>
+                {editForm.deadline_at && (
+                  <button
+                    type="button"
+                    className="ticket-confirm__deadline-clear"
+                    onClick={() => setEditForm((p) => ({ ...p, deadline_at: undefined }))}
+                  >清除截止时间</button>
+                )}
               </div>
             </div>
           </div>

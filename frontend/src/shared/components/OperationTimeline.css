@@ -1,0 +1,178 @@
+/* 工单操作日志时间线组件样式 */
+
+.op-timeline {
+  padding: 16px 0;
+  position: relative;
+}
+
+.op-timeline__loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 40px 0;
+}
+
+.op-timeline__empty {
+  padding: 40px 0;
+}
+
+.op-timeline__group {
+  position: relative;
+  padding-bottom: 16px;
+}
+
+.op-timeline__connector {
+  position: absolute;
+  left: 11px;
+  top: 32px;
+  bottom: -8px;
+  width: 2px;
+  background: linear-gradient(
+    to bottom,
+    #e5e7eb 0%,
+    #e5e7eb 50%,
+    transparent 100%
+  );
+}
+
+/* 主节点样式 */
+.op-timeline__main {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 0 16px 0;
+  position: relative;
+}
+
+.op-timeline__dot {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
+.op-timeline__dot--main {
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  border: 3px solid #dbeafe;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+}
+
+.op-timeline__dot--sub {
+  width: 22px;
+  height: 22px;
+  background: #fff;
+  border: 2px solid #d1d5db;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+.op-timeline__icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.op-timeline__content {
+  flex: 1;
+  min-width: 0;
+}
+
+.op-timeline__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.op-timeline__status {
+  font-size: 15px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.op-timeline__time {
+  font-size: 12px;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+}
+
+.op-timeline__operator {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+/* 子节点样式 */
+.op-timeline__sub {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 0;
+  position: relative;
+  margin-left: 0;
+}
+
+.op-timeline__sub .op-timeline__content {
+  background: #f9fafb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  border: 1px solid #f3f4f6;
+}
+
+.op-timeline__action {
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.op-timeline__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* 主节点连接线 */
+.op-timeline__group:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: 11px;
+  top: 32px;
+  bottom: -8px;
+  width: 2px;
+  background: #e5e7eb;
+  z-index: 0;
+}
+
+/* 最后一个分组的连接线 */
+.op-timeline__group:last-child::after {
+  display: none;
+}
+
+/* 响应式调整 */
+@media (max-width: 480px) {
+  .op-timeline {
+    padding: 12px 8px;
+  }
+
+  .op-timeline__dot--main {
+    width: 22px;
+    height: 22px;
+  }
+
+  .op-timeline__dot--sub {
+    width: 20px;
+    height: 20px;
+  }
+
+  .op-timeline__status {
+    font-size: 14px;
+  }
+
+  .op-timeline__action {
+    font-size: 12px;
+  }
+}

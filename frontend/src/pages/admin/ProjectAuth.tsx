@@ -91,6 +91,9 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
     if (!machineCode.trim()) { Toast({ message: '请输入机器码', theme: 'warning' }); return; }
     if (!licenseStartDate || !licenseEndDate) { Toast({ message: '请选择开始和结束日期', theme: 'warning' }); return; }
     if (licenseStartDate > licenseEndDate) { Toast({ message: '开始日期不能晚于结束日期', theme: 'warning' }); return; }
+    if (!maxVehicles.trim()) { Toast({ message: '请输入允许最大车数', theme: 'warning' }); return; }
+    const maxVehiclesNum = Number(maxVehicles.trim());
+    if (!Number.isFinite(maxVehiclesNum) || maxVehiclesNum <= 0) { Toast({ message: '允许最大车数必须为大于 0 的整数', theme: 'warning' }); return; }
 
     const projectCode = selectedProject.project_code || selectedProject.name;
     setApplyingLicense(true);
@@ -104,7 +107,7 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
             mac: machineCode.trim(),
             start_date: `${licenseStartDate} 00:00:00`,
             end_date: `${licenseEndDate} 23:59:59`,
-            max_vehicles: maxVehicles.trim() ? Number(maxVehicles.trim()) : null,
+            max_vehicles: maxVehiclesNum,
           }),
           timeout: 65000,
         },
@@ -218,12 +221,12 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
                 style={{ flex: 1, border: '1px solid #dcdcdc', borderRadius: 6, padding: '10px 12px', color: licenseEndDate ? '#333' : '#bbb', fontSize: 14, outline: 'none', backgroundColor: '#fff' }}
               />
             </div>
-            <div style={{ fontSize: 13, color: '#666', marginBottom: 6 }}>允许最大车数</div>
+            <div style={{ fontSize: 13, color: '#666', marginBottom: 6 }}>允许最大车数 <span style={{ color: '#d54941' }}>*</span></div>
             <ClearableInput
               value={maxVehicles}
               onChange={(v) => setMaxVehicles(String(v).replace(/[^\d]/g, ''))}
               type="number"
-              placeholder="可选，留空表示不限制"
+              placeholder="请输入大于 0 的整数"
               style={{ marginBottom: 12 }}
             />
             <Button theme="primary" block loading={applyingLicense} onClick={handleApplyLicense}>

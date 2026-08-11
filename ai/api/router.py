@@ -435,6 +435,18 @@ async def get_draft(
         return {"code": 1, "message": str(e)}
 
 
+@qa_router.delete("/ticket/draft", summary="取消确认：清除待确认草稿（用户关闭/放弃提单时调用）")
+async def clear_draft(
+    session_id: str = Query(..., description="会话 ID"),
+    pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
+) -> dict:
+    try:
+        return await pipeline.clear_draft(session_id)
+    except Exception as e:
+        logger.error(f"clear_draft 异常: {e}", exc_info=True)
+        return {"code": 1, "message": str(e)}
+
+
 @qa_router.post("/upload", summary="上传附件")
 async def upload_files(
     session_id: str = Form(..., description="会话 ID"),

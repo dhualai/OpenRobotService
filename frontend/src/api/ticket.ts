@@ -123,3 +123,33 @@ export async function createTicket(params: CreateTicketParams): Promise<CreatedT
     }),
   });
 }
+
+/** 工单操作日志类型（与后端 OperationType 枚举对齐） */
+export type OperationType =
+  | 'create'
+  | 'status_change'
+  | 'assign'
+  | 'escalate'
+  | 'return'
+  | 'reassign'
+  | 'update'
+  | 'comment'
+  | 'view'
+  | 'ai_diagnose'
+  | 'ai_assign';
+
+export interface OperationLog {
+  id: number;
+  task_id: number;
+  operation_type: OperationType;
+  operator: string;
+  operator_name?: string | null;
+  to_status?: string | null;
+  detail?: Record<string, unknown> | null;
+  description?: string | null;
+  created_at: string;
+}
+
+/** 获取工单操作日志列表（按时间倒序） */
+export const getOperationLogs = (taskId: number | string) =>
+  request<OperationLog[]>(`/${Number(taskId)}/operation-logs`, { skipCache: true });
