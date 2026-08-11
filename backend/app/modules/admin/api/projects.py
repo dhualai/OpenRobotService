@@ -317,6 +317,26 @@ async def create_project(
     except IntegrityError:
         # 并发提交兜底：唯一约束（项目编号）冲突时同样按“项目已存在”处理
         raise HTTPException(status_code=409, detail="项目已存在，请重新输入")
+
+    # 自动把创建者关联为本项目成员：无「查看全部项目」权限的用户在“我的项目”（/projects/me）
+    # 中只能看到与自己关联的项目；若不关联，创建者将无法在任何项目列表中看到刚创建的项目。
+    try:
+        token = request.headers.get("Authorization", "")
+        token = token[7:]  # 去掉 "Bearer " 前缀，与下方 decode_token 约定一致
+        from app.modules.admin.utils_das.security import decode_token
+        current_user = decode_token(token)
+        if current_user:
+            current_username = current_user.get("sub", "")
+            if current_username:
+                creator_role_data = {
+                    "project_id": project_data.project_code,
+                    "role_ids": ["project_contact"],
+                }
+                await PermissionService.assign_role(request, token, current_username, creator_role_data)
+    except Exception as e:
+        # 关联失败不影响创建成功，仅记录日志（例如项目已存在/当前用户异常）
+        logger.warning(f"自动关联创建者到项目失败: {e}", exc_info=True)
+
     return project
 
 

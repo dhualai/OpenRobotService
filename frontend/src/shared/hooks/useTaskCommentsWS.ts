@@ -19,6 +19,13 @@ export interface TaskUpdatedPatch {
   assigned_to_name?: string | null;
 }
 
+/** 在线成员（按用户去重，含头像） */
+export interface OnlineMember {
+  username: string;
+  name?: string | null;
+  avatar_resource_id?: number | null;
+}
+
 interface Options {
   currentUser?: string;
   onTaskUpdated?: (patch: TaskUpdatedPatch) => void;
@@ -38,30 +45,40 @@ export function useTaskCommentsWS(
   options?: Options,
 ): {
   displayComments: DiscussionComment[];
-  online: string[];
+  online: OnlineMember[];
   typingUser: string | null;
   readMap: Record<string, number>;
   sendTyping: (value: boolean) => void;
   sendRead: (lastReadCommentId: number) => void;
+  deletedIds: Set<string>;
 } {
   const [displayComments, setDisplayComments] = useState<DiscussionComment[]>(baseComments);
-  const [online, setOnline] = useState<string[]>([]);
+  const [online, setOnline] = useState<OnlineMember[]>([]);
   const [typingUser, setTypingUser] = useState<string | null>(null);
   const [readMap, setReadMap] = useState<Record<string, number>>({});
+  // 已删除评论 id 集合（WS comment.deleted / 本地删除记录）。
+  // 同步维护 ref（合并基线时用，避免闭包旧值）+ state（驱动引用块「已删除」展示重渲染）。
+  const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
+  const deletedIdsRef = useRef<Set<string>>(new Set());
 
   const socketRef = useRef<TaskRoomSocket | null>(null);
   const currentUserRef = useRef(options?.currentUser);
   currentUserRef.current = options?.currentUser;
   const onTaskUpdatedRef = useRef(options?.onTaskUpdated);
-  onTaskUpdatedRef.current = options?.onTaskUpdated;
 
-  // 父级基线变化（GET/POST 乐观更新）→ 合并 WS 增量（按 id 去重），保持排序
+  // 父级基线变化（GET/POST/DELETE 乐观更新）→ 以基线为权威源合并 WS 增量：
+  // 基线已有的按基线更新；基线没有但 WS 新增的保留；已删除的（deletedIdsRef）一律排除。
   useEffect(() => {
     setDisplayComments((prev) => {
       const map = new Map<string, DiscussionComment>();
-      for (const c of baseComments) map.set(String(c.id), c);
+      for (const c of baseComments) {
+        const id = String(c.id);
+        if (!deletedIdsRef.current.has(id)) map.set(id, c);
+      }
+      // 补充 WS 增量新增的（基线没有的），排除已删除
       for (const c of prev) {
-        if (!map.has(String(c.id))) map.set(String(c.id), c);
+        const id = String(c.id);
+        if (!map.has(id) && !deletedIdsRef.current.has(id)) map.set(id, c);
       }
       return sortComments(Array.from(map.values()));
     });
@@ -98,9 +115,13 @@ export function useTaskCommentsWS(
           });
           break;
         }
-        case 'comment.deleted':
-          setDisplayComments((prev) => prev.filter((c) => String(c.id) !== String(e.id)));
+        case 'comment.deleted': {
+          const delId = String(e.id);
+          deletedIdsRef.current.add(delId);
+          setDeletedIds((prev) => (prev.has(delId) ? prev : new Set(prev).add(delId)));
+          setDisplayComments((prev) => prev.filter((c) => String(c.id) !== delId));
           break;
+        }
         case 'typing':
           if (e.username && e.username !== currentUserRef.current) {
             setTypingUser(e.value ? e.username : null);
@@ -136,5 +157,5 @@ export function useTaskCommentsWS(
     socketRef.current?.sendRead(lastReadCommentId);
   }, []);
 
-  return { displayComments, online, typingUser, readMap, sendTyping, sendRead };
+  return { displayComments, online, typingUser, readMap, sendTyping, sendRead, deletedIds };
 }
