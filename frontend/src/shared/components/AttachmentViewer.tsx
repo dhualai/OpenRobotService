@@ -144,7 +144,16 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
             <button
               type="button"
               className="attachment-viewer__dl"
-              onClick={() => window.open(item.downloadUrl, '_blank', 'noopener,noreferrer')}
+              onClick={() => {
+                if (wechat) {
+                  // 微信内置 WebView 无法直接下载文件：把当前页跳到绝对下载地址，
+                  // 微信会弹出「在浏览器打开」横幅，用户在系统浏览器中即可直接下载
+                  // （downloadUrl 已携带 token，浏览器打开不会落到 SPA 404 → 微信 OAuth 重定向）。
+                  window.location.href = item.downloadUrl;
+                } else {
+                  window.open(item.downloadUrl, '_blank', 'noopener,noreferrer');
+                }
+              }}
             >
               下载
             </button>
@@ -169,7 +178,9 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
             <div className="attachment-viewer__hint">
               该文件格式暂不支持在线预览。
               <br />
-              请点击右上角「下载」后在本地打开。
+              {wechat
+                ? '请点击右上角「···」→「在浏览器中打开」，在浏览器中点击「下载」即可保存文件。'
+                : '请点击「下载」后在本地打开。'}
             </div>
           )}
           {kind !== 'other' && kind !== 'office' && wechat && (
