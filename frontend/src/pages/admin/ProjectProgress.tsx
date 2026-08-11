@@ -1,6 +1,7 @@
 // 项目进度管理 —— 聚合项目列表 + 风险状态，侧重视觉化项目进度
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Button, Toast, Loading, Input, Popup, Dialog } from 'tdesign-mobile-react';
+import { Button, Toast, Loading, Popup, Dialog } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { aiGet } from '@/api/ai';
 import { createRequest } from '@/api/client';
@@ -186,11 +187,10 @@ export default function ProjectProgress() {
 
       {/* 项目名称搜索 */}
       <div style={{ marginBottom: 12 }}>
-        <Input
+        <ClearableInput
           value={keyword}
           onChange={(v) => setKeyword(String(v))}
           placeholder="搜索项目名称 · 长按删除项目"
-          clearable
         />
       </div>
 
