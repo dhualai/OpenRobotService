@@ -689,7 +689,7 @@ async def handle_subscribe_event(message: dict):
     
     auth_service.register_wechat_user(from_user_name)
     
-    welcome_message = "👋 欢迎关注我们！请点击连接完成个人信息录入。"
+    welcome_message = "👋 欢迎关注我们！请点击链接完成个人信息录入。"
     reply_xml = build_reply_text(from_user_name, to_user_name, welcome_message)
     
     # 追加推送个人中心分享卡片（news 类型图文消息）
@@ -699,7 +699,7 @@ async def handle_subscribe_event(message: dict):
         wechat_service.send_news_message_to_user(
             open_id=from_user_name,
             title="设置你的个人信息",
-            description="设置你的真实姓名，公司，部门等， 为你开发全部功能！",
+            description="设置你的真实姓名，公司，部门等， 为你开放全部功能！",
             url=profile_url,
             picurl=share_img,
         )

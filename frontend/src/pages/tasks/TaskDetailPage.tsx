@@ -320,6 +320,8 @@ export default function TaskDetailPage() {
   const handleWsTaskUpdated = (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null }) => {
     setDetail((prev) => {
       if (!prev) return prev;
+      // WS 推送的 assigned_to 可能为 null（退单/清空处理人），状态类型为 string | undefined，
+      // null → undefined 以兼容类型，展示层有 || 兜底，null 与 undefined 表现一致。
       return {
         ...prev,
         ...(patch.status ? { status: patch.status } : {}),
@@ -416,7 +418,11 @@ export default function TaskDetailPage() {
       minioPath = `${parsed.bucket}/${parsed.objectKey}`;
     }
     const authToken = localStorage.getItem('auth_token') || '';
-    return `${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
+    // 必须拼成绝对 URL：微信内 window.open(相对URL) 打开的是微信内置 WebView，无法下载；
+    // 用户「在浏览器打开」后相对路径在外部浏览器解析失败会落到 SPA 404 → 未登录重定向微信 OAuth
+    // （表现为「提示跳转到微信客户端」）。绝对 URL 携带 token，在外部浏览器可直接下载。
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    return `${origin}${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
   };
 
   const handleAttachmentDownload = async (att: Attachment, idx: number) => {
@@ -828,6 +834,22 @@ export default function TaskDetailPage() {
                             className="detail-attachment-thumb"
                             loading="lazy"
                             onClick={() => openAttachmentViewer(att)}
+                            onError={(e) => {
+                              // 微信 WebView 偶发 img 静默渲染失败（HTTP 200 但白屏）：破缓存重试一次，仍失败换文件名占位
+                              const el = e.currentTarget;
+                              if (!el.dataset.retried) {
+                                el.dataset.retried = '1';
+                                const sep = thumbSrc.includes('?') ? '&' : '?';
+                                el.src = `${thumbSrc}${sep}_r=${Date.now()}`;
+                              } else {
+                                el.style.display = 'none';
+                                const ph = document.createElement('div');
+                                ph.className = 'detail-attachment-thumb detail-attachment-thumb--fallback';
+                                ph.textContent = '🖼️';
+                                ph.onclick = () => openAttachmentViewer(att);
+                                el.parentNode?.appendChild(ph);
+                              }
+                            }}
                           />
                         );
                       })}

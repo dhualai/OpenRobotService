@@ -112,22 +112,20 @@ export default function UserProfile() {
       setUspUsernameDraft('');
       return;
     }
-    // 姓名未变化时不重新生成
-    if (trimmed === original.name) return;
     try {
       const uspName = await generateUspUsername(trimmed);
       setUspUsernameDraft(uspName);
     } catch {
       // 生成失败时静默，保留原值
     }
-  }, [nameDraft, original.name]);
+  }, [nameDraft]);
 
   // 进入个人中心页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈
   useEffect(() => {
     if (loading) return;
     setupWechatShare({
       title: '设置你的个人信息',
-      desc: '设置你的真实姓名，公司，部门等， 为你开发全部功能！',
+      desc: '设置你的真实姓名，公司，部门等， 为你开放全部功能！',
       link: window.location.href,
       imgUrl: WECHAT_CONFIG.shareImgUrl,
     });
