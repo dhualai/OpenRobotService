@@ -731,11 +731,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const attachment = isImage ? null : { name: file.name, size: file.size };
     const userId = uid();
     const assistantId = uid();
-    // 乐观渲染：立即插入用户气泡（带进度遮罩）+ AI「正在分析」占位气泡
+    // 是否带附带文字：纯图片上传（无文字）时 VLM 描述就是回复，需保留；带文字时 VLM 描述才抑制
+    const hasMessage = content.trim().length > 0;
+    // 初始占位文案（乐观渲染直接写入 content，避免 React 批处理下后续 paint() 读旧 state 失效）
+    const initialPlaceholder = isImage ? '正在分析图片…' : '正在分析文件…';
+    // 乐观渲染：立即插入用户气泡（带进度遮罩）+ AI 占位气泡（content 直接写占位，避免首帧空白/「思考中」）
     setMessages((prev) => [
       ...prev,
       { id: userId, role: 'user', content, timestamp: new Date().toISOString(), imageUrl, attachment, uploading: true, percent: 0 },
-      { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString(), streaming: true },
+      { id: assistantId, role: 'assistant', content: initialPlaceholder, timestamp: new Date().toISOString(), streaming: true },
     ]);
     setInput('');
     clearPendingFile();
@@ -746,8 +750,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // VLM 图片描述是否已完成。onToken 会收到两段 token：vision_done 前的 VLM 描述 + 之后的诊断正文。
     // VLM 描述是给模型看图用的中间产物（诊断回复已复述图片内容），不上屏——只留「正在分析…」占位。
     let visionDone = false;
-    // 是否带附带文字：纯图片上传（无文字）时 VLM 描述就是回复，需保留；带文字时 VLM 描述才抑制
-    const hasMessage = content.trim().length > 0;
     let convId: number | null = null; // 局部快照：发送期间用户可能切会话，落库必须用快照
     let hasResult = false;
     let streamError = ''; // 后端 SSE event:error 的真实错误（非流解析问题）
@@ -771,8 +773,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const now = Date.now();
       if (now - lastFlush >= FLUSH_MS) { lastFlush = now; paint(); }
     };
-    // 上传后立即显示占位（VLM 阶段 acc 为空且不触发 schedulePaint，需主动刷一次）
-    paint();
 
     try {
       const sid = ensureSessionId();
