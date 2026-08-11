@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Loading, Toast } from 'tdesign-mobile-react';
-import { getOperationLogs, OperationLog } from '@/api/ticket';
+import { getOperationLogs } from '@/api/ticket';
+import type { OperationLog } from '@/api/ticket';
 import OperationTimeline from '@/shared/components/OperationTimeline';
 import './OperationLogsPage.css';
 
@@ -20,7 +21,7 @@ const OperationLogsPage: React.FC = () => {
         setLogs(data || []);
       } catch (error) {
         console.error('获取工单操作日志失败:', error);
-        Toast({ theme: 'error', content: '获取操作日志失败' });
+        Toast({ theme: 'error', message: '获取操作日志失败' });
       } finally {
         setLoading(false);
       }
@@ -32,7 +33,8 @@ const OperationLogsPage: React.FC = () => {
     <div className="operation-logs-page">
       <Navbar
         title="工单流转记录"
-        onBack={() => navigate(-1)}
+        leftArrow
+        onLeftClick={() => navigate(-1)}
       />
       <div className="operation-logs-page__content">
         <OperationTimeline logs={logs} loading={loading} />

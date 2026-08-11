@@ -1,5 +1,5 @@
 import React from 'react';
-import { OperationLog, OperationType } from '@/api/ticket';
+import type { OperationLog, OperationType } from '@/api/ticket';
 import { Loading, Empty } from 'tdesign-mobile-react';
 import './OperationTimeline.css';
 
@@ -52,23 +52,11 @@ const OP_TYPE_STYLE: Record<OperationType, { color: string; icon: string }> = {
 const formatTime = (isoString: string): string => {
   try {
     const date = new Date(isoString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 1) return '刚刚';
-    if (diffMins < 60) return `${diffMins}分钟前`;
-    if (diffHours < 24) return `${diffHours}小时前`;
-    if (diffDays < 7) return `${diffDays}天前`;
-
-    // 超过7天显示具体日期
     const month = date.getMonth() + 1;
     const day = date.getDate();
     const hours = date.getHours().toString().padStart(2, '0');
     const mins = date.getMinutes().toString().padStart(2, '0');
-    return `${month}-${day} ${hours}:${mins}`;
+    return `${month}月${day}日 ${hours}:${mins}`;
   } catch {
     return '';
   }
@@ -123,7 +111,7 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
   if (loading) {
     return (
       <div className="op-timeline__loading">
-        <Loading theme="circular" size={24} />
+        <Loading theme="circular" size="24" />
       </div>
     );
   }
@@ -189,7 +177,6 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
           )}
         </div>
       ))}
-    ))}
     </div>
   );
 };
