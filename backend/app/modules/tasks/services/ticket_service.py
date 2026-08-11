@@ -547,8 +547,9 @@ class TicketService:
 
                 user_map = await TicketService._get_user_map(token)
                 for comment in comments:
-                    setattr(comment, "created_by_name", user_map.get(comment.created_by, comment.created_by))
-                    comment.content = ImageProcessor.process_content_for_response(comment.content)
+                    # 复用 _attach_comment_meta：统一拼装 created_by_name / 图片处理 / 引用块 quoted
+                    # （修复刷新后引用消息丢失：原仅设 created_by_name 未拼 quoted）
+                    await TicketService._attach_comment_meta(db, comment, user_map)
 
                 # 将评论列表固化为已提交值：response_model 序列化发生在 db session 关闭后，
                 # 直接访问 ticket.comments 会触发懒加载 → async 下 MissingGreenlet。
