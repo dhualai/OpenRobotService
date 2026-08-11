@@ -138,7 +138,7 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
       content: '确定要撤销此授权吗？',
       onConfirm: async () => {
         try {
-          await request(`/project/auth/${item.id}`, { method: 'DELETE' });
+          await request(`/projects/licenses/${item.id}`, { method: 'DELETE' });
           Toast({ message: '授权已撤销', theme: 'success' });
           if (selectedProject) {
             const code = selectedProject.project_code || selectedProject.name;

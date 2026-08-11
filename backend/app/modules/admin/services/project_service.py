@@ -499,6 +499,21 @@ class ProjectService:
         finally:
             db.close()
 
+    def delete_license(self, license_id: int) -> bool:
+        """按 ID 删除项目授权（撤销）。不存在返回 False。"""
+        from app.modules.admin.models_das.models import ProjectLicense
+
+        db = SessionLocal()
+        try:
+            license = db.query(ProjectLicense).filter(ProjectLicense.id == license_id).first()
+            if not license:
+                return False
+            db.delete(license)
+            db.commit()
+            return True
+        finally:
+            db.close()
+
     def _get_user_name_by_username(self, username: str) -> str:
         try:
             url = f"{AUTH_SERVICE_BASE_URL}/users/{username}/detail"

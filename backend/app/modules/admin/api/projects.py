@@ -457,3 +457,15 @@ async def get_project_licenses(
 
     logger.info(f"返回授权信息 - 项目代码: {project_code}, 授权数量: {len(licenses)}")
     return licenses
+
+
+@project_router.delete("/licenses/{license_id}", summary="撤销项目授权")
+async def delete_project_license(
+    license_id: int,
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
+) -> Dict[str, bool]:
+    """按授权记录 ID 删除（撤销）项目授权。"""
+    success = project_service.delete_license(license_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="授权记录不存在")
+    return {"success": True}
