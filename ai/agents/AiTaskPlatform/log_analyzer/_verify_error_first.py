@@ -50,13 +50,17 @@ def test_full():
     print("level_dist:", lv)
 
     te = _top_errors(idx, top_n=8)
-    print("top_errors:")
-    for e in te:
+    print("ERROR primary:")
+    for e in te.get("primary", []):
+        print(f"   {e['count']:6d}  {e['code']!r}")
+    print("WARNING:")
+    for e in te.get("warning", [])[:5]:
         print(f"   {e['count']:6d}  {e['code']!r}")
 
-    # 确认 _err_idx 里没有纯字段名污染
-    field_names = [e["code"] for e in te if e["code"] in ("workingState", "envelope2d", "taskState")]
-    print("字段名污染 in top_errors:", field_names or "无")
+    # 确认没有纯字段名污染
+    all_ph = [e["code"] for k in ("primary", "warning") for e in te.get(k, [])]
+    field_names = [c for c in all_ph if c in ("workingState", "envelope2d", "taskState")]
+    print("字段名污染:", field_names or "无")
 
 # ── 4) run_triage 端到端 + _discovery_to_text 顺序 ──
 def test_triage_text():
@@ -64,11 +68,14 @@ def test_triage_text():
     print("\n== run_triage 错误优先字段 ==")
     res = run_triage(LOG, manual_dir="")
     lv = res.get("level_dist") or {}
-    te = res.get("top_errors") or []
+    te = res.get("top_errors") or {}
+    prim = te.get("primary") or []
+    warn = te.get("warning") or []
     print("  level_dist:", lv)
-    print("  top_errors(前6):", [f"{e['code']}({e['count']})" for e in te[:6]])
+    print("  ERROR primary(前6):", [f"{e['code']}({e['count']})" for e in prim[:6]])
+    print("  WARNING(前5):", [f"{e['code']}({e['count']})" for e in warn[:5]])
     assert lv.get("has_error"), "日志应有 ERROR 输出"
-    assert te, "top_errors 不应为空"
+    assert prim or warn, "top_errors 不应为空"
     print("  [fields OK]")
 
     # 2) 若 handlers 可导入则进一步验证 _discovery_to_text 的顺序

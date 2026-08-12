@@ -140,9 +140,10 @@ class LogOrchestrator:
                 logger.info(f"编排 conclude at R{round_num}: {conclusion[:80]}")
                 break
 
-        # 兜底：没结论 → 用 Discovery + 证据拼一条
+        # 结论：编排 LLM 未给出精炼 conclude 时，用结论撰写 LLM 生成精炼报告
+        # （ERROR优先信号 + 具体证据行 → 简洁根因/证据/建议），失败才回退文本兜底。
         if not conclusion:
-            conclusion = _compose_fallback_conclusion(discovery_text, evidence)
+            conclusion = await self._compose_llm_conclusion(discovery_text, evidence)
 
         elapsed_ms = round((_time.perf_counter() - t0) * 1000)
         logger.info(f"LogOrchestrator done: rounds={len(rounds)}, evidence={len(evidence)}, "
@@ -176,6 +177,27 @@ class LogOrchestrator:
             return ""
 
 
+    # ── 结论撰写：基于 Discovery + 证据，产出精炼结论（替代"堆原文"兜底）──
+    async def _compose_llm_conclusion(self, discovery_text, evidence) -> str:
+        try:
+            parts = []
+            if discovery_text:
+                parts.append("## 日志 Discovery（错误优先信号）\n" + discovery_text)
+            if evidence:
+                evs = "\n".join(f"  L{e['line']}: {e['summary'][:150]}" for e in evidence[-15:])
+                parts.append("## 已收集证据日志行\n" + evs)
+            if not parts:
+                return _compose_fallback_conclusion(discovery_text, evidence)
+            prompt = "\n\n".join(parts) + "\n\n请输出精炼排查结论 (markdown)。"
+            return (await self.llm.complete(
+                prompt=prompt, system_prompt=_CONCLUSION_SYSTEM_PROMPT,
+                max_tokens=500, temperature=0.0,
+            )).strip()
+        except Exception as e:
+            logger.warning(f"结论撰写 LLM 失败，回退兜底: {e}")
+            return _compose_fallback_conclusion(discovery_text, evidence)
+
+
 # ════════════════════════════════════════════════════════════
 # 编排 Reviewer Prompt
 # ════════════════════════════════════════════════════════════
@@ -192,10 +214,27 @@ _REVIEW_SYSTEM_PROMPT = """你是AGV调度系统日志排查的总指挥。你�
 
 硬性规则:
 - time_start/time_end/robot_filter/task_filter 必须来自下方「日志客观事实」或已给证据；绝不虚构日期/车型/ID。
-- keyword_filter 应从 Discovery 的「Top 高频错误」里取真实短语（如 last_node_index），用于精确锁定同类错误行；没有就留空串""。
+- keyword_filter 应从 Discovery 的「Top 高频错误」里取真实短语（如 存在路径未被接收 / last_node_index跳变），用于精确锁定同类错误行；没有就留空串""。
 - time_start 必填（用一个窄时间窗），error_only 默认 true。
+- 每轮查证应选一个【尚未查过】的真实错误信号；勿重复已执行轮次的 keyword_filter（看「已执行的查询轮次」），否则视为重复查询。
+- 优先查证最能解释用户/评论区症状的信号；若 R1 已命中大量同类错误，下一轮换另一个真实错误信号交叉验证。
 - 最多3轮内必须结案；若连续两轮无新信息，直接 conclude。
+- conclude 时：一句话根因 + 证据链 + 建议，并**引用能明确定位问题的具体日志行号（如 L126118）及其错误描述**。
 - 每次只输出一个JSON命令，别写任何文字。"""
+
+
+_CONCLUSION_SYSTEM_PROMPT = """你是AGV调度系统日志排查的结论撰写者。请基于给定的 Discovery 信号和已收集的证据日志行，输出一份【精炼的排查结论】markdown 文本。
+
+输出结构（务必简洁，不要复制大段原文）：
+1. **根因**：一句话定位根因。若存在 ERROR 根因（如 TimeoutError 超时），应优先作为主因；WARNING 仅为次生/伴随信号。
+2. **关键证据行**：引用3-5条最能定位问题的具体日志行（如 `L126118 | [13:57:42] [WARNING] MSG=last_node_index跳变...`），说明它们如何支撑根因。
+3. **建议**：1-2条可操作建议。
+
+规则：
+- 只能基于给定的 Discovery 和证据行，严禁虚构行号/时间/车型。
+- 错误优先顺序：ERROR → WARNING。ERROR 存在时根因围绕 ERROR（如超时），WARNING 作佐证。
+- 如果 ERROR 不存在，才以最高频 WARNING 信号为主。
+- 控制在 120 字以内的精炼正文（不含行号引用），不要像兜底那样整段堆 Discovery 原文。"""
 
 
 def _build_review_context(task_ctx, discussion_history, query, discovery_text, evidence, rounds) -> str:

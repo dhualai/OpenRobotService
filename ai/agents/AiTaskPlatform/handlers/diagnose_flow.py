@@ -52,10 +52,22 @@ def _discovery_to_text(triage_result: dict) -> str:
                 f"共 {lv.get('total_tagged', 0)} 条带级别标注)"
             )
 
-    top_errs = triage_result.get("top_errors") or []
-    if top_errs:
-        te = ", ".join(f"「{e['code']}」({e['count']})" for e in top_errs[:6])
-        parts.append(f"Top 高频错误: {te}")
+    top_errs = triage_result.get("top_errors") or {}
+    primary = top_errs.get("primary") or []
+    warning = top_errs.get("warning") or []
+    has_err = top_errs.get("has_error", False)
+    if primary:
+        if has_err:
+            # 存在 ERROR：ERROR 根因优先呈现（明确标注），WARNING 作为次生信号
+            te = ", ".join(f"「{e['code']}」({e['count']})" for e in primary[:6])
+            parts.append(f"⚠️ ERROR 根因 (优先): {te}")
+            if warning:
+                tw = ", ".join(f"「{e['code']}」({e['count']})" for e in warning[:5])
+                parts.append(f"WARNING 次生信号: {tw}")
+        else:
+            # 无 ERROR：退而用 WARNING 作为主信号
+            te = ", ".join(f"「{e['code']}」({e['count']})" for e in primary[:6])
+            parts.append(f"高频异常信号 (无ERROR，以WARNING为主): {te}")
 
     signals = triage_result.get("signals") or []
     if signals:
