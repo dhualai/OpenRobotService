@@ -16,6 +16,7 @@ import { createConversation, getConversation, appendMessage, readAiSessionId, up
 import { createRequest } from '@/api/client';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import { deadlinePickerValue } from '@/shared/utils/url';
+import { compressImage } from '@/shared/utils/imageCompress';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import ImageLightbox from '@/shared/components/ImageLightbox';
 import SuggestedQuestions from '@/shared/components/SuggestedQuestions';
@@ -467,12 +468,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const albumInputRef = useRef<HTMLInputElement>(null);
-  // 文件上传大小上限：100MB
+  // 文件上传大小上限：100MB（MinIO 单对象理论上限 5TB，此处为前端体验上限，可按需调整）
   const MAX_FILE_SIZE = 100 * 1024 * 1024;
   const [showUploadMenu, setShowUploadMenu] = useState(false);
   // 待发送附件：选中文件先挂起（不立即发送），用户可继续打字，发送时随 message 一起上传
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
-  const [pendingImageUrl, setPendingImageUrl] = useState<string | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [pendingImageUrls, setPendingImageUrls] = useState<string[]>([]);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   // 语音 tap/hold 双模式 + 真实音量可视化
   const voiceInteractionModeRef = useRef<'tap' | 'hold' | null>(null);
@@ -742,16 +743,21 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   /** 带附件发送：文件(可附文字)一起上传 /qa/upload（SSE 流式），逐步推送 VLM 分析 + 诊断。
    * 方案一（乐观渲染）：点发送即插入用户气泡（附件+文字，内嵌上传进度遮罩）+ AI 分析占位气泡，
    * 上传进度实时更新到用户气泡，完成后遮罩消失、AI 回复填入占位气泡。文件名不拼进文字上下文。 */
-  const sendWithFile = async (file: File, content: string) => {
-    const isImage = file.type.startsWith('image/');
-    const imageUrl = isImage ? URL.createObjectURL(file) : undefined;
-    const attachment = isImage ? null : { name: file.name, size: file.size };
+  const sendWithFile = async (files: File[], content: string) => {
+    // 多文件：用户气泡展示所有附件（图片用缩略图，其它用文件名+大小）
+    const firstImage = files.find((f) => f.type.startsWith('image/'));
+    const hasNonImage = files.some((f) => !f.type.startsWith('image/'));
     const userId = uid();
     const assistantId = uid();
-    // 是否带附带文字：纯图片上传（无文字）时 VLM 描述就是回复，需保留；带文字时 VLM 描述才抑制
+    // 是否带附带文字
     const hasMessage = content.trim().length > 0;
-    // 初始占位阶段：图片/文件上传后先「正在分析…」，VLM 完成切「思考中」（同纯文字动态打字动画）
-    const initialPhase: Message['phase'] = isImage ? 'analyzing_image' : 'analyzing_file';
+    // 占位阶段：含图片→分析图片；纯文件→分析文件
+    const initialPhase: Message['phase'] = firstImage ? 'analyzing_image' : 'analyzing_file';
+    // 用户气泡：多附件以 attachment 列表形式存（图片用第一张做 imageUrl 缩略，其余在 attachment 展示）
+    const imageUrl = firstImage ? URL.createObjectURL(firstImage) : undefined;
+    const attachment = hasNonImage
+      ? { name: files.length > 1 ? `${files.length} 个文件` : (files.find((f) => !f.type.startsWith('image/'))?.name ?? '文件'), size: files.reduce((s, f) => s + f.size, 0) }
+      : null;
     // 乐观渲染：立即插入用户气泡（带进度遮罩）+ AI 占位气泡（phase 触发动态打字动画，content 留空）
     setMessages((prev) => [
       ...prev,
@@ -759,30 +765,25 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       { id: assistantId, role: 'assistant', content: '', phase: initialPhase, streaming: true, timestamp: new Date().toISOString() },
     ]);
     setInput('');
-    clearPendingFile();
+    clearPendingFiles();
     setLoading(true);
 
     // 流式累计 + 节流渲染（对齐 send 的流式体验）
     let acc = '';
-    // VLM 图片描述是否已完成。onToken 会收到两段 token：vision_done 前的 VLM 描述 + 之后的诊断正文。
-    // VLM 描述是给模型看图用的中间产物（诊断回复已复述图片内容），不上屏——只留「正在分析…」占位。
     let visionDone = false;
-    let convId: number | null = null; // 局部快照：发送期间用户可能切会话，落库必须用快照
+    let convId: number | null = null;
     let hasResult = false;
-    let streamError = ''; // 后端 SSE event:error 的真实错误（非流解析问题）
+    let streamError = '';
     let lastFlush = 0;
     const FLUSH_MS = 90;
     const paint = () => setMessages((prev) => prev.map((m) => {
       if (m.id !== assistantId) return m;
       if (acc) {
-        // 有正文：退出占位阶段，显示内容
         return { ...m, content: looksLikeJsonHead(acc) ? '正在思考…' : acc, phase: undefined };
       }
-      // 无正文：占位阶段（phase 触发动态打字动画）。带文字时 VLM 描述抑制→思考中；
-      // 纯图片/纯文件时保持「正在分析…」直到 token 上屏
       const phase: Message['phase'] = hasMessage
-        ? (visionDone ? 'thinking' : (isImage ? 'analyzing_image' : 'analyzing_file'))
-        : (isImage ? 'analyzing_image' : 'analyzing_file');
+        ? (visionDone ? 'thinking' : (firstImage ? 'analyzing_image' : 'analyzing_file'))
+        : (firstImage ? 'analyzing_image' : 'analyzing_file');
       return { ...m, phase };
     }));
     const schedulePaint = () => {
@@ -790,109 +791,93 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (now - lastFlush >= FLUSH_MS) { lastFlush = now; paint(); }
     };
 
+    // 已保存的附件元数据（逐个 file_saved 事件累积）
+    const savedItems: Array<{ filename: string; object_path?: string; size: number; isImage: boolean }> = [];
+
     try {
       const sid = ensureSessionId();
 
-      await qaUploadStream(sid, [file], content, {
-        // 文件已保存：回填文件 URL、进度遮罩消失、持久化用户消息
-        // 注意：此回调必须自身捕获所有异常——它发生在 SSE 读流循环内，
-        // 一旦前抛错会中断整个流，导致"后端成功却显示上传失败"。
+      await qaUploadStream(sid, files, content, {
         onFileSaved: async (d) => {
           try {
+            // 逐文件回执：d.saved 为本次完成的单个文件（档1改造后逐文件 yield）
             const uploaded = d.saved?.[0];
-            const fileUrl = uploaded?.object_path ? attachmentUrl(uploaded.object_path) : undefined;
+            if (!uploaded) return;
+            const matchedFile = files.find((f) => f.name === uploaded.filename);
+            const isImg = matchedFile?.type.startsWith('image/') ?? false;
+            savedItems.push({ filename: uploaded.filename, object_path: uploaded.object_path, size: uploaded.size, isImage: isImg });
+            // 进度：已保存数 / 总数
+            const percent = Math.round((savedItems.length / files.length) * 100);
             setMessages((prev) => prev.map((m) => {
               if (m.id !== userId) return m;
-              const updated: Message = { ...m, uploading: false, percent: 100 };
-              if (isImage && fileUrl) {
-                if (m.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(m.imageUrl);
-                updated.imageUrl = fileUrl;
-              } else if (!isImage && fileUrl && m.attachment) {
-                updated.attachment = { ...m.attachment, url: fileUrl };
-              }
+              const updated: Message = { ...m, uploading: savedItems.length < files.length, percent };
               return updated;
             }));
-            // 持久化用户消息（存 object_path，前端恢复时拼后端代理路径 /api/call/files/{object_path}）
-            convId = await ensureConversation(sid, content || `[发送了附件] ${file.name}`);
-            if (convId) {
-              const cid: number = convId; // 非空快照：递归 persist 中 TS 无法收窄外层 nullable convId
-              const objectPath = uploaded?.object_path;
-              const fileUrls = objectPath ? JSON.stringify([{ filename: file.name, object_path: objectPath, size: file.size, isImage }]) : undefined;
-              // 附件落库带 2 次重试；失败仅告警（不抛出，避免中断 SSE 读流导致"后端成功却显示上传失败"）。
-              // 此前 .catch(()=>{}) 静默吞错，用户"上传成功但 DB 无附件记录"且无任何提示，此处改为可观测。
-              const persist = async (attempt: number): Promise<void> => {
-                try {
-                  await appendMessage(cid, 'user', content || `[发送了附件] ${file.name}`, { fileUrls, messageType: isImage ? 'image' : 'file' });
-                } catch (e) {
-                  if (attempt < 3) {
-                    await new Promise((r) => setTimeout(r, 300 * attempt)); // 300ms/600ms 退避
-                    return persist(attempt + 1);
+            // 全部保存后持久化用户消息
+            if (savedItems.length === files.length) {
+              setMessages((prev) => prev.map((m) => (m.id === userId ? { ...m, uploading: false, percent: 100 } : m)));
+              convId = await ensureConversation(sid, content || `[发送了${files.length}个附件]`);
+              if (convId) {
+                const cid: number = convId;
+                const fileUrls = JSON.stringify(savedItems.map((it) => ({ filename: it.filename, object_path: it.object_path, size: it.size, isImage: it.isImage })));
+                const persist = async (attempt: number): Promise<void> => {
+                  try {
+                    await appendMessage(cid, 'user', content || `[发送了${files.length}个附件]`, { fileUrls, messageType: firstImage ? 'image' : 'file' });
+                  } catch (e) {
+                    if (attempt < 3) {
+                      await new Promise((r) => setTimeout(r, 300 * attempt));
+                      return persist(attempt + 1);
+                    }
+                    console.warn('[ChatPanel] 附件消息落库失败（已重试3次）:', e);
                   }
-                  console.warn('[ChatPanel] 附件消息落库失败（已重试3次）仍失败，DB 中将无该附件记录:', e);
-                }
-              };
-              void persist(1);
+                };
+                void persist(1);
+              }
             }
           } catch (e) {
-            // 落库/建会话失败不阻塞上传与 AI 流式回复
-            console.warn('[ChatPanel] 上传文件已保存，但持久化会话失败（DB 可能缺失该附件记录）:', e);
+            console.warn('[ChatPanel] 上传文件已保存，但持久化会话失败:', e);
           }
         },
-        // onToken 会收到两段 token：vision_done 前的 VLM 描述 + 之后的诊断正文。
-        // 带文字时 VLM 描述是中间产物，抑制不上屏；纯图片时保留（描述就是回复）。
         onToken: (tok) => {
           if (!visionDone && hasMessage) {
-            // VLM 描述阶段：抑制，不累计不上屏（诊断正文会复述图片内容）
             return;
           }
           acc += tok;
           schedulePaint();
         },
-        // VLM 完成：带文字时刷新占位为「正在思考…」（onVisionDone 触发后 acc 仍为空，
-        // 需 paint 一次把占位从「正在分析图片…」切到「正在思考…」）
         onVisionDone: () => {
           visionDone = true;
           if (hasMessage) paint();
         },
         onResult: (data) => {
           hasResult = true;
-          // 附带文字触发了提单 → 刷新待派单计数
           if (data.ticket) refreshTasks();
-          // 纯文件/纯图片且无描述 token（如非图片附件、VLM 失败）：result 的 message 是给用户的回执，
-          // 此时 acc 为空，回填上屏，避免「正在分析…」占位残留（否则气泡停在占位不显示实际回执）
           if (!acc && typeof data.message === 'string' && data.message) {
             acc = data.message;
             paint();
           }
         },
         onError: (msg) => {
-          // 记录真实错误（qaUploadStream 已安全包装，不会中断流）。
-          // 流结束后若没有内容则据此标记上传失败。
           streamError = msg;
         },
       });
 
-      // 流结束：若确实是后端报错且未产出任何回复 → 按失败处理
       if (streamError && !acc) {
         throw new Error(streamError);
       }
 
-      // 流结束：清洗并写入最终回复，持久化 assistant
       const finalContent = sanitizeAiText(acc);
       if (finalContent) {
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: finalContent, phase: undefined, streaming: false } : m)));
         if (convId) appendMessage(convId, 'assistant', finalContent).catch(() => {});
       } else if (!hasResult) {
-        // 无回复：移除 AI 占位气泡，避免空气泡
         setMessages((prev) => prev.filter((m) => m.id !== assistantId));
       } else {
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)));
       }
     } catch (err) {
-      // 失败：用户气泡标记失败态（红色遮罩），移除 AI 占位气泡
       setMessages((prev) => prev.map((m) => (m.id === userId ? { ...m, uploading: false, failed: true } : m)));
       setMessages((prev) => prev.filter((m) => m.id !== assistantId));
-      // 鉴权失效已由 kickToLogin 统一提示并跳转，此处不重复弹错误（与 send 一致）
       if (!isKickingToLogin()) {
         Toast({ message: `发送失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
       }
@@ -903,8 +888,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
   const send = async (text: string) => {
     const content = text.trim();
-    const file = pendingFile;
-    if (!content && !file) return;
+    const files = pendingFiles;
+    if (!content && files.length === 0) return;
     if (!token) { kickToLogin('请先登录'); return; }
     if (sendingRef.current) return; // 防双发
     sendingRef.current = true;
@@ -912,9 +897,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     setTicketMissing(null);
 
     // 带附件：走 /qa/upload（SSE 流式），由 sendWithFile 流式渲染 VLM 分析 + 诊断
-    if (file) {
+    if (files.length > 0) {
       try {
-        await sendWithFile(file, content);
+        await sendWithFile(files, content);
       } finally {
         sendingRef.current = false;
       }
@@ -1352,31 +1337,58 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   };
 
   /** 清空待发送附件（释放图片预览 objectURL） */
-  const clearPendingFile = () => {
-    if (pendingImageUrl) URL.revokeObjectURL(pendingImageUrl);
-    setPendingFile(null);
-    setPendingImageUrl(null);
+  const clearPendingFiles = () => {
+    pendingImageUrls.forEach((u) => URL.revokeObjectURL(u));
+    setPendingFiles([]);
+    setPendingImageUrls([]);
+  };
+  /** 移除单个待发送附件 */
+  const removePendingFile = (idx: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== idx));
+    setPendingImageUrls((prev) => {
+      const url = prev[idx];
+      if (url) URL.revokeObjectURL(url);
+      return prev.filter((_, i) => i !== idx);
+    });
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
     e.target.value = '';
-    if (!file) return;
-    if (file.size > MAX_FILE_SIZE) {
-      const mb = (file.size / 1024 / 1024).toFixed(1);
-      Toast({ message: `「${file.name}」(${mb}MB) 超过 100MB 上限，请压缩或拆分后重试`, theme: 'error' });
-      return;
+    if (!fileList || fileList.length === 0) return;
+    // 逐个校验大小 + 图片压缩，收集通过的新文件
+    const accepted: File[] = [];
+    const newImageUrls: string[] = [];
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
+      if (file.size > MAX_FILE_SIZE) {
+        const mb = (file.size / 1024 / 1024).toFixed(1);
+        Toast({ message: `「${file.name}」(${mb}MB) 超过 100MB 上限，请压缩或拆分后重试`, theme: 'error' });
+        continue;
+      }
+      let finalFile = file;
+      if (file.type.startsWith('image/')) {
+        const r = await compressImage(file);
+        finalFile = r.file;
+        if (r.compressed) {
+          const beforeMb = (r.originalSize / 1024 / 1024).toFixed(1);
+          const afterMb = (r.resultSize / 1024 / 1024).toFixed(1);
+          Toast({ message: `「${file.name}」已压缩 ${beforeMb}MB→${afterMb}MB`, theme: 'success' });
+        }
+      }
+      accepted.push(finalFile);
+      if (finalFile.type.startsWith('image/')) {
+        newImageUrls.push(URL.createObjectURL(finalFile));
+      }
     }
-    // 选中后不立即发送：挂到输入栏，用户可继续打字，发送时随 message 一起上传
-    clearPendingFile();
-    setPendingFile(file);
-    if (file.type.startsWith('image/')) {
-      setPendingImageUrl(URL.createObjectURL(file));
-    }
+    if (accepted.length === 0) return;
+    // 追加到已有待发送列表（支持多次选择累积）
+    setPendingFiles((prev) => [...prev, ...accepted]);
+    setPendingImageUrls((prev) => [...prev, ...newImageUrls]);
   };
 
   /** PC 端粘贴图片：从剪贴板取 image/* 文件，走与「选择文件」一致的待发送附件流程（预览后可随消息上传） */
-  const handlePaste = (e: React.ClipboardEvent) => {
+  const handlePaste = async (e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
     for (let i = 0; i < items.length; i++) {
@@ -1390,9 +1402,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         Toast({ message: `「${file.name}」(${mb}MB) 超过 100MB 上限，请压缩后重试`, theme: 'error' });
         return;
       }
-      clearPendingFile();
-      setPendingFile(file);
-      setPendingImageUrl(URL.createObjectURL(file));
+      // 粘贴图同样压缩
+      const r = await compressImage(file);
+      const finalFile = r.file;
+      setPendingFiles((prev) => [...prev, finalFile]);
+      setPendingImageUrls((prev) => [...prev, URL.createObjectURL(finalFile)]);
       Toast({ message: '已粘贴图片，可直接发送', theme: 'success' });
       return; // 只处理第一张图片
     }
@@ -1858,15 +1872,19 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             <span className="chat-ticket-btn__label">{submittingTicket ? '提交中…' : '转工单'}</span>
           </div>
         )}
-        {pendingFile && (
-          <div className="chat-pending-file">
-            {pendingImageUrl ? (
-              <img src={pendingImageUrl} alt="附件预览" className="chat-pending-file__thumb" />
-            ) : (
-              <span className="chat-pending-file__icon">📎</span>
-            )}
-            <span className="chat-pending-file__name">{pendingFile.name}</span>
-            <button type="button" className="chat-pending-file__remove" onClick={clearPendingFile} aria-label="移除附件">✕</button>
+        {pendingFiles.length > 0 && (
+          <div className="chat-pending-files">
+            {pendingFiles.map((f, i) => (
+              <div className="chat-pending-file" key={`${f.name}-${i}`}>
+                {pendingImageUrls[i] ? (
+                  <img src={pendingImageUrls[i]} alt="附件预览" className="chat-pending-file__thumb" />
+                ) : (
+                  <span className="chat-pending-file__icon">📎</span>
+                )}
+                <span className="chat-pending-file__name">{f.name}</span>
+                <button type="button" className="chat-pending-file__remove" onClick={() => removePendingFile(i)} aria-label="移除附件">✕</button>
+              </div>
+            ))}
           </div>
         )}
         {voiceMode ? (
@@ -1950,7 +1968,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   </svg>
                 </button>
               </div>
-              <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={(!input.trim() && !pendingFile) || loading} aria-label="发送">
+              <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={(!input.trim() && pendingFiles.length === 0) || loading} aria-label="发送">
                 {loading ? (
                   <span className="chat-send-btn__spinner" />
                 ) : (
@@ -1964,8 +1982,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           </>
         )}
         <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" onChange={handleFileChange} style={{ display: 'none' }} />
-        <input ref={albumInputRef} type="file" accept="image/*" onChange={handleFileChange} style={{ display: 'none' }} />
-        <input ref={fileInputRef} type="file" accept="*/*" onChange={handleFileChange} style={{ display: 'none' }} />
+        <input ref={albumInputRef} type="file" accept="image/*" multiple onChange={handleFileChange} style={{ display: 'none' }} />
+        <input ref={fileInputRef} type="file" accept="*/*" multiple onChange={handleFileChange} style={{ display: 'none' }} />
         {textareaFullscreen && (
           <div className="chat-input-bar__fullscreen-overlay" onClick={() => setTextareaFullscreen(false)}>
             <div className="chat-input-bar__fullscreen-panel" onClick={(e) => e.stopPropagation()}>
@@ -1997,7 +2015,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 autoFocus
               />
               <div className="chat-input-bar__fullscreen-footer">
-                <button type="button" className="chat-send-btn" onClick={() => { send(input); setTextareaFullscreen(false); }} disabled={(!input.trim() && !pendingFile) || loading} aria-label="发送">
+                <button type="button" className="chat-send-btn" onClick={() => { send(input); setTextareaFullscreen(false); }} disabled={(!input.trim() && pendingFiles.length === 0) || loading} aria-label="发送">
                   {loading ? (
                     <span className="chat-send-btn__spinner" />
                   ) : (
