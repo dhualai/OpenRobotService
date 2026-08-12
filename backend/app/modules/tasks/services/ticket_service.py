@@ -105,13 +105,13 @@ class TicketService:
         import logging
         logger = logging.getLogger(__name__)
         if ticket_data.assigned_to:
-            logger.info(f"准备发送新建工单通知: ticket_id={ticket.id}, assignee={ticket_data.assigned_to}, operator={created_by}")
+            logger.info(f"准备发送新建工单通知: ticket_id={ticket.id}, assignee={ticket_data.assigned_to}, operator={created_by_name}")
             try:
                 await NotificationUtils.send_ticket_create_notification(
                     ticket_id=ticket.id,
                     title=ticket.title or "",
                     project_name=ticket.project_name or "",
-                    operator=created_by,
+                    operator=created_by_name,
                     deadline_at=ticket.deadline_at,
                     user_names=[ticket_data.assigned_to],
                     token=token,
@@ -569,7 +569,8 @@ class TicketService:
         if not ticket:
             return {"ticket": None, "notification": None}
 
-        update_data = ticket_update.dict(exclude_unset=True)
+        # operation_type 仅用于操作日志识别，不入库、不入通知（与 API 层及 schema 注释一致）
+        update_data = ticket_update.dict(exclude_unset=True, exclude={'operation_type'})
 
         for field, value in update_data.items():
             if field == "deadline_at":

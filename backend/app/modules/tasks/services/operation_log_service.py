@@ -20,15 +20,27 @@ VIEW_DEDUP_WINDOW = 300  # 5 分钟
 
 
 def _resolve_operator_name(operator: str, operator_name: Optional[str]) -> str:
-    """通过 username 解析显示名（已传则用传入的，否则查用户表兜底）。"""
-    if operator_name:
+    """通过 username 解析显示名。
+
+    传入的 operator_name 可能是 JWT fallback 的 username（无效），需要继续查库。
+    只有传入值与 operator 不同时才认为是有效显示名。
+    """
+    if operator_name and operator_name != operator:
+        logger.info(f"[OpLog] _resolve: operator={operator}, using passed operator_name={operator_name}")
         return operator_name
+    # 传入为空或等于 username（JWT fallback），查用户表补全
     try:
         user = db_manager.get_user(operator)
-        if user and user.get("name"):
-            return user["name"]
+        if user:
+            user_name = user.get("name")
+            logger.info(f"[OpLog] _resolve: operator={operator}, db_user.name={user_name!r}")
+            if user_name:
+                return user_name
+        else:
+            logger.warning(f"[OpLog] _resolve: operator={operator}, db_manager.get_user returned None")
     except Exception as e:
-        logger.warning(f"Failed to resolve operator name for {operator}: {e}")
+        logger.warning(f"[OpLog] _resolve: operator={operator}, exception: {e}", exc_info=True)
+    logger.info(f"[OpLog] _resolve: operator={operator}, fallback to username")
     return operator
 
 
@@ -131,7 +143,8 @@ class OperationLogService:
         """
         try:
             # 去重：查询最近时间窗口内是否已有同一用户的 VIEW 记录
-            cutoff_time = datetime.utcnow() - timedelta(seconds=VIEW_DEDUP_WINDOW)
+            cutoff_time = datetime.now() - timedelta(seconds=VIEW_DEDUP_WINDOW)
+            logger.info(f"[OpLog] log_view: task_id={task_id}, username={username}, passed user_name={user_name!r}")
             dedup_query = select(TaskOperationLog).where(
                 and_(
                     TaskOperationLog.task_id == task_id,
@@ -142,13 +155,12 @@ class OperationLogService:
             ).limit(1)
             result = await db.execute(dedup_query)
             if result.scalar_one_or_none():
-                logger.debug(
-                    f"View log deduped: task_id={task_id}, operator={username}"
-                )
+                logger.info(f"[OpLog] log_view deduped: task_id={task_id}, operator={username}")
                 return None  # 去重，不重复记录
 
             # 写入新的查看记录（log 内部会自动补全 operator_name）
             resolved = _resolve_operator_name(username, user_name)
+            logger.info(f"[OpLog] log_view writing: task_id={task_id}, operator={username}, resolved_name={resolved!r}")
             return await OperationLogService.log(
                 db=db,
                 task_id=task_id,
