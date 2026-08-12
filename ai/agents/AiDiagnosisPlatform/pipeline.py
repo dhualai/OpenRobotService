@@ -973,134 +973,60 @@ class AiDiagnosisPlatform:
     # ================================================================
     # 检索：用近期对话上下文，带简单内存缓存
     # ================================================================
-    _CACHE_TTL = 60  # 秒
+    _CACHE_TTL = 300  # 秒：检索结果（含 rerank 精排）5 分钟内复用，重复/相近问题秒回
+
+    async def _classify_intent(self, llm_client, raw_query: str, resolved_query: str) -> str:
+        """意图识别：判断输入是闲聊还是诊断求助。
+
+        独立于主对话的快速分类（v4-flash 无思考，~1.5s），
+        只返回一个词：courtesy（闲聊） / diagnosis（诊断），绝不阻塞诊断路径。
+        """
+        prompt = (
+            "判断下面用户消息的意图，只回复两个词之一：\n"
+            "courtesy：寒暄/问候/闲聊/客套/表达感谢或情绪（如 你好、辛苦了、哈哈、谢谢、在吗）\n"
+            "diagnosis：任何与设备、报错、故障、工作相关的求助或提问（如 AGV卡住、报错码、怎么办）\n"
+            f"消息：{resolved_query or raw_query}\n"
+            "意图："
+        )
+        try:
+            answer = await llm_client.complete(
+                prompt,
+                system_prompt="你是意图分类器，只输出 courtesy 或 diagnosis，不要输出其他内容。",
+                max_tokens=8,
+                temperature=0.0,
+                thinking=False,
+            )
+            intent = (answer or "").strip().lower()[:20]
+            logger.debug(f"[intent] 分类结果: {intent!r} (raw={raw_query[:30]!r})")
+            if "courtesy" in intent:
+                return "courtesy"
+            return "diagnosis"
+        except Exception as e:
+            # 意图识别失败/超时 → 一律当作诊断，不阻塞正常检索路径
+            logger.warning(f"[intent] 识别失败，按诊断处理: {e}")
+            return "diagnosis"
+
+    def _cancel_retrieval(self, retrieval_task: asyncio.Task) -> None:
+        """取消正在运行的检索任务。
+
+        cancel() 会让检索协程在下一个 await 点（rerank 等）抛出 CancelledError，
+        外层立即继续；底层 thread pool 中已提交的 rerank 推理会跑完（尽力而为，不中断线程）。
+        """
+        if not retrieval_task.done():
+            retrieval_task.cancel()
 
     async def _retrieve_with_context(self, session_id: str, state: AgentState,
                                       resolved_query: str = "") -> str:
         t0 = time.perf_counter()
         logger.info(f"[retrieve] 进入检索: session={session_id}")
         try:
-            # 检索查询：用户当前输入为主，problem_summary/hypotheses 仅辅助短查询补全。
-            # 用户查询≥10字且具体 → 不加任何旧 state 信息，防止旧话题污染（如查"自动门对接"
-            # 但 state 残留"充电验证"，导致 embedding 偏航、正确 chunk 排不进 top N）。
-            search_query = resolved_query if resolved_query else state.original_query
-            _need_context = len(search_query) < 10  # 极短查询（"怎么办""这是啥"）才需要上下文
-            if state.problem_summary and _need_context:
-                search_query = search_query + " " + state.problem_summary[:30]
-            if state.hypotheses and _need_context:
-                # LLM 可能输出 dict 而非纯字符串列表，先展平确保 join 不炸
-                _hyps = [str(h) if not isinstance(h, str) else h for h in state.hypotheses]
-                search_query = search_query + " " + " ".join(_hyps)[:50]
-
-            # 缓存命中：同一查询 60 秒内复用结果
-            cache_key = search_query[:200]
-            cached = self._retrieval_cache.get(cache_key)
-            if cached and time.time() - cached["ts"] < self._CACHE_TTL:
-                logger.debug(f"[retrieve] cache hit: {(time.perf_counter() - t0) * 1000:.0f}ms")
-                return cached["result"]
-
-            # 三路并行域检索（team / company / industry）
-            # chunk 自带 sub_domain 字段，按 sub_domain 自动贴标签
-            config = get_ai_config()
-            team_task = asyncio.wait_for(
-                self._retriever.retrieve_domain(search_query, "team", top_k=6),
-                timeout=15.0,
-            )
-            company_task = asyncio.wait_for(
-                self._retriever.retrieve_domain(search_query, "company", top_k=4),
-                timeout=10.0,
-            )
-            industry_task = asyncio.wait_for(
-                self._retriever.retrieve_domain(search_query, "industry", top_k=3),
-                timeout=10.0,
-            )
-
-            logger.info(f"[retrieve] 三路域检索: query={search_query[:60]}...")
-            gathered = await asyncio.wait_for(
-                asyncio.gather(team_task, company_task, industry_task, return_exceptions=True),
-                timeout=20.0,
-            )
-            logger.info(f"[retrieve] 三路检索完成")
-            team_results, company_results, industry_results = gathered
-            if isinstance(team_results, BaseException):
-                team_results = []
-            if isinstance(company_results, BaseException):
-                company_results = []
-            if isinstance(industry_results, BaseException):
-                industry_results = []
-
-            # sub_domain → 标签映射
-            _sub_labels = {
-                "platform": "🎫 服务号",
-                "faq": "📋 FAQ", "usp_faq": "📋 FAQ",
-                "cheduan_errors": "🚗 车端", "cheduan_implementation": "🚗 车端",
-                "translation": "🌐 翻译",
-                "diagnosis": "🏭 诊断",
-                "usp_manual": "📖 手册", "usp_product": "📖 产品",
-                "product_catalog": "🏢 产品", "vda5050_protocol": "🏢 协议",
-                "navigation": "📐 导航", "standards": "📐 标准",
-            }
-
-            def _label(r) -> str:
-                return _sub_labels.get(r.sub_domain, f"📄 {r.sub_domain or '知识库'}")
-
-            # error code extraction + targeted cheduan retrieval
-            _query_codes = self._retriever._extract_error_codes(search_query)
-            _cheduan_exact: list = []
-            if _query_codes:
-                try:
-                    _cheduan_exact = await asyncio.wait_for(
-                        self._retriever.retrieve_cheduan(search_query, top_k=3),
-                        timeout=10.0,
-                    )
-                except Exception:
-                    _cheduan_exact = []
-            _cheduan_found = any(
-                (r.sub_domain or "") in ("cheduan_errors", "cheduan_implementation")
-                for r in _cheduan_exact
-            )
-
-            docs = []
-            idx = 1
-
-            # cheduan error code not found → note for LLM (not a mandatory denial)
-            if _query_codes and not _cheduan_found:
-                codes_str = "、".join(_query_codes)
-                docs.insert(0,
-                    f"---\n🚗 提示：从查询中提取的数字 [{codes_str}] "
-                    f"在车端错误码库中未找到。如果检索结果中包含产品型号、文档编号等包含该数字的内容，"
-                    f"则这些是相关知识而非错误码，请正常引用，不要告知用户\"未收录\"。\n---")
-
-            # 三路结果合并 → 按 score 降序 → 取 top N（避免 13+ 个 chunk 撑爆 prompt）
-            all_results = list(_cheduan_exact) + list(team_results) + list(company_results) + list(industry_results)
-            # 去重（同 id 只保留最高分）
-            seen = set()
-            uniq = []
-            for r in sorted(all_results, key=lambda r: r.score, reverse=True):
-                if r.id not in seen:
-                    seen.add(r.id)
-                    uniq.append(r)
-            hit_logs = []  # 送入 prompt 的 chunk 摘要（标题@分数，用于生产排查检索效果）
-            for r in uniq[:_MAX_RETRIEVAL_DOCS]:
-                content = self._rewrite_images(r) if r.content else ""
-                if not content.strip():
-                    continue
-                title = f"（{r.title}）" if r.title else ""
-                docs.append(f"---\n{_label(r)} {idx}{title}：\n{content}\n---")
-                hit_logs.append(f"[{r.sub_domain or '-'}]{r.title or '(无标题)'}@{r.score:.4f}")
-                idx += 1
-            logger.info(f"[retrieve] 命中{len(all_results)}去重{len(uniq)}送prompt{len(hit_logs)}: {' | '.join(hit_logs)}")
-
-            result = "\n".join(docs) if docs else "（知识库暂无匹配文档，请告知用户当前手册未覆盖此问题，建议转工单处理，不要自己编造答案。）"
-
-            self._retrieval_cache[cache_key] = {"result": result, "ts": time.time()}
-            # 防止缓存无限增长
-            if len(self._retrieval_cache) > 200:
-                oldest = min(self._retrieval_cache, key=lambda k: self._retrieval_cache[k]["ts"])
-                del self._retrieval_cache[oldest]
-            logger.debug(f"[retrieve] total: {(time.perf_counter() - t0) * 1000:.0f}ms")
-            return result
-
+            # 意图判闲聊时由外部 cancel：检索在 await 点抛出 CancelledError，
+            # 必须先于此处的宽泛 handler 退出（否则会落到下面 TimeoutError/ConnectionError 分支被当作失败）
+            try:
+                return await self._retrieve_inner(session_id, state, resolved_query)
+            except asyncio.CancelledError:
+                logger.debug(f"[retrieve] 被意图取消: session={session_id}")
+                raise
         except ServiceUnavailableError as e:
             logger.warning(f"[retrieve] ServiceUnavailable: {e}")
             logger.warning(f"检索服务不可用: session={session_id}, error={e}")
@@ -1112,6 +1038,138 @@ class AiDiagnosisPlatform:
             logger.warning(f"[retrieve] 超时/失败: {(time.perf_counter() - t0) * 1000:.0f}ms")
             logger.warning(f"检索超时/失败: session={session_id}")
         return "（知识库检索失败，请告知用户当前系统检索异常、建议稍后重试或转工单处理，不要自己编造答案。）"
+
+    async def _retrieve_inner(self, session_id: str, state: AgentState,
+                              resolved_query: str = "") -> str:
+        # 检索查询：用户当前输入为主，problem_summary/hypotheses 仅辅助短查询补全。
+        # 用户查询≥10字且具体 → 不加任何旧 state 信息，防止旧话题污染（如查"自动门对接"
+        # 但 state 残留"充电验证"，导致 embedding 偏航、正确 chunk 排不进 top N）。
+        t0 = time.perf_counter()
+        search_query = resolved_query if resolved_query else state.original_query
+        _need_context = len(search_query) < 10  # 极短查询（"怎么办""这是啥"）才需要上下文
+        if state.problem_summary and _need_context:
+            search_query = search_query + " " + state.problem_summary[:30]
+        if state.hypotheses and _need_context:
+            # LLM 可能输出 dict 而非纯字符串列表，先展平确保 join 不炸
+            _hyps = [str(h) if not isinstance(h, str) else h for h in state.hypotheses]
+            search_query = search_query + " " + " ".join(_hyps)[:50]
+
+        # 缓存命中：同一查询 TTL 内复用结果
+        cache_key = search_query[:200]
+        cached = self._retrieval_cache.get(cache_key)
+        if cached and time.time() - cached["ts"] < self._CACHE_TTL:
+            logger.debug(f"[retrieve] cache hit: {(time.perf_counter() - t0) * 1000:.0f}ms")
+            return cached["result"]
+
+        # 三路并行域检索（team / company / industry）
+        # chunk 自带 sub_domain 字段，按 sub_domain 自动贴标签
+        config = get_ai_config()
+        team_task = asyncio.wait_for(
+            self._retriever.retrieve_domain(search_query, "team", top_k=6, skip_rerank=True),
+            timeout=15.0,
+        )
+        company_task = asyncio.wait_for(
+            self._retriever.retrieve_domain(search_query, "company", top_k=4, skip_rerank=True),
+            timeout=10.0,
+        )
+        industry_task = asyncio.wait_for(
+            self._retriever.retrieve_domain(search_query, "industry", top_k=3, skip_rerank=True),
+            timeout=10.0,
+        )
+
+        logger.info(f"[retrieve] 三路域检索: query={search_query[:60]}...")
+        gathered = await asyncio.wait_for(
+            asyncio.gather(team_task, company_task, industry_task, return_exceptions=True),
+            timeout=20.0,
+        )
+        logger.info(f"[retrieve] 三路检索完成")
+        team_results, company_results, industry_results = gathered
+        if isinstance(team_results, BaseException):
+            team_results = []
+        if isinstance(company_results, BaseException):
+            company_results = []
+        if isinstance(industry_results, BaseException):
+            industry_results = []
+
+        # sub_domain → 标签映射
+        _sub_labels = {
+            "platform": "🎫 服务号",
+            "faq": "📋 FAQ", "usp_faq": "📋 FAQ",
+            "cheduan_errors": "🚗 车端", "cheduan_implementation": "🚗 车端",
+            "translation": "🌐 翻译",
+            "diagnosis": "🏭 诊断",
+            "usp_manual": "📖 手册", "usp_product": "📖 产品",
+            "product_catalog": "🏢 产品", "vda5050_protocol": "🏢 协议",
+            "navigation": "📐 导航", "standards": "📐 标准",
+        }
+
+        def _label(r) -> str:
+            return _sub_labels.get(r.sub_domain, f"📄 {r.sub_domain or '知识库'}")
+
+        # error code extraction + targeted cheduan retrieval
+        _query_codes = self._retriever._extract_error_codes(search_query)
+        _cheduan_exact: list = []
+        if _query_codes:
+            try:
+                _cheduan_exact = await asyncio.wait_for(
+                    self._retriever.retrieve_cheduan(search_query, top_k=3),
+                    timeout=10.0,
+                )
+            except Exception:
+                _cheduan_exact = []
+        _cheduan_found = any(
+            (r.sub_domain or "") in ("cheduan_errors", "cheduan_implementation")
+            for r in _cheduan_exact
+        )
+
+        docs = []
+        idx = 1
+
+        # cheduan error code not found → note for LLM (not a mandatory denial)
+        if _query_codes and not _cheduan_found:
+            codes_str = "、".join(_query_codes)
+            docs.insert(0,
+                f"---\n🚗 提示：从查询中提取的数字 [{codes_str}] "
+                f"在车端错误码库中未找到。如果检索结果中包含产品型号、文档编号等包含该数字的内容，"
+                f"则这些是相关知识而非错误码，请正常引用，不要告知用户\"未收录\"。\n---")
+
+        # 三路结果合并 → 按 score 降序 → 取 top N（避免 13+ 个 chunk 撑爆 prompt）
+        all_results = list(_cheduan_exact) + list(team_results) + list(company_results) + list(industry_results)
+        # 去重（同 id 只保留最高分）
+        seen = set()
+        uniq = []
+        for r in sorted(all_results, key=lambda r: r.score, reverse=True):
+            if r.id not in seen:
+                seen.add(r.id)
+                uniq.append(r)
+
+        # 三路已 skip_rerank（只检索未精排）→ 合并去重后统一 rerank 一次，
+        # 从三路各自 rerank 的 3 次 CPU 推理降为 1 次，且候选放宽到合并后的 top N
+        if len(uniq) > _MAX_RETRIEVAL_DOCS:
+            _reranked = await self._retriever._rerank_results(search_query, uniq, _MAX_RETRIEVAL_DOCS)
+            if _reranked:
+                uniq = _reranked
+
+        hit_logs = []  # 送入 prompt 的 chunk 摘要（标题@分数，用于生产排查检索效果）
+        for r in uniq[:_MAX_RETRIEVAL_DOCS]:
+            content = self._rewrite_images(r) if r.content else ""
+            if not content.strip():
+                continue
+            title = f"（{r.title}）" if r.title else ""
+            docs.append(f"---\n{_label(r)} {idx}{title}：\n{content}\n---")
+            hit_logs.append(f"[{r.sub_domain or '-'}]{r.title or '(无标题)'}@{r.score:.4f}")
+            idx += 1
+        logger.info(f"[retrieve] 命中{len(all_results)}去重{len(uniq)}送prompt{len(hit_logs)}: {' | '.join(hit_logs)}")
+
+        result = "\n".join(docs) if docs else "（知识库暂无匹配文档，请告知用户当前手册未覆盖此问题，建议转工单处理，不要自己编造答案。）"
+
+        self._retrieval_cache[cache_key] = {"result": result, "ts": time.time()}
+        # 防止缓存无限增长
+        if len(self._retrieval_cache) > 200:
+            oldest = min(self._retrieval_cache, key=lambda k: self._retrieval_cache[k]["ts"])
+            del self._retrieval_cache[oldest]
+        logger.debug(f"[retrieve] total: {(time.perf_counter() - t0) * 1000:.0f}ms")
+        return result
 
     # ================================================================
     # 工单生成
@@ -1844,6 +1902,13 @@ class AiDiagnosisPlatform:
             return
 
 
+        # ---- 闲聊/问候短接：纯问候/打招呼 → 跳过检索，避免 4s+ 的 reranker 检索 ----
+        _greet_str = re.sub(r"[，。.!！\s]", "", request.query.strip())
+        _is_greeting = bool(_greet_str) and re.fullmatch(
+            r"(你好|您好|哈喽|嗨|hello|hi|hey|在吗|早上好|上午好|中午好|下午好|晚上好|hello|hi|嗨)+",
+            _greet_str, re.IGNORECASE
+        )
+
         # 指代消解："然后呢"等省略表达 → 用上文补全为完整查询
         resolved_query, _ = await self._memory_manager.resolve_pronoun(
             request.query, request.session_id)
@@ -1855,12 +1920,46 @@ class AiDiagnosisPlatform:
         logger.info(f"[stream] 开始检索: session={request.session_id}")
         # 工单填写模式不需要知识库——用户只是在填表字段，不走诊断检索；
         # 跳过检索可大幅缩小 prompt，降低 thinking 长度，提升收集轮响应速度。
-        reference_docs = (
-            "（跳过检索）" if request.skip_retrieval or state.ticket_collecting
-            else await self._retrieve_with_context(request.session_id, state, resolved_query)
-)
+        _skip_retrieval = request.skip_retrieval or state.ticket_collecting
+        if _skip_retrieval:
+            reference_docs = "（跳过检索）"
+            t_stream["intent"] = 0
+        elif _is_greeting:
+            # 正则 0ms 快路径：白名单纯问候不触发意图调用（省 1 次 LLM 调用），直接跳过检索
+            reference_docs = ""
+            t_stream["intent"] = 0
+        else:
+            # 白名单之外的输入（辛苦/哈哈/客套等）→ 意图识别与检索并发：
+            # 检索那 4s 的时间窗把意图调用（v4-flash 无思考 ~1.5s）盖掉；
+            # 若意图判为闲聊，立即 cancel 检索，避免白跑 rerank。
+            _intent_llm = await get_llm_client()
+            _retrieval_task = asyncio.create_task(
+                self._retrieve_with_context(request.session_id, state, resolved_query))
+            _intent_task = asyncio.create_task(
+                self._classify_intent(_intent_llm, request.query, resolved_query))
+            _intent_t0 = time.perf_counter()
+            try:
+                _intent = await asyncio.wait_for(_intent_task, timeout=2.0)
+            except (asyncio.TimeoutError, Exception):
+                _intent = "diagnosis"
+            t_stream["intent"] = round((time.perf_counter() - _intent_t0) * 1000)
+            logger.info(f"[stream] 意图={_intent} intent_ms={t_stream['intent']}")
+
+            if _intent == "courtesy":
+                # 意图判闲聊 → 停掉还在跑的检索（rerank 等 await 点立刻取消，thread pool 尾随可接受）
+                reference_docs = ""
+                logger.info(f"[stream] 意图判闲聊，取消检索: session={request.session_id}")
+                self._cancel_retrieval(_retrieval_task)
+            else:
+                try:
+                    reference_docs = await asyncio.wait_for(_retrieval_task, timeout=20.0)
+                except asyncio.TimeoutError:
+                    reference_docs = ""
+                    logger.warning(f"[stream] 检索超时(20s)，降级无上下文: session={request.session_id}")
+
         t_stream["retrieve"] = round((time.perf_counter() - t_ret) * 1000)
-        logger.info(f"[stream] 检索完成: {t_stream['retrieve']}ms, docs_len={len(reference_docs)}")
+        logger.info(f"[stream] 检索完成: {t_stream['retrieve']}ms, docs_len={len(reference_docs)}"
+                    + ("（闲聊跳过检索）" if _is_greeting else ""))
         prompt = self._build_diagnosis_prompt(state, memory, reference_docs)
         t_stream["prompt_chars"] = len(prompt)
         logger.info(f"[stream] prompt构建完成: {t_stream['prompt_chars']} chars, retrieve={t_stream['retrieve']}ms")
