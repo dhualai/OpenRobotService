@@ -13,6 +13,7 @@ import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
+import { getOperationLogs, type OperationLog } from '@/api/ticket';
 import { uploadCommentAttachment } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { formatDateTime } from '@/shared/utils/url';
@@ -142,6 +143,9 @@ export default function TaskDetailPage() {
   // AI 摘要（后端定时写入评论，前端从评论提取展示）
   const [aiSummary, setAiSummary] = useState('');
 
+  // 工单动态（操作日志，用于详情页滚动展示）
+  const [opLogs, setOpLogs] = useState<OperationLog[]>([]);
+
   // 项目成员（用于讨论区 @ 提及）
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
 
@@ -182,6 +186,17 @@ export default function TaskDetailPage() {
       imgUrl: WECHAT_CONFIG.shareImgUrl,
     });
   }, [detail?.id]);
+
+  // 加载工单动态（操作日志）
+  const fetchOpLogs = async () => {
+    if (!detailId) return;
+    try {
+      const data = await getOperationLogs(detailId);
+      setOpLogs(data || []);
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => { fetchOpLogs(); }, [detailId]);
 
   const getCurrentUserRoles = () => {
     const currentUsername = username;
@@ -330,6 +345,7 @@ export default function TaskDetailPage() {
     const refreshed = await request<Ticket>(`/${detailId}?load_comments=true`, { skipCache: true });
     setDetail(refreshed);
     refreshTasks();
+    fetchOpLogs();
   };
 
   const handleReturn = async () => {
@@ -687,14 +703,6 @@ export default function TaskDetailPage() {
         fixed
         leftArrow
         onLeftClick={handleBack}
-        right={
-          <span
-            onClick={() => navigate(`/tasks/${detailId}/operations`)}
-            style={{ fontSize: 14, color: '#0052d9', cursor: 'pointer', fontWeight: 500 }}
-          >
-            流转记录
-          </span>
-        }
       />
       <div className="page-container" style={{ paddingTop: 56 }}>
         <div className="detail-card">
@@ -779,10 +787,10 @@ export default function TaskDetailPage() {
               </div>
             </div>
             <div className="detail-info-item">
-              <span className="detail-info-item__icon">🕐</span>
+              <span className="detail-info-item__icon">📁</span>
               <div className="detail-info-item__content">
-                <span className="detail-info-item__label">创建时间</span>
-                <span className="detail-info-item__value">{formatDateTime(detail.created_at)}</span>
+                <span className="detail-info-item__label">所属项目</span>
+                <span className="detail-info-item__value">{detail.project_name || '-'}</span>
               </div>
             </div>
             <div className="detail-info-item">
@@ -790,6 +798,13 @@ export default function TaskDetailPage() {
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">最晚解决时间</span>
                 <span className="detail-info-item__value">{detail.deadline_at ? formatDateTime(detail.deadline_at) : '未设置'}</span>
+              </div>
+            </div>
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon">🕐</span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">创建时间</span>
+                <span className="detail-info-item__value">{formatDateTime(detail.created_at)}</span>
               </div>
             </div>
             <div className="detail-info-item">
@@ -805,6 +820,43 @@ export default function TaskDetailPage() {
         <div className="detail-card">
           <h4 className="detail-card__h">问题描述</h4>
           <SafeHtml html={detail.description || '<p style="color:#999">无描述</p>'} />
+        </div>
+
+        <div
+          className="detail-card ticket-dynamics-card"
+          onClick={() => navigate(`/tasks/${detailId}/operations`)}
+          role="button"
+          tabIndex={0}
+        >
+          <h4 className="detail-card__h">
+            工单动态
+            <span className="ticket-dynamics-card__more">查看全部 ›</span>
+          </h4>
+          {(() => {
+            if (opLogs.length === 0) {
+              return <p style={{ color: '#999' }}>暂无动态</p>;
+            }
+            const displayName = (l: OperationLog) => l.operator_name || l.operator;
+            const formatTime = (ts: string) => {
+              const d = new Date(ts);
+              return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            };
+            const items = opLogs.map((l) => ({
+              key: l.id,
+              text: `${formatTime(l.created_at)} · ${l.description || l.operation_type}`,
+            }));
+            // 复制一份用于无缝滚动
+            const loopItems = [...items, ...items];
+            return (
+              <div className="ticket-dynamics-scroll" style={{ '--count': items.length } as React.CSSProperties}>
+                <div className="ticket-dynamics-scroll__track">
+                  {loopItems.map((it, i) => (
+                    <div className="ticket-dynamics-scroll__item" key={`${it.key}-${i}`}>{it.text}</div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         <div className="detail-card">
@@ -918,12 +970,6 @@ export default function TaskDetailPage() {
                 </>
               );
             })()}
-          </div>
-        )}
-
-        {detail.project_name && (
-          <div className="detail-card">
-            <DetailRow label="所属项目" value={detail.project_name} />
           </div>
         )}
 

@@ -44,6 +44,25 @@ STATUS_LABEL = {
 comment_attachment_map = {}
 
 
+async def _add_system_comment(db: AsyncSession, task_id: int, content: str, operator: str, token: str = ""):
+    """向讨论区添加一条系统操作评论，并 WS 广播。失败不阻塞主流程。"""
+    try:
+        comment_data = TicketCommentCreate(content=content, is_public=True)
+        comment = await TicketService.add_comment(db, task_id, comment_data, operator, comment_attachment_map, token=token)
+        if comment:
+            await db.commit()
+            await db.refresh(comment)
+            try:
+                await ws_broadcast_comment("comment.created", task_id, comment)
+            except Exception:
+                pass
+        return comment
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to add system comment for task {task_id}: {e}")
+        return None
+
+
 @router.post("/", response_model=TicketResponse)
 async def create_task(
     ticket_data: TicketCreate,
@@ -400,7 +419,8 @@ async def update_task(
             raise HTTPException(status_code=404, detail="任务未找到")
 
         # ── 记录操作日志 ──
-        # 1. 状态变更日志
+        token = current_user.get('token') or ''
+        # 1. 状态变更日志 + 系统评论
         if ticket_update.status:
             new_status = ticket_update.status.value if hasattr(ticket_update.status, 'value') else str(ticket_update.status)
             old_status = ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)
@@ -413,6 +433,11 @@ async def update_task(
                 to_status=new_status,
                 detail={"from": old_status, "to": new_status},
                 description=f"{user_name} 将工单状态变更为「{new_status}」",
+            )
+            await _add_system_comment(
+                db, task_id,
+                f"<p>{user_name} 将工单状态变更为「{STATUS_LABEL.get(new_status, new_status)}」</p>",
+                username, token,
             )
         
         # 2. 其他操作日志（根据 operation_type 或字段变更推断）
@@ -429,12 +454,14 @@ async def update_task(
                 operator=username, operator_name=user_name,
                 description=f"{user_name} 升级了工单",
             )
+            await _add_system_comment(db, task_id, f"<p>{user_name} 升级了工单</p>", username, token)
         elif op_type_str == 'return':
             await OperationLogService.log(
                 db=db, task_id=task_id, op_type=OperationType.RETURN,
                 operator=username, operator_name=user_name,
                 description=f"{user_name} 退回了工单",
             )
+            await _add_system_comment(db, task_id, f"<p>{user_name} 退回了工单</p>", username, token)
         elif op_type_str == 'reassign':
             new_assignee = update_data.get('assigned_to', '')
             await OperationLogService.log(
@@ -443,6 +470,7 @@ async def update_task(
                 detail={"new_assignee": new_assignee},
                 description=f"{user_name} 将工单重新指派给 {new_assignee}",
             )
+            await _add_system_comment(db, task_id, f"<p>{user_name} 将工单重新指派给 {new_assignee}</p>", username, token)
         elif changed_fields:
             # 普通字段更新
             field_labels = {
@@ -775,6 +803,13 @@ async def update_task_status(
             description=f"{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」",
         )
 
+        # ── 向讨论区添加系统评论 ──
+        await _add_system_comment(
+            db, task_id,
+            f"<p>{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」</p>",
+            username, token,
+        )
+
         return updated_ticket
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -813,7 +848,10 @@ async def assign_task(
             detail={"new_assignee": user_id},
             description=f"{user_name} 将工单指派给 {user_id}",
         )
-        
+
+        # ── 向讨论区添加系统评论 ──
+        await _add_system_comment(db, task_id, f"<p>{user_name} 将工单指派给 {user_id}</p>", username)
+
         return ticket
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"分配任务失败: {str(e)}")

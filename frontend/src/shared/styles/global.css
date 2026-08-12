@@ -2783,6 +2783,44 @@ html, body, #root {
 .detail-card__id { color: #bbb; font-size: 12px; }
 .detail-card__title { font-size: 17px; font-weight: 600; margin: 0 0 10px; color: #222; }
 .detail-card__h { font-size: 14px; font-weight: 600; margin: 0 0 8px; color: #555; }
+
+/* 工单动态卡片（详情页内嵌，点击跳转流转记录页） */
+.ticket-dynamics-card { cursor: pointer; transition: background 0.15s; }
+.ticket-dynamics-card:active { background: #f5f5f5; }
+.ticket-dynamics-card .detail-card__h {
+  display: flex; justify-content: space-between; align-items: center;
+}
+.ticket-dynamics-card__more { font-size: 12px; font-weight: 400; color: #0052d9; }
+
+/* 滚动容器：限制高度 3 行（约 66px），overflow hidden */
+.ticket-dynamics-scroll {
+  height: 66px;
+  overflow: hidden;
+  position: relative;
+}
+/* 滚动轨道：复制一份内容实现无缝循环，用 translateY 从 0 到 -50% */
+.ticket-dynamics-scroll__track {
+  display: flex;
+  flex-direction: column;
+  animation: dynamics-scroll calc(var(--count, 1) * 4s) linear infinite;
+}
+.ticket-dynamics-scroll__item {
+  height: 22px;
+  line-height: 22px;
+  font-size: 13px;
+  color: #666;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes dynamics-scroll {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(-50%); }
+}
+/* 尊重用户偏好：减少动效时停止滚动 */
+@media (prefers-reduced-motion: reduce) {
+  .ticket-dynamics-scroll__track { animation: none; }
+}
 .detail-row { display: flex; padding: 6px 0; }
 .detail-row__label { color: #999; width: 64px; flex-shrink: 0; font-size: 13px; }
 .detail-row__value { flex: 1; font-size: 13px; color: #333; word-break: break-word; }
