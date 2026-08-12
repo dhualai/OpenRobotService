@@ -195,6 +195,17 @@ def _reset_state_after_submit(agent_state: AgentState, memory, ticket: dict, db_
 # 提单就绪判定（服务端唯一真相，不信任 LLM 自评）
 # ============================================================
 
+def _canonical_field_key(key: str) -> str:
+    """项目名称 key 归一化：project_name / projectName / projectname → project。
+
+    collected_info 合并时已把这几个变体归一化为 project（_apply_state_update），
+    required_fields 的写入与 readiness 判定必须用同一映射，否则 LLM 声明
+    required_fields={'project_name'} 时 collected_info 里只有 project，永远判缺，
+    造成"用户反复给项目名却一直追着问"的鬼打墙。
+    """
+    return "project" if key in ("project_name", "projectName", "projectname") else key
+
+
 # 鬼打墙防护：诊断/收集轮次上限
 _MAX_DIAGNOSIS_ROUNDS = 6   # 诊断超过此轮数 → prompt 提示 LLM 收尾或建议转工单
 _MAX_COLLECT_ROUNDS = 4     # 工单填写超过此轮数仍不齐 → 强制提单（project 缺则用"摇人吧服务号提单"兜底）
@@ -215,7 +226,7 @@ def _assess_ticket_readiness(state: AgentState) -> tuple[bool, list[str]]:
     if not has_project:
         missing.append("项目名称")
     for field_key, label in (state.required_fields or {}).items():
-        if not (state.collected_info.get(field_key) or "").strip():
+        if not (state.collected_info.get(_canonical_field_key(field_key)) or "").strip():
             missing.append(label)
     return (not missing, missing)
 
@@ -254,6 +265,18 @@ def _log_ticket_state(state: AgentState, event: str, **extra) -> None:
     info.update(extra)
     parts = " ".join(f"{k}={v}" for k, v in info.items())
     logger.info(f"[ticket_state] {parts}")
+
+
+# 对话单条 turn 进 prompt 的最大字符数：图片描述等长文本原样塞入会把 prompt
+# 撑到 2 万+ 字符，思考型 LLM 首 token 延迟飙升。截断只影响长度，不丢关键信息。
+_CONV_TURN_MAX_CHARS = 400
+
+
+def _truncate_turn(content) -> str:
+    c = (content or "").strip()
+    if len(c) > _CONV_TURN_MAX_CHARS:
+        return c[:_CONV_TURN_MAX_CHARS] + "…（已截断）"
+    return c
 
 
 async def _generate_title(llm_client, memory) -> str:
@@ -458,7 +481,9 @@ project 不用写在 required_fields 里（系统强制要求）。
 ```json
 {{"action":"answer|ask|submit","intent":"howto|troubleshoot|chat","state_update":{{"ticket_type":"problem|bug|feature|support|other","problem_summary":"概述","ruled_out":[],"hypotheses":[],"collected_info":{{}},"ticket_ready":false}}}}
 ```
-JSON 之后直接写回复。语气像工程师。引用图片时用 ![说明](url) 格式。"""
+JSON 之后直接写回复。语气像工程师。引用图片时用 ![说明](url) 格式。
+回复正文不超过 300 字（图片引用不计入字数）：先给结论，再给 1-3 条最关键的操作步骤，不重复知识库原文、不写长段分析和铺垫。
+⚠️ 图片引用（![说明](url)）**绝不能省略**：知识库里有相关截图/示意图时，每张都必须原样保留在回复中（操作步骤贴图、产品介绍配图），图片是用户定位和操作的关键，省图片不等于省字数。"""
 
 
 # ============================================================
@@ -691,9 +716,10 @@ class AiDiagnosisPlatform:
             fields = "、".join(state.ticket_collecting)
             collected_summary = "、".join(f"{k}={v}" for k, v in state.collected_info.items() if v) or "（暂无）"
             # 如果有自定义 required_fields，把 field_key→label 映射也告诉 LLM
+            # （key 已用 _canonical_field_key 归一化，_assess_ticket_readiness 按同一 key 判定）
             field_map_hint = ""
             if state.required_fields:
-                fm = "；".join(f"{k}→{label}" for k, label in state.required_fields.items())
+                fm = "；".join(f"{_canonical_field_key(k)}→{label}" for k, label in state.required_fields.items())
                 field_map_hint = f"\n字段映射（写入 collected_info 时用左边 key）：{fm}"
             ticket_collecting_context = (
                 f"⚠️ 当前处于**工单填写模式**，请不要再排查故障。\n"
@@ -778,7 +804,10 @@ class AiDiagnosisPlatform:
         if "required_fields" in state_update:
             rf = state_update["required_fields"]
             if isinstance(rf, dict) and rf:
-                state.required_fields = {k: str(v) for k, v in rf.items() if k and v}
+                state.required_fields = {
+                    _canonical_field_key(k): str(v) for k, v in rf.items()
+                    if k and v
+                }
                 logger.info(f"[state] LLM 设 required_fields={state.required_fields}")
         if "problem_summary" in state_update:
             new_ps = (state_update["problem_summary"] or "").strip()
@@ -914,7 +943,9 @@ class AiDiagnosisPlatform:
         if _existing.get("required_fields"):
             state.required_fields = _existing["required_fields"]
         if _existing.get("collect_rounds"):
-            state.collect_rounds = _existing["collect_rounds"]
+            # 取 max：阻塞路径的 +1（ticket_collecting 每轮递增）必须先落盘才进 _finalize_diagnosis，
+            # 否则这里会被内存里的旧值覆盖，collect_rounds 永远卡住、强制提单安全阀不触发。
+            state.collect_rounds = max(state.collect_rounds, _existing["collect_rounds"])
         _save_agent_state(memory, state)
         await self._memory_manager.save_memory(memory)
 
@@ -1210,8 +1241,8 @@ class AiDiagnosisPlatform:
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
             data = json.loads(clean)
             filled = []
-            # 只接受 required_fields 中定义的 key + project
-            valid_keys = set(rf.keys())
+            # 只接受 required_fields 中定义的 key + project（key 用同一归一化，防 project_name 变体判缺）
+            valid_keys = set(_canonical_field_key(k) for k in rf.keys())
             valid_keys.add("project")
             valid_aliases = {"project_name", "projectName", "projectname"}
             for k, v in data.items():
@@ -1276,10 +1307,10 @@ class AiDiagnosisPlatform:
                 # 不再用固定词表限制——LLM 根据问题类型自主选字段，
                 # 只做基本合理性过滤（key 长度、value 简短标签、非空、不重复收集）
                 agent_state.required_fields = {
-                    k: str(v)[:20] for k, v in rf.items()
+                    _canonical_field_key(k): str(v)[:20] for k, v in rf.items()
                     if str(v).strip()
                     and len(str(k)) <= 40
-                    and not (agent_state.collected_info.get(k) or "").strip()
+                    and not (agent_state.collected_info.get(_canonical_field_key(k)) or "").strip()
                 }
             logger.info(f"[decide_fields] type={agent_state.ticket_type} "
                         f"required={agent_state.required_fields} session={session_id}")
@@ -1670,11 +1701,16 @@ class AiDiagnosisPlatform:
         """只取最近 N 条，避免长对话撑大 prompt。
 
         from_turn：从该 turn 索引开始（默认 0=全部）。诊断 prompt 传 context_start，
-        让 LLM 只看提单后的新对话，防止它从旧对话重新提炼已提交的问题、绕过闭环保护。"""
+        让 LLM 只看提单后的新对话，防止它从旧对话重新提炼已提交的问题、绕过闭环保护。
+
+        每条 turn 内容超过 _CONV_TURN_MAX_CHARS 时截断：图片描述等长文本
+        （VLM 输出 ~3000 字）原样塞入会把 prompt 撑到 2 万+ 字符，
+        思考型 LLM 首 token 延迟从 ~2s 飙到 13s+（图片+文字场景明显卡顿）。
+        """
         turns = memory.turns[from_turn:]
         turns = turns[-max_turns:] if len(turns) > max_turns else turns
         formatted = "\n".join(
-            f"{'用户' if t['role'] == 'user' else '助手'}：{t['content']}"
+            f"{'用户' if t['role'] == 'user' else '助手'}：{_truncate_turn(t['content'])}"
             for t in turns
         )
         image_turns = [
