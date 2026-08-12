@@ -39,10 +39,16 @@ class RerankerClient:
                         model_path = str(local.resolve())
 
                     try:
-                        self._model = CrossEncoder(
-                            model_path,
-                            device=self.device,
-                            max_length=self.max_length,
+                        # 模型加载慢（数秒），放线程池执行：否则持锁期间阻塞事件循环，
+                        # 并发 retrieve_domain 排队等锁 → 整个循环卡死、SSE 中断。
+                        loop = asyncio.get_event_loop()
+                        self._model = await loop.run_in_executor(
+                            None,
+                            lambda: CrossEncoder(
+                                model_path,
+                                device=self.device,
+                                max_length=self.max_length,
+                            ),
                         )
                     except Exception as e:
                         raise EmbeddingError(f"Reranker 模型加载失败: {str(e)}")

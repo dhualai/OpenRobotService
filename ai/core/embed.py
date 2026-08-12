@@ -81,7 +81,14 @@ class EmbedClient:
                         model_path = str(local.resolve())
 
                     try:
-                        self._model = SentenceTransformer(model_path, device=self.device)
+                        # 模型加载很慢（数秒），必须放到线程池，否则持锁期间阻塞事件循环：
+                        # 三路并发 retrieve_domain 的 embed() 会排队等这把锁，整个循环卡死，
+                        # SSE 流中断、前端永远「思考中」。
+                        loop = asyncio.get_event_loop()
+                        self._model = await loop.run_in_executor(
+                            None,
+                            lambda: SentenceTransformer(model_path, device=self.device),
+                        )
                     except Exception as e:
                         raise EmbeddingError(f"模型加载失败: {str(e)}")
         return self._model
