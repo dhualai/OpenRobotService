@@ -222,6 +222,9 @@ def upsert_task(ticket: dict, created_by: str = "") -> Task:
         db.refresh(rec)
         # 写入操作日志：创建工单 + 初始状态变更（source='ai' 的工单也补日志）
         _log_task_creation(db, rec, created_by)
+        # _log_task_creation 内部的 commit 会过期 rec 的属性，需先 refresh 再 expunge，
+        # 否则返回后调用方访问 record.id 会触发 DetachedInstanceError（首次提单报错、二次成功）
+        db.refresh(rec)
         db.expunge(rec)  # 脱离 session，避免返回后 DetachedInstanceError
         return rec
     finally:
