@@ -31,7 +31,7 @@ const OperationLogsPage: React.FC = () => {
   return (
     <div className="operation-logs-page">
       <Navbar
-        title="工单流转记录"
+        title="工单动态"
         leftArrow
         onLeftClick={() => navigate(-1)}
       />

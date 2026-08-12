@@ -87,16 +87,28 @@ export function buildWechatAuthUrl(state: string): string {
 
 export function formatDateTime(dateString: string): string {
   if (!dateString) return '';
-  const date = new Date(dateString);
-  if (isNaN(date.getTime())) return '';
-  return date.toLocaleString('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const d = new Date(dateString);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** 统一日期时间格式：「2026/08/12 09:37」，24h 制 */
+export function formatDateTimeShort(dateString: string): string {
+  if (!dateString) return '';
+  const d = new Date(dateString);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** 最晚解决时间选择器值：有值用原值，无值默认当天 9:00（格式 YYYY-MM-DD HH:00） */
+export function deadlinePickerValue(iso?: string): string {
+  const d = iso ? new Date(iso) : new Date();
+  if (iso && isNaN(d.getTime())) return '';
+  if (!iso) d.setHours(9, 0, 0, 0);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:00`;
 }
 
 export function formatTime(dateString: string): string {

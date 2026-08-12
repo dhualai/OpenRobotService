@@ -8,7 +8,7 @@ interface OperationTimelineProps {
   loading?: boolean;
 }
 
-// 状态映射
+// 状态中文映射
 const STATUS_MAP: Record<string, string> = {
   new: '新建',
   in_progress: '处理中',
@@ -16,6 +16,18 @@ const STATUS_MAP: Record<string, string> = {
   resolved: '已解决',
   canceled: '已取消',
   closed: '已关闭',
+  initial: '初始状态',
+};
+
+// 状态颜色映射
+const STATUS_COLOR: Record<string, string> = {
+  new: '#3b82f6',        // 蓝色 - 新建
+  in_progress: '#f59e0b', // 橙色 - 处理中
+  pending: '#6b7280',     // 灰色 - 待处理
+  resolved: '#10b981',    // 绿色 - 已解决
+  canceled: '#ef4444',    // 红色 - 已取消
+  closed: '#4b5563',      // 深灰 - 已关闭
+  initial: '#9ca3af',
 };
 
 // 操作类型标签映射
@@ -33,7 +45,7 @@ const OP_TYPE_LABEL: Record<OperationType, string> = {
   ai_assign: 'AI派单',
 };
 
-// 操作类型图标/颜色
+// 操作类型图标
 const OP_TYPE_STYLE: Record<OperationType, { color: string; icon: string }> = {
   create: { color: '#0052D9', icon: '📋' },
   status_change: { color: '#ED7B2F', icon: '🔄' },
@@ -71,37 +83,36 @@ interface TimelineGroup {
 
 /**
  * 构建时间线分组
- * 按 to_status 非空的记录作为主节点（状态变更），其余归入对应状态分组
+ * logs 按时间倒序（最新在前）。
+ * 状态变更(status_change)作为主节点，其后的操作（时间更新）归入该状态分组。
  */
 const buildTimelineGroups = (logs: OperationLog[]): TimelineGroup[] => {
   if (!logs.length) return [];
 
   const groups: TimelineGroup[] = [];
-  let currentGroup: TimelineGroup | null = null;
+  let pendingChildren: OperationLog[] = [];
 
   for (const log of logs) {
     if (log.operation_type === 'status_change' && log.to_status) {
-      // 新的主节点（状态变更）
-      currentGroup = {
+      groups.push({
         status: log.to_status,
         statusTime: log.created_at,
         triggerOperator: log.operator_name || log.operator,
-        children: [],
-      };
-      groups.push(currentGroup);
-    } else if (currentGroup) {
-      // 归入当前状态分组
-      currentGroup.children.push(log);
+        children: pendingChildren,
+      });
+      pendingChildren = [];
     } else {
-      // 在第一个状态变更前的操作，创建一个"初始"分组
-      currentGroup = {
-        status: 'initial',
-        statusTime: log.created_at,
-        triggerOperator: log.operator_name || log.operator,
-        children: [log],
-      };
-      groups.push(currentGroup);
+      pendingChildren.push(log);
     }
+  }
+
+  if (pendingChildren.length && !groups.length) {
+    groups.push({
+      status: 'initial',
+      statusTime: pendingChildren[0]?.created_at || '',
+      triggerOperator: '',
+      children: pendingChildren,
+    });
   }
 
   return groups;
@@ -128,55 +139,86 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
 
   return (
     <div className="op-timeline">
-      {groups.map((group, groupIdx) => (
-        <div className="op-timeline__group" key={groupIdx}>
-          {/* 主节点：状态变更 */}
-          <div className="op-timeline__main">
-            <div className="op-timeline__dot op-timeline__dot--main" />
-            <div className="op-timeline__content">
-              <div className="op-timeline__header">
-                <span className="op-timeline__status">
-                  {group.status === 'initial' ? '初始状态' : STATUS_MAP[group.status] || group.status}
-                </span>
-                <span className="op-timeline__time">{formatTime(group.statusTime)}</span>
+      {groups.map((group, idx) => {
+        const color = STATUS_COLOR[group.status] || '#9ca3af';
+        const statusLabel = STATUS_MAP[group.status] || group.status;
+        const isLatest = idx === 0;
+        // 下一个状态（时间更旧，即此状态结束后转入的状态）；倒序中 idx+1 是时间更旧的
+        const prevGroup = idx < groups.length - 1 ? groups[idx + 1] : null;
+
+        return (
+          <div className="op-segment" key={idx}>
+            {/* 左侧彩色状态条 + 两端圆点 */}
+            <div className="op-segment__track">
+              {/* 顶部圆点（状态起点） */}
+              <div className="op-segment__dot op-segment__dot--start" style={{ backgroundColor: color, borderColor: color }} />
+              {/* 彩色条主体（两端圆点之间） */}
+              <div className="op-segment__bar" style={{ backgroundColor: color }} />
+              {/* 底部圆点（状态终点） */}
+              <div className="op-segment__dot op-segment__dot--end" style={{ backgroundColor: color, borderColor: color }} />
+            </div>
+
+            {/* 右侧内容区 */}
+            <div className="op-segment__content">
+              {/* 状态起点：状态名 + 时间 + 操作人 */}
+              <div className="op-segment__start">
+                <div className="op-segment__start-row">
+                  <span className="op-segment__status" style={{ color }}>
+                    {statusLabel}
+                  </span>
+                  <span className="op-segment__time">{formatTime(group.statusTime)}</span>
+                </div>
+                {group.triggerOperator && (
+                  <div className="op-segment__operator">由 {group.triggerOperator} 操作</div>
+                )}
               </div>
-              {group.triggerOperator && (
-                <div className="op-timeline__operator">
-                  {group.triggerOperator}
+
+              {/* 子节点操作 */}
+              {group.children.length > 0 && (
+                <div className="op-segment__children">
+                  {group.children.map((log) => {
+                    const style = OP_TYPE_STYLE[log.operation_type];
+                    return (
+                      <div className="op-segment__sub" key={log.id}>
+                        <div className="op-segment__sub-dot" style={{ borderColor: style.color }}>
+                          <span className="op-segment__sub-icon">{style.icon}</span>
+                        </div>
+                        <div className="op-segment__sub-content">
+                          <div className="op-segment__action">
+                            {log.description || `${OP_TYPE_LABEL[log.operation_type]}操作`}
+                          </div>
+                          <div className="op-segment__sub-meta">
+                            <span className="op-segment__time">{formatTime(log.created_at)}</span>
+                            {log.operator_name && (
+                              <span className="op-segment__sub-operator">{log.operator_name}</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
+
+              {/* 状态终点提示：再次显示状态名 */}
+              <div className="op-segment__end">
+                {isLatest ? (
+                  <div className="op-segment__end-current">
+                    <span className="op-segment__end-status">「{statusLabel}」</span>
+                    <span>持续至今</span>
+                  </div>
+                ) : prevGroup ? (
+                  <div className="op-segment__end-next">
+                    <span className="op-segment__end-status">「{statusLabel}」</span>
+                    <span>结束，转入「{STATUS_MAP[prevGroup.status] || prevGroup.status}」</span>
+                    <span className="op-segment__end-time"> {formatTime(prevGroup.statusTime)}</span>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
-
-          {/* 子节点：该状态下的操作 */}
-          {group.children.map((log) => {
-            const style = OP_TYPE_STYLE[log.operation_type];
-            return (
-              <div className="op-timeline__sub" key={log.id}>
-                <div className="op-timeline__dot op-timeline__dot--sub" style={{ borderColor: style.color }}>
-                  <span className="op-timeline__icon">{style.icon}</span>
-                </div>
-                <div className="op-timeline__content">
-                  <div className="op-timeline__action">
-                    {log.description || `${OP_TYPE_LABEL[log.operation_type]}操作`}
-                  </div>
-                  <div className="op-timeline__meta">
-                    <span className="op-timeline__time">{formatTime(log.created_at)}</span>
-                    {log.operator_name && (
-                      <span className="op-timeline__operator">{log.operator_name}</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-
-          {/* 连接线（最后一个分组不需要） */}
-          {groupIdx < groups.length - 1 && (
-            <div className="op-timeline__connector" />
-          )}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 };
