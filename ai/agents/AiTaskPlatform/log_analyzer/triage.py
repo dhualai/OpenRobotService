@@ -15,10 +15,11 @@
   - 信号关键词/场景规则**不写死**，而是从手册动态提取；无手册时才用内置通用启发式兜底。
   - 这样将来加"服务号日志分析"只需写好新模块手册，无需改本文件逻辑。
 
-手册加载优先级（本地当前确定走"读 .md 文件路径"这一条）：
-  1. 显式传入 manual_dir（本次调用指定）
-  2. DOCS_PATH（.env）下的 task_agent/ 或 log_manual/ 目录
-  3. 代码目录 log_manual/（log_analyzer/log_manual）
+手册加载优先级（多产品 LOG_MANUALS 为唯一产品手册来源）:
+  1. 多产品注册表 LOG_MANUALS：按日志路径命中产品 → 服务器优先/本地兜底（product_registry）
+  2. 显式传入 manual_dir
+  3. DOCS_PATH 下的 task_agent/ 目录
+  4. 代码目录内置 log_manual/（离线兜底，非产品手册）
   （将来手册入库 Qdrant 后，可加一个 ManualSource 抽象插拔，见 ManualProvider）
 """
 
@@ -65,8 +66,8 @@ class ManualGuide:
     _OVERVIEW_FILE = "USP平台完整架构与日志分析总览.md"
 
     def __init__(self, manual_dir: Optional[str] = None, log_path: str = ""):
-        self.manual_dir = self._resolve_dir(manual_dir)
         self.log_path = log_path or ""
+        self.manual_dir = self._resolve_dir(manual_dir, self.log_path)
         self.signals: List[Dict] = []      # [{name, keywords, weight, source}]
         self.scenarios: List[Dict] = []    # [{title, keywords, steps}]
         self.normal_timeline: List[str] = []  # 正常流程日志串
@@ -75,25 +76,26 @@ class ManualGuide:
         if self.manual_dir:
             self._parse_and_route()
 
-    # ── 目录解析（本地默认 D:\CodeHub\Algorithm\日志分析指南）──
+    # ── 目录解析（多产品注册表：服务器优先、本地兜底；再回退代码内置兜底）──
     @staticmethod
-    def _resolve_dir(manual_dir: Optional[str]) -> Optional[str]:
+    def _resolve_dir(manual_dir: Optional[str], log_path: str = "") -> Optional[str]:
+        # 0. 多产品注册表：按日志路径命中产品 → 服务器优先/本地兜底（唯一产品手册来源）
+        from ai.agents.AiTaskPlatform.product_registry import pick_manual_dir
+        _reg = pick_manual_dir(log_path)
+        if _reg:
+            return _reg
+
         candidates = []
         # 1. 显式传入
         if manual_dir:
             candidates.append(manual_dir)
-        # 2. 配置 log_manual_dir（LOG_MANUAL_DIR 环境变量）
+        # 2. docs_path/task_agent
         from ai.config import get_ai_config
         _cfg = get_ai_config()
-        if _cfg.log_manual_dir:
-            candidates.append(_cfg.log_manual_dir)
-        # 3. docs_path/task_agent
         if _cfg.docs_path:
             candidates.append(str(Path(_cfg.docs_path) / "task_agent"))
-        # 4. 代码目录 log_manual
+        # 3. 代码目录内置 log_manual（离线兜底，非产品手册）
         candidates.append(str(Path(__file__).parent / "log_manual"))
-        # 5. 本地默认（手册当前整理地）
-        candidates.append(r"D:\CodeHub\Algorithm\日志分析指南")
 
         for c in candidates:
             if c and Path(c).is_dir():
