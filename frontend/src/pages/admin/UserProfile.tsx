@@ -3,8 +3,9 @@
 // 但用户此前从未设置过 name。本页提供自助修改昵称/头像的入口；首次进入（name 为空）时弹窗提示设置。
 // 头像字段策略：进入页面时 /auth/me 返回的头像 id 不再覆盖 store（与登录/刷新时 fetchUserDetails 同源），
 // 避免接口偶发缺字段时把已显示的头像清成上传图标（本次修复根因之一见 backend/app/core/auth_service.py）。
-// 个人中心可编辑字段：姓名 / 公司 / 部门 / USP 密码。
-// username 为系统内用户标识，只读展示；USP 账号根据姓名拼音自动生成（只读）；USP 密码以哈希存储，前端不回显，留空表示不修改。
+// 个人中心可编辑字段：姓名（必填）/ 公司（选填）/ 部门（选填）/ USP 密码（已设置则选填，未设置则必填）/ 确认密码（同上）。
+// username 为系统内用户标识，只读展示；USP 账号根据姓名拼音自动生成（只读）；USP 密码以哈希存储，前端不回显。
+// 后端返回 external_credentials.usp.password 为 "-" 哨兵表示已设置密码，前端据此判断是否必填。
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Input, Button, Dialog, Toast, Popup } from 'tdesign-mobile-react';
@@ -43,10 +44,12 @@ export default function UserProfile() {
   const [companyDraft, setCompanyDraft] = useState('');
   const [departmentDraft, setDepartmentDraft] = useState('');
   const [uspUsernameDraft, setUspUsernameDraft] = useState('');
-  // USP 密码：仅用于「设置新密码」，留空表示不修改；后端存储的是哈希，前端不回显
+  // USP 密码：已设置时后端返回 "-" 哨兵（选填，留空则保留原密码），未设置时需必填
   const [uspPasswordDraft, setUspPasswordDraft] = useState('');
   // USP 密码确认：需与密码一致
   const [uspPasswordConfirmDraft, setUspPasswordConfirmDraft] = useState('');
+  // USP 密码是否已设置（后端返回 "-" 哨兵则为 true）
+  const [hasUspPassword, setHasUspPassword] = useState(false);
 
   // 公司/部门下拉可选项（来自 users 表去重值，点「添加」可自定义新值）
   const [companyOptions, setCompanyOptions] = useState<string[]>([]);
@@ -81,6 +84,8 @@ export default function UserProfile() {
           department: profile.department || '',
           uspUsername: profile.external_credentials?.usp?.username || '',
         };
+        // 后端返回 "-" 哨兵表示已设置 USP 密码
+        setHasUspPassword(profile.external_credentials?.usp?.password === '-');
         setOriginal(snapshot);
         setNameDraft(snapshot.name);
         setCompanyDraft(snapshot.company);
@@ -177,9 +182,10 @@ export default function UserProfile() {
       return;
     }
 
-    // USP 密码强度校验：留空表示不修改，填了则需满足强度要求
+    // USP 密码校验：已设置密码时选填（留空则保留原密码），未设置时必填
     const hasNewPassword = !!uspPasswordDraft;
     if (hasNewPassword) {
+      // 填了新密码 → 强度校验 + 一致性校验
       if (uspPasswordDraft.length < 8) {
         Toast({ message: '密码至少8位，至少包括字母、数字、特殊字符', theme: 'error' });
         return;
@@ -188,10 +194,18 @@ export default function UserProfile() {
         Toast({ message: '密码至少8位，至少包括字母、数字、特殊字符', theme: 'error' });
         return;
       }
+      if (!uspPasswordConfirmDraft) {
+        Toast({ message: '请再次输入新密码', theme: 'error' });
+        return;
+      }
       if (uspPasswordDraft !== uspPasswordConfirmDraft) {
         Toast({ message: '两次输入的密码不一致', theme: 'error' });
         return;
       }
+    } else if (!hasUspPassword) {
+      // 未设置过密码且未填 → 必填
+      Toast({ message: '请输入 USP 密码', theme: 'error' });
+      return;
     }
 
     // 仅发送有变更的字段
@@ -238,7 +252,7 @@ export default function UserProfile() {
     } finally {
       setSaving(false);
     }
-  }, [nameDraft, companyDraft, departmentDraft, uspUsernameDraft, uspPasswordDraft, uspPasswordConfirmDraft, original, username, name, setProfile, isDirty, navigate]);
+  }, [nameDraft, companyDraft, departmentDraft, uspUsernameDraft, uspPasswordDraft, uspPasswordConfirmDraft, original, username, name, setProfile, isDirty, navigate, hasUspPassword]);
 
   const handleUploadAvatar = useCallback(
     async (file: File): Promise<{ status: 'success' | 'fail'; response: { url?: string } }> => {
@@ -356,7 +370,7 @@ export default function UserProfile() {
           <div style={{ fontSize: 14, color: '#333' }}>{loading ? '加载中...' : username}</div>
         </Field>
 
-        <Field label="姓名">
+        <Field label="姓名" required>
           <ClearableInput
             value={nameDraft}
             onChange={(v) => setNameDraft(String(v))}
@@ -366,7 +380,7 @@ export default function UserProfile() {
           />
         </Field>
 
-        <Field label="公司">
+        <Field label="公司" hint="选填">
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <select
               value={companyDraft}
@@ -392,7 +406,7 @@ export default function UserProfile() {
           </div>
         </Field>
 
-        <Field label="部门">
+        <Field label="部门" hint="选填">
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <select
               value={departmentDraft}
@@ -434,21 +448,23 @@ export default function UserProfile() {
           />
         </Field>
 
-        <Field label="USP 密码" hint="至少8位，含字母、数字、特殊字符">
+        <Field label="USP 密码" hint="至少8位，含字母、数字、特殊字符" required={!hasUspPassword}>
           <ClearableInput
             value={uspPasswordDraft}
             onChange={(v) => setUspPasswordDraft(String(v))}
-            placeholder="留空则不修改"
+            placeholder={hasUspPassword ? '留空则不修改' : '请输入 USP 密码'}
             type="password"
+            passwordToggle
           />
         </Field>
 
-        <Field label="确认密码">
+        <Field label="确认密码" required={!hasUspPassword}>
           <ClearableInput
             value={uspPasswordConfirmDraft}
             onChange={(v) => setUspPasswordConfirmDraft(String(v))}
-            placeholder="再次输入新密码"
+            placeholder={hasUspPassword ? '留空则不修改' : '请再次输入新密码'}
             type="password"
+            passwordToggle
           />
         </Field>
       </div>
@@ -503,15 +519,18 @@ export default function UserProfile() {
 function Field({
   label,
   hint,
+  required,
   children,
 }: {
   label: string;
   hint?: string;
+  required?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 6 }}>
+        {required && <span style={{ fontSize: 12, color: '#e34d59', lineHeight: 1 }}>*</span>}
         <span style={{ fontSize: 12, color: '#999' }}>{label}</span>
         {hint && <span style={{ fontSize: 11, color: '#bbb' }}>({hint})</span>}
       </div>
