@@ -639,7 +639,10 @@ async def _upload_events(
         memory = await mgr.get_memory(session_id)
         state = memory.metadata.get("agent_state", {}) or {}
         existing = state.get("attachments", [])
-        state["attachments"] = existing + saved
+        # 去重：按 object_path + filename 去重，避免同一文件重复上传/多次提单累积冗余
+        _seen = {(a.get("object_path"), a.get("filename")) for a in existing if isinstance(a, dict)}
+        _new = [s for s in saved if (s.get("object_path"), s.get("filename")) not in _seen]
+        state["attachments"] = existing + _new
         if image_desc:
             ci = state.get("collected_info", {}) or {}
             prev = ci.get("image_description", "")
