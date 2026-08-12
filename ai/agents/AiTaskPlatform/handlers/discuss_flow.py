@@ -36,7 +36,7 @@ class DiscussFlow:
         discussion_history = "\n".join(discussion_lines) if discussion_lines else "（暂无讨论）"
 
         # 3. 按需调附件分析 / 历史工单（日志和图片各自独立触发）
-        from ai.agents.AiTaskPlatform import rules as _rules
+        from ai.agents.AiTaskPlatform.retrieval import rules as _rules
         from ai.agents.AiTaskPlatform.contexts import build_img_ctx, build_task_ctx
 
         facultative = ""
