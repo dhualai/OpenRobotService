@@ -929,7 +929,9 @@ class AiDiagnosisPlatform:
         if _existing.get("required_fields"):
             state.required_fields = _existing["required_fields"]
         if _existing.get("collect_rounds"):
-            state.collect_rounds = _existing["collect_rounds"]
+            # 取 max：阻塞路径的 +1（ticket_collecting 每轮递增）必须先落盘才进 _finalize_diagnosis，
+            # 否则这里会被内存里的旧值覆盖，collect_rounds 永远卡住、强制提单安全阀不触发。
+            state.collect_rounds = max(state.collect_rounds, _existing["collect_rounds"])
         _save_agent_state(memory, state)
         await self._memory_manager.save_memory(memory)
 
