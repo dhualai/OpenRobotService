@@ -267,6 +267,18 @@ def _log_ticket_state(state: AgentState, event: str, **extra) -> None:
     logger.info(f"[ticket_state] {parts}")
 
 
+# 对话单条 turn 进 prompt 的最大字符数：图片描述等长文本原样塞入会把 prompt
+# 撑到 2 万+ 字符，思考型 LLM 首 token 延迟飙升。截断只影响长度，不丢关键信息。
+_CONV_TURN_MAX_CHARS = 400
+
+
+def _truncate_turn(content) -> str:
+    c = (content or "").strip()
+    if len(c) > _CONV_TURN_MAX_CHARS:
+        return c[:_CONV_TURN_MAX_CHARS] + "…（已截断）"
+    return c
+
+
 async def _generate_title(llm_client, memory) -> str:
     """第2轮对话结束后，用前两轮对话生成会话标题（中文不超过15字，英文不超过50字符）"""
     turns = memory.turns
@@ -469,7 +481,9 @@ project 不用写在 required_fields 里（系统强制要求）。
 ```json
 {{"action":"answer|ask|submit","intent":"howto|troubleshoot|chat","state_update":{{"ticket_type":"problem|bug|feature|support|other","problem_summary":"概述","ruled_out":[],"hypotheses":[],"collected_info":{{}},"ticket_ready":false}}}}
 ```
-JSON 之后直接写回复。语气像工程师。引用图片时用 ![说明](url) 格式。"""
+JSON 之后直接写回复。语气像工程师。引用图片时用 ![说明](url) 格式。
+回复正文不超过 300 字（图片引用不计入字数）：先给结论，再给 1-3 条最关键的操作步骤，不重复知识库原文、不写长段分析和铺垫。
+⚠️ 图片引用（![说明](url)）**绝不能省略**：知识库里有相关截图/示意图时，每张都必须原样保留在回复中（操作步骤贴图、产品介绍配图），图片是用户定位和操作的关键，省图片不等于省字数。"""
 
 
 # ============================================================
@@ -1687,11 +1701,16 @@ class AiDiagnosisPlatform:
         """只取最近 N 条，避免长对话撑大 prompt。
 
         from_turn：从该 turn 索引开始（默认 0=全部）。诊断 prompt 传 context_start，
-        让 LLM 只看提单后的新对话，防止它从旧对话重新提炼已提交的问题、绕过闭环保护。"""
+        让 LLM 只看提单后的新对话，防止它从旧对话重新提炼已提交的问题、绕过闭环保护。
+
+        每条 turn 内容超过 _CONV_TURN_MAX_CHARS 时截断：图片描述等长文本
+        （VLM 输出 ~3000 字）原样塞入会把 prompt 撑到 2 万+ 字符，
+        思考型 LLM 首 token 延迟从 ~2s 飙到 13s+（图片+文字场景明显卡顿）。
+        """
         turns = memory.turns[from_turn:]
         turns = turns[-max_turns:] if len(turns) > max_turns else turns
         formatted = "\n".join(
-            f"{'用户' if t['role'] == 'user' else '助手'}：{t['content']}"
+            f"{'用户' if t['role'] == 'user' else '助手'}：{_truncate_turn(t['content'])}"
             for t in turns
         )
         image_turns = [
