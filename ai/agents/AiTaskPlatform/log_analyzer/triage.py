@@ -388,9 +388,28 @@ def _minute_end(minute: str) -> str:
 
 
 def _top_errors(idx: LogIndex, top_n: int = 8) -> List[Dict]:
-    """高频 error_code 统计（非 ERROR 级别的信号也在 _err_idx 里）。"""
-    ranked = sorted(idx._err_idx.items(), key=lambda kv: -len(kv[1]))[:top_n]
-    return [{"code": c, "count": len(lines)} for c, lines in ranked]
+    """自主发现的高频真实错误短语，**ERROR 优先于 WARNING**。
+
+    方法论（用户要求）: 若日志存在 ERROR，优先呈现/定位 ERROR（含 Traceback 展开如
+    TimeoutError）；仅当 ERROR 不存在或不足以定位时才以 WARNING 为主信号。
+
+    返回: {"primary": [...], "warning": [...]}，primary 为 ERROR 或(WARNING 兜底)。
+    """
+    err_ph = idx._err_phrase_err
+    warn_ph = idx._err_phrase_warn
+
+    def _top(d, n):
+        ranked = sorted(d.items(), key=lambda kv: -kv[1])[:n]
+        return [{"code": c, "count": v} for c, v in ranked]
+
+    err_top = _top(err_ph, top_n)
+    warn_top = _top(warn_ph, top_n)
+    if err_top:
+        # 存在 ERROR：primary=ERROR，WARNING 作为补充
+        return {"primary": err_top, "warning": warn_top, "has_error": True}
+    # 无 ERROR：退而用 WARNING
+    w = _top(warn_ph or idx._err_phrase, top_n)
+    return {"primary": w, "warning": [], "has_error": False}
 
 
 def _level_distribution(idx: LogIndex) -> Dict:
