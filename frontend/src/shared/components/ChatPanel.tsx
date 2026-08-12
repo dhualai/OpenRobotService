@@ -1384,14 +1384,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const fileList = e.target.files;
+    // 必须先 Array.from 快照：e.target.files 是活的 FileList，e.target.value='' 清空后 FileList 也变空
+    // （讨论区 handleSelectFile 同理：先 Array.from 再清 value）
+    const fileArr = Array.from(e.target.files || []);
     e.target.value = '';
-    if (!fileList || fileList.length === 0) return;
+    if (fileArr.length === 0) return;
     // 逐个校验大小 + 图片压缩，收集通过的新文件
     const accepted: File[] = [];
     const newImageUrls: string[] = [];
-    for (let i = 0; i < fileList.length; i++) {
-      const file = fileList[i];
+    for (const file of fileArr) {
       if (file.size > MAX_FILE_SIZE) {
         const mb = (file.size / 1024 / 1024).toFixed(1);
         Toast({ message: `「${file.name}」(${mb}MB) 超过 100MB 上限，请压缩或拆分后重试`, theme: 'error' });
