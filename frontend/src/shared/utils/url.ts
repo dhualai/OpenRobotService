@@ -99,15 +99,13 @@ export function formatDateTime(dateString: string): string {
   });
 }
 
-/** 精简日期时间：当年「08-12 09:00」，跨年「2026-08-12 09:00」（具体到小时分钟） */
+/** 统一日期时间格式：「2026/08/12 09:37」，24h 制 */
 export function formatDateTimeShort(dateString: string): string {
   if (!dateString) return '';
   const d = new Date(dateString);
   if (isNaN(d.getTime())) return '';
   const pad = (n: number) => String(n).padStart(2, '0');
-  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  return d.getFullYear() === new Date().getFullYear() ? `${md} ${hm}` : `${d.getFullYear()}-${md} ${hm}`;
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /** 最晚解决时间选择器值：有值用原值，无值默认当天 9:00（格式 YYYY-MM-DD HH:00） */
