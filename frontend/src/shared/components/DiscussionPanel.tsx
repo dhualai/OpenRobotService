@@ -8,7 +8,7 @@ import { useState, useRef, useEffect, useMemo, useCallback, Fragment } from 'rea
 import { Button, Toast, Popover } from 'tdesign-mobile-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
-import ForwardToWechatDialog from '@/shared/components/ForwardToWechatDialog';
+
 import { useAuthStore } from '@/stores/auth';
 import API_CONFIG from '@/config/api';
 import { avatarUrl } from '@/api/profile';
@@ -199,8 +199,6 @@ export default function DiscussionPanel({
   // 长按操作菜单：{ 评论, 气泡定位矩形 }
   const [menu, setMenu] = useState<{ comment: DiscussionComment; rect: DOMRect } | null>(null);
   const longPressTimer = useRef<number | null>(null);
-  // 转发到微信弹窗的目标评论
-  const [forwardComment, setForwardComment] = useState<DiscussionComment | null>(null);
   // 长按后抑制紧随的 click（避免误触容器诊断链接等）
   const suppressClickRef = useRef(false);
 
@@ -511,16 +509,6 @@ export default function DiscussionPanel({
       Toast({ message: `删除失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     }
   };
-  const handleForwardToWechat = () => {
-    if (!menu) return;
-    if (taskId === undefined) {
-      Toast({ message: '该讨论区未启用转发到微信', theme: 'warning' });
-      setMenu(null);
-      return;
-    }
-    setForwardComment(menu.comment);
-    setMenu(null);
-  };
 
   const ph = placeholder ?? (enableAI ? '直接评论或者 @U老师 进行讨论。' : '参与讨论…');
 
@@ -747,7 +735,6 @@ export default function DiscussionPanel({
             <div className="detail-chat-menu">
               <button type="button" className="detail-chat-menu__item" onClick={handleQuote}>引用</button>
               <button type="button" className="detail-chat-menu__item" onClick={handleCopy}>复制</button>
-              <button type="button" className="detail-chat-menu__item" onClick={handleForwardToWechat}>转发到微信</button>
               {onDeleteComment && (
                 <button type="button" className="detail-chat-menu__item is-danger" onClick={handleDelete}>删除</button>
               )}
@@ -838,14 +825,6 @@ export default function DiscussionPanel({
 
       {/* 附件预览：图片灯箱 / PDF 内联 / Markdown 渲染 */}
       <AttachmentViewer item={viewer} onClose={() => setViewer(null)} />
-
-      {/* 转发到微信弹窗：选接收人 + 文本/链接卡片形式 */}
-      <ForwardToWechatDialog
-        visible={!!forwardComment}
-        taskId={taskId}
-        comment={forwardComment}
-        onClose={() => setForwardComment(null)}
-      />
     </div>
   );
 }
