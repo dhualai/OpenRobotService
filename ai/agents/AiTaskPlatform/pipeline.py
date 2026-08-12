@@ -37,32 +37,30 @@ from ai.agents.AiTaskPlatform.prompts import (
 )
 
 # 拆分出的能力模块（pipeline 改薄为编排门面）
-from ai.agents.AiTaskPlatform.trace import Node, TraceBus
-from ai.agents.AiTaskPlatform.comments import (
+from ai.agents.AiTaskPlatform.tracing import Node, TraceBus
+from ai.agents.AiTaskPlatform.contexts import (
     load_discussion as _load_discussion_impl,
     add_diagnosis_comment as _add_diagnosis_comment_impl,
     add_diagnosis_comment_short as _add_diagnosis_comment_short_impl,
-)
-from ai.agents.AiTaskPlatform.contexts import (
     load_task_context as _load_task_context_impl,
     is_platform_ticket as _is_platform_ticket_impl,
     build_query as _build_query_impl,
     build_task_ctx as _build_task_ctx_impl,
     build_img_ctx as _build_img_ctx_impl,
 )
-from ai.agents.AiTaskPlatform import rules as _rules
+from ai.agents.AiTaskPlatform.retrieval import rules as _rules
 from ai.agents.AiTaskPlatform.attachments.utils import (
     read_attachment_content as _read_attachment_content_impl,
     extract_log_errors as _extract_log_errors_impl,
     materialize_path as _materialize_path_impl,
     extract_log_paths as _extract_log_paths_impl,
 )
-from ai.agents.AiTaskPlatform.retrieval_utils import format_retrieval_results
-from ai.agents.AiTaskPlatform.solution_io import (
+from ai.agents.AiTaskPlatform.retrieval import format_retrieval_results
+from ai.agents.AiTaskPlatform.retrieval import (
     parse_solution as _parse_solution_impl,
     parse_solution_with_status as _parse_solution_with_status_impl,
 )
-from ai.agents.AiTaskPlatform.prompt_builder import build_user_prompt
+from ai.agents.AiTaskPlatform.prompts import build_user_prompt
 from ai.agents.AiTaskPlatform.handlers import SolutionFlow, DiagnoseFlow, DiscussFlow, SummarizeFlow
 
 logger = get_logger("TASK_AGENT")

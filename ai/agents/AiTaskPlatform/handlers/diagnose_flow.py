@@ -162,7 +162,7 @@ class DiagnoseFlow:
                             pass
 
                 # 2b. 非日志附件 → parser（图片/文档/结构化文件等，不含压缩包和日志）
-                from ai.agents.AiTaskPlatform import rules as _rules
+                from ai.agents.AiTaskPlatform.retrieval import rules as _rules
                 _PIPED_EXTS = _rules.PIPED_LOG_EXTS
                 non_log_atts = [a for a in context.attachments
                                 if not (a.get("filename") or a.get("name") or "").lower().endswith(_PIPED_EXTS)]
