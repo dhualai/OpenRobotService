@@ -195,6 +195,17 @@ def _reset_state_after_submit(agent_state: AgentState, memory, ticket: dict, db_
 # 提单就绪判定（服务端唯一真相，不信任 LLM 自评）
 # ============================================================
 
+def _canonical_field_key(key: str) -> str:
+    """项目名称 key 归一化：project_name / projectName / projectname → project。
+
+    collected_info 合并时已把这几个变体归一化为 project（_apply_state_update），
+    required_fields 的写入与 readiness 判定必须用同一映射，否则 LLM 声明
+    required_fields={'project_name'} 时 collected_info 里只有 project，永远判缺，
+    造成"用户反复给项目名却一直追着问"的鬼打墙。
+    """
+    return "project" if key in ("project_name", "projectName", "projectname") else key
+
+
 # 鬼打墙防护：诊断/收集轮次上限
 _MAX_DIAGNOSIS_ROUNDS = 6   # 诊断超过此轮数 → prompt 提示 LLM 收尾或建议转工单
 _MAX_COLLECT_ROUNDS = 4     # 工单填写超过此轮数仍不齐 → 强制提单（project 缺则用"摇人吧服务号提单"兜底）
@@ -215,7 +226,7 @@ def _assess_ticket_readiness(state: AgentState) -> tuple[bool, list[str]]:
     if not has_project:
         missing.append("项目名称")
     for field_key, label in (state.required_fields or {}).items():
-        if not (state.collected_info.get(field_key) or "").strip():
+        if not (state.collected_info.get(_canonical_field_key(field_key)) or "").strip():
             missing.append(label)
     return (not missing, missing)
 
@@ -691,9 +702,10 @@ class AiDiagnosisPlatform:
             fields = "、".join(state.ticket_collecting)
             collected_summary = "、".join(f"{k}={v}" for k, v in state.collected_info.items() if v) or "（暂无）"
             # 如果有自定义 required_fields，把 field_key→label 映射也告诉 LLM
+            # （key 已用 _canonical_field_key 归一化，_assess_ticket_readiness 按同一 key 判定）
             field_map_hint = ""
             if state.required_fields:
-                fm = "；".join(f"{k}→{label}" for k, label in state.required_fields.items())
+                fm = "；".join(f"{_canonical_field_key(k)}→{label}" for k, label in state.required_fields.items())
                 field_map_hint = f"\n字段映射（写入 collected_info 时用左边 key）：{fm}"
             ticket_collecting_context = (
                 f"⚠️ 当前处于**工单填写模式**，请不要再排查故障。\n"
@@ -778,7 +790,10 @@ class AiDiagnosisPlatform:
         if "required_fields" in state_update:
             rf = state_update["required_fields"]
             if isinstance(rf, dict) and rf:
-                state.required_fields = {k: str(v) for k, v in rf.items() if k and v}
+                state.required_fields = {
+                    _canonical_field_key(k): str(v) for k, v in rf.items()
+                    if k and v
+                }
                 logger.info(f"[state] LLM 设 required_fields={state.required_fields}")
         if "problem_summary" in state_update:
             new_ps = (state_update["problem_summary"] or "").strip()
@@ -1210,8 +1225,8 @@ class AiDiagnosisPlatform:
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
             data = json.loads(clean)
             filled = []
-            # 只接受 required_fields 中定义的 key + project
-            valid_keys = set(rf.keys())
+            # 只接受 required_fields 中定义的 key + project（key 用同一归一化，防 project_name 变体判缺）
+            valid_keys = set(_canonical_field_key(k) for k in rf.keys())
             valid_keys.add("project")
             valid_aliases = {"project_name", "projectName", "projectname"}
             for k, v in data.items():
@@ -1276,10 +1291,10 @@ class AiDiagnosisPlatform:
                 # 不再用固定词表限制——LLM 根据问题类型自主选字段，
                 # 只做基本合理性过滤（key 长度、value 简短标签、非空、不重复收集）
                 agent_state.required_fields = {
-                    k: str(v)[:20] for k, v in rf.items()
+                    _canonical_field_key(k): str(v)[:20] for k, v in rf.items()
                     if str(v).strip()
                     and len(str(k)) <= 40
-                    and not (agent_state.collected_info.get(k) or "").strip()
+                    and not (agent_state.collected_info.get(_canonical_field_key(k)) or "").strip()
                 }
             logger.info(f"[decide_fields] type={agent_state.ticket_type} "
                         f"required={agent_state.required_fields} session={session_id}")
