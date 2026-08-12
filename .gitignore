@@ -72,6 +72,7 @@ uploads/
 ai/kb/active_*.txt
 ai/kb/qdrant/
 ai/kb/.ingest_state/
+ai/embed_models/
 
 # =====生产同步的媒体文件（operation_doc 图片等），不入库====
 /docs/operation_doc/
@@ -92,6 +93,10 @@ output/
 
 # ===== 项目数据（本地数据文件，不入库）=====
 /项目数据/
+
+# ===== 派单系统说明（本地参考文档，不入库）=====
+/docs/派单系统说明.md
+
 # ===== AI 测试生成流水线产物（每次 CI 重新生成，不入库）=====
 /test-gen/
 
@@ -100,3 +105,16 @@ automation/references/generated-cases/
 
 # ===== 本地脚本（不入库）=====
 scripts/start-minio.ps1
+
+# ===== 本地部署/打包产物（不入库）=====
+/ai_deploy.zip
+/ai_deploy.tar.gz
+/ors-v1-*.zip
+/*.zip
+
+# ===== 本地调试/测试数据（不入库）=====
+/bad_pairs_storage_full.json
+/code_index_test.json
+/package-lock.json
+ai/tests/_verify_log_sub_agent_fix.py
+

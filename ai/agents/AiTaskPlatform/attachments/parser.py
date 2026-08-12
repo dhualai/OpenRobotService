@@ -625,6 +625,7 @@ async def _read_bytes(att: dict) -> Optional[bytes]:
                 from ai.core.minio_client import minio_client
                 bucket = path.split("/")[0]
                 object_name = "/".join(path.split("/")[1:])
+                object_name = minio_client.resolve_key(object_name)
                 data = minio_client.client.get_object(bucket, object_name)
                 return data.read()
             except Exception as e:

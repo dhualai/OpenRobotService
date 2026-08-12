@@ -8,10 +8,37 @@ from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
     AssignmentResult, EngineerProfile, TicketContext,
 )
 
+from ai.core.logging import get_logger
+
+logger = get_logger("ASSIGNER")
+
+# 「摇人吧服务号」自身的项目标识。
+# 只有工单项目归属此类兜底项目时，问题的总负责人（模块总负责人）才按服务号内部
+# 子界面/子功能区分；常规 AGV/AMR 项目（调度USP 等）不适用这套总负责人逻辑，
+# 不应把"模块总负责人优先"这套 prompt 引入。
+_YAORENBA_INTAKE_PROJECT_MARKERS = (
+    "摇人吧服务号提单",
+)
+
 
 class LlmDecision:
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
+
+    @staticmethod
+    def _is_yaorenba_intake(ticket) -> bool:
+        """工单是否归属「摇人吧服务号提单」项目。
+
+        只有这种兜底项目下的工单，才应启用"服务号模块总负责人"派单规则：
+        （我要摇人提单 / 系统任务 / 后台管理…各自总负责人不同）。
+        其余项目直接返回 False，避免把服务号总负责人逻辑错误套用到常规项目上。
+        """
+        project = (getattr(ticket, "project_name", None) or "").strip()
+        if not project:
+            return False
+        # 归一化：去掉可能的空格 / 全角空格后做精确即可（兜底项目名固定且唯一）
+        norm = project.replace(" ", "").replace("\u3000", "")
+        return any(marker.replace(" ", "") in norm for marker in _YAORENBA_INTAKE_PROJECT_MARKERS)
 
     async def adecide(self, ticket, engineers, recall_result, ranked_scores):
         prompt = self._build_prompt(ticket, engineers, recall_result, ranked_scores)
@@ -95,13 +122,25 @@ class LlmDecision:
             "2. 需求/产品建议类：优先找负责「产品设计」模块、且归属产品与工单一致的候选人（产品经理）。",
             "3. 故障/缺陷类：按工单涉及的模块（页面→界面类；逻辑->服务端类）匹配候选人负责的模块。",
             "4. 在匹配范围内，优先总分高者（#1 默认优先）；仅当 #1 产品/模块明显不匹配时才选下一个更相关者，并在 reasoning 说明。",
-            "5. 若工单涉及「摇人吧服务号」产品：优先派给对应功能的「模块总负责人」候选人。",
-            "   候选人 responsibility_modules 或 duty_text 中带「总负责人」标记（如「我要摇人总负责人」「系统任务总负责人」「后台管理总负责人」），",
-            "   即该界面/功能的模块负责人，应优先承接对应模块的工单；",
-            "   常见对应：我要摇人→张俊磊、系统任务→张文星、后台管理→罗昊（按其模块中的总负责人标记为准）。",
+        ])
+
+        # 「摇人吧服务号提单」项目专属：按服务号内部子界面/子功能区分总负责人。
+        # 只有工单项目归属该兜底项目时才启用这条总负责人规则；常规 AGV/AMR 项目
+        # （调度USP 等）不引入，避免把服务号的总负责人逻辑错误套用到其他项目上。
+        if self._is_yaorenba_intake(ticket):
+            lines.extend([
+                "5.（仅本次工单项目＝「摇人吧服务号提单」适用）先判断问题落在服务号哪个环节，再派给对应子功能的「模块总负责人」：",
+                "   - 我要摇人界面的「提单/报障」过程（建单、填信息、提交、AI诊断出单等，涉及我要摇人模块）：优先派给「我要摇人」模块总负责人；",
+                "   - 「处理工单」的系统任务（工单收件箱、任务处理、状态流转、接单/转派等，涉及系统任务模块）：优先派给「系统任务」模块总负责人；",
+                "   - 「后台管理」相关（项目看板/跨项目看板、风险管理、状态检测、数据统计、角色授权/权限等，涉及后台管理模块）：优先派给「后台管理」模块总负责人。",
+                "   判定依据以候选人 responsibility_modules 或 duty_text 中的「总负责人」标记为准（如『我要摇人总负责人』『系统任务总负责人』『后台管理总负责人』），",
+                "   上述常见对应仅作参考，若候选人名单无对应总负责人，则退回按总分/模块匹配正常选人。",
+            ])
+
+        lines.extend([
             "",
             "输出 JSON。engineer_id 必须是候选人列表中该人选对应的完整 username（以 wechat_ 开头，如 wechat_oD5oY3xxx），必须保留 wechat_ 前缀、精确复制，不要去掉前缀或填姓名。",
-            '{"ticket_category":"需求", "problem_domain":"产品", "product":"摇人吧服务号", "engineer_id":"wechat_oD5oY3RN...", "confidence_score":0.85, "reasoning":"理由(说明类型/产品/模块/总负责人判断)", "decision_type":"auto"}',
+            '{"ticket_category":"需求", "problem_domain":"产品", "product":"", "engineer_id":"wechat_oD5oY3RN...", "confidence_score":0.85, "reasoning":"理由(说明类型/产品/模块/环节判断)", "decision_type":"auto"}',
             "decision_type: auto(>=0.8) / recommend(0.5-0.8) / fallback(<0.5)",
         ])
         return "\n".join(lines)
