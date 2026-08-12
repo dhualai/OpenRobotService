@@ -1394,8 +1394,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const newImageUrls: string[] = [];
     for (const file of fileArr) {
       if (file.size > MAX_FILE_SIZE) {
-        const mb = (file.size / 1024 / 1024).toFixed(1);
-        Toast({ message: `「${file.name}」(${mb}MB) 超过 100MB 上限，请压缩或拆分后重试`, theme: 'error' });
+        Toast({ message: '文件大小超过100M，请重新上传', theme: 'error' });
         continue;
       }
       let finalFile = file;
@@ -1430,8 +1429,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (!file) continue;
       e.preventDefault(); // 阻止图片被当作 base64/文本塞进输入框
       if (file.size > MAX_FILE_SIZE) {
-        const mb = (file.size / 1024 / 1024).toFixed(1);
-        Toast({ message: `「${file.name}」(${mb}MB) 超过 100MB 上限，请压缩后重试`, theme: 'error' });
+        Toast({ message: '文件大小超过100M，请重新上传', theme: 'error' });
         return;
       }
       // 粘贴图同样压缩

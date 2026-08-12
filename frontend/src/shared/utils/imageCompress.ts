@@ -86,6 +86,10 @@ export async function compressImage(
   if (file.type === 'image/svg+xml') {
     return { file, compressed: false, originalSize, resultSize: originalSize };
   }
+  // GIF 动图：canvas 只能渲染第一帧，压缩后会丢失动画，跳过
+  if (file.type === 'image/gif') {
+    return { file, compressed: false, originalSize, resultSize: originalSize };
+  }
   if (originalSize < MIN_SIZE_TO_COMPRESS) {
     return { file, compressed: false, originalSize, resultSize: originalSize };
   }

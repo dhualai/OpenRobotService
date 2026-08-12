@@ -1147,9 +1147,23 @@ class AiTaskAgent:
             return raw_path
 
         # 1. 正则匹配桶名 + 资源路径（path 段截止于 ? 查询串）
+        #    本地经 nginx 代理时 presigned URL 带 /minio-api 前缀（get_presigned_url 的
+        #    _with_api_prefix 补上），需先剥掉前缀，否则会把 minio-api 误当作 bucket 名
+        #    → NoSuchBucket。生产直连无前缀时保持原样。
         import re
-        from urllib.parse import unquote
-        m = re.match(r"https?://[^/]+/([^/]+)/(.+?)(?:\?|$)", raw_path)
+        from urllib.parse import unquote, urlparse, urlunparse
+        from ai.config import get_ai_config
+
+        _strip_path = raw_path
+        _prefix = (getattr(get_ai_config(), "minio_api_prefix", "") or "").strip("/")
+        if _prefix:
+            _u = urlparse(raw_path)
+            _segs = [s for s in _u.path.split("/") if s]
+            if _segs and _segs[0] == _prefix:
+                _newpath = "/" + "/".join(_segs[1:])
+                _strip_path = urlunparse(_u._replace(path=_newpath))
+
+        m = re.match(r"https?://[^/]+/([^/]+)/(.+?)(?:\?|$)", _strip_path)
         if not m:
             logger.warning(f"无法从 URL 解析 bucket/object: {raw_path[:120]}")
             return ""
@@ -1164,6 +1178,7 @@ class AiTaskAgent:
             tmp_dirs.append(tmp_dir)  # 复用调用方已有的 rmtree 清理
             local_name = os.path.basename(object_name) or "download.bin"
             local_path = os.path.join(tmp_dir, local_name)
+            object_name = minio_client.resolve_key(object_name)
             minio_client.client.fget_object(bucket_name, object_name, local_path)
             logger.info(f"附件下载完成: {bucket_name}/{object_name} -> {local_path}")
             return local_path

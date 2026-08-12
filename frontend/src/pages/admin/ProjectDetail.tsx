@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Loading, Toast, Popup, Upload, Checkbox } from 'tdesign-mobile-react';
 import { Input, Textarea } from 'tdesign-mobile-react';
-import { createRequest, ApiError } from '@/api/client';
+import { createRequest, ApiError, clearCache } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
 import { aiGet } from '@/api/ai';
@@ -341,6 +341,7 @@ export default function ProjectDetail() {
       const { id: _draftId, ...payload } = project;
       const created = await request<ProjectDetailData>('/projects/', { method: 'POST', body: JSON.stringify(payload) });
       Toast({ message: '创建成功', theme: 'success' });
+      clearCache(); // 清除请求缓存，确保返回项目管理页时能拉取到最新数据
       navigate(`/admin/project-detail/${created.id}`, { replace: true });
     } catch (err) {
       // 后端唯一键校验（项目编号/项目名称已存在）返回 409，直接提示用户重新输入

@@ -1,20 +1,24 @@
-"""日志子 Agent（LogSubAgent）— 独立的多轮推理能力单元
+"""日志子 Agent（LogSubAgent）— 知识库指导 + 客观事实锚定 + 多轮 LLM 推理
 
-可以被多个入口调用：
+可被多个入口调用：
   - diagnose() 出诊断报告时自动激活
   - discuss() @AI 讨论时单独提问日志问题
   - 直接 API: POST /api/ai/task/log/analyze
 
-核心循环（最多 8 轮）:
-  1. 先从知识库（docs/）查匹配的排查路径和日志含义
-  2. LLM 根据知识库指引生成 LogQuery → LogIndex.query() 执行
-  3. LLM 阅读结果 → 对比知识库的故障场景 → 判断是否需要继续
-  4. 不够 → 调整参数 → 下一轮
-  5. 所有 AI 查询无结果 → 兜底
+核心循环（最多 MAX_ROUNDS 轮）:
+  1. 先扫描日志索引 → 提取「客观事实」（真实时间范围/车型/任务ID/高频错误/错误密集时段）
+  2. 把这些事实注入 Prompt，防止 LLM 凭空捏造日期、车型、任务ID
+  3. LLM 根据知识库 + 事实生成 LogQuery → LogIndex.query() 执行
+  4. 查询参数在落地前先做**可信校验**（车型/任务必须命中索引，时间窗夹紧到日志真实范围）
+  5. LLM 阅读结果 → 对比知识库的故障场景 → 决定继续 / conclude / fallback
+  6. 结尾兜底：LLM 输出解析失败时也不丢结论，保证一定有返回值
 
-双信息源:
-  - 知识库 (docs/): 日志格式说明 + 故障排查树 + 常见日志含义
-  - 日志索引 (LogIndex): 451MB 算法日志的毫秒级查询
+2026-08-12 v3.5 修复（真实故障：错误日期+伪造车型+超宽查询+结尾解析失败丢结论）：
+  - grounding: 注入日志客观事实，杜绝幻构日期/车型/任务ID
+  - 泛化 system prompt：去掉写死的"一致性超阈值/XNA-169/1098000"场景引导
+  - 查询参数校验与夹紧：车型/任务须命中索引，时间窗夹到真实范围，拦截超宽查询
+  - 健壮 JSON 解析：剥散文/代码块，提取最完整且形状正确的命令，conclude 不丢
+  - token 收敛：每轮反馈限长，超宽查询自动加"请先缩小范围"提示
 """
 
 import json, re, os, time as _time
@@ -25,21 +29,16 @@ from ai.config import get_ai_config
 from ai.core import get_llm_client
 from ai.core.logging import get_logger
 from ai.agents.AiTaskPlatform.log_analyzer.indexer import (
-    LogIndex, LogQuery, extract_fields, fields_summary,
+    LogIndex, LogQuery,
 )
 
 logger = get_logger("TASK_AGENT")
 
 # ── 日志说明手册加载 ──────────────────────────────────────────────
-# 优先从 DOCS_PATH（.env）读取，确保部署时本地文件不丢失；
-# 本地开发时 DOCS_PATH 未设置或无效则回退到代码目录下的 log_manual/。
 _ai_config = get_ai_config()
 if _ai_config.docs_path:
     _candidate = Path(_ai_config.docs_path) / "task_agent"
-    if _candidate.is_dir():
-        _DOCS_DIR = _candidate
-    else:
-        _DOCS_DIR = Path(__file__).parent / "log_manual"
+    _DOCS_DIR = _candidate if _candidate.is_dir() else Path(__file__).parent / "log_manual"
 else:
     _DOCS_DIR = Path(__file__).parent / "log_manual"
 
@@ -88,18 +87,67 @@ def _load_log_docs() -> str:
     return result
 
 
+# ── 客观事实注入 ─────────────────────────────────────────────
+
+def _facts_to_text(facts: Dict) -> str:
+    """把 LogIndex.discover_facts() 的骨架转成给 LLM 看的客观事实文本。"""
+    if not facts:
+        return "（无法提取日志事实）"
+
+    lines = ["## 日志客观事实（只能在这些真实值中选择过滤条件，禁止虚构）"]
+    lines.append(f"- 日志总行数: {facts.get('lines', '?')}")
+    lines.append(f"- 错误/警告行: {facts.get('errors', '?')}")
+
+    ts = facts.get("time_start")
+    te = facts.get("time_end")
+    if ts and te:
+        lines.append(f"- 日志时间范围: {ts} ~ {te}（查询 time_start/time_end 必须落在此区间内）")
+
+    robots = facts.get("top_robots") or []
+    if robots:
+        lines.append(f"- 出现次数最多的车型(top{len(robots)}): {', '.join(robots)}")
+
+    tasks = facts.get("top_tasks") or []
+    if tasks:
+        lines.append(f"- 出现次数最多的任务(top{len(tasks)}): {', '.join(tasks)}")
+
+    errs = facts.get("top_errors") or []
+    if errs:
+        lines.append(f"- 高频 error_code: {', '.join(errs)}")
+
+    hours = facts.get("error_hours") or []
+    if hours:
+        shown = ", ".join(f"{h}时({c}条)" for h, c in hours[:5])
+        lines.append(f"- 错误最密集的时段: {shown}")
+
+    return "\n".join(lines)
+
+
 # ── System Prompt ───────────────────────────────────────────
 
-def _make_system_prompt(log_date: str = "") -> str:
-    docs = _load_log_docs()
-    return f"""只输出一行JSON。第1轮:搜"一致性超过update阈值"(输入WARNING行,核心根因), error_only=true, 查16:50~17:05。
-找到后第2轮:用robot_filter=XNA-169+task_filter=1098000搜上下文。第3轮必须conclude。
+def _make_system_prompt() -> str:
+    """通用、不绑定任何具体场景的 system prompt。"""
+    return """你是资深AGV调度系统日志分析专家。你只能输出【一行JSON】，禁止输出JSON以外的任何散文、解释、Markdown。
 
-query命令: {{"action":"query","query":{{"time_start":"2026-07-27 16:50","time_end":"2026-07-27 17:05","robot_filter":"","task_filter":"","error_only":true,"max_results":50}}}}
-conclude: {{"action":"conclude","conclusion":"根因(知识库场景13)+解决方案(wait_time_check_interval=40,wait_time_update_gap=40)","evidence_lines":["L123: 一致性超过update阈值42.2s","L456: MAPF-T:77.956 WAIT-T:5.0"]}}
+可用命令（每次输出恰好一个）:
 
-日期={log_date}。最多3轮。
-{docs}"""
+1) 查询:
+{"action":"query","analysis":"这一步想验证什么假设","query":{"time_start":"YYYY-MM-DD HH:MM","time_end":"YYYY-MM-DD HH:MM","robot_filter":"车型ID或空串","task_filter":"任务ID或空串","error_only":true,"max_results":50}}
+
+2) 下结论（证据足够时用）:
+{"action":"conclude","conclusion":"一句话根因(引用知识库故障场景编号)+证据链+解决方案","evidence_lines":["L数字: 关键内容","L数字: 关键内容"]}
+
+3) 放弃（确实查不到）:
+{"action":"fallback","reason":"为什么确定查不出有效线索"}
+
+硬性规则:
+- time_start/time_end、robot_filter、task_filter 只能从「日志客观事实」里选真实存在的值；不知道就填空串""。绝不虚构日期或ID。
+- error_only=true 只回错误/警告行；要上下文时回 false 并配合窄时间窗。
+- max_results 建议 30~100；时间窗越窄信息越准。
+- 每轮只输出一个JSON命令，输出前不要有任何思考文字。"""
+
+
+# ── 日志分析结论模型 ─────────────────────────────────────────
 
 
 # ── 日志分析结论模型 ─────────────────────────────────────────
@@ -111,6 +159,7 @@ class LogAnalysisResult:
         self.evidence = []            # [{"line": 390, "ts": "11:01:44", "summary": "..."}]
         self.queries_made = 0         # 执行了几轮查询
         self.fallback_used = False    # 是否兜底了
+        self.parse_failures = 0       # LLM 输出解析失败次数
 
     def to_dict(self):
         return {
@@ -138,22 +187,23 @@ class LogAnalysisResult:
 # ── 子 Agent 主循环 ─────────────────────────────────────────
 
 class LogSubAgent:
-    """日志分析子 Agent：知识库指导 + 多轮 LLM 推理 → LogIndex 执行 → 返回结论
+    """日志分析子 Agent：知识库指导 + 客观事实锚定 + 多轮 LLM 推理 → LogIndex 执行
 
     Usage:
         agent = LogSubAgent(log_path)
         result = await agent.analyze(
             task_context={{...}},
-            user_question="看看 E-XQE-217 为什么一直在等待",
+            user_question="看看某车型为什么一直在等待",
         )
     """
 
-    MAX_ROUNDS = 8
-    SOFT_LIMIT = 5
+    MAX_ROUNDS = 6
+    SOFT_LIMIT = 4
 
     def __init__(self, log_path: str):
         self.log_path = log_path
         self._index: Optional[LogIndex] = None
+        self._facts: Dict = {}
         self._llm = None
 
     async def _ensure_clients(self):
@@ -161,6 +211,7 @@ class LogSubAgent:
             self._llm = await get_llm_client()
         if self._index is None:
             self._index = LogIndex(self.log_path).build()
+            self._facts = self._index.discover_facts(top_n=8)
 
     async def analyze(
         self,
@@ -173,132 +224,116 @@ class LogSubAgent:
         await self._ensure_clients()
         result = LogAnalysisResult()
 
-        # 获取日志文件中第一行和最后一行的日期
-        log_date = "unknown"
-        with open(self.log_path, "r", encoding="utf-8", errors="replace") as f:
-            first = f.readline()
-            m = re.search(r"(\d{4}-\d{2}-\d{2})", first)
-            if m: log_date = m.group(1)
+        log_date = self._facts.get("date", "unknown")
 
         context_text = _build_context(task_context, user_question)
+        context_text += f"\n\n{_facts_to_text(self._facts)}"
         context_text += f"\n\n**日志日期**: {log_date}"
 
-        system_prompt = _make_system_prompt(log_date)
+        system_prompt = _make_system_prompt()
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": context_text},
         ]
-        query_history = []
+        query_history: List[Dict] = []
 
         for round_num in range(1, self.MAX_ROUNDS + 1):
             response = await self._llm.chat(
-                messages=messages, max_tokens=400, temperature=0.0,
+                messages=messages, max_tokens=300, temperature=0.0,
             )
 
             cmd = _parse_llm_command(response)
             if cmd is None:
+                result.parse_failures += 1
                 logger.warning(f"LogSubAgent R{round_num} parse failed, raw[:200]={response[:200]}")
-                result.conclusion = "日志子Agent输出解析失败"
-                result.fallback_used = True
-                break
+                if round_num >= self.SOFT_LIMIT:
+                    # 轮数已深 → 抢救任何 conclude 结论，避免丢答案
+                    salvage = _salvage_conclusion(response)
+                    if salvage:
+                        result.conclusion = salvage
+                        logger.info(f"LogSubAgent R{round_num}: 从输出中抢救到结论")
+                        break
+                    result.conclusion = "日志子Agent输出解析失败"
+                    result.fallback_used = True
+                    break
+                # 轮数还浅 → 提示重新严格输出一行 JSON 后重试
+                messages.append({"role": "user",
+                                 "content": "刚才的输出不是一行合法JSON命令，请重新输出一行JSON。"
+                                             "查数据用 {\"action\":\"query\",...}，证据足够用 {\"action\":\"conclude\",...}。"})
+                continue
 
             action = cmd.get("action", "conclude")
 
-            if action == "query" and round_num <= self.SOFT_LIMIT + 2:
-                q = cmd.get("query", {})
-                q_hash = json.dumps(q, sort_keys=True)
-                if q_hash in query_history:
-                    messages.append({"role": "user", "content": "重复的查询参数，请换一个查询方向"})
-                    continue
-                query_history.append(q_hash)
+            if action == "query" and round_num <= self.SOFT_LIMIT:
+                raw_q = cmd.get("query", {})
+                q = _validate_query(raw_q, self._index, self._facts)
 
-                logger.info(f"LogSubAgent R{round_num} query: {json.dumps(q, ensure_ascii=False)}")
+                if _is_near_duplicate(q, query_history):
+                    messages.append({"role": "user",
+                                     "content": "这次查询和之前一轮几乎一样（时间窗/过滤条件相同）。请换车型、换任务或改窄时间窗后重新查询。"})
+                    continue
+                query_history.append(q)
+
+                logger.info(f"LogSubAgent R{round_num} query(norm): {json.dumps(q, ensure_ascii=False)}")
                 log_query = LogQuery(
                     time_start=q.get("time_start") or None,
                     time_end=q.get("time_end") or None,
                     robot_filter=q.get("robot_filter") or None,
                     task_filter=q.get("task_filter") or None,
                     path_filter=q.get("path_filter") or None,
-                    error_only=q.get("error_only", False),
-                    context_before=int(q.get("context_lines", 3)),
-                    context_after=int(q.get("context_lines", 3)),
-                    max_results=int(q.get("max_results", 30)),
+                    error_only=q.get("error_only", True),
+                    context_before=int(q.get("context_lines", 2)),
+                    context_after=int(q.get("context_lines", 2)),
+                    max_results=int(q.get("max_results", 50)),
                 )
                 query_result = self._index.query(log_query)
                 result.queries_made += 1
-                matched_lines = int(re.search(r"matched (\d+)", query_result).group(1)) if re.search(r"matched (\d+)", query_result) else 0
-                logger.info(f"LogSubAgent R{round_num}: {cmd.get('purpose','?')[:60]} → {matched_lines} lines")
 
-                analysis = cmd.get("analysis", "")
-                feedback = f"查询第{round_num}轮结果：\n{query_result[:1500]}"
+                matched = _matched_lines(query_result)
+                logger.info(f"LogSubAgent R{round_num}: {cmd.get('analysis','?')[:60]} → {matched} lines")
+
+                _collect_evidence(result, query_result, round_num)
+
+                feedback = f"查询第{round_num}轮结果(命中{matched}行):\n{query_result[:_MAX_FEEDBACK_CHARS]}"
+                if _feedback_is_too_broad(matched):
+                    feedback += (f"\n\n⚠ 本轮命中 {matched} 行过多，说明过滤条件太宽。"
+                                 "请从「日志客观事实」里挑一个真实车型/任务，或把时间窗缩窄到错误密集时段再查询；"
+                                 "找不到合适过滤条件就 conclude 或 fallback。")
                 if round_num >= self.SOFT_LIMIT:
                     feedback += f"\n\n(已查{round_num}轮，接近上限，请尽快conclude或fallback)"
 
                 messages.append({"role": "assistant", "content": response})
                 messages.append({"role": "user", "content": feedback})
 
-                # 保存线索（暂存，conclude 时按 LLM 引用的行号过滤）
-                if "matched" in query_result and "matched 0 lines" not in query_result:
-                    for line_match in re.findall(r"\* L(\d+)\| (.+)", query_result):
-                        ln, sm = line_match
-                        summary = sm.strip()
-                        if not summary or summary.count("|") < 1:
-                            continue
-                        result.evidence.append({"line": int(ln), "summary": sm[:150], "round": round_num})
             else:
                 if action == "conclude":
-                    result.conclusion = cmd.get("conclusion", "")
-                    # ── 按 LLM 引用的行号过滤证据 ──
-                    cited_lines = set()
-                    for ref in cmd.get("evidence_lines", []):
-                        m = re.search(r"L(\d+)", str(ref))
-                        if m:
-                            cited_lines.add(int(m.group(1)))
-                    if cited_lines:
-                        result.evidence = [e for e in result.evidence if e["line"] in cited_lines]
-                    else:
-                        # 没引用具体行号 → 只保留含关键信号的证据
-                        _SIGNAL_KW = ("一致性", "MAPF-T", "ABORTED", "WARNING", "等待时间", "last_node")
-                        result.evidence = [
-                            e for e in result.evidence
-                            if any(kw in e["summary"] for kw in _SIGNAL_KW)
-                        ]
-                    logger.info(f"LogSubAgent conclude at R{round_num}: {result.conclusion[:80]} (cited={len(cited_lines)}, evidence={len(result.evidence)})")
+                    result.conclusion = cmd.get("conclusion", "") or _salvage_conclusion(response)
+                    _filter_evidence_by_citation(result, cmd.get("evidence_lines", []))
+                    logger.info(f"LogSubAgent conclude at R{round_num}: {result.conclusion[:80]} (evidence={len(result.evidence)})")
                 elif action == "fallback":
                     result.conclusion = cmd.get("reason", "无结论")
                     result.fallback_used = True
                     logger.info(f"LogSubAgent fallback at R{round_num}: {result.conclusion[:80]}")
                 break
 
-        # 兜底
+        # 兜底：没拿到结论 → 用最保守的错误样本
         if not result.conclusion and not result.fallback_used:
-            fallback_query = LogQuery(error_only=True, max_results=50)
+            result.fallback_used = True
+            fallback_query = LogQuery(time_start=None, time_end=None,
+                                      error_only=True, max_results=50,
+                                      context_before=2, context_after=2)
             fallback_text = self._index.query(fallback_query)
             if "matched" in fallback_text and "matched 0 lines" not in fallback_text:
-                result.conclusion = "未能精确定位，但日志中存在以下异常（请人工确认）"
-                for line_match in re.findall(r"\* L(\d+)\| (.*)", fallback_text)[:10]:
-                    ln, sm = line_match
-                    result.evidence.append({"line": int(ln), "summary": sm[:150]})
-                result.fallback_used = True
-            # 最后一招：读代码找机制
-            if not result.conclusion or result.fallback_used:
-                try:
-                    code_q = f"{task_context.get('problem_summary', '')} {user_question}"[:200]
-                    from ai.agents.AiTaskPlatform.code_skill.skill import get_code_skill
-                    skill = get_code_skill()
-                    skill.ensure_index()
-                    code_result = await skill.search(code_q)
-                    code_text = code_result.to_prompt_text()
-                    if code_text and "未找到" not in code_text:
-                        result.conclusion = (
-                            (result.conclusion + "\n\n") if result.conclusion else ""
-                        ) + f"日志中线索有限，从代码中查到以下机制：\n{code_text}"
-                except Exception:
-                    pass
-            result.queries_made += 1
+                _collect_evidence(result, fallback_text, round_num=0)
+                result.conclusion = "未能精确定位根因，但日志中存在以下异常（请人工确认）"
+            else:
+                result.conclusion = "日志中未发现可用错误/警告信号"
+            logger.info(f"LogSubAgent fallback: evidence={len(result.evidence)}")
 
-        logger.info(f"LogSubAgent done: rounds={result.queries_made}, evidence={len(result.evidence)}, fallback={result.fallback_used}, elapsed={(_time.perf_counter()-t0)*1000:.0f}ms")
+        logger.info(f"LogSubAgent done: rounds={result.queries_made}, evidence={len(result.evidence)}, "
+                    f"fallback={result.fallback_used}, parse_fail={result.parse_failures}, "
+                    f"elapsed={(_time.perf_counter()-t0)*1000:.0f}ms")
         return result
 
 
@@ -323,32 +358,208 @@ def _build_context(task: Dict, question: str) -> str:
     return "\n".join(parts)
 
 
-def _parse_llm_command(raw: str) -> Optional[Dict]:
-    # 找第一个 { → 手动数括号取完整 JSON
-    start = raw.find('{')
-    if start < 0:
-        return None
-    depth = 0
-    in_str = False
-    escape = False
-    for i in range(start, len(raw)):
-        c = raw[i]
-        if escape:
-            escape = False; continue
-        if c == '\\':
-            escape = True; continue
-        if c == '"':
-            in_str = not in_str; continue
-        if in_str:
-            continue
-        if c == '{':
-            depth += 1
-        elif c == '}':
-            depth -= 1
-            if depth == 0:
-                block = raw[start:i+1]
-                try:
-                    return json.loads(block)
-                except json.JSONDecodeError:
+# ── 查询参数的可信校验与夹紧 ─────────────────────────────────
+
+_MAX_FEEDBACK_CHARS = 1500      # 每轮反馈给 LLM 的最大字符数
+_BROAD_WINDOW_HINT_LINES = 20_000  # 命中超过此数量视为"太宽"，提示 LLM 缩窄
+
+
+def _validate_query(q: Dict, idx: LogIndex, facts: Dict) -> Dict:
+    """落地前校验/夹紧 LLM 给的查询参数，返回规范化后的 dict。
+
+    防三种坑（2026-08-12 真实故障复现）：
+      - 错误日期（日志是08-11/12，LLM 查 08-10）→ 时间窗夹紧到真实范围
+      - 伪造车型（robot_filter="100" 查不到）→ 未命中索引则置空
+      - 超宽查询（整日全错误行 14万行）→ 提示 LLM 缩窄
+    """
+    q = dict(q)
+
+    # 1) 时间窗夹紧到日志真实范围
+    ts, te = facts.get("time_start"), facts.get("time_end")
+    t_start = (q.get("time_start") or "").strip()
+    t_end = (q.get("time_end") or "").strip()
+    if ts and te:
+        if not t_start:
+            t_start = ts[:16]
+        elif t_start < ts[:16]:
+            t_start = ts[:16]
+        if not t_end:
+            t_end = te[:16]
+        elif t_end > te[:16]:
+            t_end = te[:16]
+    q["time_start"] = t_start
+    q["time_end"] = t_end
+
+    # 2) 车型/任务过滤须命中索引，否则置空（防伪造 "100"）
+    robot = (q.get("robot_filter") or "").strip()
+    q["robot_filter"] = (idx.valid_robot(robot) or "") if robot else ""
+
+    task = (q.get("task_filter") or "").strip()
+    q["task_filter"] = (idx.valid_task(task) or "") if task else ""
+
+    # 3) max_results / context_lines 夹紧
+    try:
+        q["max_results"] = min(max(int(q.get("max_results", 50)), 10), 100)
+    except (TypeError, ValueError):
+        q["max_results"] = 50
+    try:
+        q["context_lines"] = min(max(int(q.get("context_lines", 2)), 0), 5)
+    except (TypeError, ValueError):
+        q["context_lines"] = 2
+
+    q["error_only"] = bool(q.get("error_only", True))
+    return q
+
+
+def _feedback_is_too_broad(matched: int) -> bool:
+    return matched > _BROAD_WINDOW_HINT_LINES
+
+
+# ── 健壮 JSON 命令解析（修复结尾解析失败丢结论的根因）────────────────
+
+def _iter_json_objects(raw: str):
+    """从任意文本里逐个提取可解析的 JSON 对象（容忍前导/尾部散文、代码块）。"""
+    text = re.sub(r"```(?:json)?\s*", "", raw)
+    start = 0
+    while True:
+        start = text.find('{', start)
+        if start < 0:
+            break
+        depth = 0
+        in_str = False
+        escape = False
+        j = start
+        while j < len(text):
+            c = text[j]
+            if escape:
+                escape = False
+                j += 1
+                continue
+            if c == '\\':
+                escape = True
+                j += 1
+                continue
+            if c == '"':
+                in_str = not in_str
+                j += 1
+                continue
+            if in_str:
+                j += 1
+                continue
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    block = text[start:j+1]
+                    try:
+                        yield json.loads(block)
+                    except json.JSONDecodeError:
+                        pass
+                    start = j + 1
                     break
-    return None
+            j += 1
+        else:
+            break
+
+
+def _parse_llm_command(raw: str) -> Optional[Dict]:
+    """从 LLM 输出中提取最可信的一条命令。
+    优先 action ∈ {query, conclude, fallback} 且形状正确的 JSON；
+    越靠后的完整命令越可能是最终意图。
+    """
+    best = None
+    best_score = -1
+    for obj in _iter_json_objects(raw):
+        if not isinstance(obj, dict):
+            continue
+        action = obj.get("action")
+        if action not in ("query", "conclude", "fallback"):
+            continue
+        score = 0
+        if action == "query" and isinstance(obj.get("query"), dict):
+            score = 3
+        elif action == "conclude" and obj.get("conclusion"):
+            score = 3
+        elif action == "fallback" and obj.get("reason"):
+            score = 2
+        if score > best_score:
+            best_score = score
+            best = obj
+    return best
+
+
+def _salvage_conclusion(raw: str) -> str:
+    """LLM 整体解析失败时，从原始输出里抢救带 conclude 的结论文本。"""
+    m = re.search(r'"conclusion"\s*:\s*"', raw)
+    if not m:
+        return ""
+    seg = raw[m.end():]
+    out = []
+    i = 0
+    while i < len(seg):
+        c = seg[i]
+        if c == '\\':
+            if i + 1 < len(seg):
+                out.append(seg[i+1])
+            i += 2
+            continue
+        if c == '"':
+            break
+        out.append(c)
+        i += 1
+    txt = "".join(out).strip()
+    return txt[:400] if txt else ""
+
+
+def _matched_lines(query_result: str) -> int:
+    m = re.search(r"matched (\d+)", query_result)
+    return int(m.group(1)) if m else 0
+
+
+def _is_near_duplicate(q: Dict, history: List[Dict]) -> bool:
+    """判断新查询是否与历史查询近重复：过滤条件一致 且 时间窗重叠。"""
+    for h in history:
+        if (q.get("robot_filter") == h.get("robot_filter")
+                and q.get("task_filter") == h.get("task_filter")
+                and q.get("error_only") == h.get("error_only")):
+            if _windows_overlap(q.get("time_start", ""), q.get("time_end", ""),
+                                h.get("time_start", ""), h.get("time_end", "")):
+                return True
+    return False
+
+
+def _windows_overlap(a0, a1, b0, b1) -> bool:
+    if not (a0 and a1 and b0 and b1):
+        return False
+    return not (a1 < b0 or b1 < a0)
+
+
+def _collect_evidence(result: LogAnalysisResult, query_result: str, round_num: int):
+    """从查询结果文本里收集候选证据行。"""
+    for line_match in re.findall(r"\* L(\d+)\| (.*)", query_result):
+        ln, sm = line_match
+        summary = sm.strip()
+        if not summary or summary.count("|") < 1:
+            continue
+        if any(e["line"] == int(ln) for e in result.evidence):
+            continue
+        result.evidence.append({"line": int(ln), "summary": sm[:150], "round": round_num})
+
+
+def _filter_evidence_by_citation(result: LogAnalysisResult, cited: List):
+    """按 LLM 引用的行号过滤证据；没引用行号时保留含关键信号的证据。"""
+    cited_lines = set()
+    for ref in cited:
+        m = re.search(r"L(\d+)", str(ref))
+        if m:
+            cited_lines.add(int(m.group(1)))
+    if cited_lines:
+        result.evidence = [e for e in result.evidence if e["line"] in cited_lines]
+    else:
+        _SIGNAL_KW = ("一致性", "MAPF-T", "ABORTED", "WARNING", "等待时间", "last_node",
+                      "超时", "失败", "ERR=", "CANCELED", "拒绝")
+        result.evidence = [
+            e for e in result.evidence
+            if any(kw in e["summary"] for kw in _SIGNAL_KW)
+        ]
