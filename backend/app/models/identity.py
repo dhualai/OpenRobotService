@@ -68,6 +68,7 @@ class UserDB(Base):
     responsibility_modules = Column(JSON, nullable=True, comment='责任模块 ["车端","任务调度","地图编辑"...]')
     job_level = Column(TINYINT, default=1, nullable=False, comment="职级，数值越高越不优先接单（1=一线, 2=管理/审核, 3=仅兜底...），默认1")
     duty_text = Column(Text, nullable=True, comment="职责画像文本，供 AI 派单匹配参考")
+    supervisor_id = Column(String(64), ForeignKey('users.id'), nullable=True, index=True, comment="直属上级用户ID（全局行政汇报线）")
 
     # === 微信转发绑定 ===
     # 业务账号绑定的微信 open_id（讨论区消息转发到微信公众号客服消息用）。

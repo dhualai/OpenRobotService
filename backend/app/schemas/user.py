@@ -20,6 +20,7 @@ class UserCreate(UserBase):
     responsibility_modules: Optional[Dict[str, List[str]]] = None
     job_level: Optional[int] = 1
     duty_text: Optional[str] = None
+    supervisor_id: Optional[str] = None
 
 class UserUpdate(BaseModel):
     password: Optional[str] = None
@@ -33,6 +34,7 @@ class UserUpdate(BaseModel):
     responsibility_modules: Optional[Dict[str, List[str]]] = None
     job_level: Optional[int] = None
     duty_text: Optional[str] = None
+    supervisor_id: Optional[str] = None
 
 class UserInDB(UserBase):
     id: str
@@ -47,6 +49,7 @@ class UserInDB(UserBase):
     responsibility_modules: Optional[Dict[str, List[str]]] = None
     job_level: Optional[int] = 1
     duty_text: Optional[str] = None
+    supervisor_id: Optional[str] = None
     class Config:
         from_attributes = True
 
@@ -63,6 +66,7 @@ class User(UserBase):
     responsibility_modules: Optional[Dict[str, List[str]]] = None
     job_level: Optional[int] = 1
     duty_text: Optional[str] = None
+    supervisor_id: Optional[str] = None
     # 用户在项目中的角色关系（含汇报人 report_to_id），用于前端构建汇报树
     project_role_relations: List[Dict[str, Any]] = []
     class Config:
