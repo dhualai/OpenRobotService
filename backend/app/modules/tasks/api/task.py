@@ -63,6 +63,22 @@ async def _add_system_comment(db: AsyncSession, task_id: int, content: str, oper
         return None
 
 
+async def _reload_ticket_with_comments(db: AsyncSession, task_id: int):
+    """重新查询工单（含 comments 关系）。
+
+    _add_system_comment 内的 db.commit() 会使 session 中已加载的关系过期，
+    导致 FastAPI 序列化响应时访问 ticket.comments 触发异步上下文外的懒加载（MissingGreenlet）。
+    在调用 _add_system_comment 之后、返回响应之前调用此函数刷新工单。
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import joinedload
+    from app.modules.tasks.models.ticket import Ticket
+    result = await db.execute(
+        select(Ticket).where(Ticket.id == task_id).options(joinedload(Ticket.comments))
+    )
+    return result.unique().scalar_one_or_none()
+
+
 @router.post("/", response_model=TicketResponse)
 async def create_task(
     ticket_data: TicketCreate,
@@ -436,7 +452,7 @@ async def update_task(
             )
             await _add_system_comment(
                 db, task_id,
-                f"<p>{user_name} 将工单状态变更为「{STATUS_LABEL.get(new_status, new_status)}」</p>",
+                f"{user_name} 将工单状态变更为「{STATUS_LABEL.get(new_status, new_status)}」",
                 username, token,
             )
         
@@ -454,23 +470,25 @@ async def update_task(
                 operator=username, operator_name=user_name,
                 description=f"{user_name} 升级了工单",
             )
-            await _add_system_comment(db, task_id, f"<p>{user_name} 升级了工单</p>", username, token)
+            await _add_system_comment(db, task_id, f"{user_name} 升级了工单", username, token)
         elif op_type_str == 'return':
             await OperationLogService.log(
                 db=db, task_id=task_id, op_type=OperationType.RETURN,
                 operator=username, operator_name=user_name,
                 description=f"{user_name} 退回了工单",
             )
-            await _add_system_comment(db, task_id, f"<p>{user_name} 退回了工单</p>", username, token)
+            await _add_system_comment(db, task_id, f"{user_name} 退回了工单", username, token)
         elif op_type_str == 'reassign':
             new_assignee = update_data.get('assigned_to', '')
+            user_map = await TicketService._get_user_map(token)
+            new_assignee_name = user_map.get(new_assignee, new_assignee)
             await OperationLogService.log(
                 db=db, task_id=task_id, op_type=OperationType.REASSIGN,
                 operator=username, operator_name=user_name,
                 detail={"new_assignee": new_assignee},
-                description=f"{user_name} 将工单重新指派给 {new_assignee}",
+                description=f"{user_name} 将工单重新指派给 {new_assignee_name}",
             )
-            await _add_system_comment(db, task_id, f"<p>{user_name} 将工单重新指派给 {new_assignee}</p>", username, token)
+            await _add_system_comment(db, task_id, f"{user_name} 将工单重新指派给 {new_assignee_name}", username, token)
         elif changed_fields:
             # 普通字段更新
             field_labels = {
@@ -486,6 +504,9 @@ async def update_task(
                 description=f"{user_name} 修改了工单的「{'、'.join(label_list)}」",
             )
 
+        # _add_system_comment 的 commit 会使 result["ticket"] 的 comments 关系过期，
+        # 需重新查询以避免 FastAPI 序列化时触发异步外的懒加载（MissingGreenlet）
+        result["ticket"] = await _reload_ticket_with_comments(db, task_id)
         return result
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=f"参数值错误: {str(ve)}")
@@ -806,11 +827,13 @@ async def update_task_status(
         # ── 向讨论区添加系统评论 ──
         await _add_system_comment(
             db, task_id,
-            f"<p>{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」</p>",
+            f"{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」",
             username, token,
         )
 
-        return updated_ticket
+        # _add_system_comment 的 commit 会使 updated_ticket 的 comments 关系过期，
+        # 需重新查询以避免 FastAPI 序列化时触发异步外的懒加载（MissingGreenlet）
+        return await _reload_ticket_with_comments(db, task_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -828,7 +851,8 @@ async def assign_task(
     try:
         username = current_user.get('username', 'system')
         user_name = current_user.get('name', username)
-        
+        token = current_user.get('token')
+
         ticket = await TicketService.assign_ticket(db, task_id, user_id)
         # ── WS 实时广播：工单改派 ──
         try:
@@ -837,8 +861,10 @@ async def assign_task(
             pass
         if not ticket:
             raise HTTPException(status_code=404, detail="任务未找到")
-        
+
         # ── 记录改派操作日志 ──
+        user_map = await TicketService._get_user_map(token)
+        assignee_name = user_map.get(user_id, user_id)
         await OperationLogService.log(
             db=db,
             task_id=task_id,
@@ -846,13 +872,15 @@ async def assign_task(
             operator=username,
             operator_name=user_name,
             detail={"new_assignee": user_id},
-            description=f"{user_name} 将工单指派给 {user_id}",
+            description=f"{user_name} 将工单指派给 {assignee_name}",
         )
 
         # ── 向讨论区添加系统评论 ──
-        await _add_system_comment(db, task_id, f"<p>{user_name} 将工单指派给 {user_id}</p>", username)
+        await _add_system_comment(db, task_id, f"{user_name} 将工单指派给 {assignee_name}", username, token)
 
-        return ticket
+        # _add_system_comment 的 commit 会使 ticket 的 comments 关系过期，
+        # 需重新查询以避免 FastAPI 序列化时触发异步外的懒加载（MissingGreenlet）
+        return await _reload_ticket_with_comments(db, task_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"分配任务失败: {str(e)}")
 

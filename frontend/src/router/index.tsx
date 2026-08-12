@@ -11,6 +11,7 @@ const TicketDetailPage = lazy(() => import('@/pages/call/TicketDetailPage'));
 const TasksView = lazy(() => import('@/pages/tasks/TasksView'));
 const TaskDetailPage = lazy(() => import('@/pages/tasks/TaskDetailPage'));
 const OperationLogsPage = lazy(() => import('@/pages/tasks/OperationLogsPage'));
+const DownloadRedirect = lazy(() => import('@/pages/DownloadRedirect'));
 
 // Admin
 const Dashboard = lazy(() => import('@/pages/admin/Dashboard'));
@@ -53,6 +54,9 @@ const WechatManage = lazy(() => import('@/pages/admin/WechatManage'));
 export const router = createBrowserRouter([
   { path: '/login', element: <Login /> },
   { path: '/no-permission', element: <NoPermission /> },
+  // 下载中转页：微信内「在浏览器中打开」时，WebView 地址栏需是本页 URL 而非下载链接，
+  // 否则微信拦截下载回退到工单页，用户打开的是工单页 URL 而非下载。
+  { path: '/download', element: <DownloadRedirect /> },
 
   // 工作台主入口：底部三 Tab（我要摇人 / 系统任务 / 后台管理）
   {

@@ -134,6 +134,7 @@ export default function TaskDetailPage() {
   const [reassignReason, setReassignReason] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
+  const [statusChanging, setStatusChanging] = useState(false);
 
   // U老师 诊断
   const [diagnosing, setDiagnosing] = useState(false);
@@ -251,7 +252,9 @@ export default function TaskDetailPage() {
 
   const handleStatusChange = async (action: { nextStatus: string }) => {
     if (!detail) return;
-    
+    if (statusChanging) return;
+
+    setStatusChanging(true);
     try {
       await request<Ticket>(`/${detail.id}/status`, {
         method: 'PATCH',
@@ -263,6 +266,8 @@ export default function TaskDetailPage() {
       Toast({ message: `状态已更新为${statusLabel}`, theme: 'success' });
     } catch (err) {
       Toast({ message: `状态更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setStatusChanging(false);
     }
   };
 
@@ -414,10 +419,24 @@ export default function TaskDetailPage() {
       minioPath = `${parsed.bucket}/${parsed.objectKey}`;
     }
     const authToken = localStorage.getItem('auth_token') || '';
-    // 拼成绝对 URL：必须带环境前缀（/p/api），否则在系统浏览器打开会落到 SPA 404 → 微信 OAuth 回跳。
-    // token 随 URL 携带，外部浏览器可直接下载（接口校验 token 等价于登录态）。
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
     return `${origin}${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
+  };
+
+  /** 微信内下载中转页 URL（/download?path=...&filename=...&token=...）。
+   *  微信内不能直接 window.location.href = 下载URL（Content-Disposition:attachment 会被微信拦截回退），
+   *  需先跳到同源中转页，用户点「在浏览器中打开」时 WebView 地址栏是中转页 URL，外部浏览器打开中转页再跳下载。 */
+  const buildDownloadRedirectUrl = (att: Attachment): string | null => {
+    const rawPath = att.path || att.url || '';
+    if (!rawPath) return null;
+    let minioPath = rawPath;
+    if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
+      const parsed = parseMinioPath(rawPath);
+      if (!parsed) return null;
+      minioPath = `${parsed.bucket}/${parsed.objectKey}`;
+    }
+    const authToken = localStorage.getItem('auth_token') || '';
+    return `/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
   };
 
   const handleAttachmentDownload = async (att: Attachment, idx: number) => {
@@ -431,7 +450,9 @@ export default function TaskDetailPage() {
       // 故微信内用 window.location.href 跳绝对地址（弹「在浏览器打开」横幅，浏览器内可下载）；
       // 非微信环境用 a.click() 直接触发下载。
       if (/MicroMessenger/i.test(navigator.userAgent)) {
-        window.location.href = downloadUrl;
+        // 微信内：跳中转页（非下载 URL），用户点「在浏览器中打开」后中转页跳下载
+        const redirectUrl = buildDownloadRedirectUrl(att);
+        if (redirectUrl) window.location.href = redirectUrl;
       } else {
         const a = document.createElement('a');
         a.href = downloadUrl;
@@ -465,11 +486,14 @@ export default function TaskDetailPage() {
   const openAttachmentViewer = (att: Attachment) => {
     const previewUrl = buildPreviewUrl(att);
     if (!previewUrl) { Toast({ message: '附件路径无效', theme: 'error' }); return; }
+    // 微信内 downloadUrl 指向中转页（避免直接跳下载URL被微信拦截回退）
+    const isWechat = /MicroMessenger/i.test(navigator.userAgent);
+    const dl = isWechat ? buildDownloadRedirectUrl(att) : buildAttachmentDownloadUrl(att);
     setViewer({
       filename: att.filename || '未命名文件',
       size: att.size,
       previewUrl,
-      downloadUrl: buildAttachmentDownloadUrl(att) || previewUrl,
+      downloadUrl: dl || previewUrl,
     });
   };
 
@@ -741,10 +765,11 @@ export default function TaskDetailPage() {
             </div>
             <div className="detail-card__action-btns">
               {getActionButtons().map((action, index) => (
-                <Button 
+                <Button
                   key={index}
-                  size="small" 
-                  theme={action.theme as any} 
+                  size="small"
+                  theme={action.theme as any}
+                  disabled={statusChanging}
                   onClick={() => {
                     if (action.actionType === 'resume') {
                       setShowResumePopup(true);
