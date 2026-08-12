@@ -26,7 +26,7 @@ import UserSelect from '@/shared/components/UserSelect';
 import SafeHtml from '@/shared/components/SafeHtml';
 import { useAuthStore } from '@/stores/auth';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
-import { formatDateTime } from '@/shared/utils/url';
+import { formatDateTimeShort, deadlinePickerValue } from '@/shared/utils/url';
 import type { UserItem } from '@/api/users';
 
 interface AiDiagnosis {
@@ -649,8 +649,8 @@ export default function TicketDetailPage() {
           <h2 className="detail-card__title">{ticket.title || '(无标题)'}</h2>
           {(ticket.project_name || ticket.project) && <DetailRow label="所属项目" value={ticket.project_name || ticket.project || ''} />}
           {ticket.contact && <DetailRow label="联系人" value={ticket.contact} />}
-          <DetailRow label="创建时间" value={ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''} />
-          <DetailRow label="最晚解决时间" value={ticket.deadline_at ? formatDateTime(String(ticket.deadline_at)) : '未设置'} />
+          <DetailRow label="创建时间" value={ticket.created_at ? formatDateTimeShort(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''} />
+          <DetailRow label="最晚解决时间" value={ticket.deadline_at ? formatDateTimeShort(String(ticket.deadline_at)) : '未设置'} />
         </div>
 
         {/* 人员流转：发起人 → 处理人（与历史工单列表页同款 task-card2__people 样式）
@@ -791,13 +791,20 @@ export default function TicketDetailPage() {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (dl) {
-                                  const a = document.createElement('a');
-                                  a.href = dl;
-                                  a.download = filename;
-                                  a.target = '_blank';
-                                  document.body.appendChild(a);
-                                  a.click();
-                                  document.body.removeChild(a);
+                                  // 微信内置 WebView 会拦截 a.click() 下载并强制弹「在浏览器打开」，
+                                  // 系统浏览器打开缺环境前缀的 URL 会 404 → 回跳微信。故微信内用
+                                  // window.location.href 跳绝对地址（弹横幅，浏览器内可下载）；非微信用 a.click()。
+                                  if (/MicroMessenger/i.test(navigator.userAgent)) {
+                                    window.location.href = dl;
+                                  } else {
+                                    const a = document.createElement('a');
+                                    a.href = dl;
+                                    a.download = filename;
+                                    a.target = '_blank';
+                                    document.body.appendChild(a);
+                                    a.click();
+                                    document.body.removeChild(a);
+                                  }
                                 } else {
                                   Toast({ message: '附件路径无效', theme: 'error' });
                                 }
@@ -994,7 +1001,7 @@ export default function TicketDetailPage() {
           mode="hour"
           title="选择最晚解决时间"
           format="YYYY-MM-DD HH:00"
-          value={editForm.deadline_at || undefined}
+          value={deadlinePickerValue(editForm.deadline_at)}
           onConfirm={(v) => {
             const d = new Date(typeof v === 'number' ? v : String(v));
             if (!isNaN(d.getTime())) {

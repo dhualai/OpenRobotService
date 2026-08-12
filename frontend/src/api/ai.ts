@@ -244,76 +244,9 @@ export const qaTicketAck = (sessionId: string, dispatchId = '', status = 'dispat
     status,
   });
 
-/** 上传接口响应的 data 字段（后端 /api/ai/qa/upload 返回） */
-export interface UploadData {
-  saved: number;
-  files: Array<{ filename: string; size: number; path: string; object_path?: string }>;
-  /** 后端确认回执：只传图片=VLM 初步诊断；只传非图片=「暂不支持解析」提示 */
-  ack_message?: string;
-  /** 仅附带 message 文字非空时有值：完整诊断的 AI 回复（含提单 ticket） */
-  ai_response?: { message?: string; action?: string; thinking?: string; ticket?: unknown } | null;
-}
-
-/** 上传附件（FormData）。
- * message 为可选的附带文字：非空时后端在上传后顺带跑完整诊断并返回 ai_response；
- * 为空时后端只返回确认回执 ack_message。使用 XMLHttpRequest 以支持上传进度回调
- * （fetch 无法获取 upload 进度）。onProgress 接收 0~100 的整数百分比。
- */
-export interface UploadResult {
-  ok: boolean;
-  status: number;
-  data: { code?: number; message?: string; data?: UploadData; [k: string]: unknown };
-}
-export const qaUpload = (
-  sessionId: string,
-  files: File[],
-  message = '',
-  onProgress?: (percent: number) => void,
-): Promise<UploadResult> => {
-  // 401 刷新重试一次（对齐 fetchWithAuth）：上传+文字时后端会跑诊断可能触发提单，
-  // token 失效后端返回 401（而非 200+空 created_by），此处刷新重试避免上传失败。
-  const doUpload = (tok: string | null): Promise<UploadResult> => new Promise((resolve, reject) => {
-    const formData = new FormData();
-    formData.append('session_id', sessionId);
-    if (message.trim()) formData.append('message', message.trim());
-    files.forEach((f) => formData.append('files', f));
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${BASE}/qa/upload`);
-    if (tok) xhr.setRequestHeader('Authorization', `Bearer ${tok}`);
-    xhr.upload.onprogress = (e: ProgressEvent) => {
-      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
-    };
-    xhr.onload = () => {
-      let data: UploadResult['data'] = {};
-      try {
-        data = JSON.parse(xhr.responseText);
-      } catch {
-        /* 非 JSON 响应，忽略解析 */
-      }
-      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, data });
-    };
-    xhr.onerror = () => reject(new Error('网络错误，上传失败'));
-    xhr.send(formData);
-  });
-  return (async () => {
-    let res = await doUpload(useAuthStore.getState().token);
-    if (res.status === 401) {
-      const ok = await useAuthStore.getState().refreshAuthToken();
-      if (ok) {
-        res = await doUpload(useAuthStore.getState().token);
-      }
-      if (res.status === 401) {
-        kickToLogin('登录已过期，请重新登录');
-        throw new Error('UNAUTHORIZED');
-      }
-    }
-    return res;
-  })();
-};
-
 
 // ---------------------------------------------------------------------------
-// 流式上传（SSE）—— /qa/upload/stream
+// 流式上传（SSE）—— /qa/upload（带 Accept: text/event-stream 触发流式）
 // ---------------------------------------------------------------------------
 
 export interface UploadStreamCallbacks {
@@ -332,8 +265,8 @@ export interface UploadStreamCallbacks {
 }
 
 /**
- * 流式上传附件（FormData + SSE）。与 /upload 非流式并存：文件保存、VLM 图片分析、
- * 附带文字的完整诊断均通过 SSE 逐步推送，前端可实时渲染。
+ * 流式上传附件（FormData + SSE，带 Accept: text/event-stream 触发 /qa/upload 流式分支）。
+ * 文件保存、VLM 图片分析、附带文字的完整诊断均通过 SSE 逐步推送，前端可实时渲染。
  */
 export const qaUploadStream = async (
   sessionId: string,
@@ -362,11 +295,14 @@ export const qaUploadStream = async (
     files.forEach((f) => formData.append('files', f));
 
     const controller = new AbortController();
-    const resp = await fetch(`${BASE}/qa/upload/stream`, {
+    const resp = await fetch(`${BASE}/qa/upload`, {
       method: 'POST',
       body: formData,
       signal: controller.signal,
-      headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+      headers: {
+        Accept: 'text/event-stream',
+        ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
+      },
     });
     if (resp.status === 401) return false;
 

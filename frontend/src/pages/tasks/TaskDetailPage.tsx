@@ -13,9 +13,10 @@ import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
+import { getOperationLogs, type OperationLog } from '@/api/ticket';
 import { uploadCommentAttachment } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP } from '@/shared/constants/ticket';
-import { formatDateTime } from '@/shared/utils/url';
+import { formatDateTimeShort, deadlinePickerValue } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
 import type { ProjectMember } from '@/api/projects';
@@ -142,6 +143,9 @@ export default function TaskDetailPage() {
   // AI 摘要（后端定时写入评论，前端从评论提取展示）
   const [aiSummary, setAiSummary] = useState('');
 
+  // 工单动态（操作日志，用于详情页滚动展示）
+  const [opLogs, setOpLogs] = useState<OperationLog[]>([]);
+
   // 项目成员（用于讨论区 @ 提及）
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
 
@@ -182,6 +186,17 @@ export default function TaskDetailPage() {
       imgUrl: WECHAT_CONFIG.shareImgUrl,
     });
   }, [detail?.id]);
+
+  // 加载工单动态（操作日志）
+  const fetchOpLogs = async () => {
+    if (!detailId) return;
+    try {
+      const data = await getOperationLogs(detailId);
+      setOpLogs(data || []);
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => { fetchOpLogs(); }, [detailId]);
 
   const getCurrentUserRoles = () => {
     const currentUsername = username;
@@ -330,6 +345,7 @@ export default function TaskDetailPage() {
     const refreshed = await request<Ticket>(`/${detailId}?load_comments=true`, { skipCache: true });
     setDetail(refreshed);
     refreshTasks();
+    fetchOpLogs();
   };
 
   const handleReturn = async () => {
@@ -398,9 +414,8 @@ export default function TaskDetailPage() {
       minioPath = `${parsed.bucket}/${parsed.objectKey}`;
     }
     const authToken = localStorage.getItem('auth_token') || '';
-    // 必须拼成绝对 URL：微信内 window.open(相对URL) 打开的是微信内置 WebView，无法下载；
-    // 用户「在浏览器打开」后相对路径在外部浏览器解析失败会落到 SPA 404 → 未登录重定向微信 OAuth
-    // （表现为「提示跳转到微信客户端」）。绝对 URL 携带 token，在外部浏览器可直接下载。
+    // 拼成绝对 URL：必须带环境前缀（/p/api），否则在系统浏览器打开会落到 SPA 404 → 微信 OAuth 回跳。
+    // token 随 URL 携带，外部浏览器可直接下载（接口校验 token 等价于登录态）。
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
     return `${origin}${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
   };
@@ -411,13 +426,21 @@ export default function TaskDetailPage() {
 
     setDownloadingIdx(idx);
     try {
-      const a = document.createElement('a');
-      a.href = downloadUrl;
-      a.download = att.filename || '';
-      a.target = '_blank';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      // 微信内置 WebView 会拦截程序化 a.click() 下载并强制弹「在浏览器打开」，
+      // 且系统浏览器打开缺环境前缀的 URL 会 404 → 回跳微信。
+      // 故微信内用 window.location.href 跳绝对地址（弹「在浏览器打开」横幅，浏览器内可下载）；
+      // 非微信环境用 a.click() 直接触发下载。
+      if (/MicroMessenger/i.test(navigator.userAgent)) {
+        window.location.href = downloadUrl;
+      } else {
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = att.filename || '';
+        a.target = '_blank';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
     } catch (err) {
       Toast({ message: `下载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
@@ -687,14 +710,6 @@ export default function TaskDetailPage() {
         fixed
         leftArrow
         onLeftClick={handleBack}
-        right={
-          <span
-            onClick={() => navigate(`/tasks/${detailId}/operations`)}
-            style={{ fontSize: 14, color: '#0052d9', cursor: 'pointer', fontWeight: 500 }}
-          >
-            流转记录
-          </span>
-        }
       />
       <div className="page-container" style={{ paddingTop: 56 }}>
         <div className="detail-card">
@@ -779,24 +794,31 @@ export default function TaskDetailPage() {
               </div>
             </div>
             <div className="detail-info-item">
-              <span className="detail-info-item__icon">🕐</span>
+              <span className="detail-info-item__icon">📁</span>
               <div className="detail-info-item__content">
-                <span className="detail-info-item__label">创建时间</span>
-                <span className="detail-info-item__value">{formatDateTime(detail.created_at)}</span>
+                <span className="detail-info-item__label">所属项目</span>
+                <span className="detail-info-item__value">{detail.project_name || '-'}</span>
               </div>
             </div>
             <div className="detail-info-item">
               <span className="detail-info-item__icon">⏰</span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">最晚解决时间</span>
-                <span className="detail-info-item__value">{detail.deadline_at ? formatDateTime(detail.deadline_at) : '未设置'}</span>
+                <span className="detail-info-item__value">{detail.deadline_at ? formatDateTimeShort(detail.deadline_at) : '未设置'}</span>
+              </div>
+            </div>
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon">🕐</span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">创建时间</span>
+                <span className="detail-info-item__value">{formatDateTimeShort(detail.created_at)}</span>
               </div>
             </div>
             <div className="detail-info-item">
               <span className="detail-info-item__icon">🔄</span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">更新时间</span>
-                <span className="detail-info-item__value">{formatDateTime(detail.updated_at)}</span>
+                <span className="detail-info-item__value">{formatDateTimeShort(detail.updated_at)}</span>
               </div>
             </div>
           </div>
@@ -805,6 +827,43 @@ export default function TaskDetailPage() {
         <div className="detail-card">
           <h4 className="detail-card__h">问题描述</h4>
           <SafeHtml html={detail.description || '<p style="color:#999">无描述</p>'} />
+        </div>
+
+        <div
+          className="detail-card ticket-dynamics-card"
+          onClick={() => navigate(`/tasks/${detailId}/operations`)}
+          role="button"
+          tabIndex={0}
+        >
+          <h4 className="detail-card__h">
+            工单动态
+            <span className="ticket-dynamics-card__more">查看全部 ›</span>
+          </h4>
+          {(() => {
+            if (opLogs.length === 0) {
+              return <p style={{ color: '#999' }}>暂无动态</p>;
+            }
+            const displayName = (l: OperationLog) => l.operator_name || l.operator;
+            const formatTime = (ts: string) => {
+              const d = new Date(ts);
+              return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            };
+            const items = opLogs.map((l) => ({
+              key: l.id,
+              text: `${formatTime(l.created_at)} · ${l.description || l.operation_type}`,
+            }));
+            // 复制一份用于无缝滚动
+            const loopItems = [...items, ...items];
+            return (
+              <div className="ticket-dynamics-scroll" style={{ '--count': items.length } as React.CSSProperties}>
+                <div className="ticket-dynamics-scroll__track">
+                  {loopItems.map((it, i) => (
+                    <div className="ticket-dynamics-scroll__item" key={`${it.key}-${i}`}>{it.text}</div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         <div className="detail-card">
@@ -918,12 +977,6 @@ export default function TaskDetailPage() {
                 </>
               );
             })()}
-          </div>
-        )}
-
-        {detail.project_name && (
-          <div className="detail-card">
-            <DetailRow label="所属项目" value={detail.project_name} />
           </div>
         )}
 
@@ -1058,7 +1111,7 @@ export default function TaskDetailPage() {
           mode="hour"
           title="选择最晚解决时间"
           format="YYYY-MM-DD HH:00"
-          value={editForm.deadline_at || undefined}
+          value={deadlinePickerValue(editForm.deadline_at)}
           onConfirm={(v) => {
             const d = new Date(typeof v === 'number' ? v : String(v));
             if (!isNaN(d.getTime())) {
