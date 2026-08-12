@@ -11,9 +11,22 @@ from ai.agents.AiTaskPlatform.prompts import (
     SUMMARIZE_SYSTEM_PROMPT,
     SUMMARIZE_FULL_TEMPLATE,
     SUMMARIZE_INCREMENTAL_TEMPLATE,
+    select_system_prompt as _select_system_prompt,
 )
 
 logger = get_logger("TASK_AGENT")
+
+
+def _task_is_platform(task, title: str, desc: str) -> bool:
+    """判断任务是否属于摇人吧服务号（平台）场景，用于选 U老师 role。"""
+    try:
+        from ai.agents.AiTaskPlatform.schemas import TaskContext
+        from ai.agents.AiTaskPlatform.contexts.contexts import is_platform_ticket
+        t = task.title if (task is not None and getattr(task, "title", None)) else (title or "")
+        d = task.description if (task is not None and getattr(task, "description", None)) else (desc or "")
+        return is_platform_ticket(TaskContext(task_id="0", title=t or "", description=d or ""))
+    except Exception:
+        return False
 
 
 class SummarizeFlow:
@@ -136,7 +149,8 @@ class SummarizeFlow:
             )
 
         summary = await self._llm_client.complete(
-            prompt=prompt, system_prompt=SUMMARIZE_SYSTEM_PROMPT,
+            prompt=prompt,
+            system_prompt=_select_system_prompt(_task_is_platform(task, task_title, task_desc), "summarize"),
             max_tokens=300, temperature=0.3,
         )
         summary_text = summary.strip()

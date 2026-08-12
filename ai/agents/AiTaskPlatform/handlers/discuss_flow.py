@@ -7,7 +7,10 @@ discuss = 针对性：按 query 关键词触发日志/图片/代码/历史，组
 import time
 
 from ai.core.logging import get_logger
-from ai.agents.AiTaskPlatform.prompts import DISCUSS_SYSTEM_PROMPT, DISCUSS_USER_TEMPLATE
+from ai.agents.AiTaskPlatform.prompts import (
+    DISCUSS_SYSTEM_PROMPT, DISCUSS_USER_TEMPLATE,
+    select_system_prompt as _select_system_prompt,
+)
 
 logger = get_logger("TASK_AGENT")
 
@@ -132,7 +135,8 @@ class DiscussFlow:
 
         t_llm = time.perf_counter()
         reply = await self._llm_client.complete(
-            prompt=prompt, system_prompt=DISCUSS_SYSTEM_PROMPT,
+            prompt=prompt,
+            system_prompt=_select_system_prompt(self._is_platform_ticket(ctx), "discuss"),
             max_tokens=600, temperature=0.4,
         )
         self._add_trace(self.NODE_LLM, "ok",

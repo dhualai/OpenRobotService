@@ -9,7 +9,10 @@ import re
 import time
 
 from ai.core.logging import get_logger
-from ai.agents.AiTaskPlatform.prompts import DIAGNOSE_SYSTEM_PROMPT, DIAGNOSE_USER_TEMPLATE
+from ai.agents.AiTaskPlatform.prompts import (
+    DIAGNOSE_SYSTEM_PROMPT, DIAGNOSE_USER_TEMPLATE,
+    select_system_prompt as _select_system_prompt,
+)
 from ai.agents.AiTaskPlatform.contexts import build_task_ctx, build_img_ctx
 
 logger = get_logger("TASK_AGENT")
@@ -267,7 +270,8 @@ class DiagnoseFlow:
         )
 
         raw = await self._llm_client.complete(
-            prompt=prompt, system_prompt=DIAGNOSE_SYSTEM_PROMPT,
+            prompt=prompt,
+            system_prompt=_select_system_prompt(self._is_platform_ticket(context), "diagnose"),
             max_tokens=1500, temperature=0.3,
         )
         self._add_trace(self.NODE_LLM, "ok",
