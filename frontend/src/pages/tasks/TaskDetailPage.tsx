@@ -1130,8 +1130,10 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      {/* 最晚解决时间选择器：mode=hour 最小单位小时 */}
-      <Popup visible={editDeadlinePickerVisible} onClose={() => setEditDeadlinePickerVisible(false)} placement="bottom">
+      {/* 最晚解决时间选择器：mode=hour 最小单位小时
+          destroyOnClose + preventScrollThrough={false} 修复微信内置浏览器两层 Popup 嵌套时
+          DateTimePicker 滚轮无法滚动（详见 TicketDetailPage 同名注释） */}
+      <Popup visible={editDeadlinePickerVisible} onClose={() => setEditDeadlinePickerVisible(false)} placement="bottom" destroyOnClose preventScrollThrough={false}>
         <DateTimePicker
           mode="hour"
           title="选择最晚解决时间"

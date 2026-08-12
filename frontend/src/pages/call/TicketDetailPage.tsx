@@ -1009,8 +1009,13 @@ export default function TicketDetailPage() {
         </div>
       </Popup>
 
-      {/* 最晚解决时间选择器：mode=hour 最小单位小时 */}
-      <Popup visible={editDeadlinePickerVisible} onClose={() => setEditDeadlinePickerVisible(false)} placement="bottom">
+      {/* 最晚解决时间选择器：mode=hour 最小单位小时
+          - destroyOnClose：每次关闭彻底销毁 DateTimePicker DOM，避免微信内置浏览器（iOS WKWebView）下
+            两层 Popup 嵌套（编辑 Popup + 时间选择 Popup）时 useLockScroll 残留 touchmove 监听器
+            导致再次打开后滚轮无法滚动的问题
+          - preventScrollThrough={false}：DateTimePicker 自身滚轮需接收 touchmove，
+            内层 Popup 不再额外锁背景滚动，避免与外层编辑 Popup 的滚动锁互相干扰 */}
+      <Popup visible={editDeadlinePickerVisible} onClose={() => setEditDeadlinePickerVisible(false)} placement="bottom" destroyOnClose preventScrollThrough={false}>
         <DateTimePicker
           mode="hour"
           title="选择最晚解决时间"
