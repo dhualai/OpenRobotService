@@ -140,6 +140,8 @@ class LogIndex:
         self._task_idx = {}     # task_id -> [line_numbers]
         self._path_idx = {}     # path_id -> [line_numbers]
         self._err_lines = []    # error/warn line numbers
+        self._err_idx = {}      # error_code -> [line_numbers]
+        self._err_hour = {}     # "YYYY-MM-DD HH" -> count（错误最密集时段）
         self._total = 0
         self._built = False
         self._signal_lines = []  # 含关键信号的行号（一致性/MAPF-T/ABORTED等）
@@ -157,6 +159,14 @@ class LogIndex:
                 for p in fld.get("paths", []): self._path_idx.setdefault(p, []).append(n)
                 if fld.get("level") in ("ERROR","WARN","WARNING","FATAL") or "error" in fld:
                     self._err_lines.append(n)
+                    _err = fld.get("error")
+                    if _err:
+                        # 修剪：error_code 里可能带描述，取第一个空格前的最长子串作归类键
+                        code = _err.strip()
+                        self._err_idx.setdefault(code, []).append(n)
+                    if ts:
+                        hour = ts[:13]
+                        self._err_hour[hour] = self._err_hour.get(hour, 0) + 1
                 # 路径状态异常也是错误信号
                 if "ABORTED" in line or "CANCELED" in line:
                     self._err_lines.append(n)
@@ -173,6 +183,94 @@ class LogIndex:
                       len(self._task_idx), len(self._err_lines), elapsed))
         self._built = True
         return self
+
+    # ── 事实发现：把日志里的客观事实喂给 LLM，防止它凭空捏造日期/车型/任务ID ──
+    def discover_facts(self, top_n: int = 8) -> Dict:
+        """返回日志客观事实骨架，供 sub_agent 注入 Prompt。
+
+        返回示例:
+        {
+          "lines": 609397,
+          "errors": 296387,
+          "time_start": "2026-08-11 11:16",
+          "time_end": "2026-08-12 10:16",
+          "date": "2026-08-11",
+          "top_robots": ["XNA-169", ...],
+          "top_tasks": ["I|1098000", ...],
+          "top_errors": ["xxx", ...],   # 高频 error_code
+          "error_hours": [("2026-08-11 11", 1234), ...],  # 错误最多的时段
+        }
+        """
+        if not self._built:
+            self.build()
+
+        ts_keys = sorted(self._ts_idx.keys())
+        time_start = ts_keys[0][:16] if ts_keys else None
+        time_end = ts_keys[-1][:16] if ts_keys else None
+
+        def _top(idx, n=top_n):
+            ranked = sorted(idx.items(), key=lambda kv: -len(kv[1]))
+            return [k for k, _ in ranked[:n]]
+
+        # 错误最密集的时段（build 时已按小时聚合）
+        error_hours = sorted(self._err_hour.items(), key=lambda kv: -kv[1])[:top_n]
+
+        # 高频 error_code（从 error 字段聚合并修剪）
+        err_cnt: Dict[str, int] = {}
+        _err_field_idx = self._err_idx  # {error_code: [lines]}
+        for code, lines in _err_field_idx.items():
+            if code:
+                err_cnt[code] = len(lines)
+        top_errors = [c for c, _ in sorted(err_cnt.items(), key=lambda kv: -kv[1])[:top_n]]
+
+        facts = {
+            "lines": self._total,
+            "errors": len(set(self._err_lines)),
+            "time_start": time_start,
+            "time_end": time_end,
+            "top_robots": _top(self._robot_idx),
+            "top_tasks": _top(self._task_idx),
+            "top_errors": top_errors,
+            "error_hours": error_hours,
+        }
+        if time_start and len(time_start) >= 10:
+            facts["date"] = time_start[:10]
+        return facts
+
+    # ── 校验工具：查询参数是否命中有效数据（供 sub_agent 拦截伪造的过滤条件）──
+    def valid_robot(self, fval: str) -> Optional[str]:
+        """机器人过滤是否命中任何索引 key。
+
+        - 车型 ID 形如 XNA-169 / USP-A，必须含字母前缀；纯数字（如 "100"）
+          不是有效车型，直接判无效，防止 LLM 拿无意义数字空跑。
+        - 命中返回真实 key，否则 None。
+        """
+        if not fval:
+            return None
+        if not re.search(r"[A-Za-z]", fval):
+            return None
+        for key in self._robot_idx:
+            if fval in key:
+                return key
+        return None
+
+    def valid_task(self, fval: str) -> Optional[str]:
+        if not fval:
+            return None
+        for key in self._task_idx:
+            if fval in key:
+                return key
+        return None
+
+    def count_in_window(self, time_start: str, time_end: str) -> int:
+        """统计时间窗口 [time_start, time_end] 内索引到的行数（用于太宽查询拦截）。"""
+        if not (time_start and time_end):
+            return 0
+        cnt = 0
+        for ts, lines in self._ts_idx.items():
+            if time_start <= ts <= time_end:
+                cnt += len(lines)
+        return cnt
 
     def query(self, q: LogQuery) -> str:
         if not self._built: self.build()
