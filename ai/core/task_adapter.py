@@ -214,6 +214,7 @@ def upsert_task(ticket: dict, created_by: str = "") -> Task:
                 existing.created_by = created_by
             db.commit()
             db.refresh(existing)
+            db.expunge(existing)  # 脱离 session，避免返回后 DetachedInstanceError
             return existing
         rec = Task(**fields)
         db.add(rec)
@@ -221,6 +222,7 @@ def upsert_task(ticket: dict, created_by: str = "") -> Task:
         db.refresh(rec)
         # 写入操作日志：创建工单 + 初始状态变更（source='ai' 的工单也补日志）
         _log_task_creation(db, rec, created_by)
+        db.expunge(rec)  # 脱离 session，避免返回后 DetachedInstanceError
         return rec
     finally:
         db.close()
