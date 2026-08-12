@@ -41,6 +41,10 @@ _RE_NUMNODES = re.compile(r"Num Of Node:(\d+)")
 _RE_MAPF_T = re.compile(r"MAPF-T:([\d.]+)")    # MAPF 规划耗时
 _RE_WAIT_T = re.compile(r"WAIT-T:([\d.]+)")     # 等待耗时
 
+# 从 ERROR/WARNING 消息里提取"中文错误短语"作归类键（不依赖 error_code= 格式）
+# 匹配如: last_node_index校验失败 / 当前位置与last_node_index不匹配 / 路径规划超时 ...
+_RE_ERR_PHRASE = re.compile(r"([\u4e00-\u9fa5A-Za-z_]{1,40}?(?:校验失败|失败|异常|不匹配|拒绝|超时|错误|为空|不存在|无法|失效))")
+
 
 def extract_fields(line: str) -> Dict:
     fld = {}
@@ -120,6 +124,7 @@ def fields_summary(fld: Dict) -> str:
 class LogQuery:
     def __init__(self, time_start=None, time_end=None, robot_filter=None,
                  task_filter=None, path_filter=None, error_only=False,
+                 keyword=None,
                  context_before=2, context_after=2, max_results=200):
         self.time_start = time_start
         self.time_end = time_end
@@ -127,6 +132,7 @@ class LogQuery:
         self.task_filter = task_filter
         self.path_filter = path_filter
         self.error_only = error_only
+        self.keyword = (keyword or "").strip()
         self.context_before = context_before
         self.context_after = context_after
         self.max_results = max_results
@@ -139,12 +145,15 @@ class LogIndex:
         self._robot_idx = {}    # robot_id -> [line_numbers]
         self._task_idx = {}     # task_id -> [line_numbers]
         self._path_idx = {}     # path_id -> [line_numbers]
-        self._err_lines = []    # error/warn line numbers
+        self._err_lines = []    # error/warn line numbers（可能含重复，同行多信号）
         self._err_idx = {}      # error_code -> [line_numbers]
         self._err_hour = {}     # "YYYY-MM-DD HH" -> count（错误最密集时段）
+        self._err_minute = {}   # "YYYY-MM-DD HH:MM" -> 错误/警告行数（Discovery 热窗口，零重扫）
         self._total = 0
         self._built = False
         self._signal_lines = []  # 含关键信号的行号（一致性/MAPF-T/ABORTED等）
+        self._signal_minute = {}  # "YYYY-MM-DD HH:MM" -> 信号行数（口径与错误行一致）
+        self._level_count = {}    # level -> 行数（INFO/ERROR/WARNING/...）
 
     def build(self) -> "LogIndex":
         t0 = _time.perf_counter()
@@ -153,28 +162,45 @@ class LogIndex:
                 self._total = n
                 fld = extract_fields(line)
                 ts = fld.get("ts", "")
+                lv = fld.get("level")
+                if lv:
+                    self._level_count[lv] = self._level_count.get(lv, 0) + 1
                 if ts: self._ts_idx.setdefault(ts[:19], []).append(n)
                 for r in fld.get("robots", []): self._robot_idx.setdefault(r, []).append(n)
                 for t in fld.get("tasks", []): self._task_idx.setdefault(t, []).append(n)
                 for p in fld.get("paths", []): self._path_idx.setdefault(p, []).append(n)
-                if fld.get("level") in ("ERROR","WARN","WARNING","FATAL") or "error" in fld:
+                is_err = fld.get("level") in ("ERROR","WARN","WARNING","FATAL") or "error" in fld
+                if is_err:
                     self._err_lines.append(n)
                     _err = fld.get("error")
                     if _err:
-                        # 修剪：error_code 里可能带描述，取第一个空格前的最长子串作归类键
                         code = _err.strip()
                         self._err_idx.setdefault(code, []).append(n)
+                    else:
+                        # 无 error_code= 时，从消息提取中文错误短语作归类键（如 "校验失败"/"不匹配"）
+                        _ph = _RE_ERR_PHRASE.search(line)
+                        if _ph:
+                            ph = _ph.group(1).strip()
+                            self._err_idx.setdefault(ph, []).append(n)
                     if ts:
                         hour = ts[:13]
                         self._err_hour[hour] = self._err_hour.get(hour, 0) + 1
+                        minute = ts[:16]
+                        self._err_minute[minute] = self._err_minute.get(minute, 0) + 1
                 # 路径状态异常也是错误信号
                 if "ABORTED" in line or "CANCELED" in line:
                     self._err_lines.append(n)
+                    if ts:
+                        minute = ts[:16]
+                        self._err_minute[minute] = self._err_minute.get(minute, 0) + 1
                 # 一致性校验失败 / 路径截断 / MAPF耗时
                 _SIGNAL_KW = ("一致性超过update阈值", "一致性不满足", "MAPF-T:", "WAIT-T:", "等待时间超限")
                 if any(kw in line for kw in _SIGNAL_KW):
                     self._err_lines.append(n)
                     self._signal_lines.append(n)
+                    if ts:
+                        minute = ts[:16]
+                        self._signal_minute[minute] = self._signal_minute.get(minute, 0) + 1
                 if n % 50000 == 0:
                     logger.info("{:,} lines indexed ({:.0f}s)".format(n, _time.perf_counter()-t0))
         elapsed = _time.perf_counter() - t0
@@ -312,6 +338,19 @@ class LogIndex:
                 return "(no match: time={}~{} robot={} task={})".format(
                     q.time_start, q.time_end, q.robot_filter, q.task_filter)
 
+        # 关键词过滤：先在 cand 范围内扫描含关键词的行，得到精确命中集合
+        if q.keyword:
+            kw_lines = set()
+            with open(self.log_path, "r", encoding="utf-8", errors="replace") as fh:
+                for cur, line in enumerate(fh, 1):
+                    if cur in cand and q.keyword in line:
+                        kw_lines.add(cur)
+            cand = kw_lines
+            if not cand:
+                return "(no match: keyword={} robot={} task={} time={}~{})".format(
+                    q.keyword, q.robot_filter, q.task_filter,
+                    q.time_start or "-", q.time_end or "-")
+
         # 优先取信号行 + 尾行，再加上下文
         all_cand = sorted(cand)
         priority = [ln for ln in all_cand if ln in self._signal_lines]
@@ -346,6 +385,7 @@ class LogIndex:
         if q.robot_filter: hdr += " | robot: {}".format(q.robot_filter)
         if q.task_filter: hdr += " | task: {}".format(q.task_filter)
         if q.time_start: hdr += " | time: {}~{}".format(q.time_start, q.time_end)
+        if q.keyword: hdr += " | keyword: {}".format(q.keyword)
         return hdr + "\n\n" + "\n".join(results)
 
 

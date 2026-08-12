@@ -113,6 +113,7 @@ class AIConfig(BaseModel):
 
     # ========== 文档路径 ==========
     docs_path: str = Field(default="", description="原始文档根目录，默认 ai/docs/")
+    log_manual_dir: str = Field(default="", description="日志分析手册目录（分诊 Discovery 层读手册用）")
 
     # ========== CodeSkill 代码检索 ==========
     code_skill_paths: str = Field(default="", description="代码索引根目录，逗号分隔")
@@ -282,6 +283,7 @@ def get_ai_config() -> AIConfig:
         internal_api_key=os.getenv("INTERNAL_API_KEY", ""),
         # 文档路径
         docs_path=os.getenv("DOCS_PATH", ""),
+        log_manual_dir=os.getenv("LOG_MANUAL_DIR", ""),
         media_url_prefix=os.getenv("MEDIA_URL_PREFIX", "/api/ai/media"),
         code_skill_paths=os.getenv("CODE_SKILL_PATHS", ""),
         # 企业微信
