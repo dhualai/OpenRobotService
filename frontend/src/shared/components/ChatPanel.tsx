@@ -156,20 +156,20 @@ const mapDbMessages = (
     } catch { return null; }
   };
   const mapped = (full.messages || [])
-    .map((m) => {
+    .flatMap((m) => {
       // 工单概览气泡：metadata_.kind==='ticket_overview'（content 存工单 JSON）
       const meta = parseMeta(m.metadata_);
       if (meta?.kind === 'ticket_overview') {
         try {
           const ov = JSON.parse(m.content) as NonNullable<Message['ticket_overview']>;
-          return {
+          return [{
             id: String(m.id),
             role: 'assistant' as const,
             content: '',
             timestamp: m.created_at,
             subtype: 'ticket_overview' as const,
             ticket_overview: ov,
-          };
+          }];
         } catch { /* 解析失败降级为普通文本 */ }
       }
       const msg: Message = {
@@ -178,18 +178,32 @@ const mapDbMessages = (
         content: m.role === 'assistant' ? sanitizeAiText(m.content) : m.content,
         timestamp: m.created_at,
       };
+      const extraMsgs: Message[] = [];
       if (m.file_urls) {
         try {
           const files = JSON.parse(m.file_urls) as Array<{ filename: string; object_path?: string; size?: number; isImage?: boolean }>;
-          const f = files[0];
-          if (f && f.object_path) {
+          files.forEach((f, i) => {
+            if (!f.object_path) return;
             const url = attachmentUrl(f.object_path);
-            if (f.isImage) msg.imageUrl = url;
-            else msg.attachment = { name: f.filename, size: f.size ?? 0, url };
-          }
+            if (i === 0) {
+              // 第一个文件填入主消息气泡
+              if (f.isImage) msg.imageUrl = url;
+              else msg.attachment = { name: f.filename, size: f.size ?? 0, url };
+            } else {
+              // 其余文件各创建独立气泡（与实时上传一致，每个文件单独显示）
+              extraMsgs.push({
+                id: `${String(m.id)}-${i}`,
+                role: m.role as 'user' | 'assistant',
+                content: '',
+                timestamp: m.created_at,
+                imageUrl: f.isImage ? url : undefined,
+                attachment: f.isImage ? null : { name: f.filename, size: f.size ?? 0, url },
+              });
+            }
+          });
         } catch { /* ignore */ }
       }
-      return msg;
+      return [msg, ...extraMsgs];
     });
   // producer 后台生成中：最后一条 assistant content 空（首 token 前），标记 streaming 保留显示。
   // 配合会话加载后的轮询，producer 完成后 content 非空，轮询自动更新为完整回复。
@@ -744,26 +758,35 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
    * 方案一（乐观渲染）：点发送即插入用户气泡（附件+文字，内嵌上传进度遮罩）+ AI 分析占位气泡，
    * 上传进度实时更新到用户气泡，完成后遮罩消失、AI 回复填入占位气泡。文件名不拼进文字上下文。 */
   const sendWithFile = async (files: File[], content: string) => {
-    // 多文件：用户气泡展示所有附件（图片用缩略图，其它用文件名+大小）
+    // 每个文件独立气泡（像原来单文件一样各自显示图片缩略图/文件卡片）
     const firstImage = files.find((f) => f.type.startsWith('image/'));
-    const hasNonImage = files.some((f) => !f.type.startsWith('image/'));
-    const userId = uid();
     const assistantId = uid();
-    // 是否带附带文字
     const hasMessage = content.trim().length > 0;
-    // 占位阶段：含图片→分析图片；纯文件→分析文件
     const initialPhase: Message['phase'] = firstImage ? 'analyzing_image' : 'analyzing_file';
-    // 用户气泡：多附件以 attachment 列表形式存（图片用第一张做 imageUrl 缩略，其余在 attachment 展示）
-    const imageUrl = firstImage ? URL.createObjectURL(firstImage) : undefined;
-    const attachment = hasNonImage
-      ? { name: files.length > 1 ? `${files.length} 个文件` : (files.find((f) => !f.type.startsWith('image/'))?.name ?? '文件'), size: files.reduce((s, f) => s + f.size, 0) }
-      : null;
-    // 乐观渲染：立即插入用户气泡（带进度遮罩）+ AI 占位气泡（phase 触发动态打字动画，content 留空）
-    setMessages((prev) => [
-      ...prev,
-      { id: userId, role: 'user', content, timestamp: new Date().toISOString(), imageUrl, attachment, uploading: true, percent: 0 },
-      { id: assistantId, role: 'assistant', content: '', phase: initialPhase, streaming: true, timestamp: new Date().toISOString() },
-    ]);
+    const userIds = files.map(() => uid());
+    const now = new Date().toISOString();
+    const newMsgs: Message[] = [];
+    // 有附带文字时先插一个纯文字气泡
+    if (hasMessage) {
+      newMsgs.push({ id: uid(), role: 'user', content, timestamp: now });
+    }
+    // 每个文件一个气泡：图片用 blob 缩略图，文件用文件名+大小卡片
+    files.forEach((f, i) => {
+      const isImage = f.type.startsWith('image/');
+      newMsgs.push({
+        id: userIds[i],
+        role: 'user',
+        content: '',
+        timestamp: now,
+        imageUrl: isImage ? URL.createObjectURL(f) : undefined,
+        attachment: isImage ? null : { name: f.name, size: f.size },
+        uploading: true,
+        percent: 0,
+      });
+    });
+    // AI 占位气泡
+    newMsgs.push({ id: assistantId, role: 'assistant', content: '', phase: initialPhase, streaming: true, timestamp: now });
+    setMessages((prev) => [...prev, ...newMsgs]);
     setInput('');
     clearPendingFiles();
     setLoading(true);
@@ -803,19 +826,27 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             // 逐文件回执：d.saved 为本次完成的单个文件（档1改造后逐文件 yield）
             const uploaded = d.saved?.[0];
             if (!uploaded) return;
-            const matchedFile = files.find((f) => f.name === uploaded.filename);
+            const fileIdx = files.findIndex((f) => f.name === uploaded.filename);
+            const matchedFile = fileIdx >= 0 ? files[fileIdx] : null;
             const isImg = matchedFile?.type.startsWith('image/') ?? false;
+            const fileUrl = uploaded.object_path ? attachmentUrl(uploaded.object_path) : undefined;
             savedItems.push({ filename: uploaded.filename, object_path: uploaded.object_path, size: uploaded.size, isImage: isImg });
-            // 进度：已保存数 / 总数
-            const percent = Math.round((savedItems.length / files.length) * 100);
-            setMessages((prev) => prev.map((m) => {
-              if (m.id !== userId) return m;
-              const updated: Message = { ...m, uploading: savedItems.length < files.length, percent };
-              return updated;
-            }));
+            // 回填对应文件气泡的真实 URL（blob:→代理URL），上传完成遮罩消失
+            if (fileIdx >= 0 && userIds[fileIdx]) {
+              setMessages((prev) => prev.map((m) => {
+                if (m.id !== userIds[fileIdx]) return m;
+                const updated: Message = { ...m, uploading: false, percent: 100 };
+                if (isImg && fileUrl) {
+                  if (m.imageUrl?.startsWith('blob:')) URL.revokeObjectURL(m.imageUrl);
+                  updated.imageUrl = fileUrl;
+                } else if (!isImg && fileUrl && m.attachment) {
+                  updated.attachment = { ...m.attachment, url: fileUrl };
+                }
+                return updated;
+              }));
+            }
             // 全部保存后持久化用户消息
             if (savedItems.length === files.length) {
-              setMessages((prev) => prev.map((m) => (m.id === userId ? { ...m, uploading: false, percent: 100 } : m)));
               convId = await ensureConversation(sid, content || `[发送了${files.length}个附件]`);
               if (convId) {
                 const cid: number = convId;
@@ -876,7 +907,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)));
       }
     } catch (err) {
-      setMessages((prev) => prev.map((m) => (m.id === userId ? { ...m, uploading: false, failed: true } : m)));
+      setMessages((prev) => prev.map((m) => (userIds.includes(m.id) ? { ...m, uploading: false, failed: true } : m)));
       setMessages((prev) => prev.filter((m) => m.id !== assistantId));
       if (!isKickingToLogin()) {
         Toast({ message: `发送失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
