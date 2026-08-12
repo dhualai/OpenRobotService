@@ -134,6 +134,7 @@ export default function TaskDetailPage() {
   const [reassignReason, setReassignReason] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
+  const [statusChanging, setStatusChanging] = useState(false);
 
   // U老师 诊断
   const [diagnosing, setDiagnosing] = useState(false);
@@ -251,7 +252,9 @@ export default function TaskDetailPage() {
 
   const handleStatusChange = async (action: { nextStatus: string }) => {
     if (!detail) return;
-    
+    if (statusChanging) return;
+
+    setStatusChanging(true);
     try {
       await request<Ticket>(`/${detail.id}/status`, {
         method: 'PATCH',
@@ -263,6 +266,8 @@ export default function TaskDetailPage() {
       Toast({ message: `状态已更新为${statusLabel}`, theme: 'success' });
     } catch (err) {
       Toast({ message: `状态更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setStatusChanging(false);
     }
   };
 
@@ -741,10 +746,11 @@ export default function TaskDetailPage() {
             </div>
             <div className="detail-card__action-btns">
               {getActionButtons().map((action, index) => (
-                <Button 
+                <Button
                   key={index}
-                  size="small" 
-                  theme={action.theme as any} 
+                  size="small"
+                  theme={action.theme as any}
+                  disabled={statusChanging}
                   onClick={() => {
                     if (action.actionType === 'resume') {
                       setShowResumePopup(true);
