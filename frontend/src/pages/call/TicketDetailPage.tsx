@@ -791,13 +791,20 @@ export default function TicketDetailPage() {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (dl) {
-                                  const a = document.createElement('a');
-                                  a.href = dl;
-                                  a.download = filename;
-                                  a.target = '_blank';
-                                  document.body.appendChild(a);
-                                  a.click();
-                                  document.body.removeChild(a);
+                                  // 微信内置 WebView 会拦截 a.click() 下载并强制弹「在浏览器打开」，
+                                  // 系统浏览器打开缺环境前缀的 URL 会 404 → 回跳微信。故微信内用
+                                  // window.location.href 跳绝对地址（弹横幅，浏览器内可下载）；非微信用 a.click()。
+                                  if (/MicroMessenger/i.test(navigator.userAgent)) {
+                                    window.location.href = dl;
+                                  } else {
+                                    const a = document.createElement('a');
+                                    a.href = dl;
+                                    a.download = filename;
+                                    a.target = '_blank';
+                                    document.body.appendChild(a);
+                                    a.click();
+                                    document.body.removeChild(a);
+                                  }
                                 } else {
                                   Toast({ message: '附件路径无效', theme: 'error' });
                                 }
