@@ -15,7 +15,7 @@ import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import { uploadCommentAttachment } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP } from '@/shared/constants/ticket';
-import { formatDateTime } from '@/shared/utils/url';
+import { formatDateTimeShort, deadlinePickerValue } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
 import type { ProjectMember } from '@/api/projects';
@@ -782,21 +782,21 @@ export default function TaskDetailPage() {
               <span className="detail-info-item__icon">🕐</span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">创建时间</span>
-                <span className="detail-info-item__value">{formatDateTime(detail.created_at)}</span>
+                <span className="detail-info-item__value">{formatDateTimeShort(detail.created_at)}</span>
               </div>
             </div>
             <div className="detail-info-item">
               <span className="detail-info-item__icon">⏰</span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">最晚解决时间</span>
-                <span className="detail-info-item__value">{detail.deadline_at ? formatDateTime(detail.deadline_at) : '未设置'}</span>
+                <span className="detail-info-item__value">{detail.deadline_at ? formatDateTimeShort(detail.deadline_at) : '未设置'}</span>
               </div>
             </div>
             <div className="detail-info-item">
               <span className="detail-info-item__icon">🔄</span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">更新时间</span>
-                <span className="detail-info-item__value">{formatDateTime(detail.updated_at)}</span>
+                <span className="detail-info-item__value">{formatDateTimeShort(detail.updated_at)}</span>
               </div>
             </div>
           </div>
@@ -1058,7 +1058,7 @@ export default function TaskDetailPage() {
           mode="hour"
           title="选择最晚解决时间"
           format="YYYY-MM-DD HH:00"
-          value={editForm.deadline_at || undefined}
+          value={deadlinePickerValue(editForm.deadline_at)}
           onConfirm={(v) => {
             const d = new Date(typeof v === 'number' ? v : String(v));
             if (!isNaN(d.getTime())) {
