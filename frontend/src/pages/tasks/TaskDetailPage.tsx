@@ -121,6 +121,10 @@ export default function TaskDetailPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editDeadlinePickerVisible, setEditDeadlinePickerVisible] = useState(false);
+  // 每次打开最晚解决时间选择器都自增 key，强制 DateTimePicker 重新挂载，
+  // 规避 tdesign-mobile-react Picker 在嵌套 Popup（destroyOnClose + CSSTransition）下
+  // 二次打开时 Picker 实例竞态、事件绑到旧 DOM 节点导致桌面端无法编辑/滚动的问题
+  const [deadlinePickerKey, setDeadlinePickerKey] = useState(0);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; deadline_at?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
   const [escalateUser, setEscalateUser] = useState<UserItem | null>(null);
   const [showEscalatePopup, setShowEscalatePopup] = useState(false);
@@ -1106,7 +1110,7 @@ export default function TaskDetailPage() {
               <div className="ticket-confirm__deadline">
                 <div
                   className="ticket-confirm__deadline-field"
-                  onClick={() => setEditDeadlinePickerVisible(true)}
+                  onClick={() => { setDeadlinePickerKey((k) => k + 1); setEditDeadlinePickerVisible(true); }}
                 >
                   <span className={editForm.deadline_at ? 'ticket-confirm__deadline-value' : 'ticket-confirm__deadline-placeholder'}>
                     {editForm.deadline_at ? formatEditDeadlineAbs(editForm.deadline_at) : '点击选择'}
@@ -1130,9 +1134,12 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      {/* 最晚解决时间选择器：mode=hour 最小单位小时 */}
-      <Popup visible={editDeadlinePickerVisible} onClose={() => setEditDeadlinePickerVisible(false)} placement="bottom">
+      {/* 最晚解决时间选择器：mode=hour 最小单位小时
+          destroyOnClose + preventScrollThrough={false} 修复微信内置浏览器两层 Popup 嵌套时
+          DateTimePicker 滚轮无法滚动（详见 TicketDetailPage 同名注释） */}
+      <Popup visible={editDeadlinePickerVisible} onClose={() => setEditDeadlinePickerVisible(false)} placement="bottom" destroyOnClose preventScrollThrough={false}>
         <DateTimePicker
+          key={deadlinePickerKey}
           mode="hour"
           title="选择最晚解决时间"
           format="YYYY-MM-DD HH:00"
