@@ -1030,6 +1030,23 @@ html, body, #root {
   cursor: pointer;
   padding: 0;
 }
+/* 待发送附件列表容器（多文件时滚动 + 右下角计数） */
+.chat-pending-files {
+  position: relative;
+  max-height: 144px; /* 约 3 个 chip 高度，超出滚动 */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.chat-pending-files__count {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding: 2px 12px 4px 0;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  pointer-events: none; /* 不遮挡滚动 */
+}
 /* 附件气泡内嵌上传进度遮罩（方案一：乐观渲染） */
 .chat-bubble__media {
   position: relative;

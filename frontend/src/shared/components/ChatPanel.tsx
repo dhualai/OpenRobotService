@@ -1915,6 +1915,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 <button type="button" className="chat-pending-file__remove" onClick={() => removePendingFile(i)} aria-label="移除附件">✕</button>
               </div>
             ))}
+            {pendingFiles.length > 3 && (
+              <div className="chat-pending-files__count">共 {pendingFiles.length} 个附件</div>
+            )}
           </div>
         )}
         {voiceMode ? (
