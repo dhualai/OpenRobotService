@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Button, Toast, Loading, Dialog, Popup, Form, FormItem, Textarea, RadioGroup } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
@@ -82,6 +83,7 @@ const entriesToModules = (entries: ModuleEntry[]): Record<string, string[]> | un
 };
 
 export default function UserManage() {
+  const navigate = useNavigate();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -527,9 +529,14 @@ export default function UserManage() {
 
   return (
     <div style={{ padding: 16 }}>
-      <Button theme="primary" block style={{ marginBottom: 16 }} onClick={openCreate}>
-        新建用户
-      </Button>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <Button theme="primary" style={{ flex: 1 }} onClick={openCreate}>
+          新建用户
+        </Button>
+        <Button theme="default" variant="outline" onClick={() => navigate('/admin/org-chart')}>
+          人员结构
+        </Button>
+      </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
         <ClearableInput

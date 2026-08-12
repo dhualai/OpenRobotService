@@ -309,6 +309,7 @@ class PermissionService:
                 'responsibility_modules': rm,
                 'job_level': getattr(db_user, 'job_level', 1) or 1,
                 'duty_text': getattr(db_user, 'duty_text', None),
+                'supervisor_id': getattr(db_user, 'supervisor_id', None),
             }
         finally:
             db.close()

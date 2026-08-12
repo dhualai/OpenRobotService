@@ -83,6 +83,7 @@ async def get_users(
                 status=getattr(user_record, 'status', 'inactive'),
                 external_credentials=external_credentials,
                 avatar_resource_id=getattr(user_record, 'avatar_resource_id', None),
+                supervisor_id=getattr(user_record, 'supervisor_id', None),
                 project_role_relations=all_users_relations.get(user_record.id, []),
             )
 
@@ -212,6 +213,7 @@ async def create_user(
         responsibility_modules=user_data.responsibility_modules,
         job_level=user_data.job_level,
         duty_text=user_data.duty_text,
+        supervisor_id=user_data.supervisor_id,
     )
     
     if not success:
@@ -242,6 +244,7 @@ async def create_user(
         avatar_resource_id=created_user.get('avatar_resource_id'),
         company=created_user.get('company'),
         department=created_user.get('department'),
+        supervisor_id=created_user.get('supervisor_id'),
     )
 
 def _mask_usp_password(external_credentials: Dict) -> Dict:
@@ -284,6 +287,7 @@ async def get_user_detail(
         responsibility_modules=user.get('responsibility_modules', {}),
         job_level=user.get('job_level', 1),
         duty_text=user.get('duty_text'),
+        supervisor_id=user.get('supervisor_id'),
     )
 
 @router.put("/{username}", response_model=User)
@@ -345,6 +349,8 @@ async def update_user(
         update_data["job_level"] = user_data.job_level
     if user_data.duty_text is not None:
         update_data["duty_text"] = user_data.duty_text
+    if user_data.supervisor_id is not None:
+        update_data["supervisor_id"] = user_data.supervisor_id or None
 
     success = db_manager.update_user(user['id'], **update_data)
     if not success:
@@ -368,6 +374,7 @@ async def update_user(
         responsibility_modules=updated_user.get('responsibility_modules', {}),
         job_level=updated_user.get('job_level', 1),
         duty_text=updated_user.get('duty_text'),
+        supervisor_id=updated_user.get('supervisor_id'),
     )
 
 @router.delete("/{username}", response_model=SuccessResponse)
