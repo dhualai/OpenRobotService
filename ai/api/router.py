@@ -447,18 +447,24 @@ async def clear_draft(
         return {"code": 1, "message": str(e)}
 
 
-@qa_router.post("/upload", summary="上传附件")
-async def upload_files(
-    session_id: str = Form(..., description="会话 ID"),
-    files: List[UploadFile] = File(..., description="附件文件"),
-    message: str = Form("", description="附带文字（可选，有则直接走诊断）"),
-    authorization: str = Header(default="", alias="Authorization"),
+async def _upload_events(
+    session_id: str,
+    files: List[UploadFile],
+    message: str,
+    authorization: str,
 ):
+    """上传核心流水线，逐步产出内部事件（供 SSE / JSON 两种传输复用）。
+
+    事件流：file_saved → vision_token* → vision_done → memory_written
+    附带文字时的流式诊断（event: token/status/result）由调用方在
+    memory_written 之后自行驱动（SSE 逐条转发，JSON 收集）。
+    """
     from ai.core.minio_client import minio_client
-    from pathlib import Path
+    from ai.agents.AiTaskPlatform.attachments.parser import _is_image_file
+    from ai.core import get_llm_client
+    import base64
 
     _bucket = get_ai_config().minio_bucket
-
     t_upload_start = time.perf_counter()
     logger.info(
         f"[upload] 收到上传请求: session={session_id[:12]}, "
@@ -472,7 +478,7 @@ async def upload_files(
     except Exception as e:
         logger.warning(f"确保 bucket {_bucket} 存在失败: {e}（若桶实际存在可忽略）")
 
-    # ── 1. 上传到 MinIO ──
+    # ── 1. 上传到 MinIO，先回执 ──
     saved = []
     raw_bytes: list[tuple] = []  # (filename, bytes) 暂存供 VLM
     for f in files:
@@ -485,106 +491,105 @@ async def upload_files(
             )
         except Exception as e:
             logger.error(f"附件上传到 MinIO 失败: {f.filename} -> {e}", exc_info=True)
-            return {
-                "code": 1,
-                "message": (
+            raise HTTPException(
+                status_code=500,
+                detail=(
                     f"文件「{f.filename}」上传失败：{e}。"
                     f"请检查 MinIO 是否可达、桶 {_bucket} 是否存在、凭据是否正确。"
                 ),
-            }
+            )
         url = minio_client.get_presigned_url(object_path, expires_minutes=1440)
         saved.append({"filename": f.filename, "size": len(content), "path": url, "object_path": object_path})
     filenames = "、".join(s["filename"] for s in saved)
+    logger.info(f"[upload] 文件已保存: session={session_id[:12]}, saved={len(saved)}")
+    yield {"event": "file_saved", "saved": saved, "filenames": filenames}
 
-    # ── 2. 图片描述：VLM 看图层 ──
+    # ── 2. 图片描述：VLM 流式看图 ──
     image_desc = ""
-    try:
-        from ai.agents.AiTaskPlatform.attachments.parser import _is_image_file
-        from ai.core import get_llm_client
-        import base64
-        _MIME_MAP = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                     ".png": "image/png", ".bmp": "image/bmp",
-                     ".gif": "image/gif", ".webp": "image/webp"}
-        data_uris = []
-        for fname, raw in raw_bytes:
-            if _is_image_file(fname, fname):
-                try:
-                    ext = Path(fname).suffix.lower()
-                    mime = _MIME_MAP.get(ext, "image/png")
-                    b64 = base64.b64encode(raw).decode()
-                    data_uris.append((fname, f"data:{mime};base64,{b64}"))
-                    logger.info(f"[upload] 图片编码: name={fname}, ext={ext}, raw_bytes={len(raw)}, b64_len={len(b64)}")
-                except Exception as e:
-                    logger.warning(f"[upload] 图片编码失败: name={fname}, error={e}")
-        logger.info(
-            f"[upload] 图片检测: session={session_id[:12]}, "
-            f"total_files={len(files)}, image_files={len(data_uris)}, "
-            f"non_image_files={len(files) - len(data_uris)}"
-        )
-        if data_uris:
-            t_vlm = time.perf_counter()
-            llm = await get_llm_client()
-            names = ", ".join(n for n, _ in data_uris)
-            uris = [u for _, u in data_uris]
-            logger.info(
-                f"[upload] 开始VLM调用: session={session_id[:12]}, "
-                f"image_count={len(data_uris)}, names={names}"
-            )
-            # 拉取最近对话上下文，让 VLM 知道图片是在什么排查场景下截的
-            vlm_context = ""
+    _MIME_MAP = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                 ".png": "image/png", ".bmp": "image/bmp",
+                 ".gif": "image/gif", ".webp": "image/webp"}
+    data_uris = []
+    for fname, raw in raw_bytes:
+        if _is_image_file(fname, fname):
             try:
-                mgr = await get_memory_manager()
-                mem = await mgr.get_memory(session_id)
-                recent = [t for t in mem.turns[-6:] if t.get("role") in ("user", "assistant")]
-                if recent:
-                    lines = []
-                    for t in recent:
-                        role = "用户" if t["role"] == "user" else "AI"
-                        c = t.get("content", "")[:200]
-                        lines.append(f"{role}：{c}")
-                    vlm_context = "以下是最近的对话记录，供你理解图片背景：\n" + "\n".join(lines) + "\n"
-            except Exception:
-                pass
-            desc = await llm.complete_vision(
-                prompt=(
-                    f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。\n"
-                    f"{vlm_context}"
-                    f"请：\n"
-                    f"1. 结合对话上下文，描述画面中的关键信息（界面状态、数据、错误提示、人工标注等）\n"
-                    f"2. 如果发现异常或错误码，解释其含义并指出可能的故障方向"
-                    f"（不下最终结论，用'可能''疑似'等措辞）\n"
-                    f"3. 如果没有明显异常，说明画面看起来正常\n"
-                    f"用工程师口吻，给出有参考价值的初步分析。"
-                ),
+                ext = Path(fname).suffix.lower()
+                mime = _MIME_MAP.get(ext, "image/png")
+                b64 = base64.b64encode(raw).decode()
+                data_uris.append((fname, f"data:{mime};base64,{b64}"))
+                logger.info(f"[upload] 图片编码: name={fname}, ext={ext}, raw_bytes={len(raw)}, b64_len={len(b64)}")
+            except Exception as e:
+                logger.warning(f"[upload] 图片编码失败: name={fname}, error={e}")
+    logger.info(
+        f"[upload] 图片检测: session={session_id[:12]}, "
+        f"total_files={len(files)}, image_files={len(data_uris)}, "
+        f"non_image_files={len(files) - len(data_uris)}"
+    )
+    if data_uris:
+        t_vlm = time.perf_counter()
+        llm = await get_llm_client()
+        names = ", ".join(n for n, _ in data_uris)
+        uris = [u for _, u in data_uris]
+        logger.info(
+            f"[upload] 开始VLM调用: session={session_id[:12]}, "
+            f"image_count={len(data_uris)}, names={names}"
+        )
+        # 拉取最近对话上下文，让 VLM 知道图片是在什么排查场景下截的
+        vlm_context = ""
+        try:
+            mgr = await get_memory_manager()
+            mem = await mgr.get_memory(session_id)
+            recent = [t for t in mem.turns[-6:] if t.get("role") in ("user", "assistant")]
+            if recent:
+                lines = []
+                for t in recent:
+                    role = "用户" if t["role"] == "user" else "AI"
+                    c = t.get("content", "")[:200]
+                    lines.append(f"{role}：{c}")
+                vlm_context = "以下是最近的对话记录，供你理解图片背景：\n" + "\n".join(lines) + "\n"
+        except Exception:
+            pass
+        yield {"event": "vision_start", "names": names}
+        prompt = (
+            f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。\n"
+            f"{vlm_context}"
+            f"请：\n"
+            f"1. 结合对话上下文，描述画面中的关键信息（界面状态、数据、错误提示、人工标注等）\n"
+            f"2. 如果发现异常或错误码，解释其含义并指出可能的故障方向"
+            f"（不下最终结论，用'可能''疑似'等措辞）\n"
+            f"3. 如果没有明显异常，说明画面看起来正常\n"
+            f"用工程师口吻，给出有参考价值的初步分析。"
+        )
+        try:
+            async for tok in llm.stream_vision(
+                prompt=prompt,
                 images=uris,
                 system_prompt=(
                     "你是 AGV/AMR 调度系统的运维专家。仔细分析图片，"
-                    "给出有参考价值的初步判断。使用'可能''疑似''建议关注'等措辞，"
-                    "不下最终结论。"
+                    "给出有参考价值的初步判断。使用'可能''疑似''建议关注'等措辞，不下最终结论。"
                 ),
                 max_tokens=3072,
                 temperature=0.3,
-            )
+            ):
+                image_desc += tok
+                yield {"event": "vision_token", "token": tok}
+            image_desc = image_desc.strip()
             vlm_ms = round((time.perf_counter() - t_vlm) * 1000)
-            image_desc = desc.strip()
             logger.info(
                 f"[upload] VLM调用完成: session={session_id[:12]}, "
                 f"elapsed={vlm_ms}ms, desc_len={len(image_desc)}, "
                 f"desc_empty={not image_desc}, desc前80字={image_desc[:80]}"
             )
-        else:
-            logger.info(f"[upload] 无图片文件，跳过VLM: session={session_id[:12]}")
-    except Exception as e:
-        logger.error(
-            f"[upload] VLM阶段异常: session={session_id[:12]}, "
-            f"type={type(e).__name__}, error={e}",
-            exc_info=True,
-        )
+        except Exception as e:
+            logger.error(f"[upload] VLM失败: {e}", exc_info=True)
+            yield {"event": "vision_error", "error": str(e)}
+        yield {"event": "vision_done", "desc": image_desc}
+    else:
+        logger.info(f"[upload] 无图片文件，跳过VLM: session={session_id[:12]}")
+        yield {"event": "vision_done", "desc": ""}
 
-    # ── 3. 生成确认回复 + 写 metadata ──
-    # 只加 assistant turn 确认，不加 user turn（避免文件名数字污染 LLM 上下文）
+    # ── 3. 写入会话记忆 + agent_state（失败不阻塞上传响应） ──
     ack_message = ""
-    # ── 3. 写入会话记忆（失败不阻塞上传响应） ──
     try:
         mgr = await get_memory_manager()
         t_mem = time.perf_counter()
@@ -598,38 +603,12 @@ async def upload_files(
         if image_desc:
             await mgr.add_turn(session_id, "user",
                                f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
-            await mgr.add_turn(session_id, "assistant",
-                               f"已收到 {len(saved)} 个文件，已附到本次会话中。")
         else:
             await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
-            await mgr.add_turn(session_id, "assistant", f"已收到 {len(saved)} 个文件，已附到本次会话中。")
-        memory_after = await mgr.get_memory(session_id)
-        logger.info(
-            f"[upload] 注入记忆后: session={session_id[:12]}, "
-            f"turns_before={turn_count_before}, turns_after={len(memory_after.turns)}, "
-            f"mem_elapsed={(time.perf_counter() - t_mem) * 1000:.0f}ms"
-        )
-    except Exception as e:
-        logger.error(f"上传后写入会话记忆失败（不阻塞上传响应）: {e}", exc_info=True)
-
-    # ── 4. agent_state.attachments + 追加到已提交工单 ──
-    try:
-        t_state = time.perf_counter()
-        memory = await mgr.get_memory(session_id)
-        state = memory.metadata.get("agent_state", {})
-        # 附件列表
-        existing = state.get("attachments", [])
-        state["attachments"] = existing + saved
-        # 图片描述 → collected_info
+        # 确认回执（assistant turn）：VLM 描述直接作为回执，非图片则提示暂不支持解析
         if image_desc:
-            ci = state.get("collected_info", {}) or {}
-            prev = ci.get("image_description", "")
-            ci["image_description"] = (prev + "\n" + image_desc).strip() if prev else image_desc
-            state["collected_info"] = ci
-            # 图片：VLM 分析直接作为回复
             ack_message = image_desc
         else:
-            # 非图片文件：暂不支持解析
             exts = {Path(f["filename"]).suffix.lower() for f in saved}
             ext_str = "、".join(exts)
             ack_message = (
@@ -638,20 +617,32 @@ async def upload_files(
                 f"我们暂不支持解析除图片以外的文件类型，"
                 f"但如果您后续提单，这些文件将作为接单人处理工单的参考依据。"
             )
-        # 写 metadata
+        await mgr.add_turn(session_id, "assistant", ack_message)
+        # agent_state.attachments + collected_info.image_description（对齐旧 /upload 的完整落库）
+        memory = await mgr.get_memory(session_id)
+        state = memory.metadata.get("agent_state", {}) or {}
+        existing = state.get("attachments", [])
+        state["attachments"] = existing + saved
+        if image_desc:
+            ci = state.get("collected_info", {}) or {}
+            prev = ci.get("image_description", "")
+            ci["image_description"] = (prev + "\n" + image_desc).strip() if prev else image_desc
+            state["collected_info"] = ci
         memory.metadata["agent_state"] = state
         await mgr.save_memory(memory)
+        memory_after = await mgr.get_memory(session_id)
         logger.info(
-            f"[upload] agent_state更新: session={session_id[:12]}, "
-            f"attachments_before={len(existing)}, attachments_after={len(state['attachments'])}, "
-            f"has_last_ticket={bool(state.get('last_submitted_ticket', {}).get('ticket_id'))}"
+            f"[upload] 注入记忆后: session={session_id[:12]}, "
+            f"turns_before={turn_count_before}, turns_after={len(memory_after.turns)}, "
+            f"attachments_after={len(state['attachments'])}, "
+            f"mem_elapsed={(time.perf_counter() - t_mem) * 1000:.0f}ms"
         )
     except Exception as e:
-        logger.error(
-            f"[upload] 附件状态更新失败: session={session_id[:12]}, "
-            f"type={type(e).__name__}, error={e}",
-            exc_info=True,
-        )
+        logger.error(f"[upload] 写记忆/agent_state 失败（不阻塞上传响应）: {e}", exc_info=True)
+        ack_message = image_desc if image_desc else f"已收到 {len(saved)} 个文件（{filenames}）。"
+
+    yield {"event": "memory_written", "ack_message": ack_message}
+
     total_ms = round((time.perf_counter() - t_upload_start) * 1000)
     logger.info(
         f"[upload] 上传完成: session={session_id[:12]}, "
@@ -659,40 +650,124 @@ async def upload_files(
         f"has_image_desc={bool(image_desc)}, total_ms={total_ms}"
     )
 
-    # ── 5. 如果附带文字 → 顺手跑诊断 ──
-    ai_response = None
-    if message.strip():
+
+@qa_router.post("/upload", summary="上传附件")
+async def upload_files(
+    session_id: str = Form(..., description="会话 ID"),
+    files: List[UploadFile] = File(..., description="附件文件"),
+    message: str = Form("", description="附带文字（可选，有则直接走诊断）"),
+    authorization: str = Header(default="", alias="Authorization"),
+    accept: str = Header(default="", alias="Accept"),
+):
+    """上传附件：带 Accept: text/event-stream 时走 SSE 流式（逐 token 推送
+    VLM 描述 + 诊断），否则回退一次性 JSON（对齐旧 /upload 响应结构）。
+    合并自原 /upload 与 /upload/stream。
+    """
+    wants_stream = "text/event-stream" in accept
+
+    # 附带文字时诊断用流式推理（与 /ask/stream 一致）；SSE 逐条转发、JSON 收集
+    async def _run_diagnosis():
         username, _ = _current_user_from_header(authorization)
         # token 失效 → 返回 401，触发前端 fetchWithAuth 刷新重试，避免自动提单 created_by=""
-        # 必须放在 try/except 之外：HTTPException 是 Exception 子类，被捕获会被吞掉成 ai_response.error
+        if not username:
+            raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+        pipeline = await get_pipeline()
+        request = DiagnosisRequest(
+            session_id=session_id,
+            query=message.strip(),
+            created_by=username,
+        )
+        return pipeline.run_stream(request)
+
+    async def sse():
+        try:
+            ack = None
+            async for ev in _upload_events(session_id, files, message, authorization):
+                if ev["event"] == "file_saved":
+                    yield f"event: file_saved\ndata: {json.dumps({'saved': ev['saved'], 'filenames': ev['filenames']}, ensure_ascii=False)}\n\n"
+                elif ev["event"] == "vision_start":
+                    yield f"event: vision_start\ndata: {json.dumps({'names': ev['names']}, ensure_ascii=False)}\n\n"
+                elif ev["event"] == "vision_token":
+                    yield f"data: {json.dumps({'token': ev['token']}, ensure_ascii=False)}\n\n"
+                elif ev["event"] == "vision_error":
+                    yield f"event: vision_error\ndata: {json.dumps({'error': ev['error']}, ensure_ascii=False)}\n\n"
+                elif ev["event"] == "vision_done":
+                    yield f"event: vision_done\ndata: {json.dumps({'desc': ev['desc']}, ensure_ascii=False)}\n\n"
+                elif ev["event"] == "memory_written":
+                    ack = ev["ack_message"]
+            # ── 附带文字 → 流式诊断；否则回执即可 ──
+            if message.strip():
+                result_payload = None
+                try:
+                    async for event in _run_diagnosis():
+                        ev_type = event.get("event")
+                        if ev_type == "token":
+                            yield f"data: {json.dumps({'token': event.get('data', '')}, ensure_ascii=False)}\n\n"
+                        elif ev_type == "result":
+                            result_payload = event.get("data", {})
+                        elif ev_type == "status":
+                            yield f"event: status\ndata: {json.dumps(event.get('data', {}), ensure_ascii=False)}\n\n"
+                    if result_payload is None:
+                        result_payload = {}
+                    if result_payload.get("ticket"):
+                        logger.info(f"[upload-stream] 触发提单: session={session_id[:12]}")
+                    yield f"event: result\ndata: {json.dumps(result_payload, ensure_ascii=False)}\n\n"
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    logger.error(f"[upload-stream] 诊断失败: {e}", exc_info=True)
+                    yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+            else:
+                # memory_written 已把 ack_message 写成 assistant turn；SSE 回执透传给前端
+                if ack:
+                    yield f"event: result\ndata: {json.dumps({'message': ack}, ensure_ascii=False)}\n\n"
+            yield f"event: done\ndata: {json.dumps({'total_ms': 0}, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            logger.info(f"[upload-stream] 客户端断连: session={session_id[:12]}")
+            raise
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"[upload-stream] 未知异常: {e}", exc_info=True)
+            yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+
+    if wants_stream:
+        return StreamingResponse(sse(), media_type="text/event-stream")
+
+    # ── 非流式回退：跑完同一生成器，收集成旧 JSON 响应 ──
+    saved: list = []
+    ack_message = ""
+    ai_response = None
+    try:
+        async for ev in _upload_events(session_id, files, message, authorization):
+            if ev["event"] == "file_saved":
+                saved = ev["saved"]
+            elif ev["event"] == "memory_written":
+                ack_message = ev["ack_message"]
+    except HTTPException as e:
+        raise
+    except Exception as e:
+        logger.error(f"[upload] 非流式上传异常: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"上传失败：{e}")
+
+    if message.strip():
+        username, _ = _current_user_from_header(authorization)
         if not username:
             raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
         try:
-            pipeline = await get_pipeline()
-            request = DiagnosisRequest(
-                session_id=session_id,
-                query=message.strip(),
-                created_by=username,
-            )
-            result = await pipeline.run(request)
+            result_payload = {}
+            async for event in _run_diagnosis():
+                if event.get("event") == "result":
+                    result_payload = event.get("data", {})
             ai_response = {
-                "message": result.get("message", ""),
-                "action": result.get("action", ""),
-                "thinking": result.get("thinking", ""),
-                "ticket": result.get("ticket"),
+                "message": result_payload.get("message", ""),
+                "action": result_payload.get("action", ""),
+                "thinking": result_payload.get("thinking", ""),
+                "ticket": result_payload.get("ticket"),
             }
         except Exception as e:
             logger.error(f"上传附带文字诊断失败: {e}", exc_info=True)
             ai_response = {"error": str(e)}
-    else:
-        if ack_message:
-            try:
-                mgr = await get_memory_manager()
-                await mgr.add_turn(session_id, "assistant", ack_message)
-                logger.info(f"上传确认回执已写入: session={session_id[:8]}, "
-                            f"files={filenames}, image={bool(image_desc)}")
-            except Exception as e:
-                logger.warning(f"写入上传确认回执失败: {e}")
 
     return {
         "code": 0,
@@ -704,216 +779,6 @@ async def upload_files(
     }
 
 
-@qa_router.post("/upload/stream", summary="上传附件（流式 SSE）")
-async def upload_files_stream(
-    session_id: str = Form(..., description="会话 ID"),
-    files: List[UploadFile] = File(..., description="附件文件"),
-    message: str = Form("", description="附带文字（可选，有则直接走诊断）"),
-    authorization: str = Header(default="", alias="Authorization"),
-):
-    """流式上传：先回执文件已保存 → 流式推送 VLM 图片分析 → 附带文字时再流式推送完整诊断。
-
-    与旧 /upload 兼容并存；SSE 事件：
-      event: file_saved   data={saved, filenames}
-      event: vision_start / vision_token(data={token}) / vision_done(data={desc})
-      event: token        ——诊断文字（仅附带文字时）
-      event: result       data={action, thinking, ticket}
-      event: error / done
-    """
-    from ai.core.minio_client import minio_client
-    from pathlib import Path
-
-    _bucket = get_ai_config().minio_bucket
-    t_upload_start = time.perf_counter()
-    logger.info(
-        f"[upload-stream] 收到请求: session={session_id[:12]}, "
-        f"file_count={len(files)}"
-    )
-
-    async def sse():
-        try:
-            # ── 0. bucket ──
-            try:
-                minio_client.create_bucket(_bucket)
-            except Exception as e:
-                logger.warning(f"确保 bucket {_bucket} 存在失败: {e}")
-
-            # ── 1. 上传到 MinIO，先回执 ──
-            saved = []
-            raw_bytes: list[tuple] = []
-            for f in files:
-                content = await f.read()
-                raw_bytes.append((f.filename, content))
-                object_path = f"{_bucket}/{session_id}/{f.filename}"
-                try:
-                    minio_client.upload_bytes(
-                        content, object_path, content_type=f.content_type, raise_on_error=True
-                    )
-                except Exception as e:
-                    logger.error(f"附件上传到 MinIO 失败: {f.filename} -> {e}", exc_info=True)
-                    yield f"event: error\ndata: {json.dumps({'error': f'文件「{f.filename}」上传失败'}, ensure_ascii=False)}\n\n"
-                    return
-                url = minio_client.get_presigned_url(object_path, expires_minutes=1440)
-                saved.append({"filename": f.filename, "size": len(content), "path": url, "object_path": object_path})
-            filenames = "、".join(s["filename"] for s in saved)
-            logger.info(f"[upload-stream] 文件已保存: session={session_id[:12]}, saved={len(saved)}")
-            # 先推送文件已保存，让前端立即展示
-            yield f"event: file_saved\ndata: {json.dumps({'saved': saved, 'filenames': filenames}, ensure_ascii=False)}\n\n"
-
-            # ── 2. 图片描述：VLM 流式看图 ──
-            image_desc = ""
-            from ai.agents.AiTaskPlatform.attachments.parser import _is_image_file
-            from ai.core import get_llm_client
-            import base64
-            _MIME_MAP = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                         ".png": "image/png", ".bmp": "image/bmp",
-                         ".gif": "image/gif", ".webp": "image/webp"}
-            data_uris = []
-            for fname, raw in raw_bytes:
-                if _is_image_file(fname, fname):
-                    ext = Path(fname).suffix.lower()
-                    mime = _MIME_MAP.get(ext, "image/png")
-                    b64 = base64.b64encode(raw).decode()
-                    data_uris.append((fname, f"data:{mime};base64,{b64}"))
-            if data_uris:
-                llm = await get_llm_client()
-                names = ", ".join(n for n, _ in data_uris)
-                uris = [u for _, u in data_uris]
-                vlm_context = ""
-                try:
-                    mgr = await get_memory_manager()
-                    mem = await mgr.get_memory(session_id)
-                    recent = [t for t in mem.turns[-6:] if t.get("role") in ("user", "assistant")]
-                    if recent:
-                        lines = []
-                        for t in recent:
-                            role = "用户" if t["role"] == "user" else "AI"
-                            lines.append(f"{role}：{t.get('content', '')[:200]}")
-                        vlm_context = "以下是最近的对话记录，供你理解图片背景：\n" + "\n".join(lines) + "\n"
-                except Exception:
-                    pass
-                yield f"event: vision_start\ndata: {json.dumps({'names': names}, ensure_ascii=False)}\n\n"
-                prompt = (
-                    f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。\n"
-                    f"{vlm_context}"
-                    f"请：\n"
-                    f"1. 结合对话上下文，描述画面中的关键信息（界面状态、数据、错误提示、人工标注等）\n"
-                    f"2. 如果发现异常或错误码，解释其含义并指出可能的故障方向"
-                    f"（不下最终结论，用'可能''疑似'等措辞）\n"
-                    f"3. 如果没有明显异常，说明画面看起来正常\n"
-                    f"用工程师口吻，给出有参考价值的初步分析。"
-                )
-                try:
-                    async for tok in llm.stream_vision(
-                        prompt=prompt,
-                        images=uris,
-                        system_prompt=(
-                            "你是 AGV/AMR 调度系统的运维专家。仔细分析图片，"
-                            "给出有参考价值的初步判断。使用'可能''疑似''建议关注'等措辞，不下最终结论。"
-                        ),
-                        max_tokens=3072,
-                        temperature=0.3,
-                    ):
-                        image_desc += tok
-                        yield f"data: {json.dumps({'token': tok}, ensure_ascii=False)}\n\n"
-                    image_desc = image_desc.strip()
-                    logger.info(f"[upload-stream] VLM完成: session={session_id[:12]}, desc_len={len(image_desc)}")
-                except Exception as e:
-                    logger.error(f"[upload-stream] VLM失败: {e}", exc_info=True)
-                    yield f"event: vision_error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
-                yield f"event: vision_done\ndata: {json.dumps({'desc': image_desc}, ensure_ascii=False)}\n\n"
-            else:
-                image_desc = ""
-                yield f"event: vision_done\ndata: {json.dumps({'desc': ''}, ensure_ascii=False)}\n\n"
-
-            # ── 3. 写图片描述到记忆（供诊断感知图片），失败不阻塞 ──
-            try:
-                mgr = await get_memory_manager()
-                if image_desc:
-                    await mgr.add_turn(session_id, "user",
-                                       f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
-                    await mgr.add_turn(session_id, "assistant", f"已收到 {len(saved)} 个文件，已附到本次会话中。")
-                else:
-                    await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
-            except Exception as e:
-                logger.warning(f"[upload-stream] 写记忆失败（不阻塞）: {e}")
-
-            # ── 3.5 写附件到 agent_state.attachments（供后续转工单落库 tasks.attachments）──
-            # 旧 /upload 有此步骤；/upload/stream 此前缺失，导致 UI 流式上传的附件
-            # 永远进不了 agent_state → 转工单后 tasks.attachments 为空。此处对齐补上。
-            try:
-                mgr = await get_memory_manager()
-                memory = await mgr.get_memory(session_id)
-                state = memory.metadata.get("agent_state", {})
-                existing = state.get("attachments", [])
-                state["attachments"] = existing + saved
-                # 图片描述 → collected_info（供诊断/转工单读取）
-                if image_desc:
-                    ci = state.get("collected_info", {}) or {}
-                    prev = ci.get("image_description", "")
-                    ci["image_description"] = (prev + "\n" + image_desc).strip() if prev else image_desc
-                    state["collected_info"] = ci
-                memory.metadata["agent_state"] = state
-                await mgr.save_memory(memory)
-                logger.info(
-                    f"[upload-stream] agent_state.attachments更新: session={session_id[:12]}, "
-                    f"attachments_before={len(existing)}, attachments_after={len(state['attachments'])}"
-                )
-            except Exception as e:
-                logger.warning(f"[upload-stream] 写 agent_state.attachments 失败（不阻塞）: {e}")
-
-            # ── 4. 附带文字 → 流式诊断；否则回执即可 ──
-            if message.strip():
-                username, _ = _current_user_from_header(authorization)
-                if not username:
-                    yield f"event: error\ndata: {json.dumps({'error': '登录已过期'}, ensure_ascii=False)}\n\n"
-                    return
-                pipeline = await get_pipeline()
-                qa_request = DiagnosisRequest(
-                    session_id=session_id, query=message.strip(), created_by=username,
-                )
-                result_payload = None
-                try:
-                    async for event in pipeline.run_stream(qa_request):
-                        ev_type = event.get("event")
-                        if ev_type == "token":
-                            yield f"data: {json.dumps({'token': event.get('data', '')}, ensure_ascii=False)}\n\n"
-                        elif ev_type == "result":
-                            result_payload = event.get("data", {})
-                        elif ev_type == "status":
-                            yield f"event: status\ndata: {json.dumps(event.get('data', {}), ensure_ascii=False)}\n\n"
-                    if result_payload is None:
-                        result_payload = {}
-                    # 若有 ticket 刷新计数
-                    if result_payload.get("ticket"):
-                        logger.info(f"[upload-stream] 触发提单: session={session_id[:12]}")
-                    yield f"event: result\ndata: {json.dumps(result_payload, ensure_ascii=False)}\n\n"
-                except Exception as e:
-                    logger.error(f"[upload-stream] 诊断失败: {e}", exc_info=True)
-                    yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
-            else:
-                ack = image_desc if image_desc else (
-                    f"已收到 {len(saved)} 个文件（{filenames}）。"
-                )
-                if ack:
-                    try:
-                        mgr = await get_memory_manager()
-                        await mgr.add_turn(session_id, "assistant", ack)
-                    except Exception:
-                        pass
-                yield f"event: result\ndata: {json.dumps({'message': ack}, ensure_ascii=False)}\n\n"
-
-            total_ms = round((time.perf_counter() - t_upload_start) * 1000)
-            logger.info(f"[upload-stream] 完成: session={session_id[:12]}, total_ms={total_ms}")
-            yield f"event: done\ndata: {json.dumps({'total_ms': total_ms}, ensure_ascii=False)}\n\n"
-        except asyncio.CancelledError:
-            logger.info(f"[upload-stream] 客户端断连: session={session_id[:12]}")
-            raise
-        except Exception as e:
-            logger.error(f"[upload-stream] 未知异常: {e}", exc_info=True)
-            yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(sse(), media_type="text/event-stream")
 
 
 @qa_router.get("/health", summary="健康检查")
