@@ -665,7 +665,10 @@ async def upload_files(
     """
     wants_stream = "text/event-stream" in accept
 
-    # 附带文字时诊断用流式推理（与 /ask/stream 一致）；SSE 逐条转发、JSON 收集
+    # 附带文字时诊断用流式推理（与 /ask/stream 一致）；SSE 逐条转发、JSON 收集。
+    # 注意：必须定义为 async generator（内部 await + yield 转发 run_stream 事件），
+    # 调用方 async for 直接消费；若定义为 async def 返回 run_stream 生成器，
+    # async for 拿到的会是 coroutine（报 _aiter_ 错误）；定义为同步 def 则 await 不合法。
     async def _run_diagnosis():
         username, _ = _current_user_from_header(authorization)
         # token 失效 → 返回 401，触发前端 fetchWithAuth 刷新重试，避免自动提单 created_by=""
@@ -677,7 +680,8 @@ async def upload_files(
             query=message.strip(),
             created_by=username,
         )
-        return pipeline.run_stream(request)
+        async for event in pipeline.run_stream(request):
+            yield event
 
     async def sse():
         try:
