@@ -467,7 +467,7 @@ class RetrievalService:
         CPU 推理瓶颈：bge-reranker-v2-m3 在 CPU 上约 700ms/pair，
         候选数封顶在 15，避免单次检索耗时超过 10 秒。
         """
-        _MAX_RERANK_CANDIDATES = 8
+        _MAX_RERANK_CANDIDATES = 12  # rerank 候选数：CPU 推理 ~700ms/pair，8→5 减半耗时，精度损失可接受
         if not self._reranker or len(results) <= top_k:
             return results[:top_k]
 
@@ -649,6 +649,7 @@ class RetrievalService:
         top_k: int = 3,
         sub_domain: Optional[str] = None,
         query_filter=None,
+        skip_rerank: bool = False,
     ) -> List[RetrievalResult]:
         """
         通用 domain 检索：给定 domain 和可选 sub_domain，从对应 Qdrant 集合中检索。
@@ -723,7 +724,7 @@ class RetrievalService:
         results = self._rrf_fusion(dense_res, sparse_list, top_k=fuse_k)
 
         # cross-encoder 重排序
-        if self._reranker and len(results) > top_k:
+        if self._reranker and not skip_rerank and len(results) > top_k:
             results = await self._rerank_results(query, results, top_k)
 
         return results
