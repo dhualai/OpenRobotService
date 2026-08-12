@@ -1366,7 +1366,8 @@ html, body, #root {
   display: flex; align-items: center; justify-content: center;
   font-size: 28px; color: #999;
 }
-/* AI 占位：组件库 Loading 图标 + 「思考中」逐字跳动（简洁无卡片，纯黑加粗） */
+/* AI 占位：组件库 Loading 图标 + 逐字跳动（简洁无卡片，纯黑加粗）。
+   支持任意字数：每字通过 style="--i:N" 赋动画延迟，替代原 nth-of-type 1/2/3 写死 */
 .chat-bubble__typing {
   display: inline-flex;
   align-items: center;
@@ -1380,17 +1381,15 @@ html, body, #root {
 .chat-bubble__typing .t-loading .t-loading__spinner {
   color: #000;
 }
-/* 「思考中」逐字跳动：纯黑 + 轻微上下浮动，生动不刺眼 */
+/* 逐字跳动：纯黑 + 轻微上下浮动，生动不刺眼 */
 .chat-bubble__typing .chat-bubble__typing-char {
   font-size: 13px;
   font-weight: 500;
   letter-spacing: 0.5px;
   color: #000;
   animation: typing-char-bounce 1.2s infinite ease-in-out;
+  animation-delay: calc(var(--i, 0) * 0.15s);
 }
-.chat-bubble__typing .chat-bubble__typing-char:nth-of-type(1) { animation-delay: 0s; }
-.chat-bubble__typing .chat-bubble__typing-char:nth-of-type(2) { animation-delay: 0.15s; }
-.chat-bubble__typing .chat-bubble__typing-char:nth-of-type(3) { animation-delay: 0.3s; }
 @keyframes typing-char-bounce {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.7; }
   30% { transform: translateY(-3px); opacity: 1; }

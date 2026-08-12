@@ -59,6 +59,9 @@ interface Message {
   reaction?: 'like' | 'dislike' | null;
   // 流式输出进行中标记：true 时气泡用纯文本渲染（避免 Markdown 全量重解析造成抖动），完成后置 false
   streaming?: boolean;
+  // 附件上传后的 AI 占位阶段（对应 sendWithFile 动态占位）：analyzing_image/analyzing_file=分析中，thinking=思考中。
+  // 设置后气泡渲染 chat-bubble__typing 动态动画（同纯文字「思考中」），不写入 content（content 留空）
+  phase?: 'analyzing_image' | 'analyzing_file' | 'thinking';
   // 任务 Agent 专属：结构化方案草稿 / 工单概览 / 信息不足提示（长文本可展开）
   subtype?: 'solution_draft' | 'ticket_overview' | 'missing_hint';
   solution_draft?: {
@@ -276,7 +279,20 @@ const MessageBubble = memo(function MessageBubble({
             onChange={(v) => onEditChange(msg.id, String(v))}
           />
         ) : msg.role === 'assistant' ? (
-          msg.subtype === 'missing_hint' ? (
+          msg.phase ? (
+            // 附件上传后的动态占位（同纯文字「思考中」打字动画）：phase 决定文案
+            (() => {
+              const text = msg.phase === 'thinking' ? '思考中' : (msg.phase === 'analyzing_image' ? '正在分析图片' : '正在分析文件');
+              return (
+                <div className="chat-bubble__typing" aria-label={`AI ${text}`}>
+                  <Loading size="small" />
+                  {Array.from(text).map((ch, i) => (
+                    <span key={i} className="chat-bubble__typing-char" style={{ ['--i' as string]: String(i) }}>{ch}</span>
+                  ))}
+                </div>
+              );
+            })()
+          ) : msg.subtype === 'missing_hint' ? (
             // 信息不足提示气泡（not_ready）：长文本折叠，提供「展开/收起」
             <div className="chat-missing-hint">
               <div className={`chat-missing-hint__text chat-clamp${expandedDesc ? ' is-expanded' : ''}`} style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
@@ -722,7 +738,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
-  /** 带附件发送：文件(可附文字)一起上传 /qa/upload，由后端返回 ack/ai_response（非流式）。
+  /** 带附件发送：文件(可附文字)一起上传 /qa/upload（SSE 流式），逐步推送 VLM 分析 + 诊断。
    * 方案一（乐观渲染）：点发送即插入用户气泡（附件+文字，内嵌上传进度遮罩）+ AI 分析占位气泡，
    * 上传进度实时更新到用户气泡，完成后遮罩消失、AI 回复填入占位气泡。文件名不拼进文字上下文。 */
   const sendWithFile = async (file: File, content: string) => {
@@ -733,13 +749,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const assistantId = uid();
     // 是否带附带文字：纯图片上传（无文字）时 VLM 描述就是回复，需保留；带文字时 VLM 描述才抑制
     const hasMessage = content.trim().length > 0;
-    // 初始占位文案（乐观渲染直接写入 content，避免 React 批处理下后续 paint() 读旧 state 失效）
-    const initialPlaceholder = isImage ? '正在分析图片…' : '正在分析文件…';
-    // 乐观渲染：立即插入用户气泡（带进度遮罩）+ AI 占位气泡（content 直接写占位，避免首帧空白/「思考中」）
+    // 初始占位阶段：图片/文件上传后先「正在分析…」，VLM 完成切「思考中」（同纯文字动态打字动画）
+    const initialPhase: Message['phase'] = isImage ? 'analyzing_image' : 'analyzing_file';
+    // 乐观渲染：立即插入用户气泡（带进度遮罩）+ AI 占位气泡（phase 触发动态打字动画，content 留空）
     setMessages((prev) => [
       ...prev,
       { id: userId, role: 'user', content, timestamp: new Date().toISOString(), imageUrl, attachment, uploading: true, percent: 0 },
-      { id: assistantId, role: 'assistant', content: initialPlaceholder, timestamp: new Date().toISOString(), streaming: true },
+      { id: assistantId, role: 'assistant', content: '', phase: initialPhase, streaming: true, timestamp: new Date().toISOString() },
     ]);
     setInput('');
     clearPendingFile();
@@ -757,17 +773,16 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const FLUSH_MS = 90;
     const paint = () => setMessages((prev) => prev.map((m) => {
       if (m.id !== assistantId) return m;
-      let content: string;
       if (acc) {
-        content = looksLikeJsonHead(acc) ? '正在思考…' : acc;
-      } else if (hasMessage) {
-        // 带文字：VLM 描述抑制，显示占位直到诊断正文开始
-        content = visionDone ? '正在思考…' : (isImage ? '正在分析图片…' : '正在分析文件…');
-      } else {
-        // 纯图片：VLM 描述就是回复，等待其 token 上屏
-        content = isImage ? '正在分析图片…' : '正在分析文件…';
+        // 有正文：退出占位阶段，显示内容
+        return { ...m, content: looksLikeJsonHead(acc) ? '正在思考…' : acc, phase: undefined };
       }
-      return { ...m, content };
+      // 无正文：占位阶段（phase 触发动态打字动画）。带文字时 VLM 描述抑制→思考中；
+      // 纯图片/纯文件时保持「正在分析…」直到 token 上屏
+      const phase: Message['phase'] = hasMessage
+        ? (visionDone ? 'thinking' : (isImage ? 'analyzing_image' : 'analyzing_file'))
+        : (isImage ? 'analyzing_image' : 'analyzing_file');
+      return { ...m, phase };
     }));
     const schedulePaint = () => {
       const now = Date.now();
@@ -864,7 +879,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 流结束：清洗并写入最终回复，持久化 assistant
       const finalContent = sanitizeAiText(acc);
       if (finalContent) {
-        setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: finalContent, streaming: false } : m)));
+        setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: finalContent, phase: undefined, streaming: false } : m)));
         if (convId) appendMessage(convId, 'assistant', finalContent).catch(() => {});
       } else if (!hasResult) {
         // 无回复：移除 AI 占位气泡，避免空气泡
@@ -895,7 +910,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // 用户开始补充信息：清掉待补充清单卡片（新一轮对话后再 prepare 会重新给出最新缺口）
     setTicketMissing(null);
 
-    // 带附件：走 /qa/upload（非流式），由后端返回 ack/ai_response
+    // 带附件：走 /qa/upload（SSE 流式），由 sendWithFile 流式渲染 VLM 分析 + 诊断
     if (file) {
       try {
         await sendWithFile(file, content);
