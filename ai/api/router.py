@@ -478,17 +478,26 @@ async def _upload_events(
     except Exception as e:
         logger.warning(f"确保 bucket {_bucket} 存在失败: {e}（若桶实际存在可忽略）")
 
-    # ── 1. 上传到 MinIO，先回执 ──
-    saved = []
+    # ── 1. 上传到 MinIO（异步并发，逐文件回执） ──
+    # minio_client.upload_bytes / get_presigned_url 是同步阻塞调用，裸调会卡住整个事件循环，
+    # 导致上传期间该进程上其它 SSE/问答请求全部阻塞（TTFB 被拉到 20s+）。
+    # 用 asyncio.to_thread 把每个文件的上传+签名挪到线程池，并用 gather 并发；逐文件 yield
+    # file_saved，让前端几乎立刻看到第一个文件回执（TTFB ≈ 单文件上传耗时，而非 Σ）。
+    import asyncio as _asyncio
+    saved: list[dict] = []
     raw_bytes: list[tuple] = []  # (filename, bytes) 暂存供 VLM
-    for f in files:
+
+    def _upload_one(f_content: bytes, f_ct: str, fname: str) -> dict:
+        object_path = f"{_bucket}/{session_id}/{fname}"
+        minio_client.upload_bytes(f_content, object_path, content_type=f_ct, raise_on_error=True)
+        url = minio_client.get_presigned_url(object_path, expires_minutes=1440)
+        return {"filename": fname, "size": len(f_content), "path": url, "object_path": object_path}
+
+    async def _upload_one_async(f: UploadFile) -> dict:
         content = await f.read()
         raw_bytes.append((f.filename, content))
-        object_path = f"{_bucket}/{session_id}/{f.filename}"
         try:
-            minio_client.upload_bytes(
-                content, object_path, content_type=f.content_type, raise_on_error=True
-            )
+            return await _asyncio.to_thread(_upload_one, content, f.content_type, f.filename)
         except Exception as e:
             logger.error(f"附件上传到 MinIO 失败: {f.filename} -> {e}", exc_info=True)
             raise HTTPException(
@@ -498,11 +507,20 @@ async def _upload_events(
                     f"请检查 MinIO 是否可达、桶 {_bucket} 是否存在、凭据是否正确。"
                 ),
             )
-        url = minio_client.get_presigned_url(object_path, expires_minutes=1440)
-        saved.append({"filename": f.filename, "size": len(content), "path": url, "object_path": object_path})
+
+    # 并发上传；逐个完成后立即 yield file_saved（单文件回执，前端可即时展示）
+    upload_tasks = [_upload_one_async(f) for f in files]
+    for coro in _asyncio.as_completed(upload_tasks):
+        item = await coro
+        saved.append(item)
+        # 单文件 file_saved：saved 字段为当前已完成的那一个，filenames 为该文件名
+        # （前端 onFileSaved 按累计已保存项渲染；保留与原批量事件兼容的字段名）
+        yield {"event": "file_saved", "saved": [item], "filenames": item["filename"]}
+    # 兜底：若无文件（理论不会），补一个空 file_saved 保持事件序列完整
+    if not saved:
+        yield {"event": "file_saved", "saved": [], "filenames": ""}
     filenames = "、".join(s["filename"] for s in saved)
     logger.info(f"[upload] 文件已保存: session={session_id[:12]}, saved={len(saved)}")
-    yield {"event": "file_saved", "saved": saved, "filenames": filenames}
 
     # ── 2. 图片描述：VLM 流式看图 ──
     image_desc = ""
@@ -745,7 +763,7 @@ async def upload_files(
     try:
         async for ev in _upload_events(session_id, files, message, authorization):
             if ev["event"] == "file_saved":
-                saved = ev["saved"]
+                saved.extend(ev["saved"])  # 逐文件回执，需累积（不能覆盖）
             elif ev["event"] == "memory_written":
                 ack_message = ev["ack_message"]
     except HTTPException as e:
