@@ -593,11 +593,22 @@ export default function TicketDetailPage() {
       minioPath = `${parsed.bucket}/${parsed.objectKey}`;
     }
     const authToken = localStorage.getItem('auth_token') || '';
-    // 必须拼成绝对 URL：微信内 window.open(相对URL) 打开的是微信内置 WebView，无法下载；
-    // 用户「在浏览器打开」后相对路径在外部浏览器解析失败会落到 SPA 404 → 未登录重定向微信 OAuth
-    // （表现为「提示跳转到微信客户端」）。绝对 URL 携带 token，在外部浏览器可直接下载。
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
     return `${origin}${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
+  };
+
+  /** 微信内下载中转页 URL（同 TaskDetailPage） */
+  const buildDownloadRedirectUrl = (att: NormalizedAttachment): string | null => {
+    const rawPath = att.path || att.url || '';
+    if (!rawPath) return null;
+    let minioPath = rawPath;
+    if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
+      const parsed = parseMinioPath(rawPath);
+      if (!parsed) return null;
+      minioPath = `${parsed.bucket}/${parsed.objectKey}`;
+    }
+    const authToken = localStorage.getItem('auth_token') || '';
+    return `/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
   };
 
   /** 构造附件内联预览 URL（/api/tasks/files/{minioPath}），供缩略图 <img> src 与 AttachmentViewer 共用 */
@@ -616,11 +627,13 @@ export default function TicketDetailPage() {
   const openAttachmentViewer = (att: NormalizedAttachment) => {
     const previewUrl = buildPreviewUrl(att);
     if (!previewUrl) { Toast({ message: '附件路径无效', theme: 'error' }); return; }
+    const isWechat = /MicroMessenger/i.test(navigator.userAgent);
+    const dl = isWechat ? buildDownloadRedirectUrl(att) : buildAttachmentDownloadUrl(att);
     setViewer({
       filename: att.filename || '未命名文件',
       size: att.size,
       previewUrl,
-      downloadUrl: buildAttachmentDownloadUrl(att) || previewUrl,
+      downloadUrl: dl || previewUrl,
     });
   };
 
@@ -795,7 +808,8 @@ export default function TicketDetailPage() {
                                   // 系统浏览器打开缺环境前缀的 URL 会 404 → 回跳微信。故微信内用
                                   // window.location.href 跳绝对地址（弹横幅，浏览器内可下载）；非微信用 a.click()。
                                   if (/MicroMessenger/i.test(navigator.userAgent)) {
-                                    window.location.href = dl;
+                                    const redirectUrl = buildDownloadRedirectUrl(att);
+                                    if (redirectUrl) window.location.href = redirectUrl;
                                   } else {
                                     const a = document.createElement('a');
                                     a.href = dl;
