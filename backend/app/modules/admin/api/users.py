@@ -238,11 +238,24 @@ async def create_user(
         projectPermissions=created_user.get('projectPermissions', {}),
         name=created_user.get('name'),
         status=created_user.get('status', 'inactive'),
-        external_credentials=created_user.get('external_credentials', {}),
+        external_credentials=_mask_usp_password(created_user.get('external_credentials', {})),
         avatar_resource_id=created_user.get('avatar_resource_id'),
         company=created_user.get('company'),
         department=created_user.get('department'),
     )
+
+def _mask_usp_password(external_credentials: Dict) -> Dict:
+    """屏蔽 USP 密码哈希：已设置密码时返回 "-" 作为哨兵，未设置时保持为空"""
+    if not external_credentials:
+        return external_credentials
+    usp = external_credentials.get('usp', {})
+    if usp and usp.get('password'):
+        import copy
+        masked = copy.deepcopy(external_credentials)
+        masked['usp']['password'] = '-'
+        return masked
+    return external_credentials
+
 
 @router.get("/{username}/detail", response_model=UserDetail, summary="获取用户详细信息")
 async def get_user_detail(
@@ -264,7 +277,7 @@ async def get_user_detail(
         projectPermissions=user.get('projectPermissions', {}),
         name=user.get('name'),
         status=user.get('status', 'inactive'),
-        external_credentials=user.get('external_credentials', {}),
+        external_credentials=_mask_usp_password(user.get('external_credentials', {})),
         avatar_resource_id=user.get('avatar_resource_id'),
         company=user.get('company'),
         department=user.get('department'),
@@ -348,7 +361,7 @@ async def update_user(
         roles=user.get('roles', {}),
         name=updated_user.get('name'),
         status=updated_user.get('status', 'inactive'),
-        external_credentials=updated_user.get('external_credentials', {}),
+        external_credentials=_mask_usp_password(updated_user.get('external_credentials', {})),
         avatar_resource_id=updated_user.get('avatar_resource_id'),
         company=updated_user.get('company'),
         department=updated_user.get('department'),
