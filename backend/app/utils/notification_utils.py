@@ -50,6 +50,8 @@ class NotificationUtils:
     DAYILY_TICKET = 2
     YUQU_TICKET = 4
     YUQU_TICKET_STATUS_CHANGE = 6
+    REASSIGN_TICKET = 7
+    MENTION_TICKET = 8
     TICKET_HOST = "https://usp.ep-zl.com/p/app/tasks"
 
     @classmethod
@@ -374,6 +376,52 @@ class NotificationUtils:
             except Exception as e:
                 logger.error(f"发送通知失败：{str(e)}")
         
+        asyncio.get_event_loop().run_in_executor(_executor, _send)
+        return {"code": 200, "message": "通知已发送"}
+
+    @staticmethod
+    async def send_ticket_reassign_notification(
+        ticket_id: int,
+        title: str,
+        project_name: str,
+        operator: str,
+        new_assignee: str,
+        deadline_at: Optional[datetime] = None,
+        user_names: List[str] = None,
+        token: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """工单转派提醒（模板 7）。
+
+        通知对象：工单创建人 + 新被指派人。
+        模板字段：[工单名称, 项目名称, 转派人, 新负责人, 要求完成时间]
+        """
+        def _send():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    processed_title = loop.run_until_complete(
+                        NotificationUtils.simplify_title(title)
+                    )
+                    processed_project_name = loop.run_until_complete(
+                        NotificationUtils.simplify_title(project_name)
+                    )
+                finally:
+                    loop.close()
+
+                deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+                payload = NotificationUtils.instantiate_template(NotificationUtils.REASSIGN_TICKET,
+                                                                 processed_title, processed_project_name, operator, new_assignee, deadline_str,
+                                                                 user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
+                loop2 = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop2)
+                try:
+                    loop2.run_until_complete(NotificationUtils.send_notification(payload, token))
+                finally:
+                    loop2.close()
+            except Exception as e:
+                logger.error(f"发送转派通知失败：{str(e)}")
+
         asyncio.get_event_loop().run_in_executor(_executor, _send)
         return {"code": 200, "message": "通知已发送"}
 
