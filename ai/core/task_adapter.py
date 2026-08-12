@@ -19,6 +19,22 @@ from app.models.task import Task, TaskStatus, TaskPriority, TaskType, TaskOperat
 from app.core.database import db_manager
 
 
+def _dedup_attachments(items: list) -> list:
+    """按 object_path + filename 去重，保留首次出现顺序。
+    防止 agent_state.attachments 累加时引入重复条目透传到 tasks.attachments。"""
+    seen = set()
+    result = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        key = (it.get("object_path"), it.get("filename"))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(it)
+    return result
+
+
 def _resolve_operator_name(operator: str) -> str:
     """通过 username 解析显示名（查用户表兜底）。"""
     try:
@@ -124,7 +140,7 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
     "project_id": ticket.get("project_id", "") or "",
         "external_id": ext_id,
         "external_url": None,
-        "attachments": ticket.get("attachments") or [],
+        "attachments": _dedup_attachments(ticket.get("attachments") or []),
         "tags": ["ai_generated"],
         "metadata_info": meta,
     }
