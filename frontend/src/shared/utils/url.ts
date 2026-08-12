@@ -99,6 +99,26 @@ export function formatDateTime(dateString: string): string {
   });
 }
 
+/** 精简日期时间：当年「08-12 09:00」，跨年「2026-08-12 09:00」（具体到小时分钟） */
+export function formatDateTimeShort(dateString: string): string {
+  if (!dateString) return '';
+  const d = new Date(dateString);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return d.getFullYear() === new Date().getFullYear() ? `${md} ${hm}` : `${d.getFullYear()}-${md} ${hm}`;
+}
+
+/** 最晚解决时间选择器值：有值用原值，无值默认当天 9:00（格式 YYYY-MM-DD HH:00） */
+export function deadlinePickerValue(iso?: string): string {
+  const d = iso ? new Date(iso) : new Date();
+  if (iso && isNaN(d.getTime())) return '';
+  if (!iso) d.setHours(9, 0, 0, 0);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:00`;
+}
+
 export function formatTime(dateString: string): string {
   if (!dateString) return '刚刚';
   const date = new Date(dateString);

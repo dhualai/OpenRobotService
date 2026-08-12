@@ -15,6 +15,7 @@ import type { UserItem } from '@/api/users';
 import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
 import { createRequest } from '@/api/client';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
+import { deadlinePickerValue } from '@/shared/utils/url';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import ImageLightbox from '@/shared/components/ImageLightbox';
 import SuggestedQuestions from '@/shared/components/SuggestedQuestions';
@@ -2135,7 +2136,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             mode="hour"
             title="选择最晚解决时间"
             format="YYYY-MM-DD HH:00"
-            value={draftField('deadline_at') || undefined}
+            value={deadlinePickerValue(draftField('deadline_at') || undefined)}
             onConfirm={(v) => {
               const d = new Date(typeof v === 'number' ? v : String(v));
               if (!isNaN(d.getTime())) {
