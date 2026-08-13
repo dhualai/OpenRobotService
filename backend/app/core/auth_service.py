@@ -99,6 +99,8 @@ class AuthService:
             "roles": user['roles'],
             "external_credentials": external_credentials,
             "avatar_resource_id": user.get('avatar_resource_id'),
+            "company_id": user.get('company_id'),
+            "department_id": user.get('department_id'),
             "company": user.get('company'),
             "department": user.get('department'),
         }

@@ -17,6 +17,8 @@ class UserCreate(UserBase):
     external_credentials: Optional[Dict[str, Dict[str, str]]] = {}
     company: Optional[str] = None
     department: Optional[str] = None
+    company_id: Optional[str] = None
+    department_id: Optional[str] = None
     responsibility_modules: Optional[Dict[str, List[str]]] = None
     job_level: Optional[int] = 1
     duty_text: Optional[str] = None
@@ -31,6 +33,8 @@ class UserUpdate(BaseModel):
     avatar_resource_id: Optional[int] = None
     company: Optional[str] = None
     department: Optional[str] = None
+    company_id: Optional[str] = None
+    department_id: Optional[str] = None
     responsibility_modules: Optional[Dict[str, List[str]]] = None
     job_level: Optional[int] = None
     duty_text: Optional[str] = None
@@ -46,6 +50,8 @@ class UserInDB(UserBase):
     external_credentials: Dict[str, Dict[str, str]] = {}
     company: Optional[str] = None
     department: Optional[str] = None
+    company_id: Optional[str] = None
+    department_id: Optional[str] = None
     responsibility_modules: Optional[Dict[str, List[str]]] = None
     job_level: Optional[int] = 1
     duty_text: Optional[str] = None
@@ -63,6 +69,8 @@ class User(UserBase):
     external_credentials: Dict[str, Dict[str, str]] = {}
     company: Optional[str] = None
     department: Optional[str] = None
+    company_id: Optional[str] = None
+    department_id: Optional[str] = None
     responsibility_modules: Optional[Dict[str, List[str]]] = None
     job_level: Optional[int] = 1
     duty_text: Optional[str] = None

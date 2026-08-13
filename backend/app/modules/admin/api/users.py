@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Query, Body
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from sqlalchemy.ext.asyncio import AsyncSession
 import uuid
 import traceback
 from sqlalchemy import text
+from datetime import datetime
 
 from typing import Dict, Any
-from app.core.database import db_manager, get_user_with_roles, UserDB
+from app.core.database import db_manager, get_user_with_roles, UserDB, get_async_db
 from app.core.security import get_password_hash
 from app.modules.admin.schemas.user import User, UserCreate, UserUpdate, UserDetail
 from app.modules.admin.schemas.role import RoleBatchRemoval, RoleAssignment
@@ -13,8 +15,11 @@ from app.modules.admin.schemas.project import ProjectUserRoleAssignment
 from app.modules.admin.schemas.response import SuccessResponse
 from app.modules.admin.api.auth import get_current_active_user_from_token, require_permission
 from app.services.hmac_utils import generate_password, chinese_to_pinyin
-from app.models.task import Task
+from app.models.task import Task, TaskType, TaskPriority
 from app.models.identity import user_project_roles
+from app.models.organization import Company, Department
+from app.modules.tasks.schemas.ticket import TicketCreate
+from app.modules.tasks.services.ticket_service import TicketService
 
 router = APIRouter(prefix="/users", tags=["admin-users"])
 
@@ -160,24 +165,74 @@ async def generate_usp_username(
     finally:
         db.close()
 
-@router.get("/options", response_model=Dict[str, List[str]], summary="获取公司/部门可选项（去重）")
+@router.get("/options", summary="获取公司/部门可选项（主数据表，含审核状态）")
 async def get_user_field_options(
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
-    """返回 users 表中已有的非空 company / department 去重列表，供个人中心下拉选择。"""
+    """从 companies/departments 主数据表返回可选项。
+    - approved 的全部可见
+    - pending 的仅提交者本人可见
+    - departments 按公司分组返回
+    """
     db = db_manager.get_db()
     try:
-        companies = [
-            r[0] for r in db.query(UserDB.company)
-            .filter(UserDB.company.isnot(None), UserDB.company != '')
-            .distinct().order_by(UserDB.company).all()
+        user_id = current_user.get('id', '')
+
+        # 公司：approved 全部 + 本人 pending
+        approved_companies = db.query(Company).filter(
+            Company.status == 'approved'
+        ).order_by(Company.name).all()
+        my_pending_companies = db.query(Company).filter(
+            Company.status == 'pending',
+            Company.created_by == user_id,
+        ).order_by(Company.name).all()
+
+        companies_list = [
+            {"id": c.id, "name": c.name, "status": c.status}
+            for c in approved_companies + my_pending_companies
         ]
-        departments = [
-            r[0] for r in db.query(UserDB.department)
-            .filter(UserDB.department.isnot(None), UserDB.department != '')
-            .distinct().order_by(UserDB.department).all()
-        ]
-        return {"companies": companies, "departments": departments}
+
+        # 部门：approved 全部 + 本人 pending，按公司分组
+        all_company_ids = [c.id for c in approved_companies + my_pending_companies]
+        approved_depts = db.query(Department).filter(
+            Department.status == 'approved',
+            Department.company_id.in_(all_company_ids) if all_company_ids else text('1=1'),
+        ).all()
+        my_pending_depts = db.query(Department).filter(
+            Department.status == 'pending',
+            Department.created_by == user_id,
+        ).all()
+
+        # 构建 company_id → name 映射
+        company_name_map = {c.id: c.name for c in approved_companies + my_pending_companies}
+
+        # 按公司名分组
+        departments_by_company: Dict[str, List[Dict[str, Any]]] = {}
+        my_pending_dept_list = []
+        for d in approved_depts + my_pending_depts:
+            comp_name = company_name_map.get(d.company_id, "未分类")
+            if comp_name not in departments_by_company:
+                departments_by_company[comp_name] = []
+            departments_by_company[comp_name].append({
+                "id": d.id,
+                "name": d.name,
+                "status": d.status,
+            })
+            if d.status == 'pending':
+                my_pending_dept_list.append({
+                    "id": d.id,
+                    "name": d.name,
+                    "company_name": comp_name,
+                })
+
+        return {
+            "companies": companies_list,
+            "departments_by_company": departments_by_company,
+            "my_pending": {
+                "companies": [{"id": c.id, "name": c.name} for c in my_pending_companies],
+                "departments": my_pending_dept_list,
+            },
+        }
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -185,6 +240,246 @@ async def get_user_field_options(
         )
     finally:
         db.close()
+
+
+# ===== 公司/部门提交与审核 =====
+
+ADMIN_ASSIGNEE_ID = "user_admin"  # 审核工单指派给管理员
+
+
+@router.post("/options/company", summary="提交新公司（创建 pending 记录 + 审核工单）")
+async def submit_new_company(
+    data: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+    db: AsyncSession = Depends(get_async_db),
+):
+    name = (data.get('name') or '').strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="公司名称不能为空")
+
+    # 检查是否已存在（任意状态）
+    sync_db = db_manager.get_db()
+    try:
+        existing = sync_db.query(Company).filter(Company.name == name).first()
+        if existing:
+            if existing.status == 'approved':
+                raise HTTPException(status_code=400, detail="该公司已存在")
+            elif existing.status == 'pending':
+                raise HTTPException(status_code=400, detail="该公司已提交审核，请等待管理员处理")
+            else:
+                raise HTTPException(status_code=400, detail="该公司曾被驳回，请联系管理员")
+    finally:
+        sync_db.close()
+
+    # 创建 pending 记录
+    company_id = str(uuid.uuid4())
+    user_id = current_user.get('id', '')
+    user_name = current_user.get('name') or current_user.get('username', '')
+
+    sync_db = db_manager.get_db()
+    try:
+        new_company = Company(
+            id=company_id,
+            name=name,
+            status='pending',
+            created_by=user_id,
+        )
+        sync_db.add(new_company)
+        sync_db.commit()
+    except Exception as e:
+        sync_db.rollback()
+        raise HTTPException(status_code=500, detail=f"创建公司记录失败: {str(e)}")
+    finally:
+        sync_db.close()
+
+    # 创建审核工单
+    ticket_data = TicketCreate(
+        title=f"新公司录入审核：{name}",
+        description=f"用户 {user_name} 申请新增公司「{name}」，请审核。",
+        ticket_type=TaskType.OTHER,
+        priority=TaskPriority.LOW,
+        assigned_to=ADMIN_ASSIGNEE_ID,
+        metadata_info={
+            "approval_type": "new_company",
+            "target_table": "companies",
+            "target_id": company_id,
+            "target_name": name,
+            "submitted_by": user_id,
+        },
+    )
+    try:
+        ticket = await TicketService.create_ticket(db, ticket_data, user_id, {})
+    except Exception as e:
+        # 工单创建失败不回滚公司记录，管理员可在管理页面手动处理
+        pass
+
+    return {"company": {"id": company_id, "name": name, "status": "pending"}, "ticket_id": ticket.id if ticket else None}
+
+
+@router.post("/options/department", summary="提交新部门（创建 pending 记录 + 审核工单）")
+async def submit_new_department(
+    data: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+    db: AsyncSession = Depends(get_async_db),
+):
+    name = (data.get('name') or '').strip()
+    company_id = (data.get('company_id') or '').strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="部门名称不能为空")
+    if not company_id:
+        raise HTTPException(status_code=400, detail="请选择所属公司")
+
+    # 检查公司是否存在且可见（approved 或本人 pending）
+    sync_db = db_manager.get_db()
+    try:
+        company = sync_db.query(Company).filter(Company.id == company_id).first()
+        if not company:
+            raise HTTPException(status_code=404, detail="所选公司不存在")
+        if company.status == 'rejected':
+            raise HTTPException(status_code=400, detail="所选公司已被驳回")
+        if company.status == 'pending' and company.created_by != current_user.get('id', ''):
+            raise HTTPException(status_code=403, detail="所选公司正在审核中，无法添加部门")
+
+        # 检查部门是否已存在
+        existing = sync_db.query(Department).filter(
+            Department.name == name,
+            Department.company_id == company_id,
+        ).first()
+        if existing:
+            if existing.status == 'approved':
+                raise HTTPException(status_code=400, detail="该部门已存在")
+            elif existing.status == 'pending':
+                raise HTTPException(status_code=400, detail="该部门已提交审核，请等待管理员处理")
+            else:
+                raise HTTPException(status_code=400, detail="该部门曾被驳回，请联系管理员")
+    finally:
+        sync_db.close()
+
+    # 创建 pending 记录
+    dept_id = str(uuid.uuid4())
+    user_id = current_user.get('id', '')
+    user_name = current_user.get('name') or current_user.get('username', '')
+
+    sync_db = db_manager.get_db()
+    try:
+        new_dept = Department(
+            id=dept_id,
+            name=name,
+            company_id=company_id,
+            status='pending',
+            created_by=user_id,
+        )
+        sync_db.add(new_dept)
+        sync_db.commit()
+    except Exception as e:
+        sync_db.rollback()
+        raise HTTPException(status_code=500, detail=f"创建部门记录失败: {str(e)}")
+    finally:
+        sync_db.close()
+
+    # 创建审核工单
+    company_name = company.name if company else ""
+    ticket_data = TicketCreate(
+        title=f"新部门录入审核：{name}（{company_name}）",
+        description=f"用户 {user_name} 申请新增部门「{name}」（所属公司：{company_name}），请审核。",
+        ticket_type=TaskType.OTHER,
+        priority=TaskPriority.LOW,
+        assigned_to=ADMIN_ASSIGNEE_ID,
+        metadata_info={
+            "approval_type": "new_department",
+            "target_table": "departments",
+            "target_id": dept_id,
+            "target_name": name,
+            "company_id": company_id,
+            "company_name": company_name,
+            "submitted_by": user_id,
+        },
+    )
+    try:
+        ticket = await TicketService.create_ticket(db, ticket_data, user_id, {})
+    except Exception as e:
+        pass
+
+    return {"department": {"id": dept_id, "name": name, "status": "pending"}, "ticket_id": ticket.id if ticket else None}
+
+
+@router.put("/options/{target_type}/{target_id}/approve", summary="管理员审核通过公司/部门")
+async def approve_option(
+    target_type: str,
+    target_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    if target_type not in ('company', 'department'):
+        raise HTTPException(status_code=400, detail="类型必须是 company 或 department")
+    if current_user.get('id') != ADMIN_ASSIGNEE_ID:
+        raise HTTPException(status_code=403, detail="无权限操作")
+
+    sync_db = db_manager.get_db()
+    try:
+        if target_type == 'company':
+            obj = sync_db.query(Company).filter(Company.id == target_id).first()
+        else:
+            obj = sync_db.query(Department).filter(Department.id == target_id).first()
+        if not obj:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        if obj.status == 'approved':
+            raise HTTPException(status_code=400, detail="该记录已审核通过")
+
+        obj.status = 'approved'
+        obj.approved_by = current_user.get('id', '')
+        obj.approved_at = datetime.now()
+        obj.reject_reason = None
+        sync_db.commit()
+
+        return {"status": "approved", "id": target_id, "name": obj.name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        sync_db.rollback()
+        raise HTTPException(status_code=500, detail=f"审核操作失败: {str(e)}")
+    finally:
+        sync_db.close()
+
+
+@router.put("/options/{target_type}/{target_id}/reject", summary="管理员驳回公司/部门")
+async def reject_option(
+    target_type: str,
+    target_id: str,
+    data: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    if target_type not in ('company', 'department'):
+        raise HTTPException(status_code=400, detail="类型必须是 company 或 department")
+    if current_user.get('id') != ADMIN_ASSIGNEE_ID:
+        raise HTTPException(status_code=403, detail="无权限操作")
+
+    reason = (data.get('reason') or '').strip()
+
+    sync_db = db_manager.get_db()
+    try:
+        if target_type == 'company':
+            obj = sync_db.query(Company).filter(Company.id == target_id).first()
+        else:
+            obj = sync_db.query(Department).filter(Department.id == target_id).first()
+        if not obj:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        if obj.status == 'rejected':
+            raise HTTPException(status_code=400, detail="该记录已被驳回")
+
+        obj.status = 'rejected'
+        obj.approved_by = current_user.get('id', '')
+        obj.approved_at = datetime.now()
+        obj.reject_reason = reason or None
+        sync_db.commit()
+
+        return {"status": "rejected", "id": target_id, "name": obj.name, "reason": reason}
+    except HTTPException:
+        raise
+    except Exception as e:
+        sync_db.rollback()
+        raise HTTPException(status_code=500, detail=f"驳回操作失败: {str(e)}")
+    finally:
+        sync_db.close()
 
 @router.post("/", response_model=User)
 async def create_user(
@@ -339,10 +634,10 @@ async def update_user(
         update_data["external_credentials"] = external_creds
     if user_data.avatar_resource_id is not None:
         update_data["avatar_resource_id"] = user_data.avatar_resource_id
-    if user_data.company is not None:
-        update_data["company"] = user_data.company
-    if user_data.department is not None:
-        update_data["department"] = user_data.department
+    if user_data.company_id is not None:
+        update_data["company_id"] = user_data.company_id or None
+    if user_data.department_id is not None:
+        update_data["department_id"] = user_data.department_id or None
     if user_data.responsibility_modules is not None:
         update_data["responsibility_modules"] = user_data.responsibility_modules
     if user_data.job_level is not None:
@@ -369,6 +664,8 @@ async def update_user(
         status=updated_user.get('status', 'inactive'),
         external_credentials=_mask_usp_password(updated_user.get('external_credentials', {})),
         avatar_resource_id=updated_user.get('avatar_resource_id'),
+        company_id=updated_user.get('company_id'),
+        department_id=updated_user.get('department_id'),
         company=updated_user.get('company'),
         department=updated_user.get('department'),
         responsibility_modules=updated_user.get('responsibility_modules', {}),

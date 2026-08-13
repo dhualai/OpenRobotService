@@ -448,6 +448,7 @@ class NotificationUtils:
                                                                      extr.get('pending_count', 0), extr.get('near_overdue_count', 0),
                                                                      extr.get('overdue_count', 0), user_names=user_names)
                 elif notify_type == 6:
+                    # 工单逾期提醒, [工单名称, 项目名称, 逾期天数, 派单时间, 逾期时间]
                     deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else ''
                     create_str = create_at.strftime('%Y-%m-%d %H:%M:%S') if create_at else ''
 
@@ -457,11 +458,14 @@ class NotificationUtils:
                         processed_ticket_name = loop.run_until_complete(
                             NotificationUtils.simplify_title(ticket_name)
                         )
+                        processed_project_name = loop.run_until_complete(
+                            NotificationUtils.simplify_title(project_name)
+                        )
                     finally:
                         loop.close()
 
                     payload = NotificationUtils.instantiate_template(NotificationUtils.YUQU_TICKET_STATUS_CHANGE,
-                                                                     ticket_id, processed_ticket_name, yuqi_day, create_str, deadline_str,
+                                                                     processed_ticket_name, processed_project_name, yuqi_day, create_str, deadline_str,
                                                                      user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 elif notify_type == 9:
                     # 工单超时预警提醒, [工单名称, 项目名称, 处理人, 提交时间, 截止时间]

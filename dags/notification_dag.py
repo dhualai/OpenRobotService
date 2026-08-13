@@ -2,14 +2,14 @@
 
 定期扫描处于 NEW / IN_PROGRESS / PENDING 状态的工单，按截止时间匹配规则发送通知：
 
-规则 1 — 临期预警（未逾期）：
-  - 紧急工单（priority=urgent）：距离截止时间 60~120 分钟 → notify_type=9 通知一次
-  - 其他工单：距离截止时间 24~25 小时 → notify_type=9 通知一次
-  - 去重：{ticket_id: deadline_at}，截止时间变更后重新通知
+规则 1 — 临期预警（未逾期，不区分优先级，每单预警两次）：
+  - 第一次预警：距离截止时间 24~25 小时 → notify_type=9
+  - 第二次预警：距离截止时间 60~120 分钟 → notify_type=9
+  - 去重：{ticket_id_window: deadline_at}，两个窗口各自独立去重，截止时间变更后重新通知
 
 规则 2 — 逾期（now > deadline_at）：
-  - 逾期 < 24h：每日通知一次受理人 → notify_type=3（逾期提醒）
-  - 逾期 ≥ 24h：每日通知一次 受理人 + 受理人上级（user.supervisor_id）→ notify_type=3
+  - 逾期 < 24h：每日通知一次受理人 → notify_type=6（模板6：工单逾期提醒）
+  - 逾期 ≥ 24h：每日通知一次 受理人 + 受理人上级（user.supervisor_id）→ notify_type=6
   - 去重：{ticket_id: date(YYYY-MM-DD)}，同一张工单同一天只通知一次
 
 通知对象：
@@ -33,16 +33,18 @@ ADMIN_USERNAME = os.getenv("ORS_ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ORS_ADMIN_PASSWORD", "usp2026@EP")
 
 # 去重记录文件
-DEDUP_FILE = Path(os.getenv("ORS_DEDUP_FILE", "/opt/airflow/data/notification_sent.json"))
+DEDUP_FILE = Path(os.getenv("ORS_DEDUP_FILE", "/data/apps/airflow/dags/notification_sent.json"))
 
 # 东八区
 TZ_SHANGHAI = timezone(timedelta(hours=8))
 
-# ── 临期预警窗口 ──
-URGENT_MIN_MINUTES = 60
-URGENT_MAX_MINUTES = 120
+# ── 临期预警窗口（不区分优先级，所有工单两次预警） ──
+# 第一次预警：距截止 24~25 小时
 NORMAL_MIN_HOURS = 24
 NORMAL_MAX_HOURS = 25
+# 第二次预警：距截止 60~120 分钟
+URGENT_MIN_MINUTES = 60
+URGENT_MAX_MINUTES = 120
 
 # 逾期升级阈值（小时）
 OVERDUE_ESCALATE_HOURS = 24
@@ -160,7 +162,7 @@ def _send_cuiban_single(token: str, ticket_id: int, notify_type: int, assigned_t
 @dag(
     dag_id="ticket_deadline_notification",
     description="工单截止时间预警 + 逾期升级通知",
-    schedule_interval="0 * * * *",  # 每整点执行一次
+    schedule="0 * * * *",  # 每整点执行一次
     start_date=datetime(2026, 1, 1, tzinfo=TZ_SHANGHAI),
     catchup=False,
     tags=["ticket", "notification"],
@@ -214,8 +216,7 @@ def ticket_deadline_notification_dag():
         overdue_dedup: dict = dedup.setdefault("overdue", {})
 
         stats = {
-            "warning_urgent": 0,
-            "warning_normal": 0,
+            "warning_sent": 0,
             "warning_skipped_dedup": 0,
             "overdue_assignee": 0,
             "overdue_escalate": 0,
@@ -239,29 +240,28 @@ def ticket_deadline_notification_dag():
 
             minutes_to_deadline = (deadline - now).total_seconds() / 60
 
-            # ──────── 1) 临期预警（未逾期） ────────
+            # ──────── 1) 临期预警（未逾期，不区分优先级，每单预警两次） ────────
             if minutes_to_deadline >= 0:
-                is_urgent = priority == "urgent"
-                if is_urgent:
-                    in_window = URGENT_MIN_MINUTES <= minutes_to_deadline < URGENT_MAX_MINUTES
-                else:
-                    in_window = NORMAL_MIN_HOURS <= (minutes_to_deadline / 60) < NORMAL_MAX_HOURS
-
-                if in_window:
-                    w_key = str(ticket_id)
+                hours_to_deadline = minutes_to_deadline / 60
+                # 两个窗口：24~25h（第一次）、60~120min（第二次）
+                windows = [
+                    ("24h", NORMAL_MIN_HOURS <= hours_to_deadline < NORMAL_MAX_HOURS),
+                    ("1h", URGENT_MIN_MINUTES <= minutes_to_deadline < URGENT_MAX_MINUTES),
+                ]
+                for win_tag, in_window in windows:
+                    if not in_window:
+                        continue
+                    w_key = f"{ticket_id}_{win_tag}"
                     if warning_dedup.get(w_key) == str(deadline_raw):
                         stats["warning_skipped_dedup"] += 1
-                    else:
-                        if _send_cuiban(token, ticket_id, 9):
-                            warning_dedup[w_key] = str(deadline_raw)
-                            if is_urgent:
-                                stats["warning_urgent"] += 1
-                            else:
-                                stats["warning_normal"] += 1
-                            logger.info(
-                                f"[预警] 工单 {ticket_id} 优先级={priority} "
-                                f"距截止 {minutes_to_deadline:.0f} 分钟，已通知"
-                            )
+                        continue
+                    if _send_cuiban(token, ticket_id, 9):
+                        warning_dedup[w_key] = str(deadline_raw)
+                        stats["warning_sent"] += 1
+                        logger.info(
+                            f"[预警-{win_tag}] 工单 {ticket_id} "
+                            f"距截止 {minutes_to_deadline:.0f} 分钟，已通知"
+                        )
 
             # ──────── 2) 逾期（now > deadline） ────────
             else:
@@ -287,7 +287,7 @@ def ticket_deadline_notification_dag():
                 if not notify_targets:
                     continue
 
-                sent = _send_cuiban(token, ticket_id, 3, notify_targets)
+                sent = _send_cuiban(token, ticket_id, 6, notify_targets)
                 if sent:
                     overdue_dedup[o_key] = today_str
                     if escalated:

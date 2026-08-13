@@ -63,8 +63,12 @@ class UserDB(Base):
     avatar_resource_id = Column(Integer, nullable=True)
 
     # === 派单人信息（与 AI Assigner 共享）===
-    company = Column(String(128), nullable=True, comment="公司")
-    department = Column(String(128), nullable=True, comment="部门/团队")
+    # 旧列（存名称字符串，废弃过渡期保留，迁移完成后删除）
+    company = Column(String(128), nullable=True, comment="公司名称（废弃，改用 company_id）")
+    department = Column(String(128), nullable=True, comment="部门/团队名称（废弃，改用 department_id）")
+    # 新列（外键关联主数据表）
+    company_id = Column(String(64), ForeignKey('companies.id'), nullable=True, index=True, comment="公司ID")
+    department_id = Column(String(64), ForeignKey('departments.id'), nullable=True, index=True, comment="部门ID")
     responsibility_modules = Column(JSON, nullable=True, comment='责任模块 ["车端","任务调度","地图编辑"...]')
     job_level = Column(TINYINT, default=1, nullable=False, comment="职级，数值越高越不优先接单（1=一线, 2=管理/审核, 3=仅兜底...），默认1")
     duty_text = Column(Text, nullable=True, comment="职责画像文本，供 AI 派单匹配参考")

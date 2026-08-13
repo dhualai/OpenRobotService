@@ -113,6 +113,7 @@ export default function TaskDetailPage() {
   const { id: detailId } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
+  const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, '管理服务');
 
   const { refreshTasks } = useWorkbenchStore();
   const { username, name } = useAuthStore();
@@ -147,6 +148,11 @@ export default function TaskDetailPage() {
 
   // AI 摘要（后端定时写入评论，前端从评论提取展示）
   const [aiSummary, setAiSummary] = useState('');
+
+  // 公司/部门审核
+  const [approving, setApproving] = useState(false);
+  const [showRejectPopup, setShowRejectPopup] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
 
   // 工单动态（操作日志，用于详情页滚动展示）
   const [opLogs, setOpLogs] = useState<OperationLog[]>([]);
@@ -355,6 +361,70 @@ export default function TaskDetailPage() {
     setDetail(refreshed);
     refreshTasks();
     fetchOpLogs();
+  };
+
+  // ===== 公司/部门审核 =====
+  const approvalInfo = (() => {
+    const meta = detail?.metadata_info || {};
+    const approvalType = meta.approval_type as string | undefined;
+    if (!approvalType) return null;
+    return {
+      type: approvalType as 'new_company' | 'new_department',
+      targetTable: (meta.target_table as string) || '',
+      targetId: (meta.target_id as string) || '',
+      targetName: (meta.target_name as string) || '',
+      companyName: meta.company_name as string | undefined,
+    };
+  })();
+
+  const handleApprove = async () => {
+    if (!approvalInfo) return;
+    setApproving(true);
+    try {
+      const targetType = approvalInfo.type === 'new_company' ? 'company' : 'department';
+      await adminRequest(`/users/options/${targetType}/${approvalInfo.targetId}/approve`, {
+        method: 'PUT',
+      });
+      // 同步关闭工单
+      await request(`/${detail!.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'closed' }),
+      });
+      Toast({ message: '已审核通过', theme: 'success' });
+      await refreshDetail();
+    } catch (err) {
+      Toast({ message: `审核失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setApproving(false);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!approvalInfo) return;
+    if (!rejectReason.trim()) {
+      Toast({ message: '请填写驳回原因', theme: 'warning' });
+      return;
+    }
+    setApproving(true);
+    try {
+      const targetType = approvalInfo.type === 'new_company' ? 'company' : 'department';
+      await adminRequest(`/users/options/${targetType}/${approvalInfo.targetId}/reject`, {
+        method: 'PUT',
+        body: JSON.stringify({ reason: rejectReason.trim() }),
+      });
+      await request(`/${detail!.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'closed' }),
+      });
+      Toast({ message: '已驳回', theme: 'success' });
+      setShowRejectPopup(false);
+      setRejectReason('');
+      await refreshDetail();
+    } catch (err) {
+      Toast({ message: `驳回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setApproving(false);
+    }
   };
 
   const handleReturn = async () => {
@@ -858,6 +928,48 @@ export default function TaskDetailPage() {
           <SafeHtml html={detail.description || '<p style="color:#999">无描述</p>'} />
         </div>
 
+        {/* 公司/部门审核入口：仅管理员可见，工单 metadata_info 含 approval_type 时展示 */}
+        {approvalInfo && username === 'admin' && (
+          <div className="detail-card" style={{ border: '2px solid #0052d9', borderRadius: 12 }}>
+            <h4 className="detail-card__h" style={{ color: '#0052d9' }}>
+              {approvalInfo.type === 'new_company' ? '🏢 新公司录入审核' : '🏬 新部门录入审核'}
+            </h4>
+            <div style={{ fontSize: 14, color: '#333', lineHeight: 1.8, marginBottom: 16 }}>
+              <div>
+                <strong>{approvalInfo.type === 'new_company' ? '公司名称' : '部门名称'}：</strong>
+                {approvalInfo.targetName}
+              </div>
+              {approvalInfo.companyName && (
+                <div><strong>所属公司：</strong>{approvalInfo.companyName}</div>
+              )}
+              <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+                请审核以下信息，通过后该{approvalInfo.type === 'new_company' ? '公司' : '部门'}将对所有用户可见
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <Button
+                block
+                theme="success"
+                loading={approving}
+                onClick={handleApprove}
+                style={{ borderRadius: '10px' }}
+              >
+                审核通过
+              </Button>
+              <Button
+                block
+                theme="danger"
+                variant="outline"
+                disabled={approving}
+                onClick={() => setShowRejectPopup(true)}
+                style={{ borderRadius: '10px' }}
+              >
+                驳回
+              </Button>
+            </div>
+          </div>
+        )}
+
         <div
           className="detail-card ticket-dynamics-card"
           onClick={() => navigate(`/tasks/${detailId}/operations`)}
@@ -1235,6 +1347,36 @@ export default function TaskDetailPage() {
           <div className="ticket-edit__btns">
             <Button theme="default" onClick={() => { setShowReturnConfirmPopup(false); setReturnReason(''); }}>取消</Button>
             <Button theme="danger" onClick={handleReturn} disabled={!returnReason.trim()}>确认退回</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 驳回原因弹窗 */}
+      <Popup
+        visible={showRejectPopup}
+        onClose={() => { if (!approving) { setShowRejectPopup(false); setRejectReason(''); } }}
+        placement="bottom"
+        showOverlay
+      >
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">驳回审核</h4>
+          <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
+            确定要驳回{approvalInfo?.type === 'new_company' ? '公司' : '部门'}「{approvalInfo?.targetName}」的录入申请吗？
+          </p>
+          <Form initialData={{}}>
+            <FormItem label="驳回原因" name="rejectReason" labelAlign="top" requiredMark>
+              <Textarea
+                value={rejectReason}
+                onChange={(v) => setRejectReason(String(v))}
+                placeholder="请输入驳回原因（必填）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
+          <div className="ticket-edit__btns">
+            <Button theme="default" disabled={approving} onClick={() => { setShowRejectPopup(false); setRejectReason(''); }}>取消</Button>
+            <Button theme="danger" loading={approving} onClick={handleReject} disabled={!rejectReason.trim()}>确认驳回</Button>
           </div>
         </div>
       </Popup>
