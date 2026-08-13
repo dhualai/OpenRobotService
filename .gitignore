@@ -58,6 +58,12 @@ logs/
 .claude/settings.local.json
 codebuddy.md
 
+# ===== topo-pack 临时工件 / 授权包（含敏感 token，禁止入库）=====
+.tmp_*/
+.tmp_import_pack.py
+**/auth.json
+**/outbox_patch.zip
+
 # ===== 临时 / 草稿（如 logo 草稿、导出中间文件）=====
 old/
 # git commit 临时信息文件（write_to_file 写入，提交后删除，绝不入库）
@@ -118,11 +124,16 @@ scripts/start-minio.ps1
 /package-lock.json
 ai/tests/_verify_log_sub_agent_fix.py
 
-<<<<<<< Updated upstream
-
-# ����־�������ݣ�����⣩
+# 大日志测试数据（不入库）
 ai/tests/test_logs/
 ai/tests/test_images/
-=======
 ai/assets/fonts/msyh.ttc
->>>>>>> Stashed changes
+
+# ===== 本地调试/探测脚本（仅本地用，不入库）=====
+ai/tests/_dbg_keyword.py
+ai/tests/_diag_real_log.py
+ai/tests/_e2e_real_log_sub_agent.py
+ai/tests/_probe_live_log.py
+ai/tests/_probe_real_errors.py
+ai/tools/bench_vision_models.py
+frontend/package-lock.json.bak
