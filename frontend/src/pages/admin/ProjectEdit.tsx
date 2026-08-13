@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Form, FormItem, Input, Textarea, Button, Toast, Loading } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
-import { createRequest } from '@/api/client';
+import { createRequest, clearCache } from '@/api/client';
 import API_CONFIG from '@/config/api';
 
 export default function ProjectEdit() {
@@ -33,6 +33,7 @@ export default function ProjectEdit() {
         await request('/projects/', { method: 'POST', body: JSON.stringify(form) });
       }
       Toast({ message: '保存成功', theme: 'success' });
+      clearCache(); // 清除请求缓存，确保返回项目管理页时能拉取到最新数据
       navigate(-1);
     } catch (err) {
       Toast({ message: `保存失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });

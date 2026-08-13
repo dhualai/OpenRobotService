@@ -600,29 +600,33 @@ class TicketService:
             if notify_users:
                 user_map = await TicketService._get_user_map(token)
                 
-                update_details = []
-                for field, value in update_data.items():
-                    if isinstance(value, list):
-                        value_str = ', '.join(str(item) for item in value)
-                    else:
-                        value_str = str(value)
+                # assigned_to 变更由 API 层 send_ticket_reassign_notification 专门处理，
+                # 此处仅处理其他字段变更的通知，避免重复发送
+                notify_update_data = {k: v for k, v in update_data.items() if k != 'assigned_to'}
+                if notify_update_data:
+                    update_details = []
+                    for field, value in notify_update_data.items():
+                        if isinstance(value, list):
+                            value_str = ', '.join(str(item) for item in value)
+                        else:
+                            value_str = str(value)
+                        
+                        if field == 'customer':
+                            value_str = user_map.get(value_str, value_str)
+                        
+                        update_details.append(f"{field}: {value_str}")
+                    update_content = '\n'.join(update_details)
                     
-                    if field in ['assigned_to', 'customer']:
-                        value_str = user_map.get(value_str, value_str)
-                    
-                    update_details.append(f"{field}: {value_str}")
-                update_content = '\n'.join(update_details)
-                
-                operator_name = user_map.get(operator_id, operator_id)
-                notification_result = await NotificationUtils.send_ticket_update_notification(
-                    ticket_id=ticket_id,
-                    title=ticket.title,
-                    operator=operator_name,
-                    project_name=ticket.project_name,
-                    update_content=update_content,
-                    user_names=notify_users,
-                    token=token
-                )
+                    operator_name = user_map.get(operator_id, operator_id)
+                    notification_result = await NotificationUtils.send_ticket_update_notification(
+                        ticket_id=ticket_id,
+                        title=ticket.title,
+                        operator=operator_name,
+                        project_name=ticket.project_name,
+                        update_content=update_content,
+                        user_names=notify_users,
+                        token=token
+                    )
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)

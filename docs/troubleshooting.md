@@ -154,6 +154,36 @@ FAILED: alembic.command.MigrationError
 
 **修复**：后端 `app/wechat/api/wechat.py` 的 `resolve_callback_target()` 应优先按 base64url 解码 `state` 中的完整 URL 回跳。
 
+### 3.4 微信内置浏览器中 DateTimePicker 滚轮无法滚动（两层 Popup 嵌套）
+
+**现象**：在「最晚解决时间」等 DateTimePicker 场景，手机系统浏览器（Safari/Chrome）正常，但**微信内置浏览器（iOS WKWebView）**中，第一次打开时间选择器正常，**关闭后再次打开时滚轮无法滚动/选择**。
+
+**原因**：TDesign Mobile 的 `<Popup>` 通过 `useLockScroll`（`node_modules/tdesign-mobile-react/es/hooks/useLockScroll.js`）在 `document` 上注册 `touchmove`（`passive: false`）监听器做背景滚动锁定。当存在**两层 Popup 嵌套**（如：编辑工单 Popup → 内部触发时间选择 Popup）时：
+1. 外层 Popup `lock()` 注册监听器 A，内层 Popup `lock()` 再注册监听器 B
+2. 内层关闭时 `unlock()`，但 `useLockScroll` 的引用计数实现有缺陷——只要 `totalLockCount` 总和仍 >0（外层还开着），就会 `removeEventListener` 移除内层的 B，但外层 A 的 `contentRef` 此时已不是活动弹层，`getScrollParent` 定位错误
+3. 再次打开内层 Popup 时，残留的 A 仍在 `document` 上，其 `event.preventDefault()` 误拦截了 DateTimePicker 滚轮的 `touchmove`
+4. iOS WKWebView 对 `passive:false + preventDefault` 比 Safari/Chrome 更敏感，故仅微信内置浏览器复现
+
+**修复**：内层时间选择 Popup 加 `destroyOnClose` + `preventScrollThrough={false}`：
+```tsx
+<Popup
+  visible={deadlinePickerVisible}
+  onClose={() => setDeadlinePickerVisible(false)}
+  placement="bottom"
+  destroyOnClose              // 关闭时彻底销毁 DateTimePicker DOM，避免残留状态
+  preventScrollThrough={false} // 内层不额外锁背景滚动，避免与外层 Popup 的 useLockScroll 冲突
+>
+  <DateTimePicker ... />
+</Popup>
+```
+
+**已修复位置**：
+- `frontend/src/pages/call/TicketDetailPage.tsx`（编辑工单弹窗内的时间选择器）
+- `frontend/src/pages/tasks/TaskDetailPage.tsx`（同上，系统任务侧）
+- `frontend/src/shared/components/ChatPanel.tsx`（提单确认弹窗内的时间选择器，预防性修复）
+
+**通用规则**：凡是在一个 `<Popup>` 内部再触发另一个 `<Popup>`（含 DateTimePicker/Picker 等自带弹层的组件外层包 Popup），内层 Popup 都应加 `destroyOnClose` + `preventScrollThrough={false}`，详见 `CONTRIBUTING.md`「微信 H5 适配要求」。
+
 ---
 
 ## 四、AI 模块问题

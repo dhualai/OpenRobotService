@@ -383,6 +383,10 @@ export default function TicketDetailPage() {
   const [showEdit, setShowEdit] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; project_id: string; project_name: string; deadline_at?: string }>({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
   const [editDeadlinePickerVisible, setEditDeadlinePickerVisible] = useState(false);
+  // 每次打开最晚解决时间选择器都自增 key，强制 DateTimePicker 重新挂载，
+  // 规避 tdesign-mobile-react Picker 在嵌套 Popup（destroyOnClose + CSSTransition）下
+  // 二次打开时 Picker 实例竞态、事件绑到旧 DOM 节点导致桌面端无法编辑/滚动的问题
+  const [deadlinePickerKey, setDeadlinePickerKey] = useState(0);
   const [savingEdit, setSavingEdit] = useState(false);
   // 所属项目下拉（当前用户名下项目，GET /api/admin/projects/me；支持关键词模糊搜索）
   const [showProjectPicker, setShowProjectPicker] = useState(false);
@@ -593,11 +597,22 @@ export default function TicketDetailPage() {
       minioPath = `${parsed.bucket}/${parsed.objectKey}`;
     }
     const authToken = localStorage.getItem('auth_token') || '';
-    // 必须拼成绝对 URL：微信内 window.open(相对URL) 打开的是微信内置 WebView，无法下载；
-    // 用户「在浏览器打开」后相对路径在外部浏览器解析失败会落到 SPA 404 → 未登录重定向微信 OAuth
-    // （表现为「提示跳转到微信客户端」）。绝对 URL 携带 token，在外部浏览器可直接下载。
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
     return `${origin}${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
+  };
+
+  /** 微信内下载中转页 URL（同 TaskDetailPage） */
+  const buildDownloadRedirectUrl = (att: NormalizedAttachment): string | null => {
+    const rawPath = att.path || att.url || '';
+    if (!rawPath) return null;
+    let minioPath = rawPath;
+    if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
+      const parsed = parseMinioPath(rawPath);
+      if (!parsed) return null;
+      minioPath = `${parsed.bucket}/${parsed.objectKey}`;
+    }
+    const authToken = localStorage.getItem('auth_token') || '';
+    return `/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
   };
 
   /** 构造附件内联预览 URL（/api/tasks/files/{minioPath}），供缩略图 <img> src 与 AttachmentViewer 共用 */
@@ -616,11 +631,13 @@ export default function TicketDetailPage() {
   const openAttachmentViewer = (att: NormalizedAttachment) => {
     const previewUrl = buildPreviewUrl(att);
     if (!previewUrl) { Toast({ message: '附件路径无效', theme: 'error' }); return; }
+    const isWechat = /MicroMessenger/i.test(navigator.userAgent);
+    const dl = isWechat ? buildDownloadRedirectUrl(att) : buildAttachmentDownloadUrl(att);
     setViewer({
       filename: att.filename || '未命名文件',
       size: att.size,
       previewUrl,
-      downloadUrl: buildAttachmentDownloadUrl(att) || previewUrl,
+      downloadUrl: dl || previewUrl,
     });
   };
 
@@ -795,7 +812,8 @@ export default function TicketDetailPage() {
                                   // 系统浏览器打开缺环境前缀的 URL 会 404 → 回跳微信。故微信内用
                                   // window.location.href 跳绝对地址（弹横幅，浏览器内可下载）；非微信用 a.click()。
                                   if (/MicroMessenger/i.test(navigator.userAgent)) {
-                                    window.location.href = dl;
+                                    const redirectUrl = buildDownloadRedirectUrl(att);
+                                    if (redirectUrl) window.location.href = redirectUrl;
                                   } else {
                                     const a = document.createElement('a');
                                     a.href = dl;
@@ -971,7 +989,7 @@ export default function TicketDetailPage() {
               <div className="ticket-confirm__deadline">
                 <div
                   className="ticket-confirm__deadline-field"
-                  onClick={() => setEditDeadlinePickerVisible(true)}
+                  onClick={() => { setDeadlinePickerKey((k) => k + 1); setEditDeadlinePickerVisible(true); }}
                 >
                   <span className={editForm.deadline_at ? 'ticket-confirm__deadline-value' : 'ticket-confirm__deadline-placeholder'}>
                     {editForm.deadline_at ? formatEditDeadlineAbs(editForm.deadline_at) : '点击选择'}
@@ -995,9 +1013,15 @@ export default function TicketDetailPage() {
         </div>
       </Popup>
 
-      {/* 最晚解决时间选择器：mode=hour 最小单位小时 */}
-      <Popup visible={editDeadlinePickerVisible} onClose={() => setEditDeadlinePickerVisible(false)} placement="bottom">
+      {/* 最晚解决时间选择器：mode=hour 最小单位小时
+          - destroyOnClose：每次关闭彻底销毁 DateTimePicker DOM，避免微信内置浏览器（iOS WKWebView）下
+            两层 Popup 嵌套（编辑 Popup + 时间选择 Popup）时 useLockScroll 残留 touchmove 监听器
+            导致再次打开后滚轮无法滚动的问题
+          - preventScrollThrough={false}：DateTimePicker 自身滚轮需接收 touchmove，
+            内层 Popup 不再额外锁背景滚动，避免与外层编辑 Popup 的滚动锁互相干扰 */}
+      <Popup visible={editDeadlinePickerVisible} onClose={() => setEditDeadlinePickerVisible(false)} placement="bottom" destroyOnClose preventScrollThrough={false}>
         <DateTimePicker
+          key={deadlinePickerKey}
           mode="hour"
           title="选择最晚解决时间"
           format="YYYY-MM-DD HH:00"
