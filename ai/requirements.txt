@@ -67,6 +67,9 @@ redis>=8.0.1
 minio>=7.4.0
 paho-mqtt>=2.1.0
 
+# ---- 图像处理（聊天记录截图附件）----
+Pillow>=12.2.0
+
 # ---- 文档处理 ----
 pdfplumber>=0.11.10
 pdfminer.six>=20260107
@@ -116,4 +119,3 @@ dnspython>=2.8.0
 pytest>=9.1.1
 iniconfig>=2.3.0
 pluggy>=1.6.0
-streamlit>=1.40.0
