@@ -10,6 +10,9 @@
     【Step 1 部门过滤】(关键词匹配 → 过滤非本部门候选人)
         │
         ▼
+    【Step 1.5 产品过滤】(工单归属产品 → 候选人必须负责该产品，硬过滤)
+        │
+        ▼
     【Step 2 排除提单人】(常规派单不派给自己；提单人指定走 Step 0 不受影响)
         │
         ▼
@@ -39,6 +42,7 @@ from ai.core.logging import get_logger
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.ranking.fallback_decision import FallbackDecision
 from ai.agents.AiDiagnosisPlatform.assigner.filtering.department_filter import DepartmentFilter
+from ai.agents.AiDiagnosisPlatform.assigner.filtering.product_filter import ProductFilter
 from ai.agents.AiDiagnosisPlatform.assigner.ranking.llm_decision import LlmDecision
 from ai.agents.AiDiagnosisPlatform.assigner.recall.llm_recall import LlmRecall
 from ai.agents.AiDiagnosisPlatform.assigner.ranking.ranker import Ranker
@@ -63,6 +67,7 @@ class DispatchFlow:
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
         self._dept_filter = DepartmentFilter(config=self._config)
+        self._product_filter = ProductFilter(config=self._config)
         self._llm_recall = LlmRecall(config=self._config)
         self._semantic_recall = SemanticRecall(config=self._config)
         self._history_recall = HistoryRecall(config=self._config)      # L3-A：相似工单聚人
@@ -113,6 +118,14 @@ class DispatchFlow:
             logger.warning(f"{ltag} Step1 部门过滤后无候选人，回退全量")
             candidates = engineer_profiles
         logger.info(f"{ltag} Step1 部门过滤 {len(engineer_profiles)}→{len(candidates)}人")
+
+        # ── Step 1.5: 产品级硬过滤（工单归属产品 → 候选人必须负责该产品）──
+        # 例：「摇人吧服务号」工单只派给 responsibility_modules 中含「摇人吧服务号」
+        # 产品的工程师；只负责「调度USP」的人即使功能模块同名也不跨界承接。
+        candidates = self._product_filter.filter(
+            ticket=ticket_context, engineers=candidates,
+            project_name=ticket_context.project_name or "",
+        )
 
         # ── Step 2: 排除提单人（常规派单不派给自己；Step 0 指定自己不受影响）──
         candidates = self._exclude_creator(ticket_context, candidates)

@@ -29,6 +29,53 @@ from ai.agents.AiDiagnosisPlatform.pipeline import (
 # 均为惰性（函数内），避免在 AI 进程启动时触发 backend app/__init__.py 全量装配。
 
 # ============================================================
+# SSE 心跳保活
+# ============================================================
+# 主 LLM thinking 阶段 10s+ 无任何 token 下发（reasoning_content 不对外输出），
+# 长静默易被网关/微信 webview 按空闲连接杀掉 → 前端偶发「网络错误」「图片上传失败」。
+# 心跳以 SSE 注释行 ": ping" 下发——对前端解析透明（只认 event:/data: 行），
+# 却能让中间链路感知连接存活。每 _HEARTBEAT_SEC 秒一次。
+_HEARTBEAT_SEC = 10.0
+_HEARTBEAT_SSE = ": ping\n\n"
+
+
+async def _heartbeat_agen(agen, interval: float = _HEARTBEAT_SEC):
+    """包装异步生成器：interval 内无产出时插入 None 心跳标记。
+
+    注意不能直接 asyncio.wait_for(anext())——超时会向生成器内部注入取消，
+    把正在 await LLM HTTP 流的生产协程杀掉。这里用「anext 任务 vs sleep 任务」
+    竞速，心跳触发时 anext 任务继续跑，绝不取消。
+    """
+    _DONE = object()
+
+    async def _next():
+        try:
+            return await agen.__anext__()
+        except StopAsyncIteration:
+            return _DONE
+
+    task = asyncio.create_task(_next())
+    try:
+        while True:
+            hb = asyncio.create_task(asyncio.sleep(interval))
+            done, _ = await asyncio.wait({task, hb}, return_when=asyncio.FIRST_COMPLETED)
+            if hb in done:
+                yield None
+                continue
+            hb.cancel()
+            item = task.result()
+            if item is _DONE:
+                return
+            yield item
+            task = asyncio.create_task(_next())
+    finally:
+        # 外层 async-for 提前退出（客户端断连/CancelledError）时，
+        # 取消仍在等 anext 的任务，恢复「断连即取消内层生成器」的原有语义。
+        if not task.done():
+            task.cancel()
+
+
+# ============================================================
 # 诊断 Agent (prefix /api/ai/qa)
 # ============================================================
 qa_router = APIRouter(prefix="/api/ai/qa", tags=["AI诊断"])
@@ -234,8 +281,18 @@ async def ask_question_stream(
         producer_task = asyncio.create_task(producer())
 
         try:
-            while True:
-                event = await queue.get()
+            # consumer 心跳保活：producer（LLM thinking）长时间无产出时插入 ": ping"
+            async def _drain():
+                while True:
+                    event = await queue.get()
+                    yield event
+                    if event is _SENTINEL or (isinstance(event, tuple) and len(event) == 2 and event[0] == "__error__"):
+                        return
+
+            async for event in _heartbeat_agen(_drain()):
+                if event is None:
+                    yield _HEARTBEAT_SSE
+                    continue
                 if event is _SENTINEL:
                     break
                 if isinstance(event, tuple) and len(event) == 2 and event[0] == "__error__":
@@ -685,15 +742,28 @@ async def upload_files(
     """
     wants_stream = "text/event-stream" in accept
 
+    # ── 鉴权前置：在开启 SSE 流之前先校验 token ──
+    # 若在此处校验失败，可直接返回真正的 401；若放到流开始之后再抛 HTTPException，
+    # 会触发 "Caught handled exception, but response already started"（200 头已发出，
+    # 无法再改成 401）。故此处提前校验。
+    stream_username, _ = _current_user_from_header(authorization)
+    if not stream_username:
+        if wants_stream:
+            raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+        # 非流式路径：非流式分支后面还有一次 401 校验，这里不处理以免改变行为
+        pass
+
     # 附带文字时诊断用流式推理（与 /ask/stream 一致）；SSE 逐条转发、JSON 收集。
     # 注意：必须定义为 async generator（内部 await + yield 转发 run_stream 事件），
     # 调用方 async for 直接消费；若定义为 async def 返回 run_stream 生成器，
     # async for 拿到的会是 coroutine（报 _aiter_ 错误）；定义为同步 def 则 await 不合法。
     async def _run_diagnosis():
+        # 鉴权已在进入 SSE 流之前（upload_files 开头）校验过；此处为兜底。
+        # 注意：流开始后不能再抛 HTTPException（会触发 "response already started"），
+        # 故此处改为抛普通异常，由 sse() 的 except Exception 转为 SSE error 事件。
         username, _ = _current_user_from_header(authorization)
-        # token 失效 → 返回 401，触发前端 fetchWithAuth 刷新重试，避免自动提单 created_by=""
         if not username:
-            raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+            raise PermissionError("登录已过期，请重新登录")
         pipeline = await get_pipeline()
         request = DiagnosisRequest(
             session_id=session_id,
@@ -706,7 +776,10 @@ async def upload_files(
     async def sse():
         try:
             ack = None
-            async for ev in _upload_events(session_id, files, message, authorization):
+            async for ev in _heartbeat_agen(_upload_events(session_id, files, message, authorization)):
+                if ev is None:
+                    yield _HEARTBEAT_SSE
+                    continue
                 if ev["event"] == "file_saved":
                     yield f"event: file_saved\ndata: {json.dumps({'saved': ev['saved'], 'filenames': ev['filenames']}, ensure_ascii=False)}\n\n"
                 elif ev["event"] == "vision_start":
@@ -723,7 +796,10 @@ async def upload_files(
             if message.strip():
                 result_payload = None
                 try:
-                    async for event in _run_diagnosis():
+                    async for event in _heartbeat_agen(_run_diagnosis()):
+                        if event is None:
+                            yield _HEARTBEAT_SSE
+                            continue
                         ev_type = event.get("event")
                         if ev_type == "token":
                             yield f"data: {json.dumps({'token': event.get('data', '')}, ensure_ascii=False)}\n\n"
@@ -885,12 +961,15 @@ async def chat_stream(request: ChatRequest):
             prompt = await _build_prompt(request.session_id, request.query)
             logger.debug(f"[chat-stream] prompt={len(prompt)}chars  overhead={(time.perf_counter()-t0)*1000:.0f}ms")
             t_llm = time.perf_counter()
-            async for token in llm.stream(
+            async for token in _heartbeat_agen(llm.stream(
                 prompt=prompt,
                 system_prompt=request.system_prompt or None,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
-            ):
+            )):
+                if token is None:
+                    yield _HEARTBEAT_SSE
+                    continue
                 if not first:
                     first = True
                     logger.debug(f"[chat-stream] llm_first_token={(time.perf_counter()-t_llm)*1000:.0f}ms")
@@ -1032,30 +1111,22 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
 # ============================================================
 task_agent_router = APIRouter(prefix="/api/ai/task", tags=["U老师"])
 
-
-
 class TaskSubmitAPIRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
     session_id: str = Field(..., description="对话 session")
     final_solution: dict = Field(..., description="工程师编辑后的最终方案")
     resolution: str = Field(default="resolved")
 
-
 class SummarizeRequest(BaseModel):
     """后端触发摘要扫描（无参数 — U老师 自动扫描所有活跃工单）"""
 
-
-# ── v3.0 端点 ──
-
 class TaskDiagnoseRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
-
 
 class TaskDiscussRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
     query: str = Field(..., description="用户问题（如 @U老师 帮我分析这个日志）")
     context: dict = Field(default_factory=dict, description="讨论上下文 {recent_comments: [{author, content}]}")
-
 
 @task_agent_router.post("/diagnose", summary="诊断报告（[帮我分析] 按钮）")
 async def task_diagnose(body: TaskDiagnoseRequest) -> dict:
@@ -1075,7 +1146,8 @@ async def task_diagnose(body: TaskDiagnoseRequest) -> dict:
         return {"code": 0, "data": result}
     except Exception as e:
         elapsed = (time.perf_counter() - t_start) * 1000
-        logger.error(f"[diagnose] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms, error={e}")
+        # logger.exception 自动打印完整 traceback（含异常类型与堆栈），便于定位根因
+        logger.exception(f"[diagnose] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms")
         return {"code": 1, "message": str(e)}
 
 
@@ -1102,20 +1174,31 @@ async def task_discuss(body: TaskDiscussRequest) -> dict:
         return {"code": 0, "data": result}
     except Exception as e:
         elapsed = (time.perf_counter() - t_start) * 1000
-        logger.error(f"[discuss] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
-                     f"query={query_preview}, error={e}")
+        # logger.exception 自动打印完整 traceback（含异常类型与堆栈），便于定位根因
+        logger.exception(f"[discuss] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
+                         f"query={query_preview}")
         return {"code": 1, "message": str(e)}
 
 
 @task_agent_router.post("/summarize", summary="讨论摘要")
 async def task_summarize(body: SummarizeRequest = SummarizeRequest()) -> dict:
     """后端触发 → U老师 自动扫描所有活跃工单 → 逐条生成摘要 → 写 task_comments"""
+    import logging, time as _t
+    logger = logging.getLogger("TASK_AGENT")
+    t_start = _t.perf_counter()
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
         result = await agent.summarize_batch()
+        elapsed = (_t.perf_counter() - t_start) * 1000
+        logger.info(f"[summarize] 完成: elapsed={elapsed:.0f}ms, "
+                    f"total={result.get('total')}, generated={result.get('generated')}, "
+                    f"skipped={result.get('skipped')}, failed={result.get('failed')}")
         return {"code": 0, "data": result}
     except Exception as e:
+        elapsed = (_t.perf_counter() - t_start) * 1000
+        # logger.exception 自动打印完整 traceback（含异常类型与堆栈），便于定位根因
+        logger.exception(f"[summarize] 失败: elapsed={elapsed:.0f}ms")
         return {"code": 1, "message": str(e)}
 
 
