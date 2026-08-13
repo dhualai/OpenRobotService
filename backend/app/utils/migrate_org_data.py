@@ -20,7 +20,7 @@ def run_migration():
     db = SessionLocal()
     try:
         # 1. 创建"未分类"公司（幂等）
-        uncategorized = db.query(Company).filter(Company.name == UNCATEGIALIZED_COMPANY_NAME).first()
+        uncategorized = db.query(Company).filter(Company.name == UNCATEGORIZED_COMPANY_NAME).first()
         if not uncategorized:
             uncategorized = Company(
                 id=str(uuid.uuid4()),
@@ -39,7 +39,7 @@ def run_migration():
         existing_company_names = {row[0] for row in rows}
 
         # 加上未分类
-        existing_company_names.add(UNCATEGIALIZED_COMPANY_NAME)
+        existing_company_names.add(UNCATEGORIZED_COMPANY_NAME)
 
         # 3. 插入 companies 表（幂等：跳过已存在的）
         company_map = {}  # name → Company 对象

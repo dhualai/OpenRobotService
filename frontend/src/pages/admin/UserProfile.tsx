@@ -469,6 +469,7 @@ export default function UserProfile() {
               size="small"
               icon={<AddIcon size="16px" />}
               onClick={() => openAddDialog('company')}
+              style={{ flexShrink: 0 }}
             >
               添加公司
             </Button>
@@ -485,16 +486,18 @@ export default function UserProfile() {
               title="选择部门"
               searchPlaceholder="搜索部门…"
             />
-            <Button
-              theme="primary"
-              variant="outline"
-              size="small"
-              icon={<AddIcon size="16px" />}
-              onClick={() => openAddDialog('department')}
-              disabled={!companyIdDraft}
-            >
-              添加部门
-            </Button>
+            {companyIdDraft && (
+              <Button
+                theme="primary"
+                variant="outline"
+                size="small"
+                icon={<AddIcon size="16px" />}
+                onClick={() => openAddDialog('department')}
+                style={{ flexShrink: 0 }}
+              >
+                添加部门
+              </Button>
+            )}
           </div>
         </Field>
       </div>

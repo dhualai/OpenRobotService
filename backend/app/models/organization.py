@@ -16,9 +16,10 @@ class Company(Base):
     name = Column(String(128), unique=True, nullable=False, comment="公司名称")
     status = Column(String(16), nullable=False, default="pending",
                     comment="审核状态：pending/approved/rejected")
-    created_by = Column(String(64), ForeignKey("users.id"), nullable=True, comment="提交者用户ID")
+    # 审计字段用普通字符串存储（不建立外键），避免与 users 表形成循环依赖
+    created_by = Column(String(64), nullable=True, comment="提交者用户ID")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
-    approved_by = Column(String(64), ForeignKey("users.id"), nullable=True, comment="审核人用户ID")
+    approved_by = Column(String(64), nullable=True, comment="审核人用户ID")
     approved_at = Column(DateTime, nullable=True)
     reject_reason = Column(String(255), nullable=True, comment="驳回原因")
 
@@ -32,9 +33,10 @@ class Department(Base):
                         comment="所属公司ID（nullable 用于历史无公司数据）")
     status = Column(String(16), nullable=False, default="pending",
                     comment="审核状态：pending/approved/rejected")
-    created_by = Column(String(64), ForeignKey("users.id"), nullable=True, comment="提交者用户ID")
+    # 审计字段用普通字符串存储（不建立外键），避免与 users 表形成循环依赖
+    created_by = Column(String(64), nullable=True, comment="提交者用户ID")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
-    approved_by = Column(String(64), ForeignKey("users.id"), nullable=True, comment="审核人用户ID")
+    approved_by = Column(String(64), nullable=True, comment="审核人用户ID")
     approved_at = Column(DateTime, nullable=True)
     reject_reason = Column(String(255), nullable=True, comment="驳回原因")
 

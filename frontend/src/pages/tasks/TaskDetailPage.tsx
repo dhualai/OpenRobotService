@@ -151,6 +151,8 @@ export default function TaskDetailPage() {
 
   // 公司/部门审核
   const [approving, setApproving] = useState(false);
+  const [showAdjustPopup, setShowAdjustPopup] = useState(false);
+  const [adjustName, setAdjustName] = useState('');
   const [showRejectPopup, setShowRejectPopup] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
 
@@ -385,7 +387,6 @@ export default function TaskDetailPage() {
       await adminRequest(`/users/options/${targetType}/${approvalInfo.targetId}/approve`, {
         method: 'PUT',
       });
-      // 同步关闭工单
       await request(`/${detail!.id}/status`, {
         method: 'PATCH',
         body: JSON.stringify({ status: 'closed' }),
@@ -394,6 +395,36 @@ export default function TaskDetailPage() {
       await refreshDetail();
     } catch (err) {
       Toast({ message: `审核失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setApproving(false);
+    }
+  };
+
+  // 调整名称后通过
+  const handleAdjustApprove = async () => {
+    if (!approvalInfo) return;
+    const trimmed = (adjustName || '').trim();
+    if (!trimmed) {
+      Toast({ message: '请输入名称', theme: 'warning' });
+      return;
+    }
+    setApproving(true);
+    try {
+      const targetType = approvalInfo.type === 'new_company' ? 'company' : 'department';
+      await adminRequest(`/users/options/${targetType}/${approvalInfo.targetId}/approve`, {
+        method: 'PUT',
+        body: JSON.stringify({ new_name: trimmed }),
+      });
+      await request(`/${detail!.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'closed' }),
+      });
+      Toast({ message: '已调整名称并审核通过', theme: 'success' });
+      setShowAdjustPopup(false);
+      setAdjustName('');
+      await refreshDetail();
+    } catch (err) {
+      Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setApproving(false);
     }
@@ -946,15 +977,25 @@ export default function TaskDetailPage() {
                 请审核以下信息，通过后该{approvalInfo.type === 'new_company' ? '公司' : '部门'}将对所有用户可见
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ display: 'flex', gap: 8 }}>
               <Button
                 block
-                theme="success"
+                theme="primary"
                 loading={approving}
                 onClick={handleApprove}
+                style={{ borderRadius: '10px', backgroundColor: '#52c41a', color: '#fff', border: 'none' }}
+              >
+                通过
+              </Button>
+              <Button
+                block
+                theme="default"
+                variant="outline"
+                disabled={approving}
+                onClick={() => { setAdjustName(approvalInfo.targetName); setShowAdjustPopup(true); }}
                 style={{ borderRadius: '10px' }}
               >
-                审核通过
+                调整名称
               </Button>
               <Button
                 block
@@ -1377,6 +1418,35 @@ export default function TaskDetailPage() {
           <div className="ticket-edit__btns">
             <Button theme="default" disabled={approving} onClick={() => { setShowRejectPopup(false); setRejectReason(''); }}>取消</Button>
             <Button theme="danger" loading={approving} onClick={handleReject} disabled={!rejectReason.trim()}>确认驳回</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 调整名称弹窗 */}
+      <Popup
+        visible={showAdjustPopup}
+        onClose={() => { if (!approving) { setShowAdjustPopup(false); setAdjustName(''); } }}
+        placement="bottom"
+        showOverlay
+      >
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">调整名称</h4>
+          <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
+            修改{approvalInfo?.type === 'new_company' ? '公司' : '部门'}名称后审核通过：
+          </p>
+          <Form initialData={{}}>
+            <FormItem label="名称" name="adjustName" labelAlign="top" requiredMark>
+              <ClearableInput
+                value={adjustName}
+                onChange={(v) => setAdjustName(String(v))}
+                placeholder="请输入新的名称"
+                maxlength={64}
+              />
+            </FormItem>
+          </Form>
+          <div className="ticket-edit__btns">
+            <Button theme="default" disabled={approving} onClick={() => { setShowAdjustPopup(false); setAdjustName(''); }}>取消</Button>
+            <Button theme="primary" loading={approving} onClick={handleAdjustApprove} disabled={!adjustName.trim()}>确认通过</Button>
           </div>
         </div>
       </Popup>
