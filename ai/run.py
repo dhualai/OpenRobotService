@@ -187,6 +187,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"派单 Worker 启动失败: {e}", exc_info=True)
 
+    # 7.5 启动解决方式总结 Worker（结束工单 AI 确认弹窗后台总结，Redis 队列 + 多消费者并行）
+    resolution_worker = None
+    resolution_worker_task = None
+    try:
+        from ai.agents.AiTaskPlatform.services.resolution_worker import resolution_worker_start
+        resolution_worker, resolution_worker_task = resolution_worker_start()
+        _rcfg = get_ai_config()
+        logger.info(f"解决方式总结 Worker 已启动 (concurrency={_rcfg.resolution_worker_concurrency}, queue={_rcfg.resolution_worker_queue})")
+    except Exception as e:
+        logger.error(f"解决方式总结 Worker 启动失败: {e}", exc_info=True)
+
     # 8. 企业微信 Smartsheet 集成状态
     try:
         _wcfg = get_ai_config()
@@ -210,6 +221,9 @@ async def lifespan(app: FastAPI):
     # ── 关闭 ──
     if assign_worker:
         await assign_worker.stop()
+    if resolution_worker:
+        logger.info("解决方式总结 Worker 停止中...")
+        await resolution_worker.stop()
     if knowledge_stop:
         knowledge_stop.set()
         logger.info("知识沉淀 Worker 停止中...")

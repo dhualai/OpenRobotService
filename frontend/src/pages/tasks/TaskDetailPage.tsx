@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import { DatePicker } from 'antd';
@@ -138,6 +138,19 @@ export default function TaskDetailPage() {
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
 
+  // 结束工单确认弹窗：问题 + AI 解决方式
+  const [showResolutionPopup, setShowResolutionPopup] = useState(false);
+  const [resolutionText, setResolutionText] = useState('');
+  const [resolutionLoading, setResolutionLoading] = useState(false);
+  const [resolutionFailed, setResolutionFailed] = useState(false);
+  const [resolutionPolling, setResolutionPolling] = useState(false);
+  // 标记是否已"确认完成"成功（成功后关闭弹窗不应清除草稿；取消/遮罩关闭才清除）
+  const resolveConfirmedRef = useRef(false);
+  // 轮询停止标志：取消/关闭时置 true，让异步轮询循环及时退出（state 无法中断 while 循环）
+  const resolvePollStopRef = useRef(false);
+  // 确认完成提交中（防重复提交）
+  const [resolutionSubmitting, setResolutionSubmitting] = useState(false);
+
   // U老师 诊断
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagnosisReport, setDiagnosisReport] = useState('');  // raw Markdown
@@ -262,6 +275,180 @@ export default function TaskDetailPage() {
       Toast({ message: `状态已更新为${statusLabel}`, theme: 'success' });
     } catch (err) {
       Toast({ message: `状态更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    }
+  };
+
+  // 结束工单：轮询读取 metadata_info.resolution_summary（worker 后台生成后回填）
+  const pollResolutionSummary = async (force = false) => {
+    if (!detailId) return;
+    let attempts = 0;
+    const maxAttempts = 20; // 约 20 * 1.5s ≈ 30s 上限
+    setResolutionPolling(true);
+
+    // 重试时先带 force 强制重新入队（清除"无内容"标记）
+    if (force) {
+      try {
+        await request<{ status: string; resolution_summary?: string }>(`/${detailId}/resolution-summary`, {
+          method: 'POST',
+          body: JSON.stringify({ force: true }),
+          skipCache: true,
+        });
+      } catch {
+        setResolutionLoading(false);
+        setResolutionPolling(false);
+        setResolutionFailed(true);
+        return;
+      }
+    }
+
+    while (attempts < maxAttempts) {
+      attempts += 1;
+      await new Promise((r) => setTimeout(r, 1500));
+      // 取消/关闭时立即停止轮询
+      if (resolvePollStopRef.current) {
+        setResolutionPolling(false);
+        return;
+      }
+      try {
+        const res = await request<{ status: string; resolution_summary?: string }>(`/${detailId}/resolution-summary`, {
+          method: 'POST',
+          skipCache: true,
+        });
+        console.log(`[resolution-summary] 轮询第${attempts}次:`, res);
+        // 已取消 → 不再回填，直接退出
+        if (resolvePollStopRef.current) {
+          setResolutionPolling(false);
+          return;
+        }
+        const text = (res?.resolution_summary || '').trim();
+        // 已生成完成（有值或有"无内容"标记）→ 结束轮询
+        if (res?.status === 'done' || res?.status === 'confirmed') {
+          if (text) {
+            setResolutionText(text);
+          }
+          setResolutionLoading(false);
+          setResolutionFailed(false);
+          setResolutionPolling(false);
+          return;
+        }
+        // status === 'pending' → 仍在生成中，继续轮询
+      } catch {
+        // 单次请求失败继续轮询
+      }
+    }
+    // 轮询超时仍未完成 → 置失败，提示用户手动补充/重试
+    setResolutionLoading(false);
+    setResolutionPolling(false);
+    setResolutionFailed(true);
+  };
+
+  const handleResolveClick = async () => {
+    if (!detail) return;
+    // 打开弹窗：展示工单问题 + 请求 AI 解决方式草稿
+    console.log('[resolution-summary] handleResolveClick 触发: task_id=', detail.id);
+    resolvePollStopRef.current = false; // 重置轮询停止标志
+    resolveConfirmedRef.current = false; // 重置确认标志（新一次打开）
+    setShowResolutionPopup(true);
+    setResolutionText('');
+    setResolutionLoading(true);
+    setResolutionFailed(false);
+    setResolutionPolling(false);
+
+    try {
+      console.log('[resolution-summary] 发起 POST /' + detail.id + '/resolution-summary');
+      const res = await request<{ status: string; resolution_summary?: string }>(`/${detail.id}/resolution-summary`, {
+        method: 'POST',
+        skipCache: true,
+      });
+      console.log('[resolution-summary] 接口返回:', res);
+      if (res) {
+        const text = (res.resolution_summary || '').trim();
+        if (text) {
+          // 已有解决方式（worker 已生成/已确认）→ 直接填入
+          setResolutionText(text);
+          setResolutionLoading(false);
+          setResolutionFailed(false);
+        } else if (res.status === 'pending') {
+          // 仍在生成中 → 轮询回读 worker 生成的草稿
+          pollResolutionSummary();
+        } else if (res.status === 'done') {
+          // worker 已完成但无内容（无资料）→ 停止 loading，placeholder 兜底
+          setResolutionLoading(false);
+          setResolutionFailed(false);
+        } else {
+          // 入队失败/异常 → 兜底：提示用户补充
+          setResolutionLoading(false);
+          setResolutionFailed(true);
+        }
+      } else {
+        setResolutionLoading(false);
+        setResolutionFailed(true);
+      }
+    } catch {
+      setResolutionLoading(false);
+      setResolutionFailed(true);
+    }
+  };
+
+  const handleRetryResolution = () => {
+    // 重试：重置停止标志，强制重新触发生成 + 轮询
+    resolvePollStopRef.current = false;
+    setResolutionFailed(false);
+    setResolutionLoading(true);
+    setResolutionText('');
+    pollResolutionSummary(true);
+  };
+
+  // 取消：停止轮询 + 清掉已保存的解决方式草稿，关闭弹窗（下次点击重新生成）
+  const handleResolveCancel = async () => {
+    // 先停止任何进行中的轮询
+    resolvePollStopRef.current = true;
+    setResolutionPolling(false);
+    setResolutionLoading(false);
+    if (resolveConfirmedRef.current) {
+      // 已确认完成成功，关闭弹窗但不清除草稿
+      setShowResolutionPopup(false);
+      resolveConfirmedRef.current = false;
+      return;
+    }
+    setShowResolutionPopup(false);
+    try {
+      if (detail?.id) {
+        await request<{ status: string }>(`/${detail.id}/resolution-summary`, {
+          method: 'POST',
+          body: JSON.stringify({ clear: true }),
+          skipCache: true,
+        });
+      }
+    } catch {
+      // 清除失败不影响：下次点击仍会重新生成
+    }
+  };
+
+  const handleConfirmResolve = async () => {
+    if (!detail) return;
+    const finalText = resolutionText.trim();
+    if (!finalText) {
+      Toast({ message: '请填写解决方式', theme: 'warning' });
+      return;
+    }
+    if (resolutionSubmitting) return;
+    setResolutionSubmitting(true);
+    try {
+      await request<Ticket>(`/${detail.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'resolved', resolution_summary: finalText }),
+      });
+      refreshTasks();
+      await refreshDetail();
+      resolveConfirmedRef.current = true; // 标记已确认，关闭时不清除草稿
+      setShowResolutionPopup(false);
+      setResolutionText('');
+      Toast({ message: '工单已处理完成', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `处理完成失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setResolutionSubmitting(false);
     }
   };
 
@@ -834,6 +1021,9 @@ export default function TaskDetailPage() {
                   onClick={() => {
                     if (action.actionType === 'resume') {
                       setShowResumePopup(true);
+                    } else if (action.nextStatus === 'resolved') {
+                      // 结束工单（→ resolved）→ 打开 "问题 + AI 解决方式" 确认弹窗
+                      handleResolveClick();
                     } else {
                       handleStatusChange(action);
                     }
@@ -996,6 +1186,21 @@ export default function TaskDetailPage() {
             );
           })()}
         </div>
+
+        {(() => {
+          const meta = detail.metadata_info || {};
+          const rs = typeof meta.resolution_summary === 'string' ? meta.resolution_summary as string : '';
+          const isTerminal = ['resolved', 'closed'].includes((detail.status || '').toLowerCase());
+          if (!isTerminal || !rs.trim()) return null;
+          return (
+            <div className="detail-card">
+              <h4 className="detail-card__h">解决方式</h4>
+              <div style={{ color: '#333', fontSize: '14px', lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {rs}
+              </div>
+            </div>
+          );
+        })()}
 
         <div className="detail-card">
           <h4 className="detail-card__h">讨论摘要</h4>
@@ -1273,6 +1478,66 @@ export default function TaskDetailPage() {
           </div>
         </div>
       </Popup>
+
+      {/* 结束工单确认弹窗：问题 + 工单解决方式 */}
+      <Popup visible={showResolutionPopup} onClose={handleResolveCancel} placement="bottom" showOverlay>
+        <div className="ticket-edit-form">
+          <div className="ticket-edit-form__header">
+            <span className="ticket-edit-form__title">确认完成工单</span>
+            <span className="ticket-edit-form__close" onClick={handleResolveCancel}>×</span>
+          </div>
+          <div className="ticket-edit-form__body">
+            {/* 工单问题 */}
+            <div className="ticket-edit-form__field">
+              <span className="ticket-edit-form__label">📌 工单问题</span>
+              <div style={{ fontSize: '14px', fontWeight: 600, color: '#1a1a1a', marginBottom: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{detail?.title}</div>
+              <div style={{
+                fontSize: '13px', color: '#888', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+              }}>
+                {detail?.description || <span style={{ color: '#bbb' }}>（无描述）</span>}
+              </div>
+            </div>
+
+            {/* 工单解决方式 */}
+            <div className="ticket-edit-form__field">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <span className="ticket-edit-form__label" style={{ marginBottom: 0 }}>✅ 工单解决方式</span>
+                {resolutionFailed && (
+                  <span style={{ color: '#faad14', fontSize: '12px' }}>自动总结出错，请手动补充</span>
+                )}
+              </div>
+              {resolutionLoading || resolutionPolling ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '20px 0', color: '#666', fontSize: '13px', justifyContent: 'center' }}>
+                  <Loading size="20px" /> 正在生成解决方式…
+                </div>
+              ) : (
+                <Textarea
+                  value={resolutionText}
+                  onChange={(v) => setResolutionText(String(v))}
+                  placeholder={resolutionFailed ? 'U老师自动总结出错了，请补充解决方法' : '请填写该工单的解决方式'}
+                  autosize={{ minRows: 4, maxRows: 8 }}
+                  maxlength={1000}
+                />
+              )}
+            </div>
+          </div>
+          <div className="ticket-edit-form__footer">
+            <Button theme="default" onClick={handleResolveCancel}>取消</Button>
+            {resolutionFailed && !resolutionLoading && !resolutionPolling && (
+              <Button theme="danger" onClick={handleRetryResolution}>重试</Button>
+            )}
+            <Button
+              theme="primary"
+              onClick={handleConfirmResolve}
+              disabled={resolutionSubmitting || resolutionLoading || resolutionPolling || !resolutionText.trim()}
+            >
+              确认完成
+            </Button>
+          </div>
+        </div>
+      </Popup>
+
 
       <Popup visible={showReassignPopup} onClose={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); }} placement="bottom" showOverlay>
         <div className="ticket-edit">
