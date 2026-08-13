@@ -28,6 +28,7 @@ class IdentityService:
         external_credentials: Optional[Dict[str, Dict[str, str]]] = None,
         company: Optional[str] = None, department: Optional[str] = None, responsibility_modules: Optional[Dict[str, List[str]]] = None,
         job_level: Optional[int] = 1, duty_text: Optional[str] = None,
+        supervisor_id: Optional[str] = None,
     ) -> bool:
         db = IdentityService._get_db()
         try:
@@ -40,6 +41,7 @@ class IdentityService:
                 name=name, status=status, external_credentials=external_credentials_json,
                 company=company, department=department, responsibility_modules=responsibility_modules or {},
                 job_level=job_level if job_level is not None else 1, duty_text=duty_text,
+                supervisor_id=supervisor_id,
             )
             db.add(db_user)
             db.commit()
@@ -79,6 +81,7 @@ class IdentityService:
                     'responsibility_modules': rm,
                     'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),
+                    'supervisor_id': getattr(db_user, 'supervisor_id', None),
                 }
             return None
         finally:
@@ -110,6 +113,7 @@ class IdentityService:
                     'responsibility_modules': rm,
                     'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),
+                    'supervisor_id': getattr(db_user, 'supervisor_id', None),
                 }
             return None
         finally:

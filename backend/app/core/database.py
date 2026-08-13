@@ -29,10 +29,10 @@ class DatabaseManager:
     def add_user(self, user_id: str, username: str, hashed_password: str, permissions: List[str],
                  name: Optional[str] = None, status: str = "inactive", external_credentials: Optional[Dict[str, Dict[str, str]]] = None,
                  company: Optional[str] = None, department: Optional[str] = None, responsibility_modules: Optional[Dict[str, List[str]]] = None,
-                 job_level: Optional[int] = 1, duty_text: Optional[str] = None) -> bool:
+                 job_level: Optional[int] = 1, duty_text: Optional[str] = None, supervisor_id: Optional[str] = None) -> bool:
         return identity_service.add_user(user_id, username, hashed_password, permissions,
                                           name, status, external_credentials,
-                                          company, department, responsibility_modules, job_level, duty_text)
+                                          company, department, responsibility_modules, job_level, duty_text, supervisor_id)
 
     def get_user(self, username: str) -> Optional[Dict[str, Any]]:
         return identity_service.get_user(username)

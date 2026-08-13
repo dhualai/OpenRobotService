@@ -571,22 +571,21 @@ async def _upload_events(
         prompt = (
             f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。\n"
             f"{vlm_context}"
-            f"请：\n"
-            f"1. 结合对话上下文，描述画面中的关键信息（界面状态、数据、错误提示、人工标注等）\n"
-            f"2. 如果发现异常或错误码，解释其含义并指出可能的故障方向"
-            f"（不下最终结论，用'可能''疑似'等措辞）\n"
-            f"3. 如果没有明显异常，说明画面看起来正常\n"
-            f"用工程师口吻，给出有参考价值的初步分析。"
+            f"请用**结构化要点**输出，总字数 ≤ 200 字，只列关键信息：\n"
+            f"- 界面状态 / 关键数据（含错误码、机器人ID、数值等）\n"
+            f"- 发现的异常或提示，用'可能''疑似'措辞\n"
+            f"- 一句话说明可能的故障方向（没有异常则写'画面正常'）\n"
+            f"不要输出长段分析或背景介绍，不要复述 prompt 要求，直接给要点。"
         )
         try:
             async for tok in llm.stream_vision(
                 prompt=prompt,
                 images=uris,
                 system_prompt=(
-                    "你是 AGV/AMR 调度系统的运维专家。仔细分析图片，"
-                    "给出有参考价值的初步判断。使用'可能''疑似''建议关注'等措辞，不下最终结论。"
+                    "你是 AGV/AMR 调度系统的运维专家。看图后只输出关键要点的简短描述，"
+                    "总字数 ≤ 200 字。使用'可能''疑似'等措辞，不下最终结论，不写长段分析。"
                 ),
-                max_tokens=3072,
+                max_tokens=600,
                 temperature=0.3,
             ):
                 image_desc += tok
@@ -640,7 +639,10 @@ async def _upload_events(
         memory = await mgr.get_memory(session_id)
         state = memory.metadata.get("agent_state", {}) or {}
         existing = state.get("attachments", [])
-        state["attachments"] = existing + saved
+        # 去重：按 object_path + filename 去重，避免同一文件重复上传/多次提单累积冗余
+        _seen = {(a.get("object_path"), a.get("filename")) for a in existing if isinstance(a, dict)}
+        _new = [s for s in saved if (s.get("object_path"), s.get("filename")) not in _seen]
+        state["attachments"] = existing + _new
         if image_desc:
             ci = state.get("collected_info", {}) or {}
             prev = ci.get("image_description", "")
