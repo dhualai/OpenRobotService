@@ -176,7 +176,7 @@ async def get_user_field_options(
     """
     db = db_manager.get_db()
     try:
-        user_id = current_user.get('id', '')
+        user_id = current_user.get('username', '')
 
         # 公司：approved 全部 + 本人 pending
         approved_companies = db.query(Company).filter(
@@ -244,7 +244,7 @@ async def get_user_field_options(
 
 # ===== 公司/部门提交与审核 =====
 
-ADMIN_ASSIGNEE_ID = "user_admin"  # 审核工单指派给管理员
+ADMIN_ASSIGNEE_ID = "admin"  # 审核工单指派给管理员
 
 
 @router.post("/options/company", summary="提交新公司（创建 pending 记录 + 审核工单）")
@@ -274,7 +274,8 @@ async def submit_new_company(
     # 创建 pending 记录
     company_id = str(uuid.uuid4())
     user_id = current_user.get('id', '')
-    user_name = current_user.get('name') or current_user.get('username', '')
+    user_username = current_user.get('username', '')
+    user_name = current_user.get('name') or user_username
 
     sync_db = db_manager.get_db()
     try:
@@ -282,7 +283,7 @@ async def submit_new_company(
             id=company_id,
             name=name,
             status='pending',
-            created_by=user_id,
+            created_by=user_username,
         )
         sync_db.add(new_company)
         sync_db.commit()
@@ -304,7 +305,7 @@ async def submit_new_company(
             "target_table": "companies",
             "target_id": company_id,
             "target_name": name,
-            "submitted_by": user_id,
+            "submitted_by": user_username,
         },
     )
     try:
@@ -358,7 +359,8 @@ async def submit_new_department(
     # 创建 pending 记录
     dept_id = str(uuid.uuid4())
     user_id = current_user.get('id', '')
-    user_name = current_user.get('name') or current_user.get('username', '')
+    user_username = current_user.get('username', '')
+    user_name = current_user.get('name') or user_username
 
     sync_db = db_manager.get_db()
     try:
@@ -367,7 +369,7 @@ async def submit_new_department(
             name=name,
             company_id=company_id,
             status='pending',
-            created_by=user_id,
+            created_by=user_username,
         )
         sync_db.add(new_dept)
         sync_db.commit()
@@ -392,7 +394,7 @@ async def submit_new_department(
             "target_name": name,
             "company_id": company_id,
             "company_name": company_name,
-            "submitted_by": user_id,
+            "submitted_by": user_username,
         },
     )
     try:
@@ -403,16 +405,20 @@ async def submit_new_department(
     return {"department": {"id": dept_id, "name": name, "status": "pending"}, "ticket_id": ticket.id if ticket else None}
 
 
-@router.put("/options/{target_type}/{target_id}/approve", summary="管理员审核通过公司/部门")
+@router.put("/options/{target_type}/{target_id}/approve", summary="管理员审核通过公司/部门（可调整名称后通过）")
 async def approve_option(
     target_type: str,
     target_id: str,
+    data: Dict[str, Any] = Body(default={}),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
+    """审核通过。管理员可在 body 中传入 new_name 调整名称后再通过。"""
     if target_type not in ('company', 'department'):
         raise HTTPException(status_code=400, detail="类型必须是 company 或 department")
     if current_user.get('id') != ADMIN_ASSIGNEE_ID:
         raise HTTPException(status_code=403, detail="无权限操作")
+
+    new_name = (data.get('new_name') or '').strip() if data else ''
 
     sync_db = db_manager.get_db()
     try:
@@ -425,10 +431,23 @@ async def approve_option(
         if obj.status == 'approved':
             raise HTTPException(status_code=400, detail="该记录已审核通过")
 
+        # 管理员可调整名称
+        if new_name and new_name != obj.name:
+            # 检查新名称是否已存在
+            if target_type == 'company':
+                existing = sync_db.query(Company).filter(Company.name == new_name).first()
+            else:
+                existing = sync_db.query(Department).filter(
+                    Department.name == new_name,
+                    Department.company_id == obj.company_id,
+                ).first()
+            if existing:
+                raise HTTPException(status_code=400, detail=f"名称「{new_name}」已存在")
+            obj.name = new_name
+
         obj.status = 'approved'
-        obj.approved_by = current_user.get('id', '')
+        obj.approved_by = current_user.get('username', '')
         obj.approved_at = datetime.now()
-        obj.reject_reason = None
         sync_db.commit()
 
         return {"status": "approved", "id": target_id, "name": obj.name}
@@ -467,7 +486,7 @@ async def reject_option(
             raise HTTPException(status_code=400, detail="该记录已被驳回")
 
         obj.status = 'rejected'
-        obj.approved_by = current_user.get('id', '')
+        obj.approved_by = current_user.get('username', '')
         obj.approved_at = datetime.now()
         obj.reject_reason = reason or None
         sync_db.commit()
