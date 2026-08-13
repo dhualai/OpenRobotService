@@ -34,6 +34,8 @@ export default function OrgChart() {
   // 选中用户弹窗（设置上级）
   const [selectUser, setSelectUser] = useState<User | null>(null);
   const [pickerVisible, setPickerVisible] = useState(false);
+  // 折叠状态：默认全部折叠
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
 
   // 分组视图：公司 → 部门 → 用户
   const [viewMode, setViewMode] = useState<'tree' | 'group'>('tree');
@@ -79,6 +81,22 @@ export default function OrgChart() {
 
     return build(null, 0);
   }, [users]);
+
+  // 默认折叠所有有子节点的节点（仅首次加载，后续操作不重置）
+  const initialCollapseRef = useRef(false);
+  useEffect(() => {
+    if (initialCollapseRef.current) return;
+    initialCollapseRef.current = true;
+    const ids = new Set<string>();
+    const collect = (nodes: TreeNode[]) => {
+      nodes.forEach((n) => {
+        if (n.children.length > 0) ids.add(n.id);
+        collect(n.children);
+      });
+    };
+    collect(tree);
+    setCollapsedIds(ids);
+  }, [tree]);
 
   // 未分配上级的用户（不在树中的 — 理论上应该都在 tree 里，因为 null supervisor 的就是 root）
   // 但如果存在循环引用，这些用户不会被遍历到
@@ -178,9 +196,21 @@ export default function OrgChart() {
     handleSetSupervisor(dragUser.id, targetUser.id);
   };
 
+  // 切换折叠
+  const toggleCollapse = (id: string) => {
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   // 渲染树节点
   const renderTreeNode = (node: TreeNode): React.ReactNode => {
     const isDragOver = dragOverUserId === node.id;
+    const isCollapsed = collapsedIds.has(node.id);
+    const hasChildren = node.children.length > 0;
     const supervisorName = node.supervisor_id
       ? userMap.get(node.supervisor_id)?.name || userMap.get(node.supervisor_id)?.username
       : null;
@@ -207,8 +237,17 @@ export default function OrgChart() {
             transition: 'background 0.15s',
           }}
         >
+          {hasChildren && (
+            <span
+              onClick={(e) => { e.stopPropagation(); toggleCollapse(node.id); }}
+              style={{ fontSize: 14, cursor: 'pointer', flexShrink: 0, width: 20, textAlign: 'center', color: '#666' }}
+            >
+              {isCollapsed ? '▸' : '▾'}
+            </span>
+          )}
+          {!hasChildren && <span style={{ width: 20, flexShrink: 0 }} />}
           <span style={{ fontSize: 16 }}>
-            {node.children.length > 0 ? '👥' : '👤'}
+            {hasChildren ? '👥' : '👤'}
           </span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -235,13 +274,13 @@ export default function OrgChart() {
               </div>
             )}
           </div>
-          {node.children.length > 0 && (
+          {hasChildren && (
             <span style={{ fontSize: 11, color: '#999', flexShrink: 0 }}>
               {node.children.length} 人
             </span>
           )}
         </div>
-        {node.children.length > 0 && (
+        {hasChildren && !isCollapsed && (
           <div style={{ marginTop: 2 }}>
             {node.children.map((child) => renderTreeNode(child))}
           </div>
@@ -285,6 +324,26 @@ export default function OrgChart() {
         >
           {viewMode === 'tree' ? '切换分组视图' : '切换树形视图'}
         </Button>
+        {viewMode === 'tree' && (
+          <Button
+            size="small"
+            variant="text"
+            onClick={() => {
+              const allParentIds = new Set<string>();
+              const collect = (nodes: TreeNode[]) => {
+                nodes.forEach((n) => {
+                  if (n.children.length > 0) allParentIds.add(n.id);
+                  collect(n.children);
+                });
+              };
+              collect(tree);
+              // 如果当前全部折叠 → 全部展开；否则全部折叠
+              setCollapsedIds(collapsedIds.size >= allParentIds.size ? new Set() : allParentIds);
+            }}
+          >
+            {collapsedIds.size > 0 ? '全部展开' : '全部折叠'}
+          </Button>
+        )}
       </div>
 
       {/* 操作提示 */}

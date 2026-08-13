@@ -338,8 +338,6 @@ async def submit_new_department(
             raise HTTPException(status_code=404, detail="所选公司不存在")
         if company.status == 'rejected':
             raise HTTPException(status_code=400, detail="所选公司已被驳回")
-        if company.status == 'pending' and company.created_by != current_user.get('id', ''):
-            raise HTTPException(status_code=403, detail="所选公司正在审核中，无法添加部门")
 
         # 检查部门是否已存在
         existing = sync_db.query(Department).filter(
@@ -415,7 +413,7 @@ async def approve_option(
     """审核通过。管理员可在 body 中传入 new_name 调整名称后再通过。"""
     if target_type not in ('company', 'department'):
         raise HTTPException(status_code=400, detail="类型必须是 company 或 department")
-    if current_user.get('id') != ADMIN_ASSIGNEE_ID:
+    if current_user.get('username') != ADMIN_ASSIGNEE_ID:
         raise HTTPException(status_code=403, detail="无权限操作")
 
     new_name = (data.get('new_name') or '').strip() if data else ''
@@ -469,7 +467,7 @@ async def reject_option(
 ):
     if target_type not in ('company', 'department'):
         raise HTTPException(status_code=400, detail="类型必须是 company 或 department")
-    if current_user.get('id') != ADMIN_ASSIGNEE_ID:
+    if current_user.get('username') != ADMIN_ASSIGNEE_ID:
         raise HTTPException(status_code=403, detail="无权限操作")
 
     reason = (data.get('reason') or '').strip()
