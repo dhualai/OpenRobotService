@@ -808,7 +808,7 @@ class TicketService:
         return True
 
     @staticmethod
-    async def update_ticket_status(db: AsyncSession, ticket_id: int, status: TicketStatus, token: Optional[str] = None, operator_id: Optional[str] = None) -> Optional[Ticket]:
+    async def update_ticket_status(db: AsyncSession, ticket_id: int, status: TicketStatus, token: Optional[str] = None, operator_id: Optional[str] = None, resolution_summary: Optional[str] = None) -> Optional[Ticket]:
         ticket = await TicketService.get_ticket_by_id(db, ticket_id)
         if not ticket:
             return None
@@ -819,6 +819,15 @@ class TicketService:
             ticket.resolved_at = func.now()
         elif status == TicketStatus.CLOSED:
             ticket.closed_at = func.now()
+
+        # 结束工单（resolved）时，若带解决方式，则写入 metadata_info.resolution_summary
+        if status == TicketStatus.RESOLVED and resolution_summary is not None:
+            meta = dict(ticket.metadata_info or {})
+            meta["resolution_summary"] = resolution_summary
+            from datetime import datetime
+            meta["resolution_summary_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            meta["resolution_gen_state"] = "confirmed"
+            ticket.metadata_info = meta
         
         ticket.updated_at = func.now()
         
