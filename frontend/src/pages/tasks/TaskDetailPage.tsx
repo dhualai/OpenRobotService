@@ -1070,10 +1070,10 @@ export default function TaskDetailPage() {
               </div>
             </div>
             <div className="detail-info-item">
-              <span className="detail-info-item__icon">🕐</span>
+              <span className="detail-info-item__icon">📁</span>
               <div className="detail-info-item__content">
-                <span className="detail-info-item__label">创建时间</span>
-                <span className="detail-info-item__value">{formatDateTime(detail.created_at)}</span>
+                <span className="detail-info-item__label">所属项目</span>
+                <span className="detail-info-item__value">{detail.project_name || '-'}</span>
               </div>
             </div>
             <div className="detail-info-item">
@@ -1081,6 +1081,13 @@ export default function TaskDetailPage() {
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">最晚解决时间</span>
                 <span className="detail-info-item__value">{detail.deadline_at ? formatDateTime(detail.deadline_at) : '未设置'}</span>
+              </div>
+            </div>
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon">🕐</span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">创建时间</span>
+                <span className="detail-info-item__value">{formatDateTime(detail.created_at)}</span>
               </div>
             </div>
             <div className="detail-info-item">
@@ -1314,12 +1321,6 @@ export default function TaskDetailPage() {
                 </>
               );
             })()}
-          </div>
-        )}
-
-        {detail.project_name && (
-          <div className="detail-card">
-            <DetailRow label="所属项目" value={detail.project_name} />
           </div>
         )}
 
@@ -1666,15 +1667,6 @@ export default function TaskDetailPage() {
 
       {/* 附件预览：图片灯箱 / PDF 内联 / Markdown 渲染 */}
       <AttachmentViewer item={viewer} onClose={() => setViewer(null)} />
-    </div>
-  );
-}
-
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="detail-row">
-      <span className="detail-row__label">{label}</span>
-      <span className="detail-row__value">{value}</span>
     </div>
   );
 }
