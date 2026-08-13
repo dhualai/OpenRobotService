@@ -425,7 +425,7 @@ const convMessagesCache: Record<number, Message[]> = {};
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
 
   const { token, name, username } = useAuthStore();
-  const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations } = useWorkbenchStore();
+  const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations, requestNewConversation } = useWorkbenchStore();
   const isCall = scene === 'call';
   const cfg = SCENE_CONFIG[scene];
   const navigate = useNavigate();
@@ -2023,6 +2023,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                     <circle cx="12" cy="12" r="9.5" />
                     <line x1="12" y1="7.5" x2="12" y2="16.5" />
                     <line x1="7.5" y1="12" x2="16.5" y2="12" />
+                  </svg>
+                </button>
+                {/* 新建会话：入口从会话抽屉挪到此处（上传按钮右侧），图标为手绘风格聊天气泡 */}
+                <button className="chat-input-btn" onClick={requestNewConversation} title="新建会话" aria-label="新建会话">
+                  <svg viewBox="0 0 78 66" width="26" height="22" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M21 22 h8 v1 h-8 zM40 22 h5 v1 h-5 zM20 23 h10 v1 h-10 zM39 23 h7 v1 h-7 zM19 24 h10 v1 h-10 zM38 24 h4 v1 h-4 zM43 24 h4 v1 h-4 zM18 25 h3 v1 h-3 zM37 25 h3 v1 h-3 zM44 25 h3 v1 h-3 zM17 26 h3 v22 h-3 zM36 26 h3 v1 h-3 zM45 26 h2 v1 h-2 zM35 27 h3 v1 h-3 zM44 27 h3 v2 h-3 zM34 28 h3 v1 h-3 zM32 29 h4 v1 h-4 zM43 29 h3 v1 h-3 zM31 30 h4 v1 h-4 zM42 30 h3 v1 h-3 zM30 31 h4 v1 h-4 zM41 31 h4 v1 h-4 zM29 32 h4 v1 h-4 zM40 32 h4 v1 h-4 zM28 33 h4 v1 h-4 zM39 33 h3 v1 h-3 zM28 34 h3 v1 h-3 zM38 34 h3 v1 h-3 zM27 35 h3 v2 h-3 zM37 35 h3 v1 h-3 zM36 36 h3 v1 h-3 zM26 37 h3 v3 h-3 zM35 37 h3 v1 h-3 zM34 38 h3 v1 h-3 zM32 39 h4 v1 h-4 zM45 39 h1 v1 h-1 zM26 40 h9 v1 h-9 zM44 40 h3 v8 h-3 zM26 41 h8 v1 h-8 zM26 42 h5 v1 h-5 zM18 48 h3 v1 h-3 zM43 48 h3 v1 h-3 zM19 49 h26 v1 h-26 zM20 50 h24 v1 h-24 zM21 51 h22 v1 h-22 z" />
                   </svg>
                 </button>
               </div>
