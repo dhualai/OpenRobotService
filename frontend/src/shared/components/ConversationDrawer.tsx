@@ -2,7 +2,7 @@
 // 仿千问/deepseek 移动端会话管理布局
 import { useState, useEffect } from 'react';
 import { Popup, Button, Toast } from 'tdesign-mobile-react';
-import { AddIcon, Edit1Icon, DeleteIcon } from 'tdesign-icons-react';
+import { Edit1Icon, DeleteIcon } from 'tdesign-icons-react';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { formatDateTime } from '@/shared/utils/url';
 import type { Conversation } from '@/api/conversation';
@@ -13,19 +13,12 @@ interface Props {
 }
 
 export default function ConversationDrawer({ visible, onClose }: Props) {
-  const { conversations, conversationId, refreshConversations, deleteConversation, renameConversation, setConversationId, requestNewConversation } = useWorkbenchStore();
+  const { conversations, conversationId, refreshConversations, deleteConversation, renameConversation, setConversationId } = useWorkbenchStore();
   const [renaming, setRenaming] = useState<Conversation | null>(null);
   const [renameText, setRenameText] = useState('');
   const [deleting, setDeleting] = useState<Conversation | null>(null);
 
   useEffect(() => { if (visible) refreshConversations(); }, [visible, refreshConversations]);
-
-  // 新建会话：清空当前 → ChatPanel 新建（延迟创建，首条消息时入库）。
-  // 用 requestNewConversation 标记「显式新建」，使进入页逻辑不会把空白新会话覆盖成最近会话。
-  const handleNew = () => {
-    requestNewConversation();
-    onClose();
-  };
 
   // 切换会话
   const handleSwitch = (id: number) => {
@@ -64,13 +57,7 @@ export default function ConversationDrawer({ visible, onClose }: Props) {
       />
       {/* 抽屉 */}
       <aside className={`conv-drawer ${visible ? 'open' : ''}`}>
-        {/* 新建会话按钮 */}
-        <button type="button" className="conv-new-btn" onClick={handleNew}>
-          <AddIcon size="20px" />
-          <span>新建会话</span>
-        </button>
-
-        {/* 会话列表 */}
+        {/* 会话列表（新建会话按钮已挪到聊天输入栏上传按钮右侧） */}
         <div className="conv-list">
           {conversations.length === 0 ? (
             <div className="conv-list__empty">暂无历史会话</div>
