@@ -1,4 +1,4 @@
-"""@AI 讨论流程 — 从 pipeline.py 拆分出的 Mixin
+"""@U老师 讨论流程 — 从 pipeline.py 拆分出的 Mixin
 
 含 AiTaskAgent 的 discuss 方法（保持 self.xxx 调用不变，仅拆分文件）。
 discuss = 针对性：按 query 关键词触发日志/图片/代码/历史，组合讨论历史回复。
@@ -17,11 +17,11 @@ logger = get_logger("TASK_AGENT")
 
 class DiscussFlow:
     # ============================================================
-    # discuss — @AI 讨论回复
+    # discuss — @U老师 讨论回复
     # ============================================================
 
     async def discuss(self, task_id: str, query: str, context: dict) -> dict:
-        """@AI 讨论：基于讨论历史 + 工单上下文 + 按需附件/历史工单 回复。"""
+        """@U老师 讨论：基于讨论历史 + 工单上下文 + 按需附件/历史工单 回复。"""
         t0 = time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
@@ -121,7 +121,7 @@ class DiscussFlow:
         if not facultative and query:
             att_mentions = _rules.ATTACHMENT_MENTION_WORDS
             if any(kw in query.lower() for kw in att_mentions):
-                facultative = "⚠️ 当前工单没有日志、图片或任何可解析的附件。请如实告知工程师，不要编造。"
+                facultative = "当前工单没有日志、图片或任何可解析的附件。请如实告知工程师，不要编造。"
 
         diag_summary = f"推测: {' / '.join(ctx.hypotheses) if ctx.hypotheses else '无'}"
         prompt = DISCUSS_USER_TEMPLATE.format(
