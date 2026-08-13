@@ -794,6 +794,9 @@ async def upload_files(
                     ack = ev["ack_message"]
             # ── 附带文字 → 流式诊断；否则回执即可 ──
             if message.strip():
+                # 先推一个 status 保活，避免 _run_diagnosis 启动前的间隙（get_memory+检索）
+                # 导致 SSE 长时间无数据 → nginx proxy_read_timeout 断连 → 前端 NetworkError
+                yield f"event: status\ndata: {json.dumps({'stage': 'diagnosing', 'round': 1}, ensure_ascii=False)}\n\n"
                 result_payload = None
                 try:
                     async for event in _heartbeat_agen(_run_diagnosis()):

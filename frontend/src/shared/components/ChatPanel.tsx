@@ -3,7 +3,9 @@
 import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { Textarea, Toast, Popup, Tag, Loading, DateTimePicker } from 'tdesign-mobile-react';
+import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
+import { DatePicker } from 'antd';
+import dayjs from 'dayjs';
 import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
@@ -15,7 +17,6 @@ import type { UserItem } from '@/api/users';
 import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
 import { createRequest } from '@/api/client';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
-import { deadlinePickerValue } from '@/shared/utils/url';
 import { compressImage } from '@/shared/utils/imageCompress';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import ImageLightbox from '@/shared/components/ImageLightbox';
@@ -1559,16 +1560,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const setDraftField = (k: keyof TicketDraft, v: string) =>
     setTicketConfirm((s) => ({ ...s, overrides: { ...s.overrides, [k]: v } }));
 
-  // ── 最晚解决时间（截止时间）：DateTimePicker 选择，最小单位小时 ──
-  const [deadlinePickerVisible, setDeadlinePickerVisible] = useState(false);
-  /** 格式化绝对截止时间展示「8月12日 18:00 前」 */
-  const formatDeadlineAbsolute = (iso: string): string => {
-    if (!iso) return '';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return '';
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())} 前`;
-  };
+  // ── 最晚解决时间（截止时间）：antd DatePicker 下拉，与编辑弹窗统一（浮层 z-index 见下方 JSX）──
 
   // ── 工单概览气泡 + 派单轮询 ──────────────────────────────────
   const tasksReq = useMemo(() => createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务'), []);
@@ -2040,9 +2032,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                     <line x1="7.5" y1="12" x2="16.5" y2="12" />
                   </svg>
                 </button>
-                {/* 新建会话：入口从会话抽屉挪到此处（上传按钮右侧），图标为手绘风格聊天气泡 */}
+                {/* 新建会话：入口从会话抽屉挪到此处（上传按钮右侧），图标为手绘风格聊天气泡。
+                    viewBox 裁剪到墨迹包围盒（原图 78x66 四周留白大），尺寸 22 略小于旁边的 26 上传图标 */}
                 <button className="chat-input-btn" onClick={requestNewConversation} title="新建会话" aria-label="新建会话">
-                  <svg viewBox="0 0 78 66" width="26" height="22" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                  <svg viewBox="16 21 32 32" width="22" height="22" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
                     <path d="M21 22 h8 v1 h-8 zM40 22 h5 v1 h-5 zM20 23 h10 v1 h-10 zM39 23 h7 v1 h-7 zM19 24 h10 v1 h-10 zM38 24 h4 v1 h-4 zM43 24 h4 v1 h-4 zM18 25 h3 v1 h-3 zM37 25 h3 v1 h-3 zM44 25 h3 v1 h-3 zM17 26 h3 v22 h-3 zM36 26 h3 v1 h-3 zM45 26 h2 v1 h-2 zM35 27 h3 v1 h-3 zM44 27 h3 v2 h-3 zM34 28 h3 v1 h-3 zM32 29 h4 v1 h-4 zM43 29 h3 v1 h-3 zM31 30 h4 v1 h-4 zM42 30 h3 v1 h-3 zM30 31 h4 v1 h-4 zM41 31 h4 v1 h-4 zM29 32 h4 v1 h-4 zM40 32 h4 v1 h-4 zM28 33 h4 v1 h-4 zM39 33 h3 v1 h-3 zM28 34 h3 v1 h-3 zM38 34 h3 v1 h-3 zM27 35 h3 v2 h-3 zM37 35 h3 v1 h-3 zM36 36 h3 v1 h-3 zM26 37 h3 v3 h-3 zM35 37 h3 v1 h-3 zM34 38 h3 v1 h-3 zM32 39 h4 v1 h-4 zM45 39 h1 v1 h-1 zM26 40 h9 v1 h-9 zM44 40 h3 v8 h-3 zM26 41 h8 v1 h-8 zM26 42 h5 v1 h-5 zM18 48 h3 v1 h-3 zM43 48 h3 v1 h-3 zM19 49 h26 v1 h-26 zM20 50 h24 v1 h-24 zM21 51 h22 v1 h-22 z" />
                   </svg>
                 </button>
@@ -2156,24 +2149,18 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   <option value="中">中</option>
                   <option value="低">低</option>
                 </select>
-                {/* 最晚解决时间：DateTimePicker 选择，最小单位小时 */}
+                {/* 最晚解决时间：antd DatePicker 下拉（与编辑弹窗统一），浮层 z-index 高于弹窗避免被遮挡 */}
                 <label className="ticket-confirm__label">最晚解决时间</label>
-                <div
-                  className="ticket-confirm__deadline-field"
-                  onClick={() => setDeadlinePickerVisible(true)}
-                >
-                  <span className={draftField('deadline_at') ? 'ticket-confirm__deadline-value' : 'ticket-confirm__deadline-placeholder'}>
-                    {draftField('deadline_at') ? formatDeadlineAbsolute(draftField('deadline_at')) : '点击选择最晚解决时间'}
-                  </span>
-                  <span className="ticket-confirm__deadline-arrow">›</span>
-                </div>
-                {draftField('deadline_at') && (
-                  <button
-                    type="button"
-                    className="ticket-confirm__deadline-clear"
-                    onClick={() => setDraftField('deadline_at', '')}
-                  >清除</button>
-                )}
+                <DatePicker
+                  style={{ width: '100%' }}
+                  placeholder="点击选择"
+                  format="YYYY-MM-DD HH:00"
+                  showTime={{ defaultValue: dayjs().hour(9).minute(0), format: 'HH:00' }}
+                  value={draftField('deadline_at') ? dayjs(draftField('deadline_at')) : null}
+                  onChange={(d) => setDraftField('deadline_at', d ? d.minute(0).second(0).millisecond(0).toISOString() : '')}
+                  allowClear
+                  styles={{ popup: { root: { zIndex: 12000 } } }}
+                />
                 <label className="ticket-confirm__label">绑定项目 {!ticketConfirm.dualTicket && <span style={{ color: '#e34d59' }}>*</span>}</label>
                 <ProjectSelect
                   value={draftField('project_id') || null}
@@ -2225,27 +2212,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               >{ticketConfirm.submitting ? '提交中…' : '确认提交'}</button>
             </div>
           </div>
-        </Popup>
-
-        {/* 最晚解决时间选择器：mode=hour 最小单位小时
-            destroyOnClose + preventScrollThrough={false} 修复微信内置浏览器两层 Popup 嵌套时
-            DateTimePicker 滚轮无法滚动（详见 TicketDetailPage 同名注释） */}
-        <Popup visible={deadlinePickerVisible} onClose={() => setDeadlinePickerVisible(false)} placement="bottom" destroyOnClose preventScrollThrough={false}>
-          <DateTimePicker
-            mode="hour"
-            title="选择最晚解决时间"
-            format="YYYY-MM-DD HH:00"
-            value={deadlinePickerValue(draftField('deadline_at') || undefined)}
-            onConfirm={(v) => {
-              const d = new Date(typeof v === 'number' ? v : String(v));
-              if (!isNaN(d.getTime())) {
-                d.setMinutes(0, 0, 0);
-                setDraftField('deadline_at', d.toISOString());
-              }
-              setDeadlinePickerVisible(false);
-            }}
-            onCancel={() => setDeadlinePickerVisible(false)}
-          />
         </Popup>
 
         {/* 图片预览：点击用户气泡图片放大查看 + 复制/下载 */}

@@ -154,35 +154,30 @@ FAILED: alembic.command.MigrationError
 
 **修复**：后端 `app/wechat/api/wechat.py` 的 `resolve_callback_target()` 应优先按 base64url 解码 `state` 中的完整 URL 回跳。
 
-### 3.4 微信内置浏览器中 DateTimePicker 滚轮无法滚动（两层 Popup 嵌套）
+### 3.4 antd DatePicker 浮层被编辑弹窗遮挡（React 19 兼容）
 
-**现象**：在「最晚解决时间」等 DateTimePicker 场景，手机系统浏览器（Safari/Chrome）正常，但**微信内置浏览器（iOS WKWebView）**中，第一次打开时间选择器正常，**关闭后再次打开时滚轮无法滚动/选择**。
+**现象**：编辑工单弹窗内「最晚解决时间」用 antd `DatePicker`，点击后日历/时间面板看不到或无法交互。
 
-**原因**：TDesign Mobile 的 `<Popup>` 通过 `useLockScroll`（`node_modules/tdesign-mobile-react/es/hooks/useLockScroll.js`）在 `document` 上注册 `touchmove`（`passive: false`）监听器做背景滚动锁定。当存在**两层 Popup 嵌套**（如：编辑工单 Popup → 内部触发时间选择 Popup）时：
-1. 外层 Popup `lock()` 注册监听器 A，内层 Popup `lock()` 再注册监听器 B
-2. 内层关闭时 `unlock()`，但 `useLockScroll` 的引用计数实现有缺陷——只要 `totalLockCount` 总和仍 >0（外层还开着），就会 `removeEventListener` 移除内层的 B，但外层 A 的 `contentRef` 此时已不是活动弹层，`getScrollParent` 定位错误
-3. 再次打开内层 Popup 时，残留的 A 仍在 `document` 上，其 `event.preventDefault()` 误拦截了 DateTimePicker 滚轮的 `touchmove`
-4. iOS WKWebView 对 `passive:false + preventDefault` 比 Safari/Chrome 更敏感，故仅微信内置浏览器复现
+**原因**：两层叠加——(1) tdesign `Popup` 编辑弹窗 `z-index: 11500`（见 `tdesign-mobile-react/es/popup/style/index.css`），而 antd `DatePicker` 浮层默认 `z-index` 远低于此，浮层被编辑弹窗遮罩/内容盖住；(2) React 19 已移除 `findDOMNode`，antd v5 浮层依赖它挂载，缺 `@ant-design/v5-patch-for-react-19` 补丁时浮层直接不渲染。
 
-**修复**：内层时间选择 Popup 加 `destroyOnClose` + `preventScrollThrough={false}`：
-```tsx
-<Popup
-  visible={deadlinePickerVisible}
-  onClose={() => setDeadlinePickerVisible(false)}
-  placement="bottom"
-  destroyOnClose              // 关闭时彻底销毁 DateTimePicker DOM，避免残留状态
-  preventScrollThrough={false} // 内层不额外锁背景滚动，避免与外层 Popup 的 useLockScroll 冲突
->
-  <DateTimePicker ... />
-</Popup>
-```
+**修复**：
+- 入口 `main.tsx` 顶部 `import '@ant-design/v5-patch-for-react-19';`（React 19 必需，否则浮层不挂载）。
+- `DatePicker` 设 `styles={{ popup: { root: { zIndex: 12000 } } }}`（> 11500），浮层浮在编辑弹窗之上。
+- 废弃的 `popupStyle` 勿再用。
 
-**已修复位置**：
-- `frontend/src/pages/call/TicketDetailPage.tsx`（编辑工单弹窗内的时间选择器）
-- `frontend/src/pages/tasks/TaskDetailPage.tsx`（同上，系统任务侧）
-- `frontend/src/shared/components/ChatPanel.tsx`（提单确认弹窗内的时间选择器，预防性修复）
+**涉及位置**：`frontend/src/pages/call/TicketDetailPage.tsx`、`frontend/src/pages/tasks/TaskDetailPage.tsx`。
 
-**通用规则**：凡是在一个 `<Popup>` 内部再触发另一个 `<Popup>`（含 DateTimePicker/Picker 等自带弹层的组件外层包 Popup），内层 Popup 都应加 `destroyOnClose` + `preventScrollThrough={false}`，详见 `CONTRIBUTING.md`「微信 H5 适配要求」。
+### 3.5 详情页「最晚解决时间」回显消失（字段名蛇形/驼峰混淆）
+
+**现象**：工单已写入 `deadline_at`，但历史工单详情页 / 系统任务详情页不显示「最晚解决时间」一行，编辑弹窗也不回显。
+
+**原因**：tasks 详情接口 `GET /{id}` 的 `response_model=TicketResponse` 返回**蛇形 `deadline_at`**（见 `backend/app/modules/tasks/schemas/ticket.py:107`）。而 `ticket_service.py` 的 `FIELD_MAPPING` 里有 `'deadlineAt': (Ticket.deadline_at, ...)`，那是给 `POST /filter` 复合过滤查询用的驼峰别名，**与详情接口无关**。前端曾误把 `FIELD_MAPPING` 的驼峰当成详情接口返回，把读取从 `detail.deadline_at` 改成 `detail.deadlineAt` → 取值恒为 `undefined` → 回显块 `{... && ...}` 判定为假、不渲染。
+
+**修复**：详情/编辑统一读蛇形 `deadline_at`：
+- `tasks/TaskDetailPage.tsx`：`Ticket.deadline_at`；展示读 `detail.deadline_at`；`startEdit` 回显 `detail.deadline_at`；编辑提交 `editForm.deadline_at`（后端 `update_ticket` 的 `setattr(ticket, 'deadline_at', ...)` 认蛇形）。
+- `call/TicketDetailPage.tsx`：`setTicket` 两处从 `taskDetail.deadline_at`（蛇形）映射到 `ticket.deadline_at`；详情读 `ticket.deadline_at`。
+
+**鉴别要点**：判断接口返回字段名时，看该路由的 `response_model`（Pydantic schema 字段名），不要看 `FIELD_MAPPING`（那是过滤查询别名表）。
 
 ---
 
