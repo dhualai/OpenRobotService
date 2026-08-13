@@ -3,7 +3,9 @@
 // 路由 /app/call/ticket/:id 中的 :id 形如 db_<数字id>（Task.id）；session_id 直链仅作旧链接兼容
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea, DateTimePicker } from 'tdesign-mobile-react';
+import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea } from 'tdesign-mobile-react';
+import { DatePicker } from 'antd';
+import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
@@ -26,7 +28,7 @@ import UserSelect from '@/shared/components/UserSelect';
 import SafeHtml from '@/shared/components/SafeHtml';
 import { useAuthStore } from '@/stores/auth';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
-import { formatDateTimeShort, deadlinePickerValue } from '@/shared/utils/url';
+import { formatDateTime } from '@/shared/utils/url';
 import type { UserItem } from '@/api/users';
 
 interface AiDiagnosis {
@@ -61,7 +63,7 @@ interface AiTicket {
   project_name?: string;
   // 所属项目编码（DB TicketResponse 返回，编辑回显与提交用）
   project_id?: string;
-  // 最晚解决时间（ISO 字符串，编辑弹窗拖拽进度条回显/编辑；详情页只读展示）
+  // 最晚解决时间（ISO 字符串，编辑弹窗 antd DatePicker 回显/编辑；详情页只读展示。tasks 详情接口返回蛇形 deadline_at）
   deadline_at?: string | null;
   // 类型专属
   location?: string; robot_type?: string; fault_code?: string; special_notes?: string;
@@ -199,7 +201,8 @@ export default function TicketDetailPage() {
           project_name: taskDetail.project_name || '',
           project_id: taskDetail.project_id || '',
           created_at: taskDetail.created_at || '',
-          deadline_at: taskDetail.deadline_at || null,
+          // 最晚解决时间：tasks 详情接口 GET /{id} 返回蛇形 deadline_at（见 TicketResponse）
+          deadline_at: taskDetail.deadline_at ?? null,
           // AI 诊断数据存在 metadata_info.diagnosis（task_adapter 平铺入库）；手动工单无此字段
           diagnosis: taskDetail.metadata_info?.diagnosis,
           // 附件来自 tasks 服务 GET /{dbId} 的 attachments 字段（object_path 或字典数组）
@@ -243,7 +246,8 @@ export default function TicketDetailPage() {
               project_name: taskDetail.project_name || prev.project_name || prev.project,
               // 项目编码以 DB 为准（编辑回显与提交用），AI 接口不返回该字段
               project_id: taskDetail.project_id || prev.project_id,
-              deadline_at: taskDetail.deadline_at ?? prev.deadline_at,
+              // 最晚解决时间以 DB 为准（tasks 详情接口蛇形 deadline_at），覆盖 AI 滞后副本
+              deadline_at: taskDetail.deadline_at ?? prev.deadline_at ?? null,
             } : prev);
             setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
           } catch { /* 评论加载失败不阻塞主流程 */ }
@@ -382,11 +386,6 @@ export default function TicketDetailPage() {
   // 编辑工单（标题/描述/优先级/类型/联系人；权限与后端对齐：admin/创建人/处理人，终态不可编辑）
   const [showEdit, setShowEdit] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; project_id: string; project_name: string; deadline_at?: string }>({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
-  const [editDeadlinePickerVisible, setEditDeadlinePickerVisible] = useState(false);
-  // 每次打开最晚解决时间选择器都自增 key，强制 DateTimePicker 重新挂载，
-  // 规避 tdesign-mobile-react Picker 在嵌套 Popup（destroyOnClose + CSSTransition）下
-  // 二次打开时 Picker 实例竞态、事件绑到旧 DOM 节点导致桌面端无法编辑/滚动的问题
-  const [deadlinePickerKey, setDeadlinePickerKey] = useState(0);
   const [savingEdit, setSavingEdit] = useState(false);
   // 所属项目下拉（当前用户名下项目，GET /api/admin/projects/me；支持关键词模糊搜索）
   const [showProjectPicker, setShowProjectPicker] = useState(false);
@@ -432,14 +431,8 @@ export default function TicketDetailPage() {
     });
     setShowEdit(true);
   };
-  // ── 最晚解决时间（截止时间）：编辑页只读回显已有 deadline_at，进度条仅提单时用 ──
-  const formatEditDeadlineAbs = (iso?: string): string => {
-    if (!iso) return '未设置';
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return '未设置';
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())} 前`;
-  };
+  // ── 最晚解决时间（截止时间）：编辑弹窗用 antd DatePicker 下拉选择（双端可用）──
+  // 浮层 z-index 通过 styles.popup.root 提到高于 tdesign 编辑弹窗（z-index 11500），避免被遮挡
   const handleEditSave = async () => {
     if (!ticket?.ticket_id) return;
     if (!editForm.title.trim()) { Toast({ message: '标题不能为空', theme: 'warning' }); return; }
@@ -597,22 +590,11 @@ export default function TicketDetailPage() {
       minioPath = `${parsed.bucket}/${parsed.objectKey}`;
     }
     const authToken = localStorage.getItem('auth_token') || '';
+    // 必须拼成绝对 URL：微信内 window.open(相对URL) 打开的是微信内置 WebView，无法下载；
+    // 用户「在浏览器打开」后相对路径在外部浏览器解析失败会落到 SPA 404 → 未登录重定向微信 OAuth
+    // （表现为「提示跳转到微信客户端」）。绝对 URL 携带 token，在外部浏览器可直接下载。
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
     return `${origin}${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
-  };
-
-  /** 微信内下载中转页 URL（同 TaskDetailPage） */
-  const buildDownloadRedirectUrl = (att: NormalizedAttachment): string | null => {
-    const rawPath = att.path || att.url || '';
-    if (!rawPath) return null;
-    let minioPath = rawPath;
-    if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
-      const parsed = parseMinioPath(rawPath);
-      if (!parsed) return null;
-      minioPath = `${parsed.bucket}/${parsed.objectKey}`;
-    }
-    const authToken = localStorage.getItem('auth_token') || '';
-    return `/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
   };
 
   /** 构造附件内联预览 URL（/api/tasks/files/{minioPath}），供缩略图 <img> src 与 AttachmentViewer 共用 */
@@ -631,13 +613,11 @@ export default function TicketDetailPage() {
   const openAttachmentViewer = (att: NormalizedAttachment) => {
     const previewUrl = buildPreviewUrl(att);
     if (!previewUrl) { Toast({ message: '附件路径无效', theme: 'error' }); return; }
-    const isWechat = /MicroMessenger/i.test(navigator.userAgent);
-    const dl = isWechat ? buildDownloadRedirectUrl(att) : buildAttachmentDownloadUrl(att);
     setViewer({
       filename: att.filename || '未命名文件',
       size: att.size,
       previewUrl,
-      downloadUrl: dl || previewUrl,
+      downloadUrl: buildAttachmentDownloadUrl(att) || previewUrl,
     });
   };
 
@@ -666,8 +646,8 @@ export default function TicketDetailPage() {
           <h2 className="detail-card__title">{ticket.title || '(无标题)'}</h2>
           {(ticket.project_name || ticket.project) && <DetailRow label="所属项目" value={ticket.project_name || ticket.project || ''} />}
           {ticket.contact && <DetailRow label="联系人" value={ticket.contact} />}
-          <DetailRow label="创建时间" value={ticket.created_at ? formatDateTimeShort(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''} />
-          <DetailRow label="最晚解决时间" value={ticket.deadline_at ? formatDateTimeShort(String(ticket.deadline_at)) : '未设置'} />
+          <DetailRow label="创建时间" value={ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''} />
+          <DetailRow label="最晚解决时间" value={ticket.deadline_at ? formatDateTime(String(ticket.deadline_at)) : '未设置'} />
         </div>
 
         {/* 人员流转：发起人 → 处理人（与历史工单列表页同款 task-card2__people 样式）
@@ -808,21 +788,13 @@ export default function TicketDetailPage() {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (dl) {
-                                  // 微信内置 WebView 会拦截 a.click() 下载并强制弹「在浏览器打开」，
-                                  // 系统浏览器打开缺环境前缀的 URL 会 404 → 回跳微信。故微信内用
-                                  // window.location.href 跳绝对地址（弹横幅，浏览器内可下载）；非微信用 a.click()。
-                                  if (/MicroMessenger/i.test(navigator.userAgent)) {
-                                    const redirectUrl = buildDownloadRedirectUrl(att);
-                                    if (redirectUrl) window.location.href = redirectUrl;
-                                  } else {
-                                    const a = document.createElement('a');
-                                    a.href = dl;
-                                    a.download = filename;
-                                    a.target = '_blank';
-                                    document.body.appendChild(a);
-                                    a.click();
-                                    document.body.removeChild(a);
-                                  }
+                                  const a = document.createElement('a');
+                                  a.href = dl;
+                                  a.download = filename;
+                                  a.target = '_blank';
+                                  document.body.appendChild(a);
+                                  a.click();
+                                  document.body.removeChild(a);
                                 } else {
                                   Toast({ message: '附件路径无效', theme: 'error' });
                                 }
@@ -956,7 +928,7 @@ export default function TicketDetailPage() {
                     key={label}
                     type="button"
                     className={`tasks-create-modal__radio-btn ${editForm.priority === PRIORITY_EN[label] ? 'is-active' : ''}`}
-                    onClick={() => setEditForm((prev) => ({ ...prev, priority: PRIORITY_EN[label] }))}
+                    onClick={() => setEditForm((p) => ({ ...p, priority: PRIORITY_EN[label] }))}
                   >{label}</button>
                 ))}
               </div>
@@ -983,27 +955,24 @@ export default function TicketDetailPage() {
                 <span className="ticket-edit-form__select-arrow">▾</span>
               </div>
             </div>
-            {/* 最晚解决时间：DateTimePicker 选择，最小单位小时 */}
+            {/* 最晚解决时间：antd DatePicker 下拉选择（双端可用），浮层 z-index 高于编辑弹窗避免被遮挡 */}
             <div className="ticket-edit-form__field">
               <label className="ticket-edit-form__label">最晚解决时间</label>
-              <div className="ticket-confirm__deadline">
-                <div
-                  className="ticket-confirm__deadline-field"
-                  onClick={() => { setDeadlinePickerKey((k) => k + 1); setEditDeadlinePickerVisible(true); }}
-                >
-                  <span className={editForm.deadline_at ? 'ticket-confirm__deadline-value' : 'ticket-confirm__deadline-placeholder'}>
-                    {editForm.deadline_at ? formatEditDeadlineAbs(editForm.deadline_at) : '点击选择'}
-                  </span>
-                  <span className="ticket-confirm__deadline-arrow">›</span>
-                </div>
-                {editForm.deadline_at && (
-                  <button
-                    type="button"
-                    className="ticket-confirm__deadline-clear"
-                    onClick={() => setEditForm((p) => ({ ...p, deadline_at: undefined }))}
-                  >清除</button>
-                )}
-              </div>
+              <DatePicker
+                style={{ width: '100%' }}
+                placeholder="点击选择"
+                format="YYYY-MM-DD HH:00"
+                showTime={{ defaultValue: dayjs().hour(9).minute(0), format: 'HH:00' }}
+                value={editForm.deadline_at ? dayjs(editForm.deadline_at) : null}
+                onChange={(d) =>
+                  setEditForm((p) => ({
+                    ...p,
+                    deadline_at: d ? d.minute(0).second(0).millisecond(0).toISOString() : undefined,
+                  }))
+                }
+                allowClear
+                styles={{ popup: { root: { zIndex: 12000 } } }}
+              />
             </div>
           </div>
           <div className="ticket-edit-form__footer">
@@ -1011,31 +980,6 @@ export default function TicketDetailPage() {
             <Button theme="primary" block loading={savingEdit} onClick={handleEditSave}>保存</Button>
           </div>
         </div>
-      </Popup>
-
-      {/* 最晚解决时间选择器：mode=hour 最小单位小时
-          - destroyOnClose：每次关闭彻底销毁 DateTimePicker DOM，避免微信内置浏览器（iOS WKWebView）下
-            两层 Popup 嵌套（编辑 Popup + 时间选择 Popup）时 useLockScroll 残留 touchmove 监听器
-            导致再次打开后滚轮无法滚动的问题
-          - preventScrollThrough={false}：DateTimePicker 自身滚轮需接收 touchmove，
-            内层 Popup 不再额外锁背景滚动，避免与外层编辑 Popup 的滚动锁互相干扰 */}
-      <Popup visible={editDeadlinePickerVisible} onClose={() => setEditDeadlinePickerVisible(false)} placement="bottom" destroyOnClose preventScrollThrough={false}>
-        <DateTimePicker
-          key={deadlinePickerKey}
-          mode="hour"
-          title="选择最晚解决时间"
-          format="YYYY-MM-DD HH:00"
-          value={deadlinePickerValue(editForm.deadline_at)}
-          onConfirm={(v) => {
-            const d = new Date(typeof v === 'number' ? v : String(v));
-            if (!isNaN(d.getTime())) {
-              d.setMinutes(0, 0, 0);
-              setEditForm((p) => ({ ...p, deadline_at: d.toISOString() }));
-            }
-            setEditDeadlinePickerVisible(false);
-          }}
-          onCancel={() => setEditDeadlinePickerVisible(false)}
-        />
       </Popup>
 
       {/* 所属项目选择弹层：当前用户名下项目 + 关键词模糊搜索 */}

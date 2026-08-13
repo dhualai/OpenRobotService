@@ -2838,7 +2838,7 @@ html, body, #root {
   .ticket-dynamics-scroll__track { animation: none; }
 }
 .detail-row { display: flex; padding: 6px 0; }
-.detail-row__label { color: #999; width: 64px; flex-shrink: 0; font-size: 13px; }
+.detail-row__label { color: #999; width: 84px; flex-shrink: 0; font-size: 13px; white-space: nowrap; }
 .detail-row__value { flex: 1; font-size: 13px; color: #333; word-break: break-word; }
 .detail-card__info-grid {
   display: grid;
@@ -3595,22 +3595,6 @@ html, body, #root {
 .ticket-confirm__select:focus { border-color: #0052d9; }
 .ticket-confirm__textarea { resize: vertical; line-height: 1.5; font-family: inherit; }
 
-/* 最晚解决时间：DateTimePicker 选择字段 */
-.ticket-confirm__deadline { margin-top: 4px; }
-.ticket-confirm__deadline-field {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 12px; background: #f5f7fa; border-radius: 6px;
-  cursor: pointer;
-}
-.ticket-confirm__deadline-value { font-size: 14px; color: #333; }
-.ticket-confirm__deadline-placeholder { font-size: 14px; color: #999; }
-.ticket-confirm__deadline-arrow { color: #c0c4cc; font-size: 18px; }
-.ticket-confirm__deadline-clear {
-  margin-top: 6px; background: none; border: none;
-  color: #999; font-size: 12px; cursor: pointer; padding: 2px 0;
-  text-decoration: underline;
-}
-.ticket-confirm__deadline-clear:active { color: #e34d59; }
 .ticket-confirm__btns { display: flex; gap: 12px; margin-top: 20px; }
 .ticket-confirm__btn {
   flex: 1; padding: 12px; border: none; border-radius: 6px;
@@ -3668,14 +3652,7 @@ html, body, #root {
   box-shadow: 2px 0 12px rgba(0,0,0,0.1);
 }
 .conv-drawer.open { transform: translateX(0); }
-.conv-new-btn {
-  display: flex; align-items: center; justify-content: center; gap: 6px;
-  margin: 12px; padding: 12px; border-radius: 12px;
-  background: rgba(0, 82, 217, 0.06); border: 1px solid rgba(0, 82, 217, 0.12);
-  color: #0052d9; font-size: 15px; font-weight: 500; cursor: pointer;
-}
-.conv-new-btn:active { background: rgba(0, 82, 217, 0.12); }
-.conv-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 12px; }
+.conv-list { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 8px 12px; }
 .conv-list__empty { text-align: center; color: #999; padding: 40px 0; font-size: 14px; }
 .conv-item {
   display: flex; align-items: center; gap: 8px;

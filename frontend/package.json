@@ -15,6 +15,8 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@ant-design/v5-patch-for-react-19": "^1.0.3",
+    "antd": "^5.29.3",
     "dompurify": "^3.4.12",
     "echarts": "^6.0.0",
     "echarts-for-react": "^3.0.5",
