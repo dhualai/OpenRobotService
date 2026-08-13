@@ -889,7 +889,7 @@ async def get_resolution_summary(
     import logging
     _logger = logging.getLogger(__name__)
     _user = (current_user or {}).get('username', '?')
-    _logger.info(f"[resolution-summary] 接口被调用: task_id={task_id}, force={force}, clear={clear}, user={_user}")
+    _logger.debug(f"[resolution-summary] 接口被调用: task_id={task_id}, force={force}, clear={clear}, user={_user}")
 
     ticket = await TicketService.get_ticket_by_id(db, task_id)
     if not ticket:
@@ -910,7 +910,7 @@ async def get_resolution_summary(
         new_meta.pop("resolution_status", None)  # 清理历史遗留的旧字段名残留
         ticket.metadata_info = new_meta
         await db.commit()
-        _logger.info(f"[resolution-summary] task_id={task_id} clear=true 已清除解决方式草稿与生成状态, 剩余 keys={list(new_meta.keys())}")
+        _logger.debug(f"[resolution-summary] task_id={task_id} clear=true 已清除解决方式草稿与生成状态, 剩余 keys={list(new_meta.keys())}")
         return {
             "task_id": task_id,
             "problem": {"title": ticket.title or "", "description": ticket.description or ""},
@@ -919,7 +919,7 @@ async def get_resolution_summary(
             "status": "cleared",
         }
 
-    _logger.info(f"[resolution-summary] task_id={task_id} metadata keys={list(meta.keys())}, resolution_gen_state={meta.get('resolution_gen_state')}, has_summary={bool(meta.get('resolution_summary'))}")
+    _logger.debug(f"[resolution-summary] task_id={task_id} metadata keys={list(meta.keys())}, resolution_gen_state={meta.get('resolution_gen_state')}, has_summary={bool(meta.get('resolution_summary'))}")
 
     # 强制重试：清掉"无内容(done)"标记，允许重新入队
     if force:
@@ -929,11 +929,11 @@ async def get_resolution_summary(
             ticket.metadata_info = _m
             await db.commit()
             meta = _m
-            _logger.info(f"[resolution-summary] task_id={task_id} force=true 已清除无内容标记，放行重新入队")
+            _logger.debug(f"[resolution-summary] task_id={task_id} force=true 已清除无内容标记，放行重新入队")
 
     # 已有解决方式（草案/已确认）→ 直接返回
     if meta.get("resolution_summary"):
-        _logger.info(f"[resolution-summary] task_id={task_id} 命中已有解决方式，直接返回 (status=done)")
+        _logger.debug(f"[resolution-summary] task_id={task_id} 命中已有解决方式，直接返回 (status=done)")
         return {
             "task_id": task_id,
             "problem": {"title": ticket.title or "", "description": ticket.description or ""},
@@ -945,11 +945,11 @@ async def get_resolution_summary(
     # 状态 done/empty 但无内容（worker 曾判定无材料）→ 允许重新入队重新生成（可能有新评论/新摘要）
     # （有内容的 done 已在上面命中 resolution_summary 分支返回，不会走到这里）
     if meta.get("resolution_gen_state") in ("done", "empty"):
-        _logger.info(f"[resolution-summary] task_id={task_id} 生成状态 {meta.get('resolution_gen_state')} 无内容，放行重新入队")
+        _logger.debug(f"[resolution-summary] task_id={task_id} 生成状态 {meta.get('resolution_gen_state')} 无内容，放行重新入队")
 
     # 已在生成中（此前已入队，worker 正在异步总结）→ 只读返回，不重复入队
     if meta.get("resolution_gen_state") == "pending":
-        _logger.info(f"[resolution-summary] task_id={task_id} 生成状态 pending（生成中），返回空 (status=pending)")
+        _logger.debug(f"[resolution-summary] task_id={task_id} 生成状态 pending（生成中），返回空 (status=pending)")
         return {
             "task_id": task_id,
             "problem": {"title": ticket.title or "", "description": ticket.description or ""},
@@ -972,7 +972,7 @@ async def get_resolution_summary(
             meta["resolution_requested_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ticket.metadata_info = meta
             await db.commit()
-            _logger.info(f"[resolution-summary] task_id={task_id} 已入队到 {RESOLUTION_WORKER_QUEUE} 触发 worker 生成")
+            _logger.debug(f"[resolution-summary] task_id={task_id} 已入队到 {RESOLUTION_WORKER_QUEUE} 触发 worker 生成")
         finally:
             await r.aclose()
     except Exception as e:
@@ -980,7 +980,7 @@ async def get_resolution_summary(
         enqueue_status = "failed"
         _logger.error(f"[resolution-summary] task_id={task_id} 入队失败: {e}")
 
-    _logger.info(f"[resolution-summary] task_id={task_id} 返回 enqueue_status={enqueue_status}")
+    _logger.debug(f"[resolution-summary] task_id={task_id} 返回 enqueue_status={enqueue_status}")
     return {
         "task_id": task_id,
         "problem": {"title": ticket.title or "", "description": ticket.description or ""},
