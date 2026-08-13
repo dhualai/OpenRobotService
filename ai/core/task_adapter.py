@@ -124,6 +124,21 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
     if ticket.get("type") == "feature" and ticket.get("source"):
         meta["feature_source"] = ticket["source"]
 
+    # 截止时间：弹窗编辑值（ISO 字符串）→ Task.deadline_at（DateTime 列）。
+    # 前端 toISOString() 带时区后缀（如 2026-08-13T10:00:00.000Z），
+    # MySQL DateTime 需无时区 naive datetime，统一转上海时间再剥时区。
+    deadline = None
+    _dl_raw = ticket.get("deadline_at")
+    if _dl_raw:
+        try:
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+            _dl = _dt.fromisoformat(str(_dl_raw).replace("Z", "+00:00"))
+            if _dl.tzinfo is not None:
+                _dl = _dl.astimezone(_tz(_td(hours=8))).replace(tzinfo=None)
+            deadline = _dl
+        except Exception:
+            deadline = None
+
     ext_id = _external_id_for(ticket.get("session_id", ""))
     # 同一会话多次转单时，ticket_seq 确保 external_id 唯一
     if ticket.get("ticket_seq"):
@@ -143,6 +158,7 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
         "attachments": _dedup_attachments(ticket.get("attachments") or []),
         "tags": ["ai_generated"],
         "metadata_info": meta,
+        "deadline_at": deadline,
     }
 
 
@@ -193,6 +209,8 @@ def task_to_dict(task: Task) -> dict:
         "feature_source": meta.get("feature_source", ""),
         "project": task.project_name or "",
     "project_id": task.project_id or "",
+        # 截止时间：DateTime → ISO 字符串（前端 formatDeadlineAbsolute 消费）
+        "deadline_at": task.deadline_at.isoformat() if task.deadline_at else "",
         "attachments": task.attachments or [],
         "diagnosis": meta.get("diagnosis") or {},
         "source": task.source or AI_SOURCE,
@@ -225,6 +243,9 @@ def upsert_task(ticket: dict, created_by: str = "") -> Task:
             existing.priority = fields["priority"]
             existing.attachments = fields["attachments"]
             existing.metadata_info = fields["metadata_info"]
+            # 弹窗编辑的截止时间：None 表示用户没选（保持原值），非 None 才更新
+            if fields.get("deadline_at") is not None:
+                existing.deadline_at = fields["deadline_at"]
             # 如果传入的 created_by 非空且比已有值更准确（非 system/unknown），则更新
             if created_by and existing.created_by in ("system", "unknown", ""):
                 existing.created_by = created_by
