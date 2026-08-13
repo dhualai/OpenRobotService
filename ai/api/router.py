@@ -742,15 +742,28 @@ async def upload_files(
     """
     wants_stream = "text/event-stream" in accept
 
+    # ── 鉴权前置：在开启 SSE 流之前先校验 token ──
+    # 若在此处校验失败，可直接返回真正的 401；若放到流开始之后再抛 HTTPException，
+    # 会触发 "Caught handled exception, but response already started"（200 头已发出，
+    # 无法再改成 401）。故此处提前校验。
+    stream_username, _ = _current_user_from_header(authorization)
+    if not stream_username:
+        if wants_stream:
+            raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+        # 非流式路径：非流式分支后面还有一次 401 校验，这里不处理以免改变行为
+        pass
+
     # 附带文字时诊断用流式推理（与 /ask/stream 一致）；SSE 逐条转发、JSON 收集。
     # 注意：必须定义为 async generator（内部 await + yield 转发 run_stream 事件），
     # 调用方 async for 直接消费；若定义为 async def 返回 run_stream 生成器，
     # async for 拿到的会是 coroutine（报 _aiter_ 错误）；定义为同步 def 则 await 不合法。
     async def _run_diagnosis():
+        # 鉴权已在进入 SSE 流之前（upload_files 开头）校验过；此处为兜底。
+        # 注意：流开始后不能再抛 HTTPException（会触发 "response already started"），
+        # 故此处改为抛普通异常，由 sse() 的 except Exception 转为 SSE error 事件。
         username, _ = _current_user_from_header(authorization)
-        # token 失效 → 返回 401，触发前端 fetchWithAuth 刷新重试，避免自动提单 created_by=""
         if not username:
-            raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+            raise PermissionError("登录已过期，请重新登录")
         pipeline = await get_pipeline()
         request = DiagnosisRequest(
             session_id=session_id,
@@ -1098,30 +1111,22 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
 # ============================================================
 task_agent_router = APIRouter(prefix="/api/ai/task", tags=["U老师"])
 
-
-
 class TaskSubmitAPIRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
     session_id: str = Field(..., description="对话 session")
     final_solution: dict = Field(..., description="工程师编辑后的最终方案")
     resolution: str = Field(default="resolved")
 
-
 class SummarizeRequest(BaseModel):
     """后端触发摘要扫描（无参数 — U老师 自动扫描所有活跃工单）"""
 
-
-# ── v3.0 端点 ──
-
 class TaskDiagnoseRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
-
 
 class TaskDiscussRequest(BaseModel):
     task_id: str = Field(..., description="工单 ID")
     query: str = Field(..., description="用户问题（如 @U老师 帮我分析这个日志）")
     context: dict = Field(default_factory=dict, description="讨论上下文 {recent_comments: [{author, content}]}")
-
 
 @task_agent_router.post("/diagnose", summary="诊断报告（[帮我分析] 按钮）")
 async def task_diagnose(body: TaskDiagnoseRequest) -> dict:
@@ -1141,7 +1146,8 @@ async def task_diagnose(body: TaskDiagnoseRequest) -> dict:
         return {"code": 0, "data": result}
     except Exception as e:
         elapsed = (time.perf_counter() - t_start) * 1000
-        logger.error(f"[diagnose] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms, error={e}")
+        # logger.exception 自动打印完整 traceback（含异常类型与堆栈），便于定位根因
+        logger.exception(f"[diagnose] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms")
         return {"code": 1, "message": str(e)}
 
 
@@ -1168,20 +1174,31 @@ async def task_discuss(body: TaskDiscussRequest) -> dict:
         return {"code": 0, "data": result}
     except Exception as e:
         elapsed = (time.perf_counter() - t_start) * 1000
-        logger.error(f"[discuss] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
-                     f"query={query_preview}, error={e}")
+        # logger.exception 自动打印完整 traceback（含异常类型与堆栈），便于定位根因
+        logger.exception(f"[discuss] 失败: task_id={body.task_id}, elapsed={elapsed:.0f}ms, "
+                         f"query={query_preview}")
         return {"code": 1, "message": str(e)}
 
 
 @task_agent_router.post("/summarize", summary="讨论摘要")
 async def task_summarize(body: SummarizeRequest = SummarizeRequest()) -> dict:
     """后端触发 → U老师 自动扫描所有活跃工单 → 逐条生成摘要 → 写 task_comments"""
+    import logging, time as _t
+    logger = logging.getLogger("TASK_AGENT")
+    t_start = _t.perf_counter()
     try:
         from ai.agents.AiTaskPlatform import get_task_agent
         agent = await get_task_agent()
         result = await agent.summarize_batch()
+        elapsed = (_t.perf_counter() - t_start) * 1000
+        logger.info(f"[summarize] 完成: elapsed={elapsed:.0f}ms, "
+                    f"total={result.get('total')}, generated={result.get('generated')}, "
+                    f"skipped={result.get('skipped')}, failed={result.get('failed')}")
         return {"code": 0, "data": result}
     except Exception as e:
+        elapsed = (_t.perf_counter() - t_start) * 1000
+        # logger.exception 自动打印完整 traceback（含异常类型与堆栈），便于定位根因
+        logger.exception(f"[summarize] 失败: elapsed={elapsed:.0f}ms")
         return {"code": 1, "message": str(e)}
 
 
