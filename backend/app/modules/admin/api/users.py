@@ -68,6 +68,24 @@ async def get_users(
         all_users_roles = db_manager.get_all_users_roles_all_projects(user_ids)
         all_users_relations = db_manager.get_all_users_project_role_relations(user_ids)
 
+        # 批量查询公司和部门名称，避免逐条查询造成 N+1 问题
+        all_company_ids = list({
+            getattr(r, 'company_id', None) for r in paginated_user_records
+            if getattr(r, 'company_id', None)
+        })
+        all_department_ids = list({
+            getattr(r, 'department_id', None) for r in paginated_user_records
+            if getattr(r, 'department_id', None)
+        })
+        company_name_map: Dict[str, str] = {}
+        department_name_map: Dict[str, str] = {}
+        if all_company_ids:
+            companies = db.query(Company).filter(Company.id.in_(all_company_ids)).all()
+            company_name_map = {c.id: c.name for c in companies}
+        if all_department_ids:
+            departments = db.query(Department).filter(Department.id.in_(all_department_ids)).all()
+            department_name_map = {d.id: d.name for d in departments}
+
         for user_record in paginated_user_records:
             user_roles = all_users_roles.get(user_record.id, {})
 
@@ -78,6 +96,21 @@ async def get_users(
                     external_credentials = json.loads(user_record.external_credentials)
                 except:
                     external_credentials = {}
+
+            # 解析组织名称：优先用 ID 关联主数据表，回退到旧字符串列（迁移过渡期）
+            company_id_val = getattr(user_record, 'company_id', None)
+            department_id_val = getattr(user_record, 'department_id', None)
+            company_name = company_name_map.get(company_id_val) if company_id_val else None
+            department_name = department_name_map.get(department_id_val) if department_id_val else None
+            if not company_name:
+                company_name = getattr(user_record, 'company', None)
+            if not department_name:
+                department_name = getattr(user_record, 'department', None)
+
+            # responsibility_modules 归一化为 dict，避免非法值导致 Pydantic 校验失败
+            rm = getattr(user_record, 'responsibility_modules', None)
+            if not isinstance(rm, dict):
+                rm = {}
 
             user_response = User(
                 id=user_record.id,
@@ -90,6 +123,13 @@ async def get_users(
                 avatar_resource_id=getattr(user_record, 'avatar_resource_id', None),
                 supervisor_id=getattr(user_record, 'supervisor_id', None),
                 project_role_relations=all_users_relations.get(user_record.id, []),
+                company_id=company_id_val,
+                department_id=department_id_val,
+                company=company_name,
+                department=department_name,
+                responsibility_modules=rm,
+                job_level=getattr(user_record, 'job_level', 1) or 1,
+                duty_text=getattr(user_record, 'duty_text', None),
             )
 
             result.append(user_response)
@@ -1065,6 +1105,69 @@ async def migrate_user(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"迁移用户失败: {str(e)}"
+        )
+    finally:
+        db.close()
+
+
+@router.post(
+    "/{username}/auto-hook-subordinates",
+    response_model=SuccessResponse,
+    summary="自动挂靠：将同公司同部门的其他用户挂到该部门管理员名下（设置 supervisor_id）",
+)
+async def auto_hook_subordinates_to_manager(
+    username: str,
+    current_user: Dict[str, Any] = require_permission("backend:user:base:write"),
+):
+    """将指定管理员（需有部门）的同公司+同部门用户，批量设置为其下级。
+    - 跳过管理员本人
+    - 跳过 supervisor_id 已是该管理员的用户（避免无意义 UPDATE）
+    - 返回：本部门总人数 / 实际被更新的人数
+    """
+    db = db_manager.get_db()
+    try:
+        # 1. 取管理员并校验有部门
+        manager = db.query(UserDB).filter(UserDB.username == username).first()
+        if not manager:
+            raise HTTPException(status_code=404, detail="管理员用户不存在")
+        if not getattr(manager, "company_id", None) or not getattr(manager, "department_id", None):
+            raise HTTPException(status_code=400, detail="该用户未分配公司/部门，无法作为部门管理员挂靠下级")
+
+        # 2. 查同公司+同部门所有用户（含管理员本人）
+        same_dept_users = db.query(UserDB).filter(
+            UserDB.company_id == manager.company_id,
+            UserDB.department_id == manager.department_id,
+        ).all()
+        total_in_dept = len(same_dept_users)
+
+        # 3. 过滤出需要更新的：非本人 且 supervisor_id 不是本人
+        to_update = [
+            u for u in same_dept_users
+            if u.id != manager.id and u.supervisor_id != manager.id
+        ]
+
+        for u in to_update:
+            u.supervisor_id = manager.id
+
+        updated_count = len(to_update)
+        if updated_count > 0:
+            db.commit()
+            from app.services.user_service import UserService
+            UserService.invalidate_cache()
+
+        manager_name = getattr(manager, "name", None) or username
+        return SuccessResponse(
+            message=f"已将「{manager_name}」同部门人员批量挂靠到其名下：部门共 {total_in_dept} 人，本次更新 {updated_count} 人"
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"自动挂靠失败:{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"自动挂靠失败: {str(e)}"
         )
     finally:
         db.close()

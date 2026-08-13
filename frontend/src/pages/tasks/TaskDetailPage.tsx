@@ -1426,7 +1426,7 @@ export default function TaskDetailPage() {
                 format="YYYY-MM-DD HH:00"
                 showTime={{ defaultValue: dayjs().hour(9).minute(0), format: 'HH:00' }}
                 value={editForm.deadline_at ? dayjs(editForm.deadline_at) : null}
-                onChange={(d) =>
+                onChange={(d: dayjs.Dayjs | null) =>
                   setEditForm((p) => ({
                     ...p,
                     deadline_at: d ? d.minute(0).second(0).millisecond(0).toISOString() : undefined,

@@ -2157,7 +2157,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   format="YYYY-MM-DD HH:00"
                   showTime={{ defaultValue: dayjs().hour(9).minute(0), format: 'HH:00' }}
                   value={draftField('deadline_at') ? dayjs(draftField('deadline_at')) : null}
-                  onChange={(d) => setDraftField('deadline_at', d ? d.minute(0).second(0).millisecond(0).toISOString() : '')}
+                  onChange={(d: dayjs.Dayjs | null) => setDraftField('deadline_at', d ? d.minute(0).second(0).millisecond(0).toISOString() : '')}
                   allowClear
                   styles={{ popup: { root: { zIndex: 12000 } } }}
                 />
