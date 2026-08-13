@@ -894,6 +894,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       });
 
       if (streamError && !acc) {
+        // 文件已全部保存成功 → 是诊断流中断，不是上传失败；
+        // 只提示 AI 回复中断，不标红文件气泡（避免「图片上传失败」误报）。
+        if (savedItems.length === files.length) {
+          setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+          Toast({ message: `AI 回复中断，请重试: ${streamError}`, theme: 'error' });
+          return;
+        }
         throw new Error(streamError);
       }
 
@@ -907,10 +914,28 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)));
       }
     } catch (err) {
-      setMessages((prev) => prev.map((m) => (userIds.includes(m.id) ? { ...m, uploading: false, failed: true } : m)));
-      setMessages((prev) => prev.filter((m) => m.id !== assistantId));
-      if (!isKickingToLogin()) {
-        Toast({ message: `发送失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      // 区分「文件从未保存成功」和「文件已保存但诊断流中断」：
+      // 前者才标红文件气泡（真上传失败），后者只提示 AI 回复中断。
+      const allSaved = savedItems.length === files.length;
+      if (allSaved) {
+        // 文件全部保存成功：不标红文件，只移除 AI 占位气泡 + 提示回复中断
+        setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+        if (!isKickingToLogin()) {
+          Toast({ message: `AI 回复中断，请重试: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+        }
+      } else {
+        // 部分/全部未保存：只标红未保存成功的文件（已保存的不标红）
+        setMessages((prev) => prev.map((m) => {
+          const idx = userIds.indexOf(m.id);
+          if (idx < 0) return m;
+          const fname = files[idx]?.name ?? '';
+          const wasSaved = savedItems.some((it) => it.filename === fname);
+          return wasSaved ? m : { ...m, uploading: false, failed: true };
+        }));
+        setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+        if (!isKickingToLogin()) {
+          Toast({ message: `发送失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+        }
       }
     } finally {
       setLoading(false);
@@ -1915,6 +1940,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 <button type="button" className="chat-pending-file__remove" onClick={() => removePendingFile(i)} aria-label="移除附件">✕</button>
               </div>
             ))}
+            {pendingFiles.length > 3 && (
+              <div className="chat-pending-files__count">共 {pendingFiles.length} 个附件</div>
+            )}
           </div>
         )}
         {voiceMode ? (
@@ -2178,8 +2206,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           </div>
         </Popup>
 
-        {/* 最晚解决时间选择器：mode=hour 最小单位小时 */}
-        <Popup visible={deadlinePickerVisible} onClose={() => setDeadlinePickerVisible(false)} placement="bottom">
+        {/* 最晚解决时间选择器：mode=hour 最小单位小时
+            destroyOnClose + preventScrollThrough={false} 修复微信内置浏览器两层 Popup 嵌套时
+            DateTimePicker 滚轮无法滚动（详见 TicketDetailPage 同名注释） */}
+        <Popup visible={deadlinePickerVisible} onClose={() => setDeadlinePickerVisible(false)} placement="bottom" destroyOnClose preventScrollThrough={false}>
           <DateTimePicker
             mode="hour"
             title="选择最晚解决时间"

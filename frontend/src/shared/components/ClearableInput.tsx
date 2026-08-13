@@ -7,20 +7,23 @@
 // 方便继续输入（PC/移动端一致）。
 // 用本组件替换业务代码中的 `<Input clearable ...>` 即可全局生效，样式复用 global.css 的
 // .project-picker-clear 类（弹出/悬停/按压动画）。
-import { forwardRef, useRef } from 'react';
+import { forwardRef, useRef, useState } from 'react';
 import { Input } from 'tdesign-mobile-react';
-import { CloseCircleFilledIcon } from 'tdesign-icons-react';
+import { CloseCircleFilledIcon, BrowseIcon, BrowseOffIcon } from 'tdesign-icons-react';
 import type { InputProps } from 'tdesign-mobile-react/es/input';
 import type { InputRefProps } from 'tdesign-mobile-react/es/input/Input';
 
 export interface ClearableInputProps extends Omit<InputProps, 'clearable' | 'suffix'> {
   /** 输入框有值时才显示清空按钮（默认 true）。false 时始终隐藏 × */
   showClear?: boolean;
+  /** 密码输入框：开启后右侧显示眼睛按钮，点击切换明文/密文显示 */
+  passwordToggle?: boolean;
 }
 
 const ClearableInput = forwardRef<InputRefProps, ClearableInputProps>(
-  function ClearableInput({ showClear = true, onChange, ...rest }, ref) {
+  function ClearableInput({ showClear = true, passwordToggle = false, onChange, ...rest }, ref) {
     const inputRef = useRef<InputRefProps | null>(null);
+    const [visible, setVisible] = useState(false);
     const hasValue = rest.value != null && String(rest.value).length > 0;
 
     const handleClear = () => {
@@ -28,6 +31,13 @@ const ClearableInput = forwardRef<InputRefProps, ClearableInputProps>(
       // 清空后重新聚焦，键盘保持弹出，方便继续输入（移动端必须，PC 端也无副作用）
       inputRef.current?.focus?.();
     };
+
+    // 开启 passwordToggle 后，type 由 visible 状态控制（默认 password，点击眼睛切到 text）
+    const inputType: InputProps['type'] = passwordToggle
+      ? visible
+        ? 'text'
+        : 'password'
+      : rest.type;
 
     return (
       <Input
@@ -37,17 +47,33 @@ const ClearableInput = forwardRef<InputRefProps, ClearableInputProps>(
           else if (ref) ref.current = node;
         }}
         {...rest}
+        type={inputType}
         onChange={onChange}
         suffix={
-          showClear && hasValue ? (
-            <span
-              className="project-picker-clear"
-              role="button"
-              aria-label="清空输入"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={handleClear}
-            >
-              <CloseCircleFilledIcon />
+          (showClear && hasValue) || passwordToggle ? (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              {passwordToggle && (
+                <span
+                  className="project-picker-clear"
+                  role="button"
+                  aria-label={visible ? '隐藏密码' : '显示密码'}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setVisible((v) => !v)}
+                >
+                  {visible ? <BrowseOffIcon /> : <BrowseIcon />}
+                </span>
+              )}
+              {showClear && hasValue && (
+                <span
+                  className="project-picker-clear"
+                  role="button"
+                  aria-label="清空输入"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={handleClear}
+                >
+                  <CloseCircleFilledIcon />
+                </span>
+              )}
             </span>
           ) : undefined
         }

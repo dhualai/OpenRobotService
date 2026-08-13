@@ -76,7 +76,14 @@ export class TaskRoomSocket {
     this.ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data) as WsEvent;
-        if (data.type === 'pong') return;
+        if (data.type === 'pong') {
+          // 收到 pong → 清除等待定时器，避免掉线误判与定时器泄漏
+          if (this.pingDeadline) {
+            clearTimeout(this.pingDeadline);
+            this.pingDeadline = null;
+          }
+          return;
+        }
         this.handlers.forEach((h) => h(data));
       } catch {
         /* 忽略非法帧 */
@@ -96,6 +103,8 @@ export class TaskRoomSocket {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
       this.send({ type: 'ping' });
+      // 清除上一轮未触发的 pingDeadline，避免定时器泄漏堆积
+      if (this.pingDeadline) clearTimeout(this.pingDeadline);
       // 60s 未收到 pong 视为掉线，主动关闭触发重连
       this.pingDeadline = setTimeout(() => {
         this.ws?.close();
