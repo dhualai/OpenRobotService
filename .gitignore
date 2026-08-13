@@ -118,3 +118,11 @@ scripts/start-minio.ps1
 /package-lock.json
 ai/tests/_verify_log_sub_agent_fix.py
 
+<<<<<<< Updated upstream
+
+# 大日志测试数据（不入库）
+ai/tests/test_logs/
+ai/tests/test_images/
+=======
+ai/assets/fonts/msyh.ttc
+>>>>>>> Stashed changes

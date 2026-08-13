@@ -64,6 +64,16 @@
 - [ ] **异步操作使用 waitFor / findBy**：等待 DOM 更新后再断言
 - [ ] **用户交互使用 user-event**：`@testing-library/user-event` 而非 `fireEvent`
 
+### 3.4 微信 H5 适配（强制，本项目为微信服务号 H5）
+
+- [ ] **双环境实测声明**：PR 描述中声明已在 iOS 微信 + Android 微信内置浏览器实测通过（非 PC 模拟器）
+- [ ] **无 PC-only API**：未使用 `window.alert/confirm/prompt`（改用 TDesign `Dialog`/`Toast`）；未使用 `console` 之外的开发期 API
+- [ ] **iOS 日期兼容**：`new Date(...)` 入参为 `YYYY-MM-DD` 或时间戳，未用 `YYYY/MM/DD`
+- [ ] **触控友好**：可点击元素热区 ≥ 44px；无 hover-only 交互；`cursor:pointer` 仅作视觉提示不作为唯一可达性
+- [ ] **路由/跳转带部署前缀**：`navigate('/call/...')` 类跳转在测试/生产构建下不丢前缀；OAuth 回跳 `state` 保留完整 URL
+- [ ] **长连接容错**：SSE/上传在微信切后台挂起后能自动重连；`beforeunload` 不依赖（微信内置浏览器不一定触发）
+- [ ] **JS-SDK 调用安全**：分享/扫码等 JS-SDK 调用有鉴权失败兜底，签名失败不阻塞主流程
+
 ---
 
 ## 四、AI 模块检查（Python / Agent）

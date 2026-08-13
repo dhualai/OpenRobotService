@@ -258,6 +258,14 @@ export default function DiscussionPanel({
     return () => ro.disconnect();
   }, []);
 
+  // 卸载时清理残留定时器，避免组件销毁后定时器仍触发回调
+  useEffect(() => {
+    return () => {
+      if (longPressTimer.current) clearTimeout(longPressTimer.current);
+      if (typingTimer.current) clearTimeout(typingTimer.current);
+    };
+  }, []);
+
   // commentText 变化时自适应高度（覆盖 @U老师 按钮 / mention 选择等程序化修改）
   useEffect(() => {
     const el = inputRef.current;

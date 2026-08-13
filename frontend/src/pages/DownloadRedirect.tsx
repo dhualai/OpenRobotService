@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { API_CONFIG } from '@/config/api';
+import API_CONFIG from '@/config/api';
 
 /**
  * 下载中转页（解决微信内「在浏览器中打开」打开的是工单详情页而非下载链接的问题）。

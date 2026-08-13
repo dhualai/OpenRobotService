@@ -50,6 +50,9 @@ class NotificationUtils:
     DAYILY_TICKET = 2
     YUQU_TICKET = 4
     YUQU_TICKET_STATUS_CHANGE = 6
+    REASSIGN_TICKET = 7
+    MENTION_TICKET = 8
+    OVERDUE_WARNING_TICKET = 9
     TICKET_HOST = "https://usp.ep-zl.com/p/app/tasks"
 
     @classmethod
@@ -378,6 +381,52 @@ class NotificationUtils:
         return {"code": 200, "message": "通知已发送"}
 
     @staticmethod
+    async def send_ticket_reassign_notification(
+        ticket_id: int,
+        title: str,
+        project_name: str,
+        operator: str,
+        new_assignee: str,
+        deadline_at: Optional[datetime] = None,
+        user_names: List[str] = None,
+        token: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """工单转派提醒（模板 7）。
+
+        通知对象：工单创建人 + 新被指派人。
+        模板字段：[工单名称, 项目名称, 转派人, 新负责人, 要求完成时间]
+        """
+        def _send():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    processed_title = loop.run_until_complete(
+                        NotificationUtils.simplify_title(title)
+                    )
+                    processed_project_name = loop.run_until_complete(
+                        NotificationUtils.simplify_title(project_name)
+                    )
+                finally:
+                    loop.close()
+
+                deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+                payload = NotificationUtils.instantiate_template(NotificationUtils.REASSIGN_TICKET,
+                                                                 processed_title, processed_project_name, operator, new_assignee, deadline_str,
+                                                                 user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
+                loop2 = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop2)
+                try:
+                    loop2.run_until_complete(NotificationUtils.send_notification(payload, token))
+                finally:
+                    loop2.close()
+            except Exception as e:
+                logger.error(f"发送转派通知失败：{str(e)}")
+
+        asyncio.get_event_loop().run_in_executor(_executor, _send)
+        return {"code": 200, "message": "通知已发送"}
+
+    @staticmethod
     async def send_ticket_cuiban_notification(
         ticket_id: int = 0,
         notify_type: int = 0,
@@ -401,7 +450,7 @@ class NotificationUtils:
                 elif notify_type == 6:
                     deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else ''
                     create_str = create_at.strftime('%Y-%m-%d %H:%M:%S') if create_at else ''
-                    
+
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
@@ -410,9 +459,29 @@ class NotificationUtils:
                         )
                     finally:
                         loop.close()
-                    
+
                     payload = NotificationUtils.instantiate_template(NotificationUtils.YUQU_TICKET_STATUS_CHANGE,
                                                                      ticket_id, processed_ticket_name, yuqi_day, create_str, deadline_str,
+                                                                     user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
+                elif notify_type == 9:
+                    # 工单超时预警提醒, [工单名称, 项目名称, 处理人, 提交时间, 截止时间]
+                    deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else ''
+                    create_str = create_at.strftime('%Y-%m-%d %H:%M:%S') if create_at else ''
+
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        processed_ticket_name = loop.run_until_complete(
+                            NotificationUtils.simplify_title(ticket_name)
+                        )
+                        processed_project_name = loop.run_until_complete(
+                            NotificationUtils.simplify_title(project_name)
+                        )
+                    finally:
+                        loop.close()
+
+                    payload = NotificationUtils.instantiate_template(NotificationUtils.OVERDUE_WARNING_TICKET,
+                                                                     processed_ticket_name, processed_project_name, assigned_name, create_str, deadline_str,
                                                                      user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 else:
                     reason = "工单长时间未更新"

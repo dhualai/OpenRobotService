@@ -137,6 +137,7 @@ const RiskList = lazyImport(() => import('@/pages/admin/RiskList'));
 const RiskEdit = lazyImport(() => import('@/pages/admin/RiskEdit'));
 const ReportsAnalytics = lazyImport(() => import('@/pages/admin/ReportsAnalytics'));
 const UserManage = lazyImport(() => import('@/pages/admin/UserManage'));
+const OrgChart = lazyImport(() => import('@/pages/admin/OrgChart'));
 const RoleManage = lazyImport(() => import('@/pages/admin/RoleManage'));
 const AssignRole = lazyImport(() => import('@/pages/admin/AssignRole'));
 const UserSetup = lazyImport(() => import('@/pages/admin/UserSetup'));
@@ -204,6 +205,7 @@ const router = createBrowserRouter([
                   { path: 'risk-edit/:id?', element: <RiskEdit /> },
                   { path: 'reports', element: <ReportsAnalytics /> },
                   { path: 'users', element: <UserManage /> },
+                  { path: 'org-chart', element: <OrgChart /> },
                   { path: 'roles', element: <RoleManage /> },
                   { path: 'assign-role', element: <AssignRole /> },
                   { path: 'user-setup', element: <UserSetup /> },

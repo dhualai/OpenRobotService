@@ -6,7 +6,7 @@ import API_CONFIG from '@/config/api';
 /** external_credentials 中的 USP 凭据片段 */
 export interface UspCredentials {
   username?: string;
-  /** 仅用于提交新明文密码；从后端取回时这里是已存储的哈希，前端不应展示 */
+  /** 提交时传新明文密码；从后端取回时为 "-"（表示已设置密码，前端据此判断是否必填）或空 */
   password?: string;
 }
 

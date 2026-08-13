@@ -8,7 +8,7 @@ Wave 2.2 完成：工单(tickets)已升格为任务(tasks)，本模块使用统�
 from fastapi import APIRouter, HTTPException, Depends, Query, Request, UploadFile, File, Form, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.core.database import get_async_db as get_db, db_manager
 from app.core.auth_routes import get_current_active_user_from_token
@@ -489,6 +489,18 @@ async def update_task(
                 description=f"{user_name} 将工单重新指派给 {new_assignee_name}",
             )
             await _add_system_comment(db, task_id, f"{user_name} 将工单重新指派给 {new_assignee_name}", username, token)
+            # 工单转派提醒：通知创建人 + 新被指派人
+            reassign_notify_users = list({ticket.created_by, new_assignee} - {None})
+            await NotificationUtils.send_ticket_reassign_notification(
+                ticket_id=task_id,
+                title=ticket.title or '',
+                project_name=ticket.project_name or '',
+                operator=user_name,
+                new_assignee=new_assignee_name,
+                deadline_at=ticket.deadline_at,
+                user_names=reassign_notify_users,
+                token=token,
+            )
         elif changed_fields:
             # 普通字段更新
             field_labels = {
@@ -659,23 +671,19 @@ def _maybe_notify_mentions(
                               else str(ticket.status or "")).lower()
                 status_text = status_text_map.get(raw_status, raw_status)
 
-                payload = {
-                    "message_id": f"mention_{task_id}_{hash(tuple(notified_usernames))}",
-                    "msg_type": "template",
-                    "template": {
-                        "id": "sqoVSsxbTKMyFYWdyNnw16fhl6cfwN5EeN5g38-bgKQ",
-                        "data": {
-                            "thing13": {"value": ticket_title[:20] or f"工单#{task_id}"},
-                            "thing8": {"value": (ticket_project or "未关联项目")[:20]},
-                            "short_thing5": {"value": status_text},
-                            "thing15": {"value": f"{operator} 在工单中@了您"},
-                            "thing14": {"value": operator},
-                        },
-                        "url": f"https://usp.ep-zl.com/p/app/tasks/{task_id}",
-                    },
-                    "at": {"user_names": notified_usernames, "is_all": False},
-                }
-                from app.utils.notification_utils import NotificationUtils
+                deadline_str = (ticket.deadline_at.strftime('%Y-%m-%d %H:%M:%S')
+                                if ticket.deadline_at
+                                else (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S'))
+                payload = NotificationUtils.instantiate_template(
+                    NotificationUtils.MENTION_TICKET,
+                    ticket_title[:20] or f"工单#{task_id}",
+                    (ticket_project or "未关联项目")[:20],
+                    status_text,
+                    f"{operator} 在工单中@了您",
+                    deadline_str,
+                    user_names=notified_usernames,
+                    url=NotificationUtils.TICKET_HOST + f"/{task_id}",
+                )
                 await NotificationUtils.send_notification(payload, token)
             except Exception as e:
                 import logging
@@ -877,6 +885,19 @@ async def assign_task(
 
         # ── 向讨论区添加系统评论 ──
         await _add_system_comment(db, task_id, f"{user_name} 将工单指派给 {assignee_name}", username, token)
+
+        # 工单转派提醒：通知创建人 + 新被指派人
+        assign_notify_users = list({ticket.created_by, user_id} - {None})
+        await NotificationUtils.send_ticket_reassign_notification(
+            ticket_id=task_id,
+            title=ticket.title or '',
+            project_name=ticket.project_name or '',
+            operator=user_name,
+            new_assignee=assignee_name,
+            deadline_at=ticket.deadline_at,
+            user_names=assign_notify_users,
+            token=token,
+        )
 
         # _add_system_comment 的 commit 会使 ticket 的 comments 关系过期，
         # 需重新查询以避免 FastAPI 序列化时触发异步外的懒加载（MissingGreenlet）

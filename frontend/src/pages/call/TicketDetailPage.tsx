@@ -383,6 +383,10 @@ export default function TicketDetailPage() {
   const [showEdit, setShowEdit] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; project_id: string; project_name: string; deadline_at?: string }>({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
   const [editDeadlinePickerVisible, setEditDeadlinePickerVisible] = useState(false);
+  // 每次打开最晚解决时间选择器都自增 key，强制 DateTimePicker 重新挂载，
+  // 规避 tdesign-mobile-react Picker 在嵌套 Popup（destroyOnClose + CSSTransition）下
+  // 二次打开时 Picker 实例竞态、事件绑到旧 DOM 节点导致桌面端无法编辑/滚动的问题
+  const [deadlinePickerKey, setDeadlinePickerKey] = useState(0);
   const [savingEdit, setSavingEdit] = useState(false);
   // 所属项目下拉（当前用户名下项目，GET /api/admin/projects/me；支持关键词模糊搜索）
   const [showProjectPicker, setShowProjectPicker] = useState(false);
@@ -985,7 +989,7 @@ export default function TicketDetailPage() {
               <div className="ticket-confirm__deadline">
                 <div
                   className="ticket-confirm__deadline-field"
-                  onClick={() => setEditDeadlinePickerVisible(true)}
+                  onClick={() => { setDeadlinePickerKey((k) => k + 1); setEditDeadlinePickerVisible(true); }}
                 >
                   <span className={editForm.deadline_at ? 'ticket-confirm__deadline-value' : 'ticket-confirm__deadline-placeholder'}>
                     {editForm.deadline_at ? formatEditDeadlineAbs(editForm.deadline_at) : '点击选择'}
@@ -1009,9 +1013,15 @@ export default function TicketDetailPage() {
         </div>
       </Popup>
 
-      {/* 最晚解决时间选择器：mode=hour 最小单位小时 */}
-      <Popup visible={editDeadlinePickerVisible} onClose={() => setEditDeadlinePickerVisible(false)} placement="bottom">
+      {/* 最晚解决时间选择器：mode=hour 最小单位小时
+          - destroyOnClose：每次关闭彻底销毁 DateTimePicker DOM，避免微信内置浏览器（iOS WKWebView）下
+            两层 Popup 嵌套（编辑 Popup + 时间选择 Popup）时 useLockScroll 残留 touchmove 监听器
+            导致再次打开后滚轮无法滚动的问题
+          - preventScrollThrough={false}：DateTimePicker 自身滚轮需接收 touchmove，
+            内层 Popup 不再额外锁背景滚动，避免与外层编辑 Popup 的滚动锁互相干扰 */}
+      <Popup visible={editDeadlinePickerVisible} onClose={() => setEditDeadlinePickerVisible(false)} placement="bottom" destroyOnClose preventScrollThrough={false}>
         <DateTimePicker
+          key={deadlinePickerKey}
           mode="hour"
           title="选择最晚解决时间"
           format="YYYY-MM-DD HH:00"
