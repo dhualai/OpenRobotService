@@ -380,9 +380,16 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在�
 
 - **即使用户没催**：信息够了就 submit，不要"再确认一下"。
 - **即使用户催**：必填字段没齐，也先 ask 补齐，不准盲目 submit。
-- **用户指名处理人**（"提单给XX""交给XX""派给XX"）→ 把 XX 写入 collected_info["requested_assignee"]。
-  如果此时工单草稿已弹出（或刚被取消）、用户是在**补充说明**，action=answer 简短确认「好的，已记录」，
-  不要走提单流程——用户会自己点转工单按钮重新生成草稿。补充说明不是新提单诉求，不要据此追问任何字段。
+- **用户指名处理人**（"提单给XX""交给XX""派给XX"）→ 把 XX 写入 collected_info["requested_assignee"]，
+  然后**按场景区分**：
+  ① 已有工单草稿（出现过「已生成工单草稿」）、用户是给旧草稿**补充指派/备注** → action=answer 简短确认「好的，已记录」，不走提单流程；
+  ② 用户这句话**本身是新的服务请求**（如「能让贾爽帮我配置一下自动门吗」= 让工程师去干活）→
+  这就是提单诉求，正常走提单流程（收集缺口 → submit 弹窗），不能只 answer 记录。
+  判断要点：请求内容是新任务还是旧任务的补充？新任务必须提单。
+- **草稿已生成后的任何补充说明**（「还有个补充，是XX时间发生的」「补充一下XX」）→
+  把信息写入 collected_info（时间→occurrence_time，备注→special_notes 等对应字段），
+  action=answer 简短确认「好的，已记录」，**不追问、不提单**。如果补充内容没有明确对应字段，
+  就写入 collected_info["special_notes"]。
 
 用户表示不想继续排查（"不想排查""算了""不用了"）→ action="answer"，简短收尾（"好的，有需要随时找我"），不追问不排查。
 
@@ -793,10 +800,12 @@ class AiDiagnosisPlatform:
                     "（用户说过的、能推出的不列；不列项目名）\n"
                     "3. 有缺口 → action=ask，一次只问一个缺失字段，ticket_intent=true；"
                     "没有缺口 → action=submit，message 留空，ticket_intent=true\n"
-                    "4. 🔴 用户指名处理人（「提给XX」「交给XX」「派单给XX」）或其他补充说明"
-                    "（如补充备注、补充位置）→ 写入 collected_info（如 requested_assignee），"
-                    "然后 action=answer 简短确认「好的，已记录」——**不要**自己走提单流程，"
-                    "用户会自己点转工单按钮重新生成草稿。ticket_intent=false\n"
+                    "4. 🔴 用户指名处理人（「提给XX」「交给XX」）分两种场景：\n"
+                    "   a. 对话里**已有工单草稿**（出现过「已生成工单草稿」），用户是给旧草稿补充指派/备注 → "
+                    "写入 collected_info，action=answer 简短确认「好的，已记录」，ticket_intent=false，不重新提单\n"
+                    "   b. 用户这句话**本身是新的服务请求**（如「能让贾爽帮我配置一下自动门吗」= 让工程师去干活）→ "
+                    "这就是提单诉求：写入 requested_assignee，按规则 2/3 走收集缺口 → submit 弹窗，ticket_intent=true\n"
+                    "   判断要点：请求内容是新任务还是旧任务的补充？新任务必须走提单，不能只 answer 记录\n"
                     "5. 🔴 任何情况下都不问项目名称（项目在弹窗里选）\n\n"
                     "## 输出\n"
                     '```json\n'
@@ -1112,6 +1121,7 @@ class AiDiagnosisPlatform:
             "courtesy：寒暄/问候/闲聊/客套/表达感谢或情绪（如 你好、辛苦了、哈哈、谢谢、在吗）\n"
             "ticket：用户**明确提出提单诉求**——要我帮他转工单/提交工单/派单/找工程师处理"
             "（如 帮我转工单、提单吧、派单给XX、找个人给我配一下）。"
+            "已经生成工单草稿后，用户对工单的**补充说明**（如「提给XX」「还有个补充，是XX时间发生的」「补充一下XX」）也属于 ticket。"
             "仅仅是询问「工单怎么流转/工单是什么」这类流程咨询**不算 ticket**，算 diagnosis。\n"
             "diagnosis：其他任何与设备、报错、故障、工作相关的求助或提问（如 AGV卡住、报错码、怎么办、工单流转流程是怎样的）；"
             "承接上文排查的追问、反馈（如「好的我试试」「还是不行」「这个呢」）也属于 diagnosis\n"
@@ -1512,14 +1522,15 @@ class AiDiagnosisPlatform:
                            exc_info=True)
 
     async def _build_ticket(self, session_id: str, agent_state: AgentState, memory) -> dict:
-        # 项目名提前解析：LLM 生成 description 时需要看到全名，
-        # 不能等 LLM 调用完再解析——否则 description 里用的还是用户简称。
-        # 匹配得上 → 归一为全名；匹配不上 → 保留用户原话（预填确认弹窗，
-        # 生成工单的对话：屏蔽图片描述。project 不在对话/LLM 链路产生——
-        # 项目选择的唯一入口是确认弹窗的搜索选择（confirm_submit 时写回）。
-        # LLM 提取 title/description/contact 时不需要看 VLM 描述，
-        # 看到反而会把截图 UI 文本（缺陷/处理中/处理人）当字段值填进工单。
-        conversation_text = self._format_conversation(memory, sanitize_images=True)
+        # 生成工单的对话：屏蔽图片描述 + 从 context_start 切片。
+        # 切片至关重要：提单后 context_start 会前移（旧对话归档），
+        # 下一个工单只看新对话——否则上一个工单的补充信息（如「调度版本 2.6.4」）
+        # 会串进新工单的描述。
+        # project 不在对话/LLM 链路产生——项目选择的唯一入口是确认弹窗的搜索选择
+        # （confirm_submit 时写回）。LLM 提取 title/description/contact 时不需要看
+        # VLM 描述，看到反而会把截图 UI 文本（缺陷/处理中/处理人）当字段值填进工单。
+        conversation_text = self._format_conversation(
+            memory, from_turn=agent_state.context_start, sanitize_images=True)
         reasoning = (
             f"问题概述：{agent_state.problem_summary}\n"
             f"推测原因：{'、'.join(str(h) if not isinstance(h, str) else h for h in agent_state.hypotheses) if agent_state.hypotheses else '无'}\n"
@@ -1534,7 +1545,7 @@ class AiDiagnosisPlatform:
             f"## Agent 推理链\n{reasoning}\n\n"
             f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
             f"然后以 JSON 格式返回：\n"
-            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤150字，简述问题和排查过程，不要带项目/现场名",'
+            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤150字，简述问题和排查过程，不要带项目/现场名；用户后续补充的关键信息（如调度版本、发生时间、指名处理人）要总结进去",'
             f'"priority":"紧急|高|中|低","contact":"从对话提取的联系人，没有则为空",'
             f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
             f'"project":"固定为空字符串——项目由用户在确认弹窗搜索选择，不要从对话提取",'
@@ -2081,15 +2092,17 @@ class AiDiagnosisPlatform:
                 # 不置空的话 JSON 文本会一路带进 _finalize_diagnosis 状态流转。
                 message = ""
             else:
-                # 非 submit：剥不掉时兜底文案
-                message = "抱歉，我未能正确生成回复，请重新描述您的问题。"
+                # 剥不掉且非 submit：message 置空，交给下方「最终兜底」统一处理
+                # （LLM 抽风输出纯 JSON 无正文时，宁可让系统补一句通用确认，
+                # 也不把 JSON 文本当正文流给用户）。
+                message = ""
 
         # 最终兜底：message 为空时给一个有意义的默认回复。
         # 例外：action=submit 时允许空 message——prompt 要求 submit 不写正文，
         # 系统随后展示「正在生成工单」动画 + 弹窗话术，这里不能再塞兜底文案。
         if (not message or not message.strip()) and action != "submit":
             logger.warning(f"[parse] 解析后 message 为空! raw前100字={text[:100]}")
-            message = "抱歉，我未能正确生成回复，请重新描述您的问题。"
+            message = "已收到，已为你记录。"
 
         return {
             "thinking": thinking,
