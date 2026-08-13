@@ -113,6 +113,7 @@ class AIConfig(BaseModel):
 
     # ========== 文档路径 ==========
     docs_path: str = Field(default="", description="原始文档根目录，默认 ai/docs/")
+    log_manuals: dict = Field(default_factory=dict, description="多产品日志手册注册表(唯一产品手册来源): {产品: {server, local, match, files}}，服务器优先/本地兜底")
 
     # ========== CodeSkill 代码检索 ==========
     code_skill_paths: str = Field(default="", description="代码索引根目录，逗号分隔")
@@ -282,6 +283,7 @@ def get_ai_config() -> AIConfig:
         internal_api_key=os.getenv("INTERNAL_API_KEY", ""),
         # 文档路径
         docs_path=os.getenv("DOCS_PATH", ""),
+        log_manuals=_parse_log_manuals(os.getenv("LOG_MANUALS", "")),
         media_url_prefix=os.getenv("MEDIA_URL_PREFIX", "/api/ai/media"),
         code_skill_paths=os.getenv("CODE_SKILL_PATHS", ""),
         # 企业微信
@@ -291,6 +293,41 @@ def get_ai_config() -> AIConfig:
         wecom_sheet_id=os.getenv("WECOM_SHEET_ID", ""),
 
     )
+
+
+def _parse_log_manuals(raw: str) -> dict:
+    """解析 LOG_MANUALS 环境变量为 {产品: {server, local, match, files}}。
+
+    LOG_MANUALS 是 JSON 字符串，例:
+      {"USP":{"server":"/data/apps/OpenRobotService_Data/help_manuals/USP日志分析指南",
+              "local":"D:/CodeHub/Algorithm/help_manuals/USP日志分析指南",
+              "match":"USPA|DYNAMIC_MAP|TMS|TASK-MANAGER|AI_map",
+              "files":["USP平台完整架构与日志分析总览.md"]},
+       "ORS":{"server":"/data/apps/OpenRobotService_Data/help_manuals/ORS日志分析指南",
+              "local":"D:/CodeHub/Algorithm/help_manuals/ORS日志分析指南",
+              "match":"ORS",
+              "files":["ORS平台完整架构与日志分析总览.md"]}}
+    服务器优先、本地兜底：解析时保留双地址，取用逻辑在 product_registry。
+    """
+    import json as _json
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        d = _json.loads(raw)
+    except Exception:
+        return {}
+    out = {}
+    for prod, v in d.items():
+        if not isinstance(v, dict):
+            continue
+        out[str(prod)] = {
+            "server": str(v.get("server", "") or "").strip(),
+            "local": str(v.get("local", "") or "").strip(),
+            "match": str(v.get("match", "") or ""),
+            "files": list(v.get("files") or []),
+        }
+    return out
 
 
 async def validate_ai_config() -> dict:
