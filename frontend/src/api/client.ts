@@ -242,6 +242,12 @@ export function createRequest(baseUrl: string, _serviceName = 'API') {
         requestCache.set(url, { data, timestamp: Date.now() });
       }
 
+      // 写操作（POST/PUT/DELETE 等）成功后清除全部 GET 缓存，
+      // 确保所有列表/明细页面后续拉取时能拿到最新数据，无需手动刷新
+      if (method !== 'GET') {
+        requestCache.clear();
+      }
+
       return data;
     } catch (error) {
       if (error instanceof ApiError) throw error;
