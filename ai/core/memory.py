@@ -148,6 +148,9 @@ class MemoryManager:
         user_id: str = "",
     ) -> SessionMemory:
         memory = await self.get_memory(session_id)
+        # role 归一化：外部调用方可能传大写（USER/ASSISTANT），统一小写。
+        # 否则截图渲染 `role == "user"` 只认全小写，大写 USER 会被判成助手气泡。
+        role = role.lower()
         turn = {"role": role, "content": content}
         if metadata:
             turn["metadata"] = metadata

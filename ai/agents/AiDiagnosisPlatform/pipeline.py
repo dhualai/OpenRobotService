@@ -481,9 +481,7 @@ project 不用写在 required_fields 里（系统强制要求）。
 ```json
 {{"action":"answer|ask|submit","intent":"howto|troubleshoot|chat","state_update":{{"ticket_type":"problem|bug|feature|support|other","problem_summary":"概述","ruled_out":[],"hypotheses":[],"collected_info":{{}},"ticket_ready":false}}}}
 ```
-JSON 之后直接写回复。语气像工程师。引用图片时用 ![说明](url) 格式。
-回复正文不超过 300 字（图片引用不计入字数）：先给结论，再给 1-3 条最关键的操作步骤，不重复知识库原文、不写长段分析和铺垫。
-⚠️ 图片引用（![说明](url)）**绝不能省略**：知识库里有相关截图/示意图时，每张都必须原样保留在回复中（操作步骤贴图、产品介绍配图），图片是用户定位和操作的关键，省图片不等于省字数。"""
+JSON 之后直接写回复。语气像工程师。引用图片时用 ![说明](url) 格式。"""
 
 
 # ============================================================
@@ -691,7 +689,11 @@ class AiDiagnosisPlatform:
         _from = state.context_start
         if _from >= len(memory.turns):
             _from = max(0, len(memory.turns) - 10)
-        conversation_text = self._format_conversation(memory, from_turn=_from)
+        # 收集模式下屏蔽图片描述：截图是 UI 文本（工单类型/状态/处理人），不是用户陈述，
+        # 字段提取时看不到描述，杜绝把「缺陷」之类当项目名。
+        # 诊断模式保留描述——正常诊断需要看错误码/状态等截图信息。
+        conversation_text = self._format_conversation(
+            memory, from_turn=_from, sanitize_images=bool(state.ticket_collecting))
         # 上一个工单上下文：只告诉 LLM"刚提过单"这个事实，不透露 project/问题主题——
         # 否则 flash 等模型会从主题里重新挖出 project/problem 写回 state_update，
         # 绕过闭环保护（_can_submit 误判"有新问题"）导致重复提单。服务端 _can_submit 才是裁判。
@@ -849,6 +851,14 @@ class AiDiagnosisPlatform:
                 _key = k
                 if k in ("project_name", "projectName", "projectname"):
                     _key = "project"
+                # project 确定性过滤：这些是工单 UI 文本（截图描述会进对话），
+                # 不是项目名。LLM 把「缺陷」当 project 写出时直接丢弃，
+                # 让 _assess_ticket_readiness 判定项目缺失、收集模式继续问真实项目。
+                if _key == "project" and v in (
+                        "缺陷", "报障", "问题", "工单", "处理中", "已完成",
+                        "处理人", "待处理", "已解决", "AI拒单"):
+                    logger.info(f"[state] 丢弃疑似 UI 文本的 project 值: {v!r}")
+                    continue
                 state.collected_info[_key] = v
         # ---- 服务端硬校验：按工单类型的保底必填清单复核，缺项强制打回 ----
         #  不信 LLM 的 ticket_ready 自评，也不看 problem_summary（LLM 可编造）——
@@ -1209,15 +1219,20 @@ class AiDiagnosisPlatform:
         """提单前回填：基于 required_fields 清单从对话中提取用户已给出的信息，
         补入 collected_info（不覆盖已有值）。仅提取 required_fields 中指定的字段——
         key 名必须与 required_fields 一致，保证后续 _assess_ticket_readiness 能对上。
-        required_fields 为空时退化为仅提取 project。"""
+        required_fields 为空时退化为仅提取 project。
+
+        图片描述屏蔽：上传的截图是 UI 文本（工单类型/状态/处理人等），不是用户陈述。
+        组装对话时把"图片主要内容为：..."替换成占位符，字段提取（含 project）
+        物理上看不到 UI 文本，杜绝把「缺陷」之类当项目名的污染。
+        """
         try:
             turns = memory.turns[agent_state.context_start:]
             if not turns:
                 return
-            conversation_text = "\n".join(
-                f"{'用户' if t['role'] == 'user' else '助手'}：{t['content']}"
-                for t in turns[-20:]
-            )
+            # 图片描述屏蔽：上传的截图是 UI 文本（工单类型/状态/处理人等），
+            # 不是用户陈述，字段提取（含 project）物理上看不到 UI 文本。
+            conversation_text = self._format_conversation(
+                memory, from_turn=agent_state.context_start, max_turns=20, sanitize_images=True)
             rf = agent_state.required_fields or {}
             if rf:
                 field_list = "\n".join(f"  - {k}（{label}）" for k, label in rf.items())
@@ -1228,16 +1243,22 @@ class AiDiagnosisPlatform:
                     "## 输出规范\n"
                     "- 以 JSON 对象返回，key 必须使用目标字段中给定的英文标识，不要改名\n"
                     "- 同时提取 project（项目/现场/厂区名称，非空时输出）\n"
-                    "- 对话中未提及的字段不输出\n\n"
+                    "- 对话中未提及的字段不输出\n"
+                    "- project 指用户所在项目/现场/厂区的名称，通常是用户明确说出或多次提及的地点/客户/园区名；\n"
+                    "  不要把截图里的工单类型（缺陷/报障/问题）、工单状态（处理中/已完成）、处理人姓名等 UI 文本当作项目名\n"
+                    "- 对话中未明确给出项目名时，不输出 project\n\n"
                     f"## 对话\n{conversation_text}\n"
                 )
             else:
                 prompt = (
-                    "从以下对话中提取 project（项目/现场/厂区名称），仅提取对话中直接提及的内容。\n"
-                    "以 JSON 返回：{\"project\":\"名称\"}，未提及返回 {}。\n\n"
+                    "从以下对话中提取 project（项目/现场/厂区名称），仅提取用户明确说出的地点/客户/园区名。\n"
+                    "不要把截图里的工单类型（缺陷/报障/问题）、工单状态（处理中/已完成）、处理人姓名等 UI 文本当作项目名；\n"
+                    "未明确提及项目名时返回 {}。\n"
+                    "以 JSON 返回：{\"project\":\"名称\"}。\n\n"
                     f"## 对话\n{conversation_text}\n"
                 )
-            raw = await self._llm_client.complete(prompt=prompt, max_tokens=400, temperature=0)
+            raw = await self._llm_client.complete(prompt=prompt, max_tokens=400, temperature=0,
+                                                  thinking=False)
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
             data = json.loads(clean)
             filled = []
@@ -1257,6 +1278,15 @@ class AiDiagnosisPlatform:
                 if k not in valid_keys:
                     logger.debug(f"[backfill] 忽略非目标字段: {k}={v[:30]}")
                     continue
+                if k == "project":
+                    # 安全网：回填的 project 必须在项目库能匹配上，否则丢弃。
+                    # LLM 可能把截图里的工单类型（缺陷）/状态/处理人当项目名，
+                    # 匹配不上就清掉，让收集模式继续问真实项目名。
+                    match = await self._resolve_project(v)
+                    if not match or not (match.code or "").strip():
+                        logger.info(f"[backfill] project '{v}' 未命中项目库，丢弃（防截图文本污染）")
+                        continue
+                    v = match.name
                 if k in agent_state.collected_info:
                     continue
                 agent_state.collected_info[k] = v
@@ -1275,11 +1305,10 @@ class AiDiagnosisPlatform:
         project 系统已强制，不写进 required_fields。失败则保持空（回退到 project-only 门槛）。
         """
         try:
-            turns = memory.turns[agent_state.context_start:]
-            conv = "\n".join(
-                f"{'用户' if t['role'] == 'user' else '助手'}：{t['content']}"
-                for t in turns[-20:]
-            )
+            # 屏蔽图片描述：定字段清单只关心对话里用户说了什么，
+            # 截图 UI 文本（缺陷/处理中/处理人）会诱导 LLM 把工单类型当信息缺口。
+            conv = self._format_conversation(
+                memory, from_turn=agent_state.context_start, max_turns=20, sanitize_images=True)
             prompt = (
                 "分析以下对话，判定工单类型（problem/bug/feature/support/other），"
                 "并识别要解决该工单还需向用户收集的 2-3 个关键信息项。\n\n"
@@ -1292,7 +1321,8 @@ class AiDiagnosisPlatform:
                 "- 仅输出 JSON，无额外文字\n\n"
                 f"## 对话\n{conv}\n"
             )
-            raw = await self._llm_client.complete(prompt=prompt, max_tokens=300, temperature=0)
+            raw = await self._llm_client.complete(prompt=prompt, max_tokens=300, temperature=0,
+                                                  thinking=False)
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
             data = json.loads(clean)
             # 只有主 LLM 还没定 ticket_type 时才设。主 LLM 有完整对话上下文，
@@ -1327,8 +1357,17 @@ class AiDiagnosisPlatform:
             if match and (match.code or "").strip():  # code 为空不算有效匹配
                 agent_state.collected_info["project"] = match.name
                 agent_state.collected_info["project_id"] = match.code
+            else:
+                # 项目库匹配不上：collected_info 里的 project 是垃圾值
+                # （如截图 UI 文本「缺陷」被误当项目名），清掉走兜底，绝不带进工单。
+                agent_state.collected_info.pop("project", None)
+                agent_state.collected_info.pop("project_id", None)
+                logger.info(f"[build_ticket] project '{_raw_proj}' 未命中项目库，丢弃（防截图文本污染）")
 
-        conversation_text = self._format_conversation(memory)
+        # 生成工单的对话：屏蔽图片描述。project 已在上方从 collected_info 解析，
+        # 工单本身带原图附件，LLM 提取 title/description/contact 时不需要看 VLM 描述，
+        # 看到反而会把截图 UI 文本（缺陷/处理中/处理人）当字段值填进工单。
+        conversation_text = self._format_conversation(memory, sanitize_images=True)
         # 项目名已在上方解析，直接注入 prompt，不让 LLM 从对话里"找"项目名
         # （对话里可能有用户说的简称/旧项目名，LLM 会优先用对话里的而非 collected_info）
         _ticket_proj = agent_state.collected_info.get("project", "").strip() or "项目"
@@ -1454,6 +1493,22 @@ class AiDiagnosisPlatform:
 
         return result
 
+    async def _attach_chat_snapshot(self, ticket: dict, memory) -> None:
+        """把对话记录截图附加到工单 attachments（原地修改 ticket）。
+
+        只在入库路径（submit / confirm_submit）调用——get_ticket 等只读预览
+        不生成，避免每次打开详情都白传一张截图。失败静默降级为无截图。
+        """
+        try:
+            from ai.core.chat_snapshot import create_chat_snapshot_attachment
+            snap = await create_chat_snapshot_attachment(
+                ticket.get("session_id", ""), memory.turns, title=ticket.get("title") or "")
+            if snap:
+                ticket["attachments"] = (ticket.get("attachments") or []) + [snap]
+        except Exception:
+            logger.warning(f"[chat_snapshot] 附加失败，降级无截图: session={ticket.get('session_id', '')}",
+                           exc_info=True)
+
     async def get_ticket(self, session_id: str) -> dict:
         """只读获取工单数据，不改变状态"""
         await self._ensure_clients()
@@ -1498,6 +1553,9 @@ class AiDiagnosisPlatform:
         # 同一会话多次转单：ticket_seq 自增，确保 external_id 唯一（不同话题各自独立工单）
         agent_state.ticket_seq += 1
         ticket["ticket_seq"] = agent_state.ticket_seq
+
+        # 对话记录截图附加（入库前：失败静默降级，不阻塞提单）
+        await self._attach_chat_snapshot(ticket, memory)
 
         # ---- 存储到 tasks 表（source='ai'，按 (source, external_id) 幂等 upsert）----
         from ai.core.task_adapter import upsert_task
@@ -1640,6 +1698,10 @@ class AiDiagnosisPlatform:
 
         from ai.core.task_adapter import upsert_task
         ticket["ticket_seq"] = agent_state.ticket_seq + 1
+
+        # 对话记录截图附加（入库前：失败静默降级，不阻塞提单）
+        await self._attach_chat_snapshot(ticket, memory)
+
         record = upsert_task(ticket, created_by=created_by)
 
         agent_state.ticket_seq += 1
@@ -1697,7 +1759,8 @@ class AiDiagnosisPlatform:
     # 工具方法
     # ================================================================
 
-    def _format_conversation(self, memory, max_turns: int = 8, from_turn: int = 0) -> str:
+    def _format_conversation(self, memory, max_turns: int = 8, from_turn: int = 0,
+                             sanitize_images: bool = False) -> str:
         """只取最近 N 条，避免长对话撑大 prompt。
 
         from_turn：从该 turn 索引开始（默认 0=全部）。诊断 prompt 传 context_start，
@@ -1706,13 +1769,14 @@ class AiDiagnosisPlatform:
         每条 turn 内容超过 _CONV_TURN_MAX_CHARS 时截断：图片描述等长文本
         （VLM 输出 ~3000 字）原样塞入会把 prompt 撑到 2 万+ 字符，
         思考型 LLM 首 token 延迟从 ~2s 飙到 13s+（图片+文字场景明显卡顿）。
+
+        sanitize_images=True（提单链路：收集模式 / 生成工单 / 回填字段）：
+        图片描述是 VLM 读截图的 UI 文本（工单类型/状态/处理人等），不是用户陈述，
+        替换为占位符——LLM 字段提取/工单生成物理上看不到 UI 文本，
+        杜绝把「缺陷」之类当项目名。工单本身带原图附件，不依赖描述。
         """
         turns = memory.turns[from_turn:]
         turns = turns[-max_turns:] if len(turns) > max_turns else turns
-        formatted = "\n".join(
-            f"{'用户' if t['role'] == 'user' else '助手'}：{_truncate_turn(t['content'])}"
-            for t in turns
-        )
         image_turns = [
             (i, t) for i, t in enumerate(turns)
             if "图片主要内容为" in t.get("content", "")
@@ -1724,6 +1788,30 @@ class AiDiagnosisPlatform:
                     f"[conv] 对话含图片描述: turn_idx={idx} (共{len(turns)}轮), "
                     f"role={t['role']}, content前150字={t['content'][:150]}"
                 )
+        if sanitize_images:
+            _IMG_MARKER = "图片主要内容为"
+            _sanitized = []
+            _prev_is_image_user = False
+            for t in turns:
+                content = t.get("content") or ""
+                _role = (t.get("role") or "user").lower()
+                if _role == "user" and _IMG_MARKER in content:
+                    _prev_is_image_user = True
+                    _head = content.split(_IMG_MARKER, 1)[0].rstrip("：: \n")
+                    _sanitized.append(f"用户：{_head}。[图片已附截图，仅展示用，不作为字段提取来源]")
+                else:
+                    # 图片上传后紧跟的 assistant 回执 = VLM 描述原文，同样屏蔽
+                    if _role == "assistant" and _prev_is_image_user:
+                        _prev_is_image_user = False
+                        _sanitized.append("助手：[已确认收到图片]")
+                    else:
+                        _prev_is_image_user = False
+                        _sanitized.append(f"{'用户' if _role == 'user' else '助手'}：{_truncate_turn(content)}")
+            return "\n".join(_sanitized)
+        formatted = "\n".join(
+            f"{'用户' if t['role'] == 'user' else '助手'}：{_truncate_turn(t['content'])}"
+            for t in turns
+        )
         return formatted
 
     def _parse_agent_output(self, raw: str) -> dict:
@@ -2108,6 +2196,14 @@ class AiDiagnosisPlatform:
         #     让 _can_submit 基于 LLM 判断后的有效问题描述做决策 ----
         self._apply_state_update(state, parsed["state_update"])
 
+        # ---- 提前定待补充字段清单：LLM 已判 ticket_type（=用户提单意图）且清单空 → 立即生成 ----
+        #  否则清单要等 LLM 喊 submit 才定（line 2174），而 LLM 往往先 ask 收集项目名，
+        #  清单被拖到字段齐才生成，与 _build_ticket 挤在同一轮 → 三次串行 LLM 拖慢 10s+。
+        #  提前到本轮到 submit 那轮即跳过（if not state.required_fields 短路），省一次 LLM 调用。
+        if (state.ticket_type and not state.required_fields
+                and parsed["action"] in ("ask", "submit")):
+            await self._decide_ticket_fields(request.session_id, state, memory)
+
         # ---- Step 2: 闭环保护（基于 last_submitted_ticket + 新 problem）----
         # 在 LLM 提炼 problem_summary 之后判断：刚提完单且无新问题 → 拦截重复提单。
         _can, _reason = _can_submit(state)
@@ -2166,11 +2262,13 @@ class AiDiagnosisPlatform:
                 _msg_yielded = True  # 抑制末尾兜底输出
                 yield {"event": "token", "data": parsed["message"]}
 
-        # ---- 提前进入收集模式：LLM 说 ask 但 required_fields 已设定且有缺失 ——
-        #   原逻辑只在 submit 被拦截时设 ticket_collecting（line 1905），但 LLM
-        #   经常直接说 ask 逐个收集字段，导致下一轮仍跑完整检索+思考。
-        #   这里提前设好，下一轮就能跳过检索、prompt 减半。
-        if parsed["action"] == "ask" and not state.ticket_collecting and state.required_fields:
+        # ---- 提前进入收集模式：LLM 说 ask 且存在必填缺项 ----
+        #  原逻辑只在 submit 被拦截时设 ticket_collecting（line 1905），但 LLM
+        #  经常直接说 ask 逐个收集字段（且可能不设 required_fields），导致下一轮
+        #  仍跑完整检索+意图分类。放宽为「服务端 _assess_ticket_readiness 有缺项
+        #  即进入」：project 铁律缺失必然触发，下一轮用户答项目名走填写模式
+        #  （skip_retrieval），不会因孤立短词被意图分类误判成闲聊而吞掉字段。
+        if parsed["action"] == "ask" and not state.ticket_collecting:
             await self._backfill_collected_info(request.session_id, state, memory)
             _, _tc_missing = _assess_ticket_readiness(state)
             if _tc_missing:
