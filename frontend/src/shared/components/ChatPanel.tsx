@@ -62,8 +62,9 @@ interface Message {
   // 流式输出进行中标记：true 时气泡用纯文本渲染（避免 Markdown 全量重解析造成抖动），完成后置 false
   streaming?: boolean;
   // 附件上传后的 AI 占位阶段（对应 sendWithFile 动态占位）：analyzing_image/analyzing_file=分析中，thinking=思考中。
+  // generating_ticket=提单生成工单草稿中（LLM 的「好的」被抑制，弹窗前显示动画）。
   // 设置后气泡渲染 chat-bubble__typing 动态动画（同纯文字「思考中」），不写入 content（content 留空）
-  phase?: 'analyzing_image' | 'analyzing_file' | 'thinking';
+  phase?: 'analyzing_image' | 'analyzing_file' | 'thinking' | 'generating_ticket';
   // 任务 Agent 专属：结构化方案草稿 / 工单概览 / 信息不足提示（长文本可展开）
   subtype?: 'solution_draft' | 'ticket_overview' | 'missing_hint';
   solution_draft?: {
@@ -298,7 +299,9 @@ const MessageBubble = memo(function MessageBubble({
           msg.phase ? (
             // 附件上传后的动态占位（同纯文字「思考中」打字动画）：phase 决定文案
             (() => {
-              const text = msg.phase === 'thinking' ? '思考中' : (msg.phase === 'analyzing_image' ? '正在分析图片' : '正在分析文件');
+              const text = msg.phase === 'thinking' ? '思考中'
+                : msg.phase === 'generating_ticket' ? '正在生成工单，请稍等'
+                : (msg.phase === 'analyzing_image' ? '正在分析图片' : '正在分析文件');
               return (
                 <div className="chat-bubble__typing" aria-label={`AI ${text}`}>
                   <Loading size="small" />
@@ -1067,16 +1070,28 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             setConversationTitle(data.title);
             refreshConversations();
           }
-          // submit 相关分支（need_info/need_fields/review/submit_failed）：后端已 _msg_buf.clear()
+          // submit 相关分支（need_info/need_fields/submit_failed）：后端已 _msg_buf.clear()
           // 改用干净系统话术，但流式期间已 flush 的 LLM 片段收不回 → 前端 acc 会拼接成
           // 「LLM 片段 + 系统话术」混乱。此处清空 acc，丢弃闪现的 LLM 片段，只接收后续系统话术。
-          if (currentEvent === 'status' && ['need_info', 'need_fields', 'review', 'submit_failed'].includes(data.stage)) {
+          if (currentEvent === 'status' && ['need_info', 'need_fields', 'submit_failed'].includes(data.stage)) {
             acc = '';
+          }
+          // 提单生成中：LLM 的「好的」被后端抑制，切气泡到「正在生成工单」动画，
+          // 弹窗（review）时后端会回填「已生成工单草稿…」话术，届时再显示。
+          if (currentEvent === 'status' && data.stage === 'generating_ticket') {
+            acc = '';
+            setMessages((prev) => prev.map((m) => (
+              m.id === assistantId ? { ...m, content: '', phase: 'generating_ticket' as const, streaming: true } : m
+            )));
           }
           // 转工单确认弹窗（对话路径）：后端字段齐全 → event:status + stage:review → 弹窗，
           // 复用 ticketConfirm（与按钮路径 handleSubmitTicket 殊途同归）。
           // 幂等：弹窗已打开则不覆盖（保留用户正在编辑的 overrides），防后端重复发 review 重弹。
           if (currentEvent === 'status' && data.stage === 'review' && data.draft) {
+            // 生成完成：清掉「正在生成工单」动画，等待后端回填的「已生成工单草稿…」token
+            setMessages((prev) => prev.map((m) => (
+              m.id === assistantId ? { ...m, phase: undefined } : m
+            )));
             setTicketConfirm((s) => s.visible ? s : {
               visible: true,
               draft: data.draft as TicketDraft,

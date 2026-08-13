@@ -144,6 +144,7 @@ def _can_submit(state: AgentState) -> tuple[bool, str]:
 def _check_required_fields(ticket: dict) -> dict:
     """统一的前置校验：所有类型转工单都必须绑定项目（project_id 优先，回退 project 名称）。
     与前端确认弹窗的「项目必选（所有类型）」规则对齐：未绑定项目时拒绝提交并给出提示。
+    项目选择的唯一入口是确认弹窗的搜索选择，对话中不收集。
     返回 {"ok": bool, "missing": [...], "prompt": "..."}
     """
     missing = []
@@ -153,7 +154,7 @@ def _check_required_fields(ticket: dict) -> dict:
     return {
         "ok": ok,
         "missing": missing,
-        "prompt": "" if ok else "请给出工单关联的项目名称，我好帮你提交工单。",
+        "prompt": "" if ok else "请先在确认弹窗中选择要关联的项目，再提交工单。",
     }
 
 
@@ -196,35 +197,34 @@ def _reset_state_after_submit(agent_state: AgentState, memory, ticket: dict, db_
 # ============================================================
 
 def _canonical_field_key(key: str) -> str:
-    """项目名称 key 归一化：project_name / projectName / projectname → project。
+    """项目名称 key 归一化：project_name / projectName / projectname / 项目名称 → project。
 
     collected_info 合并时已把这几个变体归一化为 project（_apply_state_update），
     required_fields 的写入与 readiness 判定必须用同一映射，否则 LLM 声明
     required_fields={'project_name'} 时 collected_info 里只有 project，永远判缺，
     造成"用户反复给项目名却一直追着问"的鬼打墙。
+    收集轮 LLM 常直接把中文标签「项目名称」当 key 写，同样归一化。
     """
-    return "project" if key in ("project_name", "projectName", "projectname") else key
+    return "project" if key in ("project_name", "projectName", "projectname", "项目名称") else key
 
 
 # 鬼打墙防护：诊断/收集轮次上限
 _MAX_DIAGNOSIS_ROUNDS = 6   # 诊断超过此轮数 → prompt 提示 LLM 收尾或建议转工单
-_MAX_COLLECT_ROUNDS = 4     # 工单填写超过此轮数仍不齐 → 强制提单（project 缺则用"摇人吧服务号提单"兜底）
+_MAX_COLLECT_ROUNDS = 4     # 工单填写超过此轮数仍不齐 → 强制提单（弹窗仍可补）
 _MAX_RETRIEVAL_DOCS = 6     # 三路检索合并后按 score 排序，只保留 top N 个 chunk 进 prompt
 
 
 def _assess_ticket_readiness(state: AgentState) -> tuple[bool, list[str]]:
-    """服务端提单就绪判定 = project 铁律 + LLM 决定的 required_fields 全非空。
+    """服务端提单就绪判定 = LLM 决定的 required_fields 全非空。
 
     required_fields 由 _decide_ticket_fields 在转单时让 LLM 按问题类型动态决定（2-3 个），
-    不是硬编码清单——符合"AI 判断要补什么信息，补齐才算 ready"。空时退化为 project-only。
+    不是硬编码清单——符合"AI 判断要补什么信息，补齐才算 ready"。空时视为已就绪。
     返回 (ready, missing)：missing 为面向用户的缺失项中文名列表。
+
+    ⚠️ project 不参与此判定：项目选择的唯一入口是前端确认弹窗的搜索选择
+    （弹窗强制必选后才允许提交）。对话中 AI 不收集、不追问项目名。
     """
     missing = []
-    has_project = bool((state.collected_info.get("project") or "").strip()
-                       or (state.collected_info.get("project_id") or "").strip()
-                       or (state.collected_info.get("project_name") or "").strip())
-    if not has_project:
-        missing.append("项目名称")
     for field_key, label in (state.required_fields or {}).items():
         if not (state.collected_info.get(_canonical_field_key(field_key)) or "").strip():
             missing.append(label)
@@ -363,36 +363,50 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在�
 一旦用户表示要转工单（"提工单""提单""帮我转""下工单""创建工单""给我提一个"等任意措辞），
 **立即停止排查/诊断**，按下表决策，**不要再去"再确认一个细节"**：
 
-| project 是否已有 | required_fields 是否收齐 | action |
-|---|---|---|
-| 否 | — | ask（只追问 project） |
-| 是 | 否 | ask（一次只问一个缺失字段） |
-| 是 | 是 | **submit**（立即，message 只写"好的"） |
+| required_fields 是否收齐 | action |
+|---|---|
+| 否 | ask（一次只问一个缺失字段） |
+| 是 | **submit**（立即，message 只写"好的"） |
 
 🔴 **submit 时 message 只能写"好的"两个字，绝对禁止写"工单已提交/已生成/工程师会处理/汇总如下..."等任何确认话术**。
 服务端会自己判断字段是否齐全、并生成最终确认消息；你提前写"已提交"会和服务端冲突——服务端若发现还缺字段会拦截，
 此时你已经吐出去的"已提交"就成了骗用户。所以 submit 时闭嘴，只写"好的"。
 
-🔴 **第三行是默认期望结果**：用户都明确要转工单了，只要 project 和必填关键字段齐 → **必须立即 submit，禁止再问任何"可选"问题**。
+🔴 **必填关键字段齐了 → 必须立即 submit，禁止再问任何"可选"问题**。
 "错误码是车端还是 USP""具体现场位置""故障现象细节"——这些都是**工程师接单后再确认的可选信息**，
 **绝对不准用可选细节卡住提单**。宁可少一个可选细节，也必须按时 submit。
 判断不了某个细节？别问，直接 submit，让工程师确认。
 
 - **即使用户没催**：信息够了就 submit，不要"再确认一下"。
-- **即使用户催**：project 或必填字段没齐，也先 ask 补齐，不准盲目 submit。
+- **即使用户催**：必填字段没齐，也先 ask 补齐，不准盲目 submit。
 - **用户指名处理人**（"提单给XX""交给XX""派给XX"）→ 把 XX 写入 collected_info["requested_assignee"]。
 
 用户表示不想继续排查（"不想排查""算了""不用了"）→ action="answer"，简短收尾（"好的，有需要随时找我"），不追问不排查。
+
+🔴 **项目选择不在对话里进行——严禁追问项目名称**：
+项目由用户在**工单确认弹窗里搜索选择**（弹窗有项目下拉搜索框，且必选），
+所以对话中**任何情况下都不要问**"是哪个项目/项目名称是什么"，也不要因为缺项目名去 ask。
+用户自己提到地点/客户名时，可以顺手记入 collected_info 的 project（预填弹窗方便用户确认），
+但**绝不追问**。缺失字段清单（required_fields）里也**绝不包含** project。
+**介绍转工单流程时不要说"需要确认项目/补充项目"**——知识库里可能还残留这类旧话术
+（如"一般只需确认项目"），引用时跳过，直接说"告诉我问题，我会引导补充必要信息，
+确认后在弹窗中选择项目即可"。
 
 ### 提单前信息检查 / required_fields
 - **由你决定要收集哪些字段**：根据问题类型 + 知识库判断，提单需要补哪 2-3 个关键字段
   （报障类：occurrence_time/robot_type/frequency；软件问题：version/steps_to_reproduce；
   需求类：scenario/expected_effect）。写入 state_update.required_fields（格式 {{字段key: 中文名}}）。
-  **project 永远必填，不写进 required_fields。**
 - 🔴 **action=submit 时必须在 state_update 中同时写入 required_fields**（格式见下方示例）。
   不要留空等服务端兜底——服务端的兜底判断没有你的完整对话上下文准确，可能误判工单类型导致字段错配。
-- 收齐 = project 非空 + required_fields 每项非空。收齐就 submit。
-- **服务端铁律**：project 必须非空，否则 submit 会被拦截追问；其他字段是否齐全信任你的判断。
+- 🔴 **禁止发明「问题描述」类字段**：用户提出转工单时说的原话本身就是工单内容
+  （写入 problem_summary，工程师接单后自己会追问细节）。像「帮我转工单找个人指导一下」
+  「帮我提单给XX」这类请求**不要再追问"遇到了什么具体问题"**——原话直接构成工单，
+  required_fields 留空或只设真正缺失的技术字段，直接 submit。
+  只有当用户只说"提单"两个字、且此前对话里**完全没有任何问题背景**时，才需要问问题内容。
+- 🔴 **设置 required_fields 前先自查**：你要问的信息如果用户已经说过（或能从用户原话直接
+  推出），就不要再设这个字段——服务端回填时发现字段已齐会直接弹窗，你的追问就变成了废话。
+- 收齐 = required_fields 每项非空。收齐就 submit。
+- 项目不在对话中校验（用户在确认弹窗里选），submit 不被项目名拦截。
 
 ### 工单类型跟踪（极其重要）
 **每一轮**都必须在 state_update 中维护 ticket_type，根据对话内容判断：
@@ -407,15 +421,16 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在�
 ```json
 {{"required_fields":{{"error_message":"错误信息/现象","occurrence_time":"发生时间","steps":"复现步骤"}}}}
 ```
-project 不用写在 required_fields 里（系统强制要求）。
+project 不写进 required_fields（项目由用户在确认弹窗选择）。
 
 ### collected_info 写入铁律（极其重要）
 **每一轮**用户发言后，只要提到任何可用信息，**必须**增量写入 state_update.collected_info（不要等齐全才写）。
 
-🔴 **project（项目名称）——提单最重要的字段，最高优先级**：
-用户消息里任何**地名/厂区/客户/现场/公司名**都极可能是项目名，**只要用户提到了，就必须写入 project**（写用户原话里的简称即可，系统会用项目库匹配真实项目全名）。
+**project（项目名称）——只在用户主动提及时顺手记录，绝不追问**：
+用户消息里出现**地名/厂区/客户/现场/公司名**时，可以写入 project（写用户原话简称即可），
+用于预填确认弹窗，方便用户直接确认。
 项目名常见形态是「地区+公司+车型+项目」，如"浙江湖州中力安吉北区调度升级项目""河南郑州东昇汽配厂潜伏车项目""江苏常州多摩川混场项目""河南郑州思念食品潜伏车项目"。
-用户通常只说**简称**，下列都要识别并写入 project：
+用户通常只说**简称**，下列都可以识别并写入 project：
 - "安吉北区的车不动了" → project="安吉北区"
 - "东昇汽配厂那边出问题" → project="东昇汽配厂"
 - "多摩川产线离线" → project="多摩川"
@@ -479,8 +494,11 @@ project 不用写在 required_fields 里（系统强制要求）。
 ---
 输出 JSON（用户要求转工单**且 ticket_ready=true** 时，action 必须是 submit 不是 answer）：
 ```json
-{{"action":"answer|ask|submit","intent":"howto|troubleshoot|chat","state_update":{{"ticket_type":"problem|bug|feature|support|other","problem_summary":"概述","ruled_out":[],"hypotheses":[],"collected_info":{{}},"ticket_ready":false}}}}
+{{"action":"answer|ask|submit","intent":"howto|troubleshoot|chat","ticket_intent":false,"ticket_cancel":false,"state_update":{{"ticket_type":"problem|bug|feature|support|other","problem_summary":"概述","ruled_out":[],"hypotheses":[],"collected_info":{{}},"ticket_ready":false}}}}
 ```
+两个布尔字段（每轮都要输出，服务端据此决策）：
+- `ticket_intent`：本轮用户**表达了提单意图**（说"转工单/提单/派单/帮我建单"等，或是在上轮已开始的提单流程中继续补信息）→ true；只是咨询/报障/闲聊 → false
+- `ticket_cancel`：本轮用户**明确表示不想提单**（"不用转工单""我没说转工单""算了"）→ true；其余 → false
 JSON 之后直接写回复。语气像工程师。引用图片时用 ![说明](url) 格式。"""
 
 
@@ -734,7 +752,12 @@ class AiDiagnosisPlatform:
                 f"3. 用户说【没有】【不知道】【不清楚】等 → 该字段直接记录为'无'，立即跳过，不得再问\n"
                 f"4. 🚫 禁止对同一字段追问两次。任何字段最多只问一次，用户说没有就直接过\n"
                 f"5. 所有缺失字段（含'无'）都补齐后 → 立即 action='submit'，message 只写'好的'\n"
-                f"⚠️ 已收集的字段不要再问（比如上面已收集里已经有 project，就不要再追问项目）。"
+                f"6. 🚫 用户表示不转工单/不需要工单（如「我没说转工单」「不用提单」「算了」）时："
+                f"**绝不能**把这种话理解成字段值然后 submit，"
+                f"必须输出 ticket_cancel=true，只回复「好的，不转工单。有什么其他问题随时问我。」\n"
+                f"7. 🔴 项目由用户在确认弹窗里选择，对话中**任何情况都不要问**项目名称，"
+                f"缺失字段清单里也不会出现项目。"
+                f"⚠️ 已收集的字段不要再问。"
             )
             # 收集模式用极简 prompt：砍掉 DIAGNOSIS_PROMPT 的 165 行人设/知识库/诊断规则，
             # LLM 只需提取字段值 + 自然确认，大幅减少无关思考，提升收集轮响应速度。
@@ -745,7 +768,7 @@ class AiDiagnosisPlatform:
                 f"---\n"
                 f"输出 JSON（字段齐就 submit，message 只写「好的」）：\n"
                 f'```json\n'
-                f'{{"action":"ask|submit","intent":"troubleshoot",'
+                f'{{"action":"ask|submit","intent":"troubleshoot","ticket_cancel":false,'
                 f'"state_update":{{"collected_info":{{}},"ticket_ready":false}}}}\n'
                 f'```\n'
                 f"JSON 之后直接写回复。语气像工程师。"
@@ -806,11 +829,16 @@ class AiDiagnosisPlatform:
         if "required_fields" in state_update:
             rf = state_update["required_fields"]
             if isinstance(rf, dict) and rf:
-                state.required_fields = {
-                    _canonical_field_key(k): str(v) for k, v in rf.items()
-                    if k and v
-                }
-                logger.info(f"[state] LLM 设 required_fields={state.required_fields}")
+                _new_rf = {_canonical_field_key(k): str(v) for k, v in rf.items() if k and v}
+                # 清单锁定：旧清单非空且已按它收集过字段时，拒绝 LLM 改写。
+                # 否则已收集字段全对不上新 key，收集进度归零（用户被重新追问一轮）。
+                if (state.required_fields and state.collected_info
+                        and state.required_fields != _new_rf):
+                    logger.info(f"[state] required_fields 已锁定 {state.required_fields}，"
+                                f"拒绝 LLM 改为 {rf}")
+                else:
+                    state.required_fields = _new_rf
+                    logger.info(f"[state] LLM 设 required_fields={state.required_fields}")
         if "problem_summary" in state_update:
             new_ps = (state_update["problem_summary"] or "").strip()
             # 闭环绕过防护：工单提交后 phase=resolved，对话历史中仍有故障描述，
@@ -837,7 +865,10 @@ class AiDiagnosisPlatform:
         if "collected_info" in state_update:
             # 合并新字段，空值/无 视为清除。project 由 LLM 提取用户提到的地点/客户名，
             # 提单时 _build_ticket 会调 _resolve_project 把它匹配成真实项目全名。
-            # 🔴 LLM 可能用 project_name / projectName 等变体，统一归一化为 "project"
+            # 🔴 LLM 可能用 project_name / projectName / 项目名称 等变体，统一归一化为 "project"
+            # 收集轮 LLM 也常把 required_fields 的中文标签当 key 写（如 "期望调整效果"），
+            # 服务端只认英文 key——用反向映射归位，否则永远判缺（鬼打墙）。
+            _label_to_key = {str(label): key for key, label in (state.required_fields or {}).items()}
             for k, v in list(state_update["collected_info"].items()):
                 if v is None:
                     state.collected_info.pop(k, None)
@@ -849,8 +880,11 @@ class AiDiagnosisPlatform:
                     continue
                 # 归一化项目名称 key：LLM 可能输出 project_name / projectName / project 等
                 _key = k
-                if k in ("project_name", "projectName", "projectname"):
+                if k in ("project_name", "projectName", "projectname", "项目名称"):
                     _key = "project"
+                # 中文标签 → 英文 key 归位
+                elif _key in _label_to_key:
+                    _key = _label_to_key[_key]
                 # project 确定性过滤：这些是工单 UI 文本（截图描述会进对话），
                 # 不是项目名。LLM 把「缺陷」当 project 写出时直接丢弃，
                 # 让 _assess_ticket_readiness 判定项目缺失、收集模式继续问真实项目。
@@ -1016,16 +1050,34 @@ class AiDiagnosisPlatform:
     # ================================================================
     _CACHE_TTL = 300  # 秒：检索结果（含 rerank 精排）5 分钟内复用，重复/相近问题秒回
 
-    async def _classify_intent(self, llm_client, raw_query: str, resolved_query: str) -> str:
+    async def _classify_intent(self, llm_client, raw_query: str, resolved_query: str,
+                               context_turns: Optional[List[dict]] = None) -> str:
         """意图识别：判断输入是闲聊还是诊断求助。
 
         独立于主对话的快速分类（v4-flash 无思考，~1.5s），
         只返回一个词：courtesy（闲聊） / diagnosis（诊断），绝不阻塞诊断路径。
+
+        context_turns：最近几轮对话（可选）。只看当前消息会误判多轮场景——
+        「好的，我试试」单看是闲聊，但承接上一轮的排查就是诊断延续；
+        「还是不行」单看无法归类。带上最近 2-3 轮让分类有上下文。
         """
+        _ctx = ""
+        if context_turns:
+            lines = []
+            for t in context_turns[-3:]:
+                role = "用户" if (t.get("role") or "").lower() == "user" else "助手"
+                c = (t.get("content") or "").strip()
+                if c:
+                    lines.append(f"{role}：{c[:150]}")
+            if lines:
+                _ctx = "以下是最近几轮对话（仅作上下文，你要判断的是最后一条消息的意图）：\n" \
+                       + "\n".join(lines) + "\n\n"
         prompt = (
+            f"{_ctx}"
             "判断下面用户消息的意图，只回复两个词之一：\n"
             "courtesy：寒暄/问候/闲聊/客套/表达感谢或情绪（如 你好、辛苦了、哈哈、谢谢、在吗）\n"
-            "diagnosis：任何与设备、报错、故障、工作相关的求助或提问（如 AGV卡住、报错码、怎么办）\n"
+            "diagnosis：任何与设备、报错、故障、工作相关的求助或提问（如 AGV卡住、报错码、怎么办）；"
+            "承接上文排查的追问、反馈（如「好的我试试」「还是不行」「这个呢」）也属于 diagnosis\n"
             f"消息：{resolved_query or raw_query}\n"
             "意图："
         )
@@ -1244,6 +1296,9 @@ class AiDiagnosisPlatform:
                     "- 以 JSON 对象返回，key 必须使用目标字段中给定的英文标识，不要改名\n"
                     "- 同时提取 project（项目/现场/厂区名称，非空时输出）\n"
                     "- 对话中未提及的字段不输出\n"
+                    "- 🔴 只能提取用户明确陈述过的事实。用户的提问/诉求本身不是答案：\n"
+                    "  用户问「怎么更新权限」，不代表用户说过「当前权限是什么、目标权限是什么」——\n"
+                    "  不要把问题当答案回填，没说的字段一律不输出\n"
                     "- project 指用户所在项目/现场/厂区的名称，通常是用户明确说出或多次提及的地点/客户/园区名；\n"
                     "  不要把截图里的工单类型（缺陷/报障/问题）、工单状态（处理中/已完成）、处理人姓名等 UI 文本当作项目名\n"
                     "- 对话中未明确给出项目名时，不输出 project\n\n"
@@ -1265,7 +1320,9 @@ class AiDiagnosisPlatform:
             # 只接受 required_fields 中定义的 key + project（key 用同一归一化，防 project_name 变体判缺）
             valid_keys = set(_canonical_field_key(k) for k in rf.keys())
             valid_keys.add("project")
-            valid_aliases = {"project_name", "projectName", "projectname"}
+            valid_aliases = {"project_name", "projectName", "projectname", "项目名称"}
+            # 中文标签 → 英文 key 反向映射（LLM 可能直接输出标签）
+            _label_to_key = {str(label): key for key, label in rf.items()}
             for k, v in data.items():
                 if not v:
                     continue
@@ -1275,18 +1332,23 @@ class AiDiagnosisPlatform:
                 # 别名归一化
                 if k in valid_aliases:
                     k = "project"
+                elif k in _label_to_key:
+                    k = _label_to_key[k]
                 if k not in valid_keys:
                     logger.debug(f"[backfill] 忽略非目标字段: {k}={v[:30]}")
                     continue
                 if k == "project":
-                    # 安全网：回填的 project 必须在项目库能匹配上，否则丢弃。
-                    # LLM 可能把截图里的工单类型（缺陷）/状态/处理人当项目名，
-                    # 匹配不上就清掉，让收集模式继续问真实项目名。
+                    # 安全网：回填的 project 若在项目库匹配得上 → 直接归一名；
+                    # 匹配不上 → **保留原值**。用户可能是真实回答了一个库外项目
+                    # （如「功能测试环境」），丢弃会导致收集模式永远追问项目名（鬼打墙）。
+                    # 截图 UI 文本污染已由 sanitize_images 物理屏蔽 + _apply_state_update
+                    # 的确定性过滤兜底，不需要这里再拦截。
                     match = await self._resolve_project(v)
-                    if not match or not (match.code or "").strip():
-                        logger.info(f"[backfill] project '{v}' 未命中项目库，丢弃（防截图文本污染）")
-                        continue
-                    v = match.name
+                    if match and (match.code or "").strip():
+                        v = match.name
+                    else:
+                        logger.info(f"[backfill] project '{v}' 未命中项目库，保留原值"
+                                    f"（用户回答优先，防反复追问）")
                 if k in agent_state.collected_info:
                     continue
                 agent_state.collected_info[k] = v
@@ -1297,60 +1359,87 @@ class AiDiagnosisPlatform:
             logger.warning(f"[backfill] 回填失败（忽略，按原 collected_info 判定）: session={session_id}",
                            exc_info=True)
 
+    async def _compute_ticket_fields(self, session_id: str, memory, context_start: int) -> dict:
+        """纯计算（不写任何状态）：基于对话预测 {ticket_type, required_fields}。
+
+        从 _decide_ticket_fields 拆出，供两条路径复用：
+        ① 同步路径：_decide_ticket_fields 直接调用后写 state；
+        ② 并行路径：主 LLM 流式推理期间后台预测，解析完按需采用（零等待）。
+        只读 memory.turns / context_start 快照，不碰 agent_state。
+        """
+        # 屏蔽图片描述：定字段清单只关心对话里用户说了什么，
+        # 截图 UI 文本（缺陷/处理中/处理人）会诱导 LLM 把工单类型当信息缺口。
+        conv = self._format_conversation(
+            memory, from_turn=context_start, max_turns=20, sanitize_images=True)
+        prompt = (
+            "分析以下对话，判定工单类型（problem/bug/feature/support/other），"
+            "并识别要解决该工单还需向用户收集的 2-3 个关键信息项。\n\n"
+            "## 输出规范\n"
+            "- ticket_type：从 problem/bug/feature/support/other 中选取\n"
+            "- required_fields：JSON 对象，key 为英文标识，value 为中文简短标签（≤8 字）\n"
+            "- 字段应基于对话内容推导——不同问题的信息缺口不同，无固定词表\n"
+            "- 对话中已明确的信息不再列入\n"
+            "- 项目由用户在确认弹窗选择，不要写入 required_fields\n"
+            "- 🔴 禁止发明字段：用户咨询/报障的原话本身就是工单内容（工程师接单后会追问细节），"
+            "除非用户描述的故障确实缺少关键定位信息（如报障却没给错误码/车型），"
+            "否则 required_fields 直接返回空对象 {{}}，不要拆出「当前状态/目标内容」这类字段\n"
+            "- 仅输出 JSON，无额外文字\n\n"
+            f"## 对话\n{conv}\n"
+        )
+        raw = await self._llm_client.complete(prompt=prompt, max_tokens=300, temperature=0,
+                                              thinking=False)
+        clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+        data = json.loads(clean)
+        tt = (data.get("ticket_type") or "").strip()
+        result = {"ticket_type": tt if tt in ("problem", "bug", "feature", "support", "other") else ""}
+        rf = data.get("required_fields") or {}
+        if isinstance(rf, dict):
+            result["required_fields"] = {
+                _canonical_field_key(k): str(v)[:20] for k, v in rf.items()
+                if str(v).strip() and len(str(k)) <= 40
+            }
+        else:
+            result["required_fields"] = {}
+        return result
+
+    def _adopt_ticket_fields(self, agent_state: AgentState, result: dict) -> None:
+        """采纳预测结果（同步写 state）。ticket_type 只在主 LLM 未定时采用；
+        required_fields 过滤掉已收集字段、且非空清单时不做二次改写。"""
+        if not agent_state.ticket_type:
+            tt = result.get("ticket_type") or ""
+            if tt in ("problem", "bug", "feature", "support", "other"):
+                agent_state.ticket_type = tt
+        rf = result.get("required_fields") or {}
+        if isinstance(rf, dict) and not agent_state.required_fields:
+            agent_state.required_fields = {
+                _canonical_field_key(k): str(v)[:20] for k, v in rf.items()
+                if str(v).strip()
+                and len(str(k)) <= 40
+                and not (agent_state.collected_info.get(_canonical_field_key(k)) or "").strip()
+            }
+        logger.info(f"[decide_fields] type={agent_state.ticket_type} "
+                    f"required={agent_state.required_fields} session={agent_state.session_id}")
+
     async def _decide_ticket_fields(self, session_id: str, agent_state: AgentState, memory) -> None:
-        """转单瞬间调用一次：让 LLM 根据对话总结出工单类型 + 2-3 个必补关键字段，
-        锁进 state.required_fields / ticket_type。后续提单门槛 = project + 这些字段全非空。
+        """同步路径：让 LLM 根据对话总结出工单类型 + 2-3 个必补关键字段，
+        锁进 state.required_fields / ticket_type。后续提单门槛 = 这些字段全非空。
 
         字段由 LLM 按问题类型动态决定（不是硬编码清单），符合"AI 判断要补什么信息"。
-        project 系统已强制，不写进 required_fields。失败则保持空（回退到 project-only 门槛）。
+        项目由用户在确认弹窗选择，不写进 required_fields。失败则保持空（无必补字段）。
         """
         try:
-            # 屏蔽图片描述：定字段清单只关心对话里用户说了什么，
-            # 截图 UI 文本（缺陷/处理中/处理人）会诱导 LLM 把工单类型当信息缺口。
-            conv = self._format_conversation(
-                memory, from_turn=agent_state.context_start, max_turns=20, sanitize_images=True)
-            prompt = (
-                "分析以下对话，判定工单类型（problem/bug/feature/support/other），"
-                "并识别要解决该工单还需向用户收集的 2-3 个关键信息项。\n\n"
-                "## 输出规范\n"
-                "- ticket_type：从 problem/bug/feature/support/other 中选取\n"
-                "- required_fields：JSON 对象，key 为英文标识，value 为中文简短标签（≤8 字）\n"
-                "- 字段应基于对话内容推导——不同问题的信息缺口不同，无固定词表\n"
-                "- 对话中已明确的信息不再列入\n"
-                "- project（项目名称）为系统级必填项，不要写入 required_fields\n"
-                "- 仅输出 JSON，无额外文字\n\n"
-                f"## 对话\n{conv}\n"
-            )
-            raw = await self._llm_client.complete(prompt=prompt, max_tokens=300, temperature=0,
-                                                  thinking=False)
-            clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
-            data = json.loads(clean)
-            # 只有主 LLM 还没定 ticket_type 时才设。主 LLM 有完整对话上下文，
-            # 判断比这里的独立 LLM 调用更准。覆盖会导致报障被错标为 support，
-            # 后续 required_fields 与实际故障不匹配，LLM 陷入收集死循环。
-            if not agent_state.ticket_type:
-                tt = (data.get("ticket_type") or "").strip()
-                if tt in ("problem", "bug", "feature", "support", "other") and tt:
-                    agent_state.ticket_type = tt
-            rf = data.get("required_fields") or {}
-            if isinstance(rf, dict):
-                # 不再用固定词表限制——LLM 根据问题类型自主选字段，
-                # 只做基本合理性过滤（key 长度、value 简短标签、非空、不重复收集）
-                agent_state.required_fields = {
-                    _canonical_field_key(k): str(v)[:20] for k, v in rf.items()
-                    if str(v).strip()
-                    and len(str(k)) <= 40
-                    and not (agent_state.collected_info.get(_canonical_field_key(k)) or "").strip()
-                }
-            logger.info(f"[decide_fields] type={agent_state.ticket_type} "
-                        f"required={agent_state.required_fields} session={session_id}")
+            result = await self._compute_ticket_fields(
+                session_id, memory, agent_state.context_start)
+            self._adopt_ticket_fields(agent_state, result)
         except Exception:
-            logger.warning(f"[decide_fields] 失败（回退 project-only 门槛）: session={session_id}",
+            logger.warning(f"[decide_fields] 失败（无必补字段门槛）: session={session_id}",
                            exc_info=True)
 
     async def _build_ticket(self, session_id: str, agent_state: AgentState, memory) -> dict:
         # 项目名提前解析：LLM 生成 description 时需要看到全名，
         # 不能等 LLM 调用完再解析——否则 description 里用的还是用户简称。
+        # 匹配得上 → 归一为全名；匹配不上 → 保留用户原话（预填确认弹窗，
+        # 用户在弹窗里搜索重选后 confirm_submit 会重新解析）。
         _raw_proj = (agent_state.collected_info.get("project") or "").strip()
         if _raw_proj:
             match = await self._resolve_project(_raw_proj)
@@ -1358,11 +1447,7 @@ class AiDiagnosisPlatform:
                 agent_state.collected_info["project"] = match.name
                 agent_state.collected_info["project_id"] = match.code
             else:
-                # 项目库匹配不上：collected_info 里的 project 是垃圾值
-                # （如截图 UI 文本「缺陷」被误当项目名），清掉走兜底，绝不带进工单。
-                agent_state.collected_info.pop("project", None)
-                agent_state.collected_info.pop("project_id", None)
-                logger.info(f"[build_ticket] project '{_raw_proj}' 未命中项目库，丢弃（防截图文本污染）")
+                logger.info(f"[build_ticket] project '{_raw_proj}' 未命中项目库，保留原值（弹窗重选）")
 
         # 生成工单的对话：屏蔽图片描述。project 已在上方从 collected_info 解析，
         # 工单本身带原图附件，LLM 提取 title/description/contact 时不需要看 VLM 描述，
@@ -1370,7 +1455,9 @@ class AiDiagnosisPlatform:
         conversation_text = self._format_conversation(memory, sanitize_images=True)
         # 项目名已在上方解析，直接注入 prompt，不让 LLM 从对话里"找"项目名
         # （对话里可能有用户说的简称/旧项目名，LLM 会优先用对话里的而非 collected_info）
-        _ticket_proj = agent_state.collected_info.get("project", "").strip() or "项目"
+        _ticket_proj = agent_state.collected_info.get("project", "").strip()
+        _desc_spec = (f'≤150字，以【{_ticket_proj}】开头，简述问题和排查过程'
+                      if _ticket_proj else '≤150字，简述问题和排查过程')
         reasoning = (
             f"问题概述：{agent_state.problem_summary}\n"
             f"推测原因：{'、'.join(str(h) if not isinstance(h, str) else h for h in agent_state.hypotheses) if agent_state.hypotheses else '无'}\n"
@@ -1385,10 +1472,10 @@ class AiDiagnosisPlatform:
             f"## Agent 推理链\n{reasoning}\n\n"
             f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
             f"然后以 JSON 格式返回：\n"
-            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目已单独记录在project字段）","description":"≤150字，以【{_ticket_proj}】开头，简述问题和排查过程",'
+            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目已单独记录在project字段）","description":"{_desc_spec}",'
             f'"priority":"紧急|高|中|低","contact":"从对话提取的联系人，没有则为空",'
             f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
-            f'"project":"所有类型必填，从对话提取的项目/现场名称，没有则为空",'
+            f'"project":"用户主动提到的项目/现场名（对话未提则为空）",'
             f'"fault_code":"仅type=problem时填，故障码","special_notes":"所有类型可用，特殊说明（用户指名处理人、额外备注等）",'
             f'"occurrence_time":"仅type=problem时填，故障发生时间","frequency":"仅type=problem时填，出现频率（每次/偶尔/首次）",'
             f'"steps_to_reproduce":"仅type=bug时填","expected_result":"仅type=bug时填",'
@@ -1426,8 +1513,9 @@ class AiDiagnosisPlatform:
             "priority": analysis.get("priority", "中"),
             "status": "pending",
             "contact": analysis.get("contact", ""),
-            # 项目（所有类型提单必填）：对话收集 > LLM 提取 > 兜底"摇人吧服务号提单"
-            "project": agent_state.collected_info.get("project", "") or analysis.get("project", "") or "摇人吧服务号提单",
+            # 项目：对话中用户主动提到才填（预填弹窗用）。未提到留空，
+            # 用户在确认弹窗里搜索选择后由 confirm_submit 写回。兜底值在弹窗提交时处理。
+            "project": agent_state.collected_info.get("project", "") or analysis.get("project", ""),
             "project_id": agent_state.collected_info.get("project_id", ""),
             "diagnosis": {
                 "problem_summary": agent_state.problem_summary,
@@ -1449,7 +1537,7 @@ class AiDiagnosisPlatform:
         result["special_notes"] = _notes
 
         # 项目名：已在 LLM 调用前解析（collected_info 中即为全名）。
-        # 这里处理 result 的 project/project_id；只有 collected_info 无项目时才兜底匹配。
+        # 这里处理 result 的 project/project_id；只有 collected_info 无项目时才用 LLM 提取值。
         _proj = (agent_state.collected_info.get("project") or "").strip()
         _pid = agent_state.collected_info.get("project_id") or ""
         if _proj:
@@ -1465,9 +1553,8 @@ class AiDiagnosisPlatform:
                     result["project"] = match.name
                     result["project_id"] = match.code
                 else:
-                    result["project"] = "摇人吧服务号提单"
-            else:
-                result["project"] = "摇人吧服务号提单"
+                    # 匹配不上也保留原值预填弹窗，让用户在弹窗里重选
+                    result["project"] = _llm_proj
 
         # 类型专属字段
         if ticket_type == "problem":
@@ -1541,8 +1628,8 @@ class AiDiagnosisPlatform:
             await self._decide_ticket_fields(session_id, agent_state, memory)
         # 提单关口回填：主对话 LLM 可能没把用户说过的字段写进 collected_info
         await self._backfill_collected_info(session_id, agent_state, memory)
-        if not agent_state.collected_info.get("project", "").strip() and not agent_state.collected_info.get("project_id", "").strip():
-            raise ValueError("请先通过对话提供项目名称，再转工单。")
+        # 项目不在对话路径校验——用户在确认弹窗中搜索选择项目，_check_required_fields
+        # 在 confirm_submit 时校验 project/project_id。submit() 只卡 required_fields。
         if not force:
             ready, missing = _assess_ticket_readiness(agent_state)
             if not ready:
@@ -1604,7 +1691,8 @@ class AiDiagnosisPlatform:
             logger.info(f"[prepare] 重复提单拦截: phase={agent_state.phase}")
             return {"code": 1, "message": reason}
 
-        # 保底必填字段校验（与对话路径同标准）——不足则不开弹窗，回对话补充
+        # 必填字段校验（required_fields，不含项目）——不足则不开弹窗，回对话补充。
+        # 项目不在对话中收集：弹窗打开后用户搜索选择项目，未选项目前端禁止提交。
         # 首次转单：先 decide 决定字段清单，再 backfill 从对话补齐
         if not agent_state.required_fields:
             await self._decide_ticket_fields(session_id, agent_state, memory)
@@ -1827,6 +1915,8 @@ class AiDiagnosisPlatform:
         action = "ask"
         intent = ""
         state_update = {}
+        ticket_intent = False
+        ticket_cancel = False
         message = text
         json_end = 0  # JSON 区域结束位置
 
@@ -1875,6 +1965,13 @@ class AiDiagnosisPlatform:
                     action = "ask"
                 intent = data.get("intent", "").strip().lower()
                 state_update = data.get("state_update", {})
+                # LLM 提单意图信号（服务端不用关键词，只信这两个布尔值）
+                ticket_intent = data.get("ticket_intent", False)
+                ticket_cancel = data.get("ticket_cancel", False)
+                if not isinstance(ticket_intent, bool):
+                    ticket_intent = str(ticket_intent).lower() in ("true", "1")
+                if not isinstance(ticket_cancel, bool):
+                    ticket_cancel = str(ticket_cancel).lower() in ("true", "1")
             except (json.JSONDecodeError, Exception):
                 logger.info(f"[parse] json.loads failed on extracted JSON: "
                             f"json_str={json_str[:120]!r}")
@@ -1944,6 +2041,8 @@ class AiDiagnosisPlatform:
             "intent": intent,
             "message": message,
             "state_update": state_update,
+            "ticket_intent": ticket_intent,
+            "ticket_cancel": ticket_cancel,
         }
 
     # ================================================================
@@ -2026,6 +2125,10 @@ class AiDiagnosisPlatform:
             return
 
 
+        # 收集模式取消短接改用 LLM 判断：ticket_cancel 由 LLM 每轮输出（见 DIAGNOSIS_PROMPT
+        # 输出规范），服务端只信任这个布尔值，不再用关键词正则（关键词既僵化又漏判）。
+        # 取消处理放在 LLM 解析之后（parse 之后单独处理）。
+
         # ---- 闲聊/问候短接：纯问候/打招呼 → 跳过检索，避免 4s+ 的 reranker 检索 ----
         _greet_str = re.sub(r"[，。.!！\s]", "", request.query.strip())
         _is_greeting = bool(_greet_str) and re.fullmatch(
@@ -2040,6 +2143,18 @@ class AiDiagnosisPlatform:
         # ---- 诊断路径 ----
         # 立刻发状态，别让用户干等
         yield {"event": "status", "data": {"stage": "retrieving", "round": state.diagnosis_rounds}}
+
+        # ---- 待补充字段并行预测：主 LLM 流式推理（6-10s thinking）期间后台预跑 ----
+        #  触发条件：ticket_type 已非空（对话进入问题场景，提单概率高）且清单为空。
+        #  预测结果先存候选，主 LLM 解析完再按 ticket_intent 决定采用还是丢弃——
+        #  用户说提单的那一轮清单已备好，进入收集模式零等待。
+        _prefetch_task = None
+        if (not state.ticket_collecting and not state.required_fields
+                and state.ticket_type and not _is_greeting):
+            _prefetch_task = asyncio.create_task(
+                self._compute_ticket_fields(request.session_id, memory, state.context_start))
+            logger.info(f"[stream] 并行预测字段清单已启动: session={request.session_id}")
+
         t_ret = time.perf_counter()
         logger.info(f"[stream] 开始检索: session={request.session_id}")
         # 工单填写模式不需要知识库——用户只是在填表字段，不走诊断检索；
@@ -2060,7 +2175,9 @@ class AiDiagnosisPlatform:
             _retrieval_task = asyncio.create_task(
                 self._retrieve_with_context(request.session_id, state, resolved_query))
             _intent_task = asyncio.create_task(
-                self._classify_intent(_intent_llm, request.query, resolved_query))
+                self._classify_intent(
+                    _intent_llm, request.query, resolved_query,
+                    context_turns=memory.turns[-4:]))
             _intent_t0 = time.perf_counter()
             try:
                 _intent = await asyncio.wait_for(_intent_task, timeout=2.0)
@@ -2196,13 +2313,31 @@ class AiDiagnosisPlatform:
         #     让 _can_submit 基于 LLM 判断后的有效问题描述做决策 ----
         self._apply_state_update(state, parsed["state_update"])
 
-        # ---- 提前定待补充字段清单：LLM 已判 ticket_type（=用户提单意图）且清单空 → 立即生成 ----
-        #  否则清单要等 LLM 喊 submit 才定（line 2174），而 LLM 往往先 ask 收集项目名，
-        #  清单被拖到字段齐才生成，与 _build_ticket 挤在同一轮 → 三次串行 LLM 拖慢 10s+。
-        #  提前到本轮到 submit 那轮即跳过（if not state.required_fields 短路），省一次 LLM 调用。
-        if (state.ticket_type and not state.required_fields
+        # ---- 提前定待补充字段清单：有提单意图且清单空 → 采用并行预测结果 ----
+        #  主 LLM 流式期间已后台预跑预测（_prefetch_task），这里按需采用：
+        #  ① 本轮有提单意图（ticket_intent/submit/已在收集）→ 采用候选，零等待；
+        #  ② 无提单意图 → 丢弃候选（下轮重新预测）。
+        #  没有候选（未预跑/预测失败）且有提单意图 → 同步补一次 decide。
+        #  提单意图由 LLM 输出 ticket_intent 判定（服务端不用关键词正则）。
+        _ticket_intent = (state.ticket_collecting
+                          or parsed["action"] == "submit"
+                          or parsed.get("ticket_intent", False))
+        if (_ticket_intent and state.ticket_type and not state.required_fields
                 and parsed["action"] in ("ask", "submit")):
-            await self._decide_ticket_fields(request.session_id, state, memory)
+            if _prefetch_task is not None:
+                try:
+                    _cand = await asyncio.wait_for(_prefetch_task, timeout=10.0)
+                    self._adopt_ticket_fields(state, _cand)
+                    logger.info(f"[stream] 采用并行预测清单: session={request.session_id}")
+                except (asyncio.TimeoutError, Exception):
+                    logger.warning(f"[stream] 并行预测失败，同步补 decide: session={request.session_id}")
+                    await self._decide_ticket_fields(request.session_id, state, memory)
+            else:
+                await self._decide_ticket_fields(request.session_id, state, memory)
+        elif _prefetch_task is not None:
+            # 本轮无提单意图 → 丢弃候选，收掉后台任务（防 pending 告警；下轮重新预测）
+            _prefetch_task.cancel()
+            logger.debug(f"[stream] 本轮无提单意图，丢弃并行预测: session={request.session_id}")
 
         # ---- Step 2: 闭环保护（基于 last_submitted_ticket + 新 problem）----
         # 在 LLM 提炼 problem_summary 之后判断：刚提完单且无新问题 → 拦截重复提单。
@@ -2215,22 +2350,36 @@ class AiDiagnosisPlatform:
             logger.info(f"[stream] LLM submit 被闭环拦截")
 
         # 注：不再有服务端字段兜底触发提单。完全信任 LLM 的 ticket_ready / action=submit
-        # 判断（实测多轮流程下 LLM 自己会 submit）。服务端只守 project 铁律 + 闭环 + 收集轮次上限。
+        # 判断（实测多轮流程下 LLM 自己会 submit）。服务端只守闭环 + 收集轮次上限。
 
-        # ---- 工单填写模式：计数 + 字段齐/超限 → 提单 ----
-        _force_submit = False  # 收集超限强制提单：跳过 project 铁律拦截（_build_ticket 兜底"摇人吧服务号提单"）
-        if state.ticket_collecting:
+        # ---- 工单填写模式：取消 / 计数 + 字段齐/超限 → 提单 ----
+        _force_submit = False  # 收集超限强制提单：跳过剩余字段校验，弹窗里用户仍可补齐
+        if state.ticket_collecting and parsed.get("ticket_cancel", False):
+            # 用户明确不提单（LLM 判 ticket_cancel=true）→ 退出收集模式，回到正常诊断。
+            logger.info(f"[stream] LLM 判用户取消提单，退出收集模式: query={request.query[:40]}")
+            state.ticket_collecting = []
+            state.collect_rounds = 0
+            state.ticket_ready = False
+            state.required_fields = {}
+            _save_agent_state(memory, state)
+            await self._memory_manager.save_memory(memory)
+            parsed["action"] = "answer"
+            parsed["message"] = "好的，不转工单。有什么其他问题随时问我。"
+            _msg_buf.clear()
+            _msg_yielded = True
+            yield {"event": "status", "data": {"stage": "collect_cancel"}}
+            yield {"event": "token", "data": parsed["message"]}
+        elif state.ticket_collecting:
             state.collect_rounds += 1
             await self._backfill_collected_info(request.session_id, state, memory)
             _tc_ready, _tc_missing = _assess_ticket_readiness(state)
             if _tc_ready:
-                # project 已齐 → 提单
                 _log_ticket_state(state, "ticket_collecting_ready_auto")
                 logger.info(f"[stream] ticket_collecting 字段集齐，自动提单: query={request.query[:40]}")
                 state.ticket_collecting = []
                 parsed["action"] = "submit"
             elif state.collect_rounds >= _MAX_COLLECT_ROUNDS:
-                # 防鬼打墙：收集超限仍不齐 → 强制提单（project 缺由 _build_ticket "摇人吧服务号提单" 兜底）
+                # 防鬼打墙：收集超限仍不齐 → 强制进入弹窗（弹窗里用户仍可核对/补齐）
                 _log_ticket_state(state, "collect_rounds_exceeded_force_submit", missing=_tc_missing)
                 logger.info(f"[stream] 收集轮数超限({state.collect_rounds})，强制提单: missing={_tc_missing}")
                 state.ticket_collecting = []
@@ -2238,10 +2387,9 @@ class AiDiagnosisPlatform:
                 parsed["action"] = "submit"
             else:
                 # 字段尚未收齐：刷新 ticket_collecting 为当前仍缺失的字段
-                # （上一轮可能缺 project，这轮用户给了 project 后缺 error_message）
                 state.ticket_collecting = _tc_missing
 
-        # ---- 提单就绪门槛：project 铁律 + LLM 决定的 required_fields 全非空 ----
+        # ---- 提单就绪门槛：LLM 决定的 required_fields 全非空 ----
         #  放在 phase 转换之前：action 改 ask 后 phase 不会被置为 escalated
         if parsed["action"] == "submit" and not _force_submit:
             # 首次转单：专门调一次 LLM 决定要补哪 2-3 个字段（锁进 required_fields）
@@ -2262,14 +2410,16 @@ class AiDiagnosisPlatform:
                 _msg_yielded = True  # 抑制末尾兜底输出
                 yield {"event": "token", "data": parsed["message"]}
 
-        # ---- 提前进入收集模式：LLM 说 ask 且存在必填缺项 ----
-        #  原逻辑只在 submit 被拦截时设 ticket_collecting（line 1905），但 LLM
-        #  经常直接说 ask 逐个收集字段（且可能不设 required_fields），导致下一轮
-        #  仍跑完整检索+意图分类。放宽为「服务端 _assess_ticket_readiness 有缺项
-        #  即进入」：project 铁律缺失必然触发，下一轮用户答项目名走填写模式
-        #  （skip_retrieval），不会因孤立短词被意图分类误判成闲聊而吞掉字段。
-        if parsed["action"] == "ask" and not state.ticket_collecting:
-            await self._backfill_collected_info(request.session_id, state, memory)
+        # ---- 提前进入收集模式：LLM 判提单意图 + 说 ask + 存在必填缺项 ----
+        #  提单意图由 LLM 输出 ticket_intent 判定（服务端不猜关键词）。
+        #  普通咨询里 LLM 也会 ask（正常追问）——不加意图门槛会把所有多轮咨询
+        #  都拖进收集模式。
+        #  ⚠️ 这里不做 backfill：LLM 刚问完字段，此时回填会把提问里的词当答案
+        #  （如问「潜伏车还是叉车」时把「潜伏车」提取成 robot_type），missing 判空、
+        #  进不了收集模式，下一轮走完整诊断拖 10s+。收集模式下（用户已答完）才回填。
+        #  ⚠️ 也不做 ask→submit 转换：LLM 的追问判断优先，服务端不抢话。
+        if (parsed["action"] == "ask" and not state.ticket_collecting
+                and (parsed.get("ticket_intent", False) or state.required_fields)):
             _, _tc_missing = _assess_ticket_readiness(state)
             if _tc_missing:
                 state.ticket_collecting = _tc_missing
@@ -2287,67 +2437,56 @@ class AiDiagnosisPlatform:
             # 否则 submit() 从 memory 重新加载会拿到旧 state，闭环判定与 stream 不一致。
             _save_agent_state(memory, state)
             await self._memory_manager.save_memory(memory)
+            # 前端把气泡切到「正在生成工单」动画：LLM 的「好的」不再闪出，
+            # 生成完成（弹窗时）再回填固定话术。
+            yield {"event": "status", "data": {"stage": "generating_ticket"}}
             try:
                 draft = await self._build_ticket(request.session_id, state, memory)
+                # check 只用于给前端弹窗展示 missing_fields（project 未选时弹窗内提示必选），
+                # 对话路径不做拦截：required_fields 已在上方「提单就绪门槛」校验过（不齐已改 ask），
+                # project 由用户在弹窗里选择——不能在对话里提示「请先在弹窗选项目」。
                 check = _check_required_fields(draft)
-                if not check["ok"]:
-                    logger.info(f"[stream] 缺必填字段: {check['missing']}, 引导用户补充")
-                    # 先改 action/message + 发 status 再写 memory：避免 save_memory
-                    # 抛异常时前端看到 LLM role-play 的"已生成工单"但实际没提单
+                # 字段齐全 → 不自动提单，弹窗让用户核对/修改后确认
+                # 幂等：上一轮已发 review 未确认（ticket_draft 已存在）→ 不重复发 review，只提示
+                existing_draft = memory.metadata.get("ticket_draft")
+                if existing_draft:
+                    logger.info(f"[stream] 复用待确认草稿(未确认),不重复弹窗: session={request.session_id}")
                     parsed["action"] = "answer"
-                    parsed["message"] = check["prompt"]
-                    yield {"event": "status", "data": {
-                        "stage": "need_fields", "missing_fields": check["missing"], "prompt": check["prompt"],
-                    }}
-                    # 丢弃 LLM 缓冲（可能含 JSON 碎片），直接用系统提示
+                    state.ticket_collecting = []
+                    parsed["message"] = "您有待确认的工单，请先在弹窗中确认或修改后提交。"
                     _msg_buf.clear()
                     _msg_yielded = True
-                    yield {"event": "token", "data": check["prompt"]}
-                    try:
-                        memory.metadata["ticket_draft"] = draft
-                        await self._memory_manager.save_memory(memory)
-                    except Exception:
-                        logger.warning(f"[stream] 草稿保存失败: session={request.session_id}", exc_info=True)
+                    yield {"event": "token", "data": parsed["message"]}
                 else:
-                    # 字段齐全 → 不自动提单，弹窗让用户核对/修改后确认
-                    # 幂等：上一轮已发 review 未确认（ticket_draft 已存在）→ 不重复发 review，只提示
-                    existing_draft = memory.metadata.get("ticket_draft")
-                    if existing_draft:
-                        logger.info(f"[stream] 复用待确认草稿(未确认),不重复弹窗: session={request.session_id}")
-                        parsed["action"] = "answer"
-                        state.ticket_collecting = []
-                        parsed["message"] = "您有待确认的工单，请先在弹窗中确认或修改后提交。"
-                        _msg_buf.clear()
-                        _msg_yielded = True
-                        yield {"event": "token", "data": parsed["message"]}
+                    memory.metadata["ticket_draft"] = draft
+                    # review 阶段工单未建：回退 _apply_action_phase 误置的 escalated → diagnosing，
+                    # 清空 ticket_collecting 退出工单填写模式，一并持久化（原代码只改局部 state 未 save）
+                    state.phase = "diagnosing"
+                    state.ticket_collecting = []
+                    _save_agent_state(memory, state)
+                    await self._memory_manager.save_memory(memory)
+                    logger.info(f"[stream] 字段齐全，弹窗确认: session={request.session_id}, force={_force_submit}")
+                    yield {"event": "status", "data": {
+                        "stage": "review",
+                        "draft": draft,
+                        "missing_fields": check["missing"],
+                        "force_submit": _force_submit,
+                    }}
+                    # 由于不在这里提单，parsed action 改回 answer（避免 _finalize_diagnosis
+                    # 以 escalated 追加 system turn 污染对话），同时不调 submit() 清空状态。
+                    parsed["action"] = "answer"
+                    # 生成完成：弹窗 + 对话气泡回填固定话术（前端已切「正在生成工单」动画，
+                    # LLM 的「好的」不发，所以这里一定显示完整话术）。
+                    proj = state.collected_info.get("project", "")
+                    if _force_submit:
+                        parsed["message"] = "信息收集超限，请在弹窗中核对工单信息、选择项目后提交。"
+                    elif proj:
+                        parsed["message"] = f"已生成工单草稿（预填项目「{proj}」），请在弹窗中核对并选择项目后确认提交。"
                     else:
-                        memory.metadata["ticket_draft"] = draft
-                        # review 阶段工单未建：回退 _apply_action_phase 误置的 escalated → diagnosing，
-                        # 清空 ticket_collecting 退出工单填写模式，一并持久化（原代码只改局部 state 未 save）
-                        state.phase = "diagnosing"
-                        state.ticket_collecting = []
-                        _save_agent_state(memory, state)
-                        await self._memory_manager.save_memory(memory)
-                        logger.info(f"[stream] 字段齐全，弹窗确认: session={request.session_id}, force={_force_submit}")
-                        yield {"event": "status", "data": {
-                            "stage": "review",
-                            "draft": draft,
-                            "missing_fields": check["missing"],
-                            "force_submit": _force_submit,
-                        }}
-                        # 由于不在这里提单，parsed action 改回 answer（避免 _finalize_diagnosis
-                        # 以 escalated 追加 system turn 污染对话），同时不调 submit() 清空状态。
-                        parsed["action"] = "answer"
-                        proj = state.collected_info.get("project", "")
-                        if _force_submit:
-                            parsed["message"] = "信息收集超限，请核对工单信息后提交。"
-                        elif proj:
-                            parsed["message"] = f"已为「{proj}」生成工单草稿，请核对信息后确认提交。"
-                        else:
-                            parsed["message"] = "已生成工单草稿，请核对信息后确认提交。"
-                        _msg_buf.clear()
-                        _msg_yielded = True  # 抑制末尾兜底输出
-                        yield {"event": "token", "data": parsed["message"]}
+                        parsed["message"] = "已生成工单草稿，请在弹窗中选择项目并核对信息后确认提交。"
+                    _msg_buf.clear()
+                    _msg_yielded = True  # 抑制末尾兜底输出
+                    yield {"event": "token", "data": parsed["message"]}
             except Exception as e:
                 logger.error(f"[stream] 提单失败: session={request.session_id}, error={e}", exc_info=True)
                 yield {"event": "status", "data": {"stage": "submit_failed", "error": str(e)}}
