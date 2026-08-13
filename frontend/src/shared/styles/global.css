@@ -2808,17 +2808,19 @@ html, body, #root {
 }
 .ticket-dynamics-card__more { font-size: 12px; font-weight: 400; color: #0052d9; }
 
-/* 滚动容器：限制高度 3 行（约 66px），overflow hidden */
+/* 滚动容器：限制高度 3 行（66px = 22px × 3），超出隐藏 */
 .ticket-dynamics-scroll {
   height: 66px;
   overflow: hidden;
   position: relative;
 }
-/* 滚动轨道：复制一份内容实现无缝循环，用 translateY 从 0 到 -50% */
+/* 滚动轨道：放置两份相同内容实现无缝循环，使用 flex column 纵向排列 */
 .ticket-dynamics-scroll__track {
   display: flex;
   flex-direction: column;
+  /* 每行 4s，总时长 = 行数 × 4s，保证滚动速度均匀 */
   animation: dynamics-scroll calc(var(--count, 1) * 4s) linear infinite;
+  will-change: transform;
 }
 .ticket-dynamics-scroll__item {
   height: 22px;
@@ -2828,10 +2830,16 @@ html, body, #root {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex-shrink: 0;
 }
+/* 无缝滚动关键帧：从 0 → -50%（正好滚过第一份完整内容，第二份补到开头位置） */
 @keyframes dynamics-scroll {
   0% { transform: translateY(0); }
   100% { transform: translateY(-50%); }
+}
+/* 当记录数 ≤ 3 条时，不滚动直接展示全部，避免空转 */
+.ticket-dynamics-scroll[data-count-lte="3"] .ticket-dynamics-scroll__track {
+  animation: none;
 }
 /* 尊重用户偏好：减少动效时停止滚动 */
 @media (prefers-reduced-motion: reduce) {

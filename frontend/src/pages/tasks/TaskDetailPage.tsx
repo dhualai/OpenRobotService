@@ -15,7 +15,7 @@ import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
-import { uploadCommentAttachment } from '@/api/ticket';
+import { uploadCommentAttachment, getOperationLogs, type OperationLog as TicketOperationLog } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { formatDateTime } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
@@ -91,7 +91,7 @@ const parseMinioPath = (rawPath: string): MinioPathInfo | null => {
 };
 
 interface Attachment { path: string; size?: number; filename?: string; url?: string; id?: string; }
-interface OperationLog { id: string; operator: string; operator_name?: string; operation_type: string; description?: string; created_at: string; }
+type OperationLog = TicketOperationLog;
 interface Comment { id: string; content: string; created_by_name?: string; created_by?: string; created_at: string; attachments?: Array<string | { path?: string; filename?: string; size?: number }>; reply_to?: string | number; quoted?: { id: string | number; content: string; created_by_name?: string }; }
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
@@ -197,6 +197,14 @@ export default function TaskDetailPage() {
       })
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
+  }, [detailId]);
+
+  // 加载工单操作日志（用于工单动态区域滚动展示）
+  useEffect(() => {
+    if (!detailId) return;
+    getOperationLogs(detailId)
+      .then((data) => setOpLogs(data || []))
+      .catch(() => setOpLogs([]));
   }, [detailId]);
 
   // 进入详情页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈，无需额外按钮
@@ -975,14 +983,6 @@ export default function TaskDetailPage() {
         fixed
         leftArrow
         onLeftClick={handleBack}
-        right={
-          <span
-            onClick={() => navigate(`/tasks/${detailId}/operations`)}
-            style={{ fontSize: 14, color: '#0052d9', cursor: 'pointer', fontWeight: 500 }}
-          >
-            流转记录
-          </span>
-        }
       />
       <div className="page-container" style={{ paddingTop: 56 }}>
         <div className="detail-card">
@@ -1164,19 +1164,20 @@ export default function TaskDetailPage() {
             if (opLogs.length === 0) {
               return <p style={{ color: '#999' }}>暂无动态</p>;
             }
-            const displayName = (l: OperationLog) => l.operator_name || l.operator;
             const formatTime = (ts: string) => {
               const d = new Date(ts);
               return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
             };
             const items = opLogs.map((l) => ({
-              key: l.id,
+              key: String(l.id),
               text: `${formatTime(l.created_at)} · ${l.description || l.operation_type}`,
             }));
-            // 复制一份用于无缝滚动
+            // 复制一份用于无缝循环滚动
             const loopItems = [...items, ...items];
+            const scrollStyle = { '--count': items.length } as React.CSSProperties;
+            const scrollAttrs = items.length <= 3 ? { 'data-count-lte': '3' } : {};
             return (
-              <div className="ticket-dynamics-scroll" style={{ '--count': items.length } as React.CSSProperties}>
+              <div className="ticket-dynamics-scroll" style={scrollStyle} {...scrollAttrs}>
                 <div className="ticket-dynamics-scroll__track">
                   {loopItems.map((it, i) => (
                     <div className="ticket-dynamics-scroll__item" key={`${it.key}-${i}`}>{it.text}</div>
