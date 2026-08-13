@@ -29,6 +29,53 @@ from ai.agents.AiDiagnosisPlatform.pipeline import (
 # 均为惰性（函数内），避免在 AI 进程启动时触发 backend app/__init__.py 全量装配。
 
 # ============================================================
+# SSE 心跳保活
+# ============================================================
+# 主 LLM thinking 阶段 10s+ 无任何 token 下发（reasoning_content 不对外输出），
+# 长静默易被网关/微信 webview 按空闲连接杀掉 → 前端偶发「网络错误」「图片上传失败」。
+# 心跳以 SSE 注释行 ": ping" 下发——对前端解析透明（只认 event:/data: 行），
+# 却能让中间链路感知连接存活。每 _HEARTBEAT_SEC 秒一次。
+_HEARTBEAT_SEC = 10.0
+_HEARTBEAT_SSE = ": ping\n\n"
+
+
+async def _heartbeat_agen(agen, interval: float = _HEARTBEAT_SEC):
+    """包装异步生成器：interval 内无产出时插入 None 心跳标记。
+
+    注意不能直接 asyncio.wait_for(anext())——超时会向生成器内部注入取消，
+    把正在 await LLM HTTP 流的生产协程杀掉。这里用「anext 任务 vs sleep 任务」
+    竞速，心跳触发时 anext 任务继续跑，绝不取消。
+    """
+    _DONE = object()
+
+    async def _next():
+        try:
+            return await agen.__anext__()
+        except StopAsyncIteration:
+            return _DONE
+
+    task = asyncio.create_task(_next())
+    try:
+        while True:
+            hb = asyncio.create_task(asyncio.sleep(interval))
+            done, _ = await asyncio.wait({task, hb}, return_when=asyncio.FIRST_COMPLETED)
+            if hb in done:
+                yield None
+                continue
+            hb.cancel()
+            item = task.result()
+            if item is _DONE:
+                return
+            yield item
+            task = asyncio.create_task(_next())
+    finally:
+        # 外层 async-for 提前退出（客户端断连/CancelledError）时，
+        # 取消仍在等 anext 的任务，恢复「断连即取消内层生成器」的原有语义。
+        if not task.done():
+            task.cancel()
+
+
+# ============================================================
 # 诊断 Agent (prefix /api/ai/qa)
 # ============================================================
 qa_router = APIRouter(prefix="/api/ai/qa", tags=["AI诊断"])
@@ -234,8 +281,18 @@ async def ask_question_stream(
         producer_task = asyncio.create_task(producer())
 
         try:
-            while True:
-                event = await queue.get()
+            # consumer 心跳保活：producer（LLM thinking）长时间无产出时插入 ": ping"
+            async def _drain():
+                while True:
+                    event = await queue.get()
+                    yield event
+                    if event is _SENTINEL or (isinstance(event, tuple) and len(event) == 2 and event[0] == "__error__"):
+                        return
+
+            async for event in _heartbeat_agen(_drain()):
+                if event is None:
+                    yield _HEARTBEAT_SSE
+                    continue
                 if event is _SENTINEL:
                     break
                 if isinstance(event, tuple) and len(event) == 2 and event[0] == "__error__":
@@ -706,7 +763,10 @@ async def upload_files(
     async def sse():
         try:
             ack = None
-            async for ev in _upload_events(session_id, files, message, authorization):
+            async for ev in _heartbeat_agen(_upload_events(session_id, files, message, authorization)):
+                if ev is None:
+                    yield _HEARTBEAT_SSE
+                    continue
                 if ev["event"] == "file_saved":
                     yield f"event: file_saved\ndata: {json.dumps({'saved': ev['saved'], 'filenames': ev['filenames']}, ensure_ascii=False)}\n\n"
                 elif ev["event"] == "vision_start":
@@ -723,7 +783,10 @@ async def upload_files(
             if message.strip():
                 result_payload = None
                 try:
-                    async for event in _run_diagnosis():
+                    async for event in _heartbeat_agen(_run_diagnosis()):
+                        if event is None:
+                            yield _HEARTBEAT_SSE
+                            continue
                         ev_type = event.get("event")
                         if ev_type == "token":
                             yield f"data: {json.dumps({'token': event.get('data', '')}, ensure_ascii=False)}\n\n"
@@ -885,12 +948,15 @@ async def chat_stream(request: ChatRequest):
             prompt = await _build_prompt(request.session_id, request.query)
             logger.debug(f"[chat-stream] prompt={len(prompt)}chars  overhead={(time.perf_counter()-t0)*1000:.0f}ms")
             t_llm = time.perf_counter()
-            async for token in llm.stream(
+            async for token in _heartbeat_agen(llm.stream(
                 prompt=prompt,
                 system_prompt=request.system_prompt or None,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
-            ):
+            )):
+                if token is None:
+                    yield _HEARTBEAT_SSE
+                    continue
                 if not first:
                     first = True
                     logger.debug(f"[chat-stream] llm_first_token={(time.perf_counter()-t_llm)*1000:.0f}ms")
