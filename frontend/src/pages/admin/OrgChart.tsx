@@ -12,6 +12,8 @@ interface User {
   status?: string;
   company?: string | null;
   department?: string | null;
+  company_id?: string | null;
+  department_id?: string | null;
   job_level?: number;
   supervisor_id?: string | null;
 }
@@ -206,14 +208,75 @@ export default function OrgChart() {
     });
   };
 
+  // 切换部门管理员身份（通过 job_level：1=普通员工，2=部门管理员）
+  // 仅对有部门（department_id 非空）的用户可用
+  const handleToggleDeptManager = useCallback(
+    async (user: User, setAsManager: boolean) => {
+      if (!user.department_id) {
+        Toast({ message: '未分配部门的用户不能设为部门管理员', theme: 'warning' });
+        return;
+      }
+      const targetLevel = setAsManager ? 2 : 1;
+      setSaving(true);
+      try {
+        await request(`/users/${user.username}`, {
+          method: 'PUT',
+          body: JSON.stringify({ job_level: targetLevel }),
+        });
+        Toast({
+          message: setAsManager ? '已设为部门管理员' : '已取消部门管理员',
+          theme: 'success',
+        });
+        setUsers((prev) =>
+          prev.map((u) => (u.id === user.id ? { ...u, job_level: targetLevel } : u)),
+        );
+      } catch (e) {
+        Toast({ message: `操作失败: ${e instanceof Error ? e.message : ''}`, theme: 'error' });
+      } finally {
+        setSaving(false);
+      }
+    },
+    [request],
+  );
+
+  // 自动挂靠：将同公司同部门用户的 supervisor_id 设为该部门管理员
+  const handleAutoHookSubordinates = useCallback(
+    async (manager: User) => {
+      if (!manager.department_id || (manager.job_level ?? 1) < 2) {
+        Toast({ message: '仅部门管理员可执行自动挂靠', theme: 'warning' });
+        return;
+      }
+      setSaving(true);
+      try {
+        const res = (await request(`/users/${manager.username}/auto-hook-subordinates`, {
+          method: 'POST',
+        })) as { message?: string };
+        Toast({ message: res?.message || '自动挂靠完成', theme: 'success' });
+        // 刷新用户列表以同步 supervisor_id 变化
+        await fetchUsers();
+      } catch (e) {
+        Toast({ message: `自动挂靠失败: ${e instanceof Error ? e.message : ''}`, theme: 'error' });
+      } finally {
+        setSaving(false);
+      }
+    },
+    [request, fetchUsers],
+  );
+
   // 渲染树节点
   const renderTreeNode = (node: TreeNode): React.ReactNode => {
     const isDragOver = dragOverUserId === node.id;
     const isCollapsed = collapsedIds.has(node.id);
     const hasChildren = node.children.length > 0;
     const supervisorName = node.supervisor_id
-      ? userMap.get(node.supervisor_id)?.name || userMap.get(node.supervisor_id)?.username
+      ? (() => {
+          const s = userMap.get(node.supervisor_id);
+          return s ? (s.name || s.username) : null;
+        })()
       : null;
+
+    const isDeptManager = (node.job_level ?? 1) >= 2;
+    const hasDept = !!node.department_id;
 
     return (
       <div key={node.id} style={{ marginLeft: node.depth * 20 }}>
@@ -230,8 +293,8 @@ export default function OrgChart() {
             gap: 8,
             padding: '10px 12px',
             margin: '4px 0',
-            background: isDragOver ? '#e8f0fe' : '#fff',
-            border: isDragOver ? '2px dashed #0052d9' : '1px solid #eee',
+            background: isDragOver ? '#e8f0fe' : isDeptManager ? '#fff8e1' : '#fff',
+            border: isDragOver ? '2px dashed #0052d9' : isDeptManager ? '1px solid #d4b106' : '1px solid #eee',
             borderRadius: 8,
             cursor: 'pointer',
             transition: 'background 0.15s',
@@ -247,22 +310,25 @@ export default function OrgChart() {
           )}
           {!hasChildren && <span style={{ width: 20, flexShrink: 0 }} />}
           <span style={{ fontSize: 16 }}>
-            {hasChildren ? '👥' : '👤'}
+            {hasChildren ? '👥' : isDeptManager ? '👑' : '👤'}
           </span>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
               <span style={{ fontWeight: 500, fontSize: 14 }}>
                 {node.name || node.username}
               </span>
-              {node.name && node.name !== node.username && (
-                <span style={{ fontSize: 12, color: '#888' }}>@{node.username}</span>
+              {isDeptManager && (
+                <span style={{ fontSize: 11, color: '#b08400', background: '#fff3c4', padding: '1px 6px', borderRadius: 3, fontWeight: 500 }}>
+                  部门管理员
+                </span>
               )}
-              {node.company && (
+              {/* 仅在树的根节点（无父节点、depth===0）显示公司/部门，避免子卡片重复显示 */}
+              {node.depth === 0 && node.company && (
                 <span style={{ fontSize: 11, color: '#0052d9', background: '#e8f0fe', padding: '1px 6px', borderRadius: 3 }}>
                   {node.company}
                 </span>
               )}
-              {node.department && (
+              {node.depth === 0 && node.department && (
                 <span style={{ fontSize: 11, color: '#d46b08', background: '#fff7e6', padding: '1px 6px', borderRadius: 3 }}>
                   {node.department}
                 </span>
@@ -271,6 +337,47 @@ export default function OrgChart() {
             {supervisorName && (
               <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
                 ↑ 汇报给：{supervisorName}
+              </div>
+            )}
+            {/* 管理员操作按钮行 */}
+            {hasDept && (
+              <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                {!isDeptManager && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleToggleDeptManager(node, true); }}
+                    style={{
+                      fontSize: 11, padding: '2px 8px', borderRadius: 3,
+                      border: '1px solid #d4b106', background: '#fffbe6', color: '#b08400',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    设为部门管理员
+                  </button>
+                )}
+                {isDeptManager && (
+                  <>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleAutoHookSubordinates(node); }}
+                      style={{
+                        fontSize: 11, padding: '2px 8px', borderRadius: 3,
+                        border: '1px solid #0052d9', background: '#e8f0fe', color: '#0052d9',
+                        cursor: 'pointer', fontWeight: 500,
+                      }}
+                    >
+                      🔗 自动挂靠（同部门人员 → 其名下）
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleToggleDeptManager(node, false); }}
+                      style={{
+                        fontSize: 11, padding: '2px 8px', borderRadius: 3,
+                        border: '1px solid #d9d9d9', background: '#fafafa', color: '#888',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      取消管理员
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -380,7 +487,7 @@ export default function OrgChart() {
                   padding: '8px 12px', background: '#fff0f0', borderRadius: 6,
                   marginBottom: 4, fontSize: 13, color: '#cf1322',
                 }}>
-                  {u.name || u.username} → 上级：{userMap.get(u.supervisor_id || '')?.name || u.supervisor_id || '无'}
+                  {u.name || u.username} → 上级：{(s => s ? (s.name || s.username) : null)(userMap.get(u.supervisor_id || '')) || u.supervisor_id || '无'}
                 </div>
               ))}
               <Button
@@ -427,6 +534,8 @@ export default function OrgChart() {
                     <div style={{ marginLeft: 12, marginTop: 2 }}>
                       {userList.map((u) => {
                         const supervisor = u.supervisor_id ? userMap.get(u.supervisor_id) : null;
+                        const isDeptManager = (u.job_level ?? 1) >= 2;
+                        const hasDept = !!u.department_id;
                         return (
                           <div
                             key={u.id}
@@ -437,24 +546,75 @@ export default function OrgChart() {
                             onDrop={(e) => handleDrop(e, u)}
                             onClick={() => { setSelectUser(u); setPickerVisible(true); }}
                             style={{
-                              display: 'flex', alignItems: 'center', gap: 6,
-                              padding: '8px 10px', margin: '2px 0',
-                              background: dragOverUserId === u.id ? '#e8f0fe' : '#fff',
-                              border: dragOverUserId === u.id ? '2px dashed #0052d9' : '1px solid #f0f0f0',
+                              display: 'flex', alignItems: 'flex-start', gap: 6,
+                              padding: '8px 10px', margin: '4px 0',
+                              background: dragOverUserId === u.id ? '#e8f0fe' : isDeptManager ? '#fff8e1' : '#fff',
+                              border: dragOverUserId === u.id ? '2px dashed #0052d9' : isDeptManager ? '1px solid #d4b106' : '1px solid #f0f0f0',
                               borderRadius: 6, cursor: 'pointer',
+                              flexDirection: 'column',
                             }}
                           >
-                            <span style={{ fontSize: 14 }}>👤</span>
-                            <span style={{ fontSize: 13, fontWeight: 500 }}>
-                              {u.name || u.username}
-                            </span>
-                            {supervisor && (
-                              <span style={{ fontSize: 11, color: '#999' }}>
-                                ↑ {supervisor.name || supervisor.username}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: 14 }}>
+                                {isDeptManager ? '�' : '��'}
                               </span>
-                            )}
-                            {!supervisor && (
-                              <span style={{ fontSize: 11, color: '#ccc' }}>无上级</span>
+                              <span style={{ fontSize: 13, fontWeight: 500 }}>
+                                {u.name || u.username}
+                              </span>
+                              {isDeptManager && (
+                                <span style={{ fontSize: 10, color: '#b08400', background: '#fff3c4', padding: '1px 5px', borderRadius: 3, fontWeight: 500 }}>
+                                  部门管理员
+                                </span>
+                              )}
+                              {supervisor && (
+                                <span style={{ fontSize: 11, color: '#999' }}>
+                                  ↑ {supervisor.name || supervisor.username}
+                                </span>
+                              )}
+                              {!supervisor && (
+                                <span style={{ fontSize: 11, color: '#ccc' }}>无上级</span>
+                              )}
+                            </div>
+                            {/* 管理员操作按钮行 */}
+                            {hasDept && (
+                              <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                                {!isDeptManager && (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); handleToggleDeptManager(u, true); }}
+                                    style={{
+                                      fontSize: 10, padding: '2px 7px', borderRadius: 3,
+                                      border: '1px solid #d4b106', background: '#fffbe6', color: '#b08400',
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    设为部门管理员
+                                  </button>
+                                )}
+                                {isDeptManager && (
+                                  <>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleAutoHookSubordinates(u); }}
+                                      style={{
+                                        fontSize: 10, padding: '2px 7px', borderRadius: 3,
+                                        border: '1px solid #0052d9', background: '#e8f0fe', color: '#0052d9',
+                                        cursor: 'pointer', fontWeight: 500,
+                                      }}
+                                    >
+                                      🔗 自动挂靠
+                                    </button>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleToggleDeptManager(u, false); }}
+                                      style={{
+                                        fontSize: 10, padding: '2px 7px', borderRadius: 3,
+                                        border: '1px solid #d9d9d9', background: '#fafafa', color: '#888',
+                                        cursor: 'pointer',
+                                      }}
+                                    >
+                                      取消管理员
+                                    </button>
+                                  </>
+                                )}
+                              </div>
                             )}
                           </div>
                         );
