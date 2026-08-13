@@ -336,6 +336,81 @@ class LogSubAgent:
                     f"elapsed={(_time.perf_counter()-t0)*1000:.0f}ms")
         return result
 
+    # ── 确认者接口：执行单条 directive，返回结构化证据（方案 X：编排集中在 orchestrator）──
+
+    async def analyze_directive(
+        self,
+        directive: Dict,
+        evidence: Optional[List] = None,
+        query_text: Optional[str] = None,
+    ) -> Dict:
+        """执行 orchestrator 下发的一条 directive，返回该次聚焦查询的证据。
+
+        Args:
+            directive: 结构化查询意图，形如
+                {"time_start":"2026-08-11 11:00","time_end":"2026-08-11 11:05",
+                 "robot_filter":"XNA-169","task_filter":"","error_only":true,
+                 "keyword_filter":"last_node_index",
+                 "context_lines":3,"max_results":50}
+            evidence: 可传入主流程已收集的证据列表，discovery 结果会追加进去
+            query_text: 可选的人类可读描述（用于日志）
+
+        Returns:
+            {"matched": int, "text": str, "sample": [summary...],
+             "evidence": [{"line":..,"summary":..}...]}  # 追加了本轮证据
+        """
+        await self._ensure_clients()
+
+        # 结构化 directive 直接走校验/夹紧，不绕 LLM 翻译（忠实执行）
+        q = _validate_query(dict(directive), self._index, self._facts)
+        log_query = LogQuery(
+            time_start=q.get("time_start") or None,
+            time_end=q.get("time_end") or None,
+            robot_filter=q.get("robot_filter") or None,
+            task_filter=q.get("task_filter") or None,
+            path_filter=q.get("path_filter") or None,
+            error_only=q.get("error_only", True),
+            keyword=q.get("keyword_filter") or None,
+            context_before=int(q.get("context_lines", 2)),
+            context_after=int(q.get("context_lines", 2)),
+            max_results=int(q.get("max_results", 50)),
+        )
+        query_result = self._index.query(log_query)
+        matched = _matched_lines(query_result)
+
+        logger.info(f"LogSubAgent directive{(' '+query_text[:50]) if query_text else ''} "
+                    f"→ {matched} lines | {json.dumps(q, ensure_ascii=False)}")
+
+        # 收集证据（只收「命中」行，避免 INFO context 行污染；有 * 标记的才是真正命中）
+        result_evidence = evidence if evidence is not None else []
+        _collect_evidence_into(result_evidence, query_result, only_hit=True)
+
+        # 抽样行摘要（供编排 LLM 阅读）：优先命中行，其次 context
+        sample = []
+        for line_match in re.findall(r"\* L(\d+)\| (.*)", query_result):
+            ln, sm = line_match
+            summary = sm.strip()
+            if summary:
+                sample.append({"line": int(ln), "summary": summary[:180]})
+            if len(sample) >= 30:
+                break
+        # 命中行不足时补充 context 行
+        if len(sample) < 10:
+            for line_match in re.findall(r"  L(\d+)\| (.*)", query_result):
+                ln, sm = line_match
+                summary = sm.strip()
+                if summary:
+                    sample.append({"line": int(ln), "summary": summary[:180]})
+                if len(sample) >= 15:
+                    break
+
+        return {
+            "matched": matched,
+            "text": query_result[:_MAX_FEEDBACK_CHARS],
+            "sample": sample,
+            "evidence": result_evidence,
+        }
+
 
 # ── 辅助函数 ────────────────────────────────────────────────
 
@@ -396,6 +471,10 @@ def _validate_query(q: Dict, idx: LogIndex, facts: Dict) -> Dict:
 
     task = (q.get("task_filter") or "").strip()
     q["task_filter"] = (idx.valid_task(task) or "") if task else ""
+
+    # 2.5) 关键词过滤：非空且为短词才保留（防超长噪声），空则置空
+    kw = (q.get("keyword_filter") or "").strip()
+    q["keyword_filter"] = kw[:60] if kw else ""
 
     # 3) max_results / context_lines 夹紧
     try:
@@ -545,6 +624,25 @@ def _collect_evidence(result: LogAnalysisResult, query_result: str, round_num: i
         if any(e["line"] == int(ln) for e in result.evidence):
             continue
         result.evidence.append({"line": int(ln), "summary": sm[:150], "round": round_num})
+
+
+def _collect_evidence_into(evidence: List[Dict], query_result: str, only_hit: bool = False) -> None:
+    """把查询结果文本里的候选证据追加进已有 evidence 列表（供 analyze_directive 复用）。
+
+    only_hit=True 时只收带 '*' 标记的真正命中行（keyword/error 命中行），
+    避免无 * 的 INFO context 行污染证据。
+    """
+    seen = {e["line"] for e in evidence}
+    pat = r"\* L(\d+)\| (.*)" if only_hit else r"[* ] L(\d+)\| (.*)"
+    for line_match in re.findall(pat, query_result):
+        ln, sm = line_match
+        summary = sm.strip()
+        if not summary:
+            continue
+        if int(ln) in seen:
+            continue
+        evidence.append({"line": int(ln), "summary": sm[:150]})
+        seen.add(int(ln))
 
 
 def _filter_evidence_by_citation(result: LogAnalysisResult, cited: List):
