@@ -109,13 +109,17 @@ class SummarizeFlow:
                 except Exception:
                     pass
 
+            # 触发判断：只累计"非 U老师"的摘要后新评论（U老师的自答不算他人进展）
             new_comments = []
+            # 摘要内容素材：摘要之后的全部评论（含 U老师，让 AI 的回复/诊断也参与提炼）
+            summary_comments = []
             for c in comments:
-                if c.created_by == "U老师":
-                    continue
                 if last_summary_at and c.created_at and c.created_at <= last_summary_at:
                     continue
-                new_comments.append(c)
+                if c.content is not None and str(c.content or "").strip():
+                    summary_comments.append(c)
+                    if c.created_by != "U老师":
+                        new_comments.append(c)
         finally:
             db.close()
 
@@ -129,7 +133,7 @@ class SummarizeFlow:
             }
 
         history_lines = []
-        for c in new_comments[-20:]:
+        for c in summary_comments[-20:]:
             author = getattr(c, 'created_by_name', None) or c.created_by or "?"
             content = (c.content or "")[:200]
             history_lines.append(f"[{author}] {content}")

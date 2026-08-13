@@ -87,6 +87,12 @@ class AIConfig(BaseModel):
     # ========== 诊断服务 ==========
     diagnosis_scan_interval: int = Field(default=60, description="诊断服务扫描新工单间隔（秒）")
 
+    # ========== 解决方式总结 Worker（结束工单 AI 确认弹窗）==========
+    resolution_worker_concurrency: int = Field(default=10, description="解决方式总结 Worker 最大并行数（同时处理多少个工单的总结）")
+    resolution_worker_queue: str = Field(default="ors:resolution", description="解决方式总结任务队列（Redis List）")
+    resolution_worker_wait_timeout: float = Field(default=30.0, description="BROP 阻塞等待秒数 / LLM 单轮超时秒数")
+    resolution_empty_text: str = Field(default="", description="无任何内容时返回的空串（占位提示由前端 placeholder 控制）")
+
     # ========== MinIO 对象存储（附件图片读取）==========
     minio_endpoint: str = Field(default="localhost:9000")
     minio_access_key: str = Field(default="")

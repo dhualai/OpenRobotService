@@ -41,6 +41,12 @@ STATUS_LABEL = {
     "closed": "已关闭",
 }
 
+# 解决方式总结 Worker 的 Redis 任务队列（与 ai/agents/AiTaskPlatform/services/resolution_worker.py 保持一致）
+RESOLUTION_WORKER_QUEUE = "ors:resolution"
+# 占位文案（前端 placeholder，不入库；这里用于识别"无内容"状态）
+RESOLUTION_PLACEHOLDER_TEXT = "【请补充解决方法】"
+RESOLUTION_PLACEHOLDER_ERROR = "【U老师自动总结出错了，请补充解决方法】"
+
 comment_attachment_map = {}
 
 
@@ -811,8 +817,25 @@ async def update_task_status(
 
     try:
         status_enum = TicketStatus(status)
+
+        # ── 结束工单（→ resolved）需携带解决方式：接单人确认后提交的最终文本 ──
+        resolution_summary = None
+        try:
+            if request:
+                body = await request.json()
+                resolution_summary = (body or {}).get("resolution_summary")
+        except Exception:
+            resolution_summary = None
+
+        if status_enum == TicketStatus.RESOLVED:
+            # 必填校验：去空白后非空（占位提示由前端 placeholder 控制，不入值）
+            rs = (resolution_summary or "").strip()
+            if not rs:
+                raise HTTPException(status_code=400, detail="结束工单必须填写解决方式")
+            resolution_summary = rs
+
         old_status = ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)
-        updated_ticket = await TicketService.update_ticket_status(db, task_id, status_enum, token=token, operator_id=username)
+        updated_ticket = await TicketService.update_ticket_status(db, task_id, status_enum, token=token, operator_id=username, resolution_summary=resolution_summary)
         # ── WS 实时广播：工单状态变更 ──
         try:
             await ws_broadcast_task_updated(task_id, updated_ticket)
@@ -846,6 +869,125 @@ async def update_task_status(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新任务状态失败: {str(e)}")
+
+
+@router.post("/{task_id}/resolution-summary")
+async def get_resolution_summary(
+    task_id: int,
+    force: bool = Body(False, embed=True, description="强制重新入队生成（重试场景）"),
+    clear: bool = Body(False, embed=True, description="清除已保存的解决方式草稿与生成状态（接单人取消时调用）"),
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """结束工单确认弹窗：获取工单问题 + AI 解决方式草案。
+
+    - 若 clear=true → 仅清除已保存的 resolution_summary 与生成状态（不入队不生成），供"取消"使用。
+    - 若 metadata_info.resolution_summary 已有（worker 生成的草案或已确认值）→ 直接返回。
+    - 若 force=true → 视为重试，清掉"无内容"标记并重新入队生成。
+    - 若无 → 把任务 LPUSH 到 Redis 队列，由 ai 侧 resolution worker 异步生成（前端轮询回读）。
+    """
+    import logging
+    _logger = logging.getLogger(__name__)
+    _user = (current_user or {}).get('username', '?')
+    _logger.info(f"[resolution-summary] 接口被调用: task_id={task_id}, force={force}, clear={clear}, user={_user}")
+
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        _logger.warning(f"[resolution-summary] task_id={task_id} 不存在 (404)")
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    meta = ticket.metadata_info or {}
+
+    # 取消：清除已保存的解决方式草稿与生成状态（不重新生成，下次点击再生成）
+    if clear:
+        # 复制新 dict 再赋回，强制 SQLAlchemy 检测 JSON 列变化（原地 pop 可能不触发 UPDATE）
+        new_meta = dict(meta)
+        new_meta.pop("resolution_summary", None)
+        new_meta.pop("resolution_summary_at", None)
+        new_meta.pop("resolution_gen_state", None)
+        new_meta.pop("resolution_requested_at", None)
+        new_meta.pop("resolution_empty_at", None)
+        new_meta.pop("resolution_status", None)  # 清理历史遗留的旧字段名残留
+        ticket.metadata_info = new_meta
+        await db.commit()
+        _logger.info(f"[resolution-summary] task_id={task_id} clear=true 已清除解决方式草稿与生成状态, 剩余 keys={list(new_meta.keys())}")
+        return {
+            "task_id": task_id,
+            "problem": {"title": ticket.title or "", "description": ticket.description or ""},
+            "resolution_summary": "",
+            "has_ai": False,
+            "status": "cleared",
+        }
+
+    _logger.info(f"[resolution-summary] task_id={task_id} metadata keys={list(meta.keys())}, resolution_gen_state={meta.get('resolution_gen_state')}, has_summary={bool(meta.get('resolution_summary'))}")
+
+    # 强制重试：清掉"无内容(done)"标记，允许重新入队
+    if force:
+        if meta.get("resolution_gen_state") in ("done", "empty") and not meta.get("resolution_summary"):
+            meta.pop("resolution_gen_state", None)
+            _m = dict(meta)
+            ticket.metadata_info = _m
+            await db.commit()
+            meta = _m
+            _logger.info(f"[resolution-summary] task_id={task_id} force=true 已清除无内容标记，放行重新入队")
+
+    # 已有解决方式（草案/已确认）→ 直接返回
+    if meta.get("resolution_summary"):
+        _logger.info(f"[resolution-summary] task_id={task_id} 命中已有解决方式，直接返回 (status=done)")
+        return {
+            "task_id": task_id,
+            "problem": {"title": ticket.title or "", "description": ticket.description or ""},
+            "resolution_summary": meta["resolution_summary"],
+            "has_ai": True,
+            "status": "done",
+        }
+
+    # 状态 done/empty 但无内容（worker 曾判定无材料）→ 允许重新入队重新生成（可能有新评论/新摘要）
+    # （有内容的 done 已在上面命中 resolution_summary 分支返回，不会走到这里）
+    if meta.get("resolution_gen_state") in ("done", "empty"):
+        _logger.info(f"[resolution-summary] task_id={task_id} 生成状态 {meta.get('resolution_gen_state')} 无内容，放行重新入队")
+
+    # 已在生成中（此前已入队，worker 正在异步总结）→ 只读返回，不重复入队
+    if meta.get("resolution_gen_state") == "pending":
+        _logger.info(f"[resolution-summary] task_id={task_id} 生成状态 pending（生成中），返回空 (status=pending)")
+        return {
+            "task_id": task_id,
+            "problem": {"title": ticket.title or "", "description": ticket.description or ""},
+            "resolution_summary": "",
+            "has_ai": False,
+            "status": "pending",
+        }
+
+    # 无解决方式且未在生成 → 触发 ai worker 异步生成（LPUSH 到 Redis 队列）
+    from datetime import datetime
+    enqueue_status = "pending"
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(
+            f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
+        )
+        try:
+            await r.lpush(RESOLUTION_WORKER_QUEUE, str(int(task_id)))
+            meta["resolution_gen_state"] = "pending"
+            meta["resolution_requested_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ticket.metadata_info = meta
+            await db.commit()
+            _logger.info(f"[resolution-summary] task_id={task_id} 已入队到 {RESOLUTION_WORKER_QUEUE} 触发 worker 生成")
+        finally:
+            await r.aclose()
+    except Exception as e:
+        # 入队失败不影响弹窗；前端 placeholder 兜底提示
+        enqueue_status = "failed"
+        _logger.error(f"[resolution-summary] task_id={task_id} 入队失败: {e}")
+
+    _logger.info(f"[resolution-summary] task_id={task_id} 返回 enqueue_status={enqueue_status}")
+    return {
+        "task_id": task_id,
+        "problem": {"title": ticket.title or "", "description": ticket.description or ""},
+        "resolution_summary": "",
+        "has_ai": False,
+        "status": enqueue_status,
+    }
 
 
 @router.patch("/{task_id}/assign", response_model=TicketResponse)
