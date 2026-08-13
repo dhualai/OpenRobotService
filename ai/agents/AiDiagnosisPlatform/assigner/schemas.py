@@ -77,17 +77,21 @@ class TicketContext(BaseModel):
 
 
 class EngineerProfile(BaseModel):
-    """工程师画像（数据源自后端 users 表）
+    """工程师画像（数据源自后端 users 表 + 公司/部门主数据表）
 
-    对应后端 users 表字段（见 models/identity.py::UserDB）：
-    - id / name / department / responsibility_modules / job_level / duty_text
+    对应后端字段：
+    - id / name ↔ users.username / users.name
+    - company / department ↔ 通过 company_id / department_id 关联主数据表取名称
     数据同步入口：assigner/sync/engineers_sync.py::load_engineers()
     """
 
     id: str = Field(..., description="工程师唯一标识 ↔ users.username（真实环境为 wechat_ 前缀，与 tasks.created_by/assigned_to 一致）")
     name: str = Field(..., description="工程师姓名 ↔ users.name")
+    company: Optional[str] = Field(
+        None, description="公司名称 ↔ users.company_id → companies.name"
+    )
     department: Optional[str] = Field(
-        None, description="部门/团队 ↔ users.department"
+        None, description="部门/团队名称 ↔ users.department_id → departments.name"
     )
     responsibility_modules: Dict[str, List[str]] = Field(
         default_factory=dict,

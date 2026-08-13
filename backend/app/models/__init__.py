@@ -62,6 +62,12 @@ from app.models.resource import (
     StorageType,
 )
 
+# 组织主数据（公司/部门，含审核流程）
+from app.models.organization import (
+    Company,
+    Department,
+)
+
 __all__ = [
     "Base",
     # identity
@@ -80,4 +86,6 @@ __all__ = [
     "Ticket",
     # resource
     "Resource", "ResourceFolder", "ResourceType", "ResourceStatus", "StorageType",
+    # organization
+    "Company", "Department",
 ]

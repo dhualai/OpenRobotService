@@ -19,13 +19,21 @@ _CACHE_TTL = 600
 
 
 def _fetch_from_users_table() -> list[dict]:
-    """从后端 users 表查询可用于派单的用户（status='active'）。"""
+    """从后端 users 表查询可用于派单的用户（status='active'）。
+
+    company / department 字段：优先通过 company_id / department_id 关联主数据表获取名称，
+    若 ID 为空则回退到旧字符串列（过渡期）。
+    """
     from app.core.db import SessionLocal
     from app.models.identity import UserDB
+    from app.models.organization import Company, Department
 
     db = SessionLocal()
     try:
         rows = db.query(UserDB).filter(UserDB.status == "active").all()
+        # 预加载主数据表映射：id → name
+        comp_map = {c.id: c.name for c in db.query(Company).all()}
+        dept_map = {d.id: d.name for d in db.query(Department).all()}
         results = []
         for u in rows:
             modules = getattr(u, "responsibility_modules", None)
@@ -40,10 +48,26 @@ def _fetch_from_users_table() -> list[dict]:
                 modules = {"其他": modules}
             if not isinstance(modules, dict):
                 modules = {}
+            # 优先使用 ID 关联主数据表获取名称
+            comp_id = getattr(u, "company_id", None)
+            comp_name = None
+            if comp_id:
+                comp_name = comp_map.get(comp_id)
+            if not comp_name:
+                comp_name = getattr(u, "company", None)
+
+            dept_id = getattr(u, "department_id", None)
+            dept_name = None
+            if dept_id:
+                dept_name = dept_map.get(dept_id)
+            if not dept_name:
+                dept_name = getattr(u, "department", None)
+
             results.append({
-                "id": getattr(u, "username", None),  # 统一用 username 作为工程师标识（真实环境为 wechat_ 前缀）
+                "id": getattr(u, "username", None),
                 "name": getattr(u, "name", None) or u.username,
-                "department": getattr(u, "department", None),
+                "company": comp_name,
+                "department": dept_name,
                 "responsibility_modules": modules or [],
                 "job_level": getattr(u, "job_level", 1),
                 "duty_text": getattr(u, "duty_text", None),
@@ -79,10 +103,11 @@ def _build_profiles(rows: list[dict]) -> List[EngineerProfile]:
         profiles.append(EngineerProfile(
             id=row["id"],
             name=row["name"],
+            company=row.get("company"),
             department=dept,
             responsibility_modules=modules,
             job_level=row.get("job_level", 1),
-            duty_text=row.get("duty_text"),  # 有更好，没有也行
+            duty_text=row.get("duty_text"),
         ))
 
     if skipped:

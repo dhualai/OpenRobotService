@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.core.db import SessionLocal
 from app.models import UserDB, Role, Permission, Project, role_permissions, user_project_roles
+from app.models.organization import Company, Department
 
 
 class PermissionService:
@@ -293,6 +294,19 @@ class PermissionService:
             # 历史脏数据（非 dict）归一为 {}，避免 Pydantic 校验失败
             if not isinstance(rm, dict):
                 rm = {}
+            # 通过 company_id/department_id join 主数据表获取名称
+            company_name = None
+            department_name = None
+            cid = getattr(db_user, 'company_id', None)
+            did = getattr(db_user, 'department_id', None)
+            if cid:
+                comp = db.query(Company).filter(Company.id == cid).first()
+                if comp:
+                    company_name = comp.name
+            if did:
+                dept = db.query(Department).filter(Department.id == did).first()
+                if dept:
+                    department_name = dept.name
             return {
                 'id': db_user.id,
                 'username': db_user.username,
@@ -304,8 +318,10 @@ class PermissionService:
                 'status': getattr(db_user, 'status', 'inactive'),
                 'external_credentials': external_credentials,
                 'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
-                'company': getattr(db_user, 'company', None),
-                'department': getattr(db_user, 'department', None),
+                'company_id': cid,
+                'department_id': did,
+                'company': company_name,
+                'department': department_name,
                 'responsibility_modules': rm,
                 'job_level': getattr(db_user, 'job_level', 1) or 1,
                 'duty_text': getattr(db_user, 'duty_text', None),

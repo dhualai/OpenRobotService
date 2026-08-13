@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, text
 from app.core.db import SessionLocal
 from app.models import UserDB, Role, Permission, Project, role_permissions, user_project_roles
+from app.models.organization import Company, Department
 from app.core.security import get_password_hash, verify_password
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,23 @@ class IdentityService:
         except:
             db.close()
             raise
+
+    @staticmethod
+    def _resolve_org_names(db: Session, company_id: Optional[str], department_id: Optional[str]) -> Dict[str, Optional[str]]:
+        """通过 company_id/department_id join 主数据表获取名称。
+        优先使用 ID 关联；若 ID 为空则回退到旧字符串列（迁移过渡期）。
+        """
+        company_name = None
+        department_name = None
+        if company_id:
+            comp = db.query(Company).filter(Company.id == company_id).first()
+            if comp:
+                company_name = comp.name
+        if department_id:
+            dept = db.query(Department).filter(Department.id == department_id).first()
+            if dept:
+                department_name = dept.name
+        return {"company": company_name, "department": department_name}
 
     @staticmethod
     def add_user(
@@ -68,6 +86,9 @@ class IdentityService:
                 # 此处强制归一为 dict，避免 Pydantic Dict 校验失败导致接口 500
                 if not isinstance(rm, dict):
                     rm = {}
+                org_names = IdentityService._resolve_org_names(
+                    db, getattr(db_user, 'company_id', None), getattr(db_user, 'department_id', None)
+                )
                 return {
                     'id': db_user.id, 'username': db_user.username,
                     'password_hash': db_user.password_hash,
@@ -76,8 +97,10 @@ class IdentityService:
                     'external_credentials': ec,
                     'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
                     'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
-                    'company': getattr(db_user, 'company', None),
-                    'department': getattr(db_user, 'department', None),
+                    'company_id': getattr(db_user, 'company_id', None),
+                    'department_id': getattr(db_user, 'department_id', None),
+                    'company': org_names['company'],
+                    'department': org_names['department'],
                     'responsibility_modules': rm,
                     'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),
@@ -100,6 +123,9 @@ class IdentityService:
                 rm = getattr(db_user, 'responsibility_modules', None)
                 if not isinstance(rm, dict):
                     rm = {}
+                org_names = IdentityService._resolve_org_names(
+                    db, getattr(db_user, 'company_id', None), getattr(db_user, 'department_id', None)
+                )
                 return {
                     'id': db_user.id, 'username': db_user.username,
                     'password_hash': db_user.password_hash,
@@ -108,8 +134,10 @@ class IdentityService:
                     'external_credentials': ec,
                     'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
                     'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
-                    'company': getattr(db_user, 'company', None),
-                    'department': getattr(db_user, 'department', None),
+                    'company_id': getattr(db_user, 'company_id', None),
+                    'department_id': getattr(db_user, 'department_id', None),
+                    'company': org_names['company'],
+                    'department': org_names['department'],
                     'responsibility_modules': rm,
                     'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),

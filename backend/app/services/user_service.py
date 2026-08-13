@@ -3,6 +3,7 @@ from app.core.database import db_manager, UserDB
 from app.schemas.user import User, UserInDB
 from app.services.permission_service import permission_service
 from app.models import role_permissions
+from app.models.organization import Company, Department
 import json
 import time
 
@@ -46,6 +47,8 @@ class UserService:
                     'name': getattr(user_record, 'name', None),
                     'status': getattr(user_record, 'status', 'inactive'),
                     'external_credentials': external_credentials,
+                    'company_id': getattr(user_record, 'company_id', None),
+                    'department_id': getattr(user_record, 'department_id', None),
                     'company': getattr(user_record, 'company', None),
                     'department': getattr(user_record, 'department', None),
                     'responsibility_modules': rm,

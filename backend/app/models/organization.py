@@ -1,0 +1,43 @@
+"""公司/部门主数据 ORM 模型。
+
+独立于 users 表的主数据表，支持审核流程（pending → approved/rejected）。
+users 表通过 company_id / department_id 外键关联，不再直接存名称字符串。
+"""
+from sqlalchemy import Column, String, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy.sql import func
+
+from app.models.base import Base
+
+
+class Company(Base):
+    __tablename__ = "companies"
+
+    id = Column(String(64), primary_key=True)
+    name = Column(String(128), unique=True, nullable=False, comment="公司名称")
+    status = Column(String(16), nullable=False, default="pending",
+                    comment="审核状态：pending/approved/rejected")
+    created_by = Column(String(64), ForeignKey("users.id"), nullable=True, comment="提交者用户ID")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    approved_by = Column(String(64), ForeignKey("users.id"), nullable=True, comment="审核人用户ID")
+    approved_at = Column(DateTime, nullable=True)
+    reject_reason = Column(String(255), nullable=True, comment="驳回原因")
+
+
+class Department(Base):
+    __tablename__ = "departments"
+
+    id = Column(String(64), primary_key=True)
+    name = Column(String(128), nullable=False, comment="部门名称")
+    company_id = Column(String(64), ForeignKey("companies.id"), nullable=True,
+                        comment="所属公司ID（nullable 用于历史无公司数据）")
+    status = Column(String(16), nullable=False, default="pending",
+                    comment="审核状态：pending/approved/rejected")
+    created_by = Column(String(64), ForeignKey("users.id"), nullable=True, comment="提交者用户ID")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    approved_by = Column(String(64), ForeignKey("users.id"), nullable=True, comment="审核人用户ID")
+    approved_at = Column(DateTime, nullable=True)
+    reject_reason = Column(String(255), nullable=True, comment="驳回原因")
+
+    __table_args__ = (
+        UniqueConstraint("name", "company_id", name="uq_department_name_company"),
+    )
