@@ -5,6 +5,9 @@
 import '@/shared/polyfills';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+// React 19 已移除 findDOMNode，antd v5 浮层（DatePicker 日历面板等）依赖它挂载，
+// 需引入官方兼容补丁，否则浮层不弹出（与 tdesign 编辑弹窗的遮挡问题无关，是独立的前提）
+import '@ant-design/v5-patch-for-react-19';
 import { RouterProvider, createBrowserRouter, Navigate, Outlet, useRouteError } from 'react-router-dom';
 import { AuthGuard } from '@/shared/utils/authGuard';
 import { RAW_BASE } from '@/config/api';
