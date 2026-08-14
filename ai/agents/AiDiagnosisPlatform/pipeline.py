@@ -1774,8 +1774,7 @@ class AiDiagnosisPlatform:
                 "code": 1,
                 "stage": "not_ready",
                 "missing_info": missing,
-                "message": f"工单信息不足，还差：{'、'.join(missing)}。"
-                           f"请直接在对话中告诉我，补全后再点转工单。",
+                "message": f"工单信息不足，还差：{'、'.join(missing)}。在对话中补充后会自动为您生成工单。",
             }
 
         ticket = await self._build_ticket(session_id, agent_state, memory)
@@ -1818,7 +1817,7 @@ class AiDiagnosisPlatform:
         if not ready:
             logger.info(f"[confirm] 信息不足拦截: session={session_id}, missing={missing}")
             return {"code": 1, "stage": "not_ready", "missing_info": missing,
-                    "message": f"工单信息不足，还差：{'、'.join(missing)}。请先在对话中补充后再提交。"}
+                    "message": f"工单信息不足，还差：{'、'.join(missing)}。在对话中补充后会自动为您生成工单。"}
 
         ticket = await self._build_ticket(session_id, agent_state, memory)
         # 只应用用户在弹窗中显式修改的字段（overrides），不用整个 draft 覆盖。
