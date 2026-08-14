@@ -689,7 +689,7 @@ async def handle_subscribe_event(message: dict):
     
     auth_service.register_wechat_user(from_user_name)
     
-    welcome_message = "👋 欢迎关注我们！请点击链接完成个人信息录入。"
+    welcome_message = "👋 欢迎关注我们！请点击链接完成个人信息录入。\n点击链接注册后可在”我要摇人“中提问或提单摇人；”系统任务“中处理工单；”后台管理“中看到工单和项目情况!"
     reply_xml = build_reply_text(from_user_name, to_user_name, welcome_message)
     
     # 追加推送个人中心分享卡片（news 类型图文消息）
