@@ -90,7 +90,7 @@
 }
 
 .op-segment__status {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
 }
 
@@ -176,13 +176,13 @@
 }
 
 .op-segment__end-current {
-  font-size: 12px;
+  font-size: 13px;
   color: #10b981;
   font-weight: 500;
 }
 
 .op-segment__end-next {
-  font-size: 12px;
+  font-size: 13px;
   color: #9ca3af;
 }
 
@@ -212,7 +212,7 @@
   }
 
   .op-segment__status {
-    font-size: 14px;
+    font-size: 13px;
   }
 
   .op-segment__action {

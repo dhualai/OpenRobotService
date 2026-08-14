@@ -269,16 +269,33 @@ def ticket_deadline_notification_dag():
                 overdue_hours = overdue_minutes / 60
 
                 o_key = str(ticket_id)
-                last_date = overdue_dedup.get(o_key)
+                escalated = overdue_hours >= OVERDUE_ESCALATE_HOURS
+
+                # 去重记录格式: "YYYY-MM-DD:level"，level ∈ {normal, escalate}
+                # 兼容旧格式 "YYYY-MM-DD"（视为 normal）
+                last_raw = overdue_dedup.get(o_key, "")
+                last_date, last_level = (last_raw.split(":", 1) + [""])[:2] if last_raw else ("", "")
+                if last_level not in ("normal", "escalate"):
+                    # 旧格式无 level，last_date 即整个值，level 视为已发普通
+                    last_date = last_raw
+                    last_level = "normal" if last_raw else ""
+
+                # 去重判断：
+                # - 今天已发升级 → 跳过（最高级别，无需再发）
+                # - 今天已发普通，本次普通 → 跳过
+                # - 今天已发普通，本次升级 → 允许（级别提升，上级需要知道）
                 if last_date == today_str:
-                    stats["overdue_skipped_dedup"] += 1
-                    continue  # 今天已通知过，跳过
+                    if last_level == "escalate":
+                        stats["overdue_skipped_dedup"] += 1
+                        continue
+                    elif last_level == "normal" and not escalated:
+                        stats["overdue_skipped_dedup"] += 1
+                        continue
 
                 notify_targets: list[str] = []
                 if assigned_to:
                     notify_targets.append(assigned_to)
 
-                escalated = overdue_hours >= OVERDUE_ESCALATE_HOURS
                 if escalated and assigned_to:
                     supervisor = _get_user_supervisor(token, assigned_to)
                     if supervisor and supervisor not in notify_targets:
@@ -289,7 +306,8 @@ def ticket_deadline_notification_dag():
 
                 sent = _send_cuiban(token, ticket_id, 6, notify_targets)
                 if sent:
-                    overdue_dedup[o_key] = today_str
+                    new_level = "escalate" if escalated else "normal"
+                    overdue_dedup[o_key] = f"{today_str}:{new_level}"
                     if escalated:
                         stats["overdue_escalate"] += 1
                     else:
