@@ -89,7 +89,7 @@ class Project(Base):
     system_id = Column(String(50), nullable=True, comment='系统ID')
     description = Column(Text, nullable=True, comment='项目描述')
     contact_person = Column(String(50), nullable=True, comment='对接人')
-    contact_person_id = Column(String(20), nullable=True, comment='对接人ID')
+    contact_person_id = Column(String(64), nullable=True, comment='对接人ID（与 users.id 同长度）')
     project_contact = Column(String(50), nullable=True, comment='对接人')
     status = Column(String(20), nullable=False, default='active', comment='状态')
     expected_trend = Column(String(20), nullable=True, comment='预计走向')

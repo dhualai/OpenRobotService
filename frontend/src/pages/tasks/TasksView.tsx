@@ -1,7 +1,7 @@
 // 系统任务（供给视角）—— 上：AI 任务助手 / 下：工单卡片列表
 // 卡片样式与输入卡片审美一致（白底 + 阴影 + 圆角）。
 // 跨视图流转：消费 ticketDraft 自动建单；讨论按钮 → 带上下文跳回我要摇人。
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar, Toast, Loading, Tag, Popup, Button, Textarea, Form, FormItem } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
@@ -70,6 +70,68 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
   };
 };
 
+// 与后端 TicketFilter 对应的复合过滤条件（支持 or/and 嵌套）
+interface TicketFilterCondition {
+  field?: string;
+  op?: string;
+  value?: string;
+  or?: TicketFilterCondition[];
+  and?: TicketFilterCondition[];
+}
+
+// 相关性分类（全部/项目相关/待我处理/与我相关）的基础过滤条件，不含搜索/状态/优先级。
+// 列表查询与分类角标计数共用，保证两侧口径一致；
+// 待我处理/与我相关在缺少用户名时回退为项目维度，与列表行为一致。
+const buildRelevanceFilters = (
+  relevance: string,
+  username: string,
+  projectIds: string[],
+): TicketFilterCondition[] => {
+  if (relevance === 'global') {
+    // 「全部」：不过滤项目、人员相关性，直接拉全量
+    return [];
+  }
+  if (relevance === 'mine' && username) {
+    const workingStatusFilters = [
+      { field: 'status', op: 'eq', value: 'new' },
+      { field: 'status', op: 'eq', value: 'in_progress' },
+      { field: 'status', op: 'eq', value: 'pending' },
+    ];
+    return [{
+      or: [
+        {
+          and: [
+            { or: workingStatusFilters },
+            { field: 'assignedTo', op: 'eq', value: username },
+          ],
+        },
+        {
+          and: [
+            { field: 'status', op: 'eq', value: 'resolved' },
+            { field: 'createdBy', op: 'eq', value: username },
+          ],
+        },
+      ],
+    }];
+  }
+  if (relevance === 'related' && username) {
+    const userRelatedFilters = [
+      { field: 'createdBy', op: 'eq', value: username },
+      { field: 'createdByName', op: 'contains', value: username },
+      { field: 'assignedTo', op: 'eq', value: username },
+      { field: 'assignedToName', op: 'contains', value: username },
+      { field: 'customer', op: 'eq', value: username },
+      { field: 'customerName', op: 'contains', value: username },
+    ];
+    return [{ or: userRelatedFilters }];
+  }
+  // 「项目相关」：仅展示与当前用户关联的项目（projectIds）下的工单，
+  // 项目列表为空时（未加载/无项目）回退为不限制。
+  return projectIds.length > 0
+    ? [{ or: projectIds.map((pid) => ({ field: 'projectId', op: 'eq', value: pid })) }]
+    : [];
+};
+
 // 将筛选状态同步到 URL 查询参数的工具函数
 const buildFilterParams = (filter: {
   search: string; statusFilter: string; priorityFilter: string;
@@ -128,165 +190,46 @@ export default function TasksView() {
   const isFetchingRef = useRef(false);
   const fetchTicketsRef = useRef<typeof fetchTickets>(async () => {});
 
+  // 各分类（全部/项目相关/待我处理/与我相关）的工单条数，用于筛选条目的右上角角标
+  const [relevanceCounts, setRelevanceCounts] = useState<Record<string, number>>({});
+  const countsFetchingRef = useRef(false);
+  const fetchCountsRef = useRef<() => Promise<void>>(async () => {});
+
   const fetchTickets = useCallback(async (silent = false) => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
     if (!silent) setLoading(true);
     try {
-      let data;
-      
-      if (relevanceFilter === 'global' && canViewAllTasks) {
-        // 「全部」：有权限时不过滤项目、人员相关性，直接拉全量
-        const filters: any[] = [];
-        if (search) {
-          filters.push({ field: 'title', op: 'contains', value: search });
-        }
-        if (statusFilter !== 'all') {
-          filters.push({ field: 'status', op: 'eq', value: statusFilter });
-        }
-        if (priorityFilter !== 'all') {
-          filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
-        }
+      // 相关性基础过滤（全部/项目相关/待我处理/与我相关）；
+      // 「全部」无权限时按项目相关口径处理，与可见的分类选项一致。
+      const relevanceKey = relevanceFilter === 'global' && !canViewAllTasks ? 'all' : relevanceFilter;
+      const filters: TicketFilterCondition[] = buildRelevanceFilters(relevanceKey, username, projectIds);
 
-        const sorts = sortBy === 'priority'
-          ? []
-          : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
-
-        data = await request<{ items: Ticket[]; total: number }>('/filter', {
-          method: 'POST',
-          body: JSON.stringify({
-            filters,
-            sorts,
-            page,
-            size: pageSize,
-          }),
-          skipCache: true,
-        });
-      } else if (relevanceFilter === 'mine' && username) {
-        const filters: any[] = [];
-        
-        const workingStatusFilters = [
-          { field: 'status', op: 'eq', value: 'new' },
-          { field: 'status', op: 'eq', value: 'in_progress' },
-          { field: 'status', op: 'eq', value: 'pending' },
-        ];
-        
-        filters.push({
-          or: [
-            {
-              and: [
-                { or: workingStatusFilters },
-                { field: 'assignedTo', op: 'eq', value: username },
-              ],
-            },
-            {
-              and: [
-                { field: 'status', op: 'eq', value: 'resolved' },
-                { field: 'createdBy', op: 'eq', value: username },
-              ],
-            },
-          ],
-        });
-        
-        if (search) {
-          filters.push({ field: 'title', op: 'contains', value: search });
-        }
-        
-        if (statusFilter !== 'all') {
-          filters.push({ field: 'status', op: 'eq', value: statusFilter });
-        }
-        
-        if (priorityFilter !== 'all') {
-          filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
-        }
-        
-        const sorts = sortBy === 'priority' 
-          ? [] 
-          : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
-        
-        data = await request<{ items: Ticket[]; total: number }>('/filter', {
-          method: 'POST',
-          body: JSON.stringify({
-            filters,
-            sorts,
-            page,
-            size: pageSize,
-          }),
-          skipCache: true,
-        });
-      } else if (relevanceFilter === 'related' && username) {
-        const filters: any[] = [];
-        
-        const userRelatedFilters = [
-          { field: 'createdBy', op: 'eq', value: username },
-          { field: 'createdByName', op: 'contains', value: username },
-          { field: 'assignedTo', op: 'eq', value: username },
-          { field: 'assignedToName', op: 'contains', value: username },
-          { field: 'customer', op: 'eq', value: username },
-          { field: 'customerName', op: 'contains', value: username },
-        ];
-        
-        filters.push({ or: userRelatedFilters });
-        
-        if (search) {
-          filters.push({ field: 'title', op: 'contains', value: search });
-        }
-        
-        if (statusFilter !== 'all') {
-          filters.push({ field: 'status', op: 'eq', value: statusFilter });
-        }
-        
-        if (priorityFilter !== 'all') {
-          filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
-        }
-        
-        const sorts = sortBy === 'priority' 
-          ? [] 
-          : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
-        
-        data = await request<{ items: Ticket[]; total: number }>('/filter', {
-          method: 'POST',
-          body: JSON.stringify({
-            filters,
-            sorts,
-            page,
-            size: pageSize,
-          }),
-          skipCache: true,
-        });
-      } else {
-        // “全部”：仅展示与当前用户关联的项目（projectPermissions keys）下的工单，
-        // 按 task.project_id 过滤；项目列表为空时（未加载/无项目）回退为不限制。
-        const filters: any[] = [];
-        if (projectIds.length > 0) {
-          filters.push({ or: projectIds.map((pid) => ({ field: 'projectId', op: 'eq', value: pid })) });
-        }
-        if (search) {
-          filters.push({ field: 'title', op: 'contains', value: search });
-        }
-        if (statusFilter !== 'all') {
-          filters.push({ field: 'status', op: 'eq', value: statusFilter });
-        }
-        if (priorityFilter !== 'all') {
-          filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
-        }
-
-        const sorts = sortBy === 'priority'
-          ? []
-          : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
-
-        data = await request<{ items: Ticket[]; total: number }>('/filter', {
-          method: 'POST',
-          body: JSON.stringify({
-            filters,
-            sorts,
-            page,
-            size: pageSize,
-          }),
-          skipCache: true,
-        });
+      if (search) {
+        filters.push({ field: 'title', op: 'contains', value: search });
       }
-      
+      if (statusFilter !== 'all') {
+        filters.push({ field: 'status', op: 'eq', value: statusFilter });
+      }
+      if (priorityFilter !== 'all') {
+        filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
+      }
+
+      const sorts = sortBy === 'priority'
+        ? []
+        : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
+
+      const data = await request<{ items: Ticket[]; total: number }>('/filter', {
+        method: 'POST',
+        body: JSON.stringify({
+          filters,
+          sorts,
+          page,
+          size: pageSize,
+        }),
+        skipCache: true,
+      });
+
       let sortedItems = data.items || [];
       if (sortBy === 'priority') {
         sortedItems = [...sortedItems].sort((a, b) => {
@@ -305,7 +248,7 @@ export default function TasksView() {
       isFetchingRef.current = false;
       if (!silent) setLoading(false);
     }
-  }, [page, search, statusFilter, priorityFilter, relevanceFilter, username, projectIds, sortBy, sortOrder]);
+  }, [page, search, statusFilter, priorityFilter, relevanceFilter, username, projectIds, sortBy, sortOrder, canViewAllTasks]);
 
   fetchTicketsRef.current = fetchTickets;
 
@@ -326,6 +269,7 @@ export default function TasksView() {
   useEffect(() => {
     const interval = setInterval(() => {
       fetchTicketsRef.current(true);
+      fetchCountsRef.current();
     }, 2000);
     return () => clearInterval(interval);
   }, []);
@@ -350,12 +294,53 @@ export default function TasksView() {
 
   
 
-  const relevanceOptions = [
+  const relevanceOptions = useMemo(() => [
     ...(canViewAllTasks ? [{ value: 'global', label: '全部' }] : []),
     { value: 'all', label: '项目相关' },
     { value: 'mine', label: '待我处理' },
     { value: 'related', label: '与我相关' },
-  ];
+  ], [canViewAllTasks]);
+
+  // 拉取各分类角标条数：与列表共用同一套相关性过滤口径（不受搜索/状态/优先级影响），
+  // 每次只取 total（size=1）；单个分类失败静默跳过，保留旧值。
+  const fetchRelevanceCounts = useCallback(async () => {
+    if (countsFetchingRef.current) return;
+    countsFetchingRef.current = true;
+    try {
+      const entries = await Promise.all(
+        relevanceOptions.map(async (option) => {
+          try {
+            const data = await request<{ total: number }>('/filter', {
+              method: 'POST',
+              body: JSON.stringify({
+                filters: buildRelevanceFilters(option.value, username, projectIds),
+                sorts: [],
+                page: 1,
+                size: 1,
+              }),
+              skipCache: true,
+            });
+            return [option.value, data.total] as const;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      const next: Record<string, number> = {};
+      entries.forEach((entry) => {
+        if (entry) next[entry[0]] = entry[1];
+      });
+      setRelevanceCounts(next);
+    } catch {
+      // 计数失败保持旧角标，不打扰页面
+    } finally {
+      countsFetchingRef.current = false;
+    }
+  }, [relevanceOptions, username, projectIds]);
+  fetchCountsRef.current = fetchRelevanceCounts;
+
+  useEffect(() => { fetchRelevanceCounts(); }, [fetchRelevanceCounts]);
+  useEffect(() => { if (tasksRefreshKey > 0) fetchRelevanceCounts(); }, [tasksRefreshKey]);
 
   const statusOptions = Object.entries(STATUS_DISPLAY_MAP).map(([value, label]) => ({ value, label }));
 
@@ -532,6 +517,11 @@ export default function TasksView() {
                   onClick={() => { handleRelevanceChange(option.value); }}
                 >
                   {option.label}
+                  {typeof relevanceCounts[option.value] === 'number' && (
+                    <span className="tasks-count-badge">
+                      {relevanceCounts[option.value] > 99 ? '99+' : relevanceCounts[option.value]}
+                    </span>
+                  )}
                 </button>
               ))}
               <div className="tasks-view__filter-divider"></div>
@@ -638,6 +628,11 @@ export default function TasksView() {
                   onClick={() => { handleRelevanceChange(option.value); }}
                 >
                   {option.label}
+                  {typeof relevanceCounts[option.value] === 'number' && (
+                    <span className="tasks-count-badge">
+                      {relevanceCounts[option.value] > 99 ? '99+' : relevanceCounts[option.value]}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>

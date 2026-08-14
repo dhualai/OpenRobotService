@@ -86,7 +86,9 @@ def _load_agent_state(metadata: dict) -> Optional[AgentState]:
         ticket_ready=s.get("ticket_ready", False),
         ticket_type=s.get("ticket_type", ""),
         ticket_collecting=s.get("ticket_collecting", []),
-        required_fields=s.get("required_fields"),  # 旧数据是 {}，None 表示从未决定；{} 语义改为「已决定无需补字段」
+        # 三态迁移：旧持久化数据的 {} 表示「从未决定」（旧语义），新语义 {} =「已决定无需补」。
+        # 若直接按新语义读，旧会话按钮提单会跳过 decide、缺失字段不拦截。空 dict 一律归一为 None。
+        required_fields=(s.get("required_fields") or None),
         context_start=s.get("context_start", 0),
         collect_rounds=s.get("collect_rounds", 0),
     )
@@ -255,8 +257,6 @@ def _log_ticket_state(state: AgentState, event: str, **extra) -> None:
         "phase": state.phase,
         "can_submit": can,
         "ticket_ready": state.ticket_ready,
-        "has_project": bool(state.collected_info.get("project", "").strip() or state.collected_info.get("project_id", "").strip()),
-        "project": (state.collected_info.get("project") or state.collected_info.get("project_id") or "")[:20],
         "problem_summary": (state.problem_summary or "")[:50],
         "rounds": state.diagnosis_rounds,
         "has_last_ticket": bool(state.last_submitted_ticket and state.last_submitted_ticket.get("ticket_id")),
@@ -1320,47 +1320,36 @@ class AiDiagnosisPlatform:
         """提单前回填：基于 required_fields 清单从对话中提取用户已给出的信息，
         补入 collected_info（不覆盖已有值）。仅提取 required_fields 中指定的字段——
         key 名必须与 required_fields 一致，保证后续 _assess_ticket_readiness 能对上。
-        required_fields 为空时退化为仅提取 project。
+        required_fields 为空时无字段可提取（project 已移出对话链路，不回填）。
 
         图片描述屏蔽：上传的截图是 UI 文本（工单类型/状态/处理人等），不是用户陈述。
-        组装对话时把"图片主要内容为：..."替换成占位符，字段提取（含 project）
-        物理上看不到 UI 文本，杜绝把「缺陷」之类当项目名的污染。
+        组装对话时把"图片主要内容为：..."替换成占位符，字段提取物理上看不到 UI 文本。
         """
         try:
             turns = memory.turns[agent_state.context_start:]
             if not turns:
                 return
             # 图片描述屏蔽：上传的截图是 UI 文本（工单类型/状态/处理人等），
-            # 不是用户陈述，字段提取（含 project）物理上看不到 UI 文本。
+            # 不是用户陈述，字段提取物理上看不到 UI 文本。
             conversation_text = self._format_conversation(
                 memory, from_turn=agent_state.context_start, max_turns=20, sanitize_images=True)
             rf = agent_state.required_fields or {}
-            if rf:
-                field_list = "\n".join(f"  - {k}（{label}）" for k, label in rf.items())
-                prompt = (
-                    "从以下对话中提取指定字段的值，仅提取对话中直接提及的内容，不推测、不编造。\n\n"
-                    "## 目标字段\n"
-                    f"{field_list}\n"
-                    "## 输出规范\n"
-                    "- 以 JSON 对象返回，key 必须使用目标字段中给定的英文标识，不要改名\n"
-                    "- 同时提取 project（项目/现场/厂区名称，非空时输出）\n"
-                    "- 对话中未提及的字段不输出\n"
-                    "- 🔴 只能提取用户明确陈述过的事实。用户的提问/诉求本身不是答案：\n"
-                    "  用户问「怎么更新权限」，不代表用户说过「当前权限是什么、目标权限是什么」——\n"
-                    "  不要把问题当答案回填，没说的字段一律不输出\n"
-                    "- project 指用户所在项目/现场/厂区的名称，通常是用户明确说出或多次提及的地点/客户/园区名；\n"
-                    "  不要把截图里的工单类型（缺陷/报障/问题）、工单状态（处理中/已完成）、处理人姓名等 UI 文本当作项目名\n"
-                    "- 对话中未明确给出项目名时，不输出 project\n\n"
-                    f"## 对话\n{conversation_text}\n"
-                )
-            else:
-                prompt = (
-                    "从以下对话中提取 project（项目/现场/厂区名称），仅提取用户明确说出的地点/客户/园区名。\n"
-                    "不要把截图里的工单类型（缺陷/报障/问题）、工单状态（处理中/已完成）、处理人姓名等 UI 文本当作项目名；\n"
-                    "未明确提及项目名时返回 {}。\n"
-                    "以 JSON 返回：{\"project\":\"名称\"}。\n\n"
-                    f"## 对话\n{conversation_text}\n"
-                )
+            if not rf:
+                # 无 required_fields：没有可提取的目标，直接返回（不再退化为提取 project）
+                return
+            field_list = "\n".join(f"  - {k}（{label}）" for k, label in rf.items())
+            prompt = (
+                "从以下对话中提取指定字段的值，仅提取对话中直接提及的内容，不推测、不编造。\n\n"
+                "## 目标字段\n"
+                f"{field_list}\n"
+                "## 输出规范\n"
+                "- 以 JSON 对象返回，key 必须使用目标字段中给定的英文标识，不要改名\n"
+                "- 对话中未提及的字段不输出\n"
+                "- 🔴 只能提取用户明确陈述过的事实。用户的提问/诉求本身不是答案：\n"
+                "  用户问「怎么更新权限」，不代表用户说过「当前权限是什么、目标权限是什么」——\n"
+                "  不要把问题当答案回填，没说的字段一律不输出\n\n"
+                f"## 对话\n{conversation_text}\n"
+            )
             raw = await asyncio.wait_for(
                 self._llm_client.complete(prompt=prompt, max_tokens=400, temperature=0,
                                            thinking=False),
@@ -1369,10 +1358,9 @@ class AiDiagnosisPlatform:
             clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
             data = json.loads(clean)
             filled = []
-            # 只接受 required_fields 中定义的 key + project（key 用同一归一化，防 project_name 变体判缺）
+            # 只接受 required_fields 中定义的 key（key 用同一归一化，防 project_name 变体判缺）。
+            # project 已移出对话链路，不回填、不归一。
             valid_keys = set(_canonical_field_key(k) for k in rf.keys())
-            valid_keys.add("project")
-            valid_aliases = {"project_name", "projectName", "projectname", "项目名称"}
             # 中文标签 → 英文 key 反向映射（LLM 可能直接输出标签）
             _label_to_key = {str(label): key for key, label in rf.items()}
             for k, v in data.items():
@@ -1381,26 +1369,12 @@ class AiDiagnosisPlatform:
                 v = str(v).strip()
                 if not v:
                     continue
-                # 别名归一化
-                if k in valid_aliases:
-                    k = "project"
-                elif k in _label_to_key:
+                # 中文标签归位
+                if k in _label_to_key:
                     k = _label_to_key[k]
                 if k not in valid_keys:
                     logger.debug(f"[backfill] 忽略非目标字段: {k}={v[:30]}")
                     continue
-                if k == "project":
-                    # 安全网：回填的 project 若在项目库匹配得上 → 直接归一名；
-                    # 匹配不上 → **保留原值**。用户可能是真实回答了一个库外项目
-                    # （如「功能测试环境」），丢弃会导致收集模式永远追问项目名（鬼打墙）。
-                    # 截图 UI 文本污染已由 sanitize_images 物理屏蔽 + _apply_state_update
-                    # 的确定性过滤兜底，不需要这里再拦截。
-                    match = await self._resolve_project(v)
-                    if match and (match.code or "").strip():
-                        v = match.name
-                    else:
-                        logger.info(f"[backfill] project '{v}' 未命中项目库，保留原值"
-                                    f"（用户回答优先，防反复追问）")
                 if k in agent_state.collected_info:
                     continue
                 agent_state.collected_info[k] = v
@@ -1641,19 +1615,59 @@ class AiDiagnosisPlatform:
         return result
 
     async def _attach_chat_snapshot(self, ticket: dict, memory) -> None:
-        """把对话记录截图附加到工单 attachments（原地修改 ticket）。
+        """把对话记录以 Markdown 文档附加到工单 attachments（原地修改 ticket）。
 
-        只在入库路径（submit / confirm_submit）调用——get_ticket 等只读预览
-        不生成，避免每次打开详情都白传一张截图。失败静默降级为无截图。
+        只附加工单入库路径（submit / confirm_submit）调用——get_ticket 等只读预览
+        不生成，避免每次打开详情都白传一份。失败静默降级为无附件。
+
+        记录来源：优先 MySQL 全量历史（conversations.service_ticket_id=session_id 映射，
+        前端每轮 appendMessage 落库），Redis 只保留最近 N 轮；MySQL 不可用/无记录时
+        回退 memory.turns（最近 N 轮）。
         """
         try:
-            from ai.core.chat_snapshot import create_chat_snapshot_attachment
-            snap = await create_chat_snapshot_attachment(
-                ticket.get("session_id", ""), memory.turns, title=ticket.get("title") or "")
-            if snap:
-                ticket["attachments"] = (ticket.get("attachments") or []) + [snap]
+            from ai.core.chat_snapshot import create_chat_markdown_attachment
+            sid = ticket.get("session_id", "")
+            turns = memory.turns
+            try:
+                from ai.core.conversation_store import get_history
+                rows = await asyncio.to_thread(get_history, sid)
+                if rows:
+                    db_turns = [{"role": r["role"], "content": r["content"]} for r in rows]
+                    # 顺序校正：MySQL messages.sequence 有落库竞态——用户消息是前端
+                    # fire-and-forget、AI 回复是后端流式落库，连发消息时落库先后
+                    # ≠ 真实对话先后。memory.turns 在内存里按真实顺序 append，是权威。
+                    # 用 memory 的最近 N 轮替换 MySQL 尾部（乱序只发生在最近的落库竞态轮），
+                    # 早于 memory 窗口的老消息顺序稳定，保留 MySQL 部分。
+                    mem_turns = list(memory.turns)
+                    if mem_turns:
+                        # memory 尾部在 MySQL 里找到匹配（从后往前找第一个匹配点），
+                        # 之前的部分用 MySQL（老消息），之后的部分用 memory（顺序权威）
+                        matched = -1
+                        for i in range(len(db_turns) - 1, -1, -1):
+                            if (db_turns[i]["role"] == mem_turns[-1]["role"]
+                                    and db_turns[i]["content"] == mem_turns[-1]["content"]):
+                                matched = i
+                                break
+                        if matched >= 0:
+                            turns = db_turns[:matched] + mem_turns
+                            logger.info(f"[chat_markdown] MySQL 尾部顺序已用 memory 校正: session={sid}, "
+                                        f"db={len(db_turns)}, mem={len(mem_turns)}, matched={matched}")
+                        else:
+                            turns = db_turns
+                            logger.info(f"[chat_markdown] MySQL 尾部未在 memory 中匹配，保持 MySQL 顺序: session={sid}")
+                    else:
+                        turns = db_turns
+                    logger.info(f"[chat_markdown] 使用 MySQL 全量历史: session={sid}, turns={len(turns)}")
+                else:
+                    logger.info(f"[chat_markdown] MySQL 无记录，回退 memory turns: session={sid}, turns={len(turns)}")
+            except Exception as e:
+                logger.warning(f"[chat_markdown] MySQL 历史读取失败，回退 memory turns: session={sid}, err={e}")
+            doc = await create_chat_markdown_attachment(
+                sid, turns, title=ticket.get("title") or "")
+            if doc:
+                ticket["attachments"] = (ticket.get("attachments") or []) + [doc]
         except Exception:
-            logger.warning(f"[chat_snapshot] 附加失败，降级无截图: session={ticket.get('session_id', '')}",
+            logger.warning(f"[chat_markdown] 附加失败，降级无附件: session={ticket.get('session_id', '')}",
                            exc_info=True)
 
     async def get_ticket(self, session_id: str) -> dict:
@@ -1693,7 +1707,9 @@ class AiDiagnosisPlatform:
         if not force:
             ready, missing = _assess_ticket_readiness(agent_state)
             if not ready:
-                raise ValueError(f"工单信息不足，还差：{'、'.join(missing)}。请先在对话中补充后再转工单。")
+                # 收集模式中用户补充完整后 LLM 会 submit → 自动生成草稿弹窗，
+                # 不需要点按钮。文案按实际行为写。
+                raise ValueError(f"工单信息不足，还差：{'、'.join(missing)}。在对话中补充后会自动为您生成工单。")
 
         ticket = await self._build_ticket(session_id, agent_state, memory)
 
@@ -1772,8 +1788,7 @@ class AiDiagnosisPlatform:
                 "code": 1,
                 "stage": "not_ready",
                 "missing_info": missing,
-                "message": f"工单信息不足，还差：{'、'.join(missing)}。"
-                           f"请直接在对话中告诉我，补全后再点转工单。",
+                "message": f"工单信息不足，还差：{'、'.join(missing)}。在对话中补充后会自动为您生成工单。",
             }
 
         ticket = await self._build_ticket(session_id, agent_state, memory)
@@ -1816,13 +1831,7 @@ class AiDiagnosisPlatform:
         if not ready:
             logger.info(f"[confirm] 信息不足拦截: session={session_id}, missing={missing}")
             return {"code": 1, "stage": "not_ready", "missing_info": missing,
-                    "message": f"工单信息不足，还差：{'、'.join(missing)}。请先在对话中补充后再提交。"}
-
-        # 用户在弹窗里可能改了项目名 → 提前注入 collected_info，_build_ticket 的
-        # LLM 才能在 description 里自然带上正确的项目名。
-        _draft_proj = (draft.get("project") or "").strip()
-        if _draft_proj and _draft_proj != agent_state.collected_info.get("project", ""):
-            agent_state.collected_info["project"] = _draft_proj
+                    "message": f"工单信息不足，还差：{'、'.join(missing)}。在对话中补充后会自动为您生成工单。"}
 
         ticket = await self._build_ticket(session_id, agent_state, memory)
         # 只应用用户在弹窗中显式修改的字段（overrides），不用整个 draft 覆盖。
@@ -2249,7 +2258,10 @@ class AiDiagnosisPlatform:
                     context_turns=memory.turns[-4:]))
             _intent_t0 = time.perf_counter()
             try:
-                _intent = await asyncio.wait_for(_intent_task, timeout=2.0)
+                # 实测 _classify_intent 约 2.0-2.1s（DeepSeek 偶发慢），2s 超时正好擦边
+                # 被判 diagnosis 回退 → 提单轮走完整诊断 25s+。放宽到 4s：
+                # 意图分类和检索并发，检索 ~4s 盖住它，不拖慢主链路；超时兜底仍是 diagnosis。
+                _intent = await asyncio.wait_for(_intent_task, timeout=4.0)
             except (asyncio.TimeoutError, Exception):
                 _intent = "diagnosis"
             t_stream["intent"] = round((time.perf_counter() - _intent_t0) * 1000)
@@ -2583,13 +2595,16 @@ class AiDiagnosisPlatform:
                     parsed["action"] = "answer"
                     # 生成完成：弹窗 + 对话气泡回填固定话术（前端已切「正在生成工单」动画，
                     # LLM 的「好的」不发，所以这里一定显示完整话术）。
-                    proj = state.collected_info.get("project", "")
+                    # 话术按「弹窗关闭后」的语境写：用户此时看到的只有对话气泡，
+                    # 要告诉他下一步做什么（补充信息 / 重新打开弹窗提交）。
                     if _force_submit:
-                        parsed["message"] = "信息收集超限，请在弹窗中核对工单信息、选择项目后提交。"
-                    elif proj:
-                        parsed["message"] = f"已生成工单草稿（预填项目「{proj}」），请在弹窗中核对并选择项目后确认提交。"
+                        parsed["message"] = ("工单草稿已生成（信息收集超限）。"
+                                             "如需补充，直接在对话里告诉我；"
+                                             "确认无误后点击转工单按钮，在弹窗中核对信息、选择项目后提交。")
                     else:
-                        parsed["message"] = "已生成工单草稿，请在弹窗中选择项目并核对信息后确认提交。"
+                        parsed["message"] = ("工单草稿已生成。您可以在对话里继续补充信息"
+                                             "（如指定处理人、发生时间），也可以直接点击转工单按钮，"
+                                             "在弹窗中选择项目并提交。")
                     _msg_buf.clear()
                     _msg_yielded = True  # 抑制末尾兜底输出
                     yield {"event": "token", "data": parsed["message"]}

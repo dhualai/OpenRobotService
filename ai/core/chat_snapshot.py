@@ -211,6 +211,78 @@ def render_chat_snapshot(
     return buf.getvalue()
 
 
+def _turns_to_markdown(
+    turns: List[Dict[str, str]],
+    title: str = "AI 诊断对话记录",
+    session_id: str = "",
+) -> str:
+    """把对话 turns 转录成 Markdown 文本（工单附件用，可复制/可检索/可被下游解析）。
+
+    格式：助手在左、用户在右，逐轮排列（一左一右的聊天记录形态）：
+        助手：xxx
+        用户：xxx
+    相邻内容完全相同的 turn 视为重复记录（上传回执等），只保留一条。
+    图片描述（「我上传了 N 个文件：…」）原样保留在用户消息里。
+    """
+    lines = [f"# {title}", ""]
+    _prev = None
+    for turn in turns:
+        role = (turn.get("role") or "user").lower()
+        role_label = "U老师" if role == "assistant" else "用户"
+        content = (turn.get("content") or "").strip()
+        if not content:
+            continue
+        if _prev == (role_label, content):
+            continue  # 相邻重复（如上传后的重复回执），跳过
+        _prev = (role_label, content)
+        lines.append(f"{role_label}：{content}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+async def create_chat_markdown_attachment(
+    session_id: str,
+    turns: List[Dict[str, str]],
+    title: str = "",
+) -> Optional[dict]:
+    """生成对话记录 Markdown 文档并上传 MinIO，返回 attachments 元素 {path, filename, size}。
+
+    替代旧版 PNG 截图附件：md 可复制、可检索、文件更小，且下游系统可直接解析。
+    任何失败都返回 None（不抛异常）——附件是锦上添花，不能拖垮提单主流程。
+    """
+    try:
+        import time as _t
+        from app.utils.minio_client import minio_client
+        from app.core.config import settings
+
+        md_text = _turns_to_markdown(
+            turns,
+            title=title or "AI 诊断对话记录",
+            session_id=session_id,
+        )
+        if not md_text.strip():
+            return None
+        md_bytes = md_text.encode("utf-8")
+
+        bucket = settings.COMMENT_BUCKET
+        object_path = f"{bucket}/chat_records/{session_id}/{int(_t.time())}.md"
+        ok = minio_client.upload_bytes(
+            file_bytes=md_bytes,
+            object_path=object_path,
+            content_type="text/markdown; charset=utf-8",
+        )
+        if not ok:
+            logger.warning(f"[chat_markdown] MinIO 上传失败，降级无附件: session={session_id}")
+            return None
+
+        fname = "对话记录_" + _t.strftime("%Y%m%d") + ".md"
+        logger.info(f"[chat_markdown] 对话记录已上传: {object_path} ({len(md_bytes)}B)")
+        return {"path": object_path, "filename": fname, "size": len(md_bytes)}
+    except Exception as e:
+        logger.warning(f"[chat_markdown] 生成失败，降级无附件: session={session_id}, err={e}")
+        return None
+
+
 async def create_chat_snapshot_attachment(
     session_id: str,
     turns: List[Dict[str, str]],
