@@ -10,7 +10,7 @@
 // 因 id 已存在而被忽略/更新，天然不重复。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { TaskRoomSocket, type CommentPayload, type WsEvent } from '@/api/ws';
+import { TaskRoomSocket, type CommentPayload, type WsEvent, type AiProgressTodo } from '@/api/ws';
 import type { DiscussionComment } from '@/shared/components/DiscussionPanel';
 
 export interface TaskUpdatedPatch {
@@ -29,6 +29,8 @@ export interface OnlineMember {
 interface Options {
   currentUser?: string;
   onTaskUpdated?: (patch: TaskUpdatedPatch) => void;
+  /** AI 执行过程实时进度（Claude Code 式动态展示）；phase=done 收尾时前端收起过程区 */
+  onAiProgress?: (ev: { run_id?: string; phase: 'running' | 'done'; todos: AiProgressTodo[] }) => void;
 }
 
 const sortComments = (list: DiscussionComment[]): DiscussionComment[] =>
@@ -65,6 +67,8 @@ export function useTaskCommentsWS(
   const currentUserRef = useRef(options?.currentUser);
   currentUserRef.current = options?.currentUser;
   const onTaskUpdatedRef = useRef(options?.onTaskUpdated);
+  const onAiProgressRef = useRef(options?.onAiProgress);
+  onAiProgressRef.current = options?.onAiProgress;
 
   // 父级基线变化（GET/POST/DELETE 乐观更新）→ 以基线为权威源合并 WS 增量：
   // 基线已有的按基线更新；基线没有但 WS 新增的保留；已删除的（deletedIdsRef）一律排除。
@@ -135,6 +139,13 @@ export function useTaskCommentsWS(
             status: e.status,
             assigned_to: e.assigned_to,
             assigned_to_name: e.assigned_to_name,
+          });
+          break;
+        case 'ai.progress':
+          onAiProgressRef.current?.({
+            run_id: e.run_id,
+            phase: e.phase,
+            todos: e.todos || [],
           });
           break;
         default:
