@@ -1509,8 +1509,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (res.data.stage === 'not_ready') {
         const missing = res.data.missing_info ?? [];
         const msg = res.data.message || (missing.length
-          ? `工单信息不足，还差：${missing.join('、')}。请直接在对话中告诉我，补全后再点转工单。`
-          : '工单信息不足，请补充后再点转工单。');
+          ? `工单信息不足，还差：${missing.join('、')}。在对话中补充后会自动为您生成工单。`
+          : '工单信息不足，在对话中补充后会自动为您生成工单。');
         setMessages((prev) => [...prev, {
           id: uid(),
           role: 'assistant',
