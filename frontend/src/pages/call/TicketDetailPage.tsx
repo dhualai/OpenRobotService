@@ -18,6 +18,7 @@ import {
   canUrgeTicket,
   canReportTicket,
   canShowCancelButton,
+  canEditPriority,
   STATUS_DISPLAY_MAP,
   getStatusColor,
 } from '@/shared/constants/ticket';
@@ -29,6 +30,7 @@ import SafeHtml from '@/shared/components/SafeHtml';
 import { useAuthStore } from '@/stores/auth';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
 import { formatDateTime } from '@/shared/utils/url';
+import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
 import type { UserItem } from '@/api/users';
 
 interface AiDiagnosis {
@@ -386,6 +388,10 @@ export default function TicketDetailPage() {
   // 编辑工单（标题/描述/优先级/类型/联系人；权限与后端对齐：admin/创建人/处理人，终态不可编辑）
   const [showEdit, setShowEdit] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; project_id: string; project_name: string; deadline_at?: string }>({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
+  // 最晚解决时间区间：基准 = 工单创建时间（ticket.created_at），而非用户操作时刻
+  const editDeadlineRange = getDeadlineRange(editForm.priority, ticket?.created_at);
+  // 优先级仅在「尚未派单」（新建/待派单）可修改；已派单及后续状态禁止（置灰不可点）
+  const priorityDisabled = !canEditPriority(ticket?.status);
   const [savingEdit, setSavingEdit] = useState(false);
   // 所属项目下拉（当前用户名下项目，GET /api/admin/projects/me；支持关键词模糊搜索）
   const [showProjectPicker, setShowProjectPicker] = useState(false);
@@ -927,8 +933,14 @@ export default function TicketDetailPage() {
                   <button
                     key={label}
                     type="button"
-                    className={`tasks-create-modal__radio-btn ${editForm.priority === PRIORITY_EN[label] ? 'is-active' : ''}`}
-                    onClick={() => setEditForm((p) => ({ ...p, priority: PRIORITY_EN[label] }))}
+                    disabled={priorityDisabled}
+                    title={priorityDisabled ? '仅新建工单可修改优先级' : undefined}
+                    className={`tasks-create-modal__radio-btn ${editForm.priority === PRIORITY_EN[label] ? 'is-active' : ''} ${priorityDisabled ? 'is-disabled' : ''}`}
+                    onClick={() => {
+                      const v = PRIORITY_EN[label];
+                      const r = getDeadlineRange(v, ticket?.created_at);
+                      setEditForm((p) => ({ ...p, priority: v, ...(r ? { deadline_at: r.max.toISOString() } : {}) }));
+                    }}
                   >{label}</button>
                 ))}
               </div>
@@ -962,8 +974,10 @@ export default function TicketDetailPage() {
                 style={{ width: '100%' }}
                 placeholder="点击选择"
                 format="YYYY-MM-DD HH:00"
-                showTime={{ defaultValue: dayjs().hour(9).minute(0), format: 'HH:00' }}
+                showTime={{ defaultValue: editDeadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00' }}
                 value={editForm.deadline_at ? dayjs(editForm.deadline_at) : null}
+                disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min, editDeadlineRange.max) : undefined}
+                disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>
                   setEditForm((p) => ({
                     ...p,

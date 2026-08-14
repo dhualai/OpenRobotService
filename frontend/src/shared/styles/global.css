@@ -784,6 +784,12 @@ html, body, #root {
   border-color: #0052d9;
 }
 
+.tasks-create-modal__radio-btn.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .tasks-create-modal__actions {
   display: flex;
   gap: 8px;
