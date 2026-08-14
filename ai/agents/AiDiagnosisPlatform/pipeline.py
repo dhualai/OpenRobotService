@@ -207,14 +207,14 @@ def _reset_state_after_submit(agent_state: AgentState, memory, ticket: dict, db_
 # ============================================================
 
 def _canonical_field_key(key: str) -> str:
-    """项目名称 key 归一化：project_name / projectName / projectname / 项目名称 → project。
+    """字段 key 归一化：仅处理 project 的历史变体。
 
-    collected_info 合并时已把这几个变体归一化为 project（_apply_state_update），
-    required_fields 的写入与 readiness 判定必须用同一映射，否则 LLM 声明
-    required_fields={'project_name'} 时 collected_info 里只有 project，永远判缺，
-    造成"用户反复给项目名却一直追着问"的鬼打墙。
-    收集轮 LLM 常直接把中文标签「项目名称」当 key 写，同样归一化。
+    其余字段不做近义词归一化——required_fields 一旦由 decide 确定就锁定不变
+    （_apply_state_update 的清单锁定），收集模式 JSON 模板直接列出这些 key，
+    LLM 只准照模板填 value。近义词表是补丁不是根治，越扩越打地鼠。
     """
+    if not isinstance(key, str):
+        return key
     return "project" if key in ("project_name", "projectName", "projectname", "项目名称") else key
 
 
@@ -776,6 +776,11 @@ class AiDiagnosisPlatform:
             )
             # 收集模式用极简 prompt：砍掉 DIAGNOSIS_PROMPT 的 165 行人设/知识库/诊断规则，
             # LLM 只需提取字段值 + 自然确认，大幅减少无关思考，提升收集轮响应速度。
+            # collected_info 模板直接列出待填字段 key——LLM 只准照模板填，
+            # 不准自创 key（此前它自创 reproduce_steps/environment 导致服务端按
+            # required_fields 的 key 查永远判缺，鬼打墙）。
+            _rf_items = "".join(f'"{k}":""' + ("," if i < len(state.required_fields) - 1 else "")
+                                for i, k in enumerate(state.required_fields.keys()))
             return (
                 f"你是工单填写助手。用户正在补充工单所需信息，请逐字段记录到 collected_info。\n\n"
                 f"{ticket_collecting_context}\n\n"
@@ -784,8 +789,10 @@ class AiDiagnosisPlatform:
                 f"输出 JSON（字段齐就 submit，message 留空不写正文）：\n"
                 f'```json\n'
                 f'{{"action":"ask|submit","intent":"troubleshoot","ticket_cancel":false,'
-                f'"state_update":{{"collected_info":{{}},"ticket_ready":false}}}}\n'
+                f'"state_update":{{"collected_info":{{{_rf_items}}},"ticket_ready":false}}}}\n'
                 f'```\n'
+                f"collected_info 的 key 必须严格使用上面模板里的英文 key，一个字都不准改；"
+                f"value 填用户实际提供的内容，未提供的字段保持空字符串。\n"
                 f"只有 action=ask（还在问字段）时才在 JSON 后写回复，语气像工程师；"
                 f"action=submit 时 JSON 后什么都不写。"
             )
@@ -932,12 +939,12 @@ class AiDiagnosisPlatform:
                 v = str(v).strip()
                 if not v:
                     continue
-                # 归一化项目名称 key：LLM 可能输出 project_name / projectName / project 等
-                _key = k
-                if k in ("project_name", "projectName", "projectname", "项目名称"):
-                    _key = "project"
-                # 中文标签 → 英文 key 归位
-                elif _key in _label_to_key:
+                # key 归一化（近义词/中文标签/项目变体 → 统一 key）。
+                # 写入时归一，读取判定（_assess_ticket_readiness）也归一，
+                # 两侧一致才不会出现「LLM 写了 reproduce_steps、服务端找 repro_steps」的鬼打墙。
+                _key = _canonical_field_key(k)
+                # 中文标签 → 英文 key 归位（required_fields 的 label 反查）
+                if _key in _label_to_key:
                     _key = _label_to_key[_key]
                 # project 确定性过滤：这些是工单 UI 文本（截图描述会进对话），
                 # 不是项目名。LLM 把「缺陷」当 project 写出时直接丢弃，
@@ -1200,7 +1207,11 @@ class AiDiagnosisPlatform:
         # 但 state 残留"充电验证"，导致 embedding 偏航、正确 chunk 排不进 top N）。
         t0 = time.perf_counter()
         search_query = resolved_query if resolved_query else state.original_query
-        _need_context = len(search_query) < 10  # 极短查询（"怎么办""这是啥"）才需要上下文
+        # 上下文补全只对真正的指代性短查询生效（"怎么办""这是啥"等无实义词）。
+        # 阈值 10 太宽——「在哪看回放」（6字）是语义完整的新问题，被误当短查询
+        # 拼上旧话题 problem_summary（30字），embedding 主成分被带偏，正确 chunk
+        # 排不进 top N（日志实锤：检索结果全是旧话题「自研车上线」，无一条「回放」）。
+        _need_context = len(search_query) < 4
         if state.problem_summary and _need_context:
             search_query = search_query + " " + state.problem_summary[:30]
         if state.hypotheses and _need_context:
@@ -1381,7 +1392,8 @@ class AiDiagnosisPlatform:
                 v = str(v).strip()
                 if not v:
                     continue
-                # 中文标签归位
+                # key 归一化：近义词/中文标签 → 统一 key，再与 valid_keys 比对
+                k = _canonical_field_key(k)
                 if k in _label_to_key:
                     k = _label_to_key[k]
                 if k not in valid_keys:
