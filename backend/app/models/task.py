@@ -98,6 +98,8 @@ class Task(Base):
     tags = Column(JSON, nullable=True, comment="标签列表")
     metadata_info = Column(JSON, nullable=True, comment="扩展元数据")
     attachments = Column(JSON, nullable=True, comment="附件列表")
+    attachment_analysis = Column(JSON, nullable=True,
+                                  comment="附件分析记忆：{object_path: {filename, kind, summary, analyzed_at}}，供 AI 判断每次需重新分析的附件，避免重复分析")
 
     reply_count = Column(Integer, nullable=False, default=0, comment="回复数量")
     view_count = Column(Integer, nullable=False, default=0, comment="查看数量")

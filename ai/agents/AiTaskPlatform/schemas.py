@@ -77,6 +77,8 @@ class TaskContext(BaseModel):
     project_name: Optional[str] = None
     attachments: List[dict] = Field(default_factory=list)
     metadata_info: Optional[dict] = None
+    attachment_analysis: Dict[str, dict] = Field(default_factory=dict,
+        description="已解读附件记忆 {object_path: {kind, analyzed, summary, analyzed_at}}")
 
     # ── 来自 diagnosis JSON（提单 Agent 交付）──
     problem_summary: str = ""
