@@ -212,6 +212,7 @@ def task_to_dict(task: Task) -> dict:
         # 截止时间：DateTime → ISO 字符串（前端 formatDeadlineAbsolute 消费）
         "deadline_at": task.deadline_at.isoformat() if task.deadline_at else "",
         "attachments": task.attachments or [],
+        "attachment_analysis": task.attachment_analysis or {},
         "diagnosis": meta.get("diagnosis") or {},
         "source": task.source or AI_SOURCE,
         "created_by": created_by,
@@ -336,7 +337,11 @@ def update_task_resolution(task_id, solution: dict, resolution: str = "resolved"
 
 
 def load_task_context_dict(task_id) -> dict:
-    """任务 Agent _load_task_context：读 task + 解构 diagnosis。"""
+    """任务 Agent _load_task_context：读 task + 解构 diagnosis。
+
+    额外合并最近评论（task_comments）里上传的附件（讨论区补发的截图/日志），
+    使 AI 能解析到用户评论时上传的图片/日志，避免"没收到附件"的误判。
+    """
     db = SessionLocal()
     try:
         task = db.query(Task).filter(Task.id == int(task_id)).first()
@@ -349,6 +354,102 @@ def load_task_context_dict(task_id) -> dict:
         base["ruled_out"] = diag.get("ruled_out") or []
         base["collected_info"] = diag.get("collected_info") or {}
         base["diagnosis_rounds"] = diag.get("rounds", 0)
+
+        # 合并最近评论（task_comments）上传的附件，复用 _dedup_attachments 去重
+        comment_atts = _collect_comment_attachments(db, int(task_id))
+        if comment_atts:
+            base["attachments"] = _dedup_attachments(
+                (base.get("attachments") or []) + comment_atts
+            )
         return base
     finally:
         db.close()
+
+
+_COMMENT_ATTACHMENT_LIMIT = 50
+_COMMENT_SCAN_ROWS = 30
+
+
+def _collect_comment_attachments(db, task_id: int) -> list:
+    """收集该工单最近评论里上传的附件，转成 AI 可解析的附件 dict 列表。
+
+    task_comments.attachments 为 {bucket}/{object} 字符串（讨论区上传的截图/日志），
+    这里转成 {filename, path=MinIO 预签名 URL, object_path} 字典，
+    供 parse_attachments / analyze_images / extract_log_paths 统一读取。
+    presign 失败时降级保留 bucket/object 原值（_read_bytes 的 MinIO 分支仍可直接读取）。
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+    result: list = []
+    try:
+        from app.models.task import TaskComment
+        rows = (
+            db.query(TaskComment)
+            .filter(TaskComment.task_id == task_id, TaskComment.attachments.isnot(None))
+            .order_by(TaskComment.created_at.desc())
+            .limit(_COMMENT_SCAN_ROWS)
+            .all()
+        )
+        from ai.core.minio_client import minio_client
+        for c in rows:
+            for att in (c.attachments or []):
+                if not isinstance(att, str) or not att.strip():
+                    continue
+                att = att.strip()
+                obj = att.partition("/")[2] or att
+                fname = obj.split("/")[-1] or att
+                try:
+                    url = minio_client.get_presigned_url(att, expires_minutes=10)
+                except Exception as e:
+                    _log.debug(f"[task_adapter] 评论附件 presign 失败 {att}: {e}")
+                    url = att  # 降级：保留 bucket/object 原值，_read_bytes 的 MinIO 分支可读
+                result.append({"filename": fname, "path": url, "object_path": att})
+                if len(result) >= _COMMENT_ATTACHMENT_LIMIT:
+                    break
+            if len(result) >= _COMMENT_ATTACHMENT_LIMIT:
+                break
+    except Exception as e:
+        _log.debug(f"[task_adapter] 收集评论附件失败: {e}")
+    return result
+
+
+def update_attachment_analysis(task_id, updates: dict) -> bool:
+    """把本次分析过的附件结论写回 tasks.attachment_analysis 记忆。
+
+    updates: {object_path: {kind, summary, analyzed_at?}} — 逐个合并（保留历史其它条目）。
+    attachment_analysis 为 JSON 列，就地修改不触发 UPDATE（SQLAlchemy 不感知），
+    故整体构建新 dict 后整体赋值。
+    """
+    from datetime import datetime
+
+    db = SessionLocal()
+    try:
+        task = db.query(Task).filter(Task.id == int(task_id)).first()
+        if not task:
+            return False
+        memo = dict(task.attachment_analysis or {})
+        now = datetime.now().isoformat(timespec="seconds")
+        for obj_path, rec in (updates or {}).items():
+            if not obj_path:
+                continue
+            prev = dict(memo.get(obj_path) or {})
+            prev.update({k: v for k, v in (rec or {}).items() if v is not None})
+            prev["analyzed"] = True
+            prev["analyzed_at"] = prev.get("analyzed_at") or now
+            memo[obj_path] = prev
+        task.attachment_analysis = memo
+        db.commit()
+        return True
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"[task_adapter] 更新附件记忆失败 task={task_id}: {e}"
+        )
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        db.close()
+

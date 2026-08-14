@@ -137,9 +137,15 @@ def _can_submit(state: AgentState) -> tuple[bool, str]:
     刚提完单（last_submitted_ticket 非空）且之后没有提炼出新 problem_summary 时拦截；
     用户描述了新问题（problem_summary 非空）则允许重新开始提单流程。
 
+    例外：收集模式（ticket_collecting 非空）说明提单流程已启动、问题已在对话中确认
+    （首轮就设了 required_fields），此时绝不拦截——否则用户在补字段时会被
+    「刚提交过工单」误拦，submit 失效后 LLM 反复追问同一字段、收集轮数超限强制弹窗。
+
     不依赖 phase——run_stream 会提前把 phase 改成 diagnosing，phase 不可靠。
     对话路径和按钮路径都调用此函数，行为一致。
     """
+    if state.ticket_collecting:
+        return True, ""
     if state.last_submitted_ticket and not (state.problem_summary or "").strip():
         return False, "工单刚提交，如需处理新问题请先描述新现象。"
     return True, ""
@@ -798,6 +804,10 @@ class AiDiagnosisPlatform:
                     "2. 用户确有提单诉求 → 判定 ticket_type（problem=报障/bug=缺陷/feature=需求/support=咨询/other），"
                     "仔细读完整对话找出工程师接单后必须知道、但对话里确实还没说过的 1-4 个关键信息缺口"
                     "（用户说过的、能推出的不列；不列项目名）\n"
+                    "2.5 🔴 有提单诉求时，必须把用户要提单的问题一句话总结写进 state_update.problem_summary"
+                    "（如「工单401确认完成页面，解决方式自动总结出错」）。这是服务端闭环校验的依据——"
+                    "不写的话，刚提过单的会话会被误判为「无新问题重复提单」而拦截。"
+                    "即使其他信息都齐、直接 submit，也必须写 problem_summary\n"
                     "3. 有缺口 → action=ask，一次只问一个缺失字段，ticket_intent=true；"
                     "没有缺口 → action=submit，message 留空，ticket_intent=true\n"
                     "4. 🔴 用户指名处理人（「提给XX」「交给XX」）分两种场景：\n"
@@ -811,6 +821,7 @@ class AiDiagnosisPlatform:
                     '```json\n'
                     '{"action":"answer|ask|submit","intent":"howto|troubleshoot","ticket_intent":true|false,"ticket_cancel":false,'
                     '"state_update":{"ticket_type":"problem|bug|feature|support|other",'
+                    '"problem_summary":"一句话问题概述",'
                     '"required_fields":{"field_key":"中文标签"},'
                     '"collected_info":{},"ticket_ready":false}}\n'
                     '```\n'
@@ -1519,7 +1530,7 @@ class AiDiagnosisPlatform:
             f"## Agent 推理链\n{reasoning}\n\n"
             f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
             f"然后以 JSON 格式返回：\n"
-            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤150字，简述问题和排查过程，不要带项目/现场名；用户后续补充的关键信息（如调度版本、发生时间、指名处理人）要总结进去",'
+            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤150字，简述问题和排查过程，不要带项目/现场名；用户后续补充的关键信息（如调度版本、发生时间）要总结进去；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
             f'"priority":"紧急|高|中|低","contact":"从对话提取的联系人，没有则为空",'
             f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
             f'"project":"固定为空字符串——项目由用户在确认弹窗搜索选择，不要从对话提取",'
@@ -1815,9 +1826,19 @@ class AiDiagnosisPlatform:
         draft = memory.metadata.get("ticket_draft")
         if not draft:
             return {"code": 1, "message": "没有待确认的工单草稿"}
+        # 弹窗所见即所得：以 draft 为基准（弹窗展示的就是它），叠 overrides 后直接入库。
+        # 不再二次调用 _build_ticket——LLM 随机性会让 v2 ≠ 弹窗展示的 v1，
+        # 造成弹窗 / 提交后卡片 / 历史工单三处不一致。
+        # overrides 应用到副本，不污染 memory 里的 draft（校验失败时还能重试）。
+        ticket = dict(draft)
         if overrides:
-            draft.update(overrides)
-        check = _check_required_fields(draft)
+            for k, v in overrides.items():
+                if k in ("ticket_id", "missing_fields", "confirm_prompt", "stage"):
+                    continue
+                # deadline_at 允许空值（用户在弹窗里清除截止时间）；其余字段空值跳过
+                if v or k == "deadline_at":
+                    ticket[k] = v
+        check = _check_required_fields(ticket)
         if not check["ok"]:
             return {"code": 1, "message": check["prompt"], "missing_fields": check["missing"]}
 
@@ -1833,20 +1854,10 @@ class AiDiagnosisPlatform:
             return {"code": 1, "stage": "not_ready", "missing_info": missing,
                     "message": f"工单信息不足，还差：{'、'.join(missing)}。在对话中补充后会自动为您生成工单。"}
 
-        ticket = await self._build_ticket(session_id, agent_state, memory)
-        # 只应用用户在弹窗中显式修改的字段（overrides），不用整个 draft 覆盖。
-        # draft 里的 description/project 等是上一轮 _build_ticket 用旧上下文生成的，
-        # 覆盖会把用户改过项目名后 LLM 重新生成的正确内容冲掉。
-        # title/description 现在允许用户在弹窗编辑（setDraftField 只写用户实际改过的字段），
-        # 必须应用；仅排除内部流转字段（ticket_id 等）和会被下方重新生成的字段。
-        if overrides:
-            for k, v in overrides.items():
-                if v and k not in ("ticket_id", "missing_fields", "confirm_prompt", "stage"):
-                    ticket[k] = v
-
-        # 用户在弹窗里改了项目名 → 重新匹配 project_id，否则 project_id 还是旧的
+        # 弹窗里选的项目 → 归一为项目库全名 + code（弹窗 ProjectSelect 已传全名，
+        # 这里是防旧前端/直调 API 传简称的兜底）
         _final_project = ticket.get("project", "")
-        if _final_project and _final_project != agent_state.collected_info.get("project", ""):
+        if _final_project:
             match = await self._resolve_project(_final_project)
             if match:
                 ticket["project"] = match.name
@@ -2365,10 +2376,11 @@ class AiDiagnosisPlatform:
                             except Exception:
                                 _is_submit_action = False
                             if _is_submit_action:
+                                # submit：只吞正文，不发「生成工单中」动画。
+                                # 服务端就绪门槛可能把 submit 打回 ask（required_fields 未齐），
+                                # 若这里乐观发动画，用户会看到「生成工单中」→ 两秒后又开始问信息。
+                                # 动画统一推迟到 submit 块（就绪判定通过后、真正 build_ticket 前）发。
                                 _suppress_msg = True
-                                _generating_sent = True
-                                logger.info(f"[stream] 流式阶段发现submit，发 generating_ticket: session={request.session_id}")
-                                yield {"event": "status", "data": {"stage": "generating_ticket"}}
                                 # 不 yield tail，后续 token 也全部吞掉（raw_tokens 照常累积供最终解析）
                                 continue
                             tail = _buf[msg_start:]
@@ -2548,14 +2560,14 @@ class AiDiagnosisPlatform:
         ticket_data = None
         if parsed["action"] == "submit":
             _log_ticket_state(state, "llm_action_submit")
+            # 「生成工单中」动画在这里发（就绪门槛已通过、即将 build_ticket 前）。
+            # 流式阶段只吞正文不发动画——否则 LLM 的 submit 若被就绪门槛打回 ask，
+            # 用户会看到「生成工单中」闪现后又被问信息。
+            if not _generating_sent:
+                _generating_sent = True
+                yield {"event": "status", "data": {"stage": "generating_ticket"}}
             # 先把本轮 state（含 LLM 提炼的 problem_summary/collected_info）落盘，
             # 否则 submit() 从 memory 重新加载会拿到旧 state，闭环判定与 stream 不一致。
-            if not _generating_sent:
-                # 兜底补发：流式阶段 JSON 就位解析失败（fenced 等待超时/非标准 JSON）时
-                # 没有发过 generating_ticket → 前端会一直「思考中」到弹窗。这里补发。
-                _generating_sent = True
-                logger.info(f"[stream] submit 块兜底补发 generating_ticket: session={request.session_id}")
-                yield {"event": "status", "data": {"stage": "generating_ticket"}}
             _save_agent_state(memory, state)
             await self._memory_manager.save_memory(memory)
             try:
