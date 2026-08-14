@@ -35,6 +35,7 @@ def load_task_context(task_id: str) -> TaskContext:
             ctx.status = d.get("status", "pending") or "pending"
             ctx.source = d.get("source", "ai") or "ai"
             ctx.attachments = d.get("attachments") or []
+            ctx.attachment_analysis = d.get("attachment_analysis") or {}
             ctx.robot_type = d.get("robot_type", "")
             ctx.fault_code = d.get("fault_code", "")
             ctx.location = d.get("location", "")

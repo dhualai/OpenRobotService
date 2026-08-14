@@ -212,6 +212,7 @@ def task_to_dict(task: Task) -> dict:
         # 截止时间：DateTime → ISO 字符串（前端 formatDeadlineAbsolute 消费）
         "deadline_at": task.deadline_at.isoformat() if task.deadline_at else "",
         "attachments": task.attachments or [],
+        "attachment_analysis": task.attachment_analysis or {},
         "diagnosis": meta.get("diagnosis") or {},
         "source": task.source or AI_SOURCE,
         "created_by": created_by,
@@ -410,3 +411,45 @@ def _collect_comment_attachments(db, task_id: int) -> list:
     except Exception as e:
         _log.debug(f"[task_adapter] 收集评论附件失败: {e}")
     return result
+
+
+def update_attachment_analysis(task_id, updates: dict) -> bool:
+    """把本次分析过的附件结论写回 tasks.attachment_analysis 记忆。
+
+    updates: {object_path: {kind, summary, analyzed_at?}} — 逐个合并（保留历史其它条目）。
+    attachment_analysis 为 JSON 列，就地修改不触发 UPDATE（SQLAlchemy 不感知），
+    故整体构建新 dict 后整体赋值。
+    """
+    from datetime import datetime
+
+    db = SessionLocal()
+    try:
+        task = db.query(Task).filter(Task.id == int(task_id)).first()
+        if not task:
+            return False
+        memo = dict(task.attachment_analysis or {})
+        now = datetime.now().isoformat(timespec="seconds")
+        for obj_path, rec in (updates or {}).items():
+            if not obj_path:
+                continue
+            prev = dict(memo.get(obj_path) or {})
+            prev.update({k: v for k, v in (rec or {}).items() if v is not None})
+            prev["analyzed"] = True
+            prev["analyzed_at"] = prev.get("analyzed_at") or now
+            memo[obj_path] = prev
+        task.attachment_analysis = memo
+        db.commit()
+        return True
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"[task_adapter] 更新附件记忆失败 task={task_id}: {e}"
+        )
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        db.close()
+
