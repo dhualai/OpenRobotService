@@ -127,6 +127,10 @@ async def _summarize_resolution(task_id: int, llm) -> tuple[str, bool]:
             timeout=get_ai_config().resolution_worker_wait_timeout,
         )
         summary_text = summary.strip()
+        # LLM 判定"无真正解决方案"（只输出 NO_SOLUTION）→ 视为无方案，返回空
+        if summary_text.upper() in ("NO_SOLUTION", "__NO_SOLUTION__"):
+            logger.info(f"Resolution #{task_id}: LLM 判定无真正解决方案 (NO_SOLUTION)")
+            return "", False
         return summary_text, True
     except asyncio.TimeoutError:
         logger.warning(f"Resolution #{task_id}: LLM 总结超时")

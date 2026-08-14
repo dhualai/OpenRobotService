@@ -942,10 +942,18 @@ async def get_resolution_summary(
             "status": "done",
         }
 
-    # 状态 done/empty 但无内容（worker 曾判定无材料）→ 允许重新入队重新生成（可能有新评论/新摘要）
+    # 状态 done/empty 但无内容（worker 曾判定无材料）→ 非 force 时直接返回空，不再重复入队
     # （有内容的 done 已在上面命中 resolution_summary 分支返回，不会走到这里）
-    if meta.get("resolution_gen_state") in ("done", "empty"):
-        _logger.debug(f"[resolution-summary] task_id={task_id} 生成状态 {meta.get('resolution_gen_state')} 无内容，放行重新入队")
+    # 只有 force=true（用户主动重试）时才会清除状态走下面的重新入队分支。
+    if meta.get("resolution_gen_state") == "empty":
+        _logger.debug(f"[resolution-summary] task_id={task_id} 生成状态 empty（无材料），直接返回 (status=empty)，不重复入队")
+        return {
+            "task_id": task_id,
+            "problem": {"title": ticket.title or "", "description": ticket.description or ""},
+            "resolution_summary": "",
+            "has_ai": False,
+            "status": "empty",
+        }
 
     # 已在生成中（此前已入队，worker 正在异步总结）→ 只读返回，不重复入队
     if meta.get("resolution_gen_state") == "pending":
@@ -957,6 +965,10 @@ async def get_resolution_summary(
             "has_ai": False,
             "status": "pending",
         }
+
+    # 状态 done 且无内容（历史遗留，非 empty）→ 放行重新入队一次（兼容旧数据）
+    if meta.get("resolution_gen_state") == "done":
+        _logger.debug(f"[resolution-summary] task_id={task_id} 生成状态 done 但无内容，放行重新入队")
 
     # 无解决方式且未在生成 → 触发 ai worker 异步生成（LPUSH 到 Redis 队列）
     from datetime import datetime
