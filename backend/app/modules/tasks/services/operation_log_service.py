@@ -198,3 +198,62 @@ class OperationLogService:
         except Exception as e:
             logger.error(f"Failed to log view for task {task_id}: {str(e)}", exc_info=True)
             return None
+
+    @staticmethod
+    async def update_view_duration(
+        db: AsyncSession,
+        task_id: int,
+        username: str,
+        duration_seconds: int,
+    ) -> bool:
+        """更新最近一条查看记录的停留时长。
+
+        前端在用户离开页面时回传累计停留秒数，后端将其累加到最近一条 VIEW 记录上
+        （多次可见性切换/短时离开再回来会在同一条 VIEW 记录上累加）。
+
+        Args:
+            db: 数据库会话
+            task_id: 工单 ID
+            username: 操作人 username
+            duration_seconds: 本次回传的停留秒数
+
+        Returns:
+            是否更新成功
+        """
+        if duration_seconds <= 0:
+            return False
+        try:
+            # 查找该用户在本工单上最近一条 VIEW 记录
+            query = select(TaskOperationLog).where(
+                and_(
+                    TaskOperationLog.task_id == task_id,
+                    TaskOperationLog.operator == username,
+                    TaskOperationLog.operation_type == OperationType.VIEW,
+                )
+            ).order_by(desc(TaskOperationLog.created_at)).limit(1)
+            result = await db.execute(query)
+            log = result.scalar_one_or_none()
+            if not log:
+                logger.warning(
+                    f"[OpLog] update_view_duration: no VIEW record found for "
+                    f"task_id={task_id}, operator={username}"
+                )
+                return False
+
+            # 累加停留时长（多次回传累加，覆盖同一查看会话的多个可见性周期）
+            existing = log.duration_seconds or 0
+            log.duration_seconds = existing + duration_seconds
+            log.ended_at = datetime.now()
+            await db.commit()
+            logger.info(
+                f"[OpLog] update_view_duration: task_id={task_id}, operator={username}, "
+                f"added={duration_seconds}s, total={log.duration_seconds}s"
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                f"Failed to update view duration for task {task_id}: {str(e)}",
+                exc_info=True,
+            )
+            await db.rollback()
+            return False
