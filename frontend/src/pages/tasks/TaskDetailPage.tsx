@@ -1357,9 +1357,9 @@ export default function TaskDetailPage() {
                 {showRoleActions && (
                   <>
                     <Button size="small" theme="default" style={{ backgroundColor: '#333333', color: '#fff', border: 'none' }} onClick={startEdit}>修改工单</Button>
-                    <Button size="small" theme="default" style={{ backgroundColor: '#faad14', color: '#fff', border: 'none' }} onClick={() => setShowReturnConfirmPopup(true)}>退回工单</Button>
-                    <Button size="small" theme="default" style={{ backgroundColor: '#0052d9', color: '#fff', border: 'none' }} onClick={() => setShowReassignPopup(true)}>重新指派</Button>
-                    <Button size="small" theme="default" style={{ backgroundColor: '#d54941', color: '#fff', border: 'none' }} onClick={() => setShowEscalatePopup(true)}>升级上报</Button>
+                    <Button size="small" theme="default" style={{ backgroundColor: '#faad14', color: '#fff', border: 'none' }} onClick={() => { setReturnReason(''); setShowReturnConfirmPopup(true); }}>退回工单</Button>
+                    <Button size="small" theme="default" style={{ backgroundColor: '#0052d9', color: '#fff', border: 'none' }} onClick={() => { setReassignUser(null); setReassignReason(''); setShowReassignPopup(true); }}>重新指派</Button>
+                    <Button size="small" theme="default" style={{ backgroundColor: '#d54941', color: '#fff', border: 'none' }} onClick={() => { setEscalateUser(null); setEscalateReason(''); setShowEscalatePopup(true); }}>升级上报</Button>
                   </>
                 )}
               </div>
@@ -1446,7 +1446,7 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      <Popup visible={showEscalatePopup} onClose={() => { setShowEscalatePopup(false); setEscalateReason(''); }} placement="bottom" showOverlay>
+      <Popup visible={showEscalatePopup} onClose={() => { setShowEscalatePopup(false); setEscalateReason(''); }} placement="bottom" showOverlay destroyOnClose>
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">升级上报</h4>
           <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>请选择升级对象</p>
@@ -1541,7 +1541,7 @@ export default function TaskDetailPage() {
       </Popup>
 
 
-      <Popup visible={showReassignPopup} onClose={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); }} placement="bottom" showOverlay>
+      <Popup visible={showReassignPopup} onClose={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); }} placement="bottom" showOverlay destroyOnClose>
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">重新指派</h4>
           <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>选择新的处理人</p>
@@ -1564,7 +1564,7 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      <Popup visible={showReturnConfirmPopup} onClose={() => { setShowReturnConfirmPopup(false); setReturnReason(''); }} placement="bottom" showOverlay>
+      <Popup visible={showReturnConfirmPopup} onClose={() => { setShowReturnConfirmPopup(false); setReturnReason(''); }} placement="bottom" showOverlay destroyOnClose>
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">退回工单</h4>
           <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
