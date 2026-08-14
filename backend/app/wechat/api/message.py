@@ -65,7 +65,6 @@ async def send_notification_core(payload: dict, token: str = None):
         logger.info(token)
         
         users = await PermissionService.get_user_list(None, token)
-        logger.info(users)
         
         users_dict = {}
         for user in users:
