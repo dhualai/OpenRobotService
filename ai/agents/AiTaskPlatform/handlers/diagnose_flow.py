@@ -4,6 +4,7 @@
 diagnose = 全量通盘：读评论 + Discovery/日志分析 + 历史/平台检索 → 一次性报告（不落库）。
 """
 
+import asyncio
 import json
 import re
 import time
@@ -98,6 +99,36 @@ class DiagnoseFlow:
     # ============================================================
     # diagnose — 诊断报告（[帮我分析] 按钮）
     # ============================================================
+
+    # 改造点 B / G2 并行化的三个独立只读小任务（各写回 self._diag_* 实例字段）
+    async def _diag_load_history(self, context):
+        """历史工单方案检索（独立只读）。"""
+        try:
+            query_text = self._build_query(context)
+            history_text = await self._retrieve_task_resolutions(query_text)
+            self._diag_hist_found = history_text is not None and len(history_text) > 0 and "无" not in history_text[:20]
+            self._diag_hist_summary = history_text[:1000] if history_text else ""
+        except Exception:
+            self._diag_hist_found = False
+            self._diag_hist_summary = ""
+
+    async def _diag_load_platform(self, context):
+        """平台参考文档检索（仅服务号/平台问题启用，独立只读）。"""
+        self._diag_platform_ref = ""
+        try:
+            if self._is_platform_ticket(context):
+                platform_text = await self._retrieve_platform_reference(self._build_query(context))
+                if platform_text and "无" not in platform_text[:10]:
+                    self._diag_platform_ref = platform_text[:1000]
+        except Exception:
+            self._diag_platform_ref = ""
+
+    async def _diag_load_discussion(self, task_id):
+        """读取讨论评论（独立只读）。"""
+        try:
+            self._diag_user_discussion = self._load_discussion(task_id, limit=20)
+        except Exception:
+            self._diag_user_discussion = ""
 
     async def diagnose(self, task_id: str) -> dict:
         """全能力诊断 → 即时返回报告 JSON（不存库）。
@@ -204,39 +235,25 @@ class DiagnoseFlow:
                             input={"error": str(e)},
                             elapsed_ms=round((time.perf_counter() - t2) * 1000))
 
-        # 3. 历史工单检索（能力二）
+        # 3. 历史工单检索 + 平台参考 + 讨论评论（改造点 B / G2 并行化：均为独立只读，用 gather 并行）
         t3 = time.perf_counter()
-        hist_found = False
-        hist_summary = ""
-        try:
-            query_text = self._build_query(context)
-            history_text = await self._retrieve_task_resolutions(query_text)
-            hist_found = history_text is not None and len(history_text) > 0 and "无" not in history_text[:20]
-            hist_summary = history_text[:1000] if history_text else ""
-            self._add_trace(self.NODE_KNOWLEDGE, "ok",
-                            output={"found": hist_found},
-                            elapsed_ms=round((time.perf_counter() - t3) * 1000))
-        except Exception as e:
-            self._add_trace(self.NODE_KNOWLEDGE, "error",
-                            input={"error": str(e)},
-                            elapsed_ms=round((time.perf_counter() - t3) * 1000))
-
-        # 3b. 平台参考文档检索（仅服务号/平台问题启用）
-        platform_ref = ""
-        try:
-            if self._is_platform_ticket(context):
-                platform_text = await self._retrieve_platform_reference(self._build_query(context))
-                if platform_text and "无" not in platform_text[:10]:
-                    platform_ref = platform_text[:1000]
-        except Exception:
-            pass
-
-        # 3c. 读取讨论评论（通盘诊断补充工程师与 AI 的一手线索与排查进展）
-        user_discussion = ""
-        try:
-            user_discussion = self._load_discussion(task_id, limit=20)
-        except Exception:
-            user_discussion = ""
+        # 初始化并行任务写回字段（防御：若某任务异常也必须能读到默认值）
+        self._diag_hist_found = False
+        self._diag_hist_summary = ""
+        self._diag_platform_ref = ""
+        self._diag_user_discussion = ""
+        await asyncio.gather(
+            self._diag_load_history(context),
+            self._diag_load_platform(context),
+            self._diag_load_discussion(task_id),
+        )
+        hist_found = self._diag_hist_found
+        hist_summary = self._diag_hist_summary
+        platform_ref = self._diag_platform_ref
+        user_discussion = self._diag_user_discussion
+        self._add_trace(self.NODE_KNOWLEDGE, "ok",
+                        output={"hist_found": hist_found, "platform": bool(platform_ref), "discussion": bool(user_discussion)},
+                        elapsed_ms=round((time.perf_counter() - t3) * 1000))
 
         # 4. LLM 综合分析
         t4 = time.perf_counter()

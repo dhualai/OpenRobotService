@@ -336,7 +336,11 @@ def update_task_resolution(task_id, solution: dict, resolution: str = "resolved"
 
 
 def load_task_context_dict(task_id) -> dict:
-    """任务 Agent _load_task_context：读 task + 解构 diagnosis。"""
+    """任务 Agent _load_task_context：读 task + 解构 diagnosis。
+
+    额外合并最近评论（task_comments）里上传的附件（讨论区补发的截图/日志），
+    使 AI 能解析到用户评论时上传的图片/日志，避免"没收到附件"的误判。
+    """
     db = SessionLocal()
     try:
         task = db.query(Task).filter(Task.id == int(task_id)).first()
@@ -349,6 +353,60 @@ def load_task_context_dict(task_id) -> dict:
         base["ruled_out"] = diag.get("ruled_out") or []
         base["collected_info"] = diag.get("collected_info") or {}
         base["diagnosis_rounds"] = diag.get("rounds", 0)
+
+        # 合并最近评论（task_comments）上传的附件，复用 _dedup_attachments 去重
+        comment_atts = _collect_comment_attachments(db, int(task_id))
+        if comment_atts:
+            base["attachments"] = _dedup_attachments(
+                (base.get("attachments") or []) + comment_atts
+            )
         return base
     finally:
         db.close()
+
+
+_COMMENT_ATTACHMENT_LIMIT = 50
+_COMMENT_SCAN_ROWS = 30
+
+
+def _collect_comment_attachments(db, task_id: int) -> list:
+    """收集该工单最近评论里上传的附件，转成 AI 可解析的附件 dict 列表。
+
+    task_comments.attachments 为 {bucket}/{object} 字符串（讨论区上传的截图/日志），
+    这里转成 {filename, path=MinIO 预签名 URL, object_path} 字典，
+    供 parse_attachments / analyze_images / extract_log_paths 统一读取。
+    presign 失败时降级保留 bucket/object 原值（_read_bytes 的 MinIO 分支仍可直接读取）。
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+    result: list = []
+    try:
+        from app.models.task import TaskComment
+        rows = (
+            db.query(TaskComment)
+            .filter(TaskComment.task_id == task_id, TaskComment.attachments.isnot(None))
+            .order_by(TaskComment.created_at.desc())
+            .limit(_COMMENT_SCAN_ROWS)
+            .all()
+        )
+        from ai.core.minio_client import minio_client
+        for c in rows:
+            for att in (c.attachments or []):
+                if not isinstance(att, str) or not att.strip():
+                    continue
+                att = att.strip()
+                obj = att.partition("/")[2] or att
+                fname = obj.split("/")[-1] or att
+                try:
+                    url = minio_client.get_presigned_url(att, expires_minutes=10)
+                except Exception as e:
+                    _log.debug(f"[task_adapter] 评论附件 presign 失败 {att}: {e}")
+                    url = att  # 降级：保留 bucket/object 原值，_read_bytes 的 MinIO 分支可读
+                result.append({"filename": fname, "path": url, "object_path": att})
+                if len(result) >= _COMMENT_ATTACHMENT_LIMIT:
+                    break
+            if len(result) >= _COMMENT_ATTACHMENT_LIMIT:
+                break
+    except Exception as e:
+        _log.debug(f"[task_adapter] 收集评论附件失败: {e}")
+    return result
