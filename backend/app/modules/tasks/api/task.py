@@ -23,7 +23,7 @@ from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, Ticket
 from app.modules.tasks.services.ticket_service import TicketService
 from app.modules.tasks.services.operation_log_service import OperationLogService, get_role_prefix
 from app.models.task import OperationType
-from app.modules.tasks.api.ws import ws_broadcast_comment, ws_broadcast_comment_deleted, ws_broadcast_task_updated
+from app.modules.tasks.api.ws import ws_broadcast_comment, ws_broadcast_comment_deleted, ws_broadcast_task_updated, manager
 from app.utils.minio_client import minio_client
 from app.utils.notification_utils import NotificationUtils
 from app.integrations.api import verify_sync_api_key
@@ -1196,6 +1196,11 @@ async def upload_comment_attachment(
 
         return {"message": "上传附件成功"}
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(
+            f"[attach-upload] 上传附件失败 temp_id={temp_id} filename={getattr(file, 'filename', '?')} bucket={settings.COMMENT_BUCKET}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail=f"上传附件失败: {str(e)}")
 
 
@@ -1360,6 +1365,30 @@ async def internal_broadcast_comment(
     if not comment or comment.task_id != task_id:
         raise HTTPException(status_code=404, detail="评论不存在")
     await ws_broadcast_comment("comment.created", task_id, comment)
+    return {"code": 0, "message": "broadcasted"}
+
+
+@router.post("/{task_id}/internal/broadcast-ai-progress")
+async def internal_broadcast_ai_progress(
+    task_id: int,
+    body: dict = Body(...),
+    _: str = Depends(verify_sync_api_key),
+):
+    """AI 服务跨进程回调：把 AI 执行过程（ai.progress）广播进该工单 WS 房间。
+
+    AI 服务在 Supervisor 派发能力期间逐项推送进度（Claude Code 式动态执行过程），
+    由后端转广播给在线客户端实时展示；最终 reply 只写纯答复（不含过程块）。
+    鉴权走 X-API-Key，与广播评论一致。best-effort，失败不阻塞 AI 主流程。
+    """
+    run_id = body.get("run_id")
+    phase = body.get("phase", "running")
+    todos = body.get("todos") or []
+    await manager.broadcast(task_id, {
+        "type": "ai.progress",
+        "run_id": run_id,
+        "phase": phase,
+        "todos": todos,
+    })
     return {"code": 0, "message": "broadcasted"}
 
 
