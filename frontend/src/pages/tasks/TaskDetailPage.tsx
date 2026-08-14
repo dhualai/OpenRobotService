@@ -16,7 +16,8 @@ import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import { uploadCommentAttachment, getOperationLogs, type OperationLog as TicketOperationLog } from '@/api/ticket';
-import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP } from '@/shared/constants/ticket';
+import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canEditPriority } from '@/shared/constants/ticket';
+import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
 import { formatDateTime } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
@@ -125,6 +126,10 @@ export default function TaskDetailPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; deadline_at?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
+  // 最晚解决时间区间：基准 = 工单创建时间（detail.created_at），而非用户操作时刻
+  const editDeadlineRange = getDeadlineRange(editForm.priority, detail?.created_at);
+  // 优先级仅在「尚未派单」（新建/待派单）可修改；已派单及后续状态禁止（置灰不可点）
+  const priorityDisabled = !canEditPriority(detail?.status);
   const [escalateUser, setEscalateUser] = useState<UserItem | null>(null);
   const [showEscalatePopup, setShowEscalatePopup] = useState(false);
   const [resumeUser, setResumeUser] = useState<UserItem | null>(null);
@@ -1387,9 +1392,9 @@ export default function TaskDetailPage() {
                 {showRoleActions && (
                   <>
                     <Button size="small" theme="default" style={{ backgroundColor: '#333333', color: '#fff', border: 'none' }} onClick={startEdit}>修改工单</Button>
-                    <Button size="small" theme="default" style={{ backgroundColor: '#faad14', color: '#fff', border: 'none' }} onClick={() => setShowReturnConfirmPopup(true)}>退回工单</Button>
-                    <Button size="small" theme="default" style={{ backgroundColor: '#0052d9', color: '#fff', border: 'none' }} onClick={() => setShowReassignPopup(true)}>重新指派</Button>
-                    <Button size="small" theme="default" style={{ backgroundColor: '#d54941', color: '#fff', border: 'none' }} onClick={() => setShowEscalatePopup(true)}>升级上报</Button>
+                    <Button size="small" theme="default" style={{ backgroundColor: '#faad14', color: '#fff', border: 'none' }} onClick={() => { setReturnReason(''); setShowReturnConfirmPopup(true); }}>退回工单</Button>
+                    <Button size="small" theme="default" style={{ backgroundColor: '#0052d9', color: '#fff', border: 'none' }} onClick={() => { setReassignUser(null); setReassignReason(''); setShowReassignPopup(true); }}>重新指派</Button>
+                    <Button size="small" theme="default" style={{ backgroundColor: '#d54941', color: '#fff', border: 'none' }} onClick={() => { setEscalateUser(null); setEscalateReason(''); setShowEscalatePopup(true); }}>升级上报</Button>
                   </>
                 )}
               </div>
@@ -1430,8 +1435,13 @@ export default function TaskDetailPage() {
                   <button
                     key={value}
                     type="button"
-                    className={`tasks-create-modal__radio-btn ${editForm.priority === value ? 'is-active' : ''}`}
-                    onClick={() => setEditForm((p) => ({ ...p, priority: value }))}
+                    disabled={priorityDisabled}
+                    title={priorityDisabled ? '仅新建工单可修改优先级' : undefined}
+                    className={`tasks-create-modal__radio-btn ${editForm.priority === value ? 'is-active' : ''} ${priorityDisabled ? 'is-disabled' : ''}`}
+                    onClick={() => {
+                      const r = getDeadlineRange(value, detail?.created_at);
+                      setEditForm((p) => ({ ...p, priority: value, ...(r ? { deadline_at: r.max.toISOString() } : {}) }));
+                    }}
                   >{label}</button>
                 ))}
               </div>
@@ -1456,8 +1466,10 @@ export default function TaskDetailPage() {
                 style={{ width: '100%' }}
                 placeholder="点击选择"
                 format="YYYY-MM-DD HH:00"
-                showTime={{ defaultValue: dayjs().hour(9).minute(0), format: 'HH:00' }}
+                showTime={{ defaultValue: editDeadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00' }}
                 value={editForm.deadline_at ? dayjs(editForm.deadline_at) : null}
+                disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min, editDeadlineRange.max) : undefined}
+                disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>
                   setEditForm((p) => ({
                     ...p,
@@ -1476,7 +1488,7 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      <Popup visible={showEscalatePopup} onClose={() => { setShowEscalatePopup(false); setEscalateReason(''); }} placement="bottom" showOverlay>
+      <Popup visible={showEscalatePopup} onClose={() => { setShowEscalatePopup(false); setEscalateReason(''); }} placement="bottom" showOverlay destroyOnClose>
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">升级上报</h4>
           <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>请选择升级对象</p>
@@ -1582,7 +1594,7 @@ export default function TaskDetailPage() {
       </Popup>
 
 
-      <Popup visible={showReassignPopup} onClose={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); }} placement="bottom" showOverlay>
+      <Popup visible={showReassignPopup} onClose={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); }} placement="bottom" showOverlay destroyOnClose>
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">重新指派</h4>
           <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>选择新的处理人</p>
@@ -1605,7 +1617,7 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
-      <Popup visible={showReturnConfirmPopup} onClose={() => { setShowReturnConfirmPopup(false); setReturnReason(''); }} placement="bottom" showOverlay>
+      <Popup visible={showReturnConfirmPopup} onClose={() => { setShowReturnConfirmPopup(false); setReturnReason(''); }} placement="bottom" showOverlay destroyOnClose>
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">退回工单</h4>
           <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>

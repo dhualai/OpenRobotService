@@ -784,6 +784,12 @@ html, body, #root {
   border-color: #0052d9;
 }
 
+.tasks-create-modal__radio-btn.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .tasks-create-modal__actions {
   display: flex;
   gap: 8px;
@@ -2062,11 +2068,14 @@ html, body, #root {
   white-space: nowrap;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
+  /* 顶部留白：容纳角标超出胶囊的部分，避免被 overflow-y: hidden 裁掉 */
+  padding-top: 6px;
 }
 .tasks-view__filter-chips::-webkit-scrollbar {
   display: none;
 }
 .tasks-view__filter-chip {
+  position: relative;
   flex-shrink: 0;
   padding: 4px 10px;
   border: 1px solid #e0e0e0;
@@ -2086,6 +2095,23 @@ html, body, #root {
   border-color: #0052d9;
   background: #0052d9;
   color: #fff;
+}
+/* 筛选条目右上角工单条数角标（圆圈+数字），筛选胶囊与筛选菜单共用 */
+.tasks-count-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #999999;
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-weight: 600;
+  box-shadow: 0 0 0 2px #fff;
 }
 .tasks-view__filter-divider {
   flex-shrink: 0;
@@ -2130,6 +2156,7 @@ html, body, #root {
   gap: 8px;
 }
 .filter-menu__item {
+  position: relative;
   padding: 8px 16px;
   border: 1px solid #e0e0e0;
   border-radius: 20px;

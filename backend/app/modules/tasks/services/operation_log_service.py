@@ -19,6 +19,27 @@ logger = logging.getLogger(__name__)
 VIEW_DEDUP_WINDOW = 300  # 5 分钟
 
 
+def get_role_prefix(
+    created_by: Optional[str],
+    assigned_to: Optional[str],
+    operator: str,
+) -> str:
+    """返回操作人在工单中的角色前缀。
+
+    根据工单的 created_by / assigned_to 判断操作人是创建人还是处理人，
+    返回形如 '【创建人】' 的前缀；若两者都不是则返回空字符串。
+    """
+    is_creator = bool(created_by) and operator == created_by
+    is_assignee = bool(assigned_to) and operator == assigned_to
+    if is_creator and is_assignee:
+        return "【创建人/处理人】"
+    if is_creator:
+        return "【创建人】"
+    if is_assignee:
+        return "【处理人】"
+    return ""
+
+
 def _resolve_operator_name(operator: str, operator_name: Optional[str]) -> str:
     """通过 username 解析显示名。
 
@@ -128,6 +149,8 @@ class OperationLogService:
         task_id: int,
         username: str,
         user_name: Optional[str] = None,
+        ticket_created_by: Optional[str] = None,
+        ticket_assigned_to: Optional[str] = None,
     ) -> Optional[TaskOperationLog]:
         """
         记录查看工单操作（带去重：同一用户在 VIEW_DEDUP_WINDOW 秒内重复查看只记一次）。
@@ -137,6 +160,8 @@ class OperationLogService:
             task_id: 工单 ID
             username: 操作人 username
             user_name: 操作人显示名
+            ticket_created_by: 工单创建人 username（用于角色判断）
+            ticket_assigned_to: 工单处理人 username（用于角色判断）
 
         Returns:
             创建的 TaskOperationLog 实例，去重或失败返回 None
@@ -160,14 +185,15 @@ class OperationLogService:
 
             # 写入新的查看记录（log 内部会自动补全 operator_name）
             resolved = _resolve_operator_name(username, user_name)
-            logger.info(f"[OpLog] log_view writing: task_id={task_id}, operator={username}, resolved_name={resolved!r}")
+            role = get_role_prefix(ticket_created_by, ticket_assigned_to, username)
+            logger.info(f"[OpLog] log_view writing: task_id={task_id}, operator={username}, resolved_name={resolved!r}, role={role!r}")
             return await OperationLogService.log(
                 db=db,
                 task_id=task_id,
                 op_type=OperationType.VIEW,
                 operator=username,
                 operator_name=user_name,
-                description=f"{resolved} 查看了工单",
+                description=f"{role}{resolved} 查看了工单" if role else f"{resolved} 查看了工单",
             )
         except Exception as e:
             logger.error(f"Failed to log view for task {task_id}: {str(e)}", exc_info=True)
