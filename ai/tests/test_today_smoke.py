@@ -11,7 +11,7 @@
 import json
 import pytest
 
-from ai.agents.AiDiagnosisPlatform.pipeline import AgentState
+from ai.agents.AiDiagnosisPlatform.pipeline import AgentState, _can_submit
 
 
 class TestTicketFastLane:
@@ -187,3 +187,31 @@ class TestTicketContextSlicing:
 
         assert captured["kw"].get("from_turn") == 3, "build_ticket 应按 context_start 切片"
         assert "调度版本" not in captured["text"], "旧工单的补充信息不应出现在新工单对话切片"
+
+
+class TestClosedLoopAfterSubmit:
+    """提单后新问题：快路径必须写 problem_summary，否则闭环误拦"""
+
+    @pytest.mark.unit
+    def test_can_submit_with_new_problem_summary(self, make_state):
+        """已提过单 + 有新 problem_summary → 放行"""
+        st = make_state(last_submitted_ticket={"ticket_id": "T-1", "db_id": 1})
+        st.problem_summary = "工单401确认完成页面，解决方式自动总结出错"
+        ok, _ = _can_submit(st)
+        assert ok is True
+
+    @pytest.mark.unit
+    def test_can_submit_collecting_allows(self, make_state):
+        """已提过单 + 收集模式中（ticket_collecting 非空）→ 放行（提单流程已启动）"""
+        st = make_state(last_submitted_ticket={"ticket_id": "T-1", "db_id": 1})
+        st.ticket_collecting = ["错误详情"]
+        ok, _ = _can_submit(st)
+        assert ok is True
+
+    @pytest.mark.unit
+    def test_can_submit_no_new_problem_still_blocks(self, make_state):
+        """已提过单 + 无新 problem_summary + 非收集模式 → 拦截（防裸重复提单）"""
+        st = make_state(last_submitted_ticket={"ticket_id": "T-1", "db_id": 1})
+        st.problem_summary = ""
+        ok, _ = _can_submit(st)
+        assert ok is False
