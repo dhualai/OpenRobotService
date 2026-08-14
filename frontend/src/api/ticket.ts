@@ -37,6 +37,7 @@ export interface CreateTicketParams {
   project_name?: string;
   project_id?: string;
   assigned_to?: string;       // 接单人 username（后端改后生效）
+  deadline_at?: string;       // 最晚解决时间（ISO 字符串，兜底双工单工单2 复用弹窗选择值）
   customer?: string;
   metadata_info?: Record<string, unknown>;
   tags?: string[];
@@ -117,6 +118,7 @@ export async function createTicket(params: CreateTicketParams): Promise<CreatedT
       project_name: params.project_name ?? '',
       project_id: params.project_id ?? '',
       assigned_to: params.assigned_to ?? null,
+      deadline_at: params.deadline_at ?? null,
       customer: params.customer ?? null,
       metadata_info: params.metadata_info ?? null,
       tags: params.tags ?? null,

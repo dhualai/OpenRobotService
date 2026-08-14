@@ -1700,6 +1700,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         project: isDual ? '摇人吧服务号提单' : draftField('project'),
         project_id: isDual ? '' : projectIdVal,
       };
+      // deadline 兜底：用户未手动设置时，用区间最大值（提单时间 + 优先级时长）作为默认最晚解决时间，
+      // 确保 DatePicker 显示值与提交值一致——否则未触碰 deadline 直接提交时，工单1/工单2 均不落库 deadline。
+      // 已手动清空（overrides.deadline_at=''）不兜底，尊重用户主动置空。
+      if (!Object.prototype.hasOwnProperty.call(overrides, 'deadline_at') && deadlineRange) {
+        overrides.deadline_at = deadlineRange.max.toISOString();
+      }
       const res = await qaConfirmTicket(sessionId, overrides);
       if (res?.code !== 0) {
         Toast({ message: res?.message || '提交工单失败', theme: 'error' });
@@ -1739,6 +1745,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             project_name: '摇人吧服务号提单',
             project_id: projectIdVal || '',
             assigned_to: owner.username,
+            deadline_at: overrides.deadline_at || undefined,
           });
           ov2 = {
             db_id: created.id,
