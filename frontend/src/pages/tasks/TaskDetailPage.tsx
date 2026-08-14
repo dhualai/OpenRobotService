@@ -149,6 +149,8 @@ export default function TaskDetailPage() {
   const [resolutionLoading, setResolutionLoading] = useState(false);
   const [resolutionFailed, setResolutionFailed] = useState(false);
   const [resolutionPolling, setResolutionPolling] = useState(false);
+  // AI 判定当前无解决方案（仅占位提示，不填入输入框）
+  const [resolutionNoSolution, setResolutionNoSolution] = useState(false);
   // 标记是否已"确认完成"成功（成功后关闭弹窗不应清除草稿；取消/遮罩关闭才清除）
   const resolveConfirmedRef = useRef(false);
   // 轮询停止标志：取消/关闭时置 true，让异步轮询循环及时退出（state 无法中断 while 循环）
@@ -334,13 +336,23 @@ export default function TaskDetailPage() {
           return;
         }
         const text = (res?.resolution_summary || '').trim();
-        // 已生成完成（有值或有"无内容"标记）→ 结束轮询
+        // 已生成完成（有值、无内容、或 empty）→ 结束轮询
+        if (res?.status === 'empty') {
+          // AI 判定无解决方案
+          setResolutionLoading(false);
+          setResolutionFailed(false);
+          setResolutionNoSolution(true);
+          setResolutionPolling(false);
+          if (text) setResolutionText(text);
+          return;
+        }
         if (res?.status === 'done' || res?.status === 'confirmed') {
           if (text) {
             setResolutionText(text);
           }
           setResolutionLoading(false);
           setResolutionFailed(false);
+          setResolutionNoSolution(false);
           setResolutionPolling(false);
           return;
         }
@@ -357,20 +369,31 @@ export default function TaskDetailPage() {
 
   const handleResolveClick = async () => {
     if (!detail) return;
-    // 打开弹窗：展示工单问题 + 请求 AI 解决方式草稿
+    // 打开弹窗：默认显示空输入框，由接单人手动填写或点击"帮我生成"触发 AI
     console.log('[resolution-summary] handleResolveClick 触发: task_id=', detail.id);
     resolvePollStopRef.current = false; // 重置轮询停止标志
     resolveConfirmedRef.current = false; // 重置确认标志（新一次打开）
     setShowResolutionPopup(true);
     setResolutionText('');
+    setResolutionLoading(false);
+    setResolutionFailed(false);
+    setResolutionPolling(false);
+    setResolutionNoSolution(false);
+  };
+
+  // 手动触发 AI 生成解决方式（点"帮我生成"时调用）
+  const handleGenerateResolution = async () => {
+    if (!detail) return;
+    resolvePollStopRef.current = false;
     setResolutionLoading(true);
     setResolutionFailed(false);
     setResolutionPolling(false);
-
+    setResolutionNoSolution(false);
     try {
-      console.log('[resolution-summary] 发起 POST /' + detail.id + '/resolution-summary');
+      console.log('[resolution-summary] 手动触发 POST /' + detail.id + '/resolution-summary (force)');
       const res = await request<{ status: string; resolution_summary?: string }>(`/${detail.id}/resolution-summary`, {
         method: 'POST',
+        body: JSON.stringify({ force: true }),
         skipCache: true,
       });
       console.log('[resolution-summary] 接口返回:', res);
@@ -384,10 +407,16 @@ export default function TaskDetailPage() {
         } else if (res.status === 'pending') {
           // 仍在生成中 → 轮询回读 worker 生成的草稿
           pollResolutionSummary();
+        } else if (res.status === 'empty') {
+          // AI 判定当前无解决方案 → 停止 loading，显示"当前没有解决方案"占位
+          setResolutionLoading(false);
+          setResolutionFailed(false);
+          setResolutionNoSolution(true);
         } else if (res.status === 'done') {
           // worker 已完成但无内容（无资料）→ 停止 loading，placeholder 兜底
           setResolutionLoading(false);
           setResolutionFailed(false);
+          setResolutionNoSolution(false);
         } else {
           // 入队失败/异常 → 兜底：提示用户补充
           setResolutionLoading(false);
@@ -409,6 +438,7 @@ export default function TaskDetailPage() {
     setResolutionFailed(false);
     setResolutionLoading(true);
     setResolutionText('');
+    setResolutionNoSolution(false);
     pollResolutionSummary(true);
   };
 
@@ -1529,7 +1559,13 @@ export default function TaskDetailPage() {
                 <Textarea
                   value={resolutionText}
                   onChange={(v) => setResolutionText(String(v))}
-                  placeholder={resolutionFailed ? 'U老师自动总结出错了，请补充解决方法' : '请填写该工单的解决方式'}
+                  placeholder={
+                    resolutionNoSolution
+                      ? '当前没有解决方案，请在此补充实际解决方式'
+                      : resolutionFailed
+                        ? 'U老师自动总结出错了，请补充解决方法'
+                        : '请填写该工单的解决方式'
+                  }
                   autosize={{ minRows: 4, maxRows: 8 }}
                   maxlength={1000}
                 />
@@ -1538,9 +1574,14 @@ export default function TaskDetailPage() {
           </div>
           <div className="ticket-edit-form__footer">
             <Button theme="default" onClick={handleResolveCancel}>取消</Button>
-            {resolutionFailed && !resolutionLoading && !resolutionPolling && (
-              <Button theme="danger" onClick={handleRetryResolution}>重试</Button>
-            )}
+            <Button
+              theme={resolutionFailed ? 'danger' : 'default'}
+              onClick={resolutionFailed ? handleRetryResolution : handleGenerateResolution}
+              loading={resolutionLoading || resolutionPolling}
+              disabled={resolutionSubmitting || resolutionLoading || resolutionPolling}
+            >
+              {resolutionFailed ? '重试' : '帮我生成'}
+            </Button>
             <Button
               theme="primary"
               onClick={handleConfirmResolve}
