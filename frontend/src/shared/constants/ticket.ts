@@ -31,6 +31,29 @@ export const PRIORITY_DISPLAY_MAP: Record<string, string> = {
   urgent: '紧急',
 };
 
+// ===== 优先级 → 最晚解决时长（小时）=====
+// 紧急 1 天 / 高 3 天 / 中 5 天 / 低 14 天。
+// 同时收录中英文 value（提单弹窗用中文、编辑弹窗用英文），供「最晚解决时间」区间计算复用。
+export const PRIORITY_DEADLINE_HOURS: Record<string, number> = {
+  紧急: 24,
+  高: 72,
+  中: 120,
+  低: 336,
+  urgent: 24,
+  high: 72,
+  medium: 120,
+  low: 336,
+};
+
+/** 归一化优先级为英文 key（兼容中文/英文输入），无法识别返回 null。 */
+export function normalizePriority(priority?: string | null): string | null {
+  if (!priority) return null;
+  const t = String(priority).trim();
+  if (!t) return null;
+  const en = PRIORITY_VALUE_MAP[t] || t.toLowerCase();
+  return PRIORITY_DEADLINE_HOURS[en] != null ? en : null;
+}
+
 export const TICKET_TYPE_DISPLAY_MAP: Record<string, string> = {
   bug: '缺陷',
   feature: '功能',
@@ -99,6 +122,13 @@ export function canCancelTicket(status: TicketStatusLike): boolean {
 export function canShowCancelButton(status?: string | null): boolean {
   const key = normalizeKey(status);
   return key === 'new' || key === 'pending_dispatch' || key === 'dispatched';
+}
+
+/** 是否允许修改优先级：仅「尚未派单」状态可修改（新建 new / 待派单 pending_dispatch）。
+ * 工单一经派单（dispatched/in_progress/pending 等）即进入处理流程，优先级不再允许变更。 */
+export function canEditPriority(status: TicketStatusLike): boolean {
+  const key = normalizeKey(status);
+  return key === 'new' || key === 'pending_dispatch';
 }
 
 // ===== 状态颜色（TaskDetailPage / TasksView / TicketDetailPage 共用）=====
