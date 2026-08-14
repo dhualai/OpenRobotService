@@ -86,7 +86,9 @@ def _load_agent_state(metadata: dict) -> Optional[AgentState]:
         ticket_ready=s.get("ticket_ready", False),
         ticket_type=s.get("ticket_type", ""),
         ticket_collecting=s.get("ticket_collecting", []),
-        required_fields=s.get("required_fields"),  # 旧数据是 {}，None 表示从未决定；{} 语义改为「已决定无需补字段」
+        # 三态迁移：旧持久化数据的 {} 表示「从未决定」（旧语义），新语义 {} =「已决定无需补」。
+        # 若直接按新语义读，旧会话按钮提单会跳过 decide、缺失字段不拦截。空 dict 一律归一为 None。
+        required_fields=(s.get("required_fields") or None),
         context_start=s.get("context_start", 0),
         collect_rounds=s.get("collect_rounds", 0),
     )
@@ -255,8 +257,6 @@ def _log_ticket_state(state: AgentState, event: str, **extra) -> None:
         "phase": state.phase,
         "can_submit": can,
         "ticket_ready": state.ticket_ready,
-        "has_project": bool(state.collected_info.get("project", "").strip() or state.collected_info.get("project_id", "").strip()),
-        "project": (state.collected_info.get("project") or state.collected_info.get("project_id") or "")[:20],
         "problem_summary": (state.problem_summary or "")[:50],
         "rounds": state.diagnosis_rounds,
         "has_last_ticket": bool(state.last_submitted_ticket and state.last_submitted_ticket.get("ticket_id")),
@@ -1693,7 +1693,9 @@ class AiDiagnosisPlatform:
         if not force:
             ready, missing = _assess_ticket_readiness(agent_state)
             if not ready:
-                raise ValueError(f"工单信息不足，还差：{'、'.join(missing)}。请先在对话中补充后再转工单。")
+                # 收集模式中用户补充完整后 LLM 会 submit → 自动生成草稿弹窗，
+                # 不需要点按钮。文案按实际行为写。
+                raise ValueError(f"工单信息不足，还差：{'、'.join(missing)}。在对话中补充后会自动为您生成工单。")
 
         ticket = await self._build_ticket(session_id, agent_state, memory)
 
@@ -1817,12 +1819,6 @@ class AiDiagnosisPlatform:
             logger.info(f"[confirm] 信息不足拦截: session={session_id}, missing={missing}")
             return {"code": 1, "stage": "not_ready", "missing_info": missing,
                     "message": f"工单信息不足，还差：{'、'.join(missing)}。请先在对话中补充后再提交。"}
-
-        # 用户在弹窗里可能改了项目名 → 提前注入 collected_info，_build_ticket 的
-        # LLM 才能在 description 里自然带上正确的项目名。
-        _draft_proj = (draft.get("project") or "").strip()
-        if _draft_proj and _draft_proj != agent_state.collected_info.get("project", ""):
-            agent_state.collected_info["project"] = _draft_proj
 
         ticket = await self._build_ticket(session_id, agent_state, memory)
         # 只应用用户在弹窗中显式修改的字段（overrides），不用整个 draft 覆盖。
@@ -2249,7 +2245,10 @@ class AiDiagnosisPlatform:
                     context_turns=memory.turns[-4:]))
             _intent_t0 = time.perf_counter()
             try:
-                _intent = await asyncio.wait_for(_intent_task, timeout=2.0)
+                # 实测 _classify_intent 约 2.0-2.1s（DeepSeek 偶发慢），2s 超时正好擦边
+                # 被判 diagnosis 回退 → 提单轮走完整诊断 25s+。放宽到 4s：
+                # 意图分类和检索并发，检索 ~4s 盖住它，不拖慢主链路；超时兜底仍是 diagnosis。
+                _intent = await asyncio.wait_for(_intent_task, timeout=4.0)
             except (asyncio.TimeoutError, Exception):
                 _intent = "diagnosis"
             t_stream["intent"] = round((time.perf_counter() - _intent_t0) * 1000)
@@ -2583,13 +2582,16 @@ class AiDiagnosisPlatform:
                     parsed["action"] = "answer"
                     # 生成完成：弹窗 + 对话气泡回填固定话术（前端已切「正在生成工单」动画，
                     # LLM 的「好的」不发，所以这里一定显示完整话术）。
-                    proj = state.collected_info.get("project", "")
+                    # 话术按「弹窗关闭后」的语境写：用户此时看到的只有对话气泡，
+                    # 要告诉他下一步做什么（补充信息 / 重新打开弹窗提交）。
                     if _force_submit:
-                        parsed["message"] = "信息收集超限，请在弹窗中核对工单信息、选择项目后提交。"
-                    elif proj:
-                        parsed["message"] = f"已生成工单草稿（预填项目「{proj}」），请在弹窗中核对并选择项目后确认提交。"
+                        parsed["message"] = ("工单草稿已生成（信息收集超限）。"
+                                             "如需补充，直接在对话里告诉我；"
+                                             "确认无误后点击转工单按钮，在弹窗中核对信息、选择项目后提交。")
                     else:
-                        parsed["message"] = "已生成工单草稿，请在弹窗中选择项目并核对信息后确认提交。"
+                        parsed["message"] = ("工单草稿已生成。您可以在对话里继续补充信息"
+                                             "（如指定处理人、发生时间），也可以直接点击转工单按钮，"
+                                             "在弹窗中选择项目并提交。")
                     _msg_buf.clear()
                     _msg_yielded = True  # 抑制末尾兜底输出
                     yield {"event": "token", "data": parsed["message"]}

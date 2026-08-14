@@ -87,8 +87,8 @@ def mock_llm():
         "project": "华大制造基地",
     }, ensure_ascii=False)
 
-    def _llm_side_effect(prompt: str = "", max_tokens: int = 1500, temperature: float = 0.5):
-        """根据 prompt 内容返回诊断或工单 JSON"""
+    def _llm_side_effect(prompt: str = "", max_tokens: int = 1500, temperature: float = 0.5, **kwargs):
+        """根据 prompt 内容返回诊断或工单 JSON（**kwargs 吞掉 system_prompt/thinking 等新参数）"""
         if "工单" in prompt or "ticket" in prompt.lower() or "title" in prompt:
             return _TICKET_RESPONSE
         return _DIAGNOSIS_RESPONSE
