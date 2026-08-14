@@ -3420,6 +3420,65 @@ html, body, #root {
   color: #999;
 }
 
+/* ===== AI 执行过程（Claude Code 式动态展示） ===== */
+.detail-chat-ai-progress {
+  margin: 6px 0;
+  padding: 8px 12px;
+  background: #f7f9fc;
+  border: 1px solid #e7ecf3;
+  border-radius: 12px;
+}
+.detail-chat-ai-progress__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0052d9;
+  margin-bottom: 6px;
+}
+.detail-chat-ai-progress__spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #0052d9;
+  border-top-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  animation: chatTyping 0.8s linear infinite;
+}
+.detail-chat-ai-progress__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.detail-chat-ai-progress__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 13px;
+  color: #555;
+  line-height: 1.4;
+}
+.detail-chat-ai-progress__icon {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.detail-chat-ai-progress__text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+.detail-chat-ai-progress__item.is-running .detail-chat-ai-progress__text {
+  color: #0052d9;
+}
+.detail-chat-ai-progress__item.is-done .detail-chat-ai-progress__text {
+  color: #333;
+}
+
 /* ===== 用户选择器（升级对象） ===== */
 .user-select { width: 100%; }
 .user-select__trigger {
