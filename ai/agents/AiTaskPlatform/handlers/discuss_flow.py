@@ -286,6 +286,26 @@ class DiscussFlow:
                 task_id=task_id, run_id=run_id, live_todo=_live_todo,
             )
 
+            # 起始 running 信号（确定性广播）：前端只有在收到 phase=running 时才会建立
+            # aiRunId 并显示「执行过程区」（DiscussionPanel.showAiProcess）。若首条 running
+            # 走 fire-and-forget 而丢失，前端只收到收尾 done 时过程区恒不显示。故这里用
+            # await 版本先确保送达一条带占位项的 running；后续逐项 running/done 仍走
+            # best-effort（容忍丢失），收尾 done 保持 await 确定性送达。
+            await _broadcast_ai_progress_await(
+                task_id, run_id,
+                todos=[{
+                    "id": "planning",
+                    "description": "正在分析任务并规划排查步骤",
+                    "status": "in_progress",
+                    "capability": "",
+                    "phase": "running",
+                }],
+                phase="running",
+            )
+
+            # 把进度回调注入运行时上下文，供子 Agent（如 LogSubAgent）内部上报子步骤
+            runtime_ctx["progress_emitter"] = _emit_progress
+
             sup_result = await supervisor.run(
                 task_context=task_ctx_for_plan,
                 available_caps=available_caps,

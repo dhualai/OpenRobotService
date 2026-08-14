@@ -131,7 +131,13 @@ class LogAnalyzeCapability(BaseCapability):
 
         try:
             sub = LogSubAgent(log_path)
-            result = await sub.analyze(task_context=task_context, user_question=query)
+            # progress：由上层（discuss_flow via runtime_ctx）注入的 ai.progress 回调，
+            # 让 LogSubAgent 内部各阶段（建索引/R1..Rn）也能上报子节点，避免前端只看一个卡住的节点
+            result = await sub.analyze(
+                task_context=task_context,
+                user_question=query,
+                progress=kwargs.get("progress_emitter"),
+            )
         except Exception as e:
             logger.error(f"LogAnalyzeCapability 执行失败: {e}")
             return CapabilityResult.failure(f"日志分析失败: {type(e).__name__}: {e}")
