@@ -92,10 +92,21 @@ const buildTimelineGroups = (logs: OperationLog[]): TimelineGroup[] => {
   const groups: TimelineGroup[] = [];
   let pendingChildren: OperationLog[] = [];
 
-  for (const log of logs) {
-    if (log.operation_type === 'status_change' && log.to_status) {
+  for (let i = 0; i < logs.length; i++) {
+    const log = logs[i];
+    if ((log.operation_type === 'status_change' && log.to_status) || log.operation_type === 'create') {
+      const statusKey = log.to_status || 'new';
+      // 跳过紧随其后的、指向相同状态的 status_change（冗余日志）
+      while (i + 1 < logs.length) {
+        const next = logs[i + 1];
+        if (next.operation_type === 'status_change' && next.to_status === statusKey) {
+          i++;
+        } else {
+          break;
+        }
+      }
       groups.push({
-        status: log.to_status,
+        status: statusKey,
         statusTime: log.created_at,
         triggerOperator: log.operator_name || log.operator,
         children: pendingChildren,
@@ -164,13 +175,12 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
               <div className="op-segment__start">
                 <div className="op-segment__start-row">
                   <span className="op-segment__status" style={{ color }}>
-                    结束「{statusLabel}」状态
+                    {isLatest ? '持续至今' : `结束「${statusLabel}」状态`}
                   </span>
-                  <span className="op-segment__time">{formatTime(group.statusTime)}</span>
+                  {!isLatest && prevGroup ? (
+                    <span className="op-segment__time">{formatTime(prevGroup.statusTime)}</span>
+                  ) : null}
                 </div>
-                {group.triggerOperator && (
-                  <div className="op-segment__operator">由 {group.triggerOperator} 操作</div>
-                )}
               </div>
 
               {/* 子节点操作 */}
@@ -202,17 +212,15 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
 
               {/* 状态终点：进入该状态 */}
               <div className="op-segment__end">
-                {isLatest ? (
-                  <div className="op-segment__end-current">
+                <div className="op-segment__start-row">
+                  <span className="op-segment__status" style={{ color }}>
                     进入「{statusLabel}」状态
-                    <span className="op-segment__end-time"> 持续至今</span>
-                  </div>
-                ) : prevGroup ? (
-                  <div className="op-segment__end-next">
-                    进入「{statusLabel}」状态
-                    <span className="op-segment__end-time"> {formatTime(prevGroup.statusTime)}</span>
-                  </div>
-                ) : null}
+                  </span>
+                  <span className="op-segment__time">{formatTime(group.statusTime)}</span>
+                </div>
+                {group.triggerOperator && (
+                  <div className="op-segment__operator">由 {group.triggerOperator} 操作</div>
+                )}
               </div>
             </div>
           </div>
