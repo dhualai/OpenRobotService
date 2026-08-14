@@ -9,9 +9,52 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 from app.core.config import settings
+from app.core.database import db_manager, UserDB
 from app.modules.admin.services.project_service import project_service
+from app.services.identity_service import IdentityService
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_contact_person_id(name: str) -> str:
+    """根据姓名（user.name）反查用户表，返回 user.id。
+
+    找不到或查询异常时返回空字符串，避免影响项目同步主流程。
+    注意：wecom 的“调度对接人”字段可能带前后空格或不可见字符，这里统一 strip 后再精确匹配。
+    """
+    if not name:
+        return ""
+    cleaned = name.strip()
+    if not cleaned:
+        return ""
+    db = db_manager.get_db()
+    try:
+        user = db.query(UserDB).filter(UserDB.name == cleaned).first()
+        if user:
+            logger.info(f"contact_person 命中用户: raw={name!r}, cleaned={cleaned!r}, user_id={user.id}")
+            return user.id
+        logger.info(f"contact_person 未命中用户: raw={name!r}, cleaned={cleaned!r}（users 表无完全相等的 name）")
+        return ""
+    except Exception as e:
+        logger.warning(f"根据姓名查询用户ID失败: name={name!r}, error={e}")
+        return ""
+    finally:
+        db.close()
+
+
+def _ensure_contact_person_role(project_id: str, user_id: str) -> bool:
+    """给 contact_person 在该项目上赋予"调度研发"角色（幂等）。
+
+    委托 IdentityService.ensure_user_project_role_by_name，使用确定性 upr id，
+    与项目创建接口的授权机制一致，多次同步不会产生重复授权。
+    """
+    if not user_id or not project_id:
+        return False
+    ok = IdentityService.ensure_user_project_role_by_name(project_id, user_id, "调度研发")
+    if ok:
+        logger.info(f"自动授权: project={project_id}, user={user_id}, role=调度研发")
+    return ok
+
 
 WECOM_PROJECT_API_URL = "https://usp.ep-zl.com/p/api/ai/wecom/projects"
 
@@ -48,12 +91,14 @@ def map_wecom_record_to_project(record: Dict[str, Any]) -> Dict[str, Any]:
     project_code = str(values.get("项目编号", record.get("record_id", "")))
     lifecycle = values.get("项目生命周期", "")
     
+    contact_person = values.get("调度对接人", "")
+
     return {
         "project_code": project_code,
         "name": values.get("项目名称", ""),
         "description": values.get("承接描述", ""),
-        "contact_person": values.get("调度对接人", ""),
-        "contact_person_id": "",
+        "contact_person": contact_person,
+        "contact_person_id": _resolve_contact_person_id(contact_person),
         "status": STATUS_MAP.get(lifecycle, lifecycle) or "待开始",
         "expected_trend": "",
         "issues": 0,
@@ -120,21 +165,23 @@ class WecomProjectAdapter:
         created = 0
         updated = 0
         skipped = 0
+        authorized = 0
         errors = []
         filtered = 0
-        
+
         for record in records:
             try:
                 values = record.get("values", {})
                 if values.get("是否承接") != "是":
                     filtered += 1
                     continue
-                
+
                 project_data = map_wecom_record_to_project(record)
                 project_code = project_data["project_code"]
-                
+                contact_person_id = project_data.get("contact_person_id", "")
+
                 existing_project = project_service.get_project(project_code)
-                
+
                 if existing_project:
                     update_data = {k: v for k, v in project_data.items() if v}
                     if update_data:
@@ -145,21 +192,28 @@ class WecomProjectAdapter:
                             errors.append(f"更新项目失败: {project_code}")
                     else:
                         skipped += 1
+                    # 回填：早期创建的项目当时 contact_person_id 为空未授权，这里幂等补上
+                    if contact_person_id and _ensure_contact_person_role(project_code, contact_person_id):
+                        authorized += 1
                 else:
                     result = project_service.create_project(project_data)
                     if result:
                         created += 1
+                        # 新项目导入后自动授权：给调度对接人赋予"调度研发"角色
+                        if contact_person_id and _ensure_contact_person_role(project_code, contact_person_id):
+                            authorized += 1
                     else:
                         errors.append(f"创建项目失败: {project_code}")
             except Exception as e:
                 errors.append(f"处理项目记录失败: {record.get('record_id', 'unknown')}, error={str(e)}")
-        
+
         return {
             "fetched": len(records),
             "filtered": filtered,
             "created": created,
             "updated": updated,
             "skipped": skipped,
+            "authorized": authorized,
             "errors": errors,
         }
 

@@ -292,6 +292,11 @@ async def create_project(
                 "project_id": project_data.project_code,
                 "role_ids": ["project_contact"]
             }
+            # 同步创建一样：给对接人额外赋予"调度研发"角色（按角色名查 id，未找到则跳过）
+            from app.services.identity_service import IdentityService
+            diaoyan_role_id = IdentityService.get_role_id_by_name("调度研发")
+            if diaoyan_role_id and diaoyan_role_id not in role_data["role_ids"]:
+                role_data["role_ids"].append(diaoyan_role_id)
             await PermissionService.assign_role(request, token, project_data.contact_person_id, role_data)
             
             from app.modules.admin.utils_das.security import decode_token
@@ -354,16 +359,26 @@ async def update_project(
     if update_data.contact_person_id and update_data.contact_person_id != existing_project["contact_person_id"]:
         token = request.headers.get("Authorization", "")
         token = token[7:]
-        
+
+        # 对接人变更时，"调度研发"角色随"project_contact"一并回收旧人、授予新人（与创建口径一致）
+        from app.services.identity_service import IdentityService
+        diaoyan_role_id = IdentityService.get_role_id_by_name("调度研发")
+
+        old_role_ids = ["project_contact"]
+        if diaoyan_role_id:
+            old_role_ids.append(diaoyan_role_id)
         old_role_data = {
             "project_id": existing_project["project_code"],
-            "role_ids": ["project_contact"]
+            "role_ids": old_role_ids
         }
         await PermissionService.remove_role(request, token, existing_project["contact_person_id"], old_role_data)
-        
+
+        new_role_ids = ["project_contact"]
+        if diaoyan_role_id:
+            new_role_ids.append(diaoyan_role_id)
         new_role_data = {
             "project_id": existing_project["project_code"],
-            "role_ids": ["project_contact"]
+            "role_ids": new_role_ids
         }
         await PermissionService.assign_role(request, token, update_data.contact_person_id, new_role_data)
         

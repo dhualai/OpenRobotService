@@ -11,6 +11,9 @@ from app.core.security import get_password_hash, verify_password
 
 logger = logging.getLogger(__name__)
 
+# 角色名 -> role.id 的进程内缓存（仅缓存命中结果，未命中不缓存以便后续重试）
+_ROLE_NAME_ID_CACHE: Dict[str, str] = {}
+
 
 class IdentityService:
     @staticmethod
@@ -367,6 +370,39 @@ class IdentityService:
             return False
         finally:
             db.close()
+
+    @staticmethod
+    def get_role_id_by_name(name: str) -> Optional[str]:
+        """按角色名查 roles 表返回 role.id，命中结果进程内缓存。未命中返回 None（不缓存，便于后续重试）。"""
+        if not name:
+            return None
+        if name in _ROLE_NAME_ID_CACHE:
+            return _ROLE_NAME_ID_CACHE[name]
+        db = IdentityService._get_db()
+        try:
+            role = db.query(Role).filter(Role.name == name).first()
+            if role:
+                _ROLE_NAME_ID_CACHE[name] = role.id
+                return role.id
+            return None
+        finally:
+            db.close()
+
+    @staticmethod
+    def ensure_user_project_role_by_name(project_id: str, user_id: str, role_name: str) -> bool:
+        """幂等地给 user_id 在 project_id 上赋予 role_name 角色。
+
+        使用确定性 upr id（与 PermissionService.assign_role 一致），重复调用不会产生重复授权行。
+        缺参 / 角色名未找到 / 已存在授权时返回 False；本次新增返回 True。
+        """
+        if not project_id or not user_id or not role_name:
+            return False
+        role_id = IdentityService.get_role_id_by_name(role_name)
+        if not role_id:
+            logger.warning(f"未找到角色，跳过授权: role_name={role_name!r}")
+            return False
+        upr_id = f"upr_{user_id}_{project_id}_{role_id}"
+        return IdentityService.add_user_project_role(upr_id, user_id, project_id, role_id)
 
     @staticmethod
     def batch_add_user_project_roles(roles_data: List[dict]) -> int:
