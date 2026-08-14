@@ -70,13 +70,60 @@ def _attachment_kind(filename: str, path: str = "") -> str:
     return "log" if ("log" in name) else "other"
 
 
+def _build_progress_emitter(task_id, run_id, live_todo: dict):
+    """构造 Supervisor 单项进度回调：累积 live_todo 并广播 ai.progress 到后端 WS。
+
+    让前端像 Claude Code 一样，在执行过程中实时看到"正在做哪一步 / 已完成哪步"。
+    """
+    def emitter(payload: dict) -> None:
+        tid = payload.get("id")
+        if tid is not None:
+            live_todo[tid] = payload
+        # 用 payload 自身的 phase（running/单个完成的 done），而非固定 running，
+        # 否则前端永远看不到单步完成、接口也收不到 done 来收起过程区。
+        phase = payload.get("phase") or "running"
+        _broadcast_ai_progress(task_id, run_id, todos=list(live_todo.values()),
+                              phase=phase)
+    return emitter
+
+
+def _emit_progress_phase(phase: str, run_id, task_id, final_todo) -> None:
+    """整体阶段广播（done）：前端据此收起执行过程，仅展示最终纯回复。"""
+    _broadcast_ai_progress(task_id, run_id, todos=final_todo, phase=phase)
+
+
+def _broadcast_ai_progress(task_id, run_id, todos, phase: str) -> None:
+    """跨进程通知后端把 AI 执行进度广播进该工单的 WS 房间（best-effort 不阻塞主流程）。"""
+    try:
+        from ai.agents.AiTaskPlatform.contexts import notify_backend_ai_progress
+        notify_backend_ai_progress(task_id, run_id, todos, phase)
+    except Exception as e:
+        logger.warning(f"[discuss] ai.progress 广播失败 phase={phase} task={task_id}: {e}")
+
+
+async def _broadcast_ai_progress_await(task_id, run_id, todos, phase: str) -> None:
+    """整体阶段的确定性广播（await 等待发出后返回），用于收尾 done 信号。
+
+    相比 best-effort 的火花线程，这里保证 done 一定送达后端，前端据此收起执行过程。
+    """
+    try:
+        from ai.agents.AiTaskPlatform.contexts import notify_backend_ai_progress_await
+        await notify_backend_ai_progress_await(task_id, run_id, todos, phase)
+    except Exception as e:
+        logger.warning(f"[discuss] ai.progress 收尾广播失败 phase={phase} task={task_id}: {e}")
+
+
 class DiscussFlow:
     # ============================================================
     # discuss — @U老师 讨论回复
     # ============================================================
 
     async def discuss(self, task_id: str, query: str, context: dict) -> dict:
-        """@U老师 讨论：基于讨论历史 + 工单上下文 + 按需附件/历史工单 回复。"""
+        """@U老师 讨论：基于讨论历史 + 工单上下文 + 按需附件/历史工单 回复。
+
+        Supervisor 派发能力时的实时进度会通过后端 WS 广播 ai.progress，前端像
+        Claude Code 一样动态展示执行过程；最终回复只写纯粹答复（不含过程块）。
+        """
         t0 = time.perf_counter()
         self._pop_trace()
         await self._ensure_clients()
@@ -146,6 +193,30 @@ class DiscussFlow:
                     pass
 
         # 3.1 构造给调度 LLM 看的能力描述清单（只把"当前可用的、有意义的"交给它）
+        #   - 确定性程序护栏：能力所需资源缺失时直接从可用清单剔除，避免 LLM 派发必然失败的能力
+        #     （如工单没有日志 → 不提供 log_analyze；没有非图片附件 → 不提供 attachment_parse）。
+        _cap_att = runtime_ctx.get("attachments") or []
+        _cap_all = ctx.attachments or []
+        _kinds = set(kind_of.values())
+        _has_log = bool(runtime_ctx.get("log_path"))
+        _has_image = "image" in _kinds
+        _has_non_image = bool(_kinds & {"log", "doc", "other"})
+        # 附件的 object_path 集合（供 image_analyze 判断是否有可分析的图片）
+        _img_paths = [a for a in _cap_all if kind_of.get(a.get("object_path") or a.get("path") or "") == "image"]
+
+        _RESOURCE_GUARD = {
+            "log_analyze": _has_log,                       # 需日志路径
+            "attachment_parse": _has_non_image,            # 需非图片附件（日志/文档）
+            "image_analyze": bool(_has_image or _img_paths),  # 需图片附件
+        }
+        available_caps = [
+            c for c in available_caps
+            if _RESOURCE_GUARD.get(c, True)  # 未在守卫表内的能力（历史/代码/排查树等）视为可用
+        ]
+        if available_caps != CapabilityRegistry.list_available():
+            removed = [c for c in CapabilityRegistry.list_available() if c not in available_caps]
+            logger.info(f"[discuss] 按资源剔除不可用能力: {removed}（可用: {available_caps}）")
+
         cap_hint = ", ".join(available_caps) or "（无可用能力）"
         has_att = bool(ctx.attachments)
         has_logs = bool(runtime_ctx.get("log_path"))
@@ -205,10 +276,21 @@ class DiscussFlow:
 
         if need_supervisor and available_caps and not is_pure_chat:
             supervisor = Supervisor(llm_client=self._llm_client)
+
+            # 实时进度流（改造点 G6.5 / Claude Code 式动态执行过程）：
+            #  - 每项能力 running/done 时，通过后端 WS 广播 ai.progress，前端边跑边展示；
+            #  - 同时把最新状态累积到 reasoning_trace.todo（供最终返回 + 失败保底）。
+            run_id = f"{task_id}:{int(time.time() * 1000)}"
+            _live_todo: dict[str, dict] = {}
+            _emit_progress = _build_progress_emitter(
+                task_id=task_id, run_id=run_id, live_todo=_live_todo,
+            )
+
             sup_result = await supervisor.run(
                 task_context=task_ctx_for_plan,
                 available_caps=available_caps,
                 runtime_ctx=runtime_ctx,
+                on_progress=_emit_progress,
             )
             # 把各能力结果拼进 facultative
             if sup_result.get("results"):
@@ -224,16 +306,75 @@ class DiscussFlow:
                     elif isinstance(res, dict) and not res.get("ok"):
                         # 能力失败：记录告警（无发生时间的日志提示已内嵌在结果文本里，不再单独阻断）
                         logger.warning(f"[discuss] 能力 {cap_name} 失败: {res.get('error')}")
+
+            # ── 确定性保底（仅当用户明确要求"分析全部/所有附件/图片"时）——强制补做图片分析 ──
+            # LLM 调度偶发只派 attachment_parse（解析文本附件）而不派 image_analyze，
+            # 导致"分析全部附件"时截图不被识别。但**不做成无条件的**：用户没明确要求全面分析
+            # 图片时，是否派 image_analyze 尊重 Supervisor/用户自己的意图（如用户单独说"分析一下图片"）。
+            _ask_all_media = any(kw in query for kw in ("全部", "所有", "全部附件", "所有附件", "分析全部"))
+            if (
+                _ask_all_media
+                and "image_analyze" in available_caps
+                and _img_paths
+                and "image_analyze" not in sup_result.get("results", {})
+            ):
+                try:
+                    from ai.agents.AiTaskPlatform.capabilities import CapabilityRegistry
+                    _img_cap = CapabilityRegistry.get("image_analyze")
+                    if _img_cap is not None and _img_cap.is_available():
+                        # 复用已回退全量的运行时附件（含图片 object_path），走 image_analyze
+                        _img_kw = {
+                            "query": "分析工单中的全部图片/截图，识别其中的车辆状态、路径与异常信息",
+                            "img_ctx": runtime_ctx.get("img_ctx"),
+                            "attachments": _img_paths,          # 仅图片附件
+                            "all_attachments": _cap_all,        # 全量兜底
+                        }
+                        _img_res = await _img_cap(**_img_kw)  # 统一入口 __call__（含配额/异常兜底）
+                        _res_dict = _img_res.to_dict() if hasattr(_img_res, "to_dict") else _img_res
+                        if isinstance(_res_dict, dict) and _res_dict.get("text"):
+                            facultative += f"\n[图片分析]\n{_res_dict['text']}\n"
+                            sup_result.setdefault("results", {})["image_analyze"] = _res_dict
+                            # 同步补一条 todo（进过程区展示）
+                            _live_todo_txt = _res_dict["text"]
+                            _live_todo.setdefault("image_analyze", {
+                                "id": f"img_{len(_live_todo) + 1}",
+                                "description": "分析工单中的图片/截图，识别车辆状态与路径信息",
+                                "status": "completed",
+                                "capability": "image_analyze",
+                                "phase": "done",
+                                "result_summary": _live_todo_txt[:80],
+                            })
+                            logger.info("[discuss] 已强制补做 image_analyze（图片保底分析）")
+                except Exception as e:
+                    logger.warning(f"[discuss] 强制 image_analyze 失败: {e}")
+
             self._add_trace(self.NODE_ATTACHMENT, "ok",
                             output={"supervisor_caps": list(sup_result.get("results", {}).keys())})
 
             # 透明化 planning（G6）：把 Supervisor 的调度决策、plan、todo 暴露给前端
+            final_todo = sup_result.get("todo", [])
+            if _live_todo:
+                # 用实时进度流累积的 todo 覆盖（含每项状态，前端能拿到完整过程）
+                merged = []
+                for item in final_todo:
+                    live = _live_todo.get(item.get("id"))
+                    merged.append(live if live else item)
+                final_todo = merged
+            # 补充强制 image_analyze 的 todo（若存在），保证过程区能看到图片分析半步
+            _img_todo = _live_todo.get("image_analyze")
+            if _img_todo and not any(t.get("capability") == "image_analyze" for t in final_todo):
+                final_todo = final_todo + [_img_todo]
             reasoning_trace = {
                 "complexity": sup_result.get("complexity"),
                 "plan": sup_result.get("plan", []),
-                "todo": sup_result.get("todo", []),
+                "todo": final_todo,
                 "decision": sup_result.get("_decision"),
+                "run_id": run_id,
             }
+
+            # 收尾：整体完成广播（前端据此收起执行过程、仅展示纯回复）。
+            # 用 await 版本确保 done 一定送达后端，避免出现"一直转不停"。
+            await _broadcast_ai_progress_await(task_id, run_id, final_todo, "done")
 
             # 清理临时目录（如日志解压）
             for td in runtime_ctx.get("_tmp_dirs", []):
@@ -334,8 +475,11 @@ class DiscussFlow:
                 logger.warning(f"[discuss] Evaluator 执行异常，沿用初稿: {e}")
 
         # 5. 回复写入 task_comments
+        #    最终评论只写入纯粹答复（不含"分析过程"）——执行过程已通过 ai.progress
+        #    WS 事件在前端动态展示（Claude Code 式），不污染最终回复。
+        comment_reply = reply.strip()
         try:
-            self._add_diagnosis_comment_short(int(task_id), reply.strip())
+            self._add_diagnosis_comment_short(int(task_id), comment_reply)
         except Exception:
             pass
 

@@ -15,6 +15,8 @@ from ai.agents.AiTaskPlatform.contexts.comments import (
     add_diagnosis_comment,
     add_diagnosis_comment_short,
     notify_backend_comment_broadcast,
+    notify_backend_ai_progress,
+    notify_backend_ai_progress_await,
 )
 
 __all__ = [
@@ -22,4 +24,5 @@ __all__ = [
     "build_task_ctx", "build_img_ctx",
     "load_discussion", "add_diagnosis_comment",
     "add_diagnosis_comment_short", "notify_backend_comment_broadcast",
+    "notify_backend_ai_progress", "notify_backend_ai_progress_await",
 ]
