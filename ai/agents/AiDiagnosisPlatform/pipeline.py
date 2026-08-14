@@ -721,9 +721,10 @@ class AiDiagnosisPlatform:
         _from = state.context_start
         if _from >= len(memory.turns):
             _from = max(0, len(memory.turns) - 10)
-        # 收集模式下屏蔽图片描述：截图是 UI 文本（工单类型/状态/处理人），不是用户陈述，
-        # 字段提取时看不到描述，杜绝把「缺陷」之类当项目名。
-        # 诊断模式保留描述——正常诊断需要看错误码/状态等截图信息。
+        # 图片描述屏蔽：收集模式下屏蔽（字段只从用户打字里提取，防「缺陷」类
+        # UI 文本污染）。提单快路径不做分级——用户说「这个问题复现了」这类
+        # 模糊指代时，截图本身就是唯一信息源，AI 看图理解是唯一解；
+        # 即使图上文字会带入主题，工程师接单后会纠正，不做过度优化。
         conversation_text = self._format_conversation(
             memory, from_turn=_from, sanitize_images=bool(state.ticket_collecting))
         # 上一个工单上下文：只告诉 LLM"刚提过单"这个事实，不透露 project/问题主题——
