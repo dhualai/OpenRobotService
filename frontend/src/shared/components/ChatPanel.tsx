@@ -1706,16 +1706,19 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         return;
       }
 
-      // 工单1 概览气泡数据
+      // 工单1 概览气泡数据：以 confirm_submit 返回的 ticket（实际入库的那份）为准。
+      // 之前用本地 draft（弹窗时的第一版 LLM 草稿）——confirm_submit 内部会重新
+      // _build_ticket 生成第二版，两次 LLM 调用有随机性，导致卡片标题/描述与
+      // 历史工单页（从 DB 读）不一致。
       const ticket = res.data?.ticket as Record<string, unknown> | undefined;
       const ov1: NonNullable<Message['ticket_overview']> = {
         db_id: (res.data?.db_id as number) ?? 0,
         ticket_id: (ticket?.ticket_id as string) || draft.ticket_id || '',
-        title: draftField('title') || draft.title || '工单',
-        type: draftField('type') || draft.type,
-        priority: draftField('priority') || draft.priority,
-        project: overrides.project || '摇人吧服务号提单',
-        description: draftField('description') || draft.description,
+        title: (ticket?.title as string) || draftField('title') || draft.title || '工单',
+        type: (ticket?.type as string) || draftField('type') || draft.type,
+        priority: (ticket?.priority as string) || draftField('priority') || draft.priority,
+        project: (ticket?.project as string) || overrides.project || '摇人吧服务号提单',
+        description: (ticket?.description as string) || draftField('description') || draft.description,
         created_at: new Date().toISOString(),
       };
 
