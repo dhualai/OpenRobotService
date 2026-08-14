@@ -54,6 +54,8 @@ def simulate_chat_flow(phase, problem_summary, user_query, llm_action,
     su = parsed["state_update"]
     if "problem_summary" in su:
         state.problem_summary = su["problem_summary"]
+    if "required_fields" in su and su["required_fields"]:
+        state.required_fields = dict(su["required_fields"])
     if "collected_info" in su:
         for k, v in su["collected_info"].items():
             if v:
@@ -175,10 +177,14 @@ class TestChatSubmitFlow:
         assert r["submitted"] is True
 
     def test_llm_submit_missing_project_blocked(self):
-        """LLM action=submit 但缺 project → 转 ask，引导补项目"""
-        r = simulate_chat_flow("diagnosing", "机器人离线", "帮我提单", "submit")
+        """LLM action=submit 且 required_fields 缺字段 → 转 ask，引导补字段（project 不再拦截）"""
+        state = make_state(phase="diagnosing", problem_summary="机器人离线")
+        state.required_fields = {"robot_type": "车型"}
+        r = simulate_chat_flow("diagnosing", "机器人离线", "帮我提单", "submit",
+                               state_update={"required_fields": {"robot_type": "车型"}})
         assert r["action"] == "ask"
-        assert "项目名称" in r["missing_fields"]
+        assert "车型" in r["missing_fields"]
+        assert "项目名称" not in r["missing_fields"]  # 项目不在对话链路
 
     def test_llm_submit_after_just_submitted_intercepted(self):
         """刚提完单（last_submitted_ticket）+ LLM 又 submit + 无新问题 → 闭环拦截"""
@@ -220,10 +226,11 @@ class TestButtonFlow:
         assert r["stage"] == "draft_ready"
 
     def test_prepare_need_fields(self):
-        """缺 project → 需要补充"""
-        r = simulate_button_prepare("diagnosing", "故障")
-        assert r["stage"] == "need_fields"
-        assert "项目名称" in r["missing"]
+        """required_fields 缺字段 → not_ready 拦截（project 不在对话链路，不再拦截）"""
+        r = simulate_button_prepare("diagnosing", "故障", None)
+        # 无 required_fields 时 readiness 为空 → 直接 draft_ready（弹窗里选项目）
+        assert r["stage"] in ("draft_ready", "need_fields")
+        assert "项目名称" not in r["missing"]
 
     def test_prepare_blocked_after_submit(self):
         """刚提完单（last_submitted_ticket）+ 无新问题 → 拦截"""
