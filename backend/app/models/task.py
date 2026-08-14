@@ -230,6 +230,10 @@ class TaskOperationLog(Base):
     description = Column(String(500), nullable=True,
                          comment="人类可读描述，如：将工单状态变更为「处理中」")
 
+    # 查看时长专属（仅 VIEW 操作有值）：前端在用户离开页面时回传累计停留秒数
+    ended_at = Column(DateTime, nullable=True, comment="查看结束时间（仅 VIEW 有值）")
+    duration_seconds = Column(Integer, nullable=True, comment="查看时长（秒，仅 VIEW 有值）")
+
     created_at = Column(DateTime, server_default=func.now(),
                         nullable=False, index=True, comment="操作时间")
 

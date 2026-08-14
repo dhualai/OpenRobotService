@@ -150,8 +150,22 @@ export interface OperationLog {
   detail?: Record<string, unknown> | null;
   description?: string | null;
   created_at: string;
+  ended_at?: string | null;
+  duration_seconds?: number | null;
 }
 
 /** 获取工单操作日志列表（按时间倒序） */
 export const getOperationLogs = (taskId: number | string) =>
   request<OperationLog[]>(`/${Number(taskId)}/operation-logs`, { skipCache: true });
+
+/** 将秒数格式化为人类可读的停留时长，如 "5 分 30 秒" / "45 秒" / "1 小时 5 分" */
+export const formatDuration = (seconds: number | null | undefined): string => {
+  if (!seconds || seconds <= 0) return '';
+  const s = Math.floor(seconds);
+  if (s < 60) return `${s} 秒`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const rest = s % 60;
+  if (h > 0) return rest > 0 ? `${h} 小时 ${m} 分` : `${h} 小时 ${m} 分`;
+  return rest > 0 ? `${m} 分 ${rest} 秒` : `${m} 分钟`;
+};
