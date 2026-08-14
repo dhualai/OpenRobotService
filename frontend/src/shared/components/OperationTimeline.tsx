@@ -1,5 +1,6 @@
 import React from 'react';
 import type { OperationLog, OperationType } from '@/api/ticket';
+import { formatDuration } from '@/api/ticket';
 import { Loading, Empty } from 'tdesign-mobile-react';
 import './OperationTimeline.css';
 
@@ -196,6 +197,9 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
                         <div className="op-segment__sub-content">
                           <div className="op-segment__action">
                             {log.description || `${OP_TYPE_LABEL[log.operation_type]}操作`}
+                            {log.operation_type === 'view' && formatDuration(log.duration_seconds) && (
+                              <span className="op-segment__duration">（停留 {formatDuration(log.duration_seconds)}）</span>
+                            )}
                           </div>
                           <div className="op-segment__sub-meta">
                             <span className="op-segment__time">{formatTime(log.created_at)}</span>
