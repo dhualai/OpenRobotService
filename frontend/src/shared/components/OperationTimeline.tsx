@@ -160,11 +160,11 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
 
             {/* 右侧内容区 */}
             <div className="op-segment__content">
-              {/* 状态起点：状态名 + 时间 + 操作人 */}
+              {/* 状态起点：结束该状态 */}
               <div className="op-segment__start">
                 <div className="op-segment__start-row">
                   <span className="op-segment__status" style={{ color }}>
-                    {statusLabel}
+                    结束「{statusLabel}」状态
                   </span>
                   <span className="op-segment__time">{formatTime(group.statusTime)}</span>
                 </div>
@@ -200,17 +200,16 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
                 </div>
               )}
 
-              {/* 状态终点提示：再次显示状态名 */}
+              {/* 状态终点：进入该状态 */}
               <div className="op-segment__end">
                 {isLatest ? (
                   <div className="op-segment__end-current">
-                    <span className="op-segment__end-status">「{statusLabel}」</span>
-                    <span>持续至今</span>
+                    进入「{statusLabel}」状态
+                    <span className="op-segment__end-time"> 持续至今</span>
                   </div>
                 ) : prevGroup ? (
                   <div className="op-segment__end-next">
-                    <span className="op-segment__end-status">「{statusLabel}」</span>
-                    <span>结束，转入「{STATUS_MAP[prevGroup.status] || prevGroup.status}」</span>
+                    进入「{statusLabel}」状态
                     <span className="op-segment__end-time"> {formatTime(prevGroup.statusTime)}</span>
                   </div>
                 ) : null}

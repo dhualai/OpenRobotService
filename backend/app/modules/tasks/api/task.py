@@ -21,7 +21,7 @@ from app.modules.tasks.schemas.ticket import (
 )
 from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, TicketType
 from app.modules.tasks.services.ticket_service import TicketService
-from app.modules.tasks.services.operation_log_service import OperationLogService
+from app.modules.tasks.services.operation_log_service import OperationLogService, get_role_prefix
 from app.models.task import OperationType
 from app.modules.tasks.api.ws import ws_broadcast_comment, ws_broadcast_comment_deleted, ws_broadcast_task_updated
 from app.utils.minio_client import minio_client
@@ -111,7 +111,7 @@ async def create_task(
             operator=username,
             operator_name=user_name,
             to_status=ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status),
-            description=f"{user_name or username} 创建了工单",
+            description=f"【创建人】{user_name or username} 创建了工单",
         )
         await OperationLogService.log(
             db=db,
@@ -121,7 +121,7 @@ async def create_task(
             operator_name=user_name,
             to_status=ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status),
             detail={"from": None, "to": ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)},
-            description=f"工单状态变更为「{ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)}」",
+            description=f"【创建人】{user_name or username} 将工单状态变更为「{ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)}」",
         )
         
         return ticket
@@ -309,6 +309,8 @@ async def get_task(
                         task_id=task_id,
                         username=username,
                         user_name=user_name,
+                        ticket_created_by=getattr(ticket, 'created_by', None),
+                        ticket_assigned_to=getattr(ticket, 'assigned_to', None),
                     )
             except Exception as view_err:
                 logger.warning(f"Failed to log view for task {task_id}: {view_err}")
@@ -442,6 +444,7 @@ async def update_task(
 
         # ── 记录操作日志 ──
         token = current_user.get('token') or ''
+        _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
         # 1. 状态变更日志 + 系统评论
         if ticket_update.status:
             new_status = ticket_update.status.value if hasattr(ticket_update.status, 'value') else str(ticket_update.status)
@@ -454,7 +457,7 @@ async def update_task(
                 operator_name=user_name,
                 to_status=new_status,
                 detail={"from": old_status, "to": new_status},
-                description=f"{user_name} 将工单状态变更为「{new_status}」",
+                description=f"{_role}{user_name} 将工单状态变更为「{new_status}」" if _role else f"{user_name} 将工单状态变更为「{new_status}」",
             )
             await _add_system_comment(
                 db, task_id,
@@ -474,14 +477,14 @@ async def update_task(
             await OperationLogService.log(
                 db=db, task_id=task_id, op_type=OperationType.ESCALATE,
                 operator=username, operator_name=user_name,
-                description=f"{user_name} 升级了工单",
+                description=f"{_role}{user_name} 升级了工单" if _role else f"{user_name} 升级了工单",
             )
             await _add_system_comment(db, task_id, f"{user_name} 升级了工单", username, token)
         elif op_type_str == 'return':
             await OperationLogService.log(
                 db=db, task_id=task_id, op_type=OperationType.RETURN,
                 operator=username, operator_name=user_name,
-                description=f"{user_name} 退回了工单",
+                description=f"{_role}{user_name} 退回了工单" if _role else f"{user_name} 退回了工单",
             )
             await _add_system_comment(db, task_id, f"{user_name} 退回了工单", username, token)
         elif op_type_str == 'reassign':
@@ -492,7 +495,7 @@ async def update_task(
                 db=db, task_id=task_id, op_type=OperationType.REASSIGN,
                 operator=username, operator_name=user_name,
                 detail={"new_assignee": new_assignee},
-                description=f"{user_name} 将工单重新指派给 {new_assignee_name}",
+                description=f"{_role}{user_name} 将工单重新指派给 {new_assignee_name}" if _role else f"{user_name} 将工单重新指派给 {new_assignee_name}",
             )
             await _add_system_comment(db, task_id, f"{user_name} 将工单重新指派给 {new_assignee_name}", username, token)
             # 工单转派提醒：通知创建人 + 新被指派人
@@ -519,7 +522,7 @@ async def update_task(
                 db=db, task_id=task_id, op_type=OperationType.UPDATE,
                 operator=username, operator_name=user_name,
                 detail={"fields": changed_fields},
-                description=f"{user_name} 修改了工单的「{'、'.join(label_list)}」",
+                description=f"{_role}{user_name} 修改了工单的「{'、'.join(label_list)}」" if _role else f"{user_name} 修改了工单的「{'、'.join(label_list)}」",
             )
 
         # _add_system_comment 的 commit 会使 result["ticket"] 的 comments 关系过期，
@@ -588,13 +591,16 @@ async def add_comment(
 
         # ── 记录评论操作日志 ──
         content_summary = comment_data.content[:100] + ('...' if len(comment_data.content) > 100 else '')
+        # 获取工单信息用于角色判断
+        _ticket = await TicketService.get_ticket_by_id(db, task_id)
+        _role = get_role_prefix(getattr(_ticket, 'created_by', None), getattr(_ticket, 'assigned_to', None), username) if _ticket else ""
         await OperationLogService.log(
             db=db,
             task_id=task_id,
             op_type=OperationType.COMMENT,
             operator=username,
             operator_name=operator,
-            description=f"{operator} 添加了评论：{content_summary}",
+            description=f"{_role}{operator} 添加了评论：{content_summary}" if _role else f"{operator} 添加了评论：{content_summary}",
         )
 
         # ── @mention 通知：检测评论中的 @用户名，排除 @U老师 ──
@@ -844,6 +850,7 @@ async def update_task_status(
 
         # ── 记录状态变更操作日志 ──
         user_name = current_user.get('name', username)
+        _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
         await OperationLogService.log(
             db=db,
             task_id=task_id,
@@ -852,7 +859,7 @@ async def update_task_status(
             operator_name=user_name,
             to_status=status,
             detail={"from": old_status, "to": status},
-            description=f"{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」",
+            description=f"{_role}{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」" if _role else f"{user_name} 将工单状态变更为「{STATUS_LABEL.get(status, status)}」",
         )
 
         # ── 向讨论区添加系统评论 ──
@@ -1015,6 +1022,7 @@ async def assign_task(
         # ── 记录改派操作日志 ──
         user_map = await TicketService._get_user_map(token)
         assignee_name = user_map.get(user_id, user_id)
+        _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username) if ticket else ""
         await OperationLogService.log(
             db=db,
             task_id=task_id,
@@ -1022,7 +1030,7 @@ async def assign_task(
             operator=username,
             operator_name=user_name,
             detail={"new_assignee": user_id},
-            description=f"{user_name} 将工单指派给 {assignee_name}",
+            description=f"{_role}{user_name} 将工单指派给 {assignee_name}" if _role else f"{user_name} 将工单指派给 {assignee_name}",
         )
 
         # ── 向讨论区添加系统评论 ──
