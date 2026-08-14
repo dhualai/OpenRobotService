@@ -13,6 +13,7 @@ import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepa
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import UserSelect from '@/shared/components/UserSelect';
 import { createTicket } from '@/api/ticket';
+import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
 import type { UserItem } from '@/api/users';
 import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
 import { createRequest } from '@/api/client';
@@ -452,6 +453,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     dualTicket: boolean;      // 兜底双工单：项目不在项目集时勾选，生成申请单派给项目负责人
     projectOwner: UserItem | null;  // 双工单场景下选中的项目负责人
   }>({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
+  // 提单基准时间：首次打开确认弹窗时固定（= 提单时刻），切换优先级/后续操作不漂移，
+  // 使「最晚解决时间 = 提单时间 + 优先级时长」恒定，不随用户修改时间变化。
+  const ticketBaseTimeRef = useRef<dayjs.Dayjs | null>(null);
   // 转工单信息不足引导（方案A）：prepare 返回 not_ready 时，
   // 在输入框上方常驻「待补充清单」卡片 + 转工单按钮角标，引导用户回对话补全
   const [ticketMissing, setTicketMissing] = useState<{ info: string[]; message: string } | null>(null);
@@ -1093,14 +1097,19 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             setMessages((prev) => prev.map((m) => (
               m.id === assistantId ? { ...m, phase: undefined } : m
             )));
-            setTicketConfirm((s) => s.visible ? s : {
-              visible: true,
-              draft: data.draft as TicketDraft,
-              overrides: {},
-              submitting: false,
-              force_submit: !!data.force_submit,
-              dualTicket: false,
-              projectOwner: null,
+            setTicketConfirm((s) => {
+              if (s.visible) return s;
+              // 提单基准时间：首次打开确认弹窗时固定，此后切换优先级/操作不漂移
+              if (!ticketBaseTimeRef.current) ticketBaseTimeRef.current = dayjs();
+              return {
+                visible: true,
+                draft: data.draft as TicketDraft,
+                overrides: {},
+                submitting: false,
+                force_submit: !!data.force_submit,
+                dualTicket: false,
+                projectOwner: null,
+              };
             });
           }
         } catch { /* JSON 行解析出错则跳过 */ }
@@ -1542,6 +1551,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const { draft, missing_fields, prompt } = res.data;
       // 打开确认弹窗，让用户核对/编辑/补字段
       setTicketMissing(null); // 已就绪，清掉待补充清单
+      ticketBaseTimeRef.current = dayjs(); // 提单基准时间：生成草稿并打开弹窗时固定
       setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
       if (missing_fields?.length) {
         // 缺失字段明细已在确认弹窗内逐字段展示，Toast 仅作短提示（避免长 prompt 被截断/喧宾夺主）
@@ -1561,6 +1571,16 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     setTicketConfirm((s) => ({ ...s, overrides: { ...s.overrides, [k]: v } }));
 
   // ── 最晚解决时间（截止时间）：antd DatePicker 下拉，与编辑弹窗统一（浮层 z-index 见下方 JSX）──
+  // 区间基准 = 提单基准时间（ticketBaseTimeRef），优先级决定时长（紧急24h/高72h/中120h/低336h）。
+  const deadlineRange = getDeadlineRange(draftField('priority'), ticketBaseTimeRef.current);
+  // 用户是否手动动过 deadline（清空 or 选择）：未动过则默认显示区间最大值（提单时间 + 优先级时长）。
+  const deadlineTouched = Object.prototype.hasOwnProperty.call(ticketConfirm.overrides, 'deadline_at');
+  const deadlinePickerValue = (() => {
+    const raw = draftField('deadline_at');
+    if (raw) return dayjs(raw);
+    if (deadlineTouched) return null; // 用户主动清空，保持空
+    return deadlineRange?.max ?? null; // 未设置 → 默认显示最大值
+  })();
 
   // ── 工单概览气泡 + 派单轮询 ──────────────────────────────────
   const tasksReq = useMemo(() => createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务'), []);
@@ -1642,6 +1662,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 前端确认弹窗无法再次弹出，提单卡死。清掉后下次对话字段齐全会重新弹窗。
   const handleCancelTicketConfirm = () => {
     const sid = ticketConfirm.draft?.source_conversation_id ?? sessionId;
+    ticketBaseTimeRef.current = null; // 关闭弹窗即清空基准，下次打开重新固定
     setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
     if (sid) {
       qaClearDraft(String(sid)).catch(() => { /* 清草稿失败不阻塞，本地已重置 */ });
@@ -1731,6 +1752,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         }
       }
 
+      ticketBaseTimeRef.current = null; // 提交完成关闭弹窗，清空基准
       setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
 
       // 工单1 落库 + 气泡 + 轮询
@@ -2142,7 +2164,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 <select
                   className="ticket-confirm__select"
                   value={draftField('priority')}
-                  onChange={(e) => setDraftField('priority', e.target.value)}
+                  onChange={(e) => {
+                    const p = e.target.value;
+                    setDraftField('priority', p);
+                    // 切换优先级：最晚解决时间重算为「提单时间 + 新优先级时长」最大值
+                    const r = getDeadlineRange(p, ticketBaseTimeRef.current);
+                    if (r) setDraftField('deadline_at', r.max.toISOString());
+                  }}
                 >
                   <option value="紧急">紧急</option>
                   <option value="高">高</option>
@@ -2155,8 +2183,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   style={{ width: '100%' }}
                   placeholder="点击选择"
                   format="YYYY-MM-DD HH:00"
-                  showTime={{ defaultValue: dayjs().hour(9).minute(0), format: 'HH:00' }}
-                  value={draftField('deadline_at') ? dayjs(draftField('deadline_at')) : null}
+                  showTime={{ defaultValue: deadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00' }}
+                  value={deadlinePickerValue}
+                  disabledDate={deadlineRange ? makeDisabledDate(deadlineRange.min, deadlineRange.max) : undefined}
+                  disabledTime={deadlineRange ? makeDisabledTime(deadlineRange.min, deadlineRange.max) : undefined}
                   onChange={(d: dayjs.Dayjs | null) => setDraftField('deadline_at', d ? d.minute(0).second(0).millisecond(0).toISOString() : '')}
                   allowClear
                   styles={{ popup: { root: { zIndex: 12000 } } }}
