@@ -2365,10 +2365,11 @@ class AiDiagnosisPlatform:
                             except Exception:
                                 _is_submit_action = False
                             if _is_submit_action:
+                                # submit：只吞正文，不发「生成工单中」动画。
+                                # 服务端就绪门槛可能把 submit 打回 ask（required_fields 未齐），
+                                # 若这里乐观发动画，用户会看到「生成工单中」→ 两秒后又开始问信息。
+                                # 动画统一推迟到 submit 块（就绪判定通过后、真正 build_ticket 前）发。
                                 _suppress_msg = True
-                                _generating_sent = True
-                                logger.info(f"[stream] 流式阶段发现submit，发 generating_ticket: session={request.session_id}")
-                                yield {"event": "status", "data": {"stage": "generating_ticket"}}
                                 # 不 yield tail，后续 token 也全部吞掉（raw_tokens 照常累积供最终解析）
                                 continue
                             tail = _buf[msg_start:]
@@ -2548,14 +2549,14 @@ class AiDiagnosisPlatform:
         ticket_data = None
         if parsed["action"] == "submit":
             _log_ticket_state(state, "llm_action_submit")
+            # 「生成工单中」动画在这里发（就绪门槛已通过、即将 build_ticket 前）。
+            # 流式阶段只吞正文不发动画——否则 LLM 的 submit 若被就绪门槛打回 ask，
+            # 用户会看到「生成工单中」闪现后又被问信息。
+            if not _generating_sent:
+                _generating_sent = True
+                yield {"event": "status", "data": {"stage": "generating_ticket"}}
             # 先把本轮 state（含 LLM 提炼的 problem_summary/collected_info）落盘，
             # 否则 submit() 从 memory 重新加载会拿到旧 state，闭环判定与 stream 不一致。
-            if not _generating_sent:
-                # 兜底补发：流式阶段 JSON 就位解析失败（fenced 等待超时/非标准 JSON）时
-                # 没有发过 generating_ticket → 前端会一直「思考中」到弹窗。这里补发。
-                _generating_sent = True
-                logger.info(f"[stream] submit 块兜底补发 generating_ticket: session={request.session_id}")
-                yield {"event": "status", "data": {"stage": "generating_ticket"}}
             _save_agent_state(memory, state)
             await self._memory_manager.save_memory(memory)
             try:
