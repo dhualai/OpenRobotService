@@ -1096,7 +1096,7 @@ async def get_task_operation_logs(
     """获取工单操作日志列表（按时间倒序）"""
     try:
         logs = await OperationLogService.list_by_task(db, task_id)
-        
+
         # 转换为前端需要的格式
         result = []
         for log in logs:
@@ -1110,6 +1110,8 @@ async def get_task_operation_logs(
                 "detail": log.detail,
                 "description": log.description,
                 "created_at": log.created_at.isoformat() if log.created_at else None,
+                "ended_at": log.ended_at.isoformat() if log.ended_at else None,
+                "duration_seconds": log.duration_seconds,
             })
         return result
     except Exception as e:
@@ -1117,6 +1119,53 @@ async def get_task_operation_logs(
         logger = logging.getLogger(__name__)
         logger.error(f"获取工单操作日志失败: task_id={task_id}, error={str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取工单操作日志失败: {str(e)}")
+
+
+class ViewEndRequest(BaseModel):
+    duration_seconds: int
+
+
+@router.post("/{task_id}/view-end")
+async def report_view_duration(
+    task_id: int,
+    payload: ViewEndRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """回传用户查看工单的停留时长。
+
+    前端在用户离开页面（pagehide / visibilitychange→hidden / 组件卸载）时调用，
+    将累计的可见停留秒数回传给后端，后端累加到最近一条 VIEW 操作记录上。
+    使用 JWT 中的 sub 作为操作人标识，与查看记录创建时的去重逻辑一致。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    auth_header = request.headers.get("Authorization")
+    token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
+    if not token:
+        raise HTTPException(status_code=401, detail="未授权")
+
+    try:
+        from app.core.security import decode_token
+        payload_jwt = decode_token(token)
+        username = payload_jwt.get("sub") if payload_jwt else None
+        if not username:
+            raise HTTPException(status_code=401, detail="无效的令牌")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"view-end token decode failed: {e}")
+        raise HTTPException(status_code=401, detail="令牌解析失败")
+
+    duration = int(payload.duration_seconds or 0)
+    ok = await OperationLogService.update_view_duration(
+        db=db,
+        task_id=task_id,
+        username=username,
+        duration_seconds=duration,
+    )
+    return {"ok": ok, "duration_seconds": duration}
 
 
 @router.post("/comments/attachments")

@@ -6,7 +6,7 @@ import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
-import { createRequest } from '@/api/client';
+import { createRequest, getToken } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import SafeHtml from '@/shared/components/SafeHtml';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
@@ -15,7 +15,7 @@ import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
-import { uploadCommentAttachment, getOperationLogs, type OperationLog as TicketOperationLog } from '@/api/ticket';
+import { uploadCommentAttachment, getOperationLogs, formatDuration, type OperationLog as TicketOperationLog } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canEditPriority } from '@/shared/constants/ticket';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
 import { formatDateTime } from '@/shared/utils/url';
@@ -212,6 +212,60 @@ export default function TaskDetailPage() {
     getOperationLogs(detailId)
       .then((data) => setOpLogs(data || []))
       .catch(() => setOpLogs([]));
+  }, [detailId]);
+
+  // 查看停留时长追踪：用户离开页面 / 切后台时回传累计可见秒数
+  // 后端将累加到最近一条 VIEW 操作记录上（5 分钟去重窗口内同一条记录）
+  useEffect(() => {
+    if (!detailId) return;
+
+    let accumulated = 0;                     // 累计可见秒数
+    let lastActive: number | null = Date.now(); // 当前可见周期起始时间戳
+    let sent = false;                        // 当前可见周期是否已回传
+
+    const flush = () => {
+      if (lastActive !== null) {
+        accumulated += (Date.now() - lastActive) / 1000;
+        lastActive = null;
+      }
+      const seconds = Math.floor(accumulated);
+      if (seconds <= 0 || sent) return;
+      sent = true;
+
+      const token = getToken();
+      if (!token) return;
+      // keepalive 保证页面卸载时请求仍能发出
+      fetch(`${API_CONFIG.TASKS.BASE_URL}/${detailId}/view-end`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ duration_seconds: seconds }),
+        keepalive: true,
+      }).catch(() => {});
+    };
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        // 切后台 / 最小化：立即回传当前可见周期时长
+        flush();
+      } else {
+        // 恢复可见：开启新的可见周期（后端累加，不覆盖之前已回传的时长）
+        lastActive = Date.now();
+        accumulated = 0;
+        sent = false;
+      }
+    };
+
+    const onPageHide = () => flush();
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+      // SPA 内部导航（组件卸载）：回传剩余时长
+      flush();
+    };
   }, [detailId]);
 
   // 进入详情页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈，无需额外按钮
@@ -1210,10 +1264,15 @@ export default function TaskDetailPage() {
               const d = new Date(ts);
               return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
             };
-            const items = opLogs.map((l) => ({
-              key: String(l.id),
-              text: `${formatTime(l.created_at)} · ${l.description || l.operation_type}`,
-            }));
+            const items = opLogs.map((l) => {
+              // 查看记录追加停留时长
+              const dur = l.operation_type === 'view' ? formatDuration(l.duration_seconds) : '';
+              const suffix = dur ? `（停留 ${dur}）` : '';
+              return {
+                key: String(l.id),
+                text: `${formatTime(l.created_at)} · ${l.description || l.operation_type}${suffix}`,
+              };
+            });
             // 复制一份用于无缝循环滚动
             const loopItems = [...items, ...items];
             const scrollStyle = { '--count': items.length } as React.CSSProperties;
