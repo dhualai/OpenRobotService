@@ -137,9 +137,15 @@ def _can_submit(state: AgentState) -> tuple[bool, str]:
     刚提完单（last_submitted_ticket 非空）且之后没有提炼出新 problem_summary 时拦截；
     用户描述了新问题（problem_summary 非空）则允许重新开始提单流程。
 
+    例外：收集模式（ticket_collecting 非空）说明提单流程已启动、问题已在对话中确认
+    （首轮就设了 required_fields），此时绝不拦截——否则用户在补字段时会被
+    「刚提交过工单」误拦，submit 失效后 LLM 反复追问同一字段、收集轮数超限强制弹窗。
+
     不依赖 phase——run_stream 会提前把 phase 改成 diagnosing，phase 不可靠。
     对话路径和按钮路径都调用此函数，行为一致。
     """
+    if state.ticket_collecting:
+        return True, ""
     if state.last_submitted_ticket and not (state.problem_summary or "").strip():
         return False, "工单刚提交，如需处理新问题请先描述新现象。"
     return True, ""
@@ -798,6 +804,10 @@ class AiDiagnosisPlatform:
                     "2. 用户确有提单诉求 → 判定 ticket_type（problem=报障/bug=缺陷/feature=需求/support=咨询/other），"
                     "仔细读完整对话找出工程师接单后必须知道、但对话里确实还没说过的 1-4 个关键信息缺口"
                     "（用户说过的、能推出的不列；不列项目名）\n"
+                    "2.5 🔴 有提单诉求时，必须把用户要提单的问题一句话总结写进 state_update.problem_summary"
+                    "（如「工单401确认完成页面，解决方式自动总结出错」）。这是服务端闭环校验的依据——"
+                    "不写的话，刚提过单的会话会被误判为「无新问题重复提单」而拦截。"
+                    "即使其他信息都齐、直接 submit，也必须写 problem_summary\n"
                     "3. 有缺口 → action=ask，一次只问一个缺失字段，ticket_intent=true；"
                     "没有缺口 → action=submit，message 留空，ticket_intent=true\n"
                     "4. 🔴 用户指名处理人（「提给XX」「交给XX」）分两种场景：\n"
@@ -811,6 +821,7 @@ class AiDiagnosisPlatform:
                     '```json\n'
                     '{"action":"answer|ask|submit","intent":"howto|troubleshoot","ticket_intent":true|false,"ticket_cancel":false,'
                     '"state_update":{"ticket_type":"problem|bug|feature|support|other",'
+                    '"problem_summary":"一句话问题概述",'
                     '"required_fields":{"field_key":"中文标签"},'
                     '"collected_info":{},"ticket_ready":false}}\n'
                     '```\n'
