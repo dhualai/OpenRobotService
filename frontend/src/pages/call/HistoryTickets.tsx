@@ -17,12 +17,13 @@ import type { UserItem } from '@/api/users';
 
 const PAGE_SIZE = 20;
 
-// 蓝阶优先级（设计稿唯一保留的色彩体系，深→浅）
-const PRIORITY_COLOR: Record<string, string> = {
-  紧急: 'var(--blue-1)', 高: 'var(--blue-2)', 中: 'var(--blue-3)', 低: 'var(--gray-light)',
-};
+
 const TYPE_LABEL: Record<string, string> = {
   problem: '报障', bug: '缺陷', feature: '需求', support: '支持', other: '其他',
+};
+// 类型 Tag 色调（设计稿 kindTone：需求 blue / 报障·缺陷 gray / 支持·其他 muted）
+const TYPE_TONE: Record<string, string> = {
+  feature: 'blue', problem: 'gray', bug: 'gray', support: 'muted', other: 'muted',
 };
 // 列表仅展示「除已关闭外」的工单；countKey 对应列表接口返回 by_status 的键（'__active__' 表示除已关闭外总数）
 const STATUS_TABS = [
@@ -237,50 +238,43 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
               className="history-row"
               onClick={() => navigate(`/call/ticket/db_${t.id}`)}
             >
+              {/* 顶行（设计稿：类型 Tag + 标题 flex-1 截断 + 编号胶囊 + 日期） */}
               <div className="history-row__top">
-                <span className="history-row__dot" style={{ background: PRIORITY_COLOR[t.priority || ''] || 'var(--gray-light)' }} />
-                {t.type && <span className="history-row__type">{TYPE_LABEL[t.type] || t.type}</span>}
+                {t.type && <span className={`history-row__kind history-row__kind--${TYPE_TONE[t.type] || 'muted'}`}>{TYPE_LABEL[t.type] || t.type}</span>}
                 <span className="history-row__title">{t.title}</span>
-                {t.priority && (
-                  <span className="history-row__priority" style={{ color: PRIORITY_COLOR[t.priority] || 'var(--gray-light)' }}>{t.priority}</span>
-                )}
+                <span className="history-row__id">#{t.id}</span>
                 <span className="history-row__date">{(t.created_at || '').slice(0, 10)}</span>
               </div>
               {t.description && <span className="history-row__summary">{t.description}</span>}
               {t.project && <span className="history-row__project">所属项目：{t.project}</span>}
-              {/* 人员流转：发起人 → 处理人（照搬系统任务卡片 task-card2__people 样式）。
+              {/* 人员流转（设计稿：头像 blue-3 + 姓名 | ArrowRight blue-3 居中 | 姓名 + 头像 blue-2）。
                   派单中（status=new 且处理人未写入，AI 派单 Worker 60s 轮询中）：显示「派单中」呼吸动效 */}
               <div className="task-card2__people">
                 <div className="task-card2__person task-card2__person--creator" title={`发起人：${t.created_by_name || t.created_by || '-'}`}>
                   <span className="task-card2__avatar">{(t.created_by_name || t.created_by || '?').slice(0, 1).toUpperCase()}</span>
-                  <span className="task-card2__person-text">
-                    <span className="task-card2__person-label">发起人</span>
-                    <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
-                  </span>
+                  <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
                 </div>
-                <span className="task-card2__person-arrow"><ArrowRight size={13} strokeWidth={2.2} /></span>
+                <span className="task-card2__person-arrow"><ArrowRight size={14} strokeWidth={2} /></span>
                 {(t.status === 'new' && !t.assigned_to && !t.assigned_to_name) ? (
                   <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单">
                     <span className="task-card2__avatar task-card2__avatar--assignee task-card2__avatar--dispatching"><i className="dispatch-pulse" /></span>
-                    <span className="task-card2__person-text">
-                      <span className="task-card2__person-label">处理人</span>
-                      <span className="task-card2__person-name task-card2__person-name--dispatching">派单中</span>
-                    </span>
+                    <span className="task-card2__person-name task-card2__person-name--dispatching">派单中</span>
                   </div>
                 ) : (
                   <div className="task-card2__person task-card2__person--assignee" title={`处理人：${t.assigned_to_name || t.assigned_to || '-'}`}>
                     <span className="task-card2__avatar task-card2__avatar--assignee">{(t.assigned_to_name || t.assigned_to || '?').slice(0, 1).toUpperCase()}</span>
-                    <span className="task-card2__person-text">
-                      <span className="task-card2__person-label">处理人</span>
-                      <span className="task-card2__person-name">{t.assigned_to_name || t.assigned_to || '-'}</span>
-                    </span>
+                    <span className="task-card2__person-name">{t.assigned_to_name || t.assigned_to || '-'}</span>
                   </div>
                 )}
               </div>
+              {/* 底部行（设计稿：状态/优先级 Tag bg-secondary text-blue-2 + 操作按钮组） */}
               <div className="history-row__bottom">
-                {statusMeta.label && (
-                  <span className="history-row__status" style={{ color: statusMeta.color, background: statusMeta.bg }}>{statusMeta.label}</span>
-                )}
+                <div className="history-row__bottom-tags">
+                  {statusMeta.label && (
+                    <span className="history-row__status" style={{ color: 'var(--blue-2)', background: 'var(--secondary)' }}>{statusMeta.label}</span>
+                  )}
+                  {t.priority && <span className="history-row__priority-tag">{t.priority}</span>}
+                </div>
                 {/* 操作按钮：已解决/已取消/已关闭（终态）整组不显示；
                     新建/待处理可催办、撤回；处理中仅可上报；不可用按钮禁用 */}
                 {!isTerminalTicketStatus(t.status) && (
