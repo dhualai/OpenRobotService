@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Navbar } from 'tdesign-mobile-react';
+import { Menu, CalendarDays } from 'lucide-react';
 
 import ChatPanel from '@/shared/components/ChatPanel';
 import HistoryTickets from './HistoryTickets';
@@ -11,8 +12,6 @@ import { useSwipeToClose } from '@/shared/utils/useSwipeToClose';
 import { qaListTickets } from '@/api/ai';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
-
-const ACTIVE_STATUSES = ['new', 'in_progress', 'pending'];
 
 export default function CallView() {
   const [showHistory, setShowHistory] = useState(false);
@@ -50,10 +49,10 @@ export default function CallView() {
   useEffect(() => {
     (async () => {
       try {
+        // 复用列表接口（limit=1 最小开销）取「除已关闭外」总数，无需额外统计接口
         const filters = !isAdmin && username ? { username } : undefined;
-        const res = await qaListTickets(0, 200, filters);
-        const items = res?.data?.items || [];
-        setUnread(items.filter((t) => ACTIVE_STATUSES.includes(t.status || '')).length);
+        const res = await qaListTickets(0, 1, filters);
+        setUnread(res?.data?.active_total ?? 0);
       } catch { /* ignore */ }
     })();
   }, [tasksRefreshKey, username, isAdmin]);
@@ -102,7 +101,7 @@ export default function CallView() {
             用 absolute 相对 .app-shell(内容区，已排除底部 TabBar) 定位，
             而非 fixed 全屏，避免盖住底部模块入口 TabBar（详情页是独立路由天然不盖）。 */}
         {showHistory && (
-          <div className="chat-view" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 50, background: '#f5f5f5' }} {...swipeToCloseHistory}>
+          <div className="chat-view" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 50, background: 'var(--gradient-surface)' }} {...swipeToCloseHistory}>
             <Navbar title="历史工单" fixed leftArrow onLeftClick={() => setShowHistory(false)} />
             <div className="page-container" style={{ paddingTop: 16, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
               <HistoryTickets showHeader={false} />
