@@ -4,7 +4,7 @@ import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
-import { ArrowUp, Plus, MessageSquarePlus, TicketPlus, Paperclip } from 'lucide-react';
+import { ArrowUp, Plus, MessageSquarePlus, TicketPlus, Paperclip, ThumbsUp, ThumbsDown, Copy, Pencil, Check, X, FolderClosed, User, CheckCircle2 } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import { useAuthStore } from '@/stores/auth';
@@ -20,6 +20,7 @@ import { createConversation, getConversation, appendMessage, readAiSessionId, up
 import { createRequest } from '@/api/client';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import { compressImage } from '@/shared/utils/imageCompress';
+import { useInertiaScroll } from '@/shared/hooks/useInertiaScroll';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import ImageLightbox from '@/shared/components/ImageLightbox';
 import SuggestedQuestions from '@/shared/components/SuggestedQuestions';
@@ -272,7 +273,7 @@ const MessageBubble = memo(function MessageBubble({
             role={msg.attachment?.url && !msg.uploading && !msg.failed ? 'button' : undefined}
             style={{ cursor: msg.attachment?.url && !msg.uploading && !msg.failed ? 'pointer' : 'default' }}
           >
-            <span className="chat-bubble__file-icon">📎</span>
+            <Paperclip size={16} strokeWidth={1.8} className="chat-bubble__file-icon" />
             <span className="chat-bubble__file-name">{msg.attachment.name}</span>
             {msg.failed ? (
               <span className="chat-bubble__file-fail">上传失败</span>
@@ -338,15 +339,15 @@ const MessageBubble = memo(function MessageBubble({
               }}
             >
               <div className="chat-ticket-overview__header">
-                <span className="chat-ticket-overview__emoji">🎫</span>
+                <FolderClosed size={14} strokeWidth={2} className="chat-ticket-overview__icon" />
                 <span className="chat-ticket-overview__id">工单 #{msg.ticket_overview.db_id}</span>
                 {msg.ticket_overview.type && <Tag theme="primary">{TICKET_TYPE_LABEL[msg.ticket_overview.type] || msg.ticket_overview.type}</Tag>}
                 {msg.ticket_overview.priority && <Tag theme="warning">{msg.ticket_overview.priority}</Tag>}
                 <span className="chat-ticket-overview__arrow" aria-hidden>›</span>
               </div>
               <div className="chat-ticket-overview__title">{msg.ticket_overview.title}</div>
-              {msg.ticket_overview.project && <div className="chat-ticket-overview__row">📁 {msg.ticket_overview.project}</div>}
-              {msg.ticket_overview.contact && <div className="chat-ticket-overview__row">👤 {msg.ticket_overview.contact}</div>}
+              {msg.ticket_overview.project && <div className="chat-ticket-overview__row"><FolderClosed size={12} strokeWidth={2} /> {msg.ticket_overview.project}</div>}
+              {msg.ticket_overview.contact && <div className="chat-ticket-overview__row"><User size={12} strokeWidth={2} /> {msg.ticket_overview.contact}</div>}
               {msg.ticket_overview.description && (
                 <>
                   <div className={`chat-ticket-overview__desc chat-clamp${expandedDesc ? ' is-expanded' : ''}`}>{msg.ticket_overview.description}</div>
@@ -357,7 +358,7 @@ const MessageBubble = memo(function MessageBubble({
               )}
               <div className="chat-ticket-overview__footer">
                 {msg.ticket_overview.assigned_to_name ? (
-                  <span className="chat-ticket-overview__assigned">✅ 已派单 · {msg.ticket_overview.assigned_to_name}</span>
+                  <span className="chat-ticket-overview__assigned"><CheckCircle2 size={14} strokeWidth={2} /> 已派单 · {msg.ticket_overview.assigned_to_name}</span>
                 ) : (
                   <span className="chat-ticket-overview__dispatching">
                     <i className="dispatch-pulse dispatch-pulse--inline" />派单中…
@@ -384,24 +385,39 @@ const MessageBubble = memo(function MessageBubble({
         )}
       </div>
 
+      {/* 气泡操作行（设计稿：22px 圆形小钮 + 14px 图标，muted/70 默认色，hover 出 secondary 圆底，选中 blue-2） */}
       <div className="chat-actions">
         {msg.role === 'assistant' && (
           <>
-            <button className={`chat-action ${msg.reaction === 'like' ? 'is-active' : ''}`} onClick={() => onToggleReaction(msg.id, 'like')}>👍</button>
-            <button className={`chat-action ${msg.reaction === 'dislike' ? 'is-active' : ''}`} onClick={() => onToggleReaction(msg.id, 'dislike')}>👎</button>
-            <button className="chat-action" onClick={() => onCopy(msg.content)}>📋</button>
+            <button className={`chat-action ${msg.reaction === 'like' ? 'is-active' : ''}`} onClick={() => onToggleReaction(msg.id, 'like')} aria-label="点赞">
+              <ThumbsUp size={14} strokeWidth={2} />
+            </button>
+            <button className={`chat-action ${msg.reaction === 'dislike' ? 'is-active' : ''}`} onClick={() => onToggleReaction(msg.id, 'dislike')} aria-label="点踩">
+              <ThumbsDown size={14} strokeWidth={2} />
+            </button>
+            <button className="chat-action" onClick={() => onCopy(msg.content)} aria-label="复制">
+              <Copy size={14} strokeWidth={2} />
+            </button>
           </>
         )}
         {msg.role === 'user' && (
           <>
-            <button className="chat-action" onClick={() => onCopy(msg.content)}>📋</button>
+            <button className="chat-action" onClick={() => onCopy(msg.content)} aria-label="复制">
+              <Copy size={14} strokeWidth={2} />
+            </button>
             {editingId === msg.id ? (
               <>
-                <button className="chat-action" onClick={() => onEditSave(msg)}>✅</button>
-                <button className="chat-action" onClick={onEditCancel}>✖️</button>
+                <button className="chat-action is-active" onClick={() => onEditSave(msg)} aria-label="保存">
+                  <Check size={14} strokeWidth={2.2} />
+                </button>
+                <button className="chat-action" onClick={onEditCancel} aria-label="取消">
+                  <X size={14} strokeWidth={2.2} />
+                </button>
               </>
             ) : (
-              <button className="chat-action" onClick={() => onEditStart(msg.id)}>✏️</button>
+              <button className="chat-action" onClick={() => onEditStart(msg.id)} aria-label="编辑">
+                <Pencil size={14} strokeWidth={2} />
+              </button>
             )}
           </>
         )}
@@ -444,6 +460,37 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const [sessionId, setSessionId] = useState<string>('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [submittingTicket, setSubmittingTicket] = useState(false);
+  // 转工单悬浮球拖拽（设计稿：pointer 捕获拖拽，位移 >8px 视为移动并抑制点击；位置 clamp 在窗口内）
+  const fabRef = useRef<HTMLButtonElement>(null);
+  const [fabPos, setFabPos] = useState<{ x: number; y: number } | null>(null);
+  const fabDragRef = useRef({ active: false, moved: false, justDragged: false, startX: 0, startY: 0, baseX: 0, baseY: 0 });
+  const FAB_SIZE = 52;
+  const clampFabPos = (x: number, y: number) => ({
+    x: Math.min(Math.max(8, x), window.innerWidth - FAB_SIZE - 8),
+    y: Math.min(Math.max(8, y), window.innerHeight - FAB_SIZE - 88),
+  });
+  const onFabPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const el = fabRef.current;
+    if (!el) return;
+    el.setPointerCapture(e.pointerId);
+    const r = el.getBoundingClientRect();
+    fabDragRef.current = { active: true, moved: false, justDragged: false, startX: e.clientX, startY: e.clientY, baseX: r.left, baseY: r.top };
+  };
+  const onFabPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const d = fabDragRef.current;
+    if (!d.active) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    if (!d.moved && Math.hypot(dx, dy) < 8) return;
+    d.moved = true;
+    setFabPos(clampFabPos(d.baseX + dx, d.baseY + dy));
+  };
+  const onFabPointerUp = () => {
+    const d = fabDragRef.current;
+    if (d.moved) d.justDragged = true;
+    d.active = false;
+    d.moved = false;
+  };
   // 转工单二次确认弹窗：prepare 生成草稿 → 用户核对/编辑/补字段 → confirm 入库
   const [ticketConfirm, setTicketConfirm] = useState<{
     visible: boolean;
@@ -517,30 +564,60 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const atBottomRef = useRef(true);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const prevCountRef = useRef(0); // 上一次消息条数：区分「新消息追加」与「内容增长」
+  // 用户滚动意图标记：wheel/touchstart 手势一开始即置 true，800ms 防抖复位。
+  // 程序置底据此避让——用户手指刚搭上/滚轮刚动（scrollTop 尚未变化、atBottom 未翻转）时，
+  // 新消息/流式更新也不把视图拽走，杜绝「抢滚动」。
+  const userScrollingRef = useRef(false);
+  const userScrollResetTimerRef = useRef<number | null>(null);
+  /** 恢复贴底跟随：用户主动行为（发送消息/确认提交/切换会话）后调用，重置上滑阅读状态 */
+  const resumeFollowBottom = useCallback(() => {
+    atBottomRef.current = true;
+    userScrollingRef.current = false;
+    if (userScrollResetTimerRef.current) {
+      clearTimeout(userScrollResetTimerRef.current);
+      userScrollResetTimerRef.current = null;
+    }
+  }, []);
+  const markUserScrolling = useCallback(() => {
+    userScrollingRef.current = true;
+    if (userScrollResetTimerRef.current) clearTimeout(userScrollResetTimerRef.current);
+    userScrollResetTimerRef.current = window.setTimeout(() => {
+      userScrollingRef.current = false;
+      userScrollResetTimerRef.current = null;
+    }, 800);
+  }, []);
+  // 惯性滚动（类 GSAP）：桌面端接管 wheel 做 lerp 缓动 + 松手惯性 + 边界橡皮筋，触摸保留原生。
+  // 通用 hook 可复用到任意滚动容器；程序 scrollTop 赋值（置底）会被 hook 识别为外部滚动并同步，互不冲突。
+  useInertiaScroll(messagesContainerRef);
+  // 只滚内层消息容器（scrollTop），绝不用 scrollIntoView——它会连带滚动所有可滚动祖先
+  // （外层 .tabbar-shell__content 也在其列），曾导致「上滑看历史被强制拉回底部、无法滚到顶」
+  const scrollContainerToBottom = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
   const scrollToBottom = useCallback(() => {
     if (!atBottomRef.current) return;
-    messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-  }, []);
-  // 强制滚动到底部（无视 atBottomRef）：加载历史会话后调用，确保「进入即见最新消息」。
+    scrollContainerToBottom();
+  }, [scrollContainerToBottom]);
+  // 强制滚动到底部（重置滚动状态后贴底）：加载/切换历史会话后调用，确保「进入即见最新消息」。
   const scrollToBottomNow = useCallback(() => {
-    atBottomRef.current = true;
-    requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-    });
-  }, []);
+    resumeFollowBottom();
+    requestAnimationFrame(scrollContainerToBottom);
+  }, [scrollContainerToBottom, resumeFollowBottom]);
   useEffect(() => {
-    // 新消息追加（条数增加：用户发送 / AI 占位气泡）→ 强制置底，让最新消息进入视野；
-    // 仅内容增长（流式 token / 编辑）→ 仅贴底时跟随，不打扰上滑看历史的用户。
+    // 新消息追加（条数增加）：用户已上滑阅读（atBottom=false）或正处于滚动手势 → 不打断；
+    // 用户主动发送（send/sendWithFile 先 resumeFollowBottom 恢复贴底再追加）天然命中置底。
+    // 仅内容增长（流式 token / 编辑）→ 仅贴底时跟随。
     const appended = messages.length > prevCountRef.current;
     prevCountRef.current = messages.length;
     if (appended) {
-      atBottomRef.current = true;
-      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      if (userScrollingRef.current) return;
+      if (atBottomRef.current) scrollContainerToBottom();
     } else {
       scrollToBottom();
     }
-  }, [messages, scrollToBottom]);
-  // 监听用户滚动，判断是否贴底（上滑看历史时不强制拉回）
+  }, [messages, scrollToBottom, scrollContainerToBottom]);
+  // 监听用户滚动，判断是否贴底（上滑看历史时不强制拉回）；wheel/touchstart 标记滚动意图
   useEffect(() => {
     const el = messagesContainerRef.current;
     if (!el) return;
@@ -548,8 +625,18 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     };
     el.addEventListener('scroll', onScroll, { passive: true });
-    return () => el.removeEventListener('scroll', onScroll);
-  }, []);
+    el.addEventListener('wheel', markUserScrolling, { passive: true });
+    el.addEventListener('touchstart', markUserScrolling, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      el.removeEventListener('wheel', markUserScrolling);
+      el.removeEventListener('touchstart', markUserScrolling);
+      if (userScrollResetTimerRef.current) {
+        clearTimeout(userScrollResetTimerRef.current);
+        userScrollResetTimerRef.current = null;
+      }
+    };
+  }, [markUserScrolling]);
 
   // 检测 textarea 是否达到最大高度，显示全屏按钮
   useEffect(() => {
@@ -958,6 +1045,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     if (!token) { kickToLogin('请先登录'); return; }
     if (sendingRef.current) return; // 防双发
     sendingRef.current = true;
+    // 用户主动发送：恢复贴底跟随（即使刚才在上滑看历史，最新对话也要立即进入视野）
+    resumeFollowBottom();
     // 用户开始补充信息：清掉待补充清单卡片（新一轮对话后再 prepare 会重新给出最新缺口）
     setTicketMissing(null);
 
@@ -1190,8 +1279,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       setLoading(false);
       sendingRef.current = false;
       abortRef.current = null;
-      // 回复完成：强制贴底，确保流式结束（Markdown 切换）后视图定位到最新消息，无需手动滑动
-      atBottomRef.current = true;
+      // 回复完成：仅贴底时跟随（用户已上滑阅读则不打扰）；定稿 streaming:false 触发
+      // Markdown 重渲染（代码块等高度突变），双 rAF 待布局稳定后再校正一次贴底
+      scrollToBottom();
+      requestAnimationFrame(() => requestAnimationFrame(scrollToBottom));
       // 定稿：合并为单次 setMessages。错误/中断时不再删除气泡，保留已接收内容（或占位提示），
       // 杜绝"闪烁一下就消失"。气泡已被 filter 删除时（中断且无内容）map 找不到，无操作。
       setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: sanitizeAiText(acc) || acc, streaming: false } : m)));
@@ -1765,6 +1856,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
       ticketBaseTimeRef.current = null; // 提交完成关闭弹窗，清空基准
       setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
+      resumeFollowBottom(); // 用户主动提交：工单概览气泡追加后立即贴底展示
 
       // 工单1 落库 + 气泡 + 轮询
       let dbMsgId1: number | null = null;
@@ -1936,33 +2028,49 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         </div>
       )}
 
-      {/* 输入区（千问风格卡片：上输入，下工具行） */}
+      {/* 转工单悬浮球（设计稿 FloatingTicketButton：52px 液态玻璃 + 可拖拽自由定位，
+          拖拽超过 8px 视为移动、否则触发点击；位置限制在窗口内，底部避开导航） */}
+      {isCall && (
+        <div
+          className="chat-panel__ticket-fab"
+          title="转为工单"
+          style={fabPos ? { left: fabPos.x, top: fabPos.y, right: 'auto', bottom: 'auto' } : undefined}
+        >
+          <button
+            ref={fabRef}
+            className={`chat-ticket-btn${messages.length > 0 ? ' has-content' : ''}${submittingTicket ? ' is-submitting' : ''}${ticketMissing && ticketMissing.info.length ? ' has-missing' : ''}`}
+            onPointerDown={onFabPointerDown}
+            onPointerMove={onFabPointerMove}
+            onPointerUp={onFabPointerUp}
+            onPointerCancel={onFabPointerUp}
+            onClick={() => {
+              // 拖拽结束时抑制本次 click（避免拖动误触发提交）
+              if (fabDragRef.current.justDragged) { fabDragRef.current.justDragged = false; return; }
+              handleSubmitTicket();
+            }}
+            disabled={submittingTicket}
+            aria-label="转工单"
+          >
+            {submittingTicket ? (
+              <span className="chat-ticket-spinner" />
+            ) : (
+              <TicketPlus size={20} strokeWidth={2} />
+            )}
+            {ticketMissing && ticketMissing.info.length > 0 && (
+              <span className="chat-ticket-btn__badge">{ticketMissing.info.length}</span>
+            )}
+          </button>
+          <span className="chat-ticket-btn__label">{submittingTicket ? '提交中…' : '转工单'}</span>
+        </div>
+      )}
+
+      {/* 输入区（设计稿单行横排：上传 + 输入框 + 发送 + 新建会话） */}
       <div
         className="chat-input-bar"
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input); }
         }}
       >
-        {isCall && (
-          <div className="chat-panel__ticket-fab" title="转为工单">
-            <button
-              className={`chat-ticket-btn${messages.length > 0 ? ' has-content' : ''}${submittingTicket ? ' is-submitting' : ''}${ticketMissing && ticketMissing.info.length ? ' has-missing' : ''}`}
-              onClick={handleSubmitTicket}
-              disabled={submittingTicket}
-              aria-label="转工单"
-            >
-              {submittingTicket ? (
-                <span className="chat-ticket-spinner" />
-              ) : (
-                <TicketPlus size={20} strokeWidth={2} />
-              )}
-              {ticketMissing && ticketMissing.info.length > 0 && (
-                <span className="chat-ticket-btn__badge">{ticketMissing.info.length}</span>
-              )}
-            </button>
-            <span className="chat-ticket-btn__label">{submittingTicket ? '提交中…' : '转工单'}</span>
-          </div>
-        )}
         {pendingFiles.length > 0 && (
           <div className="chat-pending-files">
             {pendingFiles.map((f, i) => (
@@ -2014,60 +2122,45 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             </button>
           </div>
         ) : (
-          <>
+          /* 设计稿单行横排输入区：[+ 上传] [输入框] [↑ 发送] [💬 新建会话]，底部对齐 */
+          <div className="chat-input-bar__row">
+            <button className="chat-input-btn chat-input-btn--secondary" onClick={() => setShowUploadMenu(true)} title="上传" aria-label="上传文件或拍照">
+              <Plus size={16} strokeWidth={2} />
+            </button>
             <div ref={textareaContainerRef} className="chat-input-bar__textarea" onPaste={handlePaste}>
               <Textarea
                 value={input}
                 onChange={(v) => setInput(String(v))}
-                placeholder="发消息..."
+                placeholder="发消息…"
                 autosize={{ minRows: 1, maxRows: 6 }}
               />
-            </div>
-            {textareaMaxed && !textareaFullscreen && (
-              <button
-                type="button"
-                className="chat-input-bar__expand-btn"
-                onClick={() => setTextareaFullscreen(true)}
-                aria-label="全屏输入"
-              >
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="15 3 21 3 21 9" />
-                  <polyline points="9 21 3 21 3 15" />
-                  <line x1="21" y1="3" x2="14" y2="10" />
-                  <line x1="3" y1="21" x2="10" y2="14" />
-                </svg>
-              </button>
-            )}
-            <div className="chat-input-bar__tools">
-              <div className="chat-input-bar__tools-left">
-                {/* === 语音输入入口暂时隐藏（2026-07-28），voiceMode 相关逻辑保留以便后续恢复 ===
-                <button className="chat-input-btn" onClick={() => setVoiceMode(true)} title="语音输入" aria-label="语音输入">
-                  <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="9" y="3" width="6" height="11" rx="3" />
-                    <path d="M5 11a7 7 0 0 0 14 0" />
-                    <line x1="12" y1="18" x2="12" y2="21" />
-                    <line x1="8" y1="21" x2="16" y2="21" />
+              {textareaMaxed && !textareaFullscreen && (
+                <button
+                  type="button"
+                  className="chat-input-bar__expand-btn"
+                  onClick={() => setTextareaFullscreen(true)}
+                  aria-label="全屏输入"
+                >
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 3 21 3 21 9" />
+                    <polyline points="9 21 3 21 3 15" />
+                    <line x1="21" y1="3" x2="14" y2="10" />
+                    <line x1="3" y1="21" x2="10" y2="14" />
                   </svg>
                 </button>
-                */}
-                <button className="chat-input-btn" onClick={() => setShowUploadMenu(true)} title="上传" aria-label="上传文件或拍照">
-                  <Plus size={22} strokeWidth={2} />
-                </button>
-                {/* 新建会话：入口从会话抽屉挪到此处（上传按钮右侧），图标为手绘风格聊天气泡。
-                    viewBox 裁剪到墨迹包围盒（原图 78x66 四周留白大），尺寸 22 略小于旁边的 26 上传图标 */}
-                <button className="chat-input-btn" onClick={requestNewConversation} title="新建会话" aria-label="新建会话">
-                  <MessageSquarePlus size={20} strokeWidth={2} />
-                </button>
-              </div>
-              <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={(!input.trim() && pendingFiles.length === 0) || loading} aria-label="发送">
-                {loading ? (
-                  <span className="chat-send-btn__spinner" />
-                ) : (
-                  <ArrowUp size={18} strokeWidth={2.4} />
-                )}
-              </button>
+              )}
             </div>
-          </>
+            <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={(!input.trim() && pendingFiles.length === 0) || loading} aria-label="发送">
+              {loading ? (
+                <span className="chat-send-btn__spinner" />
+              ) : (
+                <ArrowUp size={16} strokeWidth={2.4} />
+              )}
+            </button>
+            <button className="chat-input-btn chat-input-btn--blue" onClick={requestNewConversation} title="新建会话" aria-label="新建会话">
+              <MessageSquarePlus size={16} strokeWidth={2} />
+            </button>
+          </div>
         )}
         <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" onChange={handleFileChange} style={{ display: 'none' }} />
         <input ref={albumInputRef} type="file" accept="image/*" multiple onChange={handleFileChange} style={{ display: 'none' }} />
