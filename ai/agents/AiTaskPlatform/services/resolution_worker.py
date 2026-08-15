@@ -101,6 +101,7 @@ async def _summarize_resolution(task_id: int, llm) -> tuple[str, bool]:
 
     if not has_material:
         # 无任何内容 → 不调 LLM，返回空串（前端 placeholder【请补充解决方法】）
+        logger.info(f"Resolution #{task_id}: 无可用材料(无摘要/无讨论/无诊断方案)，不调 LLM")
         return "", False
 
     try:
@@ -208,6 +209,7 @@ async def _consumer(queue_key: str, llm, stop_event: asyncio.Event) -> None:
             except (TypeError, ValueError):
                 logger.warning(f"Resolution: 非法任务载荷 {raw!r}，忽略")
                 continue
+            logger.info(f"Resolution[consume] 消费到任务 #{task_id} (队列={queue_key})")
             await _process_one(task_id, llm)
     except asyncio.CancelledError:
         pass

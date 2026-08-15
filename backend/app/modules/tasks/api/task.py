@@ -896,7 +896,7 @@ async def get_resolution_summary(
     import logging
     _logger = logging.getLogger(__name__)
     _user = (current_user or {}).get('username', '?')
-    _logger.debug(f"[resolution-summary] 接口被调用: task_id={task_id}, force={force}, clear={clear}, user={_user}")
+    _logger.info(f"[resolution-summary] 接口被调用: task_id={task_id}, force={force}, clear={clear}, user={_user}")
 
     ticket = await TicketService.get_ticket_by_id(db, task_id)
     if not ticket:
@@ -991,7 +991,7 @@ async def get_resolution_summary(
             meta["resolution_requested_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ticket.metadata_info = meta
             await db.commit()
-            _logger.debug(f"[resolution-summary] task_id={task_id} 已入队到 {RESOLUTION_WORKER_QUEUE} 触发 worker 生成")
+            _logger.info(f"[resolution-summary] task_id={task_id} 已入队到 {RESOLUTION_WORKER_QUEUE} 触发 worker 生成")
         finally:
             await r.aclose()
     except Exception as e:
@@ -999,7 +999,7 @@ async def get_resolution_summary(
         enqueue_status = "failed"
         _logger.error(f"[resolution-summary] task_id={task_id} 入队失败: {e}")
 
-    _logger.debug(f"[resolution-summary] task_id={task_id} 返回 enqueue_status={enqueue_status}")
+    _logger.info(f"[resolution-summary] task_id={task_id} 返回 enqueue_status={enqueue_status}")
     return {
         "task_id": task_id,
         "problem": {"title": ticket.title or "", "description": ticket.description or ""},
