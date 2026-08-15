@@ -8,6 +8,7 @@ import { aiGet } from '@/api/ai';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import { currentYearMonth, normalizeSettlementPeriod } from '@/shared/utils/settlement';
 import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
 import { MacStat } from '@/shared/components/macaronBits';
 import { MacSearch, MacFolderClosed } from '@/shared/components/macaronIcons';
@@ -31,7 +32,7 @@ interface ProjectItem {
   task_execution_status: string;
   task_execution_stats?: TaskExecutionStats | null;
   latest_manual_switch_count?: number | null;
-  settlement_period?: string | null; // 业绩核算期，格式 YYYY-MM，来自企业微信同步
+  settlement_period?: string | null; // 业绩核算期，手工填写常见 YYYYMM（如 202608），兼容 YYYY-MM，来自企业微信同步
   deployment_date?: string | null;   // 部署时间
   final_delivery_date?: string | null; // 最终交付时间
 }
@@ -51,11 +52,6 @@ const FILTER_LABELS: Record<ProjectFilter, string> = {
   risk: '风险项目数',
   no_contact: '对接人缺省',
 };
-
-function currentYearMonth(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
 
 /** 项目时间进度：部署日期 → 最终交付日期的已过时间占比（0-100）。
  *  任一日期缺失或区间非法时返回 null（卡片隐藏进度条，不展示伪造数据）。 */
@@ -180,7 +176,7 @@ export default function ProjectProgress() {
     let list = projects;
     if (filter === 'new') {
       const ym = currentYearMonth();
-      list = list.filter((p) => p.settlement_period === ym);
+      list = list.filter((p) => normalizeSettlementPeriod(p.settlement_period) === ym);
     } else if (filter === 'risk') {
       list = list.filter((p) => p.risks > 0);
     } else if (filter === 'no_contact') {

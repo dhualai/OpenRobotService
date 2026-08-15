@@ -21,17 +21,13 @@ import { ProjectMonthBars } from '@/shared/components/macaronMonthBars';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import { currentYearMonth, normalizeSettlementPeriod } from '@/shared/utils/settlement';
 import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
 
 interface ProjectListItem {
   risks: number;
   contact_person: string;
   settlement_period?: string | null;
-}
-
-function currentYearMonth(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
 interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; }
@@ -230,7 +226,7 @@ export default function Dashboard() {
 
           <div className="mac-stat-row">
             <MacStat value={projects.length} label="项目总数" tone="blue-1" onClick={() => navigate('/admin/project-progress')} />
-            <MacStat value={projects.filter((p) => p.settlement_period === currentYearMonth()).length} label="本月新增" tone="blue-2" onClick={() => navigate('/admin/project-progress?filter=new')} />
+            <MacStat value={projects.filter((p) => normalizeSettlementPeriod(p.settlement_period) === currentYearMonth()).length} label="本月新增" tone="blue-2" onClick={() => navigate('/admin/project-progress?filter=new')} />
             <MacStat value={projects.filter((p) => p.risks > 0).length} label="风险项目" tone="blue-3" onClick={() => navigate('/admin/project-progress?filter=risk')} />
             <MacStat value={projects.filter((p) => !p.contact_person).length} label="对接人缺省" tone="blue-4" onClick={() => navigate('/admin/project-progress?filter=no_contact')} />
           </div>
