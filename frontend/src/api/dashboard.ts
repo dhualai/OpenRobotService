@@ -112,9 +112,10 @@ const EMPTY_MONTHLY_SUMMARY: ProjectMonthlySummary = { monthly: [], years: [] };
 /**
  * GET /api/admin/dashboard/projects/monthly?project_ids=id1,id2
  * 期望响应：{ code: 0, data: { monthly: [{key, year, month, value}], years: [...] } }
- * 数据来源：admin 模块 projects 表按业绩核算期 settlement_period（YYYY-MM）分组统计，
+ * 数据来源：admin 模块 projects 表按业绩核算期 settlement_period 分组统计（手工填写，
+ * 常见 YYYYMM 如 202608 = 2026年8月，兼容 YYYY-MM；后端统一输出 YYYY-MM 的 key），
  * 见 backend/app/modules/admin/api/dashboard.py get_project_monthly_summary。
- * 口径与「本月新增」统计卡一致（settlement_period = 当前月）；无核算期的项目不参与统计。
+ * 口径与「本月新增」统计卡一致（核算期 = 当前月）；无核算期的项目不参与统计。
  * projectIds 传入后仅统计这些项目。
  */
 export async function fetchProjectMonthly(projectIds?: string[]): Promise<ProjectMonthlySummary> {

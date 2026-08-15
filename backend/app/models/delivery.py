@@ -125,7 +125,7 @@ class Project(Base):
     controller_vendor = Column(String(30), nullable=True, comment='控制器选择')
     system_integration = Column(Text, nullable=True, comment='系统/外设对接(JSON数组)')
     server_deployment_status = Column(String(30), nullable=True, comment='服务器部署')
-    settlement_period = Column(String(20), nullable=True, comment='业绩核算期，格式YYYY-MM')
+    settlement_period = Column(String(20), nullable=True, comment='业绩核算期（手工填写，常见YYYYMM如202608，兼容YYYY-MM）')
 
     __table_args__ = (
         Index('idx_project_code', 'code', unique=True),
