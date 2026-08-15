@@ -216,10 +216,11 @@ export interface AiTicketBrief {
 
 /** 历史工单列表筛选参数 */
 export interface AiTicketListFilters {
-  status?: string;   // pending|dispatched|in_progress|resolved|closed
-  type?: string;     // problem|bug|feature|support|other
-  keyword?: string;  // 模糊搜索标题/描述
-  username?: string; // 按创建者用户名过滤
+  status?: string;          // new|in_progress|pending|resolved|canceled|closed
+  type?: string;            // problem|bug|feature|support|other
+  keyword?: string;         // 模糊搜索标题/描述
+  username?: string;        // 按创建者用户名过滤
+  exclude_status?: string;  // 排除的状态，逗号分隔（如 closed）
 }
 
 /** 历史工单列表（GET /api/ai/memory/tickets/all） */
@@ -229,9 +230,17 @@ export const qaListTickets = (skip = 0, limit = 50, filters?: AiTicketListFilter
   if (filters?.type) params.type = filters.type;
   if (filters?.keyword) params.keyword = filters.keyword;
   if (filters?.username) params.username = filters.username;
+  if (filters?.exclude_status) params.exclude_status = filters.exclude_status;
   return aiGet<{
     code: number;
-    data?: { items: AiTicketBrief[]; total: number; skip?: number; limit?: number };
+    data?: {
+      items: AiTicketBrief[];
+      total: number;
+      skip?: number;
+      limit?: number;
+      by_status?: Record<string, number>; // 各状态数量（口径：source+username，复用列表接口返回）
+      active_total?: number;               // 除已关闭外总数
+    };
     message?: string;
   }>('/memory/tickets/all', params);
 };

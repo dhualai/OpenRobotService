@@ -16,30 +16,32 @@ import type { UserItem } from '@/api/users';
 
 const PAGE_SIZE = 20;
 
+// 蓝阶优先级（设计稿唯一保留的色彩体系，深→浅）
 const PRIORITY_COLOR: Record<string, string> = {
-  紧急: '#d54941', 高: '#e37318', 中: '#0052d9', 低: '#999',
+  紧急: 'var(--blue-1)', 高: 'var(--blue-2)', 中: 'var(--blue-3)', 低: 'var(--gray-light)',
 };
 const TYPE_LABEL: Record<string, string> = {
   problem: '报障', bug: '缺陷', feature: '需求', support: '支持', other: '其他',
 };
+// 列表仅展示「除已关闭外」的工单；countKey 对应列表接口返回 by_status 的键（'__active__' 表示除已关闭外总数）
 const STATUS_TABS = [
-  { value: '', label: '全部' },
-  { value: 'new', label: '新建' },
-  { value: 'in_progress', label: '处理中' },
-  { value: 'pending', label: '待处理' },
-  { value: 'resolved', label: '已解决' },
-  { value: 'canceled', label: '已取消' },
-  { value: 'closed', label: '已关闭' },
+  { value: '', label: '全部', countKey: '__active__' },
+  { value: 'new', label: '新建', countKey: 'new' },
+  { value: 'in_progress', label: '处理中', countKey: 'in_progress' },
+  { value: 'pending', label: '待处理', countKey: 'pending' },
+  { value: 'resolved', label: '已解决', countKey: 'resolved' },
+  { value: 'canceled', label: '已取消', countKey: 'canceled' },
+  { value: 'closed', label: '已关闭', countKey: 'closed' },
 ];
-// 状态徽标（圆点已表达优先级，这里展示真实工单状态）
+// 状态徽标：浅灰底 + 蓝阶文字（设计稿 statusStyles 映射）
 const STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
-  new:         { label: '新建',   color: '#0052d9', bg: '#ecf2fe' },
-  pending:     { label: '待处理', color: '#e37318', bg: '#fdf3e7' },
-  dispatched:  { label: '已派单', color: '#0052d9', bg: '#ecf2fe' },
-  in_progress: { label: '处理中', color: '#2ba471', bg: '#e8f8f2' },
-  resolved:    { label: '已解决', color: '#00a870', bg: '#e6f9f2' },
-  canceled:    { label: '已取消', color: '#999',    bg: '#f2f3f5' },
-  closed:      { label: '已关闭', color: '#999',    bg: '#f2f3f5' },
+  new:         { label: '新建',   color: 'var(--blue-3)', bg: 'var(--secondary)' },
+  pending:     { label: '待处理', color: 'var(--blue-2)', bg: 'var(--secondary)' },
+  dispatched:  { label: '已派单', color: 'var(--blue-3)', bg: 'var(--secondary)' },
+  in_progress: { label: '处理中', color: 'var(--blue-2)', bg: 'var(--secondary)' },
+  resolved:    { label: '已解决', color: 'var(--blue-1)', bg: 'var(--secondary)' },
+  canceled:    { label: '已取消', color: 'var(--muted-foreground)', bg: 'var(--secondary)' },
+  closed:      { label: '已关闭', color: 'var(--muted-foreground)', bg: 'var(--secondary)' },
 };
 
 export default function HistoryTickets({ showHeader = true }: { showHeader?: boolean }) {
@@ -54,14 +56,16 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   const [skip, setSkip] = useState(0);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
 
-  // 构造筛选参数：admin 不过滤，其余按当前用户过滤
+  // 构造筛选参数：admin 不过滤，其余按当前用户过滤；「全部」= 除已关闭外全部
   const buildFilters = useCallback(() => {
-    const f: { status?: string; keyword?: string; username?: string } = {};
+    const f: { status?: string; keyword?: string; username?: string; exclude_status?: string } = {};
     if (statusFilter) f.status = statusFilter;
+    else f.exclude_status = 'closed';
     if (search.trim()) f.keyword = search.trim();
     if (!isAdmin && username) f.username = username;
-    return Object.keys(f).length ? f : undefined;
+    return f;
   }, [statusFilter, search, username, isAdmin]);
 
   // 首屏 / 下拉刷新：重置分页
@@ -74,6 +78,9 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
       setTickets(items);
       setSkip(items.length);
       setHasMore(total > items.length);
+      // 复用列表接口返回的各状态分布 + 除已关闭外总数，填充 tab 计数（无需额外统计接口）
+      const d = res?.data;
+      if (d?.by_status) setStatusCounts({ ...d.by_status, __active__: d.active_total ?? 0 });
     } catch (err) {
       Toast({ message: `历史工单加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
@@ -162,7 +169,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
       {showHeader && (
         <div className="history-tickets__head">
           <span>历史工单</span>
-          <span className="history-tickets__count">{tickets.length}</span>
+          <span className="history-tickets__count">{statusCounts.__active__ ?? tickets.length}</span>
         </div>
       )}
       {/* 搜索 + 状态快捷筛选 */}
@@ -186,16 +193,20 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
           onTouchMove={(e) => e.stopPropagation()}
           onTouchEnd={(e) => e.stopPropagation()}
         >
-          {STATUS_TABS.map((tab) => (
-            <button
-              key={tab.value}
-              type="button"
-              className={`history-tab${statusFilter === tab.value ? ' is-active' : ''}`}
-              onClick={() => setStatusFilter(tab.value)}
-            >
-              {tab.label}
-            </button>
-          ))}
+          {STATUS_TABS.map((tab) => {
+            const count = statusCounts[tab.countKey];
+            return (
+              <button
+                key={tab.value}
+                type="button"
+                className={`history-tab${statusFilter === tab.value ? ' is-active' : ''}`}
+                onClick={() => setStatusFilter(tab.value)}
+              >
+                <span className="history-tab__label">{tab.label}</span>
+                {count != null && <span className="history-tab__count">{count}</span>}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -213,7 +224,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
           <div className="history-tickets__empty">{search ? '无匹配工单' : '暂无历史工单'}</div>
         ) : (
           displayedTickets.map((t) => {
-            const statusMeta = STATUS_META[t.status || ''] || { label: t.status || '', color: '#666', bg: '#f2f3f5' };
+            const statusMeta = STATUS_META[t.status || ''] || { label: t.status || '', color: 'var(--muted-foreground)', bg: 'var(--secondary)' };
             return (
             /* 用 DB id（Task.id）导航：同一会话多次转单时 session_id 会重复
                （external_id 靠 ticket_seq 区分，DB 唯一约束在 (source, external_id) 而非 session_id），
@@ -225,11 +236,11 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
               onClick={() => navigate(`/call/ticket/db_${t.id}`)}
             >
               <div className="history-row__top">
-                <span className="history-row__dot" style={{ background: PRIORITY_COLOR[t.priority || ''] || '#999' }} />
+                <span className="history-row__dot" style={{ background: PRIORITY_COLOR[t.priority || ''] || 'var(--gray-light)' }} />
                 {t.type && <span className="history-row__type">{TYPE_LABEL[t.type] || t.type}</span>}
                 <span className="history-row__title">{t.title}</span>
                 {t.priority && (
-                  <span className="history-row__priority" style={{ color: PRIORITY_COLOR[t.priority] || '#999' }}>{t.priority}</span>
+                  <span className="history-row__priority" style={{ color: PRIORITY_COLOR[t.priority] || 'var(--gray-light)' }}>{t.priority}</span>
                 )}
                 <span className="history-row__date">{(t.created_at || '').slice(0, 10)}</span>
               </div>
@@ -245,7 +256,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                     <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
                   </span>
                 </div>
-                <span className="task-card2__person-arrow">➡️</span>
+                <span className="task-card2__person-arrow"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="m12 5 7 7-7 7" /></svg></span>
                 {(t.status === 'new' && !t.assigned_to && !t.assigned_to_name) ? (
                   <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单">
                     <span className="task-card2__avatar task-card2__avatar--assignee task-card2__avatar--dispatching"><i className="dispatch-pulse" /></span>
