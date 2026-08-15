@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Toast, Button, Popup } from 'tdesign-mobile-react';
+import { Search, ArrowRight } from 'lucide-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
 import { urgeTicket, reportTicket, cancelTicket } from '@/api/ticket';
 import { isTerminalTicketStatus, canUrgeTicket, canReportTicket, canShowCancelButton } from '@/shared/constants/ticket';
@@ -175,6 +176,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
       {/* 搜索 + 状态快捷筛选 */}
       <div className="history-toolbar">
         <div className="history-search-wrap">
+          <Search className="history-search__icon" size={16} strokeWidth={2} />
           <input
             className="history-search"
             placeholder="搜索工单标题/描述…"
@@ -256,7 +258,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                     <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
                   </span>
                 </div>
-                <span className="task-card2__person-arrow"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="m12 5 7 7-7 7" /></svg></span>
+                <span className="task-card2__person-arrow"><ArrowRight size={13} strokeWidth={2.2} /></span>
                 {(t.status === 'new' && !t.assigned_to && !t.assigned_to_name) ? (
                   <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单">
                     <span className="task-card2__avatar task-card2__avatar--assignee task-card2__avatar--dispatching"><i className="dispatch-pulse" /></span>

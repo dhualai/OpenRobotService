@@ -10,6 +10,7 @@ import ClearableInput from '@/shared/components/ClearableInput';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { NotificationIcon, UploadIcon, RollbackIcon, EditIcon } from 'tdesign-icons-react';
+import { ArrowRight } from 'lucide-react';
 import { getMyProjects, getProjectMembers, type ProjectItem, type ProjectMember } from '@/api/projects';
 import { qaGetTicket, fetchWithAuth } from '@/api/ai';
 import { cancelTicket, urgeTicket, reportTicket, uploadCommentAttachment } from '@/api/ticket';
@@ -669,7 +670,7 @@ export default function TicketDetailPage() {
                   <span className="task-card2__person-name">{ticket.created_by_name || ticket.created_by || '-'}</span>
                 </span>
               </div>
-              <span className="task-card2__person-arrow">➡️</span>
+              <span className="task-card2__person-arrow"><ArrowRight size={13} strokeWidth={2.2} /></span>
               {isDispatching ? (
                 <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单，稍候自动更新">
                   <span className="task-card2__avatar task-card2__avatar--assignee task-card2__avatar--dispatching"><i className="dispatch-pulse" /></span>
