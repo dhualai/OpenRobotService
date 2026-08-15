@@ -125,16 +125,17 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
         meta["feature_source"] = ticket["source"]
 
     # 截止时间：弹窗编辑值（ISO 字符串）→ Task.deadline_at（DateTime 列）。
-    # 前端 toISOString() 带时区后缀（如 2026-08-13T10:00:00.000Z），
-    # MySQL DateTime 需无时区 naive datetime，统一转上海时间再剥时区。
+    # 前端 toISOString() 带时区后缀（如 2026-08-13T10:00:00.000Z，UTC 时间）。
+    # DB 已强制会话 UTC（db.py 的 _ensure_utc_session），naive DateTime 列统一存 UTC，
+    # 故 aware datetime 直接转 UTC 后剥时区即可，不再转 +8（否则前端补 Z 会双重 +8）。
     deadline = None
     _dl_raw = ticket.get("deadline_at")
     if _dl_raw:
         try:
-            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+            from datetime import datetime as _dt, timezone as _tz
             _dl = _dt.fromisoformat(str(_dl_raw).replace("Z", "+00:00"))
             if _dl.tzinfo is not None:
-                _dl = _dl.astimezone(_tz(_td(hours=8))).replace(tzinfo=None)
+                _dl = _dl.astimezone(_tz.utc).replace(tzinfo=None)
             deadline = _dl
         except Exception:
             deadline = None
