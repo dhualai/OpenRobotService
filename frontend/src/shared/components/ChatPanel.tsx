@@ -4,6 +4,7 @@ import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
+import { ArrowUp, Plus, MessageSquarePlus, TicketPlus, Paperclip } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import { useAuthStore } from '@/stores/auth';
@@ -1953,11 +1954,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               {submittingTicket ? (
                 <span className="chat-ticket-spinner" />
               ) : (
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path fill="currentColor" d="M16 1H8V5H16V1Z" />
-                <path fill="currentColor" d="M6 3H3V23H13.8762C13.0139 21.897 12.5 20.5085 12.5 19C12.5 15.4101 15.4101 12.5 19 12.5C19.6978 12.5 20.3699 12.61 21 12.8135V3H18V7H6V3Z" />
-                <path fill="currentColor" d="M24 20H20V24H18V20H14V18H18V14H20V18H24V20Z" />
-              </svg>
+                <TicketPlus size={20} strokeWidth={2} />
               )}
               {ticketMissing && ticketMissing.info.length > 0 && (
                 <span className="chat-ticket-btn__badge">{ticketMissing.info.length}</span>
@@ -2076,10 +2073,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 {loading ? (
                   <span className="chat-send-btn__spinner" />
                 ) : (
-                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="12" y1="19" x2="12" y2="5" />
-                    <polyline points="6 11 12 5 18 11" />
-                  </svg>
+                  <ArrowUp size={18} strokeWidth={2.4} />
                 )}
               </button>
             </div>
