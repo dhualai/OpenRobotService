@@ -47,6 +47,9 @@ class AssignerConfig:
         self.ranker_weights: Dict[str, Any] = {}
         self.job_level_penalty: Dict[int, float] = {}
         self.contact_bonus: float = 2.0
+        # 用户倾向处理人（预留）：前端未传字段时整体不生效；传了即启用。加权系数复用 contact_bonus。
+        self.preferred_assignee_enabled: bool = True
+        self.preferred_assignee_force_keep: bool = True
         self.department_keywords: Dict[str, dict] = {}
         self.department_scenes: Dict[str, dict] = {}
         self.department_filter: Dict[str, Any] = {}
@@ -70,6 +73,9 @@ class AssignerConfig:
             self.contact_bonus = float(config.get("contact_bonus", 2.0))
         except (TypeError, ValueError):
             self.contact_bonus = 2.0
+        # 用户倾向处理人（预留）总开关与强制保留开关（缺失时默认 True/True，前端传字段即启用）
+        self.preferred_assignee_enabled = bool(config.get("preferred_assignee_enabled", True))
+        self.preferred_assignee_force_keep = bool(config.get("preferred_assignee_force_keep", True))
         self.department_keywords = config.get("department_keywords", {})
         self.department_scenes = config.get("department_scenes", {})
         self.department_filter = config.get("department_filter", {})

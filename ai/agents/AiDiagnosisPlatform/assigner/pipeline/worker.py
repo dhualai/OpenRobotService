@@ -155,6 +155,7 @@ class AssignmentWorker:
                     "location": (task.metadata_info or {}).get("location", "") if task.metadata_info else "",
                     "robot_type": (task.metadata_info or {}).get("robot_type", "") if task.metadata_info else "",
                     "fault_code": (task.metadata_info or {}).get("fault_code", "") if task.metadata_info else "",
+                    "preferred_assignee": (task.metadata_info or {}).get("preferred_assignee") if task.metadata_info else None,
                     "project_name": task.project_name or "",
                     "project_id": task.project_id or "",
                 }
@@ -218,6 +219,7 @@ class AssignmentWorker:
                         "location": (r.metadata_info or {}).get("location", "") if r.metadata_info else "",
                         "robot_type": (r.metadata_info or {}).get("robot_type", "") if r.metadata_info else "",
                         "fault_code": (r.metadata_info or {}).get("fault_code", "") if r.metadata_info else "",
+                        "preferred_assignee": (r.metadata_info or {}).get("preferred_assignee") if r.metadata_info else None,
                         "project_name": r.project_name or "",
                         "project_id": r.project_id or "",
                     }
@@ -246,6 +248,7 @@ class AssignmentWorker:
             project_name=ticket.get("project_name", ""),
             project_id=ticket.get("project_id", ""),
             creator=ticket.get("created_by", ""),
+            preferred_assignee=ticket.get("preferred_assignee"),
         )
 
         # 派单结果写回数据库
