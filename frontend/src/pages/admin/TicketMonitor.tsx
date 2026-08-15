@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Button, Toast, Loading, Tabs, Badge } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { formatDateTime } from '@/shared/utils/url';
 
 interface Ticket {
   id: number;
@@ -178,8 +179,8 @@ export default function TicketMonitor() {
                       <DetailRow label="联系人" value={t.contact} />
                       <DetailRow label="故障码" value={t.fault_code} />
                       <DetailRow label="严重程度" value={t.severity} />
-                      <DetailRow label="创建时间" value={t.created_at ? new Date(t.created_at).toLocaleString('zh-CN') : ''} />
-                      <DetailRow label="更新时间" value={t.updated_at ? new Date(t.updated_at).toLocaleString('zh-CN') : ''} />
+                      <DetailRow label="创建时间" value={t.created_at ? formatDateTime(t.created_at) : ''} />
+                      <DetailRow label="更新时间" value={t.updated_at ? formatDateTime(t.updated_at) : ''} />
                     </div>
                   )}
                 </div>
