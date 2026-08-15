@@ -176,6 +176,59 @@ async def get_project_stage_summary(
     }
 
 
+@dashboard_router.get("/projects/monthly", response_model=Dict[str, Any])
+async def get_project_monthly_summary(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),
+):
+    """项目按月统计 —— 供仪表盘「跨项目看板」月柱状图使用（替换原按阶段统计的展示口径）。
+
+    按月口径 = 项目业绩核算期 settlement_period（YYYY-MM，模型已建索引），
+    与「本月新增」统计卡口径一致；无核算期的项目不落在任何月份，不参与统计。
+
+    响应结构：
+    {
+        "code": 0,
+        "data": {
+            "monthly": [{"key": "2026-08", "year": 2026, "month": 8, "value": 12}, ...],
+            "years": [2024, 2025, 2026]
+        }
+    }
+    """
+    pid_list = _parse_project_ids(project_ids)
+    if pid_list is not None:
+        projects = project_service.get_projects_by_ids(pid_list)
+    else:
+        projects = project_service.get_projects(0, 1000)
+
+    monthly_map: Dict[str, int] = {}
+    for project in projects:
+        period = (project.get("settlement_period") or "").strip()
+        # 仅统计 YYYY-MM 格式的核算期；非法/缺失值跳过
+        if len(period) == 7 and period[4] == "-" and period[:4].isdigit() and period[5:].isdigit():
+            monthly_map[period] = monthly_map.get(period, 0) + 1
+
+    monthly = [
+        {
+            "key": key,
+            "year": int(key[:4]),
+            "month": int(key[5:]),
+            "value": value,
+        }
+        for key, value in monthly_map.items()
+    ]
+    monthly.sort(key=lambda item: item["key"])
+
+    years = sorted({item["year"] for item in monthly})
+
+    return {
+        "code": 0,
+        "data": {
+            "monthly": monthly,
+            "years": years,
+        },
+    }
+
+
 @dashboard_router.get("/projects/urgency", response_model=Dict[str, Any])
 async def get_project_urgency_summary(
     project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),

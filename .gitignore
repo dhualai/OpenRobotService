@@ -137,3 +137,4 @@ ai/tests/_probe_live_log.py
 ai/tests/_probe_real_errors.py
 ai/tools/bench_vision_models.py
 frontend/package-lock.json.bak
+frontend/macaron-minimal-ui/
