@@ -13,6 +13,7 @@ import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import PullToRefresh from '@/shared/components/PullToRefresh';
 import UserSelect from '@/shared/components/UserSelect';
+import { formatDateTime } from '@/shared/utils/url';
 import type { UserItem } from '@/api/users';
 
 const PAGE_SIZE = 20;
@@ -243,7 +244,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                 {t.type && <span className={`history-row__kind history-row__kind--${TYPE_TONE[t.type] || 'muted'}`}>{TYPE_LABEL[t.type] || t.type}</span>}
                 <span className="history-row__title">{t.title}</span>
                 <span className="history-row__id">#{t.id}</span>
-                <span className="history-row__date">{(t.created_at || '').slice(0, 10)}</span>
+                <span className="history-row__date">{formatDateTime(t.created_at).slice(0, 10)}</span>
               </div>
               {t.description && <span className="history-row__summary">{t.description}</span>}
               {t.project && <span className="history-row__project">所属项目：{t.project}</span>}

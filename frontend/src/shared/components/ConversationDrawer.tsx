@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { Popup, Button, Toast } from 'tdesign-mobile-react';
 import { Pencil, Trash2, MessageSquarePlus, X } from 'lucide-react';
 import { useWorkbenchStore } from '@/stores/workbench';
-import { formatDateTime } from '@/shared/utils/url';
+import { formatDateTimeFull } from '@/shared/utils/url';
 import type { Conversation } from '@/api/conversation';
 
 interface Props {
@@ -76,7 +76,7 @@ export default function ConversationDrawer({ visible, onClose }: Props) {
             >
               <div className="conv-item__main">
                 <div className="conv-item__title">{conv.title || '未命名会话'}</div>
-                <div className="conv-item__time">{formatDateTime(conv.created_at).slice(0, 10)}</div>
+                <div className="conv-item__time">{formatDateTimeFull(conv.created_at)}</div>
               </div>
               <div className="conv-item__actions">
                 <button type="button" onClick={(e) => { e.stopPropagation(); openRename(conv); }} aria-label="重命名">
