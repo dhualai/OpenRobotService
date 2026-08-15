@@ -35,6 +35,7 @@ class TicketContext(BaseModel):
 
     # === 人员/项目信息 ===
     project_name: Optional[str] = Field(None, description="项目名称 ↔ tasks.project_name")
+    project_id: Optional[str] = Field(None, description="项目ID/代码 ↔ tasks.project_id(→project.code)")
     creator: Optional[str] = Field(None, description="发起人 ↔ tasks.created_by")
     assignee: Optional[str] = Field(None, description="当前接单人 ↔ tasks.assigned_to")
     contact: Optional[str] = Field(None, description="联系人 ↔ tasks.customer")

@@ -46,6 +46,7 @@ class AssignerConfig:
         self.module_classify: Dict[str, Dict[str, str]] = {}
         self.ranker_weights: Dict[str, Any] = {}
         self.job_level_penalty: Dict[int, float] = {}
+        self.contact_bonus: float = 2.0
         self.department_keywords: Dict[str, dict] = {}
         self.department_scenes: Dict[str, dict] = {}
         self.department_filter: Dict[str, Any] = {}
@@ -64,6 +65,11 @@ class AssignerConfig:
         # job_level_penalty 的 key 在 YAML 中是整数，需显式转 int
         raw = config.get("job_level_penalty", {})
         self.job_level_penalty = {int(k): v for k, v in raw.items()}
+        # 项目对接人精排加权系数（≥1 起加权，=1 不加权；允许空/缺失则默认 2.0）
+        try:
+            self.contact_bonus = float(config.get("contact_bonus", 2.0))
+        except (TypeError, ValueError):
+            self.contact_bonus = 2.0
         self.department_keywords = config.get("department_keywords", {})
         self.department_scenes = config.get("department_scenes", {})
         self.department_filter = config.get("department_filter", {})

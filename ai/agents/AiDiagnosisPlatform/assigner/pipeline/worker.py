@@ -156,6 +156,7 @@ class AssignmentWorker:
                     "robot_type": (task.metadata_info or {}).get("robot_type", "") if task.metadata_info else "",
                     "fault_code": (task.metadata_info or {}).get("fault_code", "") if task.metadata_info else "",
                     "project_name": task.project_name or "",
+                    "project_id": task.project_id or "",
                 }
             finally:
                 db.close()
@@ -218,6 +219,7 @@ class AssignmentWorker:
                         "robot_type": (r.metadata_info or {}).get("robot_type", "") if r.metadata_info else "",
                         "fault_code": (r.metadata_info or {}).get("fault_code", "") if r.metadata_info else "",
                         "project_name": r.project_name or "",
+                        "project_id": r.project_id or "",
                     }
                     for r in rows
                 ]
@@ -242,6 +244,7 @@ class AssignmentWorker:
             robot_type=ticket.get("robot_type", ""),
             fault_code=ticket.get("fault_code", ""),
             project_name=ticket.get("project_name", ""),
+            project_id=ticket.get("project_id", ""),
             creator=ticket.get("created_by", ""),
         )
 

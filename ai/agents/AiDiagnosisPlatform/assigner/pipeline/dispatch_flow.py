@@ -109,6 +109,11 @@ class DispatchFlow:
             )
             return preferred
 
+        # ── 项目对接人（Step 4 加权 / 强制保留用；可能为 None → 不加权不保留）──
+        contact_assignee_id = self._resolve_contact_assignee(ticket_context)
+        if contact_assignee_id:
+            logger.info(f"{ltag} 项目对接人: {contact_assignee_id}（将加权 ×2.0 并强制保留）")
+
         # ── Step 1: 部门过滤 ──
         candidates = await self._dept_filter.filter(
             ticket=ticket_context, engineers=engineer_profiles,
@@ -132,6 +137,26 @@ class DispatchFlow:
         if not candidates:
             logger.warning(f"{ltag} Step2 排除提单人后无候选人，回退全量")
             candidates = engineer_profiles
+
+        # ── Step 2.5: 强制保留项目对接人（即使被部门/产品/排除提单人过滤掉也加回候选）──
+        # 例外：对接人 == 提单人（自提单）时**不**强制保留，交由 Step2 正常排除（自提不自接）。
+        if contact_assignee_id:
+            creator_id = (ticket_context.creator or "").strip()
+            if contact_assignee_id == creator_id:
+                logger.info(
+                    f"{ltag} Step2.5 对接人==提单人({creator_id})，不强制保留（自提不自接）"
+                )
+            elif not any(e.id == contact_assignee_id for e in candidates):
+                # 对接人可能仍在全量工程师里但被过滤掉 → 强制补回
+                contact_eng = next(
+                    (e for e in engineer_profiles if e.id == contact_assignee_id), None
+                )
+                if contact_eng is not None:
+                    candidates.append(contact_eng)
+                    logger.info(
+                        f"{ltag} Step2.5 强制保留项目对接人 {contact_assignee_id}"
+                        f" -> 候选 {len(candidates)}人"
+                    )
 
         # ── Step 3: 三路召回（L1/L2/L3 互不依赖，并行执行提升吞吐）──
         recall_result = RecallResult()
@@ -174,8 +199,11 @@ class DispatchFlow:
                 ltag, "L3", recall_result.history_recall, candidates, "历史召回(融合)", count=8,
             )
 
-        # ── Step 4: 精排 + 职级折扣 ──
-        ranked_scores = self._ranker.rank(recall_result, engineers=candidates)
+        # ── Step 4: 精排 + 职级折扣（项目对接人加权 ×2.0）──
+        ranked_scores = self._ranker.rank(
+            recall_result, engineers=candidates,
+            contact_assignee_id=contact_assignee_id,
+        )
 
         # ── Step 5: 负载均衡（按在途工单数打折，避免单子集中在少数人）──
         ranked_scores = self._apply_load_balance(ranked_scores)
@@ -394,6 +422,47 @@ class DispatchFlow:
                 f"({len(engineers)}→{len(excluded)})"
             )
         return excluded
+
+    # ── 项目对接人解析（Step 4 加权用）──
+    @staticmethod
+    def _resolve_contact_assignee(ticket: TicketContext) -> Optional[str]:
+        """按工单 project_id（回退 project_name）查 project 表，返回对接人 userId（username）。
+
+        一个项目唯一一个对接人（project.contact_person_id）；可能为空（缺省）→ 返回 None 不加权。
+        查询失败/无项目信息 → 返回 None（不阻断派单）。
+        """
+        key = (ticket.project_id or "").strip() or (ticket.project_name or "").strip()
+        if not key:
+            return None
+        try:
+            from ai.core.database import ProjectDelivery
+            from ai.core.database import SessionLocal
+            db = SessionLocal()
+            try:
+                row = None
+                if (ticket.project_id or "").strip():
+                    row = db.query(ProjectDelivery).filter(
+                        ProjectDelivery.code == ticket.project_id.strip()
+                    ).first()
+                if not row and (ticket.project_name or "").strip():
+                    row = db.query(ProjectDelivery).filter(
+                        ProjectDelivery.name == ticket.project_name.strip()
+                    ).first()
+                if not row:
+                    return None
+                cid = (row.contact_person_id or "").strip()
+                if not cid:
+                    logger.info(
+                        f"[派单:{ticket.id}] 项目对接人缺失（contact_person_id 为空），不加权: "
+                        f"project={row.code or row.name}"
+                    )
+                    return None
+                return cid
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"[派单:{ticket.id}] 解析项目对接人失败，跳过加权: {e}")
+            return None
 
     # ── Step 5 实现: 负载均衡（对全体候选人按在途工单数打折，带查询缓存）──
     _workload_cache: Dict[str, object] = {}  # {"ts": float, "data": {engineer_id: 在途数}}
