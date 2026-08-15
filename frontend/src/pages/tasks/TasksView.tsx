@@ -14,6 +14,7 @@ import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import { normalizeStatus, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { formatDateTime } from '@/shared/utils/url';
+import { Search, ArrowRight, Calendar, SlidersHorizontal } from 'lucide-react';
 
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
@@ -21,6 +22,7 @@ interface Ticket {
   contact?: string; created_at: string; updated_at: string;
   created_by?: string; created_by_name?: string;
   assigned_to?: string; assigned_to_name?: string;
+  participants?: string[];
 }
 
 const pageSize = 20;
@@ -130,6 +132,7 @@ const buildFilterParams = (filter: {
 function TicketCard({ t, onOpen }: { t: Ticket; onOpen: (id: string) => void }) {
   const creator = t.created_by_name || t.created_by || '-';
   const assignee = t.assigned_to_name || t.assigned_to || '-';
+  const participants = (t.participants || []).filter(Boolean);
   return (
     <div className="task-card2" onClick={() => onOpen(t.id)}>
       <div className="task-card2__head">
@@ -146,16 +149,24 @@ function TicketCard({ t, onOpen }: { t: Ticket; onOpen: (id: string) => void }) 
 
       <div className="task-card2__title">{t.title}</div>
 
-      {/* 人员流转：发起人 → 处理人 */}
+      {/* 人员流转：发起人 →（参与人）→ 处理人 */}
       <div className="task-card2__people">
         <div className="task-card2__person" title={`发起人：${creator}`}>
           <span className="task-card2__avatar">{creator.slice(0, 1).toUpperCase()}</span>
           <span className="task-card2__person-name">{creator}</span>
         </div>
+        {participants.length > 0 && (
+          <span className="task-card2__participants" title={`参与人：${participants.join('、')}`}>
+            {participants.slice(0, 3).map((p, i) => (
+              <span key={`${p}-${i}`} className="task-card2__participant">{p.slice(0, 1).toUpperCase()}</span>
+            ))}
+            {participants.length > 3 && (
+              <span className="task-card2__participant task-card2__participant--overflow">+{participants.length - 3}</span>
+            )}
+          </span>
+        )}
         <span className="task-card2__person-arrow">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M5 12h14M12 5l7 7-7 7" />
-          </svg>
+          <ArrowRight size={14} strokeWidth={2} />
         </span>
         <div className="task-card2__person task-card2__person--assignee" title={`处理人：${assignee}`}>
           <span className="task-card2__person-name">{assignee}</span>
@@ -168,10 +179,7 @@ function TicketCard({ t, onOpen }: { t: Ticket; onOpen: (id: string) => void }) 
         <span className="task-card2__meta-id">#{String(t.id).slice(0, 8)}</span>
         {t.project_name && <span className="task-card2__meta-project">{t.project_name}</span>}
         <span className="task-card2__meta-date">
-          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="4" width="18" height="18" rx="2" />
-            <path d="M16 2v4M8 2v4M3 10h18" />
-          </svg>
+          <Calendar size={12} strokeWidth={2} />
           {formatDateTime(t.created_at).slice(0, 10)}
         </span>
       </div>
@@ -559,10 +567,7 @@ export default function TasksView() {
         <div className="tasks-view__filters">
           <div className="tasks-view__search-row">
             <div className="tasks-view__search-card">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8" />
-                <path d="m21 21-4.35-4.35" />
-              </svg>
+              <Search size={16} strokeWidth={2} />
               <input
                 className="tasks-search"
                 placeholder="搜索工单…"
@@ -649,9 +654,7 @@ export default function TasksView() {
               ))}
             </div>
             <button className="tasks-filter-btn" onClick={() => setShowFilterMenu(true)}>
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4" />
-              </svg>
+              <SlidersHorizontal size={14} strokeWidth={2} />
               <span>筛选</span>
             </button>
           </div>
