@@ -314,7 +314,8 @@ export default function TasksView() {
             const data = await request<{ total: number }>('/filter', {
               method: 'POST',
               body: JSON.stringify({
-                filters: buildRelevanceFilters(option.value, username, projectIds),
+                // 角标计数排除已关闭工单（与列表解耦：列表仍可通过状态筛选查看已关闭）
+                filters: [...buildRelevanceFilters(option.value, username, projectIds), { field: 'status', op: 'ne', value: 'closed' }],
                 sorts: [],
                 page: 1,
                 size: 1,
