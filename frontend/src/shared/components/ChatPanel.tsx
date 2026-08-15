@@ -4,6 +4,7 @@ import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
+import { ArrowUp, Plus, MessageSquarePlus, TicketPlus, Paperclip } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import { useAuthStore } from '@/stores/auth';
@@ -1953,11 +1954,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               {submittingTicket ? (
                 <span className="chat-ticket-spinner" />
               ) : (
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path fill="currentColor" d="M16 1H8V5H16V1Z" />
-                <path fill="currentColor" d="M6 3H3V23H13.8762C13.0139 21.897 12.5 20.5085 12.5 19C12.5 15.4101 15.4101 12.5 19 12.5C19.6978 12.5 20.3699 12.61 21 12.8135V3H18V7H6V3Z" />
-                <path fill="currentColor" d="M24 20H20V24H18V20H14V18H18V14H20V18H24V20Z" />
-              </svg>
+                <TicketPlus size={20} strokeWidth={2} />
               )}
               {ticketMissing && ticketMissing.info.length > 0 && (
                 <span className="chat-ticket-btn__badge">{ticketMissing.info.length}</span>
@@ -1973,7 +1970,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 {pendingImageUrls[i] ? (
                   <img src={pendingImageUrls[i]} alt="附件预览" className="chat-pending-file__thumb" />
                 ) : (
-                  <span className="chat-pending-file__icon">📎</span>
+                  <Paperclip className="chat-pending-file__icon" size={20} strokeWidth={1.8} />
                 )}
                 <span className="chat-pending-file__name">{f.name}</span>
                 <button type="button" className="chat-pending-file__remove" onClick={() => removePendingFile(i)} aria-label="移除附件">✕</button>
@@ -2013,11 +2010,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               ) : '轻触或按住 说话'}
             </button>
             <button className="chat-input-btn" onClick={() => setShowUploadMenu(true)} title="上传" aria-label="上传文件或拍照">
-              <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-                <circle cx="12" cy="12" r="9.5" />
-                <line x1="12" y1="7.5" x2="12" y2="16.5" />
-                <line x1="7.5" y1="12" x2="16.5" y2="12" />
-              </svg>
+              <Plus size={22} strokeWidth={2} />
             </button>
           </div>
         ) : (
@@ -2058,28 +2051,19 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 </button>
                 */}
                 <button className="chat-input-btn" onClick={() => setShowUploadMenu(true)} title="上传" aria-label="上传文件或拍照">
-                  <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-                    <circle cx="12" cy="12" r="9.5" />
-                    <line x1="12" y1="7.5" x2="12" y2="16.5" />
-                    <line x1="7.5" y1="12" x2="16.5" y2="12" />
-                  </svg>
+                  <Plus size={22} strokeWidth={2} />
                 </button>
                 {/* 新建会话：入口从会话抽屉挪到此处（上传按钮右侧），图标为手绘风格聊天气泡。
                     viewBox 裁剪到墨迹包围盒（原图 78x66 四周留白大），尺寸 22 略小于旁边的 26 上传图标 */}
                 <button className="chat-input-btn" onClick={requestNewConversation} title="新建会话" aria-label="新建会话">
-                  <svg viewBox="16 21 32 32" width="22" height="22" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M21 22 h8 v1 h-8 zM40 22 h5 v1 h-5 zM20 23 h10 v1 h-10 zM39 23 h7 v1 h-7 zM19 24 h10 v1 h-10 zM38 24 h4 v1 h-4 zM43 24 h4 v1 h-4 zM18 25 h3 v1 h-3 zM37 25 h3 v1 h-3 zM44 25 h3 v1 h-3 zM17 26 h3 v22 h-3 zM36 26 h3 v1 h-3 zM45 26 h2 v1 h-2 zM35 27 h3 v1 h-3 zM44 27 h3 v2 h-3 zM34 28 h3 v1 h-3 zM32 29 h4 v1 h-4 zM43 29 h3 v1 h-3 zM31 30 h4 v1 h-4 zM42 30 h3 v1 h-3 zM30 31 h4 v1 h-4 zM41 31 h4 v1 h-4 zM29 32 h4 v1 h-4 zM40 32 h4 v1 h-4 zM28 33 h4 v1 h-4 zM39 33 h3 v1 h-3 zM28 34 h3 v1 h-3 zM38 34 h3 v1 h-3 zM27 35 h3 v2 h-3 zM37 35 h3 v1 h-3 zM36 36 h3 v1 h-3 zM26 37 h3 v3 h-3 zM35 37 h3 v1 h-3 zM34 38 h3 v1 h-3 zM32 39 h4 v1 h-4 zM45 39 h1 v1 h-1 zM26 40 h9 v1 h-9 zM44 40 h3 v8 h-3 zM26 41 h8 v1 h-8 zM26 42 h5 v1 h-5 zM18 48 h3 v1 h-3 zM43 48 h3 v1 h-3 zM19 49 h26 v1 h-26 zM20 50 h24 v1 h-24 zM21 51 h22 v1 h-22 z" />
-                  </svg>
+                  <MessageSquarePlus size={20} strokeWidth={2} />
                 </button>
               </div>
               <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={(!input.trim() && pendingFiles.length === 0) || loading} aria-label="发送">
                 {loading ? (
                   <span className="chat-send-btn__spinner" />
                 ) : (
-                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="12" y1="19" x2="12" y2="5" />
-                    <polyline points="6 11 12 5 18 11" />
-                  </svg>
+                  <ArrowUp size={18} strokeWidth={2.4} />
                 )}
               </button>
             </div>
@@ -2123,10 +2107,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   {loading ? (
                     <span className="chat-send-btn__spinner" />
                   ) : (
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="12" y1="19" x2="12" y2="5" />
-                      <polyline points="6 11 12 5 18 11" />
-                    </svg>
+                    <ArrowUp size={18} strokeWidth={2.4} />
                   )}
                 </button>
               </div>
