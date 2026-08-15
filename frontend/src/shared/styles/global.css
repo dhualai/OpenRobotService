@@ -247,6 +247,65 @@ html, body, #root {
   color: var(--foreground);
 }
 
+/* ===== 底部导航（自定义 app-bottom-nav，设计稿 BottomNav 规范） =====
+   玻璃栏 + 顶部半透明描边；选中项图标 36×36 圆角方形胶囊底 bg-blue-soft + blue-2 图标，
+   文字 text-foreground；未选 text-muted-foreground。 */
+.app-bottom-nav {
+  flex-shrink: 0;
+  background: color-mix(in oklab, var(--card) 78%, transparent);
+  backdrop-filter: saturate(1.4) blur(18px);
+  -webkit-backdrop-filter: saturate(1.4) blur(18px);
+  border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.app-bottom-nav__items {
+  display: flex;
+  align-items: stretch;
+  max-width: 768px;
+  margin: 0 auto;
+  padding: 8px 16px;
+}
+.app-bottom-nav__item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.app-bottom-nav__icon {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-2xl);
+  color: currentColor;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+.app-bottom-nav__icon svg {
+  width: 18px;
+  height: 18px;
+}
+.app-bottom-nav__label {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  color: currentColor;
+}
+/* 激活态：图标胶囊底蓝 + 图标 blue-2，文字回深灰（设计稿 text-foreground） */
+.app-bottom-nav__item.is-active .app-bottom-nav__icon {
+  background: var(--blue-soft);
+  color: var(--blue-2);
+}
+.app-bottom-nav__item.is-active .app-bottom-nav__label {
+  color: var(--foreground);
+}
+
 /* 顶部 Navbar 玻璃化（TDesign Mobile）。
    注意：玻璃样式（backdrop-filter）绝不能加在 .t-navbar 外壳上——外壳是 0 高度
    relative 锚点，backdrop-filter 会让外壳成为 fixed 子元素（.t-navbar__content，
@@ -2170,7 +2229,7 @@ html, body, #root {
 /* 状态：浅灰底 + 蓝阶文字（唯一带色文字），终态为灰色 */
 .task-card2__status-tag {
   font-size: 11.5px;
-  padding: 2px 10px;
+  padding: 4px 10px;
   border-radius: 999px;
   background: var(--secondary);
   color: var(--muted-foreground);
@@ -2185,9 +2244,6 @@ html, body, #root {
 .task-card2__type {
   flex-shrink: 0;
   font-size: 11.5px;
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: var(--secondary);
   color: var(--muted-foreground);
 }
 /* 优先级：蓝阶色块 */
@@ -2263,6 +2319,34 @@ html, body, #root {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+/* 中间参与人头像堆叠（设计稿：size-6 24px gray-soft + ring-2 card + -space-x-1.5 叠加） */
+.task-card2__participants {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+.task-card2__participant {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  background: var(--gray-soft);
+  box-shadow: 0 0 0 2px var(--card);
+  margin-left: -6px;
+}
+.task-card2__participant:first-child {
+  margin-left: 0;
+}
+.task-card2__participant--overflow {
+  background: var(--secondary);
+  color: var(--muted-foreground);
 }
 /* 元信息行：工单编号 · 项目 · 创建日期 */
 .task-card2__meta {
@@ -2463,8 +2547,8 @@ html, body, #root {
   color: var(--foreground);
 }
 .tasks-view__filter-chip.is-active {
-  background: var(--gray-25);
-  color: #fff;
+  background: var(--foreground);
+  color: var(--background);
 }
 /* 筛选条目右上角工单条数角标（圆圈+数字），筛选胶囊与筛选菜单共用；
    与原型一致：bg-primary 蒂芙尼蓝 + 白字，无外框 */
@@ -4746,6 +4830,11 @@ html, body, #root {
   height: 32px;
   min-width: auto;
 }
+/* 发送按钮不套用上方通用 t-button 规则（避免 padding/height 干扰图标居中与尺寸） */
+.detail-chat-input-row .t-button.detail-chat-send {
+  padding: 0;
+  min-width: 36px;
+}
 /* 输入框（设计稿：h-10 rounded-full border bg-card px-4 12.5px，focus:border-primary） */
 .detail-chat-input-field {
   flex: 1;
@@ -5103,11 +5192,12 @@ html, body, #root {
   font-weight: 500;
   font-size: 12px;
   border-radius: var(--radius-md);
-  border-color: color-mix(in oklab, var(--border) 80%, transparent);
-  background: var(--card);
-  color: var(--muted-foreground);
+  border-color: var(--blue-2);
+  background: var(--blue-2);
+  color: #fff;
 }
-.history-row__actions .t-button:not(.t-button--disabled):active { color: var(--foreground); background: var(--secondary); }
+.history-row__actions .t-button:not(.t-button--disabled):active { background: var(--blue-1); }
+.history-row__actions .t-button.t-button--disabled { opacity: 0.45; }
 
 /* ===== TicketDetailPage 评论附件上传 ===== */
 .detail-chat-files { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -5117,12 +5207,12 @@ html, body, #root {
 }
 .detail-chat-file__name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .detail-chat-file button { background: none; border: none; color: var(--muted-foreground); cursor: pointer; font-size: 16px; line-height: 1; padding: 0; }
-/* 讨论区附件按钮（设计稿：size-9 36px 圆形 bg-secondary muted 图标） */
+/* 讨论区附件按钮（设计稿 04/05：size-9 36px rounded-md 圆角正方形 bg-secondary muted 图标居中） */
 .detail-chat-attach {
   width: 36px;
   height: 36px;
   border: none;
-  border-radius: 50%;
+  border-radius: var(--radius-md);
   background: var(--secondary);
   color: var(--muted-foreground);
   cursor: pointer;
@@ -5134,19 +5224,44 @@ html, body, #root {
 }
 .detail-chat-attach:active { background: var(--gray-soft); color: var(--foreground); }
 .detail-chat-attach:disabled { opacity: 0.4; }
-/* 讨论区发送按钮（设计稿：size-10 40px 圆形 primary 白图标） */
+/* 讨论区发送按钮（设计稿 04/05：rounded-md 圆角正方形 primary 白图标居中；统一 36px 与附件按钮一致） */
 .detail-chat-send.t-button {
-  width: 40px;
-  height: 40px;
-  min-width: 40px;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
   padding: 0;
-  border-radius: 50%;
+  border-radius: var(--radius-md);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border: none;
 }
-.detail-chat-send .t-button__text { display: inline-flex; align-items: center; }
+/* TDesign Button 内部为 span.t-button__content（含首字符空格文本节点），需 flex 居中并消除空格偏移，图标才真正水平垂直居中 */
+.detail-chat-send .t-button__content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  font-size: 0;
+  line-height: 0;
+}
+/* 移除 TDesign 的 ::after 边框层（避免与自定义圆角正方形叠出不必要描边） */
+.detail-chat-send.t-button::after {
+  display: none;
+}
+/* 按下态：品牌深蓝（--sky） */
+.detail-chat-send.t-button:not(.t-button--disabled):active {
+  background: var(--sky);
+  color: var(--primary-foreground);
+}
+/* 禁用态：设计稿灰色（覆盖 TDesign 默认浅蓝紫 #b5c7ff） */
+.detail-chat-send.t-button.t-button--disabled {
+  background: var(--gray-soft);
+  color: var(--gray-light);
+}
 
 /* @U老师 按钮（设计稿：rounded-full bg-secondary px-3 py-1 11.5px semibold） */
 .detail-chat-mention-btn.t-button {
@@ -5669,16 +5784,16 @@ html, body, #root {
 }
 .task-card2__avatar {
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 12px;
   font-weight: 600;
-  color: var(--card);
-  background: var(--gray-40);
+  color: #fff;
+  background: var(--gray-light);
 }
 .task-card2__avatar--assignee {
   background: var(--gray-25);
@@ -5696,7 +5811,7 @@ html, body, #root {
 }
 .task-card2__person-name {
   font-size: 12px;
-  color: var(--gray-dark);
+  color: var(--foreground);
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -5707,7 +5822,7 @@ html, body, #root {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  color: var(--gray-light);
+  color: var(--muted-foreground);
   display: inline-flex;
   align-items: center;
   justify-content: center;

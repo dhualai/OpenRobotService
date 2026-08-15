@@ -2,7 +2,7 @@
 // 数据源：AI 模块 GET /api/ai/memory/tickets/all（按当前用户过滤）
 // 搜索：前端模糊过滤（title/description）；状态筛选：qaListTickets status filter（后端）
 // 分页：每页 PAGE_SIZE 条，下拉刷新、触底加载更多。
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Toast, Button, Popup } from 'tdesign-mobile-react';
 import { Search, ArrowRight } from 'lucide-react';
@@ -254,7 +254,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                   <span className="task-card2__avatar">{(t.created_by_name || t.created_by || '?').slice(0, 1).toUpperCase()}</span>
                   <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
                 </div>
-                <span className="task-card2__person-arrow"><ArrowRight size={14} strokeWidth={2} /></span>
+                <span className="task-card2__person-arrow"><ArrowRight size={16} strokeWidth={2} /></span>
                 {(t.status === 'new' && !t.assigned_to && !t.assigned_to_name) ? (
                   <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单">
                     <span className="task-card2__avatar task-card2__avatar--assignee task-card2__avatar--dispatching"><i className="dispatch-pulse" /></span>
