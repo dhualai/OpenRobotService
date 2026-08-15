@@ -4,6 +4,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem } from 'tdesign-mobile-react';
+import { Search, SlidersHorizontal, SortAsc, Calendar, ArrowRight } from 'lucide-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -458,10 +459,7 @@ export default function TasksView() {
         <div className="tasks-view__filters">
           <div className="tasks-view__search-row">
             <div className="tasks-search-wrap">
-              <svg className="tasks-search__icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="8" />
-                <path d="m21 21-4.3-4.3" />
-              </svg>
+              <Search className="tasks-search__icon" size={16} strokeWidth={2} />
               <input
                 className="tasks-search"
                 placeholder="搜索工单…"
@@ -481,7 +479,7 @@ export default function TasksView() {
                 setPage(1);
               }}
             >
-              <span className="tasks-view__priority-icon">!</span>
+              <SortAsc size={14} strokeWidth={2} />
               <span>紧急优先</span>
             </button>
             <div className="tasks-view__sort-options">
@@ -553,10 +551,7 @@ export default function TasksView() {
               ))}
             </div>
             <button className="tasks-filter-btn" onClick={() => setShowFilterMenu(true)}>
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z" />
-              </svg>
+              <SlidersHorizontal size={14} strokeWidth={2} />
               <span>筛选</span>
             </button>
           </div>
@@ -591,7 +586,7 @@ export default function TasksView() {
                     <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
                   </span>
                 </div>
-                <span className="task-card2__person-arrow"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="m12 5 7 7-7 7" /></svg></span>
+                <span className="task-card2__person-arrow"><ArrowRight size={13} strokeWidth={2.2} /></span>
                 <div className="task-card2__person task-card2__person--assignee" title={`处理人：${t.assigned_to_name || t.assigned_to || '-'}`}>
                   <span className="task-card2__avatar task-card2__avatar--assignee">{(t.assigned_to_name || t.assigned_to || '?').slice(0, 1).toUpperCase()}</span>
                   <span className="task-card2__person-text">
@@ -607,10 +602,7 @@ export default function TasksView() {
                 {t.project_name && <span className="task-card2__meta-project">{t.project_name}</span>}
                 <span className="task-card2__meta-date">
                   <span className="task-card2__meta-date-label">创建时间</span>
-                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="3" y="4" width="18" height="18" rx="2" />
-                    <path d="M16 2v4M8 2v4M3 10h18" />
-                  </svg>
+                  <Calendar size={11} strokeWidth={2} />
                   {formatDateTime(t.created_at).slice(0, 10)}
                 </span>
               </div>
