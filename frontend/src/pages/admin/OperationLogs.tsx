@@ -1,11 +1,12 @@
 // 操作记录查询 - 从 BackgroundService OperationLogs 迁移
+// 样式按 macaron 设计语言：卡片搜索框 + surface-card 日志卡（用户/时间/操作/详情），原型无独立页。
 import { useState, useEffect, useCallback } from 'react';
 import { Loading, Toast } from 'tdesign-mobile-react';
-import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import Pagination from '@/shared/components/Pagination';
 import { formatDateTime } from '@/shared/utils/url';
+import { MacSearch } from '@/shared/components/macaronIcons';
 
 interface Log {
   id: string;
@@ -43,18 +44,35 @@ export default function OperationLogs() {
   useEffect(() => { fetchLogs(); }, [fetchLogs]);
 
   return (
-    <div style={{ padding: 16 }}>
-      <ClearableInput placeholder="搜索操作记录..." value={search} onChange={(v) => { setSearch(String(v)); setPage(1); }} style={{ marginBottom: 16 }} />
-      {loading ? <Loading text="加载中..." /> : logs.map((log) => (
-        <div key={log.id} style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-            <strong>{log.user}</strong>
-            <span style={{ fontSize: 12, color: '#999' }}>{formatDateTime(log.timestamp)}</span>
-          </div>
-          <div style={{ fontSize: 13, color: '#666' }}>{log.action} - {log.resource}</div>
-          {log.detail && <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>{log.detail}</div>}
-        </div>
-      ))}
+    <div className="mac-page">
+      <div className="mac-search mac-search--card" style={{ marginBottom: 12 }}>
+        <MacSearch size={16} />
+        <input
+          className="mac-search__input"
+          placeholder="搜索操作记录..."
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+        />
+      </div>
+      {loading ? (
+        <Loading text="加载中..." />
+      ) : (
+        <>
+          {logs.map((log) => (
+            <div key={log.id} className="mac-log-card">
+              <div className="mac-log-card__head">
+                <span className="mac-log-card__user">{log.user}</span>
+                <span className="mac-log-card__time">{formatDateTime(log.timestamp)}</span>
+              </div>
+              <div className="mac-log-card__action">{log.action} - {log.resource}</div>
+              {log.detail && <div className="mac-log-card__detail">{log.detail}</div>}
+            </div>
+          ))}
+          {logs.length === 0 && (
+            <div className="mac-empty">暂无操作记录</div>
+          )}
+        </>
+      )}
       <Pagination current={page} total={total} pageSize={pageSize} onChange={setPage} />
     </div>
   );

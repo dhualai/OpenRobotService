@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -28,17 +27,8 @@ vi.mock('@/stores/workbench', () => ({
   },
 }));
 
-// Mock tdesign
+// Mock tdesign（MainLayout 仅使用 Loading）
 vi.mock('tdesign-mobile-react', () => ({
-  TabBar: ({ children, value, onChange }: { children?: ReactNode; value?: string; onChange?: (v: string) => void }) => (
-    <div data-testid="tabbar" data-value={value}>
-      <div data-testid="tabbar-click" onClick={() => onChange?.('tasks')}>switch</div>
-      {children}
-    </div>
-  ),
-  TabBarItem: ({ value, children, 'aria-label': ariaLabel }: { value?: string; children?: ReactNode; 'aria-label'?: string }) => (
-    <div data-testid={`tabitem-${value}`} data-aria-label={ariaLabel}>{children}</div>
-  ),
   Loading: ({ text }: { text?: string }) => <div data-testid="loading">{text}</div>,
 }));
 
@@ -60,19 +50,25 @@ describe('MainLayout', () => {
     mockActiveTab = 'call';
   });
 
-  it('should render TabBar with three tabs', () => {
+  it('should render bottom nav with three tabs', () => {
     renderLayout();
-    expect(screen.getByTestId('tabbar')).toBeInTheDocument();
-    expect(screen.getByTestId('tabitem-call')).toBeInTheDocument();
-    expect(screen.getByTestId('tabitem-tasks')).toBeInTheDocument();
-    expect(screen.getByTestId('tabitem-admin')).toBeInTheDocument();
+    expect(screen.getByTestId('app-bottom-nav')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-item-call')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-item-tasks')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-item-admin')).toBeInTheDocument();
   });
 
-  it('should display tabs with emoji icon and text labels', () => {
+  it('should display tabs with icon and text labels', () => {
     renderLayout();
     expect(screen.getByText('我要摇人')).toBeInTheDocument();
     expect(screen.getByText('系统任务')).toBeInTheDocument();
     expect(screen.getByText('后台管理')).toBeInTheDocument();
+  });
+
+  it('should highlight active tab from store', () => {
+    renderLayout();
+    expect(screen.getByTestId('nav-item-call').className).toContain('is-active');
+    expect(screen.getByTestId('nav-item-tasks').className).not.toContain('is-active');
   });
 
   it('should render Outlet for child routes', () => {
@@ -92,8 +88,7 @@ describe('MainLayout', () => {
 
   it('should navigate on tab change', () => {
     renderLayout();
-    const trigger = screen.getByTestId('tabbar-click');
-    fireEvent.click(trigger);
+    fireEvent.click(screen.getByTestId('nav-item-tasks'));
 
     expect(mockSetActiveTab).toHaveBeenCalled();
     expect(mockNavigate).toHaveBeenCalledWith('/tasks');

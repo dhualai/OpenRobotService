@@ -1,22 +1,23 @@
 // 后台管理首页仪表盘 —— 上中下三段式看板
-// 上：工单状态饼图 + 四项统计卡（点击状态可下钻明细）
-// 中：跨项目看板 —— 调度阶段饼图 + 紧急度四象限（点击标签可下钻明细）
+// 上：工单状态监测 —— 蓝阶环图 + 图例（百分比/数量）+ 四指标卡（点击图例下钻明细）
+// 中：跨项目看板 —— 按月项目数量柱状图 + 同步按钮 + 四指标卡 + 紧急度四象限卡片
 // 下：更多功能 —— 项目管理 / 数据管理 / 日报周报 / 其他 快捷入口
 //
-// 数据接口均为「前端先行、后端待接入」，见 src/api/dashboard.ts 顶部说明。
-// 接口未就绪时一律优雅降级为「0/暂无数据」，不阻塞页面渲染。
-import { useState, useEffect, useCallback } from 'react';
-import { Navbar, Loading } from 'tdesign-mobile-react';
+// 数据接口见 src/api/dashboard.ts；接口未就绪时一律优雅降级为「0/暂无数据」，不阻塞页面渲染。
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { Navbar, Loading, Toast } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
-import ReactECharts from 'echarts-for-react';
 import {
-  TICKET_STATUS_LIST, PROJECT_STAGE_LIST, URGENCY_LIST,
+  TICKET_STATUS_LIST, URGENCY_LIST,
 } from '@/shared/constants/dashboard';
 import {
-  fetchTicketSummary, fetchProjectStageSummary, fetchUrgencySummary, syncWecomProjects,
-  type TicketSummary, type ProjectStageSummary, type UrgencySummary, type SyncResult,
+  fetchTicketSummary, fetchProjectMonthly, fetchUrgencySummary, syncWecomProjects,
+  type TicketSummary, type ProjectMonthlySummary, type UrgencySummary,
 } from '@/api/dashboard';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
+import { MacDonut, MacLegend, MacStat } from '@/shared/components/macaronBits';
+import { MacChevronRight, MacRefreshCw } from '@/shared/components/macaronIcons';
+import { ProjectMonthBars } from '@/shared/components/macaronMonthBars';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -33,14 +34,77 @@ function currentYearMonth(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-interface MoreFunctionEntry { path: string; label: string; emoji: string; }
+interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; }
+
+type MoreEntryIconKind = 'projects' | 'data' | 'reports' | 'other';
+
+/** 更多功能入口图标：与 macaron admin 页的 lucide 图标同款线条 */
+function MoreEntryIcon({ kind }: { kind: MoreEntryIconKind }) {
+  const common = {
+    width: 18,
+    height: 18,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+  };
+  if (kind === 'projects') {
+    // lucide folder-kanban
+    return (
+      <svg {...common}>
+        <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z" />
+        <path d="M8 10v4" />
+        <path d="M12 10v2" />
+        <path d="M16 10v6" />
+      </svg>
+    );
+  }
+  if (kind === 'data') {
+    // lucide database
+    return (
+      <svg {...common}>
+        <ellipse cx="12" cy="5" rx="9" ry="3" />
+        <path d="M3 5V19A9 3 0 0 0 21 19V5" />
+        <path d="M3 12A9 3 0 0 0 21 12" />
+      </svg>
+    );
+  }
+  if (kind === 'reports') {
+    // lucide file-bar-chart
+    return (
+      <svg {...common}>
+        <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+        <path d="M15 2v5h5" />
+        <path d="M8 18v-1" />
+        <path d="M12 18v-6" />
+        <path d="M16 18v-3" />
+      </svg>
+    );
+  }
+  // lucide more-horizontal
+  return (
+    <svg {...common}>
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="19" cy="12" r="1" />
+      <circle cx="5" cy="12" r="1" />
+    </svg>
+  );
+}
 
 const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
-  { path: '/admin/project-manage', label: '项目管理', emoji: '📁' },
-  { path: '/admin/data-import', label: '数据管理', emoji: '🗄️' },
-  { path: '/admin/daily-summary', label: '日报周报', emoji: '🤖' },
-  { path: '/admin/entries', label: '其他', emoji: '⋯' },
+  { path: '/admin/project-manage', label: '项目管理', kind: 'projects', tone: 'blue-1' },
+  { path: '/admin/data-import', label: '数据管理', kind: 'data', tone: 'blue-2' },
+  { path: '/admin/daily-summary', label: '日报周报', kind: 'reports', tone: 'blue-3' },
+  { path: '/admin/entries', label: '其他', kind: 'other', tone: 'blue-4' },
 ];
+
+// 工单状态环图/图例按色阶由深到浅排列（对照 macaron 原型：处理中→已关闭→已解决→已取消→新建）
+const STATUS_TONE_ORDER = ['blue-1', 'blue-2', 'blue-3', 'blue-4', 'blue-5'];
+const SORTED_TICKET_STATUS_LIST = [...TICKET_STATUS_LIST].sort(
+  (a, b) => STATUS_TONE_ORDER.indexOf(a.tone) - STATUS_TONE_ORDER.indexOf(b.tone),
+);
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -49,12 +113,11 @@ export default function Dashboard() {
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
   const [ticketSummary, setTicketSummary] = useState<TicketSummary | null>(null);
-  const [stageSummary, setStageSummary] = useState<ProjectStageSummary | null>(null);
+  const [monthlySummary, setMonthlySummary] = useState<ProjectMonthlySummary | null>(null);
   const [urgencySummary, setUrgencySummary] = useState<UrgencySummary | null>(null);
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -63,14 +126,14 @@ export default function Dashboard() {
     // 项目列表同理：canViewAll 走 /projects/，否则走 /projects/me 由后端按 token 过滤
     const filterIds = canViewAll ? undefined : projectIds;
     const projectsUrl = canViewAll ? '/projects/?include_analysis=true' : '/projects/me?include_analysis=true';
-    const [tickets, stages, urgency, projectList] = await Promise.all([
+    const [tickets, monthly, urgency, projectList] = await Promise.all([
       fetchTicketSummary(filterIds),
-      fetchProjectStageSummary(filterIds),
+      fetchProjectMonthly(filterIds),
       fetchUrgencySummary(filterIds),
       adminRequest<ProjectListItem[]>(projectsUrl).catch(() => []),
     ]);
     setTicketSummary(tickets);
-    setStageSummary(stages);
+    setMonthlySummary(monthly);
     setUrgencySummary(urgency);
     setProjects(normalizeList<ProjectListItem>(projectList));
     setLoading(false);
@@ -78,14 +141,22 @@ export default function Dashboard() {
 
   const handleSync = useCallback(async () => {
     setSyncing(true);
-    setSyncResult(null);
     const result = await syncWecomProjects();
     if (result) {
-      setSyncResult(result);
+      Toast({ message: `同步完成：新增 ${result.created}，更新 ${result.updated}`, theme: 'success' });
       await loadAll();
+    } else {
+      Toast({ message: '同步失败，请稍后重试', theme: 'error' });
     }
     setSyncing(false);
   }, [loadAll]);
+
+  // 柱状图年份筛选列表：接口返回的出现年份 ∪ 当前年（保证可切到今年查看空月份）
+  const monthlyYears = useMemo(() => {
+    const set = new Set<number>(monthlySummary?.years ?? []);
+    set.add(new Date().getFullYear());
+    return Array.from(set).sort((a, b) => a - b);
+  }, [monthlySummary]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
@@ -101,126 +172,116 @@ export default function Dashboard() {
 
       <div style={{ padding: '16px 16px 32px' }}>
         {/* ============ 上：工单状态监测概览 ============ */}
-        <SectionTitle emoji="🎫" title="工单状态监测" onMore={() => navigate('/tasks')} />
-        <div className="dashboard-section">
-          <div className="dashboard-section__row">
-            <div className="dashboard-section__chart">
-              <TicketStatusPie data={ticketSummary} onSliceClick={(key) => navigate(`/admin/dashboard/tickets/${key}`)} />
-            </div>
-            <div className="dashboard-section__stats">
-              <StatItem label="总工单数" value={ticketSummary?.total ?? 0} color="#0052d9" />
-              <StatItem label="待处理" value={ticketSummary?.pending_count ?? 0} color="#e37318" />
-              <StatItem label="超时工单" value={ticketSummary?.overdue_count ?? 0} color="#d54941" />
-              <StatItem label="解决率" value={formatPercent(ticketSummary?.resolved_rate)} color="#00a870" />
-            </div>
+        {/* 结构性重设计（对照 macaron admin 工单状态监测）：蓝阶环图 + 图例（含百分比/数量）+ 四指标卡 */}
+        <SectionTitle title="工单状态监测" onMore={() => navigate('/tasks')} />
+        <section className="mac-card mac-card--pad">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <MacDonut
+              segments={SORTED_TICKET_STATUS_LIST.map((s) => ({
+                value: ticketSummary?.by_status[s.key] ?? 0,
+                tone: s.tone,
+              }))}
+              centerValue={ticketSummary?.total ?? 0}
+              centerLabel="工单总数"
+            />
+            <MacLegend
+              items={SORTED_TICKET_STATUS_LIST.map((s) => {
+                const value = ticketSummary?.by_status[s.key] ?? 0;
+                const total = ticketSummary?.total ?? 0;
+                return {
+                  key: s.key,
+                  label: s.label,
+                  value,
+                  tone: s.tone,
+                  percent: total > 0 ? Math.round((value / total) * 100) : 0,
+                  pending: !s.backendReady,
+                };
+              })}
+              onItemClick={(key) => navigate(`/admin/dashboard/tickets/${key}`)}
+            />
           </div>
-          {/* 状态标签行，点击下钻 */}
-          <div className="dashboard-tag-row">
-            {TICKET_STATUS_LIST.map((s) => (
-              <span
-                key={s.key}
-                className="dashboard-tag"
-                style={{ background: s.color + '18', color: s.color }}
-                onClick={() => navigate(`/admin/dashboard/tickets/${s.key}`)}
-              >
-                {s.label} {ticketSummary?.by_status[s.key] ?? 0}
-                {!s.backendReady && <sup className="dashboard-tag__pending">·待接入</sup>}
-              </span>
-            ))}
+          <div className="mac-stat-row">
+            <MacStat value={ticketSummary?.total ?? 0} label="总工单数" tone="blue-1" />
+            <MacStat value={ticketSummary?.pending_count ?? 0} label="待处理" tone="blue-2" />
+            <MacStat value={ticketSummary?.overdue_count ?? 0} label="超时工单" tone="blue-3" />
+            <MacStat value={formatPercent(ticketSummary?.resolved_rate)} label="解决率" tone="blue-4" />
           </div>
-        </div>
+        </section>
 
         {/* ============ 中：跨项目看板 ============ */}
-        <SectionTitle emoji="📊" title="跨项目看板" onMore={() => navigate('/admin/project-progress')}>
-          <button
-            className="dashboard-section-title__sync-btn"
-            onClick={handleSync}
-            disabled={syncing}
-          >
-            {syncing ? '同步中...' : '同步最新数据'}
-          </button>
-        </SectionTitle>
-        <div className="dashboard-section">
-          <p className="dashboard-section__subtitle">调度项目看板</p>
-          <div className="dashboard-section__row">
-            <div className="dashboard-section__chart">
-              <ProjectStagePie data={stageSummary} onSliceClick={(key) => navigate(`/admin/dashboard/projects/stage/${key}`)} />
-            </div>
-            <div className="dashboard-section__stats">
-              <StatItem label="项目总数" value={projects.length} color="#0052d9" onClick={() => navigate('/admin/project-progress')} />
-              <StatItem label="本月新增" value={projects.filter((p) => p.settlement_period === currentYearMonth()).length} color="#2ba471" onClick={() => navigate('/admin/project-progress?filter=new')} />
-              <StatItem label="风险项目" value={projects.filter((p) => p.risks > 0).length} color="#d54941" onClick={() => navigate('/admin/project-progress?filter=risk')} />
-              <StatItem label="对接人缺省" value={projects.filter((p) => !p.contact_person).length} color="#e37318" onClick={() => navigate('/admin/project-progress?filter=no_contact')} />
-            </div>
-          </div>
-          <div className="dashboard-tag-row">
-            {PROJECT_STAGE_LIST.map((s) => (
-              <span
-                key={s.key}
-                className="dashboard-tag"
-                style={{ background: s.color + '18', color: s.color }}
-                onClick={() => navigate(`/admin/dashboard/projects/stage/${s.key}`)}
-              >
-                {s.label} {stageSummary?.by_stage[s.key] ?? 0}
-                {!s.backendReady && <sup className="dashboard-tag__pending">·待接入</sup>}
-              </span>
-            ))}
+        {/* 结构性重设计（对照 macaron admin 跨项目看板）：按月柱状图替换原阶段饼图，
+            接口从 /projects/summary（按阶段）更换为 /projects/monthly（按月） */}
+        <SectionTitle title="跨项目看板" onMore={() => navigate('/admin/project-progress')} />
+        <section className="mac-card mac-card--pad">
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--mac-muted-fg)' }}>调度项目看板</h3>
+            <button
+              type="button"
+              className="mac-sync-btn"
+              onClick={handleSync}
+              disabled={syncing}
+            >
+              <MacRefreshCw size={14} />
+              {syncing ? '同步中...' : '同步最新数据'}
+            </button>
           </div>
 
-          <p className="dashboard-section__subtitle" style={{ marginTop: 16 }}>项目紧急度看板</p>
-          <div className="dashboard-urgency-grid">
+          <ProjectMonthBars data={monthlySummary?.monthly ?? []} years={monthlyYears} style={{ marginTop: 12 }} />
+
+          <div className="mac-stat-row">
+            <MacStat value={projects.length} label="项目总数" tone="blue-1" onClick={() => navigate('/admin/project-progress')} />
+            <MacStat value={projects.filter((p) => p.settlement_period === currentYearMonth()).length} label="本月新增" tone="blue-2" onClick={() => navigate('/admin/project-progress?filter=new')} />
+            <MacStat value={projects.filter((p) => p.risks > 0).length} label="风险项目" tone="blue-3" onClick={() => navigate('/admin/project-progress?filter=risk')} />
+            <MacStat value={projects.filter((p) => !p.contact_person).length} label="对接人缺省" tone="blue-4" onClick={() => navigate('/admin/project-progress?filter=no_contact')} />
+          </div>
+
+          <h3 style={{ margin: '20px 0 0', fontSize: 13, fontWeight: 600, color: 'var(--mac-muted-fg)' }}>项目紧急度看板</h3>
+          <div className="mac-urgency-grid">
             {URGENCY_LIST.map((u) => (
               <div
                 key={u.key}
-                className="dashboard-urgency-card"
-                style={{ borderColor: u.color }}
+                className="mac-urgency-card"
+                data-tone={u.tone}
                 onClick={() => navigate(`/admin/dashboard/projects/urgency/${u.key}`)}
               >
-                <div className="dashboard-urgency-card__value" style={{ color: u.color }}>
-                  {urgencySummary?.by_urgency[u.key] ?? 0}
-                </div>
-                <div className="dashboard-urgency-card__label">{u.label}</div>
+                <div className="mac-urgency-card__value">{urgencySummary?.by_urgency[u.key] ?? 0}</div>
+                <div className="mac-urgency-card__label">{u.label}</div>
               </div>
             ))}
           </div>
-        </div>
+        </section>
 
         {/* ============ 下：更多功能 ============ */}
-        <SectionTitle emoji="📋" title="更多功能" />
-        <div className="dashboard-section">
-          <div className="dashboard-more-grid">
-            {MORE_FUNCTION_ENTRIES
-              .filter((e) => e.path !== '/admin/entries' || canAccessAdminEntries)
-              .map((e) => (
-              <div key={e.path} className="dashboard-more-card" onClick={() => navigate(e.path)}>
-                <span className="dashboard-more-card__emoji">{e.emoji}</span>
-                <span className="dashboard-more-card__label">{e.label}</span>
-              </div>
-            ))}
-          </div>
+        <SectionTitle title="更多功能" />
+        {/* 四个入口小砖块直接排在页面上（参考 macaron admin：surface-card + 淡色图标圆角块） */}
+        <div className="dashboard-more-grid">
+          {MORE_FUNCTION_ENTRIES
+            .filter((e) => e.path !== '/admin/entries' || canAccessAdminEntries)
+            .map((e) => (
+            <div key={e.path} className="dashboard-more-card" data-tone={e.tone} onClick={() => navigate(e.path)}>
+              <span className="dashboard-more-card__icon"><MoreEntryIcon kind={e.kind} /></span>
+              <span className="dashboard-more-card__label">{e.label}</span>
+            </div>
+          ))}
         </div>
       </div>
     </div>
   );
 }
 
-function SectionTitle({ emoji, title, onMore, children }: { emoji: string; title: string; onMore?: () => void; children?: React.ReactNode }) {
+function SectionTitle({ title, onMore, children }: { title: string; onMore?: () => void; children?: React.ReactNode }) {
   return (
-    <div className="dashboard-section-title">
-      <span>{emoji} {title}</span>
-      <div className="dashboard-section-title__actions">
+    <div className="mac-section-title">
+      <span className="mac-section-title__bar" />
+      <h2 className="mac-section-title__text">{title}</h2>
+      <div className="mac-section-title__actions">
         {children}
-        {onMore && <span className="dashboard-section-title__more" onClick={onMore}>查看明细 ›</span>}
+        {onMore && (
+          <span className="mac-section-title__more" onClick={onMore}>
+            查看明细 <MacChevronRight size={14} />
+          </span>
+        )}
       </div>
-    </div>
-  );
-}
-
-function StatItem({ label, value, color, onClick }: { label: string; value: number | string; color: string; onClick?: () => void }) {
-  return (
-    <div className="dashboard-stat-item" style={onClick ? { cursor: 'pointer' } : undefined} onClick={onClick}>
-      <div className="dashboard-stat-item__value" style={{ color }}>{value}</div>
-      <div className="dashboard-stat-item__label">{label}</div>
     </div>
   );
 }
@@ -228,76 +289,4 @@ function StatItem({ label, value, color, onClick }: { label: string; value: numb
 function formatPercent(v: number | undefined): string {
   if (v === undefined || v === null) return '0%';
   return `${Math.round(v * 100)}%`;
-}
-
-// ============ 图表组件 ============
-
-function TicketStatusPie({ data, onSliceClick }: { data: TicketSummary | null; onSliceClick: (key: string) => void }) {
-  const seriesData = TICKET_STATUS_LIST.map((s) => ({
-    name: s.label,
-    value: data?.by_status[s.key] ?? 0,
-    itemStyle: { color: s.color },
-  }));
-  const allZero = seriesData.every((d) => d.value === 0);
-
-  const option = {
-    tooltip: { trigger: 'item' as const },
-    legend: { show: false },
-    series: [{
-      type: 'pie',
-      radius: ['45%', '72%'],
-      avoidLabelOverlap: true,
-      label: { show: false },
-      data: allZero ? [{ name: '暂无数据', value: 1, itemStyle: { color: '#eee' } }] : seriesData,
-    }],
-  };
-
-  return (
-    <ReactECharts
-      option={option}
-      style={{ height: 160 }}
-      onEvents={{
-        click: (params: { name: string }) => {
-          if (allZero) return;
-          const found = TICKET_STATUS_LIST.find((s) => s.label === params.name);
-          if (found) onSliceClick(found.key);
-        },
-      }}
-    />
-  );
-}
-
-function ProjectStagePie({ data, onSliceClick }: { data: ProjectStageSummary | null; onSliceClick: (key: string) => void }) {
-  const seriesData = PROJECT_STAGE_LIST.map((s) => ({
-    name: s.label,
-    value: data?.by_stage[s.key] ?? 0,
-    itemStyle: { color: s.color },
-  }));
-  const allZero = seriesData.every((d) => d.value === 0);
-
-  const option = {
-    tooltip: { trigger: 'item' as const },
-    legend: { show: false },
-    series: [{
-      type: 'pie',
-      radius: ['30%', '65%'],
-      avoidLabelOverlap: true,
-      label: { fontSize: 10, formatter: '{b}' },
-      data: allZero ? [{ name: '暂无数据', value: 1, itemStyle: { color: '#eee' } }] : seriesData,
-    }],
-  };
-
-  return (
-    <ReactECharts
-      option={option}
-      style={{ height: 220, width: '100%' }}
-      onEvents={{
-        click: (params: { name: string }) => {
-          if (allZero) return;
-          const found = PROJECT_STAGE_LIST.find((s) => s.label === params.name);
-          if (found) onSliceClick(found.key);
-        },
-      }}
-    />
-  );
 }

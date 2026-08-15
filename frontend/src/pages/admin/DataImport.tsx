@@ -3,14 +3,15 @@
 //   1) 文件导入：DAS 数据包文件（.bz2 / .json），解析后按天切分入库 CollectionData；
 //   2) JSON导入：搬运效率汇总 {summary, robots}，直接写入 ProjectTransportEfficiency。
 // 项目、日期选择是整页共用的。
-import { useState, useEffect } from 'react';
+// 样式参考 macaron data 页：surface-card 项目选择条 + 卡片内分段切换 + 虚线文件入口。
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Tabs, TabPanel, Button, Upload, Toast, Loading, Popup } from 'tdesign-mobile-react';
-import ClearableInput from '@/shared/components/ClearableInput';
+import { Toast, Loading, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
 import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
+import { MacChevronRight, MacCheck, MacSearch, MacPlus } from '@/shared/components/macaronIcons';
 
 // 与 /projects/、/projects/me 实际返回字段对齐（ProjectResponse）：项目标识是 project_code（与 id 同值），
 // 没有 code 字段 —— 之前用 project.code 取标识，永远取不到值会静默回退成 project.name（中文项目名），
@@ -62,53 +63,56 @@ function ProjectPickerField({ projects, value, onChange }: ProjectPickerFieldPro
 
   return (
     <>
-      <div
-        onClick={() => setVisible(true)}
-        style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          background: '#fff', border: '1px solid #dcdcdc', borderRadius: 8, padding: '12px 14px', marginBottom: 12,
-          cursor: 'pointer',
-        }}
-      >
-        <div>
+      <button type="button" className="mac-selector" onClick={() => setVisible(true)}>
+        <span className="mac-selector__body">
           {value ? (
-            <div style={{ fontWeight: 500 }}>{value.name}</div>
+            <>
+              <span className="mac-selector__name">{value.name}</span>
+              {(value.project_code || value.id) && (
+                <span className="mac-selector__meta">#{value.project_code || value.id}</span>
+              )}
+            </>
           ) : (
-            <span style={{ color: '#bbb', fontSize: 14 }}>请选择项目</span>
+            <span className="mac-selector__placeholder">请选择项目</span>
           )}
-        </div>
-        <span style={{ color: '#999' }}>›</span>
-      </div>
+        </span>
+        <span className="mac-selector__chevron"><MacChevronRight size={16} /></span>
+      </button>
 
       <Popup visible={visible} onClose={() => setVisible(false)} placement="bottom" showOverlay>
-        <div style={{ padding: 20, maxHeight: '70vh', overflow: 'auto' }}>
-          <h4 style={{ marginBottom: 12 }}>选择项目</h4>
-          <ClearableInput
-            value={search}
-            onChange={(v) => setSearch(String(v))}
-            placeholder="输入项目名称关键词模糊查找"
-            style={{ marginBottom: 12 }}
-          />
-          {filtered.map((p) => (
-            <div
-              key={p.id || p.name}
-              onClick={() => { onChange(p); setSearch(''); setVisible(false); }}
-              style={{
-                background: value?.name === p.name ? '#e8f2ff' : '#fff',
-                borderRadius: 8,
-                padding: '12px 14px',
-                marginBottom: 8,
-                cursor: 'pointer',
-                border: value?.name === p.name ? '1px solid #0052d9' : '1px solid transparent',
-              }}
-            >
-              <div style={{ fontWeight: 500 }}>{p.name}</div>
-              {p.project_code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{p.project_code}</div>}
-            </div>
-          ))}
-          {filtered.length === 0 && (
-            <div style={{ textAlign: 'center', padding: 30, color: '#999' }}>未找到匹配的项目</div>
-          )}
+        <div className="mac-sheet" style={{ maxHeight: '70vh', overflow: 'auto' }}>
+          <h4 className="mac-sheet__title">选择项目</h4>
+          <div className="mac-search" style={{ marginBottom: 12 }}>
+            <MacSearch size={16} />
+            <input
+              className="mac-search__input"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="输入项目名称关键词模糊查找"
+            />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {filtered.map((p) => {
+              const active = value?.name === p.name;
+              return (
+                <button
+                  key={p.id || p.name}
+                  type="button"
+                  className={`mac-pick-item ${active ? 'is-active' : ''}`}
+                  onClick={() => { onChange(p); setSearch(''); setVisible(false); }}
+                >
+                  <span className="mac-pick-item__name">{p.name}</span>
+                  {p.project_code && <span className="mac-pick-item__code">#{p.project_code}</span>}
+                  {active && (
+                    <span className="mac-pick-item__check"><MacCheck size={16} /></span>
+                  )}
+                </button>
+              );
+            })}
+            {filtered.length === 0 && (
+              <div className="mac-empty">未找到匹配的项目</div>
+            )}
+          </div>
         </div>
       </Popup>
     </>
@@ -122,6 +126,7 @@ export default function DataImport() {
   const { hasPermission } = useAuthStore();
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
   const navigate = useNavigate();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [projects, setProjects] = useState<Project[]>([]);
 
@@ -212,7 +217,7 @@ export default function DataImport() {
   };
 
   return (
-    <div style={{ padding: 16 }}>
+    <div className="mac-page">
       <ProjectPickerField
         projects={projects}
         value={project}
@@ -226,29 +231,52 @@ export default function DataImport() {
         }}
       />
 
-      <Tabs value={tab} onChange={(v) => setTab(String(v))}>
-        <TabPanel value="file" label="文件导入">
-          <div style={{ padding: '24px 0' }}>
-            <Upload
+      <div className="mac-card" style={{ marginTop: 12 }}>
+        {/* 分段切换（文件导入 / JSON导入） */}
+        <div className="mac-seg">
+          <button
+            type="button"
+            className={`mac-seg__btn ${tab === 'file' ? 'is-active' : ''}`}
+            onClick={() => setTab('file')}
+          >
+            文件导入
+          </button>
+          <button
+            type="button"
+            className={`mac-seg__btn ${tab === 'json' ? 'is-active' : ''}`}
+            onClick={() => setTab('json')}
+          >
+            JSON导入
+          </button>
+        </div>
+
+        {tab === 'file' ? (
+          <div style={{ padding: '20px 16px' }}>
+            <input
+              ref={fileInputRef}
+              type="file"
               accept=".json,.bz2"
-              max={1}
-              autoUpload={false}
-              onSelectChange={(files) => {
-                if (files?.[0]) {
-                  handleFileUpload(files[0]);
-                }
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleFileUpload(f);
+                e.target.value = '';
               }}
             />
-            <p style={{ color: '#999', fontSize: 13, marginTop: 12, textAlign: 'center' }}>
+            <button
+              type="button"
+              className="mac-file-drop"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <MacPlus size={24} />
+            </button>
+            <p className="mac-note" style={{ marginTop: 20 }}>
               上传 数据包文件（.bz2 或 .json，含 GroupEfficiency 等指标数据），选定项目后上传
             </p>
 
             {/* 导入失败提示 */}
             {fileError && (
-              <div style={{
-                background: '#fff1f0', border: '1px solid #ffccc7', borderRadius: 8,
-                padding: 12, color: '#f5222d', marginTop: 16, fontSize: 13,
-              }}>
+              <div className="mac-feedback mac-feedback--err" style={{ marginTop: 16 }}>
                 <div style={{ fontWeight: 600 }}>✗ 导入失败</div>
                 <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{fileError}</div>
               </div>
@@ -257,16 +285,12 @@ export default function DataImport() {
             {/* 导入成功：信息卡片 + 导入条目列表 */}
             {fileResult && fileResult.success !== false && (
               <div style={{ marginTop: 16 }}>
-                {/* 成功提示条 */}
-                <div style={{
-                  background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 8,
-                  padding: '10px 14px', color: '#52c41a', fontSize: 13, fontWeight: 500, marginBottom: 12,
-                }}>
+                <div className="mac-feedback mac-feedback--ok">
                   ✓ {fileResult.message || '导入成功'}
                 </div>
 
                 {/* 信息卡片（参考 ProjectMetricsList 的 header-info） */}
-                <div style={{ background: '#f9f9f9', borderRadius: 8, padding: '12px 16px', border: '1px solid #e8e8e8', marginBottom: 12 }}>
+                <div className="mac-item" style={{ marginTop: 12 }}>
                   <InfoLine label="项目名称" value={project?.name || fileResult.project || '-'} />
                   <InfoLine label="指标标签" value={fileResult.indicator || '-'} />
                   <InfoLine label="文件名称" value={fileResult.filename || '-'} />
@@ -276,14 +300,21 @@ export default function DataImport() {
 
                 {/* 导入的数据条目列表 */}
                 {fileResult.chunks && fileResult.chunks.length > 0 && (
-                  <div style={{ background: '#fff', borderRadius: 8, padding: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>导入的数据条目</div>
+                  <div className="mac-card mac-card--pad" style={{ marginTop: 12 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: 'var(--mac-fg)' }}>导入的数据条目</div>
                     {fileResult.chunks.map((c, idx) => (
-                      <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #f5f5f5', fontSize: 13, gap: 8 }}>
-                        <span style={{ color: '#1a1a1a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      <div
+                        key={idx}
+                        style={{
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          padding: '8px 0', fontSize: 13, gap: 8,
+                          borderBottom: idx < fileResult.chunks!.length - 1 ? '1px solid rgba(232,234,234,0.5)' : 'none',
+                        }}
+                      >
+                        <span style={{ color: 'var(--mac-fg)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {c.start_time} ~ {c.end_time}
                         </span>
-                        <span style={{ color: '#999', flexShrink: 0 }}>
+                        <span style={{ color: 'var(--mac-muted-fg)', flexShrink: 0 }}>
                           {c.groups && c.groups.length ? c.groups.join('、') : '—'}
                         </span>
                       </div>
@@ -293,39 +324,41 @@ export default function DataImport() {
 
                 {/* 跳转到同一项目的搬运效率分析页，验证数据已生效 */}
                 {project?.id && (
-                  <Button
-                    theme="primary"
-                    variant="outline"
-                    block
+                  <button
+                    type="button"
+                    className="mac-btn mac-btn--outline mac-btn--block"
                     style={{ marginTop: 12 }}
                     onClick={() => navigate(`/admin/project-detail/${project.id}/transport-efficiency`)}
                   >
                     查看该项目搬运效率分析 ›
-                  </Button>
+                  </button>
                 )}
               </div>
             )}
           </div>
-        </TabPanel>
-        <TabPanel value="json" label="JSON导入">
-          <div style={{ padding: '24px 0' }}>
+        ) : (
+          <div style={{ padding: '20px 16px' }}>
             <textarea
+              className="mac-textarea"
               value={jsonText}
               placeholder='{"summary": {...}, "robots": [...]}'
-              rows={8}
-              style={{ width: '100%', padding: 12, border: '1px solid #ddd', borderRadius: 8, fontSize: 14 }}
               onChange={(e) => setJsonText(e.target.value)}
             />
-            <Button theme="primary" block style={{ marginTop: 16 }} onClick={handleJsonImport}>
+            <p className="mac-note" style={{ marginTop: 12 }}>
+              粘贴含 GroupEfficiency 等指标数据的 JSON，选定项目后导入
+            </p>
+            <button
+              type="button"
+              className="mac-btn mac-btn--primary mac-btn--block"
+              style={{ marginTop: 16 }}
+              onClick={handleJsonImport}
+            >
               导入JSON数据
-            </Button>
+            </button>
 
             {/* 导入失败提示 */}
             {jsonError && (
-              <div style={{
-                background: '#fff1f0', border: '1px solid #ffccc7', borderRadius: 8,
-                padding: 12, color: '#f5222d', marginTop: 16, fontSize: 13,
-              }}>
+              <div className="mac-feedback mac-feedback--err" style={{ marginTop: 16 }}>
                 <div style={{ fontWeight: 600 }}>✗ 导入失败</div>
                 <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{jsonError}</div>
               </div>
@@ -334,27 +367,24 @@ export default function DataImport() {
             {/* 导入成功提示 + 跳转搬运效率分析 */}
             {jsonResult && (
               <div style={{ marginTop: 16 }}>
-                <div style={{
-                  background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 8,
-                  padding: '10px 14px', color: '#52c41a', fontSize: 13, fontWeight: 500, marginBottom: 12,
-                }}>
+                <div className="mac-feedback mac-feedback--ok">
                   ✓ 导入成功（项目：{project?.name || '-'}，日期：{todayStr()}）
                 </div>
                 {project?.id && (
-                  <Button
-                    theme="primary"
-                    variant="outline"
-                    block
+                  <button
+                    type="button"
+                    className="mac-btn mac-btn--outline mac-btn--block"
+                    style={{ marginTop: 12 }}
                     onClick={() => navigate(`/admin/project-detail/${project.id}/transport-efficiency`)}
                   >
                     查看该项目搬运效率分析 ›
-                  </Button>
+                  </button>
                 )}
               </div>
             )}
           </div>
-        </TabPanel>
-      </Tabs>
+        )}
+      </div>
       {loading && <Loading text="导入中..." />}
     </div>
   );
@@ -363,9 +393,11 @@ export default function DataImport() {
 // 信息卡片的一行：左侧灰色标签 + 右侧数值（参考 ProjectMetricsList 的 header-info）
 function InfoLine({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 0', fontSize: 13, gap: 12 }}>
-      <span style={{ color: '#666', flexShrink: 0 }}>{label}</span>
-      <span style={{ color: '#1a1a1a', fontWeight: 500, textAlign: 'right' }}>{value}</span>
+    <div className="mac-labelvalue" style={{ padding: '5px 0' }}>
+      <span className="mac-labelvalue__label">{label}</span>
+      <span className="mac-labelvalue__value" style={{ color: 'var(--mac-fg)', fontWeight: 500, textAlign: 'right' }}>
+        {value}
+      </span>
     </div>
   );
 }

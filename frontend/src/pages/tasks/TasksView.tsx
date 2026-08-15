@@ -1,9 +1,10 @@
 // 系统任务（供给视角）—— 上：AI 任务助手 / 下：工单卡片列表
-// 卡片样式与输入卡片审美一致（白底 + 阴影 + 圆角）。
-// 跨视图流转：消费 ticketDraft 自动建单；讨论按钮 → 带上下文跳回我要摇人。
+// 马卡龙极简风格（参考 macaron-minimal-ui 设计）：胶囊筛选 + 灰阶卡片信息层级；
+// 「待我处理」为按天时间轴。跨视图流转：消费 ticketDraft 自动建单。
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Navbar, Toast, Loading, Tag, Popup, Button, Textarea, Form, FormItem } from 'tdesign-mobile-react';
+import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -23,32 +24,6 @@ interface Ticket {
 }
 
 const pageSize = 20;
-
-const STATUS_COLOR_MAP: Record<string, string> = {
-  new: '#0052d9',
-  in_progress: '#2ba471',
-  pending: '#e37318',
-  paused: '#e37318',
-  resolved: '#00a870',
-  closed: '#999999',
-  canceled: '#d54941',
-  cancelled: '#d54941',
-};
-
-const getStatusColor = (status: string): string => {
-  const key = (status || '').toLowerCase();
-  return STATUS_COLOR_MAP[key] || '#666666';
-};
-
-const priorityTheme = (p: string): 'success' | 'default' | 'warning' | 'danger' => {
-  switch (p) {
-    case 'low': return 'success';
-    case 'medium': return 'default';
-    case 'high': return 'warning';
-    case 'urgent': return 'danger';
-    default: return 'default';
-  }
-};
 
 const PRIORITY_WEIGHT_MAP: Record<string, number> = {
   urgent: 4,
@@ -150,6 +125,100 @@ const buildFilterParams = (filter: {
   return params.toString();
 };
 
+// 马卡龙极简工单卡片：状态为唯一带色文字（蓝阶），优先级蓝阶色块，
+// 头像统一灰底白字，信息层级靠字号与字重区分（参考 macaron-minimal-ui 设计）。
+function TicketCard({ t, onOpen }: { t: Ticket; onOpen: (id: string) => void }) {
+  const creator = t.created_by_name || t.created_by || '-';
+  const assignee = t.assigned_to_name || t.assigned_to || '-';
+  return (
+    <div className="task-card2" onClick={() => onOpen(t.id)}>
+      <div className="task-card2__head">
+        <div className="task-card2__head-tags">
+          <span className="task-card2__status-tag" data-status={(t.status || '').toLowerCase()}>
+            {normalizeStatus(t.status)}
+          </span>
+          <span className="task-card2__priority" data-priority={(t.priority || '').toLowerCase()}>
+            {PRIORITY_DISPLAY_MAP[t.priority] || t.priority || '中'}
+          </span>
+        </div>
+        <span className="task-card2__type">{TICKET_TYPE_DISPLAY_MAP[t.ticket_type] || t.ticket_type || '其他'}</span>
+      </div>
+
+      <div className="task-card2__title">{t.title}</div>
+
+      {/* 人员流转：发起人 → 处理人 */}
+      <div className="task-card2__people">
+        <div className="task-card2__person" title={`发起人：${creator}`}>
+          <span className="task-card2__avatar">{creator.slice(0, 1).toUpperCase()}</span>
+          <span className="task-card2__person-name">{creator}</span>
+        </div>
+        <span className="task-card2__person-arrow">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M5 12h14M12 5l7 7-7 7" />
+          </svg>
+        </span>
+        <div className="task-card2__person task-card2__person--assignee" title={`处理人：${assignee}`}>
+          <span className="task-card2__person-name">{assignee}</span>
+          <span className="task-card2__avatar">{assignee.slice(0, 1).toUpperCase()}</span>
+        </div>
+      </div>
+
+      {/* 编号 · 项目 · 日期 */}
+      <div className="task-card2__meta">
+        <span className="task-card2__meta-id">#{String(t.id).slice(0, 8)}</span>
+        {t.project_name && <span className="task-card2__meta-project">{t.project_name}</span>}
+        <span className="task-card2__meta-date">
+          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="4" width="18" height="18" rx="2" />
+            <path d="M16 2v4M8 2v4M3 10h18" />
+          </svg>
+          {formatDateTime(t.created_at).slice(0, 10)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// 「待我处理」时间轴：按创建日期分组（新→旧），组内按紧急度排序，左侧日期列 + 竖向虚线。
+function TicketTimeline({ items, onOpen }: { items: Ticket[]; onOpen: (id: string) => void }) {
+  const groups = useMemo(() => {
+    const map = new Map<string, Ticket[]>();
+    for (const t of items) {
+      const date = (t.created_at || '').slice(0, 10) || '未知';
+      const list = map.get(date) ?? [];
+      list.push(t);
+      map.set(date, list);
+    }
+    return [...map.entries()]
+      .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+      .map(([date, list]) => ({
+        date,
+        list: [...list].sort(
+          (a, b) => (PRIORITY_WEIGHT_MAP[b.priority] || 0) - (PRIORITY_WEIGHT_MAP[a.priority] || 0),
+        ),
+      }));
+  }, [items]);
+
+  return (
+    <div className="task-timeline">
+      {groups.map((g) => (
+        <div key={g.date} className="task-timeline__group">
+          <div className="task-timeline__date">
+            <span className="task-timeline__date-md">{g.date.slice(5)}</span>
+            <span className="task-timeline__date-year">{g.date.slice(0, 4)}</span>
+            <span className="task-timeline__dot" />
+          </div>
+          <div className="task-timeline__line">
+            {g.list.map((t) => (
+              <TicketCard key={t.id} t={t} onOpen={onOpen} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function TasksView() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -194,6 +263,49 @@ export default function TasksView() {
   const [relevanceCounts, setRelevanceCounts] = useState<Record<string, number>>({});
   const countsFetchingRef = useRef(false);
   const fetchCountsRef = useRef<() => Promise<void>>(async () => {});
+
+  // 新建工单悬浮按钮：液态玻璃质感 + 可拖动（拖动超过阈值视为拖拽，不触发点击）
+  const [fabPos, setFabPos] = useState<{ x: number; y: number } | null>(null);
+  const [fabDragging, setFabDragging] = useState(false);
+  const fabDragRef = useRef({ x: 0, y: 0, moved: false });
+  const FAB_SIZE = 52;
+  const FAB_MARGIN = 12;
+
+  useEffect(() => {
+    const clamp = (x: number, y: number) => ({
+      x: Math.min(Math.max(x, FAB_MARGIN), Math.max(FAB_MARGIN, window.innerWidth - FAB_SIZE - FAB_MARGIN)),
+      y: Math.min(Math.max(y, FAB_MARGIN), Math.max(FAB_MARGIN, window.innerHeight - FAB_SIZE - FAB_MARGIN)),
+    });
+    setFabPos(clamp(window.innerWidth - FAB_SIZE - 16, window.innerHeight - FAB_SIZE - 150));
+    const onResize = () => setFabPos((p) => (p ? clamp(p.x, p.y) : p));
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const handleFabPointerDown = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!fabPos) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    fabDragRef.current = { x: e.clientX - fabPos.x, y: e.clientY - fabPos.y, moved: false };
+    setFabDragging(true);
+  };
+
+  const handleFabPointerMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!fabPos || !fabDragRef.current) return;
+    const d = fabDragRef.current;
+    const next = {
+      x: Math.min(Math.max(e.clientX - d.x, FAB_MARGIN), Math.max(FAB_MARGIN, window.innerWidth - FAB_SIZE - FAB_MARGIN)),
+      y: Math.min(Math.max(e.clientY - d.y, FAB_MARGIN), Math.max(FAB_MARGIN, window.innerHeight - FAB_SIZE - FAB_MARGIN)),
+    };
+    if (Math.abs(next.x - fabPos.x) > 2 || Math.abs(next.y - fabPos.y) > 2) d.moved = true;
+    setFabPos(next);
+  };
+
+  const handleFabPointerUp = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    setFabDragging(false);
+  };
 
   const fetchTickets = useCallback(async (silent = false) => {
     if (isFetchingRef.current) return;
@@ -294,12 +406,14 @@ export default function TasksView() {
 
   
 
+  // 「全部」始终展示：有 frontend:task:all 权限时看全量工单，
+  // 无权限时退化为项目维度（与 fetchTickets 的回退口径一致）。
   const relevanceOptions = useMemo(() => [
-    ...(canViewAllTasks ? [{ value: 'global', label: '全部' }] : []),
+    { value: 'global', label: '全部' },
     { value: 'all', label: '项目相关' },
     { value: 'mine', label: '待我处理' },
     { value: 'related', label: '与我相关' },
-  ], [canViewAllTasks]);
+  ], []);
 
   // 拉取各分类角标条数：与列表共用同一套相关性过滤口径（不受搜索/状态/优先级影响），
   // 每次只取 total（size=1）；单个分类失败静默跳过，保留旧值。
@@ -310,10 +424,12 @@ export default function TasksView() {
       const entries = await Promise.all(
         relevanceOptions.map(async (option) => {
           try {
+            // 「全部」无权限时按项目维度计数，与列表回退口径一致
+            const key = option.value === 'global' && !canViewAllTasks ? 'all' : option.value;
             const data = await request<{ total: number }>('/filter', {
               method: 'POST',
               body: JSON.stringify({
-                filters: buildRelevanceFilters(option.value, username, projectIds),
+                filters: buildRelevanceFilters(key, username, projectIds),
                 sorts: [],
                 page: 1,
                 size: 1,
@@ -336,7 +452,7 @@ export default function TasksView() {
     } finally {
       countsFetchingRef.current = false;
     }
-  }, [relevanceOptions, username, projectIds]);
+  }, [relevanceOptions, username, projectIds, canViewAllTasks]);
   fetchCountsRef.current = fetchRelevanceCounts;
 
   useEffect(() => { fetchRelevanceCounts(); }, [fetchRelevanceCounts]);
@@ -364,20 +480,6 @@ export default function TasksView() {
   const handlePriorityChange = (value: string) => {
     setPriorityFilter(value);
     setPage(1);
-  };
-
-  const getFilterSummary = () => {
-    const parts = [];
-    if (relevanceFilter !== 'all') {
-      parts.push(relevanceOptions.find((o) => o.value === relevanceFilter)?.label);
-    }
-    if (statusFilter !== 'all') {
-      parts.push(statusOptions.find((o) => o.value === statusFilter)?.label);
-    }
-    if (priorityFilter !== 'all') {
-      parts.push(priorityOptions.find((o) => o.value === priorityFilter)?.label);
-    }
-    return parts.length > 0 ? parts.join(' · ') : '筛选';
   };
 
   const handleSyncExternalTasks = async () => {
@@ -456,56 +558,59 @@ export default function TasksView() {
       <div className="tasks-list-section">
         <div className="tasks-view__filters">
           <div className="tasks-view__search-row">
-            <input
-              className="tasks-search"
-              placeholder="搜索工单…"
-              value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            />
+            <div className="tasks-view__search-card">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8" />
+                <path d="m21 21-4.35-4.35" />
+              </svg>
+              <input
+                className="tasks-search"
+                placeholder="搜索工单…"
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              />
+            </div>
           </div>
 
           <div className="tasks-view__sort-row">
-            <span className="tasks-view__sort-label">排序：</span>
+            <span className="tasks-view__sort-label">排序</span>
             <button
-              className={`tasks-view__priority-quick-sort ${sortBy === 'priority' && sortOrder === 'desc' ? 'is-active' : ''}`}
+              className={`tasks-view__sort-option ${sortBy === 'priority' && sortOrder === 'desc' ? 'is-active' : ''}`}
               onClick={() => {
                 setSortBy('priority');
                 setSortOrder('desc');
                 setPage(1);
               }}
             >
-              <span className="tasks-view__priority-icon">!</span>
-              <span>紧急优先</span>
+              紧急优先
             </button>
-            <div className="tasks-view__sort-options">
-              {sortOptions.map((option) => (
-                <button
-                  key={option.value}
-                  className={`tasks-view__sort-option ${sortBy === option.value ? (sortOrder === 'desc' ? 'is-active is-desc' : 'is-active is-asc') : ''}`}
-                  onClick={() => {
-                    if (sortBy === option.value) {
-                      if (sortOrder === 'desc') {
-                        setSortOrder('asc');
-                      } else if (sortOrder === 'asc') {
-                        setSortBy('priority');
-                        setSortOrder('desc');
-                      }
+            {sortOptions.map((option) => (
+              <button
+                key={option.value}
+                className={`tasks-view__sort-option ${sortBy === option.value ? 'is-active' : ''}`}
+                onClick={() => {
+                  if (sortBy === option.value) {
+                    if (sortOrder === 'desc') {
+                      setSortOrder('asc');
                     } else {
-                      setSortBy(option.value);
+                      setSortBy('priority');
                       setSortOrder('desc');
                     }
-                    setPage(1);
-                  }}
-                >
-                  {option.label}
-                  {sortBy === option.value && (
-                    <span className="tasks-view__sort-arrow">
-                      {sortOrder === 'desc' ? '↓' : '↑'}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
+                  } else {
+                    setSortBy(option.value);
+                    setSortOrder('desc');
+                  }
+                  setPage(1);
+                }}
+              >
+                {option.label}
+                {sortBy === option.value && (
+                  <span className="tasks-view__sort-arrow">
+                    {sortOrder === 'desc' ? '↓' : '↑'}
+                  </span>
+                )}
+              </button>
+            ))}
           </div>
 
           <div className="tasks-view__filter-row">
@@ -524,7 +629,6 @@ export default function TasksView() {
                   )}
                 </button>
               ))}
-              <div className="tasks-view__filter-divider"></div>
               {statusOptions.map((option) => (
                 <button
                   key={option.value}
@@ -534,7 +638,6 @@ export default function TasksView() {
                   {option.label}
                 </button>
               ))}
-              <div className="tasks-view__filter-divider"></div>
               {priorityOptions.map((option) => (
                 <button
                   key={option.value}
@@ -546,9 +649,8 @@ export default function TasksView() {
               ))}
             </div>
             <button className="tasks-filter-btn" onClick={() => setShowFilterMenu(true)}>
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4" />
               </svg>
               <span>筛选</span>
             </button>
@@ -558,60 +660,13 @@ export default function TasksView() {
         <div className="tasks-cards">
           {loading ? <Loading text="加载中…" /> : tickets.length === 0 ? (
             <div className="tasks-empty">暂无工单</div>
-          ) : tickets.map((t) => (
-            <div key={t.id} className="task-card2" onClick={() => openDetail(t.id)}>
-              <div className="task-card2__head">
-                <div className="task-card2__head-tags">
-                  <span
-                    className="task-card2__status-tag"
-                    style={{ background: getStatusColor(t.status), color: '#fff' }}
-                  >
-                    {normalizeStatus(t.status)}
-                  </span>
-                  <Tag theme={priorityTheme(t.priority)} className="task-card2__priority">
-                    {PRIORITY_DISPLAY_MAP[t.priority] || t.priority}
-                  </Tag>
-                </div>
-                <span className="task-card2__type">{TICKET_TYPE_DISPLAY_MAP[t.ticket_type] || t.ticket_type || '其他'}</span>
-              </div>
-              <div className="task-card2__title">{t.title}</div>
-
-              <div className="task-card2__divider" />
-
-              {/* 人员流转：发起人 → 处理人 */}
-              <div className="task-card2__people">
-                <div className="task-card2__person task-card2__person--creator" title={`发起人：${t.created_by_name || t.created_by || '-'}`}>
-                  <span className="task-card2__avatar">{(t.created_by_name || t.created_by || '?').slice(0, 1).toUpperCase()}</span>
-                  <span className="task-card2__person-text">
-                    <span className="task-card2__person-label">发起人</span>
-                    <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
-                  </span>
-                </div>
-                <span className="task-card2__person-arrow">➡️</span>
-                <div className="task-card2__person task-card2__person--assignee" title={`处理人：${t.assigned_to_name || t.assigned_to || '-'}`}>
-                  <span className="task-card2__avatar task-card2__avatar--assignee">{(t.assigned_to_name || t.assigned_to || '?').slice(0, 1).toUpperCase()}</span>
-                  <span className="task-card2__person-text">
-                    <span className="task-card2__person-label">处理人</span>
-                    <span className="task-card2__person-name">{t.assigned_to_name || t.assigned_to || '-'}</span>
-                  </span>
-                </div>
-              </div>
-
-              {/* 编号 · 项目 · 日期 */}
-              <div className="task-card2__meta">
-                <span className="task-card2__meta-id">#{String(t.id).slice(0, 8)}</span>
-                {t.project_name && <span className="task-card2__meta-project">{t.project_name}</span>}
-                <span className="task-card2__meta-date">
-                  <span className="task-card2__meta-date-label">创建时间</span>
-                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="3" y="4" width="18" height="18" rx="2" />
-                    <path d="M16 2v4M8 2v4M3 10h18" />
-                  </svg>
-                  {formatDateTime(t.created_at).slice(0, 10)}
-                </span>
-              </div>
-            </div>
-          ))}
+          ) : relevanceFilter === 'mine' ? (
+            <TicketTimeline items={tickets} onOpen={openDetail} />
+          ) : (
+            tickets.map((t) => (
+              <TicketCard key={t.id} t={t} onOpen={openDetail} />
+            ))
+          )}
           <Pagination current={page} total={total} pageSize={pageSize} onChange={setPage} />
         </div>
       </div>
@@ -684,22 +739,27 @@ export default function TasksView() {
         </div>
       </Popup>
 
-      {/* 新建工单悬浮按钮 */}
-      {canManageTasks && (
-        <div className="tasks-view__fab">
+      {/* 新建工单悬浮按钮：液态玻璃质感，可拖动 */}
+      {canManageTasks && fabPos && (
+        <div className="tasks-view__fab" style={{ left: fabPos.x, top: fabPos.y, width: FAB_SIZE }}>
           <button
-            className={`tasks-view__fab-btn${creatingTask ? ' is-submitting' : ''}`}
-            onClick={() => setShowCreateModal(true)}
+            className={`tasks-view__fab-btn${creatingTask ? ' is-submitting' : ''}${fabDragging ? ' is-dragging' : ''}`}
+            onPointerDown={handleFabPointerDown}
+            onPointerMove={handleFabPointerMove}
+            onPointerUp={handleFabPointerUp}
+            onPointerCancel={handleFabPointerUp}
+            onClick={() => { if (!fabDragRef.current.moved) setShowCreateModal(true); }}
             disabled={creatingTask}
             aria-label="新建工单"
           >
+            <span className="tasks-view__fab-highlight" />
             {creatingTask ? (
               <span className="chat-ticket-spinner" />
             ) : (
-              <svg viewBox="0 0 24 24" width="18" height="24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path fill="currentColor" d="M16 1H8V5H16V1Z" />
-                <path fill="currentColor" d="M6 3H3V23H13.8762C13.0139 21.897 12.5 20.5085 12.5 19C12.5 15.4101 15.4101 12.5 19 12.5C19.6978 12.5 20.3699 12.61 21 12.8135V3H18V7H6V3Z" />
-                <path fill="currentColor" d="M24 20H20V24H18V20H14V18H18V14H20V18H24V20Z" />
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="tasks-view__fab-icon">
+                <path d="M16 1H8V5H16V1Z" />
+                <path d="M6 3H3V23H13.8762C13.0139 21.897 12.5 20.5085 12.5 19C12.5 15.4101 15.4101 12.5 19 12.5C19.6978 12.5 20.3699 12.61 21 12.8135V3H18V7H6V3Z" />
+                <path d="M24 20H20V24H18V20H14V18H18V14H20V18H24V20Z" />
               </svg>
             )}
           </button>
