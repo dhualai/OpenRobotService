@@ -23,7 +23,7 @@ from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, Ticket
 from app.modules.tasks.services.ticket_service import TicketService
 from app.modules.tasks.services.operation_log_service import OperationLogService, get_role_prefix
 from app.models.task import OperationType
-from app.modules.tasks.api.ws import ws_broadcast_comment, ws_broadcast_comment_deleted, ws_broadcast_task_updated
+from app.modules.tasks.api.ws import ws_broadcast_comment, ws_broadcast_comment_deleted, ws_broadcast_task_updated, manager
 from app.utils.minio_client import minio_client
 from app.utils.notification_utils import NotificationUtils
 from app.integrations.api import verify_sync_api_key
@@ -896,7 +896,7 @@ async def get_resolution_summary(
     import logging
     _logger = logging.getLogger(__name__)
     _user = (current_user or {}).get('username', '?')
-    _logger.debug(f"[resolution-summary] 接口被调用: task_id={task_id}, force={force}, clear={clear}, user={_user}")
+    _logger.info(f"[resolution-summary] 接口被调用: task_id={task_id}, force={force}, clear={clear}, user={_user}")
 
     ticket = await TicketService.get_ticket_by_id(db, task_id)
     if not ticket:
@@ -991,7 +991,7 @@ async def get_resolution_summary(
             meta["resolution_requested_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ticket.metadata_info = meta
             await db.commit()
-            _logger.debug(f"[resolution-summary] task_id={task_id} 已入队到 {RESOLUTION_WORKER_QUEUE} 触发 worker 生成")
+            _logger.info(f"[resolution-summary] task_id={task_id} 已入队到 {RESOLUTION_WORKER_QUEUE} 触发 worker 生成")
         finally:
             await r.aclose()
     except Exception as e:
@@ -999,7 +999,7 @@ async def get_resolution_summary(
         enqueue_status = "failed"
         _logger.error(f"[resolution-summary] task_id={task_id} 入队失败: {e}")
 
-    _logger.debug(f"[resolution-summary] task_id={task_id} 返回 enqueue_status={enqueue_status}")
+    _logger.info(f"[resolution-summary] task_id={task_id} 返回 enqueue_status={enqueue_status}")
     return {
         "task_id": task_id,
         "problem": {"title": ticket.title or "", "description": ticket.description or ""},
@@ -1096,7 +1096,7 @@ async def get_task_operation_logs(
     """获取工单操作日志列表（按时间倒序）"""
     try:
         logs = await OperationLogService.list_by_task(db, task_id)
-        
+
         # 转换为前端需要的格式
         result = []
         for log in logs:
@@ -1110,6 +1110,8 @@ async def get_task_operation_logs(
                 "detail": log.detail,
                 "description": log.description,
                 "created_at": log.created_at.isoformat() if log.created_at else None,
+                "ended_at": log.ended_at.isoformat() if log.ended_at else None,
+                "duration_seconds": log.duration_seconds,
             })
         return result
     except Exception as e:
@@ -1117,6 +1119,53 @@ async def get_task_operation_logs(
         logger = logging.getLogger(__name__)
         logger.error(f"获取工单操作日志失败: task_id={task_id}, error={str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取工单操作日志失败: {str(e)}")
+
+
+class ViewEndRequest(BaseModel):
+    duration_seconds: int
+
+
+@router.post("/{task_id}/view-end")
+async def report_view_duration(
+    task_id: int,
+    payload: ViewEndRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """回传用户查看工单的停留时长。
+
+    前端在用户离开页面（pagehide / visibilitychange→hidden / 组件卸载）时调用，
+    将累计的可见停留秒数回传给后端，后端累加到最近一条 VIEW 操作记录上。
+    使用 JWT 中的 sub 作为操作人标识，与查看记录创建时的去重逻辑一致。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    auth_header = request.headers.get("Authorization")
+    token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
+    if not token:
+        raise HTTPException(status_code=401, detail="未授权")
+
+    try:
+        from app.core.security import decode_token
+        payload_jwt = decode_token(token)
+        username = payload_jwt.get("sub") if payload_jwt else None
+        if not username:
+            raise HTTPException(status_code=401, detail="无效的令牌")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"view-end token decode failed: {e}")
+        raise HTTPException(status_code=401, detail="令牌解析失败")
+
+    duration = int(payload.duration_seconds or 0)
+    ok = await OperationLogService.update_view_duration(
+        db=db,
+        task_id=task_id,
+        username=username,
+        duration_seconds=duration,
+    )
+    return {"ok": ok, "duration_seconds": duration}
 
 
 @router.post("/comments/attachments")
@@ -1147,6 +1196,11 @@ async def upload_comment_attachment(
 
         return {"message": "上传附件成功"}
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(
+            f"[attach-upload] 上传附件失败 temp_id={temp_id} filename={getattr(file, 'filename', '?')} bucket={settings.COMMENT_BUCKET}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail=f"上传附件失败: {str(e)}")
 
 
@@ -1311,6 +1365,30 @@ async def internal_broadcast_comment(
     if not comment or comment.task_id != task_id:
         raise HTTPException(status_code=404, detail="评论不存在")
     await ws_broadcast_comment("comment.created", task_id, comment)
+    return {"code": 0, "message": "broadcasted"}
+
+
+@router.post("/{task_id}/internal/broadcast-ai-progress")
+async def internal_broadcast_ai_progress(
+    task_id: int,
+    body: dict = Body(...),
+    _: str = Depends(verify_sync_api_key),
+):
+    """AI 服务跨进程回调：把 AI 执行过程（ai.progress）广播进该工单 WS 房间。
+
+    AI 服务在 Supervisor 派发能力期间逐项推送进度（Claude Code 式动态执行过程），
+    由后端转广播给在线客户端实时展示；最终 reply 只写纯答复（不含过程块）。
+    鉴权走 X-API-Key，与广播评论一致。best-effort，失败不阻塞 AI 主流程。
+    """
+    run_id = body.get("run_id")
+    phase = body.get("phase", "running")
+    todos = body.get("todos") or []
+    await manager.broadcast(task_id, {
+        "type": "ai.progress",
+        "run_id": run_id,
+        "phase": phase,
+        "todos": todos,
+    })
     return {"code": 0, "message": "broadcasted"}
 
 

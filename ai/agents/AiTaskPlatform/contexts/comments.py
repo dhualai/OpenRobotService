@@ -148,3 +148,60 @@ def notify_backend_comment_broadcast(task_id: int, comment_id: int) -> None:
             threading.Thread(target=lambda: asyncio.run(_run()), daemon=True).start()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"AI 评论广播回调失败 task_id={task_id} comment_id={comment_id}: {e}")
+
+
+def notify_backend_ai_progress(task_id, run_id, todos, phase: str = "running") -> None:
+    """跨进程把 AI 执行过程广播进该工单 WS 房间（ai.progress 事件，best-effort）。
+
+    用途：像 Claude Code 一样在前端动态展示"正在做哪一步/已完成哪步"，最终回复不含过程块。
+    """
+    import asyncio
+    import httpx
+    from ai.config import get_ai_config
+
+    try:
+        cfg = get_ai_config()
+        if not cfg.backend_base_url or not cfg.internal_api_key:
+            return
+        url = f"{cfg.backend_base_url.rstrip('/')}/api/tasks/{task_id}/internal/broadcast-ai-progress"
+        headers = {"X-API-Key": cfg.internal_api_key}
+        payload = {"run_id": run_id, "phase": phase, "todos": todos or []}
+
+        async def _post() -> None:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.post(url, json=payload, headers=headers)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            loop.run_in_executor(None, lambda: asyncio.run(_post()))
+        else:
+            import threading
+            threading.Thread(target=lambda: asyncio.run(_post()), daemon=True).start()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"AI 进度广播回调失败 task_id={task_id}: {e}")
+
+
+async def notify_backend_ai_progress_await(task_id, run_id, todos, phase: str) -> None:
+    """跨进程广播 AI 进度（await 版本）：确保 done 信号一定送达后端。
+
+    供收尾阶段使用（如讨论完成时发 phase=done 让前端收起执行过程），
+    避免 best-effort 线程模式偶发未送达导致前端"一直转不停"。
+    """
+    import httpx
+    from ai.config import get_ai_config
+
+    try:
+        cfg = get_ai_config()
+        if not cfg.backend_base_url or not cfg.internal_api_key:
+            return
+        url = f"{cfg.backend_base_url.rstrip('/')}/api/tasks/{task_id}/internal/broadcast-ai-progress"
+        headers = {"X-API-Key": cfg.internal_api_key}
+        payload = {"run_id": run_id, "phase": phase, "todos": todos or []}
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post(url, json=payload, headers=headers)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"AI 进度收尾广播失败 task_id={task_id}: {e}")

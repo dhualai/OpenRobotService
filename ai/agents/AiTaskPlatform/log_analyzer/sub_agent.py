@@ -206,22 +206,55 @@ class LogSubAgent:
         self._facts: Dict = {}
         self._llm = None
 
-    async def _ensure_clients(self):
+    async def _ensure_clients(self, progress=None):
         if self._llm is None:
             self._llm = await get_llm_client()
         if self._index is None:
-            self._index = LogIndex(self.log_path).build()
-            self._facts = self._index.discover_facts(top_n=8)
+            try:
+                if progress is not None:
+                    progress({
+                        "id": "log_index",
+                        "description": "正在建立日志索引（大日志需数十秒）",
+                        "status": "in_progress",
+                        "capability": "log_analyze",
+                        "phase": "running",
+                    })
+                self._index = LogIndex(self.log_path).build()
+                self._facts = self._index.discover_facts(top_n=8)
+            finally:
+                try:
+                    if progress is not None:
+                        progress({
+                            "id": "log_index",
+                            "description": "日志索引建立完成",
+                            "status": "completed",
+                            "capability": "log_analyze",
+                            "phase": "done",
+                        })
+                except Exception:
+                    pass
 
     async def analyze(
         self,
         task_context: Dict,
         user_question: str = "",
+        progress=None,
     ) -> LogAnalysisResult:
-        """主入口：多轮推理 → 返回分析结论。"""
+        """主入口：多轮推理 → 返回分析结论。
+
+        progress: 可选进度回调（ai.progress）——上报建索引 / R1..Rn 等子节点，
+        让前端在日志分析期间展示内部子步骤，避免"卡在一个节点上很久"。
+        """
+        def _p(payload: dict) -> None:
+            try:
+                if progress is not None:
+                    progress(payload)
+            except Exception:
+                pass
+
         t0 = _time.perf_counter()
         logger.info(f"LogSubAgent start: path={Path(self.log_path).name}, question={user_question[:60]}")
-        await self._ensure_clients()
+        await self._ensure_clients(progress=_p)
         result = LogAnalysisResult()
 
         log_date = self._facts.get("date", "unknown")
@@ -239,6 +272,13 @@ class LogSubAgent:
         query_history: List[Dict] = []
 
         for round_num in range(1, self.MAX_ROUNDS + 1):
+            _p({
+                "id": f"log_r{round_num}",
+                "description": f"日志分析第 {round_num} 轮：推理下一步查询",
+                "status": "in_progress",
+                "capability": "log_analyze",
+                "phase": "running",
+            })
             response = await self._llm.chat(
                 messages=messages, max_tokens=300, temperature=0.0,
             )
@@ -295,6 +335,15 @@ class LogSubAgent:
 
                 _collect_evidence(result, query_result, round_num)
 
+                _p({
+                    "id": f"log_r{round_num}",
+                    "description": f"日志查询 R{round_num}：命中 {matched} 行（{cmd.get('analysis','')[:40]}）",
+                    "status": "completed",
+                    "capability": "log_analyze",
+                    "phase": "done",
+                    "result_summary": f"R{round_num}: {matched} lines",
+                })
+
                 feedback = f"查询第{round_num}轮结果(命中{matched}行):\n{query_result[:_MAX_FEEDBACK_CHARS]}"
                 if _feedback_is_too_broad(matched):
                     feedback += (f"\n\n⚠ 本轮命中 {matched} 行过多，说明过滤条件太宽。"
@@ -315,6 +364,14 @@ class LogSubAgent:
                     result.conclusion = cmd.get("reason", "无结论")
                     result.fallback_used = True
                     logger.info(f"LogSubAgent fallback at R{round_num}: {result.conclusion[:80]}")
+                _p({
+                    "id": f"log_r{round_num}",
+                    "description": "日志分析得出结论",
+                    "status": "completed",
+                    "capability": "log_analyze",
+                    "phase": "done",
+                    "result_summary": (result.conclusion or "")[:80],
+                })
                 break
 
         # 兜底：没拿到结论 → 用最保守的错误样本

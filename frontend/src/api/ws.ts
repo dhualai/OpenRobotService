@@ -32,8 +32,18 @@ export type WsEvent =
   | { type: 'typing'; username: string; value: boolean }
   | { type: 'read_receipt'; username: string; last_read_comment_id: number }
   | { type: 'task.updated'; task_id: number; status?: string; assigned_to?: string | null; assigned_to_name?: string | null; updated_at?: string | null }
+  | { type: 'ai.progress'; run_id?: string; phase: 'running' | 'done'; todos: AiProgressTodo[] }
   | { type: 'pong' }
   | { type: 'error'; code?: number; message?: string };
+
+/** AI 执行过程单项（Supervisor 派发能力时逐项推送，Claude Code 式动态展示） */
+export interface AiProgressTodo {
+  id?: number;
+  capability?: string;
+  description?: string;
+  status?: 'pending' | 'in_progress' | 'completed' | string;
+  phase?: 'running' | 'done' | string;
+}
 
 export interface CommentPayload {
   id: number;

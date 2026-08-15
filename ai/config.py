@@ -285,8 +285,8 @@ def get_ai_config() -> AIConfig:
         dispatch_api_url=os.getenv("DISPATCH_API_URL", ""),
         upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),
         # 后端内部 API（派单后回调通知等）
-        backend_base_url=os.getenv("BACKEND_BASE_URL", "http://localhost:8000"),
-        internal_api_key=os.getenv("INTERNAL_API_KEY", ""),
+        backend_base_url=os.getenv("BACKEND_BASE_URL", "http://localhost:8400"),
+        internal_api_key=os.getenv("INTERNAL_API_KEY", "zentao"),
         # 文档路径
         docs_path=os.getenv("DOCS_PATH", ""),
         log_manuals=_parse_log_manuals(os.getenv("LOG_MANUALS", "")),

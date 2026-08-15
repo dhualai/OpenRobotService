@@ -258,7 +258,7 @@ export default function UserProfile() {
       return;
     }
 
-    // USP 密码校验：已设置密码时选填（留空则保留原密码），未设置时必填
+    // USP 密码校验：任何时候都可选（留空则保留原密码或不变）
     const hasNewPassword = !!uspPasswordDraft;
     if (hasNewPassword) {
       // 填了新密码 → 强度校验 + 一致性校验
@@ -278,10 +278,6 @@ export default function UserProfile() {
         Toast({ message: '两次输入的密码不一致', theme: 'error' });
         return;
       }
-    } else if (!hasUspPassword) {
-      // 未设置过密码且未填 → 必填
-      Toast({ message: '请输入 USP 密码', theme: 'error' });
-      return;
     }
 
     // 仅发送有变更的字段
@@ -517,21 +513,21 @@ export default function UserProfile() {
           />
         </Field>
 
-        <Field label="USP 密码" hint="至少8位，含字母、数字、特殊字符" required={!hasUspPassword}>
+        <Field label="USP 密码" hint="至少8位，含字母、数字、特殊字符；留空则不修改">
           <ClearableInput
             value={uspPasswordDraft}
             onChange={(v) => setUspPasswordDraft(String(v))}
-            placeholder={hasUspPassword ? '留空则不修改' : '请输入 USP 密码'}
+            placeholder="留空则不修改"
             type="password"
             passwordToggle
           />
         </Field>
 
-        <Field label="确认密码" required={!hasUspPassword}>
+        <Field label="确认密码">
           <ClearableInput
             value={uspPasswordConfirmDraft}
             onChange={(v) => setUspPasswordConfirmDraft(String(v))}
-            placeholder={hasUspPassword ? '留空则不修改' : '请再次输入新密码'}
+            placeholder="留空则不修改"
             type="password"
             passwordToggle
           />

@@ -4872,3 +4872,265 @@ html, body, #root {
   from { opacity: 0; transform: scale(0.5); }
   to { opacity: 1; transform: scale(1); }
 }
+
+/* =====================================================================
+ * [合并移植] develop 分支的 oklch 设计 token 与配套样式
+ * 来源：origin/develop 的 global.css（供 CallView / HistoryTickets /
+ * DiscussionPanel / TicketDetailPage 等页面使用；本文件的 --mac-* hex
+ * 体系与 TDesign 映射保持不变，两者并存互不覆盖）
+ * ===================================================================== */
+
+:root {
+  /* ── 基础几何 ── */
+  --radius: 1rem;
+  --radius-sm: calc(var(--radius) - 6px);
+  --radius-md: calc(var(--radius) - 3px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 6px);
+  --radius-2xl: calc(var(--radius) + 12px);
+  --radius-3xl: calc(var(--radius) + 20px);
+
+  /* ── 字体：圆润优先 ── */
+  --font-rounded: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display',
+    'PingFang SC', 'HarmonyOS Sans SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
+
+  /* ── 语义色（oklch） ── */
+  --background: oklch(0.985 0.001 200);
+  --foreground: oklch(0.32 0.006 220);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.32 0.006 220);
+
+  /* 蒂芙尼蓝主色 */
+  --primary: oklch(0.72 0.105 230);
+  --primary-foreground: oklch(0.99 0.003 200);
+  --primary-soft: oklch(0.965 0.022 228);
+
+  --secondary: oklch(0.965 0.003 210);
+  --secondary-foreground: oklch(0.38 0.008 220);
+
+  --muted: oklch(0.968 0.002 210);
+  --muted-foreground: oklch(0.64 0.006 220);
+
+  --accent: oklch(0.95 0.028 228);
+  --accent-foreground: oklch(0.38 0.05 195);
+
+  --destructive: oklch(0.55 0.02 220);
+  --destructive-foreground: oklch(0.99 0.003 200);
+
+  --border: oklch(0.935 0.002 210);
+  --input: oklch(0.95 0.002 210);
+  --ring: oklch(0.76 0.07 230);
+
+  /* ── 马卡龙语义色 ── */
+  --mint: oklch(0.72 0.105 230);
+  --mint-soft: oklch(0.965 0.022 228);
+  --sky: oklch(0.60 0.085 232);
+  --sky-soft: oklch(0.96 0.018 230);
+  --rose: oklch(0.45 0.012 215);
+  --rose-soft: oklch(0.93 0.004 215);
+  --butter: oklch(0.83 0.06 185);
+  --butter-soft: oklch(0.965 0.022 185);
+  --lilac: oklch(0.56 0.055 198);
+  --lilac-soft: oklch(0.94 0.018 198);
+  --apricot: oklch(0.62 0.02 215);
+  --apricot-soft: oklch(0.955 0.005 215);
+
+  /* ── 中性灰阶（仅明度变化） ── */
+  --gray: oklch(0.60 0 220);
+  --gray-soft: oklch(0.93 0 220);
+  --gray-light: oklch(0.78 0 220);
+  --gray-dark: oklch(0.38 0 220);
+  --gray-40: oklch(0.40 0 220);
+  --gray-25: oklch(0.25 0 220);
+
+  /* ── 蓝色阶（状态/优先级，深 → 浅） ── */
+  --blue-1: oklch(0.52 0.095 234);
+  --blue-2: oklch(0.64 0.11 232);
+  --blue-3: oklch(0.76 0.12 230);
+  --blue-4: oklch(0.87 0.09 228);
+  --blue-5: oklch(0.94 0.06 226);
+  --blue-soft: oklch(0.965 0.03 226);
+
+  /* ── 阴影 / 渐变 ── */
+  --shadow-soft: 0 1px 2px oklch(0.5 0.01 220 / 0.04), 0 8px 24px oklch(0.5 0.01 220 / 0.06);
+  --shadow-float: 0 2px 6px oklch(0.5 0.01 220 / 0.06), 0 16px 40px oklch(0.5 0.01 220 / 0.1);
+  --gradient-surface: linear-gradient(
+    170deg,
+    oklch(0.986 0.008 189) 0%,
+    oklch(0.981 0.002 210) 55%,
+    oklch(0.978 0.004 200) 100%
+  );
+  --gradient-primary: linear-gradient(135deg, var(--mint) 0%, var(--sky) 100%);
+}
+
+/* 毛玻璃表面卡片：80% 白 + 柔和阴影 + 半透明描边 */
+.surface-card {
+  background: color-mix(in oklab, var(--card) 80%, transparent);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-soft);
+  border: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+}
+/* 玻璃栏：顶栏 / 底栏毛玻璃 */
+.glass-bar {
+  background: color-mix(in oklab, var(--card) 78%, transparent);
+  backdrop-filter: saturate(1.4) blur(18px);
+  -webkit-backdrop-filter: saturate(1.4) blur(18px);
+}
+/* 品牌渐变文字 */
+.text-gradient-tech {
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* 设计稿 PageShell：内容区桌面端 max-w-3xl(768px) 居中（移动端全宽） */
+@media (min-width: 768px) {
+  .tabbar-shell__content .chat-view__messages > *,
+  .tabbar-shell__content .chat-view__empty,
+  .tabbar-shell__content .chat-input-bar,
+  .tabbar-shell__content .suggested-questions,
+  .tabbar-shell__content .tasks-view__filters,
+  .tabbar-shell__content .tasks-cards,
+  .tabbar-shell__content .history-tickets__viewport,
+  .tabbar-shell__content .history-tickets__head {
+    max-width: 768px;
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .tabbar-shell__content .chat-input-bar,
+  .tabbar-shell__content .suggested-questions {
+    width: calc(100% - 24px);
+  }
+}
+
+/* 工单卡人员流转区（HistoryTickets / TicketDetailPage 使用；oklch token 版） */
+.task-card2__person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.task-card2__person--creator {
+  flex: 0 1 auto;
+  padding-right: 30px;
+}
+.task-card2__person--assignee {
+  margin-left: auto;
+  flex: 0 1 auto;
+  padding-left: 30px;
+}
+.task-card2__avatar {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--card);
+  background: var(--gray-40);
+}
+.task-card2__avatar--assignee {
+  background: var(--gray-25);
+}
+.task-card2__person-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.2;
+}
+.task-card2__person-label {
+  font-size: 10px;
+  color: var(--gray);
+  margin-bottom: 1px;
+}
+.task-card2__person-name {
+  font-size: 12px;
+  color: var(--gray-dark);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.task-card2__person-arrow {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--gray-light);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 讨论区 AI 执行过程（DiscussionPanel 使用） */
+.detail-chat-ai-progress {
+  margin: 6px 0;
+  padding: 8px 12px;
+  background: var(--blue-soft);
+  border: 1px solid var(--blue-5);
+  border-radius: 12px;
+}
+.detail-chat-ai-progress__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary);
+  margin-bottom: 6px;
+}
+.detail-chat-ai-progress__spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--primary);
+  border-top-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  animation: chatTyping 0.8s linear infinite;
+}
+.detail-chat-ai-progress__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.detail-chat-ai-progress__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 13px;
+  color: var(--muted-foreground);
+  line-height: 1.4;
+}
+.detail-chat-ai-progress__icon {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.detail-chat-ai-progress__text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+.detail-chat-ai-progress__item.is-running .detail-chat-ai-progress__text {
+  color: var(--primary);
+}
+.detail-chat-ai-progress__item.is-done .detail-chat-ai-progress__text {
+  color: var(--foreground);
+}
+
+/* 历史工单 Tab 计数与搜索图标（HistoryTickets 使用） */
+.history-tab__label { line-height: 1.2; }
+.history-tab__count {
+  min-width: 16px; padding: 0 5px; height: 16px; line-height: 16px; text-align: center;
+  box-shadow: var(--shadow-soft);
+}
+.history-search__icon { flex-shrink: 0; color: var(--muted-foreground); }
