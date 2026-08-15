@@ -734,6 +734,17 @@ html, body, #root {
   border: none;
   background: var(--card);
 }
+/* 视频内联播放（#389：弹窗内 <video> 带原生控件 + 自身关闭按钮，替代浏览器原生播放页） */
+.attachment-viewer__panel--video {
+  max-width: 820px;
+}
+.attachment-viewer__video {
+  width: 100%;
+  max-height: 72vh;
+  display: block;
+  background: #000;
+  outline: none;
+}
 .attachment-viewer__md {
   flex: 1;
   min-height: 0;
@@ -4978,6 +4989,16 @@ html, body, #root {
   font-size: 12px;
   color: var(--muted-foreground);
 }
+/* @mention 空态（#410：未输入关键字 / 无匹配） */
+.detail-chat-mention-panel--empty {
+  padding: 8px 4px;
+}
+.detail-chat-mention-empty {
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  padding: 6px 0;
+}
 
 /* ===== AI 执行过程（Claude Code 式动态展示） ===== */
 .detail-chat-ai-progress {
@@ -5347,9 +5368,7 @@ html, body, #root {
 }
 .history-search::placeholder { color: var(--gray-light); }
 .history-search:focus { border-color: var(--gray-light); }
-/* padding-top/padding-right 为悬浮角标（-6px 外凸）留出空间：
-   overflow-x:auto 会使另一轴计算为 auto（裁剪），无留白时角标顶部/右缘会被裁掉 */
-.history-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 7px 6px 4px 0; -webkit-overflow-scrolling: touch; }
+.history-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0; -webkit-overflow-scrolling: touch; }
 .history-tabs::-webkit-scrollbar { display: none; }
 /* 状态 Tab（设计稿：relative 胶囊，选中黑底白字 bg-foreground text-background） */
 .history-tab {
@@ -5361,21 +5380,20 @@ html, body, #root {
 }
 .history-tab.is-active { background: var(--foreground); color: var(--background); border-color: transparent; font-weight: 500; }
 .history-tab__label { line-height: 1.2; }
-/* 数量角标（设计稿：绝对定位 -right-1.5 -top-1.5，灰色底白字 10px bold） */
+/* 数量角标：内联显示（避免外凸被 overflow-x:auto 容器裁剪），灰色底白字 10px bold */
 .history-tab__count {
-  position: absolute;
-  right: -6px;
-  top: -6px;
-  min-width: 17px;
-  padding: 1px 4px;
+  min-width: 16px;
+  padding: 0 5px;
+  height: 16px;
+  line-height: 16px;
   font-size: 10px;
   font-weight: 700;
-  line-height: 15px;
   text-align: center;
   border-radius: 999px;
   background: var(--muted-foreground);
   color: #fff;
   box-sizing: border-box;
+  box-shadow: var(--shadow-soft);
 }
 .history-tab.is-active .history-tab__count { background: var(--muted-foreground); color: #fff; }
 
@@ -5889,9 +5907,5 @@ html, body, #root {
 
 /* 历史工单 Tab 计数与搜索图标（HistoryTickets 使用） */
 .history-tab__label { line-height: 1.2; }
-.history-tab__count {
-  min-width: 16px; padding: 0 5px; height: 16px; line-height: 16px; text-align: center;
-  box-shadow: var(--shadow-soft);
-}
 .history-search__icon { flex-shrink: 0; color: var(--muted-foreground); }
 

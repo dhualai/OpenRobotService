@@ -542,8 +542,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const MAX_FILE_SIZE = 100 * 1024 * 1024;
   const [showUploadMenu, setShowUploadMenu] = useState(false);
   // 待发送附件：选中文件先挂起（不立即发送），用户可继续打字，发送时随 message 一起上传
-  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
-  const [pendingImageUrls, setPendingImageUrls] = useState<string[]>([]);
+  // 待发送附件：file 与预览 url 绑定为同一对象，彻底消除「双 state + index 对齐」导致的
+  // 预览图与实际 File 错位问题（#384：粘贴图片预览正确但发送成另一张）。
+  const [pendingItems, setPendingItems] = useState<Array<{ file: File; url?: string }>>([]);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   // 语音 tap/hold 双模式 + 真实音量可视化
   const voiceInteractionModeRef = useRef<'tap' | 'hold' | null>(null);
@@ -853,7 +854,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   /** 带附件发送：文件(可附文字)一起上传 /qa/upload（SSE 流式），逐步推送 VLM 分析 + 诊断。
    * 方案一（乐观渲染）：点发送即插入用户气泡（附件+文字，内嵌上传进度遮罩）+ AI 分析占位气泡，
    * 上传进度实时更新到用户气泡，完成后遮罩消失、AI 回复填入占位气泡。文件名不拼进文字上下文。 */
-  const sendWithFile = async (files: File[], content: string) => {
+  const sendWithFile = async (items: Array<{ file: File; url?: string }>, content: string) => {
+    const files = items.map((it) => it.file);
     // 每个文件独立气泡（像原来单文件一样各自显示图片缩略图/文件卡片）
     const firstImage = files.find((f) => f.type.startsWith('image/'));
     const assistantId = uid();
@@ -874,7 +876,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         role: 'user',
         content: '',
         timestamp: now,
-        imageUrl: isImage ? URL.createObjectURL(f) : undefined,
+        // 复用已创建的预览 objectURL（避免重复创建；后续上传完成回填真实URL）
+        imageUrl: isImage ? (items[i].url || URL.createObjectURL(f)) : undefined,
         attachment: isImage ? null : { name: f.name, size: f.size },
         uploading: true,
         percent: 0,
@@ -1040,7 +1043,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
   const send = async (text: string) => {
     const content = text.trim();
-    const files = pendingFiles;
+    const files = pendingItems.map((it) => it.file);
     if (!content && files.length === 0) return;
     if (!token) { kickToLogin('请先登录'); return; }
     if (sendingRef.current) return; // 防双发
@@ -1053,7 +1056,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // 带附件：走 /qa/upload（SSE 流式），由 sendWithFile 流式渲染 VLM 分析 + 诊断
     if (files.length > 0) {
       try {
-        await sendWithFile(files, content);
+        await sendWithFile(pendingItems, content);
       } finally {
         sendingRef.current = false;
       }
@@ -1511,16 +1514,16 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
   /** 清空待发送附件（释放图片预览 objectURL） */
   const clearPendingFiles = () => {
-    pendingImageUrls.forEach((u) => URL.revokeObjectURL(u));
-    setPendingFiles([]);
-    setPendingImageUrls([]);
+    setPendingItems((prev) => {
+      prev.forEach((p) => { if (p.url) URL.revokeObjectURL(p.url); });
+      return [];
+    });
   };
   /** 移除单个待发送附件 */
   const removePendingFile = (idx: number) => {
-    setPendingFiles((prev) => prev.filter((_, i) => i !== idx));
-    setPendingImageUrls((prev) => {
-      const url = prev[idx];
-      if (url) URL.revokeObjectURL(url);
+    setPendingItems((prev) => {
+      const item = prev[idx];
+      if (item?.url) URL.revokeObjectURL(item.url);
       return prev.filter((_, i) => i !== idx);
     });
   };
@@ -1531,9 +1534,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const fileArr = Array.from(e.target.files || []);
     e.target.value = '';
     if (fileArr.length === 0) return;
-    // 逐个校验大小 + 图片压缩，收集通过的新文件
-    const accepted: File[] = [];
-    const newImageUrls: string[] = [];
+    // 逐个校验大小 + 图片压缩，收集通过的新文件（file 与预览 url 绑定为单一对象）
+    const accepted: Array<{ file: File; url?: string }> = [];
     for (const file of fileArr) {
       if (file.size > MAX_FILE_SIZE) {
         Toast({ message: '文件大小超过100M，请重新上传', theme: 'error' });
@@ -1549,15 +1551,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           Toast({ message: `「${file.name}」已压缩 ${beforeMb}MB→${afterMb}MB`, theme: 'success' });
         }
       }
-      accepted.push(finalFile);
-      if (finalFile.type.startsWith('image/')) {
-        newImageUrls.push(URL.createObjectURL(finalFile));
-      }
+      accepted.push({
+        file: finalFile,
+        url: finalFile.type.startsWith('image/') ? URL.createObjectURL(finalFile) : undefined,
+      });
     }
     if (accepted.length === 0) return;
     // 追加到已有待发送列表（支持多次选择累积）
-    setPendingFiles((prev) => [...prev, ...accepted]);
-    setPendingImageUrls((prev) => [...prev, ...newImageUrls]);
+    setPendingItems((prev) => [...prev, ...accepted]);
   };
 
   /** PC 端粘贴图片：从剪贴板取 image/* 文件，走与「选择文件」一致的待发送附件流程（预览后可随消息上传） */
@@ -1574,11 +1575,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         Toast({ message: '文件大小超过100M，请重新上传', theme: 'error' });
         return;
       }
-      // 粘贴图同样压缩
+      // 粘贴图同样压缩；file 与预览 url 绑定为单一对象，避免错位
       const r = await compressImage(file);
       const finalFile = r.file;
-      setPendingFiles((prev) => [...prev, finalFile]);
-      setPendingImageUrls((prev) => [...prev, URL.createObjectURL(finalFile)]);
+      setPendingItems((prev) => [...prev, { file: finalFile, url: URL.createObjectURL(finalFile) }]);
       Toast({ message: '已粘贴图片，可直接发送', theme: 'success' });
       return; // 只处理第一张图片
     }
@@ -2071,21 +2071,21 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input); }
         }}
       >
-        {pendingFiles.length > 0 && (
+        {pendingItems.length > 0 && (
           <div className="chat-pending-files">
-            {pendingFiles.map((f, i) => (
-              <div className="chat-pending-file" key={`${f.name}-${i}`}>
-                {pendingImageUrls[i] ? (
-                  <img src={pendingImageUrls[i]} alt="附件预览" className="chat-pending-file__thumb" />
+            {pendingItems.map((p, i) => (
+              <div className="chat-pending-file" key={`${p.file.name}-${i}`}>
+                {p.url ? (
+                  <img src={p.url} alt="附件预览" className="chat-pending-file__thumb" />
                 ) : (
                   <Paperclip className="chat-pending-file__icon" size={20} strokeWidth={1.8} />
                 )}
-                <span className="chat-pending-file__name">{f.name}</span>
+                <span className="chat-pending-file__name">{p.file.name}</span>
                 <button type="button" className="chat-pending-file__remove" onClick={() => removePendingFile(i)} aria-label="移除附件">✕</button>
               </div>
             ))}
-            {pendingFiles.length > 3 && (
-              <div className="chat-pending-files__count">共 {pendingFiles.length} 个附件</div>
+            {pendingItems.length > 3 && (
+              <div className="chat-pending-files__count">共 {pendingItems.length} 个附件</div>
             )}
           </div>
         )}
@@ -2150,7 +2150,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 </button>
               )}
             </div>
-            <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={(!input.trim() && pendingFiles.length === 0) || loading} aria-label="发送">
+            <button type="button" className="chat-send-btn" onClick={() => send(input)} disabled={(!input.trim() && pendingItems.length === 0) || loading} aria-label="发送">
               {loading ? (
                 <span className="chat-send-btn__spinner" />
               ) : (
@@ -2196,7 +2196,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 autoFocus
               />
               <div className="chat-input-bar__fullscreen-footer">
-                <button type="button" className="chat-send-btn" onClick={() => { send(input); setTextareaFullscreen(false); }} disabled={(!input.trim() && pendingFiles.length === 0) || loading} aria-label="发送">
+                <button type="button" className="chat-send-btn" onClick={() => { send(input); setTextareaFullscreen(false); }} disabled={(!input.trim() && pendingItems.length === 0) || loading} aria-label="发送">
                   {loading ? (
                     <span className="chat-send-btn__spinner" />
                   ) : (

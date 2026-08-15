@@ -88,13 +88,13 @@ export function buildWechatAuthUrl(state: string): string {
 /**
  * 把后端时间字符串解析为本地时区 Date。
  *
- * 后端绝大多数表（tasks/task_comments/messages/...）的 `DateTime` 列没有 `timezone=True`，
- * MySQL 也不存时区；`server_default=func.now()` 在 UTC 时区下生成的是 UTC 时间，
- * 经 FastAPI/pydantic 序列化后输出无时区 ISO 字符串（如 "2026-08-15T07:55:55"）。
- * 浏览器对无时区字符串按本地时区解析，在北京时区会少 8 小时。
+ * 后端在数据库引擎层已强制每个连接的会话时区为 UTC（见 backend/app/core/db.py 的
+ * `_ensure_utc_session`），因此 ``func.now()`` 一律返回 UTC 时间，本地/生产一致。
  *
- * 本函数：对「含时分但无时区后缀」的 ISO 字符串补 'Z' 标记为 UTC，再交给浏览器按本地时区
- * 自动 +8 转换；已带时区（Z 或 ±HH:MM）的字符串原样解析。这样前端所有时间都按本地时区渲染，
+ * - 无时区 ISO 字符串（如 "2026-08-15T07:55:55"）：来自 naive DateTime 列，存储的是 UTC，
+ *   补 ``Z`` 标记为 UTC 后由浏览器按本地时区自动 +8 转换。
+ * - 已带时区（``Z`` / ``±HH:MM``）的字符串：原样解析（aware datetime 经 pydantic 序列化输出）。
+ *
  * 不写死 +8，跨时区浏览器同样正确。
  */
 export function parseUtcDate(dateString: string): Date | null {
