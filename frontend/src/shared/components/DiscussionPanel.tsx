@@ -328,11 +328,9 @@ export default function DiscussionPanel({
   };
 
   // ── @mention: 过滤项目成员 ──
-  // 关键修复（#410）：空关键字时不返回全量成员，否则 @ 一触发就弹出整列（含不相关人员），
-  // 误以为"匹配到这几个人"。改为必须输入至少一个字符才匹配，与主流 IM @ 行为一致。
   const filteredMentionUsers = useMemo(() => {
     if (!mentionUsers || mentionUsers.length === 0) return [];
-    if (!mentionFilter) return [];
+    if (!mentionFilter) return mentionUsers;
     const kw = mentionFilter.toLowerCase();
     return mentionUsers.filter(
       (u) =>
@@ -820,18 +818,6 @@ export default function DiscussionPanel({
                 <span className="detail-chat-mention-role">{u.role_name || ''}</span>
               </div>
             ))}
-          </div>
-        )}
-        {/* @mention 空态：已触发 @ 但未输入关键字时提示用户继续输入筛选（#410） */}
-        {showMentions && filteredMentionUsers.length === 0 && mentionFilter === '' && (
-          <div className="detail-chat-mention-panel detail-chat-mention-panel--empty">
-            <div className="detail-chat-mention-empty">输入姓名继续筛选成员…</div>
-          </div>
-        )}
-        {/* @mention 无匹配：已输入关键字但无匹配成员 */}
-        {showMentions && filteredMentionUsers.length === 0 && mentionFilter !== '' && (
-          <div className="detail-chat-mention-panel detail-chat-mention-panel--empty">
-            <div className="detail-chat-mention-empty">未找到匹配的成员</div>
           </div>
         )}
         {/* AI 执行过程（Claude Code 式动态展示）：Supervisor 派发能力时逐项实时滚动，
