@@ -3,7 +3,7 @@
 // 跨视图流转：消费 ticketDraft 自动建单；讨论按钮 → 带上下文跳回我要摇人。
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Navbar, Toast, Loading, Tag, Popup, Button, Textarea, Form, FormItem } from 'tdesign-mobile-react';
+import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -24,31 +24,32 @@ interface Ticket {
 
 const pageSize = 20;
 
-const STATUS_COLOR_MAP: Record<string, string> = {
-  new: '#0052d9',
-  in_progress: '#2ba471',
-  pending: '#e37318',
-  paused: '#e37318',
-  resolved: '#00a870',
-  closed: '#999999',
-  canceled: '#d54941',
-  cancelled: '#d54941',
+// 状态徽标：浅灰底 + 蓝阶文字（设计稿 statusStyles：新建 blue-3 / 处理中 blue-2 / 已解决 blue-1 / 关闭取消 muted）
+const STATUS_STYLE_MAP: Record<string, { color: string; bg: string }> = {
+  new: { color: 'var(--blue-3)', bg: 'var(--secondary)' },
+  in_progress: { color: 'var(--blue-2)', bg: 'var(--secondary)' },
+  pending: { color: 'var(--blue-2)', bg: 'var(--secondary)' },
+  paused: { color: 'var(--blue-2)', bg: 'var(--secondary)' },
+  resolved: { color: 'var(--blue-1)', bg: 'var(--secondary)' },
+  closed: { color: 'var(--muted-foreground)', bg: 'var(--secondary)' },
+  canceled: { color: 'var(--muted-foreground)', bg: 'var(--secondary)' },
+  cancelled: { color: 'var(--muted-foreground)', bg: 'var(--secondary)' },
 };
 
-const getStatusColor = (status: string): string => {
+const getStatusStyle = (status: string): { color: string; bg: string } => {
   const key = (status || '').toLowerCase();
-  return STATUS_COLOR_MAP[key] || '#666666';
+  return STATUS_STYLE_MAP[key] || { color: 'var(--muted-foreground)', bg: 'var(--secondary)' };
 };
 
-const priorityTheme = (p: string): 'success' | 'default' | 'warning' | 'danger' => {
-  switch (p) {
-    case 'low': return 'success';
-    case 'medium': return 'default';
-    case 'high': return 'warning';
-    case 'urgent': return 'danger';
-    default: return 'default';
-  }
+// 优先级徽标 class：蓝阶实底胶囊（设计稿 priorityClasses：紧急 blue-1 白字 / 高 blue-2 白字 / 中 blue-3 深字 / 低 blue-5 深字）
+const PRIORITY_CLASS_MAP: Record<string, string> = {
+  urgent: 'task-card2__priority--urgent',
+  high: 'task-card2__priority--high',
+  medium: 'task-card2__priority--medium',
+  low: 'task-card2__priority--low',
 };
+
+const priorityClass = (p: string): string => PRIORITY_CLASS_MAP[p] || 'task-card2__priority--medium';
 
 const PRIORITY_WEIGHT_MAP: Record<string, number> = {
   urgent: 4,
@@ -456,12 +457,18 @@ export default function TasksView() {
       <div className="tasks-list-section">
         <div className="tasks-view__filters">
           <div className="tasks-view__search-row">
-            <input
-              className="tasks-search"
-              placeholder="搜索工单…"
-              value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            />
+            <div className="tasks-search-wrap">
+              <svg className="tasks-search__icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8" />
+                <path d="m21 21-4.3-4.3" />
+              </svg>
+              <input
+                className="tasks-search"
+                placeholder="搜索工单…"
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              />
+            </div>
           </div>
 
           <div className="tasks-view__sort-row">
@@ -562,15 +569,12 @@ export default function TasksView() {
             <div key={t.id} className="task-card2" onClick={() => openDetail(t.id)}>
               <div className="task-card2__head">
                 <div className="task-card2__head-tags">
-                  <span
-                    className="task-card2__status-tag"
-                    style={{ background: getStatusColor(t.status), color: '#fff' }}
-                  >
+                  <span className="task-card2__status-tag" style={getStatusStyle(t.status)}>
                     {normalizeStatus(t.status)}
                   </span>
-                  <Tag theme={priorityTheme(t.priority)} className="task-card2__priority">
+                  <span className={`task-card2__priority ${priorityClass(t.priority)}`}>
                     {PRIORITY_DISPLAY_MAP[t.priority] || t.priority}
-                  </Tag>
+                  </span>
                 </div>
                 <span className="task-card2__type">{TICKET_TYPE_DISPLAY_MAP[t.ticket_type] || t.ticket_type || '其他'}</span>
               </div>
@@ -587,7 +591,7 @@ export default function TasksView() {
                     <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
                   </span>
                 </div>
-                <span className="task-card2__person-arrow">➡️</span>
+                <span className="task-card2__person-arrow"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14" /><path d="m12 5 7 7-7 7" /></svg></span>
                 <div className="task-card2__person task-card2__person--assignee" title={`处理人：${t.assigned_to_name || t.assigned_to || '-'}`}>
                   <span className="task-card2__avatar task-card2__avatar--assignee">{(t.assigned_to_name || t.assigned_to || '?').slice(0, 1).toUpperCase()}</span>
                   <span className="task-card2__person-text">
@@ -696,7 +700,7 @@ export default function TasksView() {
             {creatingTask ? (
               <span className="chat-ticket-spinner" />
             ) : (
-              <svg viewBox="0 0 24 24" width="18" height="24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path fill="currentColor" d="M16 1H8V5H16V1Z" />
                 <path fill="currentColor" d="M6 3H3V23H13.8762C13.0139 21.897 12.5 20.5085 12.5 19C12.5 15.4101 15.4101 12.5 19 12.5C19.6978 12.5 20.3699 12.61 21 12.8135V3H18V7H6V3Z" />
                 <path fill="currentColor" d="M24 20H20V24H18V20H14V18H18V14H20V18H24V20Z" />

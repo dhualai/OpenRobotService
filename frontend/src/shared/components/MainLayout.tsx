@@ -4,6 +4,7 @@
 import { Suspense, useEffect, useRef } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { TabBar, TabBarItem, Loading } from 'tdesign-mobile-react';
+import { Radio, LayoutGrid, Gauge } from 'lucide-react';
 import { useWorkbenchStore, type WorkbenchTab } from '@/stores/workbench';
 
 const TAB_PATHS: Record<WorkbenchTab, string> = {
@@ -53,15 +54,16 @@ export default function MainLayout() {
           <Outlet />
         </Suspense>
       </div>
-      {/* 底部三 Tab：emoji 图标 + 文字（非简约风，原设计） */}
+      {/* 底部三 Tab：lucide 线性图标（Radio/LayoutGrid/Gauge，与设计稿一致） + 文字，
+          玻璃栏 + 36×36 圆角方形胶囊激活态见 global.css */}
       <TabBar value={activeTab} onChange={handleChange} placeholder>
-        <TabBarItem value="call" icon={<span>🆘</span>}>
+        <TabBarItem value="call" icon={<Radio size={18} strokeWidth={2} />}>
           我要摇人
         </TabBarItem>
-        <TabBarItem value="tasks" icon={<span>📥</span>}>
+        <TabBarItem value="tasks" icon={<LayoutGrid size={18} strokeWidth={2} />}>
           系统任务
         </TabBarItem>
-        <TabBarItem value="admin" icon={<span>📊</span>}>
+        <TabBarItem value="admin" icon={<Gauge size={18} strokeWidth={2} />}>
           后台管理
         </TabBarItem>
       </TabBar>
