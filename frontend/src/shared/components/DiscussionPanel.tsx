@@ -13,6 +13,7 @@ import { useAuthStore } from '@/stores/auth';
 import API_CONFIG from '@/config/api';
 import { avatarUrl } from '@/api/profile';
 import { useTaskCommentsWS, type OnlineMember } from '@/shared/hooks/useTaskCommentsWS';
+import type { AiProgressTodo } from '@/api/ws';
 
 export interface DiscussionComment {
   id: string | number;
@@ -138,7 +139,22 @@ export default function DiscussionPanel({
   const { username, name, avatarResourceId } = useAuthStore();
   // 长按操作菜单的浮层由 TDesign Mobile <Popover> 承载（自带箭头/动画/外点关闭）；
   // 通过「透明、pointer-events:none 的代理锚点」定位到被长按气泡的 rect，避免覆盖气泡交互。
-  // ── WS 实时订阅：合并基线评论与增量事件，含在线/输入中/已读 ──
+  // ── AI 执行过程（Claude Code 式动态展示）──
+  // 后端在 Supervisor 派发能力时逐项推送 ai.progress(phase=running)，全部完成推 phase=done。
+  // 执行中在输入框上方渲染过程区；done 收尾后短暂保留再由 sending(false) 隐藏。
+  const [aiRunId, setAiRunId] = useState<string | undefined>();
+  const [aiTodos, setAiTodos] = useState<AiProgressTodo[]>([]);
+  const [aiPhase, setAiPhase] = useState<'running' | 'done'>('done');
+
+  const handleWsAiProgress = useCallback((ev: { run_id?: string; phase: 'running' | 'done'; todos: AiProgressTodo[] }) => {
+    if (ev.phase === 'running') {
+      setAiRunId((prev) => (prev === undefined ? ev.run_id : prev));
+    }
+    setAiPhase(ev.phase);
+    setAiTodos(ev.todos || []);
+  }, []);
+
+  // ── WS 实时订阅：合并基线评论与增量事件，含在线/输入中/已读 + AI 进度 ──
   const {
     displayComments,
     online,
@@ -147,7 +163,29 @@ export default function DiscussionPanel({
     sendTyping,
     sendRead,
     deletedIds,
-  } = useTaskCommentsWS(taskId, comments, { currentUser: username, onTaskUpdated });
+  } = useTaskCommentsWS(taskId, comments, { currentUser: username, onTaskUpdated, onAiProgress: handleWsAiProgress });
+
+  // 过程区可见性：AI 正在分析（sending）且至少跑过 running 或有进行中项；done 由 sending(false) 隐藏
+  const showAiProcess = (aiPhase === 'running' && aiTodos.length > 0) || (sending && aiRunId !== undefined);
+
+  // 新一轮 AI 讨论开始（sending false→true）：重置过程区
+  const prevSendingRef = useRef<boolean>(sending);
+  useEffect(() => {
+    if (sending && !prevSendingRef.current) {
+      setAiRunId(undefined);
+      setAiTodos([]);
+      setAiPhase('done');
+    }
+    prevSendingRef.current = sending;
+    // done 后 sending(false)，短暂保留过程区让用户看到结果，随后隐藏
+    if (!sending && aiPhase === 'done' && aiTodos.length > 0 && aiRunId !== undefined) {
+      const t = setTimeout(() => {
+        setAiRunId(undefined);
+        setAiTodos([]);
+      }, 400);
+      return () => clearTimeout(t);
+    }
+  }, [sending, aiPhase, aiTodos, aiRunId]);
 
   // username → 展示名 映射（用于在线头像 / 输入中提示）
   const nameMap = useMemo(() => {
@@ -778,6 +816,31 @@ export default function DiscussionPanel({
                 <span className="detail-chat-mention-role">{u.role_name || ''}</span>
               </div>
             ))}
+          </div>
+        )}
+        {/* AI 执行过程（Claude Code 式动态展示）：Supervisor 派发能力时逐项实时滚动，
+            最终回复只写纯答复（不含此过程） */}
+        {enableAI && showAiProcess && aiTodos.length > 0 && (
+          <div className="detail-chat-ai-progress">
+            <div className="detail-chat-ai-progress__head">
+              <span className="detail-chat-ai-progress__spinner" />
+              {aiPhase === 'running' ? 'AI 正在排查执行…' : '排查执行完成'}
+            </div>
+            <ul className="detail-chat-ai-progress__list">
+              {aiTodos.map((t, i) => {
+                const desc = t.description || t.capability || '分析';
+                const status = t.phase === 'done' || t.status === 'completed';
+                const running = t.phase === 'running' || t.status === 'in_progress';
+                return (
+                  <li key={`${t.id ?? i}-${i}`} className={`detail-chat-ai-progress__item ${running ? 'is-running' : ''} ${status ? 'is-done' : ''}`}>
+                    <span className="detail-chat-ai-progress__icon">
+                      {status ? '✅' : running ? '⏳' : '⬜'}
+                    </span>
+                    <span className="detail-chat-ai-progress__text">{desc}</span>
+                  </li>
+                );
+              })}
+            </ul>
           </div>
         )}
         {(enableAI || (enableAttach && pendingFiles.length > 0)) && (
