@@ -3987,9 +3987,10 @@ html, body, #root {
 .history-tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
 .history-tabs::-webkit-scrollbar { display: none; }
 .history-tab {
-  flex-shrink: 0; padding: 4px 10px; font-size: 13px; border-radius: 14px;
-  border: 1px solid var(--border); background: var(--card); color: var(--muted-foreground); cursor: pointer; white-space: nowrap;
+  flex-shrink: 0; padding: 6px 12px; font-size: 12px; font-weight: 500; border-radius: 999px;
+  border: 1px solid transparent; background: var(--card); color: var(--muted-foreground); cursor: pointer; white-space: nowrap;
   display: inline-flex; align-items: center; gap: 4px;
+  transition: all 0.2s ease;
 }
 .history-tab.is-active { background: var(--gray-25); color: var(--primary-foreground); border-color: transparent; font-weight: 500; }
 .history-tab__label { line-height: 1.2; }
@@ -3999,9 +4000,28 @@ html, body, #root {
 }
 .history-tab.is-active .history-tab__count { background: color-mix(in oklab, var(--card) 24%, transparent); color: var(--primary-foreground); }
 
-/* 搜索框清空按钮 */
-.history-search-wrap { position: relative; margin-bottom: 8px; }
-.history-search-wrap .history-search { margin-bottom: 0; padding-right: 32px; }
+/* 搜索框（设计稿：surface-card + Search 图标 + 清空按钮） */
+.history-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 0 14px;
+  background: color-mix(in oklab, var(--card) 92%, transparent);
+  border: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-soft);
+}
+.history-search__icon { flex-shrink: 0; color: var(--muted-foreground); }
+.history-search-wrap .history-search {
+  margin-bottom: 0;
+  padding: 10px 32px 10px 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+}
 .history-search__clear {
   position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
   background: var(--gray-light); color: var(--card); border: none; border-radius: 50%;
