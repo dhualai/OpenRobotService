@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any, Optional, Type, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ai.agents.AiTaskPlatform.capabilities.base import BaseCapability
+    from ai.agents.AiTaskPlatform.capabilities.core.base import BaseCapability
 
 
 class CapabilityRegistry:

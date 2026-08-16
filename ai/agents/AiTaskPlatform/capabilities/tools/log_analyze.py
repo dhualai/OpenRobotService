@@ -1,10 +1,11 @@
 """LogAnalyzeCapability — 日志分析能力（第一个真实能力，F1 落地）
 
-把现有 `LogSubAgent`/`LogOrchestrator` 的领域逻辑包装为一个 `BaseCapability` 子类，
+把现有 `LogSubAgent` 的领域逻辑包装为一个 `BaseCapability` 子类，
 让 Supervisor 可调度。产品无关：内部自动通过 `product_registry` 选产品手册（多产品）。
 
 对应设计（见 TASK_AGENT_TARGET_ARCH.md §6c）：
-  - F1 = A：`LogOrchestrator` 降为领域 worker → 本类就是它的"能力包装"
+  - F1 = A：日志多轮推理由本能力内部（LogSubAgent）承担；上层多轮编排由 Supervisor 负责
+    （v2 的 LogOrchestrator 已被 Supervisor 取代，见僵尸清理 2026-08-16）
   - 产品无关内核：本能力不写死某个产品，靠 `pick_manual_dir(log_path)` 选对应产品手册
   - 多产品：调度 UPS（当前大头） / 车端 / 服务号 / 未来其它 ORS 产品
 
@@ -25,14 +26,14 @@ from pathlib import Path
 from typing import Optional
 
 from ai.core.logging import get_logger
-from ai.agents.AiTaskPlatform.capabilities.base import BaseCapability, CapabilityResult
-from ai.agents.AiTaskPlatform.capabilities.supervisor import MAX_ROUNDS_PER_TASK
+from ai.agents.AiTaskPlatform.capabilities.core.base import BaseCapability, CapabilityResult
+from ai.agents.AiTaskPlatform.capabilities.core.supervisor import MAX_ROUNDS_PER_TASK
 
 logger = get_logger("TASK_AGENT")
 
 
 class LogAnalyzeCapability(BaseCapability):
-    """日志分析能力：内部调 LogSubAgent / LogOrchestrator 做领域内多轮推理。
+    """日志分析能力：内部调 LogSubAgent 做领域内多轮推理（v2 LogOrchestrator 已被 Supervisor 取代）。
 
     属性（BaseCapability 元数据）：
       - name: log_analyze
@@ -123,7 +124,7 @@ class LogAnalyzeCapability(BaseCapability):
             no_time_applied = True
             logger.info(f"[log_analyze] 无发生时间，全量分析（{size_mb:.0f}MB）；给时间可加速窗口截取")
 
-        # 懒加载 LogSubAgent（避免模块加载副作用；F1：LogOrchestrator 作为领域 worker 复用其核心）
+        # 懒加载 LogSubAgent（避免模块加载副作用；日志多轮推理由它承担）
         try:
             from ai.agents.AiTaskPlatform.log_analyzer.sub_agent import LogSubAgent
         except Exception as e:

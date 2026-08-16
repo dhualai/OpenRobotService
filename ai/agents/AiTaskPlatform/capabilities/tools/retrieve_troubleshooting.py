@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from ai.core.logging import get_logger
-from ai.agents.AiTaskPlatform.capabilities.base import BaseCapability, CapabilityResult
+from ai.agents.AiTaskPlatform.capabilities.core.base import BaseCapability, CapabilityResult
 
 logger = get_logger("TASK_AGENT")
 
