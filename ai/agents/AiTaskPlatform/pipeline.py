@@ -291,7 +291,8 @@ class AiTaskAgent(DiagnoseFlow, DiscussFlow, SummarizeFlow, SolutionFlow):
             pass
 
     async def _index_solution(
-        self, task_id: str, solution_text: str, draft: SolutionDraft
+        self, task_id: str, solution_text: str, draft: SolutionDraft,
+        structured: Optional[dict] = None,
     ) -> None:
         """向量化方案 → 写入 Qdrant task_resolutions collection"""
         try:
@@ -302,6 +303,9 @@ class AiTaskAgent(DiagnoseFlow, DiscussFlow, SummarizeFlow, SolutionFlow):
             robot_type = d.get("robot_type", "")
             problem_summary = d.get("problem_summary", "")
 
+            # P1 结构化根因（如提供，覆盖默认；否则用 safe 默认，兼容旧调用）
+            structured = structured or {}
+
             await self._retriever.index_task_resolution(
                 task_id=task_id,
                 title=title,
@@ -311,6 +315,11 @@ class AiTaskAgent(DiagnoseFlow, DiscussFlow, SummarizeFlow, SolutionFlow):
                 fault_code=fault_code,
                 robot_type=robot_type,
                 problem_summary=problem_summary,
+                root_cause_type=structured.get("root_cause_type", "unknown"),
+                error_codes=structured.get("error_codes", []),
+                severity=structured.get("severity", "unknown"),
+                is_common_bug=bool(structured.get("is_common_bug", False)),
+                verified=structured.get("verified", "unknown"),
             )
         except Exception as e:
             logger.warning(f"Solution index failed: {e}")

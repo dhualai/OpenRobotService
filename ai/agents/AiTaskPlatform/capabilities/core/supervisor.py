@@ -50,6 +50,7 @@ class SupervisorDecision:
     reasoning: str = ""
     plan: list[dict] = field(default_factory=list)  # [{capability, goal, parallel}]
     ask_user: bool = False
+    questions: list[str] = field(default_factory=list)  # ask_user=true 时，要问用户的具体澄清问题（闭环 P4）
 
     def is_simple(self) -> bool:
         return self.complexity == "simple"
@@ -116,11 +117,19 @@ def _parse_decision(raw: str) -> Optional[SupervisorDecision]:
                 if extra_key in p and p[extra_key] is not None:
                     item[extra_key] = p[extra_key]
             clean_plan.append(item)
+    # questions（ask_user=true 时问用户的澄清问题；兼容 string / list 两种形态）
+    q = data.get("questions") or []
+    if isinstance(q, str):
+        q = [s for s in (s_.strip() for s_ in q.split("\n")) if s]
+    if not isinstance(q, list):
+        q = []
+    questions = [str(x).strip() for x in q if str(x).strip()]
     return SupervisorDecision(
         complexity=str(data.get("complexity", "simple")),
         reasoning=str(data.get("reasoning", "")),
         plan=clean_plan,
         ask_user=bool(data.get("ask_user", False)),
+        questions=questions,
     )
 
 
@@ -188,6 +197,12 @@ def _decision_from_fields(text: str) -> Optional[SupervisorDecision]:
     else:
         data["plan"] = []
 
+    # questions（字段级兜底：尽力捞 JSON 数组里的字符串项）
+    questions = []
+    qm = _re.search(r'"questions"\s*:\s*\[[^\]]*\]', text, _re.DOTALL)
+    if qm:
+        questions = [s.strip(" \"'\n") for s in _re.findall(r'"([^"]+)"', qm.group(0)) if s.strip()]
+
     if not data.get("complexity") and not plan:
         return None
     return SupervisorDecision(
@@ -195,6 +210,7 @@ def _decision_from_fields(text: str) -> Optional[SupervisorDecision]:
         reasoning="",
         plan=data.get("plan", []),
         ask_user=bool(data.get("ask_user", False)),
+        questions=questions,
     )
 
 
@@ -232,13 +248,18 @@ class Supervisor:
             "## 输出（仅 JSON，无其他文字）\n"
             '{"complexity":"simple|medium|complex","reasoning":"...",'
             '"plan":[{"capability":"<能力名，必须来自可用能力清单>","goal":"...","parallel":bool,"window_minutes":<可选，仅log_analyze>}],'
-            '"ask_user":bool}\n'
+            '"ask_user":bool,"questions":["..."]}\n'
             "规则：\n"
             "- 任务简单（纯知识问答、无多领域线索）→ complexity=simple，plan 为空\n"
             "- 单一领域线索 → complexity=medium，plan 含 1 项\n"
             "- 多领域线索交叉 → complexity=complex，plan 含多项，parallel 合理设 true\n"
             "- capability 只能从可用能力清单里选，严禁凭空命名\n"
             "- 若派 log_analyze 且故障属缓慢累积/日志稀疏，可在 window_minutes 指定更长的前因窗口（默认15即可）\n"
+            "- **若关键信息缺失（如故障发生时间/是否可复现/变更了什么/报错现场）导致无法可靠排查，"
+            "且无能力/无充足依据可先派发硬性定位 → 设 ask_user=true，并在 questions 里列出"
+            "需要向用户确认的具体问题（每一项都应是可直接回答的高价值问题，不要笼统）**；\n"
+            "- ask_user=true 时仍可同时派 plan（先用已有依据尽量排查 + 顺带询问缺失项）；"
+            "仅当 plan 为空时才作为纯澄清请求返回。\n"
         )
 
     # ── 主入口 ──
@@ -299,6 +320,7 @@ class Supervisor:
                 "complexity": decision.complexity,
                 "plan": decision.plan,
                 "ask_user": decision.ask_user,
+                "questions": decision.questions,
                 "todo": todo.to_dict_list(),
                 "results": {},
                 "final_text": "",
@@ -314,6 +336,7 @@ class Supervisor:
             "complexity": decision.complexity,
             "plan": decision.plan,
             "ask_user": decision.ask_user,
+            "questions": decision.questions,
             "todo": todo.to_dict_list(),
             "results": results,
             "final_text": self._synthesize(results),
