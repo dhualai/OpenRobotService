@@ -37,6 +37,7 @@ from ai.agents.AiTaskPlatform.capabilities.code_search import CodeSearchCapabili
 from ai.agents.AiTaskPlatform.capabilities.image_analyze import ImageAnalyzeCapability
 from ai.agents.AiTaskPlatform.capabilities.retrieve_troubleshooting import RetrieveTroubleshootingCapability
 from ai.agents.AiTaskPlatform.capabilities.attachment_parse import AttachmentParseCapability
+from ai.agents.AiTaskPlatform.capabilities.ticket_ref import TicketRefCapability
 
 __all__ = [
     "BaseCapability",
@@ -55,4 +56,5 @@ __all__ = [
     "ImageAnalyzeCapability",
     "RetrieveTroubleshootingCapability",
     "AttachmentParseCapability",
+    "TicketRefCapability",
 ]

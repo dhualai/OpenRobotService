@@ -184,7 +184,21 @@ class DiscussFlow:
             "all_attachments": ctx.attachments or [],   # 全量（需要时扩展）
             "attachment_memory": known_map,   # 已解读附件的摘要（能力/LLM 参考，不必重读）
             "retriever": self._retriever,
+            # 当前工单上下文（供 ticket_ref 在"无 @#编号、需大脑按需检索相似工单"时作检索基准）
+            "current_task": {
+                "task_id": getattr(ctx, "task_id", "") or task_id,
+                "title": ctx.title or "",
+                "description": ctx.description or "",
+                "problem_summary": ctx.problem_summary or "",
+                "fault_code": ctx.fault_code or "",
+                "robot_type": ctx.robot_type or "",
+            },
         }
+        # @# 确定性引用已在本函数入口预加载注入（Q3c=B 主路径）→ 让大脑不再派发 ticket_ref，
+        # 避免对同一个 @#编号 重复注入。只有当入口 query 没有顶层 @#（没有预加载）时，
+        # 才保留 ticket_ref 给大脑"按需检索相似工单"（形态 C 大脑决策版）。
+        if referenced_tickets:
+            available_caps = [c for c in available_caps if c != "ticket_ref"]
         if ctx.attachments:
             runtime_ctx["img_ctx"] = build_img_ctx(ctx)
             try:
