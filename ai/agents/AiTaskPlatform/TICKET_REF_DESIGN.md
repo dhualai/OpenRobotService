@@ -49,8 +49,17 @@
 | 前端提示 | `frontend/src/shared/components/DiscussionPanel.tsx` | placeholder 增加 `@#工单号` 提示 |
 | 后端通知 | `backend/app/modules/tasks/api/task.py` | `_maybe_notify_mentions` 正则排除 `@#` 工单引用（`@(?!\d)`） |
 
-### 待实施（仅剩 Phase 3）
-- Phase 3：Supervisor 能力表可选加 `ticket_ref` 只读观察/兜底能力（可选，非核心）。
+### 已完成（Phase 3：ticket_ref 能力，两种形态）
+| 层 | 文件 | 改动 |
+|----|------|------|
+| 能力 | `ai/agents/AiTaskPlatform/capabilities/ticket_ref.py` | `TicketRefCapability`：形态一（传 `ticket_id` → 读指定工单完整上下文）+ 形态二（无 id → 按当前工单上下文自动检索相似已解决工单并拉取其完整上下文，AI 侧直查 DB 逻辑对齐 `/api/tasks/similar`） |
+| 注册 | `ai/agents/AiTaskPlatform/capabilities/__init__.py` | 导出并注册 `TicketRefCapability` |
+| 调度 | `ai/agents/AiTaskPlatform/handlers/discuss_flow.py` | `runtime_ctx` 注入 `current_task`；入口若已预加载 `@#`（`referenced_tickets` 非空）→ 从 `available_caps` 剔除 `ticket_ref`（避免重复注入）；未预加载则保留给大脑按需检索 |
+
+**ticket_ref 两种形态分工（对齐"确定性 vs 大脑决策"）：**
+- 形态一（确定性 `@#编号`）：用户明确写 `@#315` → 入口预加载注入，大脑不重复派发
+- 形态二（大脑决策）：用户无明确编号但要求"参考类似工单怎么处理" → Supervisor 派发 `ticket_ref`，能力按当前工单 title/desc 自动检索相似已解决工单 + 拉完整上下文
+- 与 `retrieve_history` 分工：`retrieve_history` 返回 Qdrant 方案**片段**（快、粗粒度）；`ticket_ref` 拉**完整工单上下文**（含解决方案/讨论）供深挖。
 
 ### 已完成（第二次：Phase 0）
 | 层 | 文件 | 改动 |
