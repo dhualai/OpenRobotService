@@ -32,14 +32,14 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Protocol
 
 from ai.core.logging import get_logger
-from ai.agents.AiTaskPlatform.capabilities.registry import CapabilityRegistry
-from ai.agents.AiTaskPlatform.capabilities.supervisor_todo import TodoList, TodoItem
+from ai.agents.AiTaskPlatform.capabilities.core.registry import CapabilityRegistry
+from ai.agents.AiTaskPlatform.capabilities.core.supervisor_todo import TodoList, TodoItem
 
 logger = get_logger("TASK_AGENT")
 
 # ── 程序强制护栏（服务端优先，不信任 LLM）──
 MAX_SUB_TASKS = 5          # 一次最多派生子任务数（防无限分叉）；与 _CONCURRENCY 配合：可派 5 个，但最多同时跑 _CONCURRENCY 个
-MAX_ROUNDS_PER_TASK = 3    # 每个子任务内部编排轮数上限（由子能力内部执行，如 LogOrchestrator.MAX_ROUNDS；此处为对齐锚点）
+MAX_ROUNDS_PER_TASK = 3    # 每个子任务内部编排轮数上限（由子能力内部执行，如 LogSubAgent/日志分析的轮数；此处为对齐锚点）
 SOFT_LIMIT = 2             # 调度 LLM 输出解析失败时的重试次数上限（浅则重试，达到上限走兜底）
 _CONCURRENCY = 3           # 同时最多并行执行几个子任务（asyncio.Semaphore，防拉爆 API/限流）
 

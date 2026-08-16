@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from ai.agents.AiTaskPlatform.capabilities.registry import CapabilityRegistry
+    from ai.agents.AiTaskPlatform.capabilities.core.registry import CapabilityRegistry
 
 
 class CapabilityResult:
@@ -141,5 +141,5 @@ class BaseCapability(ABC):
         if not cls.name:
             cls.name = cls.__name__  # 借鉴 MetaGPT：name 默认取类名
         # 延后 import 避免循环依赖
-        from ai.agents.AiTaskPlatform.capabilities.registry import CapabilityRegistry
+        from ai.agents.AiTaskPlatform.capabilities.core.registry import CapabilityRegistry
         CapabilityRegistry.register(cls)
