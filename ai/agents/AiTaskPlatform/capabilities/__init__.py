@@ -4,14 +4,10 @@
   - D12 = `BaseCapability` 抽象基类（强类型约束，子类继承即自动注册）
   - D13 = 不跨 Agent 共享，只服务 AiTaskPlatform 内部
   - D14 = 本版不上 MCP，仅预留
-  - 借鉴主流框架（LangChain/CrewAI/Claude/MetaGPT）已验证的思想：
-      ① 子类自动注册（CrewAI __init_subclass__）
-      ② 错误态返回不中断 Agent（LangChain handle_tool_error）
-      ③ 输出 schema 化（CrewAI result_schema）
-      ④ name 默认取类名（MetaGPT）
-      ⑤ is_available() 环境敏感能力（code_skill 服务器不可用）
+  - 设计要点：① 子类自动注册 ② 错误态返回不中断 Agent
+      ③ 输出 schema 化 ④ name 默认取类名 ⑤ is_available() 环境敏感能力（code_skill 服务器不可用）
   - F3 = 调度决策用 LLM 自主；F7 = TodoList 自我任务管理（本版加入，平铺）
-  - Supervisor = 产品无关通用编排内核（F1/F6，日志多轮推理收敛为 LogSubAgent，v2 LogOrchestrator 已被取代）
+  - Supervisor = 产品无关通用编排内核（F1/F6，日志多轮推理收敛为 LogSubAgent）
 
 目录分层：
   - capabilities/core/   ← 能力基础设施（框架层，产品无关）：base / registry / supervisor / supervisor_todo / router / evaluator

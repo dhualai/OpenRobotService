@@ -1,6 +1,5 @@
 """Supervisor — 自主派生子 Agent 的通用编排内核（产品无关）
 
-对标 Claude **Orchestrator-workers**：
   - 中央调度 Agent（Supervisor）评估任务复杂度 → 出 plan → 转 TodoList → 执行循环
   - 按需派生子 Agent / 能力（CapabilityRegistry），动态决定派几个、何时收束
 
@@ -262,7 +261,7 @@ class Supervisor:
                 调度 LLM 不需要知道这些。
             on_progress: 可选进度回调，每当某个能力状态变更（开始/完成）时触发一次，
                 入参为 {"id","description","status","capability","phase"}，供上层把
-                todo 的实时进展推给前端（类似 Claude Code 的动态执行过程）。
+                todo 的实时进展推给前端动态执行过程展示。
 
         Returns:
             {

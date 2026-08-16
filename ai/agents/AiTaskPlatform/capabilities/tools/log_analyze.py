@@ -5,7 +5,6 @@
 
 对应设计（见 TASK_AGENT_TARGET_ARCH.md §6c）：
   - F1 = A：日志多轮推理由本能力内部（LogSubAgent）承担；上层多轮编排由 Supervisor 负责
-    （v2 的 LogOrchestrator 已被 Supervisor 取代，见僵尸清理 2026-08-16）
   - 产品无关内核：本能力不写死某个产品，靠 `pick_manual_dir(log_path)` 选对应产品手册
   - 多产品：调度 UPS（当前大头） / 车端 / 服务号 / 未来其它 ORS 产品
 
@@ -33,7 +32,7 @@ logger = get_logger("TASK_AGENT")
 
 
 class LogAnalyzeCapability(BaseCapability):
-    """日志分析能力：内部调 LogSubAgent 做领域内多轮推理（v2 LogOrchestrator 已被 Supervisor 取代）。
+    """日志分析能力：内部调 LogSubAgent 做领域内多轮推理（上层多轮编排由 Supervisor 负责）。
 
     属性（BaseCapability 元数据）：
       - name: log_analyze

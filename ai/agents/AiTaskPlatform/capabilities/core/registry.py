@@ -1,7 +1,7 @@
 """CapabilityRegistry — 能力注册表
 
 - 类级别注册：子类继承 BaseCapability 即自动注册（__init_subclass__）
-- key 用 module.QualifiedName 保证唯一（借鉴 CrewAI）
+- key 用 module.QualifiedName 保证唯一
 - list_available() 只返回当前环境可用能力（过滤 is_available()==False）
 - match_by_tags() 供 Router / Orchestrator 按标签/描述匹配能力（衔接 G1）
 - get_singleton() 复用能力单例（如 code_skill 的单例懒加载索引）
@@ -23,7 +23,7 @@ class CapabilityRegistry:
     # ── 注册 ──
     @classmethod
     def register(cls, cap_cls: Type["BaseCapability"]) -> None:
-        """注册能力类。key = module.QualifiedName（保证唯一，借鉴 CrewAI）。"""
+        """注册能力类。key = module.QualifiedName（保证唯一）。"""
         key = f"{cap_cls.__module__}.{cap_cls.__qualname__}"
         # 若同一 class 被重复 import/注册，幂等覆盖
         if key not in cls._capabilities:

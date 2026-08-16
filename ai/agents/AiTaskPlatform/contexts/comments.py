@@ -153,7 +153,7 @@ def notify_backend_comment_broadcast(task_id: int, comment_id: int) -> None:
 def notify_backend_ai_progress(task_id, run_id, todos, phase: str = "running") -> None:
     """跨进程把 AI 执行过程广播进该工单 WS 房间（ai.progress 事件，best-effort）。
 
-    用途：像 Claude Code 一样在前端动态展示"正在做哪一步/已完成哪步"，最终回复不含过程块。
+    用途：在前端动态展示"正在做哪一步/已完成哪步"，最终回复不含过程块。
     """
     import asyncio
     import httpx

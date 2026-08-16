@@ -1,6 +1,5 @@
 """Evaluator — Evaluator-optimizer 自评闭环（改造点 C，G4）
 
-对标 Claude *Building Effective Agents* 的 **Evaluator-optimizer** 模式：
   - LLM 生成初稿后，用一次轻量自评检查质量（偏题/漏错误码/结论与证据矛盾/幻构）
   - 不通过 → 携带 Eval 反馈重写一次（最多 MAX_EVAL_REWRITES 次，防鬼打墙）
   - 仅对"需工具/有证据"的关键输出启用（诊断报告/日志结论/需工具讨论）；纯闲聊不启用（成本护栏）
