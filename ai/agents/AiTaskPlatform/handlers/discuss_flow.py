@@ -19,6 +19,10 @@ from ai.agents.AiTaskPlatform.contexts import (
 
 logger = get_logger("TASK_AGENT")
 
+# 澄清建议的稳定标记（P4）：追加"建议补充信息"时以该标记开头，
+# 后续轮次检测到此标记即视为"已建议过一次"，不再重复建议（只建议一次）。
+CLARIFY_SUGGEST_MARKER = "🔄 U老师已建议补充"
+
 
 # ── 附件记忆「大脑决策」分类 ─────────────────────────────────────────
 # 只维护 attachment_analysis（已解读附件记忆）。每次 discuss 据此决定读哪些附件：
@@ -168,6 +172,9 @@ class DiscussFlow:
 
         facultative = ""
         reasoning_trace = {}  # 透明化 planning（G6）：记录 Supervisor 的调度 plan/todo
+        # 澄清闭环（P4）：当 Supervisor 判定需向用户确认关键信息且无子任务可派时为 True
+        is_clarify = False
+        clarify_questions: list[str] = []
         available_caps = CapabilityRegistry.list_available()  # 含 log_analyze（本版全量收敛）
 
         # 3.0 附件记忆「大脑决策」：区分本次需新读的附件与历史已解读摘要
@@ -427,6 +434,18 @@ class DiscussFlow:
                 "run_id": run_id,
             }
 
+            # ── 澄清闭环（P4）：Supervisor 判定还需向用户确认关键信息（ask_user=true）——
+            #    作为「排查优先」的补充而非阻塞：把待确认问题作为可选的"结尾补充提问"注入
+            #    facultative，让回复"先给分析、后附问"，绝不因追问卡住排查。
+            #    下一轮 discuss 会通过 discussion_history 自动看到"问题 + 用户回答"，
+            #    从而自然闭合追问循环（无需额外持久化）。
+            clarify_questions = sup_result.get("questions") or []
+            if sup_result.get("ask_user") and clarify_questions:
+                is_clarify = True
+                logger.info(f"[discuss] ask_user 澄清：附带确认 {len(clarify_questions)} 项问题")
+                reasoning_trace["clarify"] = True
+                reasoning_trace["questions"] = clarify_questions
+
             # 收尾：整体完成广播（前端据此收起执行过程、仅展示纯回复）。
             # 用 await 版本确保 done 一定送达后端，避免出现"一直转不停"。
             # 兜底：把任何残留 in_progress 项归一化为 completed，保证「完成」封套内的
@@ -477,6 +496,7 @@ class DiscussFlow:
                         logger.warning(f"[discuss] 写回附件记忆失败: {_e}")
 
         # 4. LLM（纯闲聊走 light 短 prompt，省 token）
+        #    澄清（P4）不单独走 prompt：一律先生成分析答复，待确认问题在 4.7 作为"补充提问"追加。
         if is_pure_chat:
             from ai.agents.AiTaskPlatform.prompts import (
                 DISCUSS_LIGHT_SYSTEM_PROMPT, DISCUSS_LIGHT_USER_TEMPLATE,
@@ -540,6 +560,31 @@ class DiscussFlow:
                                     output={"evaluator": "eval_failed", "reply_chars": len(reply)})
             except Exception as e:
                 logger.warning(f"[discuss] Evaluator 执行异常，沿用初稿: {e}")
+
+        # 4.7 澄清闭环（P4）「排查优先 + 一次性建议补充」：
+        #      - 分析永远是主体（已经在上面的 DISCUSS 路径生成）；
+        #      - 若 Supervisor 判定还缺关键信息，才在答复末尾**建议**补充（是建议，不是提问）；
+        #      - **只建议一次**：若此前评论里已出现过建议补充的标记（AI 上一轮已建议过、
+        #        而用户仍未提供），则本轮不再建议，转而基于现有信息继续给结论/方向；
+        #      - 已覆盖的问题自动跳过。
+        #      检测用未截断的原始评论（recent），避免 discussion_history 的 [:200] 截断漏检。
+        _raw_disc = " ".join(
+            str(c.get("content", "")) for c in (recent or [])
+        ).lower()
+        _already_suggested = CLARIFY_SUGGEST_MARKER.lower() in _raw_disc
+        _disc_low = (discussion_history or "").lower()
+        _pending_q = [
+            q for q in clarify_questions
+            if q and q.strip() and q.strip().lower() not in _disc_low
+        ]
+        if is_clarify and _pending_q and not _already_suggested:
+            _appendix = ("\n\n---\n" + CLARIFY_SUGGEST_MARKER + "\n"
+                         + "基于现有信息初步判断到这一步。如果能有以下信息，定位会更准：\n"
+                         + "\n".join(f"- {q}" for q in _pending_q[:3])
+                         + "\n（没有这些信息也能按上面的方向继续排查。）")
+            reply = (reply or "").rstrip() + _appendix
+            self._add_trace(self.NODE_LLM, "ok",
+                            output={"clarify_appendix": len(_pending_q), "reply_chars": len(reply)})
 
         # 5. 回复写入 task_comments
         #    最终评论只写入纯粹答复（不含"分析过程"）——执行过程已通过 ai.progress

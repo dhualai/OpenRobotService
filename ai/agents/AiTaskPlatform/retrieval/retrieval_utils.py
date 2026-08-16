@@ -28,6 +28,18 @@ _KIND_FAIL = {
 }
 
 
+def _verified_tag(r) -> str:
+    """根据验证状态返回标注标签（P2：经验证/被推翻/复发）。"""
+    v = (getattr(r, "verified", None) or "unknown")
+    if v == "confirmed":
+        return " [已验证]"
+    if v == "rejected":
+        return " [已被推翻]"
+    if v == "recurred":
+        return " [该问题复发过]"
+    return ""
+
+
 def format_retrieval_results(results, kind: str, err: bool = False) -> str:
     """把检索结果列表格式化成带序号的文本。
 
@@ -53,5 +65,12 @@ def format_retrieval_results(results, kind: str, err: bool = False) -> str:
             continue
         if kind == "task_resolutions" and not title:
             title = f"工单 #{getattr(r, 'id', '')}"
-        lines.append(f"{label} {i}：{title}\n{content}\n---")
+        # P2：历史方案标注验证状态 + 根因类型（供 LLM 评估可信度）
+        tag = ""
+        if kind == "task_resolutions":
+            tag = _verified_tag(r)
+            rct = getattr(r, "root_cause_type", "") or ""
+            if rct and rct != "unknown":
+                tag += f" [根因类型:{rct}]"
+        lines.append(f"{label} {i}：{title}{tag}\n{content}\n---")
     return "\n".join(lines) if lines else _KIND_EMPTY.get(kind, "（无结果）")

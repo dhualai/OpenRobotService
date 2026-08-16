@@ -8,10 +8,75 @@
 import time
 
 from ai.core.logging import get_logger
-from ai.agents.AiTaskPlatform.schemas import TaskAnalyzeRequest, SolutionDraft
+from ai.agents.AiTaskPlatform.schemas import TaskAnalyzeRequest, SolutionDraft, ResolvedRootCause
 from ai.agents.AiTaskPlatform.prompts import TASK_AGENT_SYSTEM_PROMPT
 
 logger = get_logger("TASK_AGENT")
+
+
+# P1 结构化根因：把方案草稿提炼成结构化字段（submit 时一次 LLM 小调用，temp=0）
+_STRUCT_ROOT_SYSTEM = (
+    "你是工单根因结构化助手。把一份方案草稿提炼成结构化 JSON，只输出 JSON。"
+)
+_STRUCT_ROOT_USER = """根据方案草稿提炼根因的结构化信息，只输出 JSON（无其他文字）。
+
+## 方案草稿
+{root_cause}
+
+## 建议步骤
+{actions}
+
+## 输出 JSON
+{{
+  "symptom": "现象/症状（一句话）",
+  "error_codes": ["相关错误码/异常短语，最多5个，无则[]"],
+  "root_cause_type": "版本缺陷|配置错误|环境问题|竞态|硬件|未知",
+  "severity": "高|中|低|未知",
+  "is_common_bug": true或false
+}}
+注意：信息不足以判断的类型填"未知"；不要编造错误码。"""
+
+
+def _parse_struct_root(raw: str) -> ResolvedRootCause:
+    """从 LLM 输出解析 ResolvedRootCause（健壮 JSON，失败回退 safe 默认）。"""
+    import json, re
+    if not raw:
+        return ResolvedRootCause()
+    text = raw.strip()
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if m:
+        text = m.group(1)
+    else:
+        s, e = text.find("{"), text.rfind("}")
+        if s != -1 and e > s:
+            text = text[s : e + 1]
+    try:
+        data = json.loads(text)
+    except Exception:
+        return ResolvedRootCause()
+    if not isinstance(data, dict):
+        return ResolvedRootCause()
+    codes = data.get("error_codes") or []
+    if not isinstance(codes, list):
+        codes = []
+    # root_cause_type 归一化为规范值（unknown 为兜底，避免中英文混用影响下游过滤）
+    rct = str(data.get("root_cause_type", "")).strip()
+    rct = "未知" if rct in ("", "unknown", "不清楚", "无法判断") else rct
+    if rct not in ("版本缺陷", "配置错误", "环境问题", "竞态", "硬件", "未知"):
+        rct = "未知"
+    rct = "unknown" if rct == "未知" else rct
+    sev = str(data.get("severity", "")).strip()
+    sev = "未知" if sev in ("", "unknown", "不清楚", "无法判断") else sev
+    if sev not in ("高", "中", "低", "未知"):
+        sev = "未知"
+    sev = "unknown" if sev == "未知" else sev
+    return ResolvedRootCause(
+        symptom=str(data.get("symptom", ""))[:300],
+        error_codes=[str(c) for c in codes][:5],
+        root_cause_type=rct,
+        severity=sev,
+        is_common_bug=bool(data.get("is_common_bug", False)),
+    )
 
 
 class SolutionFlow:
@@ -97,6 +162,36 @@ class SolutionFlow:
         return draft
 
         # ============================================================
+    # 结构化根因提炼（P1）— submit 前调用一次，供 Qdrant 写入结构化字段
+    # ============================================================
+    async def _extract_structured_root_cause(self, draft) -> dict:
+        """把方案草稿提炼成结构化根因 dict（供 _index_solution 写入）。
+
+        一次小 LLM 调用（temp=0）；失败/解析失败回退 safe 默认，绝不阻断 submit。
+        """
+        try:
+            root_cause = getattr(draft, "root_cause_analysis", "") or ""
+            actions = "；".join(getattr(draft, "suggested_actions", []) or [])
+            if not root_cause:
+                return {}
+            raw = await self._llm_client.complete(
+                prompt=_STRUCT_ROOT_USER.format(root_cause=root_cause[:1500], actions=actions[:800]),
+                system_prompt=_STRUCT_ROOT_SYSTEM,
+                max_tokens=200,
+                temperature=0.0,
+            )
+        except Exception as e:
+            logger.warning(f"[solution] 结构化根因提炼调用失败，回退默认: {e}")
+            return {}
+        sr = _parse_struct_root(raw)
+        if not sr.symptom and not sr.error_codes and sr.root_cause_type == "未知":
+            return {}  # 解析失败 → 不写结构化字段
+        extra = sr.to_payload()
+        # 补充根因/方案（保留给检索可参考）
+        extra["root_cause"] = getattr(draft, "root_cause_analysis", "") or ""
+        return extra
+
+    # ============================================================
     # submit — 方案提交
     # ============================================================
 
@@ -111,10 +206,13 @@ class SolutionFlow:
 
         solution_text = f"根因: {getattr(draft, 'root_cause_analysis', '')}\n步骤: {'; '.join(getattr(draft, 'suggested_actions', []))}"
 
+        # P1：结构化根因提炼（temp=0 小调用，失败回退不阻断）
+        structured = await self._extract_structured_root_cause(draft)
+
         # 1. Qdrant 回写
         t_qdrant = time.perf_counter()
         try:
-            await self._index_solution(task_id, solution_text, draft)
+            await self._index_solution(task_id, solution_text, draft, structured=structured)
             result["solution_indexed"] = True
             self._add_trace(self.NODE_SUBMIT + "_qdrant", "ok",
                             elapsed_ms=round((time.perf_counter() - t_qdrant) * 1000))
