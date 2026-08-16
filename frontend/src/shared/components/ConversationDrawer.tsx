@@ -1,10 +1,10 @@
-// 会话抽屉：左侧滑出（80%宽）+ 遮罩 + 新建/切换/编辑标题/删除
-// 仿千问/deepseek 移动端会话管理布局
+// 会话抽屉：左侧滑出（80%宽，max 340px）+ 遮罩 + 标题栏 + 切换/重命名/删除 + 底部新建会话
+// 视觉按设计稿 01b-chat-sessions：选中 blue-soft、行内 Pencil/Trash2、底部 secondary 新建按钮
 import { useState, useEffect } from 'react';
 import { Popup, Button, Toast } from 'tdesign-mobile-react';
-import { Edit1Icon, DeleteIcon } from 'tdesign-icons-react';
+import { Pencil, Trash2, MessageSquarePlus, X } from 'lucide-react';
 import { useWorkbenchStore } from '@/stores/workbench';
-import { formatDateTime } from '@/shared/utils/url';
+import { formatDateTimeFull } from '@/shared/utils/url';
 import type { Conversation } from '@/api/conversation';
 
 interface Props {
@@ -13,7 +13,7 @@ interface Props {
 }
 
 export default function ConversationDrawer({ visible, onClose }: Props) {
-  const { conversations, conversationId, refreshConversations, deleteConversation, renameConversation, setConversationId } = useWorkbenchStore();
+  const { conversations, conversationId, refreshConversations, deleteConversation, renameConversation, setConversationId, requestNewConversation } = useWorkbenchStore();
   const [renaming, setRenaming] = useState<Conversation | null>(null);
   const [renameText, setRenameText] = useState('');
   const [deleting, setDeleting] = useState<Conversation | null>(null);
@@ -57,7 +57,14 @@ export default function ConversationDrawer({ visible, onClose }: Props) {
       />
       {/* 抽屉 */}
       <aside className={`conv-drawer ${visible ? 'open' : ''}`}>
-        {/* 会话列表（新建会话按钮已挪到聊天输入栏上传按钮右侧） */}
+        {/* 标题栏（设计稿：居中标题 + 右侧圆形关闭钮） */}
+        <header className="conv-drawer__header">
+          <span className="conv-drawer__title">历史会话</span>
+          <button type="button" className="conv-drawer__close" onClick={onClose} aria-label="关闭">
+            <X size={16} strokeWidth={2} />
+          </button>
+        </header>
+        {/* 会话列表 */}
         <div className="conv-list">
           {conversations.length === 0 ? (
             <div className="conv-list__empty">暂无历史会话</div>
@@ -69,19 +76,30 @@ export default function ConversationDrawer({ visible, onClose }: Props) {
             >
               <div className="conv-item__main">
                 <div className="conv-item__title">{conv.title || '未命名会话'}</div>
-                <div className="conv-item__time">{formatDateTime(conv.created_at).slice(0, 10)}</div>
+                <div className="conv-item__time">{formatDateTimeFull(conv.created_at)}</div>
               </div>
               <div className="conv-item__actions">
-                <button type="button" onClick={(e) => { e.stopPropagation(); openRename(conv); }} aria-label="编辑标题">
-                  <Edit1Icon size="16px" />
+                <button type="button" onClick={(e) => { e.stopPropagation(); openRename(conv); }} aria-label="重命名">
+                  <Pencil size={14} strokeWidth={2} />
                 </button>
                 <button type="button" onClick={(e) => { e.stopPropagation(); setDeleting(conv); }} aria-label="删除">
-                  <DeleteIcon size="16px" />
+                  <Trash2 size={14} strokeWidth={2} />
                 </button>
               </div>
             </div>
           ))}
         </div>
+        {/* 底部固定操作区（设计稿：secondary 全宽新建会话按钮，hover blue-soft） */}
+        <footer className="conv-drawer__footer">
+          <button
+            type="button"
+            className="conv-drawer__new-btn"
+            onClick={() => { requestNewConversation(); onClose(); }}
+          >
+            <MessageSquarePlus size={16} strokeWidth={2} />
+            新建会话
+          </button>
+        </footer>
       </aside>
 
       {/* 编辑标题弹窗（底部） */}

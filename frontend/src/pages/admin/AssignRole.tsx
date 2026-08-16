@@ -7,13 +7,16 @@
 //   GET  /projects/                    项目列表
 //   POST /users/project/assign-roles   批量授权（用户 × 角色 笛卡尔积）
 //   POST /users/{username}/roles/remove 批量移除
+// 样式参考 macaron assign-roles 页：入口方式卡 + 蓝条小节 + 选择芯片/复选行 + 双按钮操作区。
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
-import { Button, Toast, Loading, Popup, Tag } from 'tdesign-mobile-react';
-import ClearableInput from '@/shared/components/ClearableInput';
+import { Toast, Loading, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import {
+  MacFolderClosed, MacUserRound, MacChevronLeft, MacChevronRight, MacCheck, MacSearch,
+} from '@/shared/components/macaronIcons';
 
 interface UserItem {
   id: string;
@@ -28,7 +31,21 @@ type ApiRequest = ReturnType<typeof createRequest>;
 type View = 'entry' | 'project' | 'user';
 
 type FilterMode = 'all' | 'authorized' | 'unauthorized';
-type RolePickerMode = 'assign' | 'remove' | null;
+
+/** 自绘勾选圆点（18px 圆 + 白色对勾，对照原型 Row 的选中样式） */
+function ChoiceDot({ checked }: { checked: boolean }) {
+  return (
+    <span
+      className="mac-choice__dot"
+      style={{
+        borderColor: checked ? 'var(--mac-blue-2)' : undefined,
+        background: checked ? 'var(--mac-blue-2)' : '#fff',
+      }}
+    >
+      {checked && <MacCheck size={12} />}
+    </span>
+  );
+}
 
 export default function AssignRole() {
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
@@ -72,23 +89,27 @@ export default function AssignRole() {
   // 入口选择屏：无需等待数据加载即可展示
   if (view === 'entry') {
     return (
-      <div className="admin-view" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <h3 style={{ textAlign: 'center', color: '#333', margin: '8px 0 0' }}>请选择授权方式</h3>
-        <p style={{ textAlign: 'center', color: '#999', fontSize: 12, margin: 0 }}>
-          两种方式均可完成批量授权，按需选择
-        </p>
-        <ModeEntryCard
-          emoji="📁"
-          title="项目优先"
-          desc="先选一个项目，再批量给人员授权 / 移除角色"
-          onClick={() => setView('project')}
-        />
-        <ModeEntryCard
-          emoji="👤"
-          title="用户优先"
-          desc="先选若干用户和角色，再批量授权到多个项目"
-          onClick={() => setView('user')}
-        />
+      <div className="admin-view" style={{ padding: '24px 16px' }}>
+        <header style={{ textAlign: 'center', margin: '8px 0 16px' }}>
+          <h1 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: 'var(--mac-fg)' }}>请选择授权方式</h1>
+          <p style={{ margin: '6px 0 0', fontSize: 11.5, color: 'var(--mac-muted-fg)' }}>
+            两种方式均可完成批量授权，按需选择
+          </p>
+        </header>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <ModeEntryCard
+            icon={<MacFolderClosed size={18} />}
+            title="项目优先"
+            desc="先选一个项目，再批量给人员授权 / 移除角色"
+            onClick={() => setView('project')}
+          />
+          <ModeEntryCard
+            icon={<MacUserRound size={18} />}
+            title="用户优先"
+            desc="先选若干用户和角色，再批量授权到多个项目"
+            onClick={() => setView('user')}
+          />
+        </div>
       </div>
     );
   }
@@ -99,12 +120,10 @@ export default function AssignRole() {
     <div className="admin-view">
       {/* 返回入口 */}
       <div style={{ padding: '8px 16px 0' }}>
-        <span
-          onClick={() => setView('entry')}
-          style={{ color: '#0052d9', fontSize: 13, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2 }}
-        >
-          ‹ 返回选择授权方式
-        </span>
+        <button type="button" className="mac-back-link" onClick={() => setView('entry')}>
+          <MacChevronLeft size={14} />
+          返回选择授权方式
+        </button>
       </div>
 
       {view === 'project' ? (
@@ -148,9 +167,8 @@ function ProjectFirstAssign({
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
   const [selectedUserIds, setSelectedUserIds] = useState<Set<string>>(new Set());
 
-  // 批量角色选择弹窗（授权 / 移除共用）
-  const [rolePickerMode, setRolePickerMode] = useState<RolePickerMode>(null);
-  const [checkedRoleIds, setCheckedRoleIds] = useState<Set<string>>(new Set());
+  // 当前选中的单个角色（对照原型：先选人员，再选一个角色，下方「移除角色 / 批量授权」两个按钮）
+  const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
 
   // 单人角色编辑弹窗
   const [editingUser, setEditingUser] = useState<UserItem | null>(null);
@@ -213,47 +231,22 @@ function ProjectFirstAssign({
     [users, selectedUserIds],
   );
 
-  const openRolePicker = (mode: Exclude<RolePickerMode, null>) => {
-    if (selectedUserIds.size === 0) {
-      Toast({ message: '请先勾选用户', theme: 'warning' });
-      return;
-    }
-    // 移除模式下默认勾选所有被选用户在该项目下已有的角色（仅项目角色，系统角色不在本页管理）
-    if (mode === 'remove') {
-      const projectRoleIds = new Set(roles.map((r) => r.id));
-      const union = new Set<string>();
-      selectedUsers.forEach((u) => userRolesInProject(u).forEach((rid) => {
-        if (projectRoleIds.has(rid)) union.add(rid);
-      }));
-      setCheckedRoleIds(union);
-    } else {
-      setCheckedRoleIds(new Set());
-    }
-    setRolePickerMode(mode);
-  };
-
-  // 批量授权：一次请求，用户 × 角色 笛卡尔积
-  const handleBatchAssign = async () => {
-    if (!selectedProject) return;
-    if (checkedRoleIds.size === 0) {
-      Toast({ message: '请勾选要授权的角色', theme: 'warning' });
-      return;
-    }
+  // 批量授权：一次请求，用户 × 选中角色
+  const handleBatchGrant = async () => {
+    if (!selectedProject || !selectedRoleId) return;
     setSubmitting(true);
     try {
       const organization_ids: { user_name: string; role_id: string }[] = [];
       selectedUsers.forEach((u) => {
-        checkedRoleIds.forEach((rid) => {
-          organization_ids.push({ user_name: u.username, role_id: rid });
-        });
+        organization_ids.push({ user_name: u.username, role_id: selectedRoleId });
       });
       await request('/users/project/assign-roles', {
         method: 'POST',
         body: JSON.stringify({ project_id: selectedProject.project_code, organization_ids }),
       });
-      Toast({ message: `已为 ${selectedUsers.length} 人授权 ${checkedRoleIds.size} 个角色`, theme: 'success' });
-      setRolePickerMode(null);
+      Toast({ message: `已为 ${selectedUsers.length} 人授权「${roleNameMap.get(selectedRoleId) || ''}」`, theme: 'success' });
       setSelectedUserIds(new Set());
+      setSelectedRoleId(null);
       await reloadUsers();
     } catch (err) {
       Toast({ message: `授权失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -262,13 +255,9 @@ function ProjectFirstAssign({
     }
   };
 
-  // 批量移除：逐用户调用移除接口，逐个统计结果
-  const handleBatchRemove = async () => {
-    if (!selectedProject) return;
-    if (checkedRoleIds.size === 0) {
-      Toast({ message: '请勾选要移除的角色', theme: 'warning' });
-      return;
-    }
+  // 批量移除：逐用户移除选中角色，统计结果
+  const handleBatchRevoke = async () => {
+    if (!selectedProject || !selectedRoleId) return;
     setSubmitting(true);
     try {
       const results = await Promise.allSettled(
@@ -277,7 +266,7 @@ function ProjectFirstAssign({
             method: 'POST',
             body: JSON.stringify({
               project_id: selectedProject.project_code,
-              role_ids: Array.from(checkedRoleIds),
+              role_ids: [selectedRoleId],
             }),
           }),
         ),
@@ -285,11 +274,13 @@ function ProjectFirstAssign({
       const okCount = results.filter((r) => r.status === 'fulfilled').length;
       const failCount = results.length - okCount;
       Toast({
-        message: failCount > 0 ? `移除完成：成功 ${okCount} 人，失败 ${failCount} 人` : `已为 ${okCount} 人移除角色`,
+        message: failCount > 0
+          ? `移除完成：成功 ${okCount} 人，失败 ${failCount} 人`
+          : `已为 ${okCount} 人移除「${roleNameMap.get(selectedRoleId) || ''}」`,
         theme: failCount > 0 ? 'warning' : 'success',
       });
-      setRolePickerMode(null);
       setSelectedUserIds(new Set());
+      setSelectedRoleId(null);
       await reloadUsers();
     } finally {
       setSubmitting(false);
@@ -345,135 +336,159 @@ function ProjectFirstAssign({
   const selectedCount = selectedUserIds.size;
 
   return (
-    <div style={{ paddingBottom: selectedCount > 0 ? 72 : 0 }}>
+    <div>
       <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
         {/* 项目选择 */}
-        <div style={{ background: '#fff', borderRadius: 12, padding: 16 }}>
-          <PickerField
-            label="项目"
-            value={selectedProject?.name || ''}
-            placeholder="请先选择项目"
+        <section className="mac-card mac-card--pad">
+          <p style={{ margin: 0, fontSize: 11.5, color: 'var(--mac-muted-fg)' }}>项目</p>
+          <button
+            type="button"
+            className="mac-selector mac-selector--soft"
+            style={{ marginTop: 8 }}
             onClick={() => setProjectPickerVisible(true)}
-          />
-        </div>
+          >
+            <span className="mac-selector__body">
+              {selectedProject ? (
+                <span className="mac-selector__name">{selectedProject.name}</span>
+              ) : (
+                <span className="mac-selector__placeholder">请先选择项目</span>
+              )}
+            </span>
+            <span className="mac-selector__chevron"><MacChevronRight size={16} /></span>
+          </button>
+        </section>
 
         {selectedProject && (
           <>
             {/* 搜索 + 状态筛选 */}
-            <div style={{ background: '#fff', borderRadius: 12, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <ClearableInput
-                value={keyword}
-                onChange={(v) => setKeyword(String(v))}
-                placeholder="搜索姓名 / 用户名"
-              />
-              <div style={{ display: 'flex', gap: 8 }}>
+            <section className="mac-card mac-card--pad" style={{ padding: 12 }}>
+              <div className="mac-search">
+                <MacSearch size={16} />
+                <input
+                  className="mac-search__input"
+                  value={keyword}
+                  onChange={(e) => setKeyword(e.target.value)}
+                  placeholder="搜索姓名 / 用户名"
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                 {([
                   ['all', '全部'],
                   ['authorized', '已授权'],
                   ['unauthorized', '未授权'],
                 ] as [FilterMode, string][]).map(([mode, label]) => (
-                  <Tag
+                  <button
                     key={mode}
-                    theme={filterMode === mode ? 'primary' : 'default'}
-                    variant={filterMode === mode ? 'dark' : 'light'}
+                    type="button"
+                    className={`mac-filter-chip ${filterMode === mode ? 'is-active' : ''}`}
                     onClick={() => setFilterMode(mode)}
-                    style={{ cursor: 'pointer', padding: '4px 12px' }}
                   >
+                    {filterMode === mode && <MacCheck size={12} />}
                     {label}
-                  </Tag>
+                  </button>
                 ))}
               </div>
-            </div>
+            </section>
 
             {/* 全选栏 */}
             <div
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '4px 4px 0',
-              }}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 4px 0' }}
             >
-              <div
+              <button
+                type="button"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, border: 'none', background: 'none',
+                  cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--mac-fg)', padding: 0,
+                }}
                 onClick={toggleSelectAll}
-                style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 13, color: '#666' }}
               >
-                <CheckDot checked={allFilteredSelected} />
+                <ChoiceDot checked={allFilteredSelected} />
                 全选（{filteredUsers.length} 人）
-              </div>
-              <span style={{ fontSize: 12, color: '#999' }}>已选 {selectedCount} 人</span>
+              </button>
+              <span style={{ fontSize: 11, color: 'var(--mac-muted-fg)' }}>已选 {selectedCount} 人</span>
             </div>
 
             {/* 用户列表 */}
-            <div style={{ background: '#fff', borderRadius: 12, overflow: 'hidden' }}>
+            <section className="mac-card" style={{ overflow: 'hidden' }}>
               {filteredUsers.map((u) => {
                 const ownedRoleIds = userRolesInProject(u);
                 const checked = selectedUserIds.has(u.id);
                 return (
-                  <div
-                    key={u.id}
-                    style={{
-                      display: 'flex', alignItems: 'flex-start', gap: 10,
-                      padding: '12px 14px', borderBottom: '1px solid #f5f5f5',
-                      background: checked ? '#f0f7ff' : '#fff',
-                    }}
-                  >
-                    <div style={{ paddingTop: 2 }} onClick={() => toggleUser(u.id)}>
-                      <CheckDot checked={checked} />
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }} onClick={() => toggleUser(u.id)}>
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                        <span style={{ fontSize: 14, fontWeight: 500 }}>{u.name || u.username}</span>
-                        <span style={{ fontSize: 12, color: '#999' }}>{u.username}</span>
-                      </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+                  <div key={u.id} className={`mac-select-row ${checked ? 'is-checked' : ''}`}>
+                    <span style={{ paddingTop: 2, cursor: 'pointer' }} onClick={() => toggleUser(u.id)}>
+                      <ChoiceDot checked={checked} />
+                    </span>
+                    <div className="mac-select-row__body" onClick={() => toggleUser(u.id)}>
+                      <span className="mac-select-row__name">{u.name || u.username}</span>
+                      <span className="mac-select-row__meta">{u.username}</span>
+                      <div className="mac-select-row__chips">
                         {ownedRoleIds.length > 0 ? (
                           ownedRoleIds.map((rid) => (
-                            <Tag key={rid} theme="success" variant="light" size="small">
+                            <span key={rid} className="mac-chip mac-chip--blue">
                               {roleNameMap.get(rid) || rid}
-                            </Tag>
+                            </span>
                           ))
                         ) : (
-                          <span style={{ fontSize: 12, color: '#ccc' }}>未授权</span>
+                          <span style={{ fontSize: 11, color: 'var(--mac-muted-fg)' }}>未授权</span>
                         )}
                       </div>
                     </div>
-                    <Button
-                      size="small"
-                      variant="outline"
-                      theme="primary"
+                    <button
+                      type="button"
+                      className="mac-btn mac-btn--ghost"
                       onClick={() => openUserEditor(u)}
                     >
                       编辑
-                    </Button>
+                    </button>
                   </div>
                 );
               })}
               {filteredUsers.length === 0 && (
-                <div style={{ textAlign: 'center', padding: 30, color: '#999' }}>暂无匹配用户</div>
+                <div className="mac-empty">暂无匹配用户</div>
               )}
+            </section>
+
+            {/* 选择角色（对照原型：单选角色芯片） */}
+            <div className="mac-section-title" style={{ marginTop: 8 }}>
+              <span className="mac-section-title__bar" />
+              <h2 className="mac-section-title__text">选择角色</h2>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '0 4px' }}>
+              {roles.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  className={`mac-filter-chip ${selectedRoleId === r.id ? 'is-active' : ''}`}
+                  onClick={() => setSelectedRoleId(selectedRoleId === r.id ? null : r.id)}
+                >
+                  {selectedRoleId === r.id && <MacCheck size={12} />}
+                  {r.name}
+                </button>
+              ))}
+            </div>
+
+            {/* 操作按钮（对照原型 Actions：移除角色 / 批量授权） */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 16 }}>
+              <button
+                type="button"
+                className="mac-btn mac-btn--lg mac-btn--outline"
+                disabled={!selectedProject || selectedCount === 0 || !selectedRoleId || submitting}
+                onClick={handleBatchRevoke}
+              >
+                移除角色
+              </button>
+              <button
+                type="button"
+                className="mac-btn mac-btn--lg mac-btn--primary"
+                disabled={!selectedProject || selectedCount === 0 || !selectedRoleId || submitting}
+                onClick={handleBatchGrant}
+              >
+                {submitting ? '提交中...' : '批量授权'}
+              </button>
             </div>
           </>
         )}
       </div>
-
-      {/* 底部批量操作栏 */}
-      {selectedProject && selectedCount > 0 && (
-        <div
-          style={{
-            position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 100,
-            background: '#fff', boxShadow: '0 -2px 12px rgba(0,0,0,0.08)',
-            padding: '10px 16px calc(10px + env(safe-area-inset-bottom))',
-            display: 'flex', alignItems: 'center', gap: 10,
-          }}
-        >
-          <span style={{ flex: 1, fontSize: 13, color: '#666' }}>已选 {selectedCount} 人</span>
-          <Button size="small" theme="primary" onClick={() => openRolePicker('assign')}>
-            批量授权
-          </Button>
-          <Button size="small" theme="danger" variant="outline" onClick={() => openRolePicker('remove')}>
-            批量移除
-          </Button>
-        </div>
-      )}
 
       {/* 项目选择弹窗 */}
       <Popup visible={projectPickerVisible} onClose={() => setProjectPickerVisible(false)} placement="bottom" showOverlay>
@@ -493,62 +508,21 @@ function ProjectFirstAssign({
         />
       </Popup>
 
-      {/* 批量角色选择弹窗（授权 / 移除） */}
-      <Popup visible={rolePickerMode !== null} onClose={() => setRolePickerMode(null)} placement="bottom" showOverlay>
-        <div style={{ padding: 20, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
-          <h4 style={{ marginBottom: 4 }}>
-            {rolePickerMode === 'assign' ? '批量授权角色' : '批量移除角色'}
-          </h4>
-          <p style={{ fontSize: 12, color: '#999', marginBottom: 12 }}>
-            将对已选 {selectedCount} 人在「{selectedProject?.name}」中{rolePickerMode === 'assign' ? '添加' : '移除'}勾选的角色
-          </p>
-          <div style={{ overflow: 'auto', flex: 1 }}>
-            {roles.map((r) => (
-              <div
-                key={r.id}
-                onClick={() =>
-                  setCheckedRoleIds((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(r.id)) next.delete(r.id);
-                    else next.add(r.id);
-                    return next;
-                  })
-                }
-                style={{
-                  padding: '10px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', gap: 8, fontSize: 14,
-                }}
-              >
-                <CheckDot checked={checkedRoleIds.has(r.id)} />
-                {r.name}
-              </div>
-            ))}
-          </div>
-          <Button
-            theme={rolePickerMode === 'assign' ? 'primary' : 'danger'}
-            block
-            style={{ marginTop: 16 }}
-            loading={submitting}
-            onClick={rolePickerMode === 'assign' ? handleBatchAssign : handleBatchRemove}
-          >
-            确认{rolePickerMode === 'assign' ? '授权' : '移除'}（{checkedRoleIds.size} 个角色）
-          </Button>
-        </div>
-      </Popup>
-
       {/* 单人角色编辑弹窗 */}
       <Popup visible={editingUser !== null} onClose={() => setEditingUser(null)} placement="bottom" showOverlay>
-        <div style={{ padding: 20, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
-          <h4 style={{ marginBottom: 4 }}>
+        <div className="mac-sheet" style={{ maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
+          <h4 className="mac-sheet__title" style={{ marginBottom: 4 }}>
             编辑角色：{editingUser?.name || editingUser?.username}
           </h4>
-          <p style={{ fontSize: 12, color: '#999', marginBottom: 12 }}>
+          <p className="mac-note" style={{ textAlign: 'left', marginBottom: 12 }}>
             项目「{selectedProject?.name}」，勾选即授权，取消即移除
           </p>
           <div style={{ overflow: 'auto', flex: 1 }}>
             {roles.map((r) => (
-              <div
+              <button
                 key={r.id}
+                type="button"
+                className={`mac-choice ${editingRoleIds.has(r.id) ? 'is-active' : ''}`}
                 onClick={() =>
                   setEditingRoleIds((prev) => {
                     const next = new Set(prev);
@@ -557,19 +531,23 @@ function ProjectFirstAssign({
                     return next;
                   })
                 }
-                style={{
-                  padding: '10px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', gap: 8, fontSize: 14,
-                }}
               >
-                <CheckDot checked={editingRoleIds.has(r.id)} />
-                {r.name}
-              </div>
+                <span className="mac-choice__dot">
+                  {editingRoleIds.has(r.id) && <MacCheck size={12} />}
+                </span>
+                <span className="mac-choice__label">{r.name}</span>
+              </button>
             ))}
           </div>
-          <Button theme="primary" block style={{ marginTop: 16 }} loading={submitting} onClick={handleSaveUserEditor}>
-            保存
-          </Button>
+          <button
+            type="button"
+            className="mac-btn mac-btn--primary mac-btn--block"
+            style={{ marginTop: 16 }}
+            disabled={submitting}
+            onClick={handleSaveUserEditor}
+          >
+            {submitting ? '保存中...' : '保存'}
+          </button>
         </div>
       </Popup>
     </div>
@@ -723,156 +701,214 @@ function UserFirstAssign({
     }
   };
 
-  const totalSelected = selectedUserIds.size + selectedRoleIds.size + selectedProjectCodes.size;
+  // 批量移除：逐用户 × 逐项目移除选中角色，统计结果
+  const handleRemove = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    try {
+      const selectedUsers = users.filter((u) => selectedUserIds.has(u.id));
+      const roleIds = Array.from(selectedRoleIds);
+      const projectCodes = Array.from(selectedProjectCodes);
+      const results = await Promise.allSettled(
+        selectedUsers.flatMap((u) =>
+          projectCodes.map((code) =>
+            request(`/users/${encodeURIComponent(u.username)}/roles/remove`, {
+              method: 'POST',
+              body: JSON.stringify({ project_id: code, role_ids: roleIds }),
+            }),
+          ),
+        ),
+      );
+      const okCount = results.filter((r) => r.status === 'fulfilled').length;
+      const failCount = results.length - okCount;
+      Toast({
+        message: failCount > 0
+          ? `移除完成：成功 ${okCount} 项，失败 ${failCount} 项`
+          : `已在 ${projectCodes.length} 个项目为 ${selectedUsers.length} 人移除 ${roleIds.length} 个角色`,
+        theme: failCount > 0 ? 'warning' : 'success',
+      });
+      if (failCount === 0) {
+        setSelectedUserIds(new Set());
+        setSelectedRoleIds(new Set());
+        setSelectedProjectCodes(new Set());
+      }
+      await reloadUsers();
+    } catch (err) {
+      Toast({ message: `移除失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
-    <div style={{ paddingBottom: totalSelected > 0 ? 72 : 16 }}>
+    <div style={{ paddingBottom: 16 }}>
       <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
         {/* 选择用户 */}
-        <SectionCard title="选择用户" count={selectedUserIds.size}>
-          <ClearableInput
-            value={keyword}
-            onChange={(v) => setKeyword(String(v))}
-            placeholder="搜索姓名 / 用户名"
-            style={{ marginBottom: 8 }}
-          />
-          <div
-            onClick={toggleSelectAllUsers}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', padding: '6px 0', fontSize: 13, color: '#666' }}
-          >
-            <CheckDot checked={allUsersSelected} />
-            全选（{filteredUsers.length} 人）
+        <PickCard title="选择用户" count={selectedUserIds.size}>
+          <div className="mac-search" style={{ margin: '0 16px 8px' }}>
+            <MacSearch size={16} />
+            <input
+              className="mac-search__input"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              placeholder="搜索姓名 / 用户名"
+            />
           </div>
+          <button
+            type="button"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, border: 'none', background: 'none',
+              cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--mac-muted-fg)',
+              padding: '8px 16px', width: '100%', textAlign: 'left',
+            }}
+            onClick={toggleSelectAllUsers}
+          >
+            <ChoiceDot checked={allUsersSelected} />
+            全选（{filteredUsers.length} 人）
+          </button>
           <div style={{ maxHeight: 260, overflow: 'auto' }}>
             {filteredUsers.map((u) => {
               const checked = selectedUserIds.has(u.id);
               return (
-                <div
+                <button
                   key={u.id}
+                  type="button"
+                  className={`mac-choice ${checked ? 'is-active' : ''}`}
+                  style={{ padding: '8px 16px', borderBottom: '1px solid rgba(232,234,234,0.6)' }}
                   onClick={() => toggleUser(u.id)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '8px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
-                    background: checked ? '#f0f7ff' : 'transparent',
-                  }}
                 >
-                  <CheckDot checked={checked} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ fontSize: 14, fontWeight: 500 }}>{u.name || u.username}</span>
-                    <span style={{ fontSize: 12, color: '#999', marginLeft: 8 }}>{u.username}</span>
-                  </div>
-                </div>
+                  <span className="mac-choice__dot">
+                    {checked && <MacCheck size={12} />}
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span className="mac-choice__label">{u.name || u.username}</span>
+                    <span style={{ fontSize: 11, color: 'var(--mac-muted-fg)', marginLeft: 8 }}>{u.username}</span>
+                  </span>
+                </button>
               );
             })}
             {filteredUsers.length === 0 && (
-              <div style={{ textAlign: 'center', padding: 20, color: '#999' }}>暂无匹配用户</div>
+              <div className="mac-empty">暂无匹配用户</div>
             )}
           </div>
-        </SectionCard>
+        </PickCard>
 
         {/* 选择角色 */}
-        <SectionCard title="选择角色" count={selectedRoleIds.size}>
-          <ClearableInput
-            value={roleKeyword}
-            onChange={(v) => setRoleKeyword(String(v))}
-            placeholder="搜索角色名称"
-            style={{ marginBottom: 8 }}
-          />
-          <div
-            onClick={toggleSelectAllRoles}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', padding: '6px 0', fontSize: 13, color: '#666' }}
-          >
-            <CheckDot checked={allRolesSelected} />
-            全选（{filteredRoles.length} 个角色）
+        <PickCard title="选择角色" count={selectedRoleIds.size}>
+          <div className="mac-search" style={{ margin: '0 16px 8px' }}>
+            <MacSearch size={16} />
+            <input
+              className="mac-search__input"
+              value={roleKeyword}
+              onChange={(e) => setRoleKeyword(e.target.value)}
+              placeholder="搜索角色名称"
+            />
           </div>
+          <button
+            type="button"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, border: 'none', background: 'none',
+              cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--mac-muted-fg)',
+              padding: '8px 16px', width: '100%', textAlign: 'left',
+            }}
+            onClick={toggleSelectAllRoles}
+          >
+            <ChoiceDot checked={allRolesSelected} />
+            全选（{filteredRoles.length} 个角色）
+          </button>
           <div style={{ maxHeight: 200, overflow: 'auto' }}>
             {filteredRoles.map((r) => {
               const checked = selectedRoleIds.has(r.id);
               return (
-                <div
+                <button
                   key={r.id}
+                  type="button"
+                  className={`mac-choice ${checked ? 'is-active' : ''}`}
+                  style={{ padding: '8px 16px', borderBottom: '1px solid rgba(232,234,234,0.6)' }}
                   onClick={() => toggleRole(r.id)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '8px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
-                    background: checked ? '#f0f7ff' : 'transparent',
-                  }}
                 >
-                  <CheckDot checked={checked} />
-                  <span style={{ fontSize: 14 }}>{r.name}</span>
-                </div>
+                  <span className="mac-choice__dot">
+                    {checked && <MacCheck size={12} />}
+                  </span>
+                  <span className="mac-choice__label">{r.name}</span>
+                </button>
               );
             })}
             {filteredRoles.length === 0 && (
-              <div style={{ textAlign: 'center', padding: 20, color: '#999' }}>暂无匹配角色</div>
+              <div className="mac-empty">暂无匹配角色</div>
             )}
           </div>
-        </SectionCard>
+        </PickCard>
 
         {/* 选择项目 */}
-        <SectionCard title="选择项目" count={selectedProjectCodes.size}>
-          <ClearableInput
-            value={projectKeyword}
-            onChange={(v) => setProjectKeyword(String(v))}
-            placeholder="搜索项目名称 / 编码"
-            style={{ marginBottom: 8 }}
-          />
-          <div
-            onClick={toggleSelectAllProjects}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', padding: '6px 0', fontSize: 13, color: '#666' }}
-          >
-            <CheckDot checked={allProjectsSelected} />
-            全选（{filteredProjects.length} 个项目）
+        <PickCard title="选择项目" count={selectedProjectCodes.size}>
+          <div className="mac-search" style={{ margin: '0 16px 8px' }}>
+            <MacSearch size={16} />
+            <input
+              className="mac-search__input"
+              value={projectKeyword}
+              onChange={(e) => setProjectKeyword(e.target.value)}
+              placeholder="搜索项目名称 / 编码"
+            />
           </div>
+          <button
+            type="button"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, border: 'none', background: 'none',
+              cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, color: 'var(--mac-muted-fg)',
+              padding: '8px 16px', width: '100%', textAlign: 'left',
+            }}
+            onClick={toggleSelectAllProjects}
+          >
+            <ChoiceDot checked={allProjectsSelected} />
+            全选（{filteredProjects.length} 个项目）
+          </button>
           <div style={{ maxHeight: 260, overflow: 'auto' }}>
             {filteredProjects.map((p) => {
               const checked = selectedProjectCodes.has(p.project_code);
               return (
-                <div
+                <button
                   key={p.project_code}
+                  type="button"
+                  className={`mac-choice ${checked ? 'is-active' : ''}`}
+                  style={{ padding: '8px 16px', borderBottom: '1px solid rgba(232,234,234,0.6)' }}
                   onClick={() => toggleProject(p.project_code)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '8px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
-                    background: checked ? '#f0f7ff' : 'transparent',
-                  }}
                 >
-                  <CheckDot checked={checked} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</div>
-                    <div style={{ fontSize: 12, color: '#999' }}>{p.project_code}</div>
-                  </div>
-                </div>
+                  <span className="mac-choice__dot">
+                    {checked && <MacCheck size={12} />}
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span className="mac-choice__label">{p.name}</span>
+                    <span style={{ display: 'block', fontSize: 11, color: 'var(--mac-muted-fg)', marginTop: 2 }}>{p.project_code}</span>
+                  </span>
+                </button>
               );
             })}
             {filteredProjects.length === 0 && (
-              <div style={{ textAlign: 'center', padding: 20, color: '#999' }}>暂无匹配项目</div>
+              <div className="mac-empty">暂无匹配项目</div>
             )}
           </div>
-        </SectionCard>
+        </PickCard>
       </div>
 
-      {/* 底部批量操作栏 */}
-      <div
-        style={{
-          position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 100,
-          background: '#fff', boxShadow: '0 -2px 12px rgba(0,0,0,0.08)',
-          padding: '10px 16px calc(10px + env(safe-area-inset-bottom))',
-          display: 'flex', alignItems: 'center', gap: 10,
-        }}
-      >
-        <span style={{ flex: 1, fontSize: 13, color: '#666' }}>
-          {selectedUserIds.size} 人 × {selectedRoleIds.size} 角色 × {selectedProjectCodes.size} 项目
-        </span>
-        <Button
-          size="small"
-          theme="primary"
+      {/* 操作按钮（对照原型 Actions：移除角色 / 批量授权） */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, padding: '0 16px' }}>
+        <button
+          type="button"
+          className="mac-btn mac-btn--lg mac-btn--outline"
           disabled={!canSubmit}
-          loading={submitting}
+          onClick={handleRemove}
+        >
+          移除角色
+        </button>
+        <button
+          type="button"
+          className="mac-btn mac-btn--lg mac-btn--primary"
+          disabled={!canSubmit}
           onClick={handleAssign}
         >
-          批量授权
-        </Button>
+          {submitting ? '提交中...' : '批量授权'}
+        </button>
       </div>
     </div>
   );
@@ -881,41 +917,6 @@ function UserFirstAssign({
 // ============================================================
 // 通用辅助组件
 // ============================================================
-
-// 自绘勾选圆点：避免 tdesign Checkbox 默认白色背景块在卡片上显得突兀
-function CheckDot({ checked }: { checked: boolean }) {
-  return (
-    <span
-      style={{
-        width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
-        border: checked ? 'none' : '1.5px solid #ccc',
-        background: checked ? '#0052d9' : 'transparent',
-        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        color: '#fff', fontSize: 12, lineHeight: 1, boxSizing: 'border-box',
-      }}
-    >
-      {checked ? '✓' : ''}
-    </span>
-  );
-}
-
-function PickerField({ label, value, placeholder, onClick }: { label: string; value: string; placeholder: string; onClick: () => void }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <label style={{ fontSize: 12, color: '#999' }}>{label}</label>
-      <div
-        onClick={onClick}
-        style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          fontSize: 14, background: '#f8fafc', borderRadius: 8, padding: '12px 14px', cursor: 'pointer',
-        }}
-      >
-        <span style={{ color: value ? '#333' : '#bbb' }}>{value || placeholder}</span>
-        <span style={{ color: '#999' }}>›</span>
-      </div>
-    </div>
-  );
-}
 
 function PickerList({ title, items, onSelect, searchable }: { title: string; items: { key: string; label: string; sub?: string }[]; onSelect: (key: string) => void; searchable?: boolean }) {
   const [keyword, setKeyword] = useState('');
@@ -930,32 +931,35 @@ function PickerList({ title, items, onSelect, searchable }: { title: string; ite
   }, [items, keyword]);
 
   return (
-    <div style={{ padding: 20, maxHeight: '60vh', display: 'flex', flexDirection: 'column' }}>
-      <h4 style={{ marginBottom: 12 }}>{title}</h4>
+    <div className="mac-sheet" style={{ maxHeight: '60vh', display: 'flex', flexDirection: 'column' }}>
+      <h4 className="mac-sheet__title">{title}</h4>
       {searchable && (
-        <ClearableInput
-          value={keyword}
-          onChange={(v) => setKeyword(String(v))}
-          placeholder="输入关键字搜索项目"
-          style={{ marginBottom: 8 }}
-        />
+        <div className="mac-search" style={{ marginBottom: 8 }}>
+          <MacSearch size={16} />
+          <input
+            className="mac-search__input"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="输入关键字搜索项目"
+          />
+        </div>
       )}
       <div style={{ overflow: 'auto', flex: 1 }}>
         {filteredItems.map((item) => (
-          <div
+          <button
             key={item.key}
+            type="button"
+            className="mac-list-item"
             onClick={() => onSelect(item.key)}
-            style={{
-              padding: '12px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
-              display: 'flex', flexDirection: 'column', gap: 2,
-            }}
           >
-            <span style={{ fontSize: 14, fontWeight: 500 }}>{item.label}</span>
-            {item.sub && <span style={{ fontSize: 12, color: '#999' }}>{item.sub}</span>}
-          </div>
+            <span style={{ minWidth: 0, flex: 1 }}>
+              <span className="mac-list-item__name">{item.label}</span>
+              {item.sub && <span className="mac-list-item__sub">{item.sub}</span>}
+            </span>
+          </button>
         ))}
         {filteredItems.length === 0 && (
-          <div style={{ textAlign: 'center', padding: 30, color: '#999' }}>
+          <div className="mac-empty">
             {keyword ? '暂无匹配结果' : '暂无数据'}
           </div>
         )}
@@ -964,38 +968,45 @@ function PickerList({ title, items, onSelect, searchable }: { title: string; ite
   );
 }
 
-// 入口选择卡片
-function ModeEntryCard({ emoji, title, desc, onClick }: { emoji: string; title: string; desc: string; onClick: () => void }) {
+// 入口选择卡片（对照原型 ModeCard：淡蓝图标块 + 标题/描述 + 箭头）
+function ModeEntryCard({ icon, title, desc, onClick }: { icon: ReactNode; title: string; desc: string; onClick: () => void }) {
   return (
-    <div
-      onClick={onClick}
-      style={{
-        background: '#fff', borderRadius: 12, padding: '20px 16px', cursor: 'pointer',
-        display: 'flex', alignItems: 'center', gap: 14,
-        boxShadow: '0 1px 4px rgba(0,0,0,0.06)', transition: 'transform 0.15s',
-      }}
-    >
-      <div style={{ fontSize: 30, lineHeight: 1 }}>{emoji}</div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 16, fontWeight: 600, color: '#333' }}>{title}</div>
-        <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>{desc}</div>
-      </div>
-      <span style={{ color: '#ccc', fontSize: 18 }}>›</span>
-    </div>
+    <button type="button" className="admin-entries-card" onClick={onClick}>
+      <span
+        className="admin-entries-card__icon"
+        style={{ background: 'var(--mac-blue-soft)', color: 'var(--mac-blue-2)' }}
+      >
+        {icon}
+      </span>
+      <span className="admin-entries-card__body">
+        <span className="admin-entries-card__label">{title}</span>
+        <span className="admin-entries-card__desc">{desc}</span>
+      </span>
+      <span style={{ color: 'var(--mac-muted-fg)', display: 'inline-flex', flexShrink: 0 }}>
+        <MacChevronRight size={16} />
+      </span>
+    </button>
   );
 }
 
-// 带标题与已选计数的卡片容器
-function SectionCard({ title, count, children }: { title: string; count: number; children: ReactNode }) {
+// 带标题与已选计数的选择卡片（对照原型 PickList 的 surface-card 容器）
+function PickCard({ title, count, children }: { title: string; count: number; children: ReactNode }) {
   return (
-    <div style={{ background: '#fff', borderRadius: 12, padding: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <h4 style={{ fontSize: 14, fontWeight: 600, color: '#333', margin: 0 }}>{title}</h4>
+    <section className="mac-card" style={{ overflow: 'hidden' }}>
+      <div
+        style={{
+          display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+          padding: '16px 16px 0',
+        }}
+      >
+        <h2 style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: 'var(--mac-fg)' }}>{title}</h2>
         {count > 0 && (
-          <Tag theme="primary" variant="light" size="small">已选 {count}</Tag>
+          <span style={{ fontSize: 11, color: 'var(--mac-muted-fg)' }}>已选 {count}</span>
         )}
       </div>
-      {children}
-    </div>
+      <div style={{ padding: '12px 0 8px' }}>
+        {children}
+      </div>
+    </section>
   );
 }

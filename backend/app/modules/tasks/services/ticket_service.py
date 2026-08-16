@@ -14,14 +14,19 @@ from app.services.user_service import user_service
 
 
 def convert_to_shanghai_time(dt: Optional[datetime]) -> Optional[datetime]:
+    """deadline_at 写入前的时区归一。
+
+    DB 已强制会话 UTC（db.py 的 _ensure_utc_session），naive DateTime 列统一存 UTC。
+    前端 dayjs(...).toISOString() 传入的是 UTC aware datetime，这里剥时区转 naive UTC 即可，
+    不再转 +8（否则前端 parseUtcDate 补 Z 会双重 +8）。
+    """
     if dt is None:
         return None
-    
+
     if dt.tzinfo is not None:
         utc_dt = dt.astimezone(timezone.utc)
-        shanghai_dt = utc_dt + timedelta(hours=8)
-        return shanghai_dt.replace(tzinfo=None)
-    
+        return utc_dt.replace(tzinfo=None)
+
     return dt
 
 

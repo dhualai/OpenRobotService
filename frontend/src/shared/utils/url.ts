@@ -85,27 +85,54 @@ export function buildWechatAuthUrl(state: string): string {
   return `${baseUrl}?${params.toString()}#wechat_redirect`;
 }
 
+/**
+ * 把后端时间字符串解析为本地时区 Date。
+ *
+ * 后端在数据库引擎层已强制每个连接的会话时区为 UTC（见 backend/app/core/db.py 的
+ * `_ensure_utc_session`），因此 ``func.now()`` 一律返回 UTC 时间，本地/生产一致。
+ *
+ * - 无时区 ISO 字符串（如 "2026-08-15T07:55:55"）：来自 naive DateTime 列，存储的是 UTC，
+ *   补 ``Z`` 标记为 UTC 后由浏览器按本地时区自动 +8 转换。
+ * - 已带时区（``Z`` / ``±HH:MM``）的字符串：原样解析（aware datetime 经 pydantic 序列化输出）。
+ *
+ * 不写死 +8，跨时区浏览器同样正确。
+ */
+export function parseUtcDate(dateString: string): Date | null {
+  if (!dateString) return null;
+  let s = String(dateString).trim().replace(' ', 'T');
+  const hasTz = /([+-]\d{2}:?\d{2}|Z)$/.test(s);
+  if (!hasTz && /T\d{2}:\d{2}/.test(s)) s += 'Z';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 export function formatDateTime(dateString: string): string {
-  if (!dateString) return '';
-  const d = new Date(dateString);
-  if (isNaN(d.getTime())) return '';
+  const d = parseUtcDate(dateString);
+  if (!d) return '';
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /** 统一日期时间格式：「2026/08/12 09:37」，24h 制 */
 export function formatDateTimeShort(dateString: string): string {
-  if (!dateString) return '';
-  const d = new Date(dateString);
-  if (isNaN(d.getTime())) return '';
+  const d = parseUtcDate(dateString);
+  if (!d) return '';
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** 完整日期时间格式（24h 制，精确到秒）：「2026/08/12 09:37:45」 */
+export function formatDateTimeFull(dateString: string): string {
+  const d = parseUtcDate(dateString);
+  if (!d) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 export function formatTime(dateString: string): string {
   if (!dateString) return '刚刚';
-  const date = new Date(dateString);
-  if (isNaN(date.getTime())) return '刚刚';
+  const date = parseUtcDate(dateString);
+  if (!date) return '刚刚';
 
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
@@ -118,13 +145,6 @@ export function formatTime(dateString: string): string {
   if (diffHours < 24) return `${diffHours}小时前`;
   if (diffDays < 7) return `${diffDays}天前`;
 
-  return date.toLocaleString('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }

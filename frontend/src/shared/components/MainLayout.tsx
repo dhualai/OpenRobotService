@@ -1,10 +1,10 @@
 // 工作台主布局：底部三 Tab（我要摇人 / 系统任务 / 后台管理）= 三视角
-// TabBar 的 value 与路由同步，切换时同步 workbench store 的 activeTab，
-// 使跨视图联动（goToTab）能正确驱动 TabBar 高亮。
+// 底部导航与路由同步，切换时同步 workbench store 的 activeTab，
+// 使跨视图联动（goToTab）能正确驱动导航高亮。
+// 导航样式参考 macaron-minimal-ui 的 BottomNav：玻璃条 + 选中淡蓝圆角块 + 描边图标。
 import { Suspense, useEffect, useRef } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { TabBar, TabBarItem, Loading } from 'tdesign-mobile-react';
-import { Radio, LayoutGrid, Gauge } from 'lucide-react';
+import { Loading } from 'tdesign-mobile-react';
 import { useWorkbenchStore, type WorkbenchTab } from '@/stores/workbench';
 
 const TAB_PATHS: Record<WorkbenchTab, string> = {
@@ -19,6 +19,56 @@ function pathToTab(pathname: string): WorkbenchTab {
   if (pathname.startsWith('/admin')) return 'admin';
   return 'call';
 }
+
+/** 底部三 Tab 图标：与 macaron BottomNav 的 lucide 图标同款线条（radio / layout-grid / gauge） */
+function NavIcon({ type }: { type: WorkbenchTab }) {
+  const common = {
+    width: 18,
+    height: 18,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+  };
+  if (type === 'call') {
+    // lucide radio：广播波纹
+    return (
+      <svg {...common}>
+        <path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9" />
+        <path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5" />
+        <circle cx="12" cy="12" r="2" />
+        <path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5" />
+        <path d="M19.1 4.9C23 8.8 23 15.2 19.1 19.1" />
+      </svg>
+    );
+  }
+  if (type === 'tasks') {
+    // lucide layout-grid：四宫格
+    return (
+      <svg {...common}>
+        <rect width="7" height="7" x="3" y="3" rx="1" />
+        <rect width="7" height="7" x="14" y="3" rx="1" />
+        <rect width="7" height="7" x="14" y="14" rx="1" />
+        <rect width="7" height="7" x="3" y="14" rx="1" />
+      </svg>
+    );
+  }
+  // lucide gauge：仪表盘
+  return (
+    <svg {...common}>
+      <path d="m12 14 4-4" />
+      <path d="M3.34 19a10 10 0 1 1 17.32 0" />
+    </svg>
+  );
+}
+
+const NAV_ITEMS: { tab: WorkbenchTab; label: string }[] = [
+  { tab: 'call', label: '我要摇人' },
+  { tab: 'tasks', label: '系统任务' },
+  { tab: 'admin', label: '后台管理' },
+];
 
 export default function MainLayout() {
   const navigate = useNavigate();
@@ -41,8 +91,7 @@ export default function MainLayout() {
     if (contentRef.current) contentRef.current.scrollTop = 0;
   }, [location.pathname]);
 
-  const handleChange = (value: string | number) => {
-    const tab = String(value) as WorkbenchTab;
+  const handleChange = (tab: WorkbenchTab) => {
     setActiveTab(tab);
     navigate(TAB_PATHS[tab]);
   };
@@ -54,19 +103,25 @@ export default function MainLayout() {
           <Outlet />
         </Suspense>
       </div>
-      {/* 底部三 Tab：lucide 线性图标（Radio/LayoutGrid/Gauge，与设计稿一致） + 文字，
-          玻璃栏 + 36×36 圆角方形胶囊激活态见 global.css */}
-      <TabBar value={activeTab} onChange={handleChange} placeholder>
-        <TabBarItem value="call" icon={<Radio size={18} strokeWidth={2} />}>
-          我要摇人
-        </TabBarItem>
-        <TabBarItem value="tasks" icon={<LayoutGrid size={18} strokeWidth={2} />}>
-          系统任务
-        </TabBarItem>
-        <TabBarItem value="admin" icon={<Gauge size={18} strokeWidth={2} />}>
-          后台管理
-        </TabBarItem>
-      </TabBar>
+      {/* 底部三 Tab：马卡龙极简风（参考 macaron BottomNav） */}
+      <nav className="app-bottom-nav" data-testid="app-bottom-nav">
+        <div className="app-bottom-nav__items">
+          {NAV_ITEMS.map(({ tab, label }) => (
+            <button
+              key={tab}
+              type="button"
+              data-testid={`nav-item-${tab}`}
+              className={`app-bottom-nav__item ${activeTab === tab ? 'is-active' : ''}`}
+              onClick={() => handleChange(tab)}
+            >
+              <span className="app-bottom-nav__icon">
+                <NavIcon type={tab} />
+              </span>
+              <span className="app-bottom-nav__label">{label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
     </div>
   );
 }

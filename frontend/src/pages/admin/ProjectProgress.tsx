@@ -1,13 +1,17 @@
 // 项目进度管理 —— 聚合项目列表 + 风险状态，侧重视觉化项目进度
+// 样式参考 macaron projects.index 页：双指标卡 + 卡片搜索框 + surface-card 项目卡
+// （阶段标签 + 进度条 + 四格小指标），保留长按删除与看板筛选下钻。
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Button, Toast, Loading, Popup, Dialog } from 'tdesign-mobile-react';
-import ClearableInput from '@/shared/components/ClearableInput';
+import { Toast, Loading, Popup, Dialog } from 'tdesign-mobile-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { aiGet } from '@/api/ai';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import { currentYearMonth, normalizeSettlementPeriod } from '@/shared/utils/settlement';
 import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
+import { MacStat } from '@/shared/components/macaronBits';
+import { MacSearch, MacFolderClosed } from '@/shared/components/macaronIcons';
 
 interface TaskExecutionStats {
   total_tasks: number;
@@ -28,7 +32,9 @@ interface ProjectItem {
   task_execution_status: string;
   task_execution_stats?: TaskExecutionStats | null;
   latest_manual_switch_count?: number | null;
-  settlement_period?: string | null; // 业绩核算期，格式 YYYY-MM，来自企业微信同步
+  settlement_period?: string | null; // 业绩核算期，手工填写常见 YYYYMM（如 202608），兼容 YYYY-MM，来自企业微信同步
+  deployment_date?: string | null;   // 部署时间
+  final_delivery_date?: string | null; // 最终交付时间
 }
 
 // 企业微信实时台账记录（GET /api/ai/wecom/projects 返回，values 的键为企业微信智能表格列名）
@@ -47,9 +53,15 @@ const FILTER_LABELS: Record<ProjectFilter, string> = {
   no_contact: '对接人缺省',
 };
 
-function currentYearMonth(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+/** 项目时间进度：部署日期 → 最终交付日期的已过时间占比（0-100）。
+ *  任一日期缺失或区间非法时返回 null（卡片隐藏进度条，不展示伪造数据）。 */
+function calcTimeProgress(deploymentDate?: string | null, finalDeliveryDate?: string | null): number | null {
+  if (!deploymentDate || !finalDeliveryDate) return null;
+  const start = new Date(`${deploymentDate}T00:00:00`).getTime();
+  const end = new Date(`${finalDeliveryDate}T00:00:00`).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return null;
+  const now = Date.now();
+  return Math.max(0, Math.min(100, Math.round(((now - start) / (end - start)) * 100)));
 }
 
 export default function ProjectProgress() {
@@ -164,7 +176,7 @@ export default function ProjectProgress() {
     let list = projects;
     if (filter === 'new') {
       const ym = currentYearMonth();
-      list = list.filter((p) => p.settlement_period === ym);
+      list = list.filter((p) => normalizeSettlementPeriod(p.settlement_period) === ym);
     } else if (filter === 'risk') {
       list = list.filter((p) => p.risks > 0);
     } else if (filter === 'no_contact') {
@@ -178,57 +190,54 @@ export default function ProjectProgress() {
   })();
 
   return (
-    <div style={{ padding: 16 }}>
-      {/* 概览卡片 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 16 }}>
-        <StatCard label="项目总数" value={projects.length} color="#0052d9" />
-        <StatCard label="活跃项目" value={activeCount} color="#2ba471" />
+    <div className="mac-page">
+      {/* 概览卡片（对照原型：双 surface-card 指标卡） */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 12 }}>
+        <div className="mac-card" style={{ padding: 16 }}>
+          <MacStat value={projects.length} label="项目总数" tone="blue-2" />
+        </div>
+        <div className="mac-card" style={{ padding: 16 }}>
+          <MacStat value={activeCount} label="活跃项目" tone="blue-3" />
+        </div>
       </div>
 
       {/* 项目名称搜索 */}
-      <div style={{ marginBottom: 12 }}>
-        <ClearableInput
+      <div className="mac-search mac-search--card" style={{ marginBottom: 12 }}>
+        <MacSearch size={16} />
+        <input
+          className="mac-search__input"
           value={keyword}
-          onChange={(v) => setKeyword(String(v))}
+          onChange={(e) => setKeyword(e.target.value)}
           placeholder="搜索项目名称 · 长按删除项目"
         />
       </div>
 
       {/* 筛选提示条：从跨项目看板某个统计数字点进来时显示，可点击返回全部项目 */}
       {filter && (
-        <div style={{
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          background: '#eef1f4', borderRadius: 8, padding: '10px 14px', marginBottom: 12, fontSize: 13,
-        }}>
+        <div className="mac-filter-banner">
           <span>当前筛选：<strong>{FILTER_LABELS[filter]}</strong>（{displayProjects.length}）</span>
-          <span
-            style={{ color: '#0052d9', cursor: 'pointer' }}
-            onClick={() => setSearchParams({})}
-          >
+          <button type="button" className="mac-filter-banner__back" onClick={() => setSearchParams({})}>
             查看全部
-          </span>
+          </button>
         </div>
       )}
 
       {/* 项目列表 */}
       {displayProjects.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>
+        <div className="mac-empty" style={{ padding: '40px 0' }}>
           {filter ? '暂无符合条件的项目' : '暂无项目数据'}
         </div>
       ) : (
         displayProjects.map((p) => {
           const hasRisk = p.risks > 0;
           const wecomManager = wecomManagerOf(p);
+          const completionRate = p.task_execution_stats?.completion_rate;
+          const timeProgress = calcTimeProgress(p.deployment_date, p.final_delivery_date);
 
           return (
             <div
               key={p.id}
-              style={{
-                background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10,
-                boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
-                borderLeft: hasRisk ? '3px solid #d54941' : '3px solid transparent',
-                userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'manipulation',
-              }}
+              className="mac-proj-card"
               onClick={() => {
                 // 长按刚触发时不再进入详情页，避免删除操作被导航打断
                 if (longPressFired.current) { longPressFired.current = false; return; }
@@ -241,43 +250,53 @@ export default function ProjectProgress() {
               onMouseUp={cancelLongPress}
               onMouseLeave={cancelLongPress}
             >
-              <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600, fontSize: 15 }}>
-                {p.name}
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                <span style={{
-                  fontSize: 11, padding: '2px 8px', borderRadius: 10,
-                  background: '#f0f0f0', color: '#666',
-                }}>
-                  {p.status}
+              <div className="mac-proj-card__title">{p.name}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                <span className="mac-chip mac-chip--tag mac-chip--blue">{p.status}</span>
+                <span style={{ fontSize: 11.5, color: 'var(--mac-muted-fg)' }}>
+                  {p.project_code} · 项目经理: {wecomManager || p.project_manager || '未指定'}
                 </span>
               </div>
-              <div style={{ fontSize: 12, color: '#999', marginTop: 6 }}>
-                {p.project_code} · 项目经理: {wecomManager || p.project_manager || '未指定'}
-              </div>
+
+              {/* 项目时间进度（对照原型：部署→最终交付的时间占比，日期缺失时隐藏） */}
+              {timeProgress != null && (
+                <div className="mac-progress">
+                  <div className="mac-progress__head">
+                    <span>项目时间进度</span>
+                    <span className="mac-progress__pct">{timeProgress}%</span>
+                  </div>
+                  <div className="mac-progress__track">
+                    <div className="mac-progress__fill" style={{ width: `${timeProgress}%` }} />
+                  </div>
+                </div>
+              )}
 
               {/* 任务统计：任务总数 / 已完成任务 / 任务完成率 / 切手动次数 */}
-              <div style={{
-                marginTop: 10,
-                display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6,
-              }}>
-                <MiniStat label="任务总数" value={p.task_execution_stats?.total_tasks ?? '-'} />
-                <MiniStat label="已完成任务" value={p.task_execution_stats?.finished_tasks ?? '-'} />
-                <MiniStat
-                  label="任务完成率"
-                  value={
-                    p.task_execution_stats?.completion_rate != null
-                      ? `${Math.round(p.task_execution_stats.completion_rate * 100)}%`
-                      : '-'
-                  }
-                />
-                <MiniStat label="切手动次数" value={p.latest_manual_switch_count ?? '-'} />
+              <div className="mac-ministat-grid">
+                <div className="mac-ministat">
+                  <div className="mac-ministat__value">{p.task_execution_stats?.total_tasks ?? '-'}</div>
+                  <div className="mac-ministat__label">任务总数</div>
+                </div>
+                <div className="mac-ministat">
+                  <div className="mac-ministat__value">{p.task_execution_stats?.finished_tasks ?? '-'}</div>
+                  <div className="mac-ministat__label">已完成任务</div>
+                </div>
+                <div className="mac-ministat">
+                  <div className="mac-ministat__value">
+                    {completionRate != null ? `${Math.round(completionRate * 100)}%` : '-'}
+                  </div>
+                  <div className="mac-ministat__label">任务完成率</div>
+                </div>
+                <div className="mac-ministat">
+                  <div className="mac-ministat__value">{p.latest_manual_switch_count ?? '-'}</div>
+                  <div className="mac-ministat__label">切手动次数</div>
+                </div>
               </div>
 
-              {/* 进度条简易展示 */}
+              {/* 风险提示 */}
               {hasRisk && (
-                <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #f0f0f0' }}>
-                  <span style={{ fontSize: 12, color: '#d54941' }}>⚠ {p.risks} 项未关闭风险</span>
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(232,234,234,0.6)' }}>
+                  <span style={{ fontSize: 12, color: '#ad4545' }}>⚠ {p.risks} 项未关闭风险</span>
                 </div>
               )}
             </div>
@@ -286,40 +305,42 @@ export default function ProjectProgress() {
       )}
 
       {/* 快捷入口 */}
-      <div style={{ marginTop: 20, display: 'flex', gap: 12 }}>
-        <Button theme="primary" block onClick={() => navigate('/admin/project-manage')}>
-          📁 全部项目管理
-        </Button>
+      <div style={{ marginTop: 20 }}>
+        <button
+          type="button"
+          className="mac-btn mac-btn--primary mac-btn--block"
+          onClick={() => navigate('/admin/project-manage')}
+        >
+          <MacFolderClosed size={16} />
+          全部项目管理
+        </button>
       </div>
 
       {/* 长按项目 → 「删除项目」操作卡片 */}
       <Popup visible={!!longPressProject} onClose={() => setLongPressProject(null)} placement="bottom" showOverlay>
-        <div style={{ padding: 20 }}>
-          <h4 style={{ marginBottom: 16, fontSize: 15, fontWeight: 600 }}>
+        <div className="mac-sheet">
+          <h4 className="mac-sheet__title" style={{ fontSize: 15 }}>
             {longPressProject?.name}
           </h4>
-          <div
+          <button
+            type="button"
+            className="mac-list-item"
+            style={{ background: '#fbecec', color: '#ad4545' }}
             onClick={() => {
               setDeleteConfirmProject(longPressProject);
               setLongPressProject(null);
             }}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: '12px 14px', borderRadius: 8,
-              background: '#fef2f2', color: '#d54941',
-              fontWeight: 500, fontSize: 14, cursor: 'pointer',
-            }}
           >
-            <span>🗑</span>
-            <span>删除项目</span>
-          </div>
-          <div style={{ textAlign: 'right', marginTop: 16 }}>
-            <span
+            <span style={{ fontSize: 14, fontWeight: 500 }}>删除项目</span>
+          </button>
+          <div style={{ textAlign: 'right', marginTop: 12 }}>
+            <button
+              type="button"
+              className="mac-back-link"
               onClick={() => setLongPressProject(null)}
-              style={{ fontSize: 13, color: '#999', cursor: 'pointer', padding: 4 }}
             >
               取消
-            </span>
+            </button>
           </div>
         </div>
       </Popup>
@@ -334,28 +355,10 @@ export default function ProjectProgress() {
         onCancel={() => setDeleteConfirmProject(null)}
         onClose={() => setDeleteConfirmProject(null)}
       >
-        <p style={{ fontSize: 14, lineHeight: 1.7, color: '#333' }}>
+        <p style={{ fontSize: 14, lineHeight: 1.7, color: 'var(--mac-fg)' }}>
           确定要删除项目「<strong>{deleteConfirmProject?.name}</strong>」吗？此操作不可恢复。
         </p>
       </Dialog>
-    </div>
-  );
-}
-
-function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
-  return (
-    <div style={{ background: '#fff', borderRadius: 8, padding: '14px 12px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)', textAlign: 'center' }}>
-      <div style={{ fontSize: 26, fontWeight: 700, color }}>{value}</div>
-      <div style={{ fontSize: 13, color: '#999', marginTop: 2 }}>{label}</div>
-    </div>
-  );
-}
-
-function MiniStat({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div style={{ background: '#f7f8fa', borderRadius: 6, padding: '6px 4px', textAlign: 'center' }}>
-      <div style={{ fontSize: 14, fontWeight: 600, color: '#333' }}>{value}</div>
-      <div style={{ fontSize: 10, color: '#999', marginTop: 2 }}>{label}</div>
     </div>
   );
 }

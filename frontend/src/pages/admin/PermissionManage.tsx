@@ -1,11 +1,13 @@
-// 权限管理 - 增强版：创建/编辑/删除权限 + 启用开关 + 搜索
-// 基于接口文档 /api/admin/permissions
+// 权限管理 —— 权限项 CRUD + 启用开关 + 实时搜索，基于接口 /api/admin/permissions。
+// 样式参考 macaron permissions 页：大号新建按钮 + 卡片搜索框 +
+// surface-card 权限行卡（名称/编码/作用域 + 开关 + 删除）+ 弹层表单。
 import { useState, useEffect, useCallback } from 'react';
-import { Button, Switch, Toast, Loading, Dialog, Popup, Form, FormItem } from 'tdesign-mobile-react';
-import ClearableInput from '@/shared/components/ClearableInput';
+import { Toast, Loading, Dialog, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import { MacPlus, MacSearch } from '@/shared/components/macaronIcons';
+import { MacSwitch } from '@/shared/components/macaronBits';
 
 interface Permission { id: string; code: string; name: string; resource_type: string; action: string; enabled: boolean; }
 
@@ -23,8 +25,6 @@ export default function PermissionManage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<{ code: string; name: string; resource_type: string; action: string }>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
-  // 用于强制 Form 重新挂载，使 initialData 在每次打开时重新读取
-  const [formKey, setFormKey] = useState(0);
   const [formOriginal, setFormOriginal] = useState<{ code: string; name: string; resource_type: string; action: string }>(EMPTY_FORM);
 
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
@@ -51,7 +51,6 @@ export default function PermissionManage() {
     setEditingId(null);
     setForm(EMPTY_FORM);
     setFormOriginal(EMPTY_FORM);
-    setFormKey((k) => k + 1);
     setDialogVisible(true);
   };
 
@@ -60,7 +59,6 @@ export default function PermissionManage() {
     const nextForm = { code: perm.code, name: perm.name, resource_type: perm.resource_type, action: perm.action };
     setForm(nextForm);
     setFormOriginal(nextForm);
-    setFormKey((k) => k + 1);
     setDialogVisible(true);
   };
 
@@ -125,66 +123,113 @@ export default function PermissionManage() {
     : permissions;
 
   return (
-    <div style={{ padding: 16 }}>
-      <Button theme="primary" block style={{ marginBottom: 12 }} onClick={openCreate}>
+    <div className="mac-page">
+      <button type="button" className="mac-btn mac-btn--primary mac-btn--lg mac-btn--block" onClick={openCreate}>
+        <MacPlus size={16} />
         新建权限
-      </Button>
+      </button>
 
-      <ClearableInput
-        value={keyword}
-        onChange={(v) => setKeyword(String(v))}
-        placeholder="搜索权限名称或编码"
-        style={{ marginBottom: 12 }}
-      />
+      <div className="mac-search mac-search--card" style={{ marginTop: 12 }}>
+        <MacSearch size={16} />
+        <input
+          className="mac-search__input"
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          placeholder="搜索权限名称或编码"
+        />
+      </div>
 
-      {filtered.map((perm) => (
-        <div
-          key={perm.id}
-          onClick={() => openEdit(perm)}
-          style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 500 }}>{perm.name}</div>
-              <div style={{ fontSize: 13, color: '#999', marginTop: 2, wordBreak: 'break-all' }}>{perm.code}</div>
-              <div style={{ fontSize: 13, color: '#666', marginTop: 2 }}>{perm.resource_type} · {perm.action}</div>
+      <div style={{ marginTop: 12 }}>
+        {filtered.map((perm) => (
+          <div
+            key={perm.id}
+            className="mac-perm-card"
+            onClick={() => openEdit(perm)}
+          >
+            <div className="mac-perm-card__body">
+              <div className="mac-perm-card__name">{perm.name}</div>
+              <div className="mac-perm-card__code">{perm.code}</div>
+              <div className="mac-perm-card__meta">{perm.resource_type} · {perm.action}</div>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
-              <Switch value={perm.enabled} onChange={() => togglePermission(perm)} />
-              <Button size="small" theme="danger" variant="outline" onClick={() => handleDelete(perm)}>删除</Button>
+            <div className="mac-perm-card__actions" onClick={(e) => e.stopPropagation()}>
+              <MacSwitch checked={perm.enabled} onChange={() => togglePermission(perm)} />
+              <button
+                type="button"
+                className="mac-btn mac-btn--ghost"
+                onClick={() => handleDelete(perm)}
+              >
+                删除
+              </button>
             </div>
           </div>
-        </div>
-      ))}
+        ))}
 
-      {filtered.length === 0 && (
-        <div style={{ textAlign: 'center', color: '#999', padding: 20 }}>暂无权限数据</div>
-      )}
+        {filtered.length === 0 && (
+          <div className="mac-empty">暂无权限数据</div>
+        )}
+      </div>
 
       {/* 新建/编辑权限弹窗 */}
       <Popup visible={dialogVisible} onClose={() => setDialogVisible(false)} placement="bottom" showOverlay>
-        <div style={{ padding: 20 }}>
-          <h4 style={{ marginBottom: 16 }}>{editingId ? '编辑权限' : '新建权限'}</h4>
-          <Form key={formKey} initialData={form}>
-            <FormItem label="权限编码" name="code">
-              <ClearableInput value={form.code} onChange={(v) => setForm((p) => ({ ...p, code: String(v) }))} placeholder="如 backend:permission:base:read" />
-            </FormItem>
-            <FormItem label="权限名称" name="name">
-              <ClearableInput value={form.name} onChange={(v) => setForm((p) => ({ ...p, name: String(v) }))} placeholder="如 基础权限" />
-            </FormItem>
-            <FormItem label="资源类型" name="resource_type">
-              <ClearableInput value={form.resource_type} onChange={(v) => setForm((p) => ({ ...p, resource_type: String(v) }))} placeholder="如 backend" />
-            </FormItem>
-            <FormItem label="操作" name="action">
-              <ClearableInput value={form.action} onChange={(v) => setForm((p) => ({ ...p, action: String(v) }))} placeholder="如 read, write" />
-            </FormItem>
-            <FormItem>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <Button theme="default" block onClick={() => setDialogVisible(false)}>取消</Button>
-                <Button theme="primary" block onClick={handleSave} loading={submitting}>{editingId ? '保存' : '创建'}</Button>
-              </div>
-            </FormItem>
-          </Form>
+        <div className="mac-sheet">
+          <h4 className="mac-sheet__title">{editingId ? '编辑权限' : '新建权限'}</h4>
+
+          <div className="mac-field">
+            <span className="mac-field__label">权限编码</span>
+            <div className="mac-field__content">
+              <input
+                className="mac-input"
+                value={form.code}
+                onChange={(e) => setForm((p) => ({ ...p, code: e.target.value }))}
+                placeholder="如 backend:permission:base:read"
+              />
+            </div>
+          </div>
+
+          <div className="mac-field">
+            <span className="mac-field__label">权限名称</span>
+            <div className="mac-field__content">
+              <input
+                className="mac-input"
+                value={form.name}
+                onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+                placeholder="如 基础权限"
+              />
+            </div>
+          </div>
+
+          <div className="mac-field">
+            <span className="mac-field__label">资源类型</span>
+            <div className="mac-field__content">
+              <input
+                className="mac-input"
+                value={form.resource_type}
+                onChange={(e) => setForm((p) => ({ ...p, resource_type: e.target.value }))}
+                placeholder="如 backend"
+              />
+            </div>
+          </div>
+
+          <div className="mac-field" style={{ borderBottom: 'none' }}>
+            <span className="mac-field__label">操作</span>
+            <div className="mac-field__content">
+              <input
+                className="mac-input"
+                value={form.action}
+                onChange={(e) => setForm((p) => ({ ...p, action: e.target.value }))}
+                placeholder="如 read, write"
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+            <button type="button" className="mac-btn mac-btn--outline mac-btn--block" onClick={() => setDialogVisible(false)}>
+              取消
+            </button>
+            <button type="button" className="mac-btn mac-btn--primary mac-btn--block" disabled={submitting} onClick={handleSave}>
+              {submitting ? '保存中...' : (editingId ? '保存' : '创建')}
+            </button>
+          </div>
         </div>
       </Popup>
     </div>

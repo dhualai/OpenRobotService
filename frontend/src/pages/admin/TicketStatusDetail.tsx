@@ -5,6 +5,7 @@ import { Navbar, Loading } from 'tdesign-mobile-react';
 import { fetchTicketsByStatus, type TicketListItem } from '@/api/dashboard';
 import { TICKET_STATUS_MAP } from '@/shared/constants/dashboard';
 import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
+import { formatDateTime } from '@/shared/utils/url';
 
 export default function TicketStatusDetail() {
   const { status = '' } = useParams<{ status: string }>();
@@ -57,7 +58,7 @@ export default function TicketStatusDetail() {
                 <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
                   {t.priority ? `${t.priority}优先级` : ''}
                   {t.assignee_name ? ` · 处理人: ${t.assignee_name}` : ''}
-                  {t.created_at ? ` · ${new Date(t.created_at).toLocaleDateString('zh-CN')}` : ''}
+                  {t.created_at ? ` · ${formatDateTime(t.created_at).slice(0, 10)}` : ''}
                 </div>
               </div>
             ))
