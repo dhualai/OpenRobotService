@@ -78,7 +78,7 @@ def _attachment_kind(filename: str, path: str = "") -> str:
 def _build_progress_emitter(task_id, run_id, live_todo: dict):
     """构造 Supervisor 单项进度回调：累积 live_todo 并广播 ai.progress 到后端 WS。
 
-    让前端像 Claude Code 一样，在执行过程中实时看到"正在做哪一步 / 已完成哪步"。
+    让前端在执行过程中实时看到"正在做哪一步 / 已完成哪步"。
     """
     def emitter(payload: dict) -> None:
         tid = payload.get("id")
@@ -125,8 +125,8 @@ class DiscussFlow:
     async def discuss(self, task_id: str, query: str, context: dict) -> dict:
         """@U老师 讨论：基于讨论历史 + 工单上下文 + 按需附件/历史工单 回复。
 
-        Supervisor 派发能力时的实时进度会通过后端 WS 广播 ai.progress，前端像
-        Claude Code 一样动态展示执行过程；最终回复只写纯粹答复（不含过程块）。
+        Supervisor 派发能力时的实时进度会通过后端 WS 广播 ai.progress，前端动态
+        展示执行过程；最终回复只写纯粹答复（不含过程块）。
         """
         t0 = time.perf_counter()
         self._pop_trace()
@@ -312,7 +312,7 @@ class DiscussFlow:
         if need_supervisor and available_caps and not is_pure_chat:
             supervisor = Supervisor(llm_client=self._llm_client)
 
-            # 实时进度流（改造点 G6.5 / Claude Code 式动态执行过程）：
+            # 实时进度流（改造点 G6.5 / 动态执行过程）：
             #  - 每项能力 running/done 时，通过后端 WS 广播 ai.progress，前端边跑边展示；
             #  - 同时把最新状态累积到 reasoning_trace.todo（供最终返回 + 失败保底）。
             run_id = f"{task_id}:{int(time.time() * 1000)}"
@@ -543,7 +543,7 @@ class DiscussFlow:
 
         # 5. 回复写入 task_comments
         #    最终评论只写入纯粹答复（不含"分析过程"）——执行过程已通过 ai.progress
-        #    WS 事件在前端动态展示（Claude Code 式），不污染最终回复。
+        #    WS 事件在前端动态展示，不污染最终回复。
         comment_reply = reply.strip()
         try:
             self._add_diagnosis_comment_short(int(task_id), comment_reply)
