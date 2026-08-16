@@ -6,12 +6,14 @@
 // 微信化交互：消息引用（长按→引用；气泡内引用块可点击定位原消息）、长按操作菜单（引用/复制/删除）、气泡样式优化。
 import { useState, useRef, useEffect, useMemo, useCallback, Fragment } from 'react';
 import { Button, Toast, Popover } from 'tdesign-mobile-react';
+import { Paperclip, Send } from 'lucide-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
 
 import { useAuthStore } from '@/stores/auth';
 import API_CONFIG from '@/config/api';
 import { avatarUrl } from '@/api/profile';
+import { parseUtcDate } from '@/shared/utils/url';
 import { useTaskCommentsWS, type OnlineMember } from '@/shared/hooks/useTaskCommentsWS';
 import type { AiProgressTodo } from '@/api/ws';
 
@@ -49,8 +51,8 @@ const stripHtml = (html: string): string => {
 
 /** 聊天时间分隔格式化：当天显示 HH:MM，非当天显示 M月D日 HH:MM */
 const formatChatDividerTime = (dateString: string): string => {
-  const date = new Date(dateString);
-  if (isNaN(date.getTime())) return '';
+  const date = parseUtcDate(dateString);
+  if (!date) return '';
   const now = new Date();
   const isSameDay =
     date.getFullYear() === now.getFullYear() &&
@@ -66,16 +68,16 @@ const formatChatDividerTime = (dateString: string): string => {
 /** 是否在当前评论前插入居中时间分隔：首条消息或与上一条间隔≥5分钟 */
 const shouldShowTimeDivider = (cur: string, prev?: string): boolean => {
   if (!prev) return true;
-  const curDate = new Date(cur);
-  const prevDate = new Date(prev);
-  if (isNaN(curDate.getTime()) || isNaN(prevDate.getTime())) return true;
+  const curDate = parseUtcDate(cur);
+  const prevDate = parseUtcDate(prev);
+  if (!curDate || !prevDate) return true;
   return curDate.getTime() - prevDate.getTime() >= 5 * 60 * 1000;
 };
 
 /** 评论时间格式化（姓名旁，非本人消息）：X月X日 HH:MM:SS */
 const formatCommentTime = (dateString: string): string => {
-  const date = new Date(dateString);
-  if (isNaN(date.getTime())) return '';
+  const date = parseUtcDate(dateString);
+  if (!date) return '';
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 };
@@ -868,7 +870,7 @@ export default function DiscussionPanel({
         {(enableAI || (enableAttach && pendingFiles.length > 0)) && (
           <div className="detail-chat-toolbar">
             {enableAI && (
-              <Button size="small" theme="default" onClick={handleAIClick} disabled={sending || disabled}>
+              <Button size="small" theme="default" className="detail-chat-mention-btn" onClick={handleAIClick} disabled={sending || disabled}>
                 @U老师
               </Button>
             )}
@@ -904,11 +906,12 @@ export default function DiscussionPanel({
               disabled={sending || disabled}
               aria-label="上传图片或文件"
             >
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
+              <Paperclip size={16} strokeWidth={2} />
             </button>
           )}
-          <Button size="small" theme="primary" onClick={handleSend} disabled={!canSend}>
-            {sending ? '发送中' : '发送'}
+          {/* 发送按钮（设计稿 04/05 工单详情输入区：size-10 bg-primary 圆形 + Send 纸飞机图标；ArrowUp 仅用于对话首页） */}
+          <Button size="small" theme="primary" className="detail-chat-send" onClick={handleSend} disabled={!canSend} aria-label="发送">
+            {sending ? <span className="detail-attachment-file__spinner" /> : <Send size={16} strokeWidth={2.2} />}
           </Button>
           {enableAttach && (
             <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={handleSelectFile} />

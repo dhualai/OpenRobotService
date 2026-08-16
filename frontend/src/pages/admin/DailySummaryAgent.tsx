@@ -1,12 +1,14 @@
 // 日报周报分析 —— 对接 POST /api/ai/analysis/report/generate（流式 SSE）
 // 数据来源：ai/agents/AiDataAnalysisPlatform/report_generator.py 实时采集 MySQL 中的
 // 项目/风险/工单/任务数据并调用 LLM 生成报告文本。
+// 样式参考 macaron reports 页：卡片内分段切换 + surface-card 项目选择 + 淡蓝日期条。
 import { memo, useState, useEffect, useCallback, useRef } from 'react';
-import { Tabs, TabPanel, Loading, Popup, Button, DateTimePicker } from 'tdesign-mobile-react';
+import { Loading, Popup, DateTimePicker } from 'tdesign-mobile-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import { generateReportStream, readReportStream, type ReportPeriod } from '@/api/report';
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import type { ProjectItem } from '@/api/projects';
+import { MacCalendarDays, MacRefreshCw } from '@/shared/components/macaronIcons';
 
 function todayStr(): string {
   const d = new Date();
@@ -44,10 +46,6 @@ function reportCacheKey(p: ReportPeriod, d: string, code: string | null): string
   return `${code || '__all__'}:${p}:${d}`;
 }
 
-function cardStyle(): React.CSSProperties {
-  return { background: '#fff', borderRadius: 12, padding: 16, marginBottom: 12, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' };
-}
-
 // 流式报告卡片（React.memo）：进行中用纯文本增量渲染，避免 Markdown 全量重解析卡顿；完成后转 Markdown 全量渲染
 const ReportStreamCard = memo(function ReportStreamCard({
   text, streaming, period, date, projectName,
@@ -59,18 +57,16 @@ const ReportStreamCard = memo(function ReportStreamCard({
   projectName?: string | null;
 }) {
   return (
-    <div style={cardStyle()}>
+    <div className="mac-card mac-card--pad">
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-        <span style={{ fontSize: 15, fontWeight: 600 }}>
+        <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--mac-fg)' }}>
           {period === 'daily' ? '日报' : '周报'} · {date}
           {projectName ? ` · ${projectName}` : ''}
         </span>
-        {streaming && (
-          <span style={{ fontSize: 11, color: '#0052d9', animation: 'pulse 1.5s infinite' }}>● 生成中</span>
-        )}
+        {streaming && <span className="mac-streaming">● 生成中</span>}
       </div>
       {streaming ? (
-        <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.7, fontSize: 14, color: '#333' }}>{text}</div>
+        <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.7, fontSize: 14, color: 'var(--mac-fg)' }}>{text}</div>
       ) : (
         <MarkdownRenderer content={text} compact />
       )}
@@ -152,16 +148,30 @@ export default function DailySummaryAgent() {
   };
 
   return (
-    <div ref={rootRef} style={{ padding: 16 }}>
-      <div style={{ background: '#eef1f4', borderRadius: 999, padding: 4, display: 'flex', marginBottom: 16 }}>
-        <Tabs value={period} onChange={(v) => setPeriod(v as ReportPeriod)} style={{ flex: 1 }}>
-          <TabPanel value="daily" label="日报视图" />
-          <TabPanel value="weekly" label="周报视图" />
-        </Tabs>
+    <div ref={rootRef} className="mac-page">
+      {/* 视图切换（日报 / 周报） */}
+      <div className="mac-card">
+        <div className="mac-seg">
+          <button
+            type="button"
+            className={`mac-seg__btn ${period === 'daily' ? 'is-active' : ''}`}
+            onClick={() => setPeriod('daily')}
+          >
+            日报视图
+          </button>
+          <button
+            type="button"
+            className={`mac-seg__btn ${period === 'weekly' ? 'is-active' : ''}`}
+            onClick={() => setPeriod('weekly')}
+          >
+            周报视图
+          </button>
+        </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-        <div style={{ flex: 1 }}>
+      {/* 项目选择 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
+        <div style={{ flex: 1 }} className="mac-projectselect">
           <ProjectSelect
             value={projectCode}
             onChange={handleProjectChange}
@@ -170,30 +180,42 @@ export default function DailySummaryAgent() {
           />
         </div>
         {projectCode && (
-          <Button size="small" variant="outline" onClick={handleResetProject}>全部项目</Button>
+          <button type="button" className="mac-btn mac-btn--ghost" onClick={handleResetProject}>
+            全部项目
+          </button>
         )}
       </div>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <Button theme="light" block onClick={() => setPickerVisible(true)}>
-          📅 {date}
-        </Button>
-        <Button theme="light" onClick={handleRefresh} disabled={isStreaming}>
-          {isStreaming ? '⏳ 生成中...' : '🔄 刷新'}
-        </Button>
+      {/* 日期条：点击选日期，右侧刷新按钮 */}
+      <div className="mac-datebar" style={{ marginTop: 12 }} onClick={() => setPickerVisible(true)}>
+        <span className="mac-datebar__icon"><MacCalendarDays size={16} /></span>
+        <span className="mac-datebar__label">{date}</span>
+        <button
+          type="button"
+          className="mac-datebar__refresh"
+          disabled={isStreaming}
+          onClick={(e) => { e.stopPropagation(); handleRefresh(); }}
+        >
+          <MacRefreshCw size={14} />
+          {isStreaming ? '生成中...' : '刷新'}
+        </button>
       </div>
 
       {loading && <Loading text="AI 正在生成报告，请稍候..." />}
 
       {error && !loading && (
-        <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>
+        <div className="mac-empty" style={{ padding: '40px 0' }}>
           <p>报告生成失败：{error}</p>
-          <Button theme="primary" onClick={handleRefresh} style={{ marginTop: 12 }}>重试</Button>
+          <button type="button" className="mac-btn mac-btn--primary" style={{ marginTop: 12 }} onClick={handleRefresh}>
+            重试
+          </button>
         </div>
       )}
 
       {streamText && (
-        <ReportStreamCard text={streamText} streaming={isStreaming} period={period} date={date} projectName={projectName} />
+        <div style={{ marginTop: 12 }}>
+          <ReportStreamCard text={streamText} streaming={isStreaming} period={period} date={date} projectName={projectName} />
+        </div>
       )}
 
       <Popup visible={pickerVisible} onClose={() => setPickerVisible(false)} placement="bottom">

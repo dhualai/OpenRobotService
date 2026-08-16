@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
+import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
@@ -25,20 +26,21 @@ import type { ProjectMember } from '@/api/projects';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-const STATUS_COLOR_MAP: Record<string, string> = {
-  new: '#0052d9',
-  in_progress: '#2ba471',
-  pending: '#e37318',
-  paused: '#e37318',
-  resolved: '#00a870',
-  closed: '#999999',
-  canceled: '#d54941',
-  cancelled: '#d54941',
+// 状态文字色（设计稿 statusText 蓝阶：新建 blue-3 / 处理中·进行中 blue-2 / 已解决 blue-1 / 关闭·取消 muted）
+const STATUS_TEXT_COLOR_MAP: Record<string, string> = {
+  new: 'var(--blue-3)',
+  in_progress: 'var(--blue-2)',
+  pending: 'var(--blue-2)',
+  paused: 'var(--blue-2)',
+  resolved: 'var(--blue-1)',
+  closed: 'var(--muted-foreground)',
+  canceled: 'var(--muted-foreground)',
+  cancelled: 'var(--muted-foreground)',
 };
 
-const getStatusColor = (status: string): string => {
+const getStatusTextColor = (status: string): string => {
   const key = (status || '').toLowerCase();
-  return STATUS_COLOR_MAP[key] || '#666666';
+  return STATUS_TEXT_COLOR_MAP[key] || 'var(--muted-foreground)';
 };
 
 const formatFileSize = (bytes?: number): string => {
@@ -49,19 +51,21 @@ const formatFileSize = (bytes?: number): string => {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 };
 
-const getFileIcon = (filename?: string): string => {
+// 文件类型图标（lucide，与设计稿图标体系一致）
+const FileTypeIcon = ({ filename, size = 22 }: { filename?: string; size?: number }) => {
   const ext = (filename || '').split('.').pop()?.toLowerCase() || '';
   const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'];
   const docExts = ['pdf', 'doc', 'docx', 'txt', 'md'];
   const sheetExts = ['xls', 'xlsx', 'csv'];
   const codeExts = ['json', 'js', 'ts', 'py', 'html', 'css'];
   const archiveExts = ['zip', 'rar', '7z', 'tar', 'gz'];
-  if (imageExts.includes(ext)) return '🖼️';
-  if (docExts.includes(ext)) return '📄';
-  if (sheetExts.includes(ext)) return '📊';
-  if (codeExts.includes(ext)) return '💻';
-  if (archiveExts.includes(ext)) return '📦';
-  return '📎';
+  const props = { size, strokeWidth: 1.8 } as const;
+  if (imageExts.includes(ext)) return <FileImage {...props} />;
+  if (docExts.includes(ext)) return <FileText {...props} />;
+  if (sheetExts.includes(ext)) return <FileSpreadsheet {...props} />;
+  if (codeExts.includes(ext)) return <FileCode {...props} />;
+  if (archiveExts.includes(ext)) return <FileArchive {...props} />;
+  return <Paperclip {...props} />;
 };
 
 const isImageFile = (filename?: string): boolean => {
@@ -313,18 +317,21 @@ export default function TaskDetailPage() {
 
     if (status === 'resolved' && !isReporter) return [];
 
+    // 顶部操作按钮配色（设计稿 05：主推进 bg-primary 白字胶囊 / 次操作 bg-secondary 深字胶囊）
+    const BTN_PRIMARY = { backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)', borderRadius: '999px', border: 'none' };
+    const BTN_SECONDARY = { backgroundColor: 'var(--secondary)', color: 'var(--foreground)', borderRadius: '999px', border: 'none' };
     const actions: Record<string, { label: string; nextStatus: string; theme: string; actionType?: string; customStyle?: Record<string, string> }[]> = {
-      new: [{ label: '开始处理', nextStatus: 'in_progress', theme: 'primary', customStyle: { backgroundColor: '#0052d9', color: '#fff', borderRadius: '10px', border: 'none' } }],
+      new: [{ label: '开始处理', nextStatus: 'in_progress', theme: 'primary', customStyle: BTN_PRIMARY }],
       in_progress: [
-        { label: '暂停任务', nextStatus: 'pending', theme: 'warning', customStyle: { backgroundColor: '#faad14', color: '#fff', borderRadius: '10px', border: 'none' } },
-        { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: { backgroundColor: '#52c41a', color: '#fff', borderRadius: '10px', border: 'none' } },
+        { label: '暂停任务', nextStatus: 'pending', theme: 'warning', customStyle: BTN_SECONDARY },
+        { label: '处理完成', nextStatus: 'resolved', theme: 'success', customStyle: BTN_PRIMARY },
       ],
-      pending: [{ label: '继续处理', nextStatus: 'in_progress', theme: 'primary', actionType: 'resume', customStyle: { backgroundColor: '#0052d9', color: '#fff', borderRadius: '10px', border: 'none' } }],
+      pending: [{ label: '继续处理', nextStatus: 'in_progress', theme: 'primary', actionType: 'resume', customStyle: BTN_PRIMARY }],
       resolved: [
-        { label: '未解决', nextStatus: 'in_progress', theme: 'warning', customStyle: { backgroundColor: '#faad14', color: '#fff', borderRadius: '10px', border: 'none' } },
-        { label: '确认关闭', nextStatus: 'closed', theme: 'default', customStyle: { backgroundColor: '#1a1a1a', color: '#fff', borderRadius: '10px', border: 'none' } },
+        { label: '未解决', nextStatus: 'in_progress', theme: 'warning', customStyle: BTN_SECONDARY },
+        { label: '确认关闭', nextStatus: 'closed', theme: 'default', customStyle: BTN_PRIMARY },
       ],
-      canceled: [{ label: '重新打开', nextStatus: 'new', theme: 'primary', customStyle: { backgroundColor: '#0052d9', color: '#fff', borderRadius: '10px', border: 'none' } }],
+      canceled: [{ label: '重新打开', nextStatus: 'new', theme: 'primary', customStyle: BTN_PRIMARY }],
     };
 
     return actions[status] || [];
@@ -1077,36 +1084,42 @@ export default function TaskDetailPage() {
         <div className="detail-card">
           <div className="detail-card__header">
             <div className="detail-card__meta">
+              {/* 状态胶囊（设计稿 statusText：bg-secondary + 蓝阶文字） */}
               <Tag
-                theme="primary"
+                theme="default"
                 style={{
-                  background: getStatusColor(detail.status),
-                  color: '#fff',
+                  background: 'var(--secondary)',
+                  color: getStatusTextColor(detail.status),
                   border: 'none',
-                  fontWeight: 500,
+                  fontWeight: 600,
+                  fontSize: 11.5,
+                  borderRadius: 999,
                 }}
               >
                 {STATUS_DISPLAY_MAP[detail.status?.toLowerCase()] || detail.status}
               </Tag>
+              {/* 类型胶囊（设计稿：bg-secondary muted） */}
               <Tag
-                theme="primary"
+                theme="default"
                 style={{
-                  background: getStatusColor(detail.status),
-                  color: '#fff',
+                  background: 'var(--secondary)',
+                  color: 'var(--muted-foreground)',
                   border: 'none',
                   fontWeight: 500,
+                  fontSize: 11.5,
+                  borderRadius: 999,
                 }}
               >
                 {TICKET_TYPE_DISPLAY_MAP[detail.ticket_type] || detail.ticket_type || '其他'}
               </Tag>
-              <span className="detail-card__id" onClick={() => copyId(detail.id)}>#${detail.id}</span>
+              <span className="detail-card__id" onClick={() => copyId(detail.id)}>#{detail.id}</span>
             </div>
             <div className="detail-card__action-btns">
               {getActionButtons().map((action, index) => (
-                <Button 
+                <Button
                   key={index}
-                  size="small" 
-                  theme={action.theme as any} 
+                  size="small"
+                  theme={action.theme as 'primary' | 'default' | 'danger' | 'light'}
                   onClick={() => {
                     if (action.actionType === 'resume') {
                       setShowResumePopup(true);
@@ -1128,14 +1141,14 @@ export default function TaskDetailPage() {
           <h2 className="detail-card__title">{detail.title}</h2>
           <div className="detail-card__info-grid">
             <div className="detail-info-item">
-              <span className="detail-info-item__icon">👤</span>
+              <span className="detail-info-item__icon"><User size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">创建人</span>
                 <span className="detail-info-item__value">{detail.created_by_name || detail.reporter_name || detail.created_by || '-'}</span>
               </div>
             </div>
             <div className="detail-info-item">
-              <span className="detail-info-item__icon">🎯</span>
+              <span className="detail-info-item__icon"><UserCheck size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">处理人</span>
                 {/* AI 单派单中（status=new 且处理人未写入，Worker 60s 轮询派单）→ 呼吸动效「派单中」；
@@ -1159,28 +1172,28 @@ export default function TaskDetailPage() {
               </div>
             </div>
             <div className="detail-info-item">
-              <span className="detail-info-item__icon">📁</span>
+              <span className="detail-info-item__icon"><Folder size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">所属项目</span>
                 <span className="detail-info-item__value">{detail.project_name || '-'}</span>
               </div>
             </div>
             <div className="detail-info-item">
-              <span className="detail-info-item__icon">⏰</span>
+              <span className="detail-info-item__icon"><AlarmClock size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">最晚解决时间</span>
                 <span className="detail-info-item__value">{detail.deadline_at ? formatDateTime(detail.deadline_at) : '未设置'}</span>
               </div>
             </div>
             <div className="detail-info-item">
-              <span className="detail-info-item__icon">🕐</span>
+              <span className="detail-info-item__icon"><Clock size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">创建时间</span>
                 <span className="detail-info-item__value">{formatDateTime(detail.created_at)}</span>
               </div>
             </div>
             <div className="detail-info-item">
-              <span className="detail-info-item__icon">🔄</span>
+              <span className="detail-info-item__icon"><RefreshCw size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">更新时间</span>
                 <span className="detail-info-item__value">{formatDateTime(detail.updated_at)}</span>
@@ -1191,16 +1204,17 @@ export default function TaskDetailPage() {
 
         <div className="detail-card">
           <h4 className="detail-card__h">问题描述</h4>
-          <SafeHtml html={detail.description || '<p style="color:#999">无描述</p>'} />
+          <SafeHtml html={detail.description || '<p style="color:var(--muted-foreground)">无描述</p>'} />
         </div>
 
         {/* 公司/部门审核入口：仅管理员可见，工单 metadata_info 含 approval_type 时展示 */}
         {approvalInfo && username === 'admin' && (
-          <div className="detail-card" style={{ border: '2px solid #0052d9', borderRadius: 12 }}>
-            <h4 className="detail-card__h" style={{ color: '#0052d9' }}>
-              {approvalInfo.type === 'new_company' ? '🏢 新公司录入审核' : '🏬 新部门录入审核'}
+          <div className="detail-card" style={{ border: '1.5px solid var(--blue-4)' }}>
+            <h4 className="detail-card__h" style={{ color: 'var(--blue-2)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              {approvalInfo.type === 'new_company' ? <Building2 size={15} strokeWidth={2} /> : <Store size={15} strokeWidth={2} />}
+              {approvalInfo.type === 'new_company' ? '新公司录入审核' : '新部门录入审核'}
             </h4>
-            <div style={{ fontSize: 14, color: '#333', lineHeight: 1.8, marginBottom: 16 }}>
+            <div style={{ fontSize: 13, color: 'var(--foreground)', lineHeight: 1.8, marginBottom: 16 }}>
               <div>
                 <strong>{approvalInfo.type === 'new_company' ? '公司名称' : '部门名称'}：</strong>
                 {approvalInfo.targetName}
@@ -1208,7 +1222,7 @@ export default function TaskDetailPage() {
               {approvalInfo.companyName && (
                 <div><strong>所属公司：</strong>{approvalInfo.companyName}</div>
               )}
-              <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+              <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginTop: 4 }}>
                 请审核以下信息，通过后该{approvalInfo.type === 'new_company' ? '公司' : '部门'}将对所有用户可见
               </div>
             </div>
@@ -1218,7 +1232,7 @@ export default function TaskDetailPage() {
                 theme="primary"
                 loading={approving}
                 onClick={handleApprove}
-                style={{ borderRadius: '10px', backgroundColor: '#52c41a', color: '#fff', border: 'none' }}
+                style={{ borderRadius: '999px', backgroundColor: 'var(--blue-3)', color: '#fff', border: 'none' }}
               >
                 通过
               </Button>
@@ -1228,7 +1242,7 @@ export default function TaskDetailPage() {
                 variant="outline"
                 disabled={approving}
                 onClick={() => { setAdjustName(approvalInfo.targetName); setShowAdjustPopup(true); }}
-                style={{ borderRadius: '10px' }}
+                style={{ borderRadius: '999px' }}
               >
                 调整名称
               </Button>
@@ -1238,7 +1252,7 @@ export default function TaskDetailPage() {
                 variant="outline"
                 disabled={approving}
                 onClick={() => setShowRejectPopup(true)}
-                style={{ borderRadius: '10px' }}
+                style={{ borderRadius: '999px' }}
               >
                 驳回
               </Button>
@@ -1258,7 +1272,7 @@ export default function TaskDetailPage() {
           </h4>
           {(() => {
             if (opLogs.length === 0) {
-              return <p style={{ color: '#999' }}>暂无动态</p>;
+              return <p style={{ color: 'var(--muted-foreground)', fontSize: 12.5 }}>暂无动态</p>;
             }
             const formatTime = (ts: string) => {
               const d = new Date(ts);
@@ -1297,7 +1311,7 @@ export default function TaskDetailPage() {
           return (
             <div className="detail-card">
               <h4 className="detail-card__h">解决方式</h4>
-              <div style={{ color: '#333', fontSize: '14px', lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              <div style={{ color: 'var(--foreground)', fontSize: '12.5px', lineHeight: '24px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                 {rs}
               </div>
             </div>
@@ -1309,13 +1323,13 @@ export default function TaskDetailPage() {
           {aiSummary ? (
             <SafeHtml html={aiSummary} />
           ) : (
-            <p style={{ color: '#999' }}>暂无摘要，U老师 将自动总结讨论进展</p>
+            <p style={{ color: 'var(--muted-foreground)', fontSize: 12.5, lineHeight: '24px' }}>暂无摘要，U老师 将自动总结讨论进展</p>
           )}
         </div>
 
         {detail.attachments && detail.attachments.length > 0 && (
           <div className="detail-card">
-            <h4 className="detail-card__h">📎 附件 ({detail.attachments.length})</h4>
+            <h4 className="detail-card__h">附件 ({detail.attachments.length})</h4>
             {(() => {
               const imgItems = detail.attachments.filter((a) => isImageFile(a.filename || ''));
               const fileItems = detail.attachments
@@ -1358,13 +1372,12 @@ export default function TaskDetailPage() {
                       })}
                     </div>
                   )}
-                  {/* 非图片文件卡片（图标 + 文件名 + 下载，保留下载进度态） */}
+                  {/* 非图片文件卡片（lucide 图标 + 文件名 + 下载，保留下载进度态） */}
                   {fileItems.length > 0 && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div className="detail-attachment-files">
                       {fileItems.map(({ att, origIdx }) => {
                         const filename = att.filename || '未命名文件';
                         const size = att.size ?? 0;
-                        const icon = getFileIcon(filename);
                         const sizeLabel = formatFileSize(size);
                         const isDownloading = downloadingIdx === origIdx;
                         return (
@@ -1372,40 +1385,24 @@ export default function TaskDetailPage() {
                             key={`file-${origIdx}`}
                             role="button"
                             tabIndex={0}
+                            className="detail-attachment-file"
+                            style={{ opacity: isDownloading ? 0.6 : 1 }}
                             onClick={() => openAttachmentViewer(att)}
                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openAttachmentViewer(att); }}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              padding: '10px 12px',
-                              borderRadius: 8,
-                              border: '1px solid #e5e5e5',
-                              background: '#fafafa',
-                              color: 'inherit',
-                              cursor: 'pointer',
-                              transition: 'background 0.15s',
-                              opacity: isDownloading ? 0.6 : 1,
-                            }}
-                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#f0f7ff'; }}
-                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#fafafa'; }}
                           >
-                            <span style={{ fontSize: 22, marginRight: 10, flexShrink: 0 }}>{icon}</span>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: 13, fontWeight: 500, color: '#333', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {filename}
-                              </div>
-                              <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
-                                {sizeLabel || '未知大小'}
-                              </div>
+                            <span className="detail-attachment-file__icon"><FileTypeIcon filename={filename} /></span>
+                            <div className="detail-attachment-file__body">
+                              <div className="detail-attachment-file__name">{filename}</div>
+                              <div className="detail-attachment-file__size">{sizeLabel || '未知大小'}</div>
                             </div>
                             <span
                               role="button"
                               aria-label="下载附件"
                               title="下载"
+                              className="detail-attachment-file__download"
                               onClick={(e) => { e.stopPropagation(); handleAttachmentDownload(att, origIdx); }}
-                              style={{ fontSize: 16, color: '#0052d9', marginLeft: 8, flexShrink: 0, cursor: 'pointer' }}
                             >
-                              {isDownloading ? '⏳' : '⬇'}
+                              {isDownloading ? <span className="detail-attachment-file__spinner" /> : <Download size={16} strokeWidth={2} />}
                             </span>
                           </div>
                         );
@@ -1430,8 +1427,8 @@ export default function TaskDetailPage() {
           onTaskUpdated={handleWsTaskUpdated}
           onMessagesClick={handleOpenReport}
           headerRight={
-            <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing}>
-              🤖 帮我分析
+            <Button size="small" theme="primary" onClick={handleDiagnose} loading={diagnosing} icon={<Bot size={14} strokeWidth={2} />}>
+              帮我分析
             </Button>
           }
         />
@@ -1450,10 +1447,10 @@ export default function TaskDetailPage() {
               <div className="detail-actions__btns">
                 {showRoleActions && (
                   <>
-                    <Button size="small" theme="default" style={{ backgroundColor: '#333333', color: '#fff', border: 'none' }} onClick={startEdit}>修改工单</Button>
-                    <Button size="small" theme="default" style={{ backgroundColor: '#faad14', color: '#fff', border: 'none' }} onClick={() => { setReturnReason(''); setShowReturnConfirmPopup(true); }}>退回工单</Button>
-                    <Button size="small" theme="default" style={{ backgroundColor: '#0052d9', color: '#fff', border: 'none' }} onClick={() => { setReassignUser(null); setReassignReason(''); setShowReassignPopup(true); }}>重新指派</Button>
-                    <Button size="small" theme="default" style={{ backgroundColor: '#d54941', color: '#fff', border: 'none' }} onClick={() => { setEscalateUser(null); setEscalateReason(''); setShowEscalatePopup(true); }}>升级上报</Button>
+                    <Button size="small" theme="default" onClick={startEdit}>修改工单</Button>
+                    <Button size="small" theme="default" onClick={() => { setReturnReason(''); setShowReturnConfirmPopup(true); }}>退回工单</Button>
+                    <Button size="small" theme="default" onClick={() => { setReassignUser(null); setReassignReason(''); setShowReassignPopup(true); }}>重新指派</Button>
+                    <Button size="small" theme="default" onClick={() => { setEscalateUser(null); setEscalateReason(''); setShowEscalatePopup(true); }}>升级上报</Button>
                   </>
                 )}
               </div>

@@ -16,6 +16,7 @@ export interface AttachmentViewItem {
 }
 
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'];
+const VIDEO_EXTS = ['mp4', 'webm', 'ogg', 'mov', 'm4v'];
 const OFFICE_EXTS = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
 
 function extOf(name: string): string {
@@ -23,11 +24,12 @@ function extOf(name: string): string {
   return i >= 0 ? name.slice(i + 1).toLowerCase() : '';
 }
 
-type Kind = 'image' | 'pdf' | 'office' | 'md' | 'other';
+type Kind = 'image' | 'video' | 'pdf' | 'office' | 'md' | 'other';
 
 function kindOf(name: string): Kind {
   const ext = extOf(name);
   if (IMAGE_EXTS.includes(ext)) return 'image';
+  if (VIDEO_EXTS.includes(ext)) return 'video';
   if (ext === 'pdf') return 'pdf';
   if (OFFICE_EXTS.includes(ext)) return 'office';
   if (ext === 'md' || ext === 'markdown') return 'md';
@@ -39,6 +41,17 @@ function formatSize(bytes?: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * 给下载 URL 追加 response-content-disposition=attachment 参数，强制浏览器下载而非内联播放。
+ * MinIO / S3 兼容的代理端支持该 query 参数；对已带 query 的 URL 用 & 拼接。
+ * 对非代理直链（无该参数支持）无害——浏览器忽略未知 query。
+ */
+function withAttachmentDisposition(url: string): string {
+  if (!url) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}response-content-disposition=attachment%3B%20filename%3D${encodeURIComponent('download')}`;
 }
 
 function isWeChat(): boolean {
@@ -131,6 +144,51 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
     return <ImageLightbox src={item.previewUrl} alt={item.filename} open onClose={onClose} />;
   }
 
+  // 视频：在 H5 弹窗内内联播放（带 controls + 关闭按钮），避免浏览器原生播放页无关闭入口（#389）
+  if (kind === 'video') {
+    return createPortal(
+      <div className="attachment-viewer" onClick={onClose}>
+        <div className="attachment-viewer__panel attachment-viewer__panel--video" onClick={(e) => e.stopPropagation()}>
+          <div className="attachment-viewer__bar">
+            <span className="attachment-viewer__name" title={item.filename}>
+              {item.filename}
+            </span>
+            <div className="attachment-viewer__actions">
+              <button
+                type="button"
+                className="attachment-viewer__dl"
+                onClick={() => {
+                  // 视频下载：downloadUrl 追加 attachment 头参数，强制浏览器下载而非播放
+                  const dl = withAttachmentDisposition(item.downloadUrl);
+                  if (wechat) {
+                    window.location.href = dl;
+                  } else {
+                    window.open(dl, '_blank', 'noopener,noreferrer');
+                  }
+                }}
+              >
+                下载
+              </button>
+              <button type="button" className="attachment-viewer__close" onClick={onClose} aria-label="关闭">
+                ✕
+              </button>
+            </div>
+          </div>
+          <div className="attachment-viewer__body">
+            <video
+              src={item.previewUrl}
+              controls
+              playsInline
+              preload="metadata"
+              className="attachment-viewer__video"
+            />
+          </div>
+        </div>
+      </div>,
+      document.body,
+    );
+  }
+
   const wechat = isWeChat();
 
   return createPortal(
@@ -145,13 +203,15 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
               type="button"
               className="attachment-viewer__dl"
               onClick={() => {
+                // 强制下载（视频尤其需要，否则浏览器直接内联播放）
+                const dl = withAttachmentDisposition(item.downloadUrl);
                 if (wechat) {
                   // 微信内置 WebView 无法直接下载文件：把当前页跳到绝对下载地址，
                   // 微信会弹出「在浏览器打开」横幅，用户在系统浏览器中即可直接下载
                   // （downloadUrl 已携带 token，浏览器打开不会落到 SPA 404 → 微信 OAuth 重定向）。
-                  window.location.href = item.downloadUrl;
+                  window.location.href = dl;
                 } else {
-                  window.open(item.downloadUrl, '_blank', 'noopener,noreferrer');
+                  window.open(dl, '_blank', 'noopener,noreferrer');
                 }
               }}
             >
