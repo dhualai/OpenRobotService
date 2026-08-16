@@ -121,6 +121,8 @@ DISCUSS_USER_TEMPLATE = """## 工单背景
 ## 用户消息
 {query}
 
+{referenced_tickets}
+
 {facultative_analysis}
 
 ---

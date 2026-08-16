@@ -90,6 +90,11 @@ class TaskContext(BaseModel):
     location: str = ""
     diagnosis_rounds: int = 0
 
+    # ── 最终解决方案（任务 Agent 工程师确认方案后，写入 metadata_info.diagnosis.solution）──
+    # 结构：{root_cause_analysis, suggested_actions[], references[], confidence, needs_more_info, resolved_by_agent}
+    # 这是"参考相似案例怎么解决"最有价值的内容；只有已提交过方案的工单才有。
+    solution: Optional[dict] = None
+
 
 # ============================================================
 # 响应模型

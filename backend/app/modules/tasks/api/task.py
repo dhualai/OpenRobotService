@@ -323,6 +323,87 @@ async def get_task(
         raise HTTPException(status_code=500, detail=f"获取任务详情失败: {str(e)}")
 
 
+@router.get("/{task_id}/similar", response_model=dict)
+async def get_similar_tasks(
+    task_id: int,
+    limit: int = Query(10, description="返回相似工单条数上限"),
+    db: AsyncSession = Depends(get_db),
+):
+    """@# 相似工单检索：按当前工单标题+描述做关键词相似，返回已解决的同款历史工单（含进行中? 否，限定 resolved）。
+
+    仅用于 @# 引用"找相似"的弹列表（Q2d-①）。返回 [{task_id, title, status, project_name}]。
+    跨项目、无权限过滤（工单可分享）；排除自身。
+    """
+    import logging
+    from app.modules.tasks.models.ticket import Task, TaskStatus
+    logger = logging.getLogger(__name__)
+    try:
+        # 读取当前工单文本作为查询基准
+        cur = await db.get(Task, task_id)
+        if not cur:
+            raise HTTPException(status_code=404, detail="任务未找到")
+        query_text = " ".join(filter(None, [cur.title or "", cur.description or ""]))
+
+        # 关键词：过滤掉停用词/无意义单字，保留 2 字及以上 token
+        import re as _re
+        kws = set(_re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9]{2,}", query_text))
+        kws.discard("问题")
+        kws.discard("解决")
+        if not kws:
+            return {"task_id": task_id, "similar": []}
+
+        # 限定已解决，排除自身；按标题+描述匹配关键词打分（命中数加权）
+        from sqlalchemy import or_, select
+
+        # 简单打分：标题命中权重高于描述，用关键词出现次数近似
+        conditions = []
+        for kw in kws:
+            pat = f"%{kw}%"
+            conditions.append(Task.title.ilike(pat))
+            conditions.append(Task.description.ilike(pat))
+        # distinct 去重并按创建时间倒序取前 N（打分近似：先取含任一关键词的候选，再按更新排序）
+        stmt = (
+            select(Task)
+            .where(Task.status == TaskStatus.RESOLVED)
+            .where(Task.id != task_id)
+            .where(or_(*conditions))
+            .order_by(Task.created_at.desc())
+            .limit(limit * 3)  # 多取一些用于打分
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+
+        # 打分：标题命中 +3/词，描述命中 +1/词
+        scored = []
+        for t in rows:
+            title = t.title or ""
+            desc = t.description or ""
+            score = 0
+            for kw in kws:
+                if kw in title:
+                    score += 3
+                if kw in desc:
+                    score += 1
+            scored.append((score, t))
+
+        scored.sort(key=lambda x: (-x[0], (x[1].created_at or datetime.min)))
+        similar = []
+        for score, t in scored[:limit]:
+            if score <= 0:
+                continue
+            similar.append({
+                "task_id": t.id,
+                "title": (t.title or "")[:80] or f"工单#{t.id}",
+                "status": t.status.value if hasattr(t.status, "value") else str(t.status),
+                "project_name": getattr(t, "project_name", "") or "",
+            })
+        return {"task_id": task_id, "similar": similar}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"相似工单检索失败: task_id={task_id}, error={str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"相似工单检索失败: {str(e)}")
+
+
 @router.get("/{task_id}/project-members", response_model=List[ProjectMemberResponse])
 async def get_task_project_members(
     task_id: int,
@@ -629,7 +710,9 @@ def _maybe_notify_mentions(
 
     ai_names = {"U老师", "小U", "AI助手"}
     mentioned = set()
-    for m in re.finditer(r"@([\w一-鿿]+)", content):
+    # 排除 "@#编号" 工单引用（@# 后跟的纯数字是工单号，不是用户名），
+    # 避免把工单引用误判成对数字用户名发通知。
+    for m in re.finditer(r"@(?!\d)([\w一-鿿]+)", content):
         name = m.group(1)
         if name not in ai_names:
             mentioned.add(name)
