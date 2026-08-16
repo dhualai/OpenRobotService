@@ -478,22 +478,3 @@ class LogIndex:
         return hdr + "\n\n" + "\n".join(results)
 
 
-# ── Task Agent pipeline 集成入口 ──
-
-def parse_log_for_diagnosis(log_path, time_start=None, time_end=None,
-                            robot_filter=None, task_filter=None,
-                            path_filter=None, error_only=True,
-                            context_lines=2, max_results=100) -> str:
-    """解析算法日志，返回 ≤2000 字诊断文本。
-    首次调用建索引(30秒)，后续查询毫秒级。
-    """
-    q = LogQuery(
-        time_start=time_start, time_end=time_end,
-        robot_filter=robot_filter, task_filter=task_filter,
-        path_filter=path_filter, error_only=error_only,
-        context_before=context_lines, context_after=context_lines,
-        max_results=max_results,
-    )
-    idx = LogIndex(log_path).build()
-    result = idx.query(q)
-    return result[:2000]
