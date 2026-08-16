@@ -168,6 +168,11 @@ export default function DiscussionPanel({
   // 过程区可见性：AI 正在分析（sending）且至少跑过 running 或有进行中项；done 由 sending(false) 隐藏
   const showAiProcess = (aiPhase === 'running' && aiTodos.length > 0) || (sending && aiRunId !== undefined);
 
+  // 逐项状态：任一 todo 仍是进行中（phase=running / status=in_progress），就视为整场仍在执行。
+  // 头部「正在排查 / 已完成」据此判断而非只看事件封套 phase，杜绝「已完成却还有项在转圈」的矛盾。
+  const anyTodoRunning = aiTodos.some((t) => t.phase === 'running' || t.status === 'in_progress');
+  const allTodosDone = aiTodos.length > 0 && !anyTodoRunning;
+
   // 新一轮 AI 讨论开始（sending false→true）：重置过程区
   const prevSendingRef = useRef<boolean>(sending);
   useEffect(() => {
@@ -178,14 +183,14 @@ export default function DiscussionPanel({
     }
     prevSendingRef.current = sending;
     // done 后 sending(false)，短暂保留过程区让用户看到结果，随后隐藏
-    if (!sending && aiPhase === 'done' && aiTodos.length > 0 && aiRunId !== undefined) {
+    if (!sending && allTodosDone && aiRunId !== undefined) {
       const t = setTimeout(() => {
         setAiRunId(undefined);
         setAiTodos([]);
       }, 400);
       return () => clearTimeout(t);
     }
-  }, [sending, aiPhase, aiTodos, aiRunId]);
+  }, [sending, allTodosDone, aiTodos, aiRunId]);
 
   // username → 展示名 映射（用于在线头像 / 输入中提示）
   const nameMap = useMemo(() => {
@@ -823,8 +828,12 @@ export default function DiscussionPanel({
         {enableAI && showAiProcess && aiTodos.length > 0 && (
           <div className="detail-chat-ai-progress">
             <div className="detail-chat-ai-progress__head">
-              <span className="detail-chat-ai-progress__spinner" />
-              {aiPhase === 'running' ? 'AI 正在排查执行…' : '排查执行完成'}
+              <span className="detail-chat-ai-progress__spinner" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </span>
+              {!allTodosDone ? 'AI 正在排查执行' : '排查执行完成'}
             </div>
             <ul className="detail-chat-ai-progress__list">
               {aiTodos.map((t, i) => {
@@ -833,8 +842,21 @@ export default function DiscussionPanel({
                 const running = t.phase === 'running' || t.status === 'in_progress';
                 return (
                   <li key={`${t.id ?? i}-${i}`} className={`detail-chat-ai-progress__item ${running ? 'is-running' : ''} ${status ? 'is-done' : ''}`}>
-                    <span className="detail-chat-ai-progress__icon">
-                      {status ? '✅' : running ? '⏳' : '⬜'}
+                    <span className="detail-chat-ai-progress__icon" aria-hidden="true">
+                      {status ? (
+                        <svg viewBox="0 0 16 16" className="detail-chat-ai-progress__ic done-icon">
+                          <circle cx="8" cy="8" r="7" />
+                          <path d="M4.9 8.3l1.9 1.9 4.2-4.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      ) : running ? (
+                        <svg viewBox="0 0 16 16" className="detail-chat-ai-progress__ic running-icon">
+                          <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" fill="none" strokeLinecap="round" />
+                        </svg>
+                      ) : (
+                        <svg viewBox="0 0 16 16" className="detail-chat-ai-progress__ic pending-icon">
+                          <circle cx="8" cy="8" r="5.5" fill="none" />
+                        </svg>
+                      )}
                     </span>
                     <span className="detail-chat-ai-progress__text">{desc}</span>
                   </li>

@@ -79,9 +79,13 @@ def _build_progress_emitter(task_id, run_id, live_todo: dict):
         tid = payload.get("id")
         if tid is not None:
             live_todo[tid] = payload
-        # 用 payload 自身的 phase（running/单个完成的 done），而非固定 running，
-        # 否则前端永远看不到单步完成、接口也收不到 done 来收起过程区。
-        phase = payload.get("phase") or "running"
+        # 事件封套 phase 固定为 running：只要 Supervisor 还在派发能力（>0 项尚未收尾），
+        # 前端就应保持「正在排查执行」的进行中状态（头部转圈 + 文案）。
+        # 单项完成的 done 只体现在该 todo 项自身的 phase/status（图标 ✅），
+        # 而**不是**整场执行完成——否则第一项一完成，头部就跳到"排查执行完成"，
+        # 但剩下的项还在 ⏳，造成「完成了却还在转」的自相矛盾困惑。
+        # 整场收尾的 done 由 _broadcast_ai_progress_await(..., "done") 单独发送。
+        phase = "running"
         _broadcast_ai_progress(task_id, run_id, todos=list(live_todo.values()),
                               phase=phase)
     return emitter
@@ -394,6 +398,17 @@ class DiscussFlow:
 
             # 收尾：整体完成广播（前端据此收起执行过程、仅展示纯回复）。
             # 用 await 版本确保 done 一定送达后端，避免出现"一直转不停"。
+            # 兜底：把任何残留 in_progress 项归一化为 completed，保证「完成」封套内的
+            # 每一项都是完成态，绝不出现「头部说完成、单项还在转圈」的矛盾。
+            _final_todo = []
+            for _t in final_todo:
+                _t = dict(_t)
+                if _t.get("status") == "in_progress":
+                    _t["status"] = "completed"
+                if _t.get("phase") in ("running", "in_progress"):
+                    _t["phase"] = "done"
+                _final_todo.append(_t)
+            final_todo = _final_todo
             await _broadcast_ai_progress_await(task_id, run_id, final_todo, "done")
 
             # 清理临时目录（如日志解压）

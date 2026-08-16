@@ -3707,13 +3707,28 @@ html, body, #root {
   margin-bottom: 6px;
 }
 .detail-chat-ai-progress__spinner {
-  width: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   height: 12px;
-  border: 2px solid var(--primary);
-  border-top-color: transparent;
+}
+.detail-chat-ai-progress__spinner i {
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
-  display: inline-block;
-  animation: chatTyping 0.8s linear infinite;
+  background: var(--primary);
+  opacity: 0.25;
+  animation: aiProgressDot 1.1s ease-in-out infinite;
+}
+.detail-chat-ai-progress__spinner i:nth-child(2) {
+  animation-delay: 0.18s;
+}
+.detail-chat-ai-progress__spinner i:nth-child(3) {
+  animation-delay: 0.36s;
+}
+@keyframes aiProgressDot {
+  0%, 100% { opacity: 0.25; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-1px); }
 }
 .detail-chat-ai-progress__list {
   list-style: none;
@@ -3733,8 +3748,50 @@ html, body, #root {
 }
 .detail-chat-ai-progress__icon {
   flex-shrink: 0;
-  font-size: 13px;
-  line-height: 1.4;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.detail-chat-ai-progress__ic {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+.detail-chat-ai-progress__ic.done-icon {
+  color: var(--primary);
+}
+.detail-chat-ai-progress__ic.done-icon circle {
+  fill: oklch(0.93 0.05 228);
+  stroke: currentColor;
+  stroke-width: 1.1;
+}
+.detail-chat-ai-progress__ic.done-icon path {
+  stroke: currentColor;
+  stroke-width: 1.4;
+}
+.detail-chat-ai-progress__ic.running-icon {
+  color: var(--primary);
+}
+.detail-chat-ai-progress__ic.running-icon path {
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-dasharray: 32 14;
+  transform-origin: 8px 8px;
+  animation: aiProgressSpin 0.9s linear infinite;
+}
+.detail-chat-ai-progress__ic.pending-icon {
+  color: var(--muted-foreground);
+  opacity: 0.6;
+}
+.detail-chat-ai-progress__ic.pending-icon circle {
+  stroke: currentColor;
+  stroke-width: 1.6;
+}
+@keyframes aiProgressSpin {
+  to { transform: rotate(360deg); }
 }
 .detail-chat-ai-progress__text {
   flex: 1;
