@@ -4,16 +4,127 @@
   - load_task_context: 从 tasks 表读取工单完整上下文（含提单 Agent 的 diagnosis JSON）
   - is_platform_ticket: 判断工单是否属于服务号平台自身问题（非 AGV/USP 调度）
   - build_query: 构件检索查询文本
+  - extract_referenced_task_ids / load_referenced_task_context: @# 跨工单引用（L2 注入）
 
 纯数据/静态逻辑，不依赖 AiTaskAgent 实例状态。
 """
 
+import re
 from typing import Optional
 
 from ai.core.logging import get_logger
 from ai.agents.AiTaskPlatform.schemas import TaskContext
 
 logger = get_logger("TASK_AGENT")
+
+
+# @# 跨工单引用：匹配 "＠#/@" 后跟 1-8 位数字（工单编号）
+# 形如 "@#44123"，用于在讨论区引用另一个工单的上下文。
+_REF_PATTERN = re.compile(r"@#(\d{1,8})")
+
+
+def extract_referenced_task_ids(text: str) -> list:
+    """从一段文本（讨论 query）中提取被 @# 引用的工单编号列表（去重、保序）。
+
+    例： "@#44123 你看下他之前那个 #44123 的日志" → ["44123", "44123"]
+    注意：不在此过滤"是否已解决/是否存在"，由调用方决定；只负责解析语法。
+    """
+    if not text:
+        return []
+    return _REF_PATTERN.findall(text)
+
+
+def load_referenced_task_context(task_id: str) -> TaskContext:
+    """读取被 @# 引用工单的上下文（L2 注入深度：基本信息 + diagnosis）。
+
+    复用 load_task_context 的逻辑（含提单 Agent 的 diagnosis JSON），
+    与当前工单的读取完全同构，只是对象换成一个被引用的历史工单。
+    """
+    return load_task_context(str(task_id))
+
+
+def format_referenced_tickets(ref_ids: list) -> str:
+    """把引用的工单上下文组装成注入 prompt 的文本块（L2 注入深度）。
+
+    内容来源（用 @# 引用一个历史工单时能拿到什么）：
+      - 可靠落库：工单基本信息(title/description/status/车型/故障码)
+        + 提单 Agent 交付的 diagnosis 摘要(problem_summary/hypotheses，存于 metadata_info.diagnosis)
+        + 该工单的讨论区评论(load_discussion，discuss 内容已落库，含 U老师 分析)。
+      - ★ 最有价值：最终解决方案（solution，单独字段，存于 metadata_info.diagnosis.solution）——
+        工程师确认方案后写入，只有已提交方案的工单有；直接就是"怎么解决"的结论。
+      - 不入库、拿不到：任务 Agent「帮我分析」生成的完整诊断报告
+        （diagnose 即时生成不落库）；故不注入、也让 LLM 不要假装看到了它。
+
+    若某个编号读不到（不存在/非 AI 源），保留一条可读占位（外层不因单条失败而中断）。
+    """
+    if not ref_ids:
+        return ""
+    blocks = []
+    for rid in ref_ids:
+        try:
+            ctx = load_referenced_task_context(rid)
+            # 讨论评论已落库（discuss 内容），是被引用工单另一份可靠的"排查进展"来源
+            from ai.agents.AiTaskPlatform.contexts.comments import load_discussion as _load_discussion
+            discussion = _load_discussion(str(rid), limit=10)
+        except Exception as e:
+            logger.warning(f"[ticket_ref] 读取被引用工单 {rid} 失败: {e}")
+            ctx = TaskContext(task_id=str(rid))
+            discussion = ""
+        if not (ctx.title or ctx.description or ctx.problem_summary) and not discussion and not ctx.solution:
+            # 读不到内容 → 明确提示，避免 LLM 编造被引用工单内容
+            blocks.append(
+                f"- 工单 #{rid}: （未能读取到该工单的上下文，可能是历史工单或权限之外，请如实告知用户）"
+            )
+            continue
+        diag = f"报告: {ctx.problem_summary}" if ctx.problem_summary else ""
+        if ctx.hypotheses:
+            diag += f"；推测: {' / '.join(ctx.hypotheses)}"
+        parts = [
+            f"- 工单 #{rid}《{ctx.title or '(无标题)'}》",
+            f"  状态: {ctx.status or '未知'}；类型: {ctx.task_type or 'problem'}",
+            f"  车型: {ctx.robot_type or '未知'}；故障码: {ctx.fault_code or '无'}",
+        ]
+        if ctx.description:
+            parts.append(f"  描述: {ctx.description[:200]}")
+        if diag:
+            parts.append(f"  {diag}")
+        # 最终解决方案：单独字段，直接给"怎么解决"的结论（最有参考价值）
+        sol_text = _format_solution(ctx.solution)
+        if sol_text:
+            parts.append(f"  解决方案:\n{sol_text}")
+        if discussion:
+            parts.append(f"  该工单讨论进展:\n{discussion}")
+        blocks.append("\n".join(parts))
+    return "## 引用的历史工单上下文（@# 引用，仅作参考，勿喧宾夺主）\n" + "\n".join(blocks)
+
+
+def _format_solution(solution) -> str:
+    """把 solution 字段（dict）格式化成可读文本，返回空串表示无解决方案。
+
+    solution 结构（见 update_task_resolution 写入）：
+      {root_cause_analysis, suggested_actions[], references[], confidence, needs_more_info, resolved_by_agent}
+    """
+    if not solution or not isinstance(solution, dict):
+        return ""
+    lines = []
+    root = solution.get("root_cause_analysis") or solution.get("root_cause") or ""
+    if root:
+        lines.append(f"    根因: {root}")
+    acts = solution.get("suggested_actions") or []
+    # 兼容结构不同（可能是字符串或 dict 列表）
+    if acts:
+        act_lines = []
+        for a in acts:
+            if isinstance(a, str):
+                act_lines.append(f"      - {a}")
+            elif isinstance(a, dict) and a.get("action"):
+                act_lines.append(f"      - {a['action']}")
+        if act_lines:
+            lines.append("    建议步骤:\n" + "\n".join(act_lines[:8]))
+    conf = solution.get("confidence")
+    if conf:
+        lines.append(f"    置信度: {conf}")
+    return "\n".join(lines)
 
 
 def load_task_context(task_id: str) -> TaskContext:
@@ -46,6 +157,12 @@ def load_task_context(task_id: str) -> TaskContext:
             ctx.ruled_out = d.get("ruled_out") or []
             ctx.collected_info = d.get("collected_info") or {}
             ctx.diagnosis_rounds = d.get("diagnosis_rounds", 0)
+
+            # 最终解决方案（工程确认方案后写入 metadata_info.diagnosis.solution）
+            # 只有已提交过方案的工单有；是"参考怎么解决"最有价值的内容。
+            _diag = d.get("diagnosis") or {}
+            if _diag.get("solution"):
+                ctx.solution = _diag.get("solution")
         else:
             logger.warning(f"Task {task_id} not found in database (load_task_context_dict returned empty)")
     except Exception as e:

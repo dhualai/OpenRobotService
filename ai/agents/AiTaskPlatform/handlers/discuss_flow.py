@@ -11,6 +11,11 @@ from ai.agents.AiTaskPlatform.prompts import (
     DISCUSS_SYSTEM_PROMPT, DISCUSS_USER_TEMPLATE,
     select_system_prompt as _select_system_prompt,
 )
+# @# 跨工单引用解析/注入（模块顶层导入，避免运行时静默降级掩盖 import 错误）
+from ai.agents.AiTaskPlatform.contexts import (
+    extract_referenced_task_ids,
+    format_referenced_tickets,
+)
 
 logger = get_logger("TASK_AGENT")
 
@@ -134,6 +139,23 @@ class DiscussFlow:
 
         # 1. 工单上下文
         ctx = await self._load_task_context(task_id)
+
+        # 1b. @# 跨工单引用（L2 注入）：解析用户 query 里 @#编号 引用的历史工单，
+        #     预加载其上下文（基本信息 + diagnosis + solution + 讨论评论），
+        #     作为"新加入的上下文"注入 prompt。预加载路径（Q3c=B）：不走 Supervisor。
+        referenced_tickets = ""
+        if query:
+            try:
+                _ref_ids = extract_referenced_task_ids(query)
+                if _ref_ids:
+                    referenced_tickets = format_referenced_tickets(_ref_ids)
+                    self._add_trace(
+                        self.NODE_DISCUSS, "ok",
+                        output={"ticket_ref": _ref_ids},
+                    )
+            except Exception as _ref_e:
+                logger.warning(f"[discuss] @# 引用工单注入失败: {_ref_e}")
+                referenced_tickets = ""
 
         # 2. 讨论历史（能力三）
         recent = context.get("recent_comments", []) if context else []
@@ -471,6 +493,7 @@ class DiscussFlow:
                 diagnosis_summary=diag_summary,
                 discussion_history=discussion_history,
                 query=query or "请基于讨论历史和工单信息，给出你的分析和建议。",
+                referenced_tickets=referenced_tickets or "",
                 facultative_analysis=facultative,
             )
             system_prompt = _select_system_prompt(self._is_platform_ticket(ctx), "discuss")

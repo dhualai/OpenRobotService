@@ -239,6 +239,12 @@ export default function DiscussionPanel({
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
 
+  // @# 工单引用 state（Q2d-①：@# 弹相似工单列表选；@#44123 直接写编号不弹）
+  const [showTicketRef, setShowTicketRef] = useState(false);
+  const [ticketRefList, setTicketRefList] = useState<Array<{ task_id: number; title: string; status?: string; project_name?: string }>>([]);
+  const [ticketRefIndex, setTicketRefIndex] = useState(0);
+  const [ticketRefLoading, setTicketRefLoading] = useState(false);
+
   // 引用（消息引用）state：当前正在引用的评论
   const [quoted, setQuoted] = useState<DiscussionComment | null>(null);
   // 长按操作菜单：{ 评论, 气泡定位矩形 }
@@ -359,12 +365,39 @@ export default function DiscussionPanel({
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 160) + 'px';
 
-    if (!mentionUsers || mentionUsers.length === 0) return;
-
     const cursorPos = el.selectionStart ?? val.length;
     const textBeforeCursor = val.slice(0, cursorPos);
-    const atMatch = textBeforeCursor.match(/@([\w一-鿿]*)$/);
 
+    // ── @# 工单引用触发（独立于人员 @，两种讨论区都可用）：光标前是 "@#..." ──
+    // 只有"刚刚输入 @#（找相似）"或"@#数字（明确引用）"两种；后者不弹列表（@#44123 直接引用）。
+    const atHashMatch = textBeforeCursor.match(/@#(\d*)$/);
+    if (atHashMatch) {
+      setShowMentions(false);
+      if (atHashMatch[1]) {
+        // 已带编号 → 明确引用，不弹列表
+        setShowTicketRef(false);
+      } else {
+        // 只有 "@#" → 拉相似工单列表让用户选
+        setShowTicketRef(true);
+        void fetchSimilarTickets();
+        // 初始化导航索引
+        setTicketRefIndex(0);
+      }
+      return;
+    }
+
+    // ── 无任何触发符（既非 @# 也非 @）→ 收起两个面板 ──
+    if (!/@#\d*$/.test(textBeforeCursor) && !/@[\w一-鿿]*$/.test(textBeforeCursor)) {
+      setShowTicketRef(false);
+    }
+
+    // ── @mention: 无人员列表则跳过（@# 已在上方处理）──
+    if (!mentionUsers || mentionUsers.length === 0) {
+      setShowMentions(false);
+      return;
+    }
+
+    const atMatch = textBeforeCursor.match(/@([\w一-鿿]*)$/);
     if (atMatch) {
       setMentionFilter(atMatch[1]);
       setShowMentions(true);
@@ -402,8 +435,68 @@ export default function DiscussionPanel({
     }, 0);
   };
 
-  // ── 键盘事件：处理 @mention 导航 / Enter 发送 / Shift+Enter 换行 ──
+  // ── @# 工单引用: 拉取"相似已解决工单"列表（后端 /api/tasks/{taskId}/similar）──
+  const fetchSimilarTickets = useCallback(async () => {
+    if (taskId === undefined) return;
+    setTicketRefLoading(true);
+    try {
+      const { createRequest } = await import('@/api/client');
+      const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
+      const res = await request<{ task_id: number; similar: Array<{ task_id: number; title: string; status?: string; project_name?: string }> }>(
+        `/${taskId}/similar`
+      );
+      const list = (res?.similar || []).slice(0, 8);
+      setTicketRefList(list);
+    } catch {
+      setTicketRefList([]);
+    } finally {
+      setTicketRefLoading(false);
+    }
+  }, [taskId]);
+
+  // ── @# 工单引用: 选中 → 替换 "@#" 为 "@#编号 " ──
+  const handleTicketRefSelect = (t: { task_id: number; title: string }) => {
+    const cursorPos = inputRef.current?.selectionStart ?? commentText.length;
+    const textBeforeCursor = commentText.slice(0, cursorPos);
+    const textAfterCursor = commentText.slice(cursorPos);
+
+    const newBefore = textBeforeCursor.replace(/@#\d*$/, `@#${t.task_id} `);
+    const newText = newBefore + textAfterCursor;
+
+    setCommentText(newText);
+    setShowTicketRef(false);
+
+    setTimeout(() => {
+      inputRef.current?.focus();
+      const pos = newBefore.length;
+      inputRef.current?.setSelectionRange(pos, pos);
+    }, 0);
+  };
+
+  // ── 键盘事件：处理 @mention / @# 导航 / Enter 发送 / Shift+Enter 换行 ──
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showTicketRef && ticketRefList.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setTicketRefIndex((prev) => (prev + 1) % ticketRefList.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setTicketRefIndex((prev) => (prev - 1 + ticketRefList.length) % ticketRefList.length);
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleTicketRefSelect(ticketRefList[ticketRefIndex]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowTicketRef(false);
+        return;
+      }
+    }
     if (showMentions && filteredMentionUsers.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -563,7 +656,7 @@ export default function DiscussionPanel({
     }
   };
 
-  const ph = placeholder ?? (enableAI ? '直接评论或者 @U老师 进行讨论。' : '参与讨论…');
+  const ph = placeholder ?? (enableAI ? '直接评论、@U老师 讨论，或输入 @#工单号 引用历史工单。' : '参与讨论…');
 
   // 长按菜单浮层交给 TDesign <Popover>（popper 定位 + 箭头 + 动画 + 外点关闭）承载。
   // 用一个「透明、pointer-events:none 的代理锚点」定位到被长按气泡的 rect：
@@ -823,6 +916,31 @@ export default function DiscussionPanel({
                 <span className="detail-chat-mention-role">{u.role_name || ''}</span>
               </div>
             ))}
+          </div>
+        )}
+        {/* @# 工单引用 suggestion panel（相似已解决工单） */}
+        {showTicketRef && (
+          <div className="detail-chat-mention-panel">
+            {ticketRefLoading ? (
+              <div className="detail-chat-mention-item">
+                <span className="detail-chat-mention-name">正在加载相似工单…</span>
+              </div>
+            ) : ticketRefList.length === 0 ? (
+              <div className="detail-chat-mention-item">
+                <span className="detail-chat-mention-name">没有相似工单，可手动输入 @#工单号 引用</span>
+              </div>
+            ) : (
+              ticketRefList.map((t, i) => (
+                <div
+                  key={t.task_id}
+                  className={`detail-chat-mention-item ${i === ticketRefIndex ? 'is-active' : ''}`}
+                  onMouseDown={(e) => { e.preventDefault(); handleTicketRefSelect(t); }}
+                >
+                  <span className="detail-chat-mention-name">#{t.task_id} {t.title}</span>
+                  <span className="detail-chat-mention-role">{(t.status || '').replace('resolved', '已解决')}</span>
+                </div>
+              ))
+            )}
           </div>
         )}
         {/* AI 执行过程（Claude Code 式动态展示）：Supervisor 派发能力时逐项实时滚动，
