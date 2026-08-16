@@ -20,10 +20,7 @@ class Node:
     BUILD_PROMPT = "build_prompt"  # Prompt 构建
     LLM = "llm"                    # LLM 调用
     PARSE = "parse"                # 结果解析
-    DIAGNOSE = "diagnose"          # 诊断报告
     DISCUSS = "discuss"            # @AI 讨论
-    SUMMARIZE = "summarize"        # 讨论摘要
-    MEMORY = "memory"              # 记忆保存
     COMMENT = "comment"            # 写 task_comments
     SUBMIT = "submit"              # 方案提交
 

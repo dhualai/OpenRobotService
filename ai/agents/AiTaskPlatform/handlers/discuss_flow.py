@@ -96,11 +96,6 @@ def _build_progress_emitter(task_id, run_id, live_todo: dict):
     return emitter
 
 
-def _emit_progress_phase(phase: str, run_id, task_id, final_todo) -> None:
-    """整体阶段广播（done）：前端据此收起执行过程，仅展示最终纯回复。"""
-    _broadcast_ai_progress(task_id, run_id, todos=final_todo, phase=phase)
-
-
 def _broadcast_ai_progress(task_id, run_id, todos, phase: str) -> None:
     """跨进程通知后端把 AI 执行进度广播进该工单的 WS 房间（best-effort 不阻塞主流程）。"""
     try:

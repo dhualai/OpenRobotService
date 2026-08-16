@@ -10,10 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
-from typing import Optional, AsyncGenerator
-from dataclasses import dataclass, field
+from typing import Optional
 
 from ai.config import get_ai_config
 from ai.core import get_llm_client, get_memory_manager, get_retrieval_service
@@ -23,17 +21,6 @@ from ai.agents.AiTaskPlatform.schemas import (
     TaskContext,
     SolutionDraft,
     AttachmentAnalysis,
-)
-from ai.agents.AiTaskPlatform.prompts import (
-    DIAGNOSE_SYSTEM_PROMPT,
-    DIAGNOSE_USER_TEMPLATE,
-    DISCUSS_SYSTEM_PROMPT,
-    DISCUSS_USER_TEMPLATE,
-    SUMMARIZE_SYSTEM_PROMPT,
-    SUMMARIZE_FULL_TEMPLATE,
-    SUMMARIZE_INCREMENTAL_TEMPLATE,
-    TASK_AGENT_SYSTEM_PROMPT,
-    USER_PROMPT_TEMPLATE,
 )
 
 # 拆分出的能力模块（pipeline 改薄为编排门面）
@@ -52,12 +39,10 @@ from ai.agents.AiTaskPlatform.retrieval import rules as _rules
 from ai.agents.AiTaskPlatform.attachments.utils import (
     read_attachment_content as _read_attachment_content_impl,
     extract_log_errors as _extract_log_errors_impl,
-    materialize_path as _materialize_path_impl,
     extract_log_paths as _extract_log_paths_impl,
 )
 from ai.agents.AiTaskPlatform.retrieval import format_retrieval_results
 from ai.agents.AiTaskPlatform.retrieval import (
-    parse_solution as _parse_solution_impl,
     parse_solution_with_status as _parse_solution_with_status_impl,
 )
 from ai.agents.AiTaskPlatform.prompts import build_user_prompt
@@ -86,10 +71,7 @@ class AiTaskAgent(DiagnoseFlow, DiscussFlow, SummarizeFlow, SolutionFlow):
     NODE_BUILD_PROMPT = Node.BUILD_PROMPT
     NODE_LLM = Node.LLM
     NODE_PARSE = Node.PARSE
-    NODE_DIAGNOSE = Node.DIAGNOSE
     NODE_DISCUSS = Node.DISCUSS
-    NODE_SUMMARIZE = Node.SUMMARIZE
-    NODE_MEMORY = Node.MEMORY
     NODE_COMMENT = Node.COMMENT
     NODE_SUBMIT = Node.SUBMIT
 
@@ -266,11 +248,6 @@ class AiTaskAgent(DiagnoseFlow, DiscussFlow, SummarizeFlow, SolutionFlow):
         return _extract_log_errors_impl(text)
 
     @staticmethod
-    def _materialize_path(raw_path: str, tmp_dirs: list[str]) -> str:
-        """path 归一化。委托 attachments.materialize_path。"""
-        return _materialize_path_impl(raw_path, tmp_dirs)
-
-    @staticmethod
     def _extract_log_paths(attachments: list) -> tuple[list[str], list[str]]:
         """从附件列表提取日志路径（压缩包先解压）。委托 attachments.extract_log_paths。"""
         return _extract_log_paths_impl(attachments)
@@ -282,12 +259,6 @@ class AiTaskAgent(DiagnoseFlow, DiscussFlow, SummarizeFlow, SolutionFlow):
     def _build_prompt(self, context: TaskContext, retrieval: dict) -> str:
         """组装用户 Prompt 模板。委托 prompt_builder.build_user_prompt。"""
         return build_user_prompt(context, retrieval)
-
-    @staticmethod
-    @staticmethod
-    def _parse_solution(raw: str) -> SolutionDraft:
-        """从 LLM 原始输出解析 SolutionDraft JSON。委托 solution_io.parse_solution。"""
-        return _parse_solution_impl(raw)
 
     @staticmethod
     def _parse_solution_with_status(raw: str) -> tuple[SolutionDraft, str]:

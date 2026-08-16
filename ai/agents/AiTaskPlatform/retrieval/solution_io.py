@@ -1,21 +1,13 @@
 """解决方案解析/序列化工具（从 pipeline.py 拆分纯逻辑，不依赖 self）
 
 职责：
-  - parse_solution / parse_solution_with_status: 从 LLM 原始输出解析 SolutionDraft JSON
-
-供 AiTaskAgent 的 analyze/analyze_stream 内部调用（方法仍需 self/其他，但解析是纯逻辑）。
+  - parse_solution_with_status: 从 LLM 原始输出解析 SolutionDraft JSON
 """
 
 import json
 import re
 
 from ai.agents.AiTaskPlatform.schemas import SolutionDraft
-
-
-def parse_solution(raw: str) -> SolutionDraft:
-    """从 LLM 原始输出解析 SolutionDraft JSON。"""
-    draft, _ = parse_solution_with_status(raw)
-    return draft
 
 
 def parse_solution_with_status(raw: str) -> tuple:

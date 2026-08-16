@@ -1,6 +1,6 @@
 """AiTaskAgent 功能流程 Mixin 集合（pipeline 拆分出的功能块）。
 
-- SolutionFlow: analyze / analyze_stream / submit
+- SolutionFlow: analyze / submit
 - DiagnoseFlow: diagnose
 - DiscussFlow:  discuss
 - SummarizeFlow: summarize_batch / _summarize_one
