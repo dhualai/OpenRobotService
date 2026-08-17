@@ -2,10 +2,15 @@
 // 底部导航与路由同步，切换时同步 workbench store 的 activeTab，
 // 使跨视图联动（goToTab）能正确驱动导航高亮。
 // 导航样式参考 macaron-minimal-ui 的 BottomNav：玻璃条 + 选中淡蓝圆角块 + 描边图标。
-import { Suspense, useEffect, useRef } from 'react';
+// 「系统任务」按钮右上角展示「待我处理」工单数角标（口径与系统任务页一致）。
+import { Suspense, useEffect, useRef, useState, useCallback } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Loading } from 'tdesign-mobile-react';
 import { useWorkbenchStore, type WorkbenchTab } from '@/stores/workbench';
+import { useAuthStore } from '@/stores/auth';
+import { createRequest } from '@/api/client';
+import API_CONFIG from '@/config/api';
+import { buildRelevanceFilters } from '@/shared/utils/ticketFilters';
 
 const TAB_PATHS: Record<WorkbenchTab, string> = {
   call: '/call',
@@ -75,6 +80,37 @@ export default function MainLayout() {
   const location = useLocation();
   const activeTab = useWorkbenchStore((s) => s.activeTab);
   const setActiveTab = useWorkbenchStore((s) => s.setActiveTab);
+  const { username, projectIds } = useAuthStore();
+
+  // 「待我处理」工单数角标：与系统任务页共用同一相关性过滤口径（size=1 只取 total），
+  // 每 30 秒刷新；无用户名时无法计算「待我处理」，不展示角标。
+  const [mineTicketCount, setMineTicketCount] = useState<number | null>(null);
+
+  const fetchMineTicketCount = useCallback(async () => {
+    if (!username) return;
+    try {
+      const request = createRequest(API_CONFIG.TASKS.BASE_URL, 'Tasks');
+      const data = await request<{ total: number }>('/filter', {
+        method: 'POST',
+        body: JSON.stringify({
+          filters: buildRelevanceFilters('mine', username, projectIds),
+          sorts: [],
+          page: 1,
+          size: 1,
+        }),
+        skipCache: true,
+      });
+      setMineTicketCount(data.total);
+    } catch {
+      // 计数失败保留旧角标，不打扰页面
+    }
+  }, [username, projectIds]);
+
+  useEffect(() => {
+    fetchMineTicketCount();
+    const timer = window.setInterval(fetchMineTicketCount, 30000);
+    return () => window.clearInterval(timer);
+  }, [fetchMineTicketCount]);
 
   // 外层滚动容器（.tabbar-shell__content）：Dashboard(/admin) 直接渲染在这里，
   // 而 AdminLayout 子页(/admin/*) 又嵌套在此容器内。从 Dashboard 滚到底部再点进
@@ -116,6 +152,12 @@ export default function MainLayout() {
             >
               <span className="app-bottom-nav__icon">
                 <NavIcon type={tab} />
+                {/* 系统任务：图标右上角「待我处理」数量角标（蓝底白字，>0 时展示） */}
+                {tab === 'tasks' && mineTicketCount != null && mineTicketCount > 0 && (
+                  <span className="app-bottom-nav__badge" data-testid="nav-badge-tasks">
+                    {mineTicketCount > 99 ? '99+' : mineTicketCount}
+                  </span>
+                )}
               </span>
               <span className="app-bottom-nav__label">{label}</span>
             </button>
