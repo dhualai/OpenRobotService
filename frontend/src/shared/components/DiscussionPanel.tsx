@@ -6,12 +6,14 @@
 // 微信化交互：消息引用（长按→引用；气泡内引用块可点击定位原消息）、长按操作菜单（引用/复制/删除）、气泡样式优化。
 import { useState, useRef, useEffect, useMemo, useCallback, Fragment } from 'react';
 import { Button, Toast, Popover } from 'tdesign-mobile-react';
+import { Paperclip, Send } from 'lucide-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
 
 import { useAuthStore } from '@/stores/auth';
 import API_CONFIG from '@/config/api';
 import { avatarUrl } from '@/api/profile';
+import { parseUtcDate } from '@/shared/utils/url';
 import { useTaskCommentsWS, type OnlineMember } from '@/shared/hooks/useTaskCommentsWS';
 import type { AiProgressTodo } from '@/api/ws';
 
@@ -49,8 +51,8 @@ const stripHtml = (html: string): string => {
 
 /** 聊天时间分隔格式化：当天显示 HH:MM，非当天显示 M月D日 HH:MM */
 const formatChatDividerTime = (dateString: string): string => {
-  const date = new Date(dateString);
-  if (isNaN(date.getTime())) return '';
+  const date = parseUtcDate(dateString);
+  if (!date) return '';
   const now = new Date();
   const isSameDay =
     date.getFullYear() === now.getFullYear() &&
@@ -66,16 +68,16 @@ const formatChatDividerTime = (dateString: string): string => {
 /** 是否在当前评论前插入居中时间分隔：首条消息或与上一条间隔≥5分钟 */
 const shouldShowTimeDivider = (cur: string, prev?: string): boolean => {
   if (!prev) return true;
-  const curDate = new Date(cur);
-  const prevDate = new Date(prev);
-  if (isNaN(curDate.getTime()) || isNaN(prevDate.getTime())) return true;
+  const curDate = parseUtcDate(cur);
+  const prevDate = parseUtcDate(prev);
+  if (!curDate || !prevDate) return true;
   return curDate.getTime() - prevDate.getTime() >= 5 * 60 * 1000;
 };
 
 /** 评论时间格式化（姓名旁，非本人消息）：X月X日 HH:MM:SS */
 const formatCommentTime = (dateString: string): string => {
-  const date = new Date(dateString);
-  if (isNaN(date.getTime())) return '';
+  const date = parseUtcDate(dateString);
+  if (!date) return '';
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 };
@@ -168,6 +170,11 @@ export default function DiscussionPanel({
   // 过程区可见性：AI 正在分析（sending）且至少跑过 running 或有进行中项；done 由 sending(false) 隐藏
   const showAiProcess = (aiPhase === 'running' && aiTodos.length > 0) || (sending && aiRunId !== undefined);
 
+  // 逐项状态：任一 todo 仍是进行中（phase=running / status=in_progress），就视为整场仍在执行。
+  // 头部「正在排查 / 已完成」据此判断而非只看事件封套 phase，杜绝「已完成却还有项在转圈」的矛盾。
+  const anyTodoRunning = aiTodos.some((t) => t.phase === 'running' || t.status === 'in_progress');
+  const allTodosDone = aiTodos.length > 0 && !anyTodoRunning;
+
   // 新一轮 AI 讨论开始（sending false→true）：重置过程区
   const prevSendingRef = useRef<boolean>(sending);
   useEffect(() => {
@@ -178,14 +185,14 @@ export default function DiscussionPanel({
     }
     prevSendingRef.current = sending;
     // done 后 sending(false)，短暂保留过程区让用户看到结果，随后隐藏
-    if (!sending && aiPhase === 'done' && aiTodos.length > 0 && aiRunId !== undefined) {
+    if (!sending && allTodosDone && aiRunId !== undefined) {
       const t = setTimeout(() => {
         setAiRunId(undefined);
         setAiTodos([]);
       }, 400);
       return () => clearTimeout(t);
     }
-  }, [sending, aiPhase, aiTodos, aiRunId]);
+  }, [sending, allTodosDone, aiTodos, aiRunId]);
 
   // username → 展示名 映射（用于在线头像 / 输入中提示）
   const nameMap = useMemo(() => {
@@ -231,6 +238,12 @@ export default function DiscussionPanel({
   const [showMentions, setShowMentions] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
+
+  // @# 工单引用 state（Q2d-①：@# 弹相似工单列表选；@#44123 直接写编号不弹）
+  const [showTicketRef, setShowTicketRef] = useState(false);
+  const [ticketRefList, setTicketRefList] = useState<Array<{ task_id: number; title: string; status?: string; project_name?: string }>>([]);
+  const [ticketRefIndex, setTicketRefIndex] = useState(0);
+  const [ticketRefLoading, setTicketRefLoading] = useState(false);
 
   // 引用（消息引用）state：当前正在引用的评论
   const [quoted, setQuoted] = useState<DiscussionComment | null>(null);
@@ -352,12 +365,39 @@ export default function DiscussionPanel({
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 160) + 'px';
 
-    if (!mentionUsers || mentionUsers.length === 0) return;
-
     const cursorPos = el.selectionStart ?? val.length;
     const textBeforeCursor = val.slice(0, cursorPos);
-    const atMatch = textBeforeCursor.match(/@([\w一-鿿]*)$/);
 
+    // ── @# 工单引用触发（独立于人员 @，两种讨论区都可用）：光标前是 "@#..." ──
+    // 只有"刚刚输入 @#（找相似）"或"@#数字（明确引用）"两种；后者不弹列表（@#44123 直接引用）。
+    const atHashMatch = textBeforeCursor.match(/@#(\d*)$/);
+    if (atHashMatch) {
+      setShowMentions(false);
+      if (atHashMatch[1]) {
+        // 已带编号 → 明确引用，不弹列表
+        setShowTicketRef(false);
+      } else {
+        // 只有 "@#" → 拉相似工单列表让用户选
+        setShowTicketRef(true);
+        void fetchSimilarTickets();
+        // 初始化导航索引
+        setTicketRefIndex(0);
+      }
+      return;
+    }
+
+    // ── 无任何触发符（既非 @# 也非 @）→ 收起两个面板 ──
+    if (!/@#\d*$/.test(textBeforeCursor) && !/@[\w一-鿿]*$/.test(textBeforeCursor)) {
+      setShowTicketRef(false);
+    }
+
+    // ── @mention: 无人员列表则跳过（@# 已在上方处理）──
+    if (!mentionUsers || mentionUsers.length === 0) {
+      setShowMentions(false);
+      return;
+    }
+
+    const atMatch = textBeforeCursor.match(/@([\w一-鿿]*)$/);
     if (atMatch) {
       setMentionFilter(atMatch[1]);
       setShowMentions(true);
@@ -395,8 +435,68 @@ export default function DiscussionPanel({
     }, 0);
   };
 
-  // ── 键盘事件：处理 @mention 导航 / Enter 发送 / Shift+Enter 换行 ──
+  // ── @# 工单引用: 拉取"相似已解决工单"列表（后端 /api/tasks/{taskId}/similar）──
+  const fetchSimilarTickets = useCallback(async () => {
+    if (taskId === undefined) return;
+    setTicketRefLoading(true);
+    try {
+      const { createRequest } = await import('@/api/client');
+      const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
+      const res = await request<{ task_id: number; similar: Array<{ task_id: number; title: string; status?: string; project_name?: string }> }>(
+        `/${taskId}/similar`
+      );
+      const list = (res?.similar || []).slice(0, 8);
+      setTicketRefList(list);
+    } catch {
+      setTicketRefList([]);
+    } finally {
+      setTicketRefLoading(false);
+    }
+  }, [taskId]);
+
+  // ── @# 工单引用: 选中 → 替换 "@#" 为 "@#编号 " ──
+  const handleTicketRefSelect = (t: { task_id: number; title: string }) => {
+    const cursorPos = inputRef.current?.selectionStart ?? commentText.length;
+    const textBeforeCursor = commentText.slice(0, cursorPos);
+    const textAfterCursor = commentText.slice(cursorPos);
+
+    const newBefore = textBeforeCursor.replace(/@#\d*$/, `@#${t.task_id} `);
+    const newText = newBefore + textAfterCursor;
+
+    setCommentText(newText);
+    setShowTicketRef(false);
+
+    setTimeout(() => {
+      inputRef.current?.focus();
+      const pos = newBefore.length;
+      inputRef.current?.setSelectionRange(pos, pos);
+    }, 0);
+  };
+
+  // ── 键盘事件：处理 @mention / @# 导航 / Enter 发送 / Shift+Enter 换行 ──
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showTicketRef && ticketRefList.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setTicketRefIndex((prev) => (prev + 1) % ticketRefList.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setTicketRefIndex((prev) => (prev - 1 + ticketRefList.length) % ticketRefList.length);
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleTicketRefSelect(ticketRefList[ticketRefIndex]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowTicketRef(false);
+        return;
+      }
+    }
     if (showMentions && filteredMentionUsers.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -556,7 +656,7 @@ export default function DiscussionPanel({
     }
   };
 
-  const ph = placeholder ?? (enableAI ? '直接评论或者 @U老师 进行讨论。' : '参与讨论…');
+  const ph = placeholder ?? (enableAI ? '直接评论、@U老师 讨论，或输入 @#工单号 引用历史工单。' : '参与讨论…');
 
   // 长按菜单浮层交给 TDesign <Popover>（popper 定位 + 箭头 + 动画 + 外点关闭）承载。
   // 用一个「透明、pointer-events:none 的代理锚点」定位到被长按气泡的 rect：
@@ -818,13 +918,42 @@ export default function DiscussionPanel({
             ))}
           </div>
         )}
+        {/* @# 工单引用 suggestion panel（相似已解决工单） */}
+        {showTicketRef && (
+          <div className="detail-chat-mention-panel">
+            {ticketRefLoading ? (
+              <div className="detail-chat-mention-item">
+                <span className="detail-chat-mention-name">正在加载相似工单…</span>
+              </div>
+            ) : ticketRefList.length === 0 ? (
+              <div className="detail-chat-mention-item">
+                <span className="detail-chat-mention-name">没有相似工单，可手动输入 @#工单号 引用</span>
+              </div>
+            ) : (
+              ticketRefList.map((t, i) => (
+                <div
+                  key={t.task_id}
+                  className={`detail-chat-mention-item ${i === ticketRefIndex ? 'is-active' : ''}`}
+                  onMouseDown={(e) => { e.preventDefault(); handleTicketRefSelect(t); }}
+                >
+                  <span className="detail-chat-mention-name">#{t.task_id} {t.title}</span>
+                  <span className="detail-chat-mention-role">{(t.status || '').replace('resolved', '已解决')}</span>
+                </div>
+              ))
+            )}
+          </div>
+        )}
         {/* AI 执行过程（Claude Code 式动态展示）：Supervisor 派发能力时逐项实时滚动，
             最终回复只写纯答复（不含此过程） */}
         {enableAI && showAiProcess && aiTodos.length > 0 && (
           <div className="detail-chat-ai-progress">
             <div className="detail-chat-ai-progress__head">
-              <span className="detail-chat-ai-progress__spinner" />
-              {aiPhase === 'running' ? 'AI 正在排查执行…' : '排查执行完成'}
+              <span className="detail-chat-ai-progress__spinner" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </span>
+              {!allTodosDone ? 'AI 正在排查执行' : '排查执行完成'}
             </div>
             <ul className="detail-chat-ai-progress__list">
               {aiTodos.map((t, i) => {
@@ -833,8 +962,21 @@ export default function DiscussionPanel({
                 const running = t.phase === 'running' || t.status === 'in_progress';
                 return (
                   <li key={`${t.id ?? i}-${i}`} className={`detail-chat-ai-progress__item ${running ? 'is-running' : ''} ${status ? 'is-done' : ''}`}>
-                    <span className="detail-chat-ai-progress__icon">
-                      {status ? '✅' : running ? '⏳' : '⬜'}
+                    <span className="detail-chat-ai-progress__icon" aria-hidden="true">
+                      {status ? (
+                        <svg viewBox="0 0 16 16" className="detail-chat-ai-progress__ic done-icon">
+                          <circle cx="8" cy="8" r="7" />
+                          <path d="M4.9 8.3l1.9 1.9 4.2-4.2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      ) : running ? (
+                        <svg viewBox="0 0 16 16" className="detail-chat-ai-progress__ic running-icon">
+                          <path d="M8 1.5a6.5 6.5 0 1 0 6.5 6.5" fill="none" strokeLinecap="round" />
+                        </svg>
+                      ) : (
+                        <svg viewBox="0 0 16 16" className="detail-chat-ai-progress__ic pending-icon">
+                          <circle cx="8" cy="8" r="5.5" fill="none" />
+                        </svg>
+                      )}
                     </span>
                     <span className="detail-chat-ai-progress__text">{desc}</span>
                   </li>
@@ -846,7 +988,7 @@ export default function DiscussionPanel({
         {(enableAI || (enableAttach && pendingFiles.length > 0)) && (
           <div className="detail-chat-toolbar">
             {enableAI && (
-              <Button size="small" theme="default" onClick={handleAIClick} disabled={sending || disabled}>
+              <Button size="small" theme="default" className="detail-chat-mention-btn" onClick={handleAIClick} disabled={sending || disabled}>
                 @U老师
               </Button>
             )}
@@ -882,11 +1024,12 @@ export default function DiscussionPanel({
               disabled={sending || disabled}
               aria-label="上传图片或文件"
             >
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
+              <Paperclip size={16} strokeWidth={2} />
             </button>
           )}
-          <Button size="small" theme="primary" onClick={handleSend} disabled={!canSend}>
-            {sending ? '发送中' : '发送'}
+          {/* 发送按钮（设计稿 04/05 工单详情输入区：size-10 bg-primary 圆形 + Send 纸飞机图标；ArrowUp 仅用于对话首页） */}
+          <Button size="small" theme="primary" className="detail-chat-send" onClick={handleSend} disabled={!canSend} aria-label="发送">
+            {sending ? <span className="detail-attachment-file__spinner" /> : <Send size={16} strokeWidth={2.2} />}
           </Button>
           {enableAttach && (
             <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={handleSelectFile} />

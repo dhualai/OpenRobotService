@@ -63,6 +63,7 @@ async def assign_ticket(
     fault_code: Optional[str] = None,
     special_notes: Optional[str] = None,
     project_name: Optional[str] = None,  # 预留：未来按项目缩小范围
+    project_id: Optional[str] = None,
     required_skills: Optional[List[str]] = None,
     diagnosis_hypotheses: Optional[List[str]] = None,
     diagnosis_ruled_out: Optional[List[str]] = None,
@@ -70,6 +71,7 @@ async def assign_ticket(
     diagnosis_rounds: Optional[int] = None,
     contact: Optional[str] = None,
     creator: Optional[str] = None,
+    preferred_assignee: Optional[str] = None,  # 预留：用户提单时填写的倾向处理人（userId/username）
 ) -> AssignmentResult:
     global _dispatch_singleton
     engineers = load_engineers()
@@ -94,6 +96,7 @@ async def assign_ticket(
         fault_code=fault_code,
         special_notes=special_notes,
         project_name=project_name,
+        project_id=project_id or "", 
         required_skills=required_skills or [],
         diagnosis_hypotheses=diagnosis_hypotheses,
         diagnosis_ruled_out=diagnosis_ruled_out,
@@ -101,6 +104,7 @@ async def assign_ticket(
         diagnosis_rounds=diagnosis_rounds,
         contact=contact,
         creator=creator,
+        preferred_assignee=preferred_assignee,
     )
 
     # 复用进程级 DispatchFlow 单例（由 ensure_dispatch_ready 懒加载/预热）

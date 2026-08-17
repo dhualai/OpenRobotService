@@ -14,9 +14,10 @@
 - 不传 project_ids：不过滤（向后兼容）
 - 传 project_ids（即使为空）：仅统计指定项目内的数据
 """
+import re
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 
 from app.core.database import get_async_db as get_db
 from app.modules.admin.services.task_dashboard_service import task_dashboard_service
@@ -63,6 +64,25 @@ def _parse_project_ids(raw: Optional[str]) -> Optional[List[str]]:
     if raw is None:
         return None
     return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def _parse_settlement_period(period: Any) -> Optional[Tuple[int, int]]:
+    """解析项目业绩核算期 settlement_period，返回 (年, 月)。
+
+    该列为手工填写，常见写法：
+    - YYYYMM   → 202608（2026年8月）
+    - YYYY-MM  → 2026-08
+    兼容分隔符 - / . 及个位月份（如 2026/8）。非法/缺失返回 None。
+    """
+    if period is None:
+        return None
+    m = re.fullmatch(r"(\d{4})[-/.]?(\d{1,2})", str(period).strip())
+    if not m:
+        return None
+    year, month = int(m.group(1)), int(m.group(2))
+    if not (2000 <= year <= 2100) or not (1 <= month <= 12):
+        return None
+    return year, month
 
 
 def _enrich_projects_with_analysis(projects: List[Dict]) -> None:
@@ -172,6 +192,62 @@ async def get_project_stage_summary(
         "data": {
             "total": total,
             "by_stage": by_stage,
+        },
+    }
+
+
+@dashboard_router.get("/projects/monthly", response_model=Dict[str, Any])
+async def get_project_monthly_summary(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),
+):
+    """项目按月统计 —— 供仪表盘「跨项目看板」月柱状图使用（替换原按阶段统计的展示口径）。
+
+    按月口径 = 项目业绩核算期 settlement_period（手工填写，常见 YYYYMM 如 202608 = 2026年8月，
+    也兼容 YYYY-MM；模型字段已建索引），与「本月新增」统计卡口径一致；
+    无核算期的项目不落在任何月份，不参与统计。输出统一归一化为 YYYY-MM 的 key。
+
+    响应结构：
+    {
+        "code": 0,
+        "data": {
+            "monthly": [{"key": "2026-08", "year": 2026, "month": 8, "value": 12}, ...],
+            "years": [2024, 2025, 2026]
+        }
+    }
+    """
+    pid_list = _parse_project_ids(project_ids)
+    if pid_list is not None:
+        projects = project_service.get_projects_by_ids(pid_list)
+    else:
+        projects = project_service.get_projects(0, 1000)
+
+    monthly_map: Dict[str, int] = {}
+    for project in projects:
+        parsed = _parse_settlement_period(project.get("settlement_period"))
+        if parsed is None:
+            continue
+        year, month = parsed
+        key = f"{year:04d}-{month:02d}"
+        monthly_map[key] = monthly_map.get(key, 0) + 1
+
+    monthly = [
+        {
+            "key": key,
+            "year": int(key[:4]),
+            "month": int(key[5:]),
+            "value": value,
+        }
+        for key, value in monthly_map.items()
+    ]
+    monthly.sort(key=lambda item: item["key"])
+
+    years = sorted({item["year"] for item in monthly})
+
+    return {
+        "code": 0,
+        "data": {
+            "monthly": monthly,
+            "years": years,
         },
     }
 

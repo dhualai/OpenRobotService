@@ -73,12 +73,17 @@ class LlmDecision:
             "再匹配候选人负责的模块中是否有相关项，而非按模块名硬套前端/后端。",
             "选人时：①工单涉及的产品/模块尽量匹配候选人负责的模块；②在匹配者中优先排名靠前的。",
             "",
-            "【第三维度：工单类型（决定由谁承接）】",
-            "先判断工单是：需求/产品建议、故障、咨询、还是其他。",
-            "- 需求/产品建议类（含「建议新增」「需要支持」「希望增加」「需求」等）：应优先派给「产品设计/产品经理」类的候选人，",
-            "  由其进行需求梳理与排期，而不是直接派给具体的开发/后端。",
-            "- 故障/缺陷/修复类：派给对应技术的开发（前端问题→负责该产品前端模块的人；后端→负责服务端模块的人）。",
-            "- 咨询/排查类：派给问题域最相关、总分最高者。",
+            "【第三维度：工单类型（你必须独立判断，它决定由谁承接）】",
+            "上游提单 Agent 给了一个初步类型（见下方工单区的 ticket_type），仅供参考、可能判错；你必须基于工单内容独立复核出最终类型。",
+            "五类定义与边界（务必区分清楚，尤其 support 与 feature）：",
+            "- support 咨询：询问使用方法/操作指导/配置协助，「不会用/怎么用/如何操作/需要指导」等；不新增功能、也不报故障。",
+            "- feature 需求：希望新增/增加功能、提产品建议，「建议新增/希望支持/能不能加/增加一个」等。",
+            "- bug 缺陷：功能本该有但行为错误/异常，与预期不符。",
+            "- problem 报障：现场异常、故障报修、设备/系统出问题。",
+            "- other 其他：无法归入以上四类（闲聊/感谢/无关内容）。",
+            "承接规则：",
+            "- feature 需求类 → 派给该产品的产品经理（负责「产品设计」模块的候选人），由产品经理做需求梳理。",
+            "- 其余四类（support/bug/problem/other）→ 一律按工单涉及的产品 + 模块匹配候选人画像，选总分最高者，不要按类型硬派。",
             "候选人若负责「产品设计」模块，即为该产品的产品经理；名单可能有多名 PM，须按工单所属产品区分。",
             "",
             "【候选人排名（已含职级折扣；#1 为总分最高，默认应优先考虑）】",
@@ -112,6 +117,8 @@ class LlmDecision:
             f"标题: {ticket.title or '无'}",
             f"描述: {ticket.problem_description}",
         ])
+        if getattr(ticket, "ticket_type", None):
+            lines.append(f"工单类型(提单Agent初步判断，仅供参考，需独立复核): {ticket.ticket_type}")
         if ticket.robot_type:
             lines.append(f"车型: {ticket.robot_type}")
         if ticket.fault_code:
@@ -120,10 +127,11 @@ class LlmDecision:
         lines.extend([
             "",
             "【选人规则】",
-            "1. 先判断 ticket_category（需求/故障/咨询/其他）与 problem_domain，以及工单涉及的产品。",
-            "2. 需求/产品建议类：优先找负责「产品设计」模块、且归属产品与工单一致的候选人（产品经理）。",
-            "3. 故障/缺陷类：按工单涉及的模块（页面→界面类；逻辑->服务端类）匹配候选人负责的模块。",
-            "4. 在匹配范围内，优先总分高者（#1 默认优先）；仅当 #1 产品/模块明显不匹配时才选下一个更相关者，并在 reasoning 说明。",
+            "1. 先独立判断 ticket_category（support/feature/bug/problem/other）与 problem_domain，并识别工单涉及的产品与模块。",
+            "2. feature 需求类：优先找负责「产品设计」模块、且归属产品与工单一致的候选人（该产品的产品经理）。",
+            "3. 其余类型（support/bug/problem/other）：按工单涉及的模块匹配候选人负责的模块，选总分最高者（#1 默认优先）。",
+            "4. 仅当 #1 的产品/模块明显不匹配时才选下一个更相关者，并在 reasoning 说明。",
+            "5. 若你复核出的类型与上游初步类型不一致，在 reasoning 里说明理由（如「上游判 X，实为 Y」）。",
         ])
 
         # 「摇人吧服务号提单」项目专属：按服务号内部子界面/子功能区分总负责人。
@@ -142,7 +150,7 @@ class LlmDecision:
         lines.extend([
             "",
             "输出 JSON。engineer_id 必须是候选人列表中该人选对应的完整 username（以 wechat_ 开头，如 wechat_oD5oY3xxx），必须保留 wechat_ 前缀、精确复制，不要去掉前缀或填姓名。",
-            '{"ticket_category":"需求", "problem_domain":"产品", "product":"", "engineer_id":"wechat_oD5oY3RN...", "confidence_score":0.85, "reasoning":"理由(说明类型/产品/模块/环节判断)", "decision_type":"auto"}',
+            '{"ticket_category":"support", "problem_domain":"产品", "product":"", "engineer_id":"wechat_oD5oY3RN...", "confidence_score":0.85, "reasoning":"理由(说明类型/产品/模块/环节判断)", "decision_type":"auto"}',
             "decision_type: auto(>=0.8) / recommend(0.5-0.8) / fallback(<0.5)",
         ])
         return "\n".join(lines)

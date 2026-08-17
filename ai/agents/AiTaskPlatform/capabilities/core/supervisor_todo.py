@@ -1,6 +1,6 @@
 """TodoList — 排查 Agent 自我任务清单（产品无关通用内核能力）
 
-对标 Claude Code 的 todo 机制：Agent 拿到任务后自列 todo，边执行边更新（新增/勾选/调整）。
+Agent 拿到任务后自列 todo，边执行边更新（新增/勾选/调整）。
 
 设计约定（见 TASK_AGENT_TARGET_ARCH.md §6c.8）：
   - TodoItem: 平铺结构（初判足够，后续需要再做子任务层级）

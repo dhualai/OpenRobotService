@@ -11,8 +11,17 @@ from ai.agents.AiTaskPlatform.prompts import (
     DISCUSS_SYSTEM_PROMPT, DISCUSS_USER_TEMPLATE,
     select_system_prompt as _select_system_prompt,
 )
+# @# 跨工单引用解析/注入（模块顶层导入，避免运行时静默降级掩盖 import 错误）
+from ai.agents.AiTaskPlatform.contexts import (
+    extract_referenced_task_ids,
+    format_referenced_tickets,
+)
 
 logger = get_logger("TASK_AGENT")
+
+# 澄清建议的稳定标记（P4）：追加"建议补充信息"时以该标记开头，
+# 后续轮次检测到此标记即视为"已建议过一次"，不再重复建议（只建议一次）。
+CLARIFY_SUGGEST_MARKER = "🔄 U老师已建议补充"
 
 
 # ── 附件记忆「大脑决策」分类 ─────────────────────────────────────────
@@ -73,23 +82,22 @@ def _attachment_kind(filename: str, path: str = "") -> str:
 def _build_progress_emitter(task_id, run_id, live_todo: dict):
     """构造 Supervisor 单项进度回调：累积 live_todo 并广播 ai.progress 到后端 WS。
 
-    让前端像 Claude Code 一样，在执行过程中实时看到"正在做哪一步 / 已完成哪步"。
+    让前端在执行过程中实时看到"正在做哪一步 / 已完成哪步"。
     """
     def emitter(payload: dict) -> None:
         tid = payload.get("id")
         if tid is not None:
             live_todo[tid] = payload
-        # 用 payload 自身的 phase（running/单个完成的 done），而非固定 running，
-        # 否则前端永远看不到单步完成、接口也收不到 done 来收起过程区。
-        phase = payload.get("phase") or "running"
+        # 事件封套 phase 固定为 running：只要 Supervisor 还在派发能力（>0 项尚未收尾），
+        # 前端就应保持「正在排查执行」的进行中状态（头部转圈 + 文案）。
+        # 单项完成的 done 只体现在该 todo 项自身的 phase/status（图标 ✅），
+        # 而**不是**整场执行完成——否则第一项一完成，头部就跳到"排查执行完成"，
+        # 但剩下的项还在 ⏳，造成「完成了却还在转」的自相矛盾困惑。
+        # 整场收尾的 done 由 _broadcast_ai_progress_await(..., "done") 单独发送。
+        phase = "running"
         _broadcast_ai_progress(task_id, run_id, todos=list(live_todo.values()),
                               phase=phase)
     return emitter
-
-
-def _emit_progress_phase(phase: str, run_id, task_id, final_todo) -> None:
-    """整体阶段广播（done）：前端据此收起执行过程，仅展示最终纯回复。"""
-    _broadcast_ai_progress(task_id, run_id, todos=final_todo, phase=phase)
 
 
 def _broadcast_ai_progress(task_id, run_id, todos, phase: str) -> None:
@@ -121,8 +129,8 @@ class DiscussFlow:
     async def discuss(self, task_id: str, query: str, context: dict) -> dict:
         """@U老师 讨论：基于讨论历史 + 工单上下文 + 按需附件/历史工单 回复。
 
-        Supervisor 派发能力时的实时进度会通过后端 WS 广播 ai.progress，前端像
-        Claude Code 一样动态展示执行过程；最终回复只写纯粹答复（不含过程块）。
+        Supervisor 派发能力时的实时进度会通过后端 WS 广播 ai.progress，前端动态
+        展示执行过程；最终回复只写纯粹答复（不含过程块）。
         """
         t0 = time.perf_counter()
         self._pop_trace()
@@ -130,6 +138,23 @@ class DiscussFlow:
 
         # 1. 工单上下文
         ctx = await self._load_task_context(task_id)
+
+        # 1b. @# 跨工单引用（L2 注入）：解析用户 query 里 @#编号 引用的历史工单，
+        #     预加载其上下文（基本信息 + diagnosis + solution + 讨论评论），
+        #     作为"新加入的上下文"注入 prompt。预加载路径（Q3c=B）：不走 Supervisor。
+        referenced_tickets = ""
+        if query:
+            try:
+                _ref_ids = extract_referenced_task_ids(query)
+                if _ref_ids:
+                    referenced_tickets = format_referenced_tickets(_ref_ids)
+                    self._add_trace(
+                        self.NODE_DISCUSS, "ok",
+                        output={"ticket_ref": _ref_ids},
+                    )
+            except Exception as _ref_e:
+                logger.warning(f"[discuss] @# 引用工单注入失败: {_ref_e}")
+                referenced_tickets = ""
 
         # 2. 讨论历史（能力三）
         recent = context.get("recent_comments", []) if context else []
@@ -147,6 +172,9 @@ class DiscussFlow:
 
         facultative = ""
         reasoning_trace = {}  # 透明化 planning（G6）：记录 Supervisor 的调度 plan/todo
+        # 澄清闭环（P4）：当 Supervisor 判定需向用户确认关键信息且无子任务可派时为 True
+        is_clarify = False
+        clarify_questions: list[str] = []
         available_caps = CapabilityRegistry.list_available()  # 含 log_analyze（本版全量收敛）
 
         # 3.0 附件记忆「大脑决策」：区分本次需新读的附件与历史已解读摘要
@@ -158,7 +186,21 @@ class DiscussFlow:
             "all_attachments": ctx.attachments or [],   # 全量（需要时扩展）
             "attachment_memory": known_map,   # 已解读附件的摘要（能力/LLM 参考，不必重读）
             "retriever": self._retriever,
+            # 当前工单上下文（供 ticket_ref 在"无 @#编号、需大脑按需检索相似工单"时作检索基准）
+            "current_task": {
+                "task_id": getattr(ctx, "task_id", "") or task_id,
+                "title": ctx.title or "",
+                "description": ctx.description or "",
+                "problem_summary": ctx.problem_summary or "",
+                "fault_code": ctx.fault_code or "",
+                "robot_type": ctx.robot_type or "",
+            },
         }
+        # @# 确定性引用已在本函数入口预加载注入（Q3c=B 主路径）→ 让大脑不再派发 ticket_ref，
+        # 避免对同一个 @#编号 重复注入。只有当入口 query 没有顶层 @#（没有预加载）时，
+        # 才保留 ticket_ref 给大脑"按需检索相似工单"（形态 C 大脑决策版）。
+        if referenced_tickets:
+            available_caps = [c for c in available_caps if c != "ticket_ref"]
         if ctx.attachments:
             runtime_ctx["img_ctx"] = build_img_ctx(ctx)
             try:
@@ -277,7 +319,7 @@ class DiscussFlow:
         if need_supervisor and available_caps and not is_pure_chat:
             supervisor = Supervisor(llm_client=self._llm_client)
 
-            # 实时进度流（改造点 G6.5 / Claude Code 式动态执行过程）：
+            # 实时进度流（改造点 G6.5 / 动态执行过程）：
             #  - 每项能力 running/done 时，通过后端 WS 广播 ai.progress，前端边跑边展示；
             #  - 同时把最新状态累积到 reasoning_trace.todo（供最终返回 + 失败保底）。
             run_id = f"{task_id}:{int(time.time() * 1000)}"
@@ -285,6 +327,26 @@ class DiscussFlow:
             _emit_progress = _build_progress_emitter(
                 task_id=task_id, run_id=run_id, live_todo=_live_todo,
             )
+
+            # 起始 running 信号（确定性广播）：前端只有在收到 phase=running 时才会建立
+            # aiRunId 并显示「执行过程区」（DiscussionPanel.showAiProcess）。若首条 running
+            # 走 fire-and-forget 而丢失，前端只收到收尾 done 时过程区恒不显示。故这里用
+            # await 版本先确保送达一条带占位项的 running；后续逐项 running/done 仍走
+            # best-effort（容忍丢失），收尾 done 保持 await 确定性送达。
+            await _broadcast_ai_progress_await(
+                task_id, run_id,
+                todos=[{
+                    "id": "planning",
+                    "description": "正在分析任务并规划排查步骤",
+                    "status": "in_progress",
+                    "capability": "",
+                    "phase": "running",
+                }],
+                phase="running",
+            )
+
+            # 把进度回调注入运行时上下文，供子 Agent（如 LogSubAgent）内部上报子步骤
+            runtime_ctx["progress_emitter"] = _emit_progress
 
             sup_result = await supervisor.run(
                 task_context=task_ctx_for_plan,
@@ -372,8 +434,31 @@ class DiscussFlow:
                 "run_id": run_id,
             }
 
+            # ── 澄清闭环（P4）：Supervisor 判定还需向用户确认关键信息（ask_user=true）——
+            #    作为「排查优先」的补充而非阻塞：把待确认问题作为可选的"结尾补充提问"注入
+            #    facultative，让回复"先给分析、后附问"，绝不因追问卡住排查。
+            #    下一轮 discuss 会通过 discussion_history 自动看到"问题 + 用户回答"，
+            #    从而自然闭合追问循环（无需额外持久化）。
+            clarify_questions = sup_result.get("questions") or []
+            if sup_result.get("ask_user") and clarify_questions:
+                is_clarify = True
+                logger.info(f"[discuss] ask_user 澄清：附带确认 {len(clarify_questions)} 项问题")
+                reasoning_trace["clarify"] = True
+                reasoning_trace["questions"] = clarify_questions
+
             # 收尾：整体完成广播（前端据此收起执行过程、仅展示纯回复）。
             # 用 await 版本确保 done 一定送达后端，避免出现"一直转不停"。
+            # 兜底：把任何残留 in_progress 项归一化为 completed，保证「完成」封套内的
+            # 每一项都是完成态，绝不出现「头部说完成、单项还在转圈」的矛盾。
+            _final_todo = []
+            for _t in final_todo:
+                _t = dict(_t)
+                if _t.get("status") == "in_progress":
+                    _t["status"] = "completed"
+                if _t.get("phase") in ("running", "in_progress"):
+                    _t["phase"] = "done"
+                _final_todo.append(_t)
+            final_todo = _final_todo
             await _broadcast_ai_progress_await(task_id, run_id, final_todo, "done")
 
             # 清理临时目录（如日志解压）
@@ -411,6 +496,7 @@ class DiscussFlow:
                         logger.warning(f"[discuss] 写回附件记忆失败: {_e}")
 
         # 4. LLM（纯闲聊走 light 短 prompt，省 token）
+        #    澄清（P4）不单独走 prompt：一律先生成分析答复，待确认问题在 4.7 作为"补充提问"追加。
         if is_pure_chat:
             from ai.agents.AiTaskPlatform.prompts import (
                 DISCUSS_LIGHT_SYSTEM_PROMPT, DISCUSS_LIGHT_USER_TEMPLATE,
@@ -436,6 +522,7 @@ class DiscussFlow:
                 diagnosis_summary=diag_summary,
                 discussion_history=discussion_history,
                 query=query or "请基于讨论历史和工单信息，给出你的分析和建议。",
+                referenced_tickets=referenced_tickets or "",
                 facultative_analysis=facultative,
             )
             system_prompt = _select_system_prompt(self._is_platform_ticket(ctx), "discuss")
@@ -474,9 +561,34 @@ class DiscussFlow:
             except Exception as e:
                 logger.warning(f"[discuss] Evaluator 执行异常，沿用初稿: {e}")
 
+        # 4.7 澄清闭环（P4）「排查优先 + 一次性建议补充」：
+        #      - 分析永远是主体（已经在上面的 DISCUSS 路径生成）；
+        #      - 若 Supervisor 判定还缺关键信息，才在答复末尾**建议**补充（是建议，不是提问）；
+        #      - **只建议一次**：若此前评论里已出现过建议补充的标记（AI 上一轮已建议过、
+        #        而用户仍未提供），则本轮不再建议，转而基于现有信息继续给结论/方向；
+        #      - 已覆盖的问题自动跳过。
+        #      检测用未截断的原始评论（recent），避免 discussion_history 的 [:200] 截断漏检。
+        _raw_disc = " ".join(
+            str(c.get("content", "")) for c in (recent or [])
+        ).lower()
+        _already_suggested = CLARIFY_SUGGEST_MARKER.lower() in _raw_disc
+        _disc_low = (discussion_history or "").lower()
+        _pending_q = [
+            q for q in clarify_questions
+            if q and q.strip() and q.strip().lower() not in _disc_low
+        ]
+        if is_clarify and _pending_q and not _already_suggested:
+            _appendix = ("\n\n---\n" + CLARIFY_SUGGEST_MARKER + "\n"
+                         + "基于现有信息初步判断到这一步。如果能有以下信息，定位会更准：\n"
+                         + "\n".join(f"- {q}" for q in _pending_q[:3])
+                         + "\n（没有这些信息也能按上面的方向继续排查。）")
+            reply = (reply or "").rstrip() + _appendix
+            self._add_trace(self.NODE_LLM, "ok",
+                            output={"clarify_appendix": len(_pending_q), "reply_chars": len(reply)})
+
         # 5. 回复写入 task_comments
         #    最终评论只写入纯粹答复（不含"分析过程"）——执行过程已通过 ai.progress
-        #    WS 事件在前端动态展示（Claude Code 式），不污染最终回复。
+        #    WS 事件在前端动态展示，不污染最终回复。
         comment_reply = reply.strip()
         try:
             self._add_diagnosis_comment_short(int(task_id), comment_reply)

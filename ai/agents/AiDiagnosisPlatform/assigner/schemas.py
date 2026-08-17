@@ -35,6 +35,7 @@ class TicketContext(BaseModel):
 
     # === 人员/项目信息 ===
     project_name: Optional[str] = Field(None, description="项目名称 ↔ tasks.project_name")
+    project_id: Optional[str] = Field(None, description="项目ID/代码 ↔ tasks.project_id(→project.code)")
     creator: Optional[str] = Field(None, description="发起人 ↔ tasks.created_by")
     assignee: Optional[str] = Field(None, description="当前接单人 ↔ tasks.assigned_to")
     contact: Optional[str] = Field(None, description="联系人 ↔ tasks.customer")
@@ -70,6 +71,14 @@ class TicketContext(BaseModel):
     required_skills: Optional[List[str]] = Field(None, description="所需技能（Agent/系统推断）↔ tasks.metadata_info.required_skills")
     required_parts: Optional[List[str]] = Field(None, description="所需配件 ↔ tasks.metadata_info.required_parts")
     attachments: Optional[List[str]] = Field(None, description="附件路径列表 ↔ tasks.attachments")
+
+    # === 派单增强-预留：用户倾向处理人 ===
+    # 前端提单时若新增"倾向处理人"字段，可复用本字段（传工程师 userId/username）。
+    # 前端未传时恒为 None，整体不生效、完全向后兼容；传了即作为派单强加权信号启用。
+    preferred_assignee: Optional[str] = Field(
+        None,
+        description="倾向处理人（用户提单时填写，传工程师 userId/username，预留）↔ tasks.metadata_info.preferred_assignee",
+    )
 
     # === 其他 ===
     updated_at: Optional[str] = Field(None, description="修改时间 ↔ tasks.updated_at")

@@ -9,7 +9,7 @@ import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
-import { NotificationIcon, UploadIcon, RollbackIcon, EditIcon } from 'tdesign-icons-react';
+import { ArrowRight, Folder, UserRound, Clock, AlarmClock, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bell, Upload, Undo2, Pencil } from 'lucide-react';
 import { getMyProjects, getProjectMembers, type ProjectItem, type ProjectMember } from '@/api/projects';
 import { qaGetTicket, fetchWithAuth } from '@/api/ai';
 import { cancelTicket, urgeTicket, reportTicket, uploadCommentAttachment } from '@/api/ticket';
@@ -20,7 +20,6 @@ import {
   canShowCancelButton,
   canEditPriority,
   STATUS_DISPLAY_MAP,
-  getStatusColor,
 } from '@/shared/constants/ticket';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -92,19 +91,21 @@ const formatFileSize = (bytes?: number): string => {
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 };
-const getFileIcon = (filename?: string): string => {
+// 文件类型图标（lucide，与设计稿图标体系一致）
+const FileTypeIcon = ({ filename, size = 22 }: { filename?: string; size?: number }) => {
   const ext = (filename || '').split('.').pop()?.toLowerCase() || '';
   const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'];
   const docExts = ['pdf', 'doc', 'docx', 'txt', 'md'];
   const sheetExts = ['xls', 'xlsx', 'csv'];
   const codeExts = ['json', 'js', 'ts', 'py', 'html', 'css'];
   const archiveExts = ['zip', 'rar', '7z', 'tar', 'gz'];
-  if (imageExts.includes(ext)) return '🖼️';
-  if (docExts.includes(ext)) return '📄';
-  if (sheetExts.includes(ext)) return '📊';
-  if (codeExts.includes(ext)) return '💻';
-  if (archiveExts.includes(ext)) return '📦';
-  return '📎';
+  const props = { size, strokeWidth: 1.8 } as const;
+  if (imageExts.includes(ext)) return <FileImage {...props} />;
+  if (docExts.includes(ext)) return <FileText {...props} />;
+  if (sheetExts.includes(ext)) return <FileSpreadsheet {...props} />;
+  if (codeExts.includes(ext)) return <FileCode {...props} />;
+  if (archiveExts.includes(ext)) return <FileArchive {...props} />;
+  return <Paperclip {...props} />;
 };
 const isImageFile = (filename?: string): boolean => {
   const ext = (filename || '').split('.').pop()?.toLowerCase() || '';
@@ -579,7 +580,7 @@ export default function TicketDetailPage() {
   if (!ticket) return (
     <div>
       <Navbar title="工单详情" fixed leftArrow onLeftClick={() => navigate('/call', { state: { showHistory: true } })} />
-      <div style={{ padding: 32, textAlign: 'center', color: '#999', marginTop: 56 }}>{msg || '工单不存在'}</div>
+      <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted-foreground)', marginTop: 56 }}>{msg || '工单不存在'}</div>
     </div>
   );
 
@@ -639,21 +640,63 @@ export default function TicketDetailPage() {
         {/* 标题 + 基本信息 */}
         <div className="detail-card">
           <div className="detail-card__meta">
-            {ticket.type && <Tag theme="primary">{TYPE_LABEL[ticket.type] || ticket.type}</Tag>}
-            {ticket.priority && <Tag theme="warning">{displayPriority(ticket.priority)}</Tag>}
+            {/* 类型胶囊（设计稿 04：浅蓝 blue-soft/blue-2） */}
+            {ticket.type && (
+              <Tag theme="default" style={{ background: 'var(--blue-soft)', color: 'var(--blue-2)', border: 'none', fontWeight: 600, fontSize: 11.5, borderRadius: 999 }}>
+                {TYPE_LABEL[ticket.type] || ticket.type}
+              </Tag>
+            )}
+            {/* 优先级胶囊（蓝阶，与列表页一致） */}
+            {ticket.priority && (
+              <Tag theme="default" style={{ background: 'var(--secondary)', color: 'var(--blue-2)', border: 'none', fontWeight: 600, fontSize: 11.5, borderRadius: 999 }}>
+                {displayPriority(ticket.priority)}
+              </Tag>
+            )}
+            {/* 状态胶囊（设计稿：bg-secondary text-blue-2） */}
             <Tag
-              theme="primary"
-              style={{ background: getStatusColor(ticket.status || ''), color: '#fff', border: 'none', fontWeight: 500 }}
+              theme="default"
+              style={{ background: 'var(--secondary)', color: 'var(--blue-2)', border: 'none', fontWeight: 600, fontSize: 11.5, borderRadius: 999 }}
             >
               {STATUS_DISPLAY_MAP[(ticket.status || '').toLowerCase()] || ticket.status || '待派单'}
             </Tag>
             <span className="detail-card__id">{ticket.ticket_id || ''}</span>
           </div>
           <h2 className="detail-card__title">{ticket.title || '(无标题)'}</h2>
-          {(ticket.project_name || ticket.project) && <DetailRow label="所属项目" value={ticket.project_name || ticket.project || ''} />}
-          {ticket.contact && <DetailRow label="联系人" value={ticket.contact} />}
-          <DetailRow label="创建时间" value={ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''} />
-          <DetailRow label="最晚解决时间" value={ticket.deadline_at ? formatDateTime(String(ticket.deadline_at)) : '未设置'} />
+          {/* 元信息网格（设计稿 04：2×2 MetaItem，lucide 图标 + 标签 + 值） */}
+          <div className="detail-card__info-grid">
+            {(ticket.project_name || ticket.project) && (
+              <div className="detail-info-item">
+                <span className="detail-info-item__icon"><Folder size={14} strokeWidth={2} /></span>
+                <div className="detail-info-item__content">
+                  <span className="detail-info-item__label">所属项目</span>
+                  <span className="detail-info-item__value">{ticket.project_name || ticket.project || ''}</span>
+                </div>
+              </div>
+            )}
+            {ticket.contact && (
+              <div className="detail-info-item">
+                <span className="detail-info-item__icon"><UserRound size={14} strokeWidth={2} /></span>
+                <div className="detail-info-item__content">
+                  <span className="detail-info-item__label">联系人</span>
+                  <span className="detail-info-item__value">{ticket.contact}</span>
+                </div>
+              </div>
+            )}
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon"><Clock size={14} strokeWidth={2} /></span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">创建时间</span>
+                <span className="detail-info-item__value">{ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''}</span>
+              </div>
+            </div>
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon"><AlarmClock size={14} strokeWidth={2} /></span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">最晚解决时间</span>
+                <span className="detail-info-item__value">{ticket.deadline_at ? formatDateTime(String(ticket.deadline_at)) : '未设置'}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* 人员流转：发起人 → 处理人（与历史工单列表页同款 task-card2__people 样式）
@@ -669,7 +712,7 @@ export default function TicketDetailPage() {
                   <span className="task-card2__person-name">{ticket.created_by_name || ticket.created_by || '-'}</span>
                 </span>
               </div>
-              <span className="task-card2__person-arrow">➡️</span>
+              <span className="task-card2__person-arrow"><ArrowRight size={16} strokeWidth={2} /></span>
               {isDispatching ? (
                 <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单，稍候自动更新">
                   <span className="task-card2__avatar task-card2__avatar--assignee task-card2__avatar--dispatching"><i className="dispatch-pulse" /></span>
@@ -695,7 +738,7 @@ export default function TicketDetailPage() {
         {ticket.description && (
           <div className="detail-card">
             <h4 className="detail-card__h">问题描述</h4>
-            <div style={{ whiteSpace: 'pre-wrap', color: '#333', fontSize: 14, lineHeight: 1.7 }}>{ticket.description}</div>
+            <div style={{ whiteSpace: 'pre-wrap', color: 'var(--muted-foreground)', fontSize: 12.5, lineHeight: '24px' }}>{ticket.description}</div>
           </div>
         )}
 
@@ -704,7 +747,7 @@ export default function TicketDetailPage() {
         {/* 工单附件（图片缩略图网格 + 非图片文件卡片；复用统一 AttachmentViewer，与系统任务页一致）*/}
         {ticket.attachments && ticket.attachments.length > 0 && (
           <div className="detail-card">
-            <h4 className="detail-card__h">📎 附件 ({ticket.attachments.length})</h4>
+            <h4 className="detail-card__h">附件 ({ticket.attachments.length})</h4>
             {(() => {
               const items = ticket.attachments
                 .map((rawAtt) => normalizeAttachment(rawAtt))
@@ -748,13 +791,12 @@ export default function TicketDetailPage() {
                       })}
                     </div>
                   )}
-                  {/* 非图片文件卡片（图标 + 文件名 + 下载） */}
+                  {/* 非图片文件卡片（lucide 图标 + 文件名 + 下载） */}
                   {fileItems.length > 0 && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div className="detail-attachment-files">
                       {fileItems.map((att, idx) => {
                         const filename = att.filename || '未命名文件';
                         const size = att.size ?? 0;
-                        const icon = getFileIcon(filename);
                         const sizeLabel = formatFileSize(size);
                         const dl = buildAttachmentDownloadUrl(att);
                         return (
@@ -762,35 +804,20 @@ export default function TicketDetailPage() {
                             key={`file-${idx}`}
                             role="button"
                             tabIndex={0}
+                            className="detail-attachment-file"
                             onClick={() => openAttachmentViewer(att)}
                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openAttachmentViewer(att); }}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              padding: '10px 12px',
-                              borderRadius: 8,
-                              border: '1px solid #e5e5e5',
-                              background: '#fafafa',
-                              color: 'inherit',
-                              cursor: 'pointer',
-                              transition: 'background 0.15s',
-                            }}
-                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#f0f7ff'; }}
-                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#fafafa'; }}
                           >
-                            <span style={{ fontSize: 22, marginRight: 10, flexShrink: 0 }}>{icon}</span>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: 13, fontWeight: 500, color: '#333', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {filename}
-                              </div>
-                              <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
-                                {sizeLabel || '未知大小'}
-                              </div>
+                            <span className="detail-attachment-file__icon"><FileTypeIcon filename={filename} /></span>
+                            <div className="detail-attachment-file__body">
+                              <div className="detail-attachment-file__name">{filename}</div>
+                              <div className="detail-attachment-file__size">{sizeLabel || '未知大小'}</div>
                             </div>
                             <span
                               role="button"
                               aria-label="下载附件"
                               title="下载"
+                              className="detail-attachment-file__download"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (dl) {
@@ -805,9 +832,8 @@ export default function TicketDetailPage() {
                                   Toast({ message: '附件路径无效', theme: 'error' });
                                 }
                               }}
-                              style={{ fontSize: 16, color: '#0052d9', marginLeft: 8, flexShrink: 0, cursor: 'pointer' }}
                             >
-                              ⬇
+                              <Download size={16} strokeWidth={2} />
                             </span>
                           </div>
                         );
@@ -827,7 +853,7 @@ export default function TicketDetailPage() {
             {aiSummary ? (
               <SafeHtml html={aiSummary} />
             ) : (
-              <p style={{ color: '#999' }}>暂无摘要，U老师 将自动总结讨论进展</p>
+              <p style={{ color: 'var(--muted-foreground)', fontSize: 12.5, lineHeight: '24px' }}>暂无摘要，U老师 将自动总结讨论进展</p>
             )}
           </div>
         )}
@@ -851,27 +877,27 @@ export default function TicketDetailPage() {
         {!isTerminalTicketStatus(ticket.status) && (
           <div className="detail-actions__btns">
             <Button
-              size="small" variant="outline" theme="default" icon={<NotificationIcon />}
+              size="small" theme="default" icon={<Bell size={13} strokeWidth={2} />}
               disabled={!canUrgeTicket(ticket.status) || acting === 'urge'}
               title={canUrgeTicket(ticket.status) ? undefined : '仅新建/待处理工单可催办'}
               onClick={() => openActionPopup('urge')}
             >催办</Button>
             <Button
-              size="small" variant="outline" theme="default" icon={<UploadIcon />}
+              size="small" theme="default" icon={<Upload size={13} strokeWidth={2} />}
               disabled={!canReportTicket(ticket.status) || acting === 'report'}
               title={canReportTicket(ticket.status) ? undefined : '仅处理中工单可上报'}
               onClick={() => openActionPopup('report')}
             >上报</Button>
             {canShowCancelButton(ticket.status) && (
             <Button
-              size="small" variant="outline" theme="default" icon={<RollbackIcon />}
+              size="small" theme="default" className="detail-actions__btn--muted" icon={<Undo2 size={13} strokeWidth={2} />}
               disabled={acting === 'cancel'}
               onClick={handleCancel}
             >撤回</Button>
             )}
             {canEdit && (
               <Button
-                size="small" variant="outline" theme="primary" icon={<EditIcon />}
+                size="small" theme="default" icon={<Pencil size={13} strokeWidth={2} />}
                 disabled={savingEdit}
                 onClick={openEdit}
               >编辑</Button>
@@ -1037,11 +1063,3 @@ export default function TicketDetailPage() {
   );
 }
 
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="detail-row">
-      <span className="detail-row__label">{label}</span>
-      <span className="detail-row__value">{value}</span>
-    </div>
-  );
-}

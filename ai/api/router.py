@@ -1024,6 +1024,7 @@ async def list_all_tickets(
     type_: str = Query("", alias="type", description="按类型筛选"),
     keyword: str = Query("", description="模糊搜索标题/描述"),
     username: str = Query("", description="按创建者用户名过滤"),
+    exclude_status: str = Query("", description="排除的状态，逗号分隔（如 closed）"),
 ) -> dict:
     """查询 tasks 表，分页返回所有历史工单（含 AI 生成与系统手动创建）
     
@@ -1035,7 +1036,7 @@ async def list_all_tickets(
         from app.models.task import Task, TaskStatus, TaskType
         from app.core.db import SessionLocal
         from app.services.user_service import UserService
-        from sqlalchemy import desc
+        from sqlalchemy import desc, func
 
         # username → 展示名（与任务服务 /api/tasks 一致的解析口径）
         user_map = UserService.get_user_map()
@@ -1059,6 +1060,25 @@ async def list_all_tickets(
                     pass
             if keyword:
                 q = q.filter(Task.title.contains(keyword) | Task.description.contains(keyword))
+            # 排除指定状态（如「除已关闭外全部」）；非法值忽略
+            if exclude_status:
+                for s in [x.strip() for x in exclude_status.split(",") if x.strip()]:
+                    try:
+                        q = q.filter(Task.status != TaskStatus(s))
+                    except ValueError:
+                        pass
+            # 各状态数量分布（口径：source + username，不含 status/type/keyword/exclude 等筛选），
+            # 复用本接口一并返回，供前端各状态 Tab 计数与 badge 使用，无需额外统计接口
+            stat_q = db.query(Task.status, func.count(Task.id)).filter(Task.source.in_(["ai", "manual"]))
+            if username:
+                stat_q = stat_q.filter(Task.created_by == username)
+            by_status = {s.value: 0 for s in TaskStatus}
+            for st, cnt in stat_q.group_by(Task.status).all():
+                key = st.value if isinstance(st, TaskStatus) else st
+                if key in by_status:
+                    by_status[key] = cnt
+            active_total = sum(by_status.values()) - by_status.get("closed", 0)
+
             total = q.count()
             rows = q.order_by(desc(Task.created_at)).offset(skip).limit(limit).all()
             items = []
@@ -1082,7 +1102,8 @@ async def list_all_tickets(
                     "assigned_to": assigned_to,
                     "assigned_to_name": user_map.get(assigned_to, assigned_to) if assigned_to else "",
                 })
-            return {"code": 0, "data": {"total": total, "skip": skip, "limit": limit, "items": items}}
+            return {"code": 0, "data": {"total": total, "skip": skip, "limit": limit, "items": items,
+                                        "by_status": by_status, "active_total": active_total}}
         finally:
             db.close()
     except Exception as e:

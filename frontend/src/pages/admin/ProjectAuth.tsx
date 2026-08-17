@@ -1,7 +1,7 @@
 // 项目授权管理 - 展示授权记录、申请授权码
+// 样式参考 macaron projects.auth 页：授权记录条目卡 + 幽灵按钮 + 申请面板。
 import { useState, useEffect } from 'react';
-import { Button, Toast, Loading, Dialog } from 'tdesign-mobile-react';
-import ClearableInput from '@/shared/components/ClearableInput';
+import { Toast, Loading, Dialog } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -152,88 +152,105 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
   };
 
   if (!selectedProject) {
-    return <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>请先选择项目</div>;
+    return <div className="mac-empty">请先选择项目</div>;
   }
 
   return (
-    <div style={{ padding: '0 16px 16px' }}>
+    <div>
       {loading ? <Loading text="加载授权..." /> : (
         <>
-          <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 12, color: '#0052d9' }}>
-            {selectedProject.name} - 授权记录 ({items.length})
+          <div style={{ marginBottom: 12, fontSize: 11.5, color: 'var(--mac-muted-fg)' }}>
+            <span style={{ fontWeight: 600, color: 'var(--mac-fg)' }}>{selectedProject.name}</span>
+            <span> · 授权记录</span>
           </div>
           {items.map((item) => (
-            <div key={item.id} style={{ background: '#fff', borderRadius: 8, padding: 14, marginBottom: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                <div style={{ fontWeight: 500, wordBreak: 'break-all' }}>{maskCode(item.license_code)}</div>
-                <span
-                  onClick={() => handleCopyCode(item.license_code)}
-                  style={{ flexShrink: 0, fontSize: 12, color: '#0052d9', cursor: 'pointer' }}
-                >
-                  复制
-                </span>
-              </div>
-              {item.machine_code && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                  <div style={{ fontSize: 12, color: '#999', wordBreak: 'break-all' }}>机器码：{maskCode(item.machine_code)}</div>
-                  <span
-                    onClick={() => handleCopyCode(item.machine_code!)}
-                    style={{ flexShrink: 0, fontSize: 12, color: '#0052d9', cursor: 'pointer' }}
-                  >
-                    复制
-                  </span>
+            <div key={item.id} className="mac-item" style={{ marginBottom: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="mac-item__title">{maskCode(item.license_code)}</div>
+                  <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {item.machine_code && (
+                      <div className="mac-labelvalue">
+                        <span className="mac-labelvalue__label">机器码</span>
+                        <span className="mac-labelvalue__value">{maskCode(item.machine_code)}</span>
+                      </div>
+                    )}
+                    <div className="mac-labelvalue">
+                      <span className="mac-labelvalue__label">有效期</span>
+                      <span className="mac-labelvalue__value">{item.apply_time} ~ {item.expire_time}</span>
+                    </div>
+                    <div className="mac-labelvalue">
+                      <span className="mac-labelvalue__label">申请人</span>
+                      <span className="mac-labelvalue__value">{item.applicant}</span>
+                    </div>
+                    <div className="mac-labelvalue">
+                      <span className="mac-labelvalue__label">最大车数</span>
+                      <span className="mac-labelvalue__value">{item.max_vehicles != null ? item.max_vehicles : '不限制'}</span>
+                    </div>
+                  </div>
                 </div>
-              )}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginTop: 4 }}>
-                <div>
-                  <div style={{ fontSize: 13, color: '#666' }}>有效期：{item.apply_time} ～ {item.expire_time}</div>
-                  <div style={{ fontSize: 12, color: '#999' }}>申请人：{item.applicant}</div>
-                  <div style={{ fontSize: 12, color: '#999' }}>允许最大车数：{item.max_vehicles != null ? item.max_vehicles : '不限制'}</div>
+                <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+                  <button type="button" className="mac-btn mac-btn--ghost" onClick={() => handleCopyCode(item.license_code)}>
+                    复制授权码
+                  </button>
+                  {item.machine_code && (
+                    <button type="button" className="mac-btn mac-btn--ghost" onClick={() => handleCopyCode(item.machine_code!)}>
+                      复制机器码
+                    </button>
+                  )}
+                  <button type="button" className="mac-btn mac-btn--ghost" onClick={() => handleRevoke(item)}>
+                    撤销
+                  </button>
                 </div>
-                <Button size="small" theme="danger" variant="outline" onClick={() => handleRevoke(item)}>撤销</Button>
               </div>
             </div>
           ))}
           {items.length === 0 && (
-            <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>该项目暂无授权记录</div>
+            <div className="mac-empty">该项目暂无授权记录</div>
           )}
 
           {/* 申请授权码 */}
-          <div style={{ background: '#fff', borderRadius: 8, padding: 14, marginTop: 16, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>申请授权码</div>
-            <ClearableInput
-              value={machineCode}
-              onChange={(v) => setMachineCode(String(v))}
-              placeholder="请输入机器码"
+          <div className="mac-panel" style={{ marginTop: 16 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 12, color: 'var(--mac-fg)' }}>申请授权码</div>
+            <input
+              className="mac-input"
               style={{ marginBottom: 10 }}
+              value={machineCode}
+              onChange={(e) => setMachineCode(e.target.value)}
+              placeholder="请输入机器码"
             />
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
               <input
                 type="date"
+                className="mac-input"
                 value={licenseStartDate}
                 onChange={(e) => setLicenseStartDate(e.target.value)}
-                style={{ flex: 1, border: '1px solid #dcdcdc', borderRadius: 6, padding: '10px 12px', color: licenseStartDate ? '#333' : '#bbb', fontSize: 14, outline: 'none', backgroundColor: '#fff' }}
               />
               <input
                 type="date"
+                className="mac-input"
                 value={licenseEndDate}
                 onChange={(e) => setLicenseEndDate(e.target.value)}
-                style={{ flex: 1, border: '1px solid #dcdcdc', borderRadius: 6, padding: '10px 12px', color: licenseEndDate ? '#333' : '#bbb', fontSize: 14, outline: 'none', backgroundColor: '#fff' }}
               />
             </div>
-            <div style={{ fontSize: 13, color: '#666', marginBottom: 6 }}>允许最大车数 <span style={{ color: '#d54941' }}>*</span></div>
-            <ClearableInput
-              value={maxVehicles}
-              onChange={(v) => setMaxVehicles(String(v).replace(/[^\d]/g, ''))}
-              type="number"
-              placeholder="请输入大于 0 的整数"
+            <div style={{ fontSize: 11, color: 'var(--mac-muted-fg)', marginBottom: 6 }}>允许最大车数 <span style={{ color: '#d54941' }}>*</span></div>
+            <input
+              className="mac-input"
               style={{ marginBottom: 12 }}
+              value={maxVehicles}
+              onChange={(e) => setMaxVehicles(e.target.value.replace(/[^\d]/g, ''))}
+              inputMode="numeric"
+              placeholder="请输入大于 0 的整数"
             />
-            <Button theme="primary" block loading={applyingLicense} onClick={handleApplyLicense}>
-              申请授权码
-            </Button>
+            <button
+              type="button"
+              className="mac-btn mac-btn--primary mac-btn--block"
+              disabled={applyingLicense}
+              onClick={handleApplyLicense}
+            >
+              {applyingLicense ? '申请中...' : '申请授权码'}
+            </button>
           </div>
-
         </>
       )}
     </div>

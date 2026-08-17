@@ -82,6 +82,20 @@ function rewritePlaceholder(src: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// 预处理：@# 跨工单引用 → 可点击链接
+// ---------------------------------------------------------------------------
+// 讨论区/回复里出现的 "@#44123" 是"引用另一个工单"的语法，
+// 渲染时转成可点击链接，点击跳转到对应工单详情页（Q4-A 跳转入口）。
+// 保护范围：已被 markdown 链接语法包裹的 "@#xxx"（如 [x](...)）不重复转换。
+const TICKET_REF_RE = /@#(\d{1,8})/g;
+
+/** 把 "@#编号" 转换为指向工单详情页的 markdown 链接 */
+function preprocessTicketRef(text: string): string {
+  if (!text) return text;
+  return text.replace(TICKET_REF_RE, (_full, id) => `[@#${id}](/tasks/${id})`);
+}
+
+// ---------------------------------------------------------------------------
 // 预处理：将原始媒体 URL 转为 Markdown 图片/视频语法
 // ---------------------------------------------------------------------------
 
@@ -454,9 +468,9 @@ function isVideoAlt(alt: string): boolean {
  *   天然不存在 XSS 注入路径，DOMPurify 反而会破坏 markdown 结构。
  */
 export default function MarkdownRenderer({ content, compact = false }: MarkdownRendererProps) {
-  // 剥离 ``` → 媒体预处理
+  // 剥离 ``` → @# 工单引用链接 → 媒体预处理
   const processedContent = useMemo(
-    () => preprocessMediaUrls(stripCodeFences(content)),
+    () => preprocessMediaUrls(preprocessTicketRef(stripCodeFences(content))),
     [content]
   );
 

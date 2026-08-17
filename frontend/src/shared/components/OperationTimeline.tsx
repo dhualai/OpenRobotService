@@ -1,6 +1,7 @@
 import React from 'react';
 import type { OperationLog, OperationType } from '@/api/ticket';
 import { formatDuration } from '@/api/ticket';
+import { parseUtcDate } from '@/shared/utils/url';
 import { Loading, Empty } from 'tdesign-mobile-react';
 import './OperationTimeline.css';
 
@@ -63,16 +64,13 @@ const OP_TYPE_STYLE: Record<OperationType, { color: string; icon: string }> = {
 
 // 格式化时间
 const formatTime = (isoString: string): string => {
-  try {
-    const date = new Date(isoString);
-    const month = date.getMonth() + 1;
-    const day = date.getDate();
-    const hours = date.getHours().toString().padStart(2, '0');
-    const mins = date.getMinutes().toString().padStart(2, '0');
-    return `${month}月${day}日 ${hours}:${mins}`;
-  } catch {
-    return '';
-  }
+  const date = parseUtcDate(isoString);
+  if (!date) return '';
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hours = date.getHours().toString().padStart(2, '0');
+  const mins = date.getMinutes().toString().padStart(2, '0');
+  return `${month}月${day}日 ${hours}:${mins}`;
 };
 
 interface TimelineGroup {

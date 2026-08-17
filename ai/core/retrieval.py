@@ -51,6 +51,10 @@ class RetrievalResult:
     images: List[str] = field(default_factory=list)
     sub_domain: str = ""
     domain: str = ""
+    # P2 验证状态透出（供 LLM 看到该历史方案是否经验证/被推翻）
+    verified: str = "unknown"          # unknown|confirmed|rejected|recurred
+    root_cause_type: str = ""
+    error_codes: List[str] = field(default_factory=list)
 
 
 # ============================================================
@@ -521,6 +525,7 @@ class RetrievalService:
                     "title": "", "content": "", "images": [],
                     "vector_score": 0.0, "sparse_score": 0.0,
                     "sub_domain": "", "domain": "",
+                    "verified": "unknown", "root_cause_type": "", "error_codes": [],
                 }
             doc_scores[doc_id]["dense"] = 1.0 / (rrf_k + rank + 1)
             doc_scores[doc_id]["vector_score"] = point.score
@@ -530,6 +535,9 @@ class RetrievalService:
                 doc_scores[doc_id]["images"] = point.payload.get("images", [])
                 doc_scores[doc_id]["sub_domain"] = point.payload.get("sub_domain", "")
                 doc_scores[doc_id]["domain"] = point.payload.get("domain", "")
+                doc_scores[doc_id]["verified"] = point.payload.get("verified", "unknown") or "unknown"
+                doc_scores[doc_id]["root_cause_type"] = point.payload.get("root_cause_type", "") or ""
+                doc_scores[doc_id]["error_codes"] = point.payload.get("error_codes", []) or []
 
         for rank, point in enumerate(sparse_results):
             doc_id = str(point.id)
@@ -539,6 +547,7 @@ class RetrievalService:
                     "title": "", "content": "", "images": [],
                     "vector_score": 0.0, "sparse_score": 0.0,
                     "sub_domain": "", "domain": "",
+                    "verified": "unknown", "root_cause_type": "", "error_codes": [],
                 }
             doc_scores[doc_id]["sparse"] = 1.0 / (rrf_k + rank + 1)
             doc_scores[doc_id]["sparse_score"] = point.score
@@ -548,6 +557,9 @@ class RetrievalService:
                 doc_scores[doc_id]["images"] = point.payload.get("images", [])
                 doc_scores[doc_id]["sub_domain"] = point.payload.get("sub_domain", "")
                 doc_scores[doc_id]["domain"] = point.payload.get("domain", "")
+                doc_scores[doc_id]["verified"] = point.payload.get("verified", "unknown") or "unknown"
+                doc_scores[doc_id]["root_cause_type"] = point.payload.get("root_cause_type", "") or ""
+                doc_scores[doc_id]["error_codes"] = point.payload.get("error_codes", []) or []
 
         rrf_scores = [
             (doc_id, scores["dense"] + scores["sparse"], scores)
@@ -567,6 +579,9 @@ class RetrievalService:
                 images=scores.get("images", []),
                 sub_domain=scores.get("sub_domain", ""),
                 domain=scores.get("domain", ""),
+                verified=scores.get("verified", "unknown") or "unknown",
+                root_cause_type=scores.get("root_cause_type", "") or "",
+                error_codes=scores.get("error_codes", []) or [],
             ))
 
         return results
@@ -962,11 +977,25 @@ class RetrievalService:
         历史工单方案检索（委托到 project domain）。
 
         查询文本建议：problem_summary + hypotheses + fault_code + robot_type。
+        P2：按验证状态调整权重（经验证 confirmed 提权、被推翻 rejected/复发 recurred 降权），
+        让"可信"的方案更靠前，避免"看似结案其实错"的样本误导排查。
         """
-        return await self.retrieve_domain(
+        results = await self.retrieve_domain(
             query, "project",
             top_k=top_k or 3,
         )
+        # P2 verified 权重：confirmed×1.15，recurred×0.85，rejected×0.7，其余×1.0
+        _weight = {
+            "confirmed": 1.15,
+            "recurred": 0.85,
+            "rejected": 0.70,
+        }
+        for r in results:
+            w = _weight.get((getattr(r, "verified", "") or "unknown"), 1.0)
+            if w != 1.0:
+                r.score = r.score * w
+        results.sort(key=lambda x: x.score, reverse=True)
+        return results[: top_k or 3]
 
     async def ensure_task_resolutions_collection(self) -> str:
         """确保 project domain collection 存在，不存在则创建。
@@ -1015,6 +1044,12 @@ class RetrievalService:
         fault_code: str = "",
         robot_type: str = "",
         problem_summary: str = "",
+        # P1 结构化根因（可选，缺省用 safe 默认，兼容旧调用/旧数据）
+        root_cause_type: str = "unknown",
+        error_codes: "Optional[List[str]]" = None,
+        severity: str = "unknown",
+        is_common_bug: bool = False,
+        verified: str = "unknown",
     ) -> bool:
         """向量化并写入一条工单解决方案到 Qdrant（project domain）。"""
         from ai.config import get_active_collection_for
@@ -1040,6 +1075,12 @@ class RetrievalService:
             "fault_code": fault_code, "robot_type": robot_type,
             "domain": "project",
             "resolved_at": __import__("time").strftime("%Y-%m-%d %H:%M:%S"),
+            # P1 结构化根因（供查询过滤 + 验证回填）
+            "root_cause_type": root_cause_type or "unknown",
+            "error_codes": list(error_codes or []),
+            "severity": severity or "unknown",
+            "is_common_bug": bool(is_common_bug),
+            "verified": verified or "unknown",
         }
 
         return await self._qdrant.upsert_to_collection(
@@ -1048,6 +1089,64 @@ class RetrievalService:
             ids=[str(uuid.uuid4())],
             payloads=[payload],
         )
+
+    # P2 验证状态回填：按 task_id 更新该工单方案点的 verified 字段
+    async def update_task_resolution_verified(
+        self,
+        task_id: str,
+        verified: str,
+    ) -> bool:
+        """按 task_id 更新一条工单方案的 verified 字段（P2 验证回填）。
+
+        在 project domain 集合里 scroll 查找 task_id 匹配的点，set_payload 更新 verified。
+        找不到返回 False，不影响主流程。
+        """
+        from ai.config import get_active_collection_for
+
+        if verified not in ("confirmed", "rejected", "recurred", "unknown"):
+            return False
+        col = get_active_collection_for("project")
+        if not col:
+            return False
+        await self._ensure_clients()
+        if self._qdrant.is_unavailable:
+            return False
+
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        client = await self._qdrant._ensure_client()
+        try:
+            flt = Filter(
+                must=[
+                    FieldCondition(
+                        key="task_id",
+                        match=MatchValue(value=str(task_id)),
+                    )
+                ]
+            )
+            # 分页 scroll 找到匹配点（limit 64 足够覆盖单工单的重复索引）
+            matched = await self._to_thread(
+                client.scroll,
+                collection_name=col,
+                scroll_filter=flt,
+                limit=64,
+                with_payload=False,
+                with_vectors=False,
+            )
+            points, _next = matched
+            if not points:
+                return False
+            ids = [p.id for p in points]
+            await self._to_thread(
+                client.set_payload,
+                collection_name=col,
+                payload={"verified": verified},
+                points=ids,
+            )
+            logger.info(f"[retrieval] 已回填 verified={verified}: task_id={task_id} 覆盖 {len(ids)} 点")
+            return True
+        except Exception as e:
+            logger.warning(f"[retrieval] update verified 失败 task_id={task_id}: {e}")
+            return False
 
     # ── 派单模块（Assigner）：历史工单向量库 dispatch_history ──
 

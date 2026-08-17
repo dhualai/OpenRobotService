@@ -52,10 +52,12 @@ describe('AdminEntries', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/admin/roles');
   });
 
-  it('should render correct emoji icons', () => {
+  it('should render line icons for each entry card', () => {
     renderView();
-    expect(screen.getByText('🏷️')).toBeInTheDocument();
-    expect(screen.getByText('🔑')).toBeInTheDocument();
-    expect(screen.getByText('📝')).toBeInTheDocument();
+    const cards = screen.getAllByRole('button');
+    expect(cards.length).toBeGreaterThanOrEqual(3);
+    cards.forEach((card) => {
+      expect(card.querySelector('svg')).not.toBeNull();
+    });
   });
 });
