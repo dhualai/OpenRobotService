@@ -14,6 +14,8 @@ import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import { normalizeStatus, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
 import { formatDateTime } from '@/shared/utils/url';
+// 相关性分类过滤条件：列表查询与分类角标计数共用（底部导航「待我处理」角标复用同一口径）
+import { buildRelevanceFilters, type TicketFilterCondition } from '@/shared/utils/ticketFilters';
 import { Search, ArrowRight, Calendar, SlidersHorizontal } from 'lucide-react';
 
 interface Ticket {
@@ -47,67 +49,6 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
   };
 };
 
-// 与后端 TicketFilter 对应的复合过滤条件（支持 or/and 嵌套）
-interface TicketFilterCondition {
-  field?: string;
-  op?: string;
-  value?: string;
-  or?: TicketFilterCondition[];
-  and?: TicketFilterCondition[];
-}
-
-// 相关性分类（全部/项目相关/待我处理/与我相关）的基础过滤条件，不含搜索/状态/优先级。
-// 列表查询与分类角标计数共用，保证两侧口径一致；
-// 待我处理/与我相关在缺少用户名时回退为项目维度，与列表行为一致。
-const buildRelevanceFilters = (
-  relevance: string,
-  username: string,
-  projectIds: string[],
-): TicketFilterCondition[] => {
-  if (relevance === 'global') {
-    // 「全部」：不过滤项目、人员相关性，直接拉全量
-    return [];
-  }
-  if (relevance === 'mine' && username) {
-    const workingStatusFilters = [
-      { field: 'status', op: 'eq', value: 'new' },
-      { field: 'status', op: 'eq', value: 'in_progress' },
-      { field: 'status', op: 'eq', value: 'pending' },
-    ];
-    return [{
-      or: [
-        {
-          and: [
-            { or: workingStatusFilters },
-            { field: 'assignedTo', op: 'eq', value: username },
-          ],
-        },
-        {
-          and: [
-            { field: 'status', op: 'eq', value: 'resolved' },
-            { field: 'createdBy', op: 'eq', value: username },
-          ],
-        },
-      ],
-    }];
-  }
-  if (relevance === 'related' && username) {
-    const userRelatedFilters = [
-      { field: 'createdBy', op: 'eq', value: username },
-      { field: 'createdByName', op: 'contains', value: username },
-      { field: 'assignedTo', op: 'eq', value: username },
-      { field: 'assignedToName', op: 'contains', value: username },
-      { field: 'customer', op: 'eq', value: username },
-      { field: 'customerName', op: 'contains', value: username },
-    ];
-    return [{ or: userRelatedFilters }];
-  }
-  // 「项目相关」：仅展示与当前用户关联的项目（projectIds）下的工单，
-  // 项目列表为空时（未加载/无项目）回退为不限制。
-  return projectIds.length > 0
-    ? [{ or: projectIds.map((pid) => ({ field: 'projectId', op: 'eq', value: pid })) }]
-    : [];
-};
 
 // 将筛选状态同步到 URL 查询参数的工具函数
 const buildFilterParams = (filter: {

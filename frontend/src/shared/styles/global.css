@@ -266,6 +266,7 @@ html, body, #root {
   padding: 8px 16px;
 }
 .app-bottom-nav__item {
+  position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -278,7 +279,25 @@ html, body, #root {
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
+/* 系统任务「待我处理」数量角标：蓝底白字胶囊，贴在图标块右上角 */
+.app-bottom-nav__badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 17px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  pointer-events: none;
+}
 .app-bottom-nav__icon {
+  position: relative;
   display: inline-grid;
   place-items: center;
   width: 36px;
