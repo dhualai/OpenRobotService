@@ -30,7 +30,7 @@ print()
 
 # ── 构建 EngineerProfile ──
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
-from ai.agents.AiDiagnosisPlatform.assigner.filtering.department_filter import DepartmentFilter
+from ai.agents.AiDiagnosisPlatform.assigner.filtering.candidate_tightener import CandidateTightener
 
 profiles = []
 for item in raw:
@@ -65,20 +65,21 @@ ticket = TicketContext(
 print(f"\n[工单] {ticket.title}")
 print(f"  {ticket.problem_description}")
 
-# ── Step 0: 部门过滤 ──
+# ── Step 1: 部门收紧 ──
 print(f"\n{'─' * 60}")
-print("Step 0: 部门过滤")
-dm = DepartmentFilter()
+print("Step 1: 部门收紧 (CandidateTightener Layer1)")
+
+tightener = CandidateTightener()
 
 async def _dept_step():
-    dept = await dm.match_department(ticket)
-    print(f"  匹配结果: \"{dept}\"")
-    candidates = await dm.filter(ticket, profiles)
-    print(f"  候选人数: {len(candidates)}")
-    for c in candidates:
+    tighten = await tightener.tighten(ticket, profiles)
+    dept = tighten.dept.primary_dept
+    print(f"  匹配结果: \"{dept}\" mode={tighten.dept.mode}")
+    print(f"  候选人数: {len(tighten.candidates)} (收紧前 {tighten.before_count})")
+    for c in tighten.candidates:
         prods = list(c.responsibility_modules.keys())
         print(f"    {c.name} L{c.job_level} {c.department} products={prods}")
-    return dept, candidates
+    return dept, tighten.candidates
 
 dept, candidates = asyncio.run(_dept_step())
 

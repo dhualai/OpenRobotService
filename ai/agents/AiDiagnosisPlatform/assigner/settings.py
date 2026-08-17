@@ -5,7 +5,10 @@
 - module_anchor_texts  → recall/semantic_recall.py（L2 语义召回：Embedding 锚文本）
 - ranker_weights       → ranking/ranker.py（三路召回加权）
 - job_level_penalty    → ranking/ranker.py（职级折扣）
-- department_keywords  → filtering/department_filter.py（部门过滤关键词）
+- department_keywords  → filtering/dept_router.py（R5 strong 关键词）
+- department_routing   → filtering/dept_router.py（R2/R3 融合与门槛）
+- departments          → filtering/signals/llm_dept_signal.py（部门画像）
+- product_routing      → filtering/product_router.py（产品收紧）
 - decision_thresholds  → ranking/fallback_decision.py（兜底置信度阈值）
 """
 
@@ -30,9 +33,11 @@ class AssignerConfig:
     - module_classify:      {产品: {细分模块: 类别}}，供 L2 语义召回把细分模块映射到「产品-类别」锚
     - ranker_weights:       {llm_match, semantic_match, history_match} 三路权重
     - job_level_penalty:    {职级: 惩罚系数}，精排后按职级打折
-    - department_keywords:  {部门: {strong, medium, weak}}，供部门过滤分级匹配
-    - department_scenes:    {部门: {场景: 描述}}，供部门过滤 embedding 语义补漏
-    - department_filter:    {embed_threshold}，部门过滤参数（embedding 匹配阈值）
+    - department_keywords:  {部门: {strong: [...]}}，R5 强关键词
+    - department_routing:   部门路由融合权重与 hard/soft 门槛
+    - departments:          部门画像（R2 LLM 分类）
+    - product_routing:        产品收紧规则
+    - department_rules:       R1 确定性规则（预留）
     - decision_thresholds:  {auto, recommend}，规则兜底决策的置信度阈值
     - load_balance:         {enabled, step}，全体候选人按在途工单数负载均衡（查询带缓存）
     - history_recall:       {top_k, half_life_days, sim_threshold, fault_code_boost, robot_type_boost, decay_weight}，L3 历史召回增强参数
@@ -51,8 +56,10 @@ class AssignerConfig:
         self.preferred_assignee_enabled: bool = True
         self.preferred_assignee_force_keep: bool = True
         self.department_keywords: Dict[str, dict] = {}
-        self.department_scenes: Dict[str, dict] = {}
-        self.department_filter: Dict[str, Any] = {}
+        self.department_routing: Dict[str, Any] = {}
+        self.departments: list = []
+        self.product_routing: Dict[str, Any] = {}
+        self.department_rules: Dict[str, Any] = {}
         self.decision_thresholds: Dict[str, float] = {}
         self.load_balance: Dict[str, Any] = {}
         self.history_recall: Dict[str, Any] = {}
@@ -77,8 +84,10 @@ class AssignerConfig:
         self.preferred_assignee_enabled = bool(config.get("preferred_assignee_enabled", True))
         self.preferred_assignee_force_keep = bool(config.get("preferred_assignee_force_keep", True))
         self.department_keywords = config.get("department_keywords", {})
-        self.department_scenes = config.get("department_scenes", {})
-        self.department_filter = config.get("department_filter", {})
+        self.department_routing = config.get("department_routing", {})
+        self.departments = config.get("departments", [])
+        self.product_routing = config.get("product_routing", {})
+        self.department_rules = config.get("department_rules", {})
         self.decision_thresholds = config.get("decision_thresholds", {})
         self.load_balance = config.get("load_balance", {})
         self.history_recall = config.get("history_recall", {})
