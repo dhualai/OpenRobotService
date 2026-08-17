@@ -21,6 +21,35 @@ import os
 from pathlib import Path
 from logging.handlers import TimedRotatingFileHandler
 
+
+class ReadableFormatter(logging.Formatter):
+    """让日志行首整洁，源码定位 (module.funcName:lineno) 移至行尾（仅 ASSIGNER / TASK_AGENT 使用）。
+
+    原格式:  2026-08-13 20:10:18 - ASSIGNER - INFO - dispatch_flow.aassign:101 - [派单:457] Step0 ...
+    新格式:  2026-08-13 20:10:18 - ASSIGNER - INFO - [派单:457] Step0 ...（ dispatch_flow.aassign:101 ）
+
+    关键改进：
+      1. 源码定位 (module.funcName:lineno) 从行首移到行尾 → 不打断行首的流程标识（[派单:xxx]）阅读。
+      2. 保持紧凑的 ` - ` 分隔风格，避免固定宽度留白。
+      3. 已由父类完整处理 exc_info / 多行堆栈，仅把定位信息追加到行尾。
+    """
+
+    def __init__(self, datefmt: str = "%Y-%m-%d %H:%M:%S"):
+        # fmt 不含 module/funcName/lineno，定位信息由 format() 追加到行尾
+        super().__init__(
+            fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            datefmt=datefmt,
+        )
+
+    def format(self, record: logging.LogRecord) -> str:
+        s = super().format(record)
+        loc = f"（ {record.module}.{record.funcName}:{record.lineno}）"
+        # 防止 record 复用导致的重复追加（同一条记录仅加成一次）
+        if s.endswith(loc):
+            return s
+        return f"{s} {loc}"
+
+
 # 日志根目录：ai/logs/
 _LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 _LOGGER_NAME = "AI"
@@ -42,9 +71,14 @@ def _default_config() -> dict:
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": {
+            # AI 主日志 / root 保持原格式，不受本次可读性改造影响
             "standard": {
                 "format": "%(asctime)s - %(name)s - %(levelname)s - %(module)s.%(funcName)s:%(lineno)d - %(message)s",
                 "datefmt": "%Y-%m-%d %H:%M:%S",
+            },
+            # 仅供 ASSIGNER / TASK_AGENT：源码定位(module.funcName:lineno)移至行尾，行首固定宽度对齐
+            "readable": {
+                "()": ReadableFormatter,
             },
         },
         "handlers": {
@@ -52,6 +86,13 @@ def _default_config() -> dict:
                 "class": "logging.StreamHandler",
                 "level": "DEBUG",
                 "formatter": "standard",
+                "stream": "ext://sys.stdout",
+            },
+            # 仅 ASSIGNER / TASK_AGENT 使用：使这两个模块的控制台日志同样整洁（不影响 AI 主日志）
+            "module_console": {
+                "class": "logging.StreamHandler",
+                "level": "DEBUG",
+                "formatter": "readable",
                 "stream": "ext://sys.stdout",
             },
             "file": {
@@ -67,7 +108,7 @@ def _default_config() -> dict:
             "task_agent_file": {
                 "class": "logging.handlers.TimedRotatingFileHandler",
                 "level": "DEBUG",
-                "formatter": "standard",
+                "formatter": "readable",
                 "filename": task_log_file,
                 "when": "midnight",
                 "interval": 1,
@@ -77,7 +118,7 @@ def _default_config() -> dict:
             "assigner_file": {
                 "class": "logging.handlers.TimedRotatingFileHandler",
                 "level": "DEBUG",
-                "formatter": "standard",
+                "formatter": "readable",
                 "filename": assigner_log_file,
                 "when": "midnight",
                 "interval": 1,
@@ -93,12 +134,12 @@ def _default_config() -> dict:
             },
             _TASK_AGENT_LOGGER: {
                 "level": "INFO",
-                "handlers": ["console", "task_agent_file"],
+                "handlers": ["module_console", "task_agent_file"],
                 "propagate": False,
             },
             _ASSIGNER_LOGGER: {
                 "level": "INFO",
-                "handlers": ["console", "assigner_file"],
+                "handlers": ["module_console", "assigner_file"],
                 "propagate": False,
             },
         },

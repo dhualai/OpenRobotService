@@ -1,6 +1,5 @@
 """Supervisor — 自主派生子 Agent 的通用编排内核（产品无关）
 
-对标 Claude **Orchestrator-workers**：
   - 中央调度 Agent（Supervisor）评估任务复杂度 → 出 plan → 转 TodoList → 执行循环
   - 按需派生子 Agent / 能力（CapabilityRegistry），动态决定派几个、何时收束
 
@@ -32,14 +31,14 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Protocol
 
 from ai.core.logging import get_logger
-from ai.agents.AiTaskPlatform.capabilities.registry import CapabilityRegistry
-from ai.agents.AiTaskPlatform.capabilities.supervisor_todo import TodoList, TodoItem
+from ai.agents.AiTaskPlatform.capabilities.core.registry import CapabilityRegistry
+from ai.agents.AiTaskPlatform.capabilities.core.supervisor_todo import TodoList, TodoItem
 
 logger = get_logger("TASK_AGENT")
 
 # ── 程序强制护栏（服务端优先，不信任 LLM）──
 MAX_SUB_TASKS = 5          # 一次最多派生子任务数（防无限分叉）；与 _CONCURRENCY 配合：可派 5 个，但最多同时跑 _CONCURRENCY 个
-MAX_ROUNDS_PER_TASK = 3    # 每个子任务内部编排轮数上限（由子能力内部执行，如 LogOrchestrator.MAX_ROUNDS；此处为对齐锚点）
+MAX_ROUNDS_PER_TASK = 3    # 每个子任务内部编排轮数上限（由子能力内部执行，如 LogSubAgent/日志分析的轮数；此处为对齐锚点）
 SOFT_LIMIT = 2             # 调度 LLM 输出解析失败时的重试次数上限（浅则重试，达到上限走兜底）
 _CONCURRENCY = 3           # 同时最多并行执行几个子任务（asyncio.Semaphore，防拉爆 API/限流）
 
@@ -51,6 +50,7 @@ class SupervisorDecision:
     reasoning: str = ""
     plan: list[dict] = field(default_factory=list)  # [{capability, goal, parallel}]
     ask_user: bool = False
+    questions: list[str] = field(default_factory=list)  # ask_user=true 时，要问用户的具体澄清问题（闭环 P4）
 
     def is_simple(self) -> bool:
         return self.complexity == "simple"
@@ -117,11 +117,19 @@ def _parse_decision(raw: str) -> Optional[SupervisorDecision]:
                 if extra_key in p and p[extra_key] is not None:
                     item[extra_key] = p[extra_key]
             clean_plan.append(item)
+    # questions（ask_user=true 时问用户的澄清问题；兼容 string / list 两种形态）
+    q = data.get("questions") or []
+    if isinstance(q, str):
+        q = [s for s in (s_.strip() for s_ in q.split("\n")) if s]
+    if not isinstance(q, list):
+        q = []
+    questions = [str(x).strip() for x in q if str(x).strip()]
     return SupervisorDecision(
         complexity=str(data.get("complexity", "simple")),
         reasoning=str(data.get("reasoning", "")),
         plan=clean_plan,
         ask_user=bool(data.get("ask_user", False)),
+        questions=questions,
     )
 
 
@@ -189,6 +197,12 @@ def _decision_from_fields(text: str) -> Optional[SupervisorDecision]:
     else:
         data["plan"] = []
 
+    # questions（字段级兜底：尽力捞 JSON 数组里的字符串项）
+    questions = []
+    qm = _re.search(r'"questions"\s*:\s*\[[^\]]*\]', text, _re.DOTALL)
+    if qm:
+        questions = [s.strip(" \"'\n") for s in _re.findall(r'"([^"]+)"', qm.group(0)) if s.strip()]
+
     if not data.get("complexity") and not plan:
         return None
     return SupervisorDecision(
@@ -196,6 +210,7 @@ def _decision_from_fields(text: str) -> Optional[SupervisorDecision]:
         reasoning="",
         plan=data.get("plan", []),
         ask_user=bool(data.get("ask_user", False)),
+        questions=questions,
     )
 
 
@@ -233,13 +248,18 @@ class Supervisor:
             "## 输出（仅 JSON，无其他文字）\n"
             '{"complexity":"simple|medium|complex","reasoning":"...",'
             '"plan":[{"capability":"<能力名，必须来自可用能力清单>","goal":"...","parallel":bool,"window_minutes":<可选，仅log_analyze>}],'
-            '"ask_user":bool}\n'
+            '"ask_user":bool,"questions":["..."]}\n'
             "规则：\n"
             "- 任务简单（纯知识问答、无多领域线索）→ complexity=simple，plan 为空\n"
             "- 单一领域线索 → complexity=medium，plan 含 1 项\n"
             "- 多领域线索交叉 → complexity=complex，plan 含多项，parallel 合理设 true\n"
             "- capability 只能从可用能力清单里选，严禁凭空命名\n"
             "- 若派 log_analyze 且故障属缓慢累积/日志稀疏，可在 window_minutes 指定更长的前因窗口（默认15即可）\n"
+            "- **若关键信息缺失（如故障发生时间/是否可复现/变更了什么/报错现场）导致无法可靠排查，"
+            "且无能力/无充足依据可先派发硬性定位 → 设 ask_user=true，并在 questions 里列出"
+            "需要向用户确认的具体问题（每一项都应是可直接回答的高价值问题，不要笼统）**；\n"
+            "- ask_user=true 时仍可同时派 plan（先用已有依据尽量排查 + 顺带询问缺失项）；"
+            "仅当 plan 为空时才作为纯澄清请求返回。\n"
         )
 
     # ── 主入口 ──
@@ -262,7 +282,7 @@ class Supervisor:
                 调度 LLM 不需要知道这些。
             on_progress: 可选进度回调，每当某个能力状态变更（开始/完成）时触发一次，
                 入参为 {"id","description","status","capability","phase"}，供上层把
-                todo 的实时进展推给前端（类似 Claude Code 的动态执行过程）。
+                todo 的实时进展推给前端动态执行过程展示。
 
         Returns:
             {
@@ -300,6 +320,7 @@ class Supervisor:
                 "complexity": decision.complexity,
                 "plan": decision.plan,
                 "ask_user": decision.ask_user,
+                "questions": decision.questions,
                 "todo": todo.to_dict_list(),
                 "results": {},
                 "final_text": "",
@@ -315,6 +336,7 @@ class Supervisor:
             "complexity": decision.complexity,
             "plan": decision.plan,
             "ask_user": decision.ask_user,
+            "questions": decision.questions,
             "todo": todo.to_dict_list(),
             "results": results,
             "final_text": self._synthesize(results),

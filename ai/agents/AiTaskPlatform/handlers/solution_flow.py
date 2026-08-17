@@ -1,19 +1,82 @@
 """解决方案流程（方案生成/流式/提交）— 从 pipeline.py 拆分出的 Mixin
 
-含 AiTaskAgent 的三个方法（保持 self.xxx 调用不变，仅拆分文件）：
+含 AiTaskAgent 的方法（保持 self.xxx 调用不变，仅拆分文件）：
   - analyze: 非流式分析工单 → SolutionDraft
-  - analyze_stream: SSE 流式分析
   - submit: 确认方案 → Qdrant 回写 + tasks 表更新
 """
 
-import json
 import time
 
 from ai.core.logging import get_logger
-from ai.agents.AiTaskPlatform.schemas import TaskAnalyzeRequest, SolutionDraft
+from ai.agents.AiTaskPlatform.schemas import TaskAnalyzeRequest, SolutionDraft, ResolvedRootCause
 from ai.agents.AiTaskPlatform.prompts import TASK_AGENT_SYSTEM_PROMPT
 
 logger = get_logger("TASK_AGENT")
+
+
+# P1 结构化根因：把方案草稿提炼成结构化字段（submit 时一次 LLM 小调用，temp=0）
+_STRUCT_ROOT_SYSTEM = (
+    "你是工单根因结构化助手。把一份方案草稿提炼成结构化 JSON，只输出 JSON。"
+)
+_STRUCT_ROOT_USER = """根据方案草稿提炼根因的结构化信息，只输出 JSON（无其他文字）。
+
+## 方案草稿
+{root_cause}
+
+## 建议步骤
+{actions}
+
+## 输出 JSON
+{{
+  "symptom": "现象/症状（一句话）",
+  "error_codes": ["相关错误码/异常短语，最多5个，无则[]"],
+  "root_cause_type": "版本缺陷|配置错误|环境问题|竞态|硬件|未知",
+  "severity": "高|中|低|未知",
+  "is_common_bug": true或false
+}}
+注意：信息不足以判断的类型填"未知"；不要编造错误码。"""
+
+
+def _parse_struct_root(raw: str) -> ResolvedRootCause:
+    """从 LLM 输出解析 ResolvedRootCause（健壮 JSON，失败回退 safe 默认）。"""
+    import json, re
+    if not raw:
+        return ResolvedRootCause()
+    text = raw.strip()
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if m:
+        text = m.group(1)
+    else:
+        s, e = text.find("{"), text.rfind("}")
+        if s != -1 and e > s:
+            text = text[s : e + 1]
+    try:
+        data = json.loads(text)
+    except Exception:
+        return ResolvedRootCause()
+    if not isinstance(data, dict):
+        return ResolvedRootCause()
+    codes = data.get("error_codes") or []
+    if not isinstance(codes, list):
+        codes = []
+    # root_cause_type 归一化为规范值（unknown 为兜底，避免中英文混用影响下游过滤）
+    rct = str(data.get("root_cause_type", "")).strip()
+    rct = "未知" if rct in ("", "unknown", "不清楚", "无法判断") else rct
+    if rct not in ("版本缺陷", "配置错误", "环境问题", "竞态", "硬件", "未知"):
+        rct = "未知"
+    rct = "unknown" if rct == "未知" else rct
+    sev = str(data.get("severity", "")).strip()
+    sev = "未知" if sev in ("", "unknown", "不清楚", "无法判断") else sev
+    if sev not in ("高", "中", "低", "未知"):
+        sev = "未知"
+    sev = "unknown" if sev == "未知" else sev
+    return ResolvedRootCause(
+        symptom=str(data.get("symptom", ""))[:300],
+        error_codes=[str(c) for c in codes][:5],
+        root_cause_type=rct,
+        severity=sev,
+        is_common_bug=bool(data.get("is_common_bug", False)),
+    )
 
 
 class SolutionFlow:
@@ -98,103 +161,35 @@ class SolutionFlow:
         draft._total_ms = total_ms
         return draft
 
+        # ============================================================
+    # 结构化根因提炼（P1）— submit 前调用一次，供 Qdrant 写入结构化字段
     # ============================================================
-    # analyze_stream（SSE 流式）
-    # ============================================================
+    async def _extract_structured_root_cause(self, draft) -> dict:
+        """把方案草稿提炼成结构化根因 dict（供 _index_solution 写入）。
 
-    async def analyze_stream(
-        self, request: TaskAnalyzeRequest
-    ):
-        """流式分析工单 → SSE 逐 token 输出"""
-        t0 = time.perf_counter()
-        self._pop_trace()  # 清理上次请求的残留
-        await self._ensure_clients()
-
-        # 1. 加载上下文
-        yield {"event": "status", "data": {"stage": "loading_context"}}
-        t1 = time.perf_counter()
-        context = await self._load_task_context(request.task_id)
-        self._add_trace(self.NODE_LOAD_CONTEXT, "ok",
-                        input={"task_id": request.task_id},
-                        output={"has_title": bool(context.title), "has_problem_summary": bool(context.problem_summary),
-                                "hypotheses_count": len(context.hypotheses)},
-                        elapsed_ms=round((time.perf_counter() - t1) * 1000))
-
-        # 2. 三路分析
-        yield {"event": "status", "data": {"stage": "retrieving"}}
-        t2 = time.perf_counter()
-        retrieval_results = await self._run_analysis(context)
-        self._add_trace(self.NODE_RETRIEVE, "ok",
-                        input={"query": self._build_query(context)},
-                        output={"troubleshooting_len": len(retrieval_results.get("troubleshooting", "")),
-                                "history_len": len(retrieval_results.get("history", ""))},
-                        elapsed_ms=round((time.perf_counter() - t2) * 1000))
-
-        # 3. 构建 Prompt + 流式生成
-        yield {"event": "status", "data": {"stage": "generating"}}
-        t3 = time.perf_counter()
-        prompt = self._build_prompt(context, retrieval_results)
-        self._add_trace(self.NODE_BUILD_PROMPT, "ok",
-                        input={"prompt_chars": len(prompt)},
-                        elapsed_ms=round((time.perf_counter() - t3) * 1000))
-
-        raw_tokens: list = []
-        t_llm = time.perf_counter()
-        t_first = None
-
+        一次小 LLM 调用（temp=0）；失败/解析失败回退 safe 默认，绝不阻断 submit。
+        """
         try:
-            async for token in self._llm_client.stream(
-                prompt=prompt,
-                system_prompt=TASK_AGENT_SYSTEM_PROMPT,
-                max_tokens=1500,
-                temperature=0.3,
-            ):
-                raw_tokens.append(token)
-                if t_first is None:
-                    t_first = time.perf_counter()
-                    first_ms = round((t_first - t_llm) * 1000)
-                    yield {"event": "first_token", "data": {"ms": first_ms}}
-                yield {"event": "token", "data": token}
-            self._add_trace(self.NODE_LLM, "ok",
-                            input={"model": self._llm_client.model, "max_tokens": 1500},
-                            output={"token_count": len(raw_tokens),
-                                    "first_token_ms": round((t_first or t_llm) - t_llm) * 1000 if t_first else None},
-                            elapsed_ms=round((time.perf_counter() - t_llm) * 1000))
-        except Exception:
-            self._add_trace(self.NODE_LLM, "error",
-                            elapsed_ms=round((time.perf_counter() - t_llm) * 1000))
-            msg = "AI 分析服务暂时不可用，请稍后重试。"
-            yield {"event": "token", "data": msg}
-            result = {
-                "root_cause_analysis": "", "suggested_actions": [], "references": [],
-                "confidence": 0, "needs_more_info": True,
-                "_trace": self._pop_trace(),
-            }
-            yield {"event": "result", "data": result}
-            return
-
-        # 4. 解析 + 保存上下文
-        t5 = time.perf_counter()
-        raw = "".join(raw_tokens)
-        draft, parse_status = self._parse_solution_with_status(raw)
-        self._add_trace(self.NODE_PARSE, parse_status,
-                        output={"confidence": draft.confidence, "actions_count": len(draft.suggested_actions)},
-                        elapsed_ms=round((time.perf_counter() - t5) * 1000))
-
-        t6 = time.perf_counter()
-        await self._save_analysis_context(request.session_id, context, draft)
-        self._add_trace(self.NODE_MEMORY, "ok",
-                        elapsed_ms=round((time.perf_counter() - t6) * 1000))
-
-        # 5. 返回结构化结果（含 trace）
-        result_data = draft.model_dump()
-        result_data["attachment_analysis"] = retrieval_results.get("attachment_analysis", {})
-        total_ms = round((time.perf_counter() - t0) * 1000)
-        result_data["_trace"] = self._pop_trace()
-        result_data["_total_ms"] = total_ms
-        yield {"event": "result", "data": result_data}
-
-        yield {"event": "done", "data": {"total_ms": total_ms}}
+            root_cause = getattr(draft, "root_cause_analysis", "") or ""
+            actions = "；".join(getattr(draft, "suggested_actions", []) or [])
+            if not root_cause:
+                return {}
+            raw = await self._llm_client.complete(
+                prompt=_STRUCT_ROOT_USER.format(root_cause=root_cause[:1500], actions=actions[:800]),
+                system_prompt=_STRUCT_ROOT_SYSTEM,
+                max_tokens=200,
+                temperature=0.0,
+            )
+        except Exception as e:
+            logger.warning(f"[solution] 结构化根因提炼调用失败，回退默认: {e}")
+            return {}
+        sr = _parse_struct_root(raw)
+        if not sr.symptom and not sr.error_codes and sr.root_cause_type == "未知":
+            return {}  # 解析失败 → 不写结构化字段
+        extra = sr.to_payload()
+        # 补充根因/方案（保留给检索可参考）
+        extra["root_cause"] = getattr(draft, "root_cause_analysis", "") or ""
+        return extra
 
     # ============================================================
     # submit — 方案提交
@@ -211,10 +206,13 @@ class SolutionFlow:
 
         solution_text = f"根因: {getattr(draft, 'root_cause_analysis', '')}\n步骤: {'; '.join(getattr(draft, 'suggested_actions', []))}"
 
+        # P1：结构化根因提炼（temp=0 小调用，失败回退不阻断）
+        structured = await self._extract_structured_root_cause(draft)
+
         # 1. Qdrant 回写
         t_qdrant = time.perf_counter()
         try:
-            await self._index_solution(task_id, solution_text, draft)
+            await self._index_solution(task_id, solution_text, draft, structured=structured)
             result["solution_indexed"] = True
             self._add_trace(self.NODE_SUBMIT + "_qdrant", "ok",
                             elapsed_ms=round((time.perf_counter() - t_qdrant) * 1000))

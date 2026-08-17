@@ -5,6 +5,9 @@
 """
 from ai.agents.AiTaskPlatform.contexts.contexts import (
     load_task_context,
+    load_referenced_task_context,
+    extract_referenced_task_ids,
+    format_referenced_tickets,
     is_platform_ticket,
     build_query,
     build_task_ctx,
@@ -20,7 +23,11 @@ from ai.agents.AiTaskPlatform.contexts.comments import (
 )
 
 __all__ = [
-    "load_task_context", "is_platform_ticket", "build_query",
+    "load_task_context",
+    "load_referenced_task_context",
+    "extract_referenced_task_ids",
+    "format_referenced_tickets",
+    "is_platform_ticket", "build_query",
     "build_task_ctx", "build_img_ctx",
     "load_discussion", "add_diagnosis_comment",
     "add_diagnosis_comment_short", "notify_backend_comment_broadcast",

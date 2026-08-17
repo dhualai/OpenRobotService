@@ -1,12 +1,7 @@
 """BaseCapability 抽象基类 + CapabilityResult 统一返回
 
-借鉴主流 Agent 框架（LangChain/CrewAI/Claude/MetaGPT）的工具层思想：
-  - name/description/schema/run 能力元数据"三角结构"（主流共识）
-  - CrewAI `__init_subclass__` 子类自动注册
-  - LangChain `handle_tool_error`：错误态返回而非抛异常中断 Agent
-  - CrewAI `result_schema`：输出也 schema 化
-  - MetaGPT `name` 默认取类名
-  - Anthropic ACI：description 像写 docstring 一样用心（何时用/何时不用/示例/边界）
+能力元数据"三角结构"：name/description/schema/run；子类继承即自动注册到注册表；
+错误态返回而非抛异常中断 Agent；description 描述何时用/何时不用/示例/边界。
 
 实现方式：`CapabilityResult` 用轻量 dataclass（结果容器，支持位置参数）；
 `input_schema`/`result_schema` 用现有 Pydantic v2（与 ai/agents/AiTaskPlatform/schemas.py 一致）。
@@ -21,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from ai.agents.AiTaskPlatform.capabilities.registry import CapabilityRegistry
+    from ai.agents.AiTaskPlatform.capabilities.core.registry import CapabilityRegistry
 
 
 class CapabilityResult:
@@ -32,7 +27,7 @@ class CapabilityResult:
 
     - text: 注入 prompt 的文本（给 LLM 看）
     - meta: 结构化信息（给程序看：line 数 / confidence / 耗时 ...）
-    - ok:   执行是否成功（借鉴 LangChain 错误态返回，失败不中断 Agent）
+    - ok:   执行是否成功（错误态返回，失败不中断 Agent）
     - error: 失败原因（ok=False 时，对外只暴露轻量原因，不泄漏内部堆栈）
     """
 
@@ -61,14 +56,14 @@ class BaseCapability(ABC):
     """
 
     # ── 能力元数据（子类覆盖）──
-    name: str = ""               # 能力名（默认取类名，借鉴 MetaGPT）
-    description: str = ""        # 给 LLM 看的能力描述（Anthropic ACI 风格：何时用/何时不用/示例/边界）
+    name: str = ""               # 能力名（默认取类名）
+    description: str = ""        # 给 LLM 看的能力描述（何时用/何时不用/示例/边界）
     input_schema: Optional[type[BaseModel]] = None  # 输入校验模型（Pydantic），None = 免校验
-    result_schema: Optional[type[BaseModel]] = None # 输出元数据 schema（可选，借鉴 CrewAI）
+    result_schema: Optional[type[BaseModel]] = None # 输出元数据 schema（可选）
     tags: list[str] = []         # 标签：["log","image","code","history","knowledge"...]
 
     # ── 生命周期 / 配额（可选）──
-    max_usage_per_session: Optional[int] = None  # 单会话调用上限（None=不限），借鉴 CrewAI max_usage_count
+    max_usage_per_session: Optional[int] = None  # 单会话调用上限（None=不限）
 
     def __init__(self):
         # 会话内调用计数（配额）
@@ -80,7 +75,7 @@ class BaseCapability(ABC):
         """执行能力，返回统一 CapabilityResult。
 
         建议实现内部 try/except，失败用 `CapabilityResult.failure(msg)` 返回，
-        避免抛异常中断 Agent 编排（借鉴 LangChain 错误态）。
+        避免抛异常中断 Agent 编排。
         """
         raise NotImplementedError
 
@@ -128,18 +123,18 @@ class BaseCapability(ABC):
         try:
             return await self.run(**kwargs)
         except Exception as e:
-            # 借鉴 LangChain：只暴露异常类型/轻量消息，不泄漏内部堆栈
+            # 只暴露异常类型/轻量消息，不泄漏内部堆栈
             return CapabilityResult.failure(f"能力 {self.name} 执行失败: {type(e).__name__}: {e}")
 
     # ── 自动注册 ──
     def __init_subclass__(cls, **kwargs: Any) -> None:
-        """子类继承即自动注册到注册表（借鉴 CrewAI，key 用 module.QualifiedName 保证唯一）。
+        """子类继承即自动注册到注册表（key 用 module.QualifiedName 保证唯一）。
 
         注册发生在模块 import 时（定义类即触发），无需手工调用。
         """
         super().__init_subclass__(**kwargs)
         if not cls.name:
-            cls.name = cls.__name__  # 借鉴 MetaGPT：name 默认取类名
+            cls.name = cls.__name__  # name 默认取类名
         # 延后 import 避免循环依赖
-        from ai.agents.AiTaskPlatform.capabilities.registry import CapabilityRegistry
+        from ai.agents.AiTaskPlatform.capabilities.core.registry import CapabilityRegistry
         CapabilityRegistry.register(cls)

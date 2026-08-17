@@ -15,10 +15,17 @@ class Ranker:
         self._w_semantic = w.get("semantic_match", 0.35)
         self._w_history = w.get("history_match", 0.10)
         self._penalty: Dict[int, float] = self._config.job_level_penalty
+        # 项目对接人加权系数（≥1；=1 不加权）。默认 2.0，可由 config.contact_bonus 覆盖。
+        try:
+            self._contact_bonus = float(getattr(self._config, "contact_bonus", 2.0))
+        except (TypeError, ValueError):
+            self._contact_bonus = 2.0
 
     def rank(
         self, recall_result: RecallResult,
         engineers: Optional[List[EngineerProfile]] = None,
+        contact_assignee_id: Optional[str] = None,
+        preferred_assignee_id: Optional[str] = None,
     ) -> Dict[str, Dict[str, float]]:
         ids = set()
         ids.update(recall_result.llm_recall.keys())
@@ -52,10 +59,19 @@ class Ranker:
             else:
                 mul = self._penalty.get(lv, self._penalty.get(99, 0.6))
 
+            # 加权：项目对接人 或 用户倾向处理人 命中 → total × contact_bonus（默认2.0）。
+            # 同一人同时是对接人又是倾向处理人时不重复乘（只 × 一次），避免加权过度。
+            is_contact = bool(contact_assignee_id and eid == contact_assignee_id)
+            is_preferred = bool(preferred_assignee_id and eid == preferred_assignee_id)
+            contact_mul = self._contact_bonus if (is_contact or is_preferred) else 1.0
+
             scores[eid] = {
                 "llm_score": llm, "semantic_score": sem,
                 "history_score": his,
                 "raw_total": round(raw, 4), "job_level": lv,
-                "level_multiplier": mul, "total_score": round(raw * mul, 4),
+                "level_multiplier": mul, "contact_assignee": is_contact,
+                "preferred_assignee": is_preferred,
+                "contact_multiplier": round(contact_mul, 3),
+                "total_score": round(raw * mul * contact_mul, 4),
             }
         return dict(sorted(scores.items(), key=lambda x: x[1]["total_score"], reverse=True))

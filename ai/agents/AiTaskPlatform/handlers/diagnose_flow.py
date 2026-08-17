@@ -95,6 +95,126 @@ def _discovery_to_text(triage_result: dict) -> str:
     return "\n".join(parts)
 
 
+# ── 关键信息查漏（P3）────────────────────────────────────────────
+# 高价值前提：故障发生时间 / 是否可复现 / 变更了什么 / 现场信息。
+# 核心原则（尊重提单已收集信息）：
+#   提单 Agent 在 dialog 里通常已把这些信息收进 collected_info
+#   （如 occurrence_time=发生时间 / frequency=每次|偶尔|首次，以及 description 会总结
+#   "版本、发生时间"等关键信息）。**diagnose 不复查、不重复追问**——只有当某项
+#   被确认缺失（collected_info 无对应键 且 描述/日志/讨论里也没有）时才建议补充。
+# 且只列【缺失且对定位有决定性作用】的项，最多 3 条，杜绝"审问式"轰炸。
+#
+# 【产品无关原则（重要）】内核不绑死调度 USP：通用维度（时间/复现/变更）产品无关；
+# 现场/动作维度 [按产品分流]——AGV/调度关注"车辆现场动作"，服务号平台关注"平台操作"，
+# 通过 is_platform 参数选中对应关键词集，避免用调度词去套服务号问题。
+_TIME_KW = ["时间", "几点", "上午", "下午", "昨天", "今天", "分", "时", "点", "发生",
+            "occurred", "14:", "15:", "16:", "17:", "18:", "19:", "20:", "21:", "22:", "23:"]
+_REPRO_KW = ["复现", "复现频率", "偶尔", "经常", "每次", "偶发", "一次", "多次", "连续", "间歇", "规律", "触发", "频率"]
+_CHANGE_KW = ["变更", "升级", "版本", "更新", "部署", "配置", "改动", "新版本", "回退", "上线", "改", "调整"]
+# 现场维度：AGV/调度（车辆动作）vs 服务号平台（平台操作）——按产品分流
+_SCENE_KW_AGV = ["操作", "现场", "按了", "点了", "执行", "运行时", "步骤", "路径",
+                 "搬运", "装载", "卸货", "充电", "避让", "对接", "入库", "取货"]
+_SCENE_KW_PLATFORM = ["操作", "现场", "按了", "点了", "页面", "功能", "账号", "接口", "登录",
+                      "权限", "按钮", "菜单", "报错", "页面加载", "配置了", "点击"]
+
+
+def _has_any(text: str, kws) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in kws)
+
+
+# collected_info 里可能承载"时间/频率"的键（提单 Agent 常用，做结构化识别）
+_TIME_KEYS = {"occurrence_time", "时间", "发生时间", "occurred_at", "occurred", "time"}
+_REPRO_KEYS = {"frequency", "复现", "频率", "复现频率", "reproducibility", "frequency_desc"}
+
+
+def _ci_has(ci: dict, keys) -> bool:
+    """collected_info 中是否有任一给定键且非空（结构化识别，避免 keyword 误判）。"""
+    if not isinstance(ci, dict):
+        return False
+    for k in keys:
+        v = ci.get(k)
+        if v and str(v).strip() and str(v).strip().lower() not in ("无", "无无", "不清楚", "不知道", "暂无", "未知"):
+            return True
+    return False
+
+
+def _info_gap_detect(context, att_has_logs: bool, att_log_summary: str,
+                     user_discussion: str, is_platform: bool = False) -> list:
+    """识别对定位有决定性作用、但当前**确实缺失**的关键信息。
+
+    Args:
+        is_platform: 是否为服务号平台问题（True=平台，关注平台操作；False=调度/AGV，关注车辆现场）。
+
+    Returns:
+        list[{key, question, why}]，最多 3 条；通常为空（提单已收集好）。
+        每条 question 是可直接回答的表述（供前端/讨论引导）。
+    """
+    desc = (getattr(context, "description", None) or "") or ""
+    ci = getattr(context, "collected_info", None) or {}
+    if not isinstance(ci, dict):
+        ci = {}
+    ci_text = " ".join(str(v) for v in ci.values() if v)
+    collated = f"{desc} {ci_text} {user_discussion or ''} {att_log_summary or ''}"
+
+    # 现场关键词按产品分流
+    scene_kw = _SCENE_KW_PLATFORM if is_platform else _SCENE_KW_AGV
+
+    gaps = []
+
+    # ① 故障发生时间：提单通常已收（occurrence_time）或描述里带着。
+    #    仅当【有日志但全链路都没有时间】才建议——用于时间窗定向。
+    if (
+        att_has_logs
+        and not _ci_has(ci, _TIME_KEYS)
+        and not _has_any(collated, _TIME_KW)
+    ):
+        gaps.append({
+            "key": "occurred_at",
+            "question": "故障大概在什么时间发生？",
+            "why": "有了时间可以只分析故障前那一段日志，定位更快更准",
+        })
+
+    # ② 是否可复现/频率：提单通常已收（frequency）。缺失且全文未见才建议。
+    if (
+        not _ci_has(ci, _REPRO_KEYS)
+        and not _has_any(collated, _REPRO_KW)
+    ):
+        gaps.append({
+            "key": "reproducible",
+            "question": "这个问题是每次必现还是偶发？能不能稳定复现？",
+            "why": "判断是版本缺陷还是偶发竞态，直接影响定位方向",
+        })
+
+    # ③ 变更了什么（产品无关，通用）：提单描述里若带"版本/配置"通常已含。缺失才建议。
+    if not _has_any(collated, _CHANGE_KW):
+        gaps.append({
+            "key": "change",
+            "question": ("故障发生前后有做过什么变更吗（升级/配置调整/新增功能/加车等）？"
+                         if not is_platform else
+                         "故障发生前后有做过什么变更吗（版本升级/配置调整/权限/账号等）？"),
+            "why": "很多故障是变更引入的，知道变更能快速缩小范围",
+        })
+
+    # ④ 现场/操作信息（[按产品分流]）：
+    #    服务号平台问题不问"车辆动作"（不适用），只问平台操作。
+    if not _has_any(collated, scene_kw):
+        if is_platform:
+            gaps.append({
+                "key": "scene",
+                "question": "操作了什么功能/页面时出现的报错？具体操作步骤是什么？",
+                "why": "平台问题的操作路径（页面/功能/接口）是定位的关键线索",
+            })
+        else:
+            gaps.append({
+                "key": "scene",
+                "question": "故障发生时车在做什么（搬运/充电/避让等），操作了什么？",
+                "why": "操作与故障的关联是常见定位线索",
+            })
+
+    return gaps[:3]
+
+
 class DiagnoseFlow:
     # ============================================================
     # diagnose — 诊断报告（[帮我分析] 按钮）
@@ -255,6 +375,17 @@ class DiagnoseFlow:
                         output={"hist_found": hist_found, "platform": bool(platform_ref), "discussion": bool(user_discussion)},
                         elapsed_ms=round((time.perf_counter() - t3) * 1000))
 
+        # 3.5 关键信息查漏（P3）：识别缺失但对定位有决定性作用的信息
+        # 排查优先 + 一次性建议：报告主体照常生成，missing_info 只作为"补充建议"呈现，不阻塞、不打断。
+        # 产品无关：is_platform 决定"现场"维度用平台操作词还是车辆动作词，避免用调度词套服务号。
+        missing_info = _info_gap_detect(
+            context, att_has_logs, att_log_summary, user_discussion,
+            is_platform=self._is_platform_ticket(context),
+        )
+        self._add_trace(self.NODE_KNOWLEDGE, "ok",
+                        output={"missing": [g["key"] for g in missing_info]},
+                        elapsed_ms=0)
+
         # 4. LLM 综合分析
         t4 = time.perf_counter()
         att_text = att_log_summary if att_has_logs else "（无附件或无可解析内容）"
@@ -268,6 +399,19 @@ class DiagnoseFlow:
         if context.location:
             fault_parts.append(f"位置: {context.location}")
         fault_info = "\n".join(fault_parts) if fault_parts else "（无特殊故障信息）"
+
+        # 关键信息查漏（P3）：若存在缺失，作为"补充建议"注入 prompt，让报告末尾自然带出
+        if missing_info:
+            mi_lines = "\n".join(f"{i+1}. {g['question']}（{g['why']}）"
+                                 for i, g in enumerate(missing_info))
+            missing_info_text = (
+                "以下是与定位相关的补充信息，**可能缺失**。请先基于现有材料给出分析；\n"
+                "若确实需要这些信息才能更准定位，可在报告末尾用一两句【建议】补充，\n"
+                "**不要为了追问而放弃分析**：\n"
+                + mi_lines
+            )
+        else:
+            missing_info_text = "（信息较充分，无需补充建议）"
 
         prompt = DIAGNOSE_USER_TEMPLATE.format(
             title=context.title or "",
@@ -284,6 +428,7 @@ class DiagnoseFlow:
             attachment_analysis=att_text,
             historical_solutions=hist_text,
             user_discussion=user_discussion or "（无用户讨论补充）",
+            missing_info=missing_info_text,
         )
 
         raw = await self._llm_client.complete(
@@ -318,13 +463,16 @@ class DiagnoseFlow:
 
         total_ms = round((time.perf_counter() - t0) * 1000)
 
+        # P3：needs_more_info 由"查漏出的缺失信息"驱动（而非仅 conf<0.5），
+        # 更有意义——代表"确实有高价值信息缺失，建议补充"。
         return {
             "task_id": task_id,
             "root_cause_analysis": root_cause,
             "suggested_actions": [],
             "references": [],
             "confidence": conf,
-            "needs_more_info": conf < 0.5,
+            "needs_more_info": bool(missing_info) or conf < 0.5,
+            "missing_info": missing_info,  # P3：缺失的高价值信息（供前端「🤔 还需确认」区块 / 讨论引导）
             "attachment_analysis": {"has_logs": att_has_logs, "summary": att_log_summary},
             "history_found": hist_found,
             "report_md": report_md,

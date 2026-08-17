@@ -109,6 +109,23 @@ class DispatchFlow:
             )
             return preferred
 
+        # ── 项目对接人（Step 4 加权 / 强制保留用；可能为 None → 不加权不保留）──
+        contact_assignee_id = self._resolve_contact_assignee(ticket_context)
+        if contact_assignee_id:
+            logger.info(f"{ltag} 项目对接人: {contact_assignee_id}（将加权 ×2.0 并强制保留）")
+
+        # ── 用户倾向处理人（预留：前端传 ticket.preferred_assignee 即启用；未传返回 None 不生效）──
+        preferred_assignee_id = None
+        if self._config.preferred_assignee_enabled:
+            preferred_assignee_id = self._resolve_preferred_assignee(
+                ticket_context, engineer_profiles,
+            )
+            if preferred_assignee_id:
+                logger.info(
+                    f"{ltag} 用户倾向处理人: {preferred_assignee_id}"
+                    f"（将加权 ×{self._config.contact_bonus:.1f} 并{'' if self._config.preferred_assignee_force_keep else '不'}强制保留）"
+                )
+
         # ── Step 1: 部门过滤 ──
         candidates = await self._dept_filter.filter(
             ticket=ticket_context, engineers=engineer_profiles,
@@ -132,6 +149,42 @@ class DispatchFlow:
         if not candidates:
             logger.warning(f"{ltag} Step2 排除提单人后无候选人，回退全量")
             candidates = engineer_profiles
+
+        # ── Step 2.5: 强制保留项目对接人（即使被部门/产品/排除提单人过滤掉也加回候选）──
+        # 例外：对接人 == 提单人（自提单）时**不**强制保留，交由 Step2 正常排除（自提不自接）。
+        if contact_assignee_id:
+            creator_id = (ticket_context.creator or "").strip()
+            if contact_assignee_id == creator_id:
+                logger.info(
+                    f"{ltag} Step2.5 对接人==提单人({creator_id})，不强制保留（自提不自接）"
+                )
+            elif not any(e.id == contact_assignee_id for e in candidates):
+                # 对接人可能仍在全量工程师里但被过滤掉 → 强制补回
+                contact_eng = next(
+                    (e for e in engineer_profiles if e.id == contact_assignee_id), None
+                )
+                if contact_eng is not None:
+                    candidates.append(contact_eng)
+                    logger.info(
+                        f"{ltag} Step2.5 强制保留项目对接人 {contact_assignee_id}"
+                        f" -> 候选 {len(candidates)}人"
+                    )
+
+        # ── Step 2.6: 强制保留用户倾向处理人（预留：即使被部门/产品/排除提单人过滤也加回候选）──
+        if (
+            preferred_assignee_id
+            and self._config.preferred_assignee_force_keep
+            and not any(e.id == preferred_assignee_id for e in candidates)
+        ):
+            pref_eng = next(
+                (e for e in engineer_profiles if e.id == preferred_assignee_id), None
+            )
+            if pref_eng is not None:
+                candidates.append(pref_eng)
+                logger.info(
+                    f"{ltag} Step2.6 强制保留用户倾向处理人 {preferred_assignee_id}"
+                    f" -> 候选 {len(candidates)}人"
+                )
 
         # ── Step 3: 三路召回（L1/L2/L3 互不依赖，并行执行提升吞吐）──
         recall_result = RecallResult()
@@ -174,8 +227,12 @@ class DispatchFlow:
                 ltag, "L3", recall_result.history_recall, candidates, "历史召回(融合)", count=8,
             )
 
-        # ── Step 4: 精排 + 职级折扣 ──
-        ranked_scores = self._ranker.rank(recall_result, engineers=candidates)
+        # ── Step 4: 精排 + 职级折扣（项目对接人 / 用户倾向处理人 加权 ×contact_bonus）──
+        ranked_scores = self._ranker.rank(
+            recall_result, engineers=candidates,
+            contact_assignee_id=contact_assignee_id,
+            preferred_assignee_id=preferred_assignee_id,
+        )
 
         # ── Step 5: 负载均衡（按在途工单数打折，避免单子集中在少数人）──
         ranked_scores = self._apply_load_balance(ranked_scores)
@@ -250,13 +307,18 @@ class DispatchFlow:
             eng = emap.get(eid)
             nm = eng.name if eng else eid[:10]
             load = f"在途={d['load_count']}" if 'load_count' in d else ""
+            tag = ""
+            if d.get('preferred_assignee'):
+                tag += " [用户倾向]"
+            if d.get('contact_assignee'):
+                tag += " [对接人]"
             parts.append(
                 f"#{rank} {nm}(L{d.get('job_level','?')}) "
                 f"总={d.get('total_score',0):.2f} "
                 f"LLM={d.get('llm_score',0):.2f} "
                 f"语义={d.get('semantic_score',0):.2f} "
                 f"历史={d.get('history_score',0):.2f}"
-                f"{load}"
+                f"{load}{tag}"
             )
         logger.info(f"{ltag} {prefix} | " + " | ".join(parts))
 
@@ -395,6 +457,69 @@ class DispatchFlow:
             )
         return excluded
 
+    # ── 项目对接人解析（Step 4 加权用）──
+    @staticmethod
+    def _resolve_contact_assignee(ticket: TicketContext) -> Optional[str]:
+        """按工单 project_id（回退 project_name）查 project 表，返回对接人 userId（username）。
+
+        一个项目唯一一个对接人（project.contact_person_id）；可能为空（缺省）→ 返回 None 不加权。
+        查询失败/无项目信息 → 返回 None（不阻断派单）。
+        """
+        key = (ticket.project_id or "").strip() or (ticket.project_name or "").strip()
+        if not key:
+            return None
+        try:
+            from ai.core.database import ProjectDelivery
+            from ai.core.database import SessionLocal
+            db = SessionLocal()
+            try:
+                row = None
+                if (ticket.project_id or "").strip():
+                    row = db.query(ProjectDelivery).filter(
+                        ProjectDelivery.code == ticket.project_id.strip()
+                    ).first()
+                if not row and (ticket.project_name or "").strip():
+                    row = db.query(ProjectDelivery).filter(
+                        ProjectDelivery.name == ticket.project_name.strip()
+                    ).first()
+                if not row:
+                    return None
+                cid = (row.contact_person_id or "").strip()
+                if not cid:
+                    logger.info(
+                        f"[派单:{ticket.id}] 项目对接人缺失（contact_person_id 为空），不加权: "
+                        f"project={row.code or row.name}"
+                    )
+                    return None
+                return cid
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"[派单:{ticket.id}] 解析项目对接人失败，跳过加权: {e}")
+            return None
+
+    # ── 用户倾向处理人解析（预留功能，Step 4 加权 / 强制保留用）──
+    @staticmethod
+    def _resolve_preferred_assignee(
+        ticket: TicketContext, engineers: List[EngineerProfile],
+    ) -> Optional[str]:
+        """解析用户提单时填写的"倾向处理人"，返回工程师 userId（username）。
+
+        - 数据源：ticket.preferred_assignee（前端传工程师 userId/username，预留字段）
+        - 前端未传该字段（None/空）→ 返回 None，不启用、完全向后兼容
+        - 传入时按 e.id 精确匹配工程师；匹配不到 → 返回 None（不阻断派单，仅不加权）
+        """
+        preferred = (ticket.preferred_assignee or "").strip()
+        if not preferred:
+            return None
+        matched = next((e for e in engineers if e.id == preferred), None)
+        if matched is None:
+            logger.info(
+                f"[派单:{ticket.id}] 用户倾向处理人 '{preferred}' 未匹配到候选工程师，跳过加权"
+            )
+            return None
+        return matched.id
+
     # ── Step 5 实现: 负载均衡（对全体候选人按在途工单数打折，带查询缓存）──
     _workload_cache: Dict[str, object] = {}  # {"ts": float, "data": {engineer_id: 在途数}}
 
@@ -513,6 +638,8 @@ class DispatchFlow:
         if strong_name:
             matched = self._match_engineer_by_name(strong_name, engineers)
             if matched:
+                # 排单强信号匹配过程：保留 INFO，便于看日志了解"为何派给此人"。
+                # 行首整齐由 logging.ReadableFormatter 解决（[派单:N] 前的定位信息移至行尾）。
                 logger.info(
                     f"[派单:{ticket.id}] Step0 [提单人指定-强信号] '{strong_name}' "
                     f"→ {matched.name}({matched.id})"

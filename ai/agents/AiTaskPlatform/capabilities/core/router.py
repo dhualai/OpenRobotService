@@ -1,6 +1,5 @@
 """Router — LLM 意图路由（改造点 A，G1）
 
-对标 Claude *Building Effective Agents* 的 **Routing** 模式：
   - 用轻量 LLM 把用户输入分类成 fixed intent，避免所有输入走同一份重 prompt（单点过载）
   - 为 discuss 新增「纯闲聊」快路径、避免不必要的工具/子 Agent 派生
 

@@ -1,6 +1,7 @@
 // 项目人员关联 - 按 username 构建用户树，支持长按移除
+// 样式参考 macaron projects.auth 页：人员条目卡 + 幽灵按钮 + 单选行弹窗。
 import { useState, useEffect, useRef } from 'react';
-import { Button, Toast, Loading, Input, Popup } from 'tdesign-mobile-react';
+import { Toast, Loading, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -167,7 +168,6 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
     if (!associateUser) { Toast({ message: '请选择用户', theme: 'warning' }); return; }
     if (!associateRole) { Toast({ message: '请选择角色', theme: 'warning' }); return; }
 
-    const roleObj = roles.find((r) => r.id === associateRole);
     const payload: Record<string, string> = {
       user_name: associateUser.username,
       role_id: associateRole,
@@ -204,87 +204,91 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
   })();
 
   if (!selectedProject) {
-    return <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>请先选择项目</div>;
+    return <div className="mac-empty">请先选择项目</div>;
   }
 
   return (
-    <div style={{ padding: '0 16px 16px' }}>
-      {/* 已关联人员卡片（含添加入口） */}
-      <div style={{ background: '#fff', borderRadius: 8, padding: 14, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, flex: 1, minWidth: 0 }}>
-            已关联人员（{existingUsers.length}）
-            <span style={{ fontSize: 12, color: '#999', fontWeight: 400, marginLeft: 6 }}>长按卡片可移除</span>
-          </div>
-          <Button size="small" theme="primary" variant="outline" style={{ flexShrink: 0 }} onClick={openAssociate}>+ 添加关联人员</Button>
-        </div>
-        {existingUsersLoading ? (
-          <Loading text="加载中..." />
-        ) : existingUsers.length === 0 ? (
-          <div style={{ fontSize: 13, color: '#999', padding: '8px 0' }}>该项目暂无已关联人员</div>
-        ) : (
-          (() => {
-            const { roots, childrenMap } = buildExistingUserTree(existingUsers);
-            const renderNode = (u: ExistingProjectUser, depth: number) => {
-              const children = childrenMap.get(u.id) || [];
-              const collapsed = collapsedUsernames.has(u.username);
-              const roleNames = u.roleNames.join('、');
-              return (
-                <div key={u.username}>
-                  <div
-                    style={{
-                      background: removingUsername === u.username ? '#fff1f0' : '#fafafa',
-                      borderRadius: 8, padding: 14, marginBottom: 10, marginLeft: depth * 20,
-                      boxShadow: '0 1px 3px rgba(0,0,0,0.06)', userSelect: 'none', WebkitUserSelect: 'none',
-                    }}
-                    onTouchStart={(e) => beginLongPress(e.touches[0].clientX, e.touches[0].clientY, u.username)}
-                    onTouchEnd={cancelLongPress}
-                    onTouchMove={cancelLongPress}
-                    onMouseDown={(e) => beginLongPress(e.clientX, e.clientY, u.username)}
-                    onMouseUp={cancelLongPress}
-                    onMouseLeave={cancelLongPress}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                      <div style={{ fontSize: 14, fontWeight: 500 }}>
-                        {depth > 0 && <span style={{ color: '#bbb', marginRight: 4 }}>└</span>}
-                        {u.name}
-                        {children.length > 0 && (
-                          <span
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setCollapsedUsernames((prev) => {
-                                const next = new Set(prev);
-                                if (next.has(u.username)) next.delete(u.username); else next.add(u.username);
-                                return next;
-                              });
-                            }}
-                            style={{ marginLeft: 8, fontSize: 12, color: '#0052d9', cursor: 'pointer' }}
-                          >
-                            {collapsed ? `展开(${children.length})` : '收起'}
-                          </span>
-                        )}
-                      </div>
-                      <div style={{ fontSize: 12, color: '#999' }}>{u.username} · {roleNames}</div>
-                    </div>
-                  </div>
-                  {!collapsed && children.map((c) => renderNode(c, depth + 1))}
-                </div>
-              );
-            };
-            return roots.map((root) => renderNode(root, 0));
-          })()
-        )}
+    <div>
+      {/* 已关联人员（含添加入口） */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--mac-fg)' }}>已关联人员</span>
+        <span style={{ fontSize: 11, color: 'var(--mac-muted-fg)' }}>长按卡片可移除</span>
+        <button
+          type="button"
+          className="mac-btn mac-btn--ghost"
+          style={{ marginLeft: 'auto' }}
+          onClick={openAssociate}
+        >
+          + 添加关联人员
+        </button>
       </div>
+      {existingUsersLoading ? (
+        <Loading text="加载中..." />
+      ) : existingUsers.length === 0 ? (
+        <div style={{ fontSize: 13, color: 'var(--mac-muted-fg)', padding: '8px 0' }}>该项目暂无已关联人员</div>
+      ) : (
+        (() => {
+          const { roots, childrenMap } = buildExistingUserTree(existingUsers);
+          const renderNode = (u: ExistingProjectUser, depth: number) => {
+            const children = childrenMap.get(u.id) || [];
+            const collapsed = collapsedUsernames.has(u.username);
+            const roleNames = u.roleNames.join('、');
+            return (
+              <div key={u.username}>
+                <div
+                  className="mac-item"
+                  style={{
+                    marginBottom: 8, marginLeft: depth * 20,
+                    background: removingUsername === u.username ? '#fbecec' : undefined,
+                    userSelect: 'none', WebkitUserSelect: 'none',
+                  }}
+                  onTouchStart={(e) => beginLongPress(e.touches[0].clientX, e.touches[0].clientY, u.username)}
+                  onTouchEnd={cancelLongPress}
+                  onTouchMove={cancelLongPress}
+                  onMouseDown={(e) => beginLongPress(e.clientX, e.clientY, u.username)}
+                  onMouseUp={cancelLongPress}
+                  onMouseLeave={cancelLongPress}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--mac-fg)' }}>
+                      {depth > 0 && <span style={{ color: '#bbb', marginRight: 4 }}>└</span>}
+                      {u.name}
+                      {children.length > 0 && (
+                        <span
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCollapsedUsernames((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(u.username)) next.delete(u.username); else next.add(u.username);
+                              return next;
+                            });
+                          }}
+                          style={{ marginLeft: 8, fontSize: 12, color: 'var(--mac-blue-2)', cursor: 'pointer' }}
+                        >
+                          {collapsed ? `展开(${children.length})` : '收起'}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--mac-muted-fg)' }}>{u.username} · {roleNames}</div>
+                  </div>
+                </div>
+                {!collapsed && children.map((c) => renderNode(c, depth + 1))}
+              </div>
+            );
+          };
+          return roots.map((root) => renderNode(root, 0));
+        })()
+      )}
 
       {/* 添加关联人员弹窗 */}
       <Popup visible={associateVisible} onClose={() => setAssociateVisible(false)} placement="bottom" showOverlay>
-        <div style={{ padding: 20, maxHeight: '70vh', overflow: 'auto' }}>
-          <h4 style={{ marginBottom: 4 }}>添加关联人员</h4>
-          <div style={{ fontSize: 12, color: '#999', marginBottom: 16 }}>
+        <div className="mac-sheet" style={{ maxHeight: '70vh', overflow: 'auto' }}>
+          <h4 className="mac-sheet__title" style={{ marginBottom: 4 }}>添加关联人员</h4>
+          <div style={{ fontSize: 12, color: 'var(--mac-muted-fg)', marginBottom: 16 }}>
             项目：{selectedProject?.name}
           </div>
 
-          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>选择用户</div>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8, color: 'var(--mac-fg)' }}>选择用户</div>
           <div style={{ marginBottom: 20 }}>
             <UserSelect
               value={associateUser?.id}
@@ -294,89 +298,62 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
             />
           </div>
 
-          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>选择角色</div>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8, color: 'var(--mac-fg)' }}>选择角色</div>
           <div style={{ marginBottom: 20 }}>
             {rolesLoading ? (
               <Loading text="加载角色..." />
             ) : roles.length === 0 ? (
-              <div style={{ padding: '10px 0', color: '#999', fontSize: 13 }}>暂无可选角色，请先在角色管理中创建</div>
+              <div style={{ padding: '10px 0', color: 'var(--mac-muted-fg)', fontSize: 13 }}>暂无可选角色，请先在角色管理中创建</div>
             ) : (
               roles.map((role) => (
-              <div
-                key={role.id}
-                onClick={() => setAssociateRole(role.id)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 10,
-                  padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
-                }}
-              >
                 <div
-                  style={{
-                    width: 16, height: 16, borderRadius: '50%',
-                    border: `1px solid ${associateRole === role.id ? '#0052d9' : '#ccc'}`,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}
+                  key={role.id}
+                  className={`mac-radio ${associateRole === role.id ? 'is-active' : ''}`}
+                  onClick={() => setAssociateRole(role.id)}
                 >
-                  {associateRole === role.id && (
-                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />
-                  )}
+                  <span className="mac-radio__dot">
+                    {associateRole === role.id && <span className="mac-radio__inner" />}
+                  </span>
+                  <span className="mac-radio__label">{role.name}</span>
                 </div>
-                <div style={{ fontSize: 14 }}>{role.name}</div>
-              </div>
               ))
             )}
           </div>
 
-          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>上级人员（可选，用于展示上下层关系）</div>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8, color: 'var(--mac-fg)' }}>上级人员（可选，用于展示上下层关系）</div>
           <div style={{ marginBottom: 20 }}>
             <div
+              className={`mac-radio ${!associateSuperiorUsername ? 'is-active' : ''}`}
               onClick={() => setAssociateSuperiorUsername(null)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 10,
-                padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
-              }}
             >
-              <div
-                style={{
-                  width: 16, height: 16, borderRadius: '50%',
-                  border: `1px solid ${!associateSuperiorUsername ? '#0052d9' : '#ccc'}`,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}
-              >
-                {!associateSuperiorUsername && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />}
-              </div>
-              <div style={{ fontSize: 14 }}>无（顶层）</div>
+              <span className="mac-radio__dot">
+                {!associateSuperiorUsername && <span className="mac-radio__inner" />}
+              </span>
+              <span className="mac-radio__label">无（顶层）</span>
             </div>
             {superiorCandidates.length === 0 ? (
-              <div style={{ padding: '10px 0', color: '#999', fontSize: 13 }}>暂无已添加人员可选为上级</div>
+              <div style={{ padding: '10px 0', color: 'var(--mac-muted-fg)', fontSize: 13 }}>暂无已添加人员可选为上级</div>
             ) : (
               superiorCandidates.map((c) => (
                 <div
                   key={c.username}
+                  className={`mac-radio ${associateSuperiorUsername === c.username ? 'is-active' : ''}`}
                   onClick={() => setAssociateSuperiorUsername(c.username)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
-                  }}
                 >
-                  <div
-                    style={{
-                      width: 16, height: 16, borderRadius: '50%',
-                      border: `1px solid ${associateSuperiorUsername === c.username ? '#0052d9' : '#ccc'}`,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    }}
-                  >
-                    {associateSuperiorUsername === c.username && <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0052d9' }} />}
-                  </div>
-                  <div style={{ fontSize: 14 }}>{c.label}</div>
+                  <span className="mac-radio__dot">
+                    {associateSuperiorUsername === c.username && <span className="mac-radio__inner" />}
+                  </span>
+                  <span className="mac-radio__label">{c.label}</span>
                 </div>
               ))
             )}
           </div>
 
           <div style={{ display: 'flex', gap: 8 }}>
-            <Button theme="default" block onClick={() => setAssociateVisible(false)}>取消</Button>
-            <Button theme="primary" block loading={submittingAssociates} onClick={handleSaveAssociate}>保存</Button>
+            <button type="button" className="mac-btn mac-btn--outline mac-btn--block" onClick={() => setAssociateVisible(false)}>取消</button>
+            <button type="button" className="mac-btn mac-btn--primary mac-btn--block" disabled={submittingAssociates} onClick={handleSaveAssociate}>
+              {submittingAssociates ? '保存中...' : '保存'}
+            </button>
           </div>
         </div>
       </Popup>
@@ -395,15 +372,15 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
               left: Math.min(contextMenu.x, window.innerWidth - 140),
               top: Math.min(contextMenu.y, window.innerHeight - 60),
               zIndex: 1001,
-              background: '#fff', borderRadius: 6, padding: 4, minWidth: 120,
+              background: '#fff', borderRadius: 13, padding: 4, minWidth: 120,
               boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
             }}
           >
             <div
               onClick={() => handleRemoveExistingUser(contextMenu.username)}
               style={{
-                padding: '8px 12px', fontSize: 14, color: '#e34d59',
-                cursor: 'pointer', borderRadius: 4, userSelect: 'none',
+                padding: '8px 12px', fontSize: 14, color: 'var(--mac-fg)',
+                cursor: 'pointer', borderRadius: 9, userSelect: 'none',
               }}
             >
               {removingUsername === contextMenu.username ? '移除中...' : '移除人员'}

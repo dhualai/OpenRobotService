@@ -7,7 +7,7 @@
 
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
-import type { TicketStatusKey, ProjectStageKey, UrgencyKey } from '@/shared/constants/dashboard';
+import type { TicketStatusKey, UrgencyKey } from '@/shared/constants/dashboard';
 
 const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
 const tasksRequest = createRequest(API_CONFIG.TASKS.BASE_URL, 'Tasks');
@@ -93,31 +93,39 @@ export async function fetchTicketsByStatus(status: string, projectIds?: string[]
 }
 
 // ============================================================
-// 二、跨项目看板 —— 调度阶段汇总
+// 二、跨项目看板 —— 按月项目数量统计（新 UI 月柱状图，替换原按阶段统计口径）
 // ============================================================
-export interface ProjectStageSummary {
-  total: number;
-  by_stage: Partial<Record<ProjectStageKey, number>>;
+export interface ProjectMonthlyItem {
+  key: string;   // YYYY-MM
+  year: number;
+  month: number;
+  value: number;
 }
 
-const EMPTY_STAGE_SUMMARY: ProjectStageSummary = { total: 0, by_stage: {} };
+export interface ProjectMonthlySummary {
+  monthly: ProjectMonthlyItem[];
+  years: number[];
+}
+
+const EMPTY_MONTHLY_SUMMARY: ProjectMonthlySummary = { monthly: [], years: [] };
 
 /**
- * GET /api/admin/dashboard/projects/summary?project_ids=id1,id2
- * 期望响应：{ code: 0, data: ProjectStageSummary }
- * 数据来源（后期）：企业微信智能表格同步的调度项目数据，见 PRD 描述「后期接入企业微信的智能表格内容」。
- * 过渡期可由后端从现有 projects 表的 status 字段聚合返回（需先完成枚举扩充，见
- * shared/constants/dashboard.ts 顶部注释里列出的 4 个缺失阶段）。
- * projectIds 传入后仅统计这些项目的阶段分布。
+ * GET /api/admin/dashboard/projects/monthly?project_ids=id1,id2
+ * 期望响应：{ code: 0, data: { monthly: [{key, year, month, value}], years: [...] } }
+ * 数据来源：admin 模块 projects 表按业绩核算期 settlement_period 分组统计（手工填写，
+ * 常见 YYYYMM 如 202608 = 2026年8月，兼容 YYYY-MM；后端统一输出 YYYY-MM 的 key），
+ * 见 backend/app/modules/admin/api/dashboard.py get_project_monthly_summary。
+ * 口径与「本月新增」统计卡一致（核算期 = 当前月）；无核算期的项目不参与统计。
+ * projectIds 传入后仅统计这些项目。
  */
-export async function fetchProjectStageSummary(projectIds?: string[]): Promise<ProjectStageSummary> {
+export async function fetchProjectMonthly(projectIds?: string[]): Promise<ProjectMonthlySummary> {
   try {
     const query = buildProjectIdsQuery(projectIds);
-    const res = await adminRequest<{ code: number; data: ProjectStageSummary }>(`/dashboard/projects/summary${query}`);
+    const res = await adminRequest<{ code: number; data: ProjectMonthlySummary }>(`/dashboard/projects/monthly${query}`);
     if (res.code === 0 && res.data) return res.data;
-    return EMPTY_STAGE_SUMMARY;
+    return EMPTY_MONTHLY_SUMMARY;
   } catch {
-    return EMPTY_STAGE_SUMMARY;
+    return EMPTY_MONTHLY_SUMMARY;
   }
 }
 

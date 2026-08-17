@@ -1,9 +1,9 @@
 // 项目管理（二级页面）—— 「项目导入」「项目授权」两部分
 // ProjectImport: 项目增删改查
 // 项目授权区：项目选择器 + ProjectAuth 授权记录 + ProjectPeople 人员关联
-import { useEffect, useState, useRef, type ReactNode } from 'react';
-import { Loading, Toast, Input, Popup, Button } from 'tdesign-mobile-react';
-import { CloseCircleFilledIcon } from 'tdesign-icons-react';
+// 样式参考 macaron projects.auth 页：surface-card 折叠区 + 嵌套折叠区 + 弹层项目选择。
+import { useEffect, useState, type ReactNode } from 'react';
+import { Loading, Toast, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -11,25 +11,34 @@ import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
 import ProjectImport from './ProjectImport';
 import ProjectAuth from './ProjectAuth';
 import ProjectPeople from './ProjectPeople';
+import {
+  MacChevronDown, MacChevronRight, MacSearch, MacCheck,
+  MacFolderClosed, MacWallet, MacKeyRound, MacUsers,
+} from '@/shared/components/macaronIcons';
 
 interface Project { id?: string; project_code?: string; name: string; }
 
-// 可折叠区域：点击标题切换展开/收起，默认展开
-const CollapsibleSection = ({ icon, title, open, onToggle, children }: { icon: string; title: string; open: boolean; onToggle: () => void; children: ReactNode }) => (
-  <div style={{ marginTop: 16 }}>
-    <div
-      onClick={onToggle}
-      style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '12px 14px', background: '#fff', borderRadius: 8,
-        boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
-        fontWeight: 600, fontSize: 15,
-      }}
-    >
-      <span>{icon} {title}</span>
-      <span style={{ color: '#999', display: 'inline-block', transition: 'transform 0.2s', transform: open ? 'rotate(90deg)' : 'none' }}>›</span>
+// 可折叠区域：点击标题切换展开/收起（参考 macaron CollapsibleSection：
+// card/nested 两变体 + grid-template-rows 高度过渡动画）
+const CollapsibleSection = ({ icon, title, variant = 'card', open, onToggle, children }: {
+  icon: ReactNode;
+  title: string;
+  variant?: 'card' | 'nested';
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) => (
+  <div className={`mac-collapsible ${variant === 'card' ? 'mac-collapsible--card' : 'mac-collapsible--nested'} ${open ? 'is-open' : ''}`}>
+    <button type="button" className="mac-collapsible__header" onClick={onToggle}>
+      <span className="mac-collapsible__icon">{icon}</span>
+      <span className="mac-collapsible__title">{title}</span>
+      <span className="mac-collapsible__chevron"><MacChevronDown size={16} /></span>
+    </button>
+    <div className="mac-collapsible__bodywrap">
+      <div className="mac-collapsible__bodyinner">
+        <div className="mac-collapsible__body">{children}</div>
+      </div>
     </div>
-    {open && <div style={{ paddingTop: 12 }}>{children}</div>}
   </div>
 );
 
@@ -44,8 +53,6 @@ export default function ProjectManage() {
   const [projectSearch, setProjectSearch] = useState('');
   const [projectLoading, setProjectLoading] = useState(true);
   const [projectPickerVisible, setProjectPickerVisible] = useState(false);
-  // 项目选择搜索框 ref：清空后保持焦点，方便继续输入（tdesign Input ref 暴露 focus/blur）
-  const searchInputRef = useRef<{ focus: () => void; blur: () => void } | null>(null);
 
   // 两个区域折叠状态（默认展开）
   const [sectionImportOpen, setSectionImportOpen] = useState(true);
@@ -112,135 +119,113 @@ export default function ProjectManage() {
   };
 
   return (
-    <div style={{ padding: '16px 16px 24px' }}>
+    <div className="mac-page" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {/* 可折叠区域：项目导入 */}
-      <CollapsibleSection icon="📁" title="项目导入" open={sectionImportOpen} onToggle={() => setSectionImportOpen((v) => !v)}>
+      <CollapsibleSection icon={<MacFolderClosed size={16} />} title="项目导入" open={sectionImportOpen} onToggle={() => setSectionImportOpen((v) => !v)}>
         <ProjectImport />
       </CollapsibleSection>
 
       {/* 可折叠区域：项目授权（含项目选择器 + 授权记录 + 人员关联） */}
-      <CollapsibleSection icon="🔐" title="项目授权" open={sectionAuthOpen} onToggle={() => setSectionAuthOpen((v) => !v)}>
+      <CollapsibleSection icon={<MacWallet size={16} />} title="项目授权" open={sectionAuthOpen} onToggle={() => setSectionAuthOpen((v) => !v)}>
         {/* 项目选择器（已从页面顶部下移至此） */}
-        <div style={{ padding: '4px 0 12px' }}>
+        <div style={{ paddingBottom: 12 }}>
           {projectLoading ? <Loading text="加载项目..." /> : (
-            <div
+            <button
+              type="button"
+              className="mac-selector mac-selector--soft"
               onClick={() => setProjectPickerVisible(true)}
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                background: '#fff', borderRadius: 8, padding: '12px 14px',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
-              }}
             >
-              <div>
+              <span className="mac-selector__body">
                 {selectedProject ? (
                   <>
-                    <div style={{ fontWeight: 500 }}>{selectedProject.name}</div>
-                    {selectedProject.project_code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{selectedProject.project_code}</div>}
+                    <span className="mac-selector__name">{selectedProject.name}</span>
+                    {selectedProject.project_code && (
+                      <span className="mac-selector__meta">项目代码：{selectedProject.project_code}</span>
+                    )}
                   </>
                 ) : (
-                  <span style={{ color: '#bbb', fontSize: 14 }}>请选择项目</span>
+                  <span className="mac-selector__placeholder">请选择项目</span>
                 )}
-              </div>
-              <span style={{ color: '#999' }}>›</span>
-            </div>
+              </span>
+              <span className="mac-selector__chevron"><MacChevronRight size={16} /></span>
+            </button>
           )}
-
-          <Popup visible={projectPickerVisible} onClose={() => setProjectPickerVisible(false)} placement="bottom" showOverlay>
-            <div style={{ padding: 20, maxHeight: '70vh', overflow: 'auto' }}>
-              <h4 style={{ marginBottom: 12 }}>选择项目</h4>
-              <Input
-                ref={searchInputRef}
-                value={projectSearch}
-                onChange={(v) => setProjectSearch(String(v))}
-                placeholder="输入项目名称关键词模糊查找"
-                // 不用内置 clearable：tdesign-mobile 的清除图标只绑 onTouchEnd（移动端事件），
-                // 电脑端鼠标点击不触发；改用 suffix 自定义 ×，绑定 onClick 且带弹出/按压动画。
-                suffix={
-                  projectSearch ? (
-                    <span
-                      className="project-picker-clear"
-                      role="button"
-                      aria-label="清空搜索关键词"
-                      onClick={() => {
-                        setProjectSearch('');
-                        searchInputRef.current?.focus();
-                      }}
-                    >
-                      <CloseCircleFilledIcon />
-                    </span>
-                  ) : undefined
-                }
-                style={{ marginBottom: 12 }}
-              />
-              {filteredProjects.map((p) => (
-                <div
-                  key={p.id || p.name}
-                  onClick={() => handleProjectSelect(p)}
-                  style={{
-                    background: selectedProject?.name === p.name ? '#e8f2ff' : '#fff',
-                    borderRadius: 8,
-                    padding: '12px 14px',
-                    marginBottom: 8,
-                    cursor: 'pointer',
-                    border: selectedProject?.name === p.name ? '1px solid #0052d9' : '1px solid transparent',
-                  }}
-                >
-                  <div style={{ fontWeight: 500 }}>{p.name}</div>
-                  {p.project_code && <div style={{ fontSize: 12, color: '#999' }}>项目代码：{p.project_code}</div>}
-                </div>
-              ))}
-              {filteredProjects.length === 0 && (
-                <div style={{ textAlign: 'center', padding: 30, color: '#999' }}>未找到匹配的项目</div>
-              )}
-            </div>
-          </Popup>
         </div>
 
-        {/* 两个子区域整体左缩进，体现层级 */}
-        <div style={{ paddingLeft: 12 }}>
-          <CollapsibleSection icon="🔑" title="项目licences授权" open={subLicensesOpen} onToggle={() => setSubLicensesOpen((v) => !v)}>
-            <ProjectAuth selectedProject={selectedProject} />
-          </CollapsibleSection>
+        <CollapsibleSection variant="nested" icon={<MacKeyRound size={16} />} title="项目licences授权" open={subLicensesOpen} onToggle={() => setSubLicensesOpen((v) => !v)}>
+          <ProjectAuth selectedProject={selectedProject} />
+        </CollapsibleSection>
 
-          <CollapsibleSection icon="👥" title="项目人员授权" open={subPeopleOpen} onToggle={() => setSubPeopleOpen((v) => !v)}>
-            <ProjectPeople selectedProject={selectedProject} />
-          </CollapsibleSection>
+        <CollapsibleSection variant="nested" icon={<MacUsers size={16} />} title="项目人员授权" open={subPeopleOpen} onToggle={() => setSubPeopleOpen((v) => !v)}>
+          <ProjectPeople selectedProject={selectedProject} />
+        </CollapsibleSection>
 
-          {/* 导出按钮组 */}
-          <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <Button
-              theme="primary"
-              variant="outline"
-              block
-              loading={exportLoading === 'license'}
-              disabled={!selectedProject || exportLoading !== null}
-              onClick={() => handleExport('license')}
-            >
-              导出licence授权
-            </Button>
-            <Button
-              theme="primary"
-              variant="outline"
-              block
-              loading={exportLoading === 'users'}
-              disabled={!selectedProject || exportLoading !== null}
-              onClick={() => handleExport('users')}
-            >
-              导出人员授权
-            </Button>
-            <Button
-              theme="primary"
-              block
-              loading={exportLoading === 'all'}
-              disabled={!selectedProject || exportLoading !== null}
-              onClick={() => handleExport('all')}
-            >
-              导出完整授权
-            </Button>
+        {/* 导出按钮组 */}
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8, borderTop: '1px solid rgba(232,234,234,0.6)', paddingTop: 12 }}>
+          <button
+            type="button"
+            className="mac-btn mac-btn--outline mac-btn--block"
+            disabled={!selectedProject || exportLoading !== null}
+            onClick={() => handleExport('license')}
+          >
+            {exportLoading === 'license' ? '导出中...' : '导出licence授权'}
+          </button>
+          <button
+            type="button"
+            className="mac-btn mac-btn--outline mac-btn--block"
+            disabled={!selectedProject || exportLoading !== null}
+            onClick={() => handleExport('users')}
+          >
+            {exportLoading === 'users' ? '导出中...' : '导出人员授权'}
+          </button>
+          <button
+            type="button"
+            className="mac-btn mac-btn--primary mac-btn--block"
+            disabled={!selectedProject || exportLoading !== null}
+            onClick={() => handleExport('all')}
+          >
+            {exportLoading === 'all' ? '导出中...' : '导出完整授权'}
+          </button>
+        </div>
+      </CollapsibleSection>
+
+      {/* 项目选择弹层 */}
+      <Popup visible={projectPickerVisible} onClose={() => setProjectPickerVisible(false)} placement="bottom" showOverlay>
+        <div className="mac-sheet" style={{ maxHeight: '70vh', overflow: 'auto' }}>
+          <h4 className="mac-sheet__title">选择项目</h4>
+          <div className="mac-search" style={{ marginBottom: 12 }}>
+            <MacSearch size={16} />
+            <input
+              className="mac-search__input"
+              value={projectSearch}
+              onChange={(e) => setProjectSearch(e.target.value)}
+              placeholder="输入项目名称关键词模糊查找"
+            />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {filteredProjects.map((p) => {
+              const active = selectedProject?.name === p.name;
+              return (
+                <button
+                  key={p.id || p.name}
+                  type="button"
+                  className={`mac-pick-item ${active ? 'is-active' : ''}`}
+                  onClick={() => handleProjectSelect(p)}
+                >
+                  <span className="mac-pick-item__name">{p.name}</span>
+                  {p.project_code && <span className="mac-pick-item__code">#{p.project_code}</span>}
+                  {active && (
+                    <span className="mac-pick-item__check"><MacCheck size={16} /></span>
+                  )}
+                </button>
+              );
+            })}
+            {filteredProjects.length === 0 && (
+              <div className="mac-empty">未找到匹配的项目</div>
+            )}
           </div>
         </div>
-        
-      </CollapsibleSection>
+      </Popup>
     </div>
   );
 }

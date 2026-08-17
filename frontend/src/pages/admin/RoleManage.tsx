@@ -1,9 +1,13 @@
+// 角色管理 —— 系统/项目角色列表、角色权限绑定查看与编辑、新建/删除角色。
+// 样式参考 macaron roles 页：大号新建按钮 + 蓝条分组标题 + surface-card 角色卡
+// （蓝软边权限芯片 + "+N 更多"展开）+ 弹层表单。
+// 交互保留：长按卡片弹出删除菜单、点击卡片进入编辑。
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Button, Toast, Loading, Dialog, Popup, Form, FormItem, Checkbox } from 'tdesign-mobile-react';
-import ClearableInput from '@/shared/components/ClearableInput';
+import { Toast, Loading, Dialog, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import { MacPlus, MacCheck } from '@/shared/components/macaronIcons';
 
 interface Role {
   id: string;
@@ -30,6 +34,11 @@ interface ContextMenuState {
   role: Role | null;
 }
 
+/** 卡片上可见的权限芯片数，超出折叠为「+N 更多」（对照原型 VISIBLE=6） */
+const VISIBLE_PERMS = 6;
+
+const SYSTEM_ROLE_NAMES = new Set(['开发者', '超级管理员', '用户']);
+
 export default function RoleManage() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,6 +61,8 @@ export default function RoleManage() {
     y: 0,
     role: null,
   });
+  // 展开更多权限的卡片集合（对照原型「+N 更多/收起」交互）
+  const [expandedRoleIds, setExpandedRoleIds] = useState<Set<string>>(new Set());
 
   const request = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -316,22 +327,24 @@ export default function RoleManage() {
     }));
   };
 
-  const getPermissionColor = (resourceType: string): string => {
-    const colorMap: Record<string, string> = {
-      base: '#0052d9',
-      user: '#2ba471',
-      role: '#ff7d00',
-      project: '#9b5cff',
-      permission: '#e34d59',
-      indicators: '#00a0e9',
-    };
-    return colorMap[resourceType] || '#0052d9';
+  const toggleExpanded = (roleId: string) => {
+    setExpandedRoleIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(roleId)) next.delete(roleId);
+      else next.add(roleId);
+      return next;
+    });
   };
 
   if (loading) return <Loading text="加载角色列表..." />;
 
   const renderRoleCard = (role: Role) => {
     const permDetails = role._permDetails;
+    const expanded = expandedRoleIds.has(role.id);
+    const shown = permDetails && permDetails.length > 0
+      ? (expanded ? permDetails : permDetails.slice(0, VISIBLE_PERMS))
+      : [];
+    const rest = (permDetails?.length ?? 0) - shown.length;
 
     return (
       <div
@@ -340,97 +353,84 @@ export default function RoleManage() {
           if (el) cardRefs.current.set(role.id, el);
           else cardRefs.current.delete(role.id);
         }}
+        className="mac-role-card"
         onPointerDown={(e) => handleCardPointerDown(e, role)}
         onPointerMove={handleCardPointerMove}
         onPointerUp={handleCardPointerUp}
         onPointerLeave={handleCardPointerUp}
         onPointerCancel={handleCardPointerUp}
         onClick={() => handleCardClick(role)}
-        style={{
-          background: '#fff',
-          borderRadius: 8,
-          padding: 14,
-          marginBottom: 10,
-          boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-          cursor: 'pointer',
-          transition: 'box-shadow 0.2s',
-          userSelect: 'none',
-          WebkitUserSelect: 'none',
-          WebkitTouchCallout: 'none',
-        }}
         onMouseEnter={(e) => {
           (e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 12px rgba(0,0,0,0.12)';
         }}
         onMouseLeave={(e) => {
-          (e.currentTarget as HTMLDivElement).style.boxShadow = '0 1px 3px rgba(0,0,0,0.06)';
+          (e.currentTarget as HTMLDivElement).style.boxShadow = '';
         }}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 500, marginBottom: 4 }}>{role.name}</div>
-            {role.description && (
-              <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>{role.description}</div>
-            )}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-              {permDetails && permDetails.length > 0 ? (
-                <>
-                  {permDetails.slice(0, 6).map((p) => (
-                    <span
-                      key={p.id}
-                      style={{
-                        fontSize: 11,
-                        padding: '2px 8px',
-                        borderRadius: 4,
-                        background: `${getPermissionColor(p.resource_type)}15`,
-                        color: getPermissionColor(p.resource_type),
-                        border: `1px solid ${getPermissionColor(p.resource_type)}30`,
-                      }}
-                    >
-                      {p.name}
-                    </span>
-                  ))}
-                  {permDetails.length > 6 && (
-                    <span
-                      style={{
-                        fontSize: 11,
-                        padding: '2px 8px',
-                        color: '#999',
-                      }}
-                    >
-                      +{permDetails.length - 6} 更多
-                    </span>
-                  )}
-                </>
-              ) : (
-                <span style={{ fontSize: 11, color: '#bbb' }}>暂无权限</span>
-              )}
-            </div>
-          </div>
+        <div className="mac-role-card__title">{role.name}</div>
+        {role.description && (
+          <div className="mac-role-card__desc">{role.description}</div>
+        )}
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
+          {permDetails && permDetails.length > 0 ? (
+            <>
+              {shown.map((p) => (
+                <span key={p.id} className="mac-chip mac-chip--perm">
+                  {p.name}
+                </span>
+              ))}
+              {rest > 0 ? (
+                <button
+                  type="button"
+                  className="mac-perm-more"
+                  onClick={(e) => { e.stopPropagation(); toggleExpanded(role.id); }}
+                >
+                  +{rest} 更多
+                </button>
+              ) : permDetails.length > VISIBLE_PERMS ? (
+                <button
+                  type="button"
+                  className="mac-perm-more"
+                  onClick={(e) => { e.stopPropagation(); toggleExpanded(role.id); }}
+                >
+                  收起
+                </button>
+              ) : null}
+            </>
+          ) : (
+            <span style={{ fontSize: 11, color: 'var(--mac-muted-fg)' }}>暂无权限</span>
+          )}
         </div>
       </div>
     );
   };
 
-  const SYSTEM_ROLE_NAMES = new Set(['开发者', '超级管理员', '用户']);
-
   const systemRoles = roles.filter((r) => r.role_type === 'system' || SYSTEM_ROLE_NAMES.has(r.name));
   const projectRoles = roles.filter((r) => r.role_type === 'project' && !SYSTEM_ROLE_NAMES.has(r.name));
 
   return (
-    <div style={{ padding: 16, position: 'relative' }}>
-      <Button theme="primary" block style={{ marginBottom: 12 }} onClick={openCreate}>
+    <div className="mac-page">
+      <button type="button" className="mac-btn mac-btn--primary mac-btn--lg mac-btn--block" onClick={openCreate}>
+        <MacPlus size={16} />
         新建角色
-      </Button>
-      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, color: '#333' }}>系统角色</div>
+      </button>
+
+      <div className="mac-section-title" style={{ marginTop: 20 }}>
+        <span className="mac-section-title__bar" />
+        <h2 className="mac-section-title__text">系统角色</h2>
+      </div>
       {systemRoles.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: 20, color: '#999', fontSize: 13 }}>暂无系统角色</div>
+        <div className="mac-empty">暂无系统角色</div>
       ) : (
         systemRoles.map(renderRoleCard)
       )}
 
-      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10, marginTop: 20, color: '#333' }}>项目角色</div>
+      <div className="mac-section-title">
+        <span className="mac-section-title__bar" />
+        <h2 className="mac-section-title__text">项目角色</h2>
+      </div>
       {projectRoles.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: 20, color: '#999', fontSize: 13 }}>暂无项目角色</div>
+        <div className="mac-empty">暂无项目角色</div>
       ) : (
         projectRoles.map(renderRoleCard)
       )}
@@ -447,7 +447,7 @@ export default function RoleManage() {
             top: contextMenu.y,
             zIndex: 9999,
             background: '#fff',
-            borderRadius: 8,
+            borderRadius: 13,
             boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
             overflow: 'hidden',
             minWidth: 100,
@@ -457,14 +457,14 @@ export default function RoleManage() {
             style={{
               padding: '12px 16px',
               fontSize: 14,
-              color: '#e34d59',
+              color: 'var(--mac-fg)',
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
               gap: 6,
             }}
             onMouseEnter={(e) => {
-              (e.currentTarget as HTMLDivElement).style.background = '#fef0f0';
+              (e.currentTarget as HTMLDivElement).style.background = 'var(--mac-secondary)';
             }}
             onMouseLeave={(e) => {
               (e.currentTarget as HTMLDivElement).style.background = 'transparent';
@@ -481,98 +481,99 @@ export default function RoleManage() {
         placement="bottom"
         showOverlay
       >
-        <div style={{ padding: 20, maxHeight: '80vh', overflow: 'auto' }}>
-          <h4 style={{ marginBottom: 16 }}>
+        <div className="mac-sheet" style={{ maxHeight: '80vh', overflow: 'auto' }}>
+          <h4 className="mac-sheet__title">
             {editingRoleId ? '编辑角色' : '新建角色'}
           </h4>
-          <Form onSubmit={handleSaveRole}>
-            <FormItem label="角色名称">
-              <ClearableInput
+
+          <div className="mac-field">
+            <span className="mac-field__label">角色名称</span>
+            <div className="mac-field__content">
+              <input
+                className="mac-input"
                 value={editForm.name}
-                onChange={(v) => setEditForm((p) => ({ ...p, name: String(v) }))}
+                onChange={(e) => setEditForm((p) => ({ ...p, name: e.target.value }))}
                 placeholder="如 admin, editor"
               />
-            </FormItem>
+            </div>
+          </div>
 
-            <FormItem label="角色类型">
-              <div style={{ display: 'flex', gap: 8 }}>
+          <div className="mac-field">
+            <span className="mac-field__label">角色类型</span>
+            <div className="mac-field__content">
+              <div className="mac-role-type">
                 {(['project', 'system'] as const).map((t) => (
-                  <div
+                  <button
                     key={t}
+                    type="button"
+                    className={editForm.role_type === t ? 'mac-btn mac-btn--primary' : 'mac-btn mac-btn--blue-outline'}
                     onClick={() => setEditForm((p) => ({ ...p, role_type: t }))}
-                    style={{
-                      flex: 1, textAlign: 'center', padding: '8px 0', borderRadius: 6, cursor: 'pointer',
-                      fontSize: 13,
-                      background: editForm.role_type === t ? '#0052d9' : '#f5f5f5',
-                      color: editForm.role_type === t ? '#fff' : '#666',
-                    }}
                   >
                     {t === 'project' ? '项目角色' : '系统角色'}
-                  </div>
+                  </button>
                 ))}
               </div>
-            </FormItem>
+            </div>
+          </div>
 
-            {editingRoleId && (
-              <FormItem label="权限配置">
-                <div style={{ maxHeight: 300, overflow: 'auto', border: '1px solid #eee', borderRadius: 6, padding: '0 12px' }}>
+          {editingRoleId && (
+            <div className="mac-field" style={{ borderBottom: 'none' }}>
+              <span className="mac-field__label">权限配置</span>
+              <div className="mac-field__content">
+                <div className="mac-perm-list">
                   {permLoading ? (
                     <Loading text="加载权限..." />
                   ) : allPermissions.length === 0 ? (
-                    <div style={{ padding: 16, color: '#999', textAlign: 'center' }}>
+                    <div style={{ padding: 16, color: 'var(--mac-muted-fg)', textAlign: 'center' }}>
                       暂无可配置的权限
                     </div>
                   ) : (
-                    allPermissions.map((perm) => (
-                      <div
-                        key={perm.id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 10,
-                          padding: '10px 0',
-                          borderBottom: '1px solid #f5f5f5',
-                        }}
-                        onClick={() => togglePerm(perm.id)}
-                      >
-                        <Checkbox
-                          checked={editForm.permissions.includes(perm.id)}
-                        />
-                        <div>
-                          <div style={{ fontSize: 14, fontWeight: 500 }}>
-                            {perm.name}
-                          </div>
-                          <div style={{ fontSize: 12, color: '#999' }}>
-                            {perm.resource_type} · {perm.action}
-                          </div>
-                        </div>
-                      </div>
-                    ))
+                    allPermissions.map((perm) => {
+                      const checked = editForm.permissions.includes(perm.id);
+                      return (
+                        <button
+                          key={perm.id}
+                          type="button"
+                          className={`mac-choice ${checked ? 'is-active' : ''}`}
+                          onClick={() => togglePerm(perm.id)}
+                        >
+                          <span className="mac-choice__dot">
+                            {checked && <MacCheck size={12} />}
+                          </span>
+                          <span style={{ flex: 1, minWidth: 0 }}>
+                            <span style={{ display: 'block', fontSize: 13.5, color: 'var(--mac-fg)' }}>
+                              {perm.name}
+                            </span>
+                            <span style={{ display: 'block', fontSize: 12, color: 'var(--mac-muted-fg)' }}>
+                              {perm.resource_type} · {perm.action}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })
                   )}
                 </div>
-              </FormItem>
-            )}
-
-            <FormItem>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <Button
-                  theme="default"
-                  block
-                  onClick={() => setEditVisible(false)}
-                >
-                  取消
-                </Button>
-                <Button
-                  theme="primary"
-                  block
-                  type="submit"
-                  loading={submitting}
-                >
-                  保存
-                </Button>
               </div>
-            </FormItem>
-          </Form>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+            <button
+              type="button"
+              className="mac-btn mac-btn--outline mac-btn--block"
+              onClick={() => setEditVisible(false)}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="mac-btn mac-btn--primary mac-btn--block"
+              disabled={submitting}
+              onClick={handleSaveRole}
+            >
+              {submitting ? '保存中...' : '保存'}
+            </button>
+          </div>
         </div>
       </Popup>
     </div>
