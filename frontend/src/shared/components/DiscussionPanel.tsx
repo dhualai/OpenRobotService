@@ -14,6 +14,7 @@ import { useAuthStore } from '@/stores/auth';
 import API_CONFIG from '@/config/api';
 import { avatarUrl } from '@/api/profile';
 import { parseUtcDate } from '@/shared/utils/url';
+import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import { useTaskCommentsWS, type OnlineMember } from '@/shared/hooks/useTaskCommentsWS';
 import type { AiProgressTodo } from '@/api/ws';
 
@@ -227,6 +228,16 @@ export default function DiscussionPanel({
   const [commentText, setCommentText] = useState('');
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
+  // 待发送图片的预览 objectURL（与 pendingFiles 一一对应，非图片为空串），
+  // 让用户一眼区分多张同名图片（如剪贴板默认 image.png）；依赖变化时自动 revoke 旧 URL。
+  const previewUrls = useMemo(
+    () => pendingFiles.map((f) => (f.type.startsWith('image/') ? URL.createObjectURL(f) : '')),
+    [pendingFiles],
+  );
+  useEffect(() => {
+    const urls = previewUrls.filter(Boolean);
+    if (urls.length) return () => urls.forEach((u) => URL.revokeObjectURL(u));
+  }, [previewUrls]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
@@ -328,7 +339,10 @@ export default function DiscussionPanel({
 
   const handleSelectFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    if (files.length) setPendingFiles((prev) => [...prev, ...files]);
+    if (files.length) {
+      // 与已有待发送文件合并后去重重命名，预览区与上传均用唯一文件名
+      setPendingFiles((prev) => dedupeFileNames([...prev, ...files]));
+    }
     e.target.value = '';
   };
   const removeFile = (idx: number) => setPendingFiles((prev) => prev.filter((_, i) => i !== idx));
@@ -546,7 +560,8 @@ export default function DiscussionPanel({
     }
     if (pastedFiles.length > 0) {
       e.preventDefault();
-      setPendingFiles((prev) => [...prev, ...pastedFiles]);
+      // 与已有待发送文件合并后去重重命名，避免多张同名图片（如剪贴板默认 image.png）在预览/上传时混淆
+      setPendingFiles((prev) => dedupeFileNames([...prev, ...pastedFiles]));
     }
   };
 
@@ -996,6 +1011,13 @@ export default function DiscussionPanel({
               <div className="detail-chat-files">
                 {pendingFiles.map((f, i) => (
                   <span key={i} className="detail-chat-file">
+                    {previewUrls[i] ? (
+                      <span className="detail-chat-file__thumb">
+                        <img src={previewUrls[i]} alt={f.name} />
+                      </span>
+                    ) : (
+                      <span className="detail-chat-file__icon">📄</span>
+                    )}
                     <span className="detail-chat-file__name">{f.name}</span>
                     <button type="button" onClick={() => removeFile(i)} aria-label="移除">×</button>
                   </span>
