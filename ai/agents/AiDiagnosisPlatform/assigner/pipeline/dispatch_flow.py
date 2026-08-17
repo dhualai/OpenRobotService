@@ -7,10 +7,7 @@
     【Step 0 提单人指定】(强信号"[指定处理人:X]" / LLM检测"转给张三" → 直接指派)
         │ (未指定)
         ▼
-    【Step 1 部门过滤】(关键词匹配 → 过滤非本部门候选人)
-        │
-        ▼
-    【Step 1.5 产品过滤】(工单归属产品 → 候选人必须负责该产品，硬过滤)
+    【Step 1 候选收紧】部门(R5/R2/R3) → 产品 → 模块，逐层缩小候选人池
         │
         ▼
     【Step 2 排除提单人】(常规派单不派给自己；提单人指定走 Step 0 不受影响)
@@ -41,8 +38,8 @@ from typing import Dict, List, Optional
 from ai.core.logging import get_logger
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.ranking.fallback_decision import FallbackDecision
-from ai.agents.AiDiagnosisPlatform.assigner.filtering.department_filter import DepartmentFilter
-from ai.agents.AiDiagnosisPlatform.assigner.filtering.product_filter import ProductFilter
+from ai.agents.AiDiagnosisPlatform.assigner.filtering.candidate_tightener import CandidateTightener
+from ai.agents.AiDiagnosisPlatform.assigner.filtering.routing_schemas import TightenResult
 from ai.agents.AiDiagnosisPlatform.assigner.ranking.llm_decision import LlmDecision
 from ai.agents.AiDiagnosisPlatform.assigner.recall.llm_recall import LlmRecall
 from ai.agents.AiDiagnosisPlatform.assigner.ranking.ranker import Ranker
@@ -66,8 +63,7 @@ logger = get_logger("ASSIGNER")
 class DispatchFlow:
     def __init__(self, config: Optional[AssignerConfig] = None):
         self._config = config or AssignerConfig()
-        self._dept_filter = DepartmentFilter(config=self._config)
-        self._product_filter = ProductFilter(config=self._config)
+        self._tightener = CandidateTightener(config=self._config)
         self._llm_recall = LlmRecall(config=self._config)
         self._semantic_recall = SemanticRecall(config=self._config)
         self._history_recall = HistoryRecall(config=self._config)      # L3-A：相似工单聚人
@@ -75,6 +71,12 @@ class DispatchFlow:
         self._ranker = Ranker(config=self._config)
         self._llm_decision = LlmDecision(config=self._config)
         self._fallback_decision = FallbackDecision(config=self._config)
+        self._last_tighten: Optional[TightenResult] = None
+
+    @property
+    def last_tighten(self) -> Optional[TightenResult]:
+        """最近一次派单的候选收紧结果（供 eval / debug）。"""
+        return self._last_tighten
 
     async def aassign(
         self,
@@ -126,22 +128,20 @@ class DispatchFlow:
                     f"（将加权 ×{self._config.contact_bonus:.1f} 并{'' if self._config.preferred_assignee_force_keep else '不'}强制保留）"
                 )
 
-        # ── Step 1: 部门过滤 ──
-        candidates = await self._dept_filter.filter(
+        # ── Step 1: 候选收紧（部门 → 产品 → 模块）──
+        tighten: TightenResult = await self._tightener.tighten(
             ticket=ticket_context, engineers=engineer_profiles,
-            project_name=ticket_context.project_name or "",
         )
+        self._last_tighten = tighten
+        candidates = tighten.candidates
         if not candidates:
-            logger.warning(f"{ltag} Step1 部门过滤后无候选人，回退全量")
+            logger.warning(f"{ltag} Step1 收紧后无候选人，回退全量")
             candidates = engineer_profiles
-        logger.info(f"{ltag} Step1 部门过滤 {len(engineer_profiles)}→{len(candidates)}人")
-
-        # ── Step 1.5: 产品级硬过滤（工单归属产品 → 候选人必须负责该产品）──
-        # 例：「摇人吧服务号」工单只派给 responsibility_modules 中含「摇人吧服务号」
-        # 产品的工程师；只负责「调度USP」的人即使功能模块同名也不跨界承接。
-        candidates = self._product_filter.filter(
-            ticket=ticket_context, engineers=candidates,
-            project_name=ticket_context.project_name or "",
+        logger.info(
+            f"{ltag} Step1 候选收紧 {tighten.before_count}→{tighten.after_count}人 | "
+            f"部门={tighten.dept.mode}({tighten.dept.primary_dept or '-'}) | "
+            f"产品={tighten.product.product or '-'} | "
+            f"模块={','.join(tighten.module.matched_categories[:3]) or '-'}"
         )
 
         # ── Step 2: 排除提单人（常规派单不派给自己；Step 0 指定自己不受影响）──
@@ -232,6 +232,7 @@ class DispatchFlow:
             recall_result, engineers=candidates,
             contact_assignee_id=contact_assignee_id,
             preferred_assignee_id=preferred_assignee_id,
+            dept_routing=tighten.dept,
         )
 
         # ── Step 5: 负载均衡（按在途工单数打折，避免单子集中在少数人）──

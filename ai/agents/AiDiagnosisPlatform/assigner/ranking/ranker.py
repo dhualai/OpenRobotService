@@ -1,10 +1,13 @@
-"""精排评分层：三路加权 + 职级折扣"""
+"""精排评分层：三路加权 + 职级折扣 + 部门 soft_prior"""
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.recall.recall_result import RecallResult
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile
+
+if TYPE_CHECKING:
+    from ai.agents.AiDiagnosisPlatform.assigner.filtering.routing_schemas import DeptRoutingResult
 
 
 class Ranker:
@@ -26,6 +29,7 @@ class Ranker:
         engineers: Optional[List[EngineerProfile]] = None,
         contact_assignee_id: Optional[str] = None,
         preferred_assignee_id: Optional[str] = None,
+        dept_routing: Optional["DeptRoutingResult"] = None,
     ) -> Dict[str, Dict[str, float]]:
         ids = set()
         ids.update(recall_result.llm_recall.keys())
@@ -41,6 +45,14 @@ class Ranker:
                 eng_map[e.id] = e
                 dept = e.department or ""
                 dept_people[dept] = dept_people.get(dept, 0) + 1
+
+        dept_boost = 1.0
+        primary_dept = ""
+        if dept_routing and dept_routing.mode == "soft_prior" and dept_routing.primary_dept:
+            routing_cfg = getattr(self._config, "department_routing", {}) or {}
+            thresholds = routing_cfg.get("thresholds") or {}
+            dept_boost = float(thresholds.get("dept_boost", 1.5))
+            primary_dept = dept_routing.primary_dept
 
         scores = {}
         for eid in ids:
@@ -65,6 +77,10 @@ class Ranker:
             is_preferred = bool(preferred_assignee_id and eid == preferred_assignee_id)
             contact_mul = self._contact_bonus if (is_contact or is_preferred) else 1.0
 
+            dept_mul = dept_boost if (
+                primary_dept and (eng_map.get(eid) or EngineerProfile(id=eid, name="")).department == primary_dept
+            ) else 1.0
+
             scores[eid] = {
                 "llm_score": llm, "semantic_score": sem,
                 "history_score": his,
@@ -72,6 +88,7 @@ class Ranker:
                 "level_multiplier": mul, "contact_assignee": is_contact,
                 "preferred_assignee": is_preferred,
                 "contact_multiplier": round(contact_mul, 3),
-                "total_score": round(raw * mul * contact_mul, 4),
+                "dept_multiplier": round(dept_mul, 3),
+                "total_score": round(raw * mul * contact_mul * dept_mul, 4),
             }
         return dict(sorted(scores.items(), key=lambda x: x[1]["total_score"], reverse=True))
