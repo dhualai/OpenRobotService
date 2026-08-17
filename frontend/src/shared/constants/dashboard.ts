@@ -21,14 +21,15 @@ export interface StatusMeta {
 }
 
 export const TICKET_STATUS_LIST: StatusMeta[] = [
-  // tone 对照 macaron 原型 ticketStatusSegments：处理中 blue-1 / 已关闭 blue-2 /
-  // 已解决 blue-3 / 已取消 blue-4 / 新建 blue-5；「暂停/挂起」为新增状态，取 blue-2。
-  { key: 'new', label: '新建', color: '#0052d9', tone: 'blue-5', backendReady: true },
-  { key: 'in_progress', label: '处理中', color: '#2ba471', tone: 'blue-1', backendReady: true },
-  { key: 'paused', label: '暂停/挂起', color: '#e37318', tone: 'blue-2', backendReady: true },
-  { key: 'resolved', label: '已解决', color: '#00a870', tone: 'blue-3', backendReady: true },
-  { key: 'closed', label: '已关闭', color: '#999999', tone: 'blue-2', backendReady: true },
-  { key: 'cancelled', label: '已取消', color: '#d54941', tone: 'blue-4', backendReady: true },
+  // 「新建」不参与工单状态监测统计（后端 get_ticket_summary 亦排除 new），仅监控五种状态；
+  // tone 用五状态专用蓝阶 status-1(深) → status-5(浅)，亮度等距拉开、相邻状态对比明显；
+  // 图例顺序由 Dashboard 的 STATUS_TONE_ORDER 控制：
+  // 处理中 status-1 / 暂停挂起 status-2 / 已关闭 status-3 / 已解决 status-4 / 已取消 status-5。
+  { key: 'in_progress', label: '处理中', color: '#2ba471', tone: 'status-1', backendReady: true },
+  { key: 'paused', label: '暂停/挂起', color: '#e37318', tone: 'status-2', backendReady: true },
+  { key: 'closed', label: '已关闭', color: '#999999', tone: 'status-3', backendReady: true },
+  { key: 'resolved', label: '已解决', color: '#00a870', tone: 'status-4', backendReady: true },
+  { key: 'cancelled', label: '已取消', color: '#d54941', tone: 'status-5', backendReady: true },
 ];
 
 export const TICKET_STATUS_MAP: Record<string, StatusMeta> =
