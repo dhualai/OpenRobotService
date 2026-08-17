@@ -28,6 +28,7 @@ import UserSelect from '@/shared/components/UserSelect';
 import SafeHtml from '@/shared/components/SafeHtml';
 import { useAuthStore } from '@/stores/auth';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
+import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
 import type { UserItem } from '@/api/users';
@@ -476,9 +477,10 @@ export default function TicketDetailPage() {
     const userMsg = text;
     setAskingAI(true);
     try {
-      // 上传附件
+      // 上传附件（同名文件自动改名，避免后端对象名重复覆盖）
       const tempId = tempIdRef.current;
-      for (const f of files) {
+      const uploads = dedupeFileNames(files);
+      for (const f of uploads) {
         await uploadCommentAttachment(f, tempId);
       }
       // 1. 先保存用户的 @U老师 消息到 task_comments
@@ -537,7 +539,9 @@ export default function TicketDetailPage() {
     try {
       const tempId = tempIdRef.current;
       // 先逐个上传附件（temp_id 关联，后端登记到 comment_attachment_map）
-      for (const f of files) {
+      // 同名文件自动改名，避免后端对象名重复覆盖
+      const uploads = dedupeFileNames(files);
+      for (const f of uploads) {
         await uploadCommentAttachment(f, tempId);
       }
       const newComment = await request<Comment>(`/${ticket.ticket_id}/comments`, {

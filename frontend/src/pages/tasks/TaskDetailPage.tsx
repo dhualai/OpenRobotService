@@ -23,6 +23,7 @@ import { formatDateTime, formatRawDateTime, parseUtcDate } from '@/shared/utils/
 import { fetchWithAuth } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
 import type { ProjectMember } from '@/api/projects';
+import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -892,9 +893,10 @@ export default function TaskDetailPage() {
     }
     setSubmittingComment(true);
     try {
-      // 上传附件
+      // 上传附件（同名文件自动改名，避免后端对象名重复覆盖）
       const tempId = generateTempId();
-      for (const f of files) {
+      const uploads = dedupeFileNames(files);
+      for (const f of uploads) {
         await uploadCommentAttachment(f, tempId);
       }
       const newComment = await request<Comment>(`/${detail.id}/comments`, {
@@ -938,9 +940,10 @@ export default function TaskDetailPage() {
     const userMsg = text;
     setAskingAI(true);
     try {
-      // 上传附件
+      // 上传附件（同名文件自动改名，避免后端对象名重复覆盖）
       const tempId = generateTempId();
-      for (const f of files) {
+      const uploads = dedupeFileNames(files);
+      for (const f of uploads) {
         await uploadCommentAttachment(f, tempId);
       }
       // 1. 先保存用户的 @U老师 消息到 task_comments
