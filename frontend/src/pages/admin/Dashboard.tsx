@@ -222,7 +222,12 @@ export default function Dashboard() {
             </button>
           </div>
 
-          <ProjectMonthBars data={monthlySummary?.monthly ?? []} years={monthlyYears} style={{ marginTop: 12 }} />
+          <ProjectMonthBars
+            data={monthlySummary?.monthly ?? []}
+            years={monthlyYears}
+            style={{ marginTop: 12 }}
+            onSelect={(key) => navigate(`/admin/project-progress?filter=month&period=${key}`)}
+          />
 
           <div className="mac-stat-row">
             <MacStat value={projects.length} label="项目总数" tone="blue-1" onClick={() => navigate('/admin/project-progress')} />

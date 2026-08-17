@@ -44,13 +44,15 @@ interface WecomProjectRecord {
 }
 
 
-// 与跨项目看板的四个统计数字（项目总数/本月新增项目数/风险项目数/缺少对接人项目数）对应的筛选类型
-type ProjectFilter = 'new' | 'risk' | 'no_contact';
+// 与跨项目看板的统计入口对应的筛选类型：
+// 项目总数/本月新增项目数/风险项目数/缺少对接人项目数 + 调度项目看板点击某月柱（month）
+type ProjectFilter = 'new' | 'risk' | 'no_contact' | 'month';
 
 const FILTER_LABELS: Record<ProjectFilter, string> = {
   new: '本月新增项目数',
   risk: '风险项目数',
   no_contact: '对接人缺省',
+  month: '指定核算期项目',
 };
 
 /** 项目时间进度：部署日期 → 最终交付日期的已过时间占比（0-100）。
@@ -68,6 +70,7 @@ export default function ProjectProgress() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const filter = (searchParams.get('filter') as ProjectFilter | null) || null;
+  const period = searchParams.get('period');
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [keyword, setKeyword] = useState('');
@@ -177,6 +180,9 @@ export default function ProjectProgress() {
     if (filter === 'new') {
       const ym = currentYearMonth();
       list = list.filter((p) => normalizeSettlementPeriod(p.settlement_period) === ym);
+    } else if (filter === 'month' && period) {
+      // 调度项目看板点击某月柱进入：按业绩核算期精确匹配该月（period 为 YYYY-MM）
+      list = list.filter((p) => normalizeSettlementPeriod(p.settlement_period) === period);
     } else if (filter === 'risk') {
       list = list.filter((p) => p.risks > 0);
     } else if (filter === 'no_contact') {
@@ -212,10 +218,10 @@ export default function ProjectProgress() {
         />
       </div>
 
-      {/* 筛选提示条：从跨项目看板某个统计数字点进来时显示，可点击返回全部项目 */}
+      {/* 筛选提示条：从跨项目看板某个统计数字/月份柱点进来时显示，可点击返回全部项目 */}
       {filter && (
         <div className="mac-filter-banner">
-          <span>当前筛选：<strong>{FILTER_LABELS[filter]}</strong>（{displayProjects.length}）</span>
+          <span>当前筛选：<strong>{filter === 'month' && period ? `${period} 核算期项目` : FILTER_LABELS[filter]}</strong>（{displayProjects.length}）</span>
           <button type="button" className="mac-filter-banner__back" onClick={() => setSearchParams({})}>
             查看全部
           </button>
