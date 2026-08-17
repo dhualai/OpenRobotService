@@ -4,7 +4,7 @@
 export interface TicketFilterCondition {
   field?: string;
   op?: string;
-  value?: string;
+  value?: string | number;
   or?: TicketFilterCondition[];
   and?: TicketFilterCondition[];
 }
