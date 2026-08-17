@@ -23,7 +23,12 @@ FRONTEND_STATUS_MAP: Dict[str, TaskStatus] = {
     "cancelled": TaskStatus.CANCELED,
 }
 
-OPEN_STATUSES = [TaskStatus.NEW, TaskStatus.IN_PROGRESS, TaskStatus.PENDING]
+# 仪表盘「工单状态监测」监控的五种状态（不含 new：新建工单不参与该看板的计数统计，
+# 与前端 TICKET_STATUS_LIST 保持一致；下钻接口 get_tickets_by_status 仍支持查询 new）
+MONITORED_STATUS_KEYS = ["in_progress", "paused", "resolved", "closed", "cancelled"]
+
+# 超时工单统计的口径：仅监控中的未完成状态（new 不计入）
+OPEN_STATUSES = [TaskStatus.IN_PROGRESS, TaskStatus.PENDING]
 
 
 class TaskDashboardService:
@@ -39,24 +44,22 @@ class TaskDashboardService:
                 "pending_count": 0,
                 "overdue_count": 0,
                 "resolved_rate": 0.0,
-                "by_status": {key: 0 for key in FRONTEND_STATUS_MAP},
+                "by_status": {key: 0 for key in MONITORED_STATUS_KEYS},
             }
 
         by_status: Dict[str, int] = {}
-        for key, status_enum in FRONTEND_STATUS_MAP.items():
+        for key in MONITORED_STATUS_KEYS:
+            status_enum = FRONTEND_STATUS_MAP[key]
             query = select(func.count(Task.id)).where(Task.status == status_enum)
             if project_ids is not None:
                 query = query.where(Task.project_id.in_(project_ids))
             result = await db.execute(query)
             by_status[key] = result.scalar() or 0
 
-        total_query = select(func.count(Task.id))
-        if project_ids is not None:
-            total_query = total_query.where(Task.project_id.in_(project_ids))
-        total_result = await db.execute(total_query)
-        total = total_result.scalar() or 0
+        # 总数与状态分布同口径：仅统计监控中的五种状态（不含 new）
+        total = sum(by_status.values())
 
-        pending_count = by_status["new"] + by_status["in_progress"] + by_status["paused"]
+        pending_count = by_status["in_progress"] + by_status["paused"]
 
         now = datetime.now()
         overdue_query = select(func.count(Task.id)).where(
