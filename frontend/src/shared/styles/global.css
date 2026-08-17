@@ -2378,6 +2378,15 @@ html, body, #root {
   background: var(--secondary);
   color: var(--muted-foreground);
 }
+/* 头像图片变体：有 avatar_resource_id 时用 <img> 替代首字母 span，object-fit 保证圆形裁剪 */
+.task-card2__avatar--img {
+  display: block;
+  object-fit: cover;
+}
+.task-card2__participant--img {
+  display: block;
+  object-fit: cover;
+}
 /* 元信息行：工单编号 · 项目 · 创建日期 */
 .task-card2__meta {
   display: flex;
@@ -3531,6 +3540,29 @@ html, body, #root {
 .mac-user-card__duty { display: flex; gap: 6px; margin-top: 8px; font-size: 11.5px; line-height: 1.6; color: var(--mac-muted-fg); }
 .mac-user-card__duty-icon { flex-shrink: 0; margin-top: 2px; color: var(--mac-blue-2); display: inline-flex; }
 .mac-user-card__actions { display: flex; gap: 8px; margin-left: 8px; flex-shrink: 0; }
+/* 用户卡片头像：图片 / 首字母回退 */
+.mac-user-card__avatar {
+  width: 40px; height: 40px; border-radius: 50%;
+  flex-shrink: 0; overflow: hidden;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+.mac-user-card__avatar--img { object-fit: cover; display: block; }
+.mac-user-card__avatar--initial {
+  background: var(--mac-blue-soft); color: var(--mac-blue-2);
+  font-size: 15px; font-weight: 600; line-height: 1;
+}
+.mac-detail-avatar {
+  width: 56px; height: 56px; border-radius: 50%;
+  flex-shrink: 0; overflow: hidden;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+.mac-detail-avatar--img { object-fit: cover; display: block; }
+.mac-detail-avatar--initial {
+  background: var(--mac-blue-soft); color: var(--mac-blue-2);
+  font-size: 20px; font-weight: 600; line-height: 1;
+}
 
 /* 编辑弹层字段行（原型 Field：右对齐灰标签 + 内容区） */
 .mac-field { display: flex; align-items: flex-start; gap: 16px; border-bottom: 1px solid rgba(232, 234, 234, 0.7); padding: 12px 0; }

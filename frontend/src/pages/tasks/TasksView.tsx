@@ -17,6 +17,7 @@ import { formatDateTime } from '@/shared/utils/url';
 // 相关性分类过滤条件：列表查询与分类角标计数共用（底部导航「待我处理」角标复用同一口径）
 import { buildRelevanceFilters, type TicketFilterCondition } from '@/shared/utils/ticketFilters';
 import { Search, ArrowRight, Calendar, SlidersHorizontal } from 'lucide-react';
+import { avatarUrl } from '@/api/profile';
 
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
@@ -26,6 +27,9 @@ interface Ticket {
   assigned_to?: string; assigned_to_name?: string;
   participants?: string[];
 }
+
+/** username / user_id → avatar_resource_id 的查找表；缺失时回退为首字母头像 */
+type AvatarMap = Map<string, number>;
 
 const pageSize = 20;
 
@@ -69,11 +73,14 @@ const buildFilterParams = (filter: {
 };
 
 // 马卡龙极简工单卡片：状态为唯一带色文字（蓝阶），优先级蓝阶色块，
-// 头像统一灰底白字，信息层级靠字号与字重区分（参考 macaron-minimal-ui 设计）。
-function TicketCard({ t, onOpen }: { t: Ticket; onOpen: (id: string) => void }) {
+// 头像统一灰底白字（无头像时）/ 圆形头像图片（有 avatar_resource_id 时），
+// 信息层级靠字号与字重区分（参考 macaron-minimal-ui 设计）。
+function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) => void; avatarMap?: AvatarMap }) {
   const creator = t.created_by_name || t.created_by || '-';
   const assignee = t.assigned_to_name || t.assigned_to || '-';
   const participants = (t.participants || []).filter(Boolean);
+  const creatorAvatarId = t.created_by ? avatarMap?.get(t.created_by) : undefined;
+  const assigneeAvatarId = t.assigned_to ? avatarMap?.get(t.assigned_to) : undefined;
   return (
     <div className="task-card2" onClick={() => onOpen(t.id)}>
       <div className="task-card2__head">
@@ -93,14 +100,32 @@ function TicketCard({ t, onOpen }: { t: Ticket; onOpen: (id: string) => void }) 
       {/* 人员流转：发起人 →（参与人）→ 处理人 */}
       <div className="task-card2__people">
         <div className="task-card2__person" title={`发起人：${creator}`}>
-          <span className="task-card2__avatar">{creator.slice(0, 1).toUpperCase()}</span>
+          {creatorAvatarId ? (
+            <img
+              className="task-card2__avatar task-card2__avatar--img"
+              src={avatarUrl(creatorAvatarId)}
+              alt={creator}
+            />
+          ) : (
+            <span className="task-card2__avatar">{creator.slice(0, 1).toUpperCase()}</span>
+          )}
           <span className="task-card2__person-name">{creator}</span>
         </div>
         {participants.length > 0 && (
           <span className="task-card2__participants" title={`参与人：${participants.join('、')}`}>
-            {participants.slice(0, 3).map((p, i) => (
-              <span key={`${p}-${i}`} className="task-card2__participant">{p.slice(0, 1).toUpperCase()}</span>
-            ))}
+            {participants.slice(0, 3).map((p, i) => {
+              const pid = avatarMap?.get(p);
+              return pid ? (
+                <img
+                  key={`${p}-${i}`}
+                  className="task-card2__participant task-card2__participant--img"
+                  src={avatarUrl(pid)}
+                  alt={p}
+                />
+              ) : (
+                <span key={`${p}-${i}`} className="task-card2__participant">{p.slice(0, 1).toUpperCase()}</span>
+              );
+            })}
             {participants.length > 3 && (
               <span className="task-card2__participant task-card2__participant--overflow">+{participants.length - 3}</span>
             )}
@@ -111,7 +136,15 @@ function TicketCard({ t, onOpen }: { t: Ticket; onOpen: (id: string) => void }) 
         </span>
         <div className="task-card2__person task-card2__person--assignee" title={`处理人：${assignee}`}>
           <span className="task-card2__person-name">{assignee}</span>
-          <span className="task-card2__avatar">{assignee.slice(0, 1).toUpperCase()}</span>
+          {assigneeAvatarId ? (
+            <img
+              className="task-card2__avatar task-card2__avatar--img task-card2__avatar--assignee"
+              src={avatarUrl(assigneeAvatarId)}
+              alt={assignee}
+            />
+          ) : (
+            <span className="task-card2__avatar task-card2__avatar--assignee">{assignee.slice(0, 1).toUpperCase()}</span>
+          )}
         </div>
       </div>
 
@@ -129,7 +162,7 @@ function TicketCard({ t, onOpen }: { t: Ticket; onOpen: (id: string) => void }) 
 }
 
 // 「待我处理」时间轴：按创建日期分组（新→旧），组内按紧急度排序，左侧日期列 + 竖向虚线。
-function TicketTimeline({ items, onOpen }: { items: Ticket[]; onOpen: (id: string) => void }) {
+function TicketTimeline({ items, onOpen, avatarMap }: { items: Ticket[]; onOpen: (id: string) => void; avatarMap?: AvatarMap }) {
   const groups = useMemo(() => {
     const map = new Map<string, Ticket[]>();
     for (const t of items) {
@@ -159,7 +192,7 @@ function TicketTimeline({ items, onOpen }: { items: Ticket[]; onOpen: (id: strin
           </div>
           <div className="task-timeline__line">
             {g.list.map((t) => (
-              <TicketCard key={t.id} t={t} onOpen={onOpen} />
+              <TicketCard key={t.id} t={t} onOpen={onOpen} avatarMap={avatarMap} />
             ))}
           </div>
         </div>
@@ -172,6 +205,7 @@ export default function TasksView() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
+  const adminRequest = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
 
   const {
     tasksRefreshKey, ticketDraft, consumeTicketDraft, refreshTasks,
@@ -198,6 +232,31 @@ export default function TasksView() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creatingTask, setCreatingTask] = useState(false);
   const [syncing, setSyncing] = useState(false);
+
+  // username / user_id → avatar_resource_id 查找表：用于工单卡片创建人/处理人头像渲染。
+  // 缺失权限（backend:user:base:read）或网络失败时静默回退为首字母头像。
+  const [avatarMap, setAvatarMap] = useState<AvatarMap>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await adminRequest<Array<{
+          username?: string; id?: string; avatar_resource_id?: number | null;
+        }>>('/users/?skip=0&limit=1000');
+        if (cancelled) return;
+        const m: AvatarMap = new Map();
+        for (const u of data || []) {
+          if (!u.avatar_resource_id) continue;
+          if (u.username) m.set(u.username, u.avatar_resource_id);
+          if (u.id) m.set(u.id, u.avatar_resource_id);
+        }
+        setAvatarMap(m);
+      } catch {
+        // 无权限或失败：保持首字母回退
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [adminRequest]);
   const [createForm, setCreateForm] = useState({
     title: '',
     description: '',
@@ -613,10 +672,10 @@ export default function TasksView() {
           {loading ? <Loading text="加载中…" /> : tickets.length === 0 ? (
             <div className="tasks-empty">暂无工单</div>
           ) : relevanceFilter === 'mine' ? (
-            <TicketTimeline items={tickets} onOpen={openDetail} />
+            <TicketTimeline items={tickets} onOpen={openDetail} avatarMap={avatarMap} />
           ) : (
             tickets.map((t) => (
-              <TicketCard key={t.id} t={t} onOpen={openDetail} />
+              <TicketCard key={t.id} t={t} onOpen={openDetail} avatarMap={avatarMap} />
             ))
           )}
           <Pagination current={page} total={total} pageSize={pageSize} onChange={setPage} />
