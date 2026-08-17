@@ -267,7 +267,15 @@ export default function TasksView() {
       const filters: TicketFilterCondition[] = buildRelevanceFilters(relevanceKey, username, projectIds);
 
       if (search) {
-        filters.push({ field: 'title', op: 'contains', value: search });
+        const keyword = search.trim();
+        const searchConditions: TicketFilterCondition[] = [
+          { field: 'title', op: 'contains', value: keyword },
+        ];
+        // 纯数字关键词按工单编号精确查找（卡片展示的 #编号），非数字仍走标题模糊搜索
+        if (/^\d+$/.test(keyword)) {
+          searchConditions.push({ field: 'id', op: 'eq', value: Number(keyword) });
+        }
+        filters.push({ or: searchConditions });
       }
       if (statusFilter !== 'all') {
         filters.push({ field: 'status', op: 'eq', value: statusFilter });
@@ -511,7 +519,7 @@ export default function TasksView() {
               <Search size={16} strokeWidth={2} />
               <input
                 className="tasks-search"
-                placeholder="搜索工单…"
+                placeholder="搜索工单（支持编号/标题）…"
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(1); }}
               />
