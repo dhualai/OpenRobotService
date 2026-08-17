@@ -4907,12 +4907,13 @@ html, body, #root {
   padding: 0;
   min-width: 36px;
 }
-/* 输入框（设计稿：h-10 rounded-full border bg-card px-4 12.5px，focus:border-primary） */
+/* 输入框（设计稿：h-10 rounded-full border bg-card px-4 12.5px，focus:border-primary）
+   注：圆角用固定值（--radius-md），避免 textarea 随内容增高时 999px 圆角的视觉圆角半径变化 */
 .detail-chat-input-field {
   flex: 1;
   padding: 9px 16px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   font-size: 12.5px;
   outline: none;
   resize: none;
