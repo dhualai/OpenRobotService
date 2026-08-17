@@ -9,6 +9,12 @@ const TONE_VARS: Record<string, string> = {
   'blue-4': 'var(--mac-blue-4)',
   'blue-5': 'var(--mac-blue-5)',
   'blue-soft': 'var(--mac-blue-soft)',
+  // 工单状态五色调：等距拉开亮度的专用蓝阶（见 global.css --mac-status-*）
+  'status-1': 'var(--mac-status-1)',
+  'status-2': 'var(--mac-status-2)',
+  'status-3': 'var(--mac-status-3)',
+  'status-4': 'var(--mac-status-4)',
+  'status-5': 'var(--mac-status-5)',
   gray: 'var(--mac-muted-fg)',
 };
 

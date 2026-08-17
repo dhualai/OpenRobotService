@@ -2212,6 +2212,13 @@ html, body, #root {
   --mac-blue-4: #93e0ff; /* 原型 blue-4: oklch(0.87 0.09 228) */
   --mac-blue-5: #c1f4ff;
   --mac-blue-soft: #dff8ff; /* 原型 blue-soft: oklch(0.965 0.03 226)，底部导航选中底色 */
+  /* 工单状态监测五状态专用蓝阶（同 hue/sat，亮度 28→87 五等分，深→浅），
+     与 blue-1..5 解耦，避免影响其他页面的蓝色阶语义 */
+  --mac-status-1: #155979;
+  --mac-status-2: #2088b9;
+  --mac-status-3: #46aede;
+  --mac-status-4: #86cae9;
+  --mac-status-5: #c6e6f5;
   --mac-shadow-soft: 0 1px 2px rgba(80, 90, 100, 0.04), 0 8px 24px rgba(80, 90, 100, 0.06);
 }
 .tasks-view {

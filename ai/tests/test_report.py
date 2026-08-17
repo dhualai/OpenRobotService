@@ -134,7 +134,7 @@ async def test_data_collection():
     end = datetime.combine(today, datetime.max.time())
     date_range_str = today.strftime("%Y-%m-%d")
 
-    collector = ReportDataCollector(project_code=None)
+    collector = ReportDataCollector(project_ids=None)
     try:
         data = collector.collect_all(start, end, date_range_str)
         print(f"[OK] 采集完成: {data.date_range}")
