@@ -4025,7 +4025,8 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  height: 168px;
+  height: 196px; /* 顶部预留 28px 给激活柱的数值气泡，label 分布区保持与原 168px 版一致 */
+  padding-top: 28px;
   padding-bottom: 24px;
   width: 24px;
   text-align: right;
@@ -4044,7 +4045,7 @@ html, body, #root {
 .mac-monthbars__track {
   display: flex;
   align-items: flex-end;
-  height: 168px;
+  height: 196px; /* 顶部 28px 空档保证数值气泡完整可见，不被滚动容器裁剪 */
   min-width: 100%;
   gap: 12px;
   padding-right: 4px;
@@ -4074,7 +4075,8 @@ html, body, #root {
 }
 .mac-monthbars__tooltip {
   position: absolute;
-  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
   white-space: nowrap;
   border-radius: 16px;
   background: var(--mac-fg);
@@ -4082,6 +4084,7 @@ html, body, #root {
   font-size: 10px;
   font-weight: 600;
   color: #fff;
+  /* bottom 由组件内联样式控制（柱高 + 8px），气泡始终贴着激活柱顶部、完整可见 */
 }
 .mac-monthbars__bar {
   width: 22px;
