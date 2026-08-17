@@ -1,28 +1,29 @@
-"""工单截止时间预警 + 逾期通知 DAG。
+"""工单截止时间预警 + 逾期通知 DAG（无状态版，无去重文件）。
 
-定期扫描处于 NEW / IN_PROGRESS / PENDING 状态的工单，按截止时间匹配规则发送通知：
+定期扫描处于 NEW / IN_PROGRESS / PENDING 状态的工单，按截止时间匹配规则发送通知。
+DAG 每整点执行，所有判断纯靠"当前时间"与"截止时间"的差值，无需持久化去重记录。
 
 规则 1 — 临期预警（未逾期，不区分优先级，每单预警两次）：
   - 第一次预警：距离截止时间 24~25 小时 → notify_type=9
   - 第二次预警：距离截止时间 60~120 分钟 → notify_type=9
-  - 去重：{ticket_id_window: deadline_at}，两个窗口各自独立去重，截止时间变更后重新通知
+  - 每个窗口宽 1 小时，DAG 每小时执行 1 次，天然每窗口最多命中 1 次，无需去重
 
-规则 2 — 逾期（now > deadline_at）：
-  - 逾期 < 24h：每日通知一次受理人 → notify_type=6（模板6：工单逾期提醒）
-  - 逾期 ≥ 24h：每日通知一次 受理人 + 受理人上级（user.supervisor_id）→ notify_type=6
-  - 去重：{ticket_id: date(YYYY-MM-DD)}，同一张工单同一天只通知一次
+规则 2 — 逾期（now >= deadline_at）：
+  - 逾期天数 = floor(逾期小时数 / 24)
+  - 逾期天数 = 0（0~24h）：通知受理人 → notify_type=6（模板6：工单逾期提醒）
+  - 逾期天数 ≥ 1（≥24h）：通知 受理人 + 受理人上级（user.supervisor_id）→ notify_type=6
+  - 触发时刻 = deadline_at 向上取整到整点（整点不变，非整点进位到下一整点）+ N天
+    DAG 在该整点执行时触发，每个逾期天只在 1 个整点触发，天然不重复，无需去重
+    例：deadline=17:00 → 17:00 触发；deadline=17:01 → 18:00 触发
 
 通知对象：
   - cuiban-notification 接口支持前端传 assigned_to 指定通知对象；逾期升级时额外查 supervisor
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
-from datetime import date as _date
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import requests
 from airflow.decorators import dag, task
@@ -31,9 +32,6 @@ from airflow.decorators import dag, task
 API_BASE_URL = os.getenv("ORS_API_BASE_URL", "http://127.0.0.1:8400")
 ADMIN_USERNAME = os.getenv("ORS_ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ORS_ADMIN_PASSWORD", "usp2026@EP")
-
-# 去重记录文件
-DEDUP_FILE = Path(os.getenv("ORS_DEDUP_FILE", "/data/apps/airflow/dags/notification_sent.json"))
 
 # 东八区
 TZ_SHANGHAI = timezone(timedelta(hours=8))
@@ -46,9 +44,6 @@ NORMAL_MAX_HOURS = 25
 URGENT_MIN_MINUTES = 60
 URGENT_MAX_MINUTES = 120
 
-# 逾期升级阈值（小时）
-OVERDUE_ESCALATE_HOURS = 24
-
 # 需要扫描的工单状态
 ACTIVE_STATUSES = "new,in_progress,pending"
 
@@ -57,34 +52,6 @@ logger = logging.getLogger(__name__)
 
 
 # ── 工具函数 ──────────────────────────────────────────
-def _load_dedup() -> dict:
-    """加载去重记录：
-    {
-      "warning": {ticket_id(str): deadline_iso(str)},   // 临期预警
-      "overdue": {ticket_id(str): date_str(YYYY-MM-DD)}  // 逾期每日
-    }
-    """
-    try:
-        if DEDUP_FILE.exists():
-            data = json.loads(DEDUP_FILE.read_text(encoding="utf-8"))
-            # 兼容旧版格式：若顶层直接是 warning 的数据则迁移
-            if "warning" not in data and "overdue" not in data:
-                return {"warning": data, "overdue": {}}
-            return data
-    except Exception as e:
-        logger.warning(f"加载去重记录失败，将视为空: {e}")
-    return {"warning": {}, "overdue": {}}
-
-
-def _save_dedup(record: dict) -> None:
-    """保存去重记录"""
-    try:
-        DEDUP_FILE.parent.mkdir(parents=True, exist_ok=True)
-        DEDUP_FILE.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-    except Exception as e:
-        logger.error(f"保存去重记录失败: {e}")
-
-
 def _parse_deadline(deadline_raw) -> datetime | None:
     """解析 API 返回的截止时间字符串为东八区 aware datetime"""
     if not deadline_raw:
@@ -121,18 +88,14 @@ def _get_user_supervisor(token: str, username: str) -> str | None:
 
 def _send_cuiban(token: str, ticket_id: int, notify_type: int, target_user: str | list[str] | None = None) -> bool:
     """调用 cuiban-notification 接口；target_user 为 None 时自动用工单处理人"""
-    payload: dict = {"ticket_id": ticket_id, "notify_type": notify_type}
-    if target_user:
-        if isinstance(target_user, list):
-            # 传列表时用 assigned_to 指定一个，其他人通过 to_admin 不支持，
-            # 这里改为逐个发（保证每个都能收到）
-            ok = True
-            for u in target_user:
-                if not _send_cuiban_single(token, ticket_id, notify_type, u):
-                    ok = False
-            return ok
-        return _send_cuiban_single(token, ticket_id, notify_type, target_user)
-    return _send_cuiban_single(token, ticket_id, notify_type, None)
+    if isinstance(target_user, list):
+        # 逐个发，保证每个都能收到
+        ok = True
+        for u in target_user:
+            if not _send_cuiban_single(token, ticket_id, notify_type, u):
+                ok = False
+        return ok
+    return _send_cuiban_single(token, ticket_id, notify_type, target_user)
 
 
 def _send_cuiban_single(token: str, ticket_id: int, notify_type: int, assigned_to: str | None) -> bool:
@@ -208,25 +171,20 @@ def ticket_deadline_notification_dag():
 
     @task
     def check_and_notify(token: str, tasks: list[dict]) -> dict:
-        """检查每条工单，分别处理临期预警 + 逾期升级"""
+        """检查每条工单，分别处理临期预警 + 逾期升级（无状态，无去重文件）"""
         now = datetime.now(TZ_SHANGHAI)
-        today_str = now.strftime("%Y-%m-%d")
-        dedup = _load_dedup()
-        warning_dedup: dict = dedup.setdefault("warning", {})
-        overdue_dedup: dict = dedup.setdefault("overdue", {})
+        # 当前整点（去掉分钟/秒），用于逾期触发判断
+        now_hour_floor = now.replace(minute=0, second=0, microsecond=0)
 
         stats = {
             "warning_sent": 0,
-            "warning_skipped_dedup": 0,
             "overdue_assignee": 0,
             "overdue_escalate": 0,
-            "overdue_skipped_dedup": 0,
             "skipped_no_deadline": 0,
         }
 
         for t in tasks:
             ticket_id = t.get("id")
-            priority = (t.get("priority") or "").lower()
             deadline_raw = t.get("deadline_at")
             assigned_to = t.get("assigned_to")
 
@@ -241,7 +199,8 @@ def ticket_deadline_notification_dag():
             minutes_to_deadline = (deadline - now).total_seconds() / 60
 
             # ──────── 1) 临期预警（未逾期，不区分优先级，每单预警两次） ────────
-            if minutes_to_deadline >= 0:
+            # 窗口宽 1 小时，DAG 每小时执行 1 次，每窗口天然最多命中 1 次，无需去重
+            if minutes_to_deadline > 0:
                 hours_to_deadline = minutes_to_deadline / 60
                 # 两个窗口：24~25h（第一次）、60~120min（第二次）
                 windows = [
@@ -251,46 +210,36 @@ def ticket_deadline_notification_dag():
                 for win_tag, in_window in windows:
                     if not in_window:
                         continue
-                    w_key = f"{ticket_id}_{win_tag}"
-                    if warning_dedup.get(w_key) == str(deadline_raw):
-                        stats["warning_skipped_dedup"] += 1
-                        continue
                     if _send_cuiban(token, ticket_id, 9):
-                        warning_dedup[w_key] = str(deadline_raw)
                         stats["warning_sent"] += 1
                         logger.info(
                             f"[预警-{win_tag}] 工单 {ticket_id} "
                             f"距截止 {minutes_to_deadline:.0f} 分钟，已通知"
                         )
 
-            # ──────── 2) 逾期（now > deadline） ────────
+            # ──────── 2) 逾期（now >= deadline，即 minutes_to_deadline <= 0） ────────
+            # 触发时刻 = deadline 向上取整到整点（整点不变，非整点进位到下一整点）+ N天
+            # DAG 在该整点执行时触发，每个逾期天只在 1 个整点触发，天然不重复
             else:
-                overdue_minutes = -minutes_to_deadline
-                overdue_hours = overdue_minutes / 60
+                overdue_hours = -minutes_to_deadline / 60
+                overdue_day = int(overdue_hours // 24)
+                escalated = overdue_day >= 1
 
-                o_key = str(ticket_id)
-                escalated = overdue_hours >= OVERDUE_ESCALATE_HOURS
+                # deadline 向上取整到整点：
+                #   deadline=17:00 → 17:00（整点不变）
+                #   deadline=17:01 → 18:00（进位到下一整点）
+                deadline_truncated = deadline.replace(minute=0, second=0, microsecond=0)
+                if deadline.minute > 0 or deadline.second > 0 or deadline.microsecond > 0:
+                    deadline_ceil = deadline_truncated + timedelta(hours=1)
+                else:
+                    deadline_ceil = deadline_truncated
 
-                # 去重记录格式: "YYYY-MM-DD:level"，level ∈ {normal, escalate}
-                # 兼容旧格式 "YYYY-MM-DD"（视为 normal）
-                last_raw = overdue_dedup.get(o_key, "")
-                last_date, last_level = (last_raw.split(":", 1) + [""])[:2] if last_raw else ("", "")
-                if last_level not in ("normal", "escalate"):
-                    # 旧格式无 level，last_date 即整个值，level 视为已发普通
-                    last_date = last_raw
-                    last_level = "normal" if last_raw else ""
+                # 逾期第 N 天的触发时刻 = deadline_ceil + N天
+                notify_hour = deadline_ceil + timedelta(days=overdue_day)
 
-                # 去重判断：
-                # - 今天已发升级 → 跳过（最高级别，无需再发）
-                # - 今天已发普通，本次普通 → 跳过
-                # - 今天已发普通，本次升级 → 允许（级别提升，上级需要知道）
-                if last_date == today_str:
-                    if last_level == "escalate":
-                        stats["overdue_skipped_dedup"] += 1
-                        continue
-                    elif last_level == "normal" and not escalated:
-                        stats["overdue_skipped_dedup"] += 1
-                        continue
+                # DAG 整点执行，当前整点 == 触发时刻才发送
+                if notify_hour != now_hour_floor:
+                    continue
 
                 notify_targets: list[str] = []
                 if assigned_to:
@@ -306,18 +255,15 @@ def ticket_deadline_notification_dag():
 
                 sent = _send_cuiban(token, ticket_id, 6, notify_targets)
                 if sent:
-                    new_level = "escalate" if escalated else "normal"
-                    overdue_dedup[o_key] = f"{today_str}:{new_level}"
                     if escalated:
                         stats["overdue_escalate"] += 1
                     else:
                         stats["overdue_assignee"] += 1
                     logger.info(
-                        f"[逾期{'升级' if escalated else ''}] 工单 {ticket_id} "
+                        f"[逾期{'升级' if escalated else ''} day={overdue_day}] 工单 {ticket_id} "
                         f"逾期 {overdue_hours:.1f}h，通知对象: {notify_targets}"
                     )
 
-        _save_dedup(dedup)
         logger.info(f"DAG 执行完成: {stats}")
         return stats
 
