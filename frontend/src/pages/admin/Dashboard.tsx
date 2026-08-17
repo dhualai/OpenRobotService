@@ -96,8 +96,8 @@ const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
   { path: '/admin/entries', label: '其他', kind: 'other', tone: 'blue-4' },
 ];
 
-// 工单状态环图/图例按色阶由深到浅排列（对照 macaron 原型：处理中→已关闭→已解决→已取消→新建）
-const STATUS_TONE_ORDER = ['blue-1', 'blue-2', 'blue-3', 'blue-4', 'blue-5'];
+// 工单状态环图/图例按色阶由深到浅排列（对照 macaron 原型：处理中→暂停挂起→已关闭→已解决→已取消）
+const STATUS_TONE_ORDER = ['status-1', 'status-2', 'status-3', 'status-4', 'status-5'];
 const SORTED_TICKET_STATUS_LIST = [...TICKET_STATUS_LIST].sort(
   (a, b) => STATUS_TONE_ORDER.indexOf(a.tone) - STATUS_TONE_ORDER.indexOf(b.tone),
 );
@@ -222,7 +222,12 @@ export default function Dashboard() {
             </button>
           </div>
 
-          <ProjectMonthBars data={monthlySummary?.monthly ?? []} years={monthlyYears} style={{ marginTop: 12 }} />
+          <ProjectMonthBars
+            data={monthlySummary?.monthly ?? []}
+            years={monthlyYears}
+            style={{ marginTop: 12 }}
+            onSelect={(key) => navigate(`/admin/project-progress?filter=month&period=${key}`)}
+          />
 
           <div className="mac-stat-row">
             <MacStat value={projects.length} label="项目总数" tone="blue-1" onClick={() => navigate('/admin/project-progress')} />
