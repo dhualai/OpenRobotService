@@ -28,7 +28,7 @@ import UserSelect from '@/shared/components/UserSelect';
 import SafeHtml from '@/shared/components/SafeHtml';
 import { useAuthStore } from '@/stores/auth';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
-import { formatDateTime } from '@/shared/utils/url';
+import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
 import type { UserItem } from '@/api/users';
 
@@ -693,7 +693,7 @@ export default function TicketDetailPage() {
               <span className="detail-info-item__icon"><AlarmClock size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">最晚解决时间</span>
-                <span className="detail-info-item__value">{ticket.deadline_at ? formatDateTime(String(ticket.deadline_at)) : '未设置'}</span>
+                <span className="detail-info-item__value">{ticket.deadline_at ? formatRawDateTime(String(ticket.deadline_at)) : '未设置'}</span>
               </div>
             </div>
           </div>
