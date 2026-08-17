@@ -8,6 +8,7 @@ import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
 import { useAuthStore } from '@/stores/auth';
+import { avatarUrl } from '@/api/profile';
 import {
   MacSearch, MacCheck, MacPlus, MacX, MacBuilding2, MacClipboardList,
 } from '@/shared/components/macaronIcons';
@@ -59,6 +60,12 @@ const JOB_LEVEL_OPTIONS = [
   { label: '管理/审核', value: 2 },
   { label: '仅兜底', value: 3 },
 ];
+
+/** 取姓名首字符作为无头像时的回退；无姓名则取用户名首字符，全空时显示 ? */
+const avatarInitial = (name?: string | null, username?: string) => {
+  const src = (name && name.trim()) || (username && username.trim()) || '?';
+  return src.slice(0, 1).toUpperCase();
+};
 
 const STATUS_OPTIONS = [
   { label: '活跃', value: 'active' },
@@ -578,58 +585,71 @@ export default function UserManage() {
             onClick={() => openDetail(user)}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-                  <span className="mac-user-card__title">{user.name || user.username}</span>
-                  {user.name && user.name !== user.username && (
-                    <span className="mac-user-card__account">@{user.username}</span>
-                  )}
-                  <span className={`mac-chip mac-chip--tag ${user.status === 'active' ? 'mac-chip--tag-blue' : 'mac-chip--tag-muted'}`}>
-                    {user.status === 'active' ? '活跃' : '未激活'}
+              <div style={{ display: 'flex', gap: 12, flex: 1, minWidth: 0 }}>
+                {user.avatar_resource_id ? (
+                  <img
+                    className="mac-user-card__avatar mac-user-card__avatar--img"
+                    src={avatarUrl(user.avatar_resource_id)}
+                    alt={user.name || user.username}
+                  />
+                ) : (
+                  <span className="mac-user-card__avatar mac-user-card__avatar--initial" aria-hidden>
+                    {avatarInitial(user.name, user.username)}
                   </span>
-                </div>
-
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-                  <span className="mac-chip mac-chip--outline">{getJobLevelLabel(user.job_level)}</span>
-                  {user.department && (
-                    <span className="mac-chip mac-chip--dept">
-                      <MacBuilding2 size={12} />
-                      {user.department}
+                )}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                    <span className="mac-user-card__title">{user.name || user.username}</span>
+                    {user.name && user.name !== user.username && (
+                      <span className="mac-user-card__account">@{user.username}</span>
+                    )}
+                    <span className={`mac-chip mac-chip--tag ${user.status === 'active' ? 'mac-chip--tag-blue' : 'mac-chip--tag-muted'}`}>
+                      {user.status === 'active' ? '活跃' : '未激活'}
                     </span>
+                  </div>
+
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                    <span className="mac-chip mac-chip--outline">{getJobLevelLabel(user.job_level)}</span>
+                    {user.department && (
+                      <span className="mac-chip mac-chip--dept">
+                        <MacBuilding2 size={12} />
+                        {user.department}
+                      </span>
+                    )}
+                  </div>
+
+                  {user.responsibility_modules && Object.keys(user.responsibility_modules).length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 4 }}>
+                      {Object.entries(user.responsibility_modules).map(([mod, keywords]) => (
+                        <span key={mod} className="mac-chip mac-chip--outline">
+                          {mod}
+                          {keywords.length > 0 && <span style={{ color: 'var(--mac-muted-fg)' }}>·</span>}
+                          {keywords.slice(0, 3).map((kw) => (
+                            <span key={kw} className="mac-chip mac-chip--soft">{kw}</span>
+                          ))}
+                          {keywords.length > 3 && <span style={{ color: 'var(--mac-muted-fg)' }}>+{keywords.length - 3}</span>}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {user.duty_text && (
+                    <div className="mac-user-card__duty">
+                      <span className="mac-user-card__duty-icon"><MacClipboardList size={14} /></span>
+                      <span
+                        style={{
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          display: '-webkit-box',
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: 'vertical',
+                        }}
+                      >
+                        {user.duty_text}
+                      </span>
+                    </div>
                   )}
                 </div>
-
-                {user.responsibility_modules && Object.keys(user.responsibility_modules).length > 0 && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 4 }}>
-                    {Object.entries(user.responsibility_modules).map(([mod, keywords]) => (
-                      <span key={mod} className="mac-chip mac-chip--outline">
-                        {mod}
-                        {keywords.length > 0 && <span style={{ color: 'var(--mac-muted-fg)' }}>·</span>}
-                        {keywords.slice(0, 3).map((kw) => (
-                          <span key={kw} className="mac-chip mac-chip--soft">{kw}</span>
-                        ))}
-                        {keywords.length > 3 && <span style={{ color: 'var(--mac-muted-fg)' }}>+{keywords.length - 3}</span>}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {user.duty_text && (
-                  <div className="mac-user-card__duty">
-                    <span className="mac-user-card__duty-icon"><MacClipboardList size={14} /></span>
-                    <span
-                      style={{
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        display: '-webkit-box',
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: 'vertical',
-                      }}
-                    >
-                      {user.duty_text}
-                    </span>
-                  </div>
-                )}
               </div>
 
               <div className="mac-user-card__actions">
@@ -857,14 +877,27 @@ export default function UserManage() {
             </div>
           ) : detailUser ? (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-                <span className="mac-detail-name">{detailUser.name || detailUser.username}</span>
-                {detailUser.name && detailUser.name !== detailUser.username && (
-                  <span className="mac-detail-account">@{detailUser.username}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                {detailUser.avatar_resource_id ? (
+                  <img
+                    className="mac-detail-avatar mac-detail-avatar--img"
+                    src={avatarUrl(detailUser.avatar_resource_id)}
+                    alt={detailUser.name || detailUser.username}
+                  />
+                ) : (
+                  <span className="mac-detail-avatar mac-detail-avatar--initial" aria-hidden>
+                    {avatarInitial(detailUser.name, detailUser.username)}
+                  </span>
                 )}
-                <span className={`mac-chip mac-chip--tag ${detailUser.status === 'active' ? 'mac-chip--tag-blue' : 'mac-chip--tag-muted'}`}>
-                  {detailUser.status === 'active' ? '活跃' : '未激活'}
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flex: 1, minWidth: 0 }}>
+                  <span className="mac-detail-name">{detailUser.name || detailUser.username}</span>
+                  {detailUser.name && detailUser.name !== detailUser.username && (
+                    <span className="mac-detail-account">@{detailUser.username}</span>
+                  )}
+                  <span className={`mac-chip mac-chip--tag ${detailUser.status === 'active' ? 'mac-chip--tag-blue' : 'mac-chip--tag-muted'}`}>
+                    {detailUser.status === 'active' ? '活跃' : '未激活'}
+                  </span>
+                </div>
               </div>
 
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
