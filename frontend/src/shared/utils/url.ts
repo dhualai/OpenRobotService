@@ -106,6 +106,21 @@ export function parseUtcDate(dateString: string): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * 直接格式化 ISO 字符串，不做任何时区转换：后端返回什么就显示什么。
+ *
+ * 用途：deadline_at 等字段。后端返回 naive datetime（如 "2026-08-17T10:00:00"），
+ * 直接提取年月日时分显示为 "2026/08/17 10:00"。绕过 Date 对象的本地时区偏移，
+ * 避免 UTC+8 浏览器把 "10:00" 当 UTC 转 "18:00"。
+ */
+export function formatRawDateTime(dateString: string): string {
+  if (!dateString) return '';
+  const s = String(dateString).trim().replace(' ', 'T');
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) return '';
+  return `${m[1]}/${m[2]}/${m[3]} ${m[4]}:${m[5]}`;
+}
+
 export function formatDateTime(dateString: string): string {
   const d = parseUtcDate(dateString);
   if (!d) return '';

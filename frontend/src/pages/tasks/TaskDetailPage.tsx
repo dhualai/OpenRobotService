@@ -19,7 +19,7 @@ import { useAuthStore } from '@/stores/auth';
 import { uploadCommentAttachment, getOperationLogs, formatDuration, type OperationLog as TicketOperationLog } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canEditPriority } from '@/shared/constants/ticket';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
-import { formatDateTime } from '@/shared/utils/url';
+import { formatDateTime, formatRawDateTime, parseUtcDate } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
 import type { ProjectMember } from '@/api/projects';
@@ -1182,7 +1182,7 @@ export default function TaskDetailPage() {
               <span className="detail-info-item__icon"><AlarmClock size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">最晚解决时间</span>
-                <span className="detail-info-item__value">{detail.deadline_at ? formatDateTime(detail.deadline_at) : '未设置'}</span>
+                <span className="detail-info-item__value">{detail.deadline_at ? formatRawDateTime(detail.deadline_at) : '未设置'}</span>
               </div>
             </div>
             <div className="detail-info-item">
@@ -1275,7 +1275,9 @@ export default function TaskDetailPage() {
               return <p style={{ color: 'var(--muted-foreground)', fontSize: 12.5 }}>暂无动态</p>;
             }
             const formatTime = (ts: string) => {
-              const d = new Date(ts);
+              // 后端返回 naive datetime（UTC），需经 parseUtcDate 标记为 UTC 后由浏览器按本地时区自动 +8
+              const d = parseUtcDate(ts);
+              if (!d) return '';
               return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
             };
             const items = opLogs.map((l) => {

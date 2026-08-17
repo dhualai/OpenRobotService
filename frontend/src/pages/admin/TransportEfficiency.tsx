@@ -1,6 +1,6 @@
 // 搬运效率分析 —— 按日期查看某项目的搬运效率汇总指标 + AGV型号对比表
 // 参考 DAS 项目指标页（ProjectMetricsList）：顶部信息卡片 + 10 个指标卡片 + 各组数据对比表格
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Loading, Toast, Popup, DateTimePicker } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
@@ -75,6 +75,12 @@ const todayStr = (): string => {
   return `${y}-${m}-${day}`;
 };
 
+// PC 端检测：移动端 DateTimePicker 为滑动选择，PC 端无法拖动，需改用原生日期选择组件
+const isPC = (): boolean => {
+  if (typeof navigator === 'undefined') return false;
+  return !/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+};
+
 // 数值格式化：保留两位小数；percent 转换为百分比
 const formatValue = (value: number | null | undefined, percent?: boolean): string => {
   if (value == null) return '-';
@@ -94,6 +100,8 @@ export default function TransportEfficiency() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<EfficiencyResponse | null>(null);
   const [projectName, setProjectName] = useState('');
+  const dateInputRef = useRef<HTMLInputElement>(null);
+  const isPickingRef = useRef(false);
 
   const fetchProjectName = useCallback(async () => {
     if (!id) return;
@@ -141,28 +149,69 @@ export default function TransportEfficiency() {
           <InfoRow label="数据时间范围" value={`${date} 00:00:00 ~ ${date} 23:59:59`} />
         </div>
 
-        <div
-          onClick={() => setDatePickerVisible(true)}
-          style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            background: '#fff', borderRadius: 8, padding: '12px 14px', marginBottom: 16,
-            boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
-          }}
-        >
-          <div style={{ fontWeight: 500 }}>{date}</div>
-          <span style={{ color: '#999' }}>›</span>
-        </div>
+        {isPC() ? (
+          // PC 端：点击整个卡片弹出原生日期选择器
+          <div
+            onClick={() => {
+              if (isPickingRef.current) return;
+              isPickingRef.current = true;
+              const el = dateInputRef.current;
+              if (el && typeof (el as any).showPicker === 'function') {
+                try { (el as any).showPicker(); } catch { el?.click(); }
+              } else {
+                el?.click();
+              }
+              setTimeout(() => { isPickingRef.current = false; }, 10);
+            }}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              background: '#fff', borderRadius: 8, padding: '12px 14px', marginBottom: 16,
+              boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+              <div style={{ fontWeight: 500 }}>{date}</div>
+            </div>
+            <span style={{ color: '#999' }}>›</span>
+            <input
+              ref={dateInputRef}
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: 'absolute', opacity: 0, pointerEvents: 'none', width: 0, height: 0,
+              }}
+              tabIndex={-1}
+            />
+          </div>
+        ) : (
+          // 移动端：保留原有滑动选择 DateTimePicker
+          <>
+            <div
+              onClick={() => setDatePickerVisible(true)}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                background: '#fff', borderRadius: 8, padding: '12px 14px', marginBottom: 16,
+                boxShadow: '0 1px 3px rgba(0,0,0,0.06)', cursor: 'pointer',
+              }}
+            >
+              <div style={{ fontWeight: 500 }}>{date}</div>
+              <span style={{ color: '#999' }}>›</span>
+            </div>
 
-        <Popup visible={datePickerVisible} onClose={() => setDatePickerVisible(false)} placement="bottom">
-          <DateTimePicker
-            mode="date"
-            title="选择日期"
-            format="YYYY-MM-DD"
-            value={date || undefined}
-            onConfirm={(v) => { setDate(String(v)); setDatePickerVisible(false); }}
-            onCancel={() => setDatePickerVisible(false)}
-          />
-        </Popup>
+            <Popup visible={datePickerVisible} onClose={() => setDatePickerVisible(false)} placement="bottom">
+              <DateTimePicker
+                mode="date"
+                title="选择日期"
+                format="YYYY-MM-DD"
+                value={date || undefined}
+                onConfirm={(v) => { setDate(String(v)); setDatePickerVisible(false); }}
+                onCancel={() => setDatePickerVisible(false)}
+              />
+            </Popup>
+          </>
+        )}
 
         {loading ? (
           <Loading text="加载中..." />
