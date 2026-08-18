@@ -1185,7 +1185,7 @@ async def re_dispatch_task(
 ):
     """重新派单：强制工单回到待派单状态，触发 AI 智能派单重新推荐处理人。
 
-    - 可携带用户倾向的派单人（preferred_assignee，username），派单流水线会将其作为强加权信号
+    - 可携带用户倾向的派单人（preferred_assignee，users.id），派单流水线会将其作为强加权信号
       （复用 assigner 既有的 preferred_assignee 字段，见 TicketContext.preferred_assignee）。
     - 实现：清空 assigned_to + 状态回 new + 写入 metadata_info.preferred_assignee，
       再向 Redis 发布 usp:new_ticket 事件，由派单 Worker 立即重新派单（发布失败则依赖定时扫描兜底）。
@@ -1240,7 +1240,7 @@ async def re_dispatch_task(
     meta["preferred_assignee"] = preferred
     if remark:
         meta["preferred_assignee_remark"] = remark
-    for k in ("assignee_name", "assignee_username", "assign_confidence",
+    for k in ("assignee_name", "assignee_id", "assign_confidence",
               "assign_reasoning", "assign_decision_type", "assigned_at"):
         meta.pop(k, None)
     ticket.metadata_info = meta

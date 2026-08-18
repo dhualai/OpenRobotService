@@ -1,8 +1,7 @@
 """人员信息同步服务：从后端 users 表拉取派单人数据。
 
 缓存策略：首次请求或缓存过期时全量同步，TTL 10 分钟。
-用户标识使用 users.username（唯一且稳定，真实环境为 wechat_ 前缀），
-与 tasks.created_by / assigned_to 保持一致，避免反复查表。
+用户标识使用 users.id（表主键），与 tasks.created_by / assigned_to 保持一致，避免反复查表。
 """
 
 import time
@@ -63,9 +62,12 @@ def _fetch_from_users_table() -> list[dict]:
             if not dept_name:
                 dept_name = getattr(u, "department", None)
 
+            uid = getattr(u, "id", None)
+            if not uid:
+                continue
             results.append({
-                "id": getattr(u, "username", None),
-                "name": getattr(u, "name", None) or u.username,
+                "id": uid,
+                "name": getattr(u, "name", None) or uid,
                 "company": comp_name,
                 "department": dept_name,
                 "responsibility_modules": modules or [],
@@ -81,6 +83,9 @@ def _build_profiles(rows: list[dict]) -> List[EngineerProfile]:
     profiles = []
     skipped = 0
     for row in rows:
+        if not row.get("id"):
+            skipped += 1
+            continue
         # ── 准入校验：三个必填字段 ──
         dept = (row.get("department") or "").strip()
         modules = row.get("responsibility_modules") or {}

@@ -81,7 +81,7 @@ class Task(Base):
     priority: Mapped[TaskPriority] = mapped_column(SQLEnum(TaskPriority), nullable=False, default=TaskPriority.MEDIUM, index=True, comment="任务优先级")
 
     created_by = Column(String(50), nullable=False, index=True, comment="创建者ID")
-    assigned_to = Column(String(50), nullable=True, index=True, comment="处理者ID")
+    assigned_to = Column(String(50), nullable=True, index=True, comment="处理者ID（users.id）")
     customer = Column(String(100), nullable=True, comment="客户信息")
     team = Column(String(100), nullable=True, comment="所属团队")
     project_name = Column(String(255), nullable=True, index=True, comment="项目名称")

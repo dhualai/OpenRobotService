@@ -441,8 +441,8 @@ class DispatchFlow:
     ) -> List[EngineerProfile]:
         """把提单人从候选人中排除（避免常规派单派给自己）。
 
-        - 提单人 = TicketContext.creator（存 users.username，如 wechat_oD5oY3...）
-        - 工程师标识 EngineerProfile.id 已统一为 username，直接精确匹配
+        - 提单人 = TicketContext.creator（存 users.id）
+        - 工程师标识 EngineerProfile.id 已统一为 users.id，直接精确匹配
         - 匹配不到提单人（如提单人不是工程师）则不过滤，正常派单
         - Step 0（提单人指定）在 Step 1 之前已直接返回，不受本规则影响
         """
@@ -461,7 +461,7 @@ class DispatchFlow:
     # ── 项目对接人解析（Step 4 加权用）──
     @staticmethod
     def _resolve_contact_assignee(ticket: TicketContext) -> Optional[str]:
-        """按工单 project_id（回退 project_name）查 project 表，返回对接人 userId（username）。
+        """按工单 project_id（回退 project_name）查 project 表，返回对接人 users.id。
 
         一个项目唯一一个对接人（project.contact_person_id）；可能为空（缺省）→ 返回 None 不加权。
         查询失败/无项目信息 → 返回 None（不阻断派单）。
@@ -504,9 +504,9 @@ class DispatchFlow:
     def _resolve_preferred_assignee(
         ticket: TicketContext, engineers: List[EngineerProfile],
     ) -> Optional[str]:
-        """解析用户提单时填写的"倾向处理人"，返回工程师 userId（username）。
+        """解析用户提单时填写的"倾向处理人"，返回工程师 users.id。
 
-        - 数据源：ticket.preferred_assignee（前端传工程师 userId/username，预留字段）
+        - 数据源：ticket.preferred_assignee（前端传工程师 users.id，预留字段）
         - 前端未传该字段（None/空）→ 返回 None，不启用、完全向后兼容
         - 传入时按 e.id 精确匹配工程师；匹配不到 → 返回 None（不阻断派单，仅不加权）
         """

@@ -151,8 +151,8 @@ class LlmRecall:
             ("必须且只能从上面的候选工程师中评估全部候选人并给出分数。"
              if all_flag
              else f"必须且只能从上面的候选工程师中选出 {top_k} 位。"),
-            "输出 JSON。engineer_id 必须是候选人列表中该人选对应的完整 username（以 wechat_ 开头，如 wechat_oD5oY3xxx），必须保留 wechat_ 前缀、精确复制，不要去掉前缀或填姓名。confidence 填 0~1 的浮点数。",
-            '{"rankings":[{"engineer_id":"wechat_oD5oY3RN...","confidence":0.85},...]}',
+            "输出 JSON。engineer_id 必须是候选人列表中该人选对应的 ID（「候选ID」字段，即 users.id），必须精确复制，不要填姓名或自造标识。confidence 填 0~1 的浮点数。",
+            '{"rankings":[{"engineer_id":"<精确复制候选ID>","confidence":0.85},...]}',
         ])
         return "\n".join(lines)
 
