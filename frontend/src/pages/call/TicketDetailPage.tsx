@@ -1004,7 +1004,7 @@ export default function TicketDetailPage() {
                 style={{ width: '100%' }}
                 placeholder="点击选择"
                 format="YYYY-MM-DD HH:00"
-                showTime={{ defaultValue: editDeadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00' }}
+                showTime={{ defaultValue: editDeadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00', showNow: false }}
                 value={editForm.deadline_at ? dayjs(editForm.deadline_at) : null}
                 disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min, editDeadlineRange.max) : undefined}
