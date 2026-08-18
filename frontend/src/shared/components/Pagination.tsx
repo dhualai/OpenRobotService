@@ -86,12 +86,13 @@ export default function Pagination({
 
   const pages = buildPageList(current, totalPages, siblings);
 
+  // 与 macaron 组件适配：圆角用 --radius-sm（10px），选中态用马卡龙蓝主色
   const btnStyle = (isActive: boolean) => ({
     padding: '6px 12px',
-    border: '1px solid #ddd',
-    borderRadius: 4,
-    background: isActive ? '#0052d9' : '#fff',
-    color: isActive ? '#fff' : '#333',
+    border: '1px solid var(--mac-border)',
+    borderRadius: 'var(--radius-sm)',
+    background: isActive ? 'var(--mac-blue-2)' : '#fff',
+    color: isActive ? '#fff' : 'var(--mac-fg)',
     cursor: 'pointer',
     fontWeight: isActive ? 600 : 400,
     minWidth: 32,
@@ -114,7 +115,7 @@ export default function Pagination({
         onClick={() => onChange(current - 1)}
         style={{
           ...btnStyle(false),
-          background: current <= 1 ? '#f5f5f5' : '#fff',
+          background: current <= 1 ? 'var(--mac-secondary)' : '#fff',
           cursor: current <= 1 ? 'default' : 'pointer',
         }}
       >
@@ -152,7 +153,7 @@ export default function Pagination({
         onClick={() => onChange(current + 1)}
         style={{
           ...btnStyle(false),
-          background: current >= totalPages ? '#f5f5f5' : '#fff',
+          background: current >= totalPages ? 'var(--mac-secondary)' : '#fff',
           cursor: current >= totalPages ? 'default' : 'pointer',
         }}
       >
