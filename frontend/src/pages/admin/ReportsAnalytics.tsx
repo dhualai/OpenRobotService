@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import { Loading } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
-import ReactECharts from 'echarts-for-react';
+import ReactECharts from '@/shared/components/ReactECharts';
 
 interface ReportData { labels: string[]; values: number[]; summary: string; }
 

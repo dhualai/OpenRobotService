@@ -667,10 +667,6 @@ html, body, #root {
   color: var(--muted-foreground);
   margin-top: 10px;
   line-height: 1.6;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
 /* ── 附件预览（PDF / Markdown / 其它）全屏弹窗 ── */
@@ -900,6 +896,19 @@ html, body, #root {
   font-size: 13px;
   font-weight: 500;
 }
+.chat-ticket-overview__redispatch {
+  margin-left: auto;
+  flex-shrink: 0;
+  border: 1px solid var(--blue-1);
+  background: var(--blue-1);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.chat-ticket-overview__redispatch:active { background: var(--blue-2); border-color: var(--blue-2); }
 
 /* 提交中旋转圆环 */
 .chat-ticket-spinner {
@@ -1304,7 +1313,7 @@ html, body, #root {
 }
 .chat-view__empty-emoji { font-size: 48px; margin-bottom: 12px; }
 .chat-view__empty-sub { font-size: 13px; margin-top: 8px; }
-/* 消息气泡（设计稿：rounded-2xl + 侧小角、px-4 py-3、13px/24px、AI 侧 surface-card） */
+/* 消息气泡（设计稿：rounded-2xl + 说话人侧 rounded-sm 小角、px-4 py-3、13px/24px、AI 侧 surface-card） */
 .chat-bubble-wrap {
   display: flex;
   flex-direction: column;
@@ -1320,8 +1329,8 @@ html, body, #root {
   line-height: 24px;
   word-break: break-word;
 }
-.chat-bubble-wrap.is-right .chat-bubble { border-bottom-right-radius: 6px; }
-.chat-bubble-wrap.is-left .chat-bubble { border-bottom-left-radius: 6px; }
+.chat-bubble-wrap.is-right .chat-bubble { border-bottom-right-radius: var(--radius-sm); }
+.chat-bubble-wrap.is-left .chat-bubble { border-bottom-left-radius: var(--radius-sm); }
 .chat-bubble.is-user {
   background: var(--primary);
   color: var(--primary-foreground);
@@ -5337,6 +5346,13 @@ html, body, #root {
 }
 .history-row__actions .t-button:not(.t-button--disabled):active { background: var(--blue-1); }
 .history-row__actions .t-button.t-button--disabled { opacity: 0.45; }
+/* 重新派单：深蓝实心 + 白字，与 outline 的催办/上报/撤回区分，保证浅底上字清晰 */
+.history-row__actions .t-button.history-row__redispatch {
+  background: var(--blue-1);
+  border-color: var(--blue-1);
+  color: #fff;
+}
+.history-row__actions .t-button.history-row__redispatch:not(.t-button--disabled):active { background: var(--blue-2); }
 
 /* ===== TicketDetailPage 评论附件上传 ===== */
 .detail-chat-files { display: flex; flex-wrap: wrap; gap: 6px; }

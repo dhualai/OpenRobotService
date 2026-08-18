@@ -1170,6 +1170,119 @@ async def trigger_ai_assignment(
         raise HTTPException(status_code=500, detail=f"触发AI分配处理人失败: {str(e)}")
 
 
+class ReDispatchRequest(BaseModel):
+    """重新派单请求体。preferred_assignee 为用户倾向的派单人（username/userId，必填）；remark 为可选备注。"""
+    preferred_assignee: str
+    remark: Optional[str] = None
+
+
+@router.post("/{task_id}/re-dispatch", response_model=TicketResponse)
+async def re_dispatch_task(
+    task_id: int,
+    payload: ReDispatchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """重新派单：强制工单回到待派单状态，触发 AI 智能派单重新推荐处理人。
+
+    - 可携带用户倾向的派单人（preferred_assignee，username），派单流水线会将其作为强加权信号
+      （复用 assigner 既有的 preferred_assignee 字段，见 TicketContext.preferred_assignee）。
+    - 实现：清空 assigned_to + 状态回 new + 写入 metadata_info.preferred_assignee，
+      再向 Redis 发布 usp:new_ticket 事件，由派单 Worker 立即重新派单（发布失败则依赖定时扫描兜底）。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    is_admin = current_user.get('is_admin', False)
+    username = current_user.get('username', '')
+    user_name = current_user.get('name', username)
+    token = current_user.get('token')
+
+    # 权限口径对齐 update_task：管理员 / 提单人 / 处理人 / 客户
+    if not is_admin and username not in [ticket.assigned_to, ticket.customer, ticket.created_by]:
+        raise HTTPException(status_code=403, detail="无权限重新派单此任务")
+    if ticket.status == TicketStatus.CLOSED:
+        raise HTTPException(status_code=400, detail="已关闭的任务不能重新派单")
+    # 派单 Worker 只处理 source='ai' 的工单（manual 系统任务由兜底双工单直接指定处理人，不走 AI 派单），
+    # 若允许 manual 工单重派，Worker 永远查不到它，会一直卡在「派单中」。
+    if (ticket.source or "") != "ai":
+        raise HTTPException(status_code=400, detail="该工单非智能派单工单，无法重新派单")
+    # 提单时已指定处理人（title/description 里的强信号）会触发派单 Step 0 直接指派，
+    # 覆盖掉重新派单的倾向人，导致重派无效——提前拦截并提示（正则与 assigner Step 0 口径一致）。
+    import re as _re
+    _strong_text = f"{ticket.title or ''}\n{ticket.description or ''}"
+    _strong_m = _re.search(r"指定(?:处理人|人|人员)[:：]\s*([^\]\s，,；;:：）)】]{2,6})", _strong_text)
+    if _strong_m:
+        raise HTTPException(
+            status_code=400,
+            detail=f"该工单已指定处理人「{_strong_m.group(1).strip()}」，重新派单不会改变接单人",
+        )
+
+    preferred = (payload.preferred_assignee or "").strip()
+    if not preferred:
+        raise HTTPException(status_code=400, detail="请选择倾向处理人")
+    remark = (payload.remark or "").strip()
+
+    # 复位前捕获旧值，供操作日志角色判定（复位后 assigned_to 已清空）
+    created_by = ticket.created_by
+    old_assigned_to = ticket.assigned_to
+
+    # 重置派单状态：清空处理人 + 状态回 new
+    ticket.assigned_to = None
+    ticket.status = TicketStatus.NEW
+
+    # 写入用户倾向派单人 + 清掉上一次派单的推荐元数据
+    meta = dict(ticket.metadata_info or {})
+    meta["preferred_assignee"] = preferred
+    if remark:
+        meta["preferred_assignee_remark"] = remark
+    for k in ("assignee_name", "assignee_username", "assign_confidence",
+              "assign_reasoning", "assign_decision_type", "assigned_at"):
+        meta.pop(k, None)
+    ticket.metadata_info = meta
+
+    await db.commit()
+
+    # 触发派单 Worker：向 Redis 发布 usp:new_ticket（与 AI 服务 publish_new_ticket 同通道）
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(
+            f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
+        )
+        try:
+            await r.publish("usp:new_ticket", str(int(task_id)))
+        finally:
+            await r.aclose()
+    except Exception as e:
+        logger.warning(f"重新派单发布 Redis 事件失败（将依赖定时扫描兜底）: {e}")
+
+    # 操作日志 + 系统评论
+    _role = get_role_prefix(created_by, old_assigned_to, username)
+    user_map = await TicketService._get_user_map(token)
+    pref_name = user_map.get(preferred, preferred)
+    base = f"重新派单，倾向处理人 {pref_name}"
+    desc = f"{_role}{user_name} {base}" if _role else f"{user_name} {base}"
+    comment_text = f"{user_name} {base}"
+    if remark:
+        comment_text += f"（备注：{remark}）"
+    await OperationLogService.log(
+        db=db,
+        task_id=task_id,
+        op_type=OperationType.REASSIGN,
+        operator=username,
+        operator_name=user_name,
+        detail={"preferred_assignee": preferred, "remark": remark or None},
+        description=desc,
+    )
+    await _add_system_comment(db, task_id, comment_text, username, token)
+
+    return await _reload_ticket_with_comments(db, task_id)
+
+
 @router.get("/{task_id}/operation-logs", response_model=List[dict])
 async def get_task_operation_logs(
     task_id: int,
