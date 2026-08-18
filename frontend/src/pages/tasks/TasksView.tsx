@@ -253,7 +253,7 @@ export default function TasksView() {
     tasksRefreshKey, ticketDraft, consumeTicketDraft, refreshTasks,
   } = useWorkbenchStore();
 
-  const { username, hasPermission, projectIds } = useAuthStore();
+  const { username, userId, hasPermission, projectIds } = useAuthStore();
   const canManageTasks = hasPermission('frontend:develop');
 
   // 状态/优先级筛选 chip 栏横向滚动（PC 桌面端滚轮/拖拽横滑，移动端原生触摸滑动）
@@ -369,7 +369,7 @@ export default function TasksView() {
       // 相关性基础过滤（全部/项目相关/待我处理/与我相关）；
       // 「全部」无权限时按项目相关口径处理，与可见的分类选项一致。
       const relevanceKey = relevanceFilter === 'global' && !canViewAllTasks ? 'all' : relevanceFilter;
-      const filters: TicketFilterCondition[] = buildRelevanceFilters(relevanceKey, username, projectIds);
+      const filters: TicketFilterCondition[] = buildRelevanceFilters(relevanceKey, userId || username, projectIds);
 
       if (search) {
         const keyword = search.trim();
@@ -424,7 +424,7 @@ export default function TasksView() {
       isFetchingRef.current = false;
       if (!silent) setLoading(false);
     }
-  }, [page, search, statusFilter, priorityFilter, relevanceFilter, username, projectIds, sortBy, sortOrder, canViewAllTasks]);
+  }, [page, search, statusFilter, priorityFilter, relevanceFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
 
   fetchTicketsRef.current = fetchTickets;
 
@@ -496,7 +496,7 @@ export default function TasksView() {
             const data = await request<{ total: number }>('/filter', {
               method: 'POST',
               body: JSON.stringify({
-                filters: buildRelevanceFilters(key, username, projectIds),
+                filters: buildRelevanceFilters(key, userId || username, projectIds),
                 sorts: [],
                 page: 1,
                 size: 1,
@@ -519,7 +519,7 @@ export default function TasksView() {
     } finally {
       countsFetchingRef.current = false;
     }
-  }, [relevanceOptions, username, projectIds, canViewAllTasks]);
+  }, [relevanceOptions, username, userId, projectIds, canViewAllTasks]);
   fetchCountsRef.current = fetchRelevanceCounts;
 
   useEffect(() => { fetchRelevanceCounts(); }, [fetchRelevanceCounts]);

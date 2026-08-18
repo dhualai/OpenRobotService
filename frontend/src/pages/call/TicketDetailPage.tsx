@@ -27,6 +27,7 @@ import API_CONFIG from '@/config/api';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
 import UserSelect from '@/shared/components/UserSelect';
 import SafeHtml from '@/shared/components/SafeHtml';
+import { isSameUser } from '@/shared/utils/userIdentity';
 import { useAuthStore } from '@/stores/auth';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
@@ -149,7 +150,7 @@ export default function TicketDetailPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
-  const { username, name, isAdmin } = useAuthStore();
+  const { username, userId, name, isAdmin } = useAuthStore();
 
   const [ticket, setTicket] = useState<AiTicket | null>(null);
   const [loading, setLoading] = useState(true);
@@ -427,7 +428,7 @@ export default function TicketDetailPage() {
     setProjectKeyword('');
   };
   const canEdit = !!ticket?.ticket_id && !isTerminalTicketStatus(ticket.status)
-    && (isAdmin || username === ticket.created_by || username === ticket.assigned_to);
+    && (isAdmin || isSameUser(ticket.created_by, userId, username) || isSameUser(ticket.assigned_to, userId, username));
   const openEdit = () => {
     if (!ticket) return;
     setEditForm({
@@ -894,7 +895,7 @@ export default function TicketDetailPage() {
               title={canReportTicket(ticket.status) ? undefined : '仅处理中工单可上报'}
               onClick={() => openActionPopup('report')}
             >上报</Button>
-            {canShowCancelButton(ticket.status) && canCancelTicketByUser(ticket.created_by, username, isAdmin) && (
+            {canShowCancelButton(ticket.status) && canCancelTicketByUser(ticket.created_by, username, isAdmin, userId) && (
             <Button
               size="small" theme="default" className="detail-actions__btn--muted" icon={<Undo2 size={13} strokeWidth={2} />}
               disabled={acting === 'cancel'}
