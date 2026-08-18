@@ -105,7 +105,7 @@ const SORTED_TICKET_STATUS_LIST = [...TICKET_STATUS_LIST].sort(
 export default function Dashboard() {
   const navigate = useNavigate();
   const { hasPermission, projectIds } = useAuthStore();
-  const canAccessAdminEntries = hasPermission('frontend:admin');
+  const canAccessAdminEntries = hasPermission('frontend:admin:other:show');
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
   const [ticketSummary, setTicketSummary] = useState<TicketSummary | null>(null);
