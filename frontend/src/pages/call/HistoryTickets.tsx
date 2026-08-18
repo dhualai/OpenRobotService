@@ -7,7 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { Loading, Toast, Button, Popup } from 'tdesign-mobile-react';
 import { Search, ArrowRight } from 'lucide-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
-import { urgeTicket, reportTicket, cancelTicket } from '@/api/ticket';
+import { urgeTicket, reportTicket, cancelTicket, reDispatchTicket } from '@/api/ticket';
 import { isTerminalTicketStatus, canUrgeTicket, canReportTicket, canShowCancelButton } from '@/shared/constants/ticket';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
@@ -129,6 +129,13 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   const [actionUser, setActionUser] = useState<UserItem | null>(null);
   const [showActionPopup, setShowActionPopup] = useState(false);
 
+  // 重新派单：必选用户倾向派单人 + 可选备注
+  const [redispatchTicket, setRedispatchTicket] = useState<AiTicketBrief | null>(null);
+  const [redispatchUser, setRedispatchUser] = useState<UserItem | null>(null);
+  const [redispatchRemark, setRedispatchRemark] = useState('');
+  const [showRedispatchPopup, setShowRedispatchPopup] = useState(false);
+  const [redispatching, setRedispatching] = useState(false);
+
   const openActionPopup = (e: React.MouseEvent, t: AiTicketBrief, type: 'urge' | 'report') => {
     e.stopPropagation();
     if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
@@ -165,6 +172,39 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
     try { await cancelTicket(t.id); Toast({ message: '已撤回，工单已取消', theme: 'success' }); loadInitial(); }
     catch (err) { Toast({ message: `撤回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }); }
     finally { setActing(null); }
+  };
+
+  const openRedispatchPopup = (e: React.MouseEvent, t: AiTicketBrief) => {
+    e.stopPropagation();
+    if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    // 提单时已指定处理人的工单，派单 Step 0 强信号会覆盖重新派单的倾向人，重派无效——提前弹警告拦截
+    const strongText = `${t.title || ''}\n${t.description || ''}`;
+    const strongMatch = strongText.match(/指定(?:处理人|人|人员)[:：]\s*([^\]\s，,；;:：）)】]{2,6})/);
+    if (strongMatch) {
+      Toast({ message: `该工单已指定处理人「${strongMatch[1]}」，无法重新派单`, theme: 'warning' });
+      return;
+    }
+    setRedispatchTicket(t);
+    setRedispatchUser(null);
+    setRedispatchRemark('');
+    setShowRedispatchPopup(true);
+  };
+
+  const handleRedispatchConfirm = async () => {
+    if (!redispatchTicket?.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    if (!redispatchUser?.username) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
+    setRedispatching(true);
+    try {
+      // 派单侧 EngineerProfile.id = users.username（带 wechat_ 前缀），须传 username 而非无前缀的 UserItem.id
+      await reDispatchTicket(redispatchTicket.id, redispatchUser.username, redispatchRemark.trim() || undefined);
+      Toast({ message: '已重新派单，正在重新推荐处理人', theme: 'success' });
+      setShowRedispatchPopup(false);
+      loadInitial();
+    } catch (err) {
+      Toast({ message: `重新派单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setRedispatching(false);
+    }
   };
 
   return (
@@ -282,6 +322,9 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                   <div className="history-row__actions" onClick={(e) => e.stopPropagation()}>
                     <Button size="extra-small" variant="outline" theme="default" disabled={!canUrgeTicket(t.status) || (acting?.id === t.id && acting?.action === 'urge')} title={canUrgeTicket(t.status) ? undefined : '仅新建/待处理工单可催办'} onClick={(e) => openActionPopup(e, t, 'urge')}>催办</Button>
                     <Button size="extra-small" variant="outline" theme="default" disabled={!canReportTicket(t.status) || (acting?.id === t.id && acting?.action === 'report')} title={canReportTicket(t.status) ? undefined : '仅处理中工单可上报'} onClick={(e) => openActionPopup(e, t, 'report')}>上报</Button>
+                    {(t.source === 'ai' || !t.source) && !!t.assigned_to && (
+                    <Button size="extra-small" className="history-row__redispatch" loading={redispatching && redispatchTicket?.id === t.id} onClick={(e) => openRedispatchPopup(e, t)}>重新派单</Button>
+                    )}
                     {canShowCancelButton(t.status) && (
                     <Button size="extra-small" variant="outline" theme="default" loading={acting?.id === t.id && acting?.action === 'cancel'} disabled={acting?.id === t.id && acting?.action === 'cancel'} onClick={(e) => handleCancel(e, t)}>撤回</Button>
                     )}
@@ -309,6 +352,33 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
           <div className="conv-dialog__btns">
             <Button block theme="default" onClick={() => setShowActionPopup(false)}>取消</Button>
             <Button block theme="primary" disabled={!actionUser} loading={!!acting} onClick={handleActionConfirm}>确定</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 重新派单 弹窗（必选倾向处理人 + 可选备注） */}
+      <Popup visible={showRedispatchPopup} onClose={() => setShowRedispatchPopup(false)} placement="bottom" showOverlay>
+        <div className="conv-dialog">
+          <h4 className="conv-dialog__title">重新派单</h4>
+          <p className="conv-dialog__msg">将强制重新智能派单，请选择倾向处理人</p>
+          <div style={{ marginBottom: 16 }}>
+            <UserSelect
+              value={redispatchUser?.id ?? null}
+              onChange={(u) => setRedispatchUser(u)}
+              placeholder="选择倾向处理人（必选）"
+              title="选择倾向处理人"
+            />
+          </div>
+          <input
+            className="conv-dialog__input"
+            placeholder="备注（可选）：换人原因或给新处理人的说明"
+            value={redispatchRemark}
+            onChange={(e) => setRedispatchRemark(e.target.value)}
+            maxLength={200}
+          />
+          <div className="conv-dialog__btns">
+            <Button block theme="default" onClick={() => setShowRedispatchPopup(false)}>取消</Button>
+            <Button block theme="primary" disabled={!redispatchUser} loading={redispatching} onClick={handleRedispatchConfirm}>确定重新派单</Button>
           </div>
         </div>
       </Popup>
