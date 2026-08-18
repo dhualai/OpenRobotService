@@ -41,6 +41,52 @@ STATUS_LABEL = {
     "closed": "已关闭",
 }
 
+# 附件按扩展名分类（用于操作日志"添加了图片/视频/..."的描述）
+_ATTACHMENT_EXT_CATEGORIES = {
+    "image": {"jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "ico", "tif", "tiff", "heic", "heif"},
+    "video": {"mp4", "mov", "avi", "mkv", "webm", "flv", "wmv", "m4v", "mpeg", "mpg", "3gp"},
+    "audio": {"mp3", "wav", "aac", "flac", "ogg", "m4a", "wma", "aiff"},
+    "archive": {"zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz", "tbz2"},
+    "document": {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "rtf", "odt", "ods", "odp"},
+}
+_ATTACHMENT_CATEGORY_LABEL = {
+    "image": "图片",
+    "video": "视频",
+    "audio": "音频",
+    "archive": "压缩包",
+    "document": "文档",
+    "other": "附件",
+}
+
+
+def _extract_filename(att) -> str:
+    """从附件项提取文件名（兼容字符串路径或 dict 形式）。"""
+    if isinstance(att, str):
+        # 路径形如 "bucket/temp_id/filename.ext"
+        return att.rsplit("/", 1)[-1]
+    if isinstance(att, dict):
+        return att.get("filename") or att.get("name") or str(att.get("url") or att.get("path") or "")
+    return str(att)
+
+
+def _categorize_attachment(filename: str) -> str:
+    """根据文件名扩展名返回分类 key（image/video/audio/archive/document/other）。"""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    for cat, exts in _ATTACHMENT_EXT_CATEGORIES.items():
+        if ext in exts:
+            return cat
+    return "other"
+
+
+def _get_attachment_label(attachments) -> Optional[str]:
+    """根据 comment.attachments 列表返回中文类别标签；多类型混合时返回"附件"；无附件返回 None。"""
+    if not attachments:
+        return None
+    categories = {_categorize_attachment(_extract_filename(a)) for a in attachments}
+    if len(categories) == 1:
+        return _ATTACHMENT_CATEGORY_LABEL[next(iter(categories))]
+    return "附件"
+
 # 解决方式总结 Worker 的 Redis 任务队列（与 ai/agents/AiTaskPlatform/services/resolution_worker.py 保持一致）
 RESOLUTION_WORKER_QUEUE = "ors:resolution"
 # 占位文案（前端 placeholder，不入库；这里用于识别"无内容"状态）
@@ -671,7 +717,19 @@ async def add_comment(
         await db.commit()
 
         # ── 记录评论操作日志 ──
-        content_summary = comment_data.content[:100] + ('...' if len(comment_data.content) > 100 else '')
+        # 区分三种场景：仅附件 / 附件+文字 / 仅文字（含空内容兜底）
+        # 附件类型按扩展名识别：图片/视频/音频/压缩包/文档；多类型混合用"附件"
+        content_text = (comment_data.content or '').strip()
+        content_summary = content_text[:100] + ('...' if len(content_text) > 100 else '')
+        cat_label = _get_attachment_label(getattr(comment, 'attachments', None))
+
+        if cat_label and not content_text:
+            action_text = f"添加了{cat_label}"
+        elif cat_label and content_text:
+            action_text = f"添加了{cat_label}并附带评论 {content_summary}"
+        else:
+            action_text = f"添加了评论：{content_summary}"
+
         # 获取工单信息用于角色判断
         _ticket = await TicketService.get_ticket_by_id(db, task_id)
         _role = get_role_prefix(getattr(_ticket, 'created_by', None), getattr(_ticket, 'assigned_to', None), username) if _ticket else ""
@@ -681,7 +739,7 @@ async def add_comment(
             op_type=OperationType.COMMENT,
             operator=username,
             operator_name=operator,
-            description=f"{_role}{operator} 添加了评论：{content_summary}" if _role else f"{operator} 添加了评论：{content_summary}",
+            description=f"{_role}{operator} {action_text}" if _role else f"{operator} {action_text}",
         )
 
         # ── @mention 通知：检测评论中的 @用户名，排除 @U老师 ──
