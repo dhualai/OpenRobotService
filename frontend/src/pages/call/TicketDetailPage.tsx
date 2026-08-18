@@ -2,7 +2,7 @@
 // 数据源：tasks 服务 GET /api/tasks/{dbId}?load_comments=true（DB id 唯一定位，AI 诊断数据从 metadata_info 提取）；操作：催办 / 上报（任务服务通知）
 // 路由 /app/call/ticket/:id 中的 :id 形如 db_<数字id>（Task.id）；session_id 直链仅作旧链接兼容
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea } from 'tdesign-mobile-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
@@ -147,6 +147,7 @@ const normalizeAttachment = (a: unknown): NormalizedAttachment | null => {
 export default function TicketDetailPage() {
   const { id: sessionId = '' } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
   const { username, name, isAdmin } = useAuthStore();
 
@@ -584,7 +585,7 @@ export default function TicketDetailPage() {
   if (loading) return <Loading text="加载中..." />;
   if (!ticket) return (
     <div>
-      <Navbar title="工单详情" fixed leftArrow onLeftClick={() => navigate('/call', { state: { showHistory: true } })} />
+      <Navbar title="工单详情" fixed leftArrow onLeftClick={() => (location.key !== 'default' ? navigate(-1) : navigate('/call/history'))} />
       <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted-foreground)', marginTop: 56 }}>{msg || '工单不存在'}</div>
     </div>
   );
@@ -639,7 +640,7 @@ export default function TicketDetailPage() {
         title="工单详情"
         fixed
         leftArrow
-        onLeftClick={() => navigate('/call', { state: { showHistory: true } })}
+        onLeftClick={() => (location.key !== 'default' ? navigate(-1) : navigate('/call/history'))}
       />
       <div className="page-container" style={{ paddingTop: 56 }}>
         {/* 标题 + 基本信息 */}
