@@ -47,8 +47,31 @@ class TicketService:
         for user_id, user_name in user_map.items():
             if isinstance(user_name, str) and name.lower() in user_name.lower():
                 matched_ids.append(user_id)
-        
+        for key in cls._assignee_match_values(name):
+            if key not in matched_ids:
+                matched_ids.append(key)
         return matched_ids
+
+    @staticmethod
+    def _assignee_match_values(raw: str) -> List[str]:
+        """assigned_to 已统一存 users.id。筛选值可能仍是 username，两边都认。"""
+        value = (raw or "").strip()
+        if not value:
+            return []
+        keys = [value]
+        try:
+            from app.core.database import db_manager
+            user = db_manager.get_user(value) or db_manager.get_user_by_id(value)
+            if user:
+                uid = (user.get("id") or "").strip()
+                uname = (user.get("username") or "").strip()
+                if uid and uid not in keys:
+                    keys.append(uid)
+                if uname and uname not in keys:
+                    keys.append(uname)
+        except Exception:
+            pass
+        return keys
 
     @staticmethod
     async def create_ticket(db: AsyncSession, ticket_data: TicketCreate, created_by: str, comment_attachment_map: dict, token: Optional[str] = None) -> Ticket:
@@ -195,8 +218,14 @@ class TicketService:
                 query = query.where(Ticket.created_by.in_(matched_ids))
 
         if query_params.assigned_to:
-            query = TicketService._apply_string_op(
-                query, Ticket.assigned_to, query_params.assigned_to, query_params.assigned_to_op, 'equals')
+            keys = TicketService._assignee_match_values(query_params.assigned_to)
+            op = query_params.assigned_to_op or 'equals'
+            if op == 'contains' and keys:
+                query = query.where(or_(*[Ticket.assigned_to.ilike(f"%{k}%") for k in keys]))
+            elif op == 'notEquals' and keys:
+                query = query.where(~Ticket.assigned_to.in_(keys))
+            elif keys:
+                query = query.where(Ticket.assigned_to.in_(keys))
 
         if query_params.assigned_to_name:
             matched_ids = await TicketService._get_user_ids_by_name(query_params.assigned_to_name, token)
@@ -347,13 +376,26 @@ class TicketService:
         elif field_type == 'text':
             if op not in TEXT_OPS:
                 op = 'contains'
+            assignee_keys = (
+                TicketService._assignee_match_values(str(value))
+                if field == 'assignedTo' and isinstance(value, str)
+                else None
+            )
             if op == 'contains':
+                if assignee_keys:
+                    return query.where(or_(*[column.ilike(f"%{k}%") for k in assignee_keys]))
                 return query.where(column.ilike(f"%{value}%"))
             elif op == 'not_contains':
+                if assignee_keys:
+                    return query.where(~or_(*[column.ilike(f"%{k}%") for k in assignee_keys]))
                 return query.where(~column.ilike(f"%{value}%"))
             elif op == 'eq':
+                if assignee_keys:
+                    return query.where(column.in_(assignee_keys))
                 return query.where(column == value)
             elif op == 'ne':
+                if assignee_keys:
+                    return query.where(~column.in_(assignee_keys))
                 return query.where(column != value)
 
         elif field_type == 'enum':
@@ -918,6 +960,7 @@ class TicketService:
 
     @staticmethod
     async def get_filtered_tickets(db: AsyncSession, current_user_name: str, page: int = 1, size: int = 10, token: Optional[str] = None) -> Dict[str, Any]:
+        assignee_keys = TicketService._assignee_match_values(current_user_name)
         filter_condition = or_(
             and_(
                 Ticket.status == TicketStatus.NEW,
@@ -925,7 +968,7 @@ class TicketService:
             ),
             and_(
                 Ticket.status.in_([TicketStatus.IN_PROGRESS, TicketStatus.PENDING]),
-                Ticket.assigned_to == current_user_name
+                Ticket.assigned_to.in_(assignee_keys) if assignee_keys else Ticket.assigned_to == current_user_name
             ),
             and_(
                 Ticket.status == TicketStatus.RESOLVED,
