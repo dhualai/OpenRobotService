@@ -11,6 +11,7 @@ import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
 import { aiGet } from '@/api/ai';
 import { STATUS_OPTIONS, LIFECYCLE_STATUSES, PROJECT_ABORTED, calcLifecycleProgress } from '@/shared/utils/projectLifecycle';
+import { MacCheck, MacChevronRight, MacFileText, MacPencil, MacPlus, MacRefreshCw } from '@/shared/components/macaronIcons';
 
 interface ProjectDocument {
   name: string;
@@ -156,17 +157,6 @@ const WECOM_CATEGORY_MAP: Record<string, string> = {
 
 const AUTO_SYNC_INTERVAL = 5 * 60 * 1000; // 5 分钟自动刷新同步
 
-const STATUS_COLOR: Record<string, string> = {
-  '售前方案': '#8e5fd9', '签单洽谈': '#0052d9', '已签合同': '#0089ff', '出厂测试': '#00a3c4',
-  '即将进场': '#2ba471', '延期进场': '#e37318', '正在实施': '#00a870', '实施暂停': '#ed7b2f',
-  '实施运行': '#2f9bed', '试运行中': '#2f9bed', '验收运营': '#2eb872', '项目结束': '#666666',
-  '项目中止': '#d54941',
-};
-
-const URGENCY_COLOR: Record<string, string> = {
-  '重要紧急': '#d54941', '紧急不重要': '#0052d9', '重要不紧急': '#e37318', '不紧急不重要': '#999999',
-};
-
 type PickerKey = 'status' | 'category_basis' | 'project_type' | 'risk_carrying_type' | 'project_region' | 'controller_vendor' | 'server_deployment_status';
 
 const PICKERS: { key: PickerKey; label: string; options: string[] }[] = [
@@ -178,14 +168,6 @@ const PICKERS: { key: PickerKey; label: string; options: string[] }[] = [
   { key: 'controller_vendor', label: '控制器选择', options: CONTROLLER_VENDOR_OPTIONS },
   { key: 'server_deployment_status', label: '服务器部署', options: SERVER_DEPLOYMENT_OPTIONS },
 ];
-
-function cardStyle(): React.CSSProperties {
-  return { background: '#fff', borderRadius: 8, padding: 16, marginBottom: 12, boxShadow: '0 1px 3px rgba(0,0,0,0.06)' };
-}
-
-function cardTitleStyle(): React.CSSProperties {
-  return { fontSize: 12, color: '#999', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, paddingBottom: 10, borderBottom: '1px solid #f0f0f0', marginBottom: 14 };
-}
 
 // USP项目「新建」入口复用本页作为空白详情页：路由参数 id === 'new' 时不请求已有项目，
 // 而是以该空白对象作为起点，各字段编辑仅在本地暂存，直到点击右上角「创建」才 POST /projects/
@@ -419,6 +401,7 @@ export default function ProjectDetail() {
   const progressPct = calcLifecycleProgress(project.status);
   const isAborted = project.status === PROJECT_ABORTED;
   const activePickerConfig = PICKERS.find((p) => p.key === activePicker);
+  const activeValue = activePickerConfig ? String(project[activePickerConfig.key] ?? '') : '';
 
   return (
     <div>
@@ -434,210 +417,185 @@ export default function ProjectDetail() {
         fixed
       />
       <div style={{ padding: 16, paddingTop: 64 }}>
-        {/* 企业微信实时同步状态条 */}
+        {/* 企业微信实时同步状态条（对照原型：浅灰圆角条 + 刷新图标 + 立即同步） */}
         {!isNew && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#f0f7ff', borderRadius: 8, padding: '8px 12px', marginBottom: 12, fontSize: 12 }}>
-            <span style={{ color: '#0052d9', fontWeight: 500 }}>⏱ 企业微信实时数据</span>
-            <span style={{ color: syncFailed ? '#d54941' : '#999', flex: 1 }}>
+          <div className="mac-sync-banner">
+            <span className="mac-sync-banner__icon"><MacRefreshCw size={14} /></span>
+            <span className="mac-sync-banner__title">企业微信实时数据</span>
+            <span className={syncFailed ? 'mac-sync-banner__time is-error' : 'mac-sync-banner__time'}>
               {syncFailed ? '同步失败，将自动重试' : lastSyncTime ? `上次同步 ${lastSyncTime} · 每5分钟自动刷新` : '同步中…'}
             </span>
-            <span
-              style={{ color: '#0052d9', cursor: 'pointer' }}
+            <button
+              type="button"
+              className="mac-sync-banner__sync"
               onClick={() => project?.project_code && fetchLiveWecom(project.project_code, project.system_id)}
             >
               立即同步
-            </span>
+            </button>
           </div>
         )}
-        {/* 概要卡片 */}
-        <div style={cardStyle()}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <EditableField label="项目名称" value={project.name || '未命名项目'} placeholder="未命名项目" onSave={(v) => saveField('name', v)} compact title required={isNew} />
-              <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
-                <EditableField label="项目编号" value={project.project_code || '未填写'} placeholder="未填写" onSave={(v) => saveField('project_code', v)} compact inlineLabel="项目编号" required={isNew} />
+        {/* 概要卡片（对照原型 overview SectionCard：名称/编号 + 右上标签 + MetaRow + 进度 + 三列日期） */}
+        <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
+          <div className="mac-summary-head">
+            <div className="mac-summary-head__main">
+              <EditableField label="项目名称" value={project.name || '未命名项目'} placeholder="未命名项目" onSave={(v) => saveField('name', v)} title required={isNew} />
+              <div className="mac-summary-head__code">
+                <EditableField label="项目编号" value={project.project_code || '未填写'} placeholder="未填写" onSave={(v) => saveField('project_code', v)} inlineLabel="项目编号" required={isNew} meta plain />
                 {project.system_id ? ` · 企业微信记录ID: ${project.system_id}` : ''}
               </div>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
-              <span
-                onClick={() => navigate(`/admin/project-detail/${id}/transport-efficiency`)}
-                style={{ padding: '2px 10px', borderRadius: 999, fontSize: 12, fontWeight: 500, color: '#fff', background: '#808080', cursor: 'pointer' }}
-              >
+            <div className="mac-summary-head__side">
+              <span className="mac-chip mac-chip--tag" style={{ background: 'var(--mac-blue-2)', color: '#fff' }} onClick={() => navigate(`/admin/project-detail/${id}/transport-efficiency`)}>
                 搬运效率分析 ›
               </span>
               <span
+                className="mac-chip mac-chip--tag"
+                style={{ background: 'var(--mac-black)', color: '#fff' }}
                 onClick={() => setActivePicker('category_basis')}
-                style={{ padding: '2px 10px', borderRadius: 999, fontSize: 12, fontWeight: 500, color: '#fff', background: URGENCY_COLOR[project.category_basis] || '#999', cursor: 'pointer' }}
               >
                 {project.category_basis || '未分类'} ›
               </span>
             </div>
           </div>
 
-          {/* 项目经理 —— 位于项目编号与项目进度之间，可编辑；绑定 project_manager（企业微信「项目经理」列实时同步） */}
-          <div style={{ marginTop: 12 }}>
-            <EditableField label="项目经理" value={project.project_manager || ''} placeholder="未指定" onSave={(v) => saveField('project_manager', v)} compact />
+          {/* 项目经理 / 对接人 —— MetaRow 可编辑；绑定 project_manager / contact_person（企业微信「项目经理」「调度对接人」列实时同步） */}
+          <div style={{ marginTop: 10 }}>
+            <EditableField label="项目经理" value={project.project_manager || ''} placeholder="未指定" onSave={(v) => saveField('project_manager', v)} meta />
           </div>
+          <EditableField label="对接人" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} meta strong />
 
-          {/* 对接人 —— 位于项目经理下方，可编辑；绑定 contact_person（企业微信「调度对接人」列实时同步，与项目进度列表的对接人缺省口径一致） */}
-          <div style={{ marginTop: 8 }}>
-            <EditableField label="对接人" value={project.contact_person || ''} placeholder="未指定" onSave={(v) => saveField('contact_person', v)} compact />
-          </div>
-
-          <div style={{ height: 1, background: '#f0f0f0', margin: '14px 0' }} />
-
+          {/* 项目时间进度（与项目进度列表同一口径：按生命周期阶段线性计算；仅「项目中止」隐藏） */}
           {!isAborted && (
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#999', marginBottom: 6 }}>
+            <div className="mac-progress mac-progress--detail" style={{ marginTop: 14 }}>
+              <div className="mac-progress__head">
                 <span>项目时间进度</span>
-                <span style={{ color: '#0052d9' }}>{progressPct}%</span>
+                <span className="mac-progress__pct">{progressPct}%</span>
               </div>
-              <div style={{ width: '100%', height: 6, background: '#f0f0f0', borderRadius: 999, overflow: 'hidden' }}>
-                <div style={{ width: `${progressPct}%`, height: '100%', background: 'linear-gradient(90deg,#0052d9,#5a9cff)', borderRadius: 999 }} />
+              <div className="mac-progress__track">
+                <div className="mac-progress__fill" style={{ width: `${progressPct}%` }} />
               </div>
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+          {/* 部署 / 近期交付 / 最终交付 */}
+          <div className="mac-dates">
             <div>
-              <div style={{ fontSize: 12, color: '#999' }}>部署时间</div>
-              <div style={{ fontSize: 13, fontWeight: 500, marginTop: 2 }}>{project.deployment_date || '-'}</div>
+              <div className="mac-dates__label">部署时间</div>
+              <div className="mac-dates__value">{project.deployment_date || '-'}</div>
             </div>
             <div>
-              <div style={{ fontSize: 12, color: '#999' }}>近期交付</div>
-              <div style={{ fontSize: 13, fontWeight: 500, marginTop: 2 }}>{project.recent_delivery_date || '-'}</div>
+              <div className="mac-dates__label">近期交付</div>
+              <div className="mac-dates__value">{project.recent_delivery_date || '-'}</div>
             </div>
             <div>
-              <div style={{ fontSize: 12, color: '#999' }}>最终交付</div>
-              <div style={{ fontSize: 13, fontWeight: 500, marginTop: 2 }}>{project.final_delivery_date || '-'}</div>
+              <div className="mac-dates__label">最终交付</div>
+              <div className="mac-dates__value">{project.final_delivery_date || '-'}</div>
             </div>
           </div>
 
           {project.task_execution_status && (
-            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #f0f0f0', fontSize: 12, color: '#666' }}>
-              近7天任务执行：{project.task_execution_status}
-            </div>
+            <div className="mac-task-exec">近7天任务执行：{project.task_execution_status}</div>
           )}
-        </div>
+        </section>
 
-        {/* 项目基础画像 */}
-        <div style={cardStyle()}>
-          <h3 style={cardTitleStyle()}>项目基础画像</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <EditableField label="项目名称" value={project.name} onSave={(v) => saveField('name', v)} required={isNew} />
-            <EditableField label="项目编号" value={project.project_code} onSave={(v) => saveField('project_code', v)} required={isNew} />
-            <EditableField label="内部编号" value={project.internal_code || ''} placeholder="未填写" onSave={(v) => saveField('internal_code', v)} />
-            <EditableField label="项目描述" value={project.description || ''} placeholder="未填写" multiline onSave={(v) => saveField('description', v)} />
-            <PickerField label="项目类型" value={project.project_type || '未设置'} onClick={() => setActivePicker('project_type')} />
-            <PickerField label="项目区域/地点" value={project.project_region || '未设置'} onClick={() => setActivePicker('project_region')} />
-            <EditableField
-              label="总车数"
-              type="number"
-              value={project.total_vehicle_count != null ? String(project.total_vehicle_count) : ''}
-              placeholder="未填写"
-              onSave={(v) => saveField('total_vehicle_count', v ? Number(v) : null)}
-            />
-            <EditableField label="车型&车数" value={project.recent_delivery_content || ''} placeholder="未填写" onSave={(v) => saveField('recent_delivery_content', v)} />
-            <PickerField label="控制器选择" value={project.controller_vendor || '未设置'} onClick={() => setActivePicker('controller_vendor')} />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <label style={{ fontSize: 12, color: '#999' }}>系统/外设对接</label>
-              <div
-                onClick={openSystemIntegrationEditor}
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-                  fontSize: 14, color: project.system_integration?.length ? '#1a1a1a' : '#999',
-                  background: '#f8fafc', borderRadius: 8, padding: '10px 12px', cursor: 'pointer',
-                }}
-              >
-                <span>{project.system_integration?.length ? project.system_integration.join('、') : '未设置'}</span>
-                <span style={{ color: '#999', flexShrink: 0 }}>›</span>
-              </div>
-            </div>
-            <PickerField label="服务器部署" value={project.server_deployment_status || '未设置'} onClick={() => setActivePicker('server_deployment_status')} />
-            <EditableField label="部署版本" value={project.deployment_version || ''} placeholder="未填写" onSave={(v) => saveField('deployment_version', v)} />
+        {/* 项目基础画像（对照原型 SectionCard + FieldRow） */}
+        <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
+          <h3 className="mac-card-title">项目基础画像</h3>
+          <EditableField label="项目名称" value={project.name} onSave={(v) => saveField('name', v)} required={isNew} />
+          <EditableField label="项目编号" value={project.project_code} onSave={(v) => saveField('project_code', v)} required={isNew} />
+          <EditableField label="内部编号" value={project.internal_code || ''} placeholder="未填写" onSave={(v) => saveField('internal_code', v)} />
+          <EditableField label="项目描述" value={project.description || ''} placeholder="未填写" multiline onSave={(v) => saveField('description', v)} />
+          <PickerField label="项目类型" value={project.project_type || '未设置'} onClick={() => setActivePicker('project_type')} />
+          <PickerField label="项目区域/地点" value={project.project_region || '未设置'} onClick={() => setActivePicker('project_region')} />
+          <EditableField
+            label="总车数"
+            type="number"
+            value={project.total_vehicle_count != null ? String(project.total_vehicle_count) : ''}
+            placeholder="未填写"
+            onSave={(v) => saveField('total_vehicle_count', v ? Number(v) : null)}
+          />
+          <EditableField label="车型&车数" value={project.recent_delivery_content || ''} placeholder="未填写" onSave={(v) => saveField('recent_delivery_content', v)} />
+          <PickerField label="控制器选择" value={project.controller_vendor || '未设置'} onClick={() => setActivePicker('controller_vendor')} />
+          <div className="mac-field-stack">
+            <div className="mac-field-stack__label">系统/外设对接</div>
+            <button type="button" className="mac-field-stack__row" onClick={openSystemIntegrationEditor}>
+              <span className={`mac-field-stack__value${project.system_integration?.length ? '' : ' is-empty'}`}>
+                {project.system_integration?.length ? project.system_integration.join('、') : '未设置'}
+              </span>
+              <span className="mac-field-stack__icon"><MacChevronRight size={16} /></span>
+            </button>
           </div>
-        </div>
+          <PickerField label="服务器部署" value={project.server_deployment_status || '未设置'} onClick={() => setActivePicker('server_deployment_status')} />
+          <EditableField label="部署版本" value={project.deployment_version || ''} placeholder="未填写" onSave={(v) => saveField('deployment_version', v)} />
+        </section>
 
-        {/* 项目生命周期 */}
-        <div style={cardStyle()}>
-          <h3 style={cardTitleStyle()}>项目生命周期</h3>
+        {/* 项目生命周期（对照原型 SectionCard + 纵向时间线） */}
+        <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
+          <h3 className="mac-card-title">项目生命周期</h3>
           {/* 项目阶段 —— 位于生命周期标题下方，便于直接查看/修改当前阶段；绑定 status（企业微信「项目生命周期」列实时同步） */}
           <PickerField label="项目阶段" value={project.status || '未设置'} onClick={() => setActivePicker('status')} required={isNew} />
-          <div style={{ height: 16 }} />
           {isAborted ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 12, background: '#fef2f2', borderRadius: 8, border: '1px solid #fecaca' }}>
+            <div className="mac-timeline__aborted">
               <span>⛔</span>
-              <span style={{ fontSize: 13, color: '#d54941', fontWeight: 500 }}>项目已中止</span>
+              <span>项目已中止</span>
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16, paddingLeft: 4, position: 'relative' }}>
-              <div style={{ position: 'absolute', left: 11, top: 12, bottom: 12, width: 2, background: '#f0f0f0' }} />
+            <div className="mac-timeline">
               {LIFECYCLE_STATUSES.map((stage, idx) => {
                 const done = lifecycleIndex >= 0 && idx < lifecycleIndex;
                 const current = idx === lifecycleIndex;
                 const note = project.stage_notes?.[stage];
+                const state = done ? 'is-done' : current ? 'is-active' : 'is-pending';
                 return (
-                  <div key={stage} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, position: 'relative', zIndex: 1 }}>
-                    <div style={{
-                      width: 24, height: 24, borderRadius: '50%', flexShrink: 0,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#fff',
-                      background: done ? '#0052d9' : current ? STATUS_COLOR[stage] : '#e5e5e5',
-                      border: current ? '3px solid #fff' : 'none',
-                      boxShadow: current ? '0 0 0 1px ' + (STATUS_COLOR[stage] || '#999') : 'none',
-                    }}>
-                      {done ? '✓' : ''}
-                    </div>
-                    <div style={{ paddingTop: 2, flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <div style={{ fontSize: 14, fontWeight: 500, color: done || current ? '#1a1a1a' : '#999' }}>{stage}</div>
-                        <div style={{ fontSize: 12, color: '#999' }}>{done ? '已完成' : current ? '进行中' : '待开始'}</div>
-                        <span
-                          onClick={() => openNoteEditor(stage)}
-                          style={{ marginLeft: 'auto', fontSize: 11, color: '#0052d9', padding: '2px 8px', borderRadius: 999, background: '#eef4ff', cursor: 'pointer' }}
-                        >
+                  <div key={stage} className="mac-timeline__item">
+                    {idx < LIFECYCLE_STATUSES.length - 1 && <div className="mac-timeline__line" />}
+                    <span className={`mac-timeline__dot ${state}`}>
+                      {done ? <MacCheck size={14} /> : current ? <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--mac-blue-2)' }} /> : null}
+                    </span>
+                    <div className="mac-timeline__stage">
+                      <div className="mac-timeline__head">
+                        <span className={`mac-timeline__name ${state}`}>{stage}</span>
+                        <span className="mac-timeline__status">{done ? '已完成' : current ? '进行中' : '待开始'}</span>
+                        <button type="button" className="mac-timeline__note-btn" onClick={() => openNoteEditor(stage)}>
                           {note ? '编辑说明' : '+ 补充说明'}
-                        </span>
+                        </button>
                       </div>
-                      {note && (
-                        <div style={{ fontSize: 12, color: '#666', marginTop: 4, whiteSpace: 'pre-wrap', background: '#f8fafc', borderRadius: 6, padding: '6px 8px' }}>
-                          {note}
-                        </div>
-                      )}
+                      {note && <div className="mac-timeline__note">{note}</div>}
                     </div>
                   </div>
                 );
               })}
             </div>
           )}
-        </div>
+        </section>
 
-        {/* 风险管理 */}
-        <div style={cardStyle()}>
-          <h3 style={cardTitleStyle()}>风险管理</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <PickerField label="风险承接" value={project.risk_carrying_type || '未设置'} onClick={() => setActivePicker('risk_carrying_type')} />
-            <EditableField label="特别关注" value={project.special_attention || ''} placeholder="无" multiline onSave={(v) => saveField('special_attention', v)} />
-            <EditableField label="风险和任务描述" value={project.risk_task_description || ''} placeholder="无" multiline onSave={(v) => saveField('risk_task_description', v)} />
-            <EditableField label="项目管理策略" value={project.management_strategy || ''} placeholder="无" multiline onSave={(v) => saveField('management_strategy', v)} />
-            <EditableField label="预期走向" value={project.expected_trend || ''} placeholder="未设置" onSave={(v) => saveField('expected_trend', v)} />
+        {/* 风险管理（对照原型 SectionCard + FieldRow + 项目文档） */}
+        <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
+          <h3 className="mac-card-title">风险管理</h3>
+          <PickerField label="风险承接" value={project.risk_carrying_type || '未设置'} onClick={() => setActivePicker('risk_carrying_type')} />
+          <EditableField label="特别关注" value={project.special_attention || ''} placeholder="无" multiline onSave={(v) => saveField('special_attention', v)} />
+          <EditableField label="风险和任务描述" value={project.risk_task_description || ''} placeholder="无" multiline onSave={(v) => saveField('risk_task_description', v)} />
+          <EditableField label="项目管理策略" value={project.management_strategy || ''} placeholder="无" multiline onSave={(v) => saveField('management_strategy', v)} />
+          <EditableField label="预期走向" value={project.expected_trend || ''} placeholder="未设置" onSave={(v) => saveField('expected_trend', v)} />
 
-            {/* 项目文档 */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <label style={{ fontSize: 12, color: '#999' }}>项目文档</label>
-              {(project.project_documents || []).map((doc) => (
-                <div key={doc.resource_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#f8fafc', borderRadius: 8, padding: '8px 12px', marginBottom: 6 }}>
-                  <a
-                    href={`${API_CONFIG.ADMIN.BASE_URL}/resource-manager/resources/${doc.resource_id}/download`}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={{ fontSize: 13, color: '#0052d9', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}
-                  >
-                    📄 {doc.name}
-                  </a>
-                  <span onClick={() => removeDocument(doc.resource_id)} style={{ color: '#d54941', fontSize: 12, cursor: 'pointer', marginLeft: 8 }}>删除</span>
-                </div>
-              ))}
+          {/* 项目文档 */}
+          <div className="mac-field-stack">
+            <div className="mac-field-stack__label">项目文档</div>
+            {(project.project_documents || []).map((doc) => (
+              <div key={doc.resource_id} className="mac-doc-row">
+                <a
+                  className="mac-doc-row__link"
+                  href={`${API_CONFIG.ADMIN.BASE_URL}/resource-manager/resources/${doc.resource_id}/download`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <MacFileText size={14} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.name}</span>
+                </a>
+                <button type="button" className="mac-doc-row__del" onClick={() => removeDocument(doc.resource_id)}>删除</button>
+              </div>
+            ))}
+            <div className="mac-upload-wrap">
               <Upload
                 accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg"
                 max={1}
@@ -647,63 +605,61 @@ export default function ProjectDetail() {
                   if (raw) handleUploadDocument(raw);
                 }}
               />
-              {uploading && <div style={{ fontSize: 12, color: '#999' }}>上传中...</div>}
+              {uploading && <div style={{ fontSize: 12, color: 'var(--mac-muted-fg)', marginTop: 6 }}>上传中...</div>}
             </div>
           </div>
-        </div>
+        </section>
 
-        {/* 责任体系 */}
-        <div style={cardStyle()}>
-          <h3 style={cardTitleStyle()}>责任体系</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <EditableField label="销售" value={project.sales || ''} placeholder="未指定" onSave={(v) => saveField('sales', v)} />
-            <EditableField label="售前" value={project.pre_sales || ''} placeholder="未指定" onSave={(v) => saveField('pre_sales', v)} />
-            <EditableField label="项目经理" value={project.project_manager || ''} placeholder="未指定" onSave={(v) => saveField('project_manager', v)} />
-            <EditableField label="实施工程师" value={project.field_engineer || ''} placeholder="未指定" onSave={(v) => saveField('field_engineer', v)} />
-            <EditableField label="人员计划" value={project.personnel_plan || ''} placeholder="无" multiline onSave={(v) => saveField('personnel_plan', v)} />
-          </div>
-        </div>
+        {/* 责任体系（对照原型 SectionCard + FieldRow） */}
+        <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
+          <h3 className="mac-card-title">责任体系</h3>
+          <EditableField label="销售" value={project.sales || ''} placeholder="未指定" onSave={(v) => saveField('sales', v)} />
+          <EditableField label="售前" value={project.pre_sales || ''} placeholder="未指定" onSave={(v) => saveField('pre_sales', v)} />
+          <EditableField label="项目经理" value={project.project_manager || ''} placeholder="未指定" onSave={(v) => saveField('project_manager', v)} />
+          <EditableField label="实施工程师" value={project.field_engineer || ''} placeholder="未指定" onSave={(v) => saveField('field_engineer', v)} />
+          <EditableField label="人员计划" value={project.personnel_plan || ''} placeholder="无" multiline onSave={(v) => saveField('personnel_plan', v)} />
+        </section>
 
         {/* 企业微信台账原文（实时）—— 展示智能表格全部列，未映射到结构化字段的列也在此可见 */}
         {!isNew && liveValues && Object.keys(liveValues).length > 0 && (
-          <div style={cardStyle()}>
-            <h3 style={cardTitleStyle()}>企业微信台账 · 实时</h3>
+          <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
+            <h3 className="mac-card-title">企业微信台账 · 实时</h3>
             {Object.entries(liveValues).map(([k, v]) => {
               const text = v == null ? '' : String(v).trim();
               if (!text) return null;
               return (
-                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '9px 0', borderBottom: '1px solid #f5f5f5', fontSize: 13 }}>
-                  <span style={{ color: '#999', flexShrink: 0 }}>{k}</span>
-                  <span style={{ color: '#333', textAlign: 'right', wordBreak: 'break-all' }}>{text}</span>
+                <div key={k} className="mac-ledger-row">
+                  <span className="mac-ledger-row__key">{k}</span>
+                  <span className="mac-ledger-row__value">{text}</span>
                 </div>
               );
             })}
-          </div>
+          </section>
         )}
       </div>
 
       {/* 项目阶段 / 项目类别 / 项目类型 / 风险承接 —— 单选弹窗（真实枚举，与 backend 对应 Enum 一致） */}
       <Popup visible={!!activePicker} onClose={() => setActivePicker(null)} placement="bottom" showOverlay>
-        <div style={{ padding: 20, maxHeight: '70vh', overflow: 'auto' }}>
-          <h4 style={{ marginBottom: 16 }}>{activePickerConfig?.label}</h4>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            {activePickerConfig?.options.map((opt) => (
-              <div
-                key={opt}
-                onClick={() => handlePickSingle(activePickerConfig.key, opt)}
-                style={{ padding: '12px 4px', borderBottom: '1px solid #f5f5f5', fontSize: 14, cursor: 'pointer' }}
-              >
-                {opt}
-              </div>
-            ))}
-          </div>
+        <div className="mac-sheet" style={{ maxHeight: '70vh', overflow: 'auto' }}>
+          <h4 className="mac-sheet__title">{activePickerConfig?.label}</h4>
+          {activePickerConfig?.options.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              className={`mac-choice${opt === activeValue ? ' is-active' : ''}`}
+              onClick={() => handlePickSingle(activePickerConfig.key, opt)}
+            >
+              <span className="mac-choice__dot">{opt === activeValue ? <MacCheck size={12} /> : null}</span>
+              <span className="mac-choice__label">{opt}</span>
+            </button>
+          ))}
         </div>
       </Popup>
 
       {/* 生命周期阶段补充说明 —— 存入 stage_notes（JSON，键为阶段名） */}
       <Popup visible={!!noteStage} onClose={() => setNoteStage(null)} placement="bottom" showOverlay>
-        <div style={{ padding: 20 }}>
-          <h4 style={{ marginBottom: 16 }}>{noteStage} · 补充说明</h4>
+        <div className="mac-sheet">
+          <h4 className="mac-sheet__title">{noteStage} · 补充说明</h4>
           <Textarea
             value={noteDraft}
             onChange={(v: string | number) => setNoteDraft(String(v))}
@@ -711,33 +667,25 @@ export default function ProjectDetail() {
             autosize={{ minRows: 4, maxRows: 10 }}
           />
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
-            <span onClick={saveNote} style={{ padding: '8px 20px', background: '#0052d9', color: '#fff', borderRadius: 999, fontSize: 14, cursor: 'pointer' }}>
-              保存
-            </span>
+            <button type="button" className="mac-btn mac-btn--primary" onClick={saveNote}>保存</button>
           </div>
         </div>
       </Popup>
 
       {/* 系统/外设对接 —— 多选，存入 system_integration（JSON数组） */}
       <Popup visible={systemIntegrationOpen} onClose={() => setSystemIntegrationOpen(false)} placement="bottom" showOverlay>
-        <div style={{ padding: 20, maxHeight: '70vh', overflow: 'auto' }}>
-          <h4 style={{ marginBottom: 16 }}>系统/外设对接</h4>
+        <div className="mac-sheet" style={{ maxHeight: '70vh', overflow: 'auto' }}>
+          <h4 className="mac-sheet__title">系统/外设对接</h4>
           <div style={{ marginBottom: 16 }}>
             {SYSTEM_INTEGRATION_OPTIONS.map((opt) => (
-              <div
-                key={opt}
-                onClick={() => toggleSystemIntegration(opt)}
-                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0', borderBottom: '1px solid #f5f5f5', cursor: 'pointer' }}
-              >
+              <div key={opt} className="mac-choice" onClick={() => toggleSystemIntegration(opt)}>
                 <Checkbox checked={systemIntegrationDraft.includes(opt)} />
-                <span style={{ fontSize: 14 }}>{opt}</span>
+                <span className="mac-choice__label">{opt}</span>
               </div>
             ))}
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <span onClick={saveSystemIntegration} style={{ padding: '8px 20px', background: '#0052d9', color: '#fff', borderRadius: 999, fontSize: 14, cursor: 'pointer' }}>
-              确定
-            </span>
+            <button type="button" className="mac-btn mac-btn--primary" onClick={saveSystemIntegration}>确定</button>
           </div>
         </div>
       </Popup>
@@ -745,39 +693,35 @@ export default function ProjectDetail() {
   );
 }
 
-function ReadonlyField({ label, value, multiline }: { label: string; value: string; multiline?: boolean }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <label style={{ fontSize: 12, color: '#999' }}>{label}</label>
-      <div style={{
-        fontSize: 14, color: '#1a1a1a', background: '#f8fafc', borderRadius: 8, padding: '10px 12px',
-        whiteSpace: multiline ? 'pre-wrap' : 'nowrap', overflow: multiline ? 'visible' : 'hidden', textOverflow: 'ellipsis',
-      }}>
-        {value}
-      </div>
-    </div>
-  );
-}
-
 function PickerField({ label, value, onClick, required }: { label: string; value: string; onClick: () => void; required?: boolean }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <label style={{ fontSize: 12, color: '#999' }}>{label}{required && <span style={{ color: '#d54941', marginLeft: 2 }}>*</span>}</label>
-      <div
-        onClick={onClick}
-        style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          fontSize: 14, background: '#f8fafc', borderRadius: 8, padding: '10px 12px', cursor: 'pointer',
-        }}
-      >
-        <span>{value}</span>
-        <span style={{ color: '#999' }}>›</span>
-      </div>
+    <div className="mac-field-stack">
+      <div className="mac-field-stack__label">{label}{required && <span style={{ color: '#ad4545', marginLeft: 2 }}>*</span>}</div>
+      <button type="button" className="mac-field-stack__row" onClick={onClick}>
+        <span className={`mac-field-stack__value${isFieldEmpty(value) ? ' is-empty' : ''}`}>{value}</span>
+        <span className="mac-field-stack__icon"><MacChevronRight size={16} /></span>
+      </button>
     </div>
   );
 }
 
-function EditableField({ label, value, placeholder, multiline, compact, type, title, inlineLabel, required, onSave }: { label: string; value: string; placeholder?: string; multiline?: boolean; compact?: boolean; type?: 'text' | 'number'; title?: boolean; inlineLabel?: string; required?: boolean; onSave: (v: string) => void }) {
+const FIELD_EMPTY_VALUES = ['未设置', '未填写', '未指定', '无', ''];
+function isFieldEmpty(v: string): boolean { return FIELD_EMPTY_VALUES.includes(v); }
+
+function EditableField({ label, value, placeholder, multiline, type, title, meta, plain, strong, inlineLabel, required, onSave }: {
+  label: string;
+  value: string;
+  placeholder?: string;
+  multiline?: boolean;
+  type?: 'text' | 'number';
+  title?: boolean;
+  meta?: boolean;
+  plain?: boolean;
+  strong?: boolean;
+  inlineLabel?: string;
+  required?: boolean;
+  onSave: (v: string) => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
 
@@ -788,45 +732,63 @@ function EditableField({ label, value, placeholder, multiline, compact, type, ti
     if (draft !== value) onSave(draft);
   };
 
-  const requiredMark = <span style={{ color: '#d54941', marginLeft: 2 }}>*</span>;
+  const requiredMark = <span style={{ color: '#ad4545', marginLeft: 2 }}>*</span>;
+  const InputField = multiline ? Textarea : Input;
+  const fieldProps = { ...(!multiline && type ? { type } : {}) };
 
-  if (editing) {
-    const Field = multiline ? Textarea : Input;
+  // 概要卡 MetaRow（项目经理 / 对接人 / 内嵌项目编号）
+  if (meta) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {!inlineLabel && <label style={{ fontSize: 12, color: '#999' }}>{label}{required && requiredMark}</label>}
-        <Field
-          value={draft}
-          onChange={(v: string | number) => setDraft(String(v))}
-          onBlur={commit}
-          autofocus
-          placeholder={placeholder}
-          {...(!multiline && type ? { type } : {})}
-        />
+      <div className={`mac-meta-row${plain ? ' mac-meta-row--plain' : ''}`}>
+        <span className="mac-meta-row__label">{inlineLabel || label}{required && requiredMark}</span>
+        {editing ? (
+          <div style={{ flex: 1, minWidth: 0, marginLeft: 8 }}>
+            <InputField value={draft} onChange={(v: string | number) => setDraft(String(v))} onBlur={commit} autofocus placeholder={placeholder} {...fieldProps} />
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }} onClick={() => setEditing(true)}>
+            <span className={`mac-meta-row__value${strong ? ' is-strong' : ''}${value ? '' : ' is-empty'}`}>
+              {value || placeholder || '未指定'}
+            </span>
+            <span className="mac-meta-row__pencil"><MacPencil size={13} /></span>
+          </div>
+        )}
       </div>
     );
   }
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      {!inlineLabel && <label style={{ fontSize: 12, color: '#999' }}>{label}{required && requiredMark}</label>}
-      <div
-        onClick={() => setEditing(true)}
-        style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-          fontSize: title ? 17 : 14,
-          fontWeight: title ? 600 : 'normal',
-          color: value ? '#1a1a1a' : '#999',
-          background: compact ? 'transparent' : '#f8fafc', borderRadius: 8, padding: compact ? '2px 0' : '10px 12px', cursor: 'pointer',
-          whiteSpace: multiline ? 'pre-wrap' : 'nowrap', overflow: multiline ? 'visible' : 'hidden', textOverflow: 'ellipsis',
-        }}
-      >
-        <span style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
-          {inlineLabel && <span style={{ fontSize: 12, color: '#999', fontWeight: 'normal', flexShrink: 0 }}>{inlineLabel}:{required && <span style={{ color: '#d54941' }}>*</span>} </span>}
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{value || placeholder}</span>
-        </span>
-        <span style={{ color: '#ccc', flexShrink: 0 }}>✎</span>
+  // 概要卡标题（项目名称）
+  if (title) {
+    return (
+      <div>
+        <div className="mac-summary-head__label">{label}{required && requiredMark}</div>
+        {editing ? (
+          <InputField value={draft} onChange={(v: string | number) => setDraft(String(v))} onBlur={commit} autofocus placeholder={placeholder} {...fieldProps} />
+        ) : (
+          <div className="mac-summary-head__name" style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} onClick={() => setEditing(true)}>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{value || placeholder}</span>
+            <span style={{ color: 'var(--mac-muted-fg)', flexShrink: 0, display: 'inline-flex' }}><MacPencil size={13} /></span>
+          </div>
+        )}
       </div>
+    );
+  }
+
+  // 常规 FieldRow（对照原型 FieldRow：标签在上 + 可点行）
+  return (
+    <div className="mac-field-stack">
+      <div className="mac-field-stack__label">{label}{required && requiredMark}</div>
+      {editing ? (
+        <InputField value={draft} onChange={(v: string | number) => setDraft(String(v))} onBlur={commit} autofocus placeholder={placeholder} {...fieldProps} />
+      ) : (
+        <button type="button" className="mac-field-stack__row" onClick={() => setEditing(true)}>
+          <span className={`mac-field-stack__value${value ? '' : ' is-empty'}`}>
+            {inlineLabel && <span style={{ fontSize: 11.5, color: 'var(--mac-muted-fg)' }}>{inlineLabel}{required && requiredMark}： </span>}
+            {value || placeholder}
+          </span>
+          <span className="mac-field-stack__icon"><MacPencil size={14} /></span>
+        </button>
+      )}
     </div>
   );
 }
