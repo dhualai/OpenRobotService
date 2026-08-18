@@ -2616,6 +2616,24 @@ html, body, #root {
   background: var(--foreground);
   color: var(--background);
 }
+/* 项目过滤下拉胶囊：标签 + 当前值 + 下拉箭头，与普通胶囊区分 */
+.tasks-view__filter-chip--dropdown {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 50vw;
+}
+.tasks-view__filter-chip-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 28vw;
+  font-weight: 600;
+}
+/* 选中具体项目时下拉箭头轻微上翘，提示可收起 */
+.tasks-view__filter-chip--dropdown.is-active .tasks-view__filter-chip-value {
+  opacity: 0.95;
+}
 /* 筛选条目右上角工单条数角标（圆圈+数字），筛选胶囊与筛选菜单共用；
    与原型一致：bg-primary 蒂芙尼蓝 + 白字，无外框 */
 .tasks-count-badge {
@@ -2682,6 +2700,14 @@ html, body, #root {
 .filter-menu__item.is-active {
   background: var(--gray-25);
   color: #fff;
+}
+/* 筛选菜单空状态（如名下无关联项目） */
+.filter-menu__empty {
+  width: 100%;
+  padding: 12px 4px;
+  font-size: 13px;
+  color: var(--muted-foreground);
+  text-align: center;
 }
 .filter-menu__divider {
   height: 1px;
