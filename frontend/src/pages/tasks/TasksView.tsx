@@ -280,6 +280,8 @@ export default function TasksView() {
   // 当前用户关联的项目列表（用于项目过滤下拉）
   const [myProjects, setMyProjects] = useState<ProjectItem[]>([]);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
+  // 项目下拉搜索关键字（按名称/编码模糊匹配，contains）
+  const [projectKeyword, setProjectKeyword] = useState('');
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const [page, setPage] = useState(() => initialFilter.current.page);
   const [total, setTotal] = useState(0);
@@ -582,6 +584,17 @@ export default function TasksView() {
     return p ? (p.name || p.project_code || projectFilter) : '全部';
   }, [projectFilter, myProjects]);
 
+  // 项目下拉模糊匹配：按名称或项目编码 contains 过滤（忽略大小写）
+  const filteredMyProjects = useMemo(() => {
+    const kw = projectKeyword.trim().toLowerCase();
+    if (!kw) return myProjects;
+    return myProjects.filter(
+      (p) =>
+        (p.name || '').toLowerCase().includes(kw) ||
+        (p.project_code || '').toLowerCase().includes(kw),
+    );
+  }, [myProjects, projectKeyword]);
+
   // 项目列表加载完成前，URL 中的 projectFilter 可能指向已失效的项目；
   // 列表就绪后校验一次，命中不到则回退为「全部」，避免过滤出空结果。
   useEffect(() => {
@@ -783,13 +796,20 @@ export default function TasksView() {
                 </button>
               ))}
               <span className="tasks-view__filter-divider" aria-hidden="true" />
-              {/* 项目过滤（单选下拉）：默认「全部」，点击展开名下项目列表 */}
+              {/* 项目过滤：「全部」独立按钮 + 具体项目走可搜索下拉框 */}
+              <button
+                className={`tasks-view__filter-chip ${!projectFilter ? 'is-active' : ''}`}
+                onClick={() => { handleProjectChange(''); }}
+              >
+                全部
+              </button>
               <button
                 className={`tasks-view__filter-chip tasks-view__filter-chip--dropdown ${projectFilter ? 'is-active' : ''}`}
-                onClick={() => setShowProjectPicker(true)}
+                onClick={() => { setProjectKeyword(''); setShowProjectPicker(true); }}
               >
-                <span>项目：</span>
-                <span className="tasks-view__filter-chip-value">{selectedProjectLabel}</span>
+                <span className="tasks-view__filter-chip-value">
+                  {projectFilter ? selectedProjectLabel : '选择项目'}
+                </span>
                 <ChevronDown size={12} strokeWidth={2} />
               </button>
               <span className="tasks-view__filter-divider" aria-hidden="true" />
@@ -876,24 +896,16 @@ export default function TasksView() {
           </div>
           <div className="filter-menu__divider"></div>
           <div className="filter-menu__section">
-            <h4 className="filter-menu__title">项目（单选）</h4>
-            <div className="filter-menu__items">
-              <button
-                className={`filter-menu__item ${!projectFilter ? 'is-active' : ''}`}
-                onClick={() => { handleProjectChange(''); }}
-              >
-                全部
-              </button>
-              {myProjects.map((p) => (
-                <button
-                  key={p.id}
-                  className={`filter-menu__item ${projectFilter === p.id ? 'is-active' : ''}`}
-                  onClick={() => { handleProjectChange(p.id); }}
-                >
-                  {p.name || p.project_code}
-                </button>
-              ))}
-            </div>
+            <h4 className="filter-menu__title">项目</h4>
+            <button
+              className="filter-menu__dropdown-trigger"
+              onClick={() => { setProjectKeyword(''); setShowFilterMenu(false); setShowProjectPicker(true); }}
+            >
+              <span className={projectFilter ? 'filter-menu__dropdown-value' : 'filter-menu__dropdown-placeholder'}>
+                {projectFilter ? selectedProjectLabel : '全部'}
+              </span>
+              <ChevronDown size={14} strokeWidth={2} />
+            </button>
           </div>
           <div className="filter-menu__divider"></div>
           <div className="filter-menu__section">
@@ -920,11 +932,20 @@ export default function TasksView() {
         </div>
       </Popup>
 
-      {/* 项目过滤下拉（顶部 chip 触发）：单选名下项目，默认「全部」 */}
+      {/* 项目过滤下拉（顶部 chip 触发）：单选名下项目，支持输入模糊匹配过滤 */}
       <Popup visible={showProjectPicker} onClose={() => setShowProjectPicker(false)} placement="bottom" showOverlay>
-        <div className="filter-menu">
+        <div className="filter-menu filter-menu--searchable">
           <div className="filter-menu__section">
             <h4 className="filter-menu__title">选择项目</h4>
+            <div className="filter-menu__search">
+              <Search size={14} strokeWidth={2} />
+              <input
+                className="tasks-search filter-menu__search-input"
+                placeholder="搜索项目名称 / 编码…"
+                value={projectKeyword}
+                onChange={(e) => setProjectKeyword(e.target.value)}
+              />
+            </div>
             <div className="filter-menu__items">
               <button
                 className={`filter-menu__item ${!projectFilter ? 'is-active' : ''}`}
@@ -932,7 +953,7 @@ export default function TasksView() {
               >
                 全部
               </button>
-              {myProjects.map((p) => (
+              {filteredMyProjects.map((p) => (
                 <button
                   key={p.id}
                   className={`filter-menu__item ${projectFilter === p.id ? 'is-active' : ''}`}
@@ -941,9 +962,11 @@ export default function TasksView() {
                   {p.name || p.project_code}
                 </button>
               ))}
-              {myProjects.length === 0 && (
+              {myProjects.length === 0 ? (
                 <div className="filter-menu__empty">暂无关联项目</div>
-              )}
+              ) : filteredMyProjects.length === 0 ? (
+                <div className="filter-menu__empty">未找到匹配项目</div>
+              ) : null}
             </div>
           </div>
         </div>
