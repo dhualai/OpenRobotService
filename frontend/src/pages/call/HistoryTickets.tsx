@@ -242,15 +242,16 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
           {STATUS_TABS.map((tab) => {
             const count = statusCounts[tab.countKey];
             return (
-              <button
-                key={tab.value}
-                type="button"
-                className={`history-tab${statusFilter === tab.value ? ' is-active' : ''}`}
-                onClick={() => setStatusFilter(tab.value)}
-              >
-                <span className="history-tab__label">{tab.label}</span>
+              <div key={tab.value} className="history-tab-wrap">
+                <button
+                  type="button"
+                  className={`history-tab${statusFilter === tab.value ? ' is-active' : ''}`}
+                  onClick={() => setStatusFilter(tab.value)}
+                >
+                  {tab.label}
+                </button>
                 {count != null && <span className="history-tab__count">{count}</span>}
-              </button>
+              </div>
             );
           })}
         </div>
