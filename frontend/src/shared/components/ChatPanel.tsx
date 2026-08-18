@@ -2268,6 +2268,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   placeholder="点击选择"
                   format="YYYY-MM-DD HH:00"
                   showTime={{ defaultValue: deadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00', showNow: false }}
+                  showNow={false}
                   value={deadlinePickerValue}
                   disabledDate={deadlineRange ? makeDisabledDate(deadlineRange.min, deadlineRange.max) : undefined}
                   disabledTime={deadlineRange ? makeDisabledTime(deadlineRange.min, deadlineRange.max) : undefined}
