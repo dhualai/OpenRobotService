@@ -20,6 +20,12 @@ export interface HorizontalScrollOptions {
  *    让垂直滚轮直接横滑 tab 栏（仅当容器实际可横向滚动时接管，避免页面卡死）。
  * 2. **鼠标拖拽**：按住鼠标左键拖动即可横滑（pointer events），与触屏手势对齐。
  *
+ * 实现要点（避免破坏点击）：
+ * - 拖拽不用 `setPointerCapture`（它会把后续 click 重新定向到容器、吞掉子按钮点击），
+ *   改为 document 级 pointermove/pointerup 监听，click 的 target 保持原按钮不变。
+ * - 拖拽位移超过阈值（3px）才标记 moved，并在 capture 阶段 click 里仅对「确实拖过」的
+ *   那次 click 做 stopPropagation，随后立即复位；正常点击不受任何影响。
+ *
  * 仅在桌面精确指针（`pointer: fine`）启用，移动端保留原生触摸滑动，零干扰。
  *
  * 用法：
@@ -35,13 +41,12 @@ export function useHorizontalScroll(
     enabled,
   }: HorizontalScrollOptions = {},
 ): void {
-  // 鼠标拖拽状态（drag 用 ref 避免 re-render，且 cleanup 可安全复用）
   const drag = useRef({
     active: false,        // 是否在拖拽中
     startX: 0,            // pointerdown 时 clientX
-    startScroll: 0,      // pointerdown 时 scrollLeft
+    startScroll: 0,       // pointerdown 时 scrollLeft
     moved: false,         // 是否发生过位移（区分点击 vs 拖拽，用于抑制误触发 click）
-    pointerId: -1,        // pointer capture 句柄
+    pointerId: -1,        // 拖拽中的指针 id
   });
 
   useEffect(() => {
@@ -77,7 +82,7 @@ export function useHorizontalScroll(
       return target.closest(INTERACTIVE_SELECTOR) !== null;
     };
 
-    // ── 鼠标拖拽横滑（pointer events） ──
+    // ── 鼠标拖拽横滑（pointer events，document 级监听，不 setPointerCapture，保留子按钮 click 命中）──
     const onPointerDown = (e: PointerEvent) => {
       if (!enableDrag || e.button !== 0) return; // 仅左键
       if (maxScroll() === 0) return;
@@ -89,7 +94,6 @@ export function useHorizontalScroll(
       s.startScroll = el.scrollLeft;
       s.moved = false;
       s.pointerId = e.pointerId;
-      try { el.setPointerCapture(e.pointerId); } catch { /* 旧浏览器忽略 */ }
       el.classList.add('is-dragging');
     };
     const onPointerMove = (e: PointerEvent) => {
@@ -103,33 +107,39 @@ export function useHorizontalScroll(
       const s = drag.current;
       if (!s.active || e.pointerId !== s.pointerId) return;
       s.active = false;
-      try { el.releasePointerCapture(s.pointerId); } catch { /* 已释放忽略 */ }
       el.classList.remove('is-dragging');
+      // moved 标志延迟到 click 之后复位：click 在 pointerup 之后同步派发，需在那一刻仍能读到
+      // 「本次是否拖拽过」；用 setTimeout(0) 在 click 处理完后清掉，避免残留污染下一次点击。
+      if (s.moved) {
+        setTimeout(() => { s.moved = false; }, 0);
+      }
+    };
+    // 拖拽位移后的 click：在 capture 阶段拦截并阻断，避免拖拽松手时误触发 tab 选中；
+    // 正常点击（moved=false）不受影响，click 照常冒泡到子按钮。
+    const onClickCapture = (e: MouseEvent) => {
+      if (drag.current.moved) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
     };
 
     el.addEventListener('wheel', onWheel, { passive: false });
     if (enableDrag) {
       el.addEventListener('pointerdown', onPointerDown);
-      el.addEventListener('pointermove', onPointerMove);
-      el.addEventListener('pointerup', endDrag);
-      el.addEventListener('pointercancel', endDrag);
-      // 拖拽中抑制子按钮 click：拖出位移时阻止后续 click 冒泡（避免误选 tab）
-      el.addEventListener('click', (e) => {
-        if (drag.current.moved) {
-          e.preventDefault();
-          e.stopPropagation();
-          drag.current.moved = false;
-        }
-      }, true);
+      document.addEventListener('pointermove', onPointerMove);
+      document.addEventListener('pointerup', endDrag);
+      document.addEventListener('pointercancel', endDrag);
+      el.addEventListener('click', onClickCapture, true);
     }
 
     return () => {
       el.removeEventListener('wheel', onWheel);
       if (enableDrag) {
         el.removeEventListener('pointerdown', onPointerDown);
-        el.removeEventListener('pointermove', onPointerMove);
-        el.removeEventListener('pointerup', endDrag);
-        el.removeEventListener('pointercancel', endDrag);
+        document.removeEventListener('pointermove', onPointerMove);
+        document.removeEventListener('pointerup', endDrag);
+        document.removeEventListener('pointercancel', endDrag);
+        el.removeEventListener('click', onClickCapture, true);
       }
     };
   }, [ref, wheelMultiplier, enableDrag, enabled]);
