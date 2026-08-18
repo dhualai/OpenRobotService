@@ -179,6 +179,26 @@ FAILED: alembic.command.MigrationError
 
 **鉴别要点**：判断接口返回字段名时，看该路由的 `response_model`（Pydantic schema 字段名），不要看 `FIELD_MAPPING`（那是过滤查询别名表）。
 
+### 3.6 iOS 软键盘遮挡 DatePicker 日历浮层（2026-08-18 修复）
+
+**现象**：iOS Safari 上打开转工单确认弹窗或工单编辑弹窗，点击「最晚解决时间」`antd DatePicker`，日历面板下半部分被苹果输入法软键盘盖住，无法点底部"确定"按钮；Android Chrome 上无此问题。
+
+**原因**：iOS Safari 与 Android Chrome 软键盘行为差异——
+
+| 浏览器 | 键盘弹出时 | fixed/absolute 元素 |
+|---|---|---|
+| Android Chrome | `window.innerHeight` 缩小 | 重新布局，自动避让键盘 |
+| iOS Safari | `window.innerHeight` 不变，仅 `visualViewport.height` 缩小 | **不重新布局**，fixed 元素停留在原位被键盘盖住 |
+
+而 antd `DatePicker` 默认 `getPopupContainer = () => document.body`，日历浮层用 fixed 定位，在 iOS 上不会随键盘上移；又因 `placement` 默认 `bottomLeft` 向下弹，正好被底部键盘盖住。
+
+**修复**（三处 DatePicker 统一改）：
+- `placement="topLeft"`：日历**向上弹**，避开底部键盘（iOS 键盘从底部上滑，向上弹的日历天然不冲突）。
+- `getPopupContainer={(trigger) => trigger.parentElement || document.body}`：浮层挂载到 trigger 父元素（字段容器），变 absolute 定位、跟随表单滚动，避免 iOS fixed 定位失效。
+- 顺带移除"此刻/Now"快捷按钮：外层 `showNow={false}` + `showTime.showNow: false`。原 `showTime` 默认开启"此刻"，点击取当前时刻但 `format: 'HH:00'` 固定整点显示，会出现"11:15 提单却显示 11:00"的整点截断误显示。
+
+**涉及位置**：`frontend/src/shared/components/ChatPanel.tsx`（转工单确认弹窗）、`frontend/src/pages/tasks/TaskDetailPage.tsx`（任务详情编辑弹窗）、`frontend/src/pages/call/TicketDetailPage.tsx`（工单详情编辑弹窗）。
+
 ---
 
 ## 四、AI 模块问题
