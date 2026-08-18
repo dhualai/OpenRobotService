@@ -28,6 +28,7 @@ from app.utils.minio_client import minio_client
 from app.utils.notification_utils import NotificationUtils
 from app.integrations.api import verify_sync_api_key
 from app.core.config import settings
+from app.core.user_identity import user_matches, is_admin_user, to_user_id, actor_username
 
 router = APIRouter(tags=["tasks"])
 
@@ -141,11 +142,12 @@ async def create_task(
     logger = logging.getLogger(__name__)
     
     try:
-        username = current_user.get('username') if current_user else "system"
-        token = current_user.get('token')
-        logger.info(f"开始创建任务: title={ticket_data.title[:50] if ticket_data.title else '无标题'}, ticket_type={ticket_data.ticket_type}, created_by={username}")
+        username = actor_username(current_user) if current_user else "system"
+        creator_id = to_user_id(current_user.get("id") if isinstance(current_user, dict) else None) or to_user_id(username) or username
+        token = current_user.get('token') if isinstance(current_user, dict) else getattr(current_user, "token", None)
+        logger.info(f"开始创建任务: title={ticket_data.title[:50] if ticket_data.title else '无标题'}, ticket_type={ticket_data.ticket_type}, created_by={creator_id}")
         
-        ticket = await TicketService.create_ticket(db, ticket_data, username, comment_attachment_map, token)
+        ticket = await TicketService.create_ticket(db, ticket_data, creator_id, comment_attachment_map, token)
         logger.info(f"创建任务成功: task_id={ticket.id}, title={ticket.title[:50] if ticket.title else '无标题'}")
         
         # 记录创建操作日志
@@ -538,21 +540,21 @@ async def update_task(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = current_user.get('is_admin', False)
-    username = current_user.get('username', '')
-    user_name = current_user.get('name', username)
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
+    user_name = (current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", username))
 
     if not is_admin:
-        if username not in [ticket.assigned_to, ticket.customer, ticket.created_by]:
+        if not user_matches(current_user, ticket.assigned_to, ticket.customer, ticket.created_by):
             raise HTTPException(status_code=403, detail="无权限更新此任务")
         if ticket.status == TicketStatus.CLOSED:
             raise HTTPException(status_code=400, detail="已关闭的任务不能更新")
         if ticket_update.status:
-            if ticket.status == TicketStatus.NEW and username != ticket.created_by:
+            if ticket.status == TicketStatus.NEW and not user_matches(current_user, ticket.created_by):
                 raise HTTPException(status_code=400, detail="只允许创建者开始任务！")
-            if ticket.status in [TicketStatus.PENDING, TicketStatus.IN_PROGRESS] and username != ticket.assigned_to:
+            if ticket.status in [TicketStatus.PENDING, TicketStatus.IN_PROGRESS] and not user_matches(current_user, ticket.assigned_to):
                 raise HTTPException(status_code=400, detail="只允许处理人更新任务！")
-            if ticket.status == TicketStatus.RESOLVED and username != ticket.customer:
+            if ticket.status == TicketStatus.RESOLVED and not user_matches(current_user, ticket.customer):
                 raise HTTPException(status_code=400, detail="只允许发起人的更新已解决任务！")
 
     try:
@@ -675,11 +677,11 @@ async def delete_task(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = current_user.get('is_admin', False)
-    username = current_user.get('username', '')
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
 
     if not is_admin:
-        if username not in [ticket.assigned_to, ticket.created_by]:
+        if not user_matches(current_user, ticket.assigned_to, ticket.created_by):
             raise HTTPException(status_code=403, detail="无权限更新此任务")
 
     try:
@@ -952,14 +954,14 @@ async def update_task_status(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = current_user.get('is_admin', False)
-    username = current_user.get('username', '')
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
     token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
 
     # AI 工单（source='ai'）允许任何登录用户操作状态（created_by='system' 不是真实用户）
     if ticket.source == 'ai':
         pass
-    elif ticket.created_by != username and ticket.assigned_to != username and not is_admin:
+    elif not user_matches(current_user, ticket.created_by, ticket.assigned_to) and not is_admin:
         raise HTTPException(status_code=403, detail="无权限更新任务状态")
 
     try:
@@ -967,8 +969,8 @@ async def update_task_status(
 
         # ── 撤回（→ canceled）权限收窄：仅提单人(created_by) 或 管理员可撤回，处理人(assigned_to) 不可撤回 ──
         # 业务规则：撤回是提单人防止「派错单/误提」的特权，处理人应走「退回/暂停」而非替提单人撤回。
-        # AI 工单（source='ai'）created_by 为真实提单人 username（task_adapter.upsert_task 写入），同样按此校验。
-        if status_enum == TicketStatus.CANCELED and not is_admin and ticket.created_by != username:
+        # created_by 过渡期可能是 username 或 users.id，与当前用户双键比较。
+        if status_enum == TicketStatus.CANCELED and not is_admin and not user_matches(current_user, ticket.created_by):
             raise HTTPException(status_code=403, detail="仅提单人或管理员可撤回工单")
 
         # ── 结束工单（→ resolved）需携带解决方式：接单人确认后提交的最终文本 ──
@@ -996,7 +998,7 @@ async def update_task_status(
             pass
 
         # ── 记录状态变更操作日志 ──
-        user_name = current_user.get('name', username)
+        user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
         _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
         await OperationLogService.log(
             db=db,
@@ -1261,13 +1263,13 @@ async def re_dispatch_task(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = current_user.get('is_admin', False)
-    username = current_user.get('username', '')
-    user_name = current_user.get('name', username)
-    token = current_user.get('token')
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
+    user_name = (current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", username)) or username
+    token = current_user.get('token') if isinstance(current_user, dict) else getattr(current_user, "token", None)
 
     # 权限口径对齐 update_task：管理员 / 提单人 / 处理人 / 客户
-    if not is_admin and username not in [ticket.assigned_to, ticket.customer, ticket.created_by]:
+    if not is_admin and not user_matches(current_user, ticket.assigned_to, ticket.customer, ticket.created_by):
         raise HTTPException(status_code=403, detail="无权限重新派单此任务")
     if ticket.status == TicketStatus.CLOSED:
         raise HTTPException(status_code=400, detail="已关闭的任务不能重新派单")
@@ -1286,7 +1288,7 @@ async def re_dispatch_task(
             detail=f"该工单已指定处理人「{_strong_m.group(1).strip()}」，重新派单不会改变接单人",
         )
 
-    preferred = (payload.preferred_assignee or "").strip()
+    preferred = to_user_id((payload.preferred_assignee or "").strip()) or (payload.preferred_assignee or "").strip()
     if not preferred:
         raise HTTPException(status_code=400, detail="请选择倾向处理人")
     remark = (payload.remark or "").strip()

@@ -1844,11 +1844,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 对话内工单概览气泡「重新派单」：确认 → 调 re-dispatch → 清空 assigned_to_name 回到「派单中」→ 重新轮询显示新接单人
   const handleRedispatchConfirm = useCallback(async () => {
     if (!redispatchOv?.db_id || !redispatchMsgId) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
-    if (!redispatchUser?.username) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
+    if (!redispatchUser?.id && !redispatchUser?.username) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
     setRedispatching(true);
     try {
-      // 派单侧 EngineerProfile.id = users.username（带 wechat_ 前缀），须传 username 而非无前缀的 UserItem.id
-      await reDispatchTicket(redispatchOv.db_id, redispatchUser.username, redispatchRemark.trim() || undefined);
+      await reDispatchTicket(redispatchOv.db_id, redispatchUser.id || redispatchUser.username, redispatchRemark.trim() || undefined);
       Toast({ message: '已重新派单，正在重新推荐处理人', theme: 'success' });
       setShowRedispatchPopup(false);
       // 清空 assigned_to_name → 气泡回到「派单中」态，触发重新轮询拿到新接单人
@@ -1982,7 +1981,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             priority: 'medium',
             project_name: '摇人吧服务号提单',
             project_id: projectIdVal || '',
-            assigned_to: owner.username,
+            assigned_to: owner.id || owner.username,
             deadline_at: overrides.deadline_at || undefined,
           });
           ov2 = {

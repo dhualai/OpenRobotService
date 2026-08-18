@@ -12,6 +12,7 @@ from sqlalchemy.sql import func
 
 from app.models.task import TaskOperationLog, OperationType
 from app.core.database import db_manager
+from app.core.user_identity import same_identity
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +30,8 @@ def get_role_prefix(
     根据工单的 created_by / assigned_to 判断操作人是创建人还是处理人，
     返回形如 '【创建人】' 的前缀；若两者都不是则返回空字符串。
     """
-    is_creator = bool(created_by) and operator == created_by
-    is_assignee = bool(assigned_to) and operator == assigned_to
+    is_creator = same_identity(operator, created_by)
+    is_assignee = same_identity(operator, assigned_to)
     if is_creator and is_assignee:
         return "【创建人/处理人】"
     if is_creator:

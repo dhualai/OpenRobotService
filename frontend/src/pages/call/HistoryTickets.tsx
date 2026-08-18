@@ -52,6 +52,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   const navigate = useNavigate();
   const tasksRefreshKey = useWorkbenchStore((s) => s.tasksRefreshKey);
   const username = useAuthStore((s) => s.username);
+  const userId = useAuthStore((s) => s.userId);
   const isAdmin = useAuthStore((s) => s.isAdmin);
 
   // 状态 tab 栏横向滚动 ref（PC 桌面端滚轮/拖拽横滑，移动端原生触摸滑动）
@@ -197,11 +198,10 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
 
   const handleRedispatchConfirm = async () => {
     if (!redispatchTicket?.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
-    if (!redispatchUser?.username) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
+    if (!redispatchUser?.id && !redispatchUser?.username) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
     setRedispatching(true);
     try {
-      // 派单侧 EngineerProfile.id = users.username（带 wechat_ 前缀），须传 username 而非无前缀的 UserItem.id
-      await reDispatchTicket(redispatchTicket.id, redispatchUser.username, redispatchRemark.trim() || undefined);
+      await reDispatchTicket(redispatchTicket.id, redispatchUser.id || redispatchUser.username, redispatchRemark.trim() || undefined);
       Toast({ message: '已重新派单，正在重新推荐处理人', theme: 'success' });
       setShowRedispatchPopup(false);
       loadInitial();
@@ -327,7 +327,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                     {(t.source === 'ai' || !t.source) && !!t.assigned_to && (
                     <Button size="extra-small" className="history-row__redispatch" loading={redispatching && redispatchTicket?.id === t.id} onClick={(e) => openRedispatchPopup(e, t)}>重新派单</Button>
                     )}
-                    {canShowCancelButton(t.status) && canCancelTicketByUser(t.created_by, username, isAdmin) && (
+                    {canShowCancelButton(t.status) && canCancelTicketByUser(t.created_by, username, isAdmin, userId) && (
                     <Button size="extra-small" variant="outline" theme="default" loading={acting?.id === t.id && acting?.action === 'cancel'} disabled={acting?.id === t.id && acting?.action === 'cancel'} onClick={(e) => handleCancel(e, t)}>撤回</Button>
                     )}
                   </div>

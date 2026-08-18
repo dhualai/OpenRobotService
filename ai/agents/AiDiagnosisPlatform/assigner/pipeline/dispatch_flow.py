@@ -153,7 +153,12 @@ class DispatchFlow:
         # ── Step 2.5: 强制保留项目对接人（即使被部门/产品/排除提单人过滤掉也加回候选）──
         # 例外：对接人 == 提单人（自提单）时**不**强制保留，交由 Step2 正常排除（自提不自接）。
         if contact_assignee_id:
-            creator_id = (ticket_context.creator or "").strip()
+            creator_raw = (ticket_context.creator or "").strip()
+            try:
+                from app.core.user_identity import to_user_id
+                creator_id = to_user_id(creator_raw) or creator_raw
+            except Exception:
+                creator_id = creator_raw
             if contact_assignee_id == creator_id:
                 logger.info(
                     f"{ltag} Step2.5 对接人==提单人({creator_id})，不强制保留（自提不自接）"
@@ -450,7 +455,13 @@ class DispatchFlow:
         if not creator:
             return list(engineers)
 
-        excluded = [e for e in engineers if e.id != creator]
+        try:
+            from app.core.user_identity import to_user_id
+            creator_id = to_user_id(creator) or creator
+        except Exception:
+            creator_id = creator
+
+        excluded = [e for e in engineers if e.id != creator_id]
         if len(excluded) < len(engineers):
             logger.info(
                 f"[派单:{ticket.id}] Step2 排除提单人 | {creator} 已移除 "
@@ -513,7 +524,12 @@ class DispatchFlow:
         preferred = (ticket.preferred_assignee or "").strip()
         if not preferred:
             return None
-        matched = next((e for e in engineers if e.id == preferred), None)
+        try:
+            from app.core.user_identity import to_user_id
+            preferred_id = to_user_id(preferred) or preferred
+        except Exception:
+            preferred_id = preferred
+        matched = next((e for e in engineers if e.id == preferred_id), None)
         if matched is None:
             logger.info(
                 f"[派单:{ticket.id}] 用户倾向处理人 '{preferred}' 未匹配到候选工程师，跳过加权"

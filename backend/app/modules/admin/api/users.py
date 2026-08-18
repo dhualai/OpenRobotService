@@ -1008,16 +1008,25 @@ async def migrate_user(
         if not user_b:
             raise HTTPException(status_code=404, detail=f"目标用户不存在: {target_user_id}")
 
-        # 2. 查询assigned_to为A用户username的tasks并迁移
+        # 2. 查询 assigned_to / created_by 为 A 的 username 或 id 的 tasks，迁到 B 的 users.id
+        identity_a = [x for x in (user_a.username, user_a.id) if x]
         tasks_to_migrate = db.query(Task).filter(
-            Task.assigned_to == user_a.username
+            Task.assigned_to.in_(identity_a)
+        ).all()
+        created_to_migrate = db.query(Task).filter(
+            Task.created_by.in_(identity_a)
         ).all()
 
         migrated_count = 0
         if tasks_to_migrate:
             for task in tasks_to_migrate:
-                task.assigned_to = user_b.username
+                task.assigned_to = user_b.id
             migrated_count = len(tasks_to_migrate)
+        created_migrated = 0
+        if created_to_migrate:
+            for task in created_to_migrate:
+                task.created_by = user_b.id
+            created_migrated = len(created_to_migrate)
 
         # 3. 将A用户的字段拷贝给B用户
         fields_copied = {}
@@ -1091,7 +1100,7 @@ async def migrate_user(
 
         return SuccessResponse(
             message=f"成功迁移用户 {user_a.username} → {user_b.username}，"
-                    f"迁移任务 {migrated_count} 个，拷贝字段 {len(fields_copied)} 项，"
+                    f"迁移处理人任务 {migrated_count} 个、提单人任务 {created_migrated} 个，拷贝字段 {len(fields_copied)} 项，"
                     f"迁移项目角色 {role_rows_migrated} 项、合并 {role_rows_merged} 项、"
                     f"汇报关系 {report_to_rows_migrated} 项，已删除源用户"
         )
