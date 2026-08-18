@@ -5640,22 +5640,26 @@ html, body, #root {
 }
 .history-search::placeholder { color: var(--gray-light); }
 .history-search:focus { border-color: var(--gray-light); }
-.history-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0; -webkit-overflow-scrolling: touch; }
+.history-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 8px 0 4px; -webkit-overflow-scrolling: touch; }
 .history-tabs::-webkit-scrollbar { display: none; }
 /* PC 桌面端鼠标拖拽横滑时光标提示（useHorizontalScroll 加的类） */
 .history-tabs.is-dragging { cursor: grabbing; user-select: none; }
-/* 状态 Tab（设计稿：relative 胶囊，选中黑底白字 bg-foreground text-background） */
+/* 状态 Tab（设计稿：胶囊，选中黑底白字 bg-foreground text-background；
+    计数角标由外层 .history-tab-wrap 定位到按钮右上角） */
+.history-tab-wrap { position: relative; flex-shrink: 0; }
 .history-tab {
-  position: relative;
-  flex-shrink: 0; padding: 6px 12px; font-size: 12px; font-weight: 500; border-radius: 999px;
+  padding: 6px 12px; font-size: 12px; font-weight: 500; border-radius: 999px;
   border: 1px solid transparent; background: var(--card); color: var(--muted-foreground); cursor: pointer; white-space: nowrap;
-  display: inline-flex; align-items: center; gap: 4px;
   transition: all 0.2s ease;
 }
 .history-tab.is-active { background: var(--foreground); color: var(--background); border-color: transparent; font-weight: 500; }
-.history-tab__label { line-height: 1.2; }
-/* 数量角标：内联显示（避免外凸被 overflow-x:auto 容器裁剪），灰色底白字 10px bold */
+/* 数量角标：绝对定位到按钮右上角（对照原型 absolute -right-1.5 -top-1.5），
+   灰底白字 10px bold；pointer-events 透传点击到按钮，外层留白防 overflow 裁剪 */
 .history-tab__count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  pointer-events: none;
   min-width: 16px;
   padding: 0 5px;
   height: 16px;
@@ -6179,7 +6183,6 @@ html, body, #root {
   color: var(--foreground);
 }
 
-/* 历史工单 Tab 计数与搜索图标（HistoryTickets 使用） */
-.history-tab__label { line-height: 1.2; }
+/* 历史工单 搜索图标（HistoryTickets 使用） */
 .history-search__icon { flex-shrink: 0; color: var(--muted-foreground); }
 
