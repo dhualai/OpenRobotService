@@ -907,6 +907,12 @@ async def update_task_status(
     try:
         status_enum = TicketStatus(status)
 
+        # ── 撤回（→ canceled）权限收窄：仅提单人(created_by) 或 管理员可撤回，处理人(assigned_to) 不可撤回 ──
+        # 业务规则：撤回是提单人防止「派错单/误提」的特权，处理人应走「退回/暂停」而非替提单人撤回。
+        # AI 工单（source='ai'）created_by 为真实提单人 username（task_adapter.upsert_task 写入），同样按此校验。
+        if status_enum == TicketStatus.CANCELED and not is_admin and ticket.created_by != username:
+            raise HTTPException(status_code=403, detail="仅提单人或管理员可撤回工单")
+
         # ── 结束工单（→ resolved）需携带解决方式：接单人确认后提交的最终文本 ──
         resolution_summary = None
         try:

@@ -18,6 +18,7 @@ import {
   canUrgeTicket,
   canReportTicket,
   canShowCancelButton,
+  canCancelTicketByUser,
   canEditPriority,
   STATUS_DISPLAY_MAP,
 } from '@/shared/constants/ticket';
@@ -892,7 +893,7 @@ export default function TicketDetailPage() {
               title={canReportTicket(ticket.status) ? undefined : '仅处理中工单可上报'}
               onClick={() => openActionPopup('report')}
             >上报</Button>
-            {canShowCancelButton(ticket.status) && (
+            {canShowCancelButton(ticket.status) && canCancelTicketByUser(ticket.created_by, username, isAdmin) && (
             <Button
               size="small" theme="default" className="detail-actions__btn--muted" icon={<Undo2 size={13} strokeWidth={2} />}
               disabled={acting === 'cancel'}
