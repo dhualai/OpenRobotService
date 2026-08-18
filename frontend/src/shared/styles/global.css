@@ -2583,6 +2583,17 @@ html, body, #root {
 .tasks-view__filter-chips::-webkit-scrollbar {
   display: none;
 }
+/* PC 桌面端鼠标拖拽横滑时光标提示（useHorizontalScroll 加的类） */
+.tasks-view__filter-chips.is-dragging { cursor: grabbing; user-select: none; }
+/* 分组分隔符：区分「相关性」与「工单状态」过滤组，避免被误认为同一组 */
+.tasks-view__filter-divider {
+  flex-shrink: 0;
+  align-self: center;
+  width: 1px;
+  height: 14px;
+  margin: 0 4px;
+  background: var(--gray-light, #e0e0e0);
+}
 .tasks-view__filter-chip {
   position: relative;
   flex-shrink: 0;
@@ -3901,6 +3912,136 @@ html, body, #root {
   border-radius: 999px;
   background: linear-gradient(90deg, var(--mac-blue-2) 0%, var(--mac-blue-4) 100%);
 }
+/* 项目详情页进度条（对照 macaron projects.$id：6px 轨道 + 纯色蓝填充） */
+.mac-progress--detail .mac-progress__track { height: 6px; }
+.mac-progress--detail .mac-progress__fill { background: var(--mac-blue-2); }
+
+/* ── 项目详情（对照 macaron projects.$id：同步条 / 概要卡 / FieldRow / MetaRow / 时间线 / 文档） ── */
+.mac-card-title { margin: 0 0 12px; padding-bottom: 10px; border-bottom: 1px solid rgba(232, 234, 234, 0.7); font-size: 13px; font-weight: 600; color: var(--mac-fg); }
+
+/* 企业微信实时同步状态条 */
+.mac-sync-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--mac-secondary);
+  border-radius: 14px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-size: 11.5px;
+  color: var(--mac-fg);
+}
+.mac-sync-banner__icon { flex-shrink: 0; color: var(--mac-muted-fg); display: inline-flex; }
+.mac-sync-banner__title { font-weight: 500; flex-shrink: 0; }
+.mac-sync-banner__time { flex: 1; min-width: 0; color: var(--mac-muted-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mac-sync-banner__time.is-error { color: #ad4545; }
+.mac-sync-banner__sync { border: none; background: none; padding: 0; flex-shrink: 0; font-size: 11.5px; font-weight: 600; color: var(--mac-blue-2); cursor: pointer; font-family: inherit; }
+
+/* 概要卡头部（对照原型：名称 + 编号 + 右上标签组） */
+.mac-summary-head { display: flex; gap: 12px; }
+.mac-summary-head__main { flex: 1; min-width: 0; }
+.mac-summary-head__label { font-size: 11px; color: var(--mac-muted-fg); }
+.mac-summary-head__name { margin-top: 2px; font-size: 16px; font-weight: 700; line-height: 1.5; color: var(--mac-fg); }
+.mac-summary-head__code { margin-top: 4px; font-size: 11.5px; color: var(--mac-muted-fg); }
+.mac-summary-head__side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex-shrink: 0; }
+
+/* MetaRow（项目经理/对接人：左标签右值，可点编辑） */
+.mac-meta-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid rgba(232, 234, 234, 0.6); }
+.mac-meta-row:last-child { border-bottom: none; }
+.mac-meta-row__label { flex-shrink: 0; font-size: 11.5px; color: var(--mac-muted-fg); }
+.mac-meta-row__value { font-size: 13px; color: var(--mac-fg); }
+.mac-meta-row__value.is-strong { font-weight: 600; }
+.mac-meta-row__value.is-empty { color: var(--mac-muted-fg); }
+.mac-meta-row__pencil { flex-shrink: 0; color: var(--mac-muted-fg); margin-left: 6px; display: inline-flex; }
+/* 概要卡内嵌的字段行（项目编号）：无边框、弱前景，随概要卡副标题文字显示 */
+.mac-meta-row--plain { border-bottom: none; padding: 0; }
+.mac-meta-row--plain .mac-meta-row__value { font-size: 11.5px; color: var(--mac-muted-fg); }
+.mac-meta-row--plain .mac-meta-row__pencil { margin-left: 4px; }
+
+/* FieldRow（对照原型 FieldRow：标签在上 + 可点行） */
+.mac-field-stack { margin-top: 10px; }
+.mac-field-stack:first-child { margin-top: 0; }
+.mac-field-stack__label { margin-bottom: 4px; font-size: 11px; color: var(--mac-muted-fg); }
+.mac-field-stack__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: var(--mac-secondary);
+  border-radius: 10px;
+  padding: 10px 12px;
+  text-align: left;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--mac-fg);
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.mac-field-stack__row:active { opacity: 0.85; }
+.mac-field-stack__value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mac-field-stack__value.is-empty { color: var(--mac-muted-fg); }
+.mac-field-stack__icon { flex-shrink: 0; color: var(--mac-muted-fg); display: inline-flex; }
+
+/* 概要卡三列日期 */
+.mac-dates { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.mac-dates__label { font-size: 11px; color: var(--mac-muted-fg); }
+.mac-dates__value { margin-top: 2px; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--mac-fg); }
+.mac-task-exec { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(232, 234, 234, 0.6); font-size: 12px; color: var(--mac-muted-fg); }
+
+/* 生命周期时间线（对照原型：26px 圆点 + 竖线 + 阶段/状态/补充说明） */
+.mac-timeline { position: relative; margin-top: 16px; }
+.mac-timeline__item { position: relative; display: flex; align-items: flex-start; gap: 12px; padding-bottom: 16px; }
+.mac-timeline__item:last-child { padding-bottom: 0; }
+.mac-timeline__line { position: absolute; left: 12px; top: 28px; bottom: 0; width: 1px; background: var(--mac-border); }
+.mac-timeline__dot {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.mac-timeline__dot.is-done { background: var(--mac-blue-3); color: #fff; } /* 已完成：浅蓝底 + 白色 √ */
+.mac-timeline__dot.is-active { border: 3px solid var(--mac-blue-2); background: var(--mac-card); }
+.mac-timeline__dot.is-pending { background: var(--mac-secondary); }
+.mac-timeline__stage { flex: 1; min-width: 0; padding-top: 3px; }
+.mac-timeline__head { display: flex; align-items: center; gap: 8px; }
+.mac-timeline__name { font-size: 13px; }
+.mac-timeline__name.is-done { font-weight: 500; color: var(--mac-fg); }
+.mac-timeline__name.is-active { font-weight: 700; color: var(--mac-fg); }
+.mac-timeline__name.is-pending { color: var(--mac-muted-fg); }
+.mac-timeline__status { font-size: 11px; color: var(--mac-muted-fg); flex-shrink: 0; }
+.mac-timeline__note-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  border: none;
+  background: var(--mac-secondary);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 10.5px;
+  color: var(--mac-muted-fg);
+  cursor: pointer;
+  font-family: inherit;
+}
+.mac-timeline__note { margin-top: 6px; font-size: 12px; line-height: 1.6; color: var(--mac-muted-fg); white-space: pre-wrap; background: var(--mac-secondary); border-radius: 8px; padding: 6px 8px; }
+.mac-timeline__aborted { display: flex; align-items: center; gap: 8px; padding: 12px; margin-top: 12px; background: #fbecec; border-radius: 10px; border: 1px solid #f5d8d8; font-size: 13px; color: #ad4545; font-weight: 500; }
+
+/* 项目文档 */
+.mac-doc-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: var(--mac-secondary); border-radius: 10px; padding: 8px 12px; margin-bottom: 6px; }
+.mac-doc-row__link { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--mac-blue-2); text-decoration: none; }
+.mac-doc-row__del { border: none; background: none; padding: 4px; flex-shrink: 0; font-size: 12px; color: var(--mac-muted-fg); cursor: pointer; font-family: inherit; }
+.mac-upload-wrap { margin-top: 4px; }
+.mac-upload-wrap .t-upload__trigger { display: flex; }
+.mac-upload-wrap .t-upload__button { border: 1px dashed var(--mac-border); border-radius: 10px; background: var(--mac-secondary); color: var(--mac-muted-fg); }
+
+/* 企业微信台账·实时 行 */
+.mac-ledger-row { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid rgba(232, 234, 234, 0.5); font-size: 12.5px; }
+.mac-ledger-row:last-child { border-bottom: none; }
+.mac-ledger-row__key { flex-shrink: 0; color: var(--mac-muted-fg); }
+.mac-ledger-row__value { text-align: right; word-break: break-all; color: var(--mac-fg); }
 .mac-ministat-grid { margin-top: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .mac-ministat { border-radius: 28px; background: rgba(241, 244, 244, 0.6); padding: 8px 4px; text-align: center; }
 .mac-ministat__value { font-size: 13px; font-weight: 600; color: var(--mac-fg); font-variant-numeric: tabular-nums; }
@@ -5501,6 +5642,8 @@ html, body, #root {
 .history-search:focus { border-color: var(--gray-light); }
 .history-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0; -webkit-overflow-scrolling: touch; }
 .history-tabs::-webkit-scrollbar { display: none; }
+/* PC 桌面端鼠标拖拽横滑时光标提示（useHorizontalScroll 加的类） */
+.history-tabs.is-dragging { cursor: grabbing; user-select: none; }
 /* 状态 Tab（设计稿：relative 胶囊，选中黑底白字 bg-foreground text-background） */
 .history-tab {
   position: relative;

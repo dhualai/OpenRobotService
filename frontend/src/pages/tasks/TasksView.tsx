@@ -18,6 +18,8 @@ import { formatDateTime } from '@/shared/utils/url';
 import { buildRelevanceFilters, type TicketFilterCondition } from '@/shared/utils/ticketFilters';
 import { Search, ArrowRight, Calendar, SlidersHorizontal } from 'lucide-react';
 import { avatarUrl } from '@/api/profile';
+import { useHorizontalScroll } from '@/shared/hooks/useHorizontalScroll';
+import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
 
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
@@ -43,6 +45,8 @@ const PRIORITY_WEIGHT_MAP: Record<string, number> = {
 // 默认选中的任务状态：新建 / 进行中 / 已挂起 / 已解决（排除 已取消 / 已关闭）
 const DEFAULT_STATUS_VALUES: string[] = ['new', 'in_progress', 'pending', 'resolved'];
 const ALL_STATUS_VALUES: string[] = Object.keys(STATUS_DISPLAY_MAP);
+// 优先级默认全选（low / medium / high / urgent）
+const ALL_PRIORITY_VALUES: string[] = Object.keys(PRIORITY_DISPLAY_MAP);
 
 // 从 URL 查询参数解析筛选状态的工具函数
 const parseFilterFromUrl = (params: URLSearchParams) => {
@@ -57,10 +61,19 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
     const parsed = rawStatus.split(',').map((s) => s.trim()).filter(Boolean);
     statusFilter = parsed.length > 0 ? parsed : [...DEFAULT_STATUS_VALUES];
   }
+  // 优先级多选：缺失或 'all' 视为全选，否则按逗号分隔解析
+  const rawPriority = params.get('priority');
+  let priorityFilter: string[];
+  if (rawPriority === null || rawPriority === 'all') {
+    priorityFilter = [...ALL_PRIORITY_VALUES];
+  } else {
+    const parsed = rawPriority.split(',').map((s) => s.trim()).filter(Boolean);
+    priorityFilter = parsed.length > 0 ? parsed : [...ALL_PRIORITY_VALUES];
+  }
   return {
     search: params.get('q') || '',
     statusFilter,
-    priorityFilter: params.get('priority') || 'all',
+    priorityFilter,
     relevanceFilter: params.get('relevance') || 'mine',
     page: parseInt(params.get('page') || '1', 10),
     sortBy: params.get('sort') || 'priority',
@@ -74,7 +87,7 @@ const sameSet = (a: string[], b: string[]) =>
 
 // 将筛选状态同步到 URL 查询参数的工具函数
 const buildFilterParams = (filter: {
-  search: string; statusFilter: string[]; priorityFilter: string;
+  search: string; statusFilter: string[]; priorityFilter: string[];
   relevanceFilter: string; page: number; sortBy: string; sortOrder: string;
 }) => {
   const params = new URLSearchParams();
@@ -88,7 +101,10 @@ const buildFilterParams = (filter: {
     }
     // statusFilter 为空时不设置参数（等同于默认值，避免空 status=）
   }
-  if (filter.priorityFilter !== 'all') params.set('priority', filter.priorityFilter);
+  // 优先级：全选时省略；否则按逗号分隔输出（空数组不设置参数，等同于默认全选）
+  if (filter.priorityFilter.length > 0 && !sameSet(filter.priorityFilter, ALL_PRIORITY_VALUES)) {
+    params.set('priority', filter.priorityFilter.join(','));
+  }
   if (filter.relevanceFilter !== 'mine') params.set('relevance', filter.relevanceFilter);
   if (filter.page > 1) params.set('page', String(filter.page));
   if (filter.sortBy !== 'priority') {
@@ -239,6 +255,10 @@ export default function TasksView() {
 
   const { username, hasPermission, projectIds } = useAuthStore();
   const canManageTasks = hasPermission('frontend:develop');
+
+  // 状态/优先级筛选 chip 栏横向滚动（PC 桌面端滚轮/拖拽横滑，移动端原生触摸滑动）
+  const filterChipsRef = useRef<HTMLDivElement>(null);
+  useHorizontalScroll(filterChipsRef);
   const canViewAllTasks = hasPermission('frontend:task:all');
 
   // 从 URL 初始化筛选状态
@@ -248,7 +268,7 @@ export default function TasksView() {
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState(() => initialFilter.current.search);
   const [statusFilter, setStatusFilter] = useState(() => initialFilter.current.statusFilter);
-  const [priorityFilter, setPriorityFilter] = useState(() => initialFilter.current.priorityFilter);
+  const [priorityFilter, setPriorityFilter] = useState<string[]>(() => initialFilter.current.priorityFilter);
   const [relevanceFilter, setRelevanceFilter] = useState(() => initialFilter.current.relevanceFilter);
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   const [page, setPage] = useState(() => initialFilter.current.page);
@@ -366,8 +386,9 @@ export default function TasksView() {
       if (statusFilter.length > 0 && !sameSet(statusFilter, ALL_STATUS_VALUES)) {
         filters.push({ field: 'status', op: 'in', value: statusFilter });
       }
-      if (priorityFilter !== 'all') {
-        filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
+      // 优先级多选过滤：未全选时按 in 操作过滤，全选则不施加优先级条件
+      if (priorityFilter.length > 0 && !sameSet(priorityFilter, ALL_PRIORITY_VALUES)) {
+        filters.push({ field: 'priority', op: 'in', value: priorityFilter });
       }
 
       const sorts = sortBy === 'priority'
@@ -449,14 +470,17 @@ export default function TasksView() {
 
   
 
-  // 「全部」始终展示：有 frontend:task:all 权限时看全量工单，
-  // 无权限时退化为项目维度（与 fetchTickets 的回退口径一致）。
-  const relevanceOptions = useMemo(() => [
-    { value: 'global', label: '全部' },
-    { value: 'all', label: '项目相关' },
-    { value: 'mine', label: '待我处理' },
-    { value: 'related', label: '与我相关' },
-  ], []);
+  // 「全部」仅在用户拥有 frontend:task:all 权限时展示，用于查看全量工单。
+  const relevanceOptions = useMemo(() => {
+    const base = [
+      { value: 'all', label: '项目相关' },
+      { value: 'mine', label: '待我处理' },
+      { value: 'related', label: '与我相关' },
+    ];
+    return canViewAllTasks
+      ? [{ value: 'global', label: '全部' }, ...base]
+      : base;
+  }, [canViewAllTasks]);
 
   // 拉取各分类角标条数：与列表共用同一套相关性过滤口径（不受搜索/状态/优先级影响），
   // 每次只取 total（size=1）；单个分类失败静默跳过，保留旧值。
@@ -530,8 +554,18 @@ export default function TasksView() {
     setPage(1);
   };
 
-  const handlePriorityChange = (value: string) => {
-    setPriorityFilter(value);
+  // 多选：单个优先级点击切换选中/取消；'all' 表示全选/取消全选；空时回退为全选
+  const handlePriorityToggle = (value: string) => {
+    setPriorityFilter((prev) => {
+      if (value === 'all') {
+        return sameSet(prev, ALL_PRIORITY_VALUES) ? [] : [...ALL_PRIORITY_VALUES];
+      }
+      if (prev.includes(value)) {
+        const next = prev.filter((v) => v !== value);
+        return next.length > 0 ? next : [...ALL_PRIORITY_VALUES]; // 至少保留一项
+      }
+      return [...prev, value];
+    });
     setPage(1);
   };
 
@@ -580,6 +614,7 @@ export default function TasksView() {
 
   return (
     <div className="tasks-view">
+      <SubscriptionReminder username={username} />
       <Navbar
         title="系统任务"
         fixed
@@ -664,7 +699,7 @@ export default function TasksView() {
           </div>
 
           <div className="tasks-view__filter-row">
-            <div className="tasks-view__filter-chips">
+            <div ref={filterChipsRef} className="tasks-view__filter-chips">
               {relevanceOptions.map((option) => (
                 <button
                   key={option.value}
@@ -679,6 +714,7 @@ export default function TasksView() {
                   )}
                 </button>
               ))}
+              <span className="tasks-view__filter-divider" aria-hidden="true" />
               <button
                 key="status_all"
                 className={`tasks-view__filter-chip ${sameSet(statusFilter, ALL_STATUS_VALUES) ? 'is-active' : ''}`}
@@ -695,11 +731,19 @@ export default function TasksView() {
                   {option.label}
                 </button>
               ))}
+              <span className="tasks-view__filter-divider" aria-hidden="true" />
+              <button
+                key="priority_all"
+                className={`tasks-view__filter-chip ${sameSet(priorityFilter, ALL_PRIORITY_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { handlePriorityToggle('all'); }}
+              >
+                全部
+              </button>
               {priorityOptions.map((option) => (
                 <button
                   key={option.value}
-                  className={`tasks-view__filter-chip ${priorityFilter === option.value ? 'is-active' : ''}`}
-                  onClick={() => { handlePriorityChange(option.value); }}
+                  className={`tasks-view__filter-chip ${priorityFilter.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { handlePriorityToggle(option.value); }}
                 >
                   {option.label}
                 </button>
@@ -771,20 +815,20 @@ export default function TasksView() {
           </div>
           <div className="filter-menu__divider"></div>
           <div className="filter-menu__section">
-            <h4 className="filter-menu__title">优先级</h4>
+            <h4 className="filter-menu__title">优先级（多选）</h4>
             <div className="filter-menu__items">
               <button
-                key="all"
-                className={`filter-menu__item ${priorityFilter === 'all' ? 'is-active' : ''}`}
-                onClick={() => { handlePriorityChange('all'); }}
+                key="priority_all"
+                className={`filter-menu__item ${sameSet(priorityFilter, ALL_PRIORITY_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { handlePriorityToggle('all'); }}
               >
                 全部
               </button>
               {priorityOptions.map((option) => (
                 <button
                   key={option.value}
-                  className={`filter-menu__item ${priorityFilter === option.value ? 'is-active' : ''}`}
-                  onClick={() => { handlePriorityChange(option.value); }}
+                  className={`filter-menu__item ${priorityFilter.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { handlePriorityToggle(option.value); }}
                 >
                   {option.label}
                 </button>
