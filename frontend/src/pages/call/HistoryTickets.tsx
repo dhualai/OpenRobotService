@@ -8,7 +8,7 @@ import { Loading, Toast, Button, Popup } from 'tdesign-mobile-react';
 import { Search, ArrowRight } from 'lucide-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
 import { urgeTicket, reportTicket, cancelTicket, reDispatchTicket } from '@/api/ticket';
-import { isTerminalTicketStatus, canUrgeTicket, canReportTicket, canShowCancelButton } from '@/shared/constants/ticket';
+import { isTerminalTicketStatus, canUrgeTicket, canReportTicket, canShowCancelButton, canCancelTicketByUser } from '@/shared/constants/ticket';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import PullToRefresh from '@/shared/components/PullToRefresh';
@@ -325,7 +325,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                     {(t.source === 'ai' || !t.source) && !!t.assigned_to && (
                     <Button size="extra-small" className="history-row__redispatch" loading={redispatching && redispatchTicket?.id === t.id} onClick={(e) => openRedispatchPopup(e, t)}>重新派单</Button>
                     )}
-                    {canShowCancelButton(t.status) && (
+                    {canShowCancelButton(t.status) && canCancelTicketByUser(t.created_by, username, isAdmin) && (
                     <Button size="extra-small" variant="outline" theme="default" loading={acting?.id === t.id && acting?.action === 'cancel'} disabled={acting?.id === t.id && acting?.action === 'cancel'} onClick={(e) => handleCancel(e, t)}>撤回</Button>
                     )}
                   </div>
