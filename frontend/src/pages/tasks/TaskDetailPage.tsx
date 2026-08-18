@@ -18,6 +18,7 @@ import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import { uploadCommentAttachment, getOperationLogs, formatDuration, type OperationLog as TicketOperationLog } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canEditPriority } from '@/shared/constants/ticket';
+import { isSameUser } from '@/shared/utils/userIdentity';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
 import { formatDateTime, formatRawDateTime, parseUtcDate } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
@@ -125,7 +126,7 @@ export default function TaskDetailPage() {
   const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, '管理服务');
 
   const { refreshTasks } = useWorkbenchStore();
-  const { username, name } = useAuthStore();
+  const { username, userId, name } = useAuthStore();
 
   const [detail, setDetail] = useState<Ticket | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -285,19 +286,18 @@ export default function TaskDetailPage() {
   }, [detail?.id]);
 
   const getCurrentUserRoles = () => {
-    const currentUsername = username;
     const currentName = name || username;
 
     const isAssignee = !!(
-      (detail?.assigned_to && detail.assigned_to === currentUsername) ||
-      (detail?.assignee_name && (detail.assignee_name === currentUsername || detail.assignee_name === currentName)) ||
-      (detail?.assigned_to_name && (detail.assigned_to_name === currentUsername || detail.assigned_to_name === currentName))
+      isSameUser(detail?.assigned_to, userId, username) ||
+      (detail?.assignee_name && (detail.assignee_name === username || detail.assignee_name === currentName)) ||
+      (detail?.assigned_to_name && (detail.assigned_to_name === username || detail.assigned_to_name === currentName))
     );
 
     const isReporter = !!(
-      (detail?.created_by && detail.created_by === currentUsername) ||
-      (detail?.reporter_name && (detail.reporter_name === currentUsername || detail.reporter_name === currentName)) ||
-      (detail?.created_by_name && (detail.created_by_name === currentUsername || detail.created_by_name === currentName))
+      isSameUser(detail?.created_by, userId, username) ||
+      (detail?.reporter_name && (detail.reporter_name === username || detail.reporter_name === currentName)) ||
+      (detail?.created_by_name && (detail.created_by_name === username || detail.created_by_name === currentName))
     );
 
     return { isAssignee, isReporter };
@@ -569,7 +569,7 @@ export default function TaskDetailPage() {
       if (resumeUser) {
         await request(`/${detail.id}`, {
           method: 'PUT',
-          body: JSON.stringify({ assigned_to: resumeUser.username, operation_type: 'reassign' }),
+          body: JSON.stringify({ assigned_to: resumeUser.id || resumeUser.username, operation_type: 'reassign' }),
         });
       }
 
@@ -597,7 +597,7 @@ export default function TaskDetailPage() {
       await request(`/${t.id}`, {
         method: 'PUT',
         body: JSON.stringify({
-          assigned_to: escalateUser.username,
+          assigned_to: escalateUser.id || escalateUser.username,
           operation_type: 'escalate',
         }),
       });
@@ -791,7 +791,7 @@ export default function TaskDetailPage() {
     try {
       await request(`/${detail.id}`, {
         method: 'PUT',
-        body: JSON.stringify({ assigned_to: reassignUser.username, operation_type: 'reassign' }),
+        body: JSON.stringify({ assigned_to: reassignUser.id || reassignUser.username, operation_type: 'reassign' }),
       });
 
       // 将重新指派原因记录为评论（系统评论只记录操作本身，不包含原因）
