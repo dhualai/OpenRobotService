@@ -602,6 +602,16 @@ export default function TaskDetailPage() {
         }),
       });
 
+      // 将升级原因记录为评论（系统评论只记录操作本身，不包含原因）
+      try {
+        await request(`/${t.id}/comments`, {
+          method: 'POST',
+          body: JSON.stringify({ content: `升级原因：${escalateReason.trim()}`, is_public: true }),
+        });
+      } catch {
+        // 评论写入失败不阻断主流程，工单状态已变更
+      }
+
       await refreshDetail();
       Toast({ message: `已升级，处理人已变更为 ${target}`, theme: 'success' });
       setEscalateUser(null);
@@ -752,6 +762,16 @@ export default function TaskDetailPage() {
         });
       }
 
+      // 将退回原因记录为评论（系统评论只记录操作本身，不包含原因）
+      try {
+        await request(`/${detail.id}/comments`, {
+          method: 'POST',
+          body: JSON.stringify({ content: `退回原因：${returnReason.trim()}`, is_public: true }),
+        });
+      } catch {
+        // 评论写入失败不阻断主流程，工单状态已变更
+      }
+
       await refreshDetail();
       Toast({ message: `已退回工单，处理人变更为 ${returnTo}`, theme: 'success' });
       setReturnReason('');
@@ -773,6 +793,16 @@ export default function TaskDetailPage() {
         method: 'PUT',
         body: JSON.stringify({ assigned_to: reassignUser.username, operation_type: 'reassign' }),
       });
+
+      // 将重新指派原因记录为评论（系统评论只记录操作本身，不包含原因）
+      try {
+        await request(`/${detail.id}/comments`, {
+          method: 'POST',
+          body: JSON.stringify({ content: `重新指派原因：${reassignReason.trim()}`, is_public: true }),
+        });
+      } catch {
+        // 评论写入失败不阻断主流程，工单状态已变更
+      }
 
       await refreshDetail();
       Toast({ message: `已重新指派给 ${target}`, theme: 'success' });
