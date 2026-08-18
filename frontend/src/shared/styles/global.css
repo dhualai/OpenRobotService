@@ -2574,6 +2574,15 @@ html, body, #root {
 .tasks-view__filter-chips::-webkit-scrollbar {
   display: none;
 }
+/* 分组分隔符：区分「相关性」与「工单状态」过滤组，避免被误认为同一组 */
+.tasks-view__filter-divider {
+  flex-shrink: 0;
+  align-self: center;
+  width: 1px;
+  height: 14px;
+  margin: 0 4px;
+  background: var(--gray-light, #e0e0e0);
+}
 .tasks-view__filter-chip {
   position: relative;
   flex-shrink: 0;
