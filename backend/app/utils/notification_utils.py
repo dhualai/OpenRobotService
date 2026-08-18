@@ -11,6 +11,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List, Dict, Any
 from app.core.config import settings
+from app.core.user_identity import to_usernames
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +207,7 @@ class NotificationUtils:
                 "url": args.get('url', "https://usp.ep-zl.com/p/app/tasks")
             },
             "at": {
-                "user_names": list(set(args.get('user_names', []))),
+                "user_names": list(set(to_usernames(args.get('user_names', [])))),
                 "is_all": args.get('is_all', False)
             }
         }

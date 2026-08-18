@@ -215,6 +215,8 @@ class PermissionService:
         try:
             db_user = db.query(UserDB).filter(UserDB.username == username).first()
             if not db_user:
+                db_user = db.query(UserDB).filter(UserDB.id == username).first()
+            if not db_user:
                 return None
             
             import json

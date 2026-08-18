@@ -123,10 +123,17 @@ export function canCancelTicket(status: TicketStatusLike): boolean {
 
 /** 撤回操作权限：仅提单人(created_by === 当前用户) 或 管理员可撤回，处理人不可撤回。
  *  与 canCancelTicket（状态可用）配合使用：状态可用 + 操作人有权限，才显示可点击的撤回按钮。 */
-export function canCancelTicketByUser(createdBy: string | null | undefined, currentUsername: string | null | undefined, isAdmin: boolean): boolean {
+export function canCancelTicketByUser(
+  createdBy: string | null | undefined,
+  currentUsername: string | null | undefined,
+  isAdmin: boolean,
+  currentUserId?: string | null,
+): boolean {
   if (isAdmin) return true;
-  if (!currentUsername || !createdBy) return false;
-  return currentUsername === createdBy;
+  if (!createdBy) return false;
+  if (currentUsername && currentUsername === createdBy) return true;
+  if (currentUserId && currentUserId === createdBy) return true;
+  return false;
 }
 
 /** 撤回按钮「显示」规则：非终态且状态属于可撤回组（新建/待派单/已派单/待处理/处理中）即展示。

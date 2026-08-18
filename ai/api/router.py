@@ -1054,7 +1054,9 @@ async def list_all_tickets(
             q = db.query(Task).filter(Task.source.in_(["ai", "manual"]))
             # 按创建者过滤（非 admin 只看自己的）
             if username:
-                q = q.filter(Task.created_by == username)
+                from app.core.user_identity import identity_keys
+                keys = identity_keys(username)
+                q = q.filter(Task.created_by.in_(keys) if keys else Task.created_by == username)
             # status/type 字符串 → 枚举；非法值（如旧值 dispatched）降级为不过滤
             if status:
                 try:
@@ -1079,7 +1081,9 @@ async def list_all_tickets(
             # 复用本接口一并返回，供前端各状态 Tab 计数与 badge 使用，无需额外统计接口
             stat_q = db.query(Task.status, func.count(Task.id)).filter(Task.source.in_(["ai", "manual"]))
             if username:
-                stat_q = stat_q.filter(Task.created_by == username)
+                from app.core.user_identity import identity_keys
+                keys = identity_keys(username)
+                stat_q = stat_q.filter(Task.created_by.in_(keys) if keys else Task.created_by == username)
             by_status = {s.value: 0 for s in TaskStatus}
             for st, cnt in stat_q.group_by(Task.status).all():
                 key = st.value if isinstance(st, TaskStatus) else st
