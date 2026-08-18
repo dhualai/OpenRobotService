@@ -667,10 +667,6 @@ html, body, #root {
   color: var(--muted-foreground);
   margin-top: 10px;
   line-height: 1.6;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
 /* ── 附件预览（PDF / Markdown / 其它）全屏弹窗 ── */
