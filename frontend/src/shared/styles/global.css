@@ -2583,6 +2583,8 @@ html, body, #root {
 .tasks-view__filter-chips::-webkit-scrollbar {
   display: none;
 }
+/* PC 桌面端鼠标拖拽横滑时光标提示（useHorizontalScroll 加的类） */
+.tasks-view__filter-chips.is-dragging { cursor: grabbing; user-select: none; }
 /* 分组分隔符：区分「相关性」与「工单状态」过滤组，避免被误认为同一组 */
 .tasks-view__filter-divider {
   flex-shrink: 0;
@@ -5510,6 +5512,8 @@ html, body, #root {
 .history-search:focus { border-color: var(--gray-light); }
 .history-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0; -webkit-overflow-scrolling: touch; }
 .history-tabs::-webkit-scrollbar { display: none; }
+/* PC 桌面端鼠标拖拽横滑时光标提示（useHorizontalScroll 加的类） */
+.history-tabs.is-dragging { cursor: grabbing; user-select: none; }
 /* 状态 Tab（设计稿：relative 胶囊，选中黑底白字 bg-foreground text-background） */
 .history-tab {
   position: relative;

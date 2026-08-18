@@ -18,6 +18,7 @@ import { formatDateTime } from '@/shared/utils/url';
 import { buildRelevanceFilters, type TicketFilterCondition } from '@/shared/utils/ticketFilters';
 import { Search, ArrowRight, Calendar, SlidersHorizontal } from 'lucide-react';
 import { avatarUrl } from '@/api/profile';
+import { useHorizontalScroll } from '@/shared/hooks/useHorizontalScroll';
 
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
@@ -253,6 +254,10 @@ export default function TasksView() {
 
   const { username, hasPermission, projectIds } = useAuthStore();
   const canManageTasks = hasPermission('frontend:develop');
+
+  // 状态/优先级筛选 chip 栏横向滚动（PC 桌面端滚轮/拖拽横滑，移动端原生触摸滑动）
+  const filterChipsRef = useRef<HTMLDivElement>(null);
+  useHorizontalScroll(filterChipsRef);
   const canViewAllTasks = hasPermission('frontend:task:all');
 
   // 从 URL 初始化筛选状态
@@ -692,7 +697,7 @@ export default function TasksView() {
           </div>
 
           <div className="tasks-view__filter-row">
-            <div className="tasks-view__filter-chips">
+            <div ref={filterChipsRef} className="tasks-view__filter-chips">
               {relevanceOptions.map((option) => (
                 <button
                   key={option.value}
