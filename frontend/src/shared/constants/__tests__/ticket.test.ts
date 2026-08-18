@@ -151,8 +151,11 @@ describe('canCancelTicketByUser（撤回操作人权限：仅提单人/管理员
     expect(canCancelTicketByUser('', '', true)).toBe(true);
     expect(canCancelTicketByUser(null, null, true)).toBe(true);
   });
-  it('提单人（created_by === 当前用户）可撤回', () => {
+  it('提单人（created_by === 当前用户 username）可撤回', () => {
     expect(canCancelTicketByUser('alice', 'alice', false)).toBe(true);
+  });
+  it('提单人（created_by === 当前用户 users.id）可撤回', () => {
+    expect(canCancelTicketByUser('user-id-1', 'alice', false, 'user-id-1')).toBe(true);
   });
   it('非提单人非管理员不可撤回（含处理人）', () => {
     expect(canCancelTicketByUser('alice', 'bob', false)).toBe(false);

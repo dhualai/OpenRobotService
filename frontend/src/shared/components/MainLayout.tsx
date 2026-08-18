@@ -80,20 +80,20 @@ export default function MainLayout() {
   const location = useLocation();
   const activeTab = useWorkbenchStore((s) => s.activeTab);
   const setActiveTab = useWorkbenchStore((s) => s.setActiveTab);
-  const { username, projectIds } = useAuthStore();
+  const { username, userId, projectIds } = useAuthStore();
 
   // 「待我处理」工单数角标：与系统任务页共用同一相关性过滤口径（size=1 只取 total），
   // 每 30 秒刷新；无用户名时无法计算「待我处理」，不展示角标。
   const [mineTicketCount, setMineTicketCount] = useState<number | null>(null);
 
   const fetchMineTicketCount = useCallback(async () => {
-    if (!username) return;
+    if (!username && !userId) return;
     try {
       const request = createRequest(API_CONFIG.TASKS.BASE_URL, 'Tasks');
       const data = await request<{ total: number }>('/filter', {
         method: 'POST',
         body: JSON.stringify({
-          filters: buildRelevanceFilters('mine', username, projectIds),
+          filters: buildRelevanceFilters('mine', userId || username, projectIds),
           sorts: [],
           page: 1,
           size: 1,
@@ -104,7 +104,7 @@ export default function MainLayout() {
     } catch {
       // 计数失败保留旧角标，不打扰页面
     }
-  }, [username, projectIds]);
+  }, [username, userId, projectIds]);
 
   useEffect(() => {
     fetchMineTicketCount();
