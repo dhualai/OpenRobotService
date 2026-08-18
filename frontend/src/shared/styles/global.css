@@ -143,8 +143,8 @@ html, body, #root {
 }
 /* 玻璃栏：顶栏 / 底栏毛玻璃 */
 .glass-bar {
-  background: color-mix(in oklab, var(--card) 78%, transparent);
-  backdrop-filter: saturate(1.4) blur(18px);
+  background: color-mix(in oklab, var(--card) 50%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
   -webkit-backdrop-filter: saturate(1.4) blur(18px);
 }
 /* 品牌渐变文字 */
@@ -252,9 +252,10 @@ html, body, #root {
    文字 text-foreground；未选 text-muted-foreground。 */
 .app-bottom-nav {
   flex-shrink: 0;
-  background: color-mix(in oklab, var(--card) 78%, transparent);
-  backdrop-filter: saturate(1.4) blur(18px);
-  -webkit-backdrop-filter: saturate(1.4) blur(18px);
+  /* 背景更透（56% 不透明），磨玻璃模糊减弱（blur 10px），让背后朦胧字/工单隐约可见 */
+  background: color-mix(in oklab, var(--card) 40%, transparent);
+  backdrop-filter: saturate(1.4) blur(5px);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px);
   border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
   padding-bottom: env(safe-area-inset-bottom);
 }
