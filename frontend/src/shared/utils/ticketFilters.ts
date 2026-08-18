@@ -31,7 +31,7 @@ export const buildRelevanceFilters = (
         {
           and: [
             { or: workingStatusFilters },
-            { field: 'assignedTo', op: 'eq', value: username },
+            { field: 'assignedTo', op: 'eq', value: username },  // 前端仍传 username，后端解析为 users.id
           ],
         },
         {
