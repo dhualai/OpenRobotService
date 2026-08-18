@@ -1,6 +1,6 @@
 // 可复用 AI 对话面板 — 提单 Agent（/api/ai/qa/ask/stream）
 // 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
-import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { memo, useState, useEffect, useRef, useCallback, useMemo, type ReactNode, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
@@ -337,10 +337,14 @@ const MessageBubble = memo(function MessageBubble({
           ) : msg.subtype === 'missing_hint' ? (
             // 信息不足提示气泡（not_ready）：长文本折叠，提供「展开/收起」
             <div className="chat-missing-hint">
-              <div className={`chat-missing-hint__text chat-clamp${expandedDesc ? ' is-expanded' : ''}`} style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
-              <button type="button" className="chat-missing-hint__toggle" onClick={() => onToggleDesc(msg.id)}>
-                {expandedDesc ? '收起 ▴' : '展开 ▾'}
-              </button>
+              <ClampText
+                className="chat-missing-hint__text"
+                expanded={expandedDesc}
+                onToggle={() => onToggleDesc(msg.id)}
+                style={{ whiteSpace: 'pre-wrap' }}
+              >
+                {msg.content}
+              </ClampText>
             </div>
           ) : msg.subtype === 'ticket_overview' && msg.ticket_overview ? (
             // 工单概览气泡：confirm 成功后插入，展示工单详情 + 派单状态，点击进入工单详情页
@@ -368,12 +372,13 @@ const MessageBubble = memo(function MessageBubble({
               {msg.ticket_overview.project && <div className="chat-ticket-overview__row"><FolderClosed size={12} strokeWidth={2} /> {msg.ticket_overview.project}</div>}
               {msg.ticket_overview.contact && <div className="chat-ticket-overview__row"><User size={12} strokeWidth={2} /> {msg.ticket_overview.contact}</div>}
               {msg.ticket_overview.description && (
-                <>
-                  <div className={`chat-ticket-overview__desc chat-clamp${expandedDesc ? ' is-expanded' : ''}`}>{msg.ticket_overview.description}</div>
-                  <button type="button" className="chat-ticket-overview__toggle" onClick={(e) => { e.stopPropagation(); onToggleDesc(msg.id); }}>
-                    {expandedDesc ? '收起 ▴' : '展开 ▾'}
-                  </button>
-                </>
+                <ClampText
+                  className="chat-ticket-overview__desc"
+                  expanded={expandedDesc}
+                  onToggle={() => onToggleDesc(msg.id)}
+                >
+                  {msg.ticket_overview.description}
+                </ClampText>
               )}
               <div className="chat-ticket-overview__footer">
                 {msg.ticket_overview.assigned_to_name ? (
@@ -444,6 +449,65 @@ const MessageBubble = memo(function MessageBubble({
     </div>
   );
 });
+
+/**
+ * 长文本折叠组件：默认 3 行截断，仅当内容实际溢出（scrollHeight > clientHeight）时才显示「展开/收起」按钮。
+ * 修复历史缺陷：此前按钮无条件渲染，短文本（未溢出）也显示「展开」，点击无效果，让用户误以为按钮失效。
+ * 展开态由外部 expanded 控制（记录在 expandedMsgIds），收起后重新按 3 行截断。
+ */
+function ClampText({
+  children,
+  className = '',
+  expanded,
+  onToggle,
+  style,
+}: {
+  children: ReactNode;
+  className?: string;
+  expanded: boolean;
+  onToggle: () => void;
+  style?: CSSProperties;
+}) {
+  const textRef = useRef<HTMLDivElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+
+  useEffect(() => {
+    const el = textRef.current;
+    if (!el) return;
+    // 展开态下 overflow 已取消，需用「未截断时的完整高度」判断：临时按 3 行截断测量比较
+    // 直接测量：展开态时 scrollHeight 不受 clamp 限制，无法判断是否溢出，故只在收起态测量。
+    const measure = () => {
+      if (!expanded) {
+        setOverflowing(el.scrollHeight > el.clientHeight + 1);
+      }
+    };
+    measure();
+    // 内容变化 / 容器宽度变化（字体加载、窗口缩放）时重测
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [expanded, children]);
+
+  return (
+    <>
+      <div
+        ref={textRef}
+        className={`${className} chat-clamp${expanded ? ' is-expanded' : ''}`}
+        style={style}
+      >
+        {children}
+      </div>
+      {overflowing && (
+        <button
+          type="button"
+          className="chat-ticket-overview__toggle"
+          onClick={(e) => { e.stopPropagation(); onToggle(); }}
+        >
+          {expanded ? '收起 ▴' : '展开 ▾'}
+        </button>
+      )}
+    </>
+  );
+}
 
 const SCENE_CONFIG: Record<ChatScene, {
   sceneType: string;
@@ -1065,6 +1129,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const files = pendingItems.map((it) => it.file);
     if (!content && files.length === 0) return;
     if (!token) { kickToLogin('请先登录'); return; }
+    // 单条消息长度上限：后端 QAAskRequest.query max_length=500，超长会 422。
+    // 前端先行拦截，给出明确提示而非让后端报错（#403 发送失败 HTTP 422 根因）。
+    if (content.length > 500) {
+      Toast({ message: '单条消息上限 500 字，请精简或转为附件上传', theme: 'warning' });
+      return;
+    }
     if (sendingRef.current) return; // 防双发
     sendingRef.current = true;
     // 用户主动发送：恢复贴底跟随（即使刚才在上滑看历史，最新对话也要立即进入视野）
