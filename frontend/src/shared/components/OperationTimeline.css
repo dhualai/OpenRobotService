@@ -125,6 +125,17 @@
   border: 1px solid #f3f4f6;
 }
 
+/* 重新指派记录：突出流转类操作，浅青底 + 强调色文字 */
+.op-segment__sub--reassign {
+  background: #ecfeff;
+  border-color: #a5f3fc;
+}
+
+.op-segment__sub--reassign .op-segment__action {
+  color: #0e7490;
+  font-weight: 700;
+}
+
 .op-segment__sub-dot {
   flex-shrink: 0;
   width: 22px;
