@@ -208,45 +208,8 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
   );
 }
 
-// 「待我处理」时间轴：按创建日期分组（新→旧），组内按紧急度排序，左侧日期列 + 竖向虚线。
-function TicketTimeline({ items, onOpen, avatarMap }: { items: Ticket[]; onOpen: (id: string) => void; avatarMap?: AvatarMap }) {
-  const groups = useMemo(() => {
-    const map = new Map<string, Ticket[]>();
-    for (const t of items) {
-      const date = (t.created_at || '').slice(0, 10) || '未知';
-      const list = map.get(date) ?? [];
-      list.push(t);
-      map.set(date, list);
-    }
-    return [...map.entries()]
-      .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-      .map(([date, list]) => ({
-        date,
-        list: [...list].sort(
-          (a, b) => (PRIORITY_WEIGHT_MAP[b.priority] || 0) - (PRIORITY_WEIGHT_MAP[a.priority] || 0),
-        ),
-      }));
-  }, [items]);
-
-  return (
-    <div className="task-timeline">
-      {groups.map((g) => (
-        <div key={g.date} className="task-timeline__group">
-          <div className="task-timeline__date">
-            <span className="task-timeline__date-md">{g.date.slice(5)}</span>
-            <span className="task-timeline__date-year">{g.date.slice(0, 4)}</span>
-            <span className="task-timeline__dot" />
-          </div>
-          <div className="task-timeline__line">
-            {g.list.map((t) => (
-              <TicketCard key={t.id} t={t} onOpen={onOpen} avatarMap={avatarMap} />
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
+// 「待我处理」原先按日期分组的时间轴已移除：所有分类统一走扁平卡片列表，
+// 排序完全由 fetchTickets 中的 sortBy/sortOrder 决定，快捷排序对所有分类生效。
 
 export default function TasksView() {
   const navigate = useNavigate();
@@ -283,6 +246,8 @@ export default function TasksView() {
   // 项目下拉搜索关键字（按名称/编码模糊匹配，contains）
   const [projectKeyword, setProjectKeyword] = useState('');
   const [showFilterMenu, setShowFilterMenu] = useState(false);
+  // 记录项目下拉的打开来源：从「筛选」弹窗进入时，关闭后需回到筛选弹窗
+  const projectPickerFromFilterRef = useRef(false);
   const [page, setPage] = useState(() => initialFilter.current.page);
   const [total, setTotal] = useState(0);
   const [sortBy, setSortBy] = useState(() => initialFilter.current.sortBy);
@@ -577,6 +542,15 @@ export default function TasksView() {
     setPage(1);
   };
 
+  // 关闭项目下拉：若来自「筛选」弹窗，则回到筛选弹窗，而非回到主页面
+  const closeProjectPicker = () => {
+    setShowProjectPicker(false);
+    if (projectPickerFromFilterRef.current) {
+      projectPickerFromFilterRef.current = false;
+      setShowFilterMenu(true);
+    }
+  };
+
   // 当前选中项目的展示名（无选中或 id 不在名下项目列表时回退为「全部」）
   const selectedProjectLabel = useMemo(() => {
     if (!projectFilter) return '全部';
@@ -805,7 +779,7 @@ export default function TasksView() {
               </button>
               <button
                 className={`tasks-view__filter-chip tasks-view__filter-chip--dropdown ${projectFilter ? 'is-active' : ''}`}
-                onClick={() => { setProjectKeyword(''); setShowProjectPicker(true); }}
+                onClick={() => { setProjectKeyword(''); projectPickerFromFilterRef.current = false; setShowProjectPicker(true); }}
               >
                 <span className="tasks-view__filter-chip-value">
                   {projectFilter ? selectedProjectLabel : '选择项目'}
@@ -840,8 +814,6 @@ export default function TasksView() {
         <div className="tasks-cards">
           {loading ? <Loading text="加载中…" /> : tickets.length === 0 ? (
             <div className="tasks-empty">暂无工单</div>
-          ) : relevanceFilter === 'mine' ? (
-            <TicketTimeline items={tickets} onOpen={openDetail} avatarMap={avatarMap} />
           ) : (
             tickets.map((t) => (
               <TicketCard key={t.id} t={t} onOpen={openDetail} avatarMap={avatarMap} />
@@ -899,7 +871,7 @@ export default function TasksView() {
             <h4 className="filter-menu__title">项目</h4>
             <button
               className="filter-menu__dropdown-trigger"
-              onClick={() => { setProjectKeyword(''); setShowFilterMenu(false); setShowProjectPicker(true); }}
+              onClick={() => { setProjectKeyword(''); projectPickerFromFilterRef.current = true; setShowFilterMenu(false); setShowProjectPicker(true); }}
             >
               <span className={projectFilter ? 'filter-menu__dropdown-value' : 'filter-menu__dropdown-placeholder'}>
                 {projectFilter ? selectedProjectLabel : '全部'}
@@ -933,7 +905,7 @@ export default function TasksView() {
       </Popup>
 
       {/* 项目过滤下拉（顶部 chip 触发）：单选名下项目，支持输入模糊匹配过滤 */}
-      <Popup visible={showProjectPicker} onClose={() => setShowProjectPicker(false)} placement="bottom" showOverlay>
+      <Popup visible={showProjectPicker} onClose={closeProjectPicker} placement="bottom" showOverlay>
         <div className="filter-menu filter-menu--searchable">
           <div className="filter-menu__section">
             <h4 className="filter-menu__title">选择项目</h4>
@@ -949,7 +921,7 @@ export default function TasksView() {
             <div className="filter-menu__items">
               <button
                 className={`filter-menu__item ${!projectFilter ? 'is-active' : ''}`}
-                onClick={() => { handleProjectChange(''); setShowProjectPicker(false); }}
+                onClick={() => { handleProjectChange(''); closeProjectPicker(); }}
               >
                 全部
               </button>
@@ -957,7 +929,7 @@ export default function TasksView() {
                 <button
                   key={p.id}
                   className={`filter-menu__item ${projectFilter === p.id ? 'is-active' : ''}`}
-                  onClick={() => { handleProjectChange(p.id); setShowProjectPicker(false); }}
+                  onClick={() => { handleProjectChange(p.id); closeProjectPicker(); }}
                 >
                   {p.name || p.project_code}
                 </button>
