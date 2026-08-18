@@ -896,6 +896,19 @@ html, body, #root {
   font-size: 13px;
   font-weight: 500;
 }
+.chat-ticket-overview__redispatch {
+  margin-left: auto;
+  flex-shrink: 0;
+  border: 1px solid var(--blue-1);
+  background: var(--blue-1);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.chat-ticket-overview__redispatch:active { background: var(--blue-2); border-color: var(--blue-2); }
 
 /* 提交中旋转圆环 */
 .chat-ticket-spinner {
@@ -5324,6 +5337,13 @@ html, body, #root {
 }
 .history-row__actions .t-button:not(.t-button--disabled):active { background: var(--blue-1); }
 .history-row__actions .t-button.t-button--disabled { opacity: 0.45; }
+/* 重新派单：深蓝实心 + 白字，与 outline 的催办/上报/撤回区分，保证浅底上字清晰 */
+.history-row__actions .t-button.history-row__redispatch {
+  background: var(--blue-1);
+  border-color: var(--blue-1);
+  color: #fff;
+}
+.history-row__actions .t-button.history-row__redispatch:not(.t-button--disabled):active { background: var(--blue-2); }
 
 /* ===== TicketDetailPage 评论附件上传 ===== */
 .detail-chat-files { display: flex; flex-wrap: wrap; gap: 6px; }
