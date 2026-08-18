@@ -1,6 +1,6 @@
 // 可复用 AI 对话面板 — 提单 Agent（/api/ai/qa/ask/stream）
 // 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
-import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { memo, useState, useEffect, useRef, useCallback, useMemo, type ReactNode, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
@@ -13,7 +13,7 @@ import API_CONFIG from '@/config/api';
 import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, qaClearDraft, type TicketDraft } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import UserSelect from '@/shared/components/UserSelect';
-import { createTicket } from '@/api/ticket';
+import { createTicket, reDispatchTicket } from '@/api/ticket';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
 import type { UserItem } from '@/api/users';
 import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
@@ -245,7 +245,7 @@ const mapDbMessages = (
 
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
-  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket,
+  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch,
 }: {
   msg: Message;
   editingId: string | null;
@@ -260,6 +260,7 @@ const MessageBubble = memo(function MessageBubble({
   onEditCancel: () => void;
   onImageClick: (url: string) => void;
   onOpenTicket: (dbId: number) => void;
+  onRedispatch?: (msgId: string, ov: NonNullable<Message['ticket_overview']>) => void;
 }) {
   return (
     <div className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
@@ -337,10 +338,14 @@ const MessageBubble = memo(function MessageBubble({
           ) : msg.subtype === 'missing_hint' ? (
             // 信息不足提示气泡（not_ready）：长文本折叠，提供「展开/收起」
             <div className="chat-missing-hint">
-              <div className={`chat-missing-hint__text chat-clamp${expandedDesc ? ' is-expanded' : ''}`} style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
-              <button type="button" className="chat-missing-hint__toggle" onClick={() => onToggleDesc(msg.id)}>
-                {expandedDesc ? '收起 ▴' : '展开 ▾'}
-              </button>
+              <ClampText
+                className="chat-missing-hint__text"
+                expanded={expandedDesc}
+                onToggle={() => onToggleDesc(msg.id)}
+                style={{ whiteSpace: 'pre-wrap' }}
+              >
+                {msg.content}
+              </ClampText>
             </div>
           ) : msg.subtype === 'ticket_overview' && msg.ticket_overview ? (
             // 工单概览气泡：confirm 成功后插入，展示工单详情 + 派单状态，点击进入工单详情页
@@ -368,16 +373,26 @@ const MessageBubble = memo(function MessageBubble({
               {msg.ticket_overview.project && <div className="chat-ticket-overview__row"><FolderClosed size={12} strokeWidth={2} /> {msg.ticket_overview.project}</div>}
               {msg.ticket_overview.contact && <div className="chat-ticket-overview__row"><User size={12} strokeWidth={2} /> {msg.ticket_overview.contact}</div>}
               {msg.ticket_overview.description && (
-                <>
-                  <div className={`chat-ticket-overview__desc chat-clamp${expandedDesc ? ' is-expanded' : ''}`}>{msg.ticket_overview.description}</div>
-                  <button type="button" className="chat-ticket-overview__toggle" onClick={(e) => { e.stopPropagation(); onToggleDesc(msg.id); }}>
-                    {expandedDesc ? '收起 ▴' : '展开 ▾'}
-                  </button>
-                </>
+                <ClampText
+                  className="chat-ticket-overview__desc"
+                  expanded={expandedDesc}
+                  onToggle={() => onToggleDesc(msg.id)}
+                >
+                  {msg.ticket_overview.description}
+                </ClampText>
               )}
               <div className="chat-ticket-overview__footer">
                 {msg.ticket_overview.assigned_to_name ? (
-                  <span className="chat-ticket-overview__assigned"><CheckCircle2 size={14} strokeWidth={2} /> 已派单 · {msg.ticket_overview.assigned_to_name}</span>
+                  <>
+                    <span className="chat-ticket-overview__assigned"><CheckCircle2 size={14} strokeWidth={2} /> 已派单 · {msg.ticket_overview.assigned_to_name}</span>
+                    {onRedispatch && (
+                      <button
+                        type="button"
+                        className="chat-ticket-overview__redispatch"
+                        onClick={(e) => { e.stopPropagation(); onRedispatch(msg.id, msg.ticket_overview!); }}
+                      >重新派单</button>
+                    )}
+                  </>
                 ) : (
                   <span className="chat-ticket-overview__dispatching">
                     <i className="dispatch-pulse dispatch-pulse--inline" />派单中…
@@ -444,6 +459,65 @@ const MessageBubble = memo(function MessageBubble({
     </div>
   );
 });
+
+/**
+ * 长文本折叠组件：默认 3 行截断，仅当内容实际溢出（scrollHeight > clientHeight）时才显示「展开/收起」按钮。
+ * 修复历史缺陷：此前按钮无条件渲染，短文本（未溢出）也显示「展开」，点击无效果，让用户误以为按钮失效。
+ * 展开态由外部 expanded 控制（记录在 expandedMsgIds），收起后重新按 3 行截断。
+ */
+function ClampText({
+  children,
+  className = '',
+  expanded,
+  onToggle,
+  style,
+}: {
+  children: ReactNode;
+  className?: string;
+  expanded: boolean;
+  onToggle: () => void;
+  style?: CSSProperties;
+}) {
+  const textRef = useRef<HTMLDivElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+
+  useEffect(() => {
+    const el = textRef.current;
+    if (!el) return;
+    // 展开态下 overflow 已取消，需用「未截断时的完整高度」判断：临时按 3 行截断测量比较
+    // 直接测量：展开态时 scrollHeight 不受 clamp 限制，无法判断是否溢出，故只在收起态测量。
+    const measure = () => {
+      if (!expanded) {
+        setOverflowing(el.scrollHeight > el.clientHeight + 1);
+      }
+    };
+    measure();
+    // 内容变化 / 容器宽度变化（字体加载、窗口缩放）时重测
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [expanded, children]);
+
+  return (
+    <>
+      <div
+        ref={textRef}
+        className={`${className} chat-clamp${expanded ? ' is-expanded' : ''}`}
+        style={style}
+      >
+        {children}
+      </div>
+      {overflowing && (
+        <button
+          type="button"
+          className="chat-ticket-overview__toggle"
+          onClick={(e) => { e.stopPropagation(); onToggle(); }}
+        >
+          {expanded ? '收起 ▴' : '展开 ▾'}
+        </button>
+      )}
+    </>
+  );
+}
 
 const SCENE_CONFIG: Record<ChatScene, {
   sceneType: string;
@@ -526,6 +600,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 转工单信息不足引导（方案A）：prepare 返回 not_ready 时，
   // 在输入框上方常驻「待补充清单」卡片 + 转工单按钮角标，引导用户回对话补全
   const [ticketMissing, setTicketMissing] = useState<{ info: string[]; message: string } | null>(null);
+  // 对话内工单概览气泡「重新派单」：选倾向处理人 + 备注 → 重派 → 清空 assigned_to_name 重新轮询
+  const [redispatchOv, setRedispatchOv] = useState<NonNullable<Message['ticket_overview']> | null>(null);
+  const [redispatchMsgId, setRedispatchMsgId] = useState<string | null>(null);
+  const [redispatchUser, setRedispatchUser] = useState<UserItem | null>(null);
+  const [redispatchRemark, setRedispatchRemark] = useState('');
+  const [showRedispatchPopup, setShowRedispatchPopup] = useState(false);
+  const [redispatching, setRedispatching] = useState(false);
   // 气泡长文本「展开/收起」：记录已展开的消息 id（工单概览描述、缺失提示气泡共用）
   const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set());
   const toggleMsgExpanded = useCallback((id: string) => {
@@ -1065,6 +1146,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const files = pendingItems.map((it) => it.file);
     if (!content && files.length === 0) return;
     if (!token) { kickToLogin('请先登录'); return; }
+    // 单条消息长度上限：后端 QAAskRequest.query max_length=500，超长会 422。
+    // 前端先行拦截，给出明确提示而非让后端报错（#403 发送失败 HTTP 422 根因）。
+    if (content.length > 500) {
+      Toast({ message: '单条消息上限 500 字，请精简或转为附件上传', theme: 'warning' });
+      return;
+    }
     if (sendingRef.current) return; // 防双发
     sendingRef.current = true;
     // 用户主动发送：恢复贴底跟随（即使刚才在上滑看历史，最新对话也要立即进入视野）
@@ -1330,6 +1417,21 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const handleOpenTicket = useCallback((dbId: number) => {
     navigate(`/call/ticket/db_${dbId}`);
   }, [navigate]);
+
+  // 对话内工单概览气泡「重新派单」：打开弹窗（先拦截指定处理人工单）
+  const openRedispatch = useCallback((msgId: string, ov: NonNullable<Message['ticket_overview']>) => {
+    const strongText = `${ov.title || ''}\n${ov.description || ''}`;
+    const strongMatch = strongText.match(/指定(?:处理人|人|人员)[:：]\s*([^\]\s，,；;:：）)】]{2,6})/);
+    if (strongMatch) {
+      Toast({ message: `该工单已指定处理人「${strongMatch[1]}」，无法重新派单`, theme: 'warning' });
+      return;
+    }
+    setRedispatchMsgId(msgId);
+    setRedispatchOv(ov);
+    setRedispatchUser(null);
+    setRedispatchRemark('');
+    setShowRedispatchPopup(true);
+  }, []);
 
   // voiceWillCancelRef 在 handleMove 中直接同步写入，不再通过 useEffect 异步同步
 
@@ -1739,6 +1841,31 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     pollDispatch(msgId, dbId, ov, 0);
   }, [pollDispatch]);
 
+  // 对话内工单概览气泡「重新派单」：确认 → 调 re-dispatch → 清空 assigned_to_name 回到「派单中」→ 重新轮询显示新接单人
+  const handleRedispatchConfirm = useCallback(async () => {
+    if (!redispatchOv?.db_id || !redispatchMsgId) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    if (!redispatchUser?.username) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
+    setRedispatching(true);
+    try {
+      // 派单侧 EngineerProfile.id = users.username（带 wechat_ 前缀），须传 username 而非无前缀的 UserItem.id
+      await reDispatchTicket(redispatchOv.db_id, redispatchUser.username, redispatchRemark.trim() || undefined);
+      Toast({ message: '已重新派单，正在重新推荐处理人', theme: 'success' });
+      setShowRedispatchPopup(false);
+      // 清空 assigned_to_name → 气泡回到「派单中」态，触发重新轮询拿到新接单人
+      const newOv = { ...redispatchOv, assigned_to_name: undefined };
+      setMessages((prev) => prev.map((m) =>
+        m.id === redispatchMsgId && m.ticket_overview
+          ? { ...m, ticket_overview: newOv }
+          : m
+      ));
+      startDispatchPoll(redispatchMsgId, redispatchOv.db_id, newOv);
+    } catch (err) {
+      Toast({ message: `重新派单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setRedispatching(false);
+    }
+  }, [redispatchOv, redispatchMsgId, redispatchUser, redispatchRemark, startDispatchPoll]);
+
   // 卸载清理所有轮询 + 中断流式（避免组件卸载后后台 setMessages 报错/串台）
   useEffect(() => () => {
     cancelledRef.current = true;
@@ -2002,6 +2129,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             onEditCancel={handleEditCancel}
             onImageClick={setPreviewUrl}
             onOpenTicket={handleOpenTicket}
+            onRedispatch={openRedispatch}
             expandedDesc={expandedMsgIds.has(msg.id)}
             onToggleDesc={toggleMsgExpanded}
           />
@@ -2346,6 +2474,33 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 onClick={handleConfirmTicket}
                 disabled={ticketConfirm.submitting}
               >{ticketConfirm.submitting ? '提交中…' : '确认提交'}</button>
+            </div>
+          </div>
+        </Popup>
+
+        {/* 重新派单弹窗：对话内工单概览气泡「重新派单」，选倾向处理人 + 备注 */}
+        <Popup visible={showRedispatchPopup} onClose={() => setShowRedispatchPopup(false)} placement="bottom" showOverlay>
+          <div className="conv-dialog">
+            <h4 className="conv-dialog__title">重新派单</h4>
+            <p className="conv-dialog__msg">将强制重新智能派单，请选择倾向处理人</p>
+            <div style={{ marginBottom: 16 }}>
+              <UserSelect
+                value={redispatchUser?.id ?? null}
+                onChange={(u) => setRedispatchUser(u)}
+                placeholder="选择倾向处理人（必选）"
+                title="选择倾向处理人"
+              />
+            </div>
+            <input
+              className="conv-dialog__input"
+              placeholder="备注（可选）：换人原因或给新处理人的说明"
+              value={redispatchRemark}
+              onChange={(e) => setRedispatchRemark(e.target.value)}
+              maxLength={200}
+            />
+            <div className="conv-dialog__btns">
+              <button type="button" className="ticket-confirm__btn ticket-confirm__btn--cancel" onClick={() => setShowRedispatchPopup(false)}>取消</button>
+              <button type="button" className="ticket-confirm__btn ticket-confirm__btn--confirm" disabled={!redispatchUser || redispatching} onClick={handleRedispatchConfirm}>{redispatching ? '提交中…' : '确定重新派单'}</button>
             </div>
           </div>
         </Popup>
