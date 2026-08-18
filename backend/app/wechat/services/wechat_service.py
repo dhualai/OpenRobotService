@@ -208,6 +208,36 @@ class WechatService:
             print(f'请求用户列表异常: {e}')
             return None
 
+    async def get_user_info(self, openid: str, lang: str = 'zh_CN') -> Optional[Dict]:
+        """获取用户基本信息（订阅状态）。
+
+        调用微信公众号接口 GET /cgi-bin/user/info 获取用户信息，
+        返回 subscribe 字段标识是否关注（1=已关注，0=未关注）。
+        """
+        access_token = self.get_access_token()
+        if not access_token:
+            logger.error('获取access_token失败，无法获取用户信息')
+            return None
+
+        url = f'{settings.WECHAT_USER_INFO_URL}?access_token={access_token}&openid={openid}&lang={lang}'
+
+        try:
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.session.get(url, timeout=5)
+            )
+            result = response.json()
+
+            if 'subscribe' in result:
+                return result
+            else:
+                logger.warning(f'获取用户信息失败: {result}')
+                return result
+        except Exception as e:
+            logger.error(f'请求用户信息异常: {e}')
+            return None
+
     def broadcast_message(self, content: str) -> bool:
         user_list_result = self.get_user_list()
         if not user_list_result or 'data' not in user_list_result or 'openid' not in user_list_result['data']:

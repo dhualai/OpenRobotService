@@ -74,10 +74,20 @@ export function useHorizontalScroll(
       el.scrollLeft = Math.max(0, el.scrollLeft + e.deltaY * unit * wheelMultiplier);
     };
 
-    // ── 鼠标拖拽横滑（document 级监听，不 setPointerCapture，保留子按钮 click 命中）──
+    // 交互元素白名单：点击这些元素时跳过指针捕获，让原生 click 事件正常触发
+    const INTERACTIVE_SELECTOR = 'button, input, textarea, select, a, [role="button"], [contenteditable="true"]';
+    const isInteractiveTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof Element)) return false;
+      // closest 会向上查找，即使点击到按钮内部的子元素（如 span）也能正确识别
+      return target.closest(INTERACTIVE_SELECTOR) !== null;
+    };
+
+    // ── 鼠标拖拽横滑（pointer events，document 级监听，不 setPointerCapture，保留子按钮 click 命中）──
     const onPointerDown = (e: PointerEvent) => {
       if (!enableDrag || e.button !== 0) return; // 仅左键
       if (maxScroll() === 0) return;
+      // 点击交互元素（按钮/链接/输入框等）时跳过指针捕获，保留原生 click 行为
+      if (isInteractiveTarget(e.target)) return;
       const s = drag.current;
       s.active = true;
       s.startX = e.clientX;

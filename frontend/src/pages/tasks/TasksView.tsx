@@ -19,6 +19,7 @@ import { buildRelevanceFilters, type TicketFilterCondition } from '@/shared/util
 import { Search, ArrowRight, Calendar, SlidersHorizontal } from 'lucide-react';
 import { avatarUrl } from '@/api/profile';
 import { useHorizontalScroll } from '@/shared/hooks/useHorizontalScroll';
+import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
 
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
@@ -613,6 +614,7 @@ export default function TasksView() {
 
   return (
     <div className="tasks-view">
+      <SubscriptionReminder username={username} />
       <Navbar
         title="系统任务"
         fixed

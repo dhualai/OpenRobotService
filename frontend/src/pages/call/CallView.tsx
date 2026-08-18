@@ -7,6 +7,7 @@ import { Menu, CalendarDays } from 'lucide-react';
 import ChatPanel from '@/shared/components/ChatPanel';
 import ConversationDrawer from '@/shared/components/ConversationDrawer';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
+import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
 import { qaListTickets } from '@/api/ai';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
@@ -31,7 +32,10 @@ export default function CallView() {
 
   return (
     <div className="app-shell">
-      {/* 内容区（抽屉打开时右挤） */}
+      <SubscriptionReminder username={username} />
+      {/* 内容区（抽屉打开时右挤）。
+          ChatPanel 始终 mounted（showHistory 时 display:none 隐藏而非卸载，
+          避免切历史后回来消息丢失 */}
       <div className={`app-shell__content ${drawerOpen ? 'is-shifted' : ''}`}>
         <div className="chat-view">
           <Navbar
