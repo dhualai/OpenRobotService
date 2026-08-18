@@ -213,3 +213,22 @@ export const MacRefreshCw = ({ size }: { size?: number }) => (
     <path d="M8 16H3v5" />
   </Icon>
 );
+
+/* lucide pencil（可编辑字段行触发图标） */
+export const MacPencil = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />
+    <path d="m15 5 4 4" />
+  </Icon>
+);
+
+/* lucide file-text（项目文档图标） */
+export const MacFileText = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+    <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+    <path d="M10 9H8" />
+    <path d="M16 13H8" />
+    <path d="M16 17H8" />
+  </Icon>
+);
