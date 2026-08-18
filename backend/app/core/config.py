@@ -147,6 +147,10 @@ class Settings(BaseSettings):
         return f"{self.WECHAT_API_BASE_URL}/cgi-bin/user/get"
     
     @property
+    def WECHAT_USER_INFO_URL(self) -> str:
+        return f"{self.WECHAT_API_BASE_URL}/cgi-bin/user/info"
+    
+    @property
     def WECHAT_MENU_CREATE_URL(self) -> str:
         return f"{self.WECHAT_API_BASE_URL}/cgi-bin/menu/create"
     
