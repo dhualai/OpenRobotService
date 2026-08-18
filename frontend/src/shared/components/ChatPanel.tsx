@@ -20,6 +20,7 @@ import { createConversation, getConversation, appendMessage, readAiSessionId, up
 import { createRequest } from '@/api/client';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import { compressImage } from '@/shared/utils/imageCompress';
+import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import { useInertiaScroll } from '@/shared/hooks/useInertiaScroll';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import ImageLightbox from '@/shared/components/ImageLightbox';
@@ -99,6 +100,24 @@ const uid = () => Date.now().toString() + Math.random().toString(36).slice(2, 6)
 /** 附件代理下载 URL：前端通过后端代理读取 MinIO 对象（/api/call/files/{object_path}），
  *  不用预签名 URL（其 host=MINIO_ENDPOINT=localhost:9000，生产浏览器访问不了 → 碎图）。 */
 const attachmentUrl = (objectPath: string) => `${API_CONFIG.CALL.BASE_URL}/files/${objectPath}`;
+
+/** 待发送附件类型：file 与预览 url 绑定为单一对象（与 ChatPanel 内 pendingItems 一致） */
+type PendingItem = { file: File; url?: string };
+
+/**
+ * 对同一批待发送附件去重命名：截图工具等场景多张图常带相同默认名（如 image.png），
+ * 若原样上传，后端对象名由 `{session_id}/{filename}` 决定，同名会被 MinIO 覆盖写 →
+ * 回显时所有气泡都指向最后一张图。这里复用讨论区的 dedupeFileNames 保证文件名唯一，
+ * 预览 objectURL 复用原值（重命名不改变字节内容）。
+ */
+const dedupePendingItems = (items: PendingItem[]): PendingItem[] => {
+  if (items.length < 2) return items;
+  const files = dedupeFileNames(items.map((it) => it.file));
+  return files.map((f, i) => {
+    const orig = items[i];
+    return f === orig.file ? orig : { file: f, url: orig.url };
+  });
+};
 
 /**
  * AI 回复文本清洗（流式定稿 / 持久化 / 历史恢复统一入口）。
@@ -1557,8 +1576,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       });
     }
     if (accepted.length === 0) return;
-    // 追加到已有待发送列表（支持多次选择累积）
-    setPendingItems((prev) => [...prev, ...accepted]);
+    // 追加到已有待发送列表（支持多次选择累积）；合并后统一去重命名，避免同名截图上传时对象名冲突/回显串图
+    setPendingItems((prev) => dedupePendingItems([...prev, ...accepted]));
   };
 
   /** PC 端粘贴图片：从剪贴板取 image/* 文件，走与「选择文件」一致的待发送附件流程（预览后可随消息上传） */
@@ -1578,7 +1597,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 粘贴图同样压缩；file 与预览 url 绑定为单一对象，避免错位
       const r = await compressImage(file);
       const finalFile = r.file;
-      setPendingItems((prev) => [...prev, { file: finalFile, url: URL.createObjectURL(finalFile) }]);
+      setPendingItems((prev) => dedupePendingItems([...prev, { file: finalFile, url: URL.createObjectURL(finalFile) }]));
       Toast({ message: '已粘贴图片，可直接发送', theme: 'success' });
       return; // 只处理第一张图片
     }

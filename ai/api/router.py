@@ -8,6 +8,7 @@
 import json
 import time
 import os
+import uuid
 import asyncio
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -545,7 +546,14 @@ async def _upload_events(
     raw_bytes: list[tuple] = []  # (filename, bytes) 暂存供 VLM
 
     def _upload_one(f_content: bytes, f_ct: str, fname: str) -> dict:
-        object_path = f"{_bucket}/{session_id}/{fname}"
+        # 对象名加唯一后缀：截图工具等场景同名文件（如 image.png）跨多次发送时，
+        # 若直接用原文件名，同一 session 目录下 object_path 相同 → MinIO 覆盖写 →
+        # 历史消息回显串成同一张图。filename 保留原始可读名供前端匹配/展示，
+        # object_path 用唯一名保证每次上传落独立对象（跨发送也不冲突）。
+        stem, ext = os.path.splitext(fname)
+        uniq = uuid.uuid4().hex[:8]
+        object_name = f"{stem}_{uniq}{ext}" if stem else f"{uniq}{ext}"
+        object_path = f"{_bucket}/{session_id}/{object_name}"
         minio_client.upload_bytes(f_content, object_path, content_type=f_ct, raise_on_error=True)
         url = minio_client.get_presigned_url(object_path, expires_minutes=1440)
         return {"filename": fname, "size": len(f_content), "path": url, "object_path": object_path}
@@ -1090,7 +1098,7 @@ async def list_all_tickets(
                     "id": d["id"], "session_id": d["session_id"], "ticket_ai_id": d["ticket_ai_id"],
                     "title": d["title"], "description": d["description"], "type": d["type"],
                     "priority": d["priority"], "status": d["status"], "contact": d["contact"],
-                    "project": d["project"],
+                    "project": d["project"], "source": d["source"],
                     "location": d["location"], "robot_type": d["robot_type"],
                     "fault_code": d["fault_code"], "severity": d["severity"],
                     "attachments": d["attachments"], "diagnosis": d["diagnosis"],
