@@ -10,6 +10,7 @@ import { createRequest, ApiError, clearCache } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
 import { aiGet } from '@/api/ai';
+import { STATUS_OPTIONS, LIFECYCLE_STATUSES, PROJECT_ABORTED, calcLifecycleProgress } from '@/shared/utils/projectLifecycle';
 
 interface ProjectDocument {
   name: string;
@@ -70,12 +71,7 @@ interface WecomProjectsResponse {
   message?: string;
 }
 
-// 与 backend ProjectStatus 枚举严格一致（顺序即生命周期顺序），"项目中止"为终止分支单独处理
-const STATUS_OPTIONS = [
-  '售前方案', '签单洽谈', '已签合同', '出厂测试', '即将进场', '延期进场',
-  '正在实施', '实施暂停', '实施运行', '试运行中', '验收运营', '项目中止', '项目结束',
-];
-const LIFECYCLE_STATUSES = STATUS_OPTIONS.filter((s) => s !== '项目中止');
+// 项目阶段枚举与「项目时间进度」计算见 shared/utils/projectLifecycle.ts（与项目进度列表共用同一口径）
 
 // 与 backend ProjectCategory 枚举严格一致
 const CATEGORY_OPTIONS = ['重要紧急', '紧急不重要', '重要不紧急', '不紧急不重要'];
@@ -420,8 +416,8 @@ export default function ProjectDetail() {
   if (!project) return <div style={{ padding: 40, textAlign: 'center', color: '#999' }}>{isNew ? '初始化失败' : '项目不存在'}</div>;
 
   const lifecycleIndex = LIFECYCLE_STATUSES.indexOf(project.status);
-  const progressPct = lifecycleIndex >= 0 ? Math.round((lifecycleIndex / (LIFECYCLE_STATUSES.length - 1)) * 100) : 0;
-  const isAborted = project.status === '项目中止';
+  const progressPct = calcLifecycleProgress(project.status);
+  const isAborted = project.status === PROJECT_ABORTED;
   const activePickerConfig = PICKERS.find((p) => p.key === activePicker);
 
   return (
