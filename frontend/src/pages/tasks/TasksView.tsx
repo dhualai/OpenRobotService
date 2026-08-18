@@ -40,11 +40,26 @@ const PRIORITY_WEIGHT_MAP: Record<string, number> = {
   low: 1,
 };
 
+// 默认选中的任务状态：新建 / 进行中 / 已挂起 / 已解决（排除 已取消 / 已关闭）
+const DEFAULT_STATUS_VALUES: string[] = ['new', 'in_progress', 'pending', 'resolved'];
+const ALL_STATUS_VALUES: string[] = Object.keys(STATUS_DISPLAY_MAP);
+
 // 从 URL 查询参数解析筛选状态的工具函数
 const parseFilterFromUrl = (params: URLSearchParams) => {
+  const rawStatus = params.get('status');
+  // 约定：URL 中缺失 status 时使用默认值；status=all 表示全部选中（无状态过滤）；否则按逗号分隔解析
+  let statusFilter: string[];
+  if (rawStatus === null) {
+    statusFilter = [...DEFAULT_STATUS_VALUES];
+  } else if (rawStatus === 'all') {
+    statusFilter = [...ALL_STATUS_VALUES];
+  } else {
+    const parsed = rawStatus.split(',').map((s) => s.trim()).filter(Boolean);
+    statusFilter = parsed.length > 0 ? parsed : [...DEFAULT_STATUS_VALUES];
+  }
   return {
     search: params.get('q') || '',
-    statusFilter: params.get('status') || 'all',
+    statusFilter,
     priorityFilter: params.get('priority') || 'all',
     relevanceFilter: params.get('relevance') || 'mine',
     page: parseInt(params.get('page') || '1', 10),
@@ -53,15 +68,26 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
   };
 };
 
+// 数组对比：判断两个无序数组是否包含相同元素
+const sameSet = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((v) => b.includes(v));
 
 // 将筛选状态同步到 URL 查询参数的工具函数
 const buildFilterParams = (filter: {
-  search: string; statusFilter: string; priorityFilter: string;
+  search: string; statusFilter: string[]; priorityFilter: string;
   relevanceFilter: string; page: number; sortBy: string; sortOrder: string;
 }) => {
   const params = new URLSearchParams();
   if (filter.search) params.set('q', filter.search);
-  if (filter.statusFilter !== 'all') params.set('status', filter.statusFilter);
+  // 与默认值一致时省略 status 参数，保持 URL 简洁
+  if (!sameSet(filter.statusFilter, DEFAULT_STATUS_VALUES)) {
+    if (sameSet(filter.statusFilter, ALL_STATUS_VALUES)) {
+      params.set('status', 'all');
+    } else if (filter.statusFilter.length > 0) {
+      params.set('status', filter.statusFilter.join(','));
+    }
+    // statusFilter 为空时不设置参数（等同于默认值，避免空 status=）
+  }
   if (filter.priorityFilter !== 'all') params.set('priority', filter.priorityFilter);
   if (filter.relevanceFilter !== 'mine') params.set('relevance', filter.relevanceFilter);
   if (filter.page > 1) params.set('page', String(filter.page));
@@ -336,8 +362,9 @@ export default function TasksView() {
         }
         filters.push({ or: searchConditions });
       }
-      if (statusFilter !== 'all') {
-        filters.push({ field: 'status', op: 'eq', value: statusFilter });
+      // 任务状态多选过滤：未全选时按 in 操作过滤，全选则不施加状态条件
+      if (statusFilter.length > 0 && !sameSet(statusFilter, ALL_STATUS_VALUES)) {
+        filters.push({ field: 'status', op: 'in', value: statusFilter });
       }
       if (priorityFilter !== 'all') {
         filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
@@ -488,8 +515,18 @@ export default function TasksView() {
     setPage(1);
   };
 
-  const handleStatusChange = (value: string) => {
-    setStatusFilter(value);
+  // 多选：单个状态点击切换选中/取消；'all' 表示全部选中
+  const handleStatusToggle = (value: string) => {
+    setStatusFilter((prev) => {
+      if (value === 'all') {
+        return sameSet(prev, ALL_STATUS_VALUES) ? [...DEFAULT_STATUS_VALUES] : [...ALL_STATUS_VALUES];
+      }
+      if (prev.includes(value)) {
+        const next = prev.filter((v) => v !== value);
+        return next.length > 0 ? next : [...DEFAULT_STATUS_VALUES]; // 至少保留默认集
+      }
+      return [...prev, value];
+    });
     setPage(1);
   };
 
@@ -642,11 +679,18 @@ export default function TasksView() {
                   )}
                 </button>
               ))}
+              <button
+                key="status_all"
+                className={`tasks-view__filter-chip ${sameSet(statusFilter, ALL_STATUS_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { handleStatusToggle('all'); }}
+              >
+                全部
+              </button>
               {statusOptions.map((option) => (
                 <button
                   key={option.value}
-                  className={`tasks-view__filter-chip ${statusFilter === option.value ? 'is-active' : ''}`}
-                  onClick={() => { handleStatusChange(option.value); }}
+                  className={`tasks-view__filter-chip ${statusFilter.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { handleStatusToggle(option.value); }}
                 >
                   {option.label}
                 </button>
@@ -705,20 +749,20 @@ export default function TasksView() {
           </div>
           <div className="filter-menu__divider"></div>
           <div className="filter-menu__section">
-            <h4 className="filter-menu__title">任务状态</h4>
+            <h4 className="filter-menu__title">任务状态（多选）</h4>
             <div className="filter-menu__items">
               <button
-                key="all"
-                className={`filter-menu__item ${statusFilter === 'all' ? 'is-active' : ''}`}
-                onClick={() => { handleStatusChange('all'); }}
+                key="status_all"
+                className={`filter-menu__item ${sameSet(statusFilter, ALL_STATUS_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { handleStatusToggle('all'); }}
               >
                 全部
               </button>
               {statusOptions.map((option) => (
                 <button
                   key={option.value}
-                  className={`filter-menu__item ${statusFilter === option.value ? 'is-active' : ''}`}
-                  onClick={() => { handleStatusChange(option.value); }}
+                  className={`filter-menu__item ${statusFilter.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { handleStatusToggle(option.value); }}
                 >
                   {option.label}
                 </button>
