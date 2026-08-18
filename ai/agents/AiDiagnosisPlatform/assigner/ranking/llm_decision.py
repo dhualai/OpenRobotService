@@ -149,8 +149,8 @@ class LlmDecision:
 
         lines.extend([
             "",
-            "输出 JSON。engineer_id 必须是候选人列表中该人选对应的完整 username（以 wechat_ 开头，如 wechat_oD5oY3xxx），必须保留 wechat_ 前缀、精确复制，不要去掉前缀或填姓名。",
-            '{"ticket_category":"support", "problem_domain":"产品", "product":"", "engineer_id":"wechat_oD5oY3RN...", "confidence_score":0.85, "reasoning":"理由(说明类型/产品/模块/环节判断)", "decision_type":"auto"}',
+            "输出 JSON。engineer_id 必须是候选人列表中该人选对应的 ID（「ID:」字段，即 users.id），必须精确复制，不要填姓名或自造标识。",
+            '{"ticket_category":"support", "problem_domain":"产品", "product":"", "engineer_id":"<精确复制候选ID>", "confidence_score":0.85, "reasoning":"理由(说明类型/产品/模块/环节判断)", "decision_type":"auto"}',
             "decision_type: auto(>=0.8) / recommend(0.5-0.8) / fallback(<0.5)",
         ])
         return "\n".join(lines)
