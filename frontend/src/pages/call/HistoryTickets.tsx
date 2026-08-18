@@ -8,7 +8,8 @@ import { Loading, Toast, Button, Popup } from 'tdesign-mobile-react';
 import { Search, ArrowRight } from 'lucide-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
 import { urgeTicket, reportTicket, cancelTicket, reDispatchTicket } from '@/api/ticket';
-import { isTerminalTicketStatus, canUrgeTicket, canReportTicket, canShowCancelButton } from '@/shared/constants/ticket';
+import { isTerminalTicketStatus, canUrgeTicket, canReportTicket, canShowCancelButton, canCancelTicketByUser } from '@/shared/constants/ticket';
+import { useHorizontalScroll } from '@/shared/hooks/useHorizontalScroll';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import PullToRefresh from '@/shared/components/PullToRefresh';
@@ -52,6 +53,10 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   const tasksRefreshKey = useWorkbenchStore((s) => s.tasksRefreshKey);
   const username = useAuthStore((s) => s.username);
   const isAdmin = useAuthStore((s) => s.isAdmin);
+
+  // 状态 tab 栏横向滚动 ref（PC 桌面端滚轮/拖拽横滑，移动端原生触摸滑动）
+  const tabsRef = useRef<HTMLDivElement>(null);
+  useHorizontalScroll(tabsRef);
 
   const [tickets, setTickets] = useState<AiTicketBrief[]>([]);
   const [loading, setLoading] = useState(false);
@@ -232,6 +237,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
         {/* 横向滚动容器：阻止 touch 事件冒泡到外层 swipeToClose，
             避免左滑切换 tab 时误触发浮层关闭（手势由本容器独占横向滑动） */}
         <div
+          ref={tabsRef}
           className="history-tabs"
           onTouchStart={(e) => e.stopPropagation()}
           onTouchMove={(e) => e.stopPropagation()}
@@ -325,7 +331,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                     {(t.source === 'ai' || !t.source) && !!t.assigned_to && (
                     <Button size="extra-small" className="history-row__redispatch" loading={redispatching && redispatchTicket?.id === t.id} onClick={(e) => openRedispatchPopup(e, t)}>重新派单</Button>
                     )}
-                    {canShowCancelButton(t.status) && (
+                    {canShowCancelButton(t.status) && canCancelTicketByUser(t.created_by, username, isAdmin) && (
                     <Button size="extra-small" variant="outline" theme="default" loading={acting?.id === t.id && acting?.action === 'cancel'} disabled={acting?.id === t.id && acting?.action === 'cancel'} onClick={(e) => handleCancel(e, t)}>撤回</Button>
                     )}
                   </div>
