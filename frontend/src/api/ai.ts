@@ -212,6 +212,8 @@ export interface AiTicketBrief {
   assigned_to_name?: string;
   // 项目名称（tasks.project_name，list_all_tickets 返回）
   project?: string;
+  // 工单来源（ai 智能派单 / manual 系统任务），用于控制「重新派单」按钮显隐
+  source?: string;
 }
 
 /** 历史工单列表筛选参数 */
