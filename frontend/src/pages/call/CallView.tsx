@@ -8,6 +8,7 @@ import ChatPanel from '@/shared/components/ChatPanel';
 import HistoryTickets from './HistoryTickets';
 import ConversationDrawer from '@/shared/components/ConversationDrawer';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
+import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
 import { useSwipeToClose } from '@/shared/utils/useSwipeToClose';
 import { qaListTickets } from '@/api/ai';
 import { useWorkbenchStore } from '@/stores/workbench';
@@ -59,6 +60,7 @@ export default function CallView() {
 
   return (
     <div className="app-shell">
+      <SubscriptionReminder username={username} />
       {/* 内容区（抽屉打开时右挤）。
           ChatPanel 始终 mounted（showHistory 时 display:none 隐藏而非卸载，
           避免切历史后回来消息丢失 */}

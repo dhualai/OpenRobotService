@@ -555,6 +555,53 @@ async def get_user_permissions(openid: str = Query(..., description="微信用�
         raise HTTPException(status_code=500, detail="获取权限过程中发生错误")
 
 
+@router.get("/check-subscription")
+async def check_user_subscription(username: str = Query(..., description="用户username")):
+    """检查用户是否关注了公众号。
+
+    通过 username 查找用户 openid，再调用微信 /cgi-bin/user/info 接口获取订阅状态，
+    subscribe=1 表示已关注，subscribe=0 表示未关注。
+    """
+    try:
+        user_detail = user_service.get_user_detail(username)
+        if not user_detail:
+            raise HTTPException(status_code=404, detail="用户不存在")
+
+        openid = user_detail['id']
+        user_info = await wechat_service.get_user_info(openid)
+
+        if user_info is None:
+            raise HTTPException(status_code=500, detail="获取用户信息失败，请稍后重试")
+
+        if 'errcode' in user_info:
+            raise HTTPException(
+                status_code=400,
+                detail=f"微信API错误: {user_info.get('errmsg', '未知错误')}"
+            )
+
+        subscribed = user_info.get('subscribe', 0) == 1
+
+        return {
+            "openid": openid,
+            "subscribed": subscribed,
+            "subscribe": user_info.get('subscribe', 0),
+            "nickname": user_info.get('nickname', ''),
+            "headimgurl": user_info.get('headimgurl', ''),
+            "sex": user_info.get('sex', 0),
+            "city": user_info.get('city', ''),
+            "province": user_info.get('province', ''),
+            "country": user_info.get('country', ''),
+            "language": user_info.get('language', ''),
+            "subscribe_time": user_info.get('subscribe_time', 0),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"检查用户订阅状态失败: {e}")
+        raise HTTPException(status_code=500, detail="检查用户订阅状态过程中发生错误")
+
+
 @router.get("/callback")
 async def wechat_callback(
     request: Request,
