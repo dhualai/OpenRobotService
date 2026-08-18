@@ -314,7 +314,7 @@ class AssignmentWorker:
                     return False
 
                 # engineer_id 已统一为 users.id（与 assigned_to 一致），无需反查
-                task.assigned_to = result.engineer_id or result.engineer_name
+                task.assigned_to = result.engineer_id or None
                 if task.assigned_to:
                     task.status = TaskStatus.IN_PROGRESS
                 task.updated_at = func.now()
