@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 from ai.config import get_ai_config
 from ai.exceptions import AITimeoutError, LowConfidenceError, ServiceUnavailableError, RetrieveEmptyError
-from ai.core import get_llm_client, get_retrieval_service, get_memory_manager
+from ai.core import get_llm_client, get_intent_client, get_retrieval_service, get_memory_manager
 from ai.core.logging import get_logger
 from ai.core.project_matcher import get_project_matcher, ProjectMatch
 
@@ -256,7 +256,7 @@ def _canonical_field_key(key: str) -> str:
 # 鬼打墙防护：诊断/收集轮次上限
 _MAX_DIAGNOSIS_ROUNDS = 6   # 诊断超过此轮数 → prompt 提示 LLM 收尾或建议转工单
 _MAX_COLLECT_ROUNDS = 4     # 工单填写超过此轮数仍不齐 → 强制提单（弹窗仍可补）
-_MAX_RETRIEVAL_DOCS = 6     # 三路检索合并后按 score 排序，只保留 top N 个 chunk 进 prompt
+_MAX_RETRIEVAL_DOCS = 8     # 三路检索合并后按 score 排序，只保留 top N 个 chunk 进 prompt
 
 
 def _assess_ticket_readiness(state: AgentState) -> tuple[bool, list[str]]:
@@ -323,19 +323,24 @@ def _truncate_turn(content) -> str:
 
 
 async def _generate_title(llm_client, memory) -> str:
-    """第2轮对话结束后，用前两轮对话生成会话标题（中文不超过15字，英文不超过50字符）"""
+    """每两轮用最近十轮对话生成会话标题（中文不超过15字，英文不超过50字符）。
+    标题覆盖式更新：取最近 10 条 turn，让标题跟随对话最新内容演进；
+    对话转向新话题时标题应切到新话题。"""
     turns = memory.turns
     if len(turns) < 2 or "title" in memory.metadata:
         return ""
-    # 动态取可用 turns（最多前4条）构造对话，避免 Redis 降级 turns 不全时索引越界/直接放弃
+    # 取最近 10 条，每条截断到 120 字——标题是异步调用，控制 prompt 体积
     dialog = "\n".join(
-        f"{'用户' if t.get('role') == 'user' else '助手'}：{t.get('content', '')}"
-        for t in turns[:4]
+        f"{'用户' if t.get('role') == 'user' else '助手'}：{(t.get('content') or '')[:120]}"
+        for t in turns[-10:]
     )
     prompt = (
         "根据以下对话生成一个简短标题（中文不超过15字，英文不超过50字符）：\n\n"
         f"{dialog}\n\n"
-        "只输出标题，不要引号或任何额外内容。"
+        "规则：\n"
+        "1. 最近几轮对话如果转向了新话题（新故障/新咨询/新请求），"
+        "标题必须反映新话题，不要沿用之前的旧话题\n"
+        "2. 只输出标题，不要引号或任何额外内容。"
     )
     try:
         title = (await llm_client.complete(
@@ -1094,22 +1099,45 @@ class AiDiagnosisPlatform:
         # except Exception as e:
         #     logger.error(f"[persist] MySQL 写入失败: session={session_id[:16]}, error={e}", exc_info=True)
 
-        # 第2轮及以后对话结束生成标题（fire-and-forget，不阻塞结果返回）。
-        # 门槛放宽到 >=2：防第2轮因 LLM 抖动未生成时，后续轮还能补上；
-        # 防重复靠 memory.metadata["title"]（_generate_title 内部写入，"title" not in 判定拦住重复生成）。
+        # 第2轮及以后对话结束生成标题（真正 fire-and-forget：后台异步生成，不阻塞
+        # 结果返回。注释早有此意，此前实现误写成 await，实测每轮阻塞 ~2s）。
+        # 快照 turns + 独立 metadata，后台任务不碰主 memory 对象，避免并发读写干扰。
         title = ""
-        if state.diagnosis_rounds >= 2 and "title" not in memory.metadata:
-            logger.info(f"[title] 尝试生成: round={state.diagnosis_rounds}, turns={len(memory.turns)}")
-            title = await _generate_title(self._llm_client, memory)
-            logger.info(f"[title] 生成结果: {title!r}")
-            # 同步到 DB：会话列表 / 切回 / 刷新都读 DB title，否则始终是默认「新会话」
-            if title:
+        # 标题每两轮生成一次（第 2/4/6... 轮，异步后台，不阻塞回复流）。
+        # 覆盖式更新：每两轮重新生成，标题跟随对话最新内容演进。
+        if state.diagnosis_rounds >= 2 and state.diagnosis_rounds % 2 == 0:
+            from types import SimpleNamespace
+            _snap = SimpleNamespace(
+                session_id=memory.session_id,
+                turns=[dict(t) for t in memory.turns],
+                metadata={},
+            )
+
+            async def _title_bg():
                 try:
+                    _t = await _generate_title(self._llm_client, _snap)
+                    if not _t:
+                        return ""
+                    logger.info(f"[title] 异步生成结果: {_t!r}")
+                    # 写回主 memory（随下一次 save_memory 落盘；若本轮已保存，
+                    # 下轮会重新生成一次——代价是偶发一次 2s 调用，可接受）
+                    memory.metadata["title"] = _t
                     from ai.core.conversation_store import rename_conversation
-                    rename_conversation(memory.session_id, title)
-                    logger.info(f"[title] DB 已同步: session={memory.session_id}, title={title}")
+                    rename_conversation(memory.session_id, _t)
+                    logger.info(f"[title] DB 已同步: session={memory.session_id}, title={_t}")
+                    return _t
                 except Exception as e:
-                    logger.warning(f"[title] DB 同步失败: {e}")
+                    logger.warning(f"[title] 异步标题生成失败: {e}")
+                    return ""
+
+            logger.info(f"[title] 后台生成: round={state.diagnosis_rounds}, turns={len(memory.turns)}")
+            _task = asyncio.create_task(_title_bg())
+            # 注册给 SSE 生产者:流结束后等它落地,补发 event: title 给前端
+            # (前端 ChatPanel 靠 title 事件刷新会话标题;异步化后 result.title
+            # 恒为空,不补发前端就永远显示「新建会话」)
+            if not hasattr(self, "_pending_title_tasks"):
+                self._pending_title_tasks = {}
+            self._pending_title_tasks[memory.session_id] = _task
 
         return {
             "type": "diagnosis",
@@ -1583,6 +1611,76 @@ class AiDiagnosisPlatform:
         yield {"event": "result", "data": result_data}
 
     # ================================================================
+    # 诊断/闲聊单轮分支（无工具往返）：服务端检索 + 1 次 LLM 直接回答
+    # ================================================================
+    async def _diagnosis_oneshot_branch(self, request: DiagnosisRequest, state: AgentState,
+                                        memory, reference_docs: str = ""):
+        """诊断与闲聊共用：一次 LLM 调用直接出答案，不再有工具往返。
+
+        检索由服务端完成（三路检索与意图分类并发，100-400ms），结果直接
+        塞进小 prompt——LLM 不再自主换词检索。诊断每轮从「意图 + 2 次 LLM」
+        降为「意图 + 1 次 LLM」。问候/闲聊轮同样走这里（reference_docs 为空）。
+        """
+        yield {"event": "status", "data": {"stage": "analyzing", "round": state.diagnosis_rounds}}
+        t0 = time.perf_counter()
+
+        _conv = self._format_conversation(
+            memory, from_turn=state.context_start, max_turns=8)
+        system_prompt = (
+            "你是「摇人吧」微信服务号的 AI 诊断助手 U老师，面向 AGV/AMR 行业。\n"
+            "规则：\n"
+            "- 回答操作步骤、错误码含义、故障排查等问题时，基于下方提供的知识库内容作答，禁止编造步骤\n"
+            "- 回答时直接给出结论和排查步骤，不要出现「根据知识库」「根据检索结果」"
+            "这类来源性开场白——用户不需要知道信息来源\n"
+            "- 不要复述知识库的章节号/文档编号（如「5.13」「9.4」这类数字编号），"
+            "用自己的话把步骤总结出来\n"
+            "- 知识库内容中的 ![](url) 是操作界面截图：与当前问题直接相关的截图，"
+            "必须用 ![说明](url) 格式引用到回复中对应步骤下面；与问题无关的图片一律不要带\n"
+            "- 回答控制在 500 字以内，宁可简短完整，不要写太长（防止被截断）\n"
+            "- 知识库内容没有覆盖时，才如实说明手册未收录，给出通用排查方向，并建议用户转工单\n"
+            "- 不要问项目名称（项目由用户在确认弹窗里选择）\n"
+            "- 用户明确表达提单诉求时，礼貌引导：「可以说“转工单”，我来帮您提单」\n"
+        )
+        if reference_docs and reference_docs != "（跳过检索）":
+            user_msg = (
+                f"知识库检索结果：\n{reference_docs}\n\n"
+                f"以下是最近对话（供参考）：\n{_conv}\n\n本轮用户消息：{request.query}"
+            )
+        else:
+            user_msg = f"以下是最近对话（供参考）：\n{_conv}\n\n本轮用户消息：{request.query}"
+        logger.info(f"[diag_oneshot] prompt: system={len(system_prompt)} "
+                    f"user={len(user_msg)} chars: session={request.session_id}")
+
+        final_text = ""
+        streamed = False
+        try:
+            async with asyncio.timeout(90.0):
+                async for token in self._llm_client.stream(
+                        prompt=user_msg, system_prompt=system_prompt,
+                        max_tokens=2000, temperature=0.2):
+                    final_text += token
+                    streamed = True
+                    yield {"event": "token", "data": token}
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"[diag_oneshot] 诊断单轮失败: session={request.session_id}, err={e}")
+            yield {"event": "status", "data": {"stage": "submit_failed", "error": str(e)[:100]}}
+            final_text = "诊断过程中出现异常，请稍后重试或联系管理员。"
+            streamed = False
+
+        logger.info(f"[diag_oneshot] 完成: session={request.session_id}, "
+                    f"elapsed={round((time.perf_counter() - t0) * 1000)}ms, "
+                    f"final_text_len={len(final_text)}")
+        if final_text and not streamed:
+            yield {"event": "token", "data": final_text}
+        result_data = await self._finalize_diagnosis(
+            request.session_id, state,
+            thinking="", action="answer", message=final_text or "请稍后重试。",
+            streaming=True)
+        if result_data.get("title"):
+            yield {"event": "title", "data": {"title": result_data["title"]}}
+        yield {"event": "result", "data": result_data}
+
+    # ================================================================
     # Agent 推理循环（同步）
     # ================================================================
     async def _agent_think(self, request: DiagnosisRequest, state: AgentState, memory) -> dict:
@@ -1688,6 +1786,63 @@ class AiDiagnosisPlatform:
             logger.warning(f"检索超时/失败: session={session_id}")
         return "（知识库检索失败，请告知用户当前系统检索异常、建议稍后重试或转工单处理，不要自己编造答案。）"
 
+    async def _three_way_retrieve(self, query: str) -> list:
+        """三路并行域检索（team/company/industry），异常降级为空列表。
+        每域「稠密 top5 + 稀疏 top5 保送」进候选池——不再 RRF 早融合，
+        避免只被一路命中的文档被挤出 cross-encoder 精排池
+        （锁区文档稠密第4名,RRF 后被两路命中的文档挤出 top12,精排永远看不到它）。"""
+        async def _one(domain: str, top_k: int):
+            try:
+                dense_res, sparse_res = await asyncio.wait_for(
+                    self._retriever.retrieve_domain_dual(query, domain, top_k=8),
+                    timeout=15.0,
+                )
+                return list(dense_res)[:top_k], list(sparse_res)[:top_k]
+            except Exception as e:
+                # 不静默:缺方法(部署缺 retrieval.py)/超时/异常都打出来,
+                # 否则全空结果会伪装成「知识库没查到」(历史踩坑:命中0)
+                logger.warning(f"[retrieve] {domain} 域双路检索失败: {type(e).__name__}: {str(e)[:300]}")
+                return [], []
+
+        team_t = asyncio.create_task(_one("team", 5))
+        company_t = asyncio.create_task(_one("company", 4))
+        industry_t = asyncio.create_task(_one("industry", 3))
+        gathered = await asyncio.gather(team_t, company_t, industry_t, return_exceptions=True)
+        results = []
+        seen = set()
+        for g in gathered:
+            if isinstance(g, BaseException):
+                continue
+            for r in g[0] + g[1]:
+                if r.id not in seen:
+                    seen.add(r.id)
+                    results.append(r)
+        return results
+
+    async def _rewrite_query(self, query: str) -> str:
+        """轻量模型改写检索词（仅首轮检索弱时触发，走意图专用 deepseek 客户端）。
+        保留错误码/型号等实体，口语转检索语。失败/无变化返回空串（沿用原查询）。"""
+        try:
+            from ai.core import get_intent_client
+            _llm = await get_intent_client()
+            _out = await asyncio.wait_for(_llm.complete(
+                prompt=(
+                    "把下面的用户问题改写成适合知识库检索的查询短语（10-25字），"
+                    "保留错误码、车型/型号、专有名词等关键实体，去掉语气词和口语表达。"
+                    "只输出改写后的查询短语，不要任何解释。\n\n"
+                    f"用户问题：{query}"
+                ),
+                system_prompt="你是检索查询改写器。",
+                max_tokens=40, temperature=0.0, thinking=False,
+            ), timeout=5.0)
+            _rw = (_out or "").strip().strip('"\'「」')
+            if _rw and _rw != query and len(_rw) <= 50:
+                logger.info(f"[retrieve] 改写检索词: {query[:40]} → {_rw[:40]}")
+                return _rw
+        except Exception as e:
+            logger.warning(f"[retrieve] 改写失败，用原查询: {e}")
+        return ""
+
     async def _retrieve_inner(self, session_id: str, state: AgentState,
                               resolved_query: str = "") -> str:
         # 检索查询：用户当前输入为主，problem_summary/hypotheses 仅辅助短查询补全。
@@ -1714,35 +1869,15 @@ class AiDiagnosisPlatform:
             logger.debug(f"[retrieve] cache hit: {(time.perf_counter() - t0) * 1000:.0f}ms")
             return cached["result"]
 
-        # 三路并行域检索（team / company / industry）
-        # chunk 自带 sub_domain 字段，按 sub_domain 自动贴标签
-        config = get_ai_config()
-        team_task = asyncio.wait_for(
-            self._retriever.retrieve_domain(search_query, "team", top_k=6, skip_rerank=True),
-            timeout=15.0,
-        )
-        company_task = asyncio.wait_for(
-            self._retriever.retrieve_domain(search_query, "company", top_k=4, skip_rerank=True),
-            timeout=10.0,
-        )
-        industry_task = asyncio.wait_for(
-            self._retriever.retrieve_domain(search_query, "industry", top_k=3, skip_rerank=True),
-            timeout=10.0,
-        )
-
         logger.info(f"[retrieve] 三路域检索: query={search_query[:60]}...")
-        gathered = await asyncio.wait_for(
-            asyncio.gather(team_task, company_task, industry_task, return_exceptions=True),
-            timeout=20.0,
-        )
-        logger.info(f"[retrieve] 三路检索完成")
-        team_results, company_results, industry_results = gathered
-        if isinstance(team_results, BaseException):
-            team_results = []
-        if isinstance(company_results, BaseException):
-            company_results = []
-        if isinstance(industry_results, BaseException):
-            industry_results = []
+        # 双查询合并检索:改写词与原词都查,结果并集。
+        # 「可以调整吗」vs「怎么调整」这类提问方式差异会让 embedding 漂移,
+        # 改写后的操作句式查询把另一侧命中的文档捞回来,抹平表述差异。
+        _rw_task = asyncio.create_task(self._rewrite_query(search_query))
+        _domain_results = await self._three_way_retrieve(search_query)
+        _rw = await _rw_task
+        _rw_results = await self._three_way_retrieve(_rw) if _rw else []
+        logger.info(f"[retrieve] 三路检索完成: {round((time.perf_counter() - t0) * 1000)}ms")
 
         # sub_domain → 标签映射
         _sub_labels = {
@@ -1786,19 +1921,37 @@ class AiDiagnosisPlatform:
                 f"在车端错误码库中未找到。如果检索结果中包含产品型号、文档编号等包含该数字的内容，"
                 f"则这些是相关知识而非错误码，请正常引用，不要告知用户\"未收录\"。\n---")
 
-        # 三路结果合并 → 按 score 降序 → 取 top N（避免 13+ 个 chunk 撑爆 prompt）
-        all_results = list(_cheduan_exact) + list(team_results) + list(company_results) + list(industry_results)
-        # 去重（同 id 只保留最高分）
+        # 三路结果合并（原词 + 改写词双查并集）→ 去重
+        all_results = list(_cheduan_exact) + _domain_results + _rw_results
         seen = set()
         uniq = []
-        for r in sorted(all_results, key=lambda r: r.score, reverse=True):
+        for r in all_results:
             if r.id not in seen:
                 seen.add(r.id)
                 uniq.append(r)
 
+        # 双路保送后候选池可能超过精排上限：按「稠密 top15 + 稀疏 top15」平衡截断。
+        # 两路原始分尺度不同(稀疏 1-2 vs 稠密余弦 0.5-0.6),按单一分数排序会把
+        # 另一路保送挤掉——平衡截断保证关键词命中和语义命中都能进精排。
+        if len(uniq) > 30:
+            _dense_part = sorted(
+                [r for r in uniq if r.vector_score],
+                key=lambda r: r.vector_score, reverse=True)
+            _sparse_part = sorted(
+                [r for r in uniq if r.sparse_score],
+                key=lambda r: r.sparse_score, reverse=True)
+            _balanced, _seen2 = [], set()
+            for r in _dense_part[:15] + _sparse_part[:15]:
+                if r.id not in _seen2:
+                    _seen2.add(r.id)
+                    _balanced.append(r)
+            uniq = _balanced
+
         # 三路已 skip_rerank（只检索未精排）→ 合并去重后统一 rerank 一次，
-        # 从三路各自 rerank 的 3 次 CPU 推理降为 1 次，且候选放宽到合并后的 top N
-        if len(uniq) > _MAX_RETRIEVAL_DOCS:
+        # 从三路各自 rerank 的 3 次 CPU 推理降为 1 次，且候选放宽到合并后的 top N。
+        # 触发条件 >= 4（此前 >6 导致去重后恰好 6 条时 rerank 从不执行——
+        # cross-encoder 配了却空转,RRF 名次说了算)。
+        if len(uniq) >= 4:
             _reranked = await self._retriever._rerank_results(search_query, uniq, _MAX_RETRIEVAL_DOCS)
             if _reranked:
                 uniq = _reranked
@@ -1812,7 +1965,8 @@ class AiDiagnosisPlatform:
             docs.append(f"---\n{_label(r)} {idx}{title}：\n{content}\n---")
             hit_logs.append(f"[{r.sub_domain or '-'}]{r.title or '(无标题)'}@{r.score:.4f}")
             idx += 1
-        logger.info(f"[retrieve] 命中{len(all_results)}去重{len(uniq)}送prompt{len(hit_logs)}: {' | '.join(hit_logs)}")
+        logger.info(f"[retrieve] 命中{len(all_results)}去重{len(uniq)}送prompt{len(hit_logs)}: {' | '.join(hit_logs)} "
+                    f"总耗时{round((time.perf_counter() - t0) * 1000)}ms")
 
         result = "\n".join(docs) if docs else "（知识库暂无匹配文档，请告知用户当前手册未覆盖此问题，建议转工单处理，不要自己编造答案。）"
 
@@ -2016,8 +2170,15 @@ class AiDiagnosisPlatform:
         # project 不在对话/LLM 链路产生——项目选择的唯一入口是确认弹窗的搜索选择
         # （confirm_submit 时写回）。LLM 提取 title/description/contact 时不需要看
         # VLM 描述，看到反而会把截图 UI 文本（缺陷/处理中/处理人）当字段值填进工单。
+        # 🔴 context_start 越界护栏：turn buffer 截断（max_turns=10）时
+        # turns[context_start:] 可能为空 → 提单模型看不到任何对话，AI 追问过、
+        # 用户回答过的补充信息（如现场联系方式）全部丢失、写不进描述。
+        # 回退取最近全量 10 条，保证补充问答一定在模型视野里。
+        _from = agent_state.context_start
+        if _from >= len(memory.turns):
+            _from = max(0, len(memory.turns) - 10)
         conversation_text = self._format_conversation(
-            memory, from_turn=agent_state.context_start, sanitize_images=True)
+            memory, from_turn=_from, sanitize_images=True)
         reasoning = (
             f"问题概述：{agent_state.problem_summary}\n"
             f"推测原因：{'、'.join(str(h) if not isinstance(h, str) else h for h in agent_state.hypotheses) if agent_state.hypotheses else '无'}\n"
@@ -2032,7 +2193,7 @@ class AiDiagnosisPlatform:
             f"## Agent 推理链\n{reasoning}\n\n"
             f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
             f"然后以 JSON 格式返回：\n"
-            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤150字，简述问题和排查过程，不要带项目/现场名；用户后续补充的关键信息（如调度版本、发生时间）要总结进去；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
+            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤300字，简述问题和排查过程，不要带项目/现场名；🔴 必须把对话中 AI 追问过、用户回答过的全部内容总结进去（现场联系人及联系方式、调度版本、发生时间、设备型号等），一项都不能丢；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
             f'"priority":"紧急|高|中|低","contact":"从对话提取的联系人，没有则为空",'
             f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
             f'"project":"固定为空字符串——项目由用户在确认弹窗搜索选择，不要从对话提取",'
@@ -2411,6 +2572,17 @@ class AiDiagnosisPlatform:
         logger.info(f"[confirm] 工单已提交: session={session_id}, db_id={record.id}")
         return {"code": 0, "data": {"ticket": ticket, "db_id": record.id,
                                      "notice": "工单已生成并保存，等待自动派单。"}}
+
+    async def collect_title(self, session_id: str) -> str:
+        """等待该会话的后台标题任务落地并返回标题（SSE 生产者流结束后调用，
+        用于向前端补发 event: title）。无任务/失败返回空串。"""
+        _task = getattr(self, "_pending_title_tasks", {}).pop(session_id, None)
+        if _task is None:
+            return ""
+        try:
+            return await _task
+        except Exception:
+            return ""
 
     async def get_draft(self, session_id: str) -> dict:
         """获取待确认草稿（前端轮询兜底）。"""
@@ -2804,9 +2976,9 @@ class AiDiagnosisPlatform:
             t_stream["intent"] = 0
         else:
             # 白名单之外的输入（辛苦/哈哈/客套等）→ 意图识别与检索并发：
-            # 检索那 4s 的时间窗把意图调用（v4-flash 无思考 ~1.5s）盖掉；
-            # 若意图判为闲聊，立即 cancel 检索，避免白跑 rerank。
-            _intent_llm = await get_llm_client()
+            # 意图用独立的轻量无思考模型（默认 deepseek-v4-flash ~0.5s），
+            # 不跟随主 LLM_BACKEND——主后端切重模型后意图不能一起变慢。
+            _intent_llm = await get_intent_client()
             _retrieval_task = asyncio.create_task(
                 self._retrieve_with_context(request.session_id, state, resolved_query))
             _intent_task = asyncio.create_task(
@@ -2815,10 +2987,10 @@ class AiDiagnosisPlatform:
                     context_turns=memory.turns[-4:]))
             _intent_t0 = time.perf_counter()
             try:
-                # 实测 _classify_intent 约 2.0-2.1s（DeepSeek 偶发慢），2s 超时正好擦边
-                # 被判 diagnosis 回退 → 提单轮走完整诊断 25s+。放宽到 4s：
-                # 意图分类和检索并发，检索 ~4s 盖住它，不拖慢主链路；超时兜底仍是 diagnosis。
-                _intent = await asyncio.wait_for(_intent_task, timeout=4.0)
+                # 超时上限 6s：意图走独立 deepseek 客户端，本地/弱网路径建连+请求可达
+                # 3-4s（实测 intent_ms=4002 撞 4s 上限被强制判 diagnosis → 提单轮
+                # 整个会话走偏）。6s 给足余量；意图与检索并发，超时兜底仍是 diagnosis。
+                _intent = await asyncio.wait_for(_intent_task, timeout=6.0)
             except (asyncio.TimeoutError, Exception):
                 _intent = "diagnosis"
             t_stream["intent"] = round((time.perf_counter() - _intent_t0) * 1000)
@@ -2845,6 +3017,17 @@ class AiDiagnosisPlatform:
                 async for ev in self._diagnosis_tool_loop_branch(request, state, memory):
                     yield ev
                 return
+            elif _intent == "diagnosis":
+                # 诊断单轮：等并发检索结果 → 小 prompt 1 次 LLM 直接回答（无工具往返）
+                try:
+                    reference_docs = await asyncio.wait_for(_retrieval_task, timeout=20.0)
+                except asyncio.TimeoutError:
+                    reference_docs = ""
+                    logger.warning(f"[stream] 检索超时(20s)，降级无上下文: session={request.session_id}")
+                logger.info(f"[stream] 诊断走单轮分支（服务端检索+1次LLM）: session={request.session_id}")
+                async for ev in self._diagnosis_oneshot_branch(request, state, memory, reference_docs):
+                    yield ev
+                return
             elif _intent == "courtesy":
                 # 意图判闲聊 → 停掉还在跑的检索（rerank 等 await 点立刻取消，thread pool 尾随可接受）
                 reference_docs = ""
@@ -2857,27 +3040,51 @@ class AiDiagnosisPlatform:
                     async for ev in self._diagnosis_tool_loop_branch(request, state, memory):
                         yield ev
                     return
+                logger.info(f"[stream] 闲聊走单轮小 prompt: session={request.session_id}")
+                async for ev in self._diagnosis_oneshot_branch(request, state, memory, ""):
+                    yield ev
+                return
             else:
+                # 兜底（意图识别失败按 diagnosis 处理）：等检索 → 单轮分支
                 try:
                     reference_docs = await asyncio.wait_for(_retrieval_task, timeout=20.0)
                 except asyncio.TimeoutError:
                     reference_docs = ""
                     logger.warning(f"[stream] 检索超时(20s)，降级无上下文: session={request.session_id}")
+                logger.info(f"[stream] 意图兜底走单轮分支: session={request.session_id}")
+                async for ev in self._diagnosis_oneshot_branch(request, state, memory, reference_docs):
+                    yield ev
+                return
 
         t_stream["retrieve"] = round((time.perf_counter() - t_ret) * 1000)
         logger.info(f"[stream] 检索完成: {t_stream['retrieve']}ms, docs_len={len(reference_docs)}"
                     + ("（闲聊跳过检索）" if _is_greeting else ""))
 
-        # 纯问候走小 prompt 工具循环（开关开启时）：问候轮跳过意图分类后
-        # 会直接落到 7200 字大 prompt——一句「你好」不值得。循环无工具调用
-        # 时直接输出回答，一轮结束（实测 ~646 chars prompt）。
-        if _is_greeting and os.getenv("AI_DIAGNOSIS_TOOL_LOOP", "") == "1":
-            logger.info(f"[stream] 纯问候走工具循环（小 prompt）: session={request.session_id}")
-            async for ev in self._diagnosis_tool_loop_branch(request, state, memory):
+        # 纯问候 → 单轮小 prompt 分支（无检索文档、无工具往返，1 次 LLM）。
+        # 问候轮跳过意图分类后不能落 7200 字大 prompt——一句「你好」不值得。
+        if _is_greeting:
+            logger.info(f"[stream] 纯问候走单轮小 prompt: session={request.session_id}")
+            async for ev in self._diagnosis_oneshot_branch(request, state, memory, ""):
                 yield ev
             return
 
         prompt = self._build_diagnosis_prompt(state, memory, reference_docs)
+        # 草稿存在的补充/取消轮：强制注入字段写入与取消规则。实测 gpt 系模型会
+        # 在正文里说「已记录处理人」却不写 state_update.collected_info → 服务端判
+        # 「无新增」→ 补充完成后不自动重新弹窗;说「已清空草稿」却不置 ticket_cancel
+        # → 草稿根本没删,按钮仍弹旧草稿。注入后让模型把意图结构化落字段。
+        if memory.metadata.get("ticket_draft"):
+            prompt += (
+                "\n\n【草稿轮铁律】当前存在待确认的工单草稿，本轮用户消息是对草稿的"
+                "补充、修改或取消，你必须按类型结构化输出：\n"
+                "1. 补充/修改（如「提单给XX」「补充一下XX」）→ 把补充内容写入"
+                " state_update.collected_info（指名处理人写入 requested_assignee），"
+                "再输出 action=answer 简短确认。只写正文不写字段会被系统判定为没有补充。\n"
+                "2. 取消/删除（如「不提单了」「把草稿删了」「算了不转了」）→ 必须输出"
+                " ticket_cancel=true，只回复「好的，不转工单。有什么其他问题随时问我。」"
+                "——绝不能在正文里假装「已清空草稿」，服务端只有看到 ticket_cancel=true"
+                "才会真正删除草稿。"
+            )
         t_stream["prompt_chars"] = len(prompt)
         logger.info(f"[stream] prompt构建完成: {t_stream['prompt_chars']} chars, retrieve={t_stream['retrieve']}ms")
 
