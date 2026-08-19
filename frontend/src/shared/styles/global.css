@@ -4583,6 +4583,35 @@ html, body, #root {
   white-space: nowrap;
 }
 
+/* ===== U老师 诊断报告弹窗（TaskDetailPage · tdesign-mobile Dialog） =====
+   默认 tdesign-mobile Dialog 固定 311px 宽，适合手机但 PC 端过窄。
+   移动端：在默认基础上略加宽（min(88vw, 350px)）；PC 端（≥768px）：居中放大到 640px。
+   类名拼在 .t-dialog 上（Dialog className 追加到根元素）；宽度用 CSS 覆盖，
+   内联 width:'undefinedpx' 为非法值会被浏览器忽略，故此处样式可生效。 */
+.diagnosis-report-dialog.t-dialog {
+  width: min(88vw, 350px) !important;
+  max-width: 96vw;
+}
+.diagnosis-report-dialog .t-dialog__content {
+  max-height: 62vh;
+}
+.diagnosis-report-dialog .markdown-body {
+  width: 100%;
+  box-sizing: border-box;
+}
+@media (min-width: 768px) {
+  .diagnosis-report-dialog.t-dialog {
+    width: min(92vw, 640px) !important;
+  }
+  .diagnosis-report-dialog .t-dialog__content {
+    max-height: 70vh;
+    padding: 28px 32px 0;
+  }
+  .diagnosis-report-dialog .t-dialog__footer {
+    padding: 24px 32px;
+  }
+}
+
 /* ===== 摇人 · 工单详情操作页（TicketDetailPage） ===== */
 .ticket-detail-page .page-container { padding: 12px 14px 80px; }
 /* 详情页卡片（设计稿 SectionCard：surface-card p-4，2xl 圆角 + 柔影 + 半透明描边） */
@@ -6237,15 +6266,6 @@ html, body, #root {
   font-weight: 600;
   color: var(--primary);
   margin-bottom: 6px;
-}
-.detail-chat-ai-progress__spinner {
-  width: 12px;
-  height: 12px;
-  border: 2px solid var(--primary);
-  border-top-color: transparent;
-  border-radius: 50%;
-  display: inline-block;
-  animation: chatTyping 0.8s linear infinite;
 }
 .detail-chat-ai-progress__list {
   list-style: none;

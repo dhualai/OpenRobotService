@@ -120,6 +120,10 @@ interface DiscussionPanelProps {
   taskId?: string | number;
   /** 工单状态变更（WS task.updated 推送）：父级据此更新工单字段，替代派单轮询 */
   onTaskUpdated?: (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null }) => void;
+  /** 乐观 U老师 执行过程区：为 true 时立即显示占位 todo（无需等 WS running），
+   *  收到真实 ai.progress 后用真实数据覆盖。用于 [帮我分析] 这类点击即触发、
+   *  但 WS 首条 running 可能稍晚到达的场景，避免过程区“晚出现 / 闪一下”。 */
+  optimisticAi?: boolean;
 }
 
 export default function DiscussionPanel({
@@ -138,11 +142,12 @@ export default function DiscussionPanel({
   onDeleteComment,
   taskId,
   onTaskUpdated,
+  optimisticAi = false,
 }: DiscussionPanelProps) {
   const { username, name, avatarResourceId } = useAuthStore();
   // 长按操作菜单的浮层由 TDesign Mobile <Popover> 承载（自带箭头/动画/外点关闭）；
   // 通过「透明、pointer-events:none 的代理锚点」定位到被长按气泡的 rect，避免覆盖气泡交互。
-  // ── AI 执行过程（Claude Code 式动态展示）──
+  // ── U老师 执行过程（Claude Code 式动态展示）──
   // 后端在 Supervisor 派发能力时逐项推送 ai.progress(phase=running)，全部完成推 phase=done。
   // 执行中在输入框上方渲染过程区；done 收尾后短暂保留再由 sending(false) 隐藏。
   const [aiRunId, setAiRunId] = useState<string | undefined>();
@@ -157,7 +162,7 @@ export default function DiscussionPanel({
     setAiTodos(ev.todos || []);
   }, []);
 
-  // ── WS 实时订阅：合并基线评论与增量事件，含在线/输入中/已读 + AI 进度 ──
+  // ── WS 实时订阅：合并基线评论与增量事件，含在线/输入中/已读 + U老师 进度 ──
   const {
     displayComments,
     online,
@@ -168,15 +173,28 @@ export default function DiscussionPanel({
     deletedIds,
   } = useTaskCommentsWS(taskId, comments, { currentUser: username, onTaskUpdated, onAiProgress: handleWsAiProgress });
 
-  // 过程区可见性：AI 正在分析（sending）且至少跑过 running 或有进行中项；done 由 sending(false) 隐藏
-  const showAiProcess = (aiPhase === 'running' && aiTodos.length > 0) || (sending && aiRunId !== undefined);
+  // 过程区可见性：U老师 正在分析（sending）且至少跑过 running 或有进行中项；done 由 sending(false) 隐藏。
+  // optimisticAi：点击 [帮我分析] 时立即置为 true → 前端主动显示占位 todo，不等 WS 首条 running
+  //（避免 diagnose 这类“点击即执行、报告几秒返回”的任务，过程区晚出现/闪一下就消失）。
+  const showAiProcess =
+    (aiPhase === 'running' && aiTodos.length > 0) ||
+    (sending && aiRunId !== undefined) ||
+    optimisticAi;
+
+  // 乐观占位 todo：仅当 optimisticAi 且尚无真实 todo 时启用（planning+进行中）
+  // 文案用通用“分析/规划”，[帮我分析] 与 @U老师 讨论共用。
+  const optimisticTodo: AiProgressTodo[] = optimisticAi && aiTodos.length === 0
+    ? [{ id: 0, description: 'U老师 正在分析并规划排查步骤', status: 'in_progress', capability: 'planning', phase: 'running' as const }]
+    : [];
+  // 渲染用 todo：真实优先；否则用乐观占位（保证过程区“立刻出现”占位项）
+  const displayTodos = aiTodos.length > 0 ? aiTodos : optimisticTodo;
 
   // 逐项状态：任一 todo 仍是进行中（phase=running / status=in_progress），就视为整场仍在执行。
   // 头部「正在排查 / 已完成」据此判断而非只看事件封套 phase，杜绝「已完成却还有项在转圈」的矛盾。
-  const anyTodoRunning = aiTodos.some((t) => t.phase === 'running' || t.status === 'in_progress');
-  const allTodosDone = aiTodos.length > 0 && !anyTodoRunning;
+  const anyTodoRunning = displayTodos.some((t) => t.phase === 'running' || t.status === 'in_progress');
+  const allTodosDone = displayTodos.length > 0 && !anyTodoRunning;
 
-  // 新一轮 AI 讨论开始（sending false→true）：重置过程区
+  // 新一轮 U老师 讨论开始（sending false→true）：重置过程区
   const prevSendingRef = useRef<boolean>(sending);
   useEffect(() => {
     if (sending && !prevSendingRef.current) {
@@ -347,7 +365,7 @@ export default function DiscussionPanel({
   };
   const removeFile = (idx: number) => setPendingFiles((prev) => prev.filter((_, i) => i !== idx));
 
-  // @U老师：在输入框前缀 @U老师（父级 onSend 依此前缀路由到 AI 讨论）
+  // @U老师：在输入框前缀 @U老师（父级 onSend 依此前缀路由到 U老师 讨论）
   const handleAIClick = () => {
     if (!commentText.startsWith('@U老师 ')) setCommentText('@U老师 ' + commentText);
   };
@@ -958,9 +976,9 @@ export default function DiscussionPanel({
             )}
           </div>
         )}
-        {/* AI 执行过程（Claude Code 式动态展示）：Supervisor 派发能力时逐项实时滚动，
-            最终回复只写纯答复（不含此过程） */}
-        {enableAI && showAiProcess && aiTodos.length > 0 && (
+        {/* U老师 执行过程（Claude Code 式动态展示）：Supervisor 派发能力时逐项实时滚动，
+            最终回复只写纯答复（不含此过程）；[帮我分析] 点按瞬间用乐观占位立即显示 */}
+        {enableAI && showAiProcess && displayTodos.length > 0 && (
           <div className="detail-chat-ai-progress">
             <div className="detail-chat-ai-progress__head">
               <span className="detail-chat-ai-progress__spinner" aria-hidden="true">
@@ -968,10 +986,10 @@ export default function DiscussionPanel({
                 <i />
                 <i />
               </span>
-              {!allTodosDone ? 'AI 正在排查执行' : '排查执行完成'}
+              {!allTodosDone ? 'U老师 正在排查执行' : '排查执行完成'}
             </div>
             <ul className="detail-chat-ai-progress__list">
-              {aiTodos.map((t, i) => {
+              {displayTodos.map((t, i) => {
                 const desc = t.description || t.capability || '分析';
                 const status = t.phase === 'done' || t.status === 'completed';
                 const running = t.phase === 'running' || t.status === 'in_progress';
