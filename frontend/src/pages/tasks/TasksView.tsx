@@ -3,6 +3,7 @@
 // 「待我处理」为按天时间轴。跨视图流转：消费 ticketDraft 自动建单。
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
@@ -78,6 +79,11 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
     relevanceFilter: params.get('relevance') || 'mine',
     // 项目过滤：空字符串表示「全部」（不过滤）
     projectFilter: params.get('project') || '',
+    // 处理人过滤：空字符串表示「全部」（不过滤）；值为处理人 username
+    assigneeFilter: params.get('assignee') || '',
+    // 创建时间过滤：空字符串表示不限制；值为 YYYY-MM-DD
+    createdStart: params.get('createdStart') || '',
+    createdEnd: params.get('createdEnd') || '',
     page: parseInt(params.get('page') || '1', 10),
     sortBy: params.get('sort') || 'priority',
     sortOrder: params.get('order') || 'desc',
@@ -88,10 +94,35 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
 const sameSet = (a: string[], b: string[]) =>
   a.length === b.length && a.every((v) => b.includes(v));
 
+// 创建时间起止统一使用原生 datetime-local：PC 为浏览器日期面板，移动端自动唤起系统原生滚轮选择器
+//（tdesign DateTimePicker 拖动时存在跳变问题，已弃用）
+
+// 创建时间边界值归一化为后端可比的秒级 datetime 串：
+//   - 仅日期（YYYY-MM-DD）→ 起始 00:00:00 / 结束 23:59:59
+//   - 含时分（YYYY-MM-DDTHH:mm）→ 起始补 :00、结束补 :59（含所选分钟）
+const toBoundaryISO = (v: string, end: boolean): string => {
+  if (!v) return '';
+  if (v.length === 10) return end ? `${v}T23:59:59` : `${v}T00:00:00`;
+  return end ? `${v}:59` : `${v}:00`;
+};
+// 安全调用原生 datetime-local 的 showPicker（点击整框即弹起选择器，浏览器不支持时静默回退到点击默认行为）
+const openNativePicker = (el: HTMLInputElement | null) => {
+  if (!el) return;
+  const input = el as HTMLInputElement & { showPicker?: () => void };
+  // 优先 showPicker（PC 浏览器面板 / Android 滚轮），不支持或被拒时退回 focus（iOS Safari 唤起原生滚轮）
+  try {
+    if (typeof input.showPicker === 'function') input.showPicker();
+    else input.focus();
+  } catch {
+    try { input.focus(); } catch { /* 忽略 */ }
+  }
+};
+
 // 将筛选状态同步到 URL 查询参数的工具函数
 const buildFilterParams = (filter: {
   search: string; statusFilter: string[]; priorityFilter: string[];
-  relevanceFilter: string; projectFilter: string; page: number; sortBy: string; sortOrder: string;
+  relevanceFilter: string; projectFilter: string; assigneeFilter: string;
+  createdStart: string; createdEnd: string; page: number; sortBy: string; sortOrder: string;
 }) => {
   const params = new URLSearchParams();
   if (filter.search) params.set('q', filter.search);
@@ -111,6 +142,11 @@ const buildFilterParams = (filter: {
   if (filter.relevanceFilter !== 'mine') params.set('relevance', filter.relevanceFilter);
   // 项目过滤：非空时才输出（空 = 全部）
   if (filter.projectFilter) params.set('project', filter.projectFilter);
+  // 处理人过滤：非空时才输出（空 = 全部）
+  if (filter.assigneeFilter) params.set('assignee', filter.assigneeFilter);
+  // 创建时间过滤：非空时才输出（空 = 不限制）
+  if (filter.createdStart) params.set('createdStart', filter.createdStart);
+  if (filter.createdEnd) params.set('createdEnd', filter.createdEnd);
   if (filter.page > 1) params.set('page', String(filter.page));
   if (filter.sortBy !== 'priority') {
     params.set('sort', filter.sortBy);
@@ -211,6 +247,198 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
 // 「待我处理」原先按日期分组的时间轴已移除：所有分类统一走扁平卡片列表，
 // 排序完全由 fetchTickets 中的 sortBy/sortOrder 决定，快捷排序对所有分类生效。
 
+// 内联下拉选择器：点击触发 chip 后在 chip 下方展开固定定位的下拉面板，
+// 支持搜索过滤；选项首项约定为「全部」（value=''）。用于「项目」「处理人」单选过滤，
+// 替代原底部弹层（无需多一层弹窗）。面板通过 portal 渲染到 body 以绕开 chip 容器的 overflow 裁剪。
+function ChipDropdown({
+  label, active, options, selectedValue, searchPlaceholder, emptyText, onSelect,
+}: {
+  label: string;
+  active: boolean;
+  options: Array<{ value: string; label: string }>;
+  selectedValue: string;
+  searchPlaceholder: string;
+  emptyText: string;
+  onSelect: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [keyword, setKeyword] = useState('');
+  const [coords, setCoords] = useState<{ top: number; left: number; minWidth: number; maxHeight: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = useMemo(() => {
+    const kw = keyword.trim().toLowerCase();
+    return kw ? options.filter((o) => o.label.toLowerCase().includes(kw)) : options;
+  }, [options, keyword]);
+
+  const openPanel = useCallback(() => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const gap = 4;
+    const maxH = 320;
+    const minWidth = Math.max(r.width, 200);
+    const left = Math.min(r.left, window.innerWidth - minWidth - 8);
+    const spaceBelow = window.innerHeight - r.bottom - gap;
+    const spaceAbove = r.top - gap;
+    // 触发 chip 下方空间不足且上方更宽裕时向上展开，避免低部选项超出视口不可达
+    let top: number;
+    let maxHeight: number;
+    if (spaceBelow >= maxH || spaceBelow >= spaceAbove) {
+      top = r.bottom + gap;
+      maxHeight = Math.min(maxH, spaceBelow);
+    } else {
+      top = Math.max(gap, r.top - gap - maxH);
+      maxHeight = Math.min(maxH, spaceAbove);
+    }
+    setCoords({ top, left, minWidth, maxHeight });
+    setKeyword('');
+    setOpen(true);
+  }, []);
+
+  // 面板展开时聚焦搜索框（延迟一帧，避免与打开面板的 click 冲突）
+  useEffect(() => {
+    if (!open) return;
+    const id = setTimeout(() => searchInputRef.current?.focus(), 0);
+    return () => clearTimeout(id);
+  }, [open]);
+
+  // 点击外部 / Esc / 滚动 / 窗口尺寸变化 关闭面板
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (triggerRef.current?.contains(t)) return;
+      if (panelRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const close = () => setOpen(false);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`tasks-view__filter-chip tasks-view__filter-chip--dropdown ${(active || open) ? 'is-active' : ''}`}
+        onClick={() => { if (open) setOpen(false); else openPanel(); }}
+      >
+        <span className="tasks-view__filter-chip-value">{label}</span>
+        <ChevronDown size={12} strokeWidth={2} />
+      </button>
+      {open && coords && createPortal(
+        <div ref={panelRef} className="chip-dropdown" style={{ top: coords.top, left: coords.left, minWidth: coords.minWidth, maxHeight: coords.maxHeight }}>
+          <div className="chip-dropdown__search">
+            <Search size={14} strokeWidth={2} />
+            <input
+              ref={searchInputRef}
+              className="chip-dropdown__search-input"
+              placeholder={searchPlaceholder}
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+            />
+          </div>
+          <div className="chip-dropdown__list">
+            {filtered.length === 0 ? (
+              <div className="chip-dropdown__empty">{emptyText}</div>
+            ) : (
+              filtered.map((o) => (
+                <div
+                  key={o.value || '__all__'}
+                  className={`chip-dropdown__item ${selectedValue === o.value ? 'is-selected' : ''}`}
+                  onClick={() => { onSelect(o.value); setOpen(false); }}
+                >
+                  {o.label}
+                </div>
+              ))
+            )}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+// 筛选弹窗内的内联下拉：点击触发行就地展开「搜索框 + 选项列表」（首项「全部」）。
+// 不使用 portal / fixed，跟随筛选弹窗正常流，避免与底部弹层 z-index 冲突。
+// 选项可能很多（项目 / 用户），用纵向列表而非胶囊，配合搜索收敛。
+function FilterMenuDropdown({
+  label, options, selectedValue, searchPlaceholder, emptyText, onSelect,
+}: {
+  label: string;
+  options: Array<{ value: string; label: string }>;
+  selectedValue: string;
+  searchPlaceholder: string;
+  emptyText: string;
+  onSelect: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [keyword, setKeyword] = useState('');
+
+  const filtered = useMemo(() => {
+    const kw = keyword.trim().toLowerCase();
+    return kw ? options.filter((o) => o.label.toLowerCase().includes(kw)) : options;
+  }, [options, keyword]);
+
+  return (
+    <div className="filter-menu__inline-dropdown">
+      <button
+        type="button"
+        className="filter-menu__dropdown-trigger"
+        onClick={() => { setKeyword(''); setOpen((v) => !v); }}
+      >
+        <span className={selectedValue ? 'filter-menu__dropdown-value' : 'filter-menu__dropdown-placeholder'}>
+          {label}
+        </span>
+        <ChevronDown size={14} strokeWidth={2} />
+      </button>
+      {open && (
+        <div className="filter-menu__inline-panel">
+          <div className="filter-menu__inline-search">
+            <Search size={14} strokeWidth={2} />
+            <input
+              className="filter-menu__search-input"
+              placeholder={searchPlaceholder}
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+            />
+          </div>
+          <div className="filter-menu__inline-list">
+            {filtered.length === 0 ? (
+              <div className="filter-menu__inline-empty">{emptyText}</div>
+            ) : (
+              filtered.map((o) => (
+                <button
+                  key={o.value || '__all__'}
+                  type="button"
+                  className={`filter-menu__inline-item ${selectedValue === o.value ? 'is-selected' : ''}`}
+                  onClick={() => { onSelect(o.value); setOpen(false); }}
+                >
+                  {o.label}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TasksView() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -242,12 +470,22 @@ export default function TasksView() {
   const [projectFilter, setProjectFilter] = useState(() => initialFilter.current.projectFilter);
   // 当前用户关联的项目列表（用于项目过滤下拉）
   const [myProjects, setMyProjects] = useState<ProjectItem[]>([]);
-  const [showProjectPicker, setShowProjectPicker] = useState(false);
-  // 项目下拉搜索关键字（按名称/编码模糊匹配，contains）
-  const [projectKeyword, setProjectKeyword] = useState('');
+  // 处理人过滤：空字符串 = 「全部」；否则为选中处理人的 username
+  const [assigneeFilter, setAssigneeFilter] = useState(() => initialFilter.current.assigneeFilter);
+  // 处理人候选列表（含 username 与 name，用于处理人过滤下拉）
+  const [assignees, setAssignees] = useState<Array<{ username: string; name?: string }>>([]);
+  // 创建时间过滤：空字符串 = 不限制；值为 YYYY-MM-DDTHH:mm（精确到分钟）
+  const [createdStart, setCreatedStart] = useState(() => initialFilter.current.createdStart);
+  const [createdEnd, setCreatedEnd] = useState(() => initialFilter.current.createdEnd);
+  // datetime-local 输入框引用（用于点击整框即唤起原生选择器）
+  const startDtInputRef = useRef<HTMLInputElement | null>(null);
+  const endDtInputRef = useRef<HTMLInputElement | null>(null);
   const [showFilterMenu, setShowFilterMenu] = useState(false);
-  // 记录项目下拉的打开来源：从「筛选」弹窗进入时，关闭后需回到筛选弹窗
-  const projectPickerFromFilterRef = useRef(false);
+  // 筛选弹窗草稿：弹窗内选择先写入草稿，点「确定」才提交生效；关闭（遮罩/返回）则丢弃。
+  const [draft, setDraft] = useState<{
+    relevance: string; status: string[]; project: string; assignee: string; priority: string[];
+    createdStart: string; createdEnd: string;
+  } | null>(null);
   const [page, setPage] = useState(() => initialFilter.current.page);
   const [total, setTotal] = useState(0);
   const [sortBy, setSortBy] = useState(() => initialFilter.current.sortBy);
@@ -258,24 +496,30 @@ export default function TasksView() {
 
   // username / user_id → avatar_resource_id 查找表：用于工单卡片创建人/处理人头像渲染。
   // 缺失权限（backend:user:base:read）或网络失败时静默回退为首字母头像。
+  // 同一次请求复用于「处理人过滤」下拉候选（仅需 username + name 字段）。
   const [avatarMap, setAvatarMap] = useState<AvatarMap>(new Map());
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const data = await adminRequest<Array<{
-          username?: string; id?: string; avatar_resource_id?: number | null;
+          username?: string; id?: string; name?: string | null; avatar_resource_id?: number | null;
         }>>('/users/?skip=0&limit=1000');
         if (cancelled) return;
         const m: AvatarMap = new Map();
+        const list: Array<{ username: string; name?: string }> = [];
         for (const u of data || []) {
+          if (u.username) {
+            list.push({ username: u.username, name: u.name || undefined });
+          }
           if (!u.avatar_resource_id) continue;
           if (u.username) m.set(u.username, u.avatar_resource_id);
           if (u.id) m.set(u.id, u.avatar_resource_id);
         }
         setAvatarMap(m);
+        setAssignees(list);
       } catch {
-        // 无权限或失败：保持首字母回退
+        // 无权限或失败：保持首字母回退、处理人下拉仅展示「全部」
       }
     })();
     return () => { cancelled = true; };
@@ -387,6 +631,19 @@ export default function TasksView() {
       if (projectFilter) {
         filters.push({ field: 'projectId', op: 'eq', value: projectFilter });
       }
+      // 处理人过滤：选中具体处理人时按 assignedTo 精确过滤（空 = 全部，不施加条件）
+      // 后端对 assignedTo 双键解析（username / users.id 都认）
+      if (assigneeFilter) {
+        filters.push({ field: 'assignedTo', op: 'eq', value: assigneeFilter });
+      }
+      // 创建时间过滤：精确到分钟。起始补 :00（含所选分钟）、结束补 :59（含所选分钟）。
+      // 空值不施加条件；值格式 YYYY-MM-DDTHH:mm（兼容旧 YYYY-MM-DD）。
+      if (createdStart) {
+        filters.push({ field: 'createdAt', op: 'ge', value: toBoundaryISO(createdStart, false) });
+      }
+      if (createdEnd) {
+        filters.push({ field: 'createdAt', op: 'le', value: toBoundaryISO(createdEnd, true) });
+      }
 
       const sorts = sortBy === 'priority'
         ? []
@@ -421,7 +678,7 @@ export default function TasksView() {
       isFetchingRef.current = false;
       if (!silent) setLoading(false);
     }
-  }, [page, search, statusFilter, priorityFilter, relevanceFilter, projectFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
+  }, [page, search, statusFilter, priorityFilter, relevanceFilter, projectFilter, assigneeFilter, createdStart, createdEnd, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
 
   fetchTicketsRef.current = fetchTickets;
 
@@ -429,12 +686,12 @@ export default function TasksView() {
   useEffect(() => {
     const newParams = buildFilterParams({
       search, statusFilter, priorityFilter,
-      relevanceFilter, projectFilter, page, sortBy, sortOrder,
+      relevanceFilter, projectFilter, assigneeFilter, createdStart, createdEnd, page, sortBy, sortOrder,
     });
     if (newParams !== searchParams.toString()) {
       setSearchParams(newParams, { replace: true });
     }
-  }, [search, statusFilter, priorityFilter, relevanceFilter, projectFilter, page, sortBy, sortOrder]);
+  }, [search, statusFilter, priorityFilter, relevanceFilter, projectFilter, assigneeFilter, createdStart, createdEnd, page, sortBy, sortOrder]);
 
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
@@ -542,15 +799,6 @@ export default function TasksView() {
     setPage(1);
   };
 
-  // 关闭项目下拉：若来自「筛选」弹窗，则回到筛选弹窗，而非回到主页面
-  const closeProjectPicker = () => {
-    setShowProjectPicker(false);
-    if (projectPickerFromFilterRef.current) {
-      projectPickerFromFilterRef.current = false;
-      setShowFilterMenu(true);
-    }
-  };
-
   // 当前选中项目的展示名（无选中或 id 不在名下项目列表时回退为「全部」）
   const selectedProjectLabel = useMemo(() => {
     if (!projectFilter) return '全部';
@@ -558,16 +806,14 @@ export default function TasksView() {
     return p ? (p.name || p.project_code || projectFilter) : '全部';
   }, [projectFilter, myProjects]);
 
-  // 项目下拉模糊匹配：按名称或项目编码 contains 过滤（忽略大小写）
-  const filteredMyProjects = useMemo(() => {
-    const kw = projectKeyword.trim().toLowerCase();
-    if (!kw) return myProjects;
-    return myProjects.filter(
-      (p) =>
-        (p.name || '').toLowerCase().includes(kw) ||
-        (p.project_code || '').toLowerCase().includes(kw),
-    );
-  }, [myProjects, projectKeyword]);
+  // 项目下拉选项：首项「全部」+ 名下项目（名称优先，回退编码）
+  const projectOptions = useMemo<Array<{ value: string; label: string }>>(
+    () => [
+      { value: '', label: '全部' },
+      ...myProjects.map((p) => ({ value: p.id, label: p.name || p.project_code || p.id })),
+    ],
+    [myProjects],
+  );
 
   // 项目列表加载完成前，URL 中的 projectFilter 可能指向已失效的项目；
   // 列表就绪后校验一次，命中不到则回退为「全部」，避免过滤出空结果。
@@ -576,6 +822,36 @@ export default function TasksView() {
     const exists = myProjects.some((p) => p.id === projectFilter);
     if (!exists) setProjectFilter('');
   }, [myProjects, projectFilter]);
+
+  // 处理人过滤：单选切换（传 username；空字符串 = 「全部」）。切换后回到第一页。
+  const handleAssigneeChange = (value: string) => {
+    setAssigneeFilter(value);
+    setPage(1);
+  };
+
+  // 当前选中处理人的展示名（无选中或 username 不在候选列表时回退为「全部」）
+  const selectedAssigneeLabel = useMemo(() => {
+    if (!assigneeFilter) return '全部';
+    const u = assignees.find((it) => it.username === assigneeFilter);
+    return u ? (u.name || u.username) : assigneeFilter;
+  }, [assigneeFilter, assignees]);
+
+  // 处理人下拉选项：首项「全部」+ 候选用户（姓名优先，回退账号）
+  const assigneeOptions = useMemo<Array<{ value: string; label: string }>>(
+    () => [
+      { value: '', label: '全部' },
+      ...assignees.map((u) => ({ value: u.username, label: u.name || u.username })),
+    ],
+    [assignees],
+  );
+
+  // 处理人列表加载完成前，URL 中的 assigneeFilter 可能指向已失效的用户；
+  // 列表就绪后校验一次，命中不到则回退为「全部」，避免过滤出空结果。
+  useEffect(() => {
+    if (!assigneeFilter || assignees.length === 0) return;
+    const exists = assignees.some((u) => u.username === assigneeFilter);
+    if (!exists) setAssigneeFilter('');
+  }, [assignees, assigneeFilter]);
 
   // 多选：单个状态点击切换选中/取消；'all' 表示全部选中
   const handleStatusToggle = (value: string) => {
@@ -606,6 +882,98 @@ export default function TasksView() {
     });
     setPage(1);
   };
+
+  // 打开筛选弹窗：以当前生效的过滤值初始化草稿，弹窗内改动只作用于草稿
+  const openFilterMenu = () => {
+    setDraft({
+      relevance: relevanceFilter,
+      status: [...statusFilter],
+      project: projectFilter,
+      assignee: assigneeFilter,
+      priority: [...priorityFilter],
+      createdStart,
+      createdEnd,
+    });
+    setShowFilterMenu(true);
+  };
+  // 草稿字段更新（单选类）
+  const setDraftField = (patch: Partial<{
+    relevance: string; status: string[]; project: string; assignee: string; priority: string[];
+    createdStart: string; createdEnd: string;
+  }>) => setDraft((d) => (d ? { ...d, ...patch } : d));
+  const draftRelevanceChange = (value: string) => setDraftField({ relevance: value });
+  const draftProjectChange = (value: string) => setDraftField({ project: value });
+  const draftAssigneeChange = (value: string) => setDraftField({ assignee: value });
+  const draftSetCreatedStart = (value: string) => setDraftField({ createdStart: value });
+  const draftSetCreatedEnd = (value: string) => setDraftField({ createdEnd: value });
+  // 草稿任务状态切换（与 handleStatusToggle 同逻辑，但作用于草稿）
+  const draftStatusToggle = (value: string) => setDraft((d) => {
+    if (!d) return d;
+    if (value === 'all') {
+      return { ...d, status: sameSet(d.status, ALL_STATUS_VALUES) ? [...DEFAULT_STATUS_VALUES] : [...ALL_STATUS_VALUES] };
+    }
+    if (d.status.includes(value)) {
+      const next = d.status.filter((v) => v !== value);
+      return { ...d, status: next.length > 0 ? next : [...DEFAULT_STATUS_VALUES] };
+    }
+    return { ...d, status: [...d.status, value] };
+  });
+  // 草稿优先级切换（与 handlePriorityToggle 同逻辑，但作用于草稿）
+  const draftPriorityToggle = (value: string) => setDraft((d) => {
+    if (!d) return d;
+    if (value === 'all') {
+      return { ...d, priority: sameSet(d.priority, ALL_PRIORITY_VALUES) ? [] : [...ALL_PRIORITY_VALUES] };
+    }
+    if (d.priority.includes(value)) {
+      const next = d.priority.filter((v) => v !== value);
+      return { ...d, priority: next.length > 0 ? next : [...ALL_PRIORITY_VALUES] };
+    }
+    return { ...d, priority: [...d.priority, value] };
+  });
+  // 清空草稿（弹窗内「清空选择」）：相关性回默认、状态回默认集（新建/进行中/已挂起/已解决）、
+  // 优先级回「全部」、项目/处理人回「全部」、创建时间清空。仅作用于草稿，未点「确定」前不生效。
+  const draftClear = () => setDraft({
+    relevance: 'mine',
+    status: [...DEFAULT_STATUS_VALUES],
+    project: '',
+    assignee: '',
+    priority: [...ALL_PRIORITY_VALUES],
+    createdStart: '',
+    createdEnd: '',
+  });
+  // 提交草稿生效：将草稿写入正式过滤状态并关闭弹窗（触发 fetchTickets 重新拉取）
+  const commitDraft = () => {
+    if (!draft) { setShowFilterMenu(false); return; }
+    setRelevanceFilter(draft.relevance);
+    setStatusFilter(draft.status);
+    setProjectFilter(draft.project);
+    setAssigneeFilter(draft.assignee);
+    setPriorityFilter(draft.priority);
+    setCreatedStart(draft.createdStart);
+    setCreatedEnd(draft.createdEnd);
+    setPage(1);
+    setShowFilterMenu(false);
+  };
+
+  // 弹窗内展示用草稿值（弹窗未打开或 draft 为空时回退到生效值，UI 不致空）
+  const dRelevance = draft?.relevance ?? relevanceFilter;
+  const dStatus = draft?.status ?? statusFilter;
+  const dProject = draft?.project ?? projectFilter;
+  const dAssignee = draft?.assignee ?? assigneeFilter;
+  const dPriority = draft?.priority ?? priorityFilter;
+  const dCreatedStart = draft?.createdStart ?? createdStart;
+  const dCreatedEnd = draft?.createdEnd ?? createdEnd;
+  // 弹窗内项目/处理人展示名（基于草稿值解析，未选回退「全部」）
+  const popupProjectLabel = useMemo(() => {
+    if (!dProject) return '全部';
+    const p = myProjects.find((it) => it.id === dProject);
+    return p ? (p.name || p.project_code || dProject) : '全部';
+  }, [dProject, myProjects]);
+  const popupAssigneeLabel = useMemo(() => {
+    if (!dAssignee) return '全部';
+    const u = assignees.find((it) => it.username === dAssignee);
+    return u ? (u.name || u.username) : dAssignee;
+  }, [dAssignee, assignees]);
 
   const handleSyncExternalTasks = async () => {
     setSyncing(true);
@@ -770,22 +1138,27 @@ export default function TasksView() {
                 </button>
               ))}
               <span className="tasks-view__filter-divider" aria-hidden="true" />
-              {/* 项目过滤：「全部」独立按钮 + 具体项目走可搜索下拉框 */}
-              <button
-                className={`tasks-view__filter-chip ${!projectFilter ? 'is-active' : ''}`}
-                onClick={() => { handleProjectChange(''); }}
-              >
-                全部
-              </button>
-              <button
-                className={`tasks-view__filter-chip tasks-view__filter-chip--dropdown ${projectFilter ? 'is-active' : ''}`}
-                onClick={() => { setProjectKeyword(''); projectPickerFromFilterRef.current = false; setShowProjectPicker(true); }}
-              >
-                <span className="tasks-view__filter-chip-value">
-                  {projectFilter ? selectedProjectLabel : '选择项目'}
-                </span>
-                <ChevronDown size={12} strokeWidth={2} />
-              </button>
+              {/* 项目过滤：内联下拉（首项「全部」+ 可搜索） */}
+              <ChipDropdown
+                label={selectedProjectLabel}
+                active={!!projectFilter}
+                options={projectOptions}
+                selectedValue={projectFilter}
+                searchPlaceholder="搜索项目名称 / 编码…"
+                emptyText="未找到匹配项目"
+                onSelect={handleProjectChange}
+              />
+              <span className="tasks-view__filter-divider" aria-hidden="true" />
+              {/* 处理人过滤：内联下拉（首项「全部」+ 可搜索） */}
+              <ChipDropdown
+                label={selectedAssigneeLabel}
+                active={!!assigneeFilter}
+                options={assigneeOptions}
+                selectedValue={assigneeFilter}
+                searchPlaceholder="搜索姓名 / 账号…"
+                emptyText="未找到匹配处理人"
+                onSelect={handleAssigneeChange}
+              />
               <span className="tasks-view__filter-divider" aria-hidden="true" />
               <button
                 key="priority_all"
@@ -804,7 +1177,7 @@ export default function TasksView() {
                 </button>
               ))}
             </div>
-            <button className="tasks-filter-btn" onClick={() => setShowFilterMenu(true)}>
+            <button className="tasks-filter-btn" onClick={openFilterMenu}>
               <SlidersHorizontal size={14} strokeWidth={2} />
               <span>筛选</span>
             </button>
@@ -831,8 +1204,8 @@ export default function TasksView() {
               {relevanceOptions.map((option) => (
                 <button
                   key={option.value}
-                  className={`filter-menu__item ${relevanceFilter === option.value ? 'is-active' : ''}`}
-                  onClick={() => { handleRelevanceChange(option.value); }}
+                  className={`filter-menu__item ${dRelevance === option.value ? 'is-active' : ''}`}
+                  onClick={() => { draftRelevanceChange(option.value); }}
                 >
                   {option.label}
                   {typeof relevanceCounts[option.value] === 'number' && (
@@ -850,16 +1223,16 @@ export default function TasksView() {
             <div className="filter-menu__items">
               <button
                 key="status_all"
-                className={`filter-menu__item ${sameSet(statusFilter, ALL_STATUS_VALUES) ? 'is-active' : ''}`}
-                onClick={() => { handleStatusToggle('all'); }}
+                className={`filter-menu__item ${sameSet(dStatus, ALL_STATUS_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { draftStatusToggle('all'); }}
               >
                 全部
               </button>
               {statusOptions.map((option) => (
                 <button
                   key={option.value}
-                  className={`filter-menu__item ${statusFilter.includes(option.value) ? 'is-active' : ''}`}
-                  onClick={() => { handleStatusToggle(option.value); }}
+                  className={`filter-menu__item ${dStatus.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { draftStatusToggle(option.value); }}
                 >
                   {option.label}
                 </button>
@@ -869,15 +1242,59 @@ export default function TasksView() {
           <div className="filter-menu__divider"></div>
           <div className="filter-menu__section">
             <h4 className="filter-menu__title">项目</h4>
-            <button
-              className="filter-menu__dropdown-trigger"
-              onClick={() => { setProjectKeyword(''); projectPickerFromFilterRef.current = true; setShowFilterMenu(false); setShowProjectPicker(true); }}
-            >
-              <span className={projectFilter ? 'filter-menu__dropdown-value' : 'filter-menu__dropdown-placeholder'}>
-                {projectFilter ? selectedProjectLabel : '全部'}
-              </span>
-              <ChevronDown size={14} strokeWidth={2} />
-            </button>
+            <FilterMenuDropdown
+              label={popupProjectLabel}
+              options={projectOptions}
+              selectedValue={dProject}
+              searchPlaceholder="搜索项目名称 / 编码…"
+              emptyText="未找到匹配项目"
+              onSelect={draftProjectChange}
+            />
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">处理人</h4>
+            <FilterMenuDropdown
+              label={popupAssigneeLabel}
+              options={assigneeOptions}
+              selectedValue={dAssignee}
+              searchPlaceholder="搜索姓名 / 账号…"
+              emptyText="未找到匹配处理人"
+              onSelect={draftAssigneeChange}
+            />
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">创建时间（选择时间范围）</h4>
+            <div className="filter-menu__date-range">
+              <div className="filter-menu__date-field">
+                <input
+                  ref={startDtInputRef}
+                  type="datetime-local"
+                  className={`filter-menu__date-input${dCreatedStart ? '' : ' filter-menu__date-input--empty'}`}
+                  step={60}
+                  value={dCreatedStart}
+                  max={dCreatedEnd || undefined}
+                  onChange={(e) => draftSetCreatedStart(e.target.value)}
+                  onClick={() => openNativePicker(startDtInputRef.current)}
+                />
+                {!dCreatedStart && <span className="filter-menu__date-placeholder">起始时间</span>}
+              </div>
+              <span className="filter-menu__date-sep">至</span>
+              <div className="filter-menu__date-field">
+                <input
+                  ref={endDtInputRef}
+                  type="datetime-local"
+                  className={`filter-menu__date-input${dCreatedEnd ? '' : ' filter-menu__date-input--empty'}`}
+                  step={60}
+                  value={dCreatedEnd}
+                  min={dCreatedStart || undefined}
+                  onChange={(e) => draftSetCreatedEnd(e.target.value)}
+                  onClick={() => openNativePicker(endDtInputRef.current)}
+                />
+                {!dCreatedEnd && <span className="filter-menu__date-placeholder">终止时间</span>}
+              </div>
+            </div>
           </div>
           <div className="filter-menu__divider"></div>
           <div className="filter-menu__section">
@@ -885,61 +1302,38 @@ export default function TasksView() {
             <div className="filter-menu__items">
               <button
                 key="priority_all"
-                className={`filter-menu__item ${sameSet(priorityFilter, ALL_PRIORITY_VALUES) ? 'is-active' : ''}`}
-                onClick={() => { handlePriorityToggle('all'); }}
+                className={`filter-menu__item ${sameSet(dPriority, ALL_PRIORITY_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { draftPriorityToggle('all'); }}
               >
                 全部
               </button>
               {priorityOptions.map((option) => (
                 <button
                   key={option.value}
-                  className={`filter-menu__item ${priorityFilter.includes(option.value) ? 'is-active' : ''}`}
-                  onClick={() => { handlePriorityToggle(option.value); }}
+                  className={`filter-menu__item ${dPriority.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { draftPriorityToggle(option.value); }}
                 >
                   {option.label}
                 </button>
               ))}
             </div>
           </div>
-        </div>
-      </Popup>
-
-      {/* 项目过滤下拉（顶部 chip 触发）：单选名下项目，支持输入模糊匹配过滤 */}
-      <Popup visible={showProjectPicker} onClose={closeProjectPicker} placement="bottom" showOverlay>
-        <div className="filter-menu filter-menu--searchable">
-          <div className="filter-menu__section">
-            <h4 className="filter-menu__title">选择项目</h4>
-            <div className="filter-menu__search">
-              <Search size={14} strokeWidth={2} />
-              <input
-                className="tasks-search filter-menu__search-input"
-                placeholder="搜索项目名称 / 编码…"
-                value={projectKeyword}
-                onChange={(e) => setProjectKeyword(e.target.value)}
-              />
-            </div>
-            <div className="filter-menu__items">
-              <button
-                className={`filter-menu__item ${!projectFilter ? 'is-active' : ''}`}
-                onClick={() => { handleProjectChange(''); closeProjectPicker(); }}
-              >
-                全部
-              </button>
-              {filteredMyProjects.map((p) => (
-                <button
-                  key={p.id}
-                  className={`filter-menu__item ${projectFilter === p.id ? 'is-active' : ''}`}
-                  onClick={() => { handleProjectChange(p.id); closeProjectPicker(); }}
-                >
-                  {p.name || p.project_code}
-                </button>
-              ))}
-              {myProjects.length === 0 ? (
-                <div className="filter-menu__empty">暂无关联项目</div>
-              ) : filteredMyProjects.length === 0 ? (
-                <div className="filter-menu__empty">未找到匹配项目</div>
-              ) : null}
-            </div>
+          {/* 底部操作按钮：清空选择 / 确定（并排） */}
+          <div className="filter-menu__actions">
+            <button
+              type="button"
+              className="filter-menu__action filter-menu__action--ghost"
+              onClick={draftClear}
+            >
+              清空选择
+            </button>
+            <button
+              type="button"
+              className="filter-menu__action filter-menu__action--primary"
+              onClick={commitDraft}
+            >
+              确定
+            </button>
           </div>
         </div>
       </Popup>

@@ -1455,6 +1455,7 @@ export default function TaskDetailPage() {
           onSend={handleSendComment}
           onDeleteComment={handleDeleteComment}
           sending={submittingComment || askingAI}
+          optimisticAi={diagnosing || askingAI}
           enableAI
           enableAttach
           mentionUsers={projectMembers}
@@ -1797,8 +1798,9 @@ export default function TaskDetailPage() {
       </Popup>
 
       <Dialog
+        className="diagnosis-report-dialog"
         visible={reportVisible}
-        title="🤖 U老师 诊断报告"
+        title="U老师 诊断报告"
         confirmBtn="关闭"
         onConfirm={() => setReportVisible(false)}
       >

@@ -5,6 +5,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Loading, Toast, Popup, DateTimePicker } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { isPC } from '@/shared/utils/device';
 
 interface EfficiencySummary {
   total_tasks: number | null;
@@ -75,12 +76,7 @@ const todayStr = (): string => {
   return `${y}-${m}-${day}`;
 };
 
-// PC 端检测：移动端 DateTimePicker 为滑动选择，PC 端无法拖动，需改用原生日期选择组件
-const isPC = (): boolean => {
-  if (typeof navigator === 'undefined') return false;
-  return !/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-};
-
+// PC 端检测：移动端 DateTimePicker 为滑动选择，PC 端无法拖动，需改用原生日期选择组件（见 shared/utils/device.ts）
 // 数值格式化：保留两位小数；percent 转换为百分比
 const formatValue = (value: number | null | undefined, percent?: boolean): string => {
   if (value == null) return '-';
