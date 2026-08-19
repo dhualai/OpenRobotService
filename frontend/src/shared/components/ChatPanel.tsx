@@ -64,8 +64,8 @@ interface Message {
   percent?: number;
   failed?: boolean;
   reaction?: 'like' | 'dislike' | null;
-  // 流式输出进行中标记：true 时气泡仍实时 Markdown 渲染（protectStreamingMedia 保护未成型媒体防抖图），
-  // 完成后置 false 走完整 Markdown 渲染；用于区分流式中间态（配合 renderAcc 节流 80ms）
+  // 流式输出进行中标记：true 时气泡仍实时 Markdown 渲染文字/格式，媒体以占位代替防抖，
+  // 完成后置 false 走完整 Markdown 渲染（含真实图片/视频）；用于区分流式中间态
   streaming?: boolean;
   // 附件上传后的 AI 占位阶段（对应 sendWithFile 动态占位）：analyzing_image/analyzing_file=分析中，thinking=思考中。
   // generating_ticket=提单生成工单草稿中（LLM 的「好的」被抑制，弹窗前显示动画）。
@@ -165,24 +165,6 @@ const looksLikeJsonHead = (text: string): boolean => {
   const t = text.trimStart();
   if (t.startsWith('{') && t.slice(0, 400).includes('"action"')) return true;
   return /^```(?:json)?\s*\{/.test(t);
-};
-
-/** 流式媒体保护：中和「尚未成型的媒体引用」，避免流式期间 MarkdownRenderer 抖图。
- *  流式 content 每 80ms 增长一次，若把半截图片/视频 markdown 或截断 URL 交给
- *  preprocessMediaUrls / AuthImage，会拿到残缺 src，触发 AuthImage 反复 setImgState
- *  reset + 重新鉴权 fetch + 「加载中」，造成图片闪烁抖动。
- *  仅中和「未闭合」的媒体语法（![...]( 或 [...] 链接开头但缺闭合 )，到行尾仍未闭合）；
- *  完整闭合的不动——完整 URL 稳定后 AuthImage 只加载一次，不抖。
- */
-const protectStreamingMedia = (text: string): string => {
-  if (!text) return text;
-  let t = text;
-  // 1) 未闭合的图片/视频 markdown：![alt]( 缺闭合 ) → 中和为图片占位
-  t = t.replace(/!\[[^\]]*\]\([^)\n]*$/g, '（图片加载中…）');
-  // 2) 未闭合的普通 markdown 链接：[text]( 缺闭合 ) → 中和为通用占位
-  //    （含以 ![ 开头的图片链接残片，以及 LLM 正在敲的 URL，避免渲染成残缺链接/图片）
-  t = t.replace(/\[[^\]]*\]\([^)\n]*$/g, '（加载中…）');
-  return t;
 };
 
 /** DB 会话消息 → 前端 Message：附件恢复 + AI 文本清洗 + 空白 AI 气泡过滤（历史异常数据不上屏） */
@@ -422,10 +404,10 @@ const MessageBubble = memo(function MessageBubble({
             </div>
           ) : msg.content ? (
             msg.streaming ? (
-              // 流式期间也实时 Markdown 渲染（市面主流体验：边生成边看格式）。
-              // 只对「未成型的媒体引用」做保护（protectStreamingMedia），避免 AuthImage
-              // 拿到残缺 URL 反复 reset/重新加载而抖图；文字/代码块/标题等实时格式化。
-              <MarkdownRenderer content={protectStreamingMedia(msg.content)} compact={compact} />
+              // 流式期间实时 Markdown 渲染文字/格式；媒体（图片/视频）由 MarkdownRenderer 用
+              // 稳定占位代替（streaming=true），避免流式中间态渲染真实 <img> 反复 remount/重载闪烁；
+              // 定稿（streaming=false）后才加载真实媒体。
+              <MarkdownRenderer content={msg.content} compact={compact} streaming />
             ) : (
               <MarkdownRenderer content={msg.content} compact={compact} />
             )
