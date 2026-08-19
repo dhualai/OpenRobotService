@@ -1189,8 +1189,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // 匀速重放把突发摊平、真空期平滑衔接，视觉上始终在打字。
     let pending = '';
     let typeTimer: ReturnType<typeof setInterval> | null = null;
-    const TYPE_TICK_MS = 80;   // 每 80ms 一 tick
-    const TYPE_CHARS = 10;     // 每 tick 最多出 10 字（≈125 字/秒，快于上游平均供给，尾差小）
+    // 匀速档：每 100ms 出 4 字（40 字/秒）——低于上游(claude)平均供给 55-75 字/秒，
+    // 缓冲在突发块之间不会耗尽，视觉上始终在匀速打字（出几个字停顿 = 速率设太快）。
+    // 追赶档：缓冲积压 > 200 字（上游已整段憋完/巨块到达）时提速到 12 字/tick，
+    // 避免流结束后拖尾过长。
+    const TYPE_TICK_MS = 100;
+    const TYPE_CHARS = 4;
+    const TYPE_BURST_THRESHOLD = 200;
+    const TYPE_BURST_CHARS = 12;
     // sentConvId 快照：流式期间用户可能切换会话，convRef 会被 effect 改写指向新会话；
     // 后续 AI 回复落库/首轮会话同步必须用此快照，否则回复会错写进新会话（表现为"过时/错位回复"）
     let sentConvId: number | null = null;
@@ -1203,8 +1209,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (typeTimer) return;
       typeTimer = setInterval(() => {
         if (!pending) return;  // 上游真空期：缓冲空，不出字
-        acc += pending.slice(0, TYPE_CHARS);
-        pending = pending.slice(TYPE_CHARS);
+        const _chars = pending.length > TYPE_BURST_THRESHOLD ? TYPE_BURST_CHARS : TYPE_CHARS;
+        acc += pending.slice(0, _chars);
+        pending = pending.slice(_chars);
         renderAcc();
       }, TYPE_TICK_MS);
     };
