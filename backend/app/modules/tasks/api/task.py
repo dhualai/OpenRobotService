@@ -628,7 +628,7 @@ async def update_task(
             )
             await _add_system_comment(db, task_id, f"{user_name} 将工单重新指派给 {new_assignee_name}", username, token)
             # 工单转派提醒：通知创建人 + 新被指派人
-            reassign_notify_users = list({ticket.created_by, new_assignee} - {None})
+            reassign_notify_users = list({ticket.created_by, new_assignee} - {None, username})
             await NotificationUtils.send_ticket_reassign_notification(
                 ticket_id=task_id,
                 title=ticket.title or '',
@@ -1198,7 +1198,7 @@ async def assign_task(
         await _add_system_comment(db, task_id, f"{user_name} 将工单指派给 {assignee_name}", username, token)
 
         # 工单转派提醒：通知创建人 + 新被指派人
-        assign_notify_users = list({ticket.created_by, user_id} - {None})
+        assign_notify_users = list({ticket.created_by, user_id} - {None, username})
         await NotificationUtils.send_ticket_reassign_notification(
             ticket_id=task_id,
             title=ticket.title or '',
