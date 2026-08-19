@@ -2,7 +2,7 @@
 // 顶部返回栏 + 全部展开/折叠 + 视图切换、搜索、扁平人员卡片（部门管理员蓝卡 +
 // 公司/部门芯片 + 展开下属区）、分组视图（按部门）；保留拖拽/弹窗设置上级、
 // 设为部门管理员、自动挂靠与循环引用修复。
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Toast, Loading, Popup } from 'tdesign-mobile-react';
 import { ChevronLeft, ChevronRight, Crown, Link2, Search, UserRound, Users, Check } from 'lucide-react';
@@ -26,6 +26,7 @@ interface User {
 
 interface TreeNode extends User {
   children: TreeNode[];
+  depth: number;
 }
 
 /** 单选项行（对齐 macaron users 弹层样式） */
@@ -52,7 +53,7 @@ export default function OrgChart() {
   // 选中用户弹窗（设置上级）
   const [selectUser, setSelectUser] = useState<User | null>(null);
   const [pickerVisible, setPickerVisible] = useState(false);
-  // 折叠状态：默认全部折叠
+  // 折叠状态：默认全部展开（层级缩进一目了然），可点节点右侧「N 人」或「全部折叠」收起
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
 
   // 分组视图：按部门（对齐原型 org-structure 的 dept 分组）
@@ -82,7 +83,7 @@ export default function OrgChart() {
     return m;
   }, [users]);
 
-  // 构建组织树：supervisor_id 为 null 的为根节点
+  // 构建组织树：supervisor_id 为 null 的为根节点，按层级记录 depth（用于缩进）
   const tree = useMemo((): TreeNode[] => {
     const childrenMap = new Map<string | null, User[]>();
     users.forEach((u) => {
@@ -91,31 +92,32 @@ export default function OrgChart() {
       childrenMap.get(parent)!.push(u);
     });
 
-    const build = (parent: User | null): TreeNode[] => {
+    const build = (parent: User | null, depth: number): TreeNode[] => {
       const children = childrenMap.get(parent?.id || null) || [];
       return children
         .sort((a, b) => (a.name || a.username).localeCompare(b.name || b.username))
-        .map((u) => ({ ...u, children: build(u) }));
+        .map((u) => ({ ...u, depth, children: build(u, depth + 1) }));
     };
 
-    return build(null);
+    return build(null, 0);
   }, [users]);
 
-  // 默认折叠所有有子节点的节点（仅首次加载，后续操作不重置）
-  const initialCollapseRef = useRef(false);
-  useEffect(() => {
-    if (initialCollapseRef.current) return;
-    initialCollapseRef.current = true;
-    const ids = new Set<string>();
-    const collect = (nodes: TreeNode[]) => {
-      nodes.forEach((n) => {
-        if (n.children.length > 0) ids.add(n.id);
-        collect(n.children);
-      });
-    };
-    collect(tree);
-    setCollapsedIds(ids);
-  }, [tree]);
+  // 树形视图数据：无搜索词时展示完整层级树；搜索时保留命中节点及其祖先路径，
+  // 层级缩进结构不因搜索而丢失
+  const filteredTree = useMemo((): TreeNode[] => {
+    const kw = keyword.trim().toLowerCase();
+    if (!kw) return tree;
+    const match = (u: TreeNode) =>
+      (u.name || '').toLowerCase().includes(kw) ||
+      (u.username || '').toLowerCase().includes(kw) ||
+      (u.company || '').toLowerCase().includes(kw) ||
+      (u.department || '').toLowerCase().includes(kw);
+    const keep = (nodes: TreeNode[]): TreeNode[] =>
+      nodes
+        .map((n) => ({ ...n, children: keep(n.children) }))
+        .filter((n) => match(n) || n.children.length > 0);
+    return keep(tree);
+  }, [tree, keyword]);
 
   // 未分配上级的用户（不在树中的 — 理论上应该都在 tree 里，因为 null supervisor 的就是 root）
   // 但如果存在循环引用，这些用户不会被遍历到
@@ -289,42 +291,8 @@ export default function OrgChart() {
     setPickerVisible(true);
   };
 
-  // 渲染下属展开区的一行（对齐原型 reports 子卡：图标 + 姓名 + 汇报对象 + 操作）
-  const renderSubRow = (child: TreeNode, managerName: string): React.ReactNode => {
-    const isDragOver = dragOverUserId === child.id;
-    return (
-      <div
-        key={child.id}
-        {...drag.bind(child.id)}
-        onClick={() => openPicker(child)}
-        className={`mac-org-subrow${isDragOver ? ' mac-org-subrow--drag-over' : ''}`}
-      >
-        <span className="mac-org-subrow__icon">
-          <UserRound size={13} />
-        </span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <p className="mac-org-subrow__name">{child.name || child.username}</p>
-          <p className="mac-org-subrow__meta">↑ 汇报给：{managerName}</p>
-          {child.department_id && (child.job_level ?? 1) < 2 && (
-            <div className="mac-org-subrow__actions">
-              <button
-                type="button"
-                className="mac-org-btn"
-                onClick={(e) => { e.stopPropagation(); handleToggleDeptManager(child, true); }}
-              >
-                设为部门管理员
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
-
   // 渲染人员卡片（对齐原型 PersonRow：图标圆 + 姓名/芯片 + 操作 + 人数展开）
-  const renderPersonCard = (user: User): React.ReactNode => {
-    const node = userMap.get(user.id) as TreeNode | undefined;
-    const children = node?.children ?? [];
+  const renderPersonCard = (user: User, children: TreeNode[]): React.ReactNode => {
     const hasChildren = children.length > 0;
     const isDeptManager = (user.job_level ?? 1) >= 2;
     const isDragOver = dragOverUserId === user.id;
@@ -395,11 +363,20 @@ export default function OrgChart() {
             </button>
           )}
         </div>
+      </div>
+    );
+  };
 
-        {/* 展开的下属区 */}
+  // 渲染树节点：按层级递归渲染，下级相对上级缩进（mac-org-children 每层 24px）
+  const renderTreeNode = (node: TreeNode, forceOpen: boolean): React.ReactNode => {
+    const isCollapsed = collapsedIds.has(node.id) && !forceOpen;
+    const hasChildren = node.children.length > 0;
+    return (
+      <div key={node.id}>
+        {renderPersonCard(node, node.children)}
         {hasChildren && !isCollapsed && (
-          <div className="mac-org-sub">
-            {children.map((child) => renderSubRow(child, user.name || user.username))}
+          <div className="mac-org-children">
+            {node.children.map((child) => renderTreeNode(child, forceOpen))}
           </div>
         )}
       </div>
@@ -470,29 +447,37 @@ export default function OrgChart() {
         </div>
       )}
 
-      {flatList.length === 0 ? (
-        <div className="mac-empty" style={{ padding: '40px 0' }}>
-          {keyword ? '未找到匹配的人员' : '暂无人员数据'}
-        </div>
-      ) : viewMode === 'group' ? (
+      {viewMode === 'group' ? (
         /* 分组视图：按部门（对齐原型） */
-        groupedByDept.map(([dept, deptUsers]) => (
-          <section key={dept} style={{ marginBottom: 16 }}>
-            <h4
-              style={{
-                margin: '0 0 8px 4px', fontSize: 11.5, fontWeight: 600,
-                letterSpacing: '0.02em', color: 'var(--mac-muted-fg)',
-              }}
-            >
-              {dept}
-              <span style={{ fontWeight: 400 }}> {deptUsers.length} 人</span>
-            </h4>
-            {deptUsers.map((u) => renderPersonCard(u))}
-          </section>
-        ))
+        flatList.length === 0 ? (
+          <div className="mac-empty" style={{ padding: '40px 0' }}>
+            {keyword ? '未找到匹配的人员' : '暂无人员数据'}
+          </div>
+        ) : (
+          groupedByDept.map(([dept, deptUsers]) => (
+            <section key={dept} style={{ marginBottom: 16 }}>
+              <h4
+                style={{
+                  margin: '0 0 8px 4px', fontSize: 11.5, fontWeight: 600,
+                  letterSpacing: '0.02em', color: 'var(--mac-muted-fg)',
+                }}
+              >
+                {dept}
+                <span style={{ fontWeight: 400 }}> {deptUsers.length} 人</span>
+              </h4>
+              {deptUsers.map((u) => renderPersonCard(u, []))}
+            </section>
+          ))
+        )
       ) : (
-        /* 列表视图：扁平人员卡片 */
-        <div>{flatList.map((u) => renderPersonCard(u))}</div>
+        /* 树形视图：按层级递归缩进（自动挂靠后同部门人员移入其名下，缩进自然增加） */
+        filteredTree.length === 0 ? (
+          <div className="mac-empty" style={{ padding: '40px 0' }}>
+            {keyword ? '未找到匹配的人员' : '暂无人员数据'}
+          </div>
+        ) : (
+          <div>{filteredTree.map((node) => renderTreeNode(node, !!keyword.trim()))}</div>
+        )
       )}
 
       {/* 循环引用用户修复 */}

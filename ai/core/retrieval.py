@@ -326,13 +326,14 @@ class QdrantClientWrapper:
         top_k: int = 3,
         score_threshold: Optional[float] = None,
         collection_name: Optional[str] = None,
+        query_filter=None,
     ) -> List[Any]:
         """稀疏向量检索，可指定 collection（默认使用活跃集合）。"""
         if self.is_unavailable:
             return []
-        # 本地模式不支持稀疏检索，跳过
-        if self._is_local:
-            return []
+        # 本地模式同样支持稀疏检索（集合建库时带 sparse 索引，实测 query_points
+        # using='sparse' 正常返回命中）——旧守卫「本地模式不支持」是过时误判，
+        # 导致 BM25 关键词路从未生效（RRF 融合长期只有稠密路一腿）。
         client = await self._ensure_client()
         col = collection_name or self.collection_name
         try:
@@ -342,6 +343,7 @@ class QdrantClientWrapper:
             sv = SparseVector(indices=indices, values=values)
 
             # qdrant_client >=1.18: search() → query_points()
+            # 稀疏检索走倒排索引，不需要（也不应传）HNSW SearchParams
             result = await self._to_thread(
                 client.query_points,
                 collection_name=col,
@@ -350,10 +352,7 @@ class QdrantClientWrapper:
                 limit=top_k,
                 score_threshold=score_threshold,
                 with_payload=True,
-                search_params=SearchParams(
-                    hnsw_ef=128,
-                    exact=False,
-                ),
+                query_filter=query_filter,
             )
             return result.points
         except ServiceUnavailableError:
@@ -471,7 +470,7 @@ class RetrievalService:
         CPU 推理瓶颈：bge-reranker-v2-m3 在 CPU 上约 700ms/pair，
         候选数封顶在 15，避免单次检索耗时超过 10 秒。
         """
-        _MAX_RERANK_CANDIDATES = 12  # rerank 候选数：CPU 推理 ~700ms/pair，8→5 减半耗时，精度损失可接受
+        _MAX_RERANK_CANDIDATES = 30  # rerank 候选数:双路保送后池子变大,12 会把稀疏路保送挤掉
         if not self._reranker or len(results) <= top_k:
             return results[:top_k]
 
@@ -506,6 +505,82 @@ class RetrievalService:
     ) -> Dict[int, float]:
         """生成 BM25 稀疏向量（委托给模块级函数）"""
         return generate_bm25_sparse(query, max_index)
+
+    def _point_to_result(self, point: Any, score: float,
+                         vector_score: float = 0.0, sparse_score: float = 0.0) -> RetrievalResult:
+        """Qdrant point → RetrievalResult（payload 提取复用）。"""
+        pl = point.payload or {}
+        return RetrievalResult(
+            id=str(point.id),
+            score=score,
+            title=pl.get("title", ""),
+            content=pl.get("content", ""),
+            vector_score=vector_score,
+            sparse_score=sparse_score,
+            images=pl.get("images", []),
+            sub_domain=pl.get("sub_domain", ""),
+            domain=pl.get("domain", ""),
+            verified=pl.get("verified", "unknown") or "unknown",
+            root_cause_type=pl.get("root_cause_type", "") or "",
+            error_codes=pl.get("error_codes", []) or [],
+        )
+
+    async def retrieve_domain_dual(
+        self,
+        query: str,
+        domain: str,
+        top_k: int = 8,
+        query_filter=None,
+    ) -> Tuple[List[RetrievalResult], List[RetrievalResult]]:
+        """双路原始检索：返回 (稠密结果, 稀疏结果)，不融合。
+        用于「两路各自保送 → 合并候选池 → cross-encoder 精排」的策略：
+        RRF 早融合会把只被一路命中的文档挤出候选（锁区文档稠密路第4名，
+        RRF 后掉出 top12 精排池，cross-encoder 永远看不到它）。
+        """
+        from ai.config import get_active_collection_for
+
+        col = get_active_collection_for(domain)
+        if not col:
+            logger.warning(f"[dual] {domain} 域活跃集合指针为空，双路检索跳过")
+            return [], []
+        logger.info(f"[dual] {domain} 域检索集合: {col}")
+        await self._ensure_clients()
+        if self._qdrant.is_unavailable:
+            logger.warning(f"[dual] {domain} 域 Qdrant 不可用，双路检索跳过")
+            return [], []
+
+        query_vector = await self._embed_client.embed(query)
+        bm25_sparse = self._generate_bm25_sparse(query)
+
+        dense_task = self._qdrant.search_dense(
+            query_vector.tolist(),
+            top_k=top_k,
+            collection_name=col,
+            query_filter=query_filter,
+        )
+        # 稀疏路同样带过滤条件（此前 search_sparse 漏传 query_filter，
+        # sub_domain 场景会混入其它子域文档）
+        sparse_task = self._qdrant.search_sparse(
+            bm25_sparse,
+            top_k=top_k,
+            collection_name=col,
+            query_filter=query_filter,
+        ) if bm25_sparse else None
+
+        if sparse_task is None:
+            dense_res = await dense_task
+            return ([self._point_to_result(p, p.score, vector_score=p.score)
+                     for p in dense_res], [])
+
+        dense_res, sparse_list = await asyncio.gather(dense_task, sparse_task)
+        if isinstance(sparse_list, BaseException):
+            sparse_list = []
+        if not isinstance(sparse_list, list):
+            sparse_list = []
+        return (
+            [self._point_to_result(p, p.score, vector_score=p.score) for p in dense_res],
+            [self._point_to_result(p, p.score, sparse_score=p.score) for p in sparse_list],
+        )
 
     def _rrf_fusion(
         self,

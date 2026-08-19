@@ -3913,24 +3913,8 @@ html, body, #root {
 .mac-org-card__count .mac-org-chev { transition: transform 0.15s; }
 .mac-org-card__count.is-open .mac-org-chev { transform: rotate(90deg); }
 
-/* 展开的下属区（对齐原型 reports 嵌套卡） */
-.mac-org-sub {
-  border-top: 1px solid rgba(232, 234, 234, 0.6); background: rgba(255, 255, 255, 0.6);
-  padding: 12px 16px 12px 32px; display: flex; flex-direction: column; gap: 8px;
-}
-.mac-org-subrow {
-  display: flex; align-items: flex-start; gap: 10px; border: 1px solid rgba(232, 234, 234, 0.6);
-  background: #fff; border-radius: 12px; padding: 10px 12px; cursor: pointer; touch-action: pan-y;
-}
-.mac-org-subrow__icon {
-  width: 24px; height: 24px; border-radius: 50%; background: var(--mac-secondary);
-  color: var(--mac-muted-fg); display: inline-flex; align-items: center; justify-content: center;
-  flex-shrink: 0; margin-top: 1px;
-}
-.mac-org-subrow__name { font-size: 12.5px; font-weight: 600; color: var(--mac-fg); }
-.mac-org-subrow__meta { margin-top: 2px; font-size: 10.5px; color: var(--mac-muted-fg); }
-.mac-org-subrow__actions { margin-top: 6px; }
-.mac-org-subrow--drag-over { border: 2px dashed var(--mac-blue-2); background: var(--mac-blue-soft); }
+/* 树形视图层级缩进：下级相对上级每层多缩进 24px（自动挂靠后下属移入其名下，缩进随之增加） */
+.mac-org-children { margin-left: 24px; }
 
 /* 用户卡片头像：图片 / 首字母回退 */
 .mac-user-card__avatar {
