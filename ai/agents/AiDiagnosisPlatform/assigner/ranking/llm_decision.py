@@ -43,6 +43,83 @@ class LlmDecision:
         return any(marker.replace(" ", "") in norm for marker in _YAORENBA_INTAKE_PROJECT_MARKERS)
 
     async def adecide(self, ticket, engineers, recall_result, ranked_scores):
+        """综合决策入口：
+        - 若为摇人吧提单且检测到模块总负责人（duty_text/responsibility_modules 标记），优先返回该负责人；
+        - 否则若数值排名差距足够大（top - second >= 配置阈值），直接选 top，LLM 不覆写；
+        - 否则调用 LLM（原行为）。
+        """
+        # 先构造快速判断数据：排名列表（按 total_score 已排序）
+        try:
+            items = list(ranked_scores.items())
+        except Exception:
+            items = []
+
+        top_eid = None
+        second_eid = None
+        top_score = 0.0
+        second_score = 0.0
+        if items:
+            top_eid, top_meta = items[0]
+            top_score = float(top_meta.get("total_score", 0.0))
+            if len(items) > 1:
+                second_eid, second_meta = items[1]
+                second_score = float(second_meta.get("total_score", 0.0))
+
+        # 1) Yaorenba 专属：优先模块总负责人（在 duty_text 或 responsibility_modules 中标注含 '总负责人'）
+        try:
+            force_owner = bool(self._config.yaorenba_force_module_owner)
+        except Exception:
+            force_owner = True
+
+        if force_owner and self._is_yaorenba_intake(ticket):
+            # 定义 UI 关键词，帮助匹配界面类问题
+            ui_keywords = ("界面", "拖拽", "显示", "乱码", "交互", "页面", "iOS", "ios", "UI")
+            desc = (getattr(ticket, "problem_description", "") or "").lower()
+            is_ui = any(k.lower() in desc for k in ui_keywords)
+
+            # 优先找明确标注为“总负责人”的候选（且其 responsibility_modules 中包含服务号相关 product）
+            for eng in engineers:
+                duty = (eng.duty_text or "") or ""
+                duty_low = duty.lower()
+                has_owner_mark = "总负责人" in duty_low or "总负责" in duty_low
+                # 检查其负责产品是否包含摇人吧服务号
+                prod_keys = [p for p in (eng.responsibility_modules or {}).keys()]
+                prod_match = any("摇人吧服务号" in (p or "") for p in prod_keys)
+                # 进一步：若是 UI 问题，优先找其模块包含 '我要摇人' / '服务号页面' / '前端' 的人
+                mods = []
+                for mlist in (eng.responsibility_modules or {}).values():
+                    for m in (mlist or []):
+                        mods.append((m or "").lower())
+                mod_ui_hit = any(x in ("我要摇人", "服务号页面", "前端", "页面") for x in mods)
+
+                if prod_match and (has_owner_mark or (is_ui and mod_ui_hit)):
+                    # 选中该负责人，构造 AssignmentResult
+                    score = ranked_scores.get(eng.id, {}).get("total_score", top_score)
+                    return AssignmentResult(
+                        engineer_id=eng.id, engineer_name=eng.name,
+                        confidence_score=round(float(score), 4),
+                        reasoning=f"Yaorenba module owner matched (duty_text/mods) or UI-module hit; bypassed LLM.",
+                        decision_type="auto",
+                    )
+
+        # 2) 若排名差距足够大则直接采纳 top（避免 LLM 频繁覆写明显的数值优势）
+        try:
+            threshold = float(getattr(self._config, "llm_respect_ranking_threshold", 0.3))
+        except Exception:
+            threshold = 0.3
+
+        if top_eid and (top_score - second_score) >= threshold:
+            # 直接返回 top
+            eng = next((e for e in engineers if e.id == top_eid), None)
+            if eng:
+                return AssignmentResult(
+                    engineer_id=eng.id, engineer_name=eng.name,
+                    confidence_score=round(float(top_score), 4),
+                    reasoning=f"Selected by ranking margin: top({top_score:.4f}) - second({second_score:.4f}) >= threshold({threshold})",
+                    decision_type="auto",
+                )
+
+        # 3) 回退到原有 LLM 流程
         prompt = self._build_prompt(ticket, engineers, recall_result, ranked_scores)
         try:
             from ai.core import get_llm_client
