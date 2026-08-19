@@ -5833,12 +5833,13 @@ html, body, #root {
   transition: all 0.2s ease;
 }
 .history-tab.is-active { background: var(--foreground); color: var(--background); border-color: transparent; font-weight: 500; }
-/* 数量角标：绝对定位到按钮右上角（对照原型 absolute -right-1.5 -top-1.5），
-   灰底白字 10px bold；pointer-events 透传点击到按钮，外层留白防 overflow 裁剪 */
+/* 数量角标：绝对定位到胶囊内部右上角（设计稿「右上角凸出 6px」会与外层
+   .history-tickets{overflow:hidden} 冲突导致角标右边被裁切，看起来贴在胶囊右侧；
+   改为紧贴胶囊右上角内侧，视觉一致且不再被裁）。pointer-events 透传点击到按钮。 */
 .history-tab__count {
   position: absolute;
-  top: -6px;
-  right: -6px;
+  top: 2px;
+  right: 2px;
   pointer-events: none;
   min-width: 16px;
   padding: 0 5px;
