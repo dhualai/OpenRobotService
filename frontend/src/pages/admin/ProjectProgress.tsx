@@ -242,7 +242,7 @@ export default function ProjectProgress() {
               onTouchStart={startLongPress(p)}
               onTouchEnd={cancelLongPress}
               onTouchMove={cancelLongPress}
-              onMouseDown={startLongPress(p)}
+              onMouseDown={(e) => { if (e.button === 0) startLongPress(p)(); }}
               onMouseUp={cancelLongPress}
               onMouseLeave={cancelLongPress}
             >
