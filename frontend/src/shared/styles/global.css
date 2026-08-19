@@ -1334,7 +1334,7 @@ html, body, #root {
 .chat-bubble-wrap.is-left .chat-bubble { border-bottom-left-radius: var(--radius-sm); }
 .chat-bubble.is-user {
   background: #86CAE9;
-  color: #0b1c28;
+  color: #fff;
   box-shadow: var(--shadow-soft);
 }
 .chat-bubble.is-ai {
