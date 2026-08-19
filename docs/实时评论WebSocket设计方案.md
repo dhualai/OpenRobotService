@@ -131,20 +131,20 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
 |------|------|------|
 | `ping` | — | 心跳，服务端回 `pong` |
 | `typing` | `value: bool` | 开始/停止输入；停止或 5s 未续则自动清除 |
-| `read` | `last_read_comment_id: int` | 上报已读到的最后一条评论 id |
+| `read` | `last_read_comment_id: int`, `comment_ids?: int[]` | 上报已读：游标（最后一条 id）+ 本次实际读到的评论 id 列表（飞书式名单） |
 | `fetch_history` | `after_id?: int` | （可选）断线重连后增量拉取缺失评论 |
 
 #### 服务端 → 客户端
 
 | type | 字段 | 说明 |
 |------|------|------|
-| `welcome` | `you`, `online: string[]`, `last_read: {username:comment_id}` | 连接成功快照 |
+| `welcome` | `you`, `online: string[]`, `read_map: {username:comment_id}`, `read_records: {comment_id: [{username,name,avatar_resource_id,read_at}]}` | 连接成功快照（含已读名单） |
 | `comment.created` | `comment: {...}` | 新评论（含附件/引用/创建人） |
 | `comment.updated` | `comment: {...}` | 评论编辑 |
 | `comment.deleted` | `id: int` | 评论删除 |
 | `presence` | `online: [{username, name, avatar_resource_id}]`（按用户去重） | 在线成员变化 |
 | `typing` | `username: string`, `value: bool` | 某人输入中 |
-| `read_receipt` | `username: string`, `last_read_comment_id: int` | 已读回执 |
+| `read_receipt` | `username: string`, `last_read_comment_id: int|null`, `comment_ids?: int[]`, `records?: [{comment_id,username,name,avatar_resource_id}]` | 已读回执（游标 + 名单增量） |
 | `task.updated` | `status`, `assigned_to`, `assigned_to_name`, ... | 工单字段变更（替代 5s 轮询） |
 | `pong` | — | 心跳回应 |
 | `error` | `code`, `message` | 错误（鉴权失败/房间不存在等） |
@@ -180,6 +180,24 @@ class TaskCommentRead(Base):
 
 - 客户端发 `read` → upsert `(task_id, username, last_read_comment_id)` → 广播 `read_receipt` 给房间。
 - 评论项展示：根据各成员 `last_read_comment_id` 计算「N 人已读」/ 双勾「已读」。
+
+**已读名单（飞书式，Phase 5 落地）**：新增表 `task_comment_read_record`，逐条评论记录「谁在何时读」，支持「每条消息的已读人员名单 + 按阅读时间倒序」：
+
+```python
+class TaskCommentReadRecord(Base):
+    __tablename__ = "task_comment_read_record"
+    id = Column(BigInteger, primary_key=True)
+    task_id = Column(BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"), index=True)  # 级联删除
+    comment_id = Column(BigInteger, index=True)
+    username = Column(String(50), index=True)
+    read_at = Column(DateTime, server_default=func.now())
+    __table_args__ = (UniqueConstraint("comment_id", "username", name="uq_comment_read_user"),)
+```
+
+- 与 `task_comment_read`（游标）互补：游标算「读到哪」，明细表出「每条消息的名单」。
+- 幂等写入：唯一键 `(comment_id, username)`，`INSERT` 前查重，重复不新增。
+- 名单查询按 `read_at` 倒序（`_read_records_map`），联查 `users` 补 `name`/`avatar_resource_id`。
+- `welcome` 下发全量 `read_records` 快照；`read_receipt` 增量广播 `records` 供前端合并。
 
 ---
 
@@ -229,9 +247,10 @@ function useTaskCommentsWS(taskId: string | number) {
 4. **在线状态条**：讨论区顶部展示在线成员头像（`online` 列表，按用户去重），有 `avatar_resource_id` 渲染图片头像，无则回退首字母；离线/上线经 `presence` 事件实时更新。
 4a. **微信化消息 UI**：每条消息带头像（他人左/自己右，从 `online` 携带的 `avatar_resource_id` 或当前用户 `authStore.avatarResourceId` 取，无图回退首字母）；同作者连续消息（间隔 < 5min）省略头像/姓名/尾巴并缩小间距；气泡带 CSS 小尾巴三角；自己消息改微信绿 `#95EC69`；消息区高度改为弹性 `flex:1`（最大 60vh）；新消息提示条——滚在历史区时不强制跳底，改为显示「↓N 条新消息」悬浮条，点击跳底。
 5. **输入中提示**：评论输入框 `onChange` 时 `sendTyping(true)`，停 3s 自动 `sendTyping(false)`；收到他人 `typing` 事件显示「XXX 正在输入…」。
-6. **已读回执**：
-   - 列表滚动到底 / 新消息到达时，自动 `sendRead(最新comment.id)`；
-   - 每条评论根据 `readMap` 显示「已读」双勾或「N 人已读」。
+6. **已读回执（含飞书式已读名单）**：
+   - 列表滚动到底 / 新消息到达时，自动 `sendRead(最新comment.id, 本次实际读到的评论id列表)`；
+   - 每条自己消息根据 `readRecords`（精确名单）或 `readMap`（游标兜底）显示「已读 N 人」；
+   - 点击「已读 N 人」弹出名单 Popover（头像 + 姓名 + 相对阅读时间，按阅读时间倒序）。
 7. **工单状态实时**：收到 `task.updated` → 回调上层更新 `ticket.status / assigned_to / assigned_to_name`，**移除现有的 5s 派单轮询**（TicketDetailPage.tsx:360-364）。
 8. **卸载**：关闭 socket，清定时器。
 
@@ -304,6 +323,7 @@ location /t/api/ {
 - **Phase 2 — 在线状态 + 输入中（✅ 已落地）**：presence / typing 广播与 UI（在线成员条 + 「XXX 正在输入…」）。
 - **Phase 3 — 已读回执（✅ 已落地）**：`task_comment_read` upsert 读写 + `read_receipt` 广播 + 回执 UI（自己的消息「已读」标记）。
 - **Phase 4 — 状态变更推送（✅ 已落地）**：`task.updated` 广播（`update_task_status`/`assign_ticket`/`update_task`），**已移除**两详情页 5s 派单轮询。
+- **Phase 5 — 已读人员名单（✅ 已落地）**：新增 `task_comment_read_record` 表，逐条评论记录读者与阅读时间；`welcome`/`read_receipt` 下发名单快照与增量；前端「已读 N 人」可点击弹出名单 Popover（头像 + 姓名 + 相对时间，按阅读时间倒序），对齐飞书已读体验。
 
 ---
 
@@ -349,6 +369,13 @@ location /t/api/ {
 | `backend/app/modules/tasks/api/task.py` | 修改 | 新增内部端点 `POST /{id}/internal/broadcast-comment`（X-API-Key 鉴权），供 AI 服务回调广播 AI 评论 |
 | `ai/agents/AiTaskPlatform/pipeline.py` | 修改 | AI 写评论复用方法写库后 best-effort 回调上述端点（跨进程 pub-sub，讨论/摘要/诊断全覆盖） |
 | `backend/apply_task_comment_read_migration.py` | 新增 | 生产一键幂等建表脚本（替代 `alembic upgrade head`，规避多 head 问题） |
+| `backend/app/models/task.py` | 修改 | 新增 `TaskCommentReadRecord`（`task_comment_read_record` 表，飞书式已读名单） |
+| `backend/alembic/versions/3c2d1e0f9a8b_add_task_comment_read_record.py` | 新增 | 建表迁移（down_revision `1a2b3c4d5e6f`，本地保留不推送） |
+| `backend/app/modules/tasks/api/ws.py` | 修改 | `read` 上报支持 `comment_ids` 列表；`welcome`/`read_receipt` 下发名单；新增 `_mark_comment_read`/`_read_records_map` |
+| `frontend/src/api/ws.ts` | 修改 | 新增 `ReadRecord`/`ReadRecordDelta` 类型；`sendRead` 支持 `commentIds`；`welcome`/`read_receipt` 字段扩展 |
+| `frontend/src/shared/hooks/useTaskCommentsWS.ts` | 修改 | 新增 `readRecords` 状态，处理 `welcome.read_records` 与 `read_receipt.records` 增量合并 |
+| `frontend/src/shared/components/DiscussionPanel.tsx` | 修改 | 「已读 N 人」可点击弹出名单 Popover（头像+姓名+相对时间倒序）；上报实际读到的评论 id 列表 |
+| `frontend/src/shared/styles/global.css` | 修改 | 已读按钮样式 + 名单弹层样式 |
 
 ### 11.2 与设计的偏差
 

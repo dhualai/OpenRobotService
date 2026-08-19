@@ -22,7 +22,8 @@ from sqlalchemy import func, select
 from app.core.database import get_user_with_roles
 from app.core.security import decode_token
 from app.core.db import SessionLocal
-from app.models.task import TaskCommentRead
+from app.models.task import TaskCommentRead, TaskCommentReadRecord
+from app.models.identity import UserDB
 from app.modules.tasks.schemas.ticket import TicketCommentResponse
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,55 @@ def _read_map(db, task_id: int) -> dict:
     return {r.username: r.last_read_comment_id for r in res.scalars().all()}
 
 
+def _mark_comment_read(db, task_id: int, comment_id: int, username: str) -> bool:
+    """幂等写入单条评论的已读明细（飞书式名单）。已存在则跳过，返回是否新增。"""
+    res = db.execute(
+        select(TaskCommentReadRecord.id).where(
+            TaskCommentReadRecord.comment_id == comment_id,
+            TaskCommentReadRecord.username == username,
+        )
+    )
+    if res.scalar_one_or_none() is not None:
+        return False
+    db.add(TaskCommentReadRecord(
+        task_id=task_id, comment_id=comment_id, username=username,
+    ))
+    return True
+
+
+def _read_records_map(db, task_id: int) -> dict:
+    """按 comment_id 分组返回已读名单（含用户名/姓名/头像/阅读时间），阅读时间倒序。
+
+    返回 {str(comment_id): [ {username, name, avatar_resource_id, read_at}, ... ]}。
+    """
+    rows = db.execute(
+        select(TaskCommentReadRecord)
+        .where(TaskCommentReadRecord.task_id == task_id)
+        .order_by(TaskCommentReadRecord.read_at.desc(), TaskCommentReadRecord.id.desc())
+    ).scalars().all()
+
+    usernames = sorted({r.username for r in rows})
+    name_map: dict = {}
+    avatar_map: dict = {}
+    if usernames:
+        users = db.execute(
+            select(UserDB).where(UserDB.username.in_(usernames))
+        ).scalars().all()
+        for u in users:
+            name_map[u.username] = u.name or u.username
+            avatar_map[u.username] = getattr(u, "avatar_resource_id", None)
+
+    result: dict = {}
+    for r in rows:
+        result.setdefault(str(r.comment_id), []).append({
+            "username": r.username,
+            "name": name_map.get(r.username, r.username),
+            "avatar_resource_id": avatar_map.get(r.username),
+            "read_at": r.read_at.isoformat() if r.read_at else None,
+        })
+    return result
+
+
 @router.websocket("/{task_id}/ws")
 async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(None)):
     # 1. 鉴权（query token）
@@ -149,16 +199,21 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
     # 单个连接生命周期内复用同一同步 session（与 task.py 既有模式一致）
     db = SessionLocal()
     try:
-        # 3. welcome：在线成员 + 各用户已读游标
+        # 3. welcome：在线成员 + 各用户已读游标 + 已读名单快照
         try:
             read_map = _read_map(db, task_id)
         except Exception:
             read_map = {}
+        try:
+            read_records = _read_records_map(db, task_id)
+        except Exception:
+            read_records = {}
         await conn.send({
             "type": "welcome",
             "you": username,
             "online": manager.online_members(task_id),
             "read_map": read_map,
+            "read_records": read_records,
         })
         # 4. 接收客户端帧
         while True:
@@ -174,17 +229,38 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
             elif mtype == "typing":
                 await manager.set_typing(task_id, username, bool(msg.get("value")))
             elif mtype == "read":
+                # 兼容两种上报：comment_ids（本次实际读到的评论列表，飞书式名单）
+                # 或 last_read_comment_id（游标）。二者都维护，名单与游标互不冲突。
+                comment_ids = msg.get("comment_ids")
+                if not isinstance(comment_ids, list):
+                    comment_ids = []
                 cid = msg.get("last_read_comment_id")
-                if isinstance(cid, int):
-                    try:
+                try:
+                    new_records: list[dict] = []
+                    for _cid in comment_ids:
+                        if not isinstance(_cid, int):
+                            continue
+                        if _mark_comment_read(db, task_id, _cid, username):
+                            new_records.append({
+                                "comment_id": _cid,
+                                "username": username,
+                                "name": name,
+                                "avatar_resource_id": avatar_resource_id,
+                            })
+                    if isinstance(cid, int):
                         _upsert_read(db, task_id, username, cid)
-                        await manager.broadcast(task_id, {
-                            "type": "read_receipt",
-                            "username": username,
-                            "last_read_comment_id": cid,
-                        })
-                    except Exception as e:  # noqa: BLE001
-                        logger.error(f"已读回执写入失败 task_id={task_id}: {e}")
+                    db.commit()
+                    # 广播：游标回执（兼容旧前端人数统计）+ 名单增量（新前端名单弹层）
+                    await manager.broadcast(task_id, {
+                        "type": "read_receipt",
+                        "username": username,
+                        "last_read_comment_id": cid if isinstance(cid, int) else None,
+                        "comment_ids": comment_ids,
+                        "records": new_records,
+                    })
+                except Exception as e:  # noqa: BLE001
+                    db.rollback()
+                    logger.error(f"已读回执写入失败 task_id={task_id}: {e}")
             # 其他类型忽略
     except WebSocketDisconnect:
         pass

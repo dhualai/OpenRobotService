@@ -83,6 +83,21 @@ const formatCommentTime = (dateString: string): string => {
   return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 };
 
+/** 已读名单的相对时间格式化：刚刚 / N分钟前 / N小时前 / X月X日 HH:MM */
+const formatReadTime = (dateString?: string | null): string => {
+  if (!dateString) return '';
+  const date = parseUtcDate(dateString);
+  if (!date) return '';
+  const diff = Date.now() - date.getTime();
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if (diff < minute) return '刚刚';
+  if (diff < hour) return `${Math.floor(diff / minute)}分钟前`;
+  if (diff < 24 * hour) return `${Math.floor(diff / hour)}小时前`;
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
 export interface ProjectMember {
   id: string;
   username: string;
@@ -170,6 +185,7 @@ export default function DiscussionPanel({
     readMap,
     sendTyping,
     sendRead,
+    readRecords,
     deletedIds,
   } = useTaskCommentsWS(taskId, comments, { currentUser: username, onTaskUpdated, onAiProgress: handleWsAiProgress });
 
@@ -278,6 +294,9 @@ export default function DiscussionPanel({
   const [quoted, setQuoted] = useState<DiscussionComment | null>(null);
   // 长按操作菜单：{ 评论, 气泡定位矩形 }
   const [menu, setMenu] = useState<{ comment: DiscussionComment; rect: DOMRect } | null>(null);
+  // 已读名单弹层：正在查看哪条评论的已读名单（飞书式）
+  const [readListCommentId, setReadListCommentId] = useState<string | number | null>(null);
+  const [readListAnchor, setReadListAnchor] = useState<DOMRect | null>(null);
   const longPressTimer = useRef<number | null>(null);
   // 长按后抑制紧随的 click（避免误触容器诊断链接等）
   const suppressClickRef = useRef(false);
@@ -305,6 +324,8 @@ export default function DiscussionPanel({
 
   // 新消息到达：贴底则跟随滚动 + 上报已读；非贴底则累计提示数（不强制打断阅读历史）
   const lastMsgIdRef = useRef<string | number | null>(null);
+  // 已上报过名单的评论 id 集合（避免重复逐条上报）
+  const reportedReadIdsRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     if (!displayComments.length) return;
     const last = displayComments[displayComments.length - 1];
@@ -314,10 +335,18 @@ export default function DiscussionPanel({
       lastMsgIdRef.current = lid;
       if (isPrevInit || isAtBottomRef.current) {
         scrollToBottom();
-        const numId = Number(lid);
-        if (numId && numId !== lastReadRef.current) {
-          lastReadRef.current = numId;
-          sendRead(numId);
+        // 贴底态：把当前所有评论视为已读，逐条记入名单（飞书式）；游标取最后一条 id
+        const allIds = displayComments
+          .map((c) => Number(c.id))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        const newIds = allIds.filter((n) => !reportedReadIdsRef.current.has(n));
+        if (newIds.length) {
+          newIds.forEach((n) => reportedReadIdsRef.current.add(n));
+          const numId = allIds[allIds.length - 1];
+          if (numId && numId !== lastReadRef.current) {
+            lastReadRef.current = numId;
+          }
+          sendRead(numId, newIds);
         }
       } else {
         setNewCount((n) => n + 1);
@@ -874,10 +903,38 @@ export default function DiscussionPanel({
                       </div>
                     )}
                     {isCurrentUser && (() => {
-                      const readCount = Object.entries(readMap).filter(
-                        ([u, rid]) => u !== c.created_by && Number(rid) >= Number(c.id),
-                      ).length;
-                      return readCount > 0 ? <span className="detail-chat-read">已读</span> : null;
+                      // 名单（精确）：该评论的已读成员列表（后端按 read_at 倒序）
+                      const cid = c.id;
+                      const readers = (readRecords[String(cid)] || []).filter(
+                        (r) => r.username !== c.created_by,
+                      );
+                      // 人数兜底：名单为空时用游标 readMap 反推（兼容未上报名单的旧数据）
+                      const readCount = readers.length > 0
+                        ? readers.length
+                        : Object.entries(readMap).filter(
+                            ([u, rid]) => u !== c.created_by && Number(rid) >= Number(c.id),
+                          ).length;
+                      if (readCount <= 0) return null;
+                      const isOpen = readListCommentId === cid;
+                      return (
+                        <button
+                          type="button"
+                          className={`detail-chat-read${isOpen ? ' is-open' : ''}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (isOpen) {
+                              setReadListCommentId(null);
+                              setReadListAnchor(null);
+                            } else {
+                              setReadListCommentId(cid);
+                              setReadListAnchor(e.currentTarget.getBoundingClientRect());
+                            }
+                          }}
+                          title="查看已读名单"
+                        >
+                          已读 {readCount} 人
+                        </button>
+                      );
                     })()}
                   </div>
                   {/* 自己消息头像列（右侧）：连续消息省略（占位保持对齐） */}
@@ -921,6 +978,63 @@ export default function DiscussionPanel({
           ) : null
         }
       />
+
+      {/* 已读名单弹层（飞书式）：头像 + 姓名 + 阅读时间，按阅读时间倒序 */}
+      {readListCommentId !== null && readListAnchor && (() => {
+        const cid = readListCommentId;
+        const readers = (readRecords[String(cid)] || []).filter(
+          (r) => r.username !== (displayComments.find((x) => x.id === cid)?.created_by),
+        );
+        const anchorStyle: React.CSSProperties = {
+          position: 'fixed',
+          left: readListAnchor.left,
+          top: readListAnchor.top,
+          width: readListAnchor.width,
+          height: readListAnchor.height,
+          pointerEvents: 'none',
+          background: 'transparent',
+        };
+        const spaceAbove = readListAnchor.top - (chatMessagesRef.current?.getBoundingClientRect().top ?? 0);
+        const placement: 'top' | 'bottom' = spaceAbove >= 160 ? 'top' : 'bottom';
+        return (
+          <Popover
+            visible
+            placement={placement}
+            showArrow
+            theme="light"
+            closeOnClickOutside
+            onVisibleChange={(v) => { if (!v) { setReadListCommentId(null); setReadListAnchor(null); } }}
+            style={anchorStyle}
+            content={
+              <div className="detail-chat-readlist">
+                <div className="detail-chat-readlist__title">已读 {readers.length} 人</div>
+                {readers.length > 0 ? (
+                  <div className="detail-chat-readlist__body">
+                    {readers.map((r) => {
+                      const av = r.avatar_resource_id ? avatarUrl(r.avatar_resource_id) : '';
+                      return (
+                        <div key={r.username} className="detail-chat-readlist__item">
+                          {av ? (
+                            <img className="detail-chat-readlist__avatar" src={av} alt={r.name || r.username} />
+                          ) : (
+                            <span className="detail-chat-readlist__avatar">
+                              {(r.name || r.username || '?').slice(0, 1).toUpperCase()}
+                            </span>
+                          )}
+                          <span className="detail-chat-readlist__name">{r.name || r.username}</span>
+                          <span className="detail-chat-readlist__time">{formatReadTime(r.read_at)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="detail-chat-readlist__empty">暂无已读记录</div>
+                )}
+              </div>
+            }
+          />
+        );
+      })()}
 
       {typingUser && (
         <div className="detail-chat-typing">{typingName} 正在输入…</div>
