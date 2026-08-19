@@ -304,6 +304,14 @@ class WechatService:
         if begin > end:
             return {'errcode': -1, 'errmsg': 'begin_date 不能晚于 end_date'}
 
+        # 微信数据统计接口有 T+1 延迟，end_date 不能为今天或未来日期（最早可查到昨日）
+        today = datetime.now().date()
+        if end.date() >= today:
+            return {
+                'errcode': -1,
+                'errmsg': f'end_date 不能为今天或未来日期（微信数据统计有T+1延迟，最早可查到昨日；今天为 {today.strftime("%Y-%m-%d")}）'
+            }
+
         chunk_span = timedelta(days=7)  # 微信限制单次最大跨度7天
         one_day = timedelta(days=1)
         aggregated: List[Dict] = []
@@ -324,15 +332,24 @@ class WechatService:
 
             try:
                 loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
+                resp = await loop.run_in_executor(
                     None,
                     lambda d=data: self.session.post(
                         url,
                         data=json.dumps(d, ensure_ascii=False).encode('utf-8'),
                         headers={'Content-Type': 'application/json'},
                         timeout=10,
-                    ).json()
+                    )
                 )
+                # 微信 datacube 接口在 end_date 为今天/未来或账号无数据权限时可能返回空体
+                raw = resp.content
+                if not raw:
+                    return {'errcode': -1, 'errmsg': f'微信返回空响应 (HTTP {resp.status_code})'}
+                try:
+                    response = json.loads(raw)
+                except json.JSONDecodeError:
+                    snippet = resp.text[:200] if resp.text else ''
+                    return {'errcode': -1, 'errmsg': f'微信返回非JSON响应 (HTTP {resp.status_code}): {snippet}'}
                 if 'list' in response:
                     aggregated.extend(response['list'])
                 else:
