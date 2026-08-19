@@ -183,6 +183,28 @@ class TaskCommentRead(Base):
         return f"<TaskCommentRead(task_id={self.task_id}, username='{self.username}', last_read={self.last_read_comment_id})>"
 
 
+class TaskCommentReadRecord(Base):
+    """单条评论的已读记录（飞书式已读名单）：谁在何时读了哪条评论。
+
+    与 TaskCommentRead（游标）互补：游标用于快速算「读到哪」，本表用于
+    「每条消息的已读人员名单 + 按阅读时间排序」。唯一键 (comment_id, username) 幂等。
+    """
+    __tablename__ = "task_comment_read_record"
+
+    id = Column(BigInteger, primary_key=True, index=True, comment="已读明细ID")
+    task_id = Column(BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True, comment="任务ID")
+    comment_id = Column(BigInteger, nullable=False, index=True, comment="评论ID")
+    username = Column(String(50), nullable=False, index=True, comment="读者username")
+    read_at = Column(DateTime, server_default=func.now(), nullable=False, comment="阅读时间")
+
+    __table_args__ = (
+        UniqueConstraint("comment_id", "username", name="uq_comment_read_user"),
+    )
+
+    def __repr__(self):
+        return f"<TaskCommentReadRecord(comment_id={self.comment_id}, username='{self.username}', read_at={self.read_at})>"
+
+
 class TaskUserMapping(Base):
     """外部任务源账号 → 本平台 user_id 的映射（跨源通用，见 INTEGRATION_DESIGN.md §4.3）。
 
