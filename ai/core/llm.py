@@ -38,6 +38,7 @@ class LLMProvider(Enum):
     DEEPSEEK = "deepseek"
     OPENAI = "openai"
     ZHIPU = "zhipu"
+    RELAY = "relay"  # 中转站（OpenAI 兼容接口），当前用于试用 Claude 等备用模型
 
 
 class BaseLLMProvider(ABC):
@@ -116,17 +117,33 @@ class OpenAIProvider(BaseLLMProvider):
     ) -> Dict[str, Any]:
         # 内部参数，不透传 API
         _thinking = kwargs.pop("thinking", None)
+        _reasoning_effort = kwargs.pop("reasoning_effort", None)
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             **kwargs,
         }
+        _model = model.lower()
         # DeepSeek/miMo 思考模式（默认开启，传 thinking=False 显式关闭）
-        if any(x in model.lower() for x in ("deepseek", "mimo")):
+        if any(x in _model for x in ("deepseek", "mimo")):
             if _thinking is False:
                 payload["thinking"] = {"type": "disabled"}
             else:
                 payload["thinking"] = {"type": "enabled"}
+        # Claude（经 OpenAI 兼容中转站）：thinking 用 Anthropic 格式透传。
+        # 此前这里没处理 claude，pipeline 传的 thinking=False 被静默丢弃，
+        # Claude 照常深度思考 → 首 token 十几秒。实测中转站接受
+        # {"type":"disabled"} 且能提速约 2.3x（claude-opus-4-8: 4.3s→1.9s）。
+        elif "claude" in _model:
+            if _thinking is False:
+                payload["thinking"] = {"type": "disabled"}
+            # thinking=True/None：不强制 enabled（需要 budget_tokens，各中转站
+            # 兼容性不一），交给模型默认即可。
+        # reasoning_effort 只有 OpenAI 的推理模型（o1/o3/gpt-5 等）认识；
+        # 中转站/Claude 等模型不一定兼容这个字段，不透传以免请求被拒。
+        elif any(x in _model for x in ("o1", "o3", "gpt-5")):
+            if _reasoning_effort:
+                payload["reasoning_effort"] = _reasoning_effort
         return payload
 
     def extract_content(self, response: Dict[str, Any]) -> str:
@@ -144,6 +161,7 @@ class OpenAIProvider(BaseLLMProvider):
 _PROVIDERS: Dict[LLMProvider, BaseLLMProvider] = {
     LLMProvider.DEEPSEEK: DeepSeekProvider(),
     LLMProvider.OPENAI: OpenAIProvider(),
+    LLMProvider.RELAY: OpenAIProvider(),  # 中转站走标准 OpenAI 兼容格式
 }
 
 
@@ -174,7 +192,12 @@ class LLMClient:
     ):
         self.config = get_ai_config()
         self.provider = provider
-        self.api_key = api_key or self.config.deepseek_api_key
+        if api_key:
+            self.api_key = api_key
+        elif provider == LLMProvider.RELAY:
+            self.api_key = self.config.relay_api_key
+        else:
+            self.api_key = self.config.deepseek_api_key
         self.base_url = base_url or self._get_default_base_url()
         self.model = model or self._get_default_model()
         # 思考强度：显式传参 > .env 配置；off/disabled 表示关闭思考
@@ -195,6 +218,8 @@ class LLMClient:
             return self.config.deepseek_base_url
         elif self.provider == LLMProvider.OPENAI:
             return "https://api.openai.com/v1"
+        elif self.provider == LLMProvider.RELAY:
+            return self.config.relay_base_url
         return self.config.deepseek_base_url
 
     def _get_default_model(self) -> str:
@@ -203,6 +228,8 @@ class LLMClient:
             return self.config.deepseek_model
         elif self.provider == LLMProvider.OPENAI:
             return "gpt-4o-mini"
+        elif self.provider == LLMProvider.RELAY:
+            return self.config.relay_model
         return self.config.deepseek_model
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -357,6 +384,62 @@ class LLMClient:
                 raise
             logger.error(f"LLM 请求失败: {e}", exc_info=True)
             raise ServiceUnavailableError("LLM", f"请求失败: {str(e)}")
+
+    async def complete_with_tools(
+        self,
+        tools: List[Dict[str, Any]],
+        messages: Optional[List[Dict[str, Any]]] = None,
+        prompt: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        max_tokens: int = 2000,
+        temperature: float = 0.1,
+        thinking: Optional[bool] = None,
+    ) -> dict:
+        """带工具的单轮补全：返回 {content, tool_calls, raw}。
+
+        messages：完整消息列表（含历史 assistant tool_calls 与 tool 结果），
+        多轮工具循环时用；prompt：单轮便捷参数（自动拼 system+user）。
+
+        tool_calls: [{"id", "name", "arguments"(dict，已解析)}]
+        无工具调用时 tool_calls 为空列表。
+        LLM 只调工具不写正文时 content 为空字符串。
+        失败抛 AITimeoutError / ServiceUnavailableError（与 complete 一致）。
+        """
+        if messages is None:
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt or ""})
+
+        response = await self._make_request(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            thinking=thinking if thinking is not None else self._thinking_default,
+            tools=tools,
+        )
+        _msg = response.get("choices", [{}])[0].get("message", {})
+        tool_calls = []
+        for tc in _msg.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            args = {}
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                args = {}
+            tool_calls.append({
+                "id": tc.get("id", ""),
+                "name": fn.get("name", ""),
+                "arguments": args,
+            })
+        reasoning = self._provider_impl.extract_reasoning(response)
+        if reasoning:
+            logger.info(f"[llm-reasoning] {len(reasoning)}chars: {reasoning[:300]}")
+        return {
+            "content": _msg.get("content") or "",
+            "tool_calls": tool_calls,
+            "raw": response,
+        }
 
     async def complete_vision(
         self,
@@ -595,6 +678,117 @@ class LLMClient:
             logger.error(f"LLM 请求失败: {e}", exc_info=True)
             raise ServiceUnavailableError("LLM", f"请求失败: {str(e)}")
 
+    async def stream_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        max_tokens: int = 2000,
+        temperature: float = 0.2,
+        thinking: Optional[bool] = None,
+    ):
+        """流式带工具补全：逐 token yield，流结束时 yield 完整的 tool_calls。
+
+        yield 事件（dict）：
+        - {"type": "token", "content": "..."}   正文 token（可实时转发前端）
+        - {"type": "tool_calls", "tool_calls": [...], "content": "..."}
+          流结束事件（含完整正文 + 解析好的 tool_calls，arguments 已是 dict）
+
+        工具调用的流式特性：tool_calls 的 id/name/arguments 按 fragment 增量到达，
+        需要按 index 累积拼接；arguments 在流结束时才是完整 JSON。
+        失败策略与 stream 一致：连接阶段（未产出任何内容）重试最多 3 次。
+        """
+        if thinking is None:
+            thinking = self._thinking_default
+        payload = self._provider_impl.build_payload(
+            model=self.model, messages=messages,
+            max_tokens=max_tokens, temperature=temperature, stream=True,
+            reasoning_effort=self.reasoning_effort, thinking=thinking,
+            tools=tools,
+        )
+
+        has_yielded = False
+        last_error = None
+        reasoning_parts: list[str] = []
+        for attempt in range(3):
+            try:
+                client = await self._get_client()
+                url = self._provider_impl.get_api_url(self.base_url)
+                full_content: list[str] = []
+                tool_fragments: Dict[int, Dict[str, str]] = {}
+                async with client.stream("POST", url, json=payload) as response:
+                    if response.status_code != 200:
+                        body = await response.aread()
+                        raise ServiceUnavailableError(
+                            "LLM",
+                            f"流式响应失败: {response.status_code}, body: {body[:300].decode('utf-8', 'replace')}",
+                        )
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data)
+                                choices = chunk.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    reasoning_token = delta.get("reasoning_content", "")
+                                    if reasoning_token:
+                                        reasoning_parts.append(reasoning_token)
+                                    content = delta.get("content", "")
+                                    if content:
+                                        has_yielded = True
+                                        full_content.append(content)
+                                        yield {"type": "token", "content": content}
+                                    # 工具调用 fragment 累积
+                                    for tc in delta.get("tool_calls") or []:
+                                        idx = tc.get("index", 0)
+                                        frag = tool_fragments.setdefault(
+                                            idx, {"id": "", "name": "", "arguments": ""})
+                                        if tc.get("id"):
+                                            frag["id"] += tc["id"]
+                                        fn = tc.get("function") or {}
+                                        if fn.get("name"):
+                                            # 函数名不是增量文本；中转站 Claude 可能在多个
+                                            # chunk 重复发送完整名称，不能用 +=，否则会变成
+                                            # search_kbsearch_kb...，随后被工具循环判为未知工具。
+                                            frag["name"] = fn["name"]
+                                        if fn.get("arguments"):
+                                            frag["arguments"] += fn["arguments"]
+                            except (json.JSONDecodeError, KeyError, IndexError):
+                                continue
+                    if reasoning_parts:
+                        full_reasoning = "".join(reasoning_parts)
+                        logger.info(
+                            f"[llm-reasoning] {len(full_reasoning)}chars: {full_reasoning[:300]}"
+                        )
+                # 流结束：组装 tool_calls
+                tool_calls = []
+                for idx in sorted(tool_fragments.keys()):
+                    frag = tool_fragments[idx]
+                    if not frag["name"]:
+                        continue
+                    args = {}
+                    try:
+                        args = json.loads(frag["arguments"] or "{}")
+                    except Exception:
+                        args = {}
+                    tool_calls.append({"id": frag["id"], "name": frag["name"], "arguments": args})
+                yield {"type": "tool_calls", "tool_calls": tool_calls,
+                       "content": "".join(full_content)}
+                return
+            except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException) as e:
+                last_error = e
+                logger.warning(f"LLM 流式重试: attempt={attempt+1}, error={type(e).__name__}: {str(e)[:200]}")
+                if has_yielded or attempt == 2:
+                    if isinstance(e, (httpx.ConnectError, httpx.TimeoutException)):
+                        raise AITimeoutError(f"LLM 流式连接失败（重试{attempt+1}次）: {str(e)}")
+                    raise ServiceUnavailableError("LLM", f"流式连接失败: {str(e)}")
+                await asyncio.sleep(min(1 * (2 ** attempt), 4))
+
+        if last_error:
+            raise AITimeoutError(f"LLM 流式连接失败（重试3次）: {str(last_error)}")
+
     async def stream(
         self,
         prompt: str,
@@ -603,8 +797,7 @@ class LLMClient:
         temperature: float = 0.1,
         thinking: Optional[bool] = None,
     ):
-        """
-        流式补全 — 开启 stream:true，逐 token yield
+        """流式补全 — 开启 stream:true，逐 token yield
 
         Example:
             gen = await llm.stream("你好")
@@ -643,7 +836,11 @@ class LLMClient:
                                  f"resp_wait={((t_resp-t_conn)*1000):.0f}ms  "
                                  f"status={response.status_code}")
                     if response.status_code != 200:
-                        raise ServiceUnavailableError("LLM", f"流式响应失败: {response.status_code}")
+                        body = await response.aread()
+                        raise ServiceUnavailableError(
+                            "LLM",
+                            f"流式响应失败: {response.status_code}, body: {body[:300].decode('utf-8', 'replace')}",
+                        )
 
                     t_first_content = None
                     async for line in response.aiter_lines():
@@ -689,7 +886,6 @@ class LLMClient:
             except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException) as e:
                 last_error = e
                 logger.warning(f"LLM 流式重试: attempt={attempt+1}, error={type(e).__name__}: {str(e)[:200]}")
-                print(f"  ⚠️  [llm] stream retry attempt={attempt+1} err={type(e).__name__}: {str(e)[:100]}")
                 if has_yielded or attempt == 2:
                     if isinstance(e, (httpx.ConnectError, httpx.TimeoutException)):
                         raise AITimeoutError(f"LLM 流式连接失败（重试{attempt+1}次）: {str(e)}")
@@ -708,19 +904,32 @@ _llm_client: Optional[LLMClient] = None
 _client_lock = asyncio.Lock()
 
 
+def _resolve_default_provider() -> LLMProvider:
+    """根据 .env 的 LLM_BACKEND 决定全局默认走哪个 provider（deepseek/relay/openai）。"""
+    backend = (get_ai_config().llm_backend or "deepseek").strip().lower()
+    if backend == "relay":
+        return LLMProvider.RELAY
+    if backend == "openai":
+        return LLMProvider.OPENAI
+    return LLMProvider.DEEPSEEK
+
+
 async def get_llm_client(
-    provider: LLMProvider = LLMProvider.DEEPSEEK,
+    provider: Optional[LLMProvider] = None,
 ) -> LLMClient:
     """
     获取 LLM 客户端单例
 
     Args:
-        provider: LLM 厂商（默认 DeepSeek）
+        provider: LLM 厂商；不传时按 .env 的 LLM_BACKEND 决定（默认 DeepSeek）
 
     Returns:
         LLMClient 实例
     """
     global _llm_client
+
+    if provider is None:
+        provider = _resolve_default_provider()
 
     if _llm_client is None:
         async with _client_lock:
