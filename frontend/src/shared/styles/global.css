@@ -1333,8 +1333,8 @@ html, body, #root {
 .chat-bubble-wrap.is-right .chat-bubble { border-bottom-right-radius: var(--radius-sm); }
 .chat-bubble-wrap.is-left .chat-bubble { border-bottom-left-radius: var(--radius-sm); }
 .chat-bubble.is-user {
-  background: var(--primary);
-  color: var(--primary-foreground);
+  background: #7CB6D6;
+  color: #0b1c28;
   box-shadow: var(--shadow-soft);
 }
 .chat-bubble.is-ai {
@@ -5020,9 +5020,9 @@ html, body, #root {
   filter: brightness(0.97);
 }
 .detail-chat-bubble.is-self {
-  background: var(--blue-soft);
+  background: #7CB6D6;
   color: var(--foreground);
-  border-color: var(--blue-5);
+  border-color: #7CB6D6;
   border-radius: var(--radius-2xl) var(--radius-2xl) 6px var(--radius-2xl);
 }
 .detail-chat-bubble.is-self * {
