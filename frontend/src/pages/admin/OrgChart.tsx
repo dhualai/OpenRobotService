@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Toast, Loading, Popup } from 'tdesign-mobile-react';
+import { UserRound, Crown, Users, Check } from 'lucide-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import { usePointerDragToDrop } from '@/shared/hooks/usePointerDragToDrop';
 
 interface User {
   id: string;
@@ -30,8 +32,7 @@ export default function OrgChart() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // 拖拽状态
-  const dragUserRef = useRef<User | null>(null);
+  // 拖拽高亮目标 id（Pointer 拖拽，鼠标/触屏统一）
   const [dragOverUserId, setDragOverUserId] = useState<string | null>(null);
   // 选中用户弹窗（设置上级）
   const [selectUser, setSelectUser] = useState<User | null>(null);
@@ -173,30 +174,13 @@ export default function OrgChart() {
     }
   };
 
-  // 拖拽处理
-  const handleDragStart = (e: React.DragEvent, user: User) => {
-    dragUserRef.current = user;
-    e.dataTransfer.effectAllowed = 'move';
-  };
-
-  const handleDragOver = (e: React.DragEvent, userId: string) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverUserId(userId);
-  };
-
-  const handleDragLeave = () => {
-    setDragOverUserId(null);
-  };
-
-  const handleDrop = (e: React.DragEvent, targetUser: User) => {
-    e.preventDefault();
-    setDragOverUserId(null);
-    const dragUser = dragUserRef.current;
-    dragUserRef.current = null;
-    if (!dragUser || dragUser.id === targetUser.id) return;
-    handleSetSupervisor(dragUser.id, targetUser.id);
-  };
+  // Pointer 拖拽落点（鼠标/触屏统一，替代 HTML5 原生 draggable）
+  const drag = usePointerDragToDrop({
+    onDrop: (draggedId, targetId) => {
+      handleSetSupervisor(draggedId, targetId);
+    },
+    onHoverChange: (targetId) => setDragOverUserId(targetId),
+  });
 
   // 切换折叠
   const toggleCollapse = (id: string) => {
@@ -281,11 +265,7 @@ export default function OrgChart() {
     return (
       <div key={node.id} style={{ marginLeft: node.depth * 20 }}>
         <div
-          draggable
-          onDragStart={(e) => handleDragStart(e, node)}
-          onDragOver={(e) => handleDragOver(e, node.id)}
-          onDragLeave={handleDragLeave}
-          onDrop={(e) => handleDrop(e, node)}
+          {...drag.bind(node.id)}
           onClick={() => { setSelectUser(node); setPickerVisible(true); }}
           style={{
             display: 'flex',
@@ -297,6 +277,7 @@ export default function OrgChart() {
             border: isDragOver ? '2px dashed #0052d9' : isDeptManager ? '1px solid #d4b106' : '1px solid #eee',
             borderRadius: 8,
             cursor: 'pointer',
+            touchAction: 'pan-y',
             transition: 'background 0.15s',
           }}
         >
@@ -309,8 +290,8 @@ export default function OrgChart() {
             </span>
           )}
           {!hasChildren && <span style={{ width: 20, flexShrink: 0 }} />}
-          <span style={{ fontSize: 16 }}>
-            {hasChildren ? '👥' : isDeptManager ? '👑' : '👤'}
+          <span style={{ display: 'flex', alignItems: 'center', color: isDeptManager ? '#b08400' : '#8a8f99' }}>
+            {hasChildren ? <Users size={16} /> : isDeptManager ? <Crown size={16} /> : <UserRound size={16} />}
           </span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -539,11 +520,7 @@ export default function OrgChart() {
                         return (
                           <div
                             key={u.id}
-                            draggable
-                            onDragStart={(e) => handleDragStart(e, u)}
-                            onDragOver={(e) => handleDragOver(e, u.id)}
-                            onDragLeave={handleDragLeave}
-                            onDrop={(e) => handleDrop(e, u)}
+                            {...drag.bind(u.id)}
                             onClick={() => { setSelectUser(u); setPickerVisible(true); }}
                             style={{
                               display: 'flex', alignItems: 'flex-start', gap: 6,
@@ -552,11 +529,12 @@ export default function OrgChart() {
                               border: dragOverUserId === u.id ? '2px dashed #0052d9' : isDeptManager ? '1px solid #d4b106' : '1px solid #f0f0f0',
                               borderRadius: 6, cursor: 'pointer',
                               flexDirection: 'column',
+                              touchAction: 'pan-y',
                             }}
                           >
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                              <span style={{ fontSize: 14 }}>
-                                {isDeptManager ? '�' : '��'}
+                              <span style={{ display: 'flex', alignItems: 'center', color: isDeptManager ? '#b08400' : '#8a8f99' }}>
+                                {isDeptManager ? <Crown size={14} /> : <UserRound size={14} />}
                               </span>
                               <span style={{ fontSize: 13, fontWeight: 500 }}>
                                 {u.name || u.username}
@@ -665,7 +643,9 @@ export default function OrgChart() {
                     background: isCurrent ? '#f0faff' : 'transparent',
                   }}
                 >
-                  <span style={{ fontSize: 14 }}>{isCurrent ? '✅' : '👤'}</span>
+                  <span style={{ display: 'flex', alignItems: 'center', color: isCurrent ? '#0052d9' : '#8a8f99' }}>
+                    {isCurrent ? <Check size={14} /> : <UserRound size={14} />}
+                  </span>
                   <div>
                     <span style={{ fontWeight: 500 }}>{u.name || u.username}</span>
                     {u.company && (
