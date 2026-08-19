@@ -689,6 +689,61 @@ async def batch_get_user_info(
         raise HTTPException(status_code=500, detail=f"批量获取用户信息过程中发生错误: {str(e)}")
 
 
+@router.post("/user-summary")
+async def get_user_summary(
+    request: Request,
+    _: str = Depends(verify_sync_api_key),
+):
+    """获取用户增减数据（内部接口，供 AI 服务调用）。
+
+    鉴权走 X-API-Key（与用户 JWT 分离），需与后端 HELPDESK_SYNC_API_KEY 一致。
+
+    请求体：
+    { "begin_date": "2026-08-01", "end_date": "2026-08-07" }
+    日期格式 yyyy-MM-dd。微信限制单次查询最大跨度7天，本接口自动分批合并结果，
+    调用方传任意跨度均可（跨周会自动拆成多段调用并聚合 list）。
+
+    返回 {"success": true, "list": [...], "total": N}，每项含
+    ref_date/user_source/new_user/cancel_user。其中 user_source 渠道含义：
+    0=其他合计,1=公众号搜索,17=名片分享,30=扫描二维码,57=文章内账号名称,
+    100=微信广告,161=他人转载,149=小程序关注,200=视频号,201=直播。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+
+    begin_date = (body or {}).get('begin_date')
+    end_date = (body or {}).get('end_date')
+
+    if not begin_date or not end_date:
+        raise HTTPException(status_code=400, detail="需提供 begin_date 和 end_date (yyyy-MM-dd)")
+
+    try:
+        result = await wechat_service.get_user_summary(begin_date, end_date)
+
+        if result is None:
+            raise HTTPException(status_code=500, detail="获取用户增减数据失败，请稍后重试")
+
+        if 'list' not in result:
+            raise HTTPException(
+                status_code=400,
+                detail=f"微信API错误: {result.get('errmsg', '未知错误')} (errcode={result.get('errcode')})"
+            )
+
+        return {
+            "success": True,
+            "list": result.get('list', []),
+            "total": len(result.get('list', [])),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取用户增减数据失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取用户增减数据过程中发生错误: {str(e)}")
+
+
 @router.get("/callback")
 async def wechat_callback(
     request: Request,

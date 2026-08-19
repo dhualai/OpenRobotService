@@ -6,6 +6,7 @@ import hashlib
 import random
 import os
 import logging
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from app.core.config import settings
 
@@ -284,6 +285,66 @@ class WechatService:
                 return None
 
         return {'user_info_list': aggregated}
+
+    async def get_user_summary(self, begin_date: str, end_date: str) -> Optional[Dict]:
+        """获取用户增减数据。
+
+        调用微信 /cgi-bin/datacube/getusersummary 接口。微信限制单次查询最大跨度7天，
+        本方法自动按7天分批串行调用并合并 list。
+        返回 {"list": [...]}，每项含 ref_date/user_source/new_user/cancel_user；
+        日期格式错误返回 {"errcode": -1, "errmsg": "..."}，调用失败返回 None，微信
+        错误响应原样返回（由调用方判断 errcode）。
+        """
+        try:
+            begin = datetime.strptime(begin_date, '%Y-%m-%d')
+            end = datetime.strptime(end_date, '%Y-%m-%d')
+        except ValueError:
+            return {'errcode': -1, 'errmsg': '日期格式错误，需为 yyyy-MM-dd'}
+
+        if begin > end:
+            return {'errcode': -1, 'errmsg': 'begin_date 不能晚于 end_date'}
+
+        chunk_span = timedelta(days=7)  # 微信限制单次最大跨度7天
+        one_day = timedelta(days=1)
+        aggregated: List[Dict] = []
+
+        cur_begin = begin
+        while cur_begin <= end:
+            cur_end = min(cur_begin + chunk_span, end)
+            access_token = self.get_access_token()
+            if not access_token:
+                logger.error('获取access_token失败，无法获取用户增减数据')
+                return None
+
+            url = f'{settings.WECHAT_USER_SUMMARY_URL}?access_token={access_token}'
+            data = {
+                'begin_date': cur_begin.strftime('%Y-%m-%d'),
+                'end_date': cur_end.strftime('%Y-%m-%d'),
+            }
+
+            try:
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda d=data: self.session.post(
+                        url,
+                        data=json.dumps(d, ensure_ascii=False).encode('utf-8'),
+                        headers={'Content-Type': 'application/json'},
+                        timeout=10,
+                    ).json()
+                )
+                if 'list' in response:
+                    aggregated.extend(response['list'])
+                else:
+                    logger.warning(f'获取用户增减数据失败: {response}')
+                    return response
+            except Exception as e:
+                logger.error(f'请求用户增减数据异常: {e}')
+                return None
+
+            cur_begin = cur_end + one_day
+
+        return {'list': aggregated}
 
     def broadcast_message(self, content: str) -> bool:
         user_list_result = self.get_user_list()
