@@ -2670,7 +2670,16 @@ html, body, #root {
   transition: all 0.2s ease;
 }
 .filter-menu {
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
   padding: 20px 16px 24px;
+}
+.filter-menu__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 .filter-menu__section {
   margin-bottom: 4px;
@@ -2768,6 +2777,7 @@ html, body, #root {
 }
 /* 筛选弹窗底部操作按钮：清空选择 / 确定，并排两等分 */
 .filter-menu__actions {
+  flex-shrink: 0;
   display: flex;
   gap: 10px;
   margin-top: 18px;
@@ -2833,7 +2843,7 @@ html, body, #root {
   justify-content: center;
   pointer-events: none;
   font-size: 13px;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .filter-menu__date-sep {
   flex: 0 0 auto;

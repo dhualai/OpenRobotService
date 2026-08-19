@@ -81,9 +81,15 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
     projectFilter: params.get('project') || '',
     // 处理人过滤：空字符串表示「全部」（不过滤）；值为处理人 username
     assigneeFilter: params.get('assignee') || '',
-    // 创建时间过滤：空字符串表示不限制；值为 YYYY-MM-DD
+    // 创建人过滤：空字符串表示「全部」（不过滤）；值为创建人 username
+    creatorFilter: params.get('creator') || '',
+    // 时间过滤：空字符串表示不限制；值为 YYYY-MM-DDTHH:mm（精确到分钟）
     createdStart: params.get('createdStart') || '',
     createdEnd: params.get('createdEnd') || '',
+    resolvedStart: params.get('resolvedStart') || '',
+    resolvedEnd: params.get('resolvedEnd') || '',
+    closedStart: params.get('closedStart') || '',
+    closedEnd: params.get('closedEnd') || '',
     page: parseInt(params.get('page') || '1', 10),
     sortBy: params.get('sort') || 'priority',
     sortOrder: params.get('order') || 'desc',
@@ -118,11 +124,55 @@ const openNativePicker = (el: HTMLInputElement | null) => {
   }
 };
 
+// 日期区间字段（创建/解决/关单时间共用）：原生 datetime-local + 「起始/终止时间」占位覆盖层。
+// startRef/endRef 由调用方持有，用于点击整框即唤起原生选择器（openNativePicker）。
+type DateRangeFieldProps = {
+  startValue: string;
+  endValue: string;
+  onStartChange: (v: string) => void;
+  onEndChange: (v: string) => void;
+  startRef: { current: HTMLInputElement | null };
+  endRef: { current: HTMLInputElement | null };
+};
+function DateRangeField({ startValue, endValue, onStartChange, onEndChange, startRef, endRef }: DateRangeFieldProps) {
+  return (
+    <div className="filter-menu__date-range">
+      <div className="filter-menu__date-field">
+        <input
+          ref={startRef}
+          type="datetime-local"
+          className={`filter-menu__date-input${startValue ? '' : ' filter-menu__date-input--empty'}`}
+          step={60}
+          value={startValue}
+          max={endValue || undefined}
+          onChange={(e) => onStartChange(e.target.value)}
+          onClick={() => openNativePicker(startRef.current)}
+        />
+        {!startValue && <span className="filter-menu__date-placeholder">起始时间</span>}
+      </div>
+      <span className="filter-menu__date-sep">至</span>
+      <div className="filter-menu__date-field">
+        <input
+          ref={endRef}
+          type="datetime-local"
+          className={`filter-menu__date-input${endValue ? '' : ' filter-menu__date-input--empty'}`}
+          step={60}
+          value={endValue}
+          min={startValue || undefined}
+          onChange={(e) => onEndChange(e.target.value)}
+          onClick={() => openNativePicker(endRef.current)}
+        />
+        {!endValue && <span className="filter-menu__date-placeholder">终止时间</span>}
+      </div>
+    </div>
+  );
+}
+
 // 将筛选状态同步到 URL 查询参数的工具函数
 const buildFilterParams = (filter: {
   search: string; statusFilter: string[]; priorityFilter: string[];
-  relevanceFilter: string; projectFilter: string; assigneeFilter: string;
-  createdStart: string; createdEnd: string; page: number; sortBy: string; sortOrder: string;
+  relevanceFilter: string; projectFilter: string; assigneeFilter: string; creatorFilter: string;
+  createdStart: string; createdEnd: string; resolvedStart: string; resolvedEnd: string; closedStart: string; closedEnd: string; page: number; sortBy: string; sortOrder: string;
 }) => {
   const params = new URLSearchParams();
   if (filter.search) params.set('q', filter.search);
@@ -144,9 +194,14 @@ const buildFilterParams = (filter: {
   if (filter.projectFilter) params.set('project', filter.projectFilter);
   // 处理人过滤：非空时才输出（空 = 全部）
   if (filter.assigneeFilter) params.set('assignee', filter.assigneeFilter);
+  if (filter.creatorFilter) params.set('creator', filter.creatorFilter);
   // 创建时间过滤：非空时才输出（空 = 不限制）
   if (filter.createdStart) params.set('createdStart', filter.createdStart);
   if (filter.createdEnd) params.set('createdEnd', filter.createdEnd);
+  if (filter.resolvedStart) params.set('resolvedStart', filter.resolvedStart);
+  if (filter.resolvedEnd) params.set('resolvedEnd', filter.resolvedEnd);
+  if (filter.closedStart) params.set('closedStart', filter.closedStart);
+  if (filter.closedEnd) params.set('closedEnd', filter.closedEnd);
   if (filter.page > 1) params.set('page', String(filter.page));
   if (filter.sortBy !== 'priority') {
     params.set('sort', filter.sortBy);
@@ -472,19 +527,31 @@ export default function TasksView() {
   const [myProjects, setMyProjects] = useState<ProjectItem[]>([]);
   // 处理人过滤：空字符串 = 「全部」；否则为选中处理人的 username
   const [assigneeFilter, setAssigneeFilter] = useState(() => initialFilter.current.assigneeFilter);
+  // 创建人过滤：空字符串 = 「全部」；否则为选中创建人的 username
+  const [creatorFilter, setCreatorFilter] = useState(() => initialFilter.current.creatorFilter);
   // 处理人候选列表（含 username 与 name，用于处理人过滤下拉）
   const [assignees, setAssignees] = useState<Array<{ username: string; name?: string }>>([]);
-  // 创建时间过滤：空字符串 = 不限制；值为 YYYY-MM-DDTHH:mm（精确到分钟）
+  // 时间过滤：空字符串 = 不限制；值为 YYYY-MM-DDTHH:mm（精确到分钟）
   const [createdStart, setCreatedStart] = useState(() => initialFilter.current.createdStart);
   const [createdEnd, setCreatedEnd] = useState(() => initialFilter.current.createdEnd);
+  const [resolvedStart, setResolvedStart] = useState(() => initialFilter.current.resolvedStart);
+  const [resolvedEnd, setResolvedEnd] = useState(() => initialFilter.current.resolvedEnd);
+  const [closedStart, setClosedStart] = useState(() => initialFilter.current.closedStart);
+  const [closedEnd, setClosedEnd] = useState(() => initialFilter.current.closedEnd);
   // datetime-local 输入框引用（用于点击整框即唤起原生选择器）
   const startDtInputRef = useRef<HTMLInputElement | null>(null);
   const endDtInputRef = useRef<HTMLInputElement | null>(null);
+  const resolvedStartDtInputRef = useRef<HTMLInputElement | null>(null);
+  const resolvedEndDtInputRef = useRef<HTMLInputElement | null>(null);
+  const closedStartDtInputRef = useRef<HTMLInputElement | null>(null);
+  const closedEndDtInputRef = useRef<HTMLInputElement | null>(null);
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   // 筛选弹窗草稿：弹窗内选择先写入草稿，点「确定」才提交生效；关闭（遮罩/返回）则丢弃。
   const [draft, setDraft] = useState<{
-    relevance: string; status: string[]; project: string; assignee: string; priority: string[];
+    relevance: string; status: string[]; project: string; assignee: string; creator: string; priority: string[];
     createdStart: string; createdEnd: string;
+    resolvedStart: string; resolvedEnd: string;
+    closedStart: string; closedEnd: string;
   } | null>(null);
   const [page, setPage] = useState(() => initialFilter.current.page);
   const [total, setTotal] = useState(0);
@@ -636,6 +703,9 @@ export default function TasksView() {
       if (assigneeFilter) {
         filters.push({ field: 'assignedTo', op: 'eq', value: assigneeFilter });
       }
+      if (creatorFilter) {
+        filters.push({ field: 'createdBy', op: 'eq', value: creatorFilter });
+      }
       // 创建时间过滤：精确到分钟。起始补 :00（含所选分钟）、结束补 :59（含所选分钟）。
       // 空值不施加条件；值格式 YYYY-MM-DDTHH:mm（兼容旧 YYYY-MM-DD）。
       if (createdStart) {
@@ -643,6 +713,20 @@ export default function TasksView() {
       }
       if (createdEnd) {
         filters.push({ field: 'createdAt', op: 'le', value: toBoundaryISO(createdEnd, true) });
+      }
+      // 解决时间过滤（resolved_at）
+      if (resolvedStart) {
+        filters.push({ field: 'resolvedAt', op: 'ge', value: toBoundaryISO(resolvedStart, false) });
+      }
+      if (resolvedEnd) {
+        filters.push({ field: 'resolvedAt', op: 'le', value: toBoundaryISO(resolvedEnd, true) });
+      }
+      // 关单时间过滤（closed_at）
+      if (closedStart) {
+        filters.push({ field: 'closedAt', op: 'ge', value: toBoundaryISO(closedStart, false) });
+      }
+      if (closedEnd) {
+        filters.push({ field: 'closedAt', op: 'le', value: toBoundaryISO(closedEnd, true) });
       }
 
       const sorts = sortBy === 'priority'
@@ -678,7 +762,7 @@ export default function TasksView() {
       isFetchingRef.current = false;
       if (!silent) setLoading(false);
     }
-  }, [page, search, statusFilter, priorityFilter, relevanceFilter, projectFilter, assigneeFilter, createdStart, createdEnd, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
+  }, [page, search, statusFilter, priorityFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
 
   fetchTicketsRef.current = fetchTickets;
 
@@ -686,12 +770,12 @@ export default function TasksView() {
   useEffect(() => {
     const newParams = buildFilterParams({
       search, statusFilter, priorityFilter,
-      relevanceFilter, projectFilter, assigneeFilter, createdStart, createdEnd, page, sortBy, sortOrder,
+      relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder,
     });
     if (newParams !== searchParams.toString()) {
       setSearchParams(newParams, { replace: true });
     }
-  }, [search, statusFilter, priorityFilter, relevanceFilter, projectFilter, assigneeFilter, createdStart, createdEnd, page, sortBy, sortOrder]);
+  }, [search, statusFilter, priorityFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder]);
 
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
@@ -853,6 +937,24 @@ export default function TasksView() {
     if (!exists) setAssigneeFilter('');
   }, [assignees, assigneeFilter]);
 
+  // 创建人过滤：单选切换（传 username；空 = 「全部」），切换后回到第一页
+  const handleCreatorChange = (value: string) => {
+    setCreatorFilter(value);
+    setPage(1);
+  };
+  // 当前选中创建人的展示名（无选中或 username 不在候选列表时回退为「全部」）
+  const selectedCreatorLabel = useMemo(() => {
+    if (!creatorFilter) return '全部';
+    const u = assignees.find((it) => it.username === creatorFilter);
+    return u ? (u.name || u.username) : creatorFilter;
+  }, [creatorFilter, assignees]);
+  // 创建人列表就绪后校验 URL 中的 creatorFilter，命中不到则回退为「全部」
+  useEffect(() => {
+    if (!creatorFilter || assignees.length === 0) return;
+    const exists = assignees.some((u) => u.username === creatorFilter);
+    if (!exists) setCreatorFilter('');
+  }, [assignees, creatorFilter]);
+
   // 多选：单个状态点击切换选中/取消；'all' 表示全部选中
   const handleStatusToggle = (value: string) => {
     setStatusFilter((prev) => {
@@ -890,22 +992,34 @@ export default function TasksView() {
       status: [...statusFilter],
       project: projectFilter,
       assignee: assigneeFilter,
+      creator: creatorFilter,
       priority: [...priorityFilter],
       createdStart,
       createdEnd,
+      resolvedStart,
+      resolvedEnd,
+      closedStart,
+      closedEnd,
     });
     setShowFilterMenu(true);
   };
   // 草稿字段更新（单选类）
   const setDraftField = (patch: Partial<{
-    relevance: string; status: string[]; project: string; assignee: string; priority: string[];
+    relevance: string; status: string[]; project: string; assignee: string; creator: string; priority: string[];
     createdStart: string; createdEnd: string;
+    resolvedStart: string; resolvedEnd: string;
+    closedStart: string; closedEnd: string;
   }>) => setDraft((d) => (d ? { ...d, ...patch } : d));
   const draftRelevanceChange = (value: string) => setDraftField({ relevance: value });
   const draftProjectChange = (value: string) => setDraftField({ project: value });
   const draftAssigneeChange = (value: string) => setDraftField({ assignee: value });
+  const draftCreatorChange = (value: string) => setDraftField({ creator: value });
   const draftSetCreatedStart = (value: string) => setDraftField({ createdStart: value });
   const draftSetCreatedEnd = (value: string) => setDraftField({ createdEnd: value });
+  const draftSetResolvedStart = (value: string) => setDraftField({ resolvedStart: value });
+  const draftSetResolvedEnd = (value: string) => setDraftField({ resolvedEnd: value });
+  const draftSetClosedStart = (value: string) => setDraftField({ closedStart: value });
+  const draftSetClosedEnd = (value: string) => setDraftField({ closedEnd: value });
   // 草稿任务状态切换（与 handleStatusToggle 同逻辑，但作用于草稿）
   const draftStatusToggle = (value: string) => setDraft((d) => {
     if (!d) return d;
@@ -937,9 +1051,14 @@ export default function TasksView() {
     status: [...DEFAULT_STATUS_VALUES],
     project: '',
     assignee: '',
+    creator: '',
     priority: [...ALL_PRIORITY_VALUES],
     createdStart: '',
     createdEnd: '',
+    resolvedStart: '',
+    resolvedEnd: '',
+    closedStart: '',
+    closedEnd: '',
   });
   // 提交草稿生效：将草稿写入正式过滤状态并关闭弹窗（触发 fetchTickets 重新拉取）
   const commitDraft = () => {
@@ -948,9 +1067,14 @@ export default function TasksView() {
     setStatusFilter(draft.status);
     setProjectFilter(draft.project);
     setAssigneeFilter(draft.assignee);
+    setCreatorFilter(draft.creator);
     setPriorityFilter(draft.priority);
     setCreatedStart(draft.createdStart);
     setCreatedEnd(draft.createdEnd);
+    setResolvedStart(draft.resolvedStart);
+    setResolvedEnd(draft.resolvedEnd);
+    setClosedStart(draft.closedStart);
+    setClosedEnd(draft.closedEnd);
     setPage(1);
     setShowFilterMenu(false);
   };
@@ -960,9 +1084,14 @@ export default function TasksView() {
   const dStatus = draft?.status ?? statusFilter;
   const dProject = draft?.project ?? projectFilter;
   const dAssignee = draft?.assignee ?? assigneeFilter;
+  const dCreator = draft?.creator ?? creatorFilter;
   const dPriority = draft?.priority ?? priorityFilter;
   const dCreatedStart = draft?.createdStart ?? createdStart;
   const dCreatedEnd = draft?.createdEnd ?? createdEnd;
+  const dResolvedStart = draft?.resolvedStart ?? resolvedStart;
+  const dResolvedEnd = draft?.resolvedEnd ?? resolvedEnd;
+  const dClosedStart = draft?.closedStart ?? closedStart;
+  const dClosedEnd = draft?.closedEnd ?? closedEnd;
   // 弹窗内项目/处理人展示名（基于草稿值解析，未选回退「全部」）
   const popupProjectLabel = useMemo(() => {
     if (!dProject) return '全部';
@@ -974,6 +1103,11 @@ export default function TasksView() {
     const u = assignees.find((it) => it.username === dAssignee);
     return u ? (u.name || u.username) : dAssignee;
   }, [dAssignee, assignees]);
+  const popupCreatorLabel = useMemo(() => {
+    if (!dCreator) return '全部';
+    const u = assignees.find((it) => it.username === dCreator);
+    return u ? (u.name || u.username) : dCreator;
+  }, [dCreator, assignees]);
 
   const handleSyncExternalTasks = async () => {
     setSyncing(true);
@@ -1160,6 +1294,17 @@ export default function TasksView() {
                 onSelect={handleAssigneeChange}
               />
               <span className="tasks-view__filter-divider" aria-hidden="true" />
+              {/* 创建人过滤：内联下拉（首项「全部」+ 可搜索） */}
+              <ChipDropdown
+                label={selectedCreatorLabel}
+                active={!!creatorFilter}
+                options={assigneeOptions}
+                selectedValue={creatorFilter}
+                searchPlaceholder="搜索姓名 / 账号…"
+                emptyText="未找到匹配创建人"
+                onSelect={handleCreatorChange}
+              />
+              <span className="tasks-view__filter-divider" aria-hidden="true" />
               <button
                 key="priority_all"
                 className={`tasks-view__filter-chip ${sameSet(priorityFilter, ALL_PRIORITY_VALUES) ? 'is-active' : ''}`}
@@ -1198,6 +1343,7 @@ export default function TasksView() {
 
       <Popup visible={showFilterMenu} onClose={() => setShowFilterMenu(false)} placement="bottom" showOverlay>
         <div className="filter-menu">
+          <div className="filter-menu__body">
           <div className="filter-menu__section">
             <h4 className="filter-menu__title">相关性</h4>
             <div className="filter-menu__items">
@@ -1265,36 +1411,51 @@ export default function TasksView() {
           </div>
           <div className="filter-menu__divider"></div>
           <div className="filter-menu__section">
+            <h4 className="filter-menu__title">创建人</h4>
+            <FilterMenuDropdown
+              label={popupCreatorLabel}
+              options={assigneeOptions}
+              selectedValue={dCreator}
+              searchPlaceholder="搜索姓名 / 账号…"
+              emptyText="未找到匹配创建人"
+              onSelect={draftCreatorChange}
+            />
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
             <h4 className="filter-menu__title">创建时间（选择时间范围）</h4>
-            <div className="filter-menu__date-range">
-              <div className="filter-menu__date-field">
-                <input
-                  ref={startDtInputRef}
-                  type="datetime-local"
-                  className={`filter-menu__date-input${dCreatedStart ? '' : ' filter-menu__date-input--empty'}`}
-                  step={60}
-                  value={dCreatedStart}
-                  max={dCreatedEnd || undefined}
-                  onChange={(e) => draftSetCreatedStart(e.target.value)}
-                  onClick={() => openNativePicker(startDtInputRef.current)}
-                />
-                {!dCreatedStart && <span className="filter-menu__date-placeholder">起始时间</span>}
-              </div>
-              <span className="filter-menu__date-sep">至</span>
-              <div className="filter-menu__date-field">
-                <input
-                  ref={endDtInputRef}
-                  type="datetime-local"
-                  className={`filter-menu__date-input${dCreatedEnd ? '' : ' filter-menu__date-input--empty'}`}
-                  step={60}
-                  value={dCreatedEnd}
-                  min={dCreatedStart || undefined}
-                  onChange={(e) => draftSetCreatedEnd(e.target.value)}
-                  onClick={() => openNativePicker(endDtInputRef.current)}
-                />
-                {!dCreatedEnd && <span className="filter-menu__date-placeholder">终止时间</span>}
-              </div>
-            </div>
+            <DateRangeField
+              startValue={dCreatedStart}
+              endValue={dCreatedEnd}
+              onStartChange={draftSetCreatedStart}
+              onEndChange={draftSetCreatedEnd}
+              startRef={startDtInputRef}
+              endRef={endDtInputRef}
+            />
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">解决时间（选择时间范围）</h4>
+            <DateRangeField
+              startValue={dResolvedStart}
+              endValue={dResolvedEnd}
+              onStartChange={draftSetResolvedStart}
+              onEndChange={draftSetResolvedEnd}
+              startRef={resolvedStartDtInputRef}
+              endRef={resolvedEndDtInputRef}
+            />
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">关单时间（选择时间范围）</h4>
+            <DateRangeField
+              startValue={dClosedStart}
+              endValue={dClosedEnd}
+              onStartChange={draftSetClosedStart}
+              onEndChange={draftSetClosedEnd}
+              startRef={closedStartDtInputRef}
+              endRef={closedEndDtInputRef}
+            />
           </div>
           <div className="filter-menu__divider"></div>
           <div className="filter-menu__section">
@@ -1317,6 +1478,7 @@ export default function TasksView() {
                 </button>
               ))}
             </div>
+          </div>
           </div>
           {/* 底部操作按钮：清空选择 / 确定（并排） */}
           <div className="filter-menu__actions">

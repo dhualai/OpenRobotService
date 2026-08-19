@@ -647,6 +647,8 @@ class TicketService:
             if ticket.customer:
                 notify_users.append(ticket.customer)
             notify_users = list(set(notify_users))
+            if operator_id and operator_id in notify_users:
+                notify_users.remove(operator_id)
             if notify_users:
                 user_map = await TicketService._get_user_map(token)
                 
@@ -892,6 +894,8 @@ class TicketService:
             if ticket.customer:
                 notify_users.append(ticket.customer)
             notify_users = list(set(notify_users))
+            if operator_id and operator_id in notify_users:
+                notify_users.remove(operator_id)
             
             if notify_users:
                 user_map = await TicketService._get_user_map(token)
