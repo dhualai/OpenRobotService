@@ -5838,8 +5838,8 @@ html, body, #root {
    改为紧贴胶囊右上角内侧，视觉一致且不再被裁）。pointer-events 透传点击到按钮。 */
 .history-tab__count {
   position: absolute;
-  top: 2px;
-  right: -4px;
+  top: -6px;
+  right: -8px;
   pointer-events: none;
   min-width: 16px;
   padding: 0 5px;
