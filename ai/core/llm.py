@@ -7,6 +7,7 @@
 """
 import asyncio
 import json
+import os
 import time
 from typing import Optional, List, Dict, Any
 from abc import ABC, abstractmethod
@@ -130,15 +131,11 @@ class OpenAIProvider(BaseLLMProvider):
                 payload["thinking"] = {"type": "disabled"}
             else:
                 payload["thinking"] = {"type": "enabled"}
-        # Claude（经 OpenAI 兼容中转站）：thinking 用 Anthropic 格式透传。
-        # 此前这里没处理 claude，pipeline 传的 thinking=False 被静默丢弃，
-        # Claude 照常深度思考 → 首 token 十几秒。实测中转站接受
-        # {"type":"disabled"} 且能提速约 2.3x（claude-opus-4-8: 4.3s→1.9s）。
-        elif "claude" in _model:
-            if _thinking is False:
-                payload["thinking"] = {"type": "disabled"}
-            # thinking=True/None：不强制 enabled（需要 budget_tokens，各中转站
-            # 兼容性不一），交给模型默认即可。
+        # Claude 经 OpenAI 兼容中转站：**不传任何 thinking 字段**。
+        # 实测（yitongapi 中转站 claude-opus-4-8）：只要请求带 thinking
+        # （无论 enabled/disabled），思考型问题的正文字符就是 0——中转站对
+        # claude 的 thinking 字段处理是坏的，不带参数反而最快且正常出答案。
+        # 因此这里对 claude 一律忽略 thinking 开关，交给中转站默认行为。
         # reasoning_effort 只有 OpenAI 的推理模型（o1/o3/gpt-5 等）认识；
         # 中转站/Claude 等模型不一定兼容这个字段，不透传以免请求被拒。
         elif any(x in _model for x in ("o1", "o3", "gpt-5")):
@@ -946,6 +943,40 @@ async def close_llm_client() -> None:
     if _llm_client is not None:
         await _llm_client.close()
         _llm_client = None
+
+
+# ── 意图分类专用客户端 ──────────────────────────────────────
+# 意图识别是纯路由判断（courtesy/ticket/diagnosis），按设计用轻量无思考模型
+# （v4-flash ~0.5s，见 _classify_intent 注释）。不能跟随主 LLM_BACKEND——
+# 主后端切到 relay 的重模型（claude-opus）后，意图延迟从 0.5s 涨到 2s+。
+# 默认独立走 DeepSeek 官方 API；INTENT_LLM_BACKEND / INTENT_MODEL 可覆盖；
+# DeepSeek key 未配置时回退主客户端（保证意图功能不因配置缺失而断）。
+
+_intent_client: Optional[LLMClient] = None
+_intent_lock = asyncio.Lock()
+
+
+async def get_intent_client() -> LLMClient:
+    """意图分类专用客户端（轻量无思考模型，独立于主后端）。"""
+    global _intent_client
+
+    if _intent_client is None:
+        async with _intent_lock:
+            if _intent_client is None:
+                backend = (os.getenv("INTENT_LLM_BACKEND") or "deepseek").strip().lower()
+                model = (os.getenv("INTENT_MODEL") or "deepseek-v4-flash").strip()
+                if backend == "deepseek":
+                    if not get_ai_config().deepseek_api_key:
+                        logger.warning("[intent] DeepSeek key 未配置，意图回退主客户端")
+                        _intent_client = await get_llm_client()
+                    else:
+                        _intent_client = LLMClient(
+                            provider=LLMProvider.DEEPSEEK, model=model)
+                elif backend == "relay":
+                    _intent_client = LLMClient(provider=LLMProvider.RELAY, model=model)
+                else:
+                    _intent_client = await get_llm_client()
+    return _intent_client
 
 
 # ============================================================

@@ -10,6 +10,7 @@ import time
 import os
 import uuid
 import asyncio
+import collections
 from pathlib import Path
 from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, Header, HTTPException
@@ -229,57 +230,88 @@ async def ask_question_stream(
             acc = ""
             last_persist = 0.0
             PERSIST_MS = 0.8
-            async def _persist(content: str, force: bool = False):
-                """增量落库——producer 主协程内同步 await。
+            # 落库改为后台任务 + 串行锁：早期 fire-and-forget 用线程池踩坑
+            # （工作线程 get_event_loop 抛异常被吞 → 落库从未执行），但用
+            # asyncio.create_task 是安全的——不再 inline await 阻塞 token 转发
+            # （inline await 时 DB 写稍慢会周期性卡流，前端表现为吐字卡顿）。
+            _persist_tasks = set()
+            _persist_lock = asyncio.Lock()
 
-                注意：早期版本曾改为「线程池 + asyncio.ensure_future」的 fire-and-forget，
-                但 ThreadPoolExecutor 工作线程里 get_event_loop() 抛 RuntimeError 被吞，
-                导致落库实际从未执行 → 前端实时能看到、刷新后回复丢失。
-                此处恢复为可靠的 await 落库，保证 DB 有完整内容。
-                """
+            async def _do_persist(content: str):
+                nonlocal _persist_tasks
+                try:
+                    async with _persist_lock:
+                        await MessageService.update_message(
+                            db, persist_msg_id, MessageUpdate(content=content))
+                except Exception as e:
+                    logger.warning(f"[sse] 增量落库失败 sid={qa_req.session_id[:8]}: {e}")
+
+            def _persist_bg(content: str, force: bool = False):
+                """节流落库（后台执行，不阻塞流）。force=True 走同步等待。"""
                 nonlocal last_persist
                 now = time.perf_counter()
                 if not force and (now - last_persist) < PERSIST_MS:
                     return
-                try:
-                    await MessageService.update_message(
-                        db, persist_msg_id, MessageUpdate(content=content))
-                    last_persist = now
-                except Exception as e:
-                    logger.warning(f"[sse] 增量落库失败 sid={qa_req.session_id[:8]}: {e}")
+                last_persist = now
+                task = asyncio.create_task(_do_persist(content))
+                _persist_tasks.add(task)
+                task.add_done_callback(_persist_tasks.discard)
+
             try:
                 async for event in pipeline.run_stream(qa_request):
                     ev_type = event.get("event")
                     if ev_type == "token":
                         acc += event.get('data', '')
                         if db is not None and persist_msg_id is not None:
-                            await _persist(acc)
+                            _persist_bg(acc)
                     elif ev_type == "status":
                         # 提交/补信息阶段清空 acc（系统话术会重新流式），保证 DB 与前端展示一致
                         stage = event.get('data', {}).get('stage', '?')
                         if stage in ('need_info', 'need_fields', 'review', 'submit_failed'):
                             acc = ""
                     await queue.put(event)
-                # 流结束：最终落库（完整内容）
+                # 流结束：最终落库（完整内容，同步等待保证 DB 有终态）
                 if db is not None and persist_msg_id is not None:
                     try:
-                        await _persist(acc, force=True)
+                        await _do_persist(acc)
                     except Exception:
                         pass
+                # 标题异步生成：流结束后等它落地（上限 8s），补发 event: title。
+                # 前端 ChatPanel 靠这个事件刷新会话标题;异步化后 result.title 恒空,
+                # 不补发前端就永远显示「新建会话」。超时/失败静默降级。
+                try:
+                    _title = await asyncio.wait_for(
+                        pipeline.collect_title(qa_req.session_id), timeout=8.0)
+                except Exception:
+                    _title = ""
+                if _title:
+                    await queue.put({"event": "title", "data": {"title": _title}})
                 await queue.put(_SENTINEL)
             except Exception as e:
                 # 异常：保留已接收内容
                 if db is not None and persist_msg_id is not None and acc:
                     try:
-                        await _persist(acc, force=True)
+                        await _do_persist(acc)
                     except Exception:
                         pass
                 await queue.put(("__error__", str(e)))
             finally:
+                # 等后台落库任务收尾后再关 DB，避免连接在写入中途被关闭
+                if _persist_tasks:
+                    await asyncio.gather(*_persist_tasks, return_exceptions=True)
                 if db is not None:
                     await db.close()
 
         producer_task = asyncio.create_task(producer())
+
+        # ── 打字机平滑：上游（中转站 claude/gpt）token 常以中块突发到达
+        # （~40字/块、间隔 700-1000ms），直接转发会「卡一下出一坨」。
+        # 这里把 token 入队，按固定节奏小块重放（40ms/12字上限，300字/秒），
+        # 突发被摊平；小模型/真流式场景下块都低于阈值，基本直通。
+        _tok_buf = collections.deque()
+        _last_emit = 0.0
+        _PACER_INTERVAL = 0.04
+        _PACER_CHARS = 12
 
         try:
             # consumer 心跳保活：producer（LLM thinking）长时间无产出时插入 ": ping"
@@ -290,13 +322,35 @@ async def ask_question_stream(
                     if event is _SENTINEL or (isinstance(event, tuple) and len(event) == 2 and event[0] == "__error__"):
                         return
 
+            async def _drain_paced():
+                """按节奏小块重放缓冲中的 token（每次最多 _PACER_CHARS 字）。"""
+                nonlocal _last_emit
+                while _tok_buf:
+                    now = time.perf_counter()
+                    wait = _PACER_INTERVAL - (now - _last_emit)
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+                    out = []
+                    while _tok_buf and len(out) < _PACER_CHARS:
+                        out.append(_tok_buf.popleft())
+                    _last_emit = time.perf_counter()
+                    yield f"data: {json.dumps({'token': ''.join(out)}, ensure_ascii=False)}\n\n"
+
             async for event in _heartbeat_agen(_drain()):
                 if event is None:
                     yield _HEARTBEAT_SSE
                     continue
                 if event is _SENTINEL:
+                    if _tok_buf:
+                        _rest = ''.join(_tok_buf)
+                        _tok_buf.clear()
+                        yield f"data: {json.dumps({'token': _rest}, ensure_ascii=False)}\n\n"
                     break
                 if isinstance(event, tuple) and len(event) == 2 and event[0] == "__error__":
+                    if _tok_buf:
+                        _rest = ''.join(_tok_buf)
+                        _tok_buf.clear()
+                        yield f"data: {json.dumps({'token': _rest}, ensure_ascii=False)}\n\n"
                     err_msg = event[1]
                     yield f"data: {json.dumps({'token': f'[AI 服务异常: {err_msg[:80]}]'}, ensure_ascii=False)}\n\n"
                     _flush_tokens()
@@ -310,8 +364,15 @@ async def ask_question_stream(
                         first = True
                         yield f"event: first_token\ndata: {json.dumps({'ms': round((time.perf_counter() - t0) * 1000)}, ensure_ascii=False)}\n\n"
                     _sse_token_count += len(event.get('data', ''))
-                    yield f"data: {json.dumps({'token': event['data']}, ensure_ascii=False)}\n\n"
+                    _tok_buf.extend(event.get('data', ''))
+                    async for _sse in _drain_paced():
+                        yield _sse
                 elif ev_type == "result":
+                    # 流收尾前把剩余缓冲一次性放出（不拖尾）
+                    if _tok_buf:
+                        _rest = ''.join(_tok_buf)
+                        _tok_buf.clear()
+                        yield f"data: {json.dumps({'token': _rest}, ensure_ascii=False)}\n\n"
                     _flush_tokens()
                     _sse_trace.append(f"result")
                     yield f"event: result\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
