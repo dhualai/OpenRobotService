@@ -3645,6 +3645,75 @@ html, body, #root {
 .mac-user-card__duty { display: flex; gap: 6px; margin-top: 8px; font-size: 11.5px; line-height: 1.6; color: var(--mac-muted-fg); }
 .mac-user-card__duty-icon { flex-shrink: 0; margin-top: 2px; color: var(--mac-blue-2); display: inline-flex; }
 .mac-user-card__actions { display: flex; gap: 8px; margin-left: 8px; flex-shrink: 0; }
+
+/* ── 人员结构（org-chart）：对齐 macaron org-structure 页 ── */
+.mac-org-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.mac-org-head__back {
+  display: inline-flex; align-items: center; gap: 4px; border: none; background: none;
+  border-radius: 999px; padding: 6px 10px; color: var(--mac-muted-fg); font-size: 13px; cursor: pointer;
+}
+.mac-org-head__back:hover { background: var(--mac-secondary); }
+.mac-org-head__title { flex: 1; text-align: center; margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.02em; color: var(--mac-fg); }
+.mac-org-head__actions { display: flex; align-items: center; gap: 8px; }
+
+.mac-org-tip { margin: 0 0 12px; background: var(--mac-secondary); border-radius: 8px; padding: 8px 12px; font-size: 11.5px; line-height: 1.7; color: var(--mac-muted-fg); }
+
+/* 小号幽灵按钮（对齐原型 GhostButton） */
+.mac-org-btn {
+  display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--mac-border);
+  background: #fff; border-radius: 8px; padding: 5px 10px; font-size: 11.5px; font-weight: 500;
+  color: var(--mac-muted-fg); cursor: pointer; transition: background 0.15s;
+}
+.mac-org-btn:hover { background: var(--mac-secondary); }
+.mac-org-btn--active { border-color: rgba(81, 191, 238, 0.6); background: var(--mac-blue-soft); color: var(--mac-blue-2); }
+.mac-org-btn--emphasis { border-color: rgba(54, 151, 195, 0.7); background: var(--mac-blue-2); color: #fff; }
+.mac-org-btn--emphasis:hover { background: var(--mac-blue-1); }
+
+/* 人员卡片（对齐原型 PersonRow 的 surface-card） */
+.mac-org-card {
+  background: #fff; border: 1px solid rgba(232, 234, 234, 0.6); border-radius: 20px;
+  box-shadow: var(--mac-shadow-soft); overflow: hidden; margin-bottom: 10px;
+}
+.mac-org-card--manager { border-color: rgba(81, 191, 238, 0.5); background: rgba(223, 248, 255, 0.6); }
+.mac-org-card--drag-over { border: 2px dashed var(--mac-blue-2); background: var(--mac-blue-soft); }
+.mac-org-card__body { display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px; }
+.mac-org-card__icon {
+  width: 28px; height: 28px; border-radius: 50%; background: var(--mac-secondary);
+  color: var(--mac-muted-fg); display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0; margin-top: 1px;
+}
+.mac-org-card__icon--crown { color: var(--mac-blue-2); }
+.mac-org-card__main { flex: 1; min-width: 0; }
+.mac-org-card__chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.mac-org-card__name { font-size: 13.5px; font-weight: 600; color: var(--mac-fg); }
+.mac-org-card__actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.mac-org-card__count {
+  display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; padding: 4px 0 0;
+  font-size: 11px; color: var(--mac-muted-fg); background: none; border: none; cursor: pointer;
+}
+.mac-org-card__count:hover { color: var(--mac-blue-2); }
+.mac-org-card__count .mac-org-chev { transition: transform 0.15s; }
+.mac-org-card__count.is-open .mac-org-chev { transform: rotate(90deg); }
+
+/* 展开的下属区（对齐原型 reports 嵌套卡） */
+.mac-org-sub {
+  border-top: 1px solid rgba(232, 234, 234, 0.6); background: rgba(255, 255, 255, 0.6);
+  padding: 12px 16px 12px 32px; display: flex; flex-direction: column; gap: 8px;
+}
+.mac-org-subrow {
+  display: flex; align-items: flex-start; gap: 10px; border: 1px solid rgba(232, 234, 234, 0.6);
+  background: #fff; border-radius: 12px; padding: 10px 12px; cursor: pointer; touch-action: pan-y;
+}
+.mac-org-subrow__icon {
+  width: 24px; height: 24px; border-radius: 50%; background: var(--mac-secondary);
+  color: var(--mac-muted-fg); display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0; margin-top: 1px;
+}
+.mac-org-subrow__name { font-size: 12.5px; font-weight: 600; color: var(--mac-fg); }
+.mac-org-subrow__meta { margin-top: 2px; font-size: 10.5px; color: var(--mac-muted-fg); }
+.mac-org-subrow__actions { margin-top: 6px; }
+.mac-org-subrow--drag-over { border: 2px dashed var(--mac-blue-2); background: var(--mac-blue-soft); }
+
 /* 用户卡片头像：图片 / 首字母回退 */
 .mac-user-card__avatar {
   width: 40px; height: 40px; border-radius: 50%;
