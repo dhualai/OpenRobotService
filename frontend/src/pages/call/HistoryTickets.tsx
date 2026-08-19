@@ -4,7 +4,7 @@
 // 分页：每页 PAGE_SIZE 条，下拉刷新、触底加载更多。
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loading, Toast, Button, Popup } from 'tdesign-mobile-react';
+import { Loading, Toast, Button, Popup, DialogPlugin } from 'tdesign-mobile-react';
 import { Search, ArrowRight } from 'lucide-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
 import { urgeTicket, reportTicket, cancelTicket, reDispatchTicket } from '@/api/ticket';
@@ -171,13 +171,24 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
     }
   };
 
-  const handleCancel = async (e: React.MouseEvent, t: AiTicketBrief) => {
-    e.stopPropagation();
+  const doCancel = async (t: AiTicketBrief) => {
     if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
     setActing({ id: t.id, action: 'cancel' });
     try { await cancelTicket(t.id); Toast({ message: '已撤回，工单已取消', theme: 'success' }); loadInitial(); }
     catch (err) { Toast({ message: `撤回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }); }
     finally { setActing(null); }
+  };
+
+  const handleCancel = (e: React.MouseEvent, t: AiTicketBrief) => {
+    e.stopPropagation();
+    if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    const dlg = DialogPlugin.confirm!({
+      title: '撤回工单',
+      content: '撤回后工单将变为「已取消」，确认撤回吗？',
+      confirmBtn: '撤回',
+      cancelBtn: '再想想',
+      onConfirm: () => { doCancel(t); dlg.destroy(); },
+    });
   };
 
   const openRedispatchPopup = (e: React.MouseEvent, t: AiTicketBrief) => {

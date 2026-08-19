@@ -74,7 +74,15 @@ class TaskDashboardService:
         overdue_result = await db.execute(overdue_query)
         overdue_count = overdue_result.scalar() or 0
 
-        resolved_rate = round(by_status["resolved"] / total, 4) if total else 0.0
+        # 解决率 =（已解决 + 已关闭 + 已取消）/ 总工单数（与上方 total 同口径，均不含 new）
+        resolved_rate = (
+            round(
+                (by_status["resolved"] + by_status["closed"] + by_status["cancelled"]) / total,
+                4,
+            )
+            if total
+            else 0.0
+        )
 
         return {
             "total": total,

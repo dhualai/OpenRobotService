@@ -242,6 +242,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   hasPermission: (prefix: string) => {
     const { permissions } = get();
     if (!permissions || permissions.length === 0) return false;
+    // admin 通配权限：与后端 require_permission 的「permissions 含 admin 直通」对齐，
+    // 否则 admin 用户（permissions=['admin']）在前端看不到「其他」等按权限码控制的入口
+    if (permissions.includes('admin')) return true;
     return permissions.some(p => p.startsWith(prefix) || p === `${prefix}:*` || p === '*');
   },
 }));

@@ -3,7 +3,7 @@
 // 路由 /app/call/ticket/:id 中的 :id 形如 db_<数字id>（Task.id）；session_id 直链仅作旧链接兼容
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea } from 'tdesign-mobile-react';
+import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea, DialogPlugin } from 'tdesign-mobile-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
@@ -369,8 +369,8 @@ export default function TicketDetailPage() {
     }
   };
 
-  // 撤回：将工单状态置为已取消（Canceled）
-  const handleCancel = async () => {
+  // 撤回：二次确认后，将工单状态置为已取消（Canceled）
+  const doCancel = async () => {
     if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法撤回', theme: 'warning' }); return; }
     setActing('cancel');
     try {
@@ -384,6 +384,16 @@ export default function TicketDetailPage() {
     } finally {
       setActing(null);
     }
+  };
+  const handleCancel = () => {
+    if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法撤回', theme: 'warning' }); return; }
+    const dlg = DialogPlugin.confirm!({
+      title: '撤回工单',
+      content: '撤回后工单将变为「已取消」，确认撤回吗？',
+      confirmBtn: '撤回',
+      cancelBtn: '再想想',
+      onConfirm: () => { doCancel(); dlg.destroy(); },
+    });
   };
 
   // 派单中：AI 单 status=new 且处理人未写入（Worker 60s 轮询派单，期间 5s 轮询自动刷新）
