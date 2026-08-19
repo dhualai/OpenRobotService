@@ -7,7 +7,11 @@ export interface PointerDragToDropOptions {
   onHoverChange?: (targetId: string | null) => void;
   /** 判定一个元素是否为「可落点」目标（默认读取 data-drop-id 属性） */
   resolveTargetId?: (el: HTMLElement) => string | null;
-  /** 长按进入拖拽的延时（ms）。触屏长按避免与滚动/点击冲突；鼠标按下即进入。默认 220 */
+  /** 触屏进入拖拽的最小位移阈值（px）。手指移动超过该距离才判定为拖拽，
+   *  否则视为滚动（交给浏览器滚动）或点击。默认 10（比鼠标 6 略大，减少滚动误触） */
+  touchMoveThreshold?: number;
+  /** 触屏长按进入拖拽的延时（ms）。手指按住不动超过该时长即直接进入拖拽
+   *  （无需位移），用于「原地按住就拾起」的交互。默认 400 */
   longPressDelay?: number;
 }
 
@@ -67,7 +71,8 @@ export function usePointerDragToDrop({
   onDrop,
   onHoverChange,
   resolveTargetId,
-  longPressDelay = 220,
+  touchMoveThreshold = 10,
+  longPressDelay = 400,
 }: PointerDragToDropOptions = {}): PointerDragToDropHandle {
   injectDragSourceCss();
 
@@ -79,9 +84,10 @@ export function usePointerDragToDrop({
   resolveRef.current = resolveTargetId;
 
   const state = useRef({
-    active: false, // 是否已进入拖拽态
-    moved: false, // 是否发生位移（用于抑制点击）
-    dragging: false, // 是否已越过阈值/长按判定，真正开始拖拽
+    active: false, // 是否已进入指针按下候选态
+    dragging: false, // 是否已真正开始拖拽（越过阈值/长按到点）
+    moved: false, // 拖拽期间是否发生过真实位移（用于松手后抑制 click）
+    suppressClick: false, // 松手后需抑制紧随的 click（拖拽结算专用，独立于 moved 生命周期）
     pointerId: -1,
     startX: 0,
     startY: 0,
@@ -89,7 +95,7 @@ export function usePointerDragToDrop({
     hoverId: null as string | null, // 当前悬停落点 id
     longPressTimer: 0, // 触屏长按计时器句柄
     sourceEl: null as HTMLElement | null,
-    isMouse: true, // pointerType 是否为鼠标/笔（触屏走长按判定）
+    isMouse: true, // pointerType 是否为鼠标/笔（触屏走位移/长按判定）
     ghostEl: null as HTMLElement | null, // 跟随指针的「幽灵卡片」克隆节点
     ghostStartX: 0, // 幽灵卡片创建时的指针坐标（平移基准）
     ghostStartY: 0,
@@ -172,6 +178,7 @@ export function usePointerDragToDrop({
       const s = state.current;
       if (!s.active) return;
       const draggedId = s.draggedId;
+      const wasDragging = s.dragging;
       const targetId = hitTest(clientX, clientY, draggedId);
       // 清除悬停高亮
       setHover(null);
@@ -180,6 +187,9 @@ export function usePointerDragToDrop({
         window.clearTimeout(s.longPressTimer);
         s.longPressTimer = 0;
       }
+      // 拖拽期间发生过位移 → 松手后需抑制紧随的 click（click 在 pointerup 之后才派发，
+      // 故不能在此立即清空 moved；用独立的 suppressClick 标记，由 click 捕获监听消费后清除）
+      s.suppressClick = wasDragging && s.moved;
       s.active = false;
       s.dragging = false;
       s.moved = false;
@@ -232,18 +242,34 @@ export function usePointerDragToDrop({
       const dx = e.clientX - s.startX;
       const dy = e.clientY - s.startY;
       if (!s.dragging) {
-        // 触屏未达长按时长就移动超阈值 → 用户意图是滚动列表，取消拖拽候选（放行滚动）
-        if (!s.isMouse && !s.longPressTimer) {
-          cancelDrag();
+        const dist = Math.hypot(dx, dy);
+        // 触屏：位移阈值判定。
+        //  - 若移动方向以纵向为主（|dy| >= |dx|），判定为用户在滚动页面 → 放行，取消拖拽候选，
+        //    浏览器接管滚动（不抢指针捕获、不 preventDefault）。这根治了「只能滑侧边滚动」的问题。
+        //  - 若横向位移超过阈值，或纵向位移超过阈值但明显是拖动（非纵向滚动），才进入拖拽。
+        if (!s.isMouse) {
+          // 纵向位移占优且超过阈值 → 用户意图是滚动页面，放弃拖拽候选，放行浏览器滚动
+          if (Math.abs(dy) >= Math.abs(dx) && dist > touchMoveThreshold) {
+            cancelDrag();
+            return;
+          }
+          // 横向位移超过阈值 → 进入拖拽
+          if (dist > touchMoveThreshold) {
+            s.dragging = true;
+            s.moved = true;
+            startGhost(e.clientX, e.clientY);
+          }
+          // 否则（位移未超阈值）：继续等待长按计时器到点（原地按住即拾起），不进入拖拽也不滚动
           return;
-        }
-        // 判定是否进入拖拽：超过 6px 位移（鼠标；触屏需长按已到点）
-        if (Math.hypot(dx, dy) > 6) {
-          s.dragging = true;
-          s.moved = true;
-          startGhost(e.clientX, e.clientY);
         } else {
-          return;
+          // 鼠标：超过 6px 位移即进入拖拽
+          if (dist > 6) {
+            s.dragging = true;
+            s.moved = true;
+            startGhost(e.clientX, e.clientY);
+          } else {
+            return;
+          }
         }
       }
       moveGhost(e.clientX, e.clientY);
@@ -266,6 +292,7 @@ export function usePointerDragToDrop({
     //（pointermove 无法阻止滚动手势）。正常状态（非拖拽中）不拦截，页面滚动不受影响。
     const onTouchMove = (e: TouchEvent) => {
       const s = state.current;
+      // 仅在真正进入拖拽后拦截触摸滚动；候选/滚动意图阶段一律放行（保证页面可正常滚动）
       if (s.dragging && e.cancelable) {
         e.preventDefault();
       }
@@ -283,14 +310,16 @@ export function usePointerDragToDrop({
     };
   }, [finishDrag, cancelDrag, setHover, hitTest, startGhost, moveGhost]);
 
-  // 拖拽中抑制子元素 click（拖拽位移后松手不应触发卡片点击）
+  // 拖拽中抑制子元素 click：拖拽位移后松手不应触发卡片点击。
+  // click 在 pointerup 之后才派发，故不能依赖 moved（其已在 finishDrag 里被清空），
+  // 改用 finishDrag 结算时写入的 suppressClick 标记，消费后即清除。
   useEffect(() => {
     const onClickCapture = (e: MouseEvent) => {
       const s = state.current;
-      if (s.moved) {
+      if (s.suppressClick) {
         e.preventDefault();
         e.stopPropagation();
-        s.moved = false;
+        s.suppressClick = false;
       }
     };
     document.addEventListener('click', onClickCapture, true);
@@ -317,18 +346,18 @@ export function usePointerDragToDrop({
           s.sourceEl = e.currentTarget as HTMLElement;
           s.isMouse = isMouse;
 
-          // 触屏：长按判定（避免与滚动/点击冲突）；鼠标：立即进入候选（由移动阈值判定）
+          // 触屏：不立即抢指针捕获（保留浏览器滚动能力），靠「位移阈值 + 长按」双通道判定；
+          // 鼠标：立即捕获指针进入候选（由移动阈值判定）
           if (!isMouse) {
             s.longPressTimer = window.setTimeout(() => {
               const st = state.current;
               if (!st.active || st.draggedId !== id) return;
               st.dragging = true;
               st.moved = true;
-              st.longPressTimer = 0; // 长按已到点（标记，供 onMove 判定放行拖拽）
+              st.longPressTimer = 0; // 长按到点，进入拖拽态（onMove 据 dragging 判定）
               // 长按到点立即生成幽灵卡片（拾起反馈，未移动也可见「已拾起」）
               startGhost(st.startX, st.startY);
-              // 触屏长按后尝试捕获，避免滚动干扰（注：currentTarget 在异步回调中已失效，
-              // 用 sourceEl 兜底；捕获失败不影响拖拽，document 级监听照常追踪）
+              // 进入拖拽后才捕获指针，避免提前抢走滚动（currentTarget 在异步回调中已失效，用 sourceEl 兜底）
               try {
                 st.sourceEl?.setPointerCapture(st.pointerId);
               } catch {
