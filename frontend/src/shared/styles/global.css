@@ -2766,6 +2766,200 @@ html, body, #root {
   background: var(--border);
   margin: 14px 0;
 }
+/* 筛选弹窗底部操作按钮：清空选择 / 确定，并排两等分 */
+.filter-menu__actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+}
+.filter-menu__action {
+  flex: 1;
+  padding: 10px 0;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.filter-menu__action:active {
+  opacity: 0.85;
+}
+.filter-menu__action--ghost {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--foreground);
+}
+.filter-menu__action--primary {
+  border: none;
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+/* 筛选弹窗「创建时间」日期区间 */
+.filter-menu__date-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.filter-menu__date-field {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.filter-menu__date-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+  background: #fff;
+  color: var(--foreground);
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.filter-menu__date-input:focus {
+  border-color: var(--primary);
+}
+/* 空值时隐藏原生日期 mask，由 .filter-menu__date-placeholder 覆盖显示「起始/终止时间」 */
+.filter-menu__date-input--empty {
+  color: transparent;
+}
+.filter-menu__date-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  font-size: 13px;
+  color: var(--muted);
+}
+.filter-menu__date-sep {
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--foreground);
+}
+/* 内联下拉（项目 / 处理人过滤）：固定定位，附在触发 chip 下方，替代原底部弹层 */
+.chip-dropdown {
+  position: fixed;
+  z-index: 1000;
+  max-width: 80vw;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+.chip-dropdown__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+.chip-dropdown__search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 14px;
+  color: var(--foreground);
+}
+.chip-dropdown__search-input::placeholder {
+  color: var(--muted-foreground);
+}
+.chip-dropdown__list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 0;
+}
+.chip-dropdown__item {
+  padding: 9px 14px;
+  font-size: 14px;
+  color: var(--foreground);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.15s ease;
+}
+.chip-dropdown__item:hover {
+  background: var(--muted);
+}
+.chip-dropdown__item.is-selected {
+  color: var(--primary);
+  font-weight: 600;
+  background: var(--primary-soft);
+}
+.chip-dropdown__empty {
+  padding: 16px 12px;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+/* 筛选弹窗内的内联下拉面板（项目 / 处理人）：就地展开，跟随弹窗正常流 */
+.filter-menu__inline-dropdown {
+  margin-top: 4px;
+}
+.filter-menu__inline-panel {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+.filter-menu__inline-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+.filter-menu__inline-list {
+  max-height: 240px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 6px;
+}
+.filter-menu__inline-item {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.filter-menu__inline-item:hover {
+  background: var(--muted);
+}
+.filter-menu__inline-item.is-selected {
+  color: var(--primary);
+  font-weight: 600;
+  background: var(--primary-soft);
+}
+.filter-menu__inline-empty {
+  padding: 14px 12px;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
 .tasks-head {
   display: grid;
   grid-template-columns: 64px 1fr 84px 36px 64px;
