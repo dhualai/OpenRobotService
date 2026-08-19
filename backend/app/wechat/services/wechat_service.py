@@ -238,6 +238,53 @@ class WechatService:
             logger.error(f'请求用户信息异常: {e}')
             return None
 
+    async def batch_get_user_info(self, user_list: List[Dict]) -> Optional[Dict]:
+        """批量获取用户基本信息。
+
+        调用微信公众号接口 POST /cgi-bin/user/info/batchget，一次最多拉取 100 个用户。
+        user_list 形如 [{"openid": "...", "lang": "zh_CN"}, ...]，lang 可省略（默认 zh_CN）。
+        返回 {"user_info_list": [...]}；调用失败返回 None，微信错误响应原样返回。
+        """
+        if not user_list:
+            logger.warning('user_list 为空，跳过批量获取用户信息')
+            return None
+
+        # 微信接口单次最多 100 条，超出直接拒绝；按需分批串行
+        batch_size = 100
+        aggregated: List[Dict] = []
+
+        for start in range(0, len(user_list), batch_size):
+            chunk = user_list[start:start + batch_size]
+            access_token = self.get_access_token()
+            if not access_token:
+                logger.error('获取access_token失败，无法批量获取用户信息')
+                return None
+
+            url = f'{settings.WECHAT_USER_BATCH_INFO_URL}?access_token={access_token}'
+            data = {'user_list': chunk}
+
+            try:
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda d=data: self.session.post(
+                        url,
+                        data=json.dumps(d, ensure_ascii=False).encode('utf-8'),
+                        headers={'Content-Type': 'application/json'},
+                        timeout=10,
+                    ).json()
+                )
+                if 'user_info_list' in response:
+                    aggregated.extend(response['user_info_list'])
+                else:
+                    logger.warning(f'批量获取用户信息失败: {response}')
+                    return response
+            except Exception as e:
+                logger.error(f'请求批量用户信息异常: {e}')
+                return None
+
+        return {'user_info_list': aggregated}
+
     def broadcast_message(self, content: str) -> bool:
         user_list_result = self.get_user_list()
         if not user_list_result or 'data' not in user_list_result or 'openid' not in user_list_result['data']:
