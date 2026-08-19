@@ -461,7 +461,15 @@ class DispatchFlow:
         except Exception:
             creator_id = creator
 
-        excluded = [e for e in engineers if e.id != creator_id]
+        try:
+            from app.core.user_identity import same_identity
+        except Exception:
+            # Fallback: strict equality if helper not available
+            def same_identity(a, b):
+                return (a or "").strip() == (b or "").strip()
+
+        # 使用 same_identity 做更健壮的身份匹配（支持 id / username / 昵称互认）
+        excluded = [e for e in engineers if not same_identity(e.id, creator)]
         if len(excluded) < len(engineers):
             logger.info(
                 f"[派单:{ticket.id}] Step2 排除提单人 | {creator} 已移除 "
