@@ -1333,8 +1333,8 @@ html, body, #root {
 .chat-bubble-wrap.is-right .chat-bubble { border-bottom-right-radius: var(--radius-sm); }
 .chat-bubble-wrap.is-left .chat-bubble { border-bottom-left-radius: var(--radius-sm); }
 .chat-bubble.is-user {
-  background: var(--primary);
-  color: var(--primary-foreground);
+  background: #86CAE9;
+  color: #fff;
   box-shadow: var(--shadow-soft);
 }
 .chat-bubble.is-ai {
@@ -3328,25 +3328,39 @@ html, body, #root {
   padding: 14px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.06);
 }
+/* 更多功能四个入口（对齐 macaron admin 页：surface-card + 淡色调图标圆角块） */
 .dashboard-more-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 10px;
+  gap: 8px;
 }
 .dashboard-more-card {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 14px 4px;
-  border-radius: 10px;
-  background: var(--muted);
+  gap: 8px;
+  padding: 16px 4px;
+  border: 1px solid rgba(232, 234, 234, 0.6);
+  background: #fff;
+  border-radius: 28px;
+  box-shadow: var(--mac-shadow-soft);
   cursor: pointer;
+  font-family: inherit;
 }
-.dashboard-more-card:active { background: var(--border); }
-.dashboard-more-card__emoji { font-size: 22px; }
-.dashboard-more-card__label { font-size: 12px; color: var(--foreground); }
+.dashboard-more-card:active { opacity: 0.85; }
+.dashboard-more-card__icon {
+  display: grid;
+  place-items: center;
+  width: 40px; /* 原型 size-10 */
+  height: 40px;
+  border-radius: 28px; /* 原型 rounded-2xl，按项目圆角语言加圆 */
+}
+.dashboard-more-card[data-tone='blue-1'] .dashboard-more-card__icon { background: #e5eef3; color: var(--mac-blue-1); }
+.dashboard-more-card[data-tone='blue-2'] .dashboard-more-card__icon { background: #e7f3f8; color: var(--mac-blue-2); }
+.dashboard-more-card[data-tone='blue-3'] .dashboard-more-card__icon { background: #eaf7fd; color: var(--mac-blue-3); }
+.dashboard-more-card[data-tone='blue-4'] .dashboard-more-card__icon { background: #f2fbff; color: var(--mac-blue-4); }
+.dashboard-more-card__label { font-size: 11.5px; color: var(--mac-muted-fg); }
 
 
 .dashboard-section__subtitle { font-size: 13px; color: var(--muted-foreground); margin: 0 0 8px; font-weight: 500; }
@@ -3839,6 +3853,75 @@ html, body, #root {
 .mac-user-card__duty { display: flex; gap: 6px; margin-top: 8px; font-size: 11.5px; line-height: 1.6; color: var(--mac-muted-fg); }
 .mac-user-card__duty-icon { flex-shrink: 0; margin-top: 2px; color: var(--mac-blue-2); display: inline-flex; }
 .mac-user-card__actions { display: flex; gap: 8px; margin-left: 8px; flex-shrink: 0; }
+
+/* ── 人员结构（org-chart）：对齐 macaron org-structure 页 ── */
+.mac-org-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.mac-org-head__back {
+  display: inline-flex; align-items: center; gap: 4px; border: none; background: none;
+  border-radius: 999px; padding: 6px 10px; color: var(--mac-muted-fg); font-size: 13px; cursor: pointer;
+}
+.mac-org-head__back:hover { background: var(--mac-secondary); }
+.mac-org-head__title { flex: 1; text-align: center; margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.02em; color: var(--mac-fg); }
+.mac-org-head__actions { display: flex; align-items: center; gap: 8px; }
+
+.mac-org-tip { margin: 0 0 12px; background: var(--mac-secondary); border-radius: 8px; padding: 8px 12px; font-size: 11.5px; line-height: 1.7; color: var(--mac-muted-fg); }
+
+/* 小号幽灵按钮（对齐原型 GhostButton） */
+.mac-org-btn {
+  display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--mac-border);
+  background: #fff; border-radius: 8px; padding: 5px 10px; font-size: 11.5px; font-weight: 500;
+  color: var(--mac-muted-fg); cursor: pointer; transition: background 0.15s;
+}
+.mac-org-btn:hover { background: var(--mac-secondary); }
+.mac-org-btn--active { border-color: rgba(81, 191, 238, 0.6); background: var(--mac-blue-soft); color: var(--mac-blue-2); }
+.mac-org-btn--emphasis { border-color: rgba(54, 151, 195, 0.7); background: var(--mac-blue-2); color: #fff; }
+.mac-org-btn--emphasis:hover { background: var(--mac-blue-1); }
+
+/* 人员卡片（对齐原型 PersonRow 的 surface-card） */
+.mac-org-card {
+  background: #fff; border: 1px solid rgba(232, 234, 234, 0.6); border-radius: 20px;
+  box-shadow: var(--mac-shadow-soft); overflow: hidden; margin-bottom: 10px;
+}
+.mac-org-card--manager { border-color: rgba(81, 191, 238, 0.5); background: rgba(223, 248, 255, 0.6); }
+.mac-org-card--drag-over { border: 2px dashed var(--mac-blue-2); background: var(--mac-blue-soft); }
+.mac-org-card__body { display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px; }
+.mac-org-card__icon {
+  width: 28px; height: 28px; border-radius: 50%; background: var(--mac-secondary);
+  color: var(--mac-muted-fg); display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0; margin-top: 1px;
+}
+.mac-org-card__icon--crown { color: var(--mac-blue-2); }
+.mac-org-card__main { flex: 1; min-width: 0; }
+.mac-org-card__chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.mac-org-card__name { font-size: 13.5px; font-weight: 600; color: var(--mac-fg); }
+.mac-org-card__actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.mac-org-card__count {
+  display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; padding: 4px 0 0;
+  font-size: 11px; color: var(--mac-muted-fg); background: none; border: none; cursor: pointer;
+}
+.mac-org-card__count:hover { color: var(--mac-blue-2); }
+.mac-org-card__count .mac-org-chev { transition: transform 0.15s; }
+.mac-org-card__count.is-open .mac-org-chev { transform: rotate(90deg); }
+
+/* 展开的下属区（对齐原型 reports 嵌套卡） */
+.mac-org-sub {
+  border-top: 1px solid rgba(232, 234, 234, 0.6); background: rgba(255, 255, 255, 0.6);
+  padding: 12px 16px 12px 32px; display: flex; flex-direction: column; gap: 8px;
+}
+.mac-org-subrow {
+  display: flex; align-items: flex-start; gap: 10px; border: 1px solid rgba(232, 234, 234, 0.6);
+  background: #fff; border-radius: 12px; padding: 10px 12px; cursor: pointer; touch-action: pan-y;
+}
+.mac-org-subrow__icon {
+  width: 24px; height: 24px; border-radius: 50%; background: var(--mac-secondary);
+  color: var(--mac-muted-fg); display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0; margin-top: 1px;
+}
+.mac-org-subrow__name { font-size: 12.5px; font-weight: 600; color: var(--mac-fg); }
+.mac-org-subrow__meta { margin-top: 2px; font-size: 10.5px; color: var(--mac-muted-fg); }
+.mac-org-subrow__actions { margin-top: 6px; }
+.mac-org-subrow--drag-over { border: 2px dashed var(--mac-blue-2); background: var(--mac-blue-soft); }
+
 /* 用户卡片头像：图片 / 首字母回退 */
 .mac-user-card__avatar {
   width: 40px; height: 40px; border-radius: 50%;
@@ -4777,6 +4860,35 @@ html, body, #root {
   white-space: nowrap;
 }
 
+/* ===== U老师 诊断报告弹窗（TaskDetailPage · tdesign-mobile Dialog） =====
+   默认 tdesign-mobile Dialog 固定 311px 宽，适合手机但 PC 端过窄。
+   移动端：在默认基础上略加宽（min(88vw, 350px)）；PC 端（≥768px）：居中放大到 640px。
+   类名拼在 .t-dialog 上（Dialog className 追加到根元素）；宽度用 CSS 覆盖，
+   内联 width:'undefinedpx' 为非法值会被浏览器忽略，故此处样式可生效。 */
+.diagnosis-report-dialog.t-dialog {
+  width: min(88vw, 350px) !important;
+  max-width: 96vw;
+}
+.diagnosis-report-dialog .t-dialog__content {
+  max-height: 62vh;
+}
+.diagnosis-report-dialog .markdown-body {
+  width: 100%;
+  box-sizing: border-box;
+}
+@media (min-width: 768px) {
+  .diagnosis-report-dialog.t-dialog {
+    width: min(92vw, 640px) !important;
+  }
+  .diagnosis-report-dialog .t-dialog__content {
+    max-height: 70vh;
+    padding: 28px 32px 0;
+  }
+  .diagnosis-report-dialog .t-dialog__footer {
+    padding: 24px 32px;
+  }
+}
+
 /* ===== 摇人 · 工单详情操作页（TicketDetailPage） ===== */
 .ticket-detail-page .page-container { padding: 12px 14px 80px; }
 /* 详情页卡片（设计稿 SectionCard：surface-card p-4，2xl 圆角 + 柔影 + 半透明描边） */
@@ -5134,7 +5246,7 @@ html, body, #root {
   background: var(--blue-soft);
   color: var(--foreground);
   border-color: var(--blue-5);
-  border-radius: var(--radius-2xl) var(--radius-2xl) 6px var(--radius-2xl);
+  border-radius: var(--radius-2xl) var(--radius-2xl) var(--radius-sm) var(--radius-2xl);
 }
 .detail-chat-bubble.is-self * {
   color: var(--foreground);
@@ -5931,7 +6043,7 @@ html, body, #root {
 }
 .history-search::placeholder { color: var(--gray-light); }
 .history-search:focus { border-color: var(--gray-light); }
-.history-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 8px 0 4px; -webkit-overflow-scrolling: touch; }
+.history-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 8px 8px 4px; -webkit-overflow-scrolling: touch; }
 .history-tabs::-webkit-scrollbar { display: none; }
 /* PC 桌面端鼠标拖拽横滑时光标提示（useHorizontalScroll 加的类） */
 .history-tabs.is-dragging { cursor: grabbing; user-select: none; }
@@ -5944,12 +6056,13 @@ html, body, #root {
   transition: all 0.2s ease;
 }
 .history-tab.is-active { background: var(--foreground); color: var(--background); border-color: transparent; font-weight: 500; }
-/* 数量角标：绝对定位到按钮右上角（对照原型 absolute -right-1.5 -top-1.5），
-   灰底白字 10px bold；pointer-events 透传点击到按钮，外层留白防 overflow 裁剪 */
+/* 数量角标：绝对定位到胶囊内部右上角（设计稿「右上角凸出 6px」会与外层
+   .history-tickets{overflow:hidden} 冲突导致角标右边被裁切，看起来贴在胶囊右侧；
+   改为紧贴胶囊右上角内侧，视觉一致且不再被裁）。pointer-events 透传点击到按钮。 */
 .history-tab__count {
   position: absolute;
   top: -6px;
-  right: -6px;
+  right: -8px;
   pointer-events: none;
   min-width: 16px;
   padding: 0 5px;
@@ -6431,15 +6544,6 @@ html, body, #root {
   font-weight: 600;
   color: var(--primary);
   margin-bottom: 6px;
-}
-.detail-chat-ai-progress__spinner {
-  width: 12px;
-  height: 12px;
-  border: 2px solid var(--primary);
-  border-top-color: transparent;
-  border-radius: 50%;
-  display: inline-block;
-  animation: chatTyping 0.8s linear infinite;
 }
 .detail-chat-ai-progress__list {
   list-style: none;
