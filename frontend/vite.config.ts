@@ -63,6 +63,7 @@ export default defineConfig(({ command }) => {
             if (!id.includes('node_modules')) return undefined;
             if (id.includes('/echarts') || id.includes('/zrender')) return 'echarts';
             if (id.includes('/tdesign-mobile-react') || id.includes('/tdesign-icons-react')) return 'tdesign';
+            if (id.includes('/pdfjs-dist')) return 'pdfjs';
             if (
               id.includes('/react/') ||
               id.includes('/react-dom/') ||
