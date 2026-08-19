@@ -17,7 +17,35 @@ export interface PointerDragToDropHandle {
     'data-drag-id': string;
     'data-drop-id': string;
     onPointerDown: (e: React.PointerEvent) => void;
+    onContextMenu: (e: React.MouseEvent) => void;
   };
+}
+
+// ── 全局样式（模块加载时注入一次）：根治移动端长按拖拽被原生行为打断 ──
+// 触屏长按卡片时，iOS/Android WebView 默认会启动原生文本选择并弹出
+// 「复制/全选/搜一搜」菜单，系统随即接管手势（触发 pointercancel），
+// 自定义拖拽被打断。以下 CSS 禁掉文本选择、长按系统呼出（iOS）与原生拖拽。
+// 用 [data-drag-id] 属性选择器精准命中拖拽源，无需调用方改样式。
+let _dragCssInjected = false;
+function injectDragSourceCss() {
+  if (_dragCssInjected || typeof document === 'undefined') return;
+  _dragCssInjected = true;
+  const style = document.createElement('style');
+  style.id = 'pointer-drag-source-css';
+  style.textContent = [
+    // 拖拽源：禁文本选择/系统呼出/原生拖拽（根治长按弹「复制/全选/搜一搜」）
+    '[data-drag-id]{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-user-drag:none;user-drag:none;}',
+    // 拖拽中的源卡片：半透明 + 去饱和，明确「这张卡正被拖走」
+    '[data-drag-id].is-drag-source{opacity:.35;filter:saturate(.6);}',
+    // 幽灵卡片：克隆拖拽源，fixed 定位跟随指针；浮起阴影 + 180ms 弹性放大动画；
+    // pointer-events:none 保证不遮挡 elementFromPoint 落点判定。
+    // 注意：透明度固定在类上而非 keyframes（避免动画结束 opacity 跳变）
+    '.pointer-drag-ghost{position:fixed;z-index:9999;pointer-events:none;margin:0;opacity:.92;'
+      + 'box-shadow:0 8px 24px rgba(0,0,0,.22);will-change:transform;'
+      + 'animation:pointer-drag-ghost-pop .18s cubic-bezier(.2,.8,.4,1.4);}',
+    '@keyframes pointer-drag-ghost-pop{from{transform:scale(.92);}to{transform:scale(1.05);}}',
+  ].join('');
+  document.head.appendChild(style);
 }
 
 /**
@@ -41,6 +69,8 @@ export function usePointerDragToDrop({
   resolveTargetId,
   longPressDelay = 220,
 }: PointerDragToDropOptions = {}): PointerDragToDropHandle {
+  injectDragSourceCss();
+
   const onDropRef = useRef(onDrop);
   const onHoverChangeRef = useRef(onHoverChange);
   const resolveRef = useRef(resolveTargetId);
@@ -59,6 +89,10 @@ export function usePointerDragToDrop({
     hoverId: null as string | null, // 当前悬停落点 id
     longPressTimer: 0, // 触屏长按计时器句柄
     sourceEl: null as HTMLElement | null,
+    isMouse: true, // pointerType 是否为鼠标/笔（触屏走长按判定）
+    ghostEl: null as HTMLElement | null, // 跟随指针的「幽灵卡片」克隆节点
+    ghostStartX: 0, // 幽灵卡片创建时的指针坐标（平移基准）
+    ghostStartY: 0,
   });
 
   /** 读取元素上的落点目标 id（可自定义解析，默认读 data-drop-id） */
@@ -93,6 +127,45 @@ export function usePointerDragToDrop({
     [],
   );
 
+  // ── 拖拽动效：幽灵卡片（克隆拖拽源，fixed 定位跟随指针）+ 源卡片半透明 ──
+  // 拖拽视觉反馈三件套：原卡片变淡（is-drag-source）、克隆卡片浮起跟随手指、
+  // 松手/取消时清理。ghost 需 pointer-events:none，避免遮挡 elementFromPoint 落点判定。
+  const startGhost = useCallback((clientX: number, clientY: number) => {
+    const s = state.current;
+    if (s.ghostEl || !s.sourceEl) return;
+    const src = s.sourceEl;
+    const rect = src.getBoundingClientRect();
+    const ghost = src.cloneNode(true) as HTMLElement;
+    // 克隆节点去除所有 id，避免与源 DOM 的 id 冲突
+    ghost.removeAttribute('id');
+    ghost.querySelectorAll('[id]').forEach((n) => n.removeAttribute('id'));
+    ghost.classList.add('pointer-drag-ghost');
+    ghost.style.left = `${rect.left}px`;
+    ghost.style.top = `${rect.top}px`;
+    ghost.style.width = `${rect.width}px`;
+    ghost.style.transform = 'scale(1.05)';
+    document.body.appendChild(ghost);
+    s.ghostEl = ghost;
+    s.ghostStartX = clientX;
+    s.ghostStartY = clientY;
+    src.classList.add('is-drag-source');
+  }, []);
+
+  const moveGhost = useCallback((clientX: number, clientY: number) => {
+    const s = state.current;
+    if (!s.ghostEl) return;
+    const dx = clientX - s.ghostStartX;
+    const dy = clientY - s.ghostStartY;
+    s.ghostEl.style.transform = `translate(${dx}px, ${dy}px) scale(1.05)`;
+  }, []);
+
+  const removeGhost = useCallback(() => {
+    const s = state.current;
+    s.ghostEl?.remove();
+    s.ghostEl = null;
+    s.sourceEl?.classList.remove('is-drag-source');
+  }, []);
+
   /** 结束拖拽并结算（松手落点） */
   const finishDrag = useCallback(
     (clientX: number, clientY: number) => {
@@ -111,6 +184,7 @@ export function usePointerDragToDrop({
       s.dragging = false;
       s.moved = false;
       s.draggedId = '';
+      removeGhost();
       try {
         if (s.pointerId !== -1 && s.sourceEl?.hasPointerCapture?.(s.pointerId)) {
           s.sourceEl.releasePointerCapture(s.pointerId);
@@ -124,7 +198,7 @@ export function usePointerDragToDrop({
         onDropRef.current?.(draggedId, targetId);
       }
     },
-    [hitTest, setHover],
+    [hitTest, setHover, removeGhost],
   );
 
   const cancelDrag = useCallback(() => {
@@ -138,6 +212,7 @@ export function usePointerDragToDrop({
     s.moved = false;
     s.draggedId = '';
     setHover(null);
+    removeGhost();
     try {
       if (s.pointerId !== -1 && s.sourceEl?.hasPointerCapture?.(s.pointerId)) {
         s.sourceEl.releasePointerCapture(s.pointerId);
@@ -147,7 +222,7 @@ export function usePointerDragToDrop({
     }
     s.sourceEl = null;
     s.pointerId = -1;
-  }, [setHover]);
+  }, [setHover, removeGhost]);
 
   // 全局 pointermove / pointerup / pointercancel 监听（拖拽期间追踪指针）
   useEffect(() => {
@@ -157,14 +232,21 @@ export function usePointerDragToDrop({
       const dx = e.clientX - s.startX;
       const dy = e.clientY - s.startY;
       if (!s.dragging) {
-        // 判定是否进入拖拽：超过 6px 位移
+        // 触屏未达长按时长就移动超阈值 → 用户意图是滚动列表，取消拖拽候选（放行滚动）
+        if (!s.isMouse && !s.longPressTimer) {
+          cancelDrag();
+          return;
+        }
+        // 判定是否进入拖拽：超过 6px 位移（鼠标；触屏需长按已到点）
         if (Math.hypot(dx, dy) > 6) {
           s.dragging = true;
           s.moved = true;
+          startGhost(e.clientX, e.clientY);
         } else {
           return;
         }
       }
+      moveGhost(e.clientX, e.clientY);
       setHover(hitTest(e.clientX, e.clientY, s.draggedId));
     };
 
@@ -180,15 +262,26 @@ export function usePointerDragToDrop({
       cancelDrag();
     };
 
+    // 触屏拖拽激活期间阻止页面滚动：touchmove 必须非 passive 才能 preventDefault
+    //（pointermove 无法阻止滚动手势）。正常状态（非拖拽中）不拦截，页面滚动不受影响。
+    const onTouchMove = (e: TouchEvent) => {
+      const s = state.current;
+      if (s.dragging && e.cancelable) {
+        e.preventDefault();
+      }
+    };
+
     document.addEventListener('pointermove', onMove, { passive: true });
     document.addEventListener('pointerup', onUp, { passive: true });
     document.addEventListener('pointercancel', onCancel, { passive: true });
+    document.addEventListener('touchmove', onTouchMove, { passive: false });
     return () => {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
       document.removeEventListener('pointercancel', onCancel);
+      document.removeEventListener('touchmove', onTouchMove);
     };
-  }, [finishDrag, cancelDrag, setHover, hitTest]);
+  }, [finishDrag, cancelDrag, setHover, hitTest, startGhost, moveGhost]);
 
   // 拖拽中抑制子元素 click（拖拽位移后松手不应触发卡片点击）
   useEffect(() => {
@@ -222,16 +315,22 @@ export function usePointerDragToDrop({
           s.active = true;
           s.dragging = false;
           s.sourceEl = e.currentTarget as HTMLElement;
+          s.isMouse = isMouse;
 
           // 触屏：长按判定（避免与滚动/点击冲突）；鼠标：立即进入候选（由移动阈值判定）
           if (!isMouse) {
             s.longPressTimer = window.setTimeout(() => {
-              if (!state.current.active || state.current.draggedId !== id) return;
-              state.current.dragging = true;
-              state.current.moved = true;
-              // 触屏长按后尝试捕获，避免滚动干扰
+              const st = state.current;
+              if (!st.active || st.draggedId !== id) return;
+              st.dragging = true;
+              st.moved = true;
+              st.longPressTimer = 0; // 长按已到点（标记，供 onMove 判定放行拖拽）
+              // 长按到点立即生成幽灵卡片（拾起反馈，未移动也可见「已拾起」）
+              startGhost(st.startX, st.startY);
+              // 触屏长按后尝试捕获，避免滚动干扰（注：currentTarget 在异步回调中已失效，
+              // 用 sourceEl 兜底；捕获失败不影响拖拽，document 级监听照常追踪）
               try {
-                (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                st.sourceEl?.setPointerCapture(st.pointerId);
               } catch {
                 /* 忽略 */
               }
@@ -244,9 +343,13 @@ export function usePointerDragToDrop({
             }
           }
         },
+        // Android 长按会触发 contextmenu（原生菜单），拖拽源上直接阻止
+        onContextMenu: (e: React.MouseEvent) => {
+          if (state.current.dragging) e.preventDefault();
+        },
       };
     },
-    [longPressDelay],
+    [longPressDelay, startGhost],
   );
 
   return { bind };

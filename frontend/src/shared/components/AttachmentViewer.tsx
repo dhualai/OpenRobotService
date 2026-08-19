@@ -1,10 +1,12 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import ImageLightbox from './ImageLightbox';
-import PdfViewer from './PdfViewer';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { setupWechatFilePreview } from '@/shared/utils/wechatJsSdk';
+// pdf.js 体积大（主库 + worker 约 1.5MB），懒加载：仅在用户真正点开 PDF 附件时才下载，
+// 避免随 AttachmentViewer 被多路由静态引入而进入首屏 bundle。
+const PdfViewer = lazy(() => import('./PdfViewer'));
 
 export interface AttachmentViewItem {
   filename: string;
@@ -223,7 +225,11 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
           </div>
         </div>
         <div className="attachment-viewer__body">
-          {kind === 'pdf' && <PdfViewer url={item.previewUrl} name={item.filename} />}
+          {kind === 'pdf' && (
+            <Suspense fallback={<div className="attachment-viewer__hint">PDF 预览加载中…</div>}>
+              <PdfViewer url={item.previewUrl} name={item.filename} />
+            </Suspense>
+          )}
           {kind === 'md' &&
             (mdLoading ? (
               <div className="attachment-viewer__hint">加载中…</div>
