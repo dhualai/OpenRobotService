@@ -3134,25 +3134,39 @@ html, body, #root {
   padding: 14px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.06);
 }
+/* 更多功能四个入口（对齐 macaron admin 页：surface-card + 淡色调图标圆角块） */
 .dashboard-more-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 10px;
+  gap: 8px;
 }
 .dashboard-more-card {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 14px 4px;
-  border-radius: 10px;
-  background: var(--muted);
+  gap: 8px;
+  padding: 16px 4px;
+  border: 1px solid rgba(232, 234, 234, 0.6);
+  background: #fff;
+  border-radius: 28px;
+  box-shadow: var(--mac-shadow-soft);
   cursor: pointer;
+  font-family: inherit;
 }
-.dashboard-more-card:active { background: var(--border); }
-.dashboard-more-card__emoji { font-size: 22px; }
-.dashboard-more-card__label { font-size: 12px; color: var(--foreground); }
+.dashboard-more-card:active { opacity: 0.85; }
+.dashboard-more-card__icon {
+  display: grid;
+  place-items: center;
+  width: 40px; /* 原型 size-10 */
+  height: 40px;
+  border-radius: 28px; /* 原型 rounded-2xl，按项目圆角语言加圆 */
+}
+.dashboard-more-card[data-tone='blue-1'] .dashboard-more-card__icon { background: #e5eef3; color: var(--mac-blue-1); }
+.dashboard-more-card[data-tone='blue-2'] .dashboard-more-card__icon { background: #e7f3f8; color: var(--mac-blue-2); }
+.dashboard-more-card[data-tone='blue-3'] .dashboard-more-card__icon { background: #eaf7fd; color: var(--mac-blue-3); }
+.dashboard-more-card[data-tone='blue-4'] .dashboard-more-card__icon { background: #f2fbff; color: var(--mac-blue-4); }
+.dashboard-more-card__label { font-size: 11.5px; color: var(--mac-muted-fg); }
 
 
 .dashboard-section__subtitle { font-size: 13px; color: var(--muted-foreground); margin: 0 0 8px; font-weight: 500; }
