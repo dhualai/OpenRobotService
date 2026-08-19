@@ -146,7 +146,7 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
 
       {/* 人员流转：发起人 →（参与人）→ 处理人 */}
       <div className="task-card2__people">
-        <div className="task-card2__person" title={`发起人：${creator}`}>
+        <div className="task-card2__person" title={`发起人：${creator}`} aria-label={`发起人：${creator}`}>
           {creatorAvatarId ? (
             <img
               className="task-card2__avatar task-card2__avatar--img"
@@ -159,7 +159,7 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
           <span className="task-card2__person-name">{creator}</span>
         </div>
         {participants.length > 0 && (
-          <span className="task-card2__participants" title={`参与人：${participants.join('、')}`}>
+          <span className="task-card2__participants" title={`参与人：${participants.join('、')}`} aria-label={`参与人：${participants.join('、')}`}>
             {participants.slice(0, 3).map((p, i) => {
               const pid = avatarMap?.get(p);
               return pid ? (
@@ -181,7 +181,7 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
         <span className="task-card2__person-arrow">
           <ArrowRight size={14} strokeWidth={2} />
         </span>
-        <div className="task-card2__person task-card2__person--assignee" title={`处理人：${assignee}`}>
+        <div className="task-card2__person task-card2__person--assignee" title={`处理人：${assignee}`} aria-label={`处理人：${assignee}`}>
           <span className="task-card2__person-name">{assignee}</span>
           {assigneeAvatarId ? (
             <img
