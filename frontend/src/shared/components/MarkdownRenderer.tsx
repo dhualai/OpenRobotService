@@ -526,18 +526,17 @@ function isVideoAlt(alt: string): boolean {
 }
 
 /**
- * 流式期间的媒体遮蔽：把 markdown 里的图片/视频引用替换为稳定占位文本，
- * 避免流式中间态渲染真实 <img> 造成布局抖动/重复加载闪烁。
- * 覆盖：
- *   - 完整/未闭合的图片 markdown  ![alt](url) / ![alt](url
- *   - 完整/未闭合的视频 markdown  ![▶ Video](url) ...
- * 不影响普通文字/链接/代码（仅命中 ![ 图片音视频块）。
+ * 流式期间对「未闭合的半截媒体语法」进行中和，避免它们以原始文本闪现：
+ *   - 只处理「成形的图片 markdown 保留给 img component 走占位块」，
+ *   - 这里仅中和「半截」的 `![`（如 `![架构图](htt`，URL 还没敲完 → react-markdown
+ *     不识别为 img，会当普通文本把 `![架构图](htt...` 原样显示，很丑），替换为占位文本。
+ * 成形的 `![alt](url)` 不影响（进入 ReactMarkdown → img → streaming 占位块）。
  */
 const MASK_MEDIA_PLACEHOLDER = '⏳ 图片加载中…';
 function maskMediaForStreaming(text: string): string {
   if (!text) return text;
-  // 匹配 ![...](...) 表单（允许未闭合，防止半截被当文本）；含语言类别忽略，统一占位
-  return text.replace(/!\[[^\]]*\]\([^)\n]*\)?/g, MASK_MEDIA_PLACEHOLDER);
+  // 未闭合的半截 ![（有 `![` 但行尾仍无闭合 ））：中和为占位，避免原样丑字闪现
+  return text.replace(/!\[[^\]]*\]\([^)\n]*$/g, MASK_MEDIA_PLACEHOLDER);
 }
 
 /**
@@ -593,6 +592,13 @@ export default function MarkdownRenderer({ content, compact = false, streaming =
                 );
               }
 
+              // 流式期间：不渲染真实图片，用稳定的块级占位占住图片位置（不混进行内文字流），
+              // 回答定稿（streaming=false）后才渲染真实 <img>。占位块无异步副作用，
+              // 即使流式 remount 也不闪烁。
+              if (streaming) {
+                return <span className="md-media-loading">⏳ 图片加载中…</span>;
+              }
+
               // key 按 src 稳定：流式期间整段 markdown 每帧重解析重建，若无稳定 key，
               // 图片前内容变化（如未闭合加粗/新增段落）会导致图片节点位置/父节点变化，
               // React 判定为新节点 → AuthImage remount → 重置 imgState 重新 fetch → 图片闪烁。
@@ -621,6 +627,9 @@ export default function MarkdownRenderer({ content, compact = false, streaming =
                       </video>
                     </span>
                   );
+                }
+                if (streaming) {
+                  return <span className="md-media-loading">⏳ 图片加载中…</span>;
                 }
                 return <AuthImage key={url} src={url} alt={String(children || '')} />;
               }
