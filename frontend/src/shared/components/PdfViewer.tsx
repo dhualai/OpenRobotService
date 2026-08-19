@@ -127,7 +127,7 @@ export default function PdfViewer({ url, name }: { url: string; name: string }) 
   return (
     <div className="pdf-viewer">
       <div className="pdf-viewer__toolbar">
-        <span className="pdf-viewer__title" title={name}>
+        <span className="pdf-viewer__title" title={name} aria-label={name}>
           {name}
         </span>
         <span className="pdf-viewer__meta">{loading ? '加载中…' : `共 ${numPages} 页`}</span>

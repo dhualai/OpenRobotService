@@ -149,6 +149,14 @@ class Settings(BaseSettings):
     @property
     def WECHAT_USER_INFO_URL(self) -> str:
         return f"{self.WECHAT_API_BASE_URL}/cgi-bin/user/info"
+
+    @property
+    def WECHAT_USER_BATCH_INFO_URL(self) -> str:
+        return f"{self.WECHAT_API_BASE_URL}/cgi-bin/user/info/batchget"
+
+    @property
+    def WECHAT_USER_SUMMARY_URL(self) -> str:
+        return f"{self.WECHAT_API_BASE_URL}/cgi-bin/datacube/getusersummary"
     
     @property
     def WECHAT_MENU_CREATE_URL(self) -> str:
