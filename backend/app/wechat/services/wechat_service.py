@@ -6,6 +6,7 @@ import hashlib
 import random
 import os
 import logging
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from app.core.config import settings
 
@@ -237,6 +238,130 @@ class WechatService:
         except Exception as e:
             logger.error(f'请求用户信息异常: {e}')
             return None
+
+    async def batch_get_user_info(self, user_list: List[Dict]) -> Optional[Dict]:
+        """批量获取用户基本信息。
+
+        调用微信公众号接口 POST /cgi-bin/user/info/batchget，一次最多拉取 100 个用户。
+        user_list 形如 [{"openid": "...", "lang": "zh_CN"}, ...]，lang 可省略（默认 zh_CN）。
+        返回 {"user_info_list": [...]}；调用失败返回 None，微信错误响应原样返回。
+        """
+        if not user_list:
+            logger.warning('user_list 为空，跳过批量获取用户信息')
+            return None
+
+        # 微信接口单次最多 100 条，超出直接拒绝；按需分批串行
+        batch_size = 100
+        aggregated: List[Dict] = []
+
+        for start in range(0, len(user_list), batch_size):
+            chunk = user_list[start:start + batch_size]
+            access_token = self.get_access_token()
+            if not access_token:
+                logger.error('获取access_token失败，无法批量获取用户信息')
+                return None
+
+            url = f'{settings.WECHAT_USER_BATCH_INFO_URL}?access_token={access_token}'
+            data = {'user_list': chunk}
+
+            try:
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda d=data: self.session.post(
+                        url,
+                        data=json.dumps(d, ensure_ascii=False).encode('utf-8'),
+                        headers={'Content-Type': 'application/json'},
+                        timeout=10,
+                    ).json()
+                )
+                if 'user_info_list' in response:
+                    aggregated.extend(response['user_info_list'])
+                else:
+                    logger.warning(f'批量获取用户信息失败: {response}')
+                    return response
+            except Exception as e:
+                logger.error(f'请求批量用户信息异常: {e}')
+                return None
+
+        return {'user_info_list': aggregated}
+
+    async def get_user_summary(self, begin_date: str, end_date: str) -> Optional[Dict]:
+        """获取用户增减数据。
+
+        调用微信 /cgi-bin/datacube/getusersummary 接口。微信限制单次查询最大跨度7天，
+        本方法自动按7天分批串行调用并合并 list。
+        返回 {"list": [...]}，每项含 ref_date/user_source/new_user/cancel_user；
+        日期格式错误返回 {"errcode": -1, "errmsg": "..."}，调用失败返回 None，微信
+        错误响应原样返回（由调用方判断 errcode）。
+        """
+        try:
+            begin = datetime.strptime(begin_date, '%Y-%m-%d')
+            end = datetime.strptime(end_date, '%Y-%m-%d')
+        except ValueError:
+            return {'errcode': -1, 'errmsg': '日期格式错误，需为 yyyy-MM-dd'}
+
+        if begin > end:
+            return {'errcode': -1, 'errmsg': 'begin_date 不能晚于 end_date'}
+
+        # 微信数据统计接口有 T+1 延迟，end_date 不能为今天或未来日期（最早可查到昨日）
+        today = datetime.now().date()
+        if end.date() >= today:
+            return {
+                'errcode': -1,
+                'errmsg': f'end_date 不能为今天或未来日期（微信数据统计有T+1延迟，最早可查到昨日；今天为 {today.strftime("%Y-%m-%d")}）'
+            }
+
+        chunk_span = timedelta(days=7)  # 微信限制单次最大跨度7天
+        one_day = timedelta(days=1)
+        aggregated: List[Dict] = []
+
+        cur_begin = begin
+        while cur_begin <= end:
+            cur_end = min(cur_begin + chunk_span, end)
+            access_token = self.get_access_token()
+            if not access_token:
+                logger.error('获取access_token失败，无法获取用户增减数据')
+                return None
+
+            url = f'{settings.WECHAT_USER_SUMMARY_URL}?access_token={access_token}'
+            data = {
+                'begin_date': cur_begin.strftime('%Y-%m-%d'),
+                'end_date': cur_end.strftime('%Y-%m-%d'),
+            }
+
+            try:
+                loop = asyncio.get_event_loop()
+                resp = await loop.run_in_executor(
+                    None,
+                    lambda d=data: self.session.post(
+                        url,
+                        data=json.dumps(d, ensure_ascii=False).encode('utf-8'),
+                        headers={'Content-Type': 'application/json'},
+                        timeout=10,
+                    )
+                )
+                # 微信 datacube 接口在 end_date 为今天/未来或账号无数据权限时可能返回空体
+                raw = resp.content
+                if not raw:
+                    return {'errcode': -1, 'errmsg': f'微信返回空响应 (HTTP {resp.status_code})'}
+                try:
+                    response = json.loads(raw)
+                except json.JSONDecodeError:
+                    snippet = resp.text[:200] if resp.text else ''
+                    return {'errcode': -1, 'errmsg': f'微信返回非JSON响应 (HTTP {resp.status_code}): {snippet}'}
+                if 'list' in response:
+                    aggregated.extend(response['list'])
+                else:
+                    logger.warning(f'获取用户增减数据失败: {response}')
+                    return response
+            except Exception as e:
+                logger.error(f'请求用户增减数据异常: {e}')
+                return None
+
+            cur_begin = cur_end + one_day
+
+        return {'list': aggregated}
 
     def broadcast_message(self, content: str) -> bool:
         user_list_result = self.get_user_list()
