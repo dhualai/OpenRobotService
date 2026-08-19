@@ -143,8 +143,8 @@ html, body, #root {
 }
 /* 玻璃栏：顶栏 / 底栏毛玻璃 */
 .glass-bar {
-  background: color-mix(in oklab, var(--card) 78%, transparent);
-  backdrop-filter: saturate(1.4) blur(18px);
+  background: color-mix(in oklab, var(--card) 50%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
   -webkit-backdrop-filter: saturate(1.4) blur(18px);
 }
 /* 品牌渐变文字 */
@@ -252,9 +252,10 @@ html, body, #root {
    文字 text-foreground；未选 text-muted-foreground。 */
 .app-bottom-nav {
   flex-shrink: 0;
-  background: color-mix(in oklab, var(--card) 78%, transparent);
-  backdrop-filter: saturate(1.4) blur(18px);
-  -webkit-backdrop-filter: saturate(1.4) blur(18px);
+  /* 背景更透（56% 不透明），磨玻璃模糊减弱（blur 10px），让背后朦胧字/工单隐约可见 */
+  background: color-mix(in oklab, var(--card) 40%, transparent);
+  backdrop-filter: saturate(1.4) blur(5px);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px);
   border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
   padding-bottom: env(safe-area-inset-bottom);
 }
@@ -2616,6 +2617,24 @@ html, body, #root {
   background: var(--foreground);
   color: var(--background);
 }
+/* 项目过滤下拉胶囊：标签 + 当前值 + 下拉箭头，与普通胶囊区分 */
+.tasks-view__filter-chip--dropdown {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 50vw;
+}
+.tasks-view__filter-chip-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 28vw;
+  font-weight: 600;
+}
+/* 选中具体项目时下拉箭头轻微上翘，提示可收起 */
+.tasks-view__filter-chip--dropdown.is-active .tasks-view__filter-chip-value {
+  opacity: 0.95;
+}
 /* 筛选条目右上角工单条数角标（圆圈+数字），筛选胶囊与筛选菜单共用；
    与原型一致：bg-primary 蒂芙尼蓝 + 白字，无外框 */
 .tasks-count-badge {
@@ -2682,6 +2701,65 @@ html, body, #root {
 .filter-menu__item.is-active {
   background: var(--gray-25);
   color: #fff;
+}
+/* 筛选菜单空状态（如名下无关联项目） */
+.filter-menu__empty {
+  width: 100%;
+  padding: 12px 4px;
+  font-size: 13px;
+  color: var(--muted-foreground);
+  text-align: center;
+}
+/* 可搜索筛选菜单：顶部搜索框，复用 tasks-search 输入样式 */
+.filter-menu--searchable .filter-menu__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted-foreground);
+}
+.filter-menu__search-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 13px;
+  color: var(--foreground);
+}
+.filter-menu__search-input::placeholder {
+  color: var(--muted-foreground);
+}
+/* 筛选菜单内的下拉触发器（项目过滤）：整行可点，右侧下拉箭头 */
+.filter-menu__dropdown-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--foreground);
+  cursor: pointer;
+  transition: border-color 0.2s ease;
+}
+.filter-menu__dropdown-trigger:hover {
+  border-color: var(--primary);
+}
+.filter-menu__dropdown-placeholder {
+  color: var(--muted-foreground);
+}
+.filter-menu__dropdown-value {
+  font-weight: 600;
+  color: var(--primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .filter-menu__divider {
   height: 1px;
@@ -3681,6 +3759,21 @@ html, body, #root {
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+}
+/* 桌面 hover 阴影；触屏无 hover，用 :active 提供按压反馈 */
+@media (hover: hover) {
+  .mac-role-card:hover { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12); }
+}
+@media (hover: none) {
+  .mac-role-card:active { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12); }
+}
+/* 右键上下文菜单项：桌面 hover 高亮；触屏用 :active 反馈 */
+.mac-context-menu__item { transition: background 0.15s; }
+@media (hover: hover) {
+  .mac-context-menu__item:hover { background: var(--mac-secondary); }
+}
+@media (hover: none) {
+  .mac-context-menu__item:active { background: var(--mac-secondary); }
 }
 .mac-role-card__title { font-size: 15px; font-weight: 600; color: var(--mac-fg); margin-bottom: 4px; }
 .mac-role-card__desc { font-size: 13px; color: var(--mac-muted-fg); margin-bottom: 8px; }
@@ -5021,6 +5114,10 @@ html, body, #root {
 }
 .detail-chat-bubble:hover .detail-chat-bubble__del { display: block; }
 .detail-chat-bubble__del:hover { background: rgba(227, 77, 89, 0.12); color: var(--destructive); }
+/* 触屏无 hover：删除按钮常显，避免移动端无法触及删除入口 */
+@media (hover: none) {
+  .detail-chat-bubble.is-self .detail-chat-bubble__del { display: block; }
+}
 
 /* 引用定位高亮动画 */
 @keyframes chatFlash {

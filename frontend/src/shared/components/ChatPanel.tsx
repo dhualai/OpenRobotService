@@ -354,6 +354,7 @@ const MessageBubble = memo(function MessageBubble({
               role="button"
               tabIndex={0}
               title="点击查看工单详情"
+              aria-label="点击查看工单详情"
               onClick={() => onOpenTicket(msg.ticket_overview!.db_id)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
@@ -2180,6 +2181,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         <div
           className="chat-panel__ticket-fab"
           title="转为工单"
+          aria-label="转为工单"
           style={fabPos ? { left: fabPos.x, top: fabPos.y, right: 'auto', bottom: 'auto' } : undefined}
         >
           <button

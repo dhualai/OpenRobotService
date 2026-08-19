@@ -4,7 +4,7 @@
 // 分页：每页 PAGE_SIZE 条，下拉刷新、触底加载更多。
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loading, Toast, Button, Popup } from 'tdesign-mobile-react';
+import { Loading, Toast, Button, Popup, DialogPlugin } from 'tdesign-mobile-react';
 import { Search, ArrowRight } from 'lucide-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
 import { urgeTicket, reportTicket, cancelTicket, reDispatchTicket } from '@/api/ticket';
@@ -171,13 +171,24 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
     }
   };
 
-  const handleCancel = async (e: React.MouseEvent, t: AiTicketBrief) => {
-    e.stopPropagation();
+  const doCancel = async (t: AiTicketBrief) => {
     if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
     setActing({ id: t.id, action: 'cancel' });
     try { await cancelTicket(t.id); Toast({ message: '已撤回，工单已取消', theme: 'success' }); loadInitial(); }
     catch (err) { Toast({ message: `撤回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }); }
     finally { setActing(null); }
+  };
+
+  const handleCancel = (e: React.MouseEvent, t: AiTicketBrief) => {
+    e.stopPropagation();
+    if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    const dlg = DialogPlugin.confirm!({
+      title: '撤回工单',
+      content: '撤回后工单将变为「已取消」，确认撤回吗？',
+      confirmBtn: '撤回',
+      cancelBtn: '再想想',
+      onConfirm: () => { doCancel(t); dlg.destroy(); },
+    });
   };
 
   const openRedispatchPopup = (e: React.MouseEvent, t: AiTicketBrief) => {
@@ -294,13 +305,13 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
               {/* 人员流转（设计稿：头像 blue-3 + 姓名 | ArrowRight blue-3 居中 | 姓名 + 头像 blue-2）。
                   派单中（status=new 且处理人未写入，AI 派单 Worker 60s 轮询中）：显示「派单中」呼吸动效 */}
               <div className="task-card2__people">
-                <div className="task-card2__person task-card2__person--creator" title={`发起人：${t.created_by_name || t.created_by || '-'}`}>
+                <div className="task-card2__person task-card2__person--creator" title={`发起人：${t.created_by_name || t.created_by || '-'}`} aria-label={`发起人：${t.created_by_name || t.created_by || '-'}`}>
                   <span className="task-card2__avatar">{(t.created_by_name || t.created_by || '?').slice(0, 1).toUpperCase()}</span>
                   <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
                 </div>
                 <span className="task-card2__person-arrow"><ArrowRight size={16} strokeWidth={2} /></span>
                 {(t.status === 'new' && !t.assigned_to && !t.assigned_to_name) ? (
-                  <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单">
+                  <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单" aria-label="U老师 正在派单">
                     <span className="task-card2__avatar task-card2__avatar--assignee task-card2__avatar--dispatching"><i className="dispatch-pulse" /></span>
                     <span className="task-card2__person-name task-card2__person-name--dispatching">派单中</span>
                   </div>
@@ -323,8 +334,8 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                     新建/待处理可催办、撤回；处理中仅可上报；不可用按钮禁用 */}
                 {!isTerminalTicketStatus(t.status) && (
                   <div className="history-row__actions" onClick={(e) => e.stopPropagation()}>
-                    <Button size="extra-small" variant="outline" theme="default" disabled={!canUrgeTicket(t.status) || (acting?.id === t.id && acting?.action === 'urge')} title={canUrgeTicket(t.status) ? undefined : '仅新建/待处理工单可催办'} onClick={(e) => openActionPopup(e, t, 'urge')}>催办</Button>
-                    <Button size="extra-small" variant="outline" theme="default" disabled={!canReportTicket(t.status) || (acting?.id === t.id && acting?.action === 'report')} title={canReportTicket(t.status) ? undefined : '仅处理中工单可上报'} onClick={(e) => openActionPopup(e, t, 'report')}>上报</Button>
+                    <Button size="extra-small" variant="outline" theme="default" disabled={!canUrgeTicket(t.status) || (acting?.id === t.id && acting?.action === 'urge')} title={canUrgeTicket(t.status) ? undefined : '仅新建/待处理工单可催办'} aria-label={canUrgeTicket(t.status) ? undefined : '催办（仅新建/待处理工单可催办）'} onClick={(e) => openActionPopup(e, t, 'urge')}>催办</Button>
+                    <Button size="extra-small" variant="outline" theme="default" disabled={!canReportTicket(t.status) || (acting?.id === t.id && acting?.action === 'report')} title={canReportTicket(t.status) ? undefined : '仅处理中工单可上报'} aria-label={canReportTicket(t.status) ? undefined : '上报（仅处理中工单可上报）'} onClick={(e) => openActionPopup(e, t, 'report')}>上报</Button>
                     {(t.source === 'ai' || !t.source) && !!t.assigned_to && (
                     <Button size="extra-small" className="history-row__redispatch" loading={redispatching && redispatchTicket?.id === t.id} onClick={(e) => openRedispatchPopup(e, t)}>重新派单</Button>
                     )}

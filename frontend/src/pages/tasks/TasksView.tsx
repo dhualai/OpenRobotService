@@ -16,10 +16,11 @@ import { normalizeStatus, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, TICKET_TYPE_
 import { formatDateTime } from '@/shared/utils/url';
 // 相关性分类过滤条件：列表查询与分类角标计数共用（底部导航「待我处理」角标复用同一口径）
 import { buildRelevanceFilters, type TicketFilterCondition } from '@/shared/utils/ticketFilters';
-import { Search, ArrowRight, Calendar, SlidersHorizontal } from 'lucide-react';
+import { Search, ArrowRight, Calendar, SlidersHorizontal, ChevronDown } from 'lucide-react';
 import { avatarUrl } from '@/api/profile';
 import { useHorizontalScroll } from '@/shared/hooks/useHorizontalScroll';
 import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
+import { getMyProjects, type ProjectItem } from '@/api/projects';
 
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
@@ -75,6 +76,8 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
     statusFilter,
     priorityFilter,
     relevanceFilter: params.get('relevance') || 'mine',
+    // 项目过滤：空字符串表示「全部」（不过滤）
+    projectFilter: params.get('project') || '',
     page: parseInt(params.get('page') || '1', 10),
     sortBy: params.get('sort') || 'priority',
     sortOrder: params.get('order') || 'desc',
@@ -88,7 +91,7 @@ const sameSet = (a: string[], b: string[]) =>
 // 将筛选状态同步到 URL 查询参数的工具函数
 const buildFilterParams = (filter: {
   search: string; statusFilter: string[]; priorityFilter: string[];
-  relevanceFilter: string; page: number; sortBy: string; sortOrder: string;
+  relevanceFilter: string; projectFilter: string; page: number; sortBy: string; sortOrder: string;
 }) => {
   const params = new URLSearchParams();
   if (filter.search) params.set('q', filter.search);
@@ -106,6 +109,8 @@ const buildFilterParams = (filter: {
     params.set('priority', filter.priorityFilter.join(','));
   }
   if (filter.relevanceFilter !== 'mine') params.set('relevance', filter.relevanceFilter);
+  // 项目过滤：非空时才输出（空 = 全部）
+  if (filter.projectFilter) params.set('project', filter.projectFilter);
   if (filter.page > 1) params.set('page', String(filter.page));
   if (filter.sortBy !== 'priority') {
     params.set('sort', filter.sortBy);
@@ -141,7 +146,7 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
 
       {/* 人员流转：发起人 →（参与人）→ 处理人 */}
       <div className="task-card2__people">
-        <div className="task-card2__person" title={`发起人：${creator}`}>
+        <div className="task-card2__person" title={`发起人：${creator}`} aria-label={`发起人：${creator}`}>
           {creatorAvatarId ? (
             <img
               className="task-card2__avatar task-card2__avatar--img"
@@ -154,7 +159,7 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
           <span className="task-card2__person-name">{creator}</span>
         </div>
         {participants.length > 0 && (
-          <span className="task-card2__participants" title={`参与人：${participants.join('、')}`}>
+          <span className="task-card2__participants" title={`参与人：${participants.join('、')}`} aria-label={`参与人：${participants.join('、')}`}>
             {participants.slice(0, 3).map((p, i) => {
               const pid = avatarMap?.get(p);
               return pid ? (
@@ -176,7 +181,7 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
         <span className="task-card2__person-arrow">
           <ArrowRight size={14} strokeWidth={2} />
         </span>
-        <div className="task-card2__person task-card2__person--assignee" title={`处理人：${assignee}`}>
+        <div className="task-card2__person task-card2__person--assignee" title={`处理人：${assignee}`} aria-label={`处理人：${assignee}`}>
           <span className="task-card2__person-name">{assignee}</span>
           {assigneeAvatarId ? (
             <img
@@ -203,45 +208,8 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
   );
 }
 
-// 「待我处理」时间轴：按创建日期分组（新→旧），组内按紧急度排序，左侧日期列 + 竖向虚线。
-function TicketTimeline({ items, onOpen, avatarMap }: { items: Ticket[]; onOpen: (id: string) => void; avatarMap?: AvatarMap }) {
-  const groups = useMemo(() => {
-    const map = new Map<string, Ticket[]>();
-    for (const t of items) {
-      const date = (t.created_at || '').slice(0, 10) || '未知';
-      const list = map.get(date) ?? [];
-      list.push(t);
-      map.set(date, list);
-    }
-    return [...map.entries()]
-      .sort((a, b) => (a[0] < b[0] ? 1 : -1))
-      .map(([date, list]) => ({
-        date,
-        list: [...list].sort(
-          (a, b) => (PRIORITY_WEIGHT_MAP[b.priority] || 0) - (PRIORITY_WEIGHT_MAP[a.priority] || 0),
-        ),
-      }));
-  }, [items]);
-
-  return (
-    <div className="task-timeline">
-      {groups.map((g) => (
-        <div key={g.date} className="task-timeline__group">
-          <div className="task-timeline__date">
-            <span className="task-timeline__date-md">{g.date.slice(5)}</span>
-            <span className="task-timeline__date-year">{g.date.slice(0, 4)}</span>
-            <span className="task-timeline__dot" />
-          </div>
-          <div className="task-timeline__line">
-            {g.list.map((t) => (
-              <TicketCard key={t.id} t={t} onOpen={onOpen} avatarMap={avatarMap} />
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
+// 「待我处理」原先按日期分组的时间轴已移除：所有分类统一走扁平卡片列表，
+// 排序完全由 fetchTickets 中的 sortBy/sortOrder 决定，快捷排序对所有分类生效。
 
 export default function TasksView() {
   const navigate = useNavigate();
@@ -270,7 +238,16 @@ export default function TasksView() {
   const [statusFilter, setStatusFilter] = useState(() => initialFilter.current.statusFilter);
   const [priorityFilter, setPriorityFilter] = useState<string[]>(() => initialFilter.current.priorityFilter);
   const [relevanceFilter, setRelevanceFilter] = useState(() => initialFilter.current.relevanceFilter);
+  // 项目过滤：空字符串 = 「全部」；否则为选中项目的 id
+  const [projectFilter, setProjectFilter] = useState(() => initialFilter.current.projectFilter);
+  // 当前用户关联的项目列表（用于项目过滤下拉）
+  const [myProjects, setMyProjects] = useState<ProjectItem[]>([]);
+  const [showProjectPicker, setShowProjectPicker] = useState(false);
+  // 项目下拉搜索关键字（按名称/编码模糊匹配，contains）
+  const [projectKeyword, setProjectKeyword] = useState('');
   const [showFilterMenu, setShowFilterMenu] = useState(false);
+  // 记录项目下拉的打开来源：从「筛选」弹窗进入时，关闭后需回到筛选弹窗
+  const projectPickerFromFilterRef = useRef(false);
   const [page, setPage] = useState(() => initialFilter.current.page);
   const [total, setTotal] = useState(0);
   const [sortBy, setSortBy] = useState(() => initialFilter.current.sortBy);
@@ -303,6 +280,22 @@ export default function TasksView() {
     })();
     return () => { cancelled = true; };
   }, [adminRequest]);
+
+  // 拉取当前用户关联的项目列表（GET /api/admin/projects/me），用于项目过滤下拉。
+  // 失败时静默回退为空列表（项目筛选仅展示「全部」）。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await getMyProjects();
+        if (cancelled) return;
+        setMyProjects(list);
+      } catch {
+        // 无权限或失败：项目下拉仅保留「全部」
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
   const [createForm, setCreateForm] = useState({
     title: '',
     description: '',
@@ -390,6 +383,10 @@ export default function TasksView() {
       if (priorityFilter.length > 0 && !sameSet(priorityFilter, ALL_PRIORITY_VALUES)) {
         filters.push({ field: 'priority', op: 'in', value: priorityFilter });
       }
+      // 项目过滤：选中具体项目时按 projectId 精确过滤（空 = 全部，不施加条件）
+      if (projectFilter) {
+        filters.push({ field: 'projectId', op: 'eq', value: projectFilter });
+      }
 
       const sorts = sortBy === 'priority'
         ? []
@@ -424,7 +421,7 @@ export default function TasksView() {
       isFetchingRef.current = false;
       if (!silent) setLoading(false);
     }
-  }, [page, search, statusFilter, priorityFilter, relevanceFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
+  }, [page, search, statusFilter, priorityFilter, relevanceFilter, projectFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
 
   fetchTicketsRef.current = fetchTickets;
 
@@ -432,12 +429,12 @@ export default function TasksView() {
   useEffect(() => {
     const newParams = buildFilterParams({
       search, statusFilter, priorityFilter,
-      relevanceFilter, page, sortBy, sortOrder,
+      relevanceFilter, projectFilter, page, sortBy, sortOrder,
     });
     if (newParams !== searchParams.toString()) {
       setSearchParams(newParams, { replace: true });
     }
-  }, [search, statusFilter, priorityFilter, relevanceFilter, page, sortBy, sortOrder]);
+  }, [search, statusFilter, priorityFilter, relevanceFilter, projectFilter, page, sortBy, sortOrder]);
 
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
@@ -538,6 +535,47 @@ export default function TasksView() {
     setRelevanceFilter(value);
     setPage(1);
   };
+
+  // 项目过滤：单选切换（传项目 id；空字符串 = 「全部」）。切换后回到第一页。
+  const handleProjectChange = (value: string) => {
+    setProjectFilter(value);
+    setPage(1);
+  };
+
+  // 关闭项目下拉：若来自「筛选」弹窗，则回到筛选弹窗，而非回到主页面
+  const closeProjectPicker = () => {
+    setShowProjectPicker(false);
+    if (projectPickerFromFilterRef.current) {
+      projectPickerFromFilterRef.current = false;
+      setShowFilterMenu(true);
+    }
+  };
+
+  // 当前选中项目的展示名（无选中或 id 不在名下项目列表时回退为「全部」）
+  const selectedProjectLabel = useMemo(() => {
+    if (!projectFilter) return '全部';
+    const p = myProjects.find((it) => it.id === projectFilter);
+    return p ? (p.name || p.project_code || projectFilter) : '全部';
+  }, [projectFilter, myProjects]);
+
+  // 项目下拉模糊匹配：按名称或项目编码 contains 过滤（忽略大小写）
+  const filteredMyProjects = useMemo(() => {
+    const kw = projectKeyword.trim().toLowerCase();
+    if (!kw) return myProjects;
+    return myProjects.filter(
+      (p) =>
+        (p.name || '').toLowerCase().includes(kw) ||
+        (p.project_code || '').toLowerCase().includes(kw),
+    );
+  }, [myProjects, projectKeyword]);
+
+  // 项目列表加载完成前，URL 中的 projectFilter 可能指向已失效的项目；
+  // 列表就绪后校验一次，命中不到则回退为「全部」，避免过滤出空结果。
+  useEffect(() => {
+    if (!projectFilter || myProjects.length === 0) return;
+    const exists = myProjects.some((p) => p.id === projectFilter);
+    if (!exists) setProjectFilter('');
+  }, [myProjects, projectFilter]);
 
   // 多选：单个状态点击切换选中/取消；'all' 表示全部选中
   const handleStatusToggle = (value: string) => {
@@ -732,6 +770,23 @@ export default function TasksView() {
                 </button>
               ))}
               <span className="tasks-view__filter-divider" aria-hidden="true" />
+              {/* 项目过滤：「全部」独立按钮 + 具体项目走可搜索下拉框 */}
+              <button
+                className={`tasks-view__filter-chip ${!projectFilter ? 'is-active' : ''}`}
+                onClick={() => { handleProjectChange(''); }}
+              >
+                全部
+              </button>
+              <button
+                className={`tasks-view__filter-chip tasks-view__filter-chip--dropdown ${projectFilter ? 'is-active' : ''}`}
+                onClick={() => { setProjectKeyword(''); projectPickerFromFilterRef.current = false; setShowProjectPicker(true); }}
+              >
+                <span className="tasks-view__filter-chip-value">
+                  {projectFilter ? selectedProjectLabel : '选择项目'}
+                </span>
+                <ChevronDown size={12} strokeWidth={2} />
+              </button>
+              <span className="tasks-view__filter-divider" aria-hidden="true" />
               <button
                 key="priority_all"
                 className={`tasks-view__filter-chip ${sameSet(priorityFilter, ALL_PRIORITY_VALUES) ? 'is-active' : ''}`}
@@ -759,8 +814,6 @@ export default function TasksView() {
         <div className="tasks-cards">
           {loading ? <Loading text="加载中…" /> : tickets.length === 0 ? (
             <div className="tasks-empty">暂无工单</div>
-          ) : relevanceFilter === 'mine' ? (
-            <TicketTimeline items={tickets} onOpen={openDetail} avatarMap={avatarMap} />
           ) : (
             tickets.map((t) => (
               <TicketCard key={t.id} t={t} onOpen={openDetail} avatarMap={avatarMap} />
@@ -815,6 +868,19 @@ export default function TasksView() {
           </div>
           <div className="filter-menu__divider"></div>
           <div className="filter-menu__section">
+            <h4 className="filter-menu__title">项目</h4>
+            <button
+              className="filter-menu__dropdown-trigger"
+              onClick={() => { setProjectKeyword(''); projectPickerFromFilterRef.current = true; setShowFilterMenu(false); setShowProjectPicker(true); }}
+            >
+              <span className={projectFilter ? 'filter-menu__dropdown-value' : 'filter-menu__dropdown-placeholder'}>
+                {projectFilter ? selectedProjectLabel : '全部'}
+              </span>
+              <ChevronDown size={14} strokeWidth={2} />
+            </button>
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
             <h4 className="filter-menu__title">优先级（多选）</h4>
             <div className="filter-menu__items">
               <button
@@ -833,6 +899,46 @@ export default function TasksView() {
                   {option.label}
                 </button>
               ))}
+            </div>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 项目过滤下拉（顶部 chip 触发）：单选名下项目，支持输入模糊匹配过滤 */}
+      <Popup visible={showProjectPicker} onClose={closeProjectPicker} placement="bottom" showOverlay>
+        <div className="filter-menu filter-menu--searchable">
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">选择项目</h4>
+            <div className="filter-menu__search">
+              <Search size={14} strokeWidth={2} />
+              <input
+                className="tasks-search filter-menu__search-input"
+                placeholder="搜索项目名称 / 编码…"
+                value={projectKeyword}
+                onChange={(e) => setProjectKeyword(e.target.value)}
+              />
+            </div>
+            <div className="filter-menu__items">
+              <button
+                className={`filter-menu__item ${!projectFilter ? 'is-active' : ''}`}
+                onClick={() => { handleProjectChange(''); closeProjectPicker(); }}
+              >
+                全部
+              </button>
+              {filteredMyProjects.map((p) => (
+                <button
+                  key={p.id}
+                  className={`filter-menu__item ${projectFilter === p.id ? 'is-active' : ''}`}
+                  onClick={() => { handleProjectChange(p.id); closeProjectPicker(); }}
+                >
+                  {p.name || p.project_code}
+                </button>
+              ))}
+              {myProjects.length === 0 ? (
+                <div className="filter-menu__empty">暂无关联项目</div>
+              ) : filteredMyProjects.length === 0 ? (
+                <div className="filter-menu__empty">未找到匹配项目</div>
+              ) : null}
             </div>
           </div>
         </div>
