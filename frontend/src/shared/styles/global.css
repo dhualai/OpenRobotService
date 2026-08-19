@@ -1333,7 +1333,7 @@ html, body, #root {
 .chat-bubble-wrap.is-right .chat-bubble { border-bottom-right-radius: var(--radius-sm); }
 .chat-bubble-wrap.is-left .chat-bubble { border-bottom-left-radius: var(--radius-sm); }
 .chat-bubble.is-user {
-  background: #7CB6D6;
+  background: #86CAE9;
   color: #0b1c28;
   box-shadow: var(--shadow-soft);
 }
@@ -5049,10 +5049,10 @@ html, body, #root {
   filter: brightness(0.97);
 }
 .detail-chat-bubble.is-self {
-  background: #7CB6D6;
+  background: var(--blue-soft);
   color: var(--foreground);
-  border-color: #7CB6D6;
-  border-radius: var(--radius-2xl) var(--radius-2xl) 6px var(--radius-2xl);
+  border-color: var(--blue-5);
+  border-radius: var(--radius-2xl) var(--radius-2xl) var(--radius-sm) var(--radius-2xl);
 }
 .detail-chat-bubble.is-self * {
   color: var(--foreground);
