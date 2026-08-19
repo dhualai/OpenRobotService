@@ -10,7 +10,7 @@
 // 因 id 已存在而被忽略/更新，天然不重复。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { TaskRoomSocket, type CommentPayload, type WsEvent, type AiProgressTodo } from '@/api/ws';
+import { TaskRoomSocket, type CommentPayload, type WsEvent, type AiProgressTodo, type ReadRecord } from '@/api/ws';
 import type { DiscussionComment } from '@/shared/components/DiscussionPanel';
 
 export interface TaskUpdatedPatch {
@@ -51,13 +51,16 @@ export function useTaskCommentsWS(
   typingUser: string | null;
   readMap: Record<string, number>;
   sendTyping: (value: boolean) => void;
-  sendRead: (lastReadCommentId: number) => void;
+  sendRead: (lastReadCommentId: number, commentIds?: number[]) => void;
+  readRecords: Record<string, ReadRecord[]>;
   deletedIds: Set<string>;
 } {
   const [displayComments, setDisplayComments] = useState<DiscussionComment[]>(baseComments);
   const [online, setOnline] = useState<OnlineMember[]>([]);
   const [typingUser, setTypingUser] = useState<string | null>(null);
   const [readMap, setReadMap] = useState<Record<string, number>>({});
+  // 每条评论的已读名单（飞书式）：comment_id -> [{username,name,avatar_resource_id,read_at}]
+  const [readRecords, setReadRecords] = useState<Record<string, ReadRecord[]>>({});
   // 已删除评论 id 集合（WS comment.deleted / 本地删除记录）。
   // 同步维护 ref（合并基线时用，避免闭包旧值）+ state（驱动引用块「已删除」展示重渲染）。
   const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
@@ -102,6 +105,7 @@ export function useTaskCommentsWS(
         case 'welcome':
           setOnline(e.online || []);
           setReadMap(e.read_map || {});
+          setReadRecords(e.read_records || {});
           break;
         case 'presence':
           setOnline(e.online || []);
@@ -132,7 +136,28 @@ export function useTaskCommentsWS(
           }
           break;
         case 'read_receipt':
-          setReadMap((r) => ({ ...r, [e.username]: e.last_read_comment_id }));
+          if (typeof e.last_read_comment_id === 'number') {
+            setReadMap((r) => ({ ...r, [e.username]: e.last_read_comment_id as number }));
+          }
+          // 名单增量：将本次广播的 records 合并进对应 comment_id 的名单（按 username 去重）
+          if (e.records && e.records.length > 0) {
+            setReadRecords((prev) => {
+              const next: Record<string, ReadRecord[]> = {};
+              for (const key of Object.keys(prev)) next[key] = prev[key];
+              for (const rec of e.records!) {
+                const cid = String(rec.comment_id);
+                const existing = next[cid] || [];
+                if (existing.some((x) => x.username === rec.username)) continue;
+                next[cid] = [...existing, {
+                  username: rec.username,
+                  name: rec.name,
+                  avatar_resource_id: rec.avatar_resource_id,
+                  read_at: rec.read_at ?? new Date().toISOString(),
+                }];
+              }
+              return next;
+            });
+          }
           break;
         case 'task.updated':
           onTaskUpdatedRef.current?.({
@@ -164,9 +189,9 @@ export function useTaskCommentsWS(
     socketRef.current?.sendTyping(value);
   }, []);
 
-  const sendRead = useCallback((lastReadCommentId: number) => {
-    socketRef.current?.sendRead(lastReadCommentId);
+  const sendRead = useCallback((lastReadCommentId: number, commentIds?: number[]) => {
+    socketRef.current?.sendRead(lastReadCommentId, commentIds);
   }, []);
 
-  return { displayComments, online, typingUser, readMap, sendTyping, sendRead, deletedIds };
+  return { displayComments, online, typingUser, readMap, sendTyping, sendRead, readRecords, deletedIds };
 }

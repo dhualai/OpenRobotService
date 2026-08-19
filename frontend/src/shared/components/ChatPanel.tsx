@@ -64,7 +64,8 @@ interface Message {
   percent?: number;
   failed?: boolean;
   reaction?: 'like' | 'dislike' | null;
-  // 流式输出进行中标记：true 时气泡用纯文本渲染（避免 Markdown 全量重解析造成抖动），完成后置 false
+  // 流式输出进行中标记：true 时气泡仍实时 Markdown 渲染文字/格式，媒体以占位代替防抖，
+  // 完成后置 false 走完整 Markdown 渲染（含真实图片/视频）；用于区分流式中间态
   streaming?: boolean;
   // 附件上传后的 AI 占位阶段（对应 sendWithFile 动态占位）：analyzing_image/analyzing_file=分析中，thinking=思考中。
   // generating_ticket=提单生成工单草稿中（LLM 的「好的」被抑制，弹窗前显示动画）。
@@ -403,7 +404,10 @@ const MessageBubble = memo(function MessageBubble({
             </div>
           ) : msg.content ? (
             msg.streaming ? (
-              <div className="chat-bubble__text" style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+              // 流式期间实时 Markdown 渲染文字/格式；媒体（图片/视频）由 MarkdownRenderer 用
+              // 稳定占位代替（streaming=true），避免流式中间态渲染真实 <img> 反复 remount/重载闪烁；
+              // 定稿（streaming=false）后才加载真实媒体。
+              <MarkdownRenderer content={msg.content} compact={compact} streaming />
             ) : (
               <MarkdownRenderer content={msg.content} compact={compact} />
             )
@@ -1184,19 +1188,25 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const assistantId = uid();
     // 节流渲染相关变量提升到函数作用域：try 块内的 const/let 对 finally 不可见，必须外提
     let acc = '';
-    // 假流式（打字机缓冲）：token 先入 pending 队列，定时器匀速出字到 acc。
-    // 上游（中转站）token 是突发块+真空期交替，直接上屏就是「卡一下出一坨」；
-    // 匀速重放把突发摊平、真空期平滑衔接，视觉上始终在打字。
     let pending = '';
     let typeTimer: ReturnType<typeof setInterval> | null = null;
-    // 匀速档：每 100ms 出 4 字（40 字/秒）——低于上游(claude)平均供给 55-75 字/秒，
-    // 缓冲在突发块之间不会耗尽，视觉上始终在匀速打字（出几个字停顿 = 速率设太快）。
-    // 追赶档：缓冲积压 > 200 字（上游已整段憋完/巨块到达）时提速到 12 字/tick，
-    // 避免流结束后拖尾过长。
-    const TYPE_TICK_MS = 100;
-    const TYPE_CHARS = 4;
-    const TYPE_BURST_THRESHOLD = 200;
-    const TYPE_BURST_CHARS = 12;
+    // 伪流式（打字机缓冲）：token 先入 pending 队列，定时器按积压规模渐进出字到 acc。
+    // 上游（中转站）token 是突发块+真空期交替，直接上屏就是「卡一下出一坨」；
+    // 匀速重放把突发摊平、真空期平滑衔接，视觉上始终在打字。
+    // 渐进档位：积压越多出字越快，但每档只跳小一档，视觉连续不突变——
+    //   积压 ≤ 200 字   → 每 tick 6 字（≈75 字/秒，跟上游平均供给 55-75 持平，缓冲不轻易耗尽）
+    //   积压 ≤ 400 字   → 每 tick 10 字（≈125 字/秒，追上游突发，摊平大坨）
+    //   积压 >  400 字   → 每 tick 14 字（≈175 字/秒，快速清积压，避免排空拖尾）
+    // 相比老的二值切换（≤300 字出 3 / >300 字出 9），避免了瞬时跳到 9 的「卡一下涌出」。
+    // 「收尾出完」：流结束后不一次性并入，而是等定时器把剩余 pending 按档位逐字出完
+    // （drain=true），尾部同样平滑，杜绝「后面一下出来好几行」。
+    const TYPE_TICK_MS = 80;
+    // 由小到大积压档位 → 每 tick 出字数：积压依次跨过 0 / 200 / 400 字时档位 6 → 10 → 14
+    const TYPE_SPEED_STEPS: Array<{ threshold: number; chars: number }> = [
+      { threshold: 0, chars: 6 },
+      { threshold: 200, chars: 10 },
+      { threshold: 400, chars: 14 },
+    ];
     // sentConvId 快照：流式期间用户可能切换会话，convRef 会被 effect 改写指向新会话；
     // 后续 AI 回复落库/首轮会话同步必须用此快照，否则回复会错写进新会话（表现为"过时/错位回复"）
     let sentConvId: number | null = null;
@@ -1205,15 +1215,41 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     let assistantDbId: number | null = null;
     // 流式中间渲染：疑似 LLM 协议 JSON 头泄漏（{ / ``` 开头）时以占位代替，避免残破 JSON 闪现上屏
     const renderAcc = () => setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: looksLikeJsonHead(acc) ? '正在思考…' : acc } : m)));
+    // 收尾排空标志：流已结束（done），剩余 pending 继续逐字出完而非一次性并入
+    let draining = false;
+    // 排空完成回调已触发：防止重复定稿（finally + 排空完成各触发一次）
+    let drainFinished = false;
     const startTyping = () => {
       if (typeTimer) return;
-      typeTimer = setInterval(() => {
-        if (!pending) return;  // 上游真空期：缓冲空，不出字
-        const _chars = pending.length > TYPE_BURST_THRESHOLD ? TYPE_BURST_CHARS : TYPE_CHARS;
+      const timer = setInterval(() => {
+        if (!pending) {
+          // 缓冲已空：流结束且已排空 → 定稿停表；否则为上游真空期（还没结束），保持空转等新 token
+          if (draining) {
+            clearInterval(timer);
+            if (typeTimer === timer) typeTimer = null;
+            finishDrain();
+          }
+          return;
+        }
+        const len = pending.length;
+        // 按积压规模取当前档位的出字数（从高到低匹配第一个满足的档）
+        let _chars = TYPE_SPEED_STEPS[0].chars;
+        for (let i = TYPE_SPEED_STEPS.length - 1; i >= 0; i--) {
+          if (len > TYPE_SPEED_STEPS[i].threshold) { _chars = TYPE_SPEED_STEPS[i].chars; break; }
+        }
         acc += pending.slice(0, _chars);
         pending = pending.slice(_chars);
         renderAcc();
       }, TYPE_TICK_MS);
+      typeTimer = timer;
+    };
+    // 排空定稿：剩余 pending 已全部逐字上屏 → 置 streaming:false 触发 Markdown 重渲染 + 贴底校正。
+    // 仅成功路径由排空回调触发；错误/中断路径在 finally 直接定稿（不依赖排空）。
+    const finishDrain = () => {
+      if (drainFinished) return;
+      drainFinished = true;
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: sanitizeAiText(acc) || acc, streaming: false } : m)));
+      requestAnimationFrame(() => requestAnimationFrame(scrollToBottom));
     };
     try {
       const sid = ensureSessionId();
@@ -1342,26 +1378,34 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 流结束处理 buffer 末尾剩余行（最后 data 未跟换行的情况）
       if (buffer) processLine(buffer);
 
-      // 假流式收尾：停定时器，剩余 pending 一次性并入 acc（完整内容不拖尾）
-      if (typeTimer) {
+      // 假流式收尾：不一次性并入剩余 pending（否则尾部「哗啦一下全出来」），
+      // 置 draining 让定时器按当前档位继续逐字出完，缓冲清空后自动定稿（finishDrain）。
+      // 完整最终文本 = 已上屏 acc + 剩余 pending（此快照用于校验/落库，显示会继续逐字补全）。
+      const fullPending = pending;
+      draining = true;
+      if (!typeTimer && pending) {
+        startTyping();  // 流结束瞬间无定时器（如整段一个 chunk 落完）→ 补开定时器排空
+      }
+      if (!pending && typeTimer) {
         clearInterval(typeTimer);
         typeTimer = null;
+        pending = '';
+        finishDrain();
       }
-      acc += pending;
-      pending = '';
 
       // 流式定稿：清洗 JSON 泄漏/围栏/游离残留（带 } 回复）；纯空白（含仅空格/换行）→ ''，
       // 再统一走空回复兜底，杜绝空白气泡与残破 JSON 上屏、落库
-      acc = sanitizeAiText(acc);
+      const fullText = sanitizeAiText(acc + fullPending);
       // 前端空回复兜底：流式结束无任何内容（后端无 token 或前端解析丢字）→ 显示缺省，而非空气泡
-      if (!acc && !streamError) acc = '[未收到 AI 回复，请重试]';
+      if (!fullText && !streamError) acc = '[未收到 AI 回复，请重试]';
       // 流式出错且无任何内容 → 抛出，由外层 catch 提示并移除空气泡（不再静默）
-      if (streamError && !acc) throw new Error(streamError);
+      if (streamError && !fullText) throw new Error(streamError);
 
       // 流式结束：后端已在流式中增量落库完整内容（event:message_created 接管）。
       // 仅当后端未接管（老后端未回传 message_id / 建消息失败）时，前端兜底落库一次，避免丢字。
-      if (acc && assistantDbId == null && sentConvId) {
-        appendMessage(sentConvId, 'assistant', acc).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
+      // 注意用完整快照 fullText 落库，而非仍在逐字排空的 acc（避免落库截断）。
+      if (fullText && assistantDbId == null && sentConvId) {
+        appendMessage(sentConvId, 'assistant', fullText).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
       }
       // 首轮问答完成 → 同步会话到列表、定位到新会话。
       // 标题保持「新建会话」：标题由 AI 在第2轮回复时生成（event: title），在此之前都叫「新建会话」。
@@ -1386,6 +1430,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 主动中断 = AbortController 触发（fetch/reader 抛 AbortError）；其余视为真错误
       const aborted = err instanceof DOMException && err.name === 'AbortError';
       const finalAcc = sanitizeAiText(acc);
+      // 中断/异常：立即停掉可能仍在排空(收尾)的定时器，并标记排空已结束，
+      // 让 finally 直接定稿，避免切换会话/卸载后定时器继续 setMessages 串台。
+      if (typeTimer) {
+        clearInterval(typeTimer);
+        typeTimer = null;
+      }
+      drainFinished = true;
       if (aborted) {
         // 主动中断（切换会话/卸载）：后端已在流式中增量落库（≤0.8s 残差），切回原会话从 DB 恢复；
         // 仅后端未接管时前端兜底落库。无内容则移除空气泡（避免闪烁残留）。
@@ -1409,7 +1460,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         }
       }
     } finally {
-      // 先释放发送锁与 loading，再强制刷新最终内容，避免刷新异常时再次卡死发送
+      // 先释放发送锁与 loading
       setLoading(false);
       sendingRef.current = false;
       abortRef.current = null;
@@ -1417,9 +1468,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // Markdown 重渲染（代码块等高度突变），双 rAF 待布局稳定后再校正一次贴底
       scrollToBottom();
       requestAnimationFrame(() => requestAnimationFrame(scrollToBottom));
-      // 定稿：合并为单次 setMessages。错误/中断时不再删除气泡，保留已接收内容（或占位提示），
-      // 杜绝"闪烁一下就消失"。气泡已被 filter 删除时（中断且无内容）map 找不到，无操作。
-      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: sanitizeAiText(acc) || acc, streaming: false } : m)));
+      // 若正处于「成功排空」路径（draining=true 且排空未完成），定稿交给 finishDrain()
+      // 在剩余 pending 逐字出完后触发（此时 acc 才含完整内容，streaming:false 前贴底校准一次）。
+      // 否则（无内容/错误/中断/已结束）此处立即定稿，保留已接收内容（或占位提示）。
+      if (!draining || drainFinished) {
+        setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: sanitizeAiText(acc) || acc, streaming: false } : m)));
+      }
     }
   };
 
