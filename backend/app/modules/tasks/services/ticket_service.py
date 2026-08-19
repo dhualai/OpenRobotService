@@ -1,3 +1,4 @@
+import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, and_
 from typing import List, Optional, Dict, Any
@@ -647,8 +648,9 @@ class TicketService:
             if ticket.customer:
                 notify_users.append(ticket.customer)
             notify_users = list(set(notify_users))
-            if operator_id and operator_id in notify_users:
-                notify_users.remove(operator_id)
+            if operator_id:
+                operator_keys = set(identity_keys(operator_id))
+                notify_users = [u for u in notify_users if u not in operator_keys]
             if notify_users:
                 user_map = await TicketService._get_user_map(token)
                 
@@ -680,7 +682,6 @@ class TicketService:
                         token=token
                     )
         except Exception as e:
-            import logging
             logger = logging.getLogger(__name__)
             logger.error(f"Failed to send notification for ticket {ticket_id}: {str(e)}")
             notification_result = {
@@ -894,8 +895,9 @@ class TicketService:
             if ticket.customer:
                 notify_users.append(ticket.customer)
             notify_users = list(set(notify_users))
-            if operator_id and operator_id in notify_users:
-                notify_users.remove(operator_id)
+            if operator_id:
+                operator_keys = set(identity_keys(operator_id))
+                notify_users = [u for u in notify_users if u not in operator_keys]
             
             if notify_users:
                 user_map = await TicketService._get_user_map(token)
@@ -912,7 +914,6 @@ class TicketService:
                     token=token
                 )
         except Exception as e:
-            import logging
             logger = logging.getLogger(__name__)
             logger.error(f"Failed to send notification for ticket {ticket_id}: {str(e)}")
         

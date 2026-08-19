@@ -28,7 +28,7 @@ from app.utils.minio_client import minio_client
 from app.utils.notification_utils import NotificationUtils
 from app.integrations.api import verify_sync_api_key
 from app.core.config import settings
-from app.core.user_identity import user_matches, is_admin_user, to_user_id, actor_username
+from app.core.user_identity import user_matches, is_admin_user, to_user_id, actor_username, identity_keys
 
 router = APIRouter(tags=["tasks"])
 
@@ -628,7 +628,8 @@ async def update_task(
             )
             await _add_system_comment(db, task_id, f"{user_name} 将工单重新指派给 {new_assignee_name}", username, token)
             # 工单转派提醒：通知创建人 + 新被指派人
-            reassign_notify_users = list({ticket.created_by, new_assignee} - {None, username})
+            _op_keys = set(identity_keys(username)) | {None}
+            reassign_notify_users = [u for u in {ticket.created_by, new_assignee} if u not in _op_keys]
             await NotificationUtils.send_ticket_reassign_notification(
                 ticket_id=task_id,
                 title=ticket.title or '',
@@ -1198,7 +1199,8 @@ async def assign_task(
         await _add_system_comment(db, task_id, f"{user_name} 将工单指派给 {assignee_name}", username, token)
 
         # 工单转派提醒：通知创建人 + 新被指派人
-        assign_notify_users = list({ticket.created_by, user_id} - {None, username})
+        _op_keys = set(identity_keys(username)) | {None}
+        assign_notify_users = [u for u in {ticket.created_by, user_id} if u not in _op_keys]
         await NotificationUtils.send_ticket_reassign_notification(
             ticket_id=task_id,
             title=ticket.title or '',
