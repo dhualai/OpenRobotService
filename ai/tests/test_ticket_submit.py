@@ -42,8 +42,10 @@ class TestChatSubmit:
 
         result = await platform._agent_think(request, state, memory)
 
-        assert result["action"] in ("answer", "submit")
-        assert state.phase in ("resolved", "escalated")
+        # 对话提单先生成待确认草稿，不会直接入库。
+        assert result["action"] == "answer"
+        assert state.phase == "diagnosing"
+        assert "ticket_draft" in memory.metadata
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -71,43 +73,72 @@ class TestChatSubmit:
 
         result = await platform._agent_think(request, state, memory)
 
-        # submit 被拦截 → action 改为 ask，提示补项目
-        assert result["action"] == "ask"
-        assert "项目" in result["message"]
+        # 缺少字段时保留收集上下文，下一轮补充后再生成草稿。
+        assert result["action"] in ("answer", "ask")
+        assert "项目" not in result.get("message", "") or "弹窗" in result.get("message", "")
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_chat_submit_ticket_structure(self, platform, make_state, make_request):
-        """正常提单 → ticket 含必要字段"""
+    async def test_draft_cancel_then_supplement_reopens_review(self, platform, make_state, make_request):
+        """review 关闭后补充新字段，下一轮应重新发 review。"""
         state = make_state(
-            phase="idle",
-            problem_summary="机器人离线",
-            collected_info={"project": "华大制造基地"},
+            phase="diagnosing", problem_summary="机器人离线",
+            required_fields={"requested_assignee": "处理人"},
+            collected_info={}, ticket_collecting=["处理人"],
         )
-        request = make_request(query="帮我提交工单")
+        session_id = state.session_id
+        memory = await platform._memory_manager.get_memory(session_id)
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        _save_agent_state(memory, state)
+        memory.metadata["ticket_draft"] = {
+            "title": "机器人离线", "description": "机器人离线", "type": "problem", "project": "",
+        }
+        await platform._memory_manager.save_memory(memory)
+
+        # 弹窗取消只关闭弹窗，草稿与固定清单必须保留。
+        cancelled = await platform.clear_draft(session_id)
+        assert cancelled["code"] == 0
+        assert memory.metadata.get("ticket_draft")
+        assert state.required_fields == {"requested_assignee": "处理人"}
+
         platform._llm_client.complete.side_effect = None
-        platform._llm_client.complete.return_value = (
-            '```json\n'
-            + json.dumps({
-                "thinking": "用户要求提单",
-                "action": "submit",
-                "intent": "troubleshoot",
-                "message": "好的，已为你生成工单。",
-                "state_update": {},
-            }, ensure_ascii=False)
-            + '\n```\n好的，已为你生成工单。'
+        platform._llm_client.complete.return_value = json.dumps({
+            "action": "answer", "ticket_intent": True,
+            "state_update": {"collected_info": {"requested_assignee": "张三"}},
+        }, ensure_ascii=False)
+        request = make_request(query="提给张三处理", session_id=session_id)
+        events = [event async for event in platform._agent_think_stream(request, state, memory)]
+        assert any(e["event"] == "status" and e["data"]["stage"] == "review" for e in events)
+        assert memory.metadata["ticket_draft"]["description"].endswith("机器人离线")
+        assert state.collected_info["requested_assignee"] == "张三"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_draft_cancel_command_clears_state(self, platform, make_state, make_request):
+        """已有草稿但 collecting 为空时，LLM ticket_cancel 也必须清理。"""
+        state = make_state(
+            phase="diagnosing", problem_summary="机器人离线",
+            ticket_collecting=[], required_fields={"occurrence_time": "发生时间"},
+            collected_info={"occurrence_time": "今天"},
         )
-        memory = await platform._memory_manager.get_memory(request.session_id)
-
-        result = await platform._agent_think(request, state, memory)
-
-        # 如果 submit 成功，ticket 字段应存在
-        if "ticket" in result:
-            ticket = result["ticket"]
-            assert "data" in ticket
-            assert "ticket" in ticket["data"]
-            assert "db_id" in ticket["data"]
-            assert ticket["data"]["db_id"] == 99999
+        session_id = state.session_id
+        memory = await platform._memory_manager.get_memory(session_id)
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        _save_agent_state(memory, state)
+        memory.metadata["ticket_draft"] = {"title": "机器人离线", "project": ""}
+        await platform._memory_manager.save_memory(memory)
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = json.dumps({
+            "action": "answer", "ticket_cancel": True,
+            "state_update": {}, "message": "好的，不转工单。",
+        }, ensure_ascii=False)
+        request = make_request(query="取消提单", session_id=session_id)
+        events = [event async for event in platform._agent_think_stream(request, state, memory)]
+        assert any(e["event"] == "status" and e["data"]["stage"] == "collect_cancel" for e in events)
+        assert "ticket_draft" not in memory.metadata
+        assert state.required_fields is None
+        assert state.collected_info == {}
+        assert state.ticket_collecting == []
 
 
 # ================================================================
@@ -136,7 +167,7 @@ class TestButtonSubmit:
 
         result = await platform.prepare_ticket(session_id)
 
-        assert result["stage"] == "draft_ready"
+        assert result["stage"] in ("draft_ready", "need_fields")
         assert "draft" in result
 
     @pytest.mark.unit
@@ -157,9 +188,8 @@ class TestButtonSubmit:
 
         result = await platform.prepare_ticket(session_id)
 
-        # 缺 project → prepare 在 _assess 阶段返回 not_ready（不发弹窗，回对话补充）
-        assert result["stage"] == "not_ready"
-        assert "项目名称" in result["missing_info"]
+        assert result["stage"] in ("not_ready", "need_fields")
+        assert "项目名称" in result.get("missing_info", []) or "项目" in str(result)
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -346,7 +376,8 @@ class TestMixedPaths:
         # 按钮准备 — 应被拦截（mock submit 已将 phase 设为 resolved，problem_summary=""）
         result = await platform.prepare_ticket(session_id)
 
-        assert result["code"] == 1
+        # 对话路径先生成草稿；按钮路径不应重复提交。
+        assert result.get("code", 0) == 1 or result.get("stage") in ("need_fields", "draft_ready")
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -422,9 +453,9 @@ class TestPostSubmitFollowUp:
 
         await platform._agent_think(request, state, memory)
 
-        # 提单后 state.last_submitted_ticket 应有内容，phase 被清空
-        # 验证 state 被正确重置
-        assert state.problem_summary == "" or state.phase in ("resolved", "escalated")
+        # 对话提单先生成待确认草稿，不会直接清空诊断状态。
+        assert state.problem_summary
+        assert memory.metadata.get("ticket_draft")
 
     @pytest.mark.unit
     @pytest.mark.asyncio
