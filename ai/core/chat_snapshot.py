@@ -252,8 +252,7 @@ async def create_chat_markdown_attachment(
     """
     try:
         import time as _t
-        from app.utils.minio_client import minio_client
-        from app.core.config import settings
+        from ai.core.minio_client import minio_client
 
         md_text = _turns_to_markdown(
             turns,
@@ -264,7 +263,10 @@ async def create_chat_markdown_attachment(
             return None
         md_bytes = md_text.encode("utf-8")
 
-        bucket = settings.COMMENT_BUCKET
+        # AI 独立进程不能 import backend 的 app.utils.minio_client，
+        # 用 AI 自己的 minio_client；bucket 与 backend settings.COMMENT_BUCKET 对齐
+        # （附件统一放 helpdesk-comment 桶）。
+        bucket = "helpdesk-comment"
         object_path = f"{bucket}/chat_records/{session_id}/{int(_t.time())}.md"
         ok = minio_client.upload_bytes(
             file_bytes=md_bytes,
@@ -294,8 +296,7 @@ async def create_chat_snapshot_attachment(
     """
     try:
         import time as _t
-        from app.utils.minio_client import minio_client
-        from app.core.config import settings
+        from ai.core.minio_client import minio_client
         from PIL import Image  # noqa: F401  提前触发 Pillow 缺失报错，走统一降级
 
         png_bytes = render_chat_snapshot(
@@ -306,7 +307,8 @@ async def create_chat_snapshot_attachment(
         if not png_bytes:
             return None
 
-        bucket = settings.COMMENT_BUCKET
+        # AI 独立进程用 ai.core.minio_client；bucket 与 backend COMMENT_BUCKET 对齐
+        bucket = "helpdesk-comment"
         object_path = f"{bucket}/chat_snapshots/{session_id}/{int(_t.time())}.png"
         ok = minio_client.upload_bytes(
             file_bytes=png_bytes,

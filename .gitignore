@@ -142,3 +142,17 @@ ai/tests/_probe_real_errors.py
 ai/tools/bench_vision_models.py
 frontend/package-lock.json.bak
 frontend/macaron-minimal-ui/
+/ai/scripts
+/ai/tests
+/ai/tests
+.claude/launch.json
+/ai/tools
+/ai/tests
+/ai/tests
+ai/.env.example
+.token_tmp
+ai/.env.example
+ai/.env.example
+ai/.env.example
+/ai/tests
+/ai/tests

@@ -10,6 +10,7 @@ from ai.core.llm import (
     DeepSeekProvider,
     OpenAIProvider,
     get_llm_client,
+    get_intent_client,
     close_llm_client,
 )
 from ai.core.embed import (

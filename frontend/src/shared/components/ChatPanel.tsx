@@ -1184,22 +1184,36 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const assistantId = uid();
     // 节流渲染相关变量提升到函数作用域：try 块内的 const/let 对 finally 不可见，必须外提
     let acc = '';
+    // 假流式（打字机缓冲）：token 先入 pending 队列，定时器匀速出字到 acc。
+    // 上游（中转站）token 是突发块+真空期交替，直接上屏就是「卡一下出一坨」；
+    // 匀速重放把突发摊平、真空期平滑衔接，视觉上始终在打字。
+    let pending = '';
+    let typeTimer: ReturnType<typeof setInterval> | null = null;
+    // 匀速档：每 100ms 出 4 字（40 字/秒）——低于上游(claude)平均供给 55-75 字/秒，
+    // 缓冲在突发块之间不会耗尽，视觉上始终在匀速打字（出几个字停顿 = 速率设太快）。
+    // 追赶档：缓冲积压 > 200 字（上游已整段憋完/巨块到达）时提速到 12 字/tick，
+    // 避免流结束后拖尾过长。
+    const TYPE_TICK_MS = 100;
+    const TYPE_CHARS = 4;
+    const TYPE_BURST_THRESHOLD = 200;
+    const TYPE_BURST_CHARS = 12;
     // sentConvId 快照：流式期间用户可能切换会话，convRef 会被 effect 改写指向新会话；
     // 后续 AI 回复落库/首轮会话同步必须用此快照，否则回复会错写进新会话（表现为"过时/错位回复"）
     let sentConvId: number | null = null;
     // 后端增量落库写出的 assistant 消息 DB id：由流式 event:message_created 回传。
     // 命中即说明后端已接管落库，前端不再重复写（避免重复消息）；未命中(老后端/建消息失败)则前端兜底落库。
     let assistantDbId: number | null = null;
-    let lastFlush = 0;
-    const FLUSH_MS = 90;
     // 流式中间渲染：疑似 LLM 协议 JSON 头泄漏（{ / ``` 开头）时以占位代替，避免残破 JSON 闪现上屏
     const renderAcc = () => setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: looksLikeJsonHead(acc) ? '正在思考…' : acc } : m)));
-    const scheduleRender = () => {
-      const now = Date.now();
-      if (now - lastFlush >= FLUSH_MS) {
-        lastFlush = now;
+    const startTyping = () => {
+      if (typeTimer) return;
+      typeTimer = setInterval(() => {
+        if (!pending) return;  // 上游真空期：缓冲空，不出字
+        const _chars = pending.length > TYPE_BURST_THRESHOLD ? TYPE_BURST_CHARS : TYPE_CHARS;
+        acc += pending.slice(0, _chars);
+        pending = pending.slice(_chars);
         renderAcc();
-      }
+      }, TYPE_TICK_MS);
     };
     try {
       const sid = ensureSessionId();
@@ -1245,11 +1259,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             assistantDbId = data.message_id;
           }
           if (data.token) {
-            acc += data.token;
-            scheduleRender();
+            pending += data.token;
+            startTyping();
           } else if (data.content) {
-            acc += data.content;
-            scheduleRender();
+            pending += data.content;
+            startTyping();
           }
           // 流式错误（如诊断 pipeline 抛错）：捕获错误信息，循环结束后抛出，避免静默空气泡
           if (currentEvent === 'error' && data.error) {
@@ -1280,11 +1294,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           // 「LLM 片段 + 系统话术」混乱。此处清空 acc，丢弃闪现的 LLM 片段，只接收后续系统话术。
           if (currentEvent === 'status' && ['need_info', 'need_fields', 'submit_failed'].includes(data.stage)) {
             acc = '';
+            pending = '';
           }
           // 提单生成中：LLM 的「好的」被后端抑制，切气泡到「正在生成工单」动画，
           // 弹窗（review）时后端会回填「已生成工单草稿…」话术，届时再显示。
           if (currentEvent === 'status' && data.stage === 'generating_ticket') {
             acc = '';
+            pending = '';
             setMessages((prev) => prev.map((m) => (
               m.id === assistantId ? { ...m, content: '', phase: 'generating_ticket' as const, streaming: true } : m
             )));
@@ -1325,6 +1341,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       }
       // 流结束处理 buffer 末尾剩余行（最后 data 未跟换行的情况）
       if (buffer) processLine(buffer);
+
+      // 假流式收尾：停定时器，剩余 pending 一次性并入 acc（完整内容不拖尾）
+      if (typeTimer) {
+        clearInterval(typeTimer);
+        typeTimer = null;
+      }
+      acc += pending;
+      pending = '';
 
       // 流式定稿：清洗 JSON 泄漏/围栏/游离残留（带 } 回复）；纯空白（含仅空格/换行）→ ''，
       // 再统一走空回复兜底，杜绝空白气泡与残破 JSON 上屏、落库

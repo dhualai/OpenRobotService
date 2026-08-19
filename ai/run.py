@@ -17,9 +17,9 @@ from contextlib import asynccontextmanager
 
 # Windows GBK → UTF-8：避免 print() 中的 emoji 字符（⏱ 等）导致崩溃
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-if sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+if (getattr(sys.stdout, "encoding", None) or "").lower() not in ("utf-8", "utf8"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if sys.stderr.encoding.lower() not in ("utf-8", "utf8"):
+if (getattr(sys.stderr, "encoding", None) or "").lower() not in ("utf-8", "utf8"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # ── 路径初始化 ──────────────────────────────────────────────
