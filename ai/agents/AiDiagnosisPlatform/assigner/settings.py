@@ -63,6 +63,10 @@ class AssignerConfig:
         self.decision_thresholds: Dict[str, float] = {}
         self.load_balance: Dict[str, Any] = {}
         self.history_recall: Dict[str, Any] = {}
+        # 新增：LLM 覆写数值排名的最小差距阈值（当 top - second >= 此阈值时，直接选 top，LLM 不覆写）
+        self.llm_respect_ranking_threshold: float = 0.3
+        # 新增：是否在“摇人吧服务号”项目下强制优先模块总负责人
+        self.yaorenba_force_module_owner: bool = True
         self._load_all()
 
     def _load_all(self):
@@ -91,6 +95,13 @@ class AssignerConfig:
         self.decision_thresholds = config.get("decision_thresholds", {})
         self.load_balance = config.get("load_balance", {})
         self.history_recall = config.get("history_recall", {})
+        # 可由 config.yaml 覆盖：LLM 覆写数值排名的最小差距阈值
+        try:
+            self.llm_respect_ranking_threshold = float(config.get("llm_respect_ranking_threshold", 0.3))
+        except (TypeError, ValueError):
+            self.llm_respect_ranking_threshold = 0.3
+        # 可由 config.yaml 覆盖：是否在摇人吧服务号项目下优先模块总负责人
+        self.yaorenba_force_module_owner = bool(config.get("yaorenba_force_module_owner", True))
 
     def reload(self):
         """重新加载配置（配置热更新入口，配合派单缓存失效使用）。"""

@@ -360,12 +360,6 @@ export default function RoleManage() {
         onPointerLeave={handleCardPointerUp}
         onPointerCancel={handleCardPointerUp}
         onClick={() => handleCardClick(role)}
-        onMouseEnter={(e) => {
-          (e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 12px rgba(0,0,0,0.12)';
-        }}
-        onMouseLeave={(e) => {
-          (e.currentTarget as HTMLDivElement).style.boxShadow = '';
-        }}
       >
         <div className="mac-role-card__title">{role.name}</div>
         {role.description && (
@@ -454,6 +448,7 @@ export default function RoleManage() {
           }}
         >
           <div
+            className="mac-context-menu__item"
             style={{
               padding: '12px 16px',
               fontSize: 14,
@@ -462,12 +457,6 @@ export default function RoleManage() {
               display: 'flex',
               alignItems: 'center',
               gap: 6,
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLDivElement).style.background = 'var(--mac-secondary)';
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLDivElement).style.background = 'transparent';
             }}
           >
             删除角色
