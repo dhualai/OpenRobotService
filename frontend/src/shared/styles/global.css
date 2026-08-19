@@ -1333,8 +1333,8 @@ html, body, #root {
 .chat-bubble-wrap.is-right .chat-bubble { border-bottom-right-radius: var(--radius-sm); }
 .chat-bubble-wrap.is-left .chat-bubble { border-bottom-left-radius: var(--radius-sm); }
 .chat-bubble.is-user {
-  background: #7CB6D6;
-  color: #0b1c28;
+  background: #86CAE9;
+  color: #fff;
   box-shadow: var(--shadow-soft);
 }
 .chat-bubble.is-ai {
@@ -2765,6 +2765,200 @@ html, body, #root {
   height: 1px;
   background: var(--border);
   margin: 14px 0;
+}
+/* 筛选弹窗底部操作按钮：清空选择 / 确定，并排两等分 */
+.filter-menu__actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+}
+.filter-menu__action {
+  flex: 1;
+  padding: 10px 0;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.filter-menu__action:active {
+  opacity: 0.85;
+}
+.filter-menu__action--ghost {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--foreground);
+}
+.filter-menu__action--primary {
+  border: none;
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+/* 筛选弹窗「创建时间」日期区间 */
+.filter-menu__date-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.filter-menu__date-field {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.filter-menu__date-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+  background: #fff;
+  color: var(--foreground);
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.filter-menu__date-input:focus {
+  border-color: var(--primary);
+}
+/* 空值时隐藏原生日期 mask，由 .filter-menu__date-placeholder 覆盖显示「起始/终止时间」 */
+.filter-menu__date-input--empty {
+  color: transparent;
+}
+.filter-menu__date-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  font-size: 13px;
+  color: var(--muted);
+}
+.filter-menu__date-sep {
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--foreground);
+}
+/* 内联下拉（项目 / 处理人过滤）：固定定位，附在触发 chip 下方，替代原底部弹层 */
+.chip-dropdown {
+  position: fixed;
+  z-index: 1000;
+  max-width: 80vw;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+.chip-dropdown__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+.chip-dropdown__search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 14px;
+  color: var(--foreground);
+}
+.chip-dropdown__search-input::placeholder {
+  color: var(--muted-foreground);
+}
+.chip-dropdown__list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 0;
+}
+.chip-dropdown__item {
+  padding: 9px 14px;
+  font-size: 14px;
+  color: var(--foreground);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.15s ease;
+}
+.chip-dropdown__item:hover {
+  background: var(--muted);
+}
+.chip-dropdown__item.is-selected {
+  color: var(--primary);
+  font-weight: 600;
+  background: var(--primary-soft);
+}
+.chip-dropdown__empty {
+  padding: 16px 12px;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+/* 筛选弹窗内的内联下拉面板（项目 / 处理人）：就地展开，跟随弹窗正常流 */
+.filter-menu__inline-dropdown {
+  margin-top: 4px;
+}
+.filter-menu__inline-panel {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+.filter-menu__inline-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+.filter-menu__inline-list {
+  max-height: 240px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 6px;
+}
+.filter-menu__inline-item {
+  display: block;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.filter-menu__inline-item:hover {
+  background: var(--muted);
+}
+.filter-menu__inline-item.is-selected {
+  color: var(--primary);
+  font-weight: 600;
+  background: var(--primary-soft);
+}
+.filter-menu__inline-empty {
+  padding: 14px 12px;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: 13px;
 }
 .tasks-head {
   display: grid;
@@ -4666,6 +4860,35 @@ html, body, #root {
   white-space: nowrap;
 }
 
+/* ===== U老师 诊断报告弹窗（TaskDetailPage · tdesign-mobile Dialog） =====
+   默认 tdesign-mobile Dialog 固定 311px 宽，适合手机但 PC 端过窄。
+   移动端：在默认基础上略加宽（min(88vw, 350px)）；PC 端（≥768px）：居中放大到 640px。
+   类名拼在 .t-dialog 上（Dialog className 追加到根元素）；宽度用 CSS 覆盖，
+   内联 width:'undefinedpx' 为非法值会被浏览器忽略，故此处样式可生效。 */
+.diagnosis-report-dialog.t-dialog {
+  width: min(88vw, 350px) !important;
+  max-width: 96vw;
+}
+.diagnosis-report-dialog .t-dialog__content {
+  max-height: 62vh;
+}
+.diagnosis-report-dialog .markdown-body {
+  width: 100%;
+  box-sizing: border-box;
+}
+@media (min-width: 768px) {
+  .diagnosis-report-dialog.t-dialog {
+    width: min(92vw, 640px) !important;
+  }
+  .diagnosis-report-dialog .t-dialog__content {
+    max-height: 70vh;
+    padding: 28px 32px 0;
+  }
+  .diagnosis-report-dialog .t-dialog__footer {
+    padding: 24px 32px;
+  }
+}
+
 /* ===== 摇人 · 工单详情操作页（TicketDetailPage） ===== */
 .ticket-detail-page .page-container { padding: 12px 14px 80px; }
 /* 详情页卡片（设计稿 SectionCard：surface-card p-4，2xl 圆角 + 柔影 + 半透明描边） */
@@ -5020,10 +5243,10 @@ html, body, #root {
   filter: brightness(0.97);
 }
 .detail-chat-bubble.is-self {
-  background: #7CB6D6;
+  background: var(--blue-soft);
   color: var(--foreground);
-  border-color: #7CB6D6;
-  border-radius: var(--radius-2xl) var(--radius-2xl) 6px var(--radius-2xl);
+  border-color: var(--blue-5);
+  border-radius: var(--radius-2xl) var(--radius-2xl) var(--radius-sm) var(--radius-2xl);
 }
 .detail-chat-bubble.is-self * {
   color: var(--foreground);
@@ -6321,15 +6544,6 @@ html, body, #root {
   font-weight: 600;
   color: var(--primary);
   margin-bottom: 6px;
-}
-.detail-chat-ai-progress__spinner {
-  width: 12px;
-  height: 12px;
-  border: 2px solid var(--primary);
-  border-top-color: transparent;
-  border-radius: 50%;
-  display: inline-block;
-  animation: chatTyping 0.8s linear infinite;
 }
 .detail-chat-ai-progress__list {
   list-style: none;
