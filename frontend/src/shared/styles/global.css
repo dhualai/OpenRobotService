@@ -5820,7 +5820,7 @@ html, body, #root {
 }
 .history-search::placeholder { color: var(--gray-light); }
 .history-search:focus { border-color: var(--gray-light); }
-.history-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 8px 0 4px; -webkit-overflow-scrolling: touch; }
+.history-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 8px 8px 4px; -webkit-overflow-scrolling: touch; }
 .history-tabs::-webkit-scrollbar { display: none; }
 /* PC 桌面端鼠标拖拽横滑时光标提示（useHorizontalScroll 加的类） */
 .history-tabs.is-dragging { cursor: grabbing; user-select: none; }
@@ -5839,7 +5839,7 @@ html, body, #root {
 .history-tab__count {
   position: absolute;
   top: 2px;
-  right: 2px;
+  right: -4px;
   pointer-events: none;
   min-width: 16px;
   padding: 0 5px;
