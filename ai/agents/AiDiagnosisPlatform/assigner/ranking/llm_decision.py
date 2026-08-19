@@ -43,6 +43,125 @@ class LlmDecision:
         return any(marker.replace(" ", "") in norm for marker in _YAORENBA_INTAKE_PROJECT_MARKERS)
 
     async def adecide(self, ticket, engineers, recall_result, ranked_scores):
+        """综合决策入口：
+        - 若为摇人吧提单且检测到模块总负责人（duty_text/responsibility_modules 标记），优先返回该负责人；
+        - 否则若数值排名差距足够大（top - second >= 配置阈值），直接选 top，LLM 不覆写；
+        - 否则调用 LLM（原行为）。
+        """
+        # 先构造快速判断数据：排名列表（按 total_score 已排序）
+        try:
+            items = list(ranked_scores.items())
+        except Exception:
+            items = []
+
+        top_eid = None
+        second_eid = None
+        top_score = 0.0
+        second_score = 0.0
+        if items:
+            top_eid, top_meta = items[0]
+            top_score = float(top_meta.get("total_score", 0.0))
+            if len(items) > 1:
+                second_eid, second_meta = items[1]
+                second_score = float(second_meta.get("total_score", 0.0))
+
+        # 1) Yaorenba 专属：优先模块总负责人（在 duty_text 或 responsibility_modules 中标注含 '总负责人'）
+        try:
+            force_owner = bool(self._config.yaorenba_force_module_owner)
+        except Exception:
+            force_owner = True
+
+        if force_owner and self._is_yaorenba_intake(ticket):
+            # 更精细的模块映射规则：根据用户描述优先匹配具体子界面/模块的“总负责人”或负责人
+            text = ((getattr(ticket, "title", "") or "") + " \n " + (getattr(ticket, "problem_description", "") or "")).lower()
+
+            # 模块关键词映射（按优先级检查）
+            module_map = {
+                "我要摇人": ["我要摇人", "摇人界面", "摇人页面", "摇人"],
+                "系统任务": ["系统任务", "任务界面", "收件箱", "工单收件箱"],
+                "后台管理": ["后台管理", "管理后台", "权限", "看板", "数据统计"],
+                "agent": ["agent", "ai", "ai诊断", "提单agent", "摇人agent", "机器人agent", "智能派单", "llm", "u老师"],
+                "数据分析": ["日报", "周报", "数据分析", "数据看板", "统计"],
+            }
+
+            detected_modules = []
+            for mod_key, keywords in module_map.items():
+                for kw in keywords:
+                    if kw in text:
+                        if mod_key not in detected_modules:
+                            detected_modules.append(mod_key)
+                        break
+
+            # 若检测到模块关键词，按检测顺序优先匹配模块总负责人 -> 负责人 -> 按分数选
+            for mod in detected_modules:
+                # 收集候选人：先找 duty_text 标注为该模块总负责人
+                owners = []
+                members = []
+                for eng in engineers:
+                    duty = (eng.duty_text or "").lower()
+                    # 责任模块名扁平化
+                    mods = [m.lower() for m in (eng.all_modules() or [])]
+
+                    # 判断是否为该模块的总负责人（duty_text 中包含 模块名 + '总负责' 或 '总负责人'）
+                    is_owner = False
+                    if mod != "agent":
+                        if (f"{mod}" in duty and ("总负责" in duty or "总负责人" in duty)):
+                            is_owner = True
+                    else:
+                        # 对于 agent/AI 类型，查 duty_text 中含 '算法'/'ai'/'模型' 等关键词作为 owner
+                        if any(x in duty for x in ("算法", "模型", "ai", "ml", "mlops")) and ("总负责" in duty or "总负责人" in duty):
+                            is_owner = True
+
+                    if is_owner:
+                        owners.append(eng)
+                        continue
+
+                    # 非 owner 但负责该模块
+                    if mod != "agent":
+                        if any(mod in m for m in mods):
+                            members.append(eng)
+                    else:
+                        # agent 类型匹配到负责算法/Agent 的工程师
+                        if any(x in m for x in ("算法", "ai", "ml", "agent") for m in mods):
+                            members.append(eng)
+
+                chosen = None
+                # 按优先级选择：owner 中按 ranked_scores 总分最高者；若无 owner 则在 members 中按分数选
+                def score_of(e):
+                    return float(ranked_scores.get(e.id, {}).get("total_score", 0.0))
+
+                if owners:
+                    chosen = max(owners, key=score_of)
+                elif members:
+                    chosen = max(members, key=score_of)
+
+                if chosen:
+                    s = score_of(chosen)
+                    return AssignmentResult(
+                        engineer_id=chosen.id, engineer_name=chosen.name,
+                        confidence_score=round(float(s), 4),
+                        reasoning=f"Yaorenba deterministic: matched module '{mod}' -> selected module owner/member by score; bypassed LLM.",
+                        decision_type="auto",
+                    )
+
+        # 2) 若排名差距足够大则直接采纳 top（避免 LLM 频繁覆写明显的数值优势）
+        try:
+            threshold = float(getattr(self._config, "llm_respect_ranking_threshold", 0.3))
+        except Exception:
+            threshold = 0.3
+
+        if top_eid and (top_score - second_score) >= threshold:
+            # 直接返回 top
+            eng = next((e for e in engineers if e.id == top_eid), None)
+            if eng:
+                return AssignmentResult(
+                    engineer_id=eng.id, engineer_name=eng.name,
+                    confidence_score=round(float(top_score), 4),
+                    reasoning=f"Selected by ranking margin: top({top_score:.4f}) - second({second_score:.4f}) >= threshold({threshold})",
+                    decision_type="auto",
+                )
+
+        # 3) 回退到原有 LLM 流程
         prompt = self._build_prompt(ticket, engineers, recall_result, ranked_scores)
         try:
             from ai.core import get_llm_client
@@ -139,12 +258,13 @@ class LlmDecision:
         # （调度USP 等）不引入，避免把服务号的总负责人逻辑错误套用到其他项目上。
         if self._is_yaorenba_intake(ticket):
             lines.extend([
-                "5.（仅本次工单项目＝「摇人吧服务号提单」适用）先判断问题落在服务号哪个环节，再派给对应子功能的「模块总负责人」：",
-                "   - 我要摇人界面的「提单/报障」过程（建单、填信息、提交、AI诊断出单等，涉及我要摇人模块）：优先派给「我要摇人」模块总负责人；",
-                "   - 「处理工单」的系统任务（工单收件箱、任务处理、状态流转、接单/转派等，涉及系统任务模块）：优先派给「系统任务」模块总负责人；",
-                "   - 「后台管理」相关（项目看板/跨项目看板、风险管理、状态检测、数据统计、角色授权/权限等，涉及后台管理模块）：优先派给「后台管理」模块总负责人。",
-                "   判定依据以候选人 responsibility_modules 或 duty_text 中的「总负责人」标记为准（如『我要摇人总负责人』『系统任务总负责人』『后台管理总负责人』），",
-                "   上述常见对应仅作参考，若候选人名单无对应总负责人，则退回按总分/模块匹配正常选人。",
+                "5.（仅本次工单项目＝「摇人吧服务号提单」适用）若工单描述提到具体子界面/模块，则优先派给该模块的“模块总负责人”或负责人：",
+                "   - 提到：'我要摇人' / '摇人界面' / '摇人页面' → 优先派给 '我要摇人' 模块总负责人；",
+                "   - 提到：'系统任务' / '收件箱' / '任务界面' → 优先派给 '系统任务' 模块总负责人（不分前后端）；",
+                "   - 提到：'后台管理' / '管理后台' / '数据统计' / '权限' → 优先派给 '后台管理' 模块总负责人；",
+                "   - 提到 Agent/AI/提单Agent/智能派单/AI诊断/LLM/U老师 类相关问题 → 优先派给负责算法/Agent 的工程师（算法/AI 工程师）；",
+                "   - 提到日报/周报/数据看板/统计 → 优先派给数据分析/报表负责人。",
+                "   判定依据以候选人 responsibility_modules 或 duty_text 中的 '总负责人' 标记为准（如 '我要摇人总负责人'），若无明确总负责人则退回在负责该模块的候选人中按总分优先。",
             ])
 
         lines.extend([

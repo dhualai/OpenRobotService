@@ -245,7 +245,7 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
                   onTouchStart={(e) => beginLongPress(e.touches[0].clientX, e.touches[0].clientY, u.username)}
                   onTouchEnd={cancelLongPress}
                   onTouchMove={cancelLongPress}
-                  onMouseDown={(e) => beginLongPress(e.clientX, e.clientY, u.username)}
+                  onMouseDown={(e) => { if (e.button === 0) beginLongPress(e.clientX, e.clientY, u.username); }}
                   onMouseUp={cancelLongPress}
                   onMouseLeave={cancelLongPress}
                 >

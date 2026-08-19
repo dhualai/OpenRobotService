@@ -1528,6 +1528,7 @@ export default function TaskDetailPage() {
                     type="button"
                     disabled={priorityDisabled}
                     title={priorityDisabled ? '仅新建工单可修改优先级' : undefined}
+                    aria-label={priorityDisabled ? `优先级${label}（仅新建工单可修改优先级）` : `优先级${label}`}
                     className={`tasks-create-modal__radio-btn ${editForm.priority === value ? 'is-active' : ''} ${priorityDisabled ? 'is-disabled' : ''}`}
                     onClick={() => {
                       const r = getDeadlineRange(value, detail?.created_at);

@@ -3760,6 +3760,21 @@ html, body, #root {
   -webkit-user-select: none;
   -webkit-touch-callout: none;
 }
+/* 桌面 hover 阴影；触屏无 hover，用 :active 提供按压反馈 */
+@media (hover: hover) {
+  .mac-role-card:hover { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12); }
+}
+@media (hover: none) {
+  .mac-role-card:active { box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12); }
+}
+/* 右键上下文菜单项：桌面 hover 高亮；触屏用 :active 反馈 */
+.mac-context-menu__item { transition: background 0.15s; }
+@media (hover: hover) {
+  .mac-context-menu__item:hover { background: var(--mac-secondary); }
+}
+@media (hover: none) {
+  .mac-context-menu__item:active { background: var(--mac-secondary); }
+}
 .mac-role-card__title { font-size: 15px; font-weight: 600; color: var(--mac-fg); margin-bottom: 4px; }
 .mac-role-card__desc { font-size: 13px; color: var(--mac-muted-fg); margin-bottom: 8px; }
 .mac-chip--perm {
@@ -5099,6 +5114,10 @@ html, body, #root {
 }
 .detail-chat-bubble:hover .detail-chat-bubble__del { display: block; }
 .detail-chat-bubble__del:hover { background: rgba(227, 77, 89, 0.12); color: var(--destructive); }
+/* 触屏无 hover：删除按钮常显，避免移动端无法触及删除入口 */
+@media (hover: none) {
+  .detail-chat-bubble.is-self .detail-chat-bubble__del { display: block; }
+}
 
 /* 引用定位高亮动画 */
 @keyframes chatFlash {
