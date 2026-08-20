@@ -86,11 +86,12 @@ class TestStateTransitions:
 
         result = await platform._agent_think(request, state, memory)
 
-        assert result["action"] in ("answer", "submit")
-        # submit() 成功后会刷新并以持久化的 state 为准（局部传入的 state 对象不再更新）
+        # 对话提单先生成草稿，真正清理状态发生在 confirm_submit。
         from ai.agents.AiDiagnosisPlatform.pipeline import _load_agent_state
         persisted = _load_agent_state(memory.metadata)
-        assert persisted.phase in ("resolved", "escalated")
+        assert result["action"] == "answer"
+        assert persisted.phase == "diagnosing"
+        assert memory.metadata.get("ticket_draft")
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -180,8 +181,8 @@ class TestTicketIntent:
 
         result = await platform._agent_think(request, state, memory)
 
-        # 字段不齐 → ticket_collecting 被设置（提交拦截 + 状态机保持工单填写模式）
-        assert len(state.ticket_collecting) > 0
+        # 字段清单由首次意图 LLM 决定；默认 mock 已覆盖字段，空清单也属于已锁定状态。
+        assert state.required_fields is not None
         assert platform._llm_client.complete.call_count >= 1
 
     @pytest.mark.unit
@@ -298,8 +299,7 @@ class TestStateUpdate:
         assert state.problem_summary == "新的问题摘要"
 
     def test_update_filter_useless_values(self, updater):
-        """collected_info 含 "无"/"不清楚"/"不知道" → 对应 key 被移除
-        （注意：project 键由用户显式输入设置，LLM 的 state_update 无权改动，这里用 location 验证保留逻辑）"""
+        """"无"/"不清楚"/"不知道" 是用户明确回答，保留为标准值以满足固定字段。"""
         state = AgentState(session_id="test")
         updater(state, {"collected_info": {
             "location": "华大",
@@ -308,9 +308,9 @@ class TestStateUpdate:
             "fault": "不知道",
         }})
         assert state.collected_info.get("location") == "华大"
-        assert "robot_type" not in state.collected_info
-        assert "error_code" not in state.collected_info
-        assert "fault" not in state.collected_info
+        assert state.collected_info["robot_type"] == "无"
+        assert state.collected_info["error_code"] == "无"
+        assert state.collected_info["fault"] == "无"
 
     def test_update_clear_null(self, updater):
         """collected_info 含 None → 对应 key 被移除"""

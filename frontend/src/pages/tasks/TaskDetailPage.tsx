@@ -18,11 +18,13 @@ import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import { uploadCommentAttachment, getOperationLogs, formatDuration, type OperationLog as TicketOperationLog } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canEditPriority } from '@/shared/constants/ticket';
+import { isSameUser } from '@/shared/utils/userIdentity';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
 import { formatDateTime, formatRawDateTime, parseUtcDate } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
 import type { ProjectMember } from '@/api/projects';
+import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -124,7 +126,7 @@ export default function TaskDetailPage() {
   const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, '管理服务');
 
   const { refreshTasks } = useWorkbenchStore();
-  const { username, name } = useAuthStore();
+  const { username, userId, name } = useAuthStore();
 
   const [detail, setDetail] = useState<Ticket | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -284,19 +286,18 @@ export default function TaskDetailPage() {
   }, [detail?.id]);
 
   const getCurrentUserRoles = () => {
-    const currentUsername = username;
     const currentName = name || username;
 
     const isAssignee = !!(
-      (detail?.assigned_to && detail.assigned_to === currentUsername) ||
-      (detail?.assignee_name && (detail.assignee_name === currentUsername || detail.assignee_name === currentName)) ||
-      (detail?.assigned_to_name && (detail.assigned_to_name === currentUsername || detail.assigned_to_name === currentName))
+      isSameUser(detail?.assigned_to, userId, username) ||
+      (detail?.assignee_name && (detail.assignee_name === username || detail.assignee_name === currentName)) ||
+      (detail?.assigned_to_name && (detail.assigned_to_name === username || detail.assigned_to_name === currentName))
     );
 
     const isReporter = !!(
-      (detail?.created_by && detail.created_by === currentUsername) ||
-      (detail?.reporter_name && (detail.reporter_name === currentUsername || detail.reporter_name === currentName)) ||
-      (detail?.created_by_name && (detail.created_by_name === currentUsername || detail.created_by_name === currentName))
+      isSameUser(detail?.created_by, userId, username) ||
+      (detail?.reporter_name && (detail.reporter_name === username || detail.reporter_name === currentName)) ||
+      (detail?.created_by_name && (detail.created_by_name === username || detail.created_by_name === currentName))
     );
 
     return { isAssignee, isReporter };
@@ -568,7 +569,7 @@ export default function TaskDetailPage() {
       if (resumeUser) {
         await request(`/${detail.id}`, {
           method: 'PUT',
-          body: JSON.stringify({ assigned_to: resumeUser.username, operation_type: 'reassign' }),
+          body: JSON.stringify({ assigned_to: resumeUser.id || resumeUser.username, operation_type: 'reassign' }),
         });
       }
 
@@ -596,10 +597,20 @@ export default function TaskDetailPage() {
       await request(`/${t.id}`, {
         method: 'PUT',
         body: JSON.stringify({
-          assigned_to: escalateUser.username,
+          assigned_to: escalateUser.id || escalateUser.username,
           operation_type: 'escalate',
         }),
       });
+
+      // 将升级原因记录为评论（系统评论只记录操作本身，不包含原因）
+      try {
+        await request(`/${t.id}/comments`, {
+          method: 'POST',
+          body: JSON.stringify({ content: `升级原因：${escalateReason.trim()}`, is_public: true }),
+        });
+      } catch {
+        // 评论写入失败不阻断主流程，工单状态已变更
+      }
 
       await refreshDetail();
       Toast({ message: `已升级，处理人已变更为 ${target}`, theme: 'success' });
@@ -751,6 +762,16 @@ export default function TaskDetailPage() {
         });
       }
 
+      // 将退回原因记录为评论（系统评论只记录操作本身，不包含原因）
+      try {
+        await request(`/${detail.id}/comments`, {
+          method: 'POST',
+          body: JSON.stringify({ content: `退回原因：${returnReason.trim()}`, is_public: true }),
+        });
+      } catch {
+        // 评论写入失败不阻断主流程，工单状态已变更
+      }
+
       await refreshDetail();
       Toast({ message: `已退回工单，处理人变更为 ${returnTo}`, theme: 'success' });
       setReturnReason('');
@@ -770,8 +791,18 @@ export default function TaskDetailPage() {
     try {
       await request(`/${detail.id}`, {
         method: 'PUT',
-        body: JSON.stringify({ assigned_to: reassignUser.username, operation_type: 'reassign' }),
+        body: JSON.stringify({ assigned_to: reassignUser.id || reassignUser.username, operation_type: 'reassign' }),
       });
+
+      // 将重新指派原因记录为评论（系统评论只记录操作本身，不包含原因）
+      try {
+        await request(`/${detail.id}/comments`, {
+          method: 'POST',
+          body: JSON.stringify({ content: `重新指派原因：${reassignReason.trim()}`, is_public: true }),
+        });
+      } catch {
+        // 评论写入失败不阻断主流程，工单状态已变更
+      }
 
       await refreshDetail();
       Toast({ message: `已重新指派给 ${target}`, theme: 'success' });
@@ -892,9 +923,10 @@ export default function TaskDetailPage() {
     }
     setSubmittingComment(true);
     try {
-      // 上传附件
+      // 上传附件（同名文件自动改名，避免后端对象名重复覆盖）
       const tempId = generateTempId();
-      for (const f of files) {
+      const uploads = dedupeFileNames(files);
+      for (const f of uploads) {
         await uploadCommentAttachment(f, tempId);
       }
       const newComment = await request<Comment>(`/${detail.id}/comments`, {
@@ -938,9 +970,10 @@ export default function TaskDetailPage() {
     const userMsg = text;
     setAskingAI(true);
     try {
-      // 上传附件
+      // 上传附件（同名文件自动改名，避免后端对象名重复覆盖）
       const tempId = generateTempId();
-      for (const f of files) {
+      const uploads = dedupeFileNames(files);
+      for (const f of uploads) {
         await uploadCommentAttachment(f, tempId);
       }
       // 1. 先保存用户的 @U老师 消息到 task_comments
@@ -1422,6 +1455,7 @@ export default function TaskDetailPage() {
           onSend={handleSendComment}
           onDeleteComment={handleDeleteComment}
           sending={submittingComment || askingAI}
+          optimisticAi={diagnosing || askingAI}
           enableAI
           enableAttach
           mentionUsers={projectMembers}
@@ -1495,6 +1529,7 @@ export default function TaskDetailPage() {
                     type="button"
                     disabled={priorityDisabled}
                     title={priorityDisabled ? '仅新建工单可修改优先级' : undefined}
+                    aria-label={priorityDisabled ? `优先级${label}（仅新建工单可修改优先级）` : `优先级${label}`}
                     className={`tasks-create-modal__radio-btn ${editForm.priority === value ? 'is-active' : ''} ${priorityDisabled ? 'is-disabled' : ''}`}
                     onClick={() => {
                       const r = getDeadlineRange(value, detail?.created_at);
@@ -1524,7 +1559,10 @@ export default function TaskDetailPage() {
                 style={{ width: '100%' }}
                 placeholder="点击选择"
                 format="YYYY-MM-DD HH:00"
-                showTime={{ defaultValue: editDeadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00' }}
+                showTime={{ defaultValue: editDeadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00', showNow: false }}
+                showNow={false}
+                placement="topLeft"
+                getPopupContainer={(trigger) => trigger.parentElement || document.body}
                 value={editForm.deadline_at ? dayjs(editForm.deadline_at) : null}
                 disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min, editDeadlineRange.max) : undefined}
@@ -1760,8 +1798,9 @@ export default function TaskDetailPage() {
       </Popup>
 
       <Dialog
+        className="diagnosis-report-dialog"
         visible={reportVisible}
-        title="🤖 U老师 诊断报告"
+        title="U老师 诊断报告"
         confirmBtn="关闭"
         onConfirm={() => setReportVisible(false)}
       >

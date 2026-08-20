@@ -9,6 +9,7 @@ import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
 import { currentYearMonth, normalizeSettlementPeriod } from '@/shared/utils/settlement';
+import { calcLifecycleProgress, PROJECT_ABORTED } from '@/shared/utils/projectLifecycle';
 import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
 import { MacStat } from '@/shared/components/macaronBits';
 import { MacSearch, MacFolderClosed } from '@/shared/components/macaronIcons';
@@ -44,30 +45,22 @@ interface WecomProjectRecord {
 }
 
 
-// 与跨项目看板的四个统计数字（项目总数/本月新增项目数/风险项目数/缺少对接人项目数）对应的筛选类型
-type ProjectFilter = 'new' | 'risk' | 'no_contact';
+// 与跨项目看板的统计入口对应的筛选类型：
+// 项目总数/本月新增项目数/风险项目数/缺少对接人项目数 + 调度项目看板点击某月柱（month）
+type ProjectFilter = 'new' | 'risk' | 'no_contact' | 'month';
 
 const FILTER_LABELS: Record<ProjectFilter, string> = {
   new: '本月新增项目数',
   risk: '风险项目数',
   no_contact: '对接人缺省',
+  month: '指定核算期项目',
 };
-
-/** 项目时间进度：部署日期 → 最终交付日期的已过时间占比（0-100）。
- *  任一日期缺失或区间非法时返回 null（卡片隐藏进度条，不展示伪造数据）。 */
-function calcTimeProgress(deploymentDate?: string | null, finalDeliveryDate?: string | null): number | null {
-  if (!deploymentDate || !finalDeliveryDate) return null;
-  const start = new Date(`${deploymentDate}T00:00:00`).getTime();
-  const end = new Date(`${finalDeliveryDate}T00:00:00`).getTime();
-  if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return null;
-  const now = Date.now();
-  return Math.max(0, Math.min(100, Math.round(((now - start) / (end - start)) * 100)));
-}
 
 export default function ProjectProgress() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const filter = (searchParams.get('filter') as ProjectFilter | null) || null;
+  const period = searchParams.get('period');
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [keyword, setKeyword] = useState('');
@@ -177,6 +170,9 @@ export default function ProjectProgress() {
     if (filter === 'new') {
       const ym = currentYearMonth();
       list = list.filter((p) => normalizeSettlementPeriod(p.settlement_period) === ym);
+    } else if (filter === 'month' && period) {
+      // 调度项目看板点击某月柱进入：按业绩核算期精确匹配该月（period 为 YYYY-MM）
+      list = list.filter((p) => normalizeSettlementPeriod(p.settlement_period) === period);
     } else if (filter === 'risk') {
       list = list.filter((p) => p.risks > 0);
     } else if (filter === 'no_contact') {
@@ -212,10 +208,10 @@ export default function ProjectProgress() {
         />
       </div>
 
-      {/* 筛选提示条：从跨项目看板某个统计数字点进来时显示，可点击返回全部项目 */}
+      {/* 筛选提示条：从跨项目看板某个统计数字/月份柱点进来时显示，可点击返回全部项目 */}
       {filter && (
         <div className="mac-filter-banner">
-          <span>当前筛选：<strong>{FILTER_LABELS[filter]}</strong>（{displayProjects.length}）</span>
+          <span>当前筛选：<strong>{filter === 'month' && period ? `${period} 核算期项目` : FILTER_LABELS[filter]}</strong>（{displayProjects.length}）</span>
           <button type="button" className="mac-filter-banner__back" onClick={() => setSearchParams({})}>
             查看全部
           </button>
@@ -232,7 +228,7 @@ export default function ProjectProgress() {
           const hasRisk = p.risks > 0;
           const wecomManager = wecomManagerOf(p);
           const completionRate = p.task_execution_stats?.completion_rate;
-          const timeProgress = calcTimeProgress(p.deployment_date, p.final_delivery_date);
+          const timeProgress = calcLifecycleProgress(p.status);
 
           return (
             <div
@@ -246,7 +242,7 @@ export default function ProjectProgress() {
               onTouchStart={startLongPress(p)}
               onTouchEnd={cancelLongPress}
               onTouchMove={cancelLongPress}
-              onMouseDown={startLongPress(p)}
+              onMouseDown={(e) => { if (e.button === 0) startLongPress(p)(); }}
               onMouseUp={cancelLongPress}
               onMouseLeave={cancelLongPress}
             >
@@ -258,8 +254,8 @@ export default function ProjectProgress() {
                 </span>
               </div>
 
-              {/* 项目时间进度（对照原型：部署→最终交付的时间占比，日期缺失时隐藏） */}
-              {timeProgress != null && (
+              {/* 项目时间进度（对照原型：与项目详情页同一口径 —— 按生命周期阶段线性计算；仅「项目中止」隐藏） */}
+              {p.status !== PROJECT_ABORTED && (
                 <div className="mac-progress">
                   <div className="mac-progress__head">
                     <span>项目时间进度</span>

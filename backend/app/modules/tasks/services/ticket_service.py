@@ -1,3 +1,4 @@
+import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, and_
 from typing import List, Optional, Dict, Any
@@ -11,6 +12,7 @@ from app.core.config import settings
 from app.utils.notification_utils import NotificationUtils
 from app.utils.image_processor import ImageProcessor
 from app.services.user_service import user_service
+from app.core.user_identity import identity_keys, to_user_id
 
 
 def convert_to_shanghai_time(dt: Optional[datetime]) -> Optional[datetime]:
@@ -47,8 +49,15 @@ class TicketService:
         for user_id, user_name in user_map.items():
             if isinstance(user_name, str) and name.lower() in user_name.lower():
                 matched_ids.append(user_id)
-        
+        for key in cls._assignee_match_values(name):
+            if key not in matched_ids:
+                matched_ids.append(key)
         return matched_ids
+
+    @staticmethod
+    def _assignee_match_values(raw: str) -> List[str]:
+        """assigned_to / created_by 存 users.id，筛选值可能仍是 username，两边都认。"""
+        return identity_keys(raw)
 
     @staticmethod
     async def create_ticket(db: AsyncSession, ticket_data: TicketCreate, created_by: str, comment_attachment_map: dict, token: Optional[str] = None) -> Ticket:
@@ -66,8 +75,12 @@ class TicketService:
             0
         )
 
+        created_by_id = to_user_id(created_by) or created_by
+        assigned_to_raw = ticket_data.assigned_to
+        assigned_to_id = (to_user_id(assigned_to_raw) or assigned_to_raw) if assigned_to_raw else created_by_id
+
         user_map = await TicketService._get_user_map(token)
-        created_by_name = user_map.get(created_by, created_by)
+        created_by_name = user_map.get(created_by_id, created_by)
 
         async with db.begin():
             db_ticket = Ticket(
@@ -76,7 +89,7 @@ class TicketService:
                 ticket_type=ticket_data.ticket_type,
                 priority=ticket_data.priority,
                 related_resource_id=ticket_data.related_resource_id,
-                created_by=created_by,
+                created_by=created_by_id,
                 tags=ticket_data.tags,
                 metadata_info=ticket_data.metadata_info,
                 project_name=ticket_data.project_name,
@@ -85,9 +98,9 @@ class TicketService:
                 # 接单人：尊重前端传入的 assigned_to（兜底双工单场景下工单2 直接指定项目负责人）；
                 # 未传时回退为创建人（原有行为）。传了 assigned_to 说明已明确派单，状态置为 IN_PROGRESS，
                 # 否则工单会留在 NEW 被派单 Worker 再次派单。
-                assigned_to=ticket_data.assigned_to or created_by,
+                assigned_to=assigned_to_id,
                 customer=ticket_data.customer,
-                status=TicketStatus.IN_PROGRESS if ticket_data.assigned_to else TicketStatus.NEW
+                status=TicketStatus.IN_PROGRESS if assigned_to_raw else TicketStatus.NEW
             )
             db.add(db_ticket)
             await db.flush()
@@ -118,7 +131,7 @@ class TicketService:
                     project_name=ticket.project_name or "",
                     operator=created_by_name,
                     deadline_at=ticket.deadline_at,
-                    user_names=[ticket_data.assigned_to],
+                    user_names=[assigned_to_id or ticket_data.assigned_to],
                     token=token,
                 )
                 logger.info(f"新建工单通知已发送: ticket_id={ticket.id}, assignee={ticket_data.assigned_to}")
@@ -186,8 +199,14 @@ class TicketService:
             query = query.where(Ticket.ticket_type == query_params.ticket_type)
 
         if query_params.created_by:
-            query = TicketService._apply_string_op(
-                query, Ticket.created_by, query_params.created_by, query_params.created_by_op, 'equals')
+            keys = TicketService._assignee_match_values(query_params.created_by)
+            op = query_params.created_by_op or 'equals'
+            if op == 'contains' and keys:
+                query = query.where(or_(*[Ticket.created_by.ilike(f"%{k}%") for k in keys]))
+            elif op == 'notEquals' and keys:
+                query = query.where(~Ticket.created_by.in_(keys))
+            elif keys:
+                query = query.where(Ticket.created_by.in_(keys))
 
         if query_params.created_by_name:
             matched_ids = await TicketService._get_user_ids_by_name(query_params.created_by_name, token)
@@ -195,8 +214,14 @@ class TicketService:
                 query = query.where(Ticket.created_by.in_(matched_ids))
 
         if query_params.assigned_to:
-            query = TicketService._apply_string_op(
-                query, Ticket.assigned_to, query_params.assigned_to, query_params.assigned_to_op, 'equals')
+            keys = TicketService._assignee_match_values(query_params.assigned_to)
+            op = query_params.assigned_to_op or 'equals'
+            if op == 'contains' and keys:
+                query = query.where(or_(*[Ticket.assigned_to.ilike(f"%{k}%") for k in keys]))
+            elif op == 'notEquals' and keys:
+                query = query.where(~Ticket.assigned_to.in_(keys))
+            elif keys:
+                query = query.where(Ticket.assigned_to.in_(keys))
 
         if query_params.assigned_to_name:
             matched_ids = await TicketService._get_user_ids_by_name(query_params.assigned_to_name, token)
@@ -204,8 +229,14 @@ class TicketService:
                 query = query.where(Ticket.assigned_to.in_(matched_ids))
 
         if query_params.customer:
-            query = TicketService._apply_string_op(
-                query, Ticket.customer, query_params.customer, query_params.customer_op, 'equals')
+            keys = TicketService._assignee_match_values(query_params.customer)
+            op = query_params.customer_op or 'equals'
+            if op == 'contains' and keys:
+                query = query.where(or_(*[Ticket.customer.ilike(f"%{k}%") for k in keys]))
+            elif op == 'notEquals' and keys:
+                query = query.where(~Ticket.customer.in_(keys))
+            elif keys:
+                query = query.where(Ticket.customer.in_(keys))
 
         if query_params.customer_name:
             matched_ids = await TicketService._get_user_ids_by_name(query_params.customer_name, token)
@@ -347,13 +378,26 @@ class TicketService:
         elif field_type == 'text':
             if op not in TEXT_OPS:
                 op = 'contains'
+            assignee_keys = (
+                TicketService._assignee_match_values(str(value))
+                if field in ('assignedTo', 'createdBy', 'customer') and isinstance(value, str)
+                else None
+            )
             if op == 'contains':
+                if assignee_keys:
+                    return query.where(or_(*[column.ilike(f"%{k}%") for k in assignee_keys]))
                 return query.where(column.ilike(f"%{value}%"))
             elif op == 'not_contains':
+                if assignee_keys:
+                    return query.where(~or_(*[column.ilike(f"%{k}%") for k in assignee_keys]))
                 return query.where(~column.ilike(f"%{value}%"))
             elif op == 'eq':
+                if assignee_keys:
+                    return query.where(column.in_(assignee_keys))
                 return query.where(column == value)
             elif op == 'ne':
+                if assignee_keys:
+                    return query.where(~column.in_(assignee_keys))
                 return query.where(column != value)
 
         elif field_type == 'enum':
@@ -580,6 +624,8 @@ class TicketService:
         for field, value in update_data.items():
             if field == "deadline_at":
                 value = convert_to_shanghai_time(value)
+            if field == "assigned_to" and value:
+                value = to_user_id(value) or value
             setattr(ticket, field, value)
 
         if "status" in update_data:
@@ -602,6 +648,9 @@ class TicketService:
             if ticket.customer:
                 notify_users.append(ticket.customer)
             notify_users = list(set(notify_users))
+            if operator_id:
+                operator_keys = set(identity_keys(operator_id))
+                notify_users = [u for u in notify_users if u not in operator_keys]
             if notify_users:
                 user_map = await TicketService._get_user_map(token)
                 
@@ -633,7 +682,6 @@ class TicketService:
                         token=token
                     )
         except Exception as e:
-            import logging
             logger = logging.getLogger(__name__)
             logger.error(f"Failed to send notification for ticket {ticket_id}: {str(e)}")
             notification_result = {
@@ -847,6 +895,9 @@ class TicketService:
             if ticket.customer:
                 notify_users.append(ticket.customer)
             notify_users = list(set(notify_users))
+            if operator_id:
+                operator_keys = set(identity_keys(operator_id))
+                notify_users = [u for u in notify_users if u not in operator_keys]
             
             if notify_users:
                 user_map = await TicketService._get_user_map(token)
@@ -863,7 +914,6 @@ class TicketService:
                     token=token
                 )
         except Exception as e:
-            import logging
             logger = logging.getLogger(__name__)
             logger.error(f"Failed to send notification for ticket {ticket_id}: {str(e)}")
         
@@ -880,7 +930,7 @@ class TicketService:
         if not ticket:
             return None
 
-        ticket.assigned_to = user_id
+        ticket.assigned_to = to_user_id(user_id) or user_id
         ticket.status = TicketStatus.IN_PROGRESS
 
         await db.commit()
@@ -918,18 +968,19 @@ class TicketService:
 
     @staticmethod
     async def get_filtered_tickets(db: AsyncSession, current_user_name: str, page: int = 1, size: int = 10, token: Optional[str] = None) -> Dict[str, Any]:
+        identity_keys_me = TicketService._assignee_match_values(current_user_name)
         filter_condition = or_(
             and_(
                 Ticket.status == TicketStatus.NEW,
-                Ticket.created_by == current_user_name
+                Ticket.created_by.in_(identity_keys_me) if identity_keys_me else Ticket.created_by == current_user_name
             ),
             and_(
                 Ticket.status.in_([TicketStatus.IN_PROGRESS, TicketStatus.PENDING]),
-                Ticket.assigned_to == current_user_name
+                Ticket.assigned_to.in_(identity_keys_me) if identity_keys_me else Ticket.assigned_to == current_user_name
             ),
             and_(
                 Ticket.status == TicketStatus.RESOLVED,
-                Ticket.customer == current_user_name
+                Ticket.customer.in_(identity_keys_me) if identity_keys_me else Ticket.customer == current_user_name
             )
         )
 
@@ -1065,7 +1116,8 @@ class TicketService:
         now = datetime.now()
         near_deadline = now + timedelta(hours=near_deadline_hours)
         
-        base_query = select(Ticket).where(Ticket.assigned_to == username)
+        keys = TicketService._assignee_match_values(username)
+        base_query = select(Ticket).where(Ticket.assigned_to.in_(keys) if keys else Ticket.assigned_to == username)
         
         pending_query = base_query.where(
             Ticket.status.in_([TicketStatus.NEW, TicketStatus.PENDING, TicketStatus.IN_PROGRESS])

@@ -1,17 +1,21 @@
 // 马卡龙月柱状图（对照 macaron MonthBars）：按月展示项目数量，
-// 默认「近半年前后」13 个月可滑动窗口并定位到当前月，可按年筛选 12 个月。
+// 默认「近一年」13 个月可滑动窗口（当月在最右侧，可向左滑动查看更早月份），
+// 可按年筛选 12 个月。
 import { useMemo, useRef, useState, useEffect } from 'react';
 import type { ProjectMonthlyItem } from '@/api/dashboard';
 
-/** 以当前月为中心，前后各 6 个月的可滑动窗口；默认视口显示前后 3 个月。 */
+/** 以当前月为终点、向前 12 个月的可滑动窗口；默认视口滚动到最右（当月最右侧）。 */
 export function ProjectMonthBars({
   data,
   years,
   style,
+  onSelect,
 }: {
   data: ProjectMonthlyItem[];
   years: number[];
   style?: React.CSSProperties;
+  /** 点击某个月柱时回调（参数为 YYYY-MM），用于跳转到该月项目列表 */
+  onSelect?: (key: string) => void;
 }) {
   const now = useMemo(() => new Date(), []);
   const currentKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -23,7 +27,8 @@ export function ProjectMonthBars({
     if (year === 'recent') {
       const base = new Date(now.getFullYear(), now.getMonth(), 1);
       const keys: string[] = [];
-      for (let i = -6; i <= 6; i++) {
+      // 窗口 = 当月向前 12 个月（共 13 根柱），当月排在最右
+      for (let i = -12; i <= 0; i++) {
         const d = new Date(base.getFullYear(), base.getMonth() + i, 1);
         keys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
       }
@@ -50,10 +55,14 @@ export function ProjectMonthBars({
   const step = Math.ceil(max / ticks);
   const top = step * ticks;
 
-  // 默认滚动到中间（最近月份）
+  // 滚动定位：「近一年」默认滚到最右（当月在最右侧）；按年筛选时定位到当前月（若在该年）
   useEffect(() => {
     const el = scroller.current;
     if (!el) return;
+    if (year === 'recent') {
+      el.scrollLeft = el.scrollWidth - el.clientWidth;
+      return;
+    }
     const target = el.querySelector<HTMLElement>(`[data-key="${active}"]`);
     if (target) {
       el.scrollLeft = Math.max(0, target.offsetLeft - el.clientWidth / 2 + target.clientWidth / 2);
@@ -70,7 +79,7 @@ export function ProjectMonthBars({
           className="mac-monthbars__select"
           aria-label="按年筛选"
         >
-          <option value="recent">近半年前后</option>
+          <option value="recent">近一年</option>
           {years.map((y) => (
             <option key={y} value={y}>
               {y} 年
@@ -96,12 +105,17 @@ export function ProjectMonthBars({
                   key={it.key}
                   data-key={it.key}
                   type="button"
-                  onClick={() => setActive(it.key)}
+                  onClick={() => {
+                    setActive(it.key);
+                    onSelect?.(it.key);
+                  }}
                   className="mac-monthbars__col"
                 >
                   <span className="mac-monthbars__barwrap">
                     {isActive ? (
-                      <span className="mac-monthbars__tooltip">{it.value} 个项目</span>
+                      <span className="mac-monthbars__tooltip" style={{ bottom: h + 8 }}>
+                        {it.value} 个项目
+                      </span>
                     ) : null}
                     <span
                       className="mac-monthbars__bar"
@@ -125,7 +139,7 @@ export function ProjectMonthBars({
         </div>
       </div>
       <p className="mac-monthbars__hint">
-        左右滑动查看前后 6 个月，更多请按年筛选
+        左右滑动查看近 12 个月，更多请按年筛选；点击月份查看该月项目
       </p>
     </div>
   );

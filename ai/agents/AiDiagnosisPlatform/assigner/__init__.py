@@ -71,7 +71,7 @@ async def assign_ticket(
     diagnosis_rounds: Optional[int] = None,
     contact: Optional[str] = None,
     creator: Optional[str] = None,
-    preferred_assignee: Optional[str] = None,  # 预留：用户提单时填写的倾向处理人（userId/username）
+    preferred_assignee: Optional[str] = None,  # 预留：用户提单时填写的倾向处理人（users.id）
 ) -> AssignmentResult:
     global _dispatch_singleton
     engineers = load_engineers()

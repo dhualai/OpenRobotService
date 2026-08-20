@@ -4,7 +4,7 @@
 export interface TicketFilterCondition {
   field?: string;
   op?: string;
-  value?: string | number;
+  value?: string | number | (string | number)[];
   or?: TicketFilterCondition[];
   and?: TicketFilterCondition[];
 }
@@ -31,7 +31,13 @@ export const buildRelevanceFilters = (
         {
           and: [
             { or: workingStatusFilters },
-            { field: 'assignedTo', op: 'eq', value: username },
+            { field: 'assignedTo', op: 'eq', value: username },  // username 或 users.id，后端双键解析
+          ],
+        },
+        {
+          and: [
+            { field: 'status', op: 'eq', value: 'resolved' },
+            { field: 'createdBy', op: 'eq', value: username },
           ],
         },
         {

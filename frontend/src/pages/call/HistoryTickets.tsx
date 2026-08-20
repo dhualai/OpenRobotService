@@ -4,11 +4,12 @@
 // 分页：每页 PAGE_SIZE 条，下拉刷新、触底加载更多。
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loading, Toast, Button, Popup } from 'tdesign-mobile-react';
+import { Loading, Toast, Button, Popup, DialogPlugin } from 'tdesign-mobile-react';
 import { Search, ArrowRight } from 'lucide-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
-import { urgeTicket, reportTicket, cancelTicket } from '@/api/ticket';
-import { isTerminalTicketStatus, canUrgeTicket, canReportTicket, canShowCancelButton } from '@/shared/constants/ticket';
+import { urgeTicket, reportTicket, cancelTicket, reDispatchTicket } from '@/api/ticket';
+import { isTerminalTicketStatus, canUrgeTicket, canReportTicket, canShowCancelButton, canCancelTicketByUser } from '@/shared/constants/ticket';
+import { useHorizontalScroll } from '@/shared/hooks/useHorizontalScroll';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import PullToRefresh from '@/shared/components/PullToRefresh';
@@ -51,7 +52,12 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   const navigate = useNavigate();
   const tasksRefreshKey = useWorkbenchStore((s) => s.tasksRefreshKey);
   const username = useAuthStore((s) => s.username);
+  const userId = useAuthStore((s) => s.userId);
   const isAdmin = useAuthStore((s) => s.isAdmin);
+
+  // 状态 tab 栏横向滚动 ref（PC 桌面端滚轮/拖拽横滑，移动端原生触摸滑动）
+  const tabsRef = useRef<HTMLDivElement>(null);
+  useHorizontalScroll(tabsRef);
 
   const [tickets, setTickets] = useState<AiTicketBrief[]>([]);
   const [loading, setLoading] = useState(false);
@@ -129,6 +135,13 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   const [actionUser, setActionUser] = useState<UserItem | null>(null);
   const [showActionPopup, setShowActionPopup] = useState(false);
 
+  // 重新派单：必选用户倾向派单人 + 可选备注
+  const [redispatchTicket, setRedispatchTicket] = useState<AiTicketBrief | null>(null);
+  const [redispatchUser, setRedispatchUser] = useState<UserItem | null>(null);
+  const [redispatchRemark, setRedispatchRemark] = useState('');
+  const [showRedispatchPopup, setShowRedispatchPopup] = useState(false);
+  const [redispatching, setRedispatching] = useState(false);
+
   const openActionPopup = (e: React.MouseEvent, t: AiTicketBrief, type: 'urge' | 'report') => {
     e.stopPropagation();
     if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
@@ -158,13 +171,56 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
     }
   };
 
-  const handleCancel = async (e: React.MouseEvent, t: AiTicketBrief) => {
-    e.stopPropagation();
+  const doCancel = async (t: AiTicketBrief) => {
     if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
     setActing({ id: t.id, action: 'cancel' });
     try { await cancelTicket(t.id); Toast({ message: '已撤回，工单已取消', theme: 'success' }); loadInitial(); }
     catch (err) { Toast({ message: `撤回失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }); }
     finally { setActing(null); }
+  };
+
+  const handleCancel = (e: React.MouseEvent, t: AiTicketBrief) => {
+    e.stopPropagation();
+    if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    const dlg = DialogPlugin.confirm!({
+      title: '撤回工单',
+      content: '撤回后工单将变为「已取消」，确认撤回吗？',
+      confirmBtn: '撤回',
+      cancelBtn: '再想想',
+      onConfirm: () => { doCancel(t); dlg.destroy(); },
+    });
+  };
+
+  const openRedispatchPopup = (e: React.MouseEvent, t: AiTicketBrief) => {
+    e.stopPropagation();
+    if (!t.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    // 提单时已指定处理人的工单，派单 Step 0 强信号会覆盖重新派单的倾向人，重派无效——提前弹警告拦截
+    const strongText = `${t.title || ''}\n${t.description || ''}`;
+    const strongMatch = strongText.match(/指定(?:处理人|人|人员)[:：]\s*([^\]\s，,；;:：）)】]{2,6})/);
+    if (strongMatch) {
+      Toast({ message: `该工单已指定处理人「${strongMatch[1]}」，无法重新派单`, theme: 'warning' });
+      return;
+    }
+    setRedispatchTicket(t);
+    setRedispatchUser(null);
+    setRedispatchRemark('');
+    setShowRedispatchPopup(true);
+  };
+
+  const handleRedispatchConfirm = async () => {
+    if (!redispatchTicket?.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    if (!redispatchUser?.id && !redispatchUser?.username) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
+    setRedispatching(true);
+    try {
+      await reDispatchTicket(redispatchTicket.id, redispatchUser.id || redispatchUser.username, redispatchRemark.trim() || undefined);
+      Toast({ message: '已重新派单，正在重新推荐处理人', theme: 'success' });
+      setShowRedispatchPopup(false);
+      loadInitial();
+    } catch (err) {
+      Toast({ message: `重新派单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setRedispatching(false);
+    }
   };
 
   return (
@@ -189,26 +245,24 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
             <button type="button" className="history-search__clear" onClick={() => setSearch('')} aria-label="清空">×</button>
           )}
         </div>
-        {/* 横向滚动容器：阻止 touch 事件冒泡到外层 swipeToClose，
-            避免左滑切换 tab 时误触发浮层关闭（手势由本容器独占横向滑动） */}
+        {/* 横向滚动容器 */}
         <div
+          ref={tabsRef}
           className="history-tabs"
-          onTouchStart={(e) => e.stopPropagation()}
-          onTouchMove={(e) => e.stopPropagation()}
-          onTouchEnd={(e) => e.stopPropagation()}
         >
           {STATUS_TABS.map((tab) => {
             const count = statusCounts[tab.countKey];
             return (
-              <button
-                key={tab.value}
-                type="button"
-                className={`history-tab${statusFilter === tab.value ? ' is-active' : ''}`}
-                onClick={() => setStatusFilter(tab.value)}
-              >
-                <span className="history-tab__label">{tab.label}</span>
+              <div key={tab.value} className="history-tab-wrap">
+                <button
+                  type="button"
+                  className={`history-tab${statusFilter === tab.value ? ' is-active' : ''}`}
+                  onClick={() => setStatusFilter(tab.value)}
+                >
+                  {tab.label}
+                </button>
                 {count != null && <span className="history-tab__count">{count}</span>}
-              </button>
+              </div>
             );
           })}
         </div>
@@ -251,13 +305,13 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
               {/* 人员流转（设计稿：头像 blue-3 + 姓名 | ArrowRight blue-3 居中 | 姓名 + 头像 blue-2）。
                   派单中（status=new 且处理人未写入，AI 派单 Worker 60s 轮询中）：显示「派单中」呼吸动效 */}
               <div className="task-card2__people">
-                <div className="task-card2__person task-card2__person--creator" title={`发起人：${t.created_by_name || t.created_by || '-'}`}>
+                <div className="task-card2__person task-card2__person--creator" title={`发起人：${t.created_by_name || t.created_by || '-'}`} aria-label={`发起人：${t.created_by_name || t.created_by || '-'}`}>
                   <span className="task-card2__avatar">{(t.created_by_name || t.created_by || '?').slice(0, 1).toUpperCase()}</span>
                   <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
                 </div>
                 <span className="task-card2__person-arrow"><ArrowRight size={16} strokeWidth={2} /></span>
                 {(t.status === 'new' && !t.assigned_to && !t.assigned_to_name) ? (
-                  <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单">
+                  <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单" aria-label="U老师 正在派单">
                     <span className="task-card2__avatar task-card2__avatar--assignee task-card2__avatar--dispatching"><i className="dispatch-pulse" /></span>
                     <span className="task-card2__person-name task-card2__person-name--dispatching">派单中</span>
                   </div>
@@ -280,9 +334,12 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                     新建/待处理可催办、撤回；处理中仅可上报；不可用按钮禁用 */}
                 {!isTerminalTicketStatus(t.status) && (
                   <div className="history-row__actions" onClick={(e) => e.stopPropagation()}>
-                    <Button size="extra-small" variant="outline" theme="default" disabled={!canUrgeTicket(t.status) || (acting?.id === t.id && acting?.action === 'urge')} title={canUrgeTicket(t.status) ? undefined : '仅新建/待处理工单可催办'} onClick={(e) => openActionPopup(e, t, 'urge')}>催办</Button>
-                    <Button size="extra-small" variant="outline" theme="default" disabled={!canReportTicket(t.status) || (acting?.id === t.id && acting?.action === 'report')} title={canReportTicket(t.status) ? undefined : '仅处理中工单可上报'} onClick={(e) => openActionPopup(e, t, 'report')}>上报</Button>
-                    {canShowCancelButton(t.status) && (
+                    <Button size="extra-small" variant="outline" theme="default" disabled={!canUrgeTicket(t.status) || (acting?.id === t.id && acting?.action === 'urge')} title={canUrgeTicket(t.status) ? undefined : '仅新建/待处理工单可催办'} aria-label={canUrgeTicket(t.status) ? undefined : '催办（仅新建/待处理工单可催办）'} onClick={(e) => openActionPopup(e, t, 'urge')}>催办</Button>
+                    <Button size="extra-small" variant="outline" theme="default" disabled={!canReportTicket(t.status) || (acting?.id === t.id && acting?.action === 'report')} title={canReportTicket(t.status) ? undefined : '仅处理中工单可上报'} aria-label={canReportTicket(t.status) ? undefined : '上报（仅处理中工单可上报）'} onClick={(e) => openActionPopup(e, t, 'report')}>上报</Button>
+                    {(t.source === 'ai' || !t.source) && !!t.assigned_to && (
+                    <Button size="extra-small" className="history-row__redispatch" loading={redispatching && redispatchTicket?.id === t.id} onClick={(e) => openRedispatchPopup(e, t)}>重新派单</Button>
+                    )}
+                    {canShowCancelButton(t.status) && canCancelTicketByUser(t.created_by, username, isAdmin, userId) && (
                     <Button size="extra-small" variant="outline" theme="default" loading={acting?.id === t.id && acting?.action === 'cancel'} disabled={acting?.id === t.id && acting?.action === 'cancel'} onClick={(e) => handleCancel(e, t)}>撤回</Button>
                     )}
                   </div>
@@ -309,6 +366,33 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
           <div className="conv-dialog__btns">
             <Button block theme="default" onClick={() => setShowActionPopup(false)}>取消</Button>
             <Button block theme="primary" disabled={!actionUser} loading={!!acting} onClick={handleActionConfirm}>确定</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 重新派单 弹窗（必选倾向处理人 + 可选备注） */}
+      <Popup visible={showRedispatchPopup} onClose={() => setShowRedispatchPopup(false)} placement="bottom" showOverlay>
+        <div className="conv-dialog">
+          <h4 className="conv-dialog__title">重新派单</h4>
+          <p className="conv-dialog__msg">将强制重新智能派单，请选择倾向处理人</p>
+          <div style={{ marginBottom: 16 }}>
+            <UserSelect
+              value={redispatchUser?.id ?? null}
+              onChange={(u) => setRedispatchUser(u)}
+              placeholder="选择倾向处理人（必选）"
+              title="选择倾向处理人"
+            />
+          </div>
+          <input
+            className="conv-dialog__input"
+            placeholder="备注（可选）：换人原因或给新处理人的说明"
+            value={redispatchRemark}
+            onChange={(e) => setRedispatchRemark(e.target.value)}
+            maxLength={200}
+          />
+          <div className="conv-dialog__btns">
+            <Button block theme="default" onClick={() => setShowRedispatchPopup(false)}>取消</Button>
+            <Button block theme="primary" disabled={!redispatchUser} loading={redispatching} onClick={handleRedispatchConfirm}>确定重新派单</Button>
           </div>
         </div>
       </Popup>

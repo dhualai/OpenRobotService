@@ -52,12 +52,27 @@ export default defineConfig(({ command }) => {
       proxy,
     },
     build: {
+      // echarts 按需引入（core + bar/pie + canvas 渲染）后单 chunk 约 555 kB，
+      // 已是 tree-shake 后的合理下限（整包原为 1.1MB），阈值放宽到 600 以避免误报。
+      chunkSizeWarningLimit: 600,
       rollupOptions: {
         output: {
-          manualChunks: {
-            echarts: ['echarts', 'echarts-for-react'],
-            tdesign: ['tdesign-mobile-react'],
-            react: ['react', 'react-dom', 'react-router-dom'],
+          // 按模块路径分组而非按包名整包引入：既能合并出稳定 chunk，又不破坏 tree-shaking。
+          // 此前 `echarts: ['echarts', ...]` 会把整个 echarts 包强制打入，正是 1.1MB chunk 的来源。
+          manualChunks(id: string) {
+            if (!id.includes('node_modules')) return undefined;
+            if (id.includes('/echarts') || id.includes('/zrender')) return 'echarts';
+            if (id.includes('/tdesign-mobile-react') || id.includes('/tdesign-icons-react')) return 'tdesign';
+            if (id.includes('/pdfjs-dist')) return 'pdfjs';
+            if (
+              id.includes('/react/') ||
+              id.includes('/react-dom/') ||
+              id.includes('/react-router') ||
+              id.includes('/scheduler/')
+            ) {
+              return 'react';
+            }
+            return undefined;
           },
         },
       },

@@ -216,7 +216,12 @@ export default function ProjectAuth({ selectedProject }: { selectedProject: Proj
               className="mac-input"
               style={{ marginBottom: 10 }}
               value={machineCode}
-              onChange={(e) => setMachineCode(e.target.value)}
+              onChange={(e) => {
+                let v = e.target.value;
+                // 自动补全：若不是 = 号结尾，补一个 = 号
+                if (v && !v.endsWith('=')) v = v + '=';
+                setMachineCode(v);
+              }}
               placeholder="请输入机器码"
             />
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
