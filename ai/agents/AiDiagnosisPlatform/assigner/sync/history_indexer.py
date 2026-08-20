@@ -9,17 +9,56 @@
 数据来源：与 sync/history_sync.py 一致——只取 status=closed（提单人确认解决）。
 """
 import asyncio
+import json
+import os
 import time
+from pathlib import Path
+
+from dotenv import load_dotenv, dotenv_values
+from sqlalchemy import create_engine, text
 
 from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER")
 
+_ENGINE = None
+
+
+def _get_database_url() -> str:
+    """解析后端数据库连接串（backend/.env 优先，ai/.env 兜底）。
+
+    ⚠️ 刻意不 import app.core.config / app.core.db：
+    它们会触发 backend 顶层 app 包的 __init__（setup_logging），而 logging 配置里
+    硬编码了 backend.app... handler 类，导致在 `python -m` 单独跑脚本时循环导入崩溃
+    （AttributeError: cannot access submodule 'app' of module 'backend'）。
+    这里自举读取 DATABASE_URL，绕过该链路。
+    """
+    _project = Path(__file__).resolve().parents[5]  # → 项目根
+    backend_env = _project / "backend" / ".env"
+    for env_file in (backend_env, _project / "ai" / ".env"):
+        if env_file.exists():
+            vals = dotenv_values(env_file)
+            url = (vals or {}).get("DATABASE_URL")
+            if url:
+                return url
+    # 兜底：已注入到 os.environ 的情况
+    return os.environ.get("DATABASE_URL", "") or "mysql+pymysql://root:123456@127.0.0.1:3306/helpdesk"
+
+
+def _get_engine():
+    global _ENGINE
+    if _ENGINE is None:
+        url = _get_database_url()
+        _ENGINE = create_engine(url, pool_pre_ping=True, pool_recycle=3600)
+    return _ENGINE
+
 
 def _load_closed_tasks() -> list[dict]:
-    """从 tasks 表拉取所有 closed 工单（含 engineer_id 及召回所需字段）。"""
-    from app.core.db import SessionLocal
-    from app.models.task import Task, TaskStatus
+    """从 tasks 表拉取所有 closed 工单（含 engineer_id 及召回所需字段）。
+
+    自举实现：直接连库 + 原生 SQL，不依赖 backend 的 ORM 模型（避免触发
+    backend app 包初始化导致的循环导入崩溃，见 _get_database_url 注释）。
+    """
     from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
     from ai.agents.AiDiagnosisPlatform.assigner.sync.history_sync import (
         _extract_modules, _norm_task_type,
@@ -28,39 +67,37 @@ def _load_closed_tasks() -> list[dict]:
     cfg = AssignerConfig()
     keyword_dict = cfg.module_keywords or {}
 
-    db = SessionLocal()
+    db = _get_engine().connect()
     try:
-        rows = (
-            db.query(Task)
-            .filter(
-                Task.status == TaskStatus.CLOSED,
-                Task.assigned_to.isnot(None),
-                Task.assigned_to != "",
-            )
-            .order_by(Task.created_at.desc())
-            .all()
-        )
+        rows = db.execute(text(
+            "SELECT id, title, description, task_type, assigned_to, "
+            "       metadata_info, created_at "
+            "FROM tasks "
+            "WHERE status = 'closed' "
+            "  AND assigned_to IS NOT NULL AND assigned_to != '' "
+            "ORDER BY created_at DESC"
+        )).mappings().all()
+
         records = []
         for t in rows:
-            title = t.title or ""
-            desc = t.description or ""
+            title = t["title"] or ""
+            desc = t["description"] or ""
             combined = f"{title} {desc}"
-            meta = getattr(t, "metadata_info", None)
+            meta = t["metadata_info"]
             if not isinstance(meta, dict):
                 try:
-                    import json
                     meta = json.loads(meta) if meta else {}
                 except Exception:
                     meta = {}
             records.append({
-                "engineer_id": t.assigned_to,
+                "engineer_id": t["assigned_to"],
                 "title": title,
                 "description": desc[:2000],
                 "modules": _extract_modules(combined, keyword_dict),
-                "task_type": _norm_task_type(getattr(t, "task_type", None)),
+                "task_type": _norm_task_type(t["task_type"]),
                 "fault_code": meta.get("fault_code") or "",
                 "robot_type": meta.get("robot_type") or "",
-                "closed_at": getattr(t, "created_at", None),
+                "closed_at": t["created_at"],
             })
         return records
     finally:

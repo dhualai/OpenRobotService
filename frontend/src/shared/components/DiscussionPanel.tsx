@@ -168,8 +168,18 @@ export default function DiscussionPanel({
   const [aiRunId, setAiRunId] = useState<string | undefined>();
   const [aiTodos, setAiTodos] = useState<AiProgressTodo[]>([]);
   const [aiPhase, setAiPhase] = useState<'running' | 'done'>('done');
+  // 过程区是否"活跃"：sending（@U老师 讨论 POST）或 optimisticAi（[帮我分析] diagnose）
+  // 任一为 true 都表示有一段 AI 执行正在进行。用于：
+  // ① 忽略 AI 结束后迟到的 running 事件（done 丢失又把过程区点亮）
+  // ② AI 执行结束（两标志均 false）后强制收起过程区，不再强依赖 WS done 事件送达。
+  const aiActive = sending || optimisticAi;
+  const aiActiveRef = useRef<boolean>(aiActive);
+  aiActiveRef.current = aiActive;
 
   const handleWsAiProgress = useCallback((ev: { run_id?: string; phase: 'running' | 'done'; todos: AiProgressTodo[] }) => {
+    // AI 执行已结束（sending/optimisticAi 均 false）后到的事件一律忽略：
+    // 本轮过程区已由收尾逻辑强制收起，迟到的 running（WS 重连/竞态）不应再点亮它。
+    if (!aiActiveRef.current) return;
     if (ev.phase === 'running') {
       setAiRunId((prev) => (prev === undefined ? ev.run_id : prev));
     }
@@ -219,15 +229,20 @@ export default function DiscussionPanel({
       setAiPhase('done');
     }
     prevSendingRef.current = sending;
-    // done 后 sending(false)，短暂保留过程区让用户看到结果，随后隐藏
-    if (!sending && allTodosDone && aiRunId !== undefined) {
+    // AI 执行结束（sending/optimisticAi 均 false）→ 短暂保留过程区让用户看到结果，
+    // 随后**强制收起**。这里不再强依赖 allTodosDone（等价于收到 WS done 事件）——
+    // done 广播可能因 WS 断线/竞态丢失，若仅靠它收起，aiPhase 会卡在 'running'
+    // 导致过程区「一直挂着」。只要 aiActive=false 即说明 POST 已返回、AI 已跑完，
+    // 故直接复位 aiPhase + 清空 todos。
+    if (!aiActive && aiRunId !== undefined) {
       const t = setTimeout(() => {
         setAiRunId(undefined);
         setAiTodos([]);
+        setAiPhase('done');
       }, 400);
       return () => clearTimeout(t);
     }
-  }, [sending, allTodosDone, aiTodos, aiRunId]);
+  }, [sending, allTodosDone, aiTodos, aiRunId, aiActive]);
 
   // username → 展示名 映射（用于在线头像 / 输入中提示）
   const nameMap = useMemo(() => {
