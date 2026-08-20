@@ -5952,16 +5952,18 @@ html, body, #root {
   font-weight: 500;
   font-size: 12px;
   border-radius: var(--radius-md);
-  border-color: var(--blue-2);
   background: var(--blue-2);
   color: #fff;
 }
+/* 边缘优化根因：TDesign 按钮边框不是 border 属性，而是 ::after 伪元素（width/height:200% + scale(0.5) 实现高清 1px 边框）。
+   业务改 border-color 对 ::after 无效，导致「蓝色背景块」与「TDesign 默认灰色边框(#dcdcdc/#e7e7e7)」之间
+   形成一圈灰色留白。正确做法：禁用 ::after，让背景色成为按钮边界，文字与色块无缝贴合。 */
+.history-row__actions .t-button::after { display: none !important; content: none !important; }
 .history-row__actions .t-button:not(.t-button--disabled):active { background: var(--blue-1); }
 .history-row__actions .t-button.t-button--disabled { opacity: 0.45; }
 /* 重新派单：深蓝实心 + 白字，与 outline 的催办/上报/撤回区分，保证浅底上字清晰 */
 .history-row__actions .t-button.history-row__redispatch {
   background: var(--blue-1);
-  border-color: var(--blue-1);
   color: #fff;
 }
 .history-row__actions .t-button.history-row__redispatch:not(.t-button--disabled):active { background: var(--blue-2); }
