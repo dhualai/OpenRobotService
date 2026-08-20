@@ -34,6 +34,7 @@ const adminMenuItems: MenuItem[] = [
 
   // === 管理工具 ===
   { path: '/admin/users', label: '用户管理', emoji: '👤' },
+  { path: '/admin/module-tree', label: '责任模块树', emoji: '🌳' },
   { path: '/admin/roles', label: '角色管理', emoji: '🏷️' },
   { path: '/admin/assign-role', label: '分配角色', emoji: '👤' },
   { path: '/admin/user-setup', label: '设置用户', emoji: '🔀' },
