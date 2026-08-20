@@ -6,8 +6,9 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Toast, Loading, Dialog, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { useAuthStore } from '@/stores/auth';
 import {
-  MacPlus, MacX, MacSearch, MacCheck,
+  MacPlus, MacX, MacSearch,
 } from '@/shared/components/macaronIcons';
 
 interface Engineer {
@@ -60,6 +61,43 @@ export default function ModuleTreeManage() {
   // 工程师选择弹层状态
   const [pickEng, setPickEng] = useState<{ ifaceIdx: number; funcIdx: number } | null>(null);
   const [engSearch, setEngSearch] = useState('');
+
+  // 树状折叠状态：界面默认展开；功能详情默认折叠（只显示功能名+负责人）
+  const [collapsedIfaces, setCollapsedIfaces] = useState<Record<number, boolean>>({});
+  const [expandedFns, setExpandedFns] = useState<Record<string, boolean>>({});
+
+  // 切换产品时：界面全部展开，功能详情全部折叠
+  useEffect(() => {
+    setCollapsedIfaces({});
+    setExpandedFns({});
+  }, [active]);
+
+  // 功能负责人标签：无负责人显示「待分配」
+  const fnOwnerLabel = (fn: FuncNode) => {
+    if (!fn.engineers || fn.engineers.length === 0) return '待分配';
+    return fn.engineers.map((id) => engName(id, candidates)).join('、');
+  };
+
+  // ── 编辑权限 ──
+  const storeUserId = useAuthStore((s) => s.userId);
+  const [perm, setPerm] = useState<{ user_id: string; is_privileged: boolean } | null>(null);
+  useEffect(() => {
+    request<{ user_id: string; is_privileged: boolean }>('/module-tree/permission')
+      .then((p) => setPerm(p))
+      .catch(() => setPerm(null));
+  }, [request]);
+
+  // 判断当前用户是否能直接编辑某功能：白名单/本人负责/待分配 → 可编辑
+  const canEditFn = (fn: FuncNode) => {
+    if (perm?.is_privileged) return true;
+    const engs = (fn.engineers || []).map(String);
+    if (engs.length === 0) return true; // 待分配：任意登录用户可编辑
+    const myId = String(perm?.user_id || storeUserId || '');
+    return myId !== '' && engs.includes(myId);
+  };
+
+  // 指定负责工程师（仅管理员/特殊权限可改负责人分配；普通用户改不了他人模块）
+  const canAssignEng = !!perm?.is_privileged;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -190,23 +228,53 @@ export default function ModuleTreeManage() {
     }
   };
 
+  // 判断是否「真·工程师」：内部账号（非 wechat_ 前缀）且有像样的姓名
+  const isRealEng = (c: Engineer) => {
+    const uname = (c.username || '').toLowerCase();
+    const n = (c.name || '').trim();
+    if (uname.startsWith('wechat_')) return false;
+    if (!n || /^[\W_]+$/.test(n)) return false; // 纯符号/空白姓名
+    return true;
+  };
+
   const filteredCands = candidates.filter((c) =>
     !engSearch || c.name.toLowerCase().includes(engSearch.toLowerCase()) || (c.department || '').includes(engSearch));
 
-  const renderEngChips = (ifaceIdx: number, funcIdx: number, fn: FuncNode) => (
+  // 候选分组：真工程师按部门分组；微信/无效账号统一折叠到「其他账号」
+  const realCands = filteredCands.filter(isRealEng);
+  const wechatCands = filteredCands.filter((c) => !isRealEng(c));
+  const deptGroups: { dept: string; list: Engineer[] }[] = [];
+  for (const c of realCands) {
+    const dept = (c.department || '').trim() || '未分组';
+    let g = deptGroups.find((x) => x.dept === dept);
+    if (!g) { g = { dept, list: [] }; deptGroups.push(g); }
+    g.list.push(c);
+  }
+  deptGroups.sort((a, b) => a.dept.localeCompare(b.dept, 'zh-Hans-CN'));
+  const [showWechatGroup, setShowWechatGroup] = useState(false);
+
+  const renderEngChips = (ifaceIdx: number, funcIdx: number, fn: FuncNode, canEdit: boolean, canAssign: boolean) => (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '4px 8px' }}>
       {fn.engineers.map((eid, k) => (
         <span key={k} className="mac-kwchip">
           {engName(eid, candidates)}
-          <span
-            className="mac-kwchip__remove"
-            onClick={() => updateFuncField(ifaceIdx, funcIdx, { engineers: fn.engineers.filter((_, kdx) => kdx !== k) })}
-          >×</span>
+          {canEdit && canAssign && (
+            <span
+              className="mac-kwchip__remove"
+              onClick={() => updateFuncField(ifaceIdx, funcIdx, { engineers: fn.engineers.filter((_, kdx) => kdx !== k) })}
+            >×</span>
+          )}
         </span>
       ))}
-      <span className="mac-chip mac-chip--tag-blue" onClick={() => setPickEng({ ifaceIdx, funcIdx })}>
-        指定负责工程师 +
-      </span>
+      {canEdit && canAssign ? (
+        <span className="mac-chip mac-chip--tag-blue" onClick={() => setPickEng({ ifaceIdx, funcIdx })}>
+          指定负责工程师 +
+        </span>
+      ) : (
+        <span className="mac-chip mac-chip--tag-muted" style={{ fontSize: 11 }}>
+          {canEdit ? '由管理员分配负责人' : '🔒 由他人负责，需其同意才能修改'}
+        </span>
+      )}
     </div>
   );
 
@@ -228,14 +296,15 @@ export default function ModuleTreeManage() {
       </div>
 
       {/* 产品选择器 */}
-      <div className="mac-search" style={{ marginBottom: 12 }}>
-        <MacSearch size={16} />
+      <div className="mac-tree-add" style={{ marginBottom: 12 }}>
+        <span className="mac-tree-add__icon"><MacPlus size={16} /></span>
         <input
           placeholder="新增产品名（如 调度USP / 摇人吧服务号）"
           value={newProdName}
           onChange={(e) => setNewProdName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { addProduct(); } }}
         />
-        <button type="button" className="mac-btn mac-btn--primary" onClick={addProduct}>新增</button>
+        <button type="button" className="mac-tree-add__btn" onClick={addProduct}>新增</button>
       </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
         {products.map((p) => (
@@ -252,93 +321,142 @@ export default function ModuleTreeManage() {
       ) : (
         <>
           {/* 新增界面 */}
-          <div className="mac-search" style={{ marginBottom: 12 }}>
-            <MacPlus size={16} />
+          <div className="mac-tree-add" style={{ marginBottom: 10 }}>
+            <span className="mac-tree-add__icon"><MacPlus size={16} /></span>
             <input
-              placeholder="新增界面（如 任务管理 / 地图 / 仿真）"
+              placeholder="新增界面名称，回车确定"
               value={newIfaceName}
               onChange={(e) => setNewIfaceName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { addInterface(); } }}
             />
-            <button className="mac-btn mac-btn--primary" onClick={addInterface}>添加</button>
+            <button type="button" className="mac-tree-add__btn" onClick={addInterface}>添加</button>
           </div>
 
-          {/* 界面列表 */}
-          {activeTree.interfaces.map((iface, i) => (
-            <div key={i} className="mac-module-card" style={{ marginBottom: 12 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <input
-                  className="mac-input"
-                  style={{ fontWeight: 700, fontSize: 16 }}
-                  value={iface.name}
-                  onChange={(e) => renameInterface(i, e.target.value)}
-                />
-                <button type="button" className="mac-btn mac-btn--ghost" onClick={() => removeInterface(i)}>
-                  <MacX size={14} /> 删除
-                </button>
-              </div>
-
-              {/* 新增功能 */}
-              <div className="mac-search" style={{ margin: '8px 0' }}>
-                <MacPlus size={16} />
-                <input
-                  placeholder="新增功能（如 任务下发）"
-                  value={newFuncName[`${i}`] || ''}
-                  onChange={(e) => setNewFuncName((prev) => ({ ...prev, [`${i}`]: e.target.value }))}
-                />
-                <button className="mac-btn mac-btn--primary" onClick={() => addFunc(i)}>添加</button>
-              </div>
-
-              {/* 功能列表 */}
-              {iface.functions.map((fn, j) => (
-                <div key={j} className="mac-sheet" style={{ marginBottom: 10, padding: 10, background: 'rgba(0,0,0,0.02)' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <input
-                      className="mac-input"
-                      style={{ fontWeight: 600 }}
-                      value={fn.name}
-                      onChange={(e) => renameFunc(i, j, e.target.value)}
-                    />
-                    <button type="button" className="mac-btn mac-btn--ghost" onClick={() => removeFunc(i, j)}>
-                      <MacX size={14} /> 删除
-                    </button>
-                  </div>
-
-                  {/* keywords */}
-                  <div style={{ marginTop: 8, fontSize: 13, color: '#666' }}>关键词（L3 子串匹配）：</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '4px 0' }}>
-                    {fn.keywords.map((k, kdx) => (
-                      <span key={kdx} className="mac-kwchip">
-                        {k}
-                        <span className="mac-kwchip__remove" onClick={() => removeKeyword(i, j, kdx)}>×</span>
-                      </span>
-                    ))}
-                  </div>
-                  <div className="mac-search" style={{ margin: '4px 0' }}>
-                    <MacPlus size={16} />
-                    <input
-                      placeholder="添加关键词"
-                      value={kwInputs[`${i}-${j}`] || ''}
-                      onChange={(e) => setKwInputs((prev) => ({ ...prev, [`${i}-${j}`]: e.target.value }))}
-                    />
-                    <button className="mac-btn mac-btn--primary" onClick={() => addKeyword(i, j)}>加</button>
-                  </div>
-
-                  {/* anchor */}
-                  <div style={{ marginTop: 8, fontSize: 13, color: '#666' }}>语义锚（L2）：</div>
+          {/* 界面树：每个界面为可折叠节点，功能缩进嵌套 */}
+          {activeTree.interfaces.map((iface, i) => {
+            const ifaceCollapsed = !!collapsedIfaces[i];
+            return (
+              <div key={i} style={{ marginBottom: 10 }}>
+                {/* 界面行 */}
+                <div
+                  className="mac-iface-row"
+                  onClick={() => setCollapsedIfaces((prev) => ({ ...prev, [i]: !prev[i] }))}
+                >
+                  <span className={`mac-tree-chevron mac-iface-row__icon ${ifaceCollapsed ? '' : 'mac-tree-chevron--open'}`}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                  </span>
+                  <svg className="mac-iface-row__icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z"/></svg>
                   <input
-                    className="mac-input"
-                    placeholder="一句语义描述，逗号分隔"
-                    value={fn.anchor || ''}
-                    onChange={(e) => updateFuncField(i, j, { anchor: e.target.value })}
+                    className="mac-iface-row__name"
+                    value={iface.name}
+                    onChange={(e) => renameInterface(i, e.target.value)}
+                    onClick={(e) => e.stopPropagation()}
                   />
-
-                  {/* engineers */}
-                  <div style={{ marginTop: 8, fontSize: 13, color: '#666' }}>负责工程师：</div>
-                  {renderEngChips(i, j, fn)}
+                  <span className="mac-iface-row__badge">{iface.functions.length} 功能</span>
+                  <button type="button" className="mac-btn mac-btn--ghost mac-iface-row__del" onClick={(e) => { e.stopPropagation(); removeInterface(i); }}>
+                    <MacX size={14} />
+                  </button>
                 </div>
-              ))}
-            </div>
-          ))}
+
+                {/* 界面展开：功能树（缩进） */}
+                {!ifaceCollapsed && (
+                  <div className="mac-fn-tree">
+                    {iface.functions.map((fn, j) => {
+                      const fnKey = `${i}-${j}`;
+                      const fnExpanded = !!expandedFns[fnKey];
+                      const canEdit = canEditFn(fn);
+                      const ownerNames = (fn.engineers || []).map((id) => engName(id, candidates)).join('、');
+                      return (
+                        <div key={j} className="mac-fn-node">
+                          <div className="mac-fn-node__head" onClick={() => setExpandedFns((prev) => ({ ...prev, [fnKey]: !prev[fnKey] }))}>
+                            <span className="mac-fn-node__dot" />
+                            <input
+                              className={`mac-fn-node__name${canEdit ? '' : ' mac-fn-node__name--locked'}`}
+                              value={fn.name}
+                              disabled={!canEdit}
+                              onChange={(e) => renameFunc(i, j, e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              title={canEdit ? '' : `由 ${ownerNames} 负责，需其同意后才能修改`}
+                            />
+                            {!canEdit && (
+                              <span className="mac-fn-lock" title={`由 ${ownerNames} 负责`}>
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                              </span>
+                            )}
+                            <span className={`mac-fn-owner ${fn.engineers && fn.engineers.length > 0 ? 'mac-fn-owner--assigned' : ''}`}>
+                              {fn.engineers && fn.engineers.length > 0 && (
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                              )}
+                              {fnOwnerLabel(fn)}
+                            </span>
+                            {canEdit && (
+                              <button type="button" className="mac-btn mac-btn--ghost mac-fn-node__del" onClick={(e) => { e.stopPropagation(); removeFunc(i, j); }}>
+                                <MacX size={13} />
+                              </button>
+                            )}
+                          </div>
+
+                          {fnExpanded && (
+                            <div className="mac-fn-node__body">
+                              {/* keywords */}
+                              <div className="mac-field-label">关键词（L3 子串匹配）</div>
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                {fn.keywords.map((k, kdx) => (
+                                  <span key={kdx} className="mac-kwchip">
+                                    {k}
+                                    {canEdit && <span className="mac-kwchip__remove" onClick={() => removeKeyword(i, j, kdx)}>×</span>}
+                                  </span>
+                                ))}
+                              </div>
+                              {/* 添加关键词 */}
+                              {canEdit && (
+                                <div className="mac-tree-add mac-tree-add--sm" style={{ marginTop: 6 }}>
+                                  <span className="mac-tree-add__icon"><MacPlus size={13} /></span>
+                                  <input
+                                    placeholder="添加关键词，回车"
+                                    value={kwInputs[`${i}-${j}`] || ''}
+                                    onChange={(e) => setKwInputs((prev) => ({ ...prev, [`${i}-${j}`]: e.target.value }))}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') { addKeyword(i, j); } }}
+                                  />
+                                  <button type="button" className="mac-tree-add__btn" onClick={() => addKeyword(i, j)}>+</button>
+                                </div>
+                              )}
+
+                              {/* anchor */}
+                              <div className="mac-field-label">语义锚（L2）</div>
+                              <input
+                                className="mac-input"
+                                placeholder="一句语义描述，逗号分隔"
+                                value={fn.anchor || ''}
+                                disabled={!canEdit}
+                                onChange={(e) => updateFuncField(i, j, { anchor: e.target.value })}
+                              />
+
+                              {/* engineers */}
+                              <div className="mac-field-label">负责工程师</div>
+                              {renderEngChips(i, j, fn, canEdit, canAssignEng)}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* 新增功能 */}
+                    <div className="mac-tree-add">
+                      <span className="mac-tree-add__icon"><MacPlus size={14} /></span>
+                      <input
+                        placeholder="新增功能名称，回车确定"
+                        value={newFuncName[`${i}`] || ''}
+                        onChange={(e) => setNewFuncName((prev) => ({ ...prev, [`${i}`]: e.target.value }))}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { addFunc(i); } }}
+                      />
+                      <button type="button" className="mac-tree-add__btn" onClick={() => addFunc(i)}>添加</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </>
       )}
 
@@ -362,30 +480,81 @@ export default function ModuleTreeManage() {
           </div>
           <div>
             {filteredCands.length === 0 && <div style={{ color: '#999', padding: 12 }}>无匹配工程师</div>}
-            {filteredCands.map((c) => {
-              const ifaceIdx = pickEng?.ifaceIdx ?? 0;
-              const funcIdx = pickEng?.funcIdx ?? 0;
-              const fn = trees[active]?.interfaces?.[ifaceIdx]?.functions?.[funcIdx];
-              const selected = fn?.engineers?.includes(c.id) || false;
-              return (
-                <div
-                  key={c.id}
-                  className="mac-user-card"
-                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 10, cursor: 'pointer' }}
-                  onClick={() => {
-                    const cur = fn?.engineers || [];
-                    const next = selected ? cur.filter((x) => x !== c.id) : [...cur, c.id];
-                    updateFuncField(ifaceIdx, funcIdx, { engineers: next });
-                  }}
-                >
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{c.name}<span style={{ color: '#999', fontWeight: 400 }}> ({c.username})</span></div>
-                    <div style={{ fontSize: 12, color: '#888' }}>{c.department || '无部门'}</div>
-                  </div>
-                  {selected && <MacCheck size={16} />}
+
+            {/* 真工程师：按部门分组 */}
+            {deptGroups.map((g) => (
+              <div key={g.dept}>
+                <div className="mac-eng-group__label">
+                  {g.dept}
+                  <span className="count">{g.list.length} 人</span>
                 </div>
-              );
-            })}
+                {g.list.map((c) => {
+                  const ifaceIdx = pickEng?.ifaceIdx ?? 0;
+                  const funcIdx = pickEng?.funcIdx ?? 0;
+                  const fn = trees[active]?.interfaces?.[ifaceIdx]?.functions?.[funcIdx];
+                  const selected = fn?.engineers?.includes(c.id) || false;
+                  return (
+                    <div
+                      key={c.id}
+                      className={`mac-eng-row${selected ? ' mac-eng-row--sel' : ''}`}
+                      onClick={() => {
+                        const cur = fn?.engineers || [];
+                        const next = selected ? cur.filter((x) => x !== c.id) : [...cur, c.id];
+                        updateFuncField(ifaceIdx, funcIdx, { engineers: next });
+                      }}
+                    >
+                      <span className="mac-eng-row__avatar">{c.name ? c.name.trim().charAt(0) : '?'}</span>
+                      <div className="mac-eng-row__main">
+                        <div className="mac-eng-row__name">{c.name}</div>
+                        <div className="mac-eng-row__sub">{c.username}{c.department ? ` · ${c.department}` : ''}</div>
+                      </div>
+                      <span className="mac-eng-row__check">
+                        {selected && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+
+            {/* 微信/无效账号：折叠组 */}
+            {wechatCands.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <div className="mac-eng-group__label" style={{ cursor: 'pointer' }} onClick={() => setShowWechatGroup(!showWechatGroup)}>
+                  <span className={`mac-tree-chevron ${showWechatGroup ? 'mac-tree-chevron--open' : ''}`} style={{ color: 'var(--mac-muted-fg)' }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                  </span>
+                  其他账号（微信）
+                  <span className="count">{wechatCands.length} 人</span>
+                </div>
+                {showWechatGroup && wechatCands.map((c) => {
+                  const ifaceIdx = pickEng?.ifaceIdx ?? 0;
+                  const funcIdx = pickEng?.funcIdx ?? 0;
+                  const fn = trees[active]?.interfaces?.[ifaceIdx]?.functions?.[funcIdx];
+                  const selected = fn?.engineers?.includes(c.id) || false;
+                  return (
+                    <div
+                      key={c.id}
+                      className={`mac-eng-row${selected ? ' mac-eng-row--sel' : ''}`}
+                      onClick={() => {
+                        const cur = fn?.engineers || [];
+                        const next = selected ? cur.filter((x) => x !== c.id) : [...cur, c.id];
+                        updateFuncField(ifaceIdx, funcIdx, { engineers: next });
+                      }}
+                    >
+                      <span className="mac-eng-row__avatar" style={{ background: 'var(--mac-muted-fg)' }}>{c.name ? c.name.trim().charAt(0) : '?'}</span>
+                      <div className="mac-eng-row__main">
+                        <div className="mac-eng-row__name">{c.name}</div>
+                        <div className="mac-eng-row__sub">{c.username}</div>
+                      </div>
+                      <span className="mac-eng-row__check">
+                        {selected && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </Popup>

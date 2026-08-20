@@ -72,6 +72,8 @@ export const router = createBrowserRouter([
       { path: 'tasks', element: <TasksView /> },
       { path: 'tasks/:id', element: <TaskDetailPage /> },
       { path: 'tasks/:id/operations', element: <OperationLogsPage /> },
+      // 责任模块树（临时）：从系统任务入口进入，绕开依赖微信后台壳
+      { path: 'module-tree', element: <ModuleTreeManage /> },
       {
         path: 'admin',
         element: <Outlet />,
