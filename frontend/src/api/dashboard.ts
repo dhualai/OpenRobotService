@@ -76,6 +76,10 @@ export interface TicketListItem {
 /**
  * GET /api/admin/dashboard/tickets?status={key}&project_ids=id1,id2
  * 点击某个状态标签后展示该状态下的工单列表，响应：{ code: 0, data: { items: TicketListItem[], total: number } }
+ * status 支持单一状态 key（in_progress/paused/resolved/closed/cancelled）及仪表盘统计卡下钻的组合 scope：
+ *   all     全部工单（监控中的五种状态，不含 new，与 summary.total 同口径）
+ *   pending 待处理（处理中 + 暂停/挂起，与 summary.pending_count 同口径）
+ *   overdue 超时工单（deadline_at < now 且未完成，与 summary.overdue_count 同口径）
  * projectIds 传入后仅返回这些项目内的工单。
  */
 export async function fetchTicketsByStatus(status: string, projectIds?: string[]): Promise<{ items: TicketListItem[]; total: number }> {

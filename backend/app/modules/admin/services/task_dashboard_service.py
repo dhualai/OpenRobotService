@@ -100,20 +100,36 @@ class TaskDashboardService:
         limit: int = 20,
         project_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        status_enum = FRONTEND_STATUS_MAP.get(status_key)
-        if status_enum is None:
-            return {"items": [], "total": 0}
-
         if project_ids is not None and len(project_ids) == 0:
             return {"items": [], "total": 0}
 
-        count_query = select(func.count(Task.id)).where(Task.status == status_enum)
+        # 组合 scope key（对应仪表盘统计卡下钻，与 get_ticket_summary 同口径）：
+        #   all     总工单数 = 监控中的五种状态（不含 new）
+        #   pending 待处理   = 处理中 + 暂停/挂起
+        #   overdue 超时工单 = 截止时间已过且仍处于未完成状态
+        if status_key == "all":
+            filters = [Task.status.in_([FRONTEND_STATUS_MAP[k] for k in MONITORED_STATUS_KEYS])]
+        elif status_key == "pending":
+            filters = [Task.status.in_(OPEN_STATUSES)]
+        elif status_key == "overdue":
+            filters = [
+                Task.deadline_at.isnot(None),
+                Task.deadline_at < datetime.now(),
+                Task.status.in_(OPEN_STATUSES),
+            ]
+        else:
+            status_enum = FRONTEND_STATUS_MAP.get(status_key)
+            if status_enum is None:
+                return {"items": [], "total": 0}
+            filters = [Task.status == status_enum]
+
+        count_query = select(func.count(Task.id)).where(*filters)
         if project_ids is not None:
             count_query = count_query.where(Task.project_id.in_(project_ids))
         count_result = await db.execute(count_query)
         total = count_result.scalar() or 0
 
-        list_query = select(Task).where(Task.status == status_enum)
+        list_query = select(Task).where(*filters)
         if project_ids is not None:
             list_query = list_query.where(Task.project_id.in_(project_ids))
         result = await db.execute(
@@ -126,7 +142,7 @@ class TaskDashboardService:
             {
                 "id": t.id,
                 "title": t.title,
-                "status": status_key,
+                "status": t.status.value,
                 "priority": t.priority.value if t.priority else "",
                 "assignee_name": user_map.get(t.assigned_to, t.assigned_to) if t.assigned_to else None,
                 "created_at": t.created_at.isoformat() if t.created_at else None,
