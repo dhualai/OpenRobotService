@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
+import AppButton from '@/shared/components/AppButton';
 import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
@@ -1149,7 +1150,7 @@ export default function TaskDetailPage() {
             </div>
             <div className="detail-card__action-btns">
               {getActionButtons().map((action, index) => (
-                <Button
+                <AppButton
                   key={index}
                   size="small"
                   theme={action.theme as 'primary' | 'default' | 'danger' | 'light'}
@@ -1167,7 +1168,7 @@ export default function TaskDetailPage() {
                   style={action.customStyle}
                 >
                   {action.label}
-                </Button>
+                </AppButton>
               ))}
             </div>
           </div>

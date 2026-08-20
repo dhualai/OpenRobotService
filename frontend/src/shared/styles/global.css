@@ -5057,21 +5057,14 @@ html, body, #root {
   width: 100%;
 }
 /* 底部操作按钮（设计稿：rounded-full bg-blue-3 text-white 12px medium，hover blue-2） */
-.detail-actions__btns .t-button { color: #fff; font-size: 12px; font-weight: 500; background: var(--blue-3); border: none; border-radius: 999px; padding: 6px 14px; box-shadow: var(--shadow-soft); }
-.detail-actions__btns .t-button:not(.t-button--disabled):not(:disabled):active { background: var(--blue-2); }
-/* 修复：禁用态强制置灰，避免覆盖 tdesign 自身禁用样式导致微信端「不可点击却未置灰」 */
-.detail-actions__btns .t-button:disabled,
-.detail-actions__btns .t-button.t-button--disabled { color: var(--gray-light); background: var(--secondary); border-color: var(--secondary); box-shadow: none; }
-.detail-actions__btns .t-button::after { display: none !important; content: none !important; }
+
 .detail-actions__btns .t-button .t-icon,
 .detail-actions__btns .t-button svg { font-size: 12px; width: 12px; height: 12px; }
 /* 历史工单详情页人员行蓝色调（设计稿 04：发起人 blue-3 / 处理人 blue-2 / 箭头 blue-3） */
 .ticket-detail-page .task-card2__avatar { background: var(--blue-3); }
 .ticket-detail-page .task-card2__avatar--assignee { background: var(--blue-2); }
 .ticket-detail-page .task-card2__person-arrow { color: var(--blue-3); }
-/* 撤回按钮 muted 变体（设计稿：bg-secondary text-muted-foreground） */
-.detail-actions__btns .t-button.detail-actions__btn--muted { background: var(--secondary); color: var(--muted-foreground); box-shadow: none; }
-.detail-actions__btns .t-button.detail-actions__btn--muted:not(.t-button--disabled):not(:disabled):active { background: var(--gray-soft); color: var(--foreground); }
+
 
 /* 附件非图片文件卡片（设计稿极简：浅底圆角块 + lucide 图标 + 文件名/大小 + 下载钮） */
 .detail-attachment-files { display: flex; flex-direction: column; gap: 8px; }
@@ -5947,25 +5940,7 @@ html, body, #root {
 /* ===== HistoryTickets 行内操作按钮 ===== */
 /* 操作按钮组（设计稿：浅底灰字方圆角 rounded-md，hover 加深） */
 .history-row__actions { display: flex; gap: 6px; flex-shrink: 0; }
-.history-row__actions .t-button {
-  font-weight: 500;
-  font-size: 12px;
-  border-radius: var(--radius-md);
-  background: var(--blue-2);
-  color: #fff;
-}
-/* 边缘优化根因：TDesign 按钮边框不是 border 属性，而是 ::after 伪元素（width/height:200% + scale(0.5) 实现高清 1px 边框）。
-   业务改 border-color 对 ::after 无效，导致「蓝色背景块」与「TDesign 默认灰色边框(#dcdcdc/#e7e7e7)」之间
-   形成一圈灰色留白。正确做法：禁用 ::after，让背景色成为按钮边界，文字与色块无缝贴合。 */
-.history-row__actions .t-button::after { display: none !important; content: none !important; }
-.history-row__actions .t-button:not(.t-button--disabled):active { background: var(--blue-1); }
-.history-row__actions .t-button.t-button--disabled { opacity: 0.45; }
-/* 重新派单：深蓝实心 + 白字，与 outline 的催办/上报/撤回区分，保证浅底上字清晰 */
-.history-row__actions .t-button.history-row__redispatch {
-  background: var(--blue-1);
-  color: #fff;
-}
-.history-row__actions .t-button.history-row__redispatch:not(.t-button--disabled):active { background: var(--blue-2); }
+
 
 /* ===== TitleEllipsis：标题溢出提示（PC hover 浮层 / 移动端 展开收起） ===== */
 /* 通用：标题文本元素的基类。所有外层透传进来的 className（如 history-row__title）会自带
