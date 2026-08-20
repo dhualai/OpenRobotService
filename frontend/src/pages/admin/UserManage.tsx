@@ -542,7 +542,7 @@ export default function UserManage() {
 
   return (
     <div className="mac-page">
-      {/* 顶部操作：新建用户 / 人员结构 */}
+      {/* 顶部操作：新建用户 / 人员结构 / 责任模块树 */}
       <div style={{ display: 'flex', gap: 8 }}>
         <button type="button" className="mac-btn mac-btn--primary" style={{ flex: 1 }} onClick={openCreate}>
           新建用户
@@ -554,6 +554,14 @@ export default function UserManage() {
           onClick={() => navigate('/admin/org-chart')}
         >
           人员结构
+        </button>
+        <button
+          type="button"
+          className="mac-btn mac-btn--outline"
+          style={{ fontWeight: 400 }}
+          onClick={() => navigate('/admin/module-tree')}
+        >
+          责任模块树
         </button>
       </div>
 
