@@ -14,6 +14,7 @@ import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import PullToRefresh from '@/shared/components/PullToRefresh';
 import UserSelect from '@/shared/components/UserSelect';
+import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import { formatDateTime } from '@/shared/utils/url';
 import type { UserItem } from '@/api/users';
 
@@ -296,7 +297,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
               {/* 顶行（设计稿：类型 Tag + 标题 flex-1 截断 + 编号胶囊 + 日期） */}
               <div className="history-row__top">
                 {t.type && <span className={`history-row__kind history-row__kind--${TYPE_TONE[t.type] || 'muted'}`}>{TYPE_LABEL[t.type] || t.type}</span>}
-                <span className="history-row__title">{t.title}</span>
+                <TitleEllipsis text={t.title || '(无标题)'} lines={2} titleClassName="history-row__title" as="span" fontSize={14.5} lineHeight={1.4} />
                 <span className="history-row__id">#{t.id}</span>
                 <span className="history-row__date">{formatDateTime(t.created_at ?? '').slice(0, 10)}</span>
               </div>
