@@ -64,6 +64,15 @@ TOOL_SCHEMA: Dict[str, Any] = {
                     ),
                     "additionalProperties": {"type": "string"},
                 },
+                "project_choice": {
+                    "type": "string",
+                    "description": (
+                        "仅当系统提示中给出了「用户名下项目」列表、且用户在对话中明确提到"
+                        "要给其中某个项目提单时，把该项目名称从列表里**原样照抄**到这里。\n"
+                        "没提到项目、没有列表、或对不上列表某一项时，一律省略本参数。\n"
+                        "禁止填列表之外的值，禁止猜测，禁止追问用户项目名称。"
+                    ),
+                },
                 "requested_assignee": {
                     "type": "string",
                     "description": "用户指名处理人（「提给张三」「交给张三」），没有则省略",
@@ -119,6 +128,15 @@ TOOL_SCHEMA_SUPPLEMENT: Dict[str, Any] = {
                         "例如 {\"requested_assignee\": \"张三\"}。只写本轮新增的，不用复述之前已收集的。"
                     ),
                     "additionalProperties": {"type": "string"},
+                },
+                "project_choice": {
+                    "type": "string",
+                    "description": (
+                        "仅当系统提示中给出了「用户名下项目」列表、且用户提到要给其中某个"
+                        "项目提单时，把该项目名称从列表里**原样照抄**到这里。\n"
+                        "没提到项目、没有列表、或对不上列表某一项时，一律省略本参数。\n"
+                        "禁止填列表之外的值，禁止猜测，禁止追问用户项目名称。"
+                    ),
                 },
                 "requested_assignee": {
                     "type": "string",
