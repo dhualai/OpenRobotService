@@ -166,7 +166,7 @@ export default function TitleEllipsis({
   const Tag = as;
   const titleEl = (
     <Tag
-      ref={containerRef as React.RefObject<HTMLElement>}
+      ref={(node: HTMLElement | null) => { containerRef.current = node; }}
       className={`title-ellipsis__text ${titleClassName || ''}`.trim()}
       data-overflow={isOverflow ? '1' : '0'}
       data-expanded={expanded ? '1' : '0'}

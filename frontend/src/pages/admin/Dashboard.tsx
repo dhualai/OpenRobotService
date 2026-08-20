@@ -199,9 +199,9 @@ export default function Dashboard() {
             />
           </div>
           <div className="mac-stat-row">
-            <MacStat value={ticketSummary?.total ?? 0} label="总工单数" tone="blue-1" />
-            <MacStat value={ticketSummary?.pending_count ?? 0} label="待处理" tone="blue-2" />
-            <MacStat value={ticketSummary?.overdue_count ?? 0} label="超时工单" tone="blue-3" />
+            <MacStat value={ticketSummary?.total ?? 0} label="总工单数" tone="blue-1" onClick={() => navigate('/admin/dashboard/tickets/all')} />
+            <MacStat value={ticketSummary?.pending_count ?? 0} label="待处理" tone="blue-2" onClick={() => navigate('/admin/dashboard/tickets/pending')} />
+            <MacStat value={ticketSummary?.overdue_count ?? 0} label="超时工单" tone="blue-3" onClick={() => navigate('/admin/dashboard/tickets/overdue')} />
             <MacStat value={formatPercent(ticketSummary?.resolved_rate)} label="解决率" tone="blue-4" />
           </div>
         </section>

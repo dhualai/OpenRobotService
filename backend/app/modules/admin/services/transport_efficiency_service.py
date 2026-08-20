@@ -6,7 +6,7 @@
 2. 数据导入（JSON 导入 / 旧 Excel 导入）→ 落库 ProjectTransportEfficiency / 型号明细表。
 """
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 import io
 
 from sqlalchemy import create_engine
@@ -158,8 +158,12 @@ class TransportEfficiencyService:
         返回 (summary, robots, collection_time)。找不到当日数据时 summary 为 None、robots 为空。
         计算逻辑与参考页 ProjectMetricsList.jsx 的 calculateAverages / 各组数据对比一致。
         """
+        # end 取次日零点，兼容两种时间约定：
+        # - 正常导入数据使用当天 23:59:59（end_time_int <= 次日零点成立）
+        # - 迁移数据使用次日 00:00:00（end_time_int == 次日零点成立）
         start = f"{date} 00:00:00"
-        end = f"{date} 23:59:59"
+        next_day = (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+        end = f"{next_day} 00:00:00"
         result = AdminDataService.get_collection_data_for_indicators(
             project=project_code,
             tag="GroupEfficiency",
