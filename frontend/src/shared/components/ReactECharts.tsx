@@ -3,7 +3,7 @@
 import ReactEChartsCore from 'echarts-for-react/lib/core';
 import * as echarts from 'echarts/core';
 import { BarChart, PieChart } from 'echarts/charts';
-import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components';
+import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 import type { EChartsReactProps } from 'echarts-for-react';
 
@@ -12,6 +12,7 @@ echarts.use([
   PieChart,
   GridComponent,
   LegendComponent,
+  TitleComponent,
   TooltipComponent,
   CanvasRenderer,
 ]);
