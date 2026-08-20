@@ -343,14 +343,17 @@ async def _generate_title(llm_client, memory) -> str:
         "2. 只输出标题，不要引号或任何额外内容。"
     )
     try:
-        title = (await llm_client.complete(
+        _raw = await llm_client.complete(
             prompt=prompt, max_tokens=40, temperature=0.3,
-        )).strip()
+        )
+        title = str(_raw or "").strip()
         title = title.strip('"\'""''「」《》').strip()
         if title:
             memory.metadata["title"] = title
             logger.info(f"[title] 标题生成: {title}")
             return title
+        # 空结果单独记日志:此前静默返回导致「首轮标题缺失」无从排查
+        logger.warning(f"[title] 标题生成为空: raw={_raw!r}")
     except Exception as e:
         logger.warning(f"[title] 标题生成失败: {e}")
     return ""
@@ -1103,9 +1106,9 @@ class AiDiagnosisPlatform:
         # 结果返回。注释早有此意，此前实现误写成 await，实测每轮阻塞 ~2s）。
         # 快照 turns + 独立 metadata，后台任务不碰主 memory 对象，避免并发读写干扰。
         title = ""
-        # 标题每两轮生成一次（第 2/4/6... 轮，异步后台，不阻塞回复流）。
-        # 覆盖式更新：每两轮重新生成，标题跟随对话最新内容演进。
-        if state.diagnosis_rounds >= 2 and state.diagnosis_rounds % 2 == 0:
+        # 标题生成节奏：首轮(round 1)生成一次,之后每两轮(3/5/7...)再生成一次。
+        # 覆盖式更新:标题跟随对话最新内容演进,异步后台执行不阻塞回复流。
+        if state.diagnosis_rounds >= 1 and state.diagnosis_rounds % 2 == 1:
             from types import SimpleNamespace
             _snap = SimpleNamespace(
                 session_id=memory.session_id,
@@ -1115,7 +1118,11 @@ class AiDiagnosisPlatform:
 
             async def _title_bg():
                 try:
-                    _t = await _generate_title(self._llm_client, _snap)
+                    # 标题是轻量任务,走 deepseek flash(意图同款客户端):
+                    # 便宜、快、不受中转站抽风影响(此前用主 LLM 时,gpt-5 走
+                    # Responses API 的解析 bug 直接把标题干崩过)
+                    _title_llm = await get_intent_client()
+                    _t = await _generate_title(_title_llm, _snap)
                     if not _t:
                         return ""
                     logger.info(f"[title] 异步生成结果: {_t!r}")
@@ -1930,37 +1937,51 @@ class AiDiagnosisPlatform:
                 seen.add(r.id)
                 uniq.append(r)
 
-        # 双路保送后候选池可能超过精排上限：按「稠密 top15 + 稀疏 top15」平衡截断。
+        # 双路保送后候选池收窄：按「稠密 top4 + 稀疏 top4」平衡截断。
         # 两路原始分尺度不同(稀疏 1-2 vs 稠密余弦 0.5-0.6),按单一分数排序会把
-        # 另一路保送挤掉——平衡截断保证关键词命中和语义命中都能进精排。
-        if len(uniq) > 30:
-            _dense_part = sorted(
-                [r for r in uniq if r.vector_score],
-                key=lambda r: r.vector_score, reverse=True)
-            _sparse_part = sorted(
-                [r for r in uniq if r.sparse_score],
-                key=lambda r: r.sparse_score, reverse=True)
-            _balanced, _seen2 = [], set()
-            for r in _dense_part[:15] + _sparse_part[:15]:
-                if r.id not in _seen2:
-                    _seen2.add(r.id)
-                    _balanced.append(r)
-            uniq = _balanced
+        # 另一路保送挤掉——平衡截断保证关键词命中和语义命中都进精排。
+        # 同时收窄精排输入:最终只取 3 条且双路第1有保底注入,精排只需在 8 对
+        # 里挑第 3 条;12 对时 v2-m3 CPU 精排 3-4s/轮,8 对约 2.5s。
+        _dense_part = sorted(
+            [r for r in uniq if r.vector_score], key=lambda r: r.vector_score, reverse=True)
+        _sparse_part = sorted(
+            [r for r in uniq if r.sparse_score], key=lambda r: r.sparse_score, reverse=True)
+        logger.info(f"[retrieve] 池诊断: 总{len(uniq)} 稠密{len(_dense_part)} 稀疏{len(_sparse_part)} "
+                    f"稠密top5={[(round(r.vector_score, 4), (r.title or '')[:24]) for r in _dense_part[:5]]}")
+        _balanced, _seen2 = [], set()
+        for r in _dense_part[:4] + _sparse_part[:4]:
+            if r.id not in _seen2:
+                _seen2.add(r.id)
+                _balanced.append(r)
+        uniq = _balanced
 
-        # 三路已 skip_rerank（只检索未精排）→ 合并去重后统一 rerank 一次，
-        # 从三路各自 rerank 的 3 次 CPU 推理降为 1 次，且候选放宽到合并后的 top N。
-        # 触发条件 >= 4（此前 >6 导致去重后恰好 6 条时 rerank 从不执行——
-        # cross-encoder 配了却空转,RRF 名次说了算)。
-        if len(uniq) >= 4:
-            _reranked = await self._retriever._rerank_results(search_query, uniq, _MAX_RETRIEVAL_DOCS)
-            if _reranked:
-                uniq = _reranked
+        # 最终选取：双路平衡直选（精排已从主链路摘除）。
+        # 车端错误码精确命中优先：精确码匹配是最高置信度，且 cheduan_exact 结果
+        # 没有 vector_score/sparse_score 字段——若只从双路分数筛选会被整体漏掉
+        # （实测「错误码200」查询：精确命中 200 被丢,只回了 212/2999/10610）。
+        # 名额 5（稠密3+稀疏2）：摘精排后 top3 太窄，正确答案排在稠密第3+
+        # 会被挤掉（实测「地图生效步骤」「历史任务记录」两例丢失）；
+        # 多给 2 个名额,LLM 自行甄别,文档仍截断 800 字,prompt 可控。
+        _PROMPT_DOCS = 5
+        _final, _fs = [], set()
+        for r in list(_cheduan_exact):
+            if r.id not in _fs:
+                _fs.add(r.id)
+                _final.append(r)
+        for r in _dense_part[:3] + _sparse_part[:2]:
+            if r.id not in _fs:
+                _fs.add(r.id)
+                _final.append(r)
+        uniq = _final[:_PROMPT_DOCS]
 
         hit_logs = []  # 送入 prompt 的 chunk 摘要（标题@分数，用于生产排查检索效果）
         for r in uniq[:_MAX_RETRIEVAL_DOCS]:
             content = self._rewrite_images(r) if r.content else ""
             if not content.strip():
                 continue
+            # 单个 chunk 截断到 800 字：平铺 bullet 的大章节 chunk 可达数千字,
+            # 全文进 prompt 会把 prompt 撑到 2 万字符(生产日志实锤),模型也抓不住重点
+            content = content[:800]
             title = f"（{r.title}）" if r.title else ""
             docs.append(f"---\n{_label(r)} {idx}{title}：\n{content}\n---")
             hit_logs.append(f"[{r.sub_domain or '-'}]{r.title or '(无标题)'}@{r.score:.4f}")

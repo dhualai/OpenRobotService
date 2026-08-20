@@ -50,6 +50,16 @@ class BaseLLMProvider(ABC):
         """获取 API 端点"""
         pass
 
+    @staticmethod
+    def is_responses_model(model: str) -> bool:
+        """是否走 Responses API。默认 False（chat completions）；
+        OpenAIProvider 对 gpt-5 系列覆盖为 True。"""
+        return False
+
+    @staticmethod
+    def get_responses_url(base_url: str) -> str:
+        return f"{base_url}/responses"
+
     @abstractmethod
     def build_payload(
         self,
@@ -109,6 +119,16 @@ class OpenAIProvider(BaseLLMProvider):
 
     def get_api_url(self, base_url: str) -> str:
         return f"{base_url}/chat/completions"
+
+    @staticmethod
+    def is_responses_model(model: str) -> bool:
+        """gpt-5 系列走 Responses API：Chat Completions 兼容层在中转站上整包缓冲
+        （实测 gpt-5.6 stream=true 仍单块返回全部内容），Responses API 真逐字流。"""
+        return model.lower().startswith("gpt-5")
+
+    @staticmethod
+    def get_responses_url(base_url: str) -> str:
+        return f"{base_url}/responses"
 
     def build_payload(
         self,
@@ -326,6 +346,50 @@ class LLMClient:
                 f"响应 JSON 解析失败({e})，status={response.status_code}，body 前200字符: {response.text[:200]}"
             )
 
+    async def _complete_responses(
+        self, prompt: str, system_prompt: Optional[str], max_tokens: int, temperature: float
+    ) -> str:
+        """gpt-5 走 Responses API 的非流式补全（标题生成/草稿生成等 complete 场景）。
+
+        Chat Completions 兼容层在中转站上不流式且行为异常，gpt-5 统一走 /responses。
+        """
+        client = await self._get_client()
+        _input = []
+        if system_prompt:
+            _input.append({"role": "system", "content": system_prompt})
+        _input.append({"role": "user", "content": prompt})
+        payload = {
+            "model": self.model,
+            "input": _input,
+            "max_output_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if self.reasoning_effort:
+            payload["reasoning"] = {"effort": self.reasoning_effort}
+        url = self._provider_impl.get_responses_url(self.base_url)
+        response = await client.post(url, json=payload)
+        if response.status_code != 200:
+            raise ServiceUnavailableError(
+                "LLM", f"API返回错误码: {response.status_code}, body: {response.text[:200]}"
+            )
+        try:
+            data = response.json()
+            # 原始 API 没有 output_text 顶层字段(SDK 便捷属性);顶层 text 是
+            # 文本配置 dict({'format':..., 'verbosity':...}),不是正文。
+            # 正文在: output[] → type=message → content[] → type=output_text → text
+            out = ""
+            for item in data.get("output") or []:
+                if item.get("type") == "message":
+                    for c in item.get("content") or []:
+                        if c.get("type") == "output_text":
+                            out += c.get("text") or ""
+            return out
+        except Exception as e:
+            raise ServiceUnavailableError(
+                "LLM",
+                f"响应 JSON 解析失败({e})，status={response.status_code}，body 前200字符: {response.text[:200]}",
+            )
+
     async def complete(
         self,
         prompt: str,
@@ -344,6 +408,9 @@ class LLMClient:
             temperature: 温度参数
             thinking: 是否开启思考模式（工具调用默认关闭）
         """
+        if self._provider_impl.is_responses_model(self.model):
+            return await self._complete_responses(prompt, system_prompt, max_tokens, temperature)
+
         messages: List[Dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -816,6 +883,17 @@ class LLMClient:
             max_tokens=max_tokens, temperature=temperature, stream=True,
             reasoning_effort=self.reasoning_effort, thinking=thinking,
         )
+        _use_responses = self._provider_impl.is_responses_model(self.model)
+        if _use_responses:
+            payload = {
+                "model": self.model,
+                "input": messages if system_prompt else prompt,
+                "stream": True,
+                "max_output_tokens": max_tokens,
+                "temperature": temperature,
+            }
+            if self.reasoning_effort:
+                payload["reasoning"] = {"effort": self.reasoning_effort}
 
         t_stream_start = time.perf_counter()
         has_yielded = False
@@ -825,7 +903,8 @@ class LLMClient:
         for attempt in range(3):
             try:
                 client = await self._get_client()
-                url = self._provider_impl.get_api_url(self.base_url)
+                url = (self._provider_impl.get_responses_url(self.base_url)
+                       if _use_responses else self._provider_impl.get_api_url(self.base_url))
                 t_conn = time.perf_counter()
                 async with client.stream("POST", url, json=payload) as response:
                     t_resp = time.perf_counter()
@@ -847,6 +926,22 @@ class LLMClient:
                                 break
                             try:
                                 chunk = json.loads(data)
+                                if _use_responses:
+                                    # Responses API 事件流:response.output_text.delta 是正文
+                                    _ev_type = chunk.get("type")
+                                    if _ev_type == "response.output_text.delta":
+                                        content = chunk.get("delta") or ""
+                                    elif _ev_type == "response.completed":
+                                        break
+                                    else:
+                                        content = ""
+                                    if content:
+                                        if t_first_content is None:
+                                            t_first_content = time.perf_counter()
+                                            logger.debug(f"[llm-stream] first-token-from-http={((t_first_content-t_resp)*1000):.0f}ms")
+                                        has_yielded = True
+                                        yield content
+                                    continue
                                 choices = chunk.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
