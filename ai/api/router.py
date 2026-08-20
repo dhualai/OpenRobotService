@@ -768,6 +768,11 @@ async def _upload_events(
         # 去重：按 object_path + filename 去重，避免同一文件重复上传/多次提单累积冗余
         _seen = {(a.get("object_path"), a.get("filename")) for a in existing if isinstance(a, dict)}
         _new = [s for s in saved if (s.get("object_path"), s.get("filename")) not in _seen]
+        # VLM 摘要随附件条目落库（截 160 字）：_build_ticket 做附件取舍时，
+        # 对话记录里的图片内容已被 sanitize_images 屏蔽，摘要是 LLM 判断
+        # 「附件与本单问题是否相关」的唯一内容信号。多图批次共享同一段摘要。
+        if image_desc:
+            _new = [{**s, "desc": image_desc[:160]} for s in _new]
         state["attachments"] = existing + _new
         if image_desc:
             ci = state.get("collected_info", {}) or {}
