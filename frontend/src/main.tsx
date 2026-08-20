@@ -141,6 +141,7 @@ const RiskList = lazyImport(() => import('@/pages/admin/RiskList'));
 const RiskEdit = lazyImport(() => import('@/pages/admin/RiskEdit'));
 const ReportsAnalytics = lazyImport(() => import('@/pages/admin/ReportsAnalytics'));
 const UserManage = lazyImport(() => import('@/pages/admin/UserManage'));
+const ModuleTreeManage = lazyImport(() => import('@/pages/admin/ModuleTreeManage'));
 const OrgChart = lazyImport(() => import('@/pages/admin/OrgChart'));
 const RoleManage = lazyImport(() => import('@/pages/admin/RoleManage'));
 const AssignRole = lazyImport(() => import('@/pages/admin/AssignRole'));
@@ -173,6 +174,8 @@ const router = createBrowserRouter([
           { path: 'tasks', element: <TasksView /> },
           { path: 'tasks/:id', element: <TaskDetailPage /> },
           { path: 'tasks/:id/operations', element: <OperationLogsPage /> },
+          // 责任模块树（临时）：从系统任务入口进入，绕开依赖微信后台壳
+          { path: 'module-tree', element: <ModuleTreeManage /> },
           {
             path: 'admin',
             element: <Outlet />,
@@ -210,6 +213,7 @@ const router = createBrowserRouter([
                   { path: 'risk-edit/:id?', element: <RiskEdit /> },
                   { path: 'reports', element: <ReportsAnalytics /> },
                   { path: 'users', element: <UserManage /> },
+                  { path: 'module-tree', element: <ModuleTreeManage /> },
                   { path: 'org-chart', element: <OrgChart /> },
                   { path: 'roles', element: <RoleManage /> },
                   { path: 'assign-role', element: <AssignRole /> },

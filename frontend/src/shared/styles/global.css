@@ -4070,6 +4070,255 @@ html, body, #root {
   outline: none;
 }
 
+/* ===== 责任模块树：树状折叠 ===== */
+.mac-tree-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-right: 4px;
+  color: var(--mac-blue-2);
+  transition: transform 0.18s ease;
+  flex-shrink: 0;
+}
+.mac-tree-chevron--open { transform: rotate(90deg); }
+
+/* 界面节点：树的文件夹分支 */
+.mac-iface-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 8px 6px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+  position: relative;
+}
+.mac-iface-row:hover { background: var(--mac-secondary); }
+.mac-iface-row__icon { color: var(--mac-blue-2); display: inline-flex; flex-shrink: 0; }
+.mac-iface-row__name {
+  flex: 1;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--mac-fg);
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+}
+.mac-iface-row__name:focus { box-shadow: 0 0 0 2px var(--mac-blue-soft); border-radius: 6px; }
+.mac-iface-row__badge {
+  font-size: 11px;
+  color: var(--mac-muted-fg);
+  background: rgba(241, 244, 244, 0.8);
+  border-radius: 999px;
+  padding: 1px 8px;
+  flex-shrink: 0;
+}
+.mac-iface-row__del { color: var(--mac-muted-fg); }
+.mac-iface-row__del:hover { color: #ad4545; }
+
+/* 功能子树：左侧贯穿连接线 */
+.mac-fn-tree {
+  margin: 2px 0 4px 13px;
+  padding-left: 16px;
+  border-left: 2px solid rgba(203, 210, 216, 0.85);
+}
+
+/* 功能叶子节点：无卡片边框，纯树行 */
+.mac-fn-node {
+  position: relative;
+  margin-bottom: 2px;
+}
+/* 分支连接点（节点前的短横线） */
+.mac-fn-node::before {
+  content: '';
+  position: absolute;
+  left: -16px;
+  top: 17px;
+  width: 10px;
+  height: 2px;
+  background: rgba(203, 210, 216, 0.85);
+}
+.mac-fn-node__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  border-radius: 9px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.mac-fn-node__head:hover { background: var(--mac-secondary); }
+.mac-fn-node__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--mac-blue-2);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px var(--mac-blue-soft);
+}
+.mac-fn-node__name {
+  flex: 1;
+  font-weight: 500;
+  font-size: 13.5px;
+  color: var(--mac-fg);
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+}
+.mac-fn-node__name:focus { box-shadow: 0 0 0 2px var(--mac-blue-soft); border-radius: 6px; }
+.mac-fn-node__name--locked { color: var(--mac-muted-fg); cursor: not-allowed; opacity: 0.7; }
+.mac-fn-lock {
+  display: inline-flex;
+  align-items: center;
+  color: var(--mac-muted-fg);
+  flex-shrink: 0;
+}
+.mac-fn-node__meta { font-size: 11px; color: var(--mac-muted-fg); display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+/* 功能负责人标签 */
+.mac-fn-owner {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--mac-muted-fg);
+  background: rgba(241, 244, 244, 0.9);
+  border-radius: 999px;
+  padding: 2px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.mac-fn-owner--assigned {
+  color: var(--mac-blue-2);
+  background: var(--mac-blue-soft);
+}
+.mac-fn-node__del { color: var(--mac-muted-fg); opacity: 0; transition: opacity 0.15s; }
+.mac-fn-node__head:hover .mac-fn-node__del { opacity: 1; }
+.mac-fn-node__body {
+  margin: 2px 0 6px 19px;
+  padding: 8px 10px 10px 14px;
+  border-left: 2px dashed rgba(203, 210, 216, 0.6);
+  background: rgba(241, 244, 244, 0.5);
+  border-radius: 0 10px 10px 0;
+}
+.mac-field-label { font-size: 11.5px; color: var(--mac-muted-fg); font-weight: 700; margin: 8px 0 4px; letter-spacing: 0.2px; }
+
+/* 新增界面 / 新增功能 行 */
+.mac-tree-add {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin: 6px 0 4px 2px;
+  border: 1px solid var(--mac-border);
+  border-radius: 11px;
+  background: #fff;
+  overflow: hidden;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.mac-tree-add:focus-within { border-color: var(--mac-blue-2); box-shadow: 0 0 0 3px var(--mac-blue-soft); }
+.mac-tree-add__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  color: var(--mac-muted-fg);
+  flex-shrink: 0;
+}
+.mac-tree-add input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--mac-fg);
+}
+.mac-tree-add input::placeholder { color: var(--mac-muted-fg); }
+.mac-tree-add__btn {
+  border: none;
+  background: transparent;
+  color: var(--mac-blue-2);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0 12px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.mac-tree-add__btn:active { opacity: 0.6; }
+
+/* 紧凑版（用于功能体内小输入框） */
+.mac-tree-add--sm { margin: 4px 0; border-radius: 9px; }
+.mac-tree-add--sm .mac-tree-add__icon { width: 28px; height: 28px; }
+.mac-tree-add--sm input { font-size: 12.5px; }
+.mac-tree-add--sm .mac-tree-add__btn { padding: 0 10px; height: 28px; font-size: 15px; }
+
+/* ===== 责任模块树：工程师选择分组 ===== */
+.mac-eng-group__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--mac-muted-fg);
+  padding: 10px 4px 4px;
+  letter-spacing: 0.3px;
+}
+.mac-eng-group__label .count { font-weight: 400; margin-left: auto; }
+.mac-eng-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  background: #fff;
+  border: 1px solid var(--mac-border);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.mac-eng-row:active { background: var(--mac-secondary); }
+.mac-eng-row--sel { border-color: var(--mac-blue-2); background: var(--mac-blue-soft); }
+.mac-eng-row__avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--mac-blue-2);
+  flex-shrink: 0;
+}
+.mac-eng-row__main { flex: 1; min-width: 0; }
+.mac-eng-row__name { font-weight: 600; font-size: 13.5px; color: var(--mac-fg); }
+.mac-eng-row__sub { font-size: 11.5px; color: var(--mac-muted-fg); margin-top: 1px; }
+.mac-eng-row__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid var(--mac-muted-fg);
+  color: #fff;
+  flex-shrink: 0;
+}
+.mac-eng-row--sel .mac-eng-row__check { background: var(--mac-blue-2); border-color: var(--mac-blue-2); }
+
 /* 角色管理页（对照 macaron roles 页） */
 .mac-btn--lg { border-radius: 16px; padding: 12px; font-size: 14px; }
 .mac-role-card {

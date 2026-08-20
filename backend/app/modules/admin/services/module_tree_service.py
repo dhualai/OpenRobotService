@@ -85,6 +85,59 @@ def replace_all_trees(trees: Dict[str, Any]) -> bool:
         db.close()
 
 
+def find_function(trees: Dict[str, Any], product: str, iface_key: str, func_key: str):
+    """在树中定位某个功能节点，返回 (tree, iface, fn, iface_idx, fn_idx)，未找到返回 None。"""
+    tree = (trees or {}).get(product)
+    if not tree:
+        return None
+    for iface_idx, iface in enumerate(tree.get("interfaces", []) or []):
+        if str(iface.get("key")) != str(iface_key):
+            continue
+        for fn_idx, fn in enumerate(iface.get("functions", []) or []):
+            if str(fn.get("key")) == str(func_key) or str(fn.get("name")) == str(func_key):
+                return tree, iface, fn, iface_idx, fn_idx
+    return None
+
+
+def apply_function_change(product: str, iface_key: str, func_key: str, new_json: Dict[str, Any]) -> bool:
+    """审批通过后，把某功能节点的修改应用到 DB，并导出 config + 同步用户画像。
+
+    只替换该功能节点的字段（name/keywords/anchor/engineers），不动其它。
+    返回是否成功。
+    """
+    db = _get_db()
+    try:
+        row = db.query(ModuleTree).filter(ModuleTree.product == product).first()
+        if not row:
+            logger.error("apply_function_change: 产品不存在 %s", product)
+            return False
+        tree = row.tree_json or {"interfaces": []}
+        found = find_function({product: tree}, product, iface_key, func_key)
+        if not found:
+            logger.error("apply_function_change: 功能定位失败 %s/%s/%s", product, iface_key, func_key)
+            return False
+        _, iface, fn, iface_idx, fn_idx = found
+        # 合并新值：仅覆盖给定的键，保留未提及字段
+        merged = dict(fn)
+        merged.update(new_json or {})
+        tree["interfaces"][iface_idx]["functions"][fn_idx] = merged
+        row.tree_json = tree
+        db.commit()
+
+        # 导出 config + 同步用户画像（尽力而为）
+        all_trees = get_all_trees()
+        export_to_config(all_trees)
+        sync_to_user_profiles(all_trees)
+        return True
+    except Exception:
+        db.rollback()
+        logger.exception("apply_function_change 失败 %s/%s/%s", product, iface_key, func_key)
+        return False
+    finally:
+        db.close()
+
+
+
 def export_to_config(trees: Optional[Dict[str, Any]] = None) -> bool:
     """把 DB 中的产品树导出覆盖到 config.yaml 的 module_tree 块。
 
