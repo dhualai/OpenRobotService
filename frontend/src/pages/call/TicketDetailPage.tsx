@@ -7,6 +7,7 @@ import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea, DialogPlugin } fr
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
+import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { ArrowRight, Folder, UserRound, Clock, AlarmClock, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bell, Upload, Undo2, Pencil } from 'lucide-react';
@@ -678,7 +679,7 @@ export default function TicketDetailPage() {
             </Tag>
             <span className="detail-card__id">{ticket.ticket_id || ''}</span>
           </div>
-          <h2 className="detail-card__title">{ticket.title || '(无标题)'}</h2>
+          <h2 className="detail-card__title"><TitleEllipsis text={ticket.title || '(无标题)'} lines={3} titleClassName="detail-card__title-inner" as="span" fontSize={19} lineHeight={1.3} /></h2>
           {/* 元信息网格（设计稿 04：2×2 MetaItem，lucide 图标 + 标签 + 值） */}
           <div className="detail-card__info-grid">
             {(ticket.project_name || ticket.project) && (
