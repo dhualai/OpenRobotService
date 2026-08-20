@@ -49,14 +49,17 @@ export async function generateReport(params: GenerateReportParams): Promise<Repo
 /**
  * POST /api/ai/analysis/report/generate （流式 SSE）
  * 返回原始 Response，调用方通过 readReportStream() 逐 chunk 读取。
+ * signal：可选 AbortSignal，用于在切换日报/周报、日期、项目或刷新时中断未完成的旧流，
+ * 避免两条流交替写同一份状态导致页面闪烁。
  * 后端 SSE 格式：
  *   data: {"content":"<文本>"}\n\n
  *   ...
  *   data: [DONE]\n\n
  */
-export async function generateReportStream(params: GenerateReportParams): Promise<Response> {
+export async function generateReportStream(params: GenerateReportParams, signal?: AbortSignal): Promise<Response> {
   const res = await fetchWithAuth(`${API_CONFIG.AI.BASE_URL}/analysis/report/generate`, {
     method: 'POST',
+    signal,
     body: JSON.stringify({
       period: params.period,
       date: params.date,
@@ -70,8 +73,11 @@ export async function generateReportStream(params: GenerateReportParams): Promis
 }
 
 /**
- * 读取 SSE 流，逐 chunk 回调 onChunk，结束时调用 onDone。
+ * 读取 SSE 流，逐 chunk 回调 onChunk，结束时返回完整文本。
  * 遇到 error 字段时抛出异常。
+ * 带跨 chunk 行缓冲：网络分包可能把一行 SSE 数据截成两个 chunk，
+ * 直接 split 会导致半行 JSON.parse 失败被丢弃（内容丢失），这里把不完整的
+ * 尾行留在 buffer 中等下个 chunk 拼接后再解析。
  */
 export async function readReportStream(
   response: Response,
@@ -80,27 +86,40 @@ export async function readReportStream(
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let fullText = '';
+  let buffer = '';
+  let finished = false;
 
-  while (true) {
+  const handleLine = (rawLine: string) => {
+    const line = rawLine.trimEnd(); // 兼容 CRLF
+    if (!line.startsWith('data: ')) return;
+    const payload = line.slice(6).trim();
+    if (payload === '[DONE]') {
+      finished = true;
+      return;
+    }
+    let parsed: { content?: string; error?: string } | null = null;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      return; // 非 JSON 行跳过
+    }
+    if (parsed?.error) throw new Error(parsed.error);
+    if (parsed?.content) {
+      fullText += parsed.content;
+      onChunk(fullText);
+    }
+  };
+
+  while (!finished) {
     const { done, value } = await reader.read();
     if (done) break;
-    const text = decoder.decode(value, { stream: true });
-    for (const line of text.split('\n')) {
-      if (!line.startsWith('data: ')) continue;
-      const payload = line.slice(6).trim();
-      if (payload === '[DONE]') return fullText;
-      let parsed: { content?: string; error?: string } | null = null;
-      try {
-        parsed = JSON.parse(payload);
-      } catch {
-        continue; // 非 JSON 行跳过
-      }
-      if (parsed?.error) throw new Error(parsed.error);
-      if (parsed?.content) {
-        fullText += parsed.content;
-        onChunk(fullText);
-      }
-    }
+    buffer += decoder.decode(value, { stream: true });
+    // 按行切分；pop 保留可能不完整的尾行，等下个 chunk 拼接
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) handleLine(line);
   }
+  // 流结束后处理 buffer 残留（服务端最后一行未以 \n 结尾时）
+  if (!finished && buffer) handleLine(buffer);
   return fullText;
 }

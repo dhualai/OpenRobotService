@@ -5,6 +5,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Toast, Button, Popup, DialogPlugin } from 'tdesign-mobile-react';
+import AppButton from '@/shared/components/AppButton';
 import { Search, ArrowRight } from 'lucide-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
 import { urgeTicket, reportTicket, cancelTicket, reDispatchTicket } from '@/api/ticket';
@@ -14,6 +15,7 @@ import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import PullToRefresh from '@/shared/components/PullToRefresh';
 import UserSelect from '@/shared/components/UserSelect';
+import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import { formatDateTime } from '@/shared/utils/url';
 import type { UserItem } from '@/api/users';
 
@@ -296,7 +298,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
               {/* 顶行（设计稿：类型 Tag + 标题 flex-1 截断 + 编号胶囊 + 日期） */}
               <div className="history-row__top">
                 {t.type && <span className={`history-row__kind history-row__kind--${TYPE_TONE[t.type] || 'muted'}`}>{TYPE_LABEL[t.type] || t.type}</span>}
-                <span className="history-row__title">{t.title}</span>
+                <TitleEllipsis text={t.title || '(无标题)'} lines={2} titleClassName="history-row__title" as="span" fontSize={14.5} lineHeight={1.4} />
                 <span className="history-row__id">#{t.id}</span>
                 <span className="history-row__date">{formatDateTime(t.created_at ?? '').slice(0, 10)}</span>
               </div>
@@ -334,13 +336,13 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                     新建/待处理可催办、撤回；处理中仅可上报；不可用按钮禁用 */}
                 {!isTerminalTicketStatus(t.status) && (
                   <div className="history-row__actions" onClick={(e) => e.stopPropagation()}>
-                    <Button size="extra-small" variant="outline" theme="default" disabled={!canUrgeTicket(t.status) || (acting?.id === t.id && acting?.action === 'urge')} title={canUrgeTicket(t.status) ? undefined : '仅新建/待处理工单可催办'} aria-label={canUrgeTicket(t.status) ? undefined : '催办（仅新建/待处理工单可催办）'} onClick={(e) => openActionPopup(e, t, 'urge')}>催办</Button>
-                    <Button size="extra-small" variant="outline" theme="default" disabled={!canReportTicket(t.status) || (acting?.id === t.id && acting?.action === 'report')} title={canReportTicket(t.status) ? undefined : '仅处理中工单可上报'} aria-label={canReportTicket(t.status) ? undefined : '上报（仅处理中工单可上报）'} onClick={(e) => openActionPopup(e, t, 'report')}>上报</Button>
+                    <AppButton tone="blue" size="extra-small" disabled={!canUrgeTicket(t.status) || (acting?.id === t.id && acting?.action === 'urge')} title={canUrgeTicket(t.status) ? undefined : '仅新建/待处理工单可催办'} aria-label={canUrgeTicket(t.status) ? undefined : '催办（仅新建/待处理工单可催办）'} onClick={(e) => openActionPopup(e, t, 'urge')}>催办</AppButton>
+                    <AppButton tone="blue" size="extra-small" disabled={!canReportTicket(t.status) || (acting?.id === t.id && acting?.action === 'report')} title={canReportTicket(t.status) ? undefined : '仅处理中工单可上报'} aria-label={canReportTicket(t.status) ? undefined : '上报（仅处理中工单可上报）'} onClick={(e) => openActionPopup(e, t, 'report')}>上报</AppButton>
                     {(t.source === 'ai' || !t.source) && !!t.assigned_to && (
-                    <Button size="extra-small" className="history-row__redispatch" loading={redispatching && redispatchTicket?.id === t.id} onClick={(e) => openRedispatchPopup(e, t)}>重新派单</Button>
+                    <AppButton tone="blue-deep" size="extra-small" loading={redispatching && redispatchTicket?.id === t.id} onClick={(e) => openRedispatchPopup(e, t)}>重新派单</AppButton>
                     )}
                     {canShowCancelButton(t.status) && canCancelTicketByUser(t.created_by, username, isAdmin, userId) && (
-                    <Button size="extra-small" variant="outline" theme="default" loading={acting?.id === t.id && acting?.action === 'cancel'} disabled={acting?.id === t.id && acting?.action === 'cancel'} onClick={(e) => handleCancel(e, t)}>撤回</Button>
+                    <AppButton tone="blue" size="extra-small" loading={acting?.id === t.id && acting?.action === 'cancel'} disabled={acting?.id === t.id && acting?.action === 'cancel'} onClick={(e) => handleCancel(e, t)}>撤回</AppButton>
                     )}
                   </div>
                 )}

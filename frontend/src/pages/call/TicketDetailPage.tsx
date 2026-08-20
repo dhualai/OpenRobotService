@@ -4,9 +4,11 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea, DialogPlugin } from 'tdesign-mobile-react';
+import AppButton from '@/shared/components/AppButton';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
+import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { ArrowRight, Folder, UserRound, Clock, AlarmClock, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bell, Upload, Undo2, Pencil } from 'lucide-react';
@@ -678,7 +680,7 @@ export default function TicketDetailPage() {
             </Tag>
             <span className="detail-card__id">{ticket.ticket_id || ''}</span>
           </div>
-          <h2 className="detail-card__title">{ticket.title || '(无标题)'}</h2>
+          <h2 className="detail-card__title"><TitleEllipsis text={ticket.title || '(无标题)'} lines={3} titleClassName="detail-card__title-inner" as="span" fontSize={19} lineHeight={1.3} /></h2>
           {/* 元信息网格（设计稿 04：2×2 MetaItem，lucide 图标 + 标签 + 值） */}
           <div className="detail-card__info-grid">
             {(ticket.project_name || ticket.project) && (
@@ -893,33 +895,33 @@ export default function TicketDetailPage() {
             正在操作的按钮单独禁用（acting 标记当前动作） */}
         {!isTerminalTicketStatus(ticket.status) && (
           <div className="detail-actions__btns">
-            <Button
-              size="small" theme="default" icon={<Bell size={13} strokeWidth={2} />}
+            <AppButton
+              tone="primary" size="small" icon={<Bell size={13} strokeWidth={2} />}
               disabled={!canUrgeTicket(ticket.status) || acting === 'urge'}
               title={canUrgeTicket(ticket.status) ? undefined : '仅新建/待处理工单可催办'}
               aria-label={canUrgeTicket(ticket.status) ? undefined : '催办（仅新建/待处理工单可催办）'}
               onClick={() => openActionPopup('urge')}
-            >催办</Button>
-            <Button
-              size="small" theme="default" icon={<Upload size={13} strokeWidth={2} />}
+            >催办</AppButton>
+            <AppButton
+              tone="primary" size="small" icon={<Upload size={13} strokeWidth={2} />}
               disabled={!canReportTicket(ticket.status) || acting === 'report'}
               title={canReportTicket(ticket.status) ? undefined : '仅处理中工单可上报'}
               aria-label={canReportTicket(ticket.status) ? undefined : '上报（仅处理中工单可上报）'}
               onClick={() => openActionPopup('report')}
-            >上报</Button>
+            >上报</AppButton>
             {canShowCancelButton(ticket.status) && canCancelTicketByUser(ticket.created_by, username, isAdmin, userId) && (
-            <Button
-              size="small" theme="default" className="detail-actions__btn--muted" icon={<Undo2 size={13} strokeWidth={2} />}
+            <AppButton
+              tone="muted" size="small" icon={<Undo2 size={13} strokeWidth={2} />}
               disabled={acting === 'cancel'}
               onClick={handleCancel}
-            >撤回</Button>
+            >撤回</AppButton>
             )}
             {canEdit && (
-              <Button
-                size="small" theme="default" icon={<Pencil size={13} strokeWidth={2} />}
+              <AppButton
+                tone="primary" size="small" icon={<Pencil size={13} strokeWidth={2} />}
                 disabled={savingEdit}
                 onClick={openEdit}
-              >编辑</Button>
+              >编辑</AppButton>
             )}
           </div>
         )}

@@ -447,14 +447,13 @@ html, body, #root {
   filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.12));
 }
 
-/* 标签文字（设计稿：白字 + 投影，常显） */
+/* 标签文字（设计稿：黑字，常显） */
 .chat-ticket-btn__label {
   font-size: 10px;
-  color: var(--primary-foreground);
+  color: #000;
   font-weight: 600;
   letter-spacing: 0.5px;
   user-select: none;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 
 @keyframes ticket-fab-enter {
@@ -2232,13 +2231,18 @@ html, body, #root {
   --mac-shadow-soft: 0 1px 2px rgba(80, 90, 100, 0.04), 0 8px 24px rgba(80, 90, 100, 0.06);
 }
 .tasks-view {
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   padding-top: 56px;
   background: linear-gradient(170deg, #f5fcfb 0%, #f7f9f9 55%, #f5f9f9 100%);
 }
-/* 工单卡片列表 */
+/* 工单卡片列表：唯一滚动区（filters 在其外固定，对齐历史工单布局） */
 .tasks-list-section {
-  min-height: calc(100vh - 56px);
+  flex: 1;
+  min-height: 0;
   overflow: auto;
 }
 /* 任务卡片（马卡龙极简：surface-card 白卡 + 柔和阴影 + 大圆角，状态为唯一带色文字） */
@@ -2492,8 +2496,7 @@ html, body, #root {
   padding-bottom: 4px;
 }
 .tasks-view__filters {
-  position: sticky;
-  top: 0;
+  flex-shrink: 0;
   z-index: 5;
   background: linear-gradient(170deg, #f5fcfb 0%, #f7f9f9 55%, #f5f9f9 100%);
   padding: 8px 14px 10px;
@@ -3818,6 +3821,49 @@ html, body, #root {
 .admin-entries-card[data-tone='blue-3'] .admin-entries-card__icon { background: #eaf7fd; color: var(--mac-blue-3); }
 .admin-entries-card[data-tone='blue-4'] .admin-entries-card__icon { background: #f2fbff; color: var(--mac-blue-4); }
 
+/* 「其他」页公众号用户统计（时间筛选 + 柱状图/饼状图，卡片风格与入口卡统一） */
+.admin-entries-stats { padding: 16px 16px 0; }
+.admin-entries-stats__card {
+  background: #fff;
+  border: 1px solid rgba(232, 234, 234, 0.6);
+  border-radius: 28px;
+  box-shadow: var(--mac-shadow-soft);
+  padding: 16px;
+}
+.admin-entries-stats__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.admin-entries-stats__title { font-size: 14px; font-weight: 600; color: var(--mac-fg); }
+.admin-entries-stats__filter { display: flex; align-items: center; gap: 6px; }
+.admin-entries-stats__sep { font-size: 11.5px; color: var(--mac-muted-fg); }
+.admin-entries-stats__date {
+  border: 1px solid rgba(232, 234, 234, 0.7);
+  border-radius: 13px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--mac-fg);
+  background: rgba(241, 244, 244, 0.6);
+  font-family: inherit;
+  outline: none;
+}
+.admin-entries-stats__date:focus { border-color: var(--mac-blue-2); background: #fff; }
+.admin-entries-stats__charts { display: grid; grid-template-columns: 1fr; gap: 12px; }
+@media (min-width: 768px) { .admin-entries-stats__charts { grid-template-columns: 1fr 1fr; } }
+.admin-entries-stats__sub { display: block; font-size: 12px; color: var(--mac-muted-fg); margin-bottom: 4px; }
+.admin-entries-stats__empty {
+  padding: 32px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--mac-muted-fg);
+  line-height: 1.7;
+  white-space: pre-line;
+}
+
 /* 用户管理页（对照 macaron users 页） */
 .mac-count-pill {
   border-radius: 13px;
@@ -5054,21 +5100,14 @@ html, body, #root {
   width: 100%;
 }
 /* 底部操作按钮（设计稿：rounded-full bg-blue-3 text-white 12px medium，hover blue-2） */
-.detail-actions__btns .t-button { color: #fff; font-size: 12px; font-weight: 500; background: var(--blue-3); border: none; border-radius: 999px; padding: 6px 14px; box-shadow: var(--shadow-soft); }
-.detail-actions__btns .t-button:not(.t-button--disabled):not(:disabled):active { background: var(--blue-2); }
-/* 修复：禁用态强制置灰，避免覆盖 tdesign 自身禁用样式导致微信端「不可点击却未置灰」 */
-.detail-actions__btns .t-button:disabled,
-.detail-actions__btns .t-button.t-button--disabled { color: var(--gray-light); background: var(--secondary); border-color: var(--secondary); box-shadow: none; }
-.detail-actions__btns .t-button::after { display: none !important; content: none !important; }
+
 .detail-actions__btns .t-button .t-icon,
 .detail-actions__btns .t-button svg { font-size: 12px; width: 12px; height: 12px; }
 /* 历史工单详情页人员行蓝色调（设计稿 04：发起人 blue-3 / 处理人 blue-2 / 箭头 blue-3） */
 .ticket-detail-page .task-card2__avatar { background: var(--blue-3); }
 .ticket-detail-page .task-card2__avatar--assignee { background: var(--blue-2); }
 .ticket-detail-page .task-card2__person-arrow { color: var(--blue-3); }
-/* 撤回按钮 muted 变体（设计稿：bg-secondary text-muted-foreground） */
-.detail-actions__btns .t-button.detail-actions__btn--muted { background: var(--secondary); color: var(--muted-foreground); box-shadow: none; }
-.detail-actions__btns .t-button.detail-actions__btn--muted:not(.t-button--disabled):not(:disabled):active { background: var(--gray-soft); color: var(--foreground); }
+
 
 /* 附件非图片文件卡片（设计稿极简：浅底圆角块 + lucide 图标 + 文件名/大小 + 下载钮） */
 .detail-attachment-files { display: flex; flex-direction: column; gap: 8px; }
@@ -5210,14 +5249,28 @@ html, body, #root {
 }
 /* 我方头像 plain 色调（设计稿：bg-gray-light text-white） */
 .detail-chat-row.is-right .detail-chat-avatar { background: var(--gray-light); }
-/* 长按唤起自定义菜单（引用/复制/删除），抑制系统级长按弹窗与文本选取。
-   关键：-webkit-touch-callout 不继承，须用 * 覆盖气泡内 MarkdownRenderer 渲染的
-   img / a / code 等子元素（这些默认会弹系统「复制/保存」菜单）；复制能力由菜单「复制」项提供。 */
+/* 长按唤起自定义菜单（引用/复制/删除）：仅非文字区抑制系统级长按弹窗与文本选取。
+   文字内容区（.markdown-body）放开原生选择，支持长按/拖选文字片段复制（方案A 双端）。
+   关键：-webkit-touch-callout 不继承，须用 * 覆盖气泡内 img / a / code 等默认弹系统菜单的子元素；
+   但 .markdown-body 内部文字需显式恢复 user-select 与 callout，让原生「拷贝/全选」可用。 */
 .detail-chat-bubble,
 .detail-chat-bubble * {
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
+}
+/* 文字内容区：放开选择，恢复原生长按选字（复制片段）；代码块/表格/段落均可选 */
+.detail-chat-bubble .markdown-body,
+.detail-chat-bubble .markdown-body * {
+  -webkit-touch-callout: default;
+  -webkit-user-select: text;
+  user-select: text;
+}
+/* 图片仍保持不可选（长按图片由系统「保存」处理，不参与文字选择） */
+.detail-chat-bubble .markdown-body img {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: default;
 }
 /* 讨论气泡（设计稿：rounded-2xl + 侧小角、p-3、12.5px/24px、白底细描边） */
 .detail-chat-bubble {
@@ -5930,23 +5983,119 @@ html, body, #root {
 /* ===== HistoryTickets 行内操作按钮 ===== */
 /* 操作按钮组（设计稿：浅底灰字方圆角 rounded-md，hover 加深） */
 .history-row__actions { display: flex; gap: 6px; flex-shrink: 0; }
-.history-row__actions .t-button {
-  font-weight: 500;
-  font-size: 12px;
-  border-radius: var(--radius-md);
-  border-color: var(--blue-2);
-  background: var(--blue-2);
-  color: #fff;
+
+
+/* ===== TitleEllipsis：标题溢出提示（PC hover 浮层 / 移动端 展开收起） ===== */
+/* 通用：标题文本元素的基类。所有外层透传进来的 className（如 history-row__title）会自带
+   -webkit-line-clamp:N 截断，未溢出时 data-overflow="0"，组件不渲染任何控件。 */
+.title-ellipsis__text[data-expanded="1"] {
+  /* 移动端展开：取消 line-clamp，让 CSS 自然撑开显示完整文本。
+     父容器 line-clamp 仍由外层 className（如 .history-row__title）提供，
+     通过 display 切回普通 block + overflow:visible 即可让 box 自然增高。 */
+  display: block !important;
+  -webkit-line-clamp: unset !important;
+  -webkit-box-orient: unset !important;
+  overflow: visible !important;
 }
-.history-row__actions .t-button:not(.t-button--disabled):active { background: var(--blue-1); }
-.history-row__actions .t-button.t-button--disabled { opacity: 0.45; }
-/* 重新派单：深蓝实心 + 白字，与 outline 的催办/上报/撤回区分，保证浅底上字清晰 */
-.history-row__actions .t-button.history-row__redispatch {
-  background: var(--blue-1);
-  border-color: var(--blue-1);
-  color: #fff;
+
+/* PC 端 Info 图标按钮（hover 浮层用） */
+.title-ellipsis__trigger {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  border-radius: 50%;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.15s, background 0.15s;
 }
-.history-row__actions .t-button.history-row__redispatch:not(.t-button--disabled):active { background: var(--blue-2); }
+.title-ellipsis__trigger:hover { opacity: 1; background: var(--secondary); }
+.title-ellipsis__trigger:active { background: var(--accent); }
+/* 列表/详情页内的小图标：与品牌蓝色调一致，视觉不抢戏 */
+.history-row__top .title-ellipsis__trigger,
+.history-row__top .title-ellipsis__toggle { color: var(--blue-2); }
+.detail-card__title .title-ellipsis__trigger,
+.detail-card__title .title-ellipsis__toggle { color: var(--blue-2); }
+
+/* 移动端箭头按钮（展开/收起用） */
+.title-ellipsis__toggle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  border-radius: 50%;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s, background 0.15s, transform 0.2s;
+  /* 移动端没有 hover，按钮稍大便于手指点击 */
+  min-width: 22px;
+  min-height: 22px;
+}
+.title-ellipsis__toggle:active { opacity: 1; background: var(--secondary); }
+/* 箭头本体：展开时旋转 180° 表示"可收起"，收起时朝下表示"可展开" */
+.title-ellipsis__toggle-icon {
+  transition: transform 0.2s ease;
+}
+.title-ellipsis__toggle[aria-expanded="true"] .title-ellipsis__toggle-icon {
+  transform: rotate(180deg);
+}
+
+/* hover 浮层（仅 PC 端、createPortal 渲染到 body） */
+.title-ellipsis__tooltip {
+  position: absolute;
+  z-index: 12000;
+  max-width: 320px;
+  min-width: 48px;
+  padding: 8px 10px;
+  background: rgba(20, 22, 28, 0.94);
+  color: #fff;
+  font-size: 12.5px;
+  line-height: 1.5;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  word-break: break-word;
+  white-space: pre-wrap;
+  pointer-events: auto;
+  animation: title-ellipsis-fade-in 0.12s ease-out;
+}
+.title-ellipsis__tooltip--bottom::before {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: 12px;
+  width: 8px;
+  height: 8px;
+  background: rgba(20, 22, 28, 0.94);
+  transform: rotate(45deg);
+}
+.title-ellipsis__tooltip--top::before {
+  content: '';
+  position: absolute;
+  bottom: -4px;
+  left: 12px;
+  width: 8px;
+  height: 8px;
+  background: rgba(20, 22, 28, 0.94);
+  transform: rotate(45deg);
+}
+@keyframes title-ellipsis-fade-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
 
 /* ===== TicketDetailPage 评论附件上传 ===== */
 .detail-chat-files { display: flex; flex-wrap: wrap; gap: 6px; }
