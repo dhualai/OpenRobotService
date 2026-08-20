@@ -49,6 +49,7 @@ class AssignerConfig:
         self.module_keywords: Dict[str, list] = {}
         self.module_anchor_texts: Dict[str, str] = {}
         self.module_classify: Dict[str, Dict[str, str]] = {}
+        self.module_tree: Dict[str, Any] = {}
         self.ranker_weights: Dict[str, Any] = {}
         self.job_level_penalty: Dict[int, float] = {}
         self.contact_bonus: float = 2.0
@@ -72,9 +73,17 @@ class AssignerConfig:
     def _load_all(self):
         """从 config.yaml 读取并填充全部配置属性（缺失时保持默认空值）。"""
         config = _load_yaml(self._CONFIG_DIR / "config.yaml") or {}
-        self.module_keywords = config.get("module_keywords", {})
-        self.module_anchor_texts = config.get("module_anchor_texts", {})
-        self.module_classify = config.get("module_classify", {})
+        # ── 三套 module_* 配置：优先从「产品→界面→功能」树自动生成，否则回退手工配置 ──
+        module_tree = config.get("module_tree", {})
+        if module_tree:
+            self.module_tree = module_tree
+            self.module_classify, self.module_keywords, self.module_anchor_texts = \
+                self._build_from_tree(module_tree)
+        else:
+            self.module_tree = {}
+            self.module_keywords = config.get("module_keywords", {})
+            self.module_anchor_texts = config.get("module_anchor_texts", {})
+            self.module_classify = config.get("module_classify", {})
         self.ranker_weights = config.get("ranker_weights", {})
         # job_level_penalty 的 key 在 YAML 中是整数，需显式转 int
         raw = config.get("job_level_penalty", {})
@@ -106,3 +115,39 @@ class AssignerConfig:
     def reload(self):
         """重新加载配置（配置热更新入口，配合派单缓存失效使用）。"""
         self._load_all()
+
+    @staticmethod
+    def _build_from_tree(tree: Dict[str, Any]):
+        """从「产品→界面→功能」树生成 module_classify / module_keywords / module_anchor_texts。
+
+        映射约定（保证下游无感知）：
+        - module_classify[产品][功能key] = 界面key   （功能key 需与工程师 responsibility_modules 细分名一致）
+        - module_keywords[产品-界面key]  = [该界面下所有功能的 keywords 去重]
+        - module_anchor_texts[产品-界面key] = 该界面下所有功能的 anchor 逗号拼接
+        """
+        classify: Dict[str, Dict[str, str]] = {}
+        keywords: Dict[str, list] = {}
+        anchors: Dict[str, str] = {}
+        for product, pnode in (tree or {}).items():
+            classify[product] = {}
+            for iface in (pnode or {}).get("interfaces", []) or []:
+                ikey = (iface.get("key") or iface.get("name") or "").strip()
+                if not ikey:
+                    continue
+                kw_list: list = []
+                anchor_parts: list = []
+                for fn in (iface.get("functions", []) or []):
+                    fkey = (fn.get("key") or fn.get("name") or "").strip()
+                    if fkey:
+                        classify[product][fkey] = ikey
+                    for kw in (fn.get("keywords") or []):
+                        if kw:
+                            kw_list.append(str(kw))
+                    if fn.get("anchor"):
+                        anchor_parts.append(str(fn["anchor"]))
+                mod_key = f"{product}-{ikey}"
+                # 关键词去重保序
+                seen = set()
+                keywords[mod_key] = [k for k in kw_list if not (k in seen or seen.add(k))]
+                anchors[mod_key] = "，".join(anchor_parts) if anchor_parts else mod_key
+        return classify, keywords, anchors
