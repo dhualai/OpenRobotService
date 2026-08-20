@@ -19,6 +19,8 @@ interface ExistingProjectUser {
   roleIds: string[];
   roleNames: string[];
   reportToId?: string | null;
+  uspUsername?: string;
+  uspPassword?: string;
 }
 
 export default function ProjectPeople({ selectedProject }: { selectedProject: Project | null }) {
@@ -56,16 +58,23 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
     if (!project.id) { setExistingUsers([]); return; }
     setExistingUsersLoading(true);
     try {
-      const rows = await request<Array<{
+      type MemberRow = {
         user_id: string; username: string; name?: string | null;
         role_id: string; role_name: string; report_to_id?: string | null;
-      }>>(`/projects/${project.id}/members`);
-      const list = normalizeList<{
-        user_id: string; username: string; name?: string | null;
-        role_id: string; role_name: string; report_to_id?: string | null;
-      }>(rows);
+        external_credentials?: { usp?: { username?: string; password?: string } } | unknown[] | null;
+      };
+      const rows = await request<MemberRow[]>(`/projects/${project.id}/members?include_usp=true`);
+      const list = normalizeList<MemberRow>(rows);
       const byUsername = new Map<string, ExistingProjectUser>();
       for (const r of list) {
+        // 提取 USP 账号/密码：后端 external_credentials 为空时可能返回 []（兼容旧实现）
+        const ec = r.external_credentials;
+        const usp = (ec && typeof ec === 'object' && !Array.isArray(ec))
+          ? (ec as { usp?: { username?: string; password?: string } }).usp
+          : undefined;
+        const uspUsername = usp?.username || '';
+        const uspPassword = usp?.password || '';
+
         const existing = byUsername.get(r.username);
         if (existing) {
           if (!existing.roleIds.includes(r.role_id)) {
@@ -75,6 +84,9 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
           if (!existing.reportToId && r.report_to_id) {
             existing.reportToId = r.report_to_id;
           }
+          // USP 字段以非空值优先（同一用户多角色行，任一行带 USP 即视为已配置）
+          if (!existing.uspUsername && uspUsername) existing.uspUsername = uspUsername;
+          if (!existing.uspPassword && uspPassword) existing.uspPassword = uspPassword;
         } else {
           byUsername.set(r.username, {
             id: r.user_id,
@@ -83,6 +95,8 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
             roleIds: [r.role_id],
             roleNames: [r.role_name],
             reportToId: r.report_to_id || null,
+            uspUsername,
+            uspPassword,
           });
         }
       }
@@ -167,6 +181,28 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
     if (!selectedProject.id) { Toast({ message: '当前项目缺少 id，无法提交', theme: 'warning' }); return; }
     if (!associateUser) { Toast({ message: '请选择用户', theme: 'warning' }); return; }
     if (!associateRole) { Toast({ message: '请选择角色', theme: 'warning' }); return; }
+
+    // 拦截：USP 账户或密码为空时不允许添加（导出人员授权包会缺失该用户）
+    // 接口 _mask_usp_password 已将已设置密码掩码为 "-"，故 password === "" 即代表未设置
+    try {
+      const detail = await request<{
+        external_credentials?: { usp?: { username?: string; password?: string } };
+      }>(`/users/${encodeURIComponent(associateUser.username)}/detail`);
+      const usp = detail?.external_credentials?.usp || {};
+      const uspUsername = (usp.username || '').trim();
+      const uspPassword = usp.password || '';
+      if (!uspUsername) {
+        Toast({ message: `用户「${associateUser.name || associateUser.username}」未配置 USP 账户，请先在用户管理中设置后再添加`, theme: 'warning' });
+        return;
+      }
+      if (!uspPassword) {
+        Toast({ message: `用户「${associateUser.name || associateUser.username}」未配置 USP 密码，请先在用户管理中设置后再添加`, theme: 'warning' });
+        return;
+      }
+    } catch (err) {
+      Toast({ message: `校验 USP 信息失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+      return;
+    }
 
     const payload: Record<string, string> = {
       user_name: associateUser.username,
@@ -271,6 +307,20 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--mac-muted-fg)' }}>{u.username} · {roleNames}</div>
                   </div>
+                  {(!u.uspUsername || !u.uspPassword) && (
+                    <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {!u.uspUsername && (
+                        <span style={{ fontSize: 10.5, color: '#b3542a', background: '#fbe9df', borderRadius: 4, padding: '1px 6px' }}>
+                          USP账户未设置
+                        </span>
+                      )}
+                      {!u.uspPassword && (
+                        <span style={{ fontSize: 10.5, color: '#b3542a', background: '#fbe9df', borderRadius: 4, padding: '1px 6px' }}>
+                          USP账户密码未设置
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
                 {!collapsed && children.map((c) => renderNode(c, depth + 1))}
               </div>
