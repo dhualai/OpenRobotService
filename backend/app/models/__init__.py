@@ -68,6 +68,9 @@ from app.models.organization import (
     Department,
 )
 
+# 「产品→界面→功能」责任模块树（DB 主数据，导出到 config 供 AI Assigner）
+from app.models.module_tree import ModuleTree
+
 __all__ = [
     "Base",
     # identity
@@ -88,4 +91,6 @@ __all__ = [
     "Resource", "ResourceFolder", "ResourceType", "ResourceStatus", "StorageType",
     # organization
     "Company", "Department",
+    # module tree
+    "ModuleTree",
 ]
