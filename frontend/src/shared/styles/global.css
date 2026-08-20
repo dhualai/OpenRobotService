@@ -5209,14 +5209,28 @@ html, body, #root {
 }
 /* 我方头像 plain 色调（设计稿：bg-gray-light text-white） */
 .detail-chat-row.is-right .detail-chat-avatar { background: var(--gray-light); }
-/* 长按唤起自定义菜单（引用/复制/删除），抑制系统级长按弹窗与文本选取。
-   关键：-webkit-touch-callout 不继承，须用 * 覆盖气泡内 MarkdownRenderer 渲染的
-   img / a / code 等子元素（这些默认会弹系统「复制/保存」菜单）；复制能力由菜单「复制」项提供。 */
+/* 长按唤起自定义菜单（引用/复制/删除）：仅非文字区抑制系统级长按弹窗与文本选取。
+   文字内容区（.markdown-body）放开原生选择，支持长按/拖选文字片段复制（方案A 双端）。
+   关键：-webkit-touch-callout 不继承，须用 * 覆盖气泡内 img / a / code 等默认弹系统菜单的子元素；
+   但 .markdown-body 内部文字需显式恢复 user-select 与 callout，让原生「拷贝/全选」可用。 */
 .detail-chat-bubble,
 .detail-chat-bubble * {
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
+}
+/* 文字内容区：放开选择，恢复原生长按选字（复制片段）；代码块/表格/段落均可选 */
+.detail-chat-bubble .markdown-body,
+.detail-chat-bubble .markdown-body * {
+  -webkit-touch-callout: default;
+  -webkit-user-select: text;
+  user-select: text;
+}
+/* 图片仍保持不可选（长按图片由系统「保存」处理，不参与文字选择） */
+.detail-chat-bubble .markdown-body img {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: default;
 }
 /* 讨论气泡（设计稿：rounded-2xl + 侧小角、p-3、12.5px/24px、白底细描边） */
 .detail-chat-bubble {

@@ -670,6 +670,10 @@ export default function DiscussionPanel({
   const startLongPress = (comment: DiscussionComment, e: React.TouchEvent | React.MouseEvent) => {
     if (disabled || sending) return;
     const target = e.currentTarget as HTMLElement;
+    // 落点在文字内容区（Markdown 正文）→ 放行原生文本选择（长按选字复制），不弹自定义菜单。
+    // 落点在头像/名字/引用块/附件/留白等非文字区 → 弹自定义「引用/复制/删除」菜单（方案A 双端）。
+    const hit = e.target as HTMLElement | null;
+    if (hit && hit.closest('.markdown-body')) return;
     cancelLongPress();
     longPressTimer.current = window.setTimeout(() => {
       longPressTimer.current = null;
