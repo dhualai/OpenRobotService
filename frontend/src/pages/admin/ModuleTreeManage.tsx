@@ -3,6 +3,7 @@
 // 功能节点可编辑 keywords（L3 子串）/ anchor（L2 语义）/ engineers（负责工程师）。
 // 保存：PUT /admin/module-tree 整体覆盖 DB + 导出 config.yaml + 通知 AI 热更新。
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Toast, Loading, Dialog, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -46,6 +47,11 @@ export default function ModuleTreeManage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // ── 从「用户详情→责任模块」跳转的聚焦（先于 load 定义，避免 TDZ 报错）──
+  const [searchParams] = useSearchParams();
+  const focusUserId = searchParams.get('user') || '';
+  const [highlightFns, setHighlightFns] = useState<Record<string, boolean>>({});
+
   // 主数据
   const [products, setProducts] = useState<string[]>([]);
   const [active, setActive] = useState<string>('');
@@ -71,6 +77,24 @@ export default function ModuleTreeManage() {
     setCollapsedIfaces({});
     setExpandedFns({});
   }, [active]);
+
+  // 从用户详情聚焦：展开并高亮该用户负责的功能
+  useEffect(() => {
+    if (!focusUserId) { setHighlightFns({}); return; }
+    const hl: Record<string, boolean> = {};
+    const ifaceList = trees[active]?.interfaces || [];
+    for (let i = 0; i < ifaceList.length; i++) {
+      const funcs = ifaceList[i].functions || [];
+      for (let j = 0; j < funcs.length; j++) {
+        if ((funcs[j].engineers || []).map(String).includes(String(focusUserId))) {
+          const key = `${i}-${j}`;
+          hl[key] = true;
+          setExpandedFns((prev) => ({ ...prev, [key]: true }));
+        }
+      }
+    }
+    setHighlightFns(hl);
+  }, [focusUserId, active, trees]);
 
   // 功能负责人标签：无负责人显示「待分配」
   const fnOwnerLabel = (fn: FuncNode) => {
@@ -111,6 +135,23 @@ export default function ModuleTreeManage() {
       setProducts(prodData || []);
       setCandidates(candData || []);
       if ((prodData?.length ?? 0) > 0) {
+        // 有聚焦用户时，优先进入其负责的产品
+        if (focusUserId) {
+          let focusProduct = '';
+          for (const [prod, body] of Object.entries(treeData || {})) {
+            for (const iface of (body as any)?.interfaces || []) {
+              for (const fn of iface.functions || []) {
+                if ((fn.engineers || []).map(String).includes(String(focusUserId))) {
+                  focusProduct = prod;
+                  break;
+                }
+              }
+              if (focusProduct) break;
+            }
+            if (focusProduct) break;
+          }
+          if (focusProduct) { setActive(focusProduct); return; }
+        }
         setActive((prev) => (prev && prodData.includes(prev) ? prev : prodData[0]));
       } else {
         setActive('');
@@ -120,7 +161,7 @@ export default function ModuleTreeManage() {
     } finally {
       setLoading(false);
     }
-  }, [request]);
+  }, [request, focusUserId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -366,8 +407,9 @@ export default function ModuleTreeManage() {
                       const fnExpanded = !!expandedFns[fnKey];
                       const canEdit = canEditFn(fn);
                       const ownerNames = (fn.engineers || []).map((id) => engName(id, candidates)).join('、');
+                      const isFocus = !!highlightFns[fnKey];
                       return (
-                        <div key={j} className="mac-fn-node">
+                        <div key={j} className={`mac-fn-node${isFocus ? ' mac-fn-node--hl' : ''}`}>
                           <div className="mac-fn-node__head" onClick={() => setExpandedFns((prev) => ({ ...prev, [fnKey]: !prev[fnKey] }))}>
                             <span className="mac-fn-node__dot" />
                             <input
