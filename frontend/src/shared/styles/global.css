@@ -215,11 +215,10 @@ html, body, #root {
   padding-bottom: env(safe-area-inset-bottom);
 }
 .tabbar-shell > .t-tab-bar {
-  /* 透明设计稿：背景几乎全透，仅保留极轻微朦胧与顶部细分割线，背后内容直接透出 */
-  background: color-mix(in oklab, var(--card) 8%, transparent);
-  backdrop-filter: saturate(1.4) blur(4px);
-  -webkit-backdrop-filter: saturate(1.4) blur(4px);
-  border-top: 1px solid color-mix(in oklab, var(--border) 28%, transparent);
+  background: color-mix(in oklab, var(--card) 78%, transparent);
+  backdrop-filter: saturate(1.4) blur(18px);
+  -webkit-backdrop-filter: saturate(1.4) blur(18px);
+  border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
 }
 /* 激活态：图标 36×36 圆角方形胶囊底（设计稿 size-9 rounded-2xl bg-blue-soft），
    图标激活 blue-2、文字激活回深灰（设计稿 text-foreground） */
