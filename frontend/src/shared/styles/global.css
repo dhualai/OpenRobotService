@@ -2231,13 +2231,18 @@ html, body, #root {
   --mac-shadow-soft: 0 1px 2px rgba(80, 90, 100, 0.04), 0 8px 24px rgba(80, 90, 100, 0.06);
 }
 .tasks-view {
-  min-height: 100vh;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   padding-top: 56px;
   background: linear-gradient(170deg, #f5fcfb 0%, #f7f9f9 55%, #f5f9f9 100%);
 }
-/* 工单卡片列表 */
+/* 工单卡片列表：唯一滚动区（filters 在其外固定，对齐历史工单布局） */
 .tasks-list-section {
-  min-height: calc(100vh - 56px);
+  flex: 1;
+  min-height: 0;
   overflow: auto;
 }
 /* 任务卡片（马卡龙极简：surface-card 白卡 + 柔和阴影 + 大圆角，状态为唯一带色文字） */
@@ -2491,8 +2496,7 @@ html, body, #root {
   padding-bottom: 4px;
 }
 .tasks-view__filters {
-  position: sticky;
-  top: 0;
+  flex-shrink: 0;
   z-index: 5;
   background: linear-gradient(170deg, #f5fcfb 0%, #f7f9f9 55%, #f5f9f9 100%);
   padding: 8px 14px 10px;
