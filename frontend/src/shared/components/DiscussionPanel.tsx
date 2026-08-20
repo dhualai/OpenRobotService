@@ -653,6 +653,20 @@ export default function DiscussionPanel({
     setTimeout(() => { suppressClickRef.current = false; }, 350);
   }, []);
 
+  // 菜单打开期间监听滚动：滚动即自动关闭（仿微信，避免 fixed 定位锚点与气泡实际位置脱节造成定位漂移）。
+  // scroll 事件不冒泡，故用捕获阶段监听 window，可覆盖页面滚动与内部滚动容器滚动；
+  // wheel 兜底 PC 端在 overflow 容器外的滚轮（此时未必触发 scroll）。
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('wheel', close, true);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('wheel', close, true);
+    };
+  }, [menu]);
+
   const startLongPress = (comment: DiscussionComment, e: React.TouchEvent | React.MouseEvent) => {
     if (disabled || sending) return;
     const target = e.currentTarget as HTMLElement;
