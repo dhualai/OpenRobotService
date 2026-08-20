@@ -5993,11 +5993,11 @@ html, body, #root {
 .history-row__actions { display: flex; gap: 6px; flex-shrink: 0; }
 
 
-/* ===== TitleEllipsis：标题溢出提示（PC hover 浮层 / 移动端 展开收起） ===== */
+/* ===== TitleEllipsis：标题溢出折叠/展开（PC + 移动端一致） ===== */
 /* 通用：标题文本元素的基类。所有外层透传进来的 className（如 history-row__title）会自带
    -webkit-line-clamp:N 截断，未溢出时 data-overflow="0"，组件不渲染任何控件。 */
 .title-ellipsis__text[data-expanded="1"] {
-  /* 移动端展开：取消 line-clamp，让 CSS 自然撑开显示完整文本。
+  /* 展开：取消 line-clamp，让 CSS 自然撑开显示完整文本。
      父容器 line-clamp 仍由外层 className（如 .history-row__title）提供，
      通过 display 切回普通 block + overflow:visible 即可让 box 自然增高。 */
   display: block !important;
@@ -6006,33 +6006,7 @@ html, body, #root {
   overflow: visible !important;
 }
 
-/* PC 端 Info 图标按钮（hover 浮层用） */
-.title-ellipsis__trigger {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  margin-top: 2px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--muted-foreground);
-  border-radius: 50%;
-  cursor: pointer;
-  opacity: 0.6;
-  transition: opacity 0.15s, background 0.15s;
-}
-.title-ellipsis__trigger:hover { opacity: 1; background: var(--secondary); }
-.title-ellipsis__trigger:active { background: var(--accent); }
-/* 列表/详情页内的小图标：与品牌蓝色调一致，视觉不抢戏 */
-.history-row__top .title-ellipsis__trigger,
-.history-row__top .title-ellipsis__toggle { color: var(--blue-2); }
-.detail-card__title .title-ellipsis__trigger,
-.detail-card__title .title-ellipsis__toggle { color: var(--blue-2); }
-
-/* 移动端箭头按钮（展开/收起用） */
+/* 展开/收起箭头按钮（PC 鼠标点击 + 移动端手指点击通用） */
 .title-ellipsis__toggle {
   flex-shrink: 0;
   display: inline-flex;
@@ -6040,6 +6014,8 @@ html, body, #root {
   justify-content: center;
   width: 18px;
   height: 18px;
+  min-width: 22px;
+  min-height: 22px;
   margin-top: 2px;
   padding: 0;
   border: none;
@@ -6048,61 +6024,19 @@ html, body, #root {
   border-radius: 50%;
   cursor: pointer;
   opacity: 0.7;
-  transition: opacity 0.15s, background 0.15s, transform 0.2s;
-  /* 移动端没有 hover，按钮稍大便于手指点击 */
-  min-width: 22px;
-  min-height: 22px;
+  transition: opacity 0.15s, background 0.15s;
 }
+.title-ellipsis__toggle:hover { opacity: 1; background: var(--secondary); }
 .title-ellipsis__toggle:active { opacity: 1; background: var(--secondary); }
+/* 列表/详情页内的小图标：与品牌蓝色调一致，视觉不抢戏 */
+.history-row__top .title-ellipsis__toggle { color: var(--blue-2); }
+.detail-card__title .title-ellipsis__toggle { color: var(--blue-2); }
 /* 箭头本体：展开时旋转 180° 表示"可收起"，收起时朝下表示"可展开" */
 .title-ellipsis__toggle-icon {
   transition: transform 0.2s ease;
 }
 .title-ellipsis__toggle[aria-expanded="true"] .title-ellipsis__toggle-icon {
   transform: rotate(180deg);
-}
-
-/* hover 浮层（仅 PC 端、createPortal 渲染到 body） */
-.title-ellipsis__tooltip {
-  position: absolute;
-  z-index: 12000;
-  max-width: 320px;
-  min-width: 48px;
-  padding: 8px 10px;
-  background: rgba(20, 22, 28, 0.94);
-  color: #fff;
-  font-size: 12.5px;
-  line-height: 1.5;
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
-  word-break: break-word;
-  white-space: pre-wrap;
-  pointer-events: auto;
-  animation: title-ellipsis-fade-in 0.12s ease-out;
-}
-.title-ellipsis__tooltip--bottom::before {
-  content: '';
-  position: absolute;
-  top: -4px;
-  left: 12px;
-  width: 8px;
-  height: 8px;
-  background: rgba(20, 22, 28, 0.94);
-  transform: rotate(45deg);
-}
-.title-ellipsis__tooltip--top::before {
-  content: '';
-  position: absolute;
-  bottom: -4px;
-  left: 12px;
-  width: 8px;
-  height: 8px;
-  background: rgba(20, 22, 28, 0.94);
-  transform: rotate(45deg);
-}
-@keyframes title-ellipsis-fade-in {
-  from { opacity: 0; transform: translateY(-2px); }
-  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* ===== TicketDetailPage 评论附件上传 ===== */
