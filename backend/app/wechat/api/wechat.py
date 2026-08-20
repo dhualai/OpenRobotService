@@ -9,7 +9,7 @@ import logging
 import csv
 import asyncio
 from difflib import SequenceMatcher
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, Request, Query, HTTPException, Body, Depends, UploadFile, File, Form
 from fastapi.responses import RedirectResponse, PlainTextResponse, Response, JSONResponse
@@ -32,7 +32,7 @@ from app.wechat.services.permission_service import PermissionService
 from app.wechat.api.match_report import parse_daily_report
 from app.modules.admin.services.daily_report_service import daily_report_service
 from app.wechat.api.dependencies import admin_auth
-from app.integrations.api import verify_sync_api_key
+from app.modules.admin.api.auth import get_current_active_user_from_token
 
 templates = Jinja2Templates(directory="app/wechat/templates")
 logger = logging.getLogger(__name__)
@@ -606,11 +606,12 @@ async def check_user_subscription(username: str = Query(..., description="用户
 @router.post("/batch-user-info")
 async def batch_get_user_info(
     request: Request,
-    _: str = Depends(verify_sync_api_key),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
-    """批量获取用户基本信息（内部接口，供 AI 服务调用）。
+    """批量获取用户基本信息（管理后台「其他」页用户统计卡片用）。
 
-    鉴权走 X-API-Key（与用户 JWT 分离），需与后端 HELPDESK_SYNC_API_KEY 一致。
+    鉴权走用户 JWT（Authorization: Bearer <token>），与前端 createRequest 默认携带的
+    Authorization 头一致，无需额外 X-API-Key。
 
     默认不传请求体时，后端自动查询 users 表获取全部用户 openid（users.id 即微信
     openid），再调用微信 /cgi-bin/user/info/batchget 拉取每个用户的订阅状态等信息。
@@ -692,11 +693,12 @@ async def batch_get_user_info(
 @router.post("/user-summary")
 async def get_user_summary(
     request: Request,
-    _: str = Depends(verify_sync_api_key),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
-    """获取用户增减数据（内部接口，供 AI 服务调用）。
+    """获取用户增减数据（管理后台「其他」页用户统计卡片用）。
 
-    鉴权走 X-API-Key（与用户 JWT 分离），需与后端 HELPDESK_SYNC_API_KEY 一致。
+    鉴权走用户 JWT（Authorization: Bearer <token>），与前端 createRequest 默认携带的
+    Authorization 头一致，无需额外 X-API-Key。
 
     请求体：
     { "begin_date": "2026-08-01", "end_date": "2026-08-07" }
