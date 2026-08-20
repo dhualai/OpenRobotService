@@ -3853,7 +3853,7 @@ html, body, #root {
 }
 .admin-entries-stats__date:focus { border-color: var(--mac-blue-2); background: #fff; }
 .admin-entries-stats__charts { display: grid; grid-template-columns: 1fr; gap: 12px; }
-@media (min-width: 768px) { .admin-entries-stats__charts { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 768px) { .admin-entries-stats__charts { grid-template-columns: repeat(3, 1fr); } }
 .admin-entries-stats__sub { display: block; font-size: 12px; color: var(--mac-muted-fg); margin-bottom: 4px; }
 .admin-entries-stats__empty {
   padding: 32px 0;
@@ -3862,6 +3862,14 @@ html, body, #root {
   color: var(--mac-muted-fg);
   line-height: 1.7;
   white-space: pre-line;
+}
+/* 图卡内空态/加载占位：与图表同高，避免三列高度不齐 */
+.admin-entries-stats__chart .admin-entries-stats__empty {
+  min-height: 240px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* 用户管理页（对照 macaron users 页） */

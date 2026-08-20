@@ -1,9 +1,9 @@
 // 后台管理 —— "其他"入口（从仪表盘「更多功能」进入）
 // 仪表盘（/admin，Dashboard.tsx）是默认首页；本页仅承载不常用的管理员工具入口。
 // 样式参考 macaron other 页：surface-card 行式入口 + 色调淡色图标圆角块。
-// 顶部公众号用户统计：柱状图（同日期新增/取消用户合计）+ 饼图（时间段内来源分布），
-// 数据源后端 /api/wechat/user-summary（X-API-Key 鉴权）。
-import { useEffect, useMemo, useState } from 'react';
+// 顶部用户统计：柱状图（同日期新增/取消用户合计）+ 环形图（真实/虚拟用户构成，中心显示总数）+ 饼图（时间段内来源分布），
+// 数据源后端 /api/wechat/user-summary 与 /api/wechat/batch-user-info（X-API-Key 鉴权），均每 10 秒轮询刷新。
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Navbar } from 'tdesign-mobile-react';
 import type { ReactNode } from 'react';
@@ -11,7 +11,7 @@ import {
   MacUsers, MacTags, MacKeyRound, MacUserCog, MacShuffle, MacScrollText,
 } from '@/shared/components/macaronIcons';
 import ReactECharts from '@/shared/components/ReactECharts';
-import { fetchUserSummary, USER_SOURCE_LABELS } from '@/api/wechat';
+import { fetchBatchUserInfo, fetchUserSummary, USER_SOURCE_LABELS } from '@/api/wechat';
 import type { UserSummaryItem } from '@/api/wechat';
 
 interface Entry { path: string; label: string; desc: string; icon: ReactNode; tone: string; }
@@ -27,6 +27,11 @@ function fmtDate(d: Date): string {
 const BAR_COLOR_NEW = '#3697c3';
 const BAR_COLOR_CANCEL = '#93e0ff';
 const PIE_COLORS = ['#227197', '#3697c3', '#51bfee', '#93e0ff', '#7fc6e8', '#5aa9cd', '#888d8f', '#c9d4d9', '#3d8ab0', '#c9e7f5'];
+// 轮询间隔（user-summary 与 batch-user-info 两个接口）
+const POLL_INTERVAL = 10_000;
+// 环形图真实/虚拟用户配色
+const DONUT_COLOR_REAL = '#3697c3';
+const DONUT_COLOR_VIRTUAL = '#c9d4d9';
 
 const adminEntries: Entry[] = [
   { path: '/admin/users', label: '用户管理', desc: '用户账号CRUD、派单画像', icon: <MacUsers />, tone: 'blue-1' },
@@ -49,7 +54,53 @@ export default function AdminEntries() {
   const [list, setList] = useState<UserSummaryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // 当前用户构成（batch-user-info）：total 显示在环形图中心，real/virtual 为两扇区
+  const [userStats, setUserStats] = useState<{ total: number; real: number; virtual: number } | null>(null);
+  const [userLoading, setUserLoading] = useState(true);
+  const [userError, setUserError] = useState('');
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
+  // silent=true 为轮询刷新：不显示 loading，失败时保留旧数据避免界面闪烁
+  const loadSummary = useCallback((silent: boolean) => {
+    if (!silent) { setLoading(true); setError(''); }
+    fetchUserSummary(beginDate, endDate)
+      .then((r) => { if (mountedRef.current) { setList(r.list || []); setError(''); } })
+      .catch((e: Error) => {
+        if (!mountedRef.current || silent) return;
+        setList([]);
+        // 微信 T+1 延迟等业务错误直接透传后端文案（如 end_date 不能为今天）
+        setError(e?.message || '加载用户统计数据失败');
+      })
+      .finally(() => { if (mountedRef.current && !silent) setLoading(false); });
+  }, [beginDate, endDate]);
+
+  const loadUsers = useCallback((silent: boolean) => {
+    if (!silent) { setUserLoading(true); setUserError(''); }
+    fetchBatchUserInfo()
+      .then((r) => {
+        if (!mountedRef.current) return;
+        const items = r.user_info_list || [];
+        const real = items.filter((u) => u.subscribe === 1).length;
+        setUserStats({
+          total: typeof r.total === 'number' ? r.total : items.length,
+          real,
+          virtual: items.length - real,
+        });
+        setUserError('');
+      })
+      .catch((e: Error) => {
+        if (!mountedRef.current || silent) return;
+        setUserStats(null);
+        setUserError(e?.message || '加载当前用户数据失败');
+      })
+      .finally(() => { if (mountedRef.current && !silent) setUserLoading(false); });
+  }, []);
+
+  // 日期变更立即查询 + 每 10 秒轮询两个接口
   useEffect(() => {
     if (!beginDate || !endDate) return;
     if (beginDate > endDate) {
@@ -57,20 +108,12 @@ export default function AdminEntries() {
       setError('开始时间不能晚于结束时间');
       return;
     }
-    let alive = true;
-    setLoading(true);
-    setError('');
-    fetchUserSummary(beginDate, endDate)
-      .then((r) => { if (alive) setList(r.list || []); })
-      .catch((e: Error) => {
-        if (!alive) return;
-        setList([]);
-        // 微信 T+1 延迟等业务错误直接透传后端文案（如 end_date 不能为今天）
-        setError(e?.message || '加载用户统计数据失败');
-      })
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
-  }, [beginDate, endDate]);
+    loadSummary(false);
+    const id = window.setInterval(() => { loadSummary(true); loadUsers(true); }, POLL_INTERVAL);
+    return () => window.clearInterval(id);
+  }, [beginDate, endDate, loadSummary, loadUsers]);
+
+  useEffect(() => { loadUsers(false); }, [loadUsers]);
 
   // ── 聚合 + 图表配置 ──
   const { barOption, pieOption, hasData } = useMemo(() => {
@@ -115,6 +158,33 @@ export default function AdminEntries() {
     return { barOption, pieOption, hasData: list.length > 0 };
   }, [list]);
 
+  // 环形图：真实/虚拟用户构成，中心数字显示用户总数
+  const donutOption = useMemo(() => ({
+    color: [DONUT_COLOR_REAL, DONUT_COLOR_VIRTUAL],
+    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+    legend: { data: ['真实用户', '虚拟用户'], bottom: 0, itemWidth: 10, itemHeight: 10, textStyle: { color: '#888d8f', fontSize: 10 } },
+    title: {
+      text: String(userStats?.total ?? 0),
+      subtext: '当前用户数',
+      left: 'center',
+      top: '30%',
+      itemGap: 2,
+      textStyle: { fontSize: 22, fontWeight: 600, color: '#303435' },
+      subtextStyle: { fontSize: 10, color: '#888d8f' },
+    },
+    series: [{
+      type: 'pie',
+      radius: ['46%', '68%'],
+      center: ['50%', '42%'],
+      data: [
+        { name: '真实用户', value: userStats?.real ?? 0 },
+        { name: '虚拟用户', value: userStats?.virtual ?? 0 },
+      ],
+      label: { color: '#888d8f', fontSize: 10, formatter: '{b} {c}' },
+      itemStyle: { borderColor: '#fff', borderWidth: 2 },
+    }],
+  }), [userStats]);
+
   return (
     <div className="admin-view">
       <Navbar title="其他" leftArrow onLeftClick={() => navigate('/admin')} fixed />
@@ -140,24 +210,42 @@ export default function AdminEntries() {
               />
             </div>
           </div>
-          {loading ? (
-            <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
-          ) : error ? (
-            <div className="admin-entries-stats__empty">{error}</div>
-          ) : !hasData ? (
-            <div className="admin-entries-stats__empty">该时间段暂无用户增减数据</div>
-          ) : (
-            <div className="admin-entries-stats__charts">
-              <div className="admin-entries-stats__chart">
-                <span className="admin-entries-stats__sub">用户增减趋势</span>
+          <div className="admin-entries-stats__charts">
+            <div className="admin-entries-stats__chart">
+              <span className="admin-entries-stats__sub">用户增减趋势</span>
+              {loading ? (
+                <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
+              ) : error ? (
+                <div className="admin-entries-stats__empty">{error}</div>
+              ) : !hasData ? (
+                <div className="admin-entries-stats__empty">该时间段暂无用户增减数据</div>
+              ) : (
                 <ReactECharts option={barOption} style={{ height: 240 }} notMerge />
-              </div>
-              <div className="admin-entries-stats__chart">
-                <span className="admin-entries-stats__sub">关注来源分布</span>
-                <ReactECharts option={pieOption} style={{ height: 240 }} notMerge />
-              </div>
+              )}
             </div>
-          )}
+            <div className="admin-entries-stats__chart">
+              <span className="admin-entries-stats__sub">当前用户构成</span>
+              {userLoading ? (
+                <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
+              ) : userError ? (
+                <div className="admin-entries-stats__empty">{userError}</div>
+              ) : (
+                <ReactECharts option={donutOption} style={{ height: 240 }} notMerge />
+              )}
+            </div>
+            <div className="admin-entries-stats__chart">
+              <span className="admin-entries-stats__sub">关注来源分布</span>
+              {loading ? (
+                <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
+              ) : error ? (
+                <div className="admin-entries-stats__empty">{error}</div>
+              ) : !hasData ? (
+                <div className="admin-entries-stats__empty">该时间段暂无用户增减数据</div>
+              ) : (
+                <ReactECharts option={pieOption} style={{ height: 240 }} notMerge />
+              )}
+            </div>
+          </div>
         </section>
       </div>
       <div className="admin-entries-grid">
