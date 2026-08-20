@@ -447,14 +447,13 @@ html, body, #root {
   filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.12));
 }
 
-/* 标签文字（设计稿：白字 + 投影，常显） */
+/* 标签文字（设计稿：黑字，常显） */
 .chat-ticket-btn__label {
   font-size: 10px;
-  color: var(--primary-foreground);
+  color: #000;
   font-weight: 600;
   letter-spacing: 0.5px;
   user-select: none;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 
 @keyframes ticket-fab-enter {
