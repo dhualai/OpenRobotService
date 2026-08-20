@@ -1177,14 +1177,8 @@ export default function TasksView() {
                 <span>{syncing ? '同步中…' : '同步外部任务'}</span>
               </button>
             )}
-            <button
-              className="tasks-view__sync-btn"
-              onClick={() => navigate('/module-tree')}
-              aria-label="责任模块树"
-              title="责任模块树"
-            >
-              🌳 模块树
-            </button>
+
+            {/* 责任模块树已迁至后台「用户管理」入口，此处移除临时按钮 */}
             <UserAvatarMenu />
           </div>
         }
