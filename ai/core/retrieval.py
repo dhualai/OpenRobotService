@@ -467,10 +467,11 @@ class RetrievalService:
     ) -> List[RetrievalResult]:
         """用 cross-encoder 对候选结果精排，返回 top_k。
 
-        CPU 推理瓶颈：bge-reranker-v2-m3 在 CPU 上约 700ms/pair，
-        候选数封顶在 15，避免单次检索耗时超过 10 秒。
+        CPU 推理瓶颈：bge-reranker-v2-m3 在 CPU 上约 500-700ms/pair，
+        候选必须收窄——实测 30 对要 8s+，把检索总耗时拖到 12s。
+        候选封顶 12、每对文本截断 400 字，8 对约 4s 内完成。
         """
-        _MAX_RERANK_CANDIDATES = 30  # rerank 候选数:双路保送后池子变大,12 会把稀疏路保送挤掉
+        _MAX_RERANK_CANDIDATES = 12  # 精排候选上限：30→12（CPU 耗时 8s→~4s）
         if not self._reranker or len(results) <= top_k:
             return results[:top_k]
 

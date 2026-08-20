@@ -315,6 +315,11 @@ class KBDomainIngester(BaseIngester[KBEntry]):
             if not body:
                 continue
 
+            # ── 章节按子项细切：平铺手册（如「2.3 机器人操作」「9.5 任务操作」）
+            # 一个 ## 章节塞七八个操作项，整章一个 chunk 时 embedding/reranker
+            # 都无法把「解除车辆」这类子项查询对上——子项信号被整章稀释。
+            # 切成「章节 > 子项」小块后子项可被直接命中。内部 ≥3 子项才切,
+            # 短章节/无子项结构的自然退化为整章一个 chunk。
             # 提取图片
             images = _extract_images(body)
 
@@ -329,6 +334,15 @@ class KBDomainIngester(BaseIngester[KBEntry]):
                     body, clean_title, section_num, chapter_num,
                     sub_domain, source_file, order,
                 )
+                entries.extend(sub_entries)
+                order += len(sub_entries)
+                continue
+
+            sub_entries = self._split_manual_bullets(
+                body, clean_title, section_num, chapter_num,
+                sub_domain, source_file, order,
+            )
+            if sub_entries:
                 entries.extend(sub_entries)
                 order += len(sub_entries)
                 continue
@@ -380,6 +394,91 @@ class KBDomainIngester(BaseIngester[KBEntry]):
                 images=images, section=sub_section, chapter=chapter,
             ))
 
+        return entries
+
+    def _split_manual_bullets(
+        self, content: str, parent_title: str, parent_section: str, chapter: str,
+        sub_domain: str, source_file: str, start_order: int,
+    ) -> List[KBEntry]:
+        """长章节按子项细切（如「2.3 机器人操作」下的「- 解除车辆」「- 禁用车辆」）。
+
+        平铺手册里一个 ## 章节常含七八个操作项，整章一个 chunk 时子项查询
+        （「解除车辆在什么场景下使用？」）的信号被稀释，embedding/reranker 都对不上。
+        切成「章节 > 子项」小块后，子项名直接进标题，可被关键词/向量精确命中。
+
+        子项起始行两类：
+        - 「- 名字」一级 bullet（2.3 机器人操作）
+        - 独立短行标题（9.5 任务操作里的「强制完成任务」「重发任务」等：
+          2-25 字、无结尾标点、不以 #/-/数字/图/括号开头）
+        规则：切不出至少 3 个子项 → 返回空列表（调用方退化为整章一个 chunk）；
+        章节引言并进第一个子项，不丢内容。
+        """
+        def _is_subheader(line: str) -> bool:
+            s = line.strip()
+            if not s or len(s) < 2 or len(s) > 25:
+                return False
+            if s[0] in '#-0123456789![（(*':
+                return False
+            if s[-1] in '。！？：:；':
+                return False
+            return not any(ch in s for ch in '。！？：:；')
+
+        # 标题行（## x.y 章节名）单独提出,子块 content 里保留标题行供上下文
+        h2_match = re.match(r'^##[^\n]*\n?', content)
+        _head = h2_match.group(0) if h2_match else ""
+        body = content[len(_head):]
+
+        # 逐行切段：bullet 行或独立短行标题都作为子项起始
+        segments: list[list[str]] = []
+        cur: list[str] = []
+        for ln in body.splitlines():
+            if ln.startswith('- ') or _is_subheader(ln):
+                if cur:
+                    segments.append(cur)
+                cur = [ln]
+            else:
+                cur.append(ln)
+        if cur:
+            segments.append(cur)
+
+        if len(segments) < 3:
+            return []
+
+        lead = segments[0]
+        item_segments = segments[1:]
+
+        named = []
+        for seg in item_segments:
+            first = seg[0].strip()
+            m = re.match(r'-\s+(\S[^\n]*)', first)
+            if m:
+                name = m.group(1)
+            else:
+                name = first
+            name = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', name).strip()
+            if not name:
+                continue
+            named.append((name, seg))
+
+        if len(named) < 3:
+            return []
+
+        entries = []
+        sub_idx = 0
+        _lead_text = '\n'.join(lead).strip()
+        for name, seg in named:
+            sub_idx += 1
+            p_body = '\n'.join(seg).strip()
+            # 引言并进第一个子项
+            _content = f"{_head}{_lead_text}\n\n{p_body}".strip() if sub_idx == 1 else f"{_head}{p_body}".strip()
+            entries.append(KBEntry(
+                title=f"{parent_title} > {name}",
+                content=_content,
+                sub_domain=sub_domain, source_file=source_file,
+                order=start_order + sub_idx,
+                images=_extract_images(p_body),
+                section=f"{parent_section}.{sub_idx}", chapter=chapter,
+            ))
         return entries
 
     # ═══════════════════════════════════════════════════════════
