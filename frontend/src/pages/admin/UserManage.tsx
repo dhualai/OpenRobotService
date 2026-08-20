@@ -920,7 +920,14 @@ export default function UserManage() {
 
               {detailUser.responsibility_modules && Object.keys(detailUser.responsibility_modules).length > 0 && (
                 <div className="mac-detail-section">
-                  <div className="mac-detail-section__title">责任模块</div>
+                  <div
+                    className="mac-detail-section__title"
+                    style={{ alignItems: 'center', gap: 6, cursor: 'pointer', color: 'var(--mac-blue-2)' }}
+                    onClick={() => detailUser.id && navigate(`/admin/module-tree?user=${encodeURIComponent(detailUser.id)}`)}
+                  >
+                    责任模块
+                    <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--mac-muted-fg)' }}>点击查看负责模块 ▶</span>
+                  </div>
                   {Object.entries(detailUser.responsibility_modules).map(([mod, keywords]) => (
                     <div key={mod} className="mac-detail-panel">
                       <span className="mac-chip mac-chip--outline" style={{ marginRight: 6 }}>{mod}</span>

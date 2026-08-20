@@ -4131,6 +4131,13 @@ html, body, #root {
   position: relative;
   margin-bottom: 2px;
 }
+/* 聚焦高亮：从用户详情「责任模块」跳转时标记该用户负责的功能 */
+.mac-fn-node--hl .mac-fn-node__head {
+  background: var(--mac-blue-soft);
+  box-shadow: inset 0 0 0 1.5px var(--mac-blue-2);
+  border-radius: 9px;
+}
+.mac-fn-node--hl .mac-fn-node__dot { background: var(--mac-blue-2); box-shadow: 0 0 0 3px rgba(0, 82, 217, 0.18); }
 /* 分支连接点（节点前的短横线） */
 .mac-fn-node::before {
   content: '';
