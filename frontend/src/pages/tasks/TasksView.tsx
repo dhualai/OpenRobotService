@@ -1182,9 +1182,8 @@ export default function TasksView() {
         }
       />
 
-      {/* 工单卡片列表 */}
-      <div className="tasks-list-section">
-        <div className="tasks-view__filters">
+      {/* 筛选区（搜索 + 状态 tab）：固定在滚动区外，不随列表滚动上移（对齐历史工单） */}
+      <div className="tasks-view__filters">
           <div className="tasks-view__search-row">
             <div className="tasks-view__search-card">
               <Search size={16} strokeWidth={2} />
@@ -1329,6 +1328,8 @@ export default function TasksView() {
           </div>
         </div>
 
+      {/* 工单卡片列表：唯一滚动区 */}
+      <div className="tasks-list-section">
         <div className="tasks-cards">
           {loading ? <Loading text="加载中…" /> : tickets.length === 0 ? (
             <div className="tasks-empty">暂无工单</div>
