@@ -180,8 +180,7 @@ export default function AdminEntries() {
         { name: '真实用户', value: userStats?.real ?? 0 },
         { name: '虚拟用户', value: userStats?.virtual ?? 0 },
       ],
-      label: { show: false },
-      labelLine: { show: false },
+      label: { color: '#888d8f', fontSize: 10, formatter: '{b} {c}' },
       itemStyle: { borderColor: '#fff', borderWidth: 2 },
     }],
   }), [userStats]);
