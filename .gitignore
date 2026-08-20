@@ -59,6 +59,9 @@ logs/
 .claude/settings.local.json
 codebuddy.md
 
+# ===== CodeBuddy 本地记忆（跨会话记忆文件，仅本地，不入库）=====
+.codebuddy/memory/
+
 # ===== topo-pack 临时工件 / 授权包（含敏感 token，禁止入库）=====
 .tmp_*/
 .tmp_import_pack.py
@@ -139,3 +142,17 @@ ai/tests/_probe_real_errors.py
 ai/tools/bench_vision_models.py
 frontend/package-lock.json.bak
 frontend/macaron-minimal-ui/
+/ai/scripts
+/ai/tests
+/ai/tests
+.claude/launch.json
+/ai/tools
+/ai/tests
+/ai/tests
+ai/.env.example
+.token_tmp
+ai/.env.example
+ai/.env.example
+ai/.env.example
+/ai/tests
+/ai/tests

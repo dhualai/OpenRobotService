@@ -1,6 +1,6 @@
 // 可复用 AI 对话面板 — 提单 Agent（/api/ai/qa/ask/stream）
 // 用于「我要摇人」页面：诊断+提单。系统任务页面不再使用 ChatPanel。
-import { memo, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { memo, useState, useEffect, useRef, useCallback, useMemo, type ReactNode, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Textarea, Toast, Popup, Tag, Loading } from 'tdesign-mobile-react';
@@ -13,13 +13,14 @@ import API_CONFIG from '@/config/api';
 import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, qaClearDraft, type TicketDraft } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import UserSelect from '@/shared/components/UserSelect';
-import { createTicket } from '@/api/ticket';
+import { createTicket, reDispatchTicket } from '@/api/ticket';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
 import type { UserItem } from '@/api/users';
 import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
 import { createRequest } from '@/api/client';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import { compressImage } from '@/shared/utils/imageCompress';
+import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import { useInertiaScroll } from '@/shared/hooks/useInertiaScroll';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import ImageLightbox from '@/shared/components/ImageLightbox';
@@ -63,7 +64,8 @@ interface Message {
   percent?: number;
   failed?: boolean;
   reaction?: 'like' | 'dislike' | null;
-  // 流式输出进行中标记：true 时气泡用纯文本渲染（避免 Markdown 全量重解析造成抖动），完成后置 false
+  // 流式输出进行中标记：true 时气泡仍实时 Markdown 渲染文字/格式，媒体以占位代替防抖，
+  // 完成后置 false 走完整 Markdown 渲染（含真实图片/视频）；用于区分流式中间态
   streaming?: boolean;
   // 附件上传后的 AI 占位阶段（对应 sendWithFile 动态占位）：analyzing_image/analyzing_file=分析中，thinking=思考中。
   // generating_ticket=提单生成工单草稿中（LLM 的「好的」被抑制，弹窗前显示动画）。
@@ -99,6 +101,24 @@ const uid = () => Date.now().toString() + Math.random().toString(36).slice(2, 6)
 /** 附件代理下载 URL：前端通过后端代理读取 MinIO 对象（/api/call/files/{object_path}），
  *  不用预签名 URL（其 host=MINIO_ENDPOINT=localhost:9000，生产浏览器访问不了 → 碎图）。 */
 const attachmentUrl = (objectPath: string) => `${API_CONFIG.CALL.BASE_URL}/files/${objectPath}`;
+
+/** 待发送附件类型：file 与预览 url 绑定为单一对象（与 ChatPanel 内 pendingItems 一致） */
+type PendingItem = { file: File; url?: string };
+
+/**
+ * 对同一批待发送附件去重命名：截图工具等场景多张图常带相同默认名（如 image.png），
+ * 若原样上传，后端对象名由 `{session_id}/{filename}` 决定，同名会被 MinIO 覆盖写 →
+ * 回显时所有气泡都指向最后一张图。这里复用讨论区的 dedupeFileNames 保证文件名唯一，
+ * 预览 objectURL 复用原值（重命名不改变字节内容）。
+ */
+const dedupePendingItems = (items: PendingItem[]): PendingItem[] => {
+  if (items.length < 2) return items;
+  const files = dedupeFileNames(items.map((it) => it.file));
+  return files.map((f, i) => {
+    const orig = items[i];
+    return f === orig.file ? orig : { file: f, url: orig.url };
+  });
+};
 
 /**
  * AI 回复文本清洗（流式定稿 / 持久化 / 历史恢复统一入口）。
@@ -226,7 +246,7 @@ const mapDbMessages = (
 
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
-  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket,
+  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch,
 }: {
   msg: Message;
   editingId: string | null;
@@ -241,6 +261,7 @@ const MessageBubble = memo(function MessageBubble({
   onEditCancel: () => void;
   onImageClick: (url: string) => void;
   onOpenTicket: (dbId: number) => void;
+  onRedispatch?: (msgId: string, ov: NonNullable<Message['ticket_overview']>) => void;
 }) {
   return (
     <div className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
@@ -318,10 +339,14 @@ const MessageBubble = memo(function MessageBubble({
           ) : msg.subtype === 'missing_hint' ? (
             // 信息不足提示气泡（not_ready）：长文本折叠，提供「展开/收起」
             <div className="chat-missing-hint">
-              <div className={`chat-missing-hint__text chat-clamp${expandedDesc ? ' is-expanded' : ''}`} style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
-              <button type="button" className="chat-missing-hint__toggle" onClick={() => onToggleDesc(msg.id)}>
-                {expandedDesc ? '收起 ▴' : '展开 ▾'}
-              </button>
+              <ClampText
+                className="chat-missing-hint__text"
+                expanded={expandedDesc}
+                onToggle={() => onToggleDesc(msg.id)}
+                style={{ whiteSpace: 'pre-wrap' }}
+              >
+                {msg.content}
+              </ClampText>
             </div>
           ) : msg.subtype === 'ticket_overview' && msg.ticket_overview ? (
             // 工单概览气泡：confirm 成功后插入，展示工单详情 + 派单状态，点击进入工单详情页
@@ -330,6 +355,7 @@ const MessageBubble = memo(function MessageBubble({
               role="button"
               tabIndex={0}
               title="点击查看工单详情"
+              aria-label="点击查看工单详情"
               onClick={() => onOpenTicket(msg.ticket_overview!.db_id)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
@@ -349,16 +375,26 @@ const MessageBubble = memo(function MessageBubble({
               {msg.ticket_overview.project && <div className="chat-ticket-overview__row"><FolderClosed size={12} strokeWidth={2} /> {msg.ticket_overview.project}</div>}
               {msg.ticket_overview.contact && <div className="chat-ticket-overview__row"><User size={12} strokeWidth={2} /> {msg.ticket_overview.contact}</div>}
               {msg.ticket_overview.description && (
-                <>
-                  <div className={`chat-ticket-overview__desc chat-clamp${expandedDesc ? ' is-expanded' : ''}`}>{msg.ticket_overview.description}</div>
-                  <button type="button" className="chat-ticket-overview__toggle" onClick={(e) => { e.stopPropagation(); onToggleDesc(msg.id); }}>
-                    {expandedDesc ? '收起 ▴' : '展开 ▾'}
-                  </button>
-                </>
+                <ClampText
+                  className="chat-ticket-overview__desc"
+                  expanded={expandedDesc}
+                  onToggle={() => onToggleDesc(msg.id)}
+                >
+                  {msg.ticket_overview.description}
+                </ClampText>
               )}
               <div className="chat-ticket-overview__footer">
                 {msg.ticket_overview.assigned_to_name ? (
-                  <span className="chat-ticket-overview__assigned"><CheckCircle2 size={14} strokeWidth={2} /> 已派单 · {msg.ticket_overview.assigned_to_name}</span>
+                  <>
+                    <span className="chat-ticket-overview__assigned"><CheckCircle2 size={14} strokeWidth={2} /> 已派单 · {msg.ticket_overview.assigned_to_name}</span>
+                    {onRedispatch && (
+                      <button
+                        type="button"
+                        className="chat-ticket-overview__redispatch"
+                        onClick={(e) => { e.stopPropagation(); onRedispatch(msg.id, msg.ticket_overview!); }}
+                      >重新派单</button>
+                    )}
+                  </>
                 ) : (
                   <span className="chat-ticket-overview__dispatching">
                     <i className="dispatch-pulse dispatch-pulse--inline" />派单中…
@@ -368,7 +404,10 @@ const MessageBubble = memo(function MessageBubble({
             </div>
           ) : msg.content ? (
             msg.streaming ? (
-              <div className="chat-bubble__text" style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+              // 流式期间实时 Markdown 渲染文字/格式；媒体（图片/视频）由 MarkdownRenderer 用
+              // 稳定占位代替（streaming=true），避免流式中间态渲染真实 <img> 反复 remount/重载闪烁；
+              // 定稿（streaming=false）后才加载真实媒体。
+              <MarkdownRenderer content={msg.content} compact={compact} streaming />
             ) : (
               <MarkdownRenderer content={msg.content} compact={compact} />
             )
@@ -425,6 +464,65 @@ const MessageBubble = memo(function MessageBubble({
     </div>
   );
 });
+
+/**
+ * 长文本折叠组件：默认 3 行截断，仅当内容实际溢出（scrollHeight > clientHeight）时才显示「展开/收起」按钮。
+ * 修复历史缺陷：此前按钮无条件渲染，短文本（未溢出）也显示「展开」，点击无效果，让用户误以为按钮失效。
+ * 展开态由外部 expanded 控制（记录在 expandedMsgIds），收起后重新按 3 行截断。
+ */
+function ClampText({
+  children,
+  className = '',
+  expanded,
+  onToggle,
+  style,
+}: {
+  children: ReactNode;
+  className?: string;
+  expanded: boolean;
+  onToggle: () => void;
+  style?: CSSProperties;
+}) {
+  const textRef = useRef<HTMLDivElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+
+  useEffect(() => {
+    const el = textRef.current;
+    if (!el) return;
+    // 展开态下 overflow 已取消，需用「未截断时的完整高度」判断：临时按 3 行截断测量比较
+    // 直接测量：展开态时 scrollHeight 不受 clamp 限制，无法判断是否溢出，故只在收起态测量。
+    const measure = () => {
+      if (!expanded) {
+        setOverflowing(el.scrollHeight > el.clientHeight + 1);
+      }
+    };
+    measure();
+    // 内容变化 / 容器宽度变化（字体加载、窗口缩放）时重测
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [expanded, children]);
+
+  return (
+    <>
+      <div
+        ref={textRef}
+        className={`${className} chat-clamp${expanded ? ' is-expanded' : ''}`}
+        style={style}
+      >
+        {children}
+      </div>
+      {overflowing && (
+        <button
+          type="button"
+          className="chat-ticket-overview__toggle"
+          onClick={(e) => { e.stopPropagation(); onToggle(); }}
+        >
+          {expanded ? '收起 ▴' : '展开 ▾'}
+        </button>
+      )}
+    </>
+  );
+}
 
 const SCENE_CONFIG: Record<ChatScene, {
   sceneType: string;
@@ -507,6 +605,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 转工单信息不足引导（方案A）：prepare 返回 not_ready 时，
   // 在输入框上方常驻「待补充清单」卡片 + 转工单按钮角标，引导用户回对话补全
   const [ticketMissing, setTicketMissing] = useState<{ info: string[]; message: string } | null>(null);
+  // 对话内工单概览气泡「重新派单」：选倾向处理人 + 备注 → 重派 → 清空 assigned_to_name 重新轮询
+  const [redispatchOv, setRedispatchOv] = useState<NonNullable<Message['ticket_overview']> | null>(null);
+  const [redispatchMsgId, setRedispatchMsgId] = useState<string | null>(null);
+  const [redispatchUser, setRedispatchUser] = useState<UserItem | null>(null);
+  const [redispatchRemark, setRedispatchRemark] = useState('');
+  const [showRedispatchPopup, setShowRedispatchPopup] = useState(false);
+  const [redispatching, setRedispatching] = useState(false);
   // 气泡长文本「展开/收起」：记录已展开的消息 id（工单概览描述、缺失提示气泡共用）
   const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set());
   const toggleMsgExpanded = useCallback((id: string) => {
@@ -1046,6 +1151,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const files = pendingItems.map((it) => it.file);
     if (!content && files.length === 0) return;
     if (!token) { kickToLogin('请先登录'); return; }
+    // 单条消息长度上限：后端 QAAskRequest.query max_length=500，超长会 422。
+    // 前端先行拦截，给出明确提示而非让后端报错（#403 发送失败 HTTP 422 根因）。
+    if (content.length > 500) {
+      Toast({ message: '单条消息上限 500 字，请精简或转为附件上传', theme: 'warning' });
+      return;
+    }
     if (sendingRef.current) return; // 防双发
     sendingRef.current = true;
     // 用户主动发送：恢复贴底跟随（即使刚才在上滑看历史，最新对话也要立即进入视野）
@@ -1077,22 +1188,68 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const assistantId = uid();
     // 节流渲染相关变量提升到函数作用域：try 块内的 const/let 对 finally 不可见，必须外提
     let acc = '';
+    let pending = '';
+    let typeTimer: ReturnType<typeof setInterval> | null = null;
+    // 伪流式（打字机缓冲）：token 先入 pending 队列，定时器按积压规模渐进出字到 acc。
+    // 上游（中转站）token 是突发块+真空期交替，直接上屏就是「卡一下出一坨」；
+    // 匀速重放把突发摊平、真空期平滑衔接，视觉上始终在打字。
+    // 渐进档位：积压越多出字越快，但每档只跳小一档，视觉连续不突变——
+    //   积压 ≤ 200 字   → 每 tick 6 字（≈75 字/秒，跟上游平均供给 55-75 持平，缓冲不轻易耗尽）
+    //   积压 ≤ 400 字   → 每 tick 10 字（≈125 字/秒，追上游突发，摊平大坨）
+    //   积压 >  400 字   → 每 tick 14 字（≈175 字/秒，快速清积压，避免排空拖尾）
+    // 相比老的二值切换（≤300 字出 3 / >300 字出 9），避免了瞬时跳到 9 的「卡一下涌出」。
+    // 「收尾出完」：流结束后不一次性并入，而是等定时器把剩余 pending 按档位逐字出完
+    // （drain=true），尾部同样平滑，杜绝「后面一下出来好几行」。
+    const TYPE_TICK_MS = 80;
+    // 由小到大积压档位 → 每 tick 出字数：积压依次跨过 0 / 200 / 400 字时档位 6 → 10 → 14
+    const TYPE_SPEED_STEPS: Array<{ threshold: number; chars: number }> = [
+      { threshold: 0, chars: 6 },
+      { threshold: 200, chars: 10 },
+      { threshold: 400, chars: 14 },
+    ];
     // sentConvId 快照：流式期间用户可能切换会话，convRef 会被 effect 改写指向新会话；
     // 后续 AI 回复落库/首轮会话同步必须用此快照，否则回复会错写进新会话（表现为"过时/错位回复"）
     let sentConvId: number | null = null;
     // 后端增量落库写出的 assistant 消息 DB id：由流式 event:message_created 回传。
     // 命中即说明后端已接管落库，前端不再重复写（避免重复消息）；未命中(老后端/建消息失败)则前端兜底落库。
     let assistantDbId: number | null = null;
-    let lastFlush = 0;
-    const FLUSH_MS = 90;
     // 流式中间渲染：疑似 LLM 协议 JSON 头泄漏（{ / ``` 开头）时以占位代替，避免残破 JSON 闪现上屏
     const renderAcc = () => setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: looksLikeJsonHead(acc) ? '正在思考…' : acc } : m)));
-    const scheduleRender = () => {
-      const now = Date.now();
-      if (now - lastFlush >= FLUSH_MS) {
-        lastFlush = now;
+    // 收尾排空标志：流已结束（done），剩余 pending 继续逐字出完而非一次性并入
+    let draining = false;
+    // 排空完成回调已触发：防止重复定稿（finally + 排空完成各触发一次）
+    let drainFinished = false;
+    const startTyping = () => {
+      if (typeTimer) return;
+      const timer = setInterval(() => {
+        if (!pending) {
+          // 缓冲已空：流结束且已排空 → 定稿停表；否则为上游真空期（还没结束），保持空转等新 token
+          if (draining) {
+            clearInterval(timer);
+            if (typeTimer === timer) typeTimer = null;
+            finishDrain();
+          }
+          return;
+        }
+        const len = pending.length;
+        // 按积压规模取当前档位的出字数（从高到低匹配第一个满足的档）
+        let _chars = TYPE_SPEED_STEPS[0].chars;
+        for (let i = TYPE_SPEED_STEPS.length - 1; i >= 0; i--) {
+          if (len > TYPE_SPEED_STEPS[i].threshold) { _chars = TYPE_SPEED_STEPS[i].chars; break; }
+        }
+        acc += pending.slice(0, _chars);
+        pending = pending.slice(_chars);
         renderAcc();
-      }
+      }, TYPE_TICK_MS);
+      typeTimer = timer;
+    };
+    // 排空定稿：剩余 pending 已全部逐字上屏 → 置 streaming:false 触发 Markdown 重渲染 + 贴底校正。
+    // 仅成功路径由排空回调触发；错误/中断路径在 finally 直接定稿（不依赖排空）。
+    const finishDrain = () => {
+      if (drainFinished) return;
+      drainFinished = true;
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: sanitizeAiText(acc) || acc, streaming: false } : m)));
+      requestAnimationFrame(() => requestAnimationFrame(scrollToBottom));
     };
     try {
       const sid = ensureSessionId();
@@ -1138,11 +1295,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             assistantDbId = data.message_id;
           }
           if (data.token) {
-            acc += data.token;
-            scheduleRender();
+            pending += data.token;
+            startTyping();
           } else if (data.content) {
-            acc += data.content;
-            scheduleRender();
+            pending += data.content;
+            startTyping();
           }
           // 流式错误（如诊断 pipeline 抛错）：捕获错误信息，循环结束后抛出，避免静默空气泡
           if (currentEvent === 'error' && data.error) {
@@ -1173,11 +1330,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           // 「LLM 片段 + 系统话术」混乱。此处清空 acc，丢弃闪现的 LLM 片段，只接收后续系统话术。
           if (currentEvent === 'status' && ['need_info', 'need_fields', 'submit_failed'].includes(data.stage)) {
             acc = '';
+            pending = '';
           }
           // 提单生成中：LLM 的「好的」被后端抑制，切气泡到「正在生成工单」动画，
           // 弹窗（review）时后端会回填「已生成工单草稿…」话术，届时再显示。
           if (currentEvent === 'status' && data.stage === 'generating_ticket') {
             acc = '';
+            pending = '';
             setMessages((prev) => prev.map((m) => (
               m.id === assistantId ? { ...m, content: '', phase: 'generating_ticket' as const, streaming: true } : m
             )));
@@ -1219,18 +1378,34 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 流结束处理 buffer 末尾剩余行（最后 data 未跟换行的情况）
       if (buffer) processLine(buffer);
 
+      // 假流式收尾：不一次性并入剩余 pending（否则尾部「哗啦一下全出来」），
+      // 置 draining 让定时器按当前档位继续逐字出完，缓冲清空后自动定稿（finishDrain）。
+      // 完整最终文本 = 已上屏 acc + 剩余 pending（此快照用于校验/落库，显示会继续逐字补全）。
+      const fullPending = pending;
+      draining = true;
+      if (!typeTimer && pending) {
+        startTyping();  // 流结束瞬间无定时器（如整段一个 chunk 落完）→ 补开定时器排空
+      }
+      if (!pending && typeTimer) {
+        clearInterval(typeTimer);
+        typeTimer = null;
+        pending = '';
+        finishDrain();
+      }
+
       // 流式定稿：清洗 JSON 泄漏/围栏/游离残留（带 } 回复）；纯空白（含仅空格/换行）→ ''，
       // 再统一走空回复兜底，杜绝空白气泡与残破 JSON 上屏、落库
-      acc = sanitizeAiText(acc);
+      const fullText = sanitizeAiText(acc + fullPending);
       // 前端空回复兜底：流式结束无任何内容（后端无 token 或前端解析丢字）→ 显示缺省，而非空气泡
-      if (!acc && !streamError) acc = '[未收到 AI 回复，请重试]';
+      if (!fullText && !streamError) acc = '[未收到 AI 回复，请重试]';
       // 流式出错且无任何内容 → 抛出，由外层 catch 提示并移除空气泡（不再静默）
-      if (streamError && !acc) throw new Error(streamError);
+      if (streamError && !fullText) throw new Error(streamError);
 
       // 流式结束：后端已在流式中增量落库完整内容（event:message_created 接管）。
       // 仅当后端未接管（老后端未回传 message_id / 建消息失败）时，前端兜底落库一次，避免丢字。
-      if (acc && assistantDbId == null && sentConvId) {
-        appendMessage(sentConvId, 'assistant', acc).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
+      // 注意用完整快照 fullText 落库，而非仍在逐字排空的 acc（避免落库截断）。
+      if (fullText && assistantDbId == null && sentConvId) {
+        appendMessage(sentConvId, 'assistant', fullText).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
       }
       // 首轮问答完成 → 同步会话到列表、定位到新会话。
       // 标题保持「新建会话」：标题由 AI 在第2轮回复时生成（event: title），在此之前都叫「新建会话」。
@@ -1255,6 +1430,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 主动中断 = AbortController 触发（fetch/reader 抛 AbortError）；其余视为真错误
       const aborted = err instanceof DOMException && err.name === 'AbortError';
       const finalAcc = sanitizeAiText(acc);
+      // 中断/异常：立即停掉可能仍在排空(收尾)的定时器，并标记排空已结束，
+      // 让 finally 直接定稿，避免切换会话/卸载后定时器继续 setMessages 串台。
+      if (typeTimer) {
+        clearInterval(typeTimer);
+        typeTimer = null;
+      }
+      drainFinished = true;
       if (aborted) {
         // 主动中断（切换会话/卸载）：后端已在流式中增量落库（≤0.8s 残差），切回原会话从 DB 恢复；
         // 仅后端未接管时前端兜底落库。无内容则移除空气泡（避免闪烁残留）。
@@ -1278,7 +1460,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         }
       }
     } finally {
-      // 先释放发送锁与 loading，再强制刷新最终内容，避免刷新异常时再次卡死发送
+      // 先释放发送锁与 loading
       setLoading(false);
       sendingRef.current = false;
       abortRef.current = null;
@@ -1286,9 +1468,12 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // Markdown 重渲染（代码块等高度突变），双 rAF 待布局稳定后再校正一次贴底
       scrollToBottom();
       requestAnimationFrame(() => requestAnimationFrame(scrollToBottom));
-      // 定稿：合并为单次 setMessages。错误/中断时不再删除气泡，保留已接收内容（或占位提示），
-      // 杜绝"闪烁一下就消失"。气泡已被 filter 删除时（中断且无内容）map 找不到，无操作。
-      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: sanitizeAiText(acc) || acc, streaming: false } : m)));
+      // 若正处于「成功排空」路径（draining=true 且排空未完成），定稿交给 finishDrain()
+      // 在剩余 pending 逐字出完后触发（此时 acc 才含完整内容，streaming:false 前贴底校准一次）。
+      // 否则（无内容/错误/中断/已结束）此处立即定稿，保留已接收内容（或占位提示）。
+      if (!draining || drainFinished) {
+        setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: sanitizeAiText(acc) || acc, streaming: false } : m)));
+      }
     }
   };
 
@@ -1311,6 +1496,21 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const handleOpenTicket = useCallback((dbId: number) => {
     navigate(`/call/ticket/db_${dbId}`);
   }, [navigate]);
+
+  // 对话内工单概览气泡「重新派单」：打开弹窗（先拦截指定处理人工单）
+  const openRedispatch = useCallback((msgId: string, ov: NonNullable<Message['ticket_overview']>) => {
+    const strongText = `${ov.title || ''}\n${ov.description || ''}`;
+    const strongMatch = strongText.match(/指定(?:处理人|人|人员)[:：]\s*([^\]\s，,；;:：）)】]{2,6})/);
+    if (strongMatch) {
+      Toast({ message: `该工单已指定处理人「${strongMatch[1]}」，无法重新派单`, theme: 'warning' });
+      return;
+    }
+    setRedispatchMsgId(msgId);
+    setRedispatchOv(ov);
+    setRedispatchUser(null);
+    setRedispatchRemark('');
+    setShowRedispatchPopup(true);
+  }, []);
 
   // voiceWillCancelRef 在 handleMove 中直接同步写入，不再通过 useEffect 异步同步
 
@@ -1557,8 +1757,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       });
     }
     if (accepted.length === 0) return;
-    // 追加到已有待发送列表（支持多次选择累积）
-    setPendingItems((prev) => [...prev, ...accepted]);
+    // 追加到已有待发送列表（支持多次选择累积）；合并后统一去重命名，避免同名截图上传时对象名冲突/回显串图
+    setPendingItems((prev) => dedupePendingItems([...prev, ...accepted]));
   };
 
   /** PC 端粘贴图片：从剪贴板取 image/* 文件，走与「选择文件」一致的待发送附件流程（预览后可随消息上传） */
@@ -1578,7 +1778,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 粘贴图同样压缩；file 与预览 url 绑定为单一对象，避免错位
       const r = await compressImage(file);
       const finalFile = r.file;
-      setPendingItems((prev) => [...prev, { file: finalFile, url: URL.createObjectURL(finalFile) }]);
+      setPendingItems((prev) => dedupePendingItems([...prev, { file: finalFile, url: URL.createObjectURL(finalFile) }]));
       Toast({ message: '已粘贴图片，可直接发送', theme: 'success' });
       return; // 只处理第一张图片
     }
@@ -1720,6 +1920,30 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     pollDispatch(msgId, dbId, ov, 0);
   }, [pollDispatch]);
 
+  // 对话内工单概览气泡「重新派单」：确认 → 调 re-dispatch → 清空 assigned_to_name 回到「派单中」→ 重新轮询显示新接单人
+  const handleRedispatchConfirm = useCallback(async () => {
+    if (!redispatchOv?.db_id || !redispatchMsgId) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
+    if (!redispatchUser?.id && !redispatchUser?.username) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
+    setRedispatching(true);
+    try {
+      await reDispatchTicket(redispatchOv.db_id, redispatchUser.id || redispatchUser.username, redispatchRemark.trim() || undefined);
+      Toast({ message: '已重新派单，正在重新推荐处理人', theme: 'success' });
+      setShowRedispatchPopup(false);
+      // 清空 assigned_to_name → 气泡回到「派单中」态，触发重新轮询拿到新接单人
+      const newOv = { ...redispatchOv, assigned_to_name: undefined };
+      setMessages((prev) => prev.map((m) =>
+        m.id === redispatchMsgId && m.ticket_overview
+          ? { ...m, ticket_overview: newOv }
+          : m
+      ));
+      startDispatchPoll(redispatchMsgId, redispatchOv.db_id, newOv);
+    } catch (err) {
+      Toast({ message: `重新派单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setRedispatching(false);
+    }
+  }, [redispatchOv, redispatchMsgId, redispatchUser, redispatchRemark, startDispatchPoll]);
+
   // 卸载清理所有轮询 + 中断流式（避免组件卸载后后台 setMessages 报错/串台）
   useEffect(() => () => {
     cancelledRef.current = true;
@@ -1836,7 +2060,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             priority: 'medium',
             project_name: '摇人吧服务号提单',
             project_id: projectIdVal || '',
-            assigned_to: owner.username,
+            assigned_to: owner.id || owner.username,
             deadline_at: overrides.deadline_at || undefined,
           });
           ov2 = {
@@ -1983,6 +2207,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             onEditCancel={handleEditCancel}
             onImageClick={setPreviewUrl}
             onOpenTicket={handleOpenTicket}
+            onRedispatch={openRedispatch}
             expandedDesc={expandedMsgIds.has(msg.id)}
             onToggleDesc={toggleMsgExpanded}
           />
@@ -2034,6 +2259,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         <div
           className="chat-panel__ticket-fab"
           title="转为工单"
+          aria-label="转为工单"
           style={fabPos ? { left: fabPos.x, top: fabPos.y, right: 'auto', bottom: 'auto' } : undefined}
         >
           <button
@@ -2267,7 +2493,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   style={{ width: '100%' }}
                   placeholder="点击选择"
                   format="YYYY-MM-DD HH:00"
-                  showTime={{ defaultValue: deadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00' }}
+                  showTime={{ defaultValue: deadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00', showNow: false }}
+                  showNow={false}
+                  placement="topLeft"
+                  getPopupContainer={(trigger) => trigger.parentElement || document.body}
                   value={deadlinePickerValue}
                   disabledDate={deadlineRange ? makeDisabledDate(deadlineRange.min, deadlineRange.max) : undefined}
                   disabledTime={deadlineRange ? makeDisabledTime(deadlineRange.min, deadlineRange.max) : undefined}
@@ -2324,6 +2553,33 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 onClick={handleConfirmTicket}
                 disabled={ticketConfirm.submitting}
               >{ticketConfirm.submitting ? '提交中…' : '确认提交'}</button>
+            </div>
+          </div>
+        </Popup>
+
+        {/* 重新派单弹窗：对话内工单概览气泡「重新派单」，选倾向处理人 + 备注 */}
+        <Popup visible={showRedispatchPopup} onClose={() => setShowRedispatchPopup(false)} placement="bottom" showOverlay>
+          <div className="conv-dialog">
+            <h4 className="conv-dialog__title">重新派单</h4>
+            <p className="conv-dialog__msg">将强制重新智能派单，请选择倾向处理人</p>
+            <div style={{ marginBottom: 16 }}>
+              <UserSelect
+                value={redispatchUser?.id ?? null}
+                onChange={(u) => setRedispatchUser(u)}
+                placeholder="选择倾向处理人（必选）"
+                title="选择倾向处理人"
+              />
+            </div>
+            <input
+              className="conv-dialog__input"
+              placeholder="备注（可选）：换人原因或给新处理人的说明"
+              value={redispatchRemark}
+              onChange={(e) => setRedispatchRemark(e.target.value)}
+              maxLength={200}
+            />
+            <div className="conv-dialog__btns">
+              <button type="button" className="ticket-confirm__btn ticket-confirm__btn--cancel" onClick={() => setShowRedispatchPopup(false)}>取消</button>
+              <button type="button" className="ticket-confirm__btn ticket-confirm__btn--confirm" disabled={!redispatchUser || redispatching} onClick={handleRedispatchConfirm}>{redispatching ? '提交中…' : '确定重新派单'}</button>
             </div>
           </div>
         </Popup>

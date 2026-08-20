@@ -11,6 +11,7 @@ import {
   canUrgeTicket,
   canReportTicket,
   canCancelTicket,
+  canCancelTicketByUser,
   canShowCancelButton,
 } from '../ticket';
 
@@ -132,26 +133,46 @@ describe('工单操作状态约束（催办/上报/撤回）', () => {
     expect(canReportTicket('closed')).toBe(false);
   });
 
-  it('撤回：新建/待处理可用，其余禁用（规则同催办）', () => {
+  it('撤回：新建/待派单/已派单/待处理/处理中可用，其余禁用', () => {
     expect(canCancelTicket('new')).toBe(true);
     expect(canCancelTicket('pending')).toBe(true);
     expect(canCancelTicket('dispatched')).toBe(true);
-    expect(canCancelTicket('in_progress')).toBe(false);
+    expect(canCancelTicket('pending_dispatch')).toBe(true);
+    expect(canCancelTicket('in_progress')).toBe(true);
     expect(canCancelTicket('resolved')).toBe(false);
     expect(canCancelTicket('canceled')).toBe(false);
     expect(canCancelTicket('closed')).toBe(false);
   });
 });
 
-describe('canShowCancelButton（撤回按钮显示规则：仅新建展示，非新建隐藏）', () => {
-  it('新建/待派单/已派单展示', () => {
+describe('canCancelTicketByUser（撤回操作人权限：仅提单人/管理员）', () => {
+  it('管理员始终可撤回', () => {
+    expect(canCancelTicketByUser('other', 'alice', true)).toBe(true);
+    expect(canCancelTicketByUser('', '', true)).toBe(true);
+    expect(canCancelTicketByUser(null, null, true)).toBe(true);
+  });
+  it('提单人（created_by === 当前用户 username）可撤回', () => {
+    expect(canCancelTicketByUser('alice', 'alice', false)).toBe(true);
+  });
+  it('提单人（created_by === 当前用户 users.id）可撤回', () => {
+    expect(canCancelTicketByUser('user-id-1', 'alice', false, 'user-id-1')).toBe(true);
+  });
+  it('非提单人非管理员不可撤回（含处理人）', () => {
+    expect(canCancelTicketByUser('alice', 'bob', false)).toBe(false);
+    expect(canCancelTicketByUser('', 'bob', false)).toBe(false);
+    expect(canCancelTicketByUser(null, 'bob', false)).toBe(false);
+  });
+});
+
+describe('canShowCancelButton（撤回按钮显示规则：可撤回状态展示，终态/非可撤回状态隐藏）', () => {
+  it('新建/待派单/已派单/待处理/处理中展示', () => {
     expect(canShowCancelButton('new')).toBe(true);
     expect(canShowCancelButton('pending_dispatch')).toBe(true);
     expect(canShowCancelButton('dispatched')).toBe(true);
+    expect(canShowCancelButton('pending')).toBe(true);
+    expect(canShowCancelButton('in_progress')).toBe(true);
   });
-  it('待处理/处理中/终态隐藏', () => {
-    expect(canShowCancelButton('pending')).toBe(false);
-    expect(canShowCancelButton('in_progress')).toBe(false);
+  it('终态隐藏', () => {
     expect(canShowCancelButton('resolved')).toBe(false);
     expect(canShowCancelButton('canceled')).toBe(false);
     expect(canShowCancelButton('closed')).toBe(false);

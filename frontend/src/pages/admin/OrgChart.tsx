@@ -1,9 +1,15 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+// 人员结构配置 —— 汇报关系配置页（样式对齐 macaron-minimal-ui org-structure 页）：
+// 顶部返回栏 + 全部展开/折叠 + 视图切换、搜索、扁平人员卡片（部门管理员蓝卡 +
+// 公司/部门芯片 + 展开下属区）、分组视图（按部门）；保留拖拽/弹窗设置上级、
+// 设为部门管理员、自动挂靠与循环引用修复。
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button, Toast, Loading, Popup } from 'tdesign-mobile-react';
+import { Toast, Loading, Popup } from 'tdesign-mobile-react';
+import { ChevronLeft, ChevronRight, Crown, Link2, Search, UserRound, Users, Check } from 'lucide-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
+import { usePointerDragToDrop } from '@/shared/hooks/usePointerDragToDrop';
 
 interface User {
   id: string;
@@ -23,6 +29,18 @@ interface TreeNode extends User {
   depth: number;
 }
 
+/** 单选项行（对齐 macaron users 弹层样式） */
+function ChoiceRow({ label, checked, onClick }: { label: string; checked: boolean; onClick: () => void }) {
+  return (
+    <button type="button" className={`mac-choice ${checked ? 'is-active' : ''}`} onClick={onClick}>
+      <span className="mac-choice__dot">
+        {checked && <Check size={12} />}
+      </span>
+      <span className="mac-choice__label">{label}</span>
+    </button>
+  );
+}
+
 export default function OrgChart() {
   const navigate = useNavigate();
   const request = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
@@ -30,17 +48,17 @@ export default function OrgChart() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // 拖拽状态
-  const dragUserRef = useRef<User | null>(null);
+  // 拖拽高亮目标 id（Pointer 拖拽，鼠标/触屏统一）
   const [dragOverUserId, setDragOverUserId] = useState<string | null>(null);
   // 选中用户弹窗（设置上级）
   const [selectUser, setSelectUser] = useState<User | null>(null);
   const [pickerVisible, setPickerVisible] = useState(false);
-  // 折叠状态：默认全部折叠
+  // 折叠状态：默认全部展开（层级缩进一目了然），可点节点右侧「N 人」或「全部折叠」收起
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
 
-  // 分组视图：公司 → 部门 → 用户
+  // 分组视图：按部门（对齐原型 org-structure 的 dept 分组）
   const [viewMode, setViewMode] = useState<'tree' | 'group'>('tree');
+  const [keyword, setKeyword] = useState('');
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -65,7 +83,7 @@ export default function OrgChart() {
     return m;
   }, [users]);
 
-  // 构建组织树：supervisor_id 为 null 的为根节点
+  // 构建组织树：supervisor_id 为 null 的为根节点，按层级记录 depth（用于缩进）
   const tree = useMemo((): TreeNode[] => {
     const childrenMap = new Map<string | null, User[]>();
     users.forEach((u) => {
@@ -84,21 +102,22 @@ export default function OrgChart() {
     return build(null, 0);
   }, [users]);
 
-  // 默认折叠所有有子节点的节点（仅首次加载，后续操作不重置）
-  const initialCollapseRef = useRef(false);
-  useEffect(() => {
-    if (initialCollapseRef.current) return;
-    initialCollapseRef.current = true;
-    const ids = new Set<string>();
-    const collect = (nodes: TreeNode[]) => {
-      nodes.forEach((n) => {
-        if (n.children.length > 0) ids.add(n.id);
-        collect(n.children);
-      });
-    };
-    collect(tree);
-    setCollapsedIds(ids);
-  }, [tree]);
+  // 树形视图数据：无搜索词时展示完整层级树；搜索时保留命中节点及其祖先路径，
+  // 层级缩进结构不因搜索而丢失
+  const filteredTree = useMemo((): TreeNode[] => {
+    const kw = keyword.trim().toLowerCase();
+    if (!kw) return tree;
+    const match = (u: TreeNode) =>
+      (u.name || '').toLowerCase().includes(kw) ||
+      (u.username || '').toLowerCase().includes(kw) ||
+      (u.company || '').toLowerCase().includes(kw) ||
+      (u.department || '').toLowerCase().includes(kw);
+    const keep = (nodes: TreeNode[]): TreeNode[] =>
+      nodes
+        .map((n) => ({ ...n, children: keep(n.children) }))
+        .filter((n) => match(n) || n.children.length > 0);
+    return keep(tree);
+  }, [tree, keyword]);
 
   // 未分配上级的用户（不在树中的 — 理论上应该都在 tree 里，因为 null supervisor 的就是 root）
   // 但如果存在循环引用，这些用户不会被遍历到
@@ -114,27 +133,31 @@ export default function OrgChart() {
     return users.filter((u) => !inTree.has(u.id));
   }, [tree, users]);
 
-  // 公司 → 部门 → 用户 分组
-  const groupedByCompany = useMemo(() => {
-    const m = new Map<string, Map<string, User[]>>();
-    users.forEach((u) => {
-      const company = u.company || '未分配公司';
+  // 扁平用户列表（列表/分组视图共用），支持按姓名/用户名/公司/部门搜索
+  const flatList = useMemo(() => {
+    const kw = keyword.trim().toLowerCase();
+    const list = kw
+      ? users.filter(
+          (u) =>
+            (u.name || '').toLowerCase().includes(kw) ||
+            (u.username || '').toLowerCase().includes(kw) ||
+            (u.company || '').toLowerCase().includes(kw) ||
+            (u.department || '').toLowerCase().includes(kw),
+        )
+      : users;
+    return [...list].sort((a, b) => (a.name || a.username).localeCompare(b.name || b.username));
+  }, [users, keyword]);
+
+  // 分组视图：按部门分组（对齐原型）
+  const groupedByDept = useMemo(() => {
+    const m = new Map<string, User[]>();
+    flatList.forEach((u) => {
       const dept = u.department || '未分配部门';
-      if (!m.has(company)) m.set(company, new Map());
-      const deptMap = m.get(company)!;
-      if (!deptMap.has(dept)) deptMap.set(dept, []);
-      deptMap.get(dept)!.push(u);
+      if (!m.has(dept)) m.set(dept, []);
+      m.get(dept)!.push(u);
     });
-    // 排序
-    const sorted = Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b));
-    sorted.forEach(([, deptMap]) => {
-      const sortedDepts = Array.from(deptMap.entries()).sort(([a], [b]) => a.localeCompare(b));
-      sortedDepts.forEach(([, userList]) => {
-        userList.sort((a, b) => (a.name || a.username).localeCompare(b.name || b.username));
-      });
-    });
-    return sorted;
-  }, [users]);
+    return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [flatList]);
 
   // 设置上级
   const handleSetSupervisor = async (userId: string, supervisorId: string | null) => {
@@ -173,30 +196,13 @@ export default function OrgChart() {
     }
   };
 
-  // 拖拽处理
-  const handleDragStart = (e: React.DragEvent, user: User) => {
-    dragUserRef.current = user;
-    e.dataTransfer.effectAllowed = 'move';
-  };
-
-  const handleDragOver = (e: React.DragEvent, userId: string) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setDragOverUserId(userId);
-  };
-
-  const handleDragLeave = () => {
-    setDragOverUserId(null);
-  };
-
-  const handleDrop = (e: React.DragEvent, targetUser: User) => {
-    e.preventDefault();
-    setDragOverUserId(null);
-    const dragUser = dragUserRef.current;
-    dragUserRef.current = null;
-    if (!dragUser || dragUser.id === targetUser.id) return;
-    handleSetSupervisor(dragUser.id, targetUser.id);
-  };
+  // Pointer 拖拽落点（鼠标/触屏统一，替代 HTML5 原生 draggable）
+  const drag = usePointerDragToDrop({
+    onDrop: (draggedId, targetId) => {
+      handleSetSupervisor(draggedId, targetId);
+    },
+    onHoverChange: (targetId) => setDragOverUserId(targetId),
+  });
 
   // 切换折叠
   const toggleCollapse = (id: string) => {
@@ -206,6 +212,23 @@ export default function OrgChart() {
       else next.add(id);
       return next;
     });
+  };
+
+  // 全部展开 / 全部折叠
+  const allParentIds = useMemo(() => {
+    const ids = new Set<string>();
+    const collect = (nodes: TreeNode[]) => {
+      nodes.forEach((n) => {
+        if (n.children.length > 0) ids.add(n.id);
+        collect(n.children);
+      });
+    };
+    collect(tree);
+    return ids;
+  }, [tree]);
+  const allCollapsed = collapsedIds.size >= allParentIds.size;
+  const toggleAll = () => {
+    setCollapsedIds(allCollapsed ? new Set() : new Set(allParentIds));
   };
 
   // 切换部门管理员身份（通过 job_level：1=普通员工，2=部门管理员）
@@ -263,133 +286,97 @@ export default function OrgChart() {
     [request, fetchUsers],
   );
 
-  // 渲染树节点
-  const renderTreeNode = (node: TreeNode): React.ReactNode => {
-    const isDragOver = dragOverUserId === node.id;
-    const isCollapsed = collapsedIds.has(node.id);
-    const hasChildren = node.children.length > 0;
-    const supervisorName = node.supervisor_id
-      ? (() => {
-          const s = userMap.get(node.supervisor_id);
-          return s ? (s.name || s.username) : null;
-        })()
-      : null;
+  const openPicker = (user: User) => {
+    setSelectUser(user);
+    setPickerVisible(true);
+  };
 
-    const isDeptManager = (node.job_level ?? 1) >= 2;
-    const hasDept = !!node.department_id;
+  // 渲染人员卡片（对齐原型 PersonRow：图标圆 + 姓名/芯片 + 操作 + 人数展开）
+  const renderPersonCard = (user: User, children: TreeNode[]): React.ReactNode => {
+    const hasChildren = children.length > 0;
+    const isDeptManager = (user.job_level ?? 1) >= 2;
+    const isDragOver = dragOverUserId === user.id;
+    const isCollapsed = collapsedIds.has(user.id);
 
     return (
-      <div key={node.id} style={{ marginLeft: node.depth * 20 }}>
+      <div
+        key={user.id}
+        className={`mac-org-card${isDeptManager ? ' mac-org-card--manager' : ''}${isDragOver ? ' mac-org-card--drag-over' : ''}`}
+      >
         <div
-          draggable
-          onDragStart={(e) => handleDragStart(e, node)}
-          onDragOver={(e) => handleDragOver(e, node.id)}
-          onDragLeave={handleDragLeave}
-          onDrop={(e) => handleDrop(e, node)}
-          onClick={() => { setSelectUser(node); setPickerVisible(true); }}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '10px 12px',
-            margin: '4px 0',
-            background: isDragOver ? '#e8f0fe' : isDeptManager ? '#fff8e1' : '#fff',
-            border: isDragOver ? '2px dashed #0052d9' : isDeptManager ? '1px solid #d4b106' : '1px solid #eee',
-            borderRadius: 8,
-            cursor: 'pointer',
-            transition: 'background 0.15s',
-          }}
+          {...drag.bind(user.id)}
+          onClick={() => openPicker(user)}
+          className="mac-org-card__body"
+          style={{ cursor: 'pointer', touchAction: 'pan-y' }}
         >
-          {hasChildren && (
-            <span
-              onClick={(e) => { e.stopPropagation(); toggleCollapse(node.id); }}
-              style={{ fontSize: 14, cursor: 'pointer', flexShrink: 0, width: 20, textAlign: 'center', color: '#666' }}
-            >
-              {isCollapsed ? '▸' : '▾'}
-            </span>
-          )}
-          {!hasChildren && <span style={{ width: 20, flexShrink: 0 }} />}
-          <span style={{ fontSize: 16 }}>
-            {hasChildren ? '👥' : isDeptManager ? '👑' : '👤'}
+          <span className={`mac-org-card__icon${isDeptManager ? ' mac-org-card__icon--crown' : ''}`}>
+            {isDeptManager ? <Crown size={15} /> : hasChildren ? <Users size={15} /> : <UserRound size={15} />}
           </span>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-              <span style={{ fontWeight: 500, fontSize: 14 }}>
-                {node.name || node.username}
-              </span>
-              {isDeptManager && (
-                <span style={{ fontSize: 11, color: '#b08400', background: '#fff3c4', padding: '1px 6px', borderRadius: 3, fontWeight: 500 }}>
-                  部门管理员
-                </span>
-              )}
-              {/* 仅在树的根节点（无父节点、depth===0）显示公司/部门，避免子卡片重复显示 */}
-              {node.depth === 0 && node.company && (
-                <span style={{ fontSize: 11, color: '#0052d9', background: '#e8f0fe', padding: '1px 6px', borderRadius: 3 }}>
-                  {node.company}
-                </span>
-              )}
-              {node.depth === 0 && node.department && (
-                <span style={{ fontSize: 11, color: '#d46b08', background: '#fff7e6', padding: '1px 6px', borderRadius: 3 }}>
-                  {node.department}
-                </span>
-              )}
+
+          <div className="mac-org-card__main">
+            <div className="mac-org-card__chips">
+              <span className="mac-org-card__name">{user.name || user.username}</span>
+              {isDeptManager && <span className="mac-chip mac-chip--blue">部门管理员</span>}
+              {user.company && <span className="mac-chip mac-chip--outline">{user.company}</span>}
+              {user.department && <span className="mac-chip mac-chip--outline">{user.department}</span>}
             </div>
-            {supervisorName && (
-              <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
-                ↑ 汇报给：{supervisorName}
+
+            {isDeptManager ? (
+              <div className="mac-org-card__actions">
+                <button
+                  type="button"
+                  className="mac-org-btn mac-org-btn--emphasis"
+                  onClick={(e) => { e.stopPropagation(); handleAutoHookSubordinates(user); }}
+                >
+                  <Link2 size={13} />
+                  自动挂靠（同部门人员）
+                </button>
+                <button
+                  type="button"
+                  className="mac-org-btn"
+                  onClick={(e) => { e.stopPropagation(); handleToggleDeptManager(user, false); }}
+                >
+                  取消管理员
+                </button>
               </div>
-            )}
-            {/* 管理员操作按钮行 */}
-            {hasDept && (
-              <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
-                {!isDeptManager && (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleToggleDeptManager(node, true); }}
-                    style={{
-                      fontSize: 11, padding: '2px 8px', borderRadius: 3,
-                      border: '1px solid #d4b106', background: '#fffbe6', color: '#b08400',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    设为部门管理员
-                  </button>
-                )}
-                {isDeptManager && (
-                  <>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleAutoHookSubordinates(node); }}
-                      style={{
-                        fontSize: 11, padding: '2px 8px', borderRadius: 3,
-                        border: '1px solid #0052d9', background: '#e8f0fe', color: '#0052d9',
-                        cursor: 'pointer', fontWeight: 500,
-                      }}
-                    >
-                      🔗 自动挂靠（同部门人员 → 其名下）
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleToggleDeptManager(node, false); }}
-                      style={{
-                        fontSize: 11, padding: '2px 8px', borderRadius: 3,
-                        border: '1px solid #d9d9d9', background: '#fafafa', color: '#888',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      取消管理员
-                    </button>
-                  </>
-                )}
+            ) : user.department_id ? (
+              <div className="mac-org-card__actions">
+                <button
+                  type="button"
+                  className="mac-org-btn"
+                  onClick={(e) => { e.stopPropagation(); handleToggleDeptManager(user, true); }}
+                >
+                  设为部门管理员
+                </button>
               </div>
-            )}
+            ) : null}
           </div>
+
           {hasChildren && (
-            <span style={{ fontSize: 11, color: '#999', flexShrink: 0 }}>
-              {node.children.length} 人
-            </span>
+            <button
+              type="button"
+              className={`mac-org-card__count${isCollapsed ? '' : ' is-open'}`}
+              onClick={(e) => { e.stopPropagation(); toggleCollapse(user.id); }}
+            >
+              {children.length} 人
+              <ChevronRight size={14} className="mac-org-chev" />
+            </button>
           )}
         </div>
+      </div>
+    );
+  };
+
+  // 渲染树节点：按层级递归渲染，下级相对上级缩进（mac-org-children 每层 24px）
+  const renderTreeNode = (node: TreeNode, forceOpen: boolean): React.ReactNode => {
+    const isCollapsed = collapsedIds.has(node.id) && !forceOpen;
+    const hasChildren = node.children.length > 0;
+    return (
+      <div key={node.id}>
+        {renderPersonCard(node, node.children)}
         {hasChildren && !isCollapsed && (
-          <div style={{ marginTop: 2 }}>
-            {node.children.map((child) => renderTreeNode(child))}
+          <div className="mac-org-children">
+            {node.children.map((child) => renderTreeNode(child, forceOpen))}
           </div>
         )}
       </div>
@@ -416,272 +403,164 @@ export default function OrgChart() {
   if (loading) return <Loading text="加载人员数据..." />;
 
   return (
-    <div style={{ padding: 16, paddingBottom: 80 }}>
-      {/* 顶部导航 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-        <Button size="small" variant="text" onClick={() => navigate('/admin/users')}>
-          ← 返回
-        </Button>
-        <h3 style={{ margin: 0, flex: 1, fontSize: 16 }}>人员结构配置</h3>
-        <Button
-          size="small"
-          variant="outline"
-          theme={viewMode === 'tree' ? 'primary' : 'default'}
-          onClick={() => setViewMode(viewMode === 'tree' ? 'group' : 'tree')}
-        >
-          {viewMode === 'tree' ? '切换分组视图' : '切换树形视图'}
-        </Button>
-        {viewMode === 'tree' && (
-          <Button
-            size="small"
-            variant="text"
-            onClick={() => {
-              const allParentIds = new Set<string>();
-              const collect = (nodes: TreeNode[]) => {
-                nodes.forEach((n) => {
-                  if (n.children.length > 0) allParentIds.add(n.id);
-                  collect(n.children);
-                });
-              };
-              collect(tree);
-              // 如果当前全部折叠 → 全部展开；否则全部折叠
-              setCollapsedIds(collapsedIds.size >= allParentIds.size ? new Set() : allParentIds);
-            }}
+    <div className="mac-page">
+      {/* 顶部返回栏（对齐原型 glass-bar）：返回 + 标题 + 全部展开/折叠 + 视图切换 */}
+      <div className="mac-org-head">
+        <button type="button" className="mac-org-head__back" onClick={() => navigate('/admin/users')}>
+          <ChevronLeft size={20} />
+          <span>返回</span>
+        </button>
+        <h3 className="mac-org-head__title">人员结构配置</h3>
+        <div className="mac-org-head__actions">
+          <button type="button" className="mac-org-btn" onClick={toggleAll}>
+            {allCollapsed ? '全部展开' : '全部折叠'}
+          </button>
+          <button
+            type="button"
+            className={`mac-org-btn${viewMode === 'group' ? ' mac-org-btn--active' : ''}`}
+            onClick={() => setViewMode(viewMode === 'tree' ? 'group' : 'tree')}
           >
-            {collapsedIds.size > 0 ? '全部展开' : '全部折叠'}
-          </Button>
-        )}
+            {viewMode === 'tree' ? '切换分组视图' : '列表视图'}
+          </button>
+        </div>
       </div>
 
       {/* 操作提示 */}
-      <div style={{
-        fontSize: 12, color: '#888', background: '#f6f8fa',
-        padding: '8px 12px', borderRadius: 6, marginBottom: 12,
-      }}>
-        💡 拖拽用户到目标人上即可设置汇报关系；点击用户卡片可选择/修改上级
+      <p className="mac-org-tip">
+        拖拽用户到目标人上即可设置汇报关系；点击用户卡片可选择 / 修改上级。
+      </p>
+
+      {/* 搜索 */}
+      <div className="mac-search mac-search--card" style={{ marginBottom: 12 }}>
+        <Search size={16} style={{ color: 'var(--mac-muted-fg)', flexShrink: 0 }} />
+        <input
+          className="mac-search__input"
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          placeholder="搜索姓名 / 部门…"
+        />
       </div>
 
       {saving && (
-        <div style={{ textAlign: 'center', padding: 8, color: '#0052d9', fontSize: 12 }}>
+        <div style={{ textAlign: 'center', padding: 8, color: 'var(--mac-blue-2)', fontSize: 12 }}>
           保存中...
         </div>
       )}
 
-      {/* 树形视图 */}
-      {viewMode === 'tree' && (
-        <div>
-          {tree.length > 0 ? (
-            tree.map((node) => renderTreeNode(node))
-          ) : (
-            <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>
-              暂无人员数据
-            </div>
-          )}
-          {orphanUsers.length > 0 && (
-            <div style={{ marginTop: 16 }}>
-              <div style={{ fontSize: 12, color: '#e34d59', marginBottom: 8 }}>
-                ⚠️ 存在循环引用的用户（未出现在树中）：
-              </div>
-              {orphanUsers.map((u) => (
-                <div key={u.id} style={{
-                  padding: '8px 12px', background: '#fff0f0', borderRadius: 6,
-                  marginBottom: 4, fontSize: 13, color: '#cf1322',
-                }}>
-                  {u.name || u.username} → 上级：{(s => s ? (s.name || s.username) : null)(userMap.get(u.supervisor_id || '')) || u.supervisor_id || '无'}
-                </div>
-              ))}
-              <Button
-                size="small"
-                variant="outline"
-                theme="danger"
-                style={{ marginTop: 8 }}
-                onClick={() => {
-                  orphanUsers.forEach((u) => handleSetSupervisor(u.id, null));
+      {viewMode === 'group' ? (
+        /* 分组视图：按部门（对齐原型） */
+        flatList.length === 0 ? (
+          <div className="mac-empty" style={{ padding: '40px 0' }}>
+            {keyword ? '未找到匹配的人员' : '暂无人员数据'}
+          </div>
+        ) : (
+          groupedByDept.map(([dept, deptUsers]) => (
+            <section key={dept} style={{ marginBottom: 16 }}>
+              <h4
+                style={{
+                  margin: '0 0 8px 4px', fontSize: 11.5, fontWeight: 600,
+                  letterSpacing: '0.02em', color: 'var(--mac-muted-fg)',
                 }}
               >
-                重置这些用户的上级
-              </Button>
-            </div>
-          )}
-        </div>
+                {dept}
+                <span style={{ fontWeight: 400 }}> {deptUsers.length} 人</span>
+              </h4>
+              {deptUsers.map((u) => renderPersonCard(u, []))}
+            </section>
+          ))
+        )
+      ) : (
+        /* 树形视图：按层级递归缩进（自动挂靠后同部门人员移入其名下，缩进自然增加） */
+        filteredTree.length === 0 ? (
+          <div className="mac-empty" style={{ padding: '40px 0' }}>
+            {keyword ? '未找到匹配的人员' : '暂无人员数据'}
+          </div>
+        ) : (
+          <div>{filteredTree.map((node) => renderTreeNode(node, !!keyword.trim()))}</div>
+        )
       )}
 
-      {/* 分组视图 */}
-      {viewMode === 'group' && (
-        <div>
-          {groupedByCompany.map(([company, deptMap]) => (
-            <div key={company} style={{ marginBottom: 16 }}>
-              <div style={{
-                fontSize: 14, fontWeight: 600, color: '#333',
-                padding: '8px 12px', background: '#e8f0fe', borderRadius: 6,
-                display: 'flex', alignItems: 'center', gap: 6,
-              }}>
-                🏢 {company}
-                <span style={{ fontSize: 11, color: '#666', fontWeight: 400 }}>
-                  ({Array.from(deptMap.values()).reduce((sum, l) => sum + l.length, 0)} 人)
-                </span>
+      {/* 循环引用用户修复 */}
+      {orphanUsers.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 12, color: '#ad4545', marginBottom: 8 }}>
+            ⚠️ 存在循环引用的用户（未出现在树中）：
+          </div>
+          {orphanUsers.map((u) => {
+            const supervisor = u.supervisor_id ? userMap.get(u.supervisor_id) : null;
+            return (
+              <div
+                key={u.id}
+                style={{
+                  padding: '10px 12px', background: '#fbecec', borderRadius: 12,
+                  marginBottom: 6, fontSize: 12.5, color: '#ad4545',
+                }}
+              >
+                {u.name || u.username} → 上级：{(supervisor && (supervisor.name || supervisor.username)) || u.supervisor_id || '无'}
               </div>
-              <div style={{ marginLeft: 12, marginTop: 4 }}>
-                {Array.from(deptMap.entries()).map(([dept, userList]) => (
-                  <div key={dept} style={{ marginBottom: 8 }}>
-                    <div style={{
-                      fontSize: 13, fontWeight: 500, color: '#d46b08',
-                      padding: '6px 10px', background: '#fff7e6', borderRadius: 4,
-                      marginTop: 4,
-                    }}>
-                      📂 {dept} ({userList.length})
-                    </div>
-                    <div style={{ marginLeft: 12, marginTop: 2 }}>
-                      {userList.map((u) => {
-                        const supervisor = u.supervisor_id ? userMap.get(u.supervisor_id) : null;
-                        const isDeptManager = (u.job_level ?? 1) >= 2;
-                        const hasDept = !!u.department_id;
-                        return (
-                          <div
-                            key={u.id}
-                            draggable
-                            onDragStart={(e) => handleDragStart(e, u)}
-                            onDragOver={(e) => handleDragOver(e, u.id)}
-                            onDragLeave={handleDragLeave}
-                            onDrop={(e) => handleDrop(e, u)}
-                            onClick={() => { setSelectUser(u); setPickerVisible(true); }}
-                            style={{
-                              display: 'flex', alignItems: 'flex-start', gap: 6,
-                              padding: '8px 10px', margin: '4px 0',
-                              background: dragOverUserId === u.id ? '#e8f0fe' : isDeptManager ? '#fff8e1' : '#fff',
-                              border: dragOverUserId === u.id ? '2px dashed #0052d9' : isDeptManager ? '1px solid #d4b106' : '1px solid #f0f0f0',
-                              borderRadius: 6, cursor: 'pointer',
-                              flexDirection: 'column',
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                              <span style={{ fontSize: 14 }}>
-                                {isDeptManager ? '�' : '��'}
-                              </span>
-                              <span style={{ fontSize: 13, fontWeight: 500 }}>
-                                {u.name || u.username}
-                              </span>
-                              {isDeptManager && (
-                                <span style={{ fontSize: 10, color: '#b08400', background: '#fff3c4', padding: '1px 5px', borderRadius: 3, fontWeight: 500 }}>
-                                  部门管理员
-                                </span>
-                              )}
-                              {supervisor && (
-                                <span style={{ fontSize: 11, color: '#999' }}>
-                                  ↑ {supervisor.name || supervisor.username}
-                                </span>
-                              )}
-                              {!supervisor && (
-                                <span style={{ fontSize: 11, color: '#ccc' }}>无上级</span>
-                              )}
-                            </div>
-                            {/* 管理员操作按钮行 */}
-                            {hasDept && (
-                              <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
-                                {!isDeptManager && (
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); handleToggleDeptManager(u, true); }}
-                                    style={{
-                                      fontSize: 10, padding: '2px 7px', borderRadius: 3,
-                                      border: '1px solid #d4b106', background: '#fffbe6', color: '#b08400',
-                                      cursor: 'pointer',
-                                    }}
-                                  >
-                                    设为部门管理员
-                                  </button>
-                                )}
-                                {isDeptManager && (
-                                  <>
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); handleAutoHookSubordinates(u); }}
-                                      style={{
-                                        fontSize: 10, padding: '2px 7px', borderRadius: 3,
-                                        border: '1px solid #0052d9', background: '#e8f0fe', color: '#0052d9',
-                                        cursor: 'pointer', fontWeight: 500,
-                                      }}
-                                    >
-                                      🔗 自动挂靠
-                                    </button>
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); handleToggleDeptManager(u, false); }}
-                                      style={{
-                                        fontSize: 10, padding: '2px 7px', borderRadius: 3,
-                                        border: '1px solid #d9d9d9', background: '#fafafa', color: '#888',
-                                        cursor: 'pointer',
-                                      }}
-                                    >
-                                      取消管理员
-                                    </button>
-                                  </>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
+            );
+          })}
+          <button
+            type="button"
+            className="mac-org-btn"
+            style={{ marginTop: 8, color: '#ad4545', borderColor: '#f0d4d4' }}
+            onClick={() => {
+              orphanUsers.forEach((u) => handleSetSupervisor(u.id, null));
+            }}
+          >
+            重置这些用户的上级
+          </button>
         </div>
       )}
 
       {/* 上级选择弹窗 */}
       <Popup visible={pickerVisible} onClose={() => setPickerVisible(false)} placement="bottom" showOverlay>
-        <div style={{ padding: 20, maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
-          <h4 style={{ marginBottom: 4 }}>
+        <div className="mac-sheet" style={{ maxHeight: '70vh', display: 'flex', flexDirection: 'column' }}>
+          <h4 className="mac-sheet__title" style={{ marginBottom: 4 }}>
             设置上级：{selectUser?.name || selectUser?.username}
           </h4>
-          <p style={{ fontSize: 12, color: '#999', marginBottom: 12 }}>
+          <p className="mac-note" style={{ textAlign: 'left', marginBottom: 12 }}>
             选择一人作为直属上级，或点击「清除上级」设为顶层
           </p>
           <div style={{ overflow: 'auto', flex: 1 }}>
-            <div
+            <button
+              type="button"
+              className="mac-choice"
+              style={{ color: '#ad4545' }}
               onClick={() => {
                 if (selectUser) handleSetSupervisor(selectUser.id, null);
                 setPickerVisible(false);
               }}
-              style={{
-                padding: '10px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
-                fontSize: 14, color: '#e34d59', display: 'flex', alignItems: 'center', gap: 8,
-              }}
             >
-              🚫 清除上级（设为顶层）
-            </div>
-            {selectableSupervisors.map((u) => {
-              const isCurrent = selectUser?.supervisor_id === u.id;
-              return (
-                <div
-                  key={u.id}
-                  onClick={() => {
-                    if (selectUser) handleSetSupervisor(selectUser.id, u.id);
-                    setPickerVisible(false);
-                  }}
-                  style={{
-                    padding: '10px 4px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer',
-                    display: 'flex', alignItems: 'center', gap: 8, fontSize: 14,
-                    background: isCurrent ? '#f0faff' : 'transparent',
-                  }}
-                >
-                  <span style={{ fontSize: 14 }}>{isCurrent ? '✅' : '👤'}</span>
-                  <div>
-                    <span style={{ fontWeight: 500 }}>{u.name || u.username}</span>
-                    {u.company && (
-                      <span style={{ fontSize: 11, color: '#0052d9', marginLeft: 6 }}>{u.company}</span>
-                    )}
-                    {u.department && (
-                      <span style={{ fontSize: 11, color: '#d46b08', marginLeft: 4 }}>{u.department}</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+              <span className="mac-choice__dot" style={{ borderColor: '#f0d4d4', background: '#fbecec' }}>
+                <Check size={12} style={{ color: '#ad4545' }} />
+              </span>
+              <span className="mac-choice__label" style={{ color: '#ad4545' }}>
+                清除上级（设为顶层）
+              </span>
+            </button>
+            {selectableSupervisors.map((u) => (
+              <ChoiceRow
+                key={u.id}
+                label={
+                  [u.name || u.username, u.company, u.department].filter(Boolean).join(' · ') || u.username
+                }
+                checked={selectUser?.supervisor_id === u.id}
+                onClick={() => {
+                  if (selectUser) handleSetSupervisor(selectUser.id, u.id);
+                  setPickerVisible(false);
+                }}
+              />
+            ))}
           </div>
-          <Button theme="default" block style={{ marginTop: 16 }} onClick={() => setPickerVisible(false)}>
+          <button
+            type="button"
+            className="mac-btn mac-btn--outline mac-btn--block"
+            style={{ marginTop: 16 }}
+            onClick={() => setPickerVisible(false)}
+          >
             关闭
-          </Button>
+          </button>
         </div>
       </Popup>
     </div>

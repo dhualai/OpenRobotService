@@ -313,8 +313,8 @@ class AssignmentWorker:
                     logger.warning(f"派单结果写回失败: task_id={task_id} 不存在")
                     return False
 
-                # engineer_id 已统一为 users.username（与 assigned_to 一致），无需反查
-                task.assigned_to = result.engineer_id or result.engineer_name
+                # engineer_id 已统一为 users.id（与 assigned_to 一致），无需反查
+                task.assigned_to = result.engineer_id or None
                 if task.assigned_to:
                     task.status = TaskStatus.IN_PROGRESS
                 task.updated_at = func.now()
@@ -322,7 +322,7 @@ class AssignmentWorker:
                 # 派单详情写入 metadata_info
                 meta = task.metadata_info or {}
                 meta["assignee_name"] = result.engineer_name
-                meta["assignee_username"] = result.engineer_id or ""
+                meta["assignee_id"] = result.engineer_id or ""
                 meta["assign_confidence"] = result.confidence_score
                 meta["assign_reasoning"] = result.reasoning
                 meta["assign_decision_type"] = result.decision_type

@@ -144,13 +144,15 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
     # 同一会话多次转单时，ticket_seq 确保 external_id 唯一
     if ticket.get("ticket_seq"):
         ext_id = f"{ext_id}#{ticket['ticket_seq']}"
+    from app.core.user_identity import to_user_id
+    created_by_id = to_user_id(created_by) or created_by or ""
     return {
         "title": ticket.get("title", "") or "",
         "description": ticket.get("description", "") or "",
         "task_type": _type_to_enum(ticket.get("type")),
         "priority": _priority_to_enum(ticket.get("priority")),
         "status": TaskStatus.NEW,
-        "created_by": created_by or "",
+        "created_by": created_by_id,
         "source": AI_SOURCE,
         "project_name": ticket.get("project", "") or "",
     "project_id": ticket.get("project_id", "") or "",
@@ -250,7 +252,8 @@ def upsert_task(ticket: dict, created_by: str = "") -> Task:
                 existing.deadline_at = fields["deadline_at"]
             # 如果传入的 created_by 非空且比已有值更准确（非 system/unknown），则更新
             if created_by and existing.created_by in ("system", "unknown", ""):
-                existing.created_by = created_by
+                from app.core.user_identity import to_user_id
+                existing.created_by = to_user_id(created_by) or created_by
             db.commit()
             db.refresh(existing)
             db.expunge(existing)  # 脱离 session，避免返回后 DetachedInstanceError

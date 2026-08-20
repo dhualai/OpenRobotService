@@ -15,6 +15,7 @@ import {
   type TicketSummary, type ProjectMonthlySummary, type UrgencySummary,
 } from '@/api/dashboard';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
+import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
 import { MacDonut, MacLegend, MacStat } from '@/shared/components/macaronBits';
 import { MacChevronRight, MacRefreshCw } from '@/shared/components/macaronIcons';
 import { ProjectMonthBars } from '@/shared/components/macaronMonthBars';
@@ -104,8 +105,8 @@ const SORTED_TICKET_STATUS_LIST = [...TICKET_STATUS_LIST].sort(
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { hasPermission, projectIds } = useAuthStore();
-  const canAccessAdminEntries = hasPermission('frontend:admin');
+  const { hasPermission, projectIds, username } = useAuthStore();
+  const canAccessAdminEntries = hasPermission('frontend:admin:other:show');
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
   const [ticketSummary, setTicketSummary] = useState<TicketSummary | null>(null);
@@ -160,6 +161,7 @@ export default function Dashboard() {
 
   return (
     <div className="dashboard-page">
+      <SubscriptionReminder username={username} />
       <Navbar
         title="后台管理"
         right={<UserAvatarMenu />}
@@ -222,7 +224,12 @@ export default function Dashboard() {
             </button>
           </div>
 
-          <ProjectMonthBars data={monthlySummary?.monthly ?? []} years={monthlyYears} style={{ marginTop: 12 }} />
+          <ProjectMonthBars
+            data={monthlySummary?.monthly ?? []}
+            years={monthlyYears}
+            style={{ marginTop: 12 }}
+            onSelect={(key) => navigate(`/admin/project-progress?filter=month&period=${key}`)}
+          />
 
           <div className="mac-stat-row">
             <MacStat value={projects.length} label="项目总数" tone="blue-1" onClick={() => navigate('/admin/project-progress')} />

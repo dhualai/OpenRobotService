@@ -36,7 +36,7 @@ export interface CreateTicketParams {
   priority?: TicketPriority;
   project_name?: string;
   project_id?: string;
-  assigned_to?: string;       // 接单人 username（后端改后生效）
+  assigned_to?: string;       // 接单人 users.id（过渡期后端也认 username）
   deadline_at?: string;       // 最晚解决时间（ISO 字符串，兜底双工单工单2 复用弹窗选择值）
   customer?: string;
   metadata_info?: Record<string, unknown>;
@@ -71,6 +71,18 @@ export const cancelTicket = (ticketId: number | string) =>
   request(`/${Number(ticketId)}/status`, {
     method: 'PATCH',
     body: JSON.stringify({ status: 'canceled' }),
+  });
+
+/** 重新派单：强制工单回到待派单状态并触发 AI 智能派单重新推荐处理人。
+ *  preferredAssignee 为用户倾向的派单人（users.id，必填）；remark 为可选备注。 */
+export const reDispatchTicket = (
+  ticketId: number | string,
+  preferredAssignee: string,
+  remark?: string,
+) =>
+  request(`/${Number(ticketId)}/re-dispatch`, {
+    method: 'POST',
+    body: JSON.stringify({ preferred_assignee: preferredAssignee, remark: remark || null }),
   });
 
 /** 评论列表（按工单绑定） */

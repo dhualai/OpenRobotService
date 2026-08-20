@@ -48,6 +48,7 @@ def load_engineers_from_json() -> list[EngineerProfile]:
         if isinstance(modules, list):
             modules = {"其他": modules}
         profiles.append(EngineerProfile(
+            # 优先 users.id；旧 JSON 仅有 username 时回退，不改案例内容
             id=item.get("id") or item.get("username") or f"user_{i:03d}",
             name=name,
             department=item.get("department") or "",

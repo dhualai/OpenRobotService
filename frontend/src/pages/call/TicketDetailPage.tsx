@@ -2,8 +2,8 @@
 // 数据源：tasks 服务 GET /api/tasks/{dbId}?load_comments=true（DB id 唯一定位，AI 诊断数据从 metadata_info 提取）；操作：催办 / 上报（任务服务通知）
 // 路由 /app/call/ticket/:id 中的 :id 形如 db_<数字id>（Task.id）；session_id 直链仅作旧链接兼容
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea } from 'tdesign-mobile-react';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea, DialogPlugin } from 'tdesign-mobile-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
@@ -18,6 +18,7 @@ import {
   canUrgeTicket,
   canReportTicket,
   canShowCancelButton,
+  canCancelTicketByUser,
   canEditPriority,
   STATUS_DISPLAY_MAP,
 } from '@/shared/constants/ticket';
@@ -26,8 +27,10 @@ import API_CONFIG from '@/config/api';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
 import UserSelect from '@/shared/components/UserSelect';
 import SafeHtml from '@/shared/components/SafeHtml';
+import { isSameUser } from '@/shared/utils/userIdentity';
 import { useAuthStore } from '@/stores/auth';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
+import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
 import type { UserItem } from '@/api/users';
@@ -145,8 +148,9 @@ const normalizeAttachment = (a: unknown): NormalizedAttachment | null => {
 export default function TicketDetailPage() {
   const { id: sessionId = '' } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
-  const { username, name, isAdmin } = useAuthStore();
+  const { username, userId, name, isAdmin } = useAuthStore();
 
   const [ticket, setTicket] = useState<AiTicket | null>(null);
   const [loading, setLoading] = useState(true);
@@ -365,8 +369,8 @@ export default function TicketDetailPage() {
     }
   };
 
-  // 撤回：将工单状态置为已取消（Canceled）
-  const handleCancel = async () => {
+  // 撤回：二次确认后，将工单状态置为已取消（Canceled）
+  const doCancel = async () => {
     if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法撤回', theme: 'warning' }); return; }
     setActing('cancel');
     try {
@@ -380,6 +384,16 @@ export default function TicketDetailPage() {
     } finally {
       setActing(null);
     }
+  };
+  const handleCancel = () => {
+    if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法撤回', theme: 'warning' }); return; }
+    const dlg = DialogPlugin.confirm!({
+      title: '撤回工单',
+      content: '撤回后工单将变为「已取消」，确认撤回吗？',
+      confirmBtn: '撤回',
+      cancelBtn: '再想想',
+      onConfirm: () => { doCancel(); dlg.destroy(); },
+    });
   };
 
   // 派单中：AI 单 status=new 且处理人未写入（Worker 60s 轮询派单，期间 5s 轮询自动刷新）
@@ -424,7 +438,7 @@ export default function TicketDetailPage() {
     setProjectKeyword('');
   };
   const canEdit = !!ticket?.ticket_id && !isTerminalTicketStatus(ticket.status)
-    && (isAdmin || username === ticket.created_by || username === ticket.assigned_to);
+    && (isAdmin || isSameUser(ticket.created_by, userId, username) || isSameUser(ticket.assigned_to, userId, username));
   const openEdit = () => {
     if (!ticket) return;
     setEditForm({
@@ -476,9 +490,10 @@ export default function TicketDetailPage() {
     const userMsg = text;
     setAskingAI(true);
     try {
-      // 上传附件
+      // 上传附件（同名文件自动改名，避免后端对象名重复覆盖）
       const tempId = tempIdRef.current;
-      for (const f of files) {
+      const uploads = dedupeFileNames(files);
+      for (const f of uploads) {
         await uploadCommentAttachment(f, tempId);
       }
       // 1. 先保存用户的 @U老师 消息到 task_comments
@@ -537,7 +552,9 @@ export default function TicketDetailPage() {
     try {
       const tempId = tempIdRef.current;
       // 先逐个上传附件（temp_id 关联，后端登记到 comment_attachment_map）
-      for (const f of files) {
+      // 同名文件自动改名，避免后端对象名重复覆盖
+      const uploads = dedupeFileNames(files);
+      for (const f of uploads) {
         await uploadCommentAttachment(f, tempId);
       }
       const newComment = await request<Comment>(`/${ticket.ticket_id}/comments`, {
@@ -579,7 +596,7 @@ export default function TicketDetailPage() {
   if (loading) return <Loading text="加载中..." />;
   if (!ticket) return (
     <div>
-      <Navbar title="工单详情" fixed leftArrow onLeftClick={() => navigate('/call', { state: { showHistory: true } })} />
+      <Navbar title="工单详情" fixed leftArrow onLeftClick={() => (location.key !== 'default' ? navigate(-1) : navigate('/call/history'))} />
       <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted-foreground)', marginTop: 56 }}>{msg || '工单不存在'}</div>
     </div>
   );
@@ -634,7 +651,7 @@ export default function TicketDetailPage() {
         title="工单详情"
         fixed
         leftArrow
-        onLeftClick={() => navigate('/call', { state: { showHistory: true } })}
+        onLeftClick={() => (location.key !== 'default' ? navigate(-1) : navigate('/call/history'))}
       />
       <div className="page-container" style={{ paddingTop: 56 }}>
         {/* 标题 + 基本信息 */}
@@ -705,7 +722,7 @@ export default function TicketDetailPage() {
         {(ticket.created_by || ticket.created_by_name || ticket.assigned_to || ticket.assigned_to_name || isDispatching) && (
           <div className="detail-card">
             <div className="task-card2__people">
-              <div className="task-card2__person task-card2__person--creator" title={`发起人：${ticket.created_by_name || ticket.created_by || '-'}`}>
+              <div className="task-card2__person task-card2__person--creator" title={`发起人：${ticket.created_by_name || ticket.created_by || '-'}`} aria-label={`发起人：${ticket.created_by_name || ticket.created_by || '-'}`}>
                 <span className="task-card2__avatar">{(ticket.created_by_name || ticket.created_by || '?').slice(0, 1).toUpperCase()}</span>
                 <span className="task-card2__person-text">
                   <span className="task-card2__person-label">发起人</span>
@@ -714,7 +731,7 @@ export default function TicketDetailPage() {
               </div>
               <span className="task-card2__person-arrow"><ArrowRight size={16} strokeWidth={2} /></span>
               {isDispatching ? (
-                <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单，稍候自动更新">
+                <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单，稍候自动更新" aria-label="U老师 正在派单，稍候自动更新">
                   <span className="task-card2__avatar task-card2__avatar--assignee task-card2__avatar--dispatching"><i className="dispatch-pulse" /></span>
                   <span className="task-card2__person-text">
                     <span className="task-card2__person-label">处理人</span>
@@ -722,7 +739,7 @@ export default function TicketDetailPage() {
                   </span>
                 </div>
               ) : (
-                <div className="task-card2__person task-card2__person--assignee" title={`处理人：${ticket.assigned_to_name || ticket.assigned_to || '-'}`}>
+                <div className="task-card2__person task-card2__person--assignee" title={`处理人：${ticket.assigned_to_name || ticket.assigned_to || '-'}`} aria-label={`处理人：${ticket.assigned_to_name || ticket.assigned_to || '-'}`}>
                   <span className="task-card2__avatar task-card2__avatar--assignee">{(ticket.assigned_to_name || ticket.assigned_to || '?').slice(0, 1).toUpperCase()}</span>
                   <span className="task-card2__person-text">
                     <span className="task-card2__person-label">处理人</span>
@@ -880,15 +897,17 @@ export default function TicketDetailPage() {
               size="small" theme="default" icon={<Bell size={13} strokeWidth={2} />}
               disabled={!canUrgeTicket(ticket.status) || acting === 'urge'}
               title={canUrgeTicket(ticket.status) ? undefined : '仅新建/待处理工单可催办'}
+              aria-label={canUrgeTicket(ticket.status) ? undefined : '催办（仅新建/待处理工单可催办）'}
               onClick={() => openActionPopup('urge')}
             >催办</Button>
             <Button
               size="small" theme="default" icon={<Upload size={13} strokeWidth={2} />}
               disabled={!canReportTicket(ticket.status) || acting === 'report'}
               title={canReportTicket(ticket.status) ? undefined : '仅处理中工单可上报'}
+              aria-label={canReportTicket(ticket.status) ? undefined : '上报（仅处理中工单可上报）'}
               onClick={() => openActionPopup('report')}
             >上报</Button>
-            {canShowCancelButton(ticket.status) && (
+            {canShowCancelButton(ticket.status) && canCancelTicketByUser(ticket.created_by, username, isAdmin, userId) && (
             <Button
               size="small" theme="default" className="detail-actions__btn--muted" icon={<Undo2 size={13} strokeWidth={2} />}
               disabled={acting === 'cancel'}
@@ -961,6 +980,7 @@ export default function TicketDetailPage() {
                     type="button"
                     disabled={priorityDisabled}
                     title={priorityDisabled ? '仅新建工单可修改优先级' : undefined}
+                    aria-label={priorityDisabled ? `优先级${label}（仅新建工单可修改优先级）` : `优先级${label}`}
                     className={`tasks-create-modal__radio-btn ${editForm.priority === PRIORITY_EN[label] ? 'is-active' : ''} ${priorityDisabled ? 'is-disabled' : ''}`}
                     onClick={() => {
                       const v = PRIORITY_EN[label];
@@ -1000,7 +1020,10 @@ export default function TicketDetailPage() {
                 style={{ width: '100%' }}
                 placeholder="点击选择"
                 format="YYYY-MM-DD HH:00"
-                showTime={{ defaultValue: editDeadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00' }}
+                showTime={{ defaultValue: editDeadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00', showNow: false }}
+                showNow={false}
+                placement="topLeft"
+                getPopupContainer={(trigger) => trigger.parentElement || document.body}
                 value={editForm.deadline_at ? dayjs(editForm.deadline_at) : null}
                 disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min, editDeadlineRange.max) : undefined}

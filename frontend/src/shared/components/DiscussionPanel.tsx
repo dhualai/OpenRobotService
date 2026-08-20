@@ -14,6 +14,7 @@ import { useAuthStore } from '@/stores/auth';
 import API_CONFIG from '@/config/api';
 import { avatarUrl } from '@/api/profile';
 import { parseUtcDate } from '@/shared/utils/url';
+import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import { useTaskCommentsWS, type OnlineMember } from '@/shared/hooks/useTaskCommentsWS';
 import type { AiProgressTodo } from '@/api/ws';
 
@@ -82,6 +83,21 @@ const formatCommentTime = (dateString: string): string => {
   return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 };
 
+/** 已读名单的相对时间格式化：刚刚 / N分钟前 / N小时前 / X月X日 HH:MM */
+const formatReadTime = (dateString?: string | null): string => {
+  if (!dateString) return '';
+  const date = parseUtcDate(dateString);
+  if (!date) return '';
+  const diff = Date.now() - date.getTime();
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if (diff < minute) return '刚刚';
+  if (diff < hour) return `${Math.floor(diff / minute)}分钟前`;
+  if (diff < 24 * hour) return `${Math.floor(diff / hour)}小时前`;
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
 export interface ProjectMember {
   id: string;
   username: string;
@@ -119,6 +135,10 @@ interface DiscussionPanelProps {
   taskId?: string | number;
   /** 工单状态变更（WS task.updated 推送）：父级据此更新工单字段，替代派单轮询 */
   onTaskUpdated?: (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null }) => void;
+  /** 乐观 U老师 执行过程区：为 true 时立即显示占位 todo（无需等 WS running），
+   *  收到真实 ai.progress 后用真实数据覆盖。用于 [帮我分析] 这类点击即触发、
+   *  但 WS 首条 running 可能稍晚到达的场景，避免过程区“晚出现 / 闪一下”。 */
+  optimisticAi?: boolean;
 }
 
 export default function DiscussionPanel({
@@ -137,11 +157,12 @@ export default function DiscussionPanel({
   onDeleteComment,
   taskId,
   onTaskUpdated,
+  optimisticAi = false,
 }: DiscussionPanelProps) {
   const { username, name, avatarResourceId } = useAuthStore();
   // 长按操作菜单的浮层由 TDesign Mobile <Popover> 承载（自带箭头/动画/外点关闭）；
   // 通过「透明、pointer-events:none 的代理锚点」定位到被长按气泡的 rect，避免覆盖气泡交互。
-  // ── AI 执行过程（Claude Code 式动态展示）──
+  // ── U老师 执行过程（Claude Code 式动态展示）──
   // 后端在 Supervisor 派发能力时逐项推送 ai.progress(phase=running)，全部完成推 phase=done。
   // 执行中在输入框上方渲染过程区；done 收尾后短暂保留再由 sending(false) 隐藏。
   const [aiRunId, setAiRunId] = useState<string | undefined>();
@@ -156,7 +177,7 @@ export default function DiscussionPanel({
     setAiTodos(ev.todos || []);
   }, []);
 
-  // ── WS 实时订阅：合并基线评论与增量事件，含在线/输入中/已读 + AI 进度 ──
+  // ── WS 实时订阅：合并基线评论与增量事件，含在线/输入中/已读 + U老师 进度 ──
   const {
     displayComments,
     online,
@@ -164,18 +185,32 @@ export default function DiscussionPanel({
     readMap,
     sendTyping,
     sendRead,
+    readRecords,
     deletedIds,
   } = useTaskCommentsWS(taskId, comments, { currentUser: username, onTaskUpdated, onAiProgress: handleWsAiProgress });
 
-  // 过程区可见性：AI 正在分析（sending）且至少跑过 running 或有进行中项；done 由 sending(false) 隐藏
-  const showAiProcess = (aiPhase === 'running' && aiTodos.length > 0) || (sending && aiRunId !== undefined);
+  // 过程区可见性：U老师 正在分析（sending）且至少跑过 running 或有进行中项；done 由 sending(false) 隐藏。
+  // optimisticAi：点击 [帮我分析] 时立即置为 true → 前端主动显示占位 todo，不等 WS 首条 running
+  //（避免 diagnose 这类“点击即执行、报告几秒返回”的任务，过程区晚出现/闪一下就消失）。
+  const showAiProcess =
+    (aiPhase === 'running' && aiTodos.length > 0) ||
+    (sending && aiRunId !== undefined) ||
+    optimisticAi;
+
+  // 乐观占位 todo：仅当 optimisticAi 且尚无真实 todo 时启用（planning+进行中）
+  // 文案用通用“分析/规划”，[帮我分析] 与 @U老师 讨论共用。
+  const optimisticTodo: AiProgressTodo[] = optimisticAi && aiTodos.length === 0
+    ? [{ id: 0, description: 'U老师 正在分析并规划排查步骤', status: 'in_progress', capability: 'planning', phase: 'running' as const }]
+    : [];
+  // 渲染用 todo：真实优先；否则用乐观占位（保证过程区“立刻出现”占位项）
+  const displayTodos = aiTodos.length > 0 ? aiTodos : optimisticTodo;
 
   // 逐项状态：任一 todo 仍是进行中（phase=running / status=in_progress），就视为整场仍在执行。
   // 头部「正在排查 / 已完成」据此判断而非只看事件封套 phase，杜绝「已完成却还有项在转圈」的矛盾。
-  const anyTodoRunning = aiTodos.some((t) => t.phase === 'running' || t.status === 'in_progress');
-  const allTodosDone = aiTodos.length > 0 && !anyTodoRunning;
+  const anyTodoRunning = displayTodos.some((t) => t.phase === 'running' || t.status === 'in_progress');
+  const allTodosDone = displayTodos.length > 0 && !anyTodoRunning;
 
-  // 新一轮 AI 讨论开始（sending false→true）：重置过程区
+  // 新一轮 U老师 讨论开始（sending false→true）：重置过程区
   const prevSendingRef = useRef<boolean>(sending);
   useEffect(() => {
     if (sending && !prevSendingRef.current) {
@@ -227,6 +262,16 @@ export default function DiscussionPanel({
   const [commentText, setCommentText] = useState('');
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
+  // 待发送图片的预览 objectURL（与 pendingFiles 一一对应，非图片为空串），
+  // 让用户一眼区分多张同名图片（如剪贴板默认 image.png）；依赖变化时自动 revoke 旧 URL。
+  const previewUrls = useMemo(
+    () => pendingFiles.map((f) => (f.type.startsWith('image/') ? URL.createObjectURL(f) : '')),
+    [pendingFiles],
+  );
+  useEffect(() => {
+    const urls = previewUrls.filter(Boolean);
+    if (urls.length) return () => urls.forEach((u) => URL.revokeObjectURL(u));
+  }, [previewUrls]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
@@ -249,6 +294,9 @@ export default function DiscussionPanel({
   const [quoted, setQuoted] = useState<DiscussionComment | null>(null);
   // 长按操作菜单：{ 评论, 气泡定位矩形 }
   const [menu, setMenu] = useState<{ comment: DiscussionComment; rect: DOMRect } | null>(null);
+  // 已读名单弹层：正在查看哪条评论的已读名单（飞书式）
+  const [readListCommentId, setReadListCommentId] = useState<string | number | null>(null);
+  const [readListAnchor, setReadListAnchor] = useState<DOMRect | null>(null);
   const longPressTimer = useRef<number | null>(null);
   // 长按后抑制紧随的 click（避免误触容器诊断链接等）
   const suppressClickRef = useRef(false);
@@ -276,6 +324,8 @@ export default function DiscussionPanel({
 
   // 新消息到达：贴底则跟随滚动 + 上报已读；非贴底则累计提示数（不强制打断阅读历史）
   const lastMsgIdRef = useRef<string | number | null>(null);
+  // 已上报过名单的评论 id 集合（避免重复逐条上报）
+  const reportedReadIdsRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     if (!displayComments.length) return;
     const last = displayComments[displayComments.length - 1];
@@ -285,10 +335,18 @@ export default function DiscussionPanel({
       lastMsgIdRef.current = lid;
       if (isPrevInit || isAtBottomRef.current) {
         scrollToBottom();
-        const numId = Number(lid);
-        if (numId && numId !== lastReadRef.current) {
-          lastReadRef.current = numId;
-          sendRead(numId);
+        // 贴底态：把当前所有评论视为已读，逐条记入名单（飞书式）；游标取最后一条 id
+        const allIds = displayComments
+          .map((c) => Number(c.id))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        const newIds = allIds.filter((n) => !reportedReadIdsRef.current.has(n));
+        if (newIds.length) {
+          newIds.forEach((n) => reportedReadIdsRef.current.add(n));
+          const numId = allIds[allIds.length - 1];
+          if (numId && numId !== lastReadRef.current) {
+            lastReadRef.current = numId;
+          }
+          sendRead(numId, newIds);
         }
       } else {
         setNewCount((n) => n + 1);
@@ -328,12 +386,15 @@ export default function DiscussionPanel({
 
   const handleSelectFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    if (files.length) setPendingFiles((prev) => [...prev, ...files]);
+    if (files.length) {
+      // 与已有待发送文件合并后去重重命名，预览区与上传均用唯一文件名
+      setPendingFiles((prev) => dedupeFileNames([...prev, ...files]));
+    }
     e.target.value = '';
   };
   const removeFile = (idx: number) => setPendingFiles((prev) => prev.filter((_, i) => i !== idx));
 
-  // @U老师：在输入框前缀 @U老师（父级 onSend 依此前缀路由到 AI 讨论）
+  // @U老师：在输入框前缀 @U老师（父级 onSend 依此前缀路由到 U老师 讨论）
   const handleAIClick = () => {
     if (!commentText.startsWith('@U老师 ')) setCommentText('@U老师 ' + commentText);
   };
@@ -546,7 +607,8 @@ export default function DiscussionPanel({
     }
     if (pastedFiles.length > 0) {
       e.preventDefault();
-      setPendingFiles((prev) => [...prev, ...pastedFiles]);
+      // 与已有待发送文件合并后去重重命名，避免多张同名图片（如剪贴板默认 image.png）在预览/上传时混淆
+      setPendingFiles((prev) => dedupeFileNames([...prev, ...pastedFiles]));
     }
   };
 
@@ -591,9 +653,27 @@ export default function DiscussionPanel({
     setTimeout(() => { suppressClickRef.current = false; }, 350);
   }, []);
 
+  // 菜单打开期间监听滚动：滚动即自动关闭（仿微信，避免 fixed 定位锚点与气泡实际位置脱节造成定位漂移）。
+  // scroll 事件不冒泡，故用捕获阶段监听 window，可覆盖页面滚动与内部滚动容器滚动；
+  // wheel 兜底 PC 端在 overflow 容器外的滚轮（此时未必触发 scroll）。
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('wheel', close, true);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('wheel', close, true);
+    };
+  }, [menu]);
+
   const startLongPress = (comment: DiscussionComment, e: React.TouchEvent | React.MouseEvent) => {
     if (disabled || sending) return;
     const target = e.currentTarget as HTMLElement;
+    // 落点在文字内容区（Markdown 正文）→ 放行原生文本选择（长按选字复制），不弹自定义菜单。
+    // 落点在头像/名字/引用块/附件/留白等非文字区 → 弹自定义「引用/复制/删除」菜单（方案A 双端）。
+    const hit = e.target as HTMLElement | null;
+    if (hit && hit.closest('.markdown-body')) return;
     cancelLongPress();
     longPressTimer.current = window.setTimeout(() => {
       longPressTimer.current = null;
@@ -841,10 +921,38 @@ export default function DiscussionPanel({
                       </div>
                     )}
                     {isCurrentUser && (() => {
-                      const readCount = Object.entries(readMap).filter(
-                        ([u, rid]) => u !== c.created_by && Number(rid) >= Number(c.id),
-                      ).length;
-                      return readCount > 0 ? <span className="detail-chat-read">已读</span> : null;
+                      // 名单（精确）：该评论的已读成员列表（后端按 read_at 倒序）
+                      const cid = c.id;
+                      const readers = (readRecords[String(cid)] || []).filter(
+                        (r) => r.username !== c.created_by,
+                      );
+                      // 人数兜底：名单为空时用游标 readMap 反推（兼容未上报名单的旧数据）
+                      const readCount = readers.length > 0
+                        ? readers.length
+                        : Object.entries(readMap).filter(
+                            ([u, rid]) => u !== c.created_by && Number(rid) >= Number(c.id),
+                          ).length;
+                      if (readCount <= 0) return null;
+                      const isOpen = readListCommentId === cid;
+                      return (
+                        <button
+                          type="button"
+                          className={`detail-chat-read${isOpen ? ' is-open' : ''}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (isOpen) {
+                              setReadListCommentId(null);
+                              setReadListAnchor(null);
+                            } else {
+                              setReadListCommentId(cid);
+                              setReadListAnchor(e.currentTarget.getBoundingClientRect());
+                            }
+                          }}
+                          title="查看已读名单"
+                        >
+                          已读 {readCount} 人
+                        </button>
+                      );
                     })()}
                   </div>
                   {/* 自己消息头像列（右侧）：连续消息省略（占位保持对齐） */}
@@ -888,6 +996,63 @@ export default function DiscussionPanel({
           ) : null
         }
       />
+
+      {/* 已读名单弹层（飞书式）：头像 + 姓名 + 阅读时间，按阅读时间倒序 */}
+      {readListCommentId !== null && readListAnchor && (() => {
+        const cid = readListCommentId;
+        const readers = (readRecords[String(cid)] || []).filter(
+          (r) => r.username !== (displayComments.find((x) => x.id === cid)?.created_by),
+        );
+        const anchorStyle: React.CSSProperties = {
+          position: 'fixed',
+          left: readListAnchor.left,
+          top: readListAnchor.top,
+          width: readListAnchor.width,
+          height: readListAnchor.height,
+          pointerEvents: 'none',
+          background: 'transparent',
+        };
+        const spaceAbove = readListAnchor.top - (chatMessagesRef.current?.getBoundingClientRect().top ?? 0);
+        const placement: 'top' | 'bottom' = spaceAbove >= 160 ? 'top' : 'bottom';
+        return (
+          <Popover
+            visible
+            placement={placement}
+            showArrow
+            theme="light"
+            closeOnClickOutside
+            onVisibleChange={(v) => { if (!v) { setReadListCommentId(null); setReadListAnchor(null); } }}
+            style={anchorStyle}
+            content={
+              <div className="detail-chat-readlist">
+                <div className="detail-chat-readlist__title">已读 {readers.length} 人</div>
+                {readers.length > 0 ? (
+                  <div className="detail-chat-readlist__body">
+                    {readers.map((r) => {
+                      const av = r.avatar_resource_id ? avatarUrl(r.avatar_resource_id) : '';
+                      return (
+                        <div key={r.username} className="detail-chat-readlist__item">
+                          {av ? (
+                            <img className="detail-chat-readlist__avatar" src={av} alt={r.name || r.username} />
+                          ) : (
+                            <span className="detail-chat-readlist__avatar">
+                              {(r.name || r.username || '?').slice(0, 1).toUpperCase()}
+                            </span>
+                          )}
+                          <span className="detail-chat-readlist__name">{r.name || r.username}</span>
+                          <span className="detail-chat-readlist__time">{formatReadTime(r.read_at)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="detail-chat-readlist__empty">暂无已读记录</div>
+                )}
+              </div>
+            }
+          />
+        );
+      })()}
 
       {typingUser && (
         <div className="detail-chat-typing">{typingName} 正在输入…</div>
@@ -943,9 +1108,9 @@ export default function DiscussionPanel({
             )}
           </div>
         )}
-        {/* AI 执行过程（Claude Code 式动态展示）：Supervisor 派发能力时逐项实时滚动，
-            最终回复只写纯答复（不含此过程） */}
-        {enableAI && showAiProcess && aiTodos.length > 0 && (
+        {/* U老师 执行过程（Claude Code 式动态展示）：Supervisor 派发能力时逐项实时滚动，
+            最终回复只写纯答复（不含此过程）；[帮我分析] 点按瞬间用乐观占位立即显示 */}
+        {enableAI && showAiProcess && displayTodos.length > 0 && (
           <div className="detail-chat-ai-progress">
             <div className="detail-chat-ai-progress__head">
               <span className="detail-chat-ai-progress__spinner" aria-hidden="true">
@@ -953,10 +1118,10 @@ export default function DiscussionPanel({
                 <i />
                 <i />
               </span>
-              {!allTodosDone ? 'AI 正在排查执行' : '排查执行完成'}
+              {!allTodosDone ? 'U老师 正在排查执行' : '排查执行完成'}
             </div>
             <ul className="detail-chat-ai-progress__list">
-              {aiTodos.map((t, i) => {
+              {displayTodos.map((t, i) => {
                 const desc = t.description || t.capability || '分析';
                 const status = t.phase === 'done' || t.status === 'completed';
                 const running = t.phase === 'running' || t.status === 'in_progress';
@@ -996,6 +1161,13 @@ export default function DiscussionPanel({
               <div className="detail-chat-files">
                 {pendingFiles.map((f, i) => (
                   <span key={i} className="detail-chat-file">
+                    {previewUrls[i] ? (
+                      <span className="detail-chat-file__thumb">
+                        <img src={previewUrls[i]} alt={f.name} />
+                      </span>
+                    ) : (
+                      <span className="detail-chat-file__icon">📄</span>
+                    )}
                     <span className="detail-chat-file__name">{f.name}</span>
                     <button type="button" onClick={() => removeFile(i)} aria-label="移除">×</button>
                   </span>

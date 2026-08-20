@@ -16,7 +16,14 @@ AI 模块配置
 import os
 from pathlib import Path
 from functools import lru_cache
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+
+# 配置模块可能被直接导入（绕过 ai.run），因此在首次读取前自行加载 ai/.env。
+# override=False 保证外部环境变量优先；不输出任何配置值。
+_ENV_FILE = Path(__file__).resolve().parent / ".env"
+load_dotenv(_ENV_FILE, override=False)
 
 # .md 源文件目录（OpenRobotService_Data/kb/）
 _KB_DIR = (Path(__file__).resolve().parent.parent.parent / "OpenRobotService_Data" / "kb").resolve()
@@ -44,6 +51,15 @@ class AIConfig(BaseModel):
     llm_reasoning_effort: str = Field(default="low", description="思考强度: low/high/max/off")
     llm_connect_timeout: float = Field(default=3.0)
     llm_read_timeout: float = Field(default=30.0)  # Agent 回复可能较长
+
+    # ========== 备用模型（中转站，OpenAI 兼容接口）==========
+    # 全局切换开关：llm_backend=deepseek（默认）/ relay。切到 relay 后，
+    # get_llm_client() 单例会改用下面这套 relay_* 配置，全平台统一生效
+    # （所有走 get_llm_client() 的模块，如提单工具循环、诊断、派单打分等）。
+    llm_backend: str = Field(default="deepseek", description="激活的 LLM 后端: deepseek/relay")
+    relay_api_key: str = Field(default="", description="中转站 API Key")
+    relay_base_url: str = Field(default="https://yitongapi.com/v1", description="中转站 API 地址")
+    relay_model: str = Field(default="claude-opus-4-8", description="中转站模型名")
 
     # ========== Vision LLM（图片分析，OpenAI 兼容接口）==========
     vision_api_key: str = Field(default="", description="视觉 API Key")
@@ -237,6 +253,12 @@ def get_ai_config() -> AIConfig:
         llm_reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "low"),
         llm_connect_timeout=float(os.getenv("LLM_CONNECT_TIMEOUT", "3.0")),
         llm_read_timeout=float(os.getenv("LLM_READ_TIMEOUT", "30.0")),
+
+        # 备用模型（中转站）
+        llm_backend=os.getenv("LLM_BACKEND", "deepseek"),
+        relay_api_key=os.getenv("RELAY_API_KEY", ""),
+        relay_base_url=os.getenv("RELAY_BASE_URL", "https://yitongapi.com/v1"),
+        relay_model=os.getenv("RELAY_MODEL", "claude-opus-4-8"),
 
         vision_api_key=os.getenv("VISION_API_KEY", ""),
         vision_base_url=os.getenv("VISION_BASE_URL", ""),

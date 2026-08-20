@@ -106,6 +106,7 @@ const Login = lazyImport(() => import('@/pages/Login'));
 const NoPermission = lazyImport(() => import('@/pages/NoPermission'));
 const MainLayout = lazyImport(() => import('@/shared/components/MainLayout'));
 const CallView = lazyImport(() => import('@/pages/call/CallView'));
+const HistoryTicketsPage = lazyImport(() => import('@/pages/call/HistoryTicketsPage'));
 const TicketDetailPage = lazyImport(() => import('@/pages/call/TicketDetailPage'));
 const TasksView = lazyImport(() => import('@/pages/tasks/TasksView'));
 const TaskDetailPage = lazyImport(() => import('@/pages/tasks/TaskDetailPage'));
@@ -167,6 +168,7 @@ const router = createBrowserRouter([
         children: [
           { index: true, element: <Navigate to="/call" replace /> },
           { path: 'call', element: <CallView /> },
+          { path: 'call/history', element: <HistoryTicketsPage /> },
           { path: 'call/ticket/:id', element: <TicketDetailPage /> },
           { path: 'tasks', element: <TasksView /> },
           { path: 'tasks/:id', element: <TaskDetailPage /> },

@@ -33,7 +33,11 @@ async def send_notification(
             logger.info(f"@用户: {at_info.user_names}, 是否@所有人: {at_info.is_all}")
             if at_info.is_all:
                 raise HTTPException(status_code=400, detail="暂不支持@所有人功能")
-        filtered_users = [row for row in users if row["username"] in at_info.user_names]
+        names = set(at_info.user_names or [])
+        filtered_users = [
+            row for row in users
+            if row.get("username") in names or row.get("id") in names
+        ]
 
         if request.msg_type == "text":
             if not request.text:

@@ -99,11 +99,11 @@ class TestRequiredFieldsTriState:
     """required_fields 三态：None=未决定，{}=已决定无需补，非空=补哪些"""
 
     @pytest.mark.unit
-    def test_adopt_empty_rf_keeps_none(self, platform, make_state):
-        """预测结果空清单 → 不采纳，保持 None（交给 decide 重试）"""
+    def test_adopt_empty_rf_locks_empty(self, platform, make_state):
+        """预测结果为空时也锁定为空，避免每轮重复决定字段。"""
         state = make_state()
         platform._adopt_ticket_fields(state, {"ticket_type": "support", "required_fields": {}})
-        assert state.required_fields is None
+        assert state.required_fields == {}
 
     @pytest.mark.unit
     def test_adopt_nonempty_rf(self, platform, make_state):

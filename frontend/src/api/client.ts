@@ -52,6 +52,37 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 构造用户可读的错误信息。
+ * FastAPI 参数校验失败（422）时 detail 是数组 [{type, loc, msg, input}]，
+ * 而非字符串——这里把字段路径(loc)与具体原因(msg)提取成人类可读文案，
+ * 例如「query 字段：String should have at most 500 characters」，
+ * 让前端 Toast 直接定位是哪个字段超长/缺失，无需再查后端日志。
+ */
+function buildErrorMessage(errorData: Record<string, unknown>, status: number): string {
+  const detail = errorData.detail;
+  // FastAPI 422：detail 为校验错误数组
+  if (Array.isArray(detail) && detail.length > 0) {
+    const parts = detail
+      .map((err) => {
+        if (err && typeof err === 'object') {
+          const e = err as { loc?: unknown[]; msg?: string };
+          const loc = Array.isArray(e.loc) ? e.loc.filter((x) => typeof x === 'string').join('.') : '';
+          const msg = e.msg || '';
+          return loc ? `「${loc}」${msg}` : msg;
+        }
+        return String(err);
+      })
+      .filter(Boolean);
+    if (parts.length > 0) {
+      return `参数校验失败(${status}): ${parts.join('；')}`;
+    }
+  }
+  // 常规错误：detail/message/error 为字符串
+  const msg = errorData.detail || errorData.message || errorData.error;
+  return typeof msg === 'string' ? msg : `HTTP错误! 状态码: ${status}`;
+}
+
 export function initToken(): string {
   if (userToken) return userToken;
   try {
@@ -177,7 +208,9 @@ export function createRequest(baseUrl: string, _serviceName = 'API') {
         let errorMessage = `HTTP错误! 状态码: ${response.status}`;
         try {
           const errorData = await response.json();
-          errorMessage = errorData.detail || errorData.message || errorData.error || errorMessage;
+          if (errorData.detail || errorData.message || errorData.error) {
+            errorMessage = buildErrorMessage(errorData, response.status);
+          }
         } catch { /* ignore */ }
 
         // 401 → Token刷新

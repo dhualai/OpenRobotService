@@ -15,8 +15,102 @@ from ai.agents.AiTaskPlatform.prompts import (
     select_system_prompt as _select_system_prompt,
 )
 from ai.agents.AiTaskPlatform.contexts import build_task_ctx, build_img_ctx
+# 复用 discuss 的进度广播封装（同一语义：事件封套 phase 只 running，收尾单独 done）
+from ai.agents.AiTaskPlatform.handlers.discuss_flow import (
+    _broadcast_ai_progress,
+    _broadcast_ai_progress_await,
+)
 
 logger = get_logger("TASK_AGENT")
+
+
+class _DiagProgress:
+    """diagnose 过程区进度：按固定阶段累积 todo 并广播 ai.progress 到工单 WS 房间。
+
+    与 discuss 同语义（见 memory：ai-progress-envelope-vs-item-phase）：
+      - 事件封套 phase 只发 running，逐阶段更新单项 status/phase，前端实时看到"正在做哪一步"；
+      - 收尾单独发一次 done（await 确保送达），前端据此收起过程区。
+    """
+
+    def __init__(self, task_id: str, run_id: str):
+        self._task_id = task_id
+        self._run_id = run_id
+        self._todos: list[dict] = []
+        self._idx: dict[str, dict] = {}
+
+    def snapshot(self) -> list[dict]:
+        return [dict(t) for t in self._todos]
+
+    def seed(self, key: str, description: str, capability: str = "") -> None:
+        """仅登记首个「进行中」待办项，不广播。
+
+        首个 running 需由调用方用 await 版本确定性送达，前端才会建立执行过程区
+        （与 discuss 同理：若首个 running 走 fire-and-forget 丢失，前端只收到收尾
+        done 时过程区恒不显示）。
+        """
+        todo = {
+            "id": key,
+            "description": description,
+            "status": "in_progress",
+            "capability": capability,
+            "phase": "running",
+        }
+        self._idx[key] = todo
+        self._todos.append(todo)
+
+    def _emit(self, phase: str = "running") -> None:
+        try:
+            _broadcast_ai_progress(self._task_id, self._run_id, self.snapshot(), phase)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[diagnose] ai.progress 广播失败 phase={phase} task={self._task_id}: {e}")
+
+    def add(self, key: str, description: str, status: str = "in_progress", capability: str = "") -> None:
+        """新增一个待办项（或更新已有项描述），并广播当前快照。"""
+        todo = self._idx.get(key)
+        if todo is None:
+            todo = {
+                "id": key,
+                "description": description,
+                "status": status,
+                "capability": capability,
+                "phase": "running" if status == "in_progress" else "done",
+            }
+            self._idx[key] = todo
+            self._todos.append(todo)
+        else:
+            todo["description"] = description
+        self._emit("running")
+
+    def done(self, key: str, description: str | None = None, result_summary: str = "") -> None:
+        """把指定待办项标记完成，并广播当前快照。"""
+        todo = self._idx.get(key)
+        if todo is None:
+            # 兜底：没 add 过就直接补一条完成态（防御乱序）
+            todo = {"id": key, "description": description or key,
+                    "status": "completed", "capability": "", "phase": "done"}
+            self._idx[key] = todo
+            self._todos.append(todo)
+        else:
+            todo["status"] = "completed"
+            todo["phase"] = "done"
+            if description:
+                todo["description"] = description
+        if result_summary:
+            todo["result_summary"] = result_summary[:80]
+        self._emit("running")
+
+    async def finish(self) -> None:
+        """收尾：把残留 in_progress 归一化为 completed 并广播 done（await 确保送达）。"""
+        for todo in self._todos:
+            if todo.get("status") == "in_progress":
+                todo["status"] = "completed"
+            if todo.get("phase") in ("running", "in_progress"):
+                todo["phase"] = "done"
+        try:
+            await _broadcast_ai_progress_await(self._task_id, self._run_id, self.snapshot(), "done")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[diagnose] ai.progress 收尾广播失败 task={self._task_id}: {e}")
+
 
 
 def _discovery_to_text(triage_result: dict) -> str:
@@ -260,9 +354,19 @@ class DiagnoseFlow:
         self._pop_trace()
         await self._ensure_clients()
 
+        # 过程区进度：与 discuss 同款 ai.progress（事件封套只 running，收尾 done），
+        # 让 [帮我分析] 也能在讨论区上方实时看到 AI 正在执行哪一步（像 @AI 讨论一样）。
+        run_id = f"{task_id}:{int(time.time() * 1000)}"
+        prog = _DiagProgress(task_id, run_id)
+        # 首个 running 必须 await 确定性送达 → 前端才建立「执行过程区」；
+        # 否则只收到收尾 done 时过程区恒不显示（与 discuss 首条 running 同等处理）。
+        prog.seed("planning", "正在加载工单上下文并规划分析", capability="planning")
+        await _broadcast_ai_progress_await(task_id, run_id, prog.snapshot(), "running")
+
         # 1. 加载工单上下文
         t1 = time.perf_counter()
         context = await self._load_task_context(task_id)
+        prog.done("planning", "已加载工单上下文")
         self._add_trace(self.NODE_LOAD_CONTEXT, "ok",
                         input={"task_id": task_id},
                         output={"has_title": bool(context.title),
@@ -271,6 +375,7 @@ class DiagnoseFlow:
 
         # 2. 附件分析（能力一：日志走 LogSubAgent+Discovery，其他走 parse_attachments）
         t2 = time.perf_counter()
+        prog.add("attachment", "分析附件与日志", capability="log_analyze")
         att_has_logs = False
         att_log_summary = ""
         log_sub_result = None
@@ -355,8 +460,12 @@ class DiagnoseFlow:
                             input={"error": str(e)},
                             elapsed_ms=round((time.perf_counter() - t2) * 1000))
 
+        prog.done("attachment", "附件与日志分析完成",
+                  result_summary=("含日志" if att_has_logs else "无附件") if not att_log_summary else att_log_summary)
+
         # 3. 历史工单检索 + 平台参考 + 讨论评论（改造点 B / G2 并行化：均为独立只读，用 gather 并行）
         t3 = time.perf_counter()
+        prog.add("retrieval", "检索历史工单与平台资料", capability="retrieve_history")
         # 初始化并行任务写回字段（防御：若某任务异常也必须能读到默认值）
         self._diag_hist_found = False
         self._diag_hist_summary = ""
@@ -385,9 +494,12 @@ class DiagnoseFlow:
         self._add_trace(self.NODE_KNOWLEDGE, "ok",
                         output={"missing": [g["key"] for g in missing_info]},
                         elapsed_ms=0)
+        prog.done("retrieval", "历史工单与平台资料检索完成",
+                  result_summary=("命中历史方案" if hist_found else "无历史方案"))
 
         # 4. LLM 综合分析
         t4 = time.perf_counter()
+        prog.add("llm", "综合分析并生成诊断报告", capability="llm")
         att_text = att_log_summary if att_has_logs else "（无附件或无可解析内容）"
         hist_text = hist_summary if hist_found else "（无相似的历史工单方案）"
 
@@ -462,6 +574,10 @@ class DiagnoseFlow:
                         elapsed_ms=round((time.perf_counter() - t5) * 1000))
 
         total_ms = round((time.perf_counter() - t0) * 1000)
+
+        # 收尾：LLM 分析完成 + 整体 done（await 确保送达，前端据此收起执行过程区）
+        prog.done("llm", "诊断报告已生成", result_summary=report_md[:80] or "完成")
+        await prog.finish()
 
         # P3：needs_more_info 由"查漏出的缺失信息"驱动（而非仅 conf<0.5），
         # 更有意义——代表"确实有高价值信息缺失，建议补充"。

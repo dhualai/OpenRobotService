@@ -81,9 +81,22 @@ interface TimelineGroup {
 }
 
 /**
+ * 判断日志是否为状态转换节点（create 或 status_change）。
+ * create 与初始 status_change 通常代表同一次状态进入，需要去重。
+ */
+const isStatusTransition = (log: OperationLog): boolean =>
+  (log.operation_type === 'status_change' && !!log.to_status) || log.operation_type === 'create';
+
+const getStatusKey = (log: OperationLog): string => log.to_status || 'new';
+
+/**
  * 构建时间线分组
  * logs 按时间倒序（最新在前）。
  * 状态变更(status_change)作为主节点，其后的操作（时间更新）归入该状态分组。
+ *
+ * 去重逻辑：create 与初始 status_change 指向同一状态且时间戳相同时，
+ * 视为同一次状态转换；二者之间可能夹着同时间戳的 view 等非转换日志，
+ * 这些日志应归入该分组的 children，而不是把它们拆成两个分组。
  */
 const buildTimelineGroups = (logs: OperationLog[]): TimelineGroup[] => {
   if (!logs.length) return [];
@@ -93,12 +106,24 @@ const buildTimelineGroups = (logs: OperationLog[]): TimelineGroup[] => {
 
   for (let i = 0; i < logs.length; i++) {
     const log = logs[i];
-    if ((log.operation_type === 'status_change' && log.to_status) || log.operation_type === 'create') {
-      const statusKey = log.to_status || 'new';
-      // 跳过紧随其后的、指向相同状态的 status_change（冗余日志）
+    if (isStatusTransition(log)) {
+      const statusKey = getStatusKey(log);
+      const currentTime = log.created_at;
+      // 收集同时间戳的非转换日志作为本分组子节点，
+      // 并跳过指向相同状态、相同时间戳的重复转换日志（create + status_change）
+      const extraChildren: OperationLog[] = [];
       while (i + 1 < logs.length) {
         const next = logs[i + 1];
-        if (next.operation_type === 'status_change' && next.to_status === statusKey) {
+        if (
+          isStatusTransition(next) &&
+          getStatusKey(next) === statusKey &&
+          next.created_at === currentTime
+        ) {
+          // 同一次状态转换的重复记录，跳过
+          i++;
+        } else if (!isStatusTransition(next) && next.created_at === currentTime) {
+          // 同时间戳的非转换日志（如 view），归入本分组
+          extraChildren.push(next);
           i++;
         } else {
           break;
@@ -108,7 +133,7 @@ const buildTimelineGroups = (logs: OperationLog[]): TimelineGroup[] => {
         status: statusKey,
         statusTime: log.created_at,
         triggerOperator: log.operator_name || log.operator,
-        children: pendingChildren,
+        children: [...pendingChildren, ...extraChildren],
       });
       pendingChildren = [];
     } else {
@@ -153,8 +178,9 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
         const color = STATUS_COLOR[group.status] || '#9ca3af';
         const statusLabel = STATUS_MAP[group.status] || group.status;
         const isLatest = idx === 0;
-        // 下一个状态（时间更旧，即此状态结束后转入的状态）；倒序中 idx+1 是时间更旧的
-        const prevGroup = idx < groups.length - 1 ? groups[idx + 1] : null;
+        // 下一个（更新的）状态：本状态结束 = 下一个状态开始。
+        // 倒序中 idx-1 是时间更新的分组，取其 statusTime 作为本状态「结束」时间。
+        const nextGroup = idx > 0 ? groups[idx - 1] : null;
 
         return (
           <div className="op-segment" key={idx}>
@@ -176,8 +202,8 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
                   <span className="op-segment__status" style={{ color }}>
                     {isLatest ? '持续至今' : `结束「${statusLabel}」状态`}
                   </span>
-                  {!isLatest && prevGroup ? (
-                    <span className="op-segment__time">{formatTime(prevGroup.statusTime)}</span>
+                  {!isLatest && nextGroup ? (
+                    <span className="op-segment__time">{formatTime(nextGroup.statusTime)}</span>
                   ) : null}
                 </div>
               </div>
@@ -187,8 +213,11 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
                 <div className="op-segment__children">
                   {group.children.map((log) => {
                     const style = OP_TYPE_STYLE[log.operation_type];
+                    const subCls = `op-segment__sub${
+                      log.operation_type === 'reassign' ? ' op-segment__sub--reassign' : ''
+                    }`;
                     return (
-                      <div className="op-segment__sub" key={log.id}>
+                      <div className={subCls} key={log.id}>
                         <div className="op-segment__sub-dot" style={{ borderColor: style.color }}>
                           <span className="op-segment__sub-icon">{style.icon}</span>
                         </div>

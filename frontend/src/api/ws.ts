@@ -23,14 +23,27 @@ export interface OnlineMember {
   avatar_resource_id?: number | null;
 }
 
+/** 单条评论的一条已读明细（飞书式名单成员） */
+export interface ReadRecord {
+  username: string;
+  name?: string | null;
+  avatar_resource_id?: number | null;
+  read_at?: string | null;
+}
+
+/** read_receipt 增量广播里的单条已读明细（含所属评论 id） */
+export interface ReadRecordDelta extends ReadRecord {
+  comment_id: number;
+}
+
 export type WsEvent =
-  | { type: 'welcome'; you: string; online: OnlineMember[]; read_map: Record<string, number> }
+  | { type: 'welcome'; you: string; online: OnlineMember[]; read_map: Record<string, number>; read_records?: Record<string, ReadRecord[]> }
   | { type: 'comment.created'; comment: CommentPayload }
   | { type: 'comment.updated'; comment: CommentPayload }
   | { type: 'comment.deleted'; id: number }
   | { type: 'presence'; online: OnlineMember[] }
   | { type: 'typing'; username: string; value: boolean }
-  | { type: 'read_receipt'; username: string; last_read_comment_id: number }
+  | { type: 'read_receipt'; username: string; last_read_comment_id: number | null; comment_ids?: number[]; records?: ReadRecordDelta[] }
   | { type: 'task.updated'; task_id: number; status?: string; assigned_to?: string | null; assigned_to_name?: string | null; updated_at?: string | null }
   | { type: 'ai.progress'; run_id?: string; phase: 'running' | 'done'; todos: AiProgressTodo[] }
   | { type: 'pong' }
@@ -154,8 +167,12 @@ export class TaskRoomSocket {
     this.send({ type: 'typing', value });
   }
 
-  sendRead(lastReadCommentId: number): void {
-    this.send({ type: 'read', last_read_comment_id: lastReadCommentId });
+  sendRead(lastReadCommentId: number, commentIds?: number[]): void {
+    this.send({
+      type: 'read',
+      last_read_comment_id: lastReadCommentId,
+      comment_ids: commentIds,
+    });
   }
 
   close(): void {

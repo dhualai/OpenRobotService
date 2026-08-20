@@ -28,6 +28,7 @@ from app.utils.minio_client import minio_client
 from app.utils.notification_utils import NotificationUtils
 from app.integrations.api import verify_sync_api_key
 from app.core.config import settings
+from app.core.user_identity import user_matches, is_admin_user, to_user_id, actor_username, identity_keys
 
 router = APIRouter(tags=["tasks"])
 
@@ -40,6 +41,52 @@ STATUS_LABEL = {
     "canceled": "已取消",
     "closed": "已关闭",
 }
+
+# 附件按扩展名分类（用于操作日志"添加了图片/视频/..."的描述）
+_ATTACHMENT_EXT_CATEGORIES = {
+    "image": {"jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "ico", "tif", "tiff", "heic", "heif"},
+    "video": {"mp4", "mov", "avi", "mkv", "webm", "flv", "wmv", "m4v", "mpeg", "mpg", "3gp"},
+    "audio": {"mp3", "wav", "aac", "flac", "ogg", "m4a", "wma", "aiff"},
+    "archive": {"zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz", "tbz2"},
+    "document": {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "rtf", "odt", "ods", "odp"},
+}
+_ATTACHMENT_CATEGORY_LABEL = {
+    "image": "图片",
+    "video": "视频",
+    "audio": "音频",
+    "archive": "压缩包",
+    "document": "文档",
+    "other": "附件",
+}
+
+
+def _extract_filename(att) -> str:
+    """从附件项提取文件名（兼容字符串路径或 dict 形式）。"""
+    if isinstance(att, str):
+        # 路径形如 "bucket/temp_id/filename.ext"
+        return att.rsplit("/", 1)[-1]
+    if isinstance(att, dict):
+        return att.get("filename") or att.get("name") or str(att.get("url") or att.get("path") or "")
+    return str(att)
+
+
+def _categorize_attachment(filename: str) -> str:
+    """根据文件名扩展名返回分类 key（image/video/audio/archive/document/other）。"""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    for cat, exts in _ATTACHMENT_EXT_CATEGORIES.items():
+        if ext in exts:
+            return cat
+    return "other"
+
+
+def _get_attachment_label(attachments) -> Optional[str]:
+    """根据 comment.attachments 列表返回中文类别标签；多类型混合时返回"附件"；无附件返回 None。"""
+    if not attachments:
+        return None
+    categories = {_categorize_attachment(_extract_filename(a)) for a in attachments}
+    if len(categories) == 1:
+        return _ATTACHMENT_CATEGORY_LABEL[next(iter(categories))]
+    return "附件"
 
 # 解决方式总结 Worker 的 Redis 任务队列（与 ai/agents/AiTaskPlatform/services/resolution_worker.py 保持一致）
 RESOLUTION_WORKER_QUEUE = "ors:resolution"
@@ -95,11 +142,12 @@ async def create_task(
     logger = logging.getLogger(__name__)
     
     try:
-        username = current_user.get('username') if current_user else "system"
-        token = current_user.get('token')
-        logger.info(f"开始创建任务: title={ticket_data.title[:50] if ticket_data.title else '无标题'}, ticket_type={ticket_data.ticket_type}, created_by={username}")
+        username = actor_username(current_user) if current_user else "system"
+        creator_id = to_user_id(current_user.get("id") if isinstance(current_user, dict) else None) or to_user_id(username) or username
+        token = current_user.get('token') if isinstance(current_user, dict) else getattr(current_user, "token", None)
+        logger.info(f"开始创建任务: title={ticket_data.title[:50] if ticket_data.title else '无标题'}, ticket_type={ticket_data.ticket_type}, created_by={creator_id}")
         
-        ticket = await TicketService.create_ticket(db, ticket_data, username, comment_attachment_map, token)
+        ticket = await TicketService.create_ticket(db, ticket_data, creator_id, comment_attachment_map, token)
         logger.info(f"创建任务成功: task_id={ticket.id}, title={ticket.title[:50] if ticket.title else '无标题'}")
         
         # 记录创建操作日志
@@ -492,21 +540,21 @@ async def update_task(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = current_user.get('is_admin', False)
-    username = current_user.get('username', '')
-    user_name = current_user.get('name', username)
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
+    user_name = (current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", username))
 
     if not is_admin:
-        if username not in [ticket.assigned_to, ticket.customer, ticket.created_by]:
+        if not user_matches(current_user, ticket.assigned_to, ticket.customer, ticket.created_by):
             raise HTTPException(status_code=403, detail="无权限更新此任务")
         if ticket.status == TicketStatus.CLOSED:
             raise HTTPException(status_code=400, detail="已关闭的任务不能更新")
         if ticket_update.status:
-            if ticket.status == TicketStatus.NEW and username != ticket.created_by:
+            if ticket.status == TicketStatus.NEW and not user_matches(current_user, ticket.created_by):
                 raise HTTPException(status_code=400, detail="只允许创建者开始任务！")
-            if ticket.status in [TicketStatus.PENDING, TicketStatus.IN_PROGRESS] and username != ticket.assigned_to:
+            if ticket.status in [TicketStatus.PENDING, TicketStatus.IN_PROGRESS] and not user_matches(current_user, ticket.assigned_to):
                 raise HTTPException(status_code=400, detail="只允许处理人更新任务！")
-            if ticket.status == TicketStatus.RESOLVED and username != ticket.customer:
+            if ticket.status == TicketStatus.RESOLVED and not user_matches(current_user, ticket.customer):
                 raise HTTPException(status_code=400, detail="只允许发起人的更新已解决任务！")
 
     try:
@@ -580,7 +628,8 @@ async def update_task(
             )
             await _add_system_comment(db, task_id, f"{user_name} 将工单重新指派给 {new_assignee_name}", username, token)
             # 工单转派提醒：通知创建人 + 新被指派人
-            reassign_notify_users = list({ticket.created_by, new_assignee} - {None})
+            _op_keys = set(identity_keys(username)) | {None}
+            reassign_notify_users = [u for u in {ticket.created_by, new_assignee} if u not in _op_keys]
             await NotificationUtils.send_ticket_reassign_notification(
                 ticket_id=task_id,
                 title=ticket.title or '',
@@ -629,11 +678,11 @@ async def delete_task(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = current_user.get('is_admin', False)
-    username = current_user.get('username', '')
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
 
     if not is_admin:
-        if username not in [ticket.assigned_to, ticket.created_by]:
+        if not user_matches(current_user, ticket.assigned_to, ticket.created_by):
             raise HTTPException(status_code=403, detail="无权限更新此任务")
 
     try:
@@ -671,7 +720,19 @@ async def add_comment(
         await db.commit()
 
         # ── 记录评论操作日志 ──
-        content_summary = comment_data.content[:100] + ('...' if len(comment_data.content) > 100 else '')
+        # 区分三种场景：仅附件 / 附件+文字 / 仅文字（含空内容兜底）
+        # 附件类型按扩展名识别：图片/视频/音频/压缩包/文档；多类型混合用"附件"
+        content_text = (comment_data.content or '').strip()
+        content_summary = content_text[:100] + ('...' if len(content_text) > 100 else '')
+        cat_label = _get_attachment_label(getattr(comment, 'attachments', None))
+
+        if cat_label and not content_text:
+            action_text = f"添加了{cat_label}"
+        elif cat_label and content_text:
+            action_text = f"添加了{cat_label}并附带评论 {content_summary}"
+        else:
+            action_text = f"添加了评论：{content_summary}"
+
         # 获取工单信息用于角色判断
         _ticket = await TicketService.get_ticket_by_id(db, task_id)
         _role = get_role_prefix(getattr(_ticket, 'created_by', None), getattr(_ticket, 'assigned_to', None), username) if _ticket else ""
@@ -681,7 +742,7 @@ async def add_comment(
             op_type=OperationType.COMMENT,
             operator=username,
             operator_name=operator,
-            description=f"{_role}{operator} 添加了评论：{content_summary}" if _role else f"{operator} 添加了评论：{content_summary}",
+            description=f"{_role}{operator} {action_text}" if _role else f"{operator} {action_text}",
         )
 
         # ── @mention 通知：检测评论中的 @用户名，排除 @U老师 ──
@@ -894,18 +955,24 @@ async def update_task_status(
     if not ticket:
         raise HTTPException(status_code=404, detail="任务未找到")
 
-    is_admin = current_user.get('is_admin', False)
-    username = current_user.get('username', '')
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
     token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
 
     # AI 工单（source='ai'）允许任何登录用户操作状态（created_by='system' 不是真实用户）
     if ticket.source == 'ai':
         pass
-    elif ticket.created_by != username and ticket.assigned_to != username and not is_admin:
+    elif not user_matches(current_user, ticket.created_by, ticket.assigned_to) and not is_admin:
         raise HTTPException(status_code=403, detail="无权限更新任务状态")
 
     try:
         status_enum = TicketStatus(status)
+
+        # ── 撤回（→ canceled）权限收窄：仅提单人(created_by) 或 管理员可撤回，处理人(assigned_to) 不可撤回 ──
+        # 业务规则：撤回是提单人防止「派错单/误提」的特权，处理人应走「退回/暂停」而非替提单人撤回。
+        # created_by 过渡期可能是 username 或 users.id，与当前用户双键比较。
+        if status_enum == TicketStatus.CANCELED and not is_admin and not user_matches(current_user, ticket.created_by):
+            raise HTTPException(status_code=403, detail="仅提单人或管理员可撤回工单")
 
         # ── 结束工单（→ resolved）需携带解决方式：接单人确认后提交的最终文本 ──
         resolution_summary = None
@@ -932,7 +999,7 @@ async def update_task_status(
             pass
 
         # ── 记录状态变更操作日志 ──
-        user_name = current_user.get('name', username)
+        user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
         _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
         await OperationLogService.log(
             db=db,
@@ -1132,7 +1199,8 @@ async def assign_task(
         await _add_system_comment(db, task_id, f"{user_name} 将工单指派给 {assignee_name}", username, token)
 
         # 工单转派提醒：通知创建人 + 新被指派人
-        assign_notify_users = list({ticket.created_by, user_id} - {None})
+        _op_keys = set(identity_keys(username)) | {None}
+        assign_notify_users = [u for u in {ticket.created_by, user_id} if u not in _op_keys]
         await NotificationUtils.send_ticket_reassign_notification(
             ticket_id=task_id,
             title=ticket.title or '',
@@ -1168,6 +1236,119 @@ async def trigger_ai_assignment(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"触发AI分配处理人失败: {str(e)}")
+
+
+class ReDispatchRequest(BaseModel):
+    """重新派单请求体。preferred_assignee 为用户倾向的派单人（username/userId，必填）；remark 为可选备注。"""
+    preferred_assignee: str
+    remark: Optional[str] = None
+
+
+@router.post("/{task_id}/re-dispatch", response_model=TicketResponse)
+async def re_dispatch_task(
+    task_id: int,
+    payload: ReDispatchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """重新派单：强制工单回到待派单状态，触发 AI 智能派单重新推荐处理人。
+
+    - 可携带用户倾向的派单人（preferred_assignee，users.id），派单流水线会将其作为强加权信号
+      （复用 assigner 既有的 preferred_assignee 字段，见 TicketContext.preferred_assignee）。
+    - 实现：清空 assigned_to + 状态回 new + 写入 metadata_info.preferred_assignee，
+      再向 Redis 发布 usp:new_ticket 事件，由派单 Worker 立即重新派单（发布失败则依赖定时扫描兜底）。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
+    user_name = (current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", username)) or username
+    token = current_user.get('token') if isinstance(current_user, dict) else getattr(current_user, "token", None)
+
+    # 权限口径对齐 update_task：管理员 / 提单人 / 处理人 / 客户
+    if not is_admin and not user_matches(current_user, ticket.assigned_to, ticket.customer, ticket.created_by):
+        raise HTTPException(status_code=403, detail="无权限重新派单此任务")
+    if ticket.status == TicketStatus.CLOSED:
+        raise HTTPException(status_code=400, detail="已关闭的任务不能重新派单")
+    # 派单 Worker 只处理 source='ai' 的工单（manual 系统任务由兜底双工单直接指定处理人，不走 AI 派单），
+    # 若允许 manual 工单重派，Worker 永远查不到它，会一直卡在「派单中」。
+    if (ticket.source or "") != "ai":
+        raise HTTPException(status_code=400, detail="该工单非智能派单工单，无法重新派单")
+    # 提单时已指定处理人（title/description 里的强信号）会触发派单 Step 0 直接指派，
+    # 覆盖掉重新派单的倾向人，导致重派无效——提前拦截并提示（正则与 assigner Step 0 口径一致）。
+    import re as _re
+    _strong_text = f"{ticket.title or ''}\n{ticket.description or ''}"
+    _strong_m = _re.search(r"指定(?:处理人|人|人员)[:：]\s*([^\]\s，,；;:：）)】]{2,6})", _strong_text)
+    if _strong_m:
+        raise HTTPException(
+            status_code=400,
+            detail=f"该工单已指定处理人「{_strong_m.group(1).strip()}」，重新派单不会改变接单人",
+        )
+
+    preferred = to_user_id((payload.preferred_assignee or "").strip()) or (payload.preferred_assignee or "").strip()
+    if not preferred:
+        raise HTTPException(status_code=400, detail="请选择倾向处理人")
+    remark = (payload.remark or "").strip()
+
+    # 复位前捕获旧值，供操作日志角色判定（复位后 assigned_to 已清空）
+    created_by = ticket.created_by
+    old_assigned_to = ticket.assigned_to
+
+    # 重置派单状态：清空处理人 + 状态回 new
+    ticket.assigned_to = None
+    ticket.status = TicketStatus.NEW
+
+    # 写入用户倾向派单人 + 清掉上一次派单的推荐元数据
+    meta = dict(ticket.metadata_info or {})
+    meta["preferred_assignee"] = preferred
+    if remark:
+        meta["preferred_assignee_remark"] = remark
+    for k in ("assignee_name", "assignee_id", "assign_confidence",
+              "assign_reasoning", "assign_decision_type", "assigned_at"):
+        meta.pop(k, None)
+    ticket.metadata_info = meta
+
+    await db.commit()
+
+    # 触发派单 Worker：向 Redis 发布 usp:new_ticket（与 AI 服务 publish_new_ticket 同通道）
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(
+            f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
+        )
+        try:
+            await r.publish("usp:new_ticket", str(int(task_id)))
+        finally:
+            await r.aclose()
+    except Exception as e:
+        logger.warning(f"重新派单发布 Redis 事件失败（将依赖定时扫描兜底）: {e}")
+
+    # 操作日志 + 系统评论
+    _role = get_role_prefix(created_by, old_assigned_to, username)
+    user_map = await TicketService._get_user_map(token)
+    pref_name = user_map.get(preferred, preferred)
+    base = f"重新派单，倾向处理人 {pref_name}"
+    desc = f"{_role}{user_name} {base}" if _role else f"{user_name} {base}"
+    comment_text = f"{user_name} {base}"
+    if remark:
+        comment_text += f"（备注：{remark}）"
+    await OperationLogService.log(
+        db=db,
+        task_id=task_id,
+        op_type=OperationType.REASSIGN,
+        operator=username,
+        operator_name=user_name,
+        detail={"preferred_assignee": preferred, "remark": remark or None},
+        description=desc,
+    )
+    await _add_system_comment(db, task_id, comment_text, username, token)
+
+    return await _reload_ticket_with_comments(db, task_id)
 
 
 @router.get("/{task_id}/operation-logs", response_model=List[dict])

@@ -73,11 +73,11 @@ class TicketContext(BaseModel):
     attachments: Optional[List[str]] = Field(None, description="附件路径列表 ↔ tasks.attachments")
 
     # === 派单增强-预留：用户倾向处理人 ===
-    # 前端提单时若新增"倾向处理人"字段，可复用本字段（传工程师 userId/username）。
+    # 前端提单时若新增"倾向处理人"字段，可复用本字段（传工程师 users.id）。
     # 前端未传时恒为 None，整体不生效、完全向后兼容；传了即作为派单强加权信号启用。
     preferred_assignee: Optional[str] = Field(
         None,
-        description="倾向处理人（用户提单时填写，传工程师 userId/username，预留）↔ tasks.metadata_info.preferred_assignee",
+        description="倾向处理人（用户提单时填写，传工程师 users.id，预留）↔ tasks.metadata_info.preferred_assignee",
     )
 
     # === 其他 ===
@@ -89,12 +89,12 @@ class EngineerProfile(BaseModel):
     """工程师画像（数据源自后端 users 表 + 公司/部门主数据表）
 
     对应后端字段：
-    - id / name ↔ users.username / users.name
+    - id / name ↔ users.id / users.name
     - company / department ↔ 通过 company_id / department_id 关联主数据表取名称
     数据同步入口：assigner/sync/engineers_sync.py::load_engineers()
     """
 
-    id: str = Field(..., description="工程师唯一标识 ↔ users.username（真实环境为 wechat_ 前缀，与 tasks.created_by/assigned_to 一致）")
+    id: str = Field(..., description="工程师唯一标识 ↔ users.id（与 tasks.created_by/assigned_to 一致）")
     name: str = Field(..., description="工程师姓名 ↔ users.name")
     company: Optional[str] = Field(
         None, description="公司名称 ↔ users.company_id → companies.name"
@@ -131,12 +131,12 @@ class AssignmentResult(BaseModel):
     """智能派单结果
 
     落库对应（见 pipeline/worker.py 写回逻辑）：
-    - engineer_id → tasks.assigned_to（统一为 users.username，无需反查）
+    - engineer_id → tasks.assigned_to（统一为 users.id，无需反查）
     - engineer_name → 工程师姓名（users.name）
     - confidence_score / reasoning / decision_type → 建议存入 tasks.metadata_info 供日志/前端展示
     """
 
-    engineer_id: str = Field(..., description="推荐工程师标识（users.username）→ 直接写入 tasks.assigned_to")
+    engineer_id: str = Field(..., description="推荐工程师标识（users.id）→ 直接写入 tasks.assigned_to")
     engineer_name: str = Field(..., description="推荐工程师姓名（对应 users.name）")
     confidence_score: float = Field(..., description="置信度分数（0~1），建议存 tasks.metadata_info.confidence_score")
     reasoning: str = Field(..., description="推荐理由，用于日志或前端展示 → tasks.metadata_info.reasoning")
