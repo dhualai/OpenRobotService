@@ -6,6 +6,7 @@ import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
+import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { createRequest, getToken } from '@/api/client';
@@ -1172,7 +1173,9 @@ export default function TaskDetailPage() {
               ))}
             </div>
           </div>
-          <h2 className="detail-card__title">{detail.title}</h2>
+          <h2 className="detail-card__title">
+            <TitleEllipsis text={detail.title} lines={3} titleClassName="detail-card__title-inner" as="span" fontSize={19} lineHeight={1.3} />
+          </h2>
           <div className="detail-card__info-grid">
             <div className="detail-info-item">
               <span className="detail-info-item__icon"><User size={14} strokeWidth={2} /></span>
