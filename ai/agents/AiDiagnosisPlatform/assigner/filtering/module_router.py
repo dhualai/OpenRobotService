@@ -12,7 +12,6 @@ from ai.agents.AiDiagnosisPlatform.assigner.filtering.routing_schemas import (
 )
 from ai.agents.AiDiagnosisPlatform.assigner.filtering.product_keys import (
     classify_map_for_product,
-    engineer_modules_for_product,
     profile_keys_for_product,
 )
 from ai.core.logging import get_logger
@@ -65,16 +64,22 @@ class ModuleRouter:
         canonical_product: str,
         category: str,
     ) -> bool:
-        mods = engineer_modules_for_product(eng, canonical_product, self._config)
-        if not mods:
-            return False
+        # 主流三层结构 {产品:{界面:[功能]}}：显式遍历界面层，保留界面上下文；
+        # 匹配以「功能名」为粒度（category=锚 key 后缀=功能名）。兼容旧两层/旧 list。
         cat_map = classify_map_for_product(self._config, canonical_product)
-        for mod in mods:
-            mapped = cat_map.get(mod)
-            if mapped == category:
-                return True
-            if mod == category:
-                return True
+        return self._eng_has_func(eng, canonical_product, cat_map, category)
+
+    @staticmethod
+    def _eng_has_func(eng, product, cat_map, category) -> bool:
+        by_iface = (eng.responsibility_modules or {}).get(product)
+        bucket = by_iface if isinstance(by_iface, dict) else {"_flat": by_iface}
+        if isinstance(bucket, dict):
+            for _iface, funcs in bucket.items():
+                fns = funcs if isinstance(funcs, list) else [funcs] if funcs else []
+                for mod in fns:
+                    mapped = cat_map.get(mod)
+                    if mapped == category or mod == category:
+                        return True
         return False
 
     def route(

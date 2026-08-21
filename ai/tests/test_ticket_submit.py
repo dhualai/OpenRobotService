@@ -1068,6 +1068,210 @@ class TestRequiredFieldsGranularity:
         assert "一项信息一个字段" in captured["prompt"]
 
 
+class TestAttachmentBinding:
+    """附件-工单绑定（2026-08-20 需求）：会话累积附件不再无条件全带。
+
+    两层：机制层 = 提单成功消费清空（跨单硬边界，_reset_state_after_submit）；
+    判断层 = _build_ticket 里 LLM 按附件摘要与本单问题相关性取舍（跨话题软边界，
+    判断全交大模型）。降级 = 现状全带（字段缺失/解析失败不静默丢证据）。
+    """
+
+    _ATTS = [
+        {"filename": "fault_3号车.png", "size": 100, "path": "http://x/f1",
+         "object_path": "b/sess/fault1.png", "desc": "界面显示3号车离线，疑似网络断连"},
+        {"filename": "工单列表截图.jpg", "size": 200, "path": "http://x/f2",
+         "object_path": "b/sess/f2.jpg", "desc": "工单列表页，显示历史工单状态"},
+    ]
+
+    @pytest.mark.unit
+    def test_reset_state_after_submit_clears_attachments(self):
+        """提单成功 → 累积附件消费清空：下一单（含提单后发图问问题再换话题提单）
+        不会带上本单之前的附件。"""
+        from types import SimpleNamespace
+        from ai.agents.AiDiagnosisPlatform.pipeline import (
+            AgentState, _reset_state_after_submit,
+        )
+        state = AgentState(session_id="s-att")
+        memory = SimpleNamespace(
+            turns=[{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}],
+            metadata={"agent_state": {"session_id": "s-att", "attachments": list(self._ATTS)}},
+        )
+        _reset_state_after_submit(state, memory, {"ticket_id": "TK-1", "title": "t"}, 1)
+        assert memory.metadata["agent_state"]["attachments"] == []
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_build_selects_relevant_attachments(self, platform, make_state):
+        """LLM 输出 attach_files=[1] → draft 只带第 1 个；候选清单注入 prompt
+        （文件名 + VLM 摘要——对话里图片内容已被 sanitize_images 屏蔽）"""
+        state = make_state(phase="diagnosing", problem_summary="3号车离线",
+                           original_query="3号车不动了")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.metadata["agent_state"] = {
+            "session_id": state.session_id, "attachments": [dict(a) for a in self._ATTS]}
+        prompts = []
+
+        async def _f(prompt: str = "", **kw):
+            prompts.append(prompt)
+            return json.dumps({"type": "problem", "title": "3号车离线",
+                               "description": "3号车离线。", "priority": "中",
+                               "attach_files": [1]}, ensure_ascii=False)
+
+        platform._llm_client.complete.side_effect = _f
+        draft = await platform._build_ticket(state.session_id, state, memory)
+
+        assert "## 附件候选" in prompts[0]
+        assert "fault_3号车.png" in prompts[0]
+        assert "界面显示3号车离线" in prompts[0]          # desc 是取舍信号
+        assert "attach_files" in prompts[0]
+        assert [a["filename"] for a in draft["attachments"]] == ["fault_3号车.png"]
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_string_indices_coerced(self, platform, make_state):
+        """LLM 偶尔输出字符串数字 ["2"] → 仍按序号 2 取（宽松解析不丢选）"""
+        state = make_state(phase="diagnosing", problem_summary="p")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.metadata["agent_state"] = {
+            "session_id": state.session_id, "attachments": [dict(a) for a in self._ATTS]}
+
+        async def _f(prompt: str = "", **kw):
+            return json.dumps({"type": "problem", "title": "t", "description": "d",
+                               "priority": "中", "attach_files": ["2"]}, ensure_ascii=False)
+
+        platform._llm_client.complete.side_effect = _f
+        draft = await platform._build_ticket(state.session_id, state, memory)
+        assert [a["filename"] for a in draft["attachments"]] == ["工单列表截图.jpg"]
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_empty_selection_drops_all(self, platform, make_state):
+        """LLM 显式空数组（都与本单无关）→ 尊重，不带任何附件"""
+        state = make_state(phase="diagnosing", problem_summary="p")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.metadata["agent_state"] = {
+            "session_id": state.session_id, "attachments": [dict(a) for a in self._ATTS]}
+
+        async def _f(prompt: str = "", **kw):
+            return json.dumps({"type": "problem", "title": "t", "description": "d",
+                               "priority": "中", "attach_files": []}, ensure_ascii=False)
+
+        platform._llm_client.complete.side_effect = _f
+        draft = await platform._build_ticket(state.session_id, state, memory)
+        assert draft["attachments"] == []
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_missing_field_keeps_all(self, platform, make_state):
+        """降级 = 现状：LLM 没输出 attach_files（字段缺失）→ 全带，
+        不静默丢证据（弹窗没有附件编辑 UI，漏带无法补救）"""
+        state = make_state(phase="diagnosing", problem_summary="p")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.metadata["agent_state"] = {
+            "session_id": state.session_id, "attachments": [dict(a) for a in self._ATTS]}
+
+        async def _f(prompt: str = "", **kw):
+            return json.dumps({"type": "problem", "title": "t", "description": "d",
+                               "priority": "中"}, ensure_ascii=False)
+
+        platform._llm_client.complete.side_effect = _f
+        draft = await platform._build_ticket(state.session_id, state, memory)
+        assert [a["filename"] for a in draft["attachments"]] == \
+            [a["filename"] for a in self._ATTS]
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_no_attachments_no_block(self, platform, make_state):
+        """无附件 → prompt 无候选清单（普通会话零开销），draft 附件为空"""
+        state = make_state(phase="diagnosing", problem_summary="p")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.metadata["agent_state"] = {"session_id": state.session_id, "attachments": []}
+        prompts = []
+
+        async def _f(prompt: str = "", **kw):
+            prompts.append(prompt)
+            return json.dumps({"type": "problem", "title": "t", "description": "d",
+                               "priority": "中"}, ensure_ascii=False)
+
+        platform._llm_client.complete.side_effect = _f
+        draft = await platform._build_ticket(state.session_id, state, memory)
+        assert "## 附件候选" not in prompts[0]
+        assert draft["attachments"] == []
+
+
+class TestTicketBoundaryPrefill:
+    """跨单预填泄漏（2026-08-20 生产实录）：同一会话提多单，第二单把第一单
+    对话里提到的项目名又预填上了。根因：context_start 实际恒为 0，提单归档
+    turns[context_start:] 是空操作，第一单的「给XX项目提单」仍在最近对话窗口
+    里，LLM 分不清那句项目名属于已提交的上一单 → 照抄。
+
+    修复：提单成功记内容锚点（提交时最后一轮前 40 字）→ 对话切片在锚点后插
+    「以上已随上一张工单提交归档」分隔线 → 照抄规则只认分隔线之后用户提到的
+    项目（判断仍在 LLM，代码只提供分界事实）。
+    """
+
+    _PROJECTS = [{"name": "南京本川项目", "code": "NJBC01"}]
+
+    @pytest.mark.unit
+    def test_reset_sets_boundary_anchor(self):
+        """提单成功 → 锚点 = 提交时最后一轮内容前 40 字；无对话 → 空锚点"""
+        from types import SimpleNamespace
+        from ai.agents.AiDiagnosisPlatform.pipeline import (
+            AgentState, _reset_state_after_submit,
+        )
+        state = AgentState(session_id="s-bd")
+        memory = SimpleNamespace(
+            turns=[{"role": "user", "content": "给南京本川项目提个单"},
+                   {"role": "assistant", "content": "工单草稿已生成。"}],
+            metadata={"agent_state": {}},
+        )
+        _reset_state_after_submit(state, memory, {"ticket_id": "TK-1"}, 1)
+        assert state.ticket_boundary_prefix == "工单草稿已生成。"
+
+        memory_empty = SimpleNamespace(turns=[], metadata={"agent_state": {}})
+        _reset_state_after_submit(state, memory_empty, {"ticket_id": "TK-2"}, 2)
+        assert state.ticket_boundary_prefix == ""
+
+    @pytest.mark.unit
+    def test_boundary_line_inserted_after_anchor(self, platform):
+        """锚点轮之后插分隔线；锚点不在切片内（全新对话）不插"""
+        from types import SimpleNamespace
+        memory = SimpleNamespace(turns=[
+            {"role": "user", "content": "给南京本川项目提个单"},
+            {"role": "assistant", "content": "工单草稿已生成。"},
+            {"role": "user", "content": "充电柜报故障了"},
+        ])
+        text = platform._format_conversation(
+            memory, boundary_prefix="工单草稿已生成。")
+        lines = text.split("\n")
+        assert "───── 以上对话已随上一张工单提交归档；以下是新对话 ─────" in lines
+        # 分隔线紧跟锚点轮（索引 1），锚点前的项目名轮次在线上方
+        assert lines.index("───── 以上对话已随上一张工单提交归档；以下是新对话 ─────") == 2
+        assert lines[0].startswith("用户：给南京本川项目")
+        assert "充电柜报故障了" in lines[3]
+
+        # 锚点被截掉（只看最近 2 轮）→ 全新对话，不插分隔线
+        text2 = platform._format_conversation(
+            memory, max_turns=2, boundary_prefix="给南京本川项目提个单")
+        assert "以上对话已随上一张工单提交归档" not in text2
+
+    def test_fast_lane_prompt_has_boundary_rule(self, platform, make_state):
+        """快路径 prompt：含分隔线（锚点命中）+ 照抄规则明确「分隔线前禁抄」"""
+        import types
+        state = make_state(phase="diagnosing", ticket_fast_lane=True,
+                           ticket_boundary_prefix="工单草稿已生成。")
+        fake_mem = types.SimpleNamespace(turns=[
+            {"role": "user", "content": "给南京本川项目提个单"},
+            {"role": "assistant", "content": "工单草稿已生成。"},
+            {"role": "user", "content": "帮我提单，充电柜报故障"},
+        ])
+        s = platform._build_diagnosis_prompt(
+            state, fake_mem, "", user_projects=list(self._PROJECTS))
+        assert "以上对话已随上一张工单提交归档" in s
+        assert "不算本次提到，禁止照抄" in s
+        assert "南京本川项目（编号: NJBC01）" in s
+
+
 # ================================================================
 # 运行入口
 # ================================================================

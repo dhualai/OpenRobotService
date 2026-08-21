@@ -30,7 +30,7 @@ class AssignerConfig:
     各属性含义：
     - module_keywords:      {模块名: [关键词]}，供 L3 历史召回提取历史工单标签
     - module_anchor_texts:  {模块名: 锚文本}，供 L2 语义召回做 Embedding 比对
-    - module_classify:      {产品: {细分模块: 类别}}，供 L2 语义召回把细分模块映射到「产品-类别」锚
+    - module_classify:      {产品: {功能name: 功能name}}，供 L2 语义召回把工程师功能名映射到「产品-功能」锚
     - ranker_weights:       {llm_match, semantic_match, history_match} 三路权重
     - job_level_penalty:    {职级: 惩罚系数}，精排后按职级打折
     - department_keywords:  {部门: {strong: [...]}}，R5 强关键词
@@ -49,6 +49,7 @@ class AssignerConfig:
         self.module_keywords: Dict[str, list] = {}
         self.module_anchor_texts: Dict[str, str] = {}
         self.module_classify: Dict[str, Dict[str, str]] = {}
+        self.module_tree: Dict[str, Any] = {}
         self.ranker_weights: Dict[str, Any] = {}
         self.job_level_penalty: Dict[int, float] = {}
         self.contact_bonus: float = 2.0
@@ -72,9 +73,17 @@ class AssignerConfig:
     def _load_all(self):
         """从 config.yaml 读取并填充全部配置属性（缺失时保持默认空值）。"""
         config = _load_yaml(self._CONFIG_DIR / "config.yaml") or {}
-        self.module_keywords = config.get("module_keywords", {})
-        self.module_anchor_texts = config.get("module_anchor_texts", {})
-        self.module_classify = config.get("module_classify", {})
+        # ── 三套 module_* 配置：优先从「产品→界面→功能」树自动生成，否则回退手工配置 ──
+        module_tree = config.get("module_tree", {})
+        if module_tree:
+            self.module_tree = module_tree
+            self.module_classify, self.module_keywords, self.module_anchor_texts = \
+                self._build_from_tree(module_tree)
+        else:
+            self.module_tree = {}
+            self.module_keywords = config.get("module_keywords", {})
+            self.module_anchor_texts = config.get("module_anchor_texts", {})
+            self.module_classify = config.get("module_classify", {})
         self.ranker_weights = config.get("ranker_weights", {})
         # job_level_penalty 的 key 在 YAML 中是整数，需显式转 int
         raw = config.get("job_level_penalty", {})
@@ -106,3 +115,41 @@ class AssignerConfig:
     def reload(self):
         """重新加载配置（配置热更新入口，配合派单缓存失效使用）。"""
         self._load_all()
+
+    @staticmethod
+    def _build_from_tree(tree: Dict[str, Any]):
+        """从「产品→界面→功能」树生成 module_classify / module_keywords / module_anchor_texts。
+
+        语义：工程师领取的是「某产品→某界面→某功能」的**功能 name（中文）**，
+        锚文本按**功能单独**生成（每功能一条锚）。保证下游无感知：
+        - module_classify[产品][功能name] = 功能name
+              下游拿工程师 responsibility_modules 里的功能 name 查 cat_map.get(mod)，
+              得到锚 key 后缀（= 功能 name），再拼「产品-后缀」匹配锚。值=功能名即自洽。
+        - module_keywords[产品-功能name]  = [该功能的 keywords 去重]
+        - module_anchor_texts[产品-功能name] = 该功能自身的 anchor（无则回退功能名）
+        注意：产品名不含「-」，功能 name 为中文，故锚 key 用「产品-功能name」可安全
+        被下游 `key.split('-',1)` 拆回 (产品, 功能name)。
+        """
+        classify: Dict[str, Dict[str, str]] = {}
+        keywords: Dict[str, list] = {}
+        anchors: Dict[str, str] = {}
+        for product, pnode in (tree or {}).items():
+            classify[product] = {}
+            for iface in (pnode or {}).get("interfaces", []) or []:
+                for fn in (iface.get("functions", []) or []):
+                    # 领取/锚粒度 = 功能 name（中文）；无 name 时回退功能 key
+                    fname = (fn.get("name") or fn.get("key") or "").strip()
+                    if not fname:
+                        continue
+                    classify[product][fname] = fname
+                    # 关键词去重保序
+                    seen = set()
+                    kws = [str(kw).strip() for kw in (fn.get("keywords") or [])]
+                    kws = [k for k in kws if k and not (k in seen or seen.add(k))]
+                    mod_key = f"{product}-{fname}"
+                    if kws:
+                        keywords[mod_key] = kws
+                    # 锚：优先功能自身 anchor，无则回退功能名
+                    anchor = (fn.get("anchor") or "").strip()
+                    anchors[mod_key] = anchor or fname
+        return classify, keywords, anchors

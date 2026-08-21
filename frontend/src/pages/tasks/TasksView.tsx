@@ -7,6 +7,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
+import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import Pagination from '@/shared/components/Pagination';
@@ -233,7 +234,9 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
         <span className="task-card2__type">{TICKET_TYPE_DISPLAY_MAP[t.ticket_type] || t.ticket_type || '其他'}</span>
       </div>
 
-      <div className="task-card2__title">{t.title}</div>
+      <div className="task-card2__title">
+        <TitleEllipsis text={t.title} lines={2} titleClassName="task-card2__title-inner" as="span" fontSize={18} lineHeight={1.35} />
+      </div>
 
       {/* 人员流转：发起人 →（参与人）→ 处理人 */}
       <div className="task-card2__people">
@@ -1177,6 +1180,8 @@ export default function TasksView() {
                 <span>{syncing ? '同步中…' : '同步外部任务'}</span>
               </button>
             )}
+
+            {/* 责任模块树已迁至后台「用户管理」入口，此处移除临时按钮 */}
             <UserAvatarMenu />
           </div>
         }
