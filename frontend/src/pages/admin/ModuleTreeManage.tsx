@@ -340,7 +340,7 @@ export default function ModuleTreeManage() {
             className={`mac-chip ${viewMode === 'overview' ? 'mac-chip--tag-blue' : 'mac-chip--soft'}`}
             onClick={() => setViewMode(viewMode === 'overview' ? 'single' : 'overview')}
           >
-            {viewMode === 'overview' ? '退出导图' : '🧠 思维导图'}
+            {viewMode === 'overview' ? '退出总览' : '🗺 总览'}
           </button>
           <button className="mac-btn mac-btn--primary" onClick={handleSave} disabled={saving}>
             {saving ? '保存中…' : '保存并生效'}
@@ -348,7 +348,7 @@ export default function ModuleTreeManage() {
         </div>
       </div>
 
-      {/* ───────────── 单产品中心放射思维导图（全部功能一眼可见） ───────────── */}
+      {/* ───────────── 单产品总览（左右对称延伸，全部功能一眼可见） ───────────── */}
       {viewMode === 'overview' && (
         active ? (
           <MindmapView productName={active} interfaces={trees[active]?.interfaces || []} candidates={candidates} />
