@@ -69,7 +69,7 @@ class UserDB(Base):
     # 新列（外键关联主数据表）
     company_id = Column(String(64), ForeignKey('companies.id'), nullable=True, index=True, comment="公司ID")
     department_id = Column(String(64), ForeignKey('departments.id'), nullable=True, index=True, comment="部门ID")
-    responsibility_modules = Column(JSON, nullable=True, comment='责任模块 ["车端","任务调度","地图编辑"...]')
+    responsibility_modules = Column(JSON, nullable=True, comment='责任模块 三层结构 {产品: {界面: [功能]}}')
     job_level = Column(TINYINT, default=1, nullable=False, comment="职级，数值越高越不优先接单（1=一线, 2=管理/审核, 3=仅兜底...），默认1")
     duty_text = Column(Text, nullable=True, comment="职责画像文本，供 AI 派单匹配参考")
     supervisor_id = Column(String(64), ForeignKey('users.id'), nullable=True, index=True, comment="直属上级用户ID（全局行政汇报线）")

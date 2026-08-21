@@ -35,6 +35,7 @@ const DONUT_COLOR_VIRTUAL = '#c9d4d9';
 
 const adminEntries: Entry[] = [
   { path: '/admin/users', label: '用户管理', desc: '用户账号CRUD、派单画像', icon: <MacUsers />, tone: 'blue-1' },
+  { path: '/admin/module-tree', label: '责任模块树', desc: '产品→界面→功能维护、工程师认领', icon: <MacTags />, tone: 'blue-2' },
   { path: '/admin/roles', label: '角色管理', desc: '角色定义、权限绑定', icon: <MacTags />, tone: 'blue-2' },
   { path: '/admin/permissions', label: '权限管理', desc: '权限项定义、分配', icon: <MacKeyRound />, tone: 'blue-3' },
   { path: '/admin/assign-role', label: '分配角色', desc: '为用户在项目中分配角色', icon: <MacUserCog />, tone: 'blue-2' },
@@ -45,11 +46,14 @@ const adminEntries: Entry[] = [
 export default function AdminEntries() {
   const navigate = useNavigate();
 
-  // ── 用户统计：时间筛选默认昨天（微信数据 T+1 延迟，最早可查昨日） ──
+  // ── 用户统计：时间筛选默认最近 5 天（不含当天；微信数据 T+1 延迟，最早可查昨日） ──
   const yesterdayDate = new Date();
   yesterdayDate.setDate(yesterdayDate.getDate() - 1);
   const yesterday = fmtDate(yesterdayDate);
-  const [beginDate, setBeginDate] = useState(yesterday);
+  const beginDefaultDate = new Date();
+  beginDefaultDate.setDate(beginDefaultDate.getDate() - 5);
+  const beginDefault = fmtDate(beginDefaultDate);
+  const [beginDate, setBeginDate] = useState(beginDefault);
   const [endDate, setEndDate] = useState(yesterday);
   const [list, setList] = useState<UserSummaryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -135,7 +139,7 @@ export default function AdminEntries() {
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
       legend: { data: ['新增用户', '取消用户'], top: 0, itemWidth: 12, itemHeight: 8, textStyle: { color: '#888d8f', fontSize: 11 } },
       grid: { left: 8, right: 8, top: 32, bottom: 0, containLabel: true },
-      xAxis: { type: 'category', data: dates, axisTick: { show: false }, axisLine: { lineStyle: { color: '#e8eaea' } }, axisLabel },
+      xAxis: { type: 'category', data: dates, axisTick: { show: false }, axisLine: { lineStyle: { color: '#e8eaea' } }, axisLabel: { ...axisLabel, formatter: (v: string) => v.slice(5) } },
       yAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: '#f1f4f4' } }, axisLabel },
       series: [
         { name: '新增用户', type: 'bar', data: dates.map((d) => sumBy(d, 'new_user')), barMaxWidth: 24, itemStyle: { color: BAR_COLOR_NEW, borderRadius: [4, 4, 0, 0] } },
@@ -206,6 +210,7 @@ export default function AdminEntries() {
                 className="admin-entries-stats__date"
                 value={endDate}
                 min={beginDate || undefined}
+                max={yesterday}
                 onChange={(e) => setEndDate(e.target.value)}
               />
             </div>

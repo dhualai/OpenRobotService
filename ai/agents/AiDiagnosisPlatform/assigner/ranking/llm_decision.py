@@ -213,20 +213,17 @@ class LlmDecision:
             eng = emap.get(eid)
             if not eng:
                 continue
-            prod_parts = []
-            for p, mods in eng.responsibility_modules.items():
-                prod_parts.append(f"[{p}]{','.join(mods)}" if mods else f"[{p}]")
-            duty = (eng.duty_text or "")[:100]
             dep = f"({eng.department})" if eng.department else ""
             lines.append(
                 f"#{rank} ID:{eng.id} | L{eng.job_level} | {dep} "
-                f"|{'|'.join(prod_parts)}"
+                f"|{eng.modules_display()}"
             )
             lines.append(
                 f"   分数: 总={d.get('total_score',0):.2f} "
                 f"LLM={d.get('llm_score',0):.2f} 语义={d.get('semantic_score',0):.2f} "
                 f"历史={d.get('history_score',0):.2f}"
             )
+            duty = (eng.duty_text or "")[:100]
             if duty:
                 lines.append(f"   职责: {duty}")
 

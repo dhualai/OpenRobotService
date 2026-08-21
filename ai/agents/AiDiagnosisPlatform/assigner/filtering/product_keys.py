@@ -28,10 +28,25 @@ def engineer_has_product(eng: EngineerProfile, product: str, config: AssignerCon
 def engineer_modules_for_product(
     eng: EngineerProfile, product: str, config: AssignerConfig,
 ) -> List[str]:
+    """返回该产品下工程师负责的【功能名】扁平列表（三层 {产品:{界面:[功能]}} 展开）。
+
+    兼容旧两层/旧 list 数据：若某产品的值直接是 list 则原样透传。
+    供 module_router / semantic_recall 等以"功能名"为粒度消费（与 module_classify 对齐）。
+    """
     rm = eng.responsibility_modules or {}
     mods: List[str] = []
     for k in profile_keys_for_product(config, product):
-        mods.extend(rm.get(k) or [])
+        by_iface = rm.get(k)
+        if by_iface is None:
+            continue
+        if isinstance(by_iface, dict):
+            for iface, funcs in by_iface.items():
+                fns = funcs if isinstance(funcs, list) else [funcs]
+                for f in fns:
+                    if f:
+                        mods.append(f)
+        else:  # 兼容旧两层/旧 list
+            mods.extend(by_iface if isinstance(by_iface, list) else [by_iface])
     return mods
 
 

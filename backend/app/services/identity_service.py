@@ -47,7 +47,7 @@ class IdentityService:
         user_id: str, username: str, hashed_password: str, permissions: List[str],
         name: Optional[str] = None, status: str = "inactive",
         external_credentials: Optional[Dict[str, Dict[str, str]]] = None,
-        company: Optional[str] = None, department: Optional[str] = None, responsibility_modules: Optional[Dict[str, List[str]]] = None,
+        company: Optional[str] = None, department: Optional[str] = None, responsibility_modules: Optional[Dict[str, Dict[str, List[str]]]] = None,
         job_level: Optional[int] = 1, duty_text: Optional[str] = None,
         supervisor_id: Optional[str] = None,
     ) -> bool:

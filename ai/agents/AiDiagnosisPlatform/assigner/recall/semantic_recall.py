@@ -101,17 +101,23 @@ class SemanticRecall:
                 logger.debug(f"[派单:{ticket.id}] Step3-L2 无模块锚命中（相似度均≤0.3）")
 
             # 按模块分数反查工程师 → 加权累计
-            # 细分模块名 → module_classify 映射到类别 → 组「产品-类别」锚 key 匹配
+            # 三层遍历 {产品:{界面:[功能]}}：功能名 → module_classify 映射到锚 key 后缀
+            # → 组「产品-功能name」锚 key 匹配（主流三层，不扁平化；界面作为中间层上下文）
             classify = self._config.module_classify or {}
             for eng in engineers:
                 score = 0.0
-                for prod, mods in eng.responsibility_modules.items():
+                for prod, by_iface in eng.responsibility_modules.items():
+                    if not isinstance(by_iface, dict):
+                        # 兼容旧两层 {产品:[功能]}：按功能列表直接匹配
+                        by_iface = {"_flat": by_iface if isinstance(by_iface, list) else [by_iface]}
                     cat_map = classify.get(prod, {})
-                    for mod in mods:
-                        cat = cat_map.get(mod)
-                        key = f"{prod}-{cat}" if cat else None
-                        if key and key in module_scores:
-                            score = max(score, module_scores[key])
+                    for _iface, funcs in by_iface.items():
+                        fns = funcs if isinstance(funcs, list) else [funcs]
+                        for mod in fns:
+                            cat = cat_map.get(mod)
+                            key = f"{prod}-{cat}" if cat else None
+                            if key and key in module_scores:
+                                score = max(score, module_scores[key])
                 if score > 0:
                     sem[eng.id] = score
 

@@ -10,29 +10,84 @@ logger = get_logger("TASK_AGENT")
 
 
 class CodeRetriever:
-    """代码检索：语义搜索 → 调用图展开 → 返回结构化结果"""
+    """代码检索：语义召回(embedding) + 关键词召回 融合 → 调用图展开
+
+    检索策略（按可用性分级）：
+      1. 语义召回（语义索引就绪时启）：query → embedding → 余弦相似度，
+         对「上轨」这类中文领域词/口语化表达召回远好于 substring 匹配。
+      2. 关键词召回（IDF 加权）：函数名/注释/路径 substring 命中，作为
+         精确词兜底与语义召回融合（如函数名含 query 术语时）。
+      3. 调用图展开：对 top 结果沿 calls/called_by 展开上下游。
+    """
 
     def __init__(self, indexer: CodeIndexer):
         self._indexer = indexer
 
     async def search(self, query: str, top_k: int = 5) -> CodeSearchResult:
-        """主入口：语义搜索 + 调用图展开"""
+        """主入口：语义 + 关键词融合召回，再展开调用图"""
         result = CodeSearchResult(query=query)
 
-        # 1. 关键词搜索（快速命中函数名）
+        # 候选池：(FunctionRef, 语义分, 关键词IDF分)
+        pool: List[tuple] = []
+        key_of = {}   # fingerprint-key → FunctionRef（去重用）
+
+        # ── 1. 语义召回（embedding）──
+        semantic_ready = self._indexer.semantic is not None and self._indexer.semantic.is_ready
+        if semantic_ready:
+            try:
+                hits = await self._indexer.semantic.search(query, top_k=max(top_k, 8))
+                for score, fp in hits:
+                    m = self._match_function(fp)
+                    if m is None:
+                        continue
+                    key = (m.name, m.file_path, m.line_start)
+                    if key not in key_of:
+                        key_of[key] = m
+                        pool.append((m, float(score), 0.0))
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[search] 语义召回失败，回退关键词: {e}")
+                semantic_ready = False
+
+        # ── 2. 关键词召回（IDF 加权），与语义分融合 ──
         keywords = _extract_code_keywords(query)
+        kw_freq: dict = {}
         for kw in keywords:
-            matches = self._indexer.search_by_keyword(kw)
-            for m in matches:
-                if m not in result.matches:
-                    result.matches.append(m)
+            kw_freq[kw] = len(self._indexer.search_by_keyword(kw))
+        idf_score: dict = {}
+        for kw in keywords:
+            n = max(kw_freq.get(kw, 1), 1)
+            for m in self._indexer.search_by_keyword(kw):
+                key = (m.name, m.file_path, m.line_start)
+                idf_score[key] = idf_score.get(key, 0.0) + (1.0 / n)
+                if key not in key_of:
+                    key_of[key] = m
+                    pool.append((m, 0.0, 0.0))
 
-        # 2. 没命中关键词 → 按文件路径名搜
-        if not result.matches:
-            result.matches = self._indexer.search_by_keyword(query)
+        # 兜底：语义+关键词都空 → 按文件路径名搜整句
+        if not pool:
+            for m in self._indexer.search_by_keyword(query):
+                key = (m.name, m.file_path, m.line_start)
+                if key not in key_of:
+                    key_of[key] = m
+                    pool.append((m, 0.0, 0.0))
 
-        # 3. 调用图展开 Top 3 结果
-        result.matches = result.matches[:top_k]
+        # ── 3. 融合排序：语义分 + 关键词IDF分（两者归一化后加权）──
+        #   - 语义分（余弦相似度）通常 0.35~0.75，关键词 IDF 分 0~若干。
+        #   - 取「若有语义分则语义主导，关键词作精确词兜底」的折中：
+        #     综合分 = max(语义分, 0) * W_sem + min(idf, 1.0) * W_kw
+        def _combine(m, s, kw):
+            w_sem = 1.0
+            w_kw = 0.4 if s > 0 else 1.0   # 无语义分时关键词分主导
+            return s * w_sem + min(kw, 1.0) * w_kw
+
+        ranked = sorted(
+            pool,
+            key=lambda it: _combine(it[0], it[1], idf_score.get((it[0].name, it[0].file_path, it[0].line_start), 0.0)),
+            reverse=True,
+        )[:top_k]
+        result.matches = [it[0] for it in ranked]
+
+        # 4. 调用图展开 Top 3
         for m in result.matches[:3]:
             up, down = self._indexer.expand_call_graph(m)
             for u in up:
@@ -43,6 +98,17 @@ class CodeRetriever:
                     result.downstream.append(d)
 
         return result
+
+    def _match_function(self, fp: dict) -> Optional[FunctionRef]:
+        """按语义指纹 (name/file_path/line_start) 在索引里定位 FunctionRef。"""
+        name = fp.get("name") or ""
+        fpath = fp.get("file_path") or ""
+        line = int(fp.get("line_start") or 0)
+        for i in self._indexer._name_index.get(name, []):
+            f = self._indexer._functions[i]
+            if f.file_path == fpath and f.line_start == line:
+                return f
+        return None
 
 
 # ── 关键词提取 ──
