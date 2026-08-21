@@ -200,18 +200,18 @@ def export_to_config(trees: Optional[Dict[str, Any]] = None) -> bool:
 
 
 def sync_to_user_profiles(trees: Dict[str, Any]) -> int:
-    """把树上分配的工程师同步覆盖回 users.responsibility_modules。
+    """把树上分配的工程师同步回 users.responsibility_modules（三层结构）。
 
     以 module_tree 为唯一权威：对每个涉及其产品的工程师，
-    重算 responsibility_modules[产品] = [该工程师负责的所有界面名]。
+    重算 responsibility_modules[产品] = {界面名: [该工程师负责的功能名]}。
     仅覆盖本次涉及的产品 key，工程师在其它产品的已有模块保留（避免误清车端等）。
 
     返回：被更新的工程师数。
     """
     from app.models.identity import UserDB
 
-    # 1. 收集 { 产品: { 工程师id: set(界面名) } }
-    product_engineers: Dict[str, Dict[str, set]] = {}
+    # 1. 收集 { 产品: { 工程师id: {界面名: set(功能名)} } }
+    product_engineers: Dict[str, Dict[str, Dict[str, set]]] = {}
     for product, tree in trees.items():
         pe = product_engineers.setdefault(product, {})
         for iface in (tree or {}).get("interfaces", []) or []:
@@ -219,10 +219,14 @@ def sync_to_user_profiles(trees: Dict[str, Any]) -> int:
             if not iface_name:
                 continue
             for fn in (iface.get("functions", []) or []):
+                fn_name = fn.get("name") or ""
+                if not fn_name:
+                    continue
                 for eid in (fn.get("engineers") or []):
                     if not eid:
                         continue
-                    pe.setdefault(eid, set()).add(iface_name)
+                    by_iface = pe.setdefault(eid, {})
+                    by_iface.setdefault(iface_name, set()).add(fn_name)
 
     if not product_engineers:
         return 0
@@ -238,7 +242,7 @@ def sync_to_user_profiles(trees: Dict[str, Any]) -> int:
         user_map = {u.id: u for u in rows}
         updated = 0
         for product, pe in product_engineers.items():
-            for eid, ifaces in pe.items():
+            for eid, by_iface in pe.items():
                 u = user_map.get(eid)
                 if not u:
                     continue
@@ -252,10 +256,14 @@ def sync_to_user_profiles(trees: Dict[str, Any]) -> int:
                 if not isinstance(current, dict):
                     current = {}
                 current = {k: v for k, v in current.items() if v is not None}
-                # 覆盖当前产品 = 该工程师负责的界面名列表（非空）
-                current[product] = sorted(ifaces) if ifaces else []
-                # 这个产品该工程师一个界面都没负责 → 移除该产品 key
-                if not ifaces:
+                # 覆盖当前产品 = 该工程师负责的「界面 → 功能名列表」（三层）
+                if by_iface:
+                    current[product] = {
+                        iface_name: sorted(funcs)
+                        for iface_name, funcs in sorted(by_iface.items())
+                        if funcs
+                    }
+                else:
                     current.pop(product, None)
                 # 存回
                 try:
@@ -264,7 +272,7 @@ def sync_to_user_profiles(trees: Dict[str, Any]) -> int:
                 except Exception:
                     logger.exception("同步 responsibility_modules 失败: %s", eid)
         db.commit()
-        logger.info("已将 module_tree 工程师同步到 users 画像: %d 人", updated)
+        logger.info("已将 module_tree 工程师同步到 users 画像(三层): %d 人", updated)
         return updated
     except Exception:
         db.rollback()

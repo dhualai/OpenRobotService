@@ -138,13 +138,10 @@ class LlmRecall:
 
         lines.extend(["", "【候选工程师】"])
         for e in engineers:
-            prod_parts = []
-            for p, mods in e.responsibility_modules.items():
-                prod_parts.append(f"[{p}]{','.join(mods)}" if mods else f"[{p}]")
-            duty = (e.duty_text or "")[:120]
             dep = f"({e.department})" if e.department else ""
             lines.append(f"候选ID: {e.id} | L{e.job_level} | {dep}")
-            lines.append(f"   产品:{'|'.join(prod_parts)}")
+            lines.append(f"   产品:{e.modules_display()}")
+            duty = (e.duty_text or "")[:120]
             if duty:
                 lines.append(f"   职责:{duty}")
 

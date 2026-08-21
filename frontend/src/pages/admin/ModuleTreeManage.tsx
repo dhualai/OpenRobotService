@@ -1,6 +1,6 @@
 // 责任模块树管理 —— 产品→界面→功能 三层树维护
 // 背景：以「产品→界面→功能」树为派单主数据，工程师在此认领负责的功能。
-// 功能节点可编辑 keywords（L3 子串）/ anchor（L2 语义）/ engineers（负责工程师）。
+// 功能节点可维护：关键词（识别相关问题）/ 功能描述 / 负责工程师。
 // 保存：PUT /admin/module-tree 整体覆盖 DB + 导出 config.yaml + 通知 AI 热更新。
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -296,6 +296,7 @@ export default function ModuleTreeManage() {
 
   const renderEngChips = (ifaceIdx: number, funcIdx: number, fn: FuncNode, canEdit: boolean, canAssign: boolean) => (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '4px 8px' }}>
+      {/* 已认领：展示负责工程师 */}
       {fn.engineers.map((eid, k) => (
         <span key={k} className="mac-kwchip">
           {engName(eid, candidates)}
@@ -307,13 +308,15 @@ export default function ModuleTreeManage() {
           )}
         </span>
       ))}
-      {canEdit && canAssign ? (
+      {/* 分配入口：仅待分配（无人认领）时显示；已认领后不再显示「指定负责工程师」 */}
+      {canEdit && canAssign && (!fn.engineers || fn.engineers.length === 0) && (
         <span className="mac-chip mac-chip--tag-blue" onClick={() => setPickEng({ ifaceIdx, funcIdx })}>
           指定负责工程师 +
         </span>
-      ) : (
+      )}
+      {!canEdit && fn.engineers && fn.engineers.length === 0 && (
         <span className="mac-chip mac-chip--tag-muted" style={{ fontSize: 11 }}>
-          {canEdit ? '由管理员分配负责人' : '🔒 由他人负责，需其同意才能修改'}
+          待分配
         </span>
       )}
     </div>
@@ -441,7 +444,7 @@ export default function ModuleTreeManage() {
                           {fnExpanded && (
                             <div className="mac-fn-node__body">
                               {/* keywords */}
-                              <div className="mac-field-label">关键词（L3 子串匹配）</div>
+                              <div className="mac-field-label">关键词</div>
                               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                                 {fn.keywords.map((k, kdx) => (
                                   <span key={kdx} className="mac-kwchip">
@@ -465,7 +468,7 @@ export default function ModuleTreeManage() {
                               )}
 
                               {/* anchor */}
-                              <div className="mac-field-label">语义锚（L2）</div>
+                              <div className="mac-field-label">功能描述</div>
                               <input
                                 className="mac-input"
                                 placeholder="一句语义描述，逗号分隔"

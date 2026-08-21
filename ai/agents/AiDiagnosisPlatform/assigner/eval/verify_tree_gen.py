@@ -2,6 +2,11 @@
 
 用最小骨架树走完整链路：_build_from_tree → AssignerConfig 各属性，
 确认生成的三配置可供下游(module_router / semantic_recall)使用。
+
+语义（2026-08-20 起）：工程师领取粒度与锚文本粒度均按**功能 name（中文）**，
+- module_classify[产品][功能name] = 功能name
+- module_anchor_texts[产品-功能name] = 该功能 anchor（每功能一条）
+- module_keywords[产品-功能name]   = 该功能 keywords
 """
 import sys, os
 sys.path.insert(0, os.path.abspath('.'))
@@ -52,10 +57,13 @@ def main():
         print(f"  {k}: {v}")
 
     print("\n=== 断言 ===")
-    assert classify["调度USP"]["task_simulator"] == "task", "模拟器应归到 task 界面"
-    assert "调度USP-task" in keywords, "task 界面关键词应生成"
-    assert "模拟器" in keywords["调度USP-task"], "task 界面应含模拟器关键词"
-    assert "调度USP-map" in anchors, "map 界面锚应生成"
+    assert classify["调度USP"]["任务模拟器"] == "任务模拟器", "任务模拟器功能应自映射为功能名"
+    assert "调度USP-任务下发" in keywords, "任务下发功能关键词应生成"
+    assert "派工" in keywords["调度USP-任务下发"], "任务下发功能应含派工关键词"
+    assert "调度USP-地图编辑" in anchors, "地图编辑功能锚应生成"
+    assert anchors["调度USP-地图编辑"] == "地图编辑与导入导出", "锚应为该功能自身 anchor"
+    # 语义锚 key 可直接被下游 semantic_recall 命中（工程师领取功能名时自洽）
+    assert classify["调度USP"]["地图编辑"] and f"调度USP-{classify['调度USP']['地图编辑']}" in anchors
     print("全部断言通过 ✓")
 
 if __name__ == "__main__":
