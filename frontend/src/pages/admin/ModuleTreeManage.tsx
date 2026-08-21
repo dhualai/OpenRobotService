@@ -42,6 +42,31 @@ const engName = (id: string, cands: Engineer[]) => {
   return found ? found.name : id.slice(0, 8);
 };
 
+// ── key 生成：中文名 + 短哈希（确定性强、可读、不重复）──
+// key 由「中文名」决定，中文名变化则 key 自动重新生成；短哈希保证同一作用域内不重复。
+// 用途：仅作为程序内部定位标识（编辑定位 / 审批单应用），不影响 AI 派单归因。
+function hashStr(str: string): string {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = (h * 31 + str.charCodeAt(i)) >>> 0;
+  }
+  return h.toString(36).slice(0, 4);
+}
+
+function toKey(zhName: string, seen: Set<string>): string {
+  const trimmed = (zhName || '').trim();
+  if (!trimmed) return '';
+  const base = trimmed;
+  let k = `${base}_${hashStr(base)}`;
+  let salt = 1;
+  while (seen.has(k)) {
+    k = `${base}_${hashStr(base + '_' + salt)}`;
+    salt++;
+  }
+  seen.add(k);
+  return k;
+}
+
 export default function ModuleTreeManage() {
   const request = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
   const [loading, setLoading] = useState(true);
@@ -180,9 +205,10 @@ export default function ModuleTreeManage() {
   const addInterface = () => {
     const name = newIfaceName.trim();
     if (!name) { Toast({ message: '请输入界面名称', theme: 'warning' }); return; }
-    setActiveTree((t) => ({
-      interfaces: [...t.interfaces, { key: name, name, functions: [] }],
-    }));
+    setActiveTree((t) => {
+      const seen = new Set<string>(t.interfaces.map((x) => x.key));
+      return { interfaces: [...t.interfaces, { key: toKey(name, seen), name, functions: [] }] };
+    });
     setNewIfaceName('');
   };
   const removeInterface = (i: number) => {
@@ -190,7 +216,11 @@ export default function ModuleTreeManage() {
   };
   const renameInterface = (i: number, name: string) => {
     setActiveTree((t) => ({
-      interfaces: t.interfaces.map((iface, idx) => (idx === i ? { ...iface, name, key: name } : iface)),
+      interfaces: t.interfaces.map((iface, idx) => {
+        if (idx !== i) return iface;
+        const seen = new Set(t.interfaces.map((x) => x.key).filter((k, j) => j !== i));
+        return { ...iface, name, key: toKey(name, seen) };
+      }),
     }));
   };
 
@@ -199,8 +229,11 @@ export default function ModuleTreeManage() {
     const name = (newFuncName[`${i}`] || '').trim();
     if (!name) { Toast({ message: '请输入功能名称', theme: 'warning' }); return; }
     setActiveTree((t) => ({
-      interfaces: t.interfaces.map((iface, idx) =>
-        idx === i ? { ...iface, functions: [...iface.functions, { key: name, name, keywords: [], engineers: [] }] } : iface),
+      interfaces: t.interfaces.map((iface, idx) => {
+        if (idx !== i) return iface;
+        const seen = new Set(iface.functions.map((f) => f.key));
+        return { ...iface, functions: [...iface.functions, { key: toKey(name, seen), name, keywords: [], engineers: [] }] };
+      }),
     }));
     setNewFuncName((prev) => ({ ...prev, [`${i}`]: '' }));
   };
@@ -214,7 +247,11 @@ export default function ModuleTreeManage() {
     setActiveTree((t) => ({
       interfaces: t.interfaces.map((iface, idx) =>
         idx === i
-          ? { ...iface, functions: iface.functions.map((fn, jdx) => (jdx === j ? { ...fn, name, key: name } : fn)) }
+          ? { ...iface, functions: iface.functions.map((fn, jdx) => {
+              if (jdx !== j) return fn;
+              const seen = new Set(iface.functions.map((f) => f.key).filter((k, jj) => jj !== j));
+              return { ...fn, name, key: toKey(name, seen) };
+            }) }
           : iface),
     }));
   };
