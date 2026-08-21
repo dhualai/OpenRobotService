@@ -553,7 +553,7 @@ export default function UserManage() {
                         <span key={product} className="mac-chip mac-chip--outline">
                           {product}
                           {Object.entries(byIface).map(([iface, funcs]) =>
-                            funcs.map((fn) => (
+                            (Array.isArray(funcs) ? funcs : []).map((fn) => (
                               <span key={`${iface}-${fn}`} className="mac-chip mac-chip--soft">{fn}</span>
                             ))
                           )}
@@ -714,7 +714,7 @@ export default function UserManage() {
                         {Object.entries(byIface).map(([iface, funcs]) => (
                           <span key={iface} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginRight: 6, flexWrap: 'wrap' }}>
                             <span style={{ fontSize: 12, color: 'var(--mac-muted-fg)' }}>{iface}：</span>
-                            {funcs.map((fn) => (
+                            {(Array.isArray(funcs) ? funcs : []).map((fn) => (
                               <span key={fn} className="mac-chip mac-chip--soft">{fn}</span>
                             ))}
                           </span>
@@ -827,7 +827,7 @@ export default function UserManage() {
                       {Object.entries(byIface).map(([iface, funcs]) => (
                         <div key={iface} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, marginTop: 4 }}>
                           <span style={{ fontSize: 12, color: 'var(--mac-muted-fg)', whiteSpace: 'nowrap', marginRight: 2 }}>{iface}：</span>
-                          {funcs.map((fn) => (
+                          {(Array.isArray(funcs) ? funcs : []).map((fn) => (
                             <span key={fn} className="mac-chip mac-chip--soft" style={{ marginRight: 4 }}>{fn}</span>
                           ))}
                         </div>
