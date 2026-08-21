@@ -68,6 +68,17 @@ class Settings(BaseSettings):
     FILE_IMAGES: str = Field(default="helpdesk-images")
     
     COMMENT_BUCKET: str = Field(default="helpdesk-comment")
+
+    # ===== 阿里云 OSS（大文件分流：>1GB 写 OSS；同步 OSS 桶内容到 DB 资源表）=====
+    ALIYUN_OSS_ACCESS_KEY_ID: str = Field(default="")
+    ALIYUN_OSS_ACCESS_KEY_SECRET: str = Field(default="")
+    ALIYUN_OSS_ENDPOINT: str = Field(default="https://oss-cn-hangzhou.aliyuncs.com")
+    ALIYUN_OSS_REGION: str = Field(default="cn-hangzhou")
+    ALIYUN_OSS_BUCKET: str = Field(default="")
+    # 桶内统一上传目录前缀（空字符串=桶根目录），例 "uploads" -> 所有文件落在 bucket/uploads/
+    ALIYUN_OSS_UPLOAD_DIR: str = Field(default="")
+    # 分片上传每片大小（MB），仅对 >100MB 大文件生效
+    ALIYUN_OSS_PART_SIZE_MB: int = Field(default=10)
     
     REDIS_HOST: str = Field(default="localhost")
     REDIS_PORT: int = Field(default=6379)
