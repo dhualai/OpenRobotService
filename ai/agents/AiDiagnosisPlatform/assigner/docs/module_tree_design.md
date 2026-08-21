@@ -59,11 +59,17 @@ module_tree:
 | `anchor` | 语义锚文本 | 生成 `module_anchor_texts`（L2 Embedding） |
 | `engineers` | 负责工程师 id 列表 | 生成 EngineerProfile 的责任模块 |
 
-### 自动生成映射
+### 自动生成映射（已落地，2026-08-20）
 
-- `module_classify[产品][key] = 界面`
+- `module_classify[产品][功能name] = 功能name`
+- `module_keywords[产品-功能name] = [该功能 keywords]`
+- `module_anchor_texts[产品-功能name] = 该功能 anchor`（每功能一条）
 
-> 注意：现在 `module_classify` 是「细分模块→类别」，将来改为「功能 key→界面」。
+> 语义演进：历史版本 `module_classify` 是「细分模块→类别」（技术层：前端/后端/算法），
+> 现已改为「产品→界面→功能」三层树驱动。工程师画像 `users.responsibility_modules`
+> 同步升级为**三层结构** `{产品: {界面name: [功能name]}}`，由
+> `sync_to_user_profiles` 从树的功能节点 `engineers` 字段聚合生成。
+> 派单端以**功能 name** 为召回/收紧粒度。
 
 ---
 

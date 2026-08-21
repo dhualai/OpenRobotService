@@ -30,7 +30,7 @@ class AssignerConfig:
     各属性含义：
     - module_keywords:      {模块名: [关键词]}，供 L3 历史召回提取历史工单标签
     - module_anchor_texts:  {模块名: 锚文本}，供 L2 语义召回做 Embedding 比对
-    - module_classify:      {产品: {细分模块: 类别}}，供 L2 语义召回把细分模块映射到「产品-类别」锚
+    - module_classify:      {产品: {功能name: 功能name}}，供 L2 语义召回把工程师功能名映射到「产品-功能」锚
     - ranker_weights:       {llm_match, semantic_match, history_match} 三路权重
     - job_level_penalty:    {职级: 惩罚系数}，精排后按职级打折
     - department_keywords:  {部门: {strong: [...]}}，R5 强关键词
@@ -120,10 +120,15 @@ class AssignerConfig:
     def _build_from_tree(tree: Dict[str, Any]):
         """从「产品→界面→功能」树生成 module_classify / module_keywords / module_anchor_texts。
 
-        映射约定（保证下游无感知）：
-        - module_classify[产品][功能key] = 界面key   （功能key 需与工程师 responsibility_modules 细分名一致）
-        - module_keywords[产品-界面key]  = [该界面下所有功能的 keywords 去重]
-        - module_anchor_texts[产品-界面key] = 该界面下所有功能的 anchor 逗号拼接
+        语义：工程师领取的是「某产品→某界面→某功能」的**功能 name（中文）**，
+        锚文本按**功能单独**生成（每功能一条锚）。保证下游无感知：
+        - module_classify[产品][功能name] = 功能name
+              下游拿工程师 responsibility_modules 里的功能 name 查 cat_map.get(mod)，
+              得到锚 key 后缀（= 功能 name），再拼「产品-后缀」匹配锚。值=功能名即自洽。
+        - module_keywords[产品-功能name]  = [该功能的 keywords 去重]
+        - module_anchor_texts[产品-功能name] = 该功能自身的 anchor（无则回退功能名）
+        注意：产品名不含「-」，功能 name 为中文，故锚 key 用「产品-功能name」可安全
+        被下游 `key.split('-',1)` 拆回 (产品, 功能name)。
         """
         classify: Dict[str, Dict[str, str]] = {}
         keywords: Dict[str, list] = {}
@@ -131,23 +136,20 @@ class AssignerConfig:
         for product, pnode in (tree or {}).items():
             classify[product] = {}
             for iface in (pnode or {}).get("interfaces", []) or []:
-                ikey = (iface.get("key") or iface.get("name") or "").strip()
-                if not ikey:
-                    continue
-                kw_list: list = []
-                anchor_parts: list = []
                 for fn in (iface.get("functions", []) or []):
-                    fkey = (fn.get("key") or fn.get("name") or "").strip()
-                    if fkey:
-                        classify[product][fkey] = ikey
-                    for kw in (fn.get("keywords") or []):
-                        if kw:
-                            kw_list.append(str(kw))
-                    if fn.get("anchor"):
-                        anchor_parts.append(str(fn["anchor"]))
-                mod_key = f"{product}-{ikey}"
-                # 关键词去重保序
-                seen = set()
-                keywords[mod_key] = [k for k in kw_list if not (k in seen or seen.add(k))]
-                anchors[mod_key] = "，".join(anchor_parts) if anchor_parts else mod_key
+                    # 领取/锚粒度 = 功能 name（中文）；无 name 时回退功能 key
+                    fname = (fn.get("name") or fn.get("key") or "").strip()
+                    if not fname:
+                        continue
+                    classify[product][fname] = fname
+                    # 关键词去重保序
+                    seen = set()
+                    kws = [str(kw).strip() for kw in (fn.get("keywords") or [])]
+                    kws = [k for k in kws if k and not (k in seen or seen.add(k))]
+                    mod_key = f"{product}-{fname}"
+                    if kws:
+                        keywords[mod_key] = kws
+                    # 锚：优先功能自身 anchor，无则回退功能名
+                    anchor = (fn.get("anchor") or "").strip()
+                    anchors[mod_key] = anchor or fname
         return classify, keywords, anchors
