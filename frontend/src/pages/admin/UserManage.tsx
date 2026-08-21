@@ -10,7 +10,7 @@ import { normalizeList } from '@/shared/utils/list';
 import { useAuthStore } from '@/stores/auth';
 import { avatarUrl } from '@/api/profile';
 import {
-  MacSearch, MacCheck, MacPlus, MacX, MacBuilding2, MacClipboardList,
+  MacSearch, MacCheck, MacBuilding2, MacClipboardList,
 } from '@/shared/components/macaronIcons';
 
 interface User {
@@ -19,7 +19,7 @@ interface User {
   name?: string | null;
   status?: string;
   department?: string | null;
-  responsibility_modules?: Record<string, string[]> | null;
+  responsibility_modules?: Record<string, Record<string, string[]>> | null;
   job_level?: number;
   duty_text?: string | null;
   permissions?: string[];
@@ -34,7 +34,7 @@ interface UserCreateData {
   password: string;
   name?: string;
   department?: string;
-  responsibility_modules?: Record<string, string[]>;
+  responsibility_modules?: Record<string, Record<string, string[]>>;
   job_level?: number;
   duty_text?: string;
   status?: string;
@@ -43,16 +43,11 @@ interface UserCreateData {
 interface UserUpdateData {
   name?: string;
   department?: string;
-  responsibility_modules?: Record<string, string[]>;
+  responsibility_modules?: Record<string, Record<string, string[]>>;
   job_level?: number;
   duty_text?: string;
   status?: string;
   password?: string;
-}
-
-interface ModuleEntry {
-  module: string;
-  keywords: string[];
 }
 
 const JOB_LEVEL_OPTIONS = [
@@ -71,28 +66,6 @@ const STATUS_OPTIONS = [
   { label: '活跃', value: 'active' },
   { label: '未激活', value: 'inactive' },
 ];
-
-const modulesToEntries = (mods?: Record<string, string[]> | null): ModuleEntry[] => {
-  if (!mods) return [];
-  return Object.entries(mods).map(([module, keywords]) => ({
-    module,
-    keywords: Array.isArray(keywords) ? [...keywords] : [],
-  }));
-};
-
-const entriesToModules = (entries: ModuleEntry[]): Record<string, string[]> | undefined => {
-  const result: Record<string, string[]> = {};
-  for (const e of entries) {
-    const key = e.module.trim();
-    if (key) {
-      const kws = e.keywords.map((k) => k.trim()).filter(Boolean);
-      if (kws.length > 0) {
-        result[key] = kws;
-      }
-    }
-  }
-  return Object.keys(result).length > 0 ? result : undefined;
-};
 
 /** 单选项行（原型 users 弹层：18px 圆 + 白色对勾） */
 function ChoiceRow({ label, checked, onClick }: { label: string; checked: boolean; onClick: () => void }) {
@@ -113,6 +86,7 @@ export default function UserManage() {
 
   const [editVisible, setEditVisible] = useState(false);
   const [editingUsername, setEditingUsername] = useState<string | null>(null);
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
   const [form, setForm] = useState<UserCreateData>({
@@ -125,9 +99,6 @@ export default function UserManage() {
     duty_text: '',
     status: 'active',
   });
-
-  const [moduleEntries, setModuleEntries] = useState<ModuleEntry[]>([]);
-  const [keywordInputs, setKeywordInputs] = useState<Record<number, string>>({});
 
   const [keyword, setKeyword] = useState('');
 
@@ -228,6 +199,7 @@ export default function UserManage() {
 
   const openCreate = () => {
     setEditingUsername(null);
+    setEditingUserId(null);
     setForm({
       username: '',
       password: '',
@@ -238,13 +210,12 @@ export default function UserManage() {
       duty_text: '',
       status: 'active',
     });
-    setModuleEntries([]);
-    setKeywordInputs({});
     setEditVisible(true);
   };
 
   const openEdit = async (user: User) => {
     setEditingUsername(user.username);
+    setEditingUserId(user.id);
     setEditLoading(true);
 
     try {
@@ -259,7 +230,6 @@ export default function UserManage() {
         duty_text: detail.duty_text || '',
         status: detail.status || 'active',
       });
-      setModuleEntries(modulesToEntries(detail.responsibility_modules));
     } catch {
       setForm({
         username: user.username,
@@ -271,9 +241,7 @@ export default function UserManage() {
         duty_text: user.duty_text || '',
         status: user.status || 'active',
       });
-      setModuleEntries(modulesToEntries(user.responsibility_modules));
     }
-    setKeywordInputs({});
     setEditLoading(false);
     setEditVisible(true);
   };
@@ -425,15 +393,12 @@ export default function UserManage() {
       }
     }
 
-    const modules = entriesToModules(moduleEntries);
-
     setIsSaving(true);
     try {
       if (editingUsername) {
         const updateData: UserUpdateData = {
           name: form.name || undefined,
           department: form.department || undefined,
-          responsibility_modules: modules,
           job_level: form.job_level,
           duty_text: form.duty_text || undefined,
         };
@@ -448,7 +413,6 @@ export default function UserManage() {
           password: form.password,
           name: form.name || undefined,
           department: form.department || undefined,
-          responsibility_modules: modules,
           job_level: form.job_level,
           duty_text: form.duty_text || undefined,
           status: form.status,
@@ -490,49 +454,6 @@ export default function UserManage() {
     });
   };
 
-  const addModule = () => {
-    setModuleEntries((prev) => [...prev, { module: '', keywords: [] }]);
-  };
-
-  const removeModule = (index: number) => {
-    setModuleEntries((prev) => prev.filter((_, i) => i !== index));
-    setKeywordInputs((prev) => {
-      const next: Record<number, string> = {};
-      for (const [k, v] of Object.entries(prev)) {
-        const ki = Number(k);
-        next[ki > index ? ki - 1 : ki] = v;
-      }
-      return next;
-    });
-  };
-
-  const updateModuleName = (index: number, name: string) => {
-    setModuleEntries((prev) => prev.map((e, i) => (i === index ? { ...e, module: name } : e)));
-  };
-
-  const addKeyword = (index: number) => {
-    const val = (keywordInputs[index] || '').trim();
-    if (!val) return;
-    setModuleEntries((prev) =>
-      prev.map((e, i) => (i === index ? { ...e, keywords: [...e.keywords, val] } : e))
-    );
-    setKeywordInputs((prev) => ({ ...prev, [index]: '' }));
-  };
-
-  const removeKeyword = (moduleIndex: number, keywordIndex: number) => {
-    setModuleEntries((prev) =>
-      prev.map((e, i) =>
-        i === moduleIndex
-          ? { ...e, keywords: e.keywords.filter((_, ki) => ki !== keywordIndex) }
-          : e
-      )
-    );
-  };
-
-  const updateKeywordInput = (index: number, value: string) => {
-    setKeywordInputs((prev) => ({ ...prev, [index]: value }));
-  };
-
   const getJobLevelLabel = (level?: number) => {
     const opt = JOB_LEVEL_OPTIONS.find((o) => o.value === level);
     return opt ? opt.label : '未知';
@@ -542,7 +463,7 @@ export default function UserManage() {
 
   return (
     <div className="mac-page">
-      {/* 顶部操作：新建用户 / 人员结构 */}
+      {/* 顶部操作：新建用户 / 人员结构 / 责任模块树 */}
       <div style={{ display: 'flex', gap: 8 }}>
         <button type="button" className="mac-btn mac-btn--primary" style={{ flex: 1 }} onClick={openCreate}>
           新建用户
@@ -554,6 +475,14 @@ export default function UserManage() {
           onClick={() => navigate('/admin/org-chart')}
         >
           人员结构
+        </button>
+        <button
+          type="button"
+          className="mac-btn mac-btn--outline"
+          style={{ fontWeight: 400 }}
+          onClick={() => navigate('/admin/module-tree')}
+        >
+          责任模块树
         </button>
       </div>
 
@@ -620,14 +549,14 @@ export default function UserManage() {
 
                   {user.responsibility_modules && Object.keys(user.responsibility_modules).length > 0 && (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 4 }}>
-                      {Object.entries(user.responsibility_modules).map(([mod, keywords]) => (
-                        <span key={mod} className="mac-chip mac-chip--outline">
-                          {mod}
-                          {keywords.length > 0 && <span style={{ color: 'var(--mac-muted-fg)' }}>·</span>}
-                          {keywords.slice(0, 3).map((kw) => (
-                            <span key={kw} className="mac-chip mac-chip--soft">{kw}</span>
-                          ))}
-                          {keywords.length > 3 && <span style={{ color: 'var(--mac-muted-fg)' }}>+{keywords.length - 3}</span>}
+                      {Object.entries(user.responsibility_modules).map(([product, byIface]) => (
+                        <span key={product} className="mac-chip mac-chip--outline">
+                          {product}
+                          {Object.entries(byIface).map(([iface, funcs]) =>
+                            funcs.map((fn) => (
+                              <span key={`${iface}-${fn}`} className="mac-chip mac-chip--soft">{fn}</span>
+                            ))
+                          )}
                         </span>
                       ))}
                     </div>
@@ -770,72 +699,44 @@ export default function UserManage() {
               <div className="mac-field">
                 <span className="mac-field__label">责任模块</span>
                 <div className="mac-field__content">
-                  {moduleEntries.length === 0 && (
-                    <div className="mac-note" style={{ textAlign: 'left', marginBottom: 8 }}>
-                      暂未设置，点击下方按钮添加
-                    </div>
-                  )}
-
-                  {moduleEntries.map((entry, idx) => (
-                    <div key={idx} className="mac-module-card">
-                      <div style={{ display: 'flex', gap: 6, marginBottom: 8, alignItems: 'center' }}>
-                        <span style={{ fontSize: 12, color: 'var(--mac-muted-fg)', whiteSpace: 'nowrap', minWidth: 48 }}>
-                          模块 {idx + 1}
-                        </span>
-                        <input
-                          className="mac-input"
-                          style={{ flex: 1, padding: '8px 12px', fontSize: 12.5 }}
-                          value={entry.module}
-                          onChange={(e) => updateModuleName(idx, e.target.value)}
-                          placeholder="模块名，如：调度USP"
-                        />
-                        <button
-                          type="button"
-                          className="mac-btn mac-btn--ghost"
-                          onClick={() => removeModule(idx)}
-                        >
-                          删除
-                        </button>
-                      </div>
-
-                      {entry.keywords.length > 0 && (
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
-                          {entry.keywords.map((kw, ki) => (
-                            <span key={ki} className="mac-kwchip">
-                              {kw}
-                              <button
-                                type="button"
-                                className="mac-kwchip__remove"
-                                aria-label={`移除关键字 ${kw}`}
-                                onClick={() => removeKeyword(idx, ki)}
-                              >
-                                <MacX size={12} />
-                              </button>
-                            </span>
-                          ))}
+                  {(() => {
+                    const mods = form.responsibility_modules;
+                    if (!mods || Object.keys(mods).length === 0) {
+                      return (
+                        <div className="mac-note" style={{ textAlign: 'left', marginBottom: 8 }}>
+                          暂无责任模块，请在下方责任模块树中认领
                         </div>
-                      )}
-
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <input
-                          className="mac-input"
-                          style={{ flex: 1, padding: '8px 12px', fontSize: 12.5 }}
-                          value={keywordInputs[idx] || ''}
-                          onChange={(e) => updateKeywordInput(idx, e.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter') addKeyword(idx); }}
-                          placeholder="输入职责关键字"
-                        />
-                        <button type="button" className="mac-btn mac-btn--ghost" onClick={() => addKeyword(idx)}>
-                          添加
-                        </button>
+                      );
+                    }
+                    return Object.entries(mods).map(([product, byIface]) => (
+                      <div key={product} style={{ marginBottom: 8 }}>
+                        <span className="mac-chip mac-chip--outline" style={{ marginRight: 6 }}>{product}</span>
+                        {Object.entries(byIface).map(([iface, funcs]) => (
+                          <span key={iface} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginRight: 6, flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: 12, color: 'var(--mac-muted-fg)' }}>{iface}：</span>
+                            {funcs.map((fn) => (
+                              <span key={fn} className="mac-chip mac-chip--soft">{fn}</span>
+                            ))}
+                          </span>
+                        ))}
                       </div>
-                    </div>
-                  ))}
-
-                  <button type="button" className="mac-btn mac-btn--ghost" onClick={addModule}>
-                    <MacPlus size={14} />
-                    添加模块
-                  </button>
+                    ));
+                  })()}
+                  <div style={{ marginTop: 4 }}>
+                    <button
+                      type="button"
+                      className="mac-btn mac-btn--ghost"
+                      onClick={() => {
+                        if (editingUserId) {
+                          navigate(`/admin/module-tree?user=${encodeURIComponent(editingUserId)}`);
+                        } else {
+                          navigate('/admin/module-tree');
+                        }
+                      }}
+                    >
+                      前往责任模块树编辑
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -912,12 +813,24 @@ export default function UserManage() {
 
               {detailUser.responsibility_modules && Object.keys(detailUser.responsibility_modules).length > 0 && (
                 <div className="mac-detail-section">
-                  <div className="mac-detail-section__title">责任模块</div>
-                  {Object.entries(detailUser.responsibility_modules).map(([mod, keywords]) => (
-                    <div key={mod} className="mac-detail-panel">
-                      <span className="mac-chip mac-chip--outline" style={{ marginRight: 6 }}>{mod}</span>
-                      {keywords.map((kw) => (
-                        <span key={kw} className="mac-chip mac-chip--soft" style={{ marginRight: 4 }}>{kw}</span>
+                  <div
+                    className="mac-detail-section__title"
+                    style={{ alignItems: 'center', gap: 6, cursor: 'pointer', color: 'var(--mac-blue-2)' }}
+                    onClick={() => detailUser.id && navigate(`/admin/module-tree?user=${encodeURIComponent(detailUser.id)}`)}
+                  >
+                    责任模块
+                    <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--mac-muted-fg)' }}>点击编辑负责模块 ▶</span>
+                  </div>
+                  {Object.entries(detailUser.responsibility_modules).map(([product, byIface]) => (
+                    <div key={product} className="mac-detail-panel" style={{ marginBottom: 8 }}>
+                      <span className="mac-chip mac-chip--outline" style={{ marginRight: 6 }}>{product}</span>
+                      {Object.entries(byIface).map(([iface, funcs]) => (
+                        <div key={iface} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, marginTop: 4 }}>
+                          <span style={{ fontSize: 12, color: 'var(--mac-muted-fg)', whiteSpace: 'nowrap', marginRight: 2 }}>{iface}：</span>
+                          {funcs.map((fn) => (
+                            <span key={fn} className="mac-chip mac-chip--soft" style={{ marginRight: 4 }}>{fn}</span>
+                          ))}
+                        </div>
                       ))}
                     </div>
                   ))}

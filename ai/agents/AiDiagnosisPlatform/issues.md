@@ -48,6 +48,25 @@
 | 23 | **第三轮提单鬼打墙：ticket_type 被覆盖** | `_decide_ticket_fields`（独立 LLM 调用，无完整对话上下文）会覆盖主 LLM 判定的 ticket_type（problem→support），required_fields 与实际故障不匹配，LLM 陷入收集死循环 | 加 `if not agent_state.ticket_type:` guard，只在主 LLM 未判定时才设 |
 | 24 | **第三轮提单鬼打墙：required_fields 不准确** | 主 LLM action=submit 时不设 required_fields，留空等 `_decide_ticket_fields` 兜底——兜底的独立 LLM 没有完整对话上下文，判断易出错 | prompt 指示 LLM 在 action=submit 时同时写入 required_fields，不依赖兜底 |
 
+## 2026-08-20 生产日志修复
+
+生产实录三问题（13:35-13:48 日志）：A) LLM 服务抖动致补充轮 32.7s（流式重试自救，不修）；
+B) 同抖动窗口 `_build_ticket` 20s 超时 → 工单降级默认值（标题退化成原话硬截 20 字）；
+C) 54 轮长会话话题漂移（USP服务器重启 → 回休息站），problem_summary 停在旧话题混入新工单，
+decide_fields 还在旧状态上判缺「问题现象」多追问一轮。
+
+| # | 问题 | 根因 | 修复 |
+|---|------|------|------|
+| 25 | 工单生成单次调用无重试，抖动一次即降级 | `complete` 非流式路径无重试（重试只在流式路径有） | `_build_ticket` 改两次尝试（超时/返回不可解析都重试），期间用户看「正在生成工单」动画无感知；两次都挂才走默认值兜底 |
+| 26 | 长会话话题切换后 problem_summary 不刷新，旧话题混入新工单 | 诊断单轮分支只答不记；submit 轮没人要求 LLM 核对 summary 是否仍对应当前话题 | DIAGNOSIS_PROMPT 加铁律：「状态」里的问题与用户本轮问题不一致时必须更新 problem_summary（与 #24 required_fields 同机制，判断仍全在 LLM；`_apply_state_update` 在 escalated 阶段本就接受覆盖，resolved 拦截保留防闭环） |
+| 27 | 14:38 测试单描述里没有车型 XSC121——用户可见信息丢失 | 三重叠加：(a) 收集轮 LLM 自由命名字段为 `vehicle_id`，`_build_ticket` 取数只认 `collected_info['robot_type']`；(b) 描述规则「设备型号等一项都不能丢」是软约束，build LLM 漏了；(c) **弹窗只渲染 标题/描述/期望解决时间/项目**，draft 的 robot_type 只进 DB metadata_info、弹窗不显示——描述是车型唯一用户可见通道 | 描述规则升级为硬规则：「型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 填过也要写」。项目名不在描述里是设计（三条禁令、单通道防鬼打墙），不是丢失 |
+| 28 | 开关打开后触发轮死寂：只输出过渡语「好的，我帮您转工单，我看一下还需要补充哪些信息：」就停（tool_calls=0），用户在对话里无法提单；用户点按钮补完 4 字段后又因 `tool_loop_active` 未置位掉回旧状态机 | 过渡语指令「先说过渡语再调用」被模型执行成「只说过渡语」；`run_tool_loop_stream` 把无工具调用当正常回合结束；空转轮不置粘性续接标志（只有真调了工具的轮次才置） | 三层修复：(1) 提示词硬性化——过渡语和工具调用必须在**同一次回复**里完成（ticket/diagnosis 两分支同改）；(2) 机制层空转纠偏——零工具调用且非放弃轮时，把空转回合+纠偏 system 指令追加进 messages 重跑一遍循环（判断仍在 LLM，代码只发现协议违约，放弃轮由 LLM 固定话术「不转工单」识别沿用既有协议）；(3) 空转/回话轮置 `tool_loop_active=True`（草稿已存在时除外——草稿轮设计就是由意图分类路由）。测试 `TestToolLoopIdleCorrection` 3 例：纠偏后调工具+追问、双空转不无限重试+粘性置位、放弃不纠偏。**部署后首测又冒出双份过渡语**（「我帮您转工单…」「我帮您继续转工单…」连说两遍）——纠偏轮复述了过渡语再调工具；纠偏指令补铁律：「用户已看到你上一条回复，不要输出过渡语、不要复述（会看到两遍）；调工具正文留空，追问直接问句开头」 |
+| 29 | 生产实锤（16:29-16:32）：问 3 个字段（时间/车辆编号/任务）用户只答 1 个「早上九点」就弹窗——LLM 自己判的还是 ask（msg 在追问编号），被服务端「补充字段已齐自动 review」强转 submit，编号/任务永远没收 | 快路径 LLM 把三个信息点**打包成一个** required_fields key（`occurrence_details: '卡顿发生的时间、车辆编号及任务信息'`）→ 用户答一项该 key 即非空 → 清单「假齐」 | 三个 LLM 声明 required_fields 的 prompt 全部加铁律「**一项信息一个字段，禁止打包**」（DIAGNOSIS_PROMPT / 快路径 prompt 2.1 / `_compute_ticket_fields`），并给了正反例。测试 `TestRequiredFieldsGranularity` 3 例（三处 prompt 文案断言）。live 复现：修复后字段拆成 occurrence_time/robot_id/task_info 三 key，「早上九点」只填 1/3 继续追问，三项齐才弹窗 ✅ |
+
+A 不修：外部抖动，重试已救回轮次；调 read timeout 会误杀长思考的流间隙。
+话题残留的根治是开 `AI_TICKET_TOOL_LOOP`（submit_ticket 参数每次带 LLM 现写的
+problem_summary，状态跟本次调用走，天然无残留）；#26 是老路径上的止血。
+
 ## 已知限制（接受）
 
 | # | 问题 | 说明 |
@@ -55,6 +74,182 @@
 | 1 | 单轮"全信息+转单"flash 偶发不直接 submit | flash 模型过度澄清，多问一句；用户答后下一轮提。多轮主流流程不受影响（3/3 稳）|
 | 2 | 项目匹配需 `helpdesk_724` 库 | 沙箱无此库走"平台项目"兜底；生产环境正常匹配 |
 | 3 | 按钮路径 need_fields status + token 双发 | 前端可能显示重复（低优）|
+
+## 2026-08-20 项目预填（对话识别 → 草稿预填，弹窗仍可改）
+
+背景：领导要求"对话中能获取到项目信息就预填充，用户修改写回工单"。当年 project 移出对话链路
+是因为全量项目库模糊匹配错配 + LLM 幻觉 + 服务端循环兜底（鬼打墙三源）。本次改法的不同：
+
+- **匹配域收敛**：不匹配全量库，只匹配"该用户名下项目"（`user_project_roles` 排除 global，
+  与后端 `GET /api/admin/projects/me` 同源）。LLM 不再自由生成项目名，而是从注入列表**照抄**。
+- **严格校验防幻觉**：`_match_project_choice` 只接受与列表 name/code 精确相等（strip 后）；
+  抄不齐 = 幻觉信号 → 置空走弹窗。宁空勿错，不做模糊容错。
+- **单向管道（防鬼打墙铁律）**：project 不进 `state.collected_info`、不进 required_fields
+  判缺、不触发追问循环。路径只有：工具参数 `project_choice` → `_build_ticket(prefill_project=)`
+  → draft → 弹窗（overrides 覆盖优先）→ confirm_submit。与 `requested_assignee` 同款。
+- **服务端只做一次单向校验**（列表内 or 置空），无循环兜底。
+- **预填播报单一信息源**：LLM 在调工具前说话时校验还没发生，若让它播报"项目已填 XX"
+  可能与校验结果口径不一（抄错被拒 → 气泡说填了、弹窗是空）。因此 prompt 明确禁止 LLM
+  播报预填，播报统一由服务端兜底文案在草稿生成时给出（说的是校验后的真实值）；
+  LLM 自己说了收尾话（已流式）时则不再补发，弹窗所见即所得。
+- **降级 = 现状**：`_get_user_projects` 任何失败/为空 → 不注入 prompt → LLM 无从照抄 →
+  draft project 空 → 弹窗搜索选择（旧行为）。
+- **性能**：查询毫秒级 + per-username 缓存 5min（提单低频，同用户二次调用零 DB）；
+  仅提单/诊断工具循环调用，普通问答轮零开销；prompt 增量几百字符对首 token 无感。
+  兜底实测（本机 DB 不可达）：1s 超时截断（实测 ~1.16s 含日志）+ 失败负缓存 60s
+  （命中 ~0.005ms）——DB 故障时最坏单轮多等 1 秒、后续每轮零开销，不逐轮重付超时。
+
+改动点：
+- `ticket_tool.py`：TOOL_SCHEMA / TOOL_SCHEMA_SUPPLEMENT 加可选参数 `project_choice`
+  （不进 required、不参与判缺）
+- `pipeline.py`：
+  - `_get_user_projects(username)`：跨库查用户项目，缓存 5min（`_USER_PROJECTS_CACHE`）
+  - `_ticket_tool_loop_branch` / `_diagnosis_tool_loop_branch`：拉列表 → system prompt 注入
+    「用户名下项目列表」+ 照抄规则 → draft_ready 后 args 提取 `project_choice` 严格校验 →
+    `_build_ticket(prefill_project=...)`；预填成功时兜底话术改为"项目已预填为「XX」（可在
+    弹窗中修改）"
+  - `_build_ticket` 加可选参数 `prefill_project`，生成后代码层覆盖 `project`/`project_id`
+    （函数内 LLM prompt 仍固定空字符串，analysis 的 project 依旧被忽略）
+- 兼容性：confirm_submit 对预填的标准全名 `_resolve_project` 精确命中（score=1.0），幂等不漂移；
+  闭环 guards（last_ticket_context 无 project、context_start 跨成功消息）原样保留。
+- 测试：`tests/test_ticket_submit.py::TestProjectPrefill`（严格校验 4 例 + build_ticket
+  预填/默认空 + 预填后 `_check_required_fields` 不再缺 project），22 passed。
+
+### 首触轮体感优化：工具循环过渡语（2026-08-20 补）
+
+工具循环首触轮原本两段 LLM 往返全程无字（参数生成轮正文为空 → 判缺 → 追问轮才出字），
+用户干等 3s+。改为**过渡语叙事化**：提示词要求每次调 submit_ticket 的同一轮先说一句
+以冒号收尾的过渡语（「好的，我帮您转工单，我看一下还需要补充哪些信息：」/
+「收到，我核对一下还缺什么：」），紧接工具调用。停顿被叙事覆盖——用户等的不是
+"卡了"而是"正在查"，第二轮追问（「还需要一个联系电话」）正好是对过渡语的呼应。
+
+- 基建零改动：tool_loop 同轮 content+tool_calls 的 token 本就随到随发。
+- 红线进提示词：过渡语禁止完成时话术（已提交/已生成，嘴嗨教训 #11）、
+  禁止播报项目预填（校验前播报会与弹窗口径不一）。
+- **配套修掉一个潜伏重发 bug**：terminate 轮（草稿就绪）done 事件 final_text 恒为空，
+  `final_streamed` 恒 False——过渡语一旦在终止轮说出，服务端收尾会整段重发、气泡双份。
+  两分支（ticket/diagnosis）均改为累计 `_streamed_text`：已流式说过渡语时收尾只补
+  `\n\n信息齐了，已生成工单草稿…` 尾巴（与预填播报单一信息源兼容——尾巴仍是
+  校验后的服务端文案）。
+- 生效条件：`AI_TICKET_TOOL_LOOP=1` / `AI_DIAGNOSIS_TOOL_LOOP=1`（当前环境未开，
+  走老快路径，无过渡语需求——老路径单次 LLM 直接出字）。
+- **生产首开实锤与补丁（#28）**：开关打开后触发轮模型只说过渡语就结束回合
+  （0 次工具调用），气泡停在冒号上死寂。提示词补「同一次回复」硬性要求 +
+  机制层空转纠偏（零工具调用注入纠偏指令重跑一遍）+ 空转轮置粘性续接，
+  详见 #28 行。
+
+### 弹窗回写验证（2026-08-20 补）
+
+回写路径专项核对 + 3 个用例（`TestPrefillWriteback`，76 passed）：
+
+| 场景 | 行为 | 结果 |
+|---|---|---|
+| 预填 + 不动项目直接确认 | draft 值直通入库，`_resolve_project` 幂等（全名自匹配 score=1.0） | ✅ |
+| 预填 A + 弹窗改 B | 前端选项目时**成对**写 `project`+`project_id`（ChatPanel.tsx onChange），overrides 成对覆盖 | ✅ |
+| 预填 + 只改名不带 code（双工单兜底名 / 直调 API） | **一致性护栏**：overrides 的 project ≠ 草稿且无新 code → 清掉预填残留旧 code，再由 `_resolve_project` 命中时重写 | ✅ |
+
+第三列场景是真回归点：双工单勾选框不受 project_id 显隐控制，预填后仍可勾选；前端发
+`project='摇人吧服务号提单', project_id=''`，后端空值跳过规则会保留预填旧 code，兜底名
+若匹配不上项目库就错位入库（名字新项目 / code 旧项目）。旧版 draft.project_id 恒空无此问题。
+护栏为一次单向清空（confirm_submit 内 overrides 应用后），无循环。
+
+**测试基建债（记录不修，避免影响存量 73 例）**：conftest 的 `platform` fixture 把
+`confirm_submit` 整个替换成简化 mock——空值也覆盖（真实现跳过）、无归一化、无护栏、
+返回假工单结构（仅 4 键）。存量 override 相关测试（如 `test_button_confirm_override_merges`）
+测的是 mock 行为而非真实现。`TestPrefillWriteback` 用 `platform_real_confirm` fixture 绕开：
+恢复真实现 + sys.modules 注入假 `task_adapter`（隔离 MySQL，比 conftest 注释里"不能 patch"
+的方案更彻底）+ `_resolve_project`/`_attach_chat_snapshot` 置 no-op。后续如修 conftest，
+`_mock_confirm_submit` 的空值语义和返回结构应与真实现对齐。
+
+前端配套（前端同事做，不在本仓库改动内）：弹窗项目下拉默认展示该用户名下项目。
+
+## 2026-08-20 生产回退：工具循环撤出生产，项目预填移植到老快路径
+
+生产开了 `AI_TICKET_TOOL_LOOP` 后体感太差（触发轮死寂 #28 → 补丁后双过渡语，
+提单轮节奏不稳），用户拍板**不追求提单轮速度、撤开关回老快路径**：
+
+- 生产服务器删掉 `AI_TICKET_TOOL_LOOP` 环境变量即回退；工具循环代码全部保留
+  （flag-gated 休眠），#25/#26/#27/#28 修复对两条路径都有效。
+- **项目预填照搬到老快路径**（用户唯一要求保住的能力）：
+  - 取数条件：`ticket_fast_lane or ticket_collecting or ticket_draft` 任一命中才拉
+    用户项目列表（普通问答轮零开销，缓存 5min 不变）。
+  - 注入点：`_build_diagnosis_prompt` 三种变体全注入（收集轮小 prompt、快路径
+    prompt、主 DIAGNOSIS_PROMPT 由草稿轮铁律附加），输出模板加平级字段
+    `project_choice`。
+  - 解析：`_parse_agent_output` 白名单 return 补 `project_choice` 键（**移植时
+    踩的坑**：原实现重建 dict 只带白名单键，顶层新字段会被静默丢弃——测试
+    实锤 draft 弹了但预填空）。
+  - 单向管道不变：`pending_prefill_project` 进 AgentState（save/load 持久化），
+    `_build_ticket(prefill_project=)` 覆盖 draft 的 project/project_id；三个
+    build 入口（get_ticket / submit / prepare_ticket）都传；取消提单和
+    `_reset_state_after_submit` 清空，不泄漏到下一单。
+  - 预填播报：draft 生成后按校验后真实值说「项目已预填为「XX」（可在弹窗中
+    修改）」，无预填时话术不变（仍是服务端单一信息源，LLM 不播报）。
+  - 测试：`TestOldPathProjectPrefill` 5 例——快路径照抄进 draft+播报、幻觉
+    近似名忽略、跨轮保留（轮1识别轮2提交）、取消清空、普通轮零取数。
+    84 passed 全绿。
+  - **照抄加固（live 实锤）**：LLM 偶尔把展示格式整行抄进 project_choice
+    （「名称（编号: 69）」），精确相等会拒绝、预填靠碰运气。`_match_project_choice`
+    补窄规则：列表项**完整 name 作为连续子串出现**即剥离取回——仍是精确值
+    匹配（近似拼凑不含完整名照样拒绝），不违反宁空勿错。
+
+## 2026-08-20 附件-工单绑定（只带本单相关附件）
+
+需求：一个对话里生成工单，不再把会话里**所有**历史附件都带上——只附加与本次
+提单过程相关的。难点场景：第一单提交后用户发图问了个问题、之后换话题提第二单，
+那张诊断图不该混进第二单。
+
+原设想（提单后状态切换切窗口 + problem_summary 变更轮放宽 + 弹窗手动加附件兜底）
+经代码检验被否掉两点：
+
+- **弹窗没有附件编辑 UI**（只渲染 标题/描述/优先级/项目）——漏选无法在弹窗补救；
+- **话题锚点会误杀最常见流程**：「先发故障图、再描述问题」的图在锚点之前上传，
+  会被窗口切掉；#26 的话题刷新又是尽力而为，锚点会漂。
+
+落地为两层：
+
+| 层 | 边界 | 机制 | 性质 |
+|---|------|------|------|
+| 机制层 | 跨单 | `_reset_state_after_submit` 把 raw `agent_state.attachments` 清空（写 raw dict 再过 `_save_agent_state` 透传；attachments 不在 AgentState 字段里） | 确定性，无判断 |
+| 判断层 | 跨话题 | `_build_ticket` prompt 注入「附件候选清单」（文件名 + VLM 摘要截 120 字），输出 `attach_files` 序号数组 → 映射回条目 | 判断全交大模型 |
+
+- **信号源**：router `/qa/upload` 写附件条目时把 VLM 摘要（截 160 字）存进 `desc`
+  （多图批次共享同段摘要）——`_build_ticket` 的对话记录 `sanitize_images=True`
+  物理屏蔽图片内容，没有 desc LLM 就没有取舍信号。desc 随条目透传进
+  tasks.attachments（额外键，无害）。
+- **降级 = 现状**：`attach_files` 缺失/类型不对/LLM 整体失败 → 全带（不静默丢证据）；
+  显式 `[]` → 尊重（LLM 判定都无关）。序号宽松解析（字符串 `"2"` 也认），越界忽略。
+- **配套不变量**：`_attach_chat_snapshot` 读 turns 不受清空影响；提单后 turns 归档，
+  下一单的对话快照本就只覆盖新对话。补充轮重建草稿会重新取舍（每次 build 现选）。
+- 测试：`TestAttachmentBinding` 6 例（消费清空 / 选择映射 / 字符串序号 / 空 [],
+  缺字段全带 / 无附件零开销），94 passed。
+
+## 2026-08-20 跨单预填泄漏（#30）
+
+用户实测：同一会话连提多单，第二单把**第一单对话里**提到的项目名又预填上了。
+
+根因：`context_start` 实际**恒为 0**（全文件只有初始化 0 / load / 提单后归 0，
+从未被置成非 0——注释里「提单后前移」的设计从未接线），提单归档
+`turns[context_start:]` 是空操作，第一单的「给XX项目提单」一直留在最近对话
+窗口。第二单快路径 LLM 看到项目名在对话里 + 注入的名下项目列表 +「用户提到
+就照抄」规则，无法区分那句属于已提交的上一单 → 照抄泄漏。
+
+修复（判断仍全交 LLM，代码只提供分界事实）：
+
+- `_reset_state_after_submit` 记**内容锚点** `ticket_boundary_prefix` = 提交时
+  最后一轮内容前 40 字（内容锚点而非索引：turn buffer max_turns=10 截断会让
+  索引漂移，内容匹配免疫）；AgentState 新字段，save/load 持久化。
+- `_format_conversation` 加 `boundary_prefix` 参数：锚点轮后插分隔线
+  「───── 以上对话已随上一张工单提交归档；以下是新对话 ─────」。锚点不在当前
+  切片（from_turn/max_turns 截掉，全是新对话）时不插。
+- `_proj_block` 照抄规则收紧：分隔线**之前**（含助手旧回执）出现的项目名不算
+  本次提到、禁止照抄；只有分隔线之后**用户**明确提到（或明确指代「还是那个
+  项目」）才照抄；无分隔线以全对话为准。
+- 注：`_build_diagnosis_prompt` 三个变体共用 conversation_text，分隔线全量生效；
+  `_build_ticket`/`_compute_ticket_fields` 的切片未传锚点（描述侧跨单污染是
+  #26 同源问题，另行处理，本次不动）。
+- 测试：`TestTicketBoundaryPrefill` 3 例（锚点记录 / 分隔线插入与截掉不插 /
+  快路径 prompt 规则），97 passed。
 
 ## 稳定性（live，3 轮）
 

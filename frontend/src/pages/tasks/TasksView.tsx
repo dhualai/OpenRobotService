@@ -1177,6 +1177,8 @@ export default function TasksView() {
                 <span>{syncing ? '同步中…' : '同步外部任务'}</span>
               </button>
             )}
+
+            {/* 责任模块树已迁至后台「用户管理」入口，此处移除临时按钮 */}
             <UserAvatarMenu />
           </div>
         }

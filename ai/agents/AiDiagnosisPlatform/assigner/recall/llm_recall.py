@@ -103,7 +103,9 @@ class LlmRecall:
             logger.debug(
                 f"[派单:{ticket.id}] Step3-L1 胜者{len(winners)}≤ROUND2_MAX，不再决选返回"
             )
-            return {k: stage1[k] for k in winners if k in stage1}
+            # 用工程师 id（字符串）作 key；注意 winners 是 EngineerProfile 对象列表，
+            # 绝不能把对象本身当 dict key（unhashable → TypeError）。
+            return {w.id: stage1[w.id] for w in winners if w.id in stage1}
         final = await self._llm_score_batch(ticket, winners, top_k=self.ROUND2_MAX)
         logger.info(
             f"[派单:{ticket.id}] Step3-L1 合并决选 胜者={len(winners)}人 → 决选出={len(final)}人"
@@ -136,13 +138,10 @@ class LlmRecall:
 
         lines.extend(["", "【候选工程师】"])
         for e in engineers:
-            prod_parts = []
-            for p, mods in e.responsibility_modules.items():
-                prod_parts.append(f"[{p}]{','.join(mods)}" if mods else f"[{p}]")
-            duty = (e.duty_text or "")[:120]
             dep = f"({e.department})" if e.department else ""
             lines.append(f"候选ID: {e.id} | L{e.job_level} | {dep}")
-            lines.append(f"   产品:{'|'.join(prod_parts)}")
+            lines.append(f"   产品:{e.modules_display()}")
+            duty = (e.duty_text or "")[:120]
             if duty:
                 lines.append(f"   职责:{duty}")
 
