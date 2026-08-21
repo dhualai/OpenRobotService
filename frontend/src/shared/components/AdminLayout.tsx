@@ -42,6 +42,7 @@ const adminMenuItems: MenuItem[] = [
   { path: '/admin/wechat', label: '微信管理', emoji: '💬' },
   { path: '/admin/data-import', label: '数据导入', emoji: '📥' },
   { path: '/admin/resources', label: '资源管理', emoji: '🗂️' },
+  { path: '/admin/file-explorer', label: '文件浏览', emoji: '📂' },
 
   // === 系统日志 ===
   { path: '/admin/operation-logs', label: '操作记录', emoji: '📝' },

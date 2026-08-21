@@ -120,6 +120,7 @@ export default function MainLayout() {
 
   // 路由变化 → 同步 store（直接访问 URL / 浏览器后退时保持高亮正确）
   useEffect(() => {
+    console.log('[MainLayout] route changed →', location.pathname);
     setActiveTab(pathToTab(location.pathname));
   }, [location.pathname, setActiveTab]);
 
