@@ -8,7 +8,12 @@ import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
 import { useAuthStore } from '@/stores/auth';
-import { avatarUrl } from '@/api/profile';
+import {
+  avatarUrl,
+  getProfileOptions,
+} from '@/api/profile';
+import type { OrgOption, ProfileFieldOptions } from '@/api/profile';
+import FilterableSelect from '@/shared/components/FilterableSelect';
 import {
   MacSearch, MacCheck, MacBuilding2, MacClipboardList,
 } from '@/shared/components/macaronIcons';
@@ -18,7 +23,10 @@ interface User {
   username: string;
   name?: string | null;
   status?: string;
+  company?: string | null;
   department?: string | null;
+  company_id?: string | null;
+  department_id?: string | null;
   responsibility_modules?: Record<string, Record<string, string[]>> | null;
   job_level?: number;
   duty_text?: string | null;
@@ -34,6 +42,8 @@ interface UserCreateData {
   password: string;
   name?: string;
   department?: string;
+  company_id?: string;
+  department_id?: string;
   responsibility_modules?: Record<string, Record<string, string[]>>;
   job_level?: number;
   duty_text?: string;
@@ -43,6 +53,8 @@ interface UserCreateData {
 interface UserUpdateData {
   name?: string;
   department?: string;
+  company_id?: string;
+  department_id?: string;
   responsibility_modules?: Record<string, Record<string, string[]>>;
   job_level?: number;
   duty_text?: string;
@@ -124,6 +136,16 @@ export default function UserManage() {
     duty_text: '',
     status: 'active',
   });
+
+  // 公司/部门：同时维护 ID（保存用）和 name（显示用）
+  const [companyIdDraft, setCompanyIdDraft] = useState('');
+  const [companyNameDraft, setCompanyNameDraft] = useState('');
+  const [departmentIdDraft, setDepartmentIdDraft] = useState('');
+  const [departmentNameDraft, setDepartmentNameDraft] = useState('');
+
+  // 公司/部门下拉可选项（来自主数据表）
+  const [companyOptions, setCompanyOptions] = useState<OrgOption[]>([]);
+  const [departmentsByCompany, setDepartmentsByCompany] = useState<Record<string, OrgOption[]>>({});
 
   const [keyword, setKeyword] = useState('');
 
@@ -235,6 +257,19 @@ export default function UserManage() {
       duty_text: '',
       status: 'active',
     });
+    setCompanyIdDraft('');
+    setCompanyNameDraft('');
+    setDepartmentIdDraft('');
+    setDepartmentNameDraft('');
+    // 懒加载公司/部门选项（若尚未加载）
+    if (companyOptions.length === 0) {
+      getProfileOptions()
+        .then((opt) => {
+          setCompanyOptions(opt.companies || []);
+          setDepartmentsByCompany(opt.departments_by_company || {});
+        })
+        .catch(() => {});
+    }
     setEditVisible(true);
   };
 
@@ -243,8 +278,9 @@ export default function UserManage() {
     setEditingUserId(user.id);
     setEditLoading(true);
 
+    let detail: User;
     try {
-      const detail = await request<User>(`/users/${user.username}/detail`);
+      detail = await request<User>(`/users/${user.username}/detail`);
       setForm({
         username: detail.username,
         password: '',
@@ -256,6 +292,7 @@ export default function UserManage() {
         status: detail.status || 'active',
       });
     } catch {
+      detail = user;
       setForm({
         username: user.username,
         password: '',
@@ -267,9 +304,64 @@ export default function UserManage() {
         status: user.status || 'active',
       });
     }
+
+    // 懒加载公司/部门选项，然后通过 ID 回填名称
+    const usedOpt: ProfileFieldOptions =
+      companyOptions.length > 0
+        ? { companies: companyOptions, departments_by_company: departmentsByCompany, my_pending: { companies: [], departments: [] } }
+        : await getProfileOptions().catch(() => ({
+            companies: [],
+            departments_by_company: {},
+            my_pending: { companies: [], departments: [] },
+          }));
+    if (companyOptions.length === 0) {
+      setCompanyOptions(usedOpt.companies || []);
+      setDepartmentsByCompany(usedOpt.departments_by_company || {});
+    }
+
+    const compId = detail.company_id || '';
+    const deptId = detail.department_id || '';
+    const compName = (usedOpt.companies || []).find((c) => c.id === compId)?.name || detail.company || '';
+    const deptName = Object.values(usedOpt.departments_by_company || {})
+      .flat()
+      .find((d) => d.id === deptId)?.name || detail.department || '';
+    setCompanyIdDraft(compId);
+    setCompanyNameDraft(compName);
+    setDepartmentIdDraft(deptId);
+    setDepartmentNameDraft(deptName);
+
     setEditLoading(false);
     setEditVisible(true);
   };
+
+  // 公司/部门：选项与级联选择
+  const departmentOptions = useMemo(() => {
+    return departmentsByCompany[companyNameDraft.replace(/（审核中）$/, '')] || [];
+  }, [departmentsByCompany, companyNameDraft]);
+
+  const companyNames = useMemo(() => {
+    return companyOptions.map((c) => (c.status === 'pending' ? `${c.name}（审核中）` : c.name));
+  }, [companyOptions]);
+
+  const departmentNames = useMemo(() => {
+    return departmentOptions.map((d) => (d.status === 'pending' ? `${d.name}（审核中）` : d.name));
+  }, [departmentOptions]);
+
+  const handleCompanyChange = useCallback((displayName: string) => {
+    const realName = displayName.replace(/（审核中）$/, '');
+    const comp = companyOptions.find((c) => c.name === realName);
+    setCompanyNameDraft(displayName);
+    setCompanyIdDraft(comp?.id || '');
+    setDepartmentIdDraft('');
+    setDepartmentNameDraft('');
+  }, [companyOptions]);
+
+  const handleDepartmentChange = useCallback((displayName: string) => {
+    const realName = displayName.replace(/（审核中）$/, '');
+    const dept = departmentOptions.find((d) => d.name === realName);
+    setDepartmentNameDraft(displayName);
+    setDepartmentIdDraft(dept?.id || '');
+  }, [departmentOptions]);
 
   const openDetail = async (user: User) => {
     setDetailUser(user);
@@ -420,10 +512,14 @@ export default function UserManage() {
 
     setIsSaving(true);
     try {
+      const realCompName = companyNameDraft.replace(/（审核中）$/, '');
+      const realDeptName = departmentNameDraft.replace(/（审核中）$/, '');
       if (editingUsername) {
         const updateData: UserUpdateData = {
           name: form.name || undefined,
-          department: form.department || undefined,
+          department: realDeptName || undefined,
+          company_id: companyIdDraft || '',
+          department_id: departmentIdDraft || '',
           job_level: form.job_level,
           duty_text: form.duty_text || undefined,
         };
@@ -437,7 +533,9 @@ export default function UserManage() {
           username: form.username,
           password: form.password,
           name: form.name || undefined,
-          department: form.department || undefined,
+          department: realDeptName || undefined,
+          company_id: companyIdDraft || '',
+          department_id: departmentIdDraft || '',
           job_level: form.job_level,
           duty_text: form.duty_text || undefined,
           status: form.status,
@@ -680,13 +778,29 @@ export default function UserManage() {
               </div>
 
               <div className="mac-field">
+                <span className="mac-field__label">公司</span>
+                <div className="mac-field__content">
+                  <FilterableSelect
+                    value={companyNameDraft}
+                    onChange={handleCompanyChange}
+                    options={companyNames}
+                    placeholder="请选择公司"
+                    title="选择公司"
+                    searchPlaceholder="搜索公司…"
+                  />
+                </div>
+              </div>
+
+              <div className="mac-field">
                 <span className="mac-field__label">部门</span>
                 <div className="mac-field__content">
-                  <input
-                    className="mac-input"
-                    value={form.department || ''}
-                    onChange={(e) => setForm((p) => ({ ...p, department: e.target.value }))}
-                    placeholder="部门/团队"
+                  <FilterableSelect
+                    value={departmentNameDraft}
+                    onChange={handleDepartmentChange}
+                    options={departmentNames}
+                    placeholder={companyNameDraft ? '请选择部门' : '请先选择公司'}
+                    title="选择部门"
+                    searchPlaceholder="搜索部门…"
                   />
                 </div>
               </div>

@@ -293,16 +293,6 @@ export default function FileExplorer() {
                   >
                     分享
                   </Button>
-                  <Button
-                    size="small"
-                    theme="primary"
-                    onClick={(e: React.MouseEvent) => {
-                      e.stopPropagation();
-                      download(item);
-                    }}
-                  >
-                    下载
-                  </Button>
                 </div>
               )}
             </div>
