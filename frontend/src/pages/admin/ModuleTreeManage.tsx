@@ -8,6 +8,7 @@ import { Toast, Loading, Dialog, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
+import MindmapView from '@/pages/admin/MindmapView';
 import {
   MacPlus, MacX, MacSearch,
 } from '@/shared/components/macaronIcons';
@@ -42,6 +43,11 @@ const engName = (id: string, cands: Engineer[]) => {
   return found ? found.name : id.slice(0, 8);
 };
 
+// ── key 说明 ──
+// 界面/功能的 key（标识）由「后端保存时统一生成」：取中文名前两字拼音 + 短哈希，
+// 保证格式统一、唯一、随中文名自动更新。前端无需自行生成，新增/改名时以中文名作临时 key，
+// 保存后由后端重算覆盖。AI 派单归因不依赖 key（用 name/keywords/anchor/界面名）。
+
 export default function ModuleTreeManage() {
   const request = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
   const [loading, setLoading] = useState(true);
@@ -57,6 +63,9 @@ export default function ModuleTreeManage() {
   const [active, setActive] = useState<string>('');
   const [trees, setTrees] = useState<TreeMap>({});
   const [candidates, setCandidates] = useState<Engineer[]>([]);
+
+  // 视图模式：single=单个产品编辑；overview=全产品总览（只读、全部展开）
+  const [viewMode, setViewMode] = useState<'single' | 'overview'>('single');
 
   // 新关键词/锚输入缓存
   const [kwInputs, setKwInputs] = useState<Record<string, string>>({});
@@ -194,7 +203,7 @@ export default function ModuleTreeManage() {
     }));
   };
 
-  // ── 功能 CRUD ──
+  // ── 功能 CRUD（key 用中文名作临时值，保存时由后端统一重算为拼音+哈希）──
   const addFunc = (i: number) => {
     const name = (newFuncName[`${i}`] || '').trim();
     if (!name) { Toast({ message: '请输入功能名称', theme: 'warning' }); return; }
@@ -269,24 +278,15 @@ export default function ModuleTreeManage() {
     }
   };
 
-  // 判断是否「真·工程师」：内部账号（非 wechat_ 前缀）且有像样的姓名
-  const isRealEng = (c: Engineer) => {
-    const uname = (c.username || '').toLowerCase();
-    const n = (c.name || '').trim();
-    if (uname.startsWith('wechat_')) return false;
-    if (!n || /^[\W_]+$/.test(n)) return false; // 纯符号/空白姓名
-    return true;
-  };
-
   const filteredCands = candidates.filter((c) =>
     !engSearch || c.name.toLowerCase().includes(engSearch.toLowerCase()) || (c.department || '').includes(engSearch));
 
-  // 候选分组：真工程师按部门分组；微信/无效账号统一折叠到「其他账号」
-  const realCands = filteredCands.filter(isRealEng);
-  const wechatCands = filteredCands.filter((c) => !isRealEng(c));
+  // 候选分组：所有候选按「有部门 → 归部门分组；无部门 → 其他账号」，不按 username 过滤。
+  const withDept = filteredCands.filter((c) => (c.department || '').trim());
+  const noDeptCands = filteredCands.filter((c) => !(c.department || '').trim());
   const deptGroups: { dept: string; list: Engineer[] }[] = [];
-  for (const c of realCands) {
-    const dept = (c.department || '').trim() || '未分组';
+  for (const c of withDept) {
+    const dept = (c.department || '').trim();
     let g = deptGroups.find((x) => x.dept === dept);
     if (!g) { g = { dept, list: [] }; deptGroups.push(g); }
     g.list.push(c);
@@ -334,11 +334,32 @@ export default function ModuleTreeManage() {
     <div className="mac-page" style={{ padding: 12, paddingBottom: 80 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <h2 style={{ margin: 0, fontSize: 18 }}>责任模块树</h2>
-        <button className="mac-btn mac-btn--primary" onClick={handleSave} disabled={saving}>
-          {saving ? '保存中…' : '保存并生效'}
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            type="button"
+            className={`mac-chip ${viewMode === 'overview' ? 'mac-chip--tag-blue' : 'mac-chip--soft'}`}
+            onClick={() => setViewMode(viewMode === 'overview' ? 'single' : 'overview')}
+          >
+            {viewMode === 'overview' ? '退出总览' : '🗺 总览'}
+          </button>
+          <button className="mac-btn mac-btn--primary" onClick={handleSave} disabled={saving}>
+            {saving ? '保存中…' : '保存并生效'}
+          </button>
+        </div>
       </div>
 
+      {/* ───────────── 单产品总览（左右对称延伸，全部功能一眼可见） ───────────── */}
+      {viewMode === 'overview' && (
+        active ? (
+          <MindmapView productName={active} interfaces={trees[active]?.interfaces || []} candidates={candidates} />
+        ) : (
+          <div style={{ textAlign: 'center', color: '#999', padding: 40 }}>请先选择产品</div>
+        )
+      )}
+
+      {/* 单产品编辑视图：产品选择器仅编辑模式显示 */}
+      {viewMode === 'single' && (
+      <>
       {/* 产品选择器 */}
       <div className="mac-tree-add" style={{ marginBottom: 12 }}>
         <span className="mac-tree-add__icon"><MacPlus size={16} /></span>
@@ -504,6 +525,8 @@ export default function ModuleTreeManage() {
           })}
         </>
       )}
+      </>
+      )}
 
       {/* 工程师选择弹层 */}
       <Popup
@@ -562,17 +585,17 @@ export default function ModuleTreeManage() {
               </div>
             ))}
 
-            {/* 微信/无效账号：折叠组 */}
-            {wechatCands.length > 0 && (
+            {/* 无部门账号：折叠组 */}
+            {noDeptCands.length > 0 && (
               <div style={{ marginTop: 8 }}>
                 <div className="mac-eng-group__label" style={{ cursor: 'pointer' }} onClick={() => setShowWechatGroup(!showWechatGroup)}>
                   <span className={`mac-tree-chevron ${showWechatGroup ? 'mac-tree-chevron--open' : ''}`} style={{ color: 'var(--mac-muted-fg)' }}>
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
                   </span>
-                  其他账号（微信）
-                  <span className="count">{wechatCands.length} 人</span>
+                  其他账号
+                  <span className="count">{noDeptCands.length} 人</span>
                 </div>
-                {showWechatGroup && wechatCands.map((c) => {
+                {showWechatGroup && noDeptCands.map((c) => {
                   const ifaceIdx = pickEng?.ifaceIdx ?? 0;
                   const funcIdx = pickEng?.funcIdx ?? 0;
                   const fn = trees[active]?.interfaces?.[ifaceIdx]?.functions?.[funcIdx];

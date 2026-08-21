@@ -23,6 +23,26 @@ function fmtDate(d: Date): string {
   return `${d.getFullYear()}-${m}-${day}`;
 }
 
+/** 时间筛选最大跨度（含头含尾天数）：与微信 getusersummary 单次查询上限一致，超出会报 errcode=61501 */
+const MAX_RANGE_DAYS = 7;
+
+/** yyyy-MM-dd 日期字符串加 n 天（本地时区；拼 T00:00:00 解析避免 UTC 偏移一天） */
+function addDays(dateStr: string, n: number): string {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + n);
+  return fmtDate(d);
+}
+
+/** 默认时间范围：最近 5 天不含当天（begin=今天-5，end=昨天；微信数据 T+1 延迟，最早可查昨日） */
+function getDefaultRange(): { begin: string; end: string } {
+  const now = new Date();
+  const begin = new Date(now);
+  begin.setDate(begin.getDate() - 5);
+  const end = new Date(now);
+  end.setDate(end.getDate() - 1);
+  return { begin: fmtDate(begin), end: fmtDate(end) };
+}
+
 // macaron 蓝阶配色（与 global.css --mac-blue-1..4 对齐），柱状图/饼图共用
 const BAR_COLOR_NEW = '#3697c3';
 const BAR_COLOR_CANCEL = '#93e0ff';
@@ -50,11 +70,8 @@ export default function AdminEntries() {
   const yesterdayDate = new Date();
   yesterdayDate.setDate(yesterdayDate.getDate() - 1);
   const yesterday = fmtDate(yesterdayDate);
-  const beginDefaultDate = new Date();
-  beginDefaultDate.setDate(beginDefaultDate.getDate() - 5);
-  const beginDefault = fmtDate(beginDefaultDate);
-  const [beginDate, setBeginDate] = useState(beginDefault);
-  const [endDate, setEndDate] = useState(yesterday);
+  const [beginDate, setBeginDate] = useState(() => getDefaultRange().begin);
+  const [endDate, setEndDate] = useState(() => getDefaultRange().end);
   const [list, setList] = useState<UserSummaryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -67,6 +84,31 @@ export default function AdminEntries() {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
+
+  // 时间筛选联动：保证 begin ≤ end 且含头含尾 ≤ MAX_RANGE_DAYS 天，超限时另一端自动收窄
+  // （begin 往前提 → end 跟着前移且不越过昨天；end 往后拉 → begin 跟着后移）
+  const handleBeginChange = (v: string) => {
+    setBeginDate(v);
+    if (!v) return;
+    const maxEnd = addDays(v, MAX_RANGE_DAYS - 1);
+    const nextEnd = endDate > maxEnd ? maxEnd : (endDate < v ? v : endDate);
+    setEndDate(nextEnd > yesterday ? yesterday : nextEnd);
+  };
+
+  const handleEndChange = (v: string) => {
+    setEndDate(v);
+    if (!v) return;
+    const minBegin = addDays(v, -(MAX_RANGE_DAYS - 1));
+    const nextBegin = beginDate < minBegin ? minBegin : (beginDate > v ? v : beginDate);
+    setBeginDate(nextBegin);
+  };
+
+  // 恢复默认时间范围（最近 5 天不含当天）；日期变化触发下方 useEffect 自动重新查询
+  const handleReset = () => {
+    const { begin, end } = getDefaultRange();
+    setBeginDate(begin);
+    setEndDate(end);
+  };
 
   // silent=true 为轮询刷新：不显示 loading，失败时保留旧数据避免界面闪烁
   const loadSummary = useCallback((silent: boolean) => {
@@ -202,7 +244,7 @@ export default function AdminEntries() {
                 className="admin-entries-stats__date"
                 value={beginDate}
                 max={endDate || undefined}
-                onChange={(e) => setBeginDate(e.target.value)}
+                onChange={(e) => handleBeginChange(e.target.value)}
               />
               <span className="admin-entries-stats__sep">至</span>
               <input
@@ -211,8 +253,9 @@ export default function AdminEntries() {
                 value={endDate}
                 min={beginDate || undefined}
                 max={yesterday}
-                onChange={(e) => setEndDate(e.target.value)}
+                onChange={(e) => handleEndChange(e.target.value)}
               />
+              <button type="button" className="admin-entries-stats__reset" onClick={handleReset}>重置</button>
             </div>
           </div>
           <div className="admin-entries-stats__charts">
