@@ -10,6 +10,8 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+from pypinyin import pinyin, Style
+
 from app.core.database import db_manager
 from app.models.module_tree import ModuleTree
 
@@ -19,6 +21,69 @@ logger = logging.getLogger(__name__)
 # parents[5] = 项目根（services->admin->modules->app->backend->root）
 _PROJECT_ROOT = Path(__file__).resolve().parents[5]
 _ASSIGNER_CONFIG_PATH = _PROJECT_ROOT / "ai" / "agents" / "AiDiagnosisPlatform" / "assigner" / "config" / "config.yaml"
+
+
+def _pinyin_head(zh_name: str) -> str:
+    """取中文名「前两字」的拼音全拼（无空格）；不足两字取全部；字母/数字保留。"""
+    head = (zh_name or '')[:2]
+    if not head:
+        return ''
+    try:
+        return ''.join(p[0] for p in pinyin(head, style=Style.NORMAL))
+    except Exception:
+        return head
+
+
+def _hash_str(s: str) -> str:
+    h = 0
+    for b in (s or '').encode('utf-8'):
+        h = (h * 31 + b) & 0xFFFFFFFF
+    return format(h, 'x')[:4]
+
+
+def gen_key(zh_name: str, seen: set) -> str:
+    """生成确定性 key：<前两字拼音>_<短哈希(全名)>，撞车则加盐保证唯一。"""
+    name = (zh_name or '').strip()
+    if not name:
+        return ''
+    base = _pinyin_head(name) or 'item'
+    k = f"{base}_{_hash_str(name)}"
+    salt = 1
+    while k in seen:
+        k = f"{base}_{_hash_str(f'{name}{salt}')}"
+        salt += 1
+    seen.add(k)
+    return k
+
+
+def renormalize_keys(trees: Dict[str, Any]) -> Dict[str, Any]:
+    """对整棵树重算 界面/功能 的 key：
+
+    - 界面 key：同产品内唯一
+    - 功能 key：同产品内全局唯一（用 name 前两字拼音 + 哈希，避免歧义）
+    返回新的 dict（不修改入参）。
+    """
+    result: Dict[str, Any] = {}
+    for product, tree in trees.items():
+        seen_iface: set = set()
+        seen_fn: set = set()
+        new_tree: Dict[str, Any] = {"interfaces": []}
+        for iface in (tree or {}).get("interfaces", []) or []:
+            new_iface = dict(iface)
+            iface_name = (new_iface.get("name") or "").strip()
+            if iface_name:
+                new_iface["key"] = gen_key(iface_name, seen_iface)
+            new_funcs = []
+            for fn in (iface.get("functions", []) or []):
+                new_fn = dict(fn)
+                fn_name = (new_fn.get("name") or "").strip()
+                if fn_name:
+                    new_fn["key"] = gen_key(fn_name, seen_fn)
+                new_funcs.append(new_fn)
+            new_iface["functions"] = new_funcs
+            new_tree["interfaces"].append(new_iface)
+        result[product] = new_tree
+    return result
 
 
 def _get_db():
@@ -285,11 +350,13 @@ def sync_to_user_profiles(trees: Dict[str, Any]) -> int:
 def save_trees(trees: Dict[str, Any]) -> Dict[str, Any]:
     """统一保存：写 DB + 同步用户画像 + 导出 config。
 
+    保存前统一重算 界面/功能 的 key（前端中文名 → 前两字拼音+哈希，保证唯一且格式统一）。
     返回 {"db": bool, "synced": int, "export": bool}。
     """
-    ok_db = replace_all_trees(trees)
+    normalized = renormalize_keys(trees)
+    ok_db = replace_all_trees(normalized)
     if not ok_db:
         return {"db": False, "synced": 0, "export": False}
-    synced = sync_to_user_profiles(trees)
-    ok_export = export_to_config(trees)
+    synced = sync_to_user_profiles(normalized)
+    ok_export = export_to_config(normalized)
     return {"db": True, "synced": synced, "export": ok_export}
