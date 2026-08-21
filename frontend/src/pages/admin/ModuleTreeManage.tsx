@@ -42,30 +42,10 @@ const engName = (id: string, cands: Engineer[]) => {
   return found ? found.name : id.slice(0, 8);
 };
 
-// ── key 生成：中文名 + 短哈希（确定性强、可读、不重复）──
-// key 由「中文名」决定，中文名变化则 key 自动重新生成；短哈希保证同一作用域内不重复。
-// 用途：仅作为程序内部定位标识（编辑定位 / 审批单应用），不影响 AI 派单归因。
-function hashStr(str: string): string {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = (h * 31 + str.charCodeAt(i)) >>> 0;
-  }
-  return h.toString(36).slice(0, 4);
-}
-
-function toKey(zhName: string, seen: Set<string>): string {
-  const trimmed = (zhName || '').trim();
-  if (!trimmed) return '';
-  const base = trimmed;
-  let k = `${base}_${hashStr(base)}`;
-  let salt = 1;
-  while (seen.has(k)) {
-    k = `${base}_${hashStr(base + '_' + salt)}`;
-    salt++;
-  }
-  seen.add(k);
-  return k;
-}
+// ── key 说明 ──
+// 界面/功能的 key（标识）由「后端保存时统一生成」：取中文名前两字拼音 + 短哈希，
+// 保证格式统一、唯一、随中文名自动更新。前端无需自行生成，新增/改名时以中文名作临时 key，
+// 保存后由后端重算覆盖。AI 派单归因不依赖 key（用 name/keywords/anchor/界面名）。
 
 export default function ModuleTreeManage() {
   const request = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
@@ -205,10 +185,9 @@ export default function ModuleTreeManage() {
   const addInterface = () => {
     const name = newIfaceName.trim();
     if (!name) { Toast({ message: '请输入界面名称', theme: 'warning' }); return; }
-    setActiveTree((t) => {
-      const seen = new Set<string>(t.interfaces.map((x) => x.key));
-      return { interfaces: [...t.interfaces, { key: toKey(name, seen), name, functions: [] }] };
-    });
+    setActiveTree((t) => ({
+      interfaces: [...t.interfaces, { key: name, name, functions: [] }],
+    }));
     setNewIfaceName('');
   };
   const removeInterface = (i: number) => {
@@ -216,24 +195,17 @@ export default function ModuleTreeManage() {
   };
   const renameInterface = (i: number, name: string) => {
     setActiveTree((t) => ({
-      interfaces: t.interfaces.map((iface, idx) => {
-        if (idx !== i) return iface;
-        const seen = new Set(t.interfaces.map((x) => x.key).filter((k, j) => j !== i));
-        return { ...iface, name, key: toKey(name, seen) };
-      }),
+      interfaces: t.interfaces.map((iface, idx) => (idx === i ? { ...iface, name, key: name } : iface)),
     }));
   };
 
-  // ── 功能 CRUD ──
+  // ── 功能 CRUD（key 用中文名作临时值，保存时由后端统一重算为拼音+哈希）──
   const addFunc = (i: number) => {
     const name = (newFuncName[`${i}`] || '').trim();
     if (!name) { Toast({ message: '请输入功能名称', theme: 'warning' }); return; }
     setActiveTree((t) => ({
-      interfaces: t.interfaces.map((iface, idx) => {
-        if (idx !== i) return iface;
-        const seen = new Set(iface.functions.map((f) => f.key));
-        return { ...iface, functions: [...iface.functions, { key: toKey(name, seen), name, keywords: [], engineers: [] }] };
-      }),
+      interfaces: t.interfaces.map((iface, idx) =>
+        idx === i ? { ...iface, functions: [...iface.functions, { key: name, name, keywords: [], engineers: [] }] } : iface),
     }));
     setNewFuncName((prev) => ({ ...prev, [`${i}`]: '' }));
   };
@@ -247,11 +219,7 @@ export default function ModuleTreeManage() {
     setActiveTree((t) => ({
       interfaces: t.interfaces.map((iface, idx) =>
         idx === i
-          ? { ...iface, functions: iface.functions.map((fn, jdx) => {
-              if (jdx !== j) return fn;
-              const seen = new Set(iface.functions.map((f) => f.key).filter((k, jj) => jj !== j));
-              return { ...fn, name, key: toKey(name, seen) };
-            }) }
+          ? { ...iface, functions: iface.functions.map((fn, jdx) => (jdx === j ? { ...fn, name, key: name } : fn)) }
           : iface),
     }));
   };
@@ -306,24 +274,15 @@ export default function ModuleTreeManage() {
     }
   };
 
-  // 判断是否「真·工程师」：内部账号（非 wechat_ 前缀）且有像样的姓名
-  const isRealEng = (c: Engineer) => {
-    const uname = (c.username || '').toLowerCase();
-    const n = (c.name || '').trim();
-    if (uname.startsWith('wechat_')) return false;
-    if (!n || /^[\W_]+$/.test(n)) return false; // 纯符号/空白姓名
-    return true;
-  };
-
   const filteredCands = candidates.filter((c) =>
     !engSearch || c.name.toLowerCase().includes(engSearch.toLowerCase()) || (c.department || '').includes(engSearch));
 
-  // 候选分组：真工程师按部门分组；微信/无效账号统一折叠到「其他账号」
-  const realCands = filteredCands.filter(isRealEng);
-  const wechatCands = filteredCands.filter((c) => !isRealEng(c));
+  // 候选分组：所有候选按「有部门 → 归部门分组；无部门 → 其他账号」，不按 username 过滤。
+  const withDept = filteredCands.filter((c) => (c.department || '').trim());
+  const noDeptCands = filteredCands.filter((c) => !(c.department || '').trim());
   const deptGroups: { dept: string; list: Engineer[] }[] = [];
-  for (const c of realCands) {
-    const dept = (c.department || '').trim() || '未分组';
+  for (const c of withDept) {
+    const dept = (c.department || '').trim();
     let g = deptGroups.find((x) => x.dept === dept);
     if (!g) { g = { dept, list: [] }; deptGroups.push(g); }
     g.list.push(c);
@@ -599,17 +558,17 @@ export default function ModuleTreeManage() {
               </div>
             ))}
 
-            {/* 微信/无效账号：折叠组 */}
-            {wechatCands.length > 0 && (
+            {/* 无部门账号：折叠组 */}
+            {noDeptCands.length > 0 && (
               <div style={{ marginTop: 8 }}>
                 <div className="mac-eng-group__label" style={{ cursor: 'pointer' }} onClick={() => setShowWechatGroup(!showWechatGroup)}>
                   <span className={`mac-tree-chevron ${showWechatGroup ? 'mac-tree-chevron--open' : ''}`} style={{ color: 'var(--mac-muted-fg)' }}>
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
                   </span>
-                  其他账号（微信）
-                  <span className="count">{wechatCands.length} 人</span>
+                  其他账号
+                  <span className="count">{noDeptCands.length} 人</span>
                 </div>
-                {showWechatGroup && wechatCands.map((c) => {
+                {showWechatGroup && noDeptCands.map((c) => {
                   const ifaceIdx = pickEng?.ifaceIdx ?? 0;
                   const funcIdx = pickEng?.funcIdx ?? 0;
                   const fn = trees[active]?.interfaces?.[ifaceIdx]?.functions?.[funcIdx];

@@ -32,10 +32,10 @@
 module_tree:
   摇人吧服务号:
     interfaces:
-    - key: call
+    - key: woyao_5374
       name: 我要摇人
       functions:
-      - key: ai_chat
+      - key: AI_692b
         name: AI对话
         anchor: 摇人吧AI对话、智能问答、U老师问答、求助问答
         keywords:
@@ -45,7 +45,7 @@ module_tree:
         - U老师
         - 提问
         engineers: []
-      - key: ticket_create
+      - key: tidan_909e
         name: 提单
         anchor: 我要摇人提单、报障、创建工单、提单流程
         keywords:
@@ -55,7 +55,7 @@ module_tree:
         - 报案
         - 创建工单
         engineers: []
-      - key: guess_ask
+      - key: caini_993a
         name: 猜你想问
         anchor: 猜你想问、高频问题推荐、提问联想
         keywords:
@@ -63,7 +63,7 @@ module_tree:
         - 推荐问题
         - 高频问题
         engineers: []
-      - key: upload_attach
+      - key: fujian_ccd6
         name: 附件上传
         anchor: 工单附件上传、图片视频上传、语音输入
         keywords:
@@ -73,7 +73,7 @@ module_tree:
         - 拍照
         - 语音输入
         engineers: []
-      - key: my_tickets
+      - key: wode_7fc5
         name: 我的工单
         anchor: 历史工单查看、我的工单列表、会话记录
         keywords:
@@ -83,10 +83,10 @@ module_tree:
         - 工单记录
         engineers: []
       description: 用户提单与求助入口
-    - key: tasks
+    - key: xitong_94ca
       name: 系统任务
       functions:
-      - key: task_list
+      - key: gongdan_f582
         name: 工单列表
         anchor: 工单列表与筛选、待我处理、任务列表、搜索排序
         keywords:
@@ -96,7 +96,7 @@ module_tree:
         - 工单筛选
         - 工单过滤
         engineers: []
-      - key: task_detail
+      - key: gongdan_fccd
         name: 工单详情
         anchor: 工单详情查看、工单处理流程、状态操作
         keywords:
@@ -105,7 +105,7 @@ module_tree:
         - 处理工单
         - 工单状态
         engineers: []
-      - key: discussion
+      - key: taolun_45f8
         name: 讨论区
         anchor: 工单讨论区、评论回复、@成员、U老师回复
         keywords:
@@ -115,7 +115,7 @@ module_tree:
         - 回复
         - 留言
         engineers: []
-      - key: operation_rec
+      - key: caozuo_85a9
         name: 操作记录
         anchor: 工单操作记录、处理历史、审计日志
         keywords:
@@ -124,10 +124,10 @@ module_tree:
         - 处理记录
         engineers: []
       description: 工单承接与处理
-    - key: admin
+    - key: houtai_bda2
       name: 后台管理
       functions:
-      - key: ticket_monitor
+      - key: gongdan_f9f5
         name: 工单监测
         anchor: 工单状态监测、工单监控大屏、待处理/超时统计
         keywords:
@@ -136,7 +136,7 @@ module_tree:
         - 工单状态监测
         - 待处理监控
         engineers: []
-      - key: project_progress
+      - key: xiangmu_67db
         name: 项目进度
         anchor: 跨项目看板、项目进度管理、项目紧急度
         keywords:
@@ -145,7 +145,7 @@ module_tree:
         - 项目状态
         - 项目概览
         engineers: []
-      - key: daily_report
+      - key: ribao_c28e
         name: 日报周报
         anchor: 日报周报生成、AI日报周报、日报管理
         keywords:
@@ -155,7 +155,7 @@ module_tree:
         - AI日报
         - 日报管理
         engineers: []
-      - key: project_mgmt
+      - key: xiangmu_6539
         name: 项目管理
         anchor: 项目管理与授权、项目导入、项目编辑、licence授权码
         keywords:
@@ -165,7 +165,7 @@ module_tree:
         - 项目授权码
         - 项目编辑
         engineers: []
-      - key: data_import
+      - key: shuju_76f2
         name: 数据导入
         anchor: 数据导入、DAS包导入、搬运效率数据导入
         keywords:
@@ -174,7 +174,7 @@ module_tree:
         - JSON导入
         - DAS包
         engineers: []
-      - key: risk_mgmt
+      - key: fengxian_d6f4
         name: 风险管理
         anchor: 项目风险管理、风险清单CRUD、风险缓解措施
         keywords:
@@ -183,7 +183,7 @@ module_tree:
         - 风险详情
         - 风险编辑
         engineers: []
-      - key: reports
+      - key: baobiao_9874
         name: 报表分析
         anchor: 报表分析、数据可视化、分析总结
         keywords:
@@ -191,7 +191,7 @@ module_tree:
         - 分析报表
         - 数据分析
         engineers: []
-      - key: user_mgmt
+      - key: yonghu_1f75
         name: 用户管理
         anchor: 用户管理、用户责任模块编辑、职责画像、用户详情
         keywords:
@@ -200,7 +200,7 @@ module_tree:
         - 用户详情
         - 责任模块
         engineers: []
-      - key: role_perm
+      - key: juese_bb09
         name: 角色权限
         anchor: 角色与权限管理、分配角色、权限配置
         keywords:
@@ -209,7 +209,7 @@ module_tree:
         - 分配角色
         - 权限配置
         engineers: []
-      - key: wechat_mgmt
+      - key: weixin_d45f
         name: 微信管理
         anchor: 微信自定义菜单、标签管理、用户标签、粉丝管理
         keywords:
@@ -219,7 +219,7 @@ module_tree:
         - 用户标签
         - 粉丝
         engineers: []
-      - key: resource_mgmt
+      - key: ziyuan_3936
         name: 资源管理
         anchor: 资源管理、服务器文件浏览下载
         keywords:
@@ -227,7 +227,7 @@ module_tree:
         - 文件浏览
         - 服务器文件
         engineers: []
-      - key: account_ops
+      - key: zhanghao_a8e6
         name: 账号数据迁移
         anchor: 用户数据迁移、账号合并删除、设置用户
         keywords:
@@ -239,10 +239,10 @@ module_tree:
       description: 管理岗功能
   调度USP:
     interfaces:
-    - key: home
+    - key: shouye_9704
       name: 首页
       functions:
-      - key: platform_status
+      - key: pingtai_e2ee
         name: 平台状态
         anchor: 平台首页与整体运行状态、系统状态概览
         keywords:
@@ -253,7 +253,7 @@ module_tree:
         - 平台概览
         engineers:
         - oD5oY3bC57Jug8w_uzmAHB375NJI
-      - key: data_overview
+      - key: shuju_780e
         name: 数据概览
         anchor: 数据概览看板、运行统计展示、Dashboard
         keywords:
@@ -264,10 +264,10 @@ module_tree:
         engineers:
         - oD5oY3bC57Jug8w_uzmAHB375NJI
       description: 平台首页、整体运行状态、数据概览
-    - key: monitor
+    - key: jiankong_92fd
       name: 监控
       functions:
-      - key: path_plan
+      - key: lujing_fd10
         name: 路径规划
         anchor: 路径规划与下发失败、路径规划超时、不给车下发路径、路线错误、车不走、MAPF路径优化
         keywords:
@@ -284,7 +284,7 @@ module_tree:
         - 车不走
         - 车不动
         engineers: []
-      - key: traffic_ctrl
+      - key: jiaotong_d0dc
         name: 交通管制
         anchor: 交通管制、锁区设置与调整、车辆避让、交通流管理、堵车死锁
         keywords:
@@ -299,7 +299,7 @@ module_tree:
         - 死锁
         - 不动
         engineers: []
-      - key: charge_rest
+      - key: chongdian_184d
         name: 充电休息调度
         anchor: 充电与休息调度、该充电不充电、充电阈值、休息调度、跨楼层转移、上轨逻辑
         keywords:
@@ -315,7 +315,7 @@ module_tree:
         - 跨层
         - 上轨
         engineers: []
-      - key: run_monitor
+      - key: yunxing_ac76
         name: 运行监控
         anchor: 运行监控大屏、实时状态、车辆运行监控
         keywords:
@@ -326,10 +326,10 @@ module_tree:
         - 监控大屏
         engineers: []
       description: 路径规划、交通管制、充电休息调度、运行监控
-    - key: task
+    - key: renwu_8fb4
       name: 任务
       functions:
-      - key: task_dispatch
+      - key: renwu_83c4
         name: 任务下发
         anchor: 任务下发与分配、任务没下发、任务阻塞排队、任务调度异常、任务执行失败、任务分配不出去
         keywords:
@@ -345,7 +345,7 @@ module_tree:
         - 任务排队
         - 待分配
         engineers: []
-      - key: task_template
+      - key: renwu_8656
         name: 任务模板
         anchor: 任务模板创建与复用、任务模板下发异常、模板配置、从模板发起任务
         keywords:
@@ -357,7 +357,7 @@ module_tree:
         - 模板下发
         - 新建任务
         engineers: []
-      - key: task_logic
+      - key: renwu_cb23
         name: 任务逻辑状态
         anchor: 任务逻辑与状态流转、任务状态不更新、任务卡在某状态、状态机异常、任务回调异常
         keywords:
@@ -372,10 +372,10 @@ module_tree:
         - 任务完成不了
         engineers: []
       description: 任务创建、下发、模板、执行、状态
-    - key: orchestration
+    - key: bianpai_94d0
       name: 编排
       functions:
-      - key: flow_orchestrate
+      - key: liucheng_8ba7
         name: 流程编排
         anchor: 流程编排与配置、流程创建编辑、流程设计、发起流程
         keywords:
@@ -387,7 +387,7 @@ module_tree:
         - 流程设计
         - 发起流程
         engineers: []
-      - key: task_flow
+      - key: renwu_2147
         name: 任务流
         anchor: 任务流编排、任务流引擎、WCS回调积压、任务流卡住、流程执行失败
         keywords:
@@ -402,10 +402,10 @@ module_tree:
         - 流程执行
         engineers: []
       description: 流程编排、任务流、WCS回调
-    - key: equipment
+    - key: shebei_95d2
       name: 设备
       functions:
-      - key: robot_group
+      - key: jiqi_1fdb
         name: 机器人组
         anchor: 机器人分组管理、机器人组配置、车组划分
         keywords:
@@ -416,7 +416,7 @@ module_tree:
         - 机器人群组
         - 车辆组
         engineers: []
-      - key: robot_report
+      - key: jiqi_5e7b
         name: 机器人报表
         anchor: 机器人报表、车辆运行统计、机器人数据报表、报表数据异常
         keywords:
@@ -427,7 +427,7 @@ module_tree:
         - 车辆数据
         - 报表不对
         engineers: []
-      - key: robot_exception
+      - key: jiqi_5f77
         name: 机器人异常
         anchor: 机器人异常、车辆离线、机器人故障、上不了线、机器人状态异常、卡死不动作
         keywords:
@@ -443,10 +443,10 @@ module_tree:
         - 机器人卡死
         engineers: []
       description: 机器人组、机器人报表、机器人异常
-    - key: storage
+    - key: kuwei_9149
       name: 库位
       functions:
-      - key: location_mgmt
+      - key: kuwei_e8f1
         name: 库位库区管理
         anchor: 库位与库区管理、库位查询、库位数据异常、库位不同步、库位删除问题
         keywords:
@@ -460,7 +460,7 @@ module_tree:
         - 库位删除
         - 库位绑定
         engineers: []
-      - key: carrier_mgmt
+      - key: zaiju_d3cc
         name: 载具类型管理
         anchor: 载具与载具类型管理、载具参数、载具同步、载具类型配置
         keywords:
@@ -472,10 +472,10 @@ module_tree:
         - 载具类型管理
         engineers: []
       description: 库位、库区、载具类型管理
-    - key: map
+    - key: ditu_8faf
       name: 地图
       functions:
-      - key: map_edit
+      - key: ditu_ee01
         name: 地图编辑
         anchor: 地图编辑与保存、地图导入导出、地图打不开、地图保存失败、地图编辑锁超时
         keywords:
@@ -489,7 +489,7 @@ module_tree:
         - 地图保存失败
         - 地图编辑锁
         engineers: []
-      - key: map_topology
+      - key: ditu_e998
         name: 地图拓扑
         anchor: 地图拓扑与连通性、地图加载缓慢、非强连通、路网编辑、地图预处理
         keywords:
@@ -502,7 +502,7 @@ module_tree:
         - 地图加载慢
         - 地图连通
         engineers: []
-      - key: ai_map
+      - key: AI_582d
         name: AI地图
         anchor: AI地图生成、AI绘地图、自动地图、AI地图生成失败
         keywords:
@@ -514,10 +514,10 @@ module_tree:
         - 生成转圈
         engineers: []
       description: 地图编辑、拓扑、AI地图
-    - key: simulator
+    - key: fangzhen_8fb6
       name: 仿真
       functions:
-      - key: task_simulator
+      - key: renwu_3bfd
         name: 任务模拟器
         anchor: 任务模拟器、仿真模拟、机器人仿真适配、仿真任务下发异常、模拟器机器人适配
         keywords:
@@ -529,7 +529,7 @@ module_tree:
         - 模拟下发
         - 机器人适配异常
         engineers: []
-      - key: sim_robot
+      - key: fangzhen_dff0
         name: 仿真机器人
         anchor: 仿真机器人、虚拟机器人、机器人仿真器、仿真车不移动、仿真行为异常
         keywords:
@@ -540,7 +540,7 @@ module_tree:
         - 仿真车不动
         - 仿真行为
         engineers: []
-      - key: sim_test
+      - key: fangzhen_64bb
         name: 仿真测试
         anchor: 仿真测试、仿真环境搭建、仿真平台、仿真任务与机器人创建
         keywords:
@@ -552,10 +552,10 @@ module_tree:
         - 创建一个仿真
         engineers: []
       description: 任务模拟器、仿真机器人、仿真测试
-    - key: peripheral
+    - key: waishe_9014
       name: 外设
       functions:
-      - key: peripheral_mgmt
+      - key: waishe_3774
         name: 外设管理
         anchor: 外设管理、通用外设、外设对接与通信、外设异常
         keywords:
@@ -566,7 +566,7 @@ module_tree:
         - 外设异常
         - 外设事件
         engineers: []
-      - key: door_elevator
+      - key: menyu_c4f1
         name: 门与电梯
         anchor: 门控与门禁、门不开、电梯控制、电梯不动、电梯异常、机器人乘电梯
         keywords:
@@ -582,7 +582,7 @@ module_tree:
         - 乘电梯
         - 门不关
         engineers: []
-      - key: conveyor
+      - key: shusong_6c3a
         name: 输送线
         anchor: 输送线控制与管理、输送线不动、输送线异常
         keywords:
@@ -592,7 +592,7 @@ module_tree:
         - 输送线不动
         - 输送线异常
         engineers: []
-      - key: traffic_light
+      - key: honglv_51e1
         name: 红绿灯
         anchor: 交通灯管理与控制、红绿灯异常、信号灯不亮
         keywords:
@@ -603,7 +603,7 @@ module_tree:
         - 绿灯
         - 灯不亮
         engineers: []
-      - key: charger
+      - key: chongdian_a77b
         name: 充电桩
         anchor: 充电桩管理、充电异常、充电桩工作状态、充不进电、充电桩没反应
         keywords:
@@ -615,7 +615,7 @@ module_tree:
         - 充电桩没反应
         - 收不到工作状态
         engineers: []
-      - key: call_device
+      - key: hujiao_dfcb
         name: 呼叫器
         anchor: 呼叫器通信、呼叫设备异常
         keywords:
@@ -625,10 +625,10 @@ module_tree:
         - 呼叫异常
         engineers: []
       description: 外设管理、充电桩、门、电梯、输送线、红绿灯、通用外设
-    - key: data
+    - key: shuju_9101
       name: 数据
       functions:
-      - key: data_stats
+      - key: shuju_7af8
         name: 数据统计
         anchor: 数据统计与报表、经营指标统计、数据质量校验、数据接口、统计数据不对
         keywords:
@@ -640,7 +640,7 @@ module_tree:
         - 数据不对
         - 统计数据
         engineers: []
-      - key: report
+      - key: baobiao_9061
         name: 报表
         anchor: 报表生成与分析、数据报表展示、报表异常
         keywords:
@@ -651,10 +651,10 @@ module_tree:
         - 报表没数据
         engineers: []
       description: 数据统计、报表、经营指标
-    - key: ops
+    - key: yunwei_96ac
       name: 运维
       functions:
-      - key: sys_config
+      - key: xitong_9a44
         name: 系统配置
         anchor: 系统配置与设置、参数配置、配置管理
         keywords:
@@ -662,7 +662,7 @@ module_tree:
         - 系统设置
         - 参数配置
         engineers: []
-      - key: license
+      - key: xuke_8d83
         name: 许可证
         anchor: 许可证生成与验证、License、授权管理
         keywords:
@@ -670,7 +670,7 @@ module_tree:
         - 许可证
         - 授权
         engineers: []
-      - key: deploy_update
+      - key: bushu_53c6
         name: 部署升级
         anchor: 系统部署与打包、版本升级、容器部署、在线更新
         keywords:
@@ -682,7 +682,7 @@ module_tree:
         - 在线更新
         - 版本升级
         engineers: []
-      - key: monitor_alert
+      - key: jiankong_5af4
         name: 监控告警
         anchor: 系统监控与告警、告警通知、异常告警
         keywords:
@@ -690,7 +690,7 @@ module_tree:
         - 告警
         - 告警推送
         engineers: []
-      - key: op_log
+      - key: caozuo_80f6
         name: 操作日志
         anchor: 操作日志与审计、日志查询、系统日志
         keywords:
@@ -700,14 +700,6 @@ module_tree:
         - 操作记录
         engineers: []
       description: 系统配置、许可证、部署升级、监控告警
-# ══════════════════════════════════════════════════════════════════
-# 注：module_keywords / module_anchor_texts / module_classify 已废弃，
-#     不再手工维护。它们由 settings.py 从上方 module_tree 责任树自动生成。
-# ══════════════════════════════════════════════════════════════════
-# ══════════════════════════════════════════════════════════════════
-# 3. 三路召回权重（L1 LLM / L2 语义 / L3 历史）
-#    消费方：ranking/ranker.py
-# ══════════════════════════════════════════════════════════════════
 ranker_weights:
   llm_match: 0.70        # L1 纯LLM：LLM 看全员画像直接打分（权重最大，主导派单）
   semantic_match: 0.20   # L2 语义：Embedding 工单 → 模块锚文本 → 过滤工程师
