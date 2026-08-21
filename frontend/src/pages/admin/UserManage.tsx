@@ -62,6 +62,31 @@ const avatarInitial = (name?: string | null, username?: string) => {
   return src.slice(0, 1).toUpperCase();
 };
 
+/**
+ * 归一化 responsibility_modules：兼容「旧两层 {产品: [模块]}」与「新三层 {产品: {界面: [功能]}}」。
+ * 统一输出三层结构，供卡片/详情展示安全遍历。
+ * - 两层（value 为数组）→ 归入虚拟界面「职责模块」
+ * - 三层（value 为对象）→ 原样返回
+ */
+const normalizeRm = (rm?: Record<string, unknown> | null): Record<string, Record<string, string[]>> => {
+  if (!rm || typeof rm !== 'object') return {};
+  const out: Record<string, Record<string, string[]>> = {};
+  for (const [product, v] of Object.entries(rm)) {
+    if (!v) continue;
+    if (Array.isArray(v)) {
+      // 旧两层：整个数组作为「职责模块」界面的功能
+      out[product] = { '职责模块': v.map(String) };
+    } else if (typeof v === 'object') {
+      const byIface: Record<string, string[]> = {};
+      for (const [iface, funcs] of Object.entries(v as Record<string, unknown>)) {
+        byIface[iface] = Array.isArray(funcs) ? funcs.map(String) : [String(funcs)];
+      }
+      out[product] = byIface;
+    }
+  }
+  return out;
+};
+
 const STATUS_OPTIONS = [
   { label: '活跃', value: 'active' },
   { label: '未激活', value: 'inactive' },
@@ -549,7 +574,7 @@ export default function UserManage() {
 
                   {user.responsibility_modules && Object.keys(user.responsibility_modules).length > 0 && (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 4 }}>
-                      {Object.entries(user.responsibility_modules).map(([product, byIface]) => (
+                      {Object.entries(normalizeRm(user.responsibility_modules)).map(([product, byIface]) => (
                         <span key={product} className="mac-chip mac-chip--outline">
                           {product}
                           {Object.entries(byIface).map(([iface, funcs]) =>
@@ -708,7 +733,7 @@ export default function UserManage() {
                         </div>
                       );
                     }
-                    return Object.entries(mods).map(([product, byIface]) => (
+                    return Object.entries(normalizeRm(mods)).map(([product, byIface]) => (
                       <div key={product} style={{ marginBottom: 8 }}>
                         <span className="mac-chip mac-chip--outline" style={{ marginRight: 6 }}>{product}</span>
                         {Object.entries(byIface).map(([iface, funcs]) => (
@@ -821,7 +846,7 @@ export default function UserManage() {
                     责任模块
                     <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--mac-muted-fg)' }}>点击编辑负责模块 ▶</span>
                   </div>
-                  {Object.entries(detailUser.responsibility_modules).map(([product, byIface]) => (
+                  {Object.entries(normalizeRm(detailUser.responsibility_modules)).map(([product, byIface]) => (
                     <div key={product} className="mac-detail-panel" style={{ marginBottom: 8 }}>
                       <span className="mac-chip mac-chip--outline" style={{ marginRight: 6 }}>{product}</span>
                       {Object.entries(byIface).map(([iface, funcs]) => (
