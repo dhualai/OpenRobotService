@@ -192,16 +192,34 @@ async def proxy_download_resource(
 
                 file_size = getattr(object_info, 'content_length', 0)
 
-                result = await asyncio.to_thread(
+                get_result = await asyncio.to_thread(
                     oss_client.client.get_object,
                     oss.GetObjectRequest(bucket=bucket_name, key=object_name)
                 )
+                body = get_result.body
+
+                # alibabacloud_oss_v2 的 StreamBodyReader 是 file-like 对象，
+                # 没有 iter_chunks()；用 read(chunk_size) 循环生成流式响应。
+                def _oss_stream(chunk_size: int = 64 * 1024):
+                    try:
+                        while True:
+                            data = body.read(chunk_size)
+                            if not data:
+                                break
+                            yield data
+                    finally:
+                        close_fn = getattr(body, "close", None)
+                        if callable(close_fn):
+                            try:
+                                close_fn()
+                            except Exception:
+                                pass
 
                 filename = quote(resource.resource_name, safe='')
                 content_disposition = f'inline; filename="{filename}"'
 
                 return StreamingResponse(
-                    content=result.body.iter_chunks(),
+                    content=_oss_stream(),
                     media_type=content_type,
                     headers={
                         "Content-Disposition": content_disposition,
