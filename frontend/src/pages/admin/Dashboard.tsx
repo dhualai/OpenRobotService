@@ -1,11 +1,11 @@
 // 后台管理首页仪表盘 —— 上中下三段式看板
 // 上：工单状态监测 —— 蓝阶环图 + 图例（百分比/数量）+ 四指标卡（点击图例下钻明细）
 // 中：跨项目看板 —— 按月项目数量柱状图 + 同步按钮 + 四指标卡 + 紧急度四象限卡片
-// 下：更多功能 —— 项目管理 / 数据管理 / 日报周报 / 其他 快捷入口
+// 下：更多功能 —— 项目管理 / 数据资源 / 日报周报 / 其他 快捷入口
 //
 // 数据接口见 src/api/dashboard.ts；接口未就绪时一律优雅降级为「0/暂无数据」，不阻塞页面渲染。
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Navbar, Loading, Toast } from 'tdesign-mobile-react';
+import { Navbar, Loading, Toast, Popup } from 'tdesign-mobile-react';
 import { useNavigate } from 'react-router-dom';
 import {
   TICKET_STATUS_LIST, URGENCY_LIST,
@@ -31,7 +31,7 @@ interface ProjectListItem {
   settlement_period?: string | null;
 }
 
-interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; }
+interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; group?: 'data-resource'; }
 
 type MoreEntryIconKind = 'projects' | 'data' | 'reports' | 'other';
 
@@ -92,7 +92,7 @@ function MoreEntryIcon({ kind }: { kind: MoreEntryIconKind }) {
 
 const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
   { path: '/admin/project-manage', label: '项目管理', kind: 'projects', tone: 'blue-1' },
-  { path: '/admin/data-import', label: '数据管理', kind: 'data', tone: 'blue-2' },
+  { path: '/admin/data-resource', label: '数据资源', kind: 'data', tone: 'blue-2', group: 'data-resource' },
   { path: '/admin/daily-summary', label: '日报周报', kind: 'reports', tone: 'blue-3' },
   { path: '/admin/entries', label: '其他', kind: 'other', tone: 'blue-4' },
 ];
@@ -115,6 +115,7 @@ export default function Dashboard() {
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [dataResourceSheetVisible, setDataResourceSheetVisible] = useState(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -261,12 +262,39 @@ export default function Dashboard() {
           {MORE_FUNCTION_ENTRIES
             .filter((e) => e.path !== '/admin/entries' || canAccessAdminEntries)
             .map((e) => (
-            <div key={e.path} className="dashboard-more-card" data-tone={e.tone} onClick={() => navigate(e.path)}>
+            <div key={e.path} className="dashboard-more-card" data-tone={e.tone} onClick={() => e.group === 'data-resource' ? setDataResourceSheetVisible(true) : navigate(e.path)}>
               <span className="dashboard-more-card__icon"><MoreEntryIcon kind={e.kind} /></span>
               <span className="dashboard-more-card__label">{e.label}</span>
             </div>
           ))}
         </div>
+
+        {/* 数据资源：二级选择（资源管理 / 数据导入） */}
+        <Popup visible={dataResourceSheetVisible} placement="bottom" onVisibleChange={setDataResourceSheetVisible}>
+          <div style={{ padding: '8px 16px 20px', background: '#fff', borderRadius: '12px 12px 0 0' }}>
+            <div style={{ textAlign: 'center', fontSize: 13, color: '#999', padding: '8px 0 12px' }}>数据资源</div>
+            <div
+              onClick={() => { console.log('[Dashboard] click 资源管理 → navigate /admin/file-explorer'); setDataResourceSheetVisible(false); navigate('/admin/file-explorer'); }}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 8px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
+            >
+              <span style={{ fontSize: 18 }}>🗂️</span>
+              <span style={{ fontSize: 15 }}>资源管理</span>
+            </div>
+            <div
+              onClick={() => { setDataResourceSheetVisible(false); navigate('/admin/data-import'); }}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 8px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
+            >
+              <span style={{ fontSize: 18 }}>📥</span>
+              <span style={{ fontSize: 15 }}>数据导入</span>
+            </div>
+            <div
+              onClick={() => setDataResourceSheetVisible(false)}
+              style={{ textAlign: 'center', padding: '14px 0', color: '#999', fontSize: 15, cursor: 'pointer' }}
+            >
+              取消
+            </div>
+          </div>
+        </Popup>
       </div>
     </div>
   );

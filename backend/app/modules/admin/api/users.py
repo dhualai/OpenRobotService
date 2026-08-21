@@ -13,7 +13,7 @@ from app.modules.admin.schemas.user import User, UserCreate, UserUpdate, UserDet
 from app.modules.admin.schemas.role import RoleBatchRemoval, RoleAssignment
 from app.modules.admin.schemas.project import ProjectUserRoleAssignment
 from app.modules.admin.schemas.response import SuccessResponse
-from app.modules.admin.api.auth import get_current_active_user_from_token, require_permission
+from app.modules.admin.api.auth import get_current_active_user_from_token, require_permission, has_permission_code
 from app.services.hmac_utils import generate_password, chinese_to_pinyin
 from app.models.task import Task, TaskType, TaskPriority
 from app.models.identity import user_project_roles
@@ -648,7 +648,9 @@ async def update_user(
     user_data: UserUpdate,
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
-    if current_user['username'] != username and "admin" not in current_user.get('permissions', []):
+    # 允许修改他人的条件：本人操作 / 拥有 admin 权限 / 拥有 backend:user:base:write 权限码
+    if (current_user['username'] != username
+            and not has_permission_code(current_user, "backend:user:base:write")):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="没有权限更新该用户信息"
