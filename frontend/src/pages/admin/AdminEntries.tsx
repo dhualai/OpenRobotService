@@ -2,7 +2,7 @@
 // 仪表盘（/admin，Dashboard.tsx）是默认首页；本页仅承载不常用的管理员工具入口。
 // 样式参考 macaron other 页：surface-card 行式入口 + 色调淡色图标圆角块。
 // 顶部用户统计：柱状图（同日期新增/取消用户合计）+ 环形图（真实/虚拟用户构成，中心显示总数）+ 饼图（时间段内来源分布），
-// 数据源后端 /api/wechat/user-summary 与 /api/wechat/batch-user-info（X-API-Key 鉴权），均每 10 秒轮询刷新。
+// 数据源后端 /api/wechat/user-summary 与 /api/wechat/batch-user-info（X-API-Key 鉴权）；每 10 秒轮询刷新功能已停用（代码注释保留）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Navbar } from 'tdesign-mobile-react';
@@ -27,8 +27,8 @@ function fmtDate(d: Date): string {
 const BAR_COLOR_NEW = '#3697c3';
 const BAR_COLOR_CANCEL = '#93e0ff';
 const PIE_COLORS = ['#227197', '#3697c3', '#51bfee', '#93e0ff', '#7fc6e8', '#5aa9cd', '#888d8f', '#c9d4d9', '#3d8ab0', '#c9e7f5'];
-// 轮询间隔（user-summary 与 batch-user-info 两个接口）
-const POLL_INTERVAL = 10_000;
+// 轮询间隔（user-summary 与 batch-user-info 两个接口）——轮询功能已停用，随下方 setInterval 一并注释
+// const POLL_INTERVAL = 10_000;
 // 环形图真实/虚拟用户配色
 const DONUT_COLOR_REAL = '#3697c3';
 const DONUT_COLOR_VIRTUAL = '#c9d4d9';
@@ -104,7 +104,7 @@ export default function AdminEntries() {
       .finally(() => { if (mountedRef.current && !silent) setUserLoading(false); });
   }, []);
 
-  // 日期变更立即查询 + 每 10 秒轮询两个接口
+  // 日期变更立即查询（每 10 秒轮询两个接口功能已停用，见下方注释代码）
   useEffect(() => {
     if (!beginDate || !endDate) return;
     if (beginDate > endDate) {
@@ -113,8 +113,8 @@ export default function AdminEntries() {
       return;
     }
     loadSummary(false);
-    const id = window.setInterval(() => { loadSummary(true); loadUsers(true); }, POLL_INTERVAL);
-    return () => window.clearInterval(id);
+    // const id = window.setInterval(() => { loadSummary(true); loadUsers(true); }, POLL_INTERVAL);
+    // return () => window.clearInterval(id);
   }, [beginDate, endDate, loadSummary, loadUsers]);
 
   useEffect(() => { loadUsers(false); }, [loadUsers]);
