@@ -447,10 +447,10 @@ html, body, #root {
   filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.12));
 }
 
-/* 标签文字（设计稿：黑字，常显） */
+/* 标签文字（设计稿：深蓝字，常显） */
 .chat-ticket-btn__label {
   font-size: 10px;
-  color: #000;
+  color: #0a4a8c;
   font-weight: 600;
   letter-spacing: 0.5px;
   user-select: none;
