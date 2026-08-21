@@ -8,6 +8,7 @@ import { Toast, Loading, Dialog, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
+import MindmapView from '@/pages/admin/MindmapView';
 import {
   MacPlus, MacX, MacSearch,
 } from '@/shared/components/macaronIcons';
@@ -62,6 +63,9 @@ export default function ModuleTreeManage() {
   const [active, setActive] = useState<string>('');
   const [trees, setTrees] = useState<TreeMap>({});
   const [candidates, setCandidates] = useState<Engineer[]>([]);
+
+  // 视图模式：single=单个产品编辑；overview=全产品总览（只读、全部展开）
+  const [viewMode, setViewMode] = useState<'single' | 'overview'>('single');
 
   // 新关键词/锚输入缓存
   const [kwInputs, setKwInputs] = useState<Record<string, string>>({});
@@ -330,11 +334,32 @@ export default function ModuleTreeManage() {
     <div className="mac-page" style={{ padding: 12, paddingBottom: 80 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <h2 style={{ margin: 0, fontSize: 18 }}>责任模块树</h2>
-        <button className="mac-btn mac-btn--primary" onClick={handleSave} disabled={saving}>
-          {saving ? '保存中…' : '保存并生效'}
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            type="button"
+            className={`mac-chip ${viewMode === 'overview' ? 'mac-chip--tag-blue' : 'mac-chip--soft'}`}
+            onClick={() => setViewMode(viewMode === 'overview' ? 'single' : 'overview')}
+          >
+            {viewMode === 'overview' ? '退出导图' : '🧠 思维导图'}
+          </button>
+          <button className="mac-btn mac-btn--primary" onClick={handleSave} disabled={saving}>
+            {saving ? '保存中…' : '保存并生效'}
+          </button>
+        </div>
       </div>
 
+      {/* ───────────── 单产品中心放射思维导图（全部功能一眼可见） ───────────── */}
+      {viewMode === 'overview' && (
+        active ? (
+          <MindmapView productName={active} interfaces={trees[active]?.interfaces || []} candidates={candidates} />
+        ) : (
+          <div style={{ textAlign: 'center', color: '#999', padding: 40 }}>请先选择产品</div>
+        )
+      )}
+
+      {/* 单产品编辑视图：产品选择器仅编辑模式显示 */}
+      {viewMode === 'single' && (
+      <>
       {/* 产品选择器 */}
       <div className="mac-tree-add" style={{ marginBottom: 12 }}>
         <span className="mac-tree-add__icon"><MacPlus size={16} /></span>
@@ -499,6 +524,8 @@ export default function ModuleTreeManage() {
             );
           })}
         </>
+      )}
+      </>
       )}
 
       {/* 工程师选择弹层 */}
