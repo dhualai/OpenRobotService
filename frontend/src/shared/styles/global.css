@@ -2312,17 +2312,17 @@ html, body, #root {
 .task-card2__priority[data-priority="high"] { background: var(--blue-2); color: #fff; }
 .task-card2__priority[data-priority="medium"] { background: var(--blue-3); color: var(--foreground); }
 .task-card2__title {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
   font-size: 18px;
   font-weight: 700;
   color: var(--foreground);
   line-height: 1.35;
   margin-bottom: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
 }
+/* 标题内层文本（TitleEllipsis 透传）：继承卡片标题字体 + 2 行截断，箭头紧跟其后 */
+.task-card2__title-inner { font: inherit; color: inherit; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 /* 人员流转行：发起人 → 处理人（头像统一灰底白字，无彩色） */
 .task-card2__people {
   display: flex;
@@ -5250,7 +5250,9 @@ html, body, #root {
   cursor: pointer;
 }
 /* 标题（设计稿：19px font-bold leading-tight tracking-tight） */
-.detail-card__title { font-size: 19px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.3; margin: 0 0 10px; color: var(--foreground); }
+.detail-card__title { display: flex; align-items: flex-start; gap: 4px; font-size: 19px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.3; margin: 0 0 10px; color: var(--foreground); }
+/* 标题内层文本（TitleEllipsis 透传）：继承大标题字体 + 3 行截断，箭头紧跟其后 */
+.detail-card__title-inner { font: inherit; color: inherit; letter-spacing: inherit; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 /* 卡片小节标题（设计稿 SectionCard：13px font-semibold 前景色） */
 .detail-card__h { font-size: 13px; font-weight: 600; margin: 0 0 8px; color: var(--foreground); }
 
@@ -6252,6 +6254,12 @@ html, body, #root {
 /* ===== TitleEllipsis：标题溢出折叠/展开（PC + 移动端一致） ===== */
 /* 通用：标题文本元素的基类。所有外层透传进来的 className（如 history-row__title）会自带
    -webkit-line-clamp:N 截断，未溢出时 data-overflow="0"，组件不渲染任何控件。 */
+.title-ellipsis__text {
+  /* 在 flex 父容器（.history-row__top / .detail-card__title / .task-card2__title）里
+     占据剩余空间并允许收缩，配合末尾箭头按钮 flex-shrink:0 实现「箭头紧跟标题末尾」。 */
+  flex: 1 1 0%;
+  min-width: 0;
+}
 .title-ellipsis__text[data-expanded="1"] {
   /* 展开：取消 line-clamp，让 CSS 自然撑开显示完整文本。
      父容器 line-clamp 仍由外层 className（如 .history-row__title）提供，
