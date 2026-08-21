@@ -49,6 +49,7 @@ const AssignRole = lazy(() => import('@/pages/admin/AssignRole'));
 const UserSetup = lazy(() => import('@/pages/admin/UserSetup'));
 const PermissionManage = lazy(() => import('@/pages/admin/PermissionManage'));
 const ResourceManage = lazy(() => import('@/pages/admin/ResourceManage'));
+const FileExplorer = lazy(() => import('@/pages/admin/FileExplorer'));
 const DailyReportManage = lazy(() => import('@/pages/admin/DailyReportManage'));
 const WechatManage = lazy(() => import('@/pages/admin/WechatManage'));
 
@@ -112,6 +113,7 @@ export const router = createBrowserRouter([
               { path: 'user-setup', element: <UserSetup /> },
               { path: 'permissions', element: <PermissionManage /> },
               { path: 'resources', element: <ResourceManage /> },
+              { path: 'file-explorer', element: <FileExplorer /> },
               { path: 'wechat', element: <WechatManage /> },
             ],
           },
