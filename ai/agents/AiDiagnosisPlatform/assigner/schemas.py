@@ -6,7 +6,7 @@
 - AssignmentResult ↔ 派单结果，落库时写回 tasks.assigned_to / metadata_info
 """
 
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -102,10 +102,13 @@ class EngineerProfile(BaseModel):
     department: Optional[str] = Field(
         None, description="部门/团队名称 ↔ users.department_id → departments.name"
     )
-    responsibility_modules: Dict[str, List[str]] = Field(
+    responsibility_modules: Dict[str, Any] = Field(
         default_factory=dict,
-        description="按产品组织的责任模块 ↔ users.responsibility_modules(JSON)，"
-                    "如 {'调度USP': ['车端','任务调度'], '摇人吧服务号': ['后端']}",
+        description="责任模块 ↔ users.responsibility_modules(JSON)。"
+                    "目标三层结构 {产品: {界面: [功能]}}，如 "
+                    "{'调度USP': {'监控': ['路径规划']}}。"
+                    "兼容迁移期旧两层 {产品: [模块]} 与旧扁平列表。"
+                    "消费时统一经 function_names_for_product()/products 适配。",
     )
     job_level: int = Field(
         default=1,
@@ -115,16 +118,55 @@ class EngineerProfile(BaseModel):
         None, description="职责画像文本 ↔ users.duty_text，供 LLM 匹配参考"
     )
 
-    def all_modules(self) -> List[str]:
-        """返回所有产品下模块的扁平去重列表（供召回/排序使用）。"""
+    def function_names_for_product(self, product: str) -> List[str]:
+        """返回某产品下该工程师负责的所有【功能名】扁平列表（跨界面合并去重）。
+
+        三层结构 {产品: {界面: [功能]}} → 扁平为 [功能名]。供语义召回/模块收紧等
+        以"功能名"为粒度消费的下游使用（与 module_classify 以功能名为 key 对齐）。
+        """
+        by_iface = (self.responsibility_modules or {}).get(product) or {}
+        if isinstance(by_iface, list):  # 兼容旧两层/旧 list 数据
+            return list(by_iface)
         seen = set()
         flat = []
-        for mods in self.responsibility_modules.values():
-            for m in mods:
+        for iface, funcs in by_iface.items():
+            fns = funcs if isinstance(funcs, list) else [funcs]
+            for f in fns:
+                if f and f not in seen:
+                    seen.add(f)
+                    flat.append(f)
+        return flat
+
+    def all_modules(self) -> List[str]:
+        """返回所有产品下功能名的扁平去重列表（供召回/排序使用）。"""
+        seen = set()
+        flat = []
+        for product in self.responsibility_modules.keys():
+            for m in self.function_names_for_product(product):
                 if m not in seen:
                     seen.add(m)
                     flat.append(m)
         return flat
+
+    def modules_display(self) -> str:
+        """格式化三层责任模块用于日志/LLM 提示词展示。
+
+        例： "[调度USP]{监控:[路径规划,交通管制]}|{任务:[任务下发]}" "|" 分隔产品。
+        """
+        parts = []
+        for p, by_iface in (self.responsibility_modules or {}).items():
+            if isinstance(by_iface, list):  # 兼容旧两层/旧 list
+                parts.append(f"[{p}]{','.join(str(x) for x in by_iface)}" if by_iface else f"[{p}]")
+                continue
+            iface_parts = []
+            for iface, funcs in by_iface.items():
+                fns = funcs if isinstance(funcs, list) else [funcs]
+                if fns:
+                    iface_parts.append(f"{iface}:[{','.join(str(x) for x in fns)}]")
+                else:
+                    iface_parts.append(f"{iface}")
+            parts.append(f"[{p}]{'|'.join(iface_parts)}" if iface_parts else f"[{p}]")
+        return "|".join(parts)
 
 
 class AssignmentResult(BaseModel):

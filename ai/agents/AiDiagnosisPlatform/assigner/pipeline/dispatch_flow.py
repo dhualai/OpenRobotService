@@ -293,8 +293,13 @@ class DispatchFlow:
             mod = ""
             if eng:
                 flat = []
-                for p, ms in eng.responsibility_modules.items():
-                    flat.append(f"{p}:{','.join(ms[:3])}")
+                for p, by_iface in eng.responsibility_modules.items():
+                    if isinstance(by_iface, dict):
+                        flat.append(f"{p}:{{" + ','.join(
+                            f"{i}:{','.join(fs[:3])}" for i, fs in by_iface.items()
+                        ) + "}")
+                    else:
+                        flat.append(f"{p}:{','.join(by_iface[:3])}")
                 mod = f"[{';'.join(flat)}]"
             parts.append(f"{nm}={sc:.2f}{mod}")
         logger.info(
@@ -341,10 +346,7 @@ class DispatchFlow:
         # ── 被派人完整画像 ──
         winner = next((e for e in candidates if e.id == result.engineer_id), None)
         if winner:
-            modules_flat = []
-            for prod, mods in winner.responsibility_modules.items():
-                modules_flat.append(f"{prod}={','.join(mods)}" if mods else prod)
-            modules_str = " | ".join(modules_flat) if modules_flat else "-"
+            modules_str = winner.modules_display() or "-"
             duty = (winner.duty_text or "")[:120].replace("\n", " ")
             scores = ranked_scores.get(winner.id, {})
             logger.info(

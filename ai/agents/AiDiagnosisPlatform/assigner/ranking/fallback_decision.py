@@ -47,10 +47,9 @@ class FallbackDecision:
         for eid, d in items[1:3]:
             eng = emap.get(eid)
             if eng:
-                prod_parts = [f"[{p}]{','.join(m) if m else ''}" for p, m in eng.responsibility_modules.items()]
                 lines.append(
                     f"- {eng.name}(L{d.get('job_level','?')}): "
-                    f"{d['total_score']:.2f} {'|'.join(prod_parts)}"
+                    f"{d['total_score']:.2f} {eng.modules_display()}"
                 )
         return "\n".join(lines) or "无其他候选"
 
