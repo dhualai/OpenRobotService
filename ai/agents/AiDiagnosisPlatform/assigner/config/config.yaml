@@ -269,20 +269,62 @@ module_tree:
       functions:
       - key: lujing_fd10
         name: 路径规划
-        anchor: 路径规划与下发失败、路径规划超时、不给车下发路径、路线错误、车不走、MAPF路径优化
+        anchor: 路径规划与下发失败、路径规划超时、不给车下发路径、路线错误、车不走、路径规划总负责人兜底
         keywords:
         - 路径规划
         - 路径下发
         - 路径失败
         - 规划失败
-        - MAPF
-        - 路径优化
-        - 避让
         - 不给路径
         - 没路径
-        - 路线
+        - 路线错误
         - 车不走
         - 车不动
+        engineers: []
+      - key: lujing_aa82
+        name: 路径规划-算法内核
+        anchor: 路径规划调度算法内核、多智能体路径规划、复杂路径规划、MAPF路径优化、算法调试
+        keywords:
+        - 算法内核
+        - 调度算法
+        - 多智能体
+        - 复杂路径
+        - MAPF
+        - 路径优化
+        - 算法排查
+        - 算法调试
+        engineers: []
+      - key: lujing_429e
+        name: 路径规划-单车规划
+        anchor: 单车路径规划、单车线路下发、单车路径异常
+        keywords:
+        - 单车规划
+        - 单车路径
+        - 单车线路
+        - 单车路线
+        engineers: []
+      - key: lujing_3788
+        name: 路径规划-跨楼层电梯
+        anchor: 跨楼层规划、电梯调度联动、跨楼层路径、楼层转移、乘电梯
+        keywords:
+        - 跨楼层
+        - 跨层
+        - 电梯
+        - 楼层转移
+        - 乘电梯
+        - 电梯调度
+        engineers: []
+      - key: lujing_2823
+        name: 路径规划-库区分支
+        anchor: 库区路径规划、库位存取路径、巷道路径、货架间搬运路径、库区分支
+        keywords:
+        - 库区
+        - 库区路径
+        - 库分支
+        - 巷道
+        - 货架路径
+        - 库位存取
+        - 存取路径
         engineers: []
       - key: jiaotong_d0dc
         name: 交通管制
@@ -443,6 +485,55 @@ module_tree:
         - 机器人卡死
         engineers: []
       description: 机器人组、机器人报表、机器人异常
+    - key: tongxin_cab4
+      name: 通信对接
+      functions:
+      - key: MQ_6a1a
+        name: MQTT通信
+        anchor: MQTT通信、消息订阅发布、MQTT连接、topic管理、通信掉线
+        keywords:
+        - MQTT
+        - MQTT通信
+        - MQTT连接
+        - 消息订阅
+        - 消息发布
+        - topic
+        - 通信掉线
+        - 断连
+        engineers: []
+      - key: cheduan_a9a6
+        name: 车端对接科钛
+        anchor: 科钛车端对接、调度指令下发车端、科钛协议、科钛车通信
+        keywords:
+        - 科钛
+        - 科钛车
+        - 科钛对接
+        - 车端对接
+        - 车端通信
+        - 车端协议
+        engineers: []
+      - key: cheduan_66e8
+        name: 车端对接睿芯华睿
+        anchor: 睿芯行车端对接、华睿车端对接、车端协议适配、多车厂对接
+        keywords:
+        - 睿芯行
+        - 华睿
+        - 睿芯对接
+        - 华睿对接
+        - 车端适配
+        - 多车厂
+        engineers: []
+      - key: xieyi_d50b
+        name: 协议制定
+        anchor: 通信协议制定、协议设计、报文格式、协议文档
+        keywords:
+        - 协议制定
+        - 协议设计
+        - 报文
+        - 通信协议
+        - 协议文档
+        engineers: []
+      description: MQTT通信、车端对接、协议制定
     - key: kuwei_9149
       name: 库位
       functions:
