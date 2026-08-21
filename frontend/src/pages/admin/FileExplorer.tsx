@@ -79,10 +79,10 @@ export default function FileExplorer() {
       try {
         let children: ChildItem[];
         if (crumb.id == null) {
-          children = await request<ChildItem[]>(`${FOLDERS_PREFIX}/root/children`, { skipCache: true });
+          children = await request<ChildItem[]>(`${FOLDERS_PREFIX}/root/children?storage_type=OSS`, { skipCache: true });
           setFolderInfo(null);
         } else {
-          children = await request<ChildItem[]>(`${FOLDERS_PREFIX}/${crumb.id}/children`, { skipCache: true });
+          children = await request<ChildItem[]>(`${FOLDERS_PREFIX}/${crumb.id}/children?storage_type=OSS`, { skipCache: true });
           // 并行获取文件夹统计信息（失败不影响列表展示）
           request<FolderDetail>(`${FOLDERS_PREFIX}/${crumb.id}`, { skipCache: true })
             .then(setFolderInfo)

@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List, Any
+from typing import List, Any, Optional
 from app.core.database import get_async_db as get_db
+from app.models.resource import StorageType
 from app.modules.admin.resource_manager.schemas.resource_folder import ResourceFolderCreate, ResourceFolderUpdate, ResourceFolderResponse, Child
 from app.modules.admin.resource_manager.services.resource_folder_service import ResourceFolderService
 
@@ -19,8 +20,11 @@ async def get_root_folders(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/root/children", response_model=List[Child])
-async def get_root_children(db: AsyncSession = Depends(get_db)):
-    return await ResourceFolderService.get_root_children(db)
+async def get_root_children(
+    db: AsyncSession = Depends(get_db),
+    storage_type: Optional[StorageType] = Query(None, description="按存储类型过滤资源（MINIO/OSS）"),
+):
+    return await ResourceFolderService.get_root_children(db, storage_type=storage_type)
 
 
 @router.get("/{folder_id}", response_model=ResourceFolderResponse)
@@ -32,10 +36,14 @@ async def get_folder(folder_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{folder_id}/children", response_model=List[Child])
-async def get_folder_children(folder_id: int, db: AsyncSession = Depends(get_db)):
+async def get_folder_children(
+    folder_id: int,
+    db: AsyncSession = Depends(get_db),
+    storage_type: Optional[StorageType] = Query(None, description="按存储类型过滤资源（MINIO/OSS）"),
+):
     if not await ResourceFolderService.get_folder_by_id(db, folder_id):
         raise HTTPException(status_code=404, detail="父文件夹未找到")
-    return await ResourceFolderService.get_folder_children(db, folder_id)
+    return await ResourceFolderService.get_folder_children(db, folder_id, storage_type=storage_type)
 
 
 @router.post("/", response_model=ResourceFolderResponse, status_code=201)
