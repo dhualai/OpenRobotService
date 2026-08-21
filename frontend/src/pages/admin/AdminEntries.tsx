@@ -45,11 +45,14 @@ const adminEntries: Entry[] = [
 export default function AdminEntries() {
   const navigate = useNavigate();
 
-  // ── 用户统计：时间筛选默认昨天（微信数据 T+1 延迟，最早可查昨日） ──
+  // ── 用户统计：时间筛选默认最近 5 天（不含当天；微信数据 T+1 延迟，最早可查昨日） ──
   const yesterdayDate = new Date();
   yesterdayDate.setDate(yesterdayDate.getDate() - 1);
   const yesterday = fmtDate(yesterdayDate);
-  const [beginDate, setBeginDate] = useState(yesterday);
+  const beginDefaultDate = new Date();
+  beginDefaultDate.setDate(beginDefaultDate.getDate() - 5);
+  const beginDefault = fmtDate(beginDefaultDate);
+  const [beginDate, setBeginDate] = useState(beginDefault);
   const [endDate, setEndDate] = useState(yesterday);
   const [list, setList] = useState<UserSummaryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -135,7 +138,7 @@ export default function AdminEntries() {
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
       legend: { data: ['新增用户', '取消用户'], top: 0, itemWidth: 12, itemHeight: 8, textStyle: { color: '#888d8f', fontSize: 11 } },
       grid: { left: 8, right: 8, top: 32, bottom: 0, containLabel: true },
-      xAxis: { type: 'category', data: dates, axisTick: { show: false }, axisLine: { lineStyle: { color: '#e8eaea' } }, axisLabel },
+      xAxis: { type: 'category', data: dates, axisTick: { show: false }, axisLine: { lineStyle: { color: '#e8eaea' } }, axisLabel: { ...axisLabel, formatter: (v: string) => v.slice(5) } },
       yAxis: { type: 'value', minInterval: 1, splitLine: { lineStyle: { color: '#f1f4f4' } }, axisLabel },
       series: [
         { name: '新增用户', type: 'bar', data: dates.map((d) => sumBy(d, 'new_user')), barMaxWidth: 24, itemStyle: { color: BAR_COLOR_NEW, borderRadius: [4, 4, 0, 0] } },
@@ -206,6 +209,7 @@ export default function AdminEntries() {
                 className="admin-entries-stats__date"
                 value={endDate}
                 min={beginDate || undefined}
+                max={yesterday}
                 onChange={(e) => setEndDate(e.target.value)}
               />
             </div>
