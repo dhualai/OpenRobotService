@@ -702,13 +702,15 @@ class AiDiagnosisPlatform:
         self._retrieval_cache: dict = {}  # 实例级缓存，不跨 session 串味
 
     def _rewrite_images(self, r) -> str:
-        """把本地图片路径 ./media/xxx → 完整 CDN URL（跳过外链）"""
+        """把本地图片路径 ./media/xxx → 完整静态路由 URL（跳过外链）
+
+        布局约定：图片与 md 同目录的 media/ 子目录（usp/manual/media/、
+        usp/faq/media/ 各自独立），URL = /kb/{domain}/{sub_domain 全路径}/media/。
+        旧逻辑取 sub_domain 首段拼共享目录（usp/media/）已随布局废弃。
+        """
         _dm = r.domain or "team"
-        _sd = r.sub_domain or "faq"
-        # images are in shared parent directory (e.g., usp/media/), not per-sub_domain
-        # sub_domain like "usp\faq" → parent is "usp"
-        _sd_parent = _sd.replace('\\', '/').split('/')[0]
-        _mu = f"{self.config.media_url_prefix}/kb/{_dm}/{_sd_parent}"
+        _sd = (r.sub_domain or "").replace('\\', '/').strip('/')
+        _mu = f"{self.config.media_url_prefix}/kb/{_dm}/{_sd}"
         return re.sub(
             r'!\[([^\]]*)\]\((?:\./)?media/([^)]+)\)',
             rf'![\1]({_mu}/media/\2)',
@@ -2164,12 +2166,17 @@ class AiDiagnosisPlatform:
 
         # sub_domain → 标签映射
         _sub_labels = {
-            "platform": "🎫 服务号",
-            "faq": "📋 FAQ", "usp_faq": "📋 FAQ",
+            "platform": "🎫 服务号", "yaorenba": "🎫 服务号",
+            "faq": "📋 FAQ", "usp_faq": "📋 FAQ", "usp/faq": "📋 FAQ",
             "cheduan_errors": "🚗 车端", "cheduan_implementation": "🚗 车端",
             "translation": "🌐 翻译",
-            "diagnosis": "🏭 诊断",
-            "usp_manual": "📖 手册", "usp_product": "📖 产品",
+            "diagnosis": "🏭 诊断", "usp/diagnosis": "🏭 诊断",
+            "usp_manual": "📖 手册", "usp/manual": "📖 手册",
+            "usp_cards": "🔍 诊断卡",
+            "usp/overview": "📘 模块文档",
+            "usp/error_codes": "🚨 平台错误码",
+            "usp/ui_pages": "🧭 页面导航",
+            "usp/terminology": "🔤 术语表",
             "product_catalog": "🏢 产品", "vda5050_protocol": "🏢 协议",
             "navigation": "📐 导航", "standards": "📐 标准",
         }
