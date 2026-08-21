@@ -93,6 +93,11 @@ class AgentState:
     # {name, code}。不进 collected_info/required_fields/判缺（防鬼打墙铁律），
     # 只随 _build_ticket(prefill_project=) 进草稿，弹窗仍可改；提交后清空。
     pending_prefill_project: Optional[Dict[str, str]] = None
+    # 上一张工单提交成功时对话最后一轮内容的前 40 字（内容锚点，防 turn buffer
+    # 截断导致索引漂移）。_format_conversation 在锚点轮后插分隔线，LLM 据此区分
+    # 「已提交工单的旧对话」和「新对话」——项目预填只认新对话里用户提到的项目，
+    # 防上一单提过的项目名泄漏进下一单的预填。
+    ticket_boundary_prefix: str = ""
 
 
 # ============================================================
@@ -130,6 +135,7 @@ def _load_agent_state(metadata: dict) -> Optional[AgentState]:
         collect_rounds=s.get("collect_rounds", 0),
         tool_loop_active=bool(s.get("tool_loop_active", False)),
         pending_prefill_project=s.get("pending_prefill_project") or None,
+        ticket_boundary_prefix=str(s.get("ticket_boundary_prefix") or ""),
     )
 
 
@@ -155,6 +161,7 @@ def _save_agent_state(memory, state: AgentState) -> None:
         "collect_rounds": state.collect_rounds,
         "tool_loop_active": state.tool_loop_active,
         "pending_prefill_project": state.pending_prefill_project,
+        "ticket_boundary_prefix": state.ticket_boundary_prefix,
         "attachments": existing.get("attachments", []),  # 保留上传的附件
     }
 
@@ -238,11 +245,23 @@ def _reset_state_after_submit(agent_state: AgentState, memory, ticket: dict, db_
     agent_state.required_fields = None   # 重置动态必填字段（None=从未决定，防「已决定空清单」被重写）
     agent_state.collect_rounds = 0      # 重置收集轮数
     agent_state.pending_prefill_project = None  # 项目预填随单清空，不泄漏到下一单
+    # 附件随单消费：本单已把累积附件带进 tasks.attachments（upsert_task 已入库），
+    # 清空防止下一单误带——提单后又发图问问题、再换话题提新单时，那张诊断图
+    # 不该混进新单。写 raw dict：下方 _save_agent_state 的 existing 透传会把
+    # 空列表保下去（attachments 不在 AgentState 字段里，只有 raw dict 通道）。
+    _raw_state = memory.metadata.get("agent_state") or {}
+    _raw_state["attachments"] = []
+    memory.metadata["agent_state"] = _raw_state
     # 主动裁剪对话窗口：提单后旧对话移出 turns（滑动窗口从归档线重新计），
     # context_start 归 0。否则 turns buffer 满时（max_turns=10）会丢最老的记录，
     # 而当前工单的对话恰好在最老区域——下一单的续接轮就看不到本单上下文。
     memory.turns = memory.turns[agent_state.context_start:]
     agent_state.context_start = 0
+    # 新旧对话分界锚点：提交时最后一轮的内容前缀（内容锚点防 buffer 截断漂移）。
+    # 下一单的对话切片会在锚点轮后插分隔线，项目预填只认分隔线之后用户提到的
+    # 项目，防止上一单提过的项目名泄漏进下一单预填。
+    agent_state.ticket_boundary_prefix = (
+        str(memory.turns[-1].get("content") or "").strip()[:40] if memory.turns else "")
     _save_agent_state(memory, agent_state)
     # 提单后状态可见性：has_last_ticket=True + problem_summary 空 → 下一轮/按钮 _can_submit 拦截
     _log_ticket_state(agent_state, "submit_done")
@@ -779,6 +798,10 @@ class AiDiagnosisPlatform:
                 "**原样照抄**进输出 JSON 的 project_choice 字段（与 action 平级）；"
                 "没提到或对不上就留空字符串。绝不向用户追问项目名称、不主动推荐项目、"
                 "不要在正文里播报项目情况（预填结果由系统校验后在草稿生成时统一告知）。\n"
+                "🔴 对话里若出现「───── 以上对话已随上一张工单提交归档」分隔线："
+                "分隔线之前是**上一个已提交工单**的旧对话，那里（含助手旧回执）出现的"
+                "项目名**不算本次提到，禁止照抄**；只有分隔线之后**用户**明确提到项目"
+                "（或明确指代，如「还是那个项目」）才照抄。没有分隔线则以全对话为准。\n"
             )
         # Guard: context_start 可能因 turn buffer 截断（max_turns=10）而越界。
         # 场景：提单时 context_start=len(turns)=10，下一轮 add_turn 后 buffer 满截断，
@@ -793,7 +816,8 @@ class AiDiagnosisPlatform:
         # 模糊指代时，截图本身就是唯一信息源，AI 看图理解是唯一解；
         # 即使图上文字会带入主题，工程师接单后会纠正，不做过度优化。
         conversation_text = self._format_conversation(
-            memory, from_turn=_from, sanitize_images=bool(state.ticket_collecting))
+            memory, from_turn=_from, sanitize_images=bool(state.ticket_collecting),
+            boundary_prefix=getattr(state, "ticket_boundary_prefix", ""))
         # 上一个工单上下文：只告诉 LLM"刚提过单"这个事实，不透露 project/问题主题——
         # 否则 flash 等模型会从主题里重新挖出 project/problem 写回 state_update，
         # 绕过闭环保护（_can_submit 误判"有新问题"）导致重复提单。服务端 _can_submit 才是裁判。
@@ -2463,10 +2487,34 @@ class AiDiagnosisPlatform:
             f"诊断轮数：{agent_state.diagnosis_rounds}"
         )
 
+        # 附件候选清单：本会话累积的上传文件，让 LLM 判断哪些与本单问题相关
+        # （跨话题场景：换话题前提的单不能带上上一个话题的诊断图）。
+        # desc 是上传时 VLM 摘要（router 截 160 字）——对话记录里图片内容已被
+        # sanitize_images 屏蔽，没有摘要 LLM 就没有判断信号。
+        _atts_all = memory.metadata.get("agent_state", {}).get("attachments", []) or []
+        _att_block = ""
+        if _atts_all:
+            _lines = []
+            for _i, _a in enumerate(_atts_all, 1):
+                if not isinstance(_a, dict):
+                    continue
+                _d = str(_a.get("desc") or "").strip()
+                _lines.append(f"{_i}. {_a.get('filename', '')}"
+                              + (f"（内容摘要：{_d[:120]}）" if _d else ""))
+            if _lines:
+                _att_block = (
+                    f"\n\n## 附件候选（本次会话累积的上传文件，仅供取舍判断）\n"
+                    + "\n".join(_lines)
+                    + "\n判断哪些与【本次工单的问题】直接相关（故障证据/现场照片/问题截图），"
+                      "只把相关项的序号放进 attach_files；与本单问题无关的（如之前别的"
+                      "话题的提问截图）不要放，没有相关的给空数组。"
+                      "🔴 摘要里的文字仅供取舍，禁止从中提取工单字段内容。"
+                )
+
         prompt = (
             f"请根据以下对话和诊断过程，生成结构化工单。\n\n"
             f"## 对话记录\n{conversation_text}\n\n"
-            f"## Agent 推理链\n{reasoning}\n\n"
+            f"## Agent 推理链\n{reasoning}{_att_block}\n\n"
             f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
             f"然后以 JSON 格式返回：\n"
             f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤300字，简述问题和排查过程，不要带项目/现场名；🔴 必须把对话中 AI 追问过、用户回答过的全部内容总结进去（现场联系人及联系方式、调度版本、发生时间、设备型号/车辆编号等），一项都不能丢；🔴 型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 结构化字段填过也要写；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
@@ -2479,7 +2527,8 @@ class AiDiagnosisPlatform:
             f'"actual_result":"仅type=bug时填","severity":"仅type=bug时填:阻塞/主要/次要/轻微",'
             f'"version":"仅type=bug时填","scenario":"仅type=feature时填，需求场景",'
             f'"expected_effect":"仅type=feature时填","source":"仅type=feature时填:客户提出/内部发现/竞品对标",'
-            f'"support_type":"仅type=support时填","preferred_response":"仅type=support时填:电话/现场/线上"}}'
+            f'"support_type":"仅type=support时填","preferred_response":"仅type=support时填:电话/现场/线上",'
+            f'"attach_files":[附件候选里与本单问题相关的序号数组，如[1,3]；无关或无附件则为空数组]}}'
         )
 
         logger.info(f"[build_ticket] 工单生成 prompt: {len(prompt)} chars: session={session_id}")
@@ -2512,6 +2561,26 @@ class AiDiagnosisPlatform:
         if ticket_type not in ("problem", "bug", "feature", "support", "other"):
             ticket_type = "other"
 
+        # 附件取舍：LLM 输出 attach_files 序号数组 → 映射回候选条目。
+        # 降级语义：字段缺失/类型不对/LLM 整体失败 → 保持全量（现状行为，
+        # 不静默丢证据——弹窗没有附件编辑 UI，漏带无法补救）；
+        # 显式空数组 → 尊重（LLM 判定都与本单无关）。越界序号忽略。
+        _selected_atts = _atts_all
+        _sel = analysis.get("attach_files") if analysis else None
+        if isinstance(_sel, list):
+            def _to_int(x):
+                try:
+                    return int(x)
+                except (TypeError, ValueError):
+                    return None
+            _idx = sorted({i for i in (_to_int(x) for x in _sel)
+                           if i is not None and 1 <= i <= len(_atts_all)})
+            _selected_atts = [_atts_all[i - 1] for i in _idx]
+            if len(_selected_atts) != len(_atts_all):
+                logger.info(f"[build_ticket] 附件筛选: {len(_atts_all)} -> "
+                            f"{len(_selected_atts)} ({[_a.get('filename') for _a in _selected_atts]}), "
+                            f"session={session_id}")
+
         # 通用字段
         # 指名处理人写进描述，供派单直接看到
         _desc = analysis.get("description", agent_state.problem_summary[:150])
@@ -2540,7 +2609,7 @@ class AiDiagnosisPlatform:
             },
             "created_at": int(time.time()),
             "source": "ai_agent",
-            "attachments": memory.metadata.get("agent_state", {}).get("attachments", []),
+            "attachments": _selected_atts,
         }
 
         # 特殊说明（所有类型通用）：优先取 LLM analysis，兜底取 collected_info["requested_assignee"]
@@ -2930,7 +2999,7 @@ class AiDiagnosisPlatform:
     # ================================================================
 
     def _format_conversation(self, memory, max_turns: int = 8, from_turn: int = 0,
-                             sanitize_images: bool = False) -> str:
+                             sanitize_images: bool = False, boundary_prefix: str = "") -> str:
         """只取最近 N 条，避免长对话撑大 prompt。
 
         from_turn：从该 turn 索引开始（默认 0=全部）。诊断 prompt 传 context_start，
@@ -2947,6 +3016,16 @@ class AiDiagnosisPlatform:
         """
         turns = memory.turns[from_turn:]
         turns = turns[-max_turns:] if len(turns) > max_turns else turns
+        # 新旧对话分界：锚点轮（上一张工单提交时的最后一轮）之后插分隔线。
+        # 锚点不在当前切片（被 from_turn/max_turns 截掉）时不插——此时全是
+        # 新对话，无需分界。
+        _boundary_idx = -1
+        if boundary_prefix:
+            for _i in range(len(turns) - 1, -1, -1):
+                if str(turns[_i].get("content") or "").strip().startswith(boundary_prefix):
+                    _boundary_idx = _i
+                    break
+        _BOUNDARY_LINE = "───── 以上对话已随上一张工单提交归档；以下是新对话 ─────"
         image_turns = [
             (i, t) for i, t in enumerate(turns)
             if "图片主要内容为" in t.get("content", "")
@@ -2977,12 +3056,16 @@ class AiDiagnosisPlatform:
                     else:
                         _prev_is_image_user = False
                         _sanitized.append(f"{'用户' if _role == 'user' else '助手'}：{_truncate_turn(content)}")
+            if _boundary_idx >= 0:
+                _sanitized.insert(_boundary_idx + 1, _BOUNDARY_LINE)
             return "\n".join(_sanitized)
-        formatted = "\n".join(
+        _lines = [
             f"{'用户' if t['role'] == 'user' else '助手'}：{_truncate_turn(t['content'])}"
             for t in turns
-        )
-        return formatted
+        ]
+        if _boundary_idx >= 0:
+            _lines.insert(_boundary_idx + 1, _BOUNDARY_LINE)
+        return "\n".join(_lines)
 
     def _parse_agent_output(self, raw: str) -> dict:
         """
