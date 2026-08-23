@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "standard": {
+      "format": "%(asctime)s - %(name)s - %(levelname)s - %(module)s.%(funcName)s:%(lineno)d - %(message)s",
+      "datefmt": "%Y-%m-%d %H:%M:%S"
+    }
+  },
+  "handlers": {
+    "console": {
+      "class": "logging.StreamHandler",
+      "level": "DEBUG",
+      "formatter": "standard",
+      "stream": "ext://sys.stdout"
+    },
+    "file": {
+      "class": "logging.handlers.TimedRotatingFileHandler",
+      "level": "INFO",
+      "formatter": "standard",
+      "filename": "D:\\CODE\\7_18\\OpenRobotService\\backend\\logs\\backend.log",
+      "when": "midnight",
+      "interval": 1,
+      "backupCount": 30,
+      "encoding": "utf-8"
+    }
+  },
+  "loggers": {
+    "DAS": {
+      "level": "INFO",
+      "handlers": [
+        "console",
+        "file"
+      ],
+      "propagate": false
+    },
+    "uvicorn": {
+      "level": "INFO",
+      "handlers": [
+        "console",
+        "file"
+      ],
+      "propagate": false
+    },
+    "uvicorn.error": {
+      "level": "INFO",
+      "handlers": [
+        "console",
+        "file"
+      ],
+      "propagate": false
+    },
+    "uvicorn.access": {
+      "level": "INFO",
+      "handlers": [
+        "console",
+        "file"
+      ],
+      "propagate": false
+    }
+  },
+  "root": {
+    "level": "INFO",
+    "handlers": [
+      "console",
+      "file"
+    ]
+  }
+}

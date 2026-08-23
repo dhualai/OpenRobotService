@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#0052d9" />
+    <title>摇人吧 - OpenRobotService</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      // Polyfill Object.hasOwn (ES2022)，react-markdown 内部依赖使用
+      if (!Object.hasOwn) {
+        Object.hasOwn = function (obj, prop) {
+          return Object.prototype.hasOwnProperty.call(obj, prop);
+        };
+      }
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

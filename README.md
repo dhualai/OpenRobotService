@@ -6,7 +6,8 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688.svg)](https://fastapi.tiangolo.com/)
-[![Vue](https://img.shields.io/badge/Vue-3-42b883.svg)](https://vuejs.org/)
+[![React](https://img.shields.io/badge/React-19-61DAFB.svg)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6.svg)](https://www.typescriptlang.org/)
 
 ---
 
@@ -15,7 +16,7 @@
 无需任何部署，**微信扫码关注服务号 摇人吧，即刻开始使用**：
 
 <p align="center">
-  <img src="./docs/assets/facassist-qrcode.jpg" alt="摇人吧 服务号二维码" width="200" />
+  <img src="./docs/assets/yaorenba-qrcode.jpg" alt="摇人吧 服务号二维码" width="200" />
   <br/>
   <b>微信扫一扫，关注「摇人吧」</b>
 </p>
@@ -90,30 +91,49 @@
 | 知识库 | Qdrant 向量库 · Embedding · RAG 检索 |
 | AI | 在线商用大模型 API（默认 DeepSeek，可切换）· 三视角 Agent |
 | 微信对接 | wechatpy（消息回调 / 自定义菜单 / OAuth 网页授权 / 模板消息） |
-| 前端 | Vue 3 · Vite · Vant（移动端 H5，微信内打开） |
-| 缓存/队列 | Redis |
+| 前端 | React 19 · TypeScript · Vite 7 · TDesign Mobile React（移动端 H5，微信内打开） |
+| 缓存/队列 | Redis · Celery |
 | 认证 | 微信 OAuth + JWT · RBAC |
+| 对象存储 | MinIO · 阿里云 OSS |
 | 部署 | Docker Compose · Nginx |
 
 ### 目录结构
 
 ```
 OpenRobotService/
-├── backend/                 # FastAPI 后端
+├── ai/                     # AI 模块（知识库 RAG + 三视角 Agent）
+│   ├── agents/             # 三视角 Agent（诊断/数据分析等）
+│   ├── api/                # AI API 路由
+│   ├── core/               # AI 核心组件（LLM/Embedding/Memory/Retrieval）
+│   ├── embed_models/       # 向量模型（bge-small-zh-v1.5）
+│   ├── ingestion/          # 知识摄取模块（FAQ/操作手册/故障排查等）
+│   ├── kb/                 # Qdrant 向量库（知识库存储）
+│   ├── tests/              # AI 模块测试
+│   └── run.py              # AI 服务启动入口
+├── backend/                # FastAPI 后端
 │   ├── app/
-│   │   ├── api/             # 路由层
 │   │   ├── core/           # 配置、安全、依赖、USP 接缝
 │   │   ├── models/         # SQLAlchemy 模型
 │   │   ├── schemas/        # Pydantic 模型
-│   │   ├── services/       # 业务逻辑层（任务状态机等）
+│   │   ├── services/       # 跨模块共享服务
+│   │   ├── modules/        # 三大业务模块（admin/call/tasks）
+│   │   ├── integrations/   # 外部系统集成（禅道等）
 │   │   ├── wechat/         # 微信服务号对接（菜单/鉴权/对话/通知）
-│   │   ├── kb/             # 知识库（摄取 / RAG 检索 / 动态总结）
-│   │   ├── ai/             # AI 算法（三视角 Agent + LLM 基础层）
-│   │   └── main.py
+│   │   ├── utils/          # 工具类（MinIO/MQTT/图片处理）
+│   │   └── __init__.py     # FastAPI app 实例 + 路由装配
 │   ├── alembic/            # 数据库迁移
 │   ├── tests/              # pytest 测试
-│   └── requirements.txt
-├── frontend/               # Vue3 H5 前端（我要摇人 / 系统任务 / 后台管理）
+│   └── main.py             # 后端服务启动入口
+├── frontend/               # React H5 前端（我要摇人 / 系统任务 / 后台管理）
+│   ├── src/
+│   │   ├── pages/          # 页面组件（call/tasks/admin）
+│   │   ├── router/         # 路由配置
+│   │   ├── stores/         # 状态管理（auth/workbench）
+│   │   ├── api/            # API 调用封装
+│   │   └── shared/         # 共享组件与工具
+│   └── package.json
+├── deploy/                 # 部署配置
+│   └── nginx/conf/         # Nginx 配置文件
 ├── docs/                   # 文档（产品 / 架构 / 微信配置 / 部署）
 ├── scripts/                # 运维脚本
 └── README.md
@@ -130,12 +150,28 @@ python -m venv .venv && source .venv/Scripts/activate   # Windows Git Bash
 pip install -r requirements.txt
 cp .env.example .env          # 填写数据库与微信配置
 alembic upgrade head          # 建表
-uvicorn app.main:app --reload # 启动，访问 http://127.0.0.1:8000/docs
+uvicorn app:app --reload      # 启动，访问 http://127.0.0.1:8400/docs
 
-# 2. 前端
+# 2. AI 服务（可选，本地开发）
+cd ai
+pip install -r requirements.txt
+cd ..                         # 返回项目根目录
+python ai/run.py              # 启动 AI 服务，运行在 http://0.0.0.0:8401
+
+# 3. 前端
 cd frontend
 npm install
-npm run dev
+npm run dev                   # 开发服务器 localhost:5173
+```
+
+### 前端常用命令
+
+```bash
+npm run dev           # 开发服务器 localhost:5173
+npm run build         # tsc 类型检查 + Vite 生产构建
+npm run lint          # ESLint 代码检查
+npm run test          # Vitest 单元测试
+npm run test:coverage # 测试覆盖率
 ```
 
 ### 文档
