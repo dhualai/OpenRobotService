@@ -1,0 +1,240 @@
+# =============================================================================
+# OpenRobotService 测试用例参考库
+# 从现有 api-test-cases.xlsx 导出，作为 AI 生成新用例的参考格式
+# =============================================================================
+
+# --- call (25 cases) ---
+- id: CALL-001
+  module: call
+  method: POST
+  path: /api/conversations
+  auth: "Y"
+  payload: {"title": "New conversation"}
+  expected_status: 200
+  expected_fields: {"title": "New conversation"}
+  note: "创建会话"
+
+- id: CALL-005
+  module: call
+  method: POST
+  path: /api/qa/ask
+  auth: "Y"
+  payload: {"question": "机器故障怎么办"}
+  expected_status: 200
+  expected_fields: {"success": true}
+  note: "正常流程：提问"
+
+- id: CALL-006
+  module: call
+  method: POST
+  path: /api/qa/ask
+  auth: "Y"
+  payload: {"question": ""}
+  expected_status: 422
+  expected_fields: null
+  note: "数据校验：question 为空"
+
+- id: CALL-010
+  module: call
+  method: POST
+  path: /api/ai/qa/ticket/ack
+  auth: "Y"
+  payload: {"ticket_id": 999}
+  expected_status: 404
+  expected_fields: null
+  note: "异常流程：ticket 不存在"
+
+- id: CALL-015
+  module: call
+  method: POST
+  path: /api/tasks/cuiban-notification
+  auth: "Y"
+  payload: {"task_id": 1}
+  expected_status: 200
+  expected_fields: {"success": true}
+  note: "正常流程：催办"
+
+- id: CALL-017
+  module: call
+  method: GET
+  path: /api/tasks/assignable-users
+  auth: "Y"
+  payload: null
+  expected_status: 200
+  expected_fields: null
+  note: "正常流程：升级选人列表"
+
+- id: CALL-022
+  module: call
+  method: POST
+  path: /api/tasks/cuiban-notification
+  auth: "Y"
+  payload: '{"task_id": 1, "note": "a" * 10001}'
+  expected_status: 422
+  expected_fields: null
+  note: "数据校验：催办备注超长"
+
+- id: TASK-035
+  module: tasks
+  method: PATCH
+  path: /api/tasks/1/assign
+  auth: "Y"
+  role: customer
+  payload: {"assigned_to": "customer"}
+  expected_status: 200
+  expected_fields: {"assigned_to": "customer", "status": "in_progress"}
+  note: "正常流程：customer接单"
+
+- id: TASK-036
+  module: tasks
+  method: PATCH
+  path: /api/tasks/1/assign
+  auth: "Y"
+  role: engineer
+  payload: {"assigned_to": "engineer"}
+  expected_status: 200
+  expected_fields: {"assigned_to": "engineer", "status": "in_progress"}
+  note: "正常流程：engineer接单"
+
+# --- tasks (34 cases) ---
+- id: TASK-001
+  module: tasks
+  method: POST
+  path: /api/tasks
+  auth: "Y"
+  payload: {"title": "Error E1001", "description": "Robot fault"}
+  expected_status: 200
+  expected_fields: {"status": "pending"}
+  note: "正常流程：创建任务"
+
+- id: TASK-007
+  module: tasks
+  method: GET
+  path: /api/tasks/99999
+  auth: "Y"
+  payload: null
+  expected_status: 404
+  expected_fields: null
+  note: "异常流程：任务不存在"
+
+- id: TASK-010
+  module: tasks
+  method: PATCH
+  path: /api/tasks/1/status
+  auth: "Y"
+  payload: {"status": "illegal_state"}
+  expected_status: 400
+  expected_fields: null
+  note: "状态流转：非法流转"
+
+- id: TASK-012
+  module: tasks
+  method: POST
+  path: /api/tasks/1/assign
+  auth: "Y"
+  payload: {"assigned_to": "engineer"}
+  expected_status: 200
+  expected_fields: {"assigned_to": "engineer", "status": "in_progress"}
+  note: "正常流程：接单 → in_progress"
+
+- id: TASK-014
+  module: tasks
+  method: POST
+  path: /api/tasks/1/comments
+  auth: "Y"
+  payload: {"content": "检查了传感器"}
+  expected_status: 200
+  expected_fields: null
+  note: "正常流程：添加评论"
+
+- id: TASK-020
+  module: tasks
+  method: POST
+  path: /api/tasks
+  auth: "Y"
+  payload: {"title": ""}
+  expected_status: 422
+  expected_fields: null
+  note: "数据校验：title 为空"
+
+# --- admin (24 cases) ---
+- id: ADMIN-001
+  module: admin
+  method: GET
+  path: /api/admin/tickets
+  auth: "Y"
+  payload: null
+  expected_status: 200
+  expected_fields: null
+  note: "正常流程：工单总览"
+
+- id: ADMIN-006
+  module: admin
+  method: POST
+  path: /api/admin/users
+  auth: "Y"
+  payload: {"username": "newuser", "password": "pass123", "name": "New User", "role": "engineer"}
+  expected_status: 201
+  expected_fields: {"username": "newuser"}
+  note: "正常流程：创建用户"
+
+- id: ADMIN-008
+  module: admin
+  method: POST
+  path: /api/admin/users
+  auth: "Y"
+  payload: {"username": "testadmin"}
+  expected_status: 409
+  expected_fields: null
+  note: "数据校验：用户名重复"
+
+- id: ADMIN-010
+  module: admin
+  method: DELETE
+  path: /api/admin/users/nonexist
+  auth: "Y"
+  payload: null
+  expected_status: 404
+  expected_fields: null
+  note: "异常流程：删除用户不存在"
+
+- id: ADMIN-014
+  module: admin
+  method: POST
+  path: /api/admin/roles
+  auth: "Y"
+  payload: {"name": ""}
+  expected_status: 422
+  expected_fields: null
+  note: "数据校验：role name 为空"
+
+# --- auth (12 cases) ---
+- id: AUTH-001
+  module: auth
+  method: POST
+  path: /auth/login
+  auth: "N"
+  payload: {"username": "testadmin", "password": "admin123"}
+  expected_status: 200
+  expected_fields: {"token_type": "bearer"}
+  note: "正常流程：登录成功"
+
+- id: AUTH-002
+  module: auth
+  method: GET
+  path: /auth/me
+  auth: "N"
+  payload: null
+  expected_status: 401
+  expected_fields: null
+  note: "权限：无 token 访问"
+
+- id: AUTH-009
+  module: auth
+  method: POST
+  path: /auth/login
+  auth: "N"
+  payload: {"username": "testadmin", "password": "wrong"}
+  expected_status: 401
+  expected_fields: null
+  note: "异常流程：密码错误"

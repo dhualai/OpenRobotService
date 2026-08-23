@@ -22,6 +22,10 @@ htmlcov/
 .env
 .env.*
 !.env.example
+# 前端多环境构建配置（仅含公开信息：AppID、回调地址、开关，不含任何密钥），
+# 需要随代码提交，供 CI / 服务器 vite build --mode <env> 时加载。
+!.env.production
+!.env.staging
 *.pem
 *.key
 
@@ -32,7 +36,10 @@ htmlcov/
 # ===== 前端 =====
 node_modules/
 frontend/dist/
+frontend/dist-verify/
 frontend/.vite/
+frontend/coverage/
+*.tsbuildinfo
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
@@ -50,6 +57,102 @@ logs/
 
 # ===== Claude Code 本地设置 =====
 .claude/settings.local.json
+codebuddy.md
+
+# ===== CodeBuddy 本地记忆（跨会话记忆文件，仅本地，不入库）=====
+.codebuddy/memory/
+
+# ===== topo-pack 临时工件 / 授权包（含敏感 token，禁止入库）=====
+.tmp_*/
+.tmp_import_pack.py
+**/auth.json
+**/outbox_patch.zip
 
 # ===== 临时 / 草稿（如 logo 草稿、导出中间文件）=====
 old/
+# git commit 临时信息文件（write_to_file 写入，提交后删除，绝不入库）
+.commit-msg-tmp.txt
+.commit-msg-*.txt
+
+# ===== AI 对话用户上传临时文件 =====
+uploads/
+
+# =====ai向量库====
+/ai/docs/
+ai/kb/active_*.txt
+ai/kb/qdrant/
+ai/kb/.ingest_state/
+ai/embed_models/
+
+# =====生产同步的媒体文件（operation_doc 图片等），不入库====
+/docs/operation_doc/
+
+# ===== 本地调试文件（不入库）=====
+ai/core/minio_helper_local.py
+scripts/start-minio.ps1
+# 数据库 schema 同步工具：仅本地开发环境对齐模型与库，生产环境不同，切勿入库
+scripts/sync_db_schema.py
+
+# ===== 日志排查文档（部署时从服务器拷贝）=====
+ai/agents/AiTaskPlatform/log_analyzer/log_manual/
+
+# ===== 企业微信用户映射（含真实姓名/邮箱，不提交）=====
+ai/integrations/wecom/user_map.json
+# ===== Allure test report output =====
+output/
+
+# ===== 项目数据（本地数据文件，不入库）=====
+/项目数据/
+
+# ===== 派单系统说明（本地参考文档，不入库）=====
+/docs/派单系统说明.md
+
+# ===== AI 测试生成流水线产物（每次 CI 重新生成，不入库）=====
+/test-gen/
+
+# ===== AI 生成用例归档（审阅确认后手动转正入库）=====
+automation/references/generated-cases/
+
+# ===== 本地脚本（不入库）=====
+scripts/start-minio.ps1
+
+# ===== 本地部署/打包产物（不入库）=====
+/ai_deploy.zip
+/ai_deploy.tar.gz
+/ors-v1-*.zip
+/*.zip
+
+# ===== 本地调试/测试数据（不入库）=====
+/bad_pairs_storage_full.json
+/code_index_test.json
+/package-lock.json
+ai/tests/_verify_log_sub_agent_fix.py
+
+# 大日志测试数据（不入库）
+ai/tests/test_logs/
+ai/tests/test_images/
+ai/assets/fonts/msyh.ttc
+
+# ===== 本地调试/探测脚本（仅本地用，不入库）=====
+ai/tests/_dbg_keyword.py
+ai/tests/_diag_real_log.py
+ai/tests/_e2e_real_log_sub_agent.py
+ai/tests/_probe_live_log.py
+ai/tests/_probe_real_errors.py
+ai/tools/bench_vision_models.py
+frontend/package-lock.json.bak
+frontend/macaron-minimal-ui/
+/ai/scripts
+/ai/tests
+/ai/tests
+.claude/launch.json
+/ai/tools
+/ai/tests
+/ai/tests
+ai/.env.example
+.token_tmp
+ai/.env.example
+ai/.env.example
+ai/.env.example
+/ai/tests
+/ai/tests

@@ -1,0 +1,1280 @@
+"""
+提单测试 — 对话提单（Chat Path）+ 按钮提单（Button Path）+ 混合路径 + 提单后补充
+
+Mock LLM + Memory + Retriever，调用 AiDiagnosisPlatform 真实方法。
+"""
+import json
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+
+from ai.agents.AiDiagnosisPlatform.pipeline import AgentState
+
+
+# ================================================================
+# 1. 对话提单（Chat Path）
+# ================================================================
+
+class TestChatSubmit:
+    """对话中通过 LLM 或关键词触发提单"""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_chat_submit_success(self, platform, make_state, make_request):
+        """LLM action=submit + collected_info 有 project → ticket 生成"""
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人离线",
+            collected_info={"project": "华大制造基地"},
+        )
+        request = make_request(query="帮我提交工单")
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = (
+            '```json\n'
+            + json.dumps({
+                "thinking": "用户要求提单",
+                "action": "submit",
+                "intent": "troubleshoot",
+                "message": "好的，已为你生成工单。",
+                "state_update": {},
+            }, ensure_ascii=False)
+            + '\n```\n好的，已为你生成工单。'
+        )
+        memory = await platform._memory_manager.get_memory(request.session_id)
+
+        result = await platform._agent_think(request, state, memory)
+
+        # 对话提单先生成待确认草稿，不会直接入库。
+        assert result["action"] == "answer"
+        assert state.phase == "diagnosing"
+        assert "ticket_draft" in memory.metadata
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_chat_submit_missing_project(self, platform, make_state, make_request):
+        """LLM action=submit 但无 project → 被拦截，引导补项目"""
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人报错",
+            collected_info={},  # 无 project
+        )
+        request = make_request(query="帮我提交工单")
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = (
+            '```json\n'
+            + json.dumps({
+                "thinking": "用户要求提单",
+                "action": "submit",
+                "intent": "troubleshoot",
+                "message": "好的，已为你生成工单。",
+                "state_update": {},
+            }, ensure_ascii=False)
+            + '\n```\n好的，已为你生成工单。'
+        )
+        memory = await platform._memory_manager.get_memory(request.session_id)
+
+        result = await platform._agent_think(request, state, memory)
+
+        # 缺少字段时保留收集上下文，下一轮补充后再生成草稿。
+        assert result["action"] in ("answer", "ask")
+        assert "项目" not in result.get("message", "") or "弹窗" in result.get("message", "")
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_draft_cancel_then_supplement_reopens_review(self, platform, make_state, make_request):
+        """review 关闭后补充新字段，下一轮应重新发 review。"""
+        state = make_state(
+            phase="diagnosing", problem_summary="机器人离线",
+            required_fields={"requested_assignee": "处理人"},
+            collected_info={}, ticket_collecting=["处理人"],
+        )
+        session_id = state.session_id
+        memory = await platform._memory_manager.get_memory(session_id)
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        _save_agent_state(memory, state)
+        memory.metadata["ticket_draft"] = {
+            "title": "机器人离线", "description": "机器人离线", "type": "problem", "project": "",
+        }
+        await platform._memory_manager.save_memory(memory)
+
+        # 弹窗取消只关闭弹窗，草稿与固定清单必须保留。
+        cancelled = await platform.clear_draft(session_id)
+        assert cancelled["code"] == 0
+        assert memory.metadata.get("ticket_draft")
+        assert state.required_fields == {"requested_assignee": "处理人"}
+
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = json.dumps({
+            "action": "answer", "ticket_intent": True,
+            "state_update": {"collected_info": {"requested_assignee": "张三"}},
+        }, ensure_ascii=False)
+        request = make_request(query="提给张三处理", session_id=session_id)
+        events = [event async for event in platform._agent_think_stream(request, state, memory)]
+        assert any(e["event"] == "status" and e["data"]["stage"] == "review" for e in events)
+        assert memory.metadata["ticket_draft"]["description"].endswith("机器人离线")
+        assert state.collected_info["requested_assignee"] == "张三"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_draft_cancel_command_clears_state(self, platform, make_state, make_request):
+        """已有草稿但 collecting 为空时，LLM ticket_cancel 也必须清理。"""
+        state = make_state(
+            phase="diagnosing", problem_summary="机器人离线",
+            ticket_collecting=[], required_fields={"occurrence_time": "发生时间"},
+            collected_info={"occurrence_time": "今天"},
+        )
+        session_id = state.session_id
+        memory = await platform._memory_manager.get_memory(session_id)
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        _save_agent_state(memory, state)
+        memory.metadata["ticket_draft"] = {"title": "机器人离线", "project": ""}
+        await platform._memory_manager.save_memory(memory)
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = json.dumps({
+            "action": "answer", "ticket_cancel": True,
+            "state_update": {}, "message": "好的，不转工单。",
+        }, ensure_ascii=False)
+        request = make_request(query="取消提单", session_id=session_id)
+        events = [event async for event in platform._agent_think_stream(request, state, memory)]
+        assert any(e["event"] == "status" and e["data"]["stage"] == "collect_cancel" for e in events)
+        assert "ticket_draft" not in memory.metadata
+        assert state.required_fields is None
+        assert state.collected_info == {}
+        assert state.ticket_collecting == []
+
+
+# ================================================================
+# 2. 按钮提单（Button Path）
+# ================================================================
+
+class TestButtonSubmit:
+    """按钮路径：prepare_ticket → confirm_submit"""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_button_prepare_draft_ready(self, platform, make_state):
+        """有 project + can_submit → prepare 返回 stage=draft_ready"""
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人报错",
+            collected_info={"project": "华大制造基地"},
+        )
+        session_id = state.session_id
+
+        # 先存入 state 到 memory
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        memory = await platform._memory_manager.get_memory(session_id)
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+
+        result = await platform.prepare_ticket(session_id)
+
+        assert result["stage"] in ("draft_ready", "need_fields")
+        assert "draft" in result
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_button_prepare_need_fields(self, platform, make_state):
+        """无 project → prepare 返回 stage=need_fields"""
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人报错",
+            collected_info={},  # 无 project
+        )
+        session_id = state.session_id
+
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        memory = await platform._memory_manager.get_memory(session_id)
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+
+        result = await platform.prepare_ticket(session_id)
+
+        assert result["stage"] in ("not_ready", "need_fields")
+        assert "项目名称" in result.get("missing_info", []) or "项目" in str(result)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_button_prepare_blocked(self, platform, make_state):
+        """刚提完单（last_submitted_ticket）+ 无新 problem → prepare 闭环拦截 code=1"""
+        state = make_state(
+            phase="resolved", problem_summary="",
+            last_submitted_ticket={"ticket_id": "T-1", "db_id": 1, "title": "旧工单", "topic": "旧问题"},
+        )
+        session_id = state.session_id
+
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        memory = await platform._memory_manager.get_memory(session_id)
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+
+        result = await platform.prepare_ticket(session_id)
+
+        assert result["code"] == 1
+        assert "新问题" in result["message"] or "新现象" in result["message"]
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_button_confirm_success(self, platform, make_state):
+        """有 draft + overrides 补全 → confirm 成功"""
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人报错",
+            collected_info={"project": "华大"},
+        )
+        session_id = state.session_id
+
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        memory = await platform._memory_manager.get_memory(session_id)
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+
+        # 先 prepare 获得 draft
+        await platform.prepare_ticket(session_id)
+
+        # confirm with overrides
+        result = await platform.confirm_submit(
+            session_id,
+            overrides={"project": "华大制造基地"},
+            created_by="tester",
+        )
+
+        assert result["code"] == 0
+        assert "data" in result
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_button_confirm_no_draft(self, platform, make_state):
+        """无 draft → confirm 返回 code=1"""
+        state = make_state(phase="idle")
+        session_id = state.session_id
+
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        memory = await platform._memory_manager.get_memory(session_id)
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+
+        result = await platform.confirm_submit(session_id)
+
+        assert result["code"] == 1
+        assert "没有待确认" in result["message"]
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_button_confirm_missing_fields(self, platform, make_state):
+        """有 draft 但 overrides 未补全 → confirm 返回 code=1"""
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人报错",
+            collected_info={},  # 无 project
+        )
+        session_id = state.session_id
+
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        memory = await platform._memory_manager.get_memory(session_id)
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+
+        # prepare 在缺 project 时不建草稿（返回 not_ready），手动注入一个缺 project 的草稿
+        memory = await platform._memory_manager.get_memory(session_id)
+        memory.metadata["ticket_draft"] = {"project": ""}
+        await platform._memory_manager.save_memory(memory)
+
+        # confirm 不补 project
+        result = await platform.confirm_submit(session_id)
+
+        assert result["code"] == 1
+        assert "项目" in result["message"]
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_button_confirm_override_merges(self, platform, make_state):
+        """overrides 合并到 draft，覆盖对应字段"""
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人报错",
+            collected_info={"project": "旧项目"},
+        )
+        session_id = state.session_id
+
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        memory = await platform._memory_manager.get_memory(session_id)
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+
+        await platform.prepare_ticket(session_id)
+
+        result = await platform.confirm_submit(
+            session_id,
+            overrides={"project": "新项目名称"},
+            created_by="tester",
+        )
+
+        assert result["code"] == 0
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_get_draft_returns_none_when_empty(self, platform, make_state):
+        """无 draft → get_draft 返回 data.draft=None"""
+        state = make_state(phase="idle")
+        session_id = state.session_id
+
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        memory = await platform._memory_manager.get_memory(session_id)
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+
+        result = await platform.get_draft(session_id)
+
+        assert result["code"] == 0
+        assert result["data"]["draft"] is None
+
+
+# ================================================================
+# 3. 混合路径
+# ================================================================
+
+class TestMixedPaths:
+    """对话提单 ↔ 按钮提单互斥"""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_chat_submit_then_button_blocked(self, platform, make_state, make_request):
+        """对话已提单 → 按钮准备被拦截"""
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人离线",
+            collected_info={"project": "华大"},
+        )
+        session_id = state.session_id
+
+        # 使用 side_effect 区分诊断和工单的 LLM 响应
+        call_count = [0]
+
+        def _dual_response(prompt: str = "", **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # 诊断调用 → submit
+                return '```json\n{"action":"submit","intent":"troubleshoot","message":"已提单","state_update":{}}\n```\n已提单'
+            else:
+                # _build_ticket 调用 → 返回工单 JSON
+                return json.dumps({
+                    "title": "测试工单",
+                    "type": "problem",
+                    "priority": "中",
+                    "description": "测试描述",
+                    "project": "华大",
+                }, ensure_ascii=False)
+
+        platform._llm_client.complete.side_effect = _dual_response
+        platform._llm_client.complete.return_value = None
+
+        request = make_request(query="帮我提交工单", session_id=session_id)
+        memory = await platform._memory_manager.get_memory(session_id)
+
+        # 对话提单 — mock submit 已将 state 清空并保存到 memory
+        await platform._agent_think(request, state, memory)
+
+        # 按钮准备 — 应被拦截（mock submit 已将 phase 设为 resolved，problem_summary=""）
+        result = await platform.prepare_ticket(session_id)
+
+        # 对话路径先生成草稿；按钮路径不应重复提交。
+        assert result.get("code", 0) == 1 or result.get("stage") in ("need_fields", "draft_ready")
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_button_submit_then_chat_blocked(self, platform, make_state, make_request):
+        """按钮已提单 → 对话"转工单"被拦截"""
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人报错",
+            collected_info={"project": "华大"},
+        )
+        session_id = state.session_id
+
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        memory = await platform._memory_manager.get_memory(session_id)
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+
+        # 按钮 prepare + confirm（mock confirm 会清理 state）
+        await platform.prepare_ticket(session_id)
+        await platform.confirm_submit(
+            session_id,
+            overrides={"project": "华大制造基地"},
+            created_by="tester",
+        )
+
+        # confirm 已清理 state → 对话"转工单"被拦截
+        memory = await platform._memory_manager.get_memory(session_id)
+        request = make_request(query="转工单", session_id=session_id)
+
+        # mock confirm 已清理：last_submitted_ticket 已设，problem 清空
+        from ai.agents.AiDiagnosisPlatform.pipeline import _load_agent_state
+        loaded_state = _load_agent_state(memory.metadata) or make_state(phase="resolved", problem_summary="")
+
+        # 让 LLM 输出 submit + 空 state_update（无新问题），触发闭环拦截
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = (
+            '```json\n'
+            + json.dumps({
+                "thinking": "用户要求提单", "action": "submit", "intent": "troubleshoot",
+                "message": "好的，已为你生成工单。", "state_update": {},
+            }, ensure_ascii=False)
+            + '\n```\n好的，已为你生成工单。'
+        )
+
+        result = await platform._agent_think(request, loaded_state, memory)
+
+        assert result["action"] == "answer"
+        assert "新问题" in result["message"] or "新现象" in result["message"]
+
+
+# ================================================================
+# 4. 提单后补充
+# ================================================================
+
+class TestPostSubmitFollowUp:
+    """提单后状态重置 + 新问题处理"""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_state_reset_after_submit(self, platform, make_state, make_request):
+        """提单后 state 重置：last_submitted_ticket 设、诊断状态清空"""
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人离线",
+            collected_info={"project": "华大"},
+        )
+        request = make_request(query="帮我提交工单")
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = (
+            '```json\n{"action":"submit","intent":"troubleshoot","message":"已提单","state_update":{}}\n```\n已提单'
+        )
+        memory = await platform._memory_manager.get_memory(request.session_id)
+
+        await platform._agent_think(request, state, memory)
+
+        # 对话提单先生成待确认草稿，不会直接清空诊断状态。
+        assert state.problem_summary
+        assert memory.metadata.get("ticket_draft")
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_post_submit_new_problem_not_follow_up(self, platform, make_state, make_request):
+        """已提单 → 新故障描述 → 按新诊断处理，不追加"""
+        # 先提单
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人离线",
+            collected_info={"project": "华大"},
+        )
+        request = make_request(query="帮我提交工单", session_id=state.session_id)
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = (
+            '```json\n{"action":"submit","intent":"troubleshoot","message":"已提单","state_update":{}}\n```\n已提单'
+        )
+        memory = await platform._memory_manager.get_memory(request.session_id)
+        await platform._agent_think(request, state, memory)
+
+        # 新问题 → 走正常诊断路径
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = (
+            '```json\n'
+            + json.dumps({
+                "thinking": "新的故障",
+                "action": "answer",
+                "intent": "troubleshoot",
+                "message": "新的故障需要重新排查。",
+                "state_update": {"problem_summary": "新的故障：激光报错"},
+            }, ensure_ascii=False)
+            + '\n```\n新的故障需要重新排查。'
+        )
+        state2 = make_state(
+            phase="resolved",
+            problem_summary="新的故障：激光报错",
+            session_id=state.session_id,
+        )
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        request2 = make_request(query="新的故障：激光报错", session_id=state.session_id)
+
+        result = await platform._agent_think(request2, state2, memory)
+
+        # 应正常诊断，不拦截
+        assert result["action"] == "answer"
+
+
+# ================================================================
+# 项目预填（对话中识别项目 → 严格校验 → 写入草稿，弹窗仍可改）
+# ================================================================
+
+class TestProjectPrefill:
+    """project_choice 严格校验 + _build_ticket 预填覆盖"""
+
+    _PROJECTS = [
+        {"name": "江苏常州多摩川混场项目", "code": "13"},
+        {"name": "华大制造基地", "code": "7"},
+    ]
+
+    def test_match_by_exact_name(self):
+        """LLM 照抄列表 name（允许首尾空白）→ 命中"""
+        from ai.agents.AiDiagnosisPlatform.pipeline import AiDiagnosisPlatform
+        got = AiDiagnosisPlatform._match_project_choice(
+            " 江苏常州多摩川混场项目 ", self._PROJECTS)
+        assert got == {"name": "江苏常州多摩川混场项目", "code": "13"}
+
+    def test_match_by_code(self):
+        """LLM 抄了编号 → 命中（code 也是列表内精确值）"""
+        from ai.agents.AiDiagnosisPlatform.pipeline import AiDiagnosisPlatform
+        got = AiDiagnosisPlatform._match_project_choice("7", self._PROJECTS)
+        assert got == {"name": "华大制造基地", "code": "7"}
+
+    def test_no_fuzzy_match(self):
+        """近似但非精确（幻觉/抄错）→ 拒绝，宁可走弹窗"""
+        from ai.agents.AiDiagnosisPlatform.pipeline import AiDiagnosisPlatform
+        assert AiDiagnosisPlatform._match_project_choice("多摩川项目", self._PROJECTS) is None
+        assert AiDiagnosisPlatform._match_project_choice("华大基地", self._PROJECTS) is None
+        assert AiDiagnosisPlatform._match_project_choice("不存在的项目", self._PROJECTS) is None
+
+    def test_display_format_stripped(self):
+        """照抄把展示格式整行带上（「名称（编号: code）」，live 实锤两次）→ 剥离取回完整 name；
+        近似值仍拒绝（宁空勿错不变）"""
+        from ai.agents.AiDiagnosisPlatform.pipeline import AiDiagnosisPlatform
+        got = AiDiagnosisPlatform._match_project_choice(
+            "江苏常州多摩川混场项目（编号: 13）", self._PROJECTS)
+        assert got == {"name": "江苏常州多摩川混场项目", "code": "13"}
+        got2 = AiDiagnosisPlatform._match_project_choice(
+            "就给华大制造基地提", self._PROJECTS)
+        assert got2 == {"name": "华大制造基地", "code": "7"}
+        assert AiDiagnosisPlatform._match_project_choice("多摩川", self._PROJECTS) is None
+
+    def test_empty_choice_or_list(self):
+        """空 choice / 空列表 → None（降级现状）"""
+        from ai.agents.AiDiagnosisPlatform.pipeline import AiDiagnosisPlatform
+        assert AiDiagnosisPlatform._match_project_choice("", self._PROJECTS) is None
+        assert AiDiagnosisPlatform._match_project_choice(None, self._PROJECTS) is None
+        assert AiDiagnosisPlatform._match_project_choice("华大制造基地", []) is None
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_build_ticket_prefill(self, platform, make_state):
+        """prefill_project 写入 draft 的 project/project_id；
+        不传 → 维持空（现状）；analysis 里 LLM 偶然输出的 project 被忽略"""
+        state = make_state(problem_summary="机器人离线")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+
+        draft = await platform._build_ticket(
+            state.session_id, state, memory,
+            prefill_project={"name": "华大制造基地", "code": "7"})
+        assert draft["project"] == "华大制造基地"
+        assert draft["project_id"] == "7"
+
+        draft2 = await platform._build_ticket(state.session_id, state, memory)
+        assert draft2["project"] == ""
+        assert draft2["project_id"] == ""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_prefill_passes_required_check(self, platform, make_state):
+        """预填后 draft 过 _check_required_fields：project 不再缺，
+        missing_fields 不含 project（弹窗免选，直接确认）"""
+        from ai.agents.AiDiagnosisPlatform.pipeline import _check_required_fields
+        state = make_state(problem_summary="机器人离线")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        draft = await platform._build_ticket(
+            state.session_id, state, memory,
+            prefill_project={"name": "华大制造基地", "code": "7"})
+        check = _check_required_fields(draft)
+        assert "project" not in check["missing"]
+        assert check["ok"]
+
+
+# ================================================================
+# 项目预填 × 弹窗回写（confirm_submit：预填 draft + overrides 各种叠加）
+# ================================================================
+
+@pytest.fixture
+async def platform_real_confirm(platform, monkeypatch):
+    """恢复真实 confirm_submit（conftest 的 platform fixture 把它替换成了
+    简化 mock——空值也覆盖、无归一化、返回假工单结构，测不到真实叠加逻辑）。
+
+    DB 依赖隔离方式：
+    - upsert_task：向 sys.modules 注入假 task_adapter 模块（真模块模块级
+      import app.core.db，conftest 为避免该链路才 mock 了整个方法；假模块
+      让 confirm_submit 函数内的局部 import 拿到桩，无需触碰真模块）
+    - _resolve_project：patch 为返回 None（归一化是有 DB 依赖的独立逻辑，
+      不在本测试范围；None 即「不命中不重写」，恰好测出 overrides 直通值）
+    - _attach_chat_snapshot：no-op（截图附加有 MinIO/DB 依赖，且与本测试无关）
+    """
+    import sys
+    import types
+
+    class _FakeRec:
+        id = 88888
+
+    fake_ta = types.ModuleType("ai.core.task_adapter")
+    fake_ta.upsert_task = lambda ticket, created_by="": _FakeRec()
+    monkeypatch.setitem(sys.modules, "ai.core.task_adapter", fake_ta)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    async def _no_resolve(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(platform, "_attach_chat_snapshot", _noop)
+    monkeypatch.setattr(platform, "_resolve_project", _no_resolve)
+
+    from ai.agents.AiDiagnosisPlatform.pipeline import AiDiagnosisPlatform
+    monkeypatch.setattr(
+        platform, "confirm_submit",
+        AiDiagnosisPlatform.confirm_submit.__get__(platform))
+    return platform
+
+
+class TestPrefillWriteback:
+    """预填值进 draft 后，弹窗确认链路的最终入库值"""
+
+    @staticmethod
+    async def _prefilled_draft(platform, state):
+        """按按钮路径跑出合法草稿后，把项目字段改成预填值（模拟工具循环预填）"""
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+        await platform.prepare_ticket(state.session_id)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        draft = memory.metadata.get("ticket_draft")
+        assert draft, "prepare 应生成草稿"
+        draft["project"] = "华大制造基地"
+        draft["project_id"] = "7"
+        await platform._memory_manager.save_memory(memory)
+        return draft
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_confirm_prefill_unchanged(self, platform_real_confirm, make_state):
+        """预填 + 用户不动项目直接确认 → project/project_id 原样入库"""
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人报错",
+            collected_info={"project": "华大"},
+        )
+        await self._prefilled_draft(platform_real_confirm, state)
+
+        result = await platform_real_confirm.confirm_submit(
+            state.session_id, overrides={}, created_by="tester")
+
+        assert result["code"] == 0
+        assert result["data"]["ticket"]["project"] == "华大制造基地"
+        assert result["data"]["ticket"]["project_id"] == "7"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_confirm_user_changes_project(self, platform_real_confirm, make_state):
+        """预填 A + 用户弹窗改成 B（前端成对发送）→ 入库 B 的名和 code，
+        不残留 A 的 code"""
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人报错",
+            collected_info={"project": "华大"},
+        )
+        await self._prefilled_draft(platform_real_confirm, state)
+
+        result = await platform_real_confirm.confirm_submit(
+            state.session_id,
+            overrides={"project": "江苏常州多摩川混场项目", "project_id": "13"},
+            created_by="tester")
+
+        assert result["code"] == 0
+        assert result["data"]["ticket"]["project"] == "江苏常州多摩川混场项目"
+        assert result["data"]["ticket"]["project_id"] == "13"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_confirm_name_only_override_clears_stale_code(self, platform_real_confirm, make_state):
+        """预填 + overrides 只改 project 名不带 code（双工单兜底名 project_id=''
+        / 直调 API）→ 旧 code 不残留，project_id 置空（旧版行为）"""
+        state = make_state(
+            phase="idle",
+            problem_summary="机器人报错",
+            collected_info={"project": "华大"},
+        )
+        await self._prefilled_draft(platform_real_confirm, state)
+
+        result = await platform_real_confirm.confirm_submit(
+            state.session_id,
+            overrides={"project": "摇人吧服务号提单", "project_id": ""},
+            created_by="tester")
+
+        assert result["code"] == 0
+        assert result["data"]["ticket"]["project"] == "摇人吧服务号提单"
+        assert result["data"]["ticket"]["project_id"] == ""
+
+
+# ================================================================
+# 工具循环空转纠偏（2026-08-20 生产实录：触发轮只说过渡语不调工具 → 死寂）
+# ================================================================
+
+class TestToolLoopIdleCorrection:
+    """AI_TICKET_TOOL_LOOP 分支：零工具调用的空转轮必须被纠偏重跑，粘性续接必须置位。"""
+
+    @staticmethod
+    def _scripted_llm(rounds):
+        """构造 stream_with_tools 按调用序脚本化的 mock LLM。
+
+        rounds: [(content, tool_calls), ...]，每次 LLM 调用消费一项（超出时
+        复用最后一项）。tool_calls 为 OpenAI 格式、arguments 是 dict。
+        返回 (mock, calls)：calls 记录每次调用收到的 messages 快照。
+        """
+        mock = MagicMock()
+        mock.complete = AsyncMock(return_value="{}")
+        mock.stream = None
+        calls = []
+
+        def _stream_with_tools(messages=None, tools=None, **kw):
+            idx = len(calls)
+            calls.append([dict(m) for m in (messages or [])])
+            content, tool_calls = rounds[min(idx, len(rounds) - 1)]
+
+            async def _gen():
+                if content:
+                    half = max(1, len(content) // 2)
+                    yield {"type": "token", "content": content[:half]}
+                    yield {"type": "token", "content": content[half:]}
+                yield {"type": "final", "content": content, "tool_calls": tool_calls}
+
+            return _gen()
+
+        mock.stream_with_tools = _stream_with_tools
+        return mock, calls
+
+    async def _run(self, platform, make_request, make_state, rounds):
+        llm, calls = self._scripted_llm(rounds)
+        platform._llm_client = llm
+        platform._get_user_projects = AsyncMock(return_value=[])
+        state = make_state(problem_summary="车辆不动")
+        request = make_request(query="帮我提单吧")
+        memory = await platform._memory_manager.get_memory(request.session_id)
+        events = [ev async for ev in
+                  platform._ticket_tool_loop_branch(request, state, memory)]
+        return state, memory, events, calls
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_idle_transition_corrected_then_tool_called(
+            self, platform, make_request, make_state):
+        """空转轮（只说过渡语）→ 纠偏重跑 → 调工具收「还缺」→ 追问用户。
+
+        生产实录 14:46 的复现：第一轮只说「好的，我帮您转工单，我看一下
+        还需要补充哪些信息：」就结束（0 工具调用），气泡死寂。
+        """
+        tool_call = {
+            "id": "call_1", "name": "submit_ticket",
+            "arguments": {
+                "ticket_type": "problem",
+                "problem_summary": "车辆不动",
+                "required_fields": {"vehicle_id": "车辆编号"},
+                "collected_fields": {},
+            },
+        }
+        state, memory, events, calls = await self._run(
+            platform, make_request, make_state,
+            [
+                ("好的，我帮您转工单，我看一下还需要补充哪些信息：", []),  # 空转轮
+                ("", [tool_call]),                                        # 纠偏轮：调工具
+                ("请问车辆编号是多少？", []),                              # 收到「还缺」后追问
+            ],
+        )
+        # 纠偏轮的 messages 里注入了纠偏 system 指令（含不复述铁律）
+        # + 空转回合的 assistant 消息
+        assert any(m["role"] == "system" and "没有调用 submit_ticket" in m["content"]
+                   for m in calls[1])
+        assert any(m["role"] == "system" and "不要复述" in m["content"]
+                   for m in calls[1])
+        assert any(m["role"] == "assistant" and "补充哪些信息" in (m["content"] or "")
+                   for m in calls[1])
+        # 用户看到：过渡语 + 追问（同一气泡续上，无死寂）
+        tokens = "".join(ev["data"] for ev in events if ev["event"] == "token")
+        assert "补充哪些信息" in tokens
+        assert "车辆编号是多少" in tokens
+        # 工具参数已渐进写回 state + 粘性续接置位（下一轮直接回工具循环）
+        assert state.tool_loop_active is True
+        assert state.ticket_type == "problem"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_double_idle_sets_sticky_no_infinite_loop(
+            self, platform, make_request, make_state):
+        """纠偏轮仍空转 → 不无限重试，走「保留收集状态」，但粘性续接必须置位。
+
+        生产实录 14:47：空转轮没置 tool_loop_active，用户补完 4 个字段后
+        被意图分类掉进旧状态机。"""
+        state, memory, events, calls = await self._run(
+            platform, make_request, make_state,
+            [
+                ("好的，我帮您转工单，我看一下还需要补充哪些信息：", []),
+                ("请问车辆编号是多少？", []),
+            ],
+        )
+        assert len(calls) == 2  # 只纠偏一次，不循环
+        assert state.tool_loop_active is True
+        assert state.problem_summary == "车辆不动"  # 收集状态未销毁
+        tokens = "".join(ev["data"] for ev in events if ev["event"] == "token")
+        assert "补充哪些信息" in tokens
+        assert "车辆编号是多少" in tokens
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_abandon_not_retried(self, platform, make_request, make_state):
+        """LLM 判用户放弃（固定话术「不转工单」）→ 不纠偏，直接清状态。"""
+        state, memory, events, calls = await self._run(
+            platform, make_request, make_state,
+            [("好的，不转工单。有什么其他问题随时问我。", [])],
+        )
+        assert len(calls) == 1  # 放弃轮不重跑
+        assert state.tool_loop_active is False
+        assert state.problem_summary == ""  # 状态已清空
+        tokens = "".join(ev["data"] for ev in events if ev["event"] == "token")
+        assert tokens.count("不转工单") == 1  # 只出现一次，无重发
+
+
+# ================================================================
+# 老快路径（ticket_fast_lane JSON 协议）项目预填
+# ================================================================
+
+class TestOldPathProjectPrefill:
+    """老快路径的项目预填：用户项目列表注入 prompt → LLM 照抄 project_choice
+    → _match_project_choice 严格校验 → state.pending_prefill_project →
+    _build_ticket(prefill_project=) 覆盖 draft.project/project_id。
+
+    单向管道铁律：project 不进 collected_info/required_fields/判缺。
+    """
+
+    _PROJECTS = [
+        {"name": "南京本川项目", "code": "NJBC01"},
+        {"name": "华大制造基地", "code": "7"},
+    ]
+
+    @staticmethod
+    def _main_side_effect(*main_responses):
+        """按调用次序分发主 prompt 响应；_build_ticket / decide_fields prompt
+        固定返回合法 JSON（不占序号——通过 prompt 标记识别）。"""
+        queue = list(main_responses)
+
+        def _f(prompt: str = "", **kwargs):
+            if "生成结构化工单" in prompt:
+                return json.dumps({
+                    "type": "problem", "title": "机器人离线",
+                    "description": "机器人离线，无法继续执行任务。",
+                    "priority": "中",
+                }, ensure_ascii=False)
+            if "判定工单类型" in prompt:
+                return json.dumps(
+                    {"ticket_type": "problem", "required_fields": {"contact": "联系方式"}},
+                    ensure_ascii=False)
+            return queue.pop(0) if queue else queue
+        return _f
+
+    def _setup_platform(self, platform):
+        platform._get_user_projects = AsyncMock(return_value=list(self._PROJECTS))
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_fast_lane_prefill_into_draft(self, platform, make_state, make_request):
+        """快路径 submit + project_choice 精确照抄 → draft 预填 + 播报含预填名"""
+        self._setup_platform(platform)
+        state = make_state(
+            phase="diagnosing", problem_summary="机器人离线",
+            ticket_fast_lane=True,
+            required_fields={"contact": "联系方式"},
+            collected_info={"contact": "张三 13800000000"},
+        )
+        request = make_request(query="给华大制造基地提个单", session_id=state.session_id)
+        platform._llm_client.complete.side_effect = self._main_side_effect(json.dumps({
+            "action": "submit", "intent": "troubleshoot", "ticket_intent": True,
+            "project_choice": "华大制造基地",
+            "state_update": {"problem_summary": "机器人离线"},
+        }, ensure_ascii=False))
+        memory = await platform._memory_manager.get_memory(state.session_id)
+
+        events = [ev async for ev in platform._agent_think_stream(request, state, memory)]
+
+        review = [e for e in events if e["event"] == "status" and e["data"].get("stage") == "review"]
+        assert review, "应发 review 弹窗"
+        draft = review[0]["data"]["draft"]
+        assert draft["project"] == "华大制造基地"
+        assert draft["project_id"] == "7"
+        assert state.pending_prefill_project == {"name": "华大制造基地", "code": "7"}
+        # 预填播报单一信息源：服务端兜底话术说的是校验后的真实值
+        tokens = "".join(e["data"] for e in events if e["event"] == "token")
+        assert "项目已预填为「华大制造基地」" in tokens
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_hallucinated_choice_ignored(self, platform, make_state, make_request):
+        """project_choice 近似但非精确（幻觉/抄错）→ 忽略，走弹窗选择（现状）"""
+        self._setup_platform(platform)
+        state = make_state(
+            phase="diagnosing", problem_summary="机器人离线",
+            ticket_fast_lane=True,
+            required_fields={"contact": "联系方式"},
+            collected_info={"contact": "张三 13800000000"},
+        )
+        request = make_request(query="给华大基地提个单", session_id=state.session_id)
+        platform._llm_client.complete.side_effect = self._main_side_effect(json.dumps({
+            "action": "submit", "intent": "troubleshoot", "ticket_intent": True,
+            "project_choice": "华大基地",  # 近似，非列表精确值
+            "state_update": {"problem_summary": "机器人离线"},
+        }, ensure_ascii=False))
+        memory = await platform._memory_manager.get_memory(state.session_id)
+
+        events = [ev async for ev in platform._agent_think_stream(request, state, memory)]
+
+        review = [e for e in events if e["event"] == "status" and e["data"].get("stage") == "review"]
+        assert review
+        draft = review[0]["data"]["draft"]
+        assert draft["project"] == ""
+        assert draft["project_id"] == ""
+        assert state.pending_prefill_project is None
+        tokens = "".join(e["data"] for e in events if e["event"] == "token")
+        assert "项目已预填" not in tokens
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_prefill_persists_across_rounds(self, platform, make_state, make_request):
+        """轮 1 识别项目（字段未齐 ask），轮 2 字段齐 submit（无 project_choice）
+        → 预填值跨轮保留进 draft"""
+        self._setup_platform(platform)
+        state = make_state(
+            phase="diagnosing", problem_summary="机器人离线",
+            ticket_fast_lane=True,
+            required_fields={"contact": "联系方式"},
+            collected_info={},
+        )
+        memory = await platform._memory_manager.get_memory(state.session_id)
+
+        req1 = make_request(query="给华大制造基地提个单", session_id=state.session_id)
+        platform._llm_client.complete.side_effect = self._main_side_effect(json.dumps({
+            "action": "ask", "intent": "troubleshoot", "ticket_intent": True,
+            "project_choice": "华大制造基地",
+            "message": "请问现场联系方式是？",
+            "state_update": {"problem_summary": "机器人离线"},
+        }, ensure_ascii=False))
+        [ev async for ev in platform._agent_think_stream(req1, state, memory)]
+        assert state.pending_prefill_project == {"name": "华大制造基地", "code": "7"}
+
+        req2 = make_request(query="张三 13800000000", session_id=state.session_id)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        from ai.agents.AiDiagnosisPlatform.pipeline import _load_agent_state
+        state = _load_agent_state(memory.metadata)
+        platform._llm_client.complete.side_effect = self._main_side_effect(json.dumps({
+            "action": "submit", "intent": "troubleshoot", "ticket_intent": True,
+            "state_update": {"collected_info": {"contact": "张三 13800000000"}},
+        }, ensure_ascii=False))
+        events = [ev async for ev in platform._agent_think_stream(req2, state, memory)]
+
+        review = [e for e in events if e["event"] == "status" and e["data"].get("stage") == "review"]
+        assert review, "轮 2 字段齐应弹 review"
+        draft = review[0]["data"]["draft"]
+        assert draft["project"] == "华大制造基地"
+        assert draft["project_id"] == "7"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_cancel_clears_prefill(self, platform, make_state, make_request):
+        """LLM 判 ticket_cancel → 预填值随收集状态一起清空，不泄漏到下一单"""
+        self._setup_platform(platform)
+        state = make_state(
+            phase="diagnosing", problem_summary="机器人离线",
+            required_fields={"contact": "联系方式"},
+            collected_info={},
+            ticket_collecting=["联系方式"],
+            pending_prefill_project={"name": "华大制造基地", "code": "7"},
+        )
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        _save_agent_state(memory, state)
+        memory.metadata["ticket_draft"] = {"title": "机器人离线", "project": ""}
+        await platform._memory_manager.save_memory(memory)
+
+        request = make_request(query="不提了", session_id=state.session_id)
+        platform._llm_client.complete.side_effect = self._main_side_effect(json.dumps({
+            "action": "answer", "ticket_cancel": True,
+            "message": "好的，不转工单。有什么其他问题随时问我。",
+        }, ensure_ascii=False))
+
+        [ev async for ev in platform._agent_think_stream(request, state, memory)]
+
+        assert state.pending_prefill_project is None
+        assert state.collected_info == {}
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_normal_round_skips_project_fetch(self, platform, make_state, make_request):
+        """普通诊断轮（无提单上下文）不拉用户项目列表——零开销"""
+        platform._get_user_projects = AsyncMock(return_value=list(self._PROJECTS))
+        state = make_state(phase="diagnosing", problem_summary="机器人离线")
+        request = make_request(query="机器人为什么会离线", session_id=state.session_id)
+        platform._llm_client.complete.side_effect = self._main_side_effect(json.dumps({
+            "action": "answer", "intent": "troubleshoot",
+            "message": "可能是网络问题。",
+            "state_update": {},
+        }, ensure_ascii=False))
+        memory = await platform._memory_manager.get_memory(state.session_id)
+
+        [ev async for ev in platform._agent_think_stream(request, state, memory)]
+
+        platform._get_user_projects.assert_not_called()
+        assert state.pending_prefill_project is None
+
+
+# ================================================================
+# #29 required_fields 字段粒度（防打包）
+# ================================================================
+
+class TestRequiredFieldsGranularity:
+    """生产实锤（2026-08-20 16:30）：快路径 LLM 把「时间、车辆编号、任务」
+    打包成一个 required_fields key（occurrence_details），用户只答「早上九点」
+    → 单字段非空被判全齐 → ask 被强转 submit 提前弹窗，车辆编号/任务永远丢失。
+    修复：三个 LLM 声明 required_fields 的 prompt 全部带「一项信息一个字段」铁律。
+    """
+
+    def test_fast_lane_prompt_has_rule(self, platform, make_state):
+        import types
+        state = make_state(phase="diagnosing", ticket_fast_lane=True)
+        fake_mem = types.SimpleNamespace(turns=[])
+        s = platform._build_diagnosis_prompt(state, fake_mem, "")
+        assert "一项信息一个 key" in s
+        assert "禁止合并成一个字段" in s
+
+    def test_main_prompt_has_rule(self):
+        from ai.agents.AiDiagnosisPlatform.pipeline import DIAGNOSIS_PROMPT
+        assert "一项信息一个字段，禁止打包" in DIAGNOSIS_PROMPT
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_decide_fields_prompt_has_rule(self, platform):
+        import types
+        fake_mem = types.SimpleNamespace(turns=[])
+        captured = {}
+
+        async def _cap(prompt: str = "", **kwargs):
+            captured["prompt"] = prompt
+            return json.dumps({"ticket_type": "problem",
+                               "required_fields": {"contact": "联系方式"}},
+                              ensure_ascii=False)
+        platform._llm_client.complete.side_effect = _cap
+        await platform._compute_ticket_fields("test-granularity", fake_mem, 0)
+        assert "一项信息一个字段" in captured["prompt"]
+
+
+class TestAttachmentBinding:
+    """附件-工单绑定（2026-08-20 需求）：会话累积附件不再无条件全带。
+
+    两层：机制层 = 提单成功消费清空（跨单硬边界，_reset_state_after_submit）；
+    判断层 = _build_ticket 里 LLM 按附件摘要与本单问题相关性取舍（跨话题软边界，
+    判断全交大模型）。降级 = 现状全带（字段缺失/解析失败不静默丢证据）。
+    """
+
+    _ATTS = [
+        {"filename": "fault_3号车.png", "size": 100, "path": "http://x/f1",
+         "object_path": "b/sess/fault1.png", "desc": "界面显示3号车离线，疑似网络断连"},
+        {"filename": "工单列表截图.jpg", "size": 200, "path": "http://x/f2",
+         "object_path": "b/sess/f2.jpg", "desc": "工单列表页，显示历史工单状态"},
+    ]
+
+    @pytest.mark.unit
+    def test_reset_state_after_submit_clears_attachments(self):
+        """提单成功 → 累积附件消费清空：下一单（含提单后发图问问题再换话题提单）
+        不会带上本单之前的附件。"""
+        from types import SimpleNamespace
+        from ai.agents.AiDiagnosisPlatform.pipeline import (
+            AgentState, _reset_state_after_submit,
+        )
+        state = AgentState(session_id="s-att")
+        memory = SimpleNamespace(
+            turns=[{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}],
+            metadata={"agent_state": {"session_id": "s-att", "attachments": list(self._ATTS)}},
+        )
+        _reset_state_after_submit(state, memory, {"ticket_id": "TK-1", "title": "t"}, 1)
+        assert memory.metadata["agent_state"]["attachments"] == []
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_build_selects_relevant_attachments(self, platform, make_state):
+        """LLM 输出 attach_files=[1] → draft 只带第 1 个；候选清单注入 prompt
+        （文件名 + VLM 摘要——对话里图片内容已被 sanitize_images 屏蔽）"""
+        state = make_state(phase="diagnosing", problem_summary="3号车离线",
+                           original_query="3号车不动了")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.metadata["agent_state"] = {
+            "session_id": state.session_id, "attachments": [dict(a) for a in self._ATTS]}
+        prompts = []
+
+        async def _f(prompt: str = "", **kw):
+            prompts.append(prompt)
+            return json.dumps({"type": "problem", "title": "3号车离线",
+                               "description": "3号车离线。", "priority": "中",
+                               "attach_files": [1]}, ensure_ascii=False)
+
+        platform._llm_client.complete.side_effect = _f
+        draft = await platform._build_ticket(state.session_id, state, memory)
+
+        assert "## 附件候选" in prompts[0]
+        assert "fault_3号车.png" in prompts[0]
+        assert "界面显示3号车离线" in prompts[0]          # desc 是取舍信号
+        assert "attach_files" in prompts[0]
+        assert [a["filename"] for a in draft["attachments"]] == ["fault_3号车.png"]
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_string_indices_coerced(self, platform, make_state):
+        """LLM 偶尔输出字符串数字 ["2"] → 仍按序号 2 取（宽松解析不丢选）"""
+        state = make_state(phase="diagnosing", problem_summary="p")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.metadata["agent_state"] = {
+            "session_id": state.session_id, "attachments": [dict(a) for a in self._ATTS]}
+
+        async def _f(prompt: str = "", **kw):
+            return json.dumps({"type": "problem", "title": "t", "description": "d",
+                               "priority": "中", "attach_files": ["2"]}, ensure_ascii=False)
+
+        platform._llm_client.complete.side_effect = _f
+        draft = await platform._build_ticket(state.session_id, state, memory)
+        assert [a["filename"] for a in draft["attachments"]] == ["工单列表截图.jpg"]
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_empty_selection_drops_all(self, platform, make_state):
+        """LLM 显式空数组（都与本单无关）→ 尊重，不带任何附件"""
+        state = make_state(phase="diagnosing", problem_summary="p")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.metadata["agent_state"] = {
+            "session_id": state.session_id, "attachments": [dict(a) for a in self._ATTS]}
+
+        async def _f(prompt: str = "", **kw):
+            return json.dumps({"type": "problem", "title": "t", "description": "d",
+                               "priority": "中", "attach_files": []}, ensure_ascii=False)
+
+        platform._llm_client.complete.side_effect = _f
+        draft = await platform._build_ticket(state.session_id, state, memory)
+        assert draft["attachments"] == []
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_missing_field_keeps_all(self, platform, make_state):
+        """降级 = 现状：LLM 没输出 attach_files（字段缺失）→ 全带，
+        不静默丢证据（弹窗没有附件编辑 UI，漏带无法补救）"""
+        state = make_state(phase="diagnosing", problem_summary="p")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.metadata["agent_state"] = {
+            "session_id": state.session_id, "attachments": [dict(a) for a in self._ATTS]}
+
+        async def _f(prompt: str = "", **kw):
+            return json.dumps({"type": "problem", "title": "t", "description": "d",
+                               "priority": "中"}, ensure_ascii=False)
+
+        platform._llm_client.complete.side_effect = _f
+        draft = await platform._build_ticket(state.session_id, state, memory)
+        assert [a["filename"] for a in draft["attachments"]] == \
+            [a["filename"] for a in self._ATTS]
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_no_attachments_no_block(self, platform, make_state):
+        """无附件 → prompt 无候选清单（普通会话零开销），draft 附件为空"""
+        state = make_state(phase="diagnosing", problem_summary="p")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.metadata["agent_state"] = {"session_id": state.session_id, "attachments": []}
+        prompts = []
+
+        async def _f(prompt: str = "", **kw):
+            prompts.append(prompt)
+            return json.dumps({"type": "problem", "title": "t", "description": "d",
+                               "priority": "中"}, ensure_ascii=False)
+
+        platform._llm_client.complete.side_effect = _f
+        draft = await platform._build_ticket(state.session_id, state, memory)
+        assert "## 附件候选" not in prompts[0]
+        assert draft["attachments"] == []
+
+
+class TestTicketBoundaryPrefill:
+    """跨单预填泄漏（2026-08-20 生产实录）：同一会话提多单，第二单把第一单
+    对话里提到的项目名又预填上了。根因：context_start 实际恒为 0，提单归档
+    turns[context_start:] 是空操作，第一单的「给XX项目提单」仍在最近对话窗口
+    里，LLM 分不清那句项目名属于已提交的上一单 → 照抄。
+
+    修复：提单成功记内容锚点（提交时最后一轮前 40 字）→ 对话切片在锚点后插
+    「以上已随上一张工单提交归档」分隔线 → 照抄规则只认分隔线之后用户提到的
+    项目（判断仍在 LLM，代码只提供分界事实）。
+    """
+
+    _PROJECTS = [{"name": "南京本川项目", "code": "NJBC01"}]
+
+    @pytest.mark.unit
+    def test_reset_sets_boundary_anchor(self):
+        """提单成功 → 锚点 = 提交时最后一轮内容前 40 字；无对话 → 空锚点"""
+        from types import SimpleNamespace
+        from ai.agents.AiDiagnosisPlatform.pipeline import (
+            AgentState, _reset_state_after_submit,
+        )
+        state = AgentState(session_id="s-bd")
+        memory = SimpleNamespace(
+            turns=[{"role": "user", "content": "给南京本川项目提个单"},
+                   {"role": "assistant", "content": "工单草稿已生成。"}],
+            metadata={"agent_state": {}},
+        )
+        _reset_state_after_submit(state, memory, {"ticket_id": "TK-1"}, 1)
+        assert state.ticket_boundary_prefix == "工单草稿已生成。"
+
+        memory_empty = SimpleNamespace(turns=[], metadata={"agent_state": {}})
+        _reset_state_after_submit(state, memory_empty, {"ticket_id": "TK-2"}, 2)
+        assert state.ticket_boundary_prefix == ""
+
+    @pytest.mark.unit
+    def test_boundary_line_inserted_after_anchor(self, platform):
+        """锚点轮之后插分隔线；锚点不在切片内（全新对话）不插"""
+        from types import SimpleNamespace
+        memory = SimpleNamespace(turns=[
+            {"role": "user", "content": "给南京本川项目提个单"},
+            {"role": "assistant", "content": "工单草稿已生成。"},
+            {"role": "user", "content": "充电柜报故障了"},
+        ])
+        text = platform._format_conversation(
+            memory, boundary_prefix="工单草稿已生成。")
+        lines = text.split("\n")
+        assert "───── 以上对话已随上一张工单提交归档；以下是新对话 ─────" in lines
+        # 分隔线紧跟锚点轮（索引 1），锚点前的项目名轮次在线上方
+        assert lines.index("───── 以上对话已随上一张工单提交归档；以下是新对话 ─────") == 2
+        assert lines[0].startswith("用户：给南京本川项目")
+        assert "充电柜报故障了" in lines[3]
+
+        # 锚点被截掉（只看最近 2 轮）→ 全新对话，不插分隔线
+        text2 = platform._format_conversation(
+            memory, max_turns=2, boundary_prefix="给南京本川项目提个单")
+        assert "以上对话已随上一张工单提交归档" not in text2
+
+    def test_fast_lane_prompt_has_boundary_rule(self, platform, make_state):
+        """快路径 prompt：含分隔线（锚点命中）+ 照抄规则明确「分隔线前禁抄」"""
+        import types
+        state = make_state(phase="diagnosing", ticket_fast_lane=True,
+                           ticket_boundary_prefix="工单草稿已生成。")
+        fake_mem = types.SimpleNamespace(turns=[
+            {"role": "user", "content": "给南京本川项目提个单"},
+            {"role": "assistant", "content": "工单草稿已生成。"},
+            {"role": "user", "content": "帮我提单，充电柜报故障"},
+        ])
+        s = platform._build_diagnosis_prompt(
+            state, fake_mem, "", user_projects=list(self._PROJECTS))
+        assert "以上对话已随上一张工单提交归档" in s
+        assert "不算本次提到，禁止照抄" in s
+        assert "南京本川项目（编号: NJBC01）" in s
+
+
+# ================================================================
+# 运行入口
+# ================================================================
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

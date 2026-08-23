@@ -1,0 +1,150 @@
+from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Dict, Any
+import uuid
+
+from typing import Dict, Any
+from app.core.database import db_manager
+from app.modules.admin.schemas.response import SuccessResponse, DataResponse
+from app.modules.admin.api.auth import get_current_active_user_from_token, require_permission
+
+router = APIRouter(prefix="/permissions", tags=["admin-permissions"])
+
+def get_current_admin_user(current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)) -> Dict[str, Any]:
+    if "admin" not in current_user.get('permissions', []):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要管理员权限"
+        )
+    return current_user
+
+@router.get("/", response_model=DataResponse, summary="获取所有权限")
+async def get_all_permissions(
+    current_user: Dict[str, Any] = require_permission("backend:permission:base:read")
+):
+    try:
+        permissions = db_manager.get_all_permissions()
+        return DataResponse(
+            code=0,
+            message="success",
+            data=permissions
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取权限列表失败: {str(e)}")
+
+@router.get("/{permission_id}", response_model=DataResponse, summary="获取指定权限详情")
+async def get_permission(
+    permission_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_admin_user)
+):
+    try:
+        permission = db_manager.get_permission(permission_id)
+        if not permission:
+            raise HTTPException(status_code=404, detail=f"权限不存在: {permission_id}")
+        
+        return DataResponse(
+            code=0,
+            message="success",
+            data={"permission": permission}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取权限详情失败: {str(e)}")
+
+@router.post("/", response_model=SuccessResponse, summary="创建权限")
+async def create_permission(
+    permission_data: Dict[str, Any],
+    current_user: Dict[str, Any] = require_permission("backend:permission:base:write")
+):
+    required_fields = ['code', 'name', 'resource_type', 'action']
+    for field in required_fields:
+        if field not in permission_data:
+            raise HTTPException(status_code=400, detail=f"缺少必要参数: {field}")
+    
+    if permission_data.get('resource_type') != 'indicators':
+        user_permissions = current_user.get('permissions', [])
+        if "admin" not in user_permissions and "backend:permission:base:write" not in user_permissions:
+            raise HTTPException(status_code=403, detail="没有权限创建权限")
+    
+    # try:
+    permission_id = f"perm_{permission_data['code'].replace(':', '_')}"
+
+    result = db_manager.add_permission(
+        permission_id=permission_id,
+        code=permission_data['code'],
+        name=permission_data['name'],
+        resource_type=permission_data['resource_type'],
+        action=permission_data['action'],
+        description=permission_data.get('description')
+    )
+
+    if result:
+        return SuccessResponse(message="权限创建成功")
+    else:
+        raise HTTPException(status_code=400, detail="权限ID或编码已存在")
+    # except HTTPException:
+    #     raise
+    # except Exception as e:
+    #     raise HTTPException(status_code=500, detail=f"创建权限失败: {str(e)}")
+
+@router.put("/{permission_id}", response_model=SuccessResponse, summary="更新权限")
+async def update_permission(
+    permission_id: str,
+    permission_data: Dict[str, Any],
+    current_user: Dict[str, Any] = require_permission("backend:permission:base:write")
+):
+    try:
+        permission = db_manager.get_permission(permission_id)
+        if not permission:
+            raise HTTPException(status_code=404, detail=f"权限不存在: {permission_id}")
+        
+        if permission_data.get('resource_type') != 'indicators':
+            user_permissions = current_user.get('permissions', [])
+            if "admin" not in user_permissions and "backend:permission:base:write" not in user_permissions:
+                raise HTTPException(status_code=403, detail="没有权限更新")
+
+        if 'code' in permission_data and not str(permission_data['code']).strip():
+            raise HTTPException(status_code=400, detail="权限编码不能为空")
+
+        updatable_fields = ['code', 'name', 'resource_type', 'action', 'description', 'enabled']
+        update_data = {}
+        for field in updatable_fields:
+            if field in permission_data:
+                update_data[field] = permission_data[field]
+        
+        result = db_manager.update_permission(permission_id, **update_data)
+        
+        if result:
+            return SuccessResponse(message="权限更新成功")
+        else:
+            raise HTTPException(status_code=500, detail="权限更新失败")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新权限失败: {str(e)}")
+
+@router.delete("/{permission_id}", response_model=SuccessResponse, summary="删除权限")
+async def delete_permission(
+    permission_id: str,
+    current_user: Dict[str, Any] = require_permission("backend:permission:base:delete")
+):
+    try:
+        permission = db_manager.get_permission(permission_id)
+        if not permission:
+            raise HTTPException(status_code=404, detail=f"权限不存在: {permission_id}")
+        
+        if permission.get('resource_type') != 'indicators':
+            user_permissions = current_user.get('permissions', [])
+            if "admin" not in user_permissions and "backend:permission:base:delete" not in user_permissions:
+                raise HTTPException(status_code=403, detail="没有权限删除权限")
+        
+        result = db_manager.delete_permission(permission_id)
+        
+        if result:
+            return SuccessResponse(message="权限删除成功")
+        else:
+            raise HTTPException(status_code=500, detail="权限删除失败")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"删除权限失败: {str(e)}")
