@@ -5,6 +5,7 @@
 - 保存后将**所有产品**的树导出覆盖到 AI Assigner 的 config.yaml（作为启动快照）
 - 导出后通知 AI 服务热更新，让运行中派单流水线感知新配置
 """
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -130,6 +131,45 @@ def upsert_product_tree(product: str, tree: Dict[str, Any]) -> bool:
         return False
     finally:
         db.close()
+
+
+def product_hash(tree: Optional[Dict[str, Any]]) -> str:
+    """对产品树生成稳定哈希（乐观锁版本标识）。
+
+    用 sort_keys + ensure_ascii=False 稳定序列化（与前端加载时一致），
+    内容或顺序变化都会导致哈希变化，用于检测"产品是否被他人改过"。
+    """
+    try:
+        raw = json.dumps(tree or {"interfaces": []}, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        raw = str(tree)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def get_product_hashes() -> Dict[str, str]:
+    """返回 {产品: 产品树哈希}，供前端加载时记录"本地基准版本"用于乐观锁。"""
+    trees = get_all_trees()
+    return {product: product_hash(tree) for product, tree in trees.items()}
+
+
+def get_func_hashes() -> Dict[str, Dict[str, str]]:
+    """返回 {产品: {'界面名||功能名': 功能节点哈希}}，供前端记录"本地加载时的各功能版本"
+    用于功能级冲突检测（只有同一产品同一界面同一功能被双方修改才判定冲突）。"""
+    trees = get_all_trees()
+    result: Dict[str, Dict[str, str]] = {}
+    for product, tree in trees.items():
+        m: Dict[str, str] = {}
+        for it in (tree or {}).get("interfaces", []) or []:
+            iname = _norm_name(it.get("name"))
+            if not iname:
+                continue
+            for f in (it.get("functions", []) or []):
+                fnm = _norm_name(f.get("name"))
+                if fnm:
+                    m[f"{iname}||{fnm}"] = func_node_hash(f)
+        if m:
+            result[product] = m
+    return result
 
 
 def bulk_upsert_delete(products: Dict[str, Any], removed: Optional[List[str]] = None) -> bool:
@@ -399,33 +439,208 @@ def _clear_removed_products_from_profiles(removed: List[str]) -> int:
         db.close()
 
 
-def save_trees(trees: Dict[str, Any], removed: Optional[List[str]] = None) -> Dict[str, Any]:
-    """统一保存（增量安全）：按提交的产品写 DB + 同步用户画像 + 导出 config。
+def _norm_name(s) -> str:
+    return (s or "").strip()
+
+
+def merge_product_changes(
+    db_tree: Optional[Dict[str, Any]],
+    submitted: Dict[str, Any],
+    changed_funcs: Optional[List[str]] = None,
+    new_interfaces: Optional[List[str]] = None,
+    removed_interfaces: Optional[List[str]] = None,
+    removed_funcs: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """把前端提交的产品树，**按节点**合并到 DB 当前版本（节点级并发安全）。
+
+    规则（关键：不同界面/不同功能互不影响；只有本次改动过的节点才覆盖）：
+    - 前端提交界面里，DB 没有的同名界面 → 作为“新增界面”加入。
+    - DB 已有界面：只覆盖 changed_funcs 里点名的功能节点；其余功能保留 DB 最新值（不覆盖他人改动）。
+    - changed_funcs 条目用「界面名||功能名」定位；功能不存在则按新增加入。
+    - removed_interfaces / removed_funcs：显式删除（用 name 或 key 匹配）。
+    - 绝不删除 DB 中有、但前端旧快照里没有的未点名节点（避免误删他人新加内容）。
+    """
+    db_ifaces = (db_tree or {}).get("interfaces", []) or []
+    new_iface_names = {_norm_name(n) for n in (new_interfaces or [])}
+
+    # 1) 生成 db 界面索引（按 name）；被删除的界面（removed_interfaces 按 name）不纳入
+    db_by_iface_name: Dict[str, dict] = {}
+    db_removed_iface_names = {_norm_name(k) for k in (removed_interfaces or [])}
+    for it in db_ifaces:
+        nm = _norm_name(it.get("name"))
+        if nm and nm not in db_by_iface_name and nm not in db_removed_iface_names:
+            db_by_iface_name[nm] = dict(it)
+
+    # 2) 解析要移除的功能（key 或 name）
+    removed_func_set = {_norm_name(k) for k in (removed_funcs or [])}
+
+    # 3) 计算每个界面本次要覆盖的功能名集合
+    changed_by_iface: Dict[str, set] = {}
+    for entry in (changed_funcs or []):
+        if "||" in entry:
+            iface_nm, _, func_nm = entry.partition("||")
+            changed_by_iface.setdefault(_norm_name(iface_nm), set()).add(_norm_name(func_nm))
+
+    # 4) 遍历前端提交，构建结果 interfaces
+    out_ifaces: List[dict] = []
+    submitted_iface_names = set()
+    for sub_iface in (submitted.get("interfaces", []) or []):
+        iface_nm = _norm_name(sub_iface.get("name"))
+        if not iface_nm:
+            continue
+        submitted_iface_names.add(iface_nm)
+        # 新增界面：直接整体纳入
+        if iface_nm in new_iface_names or iface_nm not in db_by_iface_name:
+            out_ifaces.append(dict(sub_iface))
+            continue
+
+        # DB 已有界面：从 DB 版本出发合并功能
+        db_iface = db_by_iface_name[iface_nm]
+        db_funcs = db_iface.get("functions", []) or []
+        changed = changed_by_iface.get(iface_nm, set())
+        db_by_name: Dict[str, dict] = {}
+        for f in db_funcs:
+            fnm = _norm_name(f.get("name"))
+            if fnm:
+                db_by_name.setdefault(fnm, dict(f))
+
+        result_funcs: List[dict] = []
+        seen_func_names: set = set()
+        # 先放 DB 未改动的功能（保留最新）
+        for fnm, dbf in db_by_name.items():
+            if fnm in removed_func_set:
+                continue
+            if fnm in changed:
+                continue  # 交给提交覆盖
+            seen_func_names.add(fnm)
+            result_funcs.append(dbf)
+        # 再放本次改动的功能（用提交版本）
+        for sub_fn in (sub_iface.get("functions", []) or []):
+            fnm = _norm_name(sub_fn.get("name"))
+            if not fnm or fnm in removed_func_set:
+                continue
+            if fnm in changed or fnm not in db_by_name:
+                if fnm not in seen_func_names:
+                    seen_func_names.add(fnm)
+                    result_funcs.append(dict(sub_fn))
+        # 删除：removed_funcs 已在上面跳过；同时处理移除“仅存在于 db 且被删”的功能
+        out_ifaces.append({**db_iface, "functions": result_funcs})
+
+    # 5) DB 里有、但前端提交没提（且不在删除列表）的界面保留（防误删他人新加）
+    for it in db_ifaces:
+        nm = _norm_name(it.get("name"))
+        if not nm or nm in submitted_iface_names or nm in db_removed_iface_names:
+            continue
+        out_ifaces.append(dict(it))
+
+    return {"interfaces": out_ifaces}
+
+
+def func_node_hash(fn: Optional[Dict[str, Any]]) -> str:
+    """单功能节点内容哈希（功能级冲突检测基准）。"""
+    try:
+        raw = json.dumps(fn or {}, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        raw = str(fn)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def save_trees(
+    trees: Dict[str, Any],
+    removed: Optional[List[str]] = None,
+    per_product: Optional[Dict[str, Any]] = None,
+    func_hashes: Optional[Dict[str, Dict[str, str]]] = None,
+    force: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """统一保存（节点级增量 + 功能级冲突检测）：按产品写 DB + 同步画像 + 导出 config。
 
     核心：
-    - 仅覆盖 trees 中涉及的产品行，**绝不删除/改动未提交产品**（多人协作改不同产品互不覆盖）。
-    - removed 指定要删除的产品（删除产品场景）：删 DB 行 + 清用户画像 + 从 config 移除。
-    - 空提交（无产品也无删除）直接拒绝，防止把整棵树清空。
-    - 导出 config 用 DB 全量（现状 + 本次），避免丢失其它产品。
+    - 仅覆盖提交的产品；对每个产品，只把**本次改动过的功能节点**合并进 DB 当前最新版，
+      其它节点全部保留 DB 值 —— 不同界面/不同功能各自保存、互不覆盖（多人并发安全）。
+    - per_product={产品:{changed_funcs,new_interfaces,removed_interfaces,removed_funcs}} 声明本次改动范围。
+    - 功能级冲突：func_hashes={产品:{'界面名||功能名': 用户加载时该功能哈希}}。
+      若 DB 当前该功能哈希 ≠ 用户加载时哈希（该功能已被他人改过）且用户本次也改了它 →
+      跳过该功能覆盖（保留 DB 版）并记入 conflicted_funcs；force 里的产品跳过检测直接覆盖。
+    - removed 删除产品；空提交拒绝防清空；导出 config 用 DB 全量。
 
-    返回 {"db": bool, "synced": int, "export": bool, "rejected"?: str}。
+    返回 {"db","synced","export","conflicted_funcs"?:list,"rejected"?}。
     """
     removed = removed or []
+    per_product = per_product or {}
+    func_hashes = func_hashes or {}
+    force = list(force or [])
     if not trees and not removed:
         return {"db": False, "synced": 0, "export": False, "rejected": "empty"}
 
     # 保存前统一重算 界面/功能 的 key（前端中文名 → 前两字拼音+哈希）
     normalized = renormalize_keys(trees)
 
-    ok_db = bulk_upsert_delete(normalized, removed)
-    if not ok_db:
-        return {"db": False, "synced": 0, "export": False}
+    conflicted_funcs: List[str] = []
+    writable: Dict[str, Any] = {}
 
-    # 同步用户画像：只覆盖提交的产品（sync_to_user_profiles 已产品级安全）＋ 删除产品清理
-    synced = sync_to_user_profiles(normalized)
+    for product, tree in normalized.items():
+        pp = per_product.get(product) or {}
+        changed = pp.get("changed_funcs") or []
+        new_ifaces = pp.get("new_interfaces") or []
+        rem_ifaces = pp.get("removed_interfaces") or []
+        rem_funcs = pp.get("removed_funcs") or []
+        db_cur = get_product_tree(product)
+
+        # 强制覆盖或全新产品：直接采用提交整树
+        if product in force or not db_cur:
+            writable[product] = tree
+            continue
+
+        # 功能级冲突检测：DB 中本次改动功能较用户加载时已变 → 该功能冲突，跳过覆盖
+        local_hashes = func_hashes.get(product) or {}
+        db_iface_funcs: Dict[str, Dict[str, str]] = {}
+        for it in db_cur.get("interfaces", []) or []:
+            iname = _norm_name(it.get("name"))
+            if not iname:
+                continue
+            m: Dict[str, str] = {}
+            for f in (it.get("functions", []) or []):
+                fnm = _norm_name(f.get("name"))
+                if fnm:
+                    m[fnm] = func_node_hash(f)
+            db_iface_funcs[iname] = m
+
+        real_changed: List[str] = []
+        for entry in changed:
+            if "||" not in entry:
+                continue
+            iname, _, fnm = entry.partition("||")
+            iname, fnm = _norm_name(iname), _norm_name(fnm)
+            base_h = local_hashes.get(entry)
+            db_h = (db_iface_funcs.get(iname) or {}).get(fnm)
+            if base_h is not None and db_h is not None and db_h != base_h:
+                conflicted_funcs.append(f"{product}||{iname}||{fnm}")
+                continue
+            real_changed.append(entry)
+
+        merged = merge_product_changes(
+            db_cur,
+            tree,
+            changed_funcs=real_changed,
+            new_interfaces=new_ifaces,
+            removed_interfaces=rem_ifaces,
+            removed_funcs=rem_funcs,
+        )
+        writable[product] = merged
+
+    # 若所有提交的产品都无可写内容且无删除 → 视为冲突/空，不写 DB
+    if not writable and not removed:
+        return {"db": False, "synced": 0, "export": False, "conflicted_funcs": conflicted_funcs}
+
+    ok_db = bulk_upsert_delete(writable, removed)
+    if not ok_db:
+        return {"db": False, "synced": 0, "export": False, "conflicted_funcs": conflicted_funcs}
+
+    # 同步用户画像：只覆盖提交成功的产品（sync_to_user_profiles 已产品级安全）＋ 删除产品清理
+    synced = sync_to_user_profiles(writable)
     if removed:
         synced += _clear_removed_products_from_profiles(removed)
 
     # 导出 config：用 DB 全量（合并本次），避免把其它产品从 config 抹掉
     ok_export = export_to_config(get_all_trees())
-    return {"db": True, "synced": synced, "export": ok_export}
+    return {"db": True, "synced": synced, "export": ok_export, "conflicted_funcs": conflicted_funcs}

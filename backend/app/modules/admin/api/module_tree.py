@@ -35,6 +35,22 @@ async def get_products(
     return sorted(trees.keys())
 
 
+@router.get("/hashes", summary="获取各产品树的版本哈希（乐观锁基准）")
+async def get_product_hashes(
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+) -> Dict[str, str]:
+    """返回 {产品: 产品树哈希}，前端加载时记录为‘本地基准版本’。”"""
+    return module_tree_service.get_product_hashes()
+
+
+@router.get("/func-hashes", summary="获取各功能节点哈希（功能级冲突基准）")
+async def get_func_hashes(
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+) -> Dict[str, Any]:
+    """返回 {产品: {'界面名||功能名': 功能哈希}}，前端记录各功能本地版本用于功能级冲突检测。"""
+    return module_tree_service.get_func_hashes()
+
+
 @router.get("/candidates", summary="获取可选工程师候选")
 async def get_candidates(
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
@@ -64,27 +80,40 @@ async def get_candidates(
         db.close()
 
 
-@router.put("/", summary="保存 产品→界面→功能 树（增量安全）")
+@router.put("/", summary="保存 产品→界面→功能 树（节点级增量 + 功能级冲突检测）")
 async def save_module_tree(
-    payload: Dict[str, Any] = Body(..., description="{products:{产品:树}, removed?:[产品名]} 增量 或 旧式完整树 {产品:树}"),
+    payload: Dict[str, Any] = Body(..., description="{products:{产品:树}, removed?:[产品], per_product?:{产品:{changed_funcs,new_interfaces,removed_interfaces,removed_funcs}}, func_hashes?:{产品:{'界面||功能':哈希}}, force?:[产品]}"),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ) -> Dict[str, Any]:
-    """保存树，导出到 config.yaml + 通知 AI 热更新。
+    """保存树，导出 config.yaml + 通知 AI 热更新。
 
-    两种入参：
-    - 增量模式：{"products": {产品:树}, "removed": [产品名]} —— 只覆盖提交的产品、删除 removed 列出的产品。
-    - 旧式完整树：直接传 {产品:树} —— 仅按该集合增量 upsert（不再整树全删重建）。
-    增量写入避免多人同时编辑时用旧快照互相覆盖。
+    入参：
+    - products: 提交的产品树 {产品:树}
+    - removed: 待删除的产品名列表
+    - per_product: 每产品本次改动范围（节点级增量）。changed_funcs:['界面名||功能名']；
+      new_interfaces:[界面名]；removed_interfaces/removed_funcs:[key或name]
+    - func_hashes: 前端记录的“各功能加载时哈希”，用于功能级冲突检测
+    - force: 强制覆盖的产品（跳过功能冲突检测）
+    只覆盖 per_product 点名的功能节点，其它节点保留 DB 最新（多人并发安全）；
+    同一功能被双方修改时返回 conflicted_funcs。
     """
     # 解析增量 / 旧式
-    if isinstance(payload, dict) and ("products" in payload or "removed" in payload):
+    if isinstance(payload, dict) and ("products" in payload or "removed" in payload or "per_product" in payload):
         products = payload.get("products") or {}
         removed = payload.get("removed") or []
+        per_product = payload.get("per_product") or {}
+        func_hashes = payload.get("func_hashes") or {}
+        force = payload.get("force") or []
         if not isinstance(removed, list):
             removed = [removed]
+        if not isinstance(force, list):
+            force = [force]
     else:
         products = payload
         removed = []
+        per_product = {}
+        func_hashes = {}
+        force = []
 
     # 校验结构基本合法
     for product, tree in products.items():
@@ -93,14 +122,17 @@ async def save_module_tree(
         if "interfaces" not in tree:
             tree["interfaces"] = []
 
-    # 统一保存（增量）：写 DB + 同步用户画像 + 导出 config
-    result = module_tree_service.save_trees(products, removed=removed)
+    # 统一保存（节点级增量 + 功能级冲突检测）：写 DB + 同步画像 + 导出 config
+    result = module_tree_service.save_trees(
+        products, removed=removed, per_product=per_product, func_hashes=func_hashes, force=force)
     if result.get("rejected") == "empty":
         raise HTTPException(status_code=400, detail="提交内容为空，拒绝保存（防止清空责任模块树）")
     if not result["db"]:
         raise HTTPException(status_code=500, detail="保存到数据库失败")
     if not result["export"]:
         raise HTTPException(status_code=500, detail="保存成功但导出 config.yaml 失败")
+
+    conflicted_funcs = result.get("conflicted_funcs") or []
 
     # 通知 AI 热更新（尽力而为，失败不阻断）
     reload_msg = None
@@ -115,7 +147,13 @@ async def save_module_tree(
     except Exception as e:
         reload_msg = f"AI 热更新失败: {e}"
 
-    return {"code": 0, "message": "保存成功", "synced_users": result["synced"], "ai_reload": reload_msg}
+    return {
+        "code": 0,
+        "message": "保存成功" if not conflicted_funcs else "保存成功，部分功能存在冲突",
+        "synced_users": result["synced"],
+        "conflicted_funcs": conflicted_funcs,
+        "ai_reload": reload_msg,
+    }
 
 
 @router.get("/permission", summary="获取当前用户对模块树的编辑权限信息")
