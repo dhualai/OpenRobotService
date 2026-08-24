@@ -132,19 +132,28 @@ def upsert_product_tree(product: str, tree: Dict[str, Any]) -> bool:
         db.close()
 
 
-def replace_all_trees(trees: Dict[str, Any]) -> bool:
-    """整体覆盖所有产品的树（前端整树保存用）。"""
+def bulk_upsert_delete(products: Dict[str, Any], removed: Optional[List[str]] = None) -> bool:
+    """按提交的产品增量写 DB + 按需删除指定产品。
+
+    - 只新增/更新 products 中涉及的产品行，**绝不删除/改动未提交的产品**（避免多人协作互相覆盖）。
+    - removed 里列出的产品将被删除（删除产品场景）。
+    - 返回 True/False；空 products、removed 均调用前由 save_trees 拦截。
+    """
     db = _get_db()
     try:
-        # 删除现有全部
-        db.query(ModuleTree).delete()
-        for product, tree in trees.items():
-            db.add(ModuleTree(product=product, tree_json=tree or {"interfaces": []}))
+        for product, tree in (products or {}).items():
+            row = db.query(ModuleTree).filter(ModuleTree.product == product).first()
+            if row:
+                row.tree_json = tree or {"interfaces": []}
+            else:
+                db.add(ModuleTree(product=product, tree_json=tree or {"interfaces": []}))
+        for product in (removed or []):
+            db.query(ModuleTree).filter(ModuleTree.product == product).delete()
         db.commit()
         return True
     except Exception:
         db.rollback()
-        logger.exception("replace_all_trees 失败")
+        logger.exception("bulk_upsert_delete 失败")
         return False
     finally:
         db.close()
@@ -347,16 +356,76 @@ def sync_to_user_profiles(trees: Dict[str, Any]) -> int:
         db.close()
 
 
-def save_trees(trees: Dict[str, Any]) -> Dict[str, Any]:
-    """统一保存：写 DB + 同步用户画像 + 导出 config。
+def _clear_removed_products_from_profiles(removed: List[str]) -> int:
+    """删除产品后，清理 users.responsibility_modules 中这些产品 key（不影响其它产品）。"""
+    if not removed:
+        return 0
+    from app.models.identity import UserDB
 
-    保存前统一重算 界面/功能 的 key（前端中文名 → 前两字拼音+哈希，保证唯一且格式统一）。
-    返回 {"db": bool, "synced": int, "export": bool}。
+    db = _get_db()
+    try:
+        # 找出 currently 含这些产品的所有用户（宽松：先遍历有值用户，避免全表空扫）
+        rows = db.query(UserDB).filter(UserDB.responsibility_modules.isnot(None)).all()
+        updated = 0
+        removed_set = set(removed)
+        for u in rows:
+            current = u.responsibility_modules
+            if isinstance(current, str):
+                try:
+                    current = json.loads(current)
+                except Exception:
+                    current = {}
+            if not isinstance(current, dict):
+                continue
+            hit = False
+            for product in list(current.keys()):
+                if product in removed_set:
+                    del current[product]
+                    hit = True
+            if hit:
+                try:
+                    u.responsibility_modules = current
+                    updated += 1
+                except Exception:
+                    logger.exception("清理被删产品责任模块失败: %s", u.id)
+        db.commit()
+        logger.info("已清理被删产品的 responsibility_modules: %d 人", updated)
+        return updated
+    except Exception:
+        db.rollback()
+        logger.exception("清理被删产品责任模块失败")
+        return 0
+    finally:
+        db.close()
+
+
+def save_trees(trees: Dict[str, Any], removed: Optional[List[str]] = None) -> Dict[str, Any]:
+    """统一保存（增量安全）：按提交的产品写 DB + 同步用户画像 + 导出 config。
+
+    核心：
+    - 仅覆盖 trees 中涉及的产品行，**绝不删除/改动未提交产品**（多人协作改不同产品互不覆盖）。
+    - removed 指定要删除的产品（删除产品场景）：删 DB 行 + 清用户画像 + 从 config 移除。
+    - 空提交（无产品也无删除）直接拒绝，防止把整棵树清空。
+    - 导出 config 用 DB 全量（现状 + 本次），避免丢失其它产品。
+
+    返回 {"db": bool, "synced": int, "export": bool, "rejected"?: str}。
     """
+    removed = removed or []
+    if not trees and not removed:
+        return {"db": False, "synced": 0, "export": False, "rejected": "empty"}
+
+    # 保存前统一重算 界面/功能 的 key（前端中文名 → 前两字拼音+哈希）
     normalized = renormalize_keys(trees)
-    ok_db = replace_all_trees(normalized)
+
+    ok_db = bulk_upsert_delete(normalized, removed)
     if not ok_db:
         return {"db": False, "synced": 0, "export": False}
+
+    # 同步用户画像：只覆盖提交的产品（sync_to_user_profiles 已产品级安全）＋ 删除产品清理
     synced = sync_to_user_profiles(normalized)
-    ok_export = export_to_config(normalized)
+    if removed:
+        synced += _clear_removed_products_from_profiles(removed)
+
+    # 导出 config：用 DB 全量（合并本次），避免把其它产品从 config 抹掉
+    ok_export = export_to_config(get_all_trees())
     return {"db": True, "synced": synced, "export": ok_export}

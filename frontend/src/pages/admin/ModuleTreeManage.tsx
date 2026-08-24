@@ -132,14 +132,6 @@ export default function ModuleTreeManage() {
   // 指定负责工程师（仅管理员/特殊权限可改负责人分配；普通用户改不了他人模块）
   const canAssignEng = !!perm?.is_privileged;
 
-  // ── 自动保存辅助 refs ──
-  // skipNextAutoSaveRef：跳过下一次 trees 变化触发的自动保存（用于初次加载/刷新）
-  const skipNextAutoSaveRef = useRef(true);
-  // savingRef：是否正在保存中（同步标志，防重入）
-  const savingRef = useRef(false);
-  // pendingSaveRef：保存期间又有新的改动 → 保存完成后需再存一次最新状态
-  const pendingSaveRef = useRef(false);
-
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -148,8 +140,6 @@ export default function ModuleTreeManage() {
         request<string[]>('/module-tree/products'),
         request<Engineer[]>('/module-tree/candidates'),
       ]);
-      // 服务端加载的数据不算用户改动，跳过本次自动保存
-      skipNextAutoSaveRef.current = true;
       setTrees(treeData || {});
       setProducts(prodData || []);
       setCandidates(candData || []);
@@ -186,8 +176,22 @@ export default function ModuleTreeManage() {
 
   const activeTree = trees[active] || EMPTY_TREE;
 
+  // ── 增量保存用状态 ──
+  // dirtyProducts：本次被修改过、待保存的产品集合；removedProducts：本次待删除的产品
+  const [dirtyProducts, setDirtyProducts] = useState<Set<string>>(new Set());
+  const [removedProducts, setRemovedProducts] = useState<string[]>([]);
+  const markDirty = (name: string) => {
+    if (!name) return;
+    setDirtyProducts((prev) => {
+      const next = new Set(prev);
+      next.add(name);
+      return next;
+    });
+  };
+
   const setActiveTree = (updater: (t: { interfaces: InterfaceNode[] }) => { interfaces: InterfaceNode[] }) => {
     if (!active) return;
+    markDirty(active);
     setTrees((prev) => {
       const cur = prev[active] || { interfaces: [] };
       const next = updater(cur);
@@ -265,12 +269,15 @@ export default function ModuleTreeManage() {
     const name = newProdName.trim();
     if (!name) { Toast({ message: '请输入产品名', theme: 'warning' }); return; }
     if (products.includes(name)) { Toast({ message: '产品已存在', theme: 'warning' }); return; }
+    // 若该产品曾标记删除又重新添加，则取消删除标记
+    setRemovedProducts((prev) => prev.filter((p) => p !== name));
+    markDirty(name);
     setProducts((prev) => [...prev, name]);
     setTrees((prev) => ({ ...prev, [name]: { interfaces: [] } }));
     setActive(name);
     setNewProdName('');
   };
-  // 删除产品：仅特权用户可用；确认后从 products/trees 移除，保存(PUT 整体覆盖)即从 DB 删掉该产品
+  // 删除产品：仅特权用户可用；确认后加入待删除清单并从本地移除，保存(增量 PUT)时从 DB 删掉该产品
   const removeProduct = (name: string) => {
     if (!perm?.is_privileged) { Toast({ message: '无权限删除产品', theme: 'warning' }); return; }
     const ifaceCount = trees[name]?.interfaces?.length || 0;
@@ -278,6 +285,8 @@ export default function ModuleTreeManage() {
       ? `确定删除产品「${name}」吗？它包含 ${ifaceCount} 个界面，删除后需点击「保存并生效」才会真正落库。`
       : `确定删除产品「${name}」吗？删除后需点击「保存并生效」才会真正落库。`;
     if (!window.confirm(tip)) return;
+    setRemovedProducts((prev) => (prev.includes(name) ? prev : [...prev, name]));
+    setDirtyProducts((prev) => { const n = new Set(prev); n.delete(name); return n; });
     setProducts((prev) => prev.filter((p) => p !== name));
     setTrees((prev) => {
       const next = { ...prev };
@@ -285,37 +294,35 @@ export default function ModuleTreeManage() {
       return next;
     });
     setActive((cur) => (cur === name ? '' : cur));
-    Toast({ message: '已移除，记得点「保存并生效」', theme: 'success' });
+    Toast({ message: '已标记删除，保存后生效', theme: 'success' });
   };
 
-  // ── 保存（silent=true 为自动保存，不弹成功提示以免频繁打扰；手动始终提示）──
-  const handleSave = async (silent = false) => {
-    if (!active) {
-      if (!silent) Toast({ message: '无产品可保存', theme: 'warning' });
+  // ── 保存（手动增量：只提交改动过的产品 + 待删除产品，避免覆盖他人改动的其它产品）──
+  const handleSave = async () => {
+    // 待保存产品 = dirty 且未被标记删除
+    const dirtyNames = [...dirtyProducts].filter((p) => !removedProducts.includes(p));
+    if (dirtyNames.length === 0 && removedProducts.length === 0) {
+      Toast({ message: '没有需要保存的修改', theme: 'warning' });
       return;
     }
-    if (savingRef.current) {
-      // 正在保存中：记录有等待改动，保存完成后会再存一次，保证最终落库最新
-      pendingSaveRef.current = true;
-      return;
-    }
-    savingRef.current = true;
     setSaving(true);
     try {
-      const res = await request<{ code: number; message: string; ai_reload?: string }>('/module-tree/', {
+      const products: Record<string, unknown> = {};
+      for (const name of dirtyNames) {
+        products[name] = trees[name] || { interfaces: [] };
+      }
+      const res = await request<{ code: number; message: string; ai_reload?: string; rejected?: string }>('/module-tree/', {
         method: 'PUT',
-        body: JSON.stringify(trees),
+        body: JSON.stringify({ products, removed: removedProducts }),
       });
-      if (!silent) Toast({ message: res?.message || '保存成功', theme: 'success' });
+      // 保存成功：清空增量标记
+      setDirtyProducts(new Set());
+      setRemovedProducts([]);
+      Toast({ message: res?.message || '保存成功', theme: 'success' });
     } catch (e) {
       Toast({ message: '保存失败', theme: 'error' });
     } finally {
-      savingRef.current = false;
       setSaving(false);
-      if (pendingSaveRef.current) {
-        pendingSaveRef.current = false;
-        handleSaveRef.current(silent); // 有等待改动，用最新 trees 再存一次
-      }
     }
   };
 
@@ -332,15 +339,6 @@ export default function ModuleTreeManage() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
-
-  // 自动保存：界面上任何 trees 改动（加/删工程师、关键词、改名、增删功能/界面等）后立即保存
-  useEffect(() => {
-    if (skipNextAutoSaveRef.current) {
-      skipNextAutoSaveRef.current = false;
-      return;
-    }
-    handleSaveRef.current(true); // 静默自动保存
-  }, [trees]);
 
   const filteredCands = candidates.filter((c) =>
     !engSearch || c.name.toLowerCase().includes(engSearch.toLowerCase()) || (c.department || '').includes(engSearch));

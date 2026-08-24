@@ -64,21 +64,39 @@ async def get_candidates(
         db.close()
 
 
-@router.put("/", summary="整体保存 产品→界面→功能 树")
+@router.put("/", summary="保存 产品→界面→功能 树（增量安全）")
 async def save_module_tree(
-    trees: Dict[str, Any] = Body(..., description="完整树 {产品: {interfaces:[...]}}"),
+    payload: Dict[str, Any] = Body(..., description="{products:{产品:树}, removed?:[产品名]} 增量 或 旧式完整树 {产品:树}"),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ) -> Dict[str, Any]:
-    """整体覆盖所有产品树，并导出到 config.yaml + 通知 AI 热更新。"""
+    """保存树，导出到 config.yaml + 通知 AI 热更新。
+
+    两种入参：
+    - 增量模式：{"products": {产品:树}, "removed": [产品名]} —— 只覆盖提交的产品、删除 removed 列出的产品。
+    - 旧式完整树：直接传 {产品:树} —— 仅按该集合增量 upsert（不再整树全删重建）。
+    增量写入避免多人同时编辑时用旧快照互相覆盖。
+    """
+    # 解析增量 / 旧式
+    if isinstance(payload, dict) and ("products" in payload or "removed" in payload):
+        products = payload.get("products") or {}
+        removed = payload.get("removed") or []
+        if not isinstance(removed, list):
+            removed = [removed]
+    else:
+        products = payload
+        removed = []
+
     # 校验结构基本合法
-    for product, tree in trees.items():
+    for product, tree in products.items():
         if not isinstance(tree, dict):
             raise HTTPException(status_code=400, detail=f"产品 {product} 的树结构必须是对象")
         if "interfaces" not in tree:
             tree["interfaces"] = []
 
-    # 统一保存：写 DB + 覆盖同步用户画像 + 导出 config
-    result = module_tree_service.save_trees(trees)
+    # 统一保存（增量）：写 DB + 同步用户画像 + 导出 config
+    result = module_tree_service.save_trees(products, removed=removed)
+    if result.get("rejected") == "empty":
+        raise HTTPException(status_code=400, detail="提交内容为空，拒绝保存（防止清空责任模块树）")
     if not result["db"]:
         raise HTTPException(status_code=500, detail="保存到数据库失败")
     if not result["export"]:
