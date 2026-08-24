@@ -333,9 +333,16 @@ async def create_project(
         if current_user:
             current_username = current_user.get("sub", "")
             if current_username:
+                # 创建者默认关联 project_contact；并按名查 roles 表追加「项目经理」项目角色
+                # （未找到则跳过，与上方对接人「调度研发」同口径）
+                from app.services.identity_service import IdentityService
+                pm_role_id = IdentityService.get_role_id_by_name("项目经理")
+                creator_role_ids = ["project_contact"]
+                if pm_role_id:
+                    creator_role_ids.append(pm_role_id)
                 creator_role_data = {
                     "project_id": project_data.project_code,
-                    "role_ids": ["project_contact"],
+                    "role_ids": creator_role_ids,
                 }
                 await PermissionService.assign_role(request, token, current_username, creator_role_data)
     except Exception as e:
