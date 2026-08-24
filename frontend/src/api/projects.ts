@@ -42,9 +42,9 @@ export interface ProjectMember {
   role_name?: string | null;
 }
 
-/** 获取任务关联项目的成员列表 */
-export async function getProjectMembers(taskId: string | number): Promise<ProjectMember[]> {
+/** 获取任务关联项目的成员列表；all=true 时额外追加全部在职用户（供 @ 过滤到项目外） */
+export async function getProjectMembers(taskId: string | number, all = false): Promise<ProjectMember[]> {
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
-  const data = await request<ProjectMember[]>(`/${taskId}/project-members`);
+  const data = await request<ProjectMember[]>(`/${taskId}/project-members${all ? '?all=true' : ''}`);
   return Array.isArray(data) ? data : [];
 }

@@ -455,10 +455,16 @@ async def get_similar_tasks(
 @router.get("/{task_id}/project-members", response_model=List[ProjectMemberResponse])
 async def get_task_project_members(
     task_id: int,
+    all: bool = Query(False, description="为 true 时在项目成员基础上追加返回全部在职用户（用于 @ 时按关键字过滤到项目外的人）"),
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
-    """获取任务关联项目的成员列表 + 工单处理人（用于讨论区 @ 提及）。"""
+    """获取任务关联项目的成员列表 + 工单处理人（用于讨论区 @ 提及）。
+
+    all=false：仅返回提单人/处理人 + 项目成员（默认候选池）。
+    all=true：在前者基础上再追加全部 active 在职用户（已去重），
+             使讨论区输入 @关键字 时可过滤到项目外的人。
+    """
     import logging
     logger = logging.getLogger(__name__)
 
@@ -519,6 +525,31 @@ async def get_task_project_members(
                     name=name if name else uname,
                     role_name=m.get("role_name"),
                 ))
+
+        # ── 3. all=true：追加全部 active 在职用户（去重），漏出项目外的人供 @ 过滤 ──
+        if all:
+            from app.core.db import SessionLocal
+            from app.models.identity import UserDB
+            sync_db = SessionLocal()
+            try:
+                all_users = sync_db.query(UserDB).filter(UserDB.status == "active").all()
+                # 按姓名、用户名排序，保证姓名相近的排在一起
+                def _sort_key(u):
+                    return (u.name or u.username or "").lower()
+                all_users.sort(key=_sort_key)
+                for u in all_users:
+                    uname = (u.username or "").strip()
+                    if not uname or uname in seen:
+                        continue
+                    seen.add(uname)
+                    result.append(ProjectMemberResponse(
+                        id=uname,
+                        username=uname,
+                        name=u.name or uname,
+                        role_name=None,
+                    ))
+            finally:
+                sync_db.close()
 
         # 即使没有项目也能 @ 处理人
         return result

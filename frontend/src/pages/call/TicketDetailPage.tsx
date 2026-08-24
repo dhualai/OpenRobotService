@@ -163,6 +163,8 @@ export default function TicketDetailPage() {
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
   // 项目成员（用于讨论区 @ 提及）
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  // 全部在职用户（项目成员 + 项目外，@ 输入过滤字时可 @ 到项目外的人）
+  const [allUsers, setAllUsers] = useState<ProjectMember[]>([]);
   // @U老师 AI 讨论中标记
   const [askingAI, setAskingAI] = useState(false);
 
@@ -279,7 +281,7 @@ export default function TicketDetailPage() {
   // 获取项目成员用于 @ 提及（与系统任务详情页同款逻辑）
   useEffect(() => {
     const tid = ticket?.ticket_id;
-    if (!tid) { setProjectMembers([]); return; }
+    if (!tid) { setProjectMembers([]); setAllUsers([]); return; }
     getProjectMembers(tid)
       .then((members) => {
         const reporterUsername = ticket?.created_by || '';
@@ -291,6 +293,10 @@ export default function TicketDetailPage() {
         setProjectMembers(sorted);
       })
       .catch(() => setProjectMembers([]));
+    // 获取全部在职用户（@ 输入过滤字时扩展到项目外的人）
+    getProjectMembers(tid, true)
+      .then((u) => setAllUsers(u))
+      .catch(() => setAllUsers([]));
   }, [ticket?.ticket_id, ticket?.created_by]);
 
   // 进入详情页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈，无需额外按钮
@@ -886,6 +892,7 @@ export default function TicketDetailPage() {
           enableAttach
           enableAI
           mentionUsers={projectMembers}
+          mentionAllUsers={allUsers}
           taskId={ticket?.ticket_id}
           onTaskUpdated={handleWsTaskUpdated}
         />

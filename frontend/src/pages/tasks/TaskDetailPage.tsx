@@ -186,6 +186,8 @@ export default function TaskDetailPage() {
 
   // 项目成员（用于讨论区 @ 提及）
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  // 全部在职用户（项目成员 + 项目外，@ 输入过滤字时可 @ 到项目外的人）
+  const [allUsers, setAllUsers] = useState<ProjectMember[]>([]);
 
   useEffect(() => {
     if (!detailId) { setDetail(null); return; }
@@ -209,6 +211,10 @@ export default function TaskDetailPage() {
             setProjectMembers(sorted);
           })
           .catch(() => setProjectMembers([]));
+        // 获取全部在职用户（@ 输入过滤字时扩展到项目外的人）
+        getProjectMembers(detailId, true)
+          .then((u) => setAllUsers(u))
+          .catch(() => setAllUsers([]));
       })
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
@@ -1463,6 +1469,7 @@ export default function TaskDetailPage() {
           enableAI
           enableAttach
           mentionUsers={projectMembers}
+          mentionAllUsers={allUsers}
           taskId={detail?.id}
           onTaskUpdated={handleWsTaskUpdated}
           onMessagesClick={handleOpenReport}
