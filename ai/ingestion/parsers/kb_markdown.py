@@ -46,6 +46,14 @@ class KBEntry:
     description_cn: str = ""
     description_en: str = ""
     solution_cn: str = ""
+    # 仅诊断知识卡片（usp_cards）使用
+    card_id: str = ""
+    card_domain: str = ""
+    severity: str = ""
+    symptom_terms: List[str] = field(default_factory=list)
+    related_cards: List[str] = field(default_factory=list)
+    anchor_error_codes: List[str] = field(default_factory=list)
+    embed_text: str = ""
 
 
 class KBDomainIngester(BaseIngester[KBEntry]):
@@ -91,7 +99,9 @@ class KBDomainIngester(BaseIngester[KBEntry]):
                 continue
 
             rel = md_file.relative_to(self._domain_dir)
-            sub_domain = str(rel.parent) if str(rel.parent) != "." else ""
+            # 与 source_file 一致统一正斜杠：Windows 下 Path 给反斜杠，会导致
+            # sub_domain 与消费端（pipeline._sub_labels 等）的键匹配错位
+            sub_domain = str(rel.parent).replace("\\", "/") if str(rel.parent) != "." else ""
             source_file = str(rel).replace("\\", "/")
 
             try:
@@ -102,7 +112,9 @@ class KBDomainIngester(BaseIngester[KBEntry]):
 
             # 按文件名模式选择切分策略（兼容新旧目录结构）
             _rel = source_file.lower()
-            if "faq" in _rel:
+            if re.match(r"^kb-[a-z]+-\d+\.md$", Path(source_file).name.lower()):
+                file_entries = self._split_kb_cards(content, source_file)
+            elif "faq" in _rel:
                 file_entries = self._split_faq(content, sub_domain, source_file)
             elif "manual" in _rel:
                 file_entries = self._split_manual(content, sub_domain, source_file)
@@ -111,9 +123,83 @@ class KBDomainIngester(BaseIngester[KBEntry]):
             else:
                 file_entries = self._split_generic(content, sub_domain, source_file)
 
-            entries.extend(file_entries)
+            entries.extend(self._split_oversize(file_entries))
 
+        # 兜底切分会产生同 order 子块，统一按最终顺序重排（order 只用于
+        # chunk_id 唯一性与展示排序，重排零风险；每次入库都是新集合）
+        for i, e in enumerate(entries):
+            e.order = i
         return entries
+
+    # 超长块兜底阈值：超过则按行切分（翻译巨表 17-79KB 实测向量检索等于抽签）
+    _OVERSIZE_CHARS = 3000
+
+    def _split_oversize(self, file_entries: List[KBEntry]) -> List[KBEntry]:
+        """所有策略的最后防线：超长 chunk 按行切，防止嵌入信号被稀释。
+
+        - 表格感知：块开头有表头（|---| 分隔行）时，表头复制到每个子块，
+          避免切出无头表格
+        - 围栏感知：切点只落在 ``` 围栏外，代码块不拦腰截断
+        - 标题带序号（· 2/5），检索展示可辨识同组子块
+        """
+        out: List[KBEntry] = []
+        for e in file_entries:
+            if len(e.content) <= self._OVERSIZE_CHARS:
+                out.append(e)
+                continue
+            lines = e.content.splitlines()
+            # 表头：块前 6 行内找 |--- 分隔行，表头 = 首个非空行到该行
+            header: list[str] = []
+            for i, ln in enumerate(lines[:6]):
+                if re.match(r"^\s*\|[\s:|-]+\|\s*$", ln):
+                    # 从第一行（## 标题）到分隔行整体作为表头前缀
+                    start = 0
+                    for j in range(i, -1, -1):
+                        if lines[j].strip().startswith("|"):
+                            start = j
+                        else:
+                            break
+                    header = lines[start:i + 1]
+                    break
+            # 行数切分：每子块 ≈ _OVERSIZE_CHARS 字
+            per = max(20, self._OVERSIZE_CHARS // 40)  # 估算行数上限（中文行较短）
+            parts: list[list[str]] = []
+            cur: list[str] = []
+            cur_chars = 0
+            in_fence = False
+            for ln in lines:
+                if ln.strip().startswith("```"):
+                    in_fence = not in_fence
+                cur.append(ln)
+                cur_chars += len(ln) + 1
+                if cur_chars >= self._OVERSIZE_CHARS and not in_fence and len(cur) >= per // 4:
+                    parts.append(cur)
+                    cur, cur_chars = [], 0
+            if cur:
+                parts.append(cur)
+            n = len(parts)
+            if n <= 1:
+                out.append(e)
+                continue
+            for i, p in enumerate(parts, 1):
+                body = list(p)
+                if i > 1 and header:
+                    body = header + [""] + body
+                out.append(KBEntry(
+                    title=f"{e.title} · {i}/{n}" if n > 1 else e.title,
+                    content="\n".join(body).strip(),
+                    sub_domain=e.sub_domain, source_file=e.source_file,
+                    order=e.order + i - 1,
+                    images=e.images, section=e.section, chapter=e.chapter,
+                    error_code=e.error_code, category=e.category, level=e.level,
+                    description_cn=e.description_cn, solution_cn=e.solution_cn,
+                    card_id=e.card_id, card_domain=e.card_domain,
+                    severity=e.severity, symptom_terms=e.symptom_terms,
+                    related_cards=e.related_cards, anchor_error_codes=e.anchor_error_codes,
+                    # 切开后嵌入文本必须跟着变小，否则向量仍是稀释的整块全文
+                    embed_text=None,
+                ))
+        return out
 
     # ═══════════════════════════════════════════════════════════
     # 策略 1: FAQ — 按 ### 切 QA（一 QA 一 chunk）
@@ -390,7 +476,9 @@ class KBDomainIngester(BaseIngester[KBEntry]):
             entries.append(KBEntry(
                 title=full_title,
                 content=body,
-                sub_domain=sub_domain, source_file=source_file, order=start_order + sub_idx,
+                # 0 基占位 start_order..start_order+n-1：调用方 order += n 正确衔接，
+                # 1 基会与下一章节首块撞 order（chunk_id 同 → upsert 覆盖，静默丢块）
+                sub_domain=sub_domain, source_file=source_file, order=start_order + sub_idx - 1,
                 images=images, section=sub_section, chapter=chapter,
             ))
 
@@ -428,11 +516,19 @@ class KBDomainIngester(BaseIngester[KBEntry]):
         _head = h2_match.group(0) if h2_match else ""
         body = content[len(_head):]
 
-        # 逐行切段：bullet 行或独立短行标题都作为子项起始
+        # 逐行切段：bullet 行或独立短行标题都作为子项起始。
+        # ``` 围栏内（手册代码块，如 `ip a`）不参与子项识别——短命令会被
+        # _is_subheader 误判成标题、把代码块拆成假子项 chunk。
         segments: list[list[str]] = []
         cur: list[str] = []
+        _in_fence = False
         for ln in body.splitlines():
-            if ln.startswith('- ') or _is_subheader(ln):
+            if ln.strip().startswith("```"):
+                _in_fence = not _in_fence
+                cur.append(ln)
+            elif _in_fence:
+                cur.append(ln)
+            elif ln.startswith('- ') or _is_subheader(ln):
                 if cur:
                     segments.append(cur)
                 cur = [ln]
@@ -474,8 +570,9 @@ class KBDomainIngester(BaseIngester[KBEntry]):
             entries.append(KBEntry(
                 title=f"{parent_title} > {name}",
                 content=_content,
+                # 0 基占位（同 _split_manual_h3 的说明：1 基会撞下一章节首块）
                 sub_domain=sub_domain, source_file=source_file,
-                order=start_order + sub_idx,
+                order=start_order + sub_idx - 1,
                 images=_extract_images(p_body),
                 section=f"{parent_section}.{sub_idx}", chapter=chapter,
             ))
@@ -649,7 +746,9 @@ class KBDomainIngester(BaseIngester[KBEntry]):
             )]
 
         entries = []
-        for i, sub in enumerate(sub_sections):
+        # 自增计数而非 start_order+i：跳过空 body 的子节时 i 会留 gap，
+        # 调用方 order += len(entries) 仍会与最后保留块撞号（upsert 覆盖丢块）
+        for sub in sub_sections:
             h3_match = re.match(r'^###\s+(.+)$', sub, re.MULTILINE)
             if h3_match:
                 title = f"{parent_title} / {h3_match.group(1).strip()}"
@@ -661,16 +760,87 @@ class KBDomainIngester(BaseIngester[KBEntry]):
             if body:
                 entries.append(KBEntry(
                     title=title, content=body,
-                    sub_domain=sub_domain, source_file=source_file, order=start_order + i,
+                    sub_domain=sub_domain, source_file=source_file, order=start_order,
                 ))
+                start_order += 1
         return entries
+
+    # ═══════════════════════════════════════════════════════════
+    # 策略 5: 诊断知识卡片 — 一卡一 chunk（KB-{DOMAIN}-{NNN}.md）
+    # ═══════════════════════════════════════════════════════════
+
+    def _split_kb_cards(self, content: str, source_file: str) -> List[KBEntry]:
+        """USP 诊断知识卡片（diagnostic-kb）：一张卡片 = 一个故障现象的完整
+        排查闭环（现象/影响/原因/排查/处理/售后），整卡一个 chunk——按 ## 拆开
+        会把「现象」和「排查步骤」切进不同向量，检索到现象却带不出处理方法。
+
+        - sub_domain 固定 "usp_cards"（忽略 robot/task 等子目录，检索过滤与
+          标签统一）
+        - symptom_terms（用户口语同义词）并入嵌入文本：「车掉线」这类口语与
+          卡片正文措辞差异大，靠它桥接语义检索
+        - frontmatter 锚点（error_codes 等）进 payload，供未来错误码精确匹配
+          过滤（卡片库 SCHEMA 的「精确优先」分层）
+        """
+        m = re.match(r"^---\s*\n(.*?)\n---\s*\n?", content, re.DOTALL)
+        if not m:
+            self._log(f"[WARN] 卡片缺 frontmatter: {source_file}")
+            body = content
+            meta = {}
+        else:
+            fm_text, body = m.group(1), content[m.end():]
+            meta = {}
+            for key in ("id", "title", "domain", "severity"):
+                mm = re.search(rf"^{key}:\s*(.+)$", fm_text, re.MULTILINE)
+                if mm:
+                    meta[key] = mm.group(1).strip().strip("\"'")
+            meta["symptom_terms"] = self._fm_inline_list(fm_text, "symptom_terms")
+            meta["related_cards"] = self._fm_inline_list(fm_text, "related_cards")
+            # anchors.error_codes：行内 [...] 或块状 - "X:1" 两种写法
+            codes = self._fm_inline_list(fm_text, "error_codes")
+            if not codes:
+                mm = re.search(
+                    r"^\s*error_codes:\s*\n((?:\s*-\s*.+\n?)+)", fm_text, re.MULTILINE)
+                if mm:
+                    codes = [ln.strip().lstrip("-").strip().strip("\"'")
+                             for ln in mm.group(1).strip().splitlines() if ln.strip()]
+            meta["error_codes"] = codes
+
+        title = meta.get("title") or Path(source_file).stem
+        symptom = meta.get("symptom_terms") or []
+        embed_text = title
+        if symptom:
+            embed_text += "\n用户口语说法：" + "、".join(symptom)
+        embed_text += "\n" + body.strip()
+
+        return [KBEntry(
+            title=title,
+            content=body.strip(),
+            sub_domain="usp_cards",
+            source_file=source_file,
+            order=0,
+            card_id=meta.get("id", ""),
+            card_domain=meta.get("domain", ""),
+            severity=meta.get("severity", ""),
+            symptom_terms=symptom,
+            related_cards=meta.get("related_cards") or [],
+            anchor_error_codes=meta.get("error_codes") or [],
+            embed_text=embed_text,
+        )]
+
+    @staticmethod
+    def _fm_inline_list(fm_text: str, key: str) -> List[str]:
+        """frontmatter 行内列表：key: [a, b, "c"] → [a, b, c]"""
+        mm = re.search(rf"^{key}:\s*\[(.*?)\]\s*$", fm_text, re.MULTILINE)
+        if not mm:
+            return []
+        return [x.strip().strip("\"'") for x in mm.group(1).split(",") if x.strip()]
 
     # ═══════════════════════════════════════════════════════════
     # Chunk 构建
     # ═══════════════════════════════════════════════════════════
 
     def to_chunk(self, entry: KBEntry) -> Chunk:
-        text = f"{entry.title}\n{entry.content}"
+        text = entry.embed_text or f"{entry.title}\n{entry.content}"
 
         chunk_id = self.stable_id(
             self._domain,
@@ -704,6 +874,18 @@ class KBDomainIngester(BaseIngester[KBEntry]):
             payload["description_cn"] = entry.description_cn
         if entry.solution_cn:
             payload["solution_cn"] = entry.solution_cn
+        # 诊断知识卡片专用字段（error_codes 供未来精确匹配 payload filter）
+        if entry.card_id:
+            payload["card_id"] = entry.card_id
+            payload["card_domain"] = entry.card_domain
+            if entry.severity:
+                payload["severity"] = entry.severity
+            if entry.symptom_terms:
+                payload["symptom_terms"] = entry.symptom_terms
+            if entry.related_cards:
+                payload["related_cards"] = entry.related_cards
+            if entry.anchor_error_codes:
+                payload["error_codes"] = entry.anchor_error_codes
 
         return Chunk(id=chunk_id, text=text, payload=payload)
 
