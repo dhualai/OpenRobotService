@@ -765,7 +765,23 @@ export default function DiscussionPanel({
     }
   };
 
-  const ph = placeholder ?? (enableAI ? '直接评论、@U老师 讨论，或输入 @#工单号 引用历史工单。' : '参与讨论…');
+  // 输入框轮播提示（评论小技巧）：默认每 ~2s 切换展示 @U老师 / @#工单号 / @同事 等使用提示
+  const [phIndex, setPhIndex] = useState(0);
+  const AI_PLACEHOLDER_TIPS = [
+    '直接讨论或者@其他人讨论',
+    '@#工单号 可引入历史工单进行讨论',
+    '@U老师 输入你的问题进行交流分析',
+    '试试 @一下同事，让ta收到通知',
+  ];
+  useEffect(() => {
+    // 仅系统任务（enableAI）且未外部指定 placeholder 时才轮播展示小技巧
+    if (!enableAI || placeholder) return;
+    const timer = setInterval(() => setPhIndex((i) => (i + 1) % AI_PLACEHOLDER_TIPS.length), 1500);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enableAI, placeholder]);
+
+  const ph = placeholder ?? (enableAI ? AI_PLACEHOLDER_TIPS[phIndex] : '参与讨论…');
 
   // 长按菜单浮层交给 TDesign <Popover>（popper 定位 + 箭头 + 动画 + 外点关闭）承载。
   // 用一个「透明、pointer-events:none 的代理锚点」定位到被长按气泡的 rect：
