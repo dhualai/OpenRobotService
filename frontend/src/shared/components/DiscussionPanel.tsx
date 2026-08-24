@@ -129,6 +129,8 @@ interface DiscussionPanelProps {
   className?: string;
   /** @提及用户列表（系统任务：项目成员，用于 @ 弹窗选择） */
   mentionUsers?: ProjectMember[];
+  /** @提及全部用户候选（项目成员 + 项目外在职用户）。登录者输入 @过滤字（如 @刘 / @liu）时用其扩展到项目外的人 */
+  mentionAllUsers?: ProjectMember[];
   /** 删除评论（按创建人鉴权由后端把关）；不传则不显示删除菜单项 */
   onDeleteComment?: (id: string | number) => Promise<void> | void;
   /** 订阅用 taskId（传入即启用 WS 实时评论 / 在线状态 / 输入中 / 已读回执） */
@@ -154,6 +156,7 @@ export default function DiscussionPanel({
   title,
   className = '',
   mentionUsers,
+  mentionAllUsers,
   onDeleteComment,
   taskId,
   onTaskUpdated,
@@ -415,16 +418,26 @@ export default function DiscussionPanel({
   };
 
   // ── @mention: 过滤项目成员 ──
+  // @候选池：无输入 → 项目成员（默认）；有输入（@刘/@liu）→ 项目成员 + 全部在职用户补全，可 @ 到项目外的人
+  const mentionCandidates = useMemo(() => {
+    const members = Array.isArray(mentionUsers) ? mentionUsers : [];
+    if (!mentionFilter) return members;
+    const all = Array.isArray(mentionAllUsers) ? mentionAllUsers : [];
+    // 全部用户中补上项目成员里没有的（项目成员保持在最前）
+    const memberSet = new Set(members.map((m) => m.username));
+    return [...members, ...all.filter((u) => u.username && !memberSet.has(u.username))];
+  }, [mentionUsers, mentionAllUsers, mentionFilter]);
+
   const filteredMentionUsers = useMemo(() => {
-    if (!mentionUsers || mentionUsers.length === 0) return [];
-    if (!mentionFilter) return mentionUsers;
+    if (mentionCandidates.length === 0) return [];
+    if (!mentionFilter) return mentionCandidates;
     const kw = mentionFilter.toLowerCase();
-    return mentionUsers.filter(
+    return mentionCandidates.filter(
       (u) =>
         (u.username || '').toLowerCase().includes(kw) ||
         (u.name || '').toLowerCase().includes(kw),
     );
-  }, [mentionUsers, mentionFilter]);
+  }, [mentionCandidates, mentionFilter]);
 
   // 重置 mentionIndex 当过滤结果变化时
   useEffect(() => {
@@ -467,8 +480,9 @@ export default function DiscussionPanel({
       setShowTicketRef(false);
     }
 
-    // ── @mention: 无人员列表则跳过（@# 已在上方处理）──
-    if (!mentionUsers || mentionUsers.length === 0) {
+    // ── @mention: 无任何候选（项目成员 + 全部用户都为空）则跳过（@# 已在上方处理）──
+    // 注：项目成员为空但提供了全部在职用户时仍继续，便于 @ 项目外的人
+    if (!(mentionUsers && mentionUsers.length > 0) && !(mentionAllUsers && mentionAllUsers.length > 0)) {
       setShowMentions(false);
       return;
     }
@@ -751,7 +765,23 @@ export default function DiscussionPanel({
     }
   };
 
-  const ph = placeholder ?? (enableAI ? '直接评论、@U老师 讨论，或输入 @#工单号 引用历史工单。' : '参与讨论…');
+  // 输入框轮播提示（评论小技巧）：默认每 ~2s 切换展示 @U老师 / @#工单号 / @同事 等使用提示
+  const [phIndex, setPhIndex] = useState(0);
+  const AI_PLACEHOLDER_TIPS = [
+    '直接讨论或者@其他人讨论',
+    '@#工单号 可引入历史工单进行讨论',
+    '@U老师 输入你的问题进行交流分析',
+    '试试 @一下同事，让ta收到通知',
+  ];
+  useEffect(() => {
+    // 仅系统任务（enableAI）且未外部指定 placeholder 时才轮播展示小技巧
+    if (!enableAI || placeholder) return;
+    const timer = setInterval(() => setPhIndex((i) => (i + 1) % AI_PLACEHOLDER_TIPS.length), 1500);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enableAI, placeholder]);
+
+  const ph = placeholder ?? (enableAI ? AI_PLACEHOLDER_TIPS[phIndex] : '参与讨论…');
 
   // 长按菜单浮层交给 TDesign <Popover>（popper 定位 + 箭头 + 动画 + 外点关闭）承载。
   // 用一个「透明、pointer-events:none 的代理锚点」定位到被长按气泡的 rect：
