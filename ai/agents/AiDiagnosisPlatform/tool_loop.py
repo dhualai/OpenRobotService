@@ -76,11 +76,13 @@ async def run_tool_loop_stream(
                 else:
                     final_ev = ev
             if final_ev is None:
-                yield {"_final": True, "content": "", "tool_calls": []}
+                yield {"_final": True, "content": "", "tool_calls": [],
+                       "reasoning": ""}
                 return
             yield {"_final": True,
                    "content": final_ev.get("content") or "",
-                   "tool_calls": final_ev.get("tool_calls") or []}
+                   "tool_calls": final_ev.get("tool_calls") or [],
+                   "reasoning": final_ev.get("reasoning_content") or ""}
             return
         resp = await llm.complete_with_tools(
             messages=messages, tools=tools, max_tokens=1200, temperature=0.2,
@@ -88,15 +90,18 @@ async def run_tool_loop_stream(
         content = resp.get("content") or ""
         if content:
             yield {"event": "token", "data": content}
-        yield {"_final": True, "content": content, "tool_calls": resp.get("tool_calls") or []}
+        yield {"_final": True, "content": content, "tool_calls": resp.get("tool_calls") or [],
+               "reasoning": resp.get("reasoning") or ""}
 
     for _ in range(max_iterations):
         content = ""
         tool_calls = []
+        reasoning = ""
         async for ev in _llm_round():
             if ev.get("_final"):
                 content = ev["content"]
                 tool_calls = ev["tool_calls"]
+                reasoning = ev.get("reasoning") or ""
             else:
                 yield ev
 
@@ -104,7 +109,7 @@ async def run_tool_loop_stream(
             yield {"event": "done", "final_text": content, "tool_results": results}
             return
 
-        messages.append({
+        _assistant_msg = {
             "role": "assistant",
             "content": content or None,
             "tool_calls": [
@@ -115,7 +120,13 @@ async def run_tool_loop_stream(
                 }
                 for tc in tool_calls
             ],
-        })
+        }
+        # DeepSeek 协议：tools + 思考开启时，中间 assistant 的 reasoning_content
+        # 必须回传给后续请求（否则官方文档声明返回 400）。空时不写字段，
+        # 避免对额外字段敏感的中转后端出错。
+        if reasoning:
+            _assistant_msg["reasoning_content"] = reasoning
+        messages.append(_assistant_msg)
 
         terminate = False
         unknown_tool = False
@@ -230,8 +241,9 @@ async def run_tool_loop(
                 else:
                     final_ev = ev
             if final_ev is None:
-                return "", []
-            return final_ev.get("content") or "", final_ev.get("tool_calls") or []
+                return "", [], ""
+            return (final_ev.get("content") or "", final_ev.get("tool_calls") or [],
+                    final_ev.get("reasoning_content") or "")
         # 非流式回退
         resp = await llm.complete_with_tools(
             messages=messages, tools=tools, max_tokens=1200, temperature=0.2,
@@ -241,17 +253,17 @@ async def run_tool_loop(
             r = on_token(content)
             if asyncio.iscoroutine(r):
                 await r
-        return content, resp.get("tool_calls") or []
+        return content, resp.get("tool_calls") or [], resp.get("reasoning") or ""
 
     for _ in range(max_iterations):
-        content, tool_calls = await _llm_round()
+        content, tool_calls, reasoning = await _llm_round()
 
         if not tool_calls:
             # LLM 不再调工具：循环结束，返回正文
             return content, results
 
         # 记录 assistant 消息（含 tool_calls，保持 OpenAI 对话格式）
-        messages.append({
+        _assistant_msg = {
             "role": "assistant",
             "content": content or None,
             "tool_calls": [
@@ -262,7 +274,12 @@ async def run_tool_loop(
                 }
                 for tc in tool_calls
             ],
-        })
+        }
+        # DeepSeek 协议：tools + 思考开启时中间 assistant 的 reasoning_content
+        # 必须回传（空时不写字段，避免对额外字段敏感的中转后端出错）
+        if reasoning:
+            _assistant_msg["reasoning_content"] = reasoning
+        messages.append(_assistant_msg)
 
         # 逐个执行工具
         terminate = False

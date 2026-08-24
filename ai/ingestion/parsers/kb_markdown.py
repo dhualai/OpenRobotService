@@ -134,6 +134,12 @@ class KBDomainIngester(BaseIngester[KBEntry]):
     # 超长块兜底阈值：超过则按行切分（翻译巨表 17-79KB 实测向量检索等于抽签）
     _OVERSIZE_CHARS = 3000
 
+    # 整节/整文档阈值：≤2000 字不细切。手册章节实测尺寸：6.5 多层库位 1673、
+    # 9.5 任务操作 1354——细切会把「前提/步骤」切成 1-2 行碎片 chunk，正文与
+    # 标题分离，召回后拼不回完整流程；2.3 机器人操作 5192、4.3 输送线 4425
+    # 这类大章节仍需细切。
+    _SECTION_WHOLE_CHARS = 2000
+
     def _split_oversize(self, file_entries: List[KBEntry]) -> List[KBEntry]:
         """所有策略的最后防线：超长 chunk 按行切，防止嵌入信号被稀释。
 
@@ -501,6 +507,11 @@ class KBDomainIngester(BaseIngester[KBEntry]):
         规则：切不出至少 3 个子项 → 返回空列表（调用方退化为整章一个 chunk）；
         章节引言并进第一个子项，不丢内容。
         """
+        # 短章节不细切（阈值见 _SECTION_WHOLE_CHARS）：细切是为 5000+ 字的
+        # 平铺大章节设计的，短章节细切产生 1-2 行碎片，检索召回后拼不出完整步骤
+        if len(content) <= self._SECTION_WHOLE_CHARS:
+            return []
+
         def _is_subheader(line: str) -> bool:
             s = line.strip()
             if not s or len(s) < 2 or len(s) > 25:
@@ -555,6 +566,30 @@ class KBDomainIngester(BaseIngester[KBEntry]):
             if not name:
                 continue
             named.append((name, seg))
+
+        # 空壳合并：子项标题行后面紧跟的内容以 bullet 起头时，该子项会被切成
+        # 只有标题没有正文的空壳 chunk（实测 9.5「取消任务/取消充电」）。
+        # 正文 <30 字且无图的子项连同标题行并入下一个子项。
+        _merged: list = []
+        _pending: Optional[tuple] = None
+        for name, seg in named:
+            _body = "\n".join(seg[1:]).strip()
+            if len(_body) < 30 and "](./media/" not in "\n".join(seg) and "](media/" not in "\n".join(seg):
+                _pending = (name, seg) if _pending is None else (_pending[0], _pending[1] + seg)
+                continue
+            if _pending is not None:
+                # 合并后正文以空壳的标题行开头，条目名沿用空壳的子项名
+                seg = _pending[1] + seg
+                name = _pending[0]
+                _pending = None
+            _merged.append((name, seg))
+        if _pending is not None:
+            if _merged:
+                _pn, _ps = _merged[-1]
+                _merged[-1] = (_pn, _ps + _pending[1])
+            else:
+                _merged.append(_pending)
+        named = _merged
 
         if len(named) < 3:
             return []
@@ -685,6 +720,16 @@ class KBDomainIngester(BaseIngester[KBEntry]):
 
         content = re.sub(r'^---.*?---\s*', '', content, flags=re.DOTALL)
         content = re.sub(r'<!--.*?-->\s*', '', content, flags=re.DOTALL)
+        content = content.strip()
+
+        # 短文档不切（阈值见 _SECTION_WHOLE_CHARS）：产品页这类 ≤2000 字的小文档
+        # 按 ## 切成 3-4 个小 chunk 后，带产品图的 intro chunk 会在排序中输给其他
+        # 产品的参数表 chunk（实测 XP3201 没图）。整文档一个 chunk 保证图文同在。
+        if len(content) <= self._SECTION_WHOLE_CHARS:
+            return [KBEntry(
+                title=doc_title or source_file, content=content,
+                sub_domain=sub_domain, source_file=source_file, order=0,
+            )]
 
         sections = re.split(r'\n(?=## )', content)
         entries: List[KBEntry] = []

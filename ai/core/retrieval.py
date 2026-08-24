@@ -51,6 +51,7 @@ class RetrievalResult:
     images: List[str] = field(default_factory=list)
     sub_domain: str = ""
     domain: str = ""
+    source_file: str = ""
     # P2 验证状态透出（供 LLM 看到该历史方案是否经验证/被推翻）
     verified: str = "unknown"          # unknown|confirmed|rejected|recurred
     root_cause_type: str = ""
@@ -521,6 +522,7 @@ class RetrievalService:
             images=pl.get("images", []),
             sub_domain=pl.get("sub_domain", ""),
             domain=pl.get("domain", ""),
+            source_file=pl.get("source_file", ""),
             verified=pl.get("verified", "unknown") or "unknown",
             root_cause_type=pl.get("root_cause_type", "") or "",
             error_codes=pl.get("error_codes", []) or [],
