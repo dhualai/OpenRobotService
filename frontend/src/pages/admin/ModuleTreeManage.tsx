@@ -2,7 +2,7 @@
 // 背景：以「产品→界面→功能」树为派单主数据，工程师在此认领负责的功能。
 // 功能节点可维护：关键词（识别相关问题）/ 功能描述 / 负责工程师。
 // 保存：PUT /admin/module-tree 整体覆盖 DB + 导出 config.yaml + 通知 AI 热更新。
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Toast, Loading, Dialog, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
@@ -132,6 +132,14 @@ export default function ModuleTreeManage() {
   // 指定负责工程师（仅管理员/特殊权限可改负责人分配；普通用户改不了他人模块）
   const canAssignEng = !!perm?.is_privileged;
 
+  // ── 自动保存辅助 refs ──
+  // skipNextAutoSaveRef：跳过下一次 trees 变化触发的自动保存（用于初次加载/刷新）
+  const skipNextAutoSaveRef = useRef(true);
+  // savingRef：是否正在保存中（同步标志，防重入）
+  const savingRef = useRef(false);
+  // pendingSaveRef：保存期间又有新的改动 → 保存完成后需再存一次最新状态
+  const pendingSaveRef = useRef(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -140,6 +148,8 @@ export default function ModuleTreeManage() {
         request<string[]>('/module-tree/products'),
         request<Engineer[]>('/module-tree/candidates'),
       ]);
+      // 服务端加载的数据不算用户改动，跳过本次自动保存
+      skipNextAutoSaveRef.current = true;
       setTrees(treeData || {});
       setProducts(prodData || []);
       setCandidates(candData || []);
@@ -261,22 +271,59 @@ export default function ModuleTreeManage() {
     setNewProdName('');
   };
 
-  // ── 保存 ──
-  const handleSave = async () => {
-    if (!active) { Toast({ message: '无产品可保存', theme: 'warning' }); return; }
+  // ── 保存（silent=true 为自动保存，不弹成功提示以免频繁打扰；手动始终提示）──
+  const handleSave = async (silent = false) => {
+    if (!active) {
+      if (!silent) Toast({ message: '无产品可保存', theme: 'warning' });
+      return;
+    }
+    if (savingRef.current) {
+      // 正在保存中：记录有等待改动，保存完成后会再存一次，保证最终落库最新
+      pendingSaveRef.current = true;
+      return;
+    }
+    savingRef.current = true;
     setSaving(true);
     try {
       const res = await request<{ code: number; message: string; ai_reload?: string }>('/module-tree/', {
         method: 'PUT',
         body: JSON.stringify(trees),
       });
-      Toast({ message: res?.message || '保存成功', theme: 'success' });
+      if (!silent) Toast({ message: res?.message || '保存成功', theme: 'success' });
     } catch (e) {
       Toast({ message: '保存失败', theme: 'error' });
     } finally {
+      savingRef.current = false;
       setSaving(false);
+      if (pendingSaveRef.current) {
+        pendingSaveRef.current = false;
+        handleSaveRef.current(silent); // 有等待改动，用最新 trees 再存一次
+      }
     }
   };
+
+  // Ctrl+S 快捷保存：始终引用最新 handleSave，避免闭包过期
+  const handleSaveRef = useRef(handleSave);
+  useEffect(() => { handleSaveRef.current = handleSave; }, [handleSave]);
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        handleSaveRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  // 自动保存：界面上任何 trees 改动（加/删工程师、关键词、改名、增删功能/界面等）后立即保存
+  useEffect(() => {
+    if (skipNextAutoSaveRef.current) {
+      skipNextAutoSaveRef.current = false;
+      return;
+    }
+    handleSaveRef.current(true); // 静默自动保存
+  }, [trees]);
 
   const filteredCands = candidates.filter((c) =>
     !engSearch || c.name.toLowerCase().includes(engSearch.toLowerCase()) || (c.department || '').includes(engSearch));
@@ -331,8 +378,15 @@ export default function ModuleTreeManage() {
   }
 
   return (
-    <div className="mac-page" style={{ padding: 12, paddingBottom: 80 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+    <div className="mac-page" style={{ padding: 12, paddingBottom: 60 }}>
+      {/* 顶部固定标题栏：滚动时不随页面移动，保存按钮始终可见 */}
+      <div style={{
+        position: 'sticky', top: 0, zIndex: 50,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        margin: '-3px -12px 12px', padding: '10px 12px',
+        background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(8px)',
+        borderBottom: '1px solid var(--mac-border)',
+      }}>
         <h2 style={{ margin: 0, fontSize: 18 }}>责任模块树</h2>
         <div style={{ display: 'flex', gap: 8 }}>
           <button
@@ -342,7 +396,7 @@ export default function ModuleTreeManage() {
           >
             {viewMode === 'overview' ? '退出总览' : '🗺 总览'}
           </button>
-          <button className="mac-btn mac-btn--primary" onClick={handleSave} disabled={saving}>
+          <button className="mac-btn mac-btn--primary" onClick={() => handleSave()} disabled={saving}>
             {saving ? '保存中…' : '保存并生效'}
           </button>
         </div>
@@ -569,6 +623,7 @@ export default function ModuleTreeManage() {
                         const cur = fn?.engineers || [];
                         const next = selected ? cur.filter((x) => x !== c.id) : [...cur, c.id];
                         updateFuncField(ifaceIdx, funcIdx, { engineers: next });
+                        if (!selected) setPickEng(null); // 添加后自动收回弹层
                       }}
                     >
                       <span className="mac-eng-row__avatar">{c.name ? c.name.trim().charAt(0) : '?'}</span>
@@ -608,6 +663,7 @@ export default function ModuleTreeManage() {
                         const cur = fn?.engineers || [];
                         const next = selected ? cur.filter((x) => x !== c.id) : [...cur, c.id];
                         updateFuncField(ifaceIdx, funcIdx, { engineers: next });
+                        if (!selected) setPickEng(null); // 添加后自动收回弹层
                       }}
                     >
                       <span className="mac-eng-row__avatar" style={{ background: 'var(--mac-muted-fg)' }}>{c.name ? c.name.trim().charAt(0) : '?'}</span>

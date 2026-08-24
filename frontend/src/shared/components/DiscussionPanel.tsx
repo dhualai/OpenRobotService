@@ -129,6 +129,8 @@ interface DiscussionPanelProps {
   className?: string;
   /** @提及用户列表（系统任务：项目成员，用于 @ 弹窗选择） */
   mentionUsers?: ProjectMember[];
+  /** @提及全部用户候选（项目成员 + 项目外在职用户）。登录者输入 @过滤字（如 @刘 / @liu）时用其扩展到项目外的人 */
+  mentionAllUsers?: ProjectMember[];
   /** 删除评论（按创建人鉴权由后端把关）；不传则不显示删除菜单项 */
   onDeleteComment?: (id: string | number) => Promise<void> | void;
   /** 订阅用 taskId（传入即启用 WS 实时评论 / 在线状态 / 输入中 / 已读回执） */
@@ -154,6 +156,7 @@ export default function DiscussionPanel({
   title,
   className = '',
   mentionUsers,
+  mentionAllUsers,
   onDeleteComment,
   taskId,
   onTaskUpdated,
@@ -415,16 +418,26 @@ export default function DiscussionPanel({
   };
 
   // ── @mention: 过滤项目成员 ──
+  // @候选池：无输入 → 项目成员（默认）；有输入（@刘/@liu）→ 项目成员 + 全部在职用户补全，可 @ 到项目外的人
+  const mentionCandidates = useMemo(() => {
+    const members = Array.isArray(mentionUsers) ? mentionUsers : [];
+    if (!mentionFilter) return members;
+    const all = Array.isArray(mentionAllUsers) ? mentionAllUsers : [];
+    // 全部用户中补上项目成员里没有的（项目成员保持在最前）
+    const memberSet = new Set(members.map((m) => m.username));
+    return [...members, ...all.filter((u) => u.username && !memberSet.has(u.username))];
+  }, [mentionUsers, mentionAllUsers, mentionFilter]);
+
   const filteredMentionUsers = useMemo(() => {
-    if (!mentionUsers || mentionUsers.length === 0) return [];
-    if (!mentionFilter) return mentionUsers;
+    if (mentionCandidates.length === 0) return [];
+    if (!mentionFilter) return mentionCandidates;
     const kw = mentionFilter.toLowerCase();
-    return mentionUsers.filter(
+    return mentionCandidates.filter(
       (u) =>
         (u.username || '').toLowerCase().includes(kw) ||
         (u.name || '').toLowerCase().includes(kw),
     );
-  }, [mentionUsers, mentionFilter]);
+  }, [mentionCandidates, mentionFilter]);
 
   // 重置 mentionIndex 当过滤结果变化时
   useEffect(() => {
@@ -467,8 +480,9 @@ export default function DiscussionPanel({
       setShowTicketRef(false);
     }
 
-    // ── @mention: 无人员列表则跳过（@# 已在上方处理）──
-    if (!mentionUsers || mentionUsers.length === 0) {
+    // ── @mention: 无任何候选（项目成员 + 全部用户都为空）则跳过（@# 已在上方处理）──
+    // 注：项目成员为空但提供了全部在职用户时仍继续，便于 @ 项目外的人
+    if (!(mentionUsers && mentionUsers.length > 0) && !(mentionAllUsers && mentionAllUsers.length > 0)) {
       setShowMentions(false);
       return;
     }
