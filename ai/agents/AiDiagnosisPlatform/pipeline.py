@@ -701,6 +701,44 @@ class AiDiagnosisPlatform:
         self._memory_manager = None
         self._retrieval_cache: dict = {}  # 实例级缓存，不跨 session 串味
 
+    # 缺 media/ 段的 KB 图片 URL 兜底：LLM 回答里偶发把 /kb/{domain}/{sub}/{file}
+    # 拼成少了 /media/ 的坏 URL（如 .../manual/image111.png → 静态挂载 404）。
+    # 只修 /api/ai/media/kb/ 前缀、且文件名以图片扩展名结尾、且整段不含 /media/ 的 URL，
+    # 幂等：已在 .../media/xxx 的正确 URL 不被改动。
+    _KB_IMG_REF_RE = re.compile(
+        r'(!\[[^\]]*\]\()(/api/ai/media/kb/[^)\s]+?)(\))', re.IGNORECASE)
+    _KB_IMG_FILE_RE = re.compile(
+        r'^(/api/ai/media/kb/.+)/([^/]+\.(?:png|jpe?g|gif|webp|bmp|ico))$',
+        re.IGNORECASE)
+
+    def _cleanup_kb_image_urls(self, text: str) -> str:
+        """对最终回答里的 KB 图片 URL 做兜底清洗：补回缺失的 /media/ 段。
+
+        背景：_rewrite_images 只在注入 prompt 时把 ./media/xxx 重写为
+        /kb/{domain}/{sub}/media/xxx。但 LLM 生成回答时可能漏掉 /media/ 段
+        （实测偶发产出 .../manual/image111.png，静态挂载 404 → 前端渲染横线）。
+        这里对所有 action:answer 出口统一补回，幂等且不误伤正确 URL。
+        """
+        if not text or "/api/ai/media" not in text:
+            return text
+
+        def _repair(url: str) -> str:
+            # 注意：不能简单用 "/media/" in url 判断——media_url_prefix 本身
+            # 就是 /api/ai/media/，含 /media/ 子串，会误判所有 URL 为"已正确"。
+            # 应以「文件名前一段是否恰为 media」为准：已 .../media/xxx 才不动。
+            m = self._KB_IMG_FILE_RE.match(url)
+            if not m:
+                return url  # 非 kb 图片或非图片扩展名 → 不动
+            base = m.group(1)
+            if base.endswith("/media"):
+                return url  # 已是 .../media/xxx → 正确幂等，不动
+            return f"{base}/media/{m.group(2)}"
+
+        return self._KB_IMG_REF_RE.sub(
+            lambda mo: f"{mo.group(1)}{_repair(mo.group(2))}{mo.group(3)}",
+            text,
+        )
+
     def _rewrite_images(self, r) -> str:
         """把本地图片路径 ./media/xxx → 完整静态路由 URL（跳过外链）
 
@@ -1203,6 +1241,11 @@ class AiDiagnosisPlatform:
     async def _finalize_diagnosis(self, session_id: str, state: AgentState,
                                     thinking: str, action: str, message: str,
                                     streaming: bool = False) -> dict:
+        # 回答出口统一清洗 KB 图片 URL：LLM 偶发产出缺 /media/ 的坏 URL
+        # （如 .../manual/image111.png），静态挂载 404 → 前端渲染成横线/丢图。
+        # 在落盘/返回前补回 /media/，幂等且不误伤已正确的 URL。
+        message = self._cleanup_kb_image_urls(message)
+
         # 手动添加 turn + 更新 agent_state，一次 save_memory 完成
         memory = await self._memory_manager.get_memory(session_id)
         memory.turns.append({"role": "assistant", "content": message})
