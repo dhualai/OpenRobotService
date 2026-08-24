@@ -195,7 +195,7 @@ class UserService:
             return cls._user_cache
         
         try:
-            users = cls.get_user_list()
+            users = cls.get_user_list(limit=999999999)
             user_map = {}
             for user in users:
                 username = user.get("username")
