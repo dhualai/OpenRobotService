@@ -270,6 +270,23 @@ export default function ModuleTreeManage() {
     setActive(name);
     setNewProdName('');
   };
+  // 删除产品：仅特权用户可用；确认后从 products/trees 移除，保存(PUT 整体覆盖)即从 DB 删掉该产品
+  const removeProduct = (name: string) => {
+    if (!perm?.is_privileged) { Toast({ message: '无权限删除产品', theme: 'warning' }); return; }
+    const ifaceCount = trees[name]?.interfaces?.length || 0;
+    const tip = ifaceCount > 0
+      ? `确定删除产品「${name}」吗？它包含 ${ifaceCount} 个界面，删除后需点击「保存并生效」才会真正落库。`
+      : `确定删除产品「${name}」吗？删除后需点击「保存并生效」才会真正落库。`;
+    if (!window.confirm(tip)) return;
+    setProducts((prev) => prev.filter((p) => p !== name));
+    setTrees((prev) => {
+      const next = { ...prev };
+      delete next[name];
+      return next;
+    });
+    setActive((cur) => (cur === name ? '' : cur));
+    Toast({ message: '已移除，记得点「保存并生效」', theme: 'success' });
+  };
 
   // ── 保存（silent=true 为自动保存，不弹成功提示以免频繁打扰；手动始终提示）──
   const handleSave = async (silent = false) => {
@@ -427,11 +444,25 @@ export default function ModuleTreeManage() {
       </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
         {products.map((p) => (
-          <button
+          <span
             key={p}
-            className={`mac-chip ${p === active ? 'mac-chip--tag-blue' : 'mac-chip--soft'}`}
-            onClick={() => setActive(p)}
-          >{p}</button>
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+          >
+            <button
+              type="button"
+              className={`mac-chip ${p === active ? 'mac-chip--tag-blue' : 'mac-chip--soft'}`}
+              onClick={() => setActive(p)}
+            >{p}</button>
+            {perm?.is_privileged && (
+              <button
+                type="button"
+                className="mac-btn mac-btn--ghost mac-iface-row__del"
+                style={{ padding: 0, lineHeight: 1, fontSize: 13 }}
+                title={`删除产品「${p}」`}
+                onClick={(e) => { e.stopPropagation(); removeProduct(p); }}
+              ><MacX size={13} /></button>
+            )}
+          </span>
         ))}
       </div>
 
