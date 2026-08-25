@@ -5947,10 +5947,10 @@ html, body, #root {
 }
 .detail-chat-read__avatar,
 .detail-chat-read__more {
-  width: 20px;
-  height: 20px;
+  width: 25px;
+  height: 25px;
   border-radius: 50%;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -5966,7 +5966,7 @@ html, body, #root {
 }
 /* 头像两两叠放：除第一个外，每个头像向左偏移叠入前一个下方 */
 .detail-chat-read__avatars > * + * {
-  margin-left: -6px;
+  margin-left: -8px;
 }
 .detail-chat-read__more {
   background: var(--muted);
