@@ -3217,6 +3217,28 @@ html, body, #root {
   text-decoration: underline;
 }
 
+/* 工单引用（@#编号 → 工单标题）标签样式：与普通文字/链接区分。
+   行内浅蓝底色 + 圆角，box-decoration-break: clone 保证长标题换行时每行都带背景，
+   视觉上呈现为独立的「引用标签」，一眼可辨这是对另一工单的引用。
+   用 a.md-ticket-ref 提升特异性，避免被评论气泡的 color 规则（如 .is-self *）覆盖。 */
+.markdown-body a.md-ticket-ref {
+  display: inline;
+  padding: 1px 7px;
+  margin: 0 1px;
+  border-radius: 6px;
+  background: rgba(86, 177, 218, 0.13);
+  color: #1f6fb2;
+  font-weight: 500;
+  word-break: break-all;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.markdown-body a.md-ticket-ref:hover {
+  background: rgba(86, 177, 218, 0.24);
+  text-decoration: none;
+  color: #175a96;
+}
+
 /* 图片/视频容器 */
 .markdown-body .md-media-wrap,
 .markdown-body img,
@@ -4942,10 +4964,44 @@ html, body, #root {
   color: #fff;
   /* bottom 由组件内联样式控制（柱高 + 8px），气泡始终贴着激活柱顶部、完整可见 */
 }
+/* 柱子 = 堆叠容器：下段已承接（--bar-color 原色），上段待定（同色混白 45%，明显更浅）。
+   overflow:hidden + 圆角让两段共同裁成一颗完整胶囊，视觉上仍是一根柱子。 */
 .mac-monthbars__bar {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   width: 22px;
   border-radius: 16px; /* 原型 rounded-t-lg rounded-b-lg */
   transition: all 0.3s;
+}
+.mac-monthbars__seg {
+  width: 100%;
+  flex-shrink: 0;
+  background: var(--bar-color);
+}
+.mac-monthbars__seg--pending {
+  background: color-mix(in oklab, var(--bar-color) 45%, #fff);
+  /* 底边一道同色深一档的发丝线：两段都很浅时仍能一眼看出分界 */
+  box-shadow: inset 0 -1px 0 color-mix(in oklab, var(--bar-color) 70%, #fff);
+}
+/* 图例：两颗小圆点对应柱子的深/浅两段 */
+.mac-monthbars__legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--mac-muted-fg);
+}
+.mac-monthbars__legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--mac-blue-5);
+}
+.mac-monthbars__legend-dot--pending {
+  margin-left: 4px;
+  background: color-mix(in oklab, var(--mac-blue-5) 45%, #fff);
+  box-shadow: inset 0 0 0 1px var(--mac-border);
 }
 .mac-monthbars__month { font-size: 11px; color: var(--mac-muted-fg); }
 .mac-monthbars__month.is-active { font-weight: 700; color: var(--mac-fg); }
@@ -5873,17 +5929,50 @@ html, body, #root {
 }
 .detail-chat-read {
   margin-left: 6px;
-  font-size: 11px;
-  color: var(--primary);
-  font-weight: 500;
   background: none;
   border: none;
   padding: 0;
   cursor: pointer;
   line-height: inherit;
+  align-self: center;
 }
 .detail-chat-read.is-open {
   opacity: 0.7;
+}
+/* 头像堆叠（飞书式）：气泡上的已读指示，最多 3 个头像 + 超出显示 +N */
+/* 最新阅读的在最左、盖在最上层；后面的头像向左叠入前一个下方形成堆叠 */
+.detail-chat-read__avatars {
+  display: flex;
+  align-items: center;
+}
+.detail-chat-read__avatar,
+.detail-chat-read__more {
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  object-fit: cover;
+  box-sizing: border-box;
+}
+.detail-chat-read__avatar {
+  background: var(--primary);
+  color: #fff;
+  border: 1.5px solid #fff;
+}
+/* 头像两两叠放：除第一个外，每个头像向左偏移叠入前一个下方 */
+.detail-chat-read__avatars > * + * {
+  margin-left: -8px;
+}
+.detail-chat-read__more {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border: 1.5px solid #fff;
+  padding: 0 2px;
 }
 
 /* ===== 已读名单弹层（飞书式） ===== */

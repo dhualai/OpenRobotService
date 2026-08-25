@@ -21,6 +21,18 @@ import type { UserItem } from '@/api/users';
 
 const PAGE_SIZE = 20;
 
+// 筛选状态持久化：跳转详情页会卸载本组件，返回时用 sessionStorage 恢复上次筛选，
+// 避免「返回后回到全部工单」而非保持筛选结果页。
+const HISTORY_FILTER_STATUS_KEY = 'call.history.statusFilter';
+const HISTORY_FILTER_SEARCH_KEY = 'call.history.search';
+
+const readSession = (key: string, fallback: string): string => {
+  try { return sessionStorage.getItem(key) ?? fallback; } catch { return fallback; }
+};
+const writeSession = (key: string, value: string) => {
+  try { sessionStorage.setItem(key, value); } catch { /* 忽略隐私模式等写入失败 */ }
+};
+
 
 const TYPE_LABEL: Record<string, string> = {
   problem: '报障', bug: '缺陷', feature: '需求', support: '支持', other: '其他',
@@ -66,8 +78,9 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [skip, setSkip] = useState(0);
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
+  // 筛选状态初值从 sessionStorage 恢复（详情页返回后保持上次筛选结果）
+  const [search, setSearch] = useState(() => readSession(HISTORY_FILTER_SEARCH_KEY, ''));
+  const [statusFilter, setStatusFilter] = useState(() => readSession(HISTORY_FILTER_STATUS_KEY, ''));
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
 
   // 构造筛选参数：admin 不过滤，其余按当前用户过滤；「全部」= 除已关闭外全部
@@ -113,6 +126,9 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   // 联动加载：statusFilter 变 → 立即加载（含 keyword 联动）；search 变 → 防抖 400ms（非空）；search 空 → 立即
   const loadInitialRef = useRef(loadInitial);
   loadInitialRef.current = loadInitial;
+  // 筛选变化即持久化，返回列表页时恢复保持筛选结果
+  useEffect(() => { writeSession(HISTORY_FILTER_SEARCH_KEY, search); }, [search]);
+  useEffect(() => { writeSession(HISTORY_FILTER_STATUS_KEY, statusFilter); }, [statusFilter]);
   const prevStatus = useRef(statusFilter);
   useEffect(() => {
     const statusChanged = prevStatus.current !== statusFilter;
@@ -306,7 +322,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                 <button
                   type="button"
                   className={`history-tab${statusFilter === tab.value ? ' is-active' : ''}`}
-                  onClick={() => setStatusFilter(tab.value)}
+                  onClick={() => setStatusFilter(statusFilter === tab.value ? '' : tab.value)}
                 >
                   {tab.label}
                 </button>

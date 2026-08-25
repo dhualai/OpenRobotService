@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, text
 from app.core.db import SessionLocal
 from app.models import UserDB, Role, Permission, Project, role_permissions, user_project_roles
+from app.models.delivery import UNDERTAKE_YES
 from app.models.organization import Company, Department
 from app.core.security import get_password_hash, verify_password
 
@@ -308,7 +309,9 @@ class IdentityService:
     def get_all_projects() -> List[Dict[str, str]]:
         db = IdentityService._get_db()
         try:
-            return [{'id': p.id, 'code': p.code, 'name': p.name} for p in db.query(Project).all()]
+            # 只列已承接项目：待定项目仅供仪表盘月柱图统计，不参与授权/选择等业务
+            projects = db.query(Project).filter(Project.undertake_status == UNDERTAKE_YES).all()
+            return [{'id': p.id, 'code': p.code, 'name': p.name} for p in projects]
         finally:
             db.close()
 
