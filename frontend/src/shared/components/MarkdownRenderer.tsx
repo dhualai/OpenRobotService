@@ -14,9 +14,11 @@
 import { Component, useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Link } from 'react-router-dom';
 import { urlTransformAllowDataImage } from '@/shared/utils/markdown';
 import { useAuthStore } from '@/stores/auth';
-import { ENV_PREFIX } from '@/config/api';
+import { ENV_PREFIX, RAW_BASE } from '@/config/api';
+import API_CONFIG from '@/config/api';
 import ImageLightbox from '@/shared/components/ImageLightbox';
 
 // ---------------------------------------------------------------------------
@@ -94,6 +96,124 @@ const TICKET_REF_RE = /@#(\d{1,8})/g;
 function preprocessTicketRef(text: string): string {
   if (!text) return text;
   return text.replace(TICKET_REF_RE, (_full, id) => `[@#${id}](/tasks/${id})`);
+}
+
+/**
+ * 提取 text 中所有 @#工单号 的 id（去重、保序）。
+ * 用于渲染评论时按需拉取对应工单标题，把 "@#编号" 显示成工单标题。
+ */
+function extractTicketRefIds(text: string): number[] {
+  const ids: number[] = [];
+  const seen = new Set<number>();
+  const re = /@#(\d{1,8})/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text || '')) !== null) {
+    const id = Number(m[1]);
+    if (!seen.has(id)) { seen.add(id); ids.push(id); }
+  }
+  return ids;
+}
+
+// 模块级缓存：工单 id → 标题。跨组件/评论复用，同一工单只请求一次。
+// 值为空串表示「已确认无标题」（工单已删 / 无权限），避免反复请求。
+const ticketTitleCache = new Map<number, string>();
+
+/**
+ * 把 @#工单号 解析为「编号 → 标题」映射（仅当 content 含 @# 引用时才会发请求）。
+ * 评论里存的 "@#320" 是纯文本引用，发送后渲染需显示对应工单标题，故按需向后端
+ * GET /api/tasks/{id} 拉取。带模块级缓存去重；无 @# 引用时零请求、零副作用。
+ *
+ * @param content 原始 markdown 文本（streaming 期间传空串，定稿后才解析）
+ */
+function useTicketRefTitles(content: string): Map<number, string> {
+  const ids = useMemo(() => extractTicketRefIds(content), [content]);
+  const idKey = ids.join(',');
+  const [titles, setTitles] = useState<Map<number, string>>(() => {
+    const m = new Map<number, string>();
+    for (const id of ids) {
+      const t = ticketTitleCache.get(id);
+      if (t) m.set(id, t);
+    }
+    return m;
+  });
+
+  useEffect(() => {
+    // 全部命中缓存：把已在缓存但 state 里还没有的标题补进来
+    if (ids.every((id) => ticketTitleCache.has(id))) {
+      setTitles((prev) => {
+        let changed = false;
+        const next = new Map(prev);
+        for (const id of ids) {
+          const t = ticketTitleCache.get(id);
+          if (t && !next.has(id)) { next.set(id, t); changed = true; }
+        }
+        return changed ? next : prev;
+      });
+      return;
+    }
+
+    const missing = ids.filter((id) => !ticketTitleCache.has(id));
+    let cancelled = false;
+    (async () => {
+      const { createRequest } = await import('@/api/client');
+      const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
+      const results = await Promise.all(
+        missing.map(async (id): Promise<{ id: number; title: string }> => {
+          try {
+            const res = await request<{ title?: string }>(`/${id}`, { skipCache: true });
+            return { id, title: (res && res.title) || '' };
+          } catch {
+            return { id, title: '' };
+          }
+        }),
+      );
+      if (cancelled) return;
+      setTitles((prev) => {
+        const next = new Map(prev);
+        let changed = false;
+        for (const r of results) {
+          if (r.title) { next.set(r.id, r.title); ticketTitleCache.set(r.id, r.title); changed = true; }
+        }
+        // 未命中（已删/无权限）也写入缓存空串，避免下次重复请求
+        for (const id of missing) {
+          if (!ticketTitleCache.has(id)) ticketTitleCache.set(id, '');
+        }
+        return changed ? next : prev;
+      });
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idKey]);
+
+  return titles;
+}
+
+// ---------------------------------------------------------------------------
+// 内部 SPA 路由链接识别（@# 工单引用等）
+// ---------------------------------------------------------------------------
+// 生产部署下前端挂载在带前缀 base（/p/app、/t/app）下，React Router 以
+// RAW_BASE 作为 basename。若 '@#44123' 这类引用渲染成普通 <a href="/tasks/44123">，
+// 点击会整页刷新到不带 base 前缀的裸路径 /tasks/44123，nginx 匹配不到前缀 location
+// 而落到兜底 return 404（表现为 nginx 404 错误页）。
+//
+// 修复：识别这类内部路由路径，改用 React Router <Link> 渲染 —— 它会经 basename
+// 自动拼接 /p/app|/t/app 前缀，并走 SPA 前端路由（不整页刷新）。
+// 仅命中前端 SPA 路由前缀，避免误伤 /api/*、媒体、外部链接等。
+const SPA_ROUTE_RE = /^\/(?:tasks\/|call\/|admin\/|login|no-permission|module-tree|download)/;
+
+/** 判断某链接 href 是否为本站内部 SPA 路由路径（不含 base 前缀的 /tasks/… 等） */
+function isSpaRoutePath(url: string): boolean {
+  if (!url || !url.startsWith('/')) return false;
+  const withBase = RAW_BASE && RAW_BASE !== '/' && url.startsWith(RAW_BASE);
+  return SPA_ROUTE_RE.test(url) || Boolean(withBase);
+}
+
+/** 剥离已带的 base 前缀，得到 React Router <Link> 所需的裸路由路径（/tasks/…） */
+function stripBase(url: string): string {
+  if (RAW_BASE && RAW_BASE !== '/' && url.startsWith(RAW_BASE)) {
+    return url.slice(RAW_BASE.length - 1); // 保留前导 '/'
+  }
+  return url;
 }
 
 // ---------------------------------------------------------------------------
@@ -556,6 +676,9 @@ function maskMediaForStreaming(text: string): string {
  *   天然不存在 XSS 注入路径，DOMPurify 反而会破坏 markdown 结构。
  */
 export default function MarkdownRenderer({ content, compact = false, streaming = false }: MarkdownRendererProps) {
+  // @# 工单引用标题解析（streaming 期间不请求，定稿后才渲染标题）
+  const titleById = useTicketRefTitles(streaming ? '' : content);
+
   // 剥离 ``` → @# 工单引用链接 → 媒体预处理
   const processedContent = useMemo(() => {
     const stripped = stripCodeFences(content);
@@ -634,6 +757,27 @@ export default function MarkdownRenderer({ content, compact = false, streaming =
                   return <span className="md-media-loading">⏳ 图片加载中…</span>;
                 }
                 return <AuthImage key={url} src={url} alt={String(children || '')} />;
+              }
+
+              // 内部 SPA 路由链接（如 @#工单引用 → /tasks/44123）：
+              // 用 <Link> 经 basename 拼接部署前缀并走前端路由，避免裸路径被 nginx 404。
+              if (!isExternal && isSpaRoutePath(url)) {
+                // @#工单引用：命中 /tasks/{id} 时，若能查到标题则以标题作为链接文字，
+                // 让评论里显示的是「工单标题」而非「@#编号」；hover 提示保留工单号。
+                // 加 md-ticket-ref 样式类，使其呈现为可辨识的「工单引用标签」，与普通文字/链接区分。
+                const ticketMatch = /^\/tasks\/(\d+)$/.exec(stripBase(url));
+                const ticketId = ticketMatch ? Number(ticketMatch[1]) : null;
+                const refTitle = ticketId !== null ? titleById.get(ticketId) : undefined;
+                return (
+                  <Link
+                    to={stripBase(url)}
+                    {...props}
+                    className={[props.className, 'md-ticket-ref'].filter(Boolean).join(' ')}
+                    title={typeof refTitle === 'string' && refTitle ? `工单 #${ticketId} · ${refTitle}` : `工单 #${ticketId}`}
+                  >
+                    {refTitle || children}
+                  </Link>
+                );
               }
 
               return (
