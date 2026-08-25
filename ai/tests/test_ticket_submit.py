@@ -1420,6 +1420,76 @@ class TestTicketBoundaryPrefill:
         assert "南京本川项目（编号: NJBC01）" in s
 
 
+class TestDecidePrevTicketIsolation:
+    """0825 工单 #588 实锤：decide 把上一单补充轮的字段（任务编号、末端
+    站点名称）当成本单信息缺口——提单归档后上一单对话仍留在 turns（续接轮
+    指代解析要用），但 decide/backfill 的对话切片没传 boundary_prefix，
+    上一单补充轮问答平铺在本单对话前。修复：切片插分隔线 + prompt 铁律。"""
+
+    BOUNDARY_LINE = "───── 以上对话已随上一张工单提交归档"
+    ANCHOR = "好的，已记录。工单 #587 已提交，工程师会尽快联系您。"
+    NEW_TICKET_MSG = "帮我给胡健楠提单，现在的ai诊断平台的单纯图片分析回答有问题"
+
+    async def _seed(self, platform, state):
+        """归档后的真实 turns 形态：上一单补充轮问答 → 锚点轮 → 本单对话"""
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        for role, content in [
+            ("assistant", "还需要确认任务编号和末端站点名称。"),
+            ("user", "任务编号是 KD20260824001，末端站点名称是南山西丽站。"),
+            ("assistant", self.ANCHOR),  # 锚点轮（上一单提交收尾）
+            ("user", self.NEW_TICKET_MSG),
+        ]:
+            await platform._memory_manager.add_turn(state.session_id, role, content)
+        return memory
+
+    def _capture_llm(self, platform, payload):
+        captured = {}
+
+        async def _cap(prompt, **kw):
+            captured["prompt"] = prompt
+            return json.dumps(payload, ensure_ascii=False)
+
+        platform._llm_client.complete = AsyncMock(side_effect=_cap)
+        return captured
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_decide_prompt_isolates_prev_ticket(self, platform, make_state):
+        state = make_state(ticket_boundary_prefix=self.ANCHOR[:40])
+        memory = await self._seed(platform, state)
+        captured = self._capture_llm(platform, {
+            "ticket_type": "bug",
+            "required_fields": {"issue_detail": "具体异常表现",
+                                "expected_behavior": "期望行为"}})
+        await platform._decide_ticket_fields(state.session_id, state, memory)
+        prompt = captured["prompt"]
+        # 分隔线插在锚点轮之后、本单对话之前——上一单问答被隔在线上方。
+        # 行首匹配：铁律文本里也引用了分隔线字样，只认对话区独占一行的真分隔线
+        _line = "\n" + self.BOUNDARY_LINE
+        assert _line in prompt
+        assert prompt.index("KD20260824001") < prompt.index(_line)
+        assert prompt.index(self.ANCHOR) < prompt.index(_line)
+        assert prompt.index(_line) < prompt.index(self.NEW_TICKET_MSG)
+        # 铁律：旧对话字段样例不得进本单缺口
+        assert "严禁照着旧对话的字段样例列本单待补字段" in prompt
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_backfill_prompt_isolates_prev_ticket(self, platform, make_state):
+        state = make_state(ticket_boundary_prefix=self.ANCHOR[:40],
+                           required_fields={"issue_detail": "具体异常表现"})
+        memory = await self._seed(platform, state)
+        captured = self._capture_llm(platform, {"issue_detail": "图片分析默认触发诊断"})
+        await platform._backfill_collected_info(state.session_id, state, memory)
+        prompt = captured["prompt"]
+        _line = "\n" + self.BOUNDARY_LINE
+        assert _line in prompt
+        assert prompt.index("KD20260824001") < prompt.index(_line)
+        assert prompt.index(_line) < prompt.index(self.NEW_TICKET_MSG)
+        # 铁律：上一单问答里的值不得回填进本单
+        assert "严禁提取为本单字段值" in prompt
+
+
 # ================================================================
 # 运行入口
 # ================================================================

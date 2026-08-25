@@ -32,14 +32,18 @@ class MessageService:
         return await DatabaseUtils.get_by_id(db, Message, message_id)
 
     @staticmethod
-    async def get_messages_by_conversation(db: AsyncSession, conversation_id: int, skip: int = 0, limit: int = 100) -> List[Message]:
-        result = await db.execute(
+    async def get_messages_by_conversation(db: AsyncSession, conversation_id: int, skip: int = 0, limit: Optional[int] = 100) -> List[Message]:
+        # limit=None → 全量（会话详情用：旧会话超 100 条时按 sequence 截尾，
+        # 重进会丢最新的收集轮对话与工单卡片）
+        query = (
             select(Message)
             .filter(Message.conversation_id == conversation_id)
             .order_by(Message.sequence)
             .offset(skip)
-            .limit(limit)
         )
+        if limit is not None:
+            query = query.limit(limit)
+        result = await db.execute(query)
         return result.scalars().all()
 
     @staticmethod
