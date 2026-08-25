@@ -29,6 +29,7 @@ import type { ProjectMember } from '@/api/projects';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { urlTransformAllowDataImage } from '@/shared/utils/markdown';
 
 // 状态文字色（设计稿 statusText 蓝阶：新建 blue-3 / 处理中·进行中 blue-2 / 已解决 blue-1 / 关闭·取消 muted）
 const STATUS_TEXT_COLOR_MAP: Record<string, string> = {
@@ -1817,7 +1818,10 @@ export default function TaskDetailPage() {
       >
         <div className="markdown-body" style={{ maxHeight: '60vh', overflowY: 'auto', textAlign: 'left', fontSize: 14, lineHeight: 1.8 }}>
           {diagnosisReport ? (
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              urlTransform={urlTransformAllowDataImage}
+            >
               {diagnosisReport}
             </ReactMarkdown>
           ) : (

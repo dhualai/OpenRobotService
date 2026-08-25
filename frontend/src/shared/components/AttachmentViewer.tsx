@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import ImageLightbox from './ImageLightbox';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { urlTransformAllowDataImage } from '@/shared/utils/markdown';
 import { setupWechatFilePreview } from '@/shared/utils/wechatJsSdk';
 // pdf.js 体积大（主库 + worker 约 1.5MB），懒加载：仅在用户真正点开 PDF 附件时才下载，
 // 避免随 AttachmentViewer 被多路由静态引入而进入首屏 bundle。
@@ -237,7 +238,12 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
               <div className="attachment-viewer__hint attachment-viewer__hint--error">预览失败：{mdError}</div>
             ) : (
               <div className="markdown-body md-content attachment-viewer__md">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{mdText}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  urlTransform={urlTransformAllowDataImage}
+                >
+                  {mdText}
+                </ReactMarkdown>
               </div>
             ))}
           {(kind === 'other' || kind === 'office') && (
