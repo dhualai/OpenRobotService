@@ -631,6 +631,168 @@ async def platform_real_confirm(platform, monkeypatch):
     return platform
 
 
+# ================================================================
+# 收集超限强弹 × 弹窗提交死锁（0825：弹窗让提交、提交让回对话补充）
+# ================================================================
+
+# ================================================================
+# 跨单引用 × 字段卡死保险丝（0825：用户三答「#595工单里有」仍被追问账户名 4 次）
+# ================================================================
+
+class TestCollectRefAndFuse:
+    """收集模式：#N 工单指代识别/查单注入 + 同字段连问保险丝"""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_ref_ticket_lookup_and_prompt_injection(
+            self, platform, make_state, make_request, monkeypatch):
+        """用户答「#N 工单里有」→ LLM 输出 referenced_ticket → 服务端查单挂 state，
+        下一轮收集 prompt 注入工单内容（LLM 自行从中提取字段值）"""
+        from ai.agents.AiDiagnosisPlatform import pipeline as pl
+
+        async def _fake_lookup(ref_text):
+            assert "595" in ref_text
+            return "#595 USP平台无法登录\n账户名：admin，现象：登录后闪退"
+
+        monkeypatch.setattr(pl, "_lookup_ticket_ref", _fake_lookup)
+
+        state = make_state(
+            phase="diagnosing", problem_summary="USP无法登录",
+            required_fields={"account": "账户名", "error_content": "故障现象"},
+            collected_info={"error_content": "无法登录"},
+            ticket_collecting=["账户名"],
+        )
+        session_id = state.session_id
+        memory = await platform._memory_manager.get_memory(session_id)
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = json.dumps({
+            "action": "ask", "referenced_ticket": "595",
+            "state_update": {"collected_info": {}},
+            "message": "请直接告知账户名。",
+        }, ensure_ascii=False)
+        request = make_request(query="#595这个工单里有", session_id=session_id)
+        events = [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert "admin" in state.ticket_ref_context, "查单结果未挂到 state"
+        # 下一轮收集 prompt 注入「用户引用的历史工单」块
+        prompt = platform._build_diagnosis_prompt(state, memory, reference_docs="（跳过检索）")
+        assert "用户引用的历史工单" in prompt
+        assert "admin" in prompt
+        # 协议字段进 JSON 模板
+        assert '"referenced_ticket":""' in prompt
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_stuck_field_fuse_forces_skip(self, platform, make_state, make_request):
+        """同一字段连续 3 轮收不到值 → 强制记「无」跳过并直接进 review，
+        不再出现第 4 次追问（0825 生产事故形状）"""
+        state = make_state(
+            phase="diagnosing", problem_summary="USP无法登录",
+            required_fields={"account": "账户名", "error_content": "故障现象"},
+            collected_info={"error_content": "无法登录"},
+            ticket_collecting=["账户名"],
+        )
+        session_id = state.session_id
+        memory = await platform._memory_manager.get_memory(session_id)
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state, _load_agent_state
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = json.dumps({
+            "action": "ask", "referenced_ticket": "",
+            "state_update": {"collected_info": {}},
+            "message": "请告知无法登录的账户名。",
+        }, ensure_ascii=False)
+
+        queries = ["转工单", "#595这个工单里有", "都说了在那个单子里"]
+        for i, q in enumerate(queries, 1):
+            state = _load_agent_state(memory.metadata)
+            request = make_request(query=q, session_id=session_id)
+            events = [e async for e in platform._agent_think_stream(request, state, memory)]
+            has_review = any(e["event"] == "status"
+                             and isinstance(e["data"], dict)
+                             and e["data"].get("stage") == "review" for e in events)
+            if i < 3:
+                assert not has_review, f"第{i}轮不该提前弹窗"
+            else:
+                assert state.collected_info.get("account", "").startswith("无"), \
+                    f"保险丝未强制记无: {state.collected_info}"
+                assert state.ticket_collecting == []
+                assert has_review, "第 3 轮保险丝触发后应进 review"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_lookup_ticket_ref_no_digits(self):
+        """指代里没数字 → 不查库直接空串（静默降级）"""
+        from ai.agents.AiDiagnosisPlatform.pipeline import _lookup_ticket_ref
+        assert await _lookup_ticket_ref("上次那个单子") == ""
+        assert await _lookup_ticket_ref("") == ""
+
+
+class TestForceSubmitConfirm:
+    """超限强弹的草稿带 force_submit：confirm_submit 放行 collected_info 兜底"""
+
+    @staticmethod
+    async def _put_draft(platform, state, force: bool):
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        _save_agent_state(memory, state)
+        memory.metadata["ticket_draft"] = {
+            "title": "充电桩故障", "type": "problem",
+            "project": "华大制造基地", "project_id": "7",
+        }
+        if force:
+            memory.metadata["ticket_draft"]["force_submit"] = True
+        await platform._memory_manager.save_memory(memory)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_force_draft_confirm_passes(self, platform_real_confirm, make_state):
+        """强弹草稿（collected_info 不齐 + force_submit）→ 点提交入库，不再打回"""
+        state = make_state(
+            phase="diagnosing",
+            problem_summary="充电桩不伸出但调度显示已充电",
+            required_fields={"charger_location": "充电桩位置", "fault_time": "发生时间",
+                             "vehicle_id": "车辆编号"},
+            collected_info={"charger_location": "锂电二楼一号"},
+            ticket_collecting=[],
+        )
+        await self._put_draft(platform_real_confirm, state, force=True)
+
+        result = await platform_real_confirm.confirm_submit(
+            state.session_id, overrides={}, created_by="tester")
+
+        assert result["code"] == 0, f"超限强弹草稿被拦截: {result}"
+        # 标记只用于放行校验，不得泄进工单记录
+        assert "force_submit" not in result["data"]["ticket"]
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_normal_draft_incomplete_still_blocks(self, platform_real_confirm, make_state):
+        """普通草稿（无标记）+ collected_info 不齐 → 兜底校验照拦（防直调 API 绕过）"""
+        state = make_state(
+            phase="diagnosing",
+            problem_summary="充电桩不伸出但调度显示已充电",
+            required_fields={"charger_location": "充电桩位置", "fault_time": "发生时间",
+                             "vehicle_id": "车辆编号"},
+            collected_info={"charger_location": "锂电二楼一号"},
+            ticket_collecting=[],
+        )
+        await self._put_draft(platform_real_confirm, state, force=False)
+
+        result = await platform_real_confirm.confirm_submit(
+            state.session_id, overrides={}, created_by="tester")
+
+        assert result["code"] == 1
+        assert result.get("stage") == "not_ready"
+        assert "补充" in result["message"]
+
+
 class TestPrefillWriteback:
     """预填值进 draft 后，弹窗确认链路的最终入库值"""
 
