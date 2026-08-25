@@ -21,7 +21,7 @@ import { useAuthStore } from '@/stores/auth';
 import { uploadCommentAttachment, getOperationLogs, formatDuration, type OperationLog as TicketOperationLog } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canEditPriority } from '@/shared/constants/ticket';
 import { isSameUser } from '@/shared/utils/userIdentity';
-import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
+import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import { formatDateTime, formatRawDateTime, parseUtcDate } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
@@ -1574,7 +1574,7 @@ export default function TaskDetailPage() {
                 showNow={false}
                 placement="topLeft"
                 getPopupContainer={(trigger) => trigger.parentElement || document.body}
-                value={editForm.deadline_at ? dayjs(editForm.deadline_at) : null}
+                value={editForm.deadline_at ? parseDeadlineString(editForm.deadline_at) : null}
                 disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>
