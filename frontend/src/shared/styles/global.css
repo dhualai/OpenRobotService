@@ -3217,6 +3217,28 @@ html, body, #root {
   text-decoration: underline;
 }
 
+/* 工单引用（@#编号 → 工单标题）标签样式：与普通文字/链接区分。
+   行内浅蓝底色 + 圆角，box-decoration-break: clone 保证长标题换行时每行都带背景，
+   视觉上呈现为独立的「引用标签」，一眼可辨这是对另一工单的引用。
+   用 a.md-ticket-ref 提升特异性，避免被评论气泡的 color 规则（如 .is-self *）覆盖。 */
+.markdown-body a.md-ticket-ref {
+  display: inline;
+  padding: 1px 7px;
+  margin: 0 1px;
+  border-radius: 6px;
+  background: rgba(86, 177, 218, 0.13);
+  color: #1f6fb2;
+  font-weight: 500;
+  word-break: break-all;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.markdown-body a.md-ticket-ref:hover {
+  background: rgba(86, 177, 218, 0.24);
+  text-decoration: none;
+  color: #175a96;
+}
+
 /* 图片/视频容器 */
 .markdown-body .md-media-wrap,
 .markdown-body img,
