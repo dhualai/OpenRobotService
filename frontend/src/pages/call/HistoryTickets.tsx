@@ -217,13 +217,57 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
       await reDispatchTicket(redispatchTicket.id, redispatchUser.id || redispatchUser.username, redispatchRemark.trim() || undefined);
       Toast({ message: '已重新派单，正在重新推荐处理人', theme: 'success' });
       setShowRedispatchPopup(false);
+      // 重新派单后端会先清空 assigned_to（回 new 态）再异步重派：
+      // ① 立即 loadInitial 一次，让列表马上从「旧处理人」变成「派单中」；
+      // ② 再启动轮询（5s×12=60s），直到该工单派单完成（assigned_to 非空）自动显示新处理人。
       loadInitial();
+      startRedispatchPoll(redispatchTicket.id);
     } catch (err) {
       Toast({ message: `重新派单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setRedispatching(false);
     }
   };
+
+  // ── 重新派单后轮询：直到目标工单派单完成，列表自动显示新处理人 ──
+  const redispatchPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stopRedispatchPoll = useCallback(() => {
+    if (redispatchPollRef.current) {
+      clearInterval(redispatchPollRef.current);
+      redispatchPollRef.current = null;
+    }
+  }, []);
+
+  const startRedispatchPoll = (ticketId: number) => {
+    stopRedispatchPoll();
+    let attempts = 0;
+    redispatchPollRef.current = setInterval(async () => {
+      attempts++;
+      try {
+        const res = await qaListTickets(0, PAGE_SIZE, buildFilters());
+        const items = res?.data?.items || [];
+        const total = res?.data?.total ?? items.length;
+        const target = items.find((x) => x.id === ticketId);
+        // 派单完成：目标工单不再处于"派单中"（status=new 且处理人为空），或已不在当前视图
+        const done = target
+          ? !(target.status === 'new' && !target.assigned_to && !target.assigned_to_name)
+          : true; // 找不到目标也停止（可能已离开当前筛选视图）
+        if (done || attempts >= 12) {
+          stopRedispatchPoll();
+          // 用最新数据替换列表，让"派单中"实时变成新处理人
+          setTickets(items);
+          setSkip(items.length);
+          setHasMore(total > items.length);
+          return;
+        }
+      } catch {
+        /* 单次失败继续轮询 */
+      }
+    }, 5000);
+  };
+
+  // 组件卸载清理轮询，避免卸载后 setState
+  useEffect(() => () => { stopRedispatchPoll(); }, [stopRedispatchPoll]);
 
   return (
     <div className="history-tickets">
