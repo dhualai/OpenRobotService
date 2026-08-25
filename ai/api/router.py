@@ -11,6 +11,7 @@ import os
 import uuid
 import asyncio
 import collections
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, Header, HTTPException
@@ -780,11 +781,16 @@ async def _upload_events(
             f"turns={turn_count_before}, has_desc={bool(image_desc)}, "
             f"desc_len={len(image_desc)}"
         )
+        # 上传轮的完整原文随附件条目持久化（metadata 不受 10 轮滑动窗口截断）：
+        # memory 里的上传轮被滑出窗口后，_attach_chat_snapshot 用它重建合成轮
+        # 插回 db 历史——否则附件 md 里丢失「我上传了…」轮，图片内联无锚点
+        # （0825 事故：图全落末尾节）。created_at 口径对齐 MySQL（naive UTC）。
+        _uploaded_at = datetime.utcnow().isoformat(timespec="seconds")
         if image_desc:
-            await mgr.add_turn(session_id, "user",
-                               f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
+            upload_message = f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}"
         else:
-            await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
+            upload_message = f"[上传了附件] {filenames}"
+        await mgr.add_turn(session_id, "user", upload_message)
         # 确认回执（assistant turn）：VLM 描述直接作为回执，非图片则提示暂不支持解析
         if image_desc:
             ack_message = image_desc
@@ -810,6 +816,8 @@ async def _upload_events(
         # 「附件与本单问题是否相关」的唯一内容信号。多图批次共享同一段摘要。
         if image_desc:
             _new = [{**s, "desc": image_desc[:160]} for s in _new]
+        _new = [{**s, "uploaded_at": _uploaded_at, "upload_message": upload_message}
+                for s in _new]
         state["attachments"] = existing + _new
         if image_desc:
             ci = state.get("collected_info", {}) or {}

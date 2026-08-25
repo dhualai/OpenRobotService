@@ -253,14 +253,19 @@ def _turns_to_markdown(
 
     created_at 仅 MySQL 源的 turn 有（memory.turns 没有），缺失时省略时间戳。
     相邻内容完全相同的 turn 视为重复记录（上传回执等），只保留一条。
-    图片描述（「我上传了 N 个文件：…」）原样保留在用户消息里。
+    上传轮（「我上传了 N 个文件：…」/「[上传了附件] …」）是 router 注入给
+    LLM 的上下文文字，对话界面这轮显示的是图片本身——命中图片时只渲染图
+    片，不渲染注入文字（没命中图片的批次如日志压缩包，保留原文避免空轮）。
 
     user_images：_prepare_user_images 的产物（已下载的图片 bytes）。上传轮的
     content 含文件名（router 写入「我上传了 N 个文件：['x.jpg']…」），按文件名
-    匹配把原图 base64 内联在该轮内容后面——图片出现在它被发送的对话位置；
+    匹配把原图 base64 内联在该轮——图片出现在它被发送的对话位置；
     匹配不到的条目（上传轮被窗口截掉等）追加末尾「对话中的图片」节（含 desc
     引用）兜底。返回 (md 文本, 剩余图片预算)——预算与 KB 图内嵌共享接力。
     """
+    def _is_upload_turn(text: str) -> bool:
+        return text.startswith("我上传了 ") or text.startswith("[上传了附件]")
+
     pending = {e["filename"]: e for e in (user_images or [])}
     lines = [f"# {title}", ""]
     _prev = None
@@ -281,14 +286,18 @@ def _turns_to_markdown(
         lines.append("")
         lines.append(header)
         lines.append("")
-        lines.append(content)
         # 用户上传的图片内联：content 含文件名（「我上传了…['x.jpg']」）→ 原图随轮展示
+        hit = []
         if role != "assistant" and pending:
             hit = [fn for fn in list(pending) if fn and fn in content]
-            for fn in hit:
-                img_md, img_budget = _render_image_md(pending.pop(fn), img_budget)
-                lines.append("")
-                lines.append(img_md)
+        if hit and _is_upload_turn(content):
+            pass  # 上传轮只出图：注入文字不渲染（界面显示的就是图片本身）
+        else:
+            lines.append(content)
+        for fn in hit:
+            img_md, img_budget = _render_image_md(pending.pop(fn), img_budget)
+            lines.append("")
+            lines.append(img_md)
         lines.append("")
     if len(lines) > 2:
         lines.append("---")

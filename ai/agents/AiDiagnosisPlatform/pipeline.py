@@ -2576,7 +2576,8 @@ class AiDiagnosisPlatform:
             # 图片描述屏蔽：上传的截图是 UI 文本（工单类型/状态/处理人等），
             # 不是用户陈述，字段提取物理上看不到 UI 文本。
             conversation_text = self._format_conversation(
-                memory, from_turn=agent_state.context_start, max_turns=20, sanitize_images=True)
+                memory, from_turn=agent_state.context_start, max_turns=20, sanitize_images=True,
+                boundary_prefix=getattr(agent_state, "ticket_boundary_prefix", ""))
             rf = agent_state.required_fields or {}
             if not rf:
                 # 无 required_fields：没有可提取的目标，直接返回（不再退化为提取 project）
@@ -2589,6 +2590,10 @@ class AiDiagnosisPlatform:
                 "## 输出规范\n"
                 "- 以 JSON 对象返回，key 必须使用目标字段中给定的英文标识，不要改名\n"
                 "- 对话中未提及的字段不输出\n"
+                "- 🔴 对话里若出现「───── 以上对话已随上一张工单提交归档」分隔线："
+                "分隔线之前是**上一张已提交工单**的旧对话，那里的任何问答属于上一单，"
+                "严禁提取为本单字段值（除非分隔线之后用户明确指代，如「任务号和上一单一样」）。"
+                "没有分隔线则以全对话为准\n"
                 "- 🔴 只能提取用户明确陈述过的事实。用户的提问/诉求本身不是答案：\n"
                 "  用户问「怎么更新权限」，不代表用户说过「当前权限是什么、目标权限是什么」——\n"
                 "  不要把问题当答案回填，没说的字段一律不输出\n\n"
@@ -2629,24 +2634,47 @@ class AiDiagnosisPlatform:
             logger.warning(f"[backfill] 回填失败（忽略，按原 collected_info 判定）: session={session_id}",
                            exc_info=True)
 
-    async def _compute_ticket_fields(self, session_id: str, memory, context_start: int) -> dict:
+    async def _compute_ticket_fields(self, session_id: str, memory, context_start: int,
+                                     boundary_prefix: str = "") -> dict:
         """纯计算（不写任何状态）：基于对话预测 {ticket_type, required_fields}。
 
         从 _decide_ticket_fields 拆出，供两条路径复用：
         ① 同步路径：_decide_ticket_fields 直接调用后写 state；
         ② 并行路径：主 LLM 流式推理期间后台预测，解析完按需采用（零等待）。
         只读 memory.turns / context_start 快照，不碰 agent_state。
+        boundary_prefix：上一单提交锚点（归档线）。提单后旧对话仍留在 turns 里
+        （续接轮指代解析要用），decide 若看到上一单的补充轮问答，会把旧字段
+        （如上一单的「任务编号」「末端站点」）当本单信息缺口列出来问（0825
+        工单 #588 实锤）——传锚点让切片插分隔线 + prompt 铁律隔离旧对话。
         """
         # 屏蔽图片描述：定字段清单只关心对话里用户说了什么，
         # 截图 UI 文本（缺陷/处理中/处理人）会诱导 LLM 把工单类型当信息缺口。
         conv = self._format_conversation(
-            memory, from_turn=context_start, max_turns=20, sanitize_images=True)
+            memory, from_turn=context_start, max_turns=20, sanitize_images=True,
+            boundary_prefix=boundary_prefix)
+        # 结构：角色 → 推理步骤（analysis 字段 CoT，产出可见可归因）→ 红线 →
+        # 输出格式。analysis 先分析后结论，替代 thinking 模式（0825 实测
+        # thinking 15-20s 超 15s timeout 且一次跑偏被否），+2~3s 且日志可查。
         prompt = (
-            "分析以下对话，判定工单类型（problem/bug/feature/support/other），"
-            "并识别要解决该工单还需向用户收集的关键信息项。\n\n"
-            "## 输出规范\n"
-            "- ticket_type：从 problem/bug/feature/support/other 中选取\n"
-            "- required_fields：JSON 对象，key 为英文标识，value 为中文简短标签（≤8 字）\n"
+            "# 角色\n"
+            "你是工单信息架构师：判定工单类型，规划接单工程师开工所需的最小信息集。\n\n"
+            "# 推理步骤（先完成 analysis，再给结论；analysis 每步一行，共 4 行）\n"
+            "1. 问题域：这是设备故障/软件 bug/功能需求/使用支持/其他？影响范围与紧急度？"
+            "对话中的排查是否已把问题锁定到具体部件/单点？\n"
+            "2. 开工要素：工程师要定位/复现/处理该问题，最少必须知道什么？"
+            "（时间、位置、编号、版本、操作路径、期望与实际的差异……按问题域取舍。"
+            "🔴 问题已锁定到具体部件时，要素只围绕该部件收敛——如已锁定"
+            "「单个充电桩硬件故障」，要的是桩的编号/位置和故障现象，"
+            "车辆编号与修桩无关，一律不列）\n"
+            "3. 对照对话：逐项核对第 2 步要素——用户已经说过什么"
+            "（含顺带提到、换说法说过、能直接推出的）？哪些要素用户（现场人员）答得上来？\n"
+            "4. 定字段：从「未说、用户能答、且与处理该问题直接相关」中挑 2 个核心 + 0-2 个补充\n\n"
+            "# 红线（🔴 违反任何一条即返工）\n"
+            "- 🔴 对话里若出现「───── 以上对话已随上一张工单提交归档」分隔线："
+            "分隔线之前是**上一张已提交工单**的旧对话，那里出现过的任何字段/问答"
+            "（如上一单问过的任务编号、站点名等）与本单无关，严禁照着旧对话的"
+            "字段样例列本单待补字段——本单缺口只从分隔线**之后**的对话判断。"
+            "没有分隔线则以全对话为准\n"
             "- 🔴 字段分两层，总数 2-4 个，禁止返回空对象：\n"
             "  · 核心字段（2 个）：不问清楚就无法定位/复现问题的信息——"
             "缺了它工程师接单后完全没法开工。对话里已说清的不算缺口，"
@@ -2661,9 +2689,17 @@ class AiDiagnosisPlatform:
             "- 🔴 字段必须是用户（现场人员）能直接回答的信息，不是 AI 侧的排查"
             "参数——助手诊断里提到的技术细节（定位坐标、地图版本、日志路径等）"
             "用户未必知道，把这类列为待补字段会逼用户回答「不知道」\n"
-            "- 项目由用户在确认弹窗选择，不要写入 required_fields\n"
-            "- 仅输出 JSON，无额外文字\n\n"
-            f"## 对话\n{conv}\n"
+            "- 🔴 字段必须服务于**本问题**的定位/复现/处理，不是同类工单的通用"
+            "模板：对话已锁定问题部件/原因时，只收处理该问题所需的信息，"
+            "「这类设备工单通常都收 XX」不构成理由（如修充电桩不需要车辆编号）\n"
+            "- 🔴 项目由用户在确认弹窗选择，不写入 required_fields\n\n"
+            "# 输出（仅一个 JSON，无其他文字）\n"
+            "```json\n"
+            '{"analysis": "第1步…\\n第2步…\\n第3步…\\n第4步…", '
+            '"ticket_type": "problem|bug|feature|support|other", '
+            '"required_fields": {"英文key": "中文标签（≤8字）"}}\n'
+            "```\n\n"
+            f"# 对话\n{conv}\n"
         )
         raw = await asyncio.wait_for(
             self._llm_client.complete(prompt=prompt, max_tokens=2000, temperature=0,
@@ -2678,15 +2714,20 @@ class AiDiagnosisPlatform:
             result["required_fields"] = _sanitize_required_fields(rf)
         else:
             result["required_fields"] = {}
+        # analysis（CoT）进日志：字段质量出问题时可归因到具体推理步
+        _analysis = str(data.get("analysis") or "").strip()
+        if _analysis:
+            logger.info(f"[compute_fields] analysis: session={session_id}\n{_analysis[:600]}")
         # 不足 2 个字段重试：LLM 偶尔无视「2 核心 + 0-2 补充」规则只给 1 个
         # 或空清单（1 个字段用户一答就齐、直接弹草稿）。补一次带提醒的重试。
         if len(result["required_fields"]) < 2:
             retry_prompt = (
                 prompt
                 + "\n\n⚠️ 你上一次返回的 required_fields 少于 2 个（或为空），这不符合要求。"
-                  "重新分析对话：工单提单前至少有 2 个核心信息缺口"
+                  "重新走一遍推理步骤（尤其第 2 步开工要素和第 4 步挑选）："
+                  "工单提单前至少有 2 个核心信息缺口"
                   "（不问就无法定位/复现问题）需要用户补充，"
-                  "请按输出规范给出 2-4 个字段，仅输出 JSON。"
+                  "请按输出格式给出 2-4 个字段。"
             )
             try:
                 raw2 = await asyncio.wait_for(
@@ -2735,7 +2776,8 @@ class AiDiagnosisPlatform:
         """
         try:
             result = await self._compute_ticket_fields(
-                session_id, memory, agent_state.context_start)
+                session_id, memory, agent_state.context_start,
+                boundary_prefix=getattr(agent_state, "ticket_boundary_prefix", ""))
             self._adopt_ticket_fields(agent_state, result)
         except Exception:
             logger.warning(f"[decide_fields] 失败（锁定为空清单）: session={session_id}",
@@ -2967,25 +3009,45 @@ class AiDiagnosisPlatform:
             try:
                 from ai.core.conversation_store import get_history
                 rows = await asyncio.to_thread(get_history, sid)
+                from datetime import datetime as _dt, timezone as _tz
+
+                def _ca(iso):
+                    try:
+                        return _dt.fromisoformat(iso).replace(tzinfo=_tz.utc)
+                    except Exception:
+                        return _dt.min.replace(tzinfo=_tz.utc)  # 解析失败：宁可保留该消息
+
+                # 上传轮只写 Redis（10 轮滑动窗口）不落 MySQL，追问几轮后即被
+                # 滑出窗口——附件 md 丢失「我上传了…」轮，图片内联找不到锚点
+                # （0825 事故：图全落末尾节）。上传时随附件条目记了
+                # uploaded_at/upload_message（metadata 不受窗口截断），此处按
+                # 批次重建合成用户轮、按 created_at 插回 db 历史；早于工单分割
+                # 锚点的批次随后被锚点过滤归入上一单。仍在 memory 窗口内的上传
+                # 轮天然安全：其时间位置落在 mem 对齐段（db 前缀不含）或 mem
+                # 被弃用时由合成轮补位，两种结局都只出现一次。
+                _batches = {}
+                for _a in (memory.metadata.get("agent_state") or {}).get("attachments") or []:
+                    if isinstance(_a, dict) and _a.get("uploaded_at") and _a.get("upload_message"):
+                        _batches[(_a["uploaded_at"], _a["upload_message"])] = True
+                if _batches:
+                    for _ts, _msg in _batches:
+                        _tts = _ca(_ts)
+                        _i = len(rows)
+                        while _i > 0 and _ca(rows[_i - 1].get("created_at", "")) > _tts:
+                            _i -= 1
+                        rows.insert(_i, {"role": "user", "content": _msg, "created_at": _ts})
+                    logger.info(f"[chat_markdown] 重建上传轮 {len(_batches)} 批插入 db 历史: session={sid}")
                 # 工单分割：只保留上一次提单成功之后的对话（created_at 严格大于
                 # 锚点，提单收尾话术归上一单）。锚点缺失（首次提单/老会话状态丢失）
                 # 保持全量，回退旧行为。
                 _state = _load_agent_state(memory.metadata)
                 _anchor = int(_state.last_ticket_submitted_at) if _state else 0
                 if _anchor > 0 and rows:
-                    from datetime import datetime as _dt, timezone as _tz
                     # DB created_at 是 naive UTC（后端建消息用 utcnow），锚点
                     # fromtimestamp 默认转本地时区——naive UTC vs naive 本地差 8h，
                     # 所有消息恒小于锚点被全滤 → rows 空 → 回退 memory.turns
                     # （无分割），上一单收尾轮漏进附件。两侧统一为 UTC。
                     _anchor_dt = _dt.fromtimestamp(_anchor, tz=_tz.utc)
-
-                    def _ca(iso):
-                        try:
-                            return _dt.fromisoformat(iso).replace(tzinfo=_tz.utc)
-                        except Exception:
-                            return _dt.min.replace(tzinfo=_tz.utc)  # 解析失败：宁可保留该消息
-
                     _total = len(rows)
                     rows = [r for r in rows if _ca(r.get("created_at", "")) > _anchor_dt]
                     logger.info(f"[chat_markdown] 工单分割: 上次提单后消息 {len(rows)}/{_total}")
@@ -3037,6 +3099,14 @@ class AiDiagnosisPlatform:
                                 else:
                                     break
                             turns = db_turns[:first_idx] + mem_turns
+                            # 对齐中途断裂时合成上传轮可能既留在 db 前缀、又
+                            # 在 memory 窗口里（同一句「我上传了…」出现两次），
+                            # 去掉前缀侧副本、保 memory 完整版。
+                            _drop = ({(t.get("content") or "").strip() for t in mem_turns}
+                                     & {_msg for _, _msg in _batches})
+                            if _drop:
+                                turns = [t for t in db_turns[:first_idx]
+                                         if (t.get("content") or "").strip() not in _drop] + mem_turns
                             logger.info(f"[chat_markdown] MySQL 尾部顺序已用 memory 校正: session={sid}, "
                                         f"db={len(db_turns)}, mem={len(mem_turns)}, first={first_idx}")
                         else:
