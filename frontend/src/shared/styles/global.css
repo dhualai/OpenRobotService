@@ -5895,17 +5895,50 @@ html, body, #root {
 }
 .detail-chat-read {
   margin-left: 6px;
-  font-size: 11px;
-  color: var(--primary);
-  font-weight: 500;
   background: none;
   border: none;
   padding: 0;
   cursor: pointer;
   line-height: inherit;
+  align-self: center;
 }
 .detail-chat-read.is-open {
   opacity: 0.7;
+}
+/* 头像堆叠（飞书式）：气泡上的已读指示，最多 3 个头像 + 超出显示 +N */
+/* 最新阅读的在最左、盖在最上层；后面的头像向左叠入前一个下方形成堆叠 */
+.detail-chat-read__avatars {
+  display: flex;
+  align-items: center;
+}
+.detail-chat-read__avatar,
+.detail-chat-read__more {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  object-fit: cover;
+  box-sizing: border-box;
+}
+.detail-chat-read__avatar {
+  background: var(--primary);
+  color: #fff;
+  border: 1.5px solid #fff;
+}
+/* 头像两两叠放：除第一个外，每个头像向左偏移叠入前一个下方 */
+.detail-chat-read__avatars > * + * {
+  margin-left: -5px;
+}
+.detail-chat-read__more {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border: 1.5px solid #fff;
+  padding: 0 2px;
 }
 
 /* ===== 已读名单弹层（飞书式） ===== */

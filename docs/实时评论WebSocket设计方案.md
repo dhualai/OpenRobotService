@@ -249,8 +249,8 @@ function useTaskCommentsWS(taskId: string | number) {
 5. **输入中提示**：评论输入框 `onChange` 时 `sendTyping(true)`，停 3s 自动 `sendTyping(false)`；收到他人 `typing` 事件显示「XXX 正在输入…」。
 6. **已读回执（含飞书式已读名单）**：
    - 列表滚动到底 / 新消息到达时，自动 `sendRead(最新comment.id, 本次实际读到的评论id列表)`；
-   - 每条自己消息根据 `readRecords`（精确名单）或 `readMap`（游标兜底）显示「已读 N 人」；
-   - 点击「已读 N 人」弹出名单 Popover（头像 + 姓名 + 相对阅读时间，按阅读时间倒序）。
+   - 每条自己消息根据 `readRecords`（精确名单）或 `readMap`（游标兜底）显示**已读头像堆叠**（飞书式：最多 3 个头像，超出第 3 个显示「+N」数字）；
+   - 点击头像堆叠弹出名单 Popover（头像 + 姓名 + 相对阅读时间，按阅读时间倒序）。
 7. **工单状态实时**：收到 `task.updated` → 回调上层更新 `ticket.status / assigned_to / assigned_to_name`，**移除现有的 5s 派单轮询**（TicketDetailPage.tsx:360-364）。
 8. **卸载**：关闭 socket，清定时器。
 
@@ -323,7 +323,7 @@ location /t/api/ {
 - **Phase 2 — 在线状态 + 输入中（✅ 已落地）**：presence / typing 广播与 UI（在线成员条 + 「XXX 正在输入…」）。
 - **Phase 3 — 已读回执（✅ 已落地）**：`task_comment_read` upsert 读写 + `read_receipt` 广播 + 回执 UI（自己的消息「已读」标记）。
 - **Phase 4 — 状态变更推送（✅ 已落地）**：`task.updated` 广播（`update_task_status`/`assign_ticket`/`update_task`），**已移除**两详情页 5s 派单轮询。
-- **Phase 5 — 已读人员名单（✅ 已落地）**：新增 `task_comment_read_record` 表，逐条评论记录读者与阅读时间；`welcome`/`read_receipt` 下发名单快照与增量；前端「已读 N 人」可点击弹出名单 Popover（头像 + 姓名 + 相对时间，按阅读时间倒序），对齐飞书已读体验。
+- **Phase 5 — 已读人员名单（✅ 已落地）**：新增 `task_comment_read_record` 表，逐条评论记录读者与阅读时间；`welcome`/`read_receipt` 下发名单快照与增量；前端自己消息以**头像堆叠**指示已读（最多 3 个头像 + 超出显示「+N」，飞书式），可点击弹出名单 Popover（头像 + 姓名 + 相对时间，按阅读时间倒序），对齐飞书已读体验。
 
 ---
 
@@ -374,8 +374,8 @@ location /t/api/ {
 | `backend/app/modules/tasks/api/ws.py` | 修改 | `read` 上报支持 `comment_ids` 列表；`welcome`/`read_receipt` 下发名单；新增 `_mark_comment_read`/`_read_records_map` |
 | `frontend/src/api/ws.ts` | 修改 | 新增 `ReadRecord`/`ReadRecordDelta` 类型；`sendRead` 支持 `commentIds`；`welcome`/`read_receipt` 字段扩展 |
 | `frontend/src/shared/hooks/useTaskCommentsWS.ts` | 修改 | 新增 `readRecords` 状态，处理 `welcome.read_records` 与 `read_receipt.records` 增量合并 |
-| `frontend/src/shared/components/DiscussionPanel.tsx` | 修改 | 「已读 N 人」可点击弹出名单 Popover（头像+姓名+相对时间倒序）；上报实际读到的评论 id 列表 |
-| `frontend/src/shared/styles/global.css` | 修改 | 已读按钮样式 + 名单弹层样式 |
+| `frontend/src/shared/components/DiscussionPanel.tsx` | 修改 | 已读头像堆叠（≤3 头像 + 溢出「+N」）可点击弹出名单 Popover（头像+姓名+相对时间倒序）；上报实际读到的评论 id 列表 |
+| `frontend/src/shared/styles/global.css` | 修改 | 已读头像堆叠样式 + 名单弹层样式 |
 
 ### 11.2 与设计的偏差
 
