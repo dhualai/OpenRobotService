@@ -14,7 +14,7 @@ import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepa
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import UserSelect from '@/shared/components/UserSelect';
 import { createTicket, reDispatchTicket } from '@/api/ticket';
-import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
+import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import type { UserItem } from '@/api/users';
 import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
 import { createRequest } from '@/api/client';
@@ -1869,7 +1869,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const deadlineTouched = Object.prototype.hasOwnProperty.call(ticketConfirm.overrides, 'deadline_at');
   const deadlinePickerValue = (() => {
     const raw = draftField('deadline_at');
-    if (raw) return dayjs(raw);
+    if (raw) return parseDeadlineString(raw);
     if (deadlineTouched) return null; // 用户主动清空，保持空
     return deadlineRange?.max ?? null; // 未设置 → 默认显示最大值
   })();
