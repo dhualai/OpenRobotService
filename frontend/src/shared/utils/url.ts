@@ -107,18 +107,24 @@ export function parseUtcDate(dateString: string): Date | null {
 }
 
 /**
- * 直接格式化 ISO 字符串，不做任何时区转换：后端返回什么就显示什么。
+ * 格式化 deadline_at 等字段：与 parseUtcDate 语义一致——DB 存 naive UTC，
+ * 无时区后缀时补 Z 当 UTC 解析，由浏览器按本地时区自动 +8 转换。
  *
- * 用途：deadline_at 等字段。后端返回 naive datetime（如 "2026-08-17T10:00:00"），
- * 直接提取年月日时分显示为 "2026/08/17 10:00"。绕过 Date 对象的本地时区偏移，
- * 避免 UTC+8 浏览器把 "10:00" 当 UTC 转 "18:00"。
+ * 修复背景（2026-08-25）：原实现直接提取年月日时分显示，假设 naive = 上海时间。
+ * c2ebf96 时区根因治理后，DB 已统一存 UTC（naive DateTime 存 UTC 值），
+ * 写入侧（convert_to_shanghai_time：aware→转 UTC 剥时区）存的是 UTC naive，
+ * 但显示侧仍按"naive = 上海时间"提取，导致 deadline 少 8 小时（如用户选 10:00
+ * → DB 存 02:00 UTC → 显示成 02:00 而非 10:00）。
  */
 export function formatRawDateTime(dateString: string): string {
   if (!dateString) return '';
   const s = String(dateString).trim().replace(' ', 'T');
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
-  if (!m) return '';
-  return `${m[1]}/${m[2]}/${m[3]} ${m[4]}:${m[5]}`;
+  // 先补 Z 当 UTC 解析，再按本地时区显示
+  const hasTz = /([+-]\d{2}:?\d{2}|Z)$/.test(s);
+  const d = new Date(hasTz ? s : `${s}Z`);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 export function formatDateTime(dateString: string): string {
