@@ -1068,6 +1068,154 @@ class TestRequiredFieldsGranularity:
         assert "一项信息一个字段" in captured["prompt"]
 
 
+class TestRequiredFieldsSanitize:
+    """生产实锤（2026-08-25）：按钮提单显示「还差 {'page module:'问题页、
+    {'occurrence time:」——LLM 把 required_fields 写成嵌套对象，采纳代码
+    str(v)[:20] 把嵌套 dict 字符串化再截断，残片当中文标签进了判缺提示。
+    修复：_sanitize_required_fields 统一类型清洗（非字符串 value / 含引号
+    花括号的标签一律丢弃），四处采纳点 + _load_agent_state 加载自愈共用。
+    """
+
+    def test_nested_dict_value_dropped(self):
+        from ai.agents.AiDiagnosisPlatform.pipeline import _sanitize_required_fields
+        bad = {"page_module": {"page module": "问题页"},
+               "occurrence_time": {"occurrence time": "发生时间"}}
+        assert _sanitize_required_fields(bad) == {}
+
+    def test_stored_string_fragment_dropped(self):
+        """事故会话 Redis 里存的已是 str() 化残片（类型是 str），按内容识别。"""
+        from ai.agents.AiDiagnosisPlatform.pipeline import _sanitize_required_fields
+        stored = {"page_module": "{'page module': '问题页",
+                  "occurrence_time": "{'occurrence time: "}
+        assert _sanitize_required_fields(stored) == {}
+
+    def test_clean_list_kept(self):
+        from ai.agents.AiDiagnosisPlatform.pipeline import _sanitize_required_fields
+        ok = {"vehicle_id": "车辆编号", "occurrence_time": "发生时间"}
+        assert _sanitize_required_fields(ok) == ok
+
+    def test_assess_shows_no_fragment(self):
+        from ai.agents.AiDiagnosisPlatform.pipeline import (
+            _sanitize_required_fields, _assess_ticket_readiness)
+        st = AgentState(session_id="s")
+        st.required_fields = _sanitize_required_fields(
+            {"page_module": {"page module": "问题页"}}) or None
+        assert st.required_fields is None
+        _, missing = _assess_ticket_readiness(st)
+        assert missing == []
+
+    def test_load_heals_polluted_state(self):
+        """已锁定污染清单的会话：加载时清洗为空 → None，重新 decide 自愈。"""
+        from ai.agents.AiDiagnosisPlatform.pipeline import _load_agent_state
+        polluted = {"page_module": "{'page module': '问题页"}
+        loaded = _load_agent_state({"agent_state": {"session_id": "s",
+                                                    "required_fields": polluted}})
+        assert loaded.required_fields is None
+        good = _load_agent_state({"agent_state": {"session_id": "s",
+                                                  "required_fields": {"vehicle_id": "车辆编号"}}})
+        assert good.required_fields == {"vehicle_id": "车辆编号"}
+
+    def test_apply_state_update_rejects_nested(self):
+        """对话路径 state_update 里的嵌套 required_fields 不再被 str() 采纳。"""
+        from ai.agents.AiDiagnosisPlatform import pipeline as pl
+        state = pl.AgentState(session_id="s")
+        pl.AiDiagnosisPlatform._apply_state_update(
+            None, state, {"required_fields": {
+                "vehicle_id": "车辆编号",
+                "occurrence_time": "发生时间",
+                "page_module": {"page module": "问题页"},
+            }})
+        assert state.required_fields == {"vehicle_id": "车辆编号",
+                                         "occurrence_time": "发生时间"}
+
+
+class TestBackfillOnFirstSubmit:
+    """转单首轮回填（0825 生产实锤）：用户对话里已明确说过的信息
+    （「新车，XSC111，没路径」「无法移动」）decide 仍列为缺口（车辆编号/
+    故障现象），转单轮被逼把自己刚说过的话重答一遍。修复：首次转单 decide
+    后、判缺前跑 _backfill_collected_info，假缺口消掉只问真正没说过的。
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_stated_fields_not_reasked(self, platform, make_state, make_request):
+        state = make_state(phase="diagnosing", problem_summary="新车无路径无法移动")
+        request = make_request(query="算了，提单吧", session_id=state.session_id)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.turns = [
+            {"role": "user", "content": "我车不动了"},
+            {"role": "assistant", "content": "先确认是哪台车、什么表现。"},
+            {"role": "user", "content": "新车，XSC111，没路径"},
+            {"role": "assistant", "content": "新车没路径，最常出在车型配置和路网这两块。"},
+            {"role": "user", "content": "算了，提单吧"},
+        ]
+
+        def _f(prompt: str = "", **kwargs):
+            if "判定工单类型" in prompt:  # _compute_ticket_fields
+                return json.dumps({"ticket_type": "problem", "required_fields": {
+                    "vehicle_id": "车辆编号", "description": "故障现象",
+                    "occurrence_time": "发生时间", "location": "现场位置",
+                }}, ensure_ascii=False)
+            if "提取指定字段的值" in prompt:  # _backfill_collected_info
+                return json.dumps({"vehicle_id": "XSC111",
+                                   "description": "新车无路径无法移动"},
+                                  ensure_ascii=False)
+            # 主 LLM：转单 submit
+            return json.dumps({"action": "submit", "intent": "troubleshoot",
+                               "ticket_intent": True,
+                               "state_update": {"problem_summary": "新车无路径无法移动"}},
+                              ensure_ascii=False)
+
+        platform._llm_client.complete.side_effect = _f
+
+        events = [ev async for ev in platform._agent_think_stream(request, state, memory)]
+
+        # 假缺口被回填消掉
+        assert state.collected_info.get("vehicle_id") == "XSC111"
+        assert state.collected_info.get("description") == "新车无路径无法移动"
+        # 追问只问真正没说过的
+        need = [e for e in events if e["event"] == "status"
+                and e["data"].get("stage") == "need_info"]
+        assert need, "应发 need_info 追问"
+        missing = need[0]["data"]["missing_info"]
+        assert "车辆编号" not in missing and "故障现象" not in missing
+        assert "发生时间" in missing and "现场位置" in missing
+        # 对话路径一次只问第一个真缺项
+        tokens = "".join(e["data"] for e in events if e["event"] == "token")
+        assert "发生时间" in tokens and "车辆编号" not in tokens
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_collect_rounds_not_backfilled(self, platform, make_state, make_request):
+        """收集轮不额外回填（4116 既有顾虑：助手追问会被当答案），只有转单首轮回填。"""
+        from unittest.mock import patch
+        state = make_state(
+            phase="escalated", problem_summary="新车无路径无法移动",
+            required_fields={"vehicle_id": "车辆编号", "occurrence_time": "发生时间"},
+            collected_info={"vehicle_id": "XSC111"},
+            ticket_collecting=["发生时间"], collect_rounds=2,
+        )
+        request = make_request(query="今早九点", session_id=state.session_id)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.turns = [{"role": "user", "content": "算了，提单吧"},
+                        {"role": "assistant", "content": "发生时间是什么？"},
+                        {"role": "user", "content": "今早九点"}]
+
+        with patch.object(platform, "_backfill_collected_info", new=AsyncMock()) as bf:
+            def _f(prompt: str = "", **kwargs):
+                return json.dumps({"action": "submit", "intent": "troubleshoot",
+                                   "ticket_intent": True,
+                                   "state_update": {"collected_info": {
+                                       "occurrence_time": "今早九点"}}},
+                                  ensure_ascii=False)
+            platform._llm_client.complete.side_effect = _f
+            events = [ev async for ev in platform._agent_think_stream(request, state, memory)]
+            # required_fields 已决定（非 None）→ 不触发转单首轮回填
+            bf.assert_not_called()
+        review = [e for e in events if e["event"] == "status" and e["data"].get("stage") == "review"]
+        assert review, "字段齐了应直接弹草稿"
+
+
 class TestAttachmentBinding:
     """附件-工单绑定（2026-08-20 需求）：会话累积附件不再无条件全带。
 
