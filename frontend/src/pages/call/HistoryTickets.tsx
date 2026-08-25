@@ -53,6 +53,7 @@ const STATUS_META: Record<string, { label: string; color: string; bg: string }> 
 export default function HistoryTickets({ showHeader = true }: { showHeader?: boolean }) {
   const navigate = useNavigate();
   const tasksRefreshKey = useWorkbenchStore((s) => s.tasksRefreshKey);
+  const refreshTasks = useWorkbenchStore((s) => s.refreshTasks);
   const username = useAuthStore((s) => s.username);
   const userId = useAuthStore((s) => s.userId);
   const isAdmin = useAuthStore((s) => s.isAdmin);
@@ -219,9 +220,11 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
       setShowRedispatchPopup(false);
       // 重新派单后端会先清空 assigned_to（回 new 态）再异步重派：
       // ① 立即 loadInitial 一次，让列表马上从「旧处理人」变成「派单中」；
-      // ② 再启动轮询（5s×12=60s），直到该工单派单完成（assigned_to 非空）自动显示新处理人。
+      // ② 再启动轮询（5s×12=60s），直到该工单派单完成（assigned_to 非空）自动显示新处理人；
+      // ③ 发出全局工单变更信号，让「摇人对话气泡」（ChatPanel）同步该工单派单状态。
       loadInitial();
       startRedispatchPoll(redispatchTicket.id);
+      refreshTasks();
     } catch (err) {
       Toast({ message: `重新派单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
