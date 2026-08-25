@@ -79,6 +79,7 @@ class TicketCommentResponse(TicketCommentBase):
     ticket_id: int
     created_by: str
     created_by_name: Optional[str] = None
+    created_by_avatar_resource_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     quoted: Optional[QuotedComment] = Field(None, description="被引用评论的简要信息")
