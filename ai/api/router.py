@@ -1209,8 +1209,10 @@ async def list_all_tickets(
                     "location": d["location"], "robot_type": d["robot_type"],
                     "fault_code": d["fault_code"], "severity": d["severity"],
                     "attachments": d["attachments"], "diagnosis": d["diagnosis"],
-                    "created_at": d["created_at"].isoformat() if d["created_at"] else None,
-                    "updated_at": d["updated_at"].isoformat() if d["updated_at"] else None,
+                    # task_to_dict 已把 created_at/updated_at 显式 isoformat 为字符串（与 deadline_at 同口径），
+                    # 这里直接透传，不再二次 .isoformat()（字符串无此方法，会抛 AttributeError）
+                    "created_at": d["created_at"] or None,
+                    "updated_at": d["updated_at"] or None,
                     # 提单人 / 接单人（username + 展示名），供前端「提单人 → 接单人」指向性 UI 渲染
                     "created_by": created_by,
                     "created_by_name": user_map.get(created_by, created_by) if created_by else "",
