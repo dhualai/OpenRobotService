@@ -98,6 +98,10 @@ class AgentState:
     # 「已提交工单的旧对话」和「新对话」——项目预填只认新对话里用户提到的项目，
     # 防上一单提过的项目名泄漏进下一单的预填。
     ticket_boundary_prefix: str = ""
+    # 上一次提单成功的时刻（unix 秒）。聊天记录附件按它切分：本次提单只带
+    # 上次提单之后的对话（created_at 严格大于锚点，提单收尾话术归上一单）。
+    # 0 = 从未提单/老会话无锚点 → 附件保持全量历史（回退旧行为）。
+    last_ticket_submitted_at: int = 0
 
 
 # ============================================================
@@ -130,12 +134,15 @@ def _load_agent_state(metadata: dict) -> Optional[AgentState]:
         ticket_collecting=s.get("ticket_collecting", []),
         # 三态迁移：旧持久化数据的 {} 表示「从未决定」（旧语义），新语义 {} =「已决定无需补」。
         # 若直接按新语义读，旧会话按钮提单会跳过 decide、缺失字段不拦截。空 dict 一律归一为 None。
-        required_fields=(s.get("required_fields") or None),
+        # 加载即清洗：历史会话锁定的污染清单（嵌套 dict 被 str() 成 {'page module:'问题页
+        # 残片，0825 生产按钮提单事故）清洗后为空 → 归 None 重新 decide，卡住的会话自愈。
+        required_fields=(_sanitize_required_fields(s.get("required_fields")) or None),
         context_start=s.get("context_start", 0),
         collect_rounds=s.get("collect_rounds", 0),
         tool_loop_active=bool(s.get("tool_loop_active", False)),
         pending_prefill_project=s.get("pending_prefill_project") or None,
         ticket_boundary_prefix=str(s.get("ticket_boundary_prefix") or ""),
+        last_ticket_submitted_at=int(s.get("last_ticket_submitted_at") or 0),
     )
 
 
@@ -162,6 +169,7 @@ def _save_agent_state(memory, state: AgentState) -> None:
         "tool_loop_active": state.tool_loop_active,
         "pending_prefill_project": state.pending_prefill_project,
         "ticket_boundary_prefix": state.ticket_boundary_prefix,
+        "last_ticket_submitted_at": state.last_ticket_submitted_at,
         "attachments": existing.get("attachments", []),  # 保留上传的附件
     }
 
@@ -197,6 +205,34 @@ def _can_submit(state: AgentState) -> tuple[bool, str]:
     if state.last_submitted_ticket and not (state.problem_summary or "").strip():
         return False, "刚放弃或提交过工单，如需重新提交请描述新现象。"
     return True, ""
+
+
+def _sanitize_required_fields(rf) -> dict:
+    """required_fields 采纳前的类型清洗：key/value 必须是非空字符串。
+
+    LLM 偶尔把字段写成嵌套对象（"required_fields": {"page_module":
+    {"page module": "问题页"}}）——旧代码 str(v) 会把嵌套 dict 字符串化成
+    {'page module': '问题页'}，再 [:20] 截断成 {'occurrence time': 这种
+    残片直接进判缺提示（0825 生产：按钮提单显示「还差 {'page module:'问题页、
+    {'occurrence time:」）。非字符串 value 一律丢弃该字段；字段数不足由
+    既有的 <2 不采信 / _decide_ticket_fields 重生成机制兜住。
+    """
+    if not isinstance(rf, dict):
+        return {}
+    out = {}
+    for k, v in rf.items():
+        if not isinstance(k, str):
+            continue
+        k2 = k.strip().strip("'\"")
+        label = v.strip().strip("'\"") if isinstance(v, str) else ""
+        # 标签要求是 ≤8 字中文短语——含花括号/引号即 str(dict) 残片特征
+        # （{'page module': '问题页），丢弃。历史会话的 Redis 状态里存的已是
+        # 字符串化残片（类型是 str），只靠非 str 判别拦不住，须按内容识别。
+        if any(c in label for c in "{}'\""):
+            continue
+        if k2 and label and len(k2) <= 40:
+            out[_canonical_field_key(k2)] = label[:20]
+    return out
 
 
 def _check_required_fields(ticket: dict) -> dict:
@@ -267,6 +303,8 @@ def _reset_state_after_submit(agent_state: AgentState, memory, ticket: dict, db_
     # 项目，防止上一单提过的项目名泄漏进下一单预填。
     agent_state.ticket_boundary_prefix = (
         str(memory.turns[-1].get("content") or "").strip()[:40] if memory.turns else "")
+    # 聊天记录附件的工单分割锚点：下次提单的附件只带此刻之后的对话。
+    agent_state.last_ticket_submitted_at = int(time.time())
     _save_agent_state(memory, agent_state)
     # 提单后状态可见性：has_last_ticket=True + problem_summary 空 → 下一轮/按钮 _can_submit 拦截
     _log_ticket_state(agent_state, "submit_done")
@@ -1067,7 +1105,7 @@ class AiDiagnosisPlatform:
         if "required_fields" in state_update:
             rf = state_update["required_fields"]
             if isinstance(rf, dict) and rf:
-                _new_rf = {_canonical_field_key(k): str(v) for k, v in rf.items() if k and v}
+                _new_rf = _sanitize_required_fields(rf)
                 # 字段清单只允许在首次提单意图确认时生成一次。
                 # 只要已有清单（即使 collected_info 仍为空），后续轮次都不得
                 # 扩大、缩小或改写，否则用户每补充一次就会被重新追问。
@@ -2557,7 +2595,7 @@ class AiDiagnosisPlatform:
                 f"## 对话\n{conversation_text}\n"
             )
             raw = await asyncio.wait_for(
-                self._llm_client.complete(prompt=prompt, max_tokens=400, temperature=0,
+                self._llm_client.complete(prompt=prompt, max_tokens=2000, temperature=0,
                                            thinking=False),
                 timeout=15.0,
             )
@@ -2610,23 +2648,25 @@ class AiDiagnosisPlatform:
             "- ticket_type：从 problem/bug/feature/support/other 中选取\n"
             "- required_fields：JSON 对象，key 为英文标识，value 为中文简短标签（≤8 字）\n"
             "- 🔴 字段分两层，总数 2-4 个，禁止返回空对象：\n"
-            "  · 核心字段（2 个）：不问清楚就无法定位/复现问题的信息"
-            "（如车辆编号、故障码、调度版本、涉及的设备或模块）——"
+            "  · 核心字段（2 个）：不问清楚就无法定位/复现问题的信息——"
             "缺了它工程师接单后完全没法开工。对话里已说清的不算缺口，"
             "但不能用补充字段凑数\n"
             "  · 补充字段（0-2 个）：有助于加快处理但非必需的锦上添花信息"
-            "（如发生时间、现场位置、出现频率）——只在对话没提、"
-            "且确实值得追问时才加，宁缺毋滥\n"
+            "——只在对话没提、且确实值得追问时才加，宁缺毋滥\n"
             "- 🔴 一项信息一个字段：时间、车辆编号、任务等各自独立成 key，"
             "禁止合并进一个字段（打包会导致用户只答一项就被判齐、提前弹窗丢信息）\n"
             "- 🔴 只列入「对话中确实还没说过的信息缺口」：仔细读完整对话，"
-            "用户已经说过、提到过、或能从对话直接推出的信息一律不列入\n"
+            "用户已经说过、提到过、或能从对话直接推出的信息一律不列入"
+            "（哪怕换了个说法、哪怕只在某一轮里顺带说过）\n"
+            "- 🔴 字段必须是用户（现场人员）能直接回答的信息，不是 AI 侧的排查"
+            "参数——助手诊断里提到的技术细节（定位坐标、地图版本、日志路径等）"
+            "用户未必知道，把这类列为待补字段会逼用户回答「不知道」\n"
             "- 项目由用户在确认弹窗选择，不要写入 required_fields\n"
             "- 仅输出 JSON，无额外文字\n\n"
             f"## 对话\n{conv}\n"
         )
         raw = await asyncio.wait_for(
-            self._llm_client.complete(prompt=prompt, max_tokens=300, temperature=0,
+            self._llm_client.complete(prompt=prompt, max_tokens=2000, temperature=0,
                                        thinking=False),
             timeout=15.0,
         )
@@ -2635,10 +2675,7 @@ class AiDiagnosisPlatform:
         result = {"ticket_type": tt if tt in ("problem", "bug", "feature", "support", "other") else ""}
         rf = data.get("required_fields") or {}
         if isinstance(rf, dict):
-            result["required_fields"] = {
-                _canonical_field_key(k): str(v)[:20] for k, v in rf.items()
-                if str(v).strip() and len(str(k)) <= 40
-            }
+            result["required_fields"] = _sanitize_required_fields(rf)
         else:
             result["required_fields"] = {}
         # 不足 2 个字段重试：LLM 偶尔无视「2 核心 + 0-2 补充」规则只给 1 个
@@ -2653,17 +2690,14 @@ class AiDiagnosisPlatform:
             )
             try:
                 raw2 = await asyncio.wait_for(
-                    self._llm_client.complete(prompt=retry_prompt, max_tokens=300,
+                    self._llm_client.complete(prompt=retry_prompt, max_tokens=2000,
                                                temperature=0.2, thinking=False),
                     timeout=15.0,
                 )
                 data2 = _extract_json_object(raw2)
                 rf2 = data2.get("required_fields") or {}
                 if isinstance(rf2, dict) and rf2:
-                    result["required_fields"] = {
-                        _canonical_field_key(k): str(v)[:20] for k, v in rf2.items()
-                        if str(v).strip() and len(str(k)) <= 40
-                    }
+                    result["required_fields"] = _sanitize_required_fields(rf2)
             except Exception as e:
                 logger.warning(f"[compute_fields] 空清单重试失败: {e}")
         return result
@@ -2680,10 +2714,8 @@ class AiDiagnosisPlatform:
         # 否则后续轮会把“已决定”误认为 None，重复请求字段生成。
         if isinstance(rf, dict) and agent_state.required_fields is None:
             _new = {
-                _canonical_field_key(k): str(v)[:20] for k, v in rf.items()
-                if str(v).strip()
-                and len(str(k)) <= 40
-                and not (agent_state.collected_info.get(_canonical_field_key(k)) or "").strip()
+                k: v for k, v in _sanitize_required_fields(rf).items()
+                if not (agent_state.collected_info.get(k) or "").strip()
             }
             # 空字典也是“已决定”：对话已经覆盖全部字段时必须锁定空清单，
             # 否则后续每轮都会重新调用字段生成。
@@ -2920,33 +2952,93 @@ class AiDiagnosisPlatform:
         回退 memory.turns（最近 N 轮）。
         """
         try:
-            from ai.core.chat_snapshot import create_chat_markdown_attachment
+            from ai.core.chat_snapshot import create_chat_markdown_attachment, is_image_entry
             sid = ticket.get("session_id", "")
             turns = memory.turns
+            # 本单周期内用户上传的图片（attachments 在 _reset_state_after_submit
+            # 清空、此刻尚未清——本函数先于 reset 调用），内嵌进附件 md 让接单人
+            # 直接看到现场图。用户消息 content 只存 VLM 文字描述，图片本体在
+            # MinIO，不内嵌则附件里永远「看不到图」。
+            # ⚠️ is_image_entry / user_images 参数与 chat_snapshot.py 同批发布
+            # （0825 生产半部署曾致 ImportError → 两单附件整体消失）。
+            _user_images = [a for a in
+                            ((memory.metadata.get("agent_state") or {}).get("attachments") or [])
+                            if isinstance(a, dict) and is_image_entry(a)]
             try:
                 from ai.core.conversation_store import get_history
                 rows = await asyncio.to_thread(get_history, sid)
+                # 工单分割：只保留上一次提单成功之后的对话（created_at 严格大于
+                # 锚点，提单收尾话术归上一单）。锚点缺失（首次提单/老会话状态丢失）
+                # 保持全量，回退旧行为。
+                _state = _load_agent_state(memory.metadata)
+                _anchor = int(_state.last_ticket_submitted_at) if _state else 0
+                if _anchor > 0 and rows:
+                    from datetime import datetime as _dt, timezone as _tz
+                    # DB created_at 是 naive UTC（后端建消息用 utcnow），锚点
+                    # fromtimestamp 默认转本地时区——naive UTC vs naive 本地差 8h，
+                    # 所有消息恒小于锚点被全滤 → rows 空 → 回退 memory.turns
+                    # （无分割），上一单收尾轮漏进附件。两侧统一为 UTC。
+                    _anchor_dt = _dt.fromtimestamp(_anchor, tz=_tz.utc)
+
+                    def _ca(iso):
+                        try:
+                            return _dt.fromisoformat(iso).replace(tzinfo=_tz.utc)
+                        except Exception:
+                            return _dt.min.replace(tzinfo=_tz.utc)  # 解析失败：宁可保留该消息
+
+                    _total = len(rows)
+                    rows = [r for r in rows if _ca(r.get("created_at", "")) > _anchor_dt]
+                    logger.info(f"[chat_markdown] 工单分割: 上次提单后消息 {len(rows)}/{_total}")
                 if rows:
-                    db_turns = [{"role": r["role"], "content": r["content"]} for r in rows]
-                    # 顺序校正：MySQL messages.sequence 有落库竞态——用户消息是前端
-                    # fire-and-forget、AI 回复是后端流式落库，连发消息时落库先后
-                    # ≠ 真实对话先后。memory.turns 在内存里按真实顺序 append，是权威。
-                    # 用 memory 的最近 N 轮替换 MySQL 尾部（乱序只发生在最近的落库竞态轮），
-                    # 早于 memory 窗口的老消息顺序稳定，保留 MySQL 部分。
+                    db_turns = [{"role": r["role"], "content": r["content"],
+                                 "created_at": r.get("created_at", "")} for r in rows]
                     mem_turns = list(memory.turns)
                     if mem_turns:
-                        # memory 尾部在 MySQL 里找到匹配（从后往前找第一个匹配点），
-                        # 之前的部分用 MySQL（老消息），之后的部分用 memory（顺序权威）
+                        # 顺序校正：MySQL messages.sequence 有落库竞态——用户消息是前端
+                        # fire-and-forget、AI 回复是后端流式落库，连发消息时落库先后
+                        # ≠ 真实对话先后。memory.turns 在内存里按真实顺序 append，是权威。
+                        # 用 memory 的最近 N 轮替换 MySQL 尾部，早于 memory 窗口的老消息
+                        # 顺序稳定，保留 MySQL 部分。
+                        #
+                        # 对齐判断 = 位置一一对应 + 截断前缀「确认」：流式落库竞态会把
+                        # 消息截成超短前缀（0825 事故：AI 补充轮追问只剩首字「好」），
+                        # 前缀只用来确认「对齐位置上的两条是同一条被截断的」，从而用
+                        # memory 完整版替换——绝不能拿前缀在 memory 里「搜索」（AI 连续
+                        # 追问都以「好的，」开头，搜第一条前缀命中必错位，后几轮全被
+                        # 填成第一轮的内容）。窗口外的截断轮 memory 无对应版本，保留
+                        # 原样（宁显残缺不显示错内容）。
+                        def _same_turn(a, b):
+                            if (a.get("role") or "").lower() != (b.get("role") or "").lower():
+                                return False
+                            ca = (a.get("content") or "").strip()
+                            cb = (b.get("content") or "").strip()
+                            if ca == cb:
+                                return True
+                            if len(ca) <= 4 and len(cb) > 4 and cb.startswith(ca):
+                                return True
+                            if len(cb) <= 4 and len(ca) > 4 and ca.startswith(cb):
+                                return True
+                            return False
+
                         matched = -1
                         for i in range(len(db_turns) - 1, -1, -1):
-                            if (db_turns[i]["role"] == mem_turns[-1]["role"]
-                                    and db_turns[i]["content"] == mem_turns[-1]["content"]):
+                            if _same_turn(db_turns[i], mem_turns[-1]):
                                 matched = i
                                 break
                         if matched >= 0:
-                            turns = db_turns[:matched] + mem_turns
+                            # 从 matched 向前顺序延伸：找 memory 窗口在 db 里的起点，
+                            # 起点之前用 db、之后整体用 memory。直接 db[:matched]+mem
+                            # 在 db 完整时会把 memory 窗口前段重复一遍（附件出现重复轮）。
+                            first_idx = matched
+                            for _k in range(1, len(mem_turns)):
+                                _j = matched - _k
+                                if _j >= 0 and _same_turn(db_turns[_j], mem_turns[-1 - _k]):
+                                    first_idx = _j
+                                else:
+                                    break
+                            turns = db_turns[:first_idx] + mem_turns
                             logger.info(f"[chat_markdown] MySQL 尾部顺序已用 memory 校正: session={sid}, "
-                                        f"db={len(db_turns)}, mem={len(mem_turns)}, matched={matched}")
+                                        f"db={len(db_turns)}, mem={len(mem_turns)}, first={first_idx}")
                         else:
                             turns = db_turns
                             logger.info(f"[chat_markdown] MySQL 尾部未在 memory 中匹配，保持 MySQL 顺序: session={sid}")
@@ -2958,7 +3050,8 @@ class AiDiagnosisPlatform:
             except Exception as e:
                 logger.warning(f"[chat_markdown] MySQL 历史读取失败，回退 memory turns: session={sid}, err={e}")
             doc = await create_chat_markdown_attachment(
-                sid, turns, title=ticket.get("title") or "")
+                sid, turns, title=ticket.get("title") or "",
+                user_images=_user_images or None)
             if doc:
                 ticket["attachments"] = (ticket.get("attachments") or []) + [doc]
         except Exception:
@@ -4070,6 +4163,15 @@ class AiDiagnosisPlatform:
             # 首次转单：专门调一次 LLM 决定要补哪 2-3 个字段（锁进 required_fields）
             if state.required_fields is None:
                 await self._decide_ticket_fields(request.session_id, state, memory)
+            # 转单首轮回填：decide 的清单可能包含对话里已明确说过的信息
+            # （0825 生产实锤：用户刚说「新车，XSC111，没路径」「无法移动」，
+            # 清单仍列「车辆编号」「故障现象」，被逼把自己刚说过的话重答一遍，
+            # 答烦后开始敷衍，最后收集轮超限强弹）。判据=未进收集模式（此刻
+            # 对话里没有服务端追问，不存在「提问当答案」的误提取源；收集轮
+            # 每轮已结构化提取，不重复回填）。假缺口消掉后只问真正没说过的。
+            if (state.required_fields and not state.ticket_collecting
+                    and state.collect_rounds == 0):
+                await self._backfill_collected_info(request.session_id, state, memory)
             # 收集模式已经在每轮结构化提取并合并 collected_info；
             # 这里不要再调用 _backfill_collected_info（会额外发起一次 LLM 请求，
             # 也可能把助手上一轮的追问内容误当成用户答案），直接按固定清单校验。

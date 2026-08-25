@@ -62,6 +62,9 @@ decide_fields 还在旧状态上判缺「问题现象」多追问一轮。
 | 27 | 14:38 测试单描述里没有车型 XSC121——用户可见信息丢失 | 三重叠加：(a) 收集轮 LLM 自由命名字段为 `vehicle_id`，`_build_ticket` 取数只认 `collected_info['robot_type']`；(b) 描述规则「设备型号等一项都不能丢」是软约束，build LLM 漏了；(c) **弹窗只渲染 标题/描述/期望解决时间/项目**，draft 的 robot_type 只进 DB metadata_info、弹窗不显示——描述是车型唯一用户可见通道 | 描述规则升级为硬规则：「型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 填过也要写」。项目名不在描述里是设计（三条禁令、单通道防鬼打墙），不是丢失 |
 | 28 | 开关打开后触发轮死寂：只输出过渡语「好的，我帮您转工单，我看一下还需要补充哪些信息：」就停（tool_calls=0），用户在对话里无法提单；用户点按钮补完 4 字段后又因 `tool_loop_active` 未置位掉回旧状态机 | 过渡语指令「先说过渡语再调用」被模型执行成「只说过渡语」；`run_tool_loop_stream` 把无工具调用当正常回合结束；空转轮不置粘性续接标志（只有真调了工具的轮次才置） | 三层修复：(1) 提示词硬性化——过渡语和工具调用必须在**同一次回复**里完成（ticket/diagnosis 两分支同改）；(2) 机制层空转纠偏——零工具调用且非放弃轮时，把空转回合+纠偏 system 指令追加进 messages 重跑一遍循环（判断仍在 LLM，代码只发现协议违约，放弃轮由 LLM 固定话术「不转工单」识别沿用既有协议）；(3) 空转/回话轮置 `tool_loop_active=True`（草稿已存在时除外——草稿轮设计就是由意图分类路由）。测试 `TestToolLoopIdleCorrection` 3 例：纠偏后调工具+追问、双空转不无限重试+粘性置位、放弃不纠偏。**部署后首测又冒出双份过渡语**（「我帮您转工单…」「我帮您继续转工单…」连说两遍）——纠偏轮复述了过渡语再调工具；纠偏指令补铁律：「用户已看到你上一条回复，不要输出过渡语、不要复述（会看到两遍）；调工具正文留空，追问直接问句开头」 |
 | 29 | 生产实锤（16:29-16:32）：问 3 个字段（时间/车辆编号/任务）用户只答 1 个「早上九点」就弹窗——LLM 自己判的还是 ask（msg 在追问编号），被服务端「补充字段已齐自动 review」强转 submit，编号/任务永远没收 | 快路径 LLM 把三个信息点**打包成一个** required_fields key（`occurrence_details: '卡顿发生的时间、车辆编号及任务信息'`）→ 用户答一项该 key 即非空 → 清单「假齐」 | 三个 LLM 声明 required_fields 的 prompt 全部加铁律「**一项信息一个字段，禁止打包**」（DIAGNOSIS_PROMPT / 快路径 prompt 2.1 / `_compute_ticket_fields`），并给了正反例。测试 `TestRequiredFieldsGranularity` 3 例（三处 prompt 文案断言）。live 复现：修复后字段拆成 occurrence_time/robot_id/task_info 三 key，「早上九点」只填 1/3 继续追问，三项齐才弹窗 ✅ |
+| 30 | 生产实锤（0825 同事报）：按钮提单显示「工单信息不足，还差 {'page module:'问题页、{'occurrence time:」——显示英文字段且残缺不完整 | LLM 把 required_fields 写成**嵌套对象**（`"page_module": {"page module": "问题页"}`），采纳代码 `str(v)[:20]` 把嵌套 dict 字符串化再截 20 字符，残片（`{'occurrence time': ` 以冒号断尾）被当中文标签存进清单、判缺提示原样显示 | `_sanitize_required_fields` 统一类型清洗：value 必须是非空字符串，含 `{`/`}`/引号的标签（合法中文短标签绝不会出现）判为残片丢弃；四处采纳点（`_apply_state_update` / `_compute_ticket_fields` 初次+重试 / `_adopt_ticket_fields`）+ `_load_agent_state` 加载共用——已污染的存量会话清洗为空归 None，重新 decide 自愈。字段数不足由既有 <2 不采信/重生成机制兜住。测试 `TestRequiredFieldsSanitize` 6 例，102 passed |
+| 31 | 生产实锤（0825 用户报）：用户对话里明确说了「新车，XSC111，没路径」「无法移动」，转单后 AI 仍追问「车辆编号是什么」「具体故障现象」，用户被逼重答自己刚说过的话，答烦开始敷衍（用「无法移动」回答发生时间），最后收集轮超限强弹 | **转单首轮没人对照对话核查清单**：意图轮 4016 已提前 decide（清单可能把对话里说过的列为缺口，尤其同会话第二单切片含上一单 XSC151 噪音），门槛段判缺只看 collected_info——对话里已陈述的信息没有任何机制进 collected_info（`_backfill_collected_info` 专门干这个但只有 submit() 调它，对话路径在门槛处就拦下改追问，永远走不到；按钮路径 3130 又明确禁用回填防幻觉） | 门槛段判缺前（4112 区域）加转单首轮回填：判据「required_fields 非空 + 未进收集模式（ticket_collecting 空 and collect_rounds==0）」——此刻对话里没有服务端追问，不存在「提问当答案」误提取源（4116 注释的顾虑针对收集轮）；收集轮不回填（每轮已结构化提取）。decide 列字段与 backfill 提取对话证据两个 LLM 判断交叉仲裁，假缺口消掉只问真缺。测试 `TestBackfillOnFirstSubmit` 2 例（说了的不重问 / 收集轮不回填），104 passed |
+| 32 | #31 的 decide 质量根因排查（用户问：判断字段的模型是 flash 不开思考吗？不开给的字段太蠢） | flash 关思考确实列已说过的字段；但**开 low 思考实测更糟（0825 live 数据）**：延迟 14.6-20.3s（超 15s wait_for——超时路径 `_decide_ticket_fields` except 锁空清单直接弹窗，行为倒退）、一次 rf=None（flash 把思考文本写进 content 非分离 reasoning_content，格式不稳）；字段质量跑偏成**AI 诊断排查项**（任务ID/错误码/定位坐标/地图版本——助手诊断文本里提的技术参数，用户根本答不出来） | decide/backfill 三处维持 `thinking=False`（1-2.5s 稳定），质量靠三层：(a) **删除 prompt 里的字段示例**（「如车辆编号、故障码」「如发生时间、现场位置」两组——live 实测删掉后发生时间/现场位置 3/3 不再出现，是抄示例的重灾区）；(b) prompt 铁律——用户已提及绝不列缺口、字段必须是用户（现场人员）能直接回答的信息（AI 侧排查参数不列）；(c) #31 的 backfill 交叉仲裁兜底——车辆编号删示例后仍 3/3 被列（不是抄示例，是 flash 常识认为工单必问，模型能力短板），只能靠 backfill 从对话提证据消掉。live 验证事故场景：decide 列 {车辆编号,故障场景,+1}，backfill 提出 vehicle_id=XSC111 + 故障现象=没路径，最终真缺只剩 1 个 |
 
 A 不修：外部抖动，重试已救回轮次；调 read timeout 会误杀长思考的流间隙。
 话题残留的根治是开 `AI_TICKET_TOOL_LOOP`（submit_ticket 参数每次带 LLM 现写的
@@ -250,6 +253,107 @@ problem_summary，状态跟本次调用走，天然无残留）；#26 是老路�
   #26 同源问题，另行处理，本次不动）。
 - 测试：`TestTicketBoundaryPrefill` 3 例（锚点记录 / 分隔线插入与截掉不插 /
   快路径 prompt 规则），97 passed。
+
+## 2026-08-25 聊天记录附件四项修复
+
+用户反馈四个附件问题，根因与修复：
+
+1. **用户/U老师区分度差**（对话全连在一起）：`_turns_to_markdown` 每轮只有
+   `角色：内容` 纯文本前缀。改为每轮 `---` 分隔 + 粗体角色 + emoji
+   （👤 **【用户】** / 🤖 **【U老师】**）+ 可选时间戳（MySQL 源有 `created_at`
+   显示 `MM-DD HH:MM`，memory 源省略）。附件预览是 ReactMarkdown 渲染，
+   这些语法均生效（md 无法真上色，此为用户确认的替代方案）。
+2. **补充轮只剩一个字**（当时显示完整，退出再进只剩单字，附件同）：真根因是
+   **producer 落库竞态覆盖**。补充轮走 `_agent_think_stream` 兜底路径（pipeline
+   4220：收集模式 `_suppress_msg` 吞掉流式正文后逐字符重发整段 message）——
+   首字符触发 `_persist_bg` 的 `create_task`（快照=单字「已」），其余 27 字全被
+   0.8s 节流挡住；流结束的最终全量落库先 `await` 让出事件循环，锁队列里那个
+   单字 task 后拿到 `_persist_lock` 执行，**把完整内容覆盖回首字快照** → DB
+   终态=「已」。拦截轮（4095）/review 轮（4194）整段一次 yield，节流快照与
+   最终内容相同故不显形；普通诊断流渐进节流，覆盖差异小。修复：最终落库
+   （含异常路径）前先 `gather` 排空 `_persist_tasks`，保证终态写入永远最后。
+   asyncio 调度模拟复现验证：旧序 `['full','Y']`→终态 Y；新序 `['Y','full']`
+   →终态 full。此前误诊的两层防御（status 清空刷新 last_persist、`_do_persist`
+   重试换 session）保留作为纵深。存量脏数据（本次事故前的单字消息）由
+   `_attach_chat_snapshot` 生成附件时自愈：DB 消息 ≤4 字且 memory 同角色消息
+   以其为前缀 → 用 memory 完整版替换。
+
+   **排查期间的意外发现（已修）**：`ai/api/router.py` 的 `[sse]` 与 tool_loop 的
+   `[tool_loop]` 日志走 `logging.getLogger(__name__)` → root propagate 链路，
+   在 uvicorn reload spawn 的 worker 进程里整类丢失（ai.log 一条没有，REPL
+   单进程则正常）——本次事故的落库过程因此完全无法从日志取证，只能靠 DB/时序
+   推理。两个模块已改 `get_logger()`（name="AI"，直挂 file handler、
+   propagate=False，与 pipeline 同链路，生产验证可靠）。
+3. **附件图片全裂**：`_rewrite_images` 把 KB 图改写为相对路径
+   `{media_url_prefix}/kb/...`（挂在 AI 服务 8401），附件在 backend 前端
+   预览/下载打开时该路径 404。修复：`_embed_kb_images` 后处理把 KB 图片
+   读本地文件（`_KB_DIR`）内嵌为 base64 data URL——附件自包含，任何
+   环境可渲染。缺失文件保留原 URL 降级；累计 2MB 预算后剩余保留原 URL。
+4. **附件范围全量**（跨工单消息全进附件）：`_attach_chat_snapshot` 优先取
+   MySQL 全量历史。修复：提单时间锚点——`AgentState.last_ticket_submitted_at`
+   （`_reset_state_after_submit` 记录，两条提单路径共用），附件只取
+   `created_at` **严格大于**锚点的消息（提单收尾话术归上一单）；锚点缺失
+   （首次提单/老会话）回退全量。
+   **上线首测又漏（时区）**：锚点过滤全灭、上一单收尾轮照混——DB
+   `created_at` 是 naive UTC（后端 utcnow 写入），锚点
+   `datetime.fromtimestamp()` 默认转本地 naive，两侧差 8h，所有消息恒小于
+   锚点被全滤 → rows 空 → 回退 memory.turns（无分割）。修复：锚点用
+   `fromtimestamp(ts, tz=utc)`、DB 侧 `fromisoformat().replace(tzinfo=utc)`，
+   两侧统一 aware UTC（解析失败的消息宁可保留）。
+5. **用户上传图片附件不可见**（用户实测：IMG_5344.jpg 在附件里"无法可见"）：
+   用户消息 content 只存 VLM 文字描述（无 md 图片链接），图片本体在 MinIO
+   附件条目（`agent_state.attachments`，object_path/filename/desc）里——
+   聊天记录 md 天然"看不到图"。修复：`create_chat_markdown_attachment`
+   加 `user_images` 参数，`_attach_chat_snapshot` 在 reset 清空前收集本单
+   周期的图片条目传入；图片下载（`fget_object`，`asyncio.to_thread` 包）
+   → base64 内嵌进 md。预算与 KB 图共享 2MB；失败/超预算降级文字。
+   **部署纪律（0825 生产实锤）**：曾在生产只部署 pipeline.py（新版 import
+   is_image_entry）而 chat_snapshot.py 是旧版 → ImportError → 两单（578/580）
+   附件整体消失。pipeline.py 与 chat_snapshot.py **必须同批上线**（代码里
+   有标注，不做运行时免疫——用户拍板，部署靠纪律保证）。
+6. **工单详情里 base64 图片全部不显示（前端根因，0825 用户实锤）**：附件 md
+   下载到本地 IDE 打开能看到图，工单详情预览看不到。根因不在 md：前端
+   react-markdown v9+ 默认 `defaultUrlTransform` 协议白名单只有
+   http/https/irc/ircs/mailto/xmpp，**data: 一律返回空串**（node 实测
+   `defaultUrlTransform('data:image/png;base64,...') === ''`）→ img src 被清空
+   → 裂图。受影响的不止用户图，KB 图内嵌（问题 3）在工单详情同样全灭。
+   修复（前端 4 处）：新增 `frontend/src/shared/utils/markdown.ts` 的
+   `urlTransformAllowDataImage`（仅放行 `data:image/` 前缀，不放开任意
+   data: 协议），三个 ReactMarkdown 使用点（AttachmentViewer md 预览 /
+   MarkdownRenderer / TaskDetailPage 诊断报告）统一传 `urlTransform`。
+7. **图片位置（0825 用户报：图片堆在 md 末尾「对话中的图片」节，应在上传
+   那轮的位置）**：原实现 `_append_user_images` 把所有图追加末尾。改为
+   **按上传轮内联**：router 上传时用户消息 content 固定含文件名
+   （「我上传了 N 个文件：['x.jpg']。图片主要内容为：…」，router.py:785），
+   `_turns_to_markdown` 渲染用户轮时按文件名匹配 content，原图 base64 直接
+   插在该轮内容后（desc 已在消息里不重复）；匹配不到的条目（上传轮被窗口
+   截掉）降级末尾节（带 desc 引用）。下载拆出 `_prepare_user_images`
+   （to_thread），渲染拆出 `_render_image_md`；`_turns_to_markdown` 返回值
+   变 `(md, 剩余预算)`，预算顺序改为用户图先扣、KB 图接力。
+8. **单字截断复发 + md 三轮同文（0825 10:46 生产实锤，用户日志取证）**：
+   (a) 补充轮 AI 追问后两轮 DB 又只剩「好」——**旧竞态未修**，因为单字
+   排空修复（gather `_persist_tasks`）和 [sse] 日志修复都只在 router.py，
+   生产只部署了 pipeline.py + chat_snapshot.py。铁证：日志里 10:46:29-
+   10:47:04 三轮请求**一条 `[sse] sid=... q=...` 入口日志都没有**
+   （新版 router.py 每轮必打一条 INFO）；pipeline 日志全在说明服务与 AI
+   logger 正常。(b) md 里三轮追问显示成第一轮的原话——LLM 实际输出三句
+   不同的话（msg_preview 各异），旧版「截断自愈」拿 ≤4 字 db 残片在
+   memory 里**搜第一条前缀命中**，AI 连续追问都以「好的，」开头 → 后两轮
+   全被填成第一轮的完整内容。修复：自愈与尾部对齐合并为 `_same_turn`
+   位置对齐——db 与 memory 按序一一对应，前缀（短侧 ≤4 字）只做「同一轮
+   被截断」的**确认**（用 memory 对应位置的完整版替换），绝不做搜索；
+   memory 窗口外的截断保留原样（宁显残缺不编造）。verify 用真实事故内容
+   （三轮原话 + 两个「好」残片）验证三轮各自恢复。**部署清单：router.py
+   必须随 pipeline.py 同批上线并重启**（单字根治在 router，md 恢复在
+   pipeline）。
+
+**顺带修的既有 bug**：`db_turns[:matched] + mem_turns` 拼接在 MySQL 完整时
+把 memory 窗口前段重复一遍（附件出现重复轮）。改为从 matched 向前顺序延伸
+找 memory 窗口在 db 里的起点（`first_idx`），起点前用 db、之后整体用 memory。
+
+- 测试：`python -m ai.tools.verify_attachment_fix`（格式/KB图内嵌/用户图内嵌/
+  分割/自愈/无重复，离线 patch 不动 DB/MinIO）全过；回归 96 passed
+  （1 个 `test_fast_lane_prefill_into_draft` 为 stash 验证过的既有失败，与本次无关）。
 
 ## 稳定性（live，3 轮）
 

@@ -156,3 +156,4 @@ ai/.env.example
 ai/.env.example
 /ai/tests
 /ai/tests
+start_all.ps1
