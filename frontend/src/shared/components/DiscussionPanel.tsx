@@ -968,9 +968,15 @@ export default function DiscussionPanel({
                     {isCurrentUser && (() => {
                       // 名单（精确）：该评论的已读成员列表（后端按 read_at 倒序）
                       const cid = c.id;
-                      const readers = (readRecords[String(cid)] || []).filter(
-                        (r) => r.username !== c.created_by,
-                      );
+                      // 按阅读时间倒序（最新阅读的在前），保证头像堆叠与名单弹层顺序一致
+                      const readers = (readRecords[String(cid)] || [])
+                        .filter((r) => r.username !== c.created_by)
+                        .slice()
+                        .sort((a, b) => {
+                          const ta = a.read_at ? (parseUtcDate(a.read_at)?.getTime() ?? 0) : 0;
+                          const tb = b.read_at ? (parseUtcDate(b.read_at)?.getTime() ?? 0) : 0;
+                          return tb - ta;
+                        });
                       // 人数兜底：名单为空时用游标 readMap 反推（兼容未上报名单的旧数据）
                       const readCount = readers.length > 0
                         ? readers.length
@@ -979,6 +985,9 @@ export default function DiscussionPanel({
                           ).length;
                       if (readCount <= 0) return null;
                       const isOpen = readListCommentId === cid;
+                      // 头像堆叠：最多展示 3 个头像，超出第 3 个显示「+N」数字（飞书式）
+                      const visibleAvatars = readers.slice(0, 3);
+                      const overflowCount = readCount - visibleAvatars.length;
                       return (
                         <button
                           type="button"
@@ -995,7 +1004,26 @@ export default function DiscussionPanel({
                           }}
                           title="查看已读名单"
                         >
-                          已读 {readCount} 人
+                          <span className="detail-chat-read__avatars">
+                            {visibleAvatars.map((r) => {
+                              const av = r.avatar_resource_id ? avatarUrl(r.avatar_resource_id) : '';
+                              return av ? (
+                                <img
+                                  key={r.username}
+                                  className="detail-chat-read__avatar"
+                                  src={av}
+                                  alt={r.name || r.username}
+                                />
+                              ) : (
+                                <span key={r.username} className="detail-chat-read__avatar">
+                                  {(r.name || r.username || '?').slice(0, 1).toUpperCase()}
+                                </span>
+                              );
+                            })}
+                            {overflowCount > 0 && (
+                              <span className="detail-chat-read__more">+{overflowCount}</span>
+                            )}
+                          </span>
                         </button>
                       );
                     })()}
@@ -1045,9 +1073,14 @@ export default function DiscussionPanel({
       {/* 已读名单弹层（飞书式）：头像 + 姓名 + 阅读时间，按阅读时间倒序 */}
       {readListCommentId !== null && readListAnchor && (() => {
         const cid = readListCommentId;
-        const readers = (readRecords[String(cid)] || []).filter(
-          (r) => r.username !== (displayComments.find((x) => x.id === cid)?.created_by),
-        );
+        const readers = (readRecords[String(cid)] || [])
+          .filter((r) => r.username !== (displayComments.find((x) => x.id === cid)?.created_by))
+          .slice()
+          .sort((a, b) => {
+            const ta = a.read_at ? (parseUtcDate(a.read_at)?.getTime() ?? 0) : 0;
+            const tb = b.read_at ? (parseUtcDate(b.read_at)?.getTime() ?? 0) : 0;
+            return tb - ta;
+          });
         const anchorStyle: React.CSSProperties = {
           position: 'fixed',
           left: readListAnchor.left,
