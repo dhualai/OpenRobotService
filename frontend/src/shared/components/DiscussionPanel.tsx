@@ -23,6 +23,8 @@ export interface DiscussionComment {
   content: string;
   created_by_name?: string;
   created_by?: string;
+  /** 评论作者头像资源 id（后端评论序列化下发；离线作者也有，避免气泡头像回退成文字缺省） */
+  created_by_avatar_resource_id?: number | null;
   created_at: string;
   /** 附件列表：object_path 字符串 或 {path,filename,size} 字典（后端 task_comments.attachments JSON 列两种格式并存） */
   attachments?: Array<string | { path?: string; filename?: string; size?: number }>;
@@ -83,19 +85,20 @@ const formatCommentTime = (dateString: string): string => {
   return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 };
 
-/** 已读名单的相对时间格式化：刚刚 / N分钟前 / N小时前 / X月X日 HH:MM */
+/** 已读名单的阅读时间格式化：统一展示具体时间（当天 HH:MM:SS，跨天 X月X日 HH:MM:SS），不做相对时间 */
 const formatReadTime = (dateString?: string | null): string => {
   if (!dateString) return '';
   const date = parseUtcDate(dateString);
   if (!date) return '';
-  const diff = Date.now() - date.getTime();
-  const minute = 60 * 1000;
-  const hour = 60 * minute;
   const pad = (n: number) => String(n).padStart(2, '0');
-  if (diff < minute) return '刚刚';
-  if (diff < hour) return `${Math.floor(diff / minute)}分钟前`;
-  if (diff < 24 * hour) return `${Math.floor(diff / hour)}小时前`;
-  return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const now = new Date();
+  const isSameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  const hms = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  if (isSameDay) return hms;
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${hms}`;
 };
 
 export interface ProjectMember {
@@ -906,7 +909,10 @@ export default function DiscussionPanel({
             const isContinued = !!prev
               && !showDivider
               && (prev.created_by?.toLowerCase() === c.created_by?.toLowerCase());
-            const avSrc = avatarSrcOf(c.created_by);
+            // 气泡头像：优先用评论自带头像（后端下发，离线作者也有）；缺失时兜底在线成员映射
+            const avSrc =
+              (c.created_by_avatar_resource_id ? avatarUrl(c.created_by_avatar_resource_id) : '') ||
+              avatarSrcOf(c.created_by);
             const avatarEl = avSrc ? (
               <img className="detail-chat-avatar detail-chat-avatar--img" src={avSrc} alt={authorName} />
             ) : (
