@@ -545,7 +545,7 @@ const convMessagesCache: Record<number, Message[]> = {};
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
 
   const { token, name, username } = useAuthStore();
-  const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations, requestNewConversation } = useWorkbenchStore();
+  const { chatContext, consumeChatContext, refreshTasks, tasksRefreshKey, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations, requestNewConversation } = useWorkbenchStore();
   const isCall = scene === 'call';
   const cfg = SCENE_CONFIG[scene];
   const navigate = useNavigate();
@@ -1977,6 +1977,72 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       }
     });
   }, [messages, startDispatchPoll]);
+
+  // ── 跨页面同步：历史工单页发起「重新派单」后，对话气泡也能感知工单 assigned_to 变化 ──
+  // 方案2（事件驱动）：HistoryTickets 重新派单成功会调用 refreshTasks()（tasksRefreshKey+1）。
+  // 这里监听该信号，当有工单变更时，对当前会话所有工单概览气泡（含"已派单"的）逐一查询最新
+  // assigned_to_name 并更新气泡 + 回写 DB。相比轮询，只在明确的变更时刻做一次同步，更省请求。
+  const syncTicketsFromStore = useCallback(async () => {
+    const msgs = messagesRef.current;
+    if (!msgs.some((m) => m.subtype === 'ticket_overview' && m.ticket_overview?.db_id)) return;
+    for (const m of msgs) {
+      if (m.subtype !== 'ticket_overview' || !m.ticket_overview?.db_id) continue;
+      const ov = m.ticket_overview;
+      try {
+        const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string }>(`/${ov.db_id}`, { skipCache: true });
+        if (!task.assigned_to) {
+          // 后端已清空处理人（该工单被重新派单/退单，正在重派中）：
+          // 若气泡仍显示旧处理人，则把它清回"派单中"并交由 pollDispatch 继续轮询新接单人。
+          if (ov.assigned_to_name) {
+            const newOv = { ...ov, assigned_to_name: undefined };
+            setMessages((prev) => prev.map((x) =>
+              x.id === m.id && x.ticket_overview ? { ...x, ticket_overview: newOv } : x
+            ));
+            const dbMsgId = Number(m.id);
+            if (Number.isFinite(dbMsgId) && dbMsgId > 0) {
+              updateMessageContent(dbMsgId, JSON.stringify(newOv)).catch(() => {});
+            }
+            startDispatchPoll(m.id, ov.db_id, newOv);
+          }
+          continue;
+        }
+        const latestName = task.assigned_to_name || task.assigned_to;
+        if (latestName !== ov.assigned_to_name) {
+          const newOv = { ...ov, assigned_to_name: latestName };
+          setMessages((prev) => prev.map((x) =>
+            x.id === m.id && x.ticket_overview ? { ...x, ticket_overview: newOv } : x
+          ));
+          const dbMsgId = Number(m.id);
+          if (Number.isFinite(dbMsgId) && dbMsgId > 0) {
+            updateMessageContent(dbMsgId, JSON.stringify(newOv)).catch(() => {});
+          }
+        }
+      } catch { /* 单次失败忽略 */ }
+    }
+  }, [tasksReq, startDispatchPoll]);
+
+  // 用 ref 持有最新 messages，避免 syncTicketsFromStore 因 messages 变化而频繁重建
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  // 监听全局工单刷新信号：只要 tasksRefreshKey 变化（含历史工单重新派单、ChatPanel 内建单等），
+  // 就同步一次气泡派单状态，保证跨页面看到的处理人一致。
+  useEffect(() => {
+    if (tasksRefreshKey === 0) return; // 首次挂载默认 0，跳过
+    syncTicketsFromStore();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasksRefreshKey]);
+
+  // 挂载/切换会话后，也主动从 tasks 实时同步一次气泡派单状态：
+  // 若是在历史工单页（ChatPanel 未挂载）发起的重新派单，信号发出时本组件监听不到；
+  // 切回对话页后这里会补一次对齐，覆盖「气泡消息 DB content 还是旧处理人」的场景。
+  useEffect(() => {
+    if (conversationId === null) return;
+    // 短暂延迟等 getConversation 恢复的 messages 落到 messagesRef，再做一次对齐
+    const t = setTimeout(() => { syncTicketsFromStore(); }, 800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
 
   /** 确认提交：校验项目/项目负责人 → 工单1 confirm_submit + 工单2(双工单) createTicket → 两个概览气泡 */
   // 取消确认（关闭弹窗/放弃提单）：彻底清空本地草稿，并通知后端清除 ticket_draft。
