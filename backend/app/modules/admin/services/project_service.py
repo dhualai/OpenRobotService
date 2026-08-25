@@ -3,6 +3,7 @@ import json
 import requests
 from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.orm import sessionmaker
+from app.models.delivery import UNDERTAKE_YES
 from app.modules.admin.schemas_das.request_models import ProjectBase, ProjectCreate, ProjectUpdate
 from app.modules.admin.models_das.models import Project
 from app.modules.admin.utils_das.config import DATABASE_URL, AUTH_SERVICE_BASE_URL
@@ -197,28 +198,44 @@ class ProjectService:
             "system_integration": json.loads(project.system_integration) if project.system_integration else None,
             "server_deployment_status": project.server_deployment_status,
             "settlement_period": project.settlement_period,
+            "undertake_status": project.undertake_status,
         }
         return project_dict
     
-    def get_projects(self, skip: int = 0, limit: int = 999999999) -> List[Dict]:
+    def get_projects(self, skip: int = 0, limit: int = 999999999, include_pending: bool = False) -> List[Dict]:
+        """项目列表。默认只返回已承接项目（undertake_status='是'）。
+
+        include_pending=True 时把「待定」项目一并返回，目前仅仪表盘月柱图
+        （dashboard.py get_project_monthly_summary）使用，用于统计浅色段数量；
+        其余列表/统计都不应放开，否则项目总数、紧急度看板等口径会跟着变。
+        """
         db = SessionLocal()
         try:
-            projects = db.query(Project).filter(Project.id != None, Project.id != "").offset(skip).limit(limit).all()
+            query = db.query(Project).filter(Project.id != None, Project.id != "")
+            if not include_pending:
+                query = query.filter(Project.undertake_status == UNDERTAKE_YES)
+            projects = query.offset(skip).limit(limit).all()
             return [self._convert_to_dict(project) for project in projects]
         finally:
             db.close()
 
-    def get_projects_by_ids(self, project_ids: List[str]) -> List[Dict]:
-        """按项目 ID 列表批量查询项目，用于仪表盘按当前用户关联项目过滤统计。"""
+    def get_projects_by_ids(self, project_ids: List[str], include_pending: bool = False) -> List[Dict]:
+        """按项目 ID 列表批量查询项目，用于仪表盘按当前用户关联项目过滤统计。
+
+        同 get_projects：默认只返回已承接项目。
+        """
         if not project_ids:
             return []
         db = SessionLocal()
         try:
-            projects = db.query(Project).filter(
+            query = db.query(Project).filter(
                 Project.id != None,
                 Project.id != "",
                 Project.id.in_(project_ids),
-            ).all()
+            )
+            if not include_pending:
+                query = query.filter(Project.undertake_status == UNDERTAKE_YES)
+            projects = query.all()
             return [self._convert_to_dict(project) for project in projects]
         finally:
             db.close()
@@ -356,7 +373,8 @@ class ProjectService:
         db = SessionLocal()
         try:
             projects = db.query(Project).filter(
-                (Project.name.ilike(f"%{keyword}%") | 
+                Project.undertake_status == UNDERTAKE_YES,
+                (Project.name.ilike(f"%{keyword}%") |
                  Project.description.ilike(f"%{keyword}%") |
                  Project.code.ilike(f"%{keyword}%") |
                  Project.contact_person.ilike(f"%{keyword}%"))
@@ -370,8 +388,8 @@ class ProjectService:
                        contact_person_id: Optional[str] = None) -> List[Dict]:
         db = SessionLocal()
         try:
-            query = db.query(Project)
-            
+            query = db.query(Project).filter(Project.undertake_status == UNDERTAKE_YES)
+
             if status:
                 query = query.filter(Project.status == status)
             
