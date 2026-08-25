@@ -12,7 +12,7 @@ export interface DeadlineRange {
 
 /**
  * 根据优先级 + 工单创建时间，计算「最晚解决时间」可选区间 [min, max]（小时精度）。
- * - min = 创建时间（向下取整到整点）
+ * - min = 创建时间（向上取整到下一个整点，如 09:20 → 10:00；已是整点则保持不变）
  * - max = 创建时间 + 优先级对应小时数（紧急24 / 高72 / 中120 / 低336）
  * 优先级无法识别或创建时间非法时返回 null（调用方回退为不限制）。
  * createdAt 支持：ISO 字符串（DB 口径）、Unix 秒 number（AI 接口口径）、Dayjs（提单基准）。
@@ -23,13 +23,28 @@ export function getDeadlineRange(
 ): DeadlineRange | null {
   const key = normalizePriority(priority);
   if (!key) return null;
-  const base =
-    typeof createdAt === 'number'
-      ? dayjs(createdAt * 1000) // Unix 秒
-      : dayjs(createdAt ?? undefined);
+  let base: Dayjs;
+  if (typeof createdAt === 'number') {
+    // Unix 秒（AI 接口口径）：绝对时间戳，直接解析
+    base = dayjs(createdAt * 1000);
+  } else if (dayjs.isDayjs(createdAt)) {
+    // 提单基准（提单弹窗传 dayjs()）：已是本地时区对象，原样使用
+    base = createdAt;
+  } else if (typeof createdAt === 'string' && createdAt.trim()) {
+    // ISO 字符串（DB 口径 created_at）：后端 naive DateTime 存 UTC，Pydantic 序列化无时区后缀
+    // （如 "2026-08-25T01:42:00"）。dayjs 会把无时区字符串当本地时间解析，导致基准少 8 小时，
+    // 最终「最晚解决时间」显示成凌晨（如 01:00）而非创建时间之后的整点（如 09:00）。
+    // 这里与 parseUtcDate 一致：无时区后缀时补 Z 当 UTC 解析，由浏览器按本地时区 +8 转换。
+    const s = createdAt.trim().replace(' ', 'T');
+    const hasTz = /([+-]\d{2}:?\d{2}|Z)$/.test(s);
+    base = dayjs(hasTz ? s : `${s}Z`);
+  } else {
+    base = dayjs(createdAt ?? undefined);
+  }
   if (!base.isValid()) return null;
   const hours = PRIORITY_DEADLINE_HOURS[key];
-  const min = base.minute(0).second(0).millisecond(0);
+  // 向上取整到下一个整点：09:20 → 10:00；已是整点（09:00）则保持 09:00 不变
+  const min = base.minute(0).second(0).millisecond(0).add(base.minute() > 0 || base.second() > 0 || base.millisecond() > 0 ? 1 : 0, 'hour');
   const max = min.add(hours, 'hour');
   return { min, max, hours };
 }
