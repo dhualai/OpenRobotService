@@ -1253,7 +1253,7 @@ export default function TasksView() {
                   {option.label}
                   {typeof relevanceCounts[option.value] === 'number' && (
                     <span className="tasks-count-badge">
-                      {relevanceCounts[option.value] > 99 ? '99+' : relevanceCounts[option.value]}
+                      {relevanceCounts[option.value] > 999 ? '999+' : relevanceCounts[option.value]}
                     </span>
                   )}
                 </button>
@@ -1362,7 +1362,7 @@ export default function TasksView() {
                   {option.label}
                   {typeof relevanceCounts[option.value] === 'number' && (
                     <span className="tasks-count-badge">
-                      {relevanceCounts[option.value] > 99 ? '99+' : relevanceCounts[option.value]}
+                      {relevanceCounts[option.value] > 999 ? '999+' : relevanceCounts[option.value]}
                     </span>
                   )}
                 </button>
