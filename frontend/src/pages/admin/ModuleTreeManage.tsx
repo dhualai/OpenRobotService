@@ -135,14 +135,21 @@ export default function ModuleTreeManage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [treeData, prodData, candData] = await Promise.all([
+      const [treeData, prodData, candData, funcHashData] = await Promise.all([
         request<TreeMap>('/module-tree/'),
         request<string[]>('/module-tree/products'),
         request<Engineer[]>('/module-tree/candidates'),
+        request<Record<string, Record<string, string>>>('/module-tree/func-hashes').catch(() => ({})),
       ]);
       setTrees(treeData || {});
       setProducts(prodData || []);
       setCandidates(candData || []);
+      // 记录各功能加载时版本哈希（功能级冲突基准），并清空本地未保存的增量标记
+      setFuncHashes(funcHashData || {});
+      setDirtyProducts(new Set());
+      setRemovedProducts([]);
+      setPerProduct({});
+      setForceProducts([]);
       if ((prodData?.length ?? 0) > 0) {
         // 有聚焦用户时，优先进入其负责的产品
         if (focusUserId) {
@@ -180,6 +187,25 @@ export default function ModuleTreeManage() {
   // dirtyProducts：本次被修改过、待保存的产品集合；removedProducts：本次待删除的产品
   const [dirtyProducts, setDirtyProducts] = useState<Set<string>>(new Set());
   const [removedProducts, setRemovedProducts] = useState<string[]>([]);
+  // perProduct：每产品本次改动范围（节点级增量），用于后端只合并我改的节点
+  const [perProduct, setPerProduct] = useState<Record<string, {
+    changedFuncs: string[];   // ['界面名||功能名'] 本次改/增的功能
+    newInterfaces: string[];  // 本次新增的界面名
+    removedInterfaces: string[]; // 本次删除的界面名
+    removedFuncs: string[];   // ['界面名||功能名'] 本次删除的功能
+  }>>({});
+  // funcHashes：各功能在"本地加载时"的版本哈希，用于功能级冲突检测
+  const [funcHashes, setFuncHashes] = useState<Record<string, Record<string, string>>>({});
+  // forceProducts：用户选择"强制覆盖"的产品（跳过功能冲突检测、整树覆盖）
+  const [forceProducts, setForceProducts] = useState<string[]>([]);
+
+  const refreshHashes = async () => {
+    try {
+      const h = await request<Record<string, Record<string, string>>>('/module-tree/func-hashes');
+      if (h) setFuncHashes(h);
+    } catch { /* 忽略 */ }
+  };
+
   const markDirty = (name: string) => {
     if (!name) return;
     setDirtyProducts((prev) => {
@@ -187,6 +213,53 @@ export default function ModuleTreeManage() {
       next.add(name);
       return next;
     });
+  };
+
+  // ── 节点级变更记录（供后端按节点合并，不同功能互不影响）──
+  const updatePerProduct = (product: string, updater: (cur: { changedFuncs: string[]; newInterfaces: string[]; removedInterfaces: string[]; removedFuncs: string[] }) => { changedFuncs: string[]; newInterfaces: string[]; removedInterfaces: string[]; removedFuncs: string[] }) => {
+    setPerProduct((prev) => {
+      const empty = { changedFuncs: [], newInterfaces: [], removedInterfaces: [], removedFuncs: [] };
+      const cur = prev[product] || empty;
+      return { ...prev, [product]: updater(cur) };
+    });
+  };
+  const markFuncChanged = (ifaceName: string, funcName: string) => {
+    const product = active;
+    if (!product || !ifaceName || !funcName) return;
+    markDirty(product);
+    const entry = `${ifaceName}||${funcName}`;
+    updatePerProduct(product, (c) => (
+      c.changedFuncs.includes(entry) ? c : { ...c, changedFuncs: [...c.changedFuncs, entry] }
+    ));
+  };
+  const markRemovedFunc = (ifaceName: string, funcName: string) => {
+    const product = active;
+    if (!product || !ifaceName || !funcName) return;
+    markDirty(product);
+    const entry = `${ifaceName}||${funcName}`;
+    updatePerProduct(product, (c) => (
+      c.removedFuncs.includes(entry) ? c : { ...c, removedFuncs: [...c.removedFuncs, entry], changedFuncs: c.changedFuncs.filter((x) => x !== entry) }
+    ));
+  };
+  const markNewInterface = (ifaceName: string) => {
+    const product = active;
+    if (!product || !ifaceName) return;
+    markDirty(product);
+    updatePerProduct(product, (c) => (
+      c.newInterfaces.includes(ifaceName) ? c : { ...c, newInterfaces: [...c.newInterfaces, ifaceName] }
+    ));
+  };
+  const markRemovedInterface = (ifaceName: string) => {
+    const product = active;
+    if (!product || !ifaceName) return;
+    markDirty(product);
+    updatePerProduct(product, (c) => (
+      c.removedInterfaces.includes(ifaceName) ? c : { ...c, removedInterfaces: [...c.removedInterfaces, ifaceName] }
+    ));
+  };
+  const markForceProduct = (product: string) => {
+    markDirty(product);
+    setForceProducts((prev) => (prev.includes(product) ? prev : [...prev, product]));
   };
 
   const setActiveTree = (updater: (t: { interfaces: InterfaceNode[] }) => { interfaces: InterfaceNode[] }) => {
@@ -206,12 +279,17 @@ export default function ModuleTreeManage() {
     setActiveTree((t) => ({
       interfaces: [...t.interfaces, { key: name, name, functions: [] }],
     }));
+    markNewInterface(name);
     setNewIfaceName('');
   };
   const removeInterface = (i: number) => {
+    const iface = trees[active]?.interfaces?.[i];
+    markRemovedInterface(iface?.name || '');
     setActiveTree((t) => ({ interfaces: t.interfaces.filter((_, idx) => idx !== i) }));
   };
   const renameInterface = (i: number, name: string) => {
+    // 界面改名：节点迁移复杂，采用整产品强制覆盖（边界场景，较少用）
+    if (active) markForceProduct(active);
     setActiveTree((t) => ({
       interfaces: t.interfaces.map((iface, idx) => (idx === i ? { ...iface, name, key: name } : iface)),
     }));
@@ -221,19 +299,32 @@ export default function ModuleTreeManage() {
   const addFunc = (i: number) => {
     const name = (newFuncName[`${i}`] || '').trim();
     if (!name) { Toast({ message: '请输入功能名称', theme: 'warning' }); return; }
+    const iface = trees[active]?.interfaces?.[i];
     setActiveTree((t) => ({
       interfaces: t.interfaces.map((iface, idx) =>
         idx === i ? { ...iface, functions: [...iface.functions, { key: name, name, keywords: [], engineers: [] }] } : iface),
     }));
+    markFuncChanged(iface?.name || '', name);
     setNewFuncName((prev) => ({ ...prev, [`${i}`]: '' }));
   };
   const removeFunc = (i: number, j: number) => {
+    const iface = trees[active]?.interfaces?.[i];
+    const fn = iface?.functions?.[j];
+    markRemovedFunc(iface?.name || '', fn?.name || '');
     setActiveTree((t) => ({
       interfaces: t.interfaces.map((iface, idx) =>
         idx === i ? { ...iface, functions: iface.functions.filter((_, jdx) => jdx !== j) } : iface),
     }));
   };
   const renameFunc = (i: number, j: number, name: string) => {
+    const iface = trees[active]?.interfaces?.[i];
+    const oldFn = iface?.functions?.[j];
+    if (oldFn?.name && oldFn.name !== name) {
+      markRemovedFunc(iface?.name || '', oldFn.name);
+      markFuncChanged(iface?.name || '', name);
+    } else if (oldFn?.name) {
+      markFuncChanged(iface?.name || '', oldFn.name);
+    }
     setActiveTree((t) => ({
       interfaces: t.interfaces.map((iface, idx) =>
         idx === i
@@ -242,6 +333,9 @@ export default function ModuleTreeManage() {
     }));
   };
   const updateFuncField = (i: number, j: number, patch: Partial<FuncNode>) => {
+    const iface = trees[active]?.interfaces?.[i];
+    const fn = iface?.functions?.[j];
+    markFuncChanged(iface?.name || '', fn?.name || '');
     setActiveTree((t) => ({
       interfaces: t.interfaces.map((iface, idx) =>
         idx === i
@@ -287,6 +381,8 @@ export default function ModuleTreeManage() {
     if (!window.confirm(tip)) return;
     setRemovedProducts((prev) => (prev.includes(name) ? prev : [...prev, name]));
     setDirtyProducts((prev) => { const n = new Set(prev); n.delete(name); return n; });
+    setPerProduct((prev) => { const n = { ...prev }; delete n[name]; return n; });
+    setForceProducts((prev) => prev.filter((p) => p !== name));
     setProducts((prev) => prev.filter((p) => p !== name));
     setTrees((prev) => {
       const next = { ...prev };
@@ -297,27 +393,65 @@ export default function ModuleTreeManage() {
     Toast({ message: '已标记删除，保存后生效', theme: 'success' });
   };
 
-  // ── 保存（手动增量：只提交改动过的产品 + 待删除产品，避免覆盖他人改动的其它产品）──
-  const handleSave = async () => {
+  // ── 保存（节点级增量：只合并本次改动过的功能节点；同一功能被他人改过时提示冲突）──
+  const handleSave = async (opts?: { force?: string[] }) => {
     // 待保存产品 = dirty 且未被标记删除
     const dirtyNames = [...dirtyProducts].filter((p) => !removedProducts.includes(p));
     if (dirtyNames.length === 0 && removedProducts.length === 0) {
       Toast({ message: '没有需要保存的修改', theme: 'warning' });
       return;
     }
+    const forceList = opts?.force || [];
+    // 合并全局强制覆盖的产品 + 本次传入的强制产品
+    const effectiveForce = [...new Set([...forceProducts, ...forceList])];
     setSaving(true);
     try {
       const products: Record<string, unknown> = {};
       for (const name of dirtyNames) {
         products[name] = trees[name] || { interfaces: [] };
       }
-      const res = await request<{ code: number; message: string; ai_reload?: string; rejected?: string }>('/module-tree/', {
+      // 只提交每个产品本次改动范围的节点（perProduct）+ 功能级冲突基准哈希
+      const perProductPayload: Record<string, unknown> = {};
+      const funcHashesPayload: Record<string, Record<string, string>> = {};
+      for (const name of dirtyNames) {
+        const pp = perProduct[name];
+        if (pp && (pp.changedFuncs?.length || (pp.newInterfaces || []).length || (pp.removedInterfaces || []).length || (pp.removedFuncs || []).length)) {
+          perProductPayload[name] = pp;
+        }
+        if (funcHashes[name]) funcHashesPayload[name] = funcHashes[name];
+      }
+      const res = await request<{ code: number; message: string; ai_reload?: string; rejected?: string; conflicted_funcs?: string[] }>('/module-tree/', {
         method: 'PUT',
-        body: JSON.stringify({ products, removed: removedProducts }),
+        body: JSON.stringify({
+          products,
+          removed: removedProducts,
+          per_product: perProductPayload,
+          func_hashes: funcHashesPayload,
+          force: effectiveForce,
+        }),
       });
-      // 保存成功：清空增量标记
+
+      const conflictedFuncs = res?.conflicted_funcs || [];
+      if (conflictedFuncs.length > 0) {
+        // 同一功能被他人改过 → 让用户选择「强制覆盖」或「取消（重载最新，丢弃本地改动）」
+        const names = conflictedFuncs.map((c) => c.split('||').filter(Boolean).slice(-2).join(' / '));
+        Dialog.confirm?.({
+          title: '功能冲突',
+          content: `功能「${names.join('、')}」已被他人修改。\n「强制覆盖」= 以你的版本覆盖；\n「取消」= 重新加载最新数据（未保存改动将丢弃）。`,
+          confirmBtn: '强制覆盖',
+          cancelBtn: '取消（重新加载）',
+          onConfirm: () => { handleSave({ force: [...effectiveForce, ...conflictedFuncs.map((c) => c.split('||')[0])] }); },
+          onClose: () => { load(); },
+        });
+        return; // 部分冲突未落库，不清理本地标记
+      }
+
+      // 保存成功：清空增量标记、刷新功能版本哈希（避免下次误判冲突）
       setDirtyProducts(new Set());
       setRemovedProducts([]);
+      setPerProduct({});
+      setForceProducts([]);
+      void refreshHashes();
       Toast({ message: res?.message || '保存成功', theme: 'success' });
     } catch (e) {
       Toast({ message: '保存失败', theme: 'error' });
