@@ -124,8 +124,8 @@ def _read_map(db, task_id: int) -> dict:
     return {r.username: r.last_read_comment_id for r in res.scalars().all()}
 
 
-def _mark_comment_read(db, task_id: int, comment_id: int, username: str) -> bool:
-    """幂等写入单条评论的已读明细（飞书式名单）。已存在则跳过，返回是否新增。"""
+def _mark_comment_read(db, task_id: int, comment_id: int, username: str) -> Optional[TaskCommentReadRecord]:
+    """幂等写入单条评论的已读明细（飞书式名单）。已存在则跳过，返回新增的记录（含 read_at）或 None。"""
     res = db.execute(
         select(TaskCommentReadRecord.id).where(
             TaskCommentReadRecord.comment_id == comment_id,
@@ -133,11 +133,12 @@ def _mark_comment_read(db, task_id: int, comment_id: int, username: str) -> bool
         )
     )
     if res.scalar_one_or_none() is not None:
-        return False
-    db.add(TaskCommentReadRecord(
-        task_id=task_id, comment_id=comment_id, username=username,
-    ))
-    return True
+        return None
+    rec = TaskCommentReadRecord(task_id=task_id, comment_id=comment_id, username=username)
+    db.add(rec)
+    # flush 触发 server_default=func.now() 回填 read_at，供广播携带真实阅读时间
+    db.flush()
+    return rec
 
 
 def _read_records_map(db, task_id: int) -> dict:
@@ -240,12 +241,14 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
                     for _cid in comment_ids:
                         if not isinstance(_cid, int):
                             continue
-                        if _mark_comment_read(db, task_id, _cid, username):
+                        rec = _mark_comment_read(db, task_id, _cid, username)
+                        if rec is not None:
                             new_records.append({
                                 "comment_id": _cid,
                                 "username": username,
                                 "name": name,
                                 "avatar_resource_id": avatar_resource_id,
+                                "read_at": rec.read_at.isoformat() if rec.read_at else None,
                             })
                     if isinstance(cid, int):
                         _upsert_read(db, task_id, username, cid)
