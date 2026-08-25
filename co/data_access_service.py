@@ -29,6 +29,14 @@ MQTT_CONFIG = {
 SUBSCRIBE_TOPIC = 'data/1.0/EP/+/+'
 
 
+# 项目标识映射表: MQTT topic中的project段 → 系统内project编号
+# 未在映射表中的project将被丢弃，不入库
+PROJECT_MAPPING = {
+    'AJNQ': '24',
+    'AJBQSC': '67'
+}
+
+
 class MQTTSubscriber:
     """MQTT订阅者类 - 订阅消息并转发至DAS接口"""
 
@@ -72,7 +80,15 @@ class MQTTSubscriber:
                     return
                 project = topic_parts[3]
                 indicator = topic_parts[4]
-                print(f"[{ts}] [TOPIC] project={project}, indicator={indicator}")
+                print(f"[{ts}] [TOPIC] raw_project={project}, indicator={indicator}")
+
+                # 项目标识映射: MQTT topic中的project段 → 系统内project编号
+                # 未在映射表中的project将被丢弃，不入库
+                if project not in PROJECT_MAPPING:
+                    print(f"[{ts}] [WARN] 未找到项目映射,丢弃消息: raw_project={project}, topic={msg.topic}")
+                    return
+                project = PROJECT_MAPPING[project]
+                print(f"[{ts}] [MAPPED] mapped_project={project}")
 
                 # 解析消息内容
                 data_dict = json.loads(payload)

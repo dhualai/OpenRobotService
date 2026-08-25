@@ -222,8 +222,10 @@ def task_to_dict(task: Task) -> dict:
         "created_by_name": created_by_name,
         "assigned_to": assigned_to,
         "assigned_to_name": assigned_to_name,
-        "created_at": task.created_at,
-        "updated_at": task.updated_at,
+        # 创建/更新时间：DateTime → 显式 ISO 字符串（与 deadline_at 同口径），
+        # 避免依赖 FastAPI 隐式序列化 naive datetime（无时区后缀、口径不统一）。
+        "created_at": task.created_at.isoformat() if task.created_at else "",
+        "updated_at": task.updated_at.isoformat() if task.updated_at else "",
     }
 
 

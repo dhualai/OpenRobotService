@@ -19,7 +19,10 @@ from pydantic import BaseModel, Field
 
 from ai.core.logging import get_logger
 
-logger = get_logger(__name__)
+# name 固定 "AI"（直挂 file handler，propagate=False）：__name__（ai.api.router）
+# 走 root propagate 链路，在 uvicorn reload spawn 的 worker 里实测丢日志
+# （[sse] 行全部不进 ai.log），换 "AI" 后与 pipeline 同链路，已被生产日志验证。
+logger = get_logger()
 
 from ai.core import get_llm_client, get_memory_manager
 from ai.config import get_ai_config
@@ -239,12 +242,33 @@ async def ask_question_stream(
 
             async def _do_persist(content: str):
                 nonlocal _persist_tasks
-                try:
-                    async with _persist_lock:
-                        await MessageService.update_message(
-                            db, persist_msg_id, MessageUpdate(content=content))
-                except Exception as e:
-                    logger.warning(f"[sse] 增量落库失败 sid={qa_req.session_id[:8]}: {e}")
+                # 重试 + 换 session：原 session 可能已失效（长流期间连接闲置被断）。
+                # 最终落库失败曾被 warning 吞掉 → DB 停在节流写的部分内容
+                # （0825 事故：补充轮只剩单字「请」）。
+                for attempt, delay in enumerate((0.0, 0.5, 1.0)):
+                    if delay:
+                        await asyncio.sleep(delay)
+                    session = db if attempt == 0 else AsyncSessionLocal()
+                    try:
+                        async with _persist_lock:
+                            await MessageService.update_message(
+                                session, persist_msg_id, MessageUpdate(content=content))
+                        if session is not db:
+                            try:
+                                await session.close()
+                            except Exception:
+                                pass
+                        return
+                    except Exception as e:
+                        logger.warning(f"[sse] 增量落库失败(第{attempt + 1}次) "
+                                       f"sid={qa_req.session_id[:8]} msg_id={persist_msg_id}: {e}")
+                        if session is not db:
+                            try:
+                                await session.close()
+                            except Exception:
+                                pass
+                logger.error(f"[sse] 增量落库最终失败 sid={qa_req.session_id[:8]} "
+                             f"msg_id={persist_msg_id} len={len(content)}")
 
             def _persist_bg(content: str, force: bool = False):
                 """节流落库（后台执行，不阻塞流）。force=True 走同步等待。"""
@@ -265,12 +289,23 @@ async def ask_question_stream(
                         if db is not None and persist_msg_id is not None:
                             _persist_bg(acc)
                     elif ev_type == "status":
-                        # 提交/补信息阶段清空 acc（系统话术会重新流式），保证 DB 与前端展示一致
+                        # 提交/补信息阶段清空 acc（系统话术会重新流式），保证 DB 与前端展示一致。
+                        # 同时刷新节流计时：清空后第一个 token 距上次落库常超 0.8s，
+                        # 不刷新会把「请」这类单字/超短前缀立即写进 DB，若流结束的
+                        # 最终落库失败，DB 终态就停在单字（0825 生产事故）。
                         stage = event.get('data', {}).get('stage', '?')
                         if stage in ('need_info', 'need_fields', 'review', 'submit_failed'):
                             acc = ""
+                            last_persist = time.perf_counter()
                     await queue.put(event)
-                # 流结束：最终落库（完整内容，同步等待保证 DB 有终态）
+                # 流结束：先排空后台节流任务再写终态。
+                # 0825 事故（补充轮只剩单字「已」）：pipeline 兜底路径逐字符 yield，
+                # 首字符触发 _persist_bg 的 create_task，其余字符被节流挡住；
+                # 流结束的最终全量落库先 await 让出事件循环，锁队列里那个单字
+                # task 后拿到锁执行，把完整内容覆盖回首字快照。先 gather 排空，
+                # 保证终态写入永远是最后一次。
+                if _persist_tasks:
+                    await asyncio.gather(*_persist_tasks, return_exceptions=True)
                 if db is not None and persist_msg_id is not None:
                     try:
                         await _do_persist(acc)
@@ -288,7 +323,9 @@ async def ask_question_stream(
                     await queue.put({"event": "title", "data": {"title": _title}})
                 await queue.put(_SENTINEL)
             except Exception as e:
-                # 异常：保留已接收内容
+                # 异常：保留已接收内容（同样先排空后台任务，防止单字快照后写覆盖）
+                if _persist_tasks:
+                    await asyncio.gather(*_persist_tasks, return_exceptions=True)
                 if db is not None and persist_msg_id is not None and acc:
                     try:
                         await _do_persist(acc)

@@ -14,6 +14,7 @@
 import { Component, useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { urlTransformAllowDataImage } from '@/shared/utils/markdown';
 import { useAuthStore } from '@/stores/auth';
 import { ENV_PREFIX } from '@/config/api';
 import ImageLightbox from '@/shared/components/ImageLightbox';
@@ -570,6 +571,7 @@ export default function MarkdownRenderer({ content, compact = false, streaming =
       <div className={`markdown-body${compact ? ' md-compact' : ''}`}>
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
+          urlTransform={urlTransformAllowDataImage}
           components={{
             // ---- 图片 / 视频渲染 ----
             // eslint-disable-next-line @typescript-eslint/no-explicit-any

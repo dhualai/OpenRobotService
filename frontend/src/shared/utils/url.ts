@@ -1,5 +1,6 @@
 // URL 工具函数 - 从 HelpDesk urlUtils.js 移植
 import { WECHAT_CONFIG } from '@/config/wechat';
+import { formatBackendTime, parseBackendDate } from '@/shared/utils/time';
 
 const STORAGE_KEYS = {
   AUTH_TOKEN: 'auth_token',
@@ -87,38 +88,25 @@ export function buildWechatAuthUrl(state: string): string {
 
 /**
  * 把后端时间字符串解析为本地时区 Date。
+ * 统一委托 `@/shared/utils/time` 的 `parseBackendDate`（唯一解析入口，兼容 string/number）。
  *
- * 后端在数据库引擎层已强制每个连接的会话时区为 UTC（见 backend/app/core/db.py 的
- * `_ensure_utc_session`），因此 ``func.now()`` 一律返回 UTC 时间，本地/生产一致。
- *
- * - 无时区 ISO 字符串（如 "2026-08-15T07:55:55"）：来自 naive DateTime 列，存储的是 UTC，
- *   补 ``Z`` 标记为 UTC 后由浏览器按本地时区自动 +8 转换。
- * - 已带时区（``Z`` / ``±HH:MM``）的字符串：原样解析（aware datetime 经 pydantic 序列化输出）。
- *
+ * 语义：后端 DB naive DateTime 列统一存 UTC（见 backend/app/core/db.py `_ensure_utc_session`），
+ * 无时区 ISO 字符串补 Z 当 UTC 解析、由浏览器按本地时区 +8 转换；带时区后缀原样解析。
  * 不写死 +8，跨时区浏览器同样正确。
  */
 export function parseUtcDate(dateString: string): Date | null {
-  if (!dateString) return null;
-  let s = String(dateString).trim().replace(' ', 'T');
-  const hasTz = /([+-]\d{2}:?\d{2}|Z)$/.test(s);
-  if (!hasTz && /T\d{2}:\d{2}/.test(s)) s += 'Z';
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
+  return parseBackendDate(dateString);
 }
 
 /**
- * 直接格式化 ISO 字符串，不做任何时区转换：后端返回什么就显示什么。
+ * 格式化 deadline_at 等字段为「YYYY/MM/DD HH:mm」本地时区字符串。
+ * 统一委托 `formatBackendTime`（内部走 parseBackendDate）。与 formatDateTime 输出一致。
  *
- * 用途：deadline_at 等字段。后端返回 naive datetime（如 "2026-08-17T10:00:00"），
- * 直接提取年月日时分显示为 "2026/08/17 10:00"。绕过 Date 对象的本地时区偏移，
- * 避免 UTC+8 浏览器把 "10:00" 当 UTC 转 "18:00"。
+ * 修复背景（2026-08-25）：原实现直接提取年月日时分显示，假设 naive = 上海时间；
+ * c2ebf96 时区根因治理后 DB 存的是 UTC，导致 deadline 少 8 小时（选 10:00 → 存 02:00 UTC → 显示 02:00）。
  */
 export function formatRawDateTime(dateString: string): string {
-  if (!dateString) return '';
-  const s = String(dateString).trim().replace(' ', 'T');
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
-  if (!m) return '';
-  return `${m[1]}/${m[2]}/${m[3]} ${m[4]}:${m[5]}`;
+  return formatBackendTime(dateString);
 }
 
 export function formatDateTime(dateString: string): string {
