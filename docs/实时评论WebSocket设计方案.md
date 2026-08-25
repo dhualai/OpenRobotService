@@ -144,7 +144,7 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
 | `comment.deleted` | `id: int` | 评论删除 |
 | `presence` | `online: [{username, name, avatar_resource_id}]`（按用户去重） | 在线成员变化 |
 | `typing` | `username: string`, `value: bool` | 某人输入中 |
-| `read_receipt` | `username: string`, `last_read_comment_id: int|null`, `comment_ids?: int[]`, `records?: [{comment_id,username,name,avatar_resource_id}]` | 已读回执（游标 + 名单增量） |
+| `read_receipt` | `username: string`, `last_read_comment_id: int|null`, `comment_ids?: int[]`, `records?: [{comment_id,username,name,avatar_resource_id,read_at}]` | 已读回执（游标 + 名单增量，records 带真实 read_at） |
 | `task.updated` | `status`, `assigned_to`, `assigned_to_name`, ... | 工单字段变更（替代 5s 轮询） |
 | `pong` | — | 心跳回应 |
 | `error` | `code`, `message` | 错误（鉴权失败/房间不存在等） |
@@ -248,8 +248,8 @@ function useTaskCommentsWS(taskId: string | number) {
 4a. **微信化消息 UI**：每条消息带头像（他人左/自己右，从 `online` 携带的 `avatar_resource_id` 或当前用户 `authStore.avatarResourceId` 取，无图回退首字母）；同作者连续消息（间隔 < 5min）省略头像/姓名/尾巴并缩小间距；气泡带 CSS 小尾巴三角；自己消息改微信绿 `#95EC69`；消息区高度改为弹性 `flex:1`（最大 60vh）；新消息提示条——滚在历史区时不强制跳底，改为显示「↓N 条新消息」悬浮条，点击跳底。
 5. **输入中提示**：评论输入框 `onChange` 时 `sendTyping(true)`，停 3s 自动 `sendTyping(false)`；收到他人 `typing` 事件显示「XXX 正在输入…」。
 6. **已读回执（含飞书式已读名单）**：
-   - 列表滚动到底 / 新消息到达时，自动 `sendRead(最新comment.id, 本次实际读到的评论id列表)`；
-   - 每条自己消息根据 `readRecords`（精确名单）或 `readMap`（游标兜底）显示**已读头像堆叠**（飞书式：最多 3 个头像，超出第 3 个显示「+N」数字）；
+   - 上报时机（三处，抽出公共 `reportRead`）：① 新消息到达且贴底时；② 用户手动划到底部（`handleScroll` 检测贴底）；③ 主动贴底/点击「N 条新消息」跳底（`scrollToBottom`）。此前仅靠「新消息到达且贴底」单一时机触发，一旦到达时读者不在贴底就永久漏报——已修复为「贴底即补报」。
+   - 每条自己消息的读者列表统一走 `getReadersForComment`（精确名单 `readRecords` 优先，`readMap` 游标兜底推导），气泡头像堆叠与名单弹层口径一致（飞书式：最多 3 个头像，超出第 3 个显示「+N」数字）；
    - 点击头像堆叠弹出名单 Popover（头像 + 姓名 + 相对阅读时间，按阅读时间倒序）。
 7. **工单状态实时**：收到 `task.updated` → 回调上层更新 `ticket.status / assigned_to / assigned_to_name`，**移除现有的 5s 派单轮询**（TicketDetailPage.tsx:360-364）。
 8. **卸载**：关闭 socket，清定时器。
