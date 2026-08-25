@@ -825,11 +825,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         setMessages((prev) => {
           if (fresh.length > prev.length) return fresh;
           // 长度未增加：不整体替换（防丢未落库的乐观消息），但以 DB 为准同步工单概览气泡的派单状态——
-          // 否则切走期间已派单并回写 DB 后，长度相同不覆盖，气泡仍停留在"派单中"。
+          // 否则切走期间已派单并回写 DB 后，长度相同不覆盖，气泡仍停留在"派单中"；
+          // 亦或切走期间对方在别处「重新派单」换人后，DB 里 assigned_to_name 已变，而缓存快照仍是旧的，
+          // 若只用 !assigned_to_name 作门槛（旧值非空）就不会覆盖 → 气泡显示旧处理人，但详情/DB 已对新接单人。
+          // 故这里只要 DB 有对应气泡就以其 assigned_to_name 覆盖当前值（DB 为最终一致源）。
           return prev.map((m) => {
-            if (m.subtype === 'ticket_overview' && m.ticket_overview && !m.ticket_overview.assigned_to_name) {
+            if (m.subtype === 'ticket_overview' && m.ticket_overview && m.ticket_overview.db_id) {
               const f = fresh.find((x) => x.ticket_overview?.db_id === m.ticket_overview!.db_id);
-              if (f?.ticket_overview?.assigned_to_name) {
+              if (f?.ticket_overview) {
+                // 仅同步派单状态字段，避免用 DB 快照整体替换掉本地乐观的其他字段
                 return { ...m, ticket_overview: { ...m.ticket_overview, assigned_to_name: f.ticket_overview.assigned_to_name } };
               }
             }
@@ -1889,13 +1893,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (task.assigned_to) {
         const assignedName = task.assigned_to_name || task.assigned_to;
         const newOv = { ...ov, assigned_to_name: assignedName };
-        if (!cancelledRef.current) {
-          setMessages((prev) => prev.map((m) =>
-            m.id === msgId && m.ticket_overview
-              ? { ...m, ticket_overview: newOv }
-              : m
-          ));
-        }
+        // 注意：不能用 cancelledRef 判断是否更新内存——在 <React.StrictMode> 下，开发模式的
+        // effect 双调用会先触发 cleanup（cancelledRef.current=true）再 remount，且 useRef 不重置，
+        // 导致该标记永久为 true，setMessages 被跳过 → 气泡永远停在「派单中」（DB 却能回写）。
+        // React 18 起卸载组件上 setState 不再告警，真卸载时轮询也会被 cleanup 中断，故直接更新即可。
+        setMessages((prev) => prev.map((m) =>
+          m.id === msgId && m.ticket_overview
+            ? { ...m, ticket_overview: newOv }
+            : m
+        ));
         // 回写 DB：派单状态持久化。切换/刷新/历史会话切走后从 DB 读到即显示"已派单"，
         // 不再依赖内存轮询跨切换存活（此前状态只在内存，切换后丢失→气泡停在"派单中"）。
         // 回写句柄 = 气泡 id：confirm 用 String(appendMessage 返回的 DB id)，恢复用 String(m.id)，均为 DB message id。
