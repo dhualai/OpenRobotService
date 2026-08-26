@@ -464,34 +464,8 @@ async def handle_text_message(message: dict):
             operator=generate_wechat_username(from_user_name),
             summary='发送文本数据',
         )
-    if permissions_data:
-         project_permissions = permissions_data.get('projectPermissions', {})    
-         print(project_permissions)
-    
-    try:
-        name = permissions_data.get('name', '用户')
-        user_id = from_user_name
-        
-        token, refresh_token = auth_service.get_wechat_user_token(user_id)
-        print(f"获取到的token: {token}")
-        
-        user_name = generate_wechat_username(user_id)
-        print(f"用户信息: {user_name}")
-        projects = await project_ticket_service.get_user_projects(user_name, token)
-        print(f"项目列表: {projects}")
-        
-        tickets_data = await project_ticket_service.get_user_tickets(user_name, token)
-        print(f"工单数据: {tickets_data}")
-        
-        reply_content = project_ticket_service.format_user_info_reply(name, projects, tickets_data)
-        print(f"回复内容: {reply_content}")
-        reply_xml = build_reply_text(from_user_name, to_user_name, reply_content)
-        return Response(content=reply_xml, media_type="text/xml")
-    except Exception as e:
-        logger.warning(f'获取用户信息异常: {str(e)}')
-        error_message = f"获取用户信息异常: {str(e)}，请稍后重试"
-        reply_xml = build_reply_text(from_user_name, to_user_name, error_message)
-        return Response(content=reply_xml, media_type="text/xml")
+    reply_xml = build_reply_text(from_user_name, to_user_name, '可在下方👇菜单栏点击”我要摇人“中提问或提单摇人；”系统任务“中处理工单；”后台管理“中看到工单和项目情况!')
+    return Response(content=reply_xml, media_type="text/xml")
 
 
 async def handle_event_message(message: dict):
@@ -880,7 +854,7 @@ async def handle_subscribe_event(message: dict):
     
     auth_service.register_wechat_user(from_user_name)
     
-    welcome_message = "👋 欢迎关注我们！请点击链接完成个人信息录入。\n点击链接注册后可在”我要摇人“中提问或提单摇人；”系统任务“中处理工单；”后台管理“中看到工单和项目情况!"
+    welcome_message = "👋 欢迎关注我们！请点击链接完成个人信息录入。\n点击链接注册后可在下方👇菜单栏”我要摇人“中提问或提单摇人；”系统任务“中处理工单；”后台管理“中看到工单和项目情况!\n为了能提供及时通知工单进度给您，推荐[置顶服务号]并[关闭服务号消息免打扰]。\n 可以[点击右上角] -> [点击‘...’] -> [置顶服务号]或[设置] -> [关闭消息免打扰]“完成设置。"
     reply_xml = build_reply_text(from_user_name, to_user_name, welcome_message)
     
     # 追加推送个人中心分享卡片（news 类型图文消息）
