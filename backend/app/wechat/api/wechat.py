@@ -464,7 +464,25 @@ async def handle_text_message(message: dict):
             operator=generate_wechat_username(from_user_name),
             summary='发送文本数据',
         )
-    reply_xml = build_reply_text(from_user_name, to_user_name, '可在下方👇菜单栏点击”我要摇人“中提问或提单摇人；”系统任务“中处理工单；”后台管理“中看到工单和项目情况!')
+
+        welcome_message = """👋 Hi! 您好！
+
+        ✅菜单栏功能：
+        ▫️【我要摇人】👉 提问、提单摇人
+        ▫️【系统任务】👉 处理工单
+        ▫️【后台管理】👉 查看工单&项目情况
+
+        💡温馨提示：
+        为及时收到工单进度通知，推荐您：
+        🔹 置顶本服务号
+        🔹 关闭消息免打扰
+
+        📝设置路径：
+        点击右上角 → 再点击右上角「…」→【置顶服务号】
+        点击右上角 → 再点击右上角「…」→【设置】→ 关闭【消息免打扰】
+        """
+    
+    reply_xml = build_reply_text(from_user_name, to_user_name, welcome_message)
     return Response(content=reply_xml, media_type="text/xml")
 
 
@@ -854,7 +872,24 @@ async def handle_subscribe_event(message: dict):
     
     auth_service.register_wechat_user(from_user_name)
     
-    welcome_message = "👋 欢迎关注我们！请点击链接完成个人信息录入。\n点击链接注册后可在下方👇菜单栏”我要摇人“中提问或提单摇人；”系统任务“中处理工单；”后台管理“中看到工单和项目情况!\n为了能提供及时通知工单进度给您，推荐[置顶服务号]并[关闭服务号消息免打扰]。\n 可以[点击右上角] -> [点击‘...’] -> [置顶服务号]或[设置] -> [关闭消息免打扰]“完成设置。"
+    welcome_message = """👋 欢迎关注我们！
+
+    🔗 请点击链接完成个人信息录入
+
+    ✅注册完成后菜单栏功能：
+    ▫️【我要摇人】👉 提问、提单摇人
+    ▫️【系统任务】👉 处理工单
+    ▫️【后台管理】👉 查看工单&项目情况
+
+    💡温馨提示：
+    为及时收到工单进度通知，推荐您：
+    🔹 置顶本服务号
+    🔹 关闭消息免打扰
+
+    📝设置路径：
+    点击右上角 → 再点击右上角「…」→【置顶服务号】
+    点击右上角 → 再点击右上角「…」→【设置】→ 关闭【消息免打扰】
+    """
     reply_xml = build_reply_text(from_user_name, to_user_name, welcome_message)
     
     # 追加推送个人中心分享卡片（news 类型图文消息）
