@@ -2077,7 +2077,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 所以这里把空值过滤掉，避免 draft 里残留旧 remote_type 干扰。
       const currentRemoteType = String(ticketConfirm.overrides.remote_type ?? '');
       const finalRemoteType = remoteShots.length > 0 ? currentRemoteType : currentRemoteType;
-      const finalAttachments = remoteShots.map((s) => s.objectPath);
+      // 附件统一 dict 结构 {path, object_path, filename}，与 tasks.attachments 约定对齐：
+      //   path 供详情页下载（TaskDetailPage buildAttachmentDownloadUrl 读 att.path）、
+      //   object_path 供 AI 路径 _dedup_attachments 去重（只认 dict + object_path 字段，
+      //   纯字符串会被过滤导致附件丢失）。
+      const finalAttachments = remoteShots.map((s) => ({ path: s.objectPath, object_path: s.objectPath, filename: s.fileName }));
       // ── 工单1（正常工单）：confirm_submit。双工单模式强制 project=摇人吧服务号提单（兜底） ──
       const overrides: Partial<TicketDraft> = {
         ...ticketConfirm.overrides,

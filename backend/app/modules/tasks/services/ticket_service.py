@@ -97,6 +97,11 @@ class TicketService:
     async def create_ticket(db: AsyncSession, ticket_data: TicketCreate, created_by: str, comment_attachment_map: dict, token: Optional[str] = None) -> Ticket:
         processed_attachments = []
         for attachment in ticket_data.attachments or []:
+            # dict 附件（{object_path, filename} 结构，如远程截图）已是最终结构，直接落库；
+            # 字符串才可能是 temp_id（需展开）或已就绪的 object_path（直接落库）。
+            if isinstance(attachment, dict):
+                processed_attachments.append(attachment)
+                continue
             if attachment in comment_attachment_map:
                 processed_attachments.extend(comment_attachment_map[attachment])
                 comment_attachment_map[attachment].clear()
