@@ -155,7 +155,7 @@ function SourceDonut({
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { hasPermission, projectIds, username, avatarResourceId } = useAuthStore();
+  const { hasPermission, projectIds, username, name, avatarResourceId } = useAuthStore();
   const canAccessAdminEntries = hasPermission('frontend:admin:other:show');
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
@@ -237,7 +237,7 @@ export default function Dashboard() {
           </div>
           <div className="admin-welcome__text">
             <span className="admin-welcome__hello">Hello</span>
-            <span className="admin-welcome__name">{username || '用户'}</span>
+            <span className="admin-welcome__name">{name || username || '用户'}</span>
           </div>
         </div>
 
