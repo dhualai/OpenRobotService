@@ -64,6 +64,10 @@ class AssignerConfig:
         self.decision_thresholds: Dict[str, float] = {}
         self.load_balance: Dict[str, Any] = {}
         self.history_recall: Dict[str, Any] = {}
+        # L2 锚文本语义召回开关：有 LLM(L1) 强语义判断后，锚文本/关键词匹配反而干扰
+        # （对产品经理等"负责非功能模块"的候选人结构化不公平，易被表面字眼误导）。
+        # 默认按 config.yaml 控制（当前置 false，只看 L1 LLM + L3 历史）。
+        self.semantic_recall_enabled: bool = True
         # 新增：LLM 覆写数值排名的最小差距阈值（当 top - second >= 此阈值时，直接选 top，LLM 不覆写）
         self.llm_respect_ranking_threshold: float = 0.3
         # 新增：是否在“摇人吧服务号”项目下强制优先模块总负责人
@@ -114,6 +118,8 @@ class AssignerConfig:
         self.decision_thresholds = config.get("decision_thresholds", {})
         self.load_balance = config.get("load_balance", {})
         self.history_recall = config.get("history_recall", {})
+        # 可由 config.yaml 覆盖：L2 锚文本语义召回开关（false = 只看 L1 LLM + L3 历史）
+        self.semantic_recall_enabled = bool(config.get("semantic_recall_enabled", True))
         # 可由 config.yaml 覆盖：LLM 覆写数值排名的最小差距阈值
         try:
             self.llm_respect_ranking_threshold = float(config.get("llm_respect_ranking_threshold", 0.3))
