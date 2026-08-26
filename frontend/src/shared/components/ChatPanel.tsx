@@ -13,17 +13,7 @@ import API_CONFIG from '@/config/api';
 import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, qaClearDraft, type TicketDraft } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import UserSelect from '@/shared/components/UserSelect';
-import { createTicket, reDispatchTicket, uploadCommentAttachment } from '@/api/ticket';
-
-/** 远程方式选项（摇人→转工单确认弹窗 与 系统任务新建弹窗 共用）：
- *  默认空（无需远程，存 metadata_info.remote_type=null），可选 ToDesk / 向日葵 / 其他。
- *  截图作为工单附件随建单一并落库（走 uploadCommentAttachment 拿 object_path → attachments 数组）。 */
-const REMOTE_TYPE_OPTIONS: { value: string; label: string }[] = [
-  { value: '', label: '无需远程（默认）' },
-  { value: 'todesk', label: 'ToDesk' },
-  { value: 'sunflower', label: '向日葵' },
-  { value: 'other', label: '其他' },
-];
+import { createTicket, reDispatchTicket } from '@/api/ticket';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import type { UserItem } from '@/api/users';
 import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
@@ -612,11 +602,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 提单基准时间：首次打开确认弹窗时固定（= 提单时刻），切换优先级/后续操作不漂移，
   // 使「最晚解决时间 = 提单时间 + 优先级时长」恒定，不随用户修改时间变化。
   const ticketBaseTimeRef = useRef<dayjs.Dayjs | null>(null);
-  // 远程方式截图（object_path 数组）：弹窗内选择远程方式后才出现，上传即本地暂存、关闭弹窗清空。
-  // 走 uploadCommentAttachment 拿到 object_path → 提交时塞 overrides.attachments 透传至后端。
-  const [remoteShots, setRemoteShots] = useState<{ objectPath: string; fileName: string }[]>([]);
-  const [uploadingShot, setUploadingShot] = useState(false);
-  const remoteShotInputRef = useRef<HTMLInputElement | null>(null);
   // 转工单信息不足引导（方案A）：prepare 返回 not_ready 时，
   // 在输入框上方常驻「待补充清单」卡片 + 转工单按钮角标，引导用户回对话补全
   const [ticketMissing, setTicketMissing] = useState<{ info: string[]; message: string } | null>(null);
@@ -2066,7 +2051,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const handleCancelTicketConfirm = () => {
     const sid = ticketConfirm.draft?.source_conversation_id ?? sessionId;
     ticketBaseTimeRef.current = null; // 关闭弹窗即清空基准，下次打开重新固定
-    setRemoteShots([]); // 关闭弹窗即清空已上传的远程截图
     setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
     if (sid) {
       qaClearDraft(String(sid)).catch(() => { /* 清草稿失败不阻塞，本地已重置 */ });
@@ -2098,21 +2082,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
     setTicketConfirm((s) => ({ ...s, submitting: true }));
     try {
-      // 远程方式 + 远程截图（弹窗内选择后才出现，本地暂存 object_path）：
-      //   remote_type → metadata_info.remote_type（后端 ticket_dict_to_task_fields 平铺）
-      //   attachments → tasks.attachments（object_path 数组，工单主附件）
-      // 后端 confirm_submit 仅把"非空"字段合并进 ticket dict（deadline_at 例外允许空），
-      // 所以这里把空值过滤掉，避免 draft 里残留旧 remote_type 干扰。
-      const currentRemoteType = String(ticketConfirm.overrides.remote_type ?? '');
-      const finalRemoteType = remoteShots.length > 0 ? currentRemoteType : currentRemoteType;
-      const finalAttachments = remoteShots.map((s) => s.objectPath);
       // ── 工单1（正常工单）：confirm_submit。双工单模式强制 project=摇人吧服务号提单（兜底） ──
       const overrides: Partial<TicketDraft> = {
         ...ticketConfirm.overrides,
         project: isDual ? '摇人吧服务号提单' : draftField('project'),
         project_id: isDual ? '' : projectIdVal,
-        ...(finalRemoteType ? { remote_type: finalRemoteType } : {}),
-        ...(finalAttachments.length > 0 ? { attachments: finalAttachments } : {}),
       };
       // deadline 兜底：用户未手动设置时，用区间最大值（提单时间 + 优先级时长）作为默认最晚解决时间，
       // 确保 DatePicker 显示值与提交值一致——否则未触碰 deadline 直接提交时，工单1/工单2 均不落库 deadline。
@@ -2160,10 +2134,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             project_id: projectIdVal || '',
             assigned_to: owner.id || owner.username,
             deadline_at: overrides.deadline_at || undefined,
-            // 工单2 同步透传远程方式（写入 metadata_info）+ 远程截图（与工单1 共用 object_path）。
-            // metadata_info 是 json 列，createTicket 透传；attachments 同 TasksView 新建路径。
-            ...(finalRemoteType ? { metadata_info: { remote_type: finalRemoteType } } : {}),
-            ...(finalAttachments.length > 0 ? { attachments: finalAttachments } : {}),
           });
           ov2 = {
             db_id: created.id,
@@ -2181,7 +2151,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       }
 
       ticketBaseTimeRef.current = null; // 提交完成关闭弹窗，清空基准
-      setRemoteShots([]); // 提交完成清空本地远程截图暂存
       setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
       resumeFollowBottom(); // 用户主动提交：工单概览气泡追加后立即贴底展示
 
@@ -2237,34 +2206,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       Toast({ message: `提交工单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setTicketConfirm((s) => ({ ...s, submitting: false }));
-    }
-  };
-
-  /** 上传远程方式截图：走评论附件接口拿到 object_path，本地暂存，随提单一并落库。
-   *  注意：这里只接收单张图片（picker 只取 e.target.files[0]）；如需多张可以扩展。 */
-  const handleRemoteShotChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    // 清空 value，保证再次选择同一文件也能触发 onChange
-    e.target.value = '';
-    if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      Toast({ message: '仅支持上传图片截图', theme: 'warning' });
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      Toast({ message: '截图不能超过 5MB', theme: 'warning' });
-      return;
-    }
-    setUploadingShot(true);
-    try {
-      const tempId = `remote-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const objectPath = await uploadCommentAttachment(file, tempId);
-      if (!objectPath) throw new Error('未获取到附件路径');
-      setRemoteShots((p) => [...p, { objectPath, fileName: file.name }]);
-    } catch (err) {
-      Toast({ message: `截图上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    } finally {
-      setUploadingShot(false);
     }
   };
 
@@ -2635,59 +2576,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   allowClear
                   styles={{ popup: { root: { zIndex: 12000 } } }}
                 />
-                {/* 远程方式：默认无需填（空），下拉可选 ToDesk/向日葵/其他。
-                    值落到 overrides.remote_type（TicketDraft 索引签名透传），确认提交时塞给后端落 metadata_info.remote_type。 */}
-                <label className="ticket-confirm__label">远程方式</label>
-                <select
-                  className="ticket-confirm__select"
-                  value={String(ticketConfirm.overrides.remote_type ?? '')}
-                  onChange={(e) => setDraftField('remote_type', e.target.value)}
-                >
-                  {REMOTE_TYPE_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                  ))}
-                </select>
-                {/* 远程截图：选择远程方式后才出现（todesk/sunflower/other），
-                    走 uploadCommentAttachment 上传拿 object_path，提交时塞 overrides.attachments 落 tasks.attachments。 */}
-                {String(ticketConfirm.overrides.remote_type ?? '') && (
-                  <div className="ticket-confirm__remote">
-                    <p className="ticket-confirm__remote-tip">
-                      请上传 {REMOTE_TYPE_OPTIONS.find((o) => o.value === String(ticketConfirm.overrides.remote_type ?? ''))?.label || '远程'} 的设备码/连接码截图，便于远程协助（选填）。
-                    </p>
-                    {remoteShots.length > 0 && (
-                      <ul className="ticket-confirm__remote-list">
-                        {remoteShots.map((s, i) => (
-                          <li key={s.objectPath} className="ticket-confirm__remote-item">
-                            <span className="ticket-confirm__remote-name">{s.fileName}</span>
-                            <button
-                              type="button"
-                              className="ticket-confirm__remote-remove"
-                              onClick={() => setRemoteShots((p) => p.filter((_, idx) => idx !== i))}
-                              aria-label="移除截图"
-                            >
-                              移除
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <input
-                      ref={remoteShotInputRef}
-                      type="file"
-                      accept="image/*"
-                      style={{ display: 'none' }}
-                      onChange={handleRemoteShotChange}
-                    />
-                    <button
-                      type="button"
-                      className="ticket-confirm__remote-upload"
-                      onClick={() => remoteShotInputRef.current?.click()}
-                      disabled={uploadingShot || ticketConfirm.submitting}
-                    >
-                      {uploadingShot ? '上传中…' : '+ 上传截图'}
-                    </button>
-                  </div>
-                )}
                 <label className="ticket-confirm__label">绑定项目 {!ticketConfirm.dualTicket && <span style={{ color: '#e34d59' }}>*</span>}</label>
                 <ProjectSelect
                   value={draftField('project_id') || null}

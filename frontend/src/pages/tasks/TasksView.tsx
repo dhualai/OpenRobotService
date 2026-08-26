@@ -23,15 +23,6 @@ import { avatarUrl } from '@/api/profile';
 import { useHorizontalScroll } from '@/shared/hooks/useHorizontalScroll';
 import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
 import { getMyProjects, type ProjectItem } from '@/api/projects';
-import { uploadCommentAttachment } from '@/api/ticket';
-
-/** 远程方式选项：默认空（无需填），可选 ToDesk / 向日葵 / 其他 */
-const REMOTE_TYPE_OPTIONS: { value: string; label: string }[] = [
-  { value: '', label: '无需远程（默认）' },
-  { value: 'todesk', label: 'ToDesk' },
-  { value: 'sunflower', label: '向日葵' },
-  { value: 'other', label: '其他' },
-];
 
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
@@ -624,12 +615,7 @@ export default function TasksView() {
     description: '',
     priority: 'medium',
     ticket_type: 'problem',
-    remote_type: '',           // 远程方式：''（默认无需填）/ todesk / sunflower / other
   });
-  // 远程方式截图（object_path 数组，上传后随建单一并落库）
-  const [remoteShots, setRemoteShots] = useState<{ objectPath: string; fileName: string }[]>([]);
-  const [uploadingShot, setUploadingShot] = useState(false);
-  const remoteShotInputRef = useRef<HTMLInputElement | null>(null);
 
   const isFetchingRef = useRef(false);
   const fetchTicketsRef = useRef<typeof fetchTickets>(async () => {});
@@ -1148,33 +1134,6 @@ export default function TasksView() {
     }
   };
 
-  /** 上传远程方式截图：走评论附件接口拿到 object_path，本地暂存，随建单一并落库 */
-  const handleRemoteShotChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    // 清空 value，保证再次选择同一文件也能触发 onChange
-    e.target.value = '';
-    if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      Toast({ message: '仅支持上传图片截图', theme: 'warning' });
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      Toast({ message: '截图不能超过 5MB', theme: 'warning' });
-      return;
-    }
-    setUploadingShot(true);
-    try {
-      const tempId = `remote-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const objectPath = await uploadCommentAttachment(file, tempId);
-      if (!objectPath) throw new Error('未获取到附件路径');
-      setRemoteShots((p) => [...p, { objectPath, fileName: file.name }]);
-    } catch (err) {
-      Toast({ message: `截图上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
-    } finally {
-      setUploadingShot(false);
-    }
-  };
-
   const handleCreateTask = async () => {
     if (!createForm.title.trim()) {
       Toast({ message: '请输入工单标题', theme: 'warning' });
@@ -1186,24 +1145,13 @@ export default function TasksView() {
     }
     setCreatingTask(true);
     try {
-      // 远程方式写入 metadata_info（结构化，便于后续查询/展示），截图 object_path 数组写入 attachments
-      const metadata_info = createForm.remote_type
-        ? { remote_type: createForm.remote_type }
-        : null;
-      const payload = {
-        ...createForm,
-        metadata_info,
-        attachments: remoteShots.length > 0 ? remoteShots.map((s) => s.objectPath) : null,
-      };
-      delete (payload as Record<string, unknown>).remote_type;
       await request<Ticket>('/', {
         method: 'POST',
-        body: JSON.stringify(payload),
+        body: JSON.stringify(createForm),
       });
       Toast({ message: '工单创建成功', theme: 'success' });
       setShowCreateModal(false);
-      setCreateForm({ title: '', description: '', priority: 'medium', ticket_type: 'problem', remote_type: '' });
-      setRemoteShots([]);
+      setCreateForm({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
       refreshTasks();
       setPage(1);
     } catch (err) {
@@ -1640,59 +1588,6 @@ export default function TasksView() {
                 rows={4}
               />
             </FormItem>
-            <FormItem label="远程方式">
-              <select
-                className="tasks-create-modal__select"
-                value={createForm.remote_type}
-                onChange={(e) => setCreateForm((p) => ({ ...p, remote_type: e.target.value }))}
-              >
-                {REMOTE_TYPE_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </FormItem>
-            {createForm.remote_type && (
-              <FormItem label="远程截图">
-                <div className="tasks-create-modal__remote">
-                  <p className="tasks-create-modal__remote-tip">
-                    请上传 {REMOTE_TYPE_OPTIONS.find((o) => o.value === createForm.remote_type)?.label || '远程'} 的设备码/连接码截图，便于远程协助（选填）。
-                  </p>
-                  {remoteShots.length > 0 && (
-                    <ul className="tasks-create-modal__remote-list">
-                      {remoteShots.map((s, i) => (
-                        <li key={s.objectPath} className="tasks-create-modal__remote-item">
-                          <span className="tasks-create-modal__remote-name">{s.fileName}</span>
-                          <button
-                            type="button"
-                            className="tasks-create-modal__remote-remove"
-                            onClick={() => setRemoteShots((p) => p.filter((_, idx) => idx !== i))}
-                            aria-label="移除截图"
-                          >
-                            移除
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  <input
-                    ref={remoteShotInputRef}
-                    type="file"
-                    accept="image/*"
-                    style={{ display: 'none' }}
-                    onChange={handleRemoteShotChange}
-                  />
-                  <Button
-                    theme="default"
-                    size="small"
-                    onClick={() => remoteShotInputRef.current?.click()}
-                    loading={uploadingShot}
-                    disabled={creatingTask}
-                  >
-                    {uploadingShot ? '上传中…' : '+ 上传截图'}
-                  </Button>
-                </div>
-              </FormItem>
-            )}
             <FormItem>
               <div className="tasks-create-modal__actions">
                 <Button theme="default" block onClick={() => setShowCreateModal(false)}>取消</Button>
