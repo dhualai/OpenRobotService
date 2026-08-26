@@ -1,4 +1,5 @@
 import logging
+import threading
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, and_
 from typing import List, Optional, Dict, Any
@@ -35,6 +36,38 @@ def convert_to_shanghai_time(dt: Optional[datetime]) -> Optional[datetime]:
 
 def is_valid_id(id_value):
     return isinstance(id_value, int) and id_value > 0
+
+
+def _cleanup_task_log_cache(ticket_id) -> None:
+    """工单已解决/已关闭时，后台线程同步调用 AI 服务清理该工单的日志附件缓存。
+
+    逻辑上只删 AI 侧缓存的日志文件 + 内存索引，不影响工单主流程；失败仅记日志。
+    """
+    try:
+        import httpx
+    except Exception:
+        return
+    try:
+        url = f"{settings.AI_SERVICE_URL.rstrip('/')}/api/ai/task/log-cache/cleanup"
+        with httpx.Client(timeout=10.0) as client:
+            client.post(url, json={"task_id": str(ticket_id)})
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            f"清理工单日志缓存失败 ticket_id={ticket_id}: {e}"
+        )
+
+
+def spawn_log_cache_cleanup(ticket_id) -> None:
+    """为已解决/关闭的工单派发后台日志缓存清理线程（best-effort，不阻塞主流程）。"""
+    try:
+        t = threading.Thread(
+            target=_cleanup_task_log_cache, args=(ticket_id,), daemon=True
+        )
+        t.start()
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            f"派发日志缓存清理线程失败 ticket_id={ticket_id}: {e}"
+        )
 
 
 class TicketService:
@@ -886,6 +919,10 @@ class TicketService:
             ticket.resolved_at = func.now()
         elif status == TicketStatus.CLOSED:
             ticket.closed_at = func.now()
+
+        # 工单进入最终态（已解决/已关闭）→ 后台清理该工单的日志附件缓存（AI 侧）
+        if status in (TicketStatus.RESOLVED, TicketStatus.CLOSED):
+            spawn_log_cache_cleanup(ticket_id)
 
         # 结束工单（resolved）时，若带解决方式，则写入 metadata_info.resolution_summary
         if status == TicketStatus.RESOLVED and resolution_summary is not None:

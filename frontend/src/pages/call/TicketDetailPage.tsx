@@ -524,7 +524,9 @@ export default function TicketDetailPage() {
         method: 'POST',
         body: JSON.stringify({
           task_id: String(ticket.ticket_id),
-          query: userMsg.replace(/^@U老师\s*/, ''),
+          // 去掉文本中任意位置的 @U老师 标记（可能有空格/重复），保留整段话作为 query，
+          // 兼容"先说话、句尾@U老师"的场景（否则 @U老师 在尾部时 query 会带残留或丢失）
+          query: userMsg.replace(/\s*@U老师\s*/g, ' ').trim(),
           context: { recent_comments: recentComments },
         }),
       });
@@ -546,9 +548,11 @@ export default function TicketDetailPage() {
   };
 
   // 发送评论（附件上传 + POST /api/tasks/{ticket_id}/comments）；返回 true=成功（组件清空输入）
-  // 检测 @U老师 前缀：走 AI 讨论而非普通评论（与系统任务详情页同款逻辑）
+  // 检测 @U老师（任意位置，前缀或句尾均触发）：走 AI 讨论而非普通评论（与系统任务详情页同款逻辑）
   const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number }): Promise<boolean> => {
-    if (text.startsWith('@U老师 ')) {
+    // 只要文本里含 @U老师（@ 在开头/中间/结尾都算）就走 AI 讨论；
+    // 兼容"说完话后句尾手动@U老师"（否则会被当成普通评论发出、AI 不回复）
+    if (text.includes('@U老师')) {
       return handleAIDiscuss(text, files, options);
     }
     if (!ticket?.ticket_id) {
