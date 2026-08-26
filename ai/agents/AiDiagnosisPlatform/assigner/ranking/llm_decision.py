@@ -65,6 +65,44 @@ class LlmDecision:
                 second_eid, second_meta = items[1]
                 second_score = float(second_meta.get("total_score", 0.0))
 
+        # ── 决策日志：展示精排总分、LLM 维度分与候选窗口，便于定位"为什么派了某人" ──
+        try:
+            low_score_threshold = float(
+                getattr(self._config, "llm_decision_low_score_threshold", 0.6)
+            )
+        except Exception:
+            low_score_threshold = 0.6
+        try:
+            topk = int(getattr(self._config, "llm_decision_topk", 3))
+            if topk < 1:
+                topk = 1
+        except Exception:
+            topk = 3
+        emap_diag = {e.id: e for e in engineers}
+        # 窗口内 Top-K（按精排总分）
+        window_names = [
+            f"{emap_diag[eid].name if eid in emap_diag else eid[:8]}"
+            f"(总={ranked_scores[eid].get('total_score',0):.2f},LLM={ranked_scores[eid].get('llm_score',0):.2f})"
+            for eid, _ in items[:topk]
+        ]
+        # 窗口外但 LLM 分最高者（高 LLM 分却被精排/负载均衡挤出窗口 → 决策就看不到他）
+        outside = [eid for eid, _ in items[topk:] if eid in emap_diag]
+        outside_llm_top = sorted(
+            outside, key=lambda eid: ranked_scores[eid].get("llm_score", 0.0), reverse=True
+        )[:3]
+        outside_str = ", ".join(
+            f"{emap_diag[eid].name}(总={ranked_scores[eid].get('total_score',0):.2f},"
+            f"LLM={ranked_scores[eid].get('llm_score',0):.2f},"
+            f"在途={ranked_scores[eid].get('load_count','-')})"
+            for eid in outside_llm_top
+        ) or "-"
+        top1_name = emap_diag[top_eid].name if top_eid in emap_diag else top_eid
+        logger.info(
+            f"[派单:{getattr(ticket,'id','?')}] Step6决策 | top1={top1_name} 总={top_score:.2f} "
+            f"second={second_score:.2f} | 低分阈值={low_score_threshold} topk={topk} "
+            f"| 窗口内=[{', '.join(window_names)}] | 窗口外LLM最高=[{outside_str}]"
+        )
+
         # 1) Yaorenba 专属：优先模块总负责人（在 duty_text 或 responsibility_modules 中标注含 '总负责人'）
         try:
             force_owner = bool(self._config.yaorenba_force_module_owner)
@@ -202,8 +240,15 @@ class LlmDecision:
             from ai.core import get_llm_client
             llm = await get_llm_client()
             response = await llm.complete(prompt, max_tokens=400, temperature=0.3)
+            # 打印 LLM 原始输出，便于核查大模型为何这么选（谁被推举、置信、reasoning）
+            logger.info(
+                f"[派单:{getattr(ticket,'id','?')}] Step6 LLM原始输出: {response[:500]}"
+            )
             return self._parse(response, window_engineers)
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                f"[派单:{getattr(ticket,'id','?')}] Step6 LLM重选失败: {e}"
+            )
             # LLM 失败时兜底：仍采用精排第一名，保证派单不中断、尊重排名
             eng = next((e for e in window_engineers if top_eid and e.id == top_eid), None)
             if eng:

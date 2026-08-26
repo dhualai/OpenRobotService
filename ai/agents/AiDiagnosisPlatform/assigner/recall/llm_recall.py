@@ -45,6 +45,10 @@ class LlmRecall:
             from ai.core import get_llm_client
             llm = await get_llm_client()
             response = await llm.complete(prompt, max_tokens=1200, temperature=0.3)
+            # 打印 L1 LLM 原始打分输出，便于核查大模型对每位候选的置信（0.7 权重，主导派单）
+            logger.info(
+                f"[派单:{ticket.id}] Step3-L1 LLM原始输出(候选{len(engineers)}人): {response[:800]}"
+            )
             return self._parse(response, engineers)
         except Exception as e:
             logger.warning(f"[派单:{ticket.id}] Step3-L1 LLM召回失败: {e}")
