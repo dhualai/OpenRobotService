@@ -1,10 +1,11 @@
 // 责任模块树管理 —— 产品→界面→功能 三层树维护
 // 背景：以「产品→界面→功能」树为派单主数据，工程师在此认领负责的功能。
 // 功能节点可维护：关键词（识别相关问题）/ 功能描述 / 负责工程师。
-// 保存：PUT /admin/module-tree 整体覆盖 DB + 导出 config.yaml + 通知 AI 热更新。
+// 保存：每行（每个功能）即时 PUT / DELETE /admin/module-tree/node，按行 id 定位，
+// 多人改不同行天然互不覆盖（并发安全核心）；写库后后端自动导出 config.yaml + 通知 AI 热更新。
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Toast, Loading, Dialog, Popup } from 'tdesign-mobile-react';
+import { Toast, Loading, Popup } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
@@ -22,19 +23,23 @@ interface Engineer {
 }
 
 interface FuncNode {
-  key: string;
+  id?: number;           // 行主键。新增未落库时为 undefined，PUT 后用返回的 id 绑定
+  key?: string;          // 后端聚合时生成的展示 key（MindmapView 需用，编辑流程不用）
   name: string;
   keywords: string[];
   anchor?: string;
   engineers: string[];
+  iface_order: number;
+  func_order: number;
+  iface_name?: string;   // 冗余：便于重排/重命名界面时按原值定位
 }
 interface InterfaceNode {
-  key: string;
+  key?: string;
   name: string;
-  description?: string;
   functions: FuncNode[];
 }
 type TreeMap = Record<string, { interfaces: InterfaceNode[] }>;
+type PersistRes = { code: number; id?: number; message?: string };
 
 const EMPTY_TREE = { interfaces: [] as InterfaceNode[] };
 
@@ -44,14 +49,12 @@ const engName = (id: string, cands: Engineer[]) => {
 };
 
 // ── key 说明 ──
-// 界面/功能的 key（标识）由「后端保存时统一生成」：取中文名前两字拼音 + 短哈希，
-// 保证格式统一、唯一、随中文名自动更新。前端无需自行生成，新增/改名时以中文名作临时 key，
-// 保存后由后端重算覆盖。AI 派单归因不依赖 key（用 name/keywords/anchor/界面名）。
+// 界面/功能的 key（标识）由「后端聚合时统一生成」：取中文名前两字拼音 + 短哈希。
+// 编辑流程不依赖 key（用「行 id + 界面名 + 功能名」定位与保存），仅保留给总览图 MindmapView 展示用。
 
 export default function ModuleTreeManage() {
   const request = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
 
   // ── 从「用户详情→责任模块」跳转的聚焦（先于 load 定义，避免 TDZ 报错）──
   const [searchParams] = useSearchParams();
@@ -135,21 +138,15 @@ export default function ModuleTreeManage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [treeData, prodData, candData, funcHashData] = await Promise.all([
+      const [treeData, prodData, candData] = await Promise.all([
         request<TreeMap>('/module-tree/'),
         request<string[]>('/module-tree/products'),
         request<Engineer[]>('/module-tree/candidates'),
-        request<Record<string, Record<string, string>>>('/module-tree/func-hashes').catch(() => ({})),
       ]);
+      treesRef.current = treeData || {};
       setTrees(treeData || {});
       setProducts(prodData || []);
       setCandidates(candData || []);
-      // 记录各功能加载时版本哈希（功能级冲突基准），并清空本地未保存的增量标记
-      setFuncHashes(funcHashData || {});
-      setDirtyProducts(new Set());
-      setRemovedProducts([]);
-      setPerProduct({});
-      setForceProducts([]);
       if ((prodData?.length ?? 0) > 0) {
         // 有聚焦用户时，优先进入其负责的产品
         if (focusUserId) {
@@ -183,165 +180,169 @@ export default function ModuleTreeManage() {
 
   const activeTree = trees[active] || EMPTY_TREE;
 
-  // ── 增量保存用状态 ──
-  // dirtyProducts：本次被修改过、待保存的产品集合；removedProducts：本次待删除的产品
-  const [dirtyProducts, setDirtyProducts] = useState<Set<string>>(new Set());
-  const [removedProducts, setRemovedProducts] = useState<string[]>([]);
-  // perProduct：每产品本次改动范围（节点级增量），用于后端只合并我改的节点
-  const [perProduct, setPerProduct] = useState<Record<string, {
-    changedFuncs: string[];   // ['界面名||功能名'] 本次改/增的功能
-    newInterfaces: string[];  // 本次新增的界面名
-    removedInterfaces: string[]; // 本次删除的界面名
-    removedFuncs: string[];   // ['界面名||功能名'] 本次删除的功能
-  }>>({});
-  // funcHashes：各功能在"本地加载时"的版本哈希，用于功能级冲突检测
-  const [funcHashes, setFuncHashes] = useState<Record<string, Record<string, string>>>({});
-  // forceProducts：用户选择"强制覆盖"的产品（跳过功能冲突检测、整树覆盖）
-  const [forceProducts, setForceProducts] = useState<string[]>([]);
+  // ── 行级持久化工具（每行即时保存）──
+  // treesRef：为 persistence 读取当前树提供稳定引用（函数式 setTrees 之外）。
+  const treesRef = useRef(trees);
+  useEffect(() => { treesRef.current = trees; }, [trees]);
 
-  const refreshHashes = async () => {
-    try {
-      const h = await request<Record<string, Record<string, string>>>('/module-tree/func-hashes');
-      if (h) setFuncHashes(h);
-    } catch { /* 忽略 */ }
-  };
-
-  const markDirty = (name: string) => {
-    if (!name) return;
-    setDirtyProducts((prev) => {
-      const next = new Set(prev);
-      next.add(name);
-      return next;
-    });
-  };
-
-  // ── 节点级变更记录（供后端按节点合并，不同功能互不影响）──
-  const updatePerProduct = (product: string, updater: (cur: { changedFuncs: string[]; newInterfaces: string[]; removedInterfaces: string[]; removedFuncs: string[] }) => { changedFuncs: string[]; newInterfaces: string[]; removedInterfaces: string[]; removedFuncs: string[] }) => {
-    setPerProduct((prev) => {
-      const empty = { changedFuncs: [], newInterfaces: [], removedInterfaces: [], removedFuncs: [] };
-      const cur = prev[product] || empty;
-      return { ...prev, [product]: updater(cur) };
-    });
-  };
-  const markFuncChanged = (ifaceName: string, funcName: string) => {
-    const product = active;
-    if (!product || !ifaceName || !funcName) return;
-    markDirty(product);
-    const entry = `${ifaceName}||${funcName}`;
-    updatePerProduct(product, (c) => (
-      c.changedFuncs.includes(entry) ? c : { ...c, changedFuncs: [...c.changedFuncs, entry] }
-    ));
-  };
-  const markRemovedFunc = (ifaceName: string, funcName: string) => {
-    const product = active;
-    if (!product || !ifaceName || !funcName) return;
-    markDirty(product);
-    const entry = `${ifaceName}||${funcName}`;
-    updatePerProduct(product, (c) => (
-      c.removedFuncs.includes(entry) ? c : { ...c, removedFuncs: [...c.removedFuncs, entry], changedFuncs: c.changedFuncs.filter((x) => x !== entry) }
-    ));
-  };
-  const markNewInterface = (ifaceName: string) => {
-    const product = active;
-    if (!product || !ifaceName) return;
-    markDirty(product);
-    updatePerProduct(product, (c) => (
-      c.newInterfaces.includes(ifaceName) ? c : { ...c, newInterfaces: [...c.newInterfaces, ifaceName] }
-    ));
-  };
-  const markRemovedInterface = (ifaceName: string) => {
-    const product = active;
-    if (!product || !ifaceName) return;
-    markDirty(product);
-    updatePerProduct(product, (c) => (
-      c.removedInterfaces.includes(ifaceName) ? c : { ...c, removedInterfaces: [...c.removedInterfaces, ifaceName] }
-    ));
-  };
-  const markForceProduct = (product: string) => {
-    markDirty(product);
-    setForceProducts((prev) => (prev.includes(product) ? prev : [...prev, product]));
-  };
-
-  const setActiveTree = (updater: (t: { interfaces: InterfaceNode[] }) => { interfaces: InterfaceNode[] }) => {
+  // mutateTree：以 treesRef 为同步真源，更新当前产品树并同步到 React state。
+  // 所有树变更（含 applyFn/增删界面功能/加载）都必须走它，保证后续按 treesRef 读到的即最新。
+  const mutateTree = (updater: (t: { interfaces: InterfaceNode[] }) => { interfaces: InterfaceNode[] }) => {
     if (!active) return;
-    markDirty(active);
-    setTrees((prev) => {
-      const cur = prev[active] || { interfaces: [] };
-      const next = updater(cur);
-      return { ...prev, [active]: next };
-    });
+    const cur = treesRef.current[active] || { interfaces: [] };
+    const nextAll = { ...treesRef.current, [active]: updater(cur) };
+    treesRef.current = nextAll;
+    setTrees(nextAll);
+  };
+
+  // applyFn：更新本地树中某个功能行（乐观 UI）；bindId：落库后把返回的行 id 绑定到本地行。
+  const applyFn = (ifaceIdx: number, funcIdx: number, updater: (fn: FuncNode) => FuncNode) => {
+    mutateTree((tree) => ({
+      interfaces: tree.interfaces.map((iface, i) =>
+        i !== ifaceIdx ? iface : { ...iface, functions: iface.functions.map((fn, j) => (j !== funcIdx ? fn : updater(fn))) }),
+    }));
+  };
+  const bindId = (ifaceIdx: number, funcIdx: number, id: number) => {
+    applyFn(ifaceIdx, funcIdx, (fn) => (fn.id === id ? fn : { ...fn, id }));
+  };
+  const currentFn = (ifaceIdx: number, funcIdx: number): FuncNode | null =>
+    treesRef.current[active]?.interfaces?.[ifaceIdx]?.functions?.[funcIdx] ?? null;
+
+  // 文本输入防抖定时器（按 产品/界面idx/功能idx 维度），避免每次按键都打接口
+  const persistTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const clearTimer = (key: string) => {
+    const t = persistTimers.current[key];
+    if (t) { clearTimeout(t); delete persistTimers.current[key]; }
+  };
+
+  // 立即落库一个功能行（update：必须有 id；add/rename 等新建走 persistRowObject）
+  const persistNow = async (ifaceIdx: number, funcIdx: number) => {
+    const iface = treesRef.current[active]?.interfaces?.[ifaceIdx];
+    const fn = iface?.functions?.[funcIdx];
+    if (!active || !iface || !fn) return;
+    if (fn.id === undefined) return; // 尚未落库绑定的新行：跳过（防止重复插入）
+    try {
+      await request<PersistRes>('/module-tree/node', {
+        method: 'PUT',
+        body: JSON.stringify({
+          id: fn.id, product: active, iface_name: iface.name,
+          iface_order: fn.iface_order, func_name: fn.name, func_order: fn.func_order,
+          keywords: fn.keywords || [], anchor: fn.anchor || '', engineers: fn.engineers || [],
+        }),
+      });
+    } catch (e) {
+      Toast({ message: '保存失败，请重试', theme: 'error' });
+    }
+  };
+
+  // 防抖落库（文本输入用）
+  const persistDebounced = (ifaceIdx: number, funcIdx: number, delay = 600) => {
+    if (!active) return;
+    const key = `${active}::${ifaceIdx}::${funcIdx}`;
+    clearTimer(key);
+    persistTimers.current[key] = setTimeout(() => {
+      delete persistTimers.current[key];
+      void persistNow(ifaceIdx, funcIdx);
+    }, delay);
+  };
+
+  // 新建功能行落库（PUT 无 id → insert），成功后把返回 id 绑定到本地行
+  const persistRowObject = async (ifaceIdx: number, funcIdx: number, fn: FuncNode, ifaceName: string) => {
+    try {
+      const res = await request<PersistRes>('/module-tree/node', {
+        method: 'PUT',
+        body: JSON.stringify({
+          id: fn.id, product: active, iface_name: ifaceName,
+          iface_order: fn.iface_order, func_name: fn.name, func_order: fn.func_order,
+          keywords: fn.keywords || [], anchor: fn.anchor || '', engineers: fn.engineers || [],
+        }),
+      });
+      if (fn.id === undefined && res?.id) bindId(ifaceIdx, funcIdx, res.id);
+    } catch (e) {
+      Toast({ message: '保存失败，请重试', theme: 'error' });
+    }
+  };
+
+  // 批量删除若干功能行
+  const deleteNodeIds = async (ids: number[]) => {
+    if (!ids.length) return;
+    try {
+      await request<{ code: number }>('/module-tree/node', {
+        method: 'DELETE',
+        body: JSON.stringify({ ids }),
+      });
+    } catch (e) {
+      Toast({ message: '删除失败', theme: 'error' });
+    }
   };
 
   // ── 界面 CRUD ──
+  // 界面是行模型的「分组视图」，由功能行的 iface_name 聚合而来，本身不单独存行；
+  // 因此界面必须至少含一个功能才能持久化。新增界面只在本地建空分组，加入功能后才真正落库。
   const addInterface = () => {
     const name = newIfaceName.trim();
     if (!name) { Toast({ message: '请输入界面名称', theme: 'warning' }); return; }
-    setActiveTree((t) => ({
-      interfaces: [...t.interfaces, { key: name, name, functions: [] }],
-    }));
-    markNewInterface(name);
+    mutateTree((t) => ({ interfaces: [...t.interfaces, { name, functions: [] }] }));
     setNewIfaceName('');
   };
   const removeInterface = (i: number) => {
-    const iface = trees[active]?.interfaces?.[i];
-    markRemovedInterface(iface?.name || '');
-    setActiveTree((t) => ({ interfaces: t.interfaces.filter((_, idx) => idx !== i) }));
+    // 界面由功能行聚合而来 → 删除界面 = 批量删除其下所有功能行
+    const ids = (treesRef.current[active]?.interfaces?.[i]?.functions || [])
+      .map((f) => f.id).filter((x): x is number => typeof x === 'number');
+    void deleteNodeIds(ids);
+    mutateTree((t) => ({ interfaces: t.interfaces.filter((_, idx) => idx !== i) }));
   };
   const renameInterface = (i: number, name: string) => {
-    // 界面改名：节点迁移复杂，采用整产品强制覆盖（边界场景，较少用）
-    if (active) markForceProduct(active);
-    setActiveTree((t) => ({
-      interfaces: t.interfaces.map((iface, idx) => (idx === i ? { ...iface, name, key: name } : iface)),
-    }));
+    // 界面改名 = 把该界面下所有功能行的 iface_name 批量改为新名
+    const funcs = treesRef.current[active]?.interfaces?.[i]?.functions || [];
+    mutateTree((t) => ({ interfaces: t.interfaces.map((iface, idx) => (idx === i ? { ...iface, name } : iface)) }));
+    funcs.forEach((fn) => {
+      if (fn.id === undefined) return;
+      void (async () => {
+        try {
+          await request<PersistRes>('/module-tree/node', {
+            method: 'PUT',
+            body: JSON.stringify({
+              id: fn.id, product: active, iface_name: name,
+              iface_order: fn.iface_order, func_name: fn.name, func_order: fn.func_order,
+              keywords: fn.keywords || [], anchor: fn.anchor || '', engineers: fn.engineers || [],
+            }),
+          });
+        } catch (e) { Toast({ message: '界面改名保存失败', theme: 'error' }); }
+      })();
+    });
   };
 
-  // ── 功能 CRUD（key 用中文名作临时值，保存时由后端统一重算为拼音+哈希）──
+  // ── 功能 CRUD（新增/编辑即时落库）──
   const addFunc = (i: number) => {
     const name = (newFuncName[`${i}`] || '').trim();
     if (!name) { Toast({ message: '请输入功能名称', theme: 'warning' }); return; }
-    const iface = trees[active]?.interfaces?.[i];
-    setActiveTree((t) => ({
-      interfaces: t.interfaces.map((iface, idx) =>
-        idx === i ? { ...iface, functions: [...iface.functions, { key: name, name, keywords: [], engineers: [] }] } : iface),
-    }));
-    markFuncChanged(iface?.name || '', name);
+    const iface = treesRef.current[active]?.interfaces?.[i];
+    if (!iface) return;
+    const funcIdx = iface.functions.length;
+    const newFn: FuncNode = { name, keywords: [], anchor: '', engineers: [], iface_order: i, func_order: funcIdx, iface_name: iface.name };
+    mutateTree((t) => ({ interfaces: t.interfaces.map((it, idx) => (idx === i ? { ...it, functions: [...it.functions, newFn] } : it)) }));
     setNewFuncName((prev) => ({ ...prev, [`${i}`]: '' }));
+    void persistRowObject(i, funcIdx, newFn, iface.name); // 立即新建并绑定 id
   };
   const removeFunc = (i: number, j: number) => {
-    const iface = trees[active]?.interfaces?.[i];
-    const fn = iface?.functions?.[j];
-    markRemovedFunc(iface?.name || '', fn?.name || '');
-    setActiveTree((t) => ({
-      interfaces: t.interfaces.map((iface, idx) =>
-        idx === i ? { ...iface, functions: iface.functions.filter((_, jdx) => jdx !== j) } : iface),
-    }));
+    const fn = currentFn(i, j);
+    if (!fn) return;
+    clearTimer(`${active}::${i}::${j}`);
+    if (typeof fn.id === 'number') void deleteNodeIds([fn.id]);
+    mutateTree((t) => ({ interfaces: t.interfaces.map((it, idx) => (idx === i ? { ...it, functions: it.functions.filter((_, jdx) => jdx !== j) } : it)) }));
   };
   const renameFunc = (i: number, j: number, name: string) => {
-    const iface = trees[active]?.interfaces?.[i];
-    const oldFn = iface?.functions?.[j];
-    if (oldFn?.name && oldFn.name !== name) {
-      markRemovedFunc(iface?.name || '', oldFn.name);
-      markFuncChanged(iface?.name || '', name);
-    } else if (oldFn?.name) {
-      markFuncChanged(iface?.name || '', oldFn.name);
-    }
-    setActiveTree((t) => ({
-      interfaces: t.interfaces.map((iface, idx) =>
-        idx === i
-          ? { ...iface, functions: iface.functions.map((fn, jdx) => (jdx === j ? { ...fn, name, key: name } : fn)) }
-          : iface),
-    }));
+    applyFn(i, j, (fn) => ({ ...fn, name }));
+    persistDebounced(i, j);
   };
   const updateFuncField = (i: number, j: number, patch: Partial<FuncNode>) => {
-    const iface = trees[active]?.interfaces?.[i];
-    const fn = iface?.functions?.[j];
-    markFuncChanged(iface?.name || '', fn?.name || '');
-    setActiveTree((t) => ({
-      interfaces: t.interfaces.map((iface, idx) =>
-        idx === i
-          ? { ...iface, functions: iface.functions.map((fn, jdx) => (jdx === j ? { ...fn, ...patch } : fn)) }
-          : iface),
-    }));
+    applyFn(i, j, (fn) => ({ ...fn, ...patch }));
+    persistDebounced(i, j);
+  };
+  const saveFuncNow = (i: number, j: number, patch: Partial<FuncNode>) => {
+    applyFn(i, j, (fn) => ({ ...fn, ...patch }));
+    void persistNow(i, j);
   };
 
   // 关键词
@@ -349,13 +350,17 @@ export default function ModuleTreeManage() {
     const key = `${i}-${j}`;
     const val = (kwInputs[key] || '').trim();
     if (!val) return;
-    updateFuncField(i, j, { keywords: [...(trees[active]?.interfaces?.[i]?.functions?.[j]?.keywords || []), val] });
+    const fn = currentFn(i, j);
+    if (!fn) return;
+    applyFn(i, j, (cf) => ({ ...cf, keywords: [...(cf.keywords || []), val] }));
     setKwInputs((prev) => ({ ...prev, [key]: '' }));
+    void persistNow(i, j);
   };
   const removeKeyword = (i: number, j: number, k: number) => {
-    const fn = trees[active]?.interfaces?.[i]?.functions?.[j];
+    const fn = currentFn(i, j);
     if (!fn) return;
-    updateFuncField(i, j, { keywords: fn.keywords.filter((_, kdx) => kdx !== k) });
+    applyFn(i, j, (cf) => ({ ...cf, keywords: (cf.keywords || []).filter((_, kdx) => kdx !== k) }));
+    void persistNow(i, j);
   };
 
   // ── 产品 CRUD ──
@@ -363,116 +368,29 @@ export default function ModuleTreeManage() {
     const name = newProdName.trim();
     if (!name) { Toast({ message: '请输入产品名', theme: 'warning' }); return; }
     if (products.includes(name)) { Toast({ message: '产品已存在', theme: 'warning' }); return; }
-    // 若该产品曾标记删除又重新添加，则取消删除标记
-    setRemovedProducts((prev) => prev.filter((p) => p !== name));
-    markDirty(name);
+    // 产品由功能行聚合而来：先在本地建空组，加入第一个功能后才真正出现在行模型
     setProducts((prev) => [...prev, name]);
     setTrees((prev) => ({ ...prev, [name]: { interfaces: [] } }));
     setActive(name);
     setNewProdName('');
   };
-  // 删除产品：仅特权用户可用；确认后加入待删除清单并从本地移除，保存(增量 PUT)时从 DB 删掉该产品
+  // 删除产品：仅特权用户可用；确认后立即删除该产品下所有功能行并移除本地
   const removeProduct = (name: string) => {
     if (!perm?.is_privileged) { Toast({ message: '无权限删除产品', theme: 'warning' }); return; }
-    const ifaceCount = trees[name]?.interfaces?.length || 0;
-    const tip = ifaceCount > 0
-      ? `确定删除产品「${name}」吗？它包含 ${ifaceCount} 个界面，删除后需点击「保存并生效」才会真正落库。`
-      : `确定删除产品「${name}」吗？删除后需点击「保存并生效」才会真正落库。`;
+    const ifaces = treesRef.current[name]?.interfaces || [];
+    const fnCount = ifaces.reduce((n, it) => n + (it.functions?.length || 0), 0);
+    const tip = fnCount > 0
+      ? `确定删除产品「${name}」吗？它包含 ${fnCount} 个功能节点，删除将立即生效。`
+      : `确定删除产品「${name}」吗？删除将立即生效。`;
     if (!window.confirm(tip)) return;
-    setRemovedProducts((prev) => (prev.includes(name) ? prev : [...prev, name]));
-    setDirtyProducts((prev) => { const n = new Set(prev); n.delete(name); return n; });
-    setPerProduct((prev) => { const n = { ...prev }; delete n[name]; return n; });
-    setForceProducts((prev) => prev.filter((p) => p !== name));
+    const ids: number[] = [];
+    for (const it of ifaces) for (const f of it.functions || []) if (typeof f.id === 'number') ids.push(f.id);
+    void deleteNodeIds(ids);
     setProducts((prev) => prev.filter((p) => p !== name));
-    setTrees((prev) => {
-      const next = { ...prev };
-      delete next[name];
-      return next;
-    });
+    setTrees((prev) => { const next = { ...prev }; delete next[name]; return next; });
     setActive((cur) => (cur === name ? '' : cur));
-    Toast({ message: '已标记删除，保存后生效', theme: 'success' });
+    Toast({ message: '已删除', theme: 'success' });
   };
-
-  // ── 保存（节点级增量：只合并本次改动过的功能节点；同一功能被他人改过时提示冲突）──
-  const handleSave = async (opts?: { force?: string[] }) => {
-    // 待保存产品 = dirty 且未被标记删除
-    const dirtyNames = [...dirtyProducts].filter((p) => !removedProducts.includes(p));
-    if (dirtyNames.length === 0 && removedProducts.length === 0) {
-      Toast({ message: '没有需要保存的修改', theme: 'warning' });
-      return;
-    }
-    const forceList = opts?.force || [];
-    // 合并全局强制覆盖的产品 + 本次传入的强制产品
-    const effectiveForce = [...new Set([...forceProducts, ...forceList])];
-    setSaving(true);
-    try {
-      const products: Record<string, unknown> = {};
-      for (const name of dirtyNames) {
-        products[name] = trees[name] || { interfaces: [] };
-      }
-      // 只提交每个产品本次改动范围的节点（perProduct）+ 功能级冲突基准哈希
-      const perProductPayload: Record<string, unknown> = {};
-      const funcHashesPayload: Record<string, Record<string, string>> = {};
-      for (const name of dirtyNames) {
-        const pp = perProduct[name];
-        if (pp && (pp.changedFuncs?.length || (pp.newInterfaces || []).length || (pp.removedInterfaces || []).length || (pp.removedFuncs || []).length)) {
-          perProductPayload[name] = pp;
-        }
-        if (funcHashes[name]) funcHashesPayload[name] = funcHashes[name];
-      }
-      const res = await request<{ code: number; message: string; ai_reload?: string; rejected?: string; conflicted_funcs?: string[] }>('/module-tree/', {
-        method: 'PUT',
-        body: JSON.stringify({
-          products,
-          removed: removedProducts,
-          per_product: perProductPayload,
-          func_hashes: funcHashesPayload,
-          force: effectiveForce,
-        }),
-      });
-
-      const conflictedFuncs = res?.conflicted_funcs || [];
-      if (conflictedFuncs.length > 0) {
-        // 同一功能被他人改过 → 让用户选择「强制覆盖」或「取消（重载最新，丢弃本地改动）」
-        const names = conflictedFuncs.map((c) => c.split('||').filter(Boolean).slice(-2).join(' / '));
-        Dialog.confirm?.({
-          title: '功能冲突',
-          content: `功能「${names.join('、')}」已被他人修改。\n「强制覆盖」= 以你的版本覆盖；\n「取消」= 重新加载最新数据（未保存改动将丢弃）。`,
-          confirmBtn: '强制覆盖',
-          cancelBtn: '取消（重新加载）',
-          onConfirm: () => { handleSave({ force: [...effectiveForce, ...conflictedFuncs.map((c) => c.split('||')[0])] }); },
-          onClose: () => { load(); },
-        });
-        return; // 部分冲突未落库，不清理本地标记
-      }
-
-      // 保存成功：清空增量标记、刷新功能版本哈希（避免下次误判冲突）
-      setDirtyProducts(new Set());
-      setRemovedProducts([]);
-      setPerProduct({});
-      setForceProducts([]);
-      void refreshHashes();
-      Toast({ message: res?.message || '保存成功', theme: 'success' });
-    } catch (e) {
-      Toast({ message: '保存失败', theme: 'error' });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // Ctrl+S 快捷保存：始终引用最新 handleSave，避免闭包过期
-  const handleSaveRef = useRef(handleSave);
-  useEffect(() => { handleSaveRef.current = handleSave; }, [handleSave]);
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-        e.preventDefault();
-        handleSaveRef.current();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
 
   const filteredCands = candidates.filter((c) =>
     !engSearch || c.name.toLowerCase().includes(engSearch.toLowerCase()) || (c.department || '').includes(engSearch));
@@ -499,7 +417,7 @@ export default function ModuleTreeManage() {
           {canEdit && canAssign && (
             <span
               className="mac-kwchip__remove"
-              onClick={() => updateFuncField(ifaceIdx, funcIdx, { engineers: fn.engineers.filter((_, kdx) => kdx !== k) })}
+              onClick={() => saveFuncNow(ifaceIdx, funcIdx, { engineers: fn.engineers.filter((_, kdx) => kdx !== k) })}
             >×</span>
           )}
         </span>
@@ -544,9 +462,6 @@ export default function ModuleTreeManage() {
             onClick={() => setViewMode(viewMode === 'overview' ? 'single' : 'overview')}
           >
             {viewMode === 'overview' ? '退出总览' : '🗺 总览'}
-          </button>
-          <button className="mac-btn mac-btn--primary" onClick={() => handleSave()} disabled={saving}>
-            {saving ? '保存中…' : '保存并生效'}
           </button>
         </div>
       </div>
@@ -785,7 +700,7 @@ export default function ModuleTreeManage() {
                       onClick={() => {
                         const cur = fn?.engineers || [];
                         const next = selected ? cur.filter((x) => x !== c.id) : [...cur, c.id];
-                        updateFuncField(ifaceIdx, funcIdx, { engineers: next });
+                        saveFuncNow(ifaceIdx, funcIdx, { engineers: next });
                         if (!selected) setPickEng(null); // 添加后自动收回弹层
                       }}
                     >
@@ -825,7 +740,7 @@ export default function ModuleTreeManage() {
                       onClick={() => {
                         const cur = fn?.engineers || [];
                         const next = selected ? cur.filter((x) => x !== c.id) : [...cur, c.id];
-                        updateFuncField(ifaceIdx, funcIdx, { engineers: next });
+                        saveFuncNow(ifaceIdx, funcIdx, { engineers: next });
                         if (!selected) setPickEng(null); // 添加后自动收回弹层
                       }}
                     >

@@ -381,8 +381,11 @@ class DiagnoseFlow:
         log_sub_result = None
         try:
             if context.attachments:
-                # 2a. 日志文件提取（压缩包自动解压到临时目录）
-                log_paths, _tmp_dirs = self._extract_log_paths(context.attachments)
+                # 2a. 日志文件提取（压缩包自动解压；带 task_id 落到稳定日志缓存目录跨讨论复用）
+                log_paths, _tmp_dirs = self._extract_log_paths(
+                    context.attachments,
+                    task_id=getattr(context, "task_id", "") or "",
+                )
 
                 if log_paths:
                     from ai.agents.AiTaskPlatform.log_analyzer.sub_agent import LogSubAgent

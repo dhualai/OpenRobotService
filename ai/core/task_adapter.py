@@ -120,6 +120,11 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
     for tk, mk in _TICKET_META_FIELD_MAP.items():
         if ticket.get(tk):
             meta[mk] = ticket[tk]
+    # 远程方式（前端弹窗透传）：写入 metadata_info.remote_type，便于详情页展示/后续筛选。
+    # 路径：ChatPanel 转工单确认弹窗 / 系统任务新建弹窗 → overrides.attachments+remote_type
+    # → ticket_dict_to_task_fields 落库。值约定：todesk / sunflower / other / ''。
+    if ticket.get("remote_type"):
+        meta["remote_type"] = ticket["remote_type"]
     # feature 类型的 source 存为 feature_source，避开 Task.source 列名
     if ticket.get("type") == "feature" and ticket.get("source"):
         meta["feature_source"] = ticket["source"]
@@ -316,32 +321,6 @@ def _log_task_creation(db, task: Task, created_by: str) -> None:
             pass
 
 
-def update_task_resolution(task_id, solution: dict, resolution: str = "resolved") -> bool:
-    """任务 Agent submit：置状态 + 把方案写进 metadata_info.diagnosis。
-
-    metadata_info 整体替换（JSON 列不感知就地修改）。
-    """
-    db = SessionLocal()
-    try:
-        task = db.query(Task).filter(Task.id == int(task_id)).first()
-        if not task:
-            return False
-        try:
-            task.status = TaskStatus(resolution)
-        except ValueError:
-            task.status = TaskStatus.RESOLVED
-        meta = dict(task.metadata_info or {})
-        diag = dict(meta.get("diagnosis") or {})
-        diag["solution"] = solution
-        diag["resolved_by_agent"] = True
-        meta["diagnosis"] = diag
-        task.metadata_info = meta
-        db.commit()
-        return True
-    finally:
-        db.close()
-
-
 def load_task_context_dict(task_id) -> dict:
     """任务 Agent _load_task_context：读 task + 解构 diagnosis。
 
@@ -360,6 +339,13 @@ def load_task_context_dict(task_id) -> dict:
         base["ruled_out"] = diag.get("ruled_out") or []
         base["collected_info"] = diag.get("collected_info") or {}
         base["diagnosis_rounds"] = diag.get("rounds", 0)
+
+        # 工程师填写的解决方式与 AI 讨论摘要（存于 metadata_info 顶层，非 diagnosis 内）：
+        # resolution_summary 是「结束工单」时工程师填写的真实解决方式（唯一实际写入来源），
+        # ai_summary 是 AI 讨论摘要。@# 引用读取解决方式必须从这里取，而非 diagnosis.solution。
+        meta = task.metadata_info or {}
+        base["resolution_summary"] = meta.get("resolution_summary", "")
+        base["ai_summary"] = meta.get("ai_summary", "")
 
         # 合并最近评论（task_comments）上传的附件，复用 _dedup_attachments 去重
         comment_atts = _collect_comment_attachments(db, int(task_id))

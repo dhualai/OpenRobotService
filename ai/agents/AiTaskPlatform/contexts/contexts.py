@@ -21,7 +21,8 @@ logger = get_logger("TASK_AGENT")
 # @# 跨工单引用：匹配 "＠#/@" 后跟 1-8 位数字（工单编号）
 # 形如 "@#44123"，用于在讨论区引用另一个工单的上下文。
 _REF_PATTERN = re.compile(r"@#(\d{1,8})")
-
+# @# 引用某工单时，最多注入该工单最近多少条讨论评论（非完整历史，仅供参考）
+MAX_REF_DISCUSSION_ITEMS = 10
 
 def extract_referenced_task_ids(text: str) -> list:
     """从一段文本（讨论 query）中提取被 @# 引用的工单编号列表（去重、保序）。
@@ -65,7 +66,7 @@ def format_referenced_tickets(ref_ids: list) -> str:
             ctx = load_referenced_task_context(rid)
             # 讨论评论已落库（discuss 内容），是被引用工单另一份可靠的"排查进展"来源
             from ai.agents.AiTaskPlatform.contexts.comments import load_discussion as _load_discussion
-            discussion = _load_discussion(str(rid), limit=10)
+            discussion = _load_discussion(str(rid), limit=MAX_REF_DISCUSSION_ITEMS)
         except Exception as e:
             logger.warning(f"[ticket_ref] 读取被引用工单 {rid} 失败: {e}")
             ctx = TaskContext(task_id=str(rid))
@@ -88,12 +89,17 @@ def format_referenced_tickets(ref_ids: list) -> str:
             parts.append(f"  描述: {ctx.description[:200]}")
         if diag:
             parts.append(f"  {diag}")
-        # 最终解决方案：单独字段，直接给"怎么解决"的结论（最有参考价值）
+        # 最终解决方案：优先 diagnosis.solution（结构化方案）；
+        # 其次工程师结束工单填写的 resolution_summary（真实生产字段）。
         sol_text = _format_solution(ctx.solution)
+        if not sol_text and ctx.resolution_summary:
+            sol_text = ctx.resolution_summary
         if sol_text:
-            parts.append(f"  解决方案:\n{sol_text}")
+            parts.append(f"  解决方式:\n{sol_text}")
+        if ctx.ai_summary:
+            parts.append(f"  AI 摘要: {ctx.ai_summary}")
         if discussion:
-            parts.append(f"  该工单讨论进展:\n{discussion}")
+            parts.append(f"  该工单近期讨论（最近 {MAX_REF_DISCUSSION_ITEMS} 条，非完整历史）:\n{discussion}")
         blocks.append("\n".join(parts))
     return "## 引用的历史工单上下文（@# 引用，仅作参考，勿喧宾夺主）\n" + "\n".join(blocks)
 
@@ -101,9 +107,12 @@ def format_referenced_tickets(ref_ids: list) -> str:
 def _format_solution(solution) -> str:
     """把 solution 字段（dict）格式化成可读文本，返回空串表示无解决方案。
 
-    solution 结构（见 update_task_resolution 写入）：
-      {root_cause_analysis, suggested_actions[], references[], confidence, needs_more_info, resolved_by_agent}
+    兼容两种形态：
+      - dict：{root_cause_analysis, suggested_actions[], references[], confidence, needs_more_info, resolved_by_agent}
+      - str：直接作为解决方式文本（少见，防御性兼容）
     """
+    if isinstance(solution, str):
+        return solution
     if not solution or not isinstance(solution, dict):
         return ""
     lines = []
@@ -163,6 +172,12 @@ def load_task_context(task_id: str) -> TaskContext:
             _diag = d.get("diagnosis") or {}
             if _diag.get("solution"):
                 ctx.solution = _diag.get("solution")
+
+            # 工程师结束工单时填写的解决方式（metadata_info.resolution_summary，纯字符串）：
+            # 这是生产实际写入的"怎么解决"字段（@# 引用主要靠它），与 diagnosis.solution 并存。
+            ctx.resolution_summary = d.get("resolution_summary") or ""
+            # AI 讨论摘要（metadata_info.ai_summary），作为"怎么解决"的补充说明
+            ctx.ai_summary = d.get("ai_summary") or ""
         else:
             logger.warning(f"Task {task_id} not found in database (load_task_context_dict returned empty)")
     except Exception as e:

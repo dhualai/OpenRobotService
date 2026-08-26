@@ -156,6 +156,71 @@ async def save_module_tree(
     }
 
 
+def _notify_ai_reload() -> Optional[str]:
+    """保存/删除单行后通知 AI 热更新（尽力而为，失败不阻断）。"""
+    try:
+        import httpx
+        from app.core.config import settings
+        ai_url = settings.AI_SERVICE_URL.rstrip("/")
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.post(f"{ai_url}/api/ai/assigner/reload")
+            if resp.status_code == 200:
+                return "ok"
+        return resp.status_code
+    except Exception as e:
+        return f"AI 热更新失败: {e}"
+
+
+@router.put("/node", summary="按行 id 新增/更新单个功能（并发安全）")
+async def upsert_node(
+    payload: Dict[str, Any] = Body(..., description="{id?, product, iface_name, iface_order, func_name, func_order, keywords, anchor, engineers}"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+) -> Dict[str, Any]:
+    """单功能行新增/更新：id 有则 update 该行，否则 insert 新行。
+
+    按行 id 精确定位，多人改不同行天然互不覆盖（并发安全核心）。
+    返回该行 id 供前端绑定。
+    """
+    node_id = payload.get("id")
+    product = payload.get("product") or ""
+    if not product:
+        raise HTTPException(status_code=400, detail="缺少 product")
+    if node_id:
+        node_id = int(node_id)
+    new_id = module_tree_service.upsert_node(
+        product=product,
+        iface_name=payload.get("iface_name") or "",
+        iface_order=int(payload.get("iface_order") or 0),
+        func_name=payload.get("func_name") or "",
+        func_order=int(payload.get("func_order") or 0),
+        keywords=payload.get("keywords") or [],
+        anchor=payload.get("anchor") or "",
+        engineers=payload.get("engineers") or [],
+        node_id=node_id,
+    )
+    if new_id is None:
+        raise HTTPException(status_code=400, detail="保存失败：行不存在或写入失败")
+    w = module_tree_service.after_write()
+    return {"code": 0, "id": new_id, "message": "已保存", "synced_users": w["synced"], "ai_reload": _notify_ai_reload()}
+
+
+@router.delete("/node", summary="按行 id 批量删除功能")
+async def delete_node(
+    payload: Dict[str, Any] = Body(..., description="{ids: [行id]}"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+) -> Dict[str, Any]:
+    """按行 id 批量删除功能行。"""
+    ids = payload.get("ids") or []
+    if isinstance(ids, (int, str)):
+        ids = [ids]
+    ids = [int(x) for x in ids if str(x).isdigit()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="缺少待删除的 id 列表")
+    deleted = module_tree_service.delete_nodes(ids)
+    w = module_tree_service.after_write()
+    return {"code": 0, "deleted": deleted, "message": "已删除", "synced_users": w["synced"], "ai_reload": _notify_ai_reload()}
+
+
 @router.get("/permission", summary="获取当前用户对模块树的编辑权限信息")
 async def get_edit_permission(
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
