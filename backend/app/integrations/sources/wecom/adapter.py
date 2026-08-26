@@ -10,6 +10,7 @@ from datetime import datetime
 
 from app.core.config import settings
 from app.core.database import db_manager, UserDB
+from app.models.delivery import UNDERTAKE_PENDING, UNDERTAKE_YES
 from app.modules.admin.services.project_service import project_service
 from app.services.identity_service import IdentityService
 
@@ -121,6 +122,7 @@ def map_wecom_record_to_project(record: Dict[str, Any]) -> Dict[str, Any]:
         "pre_sales": values.get("售前方案") or None,
         "project_manager": values.get("项目经理") or None,
         "field_engineer": values.get("实施工程师") or None,
+        "undertake_status": values.get("是否承接") or UNDERTAKE_YES,
     }
 
 
@@ -168,17 +170,27 @@ class WecomProjectAdapter:
         authorized = 0
         errors = []
         filtered = 0
+        pending = 0
 
         for record in records:
             try:
                 values = record.get("values", {})
-                if values.get("是否承接") != "是":
+                # 「是」入库为正式项目；「待定」也入库但仅供仪表盘月柱图浅色段统计，
+                # 其余项目列表/统计一律不含（见 project_service 的 include_pending 开关）；
+                # 「否」及空值仍旧整条丢弃。
+                undertake_status = values.get("是否承接")
+                if undertake_status not in (UNDERTAKE_YES, UNDERTAKE_PENDING):
                     filtered += 1
                     continue
+                is_pending = undertake_status == UNDERTAKE_PENDING
+                if is_pending:
+                    pending += 1
 
                 project_data = map_wecom_record_to_project(record)
                 project_code = project_data["project_code"]
-                contact_person_id = project_data.get("contact_person_id", "")
+                # 待定项目不做自动授权：授权即意味着对接人能在各处看到该项目，
+                # 与「待定只进月柱图」的口径冲突；待其转为「是」后下次同步补授权。
+                contact_person_id = "" if is_pending else project_data.get("contact_person_id", "")
 
                 existing_project = project_service.get_project(project_code)
 
@@ -210,6 +222,7 @@ class WecomProjectAdapter:
         return {
             "fetched": len(records),
             "filtered": filtered,
+            "pending": pending,
             "created": created,
             "updated": updated,
             "skipped": skipped,

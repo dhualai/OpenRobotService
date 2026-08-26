@@ -7,6 +7,7 @@ from sqlalchemy.orm import joinedload
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.modules.tasks.models.ticket import Ticket, TicketComment, TicketStatus, TicketPriority, TicketType
+from app.models.identity import UserDB
 from app.modules.tasks.schemas.ticket import TicketCreate, TicketUpdate, TicketCommentCreate, TicketCommentUpdate, TicketQueryParams, TicketFilterRequest, QuotedComment
 from app.core.config import settings
 from app.utils.notification_utils import NotificationUtils
@@ -723,8 +724,20 @@ class TicketService:
 
     @staticmethod
     async def _attach_comment_meta(db: AsyncSession, comment: TicketComment, user_map: Dict[str, str]) -> TicketComment:
-        """为评论附加展示用元数据：创建人姓名、引用评论摘要、响应态内容。"""
+        """为评论附加展示用元数据：创建人姓名、头像、引用评论摘要、响应态内容。"""
         setattr(comment, "created_by_name", user_map.get(comment.created_by, comment.created_by))
+        # 头像：created_by 可能是 users.id 也可能是 username，两者都查（离线作者也能取到头像，
+        # 修复「气泡头像有时显示、有时文字缺省」——原先前端只依赖在线成员列表拿头像）
+        try:
+            avatar_res = await db.execute(
+                select(UserDB.avatar_resource_id).where(
+                    or_(UserDB.id == comment.created_by, UserDB.username == comment.created_by)
+                ).limit(1)
+            )
+            avatar_rid = avatar_res.scalar_one_or_none()
+            setattr(comment, "created_by_avatar_resource_id", avatar_rid)
+        except Exception:
+            setattr(comment, "created_by_avatar_resource_id", None)
         try:
             comment.content = ImageProcessor.process_content_for_response(comment.content)
         except Exception:

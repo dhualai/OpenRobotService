@@ -1,5 +1,6 @@
 // URL 工具函数 - 从 HelpDesk urlUtils.js 移植
 import { WECHAT_CONFIG } from '@/config/wechat';
+import { formatBackendTime, parseBackendDate } from '@/shared/utils/time';
 
 const STORAGE_KEYS = {
   AUTH_TOKEN: 'auth_token',
@@ -87,44 +88,25 @@ export function buildWechatAuthUrl(state: string): string {
 
 /**
  * 把后端时间字符串解析为本地时区 Date。
+ * 统一委托 `@/shared/utils/time` 的 `parseBackendDate`（唯一解析入口，兼容 string/number）。
  *
- * 后端在数据库引擎层已强制每个连接的会话时区为 UTC（见 backend/app/core/db.py 的
- * `_ensure_utc_session`），因此 ``func.now()`` 一律返回 UTC 时间，本地/生产一致。
- *
- * - 无时区 ISO 字符串（如 "2026-08-15T07:55:55"）：来自 naive DateTime 列，存储的是 UTC，
- *   补 ``Z`` 标记为 UTC 后由浏览器按本地时区自动 +8 转换。
- * - 已带时区（``Z`` / ``±HH:MM``）的字符串：原样解析（aware datetime 经 pydantic 序列化输出）。
- *
+ * 语义：后端 DB naive DateTime 列统一存 UTC（见 backend/app/core/db.py `_ensure_utc_session`），
+ * 无时区 ISO 字符串补 Z 当 UTC 解析、由浏览器按本地时区 +8 转换；带时区后缀原样解析。
  * 不写死 +8，跨时区浏览器同样正确。
  */
 export function parseUtcDate(dateString: string): Date | null {
-  if (!dateString) return null;
-  let s = String(dateString).trim().replace(' ', 'T');
-  const hasTz = /([+-]\d{2}:?\d{2}|Z)$/.test(s);
-  if (!hasTz && /T\d{2}:\d{2}/.test(s)) s += 'Z';
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
+  return parseBackendDate(dateString);
 }
 
 /**
- * 格式化 deadline_at 等字段：与 parseUtcDate 语义一致——DB 存 naive UTC，
- * 无时区后缀时补 Z 当 UTC 解析，由浏览器按本地时区自动 +8 转换。
+ * 格式化 deadline_at 等字段为「YYYY/MM/DD HH:mm」本地时区字符串。
+ * 统一委托 `formatBackendTime`（内部走 parseBackendDate）。与 formatDateTime 输出一致。
  *
- * 修复背景（2026-08-25）：原实现直接提取年月日时分显示，假设 naive = 上海时间。
- * c2ebf96 时区根因治理后，DB 已统一存 UTC（naive DateTime 存 UTC 值），
- * 写入侧（convert_to_shanghai_time：aware→转 UTC 剥时区）存的是 UTC naive，
- * 但显示侧仍按"naive = 上海时间"提取，导致 deadline 少 8 小时（如用户选 10:00
- * → DB 存 02:00 UTC → 显示成 02:00 而非 10:00）。
+ * 修复背景（2026-08-25）：原实现直接提取年月日时分显示，假设 naive = 上海时间；
+ * c2ebf96 时区根因治理后 DB 存的是 UTC，导致 deadline 少 8 小时（选 10:00 → 存 02:00 UTC → 显示 02:00）。
  */
 export function formatRawDateTime(dateString: string): string {
-  if (!dateString) return '';
-  const s = String(dateString).trim().replace(' ', 'T');
-  // 先补 Z 当 UTC 解析，再按本地时区显示
-  const hasTz = /([+-]\d{2}:?\d{2}|Z)$/.test(s);
-  const d = new Date(hasTz ? s : `${s}Z`);
-  if (isNaN(d.getTime())) return '';
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return formatBackendTime(dateString);
 }
 
 export function formatDateTime(dateString: string): string {

@@ -43,8 +43,11 @@ from dotenv import dotenv_values
 _backend_env = _project_root / "backend" / ".env"
 if _backend_env.exists():
     _vals = dotenv_values(_backend_env)
-    if _vals.get("SECRET_KEY"):
-        os.environ["SECRET_KEY"] = _vals["SECRET_KEY"]
+    # JWT_SECRET 是 SECRET_KEY 的历史别名（backend Settings 内部归一），
+    # 只认 SECRET_KEY 会漏读已按别名配置的部署 → 验签密钥不一致 → 全量 401
+    _sk = _vals.get("SECRET_KEY") or _vals.get("JWT_SECRET")
+    if _sk:
+        os.environ["SECRET_KEY"] = _sk
     if _vals.get("ALGORITHM"):
         os.environ["ALGORITHM"] = _vals["ALGORITHM"]
 # 硬编码兜底（backend/.env 也不存在时）

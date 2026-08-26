@@ -14,7 +14,7 @@ import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepa
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import UserSelect from '@/shared/components/UserSelect';
 import { createTicket, reDispatchTicket } from '@/api/ticket';
-import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
+import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import type { UserItem } from '@/api/users';
 import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
 import { createRequest } from '@/api/client';
@@ -545,7 +545,7 @@ const convMessagesCache: Record<number, Message[]> = {};
 export default function ChatPanel({ scene, compact = false }: { scene: ChatScene; compact?: boolean }) {
 
   const { token, name, username } = useAuthStore();
-  const { chatContext, consumeChatContext, refreshTasks, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations, requestNewConversation } = useWorkbenchStore();
+  const { chatContext, consumeChatContext, refreshTasks, tasksRefreshKey, conversationId, setConversationId, setConversationTitle, renameConversation, refreshConversations, requestNewConversation } = useWorkbenchStore();
   const isCall = scene === 'call';
   const cfg = SCENE_CONFIG[scene];
   const navigate = useNavigate();
@@ -825,11 +825,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         setMessages((prev) => {
           if (fresh.length > prev.length) return fresh;
           // 长度未增加：不整体替换（防丢未落库的乐观消息），但以 DB 为准同步工单概览气泡的派单状态——
-          // 否则切走期间已派单并回写 DB 后，长度相同不覆盖，气泡仍停留在"派单中"。
+          // 否则切走期间已派单并回写 DB 后，长度相同不覆盖，气泡仍停留在"派单中"；
+          // 亦或切走期间对方在别处「重新派单」换人后，DB 里 assigned_to_name 已变，而缓存快照仍是旧的，
+          // 若只用 !assigned_to_name 作门槛（旧值非空）就不会覆盖 → 气泡显示旧处理人，但详情/DB 已对新接单人。
+          // 故这里只要 DB 有对应气泡就以其 assigned_to_name 覆盖当前值（DB 为最终一致源）。
           return prev.map((m) => {
-            if (m.subtype === 'ticket_overview' && m.ticket_overview && !m.ticket_overview.assigned_to_name) {
+            if (m.subtype === 'ticket_overview' && m.ticket_overview && m.ticket_overview.db_id) {
               const f = fresh.find((x) => x.ticket_overview?.db_id === m.ticket_overview!.db_id);
-              if (f?.ticket_overview?.assigned_to_name) {
+              if (f?.ticket_overview) {
+                // 仅同步派单状态字段，避免用 DB 快照整体替换掉本地乐观的其他字段
                 return { ...m, ticket_overview: { ...m.ticket_overview, assigned_to_name: f.ticket_overview.assigned_to_name } };
               }
             }
@@ -1869,7 +1873,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const deadlineTouched = Object.prototype.hasOwnProperty.call(ticketConfirm.overrides, 'deadline_at');
   const deadlinePickerValue = (() => {
     const raw = draftField('deadline_at');
-    if (raw) return dayjs(raw);
+    if (raw) return parseDeadlineString(raw);
     if (deadlineTouched) return null; // 用户主动清空，保持空
     return deadlineRange?.max ?? null; // 未设置 → 默认显示最大值
   })();
@@ -1889,13 +1893,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (task.assigned_to) {
         const assignedName = task.assigned_to_name || task.assigned_to;
         const newOv = { ...ov, assigned_to_name: assignedName };
-        if (!cancelledRef.current) {
-          setMessages((prev) => prev.map((m) =>
-            m.id === msgId && m.ticket_overview
-              ? { ...m, ticket_overview: newOv }
-              : m
-          ));
-        }
+        // 注意：不能用 cancelledRef 判断是否更新内存——在 <React.StrictMode> 下，开发模式的
+        // effect 双调用会先触发 cleanup（cancelledRef.current=true）再 remount，且 useRef 不重置，
+        // 导致该标记永久为 true，setMessages 被跳过 → 气泡永远停在「派单中」（DB 却能回写）。
+        // React 18 起卸载组件上 setState 不再告警，真卸载时轮询也会被 cleanup 中断，故直接更新即可。
+        setMessages((prev) => prev.map((m) =>
+          m.id === msgId && m.ticket_overview
+            ? { ...m, ticket_overview: newOv }
+            : m
+        ));
         // 回写 DB：派单状态持久化。切换/刷新/历史会话切走后从 DB 读到即显示"已派单"，
         // 不再依赖内存轮询跨切换存活（此前状态只在内存，切换后丢失→气泡停在"派单中"）。
         // 回写句柄 = 气泡 id：confirm 用 String(appendMessage 返回的 DB id)，恢复用 String(m.id)，均为 DB message id。
@@ -1971,6 +1977,72 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       }
     });
   }, [messages, startDispatchPoll]);
+
+  // ── 跨页面同步：历史工单页发起「重新派单」后，对话气泡也能感知工单 assigned_to 变化 ──
+  // 方案2（事件驱动）：HistoryTickets 重新派单成功会调用 refreshTasks()（tasksRefreshKey+1）。
+  // 这里监听该信号，当有工单变更时，对当前会话所有工单概览气泡（含"已派单"的）逐一查询最新
+  // assigned_to_name 并更新气泡 + 回写 DB。相比轮询，只在明确的变更时刻做一次同步，更省请求。
+  const syncTicketsFromStore = useCallback(async () => {
+    const msgs = messagesRef.current;
+    if (!msgs.some((m) => m.subtype === 'ticket_overview' && m.ticket_overview?.db_id)) return;
+    for (const m of msgs) {
+      if (m.subtype !== 'ticket_overview' || !m.ticket_overview?.db_id) continue;
+      const ov = m.ticket_overview;
+      try {
+        const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string }>(`/${ov.db_id}`, { skipCache: true });
+        if (!task.assigned_to) {
+          // 后端已清空处理人（该工单被重新派单/退单，正在重派中）：
+          // 若气泡仍显示旧处理人，则把它清回"派单中"并交由 pollDispatch 继续轮询新接单人。
+          if (ov.assigned_to_name) {
+            const newOv = { ...ov, assigned_to_name: undefined };
+            setMessages((prev) => prev.map((x) =>
+              x.id === m.id && x.ticket_overview ? { ...x, ticket_overview: newOv } : x
+            ));
+            const dbMsgId = Number(m.id);
+            if (Number.isFinite(dbMsgId) && dbMsgId > 0) {
+              updateMessageContent(dbMsgId, JSON.stringify(newOv)).catch(() => {});
+            }
+            startDispatchPoll(m.id, ov.db_id, newOv);
+          }
+          continue;
+        }
+        const latestName = task.assigned_to_name || task.assigned_to;
+        if (latestName !== ov.assigned_to_name) {
+          const newOv = { ...ov, assigned_to_name: latestName };
+          setMessages((prev) => prev.map((x) =>
+            x.id === m.id && x.ticket_overview ? { ...x, ticket_overview: newOv } : x
+          ));
+          const dbMsgId = Number(m.id);
+          if (Number.isFinite(dbMsgId) && dbMsgId > 0) {
+            updateMessageContent(dbMsgId, JSON.stringify(newOv)).catch(() => {});
+          }
+        }
+      } catch { /* 单次失败忽略 */ }
+    }
+  }, [tasksReq, startDispatchPoll]);
+
+  // 用 ref 持有最新 messages，避免 syncTicketsFromStore 因 messages 变化而频繁重建
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  // 监听全局工单刷新信号：只要 tasksRefreshKey 变化（含历史工单重新派单、ChatPanel 内建单等），
+  // 就同步一次气泡派单状态，保证跨页面看到的处理人一致。
+  useEffect(() => {
+    if (tasksRefreshKey === 0) return; // 首次挂载默认 0，跳过
+    syncTicketsFromStore();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasksRefreshKey]);
+
+  // 挂载/切换会话后，也主动从 tasks 实时同步一次气泡派单状态：
+  // 若是在历史工单页（ChatPanel 未挂载）发起的重新派单，信号发出时本组件监听不到；
+  // 切回对话页后这里会补一次对齐，覆盖「气泡消息 DB content 还是旧处理人」的场景。
+  useEffect(() => {
+    if (conversationId === null) return;
+    // 短暂延迟等 getConversation 恢复的 messages 落到 messagesRef，再做一次对齐
+    const t = setTimeout(() => { syncTicketsFromStore(); }, 800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
 
   /** 确认提交：校验项目/项目负责人 → 工单1 confirm_submit + 工单2(双工单) createTicket → 两个概览气泡 */
   // 取消确认（关闭弹窗/放弃提单）：彻底清空本地草稿，并通知后端清除 ticket_draft。
