@@ -360,6 +360,8 @@ export default function DiscussionPanel({
 
   // ── 滚动管理（微信式）：仅在贴底时自动滚动；非贴底时累计新消息数并提示 ──
   const isAtBottomRef = useRef(true);
+  // 用户主动发消息后进入「强制贴底」模式：新消息无条件滚到底，直到用户手动上翻历史才退出
+  const forceScrollRef = useRef(false);
   const [newCount, setNewCount] = useState(0);
   const checkAtBottom = useCallback(() => {
     const el = chatMessagesRef.current;
@@ -409,10 +411,15 @@ export default function DiscussionPanel({
       // 用户手动划到底部时补报已读——此前仅靠「新消息到达且贴底」触发，
       // 一旦错过（到达时不在贴底）就永远漏报，导致对方看不到已读头像。这里补齐。
       reportRead();
+    } else {
+      // 用户主动离开底部（翻看历史）→ 退出「发消息后强制贴底」模式，
+      // 回到微信式「新消息累计提示」，避免一直打断阅读历史。
+      forceScrollRef.current = false;
     }
   }, [checkAtBottom, reportRead, readListCommentId]);
 
-  // 新消息到达：贴底则跟随滚动 + 上报已读；非贴底则累计提示数（不强制打断阅读历史）
+  // 新消息到达：贴底 / 发消息后强制贴底 / 初次进入 则跟随滚动 + 上报已读；
+  // 否则累计提示数（不强制打断阅读历史）
   useEffect(() => {
     if (!displayComments.length) return;
     const last = displayComments[displayComments.length - 1];
@@ -420,7 +427,7 @@ export default function DiscussionPanel({
     if (lid !== lastMsgIdRef.current) {
       const isPrevInit = lastMsgIdRef.current === null;
       lastMsgIdRef.current = lid;
-      if (isPrevInit || isAtBottomRef.current) {
+      if (isPrevInit || isAtBottomRef.current || forceScrollRef.current) {
         scrollToBottom();
       } else {
         setNewCount((n) => n + 1);
@@ -728,6 +735,11 @@ export default function DiscussionPanel({
       setPendingFiles([]);
       setQuoted(null);
       setShowEmoji(false);
+      // 用户主动发消息 → 强制滚动到底部最新（无论之前是否翻看历史），
+      // 进入「强制贴底」模式；之后新消息（含回显）无条件跟随，直到用户手动上翻历史才退出。
+      forceScrollRef.current = true;
+      isAtBottomRef.current = true;
+      scrollToBottom();
     }
     // 发送完成（无论成功/失败）焦点回到输入框，避免点「发送」按钮夺焦后需手动点回，支持连续输入；
     // textarea 始终挂载，下一帧渲染（sending 解除 disabled）后 focus 生效。
@@ -1332,6 +1344,13 @@ export default function DiscussionPanel({
             onChange={handleInputChange}
             onKeyDown={handleInputKeyDown}
             onPaste={handlePaste}
+            onFocus={() => {
+              // 用户聚焦输入框（准备回复）→ 立即定位到底部最新，并进入「强制贴底」模式，
+              // 与发消息行为一致：聚焦后新消息（含回显）无条件跟滚，直到用户手动上翻历史才退出。
+              forceScrollRef.current = true;
+              isAtBottomRef.current = true;
+              scrollToBottom();
+            }}
             placeholder={disabled ? '工单号缺失，无法评论' : ph}
             disabled={sending || disabled}
             rows={1}
