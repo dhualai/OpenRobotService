@@ -6,6 +6,7 @@
 // 数据接口见 src/api/dashboard.ts；接口未就绪时一律优雅降级为「0/暂无数据」，不阻塞页面渲染。
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Navbar, Loading, Toast, Popup } from 'tdesign-mobile-react';
+import { UserCircleIcon } from 'tdesign-icons-react';
 import { useNavigate } from 'react-router-dom';
 import {
   TICKET_STATUS_LIST, URGENCY_LIST,
@@ -24,6 +25,7 @@ import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
 import { currentYearMonth, normalizeSettlementPeriod } from '@/shared/utils/settlement';
 import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
+import { avatarUrl } from '@/api/profile';
 
 interface ProjectListItem {
   risks: number;
@@ -105,7 +107,7 @@ const SORTED_TICKET_STATUS_LIST = [...TICKET_STATUS_LIST].sort(
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { hasPermission, projectIds, username } = useAuthStore();
+  const { hasPermission, projectIds, username, avatarResourceId } = useAuthStore();
   const canAccessAdminEntries = hasPermission('frontend:admin:other:show');
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
@@ -170,6 +172,21 @@ export default function Dashboard() {
       />
 
       <div style={{ padding: '16px 16px 32px' }}>
+        {/* ============ 顶：欢迎区（左侧头像 + 右侧两排：Hello / 用户名） ============ */}
+        <div className="admin-welcome">
+          <div className="admin-welcome__avatar">
+            {avatarResourceId ? (
+              <img src={avatarUrl(avatarResourceId)} alt="头像" />
+            ) : (
+              <UserCircleIcon size="40px" />
+            )}
+          </div>
+          <div className="admin-welcome__text">
+            <span className="admin-welcome__hello">Hello</span>
+            <span className="admin-welcome__name">{username || '用户'}</span>
+          </div>
+        </div>
+
         {/* ============ 上：工单状态监测概览 ============ */}
         {/* 结构性重设计（对照 macaron admin 工单状态监测）：蓝阶环图 + 图例（含百分比/数量）+ 四指标卡 */}
         <SectionTitle title="工单状态监测" onMore={() => navigate('/tasks')} />
