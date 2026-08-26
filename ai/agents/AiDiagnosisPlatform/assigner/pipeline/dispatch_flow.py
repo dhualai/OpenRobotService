@@ -113,18 +113,27 @@ class DispatchFlow:
 
         # ── 项目对接人（Step 4 加权 / 强制保留用；可能为 None → 不加权不保留）──
         contact_assignee_id = self._resolve_contact_assignee(ticket_context)
+        contact_name = next(
+            (e.name for e in engineer_profiles if e.id == contact_assignee_id),
+            contact_assignee_id,
+        )
         if contact_assignee_id:
-            logger.info(f"{ltag} 项目对接人: {contact_assignee_id}（将加权 ×2.0 并强制保留）")
+            logger.info(f"{ltag} 项目对接人: {contact_name}({contact_assignee_id})（将加权 ×2.0 并强制保留）")
 
         # ── 用户倾向处理人（预留：前端传 ticket.preferred_assignee 即启用；未传返回 None 不生效）──
         preferred_assignee_id = None
+        pref_name = None
         if self._config.preferred_assignee_enabled:
             preferred_assignee_id = self._resolve_preferred_assignee(
                 ticket_context, engineer_profiles,
             )
             if preferred_assignee_id:
+                pref_name = next(
+                    (e.name for e in engineer_profiles if e.id == preferred_assignee_id),
+                    preferred_assignee_id,
+                )
                 logger.info(
-                    f"{ltag} 用户倾向处理人: {preferred_assignee_id}"
+                    f"{ltag} 用户倾向处理人: {pref_name}"
                     f"（将加权 ×{self._config.contact_bonus:.1f} 并{'' if self._config.preferred_assignee_force_keep else '不'}强制保留）"
                 )
 
@@ -160,8 +169,12 @@ class DispatchFlow:
             except Exception:
                 creator_id = creator_raw
             if contact_assignee_id == creator_id:
+                creator_raw_name = next(
+                    (e.name for e in engineer_profiles if e.id == creator_id),
+                    creator_id,
+                )
                 logger.info(
-                    f"{ltag} Step2.5 对接人==提单人({creator_id})，不强制保留（自提不自接）"
+                    f"{ltag} Step2.5 对接人==提单人({creator_raw_name}({creator_id}))，不强制保留（自提不自接）"
                 )
             elif not any(e.id == contact_assignee_id for e in candidates):
                 # 对接人可能仍在全量工程师里但被过滤掉 → 强制补回
@@ -171,7 +184,7 @@ class DispatchFlow:
                 if contact_eng is not None:
                     candidates.append(contact_eng)
                     logger.info(
-                        f"{ltag} Step2.5 强制保留项目对接人 {contact_assignee_id}"
+                        f"{ltag} Step2.5 强制保留项目对接人 {contact_name}({contact_assignee_id})"
                         f" -> 候选 {len(candidates)}人"
                     )
 
@@ -187,7 +200,7 @@ class DispatchFlow:
             if pref_eng is not None:
                 candidates.append(pref_eng)
                 logger.info(
-                    f"{ltag} Step2.6 强制保留用户倾向处理人 {preferred_assignee_id}"
+                    f"{ltag} Step2.6 强制保留用户倾向处理人 {pref_name}({preferred_assignee_id})"
                     f" -> 候选 {len(candidates)}人"
                 )
 
