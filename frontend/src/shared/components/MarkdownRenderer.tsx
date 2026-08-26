@@ -16,6 +16,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Link } from 'react-router-dom';
 import { urlTransformAllowDataImage } from '@/shared/utils/markdown';
+import { WECHAT_EMOJI_URL_SET } from '@/shared/emoji/wechat';
 import { useAuthStore } from '@/stores/auth';
 import { ENV_PREFIX, RAW_BASE } from '@/config/api';
 import API_CONFIG from '@/config/api';
@@ -701,6 +702,12 @@ export default function MarkdownRenderer({ content, compact = false, streaming =
             img({ src, alt, ...props }: any) {
               const altText: string = alt || '';
               const srcUrl: string = src || '';
+
+              // 微信经典表情：静态打包资源直渲（不走 AuthImage 鉴权 fetch / 灯箱预览），
+              // 行内小图展示，尺寸/对齐由 .md-emoji 样式控制。
+              if (WECHAT_EMOJI_URL_SET.has(srcUrl)) {
+                return <img src={srcUrl} alt={altText} className="md-emoji" draggable={false} />;
+              }
 
               if (isVideoAlt(altText)) {
                 return (

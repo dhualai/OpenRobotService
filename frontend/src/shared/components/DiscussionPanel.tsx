@@ -6,9 +6,11 @@
 // 微信化交互：消息引用（长按→引用；气泡内引用块可点击定位原消息）、长按操作菜单（引用/复制/删除）、气泡样式优化。
 import { useState, useRef, useEffect, useMemo, useCallback, Fragment } from 'react';
 import { Button, Toast, Popover } from 'tdesign-mobile-react';
-import { Paperclip, Send } from 'lucide-react';
+import { Paperclip, Send, Smile } from 'lucide-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
+import EmojiPicker from '@/shared/components/EmojiPicker';
+import { replaceWechatEmoji, parseStandaloneEmoji } from '@/shared/emoji/wechat';
 
 import { useAuthStore } from '@/stores/auth';
 import API_CONFIG from '@/config/api';
@@ -310,6 +312,8 @@ export default function DiscussionPanel({
   );
 
   const [commentText, setCommentText] = useState('');
+  /** 表情选择器显隐：点表情按钮切换，点面板外部 / 发送后收起 */
+  const [showEmoji, setShowEmoji] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
   // 待发送图片的预览 objectURL（与 pendingFiles 一一对应，非图片为空串），
@@ -577,6 +581,19 @@ export default function DiscussionPanel({
     }, 0);
   };
 
+  // ── 表情：在光标处插入 ──
+  const insertAtCursor = (text: string) => {
+    const cursorPos = inputRef.current?.selectionStart ?? commentText.length;
+    const before = commentText.slice(0, cursorPos);
+    const after = commentText.slice(cursorPos);
+    setCommentText(before + text + after);
+    setTimeout(() => {
+      inputRef.current?.focus();
+      const pos = cursorPos + text.length;
+      inputRef.current?.setSelectionRange(pos, pos);
+    }, 0);
+  };
+
   // ── @# 工单引用: 拉取"相似已解决工单"列表（后端 /api/tasks/{taskId}/similar）──
   const fetchSimilarTickets = useCallback(async () => {
     if (taskId === undefined) return;
@@ -710,6 +727,7 @@ export default function DiscussionPanel({
       setCommentText('');
       setPendingFiles([]);
       setQuoted(null);
+      setShowEmoji(false);
     }
     // 发送完成（无论成功/失败）焦点回到输入框，避免点「发送」按钮夺焦后需手动点回，支持连续输入；
     // textarea 始终挂载，下一帧渲染（sending 解除 disabled）后 focus 生效。
@@ -968,7 +986,23 @@ export default function DiscussionPanel({
                         <span className="detail-chat-name__time">{formatCommentTime(c.created_at)}</span>
                       </div>
                     )}
-                    <MarkdownRenderer content={c.content} compact />
+                    {/* [微笑] 等表情 shortcode → Markdown 图片（微信经典表情包） */}
+                    {(() => {
+                      // 整条消息就是一个表情（WeChat 式单发表情）→ 跳过 Markdown 渲染，
+                      // 直接展示 28px 图（与选择面板 / 行内一致）；仅独占一行、不放大
+                      const solo = parseStandaloneEmoji(c.content);
+                      if (solo) {
+                        return (
+                          <img
+                            src={solo.url}
+                            alt={solo.code}
+                            className="md-emoji md-emoji--standalone"
+                            draggable={false}
+                          />
+                        );
+                      }
+                      return <MarkdownRenderer content={replaceWechatEmoji(c.content)} compact />;
+                    })()}
                     {c.attachments && c.attachments.length > 0 && (
                       <div className="detail-chat-attachments">
                         {c.attachments.map((a, i) => {
@@ -1302,6 +1336,18 @@ export default function DiscussionPanel({
             disabled={sending || disabled}
             rows={1}
           />
+          {/* 表情按钮（与附件/发送按钮同款：36px 圆角方形、居中图标；onMouseDown 阻止冒泡防误关面板） */}
+          <button
+            type="button"
+            className="detail-chat-emoji"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => setShowEmoji((v) => !v)}
+            disabled={sending || disabled}
+            aria-label="表情"
+            aria-expanded={showEmoji}
+          >
+            <Smile size={18} strokeWidth={2} />
+          </button>
           {enableAttach && (
             <button
               type="button"
@@ -1310,17 +1356,24 @@ export default function DiscussionPanel({
               disabled={sending || disabled}
               aria-label="上传图片或文件"
             >
-              <Paperclip size={16} strokeWidth={2} />
+              <Paperclip size={18} strokeWidth={2} />
             </button>
           )}
           {/* 发送按钮（设计稿 04/05 工单详情输入区：size-10 bg-primary 圆形 + Send 纸飞机图标；ArrowUp 仅用于对话首页） */}
           <Button size="small" theme="primary" className="detail-chat-send" onClick={handleSend} disabled={!canSend} aria-label="发送">
-            {sending ? <span className="detail-attachment-file__spinner" /> : <Send size={16} strokeWidth={2.2} />}
+            {sending ? <span className="detail-attachment-file__spinner" /> : <Send size={18} strokeWidth={2.2} />}
           </Button>
           {enableAttach && (
             <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={handleSelectFile} />
           )}
         </div>
+        {/* 表情选择器（微信经典表情包）：沿用 mention-panel 同款卡片浮层，浮于输入栏上方；点击外部关闭，选完保留可连续选择 */}
+        {showEmoji && (
+          <EmojiPicker
+            onSelect={(code) => insertAtCursor(`[${code}]`)}
+            onClose={() => setShowEmoji(false)}
+          />
+        )}
       </div>
 
       {/* 附件预览：图片灯箱 / PDF 内联 / Markdown 渲染 */}
