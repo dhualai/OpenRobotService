@@ -3661,7 +3661,15 @@ class AiDiagnosisPlatform:
                     continue
                 # deadline_at 允许空值（用户在弹窗里清除截止时间）；其余字段空值跳过
                 if v or k == "deadline_at":
-                    ticket[k] = v
+                    # attachments 特殊处理：合并而非覆盖。overrides 里的远程截图（dict 数组）
+                    # 追加到 draft 里会话累积的诊断图附件（dict 数组），二者都要保留。
+                    # 后续 upsert_task 的 _dedup_attachments 会按 (object_path, filename) 统一去重。
+                    if k == "attachments" and isinstance(v, list):
+                        _existing = ticket.get("attachments") or []
+                        _existing_list = _existing if isinstance(_existing, list) else []
+                        ticket["attachments"] = _existing_list + [a for a in v if a not in _existing_list]
+                    else:
+                        ticket[k] = v
         # 项目一致性护栏（预填引入）：project 名被 overrides 改成与草稿不同的值、
         # 而 overrides 未携带非空 project_id 时（双工单兜底名 project_id=''、
         # 直调 API 只传名），清掉草稿预填残留的旧 code——否则任务会以

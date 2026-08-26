@@ -710,80 +710,103 @@ async def _upload_events(
         f"non_image_files={len(files) - len(data_uris)}"
     )
     if data_uris:
-        t_vlm = time.perf_counter()
-        llm = await get_llm_client()
-        names = ", ".join(n for n, _ in data_uris)
-        uris = [u for _, u in data_uris]
-        logger.info(
-            f"[upload] 开始VLM调用: session={session_id[:12]}, "
-            f"image_count={len(data_uris)}, names={names}"
-        )
-        # 拉取最近对话上下文，让 VLM 知道图片是在什么排查场景下截的
-        vlm_context = ""
-        try:
-            mgr = await get_memory_manager()
-            mem = await mgr.get_memory(session_id)
-            recent = [t for t in mem.turns[-6:] if t.get("role") in ("user", "assistant")]
-            if recent:
-                lines = []
-                for t in recent:
-                    role = "用户" if t["role"] == "user" else "AI"
-                    c = t.get("content", "")[:200]
-                    lines.append(f"{role}：{c}")
-                vlm_context = "以下是最近的对话记录，供你理解图片背景：\n" + "\n".join(lines) + "\n"
-        except Exception:
-            pass
-        yield {"event": "vision_start", "names": names}
-        prompt = (
-            f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。\n"
-            f"{vlm_context}"
-            f"请用**结构化要点**输出，总字数 ≤ 200 字：\n"
-            f"- 画面类型（调度界面截图 / 设备现场照 / 文档表格 / 其他）\n"
-            f"- 画面上可见的关键内容：界面名称/页面元素、文字标签、数值（含错误码、机器人ID）、"
-            f"指示灯/设备状态——**逐字原样抄录，禁止推测补全**，看不清的写「（模糊）」\n"
-            f"- 仅当画面上有明确的错误提示/告警标识时，原样转述该提示文字；画面正常就写「画面无报错提示」\n"
-            f"要点之后另起一行写「【回应】」加一句话（≤40 字），结合画面要点和上面的对话背景：\n"
-            f"- 背景已明确在排查什么 → 自然接话（如「这个数值确实不对，先记下了」）\n"
-            f"- 看不出用户目的 → 一句话问清意图（要查图上的报错，还是问这个界面怎么操作，还是其他情况）\n"
-            f"- 画面无报错且没有对话背景 → 问「这是遇到什么问题了，还是想了解这个界面的配置？」\n"
-            f"要点部分禁止推测故障原因；回应部分不要给排查步骤、不要下诊断结论。"
-        )
-        try:
-            async for tok in llm.stream_vision(
-                prompt=prompt,
-                images=uris,
-                system_prompt=(
-                    "你是 AGV/AMR 调度系统的图片转述员，只做客观转述、不做分析判断："
-                    "把画面上真实可见的内容（文字、数值、状态、错误码）逐字抄录成要点，"
-                    "总字数 ≤ 200 字。看不清的注明「（模糊）」，禁止编造画面上没有的信息，"
-                    "禁止推测故障原因。最后按 prompt 要求在「【回应】」行用一句话回应用户。"
-                ),
-                max_tokens=600,
-                temperature=0.3,
-            ):
-                image_desc += tok
-                yield {"event": "vision_token", "token": tok}
-            image_desc = image_desc.strip()
-            # 【回应】段拆分：要点进 upload_message（主模型只看纯转述，不被回应话术
-            # 带偏），要点+回应进 ack_message（用户看到的回执，图片+反问自然衔接）
-            _vlm_full = image_desc
-            _vlm_reply = ""
-            if "【回应】" in image_desc:
-                _body, _, _vlm_reply = image_desc.partition("【回应】")
-                image_desc = _body.strip()
-                _vlm_reply = _vlm_reply.strip()
-                _vlm_full = image_desc + (f"\n\n{_vlm_reply}" if _vlm_reply else "")
-            vlm_ms = round((time.perf_counter() - t_vlm) * 1000)
-            logger.info(
-                f"[upload] VLM调用完成: session={session_id[:12]}, "
-                f"elapsed={vlm_ms}ms, desc_len={len(image_desc)}, "
-                f"reply_len={len(_vlm_reply)}, "
-                f"desc_empty={not image_desc}, desc前80字={image_desc[:80]}"
+        # 降级兜底：视觉模型未配置（本地/开发环境常见）时，跳过 VLM 图片分析，
+        # 直接按「无图片分析」走后续回执逻辑，避免 stream_vision 打到空 base_url
+        # 卡在连接超时（connect=45s × 3 次重试）导致前端一直「正在分析图片」。
+        # 生产环境配置了 VISION_BASE_URL / VISION_API_KEY 后，此分支不生效，照常看图。
+        _vision_cfg = get_ai_config()
+        _vision_ready = bool(_vision_cfg.vision_base_url and _vision_cfg.vision_api_key)
+        if not _vision_ready:
+            logger.warning(
+                f"[upload] 视觉模型未配置（VISION_BASE_URL/VISION_API_KEY 缺失），"
+                f"跳过图片分析走降级回执: session={session_id[:12]}, "
+                f"image_count={len(data_uris)}"
             )
-        except Exception as e:
-            logger.error(f"[upload] VLM失败: {e}", exc_info=True)
-            yield {"event": "vision_error", "error": str(e)}
-        yield {"event": "vision_done", "desc": _vlm_full}
+            _names = ", ".join(n for n, _ in data_uris)
+            # 降级回执：图片已正常保存，仅跳过「看内容」这一步；文案区别于非图片文件
+            # 的「暂不支持解析」提示，避免误导用户以为是图片格式问题。
+            _vlm_full = (
+                f"已收到 {len(saved)} 个文件（{filenames}）。"
+                f"图片已保存，当前环境未启用图片内容分析，"
+                f"后续提单时这些图片会作为接单人处理工单的参考附件。"
+            )
+            yield {"event": "vision_start", "names": _names}
+            yield {"event": "vision_done", "desc": ""}
+        else:
+            t_vlm = time.perf_counter()
+            llm = await get_llm_client()
+            names = ", ".join(n for n, _ in data_uris)
+            uris = [u for _, u in data_uris]
+            logger.info(
+                f"[upload] 开始VLM调用: session={session_id[:12]}, "
+                f"image_count={len(data_uris)}, names={names}"
+            )
+            # 拉取最近对话上下文，让 VLM 知道图片是在什么排查场景下截的
+            vlm_context = ""
+            try:
+                mgr = await get_memory_manager()
+                mem = await mgr.get_memory(session_id)
+                recent = [t for t in mem.turns[-6:] if t.get("role") in ("user", "assistant")]
+                if recent:
+                    lines = []
+                    for t in recent:
+                        role = "用户" if t["role"] == "user" else "AI"
+                        c = t.get("content", "")[:200]
+                        lines.append(f"{role}：{c}")
+                    vlm_context = "以下是最近的对话记录，供你理解图片背景：\n" + "\n".join(lines) + "\n"
+            except Exception:
+                pass
+            yield {"event": "vision_start", "names": names}
+            prompt = (
+                f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。\n"
+                f"{vlm_context}"
+                f"请用**结构化要点**输出，总字数 ≤ 200 字：\n"
+                f"- 画面类型（调度界面截图 / 设备现场照 / 文档表格 / 其他）\n"
+                f"- 画面上可见的关键内容：界面名称/页面元素、文字标签、数值（含错误码、机器人ID）、"
+                f"指示灯/设备状态——**逐字原样抄录，禁止推测补全**，看不清的写「（模糊）」\n"
+                f"- 仅当画面上有明确的错误提示/告警标识时，原样转述该提示文字；画面正常就写「画面无报错提示」\n"
+                f"要点之后另起一行写「【回应】」加一句话（≤40 字），结合画面要点和上面的对话背景：\n"
+                f"- 背景已明确在排查什么 → 自然接话（如「这个数值确实不对，先记下了」）\n"
+                f"- 看不出用户目的 → 一句话问清意图（要查图上的报错，还是问这个界面怎么操作，还是其他情况）\n"
+                f"- 画面无报错且没有对话背景 → 问「这是遇到什么问题了，还是想了解这个界面的配置？」\n"
+                f"要点部分禁止推测故障原因；回应部分不要给排查步骤、不要下诊断结论。"
+            )
+            try:
+                async for tok in llm.stream_vision(
+                    prompt=prompt,
+                    images=uris,
+                    system_prompt=(
+                        "你是 AGV/AMR 调度系统的图片转述员，只做客观转述、不做分析判断："
+                        "把画面上真实可见的内容（文字、数值、状态、错误码）逐字抄录成要点，"
+                        "总字数 ≤ 200 字。看不清的注明「（模糊）」，禁止编造画面上没有的信息，"
+                        "禁止推测故障原因。最后按 prompt 要求在「【回应】」行用一句话回应用户。"
+                    ),
+                    max_tokens=600,
+                    temperature=0.3,
+                ):
+                    image_desc += tok
+                    yield {"event": "vision_token", "token": tok}
+                image_desc = image_desc.strip()
+                # 【回应】段拆分：要点进 upload_message（主模型只看纯转述，不被回应话术
+                # 带偏），要点+回应进 ack_message（用户看到的回执，图片+反问自然衔接）
+                _vlm_full = image_desc
+                _vlm_reply = ""
+                if "【回应】" in image_desc:
+                    _body, _, _vlm_reply = image_desc.partition("【回应】")
+                    image_desc = _body.strip()
+                    _vlm_reply = _vlm_reply.strip()
+                    _vlm_full = image_desc + (f"\n\n{_vlm_reply}" if _vlm_reply else "")
+                vlm_ms = round((time.perf_counter() - t_vlm) * 1000)
+                logger.info(
+                    f"[upload] VLM调用完成: session={session_id[:12]}, "
+                    f"elapsed={vlm_ms}ms, desc_len={len(image_desc)}, "
+                    f"reply_len={len(_vlm_reply)}, "
+                    f"desc_empty={not image_desc}, desc前80字={image_desc[:80]}"
+                )
+            except Exception as e:
+                logger.error(f"[upload] VLM失败: {e}", exc_info=True)
+                yield {"event": "vision_error", "error": str(e)}
+            yield {"event": "vision_done", "desc": _vlm_full}
     else:
         logger.info(f"[upload] 无图片文件，跳过VLM: session={session_id[:12]}")
         yield {"event": "vision_done", "desc": ""}
