@@ -2317,6 +2317,33 @@ html, body, #root {
   white-space: nowrap;
 }
 
+/* 工单数据来源分析：类型分布 / 提单人角色分布各占一张卡片（上下排列），
+   卡片内环图在左、图例在右占满剩余宽度，保证角色名/数值完整展示 */
+.mac-source-block {
+  min-width: 0;
+}
+.mac-source-block__title {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mac-fg);
+  padding-bottom: 10px;
+  border-bottom: 1px solid color-mix(in oklab, var(--mac-border) 60%, transparent);
+}
+.mac-source-block__body {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 24px;
+}
+.mac-source-block__body .mac-donut {
+  flex-shrink: 0;
+}
+.mac-source-block .mac-legend {
+  flex: 1;
+  min-width: 0;
+}
+
 /* ===== 系统任务 / 工单 ===== */
 /* ===== 马卡龙极简设计变量（参考 macaron-minimal-ui 设计系统，系统任务页） ===== */
 :root {

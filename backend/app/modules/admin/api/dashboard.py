@@ -108,6 +108,53 @@ def _enrich_projects_with_analysis(projects: List[Dict]) -> None:
         project["latest_manual_switch_count"] = transport_efficiency_service.get_latest_manual_switch_count(project_code)
 
 
+@dashboard_router.get("/tickets/source-analysis", response_model=Dict[str, Any])
+async def get_ticket_source_analysis(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目内的工单"),
+    db: AsyncSession = Depends(get_db),
+):
+    """工单数据来源分析 —— 供仪表盘「工单数据来源分析」看板（类型分布 + 提单人角色分布）。
+
+    响应结构：
+    {
+        "code": 0,
+        "data": {
+            "by_type": [{"key": "bug", "count": 12}, ...],
+            "by_role": [{"label": "调度研发", "count": 3}, ...]
+        }
+    }
+    """
+    pid_list = _parse_project_ids(project_ids)
+    data = await task_dashboard_service.get_source_analysis(db, pid_list)
+    return {"code": 0, "data": data}
+
+
+@dashboard_router.get("/tickets/response-time", response_model=Dict[str, Any])
+async def get_ticket_response_time(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目内的工单"),
+    db: AsyncSession = Depends(get_db),
+):
+    """接单人响应时间分析 —— 供仪表盘「接单人响应时间」看板。
+
+    响应时间 = 工单详情页「工单动态」中【处理人】第一次点开工单的时间 - 新建工单时间
+    （VIEW 操作日志，处理人口径与动态展示一致，见 task_dashboard_service.get_response_time_analysis），
+    按 15分钟内 / 1h内 / 4h内 / 其他 分桶。
+
+    响应结构：
+    {
+        "code": 0,
+        "data": {
+            "total": 200,        // 范围内工单总数
+            "responded": 120,    // 处理人点开过、有响应时间的工单数（参与分桶）
+            "by_bucket": [{"key": "within_15m", "label": "15分钟内", "count": 30}, ...]
+        }
+    }
+    """
+    pid_list = _parse_project_ids(project_ids)
+    data = await task_dashboard_service.get_response_time_analysis(db, pid_list)
+    return {"code": 0, "data": data}
+
+
 @dashboard_router.get("/tickets/summary", response_model=Dict[str, Any])
 async def get_ticket_summary(
     project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目内的工单"),
