@@ -23,6 +23,8 @@ export interface DiscussionComment {
   content: string;
   created_by_name?: string;
   created_by?: string;
+  /** 评论作者头像资源 id（后端评论序列化下发；离线作者也有，避免气泡头像回退成文字缺省） */
+  created_by_avatar_resource_id?: number | null;
   created_at: string;
   /** 附件列表：object_path 字符串 或 {path,filename,size} 字典（后端 task_comments.attachments JSON 列两种格式并存） */
   attachments?: Array<string | { path?: string; filename?: string; size?: number }>;
@@ -83,19 +85,20 @@ const formatCommentTime = (dateString: string): string => {
   return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 };
 
-/** 已读名单的相对时间格式化：刚刚 / N分钟前 / N小时前 / X月X日 HH:MM */
+/** 已读名单的阅读时间格式化：统一展示具体时间（当天 HH:MM:SS，跨天 X月X日 HH:MM:SS），不做相对时间 */
 const formatReadTime = (dateString?: string | null): string => {
   if (!dateString) return '';
   const date = parseUtcDate(dateString);
   if (!date) return '';
-  const diff = Date.now() - date.getTime();
-  const minute = 60 * 1000;
-  const hour = 60 * minute;
   const pad = (n: number) => String(n).padStart(2, '0');
-  if (diff < minute) return '刚刚';
-  if (diff < hour) return `${Math.floor(diff / minute)}分钟前`;
-  if (diff < 24 * hour) return `${Math.floor(diff / hour)}小时前`;
-  return `${date.getMonth() + 1}月${date.getDate()}日 ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const now = new Date();
+  const isSameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  const hms = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  if (isSameDay) return hms;
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${hms}`;
 };
 
 export interface ProjectMember {
@@ -277,6 +280,35 @@ export default function DiscussionPanel({
     return rid ? avatarUrl(rid) : '';
   };
 
+  // ── 已读名单：某条评论的读者列表（精确名单优先，readMap 游标兜底推导）──
+  // 统一返回结构 { username, name, avatar_resource_id, read_at }，供气泡头像堆叠与名单弹层复用，
+  // 保证「气泡显示的人数/头像」与「弹层列表」口径一致，避免名单空时气泡孤立显示 +N 而弹层为空。
+  const getReadersForComment = useCallback(
+    (cid: string | number): Array<{ username: string; name?: string | null; avatar_resource_id?: number | null; read_at?: string | null }> => {
+      const createdBy = displayComments.find((x) => x.id === cid)?.created_by;
+      // 精确名单（后端 readRecords，按 read_at 倒序），排除作者自己
+      const exact = (readRecords[String(cid)] || [])
+        .filter((r) => r.username !== createdBy)
+        .slice()
+        .sort((a, b) => {
+          const ta = a.read_at ? (parseUtcDate(a.read_at)?.getTime() ?? 0) : 0;
+          const tb = b.read_at ? (parseUtcDate(b.read_at)?.getTime() ?? 0) : 0;
+          return tb - ta;
+        });
+      if (exact.length > 0) return exact;
+      // 名单为空（旧数据/未上报名单）→ 用游标 readMap 反推已读该评论的用户（无 read_at，兜底头像/名字）
+      return Object.entries(readMap)
+        .filter(([u, rid]) => u !== createdBy && Number(rid) >= Number(cid))
+        .map(([u]) => ({
+          username: u,
+          name: nameMap[u] || u,
+          avatar_resource_id: avatarMap[u] ?? null,
+          read_at: null,
+        }));
+    },
+    [displayComments, readRecords, readMap, nameMap, avatarMap],
+  );
+
   const [commentText, setCommentText] = useState('');
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
@@ -330,20 +362,53 @@ export default function DiscussionPanel({
     if (!el) return true;
     return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
   }, []);
+  // 已上报过名单的评论 id 集合（避免重复逐条上报）
+  const reportedReadIdsRef = useRef<Set<number>>(new Set());
+  // 最新评论 id（每次变化时更新，供贴底补报使用）
+  const lastMsgIdRef = useRef<string | number | null>(null);
+
+  // 上报已读：把「当前所有评论」视为已读，逐条记入名单（飞书式）；游标取最后一条 id。
+  // 抽出为独立函数，供「新消息到达贴底」「用户滚动到底」「主动贴底」三处复用，避免漏报。
+  const reportRead = useCallback(() => {
+    if (!displayComments.length) return;
+    const allIds = displayComments
+      .map((c) => Number(c.id))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    const newIds = allIds.filter((n) => !reportedReadIdsRef.current.has(n));
+    if (newIds.length) {
+      newIds.forEach((n) => reportedReadIdsRef.current.add(n));
+      const numId = allIds[allIds.length - 1];
+      if (numId && numId !== lastReadRef.current) {
+        lastReadRef.current = numId;
+      }
+      sendRead(numId, newIds);
+    }
+  }, [displayComments, sendRead]);
+
   const scrollToBottom = useCallback(() => {
     const el = chatMessagesRef.current;
     if (el) el.scrollTop = el.scrollHeight;
     setNewCount(0);
-  }, []);
+    // 主动贴底（含用户点击「N 条新消息」跳底）视为已读，补报一次，避免漏报
+    reportRead();
+  }, [reportRead]);
   const handleScroll = useCallback(() => {
+    // 已读名单弹层以点击瞬间的视口坐标（fixed）定位，不会跟随消息气泡滚动，
+    // 滚动后位置错乱，故只要有滚动就收起弹层。
+    if (readListCommentId !== null) {
+      setReadListCommentId(null);
+      setReadListAnchor(null);
+    }
     isAtBottomRef.current = checkAtBottom();
-    if (isAtBottomRef.current) setNewCount(0);
-  }, [checkAtBottom]);
+    if (isAtBottomRef.current) {
+      setNewCount(0);
+      // 用户手动划到底部时补报已读——此前仅靠「新消息到达且贴底」触发，
+      // 一旦错过（到达时不在贴底）就永远漏报，导致对方看不到已读头像。这里补齐。
+      reportRead();
+    }
+  }, [checkAtBottom, reportRead, readListCommentId]);
 
   // 新消息到达：贴底则跟随滚动 + 上报已读；非贴底则累计提示数（不强制打断阅读历史）
-  const lastMsgIdRef = useRef<string | number | null>(null);
-  // 已上报过名单的评论 id 集合（避免重复逐条上报）
-  const reportedReadIdsRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     if (!displayComments.length) return;
     const last = displayComments[displayComments.length - 1];
@@ -353,24 +418,11 @@ export default function DiscussionPanel({
       lastMsgIdRef.current = lid;
       if (isPrevInit || isAtBottomRef.current) {
         scrollToBottom();
-        // 贴底态：把当前所有评论视为已读，逐条记入名单（飞书式）；游标取最后一条 id
-        const allIds = displayComments
-          .map((c) => Number(c.id))
-          .filter((n) => Number.isFinite(n) && n > 0);
-        const newIds = allIds.filter((n) => !reportedReadIdsRef.current.has(n));
-        if (newIds.length) {
-          newIds.forEach((n) => reportedReadIdsRef.current.add(n));
-          const numId = allIds[allIds.length - 1];
-          if (numId && numId !== lastReadRef.current) {
-            lastReadRef.current = numId;
-          }
-          sendRead(numId, newIds);
-        }
       } else {
         setNewCount((n) => n + 1);
       }
     }
-  }, [displayComments, sendRead, scrollToBottom]);
+  }, [displayComments, scrollToBottom]);
 
   // 内容高度变化跟随（图片加载/Markdown 渲染/消息追加撑高）：贴底态自动滚到底，
   // 解决进入后停在顶部、最新消息被截断在边框等问题。仅监听内容容器尺寸，不干扰用户主动滚动。
@@ -863,7 +915,10 @@ export default function DiscussionPanel({
             const isContinued = !!prev
               && !showDivider
               && (prev.created_by?.toLowerCase() === c.created_by?.toLowerCase());
-            const avSrc = avatarSrcOf(c.created_by);
+            // 气泡头像：优先用评论自带头像（后端下发，离线作者也有）；缺失时兜底在线成员映射
+            const avSrc =
+              (c.created_by_avatar_resource_id ? avatarUrl(c.created_by_avatar_resource_id) : '') ||
+              avatarSrcOf(c.created_by);
             const avatarEl = avSrc ? (
               <img className="detail-chat-avatar detail-chat-avatar--img" src={avSrc} alt={authorName} />
             ) : (
@@ -966,19 +1021,16 @@ export default function DiscussionPanel({
                       </div>
                     )}
                     {isCurrentUser && (() => {
-                      // 名单（精确）：该评论的已读成员列表（后端按 read_at 倒序）
                       const cid = c.id;
-                      const readers = (readRecords[String(cid)] || []).filter(
-                        (r) => r.username !== c.created_by,
-                      );
-                      // 人数兜底：名单为空时用游标 readMap 反推（兼容未上报名单的旧数据）
-                      const readCount = readers.length > 0
-                        ? readers.length
-                        : Object.entries(readMap).filter(
-                            ([u, rid]) => u !== c.created_by && Number(rid) >= Number(c.id),
-                          ).length;
+                      // 统一从 getReadersForComment 取读者（精确名单优先，readMap 兜底），
+                      // 保证气泡头像堆叠与名单弹层口径一致。
+                      const readers = getReadersForComment(cid);
+                      const readCount = readers.length;
                       if (readCount <= 0) return null;
                       const isOpen = readListCommentId === cid;
+                      // 头像堆叠：最多展示 3 个头像，超出第 3 个显示「+N」数字（飞书式）
+                      const visibleAvatars = readers.slice(0, 3);
+                      const overflowCount = readCount - visibleAvatars.length;
                       return (
                         <button
                           type="button"
@@ -995,7 +1047,26 @@ export default function DiscussionPanel({
                           }}
                           title="查看已读名单"
                         >
-                          已读 {readCount} 人
+                          <span className="detail-chat-read__avatars">
+                            {visibleAvatars.map((r) => {
+                              const av = r.avatar_resource_id ? avatarUrl(r.avatar_resource_id) : '';
+                              return av ? (
+                                <img
+                                  key={r.username}
+                                  className="detail-chat-read__avatar"
+                                  src={av}
+                                  alt={r.name || r.username}
+                                />
+                              ) : (
+                                <span key={r.username} className="detail-chat-read__avatar">
+                                  {(r.name || r.username || '?').slice(0, 1).toUpperCase()}
+                                </span>
+                              );
+                            })}
+                            {overflowCount > 0 && (
+                              <span className="detail-chat-read__more">+{overflowCount}</span>
+                            )}
+                          </span>
                         </button>
                       );
                     })()}
@@ -1045,9 +1116,7 @@ export default function DiscussionPanel({
       {/* 已读名单弹层（飞书式）：头像 + 姓名 + 阅读时间，按阅读时间倒序 */}
       {readListCommentId !== null && readListAnchor && (() => {
         const cid = readListCommentId;
-        const readers = (readRecords[String(cid)] || []).filter(
-          (r) => r.username !== (displayComments.find((x) => x.id === cid)?.created_by),
-        );
+        const readers = getReadersForComment(cid);
         const anchorStyle: React.CSSProperties = {
           position: 'fixed',
           left: readListAnchor.left,

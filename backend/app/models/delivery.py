@@ -14,6 +14,12 @@ from sqlalchemy import Column, Integer, BigInteger, String, Text, Float, Index
 
 from app.models.base import Base
 
+# 项目承接状态（对应企业微信项目表「是否承接」列的原值）。
+# 「否」的项目不入库（见 integrations/sources/wecom/adapter.py 同步过滤），
+# 故库内只有这两种取值；除仪表盘月柱图外，所有项目列表默认只取「是」。
+UNDERTAKE_YES = '是'
+UNDERTAKE_PENDING = '待定'
+
 
 class RealtimeData(Base):
     __tablename__ = 'realtime_data'
@@ -126,11 +132,16 @@ class Project(Base):
     system_integration = Column(Text, nullable=True, comment='系统/外设对接(JSON数组)')
     server_deployment_status = Column(String(30), nullable=True, comment='服务器部署')
     settlement_period = Column(String(20), nullable=True, comment='业绩核算期（手工填写，常见YYYYMM如202608，兼容YYYY-MM）')
+    undertake_status = Column(
+        String(10), nullable=False, default=UNDERTAKE_YES, server_default=UNDERTAKE_YES,
+        comment='是否承接（是/待定；「否」不入库）',
+    )
 
     __table_args__ = (
         Index('idx_project_code', 'code', unique=True),
         Index('idx_project_status', 'status'),
         Index('idx_project_settlement_period', 'settlement_period'),
+        Index('idx_project_undertake_status', 'undertake_status'),
     )
 
     def __repr__(self):
