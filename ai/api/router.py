@@ -11,6 +11,7 @@ import os
 import uuid
 import asyncio
 import collections
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, Header, HTTPException
@@ -687,6 +688,8 @@ async def _upload_events(
 
     # ── 2. 图片描述：VLM 流式看图 ──
     image_desc = ""
+    _vlm_full = ""   # 要点+回应（用户可见的完整回执）
+    _vlm_reply = ""  # 【回应】段单独留存，供 ack 拼接
     _MIME_MAP = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                  ".png": "image/png", ".bmp": "image/bmp",
                  ".gif": "image/gif", ".webp": "image/webp"}
@@ -734,19 +737,26 @@ async def _upload_events(
         prompt = (
             f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。\n"
             f"{vlm_context}"
-            f"请用**结构化要点**输出，总字数 ≤ 200 字，只列关键信息：\n"
-            f"- 界面状态 / 关键数据（含错误码、机器人ID、数值等）\n"
-            f"- 发现的异常或提示，用'可能''疑似'措辞\n"
-            f"- 一句话说明可能的故障方向（没有异常则写'画面正常'）\n"
-            f"不要输出长段分析或背景介绍，不要复述 prompt 要求，直接给要点。"
+            f"请用**结构化要点**输出，总字数 ≤ 200 字：\n"
+            f"- 画面类型（调度界面截图 / 设备现场照 / 文档表格 / 其他）\n"
+            f"- 画面上可见的关键内容：界面名称/页面元素、文字标签、数值（含错误码、机器人ID）、"
+            f"指示灯/设备状态——**逐字原样抄录，禁止推测补全**，看不清的写「（模糊）」\n"
+            f"- 仅当画面上有明确的错误提示/告警标识时，原样转述该提示文字；画面正常就写「画面无报错提示」\n"
+            f"要点之后另起一行写「【回应】」加一句话（≤40 字），结合画面要点和上面的对话背景：\n"
+            f"- 背景已明确在排查什么 → 自然接话（如「这个数值确实不对，先记下了」）\n"
+            f"- 看不出用户目的 → 一句话问清意图（要查图上的报错，还是问这个界面怎么操作，还是其他情况）\n"
+            f"- 画面无报错且没有对话背景 → 问「这是遇到什么问题了，还是想了解这个界面的配置？」\n"
+            f"要点部分禁止推测故障原因；回应部分不要给排查步骤、不要下诊断结论。"
         )
         try:
             async for tok in llm.stream_vision(
                 prompt=prompt,
                 images=uris,
                 system_prompt=(
-                    "你是 AGV/AMR 调度系统的运维专家。看图后只输出关键要点的简短描述，"
-                    "总字数 ≤ 200 字。使用'可能''疑似'等措辞，不下最终结论，不写长段分析。"
+                    "你是 AGV/AMR 调度系统的图片转述员，只做客观转述、不做分析判断："
+                    "把画面上真实可见的内容（文字、数值、状态、错误码）逐字抄录成要点，"
+                    "总字数 ≤ 200 字。看不清的注明「（模糊）」，禁止编造画面上没有的信息，"
+                    "禁止推测故障原因。最后按 prompt 要求在「【回应】」行用一句话回应用户。"
                 ),
                 max_tokens=600,
                 temperature=0.3,
@@ -754,16 +764,26 @@ async def _upload_events(
                 image_desc += tok
                 yield {"event": "vision_token", "token": tok}
             image_desc = image_desc.strip()
+            # 【回应】段拆分：要点进 upload_message（主模型只看纯转述，不被回应话术
+            # 带偏），要点+回应进 ack_message（用户看到的回执，图片+反问自然衔接）
+            _vlm_full = image_desc
+            _vlm_reply = ""
+            if "【回应】" in image_desc:
+                _body, _, _vlm_reply = image_desc.partition("【回应】")
+                image_desc = _body.strip()
+                _vlm_reply = _vlm_reply.strip()
+                _vlm_full = image_desc + (f"\n\n{_vlm_reply}" if _vlm_reply else "")
             vlm_ms = round((time.perf_counter() - t_vlm) * 1000)
             logger.info(
                 f"[upload] VLM调用完成: session={session_id[:12]}, "
                 f"elapsed={vlm_ms}ms, desc_len={len(image_desc)}, "
+                f"reply_len={len(_vlm_reply)}, "
                 f"desc_empty={not image_desc}, desc前80字={image_desc[:80]}"
             )
         except Exception as e:
             logger.error(f"[upload] VLM失败: {e}", exc_info=True)
             yield {"event": "vision_error", "error": str(e)}
-        yield {"event": "vision_done", "desc": image_desc}
+        yield {"event": "vision_done", "desc": _vlm_full}
     else:
         logger.info(f"[upload] 无图片文件，跳过VLM: session={session_id[:12]}")
         yield {"event": "vision_done", "desc": ""}
@@ -780,14 +800,20 @@ async def _upload_events(
             f"turns={turn_count_before}, has_desc={bool(image_desc)}, "
             f"desc_len={len(image_desc)}"
         )
+        # 上传轮的完整原文随附件条目持久化（metadata 不受 10 轮滑动窗口截断）：
+        # memory 里的上传轮被滑出窗口后，_attach_chat_snapshot 用它重建合成轮
+        # 插回 db 历史——否则附件 md 里丢失「我上传了…」轮，图片内联无锚点
+        # （0825 事故：图全落末尾节）。created_at 口径对齐 MySQL（naive UTC）。
+        _uploaded_at = datetime.utcnow().isoformat(timespec="seconds")
         if image_desc:
-            await mgr.add_turn(session_id, "user",
-                               f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
+            upload_message = f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}"
         else:
-            await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
-        # 确认回执（assistant turn）：VLM 描述直接作为回执，非图片则提示暂不支持解析
-        if image_desc:
-            ack_message = image_desc
+            upload_message = f"[上传了附件] {filenames}"
+        await mgr.add_turn(session_id, "user", upload_message)
+        # 确认回执（assistant turn）：要点+【回应】完整版给用户（图片分析后自然
+        # 反问意图）；upload_message 里仍只存纯要点——主模型消费的对话保持纯转述
+        if _vlm_full:
+            ack_message = _vlm_full
         else:
             exts = {Path(f["filename"]).suffix.lower() for f in saved}
             ext_str = "、".join(exts)
@@ -810,6 +836,8 @@ async def _upload_events(
         # 「附件与本单问题是否相关」的唯一内容信号。多图批次共享同一段摘要。
         if image_desc:
             _new = [{**s, "desc": image_desc[:160]} for s in _new]
+        _new = [{**s, "uploaded_at": _uploaded_at, "upload_message": upload_message}
+                for s in _new]
         state["attachments"] = existing + _new
         if image_desc:
             ci = state.get("collected_info", {}) or {}

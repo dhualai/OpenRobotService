@@ -120,6 +120,11 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
     for tk, mk in _TICKET_META_FIELD_MAP.items():
         if ticket.get(tk):
             meta[mk] = ticket[tk]
+    # 远程方式（前端弹窗透传）：写入 metadata_info.remote_type，便于详情页展示/后续筛选。
+    # 路径：ChatPanel 转工单确认弹窗 / 系统任务新建弹窗 → overrides.attachments+remote_type
+    # → ticket_dict_to_task_fields 落库。值约定：todesk / sunflower / other / ''。
+    if ticket.get("remote_type"):
+        meta["remote_type"] = ticket["remote_type"]
     # feature 类型的 source 存为 feature_source，避开 Task.source 列名
     if ticket.get("type") == "feature" and ticket.get("source"):
         meta["feature_source"] = ticket["source"]
