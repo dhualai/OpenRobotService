@@ -71,16 +71,8 @@ interface Message {
   // generating_ticket=提单生成工单草稿中（LLM 的「好的」被抑制，弹窗前显示动画）。
   // 设置后气泡渲染 chat-bubble__typing 动态动画（同纯文字「思考中」），不写入 content（content 留空）
   phase?: 'analyzing_image' | 'analyzing_file' | 'thinking' | 'generating_ticket';
-  // 任务 Agent 专属：结构化方案草稿 / 工单概览 / 信息不足提示（长文本可展开）
-  subtype?: 'solution_draft' | 'ticket_overview' | 'missing_hint';
-  solution_draft?: {
-    _task_id?: string;
-    root_cause_analysis: string;
-    suggested_actions: string[];
-    references: string[];
-    confidence: number;
-    needs_more_info: boolean;
-  };
+  // 任务 Agent 专属：工单概览 / 信息不足提示（长文本可展开）
+  subtype?: 'ticket_overview' | 'missing_hint';
   // 工单确认后的概览气泡：confirm 成功时构造，DB 持久化（metadata_.kind='ticket_overview'）
   ticket_overview?: {
     db_id: number;
@@ -1280,7 +1272,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
-      let solutionDraft: Message['solution_draft'] | null = null;
       let ticketCreatedThisTurn = false;
       let currentEvent = '';
       let streamError = ''; // 流式 event:error 的错误信息（之前静默吞掉 → 空气泡）
@@ -1308,17 +1299,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           // 流式错误（如诊断 pipeline 抛错）：捕获错误信息，循环结束后抛出，避免静默空气泡
           if (currentEvent === 'error' && data.error) {
             streamError = data.error;
-          }
-          // 任务 Agent result 事件：拿到结构化方案草稿
-          if (currentEvent === 'result' && data.root_cause_analysis) {
-            solutionDraft = {
-              _task_id: data._task_id,
-              root_cause_analysis: data.root_cause_analysis,
-              suggested_actions: data.suggested_actions || [],
-              references: data.references || [],
-              confidence: data.confidence ?? 0,
-              needs_more_info: data.needs_more_info ?? false,
-            };
           }
           // AI 自动建单（对话中输入「转工单」等）：result 事件携带 ticket，标记本轮已建单
           if (currentEvent === 'result' && data.ticket) {
@@ -1417,14 +1397,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       if (wasNew && sentConvId && convRef.current === sentConvId) {
         setConversationId(sentConvId);
         refreshConversations();
-      }
-      // 任务 Agent 方案草稿：注入 solution_draft 标记
-      if (solutionDraft && !isCall) {
-        setMessages((prev) => prev.map((m) =>
-          m.id === assistantId
-            ? { ...m, subtype: 'solution_draft' as const, solution_draft: solutionDraft ?? undefined }
-            : m
-        ));
       }
       // AI 自动建单（对话中输入「转工单」等）：本轮已建单 → 触发 badge 重新计数（与外层按钮路径一致）
       if (ticketCreatedThisTurn) {
