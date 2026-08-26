@@ -1252,12 +1252,6 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
 # ============================================================
 task_agent_router = APIRouter(prefix="/api/ai/task", tags=["U老师"])
 
-class TaskSubmitAPIRequest(BaseModel):
-    task_id: str = Field(..., description="工单 ID")
-    session_id: str = Field(..., description="对话 session")
-    final_solution: dict = Field(..., description="工程师编辑后的最终方案")
-    resolution: str = Field(default="resolved")
-
 class SummarizeRequest(BaseModel):
     """后端触发摘要扫描（无参数 — U老师 自动扫描所有活跃工单）"""
 
@@ -1343,26 +1337,31 @@ async def task_summarize(body: SummarizeRequest = SummarizeRequest()) -> dict:
         return {"code": 1, "message": str(e)}
 
 
-@task_agent_router.post("/submit", summary="提交方案")
-async def task_submit(request: Request, body: TaskSubmitAPIRequest) -> dict:
-    try:
-        from ai.agents.AiTaskPlatform import get_task_agent, SolutionDraft
-        agent = await get_task_agent()
-        draft = SolutionDraft(**body.final_solution)
-        result = await agent.submit(
-            task_id=body.task_id,
-            session_id=body.session_id,
-            draft=draft,
-            resolution=body.resolution,
-        )
-        return result
-    except Exception as e:
-        return {"code": 1, "message": str(e)}
-
-
 @task_agent_router.get("/health", summary="健康检查")
 async def task_agent_health() -> dict:
     return {"status": "ok", "service": "ai-task-agent"}
+
+
+class LogCacheCleanupRequest(BaseModel):
+    task_id: str = Field(..., description="工单 ID")  # 该工单已解决/关闭，清理其日志缓存
+
+
+@task_agent_router.post("/log-cache/cleanup", summary="清理工单日志缓存（已解决/已关闭时调用）")
+async def task_log_cache_cleanup(body: LogCacheCleanupRequest) -> dict:
+    """工单已解决/已关闭时，删除该工单的所有日志附件缓存（磁盘目录 + 内存索引）。
+
+    由后端在 `update_ticket_status` 状态变更为 resolved/closed 时调用。
+    """
+    import logging
+    logger = logging.getLogger("TASK_AGENT")
+    try:
+        from ai.core.log_cache import cleanup_task_log_cache
+        removed = cleanup_task_log_cache(body.task_id)
+        logger.info(f"[log-cache/cleanup] task_id={body.task_id}, removed_dirs={removed}")
+        return {"code": 0, "data": {"task_id": body.task_id, "removed_dirs": removed}}
+    except Exception as e:
+        logger.exception(f"[log-cache/cleanup] 失败 task_id={body.task_id}: {e}")
+        return {"code": 1, "message": str(e)}
 
 
 # ============================================================
