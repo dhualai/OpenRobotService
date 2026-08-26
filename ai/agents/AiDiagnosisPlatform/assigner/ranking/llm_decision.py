@@ -144,31 +144,75 @@ class LlmDecision:
                         decision_type="auto",
                     )
 
-        # 2) 若排名差距足够大则直接采纳 top（避免 LLM 频繁覆写明显的数值优势）
+        # 2) 默认直接采用精排第一名（保证派单尊重排名），
+        #    仅当第一名总分很低（< llm_decision_low_score_threshold，说明候选都不理想）时
+        #    才触发 LLM 在精排 Top-K 内再决定一遍，避免大模型随意覆写排名。
         try:
-            threshold = float(getattr(self._config, "llm_respect_ranking_threshold", 0.3))
+            low_score_threshold = float(
+                getattr(self._config, "llm_decision_low_score_threshold", 0.6)
+            )
         except Exception:
-            threshold = 0.3
+            low_score_threshold = 0.6
+        try:
+            topk = int(getattr(self._config, "llm_decision_topk", 3))
+            if topk < 1:
+                topk = 1
+        except Exception:
+            topk = 3
 
-        if top_eid and (top_score - second_score) >= threshold:
-            # 直接返回 top
+        if top_eid and top_score >= low_score_threshold:
+            # 第一名评分不低 → 直接采用，大模型不再覆写
             eng = next((e for e in engineers if e.id == top_eid), None)
             if eng:
                 return AssignmentResult(
                     engineer_id=eng.id, engineer_name=eng.name,
                     confidence_score=round(float(top_score), 4),
-                    reasoning=f"Selected by ranking margin: top({top_score:.4f}) - second({second_score:.4f}) >= threshold({threshold})",
+                    reasoning=(
+                        f"Selected by ranking: top1({eng.name}) total={top_score:.4f} "
+                        f">= low_score_threshold({low_score_threshold}); ranking respected, LLM bypassed."
+                    ),
                     decision_type="auto",
                 )
 
-        # 3) 回退到原有 LLM 流程
-        prompt = self._build_prompt(ticket, engineers, recall_result, ranked_scores)
+        # 3) 第一名评分很低 → 触发 LLM 再决定，但把可选范围限制在精排 Top-K 内，
+        #    保证即使重选也尊重排名、不会选到低排名者。
+        #    构造 Top-K 窗口：仅保留精排前 K 的候选及其分数，供 LLM 挑选与解析。
+        top_items = list(ranked_scores.items())[:topk]
+        window_ranked = dict(top_items)
+        window_engineers = []
+        emap = {e.id: e for e in engineers}
+        for eid, _ in top_items:
+            eng = emap.get(eid)
+            if eng is not None:
+                window_engineers.append(eng)
+        if not window_engineers:
+            # 极端兜底：窗口为空则退回精排第一名
+            eng = next((e for e in engineers if top_eid and e.id == top_eid), None)
+            if eng:
+                return AssignmentResult(
+                    engineer_id=eng.id, engineer_name=eng.name,
+                    confidence_score=round(float(top_score), 4),
+                    reasoning="Low-score re-decision window empty; fell back to top1 by ranking.",
+                    decision_type="auto",
+                )
+            return None
+
+        prompt = self._build_prompt(ticket, window_engineers, recall_result, window_ranked)
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()
             response = await llm.complete(prompt, max_tokens=400, temperature=0.3)
-            return self._parse(response, engineers)
+            return self._parse(response, window_engineers)
         except Exception:
+            # LLM 失败时兜底：仍采用精排第一名，保证派单不中断、尊重排名
+            eng = next((e for e in window_engineers if top_eid and e.id == top_eid), None)
+            if eng:
+                return AssignmentResult(
+                    engineer_id=eng.id, engineer_name=eng.name,
+                    confidence_score=round(float(top_score), 4),
+                    reasoning="Low-score LLM re-decision failed; fell back to top1 by ranking.",
+                    decision_type="fallback",
+                )
             return None
 
     def _build_prompt(self, ticket, engineers, recall_result, ranked_scores):
@@ -246,8 +290,9 @@ class LlmDecision:
             "1. 先独立判断 ticket_category（support/feature/bug/problem/other）与 problem_domain，并识别工单涉及的产品与模块。",
             "2. feature 需求类：优先找负责「产品设计」模块、且归属产品与工单一致的候选人（该产品的产品经理）。",
             "3. 其余类型（support/bug/problem/other）：按工单涉及的模块匹配候选人负责的模块，选总分最高者（#1 默认优先）。",
-            "4. 仅当 #1 的产品/模块明显不匹配时才选下一个更相关者，并在 reasoning 说明。",
-            "5. 若你复核出的类型与上游初步类型不一致，在 reasoning 里说明理由（如「上游判 X，实为 Y」）。",
+            "4. 【最重要】下方候选人列表即为精排 Top-N（#1 为总分最高）。你必须默认选择 #1，尊重精排排名，不要随意更换。",
+            "5. 仅当 #1 的产品/模块明显不匹配、或工单为 feature 需求（需派产品设计师）时才可选排名更靠后的候选人，且只能在下方给出的候选人里选，并在 reasoning 说明理由。",
+            "6. 若你复核出的类型与上游初步类型不一致，在 reasoning 里说明理由（如「上游判 X，实为 Y」）。",
         ])
 
         # 「摇人吧服务号提单」项目专属：按服务号内部子界面/子功能区分总负责人。
