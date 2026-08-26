@@ -103,7 +103,8 @@ export interface ProjectMonthlyItem {
   key: string;   // YYYY-MM
   year: number;
   month: number;
-  value: number;
+  value: number;          // 已承接项目数（是否承接=是）
+  pending_value?: number; // 待定项目数（是否承接=待定），柱子上方浅色段；老后端未返回时按 0 处理
 }
 
 export interface ProjectMonthlySummary {
@@ -115,11 +116,13 @@ const EMPTY_MONTHLY_SUMMARY: ProjectMonthlySummary = { monthly: [], years: [] };
 
 /**
  * GET /api/admin/dashboard/projects/monthly?project_ids=id1,id2
- * 期望响应：{ code: 0, data: { monthly: [{key, year, month, value}], years: [...] } }
+ * 期望响应：{ code: 0, data: { monthly: [{key, year, month, value, pending_value}], years: [...] } }
  * 数据来源：admin 模块 projects 表按业绩核算期 settlement_period 分组统计（手工填写，
  * 常见 YYYYMM 如 202608 = 2026年8月，兼容 YYYY-MM；后端统一输出 YYYY-MM 的 key），
  * 见 backend/app/modules/admin/api/dashboard.py get_project_monthly_summary。
  * 口径与「本月新增」统计卡一致（核算期 = 当前月）；无核算期的项目不参与统计。
+ * value = 已承接项目数，pending_value = 待定项目数（柱子浅色段）；待定项目只出现在这张图，
+ * 项目总数/项目列表/紧急度看板等其余口径均不含，见 project_service.get_projects 的 include_pending。
  * projectIds 传入后仅统计这些项目。
  */
 export async function fetchProjectMonthly(projectIds?: string[]): Promise<ProjectMonthlySummary> {

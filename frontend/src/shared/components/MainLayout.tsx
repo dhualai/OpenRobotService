@@ -156,7 +156,7 @@ export default function MainLayout() {
                 {/* 系统任务：图标右上角「待我处理」数量角标（蓝底白字，>0 时展示） */}
                 {tab === 'tasks' && mineTicketCount != null && mineTicketCount > 0 && (
                   <span className="app-bottom-nav__badge" data-testid="nav-badge-tasks">
-                    {mineTicketCount > 99 ? '99+' : mineTicketCount}
+                    {mineTicketCount > 999 ? '999+' : mineTicketCount}
                   </span>
                 )}
               </span>

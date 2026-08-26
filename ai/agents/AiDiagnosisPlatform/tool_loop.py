@@ -10,10 +10,13 @@
 """
 import asyncio
 import json
-import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-logger = logging.getLogger(__name__)
+from ai.core.logging import get_logger
+
+# name 固定 "AI"（直挂 file handler）：logging.getLogger(__name__) 走 root
+# propagate 链路，在 uvicorn reload worker 里丢日志（[tool_loop] 不进 ai.log）。
+logger = get_logger()
 
 # 工具循环安全上限：防止 LLM 无限调工具。
 # 5 → 8：诊断循环需要「查资料→发现不相关→换角度再查→交叉验证」的深层推理，
