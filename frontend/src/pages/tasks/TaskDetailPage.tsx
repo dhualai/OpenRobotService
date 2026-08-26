@@ -149,6 +149,10 @@ export default function TaskDetailPage() {
   const [escalateReason, setEscalateReason] = useState('');
   const [returnReason, setReturnReason] = useState('');
   const [reassignReason, setReassignReason] = useState('');
+  // 创建人姓名编辑（仅处理人/管理员可点击设置）
+  const [showCreatorNamePopup, setShowCreatorNamePopup] = useState(false);
+  const [creatorNameInput, setCreatorNameInput] = useState('');
+  const [submittingCreatorName, setSubmittingCreatorName] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
 
@@ -311,6 +315,9 @@ export default function TaskDetailPage() {
 
     return { isAssignee, isReporter };
   };
+
+  // 仅工单处理人（assigned_to）或管理员可点击「创建人」设置其姓名
+  const canEditCreatorName = !!detail && (getCurrentUserRoles().isAssignee || username === 'admin');
 
   const getActionButtons = () => {
     const status = detail?.status?.toLowerCase();
@@ -823,6 +830,32 @@ export default function TaskDetailPage() {
     }
   };
 
+  // 设置创建人姓名：通过工单 created_by 反查用户表更新 user.name（不改变 created_by）
+  const handleUpdateCreatorName = async () => {
+    if (!detail) return;
+    const newName = creatorNameInput.trim();
+    if (!newName) {
+      Toast({ message: '姓名不能为空', theme: 'warning' });
+      return;
+    }
+    setSubmittingCreatorName(true);
+    try {
+      await request(`/${detail.id}/creator-name`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: newName }),
+        skipCache: true,
+      });
+      await refreshDetail();
+      Toast({ message: '创建人姓名已更新', theme: 'success' });
+      setShowCreatorNamePopup(false);
+      setCreatorNameInput('');
+    } catch (err) {
+      Toast({ message: `更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setSubmittingCreatorName(false);
+    }
+  };
+
   const [downloadingIdx, setDownloadingIdx] = useState<number | null>(null);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
 
@@ -1192,7 +1225,16 @@ export default function TaskDetailPage() {
               <span className="detail-info-item__icon"><User size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">创建人</span>
-                <span className="detail-info-item__value">{detail.created_by_name || detail.reporter_name || detail.created_by || '-'}</span>
+                <span
+                  className="detail-info-item__value"
+                  style={canEditCreatorName ? { cursor: 'pointer', color: 'var(--blue-2)', textDecoration: 'underline' } : undefined}
+                  onClick={canEditCreatorName ? () => {
+                    setCreatorNameInput(detail.created_by_name || detail.reporter_name || detail.created_by || '');
+                    setShowCreatorNamePopup(true);
+                  } : undefined}
+                >
+                  {detail.created_by_name || detail.reporter_name || detail.created_by || '-'}
+                </span>
               </div>
             </div>
             <div className="detail-info-item">
@@ -1725,6 +1767,35 @@ export default function TaskDetailPage() {
           <div className="ticket-edit__btns">
             <Button theme="default" onClick={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); }}>取消</Button>
             <Button theme="primary" onClick={handleReassign} disabled={!reassignUser || !reassignReason.trim()}>确认指派</Button>
+          </div>
+        </div>
+      </Popup>
+
+      <Popup
+        visible={showCreatorNamePopup}
+        onClose={() => { if (!submittingCreatorName) { setShowCreatorNamePopup(false); setCreatorNameInput(''); } }}
+        placement="bottom"
+        showOverlay
+        destroyOnClose
+      >
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">设置创建人姓名</h4>
+          <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
+            修改创建人（{(detail?.created_by_name || detail?.reporter_name || detail?.created_by || '-')}）的姓名，保存后工单创建人将显示新姓名。
+          </p>
+          <Form initialData={{}}>
+            <FormItem label="姓名" name="creatorName" labelAlign="top" requiredMark>
+              <ClearableInput
+                value={creatorNameInput}
+                onChange={(v) => setCreatorNameInput(String(v))}
+                placeholder="请输入创建人姓名"
+                maxlength={64}
+              />
+            </FormItem>
+          </Form>
+          <div className="ticket-edit__btns">
+            <Button theme="default" disabled={submittingCreatorName} onClick={() => { setShowCreatorNamePopup(false); setCreatorNameInput(''); }}>取消</Button>
+            <Button theme="primary" loading={submittingCreatorName} onClick={handleUpdateCreatorName} disabled={!creatorNameInput.trim()}>保存</Button>
           </div>
         </div>
       </Popup>

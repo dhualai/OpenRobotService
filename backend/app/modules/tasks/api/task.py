@@ -1250,6 +1250,72 @@ async def assign_task(
         raise HTTPException(status_code=500, detail=f"分配任务失败: {str(e)}")
 
 
+class CreatorNameUpdate(BaseModel):
+    """更新工单创建人姓名请求体。仅更新 users.name，不改变工单 created_by。"""
+    name: str
+
+
+@router.patch("/{task_id}/creator-name", summary="更新工单创建人姓名（仅处理人/管理员可操作）")
+async def update_creator_name(
+    task_id: int,
+    payload: CreatorNameUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """通过工单 created_by 反查用户表并更新其 name；不改变 created_by 本身。
+
+    权限：仅工单处理人（assigned_to）或管理员可操作。创建人姓名为后端从 users 表
+    实时解析的派生字段（无独立列），故更新用户 name 后，工单 created_by_name 自动刷新。
+    """
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
+    user_name = (current_user.get('name', username) if isinstance(current_user, dict) else username)
+
+    # 仅工单处理人（assigned_to）或管理员可修改创建人姓名
+    if not is_admin and not user_matches(current_user, ticket.assigned_to):
+        raise HTTPException(status_code=403, detail="仅工单处理人可修改创建人姓名")
+
+    new_name = (payload.name or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="创建人姓名不能为空")
+
+    created_by = getattr(ticket, "created_by", None)
+    if not created_by:
+        raise HTTPException(status_code=400, detail="工单无创建人，无法更新姓名")
+
+    # created_by 存 users.id；过渡期历史数据可能是 username，两种键都尝试解析
+    creator = db_manager.get_user_by_id(created_by) or db_manager.get_user(created_by)
+    if not creator:
+        raise HTTPException(status_code=404, detail="创建人用户记录不存在")
+
+    success = db_manager.update_user(creator['id'], name=new_name)
+    if not success:
+        raise HTTPException(status_code=500, detail="更新创建人姓名失败")
+
+    # 操作日志 + 系统评论（与派单/改派一致，记录操作与操作人）
+    token = current_user.get('token') or ''
+    try:
+        _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
+        await OperationLogService.log(
+            db=db,
+            task_id=task_id,
+            op_type=OperationType.UPDATE,
+            operator=username,
+            operator_name=user_name,
+            detail={"field": "created_by_name", "new_name": new_name},
+            description=f"{_role}{user_name} 将创建人姓名更新为「{new_name}」" if _role else f"{user_name} 将创建人姓名更新为「{new_name}」",
+        )
+        await _add_system_comment(db, task_id, f"{user_name} 将创建人姓名更新为「{new_name}」", username, token)
+    except Exception:
+        pass
+
+    return {"name": new_name, "created_by": created_by}
+
+
 @router.post("/{task_id}/ai-assign")
 async def trigger_ai_assignment(
     task_id: int,

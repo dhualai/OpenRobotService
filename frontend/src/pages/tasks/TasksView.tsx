@@ -1193,7 +1193,9 @@ export default function TasksView() {
       const payload = {
         ...createForm,
         metadata_info,
-        attachments: remoteShots.length > 0 ? remoteShots.map((s) => s.objectPath) : null,
+        // 附件统一 dict 结构 {path, object_path, filename}，与 tasks.attachments 约定对齐
+        // （path 供详情页下载，object_path 供 AI 路径去重）
+        attachments: remoteShots.length > 0 ? remoteShots.map((s) => ({ path: s.objectPath, object_path: s.objectPath, filename: s.fileName })) : null,
       };
       delete (payload as Record<string, unknown>).remote_type;
       await request<Ticket>('/', {

@@ -2273,6 +2273,77 @@ html, body, #root {
   transition: height 0.06s linear, opacity 0.15s ease;
 }
 
+/* 后台管理欢迎区：左侧圆形头像 + 右侧两排文字（Hello / 用户名），马卡龙风格 */
+.admin-welcome {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0 14px;
+}
+.admin-welcome__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--mac-blue-5) 55%, #fff);
+  color: var(--mac-blue-2);
+}
+.admin-welcome__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.admin-welcome__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.admin-welcome__hello {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--mac-muted-fg);
+}
+.admin-welcome__name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--mac-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 工单数据来源分析：类型分布 / 提单人角色分布各占一张卡片（上下排列），
+   卡片内环图在左、图例在右占满剩余宽度，保证角色名/数值完整展示 */
+.mac-source-block {
+  min-width: 0;
+}
+.mac-source-block__title {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mac-fg);
+  padding-bottom: 10px;
+  border-bottom: 1px solid color-mix(in oklab, var(--mac-border) 60%, transparent);
+}
+.mac-source-block__body {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 24px;
+}
+.mac-source-block__body .mac-donut {
+  flex-shrink: 0;
+}
+.mac-source-block .mac-legend {
+  flex: 1;
+  min-width: 0;
+}
+
 /* ===== 系统任务 / 工单 ===== */
 /* ===== 马卡龙极简设计变量（参考 macaron-minimal-ui 设计系统，系统任务页） ===== */
 :root {
@@ -5885,7 +5956,7 @@ html, body, #root {
 .detail-chat-input-row {
   display: flex;
   gap: 8px;
-  align-items: flex-end;
+  align-items: center;
 }
 .detail-chat-input-row .t-button {
   padding: 0 10px;
@@ -6541,6 +6612,114 @@ html, body, #root {
   font-weight: 600;
   padding: 4px 12px;
   height: auto;
+}
+
+/* 表情按钮：视觉与附件按钮一致（36px rounded-md bg-secondary muted 图标居中） */
+/* 表情按钮：与附件按钮样式完全一致（36px rounded-md bg-secondary muted 图标居中） */
+.detail-chat-emoji {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--secondary);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.detail-chat-emoji svg { display: block; }
+.detail-chat-emoji:active { background: var(--gray-soft); color: var(--foreground); }
+.detail-chat-emoji:disabled { opacity: 0.4; }
+
+/* 表情面板 - 白底卡片浮于输入栏上方
+   移动端（默认）：自适应全宽铺满输入框宽度，左右贴边无溢出
+   PC 端（≥768px）：右对齐固定宽度浮层，贴合输入框右下角（微信 PC 同款） */
+.emoji-picker {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  margin-bottom: 4px;
+  z-index: 100;
+  background: #ffffff; /* 强制纯白，避免 --card 浅灰透到表情之间 */
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.1);
+  padding: 8px;
+  overflow: hidden;
+}
+@media (min-width: 768px) {
+  .emoji-picker {
+    left: auto;
+    right: 0;
+    width: 380px;
+    margin-bottom: 8px;
+    border-radius: 12px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  }
+}
+
+/* 自适应列网格：
+   minmax(40px, 1fr) 让每格最小 40px、不足时由 grid 自动减小；
+   设备越宽，列数自动变多（移动端约 7 列、平板约 10+ 列、桌面约 13+ 列） */
+.emoji-picker__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.emoji-picker__grid::-webkit-scrollbar { width: 4px; }
+.emoji-picker__grid::-webkit-scrollbar-track { background: transparent; }
+.emoji-picker__grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.emoji-picker__grid::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
+
+/* 单个表情按钮：透明底、居中、仅 hover/active 给反馈，无边框无背景 */
+.emoji-picker__item {
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  padding: 6px 0;
+  line-height: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s;
+}
+.emoji-picker__item img {
+  width: 28px;
+  height: 28px;
+  display: block;
+  pointer-events: none;
+}
+.emoji-picker__item:hover { background: rgba(0, 0, 0, 0.06); }
+.emoji-picker__item:active { background: rgba(0, 0, 0, 0.1); }
+
+/* 微信经典表情：气泡内行内展示（MarkdownRenderer 直渲）。
+   尺寸与选择面板一致（28px），选 .markdown-body 前缀提高特异性，
+   压制 .markdown-body img 的 display:block / 圆角等默认样式 */
+.markdown-body .md-emoji {
+  width: 28px;
+  height: 28px;
+  display: inline-block;
+  vertical-align: -6px;
+  margin: 0 1px;
+  border-radius: 0;
+  user-select: none;
+}
+/* 单条 shortcode（整条消息就是一个表情）：与选择面板 / 行内表情一致保持 28px，
+   仅独占一行（display:block）不放大；用户要求单发与混排尺寸统一 */
+.md-emoji--standalone {
+  width: 28px;
+  height: 28px;
+  display: block;
+  margin: 2px 0;
 }
 .detail-chat-mention-btn.t-button:not(.t-button--disabled):active { background: var(--blue-soft); color: var(--blue-2); }
 

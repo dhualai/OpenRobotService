@@ -6,9 +6,11 @@
 // 微信化交互：消息引用（长按→引用；气泡内引用块可点击定位原消息）、长按操作菜单（引用/复制/删除）、气泡样式优化。
 import { useState, useRef, useEffect, useMemo, useCallback, Fragment } from 'react';
 import { Button, Toast, Popover } from 'tdesign-mobile-react';
-import { Paperclip, Send } from 'lucide-react';
+import { Paperclip, Send, Smile } from 'lucide-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
+import EmojiPicker from '@/shared/components/EmojiPicker';
+import { replaceWechatEmoji, parseStandaloneEmoji } from '@/shared/emoji/wechat';
 
 import { useAuthStore } from '@/stores/auth';
 import API_CONFIG from '@/config/api';
@@ -310,6 +312,8 @@ export default function DiscussionPanel({
   );
 
   const [commentText, setCommentText] = useState('');
+  /** 表情选择器显隐：点表情按钮切换，点面板外部 / 发送后收起 */
+  const [showEmoji, setShowEmoji] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
   // 待发送图片的预览 objectURL（与 pendingFiles 一一对应，非图片为空串），
@@ -356,6 +360,12 @@ export default function DiscussionPanel({
 
   // ── 滚动管理（微信式）：仅在贴底时自动滚动；非贴底时累计新消息数并提示 ──
   const isAtBottomRef = useRef(true);
+  // 用户主动发消息后进入「强制贴底」模式：新消息无条件滚到底，直到用户手动上翻历史才退出
+  const forceScrollRef = useRef(false);
+  // 当前讨论区会话标识（taskId）；变化时重置贴底状态，使进入/切换讨论区默认滚到底部最新
+  const sessionIdRef = useRef<string | number | undefined>(undefined);
+  // 标记是否为用户主动滚动（滚轮/触摸），用于在此类滚动时让输入框失焦（收起软键盘）
+  const userScrollRef = useRef(false);
   const [newCount, setNewCount] = useState(0);
   const checkAtBottom = useCallback(() => {
     const el = chatMessagesRef.current;
@@ -405,24 +415,42 @@ export default function DiscussionPanel({
       // 用户手动划到底部时补报已读——此前仅靠「新消息到达且贴底」触发，
       // 一旦错过（到达时不在贴底）就永远漏报，导致对方看不到已读头像。这里补齐。
       reportRead();
+    } else {
+      // 用户主动离开底部（翻看历史）→ 退出「发消息后强制贴底」模式，
+      // 回到微信式「新消息累计提示」，避免一直打断阅读历史。
+      forceScrollRef.current = false;
+    }
+    // 用户主动在消息区滚动（滚轮/触摸）→ 输入框失焦收起软键盘，避免遮挡历史浏览；
+    // 程序滚动（发消息/聚焦触发的强制滚底）不触发，避免聚焦后被立刻失焦
+    if (userScrollRef.current) {
+      userScrollRef.current = false;
+      inputRef.current?.blur();
     }
   }, [checkAtBottom, reportRead, readListCommentId]);
 
-  // 新消息到达：贴底则跟随滚动 + 上报已读；非贴底则累计提示数（不强制打断阅读历史）
+  // 新消息到达：贴底 / 发消息后强制贴底 / 初次进入 / 进入新讨论区 则跟随滚动 + 上报已读；
+  // 否则累计提示数（不强制打断阅读历史）
   useEffect(() => {
+    // 进入 / 切换讨论区（taskId 变化）→ 重置贴底状态，使下次首条评论触发 isPrevInit 强制滚到底
+    if (taskId !== sessionIdRef.current) {
+      sessionIdRef.current = taskId;
+      lastMsgIdRef.current = null;
+      isAtBottomRef.current = true;
+      forceScrollRef.current = true;
+    }
     if (!displayComments.length) return;
     const last = displayComments[displayComments.length - 1];
     const lid = last.id;
     if (lid !== lastMsgIdRef.current) {
       const isPrevInit = lastMsgIdRef.current === null;
       lastMsgIdRef.current = lid;
-      if (isPrevInit || isAtBottomRef.current) {
+      if (isPrevInit || isAtBottomRef.current || forceScrollRef.current) {
         scrollToBottom();
       } else {
         setNewCount((n) => n + 1);
       }
     }
-  }, [displayComments, scrollToBottom]);
+  }, [displayComments, scrollToBottom, taskId]);
 
   // 内容高度变化跟随（图片加载/Markdown 渲染/消息追加撑高）：贴底态自动滚到底，
   // 解决进入后停在顶部、最新消息被截断在边框等问题。仅监听内容容器尺寸，不干扰用户主动滚动。
@@ -577,6 +605,19 @@ export default function DiscussionPanel({
     }, 0);
   };
 
+  // ── 表情：在光标处插入 ──
+  const insertAtCursor = (text: string) => {
+    const cursorPos = inputRef.current?.selectionStart ?? commentText.length;
+    const before = commentText.slice(0, cursorPos);
+    const after = commentText.slice(cursorPos);
+    setCommentText(before + text + after);
+    setTimeout(() => {
+      inputRef.current?.focus();
+      const pos = cursorPos + text.length;
+      inputRef.current?.setSelectionRange(pos, pos);
+    }, 0);
+  };
+
   // ── @# 工单引用: 拉取"相似已解决工单"列表（后端 /api/tasks/{taskId}/similar）──
   const fetchSimilarTickets = useCallback(async () => {
     if (taskId === undefined) return;
@@ -710,6 +751,12 @@ export default function DiscussionPanel({
       setCommentText('');
       setPendingFiles([]);
       setQuoted(null);
+      setShowEmoji(false);
+      // 用户主动发消息 → 强制滚动到底部最新（无论之前是否翻看历史），
+      // 进入「强制贴底」模式；之后新消息（含回显）无条件跟随，直到用户手动上翻历史才退出。
+      forceScrollRef.current = true;
+      isAtBottomRef.current = true;
+      scrollToBottom();
     }
     // 发送完成（无论成功/失败）焦点回到输入框，避免点「发送」按钮夺焦后需手动点回，支持连续输入；
     // textarea 始终挂载，下一帧渲染（sending 解除 disabled）后 focus 生效。
@@ -890,6 +937,8 @@ export default function DiscussionPanel({
         className="detail-chat-messages"
         ref={chatMessagesRef}
         onScroll={handleScroll}
+        onWheel={() => { userScrollRef.current = true; }}
+        onTouchMove={() => { userScrollRef.current = true; }}
         onClick={(e) => {
           // 长按释放后的 click 抑制，避免误触容器诊断链接
           if (suppressClickRef.current) {
@@ -968,7 +1017,23 @@ export default function DiscussionPanel({
                         <span className="detail-chat-name__time">{formatCommentTime(c.created_at)}</span>
                       </div>
                     )}
-                    <MarkdownRenderer content={c.content} compact />
+                    {/* [微笑] 等表情 shortcode → Markdown 图片（微信经典表情包） */}
+                    {(() => {
+                      // 整条消息就是一个表情（WeChat 式单发表情）→ 跳过 Markdown 渲染，
+                      // 直接展示 28px 图（与选择面板 / 行内一致）；仅独占一行、不放大
+                      const solo = parseStandaloneEmoji(c.content);
+                      if (solo) {
+                        return (
+                          <img
+                            src={solo.url}
+                            alt={solo.code}
+                            className="md-emoji md-emoji--standalone"
+                            draggable={false}
+                          />
+                        );
+                      }
+                      return <MarkdownRenderer content={replaceWechatEmoji(c.content)} compact />;
+                    })()}
                     {c.attachments && c.attachments.length > 0 && (
                       <div className="detail-chat-attachments">
                         {c.attachments.map((a, i) => {
@@ -1298,10 +1363,29 @@ export default function DiscussionPanel({
             onChange={handleInputChange}
             onKeyDown={handleInputKeyDown}
             onPaste={handlePaste}
+            onFocus={() => {
+              // 用户聚焦输入框（准备回复）→ 立即定位到底部最新，并进入「强制贴底」模式，
+              // 与发消息行为一致：聚焦后新消息（含回显）无条件跟滚，直到用户手动上翻历史才退出。
+              forceScrollRef.current = true;
+              isAtBottomRef.current = true;
+              scrollToBottom();
+            }}
             placeholder={disabled ? '工单号缺失，无法评论' : ph}
             disabled={sending || disabled}
             rows={1}
           />
+          {/* 表情按钮（与附件/发送按钮同款：36px 圆角方形、居中图标；onMouseDown 阻止冒泡防误关面板） */}
+          <button
+            type="button"
+            className="detail-chat-emoji"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => setShowEmoji((v) => !v)}
+            disabled={sending || disabled}
+            aria-label="表情"
+            aria-expanded={showEmoji}
+          >
+            <Smile size={18} strokeWidth={2} />
+          </button>
           {enableAttach && (
             <button
               type="button"
@@ -1310,17 +1394,24 @@ export default function DiscussionPanel({
               disabled={sending || disabled}
               aria-label="上传图片或文件"
             >
-              <Paperclip size={16} strokeWidth={2} />
+              <Paperclip size={18} strokeWidth={2} />
             </button>
           )}
           {/* 发送按钮（设计稿 04/05 工单详情输入区：size-10 bg-primary 圆形 + Send 纸飞机图标；ArrowUp 仅用于对话首页） */}
           <Button size="small" theme="primary" className="detail-chat-send" onClick={handleSend} disabled={!canSend} aria-label="发送">
-            {sending ? <span className="detail-attachment-file__spinner" /> : <Send size={16} strokeWidth={2.2} />}
+            {sending ? <span className="detail-attachment-file__spinner" /> : <Send size={18} strokeWidth={2.2} />}
           </Button>
           {enableAttach && (
             <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={handleSelectFile} />
           )}
         </div>
+        {/* 表情选择器（微信经典表情包）：沿用 mention-panel 同款卡片浮层，浮于输入栏上方；点击外部关闭，选完保留可连续选择 */}
+        {showEmoji && (
+          <EmojiPicker
+            onSelect={(code) => insertAtCursor(`[${code}]`)}
+            onClose={() => setShowEmoji(false)}
+          />
+        )}
       </div>
 
       {/* 附件预览：图片灯箱 / PDF 内联 / Markdown 渲染 */}

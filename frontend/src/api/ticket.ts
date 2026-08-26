@@ -41,8 +41,9 @@ export interface CreateTicketParams {
   customer?: string;
   metadata_info?: Record<string, unknown>;
   tags?: string[];
-  /** 附件 object_path 字符串数组（MinIO 上的真实路径，如 "helpdesk/temp/xxx.png"） */
-  attachments?: string[];
+  /** 附件列表：字符串为 object_path；dict 为 {path, object_path, filename} 结构（远程截图等）。
+   *  与 tasks.attachments 列约定对齐——详情页读 path，AI 路径去重读 object_path。 */
+  attachments?: Array<string | { path?: string; object_path?: string; filename?: string; [k: string]: unknown }>;
 }
 
 export interface CreatedTicket {
