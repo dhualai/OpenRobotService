@@ -252,6 +252,8 @@ class DispatchFlow:
             preferred_assignee_id=preferred_assignee_id,
             dept_routing=tighten.dept,
         )
+        # 负载均衡前先记录精排原始分数，便于对比是谁被负载均衡压下去、谁被加权抬上来
+        self._log_ranked(ltag, ranked_scores, candidates, prefix="Step4 精排Top(负载均衡前)")
 
         # ── Step 5: 负载均衡（按在途工单数打折，避免单子集中在少数人）──
         ranked_scores = self._apply_load_balance(ranked_scores)
