@@ -3,14 +3,14 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 interface FuncNode {
-  key: string;
+  key?: string;
   name: string;
   keywords: string[];
   anchor?: string;
   engineers: string[];
 }
 interface InterfaceNode {
-  key: string;
+  key?: string;
   name: string;
   description?: string;
   functions: FuncNode[];
