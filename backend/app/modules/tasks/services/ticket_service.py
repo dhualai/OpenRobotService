@@ -101,7 +101,6 @@ class TicketService:
                 # 否则工单会留在 NEW 被派单 Worker 再次派单。
                 assigned_to=assigned_to_id,
                 customer=ticket_data.customer,
-                attachments=processed_attachments,
                 status=TicketStatus.IN_PROGRESS if assigned_to_raw else TicketStatus.NEW
             )
             db.add(db_ticket)

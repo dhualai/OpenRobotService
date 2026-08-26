@@ -1489,9 +1489,7 @@ async def upload_comment_attachment(
             comment_attachment_map[temp_id] = []
         comment_attachment_map[temp_id].append(object_path)
 
-        # 返回 object_path，前端可直接透传给建单接口的 attachments 字段，
-        # 无需依赖进程内存 comment_attachment_map 的 temp_id 解析（跨进程/重启更稳）。
-        return {"message": "上传附件成功", "object_path": object_path}
+        return {"message": "上传附件成功"}
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(
