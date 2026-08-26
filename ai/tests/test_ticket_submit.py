@@ -734,6 +734,214 @@ class TestCollectRefAndFuse:
         assert await _lookup_ticket_ref("") == ""
 
 
+class TestPlanExecute:
+    """plan-and-execute 合并规划分支（AI_PLAN_EXECUTE=1）：一次 flash 输出
+    意图路由+工具组合 → 并行执行 → 单次回答；关闭开关走原意图分类+乐观检索路径（零影响）"""
+
+    def _patch_stream_path(self, platform, monkeypatch, plan, intent="diagnosis"):
+        """把 stream 依赖全部替换成可控桩，返回捕获字典"""
+        captured = {"retrieve_queries": [], "oneshot_docs": None, "plan_called": False,
+                    "retrieve_called": False, "classify_called": False}
+
+        async def _fake_plan(req, state, memory):
+            captured["plan_called"] = True
+            return intent, plan
+
+        async def _fake_classify(llm, raw, resolved, context_turns=None):
+            captured["classify_called"] = True
+            return intent
+
+        async def _fake_retrieve(session_id, state, context_turns=None, query_override=""):
+            captured["retrieve_called"] = True
+            captured["retrieve_queries"].append(query_override)
+            return f"【知识库】{query_override} 的排查步骤"
+
+        async def _fake_oneshot(req, state, memory, reference_docs=""):
+            captured["oneshot_docs"] = reference_docs
+            yield {"event": "result", "data": {"type": "diagnosis", "action": "answer",
+                                               "message": "ok", "agent_state": {}}}
+
+        monkeypatch.setattr(platform, "_plan_tools", _fake_plan)
+        monkeypatch.setattr(platform, "_classify_intent", _fake_classify)
+        monkeypatch.setattr(platform, "_retrieve_with_context", _fake_retrieve)
+        monkeypatch.setattr(platform, "_diagnosis_oneshot_branch", _fake_oneshot)
+        return captured
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_combo_tools_executed_in_parallel_branch(
+            self, platform, make_state, make_request, monkeypatch):
+        """开关开 + 规划组合（检索+查单）→ 并行执行，资料两块都进回答轮，
+        检索用规划词、工单内容挂 state"""
+        from ai.agents.AiDiagnosisPlatform import pipeline as pl
+        monkeypatch.setenv("AI_PLAN_EXECUTE", "1")
+
+        async def _fake_lookup(ref_text):
+            assert ref_text.strip() == "595"
+            return "#595 USP平台无法登录\n账户名：admin"
+
+        monkeypatch.setattr(pl, "_lookup_ticket_ref", _fake_lookup)
+
+        captured = self._patch_stream_path(
+            platform, monkeypatch,
+            plan=[("search_kb", {"query": "锁区配置步骤"}),
+                  ("lookup_ticket", {"ticket_no": 595})])
+
+        state = make_state(phase="diagnosing", diagnosis_rounds=1)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        request = make_request(query="@#595里说的锁区怎么配置", skip_retrieval=False, session_id=state.session_id)
+        events = [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert captured["plan_called"], "开关开时规划器必须被调用"
+        assert captured["retrieve_queries"] == ["锁区配置步骤"], "检索词必须来自规划"
+        assert "【知识库】锁区配置步骤" in (captured["oneshot_docs"] or "")
+        assert "#595" in captured["oneshot_docs"] and "admin" in captured["oneshot_docs"], \
+            "工单内容必须注入回答轮"
+        assert "不要说无法查看" in captured["oneshot_docs"]
+        assert state.ticket_ref_context.startswith("#595"), "查单结果要挂 state 供后续轮引用"
+        assert any(e["event"] == "result" for e in events)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_no_tools_plan_answers_without_docs(
+            self, platform, make_state, make_request, monkeypatch):
+        """开关开 + 规划无工具（寒暄/纯咨询）→ 空资料直接单轮回答，不检索"""
+        monkeypatch.setenv("AI_PLAN_EXECUTE", "1")
+        captured = self._patch_stream_path(platform, monkeypatch, plan=[])
+
+        state = make_state(phase="diagnosing", diagnosis_rounds=1)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        request = make_request(query="你是谁", skip_retrieval=False, session_id=state.session_id)
+        [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert captured["plan_called"]
+        assert not captured["retrieve_called"], "无工具规划不应触发检索"
+        assert captured["oneshot_docs"] == ""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_switch_off_keeps_legacy_path(
+            self, platform, make_state, make_request, monkeypatch):
+        """开关关（默认）→ 规划器不启动，走乐观检索老路径"""
+        captured = self._patch_stream_path(platform, monkeypatch,
+                                           plan=[("search_kb", {"query": "不该出现"})])
+        # 关键差异：老路径的乐观检索在意图分类前发起，query_override=用户原话
+        async def _fake_retrieve_legacy(session_id, state, context_turns=None, query_override=""):
+            captured["retrieve_called"] = True
+            captured["retrieve_queries"].append(query_override)
+            return "【知识库】乐观检索结果"
+
+        monkeypatch.setattr(platform, "_retrieve_with_context", _fake_retrieve_legacy)
+        monkeypatch.delenv("AI_PLAN_EXECUTE", raising=False)
+
+        state = make_state(phase="diagnosing", diagnosis_rounds=1)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        request = make_request(query="锁区怎么配置", skip_retrieval=False, session_id=state.session_id)
+        [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert not captured["plan_called"], "开关关时规划器不得被调用"
+        assert captured["classify_called"], "开关关时独立意图分类必须照跑（原路径）"
+        assert captured["retrieve_called"], "老路径应发起乐观检索"
+        assert captured["retrieve_queries"] == ["锁区怎么配置"], \
+            "老路径检索词必须是用户原话（query_override=request.query）"
+        assert "乐观检索结果" in (captured["oneshot_docs"] or "")
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_lookup_ticket_reuses_prefetched_context(
+            self, platform, make_state, make_request, monkeypatch):
+        """@# 预查已挂同号工单 → 规划执行复用 state 缓存，不重复查库"""
+        monkeypatch.setenv("AI_PLAN_EXECUTE", "1")
+        lookup_calls = []
+
+        async def _fake_lookup(ref_text):
+            lookup_calls.append(ref_text)
+            return "#3 查到了"
+
+        from ai.agents.AiDiagnosisPlatform import pipeline as pl
+        monkeypatch.setattr(pl, "_lookup_ticket_ref", _fake_lookup)
+        captured = self._patch_stream_path(
+            platform, monkeypatch, plan=[("lookup_ticket", {"ticket_no": 3})])
+
+        state = make_state(phase="diagnosing", diagnosis_rounds=1,
+                           ticket_ref_context="#3 预查已挂的工单内容")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        request = make_request(query="@#3 怎么样了", skip_retrieval=False, session_id=state.session_id)
+        [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert lookup_calls == [], "同号已预查时不应重复查库"
+        assert "预查已挂的工单内容" in (captured["oneshot_docs"] or "")
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_merged_intent_ticket_with_lookup_prefetches(
+            self, platform, make_state, make_request, monkeypatch):
+        """合并模式 route=ticket + 规划带 lookup（「针对595再提一单」）→
+        查单执行挂 state、search_kb 丢弃、快路径主 prompt 当轮带旧单区块，
+        且不再调用独立意图分类"""
+        from ai.agents.AiDiagnosisPlatform import pipeline as pl
+        monkeypatch.setenv("AI_PLAN_EXECUTE", "1")
+        lookup_calls = []
+
+        async def _fake_lookup(ref_text):
+            lookup_calls.append(ref_text)
+            return "#595 USP平台无法登录\n账户名：admin"
+
+        monkeypatch.setattr(pl, "_lookup_ticket_ref", _fake_lookup)
+        captured = self._patch_stream_path(
+            platform, monkeypatch,
+            plan=[("lookup_ticket", {"ticket_no": 595})], intent="ticket")
+
+        state = make_state(phase="diagnosing", diagnosis_rounds=1)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        request = make_request(query="针对595工单的问题我再提一个单子",
+                               skip_retrieval=False, session_id=state.session_id)
+
+        prompts = []
+
+        async def _capture_complete(prompt="", **kw):
+            prompts.append(prompt)
+            return ('```json\n' + json.dumps({
+                "thinking": "", "action": "answer", "intent": "chat",
+                "ticket_intent": True, "ticket_cancel": False,
+                "message": "好的，已了解旧单内容，开始提单。",
+                "state_update": {},
+            }, ensure_ascii=False) + '\n```\n好的，已了解旧单内容，开始提单。')
+
+        platform._llm_client.complete = AsyncMock(side_effect=_capture_complete)
+        platform._get_user_projects = AsyncMock(return_value=[])
+
+        [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert not captured["classify_called"], "合并模式不得再调独立意图分类"
+        assert lookup_calls == ["595"], "提单轮规划带查单必须执行"
+        assert not captured["retrieve_called"], "提单轮不得执行 search_kb"
+        assert state.ticket_ref_context.startswith("#595"), "查单结果挂 state"
+        assert state.ticket_fast_lane, "ticket 路由要置快路径旗标"
+        main_prompt = prompts[-1] if prompts else ""
+        assert "用户引用的历史工单" in main_prompt and "#595" in main_prompt, \
+            "快路径主 prompt 当轮必须带旧单区块（草稿字段预填有据）"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_merged_intent_courtesy_direct_answer(
+            self, platform, make_state, make_request, monkeypatch):
+        """合并模式 route=courtesy（无工具）→ 单轮小 prompt 直答，零资料开销"""
+        monkeypatch.setenv("AI_PLAN_EXECUTE", "1")
+        captured = self._patch_stream_path(platform, monkeypatch,
+                                           plan=[], intent="courtesy")
+
+        state = make_state(phase="diagnosing", diagnosis_rounds=1)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        request = make_request(query="辛苦了", skip_retrieval=False, session_id=state.session_id)
+        [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert captured["plan_called"]
+        assert not captured["classify_called"], "合并模式不得再调独立意图分类"
+        assert not captured["retrieve_called"], "courtesy 不得触发检索"
+        assert captured["oneshot_docs"] == ""
+
+
 class TestForceSubmitConfirm:
     """超限强弹的草稿带 force_submit：confirm_submit 放行 collected_info 兜底"""
 

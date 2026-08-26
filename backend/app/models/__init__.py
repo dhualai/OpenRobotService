@@ -71,6 +71,7 @@ from app.models.organization import (
 # 「产品→界面→功能」责任模块树（DB 主数据，导出到 config 供 AI Assigner）
 from app.models.module_tree import ModuleTree
 from app.models.module_tree_edit import ModuleTreeEdit
+from app.models.module_tree_node import ModuleTreeNode
 
 __all__ = [
     "Base",
@@ -93,5 +94,5 @@ __all__ = [
     # organization
     "Company", "Department",
     # module tree
-    "ModuleTree", "ModuleTreeEdit",
+    "ModuleTree", "ModuleTreeEdit", "ModuleTreeNode",
 ]

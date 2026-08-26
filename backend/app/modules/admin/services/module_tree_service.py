@@ -14,7 +14,7 @@ from typing import Dict, Any, List, Optional
 from pypinyin import pinyin, Style
 
 from app.core.database import db_manager
-from app.models.module_tree import ModuleTree
+from app.models.module_tree_node import ModuleTreeNode
 
 logger = logging.getLogger(__name__)
 
@@ -91,46 +91,50 @@ def _get_db():
     return db_manager.get_db()
 
 
-def get_all_trees() -> Dict[str, Any]:
-    """返回 {产品: {"interfaces": [...]}}，供前端展示 / 导出 config。"""
+def _aggregate_from_nodes(products: Optional[List[str]] = None) -> Dict[str, Any]:
+    """从行表 module_tree_nodes 聚合出 {产品: {interfaces:[...]}}。
+
+    - 界面以 iface_name 分组、按 iface_order 排序；功能按 func_order 排序。
+    - 每个功能带上行 id（前端按 id 单行保存的定位依据）、iface_order/func_order。
+    - 聚合后用 renormalize_keys 补界面/功能 key（key 用于展示折叠；业务定位靠行 id 与 func_name）。
+    - 返回结构与旧表 module_trees(整树 JSON) 一致，另增字段 id/iface_order/func_order。
+    """
     db = _get_db()
     try:
-        rows = db.query(ModuleTree).all()
+        q = db.query(ModuleTreeNode)
+        if products:
+            q = q.filter(ModuleTreeNode.product.in_(products))
+        rows = q.all()
+        rows.sort(key=lambda r: (r.product, r.iface_order, r.func_order))
         result: Dict[str, Any] = {}
-        for row in rows:
-            result[row.product] = row.tree_json or {"interfaces": []}
-        return result
+        for r in rows:
+            tree = result.setdefault(r.product, {"interfaces": []})
+            iface = next((it for it in tree["interfaces"] if it["name"] == r.iface_name), None)
+            if iface is None:
+                iface = {"name": r.iface_name, "functions": []}
+                tree["interfaces"].append(iface)
+            iface["functions"].append({
+                "id": r.id,
+                "name": r.func_name,
+                "keywords": r.keywords or [],
+                "anchor": r.anchor or "",
+                "engineers": r.engineers or [],
+                "iface_order": r.iface_order,
+                "func_order": r.func_order,
+            })
+        return renormalize_keys(result)
     finally:
         db.close()
+
+
+def get_all_trees() -> Dict[str, Any]:
+    """返回 {产品: {"interfaces": [...]}}，从功能行模型 module_tree_nodes 聚合。"""
+    return _aggregate_from_nodes()
 
 
 def get_product_tree(product: str) -> Optional[Dict[str, Any]]:
-    """返回单产品的接口树（该产品名下的 interfaces 结构）。"""
-    db = _get_db()
-    try:
-        row = db.query(ModuleTree).filter(ModuleTree.product == product).first()
-        return row.tree_json if row else None
-    finally:
-        db.close()
-
-
-def upsert_product_tree(product: str, tree: Dict[str, Any]) -> bool:
-    """写入或更新某个产品的接口树（tree 为 {"interfaces": [...]}）。"""
-    db = _get_db()
-    try:
-        row = db.query(ModuleTree).filter(ModuleTree.product == product).first()
-        if row:
-            row.tree_json = tree
-        else:
-            db.add(ModuleTree(product=product, tree_json=tree))
-        db.commit()
-        return True
-    except Exception:
-        db.rollback()
-        logger.exception("upsert module_tree 失败: %s", product)
-        return False
-    finally:
-        db.close()
+    """返回单产品的接口树（该产品名下的 interfaces 结构），从行模型聚合。"""
+    return _aggregate_from_nodes([product]).get(product)
 
 
 def product_hash(tree: Optional[Dict[str, Any]]) -> str:
@@ -172,33 +176,6 @@ def get_func_hashes() -> Dict[str, Dict[str, str]]:
     return result
 
 
-def bulk_upsert_delete(products: Dict[str, Any], removed: Optional[List[str]] = None) -> bool:
-    """按提交的产品增量写 DB + 按需删除指定产品。
-
-    - 只新增/更新 products 中涉及的产品行，**绝不删除/改动未提交的产品**（避免多人协作互相覆盖）。
-    - removed 里列出的产品将被删除（删除产品场景）。
-    - 返回 True/False；空 products、removed 均调用前由 save_trees 拦截。
-    """
-    db = _get_db()
-    try:
-        for product, tree in (products or {}).items():
-            row = db.query(ModuleTree).filter(ModuleTree.product == product).first()
-            if row:
-                row.tree_json = tree or {"interfaces": []}
-            else:
-                db.add(ModuleTree(product=product, tree_json=tree or {"interfaces": []}))
-        for product in (removed or []):
-            db.query(ModuleTree).filter(ModuleTree.product == product).delete()
-        db.commit()
-        return True
-    except Exception:
-        db.rollback()
-        logger.exception("bulk_upsert_delete 失败")
-        return False
-    finally:
-        db.close()
-
-
 def find_function(trees: Dict[str, Any], product: str, iface_key: str, func_key: str):
     """在树中定位某个功能节点，返回 (tree, iface, fn, iface_idx, fn_idx)，未找到返回 None。"""
     tree = (trees or {}).get(product)
@@ -214,38 +191,42 @@ def find_function(trees: Dict[str, Any], product: str, iface_key: str, func_key:
 
 
 def apply_function_change(product: str, iface_key: str, func_key: str, new_json: Dict[str, Any]) -> bool:
-    """审批通过后，把某功能节点的修改应用到 DB，并导出 config + 同步用户画像。
+    """审批通过后，把某功能行的修改应用到 DB（行表 module_tree_nodes）。
 
-    只替换该功能节点的字段（name/keywords/anchor/engineers），不动其它。
-    返回是否成功。
+    兼容：func_key 参数在旧结构里是 hash key，新行表用 func_name 定位；
+    new_json 里定义的功能名优先，其次用 func_key 当作 func_name 匹配。
+    只替换存在的字段（name/keywords/anchor/engineers），不动其它。返回是否成功。
     """
+    func_name = _norm_name((new_json or {}).get("name")) or _norm_name(func_key)
     db = _get_db()
     try:
-        row = db.query(ModuleTree).filter(ModuleTree.product == product).first()
-        if not row:
-            logger.error("apply_function_change: 产品不存在 %s", product)
+        node = (
+            db.query(ModuleTreeNode)
+            .filter(ModuleTreeNode.product == product, ModuleTreeNode.func_name == func_name)
+            .first()
+        )
+        if not node:
+            logger.error("apply_function_change: 功能行不存在 %s/%s", product, func_name)
             return False
-        tree = row.tree_json or {"interfaces": []}
-        found = find_function({product: tree}, product, iface_key, func_key)
-        if not found:
-            logger.error("apply_function_change: 功能定位失败 %s/%s/%s", product, iface_key, func_key)
-            return False
-        _, iface, fn, iface_idx, fn_idx = found
-        # 合并新值：仅覆盖给定的键，保留未提及字段
-        merged = dict(fn)
-        merged.update(new_json or {})
-        tree["interfaces"][iface_idx]["functions"][fn_idx] = merged
-        row.tree_json = tree
+        if new_json:
+            if "name" in new_json:
+                node.func_name = _norm_name(new_json["name"])
+            if "keywords" in new_json:
+                node.keywords = new_json.get("keywords") or []
+            if "anchor" in new_json:
+                node.anchor = new_json.get("anchor") or ""
+            if "engineers" in new_json:
+                node.engineers = new_json.get("engineers") or []
+            iface = new_json.get("iface_name") or new_json.get("iface")
+            if iface:
+                node.iface_name = _norm_name(iface)
         db.commit()
-
-        # 导出 config + 同步用户画像（尽力而为）
-        all_trees = get_all_trees()
-        export_to_config(all_trees)
-        sync_to_user_profiles(all_trees)
+        # 同步用户画像 + 导出 config
+        after_write()
         return True
     except Exception:
         db.rollback()
-        logger.exception("apply_function_change 失败 %s/%s/%s", product, iface_key, func_key)
+        logger.exception("apply_function_change 失败 %s/%s", product, func_name)
         return False
     finally:
         db.close()
@@ -443,99 +424,6 @@ def _norm_name(s) -> str:
     return (s or "").strip()
 
 
-def merge_product_changes(
-    db_tree: Optional[Dict[str, Any]],
-    submitted: Dict[str, Any],
-    changed_funcs: Optional[List[str]] = None,
-    new_interfaces: Optional[List[str]] = None,
-    removed_interfaces: Optional[List[str]] = None,
-    removed_funcs: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    """把前端提交的产品树，**按节点**合并到 DB 当前版本（节点级并发安全）。
-
-    规则（关键：不同界面/不同功能互不影响；只有本次改动过的节点才覆盖）：
-    - 前端提交界面里，DB 没有的同名界面 → 作为“新增界面”加入。
-    - DB 已有界面：只覆盖 changed_funcs 里点名的功能节点；其余功能保留 DB 最新值（不覆盖他人改动）。
-    - changed_funcs 条目用「界面名||功能名」定位；功能不存在则按新增加入。
-    - removed_interfaces / removed_funcs：显式删除（用 name 或 key 匹配）。
-    - 绝不删除 DB 中有、但前端旧快照里没有的未点名节点（避免误删他人新加内容）。
-    """
-    db_ifaces = (db_tree or {}).get("interfaces", []) or []
-    new_iface_names = {_norm_name(n) for n in (new_interfaces or [])}
-
-    # 1) 生成 db 界面索引（按 name）；被删除的界面（removed_interfaces 按 name）不纳入
-    db_by_iface_name: Dict[str, dict] = {}
-    db_removed_iface_names = {_norm_name(k) for k in (removed_interfaces or [])}
-    for it in db_ifaces:
-        nm = _norm_name(it.get("name"))
-        if nm and nm not in db_by_iface_name and nm not in db_removed_iface_names:
-            db_by_iface_name[nm] = dict(it)
-
-    # 2) 解析要移除的功能（key 或 name）
-    removed_func_set = {_norm_name(k) for k in (removed_funcs or [])}
-
-    # 3) 计算每个界面本次要覆盖的功能名集合
-    changed_by_iface: Dict[str, set] = {}
-    for entry in (changed_funcs or []):
-        if "||" in entry:
-            iface_nm, _, func_nm = entry.partition("||")
-            changed_by_iface.setdefault(_norm_name(iface_nm), set()).add(_norm_name(func_nm))
-
-    # 4) 遍历前端提交，构建结果 interfaces
-    out_ifaces: List[dict] = []
-    submitted_iface_names = set()
-    for sub_iface in (submitted.get("interfaces", []) or []):
-        iface_nm = _norm_name(sub_iface.get("name"))
-        if not iface_nm:
-            continue
-        submitted_iface_names.add(iface_nm)
-        # 新增界面：直接整体纳入
-        if iface_nm in new_iface_names or iface_nm not in db_by_iface_name:
-            out_ifaces.append(dict(sub_iface))
-            continue
-
-        # DB 已有界面：从 DB 版本出发合并功能
-        db_iface = db_by_iface_name[iface_nm]
-        db_funcs = db_iface.get("functions", []) or []
-        changed = changed_by_iface.get(iface_nm, set())
-        db_by_name: Dict[str, dict] = {}
-        for f in db_funcs:
-            fnm = _norm_name(f.get("name"))
-            if fnm:
-                db_by_name.setdefault(fnm, dict(f))
-
-        result_funcs: List[dict] = []
-        seen_func_names: set = set()
-        # 先放 DB 未改动的功能（保留最新）
-        for fnm, dbf in db_by_name.items():
-            if fnm in removed_func_set:
-                continue
-            if fnm in changed:
-                continue  # 交给提交覆盖
-            seen_func_names.add(fnm)
-            result_funcs.append(dbf)
-        # 再放本次改动的功能（用提交版本）
-        for sub_fn in (sub_iface.get("functions", []) or []):
-            fnm = _norm_name(sub_fn.get("name"))
-            if not fnm or fnm in removed_func_set:
-                continue
-            if fnm in changed or fnm not in db_by_name:
-                if fnm not in seen_func_names:
-                    seen_func_names.add(fnm)
-                    result_funcs.append(dict(sub_fn))
-        # 删除：removed_funcs 已在上面跳过；同时处理移除“仅存在于 db 且被删”的功能
-        out_ifaces.append({**db_iface, "functions": result_funcs})
-
-    # 5) DB 里有、但前端提交没提（且不在删除列表）的界面保留（防误删他人新加）
-    for it in db_ifaces:
-        nm = _norm_name(it.get("name"))
-        if not nm or nm in submitted_iface_names or nm in db_removed_iface_names:
-            continue
-        out_ifaces.append(dict(it))
-
-    return {"interfaces": out_ifaces}
-
-
 def func_node_hash(fn: Optional[Dict[str, Any]]) -> str:
     """单功能节点内容哈希（功能级冲突检测基准）。"""
     try:
@@ -545,6 +433,107 @@ def func_node_hash(fn: Optional[Dict[str, Any]]) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
+def _flatten_tree(tree: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把一棵树的 interfaces 展平成功能行字典列表（供行表 diff 用）。"""
+    out: List[Dict[str, Any]] = []
+    for iface_idx, it in enumerate((tree or {}).get("interfaces", []) or []):
+        iface_name = _norm_name(it.get("name"))
+        if not iface_name:
+            continue
+        for func_idx, fn in enumerate((it.get("functions", []) or [])):
+            func_name = _norm_name(fn.get("name"))
+            if not func_name:
+                continue
+            out.append({
+                "iface_name": iface_name,
+                "iface_order": iface_idx,
+                "func_name": func_name,
+                "func_order": func_idx,
+                "keywords": fn.get("keywords") or [],
+                "anchor": fn.get("anchor") or "",
+                "engineers": fn.get("engineers") or [],
+            })
+    return out
+
+
+def upsert_node(
+    product: str,
+    iface_name: str,
+    iface_order: int,
+    func_name: str,
+    func_order: int,
+    keywords: Optional[list] = None,
+    anchor: Optional[str] = None,
+    engineers: Optional[list] = None,
+    node_id: Optional[int] = None,
+) -> Optional[int]:
+    """按 id 新增/更新一个功能行（id 有则 update 该行，否则 insert 新行）。
+
+    - 由于按行 id 精确定位，多人改不同行天然互不覆盖（并发安全核心）。
+    - 返回该行 id（新增时返回新分配的 id，供前端绑定）。
+    """
+    db = _get_db()
+    try:
+        if node_id:
+            node = db.query(ModuleTreeNode).filter(ModuleTreeNode.id == node_id).first()
+            if not node:
+                return None
+            node.iface_name = _norm_name(iface_name)
+            node.iface_order = iface_order
+            node.func_name = _norm_name(func_name)
+            node.func_order = func_order
+            node.keywords = keywords or []
+            node.anchor = anchor or ""
+            node.engineers = engineers or []
+        else:
+            node = ModuleTreeNode(
+                product=product,
+                iface_name=_norm_name(iface_name),
+                iface_order=iface_order or 0,
+                func_name=_norm_name(func_name),
+                func_order=func_order or 0,
+                keywords=keywords or [],
+                anchor=anchor or "",
+                engineers=engineers or [],
+            )
+            db.add(node)
+        db.commit()
+        db.refresh(node)
+        return node.id
+    except Exception:
+        db.rollback()
+        logger.exception("upsert node 失败: product=%s func=%s", product, func_name)
+        return None
+    finally:
+        db.close()
+
+
+def delete_nodes(ids: List[int]) -> int:
+    """按行 id 批量删除功能行。返回删除行数。"""
+    db = _get_db()
+    try:
+        n = db.query(ModuleTreeNode).filter(ModuleTreeNode.id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
+        return n or 0
+    except Exception:
+        db.rollback()
+        logger.exception("delete nodes 失败: ids=%s", ids)
+        return 0
+    finally:
+        db.close()
+
+
+def after_write() -> Dict[str, int]:
+    """单行写/删后统一做：同步用户画像 + 导出 config（P3 前保留 config）。
+
+    返回 {"synced": n, "export": 0/1}。
+    """
+    all_trees = _aggregate_from_nodes()
+    synced = sync_to_user_profiles(all_trees)
+    ok_export = export_to_config(all_trees)
+    return {"synced": synced, "export": 1 if ok_export else 0}
+
+
 def save_trees(
     trees: Dict[str, Any],
     removed: Optional[List[str]] = None,
@@ -552,95 +541,96 @@ def save_trees(
     func_hashes: Optional[Dict[str, Dict[str, str]]] = None,
     force: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """统一保存（节点级增量 + 功能级冲突检测）：按产品写 DB + 同步画像 + 导出 config。
+    """统一保存（功能级行模型 diff 写入，天然并发安全）：写 module_tree_nodes + 同步画像 + 导出 config。
 
-    核心：
-    - 仅覆盖提交的产品；对每个产品，只把**本次改动过的功能节点**合并进 DB 当前最新版，
-      其它节点全部保留 DB 值 —— 不同界面/不同功能各自保存、互不覆盖（多人并发安全）。
-    - per_product={产品:{changed_funcs,new_interfaces,removed_interfaces,removed_funcs}} 声明本次改动范围。
-    - 功能级冲突：func_hashes={产品:{'界面名||功能名': 用户加载时该功能哈希}}。
-      若 DB 当前该功能哈希 ≠ 用户加载时哈希（该功能已被他人改过）且用户本次也改了它 →
-      跳过该功能覆盖（保留 DB 版）并记入 conflicted_funcs；force 里的产品跳过检测直接覆盖。
-    - removed 删除产品；空提交拒绝防清空；导出 config 用 DB 全量。
+    核心（P2，彻底切行表）：
+    - 只覆盖提交的产品；对每个产品，以**行表当前状态为基准**做功能级 diff（按 func_name）：
+      - 前端提交里有的功能 → insert/update 对应行（含 iface/order/关键词/锚/工程师）；
+      - 前端提交里没有的 DB 行 → **不删**（旧快照缺失 ≠ 删除，避免误删他人新增）；
+      - 显式删除（per_product.removed_funcs / removed 产品）→ delete 对应行。
+    - 因此**不同功能各自保存、互不覆盖**（后端只动差异行，天然并发安全）。
+    - 兼容旧前端整体提交（不依赖 per_product 键名），同时也接受单功能/节点增量。
+    - 不再镜像旧表 module_trees（已彻底切换行表）。
+    - removed 删除产品；空提交拒绝防清空。
 
-    返回 {"db","synced","export","conflicted_funcs"?:list,"rejected"?}。
+    返回 {"db","synced","export","rejected"?}。
     """
     removed = removed or []
     per_product = per_product or {}
-    func_hashes = func_hashes or {}
-    force = list(force or [])
     if not trees and not removed:
         return {"db": False, "synced": 0, "export": False, "rejected": "empty"}
 
-    # 保存前统一重算 界面/功能 的 key（前端中文名 → 前两字拼音+哈希）
-    normalized = renormalize_keys(trees)
-
-    conflicted_funcs: List[str] = []
-    writable: Dict[str, Any] = {}
-
-    for product, tree in normalized.items():
-        pp = per_product.get(product) or {}
-        changed = pp.get("changed_funcs") or []
-        new_ifaces = pp.get("new_interfaces") or []
-        rem_ifaces = pp.get("removed_interfaces") or []
-        rem_funcs = pp.get("removed_funcs") or []
-        db_cur = get_product_tree(product)
-
-        # 强制覆盖或全新产品：直接采用提交整树
-        if product in force or not db_cur:
-            writable[product] = tree
-            continue
-
-        # 功能级冲突检测：DB 中本次改动功能较用户加载时已变 → 该功能冲突，跳过覆盖
-        local_hashes = func_hashes.get(product) or {}
-        db_iface_funcs: Dict[str, Dict[str, str]] = {}
-        for it in db_cur.get("interfaces", []) or []:
-            iname = _norm_name(it.get("name"))
-            if not iname:
+    db = _get_db()
+    try:
+        # 1) 逐产品：功能级 diff 写行表
+        for product, tree in trees.items():
+            if not product:
                 continue
-            m: Dict[str, str] = {}
-            for f in (it.get("functions", []) or []):
-                fnm = _norm_name(f.get("name"))
-                if fnm:
-                    m[fnm] = func_node_hash(f)
-            db_iface_funcs[iname] = m
+            # 收集该产品本次要写入的功能行（前端提交）
+            submitted_rows = _flatten_tree(tree)
+            # 现有行表（按 func_name 索引）
+            existing = {
+                _norm_name(r.func_name): r
+                for r in db.query(ModuleTreeNode).filter(ModuleTreeNode.product == product).all()
+            }
+            # 显式删除的功能（per_product.removed_funcs：'界面名||功能名' 或 功能名）
+            rem_funcs = set()
+            pp = per_product.get(product) or {}
+            for k in (pp.get("removed_funcs") or []):
+                nm = _norm_name(k)
+                if "||" in nm:
+                    nm = nm.split("||", 1)[1]
+                if nm:
+                    rem_funcs.add(nm)
 
-        real_changed: List[str] = []
-        for entry in changed:
-            if "||" not in entry:
-                continue
-            iname, _, fnm = entry.partition("||")
-            iname, fnm = _norm_name(iname), _norm_name(fnm)
-            base_h = local_hashes.get(entry)
-            db_h = (db_iface_funcs.get(iname) or {}).get(fnm)
-            if base_h is not None and db_h is not None and db_h != base_h:
-                conflicted_funcs.append(f"{product}||{iname}||{fnm}")
-                continue
-            real_changed.append(entry)
+            func_names_in_submit = set()
+            for row in submitted_rows:
+                fname = row["func_name"]
+                func_names_in_submit.add(fname)
+                node = existing.get(fname)
+                if node is not None:
+                    # 覆盖（diff：本质是 upsert 该功能行）
+                    node.iface_name = row["iface_name"]
+                    node.iface_order = row["iface_order"]
+                    node.func_name = fname
+                    node.func_order = row["func_order"]
+                    node.keywords = row["keywords"]
+                    node.anchor = row["anchor"]
+                    node.engineers = row["engineers"]
+                else:
+                    db.add(ModuleTreeNode(
+                        product=product,
+                        iface_name=row["iface_name"],
+                        iface_order=row["iface_order"],
+                        func_name=fname,
+                        func_order=row["func_order"],
+                        keywords=row["keywords"],
+                        anchor=row["anchor"],
+                        engineers=row["engineers"],
+                    ))
+            # 显式删除功能
+            for fname in rem_funcs:
+                if fname in existing and fname not in func_names_in_submit:
+                    db.delete(existing[fname])
 
-        merged = merge_product_changes(
-            db_cur,
-            tree,
-            changed_funcs=real_changed,
-            new_interfaces=new_ifaces,
-            removed_interfaces=rem_ifaces,
-            removed_funcs=rem_funcs,
-        )
-        writable[product] = merged
+        # 2) 删除产品：删全部行
+        for product in (removed or []):
+            db.query(ModuleTreeNode).filter(ModuleTreeNode.product == product).delete()
 
-    # 若所有提交的产品都无可写内容且无删除 → 视为冲突/空，不写 DB
-    if not writable and not removed:
-        return {"db": False, "synced": 0, "export": False, "conflicted_funcs": conflicted_funcs}
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("save_trees 写 module_tree_nodes 失败")
+        return {"db": False, "synced": 0, "export": False}
+    finally:
+        db.close()
 
-    ok_db = bulk_upsert_delete(writable, removed)
-    if not ok_db:
-        return {"db": False, "synced": 0, "export": False, "conflicted_funcs": conflicted_funcs}
-
-    # 同步用户画像：只覆盖提交成功的产品（sync_to_user_profiles 已产品级安全）＋ 删除产品清理
-    synced = sync_to_user_profiles(writable)
+    # 3) 用全量树同步用户画像（行表聚合后，产品级安全）
+    all_trees = get_all_trees()
+    synced = sync_to_user_profiles(all_trees)
     if removed:
         synced += _clear_removed_products_from_profiles(removed)
 
-    # 导出 config：用 DB 全量（合并本次），避免把其它产品从 config 抹掉
-    ok_export = export_to_config(get_all_trees())
-    return {"db": True, "synced": synced, "export": ok_export, "conflicted_funcs": conflicted_funcs}
+    # 4) 导出 config（AI 派单当前仍读 config；P3 切 AI 读后端接口后再删除）
+    ok_export = export_to_config(all_trees)
+    return {"db": True, "synced": synced, "export": ok_export}
