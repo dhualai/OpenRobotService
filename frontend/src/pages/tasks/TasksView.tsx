@@ -732,9 +732,14 @@ export default function TasksView() {
         filters.push({ field: 'closedAt', op: 'le', value: toBoundaryISO(closedEnd, true) });
       }
 
+      const sortFieldMap: Record<string, string> = {
+        created_at: 'createdAt',
+        updated_at: 'updatedAt',
+        deadline_at: 'deadlineAt',
+      };
       const sorts = sortBy === 'priority'
         ? []
-        : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
+        : [{ field: sortFieldMap[sortBy] || 'updatedAt', direction: sortOrder }];
 
       const data = await request<{ items: Ticket[]; total: number }>('/filter', {
         method: 'POST',
@@ -873,6 +878,7 @@ export default function TasksView() {
   const sortOptions = [
     { value: 'created_at', label: '创建时间' },
     { value: 'updated_at', label: '更新时间' },
+    { value: 'deadline_at', label: '截止时间' },
   ];
 
   const handleRelevanceChange = (value: string) => {
