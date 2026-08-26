@@ -204,15 +204,33 @@ class DispatchFlow:
                     f" -> 候选 {len(candidates)}人"
                 )
 
-        # ── Step 3: 三路召回（L1/L2/L3 互不依赖，并行执行提升吞吐）──
+        # ── Step 3: 三路召回（L1 LLM / L2 语义 / L3 历史 互不依赖，并行执行提升吞吐）──
+        # 说明：L2 锚文本语义召回默认关闭（semantic_recall_enabled=false），只看 L1 LLM + L3 历史，
+        #       因为 LLM 已有强语义判断，锚文本/关键词匹配反而干扰（对产品经理等非功能模块候选人
+        #       结构化不公平）。开启开关可恢复 L2。
         recall_result = RecallResult()
+        semantic_enabled = False
         try:
-            l1_fut, l2_fut, l3_fut = await asyncio.gather(
-                self._llm_recall.arecall(ticket=ticket_context, engineers=candidates),
-                self._semantic_recall.arecall(ticket=ticket_context, engineers=candidates),
-                self._history_pair(ticket_context),
-                return_exceptions=True,
-            )
+            semantic_enabled = bool(getattr(self._config, "semantic_recall_enabled", True))
+        except Exception:
+            semantic_enabled = True
+        try:
+            if semantic_enabled:
+                l1_fut, l2_fut, l3_fut = await asyncio.gather(
+                    self._llm_recall.arecall(ticket=ticket_context, engineers=candidates),
+                    self._semantic_recall.arecall(ticket=ticket_context, engineers=candidates),
+                    self._history_pair(ticket_context),
+                    return_exceptions=True,
+                )
+            else:
+                # L2 关闭：只并行跑 L1 + L3，L2 直接置空
+                l1_fut, l3_fut = await asyncio.gather(
+                    self._llm_recall.arecall(ticket=ticket_context, engineers=candidates),
+                    self._history_pair(ticket_context),
+                    return_exceptions=True,
+                )
+                l2_fut = {}
+                logger.info(f"{ltag} Step3 L2语义召回已关闭（semantic_recall_enabled=false）")
         except Exception as e:
             logger.warning(f"{ltag} Step3 并行召回批次异常: {e}")
             l1_fut = l2_fut = l3_fut = {}
@@ -252,12 +270,9 @@ class DispatchFlow:
             preferred_assignee_id=preferred_assignee_id,
             dept_routing=tighten.dept,
         )
-        # 负载均衡前先记录精排原始分数，便于对比是谁被负载均衡压下去、谁被加权抬上来
-        self._log_ranked(ltag, ranked_scores, candidates, prefix="Step4 精排Top(负载均衡前)")
-
-        # ── Step 5: 负载均衡（按在途工单数打折，避免单子集中在少数人）──
-        ranked_scores = self._apply_load_balance(ranked_scores)
-        self._log_ranked(ltag, ranked_scores, candidates, prefix="Step5 负载均衡后Top")
+        # 负载均衡已移除：不再按在途工单数打折（避免把"唯一该承接者"（如产品经理）压出决策窗口），
+        # 精排分数直接进入 Step6 决策。保留精排日志便于核查。
+        self._log_ranked(ltag, ranked_scores, candidates, prefix="Step4 精排Top")
 
         # ── Step 6: LLM 综合决策 ──
         result: Optional[AssignmentResult] = None
