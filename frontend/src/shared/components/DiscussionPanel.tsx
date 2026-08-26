@@ -393,6 +393,12 @@ export default function DiscussionPanel({
     reportRead();
   }, [reportRead]);
   const handleScroll = useCallback(() => {
+    // 已读名单弹层以点击瞬间的视口坐标（fixed）定位，不会跟随消息气泡滚动，
+    // 滚动后位置错乱，故只要有滚动就收起弹层。
+    if (readListCommentId !== null) {
+      setReadListCommentId(null);
+      setReadListAnchor(null);
+    }
     isAtBottomRef.current = checkAtBottom();
     if (isAtBottomRef.current) {
       setNewCount(0);
@@ -400,7 +406,7 @@ export default function DiscussionPanel({
       // 一旦错过（到达时不在贴底）就永远漏报，导致对方看不到已读头像。这里补齐。
       reportRead();
     }
-  }, [checkAtBottom, reportRead]);
+  }, [checkAtBottom, reportRead, readListCommentId]);
 
   // 新消息到达：贴底则跟随滚动 + 上报已读；非贴底则累计提示数（不强制打断阅读历史）
   useEffect(() => {
