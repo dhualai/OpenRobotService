@@ -362,6 +362,10 @@ export default function DiscussionPanel({
   const isAtBottomRef = useRef(true);
   // 用户主动发消息后进入「强制贴底」模式：新消息无条件滚到底，直到用户手动上翻历史才退出
   const forceScrollRef = useRef(false);
+  // 当前讨论区会话标识（taskId）；变化时重置贴底状态，使进入/切换讨论区默认滚到底部最新
+  const sessionIdRef = useRef<string | number | undefined>(undefined);
+  // 标记是否为用户主动滚动（滚轮/触摸），用于在此类滚动时让输入框失焦（收起软键盘）
+  const userScrollRef = useRef(false);
   const [newCount, setNewCount] = useState(0);
   const checkAtBottom = useCallback(() => {
     const el = chatMessagesRef.current;
@@ -416,11 +420,24 @@ export default function DiscussionPanel({
       // 回到微信式「新消息累计提示」，避免一直打断阅读历史。
       forceScrollRef.current = false;
     }
+    // 用户主动在消息区滚动（滚轮/触摸）→ 输入框失焦收起软键盘，避免遮挡历史浏览；
+    // 程序滚动（发消息/聚焦触发的强制滚底）不触发，避免聚焦后被立刻失焦
+    if (userScrollRef.current) {
+      userScrollRef.current = false;
+      inputRef.current?.blur();
+    }
   }, [checkAtBottom, reportRead, readListCommentId]);
 
-  // 新消息到达：贴底 / 发消息后强制贴底 / 初次进入 则跟随滚动 + 上报已读；
+  // 新消息到达：贴底 / 发消息后强制贴底 / 初次进入 / 进入新讨论区 则跟随滚动 + 上报已读；
   // 否则累计提示数（不强制打断阅读历史）
   useEffect(() => {
+    // 进入 / 切换讨论区（taskId 变化）→ 重置贴底状态，使下次首条评论触发 isPrevInit 强制滚到底
+    if (taskId !== sessionIdRef.current) {
+      sessionIdRef.current = taskId;
+      lastMsgIdRef.current = null;
+      isAtBottomRef.current = true;
+      forceScrollRef.current = true;
+    }
     if (!displayComments.length) return;
     const last = displayComments[displayComments.length - 1];
     const lid = last.id;
@@ -433,7 +450,7 @@ export default function DiscussionPanel({
         setNewCount((n) => n + 1);
       }
     }
-  }, [displayComments, scrollToBottom]);
+  }, [displayComments, scrollToBottom, taskId]);
 
   // 内容高度变化跟随（图片加载/Markdown 渲染/消息追加撑高）：贴底态自动滚到底，
   // 解决进入后停在顶部、最新消息被截断在边框等问题。仅监听内容容器尺寸，不干扰用户主动滚动。
@@ -920,6 +937,8 @@ export default function DiscussionPanel({
         className="detail-chat-messages"
         ref={chatMessagesRef}
         onScroll={handleScroll}
+        onWheel={() => { userScrollRef.current = true; }}
+        onTouchMove={() => { userScrollRef.current = true; }}
         onClick={(e) => {
           // 长按释放后的 click 抑制，避免误触容器诊断链接
           if (suppressClickRef.current) {
