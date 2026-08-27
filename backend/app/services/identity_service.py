@@ -166,6 +166,9 @@ class IdentityService:
             db.commit()
             from app.services.user_service import UserService
             UserService.invalidate_cache()
+            # 若改到 AI 派单画像相关字段，通知 AI 失效画像缓存（下次派单重拉最新）
+            if _changes_personnel_profile(kwargs):
+                _notify_ai_personnel_reload()
             return True
         except Exception as e:
             db.rollback()
@@ -771,3 +774,30 @@ class IdentityService:
 
 
 identity_service = IdentityService()
+
+
+# ── AI 派单画像缓存失效 ──
+# 用户资料写库后，若改到会进入 AI 派单画像的字段，通知 AI 失效其画像缓存，
+# 下次派单立即重拉最新画像（否则最长滞后 24h TTL）。
+_PERSONNEL_FIELDS = frozenset({
+    "name", "company_id", "department_id",
+    "responsibility_modules", "job_level", "duty_text",
+})
+
+
+def _changes_personnel_profile(kwargs: dict) -> bool:
+    """判断本次更新是否涉及 AI 派单画像相关字段。"""
+    return any(k in _PERSONNEL_FIELDS for k in (kwargs or {}))
+
+
+def _notify_ai_personnel_reload() -> None:
+    """通知 AI 失效派单画像缓存（尽力而为，失败不阻断写库）。"""
+    try:
+        import httpx
+        from app.core.config import settings
+        ai_url = getattr(settings, "AI_SERVICE_URL", "").rstrip("/")
+        if not ai_url:
+            return
+        httpx.post(f"{ai_url}/api/ai/assigner/reload", timeout=5.0)
+    except Exception as e:
+        logger.warning(f"通知 AI 失效派单画像失败: {e}")
