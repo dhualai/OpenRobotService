@@ -125,15 +125,23 @@ def _read_map(db, task_id: int) -> dict:
 
 
 def _mark_comment_read(db, task_id: int, comment_id: int, username: str) -> Optional[TaskCommentReadRecord]:
-    """幂等写入单条评论的已读明细（飞书式名单）。已存在则跳过，返回新增的记录（含 read_at）或 None。"""
-    res = db.execute(
-        select(TaskCommentReadRecord.id).where(
+    """upsert 单条评论的已读明细（飞书式名单）。
+
+    不存在则新增；已存在则刷新 read_at（视为重新阅读），两种情况都返回记录供
+    read_receipt 广播——否则「之前的消息后来被重读」不会产生增量，全员看不到更新。
+    """
+    rec = db.execute(
+        select(TaskCommentReadRecord).where(
             TaskCommentReadRecord.comment_id == comment_id,
             TaskCommentReadRecord.username == username,
         )
-    )
-    if res.scalar_one_or_none() is not None:
-        return None
+    ).scalar_one_or_none()
+    if rec is not None:
+        rec.read_at = func.now()
+        db.flush()
+        # refresh 回读数据库端 NOW() 真值，供广播携带准确阅读时间
+        db.refresh(rec)
+        return rec
     rec = TaskCommentReadRecord(task_id=task_id, comment_id=comment_id, username=username)
     db.add(rec)
     # flush 触发 server_default=func.now() 回填 read_at，供广播携带真实阅读时间

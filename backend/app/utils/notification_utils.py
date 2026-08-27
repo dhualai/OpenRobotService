@@ -170,6 +170,105 @@ class NotificationUtils:
             }
 
     @staticmethod
+    def _resolve_mobiles(user_names: List[str]) -> List[str]:
+        """根据 username/id 列表查 users 表取手机号。
+
+        用于企业微信群机器人 mentioned_mobile_list @ 指定成员。
+        查不到手机号的用户会被跳过。
+        """
+        mobiles: List[str] = []
+        seen = set()
+        try:
+            from app.core.database import db_manager
+        except Exception as e:
+            logger.error(f"企业微信通知：导入 db_manager 失败: {str(e)}")
+            return mobiles
+
+        for uname in user_names or []:
+            try:
+                user = db_manager.get_user(uname) or db_manager.get_user_by_id(uname)
+            except Exception as e:
+                logger.error(f"企业微信通知：查询用户 {uname} 失败: {str(e)}")
+                user = None
+            phone = (user or {}).get("phone")
+            if phone and phone not in seen:
+                seen.add(phone)
+                mobiles.append(phone)
+        return mobiles
+
+    @staticmethod
+    def send_wechat_work_notification(
+        content: str,
+        user_names: List[str] = None,
+        is_all: bool = False,
+    ) -> Dict[str, Any]:
+        """通过企业微信群机器人 webhook 发送文本消息。
+
+        参考 wechat_api.md：向 webhook 发起 HTTP POST，msgtype=text，
+        通过 mentioned_mobile_list 指定被 @ 的成员（手机号列表）。
+        - is_all=True 时 mentioned_mobile_list=["@all"]，@ 群内所有人；
+        - 否则按 user_names 查 users.phone 填充 mentioned_mobile_list。
+
+        webhook 未配置（WECHAT_WORK_WEBHOOK_URL 为空）时跳过推送。
+        """
+        webhook_url = getattr(settings, "WECHAT_WORK_WEBHOOK_URL", "")
+        if not webhook_url:
+            logger.warning("企业微信群机器人 webhook 未配置，跳过推送")
+            return {
+                "code": 500,
+                "message": "企业微信 webhook 未配置",
+                "data": {"status": "failed"},
+            }
+
+        if is_all:
+            mentioned_mobile_list = ["@all"]
+            resolved_mobiles: List[str] = []
+        else:
+            resolved_mobiles = NotificationUtils._resolve_mobiles(to_usernames(user_names))
+            mentioned_mobile_list = resolved_mobiles
+
+        # content 最长不超过 2048 个字节（utf8）
+        payload = {
+            "msgtype": "text",
+            "text": {
+                "content": content,
+                "mentioned_mobile_list": mentioned_mobile_list,
+            },
+        }
+
+        try:
+            import requests
+            resp = requests.post(webhook_url, json=payload, timeout=5)
+            result = resp.json()
+        except Exception as e:
+            logger.error(f"企业微信通知请求异常: {str(e)}")
+            return {
+                "code": 500,
+                "message": f"请求失败: {str(e)}",
+                "data": {"status": "failed", "error": str(e)},
+            }
+
+        if result.get("errcode", 0) == 0:
+            logger.info(f"企业微信通知已发送，@ 手机号: {resolved_mobiles}")
+            return {
+                "code": 200,
+                "message": "企业微信通知已发送",
+                "data": {
+                    "status": "success",
+                    "mentioned_mobile_list": mentioned_mobile_list,
+                },
+            }
+
+        errcode = result.get("errcode")
+        errmsg = result.get("errmsg")
+        logger.error(f"企业微信通知发送失败: errcode={errcode}, errmsg={errmsg}")
+        return {
+            "code": 500,
+            "message": f"发送失败: {errmsg}",
+            "data": {"status": "failed", "errcode": errcode, "errmsg": errmsg},
+        }
+
+    @staticmethod
     def instantiate_template(template_id: int, *params, **args) -> Dict[str, Any]:
         template_file = os.path.join(os.path.dirname(__file__), 'template.yaml')
         with open(template_file, 'r', encoding='utf-8') as f:
