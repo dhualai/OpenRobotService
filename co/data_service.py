@@ -6,7 +6,7 @@ from typing import Dict, Optional, List, Tuple
 
 
 #DATA_SERVICE_URL ="http://localhost:8801"
-DATA_SERVICE_URL ="http://127.0.0.1:8002"
+DATA_SERVICE_URL ="http://127.0.0.1:8400"
 class DataService:
     """数据服务类，负责获取项目数据"""
     
@@ -26,7 +26,7 @@ class DataService:
             # 将参数放入请求体中，使用POST请求
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    f"{DATA_SERVICE_URL}/api/data/access",
+                    f"{DATA_SERVICE_URL}/api/admin/data/access",
                     json={"project": project_id, "tag": tag, "indicator": indicator},
                     headers=headers,
                     timeout=3
@@ -166,7 +166,7 @@ class DataService:
         """
         try:
             # 使用 DATA_SERVICE_URL 作为基础URL
-            url = f"{DATA_SERVICE_URL}/api/data/insert/"
+            url = f"{DATA_SERVICE_URL}/api/admin/data/insert/"
             print(f"[HTTP] POST {url}")
             print(f"[HTTP] 请求payload: {json.dumps(data, ensure_ascii=False)[:500]}")
 

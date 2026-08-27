@@ -35,9 +35,11 @@ class CandidateTightener:
         # Layer 1: 部门
         candidates, dept_result = await self._dept_router.route(ticket, engineers)
 
-        # Layer 2: 产品
+        # Layer 2: 产品（传入部门判定，便于车端类工单按部门映射到对应产品，而非默认调度USP）
         pre_product = list(candidates)
-        candidates, product_result = self._product_router.route(ticket, candidates)
+        candidates, product_result = self._product_router.route(
+            ticket, candidates, primary_dept=dept_result.primary_dept,
+        )
 
         # Layer 3: 模块
         pre_module = list(candidates)

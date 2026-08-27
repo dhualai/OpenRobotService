@@ -90,17 +90,21 @@ class DeepSeekProvider(BaseLLMProvider):
     ) -> Dict[str, Any]:
         # 内部参数，不透传 API
         _thinking = kwargs.pop("thinking", None)
+        kwargs.pop("relay_thinking", None)
+        _effort = kwargs.pop("reasoning_effort", None)
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             **kwargs,
         }
-        # DeepSeek/miMo 思考模式（默认开启，传 thinking=False 显式关闭）
+        # DeepSeek/miMo 思考模式（默认开启，传 thinking=False 显式关闭）。
+        # 思考强度用 reasoning_effort 控制（low/medium/high），开启时一律最低档 low
         if any(x in model.lower() for x in ("deepseek", "mimo")):
             if _thinking is False:
                 payload["thinking"] = {"type": "disabled"}
             else:
                 payload["thinking"] = {"type": "enabled"}
+                payload["reasoning_effort"] = _effort or "low"
         return payload
 
     def extract_content(self, response: Dict[str, Any]) -> str:
@@ -139,6 +143,7 @@ class OpenAIProvider(BaseLLMProvider):
         # 内部参数，不透传 API
         _thinking = kwargs.pop("thinking", None)
         _reasoning_effort = kwargs.pop("reasoning_effort", None)
+        _relay_thinking = kwargs.pop("relay_thinking", False)
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -151,11 +156,17 @@ class OpenAIProvider(BaseLLMProvider):
                 payload["thinking"] = {"type": "disabled"}
             else:
                 payload["thinking"] = {"type": "enabled"}
-        # Claude 经 OpenAI 兼容中转站：**不传任何 thinking 字段**。
+        # Claude 经 OpenAI 兼容中转站：默认**不传任何 thinking 字段**。
         # 实测（yitongapi 中转站 claude-opus-4-8）：只要请求带 thinking
         # （无论 enabled/disabled），思考型问题的正文字符就是 0——中转站对
         # claude 的 thinking 字段处理是坏的，不带参数反而最快且正常出答案。
-        # 因此这里对 claude 一律忽略 thinking 开关，交给中转站默认行为。
+        # RELAY_THINKING=on 时按显式开关传字段（试验性，出问题就关回去）。
+        elif _relay_thinking and any(x in _model for x in ("claude", "opus", "sonnet", "haiku")):
+            # budget_tokens=1024 是 Anthropic 思考预算最低值 → 最低档思考
+            if _thinking is False:
+                payload["thinking"] = {"type": "disabled"}
+            else:
+                payload["thinking"] = {"type": "enabled", "budget_tokens": 1024}
         # reasoning_effort 只有 OpenAI 的推理模型（o1/o3/gpt-5 等）认识；
         # 中转站/Claude 等模型不一定兼容这个字段，不透传以免请求被拒。
         elif any(x in _model for x in ("o1", "o3", "gpt-5")):
@@ -219,7 +230,7 @@ class LLMClient:
         self.model = model or self._get_default_model()
         # 思考强度：显式传参 > .env 配置；off/disabled 表示关闭思考
         _effort = reasoning_effort if reasoning_effort is not None else self.config.llm_reasoning_effort
-        if _effort and _effort.lower() in ("off", "disabled", ""):
+        if _effort and _effort.strip().lower() in ("off", "none", "disabled", "false", "0", ""):
             self.reasoning_effort = None
             self._thinking_default = False
         else:
@@ -248,6 +259,44 @@ class LLMClient:
         elif self.provider == LLMProvider.RELAY:
             return self.config.relay_model
         return self.config.deepseek_model
+
+    def _model_chain(self) -> List[str]:
+        """主模型 + relay 降级链（仅 relay 后端启用；deepseek 直连不降级）"""
+        chain = [self.model]
+        if self.provider != LLMProvider.RELAY:
+            return chain
+        for m in (getattr(self.config, "relay_fallback_models", "") or "").split(","):
+            m = m.strip()
+            if m and m not in chain:
+                chain.append(m)
+        return chain
+
+    def _relay_thinking(self) -> bool:
+        return bool(getattr(self.config, "relay_thinking", False))
+
+    def _effort_floor(self, model: str) -> Optional[str]:
+        """思考强度取最低档：配置为 low 时，gpt-5（Responses API）用更低的
+        minimal，其余模型 low 本身已是最低档；配置为空（思考关）返回 None。"""
+        if not self.reasoning_effort:
+            return None
+        if self.reasoning_effort == "low" and model.lower().startswith("gpt-5"):
+            return "minimal"
+        return self.reasoning_effort
+
+    async def _run_with_fallback(self, call):
+        """非流式请求的模型降级：主模型 ServiceUnavailableError（HTTP 非200，
+        尚未产出任何内容）时按 RELAY_FALLBACK_MODELS 依次换模型重发。
+        网络类失败（连接/超时）说明中转站本身不可达，换模型无意义，不降级。"""
+        chain = self._model_chain()
+        for i, model in enumerate(chain):
+            try:
+                return await call(model)
+            except ServiceUnavailableError as e:
+                if i == len(chain) - 1:
+                    raise
+                logger.warning(
+                    f"[llm-fallback] {model} 不可用({str(e)[:120]})，降级尝试 {chain[i + 1]}")
+        raise ServiceUnavailableError("LLM", "模型链耗尽")  # pragma: no cover
 
     async def _get_client(self) -> httpx.AsyncClient:
         """获取或创建 httpx 客户端"""
@@ -313,6 +362,7 @@ class LLMClient:
     )
     async def _make_request(
         self,
+        model: str,
         messages: List[Dict[str, str]],
         **kwargs
     ) -> Dict[str, Any]:
@@ -320,9 +370,10 @@ class LLMClient:
         client = await self._get_client()
 
         payload = self._provider_impl.build_payload(
-            model=self.model,
+            model=model,
             messages=messages,
             reasoning_effort=self.reasoning_effort,
+            relay_thinking=self._relay_thinking(),
             **kwargs,
         )
 
@@ -347,7 +398,7 @@ class LLMClient:
             )
 
     async def _complete_responses(
-        self, prompt: str, system_prompt: Optional[str], max_tokens: int, temperature: float
+        self, model: str, prompt: str, system_prompt: Optional[str], max_tokens: int, temperature: float
     ) -> str:
         """gpt-5 走 Responses API 的非流式补全（标题生成/草稿生成等 complete 场景）。
 
@@ -359,13 +410,13 @@ class LLMClient:
             _input.append({"role": "system", "content": system_prompt})
         _input.append({"role": "user", "content": prompt})
         payload = {
-            "model": self.model,
+            "model": model,
             "input": _input,
             "max_output_tokens": max_tokens,
             "temperature": temperature,
         }
         if self.reasoning_effort:
-            payload["reasoning"] = {"effort": self.reasoning_effort}
+            payload["reasoning"] = {"effort": self._effort_floor(model)}
         url = self._provider_impl.get_responses_url(self.base_url)
         response = await client.post(url, json=payload)
         if response.status_code != 200:
@@ -408,8 +459,28 @@ class LLMClient:
             temperature: 温度参数
             thinking: 是否开启思考模式（工具调用默认关闭）
         """
-        if self._provider_impl.is_responses_model(self.model):
-            return await self._complete_responses(prompt, system_prompt, max_tokens, temperature)
+        try:
+            return await self._run_with_fallback(
+                lambda m: self._complete_one(
+                    m, prompt, system_prompt, max_tokens, temperature, thinking)
+            )
+        except (AITimeoutError, ServiceUnavailableError):
+            raise
+        except Exception as e:
+            logger.error(f"LLM 请求失败: {e}", exc_info=True)
+            raise ServiceUnavailableError("LLM", f"请求失败: {str(e)}")
+
+    async def _complete_one(
+        self,
+        model: str,
+        prompt: str,
+        system_prompt: Optional[str],
+        max_tokens: int,
+        temperature: float,
+        thinking: bool,
+    ) -> str:
+        if self._provider_impl.is_responses_model(model):
+            return await self._complete_responses(model, prompt, system_prompt, max_tokens, temperature)
 
         messages: List[Dict[str, str]] = []
         if system_prompt:
@@ -418,6 +489,7 @@ class LLMClient:
 
         try:
             response = await self._make_request(
+                model,
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
@@ -443,11 +515,6 @@ class LLMClient:
         except RetryError as e:
             logger.error(f"LLM 请求超时（重试耗尽）: {e}", exc_info=True)
             raise AITimeoutError(f"LLM 服务响应超时: {str(e)}")
-        except Exception as e:
-            if isinstance(e, (AITimeoutError, ServiceUnavailableError)):
-                raise
-            logger.error(f"LLM 请求失败: {e}", exc_info=True)
-            raise ServiceUnavailableError("LLM", f"请求失败: {str(e)}")
 
     async def complete_with_tools(
         self,
@@ -475,35 +542,40 @@ class LLMClient:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt or ""})
 
-        response = await self._make_request(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            thinking=thinking if thinking is not None else self._thinking_default,
-            tools=tools,
-        )
-        _msg = response.get("choices", [{}])[0].get("message", {})
-        tool_calls = []
-        for tc in _msg.get("tool_calls") or []:
-            fn = tc.get("function") or {}
-            args = {}
-            try:
-                args = json.loads(fn.get("arguments") or "{}")
-            except Exception:
+        async def _one(model: str):
+            response = await self._make_request(
+                model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                thinking=thinking if thinking is not None else self._thinking_default,
+                tools=tools,
+            )
+            _msg = response.get("choices", [{}])[0].get("message", {})
+            tool_calls = []
+            for tc in _msg.get("tool_calls") or []:
+                fn = tc.get("function") or {}
                 args = {}
-            tool_calls.append({
-                "id": tc.get("id", ""),
-                "name": fn.get("name", ""),
-                "arguments": args,
-            })
-        reasoning = self._provider_impl.extract_reasoning(response)
-        if reasoning:
-            logger.info(f"[llm-reasoning] {len(reasoning)}chars: {reasoning[:300]}")
-        return {
-            "content": _msg.get("content") or "",
-            "tool_calls": tool_calls,
-            "raw": response,
-        }
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except Exception:
+                    args = {}
+                tool_calls.append({
+                    "id": tc.get("id", ""),
+                    "name": fn.get("name", ""),
+                    "arguments": args,
+                })
+            reasoning = self._provider_impl.extract_reasoning(response)
+            if reasoning:
+                logger.info(f"[llm-reasoning] {len(reasoning)}chars: {reasoning[:300]}")
+            return {
+                "content": _msg.get("content") or "",
+                "tool_calls": tool_calls,
+                "reasoning": reasoning,
+                "raw": response,
+            }
+
+        return await self._run_with_fallback(_one)
 
     async def complete_vision(
         self,
@@ -717,28 +789,32 @@ class LLMClient:
             temperature: 温度参数
             thinking: 是否开启思考模式（工具调用默认关闭）
         """
-        try:
-            response = await self._make_request(
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                thinking=thinking,
-            )
-            # 记录思考过程
-            reasoning = self._provider_impl.extract_reasoning(response)
-            if reasoning:
-                logger.info(
-                    f"[llm-reasoning] {len(reasoning)}chars: {reasoning[:500]}"
-                    f"{'…' if len(reasoning) > 500 else ''}"
+        async def _one(model: str):
+            try:
+                response = await self._make_request(
+                    model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    thinking=thinking,
                 )
-            return self._provider_impl.extract_content(response)
+                # 记录思考过程
+                reasoning = self._provider_impl.extract_reasoning(response)
+                if reasoning:
+                    logger.info(
+                        f"[llm-reasoning] {len(reasoning)}chars: {reasoning[:500]}"
+                        f"{'…' if len(reasoning) > 500 else ''}"
+                    )
+                return self._provider_impl.extract_content(response)
+            except RetryError as e:
+                logger.error(f"LLM 请求超时（重试耗尽）: {e}", exc_info=True)
+                raise AITimeoutError(f"LLM 服务响应超时: {str(e)}")
 
-        except RetryError as e:
-            logger.error(f"LLM 请求超时（重试耗尽）: {e}", exc_info=True)
-            raise AITimeoutError(f"LLM 服务响应超时: {str(e)}")
+        try:
+            return await self._run_with_fallback(_one)
+        except (AITimeoutError, ServiceUnavailableError):
+            raise
         except Exception as e:
-            if isinstance(e, (AITimeoutError, ServiceUnavailableError)):
-                raise
             logger.error(f"LLM 请求失败: {e}", exc_info=True)
             raise ServiceUnavailableError("LLM", f"请求失败: {str(e)}")
 
@@ -759,14 +835,43 @@ class LLMClient:
 
         工具调用的流式特性：tool_calls 的 id/name/arguments 按 fragment 增量到达，
         需要按 index 累积拼接；arguments 在流结束时才是完整 JSON。
-        失败策略与 stream 一致：连接阶段（未产出任何内容）重试最多 3 次。
+        失败策略与 stream 一致：连接阶段（未产出任何内容）重试最多 3 次；
+        relay 后端主模型连续非 200 失败时按 RELAY_FALLBACK_MODELS 降级换模型重发。
         """
         if thinking is None:
             thinking = self._thinking_default
+
+        chain = self._model_chain()
+        for i, model in enumerate(chain):
+            yielded = False
+            try:
+                async for event in self._stream_with_tools_once(
+                    model, messages, tools, max_tokens, temperature, thinking
+                ):
+                    yielded = True
+                    yield event
+                return
+            except ServiceUnavailableError as e:
+                # 已向调用方产出内容时换模型重发会导致重复输出，直接抛
+                if yielded or i == len(chain) - 1:
+                    raise
+                logger.warning(
+                    f"[llm-fallback] {model} 流式不可用({str(e)[:120]})，降级尝试 {chain[i + 1]}")
+
+    async def _stream_with_tools_once(
+        self,
+        model: str,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+        thinking: bool,
+    ):
         payload = self._provider_impl.build_payload(
-            model=self.model, messages=messages,
+            model=model, messages=messages,
             max_tokens=max_tokens, temperature=temperature, stream=True,
             reasoning_effort=self.reasoning_effort, thinking=thinking,
+            relay_thinking=self._relay_thinking(),
             tools=tools,
         )
 
@@ -838,13 +943,22 @@ class LLMClient:
                     except Exception:
                         args = {}
                     tool_calls.append({"id": frag["id"], "name": frag["name"], "arguments": args})
+                # reasoning_content 一并带出：DeepSeek 协议要求 tools+思考开启时
+                # 后续轮必须回传中间 assistant 的 reasoning_content（tool_loop 拼消息用）
                 yield {"type": "tool_calls", "tool_calls": tool_calls,
-                       "content": "".join(full_content)}
+                       "content": "".join(full_content),
+                       "reasoning_content": "".join(reasoning_parts)}
                 return
-            except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException) as e:
+            except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException,
+                    ServiceUnavailableError) as e:
+                # ServiceUnavailableError 在此只有一种来源：status != 200（如中转商
+                # upstream_error 的 400/5xx），抛出点在读取任何流数据之前，
+                # has_yielded 恒为 False——重试无重复输出风险。瞬时上游抖动靠这层救回。
                 last_error = e
                 logger.warning(f"LLM 流式重试: attempt={attempt+1}, error={type(e).__name__}: {str(e)[:200]}")
                 if has_yielded or attempt == 2:
+                    if isinstance(e, ServiceUnavailableError):
+                        raise
                     if isinstance(e, (httpx.ConnectError, httpx.TimeoutException)):
                         raise AITimeoutError(f"LLM 流式连接失败（重试{attempt+1}次）: {str(e)}")
                     raise ServiceUnavailableError("LLM", f"流式连接失败: {str(e)}")
@@ -869,7 +983,8 @@ class LLMClient:
                 print(token, end="")
 
         注意：流式 SSE 无法在已开始产出 token 后安全重试（会导致重复输出），
-        因此仅在连接建立阶段（无 token 产出时）尝试重试，最多 3 次。
+        因此仅在连接建立阶段（无 token 产出时）尝试重试，最多 3 次；
+        relay 后端主模型连续非 200 失败时按 RELAY_FALLBACK_MODELS 降级换模型重发。
         """
         if thinking is None:
             thinking = self._thinking_default
@@ -878,22 +993,48 @@ class LLMClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        chain = self._model_chain()
+        for i, model in enumerate(chain):
+            yielded = False
+            try:
+                async for token in self._stream_once(
+                    model, messages, max_tokens, temperature, thinking
+                ):
+                    yielded = True
+                    yield token
+                return
+            except ServiceUnavailableError as e:
+                # 已向调用方产出 token 时换模型重发会导致重复输出，直接抛
+                if yielded or i == len(chain) - 1:
+                    raise
+                logger.warning(
+                    f"[llm-fallback] {model} 流式不可用({str(e)[:120]})，降级尝试 {chain[i + 1]}")
+
+    async def _stream_once(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        max_tokens: int,
+        temperature: float,
+        thinking: bool,
+    ):
         payload = self._provider_impl.build_payload(
-            model=self.model, messages=messages,
+            model=model, messages=messages,
             max_tokens=max_tokens, temperature=temperature, stream=True,
             reasoning_effort=self.reasoning_effort, thinking=thinking,
+            relay_thinking=self._relay_thinking(),
         )
-        _use_responses = self._provider_impl.is_responses_model(self.model)
+        _use_responses = self._provider_impl.is_responses_model(model)
         if _use_responses:
             payload = {
-                "model": self.model,
-                "input": messages if system_prompt else prompt,
+                "model": model,
+                "input": messages,
                 "stream": True,
                 "max_output_tokens": max_tokens,
                 "temperature": temperature,
             }
             if self.reasoning_effort:
-                payload["reasoning"] = {"effort": self.reasoning_effort}
+                payload["reasoning"] = {"effort": self._effort_floor(model)}
 
         t_stream_start = time.perf_counter()
         has_yielded = False
@@ -975,10 +1116,16 @@ class LLMClient:
                             f"{'…' if len(full_reasoning) > 500 else ''}"
                         )
                 return  # 正常结束
-            except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException) as e:
+            except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException,
+                    ServiceUnavailableError) as e:
+                # ServiceUnavailableError 在此只有一种来源：status != 200（如中转商
+                # upstream_error 的 400/5xx），抛出点在读取任何流数据之前，
+                # has_yielded 恒为 False——重试无重复输出风险。瞬时上游抖动靠这层救回。
                 last_error = e
                 logger.warning(f"LLM 流式重试: attempt={attempt+1}, error={type(e).__name__}: {str(e)[:200]}")
                 if has_yielded or attempt == 2:
+                    if isinstance(e, ServiceUnavailableError):
+                        raise
                     if isinstance(e, (httpx.ConnectError, httpx.TimeoutException)):
                         raise AITimeoutError(f"LLM 流式连接失败（重试{attempt+1}次）: {str(e)}")
                     raise ServiceUnavailableError("LLM", f"流式连接失败: {str(e)}")

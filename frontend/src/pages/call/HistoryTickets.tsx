@@ -21,6 +21,18 @@ import type { UserItem } from '@/api/users';
 
 const PAGE_SIZE = 20;
 
+// 筛选状态持久化：跳转详情页会卸载本组件，返回时用 sessionStorage 恢复上次筛选，
+// 避免「返回后回到全部工单」而非保持筛选结果页。
+const HISTORY_FILTER_STATUS_KEY = 'call.history.statusFilter';
+const HISTORY_FILTER_SEARCH_KEY = 'call.history.search';
+
+const readSession = (key: string, fallback: string): string => {
+  try { return sessionStorage.getItem(key) ?? fallback; } catch { return fallback; }
+};
+const writeSession = (key: string, value: string) => {
+  try { sessionStorage.setItem(key, value); } catch { /* 忽略隐私模式等写入失败 */ }
+};
+
 
 const TYPE_LABEL: Record<string, string> = {
   problem: '报障', bug: '缺陷', feature: '需求', support: '支持', other: '其他',
@@ -53,6 +65,7 @@ const STATUS_META: Record<string, { label: string; color: string; bg: string }> 
 export default function HistoryTickets({ showHeader = true }: { showHeader?: boolean }) {
   const navigate = useNavigate();
   const tasksRefreshKey = useWorkbenchStore((s) => s.tasksRefreshKey);
+  const refreshTasks = useWorkbenchStore((s) => s.refreshTasks);
   const username = useAuthStore((s) => s.username);
   const userId = useAuthStore((s) => s.userId);
   const isAdmin = useAuthStore((s) => s.isAdmin);
@@ -65,8 +78,9 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [skip, setSkip] = useState(0);
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
+  // 筛选状态初值从 sessionStorage 恢复（详情页返回后保持上次筛选结果）
+  const [search, setSearch] = useState(() => readSession(HISTORY_FILTER_SEARCH_KEY, ''));
+  const [statusFilter, setStatusFilter] = useState(() => readSession(HISTORY_FILTER_STATUS_KEY, ''));
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
 
   // 构造筛选参数：admin 不过滤，其余按当前用户过滤；「全部」= 除已关闭外全部
@@ -112,6 +126,9 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   // 联动加载：statusFilter 变 → 立即加载（含 keyword 联动）；search 变 → 防抖 400ms（非空）；search 空 → 立即
   const loadInitialRef = useRef(loadInitial);
   loadInitialRef.current = loadInitial;
+  // 筛选变化即持久化，返回列表页时恢复保持筛选结果
+  useEffect(() => { writeSession(HISTORY_FILTER_SEARCH_KEY, search); }, [search]);
+  useEffect(() => { writeSession(HISTORY_FILTER_STATUS_KEY, statusFilter); }, [statusFilter]);
   const prevStatus = useRef(statusFilter);
   useEffect(() => {
     const statusChanged = prevStatus.current !== statusFilter;
@@ -217,13 +234,59 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
       await reDispatchTicket(redispatchTicket.id, redispatchUser.id || redispatchUser.username, redispatchRemark.trim() || undefined);
       Toast({ message: '已重新派单，正在重新推荐处理人', theme: 'success' });
       setShowRedispatchPopup(false);
+      // 重新派单后端会先清空 assigned_to（回 new 态）再异步重派：
+      // ① 立即 loadInitial 一次，让列表马上从「旧处理人」变成「派单中」；
+      // ② 再启动轮询（5s×12=60s），直到该工单派单完成（assigned_to 非空）自动显示新处理人；
+      // ③ 发出全局工单变更信号，让「摇人对话气泡」（ChatPanel）同步该工单派单状态。
       loadInitial();
+      startRedispatchPoll(redispatchTicket.id);
+      refreshTasks();
     } catch (err) {
       Toast({ message: `重新派单失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setRedispatching(false);
     }
   };
+
+  // ── 重新派单后轮询：直到目标工单派单完成，列表自动显示新处理人 ──
+  const redispatchPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stopRedispatchPoll = useCallback(() => {
+    if (redispatchPollRef.current) {
+      clearInterval(redispatchPollRef.current);
+      redispatchPollRef.current = null;
+    }
+  }, []);
+
+  const startRedispatchPoll = (ticketId: number) => {
+    stopRedispatchPoll();
+    let attempts = 0;
+    redispatchPollRef.current = setInterval(async () => {
+      attempts++;
+      try {
+        const res = await qaListTickets(0, PAGE_SIZE, buildFilters());
+        const items = res?.data?.items || [];
+        const total = res?.data?.total ?? items.length;
+        const target = items.find((x) => x.id === ticketId);
+        // 派单完成：目标工单不再处于"派单中"（status=new 且处理人为空），或已不在当前视图
+        const done = target
+          ? !(target.status === 'new' && !target.assigned_to && !target.assigned_to_name)
+          : true; // 找不到目标也停止（可能已离开当前筛选视图）
+        if (done || attempts >= 12) {
+          stopRedispatchPoll();
+          // 用最新数据替换列表，让"派单中"实时变成新处理人
+          setTickets(items);
+          setSkip(items.length);
+          setHasMore(total > items.length);
+          return;
+        }
+      } catch {
+        /* 单次失败继续轮询 */
+      }
+    }, 5000);
+  };
+
+  // 组件卸载清理轮询，避免卸载后 setState
+  useEffect(() => () => { stopRedispatchPoll(); }, [stopRedispatchPoll]);
 
   return (
     <div className="history-tickets">
@@ -259,7 +322,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
                 <button
                   type="button"
                   className={`history-tab${statusFilter === tab.value ? ' is-active' : ''}`}
-                  onClick={() => setStatusFilter(tab.value)}
+                  onClick={() => setStatusFilter(statusFilter === tab.value ? '' : tab.value)}
                 >
                   {tab.label}
                 </button>

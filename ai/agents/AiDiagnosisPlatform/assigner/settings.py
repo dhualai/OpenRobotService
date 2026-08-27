@@ -64,26 +64,40 @@ class AssignerConfig:
         self.decision_thresholds: Dict[str, float] = {}
         self.load_balance: Dict[str, Any] = {}
         self.history_recall: Dict[str, Any] = {}
+        # L2 锚文本语义召回开关：有 LLM(L1) 强语义判断后，锚文本/关键词匹配反而干扰
+        # （对产品经理等"负责非功能模块"的候选人结构化不公平，易被表面字眼误导）。
+        # 默认按 config.yaml 控制（当前置 false，只看 L1 LLM + L3 历史）。
+        self.semantic_recall_enabled: bool = True
         # 新增：LLM 覆写数值排名的最小差距阈值（当 top - second >= 此阈值时，直接选 top，LLM 不覆写）
         self.llm_respect_ranking_threshold: float = 0.3
         # 新增：是否在“摇人吧服务号”项目下强制优先模块总负责人
         self.yaorenba_force_module_owner: bool = True
+        # 新增：LLM 综合决策的覆写窗口 = 精排前 K 名（default 3）。
+        # 即使触发让 LLM 重选，也只能在精排 Top-K 内选，不能选到低排名的人。
+        self.llm_decision_topk: int = 3
+        # 新增：精排第一名的评分阈值。总分>=此阈值时直接采用第一名（保证派单尊重排名）；
+        # 仅当第一名总分<此阈值（说明整体得分很低、候选都不理想）时才触发 LLM 再决定一遍。
+        self.llm_decision_low_score_threshold: float = 0.5
         self._load_all()
 
     def _load_all(self):
-        """从 config.yaml 读取并填充全部配置属性（缺失时保持默认空值）。"""
+        """加载全部派单配置。
+
+        模块树（module_tree / module_classify / module_keywords / module_anchor_texts）
+        一律从 DB 行表 `module_tree_nodes` 加载（DB 为唯一权威，随树编辑自动更新，
+        进程内 AssignerConfig 即内存缓存；reload 时重新拉 DB）。config.yaml 不再作为
+        模块树回退源（该兜底已废弃，将彻底移除）。
+        """
         config = _load_yaml(self._CONFIG_DIR / "config.yaml") or {}
-        # ── 三套 module_* 配置：优先从「产品→界面→功能」树自动生成，否则回退手工配置 ──
-        module_tree = config.get("module_tree", {})
-        if module_tree:
-            self.module_tree = module_tree
-            self.module_classify, self.module_keywords, self.module_anchor_texts = \
-                self._build_from_tree(module_tree)
+        # ── 三套 module_* 配置：直接从 DB 行表加载（不再回退 config.yaml 的 module_tree）──
+        db_loaded = self._load_module_from_db()
+        if db_loaded:
+            self.module_tree, self.module_classify, self.module_keywords, self.module_anchor_texts = db_loaded
         else:
             self.module_tree = {}
-            self.module_keywords = config.get("module_keywords", {})
-            self.module_anchor_texts = config.get("module_anchor_texts", {})
-            self.module_classify = config.get("module_classify", {})
+            self.module_keywords = {}
+            self.module_anchor_texts = {}
+            self.module_classify = {}
         self.ranker_weights = config.get("ranker_weights", {})
         # job_level_penalty 的 key 在 YAML 中是整数，需显式转 int
         raw = config.get("job_level_penalty", {})
@@ -104,6 +118,8 @@ class AssignerConfig:
         self.decision_thresholds = config.get("decision_thresholds", {})
         self.load_balance = config.get("load_balance", {})
         self.history_recall = config.get("history_recall", {})
+        # 可由 config.yaml 覆盖：L2 锚文本语义召回开关（false = 只看 L1 LLM + L3 历史）
+        self.semantic_recall_enabled = bool(config.get("semantic_recall_enabled", True))
         # 可由 config.yaml 覆盖：LLM 覆写数值排名的最小差距阈值
         try:
             self.llm_respect_ranking_threshold = float(config.get("llm_respect_ranking_threshold", 0.3))
@@ -111,6 +127,72 @@ class AssignerConfig:
             self.llm_respect_ranking_threshold = 0.3
         # 可由 config.yaml 覆盖：是否在摇人吧服务号项目下优先模块总负责人
         self.yaorenba_force_module_owner = bool(config.get("yaorenba_force_module_owner", True))
+        # 可由 config.yaml 覆盖：LLM 覆写窗口（精排前 K 名）
+        try:
+            self.llm_decision_topk = int(config.get("llm_decision_topk", 3))
+        except (TypeError, ValueError):
+            self.llm_decision_topk = 3
+        if self.llm_decision_topk < 1:
+            self.llm_decision_topk = 1
+        # 可由 config.yaml 覆盖：第一名评分阈值（低于此值才触发 LLM 再决定）
+        try:
+            self.llm_decision_low_score_threshold = float(config.get("llm_decision_low_score_threshold", 0.6))
+        except (TypeError, ValueError):
+            self.llm_decision_low_score_threshold = 0.6
+
+    def _load_module_from_db(self):
+        """从 DB 行表 module_tree_nodes 加载模块树并派生三张匹配表。
+
+        聚合逻辑与后端 module_tree_service 一致（按 product / iface_order / func_order 排序，
+        构造成 `{产品: {interfaces: [...]}}`），再走 `_build_from_tree` 派生：
+            module_classify / module_keywords / module_anchor_texts。
+
+        Returns:
+            (module_tree, classify, keywords, anchors)；DB 不可用、表缺失或为空时返回 None，
+            调用方将保持三表为空（config.yaml 不再作为模块树回退源）。
+        """
+        try:
+            from app.core.db import SessionLocal
+            from app.models.module_tree_node import ModuleTreeNode
+        except Exception:
+            return None
+
+        try:
+            db = SessionLocal()
+            try:
+                rows = db.query(ModuleTreeNode).order_by(
+                    ModuleTreeNode.product,
+                    ModuleTreeNode.iface_order,
+                    ModuleTreeNode.func_order,
+                ).all()
+            finally:
+                db.close()
+        except Exception:
+            return None
+
+        if not rows:
+            return None
+
+        # 聚合 {产品: {interfaces: [...]}}（与后端 _aggregate_from_nodes 口径一致）
+        tree: Dict[str, Any] = {}
+        for r in rows:
+            pnode = tree.setdefault(r.product, {"interfaces": []})
+            iface = next((it for it in pnode["interfaces"] if it["name"] == r.iface_name), None)
+            if iface is None:
+                iface = {"name": r.iface_name, "functions": []}
+                pnode["interfaces"].append(iface)
+            iface["functions"].append({
+                "id": r.id,
+                "name": r.func_name,
+                "keywords": r.keywords or [],
+                "anchor": r.anchor or "",
+                "engineers": r.engineers or [],
+            })
+        if not tree:
+            return None
+
+        classify, keywords, anchors = self._build_from_tree(tree)
+        return tree, classify, keywords, anchors
 
     def reload(self):
         """重新加载配置（配置热更新入口，配合派单缓存失效使用）。"""

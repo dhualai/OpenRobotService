@@ -51,6 +51,7 @@ class RetrievalResult:
     images: List[str] = field(default_factory=list)
     sub_domain: str = ""
     domain: str = ""
+    source_file: str = ""
     # P2 验证状态透出（供 LLM 看到该历史方案是否经验证/被推翻）
     verified: str = "unknown"          # unknown|confirmed|rejected|recurred
     root_cause_type: str = ""
@@ -521,6 +522,7 @@ class RetrievalService:
             images=pl.get("images", []),
             sub_domain=pl.get("sub_domain", ""),
             domain=pl.get("domain", ""),
+            source_file=pl.get("source_file", ""),
             verified=pl.get("verified", "unknown") or "unknown",
             root_cause_type=pl.get("root_cause_type", "") or "",
             error_codes=pl.get("error_codes", []) or [],
@@ -995,6 +997,160 @@ class RetrievalService:
                 results.append(_make_result(pt))
 
         return results[:k]
+
+    # ────────────────────────────────────────────────────────────
+    # 完整知识库检索（三路域双路检索 + 平衡选取 + 格式化）
+    # 复用 AiDiagnosisPlatform 的成熟检索策略，供 AiTaskPlatform 的
+    # retrieve_kb 能力调用，让 @U老师 讨论也能命中完整知识库
+    # （team 操作手册/FAQ/排查 / company 产品/车端错误码/VDA5050 /
+    #  industry 行业标准/导航规范）。
+    # ────────────────────────────────────────────────────────────
+    async def retrieve_ai_kb(
+        self,
+        query: str,
+        top_k: int = 6,
+        domains: Optional[Tuple[str, ...]] = None,
+    ) -> str:
+        """完整知识库三路检索，返回已格式化的文本（供 LLM 参考）。
+
+        Args:
+            query: 检索问题/关键词
+            top_k: 送 prompt 的最大条数（默认 6）
+            domains: 要检索的域（默认 team/company/industry）
+
+        Returns:
+            格式化知识库文本；无结果时返回提示"知识库暂无匹配"。
+        """
+        domains = domains or ("team", "company", "industry")
+        import time as _time
+        t0 = _time.perf_counter()
+
+        # sub_domain → 标签映射
+        _sub_labels = {
+            "platform": "🎫 服务号", "yaorenba": "🎫 服务号",
+            "faq": "📋 FAQ", "usp_faq": "📋 FAQ", "usp/faq": "📋 FAQ",
+            "cheduan_errors": "🚗 车端", "cheduan_implementation": "🚗 车端",
+            "translation": "🌐 翻译",
+            "diagnosis": "🏭 诊断", "usp/diagnosis": "🏭 诊断",
+            "usp_manual": "📖 手册", "usp/manual": "📖 手册",
+            "usp_cards": "🔍 诊断卡",
+            "usp/overview": "📘 模块文档",
+            "usp/error_codes": "🚨 平台错误码",
+            "usp/ui_pages": "🧭 页面导航",
+            "usp/terminology": "🔤 术语表",
+            "product_catalog": "🏢 产品", "vda5050_protocol": "🏢 协议",
+            "navigation": "📐 导航", "standards": "📐 标准",
+        }
+
+        def _label(r) -> str:
+            return _sub_labels.get(r.sub_domain, f"📄 {r.sub_domain or '知识库'}")
+
+        def _sec_key(r):
+            _t = r.title or ""
+            _sec = re.split(r" [>/·] ", _t, maxsplit=1)[0].strip() if _t else ""
+            return (r.source_file or r.sub_domain or "", _sec)
+
+        async def _one(domain: str, dom_top_k: int):
+            try:
+                dense_res, sparse_res = await asyncio.wait_for(
+                    self.retrieve_domain_dual(query, domain, top_k=8),
+                    timeout=15.0,
+                )
+                return list(dense_res)[:dom_top_k], list(sparse_res)[:dom_top_k]
+            except Exception as e:
+                logger.warning(f"[retrieve_ai_kb] {domain} 域双路检索失败: "
+                               f"{type(e).__name__}: {str(e)[:300]}")
+                return [], []
+
+        _weights = {"team": 5, "company": 4, "industry": 3}
+        _tasks = [asyncio.create_task(_one(d, _weights.get(d, 4))) for d in domains]
+        _gathered = await asyncio.gather(*_tasks, return_exceptions=True)
+
+        # 合并候选池（稠密+稀疏各自保送，避免 RRF 早融合挤掉只被一路命中的文档）
+        _dense_part: list = []
+        _sparse_part: list = []
+        _seen_ids: set = set()
+
+        def _push(r: RetrievalResult) -> None:
+            if r.id in _seen_ids:
+                return
+            _seen_ids.add(r.id)
+            if getattr(r, "sparse_score", 0):
+                _sparse_part.append(r)
+            else:
+                _dense_part.append(r)
+
+        for _g in _gathered:
+            if isinstance(_g, BaseException):
+                continue
+            _dn, _sp = _g
+            for r in _dn:
+                _push(r)
+            for r in _sp:
+                _push(r)
+
+        _dense_part.sort(key=lambda r: getattr(r, "vector_score", 0) or 0, reverse=True)
+        _sparse_part.sort(key=lambda r: getattr(r, "sparse_score", 0) or 0, reverse=True)
+
+        # 车端错误码精确匹配：query 含数字错误码时优先精确命中
+        _cheduan_exact: list = []
+        _query_codes = self._extract_error_codes(query)
+        if _query_codes:
+            try:
+                _cheduan_exact = await asyncio.wait_for(
+                    self.retrieve_cheduan(query, top_k=3),
+                    timeout=10.0,
+                )
+            except Exception:
+                _cheduan_exact = []
+
+        # 平衡选取（同节最多 2 条）
+        _final: list = []
+        _final_tags: list = []
+        _fs: set = set()
+        _sec_counts: dict = {}
+
+        def _take(queue: list, n_slots: int, tag: str) -> None:
+            _taken = 0
+            for r in queue:
+                if _taken >= n_slots:
+                    break
+                if r.id in _fs:
+                    continue
+                _k = _sec_key(r)
+                if _sec_counts.get(_k, 0) >= 2:
+                    continue
+                _fs.add(r.id)
+                _sec_counts[_k] = _sec_counts.get(_k, 0) + 1
+                _final.append(r)
+                _final_tags.append(tag)
+                _taken += 1
+
+        for r in _cheduan_exact:
+            if r.id not in _fs:
+                _fs.add(r.id)
+                _final.append(r)
+                _final_tags.append("码")
+        _take(_dense_part[:7], 4, "密")
+        _take(_sparse_part[:5], 2, "疏")
+
+        docs: list = []
+        idx = 1
+        for _ri, r in enumerate(_final[:top_k]):
+            content = (r.content or "").strip()
+            if not content:
+                continue
+            content = content[:800]
+            title = f"（{r.title}）" if r.title else ""
+            docs.append(f"---\n{_label(r)} {idx}{title}：\n{content}\n---")
+            idx += 1
+
+        logger.info(f"[retrieve_ai_kb] 域召回完成: 密集{len(_dense_part)} 稀疏{len(_sparse_part)} "
+                    f"车端{len(_cheduan_exact)} 送prompt{len(docs)} "
+                    f"耗时{round((_time.perf_counter() - t0) * 1000)}ms: query={query[:50]}")
+        if not docs:
+            return "（知识库暂无匹配文档。若用户问题属于知识问答，请如实告知当前手册未覆盖，不要编造答案。）"
+        return "\n".join(docs)
 
     async def retrieve_translation(
         self,

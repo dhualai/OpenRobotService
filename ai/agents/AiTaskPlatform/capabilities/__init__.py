@@ -33,6 +33,7 @@ from ai.agents.AiTaskPlatform.capabilities.core.evaluator import Evaluator
 from ai.agents.AiTaskPlatform.capabilities.core.router import Router
 from ai.agents.AiTaskPlatform.capabilities.tools.log_analyze import LogAnalyzeCapability
 from ai.agents.AiTaskPlatform.capabilities.tools.retrieve_history import RetrieveHistoryCapability
+from ai.agents.AiTaskPlatform.capabilities.tools.retrieve_kb import RetrieveKbCapability
 from ai.agents.AiTaskPlatform.capabilities.tools.code_search import CodeSearchCapability
 from ai.agents.AiTaskPlatform.capabilities.tools.image_analyze import ImageAnalyzeCapability
 from ai.agents.AiTaskPlatform.capabilities.tools.retrieve_troubleshooting import RetrieveTroubleshootingCapability

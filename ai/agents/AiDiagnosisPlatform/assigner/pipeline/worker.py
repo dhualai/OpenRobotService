@@ -302,7 +302,7 @@ class AssignmentWorker:
     def _update_task_assignee(task_id: int, result) -> bool:
         """将派单结果写回 tasks 表"""
         try:
-            from app.models.task import Task, TaskStatus
+            from app.models.task import Task, TaskStatus, TaskOperationLog, OperationType
             from app.core.db import SessionLocal
             from sqlalchemy import func
 
@@ -312,6 +312,9 @@ class AssignmentWorker:
                 if not task:
                     logger.warning(f"派单结果写回失败: task_id={task_id} 不存在")
                     return False
+
+                # 状态快照：派单前状态（new），供状态变更日志 detail 使用
+                old_status = task.status.value if hasattr(task.status, 'value') else str(task.status)
 
                 # engineer_id 已统一为 users.id（与 assigned_to 一致），无需反查
                 task.assigned_to = result.engineer_id or None
@@ -328,6 +331,49 @@ class AssignmentWorker:
                 meta["assign_decision_type"] = result.decision_type
                 meta["assigned_at"] = datetime.now(timezone.utc).isoformat()
                 task.metadata_info = meta
+
+                # 派单操作日志：与 backend/app/modules/tasks/api/task.py 的 STATUS_LABEL
+                # 中文风格对齐；operator 用 AI 系统标识，与 _log_task_creation 的
+                # "system" 兜底风格一致。日志与派单写入同一事务，保证强一致：
+                # 要么工单已派单+日志齐全，要么整体回滚由下次扫描重试派单。
+                if task.assigned_to:
+                    _AI_OP = "ai_dispatch"
+                    _AI_OP_NAME = "AI 派单"
+                    _STATUS_CN = {
+                        TaskStatus.NEW.value: "新建",
+                        TaskStatus.IN_PROGRESS.value: "处理中",
+                        TaskStatus.PENDING.value: "待处理",
+                        TaskStatus.RESOLVED.value: "已解决",
+                        TaskStatus.CANCELED.value: "已取消",
+                        TaskStatus.CLOSED.value: "已关闭",
+                    }
+                    engineer_name = result.engineer_name or task.assigned_to or ""
+                    # 1) AI 派单记录：「工单已派单给 XXX」
+                    db.add(TaskOperationLog(
+                        task_id=task.id,
+                        operation_type=OperationType.AI_ASSIGN,
+                        operator=_AI_OP,
+                        operator_name=_AI_OP_NAME,
+                        detail={
+                            "new_assignee": result.engineer_id,
+                            "assignee_name": engineer_name,
+                            "confidence_score": result.confidence_score,
+                            "decision_type": result.decision_type,
+                            "reasoning": (result.reasoning or "")[:500],
+                        },
+                        description=f"工单已派单给 {engineer_name}",
+                    ))
+                    # 2) 状态变更记录：new → in_progress
+                    new_status_val = TaskStatus.IN_PROGRESS.value
+                    db.add(TaskOperationLog(
+                        task_id=task.id,
+                        operation_type=OperationType.STATUS_CHANGE,
+                        operator=_AI_OP,
+                        operator_name=_AI_OP_NAME,
+                        to_status=new_status_val,
+                        detail={"from": old_status, "to": new_status_val},
+                        description=f"工单状态变更为「{_STATUS_CN.get(new_status_val, new_status_val)}」",
+                    ))
 
                 db.commit()
                 return True

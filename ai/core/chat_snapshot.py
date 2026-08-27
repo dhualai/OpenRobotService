@@ -11,8 +11,10 @@
    绝不阻塞提单主流程。
 3. 中文逐字符 getlength 换行，CJK/ASCII 混排精确，不靠宽度估算。
 """
+import base64
 import io
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -211,56 +213,248 @@ def render_chat_snapshot(
     return buf.getvalue()
 
 
+def _fmt_created_at(iso: str) -> str:
+    """iso 字符串 → 'MM-DD HH:MM'；解析失败返回空串（时间戳省略显示）。"""
+    if not iso:
+        return ""
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(iso).strftime("%m-%d %H:%M")
+    except Exception:
+        return ""
+
+
+# 内嵌图片总大小上限（base64 累计字符数）：防止附件 md 膨胀过大
+_EMBED_BUDGET = 2 * 1024 * 1024
+
+_IMG_MIME = {
+    "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    "gif": "image/gif", "webp": "image/webp", "svg": "image/svg+xml",
+}
+
+
 def _turns_to_markdown(
     turns: List[Dict[str, str]],
     title: str = "AI 诊断对话记录",
     session_id: str = "",
-) -> str:
+    user_images: Optional[List[dict]] = None,
+    img_budget: int = _EMBED_BUDGET,
+) -> tuple:
     """把对话 turns 转录成 Markdown 文本（工单附件用，可复制/可检索/可被下游解析）。
 
-    格式：助手在左、用户在右，逐轮排列（一左一右的聊天记录形态）：
-        助手：xxx
-        用户：xxx
+    格式：每轮以水平分隔线隔开，角色粗体 + emoji 前缀（附件预览是 ReactMarkdown
+    渲染，分隔线/粗体/emoji 均生效，用户/AI 视觉区分明显）：
+
+        ---
+
+        👤 **【用户】** 08-25 10:30
+
+        内容
+
+    created_at 仅 MySQL 源的 turn 有（memory.turns 没有），缺失时省略时间戳。
     相邻内容完全相同的 turn 视为重复记录（上传回执等），只保留一条。
-    图片描述（「我上传了 N 个文件：…」）原样保留在用户消息里。
+    上传轮（「我上传了 N 个文件：…」/「[上传了附件] …」）是 router 注入给
+    LLM 的上下文文字，对话界面这轮显示的是图片本身——命中图片时只渲染图
+    片，不渲染注入文字（没命中图片的批次如日志压缩包，保留原文避免空轮）。
+
+    user_images：_prepare_user_images 的产物（已下载的图片 bytes）。上传轮的
+    content 含文件名（router 写入「我上传了 N 个文件：['x.jpg']…」），按文件名
+    匹配把原图 base64 内联在该轮——图片出现在它被发送的对话位置；
+    匹配不到的条目（上传轮被窗口截掉等）追加末尾「对话中的图片」节（含 desc
+    引用）兜底。返回 (md 文本, 剩余图片预算)——预算与 KB 图内嵌共享接力。
     """
+    def _is_upload_turn(text: str) -> bool:
+        return text.startswith("我上传了 ") or text.startswith("[上传了附件]")
+
+    pending = {e["filename"]: e for e in (user_images or [])}
     lines = [f"# {title}", ""]
     _prev = None
     for turn in turns:
         role = (turn.get("role") or "user").lower()
-        role_label = "U老师" if role == "assistant" else "用户"
         content = (turn.get("content") or "").strip()
         if not content:
             continue
-        if _prev == (role_label, content):
+        if _prev == (role, content):
             continue  # 相邻重复（如上传后的重复回执），跳过
-        _prev = (role_label, content)
-        lines.append(f"{role_label}：{content}")
+        _prev = (role, content)
+        if role == "assistant":
+            tag = "🤖 **【U老师】**"
+        else:
+            tag = "👤 **【用户】**"
+        header = f"{tag} {_fmt_created_at(turn.get('created_at', ''))}".rstrip()
+        lines.append("---")
         lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
+        lines.append(header)
+        lines.append("")
+        # 用户上传的图片内联：content 含文件名（「我上传了…['x.jpg']」）→ 原图随轮展示
+        hit = []
+        if role != "assistant" and pending:
+            hit = [fn for fn in list(pending) if fn and fn in content]
+        if hit and _is_upload_turn(content):
+            pass  # 上传轮只出图：注入文字不渲染（界面显示的就是图片本身）
+        else:
+            lines.append(content)
+        for fn in hit:
+            img_md, img_budget = _render_image_md(pending.pop(fn), img_budget)
+            lines.append("")
+            lines.append(img_md)
+        lines.append("")
+    if len(lines) > 2:
+        lines.append("---")
+        lines.append("")
+    # 兜底：没匹配到上传轮的条目（窗口截掉/改名）放末尾节，desc 引用保留现场描述
+    if pending:
+        parts = []
+        for entry in pending.values():
+            img_md, img_budget = _render_image_md(entry, img_budget, with_desc=True)
+            parts.append(img_md)
+        lines.append("## 📷 对话中的图片")
+        lines.append("")
+        lines.append("\n\n---\n\n".join(parts))
+        lines.append("")
+    if user_images:
+        _ok = sum(1 for e in user_images if e.get("data"))
+        logger.info(f"[chat_markdown] 用户图片内嵌 {_ok}/{len(user_images)} 张（内联对话位置优先）")
+    return "\n".join(lines).rstrip() + "\n", img_budget
+
+
+def _embed_kb_images(md_text: str, budget: int = _EMBED_BUDGET) -> tuple:
+    """把 md 里的 KB 图片 URL（{media_url_prefix}/kb/.../media/x.png）替换为
+    base64 data URL——附件 md 自包含，脱离 AI 服务（backend 前端预览 / 下载
+    本地打开 / 转发）都能渲染，不再裂图。
+
+    文件缺失/读取失败保留原 URL 降级；累计内嵌体积超预算后剩余图片保留原 URL。
+    只影响附件 md，不改 turns 原文。返回 (新文本, 剩余预算)——预算与用户上传
+    图片内嵌共享（_append_user_images 接力消耗同一额度）。
+    """
+    try:
+        from ai.config import get_ai_config, _KB_DIR
+        prefix = get_ai_config().media_url_prefix.rstrip("/")
+    except Exception:
+        return md_text, budget
+
+    pat = re.compile(
+        r'!\[([^\]]*)\]\(' + re.escape(prefix) + r'/kb/([^/]+)/([^)]*?)/media/([^)/]+\.\w+)\)')
+    skipped = 0
+
+    def _repl(m):
+        nonlocal budget, skipped
+        alt, domain, sub, fname = m.group(1), m.group(2), m.group(3), m.group(4)
+        local = _KB_DIR / domain / sub / "media" / fname
+        ext = local.suffix.lstrip(".").lower()
+        mime = _IMG_MIME.get(ext)
+        if not mime:
+            return m.group(0)
+        try:
+            data = local.read_bytes()
+        except Exception:
+            return m.group(0)  # 文件不存在等：保留原 URL 降级
+        b64 = base64.b64encode(data).decode("ascii")
+        if len(b64) > budget:
+            skipped += 1
+            return m.group(0)
+        budget -= len(b64)
+        return f'![{alt}](data:{mime};base64,{b64})'
+
+    result = pat.sub(_repl, md_text)
+    if skipped:
+        logger.info(f"[chat_markdown] 内嵌图片超预算降级保留原URL: {skipped} 张")
+    return result, budget
+
+
+_USER_IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+def is_image_entry(entry: dict) -> bool:
+    """附件条目是否是图片（按 filename/object_path 扩展名判断）。"""
+    name = (entry.get("filename") or entry.get("object_path") or "").lower()
+    return Path(name).suffix in _USER_IMG_EXTS
+
+
+def _prepare_user_images(entries: List[dict]) -> List[dict]:
+    """下载用户上传图片条目（MinIO → bytes），返回
+    [{filename, desc, mime, data(bytes|None)}]——data=None 表示下载失败，
+    渲染时降级为文字。同步函数（fget_object 阻塞），调用方用 to_thread 包。
+    """
+    if not entries:
+        return []
+    try:
+        import tempfile
+        from ai.core.minio_client import minio_client
+    except Exception:
+        return []
+
+    prepared: List[dict] = []
+    for e in entries:
+        object_path = (e.get("object_path") or "").strip()
+        fname = e.get("filename") or object_path.rsplit("/", 1)[-1] or "图片"
+        ext = Path(fname).suffix.lstrip(".").lower()
+        mime = _IMG_MIME.get(ext, "image/jpeg")
+        data = None
+        if object_path:
+            try:
+                with tempfile.TemporaryDirectory() as td:
+                    local = Path(td) / "img"
+                    if minio_client.fget_object(object_path, str(local)):
+                        data = local.read_bytes()
+            except Exception:
+                data = None
+        prepared.append({
+            "filename": fname,
+            "desc": (e.get("desc") or "").strip(),
+            "mime": mime,
+            "data": data,
+        })
+    return prepared
+
+
+def _render_image_md(entry: dict, budget: int, with_desc: bool = False) -> tuple:
+    """单张已下载图片 → (md 片段, 剩余预算)。内联成功扣预算；下载失败/超预算
+    降级为文件名说明文字（不阻塞其余图片）。with_desc 时附 desc 引用块
+    （仅末尾兜底节用——内联位置的 desc 已在用户消息 content 里，不重复）。"""
+    fname = entry["filename"]
+    data = entry.get("data")
+    if data:
+        b64 = base64.b64encode(data).decode("ascii")
+        if len(b64) > budget:
+            return f"**{fname}**（图片过大未内嵌，见工单附件）", budget
+        desc_line = f"\n\n> {entry['desc']}" if with_desc and entry.get("desc") else ""
+        prefix = f"**{fname}**{desc_line}\n\n" if with_desc else ""
+        return f"{prefix}![{fname}](data:{entry['mime']};base64,{b64})", budget - len(b64)
+    return f"**{fname}**（图片下载失败，见工单附件）", budget
 
 
 async def create_chat_markdown_attachment(
     session_id: str,
     turns: List[Dict[str, str]],
     title: str = "",
+    user_images: Optional[List[dict]] = None,
 ) -> Optional[dict]:
     """生成对话记录 Markdown 文档并上传 MinIO，返回 attachments 元素 {path, filename, size}。
 
     替代旧版 PNG 截图附件：md 可复制、可检索、文件更小，且下游系统可直接解析。
+    user_images: 本单周期内用户上传的图片附件条目（object_path/filename/desc），
+    先从 MinIO 下载（to_thread），再按上传轮内联到 md 对应位置（见
+    _turns_to_markdown 的 user_images 参数说明）。
     任何失败都返回 None（不抛异常）——附件是锦上添花，不能拖垮提单主流程。
     """
     try:
+        import asyncio
         import time as _t
         from ai.core.minio_client import minio_client
 
-        md_text = _turns_to_markdown(
+        prepared = []
+        if user_images:
+            prepared = await asyncio.to_thread(_prepare_user_images, user_images)
+        md_text, budget = _turns_to_markdown(
             turns,
             title=title or "AI 诊断对话记录",
             session_id=session_id,
+            user_images=prepared,
         )
         if not md_text.strip():
             return None
+        md_text, _ = _embed_kb_images(md_text, budget)
         md_bytes = md_text.encode("utf-8")
 
         # AI 独立进程不能 import backend 的 app.utils.minio_client，

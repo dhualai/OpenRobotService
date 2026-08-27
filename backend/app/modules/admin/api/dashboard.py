@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any, Optional, List, Tuple
 
 from app.core.database import get_async_db as get_db
+from app.models.delivery import UNDERTAKE_PENDING
 from app.modules.admin.services.task_dashboard_service import task_dashboard_service
 from app.modules.admin.services.project_service import project_service
 from app.modules.admin.services.risk_service import risk_service
@@ -105,6 +106,53 @@ def _enrich_projects_with_analysis(projects: List[Dict]) -> None:
         project["risks"] = sum(1 for risk in project_risks if risk.get("status") != "关闭")
         project["task_execution_stats"] = project_service.get_task_execution_stats_7d(project_code)
         project["latest_manual_switch_count"] = transport_efficiency_service.get_latest_manual_switch_count(project_code)
+
+
+@dashboard_router.get("/tickets/source-analysis", response_model=Dict[str, Any])
+async def get_ticket_source_analysis(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目内的工单"),
+    db: AsyncSession = Depends(get_db),
+):
+    """工单数据来源分析 —— 供仪表盘「工单数据来源分析」看板（类型分布 + 提单人角色分布）。
+
+    响应结构：
+    {
+        "code": 0,
+        "data": {
+            "by_type": [{"key": "bug", "count": 12}, ...],
+            "by_role": [{"label": "调度研发", "count": 3}, ...]
+        }
+    }
+    """
+    pid_list = _parse_project_ids(project_ids)
+    data = await task_dashboard_service.get_source_analysis(db, pid_list)
+    return {"code": 0, "data": data}
+
+
+@dashboard_router.get("/tickets/response-time", response_model=Dict[str, Any])
+async def get_ticket_response_time(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目内的工单"),
+    db: AsyncSession = Depends(get_db),
+):
+    """接单人响应时间分析 —— 供仪表盘「接单人响应时间」看板。
+
+    响应时间 = 工单详情页「工单动态」中【处理人】第一次点开工单的时间 - 新建工单时间
+    （VIEW 操作日志，处理人口径与动态展示一致，见 task_dashboard_service.get_response_time_analysis），
+    按 15分钟内 / 1h内 / 4h内 / 其他 分桶。
+
+    响应结构：
+    {
+        "code": 0,
+        "data": {
+            "total": 200,        // 范围内工单总数
+            "responded": 120,    // 处理人点开过、有响应时间的工单数（参与分桶）
+            "by_bucket": [{"key": "within_15m", "label": "15分钟内", "count": 30}, ...]
+        }
+    }
+    """
+    pid_list = _parse_project_ids(project_ids)
+    data = await task_dashboard_service.get_response_time_analysis(db, pid_list)
+    return {"code": 0, "data": data}
 
 
 @dashboard_router.get("/tickets/summary", response_model=Dict[str, Any])
@@ -206,38 +254,45 @@ async def get_project_monthly_summary(
     也兼容 YYYY-MM；模型字段已建索引），与「本月新增」统计卡口径一致；
     无核算期的项目不落在任何月份，不参与统计。输出统一归一化为 YYYY-MM 的 key。
 
+    已承接（value）与待定（pending_value）分开计数，前端画成同一根柱子的深/浅两段。
+    本接口是全站唯一放开 include_pending 的地方：待定项目只影响这张图，
+    项目总数/项目列表/紧急度看板等口径均不含待定，见 project_service.get_projects。
+
     响应结构：
     {
         "code": 0,
         "data": {
-            "monthly": [{"key": "2026-08", "year": 2026, "month": 8, "value": 12}, ...],
+            "monthly": [{"key": "2026-08", "year": 2026, "month": 8, "value": 12, "pending_value": 3}, ...],
             "years": [2024, 2025, 2026]
         }
     }
     """
     pid_list = _parse_project_ids(project_ids)
     if pid_list is not None:
-        projects = project_service.get_projects_by_ids(pid_list)
+        projects = project_service.get_projects_by_ids(pid_list, include_pending=True)
     else:
-        projects = project_service.get_projects(0, 1000)
+        projects = project_service.get_projects(0, 1000, include_pending=True)
 
     monthly_map: Dict[str, int] = {}
+    pending_map: Dict[str, int] = {}
     for project in projects:
         parsed = _parse_settlement_period(project.get("settlement_period"))
         if parsed is None:
             continue
         year, month = parsed
         key = f"{year:04d}-{month:02d}"
-        monthly_map[key] = monthly_map.get(key, 0) + 1
+        target = pending_map if project.get("undertake_status") == UNDERTAKE_PENDING else monthly_map
+        target[key] = target.get(key, 0) + 1
 
     monthly = [
         {
             "key": key,
             "year": int(key[:4]),
             "month": int(key[5:]),
-            "value": value,
+            "value": monthly_map.get(key, 0),
+            "pending_value": pending_map.get(key, 0),
         }
-        for key, value in monthly_map.items()
+        for key in set(monthly_map) | set(pending_map)
     ]
     monthly.sort(key=lambda item: item["key"])
 
