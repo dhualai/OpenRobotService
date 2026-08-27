@@ -48,13 +48,17 @@ async def get_projects(
     
     if project_codes:
         detailed_risks = risk_service.get_detailed_open_risks_by_project_codes(project_codes)
-        
+        # 批量预取任务指标与切手动次数（此前在循环内逐项目查询，N 个项目为 3N 条 SQL）
+        metrics_7d = project_service.get_task_execution_metrics_7d_batch(project_codes)
+        switch_counts = transport_efficiency_service.get_latest_manual_switch_counts(project_codes)
+
         for project in projects:
             project_code = project["project_code"]
             project_risks = detailed_risks.get(project_code, [])
-            
+            metric = metrics_7d.get(project_code)
+
             project["risks"] = 0
-            
+
             custom_categories = {}
             for risk in project_risks:
                 category = risk.get("custom_category") or "未分类"
@@ -64,10 +68,9 @@ async def get_projects(
             
             risk_summary = []
             
-            task_execution_status = project_service.get_task_execution_status_7d(project_code)
-            project["task_execution_status"] = task_execution_status
-            project["task_execution_stats"] = project_service.get_task_execution_stats_7d(project_code)
-            project["latest_manual_switch_count"] = transport_efficiency_service.get_latest_manual_switch_count(project_code)
+            project["task_execution_status"] = metric["status"] if metric else "无数据"
+            project["task_execution_stats"] = metric["stats"] if metric else {"total_tasks": 0, "finished_tasks": 0, "completion_rate": None}
+            project["latest_manual_switch_count"] = switch_counts.get(project_code)
 
             for category, risks in custom_categories.items():
                 risk_summary.append(f"\n{category} ：{len(risks)}项")
@@ -79,7 +82,7 @@ async def get_projects(
                         project["risks"] += 1
 
                     risk_summary.append(f"- {risk['description']} - {risk.get('response_measure', '无')} {status_icon}")
-            
+
             if risk_summary:
                 project["project_summary"] = "\n".join(risk_summary)
                 risk_list_summary = []
@@ -89,7 +92,7 @@ async def get_projects(
             else:
                 project["project_summary"] = "无风险"
                 project["risk_list"] = "无"
-    
+
     return projects
 
 
@@ -141,11 +144,15 @@ async def get_my_projects(
     
     if project_codes:
         detailed_risks = risk_service.get_detailed_open_risks_by_project_codes(project_codes)
-        
+        # 批量预取任务指标与切手动次数（与 GET /projects/ 同口径，避免循环内 3N 条 SQL）
+        metrics_7d = project_service.get_task_execution_metrics_7d_batch(project_codes)
+        switch_counts = transport_efficiency_service.get_latest_manual_switch_counts(project_codes)
+
         for project in projects:
             project_code = project["project_code"]
             project_risks = detailed_risks.get(project_code, [])
-            
+            metric = metrics_7d.get(project_code)
+
             project["risks"] = 0
             
             custom_categories = {}
@@ -157,10 +164,9 @@ async def get_my_projects(
             
             risk_summary = []
             
-            task_execution_status = project_service.get_task_execution_status_7d(project_code)
-            project["task_execution_status"] = task_execution_status
-            project["task_execution_stats"] = project_service.get_task_execution_stats_7d(project_code)
-            project["latest_manual_switch_count"] = transport_efficiency_service.get_latest_manual_switch_count(project_code)
+            project["task_execution_status"] = metric["status"] if metric else "无数据"
+            project["task_execution_stats"] = metric["stats"] if metric else {"total_tasks": 0, "finished_tasks": 0, "completion_rate": None}
+            project["latest_manual_switch_count"] = switch_counts.get(project_code)
 
             for category, risks in custom_categories.items():
                 risk_summary.append(f"\n{category} ：{len(risks)}项")

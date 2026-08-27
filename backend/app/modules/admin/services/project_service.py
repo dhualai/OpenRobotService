@@ -1,7 +1,7 @@
 from typing import List, Optional, Dict
 import json
 import requests
-from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import create_engine, text, inspect, bindparam
 from sqlalchemy.orm import sessionmaker
 from app.models.delivery import UNDERTAKE_YES
 from app.modules.admin.schemas_das.request_models import ProjectBase, ProjectCreate, ProjectUpdate
@@ -404,6 +404,81 @@ class ProjectService:
         finally:
             db.close()
     
+    def get_task_execution_metrics_7d_batch(self, project_codes: List[str]) -> Dict[str, Dict]:
+        """批量获取多项目近 7 天任务执行指标（一次 GROUP BY 查询）。
+
+        替代循环内逐项目调用 get_task_execution_status_7d / get_task_execution_stats_7d
+        （两者 SQL 几乎相同，逐项目时为 2N 条 JSON 聚合查询，是 /projects?include_analysis
+        列表接口的主要耗时来源）。返回：
+        {
+          code: {
+            "status": "搬运任务：X，移动任务：Y，任务总数：Z，完成总数：W" | "无数据",
+            "stats": {"total_tasks": int, "finished_tasks": int, "completion_rate": float|None},
+          }
+        }
+        未出现在返回 dict 中的项目码表示无数据（status="无数据"、stats 全 0）。
+        """
+        if not project_codes:
+            return {}
+        db = SessionLocal()
+        try:
+            sql = text("""
+            SELECT
+                project,
+                SUM(
+                    JSON_EXTRACT(
+                        JSON_EXTRACT(`data`, '$.data[0].dataIndicators.taskNumber'),
+                        '$.carry'
+                    )
+                ) AS total_carry,
+                SUM(
+                    JSON_EXTRACT(
+                        JSON_EXTRACT(`data`, '$.data[0].dataIndicators.taskNumber'),
+                        '$.navigate'
+                    )
+                ) AS total_navigate,
+                SUM(
+                    JSON_EXTRACT(
+                        JSON_EXTRACT(`data`, '$.data[0].dataIndicators.taskNumber'),
+                        '$.totalTasks'
+                    )
+                ) AS total_totalTasks,
+                SUM(
+                    JSON_EXTRACT(
+                        JSON_EXTRACT(`data`, '$.data[0].dataIndicators.taskNumber'),
+                        '$.finishedTasks'
+                    )
+                ) AS total_finishedTasks
+            FROM collection_data
+            WHERE indicator = 'GroupEfficiency'
+            AND start_time_int >= UNIX_TIMESTAMP(NOW() - INTERVAL 7 DAY)
+            AND project IN :codes
+            GROUP BY project
+            """).bindparams(bindparam("codes", expanding=True))
+            rows = db.execute(sql, {"codes": list(project_codes)}).fetchall()
+
+            metrics: Dict[str, Dict] = {}
+            for row in rows:
+                total_carry = int(row.total_carry or 0)
+                total_navigate = int(row.total_navigate or 0)
+                total_tasks = int(row.total_totalTasks or 0)
+                finished_tasks = int(row.total_finishedTasks or 0)
+                completion_rate = round(finished_tasks / total_tasks, 4) if total_tasks else None
+                metrics[row.project] = {
+                    "status": (
+                        f"搬运任务：{total_carry}，移动任务：{total_navigate}，"
+                        f"任务总数：{total_tasks}，完成总数：{finished_tasks}"
+                    ),
+                    "stats": {
+                        "total_tasks": total_tasks,
+                        "finished_tasks": finished_tasks,
+                        "completion_rate": completion_rate,
+                    },
+                }
+            return metrics
+        finally:
+            db.close()
+
     def get_task_execution_status_7d(self, project_code: str) -> str:
         db = SessionLocal()
         try:

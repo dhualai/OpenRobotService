@@ -93,19 +93,25 @@ def _enrich_projects_with_analysis(projects: List[Dict]) -> None:
     - risks：未关闭风险数（status != 关闭 计 1）
     - task_execution_stats：近 7 天任务统计
     - latest_manual_switch_count：最近切手动次数
+    三类数据均按项目码批量查询（各 1 条 SQL），避免逐项目循环 3N 条查询。
     """
     project_codes = [p["project_code"] for p in projects]
     if not project_codes:
         return
 
     detailed_risks = risk_service.get_detailed_open_risks_by_project_codes(project_codes)
+    metrics_7d = project_service.get_task_execution_metrics_7d_batch(project_codes)
+    switch_counts = transport_efficiency_service.get_latest_manual_switch_counts(project_codes)
 
     for project in projects:
         project_code = project["project_code"]
-        project_risks = detailed_risks.get(project_code, [])
-        project["risks"] = sum(1 for risk in project_risks if risk.get("status") != "关闭")
-        project["task_execution_stats"] = project_service.get_task_execution_stats_7d(project_code)
-        project["latest_manual_switch_count"] = transport_efficiency_service.get_latest_manual_switch_count(project_code)
+        metric = metrics_7d.get(project_code)
+        project["risks"] = sum(1 for risk in detailed_risks.get(project_code, []) if risk.get("status") != "关闭")
+        project["task_execution_stats"] = (
+            metric["stats"] if metric
+            else {"total_tasks": 0, "finished_tasks": 0, "completion_rate": None}
+        )
+        project["latest_manual_switch_count"] = switch_counts.get(project_code)
 
 
 @dashboard_router.get("/tickets/source-analysis", response_model=Dict[str, Any])
@@ -339,15 +345,49 @@ async def get_project_urgency_summary(
     return {"code": 0, "data": {"by_urgency": _compute_urgency_summary(pid_list)}}
 
 
+def _compute_projects_brief(pid_list: Optional[list]) -> List[Dict[str, Any]]:
+    """仪表盘首屏轻量项目列表：仅取 4 个统计卡所需字段 + 未关闭风险数。
+
+    替代前端单独请求 /projects?include_analysis=true —— 那个接口会附带
+    project_summary 文本、7 天任务 JSON 聚合等重字段；首屏只需要
+    risks/contact_person/settlement_period，一条 risks 计数即可，无任何逐项目查询。
+    口径与 /projects/include_analysis 一致（status != "关闭" 计未关闭风险）。
+    """
+    if pid_list is not None:
+        projects = project_service.get_projects_by_ids(pid_list)
+    else:
+        projects = project_service.get_projects(0, 1000)
+
+    codes = [p["project_code"] for p in projects]
+    risk_counts: Dict[str, int] = {}
+    if codes:
+        detailed_risks = risk_service.get_detailed_open_risks_by_project_codes(codes)
+        for code in codes:
+            risk_counts[code] = sum(
+                1 for r in detailed_risks.get(code, []) if r.get("status") != "关闭"
+            )
+
+    return [
+        {
+            "project_code": p["project_code"],
+            "name": p.get("name", ""),
+            "contact_person": p.get("contact_person") or "",
+            "settlement_period": p.get("settlement_period"),
+            "risks": risk_counts.get(p["project_code"], 0),
+        }
+        for p in projects
+    ]
+
+
 @dashboard_router.get("/summary-all", response_model=Dict[str, Any])
 async def get_dashboard_summary_all(
     project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),
     db: AsyncSession = Depends(get_db),
 ):
-    """仪表盘聚合接口 —— 一次返回工单汇总/来源/响应时间/项目月统计/紧急度，
-    替代前端首屏 5 个并发请求（/dashboard/tickets/summary、source-analysis、
-    response-time、projects/monthly、projects/urgency），降低首屏接口并发与延迟。
-    project 列表因走独立端点（/projects 或 /projects/me）且含 include_analysis，仍由前端单独请求。
+    """仪表盘聚合接口 —— 一次返回工单汇总/来源/响应时间/项目月统计/紧急度/轻量项目列表，
+    替代前端首屏 6 个并发请求（/dashboard/tickets/summary、source-analysis、
+    response-time、projects/monthly、projects/urgency、projects?include_analysis=true），
+    降低首屏接口并发与延迟；项目列表只带首屏统计卡所需轻量字段（见 _compute_projects_brief）。
 
     响应结构：
     {
@@ -357,7 +397,8 @@ async def get_dashboard_summary_all(
             "source": {...},         # TicketSourceAnalysis
             "response_time": {...},  # TicketResponseTime
             "monthly": {...},        # ProjectMonthlySummary
-            "urgency": {"by_urgency": {...}}
+            "urgency": {"by_urgency": {...}},
+            "projects_brief": [...]  # [{project_code,name,contact_person,settlement_period,risks}]
         }
     }
     """
@@ -367,6 +408,7 @@ async def get_dashboard_summary_all(
     response_time = await task_dashboard_service.get_response_time_analysis(db, pid_list)
     monthly = _compute_monthly_summary(pid_list)
     urgency = {"by_urgency": _compute_urgency_summary(pid_list)}
+    projects_brief = _compute_projects_brief(pid_list)
     return {
         "code": 0,
         "data": {
@@ -375,6 +417,7 @@ async def get_dashboard_summary_all(
             "response_time": response_time,
             "monthly": monthly,
             "urgency": urgency,
+            "projects_brief": projects_brief,
         },
     }
 
