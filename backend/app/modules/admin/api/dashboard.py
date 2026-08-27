@@ -161,6 +161,29 @@ async def get_ticket_response_time(
     return {"code": 0, "data": data}
 
 
+@dashboard_router.get("/tickets/avg-close-time", response_model=Dict[str, Any])
+async def get_ticket_avg_close_time(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目内的工单"),
+    db: AsyncSession = Depends(get_db),
+):
+    """各类型工单平均完单耗时 —— 供仪表盘「工单类型分布」右侧图表。
+
+    完单耗时 = 工单关闭时间 closed_at - 新建时间 created_at（仅统计已关闭工单），
+    按 task_type 分组取平均，见 task_dashboard_service.get_avg_close_time_analysis。
+
+    响应结构：
+    {
+        "code": 0,
+        "data": {
+            "by_type": [{"key": "bug", "count": 5, "avg_seconds": 172800}, ...]
+        }
+    }
+    """
+    pid_list = _parse_project_ids(project_ids)
+    data = await task_dashboard_service.get_avg_close_time_analysis(db, pid_list)
+    return {"code": 0, "data": data}
+
+
 @dashboard_router.get("/tickets/summary", response_model=Dict[str, Any])
 async def get_ticket_summary(
     project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目内的工单"),
@@ -384,21 +407,23 @@ async def get_dashboard_summary_all(
     project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),
     db: AsyncSession = Depends(get_db),
 ):
-    """仪表盘聚合接口 —— 一次返回工单汇总/来源/响应时间/项目月统计/紧急度/轻量项目列表，
-    替代前端首屏 6 个并发请求（/dashboard/tickets/summary、source-analysis、
-    response-time、projects/monthly、projects/urgency、projects?include_analysis=true），
-    降低首屏接口并发与延迟；项目列表只带首屏统计卡所需轻量字段（见 _compute_projects_brief）。
+    """仪表盘聚合接口 —— 一次返回工单汇总/来源/响应时间/平均完单耗时/项目月统计/紧急度/轻量项目列表，
+    替代前端首屏 7 个并发请求（/dashboard/tickets/summary、source-analysis、
+    response-time、avg-close-time、projects/monthly、projects/urgency、
+    projects?include_analysis=true），降低首屏接口并发与延迟；项目列表只带首屏
+    统计卡所需轻量字段（见 _compute_projects_brief）。
 
     响应结构：
     {
         "code": 0,
         "data": {
-            "tickets": {...},        # TicketSummary
-            "source": {...},         # TicketSourceAnalysis
-            "response_time": {...},  # TicketResponseTime
-            "monthly": {...},        # ProjectMonthlySummary
+            "tickets": {...},         # TicketSummary
+            "source": {...},          # TicketSourceAnalysis
+            "response_time": {...},   # TicketResponseTime
+            "avg_close_time": {...},  # TicketAvgCloseTime
+            "monthly": {...},         # ProjectMonthlySummary
             "urgency": {"by_urgency": {...}},
-            "projects_brief": [...]  # [{project_code,name,contact_person,settlement_period,risks}]
+            "projects_brief": [...]   # [{project_code,name,contact_person,settlement_period,risks}]
         }
     }
     """
@@ -406,6 +431,7 @@ async def get_dashboard_summary_all(
     tickets = await task_dashboard_service.get_ticket_summary(db, pid_list)
     source = await task_dashboard_service.get_source_analysis(db, pid_list)
     response_time = await task_dashboard_service.get_response_time_analysis(db, pid_list)
+    avg_close_time = await task_dashboard_service.get_avg_close_time_analysis(db, pid_list)
     monthly = _compute_monthly_summary(pid_list)
     urgency = {"by_urgency": _compute_urgency_summary(pid_list)}
     projects_brief = _compute_projects_brief(pid_list)
@@ -415,6 +441,7 @@ async def get_dashboard_summary_all(
             "tickets": tickets,
             "source": source,
             "response_time": response_time,
+            "avg_close_time": avg_close_time,
             "monthly": monthly,
             "urgency": urgency,
             "projects_brief": projects_brief,
