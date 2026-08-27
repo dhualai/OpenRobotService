@@ -20,6 +20,7 @@ from app.models.identity import user_project_roles
 from app.models.organization import Company, Department
 from app.modules.tasks.schemas.ticket import TicketCreate
 from app.modules.tasks.services.ticket_service import TicketService
+from app.services.identity_service import _notify_ai_personnel_reload
 
 router = APIRouter(prefix="/users", tags=["admin-users"])
 
@@ -1099,6 +1100,10 @@ async def migrate_user(
         # 5. 删除A用户
         db.delete(user_a)
         db.commit()
+
+        # 迁移会拷贝部门/模块等画像字段，通知 AI 失效派单画像缓存
+        if fields_copied:
+            _notify_ai_personnel_reload()
 
         return SuccessResponse(
             message=f"成功迁移用户 {user_a.username} → {user_b.username}，"
