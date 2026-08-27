@@ -1415,7 +1415,7 @@ class TestRequiredFieldsGranularity:
         fake_mem = types.SimpleNamespace(turns=[])
         s = platform._build_diagnosis_prompt(state, fake_mem, "")
         assert "一项信息一个 key" in s
-        assert "禁止合并成一个字段" in s
+        assert "禁止打包" in s
 
     def test_main_prompt_has_rule(self):
         from ai.agents.AiDiagnosisPlatform.pipeline import DIAGNOSIS_PROMPT
@@ -1550,9 +1550,11 @@ class TestBackfillOnFirstSubmit:
         missing = need[0]["data"]["missing_info"]
         assert "车辆编号" not in missing and "故障现象" not in missing
         assert "发生时间" in missing and "现场位置" in missing
-        # 对话路径一次只问第一个真缺项
+        # 追问话术由 LLM 现场生成（_generate_missing_ask）：不锁字面，
+        # 只锁不变式——有话术且不重复问已答过的字段
         tokens = "".join(e["data"] for e in events if e["event"] == "token")
-        assert "发生时间" in tokens and "车辆编号" not in tokens
+        assert tokens.strip(), "追问话术不应为空"
+        assert "车辆编号" not in tokens and "故障现象" not in tokens
 
     @pytest.mark.unit
     @pytest.mark.asyncio
