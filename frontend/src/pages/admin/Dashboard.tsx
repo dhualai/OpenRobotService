@@ -4,7 +4,7 @@
 // 下：更多功能 —— 项目管理 / 数据资源 / 日报周报 / 其他 快捷入口
 //
 // 数据接口见 src/api/dashboard.ts；接口未就绪时一律优雅降级为「0/暂无数据」，不阻塞页面渲染。
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Navbar, Toast, Popup } from 'tdesign-mobile-react';
 import { UserCircleIcon } from 'tdesign-icons-react';
 import { useNavigate } from 'react-router-dom';
@@ -24,6 +24,9 @@ import { MacChevronRight, MacRefreshCw } from '@/shared/components/macaronIcons'
 import { ProjectMonthBars } from '@/shared/components/macaronMonthBars';
 import { currentYearMonth, normalizeSettlementPeriod } from '@/shared/utils/settlement';
 import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
+import {
+  buildDashboardFilterKey, loadDashboardCache, saveDashboardCache,
+} from '@/stores/dashboardCache';
 import { avatarUrl } from '@/api/profile';
 
 interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; group?: 'data-resource'; }
@@ -149,12 +152,21 @@ export default function Dashboard() {
   const canAccessAdminEntries = hasPermission('frontend:admin:other:show');
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
-  const [ticketSummary, setTicketSummary] = useState<TicketSummary | null>(null);
-  const [sourceAnalysis, setSourceAnalysis] = useState<TicketSourceAnalysis | null>(null);
-  const [responseTime, setResponseTime] = useState<TicketResponseTime | null>(null);
-  const [monthlySummary, setMonthlySummary] = useState<ProjectMonthlySummary | null>(null);
-  const [urgencySummary, setUrgencySummary] = useState<UrgencySummary | null>(null);
-  const [projects, setProjects] = useState<ProjectBriefItem[]>([]);
+  // stale-while-revalidate：优先用上次缓存的看板数据立即渲染图表（产品口径），
+  // 本次 summary-all 返回后覆盖刷新；换账号/口径变化/过期则回退空态
+  const filterKey = useMemo(
+    () => buildDashboardFilterKey(canViewAll, projectIds ?? []),
+    [canViewAll, projectIds],
+  );
+  const cachedRef = useRef(
+    loadDashboardCache(username ?? '', filterKey)?.data ?? null,
+  );
+  const [ticketSummary, setTicketSummary] = useState<TicketSummary | null>(cachedRef.current?.tickets ?? null);
+  const [sourceAnalysis, setSourceAnalysis] = useState<TicketSourceAnalysis | null>(cachedRef.current?.source ?? null);
+  const [responseTime, setResponseTime] = useState<TicketResponseTime | null>(cachedRef.current?.response_time ?? null);
+  const [monthlySummary, setMonthlySummary] = useState<ProjectMonthlySummary | null>(cachedRef.current?.monthly ?? null);
+  const [urgencySummary, setUrgencySummary] = useState<UrgencySummary | null>(cachedRef.current?.urgency ?? null);
+  const [projects, setProjects] = useState<ProjectBriefItem[]>(cachedRef.current?.projects_brief ?? []);
   const [syncing, setSyncing] = useState(false);
   const [dataResourceSheetVisible, setDataResourceSheetVisible] = useState(false);
 
@@ -163,7 +175,7 @@ export default function Dashboard() {
     const filterIds = canViewAll ? undefined : projectIds;
     // 首屏只发 summary-all 一个聚合请求（含轻量项目列表 projects_brief），
     // 不再单独请求 /projects?include_analysis=true（重分析字段首屏用不到）；
-    // 不阻塞渲染：界面框架立即可见，数据返回后平滑填充
+    // 返回前界面用上次缓存渲染（无缓存则空态），返回后覆盖刷新并写缓存
     fetchDashboardSummaryAll(filterIds)
       .then((all) => {
         setTicketSummary(all.tickets);
@@ -172,11 +184,12 @@ export default function Dashboard() {
         setMonthlySummary(all.monthly);
         setUrgencySummary(all.urgency);
         setProjects(all.projects_brief ?? []);
+        saveDashboardCache(username ?? '', buildDashboardFilterKey(canViewAll, projectIds ?? []), all);
       })
       .catch(() => {
-        // 接口失败保持空态展示，不打断页面
+        // 接口失败保持当前（缓存/空态）展示，不打断页面
       });
-  }, [projectIds, canViewAll]);
+  }, [projectIds, canViewAll, username]);
 
   const handleSync = useCallback(async () => {
     setSyncing(true);
