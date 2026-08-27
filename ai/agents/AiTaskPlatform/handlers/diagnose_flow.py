@@ -337,6 +337,43 @@ class DiagnoseFlow:
         except Exception:
             self._diag_platform_ref = ""
 
+    async def _diag_load_kb(self, context):
+        """知识库 + 排查树检索（独立只读）。
+
+        [帮我分析] 报告需要知识库/排查树作为依据（提单 Agent 当年的检索结论并未落库，
+        且诊断历史流程只查历史工单+平台文档，缺通用知识库与排查树）。这里随手并行检索：
+          - retrieve_ai_kb：操作手册/FAQ/错误码/VDA5050 等通用知识库（team/company/industry 三路域）
+          - retrieve_troubleshooting：排查树根因+方案结论
+        两者任一出错/无命中都不阻塞，缺则如实标注，绝不编造。
+        """
+        self._diag_kb_ref = ""
+        self._diag_ts_ref = ""
+        try:
+            query_text = self._build_query(context)
+
+            async def _kb() -> str:
+                try:
+                    if not hasattr(self._retriever, "retrieve_ai_kb"):
+                        return ""
+                    return (await self._retriever.retrieve_ai_kb(query_text, top_k=6)) or ""
+                except Exception:
+                    return ""
+
+            async def _ts() -> str:
+                try:
+                    txt = await self._retrieve_troubleshooting_conclusions(query_text)
+                    return txt if txt and "无" not in txt[:10] else ""
+                except Exception:
+                    return ""
+
+            kb_text, ts_text = await asyncio.gather(_kb(), _ts())
+            # 去掉空命中提示，仅保留有实质内容的片段
+            self._diag_kb_ref = kb_text[:1200] if kb_text and "无" not in kb_text[:10] else ""
+            self._diag_ts_ref = ts_text[:1000] if ts_text else ""
+        except Exception:
+            self._diag_kb_ref = ""
+            self._diag_ts_ref = ""
+
     async def _diag_load_discussion(self, task_id):
         """读取讨论评论（独立只读）。"""
         try:
@@ -473,18 +510,25 @@ class DiagnoseFlow:
         self._diag_hist_found = False
         self._diag_hist_summary = ""
         self._diag_platform_ref = ""
+        self._diag_kb_ref = ""
+        self._diag_ts_ref = ""
         self._diag_user_discussion = ""
         await asyncio.gather(
             self._diag_load_history(context),
             self._diag_load_platform(context),
+            self._diag_load_kb(context),
             self._diag_load_discussion(task_id),
         )
         hist_found = self._diag_hist_found
         hist_summary = self._diag_hist_summary
         platform_ref = self._diag_platform_ref
+        kb_ref = self._diag_kb_ref
+        ts_ref = self._diag_ts_ref
         user_discussion = self._diag_user_discussion
         self._add_trace(self.NODE_KNOWLEDGE, "ok",
-                        output={"hist_found": hist_found, "platform": bool(platform_ref), "discussion": bool(user_discussion)},
+                        output={"hist_found": hist_found, "platform": bool(platform_ref),
+                                "kb": bool(kb_ref), "troubleshooting": bool(ts_ref),
+                                "discussion": bool(user_discussion)},
                         elapsed_ms=round((time.perf_counter() - t3) * 1000))
 
         # 3.5 关键信息查漏（P3）：识别缺失但对定位有决定性作用的信息
@@ -505,6 +549,12 @@ class DiagnoseFlow:
         prog.add("llm", "综合分析并生成诊断报告", capability="llm")
         att_text = att_log_summary if att_has_logs else "（无附件或无可解析内容）"
         hist_text = hist_summary if hist_found else "（无相似的历史工单方案）"
+
+        # 知识库（操作手册/FAQ/错误码/VDA5050）与排查树结论：作为通用依据供 AI 参考，
+        # 无命中时明确标注，避免 AI 误以为已查知识库而编造。
+        kb_text = kb_ref or "（知识库未检索到相关依据）"
+        ts_text = ts_ref or "（排查树未检索到相关结论）"
+        kb_context = f"## 知识库依据\n{kb_text}\n\n## 排查树结论（根因+方案）\n{ts_text}"
 
         fault_parts = []
         if context.fault_code:
@@ -540,6 +590,7 @@ class DiagnoseFlow:
             rounds=context.diagnosis_rounds,
             fault_info=fault_info,
             platform_reference=platform_ref or "（非平台问题，跳过平台参考文档检索）",
+            kb_context=kb_context,
             attachment_analysis=att_text,
             historical_solutions=hist_text,
             user_discussion=user_discussion or "（无用户讨论补充）",
