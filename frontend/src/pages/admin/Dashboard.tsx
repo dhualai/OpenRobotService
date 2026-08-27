@@ -5,17 +5,16 @@
 //
 // 数据接口见 src/api/dashboard.ts；接口未就绪时一律优雅降级为「0/暂无数据」，不阻塞页面渲染。
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Navbar, Loading, Toast, Popup } from 'tdesign-mobile-react';
+import { Navbar, Toast, Popup } from 'tdesign-mobile-react';
 import { UserCircleIcon } from 'tdesign-icons-react';
 import { useNavigate } from 'react-router-dom';
 import {
   TICKET_STATUS_LIST, URGENCY_LIST,
 } from '@/shared/constants/dashboard';
 import {
-  fetchTicketSummary, fetchProjectMonthly, fetchUrgencySummary, fetchTicketSourceAnalysis,
-  fetchTicketResponseTime, syncWecomProjects,
+  fetchDashboardSummaryAll, syncWecomProjects,
   type TicketSummary, type ProjectMonthlySummary, type UrgencySummary, type TicketSourceAnalysis,
-  type TicketResponseTime,
+  type TicketResponseTime, type ProjectBriefItem,
 } from '@/api/dashboard';
 import { TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
@@ -23,18 +22,9 @@ import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
 import { MacDonut, MacLegend, MacStat } from '@/shared/components/macaronBits';
 import { MacChevronRight, MacRefreshCw } from '@/shared/components/macaronIcons';
 import { ProjectMonthBars } from '@/shared/components/macaronMonthBars';
-import { createRequest } from '@/api/client';
-import API_CONFIG from '@/config/api';
-import { normalizeList } from '@/shared/utils/list';
 import { currentYearMonth, normalizeSettlementPeriod } from '@/shared/utils/settlement';
 import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
 import { avatarUrl } from '@/api/profile';
-
-interface ProjectListItem {
-  risks: number;
-  contact_person: string;
-  settlement_period?: string | null;
-}
 
 interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; group?: 'data-resource'; }
 
@@ -164,33 +154,28 @@ export default function Dashboard() {
   const [responseTime, setResponseTime] = useState<TicketResponseTime | null>(null);
   const [monthlySummary, setMonthlySummary] = useState<ProjectMonthlySummary | null>(null);
   const [urgencySummary, setUrgencySummary] = useState<UrgencySummary | null>(null);
-  const [projects, setProjects] = useState<ProjectListItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [projects, setProjects] = useState<ProjectBriefItem[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [dataResourceSheetVisible, setDataResourceSheetVisible] = useState(false);
 
   const loadAll = useCallback(async () => {
-    setLoading(true);
-    const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
     // canViewAll 时不传 projectIds（后端不过滤，返回全部）；否则仅统计当前用户关联项目
-    // 项目列表同理：canViewAll 走 /projects/，否则走 /projects/me 由后端按 token 过滤
     const filterIds = canViewAll ? undefined : projectIds;
-    const projectsUrl = canViewAll ? '/projects/?include_analysis=true' : '/projects/me?include_analysis=true';
-    const [tickets, source, respTime, monthly, urgency, projectList] = await Promise.all([
-      fetchTicketSummary(filterIds),
-      fetchTicketSourceAnalysis(filterIds),
-      fetchTicketResponseTime(filterIds),
-      fetchProjectMonthly(filterIds),
-      fetchUrgencySummary(filterIds),
-      adminRequest<ProjectListItem[]>(projectsUrl).catch(() => []),
-    ]);
-    setTicketSummary(tickets);
-    setSourceAnalysis(source);
-    setResponseTime(respTime);
-    setMonthlySummary(monthly);
-    setUrgencySummary(urgency);
-    setProjects(normalizeList<ProjectListItem>(projectList));
-    setLoading(false);
+    // 首屏只发 summary-all 一个聚合请求（含轻量项目列表 projects_brief），
+    // 不再单独请求 /projects?include_analysis=true（重分析字段首屏用不到）；
+    // 不阻塞渲染：界面框架立即可见，数据返回后平滑填充
+    fetchDashboardSummaryAll(filterIds)
+      .then((all) => {
+        setTicketSummary(all.tickets);
+        setSourceAnalysis(all.source);
+        setResponseTime(all.response_time);
+        setMonthlySummary(all.monthly);
+        setUrgencySummary(all.urgency);
+        setProjects(all.projects_brief ?? []);
+      })
+      .catch(() => {
+        // 接口失败保持空态展示，不打断页面
+      });
   }, [projectIds, canViewAll]);
 
   const handleSync = useCallback(async () => {
@@ -213,8 +198,6 @@ export default function Dashboard() {
   }, [monthlySummary]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
-
-  if (loading) return <Loading text="加载看板..." />;
 
   return (
     <div className="dashboard-page">

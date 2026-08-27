@@ -104,12 +104,17 @@ class Settings(BaseSettings):
     MQTT_PASSWORD: str = Field(default="")
     
     WECHAT_API_BASE_URL: str = Field(default="https://api.weixin.qq.com")
-    
+
     WECHAT_TOKEN: str = Field(default="")
     WECHAT_APP_ID: str = Field(default="")
     WECHAT_APP_SECRET: str = Field(default="")
     WECHAT_ENCODING_AES_KEY: str = Field(default="")
-    
+
+    # 企业微信群机器人 webhook（消息推送用）。形如：
+    # https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+    # 留空则企业微信通知渠道不启用。
+    WECHAT_WORK_WEBHOOK_URL: str = Field(default="")
+
     SUGGESTIONS_NOTIFICATION_USERS: List[str] = Field(default=[])
     
     MQTT_BROKER: str = Field(default="")

@@ -79,3 +79,7 @@ class UserDB(Base):
     # 微信登录用户（username 形如 wechat_xxx）本身 id 即为 open_id，无需绑定；
     # 业务账号（如 zhangsan）需绑定后才能作为转发接收人。
     wechat_openid = Column(String(128), nullable=True, index=True, comment="绑定的微信open_id（讨论区消息转发到微信用）")
+
+    # === 企业微信通知 ===
+    # 用户手机号，用于企业微信群机器人 mentioned_mobile_list @ 指定成员。
+    phone = Column(String(20), nullable=True, index=True, comment="用户手机号（企业微信通知 @ 人用）")
