@@ -59,7 +59,13 @@ class AIConfig(BaseModel):
     llm_backend: str = Field(default="deepseek", description="激活的 LLM 后端: deepseek/relay")
     relay_api_key: str = Field(default="", description="中转站 API Key")
     relay_base_url: str = Field(default="https://yitongapi.com/v1", description="中转站 API 地址")
-    relay_model: str = Field(default="claude-opus-4-8", description="中转站模型名")
+    relay_model: str = Field(default="gpt-5.6-sol", description="中转站模型名")
+    relay_fallback_models: str = Field(
+        default="claude-opus-4-8,claude-sonnet-5",
+        description="relay 主模型 HTTP 非200失败后依次降级尝试的模型，逗号分隔，空=禁用降级")
+    relay_thinking: bool = Field(
+        default=False,
+        description="中转站 Claude 是否传 thinking 字段（实测中转站该字段支持不稳，默认关闭）")
 
     # ========== Vision LLM（图片分析，OpenAI 兼容接口）==========
     vision_api_key: str = Field(default="", description="视觉 API Key")
@@ -258,7 +264,9 @@ def get_ai_config() -> AIConfig:
         llm_backend=os.getenv("LLM_BACKEND", "deepseek"),
         relay_api_key=os.getenv("RELAY_API_KEY", ""),
         relay_base_url=os.getenv("RELAY_BASE_URL", "https://yitongapi.com/v1"),
-        relay_model=os.getenv("RELAY_MODEL", "claude-opus-4-8"),
+        relay_model=os.getenv("RELAY_MODEL", "gpt-5.6-sol"),
+        relay_fallback_models=os.getenv("RELAY_FALLBACK_MODELS", "claude-opus-4-8,claude-sonnet-5"),
+        relay_thinking=os.getenv("RELAY_THINKING", "off").strip().lower() in ("1", "true", "yes", "on"),
 
         vision_api_key=os.getenv("VISION_API_KEY", ""),
         vision_base_url=os.getenv("VISION_BASE_URL", ""),

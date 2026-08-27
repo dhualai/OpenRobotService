@@ -113,18 +113,27 @@ class DispatchFlow:
 
         # ── 项目对接人（Step 4 加权 / 强制保留用；可能为 None → 不加权不保留）──
         contact_assignee_id = self._resolve_contact_assignee(ticket_context)
+        contact_name = next(
+            (e.name for e in engineer_profiles if e.id == contact_assignee_id),
+            contact_assignee_id,
+        )
         if contact_assignee_id:
-            logger.info(f"{ltag} 项目对接人: {contact_assignee_id}（将加权 ×2.0 并强制保留）")
+            logger.info(f"{ltag} 项目对接人: {contact_name}({contact_assignee_id})（将加权 ×2.0 并强制保留）")
 
         # ── 用户倾向处理人（预留：前端传 ticket.preferred_assignee 即启用；未传返回 None 不生效）──
         preferred_assignee_id = None
+        pref_name = None
         if self._config.preferred_assignee_enabled:
             preferred_assignee_id = self._resolve_preferred_assignee(
                 ticket_context, engineer_profiles,
             )
             if preferred_assignee_id:
+                pref_name = next(
+                    (e.name for e in engineer_profiles if e.id == preferred_assignee_id),
+                    preferred_assignee_id,
+                )
                 logger.info(
-                    f"{ltag} 用户倾向处理人: {preferred_assignee_id}"
+                    f"{ltag} 用户倾向处理人: {pref_name}"
                     f"（将加权 ×{self._config.contact_bonus:.1f} 并{'' if self._config.preferred_assignee_force_keep else '不'}强制保留）"
                 )
 
@@ -160,8 +169,12 @@ class DispatchFlow:
             except Exception:
                 creator_id = creator_raw
             if contact_assignee_id == creator_id:
+                creator_raw_name = next(
+                    (e.name for e in engineer_profiles if e.id == creator_id),
+                    creator_id,
+                )
                 logger.info(
-                    f"{ltag} Step2.5 对接人==提单人({creator_id})，不强制保留（自提不自接）"
+                    f"{ltag} Step2.5 对接人==提单人({creator_raw_name}({creator_id}))，不强制保留（自提不自接）"
                 )
             elif not any(e.id == contact_assignee_id for e in candidates):
                 # 对接人可能仍在全量工程师里但被过滤掉 → 强制补回
@@ -171,7 +184,7 @@ class DispatchFlow:
                 if contact_eng is not None:
                     candidates.append(contact_eng)
                     logger.info(
-                        f"{ltag} Step2.5 强制保留项目对接人 {contact_assignee_id}"
+                        f"{ltag} Step2.5 强制保留项目对接人 {contact_name}({contact_assignee_id})"
                         f" -> 候选 {len(candidates)}人"
                     )
 
@@ -187,19 +200,37 @@ class DispatchFlow:
             if pref_eng is not None:
                 candidates.append(pref_eng)
                 logger.info(
-                    f"{ltag} Step2.6 强制保留用户倾向处理人 {preferred_assignee_id}"
+                    f"{ltag} Step2.6 强制保留用户倾向处理人 {pref_name}({preferred_assignee_id})"
                     f" -> 候选 {len(candidates)}人"
                 )
 
-        # ── Step 3: 三路召回（L1/L2/L3 互不依赖，并行执行提升吞吐）──
+        # ── Step 3: 三路召回（L1 LLM / L2 语义 / L3 历史 互不依赖，并行执行提升吞吐）──
+        # 说明：L2 锚文本语义召回默认关闭（semantic_recall_enabled=false），只看 L1 LLM + L3 历史，
+        #       因为 LLM 已有强语义判断，锚文本/关键词匹配反而干扰（对产品经理等非功能模块候选人
+        #       结构化不公平）。开启开关可恢复 L2。
         recall_result = RecallResult()
+        semantic_enabled = False
         try:
-            l1_fut, l2_fut, l3_fut = await asyncio.gather(
-                self._llm_recall.arecall(ticket=ticket_context, engineers=candidates),
-                self._semantic_recall.arecall(ticket=ticket_context, engineers=candidates),
-                self._history_pair(ticket_context),
-                return_exceptions=True,
-            )
+            semantic_enabled = bool(getattr(self._config, "semantic_recall_enabled", True))
+        except Exception:
+            semantic_enabled = True
+        try:
+            if semantic_enabled:
+                l1_fut, l2_fut, l3_fut = await asyncio.gather(
+                    self._llm_recall.arecall(ticket=ticket_context, engineers=candidates),
+                    self._semantic_recall.arecall(ticket=ticket_context, engineers=candidates),
+                    self._history_pair(ticket_context),
+                    return_exceptions=True,
+                )
+            else:
+                # L2 关闭：只并行跑 L1 + L3，L2 直接置空
+                l1_fut, l3_fut = await asyncio.gather(
+                    self._llm_recall.arecall(ticket=ticket_context, engineers=candidates),
+                    self._history_pair(ticket_context),
+                    return_exceptions=True,
+                )
+                l2_fut = {}
+                logger.info(f"{ltag} Step3 L2语义召回已关闭（semantic_recall_enabled=false）")
         except Exception as e:
             logger.warning(f"{ltag} Step3 并行召回批次异常: {e}")
             l1_fut = l2_fut = l3_fut = {}
@@ -239,10 +270,9 @@ class DispatchFlow:
             preferred_assignee_id=preferred_assignee_id,
             dept_routing=tighten.dept,
         )
-
-        # ── Step 5: 负载均衡（按在途工单数打折，避免单子集中在少数人）──
-        ranked_scores = self._apply_load_balance(ranked_scores)
-        self._log_ranked(ltag, ranked_scores, candidates, prefix="Step5 负载均衡后Top")
+        # 负载均衡已移除：不再按在途工单数打折（避免把"唯一该承接者"（如产品经理）压出决策窗口），
+        # 精排分数直接进入 Step6 决策。保留精排日志便于核查。
+        self._log_ranked(ltag, ranked_scores, candidates, prefix="Step4 精排Top")
 
         # ── Step 6: LLM 综合决策 ──
         result: Optional[AssignmentResult] = None

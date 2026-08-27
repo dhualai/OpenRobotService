@@ -41,6 +41,9 @@ export interface CreateTicketParams {
   customer?: string;
   metadata_info?: Record<string, unknown>;
   tags?: string[];
+  /** 附件列表：字符串为 object_path；dict 为 {path, object_path, filename} 结构（远程截图等）。
+   *  与 tasks.attachments 列约定对齐——详情页读 path，AI 路径去重读 object_path。 */
+  attachments?: Array<string | { path?: string; object_path?: string; filename?: string; [k: string]: unknown }>;
 }
 
 export interface CreatedTicket {
@@ -101,8 +104,10 @@ export const addComment = (
     body: JSON.stringify({ content, is_public: isPublic, attachments }),
   });
 
-/** 上传评论附件（FormData；temp_id 用于随后发评论时关联）。鉴权带 Bearer token */
-export const uploadCommentAttachment = async (file: File, tempId: string): Promise<void> => {
+/** 上传评论附件（FormData；temp_id 用于随后发评论时关联）。鉴权带 Bearer token
+ *  返回 MinIO 上的真实 object_path（如 "helpdesk/temp/xxx.png"），
+ *  前端建单时可直接透传给 createTicket 的 attachments 字段，无需依赖后端进程内存 temp_id 映射。 */
+export const uploadCommentAttachment = async (file: File, tempId: string): Promise<string> => {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('temp_id', tempId);
@@ -114,6 +119,8 @@ export const uploadCommentAttachment = async (file: File, tempId: string): Promi
     body: formData,
   });
   if (!res.ok) throw new Error(`附件上传失败: ${res.status}`);
+  const data = (await res.json()) as { object_path?: string };
+  return data.object_path || '';
 };
 
 /** 创建系统任务（工单）。返回创建后的工单（含 id）。
@@ -134,6 +141,7 @@ export async function createTicket(params: CreateTicketParams): Promise<CreatedT
       customer: params.customer ?? null,
       metadata_info: params.metadata_info ?? null,
       tags: params.tags ?? null,
+      attachments: params.attachments ?? null,
     }),
   });
 }

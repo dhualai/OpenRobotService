@@ -631,6 +631,376 @@ async def platform_real_confirm(platform, monkeypatch):
     return platform
 
 
+# ================================================================
+# 收集超限强弹 × 弹窗提交死锁（0825：弹窗让提交、提交让回对话补充）
+# ================================================================
+
+# ================================================================
+# 跨单引用 × 字段卡死保险丝（0825：用户三答「#595工单里有」仍被追问账户名 4 次）
+# ================================================================
+
+class TestCollectRefAndFuse:
+    """收集模式：#N 工单指代识别/查单注入 + 同字段连问保险丝"""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_ref_ticket_lookup_and_prompt_injection(
+            self, platform, make_state, make_request, monkeypatch):
+        """用户答「#N 工单里有」→ LLM 输出 referenced_ticket → 服务端查单挂 state，
+        下一轮收集 prompt 注入工单内容（LLM 自行从中提取字段值）"""
+        from ai.agents.AiDiagnosisPlatform import pipeline as pl
+
+        async def _fake_lookup(ref_text):
+            assert "595" in ref_text
+            return "#595 USP平台无法登录\n账户名：admin，现象：登录后闪退"
+
+        monkeypatch.setattr(pl, "_lookup_ticket_ref", _fake_lookup)
+
+        state = make_state(
+            phase="diagnosing", problem_summary="USP无法登录",
+            required_fields={"account": "账户名", "error_content": "故障现象"},
+            collected_info={"error_content": "无法登录"},
+            ticket_collecting=["账户名"],
+        )
+        session_id = state.session_id
+        memory = await platform._memory_manager.get_memory(session_id)
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = json.dumps({
+            "action": "ask", "referenced_ticket": "595",
+            "state_update": {"collected_info": {}},
+            "message": "请直接告知账户名。",
+        }, ensure_ascii=False)
+        request = make_request(query="#595这个工单里有", session_id=session_id)
+        events = [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert "admin" in state.ticket_ref_context, "查单结果未挂到 state"
+        # 下一轮收集 prompt 注入「用户引用的历史工单」块
+        prompt = platform._build_diagnosis_prompt(state, memory, reference_docs="（跳过检索）")
+        assert "用户引用的历史工单" in prompt
+        assert "admin" in prompt
+        # 协议字段进 JSON 模板
+        assert '"referenced_ticket":""' in prompt
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_stuck_field_fuse_forces_skip(self, platform, make_state, make_request):
+        """同一字段连续 3 轮收不到值 → 强制记「无」跳过并直接进 review，
+        不再出现第 4 次追问（0825 生产事故形状）"""
+        state = make_state(
+            phase="diagnosing", problem_summary="USP无法登录",
+            required_fields={"account": "账户名", "error_content": "故障现象"},
+            collected_info={"error_content": "无法登录"},
+            ticket_collecting=["账户名"],
+        )
+        session_id = state.session_id
+        memory = await platform._memory_manager.get_memory(session_id)
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state, _load_agent_state
+        _save_agent_state(memory, state)
+        await platform._memory_manager.save_memory(memory)
+
+        platform._llm_client.complete.side_effect = None
+        platform._llm_client.complete.return_value = json.dumps({
+            "action": "ask", "referenced_ticket": "",
+            "state_update": {"collected_info": {}},
+            "message": "请告知无法登录的账户名。",
+        }, ensure_ascii=False)
+
+        queries = ["转工单", "#595这个工单里有", "都说了在那个单子里"]
+        for i, q in enumerate(queries, 1):
+            state = _load_agent_state(memory.metadata)
+            request = make_request(query=q, session_id=session_id)
+            events = [e async for e in platform._agent_think_stream(request, state, memory)]
+            has_review = any(e["event"] == "status"
+                             and isinstance(e["data"], dict)
+                             and e["data"].get("stage") == "review" for e in events)
+            if i < 3:
+                assert not has_review, f"第{i}轮不该提前弹窗"
+            else:
+                assert state.collected_info.get("account", "").startswith("无"), \
+                    f"保险丝未强制记无: {state.collected_info}"
+                assert state.ticket_collecting == []
+                assert has_review, "第 3 轮保险丝触发后应进 review"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_lookup_ticket_ref_no_digits(self):
+        """指代里没数字 → 不查库直接空串（静默降级）"""
+        from ai.agents.AiDiagnosisPlatform.pipeline import _lookup_ticket_ref
+        assert await _lookup_ticket_ref("上次那个单子") == ""
+        assert await _lookup_ticket_ref("") == ""
+
+
+class TestPlanExecute:
+    """plan-and-execute 合并规划分支（AI_PLAN_EXECUTE=1）：一次 flash 输出
+    意图路由+工具组合 → 并行执行 → 单次回答；关闭开关走原意图分类+乐观检索路径（零影响）"""
+
+    def _patch_stream_path(self, platform, monkeypatch, plan, intent="diagnosis"):
+        """把 stream 依赖全部替换成可控桩，返回捕获字典"""
+        captured = {"retrieve_queries": [], "oneshot_docs": None, "plan_called": False,
+                    "retrieve_called": False, "classify_called": False}
+
+        async def _fake_plan(req, state, memory):
+            captured["plan_called"] = True
+            return intent, plan
+
+        async def _fake_classify(llm, raw, resolved, context_turns=None):
+            captured["classify_called"] = True
+            return intent
+
+        async def _fake_retrieve(session_id, state, context_turns=None, query_override=""):
+            captured["retrieve_called"] = True
+            captured["retrieve_queries"].append(query_override)
+            return f"【知识库】{query_override} 的排查步骤"
+
+        async def _fake_oneshot(req, state, memory, reference_docs=""):
+            captured["oneshot_docs"] = reference_docs
+            yield {"event": "result", "data": {"type": "diagnosis", "action": "answer",
+                                               "message": "ok", "agent_state": {}}}
+
+        monkeypatch.setattr(platform, "_plan_tools", _fake_plan)
+        monkeypatch.setattr(platform, "_classify_intent", _fake_classify)
+        monkeypatch.setattr(platform, "_retrieve_with_context", _fake_retrieve)
+        monkeypatch.setattr(platform, "_diagnosis_oneshot_branch", _fake_oneshot)
+        return captured
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_combo_tools_executed_in_parallel_branch(
+            self, platform, make_state, make_request, monkeypatch):
+        """开关开 + 规划组合（检索+查单）→ 并行执行，资料两块都进回答轮，
+        检索用规划词、工单内容挂 state"""
+        from ai.agents.AiDiagnosisPlatform import pipeline as pl
+        monkeypatch.setenv("AI_PLAN_EXECUTE", "1")
+
+        async def _fake_lookup(ref_text):
+            assert ref_text.strip() == "595"
+            return "#595 USP平台无法登录\n账户名：admin"
+
+        monkeypatch.setattr(pl, "_lookup_ticket_ref", _fake_lookup)
+
+        captured = self._patch_stream_path(
+            platform, monkeypatch,
+            plan=[("search_kb", {"query": "锁区配置步骤"}),
+                  ("lookup_ticket", {"ticket_no": 595})])
+
+        state = make_state(phase="diagnosing", diagnosis_rounds=1)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        request = make_request(query="@#595里说的锁区怎么配置", skip_retrieval=False, session_id=state.session_id)
+        events = [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert captured["plan_called"], "开关开时规划器必须被调用"
+        assert captured["retrieve_queries"] == ["锁区配置步骤"], "检索词必须来自规划"
+        assert "【知识库】锁区配置步骤" in (captured["oneshot_docs"] or "")
+        assert "#595" in captured["oneshot_docs"] and "admin" in captured["oneshot_docs"], \
+            "工单内容必须注入回答轮"
+        assert "不要说无法查看" in captured["oneshot_docs"]
+        assert state.ticket_ref_context.startswith("#595"), "查单结果要挂 state 供后续轮引用"
+        assert any(e["event"] == "result" for e in events)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_no_tools_plan_answers_without_docs(
+            self, platform, make_state, make_request, monkeypatch):
+        """开关开 + 规划无工具（寒暄/纯咨询）→ 空资料直接单轮回答，不检索"""
+        monkeypatch.setenv("AI_PLAN_EXECUTE", "1")
+        captured = self._patch_stream_path(platform, monkeypatch, plan=[])
+
+        state = make_state(phase="diagnosing", diagnosis_rounds=1)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        request = make_request(query="你是谁", skip_retrieval=False, session_id=state.session_id)
+        [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert captured["plan_called"]
+        assert not captured["retrieve_called"], "无工具规划不应触发检索"
+        assert captured["oneshot_docs"] == ""
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_switch_off_keeps_legacy_path(
+            self, platform, make_state, make_request, monkeypatch):
+        """开关关（默认）→ 规划器不启动，走乐观检索老路径"""
+        captured = self._patch_stream_path(platform, monkeypatch,
+                                           plan=[("search_kb", {"query": "不该出现"})])
+        # 关键差异：老路径的乐观检索在意图分类前发起，query_override=用户原话
+        async def _fake_retrieve_legacy(session_id, state, context_turns=None, query_override=""):
+            captured["retrieve_called"] = True
+            captured["retrieve_queries"].append(query_override)
+            return "【知识库】乐观检索结果"
+
+        monkeypatch.setattr(platform, "_retrieve_with_context", _fake_retrieve_legacy)
+        monkeypatch.delenv("AI_PLAN_EXECUTE", raising=False)
+
+        state = make_state(phase="diagnosing", diagnosis_rounds=1)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        request = make_request(query="锁区怎么配置", skip_retrieval=False, session_id=state.session_id)
+        [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert not captured["plan_called"], "开关关时规划器不得被调用"
+        assert captured["classify_called"], "开关关时独立意图分类必须照跑（原路径）"
+        assert captured["retrieve_called"], "老路径应发起乐观检索"
+        assert captured["retrieve_queries"] == ["锁区怎么配置"], \
+            "老路径检索词必须是用户原话（query_override=request.query）"
+        assert "乐观检索结果" in (captured["oneshot_docs"] or "")
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_lookup_ticket_reuses_prefetched_context(
+            self, platform, make_state, make_request, monkeypatch):
+        """@# 预查已挂同号工单 → 规划执行复用 state 缓存，不重复查库"""
+        monkeypatch.setenv("AI_PLAN_EXECUTE", "1")
+        lookup_calls = []
+
+        async def _fake_lookup(ref_text):
+            lookup_calls.append(ref_text)
+            return "#3 查到了"
+
+        from ai.agents.AiDiagnosisPlatform import pipeline as pl
+        monkeypatch.setattr(pl, "_lookup_ticket_ref", _fake_lookup)
+        captured = self._patch_stream_path(
+            platform, monkeypatch, plan=[("lookup_ticket", {"ticket_no": 3})])
+
+        state = make_state(phase="diagnosing", diagnosis_rounds=1,
+                           ticket_ref_context="#3 预查已挂的工单内容")
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        request = make_request(query="@#3 怎么样了", skip_retrieval=False, session_id=state.session_id)
+        [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert lookup_calls == [], "同号已预查时不应重复查库"
+        assert "预查已挂的工单内容" in (captured["oneshot_docs"] or "")
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_merged_intent_ticket_with_lookup_prefetches(
+            self, platform, make_state, make_request, monkeypatch):
+        """合并模式 route=ticket + 规划带 lookup（「针对595再提一单」）→
+        查单执行挂 state、search_kb 丢弃、快路径主 prompt 当轮带旧单区块，
+        且不再调用独立意图分类"""
+        from ai.agents.AiDiagnosisPlatform import pipeline as pl
+        monkeypatch.setenv("AI_PLAN_EXECUTE", "1")
+        lookup_calls = []
+
+        async def _fake_lookup(ref_text):
+            lookup_calls.append(ref_text)
+            return "#595 USP平台无法登录\n账户名：admin"
+
+        monkeypatch.setattr(pl, "_lookup_ticket_ref", _fake_lookup)
+        captured = self._patch_stream_path(
+            platform, monkeypatch,
+            plan=[("lookup_ticket", {"ticket_no": 595})], intent="ticket")
+
+        state = make_state(phase="diagnosing", diagnosis_rounds=1)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        request = make_request(query="针对595工单的问题我再提一个单子",
+                               skip_retrieval=False, session_id=state.session_id)
+
+        prompts = []
+
+        async def _capture_complete(prompt="", **kw):
+            prompts.append(prompt)
+            return ('```json\n' + json.dumps({
+                "thinking": "", "action": "answer", "intent": "chat",
+                "ticket_intent": True, "ticket_cancel": False,
+                "message": "好的，已了解旧单内容，开始提单。",
+                "state_update": {},
+            }, ensure_ascii=False) + '\n```\n好的，已了解旧单内容，开始提单。')
+
+        platform._llm_client.complete = AsyncMock(side_effect=_capture_complete)
+        platform._get_user_projects = AsyncMock(return_value=[])
+
+        [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert not captured["classify_called"], "合并模式不得再调独立意图分类"
+        assert lookup_calls == ["595"], "提单轮规划带查单必须执行"
+        assert not captured["retrieve_called"], "提单轮不得执行 search_kb"
+        assert state.ticket_ref_context.startswith("#595"), "查单结果挂 state"
+        assert state.ticket_fast_lane, "ticket 路由要置快路径旗标"
+        main_prompt = prompts[-1] if prompts else ""
+        assert "用户引用的历史工单" in main_prompt and "#595" in main_prompt, \
+            "快路径主 prompt 当轮必须带旧单区块（草稿字段预填有据）"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_merged_intent_courtesy_direct_answer(
+            self, platform, make_state, make_request, monkeypatch):
+        """合并模式 route=courtesy（无工具）→ 单轮小 prompt 直答，零资料开销"""
+        monkeypatch.setenv("AI_PLAN_EXECUTE", "1")
+        captured = self._patch_stream_path(platform, monkeypatch,
+                                           plan=[], intent="courtesy")
+
+        state = make_state(phase="diagnosing", diagnosis_rounds=1)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        request = make_request(query="辛苦了", skip_retrieval=False, session_id=state.session_id)
+        [e async for e in platform._agent_think_stream(request, state, memory)]
+
+        assert captured["plan_called"]
+        assert not captured["classify_called"], "合并模式不得再调独立意图分类"
+        assert not captured["retrieve_called"], "courtesy 不得触发检索"
+        assert captured["oneshot_docs"] == ""
+
+
+class TestForceSubmitConfirm:
+    """超限强弹的草稿带 force_submit：confirm_submit 放行 collected_info 兜底"""
+
+    @staticmethod
+    async def _put_draft(platform, state, force: bool):
+        from ai.agents.AiDiagnosisPlatform.pipeline import _save_agent_state
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        _save_agent_state(memory, state)
+        memory.metadata["ticket_draft"] = {
+            "title": "充电桩故障", "type": "problem",
+            "project": "华大制造基地", "project_id": "7",
+        }
+        if force:
+            memory.metadata["ticket_draft"]["force_submit"] = True
+        await platform._memory_manager.save_memory(memory)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_force_draft_confirm_passes(self, platform_real_confirm, make_state):
+        """强弹草稿（collected_info 不齐 + force_submit）→ 点提交入库，不再打回"""
+        state = make_state(
+            phase="diagnosing",
+            problem_summary="充电桩不伸出但调度显示已充电",
+            required_fields={"charger_location": "充电桩位置", "fault_time": "发生时间",
+                             "vehicle_id": "车辆编号"},
+            collected_info={"charger_location": "锂电二楼一号"},
+            ticket_collecting=[],
+        )
+        await self._put_draft(platform_real_confirm, state, force=True)
+
+        result = await platform_real_confirm.confirm_submit(
+            state.session_id, overrides={}, created_by="tester")
+
+        assert result["code"] == 0, f"超限强弹草稿被拦截: {result}"
+        # 标记只用于放行校验，不得泄进工单记录
+        assert "force_submit" not in result["data"]["ticket"]
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_normal_draft_incomplete_still_blocks(self, platform_real_confirm, make_state):
+        """普通草稿（无标记）+ collected_info 不齐 → 兜底校验照拦（防直调 API 绕过）"""
+        state = make_state(
+            phase="diagnosing",
+            problem_summary="充电桩不伸出但调度显示已充电",
+            required_fields={"charger_location": "充电桩位置", "fault_time": "发生时间",
+                             "vehicle_id": "车辆编号"},
+            collected_info={"charger_location": "锂电二楼一号"},
+            ticket_collecting=[],
+        )
+        await self._put_draft(platform_real_confirm, state, force=False)
+
+        result = await platform_real_confirm.confirm_submit(
+            state.session_id, overrides={}, created_by="tester")
+
+        assert result["code"] == 1
+        assert result.get("stage") == "not_ready"
+        assert "补充" in result["message"]
+
+
 class TestPrefillWriteback:
     """预填值进 draft 后，弹窗确认链路的最终入库值"""
 
@@ -1068,6 +1438,154 @@ class TestRequiredFieldsGranularity:
         assert "一项信息一个字段" in captured["prompt"]
 
 
+class TestRequiredFieldsSanitize:
+    """生产实锤（2026-08-25）：按钮提单显示「还差 {'page module:'问题页、
+    {'occurrence time:」——LLM 把 required_fields 写成嵌套对象，采纳代码
+    str(v)[:20] 把嵌套 dict 字符串化再截断，残片当中文标签进了判缺提示。
+    修复：_sanitize_required_fields 统一类型清洗（非字符串 value / 含引号
+    花括号的标签一律丢弃），四处采纳点 + _load_agent_state 加载自愈共用。
+    """
+
+    def test_nested_dict_value_dropped(self):
+        from ai.agents.AiDiagnosisPlatform.pipeline import _sanitize_required_fields
+        bad = {"page_module": {"page module": "问题页"},
+               "occurrence_time": {"occurrence time": "发生时间"}}
+        assert _sanitize_required_fields(bad) == {}
+
+    def test_stored_string_fragment_dropped(self):
+        """事故会话 Redis 里存的已是 str() 化残片（类型是 str），按内容识别。"""
+        from ai.agents.AiDiagnosisPlatform.pipeline import _sanitize_required_fields
+        stored = {"page_module": "{'page module': '问题页",
+                  "occurrence_time": "{'occurrence time: "}
+        assert _sanitize_required_fields(stored) == {}
+
+    def test_clean_list_kept(self):
+        from ai.agents.AiDiagnosisPlatform.pipeline import _sanitize_required_fields
+        ok = {"vehicle_id": "车辆编号", "occurrence_time": "发生时间"}
+        assert _sanitize_required_fields(ok) == ok
+
+    def test_assess_shows_no_fragment(self):
+        from ai.agents.AiDiagnosisPlatform.pipeline import (
+            _sanitize_required_fields, _assess_ticket_readiness)
+        st = AgentState(session_id="s")
+        st.required_fields = _sanitize_required_fields(
+            {"page_module": {"page module": "问题页"}}) or None
+        assert st.required_fields is None
+        _, missing = _assess_ticket_readiness(st)
+        assert missing == []
+
+    def test_load_heals_polluted_state(self):
+        """已锁定污染清单的会话：加载时清洗为空 → None，重新 decide 自愈。"""
+        from ai.agents.AiDiagnosisPlatform.pipeline import _load_agent_state
+        polluted = {"page_module": "{'page module': '问题页"}
+        loaded = _load_agent_state({"agent_state": {"session_id": "s",
+                                                    "required_fields": polluted}})
+        assert loaded.required_fields is None
+        good = _load_agent_state({"agent_state": {"session_id": "s",
+                                                  "required_fields": {"vehicle_id": "车辆编号"}}})
+        assert good.required_fields == {"vehicle_id": "车辆编号"}
+
+    def test_apply_state_update_rejects_nested(self):
+        """对话路径 state_update 里的嵌套 required_fields 不再被 str() 采纳。"""
+        from ai.agents.AiDiagnosisPlatform import pipeline as pl
+        state = pl.AgentState(session_id="s")
+        pl.AiDiagnosisPlatform._apply_state_update(
+            None, state, {"required_fields": {
+                "vehicle_id": "车辆编号",
+                "occurrence_time": "发生时间",
+                "page_module": {"page module": "问题页"},
+            }})
+        assert state.required_fields == {"vehicle_id": "车辆编号",
+                                         "occurrence_time": "发生时间"}
+
+
+class TestBackfillOnFirstSubmit:
+    """转单首轮回填（0825 生产实锤）：用户对话里已明确说过的信息
+    （「新车，XSC111，没路径」「无法移动」）decide 仍列为缺口（车辆编号/
+    故障现象），转单轮被逼把自己刚说过的话重答一遍。修复：首次转单 decide
+    后、判缺前跑 _backfill_collected_info，假缺口消掉只问真正没说过的。
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_stated_fields_not_reasked(self, platform, make_state, make_request):
+        state = make_state(phase="diagnosing", problem_summary="新车无路径无法移动")
+        request = make_request(query="算了，提单吧", session_id=state.session_id)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.turns = [
+            {"role": "user", "content": "我车不动了"},
+            {"role": "assistant", "content": "先确认是哪台车、什么表现。"},
+            {"role": "user", "content": "新车，XSC111，没路径"},
+            {"role": "assistant", "content": "新车没路径，最常出在车型配置和路网这两块。"},
+            {"role": "user", "content": "算了，提单吧"},
+        ]
+
+        def _f(prompt: str = "", **kwargs):
+            if "判定工单类型" in prompt:  # _compute_ticket_fields
+                return json.dumps({"ticket_type": "problem", "required_fields": {
+                    "vehicle_id": "车辆编号", "description": "故障现象",
+                    "occurrence_time": "发生时间", "location": "现场位置",
+                }}, ensure_ascii=False)
+            if "提取指定字段的值" in prompt:  # _backfill_collected_info
+                return json.dumps({"vehicle_id": "XSC111",
+                                   "description": "新车无路径无法移动"},
+                                  ensure_ascii=False)
+            # 主 LLM：转单 submit
+            return json.dumps({"action": "submit", "intent": "troubleshoot",
+                               "ticket_intent": True,
+                               "state_update": {"problem_summary": "新车无路径无法移动"}},
+                              ensure_ascii=False)
+
+        platform._llm_client.complete.side_effect = _f
+
+        events = [ev async for ev in platform._agent_think_stream(request, state, memory)]
+
+        # 假缺口被回填消掉
+        assert state.collected_info.get("vehicle_id") == "XSC111"
+        assert state.collected_info.get("description") == "新车无路径无法移动"
+        # 追问只问真正没说过的
+        need = [e for e in events if e["event"] == "status"
+                and e["data"].get("stage") == "need_info"]
+        assert need, "应发 need_info 追问"
+        missing = need[0]["data"]["missing_info"]
+        assert "车辆编号" not in missing and "故障现象" not in missing
+        assert "发生时间" in missing and "现场位置" in missing
+        # 对话路径一次只问第一个真缺项
+        tokens = "".join(e["data"] for e in events if e["event"] == "token")
+        assert "发生时间" in tokens and "车辆编号" not in tokens
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_collect_rounds_not_backfilled(self, platform, make_state, make_request):
+        """收集轮不额外回填（4116 既有顾虑：助手追问会被当答案），只有转单首轮回填。"""
+        from unittest.mock import patch
+        state = make_state(
+            phase="escalated", problem_summary="新车无路径无法移动",
+            required_fields={"vehicle_id": "车辆编号", "occurrence_time": "发生时间"},
+            collected_info={"vehicle_id": "XSC111"},
+            ticket_collecting=["发生时间"], collect_rounds=2,
+        )
+        request = make_request(query="今早九点", session_id=state.session_id)
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        memory.turns = [{"role": "user", "content": "算了，提单吧"},
+                        {"role": "assistant", "content": "发生时间是什么？"},
+                        {"role": "user", "content": "今早九点"}]
+
+        with patch.object(platform, "_backfill_collected_info", new=AsyncMock()) as bf:
+            def _f(prompt: str = "", **kwargs):
+                return json.dumps({"action": "submit", "intent": "troubleshoot",
+                                   "ticket_intent": True,
+                                   "state_update": {"collected_info": {
+                                       "occurrence_time": "今早九点"}}},
+                                  ensure_ascii=False)
+            platform._llm_client.complete.side_effect = _f
+            events = [ev async for ev in platform._agent_think_stream(request, state, memory)]
+            # required_fields 已决定（非 None）→ 不触发转单首轮回填
+            bf.assert_not_called()
+        review = [e for e in events if e["event"] == "status" and e["data"].get("stage") == "review"]
+        assert review, "字段齐了应直接弹草稿"
+
+
 class TestAttachmentBinding:
     """附件-工单绑定（2026-08-20 需求）：会话累积附件不再无条件全带。
 
@@ -1270,6 +1788,76 @@ class TestTicketBoundaryPrefill:
         assert "以上对话已随上一张工单提交归档" in s
         assert "不算本次提到，禁止照抄" in s
         assert "南京本川项目（编号: NJBC01）" in s
+
+
+class TestDecidePrevTicketIsolation:
+    """0825 工单 #588 实锤：decide 把上一单补充轮的字段（任务编号、末端
+    站点名称）当成本单信息缺口——提单归档后上一单对话仍留在 turns（续接轮
+    指代解析要用），但 decide/backfill 的对话切片没传 boundary_prefix，
+    上一单补充轮问答平铺在本单对话前。修复：切片插分隔线 + prompt 铁律。"""
+
+    BOUNDARY_LINE = "───── 以上对话已随上一张工单提交归档"
+    ANCHOR = "好的，已记录。工单 #587 已提交，工程师会尽快联系您。"
+    NEW_TICKET_MSG = "帮我给胡健楠提单，现在的ai诊断平台的单纯图片分析回答有问题"
+
+    async def _seed(self, platform, state):
+        """归档后的真实 turns 形态：上一单补充轮问答 → 锚点轮 → 本单对话"""
+        memory = await platform._memory_manager.get_memory(state.session_id)
+        for role, content in [
+            ("assistant", "还需要确认任务编号和末端站点名称。"),
+            ("user", "任务编号是 KD20260824001，末端站点名称是南山西丽站。"),
+            ("assistant", self.ANCHOR),  # 锚点轮（上一单提交收尾）
+            ("user", self.NEW_TICKET_MSG),
+        ]:
+            await platform._memory_manager.add_turn(state.session_id, role, content)
+        return memory
+
+    def _capture_llm(self, platform, payload):
+        captured = {}
+
+        async def _cap(prompt, **kw):
+            captured["prompt"] = prompt
+            return json.dumps(payload, ensure_ascii=False)
+
+        platform._llm_client.complete = AsyncMock(side_effect=_cap)
+        return captured
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_decide_prompt_isolates_prev_ticket(self, platform, make_state):
+        state = make_state(ticket_boundary_prefix=self.ANCHOR[:40])
+        memory = await self._seed(platform, state)
+        captured = self._capture_llm(platform, {
+            "ticket_type": "bug",
+            "required_fields": {"issue_detail": "具体异常表现",
+                                "expected_behavior": "期望行为"}})
+        await platform._decide_ticket_fields(state.session_id, state, memory)
+        prompt = captured["prompt"]
+        # 分隔线插在锚点轮之后、本单对话之前——上一单问答被隔在线上方。
+        # 行首匹配：铁律文本里也引用了分隔线字样，只认对话区独占一行的真分隔线
+        _line = "\n" + self.BOUNDARY_LINE
+        assert _line in prompt
+        assert prompt.index("KD20260824001") < prompt.index(_line)
+        assert prompt.index(self.ANCHOR) < prompt.index(_line)
+        assert prompt.index(_line) < prompt.index(self.NEW_TICKET_MSG)
+        # 铁律：旧对话字段样例不得进本单缺口
+        assert "严禁照着旧对话的字段样例列本单待补字段" in prompt
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_backfill_prompt_isolates_prev_ticket(self, platform, make_state):
+        state = make_state(ticket_boundary_prefix=self.ANCHOR[:40],
+                           required_fields={"issue_detail": "具体异常表现"})
+        memory = await self._seed(platform, state)
+        captured = self._capture_llm(platform, {"issue_detail": "图片分析默认触发诊断"})
+        await platform._backfill_collected_info(state.session_id, state, memory)
+        prompt = captured["prompt"]
+        _line = "\n" + self.BOUNDARY_LINE
+        assert _line in prompt
+        assert prompt.index("KD20260824001") < prompt.index(_line)
+        assert prompt.index(_line) < prompt.index(self.NEW_TICKET_MSG)
+        # 铁律：上一单问答里的值不得回填进本单
+        assert "严禁提取为本单字段值" in prompt
 
 
 # ================================================================

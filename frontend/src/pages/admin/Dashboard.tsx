@@ -6,14 +6,18 @@
 // 数据接口见 src/api/dashboard.ts；接口未就绪时一律优雅降级为「0/暂无数据」，不阻塞页面渲染。
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Navbar, Loading, Toast, Popup } from 'tdesign-mobile-react';
+import { UserCircleIcon } from 'tdesign-icons-react';
 import { useNavigate } from 'react-router-dom';
 import {
   TICKET_STATUS_LIST, URGENCY_LIST,
 } from '@/shared/constants/dashboard';
 import {
-  fetchTicketSummary, fetchProjectMonthly, fetchUrgencySummary, syncWecomProjects,
-  type TicketSummary, type ProjectMonthlySummary, type UrgencySummary,
+  fetchTicketSummary, fetchProjectMonthly, fetchUrgencySummary, fetchTicketSourceAnalysis,
+  fetchTicketResponseTime, syncWecomProjects,
+  type TicketSummary, type ProjectMonthlySummary, type UrgencySummary, type TicketSourceAnalysis,
+  type TicketResponseTime,
 } from '@/api/dashboard';
+import { TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
 import { MacDonut, MacLegend, MacStat } from '@/shared/components/macaronBits';
@@ -24,6 +28,7 @@ import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
 import { currentYearMonth, normalizeSettlementPeriod } from '@/shared/utils/settlement';
 import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
+import { avatarUrl } from '@/api/profile';
 
 interface ProjectListItem {
   risks: number;
@@ -103,13 +108,60 @@ const SORTED_TICKET_STATUS_LIST = [...TICKET_STATUS_LIST].sort(
   (a, b) => STATUS_TONE_ORDER.indexOf(a.tone) - STATUS_TONE_ORDER.indexOf(b.tone),
 );
 
+// 工单分布类卡片：类型分布按固定色阶（同类颜色稳定），响应时间按 快到慢 递进取色
+const SOURCE_TONES = ['blue-1', 'blue-2', 'blue-3', 'blue-4', 'blue-5'];
+const TYPE_TONE_ORDER = ['bug', 'feature', 'support', 'problem', 'other'];
+// 接单人响应时间分桶 tone：越快越深（blue-1 最快 → blue-4 最慢「其他」）
+const RESPONSE_TONE_MAP: Record<string, string> = {
+  within_15m: 'blue-1',
+  within_1h: 'blue-2',
+  within_4h: 'blue-3',
+  other: 'blue-4',
+};
+
+// 工单分布类卡片：环形图 + 图例的组合块（环图中心=总数，图例含百分比/数量）
+function SourceDonut({
+  title,
+  items,
+  centerLabel = '工单数',
+}: {
+  title: string;
+  items: { label: string; value: number; tone: string }[];
+  centerLabel?: string;
+}) {
+  const total = items.reduce((s, i) => s + i.value, 0);
+  return (
+    <div className="mac-source-block">
+      <h4 className="mac-source-block__title">{title}</h4>
+      <div className="mac-source-block__body">
+        <MacDonut
+          segments={items.map((i) => ({ value: i.value, tone: i.tone }))}
+          centerValue={total}
+          centerLabel={centerLabel}
+        />
+        <MacLegend
+          items={items.map((i) => ({
+            key: i.label,
+            label: i.label,
+            value: i.value,
+            tone: i.tone,
+            percent: total > 0 ? Math.round((i.value / total) * 100) : 0,
+          }))}
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { hasPermission, projectIds, username } = useAuthStore();
+  const { hasPermission, projectIds, username, name, avatarResourceId } = useAuthStore();
   const canAccessAdminEntries = hasPermission('frontend:admin:other:show');
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
   const [ticketSummary, setTicketSummary] = useState<TicketSummary | null>(null);
+  const [sourceAnalysis, setSourceAnalysis] = useState<TicketSourceAnalysis | null>(null);
+  const [responseTime, setResponseTime] = useState<TicketResponseTime | null>(null);
   const [monthlySummary, setMonthlySummary] = useState<ProjectMonthlySummary | null>(null);
   const [urgencySummary, setUrgencySummary] = useState<UrgencySummary | null>(null);
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
@@ -124,13 +176,17 @@ export default function Dashboard() {
     // 项目列表同理：canViewAll 走 /projects/，否则走 /projects/me 由后端按 token 过滤
     const filterIds = canViewAll ? undefined : projectIds;
     const projectsUrl = canViewAll ? '/projects/?include_analysis=true' : '/projects/me?include_analysis=true';
-    const [tickets, monthly, urgency, projectList] = await Promise.all([
+    const [tickets, source, respTime, monthly, urgency, projectList] = await Promise.all([
       fetchTicketSummary(filterIds),
+      fetchTicketSourceAnalysis(filterIds),
+      fetchTicketResponseTime(filterIds),
       fetchProjectMonthly(filterIds),
       fetchUrgencySummary(filterIds),
       adminRequest<ProjectListItem[]>(projectsUrl).catch(() => []),
     ]);
     setTicketSummary(tickets);
+    setSourceAnalysis(source);
+    setResponseTime(respTime);
     setMonthlySummary(monthly);
     setUrgencySummary(urgency);
     setProjects(normalizeList<ProjectListItem>(projectList));
@@ -170,9 +226,24 @@ export default function Dashboard() {
       />
 
       <div style={{ padding: '16px 16px 32px' }}>
+        {/* ============ 顶：欢迎区（左侧头像 + 右侧两排：Hello / 用户名） ============ */}
+        <div className="admin-welcome">
+          <div className="admin-welcome__avatar">
+            {avatarResourceId ? (
+              <img src={avatarUrl(avatarResourceId)} alt="头像" />
+            ) : (
+              <UserCircleIcon size="40px" />
+            )}
+          </div>
+          <div className="admin-welcome__text">
+            <span className="admin-welcome__hello">Hello</span>
+            <span className="admin-welcome__name">{name || username || '用户'}</span>
+          </div>
+        </div>
+
         {/* ============ 上：工单状态监测概览 ============ */}
         {/* 结构性重设计（对照 macaron admin 工单状态监测）：蓝阶环图 + 图例（含百分比/数量）+ 四指标卡 */}
-        <SectionTitle title="工单状态监测" onMore={() => navigate('/tasks')} />
+        <SectionTitle title="工单监测" onMore={() => navigate('/tasks')} />
         <section className="mac-card mac-card--pad">
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
             <MacDonut
@@ -206,6 +277,37 @@ export default function Dashboard() {
             <MacStat value={formatPercent(ticketSummary?.resolved_rate)} label="解决率" tone="blue-4" />
           </div>
         </section>
+
+        {/* ============ 中上：工单分布卡片（显示权限与「更多功能-其他」一致） ============ */}
+        {canAccessAdminEntries && (
+          <>
+            {/* 工单类型分布 */}
+            <section className="mac-card mac-card--pad" style={{ marginTop: 12 }}>
+              <SourceDonut
+                title="工单类型分布"
+                items={(sourceAnalysis?.by_type ?? []).map((t) => ({
+                  label: TICKET_TYPE_DISPLAY_MAP[t.key] ?? t.key,
+                  value: t.count,
+                  tone: TYPE_TONE_ORDER.includes(t.key)
+                    ? SOURCE_TONES[TYPE_TONE_ORDER.indexOf(t.key)]
+                    : 'gray',
+                }))}
+              />
+            </section>
+            {/* 接单人响应时间（处理人第一次点开工单时间 - 新建时间，按区间分桶） */}
+            <section className="mac-card mac-card--pad" style={{ marginTop: 12 }}>
+              <SourceDonut
+                title="接单人响应时间"
+                centerLabel="已响应工单"
+                items={(responseTime?.by_bucket ?? []).map((b) => ({
+                  label: b.label,
+                  value: b.count,
+                  tone: RESPONSE_TONE_MAP[b.key] ?? 'gray',
+                }))}
+              />
+            </section>
+          </>
+        )}
 
         {/* ============ 中：跨项目看板 ============ */}
         {/* 结构性重设计（对照 macaron admin 跨项目看板）：按月柱状图替换原阶段饼图，

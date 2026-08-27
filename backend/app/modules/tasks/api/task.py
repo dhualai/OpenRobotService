@@ -455,10 +455,16 @@ async def get_similar_tasks(
 @router.get("/{task_id}/project-members", response_model=List[ProjectMemberResponse])
 async def get_task_project_members(
     task_id: int,
+    all: bool = Query(False, description="为 true 时在项目成员基础上追加返回全部在职用户（用于 @ 时按关键字过滤到项目外的人）"),
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
-    """获取任务关联项目的成员列表 + 工单处理人（用于讨论区 @ 提及）。"""
+    """获取任务关联项目的成员列表 + 工单处理人（用于讨论区 @ 提及）。
+
+    all=false：仅返回提单人/处理人 + 项目成员（默认候选池）。
+    all=true：在前者基础上再追加全部 active 在职用户（已去重），
+             使讨论区输入 @关键字 时可过滤到项目外的人。
+    """
     import logging
     logger = logging.getLogger(__name__)
 
@@ -519,6 +525,31 @@ async def get_task_project_members(
                     name=name if name else uname,
                     role_name=m.get("role_name"),
                 ))
+
+        # ── 3. all=true：追加全部 active 在职用户（去重），漏出项目外的人供 @ 过滤 ──
+        if all:
+            from app.core.db import SessionLocal
+            from app.models.identity import UserDB
+            sync_db = SessionLocal()
+            try:
+                all_users = sync_db.query(UserDB).filter(UserDB.status == "active").all()
+                # 按姓名、用户名排序，保证姓名相近的排在一起
+                def _sort_key(u):
+                    return (u.name or u.username or "").lower()
+                all_users.sort(key=_sort_key)
+                for u in all_users:
+                    uname = (u.username or "").strip()
+                    if not uname or uname in seen:
+                        continue
+                    seen.add(uname)
+                    result.append(ProjectMemberResponse(
+                        id=uname,
+                        username=uname,
+                        name=u.name or uname,
+                        role_name=None,
+                    ))
+            finally:
+                sync_db.close()
 
         # 即使没有项目也能 @ 处理人
         return result
@@ -1219,6 +1250,72 @@ async def assign_task(
         raise HTTPException(status_code=500, detail=f"分配任务失败: {str(e)}")
 
 
+class CreatorNameUpdate(BaseModel):
+    """更新工单创建人姓名请求体。仅更新 users.name，不改变工单 created_by。"""
+    name: str
+
+
+@router.patch("/{task_id}/creator-name", summary="更新工单创建人姓名（仅处理人/管理员可操作）")
+async def update_creator_name(
+    task_id: int,
+    payload: CreatorNameUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """通过工单 created_by 反查用户表并更新其 name；不改变 created_by 本身。
+
+    权限：仅工单处理人（assigned_to）或管理员可操作。创建人姓名为后端从 users 表
+    实时解析的派生字段（无独立列），故更新用户 name 后，工单 created_by_name 自动刷新。
+    """
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
+    user_name = (current_user.get('name', username) if isinstance(current_user, dict) else username)
+
+    # 仅工单处理人（assigned_to）或管理员可修改创建人姓名
+    if not is_admin and not user_matches(current_user, ticket.assigned_to):
+        raise HTTPException(status_code=403, detail="仅工单处理人可修改创建人姓名")
+
+    new_name = (payload.name or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="创建人姓名不能为空")
+
+    created_by = getattr(ticket, "created_by", None)
+    if not created_by:
+        raise HTTPException(status_code=400, detail="工单无创建人，无法更新姓名")
+
+    # created_by 存 users.id；过渡期历史数据可能是 username，两种键都尝试解析
+    creator = db_manager.get_user_by_id(created_by) or db_manager.get_user(created_by)
+    if not creator:
+        raise HTTPException(status_code=404, detail="创建人用户记录不存在")
+
+    success = db_manager.update_user(creator['id'], name=new_name)
+    if not success:
+        raise HTTPException(status_code=500, detail="更新创建人姓名失败")
+
+    # 操作日志 + 系统评论（与派单/改派一致，记录操作与操作人）
+    token = current_user.get('token') or ''
+    try:
+        _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
+        await OperationLogService.log(
+            db=db,
+            task_id=task_id,
+            op_type=OperationType.UPDATE,
+            operator=username,
+            operator_name=user_name,
+            detail={"field": "created_by_name", "new_name": new_name},
+            description=f"{_role}{user_name} 将创建人姓名更新为「{new_name}」" if _role else f"{user_name} 将创建人姓名更新为「{new_name}」",
+        )
+        await _add_system_comment(db, task_id, f"{user_name} 将创建人姓名更新为「{new_name}」", username, token)
+    except Exception:
+        pass
+
+    return {"name": new_name, "created_by": created_by}
+
+
 @router.post("/{task_id}/ai-assign")
 async def trigger_ai_assignment(
     task_id: int,
@@ -1458,7 +1555,9 @@ async def upload_comment_attachment(
             comment_attachment_map[temp_id] = []
         comment_attachment_map[temp_id].append(object_path)
 
-        return {"message": "上传附件成功"}
+        # 返回 object_path，前端可直接透传给建单接口的 attachments 字段，
+        # 无需依赖进程内存 comment_attachment_map 的 temp_id 解析（跨进程/重启更稳）。
+        return {"message": "上传附件成功", "object_path": object_path}
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(

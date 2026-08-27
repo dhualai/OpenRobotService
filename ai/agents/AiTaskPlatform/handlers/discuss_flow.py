@@ -28,7 +28,9 @@ CLARIFY_SUGGEST_MARKER = "🔄 U老师已建议补充"
 # 只维护 attachment_analysis（已解读附件记忆）。每次 discuss 据此决定读哪些附件：
 #   - 未解读（object_path 不在记忆）         → 必须读文件分析
 #   - 已解读 + 图片                          → 不重读，直接用记忆摘要（截图结论稳定）
-#   - 已解读 + 日志/其他文件                 → 不默认重读，但交给大脑(Supervisor)按需重读
+#   - 已解读 + 日志/其他文件                 → 摘要仅作历史参考，**不替代真实分析**；
+#     用户可能告知"之前的分析是错的"，故日志始终可作为 log_analyze 资源，由 Supervisor
+#     决定是否真实重读（复用缓存索引，只重跑推理不重建索引）。
 def _classify_attachments(ctx):
     """按记忆 + 扩展名把 ctx.attachments 分为 new（需读）与 known（已解读，含可重读附件）。
 
@@ -204,7 +206,7 @@ class DiscussFlow:
         if ctx.attachments:
             runtime_ctx["img_ctx"] = build_img_ctx(ctx)
             try:
-                log_paths, _tmp_dirs = self._extract_log_paths(new_atts)
+                log_paths, _tmp_dirs = self._extract_log_paths(new_atts, task_id)
                 if log_paths:
                     runtime_ctx["log_path"] = log_paths[0]
             except Exception:
@@ -213,26 +215,33 @@ class DiscussFlow:
 
         # 3.0b 大脑重读决策（确定性走廊 + 记忆）：
         #   - 新增附件必读（记忆判断，already in new_atts）
-        #   - 历史图片：不重读（摘要已够）
-        #   - 历史日志/文件：若用户 query 涉及日志/分析 → 本次重读（含新+旧，拼完整时间线）
+        #   - 历史图片：不重读（解读结论相对稳定，用摘要即可，除非用户明确要重看）
+        #   - 历史日志/文档：**摘要只是历史参考，不能替代真实分析**。用户可能告诉 AI
+        #     "之前的分析是错的"，故日志要始终可作为 log_analyze 资源（是否真正分析由
+        #     Supervisor 决定）；用户明确提到日志/分析时无条件纳入重读。
         from ai.agents.AiTaskPlatform.retrieval import rules as _rules
         analyzed_atts = list(runtime_ctx["attachments"])  # 已计划要读的（当前=new_atts）
-        if query and _rules.query_matches(query, _rules.DISCUSS_LOG_KEYWORDS):
-            # 把已解读的非图片附件（日志/文档）也纳入重读，支持结合最新历史
-            for att in known_atts:
-                obj2 = att.get("object_path") or att.get("path") or att.get("url") or ""
-                if kind_of.get(obj2) in ("log", "doc", "other"):
-                    analyzed_atts.append(att)
-            if analyzed_atts:
-                runtime_ctx["attachments"] = analyzed_atts
-                try:
-                    lpaths, _td = self._extract_log_paths(analyzed_atts)
-                    if lpaths:
-                        runtime_ctx["log_path"] = lpaths[0]
-                        if _td:
-                            runtime_ctx.setdefault("_tmp_dirs", []).extend(_td)
-                except Exception:
-                    pass
+        # 把历史已解读的日志/文档始终纳入分析资源（供 Supervisor 决定是否真实重读）
+        for att in known_atts:
+            obj2 = att.get("object_path") or att.get("path") or att.get("url") or ""
+            if kind_of.get(obj2) in ("log", "doc", "other"):
+                analyzed_atts.append(att)
+        if analyzed_atts:
+            runtime_ctx["attachments"] = analyzed_atts
+            try:
+                lpaths, _td = self._extract_log_paths(analyzed_atts, task_id)
+                if lpaths:
+                    runtime_ctx["log_path"] = lpaths[0]
+                    if _td:
+                        runtime_ctx.setdefault("_tmp_dirs", []).extend(_td)
+            except Exception:
+                pass
+        # 用户明确要"重新分析日志/再分析/前面的分析是错的"时，强制重读日志并让
+        # Supervisisor 重新走 log_analyze（复用缓存索引，只重跑推理，不重建索引）。
+        _ask_reanalyze_log = bool(
+            query
+            and any(kw in query for kw in ("重新分析", "再分析", "重新看", "再看一下", "分析是错的", "分析错了", "不对吧", "之前分析", "重新查"))
+        )
 
         # 3.1 构造给调度 LLM 看的能力描述清单（只把"当前可用的、有意义的"交给它）
         #   - 确定性程序护栏：能力所需资源缺失时直接从可用清单剔除，避免 LLM 派发必然失败的能力
@@ -269,7 +278,6 @@ class DiscussFlow:
             kind_label = {"image": "图片", "log": "日志", "doc": "文档"}.get(rec.get("kind"), rec.get("kind"))
             known_lines.append(f"- [{kind_label}] {rec.get('filename') or obj}: {rec.get('summary') or '（已分析）'}")
         known_txt = "\n".join(known_lines) if known_lines else "（无）"
-
         new_lines = []
         for att in new_atts:
             obj = att.get("object_path") or att.get("path") or ""
@@ -281,22 +289,30 @@ class DiscussFlow:
             f"工单: {ctx.title or ''}\n"
             f"描述: {(ctx.description or '')[:200]}\n"
             f"假设: {' / '.join(ctx.hypotheses) if ctx.hypotheses else '无'}\n"
-            f"用户问题: {query or ''}\n"
+            f"用户问题: {query or '（本轮用户仅@U老师未附加文字，请基于下方讨论历史延续解答）'}\n"
+            f"最近讨论历史:\n{(discussion_history if discussion_lines else '（暂无讨论）')[:600]}\n"
             f"本次新增/未解读附件（需重点分析）:\n{new_txt}\n"
-            f"历史已解读附件摘要（结论已存在，图片无需重读；日志如需结合最新可重读）:\n{known_txt}\n"
+            f"历史已解读附件摘要（**仅作历史参考**：图片结论稳定可复述；"
+            f"日志/文档摘要不代表已分析完成，若需分析请派 log_analyze 真实重读）:\n{known_txt}\n"
             f"可用能力: {cap_hint}\n\n"
-            "根据用户问题和附件情况，决定派哪些能力分析（图片/日志/历史/代码）。\n"
+            "根据用户问题（或讨论历史中未解决的疑问）和附件情况，决定派哪些能力分析"
+            "（知识库检索/图片/日志/历史/代码）。\n"
             "规则：新增附件必分析；历史图片一般用其摘要即可（除非用户明确要重看）；\n"
-            "历史日志若用户要'最新/完整/综合分析'，可对该日志能力在 params 中带上 reanalyze_logs=true 以重读。\n"
-            "若问题仅需知识问答、无需分析附件，则 complexity=simple 不派生任何能力。"
+            "历史日志/文档摘要**不能替代真实分析**：用户可能说\"之前的分析是错的\"，"
+            "只要本问题需要从日志取证，就应派 log_analyze 真实分析日志（内部复用缓存索引，快）。\n"
+            "若问题属于知识问答（怎么操作/错误码含义/协议标准/产品介绍/排查方法）→ 派 retrieve_kb 查知识库。\n"
+            "若当前轮仅@U老师无新问题，但讨论历史有未决疑问或刚提到需要分析的内容 → 仍应继续深化分析。\n"
+            "若确无实质内容可派、只需总结/寒暄，则 complexity=simple 不派生任何能力。"
         )
 
-        # 3.2 是否值得走 Supervisor 调度？（有附件或明显需要工具时才调度，避免纯闲聊也调 LLM 调度器）
-        from ai.agents.AiTaskPlatform.retrieval import rules as _rules
-        need_supervisor = bool(
-            query
-            and (has_att or any(kw in query.lower() for kw in _rules.DISCUSS_HIST_KEYWORDS))
-        )
+        # 3.2 是否值得走 Supervisor 调度？
+        #    无条件进入：query 非空，**或** 有讨论历史（支持用户上一条说了内容但忘记@U老师、
+        #    本条只发 @U老师「补召唤」的场景——此时 query 为空也要基于讨论历史解答）。
+        #    由 Supervisor「大脑」自行判断要不要派发能力（知识库 retrieve_kb / 历史 / 日志 /
+        #    图片 / 代码）还是 complexity=simple 直接回复。纯闲聊由 3.2b 的 Router
+        #    （is_pure_chat）把关，不进 Supervisor。
+        has_discussion = bool(discussion_lines)
+        need_supervisor = bool(query) or has_discussion
 
         # 3.2b LLM 意图路由（改造点 A / G1）：识别纯闲聊 → 走短 prompt 快路径，
         #      不派生任何工具/子 Agent，省一次 Supervisor 调度 + token。
@@ -363,6 +379,8 @@ class DiscussFlow:
                             "log_analyze": "日志分析",
                             "code_search": "代码检索",
                             "retrieve_history": "历史相似工单",
+                            "retrieve_kb": "知识库参考",
+                            "retrieve_troubleshooting": "排查树",
                         }.get(cap_name, cap_name)
                         facultative += f"\n[{label}]\n{res['text']}\n"
                     elif isinstance(res, dict) and not res.get("ok"):
@@ -410,6 +428,43 @@ class DiscussFlow:
                 except Exception as e:
                     logger.warning(f"[discuss] 强制 image_analyze 失败: {e}")
 
+            # ── 日志「重新分析」确定性保底 ──
+            # 用户明确说"重新分析/再分析/前面的分析是错了/不对"时，必须**真实重跑日志分析**
+            # （不是看历史摘要敷衍），复用缓存索引只重跑推理、不重建索引。
+            # 若 Supervisor 本轮没派 log_analyze，这里确定性补派。
+            if (
+                _ask_reanalyze_log
+                and "log_analyze" in available_caps
+                and runtime_ctx.get("log_path")
+                and "log_analyze" not in sup_result.get("results", {})
+            ):
+                try:
+                    from ai.agents.AiTaskPlatform.capabilities import CapabilityRegistry
+                    _log_cap = CapabilityRegistry.get("log_analyze")
+                    if _log_cap is not None and _log_cap.is_available():
+                        _log_res = await _log_cap(
+                            log_path=runtime_ctx["log_path"],
+                            query=query,
+                            task_context=runtime_ctx.get("current_task", {}),
+                            window_minutes=15,
+                        )
+                        _res_dict = _log_res.to_dict() if hasattr(_log_res, "to_dict") else _log_res
+                        if isinstance(_res_dict, dict) and _res_dict.get("text"):
+                            facultative += f"\n[日志分析]\n{_res_dict['text']}\n"
+                            sup_result.setdefault("results", {})["log_analyze"] = _res_dict
+                            # 同步补一条 todo（进过程区展示）
+                            _live_todo.setdefault("log_analyze", {
+                                "id": f"log_re",
+                                "description": "重新分析日志（按用户要求，复用缓存索引）",
+                                "status": "completed",
+                                "capability": "log_analyze",
+                                "phase": "done",
+                                "result_summary": (_res_dict.get("text") or "")[:80],
+                            })
+                            logger.info("[discuss] 已强制补做 log_analyze（重新分析日志保底）")
+                except Exception as e:
+                    logger.warning(f"[discuss] 强制 log_analyze 失败: {e}")
+
             self._add_trace(self.NODE_ATTACHMENT, "ok",
                             output={"supervisor_caps": list(sup_result.get("results", {}).keys())})
 
@@ -426,6 +481,10 @@ class DiscussFlow:
             _img_todo = _live_todo.get("image_analyze")
             if _img_todo and not any(t.get("capability") == "image_analyze" for t in final_todo):
                 final_todo = final_todo + [_img_todo]
+            # 补充「重新分析日志」保底补派的 log_analyze todo（若存在）
+            _log_re_todo = _live_todo.get("log_analyze")
+            if _log_re_todo and not any(t.get("capability") == "log_analyze" for t in final_todo):
+                final_todo = final_todo + [_log_re_todo]
             reasoning_trace = {
                 "complexity": sup_result.get("complexity"),
                 "plan": sup_result.get("plan", []),
@@ -469,9 +528,10 @@ class DiscussFlow:
                 except Exception:
                     pass
         else:
-            # 无附件且非工具类问题 → 不走 Supervisor，直接知识问答（facultative 为空）
+            # query 为空（或纯闲聊，由上面 is_pure_chat 判定）→ 不走 Supervisor，
+            # 直接走纯知识谈话路径（facultative 为空）。知识库等能力的派发判断
+            # 已交给上面无条件进入的 Supervisor 大脑。
             pass
-
         # 3.9 写回附件记忆：本次实际读取分析的附件标记为已解读，供下次「大脑」判断不再重复
         if facultative or runtime_ctx.get("attachments"):
             _read_atts = runtime_ctx.get("attachments") or []

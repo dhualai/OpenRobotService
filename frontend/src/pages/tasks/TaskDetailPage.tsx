@@ -21,7 +21,7 @@ import { useAuthStore } from '@/stores/auth';
 import { uploadCommentAttachment, getOperationLogs, formatDuration, type OperationLog as TicketOperationLog } from '@/api/ticket';
 import { TICKET_TYPE_DISPLAY_MAP, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, canEditPriority } from '@/shared/constants/ticket';
 import { isSameUser } from '@/shared/utils/userIdentity';
-import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
+import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import { formatDateTime, formatRawDateTime, parseUtcDate } from '@/shared/utils/url';
 import { fetchWithAuth } from '@/api/ai';
 import { getProjectMembers } from '@/api/projects';
@@ -29,6 +29,7 @@ import type { ProjectMember } from '@/api/projects';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { urlTransformAllowDataImage } from '@/shared/utils/markdown';
 
 // 状态文字色（设计稿 statusText 蓝阶：新建 blue-3 / 处理中·进行中 blue-2 / 已解决 blue-1 / 关闭·取消 muted）
 const STATUS_TEXT_COLOR_MAP: Record<string, string> = {
@@ -148,6 +149,10 @@ export default function TaskDetailPage() {
   const [escalateReason, setEscalateReason] = useState('');
   const [returnReason, setReturnReason] = useState('');
   const [reassignReason, setReassignReason] = useState('');
+  // 创建人姓名编辑（仅处理人/管理员可点击设置）
+  const [showCreatorNamePopup, setShowCreatorNamePopup] = useState(false);
+  const [creatorNameInput, setCreatorNameInput] = useState('');
+  const [submittingCreatorName, setSubmittingCreatorName] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
 
@@ -186,6 +191,8 @@ export default function TaskDetailPage() {
 
   // 项目成员（用于讨论区 @ 提及）
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  // 全部在职用户（项目成员 + 项目外，@ 输入过滤字时可 @ 到项目外的人）
+  const [allUsers, setAllUsers] = useState<ProjectMember[]>([]);
 
   useEffect(() => {
     if (!detailId) { setDetail(null); return; }
@@ -209,6 +216,10 @@ export default function TaskDetailPage() {
             setProjectMembers(sorted);
           })
           .catch(() => setProjectMembers([]));
+        // 获取全部在职用户（@ 输入过滤字时扩展到项目外的人）
+        getProjectMembers(detailId, true)
+          .then((u) => setAllUsers(u))
+          .catch(() => setAllUsers([]));
       })
       .catch((err) => Toast({ message: `详情加载失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' }))
       .finally(() => setDetailLoading(false));
@@ -304,6 +315,9 @@ export default function TaskDetailPage() {
 
     return { isAssignee, isReporter };
   };
+
+  // 仅工单处理人（assigned_to）或管理员可点击「创建人」设置其姓名
+  const canEditCreatorName = !!detail && (getCurrentUserRoles().isAssignee || username === 'admin');
 
   const getActionButtons = () => {
     const status = detail?.status?.toLowerCase();
@@ -816,6 +830,32 @@ export default function TaskDetailPage() {
     }
   };
 
+  // 设置创建人姓名：通过工单 created_by 反查用户表更新 user.name（不改变 created_by）
+  const handleUpdateCreatorName = async () => {
+    if (!detail) return;
+    const newName = creatorNameInput.trim();
+    if (!newName) {
+      Toast({ message: '姓名不能为空', theme: 'warning' });
+      return;
+    }
+    setSubmittingCreatorName(true);
+    try {
+      await request(`/${detail.id}/creator-name`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: newName }),
+        skipCache: true,
+      });
+      await refreshDetail();
+      Toast({ message: '创建人姓名已更新', theme: 'success' });
+      setShowCreatorNamePopup(false);
+      setCreatorNameInput('');
+    } catch (err) {
+      Toast({ message: `更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setSubmittingCreatorName(false);
+    }
+  };
+
   const [downloadingIdx, setDownloadingIdx] = useState<number | null>(null);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
 
@@ -999,7 +1039,9 @@ export default function TaskDetailPage() {
         method: 'POST',
         body: JSON.stringify({
           task_id: String(detail.id),
-          query: userMsg.replace(/^@U老师\s*/, ''),
+          // 去掉文本中任意位置的 @U老师 标记（可能有空格/重复），保留整段话作为 query，
+          // 兼容"先说话、句尾@U老师"的场景（否则 @U老师 在尾部时 query 会带残留或丢失）
+          query: userMsg.replace(/\s*@U老师\s*/g, ' ').trim(),
           context: { recent_comments: recentComments },
         }),
       });
@@ -1020,9 +1062,11 @@ export default function TaskDetailPage() {
     }
   };
 
-  // ── onSend：检测 @U老师 前缀决定走普通评论还是 AI 讨论 ──
+  // ── onSend：检测是否 @U老师（任意位置，前缀或句尾均触发）决定走普通评论还是 AI 讨论 ──
   const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number }): Promise<boolean> => {
-    if (text.startsWith('@U老师 ')) {
+    // 只要文本里含 @U老师（@ 在开头/中间/结尾都算）就走 AI 讨论；
+    // 兼容"说完话后句尾手动@U老师"（否则会被当成普通评论发出、AI 不回复）
+    if (text.includes('@U老师')) {
       return handleAIDiscuss(text, files, options);
     }
     return handleAddComment(text, files, options);
@@ -1181,7 +1225,16 @@ export default function TaskDetailPage() {
               <span className="detail-info-item__icon"><User size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">创建人</span>
-                <span className="detail-info-item__value">{detail.created_by_name || detail.reporter_name || detail.created_by || '-'}</span>
+                <span
+                  className="detail-info-item__value"
+                  style={canEditCreatorName ? { cursor: 'pointer', color: 'var(--blue-2)', textDecoration: 'underline' } : undefined}
+                  onClick={canEditCreatorName ? () => {
+                    setCreatorNameInput(detail.created_by_name || detail.reporter_name || detail.created_by || '');
+                    setShowCreatorNamePopup(true);
+                  } : undefined}
+                >
+                  {detail.created_by_name || detail.reporter_name || detail.created_by || '-'}
+                </span>
               </div>
             </div>
             <div className="detail-info-item">
@@ -1463,6 +1516,7 @@ export default function TaskDetailPage() {
           enableAI
           enableAttach
           mentionUsers={projectMembers}
+          mentionAllUsers={allUsers}
           taskId={detail?.id}
           onTaskUpdated={handleWsTaskUpdated}
           onMessagesClick={handleOpenReport}
@@ -1567,7 +1621,7 @@ export default function TaskDetailPage() {
                 showNow={false}
                 placement="topLeft"
                 getPopupContainer={(trigger) => trigger.parentElement || document.body}
-                value={editForm.deadline_at ? dayjs(editForm.deadline_at) : null}
+                value={editForm.deadline_at ? parseDeadlineString(editForm.deadline_at) : null}
                 disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>
@@ -1717,6 +1771,35 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
+      <Popup
+        visible={showCreatorNamePopup}
+        onClose={() => { if (!submittingCreatorName) { setShowCreatorNamePopup(false); setCreatorNameInput(''); } }}
+        placement="bottom"
+        showOverlay
+        destroyOnClose
+      >
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">设置创建人姓名</h4>
+          <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
+            修改创建人（{(detail?.created_by_name || detail?.reporter_name || detail?.created_by || '-')}）的姓名，保存后工单创建人将显示新姓名。
+          </p>
+          <Form initialData={{}}>
+            <FormItem label="姓名" name="creatorName" labelAlign="top" requiredMark>
+              <ClearableInput
+                value={creatorNameInput}
+                onChange={(v) => setCreatorNameInput(String(v))}
+                placeholder="请输入创建人姓名"
+                maxlength={64}
+              />
+            </FormItem>
+          </Form>
+          <div className="ticket-edit__btns">
+            <Button theme="default" disabled={submittingCreatorName} onClick={() => { setShowCreatorNamePopup(false); setCreatorNameInput(''); }}>取消</Button>
+            <Button theme="primary" loading={submittingCreatorName} onClick={handleUpdateCreatorName} disabled={!creatorNameInput.trim()}>保存</Button>
+          </div>
+        </div>
+      </Popup>
+
       <Popup visible={showReturnConfirmPopup} onClose={() => { setShowReturnConfirmPopup(false); setReturnReason(''); }} placement="bottom" showOverlay destroyOnClose>
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">退回工单</h4>
@@ -1810,7 +1893,10 @@ export default function TaskDetailPage() {
       >
         <div className="markdown-body" style={{ maxHeight: '60vh', overflowY: 'auto', textAlign: 'left', fontSize: 14, lineHeight: 1.8 }}>
           {diagnosisReport ? (
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              urlTransform={urlTransformAllowDataImage}
+            >
               {diagnosisReport}
             </ReactMarkdown>
           ) : (

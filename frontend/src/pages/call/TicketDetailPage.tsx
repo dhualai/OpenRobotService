@@ -34,7 +34,7 @@ import { useAuthStore } from '@/stores/auth';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
-import { getDeadlineRange, makeDisabledDate, makeDisabledTime } from '@/shared/utils/deadline';
+import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import type { UserItem } from '@/api/users';
 
 interface AiDiagnosis {
@@ -54,8 +54,8 @@ interface AiTicket {
   priority?: string;
   status?: string;
   contact?: string;
-  // AI 接口返回 Unix 秒（number）；DB TicketResponse 返回 ISO 字符串（string），两者都支持
-  created_at?: number | string;
+  // 统一为 ISO 字符串（AI 接口 task_to_dict 与 DB TicketResponse 均已显式 isoformat）
+  created_at?: string;
   diagnosis?: AiDiagnosis;
   attachments?: Array<Record<string, unknown>>;
   comments?: Comment[];
@@ -163,6 +163,8 @@ export default function TicketDetailPage() {
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
   // 项目成员（用于讨论区 @ 提及）
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  // 全部在职用户（项目成员 + 项目外，@ 输入过滤字时可 @ 到项目外的人）
+  const [allUsers, setAllUsers] = useState<ProjectMember[]>([]);
   // @U老师 AI 讨论中标记
   const [askingAI, setAskingAI] = useState(false);
 
@@ -244,8 +246,7 @@ export default function TicketDetailPage() {
               created_by_name: taskDetail.created_by_name || prev.created_by_name,
               assigned_to: taskDetail.assigned_to || prev.assigned_to,
               assigned_to_name: taskDetail.assigned_to_name || prev.assigned_to_name,
-              // 创建时间以 DB 真实创建时间为准：AI 接口 get_ticket 每次读取都用 int(time.time()) 重写，
-              // 并非工单真实创建时间，故用 DB 的 created_at 覆盖（与 status/created_by 同口径）。
+              // 创建时间以 DB 真实创建时间为准（DB 的 created_at 覆盖 AI 接口返回值，与 status/created_by 同口径）。
               created_at: taskDetail.created_at ?? prev.created_at,
               title: taskDetail.title || prev.title,
               description: taskDetail.description ?? prev.description,
@@ -279,7 +280,7 @@ export default function TicketDetailPage() {
   // 获取项目成员用于 @ 提及（与系统任务详情页同款逻辑）
   useEffect(() => {
     const tid = ticket?.ticket_id;
-    if (!tid) { setProjectMembers([]); return; }
+    if (!tid) { setProjectMembers([]); setAllUsers([]); return; }
     getProjectMembers(tid)
       .then((members) => {
         const reporterUsername = ticket?.created_by || '';
@@ -291,6 +292,10 @@ export default function TicketDetailPage() {
         setProjectMembers(sorted);
       })
       .catch(() => setProjectMembers([]));
+    // 获取全部在职用户（@ 输入过滤字时扩展到项目外的人）
+    getProjectMembers(tid, true)
+      .then((u) => setAllUsers(u))
+      .catch(() => setAllUsers([]));
   }, [ticket?.ticket_id, ticket?.created_by]);
 
   // 进入详情页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈，无需额外按钮
@@ -519,7 +524,9 @@ export default function TicketDetailPage() {
         method: 'POST',
         body: JSON.stringify({
           task_id: String(ticket.ticket_id),
-          query: userMsg.replace(/^@U老师\s*/, ''),
+          // 去掉文本中任意位置的 @U老师 标记（可能有空格/重复），保留整段话作为 query，
+          // 兼容"先说话、句尾@U老师"的场景（否则 @U老师 在尾部时 query 会带残留或丢失）
+          query: userMsg.replace(/\s*@U老师\s*/g, ' ').trim(),
           context: { recent_comments: recentComments },
         }),
       });
@@ -541,9 +548,11 @@ export default function TicketDetailPage() {
   };
 
   // 发送评论（附件上传 + POST /api/tasks/{ticket_id}/comments）；返回 true=成功（组件清空输入）
-  // 检测 @U老师 前缀：走 AI 讨论而非普通评论（与系统任务详情页同款逻辑）
+  // 检测 @U老师（任意位置，前缀或句尾均触发）：走 AI 讨论而非普通评论（与系统任务详情页同款逻辑）
   const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number }): Promise<boolean> => {
-    if (text.startsWith('@U老师 ')) {
+    // 只要文本里含 @U老师（@ 在开头/中间/结尾都算）就走 AI 讨论；
+    // 兼容"说完话后句尾手动@U老师"（否则会被当成普通评论发出、AI 不回复）
+    if (text.includes('@U老师')) {
       return handleAIDiscuss(text, files, options);
     }
     if (!ticket?.ticket_id) {
@@ -705,7 +714,7 @@ export default function TicketDetailPage() {
               <span className="detail-info-item__icon"><Clock size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">创建时间</span>
-                <span className="detail-info-item__value">{ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''}</span>
+                <span className="detail-info-item__value">{ticket.created_at ? formatDateTime(ticket.created_at) : ''}</span>
               </div>
             </div>
             <div className="detail-info-item">
@@ -886,6 +895,7 @@ export default function TicketDetailPage() {
           enableAttach
           enableAI
           mentionUsers={projectMembers}
+          mentionAllUsers={allUsers}
           taskId={ticket?.ticket_id}
           onTaskUpdated={handleWsTaskUpdated}
         />
@@ -1026,7 +1036,7 @@ export default function TicketDetailPage() {
                 showNow={false}
                 placement="topLeft"
                 getPopupContainer={(trigger) => trigger.parentElement || document.body}
-                value={editForm.deadline_at ? dayjs(editForm.deadline_at) : null}
+                value={editForm.deadline_at ? parseDeadlineString(editForm.deadline_at) : null}
                 disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>
