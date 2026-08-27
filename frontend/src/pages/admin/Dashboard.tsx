@@ -12,8 +12,7 @@ import {
   TICKET_STATUS_LIST, URGENCY_LIST,
 } from '@/shared/constants/dashboard';
 import {
-  fetchTicketSummary, fetchProjectMonthly, fetchUrgencySummary, fetchTicketSourceAnalysis,
-  fetchTicketResponseTime, syncWecomProjects,
+  fetchDashboardSummaryAll, syncWecomProjects,
   type TicketSummary, type ProjectMonthlySummary, type UrgencySummary, type TicketSourceAnalysis,
   type TicketResponseTime,
 } from '@/api/dashboard';
@@ -176,19 +175,17 @@ export default function Dashboard() {
     // 项目列表同理：canViewAll 走 /projects/，否则走 /projects/me 由后端按 token 过滤
     const filterIds = canViewAll ? undefined : projectIds;
     const projectsUrl = canViewAll ? '/projects/?include_analysis=true' : '/projects/me?include_analysis=true';
-    const [tickets, source, respTime, monthly, urgency, projectList] = await Promise.all([
-      fetchTicketSummary(filterIds),
-      fetchTicketSourceAnalysis(filterIds),
-      fetchTicketResponseTime(filterIds),
-      fetchProjectMonthly(filterIds),
-      fetchUrgencySummary(filterIds),
+    // 首屏并发从 6 个降到 2 个：5 类看板走聚合接口 summary-all 一次返回，
+    // 项目列表（/projects 或 /projects/me，含 include_analysis）仍单独请求
+    const [all, projectList] = await Promise.all([
+      fetchDashboardSummaryAll(filterIds),
       adminRequest<ProjectListItem[]>(projectsUrl).catch(() => []),
     ]);
-    setTicketSummary(tickets);
-    setSourceAnalysis(source);
-    setResponseTime(respTime);
-    setMonthlySummary(monthly);
-    setUrgencySummary(urgency);
+    setTicketSummary(all.tickets);
+    setSourceAnalysis(all.source);
+    setResponseTime(all.response_time);
+    setMonthlySummary(all.monthly);
+    setUrgencySummary(all.urgency);
     setProjects(normalizeList<ProjectListItem>(projectList));
     setLoading(false);
   }, [projectIds, canViewAll]);
@@ -214,7 +211,21 @@ export default function Dashboard() {
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
-  if (loading) return <Loading text="加载看板..." />;
+  // 首屏骨架屏：框架（顶栏 + 占位块）立即出现，数据到位后替换真实内容，
+  // 消除「全屏 Loading 白屏」的体感卡顿
+  if (loading) {
+    return (
+      <div className="dashboard-page">
+        <style>{`@keyframes macShimmer{0%{opacity:.55}50%{opacity:1}100%{opacity:.55}}`}</style>
+        <Navbar title="后台管理" fixed />
+        <div style={{ padding: '16px 16px 32px' }}>
+          <div style={{ height: 220, borderRadius: 12, background: '#eef0f2', marginBottom: 16, animation: 'macShimmer 1.2s ease-in-out infinite' }} />
+          <div style={{ height: 260, borderRadius: 12, background: '#eef0f2', marginBottom: 16, animation: 'macShimmer 1.2s ease-in-out infinite' }} />
+          <div style={{ height: 120, borderRadius: 12, background: '#eef0f2', animation: 'macShimmer 1.2s ease-in-out infinite' }} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="dashboard-page">

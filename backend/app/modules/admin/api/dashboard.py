@@ -244,30 +244,8 @@ async def get_project_stage_summary(
     }
 
 
-@dashboard_router.get("/projects/monthly", response_model=Dict[str, Any])
-async def get_project_monthly_summary(
-    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),
-):
-    """项目按月统计 —— 供仪表盘「跨项目看板」月柱状图使用（替换原按阶段统计的展示口径）。
-
-    按月口径 = 项目业绩核算期 settlement_period（手工填写，常见 YYYYMM 如 202608 = 2026年8月，
-    也兼容 YYYY-MM；模型字段已建索引），与「本月新增」统计卡口径一致；
-    无核算期的项目不落在任何月份，不参与统计。输出统一归一化为 YYYY-MM 的 key。
-
-    已承接（value）与待定（pending_value）分开计数，前端画成同一根柱子的深/浅两段。
-    本接口是全站唯一放开 include_pending 的地方：待定项目只影响这张图，
-    项目总数/项目列表/紧急度看板等口径均不含待定，见 project_service.get_projects。
-
-    响应结构：
-    {
-        "code": 0,
-        "data": {
-            "monthly": [{"key": "2026-08", "year": 2026, "month": 8, "value": 12, "pending_value": 3}, ...],
-            "years": [2024, 2025, 2026]
-        }
-    }
-    """
-    pid_list = _parse_project_ids(project_ids)
+def _compute_monthly_summary(pid_list: Optional[list]) -> Dict[str, Any]:
+    """项目按月统计（承接/待定分开），供仪表盘月柱状图与 summary-all 聚合复用。"""
     if pid_list is not None:
         projects = project_service.get_projects_by_ids(pid_list, include_pending=True)
     else:
@@ -295,16 +273,52 @@ async def get_project_monthly_summary(
         for key in set(monthly_map) | set(pending_map)
     ]
     monthly.sort(key=lambda item: item["key"])
-
     years = sorted({item["year"] for item in monthly})
+    return {"monthly": monthly, "years": years}
 
-    return {
+
+@dashboard_router.get("/projects/monthly", response_model=Dict[str, Any])
+async def get_project_monthly_summary(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),
+):
+    """项目按月统计 —— 供仪表盘「跨项目看板」月柱状图使用（替换原按阶段统计的展示口径）。
+
+    按月口径 = 项目业绩核算期 settlement_period（手工填写，常见 YYYYMM 如 202608 = 2026年8月，
+    也兼容 YYYY-MM；模型字段已建索引），与「本月新增」统计卡口径一致；
+    无核算期的项目不落在任何月份，不参与统计。输出统一归一化为 YYYY-MM 的 key。
+
+    已承接（value）与待定（pending_value）分开计数，前端画成同一根柱子的深/浅两段。
+    本接口是全站唯一放开 include_pending 的地方：待定项目只影响这张图，
+    项目总数/项目列表/紧急度看板等口径均不含待定，见 project_service.get_projects。
+
+    响应结构：
+    {
         "code": 0,
         "data": {
-            "monthly": monthly,
-            "years": years,
-        },
+            "monthly": [{"key": "2026-08", "year": 2026, "month": 8, "value": 12, "pending_value": 3}, ...],
+            "years": [2024, 2025, 2026]
+        }
     }
+    """
+    pid_list = _parse_project_ids(project_ids)
+    return {"code": 0, "data": _compute_monthly_summary(pid_list)}
+
+
+def _compute_urgency_summary(pid_list: Optional[list]) -> Dict[str, int]:
+    """项目紧急度汇总，供紧急度四象限与 summary-all 聚合复用。"""
+    if pid_list is not None:
+        projects = project_service.get_projects_by_ids(pid_list)
+    else:
+        projects = project_service.get_projects(0, 1000)
+
+    by_urgency: Dict[str, int] = {key: 0 for key in URGENCY_MAP.keys()}
+    for project in projects:
+        category = project.get("category_basis", "")
+        for urgency_key, category_labels in URGENCY_MAP.items():
+            if category in category_labels:
+                by_urgency[urgency_key] += 1
+                break
+    return by_urgency
 
 
 @dashboard_router.get("/projects/urgency", response_model=Dict[str, Any])
@@ -322,24 +336,45 @@ async def get_project_urgency_summary(
     }
     """
     pid_list = _parse_project_ids(project_ids)
-    if pid_list is not None:
-        projects = project_service.get_projects_by_ids(pid_list)
-    else:
-        projects = project_service.get_projects(0, 1000)
+    return {"code": 0, "data": {"by_urgency": _compute_urgency_summary(pid_list)}}
 
-    by_urgency: Dict[str, int] = {key: 0 for key in URGENCY_MAP.keys()}
 
-    for project in projects:
-        category = project.get("category_basis", "")
-        for urgency_key, category_labels in URGENCY_MAP.items():
-            if category in category_labels:
-                by_urgency[urgency_key] += 1
-                break
+@dashboard_router.get("/summary-all", response_model=Dict[str, Any])
+async def get_dashboard_summary_all(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),
+    db: AsyncSession = Depends(get_db),
+):
+    """仪表盘聚合接口 —— 一次返回工单汇总/来源/响应时间/项目月统计/紧急度，
+    替代前端首屏 5 个并发请求（/dashboard/tickets/summary、source-analysis、
+    response-time、projects/monthly、projects/urgency），降低首屏接口并发与延迟。
+    project 列表因走独立端点（/projects 或 /projects/me）且含 include_analysis，仍由前端单独请求。
 
+    响应结构：
+    {
+        "code": 0,
+        "data": {
+            "tickets": {...},        # TicketSummary
+            "source": {...},         # TicketSourceAnalysis
+            "response_time": {...},  # TicketResponseTime
+            "monthly": {...},        # ProjectMonthlySummary
+            "urgency": {"by_urgency": {...}}
+        }
+    }
+    """
+    pid_list = _parse_project_ids(project_ids)
+    tickets = await task_dashboard_service.get_ticket_summary(db, pid_list)
+    source = await task_dashboard_service.get_source_analysis(db, pid_list)
+    response_time = await task_dashboard_service.get_response_time_analysis(db, pid_list)
+    monthly = _compute_monthly_summary(pid_list)
+    urgency = {"by_urgency": _compute_urgency_summary(pid_list)}
     return {
         "code": 0,
         "data": {
-            "by_urgency": by_urgency,
+            "tickets": tickets,
+            "source": source,
+            "response_time": response_time,
+            "monthly": monthly,
+            "urgency": urgency,
         },
     }
 
