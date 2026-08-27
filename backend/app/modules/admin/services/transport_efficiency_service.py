@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 import io
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, and_, func
 from sqlalchemy.orm import sessionmaker
 
 from app.modules.admin.models_das.models import (
@@ -149,6 +149,44 @@ class TransportEfficiencyService:
                 ProjectTransportEfficiency.project_code == project_code,
             ).order_by(ProjectTransportEfficiency.report_date.desc()).first()
             return record.avg_manual_switch_count if record else None
+        finally:
+            db.close()
+
+    def get_latest_manual_switch_counts(self, project_codes: List[str]) -> Dict[str, Optional[float]]:
+        """批量获取多项目最新一条记录的切手动次数（一条自连接查询）。
+
+        替代循环内逐项目调用 get_latest_manual_switch_count（N 条查询 → 1 条）。
+        返回 {project_code: avg_manual_switch_count|None}；无数据的项目不出现在 dict 中。
+        排序口径与单条版本一致：report_date 为 String 列，按字符串 desc 取最大（格式统一 YYYY-MM-DD）。
+        """
+        if not project_codes:
+            return {}
+        db = SessionLocal()
+        try:
+            latest = (
+                db.query(
+                    ProjectTransportEfficiency.project_code.label("pc"),
+                    func.max(ProjectTransportEfficiency.report_date).label("md"),
+                )
+                .filter(ProjectTransportEfficiency.project_code.in_(project_codes))
+                .group_by(ProjectTransportEfficiency.project_code)
+                .subquery()
+            )
+            rows = (
+                db.query(
+                    ProjectTransportEfficiency.project_code,
+                    ProjectTransportEfficiency.avg_manual_switch_count,
+                )
+                .join(
+                    latest,
+                    and_(
+                        ProjectTransportEfficiency.project_code == latest.c.pc,
+                        ProjectTransportEfficiency.report_date == latest.c.md,
+                    ),
+                )
+                .all()
+            )
+            return {row.project_code: row.avg_manual_switch_count for row in rows}
         finally:
             db.close()
 
