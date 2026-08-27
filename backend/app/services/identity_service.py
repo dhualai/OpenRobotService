@@ -109,6 +109,7 @@ class IdentityService:
                     'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),
                     'supervisor_id': getattr(db_user, 'supervisor_id', None),
+                    'phone': getattr(db_user, 'phone', None),
                 }
             return None
         finally:
@@ -146,6 +147,7 @@ class IdentityService:
                     'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),
                     'supervisor_id': getattr(db_user, 'supervisor_id', None),
+                    'phone': getattr(db_user, 'phone', None),
                 }
             return None
         finally:
