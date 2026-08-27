@@ -139,21 +139,28 @@ export function useTaskCommentsWS(
           if (typeof e.last_read_comment_id === 'number') {
             setReadMap((r) => ({ ...r, [e.username]: e.last_read_comment_id as number }));
           }
-          // 名单增量：将本次广播的 records 合并进对应 comment_id 的名单（按 username 去重）
+          // 名单增量：合并进对应 comment_id 的名单；同 username 已存在则用新的 read_at
+          // 覆盖（后端 upsert 后每次阅读都会广播），保证「之前的消息后来被重读」也能更新显示
           if (e.records && e.records.length > 0) {
             setReadRecords((prev) => {
-              const next: Record<string, ReadRecord[]> = {};
-              for (const key of Object.keys(prev)) next[key] = prev[key];
+              const next: Record<string, ReadRecord[]> = { ...prev };
               for (const rec of e.records!) {
                 const cid = String(rec.comment_id);
-                const existing = next[cid] || [];
-                if (existing.some((x) => x.username === rec.username)) continue;
-                next[cid] = [...existing, {
+                const item: ReadRecord = {
                   username: rec.username,
                   name: rec.name,
                   avatar_resource_id: rec.avatar_resource_id,
                   read_at: rec.read_at ?? new Date().toISOString(),
-                }];
+                };
+                const existing = next[cid] || [];
+                const idx = existing.findIndex((x) => x.username === item.username);
+                if (idx >= 0) {
+                  const updated = existing.slice();
+                  updated[idx] = { ...updated[idx], ...item };
+                  next[cid] = updated;
+                } else {
+                  next[cid] = [...existing, item];
+                }
               }
               return next;
             });
