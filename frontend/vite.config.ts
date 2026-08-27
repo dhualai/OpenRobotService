@@ -45,8 +45,9 @@ export default defineConfig(({ command }) => {
       react(),
       // 构建时预压缩静态资源，配合 nginx `gzip_static on` / `brotli_static on` 直接发送预压缩文件，
       // 避免 nginx 实时压缩开销，进一步降低首屏传输体积
-      compression({ algorithm: 'gzip', threshold: 1024 }),
-      compression({ algorithm: 'brotliCompress', threshold: 1024 }),
+      // 注意：vite-plugin-compression2 v2 起选项为 algorithms（数组），旧的 algorithm（单数）会被忽略，
+      // 导致每个实例按默认算法把 .gz/.br 各发一份、同名文件重复告警，故只注册一个实例
+      compression({ algorithms: ['gzip', 'brotliCompress'], threshold: 1024 }),
     ],
     resolve: {
       alias: {
