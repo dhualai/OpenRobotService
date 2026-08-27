@@ -1,31 +1,48 @@
-"""Layer 1 部门路由：R5 strong → R2 LLM + R3 历史融合。"""
+"""Layer 1 部门路由：判断工单所属部门并据此收紧候选。
+
+部门判定由 LLM(部门职责画像) + 历史(相似工单) 融合打分，只有高置信才 hard_filter；
+再经 R-Audit（独立 LLM 单轮复核）二次把关，确保不派错部门。
+"""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
 from ai.agents.AiDiagnosisPlatform.assigner.filtering.routing_schemas import DeptRoutingResult
-from ai.agents.AiDiagnosisPlatform.assigner.filtering.signals.strong_kw_signal import StrongKwSignal
 from ai.agents.AiDiagnosisPlatform.assigner.filtering.signals.llm_dept_signal import LlmDeptSignal
 from ai.agents.AiDiagnosisPlatform.assigner.filtering.signals.history_dept_signal import HistoryDeptSignal
+from ai.agents.AiDiagnosisPlatform.assigner.filtering.signals.dept_audit_signal import DeptAuditSignal
 from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER")
 
 
 class DeptRouter:
-    def __init__(self, config: Optional[AssignerConfig] = None):
-        self._config = config or AssignerConfig()
-        self._routing_cfg = self._config.department_routing or {}
-        self._thresholds = self._routing_cfg.get("thresholds") or {}
-        self._weights = self._routing_cfg.get("weights") or {}
-        self._strong = StrongKwSignal(config=self._config)
-        self._llm = LlmDeptSignal(config=self._config)
-        self._history = HistoryDeptSignal(config=self._config)
+    """Layer 1 部门路由。
 
+    流程：
+    - LLM(部门职责画像) + 历史(相似工单) 融合打分 → primary 部门与模式。
+    - R-Audit 独立 LLM 单轮复核"部门派得对不对"：
+      审查高置信纠正则采纳；纠正不明确则带反馈打回重判 1 次；审查失败则保守降级。
+    - 模式：hard_filter 确定部门并过滤；soft_prior 倾向不强制；no_filter 兜底不框部门。
+      审查流程会尽量让工单收敛到单一部门（业务上每个部门负责的产品不同，需明确归属）。
+    - 目标：不派错部门。
+    """
+
+    def __init__(self, config: Optional[AssignerConfig] = None):
+        
+        self._config = config or AssignerConfig()                                       # 派单配置对象（召回/权重/阈值等全部配置的统一入口）
+        self._routing_cfg: Dict[str, Any] = self._config.department_routing or {}       # department_routing 配置块
+        self._thresholds: Dict[str, Any] = self._routing_cfg.get("thresholds") or {}    # 部门判定阈值
+        self._weights: Dict[str, Any] = self._routing_cfg.get("weights") or {}          # 融合权重：llm / history
+        self._audit_cfg: Dict[str, Any] = self._routing_cfg.get("audit") or {}          # 审查参数
+        self._llm: LlmDeptSignal = LlmDeptSignal(config=self._config)                   # 基于「部门职责画像(profile_text)」给出候选部门
+        self._history: HistoryDeptSignal = HistoryDeptSignal(config=self._config)       # 按历史相似工单的解决部门聚合
+        self._audit: DeptAuditSignal = DeptAuditSignal(config=self._config)             # 独立 LLM 单轮复核"部门派得对不对
+        
     @staticmethod
     def _filter_by_dept(
         engineers: List[EngineerProfile], dept: str,
@@ -81,35 +98,7 @@ class DeptRouter:
         ltag = f"[派单:{ticket.id}]"
         result = DeptRoutingResult()
 
-        # ── R5 strong：单部门命中 → 直接 hard_filter ──
-        strong = self._strong.match(ticket)
-        result.signals["strong"] = {
-            "dept": strong.dept,
-            "keywords": strong.keywords,
-            "ambiguous": strong.ambiguous,
-            "ambiguous_depts": strong.ambiguous_depts,
-        }
-        if strong.dept and not strong.ambiguous:
-            result.primary_dept = strong.dept
-            result.confidence = 1.0
-            result.margin = 1.0
-            result.mode = "hard_filter"
-            result.dept_scores = {strong.dept: 1.0}
-            result.reasoning = f"R5-strong({strong.keywords[:3]})"
-            filtered = self._filter_by_dept(engineers, strong.dept)
-            logger.info(
-                f"{ltag} Layer1-部门 R5-strong → {strong.dept} "
-                f"{len(engineers)}→{len(filtered)}人"
-            )
-            return filtered or list(engineers), result
-
-        if strong.ambiguous:
-            logger.info(
-                f"{ltag} Layer1-部门 R5-strong 跨部门歧义 "
-                f"{strong.ambiguous_depts} → 走 R2+R3"
-            )
-
-        # ── R2 + R3 并行 ──
+        # ── LLM(部门画像) + 历史(相似工单) 并行判部门 ──
         llm_scores, hist_scores = await asyncio.gather(
             self._llm.classify(ticket),
             self._history.aggregate(ticket, engineers),
@@ -149,6 +138,67 @@ class DeptRouter:
         else:
             result.reasoning = "未命中部门路由"
             logger.info(f"{ltag} Layer1-部门 未命中 → no_filter")
+
+        # ── 部门派发审查（post-validator）：独立 LLM 单轮复核"部门派得对不对" ──
+        #   - 审查通过 → 维持；
+        #   - 审查高置信纠正 → 采纳纠正部门（确定性归属）；
+        #   - 审查判错但纠正不明确 → 带审查反馈打回重判 1 次；
+        #   - 审查失败（LLM 异常）→ 保守降级，不强制硬过滤。
+        if (
+            primary
+            and bool(getattr(self._config, "dept_audit_enabled", True))
+        ):
+            audit = await self._audit.audit(ticket, primary)
+            result.signals["audit"] = audit
+            audit_min_conf = float(self._audit_cfg.get("min_confidence", 0.6))
+            if audit.audit_failed:
+                if result.mode == "hard_filter":
+                    logger.warning(f"{ltag} 部门审查失败，hard_filter 降级 no_filter（保守）")
+                    result.mode = "no_filter"
+            elif audit.ok:
+                logger.info(f"{ltag} 部门审查通过 → 维持 {primary}")
+            elif audit.correct_dept and audit.confidence >= audit_min_conf:
+                # 审查高置信给出纠正部门且合法 → 采纳
+                logger.info(
+                    f"{ltag} 部门审查纠正 {primary} → {audit.correct_dept} "
+                    f"(conf={audit.confidence:.2f}) {audit.reason[:40]}"
+                )
+                primary = audit.correct_dept
+                result.primary_dept = primary
+                result.confidence = audit.confidence
+                result.mode = "hard_filter"
+                result.signals["audit_corrected"] = True
+            else:
+                # 审查判错但纠正不明确 → 打回重判 1 次（带审查反馈），最多一次
+                feedback = (
+                    f"上一轮判定为「{primary}」，审查认为可能不对：{audit.reason or ''}。"
+                    "请重新判定，务必结合部门职责画像。"
+                )
+                try:
+                    llm2, hist2 = await asyncio.gather(
+                        self._llm.classify(ticket, feedback=feedback),
+                        self._history.aggregate(ticket, engineers),
+                    )
+                    merged2 = self._fuse(llm2, hist2, w_llm, w_hist)
+                    p2, s2, m2 = self._top_two(merged2)
+                    if p2 and p2 != primary:
+                        logger.info(f"{ltag} 部门审查打回重判 {primary} → {p2} (conf={s2:.2f})")
+                        primary, score, margin = p2, s2, m2
+                        result.primary_dept = primary
+                        result.confidence = score
+                        result.margin = margin
+                        result.mode = self._decide_mode(p2, s2, m2)
+                        result.signals["audit_redone"] = True
+                    else:
+                        # 重判后仍回到原部门：确保至少落到一个部门（单一归属）
+                        logger.info(
+                            f"{ltag} 部门审查打回重判后仍为 {primary} → 确定为该部门"
+                        )
+                        result.mode = "hard_filter"
+                except Exception as e:
+                    logger.warning(f"{ltag} 部门审查打回重判失败: {e}")
+                    if result.mode == "hard_filter":
+                        result.mode = "soft_prior"
 
         if result.mode == "hard_filter" and primary:
             filtered = self._filter_by_dept(engineers, primary)
