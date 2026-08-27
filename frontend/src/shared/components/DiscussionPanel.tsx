@@ -282,14 +282,17 @@ export default function DiscussionPanel({
     return rid ? avatarUrl(rid) : '';
   };
 
-  // ── 已读名单：某条评论的读者列表（精确名单优先，readMap 游标兜底推导）──
+  // ── 已读名单：某条评论的读者列表（对所有人可见，读者排除作者自己）──
   // 统一返回结构 { username, name, avatar_resource_id, read_at }，供气泡头像堆叠与名单弹层复用，
   // 保证「气泡显示的人数/头像」与「弹层列表」口径一致，避免名单空时气泡孤立显示 +N 而弹层为空。
   const getReadersForComment = useCallback(
     (cid: string | number): Array<{ username: string; name?: string | null; avatar_resource_id?: number | null; read_at?: string | null }> => {
       const createdBy = displayComments.find((x) => x.id === cid)?.created_by;
-      // 精确名单（后端 readRecords，按 read_at 倒序），排除作者自己
-      const exact = (readRecords[String(cid)] || [])
+      // 精确名单（后端 readRecords，按 read_at 倒序），排除作者自己。
+      // 不再用游标 readMap 反推兜底：游标语义是「读到哪一条」而非「读了这条」，
+      // 反推会把「读过末尾的人」虚算成每条历史消息的读者，名单虚高且口径错误；
+      // 名单为空就如实显示暂无已读。
+      return (readRecords[String(cid)] || [])
         .filter((r) => r.username !== createdBy)
         .slice()
         .sort((a, b) => {
@@ -297,18 +300,8 @@ export default function DiscussionPanel({
           const tb = b.read_at ? (parseUtcDate(b.read_at)?.getTime() ?? 0) : 0;
           return tb - ta;
         });
-      if (exact.length > 0) return exact;
-      // 名单为空（旧数据/未上报名单）→ 用游标 readMap 反推已读该评论的用户（无 read_at，兜底头像/名字）
-      return Object.entries(readMap)
-        .filter(([u, rid]) => u !== createdBy && Number(rid) >= Number(cid))
-        .map(([u]) => ({
-          username: u,
-          name: nameMap[u] || u,
-          avatar_resource_id: avatarMap[u] ?? null,
-          read_at: null,
-        }));
     },
-    [displayComments, readRecords, readMap, nameMap, avatarMap],
+    [displayComments, readRecords],
   );
 
   const [commentText, setCommentText] = useState('');
@@ -1085,10 +1078,10 @@ export default function DiscussionPanel({
                         })}
                       </div>
                     )}
-                    {isCurrentUser && (() => {
+                    {(() => {
                       const cid = c.id;
-                      // 统一从 getReadersForComment 取读者（精确名单优先，readMap 兜底），
-                      // 保证气泡头像堆叠与名单弹层口径一致。
+                      // 已读名单对所有人可见（飞书式）：自己的和别人的消息都显示，
+                      // 读者由 getReadersForComment 统一给出（已排除作者本人）。
                       const readers = getReadersForComment(cid);
                       const readCount = readers.length;
                       if (readCount <= 0) return null;
