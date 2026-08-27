@@ -11,6 +11,7 @@ import API_CONFIG from '@/config/api';
 import { buildWsUrl } from '@/api/ws';
 import { useAuthStore } from '@/stores/auth';
 import MindmapView from '@/pages/admin/MindmapView';
+import DepartmentProfileManager from '@/pages/admin/DepartmentProfileManager';
 import {
   MacPlus, MacX, MacSearch,
 } from '@/shared/components/macaronIcons';
@@ -106,6 +107,8 @@ export default function ModuleTreeManage() {
 
   // 视图模式：single=单个产品编辑；overview=全产品总览（只读、全部展开）
   const [viewMode, setViewMode] = useState<'single' | 'overview'>('single');
+  // 顶层标签：tree=责任模块树；dept=部门职责画像管理（AI 派单部门分类用，与责任树互不影响）
+  const [tab, setTab] = useState<'tree' | 'dept'>('tree');
 
   // 新关键词/锚输入缓存
   const [kwInputs, setKwInputs] = useState<Record<string, string>>({});
@@ -565,20 +568,37 @@ export default function ModuleTreeManage() {
         background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(8px)',
         borderBottom: '1px solid var(--mac-border)',
       }}>
-        <h2 style={{ margin: 0, fontSize: 18 }}>责任模块树</h2>
+        <h2 style={{ margin: 0, fontSize: 18 }}>{tab === 'dept' ? '部门职责' : '责任模块树'}</h2>
         <div style={{ display: 'flex', gap: 8 }}>
           <button
             type="button"
-            className={`mac-chip ${viewMode === 'overview' ? 'mac-chip--tag-blue' : 'mac-chip--soft'}`}
-            onClick={() => setViewMode(viewMode === 'overview' ? 'single' : 'overview')}
-          >
-            {viewMode === 'overview' ? '退出总览' : '🗺 总览'}
-          </button>
+            className={`mac-chip ${tab === 'tree' ? 'mac-chip--tag-blue' : 'mac-chip--soft'}`}
+            onClick={() => setTab('tree')}
+          >责任树</button>
+          <button
+            type="button"
+            className={`mac-chip ${tab === 'dept' ? 'mac-chip--tag-blue' : 'mac-chip--soft'}`}
+            onClick={() => setTab('dept')}
+          >部门职责</button>
+          {tab === 'tree' && (
+            <button
+              type="button"
+              className={`mac-chip ${viewMode === 'overview' ? 'mac-chip--tag-blue' : 'mac-chip--soft'}`}
+              onClick={() => setViewMode(viewMode === 'overview' ? 'single' : 'overview')}
+            >
+              {viewMode === 'overview' ? '退出总览' : '🗺 总览'}
+            </button>
+          )}
         </div>
       </div>
 
+      {/* ───────────── 部门职责画像管理（AI 派单部门分类用，与责任树互不影响） ───────────── */}
+      {tab === 'dept' && (
+        <DepartmentProfileManager request={request} />
+      )}
+
       {/* ───────────── 单产品总览（左右对称延伸，全部功能一眼可见） ───────────── */}
-      {viewMode === 'overview' && (
+      {tab === 'tree' && viewMode === 'overview' && (
         active ? (
           <MindmapView productName={active} interfaces={trees[active]?.interfaces || []} candidates={candidates} />
         ) : (
@@ -587,7 +607,7 @@ export default function ModuleTreeManage() {
       )}
 
       {/* 单产品编辑视图：产品选择器仅编辑模式显示 */}
-      {viewMode === 'single' && (
+      {viewMode === 'single' && tab === 'tree' && (
       <>
       {/* 产品选择器 */}
       <div className="mac-tree-add" style={{ marginBottom: 12 }}>
