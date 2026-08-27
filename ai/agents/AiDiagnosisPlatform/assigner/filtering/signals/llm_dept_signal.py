@@ -24,7 +24,7 @@ class LlmDeptSignal:
     def enabled(self) -> bool:
         return bool(self._llm_cfg.get("enabled", True)) and bool(self._departments)
 
-    def _build_prompt(self, ticket: TicketContext) -> str:
+    def _build_prompt(self, ticket: TicketContext, feedback: str = "") -> str:
         dept_blocks = []
         for dept in self._departments:
             name = dept.get("name") or ""
@@ -55,8 +55,14 @@ class LlmDeptSignal:
             f"故障码：{ticket.fault_code or '无'}\n"
             f"车型：{ticket.robot_type or '无'}\n"
             f"项目：{ticket.project_name or '无'}\n"
-            f"Agent假设：{hypotheses or '无'}\n\n"
-            "输出 JSON（不要其它文字）：\n"
+            f"Agent假设：{hypotheses or '无'}\n"
+            + (
+                "\n【审查反馈（上一轮部门审查的意见，供你重新判定时参考，请审慎采纳）】"
+                f"\n{feedback}\n"
+                if feedback
+                else ""
+            )
+            + "\n输出 JSON（不要其它文字）：\n"
             '{"departments":[{"name":"部门名","confidence":0.0,"reason":"一句话"}]}'
         )
 
@@ -88,8 +94,8 @@ class LlmDeptSignal:
         out.sort(key=lambda x: x["confidence"], reverse=True)
         return out[:3]
 
-    async def classify(self, ticket: TicketContext) -> Dict[str, float]:
-        """返回 {部门名: confidence}。"""
+    async def classify(self, ticket: TicketContext, feedback: str = "") -> Dict[str, float]:
+        """返回 {部门名: confidence}。feedback 可选：附加"上一轮审查意见"供重判参考。"""
         if not self.enabled:
             return {}
 
@@ -98,7 +104,7 @@ class LlmDeptSignal:
             return {}
 
         min_conf = float(self._llm_cfg.get("min_confidence", 0.75))
-        prompt = self._build_prompt(ticket)
+        prompt = self._build_prompt(ticket, feedback=feedback)
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()

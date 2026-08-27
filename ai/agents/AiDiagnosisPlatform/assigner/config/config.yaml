@@ -62,16 +62,20 @@ job_level_penalty:
   99: 0.60   # 未知职级兜底值
 
 # ══════════════════════════════════════════════════════════════════
-# 5. 部门路由（Layer 1：R5 strong + R2 LLM + R3 历史）
+# 5. 部门路由（Layer 1：R2 LLM + R3 历史 融合 + R-Audit 审查）
 #    消费方：filtering/dept_router.py
+#    策略：保证"不派错部门"——宁缺毋滥。仅当部门判定高置信才 hard_filter，
+#          否则 no_filter 保留全量，把"选谁"交给后续精排 + LLM 决策。
+#          R5 强关键词已移除（子串匹配易误触），部门判定统一由 R2 LLM + R3 历史融合。
+#          融合后再做 R-Audit 部门派发审查（dept_audit_enabled=true 时）。
 # ══════════════════════════════════════════════════════════════════
 department_routing:
   weights:
     llm: 0.50
     history: 0.30
   thresholds:
-    hard_filter_score: 0.80
-    hard_filter_margin: 0.15
+    hard_filter_score: 0.88
+    hard_filter_margin: 0.22
     soft_prior_score: 0.55
     dept_boost: 1.5
   llm:
@@ -83,6 +87,9 @@ department_routing:
     enabled: true
     top_k: 10
     min_similarity: 0.70
+
+# R-Audit 部门派发审查开关（true = R2 判完部门后独立 LLM 单轮复核）
+dept_audit_enabled: true
 
 departments:
   - id: robot_hardware
