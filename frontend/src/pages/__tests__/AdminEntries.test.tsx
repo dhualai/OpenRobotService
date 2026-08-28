@@ -16,6 +16,8 @@ vi.mock('tdesign-mobile-react', () => ({
   Navbar: ({ title }: { title?: ReactNode }) => (
     <nav data-testid="navbar">{title}</nav>
   ),
+  // 组件数据加载中会渲染 <Loading/>，mock 需提供否则渲染即抛错
+  Loading: ({ text }: { text?: ReactNode }) => <div data-testid="loading">{text}</div>,
 }));
 
 import AdminEntries from '../admin/AdminEntries';
@@ -54,9 +56,12 @@ describe('AdminEntries', () => {
 
   it('should render line icons for each entry card', () => {
     renderView();
-    const cards = screen.getAllByRole('button');
-    expect(cards.length).toBeGreaterThanOrEqual(3);
-    cards.forEach((card) => {
+    // 仅校验管理工具入口卡片含图标；页面另有时间筛选「重置」按钮等无图标按钮，不在断言范围
+    const entryCards = screen
+      .getAllByRole('button')
+      .filter((card) => card.className.includes('admin-entries-card'));
+    expect(entryCards.length).toBeGreaterThanOrEqual(3);
+    entryCards.forEach((card) => {
       expect(card.querySelector('svg')).not.toBeNull();
     });
   });
