@@ -111,6 +111,7 @@ async def assign_ticket(
         contact=contact,
         creator=creator,
         preferred_assignee=preferred_assignee,
+        preferred_assignee_remark=preferred_assignee_remark,
     )
 
     # 复用进程级 DispatchFlow 单例（由 ensure_dispatch_ready 懒加载/预热）
