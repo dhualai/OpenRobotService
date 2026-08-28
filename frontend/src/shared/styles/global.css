@@ -2353,13 +2353,15 @@ html, body, #root {
 .mac-source-split__col {
   min-width: 0;
 }
-/* 卡片底部颜色图例：色点 + 类型名（不重复数量），占满整行并均分排列 */
+/* 卡片底部颜色图例：色点 + 类型名 + 占比（不重复数量），占满整行并均分排列；
+   手机端放不下时自动换行（窄屏下占比数字与类型名贴在一行，保证可读） */
 .mac-donut-legend {
   grid-column: 1 / -1;
   display: flex;
-  flex-wrap: nowrap;
-  justify-content: space-between;
-  gap: 6px 12px;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  column-gap: 14px;
+  row-gap: 8px;
   margin-top: 14px;
 }
 .mac-donut-legend__item {
@@ -2370,11 +2372,24 @@ html, body, #root {
   color: var(--mac-muted-fg);
   white-space: nowrap;
 }
+.mac-donut-legend__pct {
+  font-weight: 600;
+  color: var(--mac-fg);
+  font-variant-numeric: tabular-nums;
+}
 .mac-donut-legend__dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
+}
+@media (min-width: 768px) {
+  /* 宽屏：恢复一排均分整行的原布局 */
+  .mac-donut-legend {
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    column-gap: 12px;
+  }
 }
 /* 平均完单耗时横向条形图：标签 + 轨道 + 耗时数值 */
 .mac-avgclose-bar {
@@ -5028,7 +5043,8 @@ html, body, #root {
 
 /* 马卡龙数据组件：环形图 / 图例 / 指标卡（对照原型 Bits.tsx） */
 .mac-donut { position: relative; flex-shrink: 0; }
-.mac-donut__svg { transform: rotate(-90deg); display: block; }
+/* overflow: visible：小扇区的百分比标签渲染在圆环外侧，需允许超出 viewBox */
+.mac-donut__svg { transform: rotate(-90deg); display: block; overflow: visible; }
 .mac-donut__center {
   position: absolute;
   inset: 0;
