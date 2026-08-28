@@ -508,7 +508,8 @@ class TicketService:
             'title': (Ticket.title, 'text'),
             'status': (Ticket.status, 'enum'),
             'priority': (Ticket.priority, 'enum'),
-            'ticketType': (Ticket.ticket_type, 'enum'),
+            # 注意：必须用真实列 task_type（ticket_type 是模型上的 property，不能参与 SQL 表达式）
+            'ticketType': (Ticket.task_type, 'enum'),
             'createdBy': (Ticket.created_by, 'text'),
             'createdByName': (Ticket.created_by, 'name'),
             'assignedTo': (Ticket.assigned_to, 'text'),
