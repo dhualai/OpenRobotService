@@ -54,11 +54,26 @@ class Ranker:
             dept_boost = float(thresholds.get("dept_boost", 1.5))
             primary_dept = dept_routing.primary_dept
 
+        # ── 各路召回分数归一化（max=1）──
+        # 三路分数天然尺度不同（LLM 置信 0~1 / 语义 cos / 历史聚合值），
+        # 直接加权相加会因尺度差异失真。此处对每路在全体候选内做 max 归一化，
+        # 使各路对齐到 0~1 后再按 ranker_weights 加权，可信度更稳。
+        def _max_of(recall: Dict[str, float]) -> float:
+            vals = [recall.get(eid, 0.0) for eid in ids]
+            return max(vals) if vals else 0.0
+
+        llm_max = _max_of(recall_result.llm_recall)
+        sem_max = _max_of(recall_result.semantic_recall)
+        his_max = _max_of(recall_result.history_recall)
+
+        def _norm(v: float, m: float) -> float:
+            return round(v / m, 4) if m > 0 else 0.0
+
         scores = {}
         for eid in ids:
-            llm = recall_result.llm_recall.get(eid, 0.0)
-            sem = recall_result.semantic_recall.get(eid, 0.0)
-            his = recall_result.history_recall.get(eid, 0.0)
+            llm = _norm(recall_result.llm_recall.get(eid, 0.0), llm_max)
+            sem = _norm(recall_result.semantic_recall.get(eid, 0.0), sem_max)
+            his = _norm(recall_result.history_recall.get(eid, 0.0), his_max)
 
             raw = self._w_llm * llm + self._w_semantic * sem + self._w_history * his
 

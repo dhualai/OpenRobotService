@@ -79,6 +79,12 @@ class TicketContext(BaseModel):
         None,
         description="倾向处理人（用户提单时填写，传工程师 users.id，预留）↔ tasks.metadata_info.preferred_assignee",
     )
+    # 重新派单备注/原因：用户重派时填写的意图说明（如"希望派给熟悉XXX的人/之前派错"等）。
+    # 作为 Step6 决策的强信号参考（契合度判断），并有独立字段供决策层/日志使用。
+    preferred_assignee_remark: Optional[str] = Field(
+        None,
+        description="重新派单备注/原因 ↔ tasks.metadata_info.preferred_assignee_remark",
+    )
 
     # === 其他 ===
     updated_at: Optional[str] = Field(None, description="修改时间 ↔ tasks.updated_at")
