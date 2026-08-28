@@ -149,8 +149,7 @@ class DispatchFlow:
         logger.info(
             f"{ltag} Step1 候选收紧 {tighten.before_count}→{tighten.after_count}人 | "
             f"部门={tighten.dept.mode}({tighten.dept.primary_dept or '-'}) | "
-            f"产品={tighten.product.product or '-'} | "
-            f"模块={','.join(tighten.module.matched_categories[:3]) or '-'}"
+            f"产品={tighten.product.product or '-'} | 模块层=已移除(不收紧)"
         )
 
         # ── Step 2: 排除提单人（常规派单不派给自己；Step 0 指定自己不受影响）──
@@ -205,11 +204,11 @@ class DispatchFlow:
                 )
 
         # ── Step 3: 三路召回（L1 LLM / L2 语义 / L3 历史 互不依赖，并行执行提升吞吐）──
-        # 说明：L2 锚文本语义召回默认关闭（semantic_recall_enabled=false），只看 L1 LLM + L3 历史，
-        #       因为 LLM 已有强语义判断，锚文本/关键词匹配反而干扰（对产品经理等非功能模块候选人
-        #       结构化不公平）。开启开关可恢复 L2。
+        # 说明：L2 语义召回是 Embedding 向量相似度（cos(工单, 模块锚文本)），非关键词匹配；
+        #       已重新启用（semantic_recall_enabled=true），并保持 LLM 主导（llm 0.70 > 语义 0.15）。
+        #       若需临时停用 L2 只看 L1 LLM + L3 历史，把 semantic_recall_enabled 置 false 即可。
         recall_result = RecallResult()
-        semantic_enabled = False
+        semantic_enabled = bool(getattr(self._config, "semantic_recall_enabled", True))
         try:
             semantic_enabled = bool(getattr(self._config, "semantic_recall_enabled", True))
         except Exception:

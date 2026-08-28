@@ -37,7 +37,9 @@ class DeptRouter:
         self._config = config or AssignerConfig()                                       # 派单配置对象（召回/权重/阈值等全部配置的统一入口）
         self._routing_cfg: Dict[str, Any] = self._config.department_routing or {}       # department_routing 配置块
         self._thresholds: Dict[str, Any] = self._routing_cfg.get("thresholds") or {}    # 部门判定阈值
-        self._weights: Dict[str, Any] = self._routing_cfg.get("weights") or {}          # 融合权重：llm / history
+        self._fusion: Dict[str, Any] = self._routing_cfg.get("fusion") or {}            # 融合修正参数
+        self._history_bonus: float = float(self._fusion.get("history_bonus", 0.05))    # 历史明确偏向该部门(占比≥threshold)时佐证加分
+        self._history_confirm_threshold: float = float(self._fusion.get("history_confirm_threshold", 0.5))  # 历史占比达到此值才视为"明确偏向"
         self._audit_cfg: Dict[str, Any] = self._routing_cfg.get("audit") or {}          # 审查参数
         self._llm: LlmDeptSignal = LlmDeptSignal(config=self._config)                   # 基于「部门职责画像(profile_text)」给出候选部门
         self._history: HistoryDeptSignal = HistoryDeptSignal(config=self._config)       # 按历史相似工单的解决部门聚合
@@ -52,21 +54,37 @@ class DeptRouter:
         return [e for e in engineers if (e.department or "") == dept]
 
     @staticmethod
+    @staticmethod
     def _fuse(
         llm_scores: Dict[str, float],
         hist_scores: Dict[str, float],
-        w_llm: float,
-        w_hist: float,
+        history_bonus: float,
+        history_confirm_threshold: float,
     ) -> Dict[str, float]:
+        """部门分数融合：以 LLM(R2) 为基础分（不打折），历史(R3) 只做可加预确认。
+
+        - 历史完全无数据 / 该部门无历史（hist<=0）→ final = llm（纯 LLM，不打折）。
+        - 历史有数据但占比低于阈值（0<hist<threshold）→ 不是强佐证，仍维持 LLM 分（不加不减，
+          避免"有部分历史反而扣分"的不对称；历史不覆盖=无信息、不干预）。
+        - 历史明确偏向（hist >= history_confirm_threshold）→ 佐证加分 history_bonus。
+        """
         depts = set(llm_scores) | set(hist_scores)
         if not depts:
             return {}
+        n_hist = len([d for d in hist_scores if hist_scores.get(d, 0.0) > 0])
         merged: Dict[str, float] = {}
         for dept in depts:
-            merged[dept] = round(
-                w_llm * llm_scores.get(dept, 0.0) + w_hist * hist_scores.get(dept, 0.0),
-                4,
-            )
+            llm = llm_scores.get(dept, 0.0)
+            hist = hist_scores.get(dept, 0.0)
+            if n_hist <= 0 or hist <= 0:
+                # 历史缺失 / 该部门无历史 → 纯 LLM 分，不打折
+                merged[dept] = round(llm, 4)
+            elif hist >= history_confirm_threshold:
+                # 历史明确偏向该部门（占比达阈值）→ 佐证加分
+                merged[dept] = round(min(1.0, llm + history_bonus), 4)
+            else:
+                # 历史有分但占比不足 → 非强佐证，维持 LLM 分（不加不减）
+                merged[dept] = round(llm, 4)
         return merged
 
     @staticmethod
@@ -106,17 +124,12 @@ class DeptRouter:
         result.signals["llm"] = llm_scores
         result.signals["history"] = hist_scores
 
-        w_llm = float(self._weights.get("llm", 0.50))
-        w_hist = float(self._weights.get("history", 0.30))
-        # 归一化权重（仅参与融合的路由）
-        w_sum = w_llm + w_hist
-        if w_sum <= 0:
-            w_llm, w_hist = 0.5, 0.3
-            w_sum = 0.8
-        w_llm /= w_sum
-        w_hist /= w_sum
-
-        merged = self._fuse(llm_scores, hist_scores, w_llm, w_hist)
+        # 融合：LLM(R2) 为基础分（不打折），历史(R3) 做佐证修正（history_bonus / history_penalty）。
+        # 历史缺失（本地无知识沉淀，hist=0）时不改变 LLM 的强判定——R2 单独高置信即可触发收紧。
+        merged = self._fuse(
+            llm_scores, hist_scores,
+            self._history_bonus, self._history_confirm_threshold,
+        )
         result.dept_scores = merged
         primary, score, margin = self._top_two(merged)
         result.primary_dept = primary
@@ -179,7 +192,7 @@ class DeptRouter:
                         self._llm.classify(ticket, feedback=feedback),
                         self._history.aggregate(ticket, engineers),
                     )
-                    merged2 = self._fuse(llm2, hist2, w_llm, w_hist)
+                    merged2 = self._fuse(llm2, hist2, self._history_bonus, self._history_confirm_threshold)
                     p2, s2, m2 = self._top_two(merged2)
                     if p2 and p2 != primary:
                         logger.info(f"{ltag} 部门审查打回重判 {primary} → {p2} (conf={s2:.2f})")
