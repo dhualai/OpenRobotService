@@ -129,7 +129,7 @@ export default function TaskDetailPage() {
   const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, '管理服务');
 
   const { refreshTasks } = useWorkbenchStore();
-  const { username, userId, name } = useAuthStore();
+  const { username, userId, name, hasPermission } = useAuthStore();
 
   const [detail, setDetail] = useState<Ticket | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -329,10 +329,13 @@ export default function TaskDetailPage() {
 
     const { isAssignee, isReporter } = getCurrentUserRoles();
 
-    const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
-    if (assigneeOnlyStatuses.includes(status) && !isAssignee) return [];
+    // 拥有 backend:tasks:operate 权限的用户，对所有活跃状态工单均可见且可操作
+    const canOperate = hasPermission('backend:tasks:operate');
 
-    if (status === 'resolved' && !isReporter) return [];
+    const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
+    if (assigneeOnlyStatuses.includes(status) && !isAssignee && !canOperate) return [];
+
+    if (status === 'resolved' && !isReporter && !canOperate) return [];
 
     // 顶部操作按钮配色（设计稿 05：主推进 bg-primary 白字胶囊 / 次操作 bg-secondary 深字胶囊）
     const BTN_PRIMARY = { backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)', borderRadius: '999px', border: 'none' };
@@ -1533,8 +1536,9 @@ export default function TaskDetailPage() {
           if (isClosedOrCanceled) return null;
 
           const { isAssignee, isReporter } = getCurrentUserRoles();
+          const canOperate = hasPermission('backend:tasks:operate');
           const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
-          const showRoleActions = assigneeOnlyStatuses.includes(status) ? isAssignee : (status === 'resolved' ? isReporter : false);
+          const showRoleActions = canOperate || (assigneeOnlyStatuses.includes(status) ? isAssignee : (status === 'resolved' ? isReporter : false));
 
           return (
             <div className="detail-actions">
