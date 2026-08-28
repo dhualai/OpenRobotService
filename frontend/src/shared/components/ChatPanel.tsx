@@ -246,6 +246,36 @@ const mapDbMessages = (
   return mapped.filter((m) => m.role !== 'assistant' || m.subtype === 'ticket_overview' || m.content.trim().length > 0 || m.streaming);
 };
 
+/** 增量合并：以本地 prev 的顺序/身份为基准并入 DB 快照 fresh，永不整体覆盖（根治
+ *  「刷新/轮询拿 DB 顺序整体替换 → 回答跳到问题上方/乐观气泡丢失」一类问题）。
+ *  - id 命中 → 用 DB 版本更新内容/状态（React key 不变，不闪动）；
+ *  - 乐观用户气泡兜底：发送中气泡仍是本地 uid，DB 落库后 id 不同 → 按 role+content
+ *    匹配同一条（仅非空内容，附件空气泡不参与），避免重复气泡；
+ *  - 工单概览气泡：DB 快照缺本地乐观字段，仅同步派单状态（不可整体替换）；
+ *  - prev 独有（尚未落库的乐观消息）永不丢弃；DB 新增按 DB 顺序追加尾部。 */
+const mergeDbMessages = (prev: Message[], fresh: Message[]): Message[] => {
+  const used = new Set<number>();
+  const merged = prev.map((m) => {
+    let idx = fresh.findIndex((f, i) => !used.has(i) && String(f.id) === String(m.id));
+    if (idx < 0 && m.role === 'user' && !m.subtype && m.content) {
+      idx = fresh.findIndex((f, i) => !used.has(i) && f.role === 'user' && !f.subtype && f.content === m.content);
+    }
+    // 工单概览气泡兜底：本地乐观气泡 id 与 DB 不一致时，按关联工单 db_id 匹配
+    if (idx < 0 && m.subtype === 'ticket_overview' && m.ticket_overview?.db_id) {
+      idx = fresh.findIndex((f, i) => !used.has(i) && f.ticket_overview?.db_id === m.ticket_overview!.db_id);
+    }
+    if (idx < 0) return m;
+    used.add(idx);
+    const f = fresh[idx];
+    if (m.subtype === 'ticket_overview' && m.ticket_overview && f.ticket_overview) {
+      return { ...m, ticket_overview: { ...m.ticket_overview, assigned_to_name: f.ticket_overview.assigned_to_name } };
+    }
+    return f;
+  });
+  fresh.forEach((f, i) => { if (!used.has(i)) merged.push(f); });
+  return merged;
+};
+
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
   msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch,
@@ -829,24 +859,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       getConversation(conversationId).then((full) => {
         if (convRef.current !== conversationId) return; // 校正期间又切走了，丢弃
         const fresh = mapDbMessages(full);
-        setMessages((prev) => {
-          if (fresh.length > prev.length) return fresh;
-          // 长度未增加：不整体替换（防丢未落库的乐观消息），但以 DB 为准同步工单概览气泡的派单状态——
-          // 否则切走期间已派单并回写 DB 后，长度相同不覆盖，气泡仍停留在"派单中"；
-          // 亦或切走期间对方在别处「重新派单」换人后，DB 里 assigned_to_name 已变，而缓存快照仍是旧的，
-          // 若只用 !assigned_to_name 作门槛（旧值非空）就不会覆盖 → 气泡显示旧处理人，但详情/DB 已对新接单人。
-          // 故这里只要 DB 有对应气泡就以其 assigned_to_name 覆盖当前值（DB 为最终一致源）。
-          return prev.map((m) => {
-            if (m.subtype === 'ticket_overview' && m.ticket_overview && m.ticket_overview.db_id) {
-              const f = fresh.find((x) => x.ticket_overview?.db_id === m.ticket_overview!.db_id);
-              if (f?.ticket_overview) {
-                // 仅同步派单状态字段，避免用 DB 快照整体替换掉本地乐观的其他字段
-                return { ...m, ticket_overview: { ...m.ticket_overview, assigned_to_name: f.ticket_overview.assigned_to_name } };
-              }
-            }
-            return m;
-          });
-        });
+        // 增量合并（不再整体覆盖）：以本地顺序/身份为基准并入 DB 快照——既同步派单状态
+        // （切走期间已派单/重新派单换人 → DB assigned_to_name 为准），又绝不丢未落库的
+        // 乐观消息、绝不因 DB 行序异常打乱本地已验证的显示顺序。
+        setMessages((prev) => mergeDbMessages(prev, fresh));
         // 恢复 sessionId / 标题：缓存恢复分支跳过了 getConversation，这里补上，
         // 否则切回后 sessionId 仍为上一会话的/空，发送时 ensureSessionId 会重新生成 → sessionId 漂移
         const sid = readAiSessionId(full);
@@ -889,7 +905,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               const freshMsgs = mapDbMessages(fresh);
               const newLast = freshMsgs[freshMsgs.length - 1];
               if (newLast && newLast.role === 'assistant' && newLast.content.trim()) {
-                setMessages(freshMsgs);
+                // 增量合并替代整体覆盖：producer 完整回复并入本地，顺序/身份以本地为准
+                setMessages((prev) => mergeDbMessages(prev, freshMsgs));
                 scrollToBottomNow();
                 if (pollId) clearInterval(pollId);
               }
@@ -1224,6 +1241,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // 后端增量落库写出的 assistant 消息 DB id：由流式 event:message_created 回传。
     // 命中即说明后端已接管落库，前端不再重复写（避免重复消息）；未命中(老后端/建消息失败)则前端兜底落库。
     let assistantDbId: number | null = null;
+    // 本轮 user 消息 DB id：前端乐观落库返回值 或 后端代建后经 message_created 回传。
+    // 两者都未命中（前端写失败 + 旧后端）→ 流结束兜底补写，避免丢问题。
+    let userDbId: number | null = null;
     // 流式中间渲染：疑似 LLM 协议 JSON 头泄漏（{ / ``` 开头）时以占位代替，避免残破 JSON 闪现上屏
     const renderAcc = () => setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: looksLikeJsonHead(acc) ? '正在思考…' : acc } : m)));
     // 收尾排空标志：流已结束（done），剩余 pending 继续逐字出完而非一次性并入
@@ -1266,13 +1286,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const sid = ensureSessionId();
       const wasNew = !convRef.current; // 新会话：首轮问答完成后才同步到列表
       // 持久化用户消息（首条会顺带建会话）。
-      // 必须 await 落库完成后再启动流式：后端 SSE 在流式开头会立即建 assistant 占位消息，
-      // 若用户消息 fire-and-forget 与之竞态，assistant 可能先拿到更小的 sequence，
-      // 导致 DB 顺序变成「回答在问题上方」，后续刷新/轮询会覆盖前端顺序。
+      // 必须 await 落库完成后再启动流式（happens-before）：user 行先提交拿到更小的 sequence，
+      // 后端随后建的 assistant 占位必然排在其后——顺序由落库顺序结构性保证，与网络时序解耦。
+      // metadata 携带幂等键（本地乐观 id，数字+小写字母 LIKE 安全）：后端单写入方逻辑按它
+      // 复用本行（不会重复建）；前端写失败时由后端代建（persist_user_message=true）。
       const convId = await ensureConversation(sid, content);
       if (convId) {
         try {
-          const dbMsg = await appendMessage(convId, 'user', content);
+          const dbMsg = await appendMessage(convId, 'user', content, { metadata: JSON.stringify({ client_message_id: userMessage.id }) });
+          userDbId = Number(dbMsg.id);
           // 用 DB id 替换乐观消息 id：后续刷新/轮询返回同一条 DB 记录，key 一致避免闪动。
           setMessages((prev) => prev.map((m) => (m.id === userMessage.id ? { ...m, id: String(dbMsg.id) } : m)));
         } catch (e) {
@@ -1286,8 +1308,17 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
       // 提单 Agent
       const apiPath = `${API_CONFIG.AI.BASE_URL}/qa/ask/stream`;
-      // 把已落库的会话 id 传给后端，由后端在流式中增量落库 assistant 回复（刷新/切 Tab 可从 DB 恢复）
-      const apiBody = JSON.stringify({ session_id: sid, query: content, conversation_id: sentConvId });
+      // 把已落库的会话 id 传给后端，由后端在流式中增量落库 assistant 回复（刷新/切 Tab 可从 DB 恢复）。
+      // persist_user_message + client_message_id：单写入方——后端确保 user 消息已落库
+      // （前端已写则按幂等键复用，写失败则代建）并建 assistant 占位（parent 指向 user）。
+      // 旧后端忽略这两个字段，行为回退为 7c36199 的时序修复版，安全兼容。
+      const apiBody = JSON.stringify({
+        session_id: sid,
+        query: content,
+        conversation_id: sentConvId,
+        persist_user_message: true,
+        client_message_id: userMessage.id,
+      });
 
       // AbortController：切换会话/卸载时主动中断流式，避免后台 setMessages 串台丢消息
       const controller = new AbortController();
@@ -1314,6 +1345,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           // 后端建好的 assistant 消息 DB id（后端 SSE 侧落库接管后回传）
           if (currentEvent === 'message_created' && data.message_id) {
             assistantDbId = data.message_id;
+          }
+          // 后端代建/复用的 user 消息 id（前端写入失败时由后端按幂等键代建）：对账乐观气泡 id。
+          // 前端写入成功时气泡 id 已是同一 DB id，此替换为无操作。
+          if (currentEvent === 'message_created' && data.user_message_id) {
+            userDbId = Number(data.user_message_id);
+            const dbUserId = String(data.user_message_id);
+            setMessages((prev) => prev.map((m) => (m.id === userMessage.id ? { ...m, id: dbUserId } : m)));
           }
           if (data.token) {
             pending += data.token;
@@ -1414,6 +1452,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 流式结束：后端已在流式中增量落库完整内容（event:message_created 接管）。
       // 仅当后端未接管（老后端未回传 message_id / 建消息失败）时，前端兜底落库一次，避免丢字。
       // 注意用完整快照 fullText 落库，而非仍在逐字排空的 acc（避免落库截断）。
+      // user 消息兜底（排在 assistant 兜底之前，极端路径下 sequence 仍 user<assistant）：
+      // 前端乐观写入与后端代建都未发生（前端写失败 + 旧后端）→ 先补写 user 再落 assistant。
+      if (userDbId == null && sentConvId) {
+        try {
+          await appendMessage(sentConvId, 'user', content, { metadata: JSON.stringify({ client_message_id: userMessage.id }) });
+        } catch (e) {
+          console.warn('[ChatPanel] 用户消息兜底落库失败:', e);
+        }
+      }
       if (fullText && assistantDbId == null && sentConvId) {
         appendMessage(sentConvId, 'assistant', fullText).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
       }
