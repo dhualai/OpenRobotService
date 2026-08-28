@@ -47,6 +47,33 @@ function formatSize(bytes?: number): string {
 }
 
 /**
+ * 带鉴权 token 的附件下载：用 fetch 拉取 blob 后用 <a download> 触发浏览器下载。
+ * 不能用 window.open —— 浏览器原生导航请求带不上 SPA 的 Bearer token，会被后端/网关 401/403；
+ * 且后端固定返回 Content-Disposition: inline，window.open 会「打开」而非「下载」文件。
+ * 同源请求（前端与 /p/api 同域）不受 CORS 限制，可直接带 Authorization 头。
+ */
+async function downloadViaFetch(url: string, filename: string) {
+  const token = localStorage.getItem('auth_token');
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const resp = await fetch(url, { headers, credentials: 'include' });
+  if (!resp.ok) {
+    // 回退：新标签打开（让浏览器自行处理，可能触发登录流程）
+    window.open(url, '_blank', 'noopener,noreferrer');
+    throw new Error(`下载失败: ${resp.status}`);
+  }
+  const blob = await resp.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = filename || 'download';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
+}
+
+/**
  * 给下载 URL 追加 response-content-disposition=attachment 参数，强制浏览器下载而非内联播放。
  * MinIO / S3 兼容的代理端支持该 query 参数；对已带 query 的 URL 用 & 拼接。
  * 对非代理直链（无该参数支持）无害——浏览器忽略未知 query。
@@ -166,7 +193,9 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
                   if (wechat) {
                     window.location.href = dl;
                   } else {
-                    window.open(dl, '_blank', 'noopener,noreferrer');
+                    void downloadViaFetch(dl, item.filename).catch((e) =>
+                      console.error('[AttachmentViewer] 下载失败', e),
+                    );
                   }
                 }}
               >
@@ -214,7 +243,9 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
                   // （downloadUrl 已携带 token，浏览器打开不会落到 SPA 404 → 微信 OAuth 重定向）。
                   window.location.href = dl;
                 } else {
-                  window.open(dl, '_blank', 'noopener,noreferrer');
+                  void downloadViaFetch(dl, item.filename).catch((e) =>
+                    console.error('[AttachmentViewer] 下载失败', e),
+                  );
                 }
               }}
             >
