@@ -1,7 +1,7 @@
 """验证「产品→界面→功能」树自动生成链路（不修改生产 config）。
 
 用最小骨架树走完整链路：_build_from_tree → AssignerConfig 各属性，
-确认生成的三配置可供下游(module_router / semantic_recall)使用。
+确认生成的三配置可供下游(semantic_recall / expertise_recall / history_recall)使用。
 
 语义（2026-08-20 起）：工程师领取粒度与锚文本粒度均按**功能 name（中文）**，
 - module_classify[产品][功能name] = 功能name

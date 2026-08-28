@@ -8,7 +8,6 @@
 #   ranker_weights       → ranking/ranker.py（三路召回加权）
 #   history_recall       → recall/history_recall.py（L3 历史召回增强：时间衰减 + Top-K + 故障码）
 #   job_level_penalty    → ranking/ranker.py（职级折扣）
-#   department_keywords  → filtering/dept_router.py（R5 strong 关键词）
 #   department_routing   → filtering/dept_router.py
 #   departments          → filtering/signals/llm_dept_signal.py
 #   product_routing      → filtering/product_router.py
@@ -17,15 +16,16 @@
 # ══════════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════════
-# 2. 精排权重（只保留 LLM + 历史两路；L2 锚文本语义已关闭）
+# 2. 精排权重（LLM 主导 + 语义辅助 + 历史辅助）
 #    消费方：ranking/ranker.py（三路召回加权）
-#    说明：L2 锚文本/关键词匹配对"负责非功能模块"的候选人（如产品经理）结构化不公平，
-#          且在有 LLM 强语义判断下反而干扰（表面字眼误导）。
-#          semantic_match 置 0 = 语义分不参与精排，只看 LLM + 历史。
+#    说明：L2 语义召回是真正的 Embedding 向量相似度匹配（cos(工单, 模块锚文本)），
+#          非关键词子串匹配。当初误诊为"关键词匹配"而停用，实为 config 缺失
+#          ranker_weights 导致权重退化（默认语义 0.35 > LLM 0.30 语义反超 LLM）所致。
+#          现恢复为 LLM 主导(t链路) + L2 语义辅助 + L3 历史辅助：权重相加见下。
 # ══════════════════════════════════════════════════════════════════
 ranker_weights:
-  llm_match: 0.85       # L1 纯LLM：LLM 看全员画像直接打分（主导派单）
-  semantic_match: 0.0   # L2 语义：停用（有 LLM 后锚文本匹配是干扰）
+  llm_match: 0.70       # L1 纯LLM：LLM 看全员画像直接打分（主导派单）
+  semantic_match: 0.15  # L2 语义：Embedding 向量相似度（辅助信号，不反超 LLM）
   history_match: 0.15   # L3 历史：相似历史工单 → 按解决人聚合
 
 # ══════════════════════════════════════════════════════════════════
@@ -64,25 +64,37 @@ job_level_penalty:
 # ══════════════════════════════════════════════════════════════════
 # 5. 部门路由（Layer 1：R2 LLM + R3 历史 融合 + R-Audit 审查）
 #    消费方：filtering/dept_router.py
-#    策略：保证"不派错部门"——宁缺毋滥。仅当部门判定高置信才 hard_filter，
-#          否则 no_filter 保留全量，把"选谁"交给后续精排 + LLM 决策。
-#          R5 强关键词已移除（子串匹配易误触），部门判定统一由 R2 LLM + R3 历史融合。
-#          融合后再做 R-Audit 部门派发审查（dept_audit_enabled=true 时）。
+#    策略：保证"不派错部门"——R2 LLM 为主判、R3 历史为佐证。仅当部门判定足够确信才
+#          hard_filter 收紧候选；中等信度 soft_prior 倾向；低信度 no_filter 保留全量。
+#   融合：
+#     - 原则：LLM(R2) 为基础分（不打折）；历史(R3) 只做佐证修正（一致加分/分歧减分/缺失不变）。
+#     - history_bonus:    历史数据偏向该部门（占比 ≥ 平均线）时加的分（佐证确认）。
+#     - history_penalty:  历史数据不偏向该部门（占比 < 平均线）时减的分（降温）。
+#     - 历史缺失（本地无知识沉淀，hist=0）→ 不加不减，final = LLM 分，不打折。
+#   阈值：
+#     - hard_filter_score: 融合分达到此值且 margin 明显领先才收紧（R2 强确认 0.9+ 时可达到）。
+#     - hard_filter_margin: 第一名与第二名的差距门槛，避免"接近并列"还被硬框。
+#     - soft_prior_score: 中等信度 → 倾向该部门但不强制（精排给该部门加分）。
+#    说明：R5 强关键词已移除（子串匹配易误触），R-Audit 独立复核兜底（dept_audit_enabled=true）。
 # ══════════════════════════════════════════════════════════════════
 department_routing:
-  weights:
-    llm: 0.50
-    history: 0.30
+  fusion:
+    history_confirm_threshold: 0.5  # 该部门历史占比达到此值才视为"历史明确偏向"（佐证加分）
+    history_bonus: 0.05             # 历史明确偏向时加的分（佐证确认）
+                                    # 注：历史缺失/不足以确认时，LLM 为基础分不打折、不加不减
   thresholds:
-    hard_filter_score: 0.88
-    hard_filter_margin: 0.22
+    hard_filter_score: 0.63
+    hard_filter_margin: 0.10
     soft_prior_score: 0.55
     dept_boost: 1.5
   llm:
     enabled: true
-    max_tokens: 250
+    # max_tokens 需容纳最多 3 个部门 + reason
+    max_tokens: 320
     temperature: 0
-    min_confidence: 0.75
+    # min_confidence：R2 输出 confidence 的保留下限。配合 R2 prompt 四档刻度，
+    # 主判(0.85+)与主要候选(0.55+)均可过；次要候选(0.25~0.55)也保留，供融合/收紧权衡。
+    min_confidence: 0.3
   history:
     enabled: true
     top_k: 10
@@ -124,87 +136,6 @@ departments:
     examples:
       - title: "调度任务一直处于阻塞状态，无法下发"
         dept: 智能规划研究院
-
-# R5：仅 strong 关键词（medium/weak 已废弃）
-department_keywords:
-  机器人事业部:
-    strong:
-      - 硬件故障
-      - 机械故障
-      - 车体故障
-      - 故障报修
-      - 开不了机
-      - 充不进电
-      - 电池故障
-      - 电池没电
-      - 电机不转
-      - 电机故障
-      - 电机烧了
-      - 轮子坏了
-      - 轮子卡死
-      - 轮子脱落
-      - 车体损坏
-      - 车体变形
-      - 车体碰撞
-      - 硬件损坏
-      - 底盘故障
-      - 底盘变形
-      - 货叉卡住
-      - 货叉不动作
-      - 电源故障
-      - 无法上电
-      - 断电
-      - 外壳破损
-      - 外壳变形
-      - 进水
-      - 摔坏
-  智能移动研究院:
-    strong:
-      - 雷达故障
-      - 雷达数据异常
-      - 传感器故障
-      - 传感器异常
-      - 传感器报错
-      - 摄像头故障
-      - 定位漂移
-      - 重定位失败
-      - slam
-      - 定位异常
-      - 感知异常
-      - 障碍物检测失败
-      - 目标识别错误
-      - 控制器故障
-      - 控制器报错
-      - 控制逻辑错误
-      - 车辆控制异常
-      - 网关故障
-      - 网关通信异常
-      - 驱动异常
-      - imu
-      - 里程计
-  智能规划研究院:
-    strong:
-      - 调度系统
-      - 调度平台
-      - 任务调度
-      - 任务分配
-      - 任务下发
-      - 任务队列
-      - 任务阻塞
-      - 路径规划
-      - 路径下发
-      - 路径失败
-      - mapf
-      - a*
-      - 锁区
-      - 避让
-      - 交通管制
-      - 地图编辑
-      - 地图预处理
-      - 路网
-      - 背景图
-      - 充休电
-      - 上轨
 
 # R1 确定性规则（预留，有 evidence 后扩展）
 department_rules: {}
@@ -261,11 +192,11 @@ llm_decision_topk: 3
 yaorenba_force_module_owner: true
 
 # ══════════════════════════════════════════════════════════════════
-# 11. L2 锚文本语义召回开关
+# 11. L2 语义召回开关
 #    消费方：pipeline/dispatch_flow.py（Step 3）
-#    说明：false = 停用 L2，派单只看 L1 LLM + L3 历史。
-#          有 LLM 强语义判断后，锚文本/关键词匹配反而干扰（对产品经理等
-#          "负责非功能模块"的候选人结构化不公平，易被表面字眼误导）。
-#          置 true 可恢复 L2（需同时把 ranker_weights.semantic_match 调回 >0）。
+#    说明：true = 启用 L2 Embedding 向量语义召回（cos(工单, 模块锚文本)）。
+#          L2 是真正的语义匹配（非关键词子串匹配），当初因误判为关键词而停用，
+#          实为 ranker_weights 权重退化（语义 0.35 反超 LLM 0.30）所致。
+#          现已把 semantic_match 权重收敛为辅助值(0.15 < llm 0.70)，LLM 保持主导。
 # ══════════════════════════════════════════════════════════════════
-semantic_recall_enabled: false
+semantic_recall_enabled: true
