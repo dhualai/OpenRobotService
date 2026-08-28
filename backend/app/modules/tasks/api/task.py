@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 
 from app.core.database import get_async_db as get_db, db_manager
 from app.core.auth_routes import get_current_active_user_from_token
+from app.modules.admin.api.auth import has_permission_code
 from pydantic import BaseModel
 from app.modules.tasks.schemas.ticket import (
     TicketCreate, TicketUpdate, TicketResponse, TicketListResponse,
@@ -575,7 +576,9 @@ async def update_task(
     username = actor_username(current_user)
     user_name = (current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", username))
 
-    if not is_admin:
+    # 拥有 backend:tasks:operate 权限的用户视同 admin，跳过身份与状态流转校验
+    can_operate = has_permission_code(current_user, "backend:tasks:operate")
+    if not is_admin and not can_operate:
         if not user_matches(current_user, ticket.assigned_to, ticket.customer, ticket.created_by):
             raise HTTPException(status_code=403, detail="无权限更新此任务")
         if ticket.status == TicketStatus.CLOSED:
