@@ -1265,9 +1265,20 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     try {
       const sid = ensureSessionId();
       const wasNew = !convRef.current; // 新会话：首轮问答完成后才同步到列表
-      // 持久化用户消息（首条会顺带建会话）
+      // 持久化用户消息（首条会顺带建会话）。
+      // 必须 await 落库完成后再启动流式：后端 SSE 在流式开头会立即建 assistant 占位消息，
+      // 若用户消息 fire-and-forget 与之竞态，assistant 可能先拿到更小的 sequence，
+      // 导致 DB 顺序变成「回答在问题上方」，后续刷新/轮询会覆盖前端顺序。
       const convId = await ensureConversation(sid, content);
-      if (convId) appendMessage(convId, 'user', content).catch((e) => console.warn('[ChatPanel] 用户消息落库失败:', e));
+      if (convId) {
+        try {
+          const dbMsg = await appendMessage(convId, 'user', content);
+          // 用 DB id 替换乐观消息 id：后续刷新/轮询返回同一条 DB 记录，key 一致避免闪动。
+          setMessages((prev) => prev.map((m) => (m.id === userMessage.id ? { ...m, id: String(dbMsg.id) } : m)));
+        } catch (e) {
+          console.warn('[ChatPanel] 用户消息落库失败:', e);
+        }
+      }
       // 发送时会话快照：流式期间用户可能切换会话，convRef 会被 effect 改写指向新会话。
       // 后续 AI 回复持久化/首轮会话同步必须用此快照，否则回复会错写进新会话（表现为"过时/错位回复"）。
       sentConvId = convRef.current;

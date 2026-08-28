@@ -320,5 +320,45 @@ class TaskDashboardService:
             "by_bucket": by_bucket,
         }
 
+    @staticmethod
+    async def get_avg_close_time_analysis(
+        db: AsyncSession,
+        project_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """各类型工单平均完单耗时 —— 按 task_type 分组统计「关闭时间 - 创建时间」的平均值。
+
+        完单耗时口径 = closed_at - created_at，仅统计已关闭工单（closed_at 非空，
+        与类型分布一致不按状态过滤：未关闭的工单没有完单时间，不计入即不会被误算为 0 耗时）。
+        结果按平均耗时降序排列，方便前端横向条形图「最长的在最上面」。
+        """
+        if project_ids is not None and len(project_ids) == 0:
+            return {"by_type": []}
+
+        query = select(Task.task_type, Task.created_at, Task.closed_at).where(
+            Task.closed_at.isnot(None)
+        )
+        if project_ids is not None:
+            query = query.where(Task.project_id.in_(project_ids))
+        rows = (await db.execute(query)).all()
+
+        elapsed_by_type: Dict[str, List[float]] = {}
+        for task_type, created_at, closed_at in rows:
+            if created_at is None or closed_at is None:
+                continue
+            elapsed = max((closed_at - created_at).total_seconds(), 0)
+            elapsed_by_type.setdefault(task_type.value, []).append(elapsed)
+
+        by_type = [
+            {
+                "key": key,
+                "count": len(seconds_list),
+                "avg_seconds": round(sum(seconds_list) / len(seconds_list)),
+            }
+            for key, seconds_list in elapsed_by_type.items()
+        ]
+        by_type.sort(key=lambda item: item["avg_seconds"], reverse=True)
+
+        return {"by_type": by_type}
+
 
 task_dashboard_service = TaskDashboardService()
