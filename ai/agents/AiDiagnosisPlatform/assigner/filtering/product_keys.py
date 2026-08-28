@@ -31,7 +31,7 @@ def engineer_modules_for_product(
     """返回该产品下工程师负责的【功能名】扁平列表（三层 {产品:{界面:[功能]}} 展开）。
 
     兼容旧两层/旧 list 数据：若某产品的值直接是 list 则原样透传。
-    供 module_router / semantic_recall 等以"功能名"为粒度消费（与 module_classify 对齐）。
+    供 semantic_recall 等以"功能名"为粒度消费（与 module_classify 对齐）。
     """
     rm = eng.responsibility_modules or {}
     mods: List[str] = []

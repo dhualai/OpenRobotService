@@ -156,6 +156,7 @@ class AssignmentWorker:
                     "robot_type": (task.metadata_info or {}).get("robot_type", "") if task.metadata_info else "",
                     "fault_code": (task.metadata_info or {}).get("fault_code", "") if task.metadata_info else "",
                     "preferred_assignee": (task.metadata_info or {}).get("preferred_assignee") if task.metadata_info else None,
+                    "preferred_assignee_remark": (task.metadata_info or {}).get("preferred_assignee_remark") if task.metadata_info else None,
                     "diagnosis_hypotheses": (task.metadata_info or {}).get("diagnosis_hypotheses") if task.metadata_info else None,
                     "diagnosis_ruled_out": (task.metadata_info or {}).get("diagnosis_ruled_out") if task.metadata_info else None,
                     "diagnosis_collected_info": (task.metadata_info or {}).get("diagnosis_collected_info") if task.metadata_info else None,
@@ -223,6 +224,7 @@ class AssignmentWorker:
                         "robot_type": (r.metadata_info or {}).get("robot_type", "") if r.metadata_info else "",
                         "fault_code": (r.metadata_info or {}).get("fault_code", "") if r.metadata_info else "",
                         "preferred_assignee": (r.metadata_info or {}).get("preferred_assignee") if r.metadata_info else None,
+                        "preferred_assignee_remark": (r.metadata_info or {}).get("preferred_assignee_remark") if r.metadata_info else None,
                         "project_name": r.project_name or "",
                         "project_id": r.project_id or "",
                     }
@@ -252,6 +254,7 @@ class AssignmentWorker:
             project_id=ticket.get("project_id", ""),
             creator=ticket.get("created_by", ""),
             preferred_assignee=ticket.get("preferred_assignee"),
+            preferred_assignee_remark=ticket.get("preferred_assignee_remark"),
             diagnosis_hypotheses=ticket.get("diagnosis_hypotheses"),
             diagnosis_ruled_out=ticket.get("diagnosis_ruled_out"),
             diagnosis_collected_info=ticket.get("diagnosis_collected_info"),

@@ -5,7 +5,6 @@
 - module_anchor_texts  → recall/semantic_recall.py（L2 语义召回：Embedding 锚文本）
 - ranker_weights       → ranking/ranker.py（三路召回加权）
 - job_level_penalty    → ranking/ranker.py（职级折扣）
-- department_keywords  → filtering/dept_router.py（R5 strong 关键词）
 - department_routing   → filtering/dept_router.py（R2/R3 融合与门槛）
 - departments          → filtering/signals/llm_dept_signal.py（部门画像）
 - product_routing      → filtering/product_router.py（产品收紧）
@@ -51,7 +50,6 @@ class AssignerConfig:
     - module_classify:      {产品: {功能name: 功能name}}，供 L2 语义召回把工程师功能名映射到「产品-功能」锚
     - ranker_weights:       {llm_match, semantic_match, history_match} 三路权重
     - job_level_penalty:    {职级: 惩罚系数}，精排后按职级打折
-    - department_keywords:  {部门: {strong: [...]}}，R5 强关键词
     - department_routing:   部门路由融合权重与 hard/soft 门槛
     - departments:          部门画像（R2 LLM 分类）
     - product_routing:        产品收紧规则
@@ -74,7 +72,6 @@ class AssignerConfig:
         # 用户倾向处理人（预留）：前端未传字段时整体不生效；传了即启用。加权系数复用 contact_bonus。
         self.preferred_assignee_enabled: bool = True
         self.preferred_assignee_force_keep: bool = True
-        self.department_keywords: Dict[str, dict] = {}
         self.department_routing: Dict[str, Any] = {}
         # 部门派发审查开关：R2 判完部门后，用独立 LLM 单轮复核"部门派得对不对"
         # （post-validator，防单个 LLM 误判部门导致派错）。可回退。
@@ -131,7 +128,6 @@ class AssignerConfig:
         # 用户倾向处理人（预留）总开关与强制保留开关（缺失时默认 True/True，前端传字段即启用）
         self.preferred_assignee_enabled = bool(config.get("preferred_assignee_enabled", True))
         self.preferred_assignee_force_keep = bool(config.get("preferred_assignee_force_keep", True))
-        self.department_keywords = config.get("department_keywords", {})
         self.department_routing = config.get("department_routing", {})
         # 部门画像：以 DB departments 表为权威（随部门职责维护热更新），
         # config.yaml 按部门名补漏（DB 未配置职责描述的部门用 config 画像，兼容旧配置过渡期）。

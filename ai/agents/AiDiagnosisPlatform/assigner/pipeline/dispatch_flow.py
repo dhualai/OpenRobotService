@@ -7,28 +7,27 @@
     【Step 0 提单人指定】(强信号"[指定处理人:X]" / LLM检测"转给张三" → 直接指派)
         │ (未指定)
         ▼
-    【Step 1 候选收紧】部门(R5/R2/R3) → 产品 → 模块，逐层缩小候选人池
+    【Step 1 候选收紧】部门(R2 LLM + R3 历史融合 + R-Audit) → 产品(项目标记>部门映射>默认)
         │
         ▼
     【Step 2 排除提单人】(常规派单不派给自己；提单人指定走 Step 0 不受影响)
+        ▼
+    【Step 2.5/2.6 强制保留】(对接人 / 用户倾向处理人 被过滤则补回候选)
         │
         ▼
     【Step 3 三路召回】
         ├── L1 纯LLM召回(0.70): LLM 看全员画像 → 直接打分
-        ├── L2 语义召回(0.20):   Embedding 工单 → 模块锚文本(产品-类别) → 反查工程师
-        └── L3 历史召回(0.10):   A路相似工单聚人 + B路问题域聚人(带缓存)
+        ├── L2 语义召回(0.15):   Embedding 工单 → 模块锚文本(产品-类别) → 反查工程师
+        └── L3 历史召回(0.15):   A路相似工单聚人 + B路问题域聚人(带缓存)
         │
         ▼
-    【Step 4 精排 + 职级折扣】 raw_total × job_level 惩罚系数
+    【Step 4 精排】各路 max=1 归一化 → 加权(0.70/0.15/0.15) × 职级折扣 × 对接人/倾向加权 × 部门soft_prior
         │
         ▼
-    【Step 5 负载均衡】(全体候选人按在途工单数打折，查询 30s 缓存)
-        │
-        ▼
-    【Step 6 LLM 综合决策】成功→返回 / 失败→Step 7
-        │
-        ▼ (回退)
-    【Step 7 规则决策】阈值判定: auto/recommend/fallback
+    【Step 6 LLM 最终决策】所有工单统一进 LLM，在精排 Top-K 窗口内"最终拍板"
+        │ （结构化倾向人/模块负责人 仅作线索；无硬规则）
+        ▼ (LLM 无结果/失败 → 决策保底)
+    【Step 7 决策保底】精排 top1 按阈值标 auto/recommend/fallback（故障保护，非规则）
 """
 
 import json, re
@@ -149,8 +148,7 @@ class DispatchFlow:
         logger.info(
             f"{ltag} Step1 候选收紧 {tighten.before_count}→{tighten.after_count}人 | "
             f"部门={tighten.dept.mode}({tighten.dept.primary_dept or '-'}) | "
-            f"产品={tighten.product.product or '-'} | "
-            f"模块={','.join(tighten.module.matched_categories[:3]) or '-'}"
+            f"产品={tighten.product.product or '-'} | 模块层=已移除(不收紧)"
         )
 
         # ── Step 2: 排除提单人（常规派单不派给自己；Step 0 指定自己不受影响）──
@@ -205,11 +203,11 @@ class DispatchFlow:
                 )
 
         # ── Step 3: 三路召回（L1 LLM / L2 语义 / L3 历史 互不依赖，并行执行提升吞吐）──
-        # 说明：L2 锚文本语义召回默认关闭（semantic_recall_enabled=false），只看 L1 LLM + L3 历史，
-        #       因为 LLM 已有强语义判断，锚文本/关键词匹配反而干扰（对产品经理等非功能模块候选人
-        #       结构化不公平）。开启开关可恢复 L2。
+        # 说明：L2 语义召回是 Embedding 向量相似度（cos(工单, 模块锚文本)），非关键词匹配；
+        #       已重新启用（semantic_recall_enabled=true），并保持 LLM 主导（llm 0.70 > 语义 0.15）。
+        #       若需临时停用 L2 只看 L1 LLM + L3 历史，把 semantic_recall_enabled 置 false 即可。
         recall_result = RecallResult()
-        semantic_enabled = False
+        semantic_enabled = bool(getattr(self._config, "semantic_recall_enabled", True))
         try:
             semantic_enabled = bool(getattr(self._config, "semantic_recall_enabled", True))
         except Exception:
@@ -284,19 +282,23 @@ class DispatchFlow:
             )
             if llm_result is not None:
                 result = llm_result
+                # 无独立来源标签：Step6 统一为「LLM 精排决策」，最终选了谁与理由在结果日志中体现
+                # （额外线索如用户重派/模块负责人仅作为上下文喂给 LLM，由 LLM 自行判断，不设硬规则）。
                 decision_source = "LLM决策"
+                _reason = (result.reasoning or "")
                 logger.info(
                     f"{ltag} Step6 LLM决策 → {result.engineer_name}({result.engineer_id}) "
-                    f"置信={result.confidence_score:.2f} 类型={result.decision_type}"
+                    f"置信={result.confidence_score:.2f} 类型={result.decision_type} "
+                    f"理由={_reason[:120]}"
                 )
         except Exception as e:
-            logger.warning(f"{ltag} Step6 LLM决策失败,回退规则: {e}")
+            logger.warning(f"{ltag} Step6 LLM决策失败: {e}")
 
-        # ── Step 7: 规则兜底 ──
+        # ── Step 7: 决策保底（仅在 LLM 无结果时触发，故障保护，非规则）──
         if result is None:
             result = self._fallback_decision.decide(ranked_scores=ranked_scores, engineers=candidates)
-            decision_source = "规则兜底"
-            logger.info(f"{ltag} Step7 规则兜底 → {result.engineer_name}({result.engineer_id})")
+            decision_source = "决策保底"
+            logger.info(f"{ltag} Step7 决策保底 → {result.engineer_name}({result.engineer_id})")
 
         # ── 结果汇总日志（含工单描述 + 被派人完整画像）──
         self._log_assignment_result(
@@ -379,6 +381,7 @@ class DispatchFlow:
             modules_str = winner.modules_display() or "-"
             duty = (winner.duty_text or "")[:120].replace("\n", " ")
             scores = ranked_scores.get(winner.id, {})
+            reason = (result.reasoning or "").replace("\n", " ")
             logger.info(
                 f"{ltag} 派单结果[{source}] | "
                 f"工单={ticket.title[:60]!r} | "
@@ -387,6 +390,7 @@ class DispatchFlow:
                 f"置信度={result.confidence_score:.0%} 决策={result.decision_type} | "
                 f"模块=[{modules_str}] | "
                 f"职责={duty} | "
+                f"理由={reason[:200]} | "
                 f"LLM={scores.get('llm_score',0):.2f} "
                 f"语义={scores.get('semantic_score',0):.2f} "
                 f"历史={scores.get('history_score',0):.2f} "
