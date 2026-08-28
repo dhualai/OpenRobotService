@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import yaml
 import os
 import random
@@ -16,6 +16,21 @@ from app.core.user_identity import to_usernames
 logger = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="notification")
+
+TZ_SHANGHAI = timezone(timedelta(hours=8))
+
+
+def _format_shanghai(dt: Optional[datetime]) -> str:
+    """格式化为东八区时间字符串。
+
+    DB 中 deadline_at / created_at 为 naive UTC（见 backend convert_to_shanghai_time），
+    naive 视为 UTC 后转 +8；aware datetime 直接转 +8。None 返回空串。
+    """
+    if dt is None:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(TZ_SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
 
 class NotificationUtils:
     _mqtt_client = None
@@ -464,7 +479,7 @@ class NotificationUtils:
                 finally:
                     loop.close()
 
-                deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+                deadline_str = _format_shanghai(deadline_at) or _format_shanghai(datetime.now(timezone.utc) + timedelta(days=7))
                 payload = NotificationUtils.instantiate_template(NotificationUtils.NEW_TICKET,
                                                                  ticket_id, processed_project_name, processed_title, operator, deadline_str,
                                                                  user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
@@ -510,7 +525,7 @@ class NotificationUtils:
                 finally:
                     loop.close()
 
-                deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+                deadline_str = _format_shanghai(deadline_at) or _format_shanghai(datetime.now(timezone.utc) + timedelta(days=7))
                 payload = NotificationUtils.instantiate_template(NotificationUtils.REASSIGN_TICKET,
                                                                  processed_title, processed_project_name, operator, new_assignee, deadline_str,
                                                                  user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
@@ -549,8 +564,8 @@ class NotificationUtils:
                                                                      extr.get('overdue_count', 0), user_names=user_names)
                 elif notify_type == 6:
                     # 工单逾期提醒, [工单名称, 项目名称, 逾期天数, 派单时间, 逾期时间]
-                    deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else ''
-                    create_str = create_at.strftime('%Y-%m-%d %H:%M:%S') if create_at else ''
+                    deadline_str = _format_shanghai(deadline_at)
+                    create_str = _format_shanghai(create_at)
 
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
@@ -569,8 +584,8 @@ class NotificationUtils:
                                                                      user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 elif notify_type == 9:
                     # 工单超时预警提醒, [工单名称, 项目名称, 处理人, 提交时间, 截止时间]
-                    deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else ''
-                    create_str = create_at.strftime('%Y-%m-%d %H:%M:%S') if create_at else ''
+                    deadline_str = _format_shanghai(deadline_at)
+                    create_str = _format_shanghai(create_at)
 
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
@@ -601,8 +616,8 @@ class NotificationUtils:
                     finally:
                         loop.close()
                     
-                    deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else ''
-                    create_str = create_at.strftime('%Y-%m-%d %H:%M:%S') if create_at else ''
+                    deadline_str = _format_shanghai(deadline_at)
+                    create_str = _format_shanghai(create_at)
 
                     if notify_type == 1:
                         payload = NotificationUtils.instantiate_template(NotificationUtils.CUIBAN_TICKET,
