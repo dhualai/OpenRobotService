@@ -95,6 +95,13 @@ class QAAskRequest(BaseModel):
     # 后端在流式中把 assistant 回复节流写入同会话 messages 表，刷新/切 Tab 也能从 DB 恢复。
     conversation_id: Optional[int] = Field(default=None, description="前端 call 会话 id（传了才启用后端落库）")
     assistant_message_id: Optional[int] = Field(default=None, description="已预建的 assistant 占位消息 id；不传则由后端创建")
+    # 单写入方+幂等：True 时后端在流式开头确保本轮 user 消息已落库（前端已写则按
+    # client_message_id 幂等复用，未写/写失败则代建），并创建 assistant 占位指向它
+    # （parent_message_id）→ sequence 严格 user < assistant，消息顺序由落库顺序决定，
+    # 与前端网络时序彻底解耦（根治 0827「回答跳到问题上方」）。
+    # 旧前端不传此标志 → 行为完全不变（兼容灰度期新旧版本混跑）。
+    persist_user_message: bool = Field(default=False, description="True=后端确保 user 消息已落库（幂等复用优先，缺失则代建）")
+    client_message_id: Optional[str] = Field(default=None, max_length=64, description="本轮消息幂等键（前端本地乐观气泡 id）")
 
 
 class QASubmitRequest(BaseModel):
@@ -200,28 +207,90 @@ async def ask_question_stream(
 
         # ── 后端增量落库准备（仅当前端传入 conversation_id 时启用）──
         persist_msg_id = qa_req.assistant_message_id
+        user_msg_id: Optional[int] = None
         db = None
 
-        # 先建占位 assistant 消息并通知前端（需在 consumer 侧 yield message_created）。
-        # db 随后交给 producer 独占使用与关闭。
+        # 流式开头统一落库本轮消息（单写入方+幂等）：
+        #   1) user 消息：persist_user_message=True 时确保存在——前端已写（metadata 含
+        #      client_message_id）则复用该行，否则代建。响应丢失后同键重发不会产生重复行。
+        #   2) assistant 占位：parent_message_id 指向 user 行；同 user 下已有占位（上次
+        #      重试遗留）则复用。sequence 按创建顺序递增 → DB 顺序天然「问题在上、回答在下」，
+        #      与前端写入/网络时序彻底解耦。
+        # 旧前端不传 persist_user_message → 走原逻辑（只建 assistant 占位），行为不变。
         if qa_req.conversation_id:
             try:
                 db = AsyncSessionLocal()
+                from sqlalchemy import select
+                from app.modules.call.models.message import Message, MessageRole
+
+                # 幂等键清洗：只保留字母数字（前端 uid 为数字+小写字母），避免 LIKE 通配符/注入
+                _cmid = (qa_req.client_message_id or "").strip()
+                if _cmid and not _cmid.isalnum():
+                    _cmid = ""
+                created_any = False
+
+                # 1) user 消息（幂等复用优先）
+                if qa_req.persist_user_message:
+                    user_msg = None
+                    if _cmid:
+                        user_msg = (await db.execute(
+                            select(Message)
+                            .filter(
+                                Message.conversation_id == qa_req.conversation_id,
+                                Message.role == MessageRole.USER,
+                                # metadata_ 经 safe_json_dumps 可能二次编码，但 cmid 子串原样保留，LIKE 可靠
+                                Message.metadata_.like(f"%{_cmid}%"),
+                            )
+                            .order_by(Message.id)
+                            .limit(1)
+                        )).scalars().first()
+                    if user_msg is None:
+                        user_msg = await MessageService.create_message(db, MessageCreate(
+                            conversation_id=qa_req.conversation_id,
+                            role="user",
+                            content=qa_req.query,
+                            message_type="text",
+                            metadata_=json.dumps({"client_message_id": _cmid}) if _cmid else None,
+                        ))
+                    user_msg_id = user_msg.id
+                    created_any = True
+
+                # 2) assistant 占位（幂等：同 user 下已有占位则复用）
                 if persist_msg_id is None:
-                    msg = await MessageService.create_message(db, MessageCreate(
-                        conversation_id=qa_req.conversation_id,
-                        role="assistant",
-                        content="",
-                        message_type="text",
-                    ))
-                    persist_msg_id = msg.id
-                    yield f"event: message_created\ndata: {json.dumps({'message_id': persist_msg_id}, ensure_ascii=False)}\n\n"
+                    if user_msg_id is not None:
+                        _asst = (await db.execute(
+                            select(Message)
+                            .filter(
+                                Message.conversation_id == qa_req.conversation_id,
+                                Message.role == MessageRole.ASSISTANT,
+                                Message.parent_message_id == user_msg_id,
+                            )
+                            .order_by(Message.id)
+                            .limit(1)
+                        )).scalars().first()
+                        if _asst is not None:
+                            persist_msg_id = _asst.id
+                    if persist_msg_id is None:
+                        msg = await MessageService.create_message(db, MessageCreate(
+                            conversation_id=qa_req.conversation_id,
+                            role="assistant",
+                            content="",
+                            message_type="text",
+                            parent_message_id=user_msg_id,
+                        ))
+                        persist_msg_id = msg.id
+                    created_any = True
+
+                if created_any:
+                    yield (f"event: message_created\ndata: "
+                           f"{json.dumps({'message_id': persist_msg_id, 'user_message_id': user_msg_id}, ensure_ascii=False)}\n\n")
             except Exception as e:
-                logger.warning(f"[sse] 建 assistant 消息失败（降级为不持久化） sid={qa_req.session_id[:8]}: {e}")
+                logger.warning(f"[sse] 流式落库准备失败（降级为不持久化） sid={qa_req.session_id[:8]}: {e}")
                 if db is not None:
                     await db.close()
                 db = None
                 persist_msg_id = None
+                user_msg_id = None
 
         # ── producer-consumer 解耦 ──
         # pipeline 放到独立后台任务（producer），不受 SSE 客户端断连取消。

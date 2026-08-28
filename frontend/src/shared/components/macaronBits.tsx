@@ -33,7 +33,9 @@ function percentLabelColor(tone: string): string {
 }
 
 /** 环形图（原型 Donut）：viewBox 140，圆环半径 54，段间 gap，中心数值+标签；
- *  percentLabels 开启后在各扇区中点上渲染百分比标签（占比过小的扇区不渲染，避免重叠） */
+ *  percentLabels 开启后在各扇区中点上渲染百分比标签；
+ *  占比低于 minPercentLabel 的扇区色块放不下数字，标签移到圆环外侧（色块侧边）渲染，
+ *  保证任何占比都能读到数字 */
 export function MacDonut({
   segments,
   size = 140,
@@ -52,7 +54,7 @@ export function MacDonut({
   centerLabel?: string;
   /** 在扇区中点上渲染百分比标签（如 "34%"） */
   percentLabels?: boolean;
-  /** 扇区占比低于该百分比时不渲染标签 */
+  /** 扇区占比低于该百分比时标签从色块内移到色块外侧渲染 */
   minPercentLabel?: number;
 }) {
   const total = segments.reduce((s, x) => s + x.value, 0) || 1;
@@ -86,21 +88,25 @@ export function MacDonut({
     };
   });
 
-  // 百分比标签：沿弧长取中点角度，落在圆环中线（半径 r）上
+  // 百分比标签：沿弧长取中点角度，落在圆环中线（半径 r）上；
+  // 占比过小的扇区（< minPercentLabel）色块内放不下数字，标签移到圆环外侧（色块侧边，半径 = 环外缘 + 6）
   const labels = percentLabels
     ? arcs
         .map(({ start, len, tone }, i) => {
           const pct = Math.round((segments[i].value / total) * 100);
-          if (pct < minPercentLabel || pct <= 0) return null;
+          if (pct <= 0) return null;
           const angle = ((start + len / 2) / c) * Math.PI * 2;
           const isLight = percentLabelColor(tone) !== '#fff';
+          const outside = pct < minPercentLabel;
+          const rLabel = outside ? r + thickness / 2 + 6 : r;
           return {
-            x: 70 + r * Math.cos(angle),
-            y: 70 + r * Math.sin(angle),
+            x: 70 + rLabel * Math.cos(angle),
+            y: 70 + rLabel * Math.sin(angle),
             pct,
-            // 白字带深色描边（paintOrder 描边垫底），浅色弧段深字无需描边
-            fill: percentLabelColor(tone),
-            stroke: isLight ? 'none' : 'rgba(21,89,121,0.45)',
+            // 环内白字带深色描边（paintOrder 描边垫底），浅色弧段深字无需描边；
+            // 环外标签底色为卡片浅色面，统一用深蓝字、不加描边
+            fill: outside ? 'var(--mac-blue-1)' : percentLabelColor(tone),
+            stroke: outside || isLight ? 'none' : 'rgba(21,89,121,0.45)',
           };
         })
         .flatMap((l) => (l ? [l] : []))
