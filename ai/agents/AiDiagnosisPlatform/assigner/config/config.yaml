@@ -67,10 +67,10 @@ job_level_penalty:
 #    策略：保证"不派错部门"——R2 LLM 为主判、R3 历史为佐证。仅当部门判定足够确信才
 #          hard_filter 收紧候选；中等信度 soft_prior 倾向；低信度 no_filter 保留全量。
 #   融合：
-#     - 原则：LLM(R2) 为基础分（不打折）；历史(R3) 只做佐证修正（一致加分/分歧减分/缺失不变）。
-#     - history_bonus:    历史数据偏向该部门（占比 ≥ 平均线）时加的分（佐证确认）。
-#     - history_penalty:  历史数据不偏向该部门（占比 < 平均线）时减的分（降温）。
-#     - 历史缺失（本地无知识沉淀，hist=0）→ 不加不减，final = LLM 分，不打折。
+#     - 原则：LLM(R2) 为基础分（不打折）；历史(R3) 只做"可加佐证"，不做惩罚。
+#     - history_confirm_threshold: 该部门历史占比达到此值才视为"历史明确偏向"（佐证生效）。
+#     - history_bonus:    历史明确偏向该部门（占比 ≥ history_confirm_threshold）时加的分（佐证确认）。
+#     - 历史不足/缺失（占比 < threshold 或 hist=0）→ 不加不减，final = LLM 分，不打折。
 #   阈值：
 #     - hard_filter_score: 融合分达到此值且 margin 明显领先才收紧（R2 强确认 0.9+ 时可达到）。
 #     - hard_filter_margin: 第一名与第二名的差距门槛，避免"接近并列"还被硬框。
@@ -148,6 +148,12 @@ product_routing:
   projects:
     - markers: ["摇人吧服务号"]
       product: 摇人吧服务号
+  # 部门→产品映射：车端类工单（无项目标记时）按部门落到对应产品，避免误入默认「调度USP」。
+  # 推断优先级：项目标记(projects) > 部门映射(dept_to_product) > 默认(default_product)。
+  # 注：此映射曾于 2026-08-24 实现并验证后遗漏于配置，此处补回。
+  dept_to_product:
+    智能移动研究院: 车端软件
+    机器人事业部: 车端硬件
   default_product: 调度USP
   default_when_project_set: true
   # users.responsibility_modules 中的 key 可能与 config 产品名不一致
@@ -178,14 +184,15 @@ load_balance:
   step: 0.15
 
 # ══════════════════════════════════════════════════════════════════
-# 10. LLM 综合决策的排名尊重策略（保证派单尊重精排结果）
-#    消费方：ranking/llm_decision.py（Step 6）
-#    规则：默认直接采用精排第一名，只有当第一名总分
-#          < llm_decision_low_score_threshold（说明整体得分都很低、候选都不理想）时，
-#          才触发大模型在精排 Top-K 内再决定一遍，避免大模型随意覆写排名。
-#    - llm_decision_low_score_threshold：第一名评分阈值，低于此值才触发 LLM 重选（default 0.6）
-#    - llm_decision_topk：即使触发 LLM 重选，也只在精排前 K 名内挑选（default 3）
-#    - yaorenba_force_module_owner：摇人吧服务号项目是否强制优先模块总负责人（default true）
+# 10. LLM 最终决策（Step 6）
+#    消费方：ranking/llm_decision.py
+#    规则：Step6 的 LLM 是『最终拍板决策者』，所有工单都进入 LLM 在精排 Top-K 窗口内
+#          做最终决策（不再有"高分直接拍板/确定性分支"）。精排 #1 是默认最强依据，
+#          但 LLM 有权在有实质理由（如用户重派、模块明显不匹配）时改选。
+#    - llm_decision_topk：LLM 的候选窗口 = 精排前 K 名（default 3）
+#    - yaorenba_force_module_owner：摇人吧服务号项目是否识别"模块总负责人"作为
+#      额外决策线索喂给 LLM（default true；仅线索，非强制）
+#    - llm_decision_low_score_threshold：保留仅为兼容日志展示，不再作为"触发 LLM"的门槛
 # ══════════════════════════════════════════════════════════════════
 llm_decision_low_score_threshold: 0.6
 llm_decision_topk: 3
