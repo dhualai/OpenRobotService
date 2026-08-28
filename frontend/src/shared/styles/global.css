@@ -2343,6 +2343,76 @@ html, body, #root {
   flex: 1;
   min-width: 0;
 }
+/* 工单分布并排两栏：左=类型分布环图（固定 140px），右=平均完单耗时条形图（占剩余宽度） */
+.mac-source-split {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 0 16px;
+  align-items: start;
+}
+.mac-source-split__col {
+  min-width: 0;
+}
+/* 卡片底部颜色图例：色点 + 类型名（不重复数量），占满整行并均分排列 */
+.mac-donut-legend {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-top: 14px;
+}
+.mac-donut-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--mac-muted-fg);
+  white-space: nowrap;
+}
+.mac-donut-legend__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+/* 平均完单耗时横向条形图：标签 + 轨道 + 耗时数值 */
+.mac-avgclose-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.mac-avgclose-bar__label {
+  flex-shrink: 0;
+  width: 36px;
+  font-size: 12px;
+  color: var(--mac-muted-fg);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mac-avgclose-bar__track {
+  flex: 1;
+  min-width: 0;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--mac-secondary);
+  overflow: hidden;
+}
+.mac-avgclose-bar__fill {
+  display: block;
+  height: 100%;
+  border-radius: 5px;
+}
+.mac-avgclose-bar__val {
+  flex-shrink: 0;
+  min-width: 52px;
+  font-size: 12px;
+  color: var(--mac-fg);
+  font-variant-numeric: tabular-nums;
+}
 
 /* ===== 系统任务 / 工单 ===== */
 /* ===== 马卡龙极简设计变量（参考 macaron-minimal-ui 设计系统，系统任务页） ===== */
