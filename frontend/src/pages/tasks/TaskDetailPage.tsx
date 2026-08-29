@@ -153,6 +153,11 @@ export default function TaskDetailPage() {
   const [showCreatorNamePopup, setShowCreatorNamePopup] = useState(false);
   const [creatorNameInput, setCreatorNameInput] = useState('');
   const [submittingCreatorName, setSubmittingCreatorName] = useState(false);
+  // 最晚解决时间直接编辑（拥有 backend:tasks:operate 权限的用户可点击信息项改期）
+  // deadlineDraft: undefined=未改动（保存时不提交该字段）；ISO 字符串=新时间；null=清除
+  const [showDeadlinePopup, setShowDeadlinePopup] = useState(false);
+  const [deadlineDraft, setDeadlineDraft] = useState<string | null | undefined>(undefined);
+  const [submittingDeadline, setSubmittingDeadline] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
 
@@ -316,8 +321,11 @@ export default function TaskDetailPage() {
     return { isAssignee, isReporter };
   };
 
-  // 仅工单处理人（assigned_to）或管理员可点击「创建人」设置其姓名
-  const canEditCreatorName = !!detail && (getCurrentUserRoles().isAssignee || username === 'admin');
+  // 拥有 backend:tasks:operate 权限的用户可点击「创建人」设置其姓名
+  const canEditCreatorName = !!detail && hasPermission('backend:tasks:operate');
+
+  // 拥有 backend:tasks:operate 权限的用户可点击「最晚解决时间」直接改期
+  const canEditDeadline = hasPermission('backend:tasks:operate');
 
   const getActionButtons = () => {
     const status = detail?.status?.toLowerCase();
@@ -859,6 +867,29 @@ export default function TaskDetailPage() {
     }
   };
 
+  // 修改最晚解决时间：拥有 backend:tasks:operate 权限的用户直接改期（PUT /{id}）
+  // deadlineDraft 为 undefined（用户未改动）时不提交 deadline_at 字段，避免误清除
+  const handleUpdateDeadline = async () => {
+    if (!detail) return;
+    setSubmittingDeadline(true);
+    try {
+      const body: Record<string, unknown> = { operation_type: 'update' };
+      if (deadlineDraft !== undefined) body.deadline_at = deadlineDraft;
+      await request<Ticket>(`/${detail.id}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+        skipCache: true,
+      });
+      await refreshDetail();
+      Toast({ message: '最晚解决时间已更新', theme: 'success' });
+      setShowDeadlinePopup(false);
+    } catch (err) {
+      Toast({ message: `更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setSubmittingDeadline(false);
+    }
+  };
+
   const [downloadingIdx, setDownloadingIdx] = useState<number | null>(null);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
 
@@ -1275,7 +1306,16 @@ export default function TaskDetailPage() {
               <span className="detail-info-item__icon"><AlarmClock size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">最晚解决时间</span>
-                <span className="detail-info-item__value">{detail.deadline_at ? formatRawDateTime(detail.deadline_at) : '未设置'}</span>
+                <span
+                  className="detail-info-item__value"
+                  style={canEditDeadline ? { cursor: 'pointer', color: 'var(--blue-2)', textDecoration: 'underline' } : undefined}
+                  onClick={canEditDeadline ? () => {
+                    setDeadlineDraft(detail.deadline_at || null);
+                    setShowDeadlinePopup(true);
+                  } : undefined}
+                >
+                  {detail.deadline_at ? formatRawDateTime(detail.deadline_at) : '未设置'}
+                </span>
               </div>
             </div>
             <div className="detail-info-item">
@@ -1626,8 +1666,8 @@ export default function TaskDetailPage() {
                 placement="topLeft"
                 getPopupContainer={(trigger) => trigger.parentElement || document.body}
                 value={editForm.deadline_at ? parseDeadlineString(editForm.deadline_at) : null}
-                disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min, editDeadlineRange.max) : undefined}
-                disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min, editDeadlineRange.max) : undefined}
+                disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min) : undefined}
+                disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>
                   setEditForm((p) => ({
                     ...p,
@@ -1800,6 +1840,48 @@ export default function TaskDetailPage() {
           <div className="ticket-edit__btns">
             <Button theme="default" disabled={submittingCreatorName} onClick={() => { setShowCreatorNamePopup(false); setCreatorNameInput(''); }}>取消</Button>
             <Button theme="primary" loading={submittingCreatorName} onClick={handleUpdateCreatorName} disabled={!creatorNameInput.trim()}>保存</Button>
+          </div>
+        </div>
+      </Popup>
+
+      <Popup
+        visible={showDeadlinePopup}
+        onClose={() => { if (!submittingDeadline) setShowDeadlinePopup(false); }}
+        placement="bottom"
+        showOverlay
+        destroyOnClose
+      >
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">修改最晚解决时间</h4>
+          <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
+            仅调整本工单的最晚解决时间，不影响其他字段；清空后表示不设置截止时间。
+          </p>
+          {(() => {
+            // 选择下限 = 创建时间（取整到整点），不限制未来上限
+            const range = getDeadlineRange(detail?.priority, detail?.created_at);
+            return (
+              <DatePicker
+                style={{ width: '100%' }}
+                placeholder="点击选择（可清空）"
+                format="YYYY-MM-DD HH:00"
+                showTime={{ defaultValue: dayjs().hour(9).minute(0), format: 'HH:00', showNow: false }}
+                showNow={false}
+                placement="topLeft"
+                getPopupContainer={(trigger) => trigger.parentElement || document.body}
+                value={deadlineDraft ? parseDeadlineString(deadlineDraft) : null}
+                disabledDate={range ? makeDisabledDate(range.min) : undefined}
+                disabledTime={range ? makeDisabledTime(range.min) : undefined}
+                onChange={(d: dayjs.Dayjs | null) =>
+                  setDeadlineDraft(d ? d.minute(0).second(0).millisecond(0).toISOString() : null)
+                }
+                allowClear
+                styles={{ popup: { root: { zIndex: 12000 } } }}
+              />
+            );
+          })()}
+          <div className="ticket-edit__btns">
+            <Button theme="default" disabled={submittingDeadline} onClick={() => setShowDeadlinePopup(false)}>取消</Button>
+            <Button theme="primary" loading={submittingDeadline} onClick={handleUpdateDeadline}>保存</Button>
           </div>
         </div>
       </Popup>
