@@ -24,9 +24,11 @@ export function parseDeadlineString(input: string | number | null | undefined): 
 }
 
 /**
- * 根据优先级 + 工单创建时间，计算「最晚解决时间」可选区间 [min, max]（小时精度）。
- * - min = 创建时间（向上取整到下一个整点，如 09:20 → 10:00；已是整点则保持不变）
- * - max = 创建时间 + 优先级对应小时数（紧急24 / 高72 / 中120 / 低336）
+ * 根据优先级 + 工单创建时间，计算「最晚解决时间」参考区间 [min, max]（小时精度）。
+ * - min = 创建时间（向上取整到下一个整点，如 09:20 → 10:00；已是整点则保持不变），作为选择下限
+ * - max = 创建时间 + 优先级对应小时数（紧急24 / 高72 / 中120 / 低336），用途由调用方决定：
+ *   切换优先级自动填充 / 时间面板默认提示；是否作为选择上限也由调用方决定
+ *   （任务详情页只限下限不传 max，来电工单详情与 AI 提单仍传 max 作上限）。
  * 优先级无法识别或创建时间非法时返回 null（调用方回退为不限制）。
  * createdAt 支持：ISO 字符串（DB 口径）、Unix 秒 number（AI 接口口径）、Dayjs（提单基准）。
  */
@@ -54,18 +56,20 @@ export function getDeadlineRange(
   return { min, max, hours };
 }
 
-/** antd DatePicker disabledDate：仅允许 [min, max] 之间的日期。 */
-export function makeDisabledDate(min: Dayjs, max: Dayjs) {
+/** antd DatePicker disabledDate：仅允许不早于 min（创建时间取整）的日期；
+ *  max 传值时同时限制上限（当天之后禁用），不传/传 null 则不限制未来上限。 */
+export function makeDisabledDate(min: Dayjs, max?: Dayjs | null) {
   return (current: Dayjs) =>
-    !!current && (current.isBefore(min, 'day') || current.isAfter(max, 'day'));
+    !!current && (current.isBefore(min, 'day') || (max ? current.isAfter(max, 'day') : false));
 }
 
-/** antd DatePicker disabledTime：小时精度限制（当天边界按 min/max 的小时截断，分钟固定整点）。 */
-export function makeDisabledTime(min: Dayjs, max: Dayjs) {
+/** antd DatePicker disabledTime：小时精度限制（分钟固定整点）；
+ *  创建当天按 min 的小时截断下限，max 传值时其当天按 max 的小时截断上限，不传则不限制未来上限。 */
+export function makeDisabledTime(min: Dayjs, max?: Dayjs | null) {
   return (current: Dayjs | null) => {
     const c = current ?? dayjs();
     const startHour = c.isSame(min, 'day') ? min.hour() : 0;
-    const endHour = c.isSame(max, 'day') ? max.hour() : 23;
+    const endHour = max && c.isSame(max, 'day') ? max.hour() : 23;
     const disabledHours: number[] = [];
     for (let h = 0; h < 24; h++) {
       if (h < startHour || h > endHour) disabledHours.push(h);
