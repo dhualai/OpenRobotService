@@ -24,15 +24,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        'project',
-        sa.Column(
-            'undertake_status', sa.String(length=10),
-            nullable=False, server_default='是',
-            comment='是否承接（是/待定；「否」不入库）',
-        ),
-    )
-    op.create_index('idx_project_undertake_status', 'project', ['undertake_status'], unique=False)
+    pass
 
 
 def downgrade() -> None:
