@@ -80,6 +80,10 @@ class Task(Base):
     source = Column(String(32), nullable=False, default="manual", index=True, comment="任务来源: manual/zentao/...")
     external_id = Column(String(64), nullable=True, index=True, comment="外部系统任务ID")
     external_url = Column(String(512), nullable=True, comment="外部系统跳转链接")
+    # 当前步骤（关联 task_steps 模板；冗余存名称/结束时间便于直接展示，与 backend/app/models/task.py Task 对齐）
+    curr_step_id = Column(BigInteger, nullable=True, index=True, comment="当前步骤ID")
+    curr_step_name = Column(String(128), nullable=True, comment="当前步骤名称")
+    curr_step_endtime = Column(DateTime, nullable=True, comment="当前步骤结束时间")
 
     __table_args__ = (
         UniqueConstraint("source", "external_id", name="uq_task_source_external"),
