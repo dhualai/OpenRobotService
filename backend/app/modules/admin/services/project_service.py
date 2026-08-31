@@ -16,6 +16,15 @@ _PROJECT_COLUMNS = {c.key for c in inspect(Project).mapper.column_attrs}
 def _filter_project_fields(data: Dict) -> Dict:
     return {k: v for k, v in data.items() if k in _PROJECT_COLUMNS}
 
+def _to_float_or_none(value) -> Optional[float]:
+    """将 JSON 提取出的值转 float；None/空串/非法值返回 None。"""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
 def get_db():
     db = SessionLocal()
     try:
@@ -405,15 +414,24 @@ class ProjectService:
             db.close()
     
     def get_task_execution_metrics_7d_batch(self, project_codes: List[str]) -> Dict[str, Dict]:
-        """批量获取多项目近 7 天任务执行指标（一次 GROUP BY 查询）。
+        """批量获取多项目任务执行指标（一次批量查询，取近 7 天内最新一天的数据）。
 
         替代循环内逐项目调用 get_task_execution_status_7d / get_task_execution_stats_7d
         （两者 SQL 几乎相同，逐项目时为 2N 条 JSON 聚合查询，是 /projects?include_analysis
-        列表接口的主要耗时来源）。返回：
+        列表接口的主要耗时来源）。数据源为 collection_data 表（indicator='GroupEfficiency'），
+        某一天的数据整体存在 `data` JSON 字段（data[0] 为该日指标），按项目取
+        近 7 天内最新一天（MAX start_time_int）：
+        - 任务总数/已完成任务：dataIndicators.taskNumber.totalTasks / finishedTasks；
+        - 任务完成率：dataIndicators.taskNumber.completionRate（如 "90%"，解析为小数）；
+        - 切手动次数：averageManualCount.averageManualCount（如 6.5）。
+        返回：
         {
           code: {
             "status": "搬运任务：X，移动任务：Y，任务总数：Z，完成总数：W" | "无数据",
-            "stats": {"total_tasks": int, "finished_tasks": int, "completion_rate": float|None},
+            "stats": {
+                "total_tasks": int, "finished_tasks": int,
+                "completion_rate": float|None, "manual_switch_count": float|None,
+            },
           }
         }
         未出现在返回 dict 中的项目码表示无数据（status="无数据"、stats 全 0）。
@@ -424,46 +442,52 @@ class ProjectService:
         try:
             sql = text("""
             SELECT
-                project,
-                SUM(
-                    JSON_EXTRACT(
-                        JSON_EXTRACT(`data`, '$.data[0].dataIndicators.taskNumber'),
-                        '$.carry'
-                    )
+                cd.project,
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                    '$.carry'
                 ) AS total_carry,
-                SUM(
-                    JSON_EXTRACT(
-                        JSON_EXTRACT(`data`, '$.data[0].dataIndicators.taskNumber'),
-                        '$.navigate'
-                    )
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                    '$.navigate'
                 ) AS total_navigate,
-                SUM(
-                    JSON_EXTRACT(
-                        JSON_EXTRACT(`data`, '$.data[0].dataIndicators.taskNumber'),
-                        '$.totalTasks'
-                    )
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                    '$.totalTasks'
                 ) AS total_totalTasks,
-                SUM(
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                    '$.finishedTasks'
+                ) AS total_finishedTasks,
+                JSON_UNQUOTE(
                     JSON_EXTRACT(
-                        JSON_EXTRACT(`data`, '$.data[0].dataIndicators.taskNumber'),
-                        '$.finishedTasks'
+                        JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                        '$.completionRate'
                     )
-                ) AS total_finishedTasks
-            FROM collection_data
-            WHERE indicator = 'GroupEfficiency'
-            AND start_time_int >= UNIX_TIMESTAMP(NOW() - INTERVAL 7 DAY)
-            AND project IN :codes
-            GROUP BY project
+                ) AS latest_completion_rate,
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].averageManualCount'),
+                    '$.averageManualCount'
+                ) AS latest_manual_count
+            FROM collection_data cd
+            JOIN (
+                SELECT project, MAX(start_time_int) AS max_start
+                FROM collection_data
+                WHERE indicator = 'GroupEfficiency'
+                AND start_time_int >= UNIX_TIMESTAMP(NOW() - INTERVAL 7 DAY)
+                AND project IN :codes
+                GROUP BY project
+            ) t ON t.project = cd.project AND cd.start_time_int = t.max_start
+            WHERE cd.indicator = 'GroupEfficiency'
             """).bindparams(bindparam("codes", expanding=True))
             rows = db.execute(sql, {"codes": list(project_codes)}).fetchall()
 
             metrics: Dict[str, Dict] = {}
             for row in rows:
-                total_carry = int(row.total_carry or 0)
-                total_navigate = int(row.total_navigate or 0)
-                total_tasks = int(row.total_totalTasks or 0)
-                finished_tasks = int(row.total_finishedTasks or 0)
-                completion_rate = round(finished_tasks / total_tasks, 4) if total_tasks else None
+                total_carry = int(_to_float_or_none(row.total_carry) or 0)
+                total_navigate = int(_to_float_or_none(row.total_navigate) or 0)
+                total_tasks = int(_to_float_or_none(row.total_totalTasks) or 0)
+                finished_tasks = int(_to_float_or_none(row.total_finishedTasks) or 0)
                 metrics[row.project] = {
                     "status": (
                         f"搬运任务：{total_carry}，移动任务：{total_navigate}，"
@@ -472,12 +496,32 @@ class ProjectService:
                     "stats": {
                         "total_tasks": total_tasks,
                         "finished_tasks": finished_tasks,
-                        "completion_rate": completion_rate,
+                        "completion_rate": self._parse_completion_rate(
+                            row.latest_completion_rate, total_tasks, finished_tasks
+                        ),
+                        "manual_switch_count": _to_float_or_none(row.latest_manual_count),
                     },
                 }
             return metrics
         finally:
             db.close()
+
+    @staticmethod
+    def _parse_completion_rate(raw, total_tasks: int, finished_tasks: int) -> Optional[float]:
+        """解析 collection_data 中的完成率字段为小数。
+
+        字段为百分比字符串（如 "90%"、"90.5%"）或小数（如 0.9），
+        缺失/非法时回退为 finished_tasks / total_tasks。
+        """
+        if raw is not None:
+            try:
+                text = str(raw).strip()
+                if text.endswith("%"):
+                    return round(float(text[:-1]) / 100, 4)
+                return round(float(text), 4)
+            except (TypeError, ValueError):
+                pass
+        return round(finished_tasks / total_tasks, 4) if total_tasks else None
 
     def get_task_execution_status_7d(self, project_code: str) -> str:
         db = SessionLocal()
