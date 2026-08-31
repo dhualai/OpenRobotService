@@ -52,6 +52,34 @@ user, pwd, host, port, db = _parse_db_url(DATABASE_URL)
 print(f"🔌 连接数据库: {host}:{port}/{db} (user={user})")
 
 
+def _has_col(cur, table, col):
+    cur.execute(
+        "SELECT COUNT(*) FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME=%s",
+        (db, table, col))
+    return cur.fetchone()[0] > 0
+
+
+def _has_index(cur, table, index):
+    cur.execute(
+        "SELECT COUNT(*) FROM information_schema.STATISTICS "
+        "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND INDEX_NAME=%s",
+        (db, table, index))
+    return cur.fetchone()[0] > 0
+
+
+def _add_col(cur, table, col, ddl, index_name=None, index_ddl=None):
+    """幂等补列：列不存在才 ADD；可附带幂等建索引。"""
+    if _has_col(cur, table, col):
+        print(f"   ✅ {table}.{col} 已存在，跳过")
+        return
+    cur.execute(ddl)
+    print(f"   ✅ {table}.{col} 已补充")
+    if index_name and index_ddl and not _has_index(cur, table, index_name):
+        cur.execute(index_ddl)
+        print(f"   ✅ {table}.{col} 索引 {index_name} 已补充")
+
+
 def main():
     import pymysql
 
@@ -90,20 +118,31 @@ def main():
         """)
         print("   ✅ task_dispatch_log 就绪")
 
-        # ── 2) 老库补 users.phone 列（幂等：列不存在才加）──
-        print("▶ 检查 users.phone ...")
-        cur.execute(
-            "SELECT COUNT(*) FROM information_schema.COLUMNS "
-            "WHERE TABLE_SCHEMA=%s AND TABLE_NAME='users' AND COLUMN_NAME='phone'",
-            (db,),
+        # ── 2) 老库补 users.phone 列（幂等）──
+        print("\n▶ 检查 users.phone ...")
+        _add_col(
+            cur, "users", "phone",
+            "ALTER TABLE users ADD COLUMN phone VARCHAR(20) NULL",
+            index_name="ix_users_phone",
+            index_ddl="ALTER TABLE users ADD INDEX ix_users_phone (phone)",
         )
-        has_phone = cur.fetchone()[0] > 0
-        if has_phone:
-            print("   ✅ users.phone 已存在，跳过")
-        else:
-            cur.execute("ALTER TABLE users ADD COLUMN phone VARCHAR(20) NULL")
-            cur.execute("ALTER TABLE users ADD INDEX ix_users_phone (phone)")
-            print("   ✅ users.phone 已补充 + 索引")
+
+        # ── 3) 老库补 tasks 任务阶段三列（同事功能字段，幂等；老库缺列会导致查工单报错）──
+        print("▶ 检查 tasks 任务阶段列 ...")
+        _add_col(
+            cur, "tasks", "curr_step_id",
+            "ALTER TABLE tasks ADD COLUMN curr_step_id BIGINT NULL",
+            index_name="ix_tasks_curr_step_id",
+            index_ddl="ALTER TABLE tasks ADD INDEX ix_tasks_curr_step_id (curr_step_id)",
+        )
+        _add_col(
+            cur, "tasks", "curr_step_name",
+            "ALTER TABLE tasks ADD COLUMN curr_step_name VARCHAR(128) NULL",
+        )
+        _add_col(
+            cur, "tasks", "curr_step_endtime",
+            "ALTER TABLE tasks ADD COLUMN curr_step_endtime DATETIME NULL",
+        )
 
         print("\n🎉 部署完成！")
     finally:
