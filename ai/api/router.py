@@ -220,77 +220,21 @@ async def ask_question_stream(
         if qa_req.conversation_id:
             try:
                 db = AsyncSessionLocal()
-                from sqlalchemy import select
-                from app.modules.call.models.message import Message, MessageRole
-
-                # 幂等键清洗：只保留字母数字（前端 uid 为数字+小写字母），避免 LIKE 通配符/注入
-                _cmid = (qa_req.client_message_id or "").strip()
-                if _cmid and not _cmid.isalnum():
-                    _cmid = ""
-                created_any = False
-
-                # 1) user 消息（幂等复用优先）
-                if qa_req.persist_user_message:
-                    user_msg = None
-                    if _cmid:
-                        user_msg = (await db.execute(
-                            select(Message)
-                            .filter(
-                                Message.conversation_id == qa_req.conversation_id,
-                                Message.role == MessageRole.USER,
-                                # metadata_ 经 safe_json_dumps 可能二次编码，但 cmid 子串原样保留，LIKE 可靠
-                                Message.metadata_.like(f"%{_cmid}%"),
-                            )
-                            .order_by(Message.id)
-                            .limit(1)
-                        )).scalars().first()
-                    if user_msg is None:
-                        user_msg = await MessageService.create_message(db, MessageCreate(
-                            conversation_id=qa_req.conversation_id,
-                            role="user",
-                            content=qa_req.query,
-                            message_type="text",
-                            metadata_=json.dumps({"client_message_id": _cmid}) if _cmid else None,
-                        ))
-                    user_msg_id = user_msg.id
-                    created_any = True
-
-                # 2) assistant 占位（幂等：同 user 下已有占位则复用）
                 if persist_msg_id is None:
-                    if user_msg_id is not None:
-                        _asst = (await db.execute(
-                            select(Message)
-                            .filter(
-                                Message.conversation_id == qa_req.conversation_id,
-                                Message.role == MessageRole.ASSISTANT,
-                                Message.parent_message_id == user_msg_id,
-                            )
-                            .order_by(Message.id)
-                            .limit(1)
-                        )).scalars().first()
-                        if _asst is not None:
-                            persist_msg_id = _asst.id
-                    if persist_msg_id is None:
-                        msg = await MessageService.create_message(db, MessageCreate(
-                            conversation_id=qa_req.conversation_id,
-                            role="assistant",
-                            content="",
-                            message_type="text",
-                            parent_message_id=user_msg_id,
-                        ))
-                        persist_msg_id = msg.id
-                    created_any = True
-
-                if created_any:
-                    yield (f"event: message_created\ndata: "
-                           f"{json.dumps({'message_id': persist_msg_id, 'user_message_id': user_msg_id}, ensure_ascii=False)}\n\n")
+                    msg = await MessageService.create_message(db, MessageCreate(
+                        conversation_id=qa_req.conversation_id,
+                        role="assistant",
+                        content="",
+                        message_type="text",
+                    ))
+                    persist_msg_id = msg.id
+                    yield f"event: message_created\ndata: {json.dumps({'message_id': persist_msg_id}, ensure_ascii=False)}\n\n"
             except Exception as e:
-                logger.warning(f"[sse] 流式落库准备失败（降级为不持久化） sid={qa_req.session_id[:8]}: {e}")
+                logger.warning(f"[sse] 建 assistant 消息失败（降级为不持久化） sid={qa_req.session_id[:8]}: {e}")
                 if db is not None:
                     await db.close()
                 db = None
                 persist_msg_id = None
-                user_msg_id = None
 
         # ── producer-consumer 解耦 ──
         # pipeline 放到独立后台任务（producer），不受 SSE 客户端断连取消。
@@ -1248,6 +1192,37 @@ async def list_pending() -> dict:
 
 
 @memory_router.get("/tickets/all", summary="历史工单列表")
+async def _redispatch_tip_for_log(log, user_map) -> Optional[str]:
+    """按需求方案 §3.6 四分支规则生成派单结果提醒的一句话摘要（无提醒返回 None）。
+
+    数据源：task_dispatch_log 最新一条（与 backend TicketService._redispatch_tip 口径一致）。
+    """
+    if log is None:
+        return None
+    assigned_name = user_map.get(log.assigned_id, log.assigned_id)
+    preferred_id = log.preferred_id
+    preferred_name = user_map.get(preferred_id, preferred_id) if preferred_id else None
+
+    # ② 未派到指定人（简洁而礼貌的措辞，照顾用户情绪）
+    if preferred_id and preferred_id != log.assigned_id:
+        tip = f"很抱歉，您指定的【{preferred_name}】暂未采纳，已改派更合适的【{assigned_name}】处理"
+    # ④ 拼音/近似名命中
+    elif log.pinyin_match:
+        tip = f"按拼音匹配到【{assigned_name}】（与输入【{preferred_name or assigned_name}】不同字），如非此人请更正"
+    # ③ 同名命中
+    elif log.name_collision:
+        tip = f"指派人存在同名，已按评估选择【{assigned_name}】"
+    else:
+        tip = None
+
+    # ① 画像不完整（可叠加追加）
+    missing = ((log.profile or {}).get("missing") or []) if isinstance(log.profile, dict) else []
+    if missing:
+        suffix = "；该接单人画像不完整，待补充"
+        tip = (tip + suffix) if tip else "该接单人画像不完整，待补充"
+    return tip
+
+
 async def list_all_tickets(
     skip: int = Query(0, ge=0, description="跳过条数"),
     limit: int = Query(20, ge=1, le=200, description="返回条数"),
@@ -1316,6 +1291,22 @@ async def list_all_tickets(
 
             total = q.count()
             rows = q.order_by(desc(Task.created_at)).offset(skip).limit(limit).all()
+
+            # 二次派单感知增强（M3）：批量取各工单最新一条派单日志 → redispatch_tip（避免 N+1）
+            from app.models.task_dispatch_log import TaskDispatchLog
+            _ids = [r.id for r in rows]
+            tip_map: Dict[int, Optional[str]] = {}
+            if _ids:
+                _log_rows = db.query(TaskDispatchLog).filter(
+                    TaskDispatchLog.task_id.in_(_ids)
+                ).order_by(TaskDispatchLog.task_id.asc(), TaskDispatchLog.dispatch_round.desc()).all()
+                _seen: set = set()
+                for _lr in _log_rows:
+                    if _lr.task_id in _seen:
+                        continue
+                    _seen.add(_lr.task_id)
+                    tip_map[_lr.task_id] = _redispatch_tip_for_log(_lr, user_map)
+
             items = []
             for r in rows:
                 d = task_to_dict(r)
@@ -1338,6 +1329,8 @@ async def list_all_tickets(
                     "created_by_name": user_map.get(created_by, created_by) if created_by else "",
                     "assigned_to": assigned_to,
                     "assigned_to_name": user_map.get(assigned_to, assigned_to) if assigned_to else "",
+                    # 二次派单感知增强（M3）：派单结果提醒一句话摘要（无提醒为 null）
+                    "redispatch_tip": tip_map.get(r.id) or None,
                 })
             return {"code": 0, "data": {"total": total, "skip": skip, "limit": limit, "items": items,
                                         "by_status": by_status, "active_total": active_total}}

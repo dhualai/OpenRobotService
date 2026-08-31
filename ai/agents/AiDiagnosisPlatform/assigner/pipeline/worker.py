@@ -8,7 +8,6 @@
 """
 
 import asyncio
-from datetime import datetime, timezone
 from typing import Optional
 
 from ai.core.logging import get_logger
@@ -306,6 +305,7 @@ class AssignmentWorker:
         """将派单结果写回 tasks 表"""
         try:
             from app.models.task import Task, TaskStatus, TaskOperationLog, OperationType
+            from app.models.task_dispatch_log import TaskDispatchLog
             from app.core.db import SessionLocal
             from sqlalchemy import func
 
@@ -325,15 +325,29 @@ class AssignmentWorker:
                     task.status = TaskStatus.IN_PROGRESS
                 task.updated_at = func.now()
 
-                # 派单详情写入 metadata_info
-                meta = task.metadata_info or {}
-                meta["assignee_name"] = result.engineer_name
-                meta["assignee_id"] = result.engineer_id or ""
-                meta["assign_confidence"] = result.confidence_score
-                meta["assign_reasoning"] = result.reasoning
-                meta["assign_decision_type"] = result.decision_type
-                meta["assigned_at"] = datetime.now(timezone.utc).isoformat()
-                task.metadata_info = meta
+                # ── 派单日志：统一落 task_dispatch_log（append-only，见需求方案 §4.2 §九-M1）。
+                #    每轮派单（含首次）写一条；dispatch_round = 该工单已有最大轮次 + 1。
+                #    与 tasks 更新、操作日志同一事务，保证强一致。 ──
+                from sqlalchemy import select
+                prev_round = db.scalar(
+                    select(func.coalesce(func.max(TaskDispatchLog.dispatch_round), 0))
+                    .where(TaskDispatchLog.task_id == task.id)
+                ) or 0
+                prof = dict(result.profile or {})
+                db.add(TaskDispatchLog(
+                    task_id=task.id,
+                    dispatch_round=int(prev_round) + 1,
+                    preferred_id=result.preferred_id,
+                    assigned_id=result.engineer_id or "",
+                    confidence=result.confidence_score,
+                    decision_type=result.decision_type,
+                    reasoning=result.reasoning,
+                    profile=prof or None,
+                    candidates=result.candidates or None,
+                    matched_pref=result.matched_pref,
+                    name_collision=result.name_collision,
+                    pinyin_match=result.pinyin_match,
+                ))
 
                 # 派单操作日志：与 backend/app/modules/tasks/api/task.py 的 STATUS_LABEL
                 # 中文风格对齐；operator 用 AI 系统标识，与 _log_task_creation 的

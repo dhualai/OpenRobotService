@@ -8,8 +8,7 @@ from typing import Any, Dict
 
 @dataclass
 class DeptRoutingResult:
-    """Layer 1：部门路由（R2 LLM + R3 历史 融合 + R-Audit 复核）。"""
-
+    """部门路由（LLM + 历史 融合 + R-Audit 复核）。"""
     primary_dept: str = ""
     confidence: float = 0.0
     margin: float = 0.0
