@@ -94,6 +94,63 @@ class TicketService:
         return identity_keys(raw)
 
     @staticmethod
+    def _redispatch_tip(log, user_map: Dict[str, str]) -> Optional[str]:
+        """按需求方案 §3.6 四分支规则生成派单结果提醒的一句话摘要（无提醒返回 None）。
+
+        分支优先级：②未派到指定人 > ④拼音近似名 > ③同名；①画像不完整可叠加追加。
+        """
+        if log is None:
+            return None
+        assigned_name = user_map.get(log.assigned_id, log.assigned_id)
+        preferred_id = log.preferred_id
+        preferred_name = user_map.get(preferred_id, preferred_id) if preferred_id else None
+
+        # ② 未派到指定人（简洁而礼貌的措辞，照顾用户情绪）
+        if preferred_id and preferred_id != log.assigned_id:
+            tip = f"很抱歉，您指定的【{preferred_name}】暂未采纳，已改派更合适的【{assigned_name}】处理"
+        # ④ 拼音/近似名命中
+        elif log.pinyin_match:
+            tip = f"按拼音匹配到【{assigned_name}】（与输入【{preferred_name or assigned_name}】不同字），如非此人请更正"
+        # ③ 同名命中
+        elif log.name_collision:
+            tip = f"指派人存在同名，已按评估选择【{assigned_name}】"
+        else:
+            tip = None
+
+        # ① 画像不完整（可叠加追加）
+        missing = ((log.profile or {}).get("missing") or []) if isinstance(log.profile, dict) else []
+        if missing:
+            suffix = "；该接单人画像不完整，待补充"
+            tip = (tip + suffix) if tip else "该接单人画像不完整，待补充"
+        return tip
+
+    @staticmethod
+    async def _redispatch_tips_map(
+        db: AsyncSession, ids: List[int], user_map: Dict[str, str],
+    ) -> Dict[int, Optional[str]]:
+        """批量取各工单最新一条派单日志 → redispatch_tip（避免 N+1 查询）。
+
+        单条 SQL：按 task_id + dispatch_round 排序，每组首行即最新一轮。
+        """
+        from sqlalchemy import select as _sel
+        from app.models.task_dispatch_log import TaskDispatchLog
+        if not ids:
+            return {}
+        rows = (await db.execute(
+            _sel(TaskDispatchLog)
+            .where(TaskDispatchLog.task_id.in_(ids))
+            .order_by(TaskDispatchLog.task_id.asc(), TaskDispatchLog.dispatch_round.desc())
+        )).scalars().all()
+        seen: set = set()
+        tips: Dict[int, Optional[str]] = {}
+        for r in rows:
+            if r.task_id in seen:
+                continue
+            seen.add(r.task_id)
+            tips[r.task_id] = TicketService._redispatch_tip(r, user_map)
+        return tips
+
+    @staticmethod
     async def create_ticket(db: AsyncSession, ticket_data: TicketCreate, created_by: str, comment_attachment_map: dict, token: Optional[str] = None) -> Ticket:
         processed_attachments = []
         for attachment in ticket_data.attachments or []:
@@ -365,6 +422,11 @@ class TicketService:
                 setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
             if ticket.customer:
                 setattr(ticket, "customer_name", user_map.get(ticket.customer, ticket.customer))
+
+        # 二次派单感知增强（M3）：批量生成派单结果提醒 redispatch_tip（避免 N+1）
+        tip_map = await TicketService._redispatch_tips_map(db, [t.id for t in tickets], user_map)
+        for ticket in tickets:
+            setattr(ticket, "redispatch_tip", tip_map.get(ticket.id))
 
         pages = (total + size - 1) // size
 
