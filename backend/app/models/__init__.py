@@ -39,6 +39,7 @@ from app.models.task import (
     TaskPriority,
     TaskType,
     TaskUserMapping,
+    TaskStep,
 )
 
 # 会话 / 消息
@@ -84,7 +85,7 @@ __all__ = [
     "Risk", "ProjectDailyReport", "ProjectLicense",
     "ProjectTransportEfficiency", "ProjectTransportEfficiencyRobot",
     # task
-    "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping",
+    "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping", "TaskStep",
     # conversation
     "Conversation", "Message", "SceneType", "MessageRole", "MessageType",
     # ticket (AI)
