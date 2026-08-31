@@ -1191,10 +1191,10 @@ async def list_pending() -> dict:
         return {"code": 1, "data": {"error": str(e)}}
 
 
-@memory_router.get("/tickets/all", summary="历史工单列表")
 async def _redispatch_tip_for_log(log, user_map) -> Optional[str]:
     """按需求方案 §3.6 四分支规则生成派单结果提醒的一句话摘要（无提醒返回 None）。
 
+    ⚠️ 内部辅助函数，非路由（路由装饰器在 list_all_tickets 上）。
     数据源：task_dispatch_log 最新一条（与 backend TicketService._redispatch_tip 口径一致）。
     """
     if log is None:
@@ -1223,6 +1223,7 @@ async def _redispatch_tip_for_log(log, user_map) -> Optional[str]:
     return tip
 
 
+@memory_router.get("/tickets/all", summary="历史工单列表")
 async def list_all_tickets(
     skip: int = Query(0, ge=0, description="跳过条数"),
     limit: int = Query(20, ge=1, le=200, description="返回条数"),
