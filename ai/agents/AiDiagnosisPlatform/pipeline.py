@@ -2126,11 +2126,6 @@ class AiDiagnosisPlatform:
                     if ev["event"] == "token":
                         _streamed_text += ev.get("data") or ""
                         yield ev
-                    elif ev["event"] == "transition_rollback":
-                        # 调工具前的过渡语已被下游撤销，同步回退累计，
-                        # 避免 review 收尾把过渡语拼回最终消息。
-                        _streamed_text = ""
-                        yield ev
                     elif ev["event"] == "done":
                         final_text = ev["final_text"]
                         tool_results = ev["tool_results"]
@@ -2471,10 +2466,6 @@ class AiDiagnosisPlatform:
                 ):
                     if ev["event"] == "token":
                         _streamed_text += ev.get("data") or ""
-                        yield ev
-                    elif ev["event"] == "transition_rollback":
-                        # 调工具前的过渡语已被下游撤销，同步回退累计。
-                        _streamed_text = ""
                         yield ev
                     elif ev["event"] == "done":
                         final_text = ev["final_text"]
