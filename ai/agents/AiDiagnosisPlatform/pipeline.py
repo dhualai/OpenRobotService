@@ -2041,15 +2041,10 @@ class AiDiagnosisPlatform:
             "工具会返回还缺哪些信息：缺信息时用自然语气追问用户（一次只问一个，"
             "追问要短，一句话说清还缺什么即可，不要重复已问过的内容），"
             "拿到后再调用工具。工具返回草稿后流程即结束，收尾话术由系统统一发送。\n"
-            "说话时机（重要）：每次调用 submit_ticket 的同一轮，先用一句简短过渡语"
-            "向用户交代你正在做什么，再发起调用（过渡语在前、工具调用在后）。"
-            "过渡语和工具调用必须在**同一次回复**里完成：说完过渡语必须立刻发起"
-            "工具调用，绝不能只说过渡语就结束回合——用户会盯着冒号一直等下文。"
-            "过渡语以冒号收尾，让用户知道后面还有内容，不要用句号把话说死。示例：\n"
-            "- 首次提单：「好的，我帮您转工单，我看一下还需要补充哪些信息：」\n"
-            "- 用户补充了一项信息后再调用：「收到，我核对一下还缺什么：」\n"
-            "- 给已生成的草稿补信息：「好的，我把这条加进草稿：」\n"
-            "过渡语红线：禁止出现「已提交」「工单已生成」「工单已创建」等完成时表述"
+            "调用 submit_ticket 工具时，禁止在正文里输出过渡语、解释或完成时话术，"
+            "直接静默发起工具调用即可。系统会通过弹窗/状态统一展示草稿结果，"
+            "对话气泡里不需要预告、播报或复述工单信息。"
+            "禁止出现「已提交」「工单已生成」「工单已创建」等完成时表述。\n"
             "（草稿经用户确认前都不算提交）；不要播报项目预填情况"
             "（预填由系统校验后统一告知用户）。\n"
             "收尾铁律：\n"
@@ -2234,22 +2229,9 @@ class AiDiagnosisPlatform:
                 "missing_fields": check["missing"],
                 "force_submit": False,
             }}
-            # 对话气泡回填话术（预填了项目时明说，让用户有感知、知道可改）。
-            # terminate 轮 final_text 恒为空，但过渡语可能已流式说出
-            # （如「收到，我核对一下还缺什么：」）——此时收尾只补尾巴，
-            # 换行接在同一气泡里，不整段重发。
-            if draft.get("project"):
-                _draft_msg = (f"已生成工单草稿，项目已预填为「{draft['project']}」"
-                              "（可在弹窗中修改），请核对信息后确认提交。")
-            else:
-                _draft_msg = "已生成工单草稿，请在弹窗中选择项目并核对信息后确认提交。"
-            _spoken = (_streamed_text or final_text or "").strip()
-            if _spoken:
-                yield {"event": "token", "data": "\n\n信息齐了，" + _draft_msg}
-                _msg = _spoken + "\n\n信息齐了，" + _draft_msg
-            else:
-                _msg = _draft_msg
-                yield {"event": "token", "data": _msg}
+            # 草稿结果已通过弹窗/工单卡片完整展示，对话气泡不再回填播报话术，
+            # 避免与弹窗和工具调用前的过渡语重复。
+            _msg = "工单草稿已生成，请在弹窗中核对。"
             result_data = await self._finalize_diagnosis(
                 request.session_id, state,
                 thinking="", action="answer", message=_msg, streaming=True)
@@ -2405,11 +2387,9 @@ class AiDiagnosisPlatform:
             "- 用户明确说某个信息没有/不知道/不方便提供，或说「直接提单」「就这些信息」时，"
             "把该字段按「没有」写入 collected_fields 后调用 submit_ticket，"
             "绝不要反复追问同一项；追问最多 2-3 次就必须完成提单。\n"
-            "- 调用 submit_ticket 的同一轮，先用一句简短过渡语向用户交代你正在做什么"
-            "（以冒号收尾，让用户知道后面还有内容），如「好的，我帮您转工单，"
-            "我看一下还需要补充哪些信息：」「收到，我核对一下还缺什么：」；"
-            "过渡语后必须立刻发起工具调用，绝不能只说过渡语就结束回合；"
-            "禁止说「已提交」「工单已生成」等完成时话术，不要播报项目预填情况。\n"
+            "- 调用 submit_ticket 时，禁止在正文里输出过渡语、解释或完成时话术，"
+            "直接静默发起工具调用即可；系统会通过弹窗/状态统一展示草稿结果，"
+            "对话气泡里不需要预告、播报或复述工单信息。\n"
             f"当前上下文（非空说明用户在提单流程中）：问题={state.problem_summary or '无'}，"
             f"已收集={json.dumps(state.collected_info, ensure_ascii=False) if state.collected_info else '无'}\n"
         )
@@ -2548,19 +2528,8 @@ class AiDiagnosisPlatform:
                 "missing_fields": check["missing"],
                 "force_submit": False,
             }}
-            # terminate 轮 final_text 恒为空，过渡语可能已流式说出 → 收尾只补尾巴
-            if draft.get("project"):
-                _draft_msg = (f"已生成工单草稿，项目已预填为「{draft['project']}」"
-                              "（可在弹窗中修改），请核对信息后确认提交。")
-            else:
-                _draft_msg = "已生成工单草稿，请在弹窗中选择项目并核对信息后确认提交。"
-            _spoken = (_streamed_text or final_text or "").strip()
-            if _spoken:
-                yield {"event": "token", "data": "\n\n信息齐了，" + _draft_msg}
-                _msg = _spoken + "\n\n信息齐了，" + _draft_msg
-            else:
-                _msg = _draft_msg
-                yield {"event": "token", "data": _msg}
+            # 草稿结果已通过弹窗/工单卡片完整展示，对话气泡不再回填播报话术。
+            _msg = "工单草稿已生成，请在弹窗中核对。"
             result_data = await self._finalize_diagnosis(
                 request.session_id, state,
                 thinking="", action="answer", message=_msg, streaming=True)
