@@ -83,14 +83,58 @@ def _engineer_profile_dict(eng: "EngineerProfile") -> Dict:
     }
 
 
+def _candidate_dict(rank: int, eng: "EngineerProfile", scores: Dict, tags: List[str]) -> Dict:
+    """把单个工程师序列化为候选快照字典（供 task_dispatch_log.candidates，R2 弹窗数据源）。"""
+    p = _engineer_profile_dict(eng)
+    return {
+        "rank": rank,
+        "engineer_id": eng.id,
+        "name": eng.name,
+        "department": p.get("dept"),
+        "job_level": p.get("job_level"),
+        "modules": p.get("modules"),
+        "duty": p.get("duty"),
+        # 画像缺失英文字段（department/job_level/responsibility_modules），供 M3 高情商话术
+        # 判定「倾向人画像不完整」并点明缺失项（历史数据无此字段 → 视为完整，安全降级）
+        "missing": p.get("missing") or [],
+        "scores": {
+            "llm": scores.get("llm_score", 0),
+            "semantic": scores.get("semantic_score", 0),
+            "history": scores.get("history_score", 0),
+            "total": scores.get("total_score", 0),
+        },
+        "tags": tags,
+    }
+
+
+def _profile_has_any(e: "EngineerProfile") -> bool:
+    """是否“有画像”：department / job_level / responsibility_modules 任一非空。"""
+    if (e.department or "").strip():
+        return True
+    if e.job_level:
+        return True
+    rm = e.responsibility_modules
+    if rm and (rm or {}):
+        return True
+    return False
+
+
 def _candidates_snapshot(ranked_scores, candidates: List["EngineerProfile"], topk: int = 10) -> List[Dict]:
-    """把精排 Top-N 导出为可序列化快照（供 task_dispatch_log.candidates，R2 弹窗数据源）。"""
+    """导出候选快照（供 task_dispatch_log.candidates，R2 弹窗数据源）。
+
+    优先取精排 Top-N；当精排结果不足以填满候选时（ranked_scores 为空 / 太少，
+    例如 Step0 提单人指定直接返回、或精排被收紧）、或精排缺失时，
+    自动把当前可用候选人（candidates）兜底纳入——已入选的在前，其余按“有画像优先、无画像殿后”补齐，
+    保证重派弹窗永远有可选人，而不是显示“暂无精排候选”。
+    """
     emap = {e.id: e for e in candidates}
     shot: List[Dict] = []
+    seen = set()
     for rank, (eid, d) in enumerate(list(ranked_scores.items())[:topk], 1):
         eng = emap.get(eid)
         if eng is None:
             continue
+        seen.add(eid)
         # tags：
         # - 项目对接人（contact_assignee）：始终标记，帮用户在候选里快速识别。
         # - 「上次倾向」：仅当本次是重派单（ticket.preferred_assignee 有值 → ranker 把上次倾向人
@@ -100,26 +144,18 @@ def _candidates_snapshot(ranked_scores, candidates: List["EngineerProfile"], top
             tags.append("项目对接人")
         if d.get("preferred_assignee"):
             tags.append("上次倾向")
-        p = _engineer_profile_dict(eng)
-        shot.append({
-            "rank": rank,
-            "engineer_id": eid,
-            "name": eng.name,
-            "department": p.get("dept"),
-            "job_level": p.get("job_level"),
-            "modules": p.get("modules"),
-            "duty": p.get("duty"),
-            # 画像缺失英文字段（department/job_level/responsibility_modules），供 M3 高情商话术
-            # 判定「倾向人画像不完整」并点明缺失项（历史数据无此字段 → 视为完整，安全降级）
-            "missing": p.get("missing") or [],
-            "scores": {
-                "llm": d.get("llm_score", 0),
-                "semantic": d.get("semantic_score", 0),
-                "history": d.get("history_score", 0),
-                "total": d.get("total_score", 0),
-            },
-            "tags": tags,
-        })
+        shot.append(_candidate_dict(rank, eng, d, tags))
+
+    # ── 兜底：精排不足时，从未入选候选人中补齐（有画像优先），保证弹窗总有可选项 ──
+    if len(shot) < topk and candidates:
+        rest = [e for e in candidates if e.id not in seen]
+        rest_sorted = (
+            [e for e in rest if _profile_has_any(e)]
+            + [e for e in rest if not _profile_has_any(e)]
+        )
+        for eng in rest_sorted[: topk - len(shot)]:
+            rank = len(shot) + 1
+            shot.append(_candidate_dict(rank, eng, {}, []))
     return shot
 
 
