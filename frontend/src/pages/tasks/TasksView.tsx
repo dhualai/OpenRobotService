@@ -701,6 +701,70 @@ export default function TasksView() {
     setFabDragging(false);
   };
 
+  // 当前列表过滤条件中「非相关性」的部分（搜索/状态/优先级/类型/项目/处理人/创建人/时间范围）。
+  // 抽成 memo 供 fetchTickets 与 fetchRelevanceCounts 共用，保证角标口径与列表完全一致。
+  const listExtraFilters = useMemo<TicketFilterCondition[]>(() => {
+    const filters: TicketFilterCondition[] = [];
+    if (search) {
+      const keyword = search.trim();
+      const searchConditions: TicketFilterCondition[] = [
+        { field: 'title', op: 'contains', value: keyword },
+      ];
+      // 纯数字关键词按工单编号精确查找（卡片展示的 #编号），非数字仍走标题模糊搜索
+      if (/^\d+$/.test(keyword)) {
+        searchConditions.push({ field: 'id', op: 'eq', value: Number(keyword) });
+      }
+      filters.push({ or: searchConditions });
+    }
+    // 任务状态多选过滤：未全选时按 in 操作过滤，全选则不施加状态条件
+    if (statusFilter.length > 0 && !sameSet(statusFilter, ALL_STATUS_VALUES)) {
+      filters.push({ field: 'status', op: 'in', value: statusFilter });
+    }
+    // 优先级多选过滤：未全选时按 in 操作过滤，全选则不施加优先级条件
+    if (priorityFilter.length > 0 && !sameSet(priorityFilter, ALL_PRIORITY_VALUES)) {
+      filters.push({ field: 'priority', op: 'in', value: priorityFilter });
+    }
+    // 工单类型多选过滤：未全选时按 in 操作过滤（后端 /filter 的 ticketType 为 enum 字段）
+    if (typeFilter.length > 0 && !sameSet(typeFilter, ALL_TYPE_VALUES)) {
+      filters.push({ field: 'ticketType', op: 'in', value: typeFilter });
+    }
+    // 项目过滤：选中具体项目时按 projectId 精确过滤（空 = 全部，不施加条件）
+    if (projectFilter) {
+      filters.push({ field: 'projectId', op: 'eq', value: projectFilter });
+    }
+    // 处理人过滤：选中具体处理人时按 assignedTo 精确过滤（空 = 全部，不施加条件）
+    // 后端对 assignedTo 双键解析（username / users.id 都认）
+    if (assigneeFilter) {
+      filters.push({ field: 'assignedTo', op: 'eq', value: assigneeFilter });
+    }
+    if (creatorFilter) {
+      filters.push({ field: 'createdBy', op: 'eq', value: creatorFilter });
+    }
+    // 创建时间过滤：精确到分钟。起始补 :00（含所选分钟）、结束补 :59（含所选分钟）。
+    // 空值不施加条件；值格式 YYYY-MM-DDTHH:mm（兼容旧 YYYY-MM-DD）。
+    if (createdStart) {
+      filters.push({ field: 'createdAt', op: 'ge', value: toBoundaryISO(createdStart, false) });
+    }
+    if (createdEnd) {
+      filters.push({ field: 'createdAt', op: 'le', value: toBoundaryISO(createdEnd, true) });
+    }
+    // 解决时间过滤（resolved_at）
+    if (resolvedStart) {
+      filters.push({ field: 'resolvedAt', op: 'ge', value: toBoundaryISO(resolvedStart, false) });
+    }
+    if (resolvedEnd) {
+      filters.push({ field: 'resolvedAt', op: 'le', value: toBoundaryISO(resolvedEnd, true) });
+    }
+    // 关单时间过滤（closed_at）
+    if (closedStart) {
+      filters.push({ field: 'closedAt', op: 'ge', value: toBoundaryISO(closedStart, false) });
+    }
+    if (closedEnd) {
+      filters.push({ field: 'closedAt', op: 'le', value: toBoundaryISO(closedEnd, true) });
+    }
+    return filters;
+  }, [search, statusFilter, priorityFilter, typeFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd]);
+
   const fetchTickets = useCallback(async (silent = false) => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
@@ -709,65 +773,10 @@ export default function TasksView() {
       // 相关性基础过滤（全部/项目相关/待我处理/与我相关）；
       // 「全部」无权限时按项目相关口径处理，与可见的分类选项一致。
       const relevanceKey = relevanceFilter === 'global' && !canViewAllTasks ? 'all' : relevanceFilter;
-      const filters: TicketFilterCondition[] = buildRelevanceFilters(relevanceKey, userId || username, projectIds);
-
-      if (search) {
-        const keyword = search.trim();
-        const searchConditions: TicketFilterCondition[] = [
-          { field: 'title', op: 'contains', value: keyword },
-        ];
-        // 纯数字关键词按工单编号精确查找（卡片展示的 #编号），非数字仍走标题模糊搜索
-        if (/^\d+$/.test(keyword)) {
-          searchConditions.push({ field: 'id', op: 'eq', value: Number(keyword) });
-        }
-        filters.push({ or: searchConditions });
-      }
-      // 任务状态多选过滤：未全选时按 in 操作过滤，全选则不施加状态条件
-      if (statusFilter.length > 0 && !sameSet(statusFilter, ALL_STATUS_VALUES)) {
-        filters.push({ field: 'status', op: 'in', value: statusFilter });
-      }
-      // 优先级多选过滤：未全选时按 in 操作过滤，全选则不施加优先级条件
-      if (priorityFilter.length > 0 && !sameSet(priorityFilter, ALL_PRIORITY_VALUES)) {
-        filters.push({ field: 'priority', op: 'in', value: priorityFilter });
-      }
-      // 工单类型多选过滤：未全选时按 in 操作过滤（后端 /filter 的 ticketType 为 enum 字段）
-      if (typeFilter.length > 0 && !sameSet(typeFilter, ALL_TYPE_VALUES)) {
-        filters.push({ field: 'ticketType', op: 'in', value: typeFilter });
-      }
-      // 项目过滤：选中具体项目时按 projectId 精确过滤（空 = 全部，不施加条件）
-      if (projectFilter) {
-        filters.push({ field: 'projectId', op: 'eq', value: projectFilter });
-      }
-      // 处理人过滤：选中具体处理人时按 assignedTo 精确过滤（空 = 全部，不施加条件）
-      // 后端对 assignedTo 双键解析（username / users.id 都认）
-      if (assigneeFilter) {
-        filters.push({ field: 'assignedTo', op: 'eq', value: assigneeFilter });
-      }
-      if (creatorFilter) {
-        filters.push({ field: 'createdBy', op: 'eq', value: creatorFilter });
-      }
-      // 创建时间过滤：精确到分钟。起始补 :00（含所选分钟）、结束补 :59（含所选分钟）。
-      // 空值不施加条件；值格式 YYYY-MM-DDTHH:mm（兼容旧 YYYY-MM-DD）。
-      if (createdStart) {
-        filters.push({ field: 'createdAt', op: 'ge', value: toBoundaryISO(createdStart, false) });
-      }
-      if (createdEnd) {
-        filters.push({ field: 'createdAt', op: 'le', value: toBoundaryISO(createdEnd, true) });
-      }
-      // 解决时间过滤（resolved_at）
-      if (resolvedStart) {
-        filters.push({ field: 'resolvedAt', op: 'ge', value: toBoundaryISO(resolvedStart, false) });
-      }
-      if (resolvedEnd) {
-        filters.push({ field: 'resolvedAt', op: 'le', value: toBoundaryISO(resolvedEnd, true) });
-      }
-      // 关单时间过滤（closed_at）
-      if (closedStart) {
-        filters.push({ field: 'closedAt', op: 'ge', value: toBoundaryISO(closedStart, false) });
-      }
-      if (closedEnd) {
-        filters.push({ field: 'closedAt', op: 'le', value: toBoundaryISO(closedEnd, true) });
-      }
+      const filters: TicketFilterCondition[] = [
+        ...buildRelevanceFilters(relevanceKey, userId || username, projectIds),
+        ...listExtraFilters,
+      ];
 
       const sortFieldMap: Record<string, string> = {
         created_at: 'createdAt',
@@ -807,7 +816,7 @@ export default function TasksView() {
       isFetchingRef.current = false;
       if (!silent) setLoading(false);
     }
-  }, [page, search, statusFilter, priorityFilter, typeFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
+  }, [page, listExtraFilters, relevanceFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
 
   fetchTicketsRef.current = fetchTickets;
 
@@ -865,7 +874,8 @@ export default function TasksView() {
       : base;
   }, [canViewAllTasks]);
 
-  // 拉取各分类角标条数：与列表共用同一套相关性过滤口径（不受搜索/状态/优先级影响），
+  // 拉取各分类角标条数：与列表共用同一套过滤口径（含搜索/状态/优先级/类型/项目/人员/时间范围），
+  // 仅相关性维度按各分类切换——这样角标数 = 「切到该分类后列表会显示的总数」，与列表动态对齐。
   // 每次只取 total（size=1）；单个分类失败静默跳过，保留旧值。
   const fetchRelevanceCounts = useCallback(async () => {
     if (countsFetchingRef.current) return;
@@ -876,10 +886,14 @@ export default function TasksView() {
           try {
             // 「全部」无权限时按项目维度计数，与列表回退口径一致
             const key = option.value === 'global' && !canViewAllTasks ? 'all' : option.value;
+            const filters = [
+              ...buildRelevanceFilters(key, userId || username, projectIds),
+              ...listExtraFilters,
+            ];
             const data = await request<{ total: number }>('/filter', {
               method: 'POST',
               body: JSON.stringify({
-                filters: buildRelevanceFilters(key, userId || username, projectIds),
+                filters,
                 sorts: [],
                 page: 1,
                 size: 1,
@@ -902,7 +916,7 @@ export default function TasksView() {
     } finally {
       countsFetchingRef.current = false;
     }
-  }, [relevanceOptions, username, userId, projectIds, canViewAllTasks]);
+  }, [relevanceOptions, listExtraFilters, username, userId, projectIds, canViewAllTasks]);
   fetchCountsRef.current = fetchRelevanceCounts;
 
   useEffect(() => { fetchRelevanceCounts(); }, [fetchRelevanceCounts]);

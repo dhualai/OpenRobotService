@@ -3910,13 +3910,15 @@ html, body, #root {
   color: var(--mac-muted-fg);
   transition: transform 0.3s;
 }
-.mac-collapsible.is-open .mac-collapsible__chevron { transform: rotate(180deg); }
+/* 使用直接子代选择器 `>`：仅当本折叠区自身 is-open 时才旋转/展开，
+   避免父级 is-open 通过后代选择器误作用到嵌套子折叠区（导致子项无法收起） */
+.mac-collapsible.is-open > .mac-collapsible__header .mac-collapsible__chevron { transform: rotate(180deg); }
 .mac-collapsible__bodywrap {
   display: grid;
   grid-template-rows: 0fr;
   transition: grid-template-rows 0.3s ease-out;
 }
-.mac-collapsible.is-open .mac-collapsible__bodywrap { grid-template-rows: 1fr; }
+.mac-collapsible.is-open > .mac-collapsible__bodywrap { grid-template-rows: 1fr; }
 .mac-collapsible__bodyinner { overflow: hidden; min-height: 0; }
 .mac-collapsible--card .mac-collapsible__bodyinner { border-top: 1px solid rgba(232, 234, 234, 0.6); }
 .mac-collapsible--card .mac-collapsible__body { padding: 16px; }

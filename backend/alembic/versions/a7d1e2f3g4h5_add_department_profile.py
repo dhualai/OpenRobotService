@@ -20,8 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('departments', sa.Column('profile_text', sa.Text(), nullable=True, comment='部门职责描述（AI 派单部门分类用）'))
-    op.add_column('departments', sa.Column('examples', sa.JSON(), nullable=True, comment='典型工单示例（[{title, dept}]）'))
+    pass
 
 
 def downgrade() -> None:

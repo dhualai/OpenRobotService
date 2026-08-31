@@ -21,12 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        'users',
-        sa.Column('phone', sa.String(20), nullable=True,
-                  comment='用户手机号（企业微信通知 @ 人用）'),
-    )
-    op.create_index('ix_users_phone', 'users', ['phone'])
+    pass
 
 
 def downgrade() -> None:
