@@ -39,6 +39,7 @@ from app.models.task import (
     TaskPriority,
     TaskType,
     TaskUserMapping,
+    TaskStep,
 )
 
 # 任务派单日志（二次派单感知增强）
@@ -87,7 +88,7 @@ __all__ = [
     "Risk", "ProjectDailyReport", "ProjectLicense",
     "ProjectTransportEfficiency", "ProjectTransportEfficiencyRobot",
     # task
-    "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping",
+    "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping", "TaskStep",
     # task dispatch log
     "TaskDispatchLog",
     # conversation

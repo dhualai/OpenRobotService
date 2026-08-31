@@ -18,6 +18,8 @@ import { avatarUrl } from '@/api/profile';
 import { parseUtcDate } from '@/shared/utils/url';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import { useTaskCommentsWS, type OnlineMember } from '@/shared/hooks/useTaskCommentsWS';
+import { ReadReporter } from '@/shared/utils/readReceipt';
+import { fetchCommentReadList, reportCommentRead } from '@/api/taskRead';
 import type { AiProgressTodo } from '@/api/ws';
 
 export interface DiscussionComment {
@@ -203,6 +205,9 @@ export default function DiscussionPanel({
     readMap,
     sendTyping,
     sendRead,
+    isWsOpen,
+    readySeq,
+    mergeReadRecords,
     readRecords,
     deletedIds,
   } = useTaskCommentsWS(taskId, comments, { currentUser: username, onTaskUpdated, onAiProgress: handleWsAiProgress });
@@ -304,6 +309,18 @@ export default function DiscussionPanel({
     [displayComments, readRecords],
   );
 
+  // 打开已读名单弹层：除本地增量外，再按需向服务端拉一次最新名单。
+  // welcome 全量快照在大工单会被截断（后端 READ_RECORDS_SNAPSHOT_LIMIT），
+  // 且断线期间别人产生的已读收不到广播 —— 弹层打开时强制拉一次，保证看到最新名单。
+  const openReadList = useCallback((cid: string | number, anchor: DOMRect) => {
+    setReadListCommentId(cid);
+    setReadListAnchor(anchor);
+    if (taskId === undefined) return;
+    void fetchCommentReadList(taskId, cid).then((list) => {
+      mergeReadRecords(cid, list);
+    });
+  }, [taskId, mergeReadRecords]);
+
   const [commentText, setCommentText] = useState('');
   /** 表情选择器显隐：点表情按钮切换，点面板外部 / 发送后收起 */
   const [showEmoji, setShowEmoji] = useState(false);
@@ -349,7 +366,13 @@ export default function DiscussionPanel({
   const suppressClickRef = useRef(false);
 
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastReadRef = useRef<number | null>(null);
+  // 最新值 ref：供 ReadReporter 的 send 回调用（闭包要拿到最新的 sendRead/taskId）
+  const sendReadRef = useRef(sendRead);
+  sendReadRef.current = sendRead;
+  const taskIdRef = useRef(taskId);
+  taskIdRef.current = taskId;
+  const isWsOpenRef = useRef(isWsOpen);
+  isWsOpenRef.current = isWsOpen;
 
   // ── 滚动管理（微信式）：仅在贴底时自动滚动；非贴底时累计新消息数并提示 ──
   const isAtBottomRef = useRef(true);
@@ -365,36 +388,78 @@ export default function DiscussionPanel({
     if (!el) return true;
     return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
   }, []);
-  // 已上报过名单的评论 id 集合（避免重复逐条上报）
-  const reportedReadIdsRef = useRef<Set<number>>(new Set());
   // 最新评论 id（每次变化时更新，供贴底补报使用）
   const lastMsgIdRef = useRef<string | number | null>(null);
 
-  // 上报已读：把「当前所有评论」视为已读，逐条记入名单（飞书式）；游标取最后一条 id。
-  // 抽出为独立函数，供「新消息到达贴底」「用户滚动到底」「主动贴底」三处复用，避免漏报。
-  const reportRead = useCallback(() => {
-    if (!displayComments.length) return;
-    const allIds = displayComments
-      .map((c) => Number(c.id))
-      .filter((n) => Number.isFinite(n) && n > 0);
-    const newIds = allIds.filter((n) => !reportedReadIdsRef.current.has(n));
-    if (newIds.length) {
-      newIds.forEach((n) => reportedReadIdsRef.current.add(n));
-      const numId = allIds[allIds.length - 1];
-      if (numId && numId !== lastReadRef.current) {
-        lastReadRef.current = numId;
-      }
-      sendRead(numId, newIds);
+  // ── 已读上报器（飞书式：视口停留判定 + 未送达自动重试）──
+  // 旧实现在「进入页面那一帧」就把全部评论上报，此时 WS 仍在 CONNECTING，
+  // 帧被静默丢弃，而 id 已被标记为「已上报」→ 历史消息永久漏报；
+  // 同时「贴底即全量已读」会把刚打开页面、一条都没看的历史消息误标为已读。
+  // 现改为：IntersectionObserver 判定气泡真的进入视口并停留够久才算已读，
+  // 只有确认送达才计入 confirmed，失败留在 pending 等连接就绪后补发。
+  const readReporterRef = useRef<ReadReporter | null>(null);
+  useEffect(() => {
+    const reporter = new ReadReporter({
+      send: (ids, lastId) => {
+        // WS 已连接 → 走 WS（实时、低开销）
+        if (isWsOpenRef.current() && sendReadRef.current(lastId ?? 0, ids)) return true;
+        // WS 未连接（尚未建连 / 重连中）→ 立刻走 REST 兜底，不再等、不再丢
+        const tid = taskIdRef.current;
+        if (tid === undefined) return false;
+        void reportCommentRead(tid, ids, lastId).then((ok) => {
+          if (ok) reporter.confirm(ids);
+        });
+        return false;
+      },
+    });
+    readReporterRef.current = reporter;
+    return () => {
+      reporter.destroy();
+      if (readReporterRef.current === reporter) readReporterRef.current = null;
+    };
+  }, [taskId]);
+
+  // 视口可见 → 已读：气泡进入滚动容器视口并停留满 dwellMs 才计入。
+  // 这是「划过即已读」的正确语义，替代旧的「贴底即全部已读」。
+  useEffect(() => {
+    const root = chatMessagesRef.current;
+    const reporter = readReporterRef.current;
+    if (!root || !reporter) return;
+    // 降级：不支持 IntersectionObserver 的环境（老 WebView）退回「贴底即全部已读」，
+    // 宁可误报也不能完全不上报（与改造前行为一致）。
+    if (typeof IntersectionObserver === 'undefined') {
+      reporter.markRead(
+        displayComments.map((c) => Number(c.id)).filter((n) => Number.isFinite(n) && n > 0),
+      );
+      return;
     }
-  }, [displayComments, sendRead]);
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const id = Number((entry.target as HTMLElement).dataset.commentId);
+          if (!Number.isFinite(id) || id <= 0) continue;
+          if (entry.isIntersecting) reporter.enterViewport(id);
+          else reporter.leaveViewport(id);
+        }
+      },
+      { root, threshold: 0.6 },
+    );
+    root.querySelectorAll<HTMLElement>('[data-comment-id]').forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, [displayComments, taskId]);
+
+  // WS 就绪 / 断线重连成功（readySeq 自增）→ 补发此前未送达的已读。
+  // 旧实现重连后不补报，断线窗口内读到的消息永久漏报。
+  useEffect(() => {
+    if (readySeq <= 0) return;
+    readReporterRef.current?.flush();
+  }, [readySeq]);
 
   const scrollToBottom = useCallback(() => {
     const el = chatMessagesRef.current;
     if (el) el.scrollTop = el.scrollHeight;
     setNewCount(0);
-    // 主动贴底（含用户点击「N 条新消息」跳底）视为已读，补报一次，避免漏报
-    reportRead();
-  }, [reportRead]);
+  }, []);
   const handleScroll = useCallback(() => {
     // 已读名单弹层以点击瞬间的视口坐标（fixed）定位，不会跟随消息气泡滚动，
     // 滚动后位置错乱，故只要有滚动就收起弹层。
@@ -404,10 +469,9 @@ export default function DiscussionPanel({
     }
     isAtBottomRef.current = checkAtBottom();
     if (isAtBottomRef.current) {
+      // 已读上报不再依赖滚动事件：由气泡的 IntersectionObserver 视口判定驱动，
+      // 划过但没到底 / 到底但没滚动 两种情况都能覆盖。
       setNewCount(0);
-      // 用户手动划到底部时补报已读——此前仅靠「新消息到达且贴底」触发，
-      // 一旦错过（到达时不在贴底）就永远漏报，导致对方看不到已读头像。这里补齐。
-      reportRead();
     } else {
       // 用户主动离开底部（翻看历史）→ 退出「发消息后强制贴底」模式，
       // 回到微信式「新消息累计提示」，避免一直打断阅读历史。
@@ -419,10 +483,11 @@ export default function DiscussionPanel({
       userScrollRef.current = false;
       inputRef.current?.blur();
     }
-  }, [checkAtBottom, reportRead, readListCommentId]);
+  }, [checkAtBottom, readListCommentId]);
 
-  // 新消息到达：贴底 / 发消息后强制贴底 / 初次进入 / 进入新讨论区 则跟随滚动 + 上报已读；
-  // 否则累计提示数（不强制打断阅读历史）
+  // 新消息到达：贴底 / 发消息后强制贴底 / 初次进入 / 进入新讨论区 则跟随滚动；
+  // 否则累计提示数（不强制打断阅读历史）。
+  // 已读上报不由本分支负责：滚到底后气泡进入视口，由 IntersectionObserver 触发。
   useEffect(() => {
     // 进入 / 切换讨论区（taskId 变化）→ 重置贴底状态，使下次首条评论触发 isPrevInit 强制滚到底
     if (taskId !== sessionIdRef.current) {
@@ -978,6 +1043,7 @@ export default function DiscussionPanel({
                   {!isCurrentUser && (isContinued ? <span className="detail-chat-avatar-ph" /> : avatarEl)}
                   <div
                     id={`comment-${c.id}`}
+                    data-comment-id={c.id}
                     className={`detail-chat-bubble ${isCurrentUser ? 'is-self' : ''}`}
                     onTouchStart={(e) => startLongPress(c, e)}
                     onTouchEnd={cancelLongPress}
@@ -1099,8 +1165,7 @@ export default function DiscussionPanel({
                               setReadListCommentId(null);
                               setReadListAnchor(null);
                             } else {
-                              setReadListCommentId(cid);
-                              setReadListAnchor(e.currentTarget.getBoundingClientRect());
+                              openReadList(cid, e.currentTarget.getBoundingClientRect());
                             }
                           }}
                           title="查看已读名单"
