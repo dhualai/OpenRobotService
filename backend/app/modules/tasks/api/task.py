@@ -88,6 +88,72 @@ def _get_attachment_label(attachments) -> Optional[str]:
         return _ATTACHMENT_CATEGORY_LABEL[next(iter(categories))]
     return "附件"
 
+
+# 画像缺失英文字段 → 中文展示（供派单情商话术点明缺失项）
+_PROFILE_MISSING_LABEL = {
+    "department": "部门",
+    "job_level": "职级",
+    "responsibility_modules": "责任模块",
+}
+
+
+async def _build_redispatch_tip_detail(pref_name: str, assigned_name: str, reasoning: str = "", pref_missing_zh: Optional[List[str]] = None):
+    """二次派单感知增强（M3 高情商回复）：未派到指定人时的完整情商话术。
+
+    默认纯模板（settings.REDISPATCH_TIP_AI_POLISH=False）：文案确定、零 LLM 成本、可复用。
+    可选 AI 润色：仅当 REDISPATCH_TIP_AI_POLISH=True 时把模板喂给 LLM 润色，失败降级模板。
+
+    模板带分支引导：
+    - 倾向人画像不完整（pref_missing_zh 非空）→ 点明缺失项 + 引导先补充画像后重新派单；
+    - 画像完整 → 引导「@ 接单人 帮忙转派」或重新派单。
+    返回 string。
+    """
+    pref_missing_zh = pref_missing_zh or []
+    missing_txt = "、".join(pref_missing_zh) if pref_missing_zh else ""
+
+    # 分支引导段
+    if pref_missing_zh:
+        guide = (
+            f"您倾向的【{pref_name}】职责画像还不完整（缺：{missing_txt}），"
+            "暂时无法作为可靠派单依据直接指派。建议先补充画像，之后可重新派单指定 TA。"
+        )
+    else:
+        guide = (
+            f"若您仍希望由【{pref_name}】接单，可 @ 接单人 帮忙转派，或重新派单指定 TA。"
+        )
+
+    reason_txt = f"，原因是：{reasoning}" if reasoning else ""
+    template = (
+        f"很抱歉，这次没有派到您指定的【{pref_name}】。"
+        f"系统综合评估后认为【{assigned_name}】在当前问题上更合适{reason_txt}，"
+        f"已改派由【{assigned_name}】优先处理。{guide}"
+    )
+    # 默认纯模板（settings.REDISPATCH_TIP_AI_POLISH=False，零 LLM 成本、文案确定可复用）。
+    # 仅当显式开启 AI_POLISH 时才用 LLM 润色；失败 / LLM_STREAM 返回生成器 → 仍降级模板。
+    try:
+        from app.core.config import settings as _ck
+        if getattr(_ck, "REDISPATCH_TIP_AI_POLISH", False):
+            from app.modules.call.services.model_service import ModelService
+            prompt = (
+                "下面是一段给工单提单人的「派单结果说明」。请把它润色成更自然、有温度、简洁的中文话术，"
+                "保留以下要点：1) 未派到提单人指定的处理人并致歉；2) 说明实际改派给了谁、简要原因；"
+                f"3) 若倾向人画像不完整({missing_txt or '无'})则引导先补画像，否则引导可 @ 接单人转派或重新派单。\n"
+                "要求：口语化但专业、不啰嗦、总字数 ≤ 100 字、不要编造模板之外的新信息、不要加 Markdown。\n"
+                f"原始模板：\n{template}"
+            )
+            polished = await ModelService.generate_answer(
+                prompt,
+                system_prompt="你是工单系统的亲和客服助手，负责把派单结果转述给提单人，语气温和、简洁、可信。",
+            )
+            if isinstance(polished, str) and polished.strip():
+                # 逗号/句号结尾兜底规范化（去掉可能的引号包裹等）
+                return polished.strip().strip('"\u201c\u201d') or template
+    except Exception:
+        # AI 润色失败 / LLM_STREAM 场景返回流式生成器 → 降级为模板
+        pass
+    return template
+
+
 # 解决方式总结 Worker 的 Redis 任务队列（与 ai/agents/AiTaskPlatform/services/resolution_worker.py 保持一致）
 RESOLUTION_WORKER_QUEUE = "ors:resolution"
 # 占位文案（前端 placeholder，不入库；这里用于识别"无内容"状态）
@@ -362,7 +428,69 @@ async def get_task(
                     )
             except Exception as view_err:
                 logger.warning(f"Failed to log view for task {task_id}: {view_err}")
-        
+
+        # ── 二次派单感知增强（M2）：组装 redispatch 子对象（读 task_dispatch_log 最新一条）──
+        try:
+            from app.models.task_dispatch_log import TaskDispatchLog
+            from sqlalchemy import select as _sel
+            _log = (await db.execute(
+                _sel(TaskDispatchLog)
+                .where(TaskDispatchLog.task_id == task_id)
+                .order_by(TaskDispatchLog.dispatch_round.desc())
+                .limit(1)
+            )).scalars().first()
+            if _log is not None:
+                user_map = await TicketService._get_user_map(token)
+                prof = dict(_log.profile or {})
+                assigned_name = user_map.get(_log.assigned_id, _log.assigned_id)
+                pref_name = user_map.get(_log.preferred_id) if _log.preferred_id else None
+                # 二次派单感知增强（M3 高情商回复）：未派到指定人时生成一段「模板为主+AI润色」的完整话术
+                # （供详情页展示）。从候选快照取倾向人画像缺失项（missing）判定引导分支；其余分支无此字段。
+                tip_detail = None
+                if _log.preferred_id and _log.preferred_id != _log.assigned_id and _log.assigned_id:
+                    # 倾向人画像缺失项（英文 → 中文）
+                    pref_missing_zh = []
+                    for cand in (_log.candidates or []):
+                        if isinstance(cand, dict) and cand.get("engineer_id") == _log.preferred_id:
+                            for f in (cand.get("missing") or []):
+                                zh = _PROFILE_MISSING_LABEL.get(str(f), str(f))
+                                if zh not in pref_missing_zh:
+                                    pref_missing_zh.append(zh)
+                            break
+                    reasoning_txt = _log.reasoning if isinstance(_log.reasoning, str) else ""
+                    tip_detail = await _build_redispatch_tip_detail(
+                        pref_name or _log.preferred_id,
+                        assigned_name,
+                        reasoning=reasoning_txt,
+                        pref_missing_zh=pref_missing_zh,
+                    )
+                setattr(ticket, "redispatch", {
+                    "dispatch_round": _log.dispatch_round,
+                    "candidates": _log.candidates,
+                    "result": {
+                        "assigned_id": _log.assigned_id,
+                        "assigned_name": assigned_name,
+                        "preferred_id": _log.preferred_id,
+                        "preferred_name": pref_name,
+                        "confidence": _log.confidence,
+                        "decision_type": _log.decision_type,
+                        "reasoning": _log.reasoning,
+                        "profile": {
+                            "dept": prof.get("dept"),
+                            "job_level": prof.get("job_level"),
+                            "modules": prof.get("modules"),
+                            "duty": prof.get("duty"),
+                            "missing": prof.get("missing") or [],
+                        } if prof else None,
+                        "matched_pref": _log.matched_pref,
+                        "name_collision": _log.name_collision,
+                        "pinyin_match": _log.pinyin_match,
+                        "tip_detail": tip_detail,
+                    },
+                })
+        except Exception as redisp_err:
+            logger.warning(f"组装 redispatch 失败 task_id={task_id}: {redisp_err}")
+
         return ticket
     except HTTPException:
         raise
@@ -1400,7 +1528,8 @@ async def re_dispatch_task(
     ticket.assigned_to = None
     ticket.status = TicketStatus.NEW
 
-    # 写入用户倾向派单人 + 清掉上一次派单的推荐元数据
+    # 写入用户倾向派单人；派单详情已不再写 metadata_info（统一走 task_dispatch_log，见 §4.2/§九-M1），
+    # 此处 pop 仅用于清理历史遗留的旧派单元数据（worker 已不再写入这些键）
     meta = dict(ticket.metadata_info or {})
     meta["preferred_assignee"] = preferred
     if remark:

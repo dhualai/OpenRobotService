@@ -41,6 +41,9 @@ from app.models.task import (
     TaskUserMapping,
 )
 
+# 任务派单日志（二次派单感知增强）
+from app.models.task_dispatch_log import TaskDispatchLog
+
 # 会话 / 消息
 from app.models.conversation import (
     Conversation,
@@ -85,6 +88,8 @@ __all__ = [
     "ProjectTransportEfficiency", "ProjectTransportEfficiencyRobot",
     # task
     "Task", "TaskComment", "TaskStatus", "TaskPriority", "TaskType", "TaskUserMapping",
+    # task dispatch log
+    "TaskDispatchLog",
     # conversation
     "Conversation", "Message", "SceneType", "MessageRole", "MessageType",
     # ticket (AI)
