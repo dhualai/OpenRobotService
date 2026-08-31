@@ -292,8 +292,11 @@ const mergeDbMessages = (prev: Message[], fresh: Message[]): Message[] => {
   const used = new Set<number>();
   const merged = prev.map((m) => {
     let idx = fresh.findIndex((f, i) => !used.has(i) && String(f.id) === String(m.id));
-    if (idx < 0 && m.role === 'user' && !m.subtype && m.content) {
-      idx = fresh.findIndex((f, i) => !used.has(i) && f.role === 'user' && !f.subtype && f.content === m.content);
+    // 乐观消息（本地临时 id）兜底：user/assistant 统一按「角色 + 内容」匹配 DB 记录。
+    // 此前 assistant 无内容兜底，而本地 AI 气泡的临时 id 历史上未回写 DB id → 切回会话
+    // 触发合并时 DB 侧回复全部匹配不上，被当作新消息整段追加到尾部（幽灵重复回复）。
+    if (idx < 0 && !m.subtype && m.content) {
+      idx = fresh.findIndex((f, i) => !used.has(i) && f.role === m.role && !f.subtype && f.content === m.content);
     }
     // 工单概览气泡兜底：本地乐观气泡 id 与 DB 不一致时，按关联工单 db_id 匹配
     if (idx < 0 && m.subtype === 'ticket_overview' && m.ticket_overview?.db_id) {
@@ -1182,7 +1185,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const finalContent = sanitizeAiText(acc);
       if (finalContent) {
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: finalContent, phase: undefined, streaming: false } : m)));
-        if (convId) appendMessage(convId, 'assistant', finalContent).catch(() => {});
+        // 落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）
+        if (convId) appendMessage(convId, 'assistant', finalContent).then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); }).catch(() => {});
       } else if (!hasResult) {
         setMessages((prev) => prev.filter((m) => m.id !== assistantId));
       } else {
@@ -1322,7 +1326,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const finishDrain = () => {
       if (drainFinished) return;
       drainFinished = true;
-      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: sanitizeAiText(acc) || acc, streaming: false } : m)));
+      const finalDrainContent = sanitizeAiText(acc) || acc;
+      // 定稿即对账：本地乐观 AI 气泡的临时 id → DB id（与 user 消息落库后回写 id 同策略）。
+      // 否则切回会话时 mergeDbMessages 按 id 匹配不上，DB 侧回复会被整段追加到尾部（幽灵重复回复）。
+      // 仅在有内容时回写：无内容的空气泡仍按临时 id 走移除逻辑。
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: finalDrainContent, streaming: false, ...(assistantDbId != null && finalDrainContent ? { id: String(assistantDbId) } : {}) } : m)));
       requestAnimationFrame(() => requestAnimationFrame(scrollToBottom));
     };
     try {
@@ -1505,7 +1513,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         }
       }
       if (fullText && assistantDbId == null && sentConvId) {
-        appendMessage(sentConvId, 'assistant', fullText).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
+        // 兜底落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）
+        appendMessage(sentConvId, 'assistant', fullText)
+          .then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); })
+          .catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
       }
       // 首轮问答完成 → 同步会话到列表、定位到新会话。
       // 标题保持「新建会话」：标题由 AI 在第2轮回复时生成（event: title），在此之前都叫「新建会话」。
@@ -1534,7 +1545,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         // 仅后端未接管时前端兜底落库。无内容则移除空气泡（避免闪烁残留）。
         if (finalAcc) {
           if (assistantDbId == null && sentConvId) {
-            appendMessage(sentConvId, 'assistant', finalAcc).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
+            // 兜底落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）
+            appendMessage(sentConvId, 'assistant', finalAcc)
+              .then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); })
+              .catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
           }
         } else {
           setMessages((prev) => prev.filter((m) => m.id !== assistantId));
@@ -1545,7 +1559,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         Toast({ message: `发送失败: ${err instanceof Error ? err.message : '未知错误'}`, theme: 'error' });
         if (finalAcc) {
           if (assistantDbId == null && sentConvId) {
-            appendMessage(sentConvId, 'assistant', finalAcc).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
+            // 兜底落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）
+            appendMessage(sentConvId, 'assistant', finalAcc)
+              .then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); })
+              .catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
           }
         } else {
           acc = '[回复中断，请重试]';
