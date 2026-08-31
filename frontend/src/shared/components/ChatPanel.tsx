@@ -13,7 +13,8 @@ import API_CONFIG from '@/config/api';
 import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, qaClearDraft, type TicketDraft } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import UserSelect from '@/shared/components/UserSelect';
-import { createTicket, reDispatchTicket, uploadCommentAttachment } from '@/api/ticket';
+import RedispatchCandidateList from '@/shared/components/RedispatchCandidateList';
+import { createTicket, reDispatchTicket, uploadCommentAttachment, fetchRedispatch, type RedispatchCandidate } from '@/api/ticket';
 
 /** 远程方式选项（摇人→转工单确认弹窗 与 系统任务新建弹窗 共用）：
  *  默认空（无需远程，存 metadata_info.remote_type=null），可选 ToDesk / 向日葵 / 其他。
@@ -95,7 +96,41 @@ interface Message {
     description?: string;
     created_at?: string;
     assigned_to_name?: string; // 派单完成后轮询填充 + 回写 DB
+    // 二次派单感知增强（M3）：派单结果提醒一句话摘要（轮询到 redispatch.result 时生成并回写 DB）
+    redispatch_tip?: string;
   };
+}
+
+// 二次派单感知增强（M3）：按详情 redispatch.result 生成派单结果提醒（与后端 _redispatch_tip 同一四分支口径）
+function redispatchTipFromResult(result?: {
+  matched_pref?: boolean | null;
+  name_collision?: boolean | null;
+  pinyin_match?: boolean | null;
+  assigned_name?: string | null;
+  preferred_name?: string | null;
+  profile?: { missing?: string[] | null } | null;
+}): string | undefined {
+  if (!result) return undefined;
+  const assignedName = result.assigned_name || '';
+  const prefName = result.preferred_name || '';
+  let tip: string | undefined;
+  // ② 未派到指定人
+  if (result.matched_pref === false) {
+    tip = `未派给您指定的【${prefName || '意向人'}】，已派给【${assignedName}】`;
+  } else if (result.pinyin_match) {
+    // ④ 拼音/近似名命中
+    tip = `按拼音匹配到【${assignedName}】（与输入【${prefName || assignedName}】不同字），如非此人请更正`;
+  } else if (result.name_collision) {
+    // ③ 同名命中
+    tip = `指派人存在同名，已按评估选择【${assignedName}】`;
+  }
+  // ① 画像不完整（可叠加追加）
+  const missing = result.profile?.missing || [];
+  if (missing.length) {
+    const suffix = '；该接单人画像不完整，待补充';
+    tip = tip ? tip + suffix : '该接单人画像不完整，待补充';
+  }
+  return tip || undefined;
 }
 
 const uid = () => Date.now().toString() + Math.random().toString(36).slice(2, 6);
@@ -433,6 +468,10 @@ const MessageBubble = memo(function MessageBubble({
                   </span>
                 )}
               </div>
+              {/* 二次派单感知增强（M3）：派单结果提醒单行（警示色，整卡点击进详情） */}
+              {msg.ticket_overview.redispatch_tip && (
+                <div className="chat-ticket-overview__tip">派单结果提醒：{msg.ticket_overview.redispatch_tip}</div>
+              )}
             </div>
           ) : msg.content ? (
             msg.streaming ? (
@@ -645,7 +684,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 对话内工单概览气泡「重新派单」：选倾向处理人 + 备注 → 重派 → 清空 assigned_to_name 重新轮询
   const [redispatchOv, setRedispatchOv] = useState<NonNullable<Message['ticket_overview']> | null>(null);
   const [redispatchMsgId, setRedispatchMsgId] = useState<string | null>(null);
-  const [redispatchUser, setRedispatchUser] = useState<UserItem | null>(null);
+  // 二次派单感知增强（M2）：候选列表数据源 = 详情 redispatch.candidates（分层排序由 RedispatchCandidateList 负责）
+  const [redispatchCands, setRedispatchCands] = useState<RedispatchCandidate[] | null>(null);
+  const [redispatchRefDept, setRedispatchRefDept] = useState<string | null>(null);
+  const [redispatchCand, setRedispatchCand] = useState<RedispatchCandidate | null>(null);
+  const [redispatchLoading, setRedispatchLoading] = useState(false);
   const [redispatchRemark, setRedispatchRemark] = useState('');
   const [showRedispatchPopup, setShowRedispatchPopup] = useState(false);
   const [redispatching, setRedispatching] = useState(false);
@@ -1556,9 +1599,23 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
     setRedispatchMsgId(msgId);
     setRedispatchOv(ov);
-    setRedispatchUser(null);
+    setRedispatchCands(null);
+    setRedispatchRefDept(null);
+    setRedispatchCand(null);
     setRedispatchRemark('');
     setShowRedispatchPopup(true);
+    // 二次派单感知增强（M2）：拉取详情 redispatch（R2 候选快照 + 当前接单人部门作为“同部门”参照）
+    setRedispatchLoading(true);
+    fetchRedispatch(ov.db_id)
+      .then((rd) => {
+        setRedispatchCands(rd?.candidates ?? null);
+        setRedispatchRefDept(rd?.result?.profile?.dept || null);
+      })
+      .catch(() => {
+        setRedispatchCands(null);
+        setRedispatchRefDept(null);
+      })
+      .finally(() => setRedispatchLoading(false));
   }, []);
 
   // voiceWillCancelRef 在 handleMove 中直接同步写入，不再通过 useEffect 异步同步
@@ -1934,10 +1991,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     try {
       // 必须 skipCache：createRequest 的 GET 默认缓存 5 分钟，否则第二次轮询起命中缓存返回旧 assigned_to，
       // 控制台看不到请求、气泡永远显示"派单中"（只有刷新清空模块级 requestCache 后才真正请求）。
-      const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string }>(`/${dbId}`, { skipCache: true });
+      const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string; redispatch?: { result?: Parameters<typeof redispatchTipFromResult>[0] } }>(`/${dbId}`, { skipCache: true });
       if (task.assigned_to) {
         const assignedName = task.assigned_to_name || task.assigned_to;
-        const newOv = { ...ov, assigned_to_name: assignedName };
+        // 二次派单感知增强（M3）：派单完成时从 redispatch.result 生成提醒文案
+        const newOv = { ...ov, assigned_to_name: assignedName, redispatch_tip: redispatchTipFromResult(task.redispatch?.result) };
         // 注意：不能用 cancelledRef 判断是否更新内存——在 <React.StrictMode> 下，开发模式的
         // effect 双调用会先触发 cleanup（cancelledRef.current=true）再 remount，且 useRef 不重置，
         // 导致该标记永久为 true，setMessages 被跳过 → 气泡永远停在「派单中」（DB 却能回写）。
@@ -1974,14 +2032,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 对话内工单概览气泡「重新派单」：确认 → 调 re-dispatch → 清空 assigned_to_name 回到「派单中」→ 重新轮询显示新接单人
   const handleRedispatchConfirm = useCallback(async () => {
     if (!redispatchOv?.db_id || !redispatchMsgId) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
-    if (!redispatchUser?.id && !redispatchUser?.username) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
+    if (!redispatchCand?.engineer_id) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
     setRedispatching(true);
     try {
-      await reDispatchTicket(redispatchOv.db_id, redispatchUser.id || redispatchUser.username, redispatchRemark.trim() || undefined);
+      await reDispatchTicket(redispatchOv.db_id, redispatchCand.engineer_id, redispatchRemark.trim() || undefined);
       Toast({ message: '已重新派单，正在重新推荐处理人', theme: 'success' });
       setShowRedispatchPopup(false);
-      // 清空 assigned_to_name → 气泡回到「派单中」态，触发重新轮询拿到新接单人
-      const newOv = { ...redispatchOv, assigned_to_name: undefined };
+      // 清空 assigned_to_name + redispatch_tip → 气泡回到「派单中」态，触发重新轮询拿到新接单人/新提醒
+      const newOv = { ...redispatchOv, assigned_to_name: undefined, redispatch_tip: undefined };
       setMessages((prev) => prev.map((m) =>
         m.id === redispatchMsgId && m.ticket_overview
           ? { ...m, ticket_overview: newOv }
@@ -1993,7 +2051,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     } finally {
       setRedispatching(false);
     }
-  }, [redispatchOv, redispatchMsgId, redispatchUser, redispatchRemark, startDispatchPoll]);
+  }, [redispatchOv, redispatchMsgId, redispatchCand, redispatchRemark, startDispatchPoll]);
 
   // 卸载清理所有轮询 + 中断流式（避免组件卸载后后台 setMessages 报错/串台）
   useEffect(() => () => {
@@ -2053,7 +2111,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         }
         const latestName = task.assigned_to_name || task.assigned_to;
         if (latestName !== ov.assigned_to_name) {
-          const newOv = { ...ov, assigned_to_name: latestName };
+          // 二次派单感知增强（M3）：同步时也刷新派单结果提醒文案
+          const newOv = { ...ov, assigned_to_name: latestName, redispatch_tip: redispatchTipFromResult((task as any)?.redispatch?.result) };
           setMessages((prev) => prev.map((x) =>
             x.id === m.id && x.ticket_overview ? { ...x, ticket_overview: newOv } : x
           ));
@@ -2779,13 +2838,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         <Popup visible={showRedispatchPopup} onClose={() => setShowRedispatchPopup(false)} placement="bottom" showOverlay>
           <div className="conv-dialog">
             <h4 className="conv-dialog__title">重新派单</h4>
-            <p className="conv-dialog__msg">将强制重新智能派单，请选择倾向处理人</p>
+            <p className="conv-dialog__msg">将强制重新智能派单，请选择倾向处理人（意向人不保证100%采纳，仅作为派单加权参考）</p>
             <div style={{ marginBottom: 16 }}>
-              <UserSelect
-                value={redispatchUser?.id ?? null}
-                onChange={(u) => setRedispatchUser(u)}
-                placeholder="选择倾向处理人（必选）"
-                title="选择倾向处理人"
+              <RedispatchCandidateList
+                candidates={redispatchCands}
+                refDept={redispatchRefDept}
+                value={redispatchCand?.engineer_id ?? null}
+                onChange={setRedispatchCand}
+                loading={redispatchLoading}
               />
             </div>
             <input
@@ -2797,7 +2857,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             />
             <div className="conv-dialog__btns">
               <button type="button" className="ticket-confirm__btn ticket-confirm__btn--cancel" onClick={() => setShowRedispatchPopup(false)}>取消</button>
-              <button type="button" className="ticket-confirm__btn ticket-confirm__btn--confirm" disabled={!redispatchUser || redispatching} onClick={handleRedispatchConfirm}>{redispatching ? '提交中…' : '确定重新派单'}</button>
+              <button type="button" className="ticket-confirm__btn ticket-confirm__btn--confirm" disabled={!redispatchCand || redispatching} onClick={handleRedispatchConfirm}>{redispatching ? '提交中…' : '确定重新派单'}</button>
             </div>
           </div>
         </Popup>

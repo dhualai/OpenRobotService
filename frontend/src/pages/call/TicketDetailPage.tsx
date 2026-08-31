@@ -159,6 +159,8 @@ export default function TicketDetailPage() {
   const [msg, setMsg] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
   const [aiSummary, setAiSummary] = useState('');
+  // 二次派单感知增强（M3）：未派到指定人时的完整情商话术（详情页 redispatch.result.tip_detail）
+  const [redispatchTipDetail, setRedispatchTipDetail] = useState('');
   const tempIdRef = useRef<string>(typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `t_${Date.now()}_${Math.random().toString(36).slice(2)}`);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
   // 项目成员（用于讨论区 @ 提及）
@@ -193,8 +195,10 @@ export default function TicketDetailPage() {
       const dbIdMatch = /^db_(\d+)$/.exec(sessionId);
       if (dbIdMatch) {
         const dbId = dbIdMatch[1];
-        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string; session_id?: string; diagnosis?: AiDiagnosis }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; deadline_at?: string }>(`/${dbId}?load_comments=true`, { skipCache: true });
+        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string; session_id?: string; diagnosis?: AiDiagnosis }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; deadline_at?: string; redispatch?: { result?: { tip_detail?: string | null } } | null }>(`/${dbId}?load_comments=true`, { skipCache: true });
         if (isStale()) return; // 已切换到别的工单，丢弃本次（旧工单）结果，避免覆盖
+        // 二次派单感知增强（M3）：完整情商话术（未派到指定人时）
+        setRedispatchTipDetail(taskDetail.redispatch?.result?.tip_detail || '');
         setTicket({
           ticket_id: String(dbId),
           session_id: taskDetail.metadata_info?.session_id || '',
@@ -231,8 +235,10 @@ export default function TicketDetailPage() {
         if (!silent) setTicket(aiTicket);
         if (aiTicket.ticket_id) {
           try {
-            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; deadline_at?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
+            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; deadline_at?: string; redispatch?: { result?: { tip_detail?: string | null } } | null }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
             if (isStale()) return; // 已切换工单：prev 可能已是新工单，不可把旧工单的 DB 字段合并进去
+            // 二次派单感知增强（M3）：完整情商话术随 DB 刷新
+            setRedispatchTipDetail(taskDetail.redispatch?.result?.tip_detail || '');
             // 用 DB 的 status 覆盖 AI 的 status：AI(qaGetTicket) 返回 dispatched/escalated 等 AI 内部状态，
             // DB(tasks 表) 是 new/in_progress 等标准枚举。列表(qaListTickets)也来自 DB，
             // 覆盖后详情页按钮置灰(canUrgeTicket/canReportTicket)与列表一致。
@@ -759,6 +765,10 @@ export default function TicketDetailPage() {
                 </div>
               )}
             </div>
+            {/* 二次派单感知增强（M3）：未派到指定人时的完整情商话术（仅 matched_pref=false 时有） */}
+            {redispatchTipDetail && (
+              <div className="redispatch-tip-detail">派单说明：{redispatchTipDetail}</div>
+            )}
           </div>
         )}
 
