@@ -73,6 +73,71 @@ async def lifespan(app: FastAPI):
 
     from ai.config import get_ai_config, validate_ai_config
 
+    # 0. DB schema 补丁（tasks 表补 curr_step_* 三列 + 建 task_steps 表）。
+    #    说明：backend 侧靠 alembic（b9c0d1e2f3a4 / 9a8b7c6d5e4f）落库；但 AI 服务
+    #    可独立启动、不保证已运行 alembic upgrade head，而
+    #    ai/core/task_adapter.py 又从 backend/app/models/task.py 导入含新列的 Task，
+    #    SQLAlchemy SELECT 会带这些列 → DB 物理表缺列就 1054 Unknown column。
+    #    这里按 backend 惯例做幂等补丁（_column_exists / _table_exists 守卫）。
+    try:
+        from sqlalchemy import text
+        from ai.core.database import engine as _ai_engine
+
+        def _col(name: str) -> bool:
+            with _ai_engine.connect() as conn:
+                row = conn.execute(text(
+                    "SELECT COUNT(*) FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() "
+                    "AND TABLE_NAME = 'tasks' AND COLUMN_NAME = :n"
+                ), {"n": name}).scalar()
+            return bool(row)
+
+        def _tbl(name: str) -> bool:
+            with _ai_engine.connect() as conn:
+                row = conn.execute(text(
+                    "SELECT COUNT(*) FROM information_schema.TABLES "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :n"
+                ), {"n": name}).scalar()
+            return bool(row)
+
+        # 0.1 tasks.curr_step_* 三列（对齐 b9c0d1e2f3a4）
+        with _ai_engine.connect() as conn:
+            if not _col("curr_step_id"):
+                conn.execute(text(
+                    "ALTER TABLE tasks ADD COLUMN curr_step_id BIGINT NULL COMMENT '当前步骤ID'"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX ix_tasks_curr_step_id ON tasks(curr_step_id)"
+                ))
+                logger.info("补丁: tasks.curr_step_id 已添加")
+            if not _col("curr_step_name"):
+                conn.execute(text(
+                    "ALTER TABLE tasks ADD COLUMN curr_step_name VARCHAR(128) NULL COMMENT '当前步骤名称'"
+                ))
+                logger.info("补丁: tasks.curr_step_name 已添加")
+            if not _col("curr_step_endtime"):
+                conn.execute(text(
+                    "ALTER TABLE tasks ADD COLUMN curr_step_endtime DATETIME NULL COMMENT '当前步骤结束时间'"
+                ))
+                logger.info("补丁: tasks.curr_step_endtime 已添加")
+            conn.commit()
+        # 0.2 task_steps 表（对齐 9a8b7c6d5e4f）
+        if not _tbl("task_steps"):
+            with _ai_engine.connect() as conn:
+                conn.execute(text(
+                    "CREATE TABLE task_steps ("
+                    "  id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '步骤ID',"
+                    "  task_type ENUM('problem','feature','bug','support','other') NOT NULL COMMENT '任务类型',"
+                    "  step_name VARCHAR(128) NOT NULL COMMENT '步骤名称',"
+                    "  sequence INT NOT NULL DEFAULT 0 COMMENT '当前步骤在当前任务类型下的序号',"
+                    "  INDEX ix_task_steps_task_type (task_type)"
+                    ") COMMENT='任务步骤模板表'"
+                ))
+                conn.commit()
+            logger.info("补丁: task_steps 表已创建")
+    except Exception as e:
+        logger.warning(f"DB schema 补丁（curr_step_* / task_steps）跳过: {e}")
+
     # 1. 连通性检查（DeepSeek + Qdrant + Redis）
     try:
         results = await validate_ai_config()

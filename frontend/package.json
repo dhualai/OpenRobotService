@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "build:test": "tsc -b && vite build --base=/t/app/",
+    "build:test": "tsc -b && vite build --mode staging --base=/t/app/",
     "build:prod": "tsc -b && vite build --base=/p/app/",
     "preview": "vite preview",
     "test": "vitest run",

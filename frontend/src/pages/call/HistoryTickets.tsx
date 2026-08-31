@@ -142,7 +142,9 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
     }
     const t = setTimeout(() => { loadInitialRef.current(); }, 400);
     return () => clearTimeout(t);
-  }, [statusFilter, search]);
+    // isAdmin 变化（刷新后 fetchUserDetails 异步回填，false→true）需重载：
+    // admin 不加 username 过滤，避免首屏只显示自己创建的工单
+  }, [statusFilter, search, isAdmin]);
 
   // 后端已按 keyword 搜索，前端无需再过滤
   const displayedTickets = tickets;

@@ -619,7 +619,7 @@ async def create_user(
         )
     
     user_id = f"user_{uuid.uuid4().hex[:8]}"
-    
+
     hashed_password = get_password_hash(user_data.password)
     # 初始化 USP 账户时，前端传入明文密码，此处走 pbkdf2_sha256 哈希后存储，
     # 与个人中心更新接口（PUT /users/{username}）的 USP 密码处理保持一致。

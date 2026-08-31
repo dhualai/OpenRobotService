@@ -231,6 +231,13 @@ def task_to_dict(task: Task) -> dict:
         # 避免依赖 FastAPI 隐式序列化 naive datetime（无时区后缀、口径不统一）。
         "created_at": task.created_at.isoformat() if task.created_at else "",
         "updated_at": task.updated_at.isoformat() if task.updated_at else "",
+        # 当前步骤：关联 task_steps 模板，名称/结束时间冗余存 tasks 行便于直接展示
+        "curr_step_id": task.curr_step_id if hasattr(task, "curr_step_id") else None,
+        "curr_step_name": task.curr_step_name if hasattr(task, "curr_step_name") else None,
+        "curr_step_endtime": (
+            task.curr_step_endtime.isoformat()
+            if hasattr(task, "curr_step_endtime") and task.curr_step_endtime else None
+        ),
     }
 
 
