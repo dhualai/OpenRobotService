@@ -8,29 +8,53 @@
 
 本模块导出若干 `ws_broadcast_*` 供 REST 评论/状态接口在写库成功后调用，
 实现「写走 REST、变更实时推送」的发布-订阅模式。
+
+已读回执相关改造（已读名单更新不及时根因治理）：
+- P1 上报逻辑下沉到 `app/modules/tasks/read_receipt.py`（批量幂等 upsert + 分块失败隔离
+  + 评论归属校验），本文件只负责收帧与广播；
+- P2 同步 ORM 一律经 `run_in_threadpool` 移出事件循环，避免大批量上报阻塞整个进程；
+- P2 跨进程广播由 `RoomHub`（Redis pub/sub）承载，Redis 不可用时自动降级为单进程。
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import time
-from typing import Dict, Iterable, Optional, Set
+from typing import Dict, Optional, Set
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
-from sqlalchemy import func, select
+from starlette.concurrency import run_in_threadpool
 
+from app.core.config import settings
 from app.core.database import get_user_with_roles
-from app.core.security import decode_token
 from app.core.db import SessionLocal
-from app.models.task import TaskCommentRead, TaskCommentReadRecord
-from app.models.identity import UserDB
+from app.core.security import decode_token
+from app.modules.tasks.read_receipt import (
+    READ_RECORDS_SNAPSHOT_LIMIT,
+    read_cursor_map,
+    read_records_map,
+    report_read_sync,
+)
 from app.modules.tasks.schemas.ticket import TicketCommentResponse
+from app.modules.tasks.ws_hub import RoomHub
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 MAX_CONN_PER_USER = 5
+
+
+def _build_redis_url() -> Optional[str]:
+    """跨进程广播用的 Redis 地址；可用环境变量关闭（关闭后纯本地广播）。"""
+    flag = os.getenv("WS_HUB_REDIS_ENABLED", "true").strip().lower()
+    if flag not in ("1", "true", "yes", "on"):
+        return None
+    return f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
+
+
+hub = RoomHub(redis_url=_build_redis_url())
 
 
 class WsConnection:
@@ -52,28 +76,27 @@ class WsConnection:
 
 
 class ConnectionManager:
-    def __init__(self) -> None:
-        self.rooms: Dict[int, Set[WsConnection]] = {}
+    """房间连接集合委托给 RoomHub（支持跨进程），typing 态仍留在进程内。"""
+
+    def __init__(self, room_hub: RoomHub) -> None:
+        self.hub = room_hub
         self.typing: Dict[int, Set[str]] = {}
 
     async def connect(self, task_id: int, conn: WsConnection) -> None:
-        self.rooms.setdefault(task_id, set()).add(conn)
+        self.hub.add(task_id, conn)
         await self._broadcast_presence(task_id)
 
     async def disconnect(self, task_id: int, conn: WsConnection) -> None:
-        room = self.rooms.get(task_id)
-        if room:
-            room.discard(conn)
-            if not room:
-                self.rooms.pop(task_id, None)
-                self.typing.pop(task_id, None)
+        self.hub.discard(task_id, conn)
+        if not self.hub.members(task_id):
+            self.typing.pop(task_id, None)
         await self._broadcast_presence(task_id)
 
     def online_members(self, task_id: int) -> list[dict]:
         """按 username 去重（多客户端同用户算一人），返回 [{username, name, avatar_resource_id}]。"""
         seen: set[str] = set()
         result: list[dict] = []
-        for c in self.rooms.get(task_id, set()):
+        for c in self.hub.members(task_id):
             if c.username in seen:
                 continue
             seen.add(c.username)
@@ -85,8 +108,7 @@ class ConnectionManager:
         return result
 
     async def broadcast(self, task_id: int, payload: dict) -> None:
-        for conn in list(self.rooms.get(task_id, set())):
-            await conn.send(payload)
+        await self.hub.broadcast(task_id, payload)
 
     async def _broadcast_presence(self, task_id: int) -> None:
         await self.broadcast(task_id, {"type": "presence", "online": self.online_members(task_id)})
@@ -101,85 +123,7 @@ class ConnectionManager:
         await self.broadcast(task_id, {"type": "typing", "username": username, "value": value})
 
 
-manager = ConnectionManager()
-
-
-def _upsert_read(db, task_id: int, username: str, comment_id: int) -> None:
-    res = db.execute(
-        select(TaskCommentRead).where(
-            TaskCommentRead.task_id == task_id, TaskCommentRead.username == username
-        )
-    )
-    rec = res.scalar_one_or_none()
-    if rec:
-        rec.last_read_comment_id = comment_id
-        rec.updated_at = func.now()
-    else:
-        db.add(TaskCommentRead(task_id=task_id, username=username, last_read_comment_id=comment_id))
-    db.commit()
-
-
-def _read_map(db, task_id: int) -> dict:
-    res = db.execute(select(TaskCommentRead).where(TaskCommentRead.task_id == task_id))
-    return {r.username: r.last_read_comment_id for r in res.scalars().all()}
-
-
-def _mark_comment_read(db, task_id: int, comment_id: int, username: str) -> Optional[TaskCommentReadRecord]:
-    """upsert 单条评论的已读明细（飞书式名单）。
-
-    不存在则新增；已存在则刷新 read_at（视为重新阅读），两种情况都返回记录供
-    read_receipt 广播——否则「之前的消息后来被重读」不会产生增量，全员看不到更新。
-    """
-    rec = db.execute(
-        select(TaskCommentReadRecord).where(
-            TaskCommentReadRecord.comment_id == comment_id,
-            TaskCommentReadRecord.username == username,
-        )
-    ).scalar_one_or_none()
-    if rec is not None:
-        rec.read_at = func.now()
-        db.flush()
-        # refresh 回读数据库端 NOW() 真值，供广播携带准确阅读时间
-        db.refresh(rec)
-        return rec
-    rec = TaskCommentReadRecord(task_id=task_id, comment_id=comment_id, username=username)
-    db.add(rec)
-    # flush 触发 server_default=func.now() 回填 read_at，供广播携带真实阅读时间
-    db.flush()
-    return rec
-
-
-def _read_records_map(db, task_id: int) -> dict:
-    """按 comment_id 分组返回已读名单（含用户名/姓名/头像/阅读时间），阅读时间倒序。
-
-    返回 {str(comment_id): [ {username, name, avatar_resource_id, read_at}, ... ]}。
-    """
-    rows = db.execute(
-        select(TaskCommentReadRecord)
-        .where(TaskCommentReadRecord.task_id == task_id)
-        .order_by(TaskCommentReadRecord.read_at.desc(), TaskCommentReadRecord.id.desc())
-    ).scalars().all()
-
-    usernames = sorted({r.username for r in rows})
-    name_map: dict = {}
-    avatar_map: dict = {}
-    if usernames:
-        users = db.execute(
-            select(UserDB).where(UserDB.username.in_(usernames))
-        ).scalars().all()
-        for u in users:
-            name_map[u.username] = u.name or u.username
-            avatar_map[u.username] = getattr(u, "avatar_resource_id", None)
-
-    result: dict = {}
-    for r in rows:
-        result.setdefault(str(r.comment_id), []).append({
-            "username": r.username,
-            "name": name_map.get(r.username, r.username),
-            "avatar_resource_id": avatar_map.get(r.username),
-            "read_at": r.read_at.isoformat() if r.read_at else None,
-        })
-    return result
+manager = ConnectionManager(hub)
 
 
 @router.websocket("/{task_id}/ws")
@@ -209,13 +153,16 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
     db = SessionLocal()
     try:
         # 3. welcome：在线成员 + 各用户已读游标 + 已读名单快照
+        #    同步 ORM 走线程池，避免大工单快照查询阻塞事件循环
         try:
-            read_map = _read_map(db, task_id)
-        except Exception:
+            read_map = await run_in_threadpool(read_cursor_map, db, task_id)
+        except Exception:  # noqa: BLE001
             read_map = {}
         try:
-            read_records = _read_records_map(db, task_id)
-        except Exception:
+            read_records = await run_in_threadpool(
+                read_records_map, db, task_id, None, READ_RECORDS_SNAPSHOT_LIMIT
+            )
+        except Exception:  # noqa: BLE001
             read_records = {}
         await conn.send({
             "type": "welcome",
@@ -238,40 +185,32 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
             elif mtype == "typing":
                 await manager.set_typing(task_id, username, bool(msg.get("value")))
             elif mtype == "read":
-                # 兼容两种上报：comment_ids（本次实际读到的评论列表，飞书式名单）
-                # 或 last_read_comment_id（游标）。二者都维护，名单与游标互不冲突。
-                comment_ids = msg.get("comment_ids")
-                if not isinstance(comment_ids, list):
-                    comment_ids = []
-                cid = msg.get("last_read_comment_id")
+                # 已读上报：明细（飞书式名单）+ 游标（兼容旧前端人数统计）都维护。
+                # 写入逻辑在 read_receipt 中：批量幂等 upsert + 分块失败隔离 + 评论归属校验。
                 try:
-                    new_records: list[dict] = []
-                    for _cid in comment_ids:
-                        if not isinstance(_cid, int):
-                            continue
-                        rec = _mark_comment_read(db, task_id, _cid, username)
-                        if rec is not None:
-                            new_records.append({
-                                "comment_id": _cid,
-                                "username": username,
-                                "name": name,
-                                "avatar_resource_id": avatar_resource_id,
-                                "read_at": rec.read_at.isoformat() if rec.read_at else None,
-                            })
-                    if isinstance(cid, int):
-                        _upsert_read(db, task_id, username, cid)
-                    db.commit()
-                    # 广播：游标回执（兼容旧前端人数统计）+ 名单增量（新前端名单弹层）
+                    result = await run_in_threadpool(
+                        report_read_sync,
+                        db,
+                        task_id,
+                        msg.get("comment_ids"),
+                        username,
+                        name,
+                        avatar_resource_id,
+                        msg.get("last_read_comment_id"),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    db.rollback()
+                    logger.error(f"已读回执写入失败 task_id={task_id}: {exc}")
+                    result = None
+                if result is not None:
+                    # 广播：游标回执（兼容旧前端）+ 名单增量（新前端名单弹层）
                     await manager.broadcast(task_id, {
                         "type": "read_receipt",
                         "username": username,
-                        "last_read_comment_id": cid if isinstance(cid, int) else None,
-                        "comment_ids": comment_ids,
-                        "records": new_records,
+                        "last_read_comment_id": result["last_read_comment_id"],
+                        "comment_ids": result["comment_ids"],
+                        "records": result["records"],
                     })
-                except Exception as e:  # noqa: BLE001
-                    db.rollback()
-                    logger.error(f"已读回执写入失败 task_id={task_id}: {e}")
             # 其他类型忽略
     except WebSocketDisconnect:
         pass
@@ -280,7 +219,7 @@ async def ws_task_room(websocket: WebSocket, task_id: int, token: str = Query(No
     finally:
         try:
             db.close()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
         await manager.disconnect(task_id, conn)
 
@@ -302,6 +241,23 @@ async def ws_broadcast_comment(event: str, task_id: int, comment) -> None:
 
 async def ws_broadcast_comment_deleted(task_id: int, comment_id: int) -> None:
     await manager.broadcast(task_id, {"type": "comment.deleted", "id": comment_id})
+
+
+async def ws_broadcast_read_receipt(
+    task_id: int,
+    username: str,
+    records: list[dict],
+    comment_ids: Optional[list[int]] = None,
+    last_read_comment_id: Optional[int] = None,
+) -> None:
+    """广播已读回执（REST 兜底通道上报成功时调用，让在线成员实时看到名单变化）。"""
+    await manager.broadcast(task_id, {
+        "type": "read_receipt",
+        "username": username,
+        "last_read_comment_id": last_read_comment_id,
+        "comment_ids": comment_ids or [],
+        "records": records,
+    })
 
 
 def _task_updated_payload(obj) -> dict:
