@@ -112,6 +112,15 @@ async def run_tool_loop_stream(
             yield {"event": "done", "final_text": content, "tool_results": results}
             return
 
+        # 本轮发起了工具调用：此前流式发出的 content 只是 LLM 的口头预告
+        # （过渡语，如「好的，我帮您转工单，我看一下还需要补充哪些信息：」），
+        # 不是给用户的正式回复。发 transition_rollback 通知下游撤销这段已上屏
+        # 的文本：前端清空气泡、SSE 落库缓冲回退，避免过渡语作为冗余气泡留在
+        # 对话里或写进 DB（刷新后仍在）。流式体验不受影响——过渡语照常实时
+        # 上屏，确认调工具后才撤销，无需提前缓冲、不破坏「边生成边出字」。
+        if content:
+            yield {"event": "transition_rollback", "data": {"chars": len(content)}}
+
         _assistant_msg = {
             "role": "assistant",
             "content": content or None,
