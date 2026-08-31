@@ -46,14 +46,11 @@ class DeptRouter:
         self._audit: DeptAuditSignal = DeptAuditSignal(config=self._config)             # 独立 LLM 单轮复核"部门派得对不对
         
     @staticmethod
-    def _filter_by_dept(
-        engineers: List[EngineerProfile], dept: str,
-    ) -> List[EngineerProfile]:
+    def _filter_by_dept(engineers: List[EngineerProfile], dept: str,) -> List[EngineerProfile]:
         if not dept:
             return list(engineers)
         return [e for e in engineers if (e.department or "") == dept]
 
-    @staticmethod
     @staticmethod
     def _fuse(
         llm_scores: Dict[str, float],
@@ -61,11 +58,10 @@ class DeptRouter:
         history_bonus: float,
         history_confirm_threshold: float,
     ) -> Dict[str, float]:
-        """部门分数融合：以 LLM(R2) 为基础分（不打折），历史(R3) 只做可加预确认。
+        """部门分数融合：以 LLM为基础分，历史只做可加预确认。
 
         - 历史完全无数据 / 该部门无历史（hist<=0）→ final = llm（纯 LLM，不打折）。
-        - 历史有数据但占比低于阈值（0<hist<threshold）→ 不是强佐证，仍维持 LLM 分（不加不减，
-          避免"有部分历史反而扣分"的不对称；历史不覆盖=无信息、不干预）。
+        - 历史有数据但占比低于阈值（0<hist<threshold）→ 不是强佐证，仍维持 LLM 分（不加不减，避免"有部分历史反而扣分"的不对称；历史不覆盖=无信息、不干预）。
         - 历史明确偏向（hist >= history_confirm_threshold）→ 佐证加分 history_bonus。
         """
         depts = set(llm_scores) | set(hist_scores)

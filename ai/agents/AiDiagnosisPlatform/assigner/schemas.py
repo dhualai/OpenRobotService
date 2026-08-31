@@ -192,3 +192,18 @@ class AssignmentResult(BaseModel):
         ...,
         description="决策类型: auto(直接拍板) / recommend(建议确认) / fallback(兜底派单) → tasks.metadata_info.decision_type"
     )
+
+    # === 二次派单感知增强 追加字段（落 task_dispatch_log）===
+    # 本次派单上下文
+    preferred_id: Optional[str] = Field(None, description="意向处理人 users.id（重派有；首次派单可 None）")
+    matched_pref: bool = Field(False, description="是否派到意向处理人")
+    name_collision: bool = Field(False, description="是否按姓名命中多人（同名）")
+    pinyin_match: bool = Field(False, description="是否经拼音/近似名匹配命中")
+
+    # 本轮完整评估（M1 profile / M2 candidates 快照）
+    profile: Optional[Dict[str, Any]] = Field(
+        None, description="被派人画像 {dept, job_level, modules, duty, missing:[...]}（missing=缺失画像字段）"
+    )
+    candidates: Optional[List[Dict[str, Any]]] = Field(
+        None, description="本轮精排 Top10 快照 [{rank, engineer_id, name, scores, profile, tags}]（M2 填充）"
+    )

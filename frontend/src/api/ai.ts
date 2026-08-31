@@ -214,6 +214,8 @@ export interface AiTicketBrief {
   project?: string;
   // 工单来源（ai 智能派单 / manual 系统任务），用于控制「重新派单」按钮显隐
   source?: string;
+  // 二次派单感知增强（M3）：派单结果提醒一句话摘要（无提醒为 null/undefined）
+  redispatch_tip?: string | null;
 }
 
 /** 历史工单列表筛选参数 */
