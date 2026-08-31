@@ -69,14 +69,34 @@ def _has_index(cur, table, index):
 
 
 def _add_col(cur, table, col, ddl, index_name=None, index_ddl=None):
-    """幂等补列：列不存在才 ADD；可附带幂等建索引。"""
+    """幂等补列：列不存在才 ADD；可附带幂等建索引。
+
+    双保险：
+    1) 先查 information_schema（快路径）；
+    2) 若因 information_schema 检测失效（如服务器库名/权限差异查不到）而误判为缺失，
+       ALTER 触发 Duplicate column(1060) 时忽略，视为已存在，不中断。
+    """
     if _has_col(cur, table, col):
         print(f"   ✅ {table}.{col} 已存在，跳过")
         return
-    cur.execute(ddl)
+    try:
+        cur.execute(ddl)
+    except Exception as e:
+        # 1060 = Duplicate column name：列实际已存在但 information_schema 没查到 → 安全忽略
+        if getattr(e, "args", (None,)) and e.args and e.args[0] == 1060:
+            print(f"   ✅ {table}.{col} 已存在（information_schema 未检出，忽略）")
+            return
+        raise
     print(f"   ✅ {table}.{col} 已补充")
     if index_name and index_ddl and not _has_index(cur, table, index_name):
-        cur.execute(index_ddl)
+        try:
+            cur.execute(index_ddl)
+        except Exception as e:
+            # 1061 = Duplicate key name：索引已存在 → 忽略
+            if getattr(e, "args", (None,)) and e.args and e.args[0] == 1061:
+                print(f"   ✅ {table}.{col} 索引 {index_name} 已存在，忽略")
+                return
+            raise
         print(f"   ✅ {table}.{col} 索引 {index_name} 已补充")
 
 
