@@ -5,6 +5,8 @@ MIGRATION.md 阶段 3：从 `app/modules/fqa/ticket/api/ticket.py` 搬迁而来�
 
 Wave 2.2 完成：工单(tickets)已升格为任务(tasks)，本模块使用统一的 Task/TaskComment 模型。
 """
+import logging
+
 from fastapi import APIRouter, HTTPException, Depends, Query, Request, UploadFile, File, Form, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any
@@ -13,7 +15,9 @@ from datetime import datetime, timedelta
 from app.core.database import get_async_db as get_db, db_manager
 from app.core.auth_routes import get_current_active_user_from_token
 from app.modules.admin.api.auth import has_permission_code
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
+from app.modules.tasks.read_receipt import fetch_comment_read_list, report_read
 from app.modules.tasks.schemas.ticket import (
     TicketCreate, TicketUpdate, TicketResponse, TicketListResponse,
     TicketCommentCreate, TicketCommentUpdate, TicketCommentResponse,
@@ -24,7 +28,13 @@ from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, Ticket
 from app.modules.tasks.services.ticket_service import TicketService
 from app.modules.tasks.services.operation_log_service import OperationLogService, get_role_prefix
 from app.models.task import OperationType
-from app.modules.tasks.api.ws import ws_broadcast_comment, ws_broadcast_comment_deleted, ws_broadcast_task_updated, manager
+from app.modules.tasks.api.ws import (
+    ws_broadcast_comment,
+    ws_broadcast_comment_deleted,
+    ws_broadcast_task_updated,
+    ws_broadcast_read_receipt,
+    manager,
+)
 from app.utils.minio_client import minio_client
 from app.utils.notification_utils import NotificationUtils
 from app.integrations.api import verify_sync_api_key
@@ -32,6 +42,9 @@ from app.core.config import settings
 from app.core.user_identity import user_matches, is_admin_user, to_user_id, actor_username, identity_keys
 
 router = APIRouter(tags=["tasks"])
+
+# 模块级 logger（避免每个端点内重复 logging.getLogger(__name__)）
+logger_task = logging.getLogger(__name__)
 
 # 状态中文映射（用于操作日志描述）
 STATUS_LABEL = {
@@ -900,6 +913,89 @@ async def get_task_comments(
 
     comments = await TicketService.get_comments(db, task_id, token)
     return comments
+
+
+class CommentReadReport(BaseModel):
+    """已读上报表单（WS 不可用时的 REST 兜底通道）。
+
+    ``comment_ids`` 为本轮实际读到的评论 id 列表，``last_read_comment_id`` 为游标。
+    长度上限与服务端清洗上限一致（MAX_COMMENT_IDS_PER_REQUEST）。
+    """
+    comment_ids: List[int] = Field(default_factory=list, max_length=500)
+    last_read_comment_id: Optional[int] = None
+
+
+class CommentReadRecordItem(BaseModel):
+    username: str
+    name: Optional[str] = None
+    avatar_resource_id: Optional[int] = None
+    read_at: Optional[str] = None
+
+
+@router.post("/{task_id}/comments/read")
+async def report_comments_read(
+    task_id: int,
+    payload: CommentReadReport,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """已读上报的 REST 兜底通道。
+
+    前端在 WS 未连接（尚未建连 / 断线重连中 / 降级）时改走本接口，避免
+    「已读帧被静默丢弃后再也不重试」导致的名单漏报。写库成功后同样广播
+    read_receipt，房间内在线成员实时可见。
+    """
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    username = actor_username(current_user)
+    user_name = current_user.get('name') or username
+    avatar_resource_id = current_user.get('avatar_resource_id')
+
+    # 同步 ORM 走线程池，避免阻塞事件循环（report_read 内部自带独立会话）
+    result = await run_in_threadpool(
+        report_read,
+        task_id,
+        username,
+        payload.comment_ids,
+        user_name,
+        avatar_resource_id,
+        payload.last_read_comment_id,
+    )
+
+    try:
+        await ws_broadcast_read_receipt(
+            task_id,
+            username,
+            result["records"],
+            result["comment_ids"],
+            result["last_read_comment_id"],
+        )
+    except Exception as e:  # noqa: BLE001
+        logger_task.warning(f"已读回执广播失败（已读已落库）task_id={task_id}: {e}")
+
+    return {
+        "ok": True,
+        "comment_ids": result["comment_ids"],
+        "last_read_comment_id": result["last_read_comment_id"],
+        "records": result["records"],
+    }
+
+
+@router.get("/{task_id}/comments/{comment_id}/read", response_model=List[CommentReadRecordItem])
+async def get_comment_read_list(
+    task_id: int,
+    comment_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """按需拉取单条评论的已读名单（已读弹层打开时刷新，兜底 welcome 快照截断）。"""
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    return await run_in_threadpool(fetch_comment_read_list, task_id, comment_id)
 
 
 @router.put("/comments/{comment_id}", response_model=TicketCommentResponse)
