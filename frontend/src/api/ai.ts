@@ -271,8 +271,6 @@ export interface UploadStreamCallbacks {
   onResult?: (data: Record<string, unknown>) => void;
   /** 流结束 */
   onDone?: (data: { total_ms?: number }) => void;
-  /** 工具调用轮过渡语撤销：后端确认本轮调工具，通知前端清空已流式上屏的口头预告 */
-  onTransitionRollback?: () => void;
   /** 错误（HTTP / SSE event:error） */
   onError?: (msg: string) => void;
 }
@@ -365,8 +363,6 @@ export const qaUploadStream = async (
             safe(cb.onResult)(data);
           } else if (currentEvent === 'done') {
             safe(cb.onDone)(data as { total_ms?: number });
-          } else if (currentEvent === 'transition_rollback') {
-            safe(cb.onTransitionRollback)();
           } else if (currentEvent === 'error' && data.error) {
             safe(cb.onError)(String(data.error));
           }

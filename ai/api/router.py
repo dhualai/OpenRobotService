@@ -358,14 +358,6 @@ async def ask_question_stream(
                         acc += event.get('data', '')
                         if db is not None and persist_msg_id is not None:
                             _persist_bg(acc)
-                    elif ev_type == "transition_rollback":
-                        # LLM 调工具前说的过渡语（「好的，我帮您转工单…」）只是口头
-                        # 预告，不是正式回复。已从前端气泡撤销，此处同步回退落库
-                        # 缓冲，避免过渡语写进 DB（否则刷新后冗余气泡又出现）。
-                        # 刷新节流计时：防止清空后首个 token 距上次落库超时而把
-                        # 极短前缀立刻写库（0825 事故同类风险）。
-                        acc = ""
-                        last_persist = time.perf_counter()
                     elif ev_type == "status":
                         # 提交/补信息阶段清空 acc（系统话术会重新流式），保证 DB 与前端展示一致。
                         # 同时刷新节流计时：清空后第一个 token 距上次落库常超 0.8s，
@@ -493,15 +485,6 @@ async def ask_question_stream(
                     yield f"event: result\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
                 elif ev_type == "title":
                     yield f"event: title\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-                elif ev_type == "transition_rollback":
-                    # 调工具前的过渡语撤销：必须显式拦截，否则会落进下面的 else
-                    # 被当成 status 转发，前端收不到撤销指令。
-                    # 关键：_tok_buf 里可能还积压着尚未重放的过渡语字符（pacer 按
-                    # 40ms/12 字小块重放），不清空的话撤销后这些字符仍会陆续吐给
-                    # 前端，冗余内容又冒出来。
-                    _tok_buf.clear()
-                    _flush_tokens()
-                    yield f"event: transition_rollback\ndata: {json.dumps(event.get('data', {}), ensure_ascii=False)}\n\n"
                 else:
                     _flush_tokens()
                     stage = event.get('data', {}).get('stage', '?')
@@ -1056,9 +1039,6 @@ async def upload_files(
                             yield f"data: {json.dumps({'token': event.get('data', '')}, ensure_ascii=False)}\n\n"
                         elif ev_type == "result":
                             result_payload = event.get("data", {})
-                        elif ev_type == "transition_rollback":
-                            # 调工具前的过渡语撤销通知，透传给前端清屏
-                            yield f"event: transition_rollback\ndata: {json.dumps(event.get('data', {}), ensure_ascii=False)}\n\n"
                         elif ev_type == "status":
                             yield f"event: status\ndata: {json.dumps(event.get('data', {}), ensure_ascii=False)}\n\n"
                     if result_payload is None:

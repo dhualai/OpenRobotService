@@ -1112,11 +1112,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           visionDone = true;
           if (hasMessage) paint();
         },
-        // 工具调用轮过渡语撤销：已实时上屏的口头预告清空，避免冗余气泡残留
-        onTransitionRollback: () => {
-          acc = '';
-          setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: '' } : m)));
-        },
         onResult: (data) => {
           hasResult = true;
           if (data.ticket) refreshTasks();
@@ -1364,14 +1359,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           } else if (data.content) {
             pending += data.content;
             startTyping();
-          }
-          // 工具调用轮过渡语撤销：LLM 调工具前说的口头预告（「好的，我帮您转工单…」）
-          // 已实时上屏，后端确认本轮调工具后通知撤销 → 清空已显示文本与待出字缓冲，
-          // 不留冗余气泡。与后端落库回退（router 侧 acc 清空）保持一致，刷新后不残留。
-          if (currentEvent === 'transition_rollback') {
-            acc = '';
-            pending = '';
-            setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: '' } : m)));
           }
           // 流式错误（如诊断 pipeline 抛错）：捕获错误信息，循环结束后抛出，避免静默空气泡
           if (currentEvent === 'error' && data.error) {
