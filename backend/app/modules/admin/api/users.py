@@ -621,6 +621,13 @@ async def create_user(
     user_id = f"user_{uuid.uuid4().hex[:8]}"
     
     hashed_password = get_password_hash(user_data.password)
+    # 初始化 USP 账户时，前端传入明文密码，此处走 pbkdf2_sha256 哈希后存储，
+    # 与个人中心更新接口（PUT /users/{username}）的 USP 密码处理保持一致。
+    external_credentials = user_data.external_credentials
+    if external_credentials and "usp" in external_credentials:
+        usp = external_credentials.get("usp") or {}
+        if usp.get("password"):
+            external_credentials["usp"]["password"] = get_password_hash(usp["password"])
     success = db_manager.add_user(
         user_id=user_id,
         username=user_data.username,
@@ -628,7 +635,7 @@ async def create_user(
         permissions=user_data.permissions,
         name=user_data.name,
         status=user_data.status,
-        external_credentials=user_data.external_credentials,
+        external_credentials=external_credentials,
         company=user_data.company,
         department=user_data.department,
         responsibility_modules=user_data.responsibility_modules,
