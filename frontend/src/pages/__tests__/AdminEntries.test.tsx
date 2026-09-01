@@ -12,10 +12,19 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
+// 用户统计区域依赖 Loading（加载态）与 ReactECharts（四张图表），
+// jsdom 无 canvas，均以占位组件 mock
 vi.mock('tdesign-mobile-react', () => ({
   Navbar: ({ title }: { title?: ReactNode }) => (
     <nav data-testid="navbar">{title}</nav>
   ),
+  Loading: ({ text }: { text?: ReactNode }) => (
+    <div data-testid="loading">{text}</div>
+  ),
+}));
+
+vi.mock('echarts-for-react', () => ({
+  default: () => <div data-testid="echarts" />,
 }));
 
 import AdminEntries from '../admin/AdminEntries';
@@ -52,9 +61,21 @@ describe('AdminEntries', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/admin/roles');
   });
 
+  it('should render the four user stats charts', () => {
+    renderView();
+    // 四张图表标题：柱状图 + 环形图 + 时间段内来源饼图 + 最新快照来源分布饼图
+    expect(screen.getByText('用户增减趋势')).toBeInTheDocument();
+    expect(screen.getByText('当前用户构成')).toBeInTheDocument();
+    expect(screen.getByText('关注来源分布')).toBeInTheDocument();
+    expect(screen.getByText('用户来源分布')).toBeInTheDocument();
+  });
+
   it('should render line icons for each entry card', () => {
     renderView();
-    const cards = screen.getAllByRole('button');
+    // 页面还有用户统计区的「重置」等按钮，这里只校验入口卡片
+    const cards = screen
+      .getAllByRole('button')
+      .filter((b) => b.classList.contains('admin-entries-card'));
     expect(cards.length).toBeGreaterThanOrEqual(3);
     cards.forEach((card) => {
       expect(card.querySelector('svg')).not.toBeNull();

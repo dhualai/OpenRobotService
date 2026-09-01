@@ -46,6 +46,12 @@ export default defineConfig(({ command }) => {
         '@': path.resolve(__dirname, './src'),
       },
     },
+    // tdesign-mobile-react 各组件按需引入 style 子路径（~60+ 个 */style/index.css），
+    // 不预打包会在页面加载中逐批发现新依赖并触发 "optimized dependencies changed. reloading"
+    // 整页重载（曾导致页面无限刷新循环），故启动时一次性预打包。
+    optimizeDeps: {
+      include: ['tdesign-mobile-react', 'tdesign-icons-react'],
+    },
     server: {
       host: '0.0.0.0',
       port: 5173,

@@ -73,6 +73,12 @@ from app.models.module_tree import ModuleTree
 from app.models.module_tree_edit import ModuleTreeEdit
 from app.models.module_tree_node import ModuleTreeNode
 
+# 用户信息（JSON 快照）
+from app.models.user_info import UserInfo
+
+# 用户统计（按日期 + 来源）
+from app.models.user_statistics import UserStatistics
+
 __all__ = [
     "Base",
     # identity
@@ -95,4 +101,8 @@ __all__ = [
     "Company", "Department",
     # module tree
     "ModuleTree", "ModuleTreeEdit", "ModuleTreeNode",
+    # user info
+    "UserInfo",
+    # user statistics
+    "UserStatistics",
 ]

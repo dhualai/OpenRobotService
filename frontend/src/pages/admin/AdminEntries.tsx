@@ -1,8 +1,10 @@
 // 后台管理 —— "其他"入口（从仪表盘「更多功能」进入）
 // 仪表盘（/admin，Dashboard.tsx）是默认首页；本页仅承载不常用的管理员工具入口。
 // 样式参考 macaron other 页：surface-card 行式入口 + 色调淡色图标圆角块。
-// 顶部用户统计：柱状图（同日期新增/取消用户合计）+ 环形图（真实/虚拟用户构成，中心显示总数）+ 饼图（时间段内来源分布），
-// 数据源后端 /api/wechat/user-summary 与 /api/wechat/batch-user-info（X-API-Key 鉴权）；每 10 秒轮询刷新功能已停用（代码注释保留）。
+// 顶部用户统计：柱状图（同日期新增/取消用户合计）+ 环形图（真实/虚拟用户构成，中心显示总数）+ 饼图（时间段内来源分布）
+// + 用户来源分布饼图（最新快照全部关注用户的 subscribe_scene 分布，不受筛选框影响），
+// 数据源后端 /api/wechat/user-summary-db 与 /api/wechat/batch-user-info-db（读 user_statistics/user_info 表，
+// 由每日凌晨 1:00 与整点定时任务落库，不再实时调微信 API）；每 10 秒轮询刷新功能已停用（代码注释保留）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loading, Navbar } from 'tdesign-mobile-react';
@@ -12,7 +14,7 @@ import {
 } from '@/shared/components/macaronIcons';
 import ReactECharts from '@/shared/components/ReactECharts';
 import { fetchBatchUserInfo, fetchUserSummary, USER_SOURCE_LABELS } from '@/api/wechat';
-import type { UserSummaryItem } from '@/api/wechat';
+import type { UserSummaryItem, WechatUserInfo } from '@/api/wechat';
 
 interface Entry { path: string; label: string; desc: string; icon: ReactNode; tone: string; }
 
@@ -23,17 +25,7 @@ function fmtDate(d: Date): string {
   return `${d.getFullYear()}-${m}-${day}`;
 }
 
-/** 时间筛选最大跨度（含头含尾天数）：与微信 getusersummary 单次查询上限一致，超出会报 errcode=61501 */
-const MAX_RANGE_DAYS = 7;
-
-/** yyyy-MM-dd 日期字符串加 n 天（本地时区；拼 T00:00:00 解析避免 UTC 偏移一天） */
-function addDays(dateStr: string, n: number): string {
-  const d = new Date(`${dateStr}T00:00:00`);
-  d.setDate(d.getDate() + n);
-  return fmtDate(d);
-}
-
-/** 默认时间范围：最近 5 天不含当天（begin=今天-5，end=昨天；微信数据 T+1 延迟，最早可查昨日） */
+/** 默认时间范围：最近 5 天不含当天（begin=今天-5，end=昨天；统计数据 T+1 次日 01:00 落库，最早可查昨日） */
 function getDefaultRange(): { begin: string; end: string } {
   const now = new Date();
   const begin = new Date(now);
@@ -52,6 +44,23 @@ const PIE_COLORS = ['#227197', '#3697c3', '#51bfee', '#93e0ff', '#7fc6e8', '#5aa
 // 环形图真实/虚拟用户配色
 const DONUT_COLOR_REAL = '#3697c3';
 const DONUT_COLOR_VIRTUAL = '#c9d4d9';
+
+/** subscribe_scene 关注渠道编码 → 中文含义（微信官方 ADD_SCENE_* 定义，取自用户提供的接口文档） */
+const SUBSCRIBE_SCENE_LABELS: Record<string, string> = {
+  ADD_SCENE_SEARCH: '公众号搜索',
+  ADD_SCENE_ACCOUNT_MIGRATION: '公众号迁移',
+  ADD_SCENE_PROFILE_CARD: '名片分享',
+  ADD_SCENE_QR_CODE: '扫描二维码',
+  ADD_SCENE_PROFILE_LINK: '图文页内名称点击',
+  ADD_SCENE_PROFILE_ITEM: '图文页右上角菜单',
+  ADD_SCENE_PAID: '支付后关注',
+  ADD_SCENE_WECHAT_ADVERTISEMENT: '微信广告',
+  ADD_SCENE_REPRINT: '他人转载',
+  ADD_SCENE_LIVESTREAM: '视频号直播',
+  ADD_SCENE_CHANNELS: '视频号',
+  ADD_SCENE_WXA: '小程序关注',
+  ADD_SCENE_OTHERS: '其他',
+};
 
 const adminEntries: Entry[] = [
   { path: '/admin/users', label: '用户管理', desc: '用户账号CRUD、派单画像', icon: <MacUsers />, tone: 'blue-1' },
@@ -79,28 +88,28 @@ export default function AdminEntries() {
   const [userStats, setUserStats] = useState<{ total: number; real: number; virtual: number } | null>(null);
   const [userLoading, setUserLoading] = useState(true);
   const [userError, setUserError] = useState('');
+  // 最新快照全部关注用户的 subscribe_scene 来源分布（与当前用户构成同源同刷新，不受筛选框影响）
+  const [sceneStats, setSceneStats] = useState<{ total: number; list: { name: string; value: number }[] } | null>(null);
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
 
-  // 时间筛选联动：保证 begin ≤ end 且含头含尾 ≤ MAX_RANGE_DAYS 天，超限时另一端自动收窄
-  // （begin 往前提 → end 跟着前移且不越过昨天；end 往后拉 → begin 跟着后移）
+  // 时间筛选联动：数据来自本地表，不限跨度；仅保证 begin ≤ end，且当天及以后无数据
+  // （T+1 次日凌晨落库），任一端越过昨天时统一收窄到昨天，另一端跟随对齐
   const handleBeginChange = (v: string) => {
-    setBeginDate(v);
-    if (!v) return;
-    const maxEnd = addDays(v, MAX_RANGE_DAYS - 1);
-    const nextEnd = endDate > maxEnd ? maxEnd : (endDate < v ? v : endDate);
-    setEndDate(nextEnd > yesterday ? yesterday : nextEnd);
+    const clamped = v && v > yesterday ? yesterday : v;
+    setBeginDate(clamped);
+    if (!clamped) return;
+    if (endDate && endDate < clamped) setEndDate(clamped);
   };
 
   const handleEndChange = (v: string) => {
-    setEndDate(v);
-    if (!v) return;
-    const minBegin = addDays(v, -(MAX_RANGE_DAYS - 1));
-    const nextBegin = beginDate < minBegin ? minBegin : (beginDate > v ? v : beginDate);
-    setBeginDate(nextBegin);
+    const clamped = v && v > yesterday ? yesterday : v;
+    setEndDate(clamped);
+    if (!clamped) return;
+    if (beginDate && beginDate > clamped) setBeginDate(clamped);
   };
 
   // 恢复默认时间范围（最近 5 天不含当天）；日期变化触发下方 useEffect 自动重新查询
@@ -136,11 +145,24 @@ export default function AdminEntries() {
           real,
           virtual: items.length - real,
         });
+        // 用户来源分布：仅统计 subscribe===1 的用户，按 subscribe_scene 归组（缺失归入其他）
+        const sceneMap = new Map<string, number>();
+        items.filter((u) => u.subscribe === 1).forEach((u) => {
+          const scene = String((u as WechatUserInfo).subscribe_scene || 'ADD_SCENE_OTHERS');
+          sceneMap.set(scene, (sceneMap.get(scene) || 0) + 1);
+        });
+        setSceneStats({
+          total: sceneMap.size,
+          list: [...sceneMap.entries()]
+            .map(([s, v]) => ({ name: SUBSCRIBE_SCENE_LABELS[s] ?? `未知(${s})`, value: v }))
+            .sort((a, b) => b.value - a.value),
+        });
         setUserError('');
       })
       .catch((e: Error) => {
         if (!mountedRef.current || silent) return;
         setUserStats(null);
+        setSceneStats(null);
         setUserError(e?.message || '加载当前用户数据失败');
       })
       .finally(() => { if (mountedRef.current && !silent) setUserLoading(false); });
@@ -231,6 +253,21 @@ export default function AdminEntries() {
     }],
   }), [userStats]);
 
+  // 用户来源分布饼图：最新快照全部关注用户的 subscribe_scene 分布（与筛选框无关，随当前用户构成同源刷新）
+  const scenePieOption = useMemo(() => ({
+    color: PIE_COLORS,
+    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+    legend: { type: 'scroll', bottom: 0, itemWidth: 10, itemHeight: 10, textStyle: { color: '#888d8f', fontSize: 10 } },
+    series: [{
+      type: 'pie',
+      radius: ['30%', '55%'],
+      center: ['50%', '40%'],
+      data: sceneStats?.list || [],
+      label: { color: '#888d8f', fontSize: 10, formatter: '{b} {c}' },
+      itemStyle: { borderColor: '#fff', borderWidth: 2 },
+    }],
+  }), [sceneStats]);
+
   return (
     <div className="admin-view">
       <Navbar title="其他" leftArrow onLeftClick={() => navigate('/admin')} fixed />
@@ -243,7 +280,7 @@ export default function AdminEntries() {
                 type="date"
                 className="admin-entries-stats__date"
                 value={beginDate}
-                max={endDate || undefined}
+                max={yesterday}
                 onChange={(e) => handleBeginChange(e.target.value)}
               />
               <span className="admin-entries-stats__sep">至</span>
@@ -291,6 +328,18 @@ export default function AdminEntries() {
                 <div className="admin-entries-stats__empty">该时间段暂无用户增减数据</div>
               ) : (
                 <ReactECharts option={pieOption} style={{ height: 240 }} notMerge />
+              )}
+            </div>
+            <div className="admin-entries-stats__chart">
+              <span className="admin-entries-stats__sub">用户来源分布</span>
+              {userLoading ? (
+                <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
+              ) : userError ? (
+                <div className="admin-entries-stats__empty">{userError}</div>
+              ) : !sceneStats || sceneStats.list.length === 0 ? (
+                <div className="admin-entries-stats__empty">暂无关注用户来源数据</div>
+              ) : (
+                <ReactECharts option={scenePieOption} style={{ height: 240 }} notMerge />
               )}
             </div>
           </div>

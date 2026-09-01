@@ -28,6 +28,8 @@ from app.wechat.utils.opt_logger import log_operation
 from app.services.hmac_utils import generate_password, chinese_to_pinyin, get_password_hash, verify_password
 from app.services.user_service import user_service
 from app.core.database import db_manager, UserDB
+from app.models.user_info import UserInfo
+from app.models.user_statistics import UserStatistics
 from app.wechat.services.permission_service import PermissionService
 from app.wechat.api.match_report import parse_daily_report
 from app.modules.admin.services.daily_report_service import daily_report_service
@@ -736,6 +738,111 @@ async def get_user_summary(
     except Exception as e:
         logger.error(f"获取用户增减数据失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取用户增减数据过程中发生错误: {str(e)}")
+
+
+@router.post("/user-summary-db")
+async def get_user_summary_from_db(
+    request: Request,
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """读取 user_statistics 表存储的用户增减数据（每日凌晨 1:00 定时任务落库的微信渠道明细）。
+
+    返回结构与 /user-summary 一致：{"success": true, "list": [...], "total": N}，
+    每项含 ref_date/user_source/new_user/cancel_user。表内为微信接口原样数据，
+    查询跨度不限；数据 T+1 落库（当日数据次日 01:00 写入），end_date 不能为
+    今天或未来日期。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+
+    begin_date = (body or {}).get('begin_date')
+    end_date = (body or {}).get('end_date')
+
+    if not begin_date or not end_date:
+        raise HTTPException(status_code=400, detail="需提供 begin_date 和 end_date (yyyy-MM-dd)")
+
+    try:
+        begin = datetime.strptime(begin_date, '%Y-%m-%d').date()
+        end = datetime.strptime(end_date, '%Y-%m-%d').date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日期格式错误，需为 yyyy-MM-dd")
+
+    if begin > end:
+        raise HTTPException(status_code=400, detail="begin_date 不能晚于 end_date")
+
+    # 统计数据 T+1 落库（每日凌晨 1:00 写入昨日数据），当天及以后暂无数据
+    today = datetime.now().date()
+    if end >= today:
+        raise HTTPException(
+            status_code=400,
+            detail=f"end_date 不能为今天或未来日期（统计数据 T+1 落库，最早可查到昨日；今天为 {today.strftime('%Y-%m-%d')}）",
+        )
+
+    try:
+        db = db_manager.get_db()
+        try:
+            rows = db.query(UserStatistics).filter(
+                UserStatistics.ref_date >= begin,
+                UserStatistics.ref_date <= end,
+            ).order_by(UserStatistics.ref_date, UserStatistics.user_source).all()
+        finally:
+            db.close()
+
+        return {
+            "success": True,
+            "list": [
+                {
+                    "ref_date": r.ref_date.strftime('%Y-%m-%d'),
+                    "user_source": r.user_source,
+                    "new_user": r.new_user,
+                    "cancel_user": r.cancel_user,
+                }
+                for r in rows
+            ],
+            "total": len(rows),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"读取用户增减数据失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"读取用户增减数据过程中发生错误: {str(e)}")
+
+
+@router.post("/batch-user-info-db")
+async def get_batch_user_info_from_db(
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """读取 user_info 表最新快照（整点快照任务落库的 batch-user-info 返回值）。
+
+    返回结构与 /batch-user-info 一致：{"success": true, "user_info_list": [...],
+    "total": N}。无快照时返回空列表（total=0）。数据最长滞后 1 小时
+    （快照任务每整点刷新）。
+    """
+    try:
+        db = db_manager.get_db()
+        try:
+            latest = db.query(UserInfo).order_by(
+                UserInfo.created_time.desc(), UserInfo.id.desc(),
+            ).first()
+        finally:
+            db.close()
+
+        if not latest or not latest.user_info:
+            return {"success": True, "user_info_list": [], "total": 0}
+
+        payload = latest.user_info if isinstance(latest.user_info, dict) else {}
+        return {
+            "success": True,
+            "user_info_list": payload.get('user_info_list', []),
+            "total": len(payload.get('user_info_list', [])),
+        }
+
+    except Exception as e:
+        logger.error(f"读取用户信息快照失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"读取用户信息快照过程中发生错误: {str(e)}")
 
 
 @router.get("/callback")
