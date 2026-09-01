@@ -3,7 +3,7 @@ import json
 import requests
 from sqlalchemy import create_engine, text, inspect, bindparam
 from sqlalchemy.orm import sessionmaker
-from app.models.delivery import UNDERTAKE_YES
+from app.models.delivery import UNDERTAKE_YES, PROJECT_DELETED
 from app.modules.admin.schemas_das.request_models import ProjectBase, ProjectCreate, ProjectUpdate
 from app.modules.admin.models_das.models import Project
 from app.modules.admin.utils_das.config import DATABASE_URL, AUTH_SERVICE_BASE_URL
@@ -220,7 +220,11 @@ class ProjectService:
         """
         db = SessionLocal()
         try:
-            query = db.query(Project).filter(Project.id != None, Project.id != "")
+            query = db.query(Project).filter(
+                Project.id != None,
+                Project.id != "",
+                Project.status != PROJECT_DELETED,
+            )
             if not include_pending:
                 query = query.filter(Project.undertake_status == UNDERTAKE_YES)
             projects = query.offset(skip).limit(limit).all()
@@ -238,10 +242,11 @@ class ProjectService:
         db = SessionLocal()
         try:
             query = db.query(Project).filter(
-                Project.id != None,
-                Project.id != "",
-                Project.id.in_(project_ids),
-            )
+            Project.id != None,
+            Project.id != "",
+            Project.id.in_(project_ids),
+            Project.status != PROJECT_DELETED,
+        )
             if not include_pending:
                 query = query.filter(Project.undertake_status == UNDERTAKE_YES)
             projects = query.all()
@@ -252,7 +257,10 @@ class ProjectService:
     def get_project(self, project_id: int) -> Optional[Dict]:
         db = SessionLocal()
         try:
-            project = db.query(Project).filter(Project.id == project_id).first()
+            project = db.query(Project).filter(
+                Project.id == project_id,
+                Project.status != PROJECT_DELETED,
+            ).first()
             return self._convert_to_dict(project) if project else None
         finally:
             db.close()
@@ -323,7 +331,10 @@ class ProjectService:
     def update_project(self, project_id: int, update_data: Dict) -> Optional[Dict]:
         db = SessionLocal()
         try:
-            project = db.query(Project).filter(Project.id == project_id).first()
+            project = db.query(Project).filter(
+                Project.id == project_id,
+                Project.status != PROJECT_DELETED,
+            ).first()
             if not project:
                 return None
 
@@ -369,10 +380,19 @@ class ProjectService:
         db = SessionLocal()
         try:
             project = db.query(Project).filter(Project.id == project_id).first()
-            if not project:
+            if not project or project.status == PROJECT_DELETED:
                 return False
-            
-            db.delete(project)
+
+            # 先清理 user_project_roles 中引用本项目的关联记录，否则外键约束
+            # user_project_roles_ibfk_2（project_id → project.id）会阻止删除
+            from app.models.identity import user_project_roles
+            db.execute(user_project_roles.delete().where(
+                user_project_roles.c.project_id == str(project.id)))
+
+            # 软删除：保留 project 记录，仅标记为已删除。
+            # 后续创建新项目时 check_project_duplicate 仍会命中本记录（按编号/名称），
+            # 从而阻止编号/名称被复用，达到去重目的。
+            project.status = PROJECT_DELETED
             db.commit()
             return True
         finally:
@@ -383,6 +403,7 @@ class ProjectService:
         try:
             projects = db.query(Project).filter(
                 Project.undertake_status == UNDERTAKE_YES,
+                Project.status != PROJECT_DELETED,
                 (Project.name.ilike(f"%{keyword}%") |
                  Project.description.ilike(f"%{keyword}%") |
                  Project.code.ilike(f"%{keyword}%") |
@@ -397,7 +418,10 @@ class ProjectService:
                        contact_person_id: Optional[str] = None) -> List[Dict]:
         db = SessionLocal()
         try:
-            query = db.query(Project).filter(Project.undertake_status == UNDERTAKE_YES)
+            query = db.query(Project).filter(
+            Project.undertake_status == UNDERTAKE_YES,
+            Project.status != PROJECT_DELETED,
+        )
 
             if status:
                 query = query.filter(Project.status == status)
