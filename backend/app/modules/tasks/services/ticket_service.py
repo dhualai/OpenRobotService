@@ -677,11 +677,23 @@ class TicketService:
         
         if ticket:
             user_map = await TicketService._get_user_map(token)
+            # user_map 为进程内缓存（10min TTL）；若某 id（新加入用户）解析不到名字会回退成裸 id，
+            # 导致前端气泡显示 id 而非名字。检测到缺失时强制失效缓存重建一次，再解析真实名字。
+            _need_refresh = (
+                (ticket.assigned_to and not user_map.get(ticket.assigned_to))
+                or (ticket.created_by and not user_map.get(ticket.created_by))
+                or (ticket.customer and not user_map.get(ticket.customer))
+            )
+            if _need_refresh:
+                user_service.invalidate_cache()
+                user_map = await TicketService._get_user_map(token)
             setattr(ticket, "created_by_name", user_map.get(ticket.created_by, ticket.created_by))
             setattr(ticket, "reporter_name", user_map.get(ticket.created_by, ticket.created_by))
             if ticket.assigned_to:
-                setattr(ticket, "assigned_to_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
-                setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to, ticket.assigned_to))
+                # 只接受解析出的真实姓名，解析不到则返回 None（不回落成裸 id）——
+                # 前端据此继续轮询等待真实名字，而不是把 id 当名字展示。
+                setattr(ticket, "assigned_to_name", user_map.get(ticket.assigned_to))
+                setattr(ticket, "assignee_name", user_map.get(ticket.assigned_to))
             if ticket.customer:
                 setattr(ticket, "customer_name", user_map.get(ticket.customer, ticket.customer))
         
