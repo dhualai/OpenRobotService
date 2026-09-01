@@ -130,18 +130,7 @@ export interface TicketDraft {
   missing_fields?: string[];
   /** 最晚解决时间（ISO 字符串，转工单弹窗 antd DatePicker 选择 → overrides → confirm_submit 入库 → 落 Task.deadline_at） */
   deadline_at?: string;
-  /** 协商阶段（当前步骤）ID：提单弹窗必选，落 Task.curr_step_id */
-  curr_step_id?: number;
-  /** 阶段完成时间（SLA，ISO 字符串）：提单弹窗必选，落 Task.curr_step_endtime */
-  curr_step_endtime?: string;
   [k: string]: unknown;
-}
-
-/** 协商阶段（task_steps 模板步骤） */
-export interface TicketStep {
-  id: number;
-  step_name: string;
-  sequence: number;
 }
 
 export interface PrepareTicketResult {
@@ -191,12 +180,6 @@ export const qaGetDraft = (sessionId: string) =>
 export const qaClearDraft = (sessionId: string): Promise<{ code: number; message?: string }> =>
   fetchWithAuth(`${BASE}/qa/ticket/draft?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' }).then(
     (r) => r.json(),
-  );
-
-/** 按工单类型拉协商阶段列表（提单弹窗打开时调用；task_steps 后续可配置，故独立按需拉取） */
-export const qaGetTicketSteps = (type: string) =>
-  aiGet<{ code: number; data?: { steps: TicketStep[] }; message?: string }>(
-    '/qa/ticket/steps', { type },
   );
 
 /** 获取工单 */
