@@ -2011,27 +2011,34 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 控制台看不到请求、气泡永远显示"派单中"（只有刷新清空模块级 requestCache 后才真正请求）。
       const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string; redispatch?: { result?: Parameters<typeof redispatchTipFromResult>[0] } }>(`/${dbId}`, { skipCache: true });
       if (task.assigned_to) {
-        const assignedName = task.assigned_to_name || task.assigned_to;
-        // 二次派单感知增强（M3）：派单完成时从 redispatch.result 生成提醒文案
-        const newOv = { ...ov, assigned_to_name: assignedName, redispatch_tip: redispatchTipFromResult(task.redispatch?.result) };
-        // 注意：不能用 cancelledRef 判断是否更新内存——在 <React.StrictMode> 下，开发模式的
-        // effect 双调用会先触发 cleanup（cancelledRef.current=true）再 remount，且 useRef 不重置，
-        // 导致该标记永久为 true，setMessages 被跳过 → 气泡永远停在「派单中」（DB 却能回写）。
-        // React 18 起卸载组件上 setState 不再告警，真卸载时轮询也会被 cleanup 中断，故直接更新即可。
-        setMessages((prev) => prev.map((m) =>
-          m.id === msgId && m.ticket_overview
-            ? { ...m, ticket_overview: newOv }
-            : m
-        ));
-        // 回写 DB：派单状态持久化。切换/刷新/历史会话切走后从 DB 读到即显示"已派单"，
-        // 不再依赖内存轮询跨切换存活（此前状态只在内存，切换后丢失→气泡停在"派单中"）。
-        // 回写句柄 = 气泡 id：confirm 用 String(appendMessage 返回的 DB id)，恢复用 String(m.id)，均为 DB message id。
-        const dbMsgId = Number(msgId);
-        if (Number.isFinite(dbMsgId) && dbMsgId > 0) {
-          updateMessageContent(dbMsgId, JSON.stringify(newOv)).catch(() => {});
+        // 只接受后端解析出的真实名字 assigned_to_name，绝不用 assigned_to（裸 id）兜底显示。
+        // 若瞬时无法解析（后端 user_map 缓存缺该用户，assigned_to_name 为空/仍等于 id），
+        // 不停止轮询，继续等到解析出真实名字（或超过轮询上限），避免气泡显示裸 id。
+        const nameResolved = !!task.assigned_to_name && task.assigned_to_name !== task.assigned_to;
+        if (nameResolved) {
+          const assignedName = task.assigned_to_name as string;
+          // 二次派单感知增强（M3）：派单完成时从 redispatch.result 生成提醒文案
+          const newOv = { ...ov, assigned_to_name: assignedName, redispatch_tip: redispatchTipFromResult(task.redispatch?.result) };
+          // 注意：不能用 cancelledRef 判断是否更新内存——在 <React.StrictMode> 下，开发模式的
+          // effect 双调用会先触发 cleanup（cancelledRef.current=true）再 remount，且 useRef 不重置，
+          // 导致该标记永久为 true，setMessages 被跳过 → 气泡永远停在「派单中」（DB 却能回写）。
+          // React 18 起卸载组件上 setState 不再告警，真卸载时轮询也会被 cleanup 中断，故直接更新即可。
+          setMessages((prev) => prev.map((m) =>
+            m.id === msgId && m.ticket_overview
+              ? { ...m, ticket_overview: newOv }
+              : m
+          ));
+          // 回写 DB：派单状态持久化。切换/刷新/历史会话切走后从 DB 读到即显示"已派单"，
+          // 不再依赖内存轮询跨切换存活（此前状态只在内存，切换后丢失→气泡停在"派单中"）。
+          // 回写句柄 = 气泡 id：confirm 用 String(appendMessage 返回的 DB id)，恢复用 String(m.id)，均为 DB message id。
+          const dbMsgId = Number(msgId);
+          if (Number.isFinite(dbMsgId) && dbMsgId > 0) {
+            updateMessageContent(dbMsgId, JSON.stringify(newOv)).catch(() => {});
+          }
+          pollingRef.current.delete(msgId);
+          return; // 已派单且名字已解析，停止
         }
-        pollingRef.current.delete(msgId);
-        return; // 已派单，停止
+        // 名字未解析（仍是 id）→ 不 update 不回写，落到底部 timeout 继续轮询，等真名
       }
     } catch { /* 单次失败继续 */ }
     pollTimeoutsRef.current[msgId] = setTimeout(() => {
@@ -2127,8 +2134,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           }
           continue;
         }
-        const latestName = task.assigned_to_name || task.assigned_to;
-        if (latestName !== ov.assigned_to_name) {
+        // 只接受后端解析出的真实名字，绝不用 assigned_to（裸 id）兜底：若名字尚未解析出则跳过更新，
+        // 由 pollDispatch 继续轮询等真名，避免气泡显示裸 id（刷新后才变名字）。
+        const latestName = task.assigned_to_name;
+        if (latestName && latestName !== ov.assigned_to_name) {
           // 二次派单感知增强（M3）：同步时也刷新派单结果提醒文案
           const newOv = { ...ov, assigned_to_name: latestName, redispatch_tip: redispatchTipFromResult((task as any)?.redispatch?.result) };
           setMessages((prev) => prev.map((x) =>
