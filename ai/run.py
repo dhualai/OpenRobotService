@@ -235,7 +235,7 @@ async def lifespan(app: FastAPI):
     knowledge_worker = None
     knowledge_stop = None
     try:
-        from ai.agents.AiTaskPlatform.services.diagnosis_worker import run_knowledge_worker
+        from ai.core.knowledge_worker import run_knowledge_worker
         knowledge_stop = asyncio.Event()
         knowledge_worker = asyncio.create_task(run_knowledge_worker(knowledge_stop))
         logger.info(f"知识沉淀 Worker 已启动 (scan interval={get_ai_config().diagnosis_scan_interval}s)")
