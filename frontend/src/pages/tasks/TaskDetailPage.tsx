@@ -113,6 +113,8 @@ interface Ticket {
   attachments?: Attachment[]; metadata_info?: Record<string, unknown>; comments?: Comment[];
   // tasks 详情接口 GET /{id} 返回蛇形 deadline_at（见 TicketResponse）
   deadline_at?: string | null;
+  // 二次派单感知增强（M3）：未派到指定人时的完整话术（详情页 redispatch.result.tip_detail）
+  redispatch?: { result?: { tip_detail?: string | null } } | null;
 }
 
 const generateTempId = () =>
@@ -133,6 +135,8 @@ export default function TaskDetailPage() {
 
   const [detail, setDetail] = useState<Ticket | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // 二次派单感知增强（M3）：未派到指定人时的完整情商话术（详情页 redispatch.result.tip_detail）
+  const [redispatchTipDetail, setRedispatchTipDetail] = useState<string>('');
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; deadline_at?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
   // 最晚解决时间区间：基准 = 工单创建时间（detail.created_at），而非用户操作时刻
@@ -205,6 +209,8 @@ export default function TaskDetailPage() {
     request<Ticket>(`/${detailId}?load_comments=true`, { skipCache: true })
       .then((t) => {
         setDetail(t);
+        // 二次派单感知增强（M3）：未派到指定人时的完整话术
+        setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
         // 摘要存 metadata_info.ai_summary（不混入讨论区）
         const meta = t.metadata_info || {};
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
@@ -1162,6 +1168,8 @@ export default function TaskDetailPage() {
         setDetail(t);
         const meta = t.metadata_info || {};
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
+        // 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径）
+        setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
       })
       .catch(() => {});
   };
@@ -1333,6 +1341,11 @@ export default function TaskDetailPage() {
               </div>
             </div>
           </div>
+
+          {/* 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径） */}
+          {redispatchTipDetail && (
+            <div className="redispatch-tip-detail">派单说明：{redispatchTipDetail}</div>
+          )}
         </div>
 
         <div className="detail-card">

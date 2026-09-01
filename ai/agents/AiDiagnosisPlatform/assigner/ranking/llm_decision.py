@@ -166,9 +166,9 @@ class LlmDecision:
                 f"总分={s:.2f} 在Top{topk}窗口={'是' if in_window else '否'} → 交由LLM协商"
             )
             extra_hints.append(
-                f"用户明确指定的倾向处理人: {strong_match.name}(ID:{strong_match.id})，"
+                f"用户明确指定的倾向处理人: {strong_match.name}，"
                 f"总分={s:.2f}，{'在候选窗口内(优先考虑遵循用户意图)' if in_window else '不在候选窗口内(仅作参考，需谨慎)'}。"
-                f"请结合精排与其分数决定是否改派；若遵循请在 reasoning 说明。"
+                f"请结合精排与其分数决定是否改派；若遵循请在 reasoning 说明（reasoning 中请不要出现 users.id）。"
             )
 
         # 1) 摇人吧专属：识别工单涉及的子界面/模块 → 找候选中的"模块总负责人/负责人"，
@@ -251,7 +251,7 @@ class LlmDecision:
                     )
                     extra_hints.append(
                         f"摇人吧模块专属提示: 工单涉及模块 '{mod}'，候选中的模块总负责人/负责人为 "
-                        f"{chosen.name}(ID:{chosen.id}, 总分={s:.2f})，"
+                        f"{chosen.name}（总分={s:.2f}），"
                         f"{'在候选窗口内(可优先考虑指派该模块负责人)' if in_window else '不在候选窗口内(仅作参考)'}。"
                     )
 
@@ -356,14 +356,23 @@ class LlmDecision:
         ]
 
         emap = {e.id: e for e in engineers}
+        # 决策阶段统一用 id（工程唯一、无同名歧义）；姓名清洗只在给用户展示 reasoning 时做（见 _parse）。
         for rank, (eid, d) in enumerate(list(ranked_scores.items())[:5], 1):
             eng = emap.get(eid)
             if not eng:
                 continue
             dep = f"({eng.department})" if eng.department else ""
+            tags = []
+            if d.get("preferred_assignee"):
+                tags.append("[用户倾向]")
+            if d.get("contact_assignee"):
+                tags.append("[项目对接人]")
+            if d.get("is_creator"):
+                tags.append("[自提单人]")
+            tag_str = (" " + " ".join(tags)) if tags else ""
             lines.append(
                 f"#{rank} ID:{eng.id} | L{eng.job_level} | {dep} "
-                f"|{eng.modules_display()}"
+                f"|{eng.modules_display()}{tag_str}"
             )
             lines.append(
                 f"   分数: 总={d.get('total_score',0):.2f} "
@@ -387,6 +396,8 @@ class LlmDecision:
                 boosts.append("用户倾向人加权")
             if d.get("contact_assignee"):
                 boosts.append("项目对接人加权")
+            if d.get("contact_floor"):
+                boosts.append(f"保底≥{d.get('contact_floor')}")
             if d.get("dept_multiplier", 1.0) > 1.0:
                 boosts.append(f"部门优先×{d.get('dept_multiplier')}")
             if d.get("level_multiplier", 1.0) < 1.0:
@@ -414,20 +425,47 @@ class LlmDecision:
         # 重新派单备注/转派原因作为重要决策上下文：让 LLM 审视"精排结果是否符合用户的转派要求"。
         # 备注一般为转派原因（原处理人不合适/需更合适/明确点名），用自然语言表达；
         # 结构化倾向人（用户明确勾选）由 adecide 分支 0 作为 extra_hints 传入，此处不重复。
-        # 有备注 → 要求 LLM 作为最终决策者，结合备注审视精排 #1；无备注 → 正常拍板（默认采纳精排 #1）。
+        # ★ 重派单动作本身即"对原处理人不满意、希望换人"的强信号（无论是否写了备注）：
+        #   只要 ticket.preferred_assignee 有值（重派单前端必传）就提示换人意图，让 LLM
+        #   审视精排 #1 是否为"仍按原处理人思路"，而非默认照单全收。
         _pref_remark = (getattr(ticket, "preferred_assignee_remark", "") or "").strip()
-        if _pref_remark:
+        _pref_assignee = (getattr(ticket, "preferred_assignee", "") or "").strip()
+        _is_redispatch = bool(_pref_assignee or _pref_remark)
+        if _is_redispatch:
             _pref_lines = [
                 "",
                 "【用户重新派单意图（需纳入你的最终决策）】",
-                f"用户转派原因/备注: {_pref_remark}",
-                "作为最终决策者，请结合这段用户转派意图，审视精排 #1 是否符合用户的这一要求："
-                "若 #1 已满足用户要求，则采纳 #1；"
-                "若用户原因中明确点名/强烈倾向某位候选，且该候选在精排 Top-K 内、分数不至于显著过低，"
-                "可决定改派给该人并在 reasoning 说明理由；"
-                "若 #1 不符合用户要求但候选内没有明显更合适的，或原因未指向具体某人，"
-                "仍以精排 #1 为准，并在 reasoning 说明为何未能满足/仅部分满足用户意图。",
+                "本单是【重新派单】：用户对原处理人（或原指派/原方案）不满意，主动要求换人重新处理。"
+                "这是一条强信号——默认不应再按原处理人思路照单全收，而应结合工单实质审视谁更合适。",
             ]
+            if _pref_remark:
+                _pref_lines.append(f"用户转派原因/备注: {_pref_remark}")
+            if _pref_assignee:
+                _pref_eng = next((e for e in engineers if e.id == _pref_assignee), None)
+                _pref_name = _pref_eng.name if _pref_eng is not None else "（用户指定，但不在当前候选列表）"
+                _pref_lines.append(f"用户指定倾向处理人: {_pref_name}（其评分与画像见下方候选排名，是否遵循由你判断）")
+            # 原处理人（重派前被换掉的人）：让 LLM 明确"用户对谁不满意/要换掉谁"。
+            # prev_assignee 存 users.id（或 username），尽量反查姓名给 LLM 阅读；
+            # 若查不到姓名则不裸显 id（避免 LLM 把内部 id 抄进给用户看的 reasoning）。
+            _prev_raw = (getattr(ticket, "prev_assignee", "") or "").strip()
+            _prev_eng = None
+            _prev_name = "未知"
+            if _prev_raw:
+                _prev_eng = next((e for e in engineers if e.id == _prev_raw), None)
+                if _prev_eng is not None:
+                    _prev_name = _prev_eng.name
+                else:
+                    _prev_name = "未知（不在当前候选列表）"
+            if _prev_raw:
+                _pref_lines.append(
+                    f"原处理人（用户重派前要换掉的）: {_prev_name}"
+                )
+            _pref_lines.extend([
+                "请审视精排 #1 是否真正符合用户这次换人诉求：若 #1 与用户诉求匹配则采纳 #1；"
+                "若用户明确倾向某候选、且该候选分数不至于显著过低，可改派并在 reasoning 说明理由；"
+                f"默认应优先避免再把单派回原处理人（{_prev_name}），除非其画像确实最匹配；"
+                "若候选内无更合适者，仍以精排 #1 为准，并在 reasoning 说明为何未能满足用户换人意图。",
+            ])
             lines.extend(_pref_lines)
 
         # 额外决策线索（由 adecide 上游规则识别，作为 LLM 决策的参考提示，不直接定人选）：
@@ -450,11 +488,17 @@ class LlmDecision:
             "4. 若你决定不采纳精排 #1，请给出清晰理由（如 #1 产品/模块明显不匹配、用户明确指定他人等），"
             "并在 reasoning 中说明最终所选候选相对 #1 的优势。",
             "5. 不要仅仅因为「你认为类型是 X」就更换人选；类型复核仅作为参考，改选仍需实质依据。",
+            "6. 候选带 [自提单人] 标签 = 该候选人是本工单的提单人（自己提的单）。自提不是禁接，"
+            "由你判断是否恰当：若其职责/模块确实最匹配（如『派单算法 bug』由派单引擎负责人自提报修），"
+            "可正常采纳该自提单人；否则优先派给更合适的非提单人，并在 reasoning 说明。",
         ])
 
         lines.extend([
             "",
-            "输出 JSON。engineer_id 必须是候选人列表中该人选对应的 ID（「ID:」字段，即 users.id），必须精确复制，不要填姓名或自造标识。",
+            "输出 JSON。",
+            "★ engineer_id 必须是候选人列表中该人选对应的 ID（「ID:」字段，即 users.id），必须精确复制，不要填姓名或自造标识（系统内部落库用）。",
+            "★ reasoning（派单说明）最终会展示给用户，用自然语言说明为什么选这位（类型/产品/模块/精排分数/是否遵循用户意向等），无需提及 users.id 等内部标识。",
+            "  （系统展示时会自动把 reasoning 中出现的候选人 id 替换为姓名，你只需给出准确依据即可。）",
             '{"ticket_category":"support", "problem_domain":"产品", "product":"", "engineer_id":"<精确复制候选ID>", "confidence_score":0.85, "reasoning":"理由(说明类型/产品/模块/环节判断)", "decision_type":"auto"}',
             "decision_type: auto(>=0.8) / recommend(0.5-0.8) / fallback(<0.5)",
         ])
@@ -468,8 +512,8 @@ class LlmDecision:
             data = json.loads(m.group())
         except json.JSONDecodeError:
             return None
-        eid = data.get("engineer_id", "").strip()
-        eng = next((e for e in engineers if e.id == eid), None)
+        raw = data.get("engineer_id", "").strip()
+        eng = next((e for e in engineers if e.id == raw), None)
         if not eng:
             return None
         dt = data.get("decision_type", "fallback").strip().lower()
@@ -481,6 +525,16 @@ class LlmDecision:
         audit = "/".join(filter(None, [cat, dom, prod]))
         if audit and reason:
             reason = f"[{audit}] {reason}"
+
+        # 面向用户展示清洗：决策全程用 id，但给用户看的 reasoning 里把出现的候选人 id
+        # 替换为姓名（id 长且唯一，误伤率极低）。先处理带 ID: 前缀/括号形态，再兜底裸 id。
+        if reason:
+            for e in engineers:
+                reason = reason.replace(f"ID:{e.id}", e.name)
+                reason = reason.replace(f"({e.id})", f"({e.name})")
+                reason = reason.replace(f"（{e.id}）", f"（{e.name}）")
+                reason = reason.replace(e.id, e.name)
+
         return AssignmentResult(
             engineer_id=eng.id, engineer_name=eng.name,
             confidence_score=round(float(data.get("confidence_score", 0.0)), 4),

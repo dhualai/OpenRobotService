@@ -240,6 +240,12 @@ class AssignmentWorker:
         t_id = ticket["id"]
         logger.debug(f"派单中: task_id={t_id}, title={ticket.get('title', '')[:30]}")
 
+        # 原处理人 = 上一轮 task_dispatch_log（该工单已写过的最新一条）的 assigned_id。
+        # 重派单流程：re_dispatch API 复位 assigned_to → 触发 worker 决策（此时本轮日志尚未写，
+        # task_dispatch_log 最新一条仍是上一轮）→ 故"最新一条 assigned"即"用户重派前要换掉的原处理人"。
+        # 首次派单（无任何日志）→ prev_assignee 为 None，不启用换人信号。
+        prev_assignee = self._fetch_prev_assignee(t_id)
+
         result = await assign_ticket(
             ticket_id=str(t_id),
             title=ticket["title"],
@@ -254,6 +260,7 @@ class AssignmentWorker:
             creator=ticket.get("created_by", ""),
             preferred_assignee=ticket.get("preferred_assignee"),
             preferred_assignee_remark=ticket.get("preferred_assignee_remark"),
+            prev_assignee=prev_assignee,
             diagnosis_hypotheses=ticket.get("diagnosis_hypotheses"),
             diagnosis_ruled_out=ticket.get("diagnosis_ruled_out"),
             diagnosis_collected_info=ticket.get("diagnosis_collected_info"),
@@ -299,6 +306,32 @@ class AssignmentWorker:
             f"派单完成: task_id={t_id}, assignee={result.engineer_name}, "
             f"confidence={result.confidence_score:.0%}, decision={result.decision_type}"
         )
+
+    @staticmethod
+    def _fetch_prev_assignee(task_id: int) -> Optional[str]:
+        """取重派单前一轮的原处理人 users.id（读 task_dispatch_log 已存在的最新一条 assigned_id）。
+
+        首次派单（无任何日志）→ 返回 None；重派单时本轮日志尚未写入，
+        task_dispatch_log 最新一条即"上一轮"，其 assigned_id 就是被换掉的原处理人。
+        """
+        try:
+            from app.models.task_dispatch_log import TaskDispatchLog
+            from app.core.db import SessionLocal
+            from sqlalchemy import select
+            db = SessionLocal()
+            try:
+                row = db.execute(
+                    select(TaskDispatchLog.assigned_id)
+                    .where(TaskDispatchLog.task_id == task_id)
+                    .order_by(TaskDispatchLog.dispatch_round.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                return row if row else None
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"查询上一轮原处理人失败 task_id={task_id}: {e}")
+            return None
 
     @staticmethod
     def _update_task_assignee(task_id: int, result) -> bool:
