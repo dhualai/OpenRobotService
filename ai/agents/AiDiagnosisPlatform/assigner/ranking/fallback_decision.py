@@ -34,39 +34,23 @@ class FallbackDecision:
         return AssignmentResult(
             engineer_id=top_eng.id, engineer_name=top_eng.name,
             confidence_score=round(top_score, 4),
-            reasoning=self._reasoning(dt, top_eng, ranked_scores[top_id], top_score,
-                                      self._runner_up(ranked_scores, emap)),
+            reasoning=self._reasoning(dt, top_eng, ranked_scores[top_id], top_score),
             decision_type=dt,
         )
 
-    def _runner_up(self, scores, emap):
-        items = list(scores.items())
-        if len(items) < 2:
-            return "无其他候选"
-        lines = []
-        for eid, d in items[1:3]:
-            eng = emap.get(eid)
-            if eng:
-                lines.append(
-                    f"- {eng.name}(L{d.get('job_level','?')}): "
-                    f"{d['total_score']:.2f} {eng.modules_display()}"
-                )
-        return "\n".join(lines) or "无其他候选"
-
-    def _reasoning(self, dt, eng, detail, conf, runner_up):
-        reasons = []
-        for key, label in [("llm_score", "LLM"), ("semantic_score", "语义"), ("history_score", "历史")]:
-            v = detail.get(key, 0)
-            if v > 0:
-                reasons.append(f"{label}({v:.2f})")
-        base = f"推荐 {eng.name}，置信度 {conf:.2f}。"
-        if reasons:
-            base += f" 维度: {'/'.join(reasons)}。"
+    def _reasoning(self, dt, eng, detail, conf):
+        # 简洁一句话：不罗列候选、不展开多句，只点出核心依据（与 LLM 决策保持一致的精简风格）。
+        dims = "/".join(
+            f"{label}{detail.get(key, 0):.2f}"
+            for key, label in [("llm_score", "LLM"), ("semantic_score", "语义"), ("history_score", "历史")]
+            if detail.get(key, 0) > 0
+        )
+        dim_txt = f"（{dims} 综合占优）" if dims else ""
         if dt == "auto":
-            return base + "可直接派单。"
-        elif dt == "recommend":
-            return base + f"建议确认。候选:\n{runner_up}"
-        return base + "兜底派单，建议复核。候选:\n" + runner_up
+            return f"{eng.name} 精排分数最高{dim_txt}，自动指派。"
+        if dt == "recommend":
+            return f"{eng.name} 精排分数最高{dim_txt}，建议确认后派单。"
+        return f"候选匹配度普遍偏低，按 {eng.name} 兜底派单，建议人工复核。"
 
     def _fallback(self, engineer, reason):
         return AssignmentResult(

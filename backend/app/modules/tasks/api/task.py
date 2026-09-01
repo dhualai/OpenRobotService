@@ -40,6 +40,7 @@ from app.utils.notification_utils import NotificationUtils
 from app.integrations.api import verify_sync_api_key
 from app.core.config import settings
 from app.core.user_identity import user_matches, is_admin_user, to_user_id, actor_username, identity_keys
+from app.services.redispatch_tip_service import build_redispatch_tip_detail  # 派单说明话术生成（模板+可选AI润色）
 
 router = APIRouter(tags=["tasks"])
 
@@ -187,61 +188,8 @@ def _fallback_redispatch_candidates() -> List[Dict]:
     return out
 
 
-async def _build_redispatch_tip_detail(pref_name: str, assigned_name: str, reasoning: str = "", pref_missing_zh: Optional[List[str]] = None):
-    """二次派单感知增强（M3 高情商回复）：未派到指定人时的完整情商话术。
-
-    默认纯模板（settings.REDISPATCH_TIP_AI_POLISH=False）：文案确定、零 LLM 成本、可复用。
-    可选 AI 润色：仅当 REDISPATCH_TIP_AI_POLISH=True 时把模板喂给 LLM 润色，失败降级模板。
-
-    模板带分支引导：
-    - 倾向人画像不完整（pref_missing_zh 非空）→ 点明缺失项 + 引导先补充画像后重新派单；
-    - 画像完整 → 引导「@ 接单人 帮忙转派」或重新派单。
-    返回 string。
-    """
-    pref_missing_zh = pref_missing_zh or []
-    missing_txt = "、".join(pref_missing_zh) if pref_missing_zh else ""
-
-    # 分支引导段
-    if pref_missing_zh:
-        guide = (
-            f"您倾向的【{pref_name}】职责画像还不完整（缺：{missing_txt}），"
-            "暂时无法作为可靠派单依据直接指派。建议先补充画像，之后可重新派单指定 TA。"
-        )
-    else:
-        guide = (
-            f"若您仍希望由【{pref_name}】接单，可 @ 接单人 帮忙转派，或重新派单指定 TA。"
-        )
-
-    reason_txt = f"，原因是：{reasoning}" if reasoning else ""
-    template = (
-        f"很抱歉，这次没有派到您指定的【{pref_name}】。"
-        f"系统综合评估后认为【{assigned_name}】在当前问题上更合适{reason_txt}，"
-        f"已改派由【{assigned_name}】优先处理。{guide}"
-    )
-    # 默认纯模板（settings.REDISPATCH_TIP_AI_POLISH=False，零 LLM 成本、文案确定可复用）。
-    # 仅当显式开启 AI_POLISH 时才用 LLM 润色；失败 / LLM_STREAM 返回生成器 → 仍降级模板。
-    try:
-        from app.core.config import settings as _ck
-        if getattr(_ck, "REDISPATCH_TIP_AI_POLISH", False):
-            from app.modules.call.services.model_service import ModelService
-            prompt = (
-                "下面是一段给工单提单人的「派单结果说明」。请把它润色成更自然、有温度、简洁的中文话术，"
-                "保留以下要点：1) 未派到提单人指定的处理人并致歉；2) 说明实际改派给了谁、简要原因；"
-                f"3) 若倾向人画像不完整({missing_txt or '无'})则引导先补画像，否则引导可 @ 接单人转派或重新派单。\n"
-                "要求：口语化但专业、不啰嗦、总字数 ≤ 100 字、不要编造模板之外的新信息、不要加 Markdown。\n"
-                f"原始模板：\n{template}"
-            )
-            polished = await ModelService.generate_answer(
-                prompt,
-                system_prompt="你是工单系统的亲和客服助手，负责把派单结果转述给提单人，语气温和、简洁、可信。",
-            )
-            if isinstance(polished, str) and polished.strip():
-                # 逗号/句号结尾兜底规范化（去掉可能的引号包裹等）
-                return polished.strip().strip('"\u201c\u201d') or template
-    except Exception:
-        # AI 润色失败 / LLM_STREAM 场景返回流式生成器 → 降级为模板
-        pass
-    return template
+# 注：派单说明（tip_detail）话术生成已抽离到独立 service，见
+# app.services.redispatch_tip_service.build_redispatch_tip_detail
 
 
 # 解决方式总结 Worker 的 Redis 任务队列（与 ai/agents/AiTaskPlatform/services/resolution_worker.py 保持一致）
@@ -581,7 +529,7 @@ async def get_task(
                         for _cid, _cname in (user_map or {}).items():
                             if _cname and _cid and isinstance(_cid, str) and _cid in reasoning_txt:
                                 reasoning_txt = reasoning_txt.replace(_cid, _cname)
-                    tip_detail = await _build_redispatch_tip_detail(
+                    tip_detail = await build_redispatch_tip_detail(
                         pref_name or _log.preferred_id,
                         assigned_name,
                         reasoning=reasoning_txt,
