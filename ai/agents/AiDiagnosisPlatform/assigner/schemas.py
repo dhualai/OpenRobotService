@@ -202,7 +202,7 @@ class AssignmentResult(BaseModel):
     # === 二次派单感知增强 追加字段（落 task_dispatch_log）===
     # 本次派单上下文
     preferred_id: Optional[str] = Field(None, description="意向处理人 users.id（重派有；首次派单可 None）")
-    matched_pref: bool = Field(False, description="是否派到意向处理人")
+    matched_pref: Optional[bool] = Field(None, description="是否派到意向处理人（无意向处理人时保持 None，勿用 False 表示「未派到」以区分『没有指定人』）")
     name_collision: bool = Field(False, description="是否按姓名命中多人（同名）")
     pinyin_match: bool = Field(False, description="是否经拼音/近似名匹配命中")
 
