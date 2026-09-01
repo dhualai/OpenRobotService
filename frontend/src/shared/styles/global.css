@@ -6910,19 +6910,6 @@ html, body, #root {
 .ticket-confirm__textarea:focus,
 .ticket-confirm__select:focus { border-color: var(--primary); }
 .ticket-confirm__textarea { resize: vertical; line-height: 1.5; font-family: inherit; }
-/* 阶段完成时间快捷选项（1/3/5/7/14 天） */
-.ticket-confirm__quick-options {
-  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;
-}
-.ticket-confirm__quick-option {
-  padding: 6px 14px; font-size: 13px; border: 1px solid #e7e7e7;
-  border-radius: 999px; background: var(--card); color: var(--foreground);
-  cursor: pointer; outline: none;
-}
-.ticket-confirm__quick-option--active {
-  border-color: var(--primary); color: var(--primary);
-  background: rgba(var(--primary-rgb, 0, 0, 0), 0.06);
-}
 
 /* 转工单确认弹窗：远程方式截图上传区（与 TasksView 新建弹窗 .tasks-create-modal__remote* 对齐） */
 .ticket-confirm__remote {
