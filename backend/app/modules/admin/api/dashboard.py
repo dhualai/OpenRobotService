@@ -24,7 +24,6 @@ from app.models.delivery import UNDERTAKE_PENDING
 from app.modules.admin.services.task_dashboard_service import task_dashboard_service
 from app.modules.admin.services.project_service import project_service
 from app.modules.admin.services.risk_service import risk_service
-from app.modules.admin.services.transport_efficiency_service import transport_efficiency_service
 
 dashboard_router = APIRouter(prefix="/dashboard", tags=["admin-dashboard"])
 
@@ -91,21 +90,29 @@ def _enrich_projects_with_analysis(projects: List[Dict]) -> None:
 
     与 /projects/ 接口 include_analysis 逻辑保持一致：
     - risks：未关闭风险数（status != 关闭 计 1）
-    - task_execution_stats：近 7 天任务统计
-    - latest_manual_switch_count：最近切手动次数
+    - task_execution_stats：近 7 天任务统计（总数/完成数/完成率，来自 collection_data）
+    - latest_manual_switch_count：切手动次数（collection_data 最新一天的
+      averageManualCount.averageManualCount，见 get_task_execution_metrics_7d_batch）
+    数据均按项目码批量查询（各 1 条 SQL），避免逐项目循环 3N 条查询。
     """
     project_codes = [p["project_code"] for p in projects]
     if not project_codes:
         return
 
     detailed_risks = risk_service.get_detailed_open_risks_by_project_codes(project_codes)
+    metrics_7d = project_service.get_task_execution_metrics_7d_batch(project_codes)
 
     for project in projects:
         project_code = project["project_code"]
-        project_risks = detailed_risks.get(project_code, [])
-        project["risks"] = sum(1 for risk in project_risks if risk.get("status") != "关闭")
-        project["task_execution_stats"] = project_service.get_task_execution_stats_7d(project_code)
-        project["latest_manual_switch_count"] = transport_efficiency_service.get_latest_manual_switch_count(project_code)
+        metric = metrics_7d.get(project_code)
+        project["risks"] = sum(1 for risk in detailed_risks.get(project_code, []) if risk.get("status") != "关闭")
+        project["task_execution_stats"] = (
+            metric["stats"] if metric
+            else {"total_tasks": 0, "finished_tasks": 0, "completion_rate": None, "manual_switch_count": None}
+        )
+        project["latest_manual_switch_count"] = (
+            metric["stats"].get("manual_switch_count") if metric else None
+        )
 
 
 @dashboard_router.get("/tickets/source-analysis", response_model=Dict[str, Any])
@@ -152,6 +159,29 @@ async def get_ticket_response_time(
     """
     pid_list = _parse_project_ids(project_ids)
     data = await task_dashboard_service.get_response_time_analysis(db, pid_list)
+    return {"code": 0, "data": data}
+
+
+@dashboard_router.get("/tickets/avg-close-time", response_model=Dict[str, Any])
+async def get_ticket_avg_close_time(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目内的工单"),
+    db: AsyncSession = Depends(get_db),
+):
+    """各类型工单平均完单耗时 —— 供仪表盘「工单类型分布」右侧图表。
+
+    完单耗时 = 工单关闭时间 closed_at - 新建时间 created_at（仅统计已关闭工单），
+    按 task_type 分组取平均，见 task_dashboard_service.get_avg_close_time_analysis。
+
+    响应结构：
+    {
+        "code": 0,
+        "data": {
+            "by_type": [{"key": "bug", "count": 5, "avg_seconds": 172800}, ...]
+        }
+    }
+    """
+    pid_list = _parse_project_ids(project_ids)
+    data = await task_dashboard_service.get_avg_close_time_analysis(db, pid_list)
     return {"code": 0, "data": data}
 
 
@@ -244,30 +274,8 @@ async def get_project_stage_summary(
     }
 
 
-@dashboard_router.get("/projects/monthly", response_model=Dict[str, Any])
-async def get_project_monthly_summary(
-    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),
-):
-    """项目按月统计 —— 供仪表盘「跨项目看板」月柱状图使用（替换原按阶段统计的展示口径）。
-
-    按月口径 = 项目业绩核算期 settlement_period（手工填写，常见 YYYYMM 如 202608 = 2026年8月，
-    也兼容 YYYY-MM；模型字段已建索引），与「本月新增」统计卡口径一致；
-    无核算期的项目不落在任何月份，不参与统计。输出统一归一化为 YYYY-MM 的 key。
-
-    已承接（value）与待定（pending_value）分开计数，前端画成同一根柱子的深/浅两段。
-    本接口是全站唯一放开 include_pending 的地方：待定项目只影响这张图，
-    项目总数/项目列表/紧急度看板等口径均不含待定，见 project_service.get_projects。
-
-    响应结构：
-    {
-        "code": 0,
-        "data": {
-            "monthly": [{"key": "2026-08", "year": 2026, "month": 8, "value": 12, "pending_value": 3}, ...],
-            "years": [2024, 2025, 2026]
-        }
-    }
-    """
-    pid_list = _parse_project_ids(project_ids)
+def _compute_monthly_summary(pid_list: Optional[list]) -> Dict[str, Any]:
+    """项目按月统计（承接/待定分开），供仪表盘月柱状图与 summary-all 聚合复用。"""
     if pid_list is not None:
         projects = project_service.get_projects_by_ids(pid_list, include_pending=True)
     else:
@@ -295,16 +303,52 @@ async def get_project_monthly_summary(
         for key in set(monthly_map) | set(pending_map)
     ]
     monthly.sort(key=lambda item: item["key"])
-
     years = sorted({item["year"] for item in monthly})
+    return {"monthly": monthly, "years": years}
 
-    return {
+
+@dashboard_router.get("/projects/monthly", response_model=Dict[str, Any])
+async def get_project_monthly_summary(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),
+):
+    """项目按月统计 —— 供仪表盘「跨项目看板」月柱状图使用（替换原按阶段统计的展示口径）。
+
+    按月口径 = 项目业绩核算期 settlement_period（手工填写，常见 YYYYMM 如 202608 = 2026年8月，
+    也兼容 YYYY-MM；模型字段已建索引），与「本月新增」统计卡口径一致；
+    无核算期的项目不落在任何月份，不参与统计。输出统一归一化为 YYYY-MM 的 key。
+
+    已承接（value）与待定（pending_value）分开计数，前端画成同一根柱子的深/浅两段。
+    本接口是全站唯一放开 include_pending 的地方：待定项目只影响这张图，
+    项目总数/项目列表/紧急度看板等口径均不含待定，见 project_service.get_projects。
+
+    响应结构：
+    {
         "code": 0,
         "data": {
-            "monthly": monthly,
-            "years": years,
-        },
+            "monthly": [{"key": "2026-08", "year": 2026, "month": 8, "value": 12, "pending_value": 3}, ...],
+            "years": [2024, 2025, 2026]
+        }
     }
+    """
+    pid_list = _parse_project_ids(project_ids)
+    return {"code": 0, "data": _compute_monthly_summary(pid_list)}
+
+
+def _compute_urgency_summary(pid_list: Optional[list]) -> Dict[str, int]:
+    """项目紧急度汇总，供紧急度四象限与 summary-all 聚合复用。"""
+    if pid_list is not None:
+        projects = project_service.get_projects_by_ids(pid_list)
+    else:
+        projects = project_service.get_projects(0, 1000)
+
+    by_urgency: Dict[str, int] = {key: 0 for key in URGENCY_MAP.keys()}
+    for project in projects:
+        category = project.get("category_basis", "")
+        for urgency_key, category_labels in URGENCY_MAP.items():
+            if category in category_labels:
+                by_urgency[urgency_key] += 1
+                break
+    return by_urgency
 
 
 @dashboard_router.get("/projects/urgency", response_model=Dict[str, Any])
@@ -322,24 +366,86 @@ async def get_project_urgency_summary(
     }
     """
     pid_list = _parse_project_ids(project_ids)
+    return {"code": 0, "data": {"by_urgency": _compute_urgency_summary(pid_list)}}
+
+
+def _compute_projects_brief(pid_list: Optional[list]) -> List[Dict[str, Any]]:
+    """仪表盘首屏轻量项目列表：仅取 4 个统计卡所需字段 + 未关闭风险数。
+
+    替代前端单独请求 /projects?include_analysis=true —— 那个接口会附带
+    project_summary 文本、7 天任务 JSON 聚合等重字段；首屏只需要
+    risks/contact_person/settlement_period，一条 risks 计数即可，无任何逐项目查询。
+    口径与 /projects/include_analysis 一致（status != "关闭" 计未关闭风险）。
+    """
     if pid_list is not None:
         projects = project_service.get_projects_by_ids(pid_list)
     else:
         projects = project_service.get_projects(0, 1000)
 
-    by_urgency: Dict[str, int] = {key: 0 for key in URGENCY_MAP.keys()}
+    codes = [p["project_code"] for p in projects]
+    risk_counts: Dict[str, int] = {}
+    if codes:
+        detailed_risks = risk_service.get_detailed_open_risks_by_project_codes(codes)
+        for code in codes:
+            risk_counts[code] = sum(
+                1 for r in detailed_risks.get(code, []) if r.get("status") != "关闭"
+            )
 
-    for project in projects:
-        category = project.get("category_basis", "")
-        for urgency_key, category_labels in URGENCY_MAP.items():
-            if category in category_labels:
-                by_urgency[urgency_key] += 1
-                break
+    return [
+        {
+            "project_code": p["project_code"],
+            "name": p.get("name", ""),
+            "contact_person": p.get("contact_person") or "",
+            "settlement_period": p.get("settlement_period"),
+            "risks": risk_counts.get(p["project_code"], 0),
+        }
+        for p in projects
+    ]
 
+
+@dashboard_router.get("/summary-all", response_model=Dict[str, Any])
+async def get_dashboard_summary_all(
+    project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),
+    db: AsyncSession = Depends(get_db),
+):
+    """仪表盘聚合接口 —— 一次返回工单汇总/来源/响应时间/平均完单耗时/项目月统计/紧急度/轻量项目列表，
+    替代前端首屏 7 个并发请求（/dashboard/tickets/summary、source-analysis、
+    response-time、avg-close-time、projects/monthly、projects/urgency、
+    projects?include_analysis=true），降低首屏接口并发与延迟；项目列表只带首屏
+    统计卡所需轻量字段（见 _compute_projects_brief）。
+
+    响应结构：
+    {
+        "code": 0,
+        "data": {
+            "tickets": {...},         # TicketSummary
+            "source": {...},          # TicketSourceAnalysis
+            "response_time": {...},   # TicketResponseTime
+            "avg_close_time": {...},  # TicketAvgCloseTime
+            "monthly": {...},         # ProjectMonthlySummary
+            "urgency": {"by_urgency": {...}},
+            "projects_brief": [...]   # [{project_code,name,contact_person,settlement_period,risks}]
+        }
+    }
+    """
+    pid_list = _parse_project_ids(project_ids)
+    tickets = await task_dashboard_service.get_ticket_summary(db, pid_list)
+    source = await task_dashboard_service.get_source_analysis(db, pid_list)
+    response_time = await task_dashboard_service.get_response_time_analysis(db, pid_list)
+    avg_close_time = await task_dashboard_service.get_avg_close_time_analysis(db, pid_list)
+    monthly = _compute_monthly_summary(pid_list)
+    urgency = {"by_urgency": _compute_urgency_summary(pid_list)}
+    projects_brief = _compute_projects_brief(pid_list)
     return {
         "code": 0,
         "data": {
-            "by_urgency": by_urgency,
+            "tickets": tickets,
+            "source": source,
+            "response_time": response_time,
+            "avg_close_time": avg_close_time,
+            "monthly": monthly,
+            "urgency": urgency,
+            "projects_brief": projects_brief,
         },
     }
 

@@ -20,6 +20,11 @@ from app.models.base import Base
 UNDERTAKE_YES = '是'
 UNDERTAKE_PENDING = '待定'
 
+# 项目软删除标记值：删除项目时不物理删除 project 记录，而是把 status 置为此值，
+# 保留记录用于后续创建项目时按编号/名称去重（已删除记录仍占用编号与名称）。
+# 所有项目列表/详情查询均应排除此状态。
+PROJECT_DELETED = '已删除'
+
 
 class RealtimeData(Base):
     __tablename__ = 'realtime_data'
@@ -123,6 +128,7 @@ class Project(Base):
     sales = Column(String(50), nullable=True, comment='销售')
     pre_sales = Column(String(50), nullable=True, comment='售前')
     project_manager = Column(String(50), nullable=True, comment='项目经理')
+    project_manager_id = Column(String(64), nullable=True, comment='项目经理ID（与 users.id 同长度，用于关联角色）')
     field_engineer = Column(String(50), nullable=True, comment='实施工程师')
 
     internal_code = Column(String(50), nullable=True, comment='内部编号')

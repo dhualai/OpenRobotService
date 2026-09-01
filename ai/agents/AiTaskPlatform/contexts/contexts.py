@@ -71,8 +71,10 @@ def format_referenced_tickets(ref_ids: list) -> str:
             logger.warning(f"[ticket_ref] 读取被引用工单 {rid} 失败: {e}")
             ctx = TaskContext(task_id=str(rid))
             discussion = ""
-        if not (ctx.title or ctx.description or ctx.problem_summary) and not discussion and not ctx.solution:
+        if not (ctx.title or ctx.description or ctx.problem_summary or ctx.resolution_summary) and not discussion and not ctx.solution:
             # 读不到内容 → 明确提示，避免 LLM 编造被引用工单内容
+            # 注意：resolution_summary（工程师结束工单填写的解决方式）也算"有内容"，
+            #       否则已解决工单若恰无 title/描述/讨论会误判为"读不到"，导致 LLM 答"无法核实"。
             blocks.append(
                 f"- 工单 #{rid}: （未能读取到该工单的上下文，可能是历史工单或权限之外，请如实告知用户）"
             )
@@ -101,7 +103,9 @@ def format_referenced_tickets(ref_ids: list) -> str:
         if discussion:
             parts.append(f"  该工单近期讨论（最近 {MAX_REF_DISCUSSION_ITEMS} 条，非完整历史）:\n{discussion}")
         blocks.append("\n".join(parts))
-    return "## 引用的历史工单上下文（@# 引用，仅作参考，勿喧宾夺主）\n" + "\n".join(blocks)
+    # 标签明确标注这是 AI 从数据库读取的「已结束工单权威记录」，其中的「解决方式」
+    # 是工程师结束工单时填写的最终结论，应直接采信为事实，不得声称"无法核实"。
+    return "## 引用的历史工单上下文（@# 引用，AI从数据库读取的已结束工单记录）\n" + "\n".join(blocks)
 
 
 def _format_solution(solution) -> str:

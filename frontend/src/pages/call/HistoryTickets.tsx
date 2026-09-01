@@ -8,7 +8,9 @@ import { Loading, Toast, Button, Popup, DialogPlugin } from 'tdesign-mobile-reac
 import AppButton from '@/shared/components/AppButton';
 import { Search, ArrowRight } from 'lucide-react';
 import { qaListTickets, type AiTicketBrief } from '@/api/ai';
-import { urgeTicket, reportTicket, cancelTicket, reDispatchTicket } from '@/api/ticket';
+import { urgeTicket, reportTicket, cancelTicket, reDispatchTicket, fetchRedispatch } from '@/api/ticket';
+import type { RedispatchCandidate } from '@/api/ticket';
+import RedispatchCandidateList from '@/shared/components/RedispatchCandidateList';
 import { isTerminalTicketStatus, canUrgeTicket, canReportTicket, canShowCancelButton, canCancelTicketByUser } from '@/shared/constants/ticket';
 import { useHorizontalScroll } from '@/shared/hooks/useHorizontalScroll';
 import { useWorkbenchStore } from '@/stores/workbench';
@@ -140,7 +142,9 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
     }
     const t = setTimeout(() => { loadInitialRef.current(); }, 400);
     return () => clearTimeout(t);
-  }, [statusFilter, search]);
+    // isAdmin 变化（刷新后 fetchUserDetails 异步回填，false→true）需重载：
+    // admin 不加 username 过滤，避免首屏只显示自己创建的工单
+  }, [statusFilter, search, isAdmin]);
 
   // 后端已按 keyword 搜索，前端无需再过滤
   const displayedTickets = tickets;
@@ -154,12 +158,15 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
   const [actionUser, setActionUser] = useState<UserItem | null>(null);
   const [showActionPopup, setShowActionPopup] = useState(false);
 
-  // 重新派单：必选用户倾向派单人 + 可选备注
+  // 重新派单：必选用户倾向派单人 + 可选备注（M2：候选列表来自详情 redispatch.candidates）
   const [redispatchTicket, setRedispatchTicket] = useState<AiTicketBrief | null>(null);
-  const [redispatchUser, setRedispatchUser] = useState<UserItem | null>(null);
+  const [redispatchCands, setRedispatchCands] = useState<RedispatchCandidate[] | null>(null);
+  const [redispatchRefDept, setRedispatchRefDept] = useState<string | null>(null);
+  const [redispatchCand, setRedispatchCand] = useState<RedispatchCandidate | null>(null);
   const [redispatchRemark, setRedispatchRemark] = useState('');
   const [showRedispatchPopup, setShowRedispatchPopup] = useState(false);
   const [redispatching, setRedispatching] = useState(false);
+  const [redispatchLoading, setRedispatchLoading] = useState(false);
 
   const openActionPopup = (e: React.MouseEvent, t: AiTicketBrief, type: 'urge' | 'report') => {
     e.stopPropagation();
@@ -221,17 +228,29 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
       return;
     }
     setRedispatchTicket(t);
-    setRedispatchUser(null);
+    setRedispatchCand(null);
     setRedispatchRemark('');
     setShowRedispatchPopup(true);
+    // 拉取详情 redispatch（R2 候选快照 + 当前接单人部门作为“同部门”参照）
+    setRedispatchLoading(true);
+    fetchRedispatch(t.id)
+      .then((rd) => {
+        setRedispatchCands(rd?.candidates ?? null);
+        setRedispatchRefDept(rd?.result?.profile?.dept || null);
+      })
+      .catch(() => {
+        setRedispatchCands(null);
+        setRedispatchRefDept(null);
+      })
+      .finally(() => setRedispatchLoading(false));
   };
 
   const handleRedispatchConfirm = async () => {
     if (!redispatchTicket?.id) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
-    if (!redispatchUser?.id && !redispatchUser?.username) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
+    if (!redispatchCand?.engineer_id) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
     setRedispatching(true);
     try {
-      await reDispatchTicket(redispatchTicket.id, redispatchUser.id || redispatchUser.username, redispatchRemark.trim() || undefined);
+      await reDispatchTicket(redispatchTicket.id, redispatchCand.engineer_id, redispatchRemark.trim() || undefined);
       Toast({ message: '已重新派单，正在重新推荐处理人', theme: 'success' });
       setShowRedispatchPopup(false);
       // 重新派单后端会先清空 assigned_to（回 new 态）再异步重派：
@@ -302,7 +321,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
           <Search className="history-search__icon" size={16} strokeWidth={2} />
           <input
             className="history-search"
-            placeholder="搜索工单标题/描述…"
+            placeholder="搜索工单编号/标题/描述…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -367,6 +386,10 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
               </div>
               {t.description && <span className="history-row__summary">{t.description}</span>}
               {t.project && <span className="history-row__project">所属项目：{t.project}</span>}
+              {/* 二次派单感知增强（M3）：派单结果提醒（单独一行，警示色，超长省略，跟随整行点击进详情） */}
+              {t.redispatch_tip && (
+                <div className="history-row__tip">派单结果提醒：{t.redispatch_tip}</div>
+              )}
               {/* 人员流转（设计稿：头像 blue-3 + 姓名 | ArrowRight blue-3 居中 | 姓名 + 头像 blue-2）。
                   派单中（status=new 且处理人未写入，AI 派单 Worker 60s 轮询中）：显示「派单中」呼吸动效 */}
               <div className="task-card2__people">
@@ -439,13 +462,14 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
       <Popup visible={showRedispatchPopup} onClose={() => setShowRedispatchPopup(false)} placement="bottom" showOverlay>
         <div className="conv-dialog">
           <h4 className="conv-dialog__title">重新派单</h4>
-          <p className="conv-dialog__msg">将强制重新智能派单，请选择倾向处理人</p>
+          <p className="conv-dialog__msg">将强制重新智能派单，请选择倾向处理人（不保证100%采纳，仅加权）</p>
           <div style={{ marginBottom: 16 }}>
-            <UserSelect
-              value={redispatchUser?.id ?? null}
-              onChange={(u) => setRedispatchUser(u)}
-              placeholder="选择倾向处理人（必选）"
-              title="选择倾向处理人"
+            <RedispatchCandidateList
+              candidates={redispatchCands}
+              refDept={redispatchRefDept}
+              value={redispatchCand?.engineer_id ?? null}
+              onChange={setRedispatchCand}
+              loading={redispatchLoading}
             />
           </div>
           <input
@@ -457,7 +481,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
           />
           <div className="conv-dialog__btns">
             <Button block theme="default" onClick={() => setShowRedispatchPopup(false)}>取消</Button>
-            <Button block theme="primary" disabled={!redispatchUser} loading={redispatching} onClick={handleRedispatchConfirm}>确定重新派单</Button>
+            <Button block theme="primary" disabled={!redispatchCand} loading={redispatching} onClick={handleRedispatchConfirm}>确定重新派单</Button>
           </div>
         </div>
       </Popup>

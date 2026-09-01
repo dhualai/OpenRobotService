@@ -24,7 +24,7 @@ class LlmDeptSignal:
     def enabled(self) -> bool:
         return bool(self._llm_cfg.get("enabled", True)) and bool(self._departments)
 
-    def _build_prompt(self, ticket: TicketContext) -> str:
+    def _build_prompt(self, ticket: TicketContext, feedback: str = "") -> str:
         dept_blocks = []
         for dept in self._departments:
             name = dept.get("name") or ""
@@ -44,19 +44,59 @@ class LlmDeptSignal:
         if ticket.diagnosis_hypotheses:
             hypotheses = "；".join(ticket.diagnosis_hypotheses[:5])
 
+        # 工单类型 → 判定逻辑分支（对齐提单 Agent 的 5 类：problem/bug/feature/support/other）
+        ticket_type = (ticket.ticket_type or "other").strip().lower()
+        type_text = {
+            "problem": "问题/报障(problem)：描述异常现象，按【故障现象】归到负责该故障的部门",
+            "bug": "缺陷(bug)：描述软件缺陷，按【故障现象】归到负责该故障的部门",
+            "feature": "需求(feature)：希望加功能/提需求，无故障现象，按【工单涉及的产品/项目】归到管理该产品的部门",
+            "support": "咨询(support)：使用方法/操作指导/配置协助，按【咨询涉及的产品/项目】归到管理该产品的部门",
+            "other": "其它(other)：结合内容判断，按涉及的产品/项目或现象归到对应部门",
+        }[ticket_type] if ticket_type in "problem bug feature support other".split() else (
+            "其它：结合内容判断，按涉及的产品/项目或故障现象归到对应部门"
+        )
+
+        type_extra = ""
+        if ticket.scenario or ticket.expected_effect:
+            type_extra += f"需求场景：{ticket.scenario or '无'}\n预期效果：{ticket.expected_effect or '无'}\n"
+        if ticket.support_type:
+            type_extra += f"支持类型：{ticket.support_type or '无'}\n"
+        if ticket.severity or ticket.version:
+            type_extra += f"严重程度：{ticket.severity or '无'}\n版本：{ticket.version or '无'}\n"
+
         return (
-            "你是工单部门路由专家。根据工单内容，判断最可能负责处理的部门。\n"
-            "只能从下列部门中选择，按 confidence 降序输出最多 3 个。\n\n"
+            "你是工单部门路由专家。请判断工单最可能由哪个部门负责处理。\n"
+            "判断前请先看工单类型，按对应逻辑判部门（不要把所有工单都当故障）：\n"
+            f"  - {type_text}\n"
+            "请结合每个部门的【负责】与【不负责】边界：先用【不负责】排除明显无关的部门\n"
+            "（避免仅凭表面字眼命中而误判），再看【负责】/【典型现象】确定归属。\n"
+            "针对【部门清单】中的每一个部门，评估其负责该工单的可能性，并给出 confidence（0~1）：\n"
+            "  - 0.85~1.0：明确负责（强归属，几乎确定）\n"
+            "  - 0.55~0.85：很可能负责（主要候选，有较强证据）\n"
+            "  - 0.25~0.55：有一定关联（次要候选，可能是交叉/多部门，请保留并给合理分数）\n"
+            "  - 0~0.25：基本不相关（被【不负责】排除或明显无关）\n"
+            "对跨部门/交叉工单，请明确区分主导部门与次要涉及部门：主导给高分(0.85+)，\n"
+            "次要给中等分(0.3~0.5)，避免所有候选都挤在 0.6~0.7 无法区分。\n"
+            "请按 confidence 降序输出最多 3 个最有把握的部门（若存在合理的次要候选也一并输出，\n"
+            "不要只给 0.9 一个高分而把其余全部压到 0.1）；若确实无法判断则输出空数组，不要强行给分。\n\n"
             "【部门清单】\n"
             + "\n".join(dept_blocks)
             + "\n\n【工单】\n"
+            f"工单类型：{ticket_type}\n"
             f"标题：{ticket.title or ''}\n"
             f"描述：{ticket.problem_description or ''}\n"
-            f"故障码：{ticket.fault_code or '无'}\n"
+            + type_extra
+            + f"故障码：{ticket.fault_code or '无'}\n"
             f"车型：{ticket.robot_type or '无'}\n"
             f"项目：{ticket.project_name or '无'}\n"
-            f"Agent假设：{hypotheses or '无'}\n\n"
-            "输出 JSON（不要其它文字）：\n"
+            f"Agent假设：{hypotheses or '无'}\n"
+            + (
+                "\n【审查反馈（上一轮部门审查的意见，供你重新判定时参考，请审慎采纳）】"
+                f"\n{feedback}\n"
+                if feedback
+                else ""
+            )
+            + "\n输出 JSON（不要其它文字）：\n"
             '{"departments":[{"name":"部门名","confidence":0.0,"reason":"一句话"}]}'
         )
 
@@ -88,8 +128,8 @@ class LlmDeptSignal:
         out.sort(key=lambda x: x["confidence"], reverse=True)
         return out[:3]
 
-    async def classify(self, ticket: TicketContext) -> Dict[str, float]:
-        """返回 {部门名: confidence}。"""
+    async def classify(self, ticket: TicketContext, feedback: str = "") -> Dict[str, float]:
+        """返回 {部门名: confidence}。feedback 可选：附加"上一轮审查意见"供重判参考。"""
         if not self.enabled:
             return {}
 
@@ -97,8 +137,8 @@ class LlmDeptSignal:
         if not allowed:
             return {}
 
-        min_conf = float(self._llm_cfg.get("min_confidence", 0.75))
-        prompt = self._build_prompt(ticket)
+        min_conf = float(self._llm_cfg.get("min_confidence", 0.3))
+        prompt = self._build_prompt(ticket, feedback=feedback)
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()

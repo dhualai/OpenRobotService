@@ -48,6 +48,7 @@ interface UserCreateData {
   job_level?: number;
   duty_text?: string;
   status?: string;
+  external_credentials?: Record<string, Record<string, string>>;
 }
 
 interface UserUpdateData {
@@ -539,6 +540,15 @@ export default function UserManage() {
           job_level: form.job_level,
           duty_text: form.duty_text || undefined,
           status: form.status,
+          // 初始化 USP 账户：usp.username 与登录账号一致，usp.password 使用明文，
+          // 由后端 create_user 走 get_password_hash(pbkdf2_sha256) 加密存储，
+          // 与个人中心更新接口保持一致。
+          external_credentials: {
+            usp: {
+              username: form.username,
+              password: form.password,
+            },
+          },
         };
         await request('/users/', {
           method: 'POST',

@@ -88,6 +88,56 @@ export const reDispatchTicket = (
     body: JSON.stringify({ preferred_assignee: preferredAssignee, remark: remark || null }),
   });
 
+// ── 二次派单感知增强（M2）：详情 redispatch 子对象类型 + 读取 ──
+export interface RedispatchCandidate {
+  rank: number;
+  engineer_id: string;
+  name: string;
+  department?: string | null;
+  job_level?: number | null;
+  modules?: string[] | null;
+  duty?: string | null;
+  // 画像缺失英文字段（department/job_level/responsibility_modules），供前端权威判定"待补充画像"
+  missing?: string[] | null;
+  scores?: { llm?: number; semantic?: number; history?: number; total?: number } | null;
+  tags?: string[] | null;
+}
+
+export interface RedispatchProfile {
+  dept?: string | null;
+  job_level?: number | null;
+  modules?: string[] | null;
+  duty?: string | null;
+  missing?: string[] | null;
+}
+
+export interface RedispatchResult {
+  assigned_id?: string;
+  assigned_name?: string;
+  preferred_id?: string | null;
+  preferred_name?: string | null;
+  confidence?: number | null;
+  decision_type?: string | null;
+  reasoning?: string | null;
+  profile?: RedispatchProfile | null;
+  matched_pref?: boolean | null;
+  name_collision?: boolean | null;
+  pinyin_match?: boolean | null;
+  tip_detail?: string | null;
+}
+
+export interface TicketRedispatch {
+  dispatch_round?: number;
+  candidates?: RedispatchCandidate[] | null;
+  result?: RedispatchResult | null;
+}
+
+/** 读取工单详情的 redispatch 子对象（R2 候选快照 + R3 结果信息），无记录返回 null */
+export const fetchRedispatch = (ticketId: number | string) =>
+  request<{ redispatch?: TicketRedispatch | null }>(`/${Number(ticketId)}`).then((r) => {
+    return r?.redispatch ?? null;
+  });
+
 /** 评论列表（按工单绑定） */
 export const listComments = (ticketId: number | string) =>
   request<TicketComment[]>(`/${Number(ticketId)}/comments`);

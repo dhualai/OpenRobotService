@@ -557,7 +557,10 @@ class DiscussFlow:
 
         # 4. LLM（纯闲聊走 light 短 prompt，省 token）
         #    澄清（P4）不单独走 prompt：一律先生成分析答复，待确认问题在 4.7 作为"补充提问"追加。
-        if is_pure_chat:
+        #    若用户 @# 引用了历史工单（referenced_tickets 非空），说明在认真查工单问题，
+        #    绝非闲聊 —— 强制走完整 DISCUSS 模板（light 模板没有 referenced_tickets 占位，
+        #    会把引用内容整个丢弃导致 Agent 只能凭记忆/猜测回复，是幻觉来源之一）。
+        if is_pure_chat and not referenced_tickets:
             from ai.agents.AiTaskPlatform.prompts import (
                 DISCUSS_LIGHT_SYSTEM_PROMPT, DISCUSS_LIGHT_USER_TEMPLATE,
             )

@@ -20,6 +20,7 @@ from app.models.identity import user_project_roles
 from app.models.organization import Company, Department
 from app.modules.tasks.schemas.ticket import TicketCreate
 from app.modules.tasks.services.ticket_service import TicketService
+from app.services.identity_service import _notify_ai_personnel_reload
 
 router = APIRouter(prefix="/users", tags=["admin-users"])
 
@@ -287,6 +288,74 @@ async def get_user_field_options(
 ADMIN_ASSIGNEE_ID = "admin"  # 审核工单指派给管理员
 
 
+# ===== 部门职责画像（AI 派单 R2 部门分类用）=====
+
+@router.get("/department-profiles", summary="读取全部已审核部门的职责画像")
+async def list_department_profiles(
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """返回 [{id, name, company_id, profile_text, examples}]（仅 approved 部门）。"""
+    db = db_manager.get_db()
+    try:
+        rows = db.query(Department).filter(
+            Department.status == 'approved'
+        ).order_by(Department.name).all()
+        return [
+            {
+                "id": d.id,
+                "name": d.name,
+                "company_id": d.company_id,
+                "profile_text": d.profile_text or "",
+                "examples": d.examples or [],
+            }
+            for d in rows
+        ]
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取部门职责失败: {str(e)}"
+        )
+    finally:
+        db.close()
+
+
+@router.put("/department-profiles", summary="批量更新部门职责画像并通知 AI 重载")
+async def update_department_profiles(
+    payload: Dict[str, Any] = Body(...),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """入参 {departments: [{id, profile_text, examples}]}。
+
+    写库后通知 AI 重载部门画像（R2 LLM 部门分类 / R-Audit 用最新职责描述）。
+    """
+    items = payload.get("departments") or []
+    db = db_manager.get_db()
+    try:
+        for it in items:
+            dept_id = it.get("id")
+            if not dept_id:
+                continue
+            dept = db.query(Department).filter(Department.id == dept_id).first()
+            if not dept:
+                continue
+            if "profile_text" in it:
+                dept.profile_text = (it.get("profile_text") or "").strip()
+            if "examples" in it:
+                dept.examples = it.get("examples") or []
+        db.commit()
+        if items:
+            _notify_ai_personnel_reload()
+        return {"code": 0, "message": "已保存", "updated": len(items)}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"更新部门职责失败: {str(e)}"
+        )
+    finally:
+        db.close()
+
+
 @router.post("/options/company", summary="提交新公司（创建 pending 记录 + 审核工单）")
 async def submit_new_company(
     data: Dict[str, Any] = Body(...),
@@ -550,8 +619,15 @@ async def create_user(
         )
     
     user_id = f"user_{uuid.uuid4().hex[:8]}"
-    
+
     hashed_password = get_password_hash(user_data.password)
+    # 初始化 USP 账户时，前端传入明文密码，此处走 pbkdf2_sha256 哈希后存储，
+    # 与个人中心更新接口（PUT /users/{username}）的 USP 密码处理保持一致。
+    external_credentials = user_data.external_credentials
+    if external_credentials and "usp" in external_credentials:
+        usp = external_credentials.get("usp") or {}
+        if usp.get("password"):
+            external_credentials["usp"]["password"] = get_password_hash(usp["password"])
     success = db_manager.add_user(
         user_id=user_id,
         username=user_data.username,
@@ -559,7 +635,7 @@ async def create_user(
         permissions=user_data.permissions,
         name=user_data.name,
         status=user_data.status,
-        external_credentials=user_data.external_credentials,
+        external_credentials=external_credentials,
         company=user_data.company,
         department=user_data.department,
         responsibility_modules=user_data.responsibility_modules,
@@ -1099,6 +1175,10 @@ async def migrate_user(
         # 5. 删除A用户
         db.delete(user_a)
         db.commit()
+
+        # 迁移会拷贝部门/模块等画像字段，通知 AI 失效派单画像缓存
+        if fields_copied:
+            _notify_ai_personnel_reload()
 
         return SuccessResponse(
             message=f"成功迁移用户 {user_a.username} → {user_b.username}，"

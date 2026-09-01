@@ -129,6 +129,32 @@ export async function fetchTicketResponseTime(projectIds?: string[]): Promise<Ti
   }
 }
 
+export interface TicketAvgCloseTime {
+  by_type: { key: string; count: number; avg_seconds: number }[]; // 各类型已关闭工单平均完单耗时（秒）
+}
+
+const EMPTY_AVG_CLOSE_TIME: TicketAvgCloseTime = { by_type: [] };
+
+/**
+ * GET /api/admin/dashboard/tickets/avg-close-time?project_ids=id1,id2
+ * 响应：{ code: 0, data: TicketAvgCloseTime }
+ * 数据来源：系统任务模块 tasks 表，完单耗时 = closed_at - created_at（仅统计已关闭工单），
+ * 按 task_type 分组取平均，见 task_dashboard_service.get_avg_close_time_analysis。
+ * 与「工单类型分布」同一数据源，供其右侧「平均完单耗时」图表。
+ */
+export async function fetchTicketAvgCloseTime(projectIds?: string[]): Promise<TicketAvgCloseTime> {
+  try {
+    const query = buildProjectIdsQuery(projectIds);
+    const res = await adminRequest<{ code: number; data: TicketAvgCloseTime }>(
+      `/dashboard/tickets/avg-close-time${query}`,
+    );
+    if (res.code === 0 && res.data) return res.data;
+    return EMPTY_AVG_CLOSE_TIME;
+  } catch {
+    return EMPTY_AVG_CLOSE_TIME;
+  }
+}
+
 export interface TicketListItem {
   id: string; title: string; status: string; priority: string;
   assignee_name?: string; created_at: string;
@@ -299,5 +325,58 @@ export async function syncWecomProjects(): Promise<SyncResult | null> {
     return null;
   } catch {
     return null;
+  }
+}
+
+// ============================================================
+// 四、仪表盘聚合接口 —— 一次返回 6 类看板数据，替代首屏并发请求
+// ============================================================
+
+/** summary-all 附带的轻量项目列表：仅首屏统计卡所需字段，risks 为未关闭风险数 */
+export interface ProjectBriefItem {
+  project_code: string;
+  name: string;
+  contact_person: string;
+  settlement_period?: string | null;
+  risks: number;
+}
+
+export interface DashboardSummaryAll {
+  tickets: TicketSummary;
+  source: TicketSourceAnalysis;
+  response_time: TicketResponseTime;
+  avg_close_time: TicketAvgCloseTime;
+  monthly: ProjectMonthlySummary;
+  urgency: UrgencySummary;
+  projects_brief?: ProjectBriefItem[];
+}
+
+const EMPTY_SUMMARY_ALL: DashboardSummaryAll = {
+  tickets: EMPTY_TICKET_SUMMARY,
+  source: EMPTY_SOURCE_ANALYSIS,
+  response_time: EMPTY_RESPONSE_TIME,
+  avg_close_time: EMPTY_AVG_CLOSE_TIME,
+  monthly: EMPTY_MONTHLY_SUMMARY,
+  urgency: EMPTY_URGENCY_SUMMARY,
+  projects_brief: [],
+};
+
+/**
+ * GET /api/admin/dashboard/summary-all?project_ids=id1,id2
+ * 聚合接口：一次返回工单汇总/来源/响应时间/项目月统计/紧急度/轻量项目列表，
+ * 替代前端首屏 6 个并发请求（fetchTicketSummary / fetchTicketSourceAnalysis /
+ * fetchTicketResponseTime / fetchProjectMonthly / fetchUrgencySummary /
+ * /projects?include_analysis=true）。
+ * 项目列表只带统计卡所需轻量字段（projects_brief）；需要完整分析字段的重列表
+ * （project_summary/任务指标等）仍走 /dashboard/projects 下钻端点。
+ */
+export async function fetchDashboardSummaryAll(projectIds?: string[]): Promise<DashboardSummaryAll> {
+  try {
+    const query = buildProjectIdsQuery(projectIds);
+    const res = await adminRequest<{ code: number; data: DashboardSummaryAll }>(`/dashboard/summary-all${query}`);
+    if (res.code === 0 && res.data) return res.data;
+    return EMPTY_SUMMARY_ALL;
+  } catch {
+    return EMPTY_SUMMARY_ALL;
   }
 }

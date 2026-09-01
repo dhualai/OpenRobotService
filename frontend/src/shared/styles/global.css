@@ -909,6 +909,19 @@ html, body, #root {
   cursor: pointer;
 }
 .chat-ticket-overview__redispatch:active { background: var(--blue-2); border-color: var(--blue-2); }
+/* 二次派单感知增强（M3）：派单结果提醒单行（警示色、单行省略，整卡点击进详情） */
+.chat-ticket-overview__tip {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: #B45309;
+  background: rgba(255, 171, 0, 0.10);
+  border-radius: 4px;
+  padding: 3px 8px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* 提交中旋转圆环 */
 .chat-ticket-spinner {
@@ -1777,6 +1790,31 @@ html, body, #root {
   color: var(--muted-foreground);
   margin-top: 2px;
 }
+/* 二次派单感知增强（M3）：派单结果提醒行（警示色、单行省略） */
+.history-row__tip {
+  font-size: 11.5px;
+  color: #B45309;
+  background: rgba(255, 171, 0, 0.10);
+  border-radius: 4px;
+  padding: 2px 8px;
+  margin-top: 4px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 二次派单感知增强（M3）：详情页"派单说明"完整情商话术（未派到指定人时） */
+.redispatch-tip-detail {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(255, 171, 0, 0.35);
+  font-size: 12px;
+  line-height: 20px;
+  color: #92400E;
+  background: rgba(255, 171, 0, 0.06);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
 /* 编辑弹窗-所属项目选择（仿下拉，点击弹出搜索层） */
 .ticket-edit-form__select {
   display: flex;
@@ -2342,6 +2380,91 @@ html, body, #root {
 .mac-source-block .mac-legend {
   flex: 1;
   min-width: 0;
+}
+/* 工单分布并排两栏：左=类型分布环图（固定 140px），右=平均完单耗时条形图（占剩余宽度） */
+.mac-source-split {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 0 16px;
+  align-items: start;
+}
+.mac-source-split__col {
+  min-width: 0;
+}
+/* 卡片底部颜色图例：色点 + 类型名 + 占比（不重复数量），占满整行并均分排列；
+   手机端放不下时自动换行（窄屏下占比数字与类型名贴在一行，保证可读） */
+.mac-donut-legend {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  column-gap: 14px;
+  row-gap: 8px;
+  margin-top: 14px;
+}
+.mac-donut-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--mac-muted-fg);
+  white-space: nowrap;
+}
+.mac-donut-legend__pct {
+  font-weight: 600;
+  color: var(--mac-fg);
+  font-variant-numeric: tabular-nums;
+}
+.mac-donut-legend__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+@media (min-width: 768px) {
+  /* 宽屏：恢复一排均分整行的原布局 */
+  .mac-donut-legend {
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    column-gap: 12px;
+  }
+}
+/* 平均完单耗时横向条形图：标签 + 轨道 + 耗时数值 */
+.mac-avgclose-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.mac-avgclose-bar__label {
+  flex-shrink: 0;
+  width: 36px;
+  font-size: 12px;
+  color: var(--mac-muted-fg);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mac-avgclose-bar__track {
+  flex: 1;
+  min-width: 0;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--mac-secondary);
+  overflow: hidden;
+}
+.mac-avgclose-bar__fill {
+  display: block;
+  height: 100%;
+  border-radius: 5px;
+}
+.mac-avgclose-bar__val {
+  flex-shrink: 0;
+  min-width: 52px;
+  font-size: 12px;
+  color: var(--mac-fg);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ===== 系统任务 / 工单 ===== */
@@ -3787,13 +3910,15 @@ html, body, #root {
   color: var(--mac-muted-fg);
   transition: transform 0.3s;
 }
-.mac-collapsible.is-open .mac-collapsible__chevron { transform: rotate(180deg); }
+/* 使用直接子代选择器 `>`：仅当本折叠区自身 is-open 时才旋转/展开，
+   避免父级 is-open 通过后代选择器误作用到嵌套子折叠区（导致子项无法收起） */
+.mac-collapsible.is-open > .mac-collapsible__header .mac-collapsible__chevron { transform: rotate(180deg); }
 .mac-collapsible__bodywrap {
   display: grid;
   grid-template-rows: 0fr;
   transition: grid-template-rows 0.3s ease-out;
 }
-.mac-collapsible.is-open .mac-collapsible__bodywrap { grid-template-rows: 1fr; }
+.mac-collapsible.is-open > .mac-collapsible__bodywrap { grid-template-rows: 1fr; }
 .mac-collapsible__bodyinner { overflow: hidden; min-height: 0; }
 .mac-collapsible--card .mac-collapsible__bodyinner { border-top: 1px solid rgba(232, 234, 234, 0.6); }
 .mac-collapsible--card .mac-collapsible__body { padding: 16px; }
@@ -4959,7 +5084,8 @@ html, body, #root {
 
 /* 马卡龙数据组件：环形图 / 图例 / 指标卡（对照原型 Bits.tsx） */
 .mac-donut { position: relative; flex-shrink: 0; }
-.mac-donut__svg { transform: rotate(-90deg); display: block; }
+/* overflow: visible：小扇区的百分比标签渲染在圆环外侧，需允许超出 viewBox */
+.mac-donut__svg { transform: rotate(-90deg); display: block; overflow: visible; }
 .mac-donut__center {
   position: absolute;
   inset: 0;

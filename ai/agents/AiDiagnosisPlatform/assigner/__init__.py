@@ -72,6 +72,8 @@ async def assign_ticket(
     contact: Optional[str] = None,
     creator: Optional[str] = None,
     preferred_assignee: Optional[str] = None,  # 预留：用户提单时填写的倾向处理人（users.id）
+    preferred_assignee_remark: Optional[str] = None,  # 重新派单时的备注/原因（拼入描述供派单算法参考）
+    prev_assignee: Optional[str] = None,  # 重新派单前的原处理人 users.id（识别"对谁不满意/换掉谁"）
 ) -> AssignmentResult:
     global _dispatch_singleton
     engineers = load_engineers()
@@ -81,6 +83,11 @@ async def assign_ticket(
     if not ticket_id:
         import time
         ticket_id = f"ticket_{int(time.time())}"
+
+    # 重新派单备注：拼到问题描述之后，作为派单算法（部门判定/召回/LLM 决策）的补充上下文
+    if preferred_assignee_remark and (preferred_assignee_remark or "").strip():
+        _remark = str(preferred_assignee_remark).strip()
+        problem_description = (problem_description or "") + f"\n【重新派单备注】{_remark}"
 
     ctx = TicketContext(
         id=ticket_id,
@@ -105,6 +112,8 @@ async def assign_ticket(
         contact=contact,
         creator=creator,
         preferred_assignee=preferred_assignee,
+        preferred_assignee_remark=preferred_assignee_remark,
+        prev_assignee=prev_assignee,
     )
 
     # 复用进程级 DispatchFlow 单例（由 ensure_dispatch_ready 懒加载/预热）

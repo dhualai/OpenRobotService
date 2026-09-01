@@ -9,6 +9,12 @@ export interface UserItem {
   username: string;
   name?: string | null;
   status?: string;
+  // 派单画像（重派「全部用户」分组用）：无画像时为空
+  department?: string | null;
+  job_level?: number | null;
+  modules?: string[] | null;
+  duty?: string | null;
+  has_profile?: boolean;
 }
 
 // 拉取可指派人员列表（全量，用于前端下拉 + 模糊搜索）

@@ -4,37 +4,30 @@
 // 下：更多功能 —— 项目管理 / 数据资源 / 日报周报 / 其他 快捷入口
 //
 // 数据接口见 src/api/dashboard.ts；接口未就绪时一律优雅降级为「0/暂无数据」，不阻塞页面渲染。
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Navbar, Loading, Toast, Popup } from 'tdesign-mobile-react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Navbar, Toast, Popup } from 'tdesign-mobile-react';
 import { UserCircleIcon } from 'tdesign-icons-react';
 import { useNavigate } from 'react-router-dom';
 import {
   TICKET_STATUS_LIST, URGENCY_LIST,
 } from '@/shared/constants/dashboard';
 import {
-  fetchTicketSummary, fetchProjectMonthly, fetchUrgencySummary, fetchTicketSourceAnalysis,
-  fetchTicketResponseTime, syncWecomProjects,
+  fetchDashboardSummaryAll, syncWecomProjects,
   type TicketSummary, type ProjectMonthlySummary, type UrgencySummary, type TicketSourceAnalysis,
-  type TicketResponseTime,
+  type TicketResponseTime, type TicketAvgCloseTime, type ProjectBriefItem,
 } from '@/api/dashboard';
 import { TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
-import { MacDonut, MacLegend, MacStat } from '@/shared/components/macaronBits';
+import { MacDonut, MacLegend, MacStat, macTone } from '@/shared/components/macaronBits';
 import { MacChevronRight, MacRefreshCw } from '@/shared/components/macaronIcons';
 import { ProjectMonthBars } from '@/shared/components/macaronMonthBars';
-import { createRequest } from '@/api/client';
-import API_CONFIG from '@/config/api';
-import { normalizeList } from '@/shared/utils/list';
 import { currentYearMonth, normalizeSettlementPeriod } from '@/shared/utils/settlement';
 import { useAuthStore, PERMISSION_VIEW_ALL } from '@/stores/auth';
+import {
+  buildDashboardFilterKey, loadDashboardCache, saveDashboardCache,
+} from '@/stores/dashboardCache';
 import { avatarUrl } from '@/api/profile';
-
-interface ProjectListItem {
-  risks: number;
-  contact_person: string;
-  settlement_period?: string | null;
-}
 
 interface MoreFunctionEntry { path: string; label: string; kind: MoreEntryIconKind; tone: string; group?: 'data-resource'; }
 
@@ -119,15 +112,28 @@ const RESPONSE_TONE_MAP: Record<string, string> = {
   other: 'blue-4',
 };
 
-// 工单分布类卡片：环形图 + 图例的组合块（环图中心=总数，图例含百分比/数量）
+// 工单类型 → 固定色阶（环图扇区 / 条形图 / 下方颜色图例共用，同类颜色稳定）
+function typeTone(key: string): string {
+  return TYPE_TONE_ORDER.includes(key)
+    ? SOURCE_TONES[TYPE_TONE_ORDER.indexOf(key)]
+    : 'gray';
+}
+
+// 工单分布类卡片：环形图 + 可选图例的组合块（环图中心=总数，图例含百分比/数量）
 function SourceDonut({
   title,
   items,
   centerLabel = '工单数',
+  showPercentLabels = false,
+  showLegend = true,
 }: {
   title: string;
   items: { label: string; value: number; tone: string }[];
   centerLabel?: string;
+  /** 在环图扇区中点上渲染百分比标签 */
+  showPercentLabels?: boolean;
+  /** 是否渲染右侧图例（百分比/数量）；类型分布图百分比已标在扇区上，省略图例 */
+  showLegend?: boolean;
 }) {
   const total = items.reduce((s, i) => s + i.value, 0);
   return (
@@ -138,17 +144,67 @@ function SourceDonut({
           segments={items.map((i) => ({ value: i.value, tone: i.tone }))}
           centerValue={total}
           centerLabel={centerLabel}
+          percentLabels={showPercentLabels}
         />
-        <MacLegend
-          items={items.map((i) => ({
-            key: i.label,
-            label: i.label,
-            value: i.value,
-            tone: i.tone,
-            percent: total > 0 ? Math.round((i.value / total) * 100) : 0,
-          }))}
-        />
+        {showLegend && (
+          <MacLegend
+            items={items.map((i) => ({
+              key: i.label,
+              label: i.label,
+              value: i.value,
+              tone: i.tone,
+              percent: total > 0 ? Math.round((i.value / total) * 100) : 0,
+            }))}
+          />
+        )}
       </div>
+    </div>
+  );
+}
+
+// 秒 → 人类可读耗时：<1h 分钟、<24h 小时、否则天（保留 1 位小数）
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}秒`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}分钟`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}小时`;
+  return `${Math.round((seconds / 86400) * 10) / 10}天`;
+}
+
+// 各类型平均完单耗时：横向条形图（长度按最大耗时等比缩放，右侧标注格式化耗时）
+function AvgCloseBars({
+  title,
+  items,
+}: {
+  title: string;
+  items: { label: string; value: number; tone: string }[];
+}) {
+  const max = Math.max(...items.map((i) => i.value), 1);
+  return (
+    <div className="mac-source-block">
+      <h4 className="mac-source-block__title">{title}</h4>
+      {items.length === 0 ? (
+        <div style={{ padding: '28px 0', textAlign: 'center', fontSize: 12, color: 'var(--mac-muted-fg)' }}>
+          暂无已关闭工单
+        </div>
+      ) : (
+        <div>
+          {items.map((it) => (
+            <div key={it.label} className="mac-avgclose-bar">
+              <span className="mac-avgclose-bar__label">{it.label}</span>
+              <span className="mac-avgclose-bar__track">
+                <span
+                  className="mac-avgclose-bar__fill"
+                  style={{
+                    width: `${Math.max((it.value / max) * 100, 2)}%`,
+                    background: macTone(it.tone),
+                  }}
+                />
+              </span>
+              <span className="mac-avgclose-bar__val">{formatDuration(it.value)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -159,39 +215,46 @@ export default function Dashboard() {
   const canAccessAdminEntries = hasPermission('frontend:admin:other:show');
   // 拥有此权限的用户不受「仅看自己关联项目」限制，可查看全部项目和工单
   const canViewAll = hasPermission(PERMISSION_VIEW_ALL);
-  const [ticketSummary, setTicketSummary] = useState<TicketSummary | null>(null);
-  const [sourceAnalysis, setSourceAnalysis] = useState<TicketSourceAnalysis | null>(null);
-  const [responseTime, setResponseTime] = useState<TicketResponseTime | null>(null);
-  const [monthlySummary, setMonthlySummary] = useState<ProjectMonthlySummary | null>(null);
-  const [urgencySummary, setUrgencySummary] = useState<UrgencySummary | null>(null);
-  const [projects, setProjects] = useState<ProjectListItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  // stale-while-revalidate：优先用上次缓存的看板数据立即渲染图表（产品口径），
+  // 本次 summary-all 返回后覆盖刷新；换账号/口径变化/过期则回退空态
+  const filterKey = useMemo(
+    () => buildDashboardFilterKey(canViewAll, projectIds ?? []),
+    [canViewAll, projectIds],
+  );
+  const cachedRef = useRef(
+    loadDashboardCache(username ?? '', filterKey)?.data ?? null,
+  );
+  const [ticketSummary, setTicketSummary] = useState<TicketSummary | null>(cachedRef.current?.tickets ?? null);
+  const [sourceAnalysis, setSourceAnalysis] = useState<TicketSourceAnalysis | null>(cachedRef.current?.source ?? null);
+  const [responseTime, setResponseTime] = useState<TicketResponseTime | null>(cachedRef.current?.response_time ?? null);
+  const [avgCloseTime, setAvgCloseTime] = useState<TicketAvgCloseTime | null>(cachedRef.current?.avg_close_time ?? null);
+  const [monthlySummary, setMonthlySummary] = useState<ProjectMonthlySummary | null>(cachedRef.current?.monthly ?? null);
+  const [urgencySummary, setUrgencySummary] = useState<UrgencySummary | null>(cachedRef.current?.urgency ?? null);
+  const [projects, setProjects] = useState<ProjectBriefItem[]>(cachedRef.current?.projects_brief ?? []);
   const [syncing, setSyncing] = useState(false);
   const [dataResourceSheetVisible, setDataResourceSheetVisible] = useState(false);
 
   const loadAll = useCallback(async () => {
-    setLoading(true);
-    const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
     // canViewAll 时不传 projectIds（后端不过滤，返回全部）；否则仅统计当前用户关联项目
-    // 项目列表同理：canViewAll 走 /projects/，否则走 /projects/me 由后端按 token 过滤
     const filterIds = canViewAll ? undefined : projectIds;
-    const projectsUrl = canViewAll ? '/projects/?include_analysis=true' : '/projects/me?include_analysis=true';
-    const [tickets, source, respTime, monthly, urgency, projectList] = await Promise.all([
-      fetchTicketSummary(filterIds),
-      fetchTicketSourceAnalysis(filterIds),
-      fetchTicketResponseTime(filterIds),
-      fetchProjectMonthly(filterIds),
-      fetchUrgencySummary(filterIds),
-      adminRequest<ProjectListItem[]>(projectsUrl).catch(() => []),
-    ]);
-    setTicketSummary(tickets);
-    setSourceAnalysis(source);
-    setResponseTime(respTime);
-    setMonthlySummary(monthly);
-    setUrgencySummary(urgency);
-    setProjects(normalizeList<ProjectListItem>(projectList));
-    setLoading(false);
-  }, [projectIds, canViewAll]);
+    // 首屏只发 summary-all 一个聚合请求（含轻量项目列表 projects_brief），
+    // 不再单独请求 /projects?include_analysis=true（重分析字段首屏用不到）；
+    // 返回前界面用上次缓存渲染（无缓存则空态），返回后覆盖刷新并写缓存
+    fetchDashboardSummaryAll(filterIds)
+      .then((all) => {
+        setTicketSummary(all.tickets);
+        setSourceAnalysis(all.source);
+        setResponseTime(all.response_time);
+        setAvgCloseTime(all.avg_close_time);
+        setMonthlySummary(all.monthly);
+        setUrgencySummary(all.urgency);
+        setProjects(all.projects_brief ?? []);
+        saveDashboardCache(username ?? '', buildDashboardFilterKey(canViewAll, projectIds ?? []), all);
+      })
+      .catch(() => {
+        // 接口失败保持当前（缓存/空态）展示，不打断页面
+      });
+  }, [projectIds, canViewAll, username]);
 
   const handleSync = useCallback(async () => {
     setSyncing(true);
@@ -213,8 +276,6 @@ export default function Dashboard() {
   }, [monthlySummary]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
-
-  if (loading) return <Loading text="加载看板..." />;
 
   return (
     <div className="dashboard-page">
@@ -281,18 +342,48 @@ export default function Dashboard() {
         {/* ============ 中上：工单分布卡片（显示权限与「更多功能-其他」一致） ============ */}
         {canAccessAdminEntries && (
           <>
-            {/* 工单类型分布 */}
+            {/* 工单类型分布（左环图，百分比标在扇区上、颜色图例在下方）+ 各类型平均完单耗时（右条形图） */}
+            {/* 环图小扇区（<8%）数字放在色块侧边渲染，图例同样补上百分比，双保险保证手机端数字可读 */}
             <section className="mac-card mac-card--pad" style={{ marginTop: 12 }}>
-              <SourceDonut
-                title="工单类型分布"
-                items={(sourceAnalysis?.by_type ?? []).map((t) => ({
-                  label: TICKET_TYPE_DISPLAY_MAP[t.key] ?? t.key,
-                  value: t.count,
-                  tone: TYPE_TONE_ORDER.includes(t.key)
-                    ? SOURCE_TONES[TYPE_TONE_ORDER.indexOf(t.key)]
-                    : 'gray',
-                }))}
-              />
+              <div className="mac-source-split">
+                <div className="mac-source-split__col">
+                  <SourceDonut
+                    title="工单类型分布"
+                    showPercentLabels
+                    showLegend={false}
+                    items={(sourceAnalysis?.by_type ?? []).map((t) => ({
+                      label: TICKET_TYPE_DISPLAY_MAP[t.key] ?? t.key,
+                      value: t.count,
+                      tone: typeTone(t.key),
+                    }))}
+                  />
+                </div>
+                <div className="mac-source-split__col">
+                  {/* 完单耗时 = 关闭时间 - 创建时间，按类型取平均 */}
+                  <AvgCloseBars
+                    title="平均完单耗时"
+                    items={(avgCloseTime?.by_type ?? []).map((t) => ({
+                      label: TICKET_TYPE_DISPLAY_MAP[t.key] ?? t.key,
+                      value: t.avg_seconds,
+                      tone: typeTone(t.key),
+                    }))}
+                  />
+                </div>
+              </div>
+              {/* 颜色图例：不同颜色代表不同工单类型，一排均分整行；每项附占比，
+                  与环图扇区上的百分比同口径（Math.round），小扇区在图例上也能读到数字 */}
+              <div className="mac-donut-legend">
+                {(sourceAnalysis?.by_type ?? []).map((t, _i, arr) => {
+                  const total = arr.reduce((s, x) => s + x.count, 0);
+                  return (
+                    <span key={t.key} className="mac-donut-legend__item">
+                      <i className="mac-donut-legend__dot" style={{ background: macTone(typeTone(t.key)) }} />
+                      {TICKET_TYPE_DISPLAY_MAP[t.key] ?? t.key}
+                      <b className="mac-donut-legend__pct">{total > 0 ? Math.round((t.count / total) * 100) : 0}%</b>
+                    </span>
+                  );
+                })}
+              </div>
             </section>
             {/* 接单人响应时间（处理人第一次点开工单时间 - 新建时间，按区间分桶） */}
             <section className="mac-card mac-card--pad" style={{ marginTop: 12 }}>

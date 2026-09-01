@@ -5,11 +5,13 @@
 // 多人改不同行天然互不覆盖（并发安全核心）；写库后后端自动导出 config.yaml + 通知 AI 热更新。
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Toast, Loading, Popup } from 'tdesign-mobile-react';
+import { Toast, Loading, Popup, Dialog } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { buildWsUrl } from '@/api/ws';
 import { useAuthStore } from '@/stores/auth';
 import MindmapView from '@/pages/admin/MindmapView';
+import DepartmentProfileManager from '@/pages/admin/DepartmentProfileManager';
 import {
   MacPlus, MacX, MacSearch,
 } from '@/shared/components/macaronIcons';
@@ -48,6 +50,42 @@ const engName = (id: string, cands: Engineer[]) => {
   return found ? found.name : id.slice(0, 8);
 };
 
+// ── 行级合并：以 remote（他人最新）为权威，保留本地「有未保存差异的行」 ──
+// 按界面名分组对齐；功能行按行 id 对齐：
+//   - remote 有、local 有且内容一致  → 用 remote
+//   - remote 有、local 无           → 新增（远端加的）
+//   - remote 有、local 有但内容不同  → 保留 local（本地有未保存编辑，交给冲突弹窗）
+//   - remote 无、local 有 id        → 删除（远端删的）
+//   - local 无 id（本地新插入未落库）→ 保留
+function sameFn(a: FuncNode, b: FuncNode): boolean {
+  const pick = (f: FuncNode) => JSON.stringify([
+    f.name, f.keywords || [], f.anchor || '', f.engineers || [], f.iface_order, f.func_order,
+  ]);
+  return pick(a) === pick(b);
+}
+function mergeProductTree(
+  local: { interfaces: InterfaceNode[] },
+  remote: { interfaces: InterfaceNode[] },
+): InterfaceNode[] {
+  const lmap = new Map((local?.interfaces || []).map((it) => [it?.name || '', it]));
+  const out: InterfaceNode[] = [];
+  for (const rit of remote?.interfaces || []) {
+    const name = rit?.name || '';
+    const lin = lmap.get(name);
+    const fns: FuncNode[] = [];
+    for (const rf of rit.functions || []) {
+      const lf = lin?.functions?.find((f) => f.id != null && rf.id != null && f.id === rf.id);
+      fns.push(lf && !sameFn(lf, rf) ? { ...lf } : { ...rf });
+    }
+    // 本地新插入未落库的行（无 id）保留
+    for (const lf of lin?.functions || []) {
+      if (lf.id == null && !fns.some((f) => sameFn(f, lf))) fns.push({ ...lf });
+    }
+    out.push({ key: rit.key, name, functions: fns });
+  }
+  return out;
+}
+
 // ── key 说明 ──
 // 界面/功能的 key（标识）由「后端聚合时统一生成」：取中文名前两字拼音 + 短哈希。
 // 编辑流程不依赖 key（用「行 id + 界面名 + 功能名」定位与保存），仅保留给总览图 MindmapView 展示用。
@@ -69,6 +107,8 @@ export default function ModuleTreeManage() {
 
   // 视图模式：single=单个产品编辑；overview=全产品总览（只读、全部展开）
   const [viewMode, setViewMode] = useState<'single' | 'overview'>('single');
+  // 顶层标签：tree=责任模块树；dept=部门职责画像管理（AI 派单部门分类用，与责任树互不影响）
+  const [tab, setTab] = useState<'tree' | 'dept'>('tree');
 
   // 新关键词/锚输入缓存
   const [kwInputs, setKwInputs] = useState<Record<string, string>>({});
@@ -214,6 +254,80 @@ export default function ModuleTreeManage() {
     const t = persistTimers.current[key];
     if (t) { clearTimeout(t); delete persistTimers.current[key]; }
   };
+
+  // ── 实时协同：订阅他人对责任树的修改（WS 广播 → 行级合并 → 冲突弹窗）──
+  const myUsername = useAuthStore((s) => s.username);
+  const activeRef = useRef(active);
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsReconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => { activeRef.current = active; }, [active]);
+
+  // 拉取某产品最新树并与本地行级合并（远端为权威，保留本地未保存行）
+  const applyRemoteProduct = useCallback(async (product: string) => {
+    try {
+      const fresh = await request<TreeMap>('/module-tree/');
+      const remote = fresh?.[product];
+      if (!remote) return;
+      const local = treesRef.current[product] || { interfaces: [] };
+      const merged = mergeProductTree(local, remote);
+      const nextAll = { ...treesRef.current, [product]: { interfaces: merged } };
+      treesRef.current = nextAll;
+      setTrees(nextAll);
+    } catch {
+      /* 拉取失败忽略，下次广播再试 */
+    }
+  }, [request]);
+
+  const confirmRefresh = useCallback((product: string, by: string) => {
+    Dialog.confirm?.({
+      title: '责任树已被他人修改',
+      content: `${by} 刚修改了「${product}」。你本地有未保存的编辑，是否刷新为最新？`,
+      confirmBtn: '刷新',
+      cancelBtn: '保留我的',
+      onConfirm: () => { void applyRemoteProduct(product); },
+    });
+  }, [applyRemoteProduct]);
+
+  useEffect(() => {
+    let closedByUser = false;
+
+    const handleMessage = (ev: MessageEvent) => {
+      try {
+        const msg = JSON.parse(ev.data) as { type?: string; product?: string; by?: string };
+        if (msg.type !== 'module_tree.updated') return;
+        if (msg.by && msg.by === myUsername) return; // 自己的改动本地已乐观更新
+        const product = String(msg.product || '');
+        if (!product) return;
+        // 正在编辑该产品且本地有未落库编辑（防抖定时器在跑）→ 冲突弹窗；否则静默合并
+        const editing = product === activeRef.current
+          && Object.keys(persistTimers.current).some((k) => k.startsWith(`${product}::`));
+        if (editing) {
+          confirmRefresh(product, String(msg.by || '对方'));
+        } else {
+          void applyRemoteProduct(product);
+        }
+      } catch { /* 忽略非法帧 */ }
+    };
+
+    const connect = (attempt: number) => {
+      if (closedByUser) return;
+      const ws = new WebSocket(buildWsUrl('/api/admin/module-tree/ws'));
+      wsRef.current = ws;
+      ws.onmessage = handleMessage;
+      ws.onclose = () => {
+        if (closedByUser) return;
+        // 指数退避重连（3s、6s、12s…上限 60s）
+        const delay = Math.min(3000 * (attempt + 1), 60000);
+        wsReconnectRef.current = setTimeout(() => connect(attempt + 1), delay);
+      };
+    };
+    connect(0);
+    return () => {
+      closedByUser = true;
+      if (wsReconnectRef.current) clearTimeout(wsReconnectRef.current);
+      wsRef.current?.close();
+    };
+  }, [myUsername, applyRemoteProduct, confirmRefresh]);
 
   // 立即落库一个功能行（update：必须有 id；add/rename 等新建走 persistRowObject）
   const persistNow = async (ifaceIdx: number, funcIdx: number) => {
@@ -446,7 +560,7 @@ export default function ModuleTreeManage() {
 
   return (
     <div className="mac-page" style={{ padding: 12, paddingBottom: 60 }}>
-      {/* 顶部固定标题栏：滚动时不随页面移动，保存按钮始终可见 */}
+      {/* 顶部固定标题栏：滚动时不随页面移动 */}
       <div style={{
         position: 'sticky', top: 0, zIndex: 50,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -454,20 +568,37 @@ export default function ModuleTreeManage() {
         background: 'rgba(255,255,255,0.95)', backdropFilter: 'blur(8px)',
         borderBottom: '1px solid var(--mac-border)',
       }}>
-        <h2 style={{ margin: 0, fontSize: 18 }}>责任模块树</h2>
+        <h2 style={{ margin: 0, fontSize: 18 }}>{tab === 'dept' ? '部门职责' : '责任模块树'}</h2>
         <div style={{ display: 'flex', gap: 8 }}>
           <button
             type="button"
-            className={`mac-chip ${viewMode === 'overview' ? 'mac-chip--tag-blue' : 'mac-chip--soft'}`}
-            onClick={() => setViewMode(viewMode === 'overview' ? 'single' : 'overview')}
-          >
-            {viewMode === 'overview' ? '退出总览' : '🗺 总览'}
-          </button>
+            className={`mac-chip ${tab === 'tree' ? 'mac-chip--tag-blue' : 'mac-chip--soft'}`}
+            onClick={() => setTab('tree')}
+          >责任树</button>
+          <button
+            type="button"
+            className={`mac-chip ${tab === 'dept' ? 'mac-chip--tag-blue' : 'mac-chip--soft'}`}
+            onClick={() => setTab('dept')}
+          >部门职责</button>
+          {tab === 'tree' && (
+            <button
+              type="button"
+              className={`mac-chip ${viewMode === 'overview' ? 'mac-chip--tag-blue' : 'mac-chip--soft'}`}
+              onClick={() => setViewMode(viewMode === 'overview' ? 'single' : 'overview')}
+            >
+              {viewMode === 'overview' ? '退出总览' : '🗺 总览'}
+            </button>
+          )}
         </div>
       </div>
 
+      {/* ───────────── 部门职责画像管理（AI 派单部门分类用，与责任树互不影响） ───────────── */}
+      {tab === 'dept' && (
+        <DepartmentProfileManager request={request} />
+      )}
+
       {/* ───────────── 单产品总览（左右对称延伸，全部功能一眼可见） ───────────── */}
-      {viewMode === 'overview' && (
+      {tab === 'tree' && viewMode === 'overview' && (
         active ? (
           <MindmapView productName={active} interfaces={trees[active]?.interfaces || []} candidates={candidates} />
         ) : (
@@ -476,7 +607,7 @@ export default function ModuleTreeManage() {
       )}
 
       {/* 单产品编辑视图：产品选择器仅编辑模式显示 */}
-      {viewMode === 'single' && (
+      {viewMode === 'single' && tab === 'tree' && (
       <>
       {/* 产品选择器 */}
       <div className="mac-tree-add" style={{ marginBottom: 12 }}>

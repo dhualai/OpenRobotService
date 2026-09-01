@@ -2,6 +2,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import { compression } from 'vite-plugin-compression2';
 
 // ── dev 代理目标：业务后端与 AI 服务已拆分（与 deploy/nginx/conf/conf.d/app_gateway.conf 对齐）─────
 //    业务后端：backend/main.py @8400（auth/admin/tasks/call/wechat）
@@ -40,7 +41,14 @@ export default defineConfig(({ command }) => {
 
   return {
     base: APP_BASE,
-    plugins: [react()],
+    plugins: [
+      react(),
+      // 构建时预压缩静态资源，配合 nginx `gzip_static on` / `brotli_static on` 直接发送预压缩文件，
+      // 避免 nginx 实时压缩开销，进一步降低首屏传输体积
+      // 注意：vite-plugin-compression2 v2 起选项为 algorithms（数组），旧的 algorithm（单数）会被忽略，
+      // 导致每个实例按默认算法把 .gz/.br 各发一份、同名文件重复告警，故只注册一个实例
+      compression({ algorithms: ['gzip', 'brotliCompress'], threshold: 1024 }),
+    ],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './src'),
@@ -66,6 +74,17 @@ export default defineConfig(({ command }) => {
           // 按模块路径分组而非按包名整包引入：既能合并出稳定 chunk，又不破坏 tree-shaking。
           // 此前 `echarts: ['echarts', ...]` 会把整个 echarts 包强制打入，正是 1.1MB chunk 的来源。
           manualChunks(id: string) {
+            // 仅合并首屏明确依赖的少量共享组件为一个 admin-shared chunk，减少首屏 HTTP 请求数；
+            // 不合并整个 /src/shared —— 否则会把非首屏大模块（hooks/api/stores）一起拖进首屏，体积暴涨（曾达 746KB）。
+            if (
+              id.includes('/src/shared/components/macaronBits') ||
+              id.includes('/src/shared/components/macaronIcons') ||
+              id.includes('/src/shared/components/macaronMonthBars') ||
+              id.includes('/src/shared/components/UserAvatarMenu') ||
+              id.includes('/src/shared/components/SubscriptionReminder')
+            ) {
+              return 'admin-shared';
+            }
             if (!id.includes('node_modules')) return undefined;
             if (id.includes('/echarts') || id.includes('/zrender')) return 'echarts';
             if (id.includes('/tdesign-mobile-react') || id.includes('/tdesign-icons-react')) return 'tdesign';

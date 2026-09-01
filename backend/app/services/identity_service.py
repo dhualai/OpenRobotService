@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, text
 from app.core.db import SessionLocal
 from app.models import UserDB, Role, Permission, Project, role_permissions, user_project_roles
-from app.models.delivery import UNDERTAKE_YES
+from app.models.delivery import UNDERTAKE_YES, PROJECT_DELETED
 from app.models.organization import Company, Department
 from app.core.security import get_password_hash, verify_password
 
@@ -109,6 +109,7 @@ class IdentityService:
                     'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),
                     'supervisor_id': getattr(db_user, 'supervisor_id', None),
+                    'phone': getattr(db_user, 'phone', None),
                 }
             return None
         finally:
@@ -146,6 +147,7 @@ class IdentityService:
                     'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),
                     'supervisor_id': getattr(db_user, 'supervisor_id', None),
+                    'phone': getattr(db_user, 'phone', None),
                 }
             return None
         finally:
@@ -166,6 +168,9 @@ class IdentityService:
             db.commit()
             from app.services.user_service import UserService
             UserService.invalidate_cache()
+            # 若改到 AI 派单画像相关字段，通知 AI 失效画像缓存（下次派单重拉最新）
+            if _changes_personnel_profile(kwargs):
+                _notify_ai_personnel_reload()
             return True
         except Exception as e:
             db.rollback()
@@ -310,7 +315,10 @@ class IdentityService:
         db = IdentityService._get_db()
         try:
             # 只列已承接项目：待定项目仅供仪表盘月柱图统计，不参与授权/选择等业务
-            projects = db.query(Project).filter(Project.undertake_status == UNDERTAKE_YES).all()
+            projects = db.query(Project).filter(
+                Project.undertake_status == UNDERTAKE_YES,
+                Project.status != PROJECT_DELETED,
+            ).all()
             return [{'id': p.id, 'code': p.code, 'name': p.name} for p in projects]
         finally:
             db.close()
@@ -319,7 +327,10 @@ class IdentityService:
     def get_project(project_id: str) -> Optional[Dict[str, Any]]:
         db = IdentityService._get_db()
         try:
-            p = db.query(Project).filter(Project.id == project_id).first()
+            p = db.query(Project).filter(
+                Project.id == project_id,
+                Project.status != PROJECT_DELETED,
+            ).first()
             return {'id': p.id, 'code': p.code, 'name': p.name} if p else None
         finally:
             db.close()
@@ -474,7 +485,10 @@ class IdentityService:
     def update_project(project_id: str, project_name: str) -> bool:
         db = IdentityService._get_db()
         try:
-            project = db.query(Project).filter(Project.id == project_id).first()
+            project = db.query(Project).filter(
+                Project.id == project_id,
+                Project.status != PROJECT_DELETED,
+            ).first()
             if not project:
                 return False
 
@@ -499,14 +513,16 @@ class IdentityService:
         db = IdentityService._get_db()
         try:
             project = db.query(Project).filter(Project.id == project_id).first()
-            if not project:
+            if not project or project.status == PROJECT_DELETED:
                 return False
 
+            # 清理 user_project_roles 中引用本项目的关联记录（外键约束）
             db.execute(user_project_roles.delete().where(
                 user_project_roles.c.project_id == project_id
             ))
 
-            db.delete(project)
+            # 软删除：保留 project 记录，仅标记为已删除，供后续创建项目去重
+            project.status = PROJECT_DELETED
             db.commit()
             return True
         except Exception as e:
@@ -771,3 +787,30 @@ class IdentityService:
 
 
 identity_service = IdentityService()
+
+
+# ── AI 派单画像缓存失效 ──
+# 用户资料写库后，若改到会进入 AI 派单画像的字段，通知 AI 失效其画像缓存，
+# 下次派单立即重拉最新画像（否则最长滞后 24h TTL）。
+_PERSONNEL_FIELDS = frozenset({
+    "name", "company_id", "department_id",
+    "responsibility_modules", "job_level", "duty_text",
+})
+
+
+def _changes_personnel_profile(kwargs: dict) -> bool:
+    """判断本次更新是否涉及 AI 派单画像相关字段。"""
+    return any(k in _PERSONNEL_FIELDS for k in (kwargs or {}))
+
+
+def _notify_ai_personnel_reload() -> None:
+    """通知 AI 失效派单画像缓存（尽力而为，失败不阻断写库）。"""
+    try:
+        import httpx
+        from app.core.config import settings
+        ai_url = getattr(settings, "AI_SERVICE_URL", "").rstrip("/")
+        if not ai_url:
+            return
+        httpx.post(f"{ai_url}/api/ai/assigner/reload", timeout=5.0)
+    except Exception as e:
+        logger.warning(f"通知 AI 失效派单画像失败: {e}")

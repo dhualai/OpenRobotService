@@ -15,7 +15,7 @@ legacy tickets 表，本模块让 AI 改为读写 tasks 表，与 backend 工单
 import hashlib
 
 from app.core.db import SessionLocal
-from app.models.task import Task, TaskStatus, TaskPriority, TaskType, TaskOperationLog, OperationType
+from app.models.task import Task, TaskStatus, TaskPriority, TaskType, TaskOperationLog, OperationType, TaskStep
 from app.core.database import db_manager
 
 
@@ -107,6 +107,40 @@ def _type_to_enum(value):
     return _TYPE_TO_ENUM.get((value or "other").strip(), TaskType.OTHER)
 
 
+def _parse_naive_utc(value) -> "datetime | None":
+    """ISO 字符串 → naive UTC datetime（剥时区）。
+
+    前端 toISOString() 带时区后缀（如 2026-08-13T10:00:00.000Z，UTC）。
+    DB 已强制会话 UTC（db.py 的 _ensure_utc_session），naive DateTime 列统一存 UTC，
+    故 aware datetime 转 UTC 后剥时区即可（不能 +8，否则前端补 Z 会双重 +8）。
+    解析失败返回 None。
+    """
+    if not value:
+        return None
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        _d = _dt.fromisoformat(str(value).replace("Z", "+00:00"))
+        if _d.tzinfo is not None:
+            _d = _d.astimezone(_tz.utc).replace(tzinfo=None)
+        return _d
+    except Exception:
+        return None
+
+
+def _resolve_step_name(step_id) -> "str | None":
+    """按 curr_step_id 反查 task_steps 模板的 step_name（防前端传名被篡改）。"""
+    if step_id is None:
+        return None
+    db = SessionLocal()
+    try:
+        row = db.query(TaskStep).filter(TaskStep.id == step_id).first()
+        return row.step_name if row else None
+    except Exception:
+        return None
+    finally:
+        db.close()
+
+
 def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
     """ticket dict → 可 Task(**fields) 的字段字典（不含 id / 时间戳，交给 server_default）。"""
     meta = {
@@ -129,21 +163,9 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
     if ticket.get("type") == "feature" and ticket.get("source"):
         meta["feature_source"] = ticket["source"]
 
-    # 截止时间：弹窗编辑值（ISO 字符串）→ Task.deadline_at（DateTime 列）。
-    # 前端 toISOString() 带时区后缀（如 2026-08-13T10:00:00.000Z，UTC 时间）。
-    # DB 已强制会话 UTC（db.py 的 _ensure_utc_session），naive DateTime 列统一存 UTC，
-    # 故 aware datetime 直接转 UTC 后剥时区即可，不再转 +8（否则前端补 Z 会双重 +8）。
-    deadline = None
-    _dl_raw = ticket.get("deadline_at")
-    if _dl_raw:
-        try:
-            from datetime import datetime as _dt, timezone as _tz
-            _dl = _dt.fromisoformat(str(_dl_raw).replace("Z", "+00:00"))
-            if _dl.tzinfo is not None:
-                _dl = _dl.astimezone(_tz.utc).replace(tzinfo=None)
-            deadline = _dl
-        except Exception:
-            deadline = None
+    # 截止时间（deadline_at，系统任务模块专用，摇人链路已不用但保留兼容）：
+    # 弹窗编辑值（ISO 字符串）→ Task.deadline_at（DateTime 列）。naive 存 UTC。
+    deadline = _parse_naive_utc(ticket.get("deadline_at"))
 
     ext_id = _external_id_for(ticket.get("session_id", ""))
     # 同一会话多次转单时，ticket_seq 确保 external_id 唯一
@@ -151,6 +173,22 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
         ext_id = f"{ext_id}#{ticket['ticket_seq']}"
     from app.core.user_identity import to_user_id
     created_by_id = to_user_id(created_by) or created_by or ""
+
+    # 协商阶段（当前步骤）：提单弹窗必填，前端传 curr_step_id；step_name 由后端
+    # 按 id 反查 task_steps 模板补齐（防前端传名被篡改/与模板不一致）。
+    # curr_step_endtime 为阶段完成时间（SLA），前端 ISO 字符串 → naive UTC DateTime。
+    curr_step_id = None
+    curr_step_name = None
+    _sid_raw = ticket.get("curr_step_id")
+    if _sid_raw:
+        try:
+            curr_step_id = int(_sid_raw)
+        except (TypeError, ValueError):
+            curr_step_id = None
+    if curr_step_id is not None:
+        curr_step_name = _resolve_step_name(curr_step_id)
+    curr_step_endtime = _parse_naive_utc(ticket.get("curr_step_endtime"))
+
     return {
         "title": ticket.get("title", "") or "",
         "description": ticket.get("description", "") or "",
@@ -167,6 +205,9 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
         "tags": ["ai_generated"],
         "metadata_info": meta,
         "deadline_at": deadline,
+        "curr_step_id": curr_step_id,
+        "curr_step_name": curr_step_name,
+        "curr_step_endtime": curr_step_endtime,
     }
 
 
@@ -231,6 +272,13 @@ def task_to_dict(task: Task) -> dict:
         # 避免依赖 FastAPI 隐式序列化 naive datetime（无时区后缀、口径不统一）。
         "created_at": task.created_at.isoformat() if task.created_at else "",
         "updated_at": task.updated_at.isoformat() if task.updated_at else "",
+        # 当前步骤：关联 task_steps 模板，名称/结束时间冗余存 tasks 行便于直接展示
+        "curr_step_id": task.curr_step_id if hasattr(task, "curr_step_id") else None,
+        "curr_step_name": task.curr_step_name if hasattr(task, "curr_step_name") else None,
+        "curr_step_endtime": (
+            task.curr_step_endtime.isoformat()
+            if hasattr(task, "curr_step_endtime") and task.curr_step_endtime else None
+        ),
     }
 
 
@@ -257,6 +305,11 @@ def upsert_task(ticket: dict, created_by: str = "") -> Task:
             # 弹窗编辑的截止时间：None 表示用户没选（保持原值），非 None 才更新
             if fields.get("deadline_at") is not None:
                 existing.deadline_at = fields["deadline_at"]
+            # 协商阶段：curt_step_* 直接覆盖（提单时确定，重复 submit 幂等更新为最新选择）
+            existing.curr_step_id = fields.get("curr_step_id")
+            existing.curr_step_name = fields.get("curr_step_name")
+            if fields.get("curr_step_endtime") is not None:
+                existing.curr_step_endtime = fields["curr_step_endtime"]
             # 如果传入的 created_by 非空且比已有值更准确（非 system/unknown），则更新
             if created_by and existing.created_by in ("system", "unknown", ""):
                 from app.core.user_identity import to_user_id

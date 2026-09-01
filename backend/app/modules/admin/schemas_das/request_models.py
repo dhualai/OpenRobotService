@@ -1,5 +1,5 @@
 from pydantic import BaseModel, validator, Field
-from typing import List, Optional, Dict, Union
+from typing import List, Optional, Dict, Union, Any
 import re
 from datetime import datetime
 from enum import Enum
@@ -145,6 +145,7 @@ class ProjectBase(BaseModel):
     sales: Optional[str] = None
     pre_sales: Optional[str] = None
     project_manager: Optional[str] = None
+    project_manager_id: Optional[str] = None
     field_engineer: Optional[str] = None
     internal_code: Optional[str] = None
     project_region: Optional[ProjectRegion] = None
@@ -192,6 +193,7 @@ class ProjectUpdate(BaseModel):
     sales: Optional[str] = None
     pre_sales: Optional[str] = None
     project_manager: Optional[str] = None
+    project_manager_id: Optional[str] = None
     field_engineer: Optional[str] = None
     internal_code: Optional[str] = None
     project_region: Optional[ProjectRegion] = None
@@ -213,7 +215,12 @@ class ProjectResponse(ProjectBase):
     controller_vendor: Optional[Union[str, ControllerVendor]] = None
     system_integration: Optional[List[Union[str, SystemIntegrationType]]] = None
     server_deployment_status: Optional[Union[str, ServerDeploymentStatus]] = None
-    
+    # 运行时附加的分析字段（服务层就地补充，非 Project 表列）：
+    # task_execution_stats = {"total_tasks", "finished_tasks", "completion_rate", "manual_switch_count"}
+    # latest_manual_switch_count = collection_data 最新一天的 averageManualCount
+    task_execution_stats: Optional[Dict[str, Any]] = None
+    latest_manual_switch_count: Optional[float] = None
+
     class Config:
         from_attributes = True
 

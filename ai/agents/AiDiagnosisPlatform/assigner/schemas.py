@@ -79,6 +79,18 @@ class TicketContext(BaseModel):
         None,
         description="倾向处理人（用户提单时填写，传工程师 users.id，预留）↔ tasks.metadata_info.preferred_assignee",
     )
+    # 重新派单备注/原因：用户重派时填写的意图说明（如"希望派给熟悉XXX的人/之前派错"等）。
+    # 作为 Step6 决策的强信号参考（契合度判断），并有独立字段供决策层/日志使用。
+    preferred_assignee_remark: Optional[str] = Field(
+        None,
+        description="重新派单备注/原因 ↔ tasks.metadata_info.preferred_assignee_remark",
+    )
+    # 重新派单时的「原处理人」（users.id）。重派单会清空 assigned_to，故在复位前
+    # 把旧值存进 metadata_info.prev_assignee，供 Step6 决策识别"对谁不满意/换掉谁"。
+    prev_assignee: Optional[str] = Field(
+        None,
+        description="重新派单前的原处理人 users.id ↔ tasks.metadata_info.prev_assignee",
+    )
 
     # === 其他 ===
     updated_at: Optional[str] = Field(None, description="修改时间 ↔ tasks.updated_at")
@@ -185,4 +197,19 @@ class AssignmentResult(BaseModel):
     decision_type: str = Field(
         ...,
         description="决策类型: auto(直接拍板) / recommend(建议确认) / fallback(兜底派单) → tasks.metadata_info.decision_type"
+    )
+
+    # === 二次派单感知增强 追加字段（落 task_dispatch_log）===
+    # 本次派单上下文
+    preferred_id: Optional[str] = Field(None, description="意向处理人 users.id（重派有；首次派单可 None）")
+    matched_pref: Optional[bool] = Field(None, description="是否派到意向处理人（无意向处理人时保持 None，勿用 False 表示「未派到」以区分『没有指定人』）")
+    name_collision: bool = Field(False, description="是否按姓名命中多人（同名）")
+    pinyin_match: bool = Field(False, description="是否经拼音/近似名匹配命中")
+
+    # 本轮完整评估（M1 profile / M2 candidates 快照）
+    profile: Optional[Dict[str, Any]] = Field(
+        None, description="被派人画像 {dept, job_level, modules, duty, missing:[...]}（missing=缺失画像字段）"
+    )
+    candidates: Optional[List[Dict[str, Any]]] = Field(
+        None, description="本轮精排 Top10 快照 [{rank, engineer_id, name, scores, profile, tags}]（M2 填充）"
     )

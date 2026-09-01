@@ -9,7 +9,6 @@ from typing import Optional, Dict, List, Any
 from app.modules.admin.schemas_das.request_models import ProjectCreate, ProjectUpdate, ProjectResponse
 from app.modules.admin.services.project_service import project_service
 from app.modules.admin.services.risk_service import risk_service
-from app.modules.admin.services.transport_efficiency_service import transport_efficiency_service
 from app.modules.admin.services.permission_service import PermissionService
 from app.modules.admin.utils_das.config import security, DEBUG_MODE
 from app.core.database import db_manager
@@ -48,13 +47,17 @@ async def get_projects(
     
     if project_codes:
         detailed_risks = risk_service.get_detailed_open_risks_by_project_codes(project_codes)
-        
+        # 批量预取任务指标与切手动次数（此前在循环内逐项目查询，N 个项目为 3N 条 SQL；
+        # 切手动次数现随任务指标一起取自 collection_data，见 get_task_execution_metrics_7d_batch）
+        metrics_7d = project_service.get_task_execution_metrics_7d_batch(project_codes)
+
         for project in projects:
             project_code = project["project_code"]
             project_risks = detailed_risks.get(project_code, [])
-            
+            metric = metrics_7d.get(project_code)
+
             project["risks"] = 0
-            
+
             custom_categories = {}
             for risk in project_risks:
                 category = risk.get("custom_category") or "未分类"
@@ -64,10 +67,9 @@ async def get_projects(
             
             risk_summary = []
             
-            task_execution_status = project_service.get_task_execution_status_7d(project_code)
-            project["task_execution_status"] = task_execution_status
-            project["task_execution_stats"] = project_service.get_task_execution_stats_7d(project_code)
-            project["latest_manual_switch_count"] = transport_efficiency_service.get_latest_manual_switch_count(project_code)
+            project["task_execution_status"] = metric["status"] if metric else "无数据"
+            project["task_execution_stats"] = metric["stats"] if metric else {"total_tasks": 0, "finished_tasks": 0, "completion_rate": None, "manual_switch_count": None}
+            project["latest_manual_switch_count"] = metric["stats"].get("manual_switch_count") if metric else None
 
             for category, risks in custom_categories.items():
                 risk_summary.append(f"\n{category} ：{len(risks)}项")
@@ -79,7 +81,7 @@ async def get_projects(
                         project["risks"] += 1
 
                     risk_summary.append(f"- {risk['description']} - {risk.get('response_measure', '无')} {status_icon}")
-            
+
             if risk_summary:
                 project["project_summary"] = "\n".join(risk_summary)
                 risk_list_summary = []
@@ -89,7 +91,7 @@ async def get_projects(
             else:
                 project["project_summary"] = "无风险"
                 project["risk_list"] = "无"
-    
+
     return projects
 
 
@@ -141,11 +143,14 @@ async def get_my_projects(
     
     if project_codes:
         detailed_risks = risk_service.get_detailed_open_risks_by_project_codes(project_codes)
-        
+        # 批量预取任务指标与切手动次数（与 GET /projects/ 同口径，避免循环内 3N 条 SQL）
+        metrics_7d = project_service.get_task_execution_metrics_7d_batch(project_codes)
+
         for project in projects:
             project_code = project["project_code"]
             project_risks = detailed_risks.get(project_code, [])
-            
+            metric = metrics_7d.get(project_code)
+
             project["risks"] = 0
             
             custom_categories = {}
@@ -157,10 +162,9 @@ async def get_my_projects(
             
             risk_summary = []
             
-            task_execution_status = project_service.get_task_execution_status_7d(project_code)
-            project["task_execution_status"] = task_execution_status
-            project["task_execution_stats"] = project_service.get_task_execution_stats_7d(project_code)
-            project["latest_manual_switch_count"] = transport_efficiency_service.get_latest_manual_switch_count(project_code)
+            project["task_execution_status"] = metric["status"] if metric else "无数据"
+            project["task_execution_stats"] = metric["stats"] if metric else {"total_tasks": 0, "finished_tasks": 0, "completion_rate": None, "manual_switch_count": None}
+            project["latest_manual_switch_count"] = metric["stats"].get("manual_switch_count") if metric else None
 
             for category, risks in custom_categories.items():
                 risk_summary.append(f"\n{category} ：{len(risks)}项")
@@ -283,11 +287,11 @@ async def create_project(
         try:
             existing_projects = await PermissionService.get_projects(request, token)
             project_exists = any(p.get("project_code") == project_data.project_code for p in existing_projects["projects"])
-            
+
             if not project_exists:
                 project_dict = project_data.model_dump()
                 await PermissionService.create_project(request, token, project_dict)
-            
+
             role_data = {
                 "project_id": project_data.project_code,
                 "role_ids": ["project_contact"]
@@ -298,13 +302,13 @@ async def create_project(
             if diaoyan_role_id and diaoyan_role_id not in role_data["role_ids"]:
                 role_data["role_ids"].append(diaoyan_role_id)
             await PermissionService.assign_role(request, token, project_data.contact_person_id, role_data)
-            
+
             from app.modules.admin.utils_das.security import decode_token
             from app.modules.admin.services.wechat_service import WeChatService
-            
+
             current_user = decode_token(token)
             current_username = current_user.get("sub", "系统") if current_user else "系统"
-            
+
             users = await PermissionService.get_users_list(request, token)
             contact_user = next((u for u in users if u["username"] == project_data.contact_person_id), None)
             if contact_user:
@@ -313,9 +317,23 @@ async def create_project(
                 title = project_data.name
                 content = f"{current_user_name} 给您设置为项目 '{project_data.name}' 的对接人"
                 WeChatService.send_notification(contact_user["id"], content, url='https://usp.ep-zl.com/wechat/projects')
-        
+
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"权限服务操作失败: {str(e)}")
+
+    # 项目经理：自动关联「项目经理」角色（按角色名查 id，未找到则跳过）
+    if project_data.project_manager_id:
+        try:
+            from app.services.identity_service import IdentityService
+            pm_role_id = IdentityService.get_role_id_by_name("项目经理")
+            if pm_role_id:
+                pm_role_data = {
+                    "project_id": project_data.project_code,
+                    "role_ids": [pm_role_id],
+                }
+                await PermissionService.assign_role(request, token, project_data.project_manager_id, pm_role_data)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"项目经理角色关联失败: {str(e)}")
     
     try:
         project = project_service.create_project(project_data.model_dump())
@@ -333,18 +351,18 @@ async def create_project(
         if current_user:
             current_username = current_user.get("sub", "")
             if current_username:
-                # 创建者默认关联 project_contact；并按名查 roles 表追加「项目经理」项目角色
-                # （未找到则跳过，与上方对接人「调度研发」同口径）
+                # 创建人默认只加「项目经理」角色（不再加 project_contact）
                 from app.services.identity_service import IdentityService
                 pm_role_id = IdentityService.get_role_id_by_name("项目经理")
-                creator_role_ids = ["project_contact"]
+                creator_role_ids = []
                 if pm_role_id:
                     creator_role_ids.append(pm_role_id)
-                creator_role_data = {
-                    "project_id": project_data.project_code,
-                    "role_ids": creator_role_ids,
-                }
-                await PermissionService.assign_role(request, token, current_username, creator_role_data)
+                if creator_role_ids:
+                    creator_role_data = {
+                        "project_id": project_data.project_code,
+                        "role_ids": creator_role_ids,
+                    }
+                    await PermissionService.assign_role(request, token, current_username, creator_role_data)
     except Exception as e:
         # 关联失败不影响创建成功，仅记录日志（例如项目已存在/当前用户异常）
         logger.warning(f"自动关联创建者到项目失败: {e}", exc_info=True)
@@ -403,7 +421,23 @@ async def update_project(
             title = existing_project["name"]
             content = f"{current_user_name} 给您设置为项目 '{existing_project['name']}' 的对接人"
             WeChatService.send_notification(contact_user["id"], content, url='https://usp.ep-zl.com/wechat/projects')
-    
+
+    # 项目经理变更时，回收旧人「项目经理」角色、授予新人（与对接人口径一致）
+    if update_data.project_manager_id and update_data.project_manager_id != existing_project.get("project_manager_id"):
+        token = request.headers.get("Authorization", "")
+        token = token[7:]
+        from app.services.identity_service import IdentityService
+        pm_role_id = IdentityService.get_role_id_by_name("项目经理")
+        if pm_role_id:
+            pm_role_data = {
+                "project_id": existing_project["project_code"],
+                "role_ids": [pm_role_id],
+            }
+            old_pm_id = existing_project.get("project_manager_id")
+            if old_pm_id:
+                await PermissionService.remove_role(request, token, old_pm_id, pm_role_data)
+            await PermissionService.assign_role(request, token, update_data.project_manager_id, pm_role_data)
+
     # 项目编号/项目名称是唯一 key：更新时若改动这两个字段，同样校验库中是否已被其他项目占用
     if update_data.project_code or update_data.name:
         new_code = update_data.project_code or existing_project["project_code"]
@@ -425,7 +459,13 @@ async def delete_project(
     project_id: str,
     credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
 ) -> Dict[str, bool]:
-    success = project_service.delete_project(project_id)
+    try:
+        success = project_service.delete_project(project_id)
+    except IntegrityError as e:
+        # service 层已清理 user_project_roles；若仍有残留外键引用（如未来新增关联表），
+        # 避免裸 500，转成带原因的 500
+        logger.error(f"删除项目失败(外键约束): project_id={project_id}, error={str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"删除项目失败：存在关联数据，请先解除关联后再删除（{str(e)}）")
     if not success:
         raise HTTPException(status_code=404, detail="项目不存在")
     return {"success": True}

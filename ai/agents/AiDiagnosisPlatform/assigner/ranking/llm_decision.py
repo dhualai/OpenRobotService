@@ -1,4 +1,9 @@
-"""LLM 综合决策层：先判断工单技术归属（前端/后端/算法...），再结合精排分数选人"""
+"""LLM 最终决策层（Step6）：在精排基础上做最终拍板选人
+
+精排（排名 + 分数 + 原因）是系统给出的最强参考；本层 LLM 是最终决策者，
+负责决定是否采纳精排 #1、以及在充分理由下（如用户重派要求、模块明显不匹配）
+对候选做出调整。各维度判断（技术归属/产品/模块/工单类型）作为决策辅助信息。
+"""
 
 import json, re
 from typing import Dict, List, Optional
@@ -42,11 +47,39 @@ class LlmDecision:
         norm = project.replace(" ", "").replace("\u3000", "")
         return any(marker.replace(" ", "") in norm for marker in _YAORENBA_INTAKE_PROJECT_MARKERS)
 
+    def _resolve_redispatch_strong(
+        self, ticket, engineers, ranked_scores
+    ) -> Optional["EngineerProfile"]:
+        """解析重新派单的强信号：仅指用户明确勾选的『结构化倾向人』。
+
+        说明：用户重派时的『备注/原因』（preferred_assignee_remark）是转派的原因说明，
+        不一定点名某人，不应从备注正则抠人名当强信号（易误配、语义失真）。
+        因此这里只认 ticket.preferred_assignee（结构化 users.id，用户在表单中明确选择）。
+        ”备注/原因“在 assign_ticket 已原样拼入 problem_description，
+        并在 Step6 prompt 的【用户重新派单意图】段落作为上下文喂给 LLM 自行判断。
+        """
+        emap = {e.id: e for e in engineers}
+        # 结构化倾向人（users.id）
+        pref = (getattr(ticket, "preferred_assignee", "") or "").strip()
+        if not pref:
+            return None
+        try:
+            from app.core.user_identity import to_user_id
+            pref_id = to_user_id(pref) or pref
+        except Exception:
+            pref_id = pref
+        return emap.get(pref_id)
+
+
     async def adecide(self, ticket, engineers, recall_result, ranked_scores):
-        """综合决策入口：
-        - 若为摇人吧提单且检测到模块总负责人（duty_text/responsibility_modules 标记），优先返回该负责人；
-        - 否则若数值排名差距足够大（top - second >= 配置阈值），直接选 top，LLM 不覆写；
-        - 否则调用 LLM（原行为）。
+        """Step6 统一 LLM 最终决策入口。
+
+        原则：精排为主 + 判断辅助 + 重派为上下文（无硬规则）。
+        - 在所有情况下都调用 LLM，在精排 Top-K 窗口内做最终选人（没有确定性分支直接拍板）。
+        - 结构化倾向人 / 摇人吧模块总负责人 仅作为「额外决策线索」参考提示喂给 LLM，
+          由 LLM 自行判断是否采纳（并非强制规则）。
+        - 重派备注/转派原因 只作为上下文（不从中抠人名），LLM 自行理解。
+        - LLM 失败或窗口为空时，故障保护：保底回退精排第一名。
         """
         # 先构造快速判断数据：排名列表（按 total_score 已排序）
         try:
@@ -97,20 +130,56 @@ class LlmDecision:
             for eid in outside_llm_top
         ) or "-"
         top1_name = emap_diag[top_eid].name if top_eid in emap_diag else top_eid
+
+        # ── 重新派单备注/倾向人 强信号：决策日志展示重派原因，便于定位"为什么最高分未被选" ──
+        pref_assignee = (getattr(ticket, "preferred_assignee", "") or "").strip()
+        pref_remark = (getattr(ticket, "preferred_assignee_remark", "") or "").strip()
+        pref_desc = f"重派倾向人={pref_assignee or '-'}" if pref_assignee or pref_remark else ""
+        if pref_remark:
+            pref_desc += f" | 重派备注=\"{pref_remark[:120]}\""
+        if pref_desc:
+            logger.info(
+                f"[派单:{getattr(ticket,'id','?')}] Step6 重新派单信息: {pref_desc}"
+            )
         logger.info(
             f"[派单:{getattr(ticket,'id','?')}] Step6决策 | top1={top1_name} 总={top_score:.2f} "
             f"second={second_score:.2f} | 低分阈值={low_score_threshold} topk={topk} "
             f"| 窗口内=[{', '.join(window_names)}] | 窗口外LLM最高=[{outside_str}]"
         )
 
-        # 1) Yaorenba 专属：优先模块总负责人（在 duty_text 或 responsibility_modules 中标注含 '总负责人'）
-        try:
-            force_owner = bool(self._config.yaorenba_force_module_owner)
-        except Exception:
-            force_owner = True
+        # ── 收集"额外决策线索"（参考，不直接定人选）──
+        # 所有情况统一交由 LLM 做最终决策；结构化倾向人 / 模块总负责人 仅作为提示传入 prompt，
+        # 由 LLM 结合精排窗口协商权衡（尊重精排为主）。
+        # 备注/转派原因(preferred_assignee_remark)不在此抠人名，只作上下文已在 prompt 呈现。
+        extra_hints = []
 
-        if force_owner and self._is_yaorenba_intake(ticket):
-            # 更精细的模块映射规则：根据用户描述优先匹配具体子界面/模块的“总负责人”或负责人
+        # 0) 结构化用户倾向处理人：作为提示供 LLM 协商，不无条件换人。
+        try:
+            strong_match = self._resolve_redispatch_strong(ticket, engineers, ranked_scores)
+        except Exception:
+            strong_match = None
+        if strong_match is not None:
+            s = float(ranked_scores.get(strong_match.id, {}).get("total_score", 0.0))
+            in_window = strong_match.id in [eid for eid, _ in items[:topk]]
+            logger.info(
+                f"[派单:{getattr(ticket,'id','?')}] Step6 用户倾向处理人={strong_match.name} "
+                f"总分={s:.2f} 在Top{topk}窗口={'是' if in_window else '否'} → 交由LLM协商"
+            )
+            extra_hints.append(
+                f"用户明确指定的倾向处理人: {strong_match.name}，"
+                f"总分={s:.2f}，{'在候选窗口内(优先考虑遵循用户意图)' if in_window else '不在候选窗口内(仅作参考，需谨慎)'}。"
+                f"请结合精排与其分数决定是否改派；若遵循请在 reasoning 说明（reasoning 中请不要出现 users.id）。"
+            )
+
+        # 1) 摇人吧专属：识别工单涉及的子界面/模块 → 找候选中的"模块总负责人/负责人"，
+        #    仅作为一条「额外决策线索」喂给 LLM，由 LLM 决定是否参考，不是强制派给规则。
+        try:
+            enable_owner_hint = bool(self._config.yaorenba_force_module_owner)
+        except Exception:
+            enable_owner_hint = True
+
+        if enable_owner_hint and self._is_yaorenba_intake(ticket):
+            # 根据用户描述匹配具体子界面/模块，识别该模块的总负责人/负责人作为线索
             text = ((getattr(ticket, "title", "") or "") + " \n " + (getattr(ticket, "problem_description", "") or "")).lower()
 
             # 模块关键词映射（按优先级检查）
@@ -175,22 +244,18 @@ class LlmDecision:
 
                 if chosen:
                     s = score_of(chosen)
-                    return AssignmentResult(
-                        engineer_id=chosen.id, engineer_name=chosen.name,
-                        confidence_score=round(float(s), 4),
-                        reasoning=f"Yaorenba deterministic: matched module '{mod}' -> selected module owner/member by score; bypassed LLM.",
-                        decision_type="auto",
+                    in_window = chosen.id in [eid for eid, _ in items[:topk]]
+                    logger.info(
+                        f"[派单:{getattr(ticket,'id','?')}] Step6 模块负责人线索: "
+                        f"模块'{mod}' → {chosen.name}(总={s:.2f}) 在Top{topk}窗口={'是' if in_window else '否'} → 交由LLM参考"
+                    )
+                    extra_hints.append(
+                        f"摇人吧模块专属提示: 工单涉及模块 '{mod}'，候选中的模块总负责人/负责人为 "
+                        f"{chosen.name}（总分={s:.2f}），"
+                        f"{'在候选窗口内(可优先考虑指派该模块负责人)' if in_window else '不在候选窗口内(仅作参考)'}。"
                     )
 
-        # 2) 默认直接采用精排第一名（保证派单尊重排名），
-        #    仅当第一名总分很低（< llm_decision_low_score_threshold，说明候选都不理想）时
-        #    才触发 LLM 在精排 Top-K 内再决定一遍，避免大模型随意覆写排名。
-        try:
-            low_score_threshold = float(
-                getattr(self._config, "llm_decision_low_score_threshold", 0.6)
-            )
-        except Exception:
-            low_score_threshold = 0.6
+        # ── 统一决策：所有情况（含结构化倾向人、模块负责人线索）都经 LLM 在精排 Top-K 窗口内最终决策 ──
         try:
             topk = int(getattr(self._config, "llm_decision_topk", 3))
             if topk < 1:
@@ -198,23 +263,7 @@ class LlmDecision:
         except Exception:
             topk = 3
 
-        if top_eid and top_score >= low_score_threshold:
-            # 第一名评分不低 → 直接采用，大模型不再覆写
-            eng = next((e for e in engineers if e.id == top_eid), None)
-            if eng:
-                return AssignmentResult(
-                    engineer_id=eng.id, engineer_name=eng.name,
-                    confidence_score=round(float(top_score), 4),
-                    reasoning=(
-                        f"Selected by ranking: top1({eng.name}) total={top_score:.4f} "
-                        f">= low_score_threshold({low_score_threshold}); ranking respected, LLM bypassed."
-                    ),
-                    decision_type="auto",
-                )
-
-        # 3) 第一名评分很低 → 触发 LLM 再决定，但把可选范围限制在精排 Top-K 内，
-        #    保证即使重选也尊重排名、不会选到低排名者。
-        #    构造 Top-K 窗口：仅保留精排前 K 的候选及其分数，供 LLM 挑选与解析。
+        # 构造 Top-K 窗口：仅保留精排前 K 的候选及其分数，供 LLM 挑选与解析。
         top_items = list(ranked_scores.items())[:topk]
         window_ranked = dict(top_items)
         window_engineers = []
@@ -230,40 +279,47 @@ class LlmDecision:
                 return AssignmentResult(
                     engineer_id=eng.id, engineer_name=eng.name,
                     confidence_score=round(float(top_score), 4),
-                    reasoning="Low-score re-decision window empty; fell back to top1 by ranking.",
+                    reasoning="Decision window empty; fell back to top1 by ranking.",
                     decision_type="auto",
                 )
             return None
 
-        prompt = self._build_prompt(ticket, window_engineers, recall_result, window_ranked)
+        prompt = self._build_prompt(
+            ticket, window_engineers, recall_result, window_ranked,
+            extra_hints=extra_hints or None,
+        )
         try:
             from ai.core import get_llm_client
             llm = await get_llm_client()
             response = await llm.complete(prompt, max_tokens=400, temperature=0.3)
             # 打印 LLM 原始输出，便于核查大模型为何这么选（谁被推举、置信、reasoning）
             logger.info(
-                f"[派单:{getattr(ticket,'id','?')}] Step6 LLM原始输出: {response[:500]}"
+                f"[派单:{getattr(ticket,'id','?')}] Step6 LLM最终决策原始输出: {response[:500]}"
             )
             return self._parse(response, window_engineers)
         except Exception as e:
             logger.warning(
-                f"[派单:{getattr(ticket,'id','?')}] Step6 LLM重选失败: {e}"
+                f"[派单:{getattr(ticket,'id','?')}] Step6 LLM最终决策失败: {e}；"
+                f"已降级采用精排第一名（决策保底，非规则）"
             )
-            # LLM 失败时兜底：仍采用精排第一名，保证派单不中断、尊重排名
+            # LLM 失败时保底（故障保护）：仍采用精排第一名，保证派单不中断、尊重排名。
             eng = next((e for e in window_engineers if top_eid and e.id == top_eid), None)
             if eng:
                 return AssignmentResult(
                     engineer_id=eng.id, engineer_name=eng.name,
                     confidence_score=round(float(top_score), 4),
-                    reasoning="Low-score LLM re-decision failed; fell back to top1 by ranking.",
+                    reasoning="LLM decision failed; fell back to top1 by ranking (fault fallback).",
                     decision_type="fallback",
                 )
             return None
 
-    def _build_prompt(self, ticket, engineers, recall_result, ranked_scores):
+    def _build_prompt(self, ticket, engineers, recall_result, ranked_scores, extra_hints=None):
         lines = [
-            "你是派单决策专家。请先判断工单的技术归属（前端/后端/算法等）与业务模块，",
-            "再结合精排分数与候选人画像，推荐最合适的人。",
+            "你是本工单派单的『最终拍板决策者』。",
+            "系统已通过部门过滤、召回与精排为你准备好了带依据的候选排名"
+            "（见下方【候选人排名】：每个候选的总分、各维度分与精排原因）。",
+            "精排是系统给你的最重要参考，但最终是否采纳这份排名、采纳哪位候选人，由你决定。",
+            "你的职责：先通读工单与精排结果，做出最终的选人判断，并在 reasoning 里说明你最终采纳/调整的理由。",
             "",
             "【第一维度：技术归属（判断问题属于哪个技术层）】",
             "- 前端/界面类：页面、UI、显示、展示、时区显示、标题显示、交互、列表、表单、样式、渲染",
@@ -281,37 +337,82 @@ class LlmDecision:
             "再匹配候选人负责的模块中是否有相关项，而非按模块名硬套前端/后端。",
             "选人时：①工单涉及的产品/模块尽量匹配候选人负责的模块；②在匹配者中优先排名靠前的。",
             "",
-            "【第三维度：工单类型（你必须独立判断，它决定由谁承接）】",
-            "上游提单 Agent 给了一个初步类型（见下方工单区的 ticket_type），仅供参考、可能判错；你必须基于工单内容独立复核出最终类型。",
+            "【第三维度：工单类型（辅助你判断该派谁承接）】",
+            "上游提单 Agent 给了一个初步类型（见下方工单区的 ticket_type），仅供参考；你可基于工单内容复核。"
+            "这类判断帮助你理解工单性质与候选人匹配度，是支持你做最终拍板的信息之一。",
             "五类定义与边界（务必区分清楚，尤其 support 与 feature）：",
             "- support 咨询：询问使用方法/操作指导/配置协助，「不会用/怎么用/如何操作/需要指导」等；不新增功能、也不报故障。",
             "- feature 需求：希望新增/增加功能、提产品建议，「建议新增/希望支持/能不能加/增加一个」等。",
             "- bug 缺陷：功能本该有但行为错误/异常，与预期不符。",
             "- problem 报障：现场异常、故障报修、设备/系统出问题。",
             "- other 其他：无法归入以上四类（闲聊/感谢/无关内容）。",
-            "承接规则：",
-            "- feature 需求类 → 派给该产品的产品经理（负责「产品设计」模块的候选人），由产品经理做需求梳理。",
-            "- 其余四类（support/bug/problem/other）→ 一律按工单涉及的产品 + 模块匹配候选人画像，选总分最高者，不要按类型硬派。",
-            "候选人若负责「产品设计」模块，即为该产品的产品经理；名单可能有多名 PM，须按工单所属产品区分。",
+            "承接参考：",
+            "- 正常情况下以「精排 #1 为默认」（见【决策原则】），但你是最终决策者，可基于实质依据调整。",
+            "- feature 需求可优先考虑负责「产品设计」模块、且归属产品与工单一致的候选人（产品设计师），"
+            "但这只是改选理由之一（需匹配产品），不是强制规则；#1 若已合理匹配仍应保留。",
             "",
+
             "【候选人排名（已含职级折扣；#1 为总分最高，默认应优先考虑）】",
         ]
 
         emap = {e.id: e for e in engineers}
+        # 决策阶段统一用 id（工程唯一、无同名歧义）；姓名清洗只在给用户展示 reasoning 时做（见 _parse）。
         for rank, (eid, d) in enumerate(list(ranked_scores.items())[:5], 1):
             eng = emap.get(eid)
             if not eng:
                 continue
             dep = f"({eng.department})" if eng.department else ""
+            tags = []
+            if d.get("preferred_assignee"):
+                tags.append("[用户倾向]")
+            if d.get("contact_assignee"):
+                tags.append("[项目对接人]")
+            if d.get("is_creator"):
+                tags.append("[自提单人]")
+            tag_str = (" " + " ".join(tags)) if tags else ""
+            # 职级语义：L1 一线 / L2 管理·审核 / L3 最高（兜底）。数字越大职级越高、越是上级，
+            # 供 LLM 在用户重派备注提到"上报上级/请领导"时据此选择更合适职级的人。
+            _lv_txt = {
+                1: "L1一线",
+                2: "L2管理·审核",
+                3: "L3最高·兜底",
+            }.get(int(eng.job_level or 1), f"L{eng.job_level}")
             lines.append(
-                f"#{rank} ID:{eng.id} | L{eng.job_level} | {dep} "
-                f"|{eng.modules_display()}"
+                f"#{rank} ID:{eng.id} | {_lv_txt} | {dep} "
+                f"|{eng.modules_display()}{tag_str}"
             )
             lines.append(
                 f"   分数: 总={d.get('total_score',0):.2f} "
                 f"LLM={d.get('llm_score',0):.2f} 语义={d.get('semantic_score',0):.2f} "
                 f"历史={d.get('history_score',0):.2f}"
             )
+            # 精排原因：说明该候选人为何排在当前位次，供决策者理解"排名依据"。
+            # 主要依据各维度原始分 + 加权来源（职级/对接人/倾向人/部门）推导，不需要额外信息。
+            raw_parts = []
+            dims = [
+                ("LLM", d.get("llm_score", 0.0)),
+                ("语义", d.get("semantic_score", 0.0)),
+                ("历史", d.get("history_score", 0.0)),
+            ]
+            if dims:
+                top_dim, top_val = max(dims, key=lambda x: x[1])
+                if top_val > 0:
+                    raw_parts.append(f"主贡献={top_dim}({top_val:.2f})")
+            boosts = []
+            if d.get("preferred_assignee"):
+                boosts.append("用户倾向人加权")
+            if d.get("contact_assignee"):
+                boosts.append("项目对接人加权")
+            if d.get("contact_floor"):
+                boosts.append(f"保底≥{d.get('contact_floor')}")
+            if d.get("dept_multiplier", 1.0) > 1.0:
+                boosts.append(f"部门优先×{d.get('dept_multiplier')}")
+            if d.get("level_multiplier", 1.0) < 1.0:
+                boosts.append(f"职级×{d.get('level_multiplier')}")
+            if boosts:
+                raw_parts.append("提升=" + ",".join(boosts))
+            if raw_parts:
+                lines.append(f"   精排原因: {('; '.join(raw_parts))[:120]}")
             duty = (eng.duty_text or "")[:100]
             if duty:
                 lines.append(f"   职责: {duty}")
@@ -328,36 +429,90 @@ class LlmDecision:
             lines.append(f"车型: {ticket.robot_type}")
         if ticket.fault_code:
             lines.append(f"故障码: {ticket.fault_code}")
+        # 重新派单备注/转派原因作为重要决策上下文：让 LLM 审视"精排结果是否符合用户的转派要求"。
+        # 备注一般为转派原因（原处理人不合适/需更合适/明确点名），用自然语言表达；
+        # 结构化倾向人（用户明确勾选）由 adecide 分支 0 作为 extra_hints 传入，此处不重复。
+        # ★ 重派单动作本身即"对原处理人不满意、希望换人"的强信号（无论是否写了备注）：
+        #   只要 ticket.preferred_assignee 有值（重派单前端必传）就提示换人意图，让 LLM
+        #   审视精排 #1 是否为"仍按原处理人思路"，而非默认照单全收。
+        _pref_remark = (getattr(ticket, "preferred_assignee_remark", "") or "").strip()
+        _pref_assignee = (getattr(ticket, "preferred_assignee", "") or "").strip()
+        _is_redispatch = bool(_pref_assignee or _pref_remark)
+        if _is_redispatch:
+            _pref_lines = [
+                "",
+                "【用户重新派单意图（需纳入你的最终决策）】",
+                "本单是【重新派单】：用户对原处理人（或原指派/原方案）不满意，主动要求换人重新处理。"
+                "这是一条强信号——默认不应再按原处理人思路照单全收，而应结合工单实质审视谁更合适。",
+            ]
+            if _pref_remark:
+                _pref_lines.append(f"用户转派原因/备注: {_pref_remark}")
+            if _pref_assignee:
+                _pref_eng = next((e for e in engineers if e.id == _pref_assignee), None)
+                _pref_name = _pref_eng.name if _pref_eng is not None else "（用户指定，但不在当前候选列表）"
+                _pref_lines.append(f"用户指定倾向处理人: {_pref_name}（其评分与画像见下方候选排名，是否遵循由你判断）")
+            # 原处理人（重派前被换掉的人）：让 LLM 明确"用户对谁不满意/要换掉谁"。
+            # prev_assignee 存 users.id（或 username），尽量反查姓名给 LLM 阅读；
+            # 若查不到姓名则不裸显 id（避免 LLM 把内部 id 抄进给用户看的 reasoning）。
+            _prev_raw = (getattr(ticket, "prev_assignee", "") or "").strip()
+            _prev_eng = None
+            _prev_name = "未知"
+            if _prev_raw:
+                _prev_eng = next((e for e in engineers if e.id == _prev_raw), None)
+                if _prev_eng is not None:
+                    _prev_name = _prev_eng.name
+                else:
+                    _prev_name = "未知（不在当前候选列表）"
+            if _prev_raw:
+                _pref_lines.append(
+                    f"原处理人（用户重派前要换掉的）: {_prev_name}"
+                )
+            _pref_lines.extend([
+                "请审视精排 #1 是否真正符合用户这次换人诉求：若 #1 与用户诉求匹配则采纳 #1；"
+                "若用户明确倾向某候选、且该候选分数不至于显著过低，可改派并在 reasoning 说明理由；"
+                f"默认应优先避免再把单派回原处理人（{_prev_name}），除非其画像确实最匹配；"
+                "若候选内无更合适者，仍以精排 #1 为准，并在 reasoning 说明为何未能满足用户换人意图。",
+            ])
+            lines.extend(_pref_lines)
+
+        # 额外决策线索（由 adecide 上游规则识别，作为 LLM 决策的参考提示，不直接定人选）：
+        # 1) 结构化用户倾向处理人；2) 摇人吧模块总负责人。两者都由 LLM 在精排窗口内审视权衡。
+        if extra_hints:
+            lines.extend(["", "【额外决策线索（参考，非强制）】"])
+            for hint in extra_hints:
+                lines.append(f"- {hint}")
 
         lines.extend([
             "",
-            "【选人规则】",
-            "1. 先独立判断 ticket_category（support/feature/bug/problem/other）与 problem_domain，并识别工单涉及的产品与模块。",
-            "2. feature 需求类：优先找负责「产品设计」模块、且归属产品与工单一致的候选人（该产品的产品经理）。",
-            "3. 其余类型（support/bug/problem/other）：按工单涉及的模块匹配候选人负责的模块，选总分最高者（#1 默认优先）。",
-            "4. 【最重要】下方候选人列表即为精排 Top-N（#1 为总分最高）。你必须默认选择 #1，尊重精排排名，不要随意更换。",
-            "5. 仅当 #1 的产品/模块明显不匹配、或工单为 feature 需求（需派产品设计师）时才可选排名更靠后的候选人，且只能在下方给出的候选人里选，并在 reasoning 说明理由。",
-            "6. 若你复核出的类型与上游初步类型不一致，在 reasoning 里说明理由（如「上游判 X，实为 Y」）。",
+            "【决策原则】",
+            "0. 你是最终拍板者：精排 #1（下方候选排名第一名）是系统给出的最强依据，正常情况下应采纳它。",
+            "1. 你拥有最终决策权：若你结合工单内容、各维度判断或用户重派要求，认为应选择排名中其他候选人，"
+            "你有权改选——但必须在 reasoning 中说明明确依据，且只能在下方面试名额（候选列表）内的人里选。",
+            "2. 候选人 responsibility_modules 是平级模块清单，选人以「产品/模块匹配 + 精排分数」为准，"
+            "不要因模块名带前端/后端而硬套技术分层。",
+            "3. 有重派备注(【用户重新派单意图】)时：作为最终决策者，请审视精排 #1 是否符合用户这次转派的要求，"
+            "再决定是否因此调整；正常情况下仍以精排 #1 为准，除非用户意图明确指向其他候选。",
+            "4. 若你决定不采纳精排 #1，请给出清晰理由（如 #1 产品/模块明显不匹配、用户明确指定他人等），"
+            "并在 reasoning 中说明最终所选候选相对 #1 的优势。",
+            "5. 不要仅仅因为「你认为类型是 X」就更换人选；类型复核仅作为参考，改选仍需实质依据。",
+            "6. 候选带 [自提单人] 标签 = 该候选人是本工单的提单人（自己提的单）。自提不是禁接，"
+            "由你判断是否恰当：若其职责/模块确实最匹配（如『派单算法 bug』由派单引擎负责人自提报修），"
+            "可正常采纳该自提单人；否则优先派给更合适的非提单人，并在 reasoning 说明。",
+            "7. 候选带职级标注（L1 一线 / L2 管理·审核 / L3 最高·兜底，数字越大职级越高）。"
+            "若用户重派备注/工单描述中提到「上报给上级/请领导/需要审批/领导处理」等诉求，"
+            "说明用户希望由更高级别的人处理，应优先选择职级更高者承接（在职责/模块匹配的前提下），"
+            "并在 reasoning 说明选的是上级。",
         ])
 
-        # 「摇人吧服务号提单」项目专属：按服务号内部子界面/子功能区分总负责人。
-        # 只有工单项目归属该兜底项目时才启用这条总负责人规则；常规 AGV/AMR 项目
-        # （调度USP 等）不引入，避免把服务号的总负责人逻辑错误套用到其他项目上。
-        if self._is_yaorenba_intake(ticket):
-            lines.extend([
-                "5.（仅本次工单项目＝「摇人吧服务号提单」适用）若工单描述提到具体子界面/模块，则优先派给该模块的“模块总负责人”或负责人：",
-                "   - 提到：'我要摇人' / '摇人界面' / '摇人页面' → 优先派给 '我要摇人' 模块总负责人；",
-                "   - 提到：'系统任务' / '收件箱' / '任务界面' → 优先派给 '系统任务' 模块总负责人（不分前后端）；",
-                "   - 提到：'后台管理' / '管理后台' / '数据统计' / '权限' → 优先派给 '后台管理' 模块总负责人；",
-                "   - 提到 Agent/AI/提单Agent/智能派单/AI诊断/LLM/U老师 类相关问题 → 优先派给负责算法/Agent 的工程师（算法/AI 工程师）；",
-                "   - 提到日报/周报/数据看板/统计 → 优先派给数据分析/报表负责人。",
-                "   判定依据以候选人 responsibility_modules 或 duty_text 中的 '总负责人' 标记为准（如 '我要摇人总负责人'），若无明确总负责人则退回在负责该模块的候选人中按总分优先。",
-            ])
-
         lines.extend([
             "",
-            "输出 JSON。engineer_id 必须是候选人列表中该人选对应的 ID（「ID:」字段，即 users.id），必须精确复制，不要填姓名或自造标识。",
-            '{"ticket_category":"support", "problem_domain":"产品", "product":"", "engineer_id":"<精确复制候选ID>", "confidence_score":0.85, "reasoning":"理由(说明类型/产品/模块/环节判断)", "decision_type":"auto"}',
+            "输出 JSON。",
+            "★ engineer_id 必须是候选人列表中该人选对应的 ID（「ID:」字段，即 users.id），必须精确复制，不要填姓名或自造标识（系统内部落库用）。",
+            "★ reasoning（派单说明）最终会展示给提单人：请写**一句话、最简洁精炼**的核心原因",
+            "（如某候选类型/产品/模块更匹配、精排分数最高、满足用户指定意向等），能短则短，",
+            "一句话说清即可，不要写多句、不要罗列各项维度分数。可直接用候选人姓名指代，",
+            "不要刻意输出 users.id 等内部标识（即便误带入，系统展示时也会自动替换为姓名，不影响）。",
+            '{"ticket_category":"support", "problem_domain":"产品", "product":"", "engineer_id":"<精确复制候选ID>", "confidence_score":0.85, "reasoning":"一句话简洁原因，例如：该候选产品模块匹配度最高且为该项目对接人", "decision_type":"auto"}',
             "decision_type: auto(>=0.8) / recommend(0.5-0.8) / fallback(<0.5)",
         ])
         return "\n".join(lines)
@@ -370,19 +525,22 @@ class LlmDecision:
             data = json.loads(m.group())
         except json.JSONDecodeError:
             return None
-        eid = data.get("engineer_id", "").strip()
-        eng = next((e for e in engineers if e.id == eid), None)
+        raw = data.get("engineer_id", "").strip()
+        eng = next((e for e in engineers if e.id == raw), None)
         if not eng:
             return None
         dt = data.get("decision_type", "fallback").strip().lower()
-        # ticket_category / problem_domain / product 为审计字段：纳入 reasoning 便于排查
-        cat = data.get("ticket_category", "")
-        dom = data.get("problem_domain", "")
-        prod = data.get("product", "")
         reason = data.get("reasoning", "").strip()
-        audit = "/".join(filter(None, [cat, dom, prod]))
-        if audit and reason:
-            reason = f"[{audit}] {reason}"
+
+        # 面向用户展示清洗：决策全程用 id，但给用户看的 reasoning 里把出现的候选人 id
+        # 替换为姓名（id 长且唯一，误伤率极低）。先处理带 ID: 前缀/括号形态，再兜底裸 id。
+        if reason:
+            for e in engineers:
+                reason = reason.replace(f"ID:{e.id}", e.name)
+                reason = reason.replace(f"({e.id})", f"({e.name})")
+                reason = reason.replace(f"（{e.id}）", f"（{e.name}）")
+                reason = reason.replace(e.id, e.name)
+
         return AssignmentResult(
             engineer_id=eng.id, engineer_name=eng.name,
             confidence_score=round(float(data.get("confidence_score", 0.0)), 4),

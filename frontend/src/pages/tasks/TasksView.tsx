@@ -14,7 +14,7 @@ import Pagination from '@/shared/components/Pagination';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
-import { normalizeStatus, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
+import { normalizeStatus, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, TICKET_TYPE_DISPLAY_MAP, TICKET_TYPE_VALUE_MAP } from '@/shared/constants/ticket';
 import { formatDateTime } from '@/shared/utils/url';
 // 相关性分类过滤条件：列表查询与分类角标计数共用（底部导航「待我处理」角标复用同一口径）
 import { buildRelevanceFilters, type TicketFilterCondition } from '@/shared/utils/ticketFilters';
@@ -59,6 +59,9 @@ const DEFAULT_STATUS_VALUES: string[] = ['new', 'in_progress', 'pending', 'resol
 const ALL_STATUS_VALUES: string[] = Object.keys(STATUS_DISPLAY_MAP);
 // 优先级默认全选（low / medium / high / urgent）
 const ALL_PRIORITY_VALUES: string[] = Object.keys(PRIORITY_DISPLAY_MAP);
+// 工单类型默认全选（bug / feature / support / problem / other）
+// 取 TICKET_TYPE_VALUE_MAP 的值集（与后端 TaskType 枚举一致），排除仅做展示用的 question 别名
+const ALL_TYPE_VALUES: string[] = Object.values(TICKET_TYPE_VALUE_MAP);
 
 // 从 URL 查询参数解析筛选状态的工具函数
 const parseFilterFromUrl = (params: URLSearchParams) => {
@@ -82,10 +85,20 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
     const parsed = rawPriority.split(',').map((s) => s.trim()).filter(Boolean);
     priorityFilter = parsed.length > 0 ? parsed : [...ALL_PRIORITY_VALUES];
   }
+  // 工单类型多选：缺失或 'all' 视为全选，否则按逗号分隔解析
+  const rawType = params.get('type');
+  let typeFilter: string[];
+  if (rawType === null || rawType === 'all') {
+    typeFilter = [...ALL_TYPE_VALUES];
+  } else {
+    const parsed = rawType.split(',').map((s) => s.trim()).filter(Boolean);
+    typeFilter = parsed.length > 0 ? parsed : [...ALL_TYPE_VALUES];
+  }
   return {
     search: params.get('q') || '',
     statusFilter,
     priorityFilter,
+    typeFilter,
     relevanceFilter: params.get('relevance') || 'mine',
     // 项目过滤：空字符串表示「全部」（不过滤）
     projectFilter: params.get('project') || '',
@@ -180,7 +193,7 @@ function DateRangeField({ startValue, endValue, onStartChange, onEndChange, star
 
 // 将筛选状态同步到 URL 查询参数的工具函数
 const buildFilterParams = (filter: {
-  search: string; statusFilter: string[]; priorityFilter: string[];
+  search: string; statusFilter: string[]; priorityFilter: string[]; typeFilter: string[];
   relevanceFilter: string; projectFilter: string; assigneeFilter: string; creatorFilter: string;
   createdStart: string; createdEnd: string; resolvedStart: string; resolvedEnd: string; closedStart: string; closedEnd: string; page: number; sortBy: string; sortOrder: string;
 }) => {
@@ -198,6 +211,10 @@ const buildFilterParams = (filter: {
   // 优先级：全选时省略；否则按逗号分隔输出（空数组不设置参数，等同于默认全选）
   if (filter.priorityFilter.length > 0 && !sameSet(filter.priorityFilter, ALL_PRIORITY_VALUES)) {
     params.set('priority', filter.priorityFilter.join(','));
+  }
+  // 工单类型：全选时省略；否则按逗号分隔输出（空数组不设置参数，等同于默认全选）
+  if (filter.typeFilter.length > 0 && !sameSet(filter.typeFilter, ALL_TYPE_VALUES)) {
+    params.set('type', filter.typeFilter.join(','));
   }
   if (filter.relevanceFilter !== 'mine') params.set('relevance', filter.relevanceFilter);
   // 项目过滤：非空时才输出（空 = 全部）
@@ -532,6 +549,8 @@ export default function TasksView() {
   const [search, setSearch] = useState(() => initialFilter.current.search);
   const [statusFilter, setStatusFilter] = useState(() => initialFilter.current.statusFilter);
   const [priorityFilter, setPriorityFilter] = useState<string[]>(() => initialFilter.current.priorityFilter);
+  // 工单类型多选过滤（全部选中时表示不过滤）
+  const [typeFilter, setTypeFilter] = useState<string[]>(() => initialFilter.current.typeFilter);
   const [relevanceFilter, setRelevanceFilter] = useState(() => initialFilter.current.relevanceFilter);
   // 项目过滤：空字符串 = 「全部」；否则为选中项目的 id
   const [projectFilter, setProjectFilter] = useState(() => initialFilter.current.projectFilter);
@@ -560,7 +579,7 @@ export default function TasksView() {
   const [showFilterMenu, setShowFilterMenu] = useState(false);
   // 筛选弹窗草稿：弹窗内选择先写入草稿，点「确定」才提交生效；关闭（遮罩/返回）则丢弃。
   const [draft, setDraft] = useState<{
-    relevance: string; status: string[]; project: string; assignee: string; creator: string; priority: string[];
+    relevance: string; status: string[]; project: string; assignee: string; creator: string; priority: string[]; type: string[];
     createdStart: string; createdEnd: string;
     resolvedStart: string; resolvedEnd: string;
     closedStart: string; closedEnd: string;
@@ -682,6 +701,70 @@ export default function TasksView() {
     setFabDragging(false);
   };
 
+  // 当前列表过滤条件中「非相关性」的部分（搜索/状态/优先级/类型/项目/处理人/创建人/时间范围）。
+  // 抽成 memo 供 fetchTickets 与 fetchRelevanceCounts 共用，保证角标口径与列表完全一致。
+  const listExtraFilters = useMemo<TicketFilterCondition[]>(() => {
+    const filters: TicketFilterCondition[] = [];
+    if (search) {
+      const keyword = search.trim();
+      const searchConditions: TicketFilterCondition[] = [
+        { field: 'title', op: 'contains', value: keyword },
+      ];
+      // 纯数字关键词按工单编号精确查找（卡片展示的 #编号），非数字仍走标题模糊搜索
+      if (/^\d+$/.test(keyword)) {
+        searchConditions.push({ field: 'id', op: 'eq', value: Number(keyword) });
+      }
+      filters.push({ or: searchConditions });
+    }
+    // 任务状态多选过滤：未全选时按 in 操作过滤，全选则不施加状态条件
+    if (statusFilter.length > 0 && !sameSet(statusFilter, ALL_STATUS_VALUES)) {
+      filters.push({ field: 'status', op: 'in', value: statusFilter });
+    }
+    // 优先级多选过滤：未全选时按 in 操作过滤，全选则不施加优先级条件
+    if (priorityFilter.length > 0 && !sameSet(priorityFilter, ALL_PRIORITY_VALUES)) {
+      filters.push({ field: 'priority', op: 'in', value: priorityFilter });
+    }
+    // 工单类型多选过滤：未全选时按 in 操作过滤（后端 /filter 的 ticketType 为 enum 字段）
+    if (typeFilter.length > 0 && !sameSet(typeFilter, ALL_TYPE_VALUES)) {
+      filters.push({ field: 'ticketType', op: 'in', value: typeFilter });
+    }
+    // 项目过滤：选中具体项目时按 projectId 精确过滤（空 = 全部，不施加条件）
+    if (projectFilter) {
+      filters.push({ field: 'projectId', op: 'eq', value: projectFilter });
+    }
+    // 处理人过滤：选中具体处理人时按 assignedTo 精确过滤（空 = 全部，不施加条件）
+    // 后端对 assignedTo 双键解析（username / users.id 都认）
+    if (assigneeFilter) {
+      filters.push({ field: 'assignedTo', op: 'eq', value: assigneeFilter });
+    }
+    if (creatorFilter) {
+      filters.push({ field: 'createdBy', op: 'eq', value: creatorFilter });
+    }
+    // 创建时间过滤：精确到分钟。起始补 :00（含所选分钟）、结束补 :59（含所选分钟）。
+    // 空值不施加条件；值格式 YYYY-MM-DDTHH:mm（兼容旧 YYYY-MM-DD）。
+    if (createdStart) {
+      filters.push({ field: 'createdAt', op: 'ge', value: toBoundaryISO(createdStart, false) });
+    }
+    if (createdEnd) {
+      filters.push({ field: 'createdAt', op: 'le', value: toBoundaryISO(createdEnd, true) });
+    }
+    // 解决时间过滤（resolved_at）
+    if (resolvedStart) {
+      filters.push({ field: 'resolvedAt', op: 'ge', value: toBoundaryISO(resolvedStart, false) });
+    }
+    if (resolvedEnd) {
+      filters.push({ field: 'resolvedAt', op: 'le', value: toBoundaryISO(resolvedEnd, true) });
+    }
+    // 关单时间过滤（closed_at）
+    if (closedStart) {
+      filters.push({ field: 'closedAt', op: 'ge', value: toBoundaryISO(closedStart, false) });
+    }
+    if (closedEnd) {
+      filters.push({ field: 'closedAt', op: 'le', value: toBoundaryISO(closedEnd, true) });
+    }
+    return filters;
+  }, [search, statusFilter, priorityFilter, typeFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd]);
+
   const fetchTickets = useCallback(async (silent = false) => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
@@ -690,61 +773,10 @@ export default function TasksView() {
       // 相关性基础过滤（全部/项目相关/待我处理/与我相关）；
       // 「全部」无权限时按项目相关口径处理，与可见的分类选项一致。
       const relevanceKey = relevanceFilter === 'global' && !canViewAllTasks ? 'all' : relevanceFilter;
-      const filters: TicketFilterCondition[] = buildRelevanceFilters(relevanceKey, userId || username, projectIds);
-
-      if (search) {
-        const keyword = search.trim();
-        const searchConditions: TicketFilterCondition[] = [
-          { field: 'title', op: 'contains', value: keyword },
-        ];
-        // 纯数字关键词按工单编号精确查找（卡片展示的 #编号），非数字仍走标题模糊搜索
-        if (/^\d+$/.test(keyword)) {
-          searchConditions.push({ field: 'id', op: 'eq', value: Number(keyword) });
-        }
-        filters.push({ or: searchConditions });
-      }
-      // 任务状态多选过滤：未全选时按 in 操作过滤，全选则不施加状态条件
-      if (statusFilter.length > 0 && !sameSet(statusFilter, ALL_STATUS_VALUES)) {
-        filters.push({ field: 'status', op: 'in', value: statusFilter });
-      }
-      // 优先级多选过滤：未全选时按 in 操作过滤，全选则不施加优先级条件
-      if (priorityFilter.length > 0 && !sameSet(priorityFilter, ALL_PRIORITY_VALUES)) {
-        filters.push({ field: 'priority', op: 'in', value: priorityFilter });
-      }
-      // 项目过滤：选中具体项目时按 projectId 精确过滤（空 = 全部，不施加条件）
-      if (projectFilter) {
-        filters.push({ field: 'projectId', op: 'eq', value: projectFilter });
-      }
-      // 处理人过滤：选中具体处理人时按 assignedTo 精确过滤（空 = 全部，不施加条件）
-      // 后端对 assignedTo 双键解析（username / users.id 都认）
-      if (assigneeFilter) {
-        filters.push({ field: 'assignedTo', op: 'eq', value: assigneeFilter });
-      }
-      if (creatorFilter) {
-        filters.push({ field: 'createdBy', op: 'eq', value: creatorFilter });
-      }
-      // 创建时间过滤：精确到分钟。起始补 :00（含所选分钟）、结束补 :59（含所选分钟）。
-      // 空值不施加条件；值格式 YYYY-MM-DDTHH:mm（兼容旧 YYYY-MM-DD）。
-      if (createdStart) {
-        filters.push({ field: 'createdAt', op: 'ge', value: toBoundaryISO(createdStart, false) });
-      }
-      if (createdEnd) {
-        filters.push({ field: 'createdAt', op: 'le', value: toBoundaryISO(createdEnd, true) });
-      }
-      // 解决时间过滤（resolved_at）
-      if (resolvedStart) {
-        filters.push({ field: 'resolvedAt', op: 'ge', value: toBoundaryISO(resolvedStart, false) });
-      }
-      if (resolvedEnd) {
-        filters.push({ field: 'resolvedAt', op: 'le', value: toBoundaryISO(resolvedEnd, true) });
-      }
-      // 关单时间过滤（closed_at）
-      if (closedStart) {
-        filters.push({ field: 'closedAt', op: 'ge', value: toBoundaryISO(closedStart, false) });
-      }
-      if (closedEnd) {
-        filters.push({ field: 'closedAt', op: 'le', value: toBoundaryISO(closedEnd, true) });
-      }
+      const filters: TicketFilterCondition[] = [
+        ...buildRelevanceFilters(relevanceKey, userId || username, projectIds),
+        ...listExtraFilters,
+      ];
 
       const sortFieldMap: Record<string, string> = {
         created_at: 'createdAt',
@@ -784,20 +816,20 @@ export default function TasksView() {
       isFetchingRef.current = false;
       if (!silent) setLoading(false);
     }
-  }, [page, search, statusFilter, priorityFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
+  }, [page, listExtraFilters, relevanceFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
 
   fetchTicketsRef.current = fetchTickets;
 
   // 筛选状态变化时同步到 URL
   useEffect(() => {
     const newParams = buildFilterParams({
-      search, statusFilter, priorityFilter,
+      search, statusFilter, priorityFilter, typeFilter,
       relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder,
     });
     if (newParams !== searchParams.toString()) {
       setSearchParams(newParams, { replace: true });
     }
-  }, [search, statusFilter, priorityFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder]);
+  }, [search, statusFilter, priorityFilter, typeFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder]);
 
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
@@ -842,7 +874,8 @@ export default function TasksView() {
       : base;
   }, [canViewAllTasks]);
 
-  // 拉取各分类角标条数：与列表共用同一套相关性过滤口径（不受搜索/状态/优先级影响），
+  // 拉取各分类角标条数：与列表共用同一套过滤口径（含搜索/状态/优先级/类型/项目/人员/时间范围），
+  // 仅相关性维度按各分类切换——这样角标数 = 「切到该分类后列表会显示的总数」，与列表动态对齐。
   // 每次只取 total（size=1）；单个分类失败静默跳过，保留旧值。
   const fetchRelevanceCounts = useCallback(async () => {
     if (countsFetchingRef.current) return;
@@ -853,10 +886,14 @@ export default function TasksView() {
           try {
             // 「全部」无权限时按项目维度计数，与列表回退口径一致
             const key = option.value === 'global' && !canViewAllTasks ? 'all' : option.value;
+            const filters = [
+              ...buildRelevanceFilters(key, userId || username, projectIds),
+              ...listExtraFilters,
+            ];
             const data = await request<{ total: number }>('/filter', {
               method: 'POST',
               body: JSON.stringify({
-                filters: buildRelevanceFilters(key, userId || username, projectIds),
+                filters,
                 sorts: [],
                 page: 1,
                 size: 1,
@@ -879,7 +916,7 @@ export default function TasksView() {
     } finally {
       countsFetchingRef.current = false;
     }
-  }, [relevanceOptions, username, userId, projectIds, canViewAllTasks]);
+  }, [relevanceOptions, listExtraFilters, username, userId, projectIds, canViewAllTasks]);
   fetchCountsRef.current = fetchRelevanceCounts;
 
   useEffect(() => { fetchRelevanceCounts(); }, [fetchRelevanceCounts]);
@@ -888,6 +925,9 @@ export default function TasksView() {
   const statusOptions = Object.entries(STATUS_DISPLAY_MAP).map(([value, label]) => ({ value, label }));
 
   const priorityOptions = Object.entries(PRIORITY_DISPLAY_MAP).map(([value, label]) => ({ value, label }));
+
+  // 工单类型选项：与后端 TaskType 枚举一致的五个值（bug/feature/support/problem/other）
+  const typeOptions = ALL_TYPE_VALUES.map((value) => ({ value, label: TICKET_TYPE_DISPLAY_MAP[value] || value }));
 
   const sortOptions = [
     { value: 'created_at', label: '创建时间' },
@@ -1008,6 +1048,21 @@ export default function TasksView() {
     setPage(1);
   };
 
+  // 多选：单个类型点击切换选中/取消；'all' 表示全选/取消全选；空时回退为全选
+  const handleTypeToggle = (value: string) => {
+    setTypeFilter((prev) => {
+      if (value === 'all') {
+        return sameSet(prev, ALL_TYPE_VALUES) ? [] : [...ALL_TYPE_VALUES];
+      }
+      if (prev.includes(value)) {
+        const next = prev.filter((v) => v !== value);
+        return next.length > 0 ? next : [...ALL_TYPE_VALUES]; // 至少保留一项
+      }
+      return [...prev, value];
+    });
+    setPage(1);
+  };
+
   // 打开筛选弹窗：以当前生效的过滤值初始化草稿，弹窗内改动只作用于草稿
   const openFilterMenu = () => {
     setDraft({
@@ -1017,6 +1072,7 @@ export default function TasksView() {
       assignee: assigneeFilter,
       creator: creatorFilter,
       priority: [...priorityFilter],
+      type: [...typeFilter],
       createdStart,
       createdEnd,
       resolvedStart,
@@ -1028,7 +1084,7 @@ export default function TasksView() {
   };
   // 草稿字段更新（单选类）
   const setDraftField = (patch: Partial<{
-    relevance: string; status: string[]; project: string; assignee: string; creator: string; priority: string[];
+    relevance: string; status: string[]; project: string; assignee: string; creator: string; priority: string[]; type: string[];
     createdStart: string; createdEnd: string;
     resolvedStart: string; resolvedEnd: string;
     closedStart: string; closedEnd: string;
@@ -1067,6 +1123,18 @@ export default function TasksView() {
     }
     return { ...d, priority: [...d.priority, value] };
   });
+  // 草稿类型切换（与 handleTypeToggle 同逻辑，但作用于草稿）
+  const draftTypeToggle = (value: string) => setDraft((d) => {
+    if (!d) return d;
+    if (value === 'all') {
+      return { ...d, type: sameSet(d.type, ALL_TYPE_VALUES) ? [] : [...ALL_TYPE_VALUES] };
+    }
+    if (d.type.includes(value)) {
+      const next = d.type.filter((v) => v !== value);
+      return { ...d, type: next.length > 0 ? next : [...ALL_TYPE_VALUES] };
+    }
+    return { ...d, type: [...d.type, value] };
+  });
   // 清空草稿（弹窗内「清空选择」）：相关性回默认、状态回默认集（新建/进行中/已挂起/已解决）、
   // 优先级回「全部」、项目/处理人回「全部」、创建时间清空。仅作用于草稿，未点「确定」前不生效。
   const draftClear = () => setDraft({
@@ -1076,6 +1144,7 @@ export default function TasksView() {
     assignee: '',
     creator: '',
     priority: [...ALL_PRIORITY_VALUES],
+    type: [...ALL_TYPE_VALUES],
     createdStart: '',
     createdEnd: '',
     resolvedStart: '',
@@ -1092,6 +1161,7 @@ export default function TasksView() {
     setAssigneeFilter(draft.assignee);
     setCreatorFilter(draft.creator);
     setPriorityFilter(draft.priority);
+    setTypeFilter(draft.type);
     setCreatedStart(draft.createdStart);
     setCreatedEnd(draft.createdEnd);
     setResolvedStart(draft.resolvedStart);
@@ -1109,6 +1179,7 @@ export default function TasksView() {
   const dAssignee = draft?.assignee ?? assigneeFilter;
   const dCreator = draft?.creator ?? creatorFilter;
   const dPriority = draft?.priority ?? priorityFilter;
+  const dType = draft?.type ?? typeFilter;
   const dCreatedStart = draft?.createdStart ?? createdStart;
   const dCreatedEnd = draft?.createdEnd ?? createdEnd;
   const dResolvedStart = draft?.resolvedStart ?? resolvedStart;
@@ -1336,6 +1407,24 @@ export default function TasksView() {
                 </button>
               ))}
               <span className="tasks-view__filter-divider" aria-hidden="true" />
+              {/* 工单类型过滤：多选 chip（全部 + 各类型），与状态/优先级同一模式 */}
+              <button
+                key="type_all"
+                className={`tasks-view__filter-chip ${sameSet(typeFilter, ALL_TYPE_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { handleTypeToggle('all'); }}
+              >
+                全部
+              </button>
+              {typeOptions.map((option) => (
+                <button
+                  key={option.value}
+                  className={`tasks-view__filter-chip ${typeFilter.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { handleTypeToggle(option.value); }}
+                >
+                  {option.label}
+                </button>
+              ))}
+              <span className="tasks-view__filter-divider" aria-hidden="true" />
               {/* 项目过滤：内联下拉（首项「全部」+ 可搜索） */}
               <ChipDropdown
                 label={selectedProjectLabel}
@@ -1445,6 +1534,28 @@ export default function TasksView() {
                   key={option.value}
                   className={`filter-menu__item ${dStatus.includes(option.value) ? 'is-active' : ''}`}
                   onClick={() => { draftStatusToggle(option.value); }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">工单类型（多选）</h4>
+            <div className="filter-menu__items">
+              <button
+                key="type_all"
+                className={`filter-menu__item ${sameSet(dType, ALL_TYPE_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { draftTypeToggle('all'); }}
+              >
+                全部
+              </button>
+              {typeOptions.map((option) => (
+                <button
+                  key={option.value}
+                  className={`filter-menu__item ${dType.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { draftTypeToggle(option.value); }}
                 >
                   {option.label}
                 </button>

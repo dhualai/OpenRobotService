@@ -8,7 +8,6 @@
 """
 
 import asyncio
-from datetime import datetime, timezone
 from typing import Optional
 
 from ai.core.logging import get_logger
@@ -156,6 +155,7 @@ class AssignmentWorker:
                     "robot_type": (task.metadata_info or {}).get("robot_type", "") if task.metadata_info else "",
                     "fault_code": (task.metadata_info or {}).get("fault_code", "") if task.metadata_info else "",
                     "preferred_assignee": (task.metadata_info or {}).get("preferred_assignee") if task.metadata_info else None,
+                    "preferred_assignee_remark": (task.metadata_info or {}).get("preferred_assignee_remark") if task.metadata_info else None,
                     "diagnosis_hypotheses": (task.metadata_info or {}).get("diagnosis_hypotheses") if task.metadata_info else None,
                     "diagnosis_ruled_out": (task.metadata_info or {}).get("diagnosis_ruled_out") if task.metadata_info else None,
                     "diagnosis_collected_info": (task.metadata_info or {}).get("diagnosis_collected_info") if task.metadata_info else None,
@@ -223,6 +223,7 @@ class AssignmentWorker:
                         "robot_type": (r.metadata_info or {}).get("robot_type", "") if r.metadata_info else "",
                         "fault_code": (r.metadata_info or {}).get("fault_code", "") if r.metadata_info else "",
                         "preferred_assignee": (r.metadata_info or {}).get("preferred_assignee") if r.metadata_info else None,
+                        "preferred_assignee_remark": (r.metadata_info or {}).get("preferred_assignee_remark") if r.metadata_info else None,
                         "project_name": r.project_name or "",
                         "project_id": r.project_id or "",
                     }
@@ -239,6 +240,12 @@ class AssignmentWorker:
         t_id = ticket["id"]
         logger.debug(f"派单中: task_id={t_id}, title={ticket.get('title', '')[:30]}")
 
+        # 原处理人 = 上一轮 task_dispatch_log（该工单已写过的最新一条）的 assigned_id。
+        # 重派单流程：re_dispatch API 复位 assigned_to → 触发 worker 决策（此时本轮日志尚未写，
+        # task_dispatch_log 最新一条仍是上一轮）→ 故"最新一条 assigned"即"用户重派前要换掉的原处理人"。
+        # 首次派单（无任何日志）→ prev_assignee 为 None，不启用换人信号。
+        prev_assignee = self._fetch_prev_assignee(t_id)
+
         result = await assign_ticket(
             ticket_id=str(t_id),
             title=ticket["title"],
@@ -252,6 +259,8 @@ class AssignmentWorker:
             project_id=ticket.get("project_id", ""),
             creator=ticket.get("created_by", ""),
             preferred_assignee=ticket.get("preferred_assignee"),
+            preferred_assignee_remark=ticket.get("preferred_assignee_remark"),
+            prev_assignee=prev_assignee,
             diagnosis_hypotheses=ticket.get("diagnosis_hypotheses"),
             diagnosis_ruled_out=ticket.get("diagnosis_ruled_out"),
             diagnosis_collected_info=ticket.get("diagnosis_collected_info"),
@@ -299,10 +308,37 @@ class AssignmentWorker:
         )
 
     @staticmethod
+    def _fetch_prev_assignee(task_id: int) -> Optional[str]:
+        """取重派单前一轮的原处理人 users.id（读 task_dispatch_log 已存在的最新一条 assigned_id）。
+
+        首次派单（无任何日志）→ 返回 None；重派单时本轮日志尚未写入，
+        task_dispatch_log 最新一条即"上一轮"，其 assigned_id 就是被换掉的原处理人。
+        """
+        try:
+            from app.models.task_dispatch_log import TaskDispatchLog
+            from app.core.db import SessionLocal
+            from sqlalchemy import select
+            db = SessionLocal()
+            try:
+                row = db.execute(
+                    select(TaskDispatchLog.assigned_id)
+                    .where(TaskDispatchLog.task_id == task_id)
+                    .order_by(TaskDispatchLog.dispatch_round.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                return row if row else None
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"查询上一轮原处理人失败 task_id={task_id}: {e}")
+            return None
+
+    @staticmethod
     def _update_task_assignee(task_id: int, result) -> bool:
         """将派单结果写回 tasks 表"""
         try:
             from app.models.task import Task, TaskStatus, TaskOperationLog, OperationType
+            from app.models.task_dispatch_log import TaskDispatchLog
             from app.core.db import SessionLocal
             from sqlalchemy import func
 
@@ -322,15 +358,29 @@ class AssignmentWorker:
                     task.status = TaskStatus.IN_PROGRESS
                 task.updated_at = func.now()
 
-                # 派单详情写入 metadata_info
-                meta = task.metadata_info or {}
-                meta["assignee_name"] = result.engineer_name
-                meta["assignee_id"] = result.engineer_id or ""
-                meta["assign_confidence"] = result.confidence_score
-                meta["assign_reasoning"] = result.reasoning
-                meta["assign_decision_type"] = result.decision_type
-                meta["assigned_at"] = datetime.now(timezone.utc).isoformat()
-                task.metadata_info = meta
+                # ── 派单日志：统一落 task_dispatch_log（append-only，见需求方案 §4.2 §九-M1）。
+                #    每轮派单（含首次）写一条；dispatch_round = 该工单已有最大轮次 + 1。
+                #    与 tasks 更新、操作日志同一事务，保证强一致。 ──
+                from sqlalchemy import select
+                prev_round = db.scalar(
+                    select(func.coalesce(func.max(TaskDispatchLog.dispatch_round), 0))
+                    .where(TaskDispatchLog.task_id == task.id)
+                ) or 0
+                prof = dict(result.profile or {})
+                db.add(TaskDispatchLog(
+                    task_id=task.id,
+                    dispatch_round=int(prev_round) + 1,
+                    preferred_id=result.preferred_id,
+                    assigned_id=result.engineer_id or "",
+                    confidence=result.confidence_score,
+                    decision_type=result.decision_type,
+                    reasoning=result.reasoning,
+                    profile=prof or None,
+                    candidates=result.candidates or None,
+                    matched_pref=result.matched_pref,
+                    name_collision=result.name_collision,
+                    pinyin_match=result.pinyin_match,
+                ))
 
                 # 派单操作日志：与 backend/app/modules/tasks/api/task.py 的 STATUS_LABEL
                 # 中文风格对齐；operator 用 AI 系统标识，与 _log_task_creation 的

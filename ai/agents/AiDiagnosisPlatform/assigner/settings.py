@@ -5,7 +5,6 @@
 - module_anchor_texts  → recall/semantic_recall.py（L2 语义召回：Embedding 锚文本）
 - ranker_weights       → ranking/ranker.py（三路召回加权）
 - job_level_penalty    → ranking/ranker.py（职级折扣）
-- department_keywords  → filtering/dept_router.py（R5 strong 关键词）
 - department_routing   → filtering/dept_router.py（R2/R3 融合与门槛）
 - departments          → filtering/signals/llm_dept_signal.py（部门画像）
 - product_routing      → filtering/product_router.py（产品收紧）
@@ -13,7 +12,7 @@
 """
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 try:
     import yaml
@@ -22,6 +21,24 @@ try:
             return yaml.safe_load(f)
 except ImportError:
     raise RuntimeError("PyYAML 是必要依赖，请安装: pip install pyyaml")
+
+
+def _merge_departments(db_depts: list, cfg_depts: list) -> list:
+    """合并 DB 与 config 的部门画像：DB 优先，config 按部门名补漏。
+
+    - DB 已配置职责描述的部门 → 用 DB 最新；
+    - DB 未配置、config 有该部门画像 → 用 config 补上（过渡期兼容，避免部分迁移丢数据）。
+    """
+    merged: Dict[str, dict] = {}
+    for d in cfg_depts:
+        name = (d or {}).get("name") or ""
+        if name:
+            merged.setdefault(name, d)          # 先放 config，DB 同名覆盖
+    for d in db_depts:
+        name = (d or {}).get("name") or ""
+        if name:
+            merged[name] = d                    # DB 优先覆盖
+    return list(merged.values())
 
 
 class AssignerConfig:
@@ -33,7 +50,6 @@ class AssignerConfig:
     - module_classify:      {产品: {功能name: 功能name}}，供 L2 语义召回把工程师功能名映射到「产品-功能」锚
     - ranker_weights:       {llm_match, semantic_match, history_match} 三路权重
     - job_level_penalty:    {职级: 惩罚系数}，精排后按职级打折
-    - department_keywords:  {部门: {strong: [...]}}，R5 强关键词
     - department_routing:   部门路由融合权重与 hard/soft 门槛
     - departments:          部门画像（R2 LLM 分类）
     - product_routing:        产品收紧规则
@@ -53,11 +69,17 @@ class AssignerConfig:
         self.ranker_weights: Dict[str, Any] = {}
         self.job_level_penalty: Dict[int, float] = {}
         self.contact_bonus: float = 2.0
+        # 项目对接人 / 用户倾向处理人 精排保底分（≥1 不起保底作用）。
+        # 思路：倾向/对接人即使召回基础分很低，×contact_bonus 后仍可能进不了决策窗口，
+        #       因此再抬一个精排保底 total_score（默认 0.8），保证其大概率进入 Step6 决策窗口。
+        self.contact_floor: float = 0.8
         # 用户倾向处理人（预留）：前端未传字段时整体不生效；传了即启用。加权系数复用 contact_bonus。
         self.preferred_assignee_enabled: bool = True
         self.preferred_assignee_force_keep: bool = True
-        self.department_keywords: Dict[str, dict] = {}
         self.department_routing: Dict[str, Any] = {}
+        # 部门派发审查开关：R2 判完部门后，用独立 LLM 单轮复核"部门派得对不对"
+        # （post-validator，防单个 LLM 误判部门导致派错）。可回退。
+        self.dept_audit_enabled: bool = True
         self.departments: list = []
         self.product_routing: Dict[str, Any] = {}
         self.department_rules: Dict[str, Any] = {}
@@ -107,12 +129,22 @@ class AssignerConfig:
             self.contact_bonus = float(config.get("contact_bonus", 2.0))
         except (TypeError, ValueError):
             self.contact_bonus = 2.0
+        # 对接人/倾向人 精排保底分（缺失时默认 0.8）
+        try:
+            self.contact_floor = float(config.get("contact_floor", 0.8))
+        except (TypeError, ValueError):
+            self.contact_floor = 0.8
         # 用户倾向处理人（预留）总开关与强制保留开关（缺失时默认 True/True，前端传字段即启用）
         self.preferred_assignee_enabled = bool(config.get("preferred_assignee_enabled", True))
         self.preferred_assignee_force_keep = bool(config.get("preferred_assignee_force_keep", True))
-        self.department_keywords = config.get("department_keywords", {})
         self.department_routing = config.get("department_routing", {})
-        self.departments = config.get("departments", [])
+        # 部门画像：以 DB departments 表为权威（随部门职责维护热更新），
+        # config.yaml 按部门名补漏（DB 未配置职责描述的部门用 config 画像，兼容旧配置过渡期）。
+        db_depts = self._load_departments_from_db() or []
+        cfg_depts = config.get("departments", []) or []
+        self.departments = _merge_departments(db_depts, cfg_depts)
+        # 可由 config.yaml 覆盖：部门派发审查开关（false 则不做二次复核）
+        self.dept_audit_enabled = bool(config.get("dept_audit_enabled", True))
         self.product_routing = config.get("product_routing", {})
         self.department_rules = config.get("department_rules", {})
         self.decision_thresholds = config.get("decision_thresholds", {})
@@ -193,6 +225,40 @@ class AssignerConfig:
 
         classify, keywords, anchors = self._build_from_tree(tree)
         return tree, classify, keywords, anchors
+
+    def _load_departments_from_db(self) -> Optional[list]:
+        """从 DB departments 表加载部门职责画像（供 R2 LLM 部门分类）。
+
+        读 approved 部门组装 [{name, profile_text, examples}]，与 config.yaml 结构一致。
+        表不可用 / 无批准部门 / 部门未配职责描述时返回 None（调用方回退 config.yaml）。
+        """
+        try:
+            from app.core.db import SessionLocal
+            from app.models.organization import Department
+        except Exception:
+            return None
+        try:
+            db = SessionLocal()
+            try:
+                rows = db.query(Department).filter(
+                    Department.status == 'approved'
+                ).all()
+            finally:
+                db.close()
+        except Exception:
+            return None
+        result = []
+        for d in rows:
+            name = (d.name or "").strip()
+            profile = (d.profile_text or "").strip()
+            if not name or not profile:
+                continue  # 无职责描述的部门不参与 R2 分类
+            result.append({
+                "name": name,
+                "profile_text": profile,
+                "examples": d.examples or [],
+            })
+        return result or None
 
     def reload(self):
         """重新加载配置（配置热更新入口，配合派单缓存失效使用）。"""

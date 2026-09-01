@@ -8,7 +8,6 @@
 #   ranker_weights       → ranking/ranker.py（三路召回加权）
 #   history_recall       → recall/history_recall.py（L3 历史召回增强：时间衰减 + Top-K + 故障码）
 #   job_level_penalty    → ranking/ranker.py（职级折扣）
-#   department_keywords  → filtering/dept_router.py（R5 strong 关键词）
 #   department_routing   → filtering/dept_router.py
 #   departments          → filtering/signals/llm_dept_signal.py
 #   product_routing      → filtering/product_router.py
@@ -17,15 +16,16 @@
 # ══════════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════════
-# 2. 精排权重（只保留 LLM + 历史两路；L2 锚文本语义已关闭）
+# 2. 精排权重（LLM 主导 + 语义辅助 + 历史辅助）
 #    消费方：ranking/ranker.py（三路召回加权）
-#    说明：L2 锚文本/关键词匹配对"负责非功能模块"的候选人（如产品经理）结构化不公平，
-#          且在有 LLM 强语义判断下反而干扰（表面字眼误导）。
-#          semantic_match 置 0 = 语义分不参与精排，只看 LLM + 历史。
+#    说明：L2 语义召回是真正的 Embedding 向量相似度匹配（cos(工单, 模块锚文本)），
+#          非关键词子串匹配。当初误诊为"关键词匹配"而停用，实为 config 缺失
+#          ranker_weights 导致权重退化（默认语义 0.35 > LLM 0.30 语义反超 LLM）所致。
+#          现恢复为 LLM 主导(t链路) + L2 语义辅助 + L3 历史辅助：权重相加见下。
 # ══════════════════════════════════════════════════════════════════
 ranker_weights:
-  llm_match: 0.85       # L1 纯LLM：LLM 看全员画像直接打分（主导派单）
-  semantic_match: 0.0   # L2 语义：停用（有 LLM 后锚文本匹配是干扰）
+  llm_match: 0.70       # L1 纯LLM：LLM 看全员画像直接打分（主导派单）
+  semantic_match: 0.15  # L2 语义：Embedding 向量相似度（辅助信号，不反超 LLM）
   history_match: 0.15   # L3 历史：相似历史工单 → 按解决人聚合
 
 # ══════════════════════════════════════════════════════════════════
@@ -51,38 +51,72 @@ history_recall:
   weight_b: 0.5             # B路（问题域聚人）
 
 # ══════════════════════════════════════════════════════════════════
+# 3.3 对接人/倾向人 加权与精排保底
+#    消费方：ranking/ranker.py（项目对接人 / 用户倾向处理人）
+#    - contact_bonus: 对接人/倾向人 精排 × 的加权系数（默认 2.0）
+#    - contact_floor: 对接人/倾向人 精排保底分（默认 0.8）。理由：即使其召回基础分很低，
+#                     翻倍后仍可能进不了 Step6 决策窗口 → 再抬到该保底分，保证能被 LLM 看到并权衡。
+#                     （=1 或 <1 则不启用保底）
+# ══════════════════════════════════════════════════════════════════
+contact_bonus: 2.0
+contact_floor: 0.8
+
+# ══════════════════════════════════════════════════════════════════
 # 4. 职级惩罚系数
 #    用途：职级越高越不优先接单，精排后按职级打折。
+#    说明：不要折太狠（曾用 L2:0.60/L3:0.40，会把管理/审核级压出 LLM 的 Top-K 决策窗口，
+#          导致用户重派备注提到"上报上级/请领导"时，LLM 即便想选上级也看不到人选）。
+#          现改为轻微打折（~0.90），让上级保留在决策窗口内；职级高低由 Step6 LLM
+#          结合重派备注与每位候选标出的职级（L1/L2/L3）自主判断。
 #    消费方：ranking/ranker.py
 # ══════════════════════════════════════════════════════════════════
 job_level_penalty:
   1: 1.0     # 一线：不打折
-  2: 0.60    # 管理/审核：打 6 折
-  3: 0.40    # 仅兜底：打 4 折
-  99: 0.60   # 未知职级兜底值
+  2: 0.90    # 管理/审核：轻微打折（不过度压制，保留在 LLM 决策窗口内）
+  3: 0.90    # 仅兜底：轻微打折（同上，职级高低交给 LLM 结合备注/职级自主判断）
+  99: 0.90   # 未知职级兜底值
 
 # ══════════════════════════════════════════════════════════════════
-# 5. 部门路由（Layer 1：R5 strong + R2 LLM + R3 历史）
+# 5. 部门路由（Layer 1：R2 LLM + R3 历史 融合 + R-Audit 审查）
 #    消费方：filtering/dept_router.py
+#    策略：保证"不派错部门"——R2 LLM 为主判、R3 历史为佐证。仅当部门判定足够确信才
+#          hard_filter 收紧候选；中等信度 soft_prior 倾向；低信度 no_filter 保留全量。
+#   融合：
+#     - 原则：LLM(R2) 为基础分（不打折）；历史(R3) 只做"可加佐证"，不做惩罚。
+#     - history_confirm_threshold: 该部门历史占比达到此值才视为"历史明确偏向"（佐证生效）。
+#     - history_bonus:    历史明确偏向该部门（占比 ≥ history_confirm_threshold）时加的分（佐证确认）。
+#     - 历史不足/缺失（占比 < threshold 或 hist=0）→ 不加不减，final = LLM 分，不打折。
+#   阈值：
+#     - hard_filter_score: 融合分达到此值且 margin 明显领先才收紧（R2 强确认 0.9+ 时可达到）。
+#     - hard_filter_margin: 第一名与第二名的差距门槛，避免"接近并列"还被硬框。
+#     - soft_prior_score: 中等信度 → 倾向该部门但不强制（精排给该部门加分）。
+#    说明：R5 强关键词已移除（子串匹配易误触），R-Audit 独立复核兜底（dept_audit_enabled=true）。
 # ══════════════════════════════════════════════════════════════════
 department_routing:
-  weights:
-    llm: 0.50
-    history: 0.30
+  fusion:
+    history_confirm_threshold: 0.5  # 该部门历史占比达到此值才视为"历史明确偏向"（佐证加分）
+    history_bonus: 0.05             # 历史明确偏向时加的分（佐证确认）
+                                    # 注：历史缺失/不足以确认时，LLM 为基础分不打折、不加不减
   thresholds:
-    hard_filter_score: 0.80
-    hard_filter_margin: 0.15
+    hard_filter_score: 0.63
+    hard_filter_margin: 0.10
     soft_prior_score: 0.55
     dept_boost: 1.5
   llm:
     enabled: true
-    max_tokens: 250
+    # max_tokens 需容纳最多 3 个部门 + reason
+    max_tokens: 320
     temperature: 0
-    min_confidence: 0.75
+    # min_confidence：R2 输出 confidence 的保留下限。配合 R2 prompt 四档刻度，
+    # 主判(0.85+)与主要候选(0.55+)均可过；次要候选(0.25~0.55)也保留，供融合/收紧权衡。
+    min_confidence: 0.3
   history:
     enabled: true
     top_k: 10
     min_similarity: 0.70
+
+# R-Audit 部门派发审查开关（true = R2 判完部门后独立 LLM 单轮复核）
+dept_audit_enabled: true
 
 departments:
   - id: robot_hardware
@@ -118,87 +152,6 @@ departments:
       - title: "调度任务一直处于阻塞状态，无法下发"
         dept: 智能规划研究院
 
-# R5：仅 strong 关键词（medium/weak 已废弃）
-department_keywords:
-  机器人事业部:
-    strong:
-      - 硬件故障
-      - 机械故障
-      - 车体故障
-      - 故障报修
-      - 开不了机
-      - 充不进电
-      - 电池故障
-      - 电池没电
-      - 电机不转
-      - 电机故障
-      - 电机烧了
-      - 轮子坏了
-      - 轮子卡死
-      - 轮子脱落
-      - 车体损坏
-      - 车体变形
-      - 车体碰撞
-      - 硬件损坏
-      - 底盘故障
-      - 底盘变形
-      - 货叉卡住
-      - 货叉不动作
-      - 电源故障
-      - 无法上电
-      - 断电
-      - 外壳破损
-      - 外壳变形
-      - 进水
-      - 摔坏
-  智能移动研究院:
-    strong:
-      - 雷达故障
-      - 雷达数据异常
-      - 传感器故障
-      - 传感器异常
-      - 传感器报错
-      - 摄像头故障
-      - 定位漂移
-      - 重定位失败
-      - slam
-      - 定位异常
-      - 感知异常
-      - 障碍物检测失败
-      - 目标识别错误
-      - 控制器故障
-      - 控制器报错
-      - 控制逻辑错误
-      - 车辆控制异常
-      - 网关故障
-      - 网关通信异常
-      - 驱动异常
-      - imu
-      - 里程计
-  智能规划研究院:
-    strong:
-      - 调度系统
-      - 调度平台
-      - 任务调度
-      - 任务分配
-      - 任务下发
-      - 任务队列
-      - 任务阻塞
-      - 路径规划
-      - 路径下发
-      - 路径失败
-      - mapf
-      - a*
-      - 锁区
-      - 避让
-      - 交通管制
-      - 地图编辑
-      - 地图预处理
-      - 路网
-      - 背景图
-      - 充休电
-      - 上轨
-
 # R1 确定性规则（预留，有 evidence 后扩展）
 department_rules: {}
 
@@ -210,6 +163,12 @@ product_routing:
   projects:
     - markers: ["摇人吧服务号"]
       product: 摇人吧服务号
+  # 部门→产品映射：车端类工单（无项目标记时）按部门落到对应产品，避免误入默认「调度USP」。
+  # 推断优先级：项目标记(projects) > 部门映射(dept_to_product) > 默认(default_product)。
+  # 注：此映射曾于 2026-08-24 实现并验证后遗漏于配置，此处补回。
+  dept_to_product:
+    智能移动研究院: 车端软件
+    机器人事业部: 车端硬件
   default_product: 调度USP
   default_when_project_set: true
   # users.responsibility_modules 中的 key 可能与 config 产品名不一致
@@ -240,25 +199,26 @@ load_balance:
   step: 0.15
 
 # ══════════════════════════════════════════════════════════════════
-# 10. LLM 综合决策的排名尊重策略（保证派单尊重精排结果）
-#    消费方：ranking/llm_decision.py（Step 6）
-#    规则：默认直接采用精排第一名，只有当第一名总分
-#          < llm_decision_low_score_threshold（说明整体得分都很低、候选都不理想）时，
-#          才触发大模型在精排 Top-K 内再决定一遍，避免大模型随意覆写排名。
-#    - llm_decision_low_score_threshold：第一名评分阈值，低于此值才触发 LLM 重选（default 0.6）
-#    - llm_decision_topk：即使触发 LLM 重选，也只在精排前 K 名内挑选（default 3）
-#    - yaorenba_force_module_owner：摇人吧服务号项目是否强制优先模块总负责人（default true）
+# 10. LLM 最终决策（Step 6）
+#    消费方：ranking/llm_decision.py
+#    规则：Step6 的 LLM 是『最终拍板决策者』，所有工单都进入 LLM 在精排 Top-K 窗口内
+#          做最终决策（不再有"高分直接拍板/确定性分支"）。精排 #1 是默认最强依据，
+#          但 LLM 有权在有实质理由（如用户重派、模块明显不匹配）时改选。
+#    - llm_decision_topk：LLM 的候选窗口 = 精排前 K 名（default 3）
+#    - yaorenba_force_module_owner：摇人吧服务号项目是否识别"模块总负责人"作为
+#      额外决策线索喂给 LLM（default true；仅线索，非强制）
+#    - llm_decision_low_score_threshold：保留仅为兼容日志展示，不再作为"触发 LLM"的门槛
 # ══════════════════════════════════════════════════════════════════
 llm_decision_low_score_threshold: 0.6
 llm_decision_topk: 3
 yaorenba_force_module_owner: true
 
 # ══════════════════════════════════════════════════════════════════
-# 11. L2 锚文本语义召回开关
+# 11. L2 语义召回开关
 #    消费方：pipeline/dispatch_flow.py（Step 3）
-#    说明：false = 停用 L2，派单只看 L1 LLM + L3 历史。
-#          有 LLM 强语义判断后，锚文本/关键词匹配反而干扰（对产品经理等
-#          "负责非功能模块"的候选人结构化不公平，易被表面字眼误导）。
-#          置 true 可恢复 L2（需同时把 ranker_weights.semantic_match 调回 >0）。
+#    说明：true = 启用 L2 Embedding 向量语义召回（cos(工单, 模块锚文本)）。
+#          L2 是真正的语义匹配（非关键词子串匹配），当初因误判为关键词而停用，
+#          实为 ranker_weights 权重退化（语义 0.35 反超 LLM 0.30）所致。
+#          现已把 semantic_match 权重收敛为辅助值(0.15 < llm 0.70)，LLM 保持主导。
 # ══════════════════════════════════════════════════════════════════
-semantic_recall_enabled: false
+semantic_recall_enabled: true

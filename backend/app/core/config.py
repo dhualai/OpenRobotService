@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     LLM_MODEL_NAME: str = Field(default="deepseek-v4-flash")
     LLM_TEMPERATURE: float = Field(default=0.7)
     LLM_STREAM: bool = Field(default=False)
+    # 二次派单感知增强（M3 高情商回复）：未派到指定人时，tip_detail 是否用 AI 润色。
+    # 默认 False=纯模板（零 LLM 成本、文案确定可复用）；True 时才调 ModelService 润色（失败仍降级模板）。
+    REDISPATCH_TIP_AI_POLISH: bool = Field(default=False)
     
     CUSTOM_AI_BASE_URL: str = Field(default="")
     CUSTOM_AI_API_PATH: str = Field(default="/api/ask")
@@ -104,12 +107,17 @@ class Settings(BaseSettings):
     MQTT_PASSWORD: str = Field(default="")
     
     WECHAT_API_BASE_URL: str = Field(default="https://api.weixin.qq.com")
-    
+
     WECHAT_TOKEN: str = Field(default="")
     WECHAT_APP_ID: str = Field(default="")
     WECHAT_APP_SECRET: str = Field(default="")
     WECHAT_ENCODING_AES_KEY: str = Field(default="")
-    
+
+    # 企业微信群机器人 webhook（消息推送用）。形如：
+    # https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+    # 留空则企业微信通知渠道不启用。
+    WECHAT_WORK_WEBHOOK_URL: str = Field(default="")
+
     SUGGESTIONS_NOTIFICATION_USERS: List[str] = Field(default=[])
     
     MQTT_BROKER: str = Field(default="")

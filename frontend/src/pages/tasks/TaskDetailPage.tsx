@@ -113,6 +113,19 @@ interface Ticket {
   attachments?: Attachment[]; metadata_info?: Record<string, unknown>; comments?: Comment[];
   // tasks 详情接口 GET /{id} 返回蛇形 deadline_at（见 TicketResponse）
   deadline_at?: string | null;
+  // 二次派单感知增强（M3）：未派到指定人时的完整话术（详情页 redispatch.result.tip_detail）
+  redispatch?: { result?: { tip_detail?: string | null } } | null;
+  // 工单阶段性处理（协商节点）：当前节点 ID/名称/结束时间（naive UTC）
+  curr_step_id?: number | null;
+  curr_step_name?: string | null;
+  curr_step_endtime?: string | null;
+}
+
+// 协商阶段模板步骤（GET /{task_id}/steps 返回）
+interface StepTemplate {
+  id: number;
+  step_name: string;
+  sequence: number;
 }
 
 const generateTempId = () =>
@@ -129,10 +142,12 @@ export default function TaskDetailPage() {
   const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, '管理服务');
 
   const { refreshTasks } = useWorkbenchStore();
-  const { username, userId, name } = useAuthStore();
+  const { username, userId, name, hasPermission } = useAuthStore();
 
   const [detail, setDetail] = useState<Ticket | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // 二次派单感知增强（M3）：未派到指定人时的完整情商话术（详情页 redispatch.result.tip_detail）
+  const [redispatchTipDetail, setRedispatchTipDetail] = useState<string>('');
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; deadline_at?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
   // 最晚解决时间区间：基准 = 工单创建时间（detail.created_at），而非用户操作时刻
@@ -153,6 +168,11 @@ export default function TaskDetailPage() {
   const [showCreatorNamePopup, setShowCreatorNamePopup] = useState(false);
   const [creatorNameInput, setCreatorNameInput] = useState('');
   const [submittingCreatorName, setSubmittingCreatorName] = useState(false);
+  // 最晚解决时间直接编辑（拥有 backend:tasks:operate 权限的用户可点击信息项改期）
+  // deadlineDraft: undefined=未改动（保存时不提交该字段）；ISO 字符串=新时间；null=清除
+  const [showDeadlinePopup, setShowDeadlinePopup] = useState(false);
+  const [deadlineDraft, setDeadlineDraft] = useState<string | null | undefined>(undefined);
+  const [submittingDeadline, setSubmittingDeadline] = useState(false);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [askingAI, setAskingAI] = useState(false);
 
@@ -189,6 +209,14 @@ export default function TaskDetailPage() {
   // 工单动态（操作日志，用于详情页滚动展示）
   const [opLogs, setOpLogs] = useState<OperationLog[]>([]);
 
+  // 工单阶段性处理（协商节点）
+  const [stepTemplate, setStepTemplate] = useState<StepTemplate[]>([]);
+  const [responding, setResponding] = useState(false);
+  const [showNegotiateStepPopup, setShowNegotiateStepPopup] = useState(false);
+  const [negotiateEndTime, setNegotiateEndTime] = useState<string | null>(null);
+  const [negotiateReason, setNegotiateReason] = useState('');
+  const [submittingNegotiate, setSubmittingNegotiate] = useState(false);
+
   // 项目成员（用于讨论区 @ 提及）
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   // 全部在职用户（项目成员 + 项目外，@ 输入过滤字时可 @ 到项目外的人）
@@ -200,9 +228,16 @@ export default function TaskDetailPage() {
     request<Ticket>(`/${detailId}?load_comments=true`, { skipCache: true })
       .then((t) => {
         setDetail(t);
+        // 二次派单感知增强（M3）：未派到指定人时的完整话术
+        setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
         // 摘要存 metadata_info.ai_summary（不混入讨论区）
         const meta = t.metadata_info || {};
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
+
+        // 拉取协商阶段模板（按工单 task_type），用于「工单阶段性处理」当前节点描述
+        request<{ code: number; data: { steps: StepTemplate[] } }>(`/${detailId}/steps`)
+          .then((res) => setStepTemplate(res?.data?.steps || []))
+          .catch(() => setStepTemplate([]));
 
         // 获取项目成员用于 @ 提及（无项目时也能拉到提单人和被指派人）
         getProjectMembers(detailId)
@@ -316,8 +351,11 @@ export default function TaskDetailPage() {
     return { isAssignee, isReporter };
   };
 
-  // 仅工单处理人（assigned_to）或管理员可点击「创建人」设置其姓名
-  const canEditCreatorName = !!detail && (getCurrentUserRoles().isAssignee || username === 'admin');
+  // 拥有 backend:tasks:operate 权限的用户可点击「创建人」设置其姓名
+  const canEditCreatorName = !!detail && hasPermission('backend:tasks:operate');
+
+  // 拥有 backend:tasks:operate 权限的用户可点击「最晚解决时间」直接改期
+  const canEditDeadline = hasPermission('backend:tasks:operate');
 
   const getActionButtons = () => {
     const status = detail?.status?.toLowerCase();
@@ -329,10 +367,13 @@ export default function TaskDetailPage() {
 
     const { isAssignee, isReporter } = getCurrentUserRoles();
 
-    const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
-    if (assigneeOnlyStatuses.includes(status) && !isAssignee) return [];
+    // 拥有 backend:tasks:operate 权限的用户，对所有活跃状态工单均可见且可操作
+    const canOperate = hasPermission('backend:tasks:operate');
 
-    if (status === 'resolved' && !isReporter) return [];
+    const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
+    if (assigneeOnlyStatuses.includes(status) && !isAssignee && !canOperate) return [];
+
+    if (status === 'resolved' && !isReporter && !canOperate) return [];
 
     // 顶部操作按钮配色（设计稿 05：主推进 bg-primary 白字胶囊 / 次操作 bg-secondary 深字胶囊）
     const BTN_PRIMARY = { backgroundColor: 'var(--primary)', color: 'var(--primary-foreground)', borderRadius: '999px', border: 'none' };
@@ -797,6 +838,49 @@ export default function TaskDetailPage() {
     }
   };
 
+  // 首次响应（确认同意）：确认当前协商节点，工单 new → in_progress
+  const handleRespond = async () => {
+    if (!detail) return;
+    setResponding(true);
+    try {
+      await request(`/${detail.id}/respond`, {
+        method: 'POST',
+        body: JSON.stringify({ curr_step_id: detail.curr_step_id ?? null }),
+      });
+      await refreshDetail();
+      Toast({ message: '已确认协商节点，开始处理', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `响应失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setResponding(false);
+    }
+  };
+
+  // 协商节点时间：设置当前节点结束时间 + 理由
+  const handleNegotiateStep = async () => {
+    if (!detail) return;
+    if (!negotiateEndTime) {
+      Toast({ message: '请选择协商节点时间', theme: 'warning' });
+      return;
+    }
+    setSubmittingNegotiate(true);
+    try {
+      await request(`/${detail.id}/negotiate-step`, {
+        method: 'POST',
+        body: JSON.stringify({ curr_step_endtime: negotiateEndTime, reason: negotiateReason.trim() || null }),
+      });
+      await refreshDetail();
+      Toast({ message: '协商节点时间已设置', theme: 'success' });
+      setNegotiateReason('');
+      setNegotiateEndTime(null);
+      setShowNegotiateStepPopup(false);
+    } catch (err) {
+      Toast({ message: `设置失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setSubmittingNegotiate(false);
+    }
+  };
+
   const handleReassign = async () => {
     if (!detail || !reassignUser) return;
     if (!reassignReason.trim()) {
@@ -853,6 +937,29 @@ export default function TaskDetailPage() {
       Toast({ message: `更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
       setSubmittingCreatorName(false);
+    }
+  };
+
+  // 修改最晚解决时间：拥有 backend:tasks:operate 权限的用户直接改期（PUT /{id}）
+  // deadlineDraft 为 undefined（用户未改动）时不提交 deadline_at 字段，避免误清除
+  const handleUpdateDeadline = async () => {
+    if (!detail) return;
+    setSubmittingDeadline(true);
+    try {
+      const body: Record<string, unknown> = { operation_type: 'update' };
+      if (deadlineDraft !== undefined) body.deadline_at = deadlineDraft;
+      await request<Ticket>(`/${detail.id}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+        skipCache: true,
+      });
+      await refreshDetail();
+      Toast({ message: '最晚解决时间已更新', theme: 'success' });
+      setShowDeadlinePopup(false);
+    } catch (err) {
+      Toast({ message: `更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setSubmittingDeadline(false);
     }
   };
 
@@ -1128,6 +1235,8 @@ export default function TaskDetailPage() {
         setDetail(t);
         const meta = t.metadata_info || {};
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
+        // 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径）
+        setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
       })
       .catch(() => {});
   };
@@ -1272,7 +1381,16 @@ export default function TaskDetailPage() {
               <span className="detail-info-item__icon"><AlarmClock size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">最晚解决时间</span>
-                <span className="detail-info-item__value">{detail.deadline_at ? formatRawDateTime(detail.deadline_at) : '未设置'}</span>
+                <span
+                  className="detail-info-item__value"
+                  style={canEditDeadline ? { cursor: 'pointer', color: 'var(--blue-2)', textDecoration: 'underline' } : undefined}
+                  onClick={canEditDeadline ? () => {
+                    setDeadlineDraft(detail.deadline_at || null);
+                    setShowDeadlinePopup(true);
+                  } : undefined}
+                >
+                  {detail.deadline_at ? formatRawDateTime(detail.deadline_at) : '未设置'}
+                </span>
               </div>
             </div>
             <div className="detail-info-item">
@@ -1290,12 +1408,81 @@ export default function TaskDetailPage() {
               </div>
             </div>
           </div>
+
+          {/* 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径） */}
+          {redispatchTipDetail && (
+            <div className="redispatch-tip-detail">派单说明：{redispatchTipDetail}</div>
+          )}
         </div>
 
         <div className="detail-card">
           <h4 className="detail-card__h">问题描述</h4>
           <SafeHtml html={detail.description || '<p style="color:var(--muted-foreground)">无描述</p>'} />
         </div>
+
+        {/* 工单阶段性处理（协商节点）：当前节点描述 + 操作按钮（退回 / 确认同意 / 协商节点时间） */}
+        {(() => {
+          const status = (detail.status || '').toLowerCase();
+          // 仅活跃工单展示（新建/处理中/待处理），已解决/已关闭/已取消隐藏
+          if (['resolved', 'closed', 'canceled', 'cancelled'].includes(status)) return null;
+          // 当前节点描述：基于 curr_step_id/curr_step_name + 模板进度（如 1/3）
+          const total = stepTemplate.length;
+          const currIdx = stepTemplate.findIndex((s) => s.id === detail.curr_step_id);
+          const stepName = detail.curr_step_name || (currIdx >= 0 ? stepTemplate[currIdx].step_name : '');
+          const desc = stepName
+            ? `当前节点：${stepName}${total > 0 ? `（${currIdx >= 0 ? currIdx + 1 : '-'} / ${total}）` : ''}`
+            : '当前节点：尚未设置协商节点';
+          const endtimeText = detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '';
+          const isNew = status === 'new';
+          const canRespond = isNew && !!detail.curr_step_id;
+          const canNegotiate = !!detail.curr_step_id;
+          return (
+            <div className="detail-card">
+              <h4 className="detail-card__h">工单阶段性处理</h4>
+              <div style={{ fontSize: 13, color: 'var(--foreground)', marginBottom: 12, lineHeight: 1.6 }}>
+                当前节点描述：{desc}
+                {endtimeText && (
+                  <span style={{ color: 'var(--muted-foreground)', marginLeft: 8 }}>
+                    节点时间：{endtimeText}
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Button
+                  block
+                  size="small"
+                  theme="default"
+                  onClick={() => { setReturnReason(''); setShowReturnConfirmPopup(true); }}
+                >
+                  工单退回
+                </Button>
+                <Button
+                  block
+                  size="small"
+                  theme="primary"
+                  loading={responding}
+                  disabled={!canRespond}
+                  onClick={handleRespond}
+                >
+                  确认同意
+                </Button>
+                <Button
+                  block
+                  size="small"
+                  theme="default"
+                  disabled={!canNegotiate}
+                  onClick={() => {
+                    setNegotiateEndTime(detail.curr_step_endtime ?? null);
+                    setNegotiateReason('');
+                    setShowNegotiateStepPopup(true);
+                  }}
+                >
+                  协商节点时间
+                </Button>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* 公司/部门审核入口：仅管理员可见，工单 metadata_info 含 approval_type 时展示 */}
         {approvalInfo && username === 'admin' && (
@@ -1533,8 +1720,9 @@ export default function TaskDetailPage() {
           if (isClosedOrCanceled) return null;
 
           const { isAssignee, isReporter } = getCurrentUserRoles();
+          const canOperate = hasPermission('backend:tasks:operate');
           const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
-          const showRoleActions = assigneeOnlyStatuses.includes(status) ? isAssignee : (status === 'resolved' ? isReporter : false);
+          const showRoleActions = canOperate || (assigneeOnlyStatuses.includes(status) ? isAssignee : (status === 'resolved' ? isReporter : false));
 
           return (
             <div className="detail-actions">
@@ -1622,8 +1810,8 @@ export default function TaskDetailPage() {
                 placement="topLeft"
                 getPopupContainer={(trigger) => trigger.parentElement || document.body}
                 value={editForm.deadline_at ? parseDeadlineString(editForm.deadline_at) : null}
-                disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min, editDeadlineRange.max) : undefined}
-                disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min, editDeadlineRange.max) : undefined}
+                disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min) : undefined}
+                disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>
                   setEditForm((p) => ({
                     ...p,
@@ -1800,6 +1988,48 @@ export default function TaskDetailPage() {
         </div>
       </Popup>
 
+      <Popup
+        visible={showDeadlinePopup}
+        onClose={() => { if (!submittingDeadline) setShowDeadlinePopup(false); }}
+        placement="bottom"
+        showOverlay
+        destroyOnClose
+      >
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">修改最晚解决时间</h4>
+          <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
+            仅调整本工单的最晚解决时间，不影响其他字段；清空后表示不设置截止时间。
+          </p>
+          {(() => {
+            // 选择下限 = 创建时间（取整到整点），不限制未来上限
+            const range = getDeadlineRange(detail?.priority, detail?.created_at);
+            return (
+              <DatePicker
+                style={{ width: '100%' }}
+                placeholder="点击选择（可清空）"
+                format="YYYY-MM-DD HH:00"
+                showTime={{ defaultValue: dayjs().hour(9).minute(0), format: 'HH:00', showNow: false }}
+                showNow={false}
+                placement="topLeft"
+                getPopupContainer={(trigger) => trigger.parentElement || document.body}
+                value={deadlineDraft ? parseDeadlineString(deadlineDraft) : null}
+                disabledDate={range ? makeDisabledDate(range.min) : undefined}
+                disabledTime={range ? makeDisabledTime(range.min) : undefined}
+                onChange={(d: dayjs.Dayjs | null) =>
+                  setDeadlineDraft(d ? d.minute(0).second(0).millisecond(0).toISOString() : null)
+                }
+                allowClear
+                styles={{ popup: { root: { zIndex: 12000 } } }}
+              />
+            );
+          })()}
+          <div className="ticket-edit__btns">
+            <Button theme="default" disabled={submittingDeadline} onClick={() => setShowDeadlinePopup(false)}>取消</Button>
+            <Button theme="primary" loading={submittingDeadline} onClick={handleUpdateDeadline}>保存</Button>
+          </div>
+        </div>
+      </Popup>
+
       <Popup visible={showReturnConfirmPopup} onClose={() => { setShowReturnConfirmPopup(false); setReturnReason(''); }} placement="bottom" showOverlay destroyOnClose>
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">退回工单</h4>
@@ -1821,6 +2051,60 @@ export default function TaskDetailPage() {
           <div className="ticket-edit__btns">
             <Button theme="default" onClick={() => { setShowReturnConfirmPopup(false); setReturnReason(''); }}>取消</Button>
             <Button theme="danger" onClick={handleReturn} disabled={!returnReason.trim()}>确认退回</Button>
+          </div>
+        </div>
+      </Popup>
+
+      {/* 协商节点时间弹窗：时间选择器 + 文字理由（截图暂不实现） */}
+      <Popup
+        visible={showNegotiateStepPopup}
+        onClose={() => { if (!submittingNegotiate) setShowNegotiateStepPopup(false); }}
+        placement="bottom"
+        showOverlay
+        destroyOnClose
+      >
+        <div className="ticket-edit">
+          <h4 className="ticket-edit__title">协商节点时间</h4>
+          <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
+            设置当前协商节点的结束时间（SLA），并可填写协商理由。
+          </p>
+          {(() => {
+            // 选择下限 = 工单创建时间，与最晚解决时间编辑口径一致
+            const range = getDeadlineRange(detail?.priority, detail?.created_at);
+            return (
+              <DatePicker
+                style={{ width: '100%', marginBottom: 12 }}
+                placeholder="点击选择节点结束时间"
+                format="YYYY-MM-DD HH:mm"
+                showTime={{ defaultValue: dayjs().hour(18).minute(0), format: 'HH:mm', showNow: false }}
+                showNow={false}
+                placement="topLeft"
+                getPopupContainer={(trigger) => trigger.parentElement || document.body}
+                value={negotiateEndTime ? parseDeadlineString(negotiateEndTime) : null}
+                disabledDate={range ? makeDisabledDate(range.min) : undefined}
+                disabledTime={range ? makeDisabledTime(range.min) : undefined}
+                onChange={(d: dayjs.Dayjs | null) =>
+                  setNegotiateEndTime(d ? d.second(0).millisecond(0).toISOString() : null)
+                }
+                allowClear
+                styles={{ popup: { root: { zIndex: 12000 } } }}
+              />
+            );
+          })()}
+          <Form initialData={{}}>
+            <FormItem label="协商理由" name="negotiateReason" labelAlign="top">
+              <Textarea
+                value={negotiateReason}
+                onChange={(v) => setNegotiateReason(String(v))}
+                placeholder="请输入协商理由（可选）"
+                autosize={{ minRows: 3, maxRows: 6 }}
+                maxlength={500}
+              />
+            </FormItem>
+          </Form>
+          <div className="ticket-edit__btns">
+            <Button theme="default" disabled={submittingNegotiate} onClick={() => setShowNegotiateStepPopup(false)}>取消</Button>
+            <Button theme="primary" loading={submittingNegotiate} onClick={handleNegotiateStep} disabled={!negotiateEndTime}>保存</Button>
           </div>
         </div>
       </Popup>

@@ -13,7 +13,8 @@ import API_CONFIG from '@/config/api';
 import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, qaClearDraft, type TicketDraft } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import UserSelect from '@/shared/components/UserSelect';
-import { createTicket, reDispatchTicket, uploadCommentAttachment } from '@/api/ticket';
+import RedispatchCandidateList from '@/shared/components/RedispatchCandidateList';
+import { createTicket, reDispatchTicket, uploadCommentAttachment, fetchRedispatch, type RedispatchCandidate } from '@/api/ticket';
 
 /** 远程方式选项（摇人→转工单确认弹窗 与 系统任务新建弹窗 共用）：
  *  默认空（无需远程，存 metadata_info.remote_type=null），可选 ToDesk / 向日葵 / 其他。
@@ -95,7 +96,42 @@ interface Message {
     description?: string;
     created_at?: string;
     assigned_to_name?: string; // 派单完成后轮询填充 + 回写 DB
+    // 二次派单感知增强（M3）：派单结果提醒一句话摘要（轮询到 redispatch.result 时生成并回写 DB）
+    redispatch_tip?: string;
   };
+}
+
+// 二次派单感知增强（M3）：按详情 redispatch.result 生成派单结果提醒（与后端 _redispatch_tip 同一四分支口径）
+function redispatchTipFromResult(result?: {
+  matched_pref?: boolean | null;
+  name_collision?: boolean | null;
+  pinyin_match?: boolean | null;
+  assigned_name?: string | null;
+  preferred_name?: string | null;
+  profile?: { missing?: string[] | null } | null;
+}): string | undefined {
+  if (!result) return undefined;
+  const assignedName = result.assigned_name || '';
+  const prefName = result.preferred_name || '';
+  let tip: string | undefined;
+  // ② 未派到指定人（仅当确实存在用户指定的倾向人时才算「未派到指定人」；
+  //    首次派单无倾向处理人时 matched_pref 默认为 false，但此时并无「指定的 X」，不应显示该提醒）
+  if (result.matched_pref === false && prefName) {
+    tip = `未派给您指定的【${prefName}】，已派给【${assignedName}】`;
+  } else if (result.pinyin_match) {
+    // ④ 拼音/近似名命中
+    tip = `按拼音匹配到【${assignedName}】（与输入【${prefName || assignedName}】不同字），如非此人请更正`;
+  } else if (result.name_collision) {
+    // ③ 同名命中
+    tip = `指派人存在同名，已按评估选择【${assignedName}】`;
+  }
+  // ① 画像不完整（可叠加追加）
+  const missing = result.profile?.missing || [];
+  if (missing.length) {
+    const suffix = '；该接单人画像不完整，待补充';
+    tip = tip ? tip + suffix : '该接单人画像不完整，待补充';
+  }
+  return tip || undefined;
 }
 
 const uid = () => Date.now().toString() + Math.random().toString(36).slice(2, 6);
@@ -244,6 +280,39 @@ const mapDbMessages = (
   }
   // 空白 AI 气泡（历史异常落库的空内容/纯空白）不恢复显示；但 streaming 占位（producer 生成中）保留
   return mapped.filter((m) => m.role !== 'assistant' || m.subtype === 'ticket_overview' || m.content.trim().length > 0 || m.streaming);
+};
+
+/** 增量合并：以本地 prev 的顺序/身份为基准并入 DB 快照 fresh，永不整体覆盖（根治
+ *  「刷新/轮询拿 DB 顺序整体替换 → 回答跳到问题上方/乐观气泡丢失」一类问题）。
+ *  - id 命中 → 用 DB 版本更新内容/状态（React key 不变，不闪动）；
+ *  - 乐观用户气泡兜底：发送中气泡仍是本地 uid，DB 落库后 id 不同 → 按 role+content
+ *    匹配同一条（仅非空内容，附件空气泡不参与），避免重复气泡；
+ *  - 工单概览气泡：DB 快照缺本地乐观字段，仅同步派单状态（不可整体替换）；
+ *  - prev 独有（尚未落库的乐观消息）永不丢弃；DB 新增按 DB 顺序追加尾部。 */
+const mergeDbMessages = (prev: Message[], fresh: Message[]): Message[] => {
+  const used = new Set<number>();
+  const merged = prev.map((m) => {
+    let idx = fresh.findIndex((f, i) => !used.has(i) && String(f.id) === String(m.id));
+    // 乐观消息（本地临时 id）兜底：user/assistant 统一按「角色 + 内容」匹配 DB 记录。
+    // 此前 assistant 无内容兜底，而本地 AI 气泡的临时 id 历史上未回写 DB id → 切回会话
+    // 触发合并时 DB 侧回复全部匹配不上，被当作新消息整段追加到尾部（幽灵重复回复）。
+    if (idx < 0 && !m.subtype && m.content) {
+      idx = fresh.findIndex((f, i) => !used.has(i) && f.role === m.role && !f.subtype && f.content === m.content);
+    }
+    // 工单概览气泡兜底：本地乐观气泡 id 与 DB 不一致时，按关联工单 db_id 匹配
+    if (idx < 0 && m.subtype === 'ticket_overview' && m.ticket_overview?.db_id) {
+      idx = fresh.findIndex((f, i) => !used.has(i) && f.ticket_overview?.db_id === m.ticket_overview!.db_id);
+    }
+    if (idx < 0) return m;
+    used.add(idx);
+    const f = fresh[idx];
+    if (m.subtype === 'ticket_overview' && m.ticket_overview && f.ticket_overview) {
+      return { ...m, ticket_overview: { ...m.ticket_overview, assigned_to_name: f.ticket_overview.assigned_to_name } };
+    }
+    return f;
+  });
+  fresh.forEach((f, i) => { if (!used.has(i)) merged.push(f); });
+  return merged;
 };
 
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
@@ -403,6 +472,10 @@ const MessageBubble = memo(function MessageBubble({
                   </span>
                 )}
               </div>
+              {/* 二次派单感知增强（M3）：派单结果提醒单行（警示色，整卡点击进详情） */}
+              {msg.ticket_overview.redispatch_tip && (
+                <div className="chat-ticket-overview__tip">派单结果提醒：{msg.ticket_overview.redispatch_tip}</div>
+              )}
             </div>
           ) : msg.content ? (
             msg.streaming ? (
@@ -615,7 +688,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 对话内工单概览气泡「重新派单」：选倾向处理人 + 备注 → 重派 → 清空 assigned_to_name 重新轮询
   const [redispatchOv, setRedispatchOv] = useState<NonNullable<Message['ticket_overview']> | null>(null);
   const [redispatchMsgId, setRedispatchMsgId] = useState<string | null>(null);
-  const [redispatchUser, setRedispatchUser] = useState<UserItem | null>(null);
+  // 二次派单感知增强（M2）：候选列表数据源 = 详情 redispatch.candidates（分层排序由 RedispatchCandidateList 负责）
+  const [redispatchCands, setRedispatchCands] = useState<RedispatchCandidate[] | null>(null);
+  const [redispatchRefDept, setRedispatchRefDept] = useState<string | null>(null);
+  const [redispatchCand, setRedispatchCand] = useState<RedispatchCandidate | null>(null);
+  const [redispatchLoading, setRedispatchLoading] = useState(false);
   const [redispatchRemark, setRedispatchRemark] = useState('');
   const [showRedispatchPopup, setShowRedispatchPopup] = useState(false);
   const [redispatching, setRedispatching] = useState(false);
@@ -829,24 +906,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       getConversation(conversationId).then((full) => {
         if (convRef.current !== conversationId) return; // 校正期间又切走了，丢弃
         const fresh = mapDbMessages(full);
-        setMessages((prev) => {
-          if (fresh.length > prev.length) return fresh;
-          // 长度未增加：不整体替换（防丢未落库的乐观消息），但以 DB 为准同步工单概览气泡的派单状态——
-          // 否则切走期间已派单并回写 DB 后，长度相同不覆盖，气泡仍停留在"派单中"；
-          // 亦或切走期间对方在别处「重新派单」换人后，DB 里 assigned_to_name 已变，而缓存快照仍是旧的，
-          // 若只用 !assigned_to_name 作门槛（旧值非空）就不会覆盖 → 气泡显示旧处理人，但详情/DB 已对新接单人。
-          // 故这里只要 DB 有对应气泡就以其 assigned_to_name 覆盖当前值（DB 为最终一致源）。
-          return prev.map((m) => {
-            if (m.subtype === 'ticket_overview' && m.ticket_overview && m.ticket_overview.db_id) {
-              const f = fresh.find((x) => x.ticket_overview?.db_id === m.ticket_overview!.db_id);
-              if (f?.ticket_overview) {
-                // 仅同步派单状态字段，避免用 DB 快照整体替换掉本地乐观的其他字段
-                return { ...m, ticket_overview: { ...m.ticket_overview, assigned_to_name: f.ticket_overview.assigned_to_name } };
-              }
-            }
-            return m;
-          });
-        });
+        // 增量合并（不再整体覆盖）：以本地顺序/身份为基准并入 DB 快照——既同步派单状态
+        // （切走期间已派单/重新派单换人 → DB assigned_to_name 为准），又绝不丢未落库的
+        // 乐观消息、绝不因 DB 行序异常打乱本地已验证的显示顺序。
+        setMessages((prev) => mergeDbMessages(prev, fresh));
         // 恢复 sessionId / 标题：缓存恢复分支跳过了 getConversation，这里补上，
         // 否则切回后 sessionId 仍为上一会话的/空，发送时 ensureSessionId 会重新生成 → sessionId 漂移
         const sid = readAiSessionId(full);
@@ -889,7 +952,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               const freshMsgs = mapDbMessages(fresh);
               const newLast = freshMsgs[freshMsgs.length - 1];
               if (newLast && newLast.role === 'assistant' && newLast.content.trim()) {
-                setMessages(freshMsgs);
+                // 增量合并替代整体覆盖：producer 完整回复并入本地，顺序/身份以本地为准
+                setMessages((prev) => mergeDbMessages(prev, freshMsgs));
                 scrollToBottomNow();
                 if (pollId) clearInterval(pollId);
               }
@@ -1122,7 +1186,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const finalContent = sanitizeAiText(acc);
       if (finalContent) {
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: finalContent, phase: undefined, streaming: false } : m)));
-        if (convId) appendMessage(convId, 'assistant', finalContent).catch(() => {});
+        // 落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）
+        if (convId) appendMessage(convId, 'assistant', finalContent).then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); }).catch(() => {});
       } else if (!hasResult) {
         setMessages((prev) => prev.filter((m) => m.id !== assistantId));
       } else {
@@ -1224,6 +1289,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // 后端增量落库写出的 assistant 消息 DB id：由流式 event:message_created 回传。
     // 命中即说明后端已接管落库，前端不再重复写（避免重复消息）；未命中(老后端/建消息失败)则前端兜底落库。
     let assistantDbId: number | null = null;
+    // 本轮 user 消息 DB id：前端乐观落库返回值 或 后端代建后经 message_created 回传。
+    // 两者都未命中（前端写失败 + 旧后端）→ 流结束兜底补写，避免丢问题。
+    let userDbId: number | null = null;
     // 流式中间渲染：疑似 LLM 协议 JSON 头泄漏（{ / ``` 开头）时以占位代替，避免残破 JSON 闪现上屏
     const renderAcc = () => setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: looksLikeJsonHead(acc) ? '正在思考…' : acc } : m)));
     // 收尾排空标志：流已结束（done），剩余 pending 继续逐字出完而非一次性并入
@@ -1259,15 +1327,32 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const finishDrain = () => {
       if (drainFinished) return;
       drainFinished = true;
-      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: sanitizeAiText(acc) || acc, streaming: false } : m)));
+      const finalDrainContent = sanitizeAiText(acc) || acc;
+      // 定稿即对账：本地乐观 AI 气泡的临时 id → DB id（与 user 消息落库后回写 id 同策略）。
+      // 否则切回会话时 mergeDbMessages 按 id 匹配不上，DB 侧回复会被整段追加到尾部（幽灵重复回复）。
+      // 仅在有内容时回写：无内容的空气泡仍按临时 id 走移除逻辑。
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: finalDrainContent, streaming: false, ...(assistantDbId != null && finalDrainContent ? { id: String(assistantDbId) } : {}) } : m)));
       requestAnimationFrame(() => requestAnimationFrame(scrollToBottom));
     };
     try {
       const sid = ensureSessionId();
       const wasNew = !convRef.current; // 新会话：首轮问答完成后才同步到列表
-      // 持久化用户消息（首条会顺带建会话）
+      // 持久化用户消息（首条会顺带建会话）。
+      // 必须 await 落库完成后再启动流式（happens-before）：user 行先提交拿到更小的 sequence，
+      // 后端随后建的 assistant 占位必然排在其后——顺序由落库顺序结构性保证，与网络时序解耦。
+      // metadata 携带幂等键（本地乐观 id，数字+小写字母 LIKE 安全）：后端单写入方逻辑按它
+      // 复用本行（不会重复建）；前端写失败时由后端代建（persist_user_message=true）。
       const convId = await ensureConversation(sid, content);
-      if (convId) appendMessage(convId, 'user', content).catch((e) => console.warn('[ChatPanel] 用户消息落库失败:', e));
+      if (convId) {
+        try {
+          const dbMsg = await appendMessage(convId, 'user', content, { metadata: JSON.stringify({ client_message_id: userMessage.id }) });
+          userDbId = Number(dbMsg.id);
+          // 用 DB id 替换乐观消息 id：后续刷新/轮询返回同一条 DB 记录，key 一致避免闪动。
+          setMessages((prev) => prev.map((m) => (m.id === userMessage.id ? { ...m, id: String(dbMsg.id) } : m)));
+        } catch (e) {
+          console.warn('[ChatPanel] 用户消息落库失败:', e);
+        }
+      }
       // 发送时会话快照：流式期间用户可能切换会话，convRef 会被 effect 改写指向新会话。
       // 后续 AI 回复持久化/首轮会话同步必须用此快照，否则回复会错写进新会话（表现为"过时/错位回复"）。
       sentConvId = convRef.current;
@@ -1275,8 +1360,17 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
 
       // 提单 Agent
       const apiPath = `${API_CONFIG.AI.BASE_URL}/qa/ask/stream`;
-      // 把已落库的会话 id 传给后端，由后端在流式中增量落库 assistant 回复（刷新/切 Tab 可从 DB 恢复）
-      const apiBody = JSON.stringify({ session_id: sid, query: content, conversation_id: sentConvId });
+      // 把已落库的会话 id 传给后端，由后端在流式中增量落库 assistant 回复（刷新/切 Tab 可从 DB 恢复）。
+      // persist_user_message + client_message_id：单写入方——后端确保 user 消息已落库
+      // （前端已写则按幂等键复用，写失败则代建）并建 assistant 占位（parent 指向 user）。
+      // 旧后端忽略这两个字段，行为回退为 7c36199 的时序修复版，安全兼容。
+      const apiBody = JSON.stringify({
+        session_id: sid,
+        query: content,
+        conversation_id: sentConvId,
+        persist_user_message: true,
+        client_message_id: userMessage.id,
+      });
 
       // AbortController：切换会话/卸载时主动中断流式，避免后台 setMessages 串台丢消息
       const controller = new AbortController();
@@ -1303,6 +1397,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           // 后端建好的 assistant 消息 DB id（后端 SSE 侧落库接管后回传）
           if (currentEvent === 'message_created' && data.message_id) {
             assistantDbId = data.message_id;
+          }
+          // 后端代建/复用的 user 消息 id（前端写入失败时由后端按幂等键代建）：对账乐观气泡 id。
+          // 前端写入成功时气泡 id 已是同一 DB id，此替换为无操作。
+          if (currentEvent === 'message_created' && data.user_message_id) {
+            userDbId = Number(data.user_message_id);
+            const dbUserId = String(data.user_message_id);
+            setMessages((prev) => prev.map((m) => (m.id === userMessage.id ? { ...m, id: dbUserId } : m)));
           }
           if (data.token) {
             pending += data.token;
@@ -1403,8 +1504,20 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 流式结束：后端已在流式中增量落库完整内容（event:message_created 接管）。
       // 仅当后端未接管（老后端未回传 message_id / 建消息失败）时，前端兜底落库一次，避免丢字。
       // 注意用完整快照 fullText 落库，而非仍在逐字排空的 acc（避免落库截断）。
+      // user 消息兜底（排在 assistant 兜底之前，极端路径下 sequence 仍 user<assistant）：
+      // 前端乐观写入与后端代建都未发生（前端写失败 + 旧后端）→ 先补写 user 再落 assistant。
+      if (userDbId == null && sentConvId) {
+        try {
+          await appendMessage(sentConvId, 'user', content, { metadata: JSON.stringify({ client_message_id: userMessage.id }) });
+        } catch (e) {
+          console.warn('[ChatPanel] 用户消息兜底落库失败:', e);
+        }
+      }
       if (fullText && assistantDbId == null && sentConvId) {
-        appendMessage(sentConvId, 'assistant', fullText).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
+        // 兜底落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）
+        appendMessage(sentConvId, 'assistant', fullText)
+          .then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); })
+          .catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
       }
       // 首轮问答完成 → 同步会话到列表、定位到新会话。
       // 标题保持「新建会话」：标题由 AI 在第2轮回复时生成（event: title），在此之前都叫「新建会话」。
@@ -1433,7 +1546,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         // 仅后端未接管时前端兜底落库。无内容则移除空气泡（避免闪烁残留）。
         if (finalAcc) {
           if (assistantDbId == null && sentConvId) {
-            appendMessage(sentConvId, 'assistant', finalAcc).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
+            // 兜底落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）
+            appendMessage(sentConvId, 'assistant', finalAcc)
+              .then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); })
+              .catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
           }
         } else {
           setMessages((prev) => prev.filter((m) => m.id !== assistantId));
@@ -1444,7 +1560,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         Toast({ message: `发送失败: ${err instanceof Error ? err.message : '未知错误'}`, theme: 'error' });
         if (finalAcc) {
           if (assistantDbId == null && sentConvId) {
-            appendMessage(sentConvId, 'assistant', finalAcc).catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
+            // 兜底落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）
+            appendMessage(sentConvId, 'assistant', finalAcc)
+              .then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); })
+              .catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
           }
         } else {
           acc = '[回复中断，请重试]';
@@ -1498,9 +1617,23 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
     setRedispatchMsgId(msgId);
     setRedispatchOv(ov);
-    setRedispatchUser(null);
+    setRedispatchCands(null);
+    setRedispatchRefDept(null);
+    setRedispatchCand(null);
     setRedispatchRemark('');
     setShowRedispatchPopup(true);
+    // 二次派单感知增强（M2）：拉取详情 redispatch（R2 候选快照 + 当前接单人部门作为“同部门”参照）
+    setRedispatchLoading(true);
+    fetchRedispatch(ov.db_id)
+      .then((rd) => {
+        setRedispatchCands(rd?.candidates ?? null);
+        setRedispatchRefDept(rd?.result?.profile?.dept || null);
+      })
+      .catch(() => {
+        setRedispatchCands(null);
+        setRedispatchRefDept(null);
+      })
+      .finally(() => setRedispatchLoading(false));
   }, []);
 
   // voiceWillCancelRef 在 handleMove 中直接同步写入，不再通过 useEffect 异步同步
@@ -1876,10 +2009,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     try {
       // 必须 skipCache：createRequest 的 GET 默认缓存 5 分钟，否则第二次轮询起命中缓存返回旧 assigned_to，
       // 控制台看不到请求、气泡永远显示"派单中"（只有刷新清空模块级 requestCache 后才真正请求）。
-      const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string }>(`/${dbId}`, { skipCache: true });
+      const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string; redispatch?: { result?: Parameters<typeof redispatchTipFromResult>[0] } }>(`/${dbId}`, { skipCache: true });
       if (task.assigned_to) {
         const assignedName = task.assigned_to_name || task.assigned_to;
-        const newOv = { ...ov, assigned_to_name: assignedName };
+        // 二次派单感知增强（M3）：派单完成时从 redispatch.result 生成提醒文案
+        const newOv = { ...ov, assigned_to_name: assignedName, redispatch_tip: redispatchTipFromResult(task.redispatch?.result) };
         // 注意：不能用 cancelledRef 判断是否更新内存——在 <React.StrictMode> 下，开发模式的
         // effect 双调用会先触发 cleanup（cancelledRef.current=true）再 remount，且 useRef 不重置，
         // 导致该标记永久为 true，setMessages 被跳过 → 气泡永远停在「派单中」（DB 却能回写）。
@@ -1916,14 +2050,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 对话内工单概览气泡「重新派单」：确认 → 调 re-dispatch → 清空 assigned_to_name 回到「派单中」→ 重新轮询显示新接单人
   const handleRedispatchConfirm = useCallback(async () => {
     if (!redispatchOv?.db_id || !redispatchMsgId) { Toast({ message: '工单号缺失', theme: 'warning' }); return; }
-    if (!redispatchUser?.id && !redispatchUser?.username) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
+    if (!redispatchCand?.engineer_id) { Toast({ message: '请选择倾向处理人', theme: 'warning' }); return; }
     setRedispatching(true);
     try {
-      await reDispatchTicket(redispatchOv.db_id, redispatchUser.id || redispatchUser.username, redispatchRemark.trim() || undefined);
+      await reDispatchTicket(redispatchOv.db_id, redispatchCand.engineer_id, redispatchRemark.trim() || undefined);
       Toast({ message: '已重新派单，正在重新推荐处理人', theme: 'success' });
       setShowRedispatchPopup(false);
-      // 清空 assigned_to_name → 气泡回到「派单中」态，触发重新轮询拿到新接单人
-      const newOv = { ...redispatchOv, assigned_to_name: undefined };
+      // 清空 assigned_to_name + redispatch_tip → 气泡回到「派单中」态，触发重新轮询拿到新接单人/新提醒
+      const newOv = { ...redispatchOv, assigned_to_name: undefined, redispatch_tip: undefined };
       setMessages((prev) => prev.map((m) =>
         m.id === redispatchMsgId && m.ticket_overview
           ? { ...m, ticket_overview: newOv }
@@ -1935,7 +2069,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     } finally {
       setRedispatching(false);
     }
-  }, [redispatchOv, redispatchMsgId, redispatchUser, redispatchRemark, startDispatchPoll]);
+  }, [redispatchOv, redispatchMsgId, redispatchCand, redispatchRemark, startDispatchPoll]);
 
   // 卸载清理所有轮询 + 中断流式（避免组件卸载后后台 setMessages 报错/串台）
   useEffect(() => () => {
@@ -1995,7 +2129,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         }
         const latestName = task.assigned_to_name || task.assigned_to;
         if (latestName !== ov.assigned_to_name) {
-          const newOv = { ...ov, assigned_to_name: latestName };
+          // 二次派单感知增强（M3）：同步时也刷新派单结果提醒文案
+          const newOv = { ...ov, assigned_to_name: latestName, redispatch_tip: redispatchTipFromResult((task as any)?.redispatch?.result) };
           setMessages((prev) => prev.map((x) =>
             x.id === m.id && x.ticket_overview ? { ...x, ticket_overview: newOv } : x
           ));
@@ -2721,13 +2856,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         <Popup visible={showRedispatchPopup} onClose={() => setShowRedispatchPopup(false)} placement="bottom" showOverlay>
           <div className="conv-dialog">
             <h4 className="conv-dialog__title">重新派单</h4>
-            <p className="conv-dialog__msg">将强制重新智能派单，请选择倾向处理人</p>
+            <p className="conv-dialog__msg">将强制重新智能派单，请选择倾向处理人（意向人不保证100%采纳，仅作为派单加权参考）</p>
             <div style={{ marginBottom: 16 }}>
-              <UserSelect
-                value={redispatchUser?.id ?? null}
-                onChange={(u) => setRedispatchUser(u)}
-                placeholder="选择倾向处理人（必选）"
-                title="选择倾向处理人"
+              <RedispatchCandidateList
+                candidates={redispatchCands}
+                refDept={redispatchRefDept}
+                value={redispatchCand?.engineer_id ?? null}
+                onChange={setRedispatchCand}
+                loading={redispatchLoading}
               />
             </div>
             <input
@@ -2739,7 +2875,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             />
             <div className="conv-dialog__btns">
               <button type="button" className="ticket-confirm__btn ticket-confirm__btn--cancel" onClick={() => setShowRedispatchPopup(false)}>取消</button>
-              <button type="button" className="ticket-confirm__btn ticket-confirm__btn--confirm" disabled={!redispatchUser || redispatching} onClick={handleRedispatchConfirm}>{redispatching ? '提交中…' : '确定重新派单'}</button>
+              <button type="button" className="ticket-confirm__btn ticket-confirm__btn--confirm" disabled={!redispatchCand || redispatching} onClick={handleRedispatchConfirm}>{redispatching ? '提交中…' : '确定重新派单'}</button>
             </div>
           </div>
         </Popup>

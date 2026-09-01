@@ -95,6 +95,13 @@ class QAAskRequest(BaseModel):
     # 后端在流式中把 assistant 回复节流写入同会话 messages 表，刷新/切 Tab 也能从 DB 恢复。
     conversation_id: Optional[int] = Field(default=None, description="前端 call 会话 id（传了才启用后端落库）")
     assistant_message_id: Optional[int] = Field(default=None, description="已预建的 assistant 占位消息 id；不传则由后端创建")
+    # 单写入方+幂等：True 时后端在流式开头确保本轮 user 消息已落库（前端已写则按
+    # client_message_id 幂等复用，未写/写失败则代建），并创建 assistant 占位指向它
+    # （parent_message_id）→ sequence 严格 user < assistant，消息顺序由落库顺序决定，
+    # 与前端网络时序彻底解耦（根治 0827「回答跳到问题上方」）。
+    # 旧前端不传此标志 → 行为完全不变（兼容灰度期新旧版本混跑）。
+    persist_user_message: bool = Field(default=False, description="True=后端确保 user 消息已落库（幂等复用优先，缺失则代建）")
+    client_message_id: Optional[str] = Field(default=None, max_length=64, description="本轮消息幂等键（前端本地乐观气泡 id）")
 
 
 class QASubmitRequest(BaseModel):
@@ -200,10 +207,16 @@ async def ask_question_stream(
 
         # ── 后端增量落库准备（仅当前端传入 conversation_id 时启用）──
         persist_msg_id = qa_req.assistant_message_id
+        user_msg_id: Optional[int] = None
         db = None
 
-        # 先建占位 assistant 消息并通知前端（需在 consumer 侧 yield message_created）。
-        # db 随后交给 producer 独占使用与关闭。
+        # 流式开头统一落库本轮消息（单写入方+幂等）：
+        #   1) user 消息：persist_user_message=True 时确保存在——前端已写（metadata 含
+        #      client_message_id）则复用该行，否则代建。响应丢失后同键重发不会产生重复行。
+        #   2) assistant 占位：parent_message_id 指向 user 行；同 user 下已有占位（上次
+        #      重试遗留）则复用。sequence 按创建顺序递增 → DB 顺序天然「问题在上、回答在下」，
+        #      与前端写入/网络时序彻底解耦。
+        # 旧前端不传 persist_user_message → 走原逻辑（只建 assistant 占位），行为不变。
         if qa_req.conversation_id:
             try:
                 db = AsyncSessionLocal()
@@ -577,6 +590,43 @@ async def confirm_ticket(
         )
     except Exception as e:
         logger.error(f"confirm_ticket 异常: {e}", exc_info=True)
+        return {"code": 1, "message": str(e)}
+
+
+@qa_router.get("/ticket/steps", summary="按工单类型查协商阶段列表（提单弹窗下拉）")
+async def get_ticket_steps(
+    type: str = Query(..., description="工单类型：problem|bug|feature|support|other"),
+) -> dict:
+    """按工单类型返回 task_steps 模板步骤列表（按 sequence 升序）。
+
+    独立接口（不塞进 /ticket/prepare）：task_steps 后续会改成可配置，
+    前端弹窗打开时按类型实时拉取，天然支持配置变更。
+    """
+    try:
+        from app.models.task import TaskStep, TaskType
+        from app.core.db import SessionLocal
+        # 类型校验：非法值直接返回空（前端按空列表处理），避免异常透出
+        try:
+            _type = TaskType(type.strip())
+        except ValueError:
+            return {"code": 0, "data": {"steps": []}}
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(TaskStep)
+                .filter(TaskStep.task_type == _type)
+                .order_by(TaskStep.sequence.asc())
+                .all()
+            )
+            steps = [
+                {"id": r.id, "step_name": r.step_name, "sequence": r.sequence}
+                for r in rows
+            ]
+            return {"code": 0, "data": {"steps": steps}}
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"get_ticket_steps 异常: {e}", exc_info=True)
         return {"code": 1, "message": str(e)}
 
 
@@ -1178,6 +1228,53 @@ async def list_pending() -> dict:
         return {"code": 1, "data": {"error": str(e)}}
 
 
+async def _redispatch_tip_for_log(log, user_map) -> Optional[str]:
+    """按需求方案 §3.6 四分支规则生成派单结果提醒的一句话摘要（无提醒返回 None）。
+
+    ⚠️ 内部辅助函数，非路由（路由装饰器在 list_all_tickets 上）。
+    数据源：task_dispatch_log 最新一条（与 backend TicketService._redispatch_tip 口径一致）。
+
+    【日志标签】[redispatch_tip] 每次调用记入口/出口 + 命中分支，便于在 ai.log 定位派单结果提醒链路。
+    """
+    _ltag = "[redispatch_tip]"
+    if log is None:
+        logger.debug(f"{_ltag} log=None，返回 None")
+        return None
+    task_id = getattr(log, "task_id", None)
+    assigned_name = user_map.get(log.assigned_id, log.assigned_id)
+    preferred_id = log.preferred_id
+    preferred_name = user_map.get(preferred_id, preferred_id) if preferred_id else None
+    logger.info(
+        f"{_ltag} task={task_id} 入口: preferred={preferred_name or preferred_id} "
+        f"assigned={assigned_name} pinyin={log.pinyin_match} collision={log.name_collision}"
+    )
+
+    # ② 未派到指定人（简洁而礼貌的措辞，照顾用户情绪）
+    if preferred_id and preferred_id != log.assigned_id:
+        tip = f"很抱歉，您指定的【{preferred_name}】暂未采纳，已改派更合适的【{assigned_name}】处理"
+        _branch = "未派到指定人"
+    # ④ 拼音/近似名命中
+    elif log.pinyin_match:
+        tip = f"按拼音匹配到【{assigned_name}】（与输入【{preferred_name or assigned_name}】不同字），如非此人请更正"
+        _branch = "拼音匹配"
+    # ③ 同名命中
+    elif log.name_collision:
+        tip = f"指派人存在同名，已按评估选择【{assigned_name}】"
+        _branch = "同名命中"
+    else:
+        tip = None
+        _branch = "无提醒"
+
+    # ① 画像不完整（可叠加追加）
+    missing = ((log.profile or {}).get("missing") or []) if isinstance(log.profile, dict) else []
+    if missing:
+        suffix = "；该接单人画像不完整，待补充"
+        tip = (tip + suffix) if tip else "该接单人画像不完整，待补充"
+        logger.debug(f"{_ltag} task={task_id} 画像不完整: {missing}")
+    logger.info(f"{_ltag} task={task_id} 出口 branch={_branch} tip={'有' if tip else 'None'}")
+    return tip
+
+
 @memory_router.get("/tickets/all", summary="历史工单列表")
 async def list_all_tickets(
     skip: int = Query(0, ge=0, description="跳过条数"),
@@ -1223,7 +1320,14 @@ async def list_all_tickets(
                 except ValueError:
                     pass
             if keyword:
-                q = q.filter(Task.title.contains(keyword) | Task.description.contains(keyword))
+                # 工单编号搜索：支持「#123」或「123」形式命中 Task.id
+                kw_id = keyword.lstrip('#')
+                title_desc = Task.title.contains(keyword) | Task.description.contains(keyword)
+                try:
+                    kw_int = int(kw_id)
+                    q = q.filter(title_desc | (Task.id == kw_int))
+                except ValueError:
+                    q = q.filter(title_desc)
             # 排除指定状态（如「除已关闭外全部」）；非法值忽略
             if exclude_status:
                 for s in [x.strip() for x in exclude_status.split(",") if x.strip()]:
@@ -1247,6 +1351,22 @@ async def list_all_tickets(
 
             total = q.count()
             rows = q.order_by(desc(Task.created_at)).offset(skip).limit(limit).all()
+
+            # 二次派单感知增强（M3）：批量取各工单最新一条派单日志 → redispatch_tip（避免 N+1）
+            from app.models.task_dispatch_log import TaskDispatchLog
+            _ids = [r.id for r in rows]
+            tip_map: Dict[int, Optional[str]] = {}
+            if _ids:
+                _log_rows = db.query(TaskDispatchLog).filter(
+                    TaskDispatchLog.task_id.in_(_ids)
+                ).order_by(TaskDispatchLog.task_id.asc(), TaskDispatchLog.dispatch_round.desc()).all()
+                _seen: set = set()
+                for _lr in _log_rows:
+                    if _lr.task_id in _seen:
+                        continue
+                    _seen.add(_lr.task_id)
+                    tip_map[_lr.task_id] = await _redispatch_tip_for_log(_lr, user_map)
+
             items = []
             for r in rows:
                 d = task_to_dict(r)
@@ -1269,6 +1389,8 @@ async def list_all_tickets(
                     "created_by_name": user_map.get(created_by, created_by) if created_by else "",
                     "assigned_to": assigned_to,
                     "assigned_to_name": user_map.get(assigned_to, assigned_to) if assigned_to else "",
+                    # 二次派单感知增强（M3）：派单结果提醒一句话摘要（无提醒为 null）
+                    "redispatch_tip": tip_map.get(r.id) or None,
                 })
             return {"code": 0, "data": {"total": total, "skip": skip, "limit": limit, "items": items,
                                         "by_status": by_status, "active_total": active_total}}
