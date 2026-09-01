@@ -74,11 +74,11 @@ $ErrorActionPreference = 'Stop'
 #    留空则回退为 ssh -t 交互式输入密码。
 #  - 注意：明文密码有泄露风险，请勿将填写密码后的本脚本提交到仓库。
 $ScriptConfig = @{
-    SshHost      = '125.122.97.107'      # 默认服务器地址，如 '10.0.0.1'；留空则运行时询问
-    SshUser      = 'usp-a'  # 默认 SSH 用户名
-    SshPort      = 8802      # 默认 SSH 端口
-    SshIdentity  = 'C:\Users\PAJ25252\.ssh\id_rsa'      # 私钥路径，如 'C:\Users\me\.ssh\id_rsa'；留空用默认密钥
-    SudoPassword = '7s9K$p2G&t'      # 远端 sudo 密码；留空则交互输入
+    SshHost      = ''      # 默认服务器地址，如 '10.0.0.1'；留空则运行时询问
+    SshUser      = ''  # 默认 SSH 用户名
+    SshPort      = 80      # 默认 SSH 端口
+    SshIdentity  = ''      # 私钥路径，如 'C:\Users\me\.ssh\id_rsa'；留空用默认密钥
+    SudoPassword = ''      # 远端 sudo 密码；留空则交互输入
 }
 
 # 合并优先级：命令行参数 > 静态配置
