@@ -587,6 +587,8 @@ class TicketService:
             'resolvedAt': (Ticket.resolved_at, 'datetime'),
             'closedAt': (Ticket.closed_at, 'datetime'),
             'deadlineAt': (Ticket.deadline_at, 'datetime'),
+            # 工单回合制：最近一次改 step 的操作人侧标识（assigned/creator，见 task.py _ACTOR_SIDE_*）
+            'stepUpdatedBy': (Ticket.step_last_updated_by, 'enum'),
         }
 
         NUMBER_OPS = {'gt', 'lt', 'ge', 'le', 'eq', 'ne', 'is_null', 'not_null'}

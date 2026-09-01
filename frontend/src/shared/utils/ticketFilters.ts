@@ -28,22 +28,28 @@ export const buildRelevanceFilters = (
     ];
     return [{
       or: [
+        // 分支1：我是处理人，工单处于活跃状态 → 常规待处理
         {
           and: [
             { or: workingStatusFilters },
             { field: 'assignedTo', op: 'eq', value: username },  // username 或 users.id，后端双键解析
           ],
         },
+        // 分支2：我是提单人，工单已解决 → 待我验收
         {
           and: [
             { field: 'status', op: 'eq', value: 'resolved' },
             { field: 'createdBy', op: 'eq', value: username },
           ],
         },
+        // 分支3（回合制）：我是提单人，接单人刚改过 step（stepUpdatedBy=assigned）
+        // → 轮到我确认/答复协商。注意：必须 step 真正动过（NOT NULL），避免未响应的新建工单
+        //    因没写 assigned 而误命中（assigned=creator=同一人时也要保证）。
         {
           and: [
-            { field: 'status', op: 'eq', value: 'resolved' },
+            { or: workingStatusFilters },
             { field: 'createdBy', op: 'eq', value: username },
+            { field: 'stepUpdatedBy', op: 'eq', value: 'assigned' },
           ],
         },
       ],

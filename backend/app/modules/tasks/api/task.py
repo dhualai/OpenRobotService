@@ -237,6 +237,54 @@ async def _reload_ticket_with_comments(db: AsyncSession, task_id: int):
     return result.unique().scalar_one_or_none()
 
 
+# 最近 step 更新的"操作方标识"：与 assigned_to / created_by 字段无关，只表示角色侧，
+# 便于判定工单当前该轮到哪一方。
+_ACTOR_SIDE_ASSIGNED = "assigned"
+_ACTOR_SIDE_CREATOR = "creator"
+
+
+def _actor_side(ticket, current_user, username: str) -> Optional[str]:
+    """返回当前操作人属于接单人侧(assigned) 还是 提单人侧(creator)，都不是则 None。"""
+    if user_matches(current_user, getattr(ticket, 'assigned_to', None)):
+        return _ACTOR_SIDE_ASSIGNED
+    if user_matches(current_user, getattr(ticket, 'created_by', None)):
+        return _ACTOR_SIDE_CREATOR
+    if username and username and username == getattr(ticket, 'assigned_to', None):
+        return _ACTOR_SIDE_ASSIGNED
+    if username and username == getattr(ticket, 'created_by', None):
+        return _ACTOR_SIDE_CREATOR
+    return None
+
+
+def _apply_step_update_meta(ticket, current_user, username: str) -> Dict[str, Any]:
+    """记录当前 step 更新元信息，并按对手回应规则累加回合。
+
+    返回 dict：{bump_round: bool, round_reached_max: bool}，供调用方决定是否发软提醒。
+    """
+    from sqlalchemy import func
+    side = _actor_side(ticket, current_user, username)
+    prev_side = getattr(ticket, 'step_last_updated_by', None)
+
+    # 对手回应：前一方有记录且与当前不同，加 1 回合
+    bump_round = False
+    if prev_side and side and prev_side != side:
+        bump_round = True
+        ticket.step_negotiation_round = (getattr(ticket, 'step_negotiation_round', 0) or 0) + 1
+
+    if side:
+        ticket.step_last_updated_by = side
+        ticket.step_last_updated_at = func.now()
+
+    max_rounds = getattr(ticket, 'step_neg_max_rounds', settings.TICKET_STEP_MAX_NEGOTIATION_ROUNDS) or settings.TICKET_STEP_MAX_NEGOTIATION_ROUNDS
+    return {
+        "bump_round": bump_round,
+        "round": getattr(ticket, 'step_negotiation_round', 0) or 0,
+        "max_rounds": max_rounds,
+        "round_reached_max": (getattr(ticket, 'step_negotiation_round', 0) or 0) >= max_rounds,
+        "round_almost_max": (getattr(ticket, 'step_negotiation_round', 0) or 0) == max_rounds - 1,
+    }
+
+
 @router.post("/", response_model=TicketResponse)
 async def create_task(
     ticket_data: TicketCreate,
@@ -1437,6 +1485,10 @@ async def respond_task(
     ticket.curr_step_name = step_name
     ticket.status = TicketStatus.IN_PROGRESS
     ticket.updated_at = func.now()
+
+    # 首次响应视为接单人首轮提案：记录 updated_by=assigned（提单人"待我处理"即可命中），
+    # 不累加回合——回合从"对手回应"开始计数。
+    _apply_step_update_meta(ticket, current_user, username)
     await db.commit()
 
     # 操作日志 + 系统评论
@@ -1517,6 +1569,9 @@ async def complete_task_step(
     ticket.curr_step_name = next_step.step_name
     ticket.curr_step_endtime = None
     ticket.updated_at = func.now()
+
+    # 阶段完成 = 当前操作人"提案"推进到下一节点，记入回合
+    round_meta = _apply_step_update_meta(ticket, current_user, username)
     await db.commit()
 
     # 操作日志 + 系统评论
@@ -1528,12 +1583,21 @@ async def complete_task_step(
         op_type=OperationType.UPDATE,
         operator=username,
         operator_name=user_name,
-        detail={"from_step": old_step_name, "to_step": next_step.step_name},
+        detail={
+            "from_step": old_step_name,
+            "to_step": next_step.step_name,
+            "negotiation_round": round_meta["round"],
+        },
         description=f"{_role}{user_name} 完成阶段「{old_step_name}」，进入「{next_step.step_name}」" if _role else f"{user_name} 完成阶段「{old_step_name}」，进入「{next_step.step_name}」",
     )
+    comment_lines = [f"{user_name} 完成阶段「{old_step_name}」，进入「{next_step.step_name}」"]
+    if round_meta["bump_round"]:
+        comment_lines.append(f"（本轮协商回合：{round_meta['round']}/{round_meta['max_rounds']}）")
+        if round_meta["round_almost_max"]:
+            comment_lines.append("⚠️ 已临近最大协商回合，请尽快收敛；若仍无法达成一致可使用升级上报。")
     await _add_system_comment(
         db, task_id,
-        f"{user_name} 完成阶段「{old_step_name}」，进入「{next_step.step_name}」",
+        "".join(comment_lines),
         username, token,
     )
     try:
@@ -1572,9 +1636,10 @@ async def negotiate_step(
     token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
     can_operate = has_permission_code(current_user, "backend:tasks:operate")
 
-    if ticket.source == 'ai':
-        pass
-    elif not (user_matches(current_user, ticket.assigned_to) or is_admin or can_operate):
+    # 权限：接单人 / 提单人 / 管理员 / 操作权限均可协商（回合双方对话）
+    _is_assignee = user_matches(current_user, ticket.assigned_to)
+    _is_creator = user_matches(current_user, ticket.created_by)
+    if ticket.source != 'ai' and not (_is_assignee or _is_creator or is_admin or can_operate):
         raise HTTPException(status_code=403, detail="无权限协商此工单")
 
     # 协商理由必填
@@ -1600,6 +1665,9 @@ async def negotiate_step(
     endtime = convert_to_shanghai_time(body.curr_step_endtime)
     ticket.curr_step_endtime = endtime
     ticket.updated_at = func.now()
+
+    # 回合计数：对手回应 +1
+    round_meta = _apply_step_update_meta(ticket, current_user, username)
     await db.commit()
 
     user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
@@ -1621,12 +1689,18 @@ async def negotiate_step(
             "from_step": old_step_name if step_changed else None,
             "to_step": ticket.curr_step_name,
             "curr_step_endtime": endtime.isoformat() if endtime else None,
+            "negotiation_round": round_meta["round"],
         },
         description=f"{_role}{user_name} {action_desc}" if _role else f"{user_name} {action_desc}",
     )
+    comment_lines = [f"{user_name} {action_desc}，理由：{reason}"]
+    if round_meta["bump_round"]:
+        comment_lines.append(f"（本轮协商回合：{round_meta['round']}/{round_meta['max_rounds']}）")
+        if round_meta["round_almost_max"]:
+            comment_lines.append("⚠️ 已临近最大协商回合，请尽快收敛；若仍无法达成一致可使用升级上报。")
     await _add_system_comment(
         db, task_id,
-        f"{user_name} {action_desc}，理由：{reason}",
+        "".join(comment_lines),
         username, token,
     )
     try:
