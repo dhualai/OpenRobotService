@@ -1283,7 +1283,14 @@ async def list_all_tickets(
                 except ValueError:
                     pass
             if keyword:
-                q = q.filter(Task.title.contains(keyword) | Task.description.contains(keyword))
+                # 工单编号搜索：支持「#123」或「123」形式命中 Task.id
+                kw_id = keyword.lstrip('#')
+                title_desc = Task.title.contains(keyword) | Task.description.contains(keyword)
+                try:
+                    kw_int = int(kw_id)
+                    q = q.filter(title_desc | (Task.id == kw_int))
+                except ValueError:
+                    q = q.filter(title_desc)
             # 排除指定状态（如「除已关闭外全部」）；非法值忽略
             if exclude_status:
                 for s in [x.strip() for x in exclude_status.split(",") if x.strip()]:

@@ -128,6 +128,7 @@ class Project(Base):
     sales = Column(String(50), nullable=True, comment='销售')
     pre_sales = Column(String(50), nullable=True, comment='售前')
     project_manager = Column(String(50), nullable=True, comment='项目经理')
+    project_manager_id = Column(String(64), nullable=True, comment='项目经理ID（与 users.id 同长度，用于关联角色）')
     field_engineer = Column(String(50), nullable=True, comment='实施工程师')
 
     internal_code = Column(String(50), nullable=True, comment='内部编号')
