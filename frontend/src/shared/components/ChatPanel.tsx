@@ -114,9 +114,10 @@ function redispatchTipFromResult(result?: {
   const assignedName = result.assigned_name || '';
   const prefName = result.preferred_name || '';
   let tip: string | undefined;
-  // ② 未派到指定人
-  if (result.matched_pref === false) {
-    tip = `未派给您指定的【${prefName || '意向人'}】，已派给【${assignedName}】`;
+  // ② 未派到指定人（仅当确实存在用户指定的倾向人时才算「未派到指定人」；
+  //    首次派单无倾向处理人时 matched_pref 默认为 false，但此时并无「指定的 X」，不应显示该提醒）
+  if (result.matched_pref === false && prefName) {
+    tip = `未派给您指定的【${prefName}】，已派给【${assignedName}】`;
   } else if (result.pinyin_match) {
     // ④ 拼音/近似名命中
     tip = `按拼音匹配到【${assignedName}】（与输入【${prefName || assignedName}】不同字），如非此人请更正`;
