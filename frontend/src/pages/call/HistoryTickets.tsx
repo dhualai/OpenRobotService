@@ -321,7 +321,7 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
           <Search className="history-search__icon" size={16} strokeWidth={2} />
           <input
             className="history-search"
-            placeholder="搜索工单标题/描述…"
+            placeholder="搜索工单编号/标题/描述…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />

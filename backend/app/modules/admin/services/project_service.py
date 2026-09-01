@@ -201,6 +201,7 @@ class ProjectService:
             "sales": project.sales,
             "pre_sales": project.pre_sales,
             "project_manager": project.project_manager,
+            "project_manager_id": project.project_manager_id,
             "field_engineer": project.field_engineer,
             "internal_code": project.internal_code,
             "project_region": project.project_region,

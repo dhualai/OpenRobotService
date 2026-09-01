@@ -287,11 +287,11 @@ async def create_project(
         try:
             existing_projects = await PermissionService.get_projects(request, token)
             project_exists = any(p.get("project_code") == project_data.project_code for p in existing_projects["projects"])
-            
+
             if not project_exists:
                 project_dict = project_data.model_dump()
                 await PermissionService.create_project(request, token, project_dict)
-            
+
             role_data = {
                 "project_id": project_data.project_code,
                 "role_ids": ["project_contact"]
@@ -302,13 +302,13 @@ async def create_project(
             if diaoyan_role_id and diaoyan_role_id not in role_data["role_ids"]:
                 role_data["role_ids"].append(diaoyan_role_id)
             await PermissionService.assign_role(request, token, project_data.contact_person_id, role_data)
-            
+
             from app.modules.admin.utils_das.security import decode_token
             from app.modules.admin.services.wechat_service import WeChatService
-            
+
             current_user = decode_token(token)
             current_username = current_user.get("sub", "系统") if current_user else "系统"
-            
+
             users = await PermissionService.get_users_list(request, token)
             contact_user = next((u for u in users if u["username"] == project_data.contact_person_id), None)
             if contact_user:
@@ -317,9 +317,23 @@ async def create_project(
                 title = project_data.name
                 content = f"{current_user_name} 给您设置为项目 '{project_data.name}' 的对接人"
                 WeChatService.send_notification(contact_user["id"], content, url='https://usp.ep-zl.com/wechat/projects')
-        
+
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"权限服务操作失败: {str(e)}")
+
+    # 项目经理：自动关联「项目经理」角色（按角色名查 id，未找到则跳过）
+    if project_data.project_manager_id:
+        try:
+            from app.services.identity_service import IdentityService
+            pm_role_id = IdentityService.get_role_id_by_name("项目经理")
+            if pm_role_id:
+                pm_role_data = {
+                    "project_id": project_data.project_code,
+                    "role_ids": [pm_role_id],
+                }
+                await PermissionService.assign_role(request, token, project_data.project_manager_id, pm_role_data)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"项目经理角色关联失败: {str(e)}")
     
     try:
         project = project_service.create_project(project_data.model_dump())
@@ -337,18 +351,18 @@ async def create_project(
         if current_user:
             current_username = current_user.get("sub", "")
             if current_username:
-                # 创建者默认关联 project_contact；并按名查 roles 表追加「项目经理」项目角色
-                # （未找到则跳过，与上方对接人「调度研发」同口径）
+                # 创建人默认只加「项目经理」角色（不再加 project_contact）
                 from app.services.identity_service import IdentityService
                 pm_role_id = IdentityService.get_role_id_by_name("项目经理")
-                creator_role_ids = ["project_contact"]
+                creator_role_ids = []
                 if pm_role_id:
                     creator_role_ids.append(pm_role_id)
-                creator_role_data = {
-                    "project_id": project_data.project_code,
-                    "role_ids": creator_role_ids,
-                }
-                await PermissionService.assign_role(request, token, current_username, creator_role_data)
+                if creator_role_ids:
+                    creator_role_data = {
+                        "project_id": project_data.project_code,
+                        "role_ids": creator_role_ids,
+                    }
+                    await PermissionService.assign_role(request, token, current_username, creator_role_data)
     except Exception as e:
         # 关联失败不影响创建成功，仅记录日志（例如项目已存在/当前用户异常）
         logger.warning(f"自动关联创建者到项目失败: {e}", exc_info=True)
@@ -407,7 +421,23 @@ async def update_project(
             title = existing_project["name"]
             content = f"{current_user_name} 给您设置为项目 '{existing_project['name']}' 的对接人"
             WeChatService.send_notification(contact_user["id"], content, url='https://usp.ep-zl.com/wechat/projects')
-    
+
+    # 项目经理变更时，回收旧人「项目经理」角色、授予新人（与对接人口径一致）
+    if update_data.project_manager_id and update_data.project_manager_id != existing_project.get("project_manager_id"):
+        token = request.headers.get("Authorization", "")
+        token = token[7:]
+        from app.services.identity_service import IdentityService
+        pm_role_id = IdentityService.get_role_id_by_name("项目经理")
+        if pm_role_id:
+            pm_role_data = {
+                "project_id": existing_project["project_code"],
+                "role_ids": [pm_role_id],
+            }
+            old_pm_id = existing_project.get("project_manager_id")
+            if old_pm_id:
+                await PermissionService.remove_role(request, token, old_pm_id, pm_role_data)
+            await PermissionService.assign_role(request, token, update_data.project_manager_id, pm_role_data)
+
     # 项目编号/项目名称是唯一 key：更新时若改动这两个字段，同样校验库中是否已被其他项目占用
     if update_data.project_code or update_data.name:
         new_code = update_data.project_code or existing_project["project_code"]

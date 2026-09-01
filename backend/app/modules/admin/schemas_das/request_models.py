@@ -145,6 +145,7 @@ class ProjectBase(BaseModel):
     sales: Optional[str] = None
     pre_sales: Optional[str] = None
     project_manager: Optional[str] = None
+    project_manager_id: Optional[str] = None
     field_engineer: Optional[str] = None
     internal_code: Optional[str] = None
     project_region: Optional[ProjectRegion] = None
@@ -192,6 +193,7 @@ class ProjectUpdate(BaseModel):
     sales: Optional[str] = None
     pre_sales: Optional[str] = None
     project_manager: Optional[str] = None
+    project_manager_id: Optional[str] = None
     field_engineer: Optional[str] = None
     internal_code: Optional[str] = None
     project_region: Optional[ProjectRegion] = None
