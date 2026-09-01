@@ -4506,8 +4506,10 @@ class AiDiagnosisPlatform:
             for k, v in overrides.items():
                 if k in ("ticket_id", "missing_fields", "confirm_prompt", "stage"):
                     continue
-                # deadline_at 允许空值（用户在弹窗里清除截止时间）；其余字段空值跳过
-                if v or k == "deadline_at":
+                # deadline_at 允许空值（用户在弹窗里清除截止时间）；其余字段空值跳过。
+                # 协商阶段字段（curr_step_id/curr_step_endtime）必填非空，正常走 v 真值分支；
+                # curr_step_id 可能是 0 哨兵/数字，单独放行避免被真值判断漏掉。
+                if v or k in ("deadline_at", "curr_step_id", "curr_step_endtime"):
                     # attachments 特殊处理：合并而非覆盖。overrides 里的远程截图（dict 数组）
                     # 追加到 draft 里会话累积的诊断图附件（dict 数组），二者都要保留。
                     # 后续 upsert_task 的 _dedup_attachments 会按 (object_path, filename) 统一去重。

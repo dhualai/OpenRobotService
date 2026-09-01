@@ -593,6 +593,43 @@ async def confirm_ticket(
         return {"code": 1, "message": str(e)}
 
 
+@qa_router.get("/ticket/steps", summary="按工单类型查协商阶段列表（提单弹窗下拉）")
+async def get_ticket_steps(
+    type: str = Query(..., description="工单类型：problem|bug|feature|support|other"),
+) -> dict:
+    """按工单类型返回 task_steps 模板步骤列表（按 sequence 升序）。
+
+    独立接口（不塞进 /ticket/prepare）：task_steps 后续会改成可配置，
+    前端弹窗打开时按类型实时拉取，天然支持配置变更。
+    """
+    try:
+        from app.models.task import TaskStep, TaskType
+        from app.core.db import SessionLocal
+        # 类型校验：非法值直接返回空（前端按空列表处理），避免异常透出
+        try:
+            _type = TaskType(type.strip())
+        except ValueError:
+            return {"code": 0, "data": {"steps": []}}
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(TaskStep)
+                .filter(TaskStep.task_type == _type)
+                .order_by(TaskStep.sequence.asc())
+                .all()
+            )
+            steps = [
+                {"id": r.id, "step_name": r.step_name, "sequence": r.sequence}
+                for r in rows
+            ]
+            return {"code": 0, "data": {"steps": steps}}
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"get_ticket_steps 异常: {e}", exc_info=True)
+        return {"code": 1, "message": str(e)}
+
+
 @qa_router.get("/ticket/draft", summary="获取待确认草稿（前端轮询兜底）")
 async def get_draft(
     session_id: str = Query(..., description="会话 ID"),
