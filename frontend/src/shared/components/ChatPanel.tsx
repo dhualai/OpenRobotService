@@ -674,7 +674,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     dualTicket: boolean;      // 兜底双工单：项目不在项目集时勾选，生成申请单派给项目负责人
     projectOwner: UserItem | null;  // 双工单场景下选中的项目负责人
   }>({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
-  // 处理阶段：弹窗打开时按工单类型拉取的步骤列表（task_steps 模板，后续可配置）
+  // 协商阶段：弹窗打开时按工单类型拉取的步骤列表（task_steps 模板，后续可配置）
   const [ticketSteps, setTicketSteps] = useState<TicketStep[]>([]);
   const [stepsLoading, setStepsLoading] = useState(false);
   // 远程方式截图（object_path 数组）：弹窗内选择远程方式后才出现，上传即本地暂存、关闭弹窗清空。
@@ -1461,7 +1461,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 projectOwner: null,
               };
             });
-            // 按 AI 识别的工单类型拉取处理阶段列表
+            // 按 AI 识别的工单类型拉取协商阶段列表
             void loadTicketSteps(String((data.draft as TicketDraft | undefined)?.type ?? ''));
           }
         } catch { /* JSON 行解析出错则跳过 */ }
@@ -1968,7 +1968,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 打开确认弹窗，让用户核对/编辑/补字段
       setTicketMissing(null); // 已就绪，清掉待补充清单
       setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
-      // 按 AI 识别的工单类型拉取处理阶段列表，并回填默认阶段完成时间
+      // 按 AI 识别的工单类型拉取协商阶段列表，并设置默认阶段/阶段完成时间
       void loadTicketSteps(String(draft.type ?? ''));
       if (missing_fields?.length) {
         // 缺失字段明细已在确认弹窗内逐字段展示，Toast 仅作短提示（避免长 prompt 被截断/喧宾夺主）
@@ -1987,7 +1987,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const setDraftField = (k: keyof TicketDraft, v: string) =>
     setTicketConfirm((s) => ({ ...s, overrides: { ...s.overrides, [k]: v } }));
 
-  // ── 处理阶段（当前步骤）+ 阶段完成时间（SLA）──
+  // ── 协商阶段（当前步骤）+ 阶段完成时间（SLA）──
   // 阶段完成时间快捷选项（天）：1/3/5/7/14，默认当前时间 +7 天，精确到分钟。
   const STEP_QUICK_OPTIONS: { value: number; label: string }[] = [
     { value: 1, label: '1天' },
@@ -2007,7 +2007,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     return raw ? Number(raw) : undefined;
   })();
 
-  /** 弹窗打开/类型确定后：拉取该类型的处理阶段列表（默认不选，仅回填默认阶段完成时间 +7 天） */
+  /** 弹窗打开/类型确定后：拉取该类型的协商阶段列表，并设置默认 curr_step（第一步）+ 默认阶段完成时间（+7 天） */
   const loadTicketSteps = useCallback(async (ticketType: string) => {
     if (!ticketType) return;
     setStepsLoading(true);
@@ -2015,9 +2015,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const res = await qaGetTicketSteps(ticketType);
       const steps = res?.data?.steps ?? [];
       setTicketSteps(steps);
-      // 阶段完成时间默认 +7 天；已有则不动（处理阶段默认不选，由用户手动选择）
+      // 默认选中第一步；已有用户选择则不动
       setTicketConfirm((s) => {
+        const cur = s.overrides.curr_step_id;
+        const defaultStep = steps.length > 0 ? steps[0] : undefined;
         const overrides = { ...s.overrides };
+        if (cur == null && defaultStep) overrides.curr_step_id = defaultStep.id;
+        // 阶段完成时间默认 +7 天；已有则不动
         if (!overrides.curr_step_endtime) {
           overrides.curr_step_endtime = dayjs().add(7, 'day').toISOString();
         }
@@ -2234,9 +2238,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       Toast({ message: '请选择项目负责人', theme: 'warning' });
       return;
     }
-    // 处理阶段 + 阶段完成时间：均为必填
+    // 协商阶段 + 阶段完成时间：均为必填
     if (!selectedStepId) {
-      Toast({ message: '请选择本工单预期的处理阶段', theme: 'warning' });
+      Toast({ message: '请选择协商阶段', theme: 'warning' });
       return;
     }
     if (!stepEndtimeValue) {
@@ -2758,16 +2762,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   <option value="中">中</option>
                   <option value="低">低</option>
                 </select>
-                {/* 处理阶段（当前步骤，必填）：按 AI 识别的工单类型拉取 task_steps 模板 */}
-                <label className="ticket-confirm__label">处理阶段</label>
+                {/* 协商阶段（当前步骤，必填）：按 AI 识别的工单类型拉取 task_steps 模板 */}
+                <label className="ticket-confirm__label">协商阶段</label>
                 <select
                   className="ticket-confirm__select"
                   value={selectedStepId ?? ''}
                   onChange={(e) => setDraftField('curr_step_id', e.target.value)}
                 >
-                  {stepsLoading
-                    ? <option value="">加载中…</option>
-                    : <option value="">请选择本工单预期的处理阶段</option>}
+                  {stepsLoading && <option value="">加载中…</option>}
+                  {!stepsLoading && ticketSteps.length === 0 && <option value="">暂无阶段</option>}
                   {ticketSteps.map((s) => (
                     <option key={s.id} value={s.id}>{s.step_name}</option>
                   ))}
