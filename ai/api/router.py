@@ -1196,30 +1196,45 @@ async def _redispatch_tip_for_log(log, user_map) -> Optional[str]:
 
     ⚠️ 内部辅助函数，非路由（路由装饰器在 list_all_tickets 上）。
     数据源：task_dispatch_log 最新一条（与 backend TicketService._redispatch_tip 口径一致）。
+
+    【日志标签】[redispatch_tip] 每次调用记入口/出口 + 命中分支，便于在 ai.log 定位派单结果提醒链路。
     """
+    _ltag = "[redispatch_tip]"
     if log is None:
+        logger.debug(f"{_ltag} log=None，返回 None")
         return None
+    task_id = getattr(log, "task_id", None)
     assigned_name = user_map.get(log.assigned_id, log.assigned_id)
     preferred_id = log.preferred_id
     preferred_name = user_map.get(preferred_id, preferred_id) if preferred_id else None
+    logger.info(
+        f"{_ltag} task={task_id} 入口: preferred={preferred_name or preferred_id} "
+        f"assigned={assigned_name} pinyin={log.pinyin_match} collision={log.name_collision}"
+    )
 
     # ② 未派到指定人（简洁而礼貌的措辞，照顾用户情绪）
     if preferred_id and preferred_id != log.assigned_id:
         tip = f"很抱歉，您指定的【{preferred_name}】暂未采纳，已改派更合适的【{assigned_name}】处理"
+        _branch = "未派到指定人"
     # ④ 拼音/近似名命中
     elif log.pinyin_match:
         tip = f"按拼音匹配到【{assigned_name}】（与输入【{preferred_name or assigned_name}】不同字），如非此人请更正"
+        _branch = "拼音匹配"
     # ③ 同名命中
     elif log.name_collision:
         tip = f"指派人存在同名，已按评估选择【{assigned_name}】"
+        _branch = "同名命中"
     else:
         tip = None
+        _branch = "无提醒"
 
     # ① 画像不完整（可叠加追加）
     missing = ((log.profile or {}).get("missing") or []) if isinstance(log.profile, dict) else []
     if missing:
         suffix = "；该接单人画像不完整，待补充"
         tip = (tip + suffix) if tip else "该接单人画像不完整，待补充"
+        logger.debug(f"{_ltag} task={task_id} 画像不完整: {missing}")
+    logger.info(f"{_ltag} task={task_id} 出口 branch={_branch} tip={'有' if tip else 'None'}")
     return tip
 
 
@@ -1306,7 +1321,7 @@ async def list_all_tickets(
                     if _lr.task_id in _seen:
                         continue
                     _seen.add(_lr.task_id)
-                    tip_map[_lr.task_id] = _redispatch_tip_for_log(_lr, user_map)
+                    tip_map[_lr.task_id] = await _redispatch_tip_for_log(_lr, user_map)
 
             items = []
             for r in rows:

@@ -2,8 +2,10 @@ from typing import List, Optional, Dict
 import json
 import requests
 from sqlalchemy import create_engine, text, inspect, bindparam
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from app.models.delivery import UNDERTAKE_YES, PROJECT_DELETED
+from app.models.identity import user_project_roles
 from app.modules.admin.schemas_das.request_models import ProjectBase, ProjectCreate, ProjectUpdate
 from app.modules.admin.models_das.models import Project
 from app.modules.admin.utils_das.config import DATABASE_URL, AUTH_SERVICE_BASE_URL
@@ -376,7 +378,7 @@ class ProjectService:
         finally:
             db.close()
     
-    def delete_project(self, project_id: int) -> bool:
+    def delete_project(self, project_id: str) -> bool:
         db = SessionLocal()
         try:
             project = db.query(Project).filter(Project.id == project_id).first()
@@ -385,7 +387,6 @@ class ProjectService:
 
             # 先清理 user_project_roles 中引用本项目的关联记录，否则外键约束
             # user_project_roles_ibfk_2（project_id → project.id）会阻止删除
-            from app.models.identity import user_project_roles
             db.execute(user_project_roles.delete().where(
                 user_project_roles.c.project_id == str(project.id)))
 
@@ -395,6 +396,9 @@ class ProjectService:
             project.status = PROJECT_DELETED
             db.commit()
             return True
+        except IntegrityError:
+            db.rollback()
+            raise
         finally:
             db.close()
     

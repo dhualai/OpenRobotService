@@ -83,14 +83,58 @@ def _engineer_profile_dict(eng: "EngineerProfile") -> Dict:
     }
 
 
+def _candidate_dict(rank: int, eng: "EngineerProfile", scores: Dict, tags: List[str]) -> Dict:
+    """把单个工程师序列化为候选快照字典（供 task_dispatch_log.candidates，R2 弹窗数据源）。"""
+    p = _engineer_profile_dict(eng)
+    return {
+        "rank": rank,
+        "engineer_id": eng.id,
+        "name": eng.name,
+        "department": p.get("dept"),
+        "job_level": p.get("job_level"),
+        "modules": p.get("modules"),
+        "duty": p.get("duty"),
+        # 画像缺失英文字段（department/job_level/responsibility_modules），供 M3 高情商话术
+        # 判定「倾向人画像不完整」并点明缺失项（历史数据无此字段 → 视为完整，安全降级）
+        "missing": p.get("missing") or [],
+        "scores": {
+            "llm": scores.get("llm_score", 0),
+            "semantic": scores.get("semantic_score", 0),
+            "history": scores.get("history_score", 0),
+            "total": scores.get("total_score", 0),
+        },
+        "tags": tags,
+    }
+
+
+def _profile_has_any(e: "EngineerProfile") -> bool:
+    """是否“有画像”：department / job_level / responsibility_modules 任一非空。"""
+    if (e.department or "").strip():
+        return True
+    if e.job_level:
+        return True
+    rm = e.responsibility_modules
+    if rm and (rm or {}):
+        return True
+    return False
+
+
 def _candidates_snapshot(ranked_scores, candidates: List["EngineerProfile"], topk: int = 10) -> List[Dict]:
-    """把精排 Top-N 导出为可序列化快照（供 task_dispatch_log.candidates，R2 弹窗数据源）。"""
+    """导出候选快照（供 task_dispatch_log.candidates，R2 弹窗数据源）。
+
+    优先取精排 Top-N；当精排结果不足以填满候选时（ranked_scores 为空 / 太少，
+    例如 Step0 提单人指定直接返回、或精排被收紧）、或精排缺失时，
+    自动把当前可用候选人（candidates）兜底纳入——已入选的在前，其余按“有画像优先、无画像殿后”补齐，
+    保证重派弹窗永远有可选人，而不是显示“暂无精排候选”。
+    """
     emap = {e.id: e for e in candidates}
     shot: List[Dict] = []
+    seen = set()
     for rank, (eid, d) in enumerate(list(ranked_scores.items())[:topk], 1):
         eng = emap.get(eid)
         if eng is None:
             continue
+        seen.add(eid)
         # tags：
         # - 项目对接人（contact_assignee）：始终标记，帮用户在候选里快速识别。
         # - 「上次倾向」：仅当本次是重派单（ticket.preferred_assignee 有值 → ranker 把上次倾向人
@@ -100,27 +144,30 @@ def _candidates_snapshot(ranked_scores, candidates: List["EngineerProfile"], top
             tags.append("项目对接人")
         if d.get("preferred_assignee"):
             tags.append("上次倾向")
-        p = _engineer_profile_dict(eng)
-        shot.append({
-            "rank": rank,
-            "engineer_id": eid,
-            "name": eng.name,
-            "department": p.get("dept"),
-            "job_level": p.get("job_level"),
-            "modules": p.get("modules"),
-            "duty": p.get("duty"),
-            # 画像缺失英文字段（department/job_level/responsibility_modules），供 M3 高情商话术
-            # 判定「倾向人画像不完整」并点明缺失项（历史数据无此字段 → 视为完整，安全降级）
-            "missing": p.get("missing") or [],
-            "scores": {
-                "llm": d.get("llm_score", 0),
-                "semantic": d.get("semantic_score", 0),
-                "history": d.get("history_score", 0),
-                "total": d.get("total_score", 0),
-            },
-            "tags": tags,
-        })
+        shot.append(_candidate_dict(rank, eng, d, tags))
+
+    # ── 兜底：精排不足时，从未入选候选人中补齐（有画像优先），保证弹窗总有可选项 ──
+    if len(shot) < topk and candidates:
+        rest = [e for e in candidates if e.id not in seen]
+        rest_sorted = (
+            [e for e in rest if _profile_has_any(e)]
+            + [e for e in rest if not _profile_has_any(e)]
+        )
+        for eng in rest_sorted[: topk - len(shot)]:
+            rank = len(shot) + 1
+            shot.append(_candidate_dict(rank, eng, {}, []))
     return shot
+
+
+def _dup_names(candidates: List["EngineerProfile"]) -> set:
+    """返回候选工程师集合中出现次数 >1 的姓名集合。
+
+    同名时（多个候选人姓名相同），人工阅读日志光看姓名无法区分谁是谁，
+    因此在日志里对这些重名候选人追加 (users.id)。
+    """
+    from collections import Counter
+    cnt = Counter((e.name or "").strip() for e in candidates)
+    return {n for n, c in cnt.items() if c > 1 and n}
 
 
 class DispatchFlow:
@@ -215,11 +262,13 @@ class DispatchFlow:
             f"产品={tighten.product.product or '-'} | 模块层=已移除(不收紧)"
         )
 
-        # ── Step 2: 排除提单人（常规派单不派给自己；Step 0 指定自己不受影响）──
-        candidates = self._exclude_creator(ticket_context, candidates)
-        if not candidates:
-            logger.warning(f"{ltag} Step2 排除提单人后无候选人，回退全量")
-            candidates = engineer_profiles
+        # ── Step 2: 识别提单人（不再排除，仅标记"自提单人"）──
+        # 原则：自提不自接不再硬性剔除候选人，而是保留在候选并为精排/决策打上
+        # is_creator 标识（[自提单人]），交由 Step6 LLM 判断该提单人是否恰当接单
+        # （如"派单算法 bug"由派单引擎负责人自提时报修，可合理接回给自己）。
+        creator_id = self._resolve_creator_id(ticket_context)
+        if creator_id:
+            logger.info(f"{ltag} Step2 提单人={creator_id} 保留在候选（标记自提单人，交由LLM判断能否接单）")
 
         # ── Step 2.5: 强制保留项目对接人（即使被部门/产品/排除提单人过滤掉也加回候选）──
         # 例外：对接人 == 提单人（自提单）时**不**强制保留，交由 Step2 正常排除（自提不自接）。
@@ -330,6 +379,7 @@ class DispatchFlow:
             recall_result, engineers=candidates,
             contact_assignee_id=contact_assignee_id,
             preferred_assignee_id=preferred_assignee_id,
+            creator_id=creator_id,
             dept_routing=tighten.dept,
         )
         # 负载均衡已移除：不再按在途工单数打折（避免把"唯一该承接者"（如产品经理）压出决策窗口），
@@ -397,11 +447,14 @@ class DispatchFlow:
             logger.info(f"{ltag} Step3 {name}召回 命中=0人（{tag_desc} 无命中）")
             return
         emap = {e.id: e for e in candidates}
+        _dup = _dup_names(candidates)
         top = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:count]
         parts = []
         for eid, sc in top:
             eng = emap.get(eid)
-            nm = eng.name if eng else eid[:10]
+            nm = eng.name if eng else "未知"
+            if eng and nm in _dup:
+                nm = f"{nm}({eng.id})"
             mod = ""
             if eng:
                 flat = []
@@ -424,17 +477,23 @@ class DispatchFlow:
         if not ranked_scores:
             logger.info(f"{ltag} {prefix}: 无排名数据")
             return
+        # 同名检测：候选集合存在同名时，日志该名追加 (id) 以便区分（同名光看姓名分不清）
+        _dup = _dup_names(candidates)
         emap = {e.id: e for e in candidates}
         parts = []
         for rank, (eid, d) in enumerate(list(ranked_scores.items())[:count], 1):
             eng = emap.get(eid)
-            nm = eng.name if eng else eid[:10]
+            nm = eng.name if eng else "未知"
+            if eng and nm in _dup:
+                nm = f"{nm}({eng.id})"
             load = f"在途={d['load_count']}" if 'load_count' in d else ""
             tag = ""
             if d.get('preferred_assignee'):
                 tag += " [用户倾向]"
             if d.get('contact_assignee'):
                 tag += " [对接人]"
+            if d.get('is_creator'):
+                tag += " [自提单人]"
             parts.append(
                 f"#{rank} {nm}(L{d.get('job_level','?')}) "
                 f"总={d.get('total_score',0):.2f} "
@@ -455,6 +514,7 @@ class DispatchFlow:
         ltag: str = "[派单]",
     ):
         """打印派单结果汇总日志（工单 + 被派人完整画像 + Top3 排名）"""
+        _dup = _dup_names(candidates)
         # ── 被派人完整画像 ──
         winner = next((e for e in candidates if e.id == result.engineer_id), None)
         if winner:
@@ -462,10 +522,18 @@ class DispatchFlow:
             duty = (winner.duty_text or "")[:120].replace("\n", " ")
             scores = ranked_scores.get(winner.id, {})
             reason = (result.reasoning or "").replace("\n", " ")
+            stags = ""
+            if scores.get("preferred_assignee"):
+                stags += " [用户倾向]"
+            if scores.get("contact_assignee"):
+                stags += " [对接人]"
+            if scores.get("is_creator"):
+                stags += " [自提单人]"
+            winner_label = f"{winner.name}({winner.id})" if (winner.name or "") in _dup else winner.name
             logger.info(
                 f"{ltag} 派单结果[{source}] | "
                 f"工单={ticket.title[:60]!r} | "
-                f"指派={winner.name}({winner.id}) "
+                f"指派={winner_label}{stags} "
                 f"部门={winner.department or '-'} 职级=L{winner.job_level} | "
                 f"置信度={result.confidence_score:.0%} 决策={result.decision_type} | "
                 f"模块=[{modules_str}] | "
@@ -483,9 +551,18 @@ class DispatchFlow:
             rank_lines = []
             for rank, (eid, d) in enumerate(top3, 1):
                 eng = next((e for e in candidates if e.id == eid), None)
-                name = eng.name if eng else eid[:8]
+                name = eng.name if eng else "未知"
+                if eng and (eng.name or "") in _dup:
+                    name = f"{eng.name}({eng.id})"
+                tag = ""
+                if d.get('preferred_assignee'):
+                    tag += " [用户倾向]"
+                if d.get('contact_assignee'):
+                    tag += " [对接人]"
+                if d.get('is_creator'):
+                    tag += " [自提单人]"
                 rank_lines.append(
-                    f"#{rank} {name}(L{d.get('job_level','?')}) "
+                    f"#{rank} {name}(L{d.get('job_level','?')}){tag} "
                     f"总={d.get('total_score',0):.2f} "
                     f"LLM={d.get('llm_score',0):.2f} "
                     f"语义={d.get('semantic_score',0):.2f}"
@@ -555,43 +632,27 @@ class DispatchFlow:
             )
         return merged
 
-    # ── Step 2 实现: 排除提单人（常规派单不派给自己）──
+    # ── Step 2 实现: 识别提单人 users.id（不再排除，仅标记"自提单人"，交由 LLM 判断可否接单）──
     @staticmethod
-    def _exclude_creator(
-        ticket: TicketContext, engineers: List[EngineerProfile],
-    ) -> List[EngineerProfile]:
-        """把提单人从候选人中排除（避免常规派单派给自己）。
+    def _resolve_creator_id(ticket: TicketContext) -> Optional[str]:
+        """识别提单人 users.id。
 
-        - 提单人 = TicketContext.creator（存 users.id）
-        - 工程师标识 EngineerProfile.id 已统一为 users.id，直接精确匹配
-        - 匹配不到提单人（如提单人不是工程师）则不过滤，正常派单
-        - Step 0（提单人指定）在 Step 1 之前已直接返回，不受本规则影响
+        原"自提不自接"硬排除已改为"保留 + 标记"：提单人仍留在候选，精排/决策时打上
+        is_creator 标识（[自提单人]），由 Step6 LLM 判断该提单人是否恰当接单
+        （如"派单算法 bug"由派单引擎负责人自提时可合理接回给自己）。
+        - 提单人 = TicketContext.creator（存 users.id 或 username）
+        - 匹配不到（如提单人不是工程师）→ 返回 None，不启用自提标识
+        - Step 0（提单人指定）在 Step 1 之前已直接返回，不受本逻辑影响
         """
         creator = (ticket.creator or "").strip()
         if not creator:
-            return list(engineers)
-
+            return None
         try:
             from app.core.user_identity import to_user_id
             creator_id = to_user_id(creator) or creator
         except Exception:
             creator_id = creator
-
-        try:
-            from app.core.user_identity import same_identity
-        except Exception:
-            # Fallback: strict equality if helper not available
-            def same_identity(a, b):
-                return (a or "").strip() == (b or "").strip()
-
-        # 使用 same_identity 做更健壮的身份匹配（支持 id / username / 昵称互认）
-        excluded = [e for e in engineers if not same_identity(e.id, creator)]
-        if len(excluded) < len(engineers):
-            logger.info(
-                f"[派单:{ticket.id}] Step2 排除提单人 | {creator} 已移除 "
-                f"({len(engineers)}→{len(excluded)})"
-            )
-        return excluded
+        return creator_id
 
     # ── 项目对接人解析（Step 4 加权用）──
     @staticmethod
@@ -791,7 +852,8 @@ class DispatchFlow:
                 # 行首整齐由 logging.ReadableFormatter 解决（[派单:N] 前的定位信息移至行尾）。
                 logger.info(
                     f"[派单:{ticket.id}] Step0 [提单人指定-强信号] '{strong_name}' "
-                    f"→ {winner.name}({winner.id}){' 同名=' + str(len(matches)) if collision else ''}"
+                    f"→ {winner.name}{'(' + winner.id + ')' if collision else ''}"
+                    f"{' 同名=' + str(len(matches)) if collision else ''}"
                     f"{'[拼音]' if pinyin_hit else ''}"
                 )
                 return AssignmentResult(
@@ -873,7 +935,8 @@ class DispatchFlow:
             reason += f"（{llm_reason}）"
         logger.info(
             f"[派单:{ticket.id}] Step0 [提单人指定] '{preferred_name}'"
-            f" → {winner.name}({winner.id}){' 同名=' + str(len(matches)) if collision else ''}"
+            f" → {winner.name}{'(' + winner.id + ')' if collision else ''}"
+            f"{' 同名=' + str(len(matches)) if collision else ''}"
             f"{'[拼音]' if pinyin_hit else ''}"
         )
         return AssignmentResult(

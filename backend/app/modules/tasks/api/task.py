@@ -111,6 +111,82 @@ _PROFILE_MISSING_LABEL = {
 }
 
 
+def _fallback_redispatch_candidates() -> List[Dict]:
+    """候选快照为空时的兜底：拉全部启用工程师（users.status='active'，与派单权威口径一致），
+    按「有画像优先、无画像殿后」排序，供重派弹窗在无精排候选时仍能选择。
+
+    场景：老工单首次派单走了 Step0/精排不足导致落库 candidates 为空 → 重派弹窗「暂无精排候选」死锁。
+    此兜底保证弹窗永远有可选项；重派落地后由派单流水线重新生成完整快照覆盖。
+    """
+    try:
+        from app.services.user_service import UserService
+        users = UserService.get_user_list(limit=999999999)
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.warning(f"拉取全部用户作重派兜底候选失败: {e}")
+        return []
+
+    def _has_profile(u: Dict) -> bool:
+        if (u.get("department") or "").strip():
+            return True
+        rm = u.get("responsibility_modules") or {}
+        if isinstance(rm, dict) and any(rm.values()):
+            return True
+        if isinstance(rm, list) and rm:
+            return True
+        if u.get("job_level"):
+            return True
+        return False
+
+    def _eligible(u: Dict) -> bool:
+        """是否可为候选：需有可辨识姓名（非“微信用户/无名字”占位），且至少有部门或模块画像，
+        避免把微信客服号/空画像噪音用户排进重派弹窗。"""
+        name = (u.get("name") or "").strip()
+        if not name or name in ("微信用户", "。。", "无"):
+            return False
+        return _has_profile(u)
+
+    # 仅取启用用户；过滤掉无辨识、无画像的噪音；按“有画像优先”稳定排序（同画像保留原顺序）
+    actives = [u for u in users
+               if (u.get("status") or "").lower() == "active" and _eligible(u)]
+    actives.sort(key=_has_profile, reverse=True)
+
+    out: List[Dict] = []
+    for i, u in enumerate(actives, 1):
+        uid = u.get("id")
+        if not uid:
+            continue
+        name = u.get("name") or u.get("username") or str(uid)
+        if not name:
+            continue
+        rm = u.get("responsibility_modules") or {}
+        if isinstance(rm, dict):
+            modules = [k for k, v in rm.items() if v]
+        elif isinstance(rm, list):
+            modules = list(rm)
+        else:
+            modules = []
+        # 画像缺失项（与前端 hasProfile/hasProfile 权威 missing 字段口径一致）
+        missing = []
+        if not (u.get("department") or "").strip():
+            missing.append("department")
+        if not modules:
+            missing.append("responsibility_modules")
+        out.append({
+            "rank": i,
+            "engineer_id": str(uid),
+            "name": str(name),
+            "department": u.get("department"),
+            "job_level": u.get("job_level"),
+            "modules": modules or [],
+            "duty": u.get("duty_text"),
+            "missing": missing,
+            "scores": {"llm": 0, "semantic": 0, "history": 0, "total": 0},
+            "tags": [],
+        })
+    return out
+
+
 async def _build_redispatch_tip_detail(pref_name: str, assigned_name: str, reasoning: str = "", pref_missing_zh: Optional[List[str]] = None):
     """二次派单感知增强（M3 高情商回复）：未派到指定人时的完整情商话术。
 
@@ -447,6 +523,24 @@ async def get_task(
         try:
             from app.models.task_dispatch_log import TaskDispatchLog
             from sqlalchemy import select as _sel
+            # 权限控制：派单原因（tip_detail）属敏感信息，仅对「提单人」或「管理员」可见，其他人不返回。
+            try:
+                from app.core.database import get_user_with_roles
+                from app.core.user_identity import user_matches, is_admin_user
+                from app.core.security import decode_token
+                _viewer_creator = False
+                _viewer_admin = False
+                if token:
+                    _payload = decode_token(token)
+                    _uname = (_payload or {}).get("sub")
+                    if _uname:
+                        _viewer = get_user_with_roles(_uname)
+                        if _viewer:
+                            _viewer_creator = user_matches(_viewer, getattr(ticket, "created_by", None))
+                            _viewer_admin = is_admin_user(_viewer)
+            except Exception:
+                _viewer_creator = False
+                _viewer_admin = False
             _log = (await db.execute(
                 _sel(TaskDispatchLog)
                 .where(TaskDispatchLog.task_id == task_id)
@@ -472,15 +566,33 @@ async def get_task(
                                     pref_missing_zh.append(zh)
                             break
                     reasoning_txt = _log.reasoning if isinstance(_log.reasoning, str) else ""
+                    # 面向用户展示：reasoning 里若残留候选人 users.id，替换为姓名（避免向提单人暴露内部 id）
+                    if reasoning_txt:
+                        for _cand in (_log.candidates or []):
+                            if isinstance(_cand, dict):
+                                _cid = _cand.get("engineer_id")
+                                _cname = _cand.get("name") or user_map.get(_cid, _cid)
+                                if _cid and _cname:
+                                    reasoning_txt = reasoning_txt.replace(f"ID:{_cid}", _cname)
+                                    reasoning_txt = reasoning_txt.replace(f"({_cid})", f"({_cname})")
+                                    reasoning_txt = reasoning_txt.replace(f"（{_cid}）", f"（{_cname}）")
+                                    reasoning_txt = reasoning_txt.replace(_cid, _cname)
+                        # 原处理人等不在候选内的 id，用 user_map 兜底反查姓名
+                        for _cid, _cname in (user_map or {}).items():
+                            if _cname and _cid and isinstance(_cid, str) and _cid in reasoning_txt:
+                                reasoning_txt = reasoning_txt.replace(_cid, _cname)
                     tip_detail = await _build_redispatch_tip_detail(
                         pref_name or _log.preferred_id,
                         assigned_name,
                         reasoning=reasoning_txt,
                         pref_missing_zh=pref_missing_zh,
                     )
+                # 二次派单感知增强（M2 兜底）：候选快照为空（老工单 Step0/精排不足 → 空落库）时，
+                # 拉全部启用工程师作兜底候选，保证重派弹窗有可选项；重派落地后由流水线覆盖。
+                _cands = _log.candidates if _log.candidates else _fallback_redispatch_candidates()
                 setattr(ticket, "redispatch", {
                     "dispatch_round": _log.dispatch_round,
-                    "candidates": _log.candidates,
+                    "candidates": _cands,
                     "result": {
                         "assigned_id": _log.assigned_id,
                         "assigned_name": assigned_name,
@@ -499,8 +611,17 @@ async def get_task(
                         "matched_pref": _log.matched_pref,
                         "name_collision": _log.name_collision,
                         "pinyin_match": _log.pinyin_match,
-                        "tip_detail": tip_detail,
+                        # 派单原因仅对提单人/管理员可见；其他查看者不返回（前端不渲染派单说明）
+                        "tip_detail": tip_detail if (_viewer_creator or _viewer_admin) else None,
                     },
+                })
+            else:
+                # 无派单日志（老工单/未派过单）：重派弹窗没有候选会形成「无法选人→无法重派→无新日志」死锁，
+                # 故仍给兜底候选（拉全部启用工程师，有画像优先），保证弹窗有可选项。重派落地后由流水线覆盖。
+                setattr(ticket, "redispatch", {
+                    "dispatch_round": 0,
+                    "candidates": _fallback_redispatch_candidates(),
+                    "result": None,
                 })
         except Exception as redisp_err:
             logger.warning(f"组装 redispatch 失败 task_id={task_id}: {redisp_err}")
