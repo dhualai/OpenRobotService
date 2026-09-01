@@ -157,6 +157,12 @@ class AgentState:
     # 提单闸门消费它直接预填，不看窗口脸色。覆盖语义：新 mention 命中即覆盖
     # （用户改口）；cancel/提交后清；reset_ticket 保留（是「人」的属性）。
     mentioned_project: Optional[Dict[str, str]] = None
+    # 项目提及歧义挂起（0829 反问体现智能性）：mention 唯一指代到 ≥2 个项目
+    # （如「安吉」→ 安吉中力智芯/中力富阳/AGV-USP）时存候选 [{name, code}]，
+    # 回答轮据此反问「您指的是哪个项目」。用户给出确认信息（在候选池唯一命中）
+    # 后提升为 mentioned 并清空；用户转移话题/取消/提单后清——话题级临时澄清
+    # 状态，不是「人」的持久属性（与 project_candidates 区别）。
+    ambiguous_project_candidates: List[Dict[str, str]] = field(default_factory=list)
 
 
 # ============================================================
@@ -208,6 +214,8 @@ def _load_agent_state(metadata: dict) -> Optional[AgentState]:
                             if isinstance(c, dict)],
         mentioned_project=s.get("mentioned_project")
         if isinstance(s.get("mentioned_project"), dict) else None,
+        ambiguous_project_candidates=[c for c in (s.get("ambiguous_project_candidates") or [])
+                                      if isinstance(c, dict)],
     )
 
 
@@ -242,6 +250,7 @@ def _save_agent_state(memory, state: AgentState) -> None:
         "project_asked": state.project_asked,
         "project_candidates": state.project_candidates,
         "mentioned_project": state.mentioned_project,
+        "ambiguous_project_candidates": state.ambiguous_project_candidates,
         "attachments": existing.get("attachments", []),  # 保留上传的附件
     }
 
@@ -277,6 +286,63 @@ def _can_submit(state: AgentState) -> tuple[bool, str]:
     if state.last_submitted_ticket and not (state.problem_summary or "").strip():
         return False, "刚放弃或提交过工单，如需重新提交请描述新现象。"
     return True, ""
+
+
+def _session_state_block(state: "AgentState", memory) -> str:
+    """会话全局状态块（0901，主 LLM 全局视角）。
+
+    病根（0831 生产 PDA 误判）：提交动作不写对话（submit 形态 message 留空、
+    弹窗路径前端事件），主 LLM 只能从对话文本考古状态——10 轮提单痕迹 +
+    ticket_intent 的 OR 子句被读成「提单流程延续」。此块每轮由服务端从
+    AgentState（单一事实源：提交清空/挂起/预填都可靠维护）确定性渲染，
+    给 LLM 判断 ticket_intent/reset_ticket 的事实锚点，免疫对话窗口截断
+    （归档分隔线被 8 轮窗口挤出后失效，此块每轮都在）。
+
+    ⚠️ 不透露上一单的 project/主题/单号——flash 会从主题里挖出 project/
+    problem 写回 state_update 绕过闭环保护（旧 last_ticket_context 既定纪律），
+    单号会诱导抠号当 referenced_ticket。只说「已提交+完结」这个事实。
+    """
+    lines = []
+    _lt = state.last_submitted_ticket or {}
+    if _lt.get("ticket_id") or _lt.get("db_id"):
+        _when = ""
+        try:
+            if _lt.get("submitted_at"):
+                _when = time.strftime(
+                    "%m-%d %H:%M", time.localtime(int(_lt["submitted_at"])))
+        except Exception:
+            _when = ""
+        lines.append(
+            f"【上一张工单】已提交{_when and f'（{_when}）'}——该单流程**已完结归档**，"
+            "之后用户的每条消息都是全新对话，不是该单的延续或补信息")
+    else:
+        lines.append("【上一张工单】（无）")
+    if state.ticket_collecting:
+        lines.append(
+            f"【本单进度】提单进行中：字段收集中，还缺 {'、'.join(state.ticket_collecting)}")
+    elif (getattr(memory, "metadata", None) or {}).get("ticket_draft"):
+        lines.append("【本单进度】提单进行中：工单草稿已生成，弹窗待用户确认（尚未提交）")
+    else:
+        lines.append("【本单进度】当前不在提单流程中（无草稿、未收集字段）")
+    _pf = state.pending_prefill_project or state.mentioned_project
+    if _pf:
+        lines.append(f"【项目】已确定「{_pf.get('name')}」")
+    elif getattr(state, "ambiguous_project_candidates", None):
+        lines.append("【项目】待确认：系统已向用户列出候选反问")
+    else:
+        lines.append("【项目】本单未确定（由系统在需要时引导，你不要追问项目名）")
+    block = "\n".join(lines)
+    # 闭环保护固定话术（原 last_ticket_context 强版本收编）：_can_submit 判定
+    # 不允许提单时，直接告诉 LLM 必须回复的固定话术，防 LLM 闲聊绕开。
+    _can, _block_msg = _can_submit(state)
+    if _lt.get("ticket_id") and not _can:
+        block += (
+            "\n⚠️ 刚提交过工单且还没有新问题：用户只说【转工单/提单】"
+            "而不描述任何新故障/新问题时，不诊断不闲聊，只回复"
+            f"「{_block_msg}」；用户描述了新故障/新问题（如【车不跑了】【配置怎么弄】）"
+            "→ 正常诊断、回答、提取 problem_summary，就像新会话一样。"
+        )
+    return block
 
 
 def _sanitize_required_fields(rf) -> dict:
@@ -373,6 +439,7 @@ def _reset_state_after_submit(agent_state: AgentState, memory, ticket: dict, db_
     agent_state.project_asked = False        # 项目选择题标志随单重置（下一单重新问）
     agent_state.project_candidates = []      # 编号候选映射随单清空，不泄漏到下一单
     agent_state.mentioned_project = None     # 项目提及随单清空（0828 治本：下一单重新捕捉）
+    agent_state.ambiguous_project_candidates = []  # 歧义反问随单清空（0829：下一单重新捕捉）
     # 附件随单消费：本单已把累积附件带进 tasks.attachments（upsert_task 已入库），
     # 清空防止下一单误带——提单后又发图问问题、再换话题提新单时，那张诊断图
     # 不该混进新单。写 raw dict：下方 _save_agent_state 的 existing 透传会把
@@ -390,6 +457,13 @@ def _reset_state_after_submit(agent_state: AgentState, memory, ticket: dict, db_
     # 项目，防止上一单提过的项目名泄漏进下一单预填。
     agent_state.ticket_boundary_prefix = (
         str(memory.turns[-1].get("content") or "").strip()[:40] if memory.turns else "")
+    # 提交收尾轮（0901 全局视角治本）：submit 形态 message 留空、弹窗提交是
+    # 前端事件——两条路径提交都对 turns 无痕，主 LLM 下轮看不到"已提交"，
+    # 把提单痕迹历史读成流程延续（0831 PDA 误判）。append 在锚点捕获之后 →
+    # 落在归档线下方成为新对话第一条，LLM 与用户回看都可见。
+    memory.turns.append({
+        "role": "assistant",
+        "content": "工单已提交，已进入自动派单。有新问题随时告诉我。"})
     # 聊天记录附件的工单分割锚点：下次提单的附件只带此刻之后的对话。
     agent_state.last_ticket_submitted_at = int(time.time())
     _save_agent_state(memory, agent_state)
@@ -848,8 +922,8 @@ project 不写进 required_fields（项目由用户在确认弹窗选择）。
 ## 对话
 {conversation}
 
-## 上一个工单上下文
-{last_ticket_context}
+## 会话状态（全局视角，系统记录的事实，意图判断以此为准）
+{session_state}
 
 ## 用户引用的历史工单
 {ticket_ref_context}
@@ -867,12 +941,12 @@ project 不写进 required_fields（项目由用户在确认弹窗选择）。
 {{"action":"answer|ask|submit","intent":"howto|troubleshoot|chat","ticket_intent":false,"ticket_cancel":false,"reset_ticket":false,"referenced_ticket":"","state_update":{{"ticket_type":"problem|bug|feature|support|other","problem_summary":"概述","ruled_out":[],"hypotheses":[],"collected_info":{{}},"ticket_ready":false}}}}
 ```
 两个布尔字段（每轮都要输出，服务端据此决策）：
-- `ticket_intent`：本轮用户**表达了提单意图**（说"转工单/提单/派单/帮我建单"等，或是在上轮已开始的提单流程中继续补信息）→ true；只是咨询/报障/闲聊 → false
+- `ticket_intent`：本轮用户**明确表达了提单诉求**（说"转工单/提单/派单/帮我建单"等），或「会话状态」块显示**本单提单进行中**（字段收集中/草稿待确认）且用户在为同一张单补信息 → true；只是咨询、提问、报障、闲聊 → false。🔴 上一张工单**已提交**＝该次提单流程已完结（以「会话状态」块为准）：之后用户描述的问题是全新咨询，不是"提单流程延续"，没有新的明确提单诉求就一律 false
 - `ticket_cancel`：本轮用户**明确表示不想提单**（"不用转工单""我没说转工单""算了"）→ true；其余 → false
 - `reset_ticket`：对话里已有工单草稿，但用户本轮要提的是**另一个新问题**的单（话题已切换，旧草稿是别的问题的）→ true，服务端会清掉旧草稿和旧字段重新收集；给旧草稿补充信息、或没有旧草稿时一律 false
 - `referenced_ticket`：用户指代某个历史工单（写法如 `@#555`、`#555`、"工单555"、"上次提的那个单"）且对话上下文里还没有该工单的内容 → 输出工单号（如 "555"）；没有指代 → 空字符串。🔴 禁止把指代原话当字段值或答案内容
 🔴 **能力边界**：你没有任何系统操作能力——不能注册/创建/重置账号、不能改平台配置、不能发通知、不能操作车辆或工单状态。知识库描述的平台功能（如「输入姓名即完成注册」）是平台自身的机制，**不是你能执行的**：用户发出这类指令时，只解释平台会怎么处理、引导用户走正确入口，**绝不声称「已完成/已注册/已创建/已提交」**——你的话不产生任何系统动作，唯一能做的真实动作是生成工单草稿（且需用户确认）
-🔴 **提单门槛**：只有用户**明确表达提单诉求**（"转工单/提单/帮我建单/派单"）后才允许 action=submit、设置 ticket_type/required_fields/ticket_ready，ticket_intent 才为 true；用户只是咨询、提问、描述需求、或粘贴工单标题时一律正常答疑（ticket_intent=false），**绝不自行进入提单流程或字段收集**；判断用户的问题适合转工单时，最多在回复结尾加一句「需要的话我可以帮你转工单」
+🔴 **提单门槛**：只有用户**明确表达提单诉求**（"转工单/提单/帮我建单/派单"）后才允许 action=submit、设置 ticket_type/required_fields/ticket_ready，ticket_intent 才为 true；用户只是咨询、提问、描述需求、或粘贴工单标题时一律正常答疑（ticket_intent=false），**绝不自行进入提单流程或字段收集**（反例：用户只报障或问怎么操作——"PDA扫描不了怎么办""车又报警了"——哪怕语气着急、哪怕上一张工单就是类似问题、哪怕对话里有大量提单痕迹，也一律 false 先答疑，绝不读成提单流程延续）；判断用户的问题适合转工单时，最多在回复结尾加一句「需要的话我可以帮你转工单」
 🔴 **你输出了 `referenced_ticket` 但「用户引用的历史工单」区块为（无）时**：系统还没查到该工单内容，本轮**禁止虚构工单里的任何信息**（账户、进度、结论都不许编）——只简短回应"我去调一下这个工单"之类的过渡语，内容下一轮才有
 🔴 **「用户引用的历史工单」区块非空时**：用户已指代该工单，工单内容已由系统查到——
 · 正常对话：直接基于区块内容回答（工单进度/结论/当时记录的信息），**不要再说"我无法查看工单"**
@@ -942,14 +1016,19 @@ _PLANNER_TOOLS = [
     {"type": "function", "function": {
         "name": "mention_project",
         "description": "记录用户本轮提到的项目名（跨轮记忆，用户后续提单时自动关联）。"
-                       "用户消息里出现具体项目名或项目简称（如「摇人吧」「本川项目」"
-                       "「XX平台」的项目语境）时调用，project_name 填**用户原话**"
-                       "（照抄，不要补全或改名）。用户明确指代**上一张工单**的项目"
-                       "（如「项目还是上次提单的项目」「跟上个单一个项目」）时，"
-                       "project_name 填 \"last\"。纯设备/故障/操作咨询、没提任何"
-                       "项目名时不调用。",
+                       "只要用户消息里出现**疑似提到某个公司/客户/场地/产品/项目**"
+                       "的称呼就调用——包括：完整项目名（如「河南郑州东昇汽配厂潜伏车"
+                       "项目」）、客户简称（如「东昇」「本川」「瑞贝卡」「中力」）、"
+                       "地点场景（如「襄阳629」「吉隆坡展厅」）、平台/产品名"
+                       "（如「服务号」「公众号」「摇人吧」）。project_name 填**用户"
+                       "原话**（照抄，不要补全、不要拼接成完整项目名、不要判断它对应"
+                       "哪个项目——对应关系由服务端校验）。拿不准时也算疑似，调用"
+                       "（服务端会自行校验是否真匹配到项目，匹配不上或歧义会自动忽略）。"
+                       "用户明确指代**上一张工单**的项目（如「项目还是上次提单的项目」"
+                       "「跟上个单一个项目」）时，project_name 填 \"last\"。纯设备"
+                       "故障/操作咨询、完全没提任何公司/客户/产品/场地时，不用调。",
         "parameters": {"type": "object", "properties": {
-            "project_name": {"type": "string", "description": "用户原话里的项目名/简称；指代上一单项目时填 last"},
+            "project_name": {"type": "string", "description": "用户原话里的项目/客户/产品/场地名；指代上一单项目时填 last"},
         }, "required": ["project_name"]},
     }},
 ]
@@ -1280,25 +1359,10 @@ class AiDiagnosisPlatform:
         conversation_text = self._format_conversation(
             memory, from_turn=_from, sanitize_images=bool(state.ticket_collecting),
             boundary_prefix=getattr(state, "ticket_boundary_prefix", ""))
-        # 上一个工单上下文：只告诉 LLM"刚提过单"这个事实，不透露 project/问题主题——
-        # 否则 flash 等模型会从主题里重新挖出 project/problem 写回 state_update，
-        # 绕过闭环保护（_can_submit 误判"有新问题"）导致重复提单。服务端 _can_submit 才是裁判。
-        _lt = state.last_submitted_ticket or {}
-        # 同步 _can_submit 判定结果到 prompt：当系统判定不允许提单时，直接告诉 LLM
-        # 必须回复的固定话术，避免 LLM 用闲聊绕开（如用户说"转工单"但无新问题时回复"不客气"）。
-        _can, _block_msg = _can_submit(state)
-        if _lt.get("ticket_id") and not _can:
-            last_ticket_context = (
-                f"⚠️ 刚提交过工单，不允许无新问题直接提单。\n"
-                f"规则：如果用户描述了新故障/新问题（如【车不跑了】【配置怎么弄】），"
-                f"请正常诊断、回答、提取 problem_summary，就像新会话一样。\n"
-                f"只有当用户说【转工单/提单】但**本轮及之前没有任何新问题描述**时，"
-                f"才回复「{_block_msg}」，不诊断不闲聊。"
-            )
-        elif _lt.get("ticket_id"):
-            last_ticket_context = "刚提交过工单。除非用户描述了新的问题，否则不要重复提单。"
-        else:
-            last_ticket_context = "（无）"
+        # 会话全局状态块（0901）：替代原「上一个工单上下文」散装注入——
+        # 提交/收集中/项目三类事实统一从 AgentState 渲染，主 LLM 判断
+        # ticket_intent/reset_ticket 有了全局视角锚点（PDA 误判治本）。
+        session_state = _session_state_block(state, memory)
         # 上一单引用规则块（收集轮 + 提单快路径共用）：仅解析用户对上一单的
         # 明确指代（如「车型还是上次提单的」），禁止主动带入、禁止把指代原文
         # 当字段值。生成草稿的 _build_ticket 不注入——串单通道物理堵死。
@@ -1369,7 +1433,11 @@ class AiDiagnosisPlatform:
             # 用户用编号回应时由 LLM 还原为完整项目名照抄进 project_choice
             # （服务端仍严格校验候选名单，零新增协议——LLM 回看自己看到的清单）。
             _proj_pick_block = ""
-            if getattr(state, "project_candidates", None):
+            # 歧义挂起时编号题块不注入：其「都不是→留空继续收集」规则与反问块
+            # 冲突，LLM 会按它把「不是这些」当否定放过项目（0829 冒烟实锤）；
+            # 反问块自带候选序号还原，编号题清单已被用户否定，不再需要。
+            if (getattr(state, "project_candidates", None)
+                    and not getattr(state, "ambiguous_project_candidates", None)):
                 _pc_lines = "\n".join(
                     f"{i}. {_format_project_display(c)}"
                     for i, c in enumerate(state.project_candidates, 1))
@@ -1385,6 +1453,30 @@ class AiDiagnosisPlatform:
                     f"用户说都不是/不管项目 → project_choice 留空字符串继续收集其余字段；"
                     f"🚫 绝不把任何编号本身当成 collected_info 里字段的值。\n"
                 )
+            # 歧义挂起反问块（0829 印尼实锤）：收集轮无规划器/检索通道，
+            # 项目待确认状态只能进 prompt——列候选让 LLM 自然反问。
+            _amb_ask_block = ""
+            if getattr(state, "ambiguous_project_candidates", None):
+                _ac_lines = "\n".join(
+                    f"{i}. {c.get('name')}"
+                    for i, c in enumerate(state.ambiguous_project_candidates, 1))
+                _amb_ask_block = (
+                    f"\n🔴【项目待确认】用户提到的项目有多个候选，系统无法确定是哪个：\n"
+                    f"{_ac_lines}\n"
+                    f"→ 本轮回应开头要**自然反问用户确认**（列出上面候选，引导给客户名"
+                    f"或项目关键词），🚫 不要臆断挑一个写进 project_choice；"
+                    f"用户若已在本轮明确说了候选之一（含回序号），把该候选**完整名"
+                    f"原样照抄**进 project_choice；"
+                    f"用户明确否定这批候选（「都不是我的项目」「没有」「不对」）→"
+                    f"这批不选；若用户**同一句话里又提到了其他项目线索**"
+                    f"（如「不是这些，是印尼的」→ 线索=印尼），要对**新线索**的"
+                    f"候选继续反问确认；完全没有新线索才按**不关联项目**继续"
+                    f"收集其余字段；"
+                    f"反问项目的同时，若 collected_info 模板里还有其他没填的字段，"
+                    f"顺手把**下一个缺失字段**也一并追问（这轮用户正在提供信息，"
+                    f"别只卡在项目上）；"
+                    f"用户已转移话题不再提项目 → 不要再追问，继续收集其余字段。\n"
+                )
             # 收集模式用极简 prompt：砍掉 DIAGNOSIS_PROMPT 的 165 行人设/知识库/诊断规则，
             # LLM 只需提取字段值 + 自然确认，大幅减少无关思考，提升收集轮响应速度。
             # collected_info 模板直接列出待填字段 key——LLM 只准照模板填，
@@ -1395,7 +1487,7 @@ class AiDiagnosisPlatform:
             return (
                 f"你是工单填写助手。用户正在补充工单所需信息，请把对话里出现的信息记录到 collected_info。\n\n"
                 f"{ticket_collecting_context}\n\n"
-                f"{_ref_block}{_proj_pick_block}\n"
+                f"{_ref_block}{_proj_pick_block}{_amb_ask_block}\n"
                 f"{_proj_block}\n"
                 f"## 对话\n{conversation_text}\n\n"
                 f"---\n"
@@ -1526,7 +1618,7 @@ class AiDiagnosisPlatform:
                 conversation=self._escape_format(conversation_text),
                 reference_docs=self._escape_format(reference_docs),
                 round=state.diagnosis_rounds,
-                last_ticket_context=self._escape_format(last_ticket_context),
+                session_state=self._escape_format(session_state),
                 ticket_ref_context=self._escape_format(
                     f"{state.ticket_ref_context}\n（基于该工单内容回答/取用，不要说无法查看）"
                     if getattr(state, "ticket_ref_context", "") else "（无）"),
@@ -1804,30 +1896,180 @@ class AiDiagnosisPlatform:
         return _hit
 
     @staticmethod
-    def _match_project_mention(mention: str, pool: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
-        """项目提及的用户原话 → 唯一子串匹配（0828 治本，比 choice 宽一档但仍有门）。
+    def _mention_unique_candidates(m: str, pool: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """枚举用户原话所有 ≥2 字子串，收集「在池中唯一命中」的子串对应的不同项目。
 
-        与 _match_project_choice(choice) 的区别：choice 是 LLM 从注入列表照抄的
-        「应该精确」的值，抄不齐即幻觉拒收；mention 是用户嘴里说出的简称
-        （「摇人吧」→「摇人吧服务号」），允许子串匹配但要求**唯一命中**：
+        一个子串若命中多个项目（高频词叉车/潜伏车、地名安吉/襄阳等不唯一）不算数；
+        只统计被**任意唯一命中子串**指代到的不同项目（去重）。唯一匹配与歧义反问共用。
+        """
+        seen_sub = set()
+        cands = {}
+        for i in range(len(m)):
+            for j in range(i + 1, len(m) + 1):
+                sub = m[i:j]
+                if len(sub) < 2 or sub in seen_sub:
+                    continue
+                seen_sub.add(sub)
+                hs = [p for p in pool
+                      if (p.get("name") or "") and sub in p["name"]]
+                if len(hs) == 1:
+                    cands[id(hs[0])] = hs[0]
+        return list(cands.values())
+
+    @staticmethod
+    def _match_project_mention(mention: str, pool: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
+        """项目提及的用户原话 → 唯一匹配（0829 放宽：子串枚举 + 唯一指代）。
+
+        原「连续子串」只收「用户原话是某项目名的连续片段」（东昇 → 东昇…潜伏车
+        项目）。flash 抠出的原话常带修饰（「河南东昇那个潜伏车项目」「本川项目」），
+        连续片段接不住。放宽为：枚举用户原话所有 ≥2 字子串，在项目池里唯一子串
+        匹配，收集所有被唯一指代到的项目；**恰好 1 个**才收。≥2 个（用户原话同时
+        唯一指代多个项目，如「安吉」→ 安吉中力智芯/中力富阳/AGV-USP 都被唯一
+        指代）视为歧义 → None，由 _ambiguous_project_candidates 提供候选给反问。
         - 精确等于 name/code → 直接收
-        - mention(≥2字) 作为子串只出现在唯一一个列表项的 name 里 → 收
-        - 零命中或多个候选（歧义，如两个本川系项目都含「本川」）→ None 不收
-        宁可不收（提单时闸门会出题引导），绝不收错项目。
+        - 唯一指代到 1 个项目 → 收
+        - 唯一指代到 ≥2 个项目 → 歧义 None
+        - 零唯一指代 → None
+        高频词（叉车/潜伏车/XQE/混场/仓储）在真实池子里不唯一，天然被拒；
+        宁可不收（闸门出题/反问），绝不收错项目。
         """
         m = (mention or "").strip()
         if len(m) < 2 or not pool:
             return None
-        hits: List[Dict[str, str]] = []
         for p in pool:
-            name = (p.get("name") or "").strip()
-            if name and m == name:
+            if p.get("name") and m == p["name"].strip():
                 return p
             if p.get("code") and m == str(p["code"]).strip():
                 return p
-            if name and m in name:
-                hits.append(p)
-        return hits[0] if len(hits) == 1 else None
+        cands = AiDiagnosisPlatform._mention_unique_candidates(m, pool)
+        return cands[0] if len(cands) == 1 else None
+
+    @staticmethod
+    def _ambiguous_project_candidates(mention: str, pool: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """用户原话指代模糊 → 返回候选列表（供反问）；否则空。
+
+        三级判定（与 _match_project_mention 同源，互斥）：
+        1. 精确匹配到唯一项目 → 无歧义，空。
+        2. 唯一指代 ≥2 个项目（如「安吉中力」同时唯一指代智芯/富阳）→ 返回这些候选。
+        3. 无唯一子串、但 mention 整体命中 2~8 个项目（模糊词「安吉」「中力」——
+           2 字词子串枚举抠不出更小唯一词）→ 返回命中的项目（反问）。>8 个
+           （叉车/潜伏车/混场/仓储等真实池高频词）→ 拒收交闸门，反问列表不可读。
+        """
+        m = (mention or "").strip()
+        if len(m) < 2 or not pool:
+            return []
+        for p in pool:
+            if p.get("name") and m == p["name"].strip():
+                return []
+            if p.get("code") and m == str(p["code"]).strip():
+                return []
+        uniq = AiDiagnosisPlatform._mention_unique_candidates(m, pool)
+        if len(uniq) != 0:
+            return uniq if len(uniq) >= 2 else []
+        # 第 3 级：无唯一子串（2 字模糊词「安吉」「印尼」抠不出更小唯一词）→
+        # 取**命中数最少**的子串的命中集（最具体的词优先）——整句原话里
+        # 「项目」这类全池泛词不该污染「印尼」的精确候选（0829 整句捕捉补丁）。
+        best = None
+        for i in range(len(m)):
+            for j in range(i + 1, len(m) + 1):
+                sub = m[i:j]
+                if len(sub) < 2:
+                    continue
+                hs = [p for p in pool
+                      if (p.get("name") or "") and sub in p["name"]]
+                if len(hs) < 2:
+                    continue
+                if best is None or len(hs) < best[0]:
+                    best = (len(hs), {id(h): h for h in hs})
+                elif len(hs) == best[0]:
+                    best[1].update({id(h): h for h in hs})
+        cands = list(best[1].values()) if best else []
+        # 0829 用户拍板：>8 不再静默拒收（印尼实锤：用户说了项目名却掉坑），
+        # 返回全部命中，由调用方 _cap_ambiguous_candidates 按票史近度截 4 反问。
+        return cands if len(cands) >= 2 else []
+
+    @staticmethod
+    def _cap_ambiguous_candidates(cands: List[Dict[str, str]],
+                                  recent_names: List[str]) -> List[Dict[str, str]]:
+        """歧义反问列表统一规则（0829 定稿）：按票史近度排序，取前 5。
+
+        recent_names = 票史项目名按最近提单时间倒序（只作排序信号，候选本身
+        已限定用户名下）；不在票史的候选保持原序排后。候选本身已 ≤5 时
+        排序照做（最近的排前面）但不截。
+        """
+        order = {n: i for i, n in enumerate(recent_names)}
+
+        def _rank(c):
+            return (0, order.get(c.get("name") or "", len(order)))
+        return sorted(cands, key=_rank)[:5]
+
+    def _choice_supported_by_amb(self, query: str, choice: Optional[Dict],
+                                 amb_cands: List[Dict]) -> bool:
+        """歧义挂起期间 LLM 填的 project_choice 是否放行。
+
+        规划器已机械判定原话匹配多个候选（挂起），LLM 再从中挑一个填
+        project_choice 就是臆断（0829 S1b 实锤：用户说「印尼的项目」，
+        flash 自作主张挑三宝垄照抄预填，反问被绕过）。合法确认（用户说
+        区分词「就三宝垄那个」）都由前置通道完成——收集轮捕捉/规划器
+        确认在防线之前已提升并清挂起——防线遇到「挂起非空+choice」
+        只剩臆断。唯一例外：短序号应答（「1」「2号」「第一个」），
+        候选列表是服务端拼的，序号映射唯一，照抄仍过严格校验池。
+        ⚠️ 不用 _match 做支撑判定：原话里的设备词（「叉车」）可能恰好
+        唯一命中一个候选，机械层分不清指代词和设备词。
+        """
+        if not amb_cands:
+            return True
+        q = (query or "").strip()
+        if len(q) <= 8:
+            _seq_left = re.sub(
+                r"[就是选嗯那个这个我想说要第号个、，.\s0-9０-９一二三四五六七八九十]",
+                "", q)
+            if not _seq_left:
+                return True
+        return False
+
+    async def _collect_round_project_capture(self, request, state: AgentState) -> None:
+        """收集轮项目捕捉（0829 印尼生产实锤补）。
+
+        收集轮跳过检索/规划器（_skip_retrieval），mention 与歧义反问链路
+        在收集轮是死的——用户答编号题「不是这些，是印尼的」时名下 4 个
+        印尼项目该反问却静默掉坑。服务端在本轮原话上直接判定：
+        - 已挂起 → 候选池唯一命中即确认提升（用户回「三宝垄那个」）；
+        - 未挂起 → 歧义判定挂起（>8 按票史近度截 4），由收集轮 prompt
+          的反问块引导 LLM 列候选追问。
+        唯一命中的新收不在此做（收集轮原话是整句，联系人之类字段词有误伤
+        风险；唯一命中由 project_choice 语义映射通道兜底）。候选只认名下项目。
+        """
+        if not state.ticket_collecting or state.pending_prefill_project:
+            return
+        query = (request.query or "").strip()
+        if len(query) < 2:
+            return
+        if state.ambiguous_project_candidates:
+            _conf = self._match_project_mention(
+                query, state.ambiguous_project_candidates)
+            if _conf:
+                state.mentioned_project = _conf
+                state.ambiguous_project_candidates = []
+                logger.info(f"[mention] 收集轮歧义确认: {query!r} → {_conf['name']}")
+            return
+        if state.mentioned_project:
+            return
+        try:
+            _pool = await self._get_user_projects(request.created_by) or []
+        except Exception:
+            _pool = []
+        _amb = self._ambiguous_project_candidates(query, _pool)
+        if not _amb:
+            return
+        try:
+            _recent = await self._get_recent_ticket_projects(request.created_by)
+        except Exception:
+            _recent = []
+        _amb = self._cap_ambiguous_candidates(
+            _amb, [p.get("name") or "" for p in _recent])
+        state.ambiguous_project_candidates = _amb
+        logger.info(f"[mention] 收集轮项目提及歧义({len(_amb)}候选)，反问: {query!r}")
 
     async def _resolve_project(self, raw_name: str) -> Optional[ProjectMatch]:
         """将用户输入的项目名匹配到 helpdesk_724.project 标准名。
@@ -2197,6 +2439,14 @@ class AiDiagnosisPlatform:
                     logger.info(
                         f"[tool_loop] project_choice 未命中用户项目列表，忽略: "
                         f"{args.get('project_choice')!r}, session={request.session_id}")
+                # 歧义挂起期间的臆断防线（0829）：与主协议快路径同规则
+                if _prefill_project and not self._choice_supported_by_amb(
+                        request.query, _prefill_project,
+                        state.ambiguous_project_candidates):
+                    logger.warning(
+                        f"[tool_loop] 歧义挂起期间 project_choice 无原话支撑，"
+                        f"拒收臆断: {args.get('project_choice')!r}")
+                    _prefill_project = None
                 # 首次生成草稿（非补充）时才信任本轮声明——那一轮是真实校验过的。
                 # 补充轮不覆盖：覆盖后会让 confirm_submit 的 _assess_ticket_readiness
                 # 重新校验出偏差。
@@ -2501,6 +2751,14 @@ class AiDiagnosisPlatform:
                     logger.info(
                         f"[diag_tool] project_choice 未命中用户项目列表，忽略: "
                         f"{args.get('project_choice')!r}, session={request.session_id}")
+                # 歧义挂起期间的臆断防线（0829）：与主协议快路径同规则
+                if _prefill_project and not self._choice_supported_by_amb(
+                        request.query, _prefill_project,
+                        state.ambiguous_project_candidates):
+                    logger.warning(
+                        f"[diag_tool] 歧义挂起期间 project_choice 无原话支撑，"
+                        f"拒收臆断: {args.get('project_choice')!r}")
+                    _prefill_project = None
                 rf = args.get("required_fields") or {}
                 if rf and isinstance(rf, dict):
                     state.required_fields = dict(rf)
@@ -2844,19 +3102,57 @@ class AiDiagnosisPlatform:
                         logger.info('[mention] 指代 last 但上单无项目记录，忽略')
                 else:
                     try:
+                        # 0829 用户钉死：匹配/反问候选只认名下项目（不混入编号题
+                        # 候选等票史来源——票史项目可能已无权限，自动匹配不能给）
                         _pool = await self._get_user_projects(request.created_by) or []
                     except Exception:
                         _pool = []
-                    for _pc in (state.project_candidates or []):
-                        if _pc not in _pool:
-                            _pool.insert(0, _pc)
-                    _hit = self._match_project_mention(mention_raw, _pool)
-                    if _hit:
-                        state.mentioned_project = _hit
-                        logger.info(f"[mention] 规划器捕捉项目提及: "
-                                    f"{mention_raw!r} → {_hit['name']}")
+                    # 歧义反问（0829）：唯一指代到 ≥2 个项目（如「安吉」→ 三个
+                    # 安吉项目）→ 挂起候选供回答轮反问，不设 mentioned（宁拒收
+                    # 不误判），plan 注入 project_disambiguate 资料块。
+                    _amb = self._ambiguous_project_candidates(mention_raw, _pool)
+                    if _amb:
+                        try:
+                            _recent = await self._get_recent_ticket_projects(
+                                request.created_by)
+                        except Exception:
+                            _recent = []
+                        _amb = self._cap_ambiguous_candidates(
+                            _amb, [p.get("name") or "" for p in _recent])
+                        state.ambiguous_project_candidates = _amb
+                        plan.append(("project_disambiguate",
+                                     {"candidates": _amb}))
+                        logger.info(f"[mention] 项目提及歧义({len(_amb)}候选)，反问: "
+                                    f"{mention_raw!r}")
                     else:
-                        logger.info(f"[mention] 提及未命中/歧义，忽略: {mention_raw!r}")
+                        _hit = self._match_project_mention(mention_raw, _pool)
+                        if _hit:
+                            state.mentioned_project = _hit
+                            state.ambiguous_project_candidates = []
+                            logger.info(f"[mention] 规划器捕捉项目提及: "
+                                        f"{mention_raw!r} → {_hit['name']}")
+                        elif state.ambiguous_project_candidates:
+                            # 挂起歧义期间本轮 mention 可能是候选池内的确认
+                            # （用户回「中力智芯」「AGV-USP」等具体标识）→ 候选池
+                            # 唯一命中即确认提升。
+                            _conf = self._match_project_mention(
+                                mention_raw, state.ambiguous_project_candidates)
+                            if _conf:
+                                state.mentioned_project = _conf
+                                state.ambiguous_project_candidates = []
+                                logger.info(f"[mention] 歧义确认: {mention_raw!r} "
+                                            f"→ {_conf['name']}")
+                            else:
+                                logger.info(f"[mention] 歧义未确认，继续挂起: "
+                                            f"{mention_raw!r}")
+                        else:
+                            logger.info(f"[mention] 提及未命中，忽略: {mention_raw!r}")
+            # 挂起的歧义候选跨轮持续注入反问（用户还没确认/还没转移话题），保证
+            # 后续轮回答仍能看到候选；用户已转移话题由反问话术兜底不再追问。
+            if state.ambiguous_project_candidates and not any(
+                    n == "project_disambiguate" for n, _ in plan):
+                plan.append(("project_disambiguate",
+                             {"candidates": state.ambiguous_project_candidates}))
             return intent, plan
         except Exception as e:
             logger.warning(f"[plan] 规划失败，兜底 diagnosis+原话检索: {e}")
@@ -2923,6 +3219,16 @@ class AiDiagnosisPlatform:
                         "【历史工单经验】（公司工单沉淀库里相似问题的历史解决记录，"
                         "回答可参考其根因与解法，注明这是历史工单经验）\n"
                         + "\n".join(_items))
+                if name == "project_disambiguate":
+                    _cs = args.get("candidates") or []
+                    _names = "\n".join(f"- {c.get('name')}" for c in _cs
+                                       if isinstance(c, dict))
+                    return name, (
+                        "【项目待确认】用户提到的项目存在多个候选，无法确定具体是"
+                        "哪一个。请用自然语言**反问用户确认**（不要臆断选一个），"
+                        "可简要列出候选帮用户区分；提示用户给出更具体的客户名或"
+                        "项目关键词。若用户已给出明确项目名，或已转移话题不再提"
+                        "项目，则**不要**再追问。候选：\n" + _names)
             except Exception as e:
                 logger.warning(f"[plan_exec] 工具 {name} 执行失败: {e}")
             return name, ""
@@ -2932,6 +3238,7 @@ class AiDiagnosisPlatform:
         ticket_blocks = [c for k, c in results if k == "lookup_ticket" and c]
         history_blocks = [c for k, c in results
                           if k == "search_history_tickets" and c]
+        disamb_blocks = [c for k, c in results if k == "project_disambiguate" and c]
         parts = []
         if history_blocks:
             parts.append("\n\n".join(history_blocks))
@@ -2942,6 +3249,8 @@ class AiDiagnosisPlatform:
         if ticket_blocks:
             parts.append("用户询问的工单（系统已查到，回答工单相关问题基于此内容，"
                          "不要说无法查看）：\n" + "\n\n".join(ticket_blocks))
+        if disamb_blocks:
+            parts.append("\n\n".join(disamb_blocks))
         return "\n\n".join(parts)
 
     def _cancel_retrieval(self, retrieval_task: Optional[asyncio.Task]) -> None:
@@ -4716,6 +5025,12 @@ class AiDiagnosisPlatform:
         if _skip_retrieval:
             reference_docs = "（跳过检索）"
             t_stream["intent"] = 0
+            # 收集轮规划器被跳过 → 项目提及/歧义反问在此补（0829 印尼实锤）
+            if state.ticket_collecting:
+                try:
+                    await self._collect_round_project_capture(request, state)
+                except Exception as e:
+                    logger.warning(f"[mention] 收集轮项目捕捉失败(忽略): {e}")
         elif _is_greeting:
             # 正则 0ms 快路径：白名单纯问候不触发意图调用（省 1 次 LLM 调用），直接跳过检索
             reference_docs = ""
@@ -5133,6 +5448,9 @@ class AiDiagnosisPlatform:
                         "name": _lt_name,
                         "code": str(_lt.get("project_id") or "")}
                     state.project_candidates = []
+                    # 项目已定，歧义反问同步终结：防挂起候选持续注入反问块，
+                    # 回答与已预填项目自相矛盾（0829）
+                    state.ambiguous_project_candidates = []
                     logger.info(f"[stream] 项目指代上次工单命中: {_lt_name}")
                 else:
                     logger.warning('[stream] project_choice="last" 但上单无项目记录，'
@@ -5143,11 +5461,24 @@ class AiDiagnosisPlatform:
                     if _pc not in _pf_pool:
                         _pf_pool.insert(0, _pc)
                 _pf = self._match_project_choice(_choice_raw, _pf_pool)
+                # 歧义挂起期间的臆断防线（0829 S1b 实锤）：原话匹配多个候选时
+                # LLM 挑一个照抄 = 臆断，必须有本轮原话唯一命中支撑才收，
+                # 否则拒收走闸门歧义出题反问。
+                if _pf and not self._choice_supported_by_amb(
+                        request.query, _pf, state.ambiguous_project_candidates):
+                    logger.warning(
+                        f"[stream] 歧义挂起期间 project_choice 无原话支撑，"
+                        f"拒收臆断: {_choice_raw[:50]!r}")
+                    _pf = None
+                    parsed["project_choice"] = ""
                 if _pf:
                     state.pending_prefill_project = _pf
                     # 编号/名称→项目映射使命完成即清空：预填已落地，后续收集轮不再
                     # 注入还原块（防 LLM 反复照抄同一 choice），也不泄漏到草稿补充轮
                     state.project_candidates = []
+                    # 项目已定，歧义反问同步终结：防挂起候选持续注入反问块，
+                    # 回答与已预填项目自相矛盾（0829）
+                    state.ambiguous_project_candidates = []
                     logger.info(f"[stream] 项目预填命中: {_pf['name']}({_pf['code']})")
                 else:
                     logger.warning(f"[stream] project_choice 未命中用户项目列表，忽略: "
@@ -5179,6 +5510,8 @@ class AiDiagnosisPlatform:
             # 属性，换话题重提不该把同一个项目问题再问一遍；若用户在新话题里
             # 点名项目，prefill 管道会照常接管。
             state.project_candidates = []
+            # 歧义反问是话题级临时澄清状态：换话题重提 → 清空，不再追问旧项目的歧义
+            state.ambiguous_project_candidates = []
 
         # ---- Step 1: 先应用 LLM 提炼的 state_update（含 problem_summary），
         #     让 _can_submit 基于 LLM 判断后的有效问题描述做决策 ----
@@ -5211,6 +5544,7 @@ class AiDiagnosisPlatform:
                 and state.mentioned_project):
             state.pending_prefill_project = state.mentioned_project
             state.mentioned_project = None  # 单向管道：消费即清，取消重提走闸门
+            state.ambiguous_project_candidates = []  # 歧义反问随预填消费清空（0829）
             logger.info(f"[mention] 提单消费持久化项目提及: "
                         f"{state.pending_prefill_project['name']}")
 
@@ -5222,10 +5556,20 @@ class AiDiagnosisPlatform:
         # → 原流程照旧。按钮路径不经此处（prepare_ticket 与项目零关联）。
         if (parsed.get("ticket_intent") and not state.project_asked
                 and not state.pending_prefill_project and not state.ticket_collecting):
-            try:
-                _gate_cands = await self._get_project_candidates(request.created_by)
-            except Exception:
-                _gate_cands = []
+            if state.ambiguous_project_candidates:
+                # 歧义挂起时提单（0829）：用户已说了项目只是没匹配上——
+                # 编号题直接用歧义候选（票史近度已排前 5），别再拿票史
+                # 候选绕一圈逼用户答「不是这些」。候选转编号还原链路
+                # （挂起清空→_proj_pick_block 正常注入，答序号走服务端
+                # code 匹配双保险，比反问块的 LLM 照抄更稳）。
+                _gate_cands = state.ambiguous_project_candidates
+                state.ambiguous_project_candidates = []
+            else:
+                try:
+                    _gate_cands = await self._get_project_candidates(
+                        request.created_by)
+                except Exception:
+                    _gate_cands = []
             if _gate_cands:
                 _gate_orig_action = parsed["action"]
                 state.project_asked = True
@@ -5304,6 +5648,7 @@ class AiDiagnosisPlatform:
             state.project_asked = False       # 项目选择题随本单取消重置
             state.project_candidates = []
             state.mentioned_project = None    # 项目提及随取消清空（重提走闸门）
+            state.ambiguous_project_candidates = []  # 歧义反问随取消清空（0829）
             state.problem_summary = ""
             state.ticket_type = ""
             memory.metadata.pop("ticket_draft", None)
