@@ -370,8 +370,15 @@ class LlmDecision:
             if d.get("is_creator"):
                 tags.append("[自提单人]")
             tag_str = (" " + " ".join(tags)) if tags else ""
+            # 职级语义：L1 一线 / L2 管理·审核 / L3 最高（兜底）。数字越大职级越高、越是上级，
+            # 供 LLM 在用户重派备注提到"上报上级/请领导"时据此选择更合适职级的人。
+            _lv_txt = {
+                1: "L1一线",
+                2: "L2管理·审核",
+                3: "L3最高·兜底",
+            }.get(int(eng.job_level or 1), f"L{eng.job_level}")
             lines.append(
-                f"#{rank} ID:{eng.id} | L{eng.job_level} | {dep} "
+                f"#{rank} ID:{eng.id} | {_lv_txt} | {dep} "
                 f"|{eng.modules_display()}{tag_str}"
             )
             lines.append(
@@ -491,6 +498,10 @@ class LlmDecision:
             "6. 候选带 [自提单人] 标签 = 该候选人是本工单的提单人（自己提的单）。自提不是禁接，"
             "由你判断是否恰当：若其职责/模块确实最匹配（如『派单算法 bug』由派单引擎负责人自提报修），"
             "可正常采纳该自提单人；否则优先派给更合适的非提单人，并在 reasoning 说明。",
+            "7. 候选带职级标注（L1 一线 / L2 管理·审核 / L3 最高·兜底，数字越大职级越高）。"
+            "若用户重派备注/工单描述中提到「上报给上级/请领导/需要审批/领导处理」等诉求，"
+            "说明用户希望由更高级别的人处理，应优先选择职级更高者承接（在职责/模块匹配的前提下），"
+            "并在 reasoning 说明选的是上级。",
         ])
 
         lines.extend([
