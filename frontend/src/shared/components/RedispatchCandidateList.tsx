@@ -26,11 +26,9 @@ let allUsersCacheTs = 0;
 
 type GroupKey = 'top' | 'same' | 'other' | 'noprofile' | 'all';
 
-/** 是否"有画像"：优先用快照权威 `missing` 字段（全空=完整），缺失（历史数据无该字段）时回退启发式 */
+/** 是否"有职责画像"：以责任模块/职责文本为准——只要有 modules 或 duty 就算有画像。
+ *  department/job_level 缺失不算"整张画像缺失"（那只是组织归属信息）；仅当 modules/duty 都空才视为待补画像。 */
 function hasProfile(c: RedispatchCandidate): boolean {
-  if (Array.isArray(c.missing)) {
-    return c.missing.length === 0;
-  }
   return (
     !!(c.department && String(c.department).trim()) ||
     !!(c.modules && c.modules.length) ||
@@ -171,43 +169,35 @@ export default function RedispatchCandidateList({
     );
   }
 
-  if (!list.length) {
-    return (
-      <div className="redispatch-cand__empty" style={{ textAlign: 'center', padding: '18px 0', color: '#999' }}>
-        暂无精排候选
-      </div>
-    );
+  // 分组：
+  // - 「精排推荐」= 真正有精排分数（scores.total>0）的候选，按分数降序取前 5
+  //   （避免把「无精排分、仅兜底补齐」的人误标为精排推荐）。
+  // - 「全部用户」= 默认主体：候选里有职责画像的 + 全量可指派用户里有画像的，合并去重。
+  //   让重派默认就展示全部有画像的人，而不是被一堆"同部门/待补"分组切碎。
+  // - 「待补充画像」= 真无职责画像（modules/duty 都空）的候选，仅少量。
+  // list 为空（无精排候选快照）时，仍展示「全部用户」分组与搜索框，保证有可选项。
+  const hasRank = (c: RedispatchCandidate) => (c.scores?.total ?? 0) > 0;
+  const ranked = list.filter(hasRank).sort((a, b) => (b.scores?.total ?? 0) - (a.scores?.total ?? 0));
+  const top = ranked.slice(0, 5);
+
+  // 全部用户：候选中有画像的 + 全部可指派用户中有画像的，合并去重
+  const candWithProfile = list.filter(hasProfile);
+  const allGroupData: RedispatchCandidate[] = [...candWithProfile];
+  const allSeen = new Set<string>(allGroupData.map((c) => c.engineer_id));
+  for (const u of allUsers) {
+    if (!u.has_profile || allSeen.has(u.id)) continue;
+    const cand = toCandidate(u);
+    allSeen.add(u.id);
+    allGroupData.push(cand);
   }
 
-  // 分层分组
-  const top = list.slice(0, 5);
-  const rest = list.slice(5);
-  const sameDept: RedispatchCandidate[] = [];
-  const other: RedispatchCandidate[] = [];
-  const noProfile: RedispatchCandidate[] = [];
-  for (const c of rest) {
-    if (!hasProfile(c)) {
-      noProfile.push(c);
-    } else if (refDept && c.department && c.department === refDept) {
-      sameDept.push(c);
-    } else {
-      other.push(c);
-    }
-  }
-
-  // 「全部用户」分组：只展示**有职责画像**的用户（has_profile），去掉已在前面精排/同部门/其他/待补展示过的，
-  // 让用户在重派时能一眼看到并选择精排之外、且画像完整的其他人（默认展示，不依赖搜索）。
-  const shownIds = new Set<string>(list.map((c) => c.engineer_id));
-  const allGroupData = allUsers
-    .filter((u) => u.has_profile && !shownIds.has(u.id))
-    .map(toCandidate);
+  // 待补充画像：候选里既无职责画像、又不在「全部用户」里的（modules/duty 都空）
+  const noProfile = list.filter((c) => !hasProfile(c));
 
   const groups: Array<{ key: GroupKey; label: string; data: RedispatchCandidate[] }> = [
     { key: 'top', label: '精排推荐', data: top },
-    { key: 'same', label: '同部门推荐', data: sameDept },
-    { key: 'other', label: '其他部门', data: other },
-    { key: 'noprofile', label: '待补充画像', data: noProfile },
     { key: 'all', label: '全部用户', data: allGroupData },
+    { key: 'noprofile', label: '待补充画像', data: noProfile },
   ];
 
   const onPick = (c: RedispatchCandidate) => {
