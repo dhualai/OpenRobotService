@@ -429,7 +429,13 @@ async def delete_project(
     project_id: str,
     credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
 ) -> Dict[str, bool]:
-    success = project_service.delete_project(project_id)
+    try:
+        success = project_service.delete_project(project_id)
+    except IntegrityError as e:
+        # service 层已清理 user_project_roles；若仍有残留外键引用（如未来新增关联表），
+        # 避免裸 500，转成带原因的 500
+        logger.error(f"删除项目失败(外键约束): project_id={project_id}, error={str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"删除项目失败：存在关联数据，请先解除关联后再删除（{str(e)}）")
     if not success:
         raise HTTPException(status_code=404, detail="项目不存在")
     return {"success": True}
