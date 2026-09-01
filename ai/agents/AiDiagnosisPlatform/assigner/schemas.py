@@ -85,6 +85,12 @@ class TicketContext(BaseModel):
         None,
         description="重新派单备注/原因 ↔ tasks.metadata_info.preferred_assignee_remark",
     )
+    # 重新派单时的「原处理人」（users.id）。重派单会清空 assigned_to，故在复位前
+    # 把旧值存进 metadata_info.prev_assignee，供 Step6 决策识别"对谁不满意/换掉谁"。
+    prev_assignee: Optional[str] = Field(
+        None,
+        description="重新派单前的原处理人 users.id ↔ tasks.metadata_info.prev_assignee",
+    )
 
     # === 其他 ===
     updated_at: Optional[str] = Field(None, description="修改时间 ↔ tasks.updated_at")

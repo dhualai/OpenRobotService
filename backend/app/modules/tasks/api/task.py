@@ -523,6 +523,24 @@ async def get_task(
         try:
             from app.models.task_dispatch_log import TaskDispatchLog
             from sqlalchemy import select as _sel
+            # 权限控制：派单原因（tip_detail）属敏感信息，仅对「提单人」或「管理员」可见，其他人不返回。
+            try:
+                from app.core.database import get_user_with_roles
+                from app.core.user_identity import user_matches, is_admin_user
+                from app.core.security import decode_token
+                _viewer_creator = False
+                _viewer_admin = False
+                if token:
+                    _payload = decode_token(token)
+                    _uname = (_payload or {}).get("sub")
+                    if _uname:
+                        _viewer = get_user_with_roles(_uname)
+                        if _viewer:
+                            _viewer_creator = user_matches(_viewer, getattr(ticket, "created_by", None))
+                            _viewer_admin = is_admin_user(_viewer)
+            except Exception:
+                _viewer_creator = False
+                _viewer_admin = False
             _log = (await db.execute(
                 _sel(TaskDispatchLog)
                 .where(TaskDispatchLog.task_id == task_id)
@@ -548,6 +566,21 @@ async def get_task(
                                     pref_missing_zh.append(zh)
                             break
                     reasoning_txt = _log.reasoning if isinstance(_log.reasoning, str) else ""
+                    # 面向用户展示：reasoning 里若残留候选人 users.id，替换为姓名（避免向提单人暴露内部 id）
+                    if reasoning_txt:
+                        for _cand in (_log.candidates or []):
+                            if isinstance(_cand, dict):
+                                _cid = _cand.get("engineer_id")
+                                _cname = _cand.get("name") or user_map.get(_cid, _cid)
+                                if _cid and _cname:
+                                    reasoning_txt = reasoning_txt.replace(f"ID:{_cid}", _cname)
+                                    reasoning_txt = reasoning_txt.replace(f"({_cid})", f"({_cname})")
+                                    reasoning_txt = reasoning_txt.replace(f"（{_cid}）", f"（{_cname}）")
+                                    reasoning_txt = reasoning_txt.replace(_cid, _cname)
+                        # 原处理人等不在候选内的 id，用 user_map 兜底反查姓名
+                        for _cid, _cname in (user_map or {}).items():
+                            if _cname and _cid and isinstance(_cid, str) and _cid in reasoning_txt:
+                                reasoning_txt = reasoning_txt.replace(_cid, _cname)
                     tip_detail = await _build_redispatch_tip_detail(
                         pref_name or _log.preferred_id,
                         assigned_name,
@@ -578,7 +611,8 @@ async def get_task(
                         "matched_pref": _log.matched_pref,
                         "name_collision": _log.name_collision,
                         "pinyin_match": _log.pinyin_match,
-                        "tip_detail": tip_detail,
+                        # 派单原因仅对提单人/管理员可见；其他查看者不返回（前端不渲染派单说明）
+                        "tip_detail": tip_detail if (_viewer_creator or _viewer_admin) else None,
                     },
                 })
             else:

@@ -69,6 +69,10 @@ class AssignerConfig:
         self.ranker_weights: Dict[str, Any] = {}
         self.job_level_penalty: Dict[int, float] = {}
         self.contact_bonus: float = 2.0
+        # 项目对接人 / 用户倾向处理人 精排保底分（≥1 不起保底作用）。
+        # 思路：倾向/对接人即使召回基础分很低，×contact_bonus 后仍可能进不了决策窗口，
+        #       因此再抬一个精排保底 total_score（默认 0.8），保证其大概率进入 Step6 决策窗口。
+        self.contact_floor: float = 0.8
         # 用户倾向处理人（预留）：前端未传字段时整体不生效；传了即启用。加权系数复用 contact_bonus。
         self.preferred_assignee_enabled: bool = True
         self.preferred_assignee_force_keep: bool = True
@@ -125,6 +129,11 @@ class AssignerConfig:
             self.contact_bonus = float(config.get("contact_bonus", 2.0))
         except (TypeError, ValueError):
             self.contact_bonus = 2.0
+        # 对接人/倾向人 精排保底分（缺失时默认 0.8）
+        try:
+            self.contact_floor = float(config.get("contact_floor", 0.8))
+        except (TypeError, ValueError):
+            self.contact_floor = 0.8
         # 用户倾向处理人（预留）总开关与强制保留开关（缺失时默认 True/True，前端传字段即启用）
         self.preferred_assignee_enabled = bool(config.get("preferred_assignee_enabled", True))
         self.preferred_assignee_force_keep = bool(config.get("preferred_assignee_force_keep", True))
