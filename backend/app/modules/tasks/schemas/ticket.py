@@ -154,6 +154,10 @@ class TicketResponse(TicketBase):
     resolved_at: Optional[datetime]
     closed_at: Optional[datetime]
     deadline_at: Optional[datetime]
+    # --- 协商阶段（工单阶段性处理：当前节点 + 节点结束时间）---
+    curr_step_id: Optional[int] = Field(None, description="当前协商节点ID")
+    curr_step_name: Optional[str] = Field(None, description="当前协商节点名称")
+    curr_step_endtime: Optional[datetime] = Field(None, description="当前协商节点结束时间（naive UTC）")
     reply_count: int
     view_count: int
     comments: Optional[List[TicketCommentResponse]] = []
@@ -178,6 +182,9 @@ class TicketListItemResponse(TicketBase):
     resolved_at: Optional[datetime]
     closed_at: Optional[datetime]
     deadline_at: Optional[datetime]
+    curr_step_id: Optional[int] = Field(None, description="当前协商节点ID")
+    curr_step_name: Optional[str] = Field(None, description="当前协商节点名称")
+    curr_step_endtime: Optional[datetime] = Field(None, description="当前协商节点结束时间（naive UTC）")
     reply_count: int
     view_count: int
     redispatch_tip: Optional[str] = Field(None, description="派单结果提醒一句话摘要（无提醒为 None，见 §3.6）")
