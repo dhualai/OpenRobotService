@@ -6,8 +6,8 @@
     依据 deplp.md 中的部署说明：
       - 本地构建前端 (npm run build:test / build:prod)，未安装依赖时自动先 npm install
       - 上传 dist 内容到 nginx html 目录
-      - 上传 backend/app 与 backend/main.py，重启 supervisor 后端服务
-      - 上传 ai 代码，重启 supervisor 算法服务
+      - 上传 backend/app（忽略 main.py），重启 supervisor 后端服务
+      - 上传 ai 代码（忽略 run.py），重启 supervisor 算法服务
     使用 tar 打包 + scp 上传 + ssh 远程执行，兼容 Windows 10+ 自带 OpenSSH 与 bsdtar。
 
 .PARAMETER Environment
@@ -89,7 +89,8 @@ if (-not $SshIdentity)  { $SshIdentity  = $ScriptConfig.SshIdentity }
 if (-not $SudoPassword) { $SudoPassword = $ScriptConfig.SudoPassword }
 
 # ---------- 路径与目标 ----------
-$RepoRoot   = $PSScriptRoot
+# 脚本位于 deploy/ 子目录，项目根为其上一级
+$RepoRoot   = Split-Path $PSScriptRoot -Parent
 $FrontendDir = Join-Path $RepoRoot 'frontend'
 $BackendDir  = Join-Path $RepoRoot 'backend'
 $AiDir       = Join-Path $RepoRoot 'ai'
@@ -284,10 +285,10 @@ if ($Components -contains 'frontend') {
 
 # ---------- 后端 ----------
 if ($Components -contains 'backend') {
-    Write-Step '【后端】上传 app 与 main.py 并重启'
+    Write-Step '【后端】上传 app 并重启（忽略 main.py，保留远端版本）'
 
     $excludes = @('__pycache__','*.pyc','*.pyo','.pytest_cache','.mypy_cache','.ruff_cache')
-    $tarball = New-LocalTar -SourceDir $BackendDir -Paths @('app','main.py') -Excludes $excludes
+    $tarball = New-LocalTar -SourceDir $BackendDir -Paths @('app') -Excludes $excludes
     $remoteTar = Send-Tarball -LocalTar $tarball -RemoteName 'backend_app.tar.gz'
 
     $cleanCmd = ''
@@ -310,14 +311,15 @@ if ($Components -contains 'backend') {
 if ($Components -contains 'ai') {
     Write-Step '【算法】上传 ai 代码并重启'
 
-    # 排除虚拟环境、向量库、模型、缓存、测试、本地数据等
+    # 排除虚拟环境、向量库、模型、缓存、测试、本地数据等；run.py 保留远端版本
     $excludes = @(
         '__pycache__','*.pyc','*.pyo',
         '.venv','venv','env',
         '.pytest_cache','.mypy_cache','.ruff_cache',
         'kb','embed_models','docs','tests','tools','uploads',
         '.env','.env.*','*.log','logs','*.sqlite3','*.db',
-        '.git','.idea','.vscode'
+        '.git','.idea','.vscode',
+        'run.py'
     )
     $tarball = New-LocalTar -SourceDir $AiDir -Paths @('.') -Excludes $excludes
     $remoteTar = Send-Tarball -LocalTar $tarball -RemoteName 'ai_code.tar.gz'
