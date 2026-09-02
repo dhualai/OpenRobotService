@@ -109,6 +109,9 @@ class AIConfig(BaseModel):
     # ========== 诊断服务 ==========
     diagnosis_scan_interval: int = Field(default=60, description="诊断服务扫描新工单间隔（秒）")
 
+    # ========== 知识沉淀 Worker ==========
+    enable_knowledge_sink: bool = Field(default=False, description="知识沉淀 Worker 总开关：默认关，测试环境验证 LLM 提炼质量后再开")
+
     # ========== 解决方式总结 Worker（结束工单 AI 确认弹窗）==========
     resolution_worker_concurrency: int = Field(default=10, description="解决方式总结 Worker 最大并行数（同时处理多少个工单的总结）")
     resolution_worker_queue: str = Field(default="ors:resolution", description="解决方式总结任务队列（Redis List）")
@@ -303,6 +306,7 @@ def get_ai_config() -> AIConfig:
         # 派单
         # 诊断服务
         diagnosis_scan_interval=int(os.getenv("DIAGNOSIS_SCAN_INTERVAL", "60")),
+        enable_knowledge_sink=os.getenv("ENABLE_KNOWLEDGE_SINK", "0").strip().lower() in ("1", "true", "yes", "on"),
         # 派单后台
         assign_scan_interval=int(os.getenv("ASSIGN_SCAN_INTERVAL", "120")),
         # Debug

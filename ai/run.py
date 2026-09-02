@@ -232,15 +232,20 @@ async def lifespan(app: FastAPI):
         logger.error(f"诊断后台服务启动失败: {e}", exc_info=True)
 
     # 5. 启动知识沉淀 Worker（扫描已解决工单 → Qdrant 回写）
+    # 总开关 ENABLE_KNOWLEDGE_SINK 默认关：未验证 LLM 提炼质量前不在生产跑。
+    # 开关挡在 import 之前——关的时候完全不加载该模块。
     knowledge_worker = None
     knowledge_stop = None
-    try:
-        from ai.core.knowledge_worker import run_knowledge_worker
-        knowledge_stop = asyncio.Event()
-        knowledge_worker = asyncio.create_task(run_knowledge_worker(knowledge_stop))
-        logger.info(f"知识沉淀 Worker 已启动 (scan interval={get_ai_config().diagnosis_scan_interval}s)")
-    except Exception as e:
-        logger.error(f"知识沉淀 Worker 启动失败: {e}", exc_info=True)
+    if get_ai_config().enable_knowledge_sink:
+        try:
+            from ai.core.knowledge_worker import run_knowledge_worker
+            knowledge_stop = asyncio.Event()
+            knowledge_worker = asyncio.create_task(run_knowledge_worker(knowledge_stop))
+            logger.info(f"知识沉淀 Worker 已启动 (scan interval={get_ai_config().diagnosis_scan_interval}s)")
+        except Exception as e:
+            logger.error(f"知识沉淀 Worker 启动失败: {e}", exc_info=True)
+    else:
+        logger.info("知识沉淀 Worker 未启动（ENABLE_KNOWLEDGE_SINK=0）")
 
     # 7. 启动派单后台 Worker（定时扫描待派单池 → 自动指派）
     assign_worker = None
