@@ -83,7 +83,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         fixed
       />
 
-      <div ref={scrollRef} style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 16 }}>
+      <div ref={scrollRef} className="admin-scroll" style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 16 }}>
         <Suspense fallback={<Loading text="加载中..." />}>
           {children || <Outlet />}
         </Suspense>
