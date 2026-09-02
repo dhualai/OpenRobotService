@@ -118,6 +118,8 @@ class Task(Base):
     step_last_updated_by = Column(String(100), nullable=True, comment="最近一次改step的操作人：assigned/creator侧标识，用于判定待处理回合")
     step_last_updated_at = Column(DateTime, nullable=True, comment="最近一次step更新时间")
     step_negotiation_round = Column(Integer, nullable=False, server_default="0", comment="协商回合数：对手回应一次+1")
+    curr_step_agreed = Column(Boolean, nullable=False, server_default="0", default=False,
+                              comment="当前协商节点是否已协商一致：respond 置 True；negotiate-step/complete-step 重置为 False")
 
     __table_args__ = (
         # MySQL 允许多个 NULL，故 manual 任务（external_id=NULL）不冲突

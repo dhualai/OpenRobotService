@@ -161,6 +161,7 @@ class TicketResponse(TicketBase):
     step_last_updated_by: Optional[str] = Field(None, description="最近一次改step的操作人侧标识：assigned/creator")
     step_last_updated_at: Optional[datetime] = Field(None, description="最近一次step更新时间")
     step_negotiation_round: int = Field(0, description="协商回合数：对手回应一次+1")
+    curr_step_agreed: bool = Field(False, description="当前协商节点是否已协商一致：确认同意后 True；进入新节点或协商后重置为 False")
     step_neg_max_rounds: int = Field(5, description="该工单适用的协商回合上限（全局默认或工单专属）")
     reply_count: int
     view_count: int
