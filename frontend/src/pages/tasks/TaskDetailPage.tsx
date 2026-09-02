@@ -1502,7 +1502,7 @@ export default function TaskDetailPage() {
             setShowCompleteStepPopup(true);
           };
           // 回合展示
-          const round = detail.step_negotiation_round ?? 0;
+          const round = detail.step_negotiation_round ?? 1;
           const maxRound = detail.step_neg_max_rounds ?? 5;
           const reachedMax = round >= maxRound;          // 最后一轮：显示升级上报替代协商
           const lastStepBy = detail.step_last_updated_by;
@@ -2237,7 +2237,7 @@ export default function TaskDetailPage() {
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">协商节点时间</h4>
           <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-            可将节点调整为该类型的前/后任一节点，并设置节点结束时间（SLA），协商理由必填。
+            可将节点调整为当前或之后的任一节点，并设置节点结束时间（SLA），协商理由必填。
           </p>
           <Form initialData={{}}>
             <FormItem label="协商节点" name="negotiateStepId" labelAlign="top" requiredMark>
@@ -2250,10 +2250,17 @@ export default function TaskDetailPage() {
                   background: '#fff', marginBottom: 12,
                 }}
               >
-                {(stepTemplate.length > 0
-                  ? stepTemplate
-                  : (detail?.curr_step_id ? [{ id: detail.curr_step_id, step_name: detail.curr_step_name || '当前节点', sequence: 0 }] : [])
-                ).map((s) => (
+                {(() => {
+                  // 仅展示 sequence >= 当前节点的可选节点（当前及之后）
+                  const curSeqForNegotiate = stepTemplate.find((s) => s.id === detail?.curr_step_id)?.sequence ?? -1;
+                  const negotiableSteps = (stepTemplate.length > 0 ? stepTemplate : [])
+                    .filter((s) => s.sequence >= curSeqForNegotiate)
+                    .sort((a, b) => a.sequence - b.sequence);
+                  const fallback = detail?.curr_step_id
+                    ? [{ id: detail.curr_step_id, step_name: detail.curr_step_name || '当前节点', sequence: 0 }]
+                    : [];
+                  return (negotiableSteps.length > 0 ? negotiableSteps : fallback);
+                })().map((s) => (
                   <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
                 ))}
               </select>

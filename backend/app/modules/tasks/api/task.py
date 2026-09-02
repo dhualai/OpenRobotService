@@ -269,7 +269,7 @@ def _apply_step_update_meta(ticket, current_user, username: str) -> Dict[str, An
     bump_round = False
     if prev_side and side and prev_side != side:
         bump_round = True
-        ticket.step_negotiation_round = (getattr(ticket, 'step_negotiation_round', 0) or 0) + 1
+        ticket.step_negotiation_round = (getattr(ticket, 'step_negotiation_round', 1) or 1) + 1
 
     if side:
         ticket.step_last_updated_by = side
@@ -278,10 +278,10 @@ def _apply_step_update_meta(ticket, current_user, username: str) -> Dict[str, An
     max_rounds = getattr(ticket, 'step_neg_max_rounds', settings.TICKET_STEP_MAX_NEGOTIATION_ROUNDS) or settings.TICKET_STEP_MAX_NEGOTIATION_ROUNDS
     return {
         "bump_round": bump_round,
-        "round": getattr(ticket, 'step_negotiation_round', 0) or 0,
+        "round": getattr(ticket, 'step_negotiation_round', 1) or 1,
         "max_rounds": max_rounds,
-        "round_reached_max": (getattr(ticket, 'step_negotiation_round', 0) or 0) >= max_rounds,
-        "round_almost_max": (getattr(ticket, 'step_negotiation_round', 0) or 0) == max_rounds - 1,
+        "round_reached_max": (getattr(ticket, 'step_negotiation_round', 1) or 1) >= max_rounds,
+        "round_almost_max": (getattr(ticket, 'step_negotiation_round', 1) or 1) == max_rounds - 1,
     }
 
 
@@ -1642,9 +1642,9 @@ async def complete_task_step(
 
 
 class NegotiateStepRequest(BaseModel):
-    """协商节点请求：可调整节点（前/后均可）+ 设置节点结束时间，理由必填。"""
+    """协商节点请求：可调整节点为当前或之后（sequence >= 当前）+ 设置节点结束时间，理由必填。"""
     curr_step_endtime: datetime = Field(..., description="协商节点结束时间（ISO 字符串，naive UTC 存库）")
-    curr_step_id: Optional[int] = Field(None, description="协商后的节点ID（前/后均可；不传则保持当前节点）")
+    curr_step_id: Optional[int] = Field(None, description="协商后的节点ID（仅当前及之后；不传则保持当前节点）")
     reason: str = Field(..., description="协商理由（必填，记录为评论）")
 
 
@@ -1662,7 +1662,7 @@ async def negotiate_step(
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
     request: Request = None,
 ):
-    """协商节点：可将当前节点调整为同类型的前/后任一节点，并设置节点结束时间（SLA）。
+    """协商节点：可将当前节点调整为当前或之后的任一节点，并设置节点结束时间（SLA）。
 
     协商理由必填，作为系统评论记录。
     权限：AI 工单允许任何登录用户；其余需处理人/管理员/操作权限。
@@ -1687,16 +1687,23 @@ async def negotiate_step(
     if not reason:
         raise HTTPException(status_code=400, detail="协商理由必填")
 
-    # 节点调整（前/后均可）：校验目标节点存在且与工单类型匹配
+    # 节点调整：仅允许当前及之后（sequence >= 当前）；校验目标节点存在且与工单类型匹配
     old_step_name = ticket.curr_step_name
     step_changed = False
     if body.curr_step_id is not None and int(body.curr_step_id) != ticket.curr_step_id:
+        # 反查当前节点 sequence 用于下限校验
+        cur_row = await db.execute(select(TaskStep).where(TaskStep.id == int(ticket.curr_step_id)))
+        cur_step = cur_row.unique().scalar_one_or_none()
+        cur_seq = cur_step.sequence if cur_step else 0
+
         row = await db.execute(select(TaskStep).where(TaskStep.id == int(body.curr_step_id)))
         target_step = row.unique().scalar_one_or_none()
         if target_step is None:
             raise HTTPException(status_code=400, detail="协商节点不存在")
         if target_step.task_type != ticket.task_type:
             raise HTTPException(status_code=400, detail="协商节点与工单类型不匹配")
+        if target_step.sequence < cur_seq:
+            raise HTTPException(status_code=400, detail="协商节点不能早于当前节点")
         ticket.curr_step_id = target_step.id
         ticket.curr_step_name = target_step.step_name
         step_changed = True
