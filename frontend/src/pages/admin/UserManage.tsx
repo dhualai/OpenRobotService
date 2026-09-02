@@ -3,7 +3,7 @@
 // surface-card 用户卡（状态胶囊 + 职级/部门芯片 + 责任模块芯片 + 职责画像）+ 弹层表单。
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Toast, Loading, Dialog, Popup } from 'tdesign-mobile-react';
+import { Toast, Loading, Dialog, Popup, BackTop } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -1215,6 +1215,18 @@ export default function UserManage() {
           </button>
         </div>
       </Popup>
+
+      {/* 一键回到顶部：滚动超过 200px 时出现在右下角；弹层打开时隐藏避免遮挡。
+          底部 TabBar 高约 56px（item 40px + margin 16px）+ 安全区，按钮上移到菜单栏上方，
+          即「后台管理」tab 的垂直上方靠边。 */}
+      {!(editVisible || detailVisible || globalRoleEditVisible || projectRoleEditVisible) && (
+        <BackTop
+          container={() => document.querySelector('.admin-scroll') as HTMLElement}
+          visibilityHeight={200}
+          theme="round"
+          style={{ bottom: 'calc(56px + env(safe-area-inset-bottom) + 12px)' }}
+        />
+      )}
     </div>
   );
 }

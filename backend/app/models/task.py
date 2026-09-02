@@ -18,6 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, mapped_column, Mapped
+from sqlalchemy.ext.hybrid import hybrid_property
 
 from app.models.base import Base
 
@@ -114,6 +115,11 @@ class Task(Base):
     curr_step_id = Column(BigInteger, nullable=True, index=True, comment="当前步骤ID")
     curr_step_name = Column(String(128), nullable=True, comment="当前步骤名称")
     curr_step_endtime = Column(DateTime, nullable=True, comment="当前步骤结束时间")
+    step_last_updated_by = Column(String(100), nullable=True, comment="最近一次改step的操作人：assigned/creator侧标识，用于判定待处理回合")
+    step_last_updated_at = Column(DateTime, nullable=True, comment="最近一次step更新时间")
+    step_negotiation_round = Column(Integer, nullable=False, server_default="1", default=1, comment="协商回合数：初始1，对手回应一次+1")
+    curr_step_agreed = Column(Boolean, nullable=False, server_default="0", default=False,
+                              comment="当前协商节点是否已协商一致：respond 置 True；negotiate-step/complete-step 重置为 False")
 
     __table_args__ = (
         # MySQL 允许多个 NULL，故 manual 任务（external_id=NULL）不冲突
@@ -122,6 +128,13 @@ class Task(Base):
 
     def __repr__(self):
         return f"<Task(id={self.id}, title='{self.title}', status={self.status})>"
+
+    @hybrid_property
+    def step_neg_max_rounds(self) -> int:
+        """协商回合上限。工单未指定专属上限时读取全局配置。"""
+        # 延迟引入避免循环依赖
+        from app.core.config import settings as _s
+        return _s.TICKET_STEP_MAX_NEGOTIATION_ROUNDS
 
     @property
     def is_open(self) -> bool:

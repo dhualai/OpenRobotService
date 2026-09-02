@@ -84,6 +84,9 @@ class Task(Base):
     curr_step_id = Column(BigInteger, nullable=True, index=True, comment="当前步骤ID")
     curr_step_name = Column(String(128), nullable=True, comment="当前步骤名称")
     curr_step_endtime = Column(DateTime, nullable=True, comment="当前步骤结束时间")
+    step_last_updated_by = Column(String(100), nullable=True)
+    step_last_updated_at = Column(DateTime, nullable=True)
+    step_negotiation_round = Column(Integer, nullable=False, server_default="0")
 
     __table_args__ = (
         UniqueConstraint("source", "external_id", name="uq_task_source_external"),

@@ -12,12 +12,19 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
+// 用户统计区域依赖 Loading（加载态）与 ReactECharts（两个分组共四张图表），
+// jsdom 无 canvas，均以占位组件 mock
 vi.mock('tdesign-mobile-react', () => ({
   Navbar: ({ title }: { title?: ReactNode }) => (
     <nav data-testid="navbar">{title}</nav>
   ),
-  // 组件数据加载中会渲染 <Loading/>，mock 需提供否则渲染即抛错
-  Loading: ({ text }: { text?: ReactNode }) => <div data-testid="loading">{text}</div>,
+  Loading: ({ text }: { text?: ReactNode }) => (
+    <div data-testid="loading">{text}</div>
+  ),
+}));
+
+vi.mock('echarts-for-react', () => ({
+  default: () => <div data-testid="echarts" />,
 }));
 
 import AdminEntries from '../admin/AdminEntries';
@@ -54,14 +61,23 @@ describe('AdminEntries', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/admin/roles');
   });
 
+  it('should render the two user stats groups and all four charts', () => {
+    renderView();
+    expect(screen.getByText('用户增减趋势')).toBeInTheDocument();
+    expect(screen.getByText('关注来源分布')).toBeInTheDocument();
+    expect(screen.getByText('当前用户构成')).toBeInTheDocument();
+    expect(screen.getByText('用户来源分布')).toBeInTheDocument();
+    expect(screen.getByText('重置')).toBeInTheDocument();
+  });
+
   it('should render line icons for each entry card', () => {
     renderView();
-    // 仅校验管理工具入口卡片含图标；页面另有时间筛选「重置」按钮等无图标按钮，不在断言范围
-    const entryCards = screen
+    // 页面还有用户统计区的「重置」等按钮，这里只校验入口卡片
+    const cards = screen
       .getAllByRole('button')
-      .filter((card) => card.className.includes('admin-entries-card'));
-    expect(entryCards.length).toBeGreaterThanOrEqual(3);
-    entryCards.forEach((card) => {
+      .filter((b) => b.classList.contains('admin-entries-card'));
+    expect(cards.length).toBeGreaterThanOrEqual(3);
+    cards.forEach((card) => {
       expect(card.querySelector('svg')).not.toBeNull();
     });
   });
