@@ -19,7 +19,14 @@ from app.modules.call import call_router
 import app.integrations  # noqa: E402  装载外部任务源插件（按 TASK_SOURCES_ENABLED 自注册）
 from app.integrations.api import router as integrations_sources_router
 from app.integrations.mappings_api import router as integrations_mappings_router
-
+from app.wechat.services.user_info_snapshot import (
+    start_user_info_snapshot_scheduler,
+    stop_user_info_snapshot_scheduler,
+)
+from app.wechat.services.user_statistics_snapshot import (
+    start_user_statistics_scheduler,
+    stop_user_statistics_scheduler,
+)
 security = HTTPBearer()
 
 app = FastAPI(
@@ -63,6 +70,18 @@ async def startup_event():
         ensure_minio_buckets()
     except Exception as e:  # noqa: BLE001
         print(f"[MinIO] 初始化 bucket 失败: {e}")
+
+    # 整点拉取 batch-user-info 存入 user_info 表（每天仅保留最新一条快照）
+    start_user_info_snapshot_scheduler()
+
+    # 每凌晨 1:00 拉取昨日用户增减数据，按日期聚合存入 user_statistics 表
+    start_user_statistics_scheduler()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    stop_user_info_snapshot_scheduler()
+    stop_user_statistics_scheduler()
 
 app.add_middleware(
     CORSMiddleware,

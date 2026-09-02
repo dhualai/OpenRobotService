@@ -229,6 +229,15 @@ export function createRequest(baseUrl: string, _serviceName = 'API') {
               if (loggingOut) {
                 throw refreshError;
               }
+              // 先清掉已失效的 token 再跳转：否则整页重载后 main.tsx 的
+              // checkLoginStatus 会用 localStorage 里的旧 token 恢复登录态并再次请求，
+              // 又 401 又跳回来，形成无限重载循环（对齐 kickToLogin 先登出清 token 再跳转的做法）。
+              userToken = null;
+              try {
+                localStorage.removeItem('auth_token');
+                localStorage.removeItem('refresh_token');
+                localStorage.removeItem('token_expires_at');
+              } catch { /* SSR safe */ }
               if (WECHAT_CONFIG.loginEnabled) {
                 const state = buildStateFromPath(window.location.pathname);
                 window.location.href = buildWechatAuthUrl(state);
