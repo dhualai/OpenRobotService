@@ -11,7 +11,10 @@ class Settings(BaseSettings):
     AUTH_STR: str = Field(default="/auth")
     
     APP_ENV: str = Field(default="dev")
-    
+
+    # 服务监听端口（main.py 启动时读取，优先来自 backend/.env）
+    PORT: int = Field(default=8400, description="后端服务监听端口")
+
     SECRET_KEY: str = Field(default="")
     JWT_SECRET: str = Field(default="")
     ALGORITHM: str = Field(default="HS256")
