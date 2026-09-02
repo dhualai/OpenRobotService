@@ -587,6 +587,8 @@ class TicketService:
             'resolvedAt': (Ticket.resolved_at, 'datetime'),
             'closedAt': (Ticket.closed_at, 'datetime'),
             'deadlineAt': (Ticket.deadline_at, 'datetime'),
+            # 回合协商：支持按"最近改 step 的操作方侧标识"过滤（assigned/creator）
+            'stepUpdatedBy': (Ticket.step_last_updated_by, 'enum'),
         }
 
         NUMBER_OPS = {'gt', 'lt', 'ge', 'le', 'eq', 'ne', 'is_null', 'not_null'}

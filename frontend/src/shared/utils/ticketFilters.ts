@@ -40,10 +40,12 @@ export const buildRelevanceFilters = (
             { field: 'createdBy', op: 'eq', value: username },
           ],
         },
+        // 回合协商：接单人刚改过 step，轮到提单人确认/答复
         {
           and: [
-            { field: 'status', op: 'eq', value: 'resolved' },
+            { or: workingStatusFilters },
             { field: 'createdBy', op: 'eq', value: username },
+            { field: 'stepUpdatedBy', op: 'eq', value: 'assigned' },
           ],
         },
       ],
