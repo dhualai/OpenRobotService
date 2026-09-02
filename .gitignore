@@ -148,12 +148,6 @@ frontend/macaron-minimal-ui/
 .claude/launch.json
 /ai/tools
 /ai/tests
-/ai/tests
 ai/.env.example
 .token_tmp
-ai/.env.example
-ai/.env.example
-ai/.env.example
-/ai/tests
-/ai/tests
 start_all.ps1
