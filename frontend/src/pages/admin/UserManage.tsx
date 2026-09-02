@@ -1216,12 +1216,15 @@ export default function UserManage() {
         </div>
       </Popup>
 
-      {/* 一键回到顶部：滚动超过 200px 时出现在右下角；弹层打开时隐藏避免遮挡 */}
+      {/* 一键回到顶部：滚动超过 200px 时出现在右下角；弹层打开时隐藏避免遮挡。
+          底部 TabBar 高约 56px（item 40px + margin 16px）+ 安全区，按钮上移到菜单栏上方，
+          即「后台管理」tab 的垂直上方靠边。 */}
       {!(editVisible || detailVisible || globalRoleEditVisible || projectRoleEditVisible) && (
         <BackTop
           container={() => document.querySelector('.admin-scroll') as HTMLElement}
           visibilityHeight={200}
           theme="round"
+          style={{ bottom: 'calc(56px + env(safe-area-inset-bottom) + 12px)' }}
         />
       )}
     </div>
