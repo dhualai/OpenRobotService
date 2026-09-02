@@ -232,6 +232,10 @@ export default function TaskDetailPage() {
   const [completeNextStepId, setCompleteNextStepId] = useState<number | null>(null);
   const [completeNextEndTime, setCompleteNextEndTime] = useState<string | null>(null);
   const [submittingComplete, setSubmittingComplete] = useState(false);
+  // 设置节点时间弹窗（已升级工单，处理人一锤定音）
+  const [showSetStepTimePopup, setShowSetStepTimePopup] = useState(false);
+  const [setStepTimeValue, setSetStepTimeValue] = useState<string | null>(null);
+  const [submittingSetStepTime, setSubmittingSetStepTime] = useState(false);
 
   // 项目成员（用于讨论区 @ 提及）
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
@@ -901,6 +905,31 @@ export default function TaskDetailPage() {
     } finally {
       setSubmittingComplete(false);
       setCompleting(false);
+    }
+  };
+
+  // 设置节点时间（已升级工单，处理人一锤定音）
+  const handleSetStepTime = async () => {
+    if (!detail) return;
+    if (!setStepTimeValue) {
+      Toast({ message: '请选择节点时间', theme: 'warning' });
+      return;
+    }
+    setSubmittingSetStepTime(true);
+    try {
+      await request(`/${detail.id}/set-step-time`, {
+        method: 'POST',
+        body: JSON.stringify({ curr_step_endtime: toUTCString(setStepTimeValue) }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      Toast({ message: '已设置节点时间', theme: 'success' });
+      setShowSetStepTimePopup(false);
+      setSetStepTimeValue(null);
+      await fetchDetail();
+    } catch (e: any) {
+      Toast({ message: e?.message || '设置失败', theme: 'error' });
+    } finally {
+      setSubmittingSetStepTime(false);
     }
   };
 
@@ -1604,6 +1633,16 @@ export default function TaskDetailPage() {
                             onClick={() => { setReassignUser(null); setReassignReason(''); setShowReassignPopup(true); }}
                           >
                             重新指派
+                          </Button>
+                        )}
+                        {isAssignee && isEscalated && (
+                          <Button
+                            block
+                            size="small"
+                            theme="primary"
+                            onClick={() => { setSetStepTimeValue(null); setShowSetStepTimePopup(true); }}
+                          >
+                            设置节点时间
                           </Button>
                         )}
                         <Button
@@ -2383,6 +2422,48 @@ export default function TaskDetailPage() {
               <div className="ticket-edit__btns">
                 <Button theme="default" disabled={submittingComplete} onClick={() => setShowCompleteStepPopup(false)}>取消</Button>
                 <Button theme="primary" loading={submittingComplete} onClick={handleStepComplete} disabled={!completeNextStepId || !completeNextEndTime}>确认</Button>
+              </div>
+            </div>
+          </Popup>
+        );
+      })()}
+
+      {/* 设置节点时间弹窗（已升级工单，处理人一锤定音） */}
+      {detail && (() => {
+        const range = getDeadlineRange(detail.priority, detail.created_at);
+        return (
+          <Popup
+            visible={showSetStepTimePopup}
+            onClose={() => { if (!submittingSetStepTime) setShowSetStepTimePopup(false); }}
+            placement="bottom"
+            showOverlay
+            destroyOnClose
+          >
+            <div className="ticket-edit">
+              <h4 className="ticket-edit__title">设置节点时间</h4>
+              <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
+                升级上报后的工单，处理人可直接设置节点时间，无需协商（一锤定音）。
+              </p>
+              <DatePicker
+                style={{ width: '100%', marginBottom: 12 }}
+                placeholder="点击选择节点结束时间"
+                format="YYYY-MM-DD HH:mm"
+                showTime={{ defaultValue: dayjs().hour(18).minute(0), format: 'HH:mm', showNow: false }}
+                showNow={false}
+                placement="topLeft"
+                getPopupContainer={() => document.body}
+                value={setStepTimeValue ? parseDeadlineString(setStepTimeValue) : null}
+                disabledDate={range ? makeDisabledDate(range.min) : undefined}
+                disabledTime={range ? makeDisabledTime(range.min) : undefined}
+                onChange={(d: dayjs.Dayjs | null) =>
+                  setSetStepTimeValue(d ? d.second(0).millisecond(0).toISOString() : null)
+                }
+                allowClear
+                styles={{ popup: { root: { zIndex: 13000 } } }}
+              />
+              <div className="ticket-edit__btns">
+                <Button theme="default" disabled={submittingSetStepTime} onClick={() => setShowSetStepTimePopup(false)}>取消</Button>
+                <Button theme="primary" loading={submittingSetStepTime} onClick={handleSetStepTime} disabled={!setStepTimeValue}>确认</Button>
               </div>
             </div>
           </Popup>
