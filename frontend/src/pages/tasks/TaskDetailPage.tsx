@@ -119,6 +119,11 @@ interface Ticket {
   curr_step_id?: number | null;
   curr_step_name?: string | null;
   curr_step_endtime?: string | null;
+  // 回合制：最近一次改 step 的操作人侧标识（assigned/creator）与回合数
+  step_last_updated_by?: 'assigned' | 'creator' | null;
+  step_last_updated_at?: string | null;
+  step_negotiation_round?: number;
+  step_neg_max_rounds?: number;
 }
 
 // 协商阶段模板步骤（GET /{task_id}/steps 返回）
@@ -212,7 +217,9 @@ export default function TaskDetailPage() {
   // 工单阶段性处理（协商节点）
   const [stepTemplate, setStepTemplate] = useState<StepTemplate[]>([]);
   const [responding, setResponding] = useState(false);
+  const [completing, setCompleting] = useState(false);
   const [showNegotiateStepPopup, setShowNegotiateStepPopup] = useState(false);
+  const [negotiateStepId, setNegotiateStepId] = useState<number | null>(null);
   const [negotiateEndTime, setNegotiateEndTime] = useState<string | null>(null);
   const [negotiateReason, setNegotiateReason] = useState('');
   const [submittingNegotiate, setSubmittingNegotiate] = useState(false);
@@ -353,9 +360,6 @@ export default function TaskDetailPage() {
 
   // 拥有 backend:tasks:operate 权限的用户可点击「创建人」设置其姓名
   const canEditCreatorName = !!detail && hasPermission('backend:tasks:operate');
-
-  // 拥有 backend:tasks:operate 权限的用户可点击「最晚解决时间」直接改期
-  const canEditDeadline = hasPermission('backend:tasks:operate');
 
   const getActionButtons = () => {
     const status = detail?.status?.toLowerCase();
@@ -856,23 +860,47 @@ export default function TaskDetailPage() {
     }
   };
 
-  // 协商节点时间：设置当前节点结束时间 + 理由
+  // 当前阶段完成：基于 sequence+1 推进到下一协商节点
+  const handleStepComplete = async () => {
+    if (!detail) return;
+    setCompleting(true);
+    try {
+      await request(`/${detail.id}/complete-step`, { method: 'POST', body: JSON.stringify({}) });
+      await refreshDetail();
+      Toast({ message: '当前阶段已完成，进入下一节点', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setCompleting(false);
+    }
+  };
+
+  // 协商节点：可调整节点（前/后均可）+ 设置节点结束时间，理由必填
   const handleNegotiateStep = async () => {
     if (!detail) return;
     if (!negotiateEndTime) {
       Toast({ message: '请选择协商节点时间', theme: 'warning' });
       return;
     }
+    if (!negotiateReason.trim()) {
+      Toast({ message: '请填写协商理由', theme: 'warning' });
+      return;
+    }
     setSubmittingNegotiate(true);
     try {
       await request(`/${detail.id}/negotiate-step`, {
         method: 'POST',
-        body: JSON.stringify({ curr_step_endtime: negotiateEndTime, reason: negotiateReason.trim() || null }),
+        body: JSON.stringify({
+          curr_step_endtime: negotiateEndTime,
+          curr_step_id: negotiateStepId,
+          reason: negotiateReason.trim(),
+        }),
       });
       await refreshDetail();
-      Toast({ message: '协商节点时间已设置', theme: 'success' });
+      Toast({ message: '协商节点已更新', theme: 'success' });
       setNegotiateReason('');
       setNegotiateEndTime(null);
+      setNegotiateStepId(null);
       setShowNegotiateStepPopup(false);
     } catch (err) {
       Toast({ message: `设置失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -1380,16 +1408,9 @@ export default function TaskDetailPage() {
             <div className="detail-info-item">
               <span className="detail-info-item__icon"><AlarmClock size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
-                <span className="detail-info-item__label">最晚解决时间</span>
-                <span
-                  className="detail-info-item__value"
-                  style={canEditDeadline ? { cursor: 'pointer', color: 'var(--blue-2)', textDecoration: 'underline' } : undefined}
-                  onClick={canEditDeadline ? () => {
-                    setDeadlineDraft(detail.deadline_at || null);
-                    setShowDeadlinePopup(true);
-                  } : undefined}
-                >
-                  {detail.deadline_at ? formatRawDateTime(detail.deadline_at) : '未设置'}
+                <span className="detail-info-item__label">当前阶段时间</span>
+                <span className="detail-info-item__value">
+                  {detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '未设置'}
                 </span>
               </div>
             </div>
@@ -1420,12 +1441,10 @@ export default function TaskDetailPage() {
           <SafeHtml html={detail.description || '<p style="color:var(--muted-foreground)">无描述</p>'} />
         </div>
 
-        {/* 工单阶段性处理（协商节点）：当前节点描述 + 操作按钮（退回 / 确认同意 / 协商节点时间） */}
+        {/* 工单阶段性处理（协商节点）：当前节点描述 + 回合胶囊 + 操作按钮 */}
         {(() => {
           const status = (detail.status || '').toLowerCase();
-          // 仅活跃工单展示（新建/处理中/待处理），已解决/已关闭/已取消隐藏
           if (['resolved', 'closed', 'canceled', 'cancelled'].includes(status)) return null;
-          // 当前节点描述：基于 curr_step_id/curr_step_name + 模板进度（如 1/3）
           const total = stepTemplate.length;
           const currIdx = stepTemplate.findIndex((s) => s.id === detail.curr_step_id);
           const stepName = detail.curr_step_name || (currIdx >= 0 ? stepTemplate[currIdx].step_name : '');
@@ -1433,12 +1452,67 @@ export default function TaskDetailPage() {
             ? `当前节点：${stepName}${total > 0 ? `（${currIdx >= 0 ? currIdx + 1 : '-'} / ${total}）` : ''}`
             : '当前节点：尚未设置协商节点';
           const endtimeText = detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '';
-          const isNew = status === 'new';
-          const canRespond = isNew && !!detail.curr_step_id;
+          const isProcessing = status === 'in_progress';
+          const canRespond = status === 'new' && !!detail.curr_step_id;
           const canNegotiate = !!detail.curr_step_id;
+          const currSeq = currIdx >= 0 ? stepTemplate[currIdx].sequence : null;
+          const hasNext = currSeq === null ? true : stepTemplate.some((s) => s.sequence > currSeq);
+          const openNegotiate = () => {
+            setNegotiateStepId(detail.curr_step_id ?? null);
+            setNegotiateEndTime(detail.curr_step_endtime ?? null);
+            setNegotiateReason('');
+            setShowNegotiateStepPopup(true);
+          };
+          // 回合展示
+          const round = detail.step_negotiation_round ?? 0;
+          const maxRound = detail.step_neg_max_rounds ?? 5;
+          const reachedMax = round >= maxRound;          // 最后一轮：显示升级上报替代协商
+          const lastStepBy = detail.step_last_updated_by;
+          // 轮到当前用户：assigned = 接单人回合；creator = 提单人回合；无值 = 默认接单人回合
+          const { isAssignee, isReporter } = getCurrentUserRoles();
+          const myTurn = (!lastStepBy && isAssignee)
+            || (lastStepBy === 'assigned' && isReporter)
+            || (lastStepBy === 'creator' && isAssignee);
+          // 回合胶囊样式
+          let pillBg = 'rgba(100,116,139,0.15)';
+          let pillColor = 'var(--muted-foreground)';
+          if (round >= maxRound) { pillBg = 'rgba(220,38,38,0.15)'; pillColor = '#b91c1c'; }
+          else if (round === maxRound - 1) { pillBg = 'rgba(234,179,8,0.2)'; pillColor = '#8a6400'; }
+          else if (myTurn) { pillBg = 'rgba(37,99,235,0.15)'; pillColor = 'var(--blue-2)'; }
+          const openEscalate = () => {
+            setEscalateUser(null);
+            setEscalateReason(`已达最大协商回合（${round}/${maxRound}），申请升级介入处理。`);
+            setShowEscalatePopup(true);
+          };
+          const respondBtnDisabled = !canRespond || reachedMax;
+          const negotiateDisabled = !canNegotiate || reachedMax;
+          const completeDisabled = !hasNext || reachedMax;
           return (
             <div className="detail-card">
-              <h4 className="detail-card__h">工单阶段性处理</h4>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                <h4 className="detail-card__h" style={{ marginBottom: 0 }}>工单阶段性处理</h4>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span
+                    title="协商回合：接单人↔提单人来回应答计数"
+                    style={{
+                      display: 'inline-block', padding: '3px 10px', borderRadius: 999,
+                      background: pillBg, color: pillColor, fontSize: 12, fontWeight: 500, lineHeight: 1.4,
+                    }}
+                  >
+                    交涉回合 {round} / {maxRound}
+                  </span>
+                  {myTurn && !reachedMax && (
+                    <span style={{ fontSize: 12, color: 'var(--blue-2)', fontWeight: 500 }}>
+                      ● 轮到你确认/答复
+                    </span>
+                  )}
+                  {reachedMax && (
+                    <span style={{ fontSize: 12, color: '#b91c1c', fontWeight: 500 }}>
+                      ● 已达最大回合，请使用升级上报
+                    </span>
+                  )}
+                </div>
+              </div>
               <div style={{ fontSize: 13, color: 'var(--foreground)', marginBottom: 12, lineHeight: 1.6 }}>
                 当前节点描述：{desc}
                 {endtimeText && (
@@ -1447,38 +1521,67 @@ export default function TaskDetailPage() {
                   </span>
                 )}
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <Button
-                  block
-                  size="small"
-                  theme="default"
-                  onClick={() => { setReturnReason(''); setShowReturnConfirmPopup(true); }}
-                >
-                  工单退回
-                </Button>
-                <Button
-                  block
-                  size="small"
-                  theme="primary"
-                  loading={responding}
-                  disabled={!canRespond}
-                  onClick={handleRespond}
-                >
-                  确认同意
-                </Button>
-                <Button
-                  block
-                  size="small"
-                  theme="default"
-                  disabled={!canNegotiate}
-                  onClick={() => {
-                    setNegotiateEndTime(detail.curr_step_endtime ?? null);
-                    setNegotiateReason('');
-                    setShowNegotiateStepPopup(true);
-                  }}
-                >
-                  协商节点时间
-                </Button>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {reachedMax ? (
+                  // 最后一轮：直接显示升级上报按钮（替代管理员介入）
+                  <Button block size="small" theme="danger" onClick={openEscalate}>升级上报</Button>
+                ) : isProcessing ? (
+                  <>
+                    <Button
+                      block
+                      size="small"
+                      theme="default"
+                      disabled={negotiateDisabled}
+                      onClick={openNegotiate}
+                      title={reachedMax ? '已达最大回合，请使用升级上报' : undefined}
+                    >
+                      协商节点时间
+                    </Button>
+                    <Button
+                      block
+                      size="small"
+                      theme="primary"
+                      loading={completing}
+                      disabled={completeDisabled}
+                      onClick={handleStepComplete}
+                      title={reachedMax ? '已达最大回合，请使用升级上报' : undefined}
+                    >
+                      当前阶段完成
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      block
+                      size="small"
+                      theme="default"
+                      onClick={() => { setReturnReason(''); setShowReturnConfirmPopup(true); }}
+                    >
+                      工单退回
+                    </Button>
+                    <Button
+                      block
+                      size="small"
+                      theme="default"
+                      disabled={negotiateDisabled}
+                      onClick={openNegotiate}
+                      title={reachedMax ? '已达最大回合，请使用升级上报' : undefined}
+                    >
+                      协商节点时间
+                    </Button>
+                    <Button
+                      block
+                      size="small"
+                      theme="primary"
+                      loading={responding}
+                      disabled={respondBtnDisabled}
+                      onClick={handleRespond}
+                      title={reachedMax ? '已达最大回合，请使用升级上报' : undefined}
+                    >
+                      确认同意
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
           );
@@ -1723,7 +1826,11 @@ export default function TaskDetailPage() {
           const canOperate = hasPermission('backend:tasks:operate');
           const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
           const showRoleActions = canOperate || (assigneeOnlyStatuses.includes(status) ? isAssignee : (status === 'resolved' ? isReporter : false));
-
+          // 达到最大回合：升级上报强制可见（提单人/接单人任一），替代管理员介入
+          const round = detail.step_negotiation_round ?? 0;
+          const maxRound = detail.step_neg_max_rounds ?? 5;
+          const reachedMax = round >= maxRound;
+          const showEscalateAlone = reachedMax && (isAssignee || isReporter) && !showRoleActions;
           return (
             <div className="detail-actions">
               <div className="detail-actions__btns">
@@ -1732,8 +1839,31 @@ export default function TaskDetailPage() {
                     <Button size="small" theme="default" onClick={startEdit}>修改工单</Button>
                     <Button size="small" theme="default" onClick={() => { setReturnReason(''); setShowReturnConfirmPopup(true); }}>退回工单</Button>
                     <Button size="small" theme="default" onClick={() => { setReassignUser(null); setReassignReason(''); setShowReassignPopup(true); }}>重新指派</Button>
-                    <Button size="small" theme="default" onClick={() => { setEscalateUser(null); setEscalateReason(''); setShowEscalatePopup(true); }}>升级上报</Button>
+                    <Button
+                      size="small"
+                      theme={reachedMax ? 'danger' : 'default'}
+                      onClick={() => {
+                        setEscalateUser(null);
+                        setEscalateReason(reachedMax ? `已达最大协商回合（${round}/${maxRound}），申请升级介入。` : '');
+                        setShowEscalatePopup(true);
+                      }}
+                    >
+                      {reachedMax ? '升级上报（回合超限）' : '升级上报'}
+                    </Button>
                   </>
+                )}
+                {showEscalateAlone && (
+                  <Button
+                    size="small"
+                    theme="danger"
+                    onClick={() => {
+                      setEscalateUser(null);
+                      setEscalateReason(`已达最大协商回合（${round}/${maxRound}），申请升级介入。`);
+                      setShowEscalatePopup(true);
+                    }}
+                  >
+                    升级上报（回合超限）
+                  </Button>
                 )}
               </div>
             </div>
@@ -2066,8 +2196,28 @@ export default function TaskDetailPage() {
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">协商节点时间</h4>
           <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-            设置当前协商节点的结束时间（SLA），并可填写协商理由。
+            可将节点调整为该类型的前/后任一节点，并设置节点结束时间（SLA），协商理由必填。
           </p>
+          <Form initialData={{}}>
+            <FormItem label="协商节点" name="negotiateStepId" labelAlign="top" requiredMark>
+              <select
+                value={negotiateStepId ?? ''}
+                onChange={(e) => setNegotiateStepId(e.target.value ? Number(e.target.value) : null)}
+                style={{
+                  width: '100%', padding: '8px 10px', fontSize: 14,
+                  border: '1px solid var(--component-border, #dcdcdc)', borderRadius: 6,
+                  background: '#fff', marginBottom: 12,
+                }}
+              >
+                {(stepTemplate.length > 0
+                  ? stepTemplate
+                  : (detail?.curr_step_id ? [{ id: detail.curr_step_id, step_name: detail.curr_step_name || '当前节点', sequence: 0 }] : [])
+                ).map((s) => (
+                  <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
+                ))}
+              </select>
+            </FormItem>
+          </Form>
           {(() => {
             // 选择下限 = 工单创建时间，与最晚解决时间编辑口径一致
             const range = getDeadlineRange(detail?.priority, detail?.created_at);
@@ -2079,7 +2229,8 @@ export default function TaskDetailPage() {
                 showTime={{ defaultValue: dayjs().hour(18).minute(0), format: 'HH:mm', showNow: false }}
                 showNow={false}
                 placement="topLeft"
-                getPopupContainer={(trigger) => trigger.parentElement || document.body}
+                // 面板渲染到 body 并向上弹出，避免遮挡「协商理由」与底部按钮
+                getPopupContainer={() => document.body}
                 value={negotiateEndTime ? parseDeadlineString(negotiateEndTime) : null}
                 disabledDate={range ? makeDisabledDate(range.min) : undefined}
                 disabledTime={range ? makeDisabledTime(range.min) : undefined}
@@ -2087,16 +2238,16 @@ export default function TaskDetailPage() {
                   setNegotiateEndTime(d ? d.second(0).millisecond(0).toISOString() : null)
                 }
                 allowClear
-                styles={{ popup: { root: { zIndex: 12000 } } }}
+                styles={{ popup: { root: { zIndex: 13000 } } }}
               />
             );
           })()}
           <Form initialData={{}}>
-            <FormItem label="协商理由" name="negotiateReason" labelAlign="top">
+            <FormItem label="协商理由" name="negotiateReason" labelAlign="top" requiredMark>
               <Textarea
                 value={negotiateReason}
                 onChange={(v) => setNegotiateReason(String(v))}
-                placeholder="请输入协商理由（可选）"
+                placeholder="请输入协商理由（必填）"
                 autosize={{ minRows: 3, maxRows: 6 }}
                 maxlength={500}
               />
@@ -2104,7 +2255,7 @@ export default function TaskDetailPage() {
           </Form>
           <div className="ticket-edit__btns">
             <Button theme="default" disabled={submittingNegotiate} onClick={() => setShowNegotiateStepPopup(false)}>取消</Button>
-            <Button theme="primary" loading={submittingNegotiate} onClick={handleNegotiateStep} disabled={!negotiateEndTime}>保存</Button>
+            <Button theme="primary" loading={submittingNegotiate} onClick={handleNegotiateStep} disabled={!negotiateEndTime || !negotiateStepId || !negotiateReason.trim()}>保存</Button>
           </div>
         </div>
       </Popup>

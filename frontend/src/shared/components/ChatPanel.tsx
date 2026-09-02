@@ -10,7 +10,7 @@ import dayjs from 'dayjs';
 import { useAuthStore } from '@/stores/auth';
 import { useWorkbenchStore } from '@/stores/workbench';
 import API_CONFIG from '@/config/api';
-import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, qaClearDraft, type TicketDraft } from '@/api/ai';
+import { qaUploadStream, generateSessionId, trackSession, fetchWithAuth, qaPrepareTicket, qaConfirmTicket, qaClearDraft, qaGetTicketSteps, type TicketDraft, type TicketStep } from '@/api/ai';
 import ProjectSelect from '@/shared/components/ProjectSelect';
 import UserSelect from '@/shared/components/UserSelect';
 import RedispatchCandidateList from '@/shared/components/RedispatchCandidateList';
@@ -26,6 +26,7 @@ const REMOTE_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'other', label: '其他' },
 ];
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
+import { parseBackendDayjs } from '@/shared/utils/time';
 import type { UserItem } from '@/api/users';
 import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
 import { createRequest } from '@/api/client';
@@ -677,6 +678,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 提单基准时间：首次打开确认弹窗时固定（= 提单时刻），切换优先级/后续操作不漂移，
   // 使「最晚解决时间 = 提单时间 + 优先级时长」恒定，不随用户修改时间变化。
   const ticketBaseTimeRef = useRef<dayjs.Dayjs | null>(null);
+  // 处理阶段：弹窗打开时按工单类型拉取的步骤列表（task_steps 模板，后续可配置）
+  const [ticketSteps, setTicketSteps] = useState<TicketStep[]>([]);
+  const [stepsLoading, setStepsLoading] = useState(false);
   // 远程方式截图（object_path 数组）：弹窗内选择远程方式后才出现，上传即本地暂存、关闭弹窗清空。
   // 走 uploadCommentAttachment 拿到 object_path → 提交时塞 overrides.attachments 透传至后端。
   const [remoteShots, setRemoteShots] = useState<{ objectPath: string; fileName: string }[]>([]);
@@ -1463,6 +1467,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 projectOwner: null,
               };
             });
+            // 按 AI 识别的工单类型拉取处理阶段列表
+            void loadTicketSteps(String((data.draft as TicketDraft | undefined)?.type ?? ''));
           }
         } catch { /* JSON 行解析出错则跳过 */ }
       };
@@ -1969,6 +1975,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       setTicketMissing(null); // 已就绪，清掉待补充清单
       ticketBaseTimeRef.current = dayjs(); // 提单基准时间：生成草稿并打开弹窗时固定
       setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
+      // 按 AI 识别的工单类型拉取处理阶段列表，并回填默认阶段完成时间
+      void loadTicketSteps(String(draft.type ?? ''));
       if (missing_fields?.length) {
         // 缺失字段明细已在确认弹窗内逐字段展示，Toast 仅作短提示（避免长 prompt 被截断/喧宾夺主）
         Toast({ message: '请补全必填字段后提交', theme: 'warning', duration: 3000 });
@@ -1998,6 +2006,49 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     return deadlineRange?.max ?? null; // 未设置 → 默认显示最大值
   })();
 
+  // ── 处理阶段（当前步骤）+ 阶段完成时间（SLA）──
+  // 阶段完成时间快捷选项（天）：1/3/5/7/14，默认当前时间 +7 天，精确到分钟。
+  const STEP_QUICK_OPTIONS: { value: number; label: string }[] = [
+    { value: 1, label: '1天' },
+    { value: 3, label: '3天' },
+    { value: 5, label: '5天' },
+    { value: 7, label: '7天' },
+    { value: 14, label: '14天' },
+  ];
+  /** 阶段完成时间当前值（dayjs），未设置则返回 null */
+  const stepEndtimeValue = (() => {
+    const raw = draftField('curr_step_endtime');
+    return raw ? parseBackendDayjs(raw) : null;
+  })();
+  /** 当前选中的阶段 id（数字，未选为 undefined） */
+  const selectedStepId = (() => {
+    const raw = draftField('curr_step_id');
+    return raw ? Number(raw) : undefined;
+  })();
+
+  /** 弹窗打开/类型确定后：拉取该类型的处理阶段列表（默认不选，仅回填默认阶段完成时间 +7 天） */
+  const loadTicketSteps = useCallback(async (ticketType: string) => {
+    if (!ticketType) return;
+    setStepsLoading(true);
+    try {
+      const res = await qaGetTicketSteps(ticketType);
+      const steps = res?.data?.steps ?? [];
+      setTicketSteps(steps);
+      // 阶段完成时间默认 +7 天；已有则不动（处理阶段默认不选，由用户手动选择）
+      setTicketConfirm((s) => {
+        const overrides = { ...s.overrides };
+        if (!overrides.curr_step_endtime) {
+          overrides.curr_step_endtime = dayjs().add(7, 'day').toISOString();
+        }
+        return { ...s, overrides };
+      });
+    } catch {
+      setTicketSteps([]);
+    } finally {
+      setStepsLoading(false);
+    }
+  }, []);
+
   // ── 工单概览气泡 + 派单轮询 ──────────────────────────────────
   const tasksReq = useMemo(() => createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务'), []);
   const pollTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
@@ -2011,27 +2062,34 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // 控制台看不到请求、气泡永远显示"派单中"（只有刷新清空模块级 requestCache 后才真正请求）。
       const task = await tasksReq<{ assigned_to?: string; assigned_to_name?: string; redispatch?: { result?: Parameters<typeof redispatchTipFromResult>[0] } }>(`/${dbId}`, { skipCache: true });
       if (task.assigned_to) {
-        const assignedName = task.assigned_to_name || task.assigned_to;
-        // 二次派单感知增强（M3）：派单完成时从 redispatch.result 生成提醒文案
-        const newOv = { ...ov, assigned_to_name: assignedName, redispatch_tip: redispatchTipFromResult(task.redispatch?.result) };
-        // 注意：不能用 cancelledRef 判断是否更新内存——在 <React.StrictMode> 下，开发模式的
-        // effect 双调用会先触发 cleanup（cancelledRef.current=true）再 remount，且 useRef 不重置，
-        // 导致该标记永久为 true，setMessages 被跳过 → 气泡永远停在「派单中」（DB 却能回写）。
-        // React 18 起卸载组件上 setState 不再告警，真卸载时轮询也会被 cleanup 中断，故直接更新即可。
-        setMessages((prev) => prev.map((m) =>
-          m.id === msgId && m.ticket_overview
-            ? { ...m, ticket_overview: newOv }
-            : m
-        ));
-        // 回写 DB：派单状态持久化。切换/刷新/历史会话切走后从 DB 读到即显示"已派单"，
-        // 不再依赖内存轮询跨切换存活（此前状态只在内存，切换后丢失→气泡停在"派单中"）。
-        // 回写句柄 = 气泡 id：confirm 用 String(appendMessage 返回的 DB id)，恢复用 String(m.id)，均为 DB message id。
-        const dbMsgId = Number(msgId);
-        if (Number.isFinite(dbMsgId) && dbMsgId > 0) {
-          updateMessageContent(dbMsgId, JSON.stringify(newOv)).catch(() => {});
+        // 只接受后端解析出的真实名字 assigned_to_name，绝不用 assigned_to（裸 id）兜底显示。
+        // 若瞬时无法解析（后端 user_map 缓存缺该用户，assigned_to_name 为空/仍等于 id），
+        // 不停止轮询，继续等到解析出真实名字（或超过轮询上限），避免气泡显示裸 id。
+        const nameResolved = !!task.assigned_to_name && task.assigned_to_name !== task.assigned_to;
+        if (nameResolved) {
+          const assignedName = task.assigned_to_name as string;
+          // 二次派单感知增强（M3）：派单完成时从 redispatch.result 生成提醒文案
+          const newOv = { ...ov, assigned_to_name: assignedName, redispatch_tip: redispatchTipFromResult(task.redispatch?.result) };
+          // 注意：不能用 cancelledRef 判断是否更新内存——在 <React.StrictMode> 下，开发模式的
+          // effect 双调用会先触发 cleanup（cancelledRef.current=true）再 remount，且 useRef 不重置，
+          // 导致该标记永久为 true，setMessages 被跳过 → 气泡永远停在「派单中」（DB 却能回写）。
+          // React 18 起卸载组件上 setState 不再告警，真卸载时轮询也会被 cleanup 中断，故直接更新即可。
+          setMessages((prev) => prev.map((m) =>
+            m.id === msgId && m.ticket_overview
+              ? { ...m, ticket_overview: newOv }
+              : m
+          ));
+          // 回写 DB：派单状态持久化。切换/刷新/历史会话切走后从 DB 读到即显示"已派单"，
+          // 不再依赖内存轮询跨切换存活（此前状态只在内存，切换后丢失→气泡停在"派单中"）。
+          // 回写句柄 = 气泡 id：confirm 用 String(appendMessage 返回的 DB id)，恢复用 String(m.id)，均为 DB message id。
+          const dbMsgId = Number(msgId);
+          if (Number.isFinite(dbMsgId) && dbMsgId > 0) {
+            updateMessageContent(dbMsgId, JSON.stringify(newOv)).catch(() => {});
+          }
+          pollingRef.current.delete(msgId);
+          return; // 已派单且名字已解析，停止
         }
-        pollingRef.current.delete(msgId);
-        return; // 已派单，停止
+        // 名字未解析（仍是 id）→ 不 update 不回写，落到底部 timeout 继续轮询，等真名
       }
     } catch { /* 单次失败继续 */ }
     pollTimeoutsRef.current[msgId] = setTimeout(() => {
@@ -2127,8 +2185,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           }
           continue;
         }
-        const latestName = task.assigned_to_name || task.assigned_to;
-        if (latestName !== ov.assigned_to_name) {
+        // 只接受后端解析出的真实名字，绝不用 assigned_to（裸 id）兜底：若名字尚未解析出则跳过更新，
+        // 由 pollDispatch 继续轮询等真名，避免气泡显示裸 id（刷新后才变名字）。
+        const latestName = task.assigned_to_name;
+        if (latestName && latestName !== ov.assigned_to_name) {
           // 二次派单感知增强（M3）：同步时也刷新派单结果提醒文案
           const newOv = { ...ov, assigned_to_name: latestName, redispatch_tip: redispatchTipFromResult((task as any)?.redispatch?.result) };
           setMessages((prev) => prev.map((x) =>
@@ -2173,6 +2233,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const handleCancelTicketConfirm = () => {
     const sid = ticketConfirm.draft?.source_conversation_id ?? sessionId;
     ticketBaseTimeRef.current = null; // 关闭弹窗即清空基准，下次打开重新固定
+    setTicketSteps([]); // 关闭弹窗即清空阶段列表
     setRemoteShots([]); // 关闭弹窗即清空已上传的远程截图
     setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
     if (sid) {
@@ -2200,6 +2261,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
     if (isDual && !ticketConfirm.projectOwner) {
       Toast({ message: '请选择项目负责人', theme: 'warning' });
+      return;
+    }
+    // 处理阶段 + 阶段完成时间：均为必填
+    if (!selectedStepId) {
+      Toast({ message: '请选择本工单预期的处理阶段', theme: 'warning' });
+      return;
+    }
+    if (!stepEndtimeValue) {
+      Toast({ message: '请选择阶段完成时间', theme: 'warning' });
       return;
     }
 
@@ -2270,7 +2340,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             project_name: '摇人吧服务号提单',
             project_id: projectIdVal || '',
             assigned_to: owner.id || owner.username,
-            deadline_at: overrides.deadline_at || undefined,
+            deadline_at: overrides.deadline_at || overrides.curr_step_endtime || undefined,
             // 工单2 同步透传远程方式（写入 metadata_info）+ 远程截图（与工单1 共用 object_path）。
             // metadata_info 是 json 列，createTicket 透传；attachments 同 TasksView 新建路径。
             ...(finalRemoteType ? { metadata_info: { remote_type: finalRemoteType } } : {}),
@@ -2292,6 +2362,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       }
 
       ticketBaseTimeRef.current = null; // 提交完成关闭弹窗，清空基准
+      setTicketSteps([]); // 提交完成清空阶段列表
       setRemoteShots([]); // 提交完成清空本地远程截图暂存
       setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
       resumeFollowBottom(); // 用户主动提交：工单概览气泡追加后立即贴底展示
@@ -2744,6 +2815,50 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   disabledTime={deadlineRange ? makeDisabledTime(deadlineRange.min, deadlineRange.max) : undefined}
                   onChange={(d: dayjs.Dayjs | null) => setDraftField('deadline_at', d ? d.minute(0).second(0).millisecond(0).toISOString() : '')}
                   allowClear
+                  styles={{ popup: { root: { zIndex: 12000 } } }}
+                />
+                {/* 处理阶段（当前步骤，必填）：按 AI 识别的工单类型拉取 task_steps 模板 */}
+                <label className="ticket-confirm__label">处理阶段</label>
+                <select
+                  className="ticket-confirm__select"
+                  value={selectedStepId ?? ''}
+                  onChange={(e) => setDraftField('curr_step_id', e.target.value)}
+                >
+                  {stepsLoading
+                    ? <option value="">加载中…</option>
+                    : <option value="">请选择本工单预期的处理阶段</option>}
+                  {ticketSteps.map((s) => (
+                    <option key={s.id} value={s.id}>{s.step_name}</option>
+                  ))}
+                </select>
+                {/* 阶段完成时间（SLA，必填）：快捷选项 + 自定义精确到分钟 */}
+                <label className="ticket-confirm__label">阶段完成时间</label>
+                <div className="ticket-confirm__quick-options">
+                  {STEP_QUICK_OPTIONS.map((o) => {
+                    const active = stepEndtimeValue
+                      && stepEndtimeValue.isSame(dayjs().add(o.value, 'day'), 'minute');
+                    return (
+                      <button
+                        key={o.value}
+                        type="button"
+                        className={`ticket-confirm__quick-option${active ? ' ticket-confirm__quick-option--active' : ''}`}
+                        onClick={() => setDraftField('curr_step_endtime', dayjs().add(o.value, 'day').toISOString())}
+                      >
+                        {o.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <DatePicker
+                  style={{ width: '100%' }}
+                  placeholder="点击选择"
+                  format="YYYY-MM-DD HH:mm"
+                  showTime={{ format: 'HH:mm', showNow: true }}
+                  showNow
+                  placement="topLeft"
+                  getPopupContainer={(trigger) => trigger.parentElement || document.body}
+                  value={stepEndtimeValue}
+                  onChange={(d: dayjs.Dayjs | null) => setDraftField('curr_step_endtime', d ? d.second(0).millisecond(0).toISOString() : '')}
                   styles={{ popup: { root: { zIndex: 12000 } } }}
                 />
                 {/* 远程方式：默认无需填（空），下拉可选 ToDesk/向日葵/其他。

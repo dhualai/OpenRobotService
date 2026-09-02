@@ -37,7 +37,7 @@ from app.modules.tasks.api.ws import (
     manager,
 )
 from app.utils.minio_client import minio_client
-from app.utils.notification_utils import NotificationUtils
+from app.utils.notification_utils import NotificationUtils, _format_shanghai
 from app.integrations.api import verify_sync_api_key
 from app.core.config import settings
 from app.core.user_identity import user_matches, is_admin_user, to_user_id, actor_username, identity_keys
@@ -235,6 +235,54 @@ async def _reload_ticket_with_comments(db: AsyncSession, task_id: int):
         select(Ticket).where(Ticket.id == task_id).options(joinedload(Ticket.comments))
     )
     return result.unique().scalar_one_or_none()
+
+
+# 最近 step 更新的"操作方标识"：与 assigned_to / created_by 字段无关，只表示角色侧，
+# 便于判定工单当前该轮到哪一方。
+_ACTOR_SIDE_ASSIGNED = "assigned"
+_ACTOR_SIDE_CREATOR = "creator"
+
+
+def _actor_side(ticket, current_user, username: str) -> Optional[str]:
+    """返回当前操作人属于接单人侧(assigned) 还是 提单人侧(creator)，都不是则 None。"""
+    if user_matches(current_user, getattr(ticket, 'assigned_to', None)):
+        return _ACTOR_SIDE_ASSIGNED
+    if user_matches(current_user, getattr(ticket, 'created_by', None)):
+        return _ACTOR_SIDE_CREATOR
+    if username and username and username == getattr(ticket, 'assigned_to', None):
+        return _ACTOR_SIDE_ASSIGNED
+    if username and username == getattr(ticket, 'created_by', None):
+        return _ACTOR_SIDE_CREATOR
+    return None
+
+
+def _apply_step_update_meta(ticket, current_user, username: str) -> Dict[str, Any]:
+    """记录当前 step 更新元信息，并按对手回应规则累加回合。
+
+    返回 dict：{bump_round: bool, round_reached_max: bool}，供调用方决定是否发软提醒。
+    """
+    from sqlalchemy import func
+    side = _actor_side(ticket, current_user, username)
+    prev_side = getattr(ticket, 'step_last_updated_by', None)
+
+    # 对手回应：前一方有记录且与当前不同，加 1 回合
+    bump_round = False
+    if prev_side and side and prev_side != side:
+        bump_round = True
+        ticket.step_negotiation_round = (getattr(ticket, 'step_negotiation_round', 0) or 0) + 1
+
+    if side:
+        ticket.step_last_updated_by = side
+        ticket.step_last_updated_at = func.now()
+
+    max_rounds = getattr(ticket, 'step_neg_max_rounds', settings.TICKET_STEP_MAX_NEGOTIATION_ROUNDS) or settings.TICKET_STEP_MAX_NEGOTIATION_ROUNDS
+    return {
+        "bump_round": bump_round,
+        "round": getattr(ticket, 'step_negotiation_round', 0) or 0,
+        "max_rounds": max_rounds,
+        "round_reached_max": (getattr(ticket, 'step_negotiation_round', 0) or 0) >= max_rounds,
+        "round_almost_max": (getattr(ticket, 'step_negotiation_round', 0) or 0) == max_rounds - 1,
+    }
 
 
 @router.post("/", response_model=TicketResponse)
@@ -1437,6 +1485,10 @@ async def respond_task(
     ticket.curr_step_name = step_name
     ticket.status = TicketStatus.IN_PROGRESS
     ticket.updated_at = func.now()
+
+    # 首次响应视为接单人首轮提案：记录 updated_by=assigned（提单人"待我处理"即可命中），
+    # 不累加回合——回合从"对手回应"开始计数。
+    _apply_step_update_meta(ticket, current_user, username)
     await db.commit()
 
     # 操作日志 + 系统评论
@@ -1464,23 +1516,17 @@ async def respond_task(
     return await _reload_ticket_with_comments(db, task_id)
 
 
-class NegotiateStepRequest(BaseModel):
-    """协商节点时间请求：设置当前节点结束时间，可选附理由。"""
-    curr_step_endtime: datetime = Field(..., description="协商节点结束时间（ISO 字符串，naive UTC 存库）")
-    reason: Optional[str] = Field(None, description="协商理由（可选，记录为评论）")
-
-
-@router.post("/{task_id}/negotiate-step", response_model=TicketResponse, summary="协商节点时间：设置当前节点结束时间")
-async def negotiate_step(
+@router.post("/{task_id}/complete-step", response_model=TicketResponse, summary="当前阶段完成：推进到下一协商节点")
+async def complete_task_step(
     task_id: int,
-    body: NegotiateStepRequest,
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
     request: Request = None,
 ):
-    """设置当前协商节点的结束时间（SLA），可选附理由作为系统评论。
+    """当前协商节点完成：基于 sequence+1 选择同类型的下一节点。
 
-    权限：AI 工单允许任何登录用户；其余需处理人/管理员/操作权限。
+    更新 curr_step_id/curr_step_name 并清空 curr_step_endtime（新节点未协商时间）；
+    已是最后一个节点时返回 400。
     """
     ticket = await TicketService.get_ticket_by_id(db, task_id)
     if not ticket:
@@ -1494,14 +1540,41 @@ async def negotiate_step(
     if ticket.source == 'ai':
         pass
     elif not (user_matches(current_user, ticket.assigned_to) or is_admin or can_operate):
-        raise HTTPException(status_code=403, detail="无权限协商此工单")
+        raise HTTPException(status_code=403, detail="无权限操作此工单")
 
-    # 前端 dayjs(...).toISOString() 传入 UTC aware datetime，剥时区转 naive UTC 存库
-    endtime = convert_to_shanghai_time(body.curr_step_endtime)
-    ticket.curr_step_endtime = endtime
+    if ticket.status != TicketStatus.IN_PROGRESS:
+        raise HTTPException(status_code=400, detail="仅处理中的工单可完成当前阶段")
+    if ticket.curr_step_id is None:
+        raise HTTPException(status_code=400, detail="当前节点不存在，无法推进")
+
+    # 反查当前节点，确定 sequence
+    cur_row = await db.execute(select(TaskStep).where(TaskStep.id == int(ticket.curr_step_id)))
+    cur_step = cur_row.unique().scalar_one_or_none()
+    if cur_step is None:
+        raise HTTPException(status_code=400, detail="当前节点不存在，无法推进")
+
+    # 基于 sequence+1 选择下一节点（同 task_type，sequence 升序取第一个更大的）
+    next_row = await db.execute(
+        select(TaskStep)
+        .where(TaskStep.task_type == ticket.task_type, TaskStep.sequence > cur_step.sequence)
+        .order_by(TaskStep.sequence.asc())
+        .limit(1)
+    )
+    next_step = next_row.scalars().first()
+    if next_step is None:
+        raise HTTPException(status_code=400, detail="已是最后一个节点，无法推进")
+
+    old_step_name = ticket.curr_step_name or cur_step.step_name
+    ticket.curr_step_id = next_step.id
+    ticket.curr_step_name = next_step.step_name
+    ticket.curr_step_endtime = None
     ticket.updated_at = func.now()
+
+    # 阶段完成 = 当前操作人"提案"推进到下一节点，记入回合
+    round_meta = _apply_step_update_meta(ticket, current_user, username)
     await db.commit()
 
+    # 操作日志 + 系统评论
     user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
     _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
     await OperationLogService.log(
@@ -1510,13 +1583,124 @@ async def negotiate_step(
         op_type=OperationType.UPDATE,
         operator=username,
         operator_name=user_name,
-        detail={"curr_step_endtime": endtime.isoformat() if endtime else None},
-        description=f"{_role}{user_name} 设置协商节点时间" if _role else f"{user_name} 设置协商节点时间",
+        detail={
+            "from_step": old_step_name,
+            "to_step": next_step.step_name,
+            "negotiation_round": round_meta["round"],
+        },
+        description=f"{_role}{user_name} 完成阶段「{old_step_name}」，进入「{next_step.step_name}」" if _role else f"{user_name} 完成阶段「{old_step_name}」，进入「{next_step.step_name}」",
     )
-    reason = (body.reason or "").strip()
+    comment_lines = [f"{user_name} 完成阶段「{old_step_name}」，进入「{next_step.step_name}」"]
+    if round_meta["bump_round"]:
+        comment_lines.append(f"（本轮协商回合：{round_meta['round']}/{round_meta['max_rounds']}）")
+        if round_meta["round_almost_max"]:
+            comment_lines.append("⚠️ 已临近最大协商回合，请尽快收敛；若仍无法达成一致可使用升级上报。")
     await _add_system_comment(
         db, task_id,
-        f"设置协商节点时间{('：' + reason) if reason else ''}",
+        "".join(comment_lines),
+        username, token,
+    )
+    try:
+        await ws_broadcast_task_updated(task_id, ticket)
+    except Exception:
+        pass
+    return await _reload_ticket_with_comments(db, task_id)
+
+
+class NegotiateStepRequest(BaseModel):
+    """协商节点请求：可调整节点（前/后均可）+ 设置节点结束时间，理由必填。"""
+    curr_step_endtime: datetime = Field(..., description="协商节点结束时间（ISO 字符串，naive UTC 存库）")
+    curr_step_id: Optional[int] = Field(None, description="协商后的节点ID（前/后均可；不传则保持当前节点）")
+    reason: str = Field(..., description="协商理由（必填，记录为评论）")
+
+
+@router.post("/{task_id}/negotiate-step", response_model=TicketResponse, summary="协商节点：调整节点并设置节点结束时间")
+async def negotiate_step(
+    task_id: int,
+    body: NegotiateStepRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+    request: Request = None,
+):
+    """协商节点：可将当前节点调整为同类型的前/后任一节点，并设置节点结束时间（SLA）。
+
+    协商理由必填，作为系统评论记录。
+    权限：AI 工单允许任何登录用户；其余需处理人/管理员/操作权限。
+    """
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
+    token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
+    can_operate = has_permission_code(current_user, "backend:tasks:operate")
+
+    # 权限：接单人 / 提单人 / 管理员 / 操作权限均可协商（回合双方对话）
+    _is_assignee = user_matches(current_user, ticket.assigned_to)
+    _is_creator = user_matches(current_user, ticket.created_by)
+    if ticket.source != 'ai' and not (_is_assignee or _is_creator or is_admin or can_operate):
+        raise HTTPException(status_code=403, detail="无权限协商此工单")
+
+    # 协商理由必填
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="协商理由必填")
+
+    # 节点调整（前/后均可）：校验目标节点存在且与工单类型匹配
+    old_step_name = ticket.curr_step_name
+    step_changed = False
+    if body.curr_step_id is not None and int(body.curr_step_id) != ticket.curr_step_id:
+        row = await db.execute(select(TaskStep).where(TaskStep.id == int(body.curr_step_id)))
+        target_step = row.unique().scalar_one_or_none()
+        if target_step is None:
+            raise HTTPException(status_code=400, detail="协商节点不存在")
+        if target_step.task_type != ticket.task_type:
+            raise HTTPException(status_code=400, detail="协商节点与工单类型不匹配")
+        ticket.curr_step_id = target_step.id
+        ticket.curr_step_name = target_step.step_name
+        step_changed = True
+
+    # 前端 dayjs(...).toISOString() 传入 UTC aware datetime，剥时区转 naive UTC 存库
+    endtime = convert_to_shanghai_time(body.curr_step_endtime)
+    ticket.curr_step_endtime = endtime
+    ticket.updated_at = func.now()
+
+    # 回合计数：对手回应 +1
+    round_meta = _apply_step_update_meta(ticket, current_user, username)
+    await db.commit()
+
+    user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
+    _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
+    # 节点时间按东八区展示（DB 为 naive UTC）
+    endtime_label = _format_shanghai(endtime)
+    action_desc = (
+        f"协商将节点「{old_step_name}」调整为「{ticket.curr_step_name}」（节点时间 {endtime_label}）"
+        if step_changed
+        else f"协商节点「{ticket.curr_step_name}」时间（{endtime_label}）"
+    )
+    await OperationLogService.log(
+        db=db,
+        task_id=task_id,
+        op_type=OperationType.UPDATE,
+        operator=username,
+        operator_name=user_name,
+        detail={
+            "from_step": old_step_name if step_changed else None,
+            "to_step": ticket.curr_step_name,
+            "curr_step_endtime": endtime.isoformat() if endtime else None,
+            "negotiation_round": round_meta["round"],
+        },
+        description=f"{_role}{user_name} {action_desc}" if _role else f"{user_name} {action_desc}",
+    )
+    comment_lines = [f"{user_name} {action_desc}，理由：{reason}"]
+    if round_meta["bump_round"]:
+        comment_lines.append(f"（本轮协商回合：{round_meta['round']}/{round_meta['max_rounds']}）")
+        if round_meta["round_almost_max"]:
+            comment_lines.append("⚠️ 已临近最大协商回合，请尽快收敛；若仍无法达成一致可使用升级上报。")
+    await _add_system_comment(
+        db, task_id,
+        "".join(comment_lines),
         username, token,
     )
     try:

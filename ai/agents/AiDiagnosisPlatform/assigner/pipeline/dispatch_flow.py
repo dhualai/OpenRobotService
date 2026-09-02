@@ -840,6 +840,7 @@ class DispatchFlow:
         if strong_name:
             # 二次派单感知增强（M5/M6）：精确全等 → 拼音全拼兜底；同名/同音多人走画像完整度/单轮 LLM
             matches, pinyin_hit = self._match_engineer_with_pinyin(strong_name, engineers)
+            winner = None
             if matches:
                 winner, llm_reason = await self._pick_collision(ticket, strong_name, matches)
                 collision = len(matches) > 1
@@ -848,6 +849,21 @@ class DispatchFlow:
                     reason += "（按拼音匹配）"
                 if llm_reason:
                     reason += f"（{llm_reason}）"
+            else:
+                # 指定的人在准入工程师池匹配不到（可能缺画像）→ 全量 active 用户兜底，
+                # 只要确有其人就直接派过去（用户指定优先，不再要求满足工程师画像）。
+                _m = self._match_preferred_everyone(strong_name)
+                if _m:
+                    _everyone_id, _everyone_name, _everyone_py = _m
+                    from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile as _EP
+                    winner = _EP(id=_everyone_id, name=_everyone_name)
+                    pinyin_hit = _everyone_py
+                    collision = False
+                    reason = f"提单Agent指定接单人: {strong_name} → 匹配 {winner.name}（无完整画像，按指定直接指派）"
+                    if pinyin_hit:
+                        reason += "（按拼音匹配）"
+                    llm_reason = ""
+            if winner is not None:
                 # 排单强信号匹配过程：保留 INFO，便于看日志了解"为何派给此人"。
                 # 行首整齐由 logging.ReadableFormatter 解决（[派单:N] 前的定位信息移至行尾）。
                 logger.info(
@@ -855,6 +871,7 @@ class DispatchFlow:
                     f"→ {winner.name}{'(' + winner.id + ')' if collision else ''}"
                     f"{' 同名=' + str(len(matches)) if collision else ''}"
                     f"{'[拼音]' if pinyin_hit else ''}"
+                    f"{'[全量兜底/无画像]' if not matches else ''}"
                 )
                 return AssignmentResult(
                     engineer_id=winner.id,
@@ -865,6 +882,8 @@ class DispatchFlow:
                     decision_type="auto",
                     name_collision=collision,
                     pinyin_match=pinyin_hit,
+                    # 携带被派人画像（含 missing），供落库后_redispatch_tip/详情显示「画像不完整」
+                    profile=_engineer_profile_dict(winner),
                 )
             logger.info(
                 f"[派单:{ticket.id}] Step0 强信号指定 '{strong_name}' 未匹配到工程师，走正常派单"
@@ -919,36 +938,55 @@ class DispatchFlow:
 
         # 匹配工程师名（二次派单感知增强 M5/M6：精确→拼音；同名/同音多人走画像完整度/单轮 LLM）
         matches, pinyin_hit = self._match_engineer_with_pinyin(preferred_name, engineers)
-        if not matches:
+        winner = None
+        if matches:
+            winner, llm_reason = await self._pick_collision(ticket, preferred_name, matches)
+            collision = len(matches) > 1
+            reason = f"提单人指定接单人: {preferred_name} → 匹配 {winner.name}"
+            if pinyin_hit:
+                reason += "（按拼音匹配）"
+            if llm_reason:
+                reason += f"（{llm_reason}）"
+        else:
+            # 指定的处理人在准入工程师池匹配不到（可能缺画像）→ 全量 active 用户兜底，
+            # 只要确有其人就直接派过去（用户指定优先，不再要求满足工程师画像）。
+            _m = self._match_preferred_everyone(preferred_name)
+            if _m:
+                _everyone_id, _everyone_name, _everyone_py = _m
+                from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile as _EP
+                winner = _EP(id=_everyone_id, name=_everyone_name)
+                pinyin_hit = _everyone_py
+                collision = False
+                reason = f"提单人指定接单人: {preferred_name} → 匹配 {winner.name}（无完整画像，按指定直接指派）"
+                if pinyin_hit:
+                    reason += "（按拼音匹配）"
+                llm_reason = ""
+        if winner is not None:
             logger.info(
-                f"[派单:{ticket.id}] Step0 提单人指定 '{preferred_name}'，"
-                f"未匹配到工程师，走正常派单"
+                f"[派单:{ticket.id}] Step0 [提单人指定] '{preferred_name}'"
+                f" → {winner.name}{'(' + winner.id + ')' if collision else ''}"
+                f"{' 同名=' + str(len(matches)) if collision else ''}"
+                f"{'[拼音]' if pinyin_hit else ''}"
+                f"{'[全量兜底/无画像]' if not matches else ''}"
             )
-            return None
+            return AssignmentResult(
+                engineer_id=winner.id,
+                engineer_name=winner.name,
+                # 拼音命中 confidence 降为 0.85（D7）；精确/同名评估维持默认
+                confidence_score=0.85 if pinyin_hit else 0.95,
+                reasoning=reason,
+                decision_type="auto",
+                name_collision=collision,
+                pinyin_match=pinyin_hit,
+                # 携带被派人画像（含 missing），供落库后_redispatch_tip/详情显示「画像不完整」
+                profile=_engineer_profile_dict(winner),
+            )
 
-        winner, llm_reason = await self._pick_collision(ticket, preferred_name, matches)
-        collision = len(matches) > 1
-        reason = f"提单人指定接单人: {preferred_name} → 匹配 {winner.name}"
-        if pinyin_hit:
-            reason += "（按拼音匹配）"
-        if llm_reason:
-            reason += f"（{llm_reason}）"
         logger.info(
-            f"[派单:{ticket.id}] Step0 [提单人指定] '{preferred_name}'"
-            f" → {winner.name}{'(' + winner.id + ')' if collision else ''}"
-            f"{' 同名=' + str(len(matches)) if collision else ''}"
-            f"{'[拼音]' if pinyin_hit else ''}"
+            f"[派单:{ticket.id}] Step0 提单人指定 '{preferred_name}'，"
+            f"未匹配到工程师，走正常派单"
         )
-        return AssignmentResult(
-            engineer_id=winner.id,
-            engineer_name=winner.name,
-            # 拼音命中 confidence 降为 0.85（D7）；精确/同名评估维持默认
-            confidence_score=0.85 if pinyin_hit else 0.95,
-            reasoning=reason,
-            decision_type="auto",
-            name_collision=collision,
-            pinyin_match=pinyin_hit,
-        )
+        return None
 
     # 指派意图名词（命中才触发 LLM 识别，避免无谓 LLM 调用）
     _PREFERRED_INTENT_RE = None
@@ -1064,6 +1102,36 @@ class DispatchFlow:
         except Exception:
             pass
         return py_hits, True
+
+    def _match_preferred_everyone(self, name: str) -> Optional[tuple]:
+        """全量 active 用户兜底匹配（含无画像者）：精确全等 → 拼音全拼；返回 (uid, uname, pinyin_hit)。
+
+        用途：当指定的处理人在「准入画像工程师列表」里匹配不到（例如 TA 缺部门/责任模块，没进派单候选池），
+        只要该人确实存在于 users（status='active'），仍按用户意愿直接指派——即「指定了就直接派过去」。
+        返回 None 表示全量 active 用户里也没有该人（只能走正常派单）。
+        """
+        if not name:
+            return None
+        try:
+            from ai.agents.AiDiagnosisPlatform.assigner.sync.engineers_sync import _fetch_from_users_table
+            rows = _fetch_from_users_table()
+        except Exception as e:
+            logger.warning(f"[派单] Step0 全量兜底匹配加载用户失败: {e}")
+            return None
+        if not rows:
+            return None
+        name = name.strip()
+        # 精确全等
+        exact = [r for r in rows if (r.get("name") or "").strip() == name]
+        if exact:
+            return exact[0]["id"], exact[0]["name"], False
+        # 拼音全拼兜底
+        name_py = self._to_pinyin(name)
+        if name_py:
+            py = [r for r in rows if self._to_pinyin((r.get("name") or "").strip()) == name_py]
+            if py:
+                return py[0]["id"], py[0]["name"], True
+        return None
 
     async def _pick_collision(
         self, ticket: TicketContext, pref_name: str, matches: List[EngineerProfile],
