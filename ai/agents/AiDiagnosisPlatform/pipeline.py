@@ -136,6 +136,10 @@ class AgentState:
     # 上次提单之后的对话（created_at 严格大于锚点，提单收尾话术归上一单）。
     # 0 = 从未提单/老会话无锚点 → 附件保持全量历史（回退旧行为）。
     last_ticket_submitted_at: int = 0
+    # 提交/取消后用户是否又发过新消息（0901 闸门判据重构）。提交与取消收尾时
+    # 置 False，之后每条新用户消息置 True——_can_submit 只拦「提交后用户一句话
+    # 没说」的机器性重复触发；说过话即视为新对话，提单放行（判断真伪交 LLM）。
+    user_spoke_after_submit: bool = False
     # 同字段连续未收集轮数（防鬼打墙保险丝）：收集轮结束仍缺的字段 +1，收到值
     # 或跳过则清零；连续 _MAX_FIELD_ASK_ROUNDS 轮收不到 → 服务端强制记「无」
     # 移出清单（0825 生产：用户三答「#595工单里有」仍被追问账户名 4 次）
@@ -207,6 +211,7 @@ def _load_agent_state(metadata: dict) -> Optional[AgentState]:
         pending_prefill_project=s.get("pending_prefill_project") or None,
         ticket_boundary_prefix=str(s.get("ticket_boundary_prefix") or ""),
         last_ticket_submitted_at=int(s.get("last_ticket_submitted_at") or 0),
+        user_spoke_after_submit=bool(s.get("user_spoke_after_submit", False)),
         field_ask_rounds=dict(s.get("field_ask_rounds") or {}),
         ticket_ref_context=str(s.get("ticket_ref_context") or ""),
         project_asked=bool(s.get("project_asked", False)),
@@ -245,6 +250,7 @@ def _save_agent_state(memory, state: AgentState) -> None:
         "pending_prefill_project": state.pending_prefill_project,
         "ticket_boundary_prefix": state.ticket_boundary_prefix,
         "last_ticket_submitted_at": state.last_ticket_submitted_at,
+        "user_spoke_after_submit": state.user_spoke_after_submit,
         "field_ask_rounds": state.field_ask_rounds,
         "ticket_ref_context": state.ticket_ref_context,
         "project_asked": state.project_asked,
@@ -268,23 +274,27 @@ def _agent_state_summary(state: AgentState) -> dict:
 
 
 def _can_submit(state: AgentState) -> tuple[bool, str]:
-    """闭环保护：防止重复提交工单。
+    """闭环保护：防「提交后用户一句话没说」的机器性重复提单。
 
-    判定依据是 last_submitted_ticket（上一个已提交工单）+ problem_summary（新问题）：
-    刚提完单（last_submitted_ticket 非空）且之后没有提炼出新 problem_summary 时拦截；
-    用户描述了新问题（problem_summary 非空）则允许重新开始提单流程。
+    判据（0901 重构）：last_submitted_ticket 非空（提交过或取消过草稿）且
+    之后用户没再发过任何消息（user_spoke_after_submit=False）时拦截。
+    用户只要又说话了就视为开启新对话，提单放行——新消息算不算真新问题
+    由 LLM 在提单流程里判断，闸门不再用 problem_summary 判断（旧判据的
+    写入口在 state_update 工具，而诊断全走 oneshot 单轮分支无工具，
+    summary 永远没人写 → 用户描述得再详细也被拦，0901 生产实锤）。
 
-    例外：收集模式（ticket_collecting 非空）说明提单流程已启动、问题已在对话中确认
-    （首轮就设了 required_fields），此时绝不拦截——否则用户在补字段时会被
-    「刚提交过工单」误拦，submit 失效后 LLM 反复追问同一字段、收集轮数超限强制弹窗。
+    例外：收集模式（ticket_collecting 非空）说明提单流程已启动、问题已在
+    对话中确认（首轮就设了 required_fields），此时绝不拦截——否则用户在
+    补字段时会被「刚提交过工单」误拦，submit 失效后 LLM 反复追问同一字段、
+    收集轮数超限强制弹窗。
 
     不依赖 phase——run_stream 会提前把 phase 改成 diagnosing，phase 不可靠。
     对话路径和按钮路径都调用此函数，行为一致。
     """
     if state.ticket_collecting:
         return True, ""
-    if state.last_submitted_ticket and not (state.problem_summary or "").strip():
-        return False, "刚放弃或提交过工单，如需重新提交请描述新现象。"
+    if state.last_submitted_ticket and not state.user_spoke_after_submit:
+        return False, "刚放弃或提交过工单，请先描述新问题再提单。"
     return True, ""
 
 
@@ -423,6 +433,7 @@ def _reset_state_after_submit(agent_state: AgentState, memory, ticket: dict, db_
     }
     # 清空诊断状态——下一轮自动开始新诊断
     agent_state.problem_summary = ""
+    agent_state.user_spoke_after_submit = False  # 闸门重新武装：防同轮/狂点重复触发
     agent_state.ruled_out = []
     agent_state.hypotheses = []
     agent_state.collected_info = {}
@@ -1190,6 +1201,10 @@ class AiDiagnosisPlatform:
         self._retriever = None
         self._memory_manager = None
         self._retrieval_cache: dict = {}  # 实例级缓存，不跨 session 串味
+        # 会话级 KB 图片白名单：本轮（及本会话历史轮）注入过 prompt 的图片 URL。
+        # 回复出口用它拦截 LLM 编造的图片链接（文件名幻觉——prompt 管不住，
+        # 机械校验兜底：进过 prompt 的 URL 才允许出现在回复里）。
+        self._kb_image_allowlist: dict = {}
 
     # 缺 media/ 段的 KB 图片 URL 兜底：LLM 回答里偶发把 /kb/{domain}/{sub}/{file}
     # 拼成少了 /media/ 的坏 URL（如 .../manual/image111.png → 静态挂载 404）。
@@ -1200,6 +1215,8 @@ class AiDiagnosisPlatform:
     _KB_IMG_FILE_RE = re.compile(
         r'^(/api/ai/media/kb/.+)/([^/]+\.(?:png|jpe?g|gif|webp|bmp|ico))$',
         re.IGNORECASE)
+    # 从检索资料文本里抽全部 KB 图片 URL（注入 prompt 的即合法）
+    _KB_IMG_URL_RE = re.compile(r'/api/ai/media/kb/[^\s)\]]+')
 
     def _cleanup_kb_image_urls(self, text: str) -> str:
         """对最终回答里的 KB 图片 URL 做兜底清洗：补回缺失的 /media/ 段。
@@ -1228,6 +1245,34 @@ class AiDiagnosisPlatform:
             lambda mo: f"{mo.group(1)}{_repair(mo.group(2))}{mo.group(3)}",
             text,
         )
+
+    def _strip_unknown_kb_images(self, text: str, session_id: str) -> str:
+        """拦截 LLM 编造的 KB 图片链接：回复里的 ![..](/api/ai/media/kb/..)
+        URL 不在本会话注入过 prompt 的白名单里 → 整个图片标记删除。
+
+        白名单在 _retrieve_with_context 组装资料时累积（会话内 union）——
+        进过 prompt 的图片文件一定真实存在（入库时从文档提取）。LLM 幻觉
+        出的文件名（如 manual/image9.png 实际不存在）在这里到不了前端。
+        无白名单（本会话没检索过，如纯闲聊）时不动任何图片。
+        """
+        allow = self._kb_image_allowlist.get(session_id)
+        if not text or "/api/ai/media" not in text or not allow:
+            return text
+
+        removed = []
+
+        def _drop(mo):
+            url = mo.group(2)
+            if url in allow:
+                return mo.group(0)
+            removed.append(url.rsplit("/", 1)[-1])
+            return ""
+
+        text = self._KB_IMG_REF_RE.sub(_drop, text)
+        if removed:
+            logger.info(f"[kb_img] 拦截 {len(removed)} 个白名单外图片"
+                        f"（LLM 编造/抄错）: {removed[:3]}")
+        return text
 
     def _rewrite_images(self, r) -> str:
         """把本地图片路径 ./media/xxx → 完整静态路由 URL（跳过外链）
@@ -1292,9 +1337,10 @@ class AiDiagnosisPlatform:
             _save_agent_state(memory, agent_state)
             await self._memory_manager.save_memory(memory)
         elif agent_state.phase == "resolved" and not agent_state.problem_summary:
-            # 提单后/答完后新一轮：phase 转 diagnosing，但 problem_summary 保持空。
-            # 不把 query 当 problem——否则裸"转工单"会伪造出新问题、绕过闭环保护。
-            # 真正的新问题由本轮 LLM 在 _apply_state_update 中提炼。
+            # 提单后/答完后新一轮：phase 转 diagnosing，summary 保持空。
+            # 不把 query 当 problem（防裸「转工单」伪造新问题）；闸门放行
+            # 已由 user_spoke_after_submit 负责，summary 仅供提单草稿，
+            # 为空时由诊断 oneshot 分支回填。
             agent_state.phase = "diagnosing"
             agent_state.original_query = request.query
             _save_agent_state(memory, agent_state)
@@ -2140,6 +2186,8 @@ class AiDiagnosisPlatform:
         # （如 .../manual/image111.png），静态挂载 404 → 前端渲染成横线/丢图。
         # 在落盘/返回前补回 /media/，幂等且不误伤已正确的 URL。
         message = self._cleanup_kb_image_urls(message)
+        # 再拦白名单外图片（先修复 /media/ 缺段再比对，两种清洗顺序不能反）
+        message = self._strip_unknown_kb_images(message, session_id)
 
         # 手动添加 turn + 更新 agent_state，一次 save_memory 完成
         memory = await self._memory_manager.get_memory(session_id)
@@ -2512,6 +2560,7 @@ class AiDiagnosisPlatform:
                         "topic": state.problem_summary or "",
                         "submitted_at": int(time.time()),
                     }
+                    state.user_spoke_after_submit = False  # 取消即重新武装闸门
                 state.tool_loop_active = False
                 state.collected_info = {}
                 state.problem_summary = ""
@@ -2842,7 +2891,8 @@ class AiDiagnosisPlatform:
     # 诊断/闲聊单轮分支（无工具往返）：服务端检索 + 1 次 LLM 直接回答
     # ================================================================
     async def _diagnosis_oneshot_branch(self, request: DiagnosisRequest, state: AgentState,
-                                        memory, reference_docs: str = ""):
+                                        memory, reference_docs: str = "",
+                                        fill_problem_summary: bool = False):
         """诊断与闲聊共用：一次 LLM 调用直接出答案，不再有工具往返。
 
         检索由服务端完成（三路检索与意图分类并发，100-400ms），结果直接
@@ -2865,6 +2915,15 @@ class AiDiagnosisPlatform:
             "涉及系统内部变更时说「调度系统的行为变了」这类用户能懂的话\n"
             "- 结尾自然收尾即可，不要每条回复都以「建议转工单」结尾\n"
             "规则：\n"
+            "- 🔴 回答结构按问题类型分：\n"
+            "  · 故障/异常排查类（用户在描述现象、要定位原因）：先一段简短分析——把用户"
+            "描述的现象与知识库资料对照，说明符合哪种情况、最可能的原因是什么、为什么；"
+            "资料与现象对不上时在分析里明说，不要硬套资料。分析后再给结论和具体步骤。\n"
+            "  · 操作/配置/使用咨询类（怎么做、怎么配、在哪设置、流程是什么）：直接给"
+            "结论和操作步骤，开头一句话点明这个操作在哪个功能模块、分几部分即可，"
+            "不要写分析段。\n"
+            "  · 概念解释、信息查询、闲聊问候：直接回答。\n"
+            "  分析段要短（两三句），是对照判断，不是复述资料原文\n"
             "- 🔴 对话里「图片主要内容为：…」是图像识别生成的画面转述，不是用户亲口说的话："
             "识别可能出错，其中的推测措辞（可能/疑似）不是事实，与用户文字矛盾时以用户文字为准；"
             "用户只发图没配文字时不要默认在报障——先判断意图（查图上的错 / 问界面怎么操作 / 告知情况），"
@@ -2887,7 +2946,7 @@ class AiDiagnosisPlatform:
             "- 知识库内容中的 ![](url) 是操作界面截图：与当前问题直接相关的截图，"
             "必须用 ![说明](url) 格式引用到回复中对应步骤下面；与问题无关的图片一律不要带。"
             "介绍产品/车型时，知识库中若有该产品的图片，必须用 ![说明](url) 引用，不要省略\n"
-            "- 回答控制在 500 字以内，步骤/操作类回答可放宽到 800 字，"
+            "- 回答控制在 600 字以内（含分析段），步骤/操作类回答可放宽到 900 字，"
             "宁可简短完整，不要写太长（防止被截断）\n"
             "- 知识库内容没有覆盖时，才如实说明手册未收录这一部分，给出通用排查方向；"
             "用户问题确实需要人工处理时才提转工单，语气自然"
@@ -2937,6 +2996,22 @@ class AiDiagnosisPlatform:
                     f"final_text_len={len(final_text)}")
         if final_text and not streamed:
             yield {"event": "token", "data": final_text}
+        # 提单问题上下文回填（0901）：本分支无工具调用，LLM 没机会通过
+        # state_update 提炼 problem_summary——上一单提交后用户描述的新问题
+        # 会一直缺 summary，后续「转工单」时草稿拿不到问题描述、多问一轮。
+        # summary 为空时用本轮 query 填充；非空不覆盖（省略式追问不能顶掉
+        # 已提炼的问题）。闸门（_can_submit）已不依赖 summary——回填纯为
+        # 提单草稿供上下文。courtesy/问候调用点不传 fill_problem_summary。
+        if fill_problem_summary and not (state.problem_summary or "").strip() \
+                and (request.query or "").strip():
+            state.problem_summary = request.query.strip()[:120]
+            try:
+                _save_agent_state(memory, state)
+                await self._memory_manager.save_memory(memory)
+                logger.info(f"[diag_oneshot] 回填 problem_summary（闭环保护放行）: "
+                            f"session={request.session_id}")
+            except Exception as e:
+                logger.warning(f"[diag_oneshot] 回填 problem_summary 持久化失败: {e}")
         result_data = await self._finalize_diagnosis(
             request.session_id, state,
             thinking="", action="answer", message=final_text or "请稍后重试。",
@@ -3428,17 +3503,24 @@ class AiDiagnosisPlatform:
 
         # sub_domain → 标签映射
         _sub_labels = {
-            "platform": "🎫 服务号", "yaorenba": "🎫 服务号",
+            "platform": "🎫 服务号", "yaorenba": "🎫 服务号", "ORS": "🎫 服务号",
             "faq": "📋 FAQ", "usp_faq": "📋 FAQ", "usp/faq": "📋 FAQ",
+            "USP/faq": "📋 FAQ",
             "cheduan_errors": "🚗 车端", "cheduan_implementation": "🚗 车端",
-            "translation": "🌐 翻译",
+            "cheduan_calibration": "🚗 车端", "cheduan_io": "🚗 车端",
+            "motion_control": "🚗 车端",
+            "vehicle_errors": "🚗 车端", "vehicle_implementation": "🚗 车端",
+            "vehicle_calibration": "🚗 车端", "vehicle_io": "🚗 车端",
+            "vehicle_motion": "🚗 车端",
+            "translation": "🌐 翻译", "USP/translation": "🌐 翻译",
             "diagnosis": "🏭 诊断", "usp/diagnosis": "🏭 诊断",
-            "usp_manual": "📖 手册", "usp/manual": "📖 手册",
+            "USP/diagnosis": "🏭 诊断", "USP/troubleshooting": "🏭 排查树",
+            "usp_manual": "📖 手册", "usp/manual": "📖 手册", "USP/manual": "📖 手册",
             "usp_cards": "🔍 诊断卡",
-            "usp/overview": "📘 模块文档",
-            "usp/error_codes": "🚨 平台错误码",
-            "usp/ui_pages": "🧭 页面导航",
-            "usp/terminology": "🔤 术语表",
+            "usp/overview": "📘 模块文档", "USP/overview": "📘 模块文档",
+            "usp/error_codes": "🚨 平台错误码", "USP/error_codes": "🚨 平台错误码",
+            "usp/ui_pages": "🧭 页面导航", "USP/ui_pages": "🧭 页面导航",
+            "usp/terminology": "🔤 术语表", "USP/terminology": "🔤 术语表",
             "product_catalog": "🏢 产品", "vda5050_protocol": "🏢 协议",
             "navigation": "📐 导航", "standards": "📐 标准",
         }
@@ -3458,7 +3540,9 @@ class AiDiagnosisPlatform:
             except Exception:
                 _cheduan_exact = []
         _cheduan_found = any(
-            (r.sub_domain or "") in ("cheduan_errors", "cheduan_implementation")
+            (r.sub_domain or "") in (
+                "cheduan_errors", "cheduan_implementation",
+                "vehicle_errors", "vehicle_implementation")
             for r in _cheduan_exact
         )
 
@@ -3482,11 +3566,8 @@ class AiDiagnosisPlatform:
                 seen.add(r.id)
                 uniq.append(r)
 
-        # 双路保送后候选池收窄：按「稠密 top4 + 稀疏 top4」平衡截断。
-        # 两路原始分尺度不同(稀疏 1-2 vs 稠密余弦 0.5-0.6),按单一分数排序会把
-        # 另一路保送挤掉——平衡截断保证关键词命中和语义命中都进精排。
-        # 同时收窄精排输入:最终只取 3 条且双路第1有保底注入,精排只需在 8 对
-        # 里挑第 3 条;12 对时 v2-m3 CPU 精排 3-4s/轮,8 对约 2.5s。
+        # 双路分池（按原始分各自排序，尺度不同不能混排）：
+        # 稀疏 1-2 vs 稠密余弦 0.5-0.6，混排会把一路挤掉。
         _dense_part = sorted(
             [r for r in uniq if r.vector_score], key=lambda r: r.vector_score, reverse=True)
         _sparse_part = sorted(
@@ -3494,12 +3575,6 @@ class AiDiagnosisPlatform:
         logger.info(f"[retrieve] 池诊断: 总{len(uniq)} 稠密{len(_dense_part)} 稀疏{len(_sparse_part)} "
                     f"稠密top5={[(round(r.vector_score, 4), (r.title or '')[:24]) for r in _dense_part[:5]]} "
                     f"稀疏top3={[(round(r.sparse_score, 3), (r.title or '')[:24]) for r in _sparse_part[:3]]}")
-        _balanced, _seen2 = [], set()
-        for r in _dense_part[:4] + _sparse_part[:4]:
-            if r.id not in _seen2:
-                _seen2.add(r.id)
-                _balanced.append(r)
-        uniq = _balanced
 
         # 最终选取：双路平衡直选（精排已从主链路摘除）。
         # 车端错误码精确命中优先：精确码匹配是最高置信度，且 cheduan_exact 结果
@@ -3552,8 +3627,19 @@ class AiDiagnosisPlatform:
                 _final_tags.append(tag)
                 _taken += 1
 
-        _take(_dense_part[:7], 4, "密")
-        _take(_sparse_part[:5], 2, "疏")
+        # 精排重接（0901）：cross-encoder 对候选池（密4+疏4，去重后 ≤8 对 ≈1.5s CPU）
+        # 全池重排，取代此前「密4+疏2」双池直选。双池直选对「正确答案排稠密
+        # 第 5+」无解（v2 审计 70% 覆盖率的主因）；cross-encoder 语义判断把池内
+        # 真相关的顶进 top6。码保送与同节 cap 不变；reranker 失败时
+        # _rerank_results 内部降级为候选原序。
+        _balanced, _seen_bal = [], set()
+        for r in _dense_part[:4] + _sparse_part[:4]:
+            if r.id not in _seen_bal:
+                _seen_bal.add(r.id)
+                _balanced.append(r)
+        _reranked = await self._retriever._rerank_results(
+            search_query, _balanced, top_k=_PROMPT_DOCS)
+        _take(_reranked, _PROMPT_DOCS - len(_final), "精")
         if _capped:
             logger.info(f"[retrieve] 同节cap挤掉{len(_capped)}条（命中但未进prompt）: {' | '.join(_capped[:5])}")
         uniq = _final[:_PROMPT_DOCS]
@@ -3573,13 +3659,23 @@ class AiDiagnosisPlatform:
             idx += 1
         _dist = {t: _final_tags.count(t) for t in set(_final_tags)}
         logger.info(f"[retrieve] 命中{len(all_results)}去重{len(uniq)}送prompt{len(hit_logs)}"
-                    f"(密{_dist.get('密', 0)}/疏{_dist.get('疏', 0)}/码{_dist.get('码', 0)}): "
+                    f"(精{_dist.get('精', 0)}/码{_dist.get('码', 0)}): "
                     f"{' | '.join(hit_logs)} 总耗时{round((time.perf_counter() - t0) * 1000)}ms")
 
         if not docs:
             logger.warning(f"[retrieve] 送prompt为0条（各域召回与池诊断见上方日志——"
                            f"域全0=检索/集合异常，有召回但低分=知识库未覆盖）: query={search_query[:50]}")
         result = "\n".join(docs) if docs else "（知识库暂无匹配文档，请告知用户当前手册未覆盖此问题，建议转工单处理，不要自己编造答案。）"
+
+        # KB 图片白名单累积（会话内 union）：本轮注入 prompt 的图片 URL 全部合法。
+        # 覆盖后续出口拦截 _strip_unknown_kb_images；会话级 union 而非每轮覆盖——
+        # 用户「刚才那张图再发一次」时 LLM 从历史轮抄的 URL 也应放行。
+        _urls = set(self._KB_IMG_URL_RE.findall(result))
+        if _urls:
+            self._kb_image_allowlist.setdefault(session_id, set()).update(_urls)
+            if len(self._kb_image_allowlist) > 500:  # 防长期泄漏，粗暴清空（老会话拦截退化为放行）
+                self._kb_image_allowlist.clear()
+                self._kb_image_allowlist[session_id] = _urls
 
         self._retrieval_cache[cache_key] = {"result": result, "ts": time.time()}
         # 防止缓存无限增长
@@ -3733,9 +3829,8 @@ class AiDiagnosisPlatform:
             "对话中的排查是否已把问题锁定到具体部件/单点？\n"
             "2. 开工要素：工程师要定位/复现/处理该问题，最少必须知道什么？"
             "（时间、位置、编号、版本、操作路径、期望与实际的差异……按问题域取舍。"
-            "🔴 问题已锁定到具体部件时，要素只围绕该部件收敛——如已锁定"
-            "「单个充电桩硬件故障」，要的是桩的编号/位置和故障现象，"
-            "车辆编号与修桩无关，一律不列）\n"
+            "🔴 问题已锁定到具体部件时，要素只围绕该部件收敛——只收该部件的"
+            "标识与故障现象，其他部件/对象的编号一律不列）\n"
             "3. 对照对话：逐项核对第 2 步要素——用户已经说过什么"
             "（含顺带提到、换说法说过、能直接推出的）？哪些要素用户（现场人员）答得上来？\n"
             "4. 定字段：从「未说、用户能答、且与处理该问题直接相关」中挑 2 个核心 + 0-2 个补充\n\n"
@@ -3762,7 +3857,7 @@ class AiDiagnosisPlatform:
             "用户未必知道，把这类列为待补字段会逼用户回答「不知道」\n"
             "- 🔴 字段必须服务于**本问题**的定位/复现/处理，不是同类工单的通用"
             "模板：对话已锁定问题部件/原因时，只收处理该问题所需的信息，"
-            "「这类设备工单通常都收 XX」不构成理由（如修充电桩不需要车辆编号）\n"
+            "「这类设备工单通常都收 XX」不构成理由\n"
             "- 🔴 用户粘贴历史对话记录/复述之前 AI 的回答作背景时，第 1 步先判"
             "工单主题：用户对记录内容有态度/诉求（不满意/投诉/应该是XX/要求按XX"
             "方案处理）→ 主题=该诉求本身（如「对 AI 回答不满意要求优化回答质量」"
@@ -4883,6 +4978,15 @@ class AiDiagnosisPlatform:
         agent_state = _load_agent_state(memory.metadata)
         logger.debug(f"[overhead] init+redis={(time.perf_counter() - t_req)*1000:.0f}ms")
 
+        # 闸门解除武装（0901 判据重构）：上一单提交/取消后用户又发消息了——
+        # 无论内容是什么（诊断/闲聊/新问题），都视为开启新对话，_can_submit
+        # 放行后续提单。本轮若真又提交了单，收尾会重新置回 False（防同轮重复）。
+        if agent_state is not None and agent_state.last_submitted_ticket \
+                and not agent_state.user_spoke_after_submit:
+            agent_state.user_spoke_after_submit = True
+            _save_agent_state(memory, agent_state)
+            await self._memory_manager.save_memory(memory)
+
         if agent_state is None:
             agent_state = AgentState(
                 session_id=request.session_id,
@@ -4899,9 +5003,10 @@ class AiDiagnosisPlatform:
             _save_agent_state(memory, agent_state)
             await self._memory_manager.save_memory(memory)
         elif agent_state.phase == "resolved" and not agent_state.problem_summary:
-            # 提单后/答完后新一轮：phase 转 diagnosing，但 problem_summary 保持空。
-            # 不把 query 当 problem——否则裸"转工单"会伪造出新问题、绕过闭环保护。
-            # 真正的新问题由本轮 LLM 在 _apply_state_update 中提炼。
+            # 提单后/答完后新一轮：phase 转 diagnosing，summary 保持空。
+            # 不把 query 当 problem（防裸「转工单」伪造新问题）；闸门放行
+            # 已由 user_spoke_after_submit 负责，summary 仅供提单草稿，
+            # 为空时由诊断 oneshot 分支回填。
             agent_state.phase = "diagnosing"
             agent_state.original_query = request.query
             _save_agent_state(memory, agent_state)
@@ -5184,7 +5289,8 @@ class AiDiagnosisPlatform:
                         reference_docs = ""
                         logger.info(f"[stream] 意图判 diagnosis_nokb，取消检索直接单轮: session={request.session_id}")
                         _cancel_prefetch()
-                    async for ev in self._diagnosis_oneshot_branch(request, state, memory, reference_docs):
+                    async for ev in self._diagnosis_oneshot_branch(
+                            request, state, memory, reference_docs, fill_problem_summary=True):
                         yield ev
                     return
                 # 诊断单轮：等资料（plan-execute=执行规划工具；否则并发检索）
@@ -5195,7 +5301,8 @@ class AiDiagnosisPlatform:
                                 f"session={request.session_id}")
                 else:
                     logger.info(f"[stream] 诊断走单轮分支（服务端检索+1次LLM）: session={request.session_id}")
-                    async for ev in self._diagnosis_oneshot_branch(request, state, memory, reference_docs):
+                    async for ev in self._diagnosis_oneshot_branch(
+                            request, state, memory, reference_docs, fill_problem_summary=True):
                         yield ev
                     return
             elif _intent == "courtesy":
@@ -5227,7 +5334,8 @@ class AiDiagnosisPlatform:
                 # 兜底（意图识别失败按 diagnosis 处理）：等资料 → 单轮分支
                 reference_docs = await _get_reference_docs()
                 logger.info(f"[stream] 意图兜底走单轮分支: session={request.session_id}")
-                async for ev in self._diagnosis_oneshot_branch(request, state, memory, reference_docs):
+                async for ev in self._diagnosis_oneshot_branch(
+                        request, state, memory, reference_docs, fill_problem_summary=True):
                     yield ev
                 return
 
@@ -5660,6 +5768,7 @@ class AiDiagnosisPlatform:
                     "topic": _cancelled_topic,
                     "submitted_at": int(time.time()),
                 }
+                state.user_spoke_after_submit = False  # 取消即重新武装闸门
             _save_agent_state(memory, state)
             await self._memory_manager.save_memory(memory)
             parsed["action"] = "answer"

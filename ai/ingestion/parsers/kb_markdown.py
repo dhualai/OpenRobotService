@@ -9,14 +9,14 @@
   - faq           → 按 ## 分大节 → 按 ### 切 QA（一 QA 一 chunk）
   - usp_faq       → 同 faq 策略（Q&A 细粒度切分）
   - usp_manual    → 按 ## 切块（保留标题行），提取图片，§2.1 按 ### 细切
-  - cheduan_errors → 按表格行切分错误码
+  - cheduan_errors   → 按表格行切分错误码（目录已改名 vehicle_errors，路由双名兼容）
   - 其他          → 按 ## 切块，超长段落（>3000 字符）按 ### 细切
 
-sub_domain 自动推断规则：
-    kb/team/faq/faq.md          → sub_domain = "faq"
-    kb/team/usp_faq/xxx.md      → sub_domain = "usp_faq"
-    kb/team/usp_manual/xxx.md   → sub_domain = "usp_manual"
-    kb/company/cheduan_errors/  → sub_domain = "cheduan_errors"
+sub_domain 自动推断规则（相对 kb/{domain}/ 的父目录路径，正斜杠）：
+    kb/team/USP/faq/faq.md        → sub_domain = "USP/faq"
+    kb/team/USP/manual/manual.md  → sub_domain = "USP/manual"
+    kb/company/vehicle_errors/    → sub_domain = "vehicle_errors"（2026-09-01 前 cheduan_errors）
+（消费端 pipeline._sub_labels / retrieval._sub_labels 两处同步维护标签映射）
 """
 import re
 from pathlib import Path
@@ -118,7 +118,8 @@ class KBDomainIngester(BaseIngester[KBEntry]):
                 file_entries = self._split_faq(content, sub_domain, source_file)
             elif "manual" in _rel:
                 file_entries = self._split_manual(content, sub_domain, source_file)
-            elif sub_domain in ("cheduan_errors",) or "cheduan_errors" in _rel:
+            elif (sub_domain in ("cheduan_errors", "vehicle_errors")
+                  or "cheduan_errors" in _rel or "vehicle_errors" in _rel):
                 file_entries = self._split_cheduan_errors(content, sub_domain, source_file)
             else:
                 file_entries = self._split_generic(content, sub_domain, source_file)
