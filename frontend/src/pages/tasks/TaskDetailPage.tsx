@@ -126,6 +126,8 @@ interface Ticket {
   step_neg_max_rounds?: number;
   // 当前协商节点是否已协商一致：确认同意 → True；进入新节点 / 协商节点时间 → 重置 False
   curr_step_agreed?: boolean;
+  // 升级上报次数：>0 表示已升级，协商回合重置为1且不再受限
+  escalate_count?: number;
 }
 
 // 协商阶段模板步骤（GET /{task_id}/steps 返回）
@@ -1504,7 +1506,10 @@ export default function TaskDetailPage() {
           // 回合展示
           const round = detail.step_negotiation_round ?? 1;
           const maxRound = detail.step_neg_max_rounds ?? 5;
-          const reachedMax = round >= maxRound;          // 最后一轮：显示升级上报替代协商
+          const isEscalated = (detail.escalate_count ?? 0) > 0;
+          const escalateCount = detail.escalate_count ?? 0;
+          // 已升级上报后不再受回合上限限制
+          const reachedMax = !isEscalated && round >= maxRound;
           const lastStepBy = detail.step_last_updated_by;
           // 轮到当前用户：assigned = 接单人回合；creator = 提单人回合；无值 = 默认接单人回合
           const { isAssignee, isReporter } = getCurrentUserRoles();
@@ -1542,16 +1547,21 @@ export default function TaskDetailPage() {
                       ● 已达最大回合，请使用升级上报
                     </span>
                   )}
+                  {isEscalated && (
+                    <span style={{ fontSize: 12, color: '#92400e', fontWeight: 500 }}>
+                      ● 已升级上报（第{escalateCount}次），协商不受回合限制
+                    </span>
+                  )}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                   <span
-                    title="协商回合：接单人↔提单人来回应答计数"
+                    title={isEscalated ? `已升级上报（第${escalateCount}次），协商不受回合限制` : "协商回合：接单人↔提单人来回应答计数"}
                     style={{
                       display: 'inline-block', padding: '3px 10px', borderRadius: 999,
-                      background: pillBg, color: pillColor, fontSize: 12, fontWeight: 500, lineHeight: 1.4,
+                      background: isEscalated ? '#fef3c7' : pillBg, color: isEscalated ? '#92400e' : pillColor, fontSize: 12, fontWeight: 500, lineHeight: 1.4,
                     }}
                   >
-                    交涉回合 {round} / {maxRound}
+                    {isEscalated ? `已升级×${escalateCount} · 回合 ${round}` : `交涉回合 ${round} / ${maxRound}`}
                   </span>
                 </div>
               </div>
@@ -1868,9 +1878,12 @@ export default function TaskDetailPage() {
           const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
           const showRoleActions = canOperate || (assigneeOnlyStatuses.includes(status) ? isAssignee : (status === 'resolved' ? isReporter : false));
           // 达到最大回合：升级上报强制可见（提单人/接单人任一），替代管理员介入
-          const round = detail.step_negotiation_round ?? 0;
+          const round = detail.step_negotiation_round ?? 1;
           const maxRound = detail.step_neg_max_rounds ?? 5;
-          const reachedMax = round >= maxRound;
+          const isEscalated = (detail.escalate_count ?? 0) > 0;
+          const escalateCount = detail.escalate_count ?? 0;
+          // 已升级上报后不再受回合上限限制
+          const reachedMax = !isEscalated && round >= maxRound;
           const showEscalateAlone = reachedMax && (isAssignee || isReporter) && !showRoleActions;
           return (
             <div className="detail-actions">

@@ -276,12 +276,18 @@ def _apply_step_update_meta(ticket, current_user, username: str) -> Dict[str, An
         ticket.step_last_updated_at = func.now()
 
     max_rounds = getattr(ticket, 'step_neg_max_rounds', settings.TICKET_STEP_MAX_NEGOTIATION_ROUNDS) or settings.TICKET_STEP_MAX_NEGOTIATION_ROUNDS
+    cur_round = getattr(ticket, 'step_negotiation_round', 1) or 1
+    esc_count = int(getattr(ticket, 'escalate_count', 0) or 0)
+    is_escalated = esc_count > 0
     return {
         "bump_round": bump_round,
-        "round": getattr(ticket, 'step_negotiation_round', 1) or 1,
+        "round": cur_round,
         "max_rounds": max_rounds,
-        "round_reached_max": (getattr(ticket, 'step_negotiation_round', 1) or 1) >= max_rounds,
-        "round_almost_max": (getattr(ticket, 'step_negotiation_round', 1) or 1) == max_rounds - 1,
+        "escalate_count": esc_count,
+        "escalated": is_escalated,
+        # 已升级上报后不再受回合上限限制
+        "round_reached_max": (not is_escalated) and cur_round >= max_rounds,
+        "round_almost_max": (not is_escalated) and cur_round == max_rounds - 1,
     }
 
 
@@ -896,12 +902,18 @@ async def update_task(
                 changed_fields.append(key)
         
         if op_type_str == 'escalate':
+            # 升级上报：escalate_count +1，协商回合重置为1，不再受回合上限限制
+            prev_count = int(getattr(ticket, 'escalate_count', 0) or 0)
+            ticket.escalate_count = prev_count + 1
+            ticket.step_negotiation_round = 1
+            ticket.curr_step_agreed = False
             await OperationLogService.log(
                 db=db, task_id=task_id, op_type=OperationType.ESCALATE,
                 operator=username, operator_name=user_name,
-                description=f"{_role}{user_name} 升级了工单" if _role else f"{user_name} 升级了工单",
+                detail={"escalate_count": prev_count + 1, "round_reset": 1},
+                description=f"{_role}{user_name} 升级了工单（第{prev_count + 1}次），协商回合重置为1，不再受限" if _role else f"{user_name} 升级了工单（第{prev_count + 1}次），协商回合重置为1，不再受限",
             )
-            await _add_system_comment(db, task_id, f"{user_name} 升级了工单", username, token)
+            await _add_system_comment(db, task_id, f"{user_name} 升级了工单（第{prev_count + 1}次），协商回合重置为1，不再受回合上限限制", username, token)
         elif op_type_str == 'return':
             await OperationLogService.log(
                 db=db, task_id=task_id, op_type=OperationType.RETURN,
