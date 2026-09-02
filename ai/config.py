@@ -44,6 +44,9 @@ _KB_POINTERS = {
 class AIConfig(BaseModel):
     """AI 模块配置（值全部来自环境变量，即 .env）"""
 
+    # ========== 服务端口（run.py 启动时读取，优先来自 ai/.env）==========
+    port: int = Field(default=8401, description="AI 服务监听端口")
+
     # ========== DeepSeek LLM ==========
     deepseek_api_key: str = Field(default="", description="DeepSeek API Key")
     deepseek_base_url: str = Field(default="https://api.deepseek.com", description="API 地址")
@@ -252,6 +255,8 @@ def get_ai_config() -> AIConfig:
     注意：qdrant_collection_name 可能被指针文件覆盖（见 get_active_collection）
     """
     return AIConfig(
+        # 服务端口
+        port=int(os.getenv("PORT", "8401")),
         # DeepSeek
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
         deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
