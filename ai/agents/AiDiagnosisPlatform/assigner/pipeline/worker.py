@@ -337,7 +337,7 @@ class AssignmentWorker:
     def _update_task_assignee(task_id: int, result) -> bool:
         """将派单结果写回 tasks 表"""
         try:
-            from app.models.task import Task, TaskStatus, TaskOperationLog, OperationType
+            from app.models.task import Task, TaskOperationLog, OperationType
             from app.models.task_dispatch_log import TaskDispatchLog
             from app.core.db import SessionLocal
             from sqlalchemy import func
@@ -349,13 +349,10 @@ class AssignmentWorker:
                     logger.warning(f"派单结果写回失败: task_id={task_id} 不存在")
                     return False
 
-                # 状态快照：派单前状态（new），供状态变更日志 detail 使用
-                old_status = task.status.value if hasattr(task.status, 'value') else str(task.status)
-
                 # engineer_id 已统一为 users.id（与 assigned_to 一致），无需反查
+                # 注意：派单成功只写 assigned_to，不改状态——工单保持「新建」，
+                # 由处理人「首次响应」（POST /{task_id}/respond）后才进入「处理中」。
                 task.assigned_to = result.engineer_id or None
-                if task.assigned_to:
-                    task.status = TaskStatus.IN_PROGRESS
                 task.updated_at = func.now()
 
                 # ── 派单日志：统一落 task_dispatch_log（append-only，见需求方案 §4.2 §九-M1）。
@@ -389,16 +386,9 @@ class AssignmentWorker:
                 if task.assigned_to:
                     _AI_OP = "ai_dispatch"
                     _AI_OP_NAME = "AI 派单"
-                    _STATUS_CN = {
-                        TaskStatus.NEW.value: "新建",
-                        TaskStatus.IN_PROGRESS.value: "处理中",
-                        TaskStatus.PENDING.value: "待处理",
-                        TaskStatus.RESOLVED.value: "已解决",
-                        TaskStatus.CANCELED.value: "已取消",
-                        TaskStatus.CLOSED.value: "已关闭",
-                    }
                     engineer_name = result.engineer_name or task.assigned_to or ""
-                    # 1) AI 派单记录：「工单已派单给 XXX」
+                    # AI 派单记录：「工单已派单给 XXX」（不写状态变更日志：
+                    # 派单不改状态，状态流转由处理人「首次响应」触发）
                     db.add(TaskOperationLog(
                         task_id=task.id,
                         operation_type=OperationType.AI_ASSIGN,
@@ -412,17 +402,6 @@ class AssignmentWorker:
                             "reasoning": (result.reasoning or "")[:500],
                         },
                         description=f"工单已派单给 {engineer_name}",
-                    ))
-                    # 2) 状态变更记录：new → in_progress
-                    new_status_val = TaskStatus.IN_PROGRESS.value
-                    db.add(TaskOperationLog(
-                        task_id=task.id,
-                        operation_type=OperationType.STATUS_CHANGE,
-                        operator=_AI_OP,
-                        operator_name=_AI_OP_NAME,
-                        to_status=new_status_val,
-                        detail={"from": old_status, "to": new_status_val},
-                        description=f"工单状态变更为「{_STATUS_CN.get(new_status_val, new_status_val)}」",
                     ))
 
                 db.commit()

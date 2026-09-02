@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
-import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot } from 'lucide-react';
+import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, Calendar } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
@@ -212,7 +212,9 @@ export default function TaskDetailPage() {
   // 工单阶段性处理（协商节点）
   const [stepTemplate, setStepTemplate] = useState<StepTemplate[]>([]);
   const [responding, setResponding] = useState(false);
+  const [completing, setCompleting] = useState(false);
   const [showNegotiateStepPopup, setShowNegotiateStepPopup] = useState(false);
+  const [negotiateStepId, setNegotiateStepId] = useState<number | null>(null);
   const [negotiateEndTime, setNegotiateEndTime] = useState<string | null>(null);
   const [negotiateReason, setNegotiateReason] = useState('');
   const [submittingNegotiate, setSubmittingNegotiate] = useState(false);
@@ -856,23 +858,47 @@ export default function TaskDetailPage() {
     }
   };
 
-  // 协商节点时间：设置当前节点结束时间 + 理由
+  // 当前阶段完成：基于 sequence+1 推进到下一协商节点
+  const handleStepComplete = async () => {
+    if (!detail) return;
+    setCompleting(true);
+    try {
+      await request(`/${detail.id}/complete-step`, { method: 'POST', body: JSON.stringify({}) });
+      await refreshDetail();
+      Toast({ message: '当前阶段已完成，进入下一节点', theme: 'success' });
+    } catch (err) {
+      Toast({ message: `操作失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setCompleting(false);
+    }
+  };
+
+  // 协商节点：可调整节点（前/后均可）+ 设置节点结束时间，理由必填
   const handleNegotiateStep = async () => {
     if (!detail) return;
     if (!negotiateEndTime) {
       Toast({ message: '请选择协商节点时间', theme: 'warning' });
       return;
     }
+    if (!negotiateReason.trim()) {
+      Toast({ message: '请填写协商理由', theme: 'warning' });
+      return;
+    }
     setSubmittingNegotiate(true);
     try {
       await request(`/${detail.id}/negotiate-step`, {
         method: 'POST',
-        body: JSON.stringify({ curr_step_endtime: negotiateEndTime, reason: negotiateReason.trim() || null }),
+        body: JSON.stringify({
+          curr_step_endtime: negotiateEndTime,
+          curr_step_id: negotiateStepId,
+          reason: negotiateReason.trim(),
+        }),
       });
       await refreshDetail();
-      Toast({ message: '协商节点时间已设置', theme: 'success' });
+      Toast({ message: '协商节点已更新', theme: 'success' });
       setNegotiateReason('');
       setNegotiateEndTime(null);
+      setNegotiateStepId(null);
       setShowNegotiateStepPopup(false);
     } catch (err) {
       Toast({ message: `设置失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -1396,6 +1422,15 @@ export default function TaskDetailPage() {
             <div className="detail-info-item">
               <span className="detail-info-item__icon"><Clock size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
+                <span className="detail-info-item__label">当前阶段时间</span>
+                <span className="detail-info-item__value">
+                  {detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '未设置'}
+                </span>
+              </div>
+            </div>
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon"><Calendar size={14} strokeWidth={2} /></span>
+              <div className="detail-info-item__content">
                 <span className="detail-info-item__label">创建时间</span>
                 <span className="detail-info-item__value">{formatDateTime(detail.created_at)}</span>
               </div>
@@ -1433,9 +1468,18 @@ export default function TaskDetailPage() {
             ? `当前节点：${stepName}${total > 0 ? `（${currIdx >= 0 ? currIdx + 1 : '-'} / ${total}）` : ''}`
             : '当前节点：尚未设置协商节点';
           const endtimeText = detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '';
-          const isNew = status === 'new';
-          const canRespond = isNew && !!detail.curr_step_id;
+          const isProcessing = status === 'in_progress';
+          const canRespond = status === 'new' && !!detail.curr_step_id;
           const canNegotiate = !!detail.curr_step_id;
+          // 是否还有下一节点（模板未加载时不禁用，由后端兜底校验）
+          const currSeq = currIdx >= 0 ? stepTemplate[currIdx].sequence : null;
+          const hasNext = currSeq === null ? true : stepTemplate.some((s) => s.sequence > currSeq);
+          const openNegotiate = () => {
+            setNegotiateStepId(detail.curr_step_id ?? null);
+            setNegotiateEndTime(detail.curr_step_endtime ?? null);
+            setNegotiateReason('');
+            setShowNegotiateStepPopup(true);
+          };
           return (
             <div className="detail-card">
               <h4 className="detail-card__h">工单阶段性处理</h4>
@@ -1448,37 +1492,61 @@ export default function TaskDetailPage() {
                 )}
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <Button
-                  block
-                  size="small"
-                  theme="default"
-                  onClick={() => { setReturnReason(''); setShowReturnConfirmPopup(true); }}
-                >
-                  工单退回
-                </Button>
-                <Button
-                  block
-                  size="small"
-                  theme="primary"
-                  loading={responding}
-                  disabled={!canRespond}
-                  onClick={handleRespond}
-                >
-                  确认同意
-                </Button>
-                <Button
-                  block
-                  size="small"
-                  theme="default"
-                  disabled={!canNegotiate}
-                  onClick={() => {
-                    setNegotiateEndTime(detail.curr_step_endtime ?? null);
-                    setNegotiateReason('');
-                    setShowNegotiateStepPopup(true);
-                  }}
-                >
-                  协商节点时间
-                </Button>
+                {isProcessing ? (
+                  <>
+                    {/* 首次响应后的处理中状态：协商节点时间 | 当前阶段完成 */}
+                    <Button
+                      block
+                      size="small"
+                      theme="default"
+                      disabled={!canNegotiate}
+                      onClick={openNegotiate}
+                    >
+                      协商节点时间
+                    </Button>
+                    <Button
+                      block
+                      size="small"
+                      theme="primary"
+                      loading={completing}
+                      disabled={!hasNext}
+                      onClick={handleStepComplete}
+                    >
+                      当前阶段完成
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    {/* 新建状态：工单退回 | 协商节点时间 | 确认同意 */}
+                    <Button
+                      block
+                      size="small"
+                      theme="default"
+                      onClick={() => { setReturnReason(''); setShowReturnConfirmPopup(true); }}
+                    >
+                      工单退回
+                    </Button>
+                    <Button
+                      block
+                      size="small"
+                      theme="default"
+                      disabled={!canNegotiate}
+                      onClick={openNegotiate}
+                    >
+                      协商节点时间
+                    </Button>
+                    <Button
+                      block
+                      size="small"
+                      theme="primary"
+                      loading={responding}
+                      disabled={!canRespond}
+                      onClick={handleRespond}
+                    >
+                      确认同意
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
           );
@@ -2066,8 +2134,28 @@ export default function TaskDetailPage() {
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">协商节点时间</h4>
           <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-            设置当前协商节点的结束时间（SLA），并可填写协商理由。
+            可将节点调整为该类型的前/后任一节点，并设置节点结束时间（SLA），协商理由必填。
           </p>
+          <Form initialData={{}}>
+            <FormItem label="协商节点" name="negotiateStepId" labelAlign="top" requiredMark>
+              <select
+                value={negotiateStepId ?? ''}
+                onChange={(e) => setNegotiateStepId(e.target.value ? Number(e.target.value) : null)}
+                style={{
+                  width: '100%', padding: '8px 10px', fontSize: 14,
+                  border: '1px solid var(--component-border, #dcdcdc)', borderRadius: 6,
+                  background: '#fff', marginBottom: 12,
+                }}
+              >
+                {(stepTemplate.length > 0
+                  ? stepTemplate
+                  : (detail?.curr_step_id ? [{ id: detail.curr_step_id, step_name: detail.curr_step_name || '当前节点', sequence: 0 }] : [])
+                ).map((s) => (
+                  <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
+                ))}
+              </select>
+            </FormItem>
+          </Form>
           {(() => {
             // 选择下限 = 工单创建时间，与最晚解决时间编辑口径一致
             const range = getDeadlineRange(detail?.priority, detail?.created_at);
@@ -2079,7 +2167,8 @@ export default function TaskDetailPage() {
                 showTime={{ defaultValue: dayjs().hour(18).minute(0), format: 'HH:mm', showNow: false }}
                 showNow={false}
                 placement="topLeft"
-                getPopupContainer={(trigger) => trigger.parentElement || document.body}
+                // 面板渲染到 body 并向上弹出，避免遮挡「协商理由」与底部按钮
+                getPopupContainer={() => document.body}
                 value={negotiateEndTime ? parseDeadlineString(negotiateEndTime) : null}
                 disabledDate={range ? makeDisabledDate(range.min) : undefined}
                 disabledTime={range ? makeDisabledTime(range.min) : undefined}
@@ -2087,16 +2176,16 @@ export default function TaskDetailPage() {
                   setNegotiateEndTime(d ? d.second(0).millisecond(0).toISOString() : null)
                 }
                 allowClear
-                styles={{ popup: { root: { zIndex: 12000 } } }}
+                styles={{ popup: { root: { zIndex: 13000 } } }}
               />
             );
           })()}
           <Form initialData={{}}>
-            <FormItem label="协商理由" name="negotiateReason" labelAlign="top">
+            <FormItem label="协商理由" name="negotiateReason" labelAlign="top" requiredMark>
               <Textarea
                 value={negotiateReason}
                 onChange={(v) => setNegotiateReason(String(v))}
-                placeholder="请输入协商理由（可选）"
+                placeholder="请输入协商理由（必填）"
                 autosize={{ minRows: 3, maxRows: 6 }}
                 maxlength={500}
               />
@@ -2104,7 +2193,7 @@ export default function TaskDetailPage() {
           </Form>
           <div className="ticket-edit__btns">
             <Button theme="default" disabled={submittingNegotiate} onClick={() => setShowNegotiateStepPopup(false)}>取消</Button>
-            <Button theme="primary" loading={submittingNegotiate} onClick={handleNegotiateStep} disabled={!negotiateEndTime}>保存</Button>
+            <Button theme="primary" loading={submittingNegotiate} onClick={handleNegotiateStep} disabled={!negotiateEndTime || !negotiateStepId || !negotiateReason.trim()}>保存</Button>
           </div>
         </div>
       </Popup>
