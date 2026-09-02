@@ -370,8 +370,15 @@ class LlmDecision:
             if d.get("is_creator"):
                 tags.append("[自提单人]")
             tag_str = (" " + " ".join(tags)) if tags else ""
+            # 职级语义：L1 一线 / L2 管理·审核 / L3 最高（兜底）。数字越大职级越高、越是上级，
+            # 供 LLM 在用户重派备注提到"上报上级/请领导"时据此选择更合适职级的人。
+            _lv_txt = {
+                1: "L1一线",
+                2: "L2管理·审核",
+                3: "L3最高·兜底",
+            }.get(int(eng.job_level or 1), f"L{eng.job_level}")
             lines.append(
-                f"#{rank} ID:{eng.id} | L{eng.job_level} | {dep} "
+                f"#{rank} ID:{eng.id} | {_lv_txt} | {dep} "
                 f"|{eng.modules_display()}{tag_str}"
             )
             lines.append(
@@ -491,15 +498,21 @@ class LlmDecision:
             "6. 候选带 [自提单人] 标签 = 该候选人是本工单的提单人（自己提的单）。自提不是禁接，"
             "由你判断是否恰当：若其职责/模块确实最匹配（如『派单算法 bug』由派单引擎负责人自提报修），"
             "可正常采纳该自提单人；否则优先派给更合适的非提单人，并在 reasoning 说明。",
+            "7. 候选带职级标注（L1 一线 / L2 管理·审核 / L3 最高·兜底，数字越大职级越高）。"
+            "若用户重派备注/工单描述中提到「上报给上级/请领导/需要审批/领导处理」等诉求，"
+            "说明用户希望由更高级别的人处理，应优先选择职级更高者承接（在职责/模块匹配的前提下），"
+            "并在 reasoning 说明选的是上级。",
         ])
 
         lines.extend([
             "",
             "输出 JSON。",
             "★ engineer_id 必须是候选人列表中该人选对应的 ID（「ID:」字段，即 users.id），必须精确复制，不要填姓名或自造标识（系统内部落库用）。",
-            "★ reasoning（派单说明）最终会展示给用户，用自然语言说明为什么选这位（类型/产品/模块/精排分数/是否遵循用户意向等），无需提及 users.id 等内部标识。",
-            "  （系统展示时会自动把 reasoning 中出现的候选人 id 替换为姓名，你只需给出准确依据即可。）",
-            '{"ticket_category":"support", "problem_domain":"产品", "product":"", "engineer_id":"<精确复制候选ID>", "confidence_score":0.85, "reasoning":"理由(说明类型/产品/模块/环节判断)", "decision_type":"auto"}',
+            "★ reasoning（派单说明）最终会展示给提单人：请写**一句话、最简洁精炼**的核心原因",
+            "（如某候选类型/产品/模块更匹配、精排分数最高、满足用户指定意向等），能短则短，",
+            "一句话说清即可，不要写多句、不要罗列各项维度分数。可直接用候选人姓名指代，",
+            "不要刻意输出 users.id 等内部标识（即便误带入，系统展示时也会自动替换为姓名，不影响）。",
+            '{"ticket_category":"support", "problem_domain":"产品", "product":"", "engineer_id":"<精确复制候选ID>", "confidence_score":0.85, "reasoning":"一句话简洁原因，例如：该候选产品模块匹配度最高且为该项目对接人", "decision_type":"auto"}',
             "decision_type: auto(>=0.8) / recommend(0.5-0.8) / fallback(<0.5)",
         ])
         return "\n".join(lines)
@@ -517,14 +530,7 @@ class LlmDecision:
         if not eng:
             return None
         dt = data.get("decision_type", "fallback").strip().lower()
-        # ticket_category / problem_domain / product 为审计字段：纳入 reasoning 便于排查
-        cat = data.get("ticket_category", "")
-        dom = data.get("problem_domain", "")
-        prod = data.get("product", "")
         reason = data.get("reasoning", "").strip()
-        audit = "/".join(filter(None, [cat, dom, prod]))
-        if audit and reason:
-            reason = f"[{audit}] {reason}"
 
         # 面向用户展示清洗：决策全程用 id，但给用户看的 reasoning 里把出现的候选人 id
         # 替换为姓名（id 长且唯一，误伤率极低）。先处理带 ID: 前缀/括号形态，再兜底裸 id。
