@@ -1,5 +1,6 @@
 /// <reference types="vitest" />
 import { defineConfig } from 'vite';
+import type { ProxyOptions } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import { compression } from 'vite-plugin-compression2';
@@ -21,7 +22,8 @@ const APP_BASE = process.env.VITE_APP_BASE || '/';
 
 export default defineConfig(({ command }) => {
   // 仅 dev(serve) 生效的代理；build 不启动 dev server，生产走 nginx 分发
-  const proxy = command === 'serve' ? {
+  // 显式标注类型：否则空对象分支会被推断为 { '/api/ai'?: undefined } 联合类型，与 server.proxy 不兼容
+  const proxy: Record<string, ProxyOptions> = command === 'serve' ? {
     // AI 服务（/api/ai/*，含 SSE 流式）→ 8401；须排在 /api 之前，保证最长前缀优先命中
     '/api/ai': {
       target: DEV_AI_TARGET,

@@ -1,8 +1,8 @@
 // 后台管理 —— "其他"入口（从仪表盘「更多功能」进入）
 // 仪表盘（/admin，Dashboard.tsx）是默认首页；本页仅承载不常用的管理员工具入口。
 // 样式参考 macaron other 页：surface-card 行式入口 + 色调淡色图标圆角块。
-// 顶部用户统计：柱状图（同日期新增/取消用户合计）+ 环形图（真实/虚拟用户构成，中心显示总数）+ 饼图（时间段内来源分布）
-// + 用户来源分布饼图（最新快照全部关注用户的 subscribe_scene 分布，不受筛选框影响），
+// 顶部用户统计改为同页两个分组框：左侧分组顶部放时间筛选框，并展示与筛选框联动的
+// 用户增减趋势 + 关注来源分布；右侧分组展示不受筛选框影响的当前用户构成 + 用户来源分布。
 // 数据源后端 /api/wechat/user-summary-db 与 /api/wechat/batch-user-info-db（读 user_statistics/user_info 表，
 // 由每日凌晨 1:00 与整点定时任务落库，不再实时调微信 API）；每 10 秒轮询刷新功能已停用（代码注释保留）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -275,73 +275,83 @@ export default function AdminEntries() {
         <section className="admin-entries-stats__card">
           <div className="admin-entries-stats__head">
             <span className="admin-entries-stats__title">用户统计</span>
-            <div className="admin-entries-stats__filter">
-              <input
-                type="date"
-                className="admin-entries-stats__date"
-                value={beginDate}
-                max={yesterday}
-                onChange={(e) => handleBeginChange(e.target.value)}
-              />
-              <span className="admin-entries-stats__sep">至</span>
-              <input
-                type="date"
-                className="admin-entries-stats__date"
-                value={endDate}
-                min={beginDate || undefined}
-                max={yesterday}
-                onChange={(e) => handleEndChange(e.target.value)}
-              />
-              <button type="button" className="admin-entries-stats__reset" onClick={handleReset}>重置</button>
-            </div>
           </div>
-          <div className="admin-entries-stats__charts">
-            <div className="admin-entries-stats__chart">
-              <span className="admin-entries-stats__sub">用户增减趋势</span>
-              {loading ? (
-                <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
-              ) : error ? (
-                <div className="admin-entries-stats__empty">{error}</div>
-              ) : !hasData ? (
-                <div className="admin-entries-stats__empty">该时间段暂无用户增减数据</div>
-              ) : (
-                <ReactECharts option={barOption} style={{ height: 240 }} notMerge />
-              )}
-            </div>
-            <div className="admin-entries-stats__chart">
-              <span className="admin-entries-stats__sub">当前用户构成</span>
-              {userLoading ? (
-                <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
-              ) : userError ? (
-                <div className="admin-entries-stats__empty">{userError}</div>
-              ) : (
-                <ReactECharts option={donutOption} style={{ height: 240 }} notMerge />
-              )}
-            </div>
-            <div className="admin-entries-stats__chart">
-              <span className="admin-entries-stats__sub">关注来源分布</span>
-              {loading ? (
-                <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
-              ) : error ? (
-                <div className="admin-entries-stats__empty">{error}</div>
-              ) : !hasData ? (
-                <div className="admin-entries-stats__empty">该时间段暂无用户增减数据</div>
-              ) : (
-                <ReactECharts option={pieOption} style={{ height: 240 }} notMerge />
-              )}
-            </div>
-            <div className="admin-entries-stats__chart">
-              <span className="admin-entries-stats__sub">用户来源分布</span>
-              {userLoading ? (
-                <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
-              ) : userError ? (
-                <div className="admin-entries-stats__empty">{userError}</div>
-              ) : !sceneStats || sceneStats.list.length === 0 ? (
-                <div className="admin-entries-stats__empty">暂无关注用户来源数据</div>
-              ) : (
-                <ReactECharts option={scenePieOption} style={{ height: 240 }} notMerge />
-              )}
-            </div>
+          <div className="admin-entries-stats__groups">
+            <section className="admin-entries-stats__group">
+              <div className="admin-entries-stats__group-head">
+                <div className="admin-entries-stats__filter">
+                  <input
+                    type="date"
+                    className="admin-entries-stats__date"
+                    value={beginDate}
+                    max={yesterday}
+                    onChange={(e) => handleBeginChange(e.target.value)}
+                  />
+                  <span className="admin-entries-stats__sep">至</span>
+                  <input
+                    type="date"
+                    className="admin-entries-stats__date"
+                    value={endDate}
+                    min={beginDate || undefined}
+                    max={yesterday}
+                    onChange={(e) => handleEndChange(e.target.value)}
+                  />
+                  <button type="button" className="admin-entries-stats__reset" onClick={handleReset}>重置</button>
+                </div>
+              </div>
+              <div className="admin-entries-stats__charts">
+                <div className="admin-entries-stats__chart">
+                  <span className="admin-entries-stats__sub">用户增减趋势</span>
+                  {loading ? (
+                    <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
+                  ) : error ? (
+                    <div className="admin-entries-stats__empty">{error}</div>
+                  ) : !hasData ? (
+                    <div className="admin-entries-stats__empty">该时间段暂无用户增减数据</div>
+                  ) : (
+                    <ReactECharts option={barOption} style={{ height: 240 }} notMerge />
+                  )}
+                </div>
+                <div className="admin-entries-stats__chart">
+                  <span className="admin-entries-stats__sub">关注来源分布</span>
+                  {loading ? (
+                    <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
+                  ) : error ? (
+                    <div className="admin-entries-stats__empty">{error}</div>
+                  ) : !hasData ? (
+                    <div className="admin-entries-stats__empty">该时间段暂无用户增减数据</div>
+                  ) : (
+                    <ReactECharts option={pieOption} style={{ height: 240 }} notMerge />
+                  )}
+                </div>
+              </div>
+            </section>
+            <section className="admin-entries-stats__group">
+              <div className="admin-entries-stats__charts">
+                <div className="admin-entries-stats__chart">
+                  <span className="admin-entries-stats__sub">当前用户构成</span>
+                  {userLoading ? (
+                    <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
+                  ) : userError ? (
+                    <div className="admin-entries-stats__empty">{userError}</div>
+                  ) : (
+                    <ReactECharts option={donutOption} style={{ height: 240 }} notMerge />
+                  )}
+                </div>
+                <div className="admin-entries-stats__chart">
+                  <span className="admin-entries-stats__sub">用户来源分布</span>
+                  {userLoading ? (
+                    <div className="admin-entries-stats__empty"><Loading text="加载中..." /></div>
+                  ) : userError ? (
+                    <div className="admin-entries-stats__empty">{userError}</div>
+                  ) : !sceneStats || sceneStats.list.length === 0 ? (
+                    <div className="admin-entries-stats__empty">暂无关注用户来源数据</div>
+                  ) : (
+                    <ReactECharts option={scenePieOption} style={{ height: 240 }} notMerge />
+                  )}
+                </div>
+              </div>
+            </section>
           </div>
         </section>
       </div>

@@ -12,7 +12,7 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-// 用户统计区域依赖 Loading（加载态）与 ReactECharts（四张图表），
+// 用户统计区域依赖 Loading（加载态）与 ReactECharts（两个分组共四张图表），
 // jsdom 无 canvas，均以占位组件 mock
 vi.mock('tdesign-mobile-react', () => ({
   Navbar: ({ title }: { title?: ReactNode }) => (
@@ -61,13 +61,13 @@ describe('AdminEntries', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/admin/roles');
   });
 
-  it('should render the four user stats charts', () => {
+  it('should render the two user stats groups and all four charts', () => {
     renderView();
-    // 四张图表标题：柱状图 + 环形图 + 时间段内来源饼图 + 最新快照来源分布饼图
     expect(screen.getByText('用户增减趋势')).toBeInTheDocument();
-    expect(screen.getByText('当前用户构成')).toBeInTheDocument();
     expect(screen.getByText('关注来源分布')).toBeInTheDocument();
+    expect(screen.getByText('当前用户构成')).toBeInTheDocument();
     expect(screen.getByText('用户来源分布')).toBeInTheDocument();
+    expect(screen.getByText('重置')).toBeInTheDocument();
   });
 
   it('should render line icons for each entry card', () => {
