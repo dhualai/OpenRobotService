@@ -97,7 +97,11 @@ class Settings(BaseSettings):
     # 二次派单感知增强（M3 高情商回复）：未派到指定人时，tip_detail 是否用 AI 润色。
     # 默认 False=纯模板（零 LLM 成本、文案确定可复用）；True 时才调 ModelService 润色（失败仍降级模板）。
     REDISPATCH_TIP_AI_POLISH: bool = Field(default=False)
-    
+
+    # 协商回合上限：接单人↔提单人来回应答最大次数（含首次）。
+    # 达到最后一轮前端展示升级上报，用户点击现有升级上报通道替代管理员介入。
+    TICKET_STEP_MAX_NEGOTIATION_ROUNDS: int = Field(default=5)
+
     CUSTOM_AI_BASE_URL: str = Field(default="")
     CUSTOM_AI_API_PATH: str = Field(default="/api/ask")
     
