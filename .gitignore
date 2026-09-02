@@ -115,8 +115,6 @@ automation/references/generated-cases/
 
 # ===== 本地脚本（不入库）=====
 scripts/start-minio.ps1
-# 部署脚本含本机私钥路径/明文 sudo 密码等个性化配置，每台机器各留本地一份，不入库
-deploy/deploy.ps1
 
 # ===== 本地部署/打包产物（不入库）=====
 /ai_deploy.zip
