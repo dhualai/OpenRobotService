@@ -1408,7 +1408,7 @@ export default function TaskDetailPage() {
             <div className="detail-info-item">
               <span className="detail-info-item__icon"><AlarmClock size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
-                <span className="detail-info-item__label">当前阶段时间</span>
+                <span className="detail-info-item__label">当前阶段截止时间</span>
                 <span className="detail-info-item__value">
                   {detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '未设置'}
                 </span>
@@ -1470,6 +1470,8 @@ export default function TaskDetailPage() {
           const lastStepBy = detail.step_last_updated_by;
           // 轮到当前用户：assigned = 接单人回合；creator = 提单人回合；无值 = 默认接单人回合
           const { isAssignee, isReporter } = getCurrentUserRoles();
+          // 操作按钮仅对工单创建人（isReporter）和处理人（isAssignee）可见
+          const canOperate = isAssignee || isReporter;
           const myTurn = (!lastStepBy && isAssignee)
             || (lastStepBy === 'assigned' && isReporter)
             || (lastStepBy === 'creator' && isAssignee);
@@ -1490,17 +1492,8 @@ export default function TaskDetailPage() {
           return (
             <div className="detail-card">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-                <h4 className="detail-card__h" style={{ marginBottom: 0 }}>工单阶段性处理</h4>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                  <span
-                    title="协商回合：接单人↔提单人来回应答计数"
-                    style={{
-                      display: 'inline-block', padding: '3px 10px', borderRadius: 999,
-                      background: pillBg, color: pillColor, fontSize: 12, fontWeight: 500, lineHeight: 1.4,
-                    }}
-                  >
-                    交涉回合 {round} / {maxRound}
-                  </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <h4 className="detail-card__h" style={{ marginBottom: 0 }}>工单阶段性处理</h4>
                   {myTurn && !reachedMax && (
                     <span style={{ fontSize: 12, color: 'var(--blue-2)', fontWeight: 500 }}>
                       ● 轮到你确认/答复
@@ -1512,6 +1505,17 @@ export default function TaskDetailPage() {
                     </span>
                   )}
                 </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span
+                    title="协商回合：接单人↔提单人来回应答计数"
+                    style={{
+                      display: 'inline-block', padding: '3px 10px', borderRadius: 999,
+                      background: pillBg, color: pillColor, fontSize: 12, fontWeight: 500, lineHeight: 1.4,
+                    }}
+                  >
+                    交涉回合 {round} / {maxRound}
+                  </span>
+                </div>
               </div>
               <div style={{ fontSize: 13, color: 'var(--foreground)', marginBottom: 12, lineHeight: 1.6 }}>
                 当前节点描述：{desc}
@@ -1522,65 +1526,71 @@ export default function TaskDetailPage() {
                 )}
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {reachedMax ? (
-                  // 最后一轮：直接显示升级上报按钮（替代管理员介入）
-                  <Button block size="small" theme="danger" onClick={openEscalate}>升级上报</Button>
-                ) : isProcessing ? (
-                  <>
-                    <Button
-                      block
-                      size="small"
-                      theme="default"
-                      disabled={negotiateDisabled}
-                      onClick={openNegotiate}
-                      title={reachedMax ? '已达最大回合，请使用升级上报' : undefined}
-                    >
-                      协商节点时间
-                    </Button>
-                    <Button
-                      block
-                      size="small"
-                      theme="primary"
-                      loading={completing}
-                      disabled={completeDisabled}
-                      onClick={handleStepComplete}
-                      title={reachedMax ? '已达最大回合，请使用升级上报' : undefined}
-                    >
-                      当前阶段完成
-                    </Button>
-                  </>
+                {canOperate ? (
+                  reachedMax ? (
+                    // 最后一轮：直接显示升级上报按钮（替代管理员介入）
+                    <Button block size="small" theme="danger" onClick={openEscalate}>升级上报</Button>
+                  ) : isProcessing ? (
+                    <>
+                      <Button
+                        block
+                        size="small"
+                        theme="default"
+                        disabled={negotiateDisabled}
+                        onClick={openNegotiate}
+                        title={reachedMax ? '已达最大回合，请使用升级上报' : undefined}
+                      >
+                        协商节点时间
+                      </Button>
+                      <Button
+                        block
+                        size="small"
+                        theme="primary"
+                        loading={completing}
+                        disabled={completeDisabled}
+                        onClick={handleStepComplete}
+                        title={reachedMax ? '已达最大回合，请使用升级上报' : undefined}
+                      >
+                        当前阶段完成
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        block
+                        size="small"
+                        theme="default"
+                        onClick={() => { setReassignUser(null); setReassignReason(''); setShowReassignPopup(true); }}
+                      >
+                        重新指派
+                      </Button>
+                      <Button
+                        block
+                        size="small"
+                        theme="default"
+                        disabled={negotiateDisabled}
+                        onClick={openNegotiate}
+                        title={reachedMax ? '已达最大回合，请使用升级上报' : undefined}
+                      >
+                        协商节点时间
+                      </Button>
+                      <Button
+                        block
+                        size="small"
+                        theme="primary"
+                        loading={responding}
+                        disabled={respondBtnDisabled}
+                        onClick={handleRespond}
+                        title={reachedMax ? '已达最大回合，请使用升级上报' : undefined}
+                      >
+                        确认同意
+                      </Button>
+                    </>
+                  )
                 ) : (
-                  <>
-                    <Button
-                      block
-                      size="small"
-                      theme="default"
-                      onClick={() => { setReturnReason(''); setShowReturnConfirmPopup(true); }}
-                    >
-                      工单退回
-                    </Button>
-                    <Button
-                      block
-                      size="small"
-                      theme="default"
-                      disabled={negotiateDisabled}
-                      onClick={openNegotiate}
-                      title={reachedMax ? '已达最大回合，请使用升级上报' : undefined}
-                    >
-                      协商节点时间
-                    </Button>
-                    <Button
-                      block
-                      size="small"
-                      theme="primary"
-                      loading={responding}
-                      disabled={respondBtnDisabled}
-                      onClick={handleRespond}
-                      title={reachedMax ? '已达最大回合，请使用升级上报' : undefined}
-                    >
-                      确认同意
-                    </Button>
-                  </>
+                  <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>
+                    仅工单创建人和处理人可执行操作
+                  </span>
                 )}
               </div>
             </div>
