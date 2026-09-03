@@ -158,8 +158,8 @@ export default function TaskDetailPage() {
   // 二次派单感知增强（M3）：未派到指定人时的完整情商话术（详情页 redispatch.result.tip_detail）
   const [redispatchTipDetail, setRedispatchTipDetail] = useState<string>('');
   const [editing, setEditing] = useState(false);
-  const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; deadline_at?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
-  // 最晚解决时间区间：基准 = 工单创建时间（detail.created_at），而非用户操作时刻
+  const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; curr_step_endtime?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
+  // 当前阶段截止时间区间：基准 = 工单创建时间（detail.created_at），而非用户操作时刻
   const editDeadlineRange = getDeadlineRange(editForm.priority, detail?.created_at);
   // 优先级仅在「尚未派单」（新建/待派单）可修改；已派单及后续状态禁止（置灰不可点）
   const priorityDisabled = !canEditPriority(detail?.status);
@@ -177,7 +177,7 @@ export default function TaskDetailPage() {
   const [showCreatorNamePopup, setShowCreatorNamePopup] = useState(false);
   const [creatorNameInput, setCreatorNameInput] = useState('');
   const [submittingCreatorName, setSubmittingCreatorName] = useState(false);
-  // 最晚解决时间直接编辑（拥有 backend:tasks:operate 权限的用户可点击信息项改期）
+  // 当前阶段截止时间直接编辑（拥有 backend:tasks:operate 权限的用户可点击信息项改期）
   // deadlineDraft: undefined=未改动（保存时不提交该字段）；ISO 字符串=新时间；null=清除
   const [showDeadlinePopup, setShowDeadlinePopup] = useState(false);
   const [deadlineDraft, setDeadlineDraft] = useState<string | null | undefined>(undefined);
@@ -1063,21 +1063,21 @@ export default function TaskDetailPage() {
     }
   };
 
-  // 修改最晚解决时间：拥有 backend:tasks:operate 权限的用户直接改期（PUT /{id}）
-  // deadlineDraft 为 undefined（用户未改动）时不提交 deadline_at 字段，避免误清除
+  // 修改当前阶段截止时间：拥有 backend:tasks:operate 权限的用户直接改期（PUT /{id}）
+  // deadlineDraft 为 undefined（用户未改动）时不提交 curr_step_endtime 字段，避免误清除
   const handleUpdateDeadline = async () => {
     if (!detail) return;
     setSubmittingDeadline(true);
     try {
       const body: Record<string, unknown> = { operation_type: 'update' };
-      if (deadlineDraft !== undefined) body.deadline_at = deadlineDraft;
+      if (deadlineDraft !== undefined) body.curr_step_endtime = deadlineDraft;
       await request<Ticket>(`/${detail.id}`, {
         method: 'PUT',
         body: JSON.stringify(body),
         skipCache: true,
       });
       await refreshDetail();
-      Toast({ message: '最晚解决时间已更新', theme: 'success' });
+      Toast({ message: '当前阶段截止时间已更新', theme: 'success' });
       setShowDeadlinePopup(false);
     } catch (err) {
       Toast({ message: `更新失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -1158,7 +1158,7 @@ export default function TaskDetailPage() {
       description: detail.description,
       priority: detail.priority || 'medium',
       ticket_type: detail.ticket_type || 'problem',
-      deadline_at: detail.deadline_at || undefined,
+      curr_step_endtime: detail.curr_step_endtime || undefined,
     });
     setEditing(true);
   };
@@ -1178,7 +1178,7 @@ export default function TaskDetailPage() {
     }
   };
 
-  // ── 最晚解决时间（截止时间）：编辑弹窗用 antd DatePicker 下拉选择（双端可用）──
+  // ── 当前阶段截止时间：编辑弹窗用 antd DatePicker 下拉选择（双端可用）──
   // 浮层 z-index 通过 styles.popup.root 提到高于 tdesign 编辑弹窗（z-index 11500），避免被遮挡
 
 
@@ -1511,7 +1511,7 @@ export default function TaskDetailPage() {
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">当前阶段截止时间</span>
                 <span className="detail-info-item__value">
-                  {detail.deadline_at  ? formatRawDateTime(detail.deadline_at ) : '未设置'}
+                  {detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '未设置'}
                 </span>
               </div>
             </div>
@@ -2060,7 +2060,7 @@ export default function TaskDetailPage() {
                     className={`tasks-create-modal__radio-btn ${editForm.priority === value ? 'is-active' : ''} ${priorityDisabled ? 'is-disabled' : ''}`}
                     onClick={() => {
                       const r = getDeadlineRange(value, detail?.created_at);
-                      setEditForm((p) => ({ ...p, priority: value, ...(r ? { deadline_at: r.max.toISOString() } : {}) }));
+                      setEditForm((p) => ({ ...p, priority: value, ...(r ? { curr_step_endtime: r.max.toISOString() } : {}) }));
                     }}
                   >{label}</button>
                 ))}
@@ -2079,9 +2079,9 @@ export default function TaskDetailPage() {
                 ))}
               </div>
             </div>
-            {/* 最晚解决时间：antd DatePicker 下拉选择（双端可用），浮层 z-index 高于编辑弹窗避免被遮挡 */}
+            {/* 当前阶段截止时间：antd DatePicker 下拉选择（双端可用），浮层 z-index 高于编辑弹窗避免被遮挡 */}
             <div className="ticket-edit-form__field">
-              <label className="ticket-edit-form__label">最晚解决时间</label>
+              <label className="ticket-edit-form__label">当前阶段截止时间</label>
               <DatePicker
                 style={{ width: '100%' }}
                 placeholder="点击选择"
@@ -2090,13 +2090,13 @@ export default function TaskDetailPage() {
                 showNow={false}
                 placement="topLeft"
                 getPopupContainer={(trigger) => trigger.parentElement || document.body}
-                value={editForm.deadline_at ? parseDeadlineString(editForm.deadline_at) : null}
+                value={editForm.curr_step_endtime ? parseDeadlineString(editForm.curr_step_endtime) : null}
                 disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min) : undefined}
                 disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>
                   setEditForm((p) => ({
                     ...p,
-                    deadline_at: d ? d.minute(0).second(0).millisecond(0).toISOString() : undefined,
+                    curr_step_endtime: d ? d.minute(0).second(0).millisecond(0).toISOString() : undefined,
                   }))
                 }
                 allowClear
@@ -2277,9 +2277,9 @@ export default function TaskDetailPage() {
         destroyOnClose
       >
         <div className="ticket-edit">
-          <h4 className="ticket-edit__title">修改最晚解决时间</h4>
+          <h4 className="ticket-edit__title">修改当前阶段截止时间</h4>
           <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
-            仅调整本工单的最晚解决时间，不影响其他字段；清空后表示不设置截止时间。
+            仅调整本工单的当前阶段截止时间，不影响其他字段；清空后表示不设置截止时间。
           </p>
           {(() => {
             // 选择下限 = 创建时间（取整到整点），不限制未来上限
@@ -2377,7 +2377,7 @@ export default function TaskDetailPage() {
             </FormItem>
           </Form>
           {(() => {
-            // 选择下限 = 工单创建时间，与最晚解决时间编辑口径一致
+            // 选择下限 = 工单创建时间，与当前阶段截止时间编辑口径一致
             const range = getDeadlineRange(detail?.priority, detail?.created_at);
             return (
               <DatePicker
@@ -2449,7 +2449,7 @@ export default function TaskDetailPage() {
             </FormItem>
           </Form>
           {(() => {
-            // 选择下限 = 工单创建时间，与最晚解决时间编辑口径一致
+            // 选择下限 = 工单创建时间，与当前阶段截止时间编辑口径一致
             const range = getDeadlineRange(detail?.priority, detail?.created_at);
             return (
               <DatePicker

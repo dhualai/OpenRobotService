@@ -743,6 +743,9 @@ class TicketService:
         for field, value in update_data.items():
             if field == "deadline_at":
                 value = convert_to_shanghai_time(value)
+            if field == "curr_step_endtime":
+                value = convert_to_shanghai_time(value)
+                ticket.deadline_at = value  # 阶段截止时间更新 → 同步镜像 deadline_at（对用户不可见）
             if field == "assigned_to" and value:
                 value = to_user_id(value) or value
             setattr(ticket, field, value)
