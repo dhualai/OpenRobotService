@@ -589,6 +589,8 @@ class TicketService:
             'deadlineAt': (Ticket.deadline_at, 'datetime'),
             # 回合协商：支持按"最近改 step 的操作方侧标识"过滤（assigned/creator）
             'stepUpdatedBy': (Ticket.step_last_updated_by, 'enum'),
+            # 当前协商节点是否已协商一致：用于"待我处理"按回合精确过滤
+            'currStepAgreed': (Ticket.curr_step_agreed, 'enum'),
         }
 
         NUMBER_OPS = {'gt', 'lt', 'ge', 'le', 'eq', 'ne', 'is_null', 'not_null'}
