@@ -919,13 +919,13 @@ export default function TaskDetailPage() {
     try {
       await request(`/${detail.id}/set-step-time`, {
         method: 'POST',
-        body: JSON.stringify({ curr_step_endtime: toUTCString(setStepTimeValue) }),
+        body: JSON.stringify({ curr_step_endtime: setStepTimeValue }),
         headers: { 'Content-Type': 'application/json' },
       });
       Toast({ message: '已设置节点时间', theme: 'success' });
       setShowSetStepTimePopup(false);
       setSetStepTimeValue(null);
-      await fetchDetail();
+      await refreshDetail();
     } catch (e: any) {
       Toast({ message: e?.message || '设置失败', theme: 'error' });
     } finally {
