@@ -1726,11 +1726,8 @@ async def negotiate_step(
 
     # 前端 dayjs(...).toISOString() 传入 UTC aware datetime，剥时区转 naive UTC 存库
     endtime = convert_to_shanghai_time(body.curr_step_endtime)
-    # 每个阶段第一次设置截止时间时同步更新工单 deadline_at
-    _was_first_set = ticket.curr_step_endtime is None
     ticket.curr_step_endtime = endtime
-    if _was_first_set:
-        ticket.deadline_at = endtime
+    ticket.deadline_at = endtime  # 阶段截止时间每次更新都同步工单截止时间（deadline_at 对用户不可见）
     ticket.updated_at = func.now()
 
     # 处理人首次响应（协商节点时间）：工单状态 new → in_progress

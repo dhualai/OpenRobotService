@@ -69,8 +69,8 @@ interface AiTicket {
   project_name?: string;
   // 所属项目编码（DB TicketResponse 返回，编辑回显与提交用）
   project_id?: string;
-  // 最晚解决时间（ISO 字符串，编辑弹窗 antd DatePicker 回显/编辑；详情页只读展示。tasks 详情接口返回蛇形 deadline_at）
-  deadline_at?: string | null;
+  // 当前阶段截止时间（ISO 字符串，编辑弹窗 antd DatePicker 回显/编辑；详情页只读展示。tasks 详情接口返回蛇形 curr_step_endtime）
+  curr_step_endtime?: string | null;
   // 类型专属
   location?: string; robot_type?: string; fault_code?: string; special_notes?: string;
   steps_to_reproduce?: string; expected_result?: string; actual_result?: string; severity?: string; version?: string;
@@ -195,7 +195,7 @@ export default function TicketDetailPage() {
       const dbIdMatch = /^db_(\d+)$/.exec(sessionId);
       if (dbIdMatch) {
         const dbId = dbIdMatch[1];
-        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string; session_id?: string; diagnosis?: AiDiagnosis }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; deadline_at?: string; redispatch?: { result?: { tip_detail?: string | null } } | null }>(`/${dbId}?load_comments=true`, { skipCache: true });
+        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string; session_id?: string; diagnosis?: AiDiagnosis }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; curr_step_endtime?: string; redispatch?: { result?: { tip_detail?: string | null } } | null }>(`/${dbId}?load_comments=true`, { skipCache: true });
         if (isStale()) return; // 已切换到别的工单，丢弃本次（旧工单）结果，避免覆盖
         // 二次派单感知增强（M3）：完整情商话术（未派到指定人时）
         setRedispatchTipDetail(taskDetail.redispatch?.result?.tip_detail || '');
@@ -216,8 +216,8 @@ export default function TicketDetailPage() {
           project_name: taskDetail.project_name || '',
           project_id: taskDetail.project_id || '',
           created_at: taskDetail.created_at || '',
-          // 最晚解决时间：tasks 详情接口 GET /{id} 返回蛇形 deadline_at（见 TicketResponse）
-          deadline_at: taskDetail.deadline_at ?? null,
+          // 当前阶段截止时间：tasks 详情接口 GET /{id} 返回蛇形 curr_step_endtime（见 TicketResponse）
+          curr_step_endtime: taskDetail.curr_step_endtime ?? null,
           // AI 诊断数据存在 metadata_info.diagnosis（task_adapter 平铺入库）；手动工单无此字段
           diagnosis: taskDetail.metadata_info?.diagnosis,
           // 附件来自 tasks 服务 GET /{dbId} 的 attachments 字段（object_path 或字典数组）
@@ -235,7 +235,7 @@ export default function TicketDetailPage() {
         if (!silent) setTicket(aiTicket);
         if (aiTicket.ticket_id) {
           try {
-            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; deadline_at?: string; redispatch?: { result?: { tip_detail?: string | null } } | null }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
+            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; curr_step_endtime?: string; redispatch?: { result?: { tip_detail?: string | null } } | null }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
             if (isStale()) return; // 已切换工单：prev 可能已是新工单，不可把旧工单的 DB 字段合并进去
             // 二次派单感知增强（M3）：完整情商话术随 DB 刷新
             setRedispatchTipDetail(taskDetail.redispatch?.result?.tip_detail || '');
@@ -262,8 +262,8 @@ export default function TicketDetailPage() {
               project_name: taskDetail.project_name || prev.project_name || prev.project,
               // 项目编码以 DB 为准（编辑回显与提交用），AI 接口不返回该字段
               project_id: taskDetail.project_id || prev.project_id,
-              // 最晚解决时间以 DB 为准（tasks 详情接口蛇形 deadline_at），覆盖 AI 滞后副本
-              deadline_at: taskDetail.deadline_at ?? prev.deadline_at ?? null,
+              // 当前阶段截止时间以 DB 为准（tasks 详情接口蛇形 curr_step_endtime），覆盖 AI 滞后副本
+              curr_step_endtime: taskDetail.curr_step_endtime ?? prev.curr_step_endtime ?? null,
             } : prev);
             setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
           } catch { /* 评论加载失败不阻塞主流程 */ }
@@ -415,8 +415,8 @@ export default function TicketDetailPage() {
 
   // 编辑工单（标题/描述/优先级/类型/联系人；权限与后端对齐：admin/创建人/处理人，终态不可编辑）
   const [showEdit, setShowEdit] = useState(false);
-  const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; project_id: string; project_name: string; deadline_at?: string }>({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
-  // 最晚解决时间区间：基准 = 工单创建时间（ticket.created_at），而非用户操作时刻
+  const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; project_id: string; project_name: string; curr_step_endtime?: string }>({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
+  // 当前阶段截止时间区间：基准 = 工单创建时间（ticket.created_at），而非用户操作时刻
   const editDeadlineRange = getDeadlineRange(editForm.priority, ticket?.created_at);
   // 优先级仅在「尚未派单」（新建/待派单）可修改；已派单及后续状态禁止（置灰不可点）
   const priorityDisabled = !canEditPriority(ticket?.status);
@@ -461,11 +461,11 @@ export default function TicketDetailPage() {
       ticket_type: ticket.type || 'problem',
       project_id: ticket.project_id || '',
       project_name: ticket.project_name || ticket.project || '',
-      deadline_at: ticket.deadline_at || undefined,
+      curr_step_endtime: ticket.curr_step_endtime || undefined,
     });
     setShowEdit(true);
   };
-  // ── 最晚解决时间（截止时间）：编辑弹窗用 antd DatePicker 下拉选择（双端可用）──
+  // ── 当前阶段截止时间：编辑弹窗用 antd DatePicker 下拉选择（双端可用）──
   // 浮层 z-index 通过 styles.popup.root 提到高于 tdesign 编辑弹窗（z-index 11500），避免被遮挡
   const handleEditSave = async () => {
     if (!ticket?.ticket_id) return;
@@ -481,7 +481,7 @@ export default function TicketDetailPage() {
           ticket_type: editForm.ticket_type,
           project_name: editForm.project_name,
           project_id: editForm.project_id,
-          deadline_at: editForm.deadline_at || null,
+          curr_step_endtime: editForm.curr_step_endtime || null,
         }),
       });
       const operator = getOperatorLabel();
@@ -726,8 +726,8 @@ export default function TicketDetailPage() {
             <div className="detail-info-item">
               <span className="detail-info-item__icon"><AlarmClock size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
-                <span className="detail-info-item__label">最晚解决时间</span>
-                <span className="detail-info-item__value">{ticket.deadline_at ? formatRawDateTime(String(ticket.deadline_at)) : '未设置'}</span>
+                <span className="detail-info-item__label">当前阶段截止时间</span>
+                <span className="detail-info-item__value">{ticket.curr_step_endtime ? formatRawDateTime(String(ticket.curr_step_endtime)) : '未设置'}</span>
               </div>
             </div>
           </div>
@@ -1007,7 +1007,7 @@ export default function TicketDetailPage() {
                     onClick={() => {
                       const v = PRIORITY_EN[label];
                       const r = getDeadlineRange(v, ticket?.created_at);
-                      setEditForm((p) => ({ ...p, priority: v, ...(r ? { deadline_at: r.max.toISOString() } : {}) }));
+                      setEditForm((p) => ({ ...p, priority: v, ...(r ? { curr_step_endtime: r.max.toISOString() } : {}) }));
                     }}
                   >{label}</button>
                 ))}
@@ -1035,9 +1035,9 @@ export default function TicketDetailPage() {
                 <span className="ticket-edit-form__select-arrow">▾</span>
               </div>
             </div>
-            {/* 最晚解决时间：antd DatePicker 下拉选择（双端可用），浮层 z-index 高于编辑弹窗避免被遮挡 */}
+            {/* 当前阶段截止时间：antd DatePicker 下拉选择（双端可用），浮层 z-index 高于编辑弹窗避免被遮挡 */}
             <div className="ticket-edit-form__field">
-              <label className="ticket-edit-form__label">最晚解决时间</label>
+              <label className="ticket-edit-form__label">当前阶段截止时间</label>
               <DatePicker
                 style={{ width: '100%' }}
                 placeholder="点击选择"
@@ -1046,13 +1046,13 @@ export default function TicketDetailPage() {
                 showNow={false}
                 placement="topLeft"
                 getPopupContainer={(trigger) => trigger.parentElement || document.body}
-                value={editForm.deadline_at ? parseDeadlineString(editForm.deadline_at) : null}
+                value={editForm.curr_step_endtime ? parseDeadlineString(editForm.curr_step_endtime) : null}
                 disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min, editDeadlineRange.max) : undefined}
                 onChange={(d: dayjs.Dayjs | null) =>
                   setEditForm((p) => ({
                     ...p,
-                    deadline_at: d ? d.minute(0).second(0).millisecond(0).toISOString() : undefined,
+                    curr_step_endtime: d ? d.minute(0).second(0).millisecond(0).toISOString() : undefined,
                   }))
                 }
                 allowClear

@@ -163,10 +163,6 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
     if ticket.get("type") == "feature" and ticket.get("source"):
         meta["feature_source"] = ticket["source"]
 
-    # 截止时间（deadline_at，系统任务模块专用，摇人链路已不用但保留兼容）：
-    # 弹窗编辑值（ISO 字符串）→ Task.deadline_at（DateTime 列）。naive 存 UTC。
-    deadline = _parse_naive_utc(ticket.get("deadline_at"))
-
     ext_id = _external_id_for(ticket.get("session_id", ""))
     # 同一会话多次转单时，ticket_seq 确保 external_id 唯一
     if ticket.get("ticket_seq"):
@@ -188,6 +184,8 @@ def ticket_dict_to_task_fields(ticket: dict, created_by: str = "") -> dict:
     if curr_step_id is not None:
         curr_step_name = _resolve_step_name(curr_step_id)
     curr_step_endtime = _parse_naive_utc(ticket.get("curr_step_endtime"))
+    # deadline_at 对用户不可见，镜像 curr_step_endtime（阶段截止时间）；显式传了 deadline_at 则优先。
+    deadline = _parse_naive_utc(ticket.get("deadline_at")) or curr_step_endtime
 
     return {
         "title": ticket.get("title", "") or "",

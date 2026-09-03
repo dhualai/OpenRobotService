@@ -25,7 +25,6 @@ const REMOTE_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: 'sunflower', label: '向日葵' },
   { value: 'other', label: '其他' },
 ];
-import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import { parseBackendDayjs } from '@/shared/utils/time';
 import type { UserItem } from '@/api/users';
 import { createConversation, getConversation, appendMessage, readAiSessionId, updateMessageContent } from '@/api/conversation';
@@ -675,9 +674,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     dualTicket: boolean;      // 兜底双工单：项目不在项目集时勾选，生成申请单派给项目负责人
     projectOwner: UserItem | null;  // 双工单场景下选中的项目负责人
   }>({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
-  // 提单基准时间：首次打开确认弹窗时固定（= 提单时刻），切换优先级/后续操作不漂移，
-  // 使「最晚解决时间 = 提单时间 + 优先级时长」恒定，不随用户修改时间变化。
-  const ticketBaseTimeRef = useRef<dayjs.Dayjs | null>(null);
   // 处理阶段：弹窗打开时按工单类型拉取的步骤列表（task_steps 模板，后续可配置）
   const [ticketSteps, setTicketSteps] = useState<TicketStep[]>([]);
   const [stepsLoading, setStepsLoading] = useState(false);
@@ -1455,8 +1451,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             )));
             setTicketConfirm((s) => {
               if (s.visible) return s;
-              // 提单基准时间：首次打开确认弹窗时固定，此后切换优先级/操作不漂移
-              if (!ticketBaseTimeRef.current) ticketBaseTimeRef.current = dayjs();
               return {
                 visible: true,
                 draft: data.draft as TicketDraft,
@@ -1973,7 +1967,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const { draft, missing_fields, prompt } = res.data;
       // 打开确认弹窗，让用户核对/编辑/补字段
       setTicketMissing(null); // 已就绪，清掉待补充清单
-      ticketBaseTimeRef.current = dayjs(); // 提单基准时间：生成草稿并打开弹窗时固定
       setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
       // 按 AI 识别的工单类型拉取处理阶段列表，并回填默认阶段完成时间
       void loadTicketSteps(String(draft.type ?? ''));
@@ -1994,19 +1987,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const setDraftField = (k: keyof TicketDraft, v: string) =>
     setTicketConfirm((s) => ({ ...s, overrides: { ...s.overrides, [k]: v } }));
 
-  // ── 最晚解决时间（截止时间）：antd DatePicker 下拉，与编辑弹窗统一（浮层 z-index 见下方 JSX）──
-  // 区间基准 = 提单基准时间（ticketBaseTimeRef），优先级决定时长（紧急24h/高72h/中120h/低336h）。
-  const deadlineRange = getDeadlineRange(draftField('priority'), ticketBaseTimeRef.current);
-  // 用户是否手动动过 deadline（清空 or 选择）：未动过则默认显示区间最大值（提单时间 + 优先级时长）。
-  const deadlineTouched = Object.prototype.hasOwnProperty.call(ticketConfirm.overrides, 'deadline_at');
-  const deadlinePickerValue = (() => {
-    const raw = draftField('deadline_at');
-    if (raw) return parseDeadlineString(raw);
-    if (deadlineTouched) return null; // 用户主动清空，保持空
-    return deadlineRange?.max ?? null; // 未设置 → 默认显示最大值
-  })();
-
-  // ── 处理阶段（当前步骤）+ 阶段完成时间（SLA）──
+  // ── 处理阶段（当前步骤）+ 当前阶段截止时间（SLA）──
   // 阶段完成时间快捷选项（天）：1/3/5/7/14，默认当前时间 +7 天，精确到分钟。
   const STEP_QUICK_OPTIONS: { value: number; label: string }[] = [
     { value: 1, label: '1天' },
@@ -2295,12 +2276,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         ...(finalRemoteType ? { remote_type: finalRemoteType } : {}),
         ...(finalAttachments.length > 0 ? { attachments: finalAttachments } : {}),
       };
-      // deadline 兜底：用户未手动设置时，用区间最大值（提单时间 + 优先级时长）作为默认最晚解决时间，
-      // 确保 DatePicker 显示值与提交值一致——否则未触碰 deadline 直接提交时，工单1/工单2 均不落库 deadline。
-      // 已手动清空（overrides.deadline_at=''）不兜底，尊重用户主动置空。
-      if (!Object.prototype.hasOwnProperty.call(overrides, 'deadline_at') && deadlineRange) {
-        overrides.deadline_at = deadlineRange.max.toISOString();
-      }
       const res = await qaConfirmTicket(sessionId, overrides);
       if (res?.code !== 0) {
         Toast({ message: res?.message || '提交工单失败', theme: 'error' });
@@ -2340,7 +2315,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             project_name: '摇人吧服务号提单',
             project_id: projectIdVal || '',
             assigned_to: owner.id || owner.username,
-            deadline_at: overrides.deadline_at || overrides.curr_step_endtime || undefined,
+            deadline_at: overrides.curr_step_endtime || undefined,
             // 工单2 同步透传远程方式（写入 metadata_info）+ 远程截图（与工单1 共用 object_path）。
             // metadata_info 是 json 列，createTicket 透传；attachments 同 TasksView 新建路径。
             ...(finalRemoteType ? { metadata_info: { remote_type: finalRemoteType } } : {}),
@@ -2361,7 +2336,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         }
       }
 
-      ticketBaseTimeRef.current = null; // 提交完成关闭弹窗，清空基准
       setTicketSteps([]); // 提交完成清空阶段列表
       setRemoteShots([]); // 提交完成清空本地远程截图暂存
       setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
@@ -2790,9 +2764,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   onChange={(e) => {
                     const p = e.target.value;
                     setDraftField('priority', p);
-                    // 切换优先级：最晚解决时间重算为「提单时间 + 新优先级时长」最大值
-                    const r = getDeadlineRange(p, ticketBaseTimeRef.current);
-                    if (r) setDraftField('deadline_at', r.max.toISOString());
                   }}
                 >
                   <option value="紧急">紧急</option>
@@ -2800,23 +2771,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   <option value="中">中</option>
                   <option value="低">低</option>
                 </select>
-                {/* 最晚解决时间：antd DatePicker 下拉（与编辑弹窗统一），浮层 z-index 高于弹窗避免被遮挡 */}
-                <label className="ticket-confirm__label">最晚解决时间</label>
-                <DatePicker
-                  style={{ width: '100%' }}
-                  placeholder="点击选择"
-                  format="YYYY-MM-DD HH:00"
-                  showTime={{ defaultValue: deadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00', showNow: false }}
-                  showNow={false}
-                  placement="topLeft"
-                  getPopupContainer={(trigger) => trigger.parentElement || document.body}
-                  value={deadlinePickerValue}
-                  disabledDate={deadlineRange ? makeDisabledDate(deadlineRange.min, deadlineRange.max) : undefined}
-                  disabledTime={deadlineRange ? makeDisabledTime(deadlineRange.min, deadlineRange.max) : undefined}
-                  onChange={(d: dayjs.Dayjs | null) => setDraftField('deadline_at', d ? d.minute(0).second(0).millisecond(0).toISOString() : '')}
-                  allowClear
-                  styles={{ popup: { root: { zIndex: 12000 } } }}
-                />
                 {/* 处理阶段（当前步骤，必填）：按 AI 识别的工单类型拉取 task_steps 模板 */}
                 <label className="ticket-confirm__label">处理阶段</label>
                 <select
@@ -2831,8 +2785,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                     <option key={s.id} value={s.id}>{s.step_name}</option>
                   ))}
                 </select>
-                {/* 阶段完成时间（SLA，必填）：快捷选项 + 自定义精确到分钟 */}
-                <label className="ticket-confirm__label">阶段完成时间</label>
+                {/* 当前阶段截止时间（SLA，必填）：快捷选项 + 自定义精确到分钟 */}
+                <label className="ticket-confirm__label">当前阶段截止时间</label>
                 <div className="ticket-confirm__quick-options">
                   {STEP_QUICK_OPTIONS.map((o) => {
                     const active = stepEndtimeValue

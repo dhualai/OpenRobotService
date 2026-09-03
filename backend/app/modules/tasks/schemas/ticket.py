@@ -47,6 +47,7 @@ class TicketUpdate(BaseModel):
     attachments: Optional[List[AttachmentItem]] = Field(None, description="附件列表")
     resolved_at: Optional[datetime] = Field(None, description="解决时间")
     deadline_at: Optional[datetime] = Field(None, description="截止时间")
+    curr_step_endtime: Optional[datetime] = Field(None, description="当前阶段截止时间（更新时同步 deadline_at，对用户不可见）")
     # 用于操作日志识别，不入库
     operation_type: Optional[str] = Field(None, description="操作类型：escalate/return/reassign/update")
 
