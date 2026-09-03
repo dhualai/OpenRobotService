@@ -1533,8 +1533,8 @@ export default function TaskDetailPage() {
             <div className="detail-info-item">
               <span className="detail-info-item__icon"><RefreshCw size={14} strokeWidth={2} /></span>
               <div className="detail-info-item__content">
-                <span className="detail-info-item__label">更新时间</span>
-                <span className="detail-info-item__value">{formatDateTime(detail.updated_at)}</span>
+                <span className="detail-info-item__label">当前协商预期时间</span>
+                <span className="detail-info-item__value">{detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '—'}</span>
               </div>
             </div>
           </div>
