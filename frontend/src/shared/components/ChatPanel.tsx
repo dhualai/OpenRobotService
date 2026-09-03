@@ -1974,11 +1974,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       // ① 信息不足：stage=not_ready → 对话区列出缺失项引导补充，不弹窗
       //    project_ask=true 是项目编号选择题（等用户回复序号），不是字段拦截
       if (res.data.stage === 'not_ready') {
-        const isProjectAsk = !!res.data.project_ask;
-        const missing = res.data.missing_info ?? [];
-        const msg = res.data.message || (missing.length
+        // 属性收窄不进 setMessages 闭包（TS18048），提局部 const 固化非空
+        const data = res.data;
+        const isProjectAsk = !!data.project_ask;
+        const missing = data.missing_info ?? [];
+        const msg = data.message || (missing.length
           ? `工单信息不足，还差：${missing.join('、')}。在对话中补充后会自动为您生成工单。`
           : '工单信息不足，在对话中补充后会自动为您生成工单。');
+        const choices = isProjectAsk && Array.isArray(data.project_choices)
+          ? data.project_choices : [];
         setMessages((prev) => [...prev, {
           id: uid(),
           role: 'assistant',
@@ -1986,9 +1990,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           // 字段拦截才用 missing_hint 折叠样式
           ...(isProjectAsk ? {} : { subtype: 'missing_hint' as const }),
           // 项目题挂结构化候选：气泡下方渲染可点按钮
-          ...(isProjectAsk && Array.isArray(res.data.project_choices) && res.data.project_choices.length
-            ? { project_choices: res.data.project_choices }
-            : {}),
+          ...(choices.length ? { project_choices: choices } : {}),
           content: msg,
           timestamp: new Date().toISOString(),
         }]);
