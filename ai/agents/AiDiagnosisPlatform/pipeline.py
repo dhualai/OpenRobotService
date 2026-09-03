@@ -49,12 +49,12 @@ def _build_project_choice_ask(candidates: List[Dict[str, str]]) -> str:
         f"{i}. {_format_project_display(c)}"
         for i, c in enumerate(candidates, 1))
     if len(candidates) == 1:
-        head = (f"出单前先跟您确认一下关联项目——这边看到您最近提交过 "
+        head = (f"出单前确认一下关联项目——看到你最近提交过 "
                 f"{_format_project_display(candidates[0])} 的工单，还是这个项目吗？")
     else:
-        head = "出单前先跟您确认一下关联项目——这边查到您最近的工单记录："
-    tail = ("回复【序号】即可帮您预填；如果没有您的项目，稍后在工单弹窗里搜索选择，"
-            "或勾选「没有我的项目」由管理员帮您新建。")
+        head = "出单前确认一下关联项目——查到你最近的工单记录："
+    tail = ("回复【序号】我帮你预填；列表里没有你的项目，稍后在工单弹窗里搜索选择，"
+            "或勾选「没有我的项目」由管理员新建。")
     # 🔴 lines 与 tail 之间必须空行：前端把 AI 消息按 markdown 渲染，`N.` 开头的
     # 行构成有序列表，尾随普通文本若只用单个 \n 相接会触发「lazy continuation」
     # 被并进最后一条列表项（0827 生产实锤：「…（编号: 2026040303） 回复【编号】」
@@ -594,7 +594,7 @@ async def _lookup_ticket_ref(ref_text: str, created_by: str = "") -> str:
             if not _ticket_visible_to(t, created_by):
                 logger.info(f"[ticket_ref] 权限不足拒绝查看: ticket={ticket_no}, "
                             f"user={created_by!r}")
-                return (f"#{ticket_no}（权限不足：该工单与您无关，您无权查看。"
+                return (f"#{ticket_no}（权限不足：这张工单与当前用户无关，不能查看。"
                         f"请直接告知用户这条工单不对其开放查看，"
                         f"🔴 禁止透露该工单的任何内容（标题/描述/状态都不行），"
                         f"也不要反复追问）")
@@ -753,6 +753,11 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在�
 - admin（系统管理员）：全部权限
 
 ## 知识库使用优先级（极其重要）
+先分清资料的产品侧：我们的产品（服务号平台、调度系统的手册/FAQ/诊断卡/平台错误码——
+界面功能与页面操作）与车端（🚗 车端：机器人本体的软硬件、车端日志文件与标定配置）。
+用户问题指向哪侧，答案主体就用哪侧资料；确需跨侧衔接时明确说明该步骤属于哪侧的操作，
+严禁把另一侧的操作流程当作答案主体。
+
 知识库中有六类 chunk，按以下优先级使用：
 
 1. **🎫 服务号平台（标题含「摇人吧服务号平台手册」）**：用户问服务号自身的问题——角色权限、工单可见范围、菜单/入口、账号使用、平台功能（如"权限怎么配置""为什么看不到别人的工单""服务号能做什么"）——**必须从服务号平台手册作答，并把答案归属为「服务号/摇人吧」**。严禁把平台内容说成 USP 调度系统的功能，也严禁用 USP 知识替代。
@@ -885,7 +890,7 @@ project 不写进 required_fields（项目由用户在确认弹窗选择）。
 ## 🧑‍💼 转人工规则
 
 用户消息中含"转人工"时（不等同于转工单）：
-→ 告知用户："目前没有在线人工客服，但我可以帮您排查问题或生成工单。"
+→ 告知用户："目前没有在线人工客服，我可以帮你排查问题或者提工单。"
 → action 设为 "answer"（不是 "submit"，也不是 "ask"）。
 → 不要追问项目信息——如果用户后续真想提单，会说"转工单"进入标准提单流程。
 
@@ -918,10 +923,19 @@ project 不写进 required_fields（项目由用户在确认弹窗选择）。
 
 - **chat（闲聊/问候）**：简单回应，不要追问技术问题。用户说"好的""谢谢""感谢"是对话收尾，回复"不客气，有问题随时找我"即可。禁止顺势开始排查或反问用户。
 
+## 语气与风格（每条回复都遵守）
+- 称呼一律用「你」：不用敬称、请托语、征询语这类客服腔——你是现场工程师在微信上帮人解决问题，不是客服
+- 先一句话回应问题本身，再给具体内容，不要公文腔
+- 开场不要复述用户问题里已知的前提，直接进入结论或关键区分
+- 默认自然段、三五句话讲清楚；只有操作步骤、多方案对比才用列表，不要堆编号小标题
+- 结尾自然收尾即可，不要每条回复都以建议转工单收尾，也不要挂服务性尾巴
+- 不要复述知识库资料的章节号/文档编号，用自己的话把内容总结出来
+
 ## 重要规则
 - 知识库每个 chunk 以 `---` 分隔，标题在 `知识库 N（标题）：`、`FAQ N：`、`🎫 服务号 N：`、`🚗 车端错误码 N：` 或 `🌐 翻译表 N：` 中标明。
   **只引用与用户问题直接相关的 chunk 内容**，无关 chunk 的内容和图片一律忽略。
 - 🔴 **方向一致性铁律（极其重要）**：知识库检索可能召回**行为方向与用户问题相反**的排查段落。典型场景——用户问"没做该做的"（如车电量低了却不生成充电任务、任务取消了但车还在跑），检索到的却是"做了不该做的/已完成未同步"（如电量够但不打断充电、任务实际已完成但状态没更新）。**方向相反 ≠ 相关知识，必须直接忽略，绝对禁止引用到回复中误导用户**。判断方向：看用户描述的异常现象与 chunk 描述的排查对象是否指向同一动作方向的异常。若方向相反，宁可答"手册未覆盖、建议转工单"，也不用反向内容硬套。
+- 🔴 **界面位置铁律（极其重要）**：凡指引用户「在哪个页面/菜单/列表查看或操作某功能」，该界面位置必须直接来自检索资料原文。资料分开描述不同功能模块时，禁止把一个模块的内容安到另一个模块描述的界面上——功能本身属于无界面的后台模块时，就不能指引用户去任何页面查看。资料没写这个东西在哪，就直说手册里没有位置信息，禁止凭系统常识推测页面路径。
 - **禁止在回复中暴露知识来源**：不要说"根据知识库""检索结果显示"等话术。
   直接给出步骤/答案，用户不需要知道你查了什么。
 - 🔴 **禁止使用开发内部术语**：你的服务对象是现场工程师和客户，不是开发人员。
@@ -1254,6 +1268,11 @@ class AiDiagnosisPlatform:
         进过 prompt 的图片文件一定真实存在（入库时从文档提取）。LLM 幻觉
         出的文件名（如 manual/image9.png 实际不存在）在这里到不了前端。
         无白名单（本会话没检索过，如纯闲聊）时不动任何图片。
+
+        路径截断消歧：LLM 偶发只抄对文件名、目录段抄错或截断（实测丢了
+        /img/ 段被整图误拦）。按文件名在白名单内反查：唯一命中 → 放行并
+        补全为白名单完整 URL；多个命中（同名图在不同文件夹，kb 内普遍，
+        如 image1.png）→ 仍拦，宁没图不错图。
         """
         allow = self._kb_image_allowlist.get(session_id)
         if not text or "/api/ai/media" not in text or not allow:
@@ -1265,7 +1284,11 @@ class AiDiagnosisPlatform:
             url = mo.group(2)
             if url in allow:
                 return mo.group(0)
-            removed.append(url.rsplit("/", 1)[-1])
+            fname = url.rsplit("/", 1)[-1]
+            matches = [u for u in allow if u.endswith("/" + fname)]
+            if len(matches) == 1:
+                return f"{mo.group(1)}{matches[0]}{mo.group(3)}"
+            removed.append(fname)
             return ""
 
         text = self._KB_IMG_REF_RE.sub(_drop, text)
@@ -2668,7 +2691,10 @@ class AiDiagnosisPlatform:
             "- 用户可以一边咨询一边提单：先查知识库回答，用户不满意要提单时再调 submit_ticket\n"
             "- 查知识库后要基于检索内容回答，禁止编造步骤；"
             "检索内容必须真的包含问题所问的定义/步骤/参数才能作答，"
-            "话题沾边但没给出所问内容时如实说手册没写，不要推测编造\n"
+            "话题沾边但没给出所问内容时如实说手册没写，不要推测编造；"
+            "界面位置同理——指引用户去哪个页面/菜单查看或操作时，该位置必须出自检索原文，"
+            "检索内容说的是无界面的后台模块时不能指引用户去任何页面查看，"
+            "资料没写位置就直说没有，禁止推测页面路径\n"
             "- 开场不要复述用户问题里已知的前提，直接进入步骤或关键区分\n"
             "- 知识库对不同的角色/身份/前提给出不同步骤时（如「USP研发」「实施」、"
             "自研车/第三方车），必须按原文的角色名称分开列出各自的完整步骤，"
@@ -2929,8 +2955,18 @@ class AiDiagnosisPlatform:
             "用户只发图没配文字时不要默认在报障——先判断意图（查图上的错 / 问界面怎么操作 / 告知情况），"
             "判断不了就一句话确认后再深入，描述里没有报错提示时禁止自行推测故障\n"
             "- 回答操作步骤、错误码含义、故障排查等问题时，基于下方提供的知识库内容作答，禁止编造步骤\n"
+            "- 🔴 分清资料的产品侧（回答前先判断）：知识库资料分属两侧——我们的产品"
+            "（手册/FAQ/诊断卡/服务号等标签：调度系统与服务号平台的功能、页面操作、平台配置）"
+            "和车端（🚗 车端标签：机器人本体上的软件与硬件，包括车上运行的程序、车端日志文件、"
+            "标定与配置文件）。用户问题指向哪一侧，答案主体就用哪一侧的资料；另一侧的资料"
+            "至多做辅助衔接，衔接时明确说明该步骤属于哪一侧的操作，"
+            "严禁把另一侧的操作流程当作答案主体\n"
             "- 检索内容必须真的包含问题所问的定义/步骤/参数才能作答：话题沾边但没给出所问内容时，"
             "如实说手册没写这部分，可以给通用排查方向，禁止基于沾边内容推测编造\n"
+            "- 🔴 界面位置必须出自检索原文：指引用户「在哪个页面/菜单查看或操作某功能」时，"
+            "该位置必须是检索资料里写明的；资料分开描述不同功能模块时，禁止把一个模块的内容"
+            "安到另一个模块描述的界面上——功能属于无界面的后台模块时不能指引用户去任何页面查看；"
+            "资料没写位置就直说手册里没有，禁止凭常识推测页面路径\n"
             "- 知识库对不同的角色/身份/前提给出不同步骤时（如「USP研发」「实施」、"
             "自研车/第三方车），必须按原文的角色名称分开列出各自的完整步骤，"
             "禁止合并成一套步骤，禁止改写角色名称\n"
@@ -2963,7 +2999,7 @@ class AiDiagnosisPlatform:
             "才进入提单话题；用户只是咨询、提问、描述需求或粘贴工单标题时正常答疑，"
             "绝不自行启动提单或字段收集；判断适合转工单时最多在结尾加一句"
             "「需要的话我可以帮你转工单」\n"
-            "- 用户明确表达提单诉求时，礼貌引导：「可以说“转工单”，我来帮您提单」\n"
+            "- 用户明确表达提单诉求时，自然引导：「可以说“转工单”，我来帮你提单」\n"
         )
         if reference_docs and reference_docs != "（跳过检索）":
             user_msg = (
@@ -3833,16 +3869,17 @@ class AiDiagnosisPlatform:
             "标识与故障现象，其他部件/对象的编号一律不列）\n"
             "3. 对照对话：逐项核对第 2 步要素——用户已经说过什么"
             "（含顺带提到、换说法说过、能直接推出的）？哪些要素用户（现场人员）答得上来？\n"
-            "4. 定字段：从「未说、用户能答、且与处理该问题直接相关」中挑 2 个核心 + 0-2 个补充\n\n"
+            "4. 定字段：从「未说、用户能答、且与处理该问题直接相关」中挑 0-2 个核心 + 0-2 个补充；对话已把开工要素说清时一项都不挑\n\n"
             "# 红线（🔴 违反任何一条即返工）\n"
             "- 🔴 对话里若出现「───── 以上对话已随上一张工单提交归档」分隔线："
             "分隔线之前是**上一张已提交工单**的旧对话，那里出现过的任何字段/问答"
             "（如上一单问过的任务编号、站点名等）与本单无关，严禁照着旧对话的"
             "字段样例列本单待补字段——本单缺口只从分隔线**之后**的对话判断。"
             "没有分隔线则以全对话为准\n"
-            "- 🔴 字段分两层，总数 2-4 个，禁止返回空对象"
-            "（唯一例外见下方「粘贴对话记录」红线：诉求类工单用户已说清 → 允许空对象）：\n"
-            "  · 核心字段（2 个）：不问清楚就无法定位/复现问题的信息——"
+            "- 🔴 字段分两层，总数 0-4 个。对话已把开工要素说清"
+            "（诉求明确/现象完整/关键信息都在）→ 必须返回空对象，禁止硬凑字段，"
+            "「这类工单通常都问 XX」不构成凑数理由：\n"
+            "  · 核心字段（0-2 个）：不问清楚就无法定位/复现问题的信息——"
             "缺了它工程师接单后完全没法开工。对话里已说清的不算缺口，"
             "但不能用补充字段凑数\n"
             "  · 补充字段（0-2 个）：有助于加快处理但非必需的锦上添花信息"
@@ -3909,16 +3946,19 @@ class AiDiagnosisPlatform:
         _analysis = str(data.get("analysis") or "").strip()
         if _analysis:
             logger.info(f"[compute_fields] analysis: session={session_id}\n{_analysis[:600]}")
-        # 不足 2 个字段重试：LLM 偶尔无视「2 核心 + 0-2 补充」规则只给 1 个
-        # 或空清单（1 个字段用户一答就齐、直接弹草稿）。补一次带提醒的重试。
+        # 少于 2 个字段复核一遍（不强制凑满）：LLM 偶尔偷懒没细读对话就给空清单，
+        # 重跑一次让它先核对「对话是否真的已说清」。说清了允许空清单——
+        # 0902 生产实锤：强制凑 2 个字段，诉求一句话已说清的需求单被逼出
+        # 无意义字段，弹窗提交被反复拦截。
         if len(result["required_fields"]) < 2:
             retry_prompt = (
                 prompt
-                + "\n\n⚠️ 你上一次返回的 required_fields 少于 2 个（或为空），这不符合要求。"
-                  "重新走一遍推理步骤（尤其第 2 步开工要素和第 4 步挑选）："
-                  "工单提单前至少有 2 个核心信息缺口"
-                  "（不问就无法定位/复现问题）需要用户补充，"
-                  "请按输出格式给出 2-4 个字段。"
+                + "\n\n⚠️ 你上一次返回的 required_fields 少于 2 个（或为空）。"
+                  "重新走一遍推理步骤（尤其第 2 步开工要素和第 3 步对照对话）："
+                  "对话确实已把开工要素说清 → 返回空对象；"
+                  "确实存在不问就无法定位/复现问题的缺口 → 列出真实缺口"
+                  "（核心 0-2 个 + 补充 0-2 个），禁止为凑数把对话里已有"
+                  "或用户答不上的信息列成字段。"
             )
             try:
                 raw2 = await asyncio.wait_for(
@@ -4071,7 +4111,7 @@ class AiDiagnosisPlatform:
             f"## Agent 推理链\n{reasoning}{_att_block}\n\n"
             f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
             f"然后以 JSON 格式返回：\n"
-            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤300字，简述问题和排查过程，不要带项目/现场名；🔴 AI 追问过、用户回答过的内容必须全部总结进去，一项都不能丢；🔴 AI 没问过的信息一律不要出现在描述里，禁止写「XX：未提供」「XX：无」凑格式（如没问过调度版本就不能有「调度版本：未提供」）；用户答「没看清/没记住」的照实写（如「报错一闪而过，用户未看清具体内容」）；🔴 型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 结构化字段填过也要写；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
+            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤500字，简述问题和排查过程，不要带项目/现场名；🔴 对话里与本问题相关的信息全部总结进去——AI 追问过、用户回答过的要装，用户主动提到的碎片（抱怨、纠正、对之前处理的反馈）同样要装，一项都不能丢；🔴 对话过程中 AI 已给出的排查假设或分诊结论，浓缩成一两句写进描述（给接单工程师排查方向）；🔴 AI 没问过的信息不要凭空出现，禁止罗列一堆「XX：未提供」凑格式（如没问过调度版本就不能有「调度版本：未提供」）；🔴 唯一例外——故障时间、车辆编号这两个关键字段，对话里没拿到的，在描述末尾明写一句「用户未提供：…」，只列真实缺失的那几项；用户答「没看清/没记住」的照实写（如「报错一闪而过，用户未看清具体内容」）；🔴 型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 结构化字段填过也要写；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
             f'"priority":"紧急|高|中|低","contact":"从对话提取的联系人，没有则为空",'
             f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
             f'"project":"固定为空字符串——项目由用户在确认弹窗搜索选择，不要从对话提取",'
@@ -4096,7 +4136,7 @@ class AiDiagnosisPlatform:
         for _attempt in (1, 2):
             try:
                 raw = await asyncio.wait_for(
-                    self._llm_client.complete(prompt=prompt, max_tokens=600, temperature=0.2),
+                    self._llm_client.complete(prompt=prompt, max_tokens=900, temperature=0.2),
                     timeout=20.0,
                 )
                 analysis = _extract_json_object(raw)
@@ -4396,7 +4436,7 @@ class AiDiagnosisPlatform:
             if not ready:
                 # 收集模式中用户补充完整后 LLM 会 submit → 自动生成草稿弹窗，
                 # 不需要点按钮。文案按实际行为写。
-                raise ValueError(f"工单信息不足，还差：{'、'.join(missing)}。在对话中补充后会自动为您生成工单。")
+                raise ValueError(f"工单信息不足，还差：{'、'.join(missing)}。补充后我自动生成工单。")
 
         ticket = await self._build_ticket(session_id, agent_state, memory,
                                           prefill_project=agent_state.pending_prefill_project)
@@ -4553,7 +4593,7 @@ class AiDiagnosisPlatform:
                 "code": 1,
                 "stage": "not_ready",
                 "missing_info": missing,
-                "message": f"工单信息不足，还差：{'、'.join(missing)}。在对话中补充后会自动为您生成工单。",
+                "message": f"工单信息不足，还差：{'、'.join(missing)}。补充后我自动生成工单。",
             }
 
         # 0828 新规则：按钮路径话术仍零项目（不出题不追问），但**预填恢复**——
@@ -4566,6 +4606,11 @@ class AiDiagnosisPlatform:
         check = _check_required_fields(ticket)
         ticket["missing_fields"] = check["missing"]
         memory.metadata["ticket_draft"] = ticket
+        # decide 的字段清单+prefilled 回填随草稿一起落盘：confirm 复核要用同一份
+        # 清单。0902 生产实锤：这里漏存 → confirm 读到 required_fields=None →
+        # 重新 decide 发明一套新字段 key，collected_info 旧 key 的值对不上，
+        # 弹窗提交被「信息不足」连拦两次。
+        _save_agent_state(memory, agent_state)
         await self._memory_manager.save_memory(memory)
 
         logger.info(f"[prepare] session={session_id}, stage={'draft_ready' if check['ok'] else 'need_fields'}, "
@@ -4628,19 +4673,21 @@ class AiDiagnosisPlatform:
             return {"code": 1, "message": check["prompt"], "missing_fields": check["missing"]}
 
         agent_state = _load_agent_state(memory.metadata) or AgentState(session_id=session_id)
-        # 服务端兜底：保底必填字段必须已在对话中收集（弹窗不承载这些字段，防直调 API 绕过）
-        # ⚠️ 不回填（backfill）：同 prepare_ticket 的理由——backfill 幻觉填字段
-        # 会让「用户没答过的字段」被判定为已收集。只认主 LLM 真实收集的 collected_info。
-        # 收集超限强弹的草稿（force_submit）除外：超限=问不齐才强弹，此处再拦
-        # 就是「弹窗让提交、提交让回对话」死锁。
-        if not _fs:
-            if agent_state.required_fields is None:
-                await self._decide_ticket_fields(session_id, agent_state, memory)
+        # 服务端兜底：字段清单已锁定（prepare/工具循环判齐后才弹的窗）时，用同一份
+        # 清单复核 collected_info。⚠️ 不回填（backfill）：同 prepare_ticket 的理由
+        # ——backfill 幻觉填字段会让「用户没答过的字段」被判定为已收集，只认主
+        # LLM 真实收集的值。
+        # 0902 生产实锤修复：清单为 None（状态丢失/直调 API）时**不再重新 decide**
+        # ——重新 decide 会发明一套新字段 key（同输入不同轮也会漂移），collected_info
+        # 里旧 key 的值永远对不上 →「弹窗让提交、提交被拦」死循环（同一张草稿三次
+        # decide 出三套字段名，用户被拦两次后问「怎么无法提交」）。弹窗所见即所得：
+        # 草稿存在即当时判齐过，放行（与 force_submit 豁免同理）。
+        if not _fs and agent_state.required_fields is not None:
             ready, missing = _assess_ticket_readiness(agent_state)
             if not ready:
                 logger.info(f"[confirm] 信息不足拦截: session={session_id}, missing={missing}")
                 return {"code": 1, "stage": "not_ready", "missing_info": missing,
-                        "message": f"工单信息不足，还差：{'、'.join(missing)}。在对话中补充后会自动为您生成工单。"}
+                        "message": f"工单信息不足，还差：{'、'.join(missing)}。补充后我自动生成工单。"}
 
         # 弹窗里选的项目 → 归一为项目库全名 + code（弹窗 ProjectSelect 已传全名，
         # 这里是防旧前端/直调 API 传简称的兜底）
@@ -5557,6 +5604,10 @@ class AiDiagnosisPlatform:
                     state.pending_prefill_project = {
                         "name": _lt_name,
                         "code": str(_lt.get("project_id") or "")}
+                    # 同轮 planner 捕捉的 mentioned_project 双通道只留预填：
+                    # 残留到草稿后的轮次会被提单意图重新提升为陈旧预填，
+                    # 误触发自动 review（0903 实锤：草稿后问「没有弹窗」answer 被吞）
+                    state.mentioned_project = None
                     state.project_candidates = []
                     # 项目已定，歧义反问同步终结：防挂起候选持续注入反问块，
                     # 回答与已预填项目自相矛盾（0829）
@@ -5583,6 +5634,10 @@ class AiDiagnosisPlatform:
                     parsed["project_choice"] = ""
                 if _pf:
                     state.pending_prefill_project = _pf
+                    # 同轮 planner 捕捉的 mentioned_project 双通道只留预填：
+                    # 残留到草稿后的轮次会被提单意图重新提升为陈旧预填，
+                    # 误触发自动 review（0903 实锤：草稿后问「没有弹窗」answer 被吞）
+                    state.mentioned_project = None
                     # 编号/名称→项目映射使命完成即清空：预填已落地，后续收集轮不再
                     # 注入还原块（防 LLM 反复照抄同一 choice），也不泄漏到草稿补充轮
                     state.project_candidates = []
@@ -6022,6 +6077,10 @@ class AiDiagnosisPlatform:
                 # 清空单向管道，防止陈旧预填在后续轮重复触发自动 review。
                 state.collect_rounds = 0
                 state.pending_prefill_project = None
+                # 草稿已带项目，mention 使命完成同步清空（兜底，防未预见的
+                # 双通道路径残留）：陈旧提及会在草稿后的轮次被提单意图重新
+                # 提升为预填，误触发自动 review 顶掉 answer（0903 实锤）
+                state.mentioned_project = None
                 # 项目选择题的编号候选映射随弹窗作废：无论预填是否命中，还原块
                 # 都不该再注入后续轮（草稿补充轮注入只会诱导 LLM 反复照抄旧 choice）
                 state.project_candidates = []
@@ -6052,9 +6111,9 @@ class AiDiagnosisPlatform:
                 else:
                     parsed["message"] = ("工单草稿已生成。"
                                          f"{_pf_note}"
-                                         "您可以在对话里继续补充信息"
-                                         "（如指定处理人、发生时间），也可以直接点击转工单按钮，"
-                                         "在弹窗中核对信息后提交。")
+                                         "可以在对话里继续补充"
+                                         "（如指定处理人、发生时间），也可以直接点转工单按钮，"
+                                         "在弹窗里核对后提交。")
                 _msg_buf.clear()
                 _msg_yielded = True  # 抑制末尾兜底输出
                 yield {"event": "token", "data": parsed["message"]}

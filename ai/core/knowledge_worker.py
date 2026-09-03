@@ -2,7 +2,7 @@
 """知识沉淀 Worker：扫描已解决工单 → LLM 提炼知识卡 → 写入 Qdrant。
 
 0901 移入 ai/core（共享核心）：知识沉淀跨平台（数据来自工单平台、检索
-服务诊断平台），由 ai/run.py lifespan 统一挂载（knowledge_worker_start），
+服务诊断平台），由 ai/run.py lifespan 统一挂载（start_knowledge_worker），
 不属于任何单个 agent 的私有 services。
 
 与 ai/tools/backfill_resolutions.py（存量回填 CLI）共享内核
@@ -36,6 +36,7 @@ async def run_knowledge_worker(stop_event: asyncio.Event):
 
     retriever = None
     fail_counts: dict[int, int] = {}
+    rounds = 0
 
     while not stop_event.is_set():
         try:
@@ -60,7 +61,12 @@ async def run_knowledge_worker(stop_event: asyncio.Event):
                         logger.warning(f"[knowledge] #{tid} 失败"
                                        f"({fail_counts[tid]}/{_FAIL_RETRY_LIMIT}): {e}")
             else:
-                logger.debug("[knowledge] 无待沉淀工单")
+                # 心跳日志（INFO）：空候选原本只有 debug 级日志，生产上看
+                # 不到——「没日志」无法区分 worker 挂了还是没活干。首轮必打
+                # 一条，之后每 15 轮（默认约 15 分钟）报一次平安。
+                if rounds % 15 == 0:
+                    logger.info("[knowledge] 心跳：worker 运行中，当前无待沉淀工单")
+                rounds += 1
         except Exception as e:
             logger.warning(f"[knowledge] 扫描失败: {e}")
 
@@ -72,7 +78,7 @@ async def run_knowledge_worker(stop_event: asyncio.Event):
     logger.info("Knowledge worker stopped")
 
 
-def knowledge_worker_start() -> tuple[asyncio.Task, asyncio.Event]:
+def start_knowledge_worker() -> tuple[asyncio.Task, asyncio.Event]:
     """启动知识沉淀 worker，返回 (task, stop_event) 供 lifespan shutdown 使用。"""
     stop_event = asyncio.Event()
     task = asyncio.create_task(run_knowledge_worker(stop_event))

@@ -56,6 +56,8 @@ class RetrievalResult:
     verified: str = "unknown"          # unknown|confirmed|rejected|recurred
     root_cause_type: str = ""
     error_codes: List[str] = field(default_factory=list)
+    # 人工审核闸门（0902）：pending=未审不可检索，approved=已放行
+    review_status: str = ""
 
 
 # ============================================================
@@ -536,6 +538,7 @@ class RetrievalService:
             verified=pl.get("verified", "unknown") or "unknown",
             root_cause_type=pl.get("root_cause_type", "") or "",
             error_codes=pl.get("error_codes", []) or [],
+            review_status=pl.get("review_status", "") or "",
         )
 
     async def retrieve_domain_dual(
@@ -614,6 +617,7 @@ class RetrievalService:
                     "vector_score": 0.0, "sparse_score": 0.0,
                     "sub_domain": "", "domain": "",
                     "verified": "unknown", "root_cause_type": "", "error_codes": [],
+                    "review_status": "",
                 }
             doc_scores[doc_id]["dense"] = 1.0 / (rrf_k + rank + 1)
             doc_scores[doc_id]["vector_score"] = point.score
@@ -626,6 +630,7 @@ class RetrievalService:
                 doc_scores[doc_id]["verified"] = point.payload.get("verified", "unknown") or "unknown"
                 doc_scores[doc_id]["root_cause_type"] = point.payload.get("root_cause_type", "") or ""
                 doc_scores[doc_id]["error_codes"] = point.payload.get("error_codes", []) or []
+                doc_scores[doc_id]["review_status"] = point.payload.get("review_status", "") or ""
 
         for rank, point in enumerate(sparse_results):
             doc_id = str(point.id)
@@ -636,6 +641,7 @@ class RetrievalService:
                     "vector_score": 0.0, "sparse_score": 0.0,
                     "sub_domain": "", "domain": "",
                     "verified": "unknown", "root_cause_type": "", "error_codes": [],
+                    "review_status": "",
                 }
             doc_scores[doc_id]["sparse"] = 1.0 / (rrf_k + rank + 1)
             doc_scores[doc_id]["sparse_score"] = point.score
@@ -648,6 +654,7 @@ class RetrievalService:
                 doc_scores[doc_id]["verified"] = point.payload.get("verified", "unknown") or "unknown"
                 doc_scores[doc_id]["root_cause_type"] = point.payload.get("root_cause_type", "") or ""
                 doc_scores[doc_id]["error_codes"] = point.payload.get("error_codes", []) or []
+                doc_scores[doc_id]["review_status"] = point.payload.get("review_status", "") or ""
 
         rrf_scores = [
             (doc_id, scores["dense"] + scores["sparse"], scores)
@@ -670,6 +677,7 @@ class RetrievalService:
                 verified=scores.get("verified", "unknown") or "unknown",
                 root_cause_type=scores.get("root_cause_type", "") or "",
                 error_codes=scores.get("error_codes", []) or [],
+                review_status=scores.get("review_status", "") or "",
             ))
 
         return results
@@ -1283,11 +1291,23 @@ class RetrievalService:
         # 0828 用户拍板：工单解决经验归 company 域（公司级跨项目服务资产，
         # 诊断默认检索域含 company），sub_domain=ticket_resolutions 与手册文档
         # 隔离——历史工单作为独立检索路按子域过滤，不与文档抢 top_k。
+        #
+        # 0902 人工审核闸门：只返回 review_status=approved 的卡（未审的 pending
+        # 卡不可检索）。不能只靠 dense 路的 query_filter——sparse BM25 路不传
+        # filter（见 retrieve_domain 的说明），pending 卡会从 sparse 路漏进
+        # RRF 融合结果，所以必须对最终结果做 payload 硬过滤；over-fetch 4 倍
+        # 是为了过滤掉 pending 卡后 approved 卡还能补上位。
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        _approved_filter = Filter(must=[FieldCondition(
+            key="review_status", match=MatchValue(value="approved"))])
+        _fetch_k = max((top_k or 3) * 4, 12)
         results = await self.retrieve_domain(
             query, "company",
-            top_k=top_k or 3,
+            top_k=_fetch_k,
             sub_domain="ticket_resolutions",
+            query_filter=_approved_filter,
         )
+        results = [r for r in results if r.review_status == "approved"]
         # P2 verified 权重：confirmed×1.15，recurred×0.85，rejected×0.7，其余×1.0
         _weight = {
             "confirmed": 1.15,
@@ -1364,11 +1384,14 @@ class RetrievalService:
         is_common_bug: bool = False,
         verified: str = "unknown",
         extra_payload: "Optional[dict]" = None,
+        review_status: str = "pending",
     ) -> bool:
         """向量化并写入一条工单解决方案到 Qdrant（project domain）。
 
         extra_payload：附加 payload 字段（如评论原文、解决人），仅存 payload
-        供生成答案时引用，不参与向量化。"""
+        供生成答案时引用，不参与向量化。
+        review_status：人工审核闸门（0902）——默认 pending（未审不可检索），
+        审核通过后由 review 工具 set_payload 为 approved。"""
         from ai.config import get_active_collection_for
         import uuid
 
@@ -1409,6 +1432,8 @@ class RetrievalService:
             "severity": severity or "unknown",
             "is_common_bug": bool(is_common_bug),
             "verified": verified or "unknown",
+            # 0902 人工审核闸门：pending 不可检索，approved 才进 retrieve_task_resolutions
+            "review_status": review_status or "pending",
         }
         if extra_payload:
             payload.update(extra_payload)
