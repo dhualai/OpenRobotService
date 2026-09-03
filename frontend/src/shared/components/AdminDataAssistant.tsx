@@ -2,7 +2,7 @@
 //
 // 设计对照：
 //  - 悬浮球形制完全模仿「我要摇人」聊天页的转工单悬浮球（ChatPanel 内 .chat-panel__ticket-fab）：
-//    52px 液态玻璃圆钮 + 常显小标签 + 可拖拽自由定位；差异点是色相换为数据紫、呼吸闪烁放慢至 3.6s。
+//    52px 液态玻璃圆钮 + 常显小标签 + 可拖拽自由定位；差异点是色相换为深一号蓝（--blue-2）、呼吸闪烁放慢至 3.6s。
 //  - 点开为右侧抽屉式聊天对话框（窄屏自动全宽），气泡样式复用全局 .chat-bubble 体系，与摇人对话观感一致。
 //  - 问答内容为本地 canned 演示数据（标注「演示」），仅用于评审 UI 形态，后续接真实数据时替换 send 逻辑即可。
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -224,7 +224,7 @@ export default function AdminDataAssistant() {
 
   return (
     <>
-      {/* 悬浮入口球：形制照抄转工单悬浮球，色相换数据紫；缓慢呼吸闪烁 */}
+      {/* 悬浮入口球：形制照抄转工单悬浮球，色相换深一号蓝；缓慢呼吸闪烁 */}
       <div
         className="ada-fab"
         title="问服务号数据"
