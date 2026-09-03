@@ -10,6 +10,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .report_schemas import ReportPeriod
+
 
 # ── 分析类型 ────────────────────────────────────────────────
 
@@ -54,11 +56,82 @@ class AnalysisRequest(BaseModel):
     stream: bool = Field(default=False, description="是否流式输出")
 
 
+class ChatContextMeta(BaseModel):
+    """前端页面上下文元信息，用于补全分析范围。"""
+
+    scene: str | None = Field(
+        default=None,
+        description="当前页面/场景标识，如 project_detail / dashboard",
+    )
+    project_code: str | None = Field(
+        default=None,
+        description="页面上下文中的项目代码；仅在请求未显式传 project_code 时兜底",
+    )
+    project_name: str | None = Field(
+        default=None,
+        description="页面上下文中的项目名称，仅用于补充可读上下文",
+    )
+    user_id: str | None = Field(
+        default=None,
+        description="页面上下文中的用户ID；仅在请求未显式传 user_id 时兜底",
+    )
+    period: ReportPeriod | None = Field(
+        default=None,
+        description="页面上下文中的周期；仅在请求未显式传 period 时兜底",
+    )
+    date: str | None = Field(
+        default=None,
+        description="页面上下文中的目标日期 YYYY-MM-DD；仅在请求未显式传 date 时兜底",
+    )
+    analysis_type: AnalysisType | None = Field(
+        default=None,
+        description="页面上下文中的推荐分析类型；仅在请求未显式传 analysis_type 时兜底",
+    )
+
+
 class QuickChatRequest(BaseModel):
-    """快速对话请求（无数据，仅文本问答）。"""
+    """快速对话请求。
+
+    - 仅传 ``question`` / ``context``：自动识别是普通问答还是数据分析。
+    - 额外传 ``data``：走带数据上下文的分析问答。
+    - 不传 ``data`` 但传 ``project_code`` / ``user_id``：后端自动从 MySQL 采集项目数据后分析。
+    - 也可传 ``context_meta`` 作为页面上下文，用于补全分析范围。
+    """
 
     question: str = Field(..., description="用户问题")
     context: str | None = Field(default=None, description="补充上下文")
+    data: str | None = Field(
+        default=None,
+        description="待分析的数据内容；传入后 /chat 会执行数据分析",
+    )
+    data_source: DataSource = Field(
+        default=DataSource.JSON,
+        description="data 的数据格式",
+    )
+    analysis_type: AnalysisType = Field(
+        default=AnalysisType.GENERAL,
+        description="分析类型；传入 data 或启用自动查库分析时生效",
+    )
+    project_code: str | None = Field(
+        default=None,
+        description="项目代码；未传 data 时可用于自动查询该项目数据",
+    )
+    user_id: str | None = Field(
+        default=None,
+        description="用户ID或用户名；未传 data 且未传 project_code 时，查询该用户关联项目数据",
+    )
+    period: ReportPeriod = Field(
+        default=ReportPeriod.DAILY,
+        description="自动查询数据库时的数据周期：daily / weekly",
+    )
+    date: str | None = Field(
+        default=None,
+        description="自动查询数据库时的目标日期 YYYY-MM-DD；默认今天",
+    )
+    context_meta: ChatContextMeta | None = Field(
+        default=None,
+        description="前端页面上下文；当显式参数缺失时可用于补充分析范围",
+    )
 
 
 # ── 响应 ────────────────────────────────────────────────────
@@ -97,8 +170,13 @@ class ChatResponse(BaseModel):
     """对话响应。"""
 
     answer: str
+    mode: str = Field(default="chat", description="响应模式：chat 或 analysis")
     model: str | None = None
     usage: dict[str, Any] | None = None
+    analysis: AnalysisResult | None = Field(
+        default=None,
+        description="带数据分析时返回的结构化分析结果",
+    )
 
 
 class HealthResponse(BaseModel):

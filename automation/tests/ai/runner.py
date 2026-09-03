@@ -457,3 +457,128 @@ async def run_analysis_case(client, case: dict) -> dict:
                   name="analysis-result", attachment_type=allure.attachment_type.JSON)
     return {"passed": passed, "skipped_all": False, "checks": checks,
             "detail": "; ".join(c["detail"] for c in checks)}
+
+
+async def run_analysis_chat_case(client, case: dict) -> dict:
+    """Run an analysis-chat golden case via POST /api/ai/analysis/chat."""
+    body = case["request"]
+    r = await client.post("/api/ai/analysis/chat", json=body)
+    r.raise_for_status()
+    data = r.json()
+
+    expect = case.get("expect", {})
+    checks = []
+
+    l1 = expect.get("l1", {})
+    mode = l1.get("mode")
+    if mode:
+        checks.append({
+            "layer": "l1",
+            "metric": "mode",
+            "passed": data.get("mode") == mode,
+            "detail": f"mode={data.get('mode')!r}, expected {mode!r}",
+        })
+
+    analysis_required = l1.get("analysis_required")
+    if analysis_required is not None:
+        actual_has_analysis = isinstance(data.get("analysis"), dict)
+        checks.append({
+            "layer": "l1",
+            "metric": "analysis_presence",
+            "passed": actual_has_analysis == analysis_required,
+            "detail": (
+                f"analysis present={actual_has_analysis}, "
+                f"expected {analysis_required}"
+            ),
+        })
+
+    analysis_type = l1.get("analysis_type")
+    if analysis_type:
+        actual_type = (data.get("analysis") or {}).get("analysis_type")
+        checks.append({
+            "layer": "l1",
+            "metric": "analysis_type",
+            "passed": actual_type == analysis_type,
+            "detail": (
+                f"analysis_type={actual_type!r}, expected {analysis_type!r}"
+            ),
+        })
+
+    answer_terms = l1.get("answer_terms")
+    if answer_terms:
+        ratio = hit_ratio(data.get("answer", ""), answer_terms)
+        checks.append({
+            "layer": "l1",
+            "metric": "answer_terms",
+            "passed": ratio >= 1.0,
+            "detail": (
+                f"answer keyword hit {ratio:.0%}: "
+                f"{data.get('answer', '')[:80]}"
+            ),
+        })
+
+    summary_terms = l1.get("summary_terms")
+    if summary_terms:
+        summary = (data.get("analysis") or {}).get("summary", "")
+        ratio = hit_ratio(summary, summary_terms)
+        checks.append({
+            "layer": "l1",
+            "metric": "summary_terms",
+            "passed": ratio >= 1.0,
+            "detail": f"summary keyword hit {ratio:.0%}: {summary[:80]}",
+        })
+
+    schema = l1.get("schema")
+    if schema:
+        violations = check_schema(data, schema)
+        checks.append({
+            "layer": "l1",
+            "metric": "schema",
+            "passed": not violations,
+            "detail": f"violations: {violations or 'none'}",
+        })
+
+    judge = _get_judge()
+    l3 = expect.get("l3", {})
+    rubric = l3.get("rubric")
+    if rubric:
+        min_score = l3.get("min_score", 3)
+        if judge is None:
+            checks.append({
+                "layer": "l3",
+                "metric": "rubric",
+                "passed": True,
+                "detail": (
+                    f"skipped: judge unavailable ({_judge_error or 'unknown'})"
+                ),
+            })
+        else:
+            question = body.get("question") or "请分析"
+            answer = data.get("answer", "")
+            out = await judge_rubric(question, answer, rubric, judge)
+            checks.append({
+                "layer": "l3",
+                "metric": "rubric",
+                "passed": out["score"] >= min_score,
+                "detail": (
+                    f"score={out['score']:.1f}/5, min {min_score}: "
+                    f"{out['reason']}"
+                ),
+            })
+
+    passed = all(c["passed"] for c in checks)
+    allure.attach(
+        json.dumps(
+            {"id": case["id"], "request": body, "response": data, "checks": checks},
+            indent=2,
+            ensure_ascii=False,
+        ),
+        name="analysis-chat-result",
+        attachment_type=allure.attachment_type.JSON,
+    )
+    return {
+        "passed": passed,
+        "skipped_all": False,
+        "checks": checks,
+        "detail": "; ".join(c["detail"] for c in checks),
+    }
