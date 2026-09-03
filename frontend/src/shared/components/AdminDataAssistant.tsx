@@ -6,9 +6,9 @@
 //    呼吸闪烁放慢至 3.6s。
 //  - 点开为右侧抽屉式聊天对话框（窄屏自动全宽），气泡样式复用全局 .chat-bubble 体系，与摇人对话观感一致。
 //  - 问答走真实接口：POST /api/ai/analysis/chat（AiDataAnalysisPlatform 快速对话，非流式 JSON）。
-//  - 权限：仅「超级管理员 / 开发者 / 部门负责人」可见入口，其余角色整组件不渲染。
-//    roles[项目键] 下存的是角色 id：种子角色（admin/developer/role_admin）走快路径直接命中；
-//    自定义角色（如「部门负责人」，id 为随机 role_xxx）经 GET /roles/ 解析成中文名后按白名单命中。
+//  - 权限：入口可见性由权限码 frontend:dataqa:view（「后台管理-问数据按钮可见性」）控制——
+//    在后台管理-其他-权限管理里定义、按角色在角色管理/分配角色里勾选：
+//    授予该权限的角色可见，未授予（且非 admin 通配权限）整组件不渲染。
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Popup, Toast } from 'tdesign-mobile-react';
@@ -17,8 +17,6 @@ import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import { analysisChat } from '@/api/analysis';
 import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
 import { useAuthStore } from '@/stores/auth';
-import { createRequest } from '@/api/client';
-import API_CONFIG from '@/config/api';
 import './AdminDataAssistant.css';
 
 /** 气泡 id 生成（纯本地） */
@@ -45,60 +43,23 @@ const CHIP_QUESTIONS = [
 
 const WELCOME_TEXT = `你好，我是**后台数据助手** 👋 可以问我服务号的运营情况：新增报障、处理时效、用户增长、项目进展……`;
 
-/** 「问数据」可见角色（中文角色名白名单；roles[项目键] 下若直接存角色名也可命中） */
-const DATA_ASSISTANT_ROLE_NAMES = new Set(['超级管理员', '开发者', '部门负责人']);
-/** 兜底角色 id（种子角色：admin=超级管理员 / developer=开发者 / role_admin=管理员-全量权限） */
-const DATA_ASSISTANT_ROLE_IDS = new Set(['admin', 'developer', 'role_admin']);
+/** 「问数据」按钮可见性权限码（后台管理-权限管理里维护，按角色勾选授予） */
+const DATA_ASSISTANT_PERMISSION = 'frontend:dataqa:view';
 
 export default function AdminDataAssistant() {
   const { pathname } = useLocation();
   const isAdminPath = pathname.startsWith('/admin');
-  const roles = useAuthStore((s) => s.roles);
   const permissions = useAuthStore((s) => s.permissions);
   const isAdmin = useAuthStore((s) => s.isAdmin);
 
-  // ── 权限门禁：超级管理员 / 开发者 / 部门负责人可见，其余角色不渲染入口 ──
-  const roleIds = useMemo(() => Object.values(roles ?? {}).flat(), [roles]);
-  // 快路径：无需请求即可判定（isAdmin / 权限直给 admin / 种子角色 id 或角色名直挂）
-  const canAskDataFast = useMemo(() => {
-    if (isAdmin) return true; // 鉴权中心返回的 admin 判定
-    if ((permissions ?? []).includes('admin')) return true; // 权限直给 admin（绕过全检查）
-    return roleIds.some(
-      (r) => DATA_ASSISTANT_ROLE_IDS.has(r) || DATA_ASSISTANT_ROLE_NAMES.has(r),
-    );
-  }, [isAdmin, permissions, roleIds]);
-
-  // 慢路径：自定义角色（如「部门负责人」role_xxx）把角色 id 解析成中文名再判定。
-  // 解析走 GET /roles/（需要 backend:role:base:read）；失败按最小权限处理 → 入口隐藏。
-  const [roleNameById, setRoleNameById] = useState<Record<string, string> | null>(null);
-  useEffect(() => {
-    if (canAskDataFast || roleIds.length === 0 || roleNameById !== null) return;
-    let cancelled = false;
-    const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
-    request<{ id: string; name: string }[]>('/roles/')
-      .then((list) => {
-        if (!cancelled) setRoleNameById(Object.fromEntries(list.map((r) => [r.id, r.name])));
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        // 角色列表不可读（无 backend:role:base:read 等）：按无权限隐藏，不打扰页面
-        console.warn('[AdminDataAssistant] 角色解析失败，问数据入口按无权限隐藏:', err);
-        setRoleNameById({});
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [canAskDataFast, roleIds, roleNameById]);
-
-  // 最终判定：快路径放行；否则等角色名映射就绪后按中文名白名单命中
+  // ── 权限门禁：按「后台管理-问数据按钮可见性」（frontend:dataqa:view）控制可见性 ──
+  // 后端 /users/{username}/detail 会把用户所有角色授予的权限码聚合进 permissions；
+  // admin 通配（isAdmin 或 permissions 含 'admin'）始终可见，其余看是否被授予该权限码。
   const canAskData = useMemo(() => {
-    if (canAskDataFast) return true;
-    if (roleNameById === null) return false; // 映射解析中：保持隐藏（解析完成自动放行/拦截）
-    return roleIds.some((r) => {
-      const name = roleNameById[r];
-      return name !== undefined && DATA_ASSISTANT_ROLE_NAMES.has(name);
-    });
-  }, [canAskDataFast, roleIds, roleNameById]);
+    if (isAdmin) return true; // 鉴权中心返回的 admin 判定
+    if ((permissions ?? []).includes('admin')) return true; // admin 通配权限
+    return (permissions ?? []).includes(DATA_ASSISTANT_PERMISSION);
+  }, [isAdmin, permissions]);
 
   // ── 悬浮球（转工单同款拖拽：pointer 捕获，位移 >8px 视为移动并抑制点击） ──
   const fabRef = useRef<HTMLButtonElement>(null);
