@@ -21,6 +21,8 @@ from app.wechat.services.auth_service import auth_service
 from app.wechat.services.data_service import data_service
 from app.wechat.services.wechat_service import wechat_service
 from app.wechat.services.project_ticket_service import project_ticket_service
+from app.wechat.services.user_info_snapshot import run_user_info_snapshot
+from app.wechat.services.user_statistics_snapshot import run_user_statistics_job
 from app.wechat.utils.qrcode import process_qrcode_content, decompress_data
 from app.wechat.utils.opt_logger import log_operation
 from app.services.hmac_utils import generate_password, chinese_to_pinyin, get_password_hash, verify_password
@@ -646,6 +648,58 @@ async def get_batch_user_info_from_db(
     except Exception as e:
         logger.error(f"读取用户信息快照失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"读取用户信息快照过程中发生错误: {str(e)}")
+
+
+@router.post("/batch-user-info/debug-run")
+async def debug_run_batch_user_info_snapshot(
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """手动触发 user_info 整点快照任务，便于线上即时调试。"""
+    try:
+        payload = await run_user_info_snapshot()
+        if payload is None:
+            return {
+                "success": False,
+                "message": "user_info 快照任务执行失败或无可用用户，本次未落库",
+                "user_info_list": [],
+                "total": 0,
+            }
+
+        return {
+            "success": True,
+            "message": "user_info 快照任务执行成功",
+            "user_info_list": payload.get("user_info_list", []),
+            "total": payload.get("total", len(payload.get("user_info_list", []))),
+        }
+    except Exception as e:
+        logger.error(f"手动触发 user_info 快照任务失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"手动触发 user_info 快照任务失败: {str(e)}")
+
+
+@router.post("/user-summary/debug-run")
+async def debug_run_user_statistics_snapshot(
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """手动触发 user_statistics 整点统计任务，便于线上即时调试。"""
+    try:
+        items = await run_user_statistics_job()
+        if items is None:
+            return {
+                "success": False,
+                "message": "user_statistics 统计任务执行失败，本次未落库",
+                "list": [],
+                "total": 0,
+            }
+
+        return {
+            "success": True,
+            "message": "user_statistics 统计任务执行成功",
+            "list": items,
+            "total": len(items),
+        }
+    except Exception as e:
+        logger.error(f"手动触发 user_statistics 统计任务失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"手动触发 user_statistics 统计任务失败: {str(e)}")
 
 
 @router.get("/callback")
