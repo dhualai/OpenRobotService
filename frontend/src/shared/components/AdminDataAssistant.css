@@ -1,0 +1,337 @@
+/* =====================================================================
+ * 后台管理 · AI 数据助手（AdminDataAssistant，UI 原型）
+ * ---------------------------------------------------------------------
+ * 设计对照「转工单」悬浮球（.chat-panel__ticket-fab / .chat-ticket-btn）：
+ * 52px 液态玻璃圆钮 + 常显小标签 + 可拖拽 + 入场回弹动画；差异为
+ *   - 色相：整体统一蓝系，按钮比转工单（--primary）深一号 → --blue-2
+ *   - 闪烁：呼吸动画放慢至 3.6s（缓慢呼吸 = 用户所说「缓慢闪烁」）
+ * 聊天抽屉气泡直接复用全局 .chat-bubble 体系，与「我要摇人」对话观感一致。
+ * ===================================================================== */
+
+:root {
+  /* AI 数据助手强调色：比「我要摇人」转工单按钮（--primary）深一号的蓝阶 token */
+  --ada-iris: var(--blue-2);
+  /* 标签/文字：蓝阶最深处再压向近黑，保证 10px 小字可读 */
+  --ada-iris-deep: color-mix(in oklab, var(--blue-1) 55%, var(--gray-25));
+  --ada-iris-soft: var(--blue-soft);
+}
+
+/* ── 悬浮入口球 ── */
+.ada-fab {
+  position: fixed;
+  right: 16px;
+  bottom: 92px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  touch-action: none;
+}
+
+.ada-fab__label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--ada-iris-deep);
+  opacity: 0.72;
+  user-select: none;
+}
+
+.ada-fab__btn {
+  width: 52px;
+  height: 52px;
+  border: 1px solid rgba(255, 255, 255, 0.46);
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--ada-iris) 24%, transparent);
+  backdrop-filter: saturate(1.6) blur(28px);
+  -webkit-backdrop-filter: saturate(1.6) blur(28px);
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow:
+    inset 0 1.5px 1px rgba(255, 255, 255, 0.3),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.04),
+    0 2px 4px rgba(0, 0, 0, 0.04),
+    0 12px 30px color-mix(in oklab, var(--ada-iris) 22%, rgba(0, 0, 0, 0.08));
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+              box-shadow 0.25s ease,
+              background 0.25s ease,
+              opacity 0.3s ease;
+  animation: ada-fab-enter 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both,
+             ada-breathe 3.6s ease-in-out 0.9s infinite;
+}
+.ada-fab__btn svg {
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.12));
+}
+.ada-fab__btn:hover {
+  transform: scale(1.08);
+}
+.ada-fab__btn:active {
+  transform: scale(0.92);
+}
+
+@keyframes ada-fab-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.3) rotate(-20deg);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+/* 缓慢呼吸闪烁：透明度微降 + 外圈光晕扩张 + 浮影加深，3.6s 一个循环 */
+@keyframes ada-breathe {
+  0%, 100% {
+    opacity: 1;
+    box-shadow:
+      inset 0 1.5px 1px rgba(255, 255, 255, 0.3),
+      inset 0 -1px 1px rgba(0, 0, 0, 0.04),
+      0 2px 4px rgba(0, 0, 0, 0.04),
+      0 12px 30px color-mix(in oklab, var(--ada-iris) 22%, rgba(0, 0, 0, 0.08));
+  }
+  50% {
+    opacity: 0.8;
+    box-shadow:
+      inset 0 1.5px 1px rgba(255, 255, 255, 0.3),
+      inset 0 -1px 1px rgba(0, 0, 0, 0.04),
+      0 2px 4px rgba(0, 0, 0, 0.04),
+      0 0 0 5px color-mix(in oklab, var(--ada-iris) 14%, transparent),
+      0 12px 34px color-mix(in oklab, var(--ada-iris) 34%, rgba(0, 0, 0, 0.1));
+  }
+}
+
+/* ── 聊天抽屉 ── */
+.ada-pop {
+  background: transparent;
+}
+
+.ada-drawer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--gradient-surface);
+}
+
+/* 头部：玻璃条 + 渐变蓝头像 + 清空/关闭 */
+.ada-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px 10px 14px;
+  background: color-mix(in oklab, var(--card) 72%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border-bottom: 1px solid var(--border);
+}
+
+.ada-head__avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: linear-gradient(140deg, var(--ada-iris) 0%, var(--sky) 100%);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 6px 14px color-mix(in oklab, var(--ada-iris) 30%, transparent);
+}
+
+.ada-head__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.ada-head__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.ada-head__demo {
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: var(--apricot-soft);
+  color: var(--apricot);
+  font-weight: 600;
+}
+
+.ada-head__sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ada-head__act {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--gray-dark);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s ease;
+}
+.ada-head__act:hover {
+  background: var(--gray-soft);
+}
+
+/* ── 消息区（气泡复用 .chat-bubble 体系；抽屉内收紧到 88% 宽） ── */
+.ada-msgs {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 12px 6px;
+  scrollbar-width: none;
+}
+.ada-msgs::-webkit-scrollbar {
+  display: none;
+}
+.ada-msgs .chat-bubble {
+  max-width: 88%;
+}
+
+/* 演示答案中的表格：超出抽屉宽度时横向滚动 */
+.ada-msgs .markdown-body table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* AI 思考占位：三点呼吸 */
+.ada-typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+}
+.ada-typing i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--gray-light);
+  animation: ada-dot-bounce 1.2s ease-in-out infinite;
+}
+.ada-typing i:nth-child(2) { animation-delay: 0.18s; }
+.ada-typing i:nth-child(3) { animation-delay: 0.36s; }
+@keyframes ada-dot-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-3px); opacity: 1; }
+}
+
+/* ── 空态推荐问题 chips ── */
+.ada-chips {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px 14px 8px;
+}
+
+.ada-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--gray-40);
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid color-mix(in oklab, var(--ada-iris) 16%, var(--border));
+  cursor: pointer;
+  box-shadow: var(--shadow-soft);
+  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+.ada-chip svg {
+  color: var(--ada-iris);
+  flex-shrink: 0;
+}
+.ada-chip:hover {
+  border-color: color-mix(in oklab, var(--ada-iris) 45%, var(--border));
+  color: var(--ada-iris-deep);
+  background: color-mix(in oklab, var(--ada-iris) 7%, var(--card));
+}
+
+/* ── 输入区 ── */
+.ada-input {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 12px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+}
+
+.ada-input__box {
+  flex: 1;
+  min-width: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 8px 14px;
+  box-shadow: var(--shadow-soft);
+}
+.ada-input__box:focus-within {
+  border-color: color-mix(in oklab, var(--ada-iris) 45%, var(--border));
+}
+
+.ada-input textarea {
+  display: block;
+  width: 100%;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--foreground);
+  max-height: 120px;
+}
+.ada-input textarea::placeholder {
+  color: var(--gray-light);
+}
+
+.ada-send {
+  width: 38px;
+  height: 38px;
+  border: none;
+  border-radius: 50%;
+  background: linear-gradient(140deg, var(--ada-iris) 0%, var(--sky) 100%);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  box-shadow: 0 6px 16px color-mix(in oklab, var(--ada-iris) 28%, transparent);
+  transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease;
+}
+.ada-send:active:not(:disabled) {
+  transform: scale(0.9);
+}
+.ada-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+  box-shadow: none;
+}
