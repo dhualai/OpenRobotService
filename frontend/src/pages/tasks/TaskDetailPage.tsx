@@ -1511,7 +1511,7 @@ export default function TaskDetailPage() {
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">当前阶段截止时间</span>
                 <span className="detail-info-item__value">
-                  {detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '未设置'}
+                  {detail.deadline_at ? formatRawDateTime(detail.deadline_at) : '未设置'}
                 </span>
               </div>
             </div>
