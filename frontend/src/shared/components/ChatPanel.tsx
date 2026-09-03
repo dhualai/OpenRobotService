@@ -84,6 +84,9 @@ interface Message {
   phase?: 'analyzing_image' | 'analyzing_file' | 'thinking' | 'generating_ticket';
   // 任务 Agent 专属：工单概览 / 信息不足提示（长文本可展开）
   subtype?: 'ticket_overview' | 'missing_hint';
+  // 项目编号题候选（prepare not_ready+project_ask）：气泡下方渲染可点按钮，
+  // 点击=以用户身份发送序号走编号还原链路；点击/发送后清空（防重复点与过期按钮）
+  project_choices?: Array<{ index: number; name: string; code?: string }> | null;
   // 工单确认后的概览气泡：confirm 成功时构造，DB 持久化（metadata_.kind='ticket_overview'）
   ticket_overview?: {
     db_id: number;
@@ -317,7 +320,7 @@ const mergeDbMessages = (prev: Message[], fresh: Message[]): Message[] => {
 
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
-  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch,
+  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch, onProjectChoice,
 }: {
   msg: Message;
   editingId: string | null;
@@ -333,6 +336,7 @@ const MessageBubble = memo(function MessageBubble({
   onImageClick: (url: string) => void;
   onOpenTicket: (dbId: number) => void;
   onRedispatch?: (msgId: string, ov: NonNullable<Message['ticket_overview']>) => void;
+  onProjectChoice?: (msgId: string, index: number) => void;
 }) {
   return (
     <div className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
@@ -496,6 +500,23 @@ const MessageBubble = memo(function MessageBubble({
           )
         ) : (
           <div className="chat-bubble__text">{msg.content}</div>
+        )}
+
+        {/* 项目编号题候选按钮：点击=以用户身份发送序号（走编号还原→预填→弹窗链路）。
+            发送/点击后 project_choices 被清空，按钮随之消失（防重复点与过期引导） */}
+        {msg.project_choices && msg.project_choices.length > 0 && (
+          <div className="chat-proj-choices">
+            {msg.project_choices.map((c) => (
+              <button
+                key={c.index}
+                type="button"
+                className="chat-proj-choices__btn"
+                onClick={() => onProjectChoice?.(msg.id, c.index)}
+              >
+                {c.name}
+              </button>
+            ))}
+          </div>
         )}
       </div>
 
@@ -1031,10 +1052,18 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
+  // 项目题按钮随用户答复消失：点按钮/手动打字/传附件回答同效（答复已给出，旧按钮继续可点是过期引导）
+  const clearProjectChoices = () => {
+    setMessages((prev) => (prev.some((m) => m.project_choices)
+      ? prev.map((m) => (m.project_choices ? { ...m, project_choices: null } : m))
+      : prev));
+  };
+
   /** 带附件发送：文件(可附文字)一起上传 /qa/upload（SSE 流式），逐步推送 VLM 分析 + 诊断。
    * 方案一（乐观渲染）：点发送即插入用户气泡（附件+文字，内嵌上传进度遮罩）+ AI 分析占位气泡，
    * 上传进度实时更新到用户气泡，完成后遮罩消失、AI 回复填入占位气泡。文件名不拼进文字上下文。 */
   const sendWithFile = async (items: Array<{ file: File; url?: string }>, content: string) => {
+    clearProjectChoices();
     const files = items.map((it) => it.file);
     // 每个文件独立气泡（像原来单文件一样各自显示图片缩略图/文件卡片）
     const firstImage = files.find((f) => f.type.startsWith('image/'));
@@ -1239,6 +1268,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     resumeFollowBottom();
     // 用户开始补充信息：清掉待补充清单卡片（新一轮对话后再 prepare 会重新给出最新缺口）
     setTicketMissing(null);
+    clearProjectChoices();
 
     // 带附件：走 /qa/upload（SSE 流式），由 sendWithFile 流式渲染 VLM 分析 + 诊断
     if (files.length > 0) {
@@ -1596,6 +1626,17 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const editAndResendRef = useRef(editAndResend);
   editAndResendRef.current = editAndResend;
   const handleEditSave = useCallback((msg: Message) => editAndResendRef.current(msg), []);
+  // 项目题按钮点击：以用户身份发送序号（如「2」），走编号还原→预填→自动弹窗既有链路。
+  // ref 转发保持 onProjectChoice 引用稳定（MessageBubble memo）；发送锁占用时直接忽略，
+  // 不清按钮不吞消息（等流式结束后用户再点）
+  const pickProjectChoice = (msgId: string, index: number) => {
+    if (sendingRef.current) return;
+    setMessages((prev) => prev.map((m) => (m.id === msgId ? { ...m, project_choices: null } : m)));
+    send(String(index));
+  };
+  const pickProjectChoiceRef = useRef(pickProjectChoice);
+  pickProjectChoiceRef.current = pickProjectChoice;
+  const handleProjectChoice = useCallback((msgId: string, index: number) => pickProjectChoiceRef.current(msgId, index), []);
   // 稳定 onEditChange / onEditCancel：内联箭头会让 MessageBubble 的 React.memo 失效（每次渲染新引用），
   // 导致流式 flush 时整列表重渲染、页面闪烁。包成 useCallback 后历史气泡可跳过重渲染。
   const handleEditChange = useCallback((id: string, v: string) => {
@@ -1931,7 +1972,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         return;
       }
       // ① 信息不足：stage=not_ready → 对话区列出缺失项引导补充，不弹窗
+      //    project_ask=true 是项目编号选择题（等用户回复序号），不是字段拦截
       if (res.data.stage === 'not_ready') {
+        const isProjectAsk = !!res.data.project_ask;
         const missing = res.data.missing_info ?? [];
         const msg = res.data.message || (missing.length
           ? `工单信息不足，还差：${missing.join('、')}。在对话中补充后会自动为您生成工单。`
@@ -1939,12 +1982,24 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         setMessages((prev) => [...prev, {
           id: uid(),
           role: 'assistant',
-          subtype: 'missing_hint',
+          // 项目题用普通气泡（与对话路径出题视觉一致，候选列表需完整展示）；
+          // 字段拦截才用 missing_hint 折叠样式
+          ...(isProjectAsk ? {} : { subtype: 'missing_hint' as const }),
+          // 项目题挂结构化候选：气泡下方渲染可点按钮
+          ...(isProjectAsk && Array.isArray(res.data.project_choices) && res.data.project_choices.length
+            ? { project_choices: res.data.project_choices }
+            : {}),
           content: msg,
           timestamp: new Date().toISOString(),
         }]);
         scrollToBottomNow();
         if (convRef.current) appendMessage(convRef.current, 'assistant', msg).catch(() => {});
+        if (isProjectAsk) {
+          // 题面气泡即完整引导，回复序号即预填；不挂「信息不足」
+          // 常驻卡片、不发「还差N项」Toast（误导为被拦截）
+          setTicketMissing(null);
+          return;
+        }
         setTicketMissing({ info: missing, message: msg });
         Toast({ message: missing.length ? `还差 ${missing.length} 项信息，已在对话中列出` : '信息不足，请补充', theme: 'warning' });
         return;
@@ -2495,6 +2550,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             onImageClick={setPreviewUrl}
             onOpenTicket={handleOpenTicket}
             onRedispatch={openRedispatch}
+            onProjectChoice={handleProjectChoice}
             expandedDesc={expandedMsgIds.has(msg.id)}
             onToggleDesc={toggleMsgExpanded}
           />

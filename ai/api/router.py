@@ -565,8 +565,14 @@ async def prepare_ticket(
     body: QASubmitRequest,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
+    # 0903 路径统一：prepare 无项目来源时按名下项目出选择题，需要用户身份。
+    # token 解析权威防伪造，失效时用前端显式传的兜底（与 confirm 同一模式）。
+    username, _ = _current_user(request)
+    if not username:
+        username = (getattr(body, "username", "") or "").strip()
     try:
-        result = await pipeline.prepare_ticket(session_id=body.session_id)
+        result = await pipeline.prepare_ticket(
+            session_id=body.session_id, created_by=username)
         return {"code": 0, "data": result}
     except Exception as e:
         logger.error(f"prepare_ticket 异常: {e}", exc_info=True)
