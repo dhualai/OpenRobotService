@@ -11,6 +11,7 @@ import { useAuthStore } from '@/stores/auth';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { buildRelevanceFilters } from '@/shared/utils/ticketFilters';
+import AdminDataAssistant from '@/shared/components/AdminDataAssistant';
 
 const TAB_PATHS: Record<WorkbenchTab, string> = {
   call: '/call',
@@ -165,6 +166,8 @@ export default function MainLayout() {
           ))}
         </div>
       </nav>
+      {/* 后台管理：AI 数据助手入口（UI 原型，仅 /admin 下渲染，组件内部自判路由） */}
+      <AdminDataAssistant />
     </div>
   );
 }

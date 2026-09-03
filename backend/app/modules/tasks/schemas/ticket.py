@@ -154,10 +154,16 @@ class TicketResponse(TicketBase):
     resolved_at: Optional[datetime]
     closed_at: Optional[datetime]
     deadline_at: Optional[datetime]
-    # --- 协商阶段（工单阶段性处理：当前节点 + 节点结束时间）---
+    # --- 协商阶段（工单阶段性处理：当前节点 + 节点结束时间 + 回合）---
     curr_step_id: Optional[int] = Field(None, description="当前协商节点ID")
     curr_step_name: Optional[str] = Field(None, description="当前协商节点名称")
     curr_step_endtime: Optional[datetime] = Field(None, description="当前协商节点结束时间（naive UTC）")
+    step_last_updated_by: Optional[str] = Field(None, description="最近一次改step的操作人侧标识：assigned/creator")
+    step_last_updated_at: Optional[datetime] = Field(None, description="最近一次step更新时间")
+    step_negotiation_round: int = Field(0, description="协商回合数：对手回应一次+1")
+    curr_step_agreed: bool = Field(False, description="当前协商节点是否已协商一致：确认同意后 True；进入新节点或协商后重置为 False")
+    escalate_count: int = Field(0, description="升级上报次数：>0 表示已升级，协商回合重置为1且不再受限")
+    step_neg_max_rounds: int = Field(5, description="该工单适用的协商回合上限（全局默认或工单专属）")
     reply_count: int
     view_count: int
     comments: Optional[List[TicketCommentResponse]] = []

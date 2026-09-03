@@ -405,5 +405,6 @@ async def root():
 # ── 入口 ─────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    port = 8401
+    # 优先读 ai/.env 中的 PORT（由 ai/config.py 的 load_dotenv 注入），缺省回退 8401
+    port = get_ai_config().port
     uvicorn.run("ai.run:app", host="0.0.0.0", port=port, reload=True, log_level="info")
