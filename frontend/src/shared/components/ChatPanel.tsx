@@ -2268,7 +2268,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 前端确认弹窗无法再次弹出，提单卡死。清掉后下次对话字段齐全会重新弹窗。
   const handleCancelTicketConfirm = () => {
     const sid = ticketConfirm.draft?.source_conversation_id ?? sessionId;
-    ticketBaseTimeRef.current = null; // 关闭弹窗即清空基准，下次打开重新固定
     setTicketSteps([]); // 关闭弹窗即清空阶段列表
     setRemoteShots([]); // 关闭弹窗即清空已上传的远程截图
     setTicketConfirm({ visible: false, draft: null, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });

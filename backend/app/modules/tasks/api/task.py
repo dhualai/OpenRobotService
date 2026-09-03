@@ -1510,9 +1510,12 @@ async def respond_task(
         ticket.deadline_at = ticket.curr_step_endtime
     ticket.updated_at = func.now()
 
-    # 首次响应视为接单人首轮提案：记录 updated_by=assigned（提单人"待我处理"即可命中），
-    # 不累加回合——回合从"对手回应"开始计数。
-    _apply_step_update_meta(ticket, current_user, username)
+    # 确认同意是"达成一致"的正向动作，不计入协商回合（回合只在"协商节点时间"时累加），
+    # 但需记录操作方元信息，供下一节点的回合归属判定使用。
+    side = _actor_side(ticket, current_user, username)
+    if side:
+        ticket.step_last_updated_by = side
+        ticket.step_last_updated_at = func.now()
     await db.commit()
 
     # 操作日志 + 系统评论
@@ -1725,9 +1728,10 @@ async def negotiate_step(
         step_changed = True
 
     # 前端 dayjs(...).toISOString() 传入 UTC aware datetime，剥时区转 naive UTC 存库
+    # 协商节点时间只更新 curr_step_endtime，不动 deadline_at；
+    # 待"确认同意"(/respond) 时再把 deadline_at 同步到已协商一致的节点时间。
     endtime = convert_to_shanghai_time(body.curr_step_endtime)
     ticket.curr_step_endtime = endtime
-    ticket.deadline_at = endtime  # 阶段截止时间每次更新都同步工单截止时间（deadline_at 对用户不可见）
     ticket.updated_at = func.now()
 
     # 处理人首次响应（协商节点时间）：工单状态 new → in_progress

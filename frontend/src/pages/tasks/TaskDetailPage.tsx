@@ -707,18 +707,26 @@ export default function TaskDetailPage() {
   };
 
   // WS 工单状态变更（派单完成/改派/状态流转）实时更新详情，替代轮询
-  const handleWsTaskUpdated = (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null }) => {
+  const handleWsTaskUpdated = (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null; updated_at?: string | null }) => {
     setDetail((prev) => {
       if (!prev) return prev;
+      // 用 updated_at 判断是否为过期推送（操作发起人自己已更新，跳过重复刷新）
+      if (patch.updated_at && prev.updated_at) {
+        const incoming = new Date(patch.updated_at).getTime();
+        const current = new Date(prev.updated_at).getTime();
+        if (incoming <= current) return prev;
+      }
       // WS 推送的 assigned_to 可能为 null（退单/清空处理人），状态类型为 string | undefined，
       // null → undefined 以兼容类型，展示层有 || 兜底，null 与 undefined 表现一致。
       return {
         ...prev,
         ...(patch.status ? { status: patch.status } : {}),
         ...(patch.assigned_to !== undefined ? { assigned_to: patch.assigned_to ?? undefined } : {}),
-        ...(patch.assigned_to_name !== undefined ? { assigned_to_name: patch.assigned_to_name ?? undefined } : {}),
+        ...(patch.assigned_to_name !== undefined ? { assigned_to: patch.assigned_to_name ?? undefined } : {}),
       };
     });
+    // WS 推送只含基础字段，阶段性处理等字段需拉全量刷新
+    refreshDetail();
   };
 
   const refreshDetail = async () => {
@@ -1511,7 +1519,7 @@ export default function TaskDetailPage() {
               <div className="detail-info-item__content">
                 <span className="detail-info-item__label">当前阶段截止时间</span>
                 <span className="detail-info-item__value">
-                  {detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '未设置'}
+                  {detail.deadline_at ? formatRawDateTime(detail.deadline_at) : '未设置'}
                 </span>
               </div>
             </div>
