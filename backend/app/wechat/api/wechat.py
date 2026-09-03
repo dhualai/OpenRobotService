@@ -548,12 +548,12 @@ async def get_user_summary_from_db(
     request: Request,
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
-    """读取 user_statistics 表存储的用户增减数据（每日凌晨 1:00 定时任务落库的微信渠道明细）。
+    """读取 user_statistics 表存储的用户增减数据（整点任务刷新出的昨日微信渠道明细）。
 
     返回结构与 /user-summary 一致：{"success": true, "list": [...], "total": N}，
     每项含 ref_date/user_source/new_user/cancel_user。表内为微信接口原样数据，
-    查询跨度不限；数据 T+1 落库（当日数据次日 01:00 写入），end_date 不能为
-    今天或未来日期。
+    查询跨度不限；任务每个整点都会刷新昨日数据，同一 ref_date 仅保留最新一次
+    刷新的渠道明细。end_date 不能为今天或未来日期。
     """
     try:
         body = await request.json()

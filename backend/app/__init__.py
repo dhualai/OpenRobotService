@@ -74,7 +74,7 @@ async def startup_event():
     # 整点拉取 batch-user-info 存入 user_info 表（每天仅保留最新一条快照）
     start_user_info_snapshot_scheduler()
 
-    # 每凌晨 1:00 拉取昨日用户增减数据，按日期聚合存入 user_statistics 表
+    # 每个整点拉取昨日用户增减数据，并覆盖为该日期最新渠道明细
     start_user_statistics_scheduler()
 
 
