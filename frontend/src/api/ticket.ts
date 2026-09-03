@@ -8,6 +8,7 @@
  */
 import { createRequest, getToken } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { readStored } from '@/stores/authStorage';
 
 const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
 
@@ -161,8 +162,8 @@ export const uploadCommentAttachment = async (file: File, tempId: string): Promi
   const formData = new FormData();
   formData.append('file', file);
   formData.append('temp_id', tempId);
-  // 优先取 client.ts 内存 token，其次 localStorage；确保与 createRequest 使用同一个 token
-  const token = getToken() || localStorage.getItem('auth_token') || '';
+  // 优先取 client.ts 内存 token，其次环境命名空间 localStorage；确保与 createRequest 使用同一个 token
+  const token = getToken() || readStored('AUTH_TOKEN') || '';
   const res = await fetch(`${API_CONFIG.TASKS.BASE_URL}/comments/attachments`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
