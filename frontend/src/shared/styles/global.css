@@ -879,6 +879,39 @@ html, body, #root {
   color: var(--foreground);
   line-height: 1.6;
 }
+/* 项目编号题候选按钮（prepare not_ready+project_ask）：题面下方一排 pill 按钮，
+   点击=以用户身份发送序号走编号还原→预填→弹窗链路；答复后随 project_choices 清空消失 */
+.chat-proj-choices {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chat-proj-choices__btn {
+  max-width: 100%;
+  padding: 5px 12px;
+  border: 1px solid var(--primary);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--primary);
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-proj-choices__btn:hover {
+  background: var(--primary);
+  color: var(--card);
+}
+.chat-proj-choices__btn:active {
+  opacity: 0.8;
+}
 .chat-ticket-overview__footer {
   margin-top: 12px;
   padding-top: 12px;

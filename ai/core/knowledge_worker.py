@@ -1,175 +1,74 @@
-"""知识沉淀 Worker（core 共享层）—— 工单解决后自动写入 Qdrant 知识库
+# -*- coding: utf-8 -*-
+"""知识沉淀 Worker：扫描已解决工单 → LLM 提炼知识卡 → 写入 Qdrant。
 
-从任务 Agent 平台仓库 `ai/agents/AiTaskPlatform/services/diagnosis_worker.py` 的"知识沉淀 Service"
-下沉合并到 `ai/core`，作为所有 Agent（任务 Agent / 智能派单等）共用的沉淀基建。
+0901 移入 ai/core（共享核心）：知识沉淀跨平台（数据来自工单平台、检索
+服务诊断平台），由 ai/run.py lifespan 统一挂载（start_knowledge_worker），
+不属于任何单个 agent 的私有 services。
 
-职责（与旧版一致，仅解耦平台依赖）：
-  - `run_knowledge_worker`：后台定时扫描"已解决/已关闭但未沉淀"的工单 → 写入 Qdrant（project domain）。
-  - `_scan_resolved_unindexed_tasks`：扫 tasks 表，挑 `metadata_info.solution_indexed != True` 的已结案工单。
-  - `_extract_solution_text`：从工单评论提取根因(U老师诊断) + 解决步骤(最后人类评论)。
-  - `_index_resolved_task`：单工单沉淀入 `task_resolutions`，成功后标记 `solution_indexed=True`。
+与 ai/tools/backfill_resolutions.py（存量回填 CLI）共享内核
+ai.core.solution_sink：DB 组装 → 提炼 → 确定性 ID 入库（幂等）→ 标记回写。
 
-解耦说明：
-  - 旧版依赖 `AiTaskAgent`（平台类）取 retriever；本版直接 `ai.core.retrieval.get_retrieval_service()`，
-    不 import 任何平台类型，故可被所有 Agent 复用。
-  - DB：沿用 `ai/core/task_adapter.py` 同款后端模型/会话（`app.models.task` + `app.core.db`）。
-
-启动位置：`ai/run.py` lifespan 已引用 `from ai.core.knowledge_worker import run_knowledge_worker`。
+v1（搁置版）的三个硬伤：没用 metadata_info.resolution_summary（正则刮评论
+猜解法，最后一条人类评论很可能是「好的谢谢」）、没有解决人、没有回填模式。
 """
-
 import asyncio
-import re
-import time
 
 from ai.config import get_ai_config
 from ai.core.logging import get_logger
 
-logger = get_logger("KNOWLEDGE_WORKER")
+logger = get_logger("KNOWLEDGE_SINK")
 
+_FAIL_RETRY_LIMIT = 3  # 同一工单连续失败次数上限，超过跳过（不堵队列）
 
-# ============================================================
-# 扫描：找出已解决/已关闭但尚未沉淀的工单
-# ============================================================
-
-def _scan_resolved_unindexed_tasks() -> list[dict]:
-    """扫描已解决/已关闭但尚未沉淀入 Qdrant 知识库的工单。
-
-    "是否已沉淀"的标记：metadata_info.solution_indexed == True
-    """
-    from app.models.task import Task, TaskStatus
-    from app.core.db import SessionLocal
-    db = SessionLocal()
-    try:
-        candidates = db.query(Task).filter(
-            Task.status.in_([TaskStatus.RESOLVED, TaskStatus.CLOSED]),
-        ).order_by(Task.updated_at.desc()).limit(20).all()
-
-        unindexed = []
-        for task in candidates:
-            meta = task.metadata_info or {}
-            if meta.get("solution_indexed"):
-                continue
-            unindexed.append({
-                "id": task.id,
-                "title": task.title or "",
-                "description": task.description or "",
-                "metadata_info": meta,
-            })
-        return unindexed
-    finally:
-        db.close()
-
-
-# ============================================================
-# 提取：从评论里抽出根因 + 解决步骤
-# ============================================================
-
-def _extract_solution_text(task_id: int) -> tuple[str, str]:
-    """从工单评论中提取解决方案文本。
-
-    Returns:
-        (root_cause, solution_steps) — 分别对应根因和解决步骤
-    """
-    from app.models.task import TaskComment
-    from app.core.db import SessionLocal
-    db = SessionLocal()
-    try:
-        comments = db.query(TaskComment).filter(
-            TaskComment.task_id == task_id
-        ).order_by(TaskComment.created_at.desc()).limit(20).all()
-
-        root_cause = ""
-        solution_steps = ""
-        for c in comments:
-            content = c.content or ""
-            # 取U老师诊断评论作为根因
-            if c.created_by == "U老师" and "根因分析" in content and not root_cause:
-                m = re.search(r"\*\*根因分析[：:]\*\*\s*(.+?)(?=\n\*\*|\n##|$)", content, re.DOTALL)
-                if m:
-                    root_cause = m.group(1).strip()[:500]
-            # 取最后的人类评论（可能的解决描述）
-            if c.created_by != "U老师" and not solution_steps:
-                if len(content) > 10:
-                    solution_steps = content[:500]
-        return root_cause or "无", solution_steps or "无"
-    finally:
-        db.close()
-
-
-# ============================================================
-# 沉淀：单工单写入 task_resolutions（project domain）
-# ============================================================
-
-async def _index_resolved_task(task_id: int) -> dict:
-    """将已解决工单沉淀到 Qdrant（project domain / task_resolutions）。
-
-    解耦：不再依赖 AiTaskAgent，统一走 core 的 get_retrieval_service()。
-    """
-    from ai.core.retrieval import get_retrieval_service
-    from ai.core.task_adapter import load_task_context_dict
-
-    d = load_task_context_dict(task_id)
-    title = d.get("title", f"工单 #{task_id}") or f"工单 #{task_id}"
-    root_cause, solution_steps = _extract_solution_text(task_id)
-
-    try:
-        retriever = await get_retrieval_service()
-        await retriever.index_task_resolution(
-            task_id=str(task_id),
-            title=title,
-            root_cause=root_cause,
-            solution_steps=solution_steps,
-            engineer_note="",
-            fault_code=d.get("fault_code", ""),
-            robot_type=d.get("robot_type", ""),
-            problem_summary=d.get("problem_summary", ""),
-        )
-
-        # 标记已沉淀
-        from app.models.task import Task
-        from app.core.db import SessionLocal
-        db = SessionLocal()
-        try:
-            task = db.query(Task).filter(Task.id == task_id).first()
-            if task:
-                meta = dict(task.metadata_info or {})
-                meta["solution_indexed"] = True
-                meta["solution_indexed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                task.metadata_info = meta
-                db.commit()
-        finally:
-            db.close()
-
-        return {"task_id": task_id, "status": "ok"}
-    except Exception as e:
-        logger.error(f"Knowledge index failed for task {task_id}: {e}")
-        return {"task_id": task_id, "status": "failed", "error": str(e)[:100]}
-
-
-# ============================================================
-# Worker 主循环
-# ============================================================
 
 async def run_knowledge_worker(stop_event: asyncio.Event):
-    """后台知识沉淀 worker：扫描已解决工单 → 写入 Qdrant（core 统一入口）"""
+    """后台知识沉淀 worker：扫描已解决工单 → 提炼 → 写入 Qdrant。
+
+    失败重试：进程内存计数，连续 _FAIL_RETRY_LIMIT 次失败的工单本进程内
+    不再重试（重启后重新计数——宕机重试无害，索引写入幂等）。
+    """
+    from ai.core import get_retrieval_service
+    from ai.core import solution_sink
+
     config = get_ai_config()
     interval = config.diagnosis_scan_interval
-    logger.info(f"Knowledge worker started (scan interval={interval}s)")
+    logger.info(f"Knowledge worker v2 started (scan interval={interval}s)")
+
+    retriever = None
+    fail_counts: dict[int, int] = {}
+    rounds = 0
 
     while not stop_event.is_set():
         try:
-            unindexed = _scan_resolved_unindexed_tasks()
-            if unindexed:
-                logger.info(f"Found {len(unindexed)} unindexed resolved task(s)")
-                for task in unindexed:
+            candidates = [
+                row for row in solution_sink.load_candidates(limit=20)
+                if fail_counts.get(row["id"], 0) < _FAIL_RETRY_LIMIT
+            ]
+            if candidates:
+                logger.info(f"[knowledge] 待沉淀 {len(candidates)} 张工单")
+                if retriever is None:
+                    retriever = await get_retrieval_service()
+                for row in candidates:
                     if stop_event.is_set():
                         break
-                    result = await _index_resolved_task(task["id"])
-                    logger.info(f"  Knowledge indexed #{result['task_id']}: {result['status']}")
+                    tid = row["id"]
+                    try:
+                        status = await solution_sink.process_ticket(row, retriever)
+                        fail_counts.pop(tid, None)
+                        logger.info(f"[knowledge] #{tid}: {status}")
+                    except Exception as e:
+                        fail_counts[tid] = fail_counts.get(tid, 0) + 1
+                        logger.warning(f"[knowledge] #{tid} 失败"
+                                       f"({fail_counts[tid]}/{_FAIL_RETRY_LIMIT}): {e}")
             else:
-                logger.debug("No unindexed resolved tasks")
+                # 心跳日志（INFO）：空候选原本只有 debug 级日志，生产上看
+                # 不到——「没日志」无法区分 worker 挂了还是没活干。首轮必打
+                # 一条，之后每 15 轮（默认约 15 分钟）报一次平安。
+                if rounds % 15 == 0:
+                    logger.info("[knowledge] 心跳：worker 运行中，当前无待沉淀工单")
+                rounds += 1
         except Exception as e:
-            logger.warning(f"Knowledge worker scan failed: {e}")
+            logger.warning(f"[knowledge] 扫描失败: {e}")
 
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval)

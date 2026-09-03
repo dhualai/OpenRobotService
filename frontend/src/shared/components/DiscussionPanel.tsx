@@ -143,7 +143,7 @@ interface DiscussionPanelProps {
   /** 订阅用 taskId（传入即启用 WS 实时评论 / 在线状态 / 输入中 / 已读回执） */
   taskId?: string | number;
   /** 工单状态变更（WS task.updated 推送）：父级据此更新工单字段，替代派单轮询 */
-  onTaskUpdated?: (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null }) => void;
+  onTaskUpdated?: (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null; updated_at?: string | null }) => void;
   /** 乐观 U老师 执行过程区：为 true 时立即显示占位 todo（无需等 WS running），
    *  收到真实 ai.progress 后用真实数据覆盖。用于 [帮我分析] 这类点击即触发、
    *  但 WS 首条 running 可能稍晚到达的场景，避免过程区“晚出现 / 闪一下”。 */

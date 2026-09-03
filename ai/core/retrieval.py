@@ -56,6 +56,8 @@ class RetrievalResult:
     verified: str = "unknown"          # unknown|confirmed|rejected|recurred
     root_cause_type: str = ""
     error_codes: List[str] = field(default_factory=list)
+    # 人工审核闸门（0902）：pending=未审不可检索，approved=已放行
+    review_status: str = ""
 
 
 # ============================================================
@@ -468,16 +470,22 @@ class RetrievalService:
     ) -> List[RetrievalResult]:
         """用 cross-encoder 对候选结果精排，返回 top_k。
 
-        CPU 推理瓶颈：bge-reranker-v2-m3 在 CPU 上约 500-700ms/pair，
-        候选必须收窄——实测 30 对要 8s+，把检索总耗时拖到 12s。
-        候选封顶 12、每对文本截断 400 字，8 对约 4s 内完成。
+        CPU 推理瓶颈：bge-reranker-v2-m3 在 CPU 上耗时 ∝ 对数×文本长度，
+        12对×400字实测 ~4s，拖垮回答体验。收窄到 8 对×220 字（配合
+        max_length=256），~1.5s 内完成；池召回问题靠上游分池保证。
         """
-        _MAX_RERANK_CANDIDATES = 12  # 精排候选上限：30→12（CPU 耗时 8s→~4s）
+        _MAX_RERANK_CANDIDATES = 8  # 精排候选上限（CPU 耗时控制）
         if not self._reranker or len(results) <= top_k:
             return results[:top_k]
 
         capped = results[:_MAX_RERANK_CANDIDATES]
-        docs = [r.content[:400] for r in capped]
+        # rerank 文本 = 标题末段（小节名）+ 正文前段：与 embed_text 口径对齐
+        # （dense 检索的嵌入文本含标题，rerank 只喂裸 content 会让配置类块
+        # （YAML/参数表，正文语义弱）在精排里被自然语言块系统性压低——
+        # 转弯速度案例实锤：标题带「转弯速度」的配置块进池后被排到 6 名外）
+        # 截 220 字：标题在前，相关性判断主要靠前段，长文只费 CPU 不涨分。
+        docs = [f"{(r.title or '').rsplit(' / ', 1)[-1]}\n{r.content}"[:220]
+                for r in capped]
         try:
             import time as _time
             _t0 = _time.perf_counter()
@@ -489,8 +497,12 @@ class RetrievalService:
             logger.warning(f"[reranker] 推理失败，降级为原始排序", exc_info=True)
             return results[:top_k]
 
-        scored = list(zip(capped, scores))
-        scored.sort(key=lambda x: x[1], reverse=True)
+        # 精排分写回 score：rerank 已改变顺序，若 score 仍是 RRF 分则与顺序
+        # 脱钩——下游（如 ticket_resolutions 的 verified 加权重排、测试断言
+        # 降序）都假设 score 单调对应最终顺序
+        scored = sorted(zip(capped, scores), key=lambda x: x[1], reverse=True)
+        for r, s in scored[:top_k]:
+            r.score = float(s)
         return [r for r, _ in scored[:top_k]]
 
     @property
@@ -526,6 +538,7 @@ class RetrievalService:
             verified=pl.get("verified", "unknown") or "unknown",
             root_cause_type=pl.get("root_cause_type", "") or "",
             error_codes=pl.get("error_codes", []) or [],
+            review_status=pl.get("review_status", "") or "",
         )
 
     async def retrieve_domain_dual(
@@ -604,6 +617,7 @@ class RetrievalService:
                     "vector_score": 0.0, "sparse_score": 0.0,
                     "sub_domain": "", "domain": "",
                     "verified": "unknown", "root_cause_type": "", "error_codes": [],
+                    "review_status": "",
                 }
             doc_scores[doc_id]["dense"] = 1.0 / (rrf_k + rank + 1)
             doc_scores[doc_id]["vector_score"] = point.score
@@ -616,6 +630,7 @@ class RetrievalService:
                 doc_scores[doc_id]["verified"] = point.payload.get("verified", "unknown") or "unknown"
                 doc_scores[doc_id]["root_cause_type"] = point.payload.get("root_cause_type", "") or ""
                 doc_scores[doc_id]["error_codes"] = point.payload.get("error_codes", []) or []
+                doc_scores[doc_id]["review_status"] = point.payload.get("review_status", "") or ""
 
         for rank, point in enumerate(sparse_results):
             doc_id = str(point.id)
@@ -626,6 +641,7 @@ class RetrievalService:
                     "vector_score": 0.0, "sparse_score": 0.0,
                     "sub_domain": "", "domain": "",
                     "verified": "unknown", "root_cause_type": "", "error_codes": [],
+                    "review_status": "",
                 }
             doc_scores[doc_id]["sparse"] = 1.0 / (rrf_k + rank + 1)
             doc_scores[doc_id]["sparse_score"] = point.score
@@ -638,6 +654,7 @@ class RetrievalService:
                 doc_scores[doc_id]["verified"] = point.payload.get("verified", "unknown") or "unknown"
                 doc_scores[doc_id]["root_cause_type"] = point.payload.get("root_cause_type", "") or ""
                 doc_scores[doc_id]["error_codes"] = point.payload.get("error_codes", []) or []
+                doc_scores[doc_id]["review_status"] = point.payload.get("review_status", "") or ""
 
         rrf_scores = [
             (doc_id, scores["dense"] + scores["sparse"], scores)
@@ -660,6 +677,7 @@ class RetrievalService:
                 verified=scores.get("verified", "unknown") or "unknown",
                 root_cause_type=scores.get("root_cause_type", "") or "",
                 error_codes=scores.get("error_codes", []) or [],
+                review_status=scores.get("review_status", "") or "",
             ))
 
         return results
@@ -798,6 +816,11 @@ class RetrievalService:
             collection_name=col,
             query_filter=query_filter,
         )
+        # ⚠️ sparse 不传 query_filter（有意为之）：本地 qdrant（local 模式）的
+        # payload filter 与 MatchAny 组合返回空——retrieve_faq 等带 MatchAny 的
+        # 检索在本地 dense 路恒 0，全靠 sparse 裸路撑住测试。生产 server 版
+        # qdrant filter 正常；sparse 补过滤是正确性改进但需在 server 版验证后
+        # 再上（本地无法验证）。
         sparse_task = self._qdrant.search_sparse(
             bm25_sparse,
             top_k=candidate_k,
@@ -834,7 +857,8 @@ class RetrievalService:
         faq_filter = Filter(
             must=[FieldCondition(
                 key="sub_domain",
-                match=MatchAny(any=["faq", "usp_faq"]),
+                # 目录改名前后的子域名并存（team/faq → team/usp/faq → team/USP/faq）
+                match=MatchAny(any=["faq", "usp_faq", "usp/faq", "USP/faq"]),
             )]
         )
         return await self.retrieve_domain(
@@ -875,19 +899,32 @@ class RetrievalService:
         top_k: int = 3,
     ) -> List[RetrievalResult]:
         """
-        问题排查树/诊断参考检索（委托到 team domain，sub_domain="diagnosis"）。
+        问题排查树/诊断参考检索（team domain，子域 diagnosis）。
         """
+        from qdrant_client.models import Filter, FieldCondition, MatchAny
+        diag_filter = Filter(
+            must=[FieldCondition(
+                key="sub_domain",
+                # 目录改名前后的子域名并存
+                # （diagnosis → usp/diagnosis → USP/diagnosis → USP/troubleshooting）
+                match=MatchAny(any=[
+                    "diagnosis", "usp/diagnosis", "USP/diagnosis", "USP/troubleshooting",
+                ]),
+            )]
+        )
         return await self.retrieve_domain(
             query, "team",
             top_k=top_k or 3,
-            sub_domain="diagnosis",
+            query_filter=diag_filter,
         )
 
     @staticmethod
     def _extract_error_codes(query: str) -> List[str]:
         r"""从查询中提取可能的车端错误码（3~5 位数字）。
-        不能用 \b —— Python 3 re.UNICODE 默认开启，中文被视作 \w。"""
-        return re.findall(r'(?<!\d)(\d{3,5})(?!\d)', query)
+        不能用 \b —— Python 3 re.UNICODE 默认开启，中文被视作 \w。
+        数字前紧贴字母时不抽（XS1152 是型号不是码；否则 1152 会当错误码
+        精确匹配，把无关错误码顶到最前，真正的 IO 手册反被挤出）。"""
+        return re.findall(r'(?<![A-Za-z\d])(\d{3,5})(?!\d)', query)
 
     async def retrieve_cheduan(
         self,
@@ -895,7 +932,7 @@ class RetrievalService:
         top_k: int = 3,
     ) -> List[RetrievalResult]:
         """
-        车端错误码检索（委托到 company domain，sub_domain="cheduan_errors"）。
+        车端错误码检索（委托到 company domain，sub_domain="vehicle_errors"）。
 
         策略：先从 query 中提取数字错误码做 payload filter 精确匹配，
         再叠加纯向量检索补充语义匹配结果（去重合并）。
@@ -939,7 +976,8 @@ class RetrievalService:
         if len(exact_points) < k:
             from qdrant_client.models import Filter as QFilter, FieldCondition, MatchValue
             sd_filter = QFilter(
-                must=[FieldCondition(key="sub_domain", match=MatchValue(value="cheduan_errors"))]
+                must=[FieldCondition(key="sub_domain",
+                                     match=MatchValue(value="vehicle_errors"))]
             )
             try:
                 vector_points = await self._qdrant.search_dense(
@@ -973,6 +1011,10 @@ class RetrievalService:
                         f"方案：{payload.get('solution_cn', '')}"
                     ),
                     vector_score=point.score,
+                    # 消费端（pipeline._cheduan_found）靠 sub_domain 判断
+                    # 是否命中错误码库，缺失会让已命中的码被错插「未找到」提示
+                    sub_domain=payload.get("sub_domain", ""),
+                    domain=payload.get("domain", ""),
                 )
             else:
                 return RetrievalResult(
@@ -981,6 +1023,8 @@ class RetrievalService:
                     title=title,
                     content=content,
                     vector_score=point.score,
+                    sub_domain=payload.get("sub_domain", ""),
+                    domain=payload.get("domain", ""),
                 )
 
         results: List[RetrievalResult] = []
@@ -1027,17 +1071,24 @@ class RetrievalService:
 
         # sub_domain → 标签映射
         _sub_labels = {
-            "platform": "🎫 服务号", "yaorenba": "🎫 服务号",
+            "platform": "🎫 服务号", "yaorenba": "🎫 服务号", "ORS": "🎫 服务号",
             "faq": "📋 FAQ", "usp_faq": "📋 FAQ", "usp/faq": "📋 FAQ",
+            "USP/faq": "📋 FAQ",
             "cheduan_errors": "🚗 车端", "cheduan_implementation": "🚗 车端",
-            "translation": "🌐 翻译",
+            "cheduan_calibration": "🚗 车端", "cheduan_io": "🚗 车端",
+            "motion_control": "🚗 车端",
+            "vehicle_errors": "🚗 车端", "vehicle_implementation": "🚗 车端",
+            "vehicle_calibration": "🚗 车端", "vehicle_io": "🚗 车端",
+            "vehicle_motion": "🚗 车端",
+            "translation": "🌐 翻译", "USP/translation": "🌐 翻译",
             "diagnosis": "🏭 诊断", "usp/diagnosis": "🏭 诊断",
-            "usp_manual": "📖 手册", "usp/manual": "📖 手册",
+            "USP/diagnosis": "🏭 诊断", "USP/troubleshooting": "🏭 排查树",
+            "usp_manual": "📖 手册", "usp/manual": "📖 手册", "USP/manual": "📖 手册",
             "usp_cards": "🔍 诊断卡",
-            "usp/overview": "📘 模块文档",
-            "usp/error_codes": "🚨 平台错误码",
-            "usp/ui_pages": "🧭 页面导航",
-            "usp/terminology": "🔤 术语表",
+            "usp/overview": "📘 模块文档", "USP/overview": "📘 模块文档",
+            "usp/error_codes": "🚨 平台错误码", "USP/error_codes": "🚨 平台错误码",
+            "usp/ui_pages": "🧭 页面导航", "USP/ui_pages": "🧭 页面导航",
+            "usp/terminology": "🔤 术语表", "USP/terminology": "🔤 术语表",
             "product_catalog": "🏢 产品", "vda5050_protocol": "🏢 协议",
             "navigation": "📐 导航", "standards": "📐 标准",
         }
@@ -1131,8 +1182,16 @@ class RetrievalService:
                 _fs.add(r.id)
                 _final.append(r)
                 _final_tags.append("码")
-        _take(_dense_part[:7], 4, "密")
-        _take(_sparse_part[:5], 2, "疏")
+        # 精排重接（0901，与诊断主链路 _retrieve_with_context 同款）：
+        # 密4+疏4 平衡截断 → cross-encoder 全池重排 → 取剩余名额。
+        # 取代密4+疏2 双池直选；reranker 失败时降级为候选原序。
+        _balanced, _seen_bal = [], set()
+        for r in _dense_part[:4] + _sparse_part[:4]:
+            if r.id not in _seen_bal:
+                _seen_bal.add(r.id)
+                _balanced.append(r)
+        _reranked = await self._rerank_results(query, _balanced, top_k=top_k)
+        _take(_reranked, top_k - len(_final), "精")
 
         docs: list = []
         idx = 1
@@ -1158,12 +1217,20 @@ class RetrievalService:
         top_k: int = 2,
     ) -> List[RetrievalResult]:
         """
-        USP 翻译表检索（委托到 team domain，sub_domain="translation"）。
+        USP 翻译表检索（team domain，子域 translation）。
         """
+        from qdrant_client.models import Filter, FieldCondition, MatchAny
+        trans_filter = Filter(
+            must=[FieldCondition(
+                key="sub_domain",
+                # 目录改名前后子域名并存（translation → USP/translation）
+                match=MatchAny(any=["translation", "USP/translation"]),
+            )]
+        )
         return await self.retrieve_domain(
             query, "team",
             top_k=top_k or 2,
-            sub_domain="translation",
+            query_filter=trans_filter,
         )
 
     async def retrieve_usp_diagnosis(
@@ -1188,14 +1255,23 @@ class RetrievalService:
         top_k: int = 3,
     ) -> List[RetrievalResult]:
         """
-        平台部署/配置/代码排查参考文档检索（委托到 team domain，sub_domain="product"）。
+        平台部署/配置/代码排查参考文档检索（team domain）。
 
-        目标文件：platform_manual.md（技术架构）、engineer_guide.md（代码排查）。
+        目标文件：USP/manual/product.md（技术架构/代码排查，随手册子域入库）。
         """
+        from qdrant_client.models import Filter, FieldCondition, MatchAny
+        ref_filter = Filter(
+            must=[FieldCondition(
+                key="sub_domain",
+                # product.md 现随手册入库（sub_domain=USP/manual）；
+                # 保留历史结构子域名做兼容
+                match=MatchAny(any=["product", "usp_product", "usp/manual", "USP/manual"]),
+            )]
+        )
         return await self.retrieve_domain(
             query, "team",
             top_k=top_k or 3,
-            sub_domain="product",
+            query_filter=ref_filter,
         )
 
     # ── 任务 Agent：历史工单方案检索 ───────────────────────────
@@ -1212,10 +1288,26 @@ class RetrievalService:
         P2：按验证状态调整权重（经验证 confirmed 提权、被推翻 rejected/复发 recurred 降权），
         让"可信"的方案更靠前，避免"看似结案其实错"的样本误导排查。
         """
+        # 0828 用户拍板：工单解决经验归 company 域（公司级跨项目服务资产，
+        # 诊断默认检索域含 company），sub_domain=ticket_resolutions 与手册文档
+        # 隔离——历史工单作为独立检索路按子域过滤，不与文档抢 top_k。
+        #
+        # 0902 人工审核闸门：只返回 review_status=approved 的卡（未审的 pending
+        # 卡不可检索）。不能只靠 dense 路的 query_filter——sparse BM25 路不传
+        # filter（见 retrieve_domain 的说明），pending 卡会从 sparse 路漏进
+        # RRF 融合结果，所以必须对最终结果做 payload 硬过滤；over-fetch 4 倍
+        # 是为了过滤掉 pending 卡后 approved 卡还能补上位。
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        _approved_filter = Filter(must=[FieldCondition(
+            key="review_status", match=MatchValue(value="approved"))])
+        _fetch_k = max((top_k or 3) * 4, 12)
         results = await self.retrieve_domain(
-            query, "project",
-            top_k=top_k or 3,
+            query, "company",
+            top_k=_fetch_k,
+            sub_domain="ticket_resolutions",
+            query_filter=_approved_filter,
         )
+        results = [r for r in results if r.review_status == "approved"]
         # P2 verified 权重：confirmed×1.15，recurred×0.85，rejected×0.7，其余×1.0
         _weight = {
             "confirmed": 1.15,
@@ -1238,7 +1330,7 @@ class RetrievalService:
         from ai.config import get_active_collection_for, write_active_collection_for
         import time as _time
 
-        tr_col = get_active_collection_for("project")
+        tr_col = get_active_collection_for("company")
         if tr_col:
             try:
                 client = await self._qdrant._ensure_client()
@@ -1250,20 +1342,29 @@ class RetrievalService:
         await self._ensure_clients()
         try:
             vec_dim = await self._embed_client.get_dimension()
-            name = f"project_{_time.strftime('%Y%m%d_%H%M%S')}"
+            name = f"company_{_time.strftime('%Y%m%d_%H%M%S')}"
             client = await self._qdrant._ensure_client()
-            from qdrant_client.models import Distance, VectorParams
+            # 与主入库链路同 schema（ai/ingestion/base.py）：命名向量
+            # dense + sparse——否则 BM25 稀疏检索路在建出的集合上永远空转
+            from qdrant_client.models import (Distance, VectorParams,
+                                              SparseVectorParams, SparseIndexParams)
             await self._to_thread(
                 client.create_collection,
                 collection_name=name,
-                vectors_config=VectorParams(size=vec_dim, distance=Distance.COSINE),
+                vectors_config={
+                    "dense": VectorParams(size=vec_dim, distance=Distance.COSINE),
+                },
+                sparse_vectors_config={
+                    "sparse": SparseVectorParams(
+                        index=SparseIndexParams(on_disk=False)),
+                },
             )
-            write_active_collection_for("project", name)
-            print(f"  [retrieval] Created project collection: {name}")
+            write_active_collection_for("company", name)
+            print(f"  [retrieval] Created company collection: {name}")
             return name
         except Exception as e:
-            logger.error(f"创建 project 集合失败: {e}", exc_info=True)
-            print(f"  [retrieval] Failed to create project collection: {e}")
+            logger.error(f"创建 company 集合失败: {e}", exc_info=True)
+            print(f"  [retrieval] Failed to create company collection: {e}")
             return ""
 
     async def index_task_resolution(
@@ -1282,12 +1383,19 @@ class RetrievalService:
         severity: str = "unknown",
         is_common_bug: bool = False,
         verified: str = "unknown",
+        extra_payload: "Optional[dict]" = None,
+        review_status: str = "pending",
     ) -> bool:
-        """向量化并写入一条工单解决方案到 Qdrant（project domain）。"""
+        """向量化并写入一条工单解决方案到 Qdrant（project domain）。
+
+        extra_payload：附加 payload 字段（如评论原文、解决人），仅存 payload
+        供生成答案时引用，不参与向量化。
+        review_status：人工审核闸门（0902）——默认 pending（未审不可检索），
+        审核通过后由 review 工具 set_payload 为 approved。"""
         from ai.config import get_active_collection_for
         import uuid
 
-        col = get_active_collection_for("project")
+        col = get_active_collection_for("company")
         if not col:
             col = await self.ensure_task_resolutions_collection()
         if not col:
@@ -1297,7 +1405,11 @@ class RetrievalService:
         if self._qdrant.is_unavailable:
             return False
 
-        index_text = f"{title} {problem_summary} {root_cause} {solution_steps} {fault_code} {robot_type}"
+        # 检索文本只放「问题侧」信号（0828 用户拍板）：查询是问题描述语义，
+        # 索引侧对齐问题侧；解决步骤是答案不是问题，进向量只会稀释——全文在
+        # payload 里供生成答案时引用。根因短语保留（「充电桩通信板故障」是
+        # 同类问题的强召回信号）。
+        index_text = f"{title} {problem_summary} {root_cause} {fault_code} {robot_type}"
         query_vector = await self._embed_client.embed(index_text)
 
         payload = {
@@ -1305,7 +1417,14 @@ class RetrievalService:
             "problem_summary": problem_summary, "root_cause": root_cause,
             "solution_steps": solution_steps, "engineer_note": engineer_note,
             "fault_code": fault_code, "robot_type": robot_type,
-            "domain": "project",
+            "domain": "company", "sub_domain": "ticket_resolutions",
+            # content 是消费侧 RetrievalResult.content 的映射源
+            # （主 KB chunk 文本同键）——缺它检索结果正文为空
+            "content": (
+                f"问题：{problem_summary}\n根因：{root_cause}\n"
+                f"解决：{solution_steps}"
+                + (f"\n故障码：{fault_code}" if fault_code else "")
+                + (f"\n车型：{robot_type}" if robot_type else "")),
             "resolved_at": __import__("time").strftime("%Y-%m-%d %H:%M:%S"),
             # P1 结构化根因（供查询过滤 + 验证回填）
             "root_cause_type": root_cause_type or "unknown",
@@ -1313,14 +1432,41 @@ class RetrievalService:
             "severity": severity or "unknown",
             "is_common_bug": bool(is_common_bug),
             "verified": verified or "unknown",
+            # 0902 人工审核闸门：pending 不可检索，approved 才进 retrieve_task_resolutions
+            "review_status": review_status or "pending",
         }
+        if extra_payload:
+            payload.update(extra_payload)
 
-        return await self._qdrant.upsert_to_collection(
-            collection_name=col,
-            vectors=[query_vector.tolist()],
-            ids=[str(uuid.uuid4())],
-            payloads=[payload],
-        )
+        # 确定性 ID（uuid5 of task_id）：同一工单重复索引覆盖同一向量点，
+        # 幂等——回填与增量 worker 并存时不会产生重复点（旧 uuid4 每次
+        # upsert 都是新点，重复索引会膨胀集合）。
+        # 命名双向量（与主入库链路 ai/ingestion/base.py 同 schema）：
+        # dense 语义 + sparse BM25——检索侧 RRF 融合的稀疏路才有料。
+        _point_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                   f"yaorenba:task_resolution:{task_id}"))
+        try:
+            from qdrant_client.models import PointStruct, SparseVector
+            from ai.core.retrieval import generate_bm25_sparse
+            _sparse = generate_bm25_sparse(index_text)
+            _s_idx = sorted(_sparse.keys())
+            point = PointStruct(
+                id=_point_id,
+                vector={
+                    "dense": query_vector.tolist(),
+                    "sparse": SparseVector(
+                        indices=_s_idx, values=[_sparse[i] for i in _s_idx]),
+                },
+                payload=payload,
+            )
+            client = await self._qdrant._ensure_client()
+            await self._qdrant._to_thread(
+                client.upsert, collection_name=col, points=[point])
+            return True
+        except Exception as e:
+            logger.error(f"[retrieval] 工单方案写入失败: task={task_id}, err={e}",
+                         exc_info=True)
+            return False
 
     # P2 验证状态回填：按 task_id 更新该工单方案点的 verified 字段
     async def update_task_resolution_verified(
@@ -1337,7 +1483,7 @@ class RetrievalService:
 
         if verified not in ("confirmed", "rejected", "recurred", "unknown"):
             return False
-        col = get_active_collection_for("project")
+        col = get_active_collection_for("company")
         if not col:
             return False
         await self._ensure_clients()

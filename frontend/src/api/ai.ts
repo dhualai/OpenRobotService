@@ -154,6 +154,10 @@ export interface PrepareTicketResult {
   missing_info?: string[];
   /** stage=not_ready 时返回的面向用户的引导话术 */
   message?: string;
+  /** 项目编号题标记（not_ready 且因项目未定出题）：前端据此不挂「信息不足」卡片/Toast */
+  project_ask?: boolean;
+  /** 项目编号题结构化候选：前端渲染可点按钮，点击=以用户身份发送序号 */
+  project_choices?: Array<{ index: number; name: string; code?: string }>;
   prompt: string;
   ticket_ready?: boolean;
 }
