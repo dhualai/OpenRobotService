@@ -18,6 +18,7 @@ export interface TaskUpdatedPatch {
   status?: string;
   assigned_to?: string | null;
   assigned_to_name?: string | null;
+  updated_at?: string | null;
 }
 
 /** 在线成员（按用户去重，含头像） */
@@ -186,6 +187,7 @@ export function useTaskCommentsWS(
             status: e.status,
             assigned_to: e.assigned_to,
             assigned_to_name: e.assigned_to_name,
+            updated_at: e.updated_at,
           });
           break;
         case 'ai.progress':
