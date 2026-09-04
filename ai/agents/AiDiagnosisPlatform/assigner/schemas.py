@@ -72,6 +72,15 @@ class TicketContext(BaseModel):
     required_parts: Optional[List[str]] = Field(None, description="所需配件 ↔ tasks.metadata_info.required_parts")
     attachments: Optional[List[str]] = Field(None, description="附件路径列表 ↔ tasks.attachments")
 
+    # === 派单提示（信息充分性信号）===
+    # 提单 Agent 在生成工单时判断用户对话信息量：lacking=信息不足 / severe=严重不足
+    # （用户不配合、几乎零信息）；信息充分时不写键。仅作事实信号注入派单各 LLM prompt，
+    # 不携带路由指令、不干预决策类型（怎么用由派单 LLM 自行判断）。
+    dispatch_hint: Optional[str] = Field(
+        None,
+        description="提单信息充分性信号: lacking=用户信息不足 / severe=严重不足 ↔ tasks.metadata_info.dispatch_hint",
+    )
+
     # === 派单增强-预留：用户倾向处理人 ===
     # 前端提单时若新增"倾向处理人"字段，可复用本字段（传工程师 users.id）。
     # 前端未传时恒为 None，整体不生效、完全向后兼容；传了即作为派单强加权信号启用。
@@ -189,7 +198,6 @@ class AssignmentResult(BaseModel):
     - engineer_name → 工程师姓名（users.name）
     - confidence_score / reasoning / decision_type → 建议存入 tasks.metadata_info 供日志/前端展示
     """
-
     engineer_id: str = Field(..., description="推荐工程师标识（users.id）→ 直接写入 tasks.assigned_to")
     engineer_name: str = Field(..., description="推荐工程师姓名（对应 users.name）")
     confidence_score: float = Field(..., description="置信度分数（0~1），建议存 tasks.metadata_info.confidence_score")
@@ -213,3 +221,21 @@ class AssignmentResult(BaseModel):
     candidates: Optional[List[Dict[str, Any]]] = Field(
         None, description="本轮精排 Top10 快照 [{rank, engineer_id, name, scores, profile, tags}]（M2 填充）"
     )
+
+
+# ── dispatch_hint 枚举 → 派单 prompt 注入话术（服务端写死，防 LLM 自由生成跑偏）──
+_DISPATCH_HINT_TEXT = {
+    "lacking": (
+        "提单提示：用户提供的故障信息不足，描述可靠性有限，"
+        "建议正常派单给接单人，由其接手后向用户补充了解情况。"
+    ),
+    "severe": (
+        "提单提示：用户提供信息严重不足（对话中未配合提供关键细节），"
+        "描述基本无法定位问题，建议派单给接单人，接单人需从零了解情况。"
+    ),
+}
+
+
+def dispatch_hint_text(hint: Optional[str]) -> str:
+    """dispatch_hint 枚举 → 注入派单各 LLM prompt 的一句话；未知/空返回空串（不注入）。"""
+    return _DISPATCH_HINT_TEXT.get((hint or "").strip(), "")

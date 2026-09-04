@@ -7,7 +7,7 @@ import re
 from typing import Dict, List, Optional
 
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
-from ai.agents.AiDiagnosisPlatform.assigner.schemas import TicketContext
+from ai.agents.AiDiagnosisPlatform.assigner.schemas import TicketContext, dispatch_hint_text
 from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER")
@@ -43,6 +43,10 @@ class LlmDeptSignal:
         hypotheses = ""
         if ticket.diagnosis_hypotheses:
             hypotheses = "；".join(ticket.diagnosis_hypotheses[:5])
+
+        # 提单信息充分性信号（有值才注入一行；信息充分 dispatch_hint 为空）
+        _dh = dispatch_hint_text(getattr(ticket, "dispatch_hint", None))
+        _dh_line = f"{_dh}\n" if _dh else ""
 
         # 工单类型 → 判定逻辑分支（对齐提单 Agent 的 5 类：problem/bug/feature/support/other）
         ticket_type = (ticket.ticket_type or "other").strip().lower()
@@ -90,6 +94,7 @@ class LlmDeptSignal:
             f"车型：{ticket.robot_type or '无'}\n"
             f"项目：{ticket.project_name or '无'}\n"
             f"Agent假设：{hypotheses or '无'}\n"
+            + _dh_line
             + (
                 "\n【审查反馈（上一轮部门审查的意见，供你重新判定时参考，请审慎采纳）】"
                 f"\n{feedback}\n"

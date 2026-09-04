@@ -83,6 +83,8 @@ _TICKET_META_FIELD_MAP = {
     "severity": "severity", "version": "version",
     "scenario": "scenario", "expected_effect": "expected_effect",
     "support_type": "support_type", "preferred_response": "preferred_response",
+    # 派单提示（信息充分性信号，提单 LLM 输出 lacking/severe，信息充分不写键）
+    "dispatch_hint": "dispatch_hint",
 }
 
 

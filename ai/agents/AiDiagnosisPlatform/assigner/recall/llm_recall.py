@@ -8,7 +8,9 @@ import json, re
 from typing import Dict, List, Optional
 
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
-from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
+from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
+    EngineerProfile, TicketContext, dispatch_hint_text,
+)
 from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER")
@@ -139,6 +141,10 @@ class LlmRecall:
             lines.append(f"车型: {ticket.robot_type}")
         if ticket.fault_code:
             lines.append(f"故障码: {ticket.fault_code}")
+        # 提单信息充分性信号（有值才注入一行；信息充分 dispatch_hint 为空）
+        _dh = dispatch_hint_text(getattr(ticket, "dispatch_hint", None))
+        if _dh:
+            lines.append(_dh)
 
         lines.extend(["", "【候选工程师】"])
         for e in engineers:

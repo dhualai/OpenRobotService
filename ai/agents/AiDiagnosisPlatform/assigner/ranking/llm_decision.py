@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
-    AssignmentResult, EngineerProfile, TicketContext,
+    AssignmentResult, EngineerProfile, TicketContext, dispatch_hint_text,
 )
 
 from ai.core.logging import get_logger
@@ -429,6 +429,10 @@ class LlmDecision:
             lines.append(f"车型: {ticket.robot_type}")
         if ticket.fault_code:
             lines.append(f"故障码: {ticket.fault_code}")
+        # 提单信息充分性信号（有值才注入一行；信息充分 dispatch_hint 为空）
+        _dh = dispatch_hint_text(getattr(ticket, "dispatch_hint", None))
+        if _dh:
+            lines.append(_dh)
         # 重新派单备注/转派原因作为重要决策上下文：让 LLM 审视"精排结果是否符合用户的转派要求"。
         # 备注一般为转派原因（原处理人不合适/需更合适/明确点名），用自然语言表达；
         # 结构化倾向人（用户明确勾选）由 adecide 分支 0 作为 extra_hints 传入，此处不重复。
