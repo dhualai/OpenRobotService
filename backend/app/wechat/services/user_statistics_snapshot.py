@@ -82,20 +82,47 @@ async def run_user_statistics_job() -> Optional[List[Dict]]:
     """
     yesterday = date.today() - timedelta(days=1)
     date_str = yesterday.strftime('%Y-%m-%d')
+    return await run_user_statistics_job_for_range(date_str, date_str)
 
-    logger.info(f'开始拉取用户增减统计（{date_str}）')
-    result = await wechat_service.get_user_summary(date_str, date_str)
+
+async def run_user_statistics_job_for_range(begin_date: str, end_date: str) -> Optional[List[Dict]]:
+    """拉取指定日期范围内的用户增减数据并按 ref_date 覆盖写入。
+
+    返回写入的明细行列表；微信拉取失败返回 None（由调用方决定重试）。
+    若 begin_date == end_date，则行为等同于原整点任务。
+    """
+    logger.info(f'开始拉取用户增减统计（{begin_date} ~ {end_date}）')
+    result = await wechat_service.get_user_summary(begin_date, end_date)
     if result is None or 'list' not in result:
         logger.error(f'拉取用户增减数据失败，本次不落库: {result}')
         return None
 
     items = result.get('list') or []
     if not items:
-        logger.info(f'微信返回空 list（{date_str} 无新渠道明细），保留历史记录不变')
+        logger.info(f'微信返回空 list（{begin_date} ~ {end_date} 无新渠道明细），保留历史记录不变')
         return []
 
-    stored = await asyncio.to_thread(_replace_rows_for_date, yesterday, items)
-    logger.info(f'user_statistics 已刷新为最新渠道明细 {stored} 行（ref_date={date_str}）')
+    stored = 0
+    touched_dates = set()
+    for item in items:
+        try:
+            ref_date = datetime.strptime(str(item.get('ref_date')), '%Y-%m-%d').date()
+        except (TypeError, ValueError):
+            logger.warning(f"跳过无法解析 ref_date 的行: {item}")
+            continue
+        if ref_date in touched_dates:
+            continue
+        same_day_items = [row for row in items if str(row.get('ref_date')) == ref_date.strftime('%Y-%m-%d')]
+        stored += await asyncio.to_thread(_replace_rows_for_date, ref_date, same_day_items)
+        touched_dates.add(ref_date)
+
+    logger.info(
+        'user_statistics 已刷新为最新渠道明细 %s 行（range=%s ~ %s, ref_dates=%s）',
+        stored,
+        begin_date,
+        end_date,
+        ','.join(sorted(day.strftime('%Y-%m-%d') for day in touched_dates)) or '-',
+    )
     return items
 
 

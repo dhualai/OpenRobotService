@@ -21,6 +21,7 @@ from .schemas import (
     AnalysisRequest,
     AnalysisResult,
     ChatResponse,
+    ChatContextMeta,
     HealthResponse,
     QuickChatRequest,
 )
@@ -54,6 +55,40 @@ def reset_agent() -> None:
     """重置 Agent 单例（用于测试或配置变更后重新初始化）。"""
     global _agent
     _agent = None
+
+
+def _merge_chat_context(request: QuickChatRequest) -> dict:
+    """按“显式参数优先，context_meta 补空位”合并聊天上下文。"""
+    meta: ChatContextMeta | None = request.context_meta
+    explicit = getattr(request, "model_fields_set", set())
+
+    def pick(field_name: str):
+        if field_name in explicit:
+            return getattr(request, field_name)
+        if meta is not None:
+            return getattr(meta, field_name)
+        return getattr(request, field_name)
+
+    context_parts: list[str] = []
+    if request.context:
+        context_parts.append(request.context)
+    if meta is not None:
+        if meta.scene:
+            context_parts.append(f"当前页面场景：{meta.scene}")
+        if meta.project_name:
+            context_parts.append(f"当前页面项目：{meta.project_name}")
+
+    return {
+        "question": request.question,
+        "context": "\n".join(context_parts) if context_parts else None,
+        "data": request.data,
+        "data_source": request.data_source,
+        "analysis_type": pick("analysis_type"),
+        "project_code": pick("project_code"),
+        "user_id": pick("user_id"),
+        "period": pick("period"),
+        "date": pick("date"),
+    }
 
 
 # -- 路由端点 -------------------------------------------------------
@@ -119,13 +154,17 @@ async def analyze_data(request: AnalysisRequest):
 
 @router.post("/chat", response_model=ChatResponse, summary="快速对话")
 async def quick_chat(request: QuickChatRequest) -> ChatResponse:
-    """快速对话问答（无数据分析，纯文本交互）。"""
+    """快速对话问答。
+
+    - 仅传 question/context：自动识别是普通聊天还是数据分析。
+    - 传 data：执行带数据上下文的分析问答。
+    - 不传 data 但传 project_code / user_id：自动查库并分析。
+        - 未显式传范围参数时，可由 context_meta 补充页面上下文。
+    """
     agent = get_agent()
     try:
-        return await agent.chat(
-            question=request.question,
-            context=request.context,
-        )
+        payload = _merge_chat_context(request)
+        return await agent.chat(**payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:

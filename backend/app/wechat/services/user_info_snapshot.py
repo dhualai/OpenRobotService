@@ -38,19 +38,19 @@ def _build_full_user_list() -> List[Dict]:
     return [{'openid': row[0], 'lang': 'zh_CN'} for row in rows if row[0]]
 
 
-def _store_snapshot(payload: Dict) -> int:
+def _store_snapshot(payload: Dict, snapshot_date: Optional[date] = None) -> int:
     """写入快照并清理当天旧快照，返回新行 id。
 
     同一天仅保留最新一条：插入新行后删除当天更早的记录；历史日期不动。
     """
-    today = date.today()
+    target_date = snapshot_date or date.today()
     db = db_manager.get_db()
     try:
-        row = UserInfo(user_info=payload, created_time=today)
+        row = UserInfo(user_info=payload, created_time=target_date)
         db.add(row)
         db.flush()  # 先拿到新行 id，再按 id 排除做删除
         db.query(UserInfo).filter(
-            UserInfo.created_time == today,
+            UserInfo.created_time == target_date,
             UserInfo.id != row.id,
         ).delete(synchronize_session=False)
         db.commit()
@@ -62,7 +62,7 @@ def _store_snapshot(payload: Dict) -> int:
         db.close()
 
 
-async def run_user_info_snapshot() -> Optional[Dict]:
+async def run_user_info_snapshot(snapshot_date: Optional[date] = None) -> Optional[Dict]:
     """执行一次快照：拉取 batch-user-info 同源数据并写入 user_info 表。
 
     返回落库的接口返回值 dict；users 表无真实用户或微信拉取失败时返回 None
@@ -85,10 +85,11 @@ async def run_user_info_snapshot() -> Optional[Dict]:
         'total': len(result.get('user_info_list', [])),
     }
 
-    row_id = await asyncio.to_thread(_store_snapshot, payload)
+    target_date = snapshot_date or date.today()
+    row_id = await asyncio.to_thread(_store_snapshot, payload, target_date)
     logger.info(
         f'user_info 快照已存储 id={row_id}, total={payload["total"]}, '
-        f'created_time={date.today()}（当天旧快照已清理，历史日期保留）'
+        f'created_time={target_date}（当天旧快照已清理，历史日期保留）'
     )
     return payload
 

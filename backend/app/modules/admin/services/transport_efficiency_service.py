@@ -196,12 +196,12 @@ class TransportEfficiencyService:
         返回 (summary, robots, collection_time)。找不到当日数据时 summary 为 None、robots 为空。
         计算逻辑与参考页 ProjectMetricsList.jsx 的 calculateAverages / 各组数据对比一致。
         """
-        # end 取次日零点，兼容两种时间约定：
-        # - 正常导入数据使用当天 23:59:59（end_time_int <= 次日零点成立）
-        # - 迁移数据使用次日 00:00:00（end_time_int == 次日零点成立）
-        start = f"{date} 00:00:00"
-        next_day = (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-        end = f"{next_day} 00:00:00"
+        # 查询窗口前后各放宽 1 天：记录的 start/end 时间戳按数据源自身时区（如 +02:00）的当日零点落库，
+        # 与服务器本地时区（如 +08:00）的日期零点存在时区错位，直接按目标日查询会把记录过滤掉。
+        # 宽窗口保证记录能被查到，之后再用记录自带 start_time（ISO 字符串，含原始时区）与目标日期精确匹配。
+        day = datetime.strptime(date, "%Y-%m-%d")
+        start = (day - timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+        end = (day + timedelta(days=2)).strftime("%Y-%m-%d 00:00:00")
         result = AdminDataService.get_collection_data_for_indicators(
             project=project_code,
             tag="GroupEfficiency",
@@ -214,10 +214,21 @@ class TransportEfficiencyService:
             return None, [], result.get("collection_time") if isinstance(result, dict) else None
 
         metrics = None
+        fallback = None
         for data_obj in content:
-            metrics = _find_metrics(data_obj)
-            if metrics:
+            found = _find_metrics(data_obj)
+            if not found:
+                continue
+            if fallback is None:
+                fallback = found
+            # 记录内嵌的 start_time 保留数据源时区（如 2026-09-03T00:00:00.000+02:00），
+            # 以其日期前缀匹配目标日，避免跨时区换算导致取错日期的数据。
+            start_iso = data_obj.get("start_time") if isinstance(data_obj, dict) else None
+            if isinstance(start_iso, str) and start_iso.startswith(date):
+                metrics = found
                 break
+        if not metrics:
+            metrics = fallback
         if not metrics:
             return None, [], result.get("collection_time") if isinstance(result, dict) else None
 
@@ -255,7 +266,7 @@ class TransportEfficiencyService:
             "avg_fault_duration_minutes": round(total_per_error / 60 / group_count, 2),
             "avg_carry_duration_minutes": round(total_per_carry / 60 / carry_len, 2),
             "avg_manual_switch_count": (metrics.get("averageManualCount") or {}).get("averageManualCount"),
-            "manual_intervention_rate": (metrics.get("rateArtificialIntervention") or {}).get("rateArtificialIntervention"),
+            "manual_intervention_rate": _parse_rate((metrics.get("rateArtificialIntervention") or {}).get("rateArtificialIntervention")),
         }
 
         error_map = {e.get("robotGroup"): e for e in per_error_time if e.get("robotGroup")}
@@ -376,6 +387,23 @@ class TransportEfficiencyService:
             "avg_carry_duration_minutes": record.avg_carry_duration_minutes,
             "created_at": record.created_at,
         }
+
+
+def _parse_rate(value) -> Optional[float]:
+    """人工干预率解析为小数（0~1），供前端按百分比展示。
+
+    数据源为 "10.0%" 之类百分比字符串时除以 100；已是数值则原样返回。
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    try:
+        num = float(text.rstrip('%'))
+    except ValueError:
+        return None
+    return round(num / 100, 4) if text.endswith('%') else num
 
 
 def _find_metrics(obj, depth: int = 0) -> Optional[Dict]:
