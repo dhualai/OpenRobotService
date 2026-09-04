@@ -123,6 +123,7 @@ interface Ticket {
   step_last_updated_by?: 'assigned' | 'creator' | null;
   step_last_updated_at?: string | null;
   step_negotiation_round?: number;
+  step_phase_round?: number;
   step_neg_max_rounds?: number;
   // 当前协商节点是否已协商一致：确认同意 → True；进入新节点 / 协商节点时间 → 重置 False
   curr_step_agreed?: boolean;
@@ -1585,8 +1586,8 @@ export default function TaskDetailPage() {
             setShowCompleteStepPopup(true);
           };
           // 回合展示
-          const round = detail.step_negotiation_round ?? 1;
-          const maxRound = detail.step_neg_max_rounds ?? 5;
+          const round = detail.step_negotiation_round ?? 0;
+          const maxRound = detail.step_neg_max_rounds ?? 3;
           const isEscalated = (detail.escalate_count ?? 0) > 0;
           const escalateCount = detail.escalate_count ?? 0;
           // 已升级上报后不再受回合上限限制
@@ -1983,8 +1984,8 @@ export default function TaskDetailPage() {
           const assigneeOnlyStatuses = ['new', 'in_progress', 'pending', 'paused'];
           const showRoleActions = canOperate || (assigneeOnlyStatuses.includes(status) ? isAssignee : (status === 'resolved' ? isReporter : false));
           // 达到最大回合：升级上报强制可见（提单人/接单人任一），替代管理员介入
-          const round = detail.step_negotiation_round ?? 1;
-          const maxRound = detail.step_neg_max_rounds ?? 5;
+          const round = detail.step_negotiation_round ?? 0;
+          const maxRound = detail.step_neg_max_rounds ?? 3;
           const isEscalated = (detail.escalate_count ?? 0) > 0;
           const escalateCount = detail.escalate_count ?? 0;
           // 已升级上报后不再受回合上限限制
@@ -2369,10 +2370,12 @@ export default function TaskDetailPage() {
                 }}
               >
                 {(() => {
-                  // 仅展示 sequence >= 当前节点的可选节点（当前及之后）
+                  // 第一轮（step_phase_round==0，未被"当前阶段完成"推进过）可任选节点；
+                  // 之后仅展示 sequence >= 当前节点的可选节点（当前及之后）
+                  const isPhaseRound0 = !(detail?.step_phase_round) || detail.step_phase_round === 0;
                   const curSeqForNegotiate = stepTemplate.find((s) => s.id === detail?.curr_step_id)?.sequence ?? -1;
                   const negotiableSteps = (stepTemplate.length > 0 ? stepTemplate : [])
-                    .filter((s) => s.sequence >= curSeqForNegotiate)
+                    .filter((s) => isPhaseRound0 || s.sequence >= curSeqForNegotiate)
                     .sort((a, b) => a.sequence - b.sequence);
                   const fallback = detail?.curr_step_id
                     ? [{ id: detail.curr_step_id, step_name: detail.curr_step_name || '当前节点', sequence: 0 }]

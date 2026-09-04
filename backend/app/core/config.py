@@ -103,7 +103,7 @@ class Settings(BaseSettings):
 
     # 协商回合上限：接单人↔提单人来回应答最大次数（含首次）。
     # 达到最后一轮前端展示升级上报，用户点击现有升级上报通道替代管理员介入。
-    TICKET_STEP_MAX_NEGOTIATION_ROUNDS: int = Field(default=5)
+    TICKET_STEP_MAX_NEGOTIATION_ROUNDS: int = Field(default=3)
 
     CUSTOM_AI_BASE_URL: str = Field(default="")
     CUSTOM_AI_API_PATH: str = Field(default="/api/ask")

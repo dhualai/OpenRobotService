@@ -213,22 +213,26 @@ class TransportEfficiencyService:
         if not content:
             return None, [], result.get("collection_time") if isinstance(result, dict) else None
 
+        # 宽窗口可能同时捞出相邻日期的记录（记录 end 为次日零点、且含数据源时区偏移），
+        # 必须按记录自带 start_time 的日期归属严格匹配目标日；只有全部记录都缺失 start_time
+        # （老数据）时才退回第一条，避免 09-03 的记录在查询 09-04 时被错误命中。
         metrics = None
-        fallback = None
+        dateless_metrics = None
+        saw_dated_record = False
         for data_obj in content:
             found = _find_metrics(data_obj)
             if not found:
                 continue
-            if fallback is None:
-                fallback = found
-            # 记录内嵌的 start_time 保留数据源时区（如 2026-09-03T00:00:00.000+02:00），
-            # 以其日期前缀匹配目标日，避免跨时区换算导致取错日期的数据。
             start_iso = data_obj.get("start_time") if isinstance(data_obj, dict) else None
-            if isinstance(start_iso, str) and start_iso.startswith(date):
-                metrics = found
-                break
-        if not metrics:
-            metrics = fallback
+            if isinstance(start_iso, str) and len(start_iso) >= 10:
+                saw_dated_record = True
+                if start_iso[:10] == date:
+                    metrics = found
+                    break
+            elif dateless_metrics is None:
+                dateless_metrics = found
+        if metrics is None and not saw_dated_record:
+            metrics = dateless_metrics
         if not metrics:
             return None, [], result.get("collection_time") if isinstance(result, dict) else None
 

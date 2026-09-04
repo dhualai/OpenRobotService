@@ -117,7 +117,8 @@ class Task(Base):
     curr_step_endtime = Column(DateTime, nullable=True, comment="当前步骤结束时间")
     step_last_updated_by = Column(String(100), nullable=True, comment="最近一次改step的操作人：assigned/creator侧标识，用于判定待处理回合")
     step_last_updated_at = Column(DateTime, nullable=True, comment="最近一次step更新时间")
-    step_negotiation_round = Column(Integer, nullable=False, server_default="1", default=1, comment="协商回合数：初始1，对手回应一次+1")
+    step_negotiation_round = Column(Integer, nullable=False, server_default="0", default=0, comment="协商回合数：初始0，对手回应一次+1")
+    step_phase_round = Column(Integer, nullable=False, server_default="0", default=0, comment="阶段回合数：complete-step 推进+1，初始0=第一轮；0时协商节点不受sequence下限限制")
     curr_step_agreed = Column(Boolean, nullable=False, server_default="0", default=False,
                               comment="当前协商节点是否已协商一致：respond 置 True；negotiate-step/complete-step 重置为 False")
     escalate_count = Column(Integer, nullable=False, server_default="0", default=0,
