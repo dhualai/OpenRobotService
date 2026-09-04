@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from typing import Dict, Any
+from pydantic import BaseModel
 import uuid
 
 from app.core.database import db_manager, get_user_with_roles
@@ -173,3 +174,4 @@ async def get_current_user(request: Request):
         return User(**result)
     except AuthServiceError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+

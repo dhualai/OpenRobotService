@@ -14,6 +14,17 @@ from sqlalchemy import Column, Integer, BigInteger, String, Text, Float, Index
 
 from app.models.base import Base
 
+# 项目承接状态（对应企业微信项目表「是否承接」列的原值）。
+# 「否」的项目不入库（见 integrations/sources/wecom/adapter.py 同步过滤），
+# 故库内只有这两种取值；除仪表盘月柱图外，所有项目列表默认只取「是」。
+UNDERTAKE_YES = '是'
+UNDERTAKE_PENDING = '待定'
+
+# 项目软删除标记值：删除项目时不物理删除 project 记录，而是把 status 置为此值，
+# 保留记录用于后续创建项目时按编号/名称去重（已删除记录仍占用编号与名称）。
+# 所有项目列表/详情查询均应排除此状态。
+PROJECT_DELETED = '已删除'
+
 
 class RealtimeData(Base):
     __tablename__ = 'realtime_data'
@@ -21,7 +32,7 @@ class RealtimeData(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     project = Column(String(50), nullable=False)
     indicator = Column(String(100), nullable=False)
-    data = Column(String(10000), nullable=False)
+    data = Column(Text, nullable=False)
     collection_time = Column(String(50), nullable=False)
     record_time = Column(String(50), nullable=False)
 
@@ -40,7 +51,7 @@ class HistoryData(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     project = Column(String(50), nullable=False)
     indicator = Column(String(100), nullable=False)
-    data = Column(String(10000), nullable=False)
+    data = Column(Text, nullable=False)
     collection_time = Column(String(50), nullable=False)
     record_time = Column(String(50), nullable=False)
     time_str = Column(String(100), nullable=False)
@@ -65,7 +76,7 @@ class CollectionData(Base):
     indicator = Column(String(100), nullable=False)
     start_time_int = Column(BigInteger, nullable=False, comment='数据采集开始时间戳用于查询')
     end_time_int = Column(BigInteger, nullable=False, comment='数据采集结束时间戳用于查询')
-    data = Column(String(10000), nullable=False)
+    data = Column(Text, nullable=False)
     collection_time = Column(String(50), nullable=False)
     record_time = Column(String(50), nullable=False)
     time_str = Column(String(100), nullable=False)
@@ -89,7 +100,7 @@ class Project(Base):
     system_id = Column(String(50), nullable=True, comment='系统ID')
     description = Column(Text, nullable=True, comment='项目描述')
     contact_person = Column(String(50), nullable=True, comment='对接人')
-    contact_person_id = Column(String(20), nullable=True, comment='对接人ID')
+    contact_person_id = Column(String(64), nullable=True, comment='对接人ID（与 users.id 同长度）')
     project_contact = Column(String(50), nullable=True, comment='对接人')
     status = Column(String(20), nullable=False, default='active', comment='状态')
     expected_trend = Column(String(20), nullable=True, comment='预计走向')
@@ -117,6 +128,7 @@ class Project(Base):
     sales = Column(String(50), nullable=True, comment='销售')
     pre_sales = Column(String(50), nullable=True, comment='售前')
     project_manager = Column(String(50), nullable=True, comment='项目经理')
+    project_manager_id = Column(String(64), nullable=True, comment='项目经理ID（与 users.id 同长度，用于关联角色）')
     field_engineer = Column(String(50), nullable=True, comment='实施工程师')
 
     internal_code = Column(String(50), nullable=True, comment='内部编号')
@@ -125,12 +137,17 @@ class Project(Base):
     controller_vendor = Column(String(30), nullable=True, comment='控制器选择')
     system_integration = Column(Text, nullable=True, comment='系统/外设对接(JSON数组)')
     server_deployment_status = Column(String(30), nullable=True, comment='服务器部署')
-    settlement_period = Column(String(20), nullable=True, comment='业绩核算期，格式YYYY-MM')
+    settlement_period = Column(String(20), nullable=True, comment='业绩核算期（手工填写，常见YYYYMM如202608，兼容YYYY-MM）')
+    undertake_status = Column(
+        String(10), nullable=False, default=UNDERTAKE_YES, server_default=UNDERTAKE_YES,
+        comment='是否承接（是/待定；「否」不入库）',
+    )
 
     __table_args__ = (
         Index('idx_project_code', 'code', unique=True),
         Index('idx_project_status', 'status'),
         Index('idx_project_settlement_period', 'settlement_period'),
+        Index('idx_project_undertake_status', 'undertake_status'),
     )
 
     def __repr__(self):
@@ -174,7 +191,7 @@ class ProjectDailyReport(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     project_code = Column(String(50), nullable=False, comment='项目代码')
     report_date = Column(String(20), nullable=False, comment='日报日期')
-    report_content = Column(String(10000), nullable=False, comment='日报内容(JSON格式)')
+    report_content = Column(Text, nullable=False, comment='日报内容(JSON格式)')
     reporter = Column(String(50), nullable=False, comment='报告人')
     reporter_id = Column(String(20), nullable=False, comment='报告人ID')
     created_at = Column(String(30), nullable=False, comment='创建时间')

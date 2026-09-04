@@ -16,7 +16,14 @@ AI 模块配置
 import os
 from pathlib import Path
 from functools import lru_cache
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+
+# 配置模块可能被直接导入（绕过 ai.run），因此在首次读取前自行加载 ai/.env。
+# override=False 保证外部环境变量优先；不输出任何配置值。
+_ENV_FILE = Path(__file__).resolve().parent / ".env"
+load_dotenv(_ENV_FILE, override=False)
 
 # .md 源文件目录（OpenRobotService_Data/kb/）
 _KB_DIR = (Path(__file__).resolve().parent.parent.parent / "OpenRobotService_Data" / "kb").resolve()
@@ -25,7 +32,8 @@ _KB_DIR = (Path(__file__).resolve().parent.parent.parent / "OpenRobotService_Dat
 _POINTER_DIR = (Path(__file__).resolve().parent / "kb").resolve()
 
 # 五层 domain 架构：industry / company / team / project / personal
-KB_DOMAINS = ["industry", "company", "team", "project", "personal"]
+# 另加 "dispatch"：派单模块历史工单向量库（L3-A 路，独立集合，避免与诊断方案混用）
+KB_DOMAINS = ["industry", "company", "team", "project", "personal", "dispatch"]
 
 _KB_POINTERS = {
     d: _POINTER_DIR / f"active_{d}_collection.txt"
@@ -36,6 +44,9 @@ _KB_POINTERS = {
 class AIConfig(BaseModel):
     """AI 模块配置（值全部来自环境变量，即 .env）"""
 
+    # ========== 服务端口（run.py 启动时读取，优先来自 ai/.env）==========
+    port: int = Field(default=8401, description="AI 服务监听端口")
+
     # ========== DeepSeek LLM ==========
     deepseek_api_key: str = Field(default="", description="DeepSeek API Key")
     deepseek_base_url: str = Field(default="https://api.deepseek.com", description="API 地址")
@@ -43,6 +54,21 @@ class AIConfig(BaseModel):
     llm_reasoning_effort: str = Field(default="low", description="思考强度: low/high/max/off")
     llm_connect_timeout: float = Field(default=3.0)
     llm_read_timeout: float = Field(default=30.0)  # Agent 回复可能较长
+
+    # ========== 备用模型（中转站，OpenAI 兼容接口）==========
+    # 全局切换开关：llm_backend=deepseek（默认）/ relay。切到 relay 后，
+    # get_llm_client() 单例会改用下面这套 relay_* 配置，全平台统一生效
+    # （所有走 get_llm_client() 的模块，如提单工具循环、诊断、派单打分等）。
+    llm_backend: str = Field(default="deepseek", description="激活的 LLM 后端: deepseek/relay")
+    relay_api_key: str = Field(default="", description="中转站 API Key")
+    relay_base_url: str = Field(default="https://yitongapi.com/v1", description="中转站 API 地址")
+    relay_model: str = Field(default="gpt-5.6-sol", description="中转站模型名")
+    relay_fallback_models: str = Field(
+        default="claude-opus-4-8,claude-sonnet-5",
+        description="relay 主模型 HTTP 非200失败后依次降级尝试的模型，逗号分隔，空=禁用降级")
+    relay_thinking: bool = Field(
+        default=False,
+        description="中转站 Claude 是否传 thinking 字段（实测中转站该字段支持不稳，默认关闭）")
 
     # ========== Vision LLM（图片分析，OpenAI 兼容接口）==========
     vision_api_key: str = Field(default="", description="视觉 API Key")
@@ -86,6 +112,15 @@ class AIConfig(BaseModel):
     # ========== 诊断服务 ==========
     diagnosis_scan_interval: int = Field(default=60, description="诊断服务扫描新工单间隔（秒）")
 
+    # ========== 知识沉淀 Worker ==========
+    enable_knowledge_sink: bool = Field(default=False, description="知识沉淀 Worker 总开关：默认关，测试环境验证 LLM 提炼质量后再开")
+
+    # ========== 解决方式总结 Worker（结束工单 AI 确认弹窗）==========
+    resolution_worker_concurrency: int = Field(default=10, description="解决方式总结 Worker 最大并行数（同时处理多少个工单的总结）")
+    resolution_worker_queue: str = Field(default="ors:resolution", description="解决方式总结任务队列（Redis List）")
+    resolution_worker_wait_timeout: float = Field(default=30.0, description="BROP 阻塞等待秒数 / LLM 单轮超时秒数")
+    resolution_empty_text: str = Field(default="", description="无任何内容时返回的空串（占位提示由前端 placeholder 控制）")
+
     # ========== MinIO 对象存储（附件图片读取）==========
     minio_endpoint: str = Field(default="localhost:9000")
     minio_access_key: str = Field(default="")
@@ -112,6 +147,7 @@ class AIConfig(BaseModel):
 
     # ========== 文档路径 ==========
     docs_path: str = Field(default="", description="原始文档根目录，默认 ai/docs/")
+    log_manuals: dict = Field(default_factory=dict, description="多产品日志手册注册表(唯一产品手册来源): {产品: {server, local, match, files}}，服务器优先/本地兜底")
 
     # ========== CodeSkill 代码检索 ==========
     code_skill_paths: str = Field(default="", description="代码索引根目录，逗号分隔")
@@ -180,6 +216,11 @@ def get_active_task_resolutions_collection() -> str:
     return get_active_collection_for("project")
 
 
+def get_active_dispatch_history_collection() -> str:
+    """派单历史工单向量库活跃集合（L3-A 路，独立 domain "dispatch"）。"""
+    return get_active_collection_for("dispatch")
+
+
 # writer 别名（lambda 实现，避免重复 try/except 逻辑）
 _write_active_collection = lambda n: write_active_collection_for("team", n)
 _write_active_faq_collection = lambda n: write_active_collection_for("team", n)
@@ -190,6 +231,7 @@ _write_active_usp_diagnosis_collection = lambda n: write_active_collection_for("
 _write_active_troubleshooting_collection = lambda n: write_active_collection_for("team", n)
 _write_active_cheduan_manual_collection = lambda n: write_active_collection_for("company", n)
 _write_active_task_resolutions_collection = lambda n: write_active_collection_for("project", n)
+_write_active_dispatch_history_collection = lambda n: write_active_collection_for("dispatch", n)
 
 
 def get_docs_dir() -> Path:
@@ -216,6 +258,8 @@ def get_ai_config() -> AIConfig:
     注意：qdrant_collection_name 可能被指针文件覆盖（见 get_active_collection）
     """
     return AIConfig(
+        # 服务端口
+        port=int(os.getenv("PORT", "8401")),
         # DeepSeek
         deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
         deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
@@ -223,6 +267,14 @@ def get_ai_config() -> AIConfig:
         llm_reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "low"),
         llm_connect_timeout=float(os.getenv("LLM_CONNECT_TIMEOUT", "3.0")),
         llm_read_timeout=float(os.getenv("LLM_READ_TIMEOUT", "30.0")),
+
+        # 备用模型（中转站）
+        llm_backend=os.getenv("LLM_BACKEND", "deepseek"),
+        relay_api_key=os.getenv("RELAY_API_KEY", ""),
+        relay_base_url=os.getenv("RELAY_BASE_URL", "https://yitongapi.com/v1"),
+        relay_model=os.getenv("RELAY_MODEL", "gpt-5.6-sol"),
+        relay_fallback_models=os.getenv("RELAY_FALLBACK_MODELS", "claude-opus-4-8,claude-sonnet-5"),
+        relay_thinking=os.getenv("RELAY_THINKING", "off").strip().lower() in ("1", "true", "yes", "on"),
 
         vision_api_key=os.getenv("VISION_API_KEY", ""),
         vision_base_url=os.getenv("VISION_BASE_URL", ""),
@@ -259,6 +311,7 @@ def get_ai_config() -> AIConfig:
         # 派单
         # 诊断服务
         diagnosis_scan_interval=int(os.getenv("DIAGNOSIS_SCAN_INTERVAL", "60")),
+        enable_knowledge_sink=os.getenv("ENABLE_KNOWLEDGE_SINK", "0").strip().lower() in ("1", "true", "yes", "on"),
         # 派单后台
         assign_scan_interval=int(os.getenv("ASSIGN_SCAN_INTERVAL", "120")),
         # Debug
@@ -271,10 +324,11 @@ def get_ai_config() -> AIConfig:
         dispatch_api_url=os.getenv("DISPATCH_API_URL", ""),
         upload_dir=os.getenv("UPLOAD_DIR", "./uploads"),
         # 后端内部 API（派单后回调通知等）
-        backend_base_url=os.getenv("BACKEND_BASE_URL", "http://localhost:8000"),
-        internal_api_key=os.getenv("INTERNAL_API_KEY", ""),
+        backend_base_url=os.getenv("BACKEND_BASE_URL", "http://localhost:8400"),
+        internal_api_key=os.getenv("INTERNAL_API_KEY", "zentao"),
         # 文档路径
         docs_path=os.getenv("DOCS_PATH", ""),
+        log_manuals=_parse_log_manuals(os.getenv("LOG_MANUALS", "")),
         media_url_prefix=os.getenv("MEDIA_URL_PREFIX", "/api/ai/media"),
         code_skill_paths=os.getenv("CODE_SKILL_PATHS", ""),
         # 企业微信
@@ -284,6 +338,41 @@ def get_ai_config() -> AIConfig:
         wecom_sheet_id=os.getenv("WECOM_SHEET_ID", ""),
 
     )
+
+
+def _parse_log_manuals(raw: str) -> dict:
+    """解析 LOG_MANUALS 环境变量为 {产品: {server, local, match, files}}。
+
+    LOG_MANUALS 是 JSON 字符串，例:
+      {"USP":{"server":"/data/apps/OpenRobotService_Data/help_manuals/USP日志分析指南",
+              "local":"D:/CodeHub/Algorithm/help_manuals/USP日志分析指南",
+              "match":"USPA|DYNAMIC_MAP|TMS|TASK-MANAGER|AI_map",
+              "files":["USP平台完整架构与日志分析总览.md"]},
+       "ORS":{"server":"/data/apps/OpenRobotService_Data/help_manuals/ORS日志分析指南",
+              "local":"D:/CodeHub/Algorithm/help_manuals/ORS日志分析指南",
+              "match":"ORS",
+              "files":["ORS平台完整架构与日志分析总览.md"]}}
+    服务器优先、本地兜底：解析时保留双地址，取用逻辑在 product_registry。
+    """
+    import json as _json
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        d = _json.loads(raw)
+    except Exception:
+        return {}
+    out = {}
+    for prod, v in d.items():
+        if not isinstance(v, dict):
+            continue
+        out[str(prod)] = {
+            "server": str(v.get("server", "") or "").strip(),
+            "local": str(v.get("local", "") or "").strip(),
+            "match": str(v.get("match", "") or ""),
+            "files": list(v.get("files") or []),
+        }
+    return out
 
 
 async def validate_ai_config() -> dict:

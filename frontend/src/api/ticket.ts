@@ -36,10 +36,14 @@ export interface CreateTicketParams {
   priority?: TicketPriority;
   project_name?: string;
   project_id?: string;
-  assigned_to?: string;       // 接单人 username（后端改后生效）
+  assigned_to?: string;       // 接单人 users.id（过渡期后端也认 username）
+  deadline_at?: string;       // 最晚解决时间（ISO 字符串，兜底双工单工单2 复用弹窗选择值）
   customer?: string;
   metadata_info?: Record<string, unknown>;
   tags?: string[];
+  /** 附件列表：字符串为 object_path；dict 为 {path, object_path, filename} 结构（远程截图等）。
+   *  与 tasks.attachments 列约定对齐——详情页读 path，AI 路径去重读 object_path。 */
+  attachments?: Array<string | { path?: string; object_path?: string; filename?: string; [k: string]: unknown }>;
 }
 
 export interface CreatedTicket {
@@ -72,6 +76,68 @@ export const cancelTicket = (ticketId: number | string) =>
     body: JSON.stringify({ status: 'canceled' }),
   });
 
+/** 重新派单：强制工单回到待派单状态并触发 AI 智能派单重新推荐处理人。
+ *  preferredAssignee 为用户倾向的派单人（users.id，必填）；remark 为可选备注。 */
+export const reDispatchTicket = (
+  ticketId: number | string,
+  preferredAssignee: string,
+  remark?: string,
+) =>
+  request(`/${Number(ticketId)}/re-dispatch`, {
+    method: 'POST',
+    body: JSON.stringify({ preferred_assignee: preferredAssignee, remark: remark || null }),
+  });
+
+// ── 二次派单感知增强（M2）：详情 redispatch 子对象类型 + 读取 ──
+export interface RedispatchCandidate {
+  rank: number;
+  engineer_id: string;
+  name: string;
+  department?: string | null;
+  job_level?: number | null;
+  modules?: string[] | null;
+  duty?: string | null;
+  // 画像缺失英文字段（department/job_level/responsibility_modules），供前端权威判定"待补充画像"
+  missing?: string[] | null;
+  scores?: { llm?: number; semantic?: number; history?: number; total?: number } | null;
+  tags?: string[] | null;
+}
+
+export interface RedispatchProfile {
+  dept?: string | null;
+  job_level?: number | null;
+  modules?: string[] | null;
+  duty?: string | null;
+  missing?: string[] | null;
+}
+
+export interface RedispatchResult {
+  assigned_id?: string;
+  assigned_name?: string;
+  preferred_id?: string | null;
+  preferred_name?: string | null;
+  confidence?: number | null;
+  decision_type?: string | null;
+  reasoning?: string | null;
+  profile?: RedispatchProfile | null;
+  matched_pref?: boolean | null;
+  name_collision?: boolean | null;
+  pinyin_match?: boolean | null;
+  tip_detail?: string | null;
+}
+
+export interface TicketRedispatch {
+  dispatch_round?: number;
+  candidates?: RedispatchCandidate[] | null;
+  result?: RedispatchResult | null;
+}
+
+/** 读取工单详情的 redispatch 子对象（R2 候选快照 + R3 结果信息），无记录返回 null */
+export const fetchRedispatch = (ticketId: number | string) =>
+  request<{ redispatch?: TicketRedispatch | null }>(`/${Number(ticketId)}`).then((r) => {
+    return r?.redispatch ?? null;
+  });
+
 /** 评论列表（按工单绑定） */
 export const listComments = (ticketId: number | string) =>
   request<TicketComment[]>(`/${Number(ticketId)}/comments`);
@@ -88,8 +154,10 @@ export const addComment = (
     body: JSON.stringify({ content, is_public: isPublic, attachments }),
   });
 
-/** 上传评论附件（FormData；temp_id 用于随后发评论时关联）。鉴权带 Bearer token */
-export const uploadCommentAttachment = async (file: File, tempId: string): Promise<void> => {
+/** 上传评论附件（FormData；temp_id 用于随后发评论时关联）。鉴权带 Bearer token
+ *  返回 MinIO 上的真实 object_path（如 "helpdesk/temp/xxx.png"），
+ *  前端建单时可直接透传给 createTicket 的 attachments 字段，无需依赖后端进程内存 temp_id 映射。 */
+export const uploadCommentAttachment = async (file: File, tempId: string): Promise<string> => {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('temp_id', tempId);
@@ -101,6 +169,8 @@ export const uploadCommentAttachment = async (file: File, tempId: string): Promi
     body: formData,
   });
   if (!res.ok) throw new Error(`附件上传失败: ${res.status}`);
+  const data = (await res.json()) as { object_path?: string };
+  return data.object_path || '';
 };
 
 /** 创建系统任务（工单）。返回创建后的工单（含 id）。
@@ -117,9 +187,55 @@ export async function createTicket(params: CreateTicketParams): Promise<CreatedT
       project_name: params.project_name ?? '',
       project_id: params.project_id ?? '',
       assigned_to: params.assigned_to ?? null,
+      deadline_at: params.deadline_at ?? null,
       customer: params.customer ?? null,
       metadata_info: params.metadata_info ?? null,
       tags: params.tags ?? null,
+      attachments: params.attachments ?? null,
     }),
   });
 }
+
+/** 工单操作日志类型（与后端 OperationType 枚举对齐） */
+export type OperationType =
+  | 'create'
+  | 'status_change'
+  | 'assign'
+  | 'escalate'
+  | 'return'
+  | 'reassign'
+  | 'update'
+  | 'comment'
+  | 'view'
+  | 'ai_diagnose'
+  | 'ai_assign';
+
+export interface OperationLog {
+  id: number;
+  task_id: number;
+  operation_type: OperationType;
+  operator: string;
+  operator_name?: string | null;
+  to_status?: string | null;
+  detail?: Record<string, unknown> | null;
+  description?: string | null;
+  created_at: string;
+  ended_at?: string | null;
+  duration_seconds?: number | null;
+}
+
+/** 获取工单操作日志列表（按时间倒序） */
+export const getOperationLogs = (taskId: number | string) =>
+  request<OperationLog[]>(`/${Number(taskId)}/operation-logs`, { skipCache: true });
+
+/** 将秒数格式化为人类可读的停留时长，如 "5 分 30 秒" / "45 秒" / "1 小时 5 分" */
+export const formatDuration = (seconds: number | null | undefined): string => {
+  if (!seconds || seconds <= 0) return '';
+  const s = Math.floor(seconds);
+  if (s < 60) return `${s} 秒`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const rest = s % 60;
+  if (h > 0) return rest > 0 ? `${h} 小时 ${m} 分` : `${h} 小时 ${m} 分`;
+  return rest > 0 ? `${m} 分 ${rest} 秒` : `${m} 分钟`;
+};

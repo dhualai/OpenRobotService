@@ -23,6 +23,36 @@ from ai.core.logging import get_logger
 
 logger = get_logger("MINIO")
 
+# 本地调试：经 nginx /minio-api/ 反向代理上传时，服务器 nginx 存在
+#   location ~* \.(php|py|pl|sh|cgi|ini|conf|sql|bak|tar|gz|zip|log)$ { deny all; }
+# 会使所有以 .zip/.gz/.tar/.log/.sql 等结尾的对象路径被 403 拦截（服务器不可改）。
+# 仅当 MINIO_API_PREFIX 非空（即经 nginx 代理访问 MinIO）时，给被拦截后缀的 object
+# key 追加安全后缀《.localproxy》绕开拦截；生产直连（prefix 为空）时不做任何改写。
+_BLOCKED_SUFFIXES = (
+    ".php", ".py", ".pl", ".sh", ".cgi", ".ini", ".conf",
+    ".sql", ".bak", ".tar", ".gz", ".zip", ".log",
+)
+_LOCAL_SAFE_SUFFIX = ".localproxy"
+
+
+def _via_proxy() -> bool:
+    """是否经 nginx 反向代理访问 MinIO（MINIO_API_PREFIX 非空）。"""
+    return bool(getattr(get_ai_config(), "minio_api_prefix", "") or "")
+
+
+def _local_safe_key(object_path: str) -> str:
+    """仅本地代理场景下，对被拦截后缀的 object key 追加安全后缀；否则原样返回。
+
+    例如 xxx.zip → xxx.zip.localproxy（URL 不再以 .zip 结尾，绕开 nginx deny all）。
+    上传/读取统一走此归一化，保证对象名一致、能正常读写。
+    """
+    if not _via_proxy():
+        return object_path
+    low = object_path.lower()
+    if any(low.endswith(s) for s in _BLOCKED_SUFFIXES) and not low.endswith(_LOCAL_SAFE_SUFFIX):
+        return object_path + _LOCAL_SAFE_SUFFIX
+    return object_path
+
 
 class AIMinIOClient:
     _instance: Optional["AIMinIOClient"] = None
@@ -97,8 +127,16 @@ class AIMinIOClient:
         path = parsed.path if parsed.path.startswith('/') else '/' + parsed.path
         return urlunparse(parsed._replace(path=prefix + path))
 
+    def resolve_key(self, object_path: str) -> str:
+        """对外暴露 object key 归一化（供 raw client 调用点统一使用）。
+
+        仅本地代理场景会对被拦截后缀追加《.localproxy》；生产直连原样返回。
+        """
+        return _local_safe_key(object_path)
+
     def get_presigned_url(self, object_path: str, expires_minutes: int = 5) -> str:
         bucket_name, object_name = self._split(object_path)
+        object_name = _local_safe_key(object_name)
         return self._with_api_prefix(self.client.presigned_get_object(
             bucket_name, object_name, expires=timedelta(minutes=expires_minutes)
         ))
@@ -107,6 +145,7 @@ class AIMinIOClient:
         """下载对象到本地文件路径（object_path = bucket/key）。"""
         try:
             bucket_name, object_name = self._split(object_path)
+            object_name = _local_safe_key(object_name)
             self.client.fget_object(bucket_name, object_name, local_path)
             return True
         except S3Error as e:
@@ -118,6 +157,7 @@ class AIMinIOClient:
                      raise_on_error: bool = False) -> bool:
         try:
             bucket_name, object_name = self._split(object_path)
+            object_name = _local_safe_key(object_name)
             file_obj = BytesIO(file_bytes)
             self.client.put_object(
                 bucket_name, object_name, file_obj,
@@ -153,6 +193,7 @@ class AIMinIOClient:
     def get_file_info(self, object_path: str):
         try:
             bucket_name, object_name = self._split(object_path)
+            object_name = _local_safe_key(object_name)
             return self.client.stat_object(bucket_name, object_name)
         except S3Error as e:
             logger.warning("获取文件信息失败: %s", e)

@@ -1,6 +1,7 @@
 // 二维码导入组件
 import { useState } from 'react';
-import { Input, Button, Toast } from 'tdesign-mobile-react';
+import { Button, Toast } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 
@@ -23,7 +24,7 @@ export default function QRCodeImport() {
 
   return (
     <div>
-      <Input placeholder="输入或扫描二维码内容" value={code} onChange={(v) => setCode(String(v))} clearable />
+      <ClearableInput placeholder="输入或扫描二维码内容" value={code} onChange={(v) => setCode(String(v))} />
       <Button theme="primary" block style={{ marginTop: 12 }} loading={loading} onClick={handleScan} disabled={!code.trim()}>
         确认导入
       </Button>

@@ -1,8 +1,11 @@
 from typing import List, Optional, Dict
 import json
 import requests
-from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import create_engine, text, inspect, bindparam
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
+from app.models.delivery import UNDERTAKE_YES, PROJECT_DELETED
+from app.models.identity import user_project_roles
 from app.modules.admin.schemas_das.request_models import ProjectBase, ProjectCreate, ProjectUpdate
 from app.modules.admin.models_das.models import Project
 from app.modules.admin.utils_das.config import DATABASE_URL, AUTH_SERVICE_BASE_URL
@@ -14,6 +17,15 @@ _PROJECT_COLUMNS = {c.key for c in inspect(Project).mapper.column_attrs}
 
 def _filter_project_fields(data: Dict) -> Dict:
     return {k: v for k, v in data.items() if k in _PROJECT_COLUMNS}
+
+def _to_float_or_none(value) -> Optional[float]:
+    """将 JSON 提取出的值转 float；None/空串/非法值返回 None。"""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 def get_db():
     db = SessionLocal()
@@ -189,6 +201,7 @@ class ProjectService:
             "sales": project.sales,
             "pre_sales": project.pre_sales,
             "project_manager": project.project_manager,
+            "project_manager_id": project.project_manager_id,
             "field_engineer": project.field_engineer,
             "internal_code": project.internal_code,
             "project_region": project.project_region,
@@ -197,28 +210,49 @@ class ProjectService:
             "system_integration": json.loads(project.system_integration) if project.system_integration else None,
             "server_deployment_status": project.server_deployment_status,
             "settlement_period": project.settlement_period,
+            "undertake_status": project.undertake_status,
         }
         return project_dict
     
-    def get_projects(self, skip: int = 0, limit: int = 999999999) -> List[Dict]:
+    def get_projects(self, skip: int = 0, limit: int = 999999999, include_pending: bool = False) -> List[Dict]:
+        """项目列表。默认只返回已承接项目（undertake_status='是'）。
+
+        include_pending=True 时把「待定」项目一并返回，目前仅仪表盘月柱图
+        （dashboard.py get_project_monthly_summary）使用，用于统计浅色段数量；
+        其余列表/统计都不应放开，否则项目总数、紧急度看板等口径会跟着变。
+        """
         db = SessionLocal()
         try:
-            projects = db.query(Project).filter(Project.id != None, Project.id != "").offset(skip).limit(limit).all()
+            query = db.query(Project).filter(
+                Project.id != None,
+                Project.id != "",
+                Project.status != PROJECT_DELETED,
+            )
+            if not include_pending:
+                query = query.filter(Project.undertake_status == UNDERTAKE_YES)
+            projects = query.offset(skip).limit(limit).all()
             return [self._convert_to_dict(project) for project in projects]
         finally:
             db.close()
 
-    def get_projects_by_ids(self, project_ids: List[str]) -> List[Dict]:
-        """按项目 ID 列表批量查询项目，用于仪表盘按当前用户关联项目过滤统计。"""
+    def get_projects_by_ids(self, project_ids: List[str], include_pending: bool = False) -> List[Dict]:
+        """按项目 ID 列表批量查询项目，用于仪表盘按当前用户关联项目过滤统计。
+
+        同 get_projects：默认只返回已承接项目。
+        """
         if not project_ids:
             return []
         db = SessionLocal()
         try:
-            projects = db.query(Project).filter(
-                Project.id != None,
-                Project.id != "",
-                Project.id.in_(project_ids),
-            ).all()
+            query = db.query(Project).filter(
+            Project.id != None,
+            Project.id != "",
+            Project.id.in_(project_ids),
+            Project.status != PROJECT_DELETED,
+        )
+            if not include_pending:
+                query = query.filter(Project.undertake_status == UNDERTAKE_YES)
+            projects = query.all()
             return [self._convert_to_dict(project) for project in projects]
         finally:
             db.close()
@@ -226,7 +260,10 @@ class ProjectService:
     def get_project(self, project_id: int) -> Optional[Dict]:
         db = SessionLocal()
         try:
-            project = db.query(Project).filter(Project.id == project_id).first()
+            project = db.query(Project).filter(
+                Project.id == project_id,
+                Project.status != PROJECT_DELETED,
+            ).first()
             return self._convert_to_dict(project) if project else None
         finally:
             db.close()
@@ -297,7 +334,10 @@ class ProjectService:
     def update_project(self, project_id: int, update_data: Dict) -> Optional[Dict]:
         db = SessionLocal()
         try:
-            project = db.query(Project).filter(Project.id == project_id).first()
+            project = db.query(Project).filter(
+                Project.id == project_id,
+                Project.status != PROJECT_DELETED,
+            ).first()
             if not project:
                 return None
 
@@ -339,16 +379,27 @@ class ProjectService:
         finally:
             db.close()
     
-    def delete_project(self, project_id: int) -> bool:
+    def delete_project(self, project_id: str) -> bool:
         db = SessionLocal()
         try:
             project = db.query(Project).filter(Project.id == project_id).first()
-            if not project:
+            if not project or project.status == PROJECT_DELETED:
                 return False
-            
-            db.delete(project)
+
+            # 先清理 user_project_roles 中引用本项目的关联记录，否则外键约束
+            # user_project_roles_ibfk_2（project_id → project.id）会阻止删除
+            db.execute(user_project_roles.delete().where(
+                user_project_roles.c.project_id == str(project.id)))
+
+            # 软删除：保留 project 记录，仅标记为已删除。
+            # 后续创建新项目时 check_project_duplicate 仍会命中本记录（按编号/名称），
+            # 从而阻止编号/名称被复用，达到去重目的。
+            project.status = PROJECT_DELETED
             db.commit()
             return True
+        except IntegrityError:
+            db.rollback()
+            raise
         finally:
             db.close()
     
@@ -356,7 +407,9 @@ class ProjectService:
         db = SessionLocal()
         try:
             projects = db.query(Project).filter(
-                (Project.name.ilike(f"%{keyword}%") | 
+                Project.undertake_status == UNDERTAKE_YES,
+                Project.status != PROJECT_DELETED,
+                (Project.name.ilike(f"%{keyword}%") |
                  Project.description.ilike(f"%{keyword}%") |
                  Project.code.ilike(f"%{keyword}%") |
                  Project.contact_person.ilike(f"%{keyword}%"))
@@ -370,8 +423,11 @@ class ProjectService:
                        contact_person_id: Optional[str] = None) -> List[Dict]:
         db = SessionLocal()
         try:
-            query = db.query(Project)
-            
+            query = db.query(Project).filter(
+            Project.undertake_status == UNDERTAKE_YES,
+            Project.status != PROJECT_DELETED,
+        )
+
             if status:
                 query = query.filter(Project.status == status)
             
@@ -386,6 +442,116 @@ class ProjectService:
         finally:
             db.close()
     
+    def get_task_execution_metrics_7d_batch(self, project_codes: List[str]) -> Dict[str, Dict]:
+        """批量获取多项目任务执行指标（一次批量查询，取近 7 天内最新一天的数据）。
+
+        替代循环内逐项目调用 get_task_execution_status_7d / get_task_execution_stats_7d
+        （两者 SQL 几乎相同，逐项目时为 2N 条 JSON 聚合查询，是 /projects?include_analysis
+        列表接口的主要耗时来源）。数据源为 collection_data 表（indicator='GroupEfficiency'），
+        某一天的数据整体存在 `data` JSON 字段（data[0] 为该日指标），按项目取
+        近 7 天内最新一天（MAX start_time_int）：
+        - 任务总数/已完成任务：dataIndicators.taskNumber.totalTasks / finishedTasks；
+        - 任务完成率：dataIndicators.taskNumber.completionRate（如 "90%"，解析为小数）；
+        - 切手动次数：averageManualCount.averageManualCount（如 6.5）。
+        返回：
+        {
+          code: {
+            "status": "搬运任务：X，移动任务：Y，任务总数：Z，完成总数：W" | "无数据",
+            "stats": {
+                "total_tasks": int, "finished_tasks": int,
+                "completion_rate": float|None, "manual_switch_count": float|None,
+            },
+          }
+        }
+        未出现在返回 dict 中的项目码表示无数据（status="无数据"、stats 全 0）。
+        """
+        if not project_codes:
+            return {}
+        db = SessionLocal()
+        try:
+            sql = text("""
+            SELECT
+                cd.project,
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                    '$.carry'
+                ) AS total_carry,
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                    '$.navigate'
+                ) AS total_navigate,
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                    '$.totalTasks'
+                ) AS total_totalTasks,
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                    '$.finishedTasks'
+                ) AS total_finishedTasks,
+                JSON_UNQUOTE(
+                    JSON_EXTRACT(
+                        JSON_EXTRACT(cd.`data`, '$.data[0].dataIndicators.taskNumber'),
+                        '$.completionRate'
+                    )
+                ) AS latest_completion_rate,
+                JSON_EXTRACT(
+                    JSON_EXTRACT(cd.`data`, '$.data[0].averageManualCount'),
+                    '$.averageManualCount'
+                ) AS latest_manual_count
+            FROM collection_data cd
+            JOIN (
+                SELECT project, MAX(start_time_int) AS max_start
+                FROM collection_data
+                WHERE indicator = 'GroupEfficiency'
+                AND start_time_int >= UNIX_TIMESTAMP(NOW() - INTERVAL 7 DAY)
+                AND project IN :codes
+                GROUP BY project
+            ) t ON t.project = cd.project AND cd.start_time_int = t.max_start
+            WHERE cd.indicator = 'GroupEfficiency'
+            """).bindparams(bindparam("codes", expanding=True))
+            rows = db.execute(sql, {"codes": list(project_codes)}).fetchall()
+
+            metrics: Dict[str, Dict] = {}
+            for row in rows:
+                total_carry = int(_to_float_or_none(row.total_carry) or 0)
+                total_navigate = int(_to_float_or_none(row.total_navigate) or 0)
+                total_tasks = int(_to_float_or_none(row.total_totalTasks) or 0)
+                finished_tasks = int(_to_float_or_none(row.total_finishedTasks) or 0)
+                metrics[row.project] = {
+                    "status": (
+                        f"搬运任务：{total_carry}，移动任务：{total_navigate}，"
+                        f"任务总数：{total_tasks}，完成总数：{finished_tasks}"
+                    ),
+                    "stats": {
+                        "total_tasks": total_tasks,
+                        "finished_tasks": finished_tasks,
+                        "completion_rate": self._parse_completion_rate(
+                            row.latest_completion_rate, total_tasks, finished_tasks
+                        ),
+                        "manual_switch_count": _to_float_or_none(row.latest_manual_count),
+                    },
+                }
+            return metrics
+        finally:
+            db.close()
+
+    @staticmethod
+    def _parse_completion_rate(raw, total_tasks: int, finished_tasks: int) -> Optional[float]:
+        """解析 collection_data 中的完成率字段为小数。
+
+        字段为百分比字符串（如 "90%"、"90.5%"）或小数（如 0.9），
+        缺失/非法时回退为 finished_tasks / total_tasks。
+        """
+        if raw is not None:
+            try:
+                text = str(raw).strip()
+                if text.endswith("%"):
+                    return round(float(text[:-1]) / 100, 4)
+                return round(float(text), 4)
+            except (TypeError, ValueError):
+                pass
+        return round(finished_tasks / total_tasks, 4) if total_tasks else None
+
     def get_task_execution_status_7d(self, project_code: str) -> str:
         db = SessionLocal()
         try:
@@ -496,6 +662,21 @@ class ProjectService:
                 "created_at": db_license.created_at
             }
             return license_dict
+        finally:
+            db.close()
+
+    def delete_license(self, license_id: int) -> bool:
+        """按 ID 删除项目授权（撤销）。不存在返回 False。"""
+        from app.modules.admin.models_das.models import ProjectLicense
+
+        db = SessionLocal()
+        try:
+            license = db.query(ProjectLicense).filter(ProjectLicense.id == license_id).first()
+            if not license:
+                return False
+            db.delete(license)
+            db.commit()
+            return True
         finally:
             db.close()
 

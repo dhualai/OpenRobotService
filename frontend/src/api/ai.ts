@@ -128,7 +128,20 @@ export interface TicketDraft {
   support_type?: string;
   preferred_response?: string;
   missing_fields?: string[];
+  /** 最晚解决时间（ISO 字符串，转工单弹窗 antd DatePicker 选择 → overrides → confirm_submit 入库 → 落 Task.deadline_at） */
+  deadline_at?: string;
+  /** 协商阶段（当前步骤）ID：提单弹窗必选，落 Task.curr_step_id */
+  curr_step_id?: number;
+  /** 阶段完成时间（SLA，ISO 字符串）：提单弹窗必选，落 Task.curr_step_endtime */
+  curr_step_endtime?: string;
   [k: string]: unknown;
+}
+
+/** 协商阶段（task_steps 模板步骤） */
+export interface TicketStep {
+  id: number;
+  step_name: string;
+  sequence: number;
 }
 
 export interface PrepareTicketResult {
@@ -141,6 +154,10 @@ export interface PrepareTicketResult {
   missing_info?: string[];
   /** stage=not_ready 时返回的面向用户的引导话术 */
   message?: string;
+  /** 项目编号题标记（not_ready 且因项目未定出题）：前端据此不挂「信息不足」卡片/Toast */
+  project_ask?: boolean;
+  /** 项目编号题结构化候选：前端渲染可点按钮，点击=以用户身份发送序号 */
+  project_choices?: Array<{ index: number; name: string; code?: string }>;
   prompt: string;
   ticket_ready?: boolean;
 }
@@ -172,6 +189,20 @@ export const qaConfirmTicket = (sessionId: string, overrides: Partial<TicketDraf
 export const qaGetDraft = (sessionId: string) =>
   aiGet<{ code: number; data?: { draft: TicketDraft | null } }>('/qa/ticket/draft', { session_id: sessionId });
 
+/** 取消确认：清除待确认草稿（用户关闭确认弹窗/放弃提单时调用）。
+ * 若不清除，后端 review 幂等分支（pipeline.py existing_draft 已存在）不再发 review 事件，
+ * 前端确认弹窗无法再次弹出，提单卡死。清掉后下次对话字段齐全会重新弹窗。 */
+export const qaClearDraft = (sessionId: string): Promise<{ code: number; message?: string }> =>
+  fetchWithAuth(`${BASE}/qa/ticket/draft?session_id=${encodeURIComponent(sessionId)}`, { method: 'DELETE' }).then(
+    (r) => r.json(),
+  );
+
+/** 按工单类型拉协商阶段列表（提单弹窗打开时调用；task_steps 后续可配置，故独立按需拉取） */
+export const qaGetTicketSteps = (type: string) =>
+  aiGet<{ code: number; data?: { steps: TicketStep[] }; message?: string }>(
+    '/qa/ticket/steps', { type },
+  );
+
 /** 获取工单 */
 export const qaGetTicket = (sessionId: string) =>
   aiGet<{ code: number; data?: unknown; message?: string }>('/qa/ticket', { session_id: sessionId });
@@ -202,14 +233,19 @@ export interface AiTicketBrief {
   assigned_to_name?: string;
   // 项目名称（tasks.project_name，list_all_tickets 返回）
   project?: string;
+  // 工单来源（ai 智能派单 / manual 系统任务），用于控制「重新派单」按钮显隐
+  source?: string;
+  // 二次派单感知增强（M3）：派单结果提醒一句话摘要（无提醒为 null/undefined）
+  redispatch_tip?: string | null;
 }
 
 /** 历史工单列表筛选参数 */
 export interface AiTicketListFilters {
-  status?: string;   // pending|dispatched|in_progress|resolved|closed
-  type?: string;     // problem|bug|feature|support|other
-  keyword?: string;  // 模糊搜索标题/描述
-  username?: string; // 按创建者用户名过滤
+  status?: string;          // new|in_progress|pending|resolved|canceled|closed
+  type?: string;            // problem|bug|feature|support|other
+  keyword?: string;         // 模糊搜索标题/描述
+  username?: string;        // 按创建者用户名过滤
+  exclude_status?: string;  // 排除的状态，逗号分隔（如 closed）
 }
 
 /** 历史工单列表（GET /api/ai/memory/tickets/all） */
@@ -219,9 +255,17 @@ export const qaListTickets = (skip = 0, limit = 50, filters?: AiTicketListFilter
   if (filters?.type) params.type = filters.type;
   if (filters?.keyword) params.keyword = filters.keyword;
   if (filters?.username) params.username = filters.username;
+  if (filters?.exclude_status) params.exclude_status = filters.exclude_status;
   return aiGet<{
     code: number;
-    data?: { items: AiTicketBrief[]; total: number; skip?: number; limit?: number };
+    data?: {
+      items: AiTicketBrief[];
+      total: number;
+      skip?: number;
+      limit?: number;
+      by_status?: Record<string, number>; // 各状态数量（口径：source+username，复用列表接口返回）
+      active_total?: number;               // 除已关闭外总数
+    };
     message?: string;
   }>('/memory/tickets/all', params);
 };
@@ -234,69 +278,134 @@ export const qaTicketAck = (sessionId: string, dispatchId = '', status = 'dispat
     status,
   });
 
-/** 上传接口响应的 data 字段（后端 /api/ai/qa/upload 返回） */
-export interface UploadData {
-  saved: number;
-  files: Array<{ filename: string; size: number; path: string; object_path?: string }>;
-  /** 后端确认回执：只传图片=VLM 初步诊断；只传非图片=「暂不支持解析」提示 */
-  ack_message?: string;
-  /** 仅附带 message 文字非空时有值：完整诊断的 AI 回复（含提单 ticket） */
-  ai_response?: { message?: string; action?: string; thinking?: string; ticket?: unknown } | null;
+
+// ---------------------------------------------------------------------------
+// 流式上传（SSE）—— /qa/upload（带 Accept: text/event-stream 触发流式）
+// ---------------------------------------------------------------------------
+
+export interface UploadStreamCallbacks {
+  /** 文件已保存到后端（saved 列表 + filenames） */
+  onFileSaved?: (data: { saved: Array<{ filename: string; size: number; path: string; object_path?: string }>; filenames: string }) => void;
+  /** 流式 token：VLM 图片描述 +（附带文字时的）诊断文字都会触发，按顺序拼接 */
+  onToken?: (token: string) => void;
+  /** VLM 图片分析完成（desc 为完整描述） */
+  onVisionDone?: (desc: string) => void;
+  /** 最终结果（不含附带文字时 = 确认回执；含文字时 = 诊断结果 {action, thinking, ticket}） */
+  onResult?: (data: Record<string, unknown>) => void;
+  /** 流结束 */
+  onDone?: (data: { total_ms?: number }) => void;
+  /** 错误（HTTP / SSE event:error） */
+  onError?: (msg: string) => void;
 }
 
-/** 上传附件（FormData）。
- * message 为可选的附带文字：非空时后端在上传后顺带跑完整诊断并返回 ai_response；
- * 为空时后端只返回确认回执 ack_message。使用 XMLHttpRequest 以支持上传进度回调
- * （fetch 无法获取 upload 进度）。onProgress 接收 0~100 的整数百分比。
+/**
+ * 流式上传附件（FormData + SSE，带 Accept: text/event-stream 触发 /qa/upload 流式分支）。
+ * 文件保存、VLM 图片分析、附带文字的完整诊断均通过 SSE 逐步推送，前端可实时渲染。
  */
-export interface UploadResult {
-  ok: boolean;
-  status: number;
-  data: { code?: number; message?: string; data?: UploadData; [k: string]: unknown };
-}
-export const qaUpload = (
+export const qaUploadStream = async (
   sessionId: string,
   files: File[],
-  message = '',
-  onProgress?: (percent: number) => void,
-): Promise<UploadResult> => {
-  // 401 刷新重试一次（对齐 fetchWithAuth）：上传+文字时后端会跑诊断可能触发提单，
-  // token 失效后端返回 401（而非 200+空 created_by），此处刷新重试避免上传失败。
-  const doUpload = (tok: string | null): Promise<UploadResult> => new Promise((resolve, reject) => {
+  message: string,
+  cb: UploadStreamCallbacks,
+): Promise<void> => {
+  // 安全包装：回调在 SSE 读流循环内被调用，任何回调抛错都会中断整个流，
+  // 导致"后端成功却前台显示失败"。这里统一吞掉回调异常，让流正常读完。
+  const safe = <A extends unknown[]>(fn?: (...args: A) => void | Promise<void>) =>
+    (...args: A) => {
+      try {
+        const r = fn?.(...args);
+        if (r && typeof (r as Promise<void>).catch === 'function') {
+          (r as Promise<void>).catch((e) => console.warn('[upload-stream] 回调异常已忽略:', e));
+        }
+      } catch (e) {
+        console.warn('[upload-stream] 回调异常已忽略:', e);
+      }
+    };
+
+  const doStream = async (tok: string | null): Promise<boolean> => {
     const formData = new FormData();
     formData.append('session_id', sessionId);
     if (message.trim()) formData.append('message', message.trim());
     files.forEach((f) => formData.append('files', f));
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${BASE}/qa/upload`);
-    if (tok) xhr.setRequestHeader('Authorization', `Bearer ${tok}`);
-    xhr.upload.onprogress = (e: ProgressEvent) => {
-      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
-    };
-    xhr.onload = () => {
-      let data: UploadResult['data'] = {};
-      try {
-        data = JSON.parse(xhr.responseText);
-      } catch {
-        /* 非 JSON 响应，忽略解析 */
-      }
-      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, data });
-    };
-    xhr.onerror = () => reject(new Error('网络错误，上传失败'));
-    xhr.send(formData);
-  });
-  return (async () => {
-    let res = await doUpload(useAuthStore.getState().token);
-    if (res.status === 401) {
-      const ok = await useAuthStore.getState().refreshAuthToken();
-      if (ok) {
-        res = await doUpload(useAuthStore.getState().token);
-      }
-      if (res.status === 401) {
-        kickToLogin('登录已过期，请重新登录');
-        throw new Error('UNAUTHORIZED');
-      }
+
+    const controller = new AbortController();
+    const resp = await fetch(`${BASE}/qa/upload`, {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal,
+      headers: {
+        Accept: 'text/event-stream',
+        ...(tok ? { Authorization: `Bearer ${tok}` } : {}),
+      },
+    });
+    if (resp.status === 401) return false;
+
+    if (!resp.ok) {
+      safe(cb.onError)(`上传失败: HTTP ${resp.status}`);
+      return true;
     }
-    return res;
-  })();
+    if (!resp.body) {
+      safe(cb.onError)('流式响应为空');
+      return true;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let currentEvent = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // 按行切分；pop 保留可能不完整的一行
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const rawLine of lines) {
+          const line = rawLine.trimEnd();
+          if (!line) continue;
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7);
+            continue;
+          }
+          if (!line.startsWith('data: ')) continue;
+          let data: Record<string, unknown>;
+          try {
+            data = JSON.parse(line.slice(6));
+          } catch {
+            continue;
+          }
+          if (currentEvent === 'file_saved') {
+            safe(cb.onFileSaved)(data as unknown as Parameters<NonNullable<UploadStreamCallbacks['onFileSaved']>>[0]);
+          } else if (data.token) {
+            safe(cb.onToken)(String(data.token));
+          } else if (currentEvent === 'vision_done' && typeof data.desc === 'string') {
+            safe(cb.onVisionDone)(data.desc);
+          } else if (currentEvent === 'result') {
+            safe(cb.onResult)(data);
+          } else if (currentEvent === 'done') {
+            safe(cb.onDone)(data as { total_ms?: number });
+          } else if (currentEvent === 'error' && data.error) {
+            safe(cb.onError)(String(data.error));
+          }
+        }
+      }
+    } finally {
+      controller.abort();
+    }
+    return true;
+  };
+
+  let ok = await doStream(useAuthStore.getState().token);
+  if (!ok) {
+    const refreshed = await useAuthStore.getState().refreshAuthToken();
+    if (refreshed) {
+      ok = await doStream(useAuthStore.getState().token);
+    }
+    if (!ok) {
+      kickToLogin('登录已过期，请重新登录');
+      safe(cb.onError)('登录已过期，请重新登录');
+    }
+  }
 };

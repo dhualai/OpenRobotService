@@ -8,6 +8,7 @@ const STORAGE_KEYS = {
   REFRESH_TOKEN: 'refresh_token',
   TOKEN_EXPIRES_AT: 'token_expires_at',
   USERNAME: 'username',
+  USER_ID: 'user_id',
   NAME: 'profile_name',
   AVATAR_RESOURCE_ID: 'profile_avatar_resource_id',
   PROJECT_IDS: 'profile_project_ids',
@@ -41,6 +42,7 @@ export const PERMISSION_VIEW_ALL = 'backend:project:all';
 export interface AuthState {
   isLoggedIn: boolean;
   username: string;
+  userId: string;
   name: string;
   avatarResourceId: number | null;
   token: string | null;
@@ -63,6 +65,7 @@ export interface AuthState {
 export const useAuthStore = create<AuthState>((set, get) => ({
   isLoggedIn: false,
   username: '',
+  userId: '',
   name: '',
   avatarResourceId: null,
   token: null,
@@ -102,6 +105,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({
       token: null,
       username: '',
+      userId: '',
       name: '',
       avatarResourceId: null,
       isLoggedIn: false,
@@ -148,7 +152,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const request = createRequest(API_CONFIG.ADMIN.BASE_URL, '用户中心');
     try {
       setApiToken(authToken);
-      const userData = await request<{ roles?: { project_backend?: string[] }, name?: string, avatar_resource_id?: number | null, permissions?: string[], projectPermissions?: Record<string, unknown> }>(
+      const userData = await request<{ id?: string; roles?: { project_backend?: string[] }, name?: string, avatar_resource_id?: number | null, permissions?: string[], projectPermissions?: Record<string, unknown> }>(
         `/users/${user}/detail`
       );
       const projectRoles = userData.roles?.project_backend || [];
@@ -156,6 +160,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const name = userData.name || '';
       const avatarResourceId = userData.avatar_resource_id ?? null;
       const permissions = userData.permissions || [];
+      const userId = userData.id || '';
       // projectPermissions 的 keys 即当前用户关联的项目 ID（与 task.project_id 同源）
       const projectIds = Object.keys(userData.projectPermissions || {});
       set({
@@ -165,8 +170,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         avatarResourceId,
         permissions,
         projectIds,
+        userId,
       });
       try {
+        if (userId) localStorage.setItem(STORAGE_KEYS.USER_ID, userId);
+        else localStorage.removeItem(STORAGE_KEYS.USER_ID);
         localStorage.setItem(STORAGE_KEYS.NAME, name);
         if (avatarResourceId === null) {
           localStorage.removeItem(STORAGE_KEYS.AVATAR_RESOURCE_ID);
@@ -206,6 +214,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (savedToken && savedUsername) {
         setApiToken(savedToken);
         const savedName = localStorage.getItem(STORAGE_KEYS.NAME) || '';
+        const savedUserId = localStorage.getItem(STORAGE_KEYS.USER_ID) || '';
         const savedAvatarId = localStorage.getItem(STORAGE_KEYS.AVATAR_RESOURCE_ID);
         const savedProjectIdsRaw = localStorage.getItem(STORAGE_KEYS.PROJECT_IDS);
         let savedProjectIds: string[] = [];
@@ -215,6 +224,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         set({
           token: savedToken,
           username: savedUsername,
+          userId: savedUserId,
           isLoggedIn: true,
           isLoading: false,
           name: savedName,
@@ -232,6 +242,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   hasPermission: (prefix: string) => {
     const { permissions } = get();
     if (!permissions || permissions.length === 0) return false;
+    // admin 通配权限：与后端 require_permission 的「permissions 含 admin 直通」对齐，
+    // 否则 admin 用户（permissions=['admin']）在前端看不到「其他」等按权限码控制的入口
+    if (permissions.includes('admin')) return true;
     return permissions.some(p => p.startsWith(prefix) || p === `${prefix}:*` || p === '*');
   },
 }));

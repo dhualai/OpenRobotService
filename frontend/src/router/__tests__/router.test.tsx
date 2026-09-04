@@ -26,6 +26,13 @@ describe('Router Configuration', () => {
     expect(callRoute).toBeDefined();
   });
 
+  it('should have call history and ticket detail child routes', () => {
+    const rootRoute = router.routes.find((r) => r.path === '/');
+    const paths = rootRoute?.children?.map((r) => r.path) || [];
+    expect(paths).toContain('call/history');
+    expect(paths).toContain('call/ticket/:id');
+  });
+
   it('should have tasks child route', () => {
     const rootRoute = router.routes.find((r) => r.path === '/');
     const tasksRoute = rootRoute?.children?.find((r) => r.path === 'tasks');

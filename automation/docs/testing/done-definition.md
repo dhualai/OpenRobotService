@@ -53,6 +53,19 @@
 - [ ] 测试策略变更 → 同步 `automation/docs/automation_strategy.md`
 - [ ] 故障排查经验 → 同步 `docs/troubleshooting.md`
 
+### 2.5 微信 H5 适配自检（强制）
+
+> 本项目是微信服务号 H5 应用，任何前端组件/功能必须在「微信内置浏览器」与「手机微信端」实测通过方可提测。PC 浏览器模拟器验证不作为通过依据。
+
+- [ ] **iOS 微信实测**：iPhone 微信内置浏览器走通核心交互路径（登录 → 主功能 → 提交/跳转），无白屏、无 JS 报错
+- [ ] **Android 微信实测**：Android 微信内置浏览器同上
+- [ ] **iOS 已知坑点已规避**：日期解析（`YYYY-MM-DD`）、`fixed` 输入框失焦归位、滚动惯性
+- [ ] **部署前缀正确**：跳转/回调地址带 `/p/app/` 或 `/t/app/` 前缀，OAuth 回跳不 404
+- [ ] **不使用 PC-only API**：无 `alert/confirm/prompt`，改用 TDesign 组件；无 hover-only 交互
+- [ ] **触控与性能**：点击热区 ≥ 44px；SSE/长连接在微信切后台后能断线重连；首屏不白屏超 3s
+
+> 自检细则见 `CONTRIBUTING.md`「微信 H5 适配要求」节；常见微信端问题排查见 `docs/troubleshooting.md` 第三章。
+
 ---
 
 ## 三、验收标准

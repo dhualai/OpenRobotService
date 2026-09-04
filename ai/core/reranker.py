@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class RerankerClient:
     """Cross-encoder 重排序客户端。惰性加载，线程池推理。"""
 
-    def __init__(self, model_path: str, device: str = "cpu", max_length: int = 512):
+    def __init__(self, model_path: str, device: str = "cpu", max_length: int = 256):
         self.model_path = model_path
         self.device = device
         self.max_length = max_length
@@ -39,10 +39,16 @@ class RerankerClient:
                         model_path = str(local.resolve())
 
                     try:
-                        self._model = CrossEncoder(
-                            model_path,
-                            device=self.device,
-                            max_length=self.max_length,
+                        # 模型加载慢（数秒），放线程池执行：否则持锁期间阻塞事件循环，
+                        # 并发 retrieve_domain 排队等锁 → 整个循环卡死、SSE 中断。
+                        loop = asyncio.get_event_loop()
+                        self._model = await loop.run_in_executor(
+                            None,
+                            lambda: CrossEncoder(
+                                model_path,
+                                device=self.device,
+                                max_length=self.max_length,
+                            ),
                         )
                     except Exception as e:
                         raise EmbeddingError(f"Reranker 模型加载失败: {str(e)}")

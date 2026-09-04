@@ -16,7 +16,7 @@
 无需任何部署，**微信扫码关注服务号 摇人吧，即刻开始使用**：
 
 <p align="center">
-  <img src="./docs/assets/facassist-qrcode.jpg" alt="摇人吧 服务号二维码" width="200" />
+  <img src="./docs/assets/yaorenba-qrcode.jpg" alt="摇人吧 服务号二维码" width="200" />
   <br/>
   <b>微信扫一扫，关注「摇人吧」</b>
 </p>

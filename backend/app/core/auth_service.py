@@ -25,7 +25,7 @@ class AuthService:
 
         access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": user['username']}, expires_delta=access_token_expires
+            data={"sub": user['username'], "name": user.get('name') or user['username']}, expires_delta=access_token_expires
         )
 
         refresh_token = create_refresh_token(data={"sub": user['username']})
@@ -56,7 +56,7 @@ class AuthService:
 
         access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(
-            data={"sub": user['username']}, expires_delta=access_token_expires
+            data={"sub": user['username'], "name": user.get('name') or user['username']}, expires_delta=access_token_expires
         )
 
         new_refresh_token = create_refresh_token(data={"sub": user['username']})
@@ -82,6 +82,13 @@ class AuthService:
         if user is None:
             raise AuthServiceError(status_code=404, detail="用户不存在")
 
+        external_credentials = user.get('external_credentials', {})
+        # 屏蔽 USP 密码哈希：已设置密码时返回 "-" 作为哨兵，未设置时保持为空
+        if external_credentials:
+            usp = external_credentials.get('usp', {})
+            if usp and usp.get('password'):
+                usp['password'] = '-'
+
         return {
             "id": user['id'],
             "username": user['username'],
@@ -90,8 +97,10 @@ class AuthService:
             "permissions": user['permissions'],
             "projectPermissions": user.get('projectPermissions', {}),
             "roles": user['roles'],
-            "external_credentials": user.get('external_credentials', {}),
+            "external_credentials": external_credentials,
             "avatar_resource_id": user.get('avatar_resource_id'),
+            "company_id": user.get('company_id'),
+            "department_id": user.get('department_id'),
             "company": user.get('company'),
             "department": user.get('department'),
         }

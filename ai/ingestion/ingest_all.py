@@ -46,14 +46,19 @@ async def ingest_all(
     from ai.config import get_ai_config
     from ai.ingestion.base import BaseIngester
 
+    # markdown 入库只覆盖五个文档 domain；dispatch 是派单模块自己的
+    # 历史工单向量库（L3-A 路独立集合），不走 markdown 入库——KB_DOMAINS
+    # 里带它是为了运行时指针管理，直接全量迭代会 ValueError: Unknown domain。
+    _INGEST_DOMAINS = [d for d in KB_DOMAINS if d != "dispatch"]
+
     # 确定要运行的 domain 列表
     if only_domain:
-        if only_domain not in KB_DOMAINS:
-            print(f"[ERR] 未知 domain: {only_domain}. 可选: {', '.join(KB_DOMAINS)}")
+        if only_domain not in _INGEST_DOMAINS:
+            print(f"[ERR] 未知 domain: {only_domain}. 可选: {', '.join(_INGEST_DOMAINS)}")
             return {"success": 0, "failed": [f"unknown_domain:{only_domain}"], "skipped": []}
         domains = [only_domain]
     else:
-        domains = [d for d in KB_DOMAINS if d not in skip_domains]
+        domains = [d for d in _INGEST_DOMAINS if d not in skip_domains]
 
     print(f"[INFO] Domain 列表: {', '.join(domains)}")
     print()
@@ -135,7 +140,7 @@ def list_domains():
 
     print("五层 Domain 知识库文件统计:\n")
     total_files = 0
-    for domain in KB_DOMAINS:
+    for domain in [d for d in KB_DOMAINS if d != "dispatch"]:
         ingester = KBDomainIngester(domain=domain)
         n = len(ingester.source_paths)
         total_files += n

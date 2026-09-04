@@ -52,6 +52,37 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * 构造用户可读的错误信息。
+ * FastAPI 参数校验失败（422）时 detail 是数组 [{type, loc, msg, input}]，
+ * 而非字符串——这里把字段路径(loc)与具体原因(msg)提取成人类可读文案，
+ * 例如「query 字段：String should have at most 500 characters」，
+ * 让前端 Toast 直接定位是哪个字段超长/缺失，无需再查后端日志。
+ */
+function buildErrorMessage(errorData: Record<string, unknown>, status: number): string {
+  const detail = errorData.detail;
+  // FastAPI 422：detail 为校验错误数组
+  if (Array.isArray(detail) && detail.length > 0) {
+    const parts = detail
+      .map((err) => {
+        if (err && typeof err === 'object') {
+          const e = err as { loc?: unknown[]; msg?: string };
+          const loc = Array.isArray(e.loc) ? e.loc.filter((x) => typeof x === 'string').join('.') : '';
+          const msg = e.msg || '';
+          return loc ? `「${loc}」${msg}` : msg;
+        }
+        return String(err);
+      })
+      .filter(Boolean);
+    if (parts.length > 0) {
+      return `参数校验失败(${status}): ${parts.join('；')}`;
+    }
+  }
+  // 常规错误：detail/message/error 为字符串
+  const msg = errorData.detail || errorData.message || errorData.error;
+  return typeof msg === 'string' ? msg : `HTTP错误! 状态码: ${status}`;
+}
+
 export function initToken(): string {
   if (userToken) return userToken;
   try {
@@ -177,7 +208,9 @@ export function createRequest(baseUrl: string, _serviceName = 'API') {
         let errorMessage = `HTTP错误! 状态码: ${response.status}`;
         try {
           const errorData = await response.json();
-          errorMessage = errorData.detail || errorData.message || errorData.error || errorMessage;
+          if (errorData.detail || errorData.message || errorData.error) {
+            errorMessage = buildErrorMessage(errorData, response.status);
+          }
         } catch { /* ignore */ }
 
         // 401 → Token刷新
@@ -196,6 +229,15 @@ export function createRequest(baseUrl: string, _serviceName = 'API') {
               if (loggingOut) {
                 throw refreshError;
               }
+              // 先清掉已失效的 token 再跳转：否则整页重载后 main.tsx 的
+              // checkLoginStatus 会用 localStorage 里的旧 token 恢复登录态并再次请求，
+              // 又 401 又跳回来，形成无限重载循环（对齐 kickToLogin 先登出清 token 再跳转的做法）。
+              userToken = null;
+              try {
+                localStorage.removeItem('auth_token');
+                localStorage.removeItem('refresh_token');
+                localStorage.removeItem('token_expires_at');
+              } catch { /* SSR safe */ }
               if (WECHAT_CONFIG.loginEnabled) {
                 const state = buildStateFromPath(window.location.pathname);
                 window.location.href = buildWechatAuthUrl(state);
@@ -240,6 +282,12 @@ export function createRequest(baseUrl: string, _serviceName = 'API') {
       // 缓存 GET 响应
       if (method === 'GET' && !options.skipCache) {
         requestCache.set(url, { data, timestamp: Date.now() });
+      }
+
+      // 写操作（POST/PUT/DELETE 等）成功后清除全部 GET 缓存，
+      // 确保所有列表/明细页面后续拉取时能拿到最新数据，无需手动刷新
+      if (method !== 'GET') {
+        requestCache.clear();
       }
 
       return data;

@@ -154,6 +154,51 @@ FAILED: alembic.command.MigrationError
 
 **修复**：后端 `app/wechat/api/wechat.py` 的 `resolve_callback_target()` 应优先按 base64url 解码 `state` 中的完整 URL 回跳。
 
+### 3.4 antd DatePicker 浮层被编辑弹窗遮挡（React 19 兼容）
+
+**现象**：编辑工单弹窗内「最晚解决时间」用 antd `DatePicker`，点击后日历/时间面板看不到或无法交互。
+
+**原因**：两层叠加——(1) tdesign `Popup` 编辑弹窗 `z-index: 11500`（见 `tdesign-mobile-react/es/popup/style/index.css`），而 antd `DatePicker` 浮层默认 `z-index` 远低于此，浮层被编辑弹窗遮罩/内容盖住；(2) React 19 已移除 `findDOMNode`，antd v5 浮层依赖它挂载，缺 `@ant-design/v5-patch-for-react-19` 补丁时浮层直接不渲染。
+
+**修复**：
+- 入口 `main.tsx` 顶部 `import '@ant-design/v5-patch-for-react-19';`（React 19 必需，否则浮层不挂载）。
+- `DatePicker` 设 `styles={{ popup: { root: { zIndex: 12000 } } }}`（> 11500），浮层浮在编辑弹窗之上。
+- 废弃的 `popupStyle` 勿再用。
+
+**涉及位置**：`frontend/src/pages/call/TicketDetailPage.tsx`、`frontend/src/pages/tasks/TaskDetailPage.tsx`。
+
+### 3.5 详情页「最晚解决时间」回显消失（字段名蛇形/驼峰混淆）
+
+**现象**：工单已写入 `deadline_at`，但历史工单详情页 / 系统任务详情页不显示「最晚解决时间」一行，编辑弹窗也不回显。
+
+**原因**：tasks 详情接口 `GET /{id}` 的 `response_model=TicketResponse` 返回**蛇形 `deadline_at`**（见 `backend/app/modules/tasks/schemas/ticket.py:107`）。而 `ticket_service.py` 的 `FIELD_MAPPING` 里有 `'deadlineAt': (Ticket.deadline_at, ...)`，那是给 `POST /filter` 复合过滤查询用的驼峰别名，**与详情接口无关**。前端曾误把 `FIELD_MAPPING` 的驼峰当成详情接口返回，把读取从 `detail.deadline_at` 改成 `detail.deadlineAt` → 取值恒为 `undefined` → 回显块 `{... && ...}` 判定为假、不渲染。
+
+**修复**：详情/编辑统一读蛇形 `deadline_at`：
+- `tasks/TaskDetailPage.tsx`：`Ticket.deadline_at`；展示读 `detail.deadline_at`；`startEdit` 回显 `detail.deadline_at`；编辑提交 `editForm.deadline_at`（后端 `update_ticket` 的 `setattr(ticket, 'deadline_at', ...)` 认蛇形）。
+- `call/TicketDetailPage.tsx`：`setTicket` 两处从 `taskDetail.deadline_at`（蛇形）映射到 `ticket.deadline_at`；详情读 `ticket.deadline_at`。
+
+**鉴别要点**：判断接口返回字段名时，看该路由的 `response_model`（Pydantic schema 字段名），不要看 `FIELD_MAPPING`（那是过滤查询别名表）。
+
+### 3.6 iOS 软键盘遮挡 DatePicker 日历浮层（2026-08-18 修复）
+
+**现象**：iOS Safari 上打开转工单确认弹窗或工单编辑弹窗，点击「最晚解决时间」`antd DatePicker`，日历面板下半部分被苹果输入法软键盘盖住，无法点底部"确定"按钮；Android Chrome 上无此问题。
+
+**原因**：iOS Safari 与 Android Chrome 软键盘行为差异——
+
+| 浏览器 | 键盘弹出时 | fixed/absolute 元素 |
+|---|---|---|
+| Android Chrome | `window.innerHeight` 缩小 | 重新布局，自动避让键盘 |
+| iOS Safari | `window.innerHeight` 不变，仅 `visualViewport.height` 缩小 | **不重新布局**，fixed 元素停留在原位被键盘盖住 |
+
+而 antd `DatePicker` 默认 `getPopupContainer = () => document.body`，日历浮层用 fixed 定位，在 iOS 上不会随键盘上移；又因 `placement` 默认 `bottomLeft` 向下弹，正好被底部键盘盖住。
+
+**修复**（三处 DatePicker 统一改）：
+- `placement="topLeft"`：日历**向上弹**，避开底部键盘（iOS 键盘从底部上滑，向上弹的日历天然不冲突）。
+- `getPopupContainer={(trigger) => trigger.parentElement || document.body}`：浮层挂载到 trigger 父元素（字段容器），变 absolute 定位、跟随表单滚动，避免 iOS fixed 定位失效。
+- 顺带移除"此刻/Now"快捷按钮：外层 `showNow={false}` + `showTime.showNow: false`。原 `showTime` 默认开启"此刻"，点击取当前时刻但 `format: 'HH:00'` 固定整点显示，会出现"11:15 提单却显示 11:00"的整点截断误显示。
+
+**涉及位置**：`frontend/src/shared/components/ChatPanel.tsx`（转工单确认弹窗）、`frontend/src/pages/tasks/TaskDetailPage.tsx`（任务详情编辑弹窗）、`frontend/src/pages/call/TicketDetailPage.tsx`（工单详情编辑弹窗）。
+
 ---
 
 ## 四、AI 模块问题

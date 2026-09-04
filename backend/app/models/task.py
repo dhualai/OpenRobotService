@@ -18,6 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, mapped_column, Mapped
+from sqlalchemy.ext.hybrid import hybrid_property
 
 from app.models.base import Base
 
@@ -46,6 +47,21 @@ class TaskType(str, enum.Enum):
     OTHER = "other"
 
 
+class OperationType(str, enum.Enum):
+    """工单操作类型"""
+    CREATE = "create"              # 创建工单
+    STATUS_CHANGE = "status_change"  # 状态变更（主节点）
+    ASSIGN = "assign"              # 派单/改派
+    ESCALATE = "escalate"          # 升级
+    RETURN = "return"              # 退回
+    REASSIGN = "reassign"          # 重新指派
+    UPDATE = "update"              # 修改字段
+    COMMENT = "comment"            # 添加评论
+    VIEW = "view"                  # 查看工单
+    AI_DIAGNOSE = "ai_diagnose"    # AI 诊断
+    AI_ASSIGN = "ai_assign"        # AI 派单
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -66,7 +82,7 @@ class Task(Base):
     priority: Mapped[TaskPriority] = mapped_column(SQLEnum(TaskPriority), nullable=False, default=TaskPriority.MEDIUM, index=True, comment="任务优先级")
 
     created_by = Column(String(50), nullable=False, index=True, comment="创建者ID")
-    assigned_to = Column(String(50), nullable=True, index=True, comment="处理者ID")
+    assigned_to = Column(String(50), nullable=True, index=True, comment="处理者ID（users.id）")
     customer = Column(String(100), nullable=True, comment="客户信息")
     team = Column(String(100), nullable=True, comment="所属团队")
     project_name = Column(String(255), nullable=True, index=True, comment="项目名称")
@@ -83,6 +99,8 @@ class Task(Base):
     tags = Column(JSON, nullable=True, comment="标签列表")
     metadata_info = Column(JSON, nullable=True, comment="扩展元数据")
     attachments = Column(JSON, nullable=True, comment="附件列表")
+    attachment_analysis = Column(JSON, nullable=True,
+                                  comment="附件分析记忆：{object_path: {filename, kind, summary, analyzed_at}}，供 AI 判断每次需重新分析的附件，避免重复分析")
 
     reply_count = Column(Integer, nullable=False, default=0, comment="回复数量")
     view_count = Column(Integer, nullable=False, default=0, comment="查看数量")
@@ -93,6 +111,19 @@ class Task(Base):
     external_id = Column(String(64), nullable=True, index=True, comment="外部系统任务ID")
     external_url = Column(String(512), nullable=True, comment="外部系统跳转链接")
 
+    # --- 当前步骤（关联 task_steps 模板，冗余存名称/结束时间便于直接展示）---
+    curr_step_id = Column(BigInteger, nullable=True, index=True, comment="当前步骤ID")
+    curr_step_name = Column(String(128), nullable=True, comment="当前步骤名称")
+    curr_step_endtime = Column(DateTime, nullable=True, comment="当前步骤结束时间")
+    step_last_updated_by = Column(String(100), nullable=True, comment="最近一次改step的操作人：assigned/creator侧标识，用于判定待处理回合")
+    step_last_updated_at = Column(DateTime, nullable=True, comment="最近一次step更新时间")
+    step_negotiation_round = Column(Integer, nullable=False, server_default="0", default=0, comment="协商回合数：初始0，对手回应一次+1")
+    step_phase_round = Column(Integer, nullable=False, server_default="0", default=0, comment="阶段回合数：complete-step 推进+1，初始0=第一轮；0时协商节点不受sequence下限限制")
+    curr_step_agreed = Column(Boolean, nullable=False, server_default="0", default=False,
+                              comment="当前协商节点是否已协商一致：respond 置 True；negotiate-step/complete-step 重置为 False")
+    escalate_count = Column(Integer, nullable=False, server_default="0", default=0,
+                        comment="升级上报次数：>0 表示已升级，协商回合重置为1且不再受限")
+
     __table_args__ = (
         # MySQL 允许多个 NULL，故 manual 任务（external_id=NULL）不冲突
         UniqueConstraint("source", "external_id", name="uq_task_source_external"),
@@ -100,6 +131,13 @@ class Task(Base):
 
     def __repr__(self):
         return f"<Task(id={self.id}, title='{self.title}', status={self.status})>"
+
+    @hybrid_property
+    def step_neg_max_rounds(self) -> int:
+        """协商回合上限。工单未指定专属上限时读取全局配置。"""
+        # 延迟引入避免循环依赖
+        from app.core.config import settings as _s
+        return _s.TICKET_STEP_MAX_NEGOTIATION_ROUNDS
 
     @property
     def is_open(self) -> bool:
@@ -148,6 +186,46 @@ class TaskComment(Base):
         return f"<TaskComment(id={self.id}, task_id={self.task_id}, created_by='{self.created_by}')>"
 
 
+class TaskCommentRead(Base):
+    """评论已读游标（轻量 IM 已读回执）：每用户每工单记录已读到的最后一条评论 id。"""
+    __tablename__ = "task_comment_read"
+
+    id = Column(BigInteger, primary_key=True, index=True, comment="已读记录ID")
+    task_id = Column(BigInteger, nullable=False, index=True, comment="任务ID")
+    username = Column(String(50), nullable=False, index=True, comment="用户username")
+    last_read_comment_id = Column(BigInteger, nullable=False, comment="已读到的最后一条评论ID")
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间")
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "username", name="uq_task_read_user"),
+    )
+
+    def __repr__(self):
+        return f"<TaskCommentRead(task_id={self.task_id}, username='{self.username}', last_read={self.last_read_comment_id})>"
+
+
+class TaskCommentReadRecord(Base):
+    """单条评论的已读记录（飞书式已读名单）：谁在何时读了哪条评论。
+
+    与 TaskCommentRead（游标）互补：游标用于快速算「读到哪」，本表用于
+    「每条消息的已读人员名单 + 按阅读时间排序」。唯一键 (comment_id, username) 幂等。
+    """
+    __tablename__ = "task_comment_read_record"
+
+    id = Column(BigInteger, primary_key=True, index=True, comment="已读明细ID")
+    task_id = Column(BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True, comment="任务ID")
+    comment_id = Column(BigInteger, nullable=False, index=True, comment="评论ID")
+    username = Column(String(50), nullable=False, index=True, comment="读者username")
+    read_at = Column(DateTime, server_default=func.now(), nullable=False, comment="阅读时间")
+
+    __table_args__ = (
+        UniqueConstraint("comment_id", "username", name="uq_comment_read_user"),
+    )
+
+    def __repr__(self):
+        return f"<TaskCommentReadRecord(comment_id={self.comment_id}, username='{self.username}', read_at={self.read_at})>"
+
+
 class TaskUserMapping(Base):
     """外部任务源账号 → 本平台 user_id 的映射（跨源通用，见 INTEGRATION_DESIGN.md §4.3）。
 
@@ -170,3 +248,56 @@ class TaskUserMapping(Base):
 
     def __repr__(self):
         return f"<TaskUserMapping(source={self.source}, {self.external_account} -> {self.local_user_id})>"
+
+
+class TaskOperationLog(Base):
+    """工单操作日志表"""
+    __tablename__ = "task_operation_logs"
+
+    id = Column(BigInteger, primary_key=True, index=True, comment="日志ID")
+    task_id = Column(BigInteger, ForeignKey("tasks.id", ondelete="CASCADE"),
+                     nullable=False, index=True, comment="任务ID")
+    operation_type = Column(SQLEnum(OperationType), nullable=False,
+                            index=True, comment="操作类型")
+    operator = Column(String(50), nullable=False, index=True,
+                      comment="操作人 username")
+    operator_name = Column(String(128), nullable=True, comment="操作人显示名")
+
+    # 状态变更专属：记录目标状态（用于主节点分组）
+    to_status = Column(String(32), nullable=True, index=True,
+                       comment="目标状态（仅 STATUS_CHANGE 有值）")
+
+    # 通用详情：JSON 存储操作快照
+    # 如 {"from": "new", "to": "in_progress"} 或 {"fields": ["title","priority"]}
+    detail = Column(JSON, nullable=True, comment="操作详情快照")
+    description = Column(String(500), nullable=True,
+                         comment="人类可读描述，如：将工单状态变更为「处理中」")
+
+    # 查看时长专属（仅 VIEW 操作有值）：前端在用户离开页面时回传累计停留秒数
+    ended_at = Column(DateTime, nullable=True, comment="查看结束时间（仅 VIEW 有值）")
+    duration_seconds = Column(Integer, nullable=True, comment="查看时长（秒，仅 VIEW 有值）")
+
+    created_at = Column(DateTime, server_default=func.now(),
+                        nullable=False, index=True, comment="操作时间")
+
+    task = relationship("Task", backref="operation_logs")
+
+    def __repr__(self):
+        return f"<TaskOperationLog(id={self.id}, task_id={self.task_id}, op={self.operation_type})>"
+
+
+class TaskStep(Base):
+    """任务步骤模板：按 task_type 预定义的处理步骤（每类型可有多步）。
+
+    与 Task.task_type 共用 TaskType 枚举语义；用于驱动标准化处理流程
+    （如创建任务时按类型展开步骤清单）。
+    """
+    __tablename__ = "task_steps"
+
+    id = Column(BigInteger, primary_key=True, index=True, comment="步骤ID")
+    task_type: Mapped[TaskType] = mapped_column(SQLEnum(TaskType), nullable=False, index=True, comment="任务类型")
+    step_name = Column(String(128), nullable=False, comment="步骤名称")
+    sequence = Column(Integer, nullable=False, server_default="0", comment="当前步骤在当前任务类型下的序号")
+
+    def __repr__(self):
+        return f"<TaskStep(id={self.id}, task_type={self.task_type}, sequence={self.sequence}, step_name='{self.step_name}')>"

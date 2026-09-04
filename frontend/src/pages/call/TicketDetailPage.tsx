@@ -1,12 +1,17 @@
 // 摇人 · 历史工单详情页（U老师诊断生成的工单）
-// 数据源：AI 模块 GET /api/ai/qa/ticket?session_id=...；操作：催办 / 上报（任务服务通知）
-// 路由 /app/call/ticket/:id 中的 :id 即 AI 会话 session_id
+// 数据源：tasks 服务 GET /api/tasks/{dbId}?load_comments=true（DB id 唯一定位，AI 诊断数据从 metadata_info 提取）；操作：催办 / 上报（任务服务通知）
+// 路由 /app/call/ticket/:id 中的 :id 形如 db_<数字id>（Task.id）；session_id 直链仅作旧链接兼容
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { Navbar, Button, Toast, Loading, Tag, Popup, Input, Textarea } from 'tdesign-mobile-react';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { Navbar, Button, Toast, Loading, Tag, Popup, Textarea, DialogPlugin } from 'tdesign-mobile-react';
+import AppButton from '@/shared/components/AppButton';
+import { DatePicker } from 'antd';
+import dayjs from 'dayjs';
+import ClearableInput from '@/shared/components/ClearableInput';
+import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
-import { NotificationIcon, UploadIcon, RollbackIcon, EditIcon } from 'tdesign-icons-react';
+import { ArrowRight, Folder, UserRound, Clock, AlarmClock, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bell, Upload, Undo2, Pencil } from 'lucide-react';
 import { getMyProjects, getProjectMembers, type ProjectItem, type ProjectMember } from '@/api/projects';
 import { qaGetTicket, fetchWithAuth } from '@/api/ai';
 import { cancelTicket, urgeTicket, reportTicket, uploadCommentAttachment } from '@/api/ticket';
@@ -14,18 +19,22 @@ import {
   isTerminalTicketStatus,
   canUrgeTicket,
   canReportTicket,
-  canCancelTicket,
+  canShowCancelButton,
+  canCancelTicketByUser,
+  canEditPriority,
   STATUS_DISPLAY_MAP,
-  getStatusColor,
 } from '@/shared/constants/ticket';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
 import UserSelect from '@/shared/components/UserSelect';
 import SafeHtml from '@/shared/components/SafeHtml';
+import { isSameUser } from '@/shared/utils/userIdentity';
 import { useAuthStore } from '@/stores/auth';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
-import { formatDateTime } from '@/shared/utils/url';
+import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
+import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
+import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
 import type { UserItem } from '@/api/users';
 
 interface AiDiagnosis {
@@ -45,8 +54,8 @@ interface AiTicket {
   priority?: string;
   status?: string;
   contact?: string;
-  // AI 接口返回 Unix 秒（number）；DB TicketResponse 返回 ISO 字符串（string），两者都支持
-  created_at?: number | string;
+  // 统一为 ISO 字符串（AI 接口 task_to_dict 与 DB TicketResponse 均已显式 isoformat）
+  created_at?: string;
   diagnosis?: AiDiagnosis;
   attachments?: Array<Record<string, unknown>>;
   comments?: Comment[];
@@ -58,8 +67,10 @@ interface AiTicket {
   // 项目（AI 接口返回 project；DB TicketResponse 返回 project_name，展示以 DB 为准）
   project?: string;
   project_name?: string;
-  // 项目编码（DB TicketResponse 返回，编辑回显与提交用）
+  // 所属项目编码（DB TicketResponse 返回，编辑回显与提交用）
   project_id?: string;
+  // 当前阶段截止时间（ISO 字符串，编辑弹窗 antd DatePicker 回显/编辑；详情页只读展示。tasks 详情接口返回蛇形 curr_step_endtime）
+  curr_step_endtime?: string | null;
   // 类型专属
   location?: string; robot_type?: string; fault_code?: string; special_notes?: string;
   steps_to_reproduce?: string; expected_result?: string; actual_result?: string; severity?: string; version?: string;
@@ -85,19 +96,21 @@ const formatFileSize = (bytes?: number): string => {
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 };
-const getFileIcon = (filename?: string): string => {
+// 文件类型图标（lucide，与设计稿图标体系一致）
+const FileTypeIcon = ({ filename, size = 22 }: { filename?: string; size?: number }) => {
   const ext = (filename || '').split('.').pop()?.toLowerCase() || '';
   const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'];
   const docExts = ['pdf', 'doc', 'docx', 'txt', 'md'];
   const sheetExts = ['xls', 'xlsx', 'csv'];
   const codeExts = ['json', 'js', 'ts', 'py', 'html', 'css'];
   const archiveExts = ['zip', 'rar', '7z', 'tar', 'gz'];
-  if (imageExts.includes(ext)) return '🖼️';
-  if (docExts.includes(ext)) return '📄';
-  if (sheetExts.includes(ext)) return '📊';
-  if (codeExts.includes(ext)) return '💻';
-  if (archiveExts.includes(ext)) return '📦';
-  return '📎';
+  const props = { size, strokeWidth: 1.8 } as const;
+  if (imageExts.includes(ext)) return <FileImage {...props} />;
+  if (docExts.includes(ext)) return <FileText {...props} />;
+  if (sheetExts.includes(ext)) return <FileSpreadsheet {...props} />;
+  if (codeExts.includes(ext)) return <FileCode {...props} />;
+  if (archiveExts.includes(ext)) return <FileArchive {...props} />;
+  return <Paperclip {...props} />;
 };
 const isImageFile = (filename?: string): boolean => {
   const ext = (filename || '').split('.').pop()?.toLowerCase() || '';
@@ -137,18 +150,23 @@ const normalizeAttachment = (a: unknown): NormalizedAttachment | null => {
 export default function TicketDetailPage() {
   const { id: sessionId = '' } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
-  const { username, name, isAdmin } = useAuthStore();
+  const { username, userId, name, isAdmin } = useAuthStore();
 
   const [ticket, setTicket] = useState<AiTicket | null>(null);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
   const [aiSummary, setAiSummary] = useState('');
+  // 二次派单感知增强（M3）：未派到指定人时的完整情商话术（详情页 redispatch.result.tip_detail）
+  const [redispatchTipDetail, setRedispatchTipDetail] = useState('');
   const tempIdRef = useRef<string>(typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `t_${Date.now()}_${Math.random().toString(36).slice(2)}`);
   const [viewer, setViewer] = useState<AttachmentViewItem | null>(null);
   // 项目成员（用于讨论区 @ 提及）
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  // 全部在职用户（项目成员 + 项目外，@ 输入过滤字时可 @ 到项目外的人）
+  const [allUsers, setAllUsers] = useState<ProjectMember[]>([]);
   // @U老师 AI 讨论中标记
   const [askingAI, setAskingAI] = useState(false);
 
@@ -167,16 +185,23 @@ export default function TicketDetailPage() {
     const isStale = () => latestSessionIdRef.current !== mySessionId;
     if (!silent) setLoading(true);
     try {
-      // 手动工单（无 session_id，URL 形如 /call/ticket/db_<数字id>）：直接按 DB 工单 id 查询，
-      // 跳过 qaGetTicket（AI 接口仅支持 session_id 查询，手动工单没有 session_id）。
+      // 统一按 DB 工单 id 查询（URL 形如 /call/ticket/db_<数字id>）。
+      // 列表点击一律用 db_<Task.id> 导航：session_id 在同一会话多次转单时会重复
+      // （external_id 用 ticket_seq 区分，DB 唯一约束在 (source, external_id) 而非 session_id），
+      // 用 session_id 导航会命中 qaGetTicket 的歧义返回（精确匹配取首条 / LIKE 兜底取最新），
+      // 表现为「点的是当前工单，显示却是别的工单」。DB id 唯一定位，彻底消除歧义。
+      // AI 工单的 session_id / diagnosis / ai_summary 等存在 metadata_info JSON 列，从此处提取；
+      // 下方 qaGetTicket 分支仅作旧链接（session_id 直链）兼容，主流程不再走它。
       const dbIdMatch = /^db_(\d+)$/.exec(sessionId);
       if (dbIdMatch) {
         const dbId = dbIdMatch[1];
-        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${dbId}?load_comments=true`, { skipCache: true });
+        const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string; session_id?: string; diagnosis?: AiDiagnosis }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; curr_step_endtime?: string; redispatch?: { result?: { tip_detail?: string | null } } | null }>(`/${dbId}?load_comments=true`, { skipCache: true });
         if (isStale()) return; // 已切换到别的工单，丢弃本次（旧工单）结果，避免覆盖
+        // 二次派单感知增强（M3）：完整情商话术（未派到指定人时）
+        setRedispatchTipDetail(taskDetail.redispatch?.result?.tip_detail || '');
         setTicket({
           ticket_id: String(dbId),
-          session_id: '',
+          session_id: taskDetail.metadata_info?.session_id || '',
           title: taskDetail.title || '',
           description: taskDetail.description ?? '',
           status: taskDetail.status || '',
@@ -191,9 +216,11 @@ export default function TicketDetailPage() {
           project_name: taskDetail.project_name || '',
           project_id: taskDetail.project_id || '',
           created_at: taskDetail.created_at || '',
-          // 手动工单无 AI 诊断数据
-          diagnosis: undefined,
-          // 手动工单附件来自 tasks 服务 GET /{dbId} 的 attachments 字段（object_path 或字典数组）
+          // 当前阶段截止时间：tasks 详情接口 GET /{id} 返回蛇形 curr_step_endtime（见 TicketResponse）
+          curr_step_endtime: taskDetail.curr_step_endtime ?? null,
+          // AI 诊断数据存在 metadata_info.diagnosis（task_adapter 平铺入库）；手动工单无此字段
+          diagnosis: taskDetail.metadata_info?.diagnosis,
+          // 附件来自 tasks 服务 GET /{dbId} 的 attachments 字段（object_path 或字典数组）
           attachments: ((taskDetail as unknown as { attachments?: unknown[] }).attachments as Array<Record<string, unknown>> | undefined) ?? [],
         });
         setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
@@ -208,8 +235,10 @@ export default function TicketDetailPage() {
         if (!silent) setTicket(aiTicket);
         if (aiTicket.ticket_id) {
           try {
-            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
+            const taskDetail = await request<{ comments: Comment[]; metadata_info?: { ai_summary?: string }; status?: string; created_by?: string; created_by_name?: string; assigned_to?: string; assigned_to_name?: string; title?: string; description?: string; priority?: string; ticket_type?: string; customer?: string; project_name?: string; project_id?: string; created_at?: string; curr_step_endtime?: string; redispatch?: { result?: { tip_detail?: string | null } } | null }>(`/${aiTicket.ticket_id}?load_comments=true`, { skipCache: true });
             if (isStale()) return; // 已切换工单：prev 可能已是新工单，不可把旧工单的 DB 字段合并进去
+            // 二次派单感知增强（M3）：完整情商话术随 DB 刷新
+            setRedispatchTipDetail(taskDetail.redispatch?.result?.tip_detail || '');
             // 用 DB 的 status 覆盖 AI 的 status：AI(qaGetTicket) 返回 dispatched/escalated 等 AI 内部状态，
             // DB(tasks 表) 是 new/in_progress 等标准枚举。列表(qaListTickets)也来自 DB，
             // 覆盖后详情页按钮置灰(canUrgeTicket/canReportTicket)与列表一致。
@@ -223,8 +252,7 @@ export default function TicketDetailPage() {
               created_by_name: taskDetail.created_by_name || prev.created_by_name,
               assigned_to: taskDetail.assigned_to || prev.assigned_to,
               assigned_to_name: taskDetail.assigned_to_name || prev.assigned_to_name,
-              // 创建时间以 DB 真实创建时间为准：AI 接口 get_ticket 每次读取都用 int(time.time()) 重写，
-              // 并非工单真实创建时间，故用 DB 的 created_at 覆盖（与 status/created_by 同口径）。
+              // 创建时间以 DB 真实创建时间为准（DB 的 created_at 覆盖 AI 接口返回值，与 status/created_by 同口径）。
               created_at: taskDetail.created_at ?? prev.created_at,
               title: taskDetail.title || prev.title,
               description: taskDetail.description ?? prev.description,
@@ -234,6 +262,8 @@ export default function TicketDetailPage() {
               project_name: taskDetail.project_name || prev.project_name || prev.project,
               // 项目编码以 DB 为准（编辑回显与提交用），AI 接口不返回该字段
               project_id: taskDetail.project_id || prev.project_id,
+              // 当前阶段截止时间以 DB 为准（tasks 详情接口蛇形 curr_step_endtime），覆盖 AI 滞后副本
+              curr_step_endtime: taskDetail.curr_step_endtime ?? prev.curr_step_endtime ?? null,
             } : prev);
             setAiSummary(typeof taskDetail.metadata_info?.ai_summary === 'string' ? taskDetail.metadata_info.ai_summary : '');
           } catch { /* 评论加载失败不阻塞主流程 */ }
@@ -256,7 +286,7 @@ export default function TicketDetailPage() {
   // 获取项目成员用于 @ 提及（与系统任务详情页同款逻辑）
   useEffect(() => {
     const tid = ticket?.ticket_id;
-    if (!tid) { setProjectMembers([]); return; }
+    if (!tid) { setProjectMembers([]); setAllUsers([]); return; }
     getProjectMembers(tid)
       .then((members) => {
         const reporterUsername = ticket?.created_by || '';
@@ -268,6 +298,10 @@ export default function TicketDetailPage() {
         setProjectMembers(sorted);
       })
       .catch(() => setProjectMembers([]));
+    // 获取全部在职用户（@ 输入过滤字时扩展到项目外的人）
+    getProjectMembers(tid, true)
+      .then((u) => setAllUsers(u))
+      .catch(() => setAllUsers([]));
   }, [ticket?.ticket_id, ticket?.created_by]);
 
   // 进入详情页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈，无需额外按钮
@@ -297,6 +331,21 @@ export default function TicketDetailPage() {
 
   // 操作人标签（与系统任务详情页同款）
   const getOperatorLabel = (): string => name || username || '当前用户';
+
+  // WS 工单状态变更（派单完成/改派/状态流转）实时更新详情，替代轮询
+  const handleWsTaskUpdated = (patch: { status?: string; assigned_to?: string | null; assigned_to_name?: string | null }) => {
+    setTicket((prev) => {
+      if (!prev) return prev;
+      // WS 推送的 assigned_to 可能为 null（退单/清空处理人），状态类型为 string | undefined，
+      // null → undefined 以兼容类型，展示层有 || 兜底，null 与 undefined 表现一致。
+      return {
+        ...prev,
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.assigned_to !== undefined ? { assigned_to: patch.assigned_to ?? undefined } : {}),
+        ...(patch.assigned_to_name !== undefined ? { assigned_to_name: patch.assigned_to_name ?? undefined } : {}),
+      };
+    });
+  };
 
   // 操作日志评论：记录到 task_comments，工单处理过程可追溯（与系统任务详情页同款逻辑）
   const addOperationComment = async (content: string) => {
@@ -333,8 +382,8 @@ export default function TicketDetailPage() {
     }
   };
 
-  // 撤回：将工单状态置为已取消（Canceled）
-  const handleCancel = async () => {
+  // 撤回：二次确认后，将工单状态置为已取消（Canceled）
+  const doCancel = async () => {
     if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法撤回', theme: 'warning' }); return; }
     setActing('cancel');
     try {
@@ -349,18 +398,28 @@ export default function TicketDetailPage() {
       setActing(null);
     }
   };
+  const handleCancel = () => {
+    if (!ticket?.ticket_id) { Toast({ message: '工单号缺失，无法撤回', theme: 'warning' }); return; }
+    const dlg = DialogPlugin.confirm!({
+      title: '撤回工单',
+      content: '撤回后工单将变为「已取消」，确认撤回吗？',
+      confirmBtn: '撤回',
+      cancelBtn: '再想想',
+      onConfirm: () => { doCancel(); dlg.destroy(); },
+    });
+  };
 
   // 派单中：AI 单 status=new 且处理人未写入（Worker 60s 轮询派单，期间 5s 轮询自动刷新）
   const isDispatching = !!ticket && ticket.status === 'new' && !ticket.assigned_to && !ticket.assigned_to_name;
-  useEffect(() => {
-    if (!isDispatching) return;
-    const timer = setInterval(() => { fetchDetail(true); }, 5000);
-    return () => clearInterval(timer);
-  }, [isDispatching, fetchDetail]);
+  // 派单完成 / 状态变更由 WS task.updated 实时推送（见 DiscussionPanel onTaskUpdated），不再轮询。
 
   // 编辑工单（标题/描述/优先级/类型/联系人；权限与后端对齐：admin/创建人/处理人，终态不可编辑）
   const [showEdit, setShowEdit] = useState(false);
-  const [editForm, setEditForm] = useState({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
+  const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; project_id: string; project_name: string; curr_step_endtime?: string }>({ title: '', description: '', priority: '中', ticket_type: 'problem', project_id: '', project_name: '' });
+  // 当前阶段截止时间区间：基准 = 工单创建时间（ticket.created_at），而非用户操作时刻
+  const editDeadlineRange = getDeadlineRange(editForm.priority, ticket?.created_at);
+  // 优先级仅在「尚未派单」（新建/待派单）可修改；已派单及后续状态禁止（置灰不可点）
+  const priorityDisabled = !canEditPriority(ticket?.status);
   const [savingEdit, setSavingEdit] = useState(false);
   // 所属项目下拉（当前用户名下项目，GET /api/admin/projects/me；支持关键词模糊搜索）
   const [showProjectPicker, setShowProjectPicker] = useState(false);
@@ -392,7 +451,7 @@ export default function TicketDetailPage() {
     setProjectKeyword('');
   };
   const canEdit = !!ticket?.ticket_id && !isTerminalTicketStatus(ticket.status)
-    && (isAdmin || username === ticket.created_by || username === ticket.assigned_to);
+    && (isAdmin || isSameUser(ticket.created_by, userId, username) || isSameUser(ticket.assigned_to, userId, username));
   const openEdit = () => {
     if (!ticket) return;
     setEditForm({
@@ -402,9 +461,12 @@ export default function TicketDetailPage() {
       ticket_type: ticket.type || 'problem',
       project_id: ticket.project_id || '',
       project_name: ticket.project_name || ticket.project || '',
+      curr_step_endtime: ticket.curr_step_endtime || undefined,
     });
     setShowEdit(true);
   };
+  // ── 当前阶段截止时间：编辑弹窗用 antd DatePicker 下拉选择（双端可用）──
+  // 浮层 z-index 通过 styles.popup.root 提到高于 tdesign 编辑弹窗（z-index 11500），避免被遮挡
   const handleEditSave = async () => {
     if (!ticket?.ticket_id) return;
     if (!editForm.title.trim()) { Toast({ message: '标题不能为空', theme: 'warning' }); return; }
@@ -419,6 +481,7 @@ export default function TicketDetailPage() {
           ticket_type: editForm.ticket_type,
           project_name: editForm.project_name,
           project_id: editForm.project_id,
+          curr_step_endtime: editForm.curr_step_endtime || null,
         }),
       });
       const operator = getOperatorLabel();
@@ -440,9 +503,10 @@ export default function TicketDetailPage() {
     const userMsg = text;
     setAskingAI(true);
     try {
-      // 上传附件
+      // 上传附件（同名文件自动改名，避免后端对象名重复覆盖）
       const tempId = tempIdRef.current;
-      for (const f of files) {
+      const uploads = dedupeFileNames(files);
+      for (const f of uploads) {
         await uploadCommentAttachment(f, tempId);
       }
       // 1. 先保存用户的 @U老师 消息到 task_comments
@@ -466,7 +530,9 @@ export default function TicketDetailPage() {
         method: 'POST',
         body: JSON.stringify({
           task_id: String(ticket.ticket_id),
-          query: userMsg.replace(/^@U老师\s*/, ''),
+          // 去掉文本中任意位置的 @U老师 标记（可能有空格/重复），保留整段话作为 query，
+          // 兼容"先说话、句尾@U老师"的场景（否则 @U老师 在尾部时 query 会带残留或丢失）
+          query: userMsg.replace(/\s*@U老师\s*/g, ' ').trim(),
           context: { recent_comments: recentComments },
         }),
       });
@@ -488,9 +554,11 @@ export default function TicketDetailPage() {
   };
 
   // 发送评论（附件上传 + POST /api/tasks/{ticket_id}/comments）；返回 true=成功（组件清空输入）
-  // 检测 @U老师 前缀：走 AI 讨论而非普通评论（与系统任务详情页同款逻辑）
+  // 检测 @U老师（任意位置，前缀或句尾均触发）：走 AI 讨论而非普通评论（与系统任务详情页同款逻辑）
   const handleSendComment = async (text: string, files: File[], options?: { replyTo?: string | number }): Promise<boolean> => {
-    if (text.startsWith('@U老师 ')) {
+    // 只要文本里含 @U老师（@ 在开头/中间/结尾都算）就走 AI 讨论；
+    // 兼容"说完话后句尾手动@U老师"（否则会被当成普通评论发出、AI 不回复）
+    if (text.includes('@U老师')) {
       return handleAIDiscuss(text, files, options);
     }
     if (!ticket?.ticket_id) {
@@ -501,7 +569,9 @@ export default function TicketDetailPage() {
     try {
       const tempId = tempIdRef.current;
       // 先逐个上传附件（temp_id 关联，后端登记到 comment_attachment_map）
-      for (const f of files) {
+      // 同名文件自动改名，避免后端对象名重复覆盖
+      const uploads = dedupeFileNames(files);
+      for (const f of uploads) {
         await uploadCommentAttachment(f, tempId);
       }
       const newComment = await request<Comment>(`/${ticket.ticket_id}/comments`, {
@@ -543,8 +613,8 @@ export default function TicketDetailPage() {
   if (loading) return <Loading text="加载中..." />;
   if (!ticket) return (
     <div>
-      <Navbar title="工单详情" fixed leftArrow onLeftClick={() => navigate('/call', { state: { showHistory: true } })} />
-      <div style={{ padding: 32, textAlign: 'center', color: '#999', marginTop: 56 }}>{msg || '工单不存在'}</div>
+      <Navbar title="工单详情" fixed leftArrow onLeftClick={() => (location.key !== 'default' ? navigate(-1) : navigate('/call/history'))} />
+      <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted-foreground)', marginTop: 56 }}>{msg || '工单不存在'}</div>
     </div>
   );
 
@@ -561,7 +631,11 @@ export default function TicketDetailPage() {
       minioPath = `${parsed.bucket}/${parsed.objectKey}`;
     }
     const authToken = localStorage.getItem('auth_token') || '';
-    return `${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
+    // 必须拼成绝对 URL：微信内 window.open(相对URL) 打开的是微信内置 WebView，无法下载；
+    // 用户「在浏览器打开」后相对路径在外部浏览器解析失败会落到 SPA 404 → 未登录重定向微信 OAuth
+    // （表现为「提示跳转到微信客户端」）。绝对 URL 携带 token，在外部浏览器可直接下载。
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    return `${origin}${API_CONFIG.TASKS.BASE_URL}/attachments/download?path=${encodeURIComponent(minioPath)}&filename=${encodeURIComponent(att.filename || 'download')}&token=${encodeURIComponent(authToken)}`;
   };
 
   /** 构造附件内联预览 URL（/api/tasks/files/{minioPath}），供缩略图 <img> src 与 AttachmentViewer 共用 */
@@ -594,26 +668,69 @@ export default function TicketDetailPage() {
         title="工单详情"
         fixed
         leftArrow
-        onLeftClick={() => navigate('/call', { state: { showHistory: true } })}
+        onLeftClick={() => (location.key !== 'default' ? navigate(-1) : navigate('/call/history'))}
       />
       <div className="page-container" style={{ paddingTop: 56 }}>
         {/* 标题 + 基本信息 */}
         <div className="detail-card">
           <div className="detail-card__meta">
-            {ticket.type && <Tag theme="primary">{TYPE_LABEL[ticket.type] || ticket.type}</Tag>}
-            {ticket.priority && <Tag theme="warning">{displayPriority(ticket.priority)}</Tag>}
+            {/* 类型胶囊（设计稿 04：浅蓝 blue-soft/blue-2） */}
+            {ticket.type && (
+              <Tag theme="default" style={{ background: 'var(--blue-soft)', color: 'var(--blue-2)', border: 'none', fontWeight: 600, fontSize: 11.5, borderRadius: 999 }}>
+                {TYPE_LABEL[ticket.type] || ticket.type}
+              </Tag>
+            )}
+            {/* 优先级胶囊（蓝阶，与列表页一致） */}
+            {ticket.priority && (
+              <Tag theme="default" style={{ background: 'var(--secondary)', color: 'var(--blue-2)', border: 'none', fontWeight: 600, fontSize: 11.5, borderRadius: 999 }}>
+                {displayPriority(ticket.priority)}
+              </Tag>
+            )}
+            {/* 状态胶囊（设计稿：bg-secondary text-blue-2） */}
             <Tag
-              theme="primary"
-              style={{ background: getStatusColor(ticket.status || ''), color: '#fff', border: 'none', fontWeight: 500 }}
+              theme="default"
+              style={{ background: 'var(--secondary)', color: 'var(--blue-2)', border: 'none', fontWeight: 600, fontSize: 11.5, borderRadius: 999 }}
             >
               {STATUS_DISPLAY_MAP[(ticket.status || '').toLowerCase()] || ticket.status || '待派单'}
             </Tag>
             <span className="detail-card__id">{ticket.ticket_id || ''}</span>
           </div>
-          <h2 className="detail-card__title">{ticket.title || '(无标题)'}</h2>
-          {(ticket.project_name || ticket.project) && <DetailRow label="所属项目" value={ticket.project_name || ticket.project || ''} />}
-          {ticket.contact && <DetailRow label="联系人" value={ticket.contact} />}
-          <DetailRow label="创建时间" value={ticket.created_at ? formatDateTime(typeof ticket.created_at === 'number' ? new Date(ticket.created_at * 1000).toISOString() : String(ticket.created_at)) : ''} />
+          <h2 className="detail-card__title"><TitleEllipsis text={ticket.title || '(无标题)'} lines={3} titleClassName="detail-card__title-inner" as="span" fontSize={19} lineHeight={1.3} /></h2>
+          {/* 元信息网格（设计稿 04：2×2 MetaItem，lucide 图标 + 标签 + 值） */}
+          <div className="detail-card__info-grid">
+            {(ticket.project_name || ticket.project) && (
+              <div className="detail-info-item">
+                <span className="detail-info-item__icon"><Folder size={14} strokeWidth={2} /></span>
+                <div className="detail-info-item__content">
+                  <span className="detail-info-item__label">所属项目</span>
+                  <span className="detail-info-item__value">{ticket.project_name || ticket.project || ''}</span>
+                </div>
+              </div>
+            )}
+            {ticket.contact && (
+              <div className="detail-info-item">
+                <span className="detail-info-item__icon"><UserRound size={14} strokeWidth={2} /></span>
+                <div className="detail-info-item__content">
+                  <span className="detail-info-item__label">联系人</span>
+                  <span className="detail-info-item__value">{ticket.contact}</span>
+                </div>
+              </div>
+            )}
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon"><Clock size={14} strokeWidth={2} /></span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">创建时间</span>
+                <span className="detail-info-item__value">{ticket.created_at ? formatDateTime(ticket.created_at) : ''}</span>
+              </div>
+            </div>
+            <div className="detail-info-item">
+              <span className="detail-info-item__icon"><AlarmClock size={14} strokeWidth={2} /></span>
+              <div className="detail-info-item__content">
+                <span className="detail-info-item__label">当前阶段截止时间</span>
+                <span className="detail-info-item__value">{ticket.curr_step_endtime ? formatRawDateTime(String(ticket.curr_step_endtime)) : '未设置'}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* 人员流转：发起人 → 处理人（与历史工单列表页同款 task-card2__people 样式）
@@ -622,16 +739,16 @@ export default function TicketDetailPage() {
         {(ticket.created_by || ticket.created_by_name || ticket.assigned_to || ticket.assigned_to_name || isDispatching) && (
           <div className="detail-card">
             <div className="task-card2__people">
-              <div className="task-card2__person task-card2__person--creator" title={`发起人：${ticket.created_by_name || ticket.created_by || '-'}`}>
+              <div className="task-card2__person task-card2__person--creator" title={`发起人：${ticket.created_by_name || ticket.created_by || '-'}`} aria-label={`发起人：${ticket.created_by_name || ticket.created_by || '-'}`}>
                 <span className="task-card2__avatar">{(ticket.created_by_name || ticket.created_by || '?').slice(0, 1).toUpperCase()}</span>
                 <span className="task-card2__person-text">
                   <span className="task-card2__person-label">发起人</span>
                   <span className="task-card2__person-name">{ticket.created_by_name || ticket.created_by || '-'}</span>
                 </span>
               </div>
-              <span className="task-card2__person-arrow">➡️</span>
+              <span className="task-card2__person-arrow"><ArrowRight size={16} strokeWidth={2} /></span>
               {isDispatching ? (
-                <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单，稍候自动更新">
+                <div className="task-card2__person task-card2__person--assignee" title="U老师 正在派单，稍候自动更新" aria-label="U老师 正在派单，稍候自动更新">
                   <span className="task-card2__avatar task-card2__avatar--assignee task-card2__avatar--dispatching"><i className="dispatch-pulse" /></span>
                   <span className="task-card2__person-text">
                     <span className="task-card2__person-label">处理人</span>
@@ -639,7 +756,7 @@ export default function TicketDetailPage() {
                   </span>
                 </div>
               ) : (
-                <div className="task-card2__person task-card2__person--assignee" title={`处理人：${ticket.assigned_to_name || ticket.assigned_to || '-'}`}>
+                <div className="task-card2__person task-card2__person--assignee" title={`处理人：${ticket.assigned_to_name || ticket.assigned_to || '-'}`} aria-label={`处理人：${ticket.assigned_to_name || ticket.assigned_to || '-'}`}>
                   <span className="task-card2__avatar task-card2__avatar--assignee">{(ticket.assigned_to_name || ticket.assigned_to || '?').slice(0, 1).toUpperCase()}</span>
                   <span className="task-card2__person-text">
                     <span className="task-card2__person-label">处理人</span>
@@ -648,6 +765,10 @@ export default function TicketDetailPage() {
                 </div>
               )}
             </div>
+            {/* 二次派单感知增强（M3）：未派到指定人时的完整情商话术（仅 matched_pref=false 时有） */}
+            {redispatchTipDetail && (
+              <div className="redispatch-tip-detail">派单说明：{redispatchTipDetail}</div>
+            )}
           </div>
         )}
 
@@ -655,7 +776,7 @@ export default function TicketDetailPage() {
         {ticket.description && (
           <div className="detail-card">
             <h4 className="detail-card__h">问题描述</h4>
-            <div style={{ whiteSpace: 'pre-wrap', color: '#333', fontSize: 14, lineHeight: 1.7 }}>{ticket.description}</div>
+            <div style={{ whiteSpace: 'pre-wrap', color: 'var(--muted-foreground)', fontSize: 12.5, lineHeight: '24px' }}>{ticket.description}</div>
           </div>
         )}
 
@@ -664,7 +785,7 @@ export default function TicketDetailPage() {
         {/* 工单附件（图片缩略图网格 + 非图片文件卡片；复用统一 AttachmentViewer，与系统任务页一致）*/}
         {ticket.attachments && ticket.attachments.length > 0 && (
           <div className="detail-card">
-            <h4 className="detail-card__h">📎 附件 ({ticket.attachments.length})</h4>
+            <h4 className="detail-card__h">附件 ({ticket.attachments.length})</h4>
             {(() => {
               const items = ticket.attachments
                 .map((rawAtt) => normalizeAttachment(rawAtt))
@@ -687,18 +808,33 @@ export default function TicketDetailPage() {
                             className="detail-attachment-thumb"
                             loading="lazy"
                             onClick={() => openAttachmentViewer(att)}
+                            onError={(e) => {
+                              // 微信 WebView 偶发 img 静默渲染失败（HTTP 200 但白屏）：破缓存重试一次，仍失败换文件名占位
+                              const el = e.currentTarget;
+                              if (!el.dataset.retried) {
+                                el.dataset.retried = '1';
+                                const sep = thumbSrc.includes('?') ? '&' : '?';
+                                el.src = `${thumbSrc}${sep}_r=${Date.now()}`;
+                              } else {
+                                el.style.display = 'none';
+                                const ph = document.createElement('div');
+                                ph.className = 'detail-attachment-thumb detail-attachment-thumb--fallback';
+                                ph.textContent = '🖼️';
+                                ph.onclick = () => openAttachmentViewer(att);
+                                el.parentNode?.appendChild(ph);
+                              }
+                            }}
                           />
                         );
                       })}
                     </div>
                   )}
-                  {/* 非图片文件卡片（图标 + 文件名 + 下载） */}
+                  {/* 非图片文件卡片（lucide 图标 + 文件名 + 下载） */}
                   {fileItems.length > 0 && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div className="detail-attachment-files">
                       {fileItems.map((att, idx) => {
                         const filename = att.filename || '未命名文件';
                         const size = att.size ?? 0;
-                        const icon = getFileIcon(filename);
                         const sizeLabel = formatFileSize(size);
                         const dl = buildAttachmentDownloadUrl(att);
                         return (
@@ -706,35 +842,20 @@ export default function TicketDetailPage() {
                             key={`file-${idx}`}
                             role="button"
                             tabIndex={0}
+                            className="detail-attachment-file"
                             onClick={() => openAttachmentViewer(att)}
                             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openAttachmentViewer(att); }}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              padding: '10px 12px',
-                              borderRadius: 8,
-                              border: '1px solid #e5e5e5',
-                              background: '#fafafa',
-                              color: 'inherit',
-                              cursor: 'pointer',
-                              transition: 'background 0.15s',
-                            }}
-                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = '#f0f7ff'; }}
-                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = '#fafafa'; }}
                           >
-                            <span style={{ fontSize: 22, marginRight: 10, flexShrink: 0 }}>{icon}</span>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: 13, fontWeight: 500, color: '#333', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {filename}
-                              </div>
-                              <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
-                                {sizeLabel || '未知大小'}
-                              </div>
+                            <span className="detail-attachment-file__icon"><FileTypeIcon filename={filename} /></span>
+                            <div className="detail-attachment-file__body">
+                              <div className="detail-attachment-file__name">{filename}</div>
+                              <div className="detail-attachment-file__size">{sizeLabel || '未知大小'}</div>
                             </div>
                             <span
                               role="button"
                               aria-label="下载附件"
                               title="下载"
+                              className="detail-attachment-file__download"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (dl) {
@@ -749,9 +870,8 @@ export default function TicketDetailPage() {
                                   Toast({ message: '附件路径无效', theme: 'error' });
                                 }
                               }}
-                              style={{ fontSize: 16, color: '#0052d9', marginLeft: 8, flexShrink: 0, cursor: 'pointer' }}
                             >
-                              ⬇
+                              <Download size={16} strokeWidth={2} />
                             </span>
                           </div>
                         );
@@ -771,7 +891,7 @@ export default function TicketDetailPage() {
             {aiSummary ? (
               <SafeHtml html={aiSummary} />
             ) : (
-              <p style={{ color: '#999' }}>暂无摘要，U老师 将自动总结讨论进展</p>
+              <p style={{ color: 'var(--muted-foreground)', fontSize: 12.5, lineHeight: '24px' }}>暂无摘要，U老师 将自动总结讨论进展</p>
             )}
           </div>
         )}
@@ -785,6 +905,9 @@ export default function TicketDetailPage() {
           enableAttach
           enableAI
           mentionUsers={projectMembers}
+          mentionAllUsers={allUsers}
+          taskId={ticket?.ticket_id}
+          onTaskUpdated={handleWsTaskUpdated}
         />
 
         {/* 操作：与历史工单列表页完全一致 —— 终态（已解决/已取消/已关闭）整组不显示；
@@ -792,30 +915,33 @@ export default function TicketDetailPage() {
             正在操作的按钮单独禁用（acting 标记当前动作） */}
         {!isTerminalTicketStatus(ticket.status) && (
           <div className="detail-actions__btns">
-            <Button
-              size="small" variant="outline" theme="default" icon={<NotificationIcon />}
+            <AppButton
+              tone="primary" size="small" icon={<Bell size={13} strokeWidth={2} />}
               disabled={!canUrgeTicket(ticket.status) || acting === 'urge'}
               title={canUrgeTicket(ticket.status) ? undefined : '仅新建/待处理工单可催办'}
+              aria-label={canUrgeTicket(ticket.status) ? undefined : '催办（仅新建/待处理工单可催办）'}
               onClick={() => openActionPopup('urge')}
-            >催办</Button>
-            <Button
-              size="small" variant="outline" theme="default" icon={<UploadIcon />}
+            >催办</AppButton>
+            <AppButton
+              tone="primary" size="small" icon={<Upload size={13} strokeWidth={2} />}
               disabled={!canReportTicket(ticket.status) || acting === 'report'}
               title={canReportTicket(ticket.status) ? undefined : '仅处理中工单可上报'}
+              aria-label={canReportTicket(ticket.status) ? undefined : '上报（仅处理中工单可上报）'}
               onClick={() => openActionPopup('report')}
-            >上报</Button>
-            <Button
-              size="small" variant="outline" theme="default" icon={<RollbackIcon />}
-              disabled={!canCancelTicket(ticket.status) || acting === 'cancel'}
-              title={canCancelTicket(ticket.status) ? undefined : '仅新建/待处理工单可撤回'}
+            >上报</AppButton>
+            {canShowCancelButton(ticket.status) && canCancelTicketByUser(ticket.created_by, username, isAdmin, userId) && (
+            <AppButton
+              tone="muted" size="small" icon={<Undo2 size={13} strokeWidth={2} />}
+              disabled={acting === 'cancel'}
               onClick={handleCancel}
-            >撤回</Button>
+            >撤回</AppButton>
+            )}
             {canEdit && (
-              <Button
-                size="small" variant="outline" theme="primary" icon={<EditIcon />}
+              <AppButton
+                tone="primary" size="small" icon={<Pencil size={13} strokeWidth={2} />}
                 disabled={savingEdit}
                 onClick={openEdit}
-              >编辑</Button>
+              >编辑</AppButton>
             )}
           </div>
         )}
@@ -851,11 +977,10 @@ export default function TicketDetailPage() {
           <div className="ticket-edit-form__body">
             <div className="ticket-edit-form__field">
               <label className="ticket-edit-form__label">标题</label>
-              <Input
+              <ClearableInput
                 value={editForm.title}
                 onChange={(v) => setEditForm((p) => ({ ...p, title: String(v) }))}
                 placeholder="请输入工单标题"
-                clearable
               />
             </div>
             <div className="ticket-edit-form__field">
@@ -875,8 +1000,15 @@ export default function TicketDetailPage() {
                   <button
                     key={label}
                     type="button"
-                    className={`tasks-create-modal__radio-btn ${editForm.priority === PRIORITY_EN[label] ? 'is-active' : ''}`}
-                    onClick={() => setEditForm((prev) => ({ ...prev, priority: PRIORITY_EN[label] }))}
+                    disabled={priorityDisabled}
+                    title={priorityDisabled ? '仅新建工单可修改优先级' : undefined}
+                    aria-label={priorityDisabled ? `优先级${label}（仅新建工单可修改优先级）` : `优先级${label}`}
+                    className={`tasks-create-modal__radio-btn ${editForm.priority === PRIORITY_EN[label] ? 'is-active' : ''} ${priorityDisabled ? 'is-disabled' : ''}`}
+                    onClick={() => {
+                      const v = PRIORITY_EN[label];
+                      const r = getDeadlineRange(v, ticket?.created_at);
+                      setEditForm((p) => ({ ...p, priority: v, ...(r ? { curr_step_endtime: r.max.toISOString() } : {}) }));
+                    }}
                   >{label}</button>
                 ))}
               </div>
@@ -903,6 +1035,30 @@ export default function TicketDetailPage() {
                 <span className="ticket-edit-form__select-arrow">▾</span>
               </div>
             </div>
+            {/* 当前阶段截止时间：antd DatePicker 下拉选择（双端可用），浮层 z-index 高于编辑弹窗避免被遮挡 */}
+            <div className="ticket-edit-form__field">
+              <label className="ticket-edit-form__label">当前阶段截止时间</label>
+              <DatePicker
+                style={{ width: '100%' }}
+                placeholder="点击选择"
+                format="YYYY-MM-DD HH:00"
+                showTime={{ defaultValue: editDeadlineRange?.max ?? dayjs().hour(9).minute(0), format: 'HH:00', showNow: false }}
+                showNow={false}
+                placement="topLeft"
+                getPopupContainer={(trigger) => trigger.parentElement || document.body}
+                value={editForm.curr_step_endtime ? parseDeadlineString(editForm.curr_step_endtime) : null}
+                disabledDate={editDeadlineRange ? makeDisabledDate(editDeadlineRange.min, editDeadlineRange.max) : undefined}
+                disabledTime={editDeadlineRange ? makeDisabledTime(editDeadlineRange.min, editDeadlineRange.max) : undefined}
+                onChange={(d: dayjs.Dayjs | null) =>
+                  setEditForm((p) => ({
+                    ...p,
+                    curr_step_endtime: d ? d.minute(0).second(0).millisecond(0).toISOString() : undefined,
+                  }))
+                }
+                allowClear
+                styles={{ popup: { root: { zIndex: 12000 } } }}
+              />
+            </div>
           </div>
           <div className="ticket-edit-form__footer">
             <Button theme="default" block onClick={() => setShowEdit(false)}>取消</Button>
@@ -919,11 +1075,10 @@ export default function TicketDetailPage() {
             <span className="project-picker__close" onClick={() => setShowProjectPicker(false)}>×</span>
           </div>
           <div className="project-picker__search">
-            <Input
+            <ClearableInput
               value={projectKeyword}
               onChange={(v) => setProjectKeyword(String(v))}
               placeholder="搜索项目名称 / 编码"
-              clearable
             />
           </div>
           <div className="project-picker__list">
@@ -953,11 +1108,3 @@ export default function TicketDetailPage() {
   );
 }
 
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="detail-row">
-      <span className="detail-row__label">{label}</span>
-      <span className="detail-row__value">{value}</span>
-    </div>
-  );
-}

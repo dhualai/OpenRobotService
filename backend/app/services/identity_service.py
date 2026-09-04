@@ -6,9 +6,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, text
 from app.core.db import SessionLocal
 from app.models import UserDB, Role, Permission, Project, role_permissions, user_project_roles
+from app.models.delivery import UNDERTAKE_YES, PROJECT_DELETED
+from app.models.organization import Company, Department
 from app.core.security import get_password_hash, verify_password
 
 logger = logging.getLogger(__name__)
+
+# 角色名 -> role.id 的进程内缓存（仅缓存命中结果，未命中不缓存以便后续重试）
+_ROLE_NAME_ID_CACHE: Dict[str, str] = {}
 
 
 class IdentityService:
@@ -22,12 +27,30 @@ class IdentityService:
             raise
 
     @staticmethod
+    def _resolve_org_names(db: Session, company_id: Optional[str], department_id: Optional[str]) -> Dict[str, Optional[str]]:
+        """通过 company_id/department_id join 主数据表获取名称。
+        优先使用 ID 关联；若 ID 为空则回退到旧字符串列（迁移过渡期）。
+        """
+        company_name = None
+        department_name = None
+        if company_id:
+            comp = db.query(Company).filter(Company.id == company_id).first()
+            if comp:
+                company_name = comp.name
+        if department_id:
+            dept = db.query(Department).filter(Department.id == department_id).first()
+            if dept:
+                department_name = dept.name
+        return {"company": company_name, "department": department_name}
+
+    @staticmethod
     def add_user(
         user_id: str, username: str, hashed_password: str, permissions: List[str],
         name: Optional[str] = None, status: str = "inactive",
         external_credentials: Optional[Dict[str, Dict[str, str]]] = None,
-        company: Optional[str] = None, department: Optional[str] = None, responsibility_modules: Optional[Dict[str, List[str]]] = None,
+        company: Optional[str] = None, department: Optional[str] = None, responsibility_modules: Optional[Dict[str, Dict[str, List[str]]]] = None,
         job_level: Optional[int] = 1, duty_text: Optional[str] = None,
+        supervisor_id: Optional[str] = None,
     ) -> bool:
         db = IdentityService._get_db()
         try:
@@ -40,6 +63,7 @@ class IdentityService:
                 name=name, status=status, external_credentials=external_credentials_json,
                 company=company, department=department, responsibility_modules=responsibility_modules or {},
                 job_level=job_level if job_level is not None else 1, duty_text=duty_text,
+                supervisor_id=supervisor_id,
             )
             db.add(db_user)
             db.commit()
@@ -66,6 +90,9 @@ class IdentityService:
                 # 此处强制归一为 dict，避免 Pydantic Dict 校验失败导致接口 500
                 if not isinstance(rm, dict):
                     rm = {}
+                org_names = IdentityService._resolve_org_names(
+                    db, getattr(db_user, 'company_id', None), getattr(db_user, 'department_id', None)
+                )
                 return {
                     'id': db_user.id, 'username': db_user.username,
                     'password_hash': db_user.password_hash,
@@ -74,11 +101,15 @@ class IdentityService:
                     'external_credentials': ec,
                     'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
                     'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
-                    'company': getattr(db_user, 'company', None),
-                    'department': getattr(db_user, 'department', None),
+                    'company_id': getattr(db_user, 'company_id', None),
+                    'department_id': getattr(db_user, 'department_id', None),
+                    'company': org_names['company'],
+                    'department': org_names['department'],
                     'responsibility_modules': rm,
                     'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),
+                    'supervisor_id': getattr(db_user, 'supervisor_id', None),
+                    'phone': getattr(db_user, 'phone', None),
                 }
             return None
         finally:
@@ -97,6 +128,9 @@ class IdentityService:
                 rm = getattr(db_user, 'responsibility_modules', None)
                 if not isinstance(rm, dict):
                     rm = {}
+                org_names = IdentityService._resolve_org_names(
+                    db, getattr(db_user, 'company_id', None), getattr(db_user, 'department_id', None)
+                )
                 return {
                     'id': db_user.id, 'username': db_user.username,
                     'password_hash': db_user.password_hash,
@@ -105,11 +139,15 @@ class IdentityService:
                     'external_credentials': ec,
                     'avatar_resource_id': getattr(db_user, 'avatar_resource_id', None),
                     'permissions': ["admin"] if db_user.username == 'admin' else ["user"],
-                    'company': getattr(db_user, 'company', None),
-                    'department': getattr(db_user, 'department', None),
+                    'company_id': getattr(db_user, 'company_id', None),
+                    'department_id': getattr(db_user, 'department_id', None),
+                    'company': org_names['company'],
+                    'department': org_names['department'],
                     'responsibility_modules': rm,
                     'job_level': getattr(db_user, 'job_level', 1) or 1,
                     'duty_text': getattr(db_user, 'duty_text', None),
+                    'supervisor_id': getattr(db_user, 'supervisor_id', None),
+                    'phone': getattr(db_user, 'phone', None),
                 }
             return None
         finally:
@@ -130,6 +168,9 @@ class IdentityService:
             db.commit()
             from app.services.user_service import UserService
             UserService.invalidate_cache()
+            # 若改到 AI 派单画像相关字段，通知 AI 失效画像缓存（下次派单重拉最新）
+            if _changes_personnel_profile(kwargs):
+                _notify_ai_personnel_reload()
             return True
         except Exception as e:
             db.rollback()
@@ -273,7 +314,12 @@ class IdentityService:
     def get_all_projects() -> List[Dict[str, str]]:
         db = IdentityService._get_db()
         try:
-            return [{'id': p.id, 'code': p.code, 'name': p.name} for p in db.query(Project).all()]
+            # 只列已承接项目：待定项目仅供仪表盘月柱图统计，不参与授权/选择等业务
+            projects = db.query(Project).filter(
+                Project.undertake_status == UNDERTAKE_YES,
+                Project.status != PROJECT_DELETED,
+            ).all()
+            return [{'id': p.id, 'code': p.code, 'name': p.name} for p in projects]
         finally:
             db.close()
 
@@ -281,7 +327,10 @@ class IdentityService:
     def get_project(project_id: str) -> Optional[Dict[str, Any]]:
         db = IdentityService._get_db()
         try:
-            p = db.query(Project).filter(Project.id == project_id).first()
+            p = db.query(Project).filter(
+                Project.id == project_id,
+                Project.status != PROJECT_DELETED,
+            ).first()
             return {'id': p.id, 'code': p.code, 'name': p.name} if p else None
         finally:
             db.close()
@@ -335,6 +384,39 @@ class IdentityService:
             return False
         finally:
             db.close()
+
+    @staticmethod
+    def get_role_id_by_name(name: str) -> Optional[str]:
+        """按角色名查 roles 表返回 role.id，命中结果进程内缓存。未命中返回 None（不缓存，便于后续重试）。"""
+        if not name:
+            return None
+        if name in _ROLE_NAME_ID_CACHE:
+            return _ROLE_NAME_ID_CACHE[name]
+        db = IdentityService._get_db()
+        try:
+            role = db.query(Role).filter(Role.name == name).first()
+            if role:
+                _ROLE_NAME_ID_CACHE[name] = role.id
+                return role.id
+            return None
+        finally:
+            db.close()
+
+    @staticmethod
+    def ensure_user_project_role_by_name(project_id: str, user_id: str, role_name: str) -> bool:
+        """幂等地给 user_id 在 project_id 上赋予 role_name 角色。
+
+        使用确定性 upr id（与 PermissionService.assign_role 一致），重复调用不会产生重复授权行。
+        缺参 / 角色名未找到 / 已存在授权时返回 False；本次新增返回 True。
+        """
+        if not project_id or not user_id or not role_name:
+            return False
+        role_id = IdentityService.get_role_id_by_name(role_name)
+        if not role_id:
+            logger.warning(f"未找到角色，跳过授权: role_name={role_name!r}")
+            return False
+        upr_id = f"upr_{user_id}_{project_id}_{role_id}"
+        return IdentityService.add_user_project_role(upr_id, user_id, project_id, role_id)
 
     @staticmethod
     def batch_add_user_project_roles(roles_data: List[dict]) -> int:
@@ -403,7 +485,10 @@ class IdentityService:
     def update_project(project_id: str, project_name: str) -> bool:
         db = IdentityService._get_db()
         try:
-            project = db.query(Project).filter(Project.id == project_id).first()
+            project = db.query(Project).filter(
+                Project.id == project_id,
+                Project.status != PROJECT_DELETED,
+            ).first()
             if not project:
                 return False
 
@@ -428,14 +513,16 @@ class IdentityService:
         db = IdentityService._get_db()
         try:
             project = db.query(Project).filter(Project.id == project_id).first()
-            if not project:
+            if not project or project.status == PROJECT_DELETED:
                 return False
 
+            # 清理 user_project_roles 中引用本项目的关联记录（外键约束）
             db.execute(user_project_roles.delete().where(
                 user_project_roles.c.project_id == project_id
             ))
 
-            db.delete(project)
+            # 软删除：保留 project 记录，仅标记为已删除，供后续创建项目去重
+            project.status = PROJECT_DELETED
             db.commit()
             return True
         except Exception as e:
@@ -700,3 +787,30 @@ class IdentityService:
 
 
 identity_service = IdentityService()
+
+
+# ── AI 派单画像缓存失效 ──
+# 用户资料写库后，若改到会进入 AI 派单画像的字段，通知 AI 失效其画像缓存，
+# 下次派单立即重拉最新画像（否则最长滞后 24h TTL）。
+_PERSONNEL_FIELDS = frozenset({
+    "name", "company_id", "department_id",
+    "responsibility_modules", "job_level", "duty_text",
+})
+
+
+def _changes_personnel_profile(kwargs: dict) -> bool:
+    """判断本次更新是否涉及 AI 派单画像相关字段。"""
+    return any(k in _PERSONNEL_FIELDS for k in (kwargs or {}))
+
+
+def _notify_ai_personnel_reload() -> None:
+    """通知 AI 失效派单画像缓存（尽力而为，失败不阻断写库）。"""
+    try:
+        import httpx
+        from app.core.config import settings
+        ai_url = getattr(settings, "AI_SERVICE_URL", "").rstrip("/")
+        if not ai_url:
+            return
+        httpx.post(f"{ai_url}/api/ai/assigner/reload", timeout=5.0)
+    except Exception as e:
+        logger.warning(f"通知 AI 失效派单画像失败: {e}")

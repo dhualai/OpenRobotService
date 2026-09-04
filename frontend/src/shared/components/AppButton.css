@@ -1,0 +1,77 @@
+/* =========================================================================
+   AppButton —— 工程级根治 TDesign 按钮 ::after 边框留白
+   所有业务按钮统一走 AppButton，::after 边框层被一次性禁用，无需在各容器零散
+   写 `.t-button::after { display: none }`。tone 变体用 `.app-btn.t-button.app-btn--x`
+   三 class 选择器（特异性 0,3,0）确保稳胜 TDesign 默认主题背景，无需 !important。
+   ========================================================================= */
+.app-btn.t-button::after {
+  display: none !important;
+  content: none !important;
+}
+
+/* 详情页操作按钮：品牌蓝实心 + 圆角胶囊 + 柔影 */
+.app-btn.t-button.app-btn--primary {
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--blue-3);
+  border: none;
+  border-radius: 999px;
+  padding: 6px 14px;
+  box-shadow: var(--shadow-soft);
+}
+.app-btn.t-button.app-btn--primary:not(.t-button--disabled):not(:disabled):active {
+  background: var(--blue-2);
+}
+.app-btn.t-button.app-btn--primary.t-button--disabled {
+  color: var(--gray-light);
+  background: var(--secondary);
+  box-shadow: none;
+}
+
+/* 详情页撤回：灰底 muted */
+.app-btn.t-button.app-btn--muted {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--secondary);
+  border: none;
+  border-radius: 999px;
+  padding: 6px 14px;
+}
+.app-btn.t-button.app-btn--muted:not(.t-button--disabled):not(:disabled):active {
+  background: var(--gray-soft);
+  color: var(--foreground);
+}
+
+/* 列表页操作按钮：品牌蓝实心 + 圆角 */
+.app-btn.t-button.app-btn--blue {
+  font-weight: 500;
+  font-size: 12px;
+  background: var(--blue-2);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-md);
+}
+.app-btn.t-button.app-btn--blue:not(.t-button--disabled):active {
+  background: var(--blue-1);
+}
+.app-btn.t-button.app-btn--blue.t-button--disabled {
+  opacity: 0.45;
+}
+
+/* 列表页重新派单：深蓝实心，与 blue 区分 */
+.app-btn.t-button.app-btn--blue-deep {
+  font-weight: 500;
+  font-size: 12px;
+  background: var(--blue-1);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-md);
+}
+.app-btn.t-button.app-btn--blue-deep:not(.t-button--disabled):active {
+  background: var(--blue-2);
+}
+.app-btn.t-button.app-btn--blue-deep.t-button--disabled {
+  opacity: 0.45;
+}

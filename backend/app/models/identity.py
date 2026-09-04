@@ -63,8 +63,23 @@ class UserDB(Base):
     avatar_resource_id = Column(Integer, nullable=True)
 
     # === 派单人信息（与 AI Assigner 共享）===
-    company = Column(String(128), nullable=True, comment="公司")
-    department = Column(String(128), nullable=True, comment="部门/团队")
-    responsibility_modules = Column(JSON, nullable=True, comment='责任模块 ["车端","任务调度","地图编辑"...]')
+    # 旧列（存名称字符串，废弃过渡期保留，迁移完成后删除）
+    company = Column(String(128), nullable=True, comment="公司名称（废弃，改用 company_id）")
+    department = Column(String(128), nullable=True, comment="部门/团队名称（废弃，改用 department_id）")
+    # 新列（外键关联主数据表）
+    company_id = Column(String(64), ForeignKey('companies.id'), nullable=True, index=True, comment="公司ID")
+    department_id = Column(String(64), ForeignKey('departments.id'), nullable=True, index=True, comment="部门ID")
+    responsibility_modules = Column(JSON, nullable=True, comment='责任模块 三层结构 {产品: {界面: [功能]}}')
     job_level = Column(TINYINT, default=1, nullable=False, comment="职级，数值越高越不优先接单（1=一线, 2=管理/审核, 3=仅兜底...），默认1")
     duty_text = Column(Text, nullable=True, comment="职责画像文本，供 AI 派单匹配参考")
+    supervisor_id = Column(String(64), ForeignKey('users.id'), nullable=True, index=True, comment="直属上级用户ID（全局行政汇报线）")
+
+    # === 微信转发绑定 ===
+    # 业务账号绑定的微信 open_id（讨论区消息转发到微信公众号客服消息用）。
+    # 微信登录用户（username 形如 wechat_xxx）本身 id 即为 open_id，无需绑定；
+    # 业务账号（如 zhangsan）需绑定后才能作为转发接收人。
+    wechat_openid = Column(String(128), nullable=True, index=True, comment="绑定的微信open_id（讨论区消息转发到微信用）")
+
+    # === 企业微信通知 ===
+    # 用户手机号，用于企业微信群机器人 mentioned_mobile_list @ 指定成员。
+    phone = Column(String(20), nullable=True, index=True, comment="用户手机号（企业微信通知 @ 人用）")

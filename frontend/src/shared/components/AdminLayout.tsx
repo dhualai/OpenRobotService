@@ -34,6 +34,7 @@ const adminMenuItems: MenuItem[] = [
 
   // === 管理工具 ===
   { path: '/admin/users', label: '用户管理', emoji: '👤' },
+  { path: '/admin/module-tree', label: '责任模块树', emoji: '🌳' },
   { path: '/admin/roles', label: '角色管理', emoji: '🏷️' },
   { path: '/admin/assign-role', label: '分配角色', emoji: '👤' },
   { path: '/admin/user-setup', label: '设置用户', emoji: '🔀' },
@@ -41,6 +42,7 @@ const adminMenuItems: MenuItem[] = [
   { path: '/admin/wechat', label: '微信管理', emoji: '💬' },
   { path: '/admin/data-import', label: '数据导入', emoji: '📥' },
   { path: '/admin/resources', label: '资源管理', emoji: '🗂️' },
+  { path: '/admin/file-explorer', label: '文件浏览', emoji: '📂' },
 
   // === 系统日志 ===
   { path: '/admin/operation-logs', label: '操作记录', emoji: '📝' },
@@ -81,7 +83,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         fixed
       />
 
-      <div ref={scrollRef} style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 16 }}>
+      <div ref={scrollRef} className="admin-scroll" style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 16 }}>
         <Suspense fallback={<Loading text="加载中..." />}>
           {children || <Outlet />}
         </Suspense>

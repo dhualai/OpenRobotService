@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Form, FormItem, Input, Textarea, Button, Toast, Loading } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 
@@ -36,7 +37,7 @@ export default function RiskEdit() {
   return (
     <div style={{ padding: 16 }}>
       <Form onSubmit={handleSubmit}>
-        <FormItem label="风险标题"><Input value={form.title} onChange={(v) => setForm((p) => ({ ...p, title: String(v) }))} placeholder="输入风险标题" clearable /></FormItem>
+        <FormItem label="风险标题"><ClearableInput value={form.title} onChange={(v) => setForm((p) => ({ ...p, title: String(v) }))} placeholder="输入风险标题" /></FormItem>
         <FormItem label="描述"><Textarea value={form.description} onChange={(v) => setForm((p) => ({ ...p, description: String(v) }))} placeholder="风险描述" autosize={{ minRows: 3 }} /></FormItem>
         <FormItem label="级别"><Input value={form.level} onChange={(v) => setForm((p) => ({ ...p, level: String(v) }))} placeholder="low/medium/high" /></FormItem>
         <FormItem label="关联项目"><Input value={form.project} onChange={(v) => setForm((p) => ({ ...p, project: String(v) }))} placeholder="项目名称" /></FormItem>

@@ -1,6 +1,9 @@
 """L2 语义召回：cos(工单, 模块锚文本) → 按工程师 responsibility_modules 反查
 
-模块锚文本配置在 config.yaml 的 module_anchor_texts 字段。
+模块锚文本配置在 config.yaml 的 module_anchor_texts 字段（key 为「产品-类别」组合，
+以便区分不同产品下同名模块——如调度USP-算法 与 摇人吧服务号-算法 负责的人不同）。
+工程师责任模块的细分名通过 config.yaml 的 module_classify（产品→{细分模块: 类别}）
+映射到类别，再组装成「产品-类别」key 匹配模块锚文本。
 """
 
 from typing import Dict, List, Optional
@@ -9,6 +12,9 @@ import numpy as np
 
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, TicketContext
+from ai.core.logging import get_logger
+
+logger = get_logger("ASSIGNER")
 
 
 def _cos(u, v):
@@ -85,17 +91,38 @@ class SemanticRecall:
                 s = _cos(qe, memb)
                 if s > 0.3:
                     module_scores[mod_name] = s
+            if module_scores:
+                hit_mods = sorted(module_scores.items(), key=lambda x: x[1], reverse=True)
+                logger.debug(
+                    f"[派单:{ticket.id}] Step3-L2 命中模块锚: "
+                    + " | ".join(f"{k}={v:.2f}" for k, v in hit_mods[:10])
+                )
+            else:
+                logger.debug(f"[派单:{ticket.id}] Step3-L2 无模块锚命中（相似度均≤0.3）")
 
             # 按模块分数反查工程师 → 加权累计
+            # 三层遍历 {产品:{界面:[功能]}}：功能名 → module_classify 映射到锚 key 后缀
+            # → 组「产品-功能name」锚 key 匹配（主流三层，不扁平化；界面作为中间层上下文）
+            classify = self._config.module_classify or {}
             for eng in engineers:
                 score = 0.0
-                for prod, mods in eng.responsibility_modules.items():
-                    for mod in mods:
-                        if mod in module_scores:
-                            score = max(score, module_scores[mod])
+                for prod, by_iface in eng.responsibility_modules.items():
+                    if not isinstance(by_iface, dict):
+                        # 兼容旧两层 {产品:[功能]}：按功能列表直接匹配
+                        by_iface = {"_flat": by_iface if isinstance(by_iface, list) else [by_iface]}
+                    cat_map = classify.get(prod, {})
+                    for _iface, funcs in by_iface.items():
+                        fns = funcs if isinstance(funcs, list) else [funcs]
+                        for mod in fns:
+                            cat = cat_map.get(mod)
+                            key = f"{prod}-{cat}" if cat else None
+                            if key and key in module_scores:
+                                score = max(score, module_scores[key])
                 if score > 0:
                     sem[eng.id] = score
 
+        if sem:
+            logger.debug(f"[派单:{ticket.id}] Step3-L2 语义召回 命中={len(sem)}人")
         return sem
 
 

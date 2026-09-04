@@ -6,7 +6,7 @@ import API_CONFIG from '@/config/api';
 /** external_credentials 中的 USP 凭据片段 */
 export interface UspCredentials {
   username?: string;
-  /** 仅用于提交新明文密码；从后端取回时这里是已存储的哈希，前端不应展示 */
+  /** 提交时传新明文密码；从后端取回时为 "-"（表示已设置密码，前端据此判断是否必填）或空 */
   password?: string;
 }
 
@@ -21,6 +21,8 @@ export interface MyProfile {
   name?: string | null;
   status: string;
   avatar_resource_id?: number | null;
+  company_id?: string | null;
+  department_id?: string | null;
   company?: string | null;
   department?: string | null;
   external_credentials?: ExternalCredentials | null;
@@ -30,8 +32,8 @@ export interface MyProfile {
 export interface MyProfileUpdate {
   name?: string;
   avatar_resource_id?: number;
-  company?: string;
-  department?: string;
+  company_id?: string;
+  department_id?: string;
   external_credentials?: ExternalCredentials;
 }
 
@@ -42,14 +44,40 @@ export async function getMyProfile(): Promise<MyProfile> {
   return authRequest<MyProfile>('/me', { skipCache: true });
 }
 
-/** 公司/部门下拉可选项（来自 users 表去重值） */
+/** 公司/部门下拉可选项（来自主数据表，含审核状态） */
+export interface OrgOption {
+  id: string;
+  name: string;
+  status: string;
+}
+
 export interface ProfileFieldOptions {
-  companies: string[];
-  departments: string[];
+  companies: OrgOption[];
+  departments_by_company: Record<string, OrgOption[]>;
+  my_pending: {
+    companies: { id: string; name: string }[];
+    departments: { id: string; name: string; company_name: string }[];
+  };
 }
 
 export async function getProfileOptions(): Promise<ProfileFieldOptions> {
   return adminRequest<ProfileFieldOptions>('/users/options', { skipCache: true });
+}
+
+/** 提交新公司（创建 pending 记录 + 审核工单） */
+export async function submitNewCompany(name: string): Promise<{ company: { id: string; name: string; status: string }; ticket_id: number | null }> {
+  return adminRequest('/users/options/company', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+/** 提交新部门（创建 pending 记录 + 审核工单） */
+export async function submitNewDepartment(name: string, companyId: string): Promise<{ department: { id: string; name: string; status: string }; ticket_id: number | null }> {
+  return adminRequest('/users/options/department', {
+    method: 'POST',
+    body: JSON.stringify({ name, company_id: companyId }),
+  });
 }
 
 /** 根据中文姓名生成去重的 USP 账户名 */

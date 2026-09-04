@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional, Dict, Any
 from app.modules.admin.resource_manager.models.resource_folder import ResourceFolder
-from app.modules.admin.resource_manager.models.resource import Resource
+from app.modules.admin.resource_manager.models.resource import Resource, StorageType
 from app.modules.admin.resource_manager.schemas.resource_folder import ResourceFolderCreate, ResourceFolderUpdate
 from app.utils.database_utils import DatabaseUtils
 from sqlalchemy.orm.attributes import flag_modified
@@ -34,7 +34,11 @@ class ResourceFolderService:
         return None
 
     @staticmethod
-    async def get_folder_children(db: AsyncSession, parent_id: int) -> List[Dict[str, Any]]:
+    async def get_folder_children(
+        db: AsyncSession,
+        parent_id: int,
+        storage_type: Optional[StorageType] = None,
+    ) -> List[Dict[str, Any]]:
         if not is_valid_id(parent_id):
             return []
 
@@ -61,12 +65,14 @@ class ResourceFolderService:
                 })
 
         if parent_folder.child_resource_ids:
-            result = await db.execute(
+            resource_query = (
                 select(Resource.id, Resource.resource_name, Resource.updated_at, Resource.deleted_at, Resource.resource_size, Resource.storage_type, Resource.resource_status)
                 .where(Resource.id.in_(parent_folder.child_resource_ids))
                 .where(Resource.deleted_at == None)
-                .order_by(Resource.resource_name)
             )
+            if storage_type:
+                resource_query = resource_query.where(Resource.storage_type == storage_type)
+            result = await db.execute(resource_query.order_by(Resource.resource_name))
             child_resources = result.all()
             for resource in child_resources:
                 children.append({
@@ -95,16 +101,19 @@ class ResourceFolderService:
         return [await ResourceFolderService._convert_folder_response(db, folder) for folder in folders]
     
     @staticmethod
-    async def get_root_children(db: AsyncSession) -> List[Dict[str, Any]]:
+    async def get_root_children(
+        db: AsyncSession,
+        storage_type: Optional[StorageType] = None,
+    ) -> List[Dict[str, Any]]:
         children = []
-        
+
         result = await db.execute(
             select(ResourceFolder.id, ResourceFolder.folder_name, ResourceFolder.updated_at, ResourceFolder.deleted_at)
             .where(ResourceFolder.parent_id == None)
             .order_by(ResourceFolder.folder_name)
         )
         root_folders = result.all()
-        
+
         for folder in root_folders:
             children.append({
                 "id": folder.id,
@@ -113,15 +122,17 @@ class ResourceFolderService:
                 "updated_at": folder.updated_at,
                 "deleted_at": folder.deleted_at
             })
-        
-        result = await db.execute(
+
+        resource_query = (
             select(Resource.id, Resource.resource_name, Resource.updated_at, Resource.deleted_at, Resource.resource_size, Resource.storage_type, Resource.resource_status)
             .where(Resource.folder_id == None)
             .where(Resource.deleted_at == None)
-            .order_by(Resource.resource_name)
         )
+        if storage_type:
+            resource_query = resource_query.where(Resource.storage_type == storage_type)
+        result = await db.execute(resource_query.order_by(Resource.resource_name))
         root_resources = result.all()
-        
+
         for resource in root_resources:
             children.append({
                 "id": resource.id,
@@ -133,7 +144,7 @@ class ResourceFolderService:
                 "storage_type": resource.storage_type,
                 "resource_status": resource.resource_status
             })
-        
+
         return children
     
     @staticmethod

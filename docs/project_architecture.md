@@ -52,7 +52,7 @@ OpenRobotService（公共实例 **「摇人吧」**）是一个面向工业移�
 
 | 目录 | 职责 | 测试文件 |
 |------|------|----------|
-| `src/api/` | API 客户端封装 | `__tests__/client.test.ts` |
+| `src/api/` | API 客户端封装（含 `ws.ts` 评论实时 WebSocket 封装） | `__tests__/client.test.ts` |
 | `src/config/` | 配置（API 地址/微信参数） | `__tests__/api.test.ts` |
 | `src/pages/` | 页面组件（call/tasks/admin） | `__tests__/` |
 | `src/router/` | 路由配置 | `__tests__/router.test.tsx` |

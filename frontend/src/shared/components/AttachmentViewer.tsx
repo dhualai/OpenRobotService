@@ -1,10 +1,13 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import ImageLightbox from './ImageLightbox';
-import PdfViewer from './PdfViewer';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { urlTransformAllowDataImage } from '@/shared/utils/markdown';
 import { setupWechatFilePreview } from '@/shared/utils/wechatJsSdk';
+// pdf.js 体积大（主库 + worker 约 1.5MB），懒加载：仅在用户真正点开 PDF 附件时才下载，
+// 避免随 AttachmentViewer 被多路由静态引入而进入首屏 bundle。
+const PdfViewer = lazy(() => import('./PdfViewer'));
 
 export interface AttachmentViewItem {
   filename: string;
@@ -16,6 +19,7 @@ export interface AttachmentViewItem {
 }
 
 const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'];
+const VIDEO_EXTS = ['mp4', 'webm', 'ogg', 'mov', 'm4v'];
 const OFFICE_EXTS = ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
 
 function extOf(name: string): string {
@@ -23,11 +27,12 @@ function extOf(name: string): string {
   return i >= 0 ? name.slice(i + 1).toLowerCase() : '';
 }
 
-type Kind = 'image' | 'pdf' | 'office' | 'md' | 'other';
+type Kind = 'image' | 'video' | 'pdf' | 'office' | 'md' | 'other';
 
 function kindOf(name: string): Kind {
   const ext = extOf(name);
   if (IMAGE_EXTS.includes(ext)) return 'image';
+  if (VIDEO_EXTS.includes(ext)) return 'video';
   if (ext === 'pdf') return 'pdf';
   if (OFFICE_EXTS.includes(ext)) return 'office';
   if (ext === 'md' || ext === 'markdown') return 'md';
@@ -39,6 +44,44 @@ function formatSize(bytes?: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * 带鉴权 token 的附件下载：用 fetch 拉取 blob 后用 <a download> 触发浏览器下载。
+ * 不能用 window.open —— 浏览器原生导航请求带不上 SPA 的 Bearer token，会被后端/网关 401/403；
+ * 且后端固定返回 Content-Disposition: inline，window.open 会「打开」而非「下载」文件。
+ * 同源请求（前端与 /p/api 同域）不受 CORS 限制，可直接带 Authorization 头。
+ */
+async function downloadViaFetch(url: string, filename: string) {
+  const token = localStorage.getItem('auth_token');
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const resp = await fetch(url, { headers, credentials: 'include' });
+  if (!resp.ok) {
+    // 回退：新标签打开（让浏览器自行处理，可能触发登录流程）
+    window.open(url, '_blank', 'noopener,noreferrer');
+    throw new Error(`下载失败: ${resp.status}`);
+  }
+  const blob = await resp.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = filename || 'download';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
+}
+
+/**
+ * 给下载 URL 追加 response-content-disposition=attachment 参数，强制浏览器下载而非内联播放。
+ * MinIO / S3 兼容的代理端支持该 query 参数；对已带 query 的 URL 用 & 拼接。
+ * 对非代理直链（无该参数支持）无害——浏览器忽略未知 query。
+ */
+function withAttachmentDisposition(url: string): string {
+  if (!url) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}response-content-disposition=attachment%3B%20filename%3D${encodeURIComponent('download')}`;
 }
 
 function isWeChat(): boolean {
@@ -131,6 +174,53 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
     return <ImageLightbox src={item.previewUrl} alt={item.filename} open onClose={onClose} />;
   }
 
+  // 视频：在 H5 弹窗内内联播放（带 controls + 关闭按钮），避免浏览器原生播放页无关闭入口（#389）
+  if (kind === 'video') {
+    return createPortal(
+      <div className="attachment-viewer" onClick={onClose}>
+        <div className="attachment-viewer__panel attachment-viewer__panel--video" onClick={(e) => e.stopPropagation()}>
+          <div className="attachment-viewer__bar">
+            <span className="attachment-viewer__name" title={item.filename}>
+              {item.filename}
+            </span>
+            <div className="attachment-viewer__actions">
+              <button
+                type="button"
+                className="attachment-viewer__dl"
+                onClick={() => {
+                  // 视频下载：downloadUrl 追加 attachment 头参数，强制浏览器下载而非播放
+                  const dl = withAttachmentDisposition(item.downloadUrl);
+                  if (wechat) {
+                    window.location.href = dl;
+                  } else {
+                    void downloadViaFetch(dl, item.filename).catch((e) =>
+                      console.error('[AttachmentViewer] 下载失败', e),
+                    );
+                  }
+                }}
+              >
+                下载
+              </button>
+              <button type="button" className="attachment-viewer__close" onClick={onClose} aria-label="关闭">
+                ✕
+              </button>
+            </div>
+          </div>
+          <div className="attachment-viewer__body">
+            <video
+              src={item.previewUrl}
+              controls
+              playsInline
+              preload="metadata"
+              className="attachment-viewer__video"
+            />
+          </div>
+        </div>
+      </div>,
+      document.body,
+    );
+  }
+
   const wechat = isWeChat();
 
   return createPortal(
@@ -144,7 +234,20 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
             <button
               type="button"
               className="attachment-viewer__dl"
-              onClick={() => window.open(item.downloadUrl, '_blank', 'noopener,noreferrer')}
+              onClick={() => {
+                // 强制下载（视频尤其需要，否则浏览器直接内联播放）
+                const dl = withAttachmentDisposition(item.downloadUrl);
+                if (wechat) {
+                  // 微信内置 WebView 无法直接下载文件：把当前页跳到绝对下载地址，
+                  // 微信会弹出「在浏览器打开」横幅，用户在系统浏览器中即可直接下载
+                  // （downloadUrl 已携带 token，浏览器打开不会落到 SPA 404 → 微信 OAuth 重定向）。
+                  window.location.href = dl;
+                } else {
+                  void downloadViaFetch(dl, item.filename).catch((e) =>
+                    console.error('[AttachmentViewer] 下载失败', e),
+                  );
+                }
+              }}
             >
               下载
             </button>
@@ -154,7 +257,11 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
           </div>
         </div>
         <div className="attachment-viewer__body">
-          {kind === 'pdf' && <PdfViewer url={item.previewUrl} name={item.filename} />}
+          {kind === 'pdf' && (
+            <Suspense fallback={<div className="attachment-viewer__hint">PDF 预览加载中…</div>}>
+              <PdfViewer url={item.previewUrl} name={item.filename} />
+            </Suspense>
+          )}
           {kind === 'md' &&
             (mdLoading ? (
               <div className="attachment-viewer__hint">加载中…</div>
@@ -162,14 +269,21 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
               <div className="attachment-viewer__hint attachment-viewer__hint--error">预览失败：{mdError}</div>
             ) : (
               <div className="markdown-body md-content attachment-viewer__md">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{mdText}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  urlTransform={urlTransformAllowDataImage}
+                >
+                  {mdText}
+                </ReactMarkdown>
               </div>
             ))}
           {(kind === 'other' || kind === 'office') && (
             <div className="attachment-viewer__hint">
               该文件格式暂不支持在线预览。
               <br />
-              请点击右上角「下载」后在本地打开。
+              {wechat
+                ? '请点击右上角「···」→「在浏览器中打开」，在浏览器中点击「下载」即可保存文件。'
+                : '请点击「下载」后在本地打开。'}
             </div>
           )}
           {kind !== 'other' && kind !== 'office' && wechat && (

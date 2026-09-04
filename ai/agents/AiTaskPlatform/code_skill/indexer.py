@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Set
 
 from ai.core.logging import get_logger
 from ai.agents.AiTaskPlatform.code_skill.schemas import FunctionRef
+from ai.agents.AiTaskPlatform.code_skill.semantic_index import SemanticCodeIndex
 
 logger = get_logger("TASK_AGENT")
 
@@ -219,6 +220,7 @@ class CodeIndexer:
         self._functions: List[FunctionRef] = []
         self._name_index: Dict[str, List[int]] = {}  # 函数名 → 函数索引列表
         self._file_index: Dict[str, List[int]] = {}  # 文件路径 → 函数索引列表
+        self.semantic: Optional[SemanticCodeIndex] = None  # embedding 语义索引
 
     def build(self) -> "CodeIndexer":
         """扫描所有源码文件 → 提取函数 → 建索引 → 构建调用图"""
@@ -331,7 +333,7 @@ class CodeIndexer:
 
     @classmethod
     def load(cls, path: str) -> "CodeIndexer":
-        """从 JSON 文件加载索引"""
+        """从 JSON 文件加载索引（含可选的本地位向量语义索引）。"""
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         indexer = cls(root_paths=data["root_paths"])
@@ -342,7 +344,56 @@ class CodeIndexer:
         for i, f in enumerate(indexer._functions):
             indexer._name_index.setdefault(f.name, []).append(i)
             indexer._file_index.setdefault(f.file_path, []).append(i)
+        # 同步加载同道语义索引（离线向量；缺失则语义召回为空，回退关键词）
+        indexer.load_semantic_from_path(path)
         return indexer
+
+    # ------------------------------------------------------------
+    # 语义索引（embedding 召回）——离线向量，与 code_index.json 同目录
+    # ------------------------------------------------------------
+    def load_semantic_from_path(self, json_path: str) -> None:
+        """从 code_index.json 所在目录加载语义向量（.npy + ids.json）。
+
+        缺失/损坏时置空，不影响关键词检索主路径。返回前不抛异常。
+        """
+        try:
+            base = os.path.dirname(os.path.abspath(json_path))
+            self.semantic = SemanticCodeIndex.load(base)
+        except Exception:  # noqa: BLE001
+            try:
+                from ai.core.logging import get_logger as _g
+                _g("TASK_AGENT").warning("[semantic] 语义索引加载失败，回退关键词检索")
+            except Exception:
+                pass
+            self.semantic = None
+
+    async def build_semantic(self, json_path: str) -> None:
+        """（离线一次）给当前全部函数构建语义向量并落盘（与 json 同目录）。"""
+        try:
+            base = os.path.dirname(os.path.abspath(json_path))
+            funcs = [self._to_dict(f) for f in self._functions]
+            self.semantic = await SemanticCodeIndex.build(funcs, base)
+        except Exception as e:  # noqa: BLE001
+            try:
+                from ai.core.logging import get_logger as _g
+                _g("TASK_AGENT").warning(f"[semantic] 语义索引构建失败: {e}")
+            except Exception:
+                pass
+            self.semantic = None
+
+    @staticmethod
+    def _to_dict(f) -> dict:
+        return {
+            "name": f.name,
+            "file_path": f.file_path,
+            "line_start": f.line_start,
+            "line_end": f.line_end,
+            "signature": f.signature,
+            "docstring": f.docstring,
+            "calls": f.calls,
+            "called_by": f.called_by,
+            "language": f.language,
+        }
 
     @property
     def function_count(self) -> int:

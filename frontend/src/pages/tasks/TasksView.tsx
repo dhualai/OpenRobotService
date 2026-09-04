@@ -1,17 +1,37 @@
 // 系统任务（供给视角）—— 上：AI 任务助手 / 下：工单卡片列表
-// 卡片样式与输入卡片审美一致（白底 + 阴影 + 圆角）。
-// 跨视图流转：消费 ticketDraft 自动建单；讨论按钮 → 带上下文跳回我要摇人。
-import { useState, useEffect, useCallback, useRef } from 'react';
+// 马卡龙极简风格（参考 macaron-minimal-ui 设计）：胶囊筛选 + 灰阶卡片信息层级；
+// 「待我处理」为按天时间轴。跨视图流转：消费 ticketDraft 自动建单。
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Navbar, Toast, Loading, Tag, Popup, Button, Input, Textarea, Form, FormItem } from 'tdesign-mobile-react';
+import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
+import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import Pagination from '@/shared/components/Pagination';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import { useWorkbenchStore } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
-import { normalizeStatus, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
+import { normalizeStatus, STATUS_DISPLAY_MAP, PRIORITY_DISPLAY_MAP, TICKET_TYPE_DISPLAY_MAP, TICKET_TYPE_VALUE_MAP } from '@/shared/constants/ticket';
 import { formatDateTime } from '@/shared/utils/url';
+// 相关性分类过滤条件：列表查询与分类角标计数共用（底部导航「待我处理」角标复用同一口径）
+import { buildRelevanceFilters, type TicketFilterCondition } from '@/shared/utils/ticketFilters';
+import { Search, ArrowRight, Calendar, SlidersHorizontal, ChevronDown } from 'lucide-react';
+import { avatarUrl } from '@/api/profile';
+import { useHorizontalScroll } from '@/shared/hooks/useHorizontalScroll';
+import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
+import { getMyProjects, type ProjectItem } from '@/api/projects';
+import { uploadCommentAttachment } from '@/api/ticket';
+
+/** 远程方式选项：默认空（无需填），可选 ToDesk / 向日葵 / 其他 */
+const REMOTE_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: '无需远程（默认）' },
+  { value: 'todesk', label: 'ToDesk' },
+  { value: 'sunflower', label: '向日葵' },
+  { value: 'other', label: '其他' },
+];
 
 interface Ticket {
   id: string; title: string; description: string; status: string; priority: string;
@@ -19,35 +39,13 @@ interface Ticket {
   contact?: string; created_at: string; updated_at: string;
   created_by?: string; created_by_name?: string;
   assigned_to?: string; assigned_to_name?: string;
+  participants?: string[];
 }
 
+/** username / user_id → avatar_resource_id 的查找表；缺失时回退为首字母头像 */
+type AvatarMap = Map<string, number>;
+
 const pageSize = 20;
-
-const STATUS_COLOR_MAP: Record<string, string> = {
-  new: '#0052d9',
-  in_progress: '#2ba471',
-  pending: '#e37318',
-  paused: '#e37318',
-  resolved: '#00a870',
-  closed: '#999999',
-  canceled: '#d54941',
-  cancelled: '#d54941',
-};
-
-const getStatusColor = (status: string): string => {
-  const key = (status || '').toLowerCase();
-  return STATUS_COLOR_MAP[key] || '#666666';
-};
-
-const priorityTheme = (p: string): 'success' | 'default' | 'warning' | 'danger' => {
-  switch (p) {
-    case 'low': return 'success';
-    case 'medium': return 'default';
-    case 'high': return 'warning';
-    case 'urgent': return 'danger';
-    default: return 'default';
-  }
-};
 
 const PRIORITY_WEIGHT_MAP: Record<string, number> = {
   urgent: 4,
@@ -56,29 +54,181 @@ const PRIORITY_WEIGHT_MAP: Record<string, number> = {
   low: 1,
 };
 
+// 默认选中的任务状态：新建 / 进行中 / 已挂起 / 已解决（排除 已取消 / 已关闭）
+const DEFAULT_STATUS_VALUES: string[] = ['new', 'in_progress', 'pending', 'resolved'];
+const ALL_STATUS_VALUES: string[] = Object.keys(STATUS_DISPLAY_MAP);
+// 优先级默认全选（low / medium / high / urgent）
+const ALL_PRIORITY_VALUES: string[] = Object.keys(PRIORITY_DISPLAY_MAP);
+// 工单类型默认全选（bug / feature / support / problem / other）
+// 取 TICKET_TYPE_VALUE_MAP 的值集（与后端 TaskType 枚举一致），排除仅做展示用的 question 别名
+const ALL_TYPE_VALUES: string[] = Object.values(TICKET_TYPE_VALUE_MAP);
+
 // 从 URL 查询参数解析筛选状态的工具函数
 const parseFilterFromUrl = (params: URLSearchParams) => {
+  const rawStatus = params.get('status');
+  // 约定：URL 中缺失 status 时使用默认值；status=all 表示全部选中（无状态过滤）；否则按逗号分隔解析
+  let statusFilter: string[];
+  if (rawStatus === null) {
+    statusFilter = [...DEFAULT_STATUS_VALUES];
+  } else if (rawStatus === 'all') {
+    statusFilter = [...ALL_STATUS_VALUES];
+  } else {
+    const parsed = rawStatus.split(',').map((s) => s.trim()).filter(Boolean);
+    statusFilter = parsed.length > 0 ? parsed : [...DEFAULT_STATUS_VALUES];
+  }
+  // 优先级多选：缺失或 'all' 视为全选，否则按逗号分隔解析
+  const rawPriority = params.get('priority');
+  let priorityFilter: string[];
+  if (rawPriority === null || rawPriority === 'all') {
+    priorityFilter = [...ALL_PRIORITY_VALUES];
+  } else {
+    const parsed = rawPriority.split(',').map((s) => s.trim()).filter(Boolean);
+    priorityFilter = parsed.length > 0 ? parsed : [...ALL_PRIORITY_VALUES];
+  }
+  // 工单类型多选：缺失或 'all' 视为全选，否则按逗号分隔解析
+  const rawType = params.get('type');
+  let typeFilter: string[];
+  if (rawType === null || rawType === 'all') {
+    typeFilter = [...ALL_TYPE_VALUES];
+  } else {
+    const parsed = rawType.split(',').map((s) => s.trim()).filter(Boolean);
+    typeFilter = parsed.length > 0 ? parsed : [...ALL_TYPE_VALUES];
+  }
   return {
     search: params.get('q') || '',
-    statusFilter: params.get('status') || 'all',
-    priorityFilter: params.get('priority') || 'all',
+    statusFilter,
+    priorityFilter,
+    typeFilter,
     relevanceFilter: params.get('relevance') || 'mine',
+    // 项目过滤：空字符串表示「全部」（不过滤）
+    projectFilter: params.get('project') || '',
+    // 处理人过滤：空字符串表示「全部」（不过滤）；值为处理人 username
+    assigneeFilter: params.get('assignee') || '',
+    // 创建人过滤：空字符串表示「全部」（不过滤）；值为创建人 username
+    creatorFilter: params.get('creator') || '',
+    // 时间过滤：空字符串表示不限制；值为 YYYY-MM-DDTHH:mm（精确到分钟）
+    createdStart: params.get('createdStart') || '',
+    createdEnd: params.get('createdEnd') || '',
+    resolvedStart: params.get('resolvedStart') || '',
+    resolvedEnd: params.get('resolvedEnd') || '',
+    closedStart: params.get('closedStart') || '',
+    closedEnd: params.get('closedEnd') || '',
     page: parseInt(params.get('page') || '1', 10),
     sortBy: params.get('sort') || 'priority',
     sortOrder: params.get('order') || 'desc',
   };
 };
 
+// 数组对比：判断两个无序数组是否包含相同元素
+const sameSet = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((v) => b.includes(v));
+
+// 创建时间起止统一使用原生 datetime-local：PC 为浏览器日期面板，移动端自动唤起系统原生滚轮选择器
+//（tdesign DateTimePicker 拖动时存在跳变问题，已弃用）
+
+// 创建时间边界值归一化为后端可比的秒级 datetime 串：
+//   - 仅日期（YYYY-MM-DD）→ 起始 00:00:00 / 结束 23:59:59
+//   - 含时分（YYYY-MM-DDTHH:mm）→ 起始补 :00、结束补 :59（含所选分钟）
+const toBoundaryISO = (v: string, end: boolean): string => {
+  if (!v) return '';
+  if (v.length === 10) return end ? `${v}T23:59:59` : `${v}T00:00:00`;
+  return end ? `${v}:59` : `${v}:00`;
+};
+// 安全调用原生 datetime-local 的 showPicker（点击整框即弹起选择器，浏览器不支持时静默回退到点击默认行为）
+const openNativePicker = (el: HTMLInputElement | null) => {
+  if (!el) return;
+  const input = el as HTMLInputElement & { showPicker?: () => void };
+  // 优先 showPicker（PC 浏览器面板 / Android 滚轮），不支持或被拒时退回 focus（iOS Safari 唤起原生滚轮）
+  try {
+    if (typeof input.showPicker === 'function') input.showPicker();
+    else input.focus();
+  } catch {
+    try { input.focus(); } catch { /* 忽略 */ }
+  }
+};
+
+// 日期区间字段（创建/解决/关单时间共用）：原生 datetime-local + 「起始/终止时间」占位覆盖层。
+// startRef/endRef 由调用方持有，用于点击整框即唤起原生选择器（openNativePicker）。
+type DateRangeFieldProps = {
+  startValue: string;
+  endValue: string;
+  onStartChange: (v: string) => void;
+  onEndChange: (v: string) => void;
+  startRef: { current: HTMLInputElement | null };
+  endRef: { current: HTMLInputElement | null };
+};
+function DateRangeField({ startValue, endValue, onStartChange, onEndChange, startRef, endRef }: DateRangeFieldProps) {
+  return (
+    <div className="filter-menu__date-range">
+      <div className="filter-menu__date-field">
+        <input
+          ref={startRef}
+          type="datetime-local"
+          className={`filter-menu__date-input${startValue ? '' : ' filter-menu__date-input--empty'}`}
+          step={60}
+          value={startValue}
+          max={endValue || undefined}
+          onChange={(e) => onStartChange(e.target.value)}
+          onClick={() => openNativePicker(startRef.current)}
+        />
+        {!startValue && <span className="filter-menu__date-placeholder">起始时间</span>}
+      </div>
+      <span className="filter-menu__date-sep">至</span>
+      <div className="filter-menu__date-field">
+        <input
+          ref={endRef}
+          type="datetime-local"
+          className={`filter-menu__date-input${endValue ? '' : ' filter-menu__date-input--empty'}`}
+          step={60}
+          value={endValue}
+          min={startValue || undefined}
+          onChange={(e) => onEndChange(e.target.value)}
+          onClick={() => openNativePicker(endRef.current)}
+        />
+        {!endValue && <span className="filter-menu__date-placeholder">终止时间</span>}
+      </div>
+    </div>
+  );
+}
+
 // 将筛选状态同步到 URL 查询参数的工具函数
 const buildFilterParams = (filter: {
-  search: string; statusFilter: string; priorityFilter: string;
-  relevanceFilter: string; page: number; sortBy: string; sortOrder: string;
+  search: string; statusFilter: string[]; priorityFilter: string[]; typeFilter: string[];
+  relevanceFilter: string; projectFilter: string; assigneeFilter: string; creatorFilter: string;
+  createdStart: string; createdEnd: string; resolvedStart: string; resolvedEnd: string; closedStart: string; closedEnd: string; page: number; sortBy: string; sortOrder: string;
 }) => {
   const params = new URLSearchParams();
   if (filter.search) params.set('q', filter.search);
-  if (filter.statusFilter !== 'all') params.set('status', filter.statusFilter);
-  if (filter.priorityFilter !== 'all') params.set('priority', filter.priorityFilter);
+  // 与默认值一致时省略 status 参数，保持 URL 简洁
+  if (!sameSet(filter.statusFilter, DEFAULT_STATUS_VALUES)) {
+    if (sameSet(filter.statusFilter, ALL_STATUS_VALUES)) {
+      params.set('status', 'all');
+    } else if (filter.statusFilter.length > 0) {
+      params.set('status', filter.statusFilter.join(','));
+    }
+    // statusFilter 为空时不设置参数（等同于默认值，避免空 status=）
+  }
+  // 优先级：全选时省略；否则按逗号分隔输出（空数组不设置参数，等同于默认全选）
+  if (filter.priorityFilter.length > 0 && !sameSet(filter.priorityFilter, ALL_PRIORITY_VALUES)) {
+    params.set('priority', filter.priorityFilter.join(','));
+  }
+  // 工单类型：全选时省略；否则按逗号分隔输出（空数组不设置参数，等同于默认全选）
+  if (filter.typeFilter.length > 0 && !sameSet(filter.typeFilter, ALL_TYPE_VALUES)) {
+    params.set('type', filter.typeFilter.join(','));
+  }
   if (filter.relevanceFilter !== 'mine') params.set('relevance', filter.relevanceFilter);
+  // 项目过滤：非空时才输出（空 = 全部）
+  if (filter.projectFilter) params.set('project', filter.projectFilter);
+  // 处理人过滤：非空时才输出（空 = 全部）
+  if (filter.assigneeFilter) params.set('assignee', filter.assigneeFilter);
+  if (filter.creatorFilter) params.set('creator', filter.creatorFilter);
+  // 创建时间过滤：非空时才输出（空 = 不限制）
+  if (filter.createdStart) params.set('createdStart', filter.createdStart);
+  if (filter.createdEnd) params.set('createdEnd', filter.createdEnd);
+  if (filter.resolvedStart) params.set('resolvedStart', filter.resolvedStart);
+  if (filter.resolvedEnd) params.set('resolvedEnd', filter.resolvedEnd);
+  if (filter.closedStart) params.set('closedStart', filter.closedStart);
+  if (filter.closedEnd) params.set('closedEnd', filter.closedEnd);
   if (filter.page > 1) params.set('page', String(filter.page));
   if (filter.sortBy !== 'priority') {
     params.set('sort', filter.sortBy);
@@ -87,17 +237,308 @@ const buildFilterParams = (filter: {
   return params.toString();
 };
 
+// 马卡龙极简工单卡片：状态为唯一带色文字（蓝阶），优先级蓝阶色块，
+// 头像统一灰底白字（无头像时）/ 圆形头像图片（有 avatar_resource_id 时），
+// 信息层级靠字号与字重区分（参考 macaron-minimal-ui 设计）。
+function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) => void; avatarMap?: AvatarMap }) {
+  const creator = t.created_by_name || t.created_by || '-';
+  const assignee = t.assigned_to_name || t.assigned_to || '-';
+  const participants = (t.participants || []).filter(Boolean);
+  const creatorAvatarId = t.created_by ? avatarMap?.get(t.created_by) : undefined;
+  const assigneeAvatarId = t.assigned_to ? avatarMap?.get(t.assigned_to) : undefined;
+  return (
+    <div className="task-card2" onClick={() => onOpen(t.id)}>
+      <div className="task-card2__head">
+        <div className="task-card2__head-tags">
+          <span className="task-card2__status-tag" data-status={(t.status || '').toLowerCase()}>
+            {normalizeStatus(t.status)}
+          </span>
+          <span className="task-card2__priority" data-priority={(t.priority || '').toLowerCase()}>
+            {PRIORITY_DISPLAY_MAP[t.priority] || t.priority || '中'}
+          </span>
+        </div>
+        <span className="task-card2__type">{TICKET_TYPE_DISPLAY_MAP[t.ticket_type] || t.ticket_type || '其他'}</span>
+      </div>
+
+      <div className="task-card2__title">
+        <TitleEllipsis text={t.title} lines={2} titleClassName="task-card2__title-inner" as="span" fontSize={18} lineHeight={1.35} />
+      </div>
+
+      {/* 人员流转：发起人 →（参与人）→ 处理人 */}
+      <div className="task-card2__people">
+        <div className="task-card2__person" title={`发起人：${creator}`} aria-label={`发起人：${creator}`}>
+          {creatorAvatarId ? (
+            <img
+              className="task-card2__avatar task-card2__avatar--img"
+              src={avatarUrl(creatorAvatarId)}
+              alt={creator}
+            />
+          ) : (
+            <span className="task-card2__avatar">{creator.slice(0, 1).toUpperCase()}</span>
+          )}
+          <span className="task-card2__person-name">{creator}</span>
+        </div>
+        {participants.length > 0 && (
+          <span className="task-card2__participants" title={`参与人：${participants.join('、')}`} aria-label={`参与人：${participants.join('、')}`}>
+            {participants.slice(0, 3).map((p, i) => {
+              const pid = avatarMap?.get(p);
+              return pid ? (
+                <img
+                  key={`${p}-${i}`}
+                  className="task-card2__participant task-card2__participant--img"
+                  src={avatarUrl(pid)}
+                  alt={p}
+                />
+              ) : (
+                <span key={`${p}-${i}`} className="task-card2__participant">{p.slice(0, 1).toUpperCase()}</span>
+              );
+            })}
+            {participants.length > 3 && (
+              <span className="task-card2__participant task-card2__participant--overflow">+{participants.length - 3}</span>
+            )}
+          </span>
+        )}
+        <span className="task-card2__person-arrow">
+          <ArrowRight size={14} strokeWidth={2} />
+        </span>
+        <div className="task-card2__person task-card2__person--assignee" title={`处理人：${assignee}`} aria-label={`处理人：${assignee}`}>
+          <span className="task-card2__person-name">{assignee}</span>
+          {assigneeAvatarId ? (
+            <img
+              className="task-card2__avatar task-card2__avatar--img task-card2__avatar--assignee"
+              src={avatarUrl(assigneeAvatarId)}
+              alt={assignee}
+            />
+          ) : (
+            <span className="task-card2__avatar task-card2__avatar--assignee">{assignee.slice(0, 1).toUpperCase()}</span>
+          )}
+        </div>
+      </div>
+
+      {/* 编号 · 项目 · 日期 */}
+      <div className="task-card2__meta">
+        <span className="task-card2__meta-id">#{String(t.id).slice(0, 8)}</span>
+        {t.project_name && <span className="task-card2__meta-project">{t.project_name}</span>}
+        <span className="task-card2__meta-date">
+          <Calendar size={12} strokeWidth={2} />
+          {formatDateTime(t.created_at).slice(0, 10)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// 「待我处理」原先按日期分组的时间轴已移除：所有分类统一走扁平卡片列表，
+// 排序完全由 fetchTickets 中的 sortBy/sortOrder 决定，快捷排序对所有分类生效。
+
+// 内联下拉选择器：点击触发 chip 后在 chip 下方展开固定定位的下拉面板，
+// 支持搜索过滤；选项首项约定为「全部」（value=''）。用于「项目」「处理人」单选过滤，
+// 替代原底部弹层（无需多一层弹窗）。面板通过 portal 渲染到 body 以绕开 chip 容器的 overflow 裁剪。
+function ChipDropdown({
+  label, active, options, selectedValue, searchPlaceholder, emptyText, onSelect,
+}: {
+  label: string;
+  active: boolean;
+  options: Array<{ value: string; label: string }>;
+  selectedValue: string;
+  searchPlaceholder: string;
+  emptyText: string;
+  onSelect: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [keyword, setKeyword] = useState('');
+  const [coords, setCoords] = useState<{ top: number; left: number; minWidth: number; maxHeight: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = useMemo(() => {
+    const kw = keyword.trim().toLowerCase();
+    return kw ? options.filter((o) => o.label.toLowerCase().includes(kw)) : options;
+  }, [options, keyword]);
+
+  const openPanel = useCallback(() => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const gap = 4;
+    const maxH = 320;
+    const minWidth = Math.max(r.width, 200);
+    const left = Math.min(r.left, window.innerWidth - minWidth - 8);
+    const spaceBelow = window.innerHeight - r.bottom - gap;
+    const spaceAbove = r.top - gap;
+    // 触发 chip 下方空间不足且上方更宽裕时向上展开，避免低部选项超出视口不可达
+    let top: number;
+    let maxHeight: number;
+    if (spaceBelow >= maxH || spaceBelow >= spaceAbove) {
+      top = r.bottom + gap;
+      maxHeight = Math.min(maxH, spaceBelow);
+    } else {
+      top = Math.max(gap, r.top - gap - maxH);
+      maxHeight = Math.min(maxH, spaceAbove);
+    }
+    setCoords({ top, left, minWidth, maxHeight });
+    setKeyword('');
+    setOpen(true);
+  }, []);
+
+  // 面板展开时聚焦搜索框（延迟一帧，避免与打开面板的 click 冲突）
+  useEffect(() => {
+    if (!open) return;
+    const id = setTimeout(() => searchInputRef.current?.focus(), 0);
+    return () => clearTimeout(id);
+  }, [open]);
+
+  // 点击外部 / Esc / 滚动 / 窗口尺寸变化 关闭面板
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (triggerRef.current?.contains(t)) return;
+      if (panelRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const close = () => setOpen(false);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`tasks-view__filter-chip tasks-view__filter-chip--dropdown ${(active || open) ? 'is-active' : ''}`}
+        onClick={() => { if (open) setOpen(false); else openPanel(); }}
+      >
+        <span className="tasks-view__filter-chip-value">{label}</span>
+        <ChevronDown size={12} strokeWidth={2} />
+      </button>
+      {open && coords && createPortal(
+        <div ref={panelRef} className="chip-dropdown" style={{ top: coords.top, left: coords.left, minWidth: coords.minWidth, maxHeight: coords.maxHeight }}>
+          <div className="chip-dropdown__search">
+            <Search size={14} strokeWidth={2} />
+            <input
+              ref={searchInputRef}
+              className="chip-dropdown__search-input"
+              placeholder={searchPlaceholder}
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+            />
+          </div>
+          <div className="chip-dropdown__list">
+            {filtered.length === 0 ? (
+              <div className="chip-dropdown__empty">{emptyText}</div>
+            ) : (
+              filtered.map((o) => (
+                <div
+                  key={o.value || '__all__'}
+                  className={`chip-dropdown__item ${selectedValue === o.value ? 'is-selected' : ''}`}
+                  onClick={() => { onSelect(o.value); setOpen(false); }}
+                >
+                  {o.label}
+                </div>
+              ))
+            )}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+// 筛选弹窗内的内联下拉：点击触发行就地展开「搜索框 + 选项列表」（首项「全部」）。
+// 不使用 portal / fixed，跟随筛选弹窗正常流，避免与底部弹层 z-index 冲突。
+// 选项可能很多（项目 / 用户），用纵向列表而非胶囊，配合搜索收敛。
+function FilterMenuDropdown({
+  label, options, selectedValue, searchPlaceholder, emptyText, onSelect,
+}: {
+  label: string;
+  options: Array<{ value: string; label: string }>;
+  selectedValue: string;
+  searchPlaceholder: string;
+  emptyText: string;
+  onSelect: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [keyword, setKeyword] = useState('');
+
+  const filtered = useMemo(() => {
+    const kw = keyword.trim().toLowerCase();
+    return kw ? options.filter((o) => o.label.toLowerCase().includes(kw)) : options;
+  }, [options, keyword]);
+
+  return (
+    <div className="filter-menu__inline-dropdown">
+      <button
+        type="button"
+        className="filter-menu__dropdown-trigger"
+        onClick={() => { setKeyword(''); setOpen((v) => !v); }}
+      >
+        <span className={selectedValue ? 'filter-menu__dropdown-value' : 'filter-menu__dropdown-placeholder'}>
+          {label}
+        </span>
+        <ChevronDown size={14} strokeWidth={2} />
+      </button>
+      {open && (
+        <div className="filter-menu__inline-panel">
+          <div className="filter-menu__inline-search">
+            <Search size={14} strokeWidth={2} />
+            <input
+              className="filter-menu__search-input"
+              placeholder={searchPlaceholder}
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+            />
+          </div>
+          <div className="filter-menu__inline-list">
+            {filtered.length === 0 ? (
+              <div className="filter-menu__inline-empty">{emptyText}</div>
+            ) : (
+              filtered.map((o) => (
+                <button
+                  key={o.value || '__all__'}
+                  type="button"
+                  className={`filter-menu__inline-item ${selectedValue === o.value ? 'is-selected' : ''}`}
+                  onClick={() => { onSelect(o.value); setOpen(false); }}
+                >
+                  {o.label}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TasksView() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
+  const adminRequest = useMemo(() => createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin'), []);
 
   const {
     tasksRefreshKey, ticketDraft, consumeTicketDraft, refreshTasks,
   } = useWorkbenchStore();
 
-  const { username, hasPermission, projectIds } = useAuthStore();
+  const { username, userId, hasPermission, projectIds } = useAuthStore();
   const canManageTasks = hasPermission('frontend:develop');
+
+  // 状态/优先级筛选 chip 栏横向滚动（PC 桌面端滚轮/拖拽横滑，移动端原生触摸滑动）
+  const filterChipsRef = useRef<HTMLDivElement>(null);
+  useHorizontalScroll(filterChipsRef);
   const canViewAllTasks = hasPermission('frontend:task:all');
 
   // 从 URL 初始化筛选状态
@@ -107,9 +548,42 @@ export default function TasksView() {
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState(() => initialFilter.current.search);
   const [statusFilter, setStatusFilter] = useState(() => initialFilter.current.statusFilter);
-  const [priorityFilter, setPriorityFilter] = useState(() => initialFilter.current.priorityFilter);
+  const [priorityFilter, setPriorityFilter] = useState<string[]>(() => initialFilter.current.priorityFilter);
+  // 工单类型多选过滤（全部选中时表示不过滤）
+  const [typeFilter, setTypeFilter] = useState<string[]>(() => initialFilter.current.typeFilter);
   const [relevanceFilter, setRelevanceFilter] = useState(() => initialFilter.current.relevanceFilter);
+  // 项目过滤：空字符串 = 「全部」；否则为选中项目的 id
+  const [projectFilter, setProjectFilter] = useState(() => initialFilter.current.projectFilter);
+  // 当前用户关联的项目列表（用于项目过滤下拉）
+  const [myProjects, setMyProjects] = useState<ProjectItem[]>([]);
+  // 处理人过滤：空字符串 = 「全部」；否则为选中处理人的 username
+  const [assigneeFilter, setAssigneeFilter] = useState(() => initialFilter.current.assigneeFilter);
+  // 创建人过滤：空字符串 = 「全部」；否则为选中创建人的 username
+  const [creatorFilter, setCreatorFilter] = useState(() => initialFilter.current.creatorFilter);
+  // 处理人候选列表（含 username 与 name，用于处理人过滤下拉）
+  const [assignees, setAssignees] = useState<Array<{ username: string; name?: string }>>([]);
+  // 时间过滤：空字符串 = 不限制；值为 YYYY-MM-DDTHH:mm（精确到分钟）
+  const [createdStart, setCreatedStart] = useState(() => initialFilter.current.createdStart);
+  const [createdEnd, setCreatedEnd] = useState(() => initialFilter.current.createdEnd);
+  const [resolvedStart, setResolvedStart] = useState(() => initialFilter.current.resolvedStart);
+  const [resolvedEnd, setResolvedEnd] = useState(() => initialFilter.current.resolvedEnd);
+  const [closedStart, setClosedStart] = useState(() => initialFilter.current.closedStart);
+  const [closedEnd, setClosedEnd] = useState(() => initialFilter.current.closedEnd);
+  // datetime-local 输入框引用（用于点击整框即唤起原生选择器）
+  const startDtInputRef = useRef<HTMLInputElement | null>(null);
+  const endDtInputRef = useRef<HTMLInputElement | null>(null);
+  const resolvedStartDtInputRef = useRef<HTMLInputElement | null>(null);
+  const resolvedEndDtInputRef = useRef<HTMLInputElement | null>(null);
+  const closedStartDtInputRef = useRef<HTMLInputElement | null>(null);
+  const closedEndDtInputRef = useRef<HTMLInputElement | null>(null);
   const [showFilterMenu, setShowFilterMenu] = useState(false);
+  // 筛选弹窗草稿：弹窗内选择先写入草稿，点「确定」才提交生效；关闭（遮罩/返回）则丢弃。
+  const [draft, setDraft] = useState<{
+    relevance: string; status: string[]; project: string; assignee: string; creator: string; priority: string[]; type: string[];
+    createdStart: string; createdEnd: string;
+    resolvedStart: string; resolvedEnd: string;
+    closedStart: string; closedEnd: string;
+  } | null>(null);
   const [page, setPage] = useState(() => initialFilter.current.page);
   const [total, setTotal] = useState(0);
   const [sortBy, setSortBy] = useState(() => initialFilter.current.sortBy);
@@ -117,175 +591,213 @@ export default function TasksView() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creatingTask, setCreatingTask] = useState(false);
   const [syncing, setSyncing] = useState(false);
+
+  // username / user_id → avatar_resource_id 查找表：用于工单卡片创建人/处理人头像渲染。
+  // 缺失权限（backend:user:base:read）或网络失败时静默回退为首字母头像。
+  // 同一次请求复用于「处理人过滤」下拉候选（仅需 username + name 字段）。
+  const [avatarMap, setAvatarMap] = useState<AvatarMap>(new Map());
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await adminRequest<Array<{
+          username?: string; id?: string; name?: string | null; avatar_resource_id?: number | null;
+        }>>('/users/?skip=0&limit=1000');
+        if (cancelled) return;
+        const m: AvatarMap = new Map();
+        const list: Array<{ username: string; name?: string }> = [];
+        for (const u of data || []) {
+          if (u.username) {
+            list.push({ username: u.username, name: u.name || undefined });
+          }
+          if (!u.avatar_resource_id) continue;
+          if (u.username) m.set(u.username, u.avatar_resource_id);
+          if (u.id) m.set(u.id, u.avatar_resource_id);
+        }
+        setAvatarMap(m);
+        setAssignees(list);
+      } catch {
+        // 无权限或失败：保持首字母回退、处理人下拉仅展示「全部」
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [adminRequest]);
+
+  // 拉取当前用户关联的项目列表（GET /api/admin/projects/me），用于项目过滤下拉。
+  // 失败时静默回退为空列表（项目筛选仅展示「全部」）。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await getMyProjects();
+        if (cancelled) return;
+        setMyProjects(list);
+      } catch {
+        // 无权限或失败：项目下拉仅保留「全部」
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
   const [createForm, setCreateForm] = useState({
     title: '',
     description: '',
     priority: 'medium',
     ticket_type: 'problem',
+    remote_type: '',           // 远程方式：''（默认无需填）/ todesk / sunflower / other
   });
+  // 远程方式截图（object_path 数组，上传后随建单一并落库）
+  const [remoteShots, setRemoteShots] = useState<{ objectPath: string; fileName: string }[]>([]);
+  const [uploadingShot, setUploadingShot] = useState(false);
+  const remoteShotInputRef = useRef<HTMLInputElement | null>(null);
 
   const isFetchingRef = useRef(false);
   const fetchTicketsRef = useRef<typeof fetchTickets>(async () => {});
+
+  // 各分类（全部/项目相关/待我处理/与我相关）的工单条数，用于筛选条目的右上角角标
+  const [relevanceCounts, setRelevanceCounts] = useState<Record<string, number>>({});
+  const countsFetchingRef = useRef(false);
+  const fetchCountsRef = useRef<() => Promise<void>>(async () => {});
+
+  // 新建工单悬浮按钮：液态玻璃质感 + 可拖动（拖动超过阈值视为拖拽，不触发点击）
+  const [fabPos, setFabPos] = useState<{ x: number; y: number } | null>(null);
+  const [fabDragging, setFabDragging] = useState(false);
+  const fabDragRef = useRef({ x: 0, y: 0, moved: false });
+  const FAB_SIZE = 52;
+  const FAB_MARGIN = 12;
+
+  useEffect(() => {
+    const clamp = (x: number, y: number) => ({
+      x: Math.min(Math.max(x, FAB_MARGIN), Math.max(FAB_MARGIN, window.innerWidth - FAB_SIZE - FAB_MARGIN)),
+      y: Math.min(Math.max(y, FAB_MARGIN), Math.max(FAB_MARGIN, window.innerHeight - FAB_SIZE - FAB_MARGIN)),
+    });
+    setFabPos(clamp(window.innerWidth - FAB_SIZE - 16, window.innerHeight - FAB_SIZE - 150));
+    const onResize = () => setFabPos((p) => (p ? clamp(p.x, p.y) : p));
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const handleFabPointerDown = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!fabPos) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    fabDragRef.current = { x: e.clientX - fabPos.x, y: e.clientY - fabPos.y, moved: false };
+    setFabDragging(true);
+  };
+
+  const handleFabPointerMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!fabPos || !fabDragRef.current) return;
+    const d = fabDragRef.current;
+    const next = {
+      x: Math.min(Math.max(e.clientX - d.x, FAB_MARGIN), Math.max(FAB_MARGIN, window.innerWidth - FAB_SIZE - FAB_MARGIN)),
+      y: Math.min(Math.max(e.clientY - d.y, FAB_MARGIN), Math.max(FAB_MARGIN, window.innerHeight - FAB_SIZE - FAB_MARGIN)),
+    };
+    if (Math.abs(next.x - fabPos.x) > 2 || Math.abs(next.y - fabPos.y) > 2) d.moved = true;
+    setFabPos(next);
+  };
+
+  const handleFabPointerUp = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    setFabDragging(false);
+  };
+
+  // 当前列表过滤条件中「非相关性」的部分（搜索/状态/优先级/类型/项目/处理人/创建人/时间范围）。
+  // 抽成 memo 供 fetchTickets 与 fetchRelevanceCounts 共用，保证角标口径与列表完全一致。
+  const listExtraFilters = useMemo<TicketFilterCondition[]>(() => {
+    const filters: TicketFilterCondition[] = [];
+    if (search) {
+      const keyword = search.trim();
+      const searchConditions: TicketFilterCondition[] = [
+        { field: 'title', op: 'contains', value: keyword },
+      ];
+      // 纯数字关键词按工单编号精确查找（卡片展示的 #编号），非数字仍走标题模糊搜索
+      if (/^\d+$/.test(keyword)) {
+        searchConditions.push({ field: 'id', op: 'eq', value: Number(keyword) });
+      }
+      filters.push({ or: searchConditions });
+    }
+    // 任务状态多选过滤：未全选时按 in 操作过滤，全选则不施加状态条件
+    if (statusFilter.length > 0 && !sameSet(statusFilter, ALL_STATUS_VALUES)) {
+      filters.push({ field: 'status', op: 'in', value: statusFilter });
+    }
+    // 优先级多选过滤：未全选时按 in 操作过滤，全选则不施加优先级条件
+    if (priorityFilter.length > 0 && !sameSet(priorityFilter, ALL_PRIORITY_VALUES)) {
+      filters.push({ field: 'priority', op: 'in', value: priorityFilter });
+    }
+    // 工单类型多选过滤：未全选时按 in 操作过滤（后端 /filter 的 ticketType 为 enum 字段）
+    if (typeFilter.length > 0 && !sameSet(typeFilter, ALL_TYPE_VALUES)) {
+      filters.push({ field: 'ticketType', op: 'in', value: typeFilter });
+    }
+    // 项目过滤：选中具体项目时按 projectId 精确过滤（空 = 全部，不施加条件）
+    if (projectFilter) {
+      filters.push({ field: 'projectId', op: 'eq', value: projectFilter });
+    }
+    // 处理人过滤：选中具体处理人时按 assignedTo 精确过滤（空 = 全部，不施加条件）
+    // 后端对 assignedTo 双键解析（username / users.id 都认）
+    if (assigneeFilter) {
+      filters.push({ field: 'assignedTo', op: 'eq', value: assigneeFilter });
+    }
+    if (creatorFilter) {
+      filters.push({ field: 'createdBy', op: 'eq', value: creatorFilter });
+    }
+    // 创建时间过滤：精确到分钟。起始补 :00（含所选分钟）、结束补 :59（含所选分钟）。
+    // 空值不施加条件；值格式 YYYY-MM-DDTHH:mm（兼容旧 YYYY-MM-DD）。
+    if (createdStart) {
+      filters.push({ field: 'createdAt', op: 'ge', value: toBoundaryISO(createdStart, false) });
+    }
+    if (createdEnd) {
+      filters.push({ field: 'createdAt', op: 'le', value: toBoundaryISO(createdEnd, true) });
+    }
+    // 解决时间过滤（resolved_at）
+    if (resolvedStart) {
+      filters.push({ field: 'resolvedAt', op: 'ge', value: toBoundaryISO(resolvedStart, false) });
+    }
+    if (resolvedEnd) {
+      filters.push({ field: 'resolvedAt', op: 'le', value: toBoundaryISO(resolvedEnd, true) });
+    }
+    // 关单时间过滤（closed_at）
+    if (closedStart) {
+      filters.push({ field: 'closedAt', op: 'ge', value: toBoundaryISO(closedStart, false) });
+    }
+    if (closedEnd) {
+      filters.push({ field: 'closedAt', op: 'le', value: toBoundaryISO(closedEnd, true) });
+    }
+    return filters;
+  }, [search, statusFilter, priorityFilter, typeFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd]);
 
   const fetchTickets = useCallback(async (silent = false) => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
     if (!silent) setLoading(true);
     try {
-      let data;
-      
-      if (relevanceFilter === 'global' && canViewAllTasks) {
-        // 「全部」：有权限时不过滤项目、人员相关性，直接拉全量
-        const filters: any[] = [];
-        if (search) {
-          filters.push({ field: 'title', op: 'contains', value: search });
-        }
-        if (statusFilter !== 'all') {
-          filters.push({ field: 'status', op: 'eq', value: statusFilter });
-        }
-        if (priorityFilter !== 'all') {
-          filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
-        }
+      // 相关性基础过滤（全部/项目相关/待我处理/与我相关）；
+      // 「全部」无权限时按项目相关口径处理，与可见的分类选项一致。
+      const relevanceKey = relevanceFilter === 'global' && !canViewAllTasks ? 'all' : relevanceFilter;
+      const filters: TicketFilterCondition[] = [
+        ...buildRelevanceFilters(relevanceKey, userId || username, projectIds),
+        ...listExtraFilters,
+      ];
 
-        const sorts = sortBy === 'priority'
-          ? []
-          : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
+      const sortFieldMap: Record<string, string> = {
+        created_at: 'createdAt',
+        updated_at: 'updatedAt',
+        deadline_at: 'deadlineAt',
+      };
+      const sorts = sortBy === 'priority'
+        ? []
+        : [{ field: sortFieldMap[sortBy] || 'updatedAt', direction: sortOrder }];
 
-        data = await request<{ items: Ticket[]; total: number }>('/filter', {
-          method: 'POST',
-          body: JSON.stringify({
-            filters,
-            sorts,
-            page,
-            size: pageSize,
-          }),
-          skipCache: true,
-        });
-      } else if (relevanceFilter === 'mine' && username) {
-        const filters: any[] = [];
-        
-        const workingStatusFilters = [
-          { field: 'status', op: 'eq', value: 'new' },
-          { field: 'status', op: 'eq', value: 'in_progress' },
-          { field: 'status', op: 'eq', value: 'pending' },
-        ];
-        
-        filters.push({
-          or: [
-            {
-              and: [
-                { or: workingStatusFilters },
-                { field: 'assignedTo', op: 'eq', value: username },
-              ],
-            },
-            {
-              and: [
-                { field: 'status', op: 'eq', value: 'resolved' },
-                { field: 'createdBy', op: 'eq', value: username },
-              ],
-            },
-          ],
-        });
-        
-        if (search) {
-          filters.push({ field: 'title', op: 'contains', value: search });
-        }
-        
-        if (statusFilter !== 'all') {
-          filters.push({ field: 'status', op: 'eq', value: statusFilter });
-        }
-        
-        if (priorityFilter !== 'all') {
-          filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
-        }
-        
-        const sorts = sortBy === 'priority' 
-          ? [] 
-          : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
-        
-        data = await request<{ items: Ticket[]; total: number }>('/filter', {
-          method: 'POST',
-          body: JSON.stringify({
-            filters,
-            sorts,
-            page,
-            size: pageSize,
-          }),
-          skipCache: true,
-        });
-      } else if (relevanceFilter === 'related' && username) {
-        const filters: any[] = [];
-        
-        const userRelatedFilters = [
-          { field: 'createdBy', op: 'eq', value: username },
-          { field: 'createdByName', op: 'contains', value: username },
-          { field: 'assignedTo', op: 'eq', value: username },
-          { field: 'assignedToName', op: 'contains', value: username },
-          { field: 'customer', op: 'eq', value: username },
-          { field: 'customerName', op: 'contains', value: username },
-        ];
-        
-        filters.push({ or: userRelatedFilters });
-        
-        if (search) {
-          filters.push({ field: 'title', op: 'contains', value: search });
-        }
-        
-        if (statusFilter !== 'all') {
-          filters.push({ field: 'status', op: 'eq', value: statusFilter });
-        }
-        
-        if (priorityFilter !== 'all') {
-          filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
-        }
-        
-        const sorts = sortBy === 'priority' 
-          ? [] 
-          : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
-        
-        data = await request<{ items: Ticket[]; total: number }>('/filter', {
-          method: 'POST',
-          body: JSON.stringify({
-            filters,
-            sorts,
-            page,
-            size: pageSize,
-          }),
-          skipCache: true,
-        });
-      } else {
-        // “全部”：仅展示与当前用户关联的项目（projectPermissions keys）下的工单，
-        // 按 task.project_id 过滤；项目列表为空时（未加载/无项目）回退为不限制。
-        const filters: any[] = [];
-        if (projectIds.length > 0) {
-          filters.push({ or: projectIds.map((pid) => ({ field: 'projectId', op: 'eq', value: pid })) });
-        }
-        if (search) {
-          filters.push({ field: 'title', op: 'contains', value: search });
-        }
-        if (statusFilter !== 'all') {
-          filters.push({ field: 'status', op: 'eq', value: statusFilter });
-        }
-        if (priorityFilter !== 'all') {
-          filters.push({ field: 'priority', op: 'eq', value: priorityFilter });
-        }
+      const data = await request<{ items: Ticket[]; total: number }>('/filter', {
+        method: 'POST',
+        body: JSON.stringify({
+          filters,
+          sorts,
+          page,
+          size: pageSize,
+        }),
+        skipCache: true,
+      });
 
-        const sorts = sortBy === 'priority'
-          ? []
-          : [{ field: sortBy === 'created_at' ? 'createdAt' : 'updatedAt', direction: sortOrder }];
-
-        data = await request<{ items: Ticket[]; total: number }>('/filter', {
-          method: 'POST',
-          body: JSON.stringify({
-            filters,
-            sorts,
-            page,
-            size: pageSize,
-          }),
-          skipCache: true,
-        });
-      }
-      
       let sortedItems = data.items || [];
       if (sortBy === 'priority') {
         sortedItems = [...sortedItems].sort((a, b) => {
@@ -304,20 +816,20 @@ export default function TasksView() {
       isFetchingRef.current = false;
       if (!silent) setLoading(false);
     }
-  }, [page, search, statusFilter, priorityFilter, relevanceFilter, username, projectIds, sortBy, sortOrder]);
+  }, [page, listExtraFilters, relevanceFilter, username, userId, projectIds, sortBy, sortOrder, canViewAllTasks]);
 
   fetchTicketsRef.current = fetchTickets;
 
   // 筛选状态变化时同步到 URL
   useEffect(() => {
     const newParams = buildFilterParams({
-      search, statusFilter, priorityFilter,
-      relevanceFilter, page, sortBy, sortOrder,
+      search, statusFilter, priorityFilter, typeFilter,
+      relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder,
     });
     if (newParams !== searchParams.toString()) {
       setSearchParams(newParams, { replace: true });
     }
-  }, [search, statusFilter, priorityFilter, relevanceFilter, page, sortBy, sortOrder]);
+  }, [search, statusFilter, priorityFilter, typeFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder]);
 
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
@@ -325,6 +837,7 @@ export default function TasksView() {
   useEffect(() => {
     const interval = setInterval(() => {
       fetchTicketsRef.current(true);
+      fetchCountsRef.current();
     }, 2000);
     return () => clearInterval(interval);
   }, []);
@@ -349,20 +862,77 @@ export default function TasksView() {
 
   
 
-  const relevanceOptions = [
-    ...(canViewAllTasks ? [{ value: 'global', label: '全部' }] : []),
-    { value: 'all', label: '项目相关' },
-    { value: 'mine', label: '待我处理' },
-    { value: 'related', label: '与我相关' },
-  ];
+  // 「全部」仅在用户拥有 frontend:task:all 权限时展示，用于查看全量工单。
+  const relevanceOptions = useMemo(() => {
+    const base = [
+      { value: 'all', label: '项目相关' },
+      { value: 'mine', label: '待我处理' },
+      { value: 'related', label: '与我相关' },
+    ];
+    return canViewAllTasks
+      ? [{ value: 'global', label: '全部' }, ...base]
+      : base;
+  }, [canViewAllTasks]);
+
+  // 拉取各分类角标条数：与列表共用同一套过滤口径（含搜索/状态/优先级/类型/项目/人员/时间范围），
+  // 仅相关性维度按各分类切换——这样角标数 = 「切到该分类后列表会显示的总数」，与列表动态对齐。
+  // 每次只取 total（size=1）；单个分类失败静默跳过，保留旧值。
+  const fetchRelevanceCounts = useCallback(async () => {
+    if (countsFetchingRef.current) return;
+    countsFetchingRef.current = true;
+    try {
+      const entries = await Promise.all(
+        relevanceOptions.map(async (option) => {
+          try {
+            // 「全部」无权限时按项目维度计数，与列表回退口径一致
+            const key = option.value === 'global' && !canViewAllTasks ? 'all' : option.value;
+            const filters = [
+              ...buildRelevanceFilters(key, userId || username, projectIds),
+              ...listExtraFilters,
+            ];
+            const data = await request<{ total: number }>('/filter', {
+              method: 'POST',
+              body: JSON.stringify({
+                filters,
+                sorts: [],
+                page: 1,
+                size: 1,
+              }),
+              skipCache: true,
+            });
+            return [option.value, data.total] as const;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      const next: Record<string, number> = {};
+      entries.forEach((entry) => {
+        if (entry) next[entry[0]] = entry[1];
+      });
+      setRelevanceCounts(next);
+    } catch {
+      // 计数失败保持旧角标，不打扰页面
+    } finally {
+      countsFetchingRef.current = false;
+    }
+  }, [relevanceOptions, listExtraFilters, username, userId, projectIds, canViewAllTasks]);
+  fetchCountsRef.current = fetchRelevanceCounts;
+
+  useEffect(() => { fetchRelevanceCounts(); }, [fetchRelevanceCounts]);
+  useEffect(() => { if (tasksRefreshKey > 0) fetchRelevanceCounts(); }, [tasksRefreshKey]);
 
   const statusOptions = Object.entries(STATUS_DISPLAY_MAP).map(([value, label]) => ({ value, label }));
 
   const priorityOptions = Object.entries(PRIORITY_DISPLAY_MAP).map(([value, label]) => ({ value, label }));
 
+  // 工单类型选项：与后端 TaskType 枚举一致的五个值（bug/feature/support/problem/other）
+  const typeOptions = ALL_TYPE_VALUES.map((value) => ({ value, label: TICKET_TYPE_DISPLAY_MAP[value] || value }));
+
   const sortOptions = [
     { value: 'created_at', label: '创建时间' },
     { value: 'updated_at', label: '更新时间' },
+    { value: 'deadline_at', label: '截止时间' },
   ];
 
   const handleRelevanceChange = (value: string) => {
@@ -370,29 +940,268 @@ export default function TasksView() {
     setPage(1);
   };
 
-  const handleStatusChange = (value: string) => {
-    setStatusFilter(value);
+  // 项目过滤：单选切换（传项目 id；空字符串 = 「全部」）。切换后回到第一页。
+  const handleProjectChange = (value: string) => {
+    setProjectFilter(value);
     setPage(1);
   };
 
-  const handlePriorityChange = (value: string) => {
-    setPriorityFilter(value);
+  // 当前选中项目的展示名（无选中或 id 不在名下项目列表时回退为「全部」）
+  const selectedProjectLabel = useMemo(() => {
+    if (!projectFilter) return '全部';
+    const p = myProjects.find((it) => it.id === projectFilter);
+    return p ? (p.name || p.project_code || projectFilter) : '全部';
+  }, [projectFilter, myProjects]);
+
+  // 项目下拉选项：首项「全部」+ 名下项目（名称优先，回退编码）
+  const projectOptions = useMemo<Array<{ value: string; label: string }>>(
+    () => [
+      { value: '', label: '全部' },
+      ...myProjects.map((p) => ({ value: p.id, label: p.name || p.project_code || p.id })),
+    ],
+    [myProjects],
+  );
+
+  // 项目列表加载完成前，URL 中的 projectFilter 可能指向已失效的项目；
+  // 列表就绪后校验一次，命中不到则回退为「全部」，避免过滤出空结果。
+  useEffect(() => {
+    if (!projectFilter || myProjects.length === 0) return;
+    const exists = myProjects.some((p) => p.id === projectFilter);
+    if (!exists) setProjectFilter('');
+  }, [myProjects, projectFilter]);
+
+  // 处理人过滤：单选切换（传 username；空字符串 = 「全部」）。切换后回到第一页。
+  const handleAssigneeChange = (value: string) => {
+    setAssigneeFilter(value);
     setPage(1);
   };
 
-  const getFilterSummary = () => {
-    const parts = [];
-    if (relevanceFilter !== 'all') {
-      parts.push(relevanceOptions.find((o) => o.value === relevanceFilter)?.label);
-    }
-    if (statusFilter !== 'all') {
-      parts.push(statusOptions.find((o) => o.value === statusFilter)?.label);
-    }
-    if (priorityFilter !== 'all') {
-      parts.push(priorityOptions.find((o) => o.value === priorityFilter)?.label);
-    }
-    return parts.length > 0 ? parts.join(' · ') : '筛选';
+  // 当前选中处理人的展示名（无选中或 username 不在候选列表时回退为「全部」）
+  const selectedAssigneeLabel = useMemo(() => {
+    if (!assigneeFilter) return '全部';
+    const u = assignees.find((it) => it.username === assigneeFilter);
+    return u ? (u.name || u.username) : assigneeFilter;
+  }, [assigneeFilter, assignees]);
+
+  // 处理人下拉选项：首项「全部」+ 候选用户（姓名优先，回退账号）
+  const assigneeOptions = useMemo<Array<{ value: string; label: string }>>(
+    () => [
+      { value: '', label: '全部' },
+      ...assignees.map((u) => ({ value: u.username, label: u.name || u.username })),
+    ],
+    [assignees],
+  );
+
+  // 处理人列表加载完成前，URL 中的 assigneeFilter 可能指向已失效的用户；
+  // 列表就绪后校验一次，命中不到则回退为「全部」，避免过滤出空结果。
+  useEffect(() => {
+    if (!assigneeFilter || assignees.length === 0) return;
+    const exists = assignees.some((u) => u.username === assigneeFilter);
+    if (!exists) setAssigneeFilter('');
+  }, [assignees, assigneeFilter]);
+
+  // 创建人过滤：单选切换（传 username；空 = 「全部」），切换后回到第一页
+  const handleCreatorChange = (value: string) => {
+    setCreatorFilter(value);
+    setPage(1);
   };
+  // 当前选中创建人的展示名（无选中或 username 不在候选列表时回退为「全部」）
+  const selectedCreatorLabel = useMemo(() => {
+    if (!creatorFilter) return '全部';
+    const u = assignees.find((it) => it.username === creatorFilter);
+    return u ? (u.name || u.username) : creatorFilter;
+  }, [creatorFilter, assignees]);
+  // 创建人列表就绪后校验 URL 中的 creatorFilter，命中不到则回退为「全部」
+  useEffect(() => {
+    if (!creatorFilter || assignees.length === 0) return;
+    const exists = assignees.some((u) => u.username === creatorFilter);
+    if (!exists) setCreatorFilter('');
+  }, [assignees, creatorFilter]);
+
+  // 多选：单个状态点击切换选中/取消；'all' 表示全部选中
+  const handleStatusToggle = (value: string) => {
+    setStatusFilter((prev) => {
+      if (value === 'all') {
+        return sameSet(prev, ALL_STATUS_VALUES) ? [...DEFAULT_STATUS_VALUES] : [...ALL_STATUS_VALUES];
+      }
+      if (prev.includes(value)) {
+        const next = prev.filter((v) => v !== value);
+        return next.length > 0 ? next : [...DEFAULT_STATUS_VALUES]; // 至少保留默认集
+      }
+      return [...prev, value];
+    });
+    setPage(1);
+  };
+
+  // 多选：单个优先级点击切换选中/取消；'all' 表示全选/取消全选；空时回退为全选
+  const handlePriorityToggle = (value: string) => {
+    setPriorityFilter((prev) => {
+      if (value === 'all') {
+        return sameSet(prev, ALL_PRIORITY_VALUES) ? [] : [...ALL_PRIORITY_VALUES];
+      }
+      if (prev.includes(value)) {
+        const next = prev.filter((v) => v !== value);
+        return next.length > 0 ? next : [...ALL_PRIORITY_VALUES]; // 至少保留一项
+      }
+      return [...prev, value];
+    });
+    setPage(1);
+  };
+
+  // 多选：单个类型点击切换选中/取消；'all' 表示全选/取消全选；空时回退为全选
+  const handleTypeToggle = (value: string) => {
+    setTypeFilter((prev) => {
+      if (value === 'all') {
+        return sameSet(prev, ALL_TYPE_VALUES) ? [] : [...ALL_TYPE_VALUES];
+      }
+      if (prev.includes(value)) {
+        const next = prev.filter((v) => v !== value);
+        return next.length > 0 ? next : [...ALL_TYPE_VALUES]; // 至少保留一项
+      }
+      return [...prev, value];
+    });
+    setPage(1);
+  };
+
+  // 打开筛选弹窗：以当前生效的过滤值初始化草稿，弹窗内改动只作用于草稿
+  const openFilterMenu = () => {
+    setDraft({
+      relevance: relevanceFilter,
+      status: [...statusFilter],
+      project: projectFilter,
+      assignee: assigneeFilter,
+      creator: creatorFilter,
+      priority: [...priorityFilter],
+      type: [...typeFilter],
+      createdStart,
+      createdEnd,
+      resolvedStart,
+      resolvedEnd,
+      closedStart,
+      closedEnd,
+    });
+    setShowFilterMenu(true);
+  };
+  // 草稿字段更新（单选类）
+  const setDraftField = (patch: Partial<{
+    relevance: string; status: string[]; project: string; assignee: string; creator: string; priority: string[]; type: string[];
+    createdStart: string; createdEnd: string;
+    resolvedStart: string; resolvedEnd: string;
+    closedStart: string; closedEnd: string;
+  }>) => setDraft((d) => (d ? { ...d, ...patch } : d));
+  const draftRelevanceChange = (value: string) => setDraftField({ relevance: value });
+  const draftProjectChange = (value: string) => setDraftField({ project: value });
+  const draftAssigneeChange = (value: string) => setDraftField({ assignee: value });
+  const draftCreatorChange = (value: string) => setDraftField({ creator: value });
+  const draftSetCreatedStart = (value: string) => setDraftField({ createdStart: value });
+  const draftSetCreatedEnd = (value: string) => setDraftField({ createdEnd: value });
+  const draftSetResolvedStart = (value: string) => setDraftField({ resolvedStart: value });
+  const draftSetResolvedEnd = (value: string) => setDraftField({ resolvedEnd: value });
+  const draftSetClosedStart = (value: string) => setDraftField({ closedStart: value });
+  const draftSetClosedEnd = (value: string) => setDraftField({ closedEnd: value });
+  // 草稿任务状态切换（与 handleStatusToggle 同逻辑，但作用于草稿）
+  const draftStatusToggle = (value: string) => setDraft((d) => {
+    if (!d) return d;
+    if (value === 'all') {
+      return { ...d, status: sameSet(d.status, ALL_STATUS_VALUES) ? [...DEFAULT_STATUS_VALUES] : [...ALL_STATUS_VALUES] };
+    }
+    if (d.status.includes(value)) {
+      const next = d.status.filter((v) => v !== value);
+      return { ...d, status: next.length > 0 ? next : [...DEFAULT_STATUS_VALUES] };
+    }
+    return { ...d, status: [...d.status, value] };
+  });
+  // 草稿优先级切换（与 handlePriorityToggle 同逻辑，但作用于草稿）
+  const draftPriorityToggle = (value: string) => setDraft((d) => {
+    if (!d) return d;
+    if (value === 'all') {
+      return { ...d, priority: sameSet(d.priority, ALL_PRIORITY_VALUES) ? [] : [...ALL_PRIORITY_VALUES] };
+    }
+    if (d.priority.includes(value)) {
+      const next = d.priority.filter((v) => v !== value);
+      return { ...d, priority: next.length > 0 ? next : [...ALL_PRIORITY_VALUES] };
+    }
+    return { ...d, priority: [...d.priority, value] };
+  });
+  // 草稿类型切换（与 handleTypeToggle 同逻辑，但作用于草稿）
+  const draftTypeToggle = (value: string) => setDraft((d) => {
+    if (!d) return d;
+    if (value === 'all') {
+      return { ...d, type: sameSet(d.type, ALL_TYPE_VALUES) ? [] : [...ALL_TYPE_VALUES] };
+    }
+    if (d.type.includes(value)) {
+      const next = d.type.filter((v) => v !== value);
+      return { ...d, type: next.length > 0 ? next : [...ALL_TYPE_VALUES] };
+    }
+    return { ...d, type: [...d.type, value] };
+  });
+  // 清空草稿（弹窗内「清空选择」）：相关性回默认、状态回默认集（新建/进行中/已挂起/已解决）、
+  // 优先级回「全部」、项目/处理人回「全部」、创建时间清空。仅作用于草稿，未点「确定」前不生效。
+  const draftClear = () => setDraft({
+    relevance: 'mine',
+    status: [...DEFAULT_STATUS_VALUES],
+    project: '',
+    assignee: '',
+    creator: '',
+    priority: [...ALL_PRIORITY_VALUES],
+    type: [...ALL_TYPE_VALUES],
+    createdStart: '',
+    createdEnd: '',
+    resolvedStart: '',
+    resolvedEnd: '',
+    closedStart: '',
+    closedEnd: '',
+  });
+  // 提交草稿生效：将草稿写入正式过滤状态并关闭弹窗（触发 fetchTickets 重新拉取）
+  const commitDraft = () => {
+    if (!draft) { setShowFilterMenu(false); return; }
+    setRelevanceFilter(draft.relevance);
+    setStatusFilter(draft.status);
+    setProjectFilter(draft.project);
+    setAssigneeFilter(draft.assignee);
+    setCreatorFilter(draft.creator);
+    setPriorityFilter(draft.priority);
+    setTypeFilter(draft.type);
+    setCreatedStart(draft.createdStart);
+    setCreatedEnd(draft.createdEnd);
+    setResolvedStart(draft.resolvedStart);
+    setResolvedEnd(draft.resolvedEnd);
+    setClosedStart(draft.closedStart);
+    setClosedEnd(draft.closedEnd);
+    setPage(1);
+    setShowFilterMenu(false);
+  };
+
+  // 弹窗内展示用草稿值（弹窗未打开或 draft 为空时回退到生效值，UI 不致空）
+  const dRelevance = draft?.relevance ?? relevanceFilter;
+  const dStatus = draft?.status ?? statusFilter;
+  const dProject = draft?.project ?? projectFilter;
+  const dAssignee = draft?.assignee ?? assigneeFilter;
+  const dCreator = draft?.creator ?? creatorFilter;
+  const dPriority = draft?.priority ?? priorityFilter;
+  const dType = draft?.type ?? typeFilter;
+  const dCreatedStart = draft?.createdStart ?? createdStart;
+  const dCreatedEnd = draft?.createdEnd ?? createdEnd;
+  const dResolvedStart = draft?.resolvedStart ?? resolvedStart;
+  const dResolvedEnd = draft?.resolvedEnd ?? resolvedEnd;
+  const dClosedStart = draft?.closedStart ?? closedStart;
+  const dClosedEnd = draft?.closedEnd ?? closedEnd;
+  // 弹窗内项目/处理人展示名（基于草稿值解析，未选回退「全部」）
+  const popupProjectLabel = useMemo(() => {
+    if (!dProject) return '全部';
+    const p = myProjects.find((it) => it.id === dProject);
+    return p ? (p.name || p.project_code || dProject) : '全部';
+  }, [dProject, myProjects]);
+  const popupAssigneeLabel = useMemo(() => {
+    if (!dAssignee) return '全部';
+    const u = assignees.find((it) => it.username === dAssignee);
+    return u ? (u.name || u.username) : dAssignee;
+  }, [dAssignee, assignees]);
+  const popupCreatorLabel = useMemo(() => {
+    if (!dCreator) return '全部';
+    const u = assignees.find((it) => it.username === dCreator);
+    return u ? (u.name || u.username) : dCreator;
+  }, [dCreator, assignees]);
 
   const handleSyncExternalTasks = async () => {
     setSyncing(true);
@@ -410,6 +1219,33 @@ export default function TasksView() {
     }
   };
 
+  /** 上传远程方式截图：走评论附件接口拿到 object_path，本地暂存，随建单一并落库 */
+  const handleRemoteShotChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // 清空 value，保证再次选择同一文件也能触发 onChange
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      Toast({ message: '仅支持上传图片截图', theme: 'warning' });
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      Toast({ message: '截图不能超过 5MB', theme: 'warning' });
+      return;
+    }
+    setUploadingShot(true);
+    try {
+      const tempId = `remote-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const objectPath = await uploadCommentAttachment(file, tempId);
+      if (!objectPath) throw new Error('未获取到附件路径');
+      setRemoteShots((p) => [...p, { objectPath, fileName: file.name }]);
+    } catch (err) {
+      Toast({ message: `截图上传失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
+    } finally {
+      setUploadingShot(false);
+    }
+  };
+
   const handleCreateTask = async () => {
     if (!createForm.title.trim()) {
       Toast({ message: '请输入工单标题', theme: 'warning' });
@@ -421,13 +1257,26 @@ export default function TasksView() {
     }
     setCreatingTask(true);
     try {
+      // 远程方式写入 metadata_info（结构化，便于后续查询/展示），截图 object_path 数组写入 attachments
+      const metadata_info = createForm.remote_type
+        ? { remote_type: createForm.remote_type }
+        : null;
+      const payload = {
+        ...createForm,
+        metadata_info,
+        // 附件统一 dict 结构 {path, object_path, filename}，与 tasks.attachments 约定对齐
+        // （path 供详情页下载，object_path 供 AI 路径去重）
+        attachments: remoteShots.length > 0 ? remoteShots.map((s) => ({ path: s.objectPath, object_path: s.objectPath, filename: s.fileName })) : null,
+      };
+      delete (payload as Record<string, unknown>).remote_type;
       await request<Ticket>('/', {
         method: 'POST',
-        body: JSON.stringify(createForm),
+        body: JSON.stringify(payload),
       });
       Toast({ message: '工单创建成功', theme: 'success' });
       setShowCreateModal(false);
-      setCreateForm({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
+      setCreateForm({ title: '', description: '', priority: 'medium', ticket_type: 'problem', remote_type: '' });
+      setRemoteShots([]);
       refreshTasks();
       setPage(1);
     } catch (err) {
@@ -439,6 +1288,7 @@ export default function TasksView() {
 
   return (
     <div className="tasks-view">
+      <SubscriptionReminder username={username} />
       <Navbar
         title="系统任务"
         fixed
@@ -461,69 +1311,70 @@ export default function TasksView() {
                 <span>{syncing ? '同步中…' : '同步外部任务'}</span>
               </button>
             )}
+
+            {/* 责任模块树已迁至后台「用户管理」入口，此处移除临时按钮 */}
             <UserAvatarMenu />
           </div>
         }
       />
 
-      {/* 工单卡片列表 */}
-      <div className="tasks-list-section">
-        <div className="tasks-view__filters">
+      {/* 筛选区（搜索 + 状态 tab）：固定在滚动区外，不随列表滚动上移（对齐历史工单） */}
+      <div className="tasks-view__filters">
           <div className="tasks-view__search-row">
-            <input
-              className="tasks-search"
-              placeholder="搜索工单…"
-              value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            />
+            <div className="tasks-view__search-card">
+              <Search size={16} strokeWidth={2} />
+              <input
+                className="tasks-search"
+                placeholder="搜索工单（支持编号/标题）…"
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              />
+            </div>
           </div>
 
           <div className="tasks-view__sort-row">
-            <span className="tasks-view__sort-label">排序：</span>
+            <span className="tasks-view__sort-label">排序</span>
             <button
-              className={`tasks-view__priority-quick-sort ${sortBy === 'priority' && sortOrder === 'desc' ? 'is-active' : ''}`}
+              className={`tasks-view__sort-option ${sortBy === 'priority' && sortOrder === 'desc' ? 'is-active' : ''}`}
               onClick={() => {
                 setSortBy('priority');
                 setSortOrder('desc');
                 setPage(1);
               }}
             >
-              <span className="tasks-view__priority-icon">!</span>
-              <span>紧急优先</span>
+              紧急优先
             </button>
-            <div className="tasks-view__sort-options">
-              {sortOptions.map((option) => (
-                <button
-                  key={option.value}
-                  className={`tasks-view__sort-option ${sortBy === option.value ? (sortOrder === 'desc' ? 'is-active is-desc' : 'is-active is-asc') : ''}`}
-                  onClick={() => {
-                    if (sortBy === option.value) {
-                      if (sortOrder === 'desc') {
-                        setSortOrder('asc');
-                      } else if (sortOrder === 'asc') {
-                        setSortBy('priority');
-                        setSortOrder('desc');
-                      }
+            {sortOptions.map((option) => (
+              <button
+                key={option.value}
+                className={`tasks-view__sort-option ${sortBy === option.value ? 'is-active' : ''}`}
+                onClick={() => {
+                  if (sortBy === option.value) {
+                    if (sortOrder === 'desc') {
+                      setSortOrder('asc');
                     } else {
-                      setSortBy(option.value);
+                      setSortBy('priority');
                       setSortOrder('desc');
                     }
-                    setPage(1);
-                  }}
-                >
-                  {option.label}
-                  {sortBy === option.value && (
-                    <span className="tasks-view__sort-arrow">
-                      {sortOrder === 'desc' ? '↓' : '↑'}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
+                  } else {
+                    setSortBy(option.value);
+                    setSortOrder('desc');
+                  }
+                  setPage(1);
+                }}
+              >
+                {option.label}
+                {sortBy === option.value && (
+                  <span className="tasks-view__sort-arrow">
+                    {sortOrder === 'desc' ? '↓' : '↑'}
+                  </span>
+                )}
+              </button>
+            ))}
           </div>
 
           <div className="tasks-view__filter-row">
-            <div className="tasks-view__filter-chips">
+            <div ref={filterChipsRef} className="tasks-view__filter-chips">
               {relevanceOptions.map((option) => (
                 <button
                   key={option.value}
@@ -531,132 +1382,158 @@ export default function TasksView() {
                   onClick={() => { handleRelevanceChange(option.value); }}
                 >
                   {option.label}
+                  {typeof relevanceCounts[option.value] === 'number' && (
+                    <span className="tasks-count-badge">
+                      {relevanceCounts[option.value] > 999 ? '999+' : relevanceCounts[option.value]}
+                    </span>
+                  )}
                 </button>
               ))}
-              <div className="tasks-view__filter-divider"></div>
+              <span className="tasks-view__filter-divider" aria-hidden="true" />
+              <button
+                key="status_all"
+                className={`tasks-view__filter-chip ${sameSet(statusFilter, ALL_STATUS_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { handleStatusToggle('all'); }}
+              >
+                全部
+              </button>
               {statusOptions.map((option) => (
                 <button
                   key={option.value}
-                  className={`tasks-view__filter-chip ${statusFilter === option.value ? 'is-active' : ''}`}
-                  onClick={() => { handleStatusChange(option.value); }}
+                  className={`tasks-view__filter-chip ${statusFilter.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { handleStatusToggle(option.value); }}
                 >
                   {option.label}
                 </button>
               ))}
-              <div className="tasks-view__filter-divider"></div>
+              <span className="tasks-view__filter-divider" aria-hidden="true" />
+              {/* 工单类型过滤：多选 chip（全部 + 各类型），与状态/优先级同一模式 */}
+              <button
+                key="type_all"
+                className={`tasks-view__filter-chip ${sameSet(typeFilter, ALL_TYPE_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { handleTypeToggle('all'); }}
+              >
+                全部
+              </button>
+              {typeOptions.map((option) => (
+                <button
+                  key={option.value}
+                  className={`tasks-view__filter-chip ${typeFilter.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { handleTypeToggle(option.value); }}
+                >
+                  {option.label}
+                </button>
+              ))}
+              <span className="tasks-view__filter-divider" aria-hidden="true" />
+              {/* 项目过滤：内联下拉（首项「全部」+ 可搜索） */}
+              <ChipDropdown
+                label={selectedProjectLabel}
+                active={!!projectFilter}
+                options={projectOptions}
+                selectedValue={projectFilter}
+                searchPlaceholder="搜索项目名称 / 编码…"
+                emptyText="未找到匹配项目"
+                onSelect={handleProjectChange}
+              />
+              <span className="tasks-view__filter-divider" aria-hidden="true" />
+              {/* 处理人过滤：内联下拉（首项「全部」+ 可搜索） */}
+              <ChipDropdown
+                label={selectedAssigneeLabel}
+                active={!!assigneeFilter}
+                options={assigneeOptions}
+                selectedValue={assigneeFilter}
+                searchPlaceholder="搜索姓名 / 账号…"
+                emptyText="未找到匹配处理人"
+                onSelect={handleAssigneeChange}
+              />
+              <span className="tasks-view__filter-divider" aria-hidden="true" />
+              {/* 创建人过滤：内联下拉（首项「全部」+ 可搜索） */}
+              <ChipDropdown
+                label={selectedCreatorLabel}
+                active={!!creatorFilter}
+                options={assigneeOptions}
+                selectedValue={creatorFilter}
+                searchPlaceholder="搜索姓名 / 账号…"
+                emptyText="未找到匹配创建人"
+                onSelect={handleCreatorChange}
+              />
+              <span className="tasks-view__filter-divider" aria-hidden="true" />
+              <button
+                key="priority_all"
+                className={`tasks-view__filter-chip ${sameSet(priorityFilter, ALL_PRIORITY_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { handlePriorityToggle('all'); }}
+              >
+                全部
+              </button>
               {priorityOptions.map((option) => (
                 <button
                   key={option.value}
-                  className={`tasks-view__filter-chip ${priorityFilter === option.value ? 'is-active' : ''}`}
-                  onClick={() => { handlePriorityChange(option.value); }}
+                  className={`tasks-view__filter-chip ${priorityFilter.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { handlePriorityToggle(option.value); }}
                 >
                   {option.label}
                 </button>
               ))}
             </div>
-            <button className="tasks-filter-btn" onClick={() => setShowFilterMenu(true)}>
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z" />
-              </svg>
+            <button className="tasks-filter-btn" onClick={openFilterMenu}>
+              <SlidersHorizontal size={14} strokeWidth={2} />
               <span>筛选</span>
             </button>
           </div>
         </div>
 
+      {/* 工单卡片列表：唯一滚动区 */}
+      <div className="tasks-list-section">
         <div className="tasks-cards">
           {loading ? <Loading text="加载中…" /> : tickets.length === 0 ? (
             <div className="tasks-empty">暂无工单</div>
-          ) : tickets.map((t) => (
-            <div key={t.id} className="task-card2" onClick={() => openDetail(t.id)}>
-              <div className="task-card2__head">
-                <div className="task-card2__head-tags">
-                  <span
-                    className="task-card2__status-tag"
-                    style={{ background: getStatusColor(t.status), color: '#fff' }}
-                  >
-                    {normalizeStatus(t.status)}
-                  </span>
-                  <Tag theme={priorityTheme(t.priority)} className="task-card2__priority">
-                    {PRIORITY_DISPLAY_MAP[t.priority] || t.priority}
-                  </Tag>
-                </div>
-                <span className="task-card2__type">{TICKET_TYPE_DISPLAY_MAP[t.ticket_type] || t.ticket_type || '其他'}</span>
-              </div>
-              <div className="task-card2__title">{t.title}</div>
-
-              <div className="task-card2__divider" />
-
-              {/* 人员流转：发起人 → 处理人 */}
-              <div className="task-card2__people">
-                <div className="task-card2__person task-card2__person--creator" title={`发起人：${t.created_by_name || t.created_by || '-'}`}>
-                  <span className="task-card2__avatar">{(t.created_by_name || t.created_by || '?').slice(0, 1).toUpperCase()}</span>
-                  <span className="task-card2__person-text">
-                    <span className="task-card2__person-label">发起人</span>
-                    <span className="task-card2__person-name">{t.created_by_name || t.created_by || '-'}</span>
-                  </span>
-                </div>
-                <span className="task-card2__person-arrow">➡️</span>
-                <div className="task-card2__person task-card2__person--assignee" title={`处理人：${t.assigned_to_name || t.assigned_to || '-'}`}>
-                  <span className="task-card2__avatar task-card2__avatar--assignee">{(t.assigned_to_name || t.assigned_to || '?').slice(0, 1).toUpperCase()}</span>
-                  <span className="task-card2__person-text">
-                    <span className="task-card2__person-label">处理人</span>
-                    <span className="task-card2__person-name">{t.assigned_to_name || t.assigned_to || '-'}</span>
-                  </span>
-                </div>
-              </div>
-
-              {/* 编号 · 项目 · 日期 */}
-              <div className="task-card2__meta">
-                <span className="task-card2__meta-id">#{String(t.id).slice(0, 8)}</span>
-                {t.project_name && <span className="task-card2__meta-project">{t.project_name}</span>}
-                <span className="task-card2__meta-date">
-                  <span className="task-card2__meta-date-label">创建时间</span>
-                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="3" y="4" width="18" height="18" rx="2" />
-                    <path d="M16 2v4M8 2v4M3 10h18" />
-                  </svg>
-                  {formatDateTime(t.created_at).slice(0, 10)}
-                </span>
-              </div>
-            </div>
-          ))}
+          ) : (
+            tickets.map((t) => (
+              <TicketCard key={t.id} t={t} onOpen={openDetail} avatarMap={avatarMap} />
+            ))
+          )}
           <Pagination current={page} total={total} pageSize={pageSize} onChange={setPage} />
         </div>
       </div>
 
       <Popup visible={showFilterMenu} onClose={() => setShowFilterMenu(false)} placement="bottom" showOverlay>
         <div className="filter-menu">
+          <div className="filter-menu__body">
           <div className="filter-menu__section">
             <h4 className="filter-menu__title">相关性</h4>
             <div className="filter-menu__items">
               {relevanceOptions.map((option) => (
                 <button
                   key={option.value}
-                  className={`filter-menu__item ${relevanceFilter === option.value ? 'is-active' : ''}`}
-                  onClick={() => { handleRelevanceChange(option.value); }}
+                  className={`filter-menu__item ${dRelevance === option.value ? 'is-active' : ''}`}
+                  onClick={() => { draftRelevanceChange(option.value); }}
                 >
                   {option.label}
+                  {typeof relevanceCounts[option.value] === 'number' && (
+                    <span className="tasks-count-badge">
+                      {relevanceCounts[option.value] > 999 ? '999+' : relevanceCounts[option.value]}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
           </div>
           <div className="filter-menu__divider"></div>
           <div className="filter-menu__section">
-            <h4 className="filter-menu__title">任务状态</h4>
+            <h4 className="filter-menu__title">任务状态（多选）</h4>
             <div className="filter-menu__items">
               <button
-                key="all"
-                className={`filter-menu__item ${statusFilter === 'all' ? 'is-active' : ''}`}
-                onClick={() => { handleStatusChange('all'); }}
+                key="status_all"
+                className={`filter-menu__item ${sameSet(dStatus, ALL_STATUS_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { draftStatusToggle('all'); }}
               >
                 全部
               </button>
               {statusOptions.map((option) => (
                 <button
                   key={option.value}
-                  className={`filter-menu__item ${statusFilter === option.value ? 'is-active' : ''}`}
-                  onClick={() => { handleStatusChange(option.value); }}
+                  className={`filter-menu__item ${dStatus.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { draftStatusToggle(option.value); }}
                 >
                   {option.label}
                 </button>
@@ -665,45 +1542,162 @@ export default function TasksView() {
           </div>
           <div className="filter-menu__divider"></div>
           <div className="filter-menu__section">
-            <h4 className="filter-menu__title">优先级</h4>
+            <h4 className="filter-menu__title">工单类型（多选）</h4>
             <div className="filter-menu__items">
               <button
-                key="all"
-                className={`filter-menu__item ${priorityFilter === 'all' ? 'is-active' : ''}`}
-                onClick={() => { handlePriorityChange('all'); }}
+                key="type_all"
+                className={`filter-menu__item ${sameSet(dType, ALL_TYPE_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { draftTypeToggle('all'); }}
               >
                 全部
               </button>
-              {priorityOptions.map((option) => (
+              {typeOptions.map((option) => (
                 <button
                   key={option.value}
-                  className={`filter-menu__item ${priorityFilter === option.value ? 'is-active' : ''}`}
-                  onClick={() => { handlePriorityChange(option.value); }}
+                  className={`filter-menu__item ${dType.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { draftTypeToggle(option.value); }}
                 >
                   {option.label}
                 </button>
               ))}
             </div>
           </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">项目</h4>
+            <FilterMenuDropdown
+              label={popupProjectLabel}
+              options={projectOptions}
+              selectedValue={dProject}
+              searchPlaceholder="搜索项目名称 / 编码…"
+              emptyText="未找到匹配项目"
+              onSelect={draftProjectChange}
+            />
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">处理人</h4>
+            <FilterMenuDropdown
+              label={popupAssigneeLabel}
+              options={assigneeOptions}
+              selectedValue={dAssignee}
+              searchPlaceholder="搜索姓名 / 账号…"
+              emptyText="未找到匹配处理人"
+              onSelect={draftAssigneeChange}
+            />
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">创建人</h4>
+            <FilterMenuDropdown
+              label={popupCreatorLabel}
+              options={assigneeOptions}
+              selectedValue={dCreator}
+              searchPlaceholder="搜索姓名 / 账号…"
+              emptyText="未找到匹配创建人"
+              onSelect={draftCreatorChange}
+            />
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">创建时间（选择时间范围）</h4>
+            <DateRangeField
+              startValue={dCreatedStart}
+              endValue={dCreatedEnd}
+              onStartChange={draftSetCreatedStart}
+              onEndChange={draftSetCreatedEnd}
+              startRef={startDtInputRef}
+              endRef={endDtInputRef}
+            />
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">解决时间（选择时间范围）</h4>
+            <DateRangeField
+              startValue={dResolvedStart}
+              endValue={dResolvedEnd}
+              onStartChange={draftSetResolvedStart}
+              onEndChange={draftSetResolvedEnd}
+              startRef={resolvedStartDtInputRef}
+              endRef={resolvedEndDtInputRef}
+            />
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">关单时间（选择时间范围）</h4>
+            <DateRangeField
+              startValue={dClosedStart}
+              endValue={dClosedEnd}
+              onStartChange={draftSetClosedStart}
+              onEndChange={draftSetClosedEnd}
+              startRef={closedStartDtInputRef}
+              endRef={closedEndDtInputRef}
+            />
+          </div>
+          <div className="filter-menu__divider"></div>
+          <div className="filter-menu__section">
+            <h4 className="filter-menu__title">优先级（多选）</h4>
+            <div className="filter-menu__items">
+              <button
+                key="priority_all"
+                className={`filter-menu__item ${sameSet(dPriority, ALL_PRIORITY_VALUES) ? 'is-active' : ''}`}
+                onClick={() => { draftPriorityToggle('all'); }}
+              >
+                全部
+              </button>
+              {priorityOptions.map((option) => (
+                <button
+                  key={option.value}
+                  className={`filter-menu__item ${dPriority.includes(option.value) ? 'is-active' : ''}`}
+                  onClick={() => { draftPriorityToggle(option.value); }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          </div>
+          {/* 底部操作按钮：清空选择 / 确定（并排） */}
+          <div className="filter-menu__actions">
+            <button
+              type="button"
+              className="filter-menu__action filter-menu__action--ghost"
+              onClick={draftClear}
+            >
+              清空选择
+            </button>
+            <button
+              type="button"
+              className="filter-menu__action filter-menu__action--primary"
+              onClick={commitDraft}
+            >
+              确定
+            </button>
+          </div>
         </div>
       </Popup>
 
-      {/* 新建工单悬浮按钮 */}
-      {canManageTasks && (
-        <div className="tasks-view__fab">
+      {/* 新建工单悬浮按钮：液态玻璃质感，可拖动 */}
+      {canManageTasks && fabPos && (
+        <div className="tasks-view__fab" style={{ left: fabPos.x, top: fabPos.y, width: FAB_SIZE }}>
           <button
-            className={`tasks-view__fab-btn${creatingTask ? ' is-submitting' : ''}`}
-            onClick={() => setShowCreateModal(true)}
+            className={`tasks-view__fab-btn${creatingTask ? ' is-submitting' : ''}${fabDragging ? ' is-dragging' : ''}`}
+            onPointerDown={handleFabPointerDown}
+            onPointerMove={handleFabPointerMove}
+            onPointerUp={handleFabPointerUp}
+            onPointerCancel={handleFabPointerUp}
+            onClick={() => { if (!fabDragRef.current.moved) setShowCreateModal(true); }}
             disabled={creatingTask}
             aria-label="新建工单"
           >
+            <span className="tasks-view__fab-highlight" />
             {creatingTask ? (
               <span className="chat-ticket-spinner" />
             ) : (
-              <svg viewBox="0 0 24 24" width="18" height="24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path fill="currentColor" d="M16 1H8V5H16V1Z" />
-                <path fill="currentColor" d="M6 3H3V23H13.8762C13.0139 21.897 12.5 20.5085 12.5 19C12.5 15.4101 15.4101 12.5 19 12.5C19.6978 12.5 20.3699 12.61 21 12.8135V3H18V7H6V3Z" />
-                <path fill="currentColor" d="M24 20H20V24H18V20H14V18H18V14H20V18H24V20Z" />
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" xmlns="http://www.w3.org/2000/svg" className="tasks-view__fab-icon">
+                <path d="M16 1H8V5H16V1Z" />
+                <path d="M6 3H3V23H13.8762C13.0139 21.897 12.5 20.5085 12.5 19C12.5 15.4101 15.4101 12.5 19 12.5C19.6978 12.5 20.3699 12.61 21 12.8135V3H18V7H6V3Z" />
+                <path d="M24 20H20V24H18V20H14V18H18V14H20V18H24V20Z" />
               </svg>
             )}
           </button>
@@ -717,11 +1711,10 @@ export default function TasksView() {
           <h4 className="tasks-create-modal__title">新建工单</h4>
           <Form onSubmit={handleCreateTask}>
             <FormItem label="标题">
-              <Input
+              <ClearableInput
                 value={createForm.title}
                 onChange={(v) => setCreateForm((p) => ({ ...p, title: String(v) }))}
                 placeholder="请输入工单标题"
-                clearable
               />
             </FormItem>
             <FormItem label="类型">
@@ -760,6 +1753,59 @@ export default function TasksView() {
                 rows={4}
               />
             </FormItem>
+            <FormItem label="远程方式">
+              <select
+                className="tasks-create-modal__select"
+                value={createForm.remote_type}
+                onChange={(e) => setCreateForm((p) => ({ ...p, remote_type: e.target.value }))}
+              >
+                {REMOTE_TYPE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </FormItem>
+            {createForm.remote_type && (
+              <FormItem label="远程截图">
+                <div className="tasks-create-modal__remote">
+                  <p className="tasks-create-modal__remote-tip">
+                    请上传 {REMOTE_TYPE_OPTIONS.find((o) => o.value === createForm.remote_type)?.label || '远程'} 的设备码/连接码截图，便于远程协助（选填）。
+                  </p>
+                  {remoteShots.length > 0 && (
+                    <ul className="tasks-create-modal__remote-list">
+                      {remoteShots.map((s, i) => (
+                        <li key={s.objectPath} className="tasks-create-modal__remote-item">
+                          <span className="tasks-create-modal__remote-name">{s.fileName}</span>
+                          <button
+                            type="button"
+                            className="tasks-create-modal__remote-remove"
+                            onClick={() => setRemoteShots((p) => p.filter((_, idx) => idx !== i))}
+                            aria-label="移除截图"
+                          >
+                            移除
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <input
+                    ref={remoteShotInputRef}
+                    type="file"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    onChange={handleRemoteShotChange}
+                  />
+                  <Button
+                    theme="default"
+                    size="small"
+                    onClick={() => remoteShotInputRef.current?.click()}
+                    loading={uploadingShot}
+                    disabled={creatingTask}
+                  >
+                    {uploadingShot ? '上传中…' : '+ 上传截图'}
+                  </Button>
+                </div>
+              </FormItem>
+            )}
             <FormItem>
               <div className="tasks-create-modal__actions">
                 <Button theme="default" block onClick={() => setShowCreateModal(false)}>取消</Button>

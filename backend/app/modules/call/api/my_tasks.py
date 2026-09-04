@@ -12,6 +12,7 @@ from app.modules.tasks.schemas.ticket import (
 )
 from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, TicketType
 from app.modules.tasks.services.ticket_service import TicketService
+from app.core.user_identity import user_matches, to_user_id
 
 router = APIRouter(prefix="/my-tasks", tags=["call-my-tasks"])
 
@@ -74,8 +75,9 @@ async def get_my_task(
     from app.modules.admin.utils_das.security import decode_token
     decoded = decode_token(token)
     username = decoded.get("sub")
+    me = {"username": username, "id": to_user_id(username)}
     
-    if username not in [ticket.created_by, ticket.assigned_to, ticket.customer]:
+    if not user_matches(me, ticket.created_by, ticket.assigned_to, ticket.customer):
         raise HTTPException(status_code=403, detail="无权限查看此任务")
     
     return ticket

@@ -109,7 +109,7 @@ backend/
 | 模块 | 视角 | 路由前缀 | 核心路由 | 主要 Service |
 |---|---|---|---|---|
 | `modules/admin` | 管理 | `/api/admin` | projects / risks / daily-reports / export / users / roles / permissions / resource-manager | AuthService、ProjectService、RiskService、DailyReportService、PermissionChecker、ResourceService |
-| `modules/tasks` | 供给（处理方） | `/api/tasks` | task CRUD + 状态/派单/AI 分配 + comments/attachments + assignable-users（可指派人员选人，仅登录、字段最小化）+ Celery 异步 | TicketService、TaskService（异步） |
+| `modules/tasks` | 供给（处理方） | `/api/tasks` | task CRUD + 状态/派单/AI 分配 + comments/attachments + assignable-users（可指派人员选人，仅登录、字段最小化）+ Celery 异步 + 评论实时 WebSocket（`/{id}/ws`，发布-订阅） | TicketService、TaskService（异步） |
 | `modules/call` | 需求（请求方） | `/api/call` | qa（AI 问答）/ conversations / messages / my-tasks / diagnosis | **ModelService（AI 核心）**、ConversationService、MessageService |
 | `integrations` | 外部集成 | `/api/tasks/sources` | 任务源列表、映射配置 | Engine、Registry、ZentaoAdapter |
 | `wechat` | 微信入口 | `/api/wechat` | OAuth 登录、消息回调、菜单/标签、通知、JS-SDK | WechatService、AuthService、DataService、ProjectTicketService |
@@ -150,6 +150,7 @@ backend/
 6. **通知**：`utils/notification_utils.py` 用线程池异步发 MQTT + 微信模板消息（派单/新讨论/上报）。
 7. **配置防呆**：`APP_ENV=production` 时 config 强制校验 DB/SECRET/微信凭证非空。
 8. **全文检索**：支持 Meilisearch，可降级为数据库 ilike 查询。
+9. **评论区实时 WebSocket**：`modules/tasks/api/ws.py` 以 FastAPI 原生 WebSocket 实现「发布-订阅」式评论实时推送（presence / typing / read_receipt / task.updated），内存房间模型（单进程够用，多实例扩展见设计文档 §9），已读游标持久化到 `task_comment_read` 表；REST 评论/状态接口写库成功后调用 `ws_broadcast_*` 广播。
 
 ## 六、数据模型（19 张表，分 5 域）
 
@@ -157,7 +158,7 @@ backend/
 |---|---|---|
 | 身份与权限 | users / roles / permissions / role_permissions / user_project_roles（含 `report_to_id` 汇报链） | AAS |
 | 项目交付 | project / risk / project_daily_report / project_license / realtime_data / history_data / collection_data | DAS |
-| 任务工单 | tasks / task_comments | HelpDesk（ticket 升格） |
+| 任务工单 | tasks / task_comments / task_comment_read | HelpDesk（ticket 升格）+ 实时已读游标（WS） |
 | 咨询对话 | conversations / messages | AI 问询 |
 | 资源 | resources / resource_folders | HelpDesk resource_manager |
 
@@ -186,6 +187,7 @@ backend/
 | AI 多提供商支持 | ✅ 已实现（DeepSeek/Qwen/GLM/SiliconFlow/OpenAI 兼容） |
 | Meilisearch 全文检索 | ✅ 已实现（可配置启用） |
 | Celery 异步任务 | ✅ 已实现（任务派发、异步处理） |
+| 评论区实时 WebSocket（轻量 IM） | ✅ 已实现（`tasks/api/ws.py`：评论 CRUD 实时 + 在线状态 + 输入中 + 已读回执 + 工单状态推送） |
 
 **已稳固落地的能力**：RBAC 账号体系、统一任务/工单状态机、DAS 项目交付管理、微信公众号外壳（OAuth/菜单/标签/通知）、MinIO 资源管理、Celery 异步任务、禅道任务源集成、多提供商 AI 问答、Qdrant 向量知识库、AI Agent（数据分析/诊断）。
 

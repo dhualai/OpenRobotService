@@ -625,6 +625,7 @@ async def _read_bytes(att: dict) -> Optional[bytes]:
                 from ai.core.minio_client import minio_client
                 bucket = path.split("/")[0]
                 object_name = "/".join(path.split("/")[1:])
+                object_name = minio_client.resolve_key(object_name)
                 data = minio_client.client.get_object(bucket, object_name)
                 return data.read()
             except Exception as e:
@@ -712,7 +713,7 @@ async def analyze_images(attachments: list, task_context: dict = None) -> str:
         raw_descriptions = await llm.complete_vision(
             prompt=desc_prompt, images=images,
             system_prompt="你是 AGV/AMR 调度系统的操作专家。仔细看图，客观描述画面内容、关键数据、异常信号和人工标注。不诊断，不下结论。",
-            max_tokens=600, temperature=0.2,
+            max_tokens=3072, temperature=0.2,
         )
     except Exception as e:
         logger.error(f"Stage 1 VLM failed: {e}")

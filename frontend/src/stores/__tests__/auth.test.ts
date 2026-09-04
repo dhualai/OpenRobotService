@@ -38,6 +38,27 @@ describe('Auth Store', () => {
     });
   });
 
+  describe('hasPermission', () => {
+    it('admin 通配权限：permissions 含 admin 时任意前缀均通过（与后端 require_permission 直通对齐）', () => {
+      useAuthStore.setState({ permissions: ['admin'] });
+      expect(useAuthStore.getState().hasPermission('frontend:admin:other:show')).toBe(true);
+      expect(useAuthStore.getState().hasPermission('frontend:develop')).toBe(true);
+      expect(useAuthStore.getState().hasPermission('backend:project:all')).toBe(true);
+    });
+
+    it('普通用户按前缀/通配匹配', () => {
+      useAuthStore.setState({ permissions: ['frontend:admin:other:show', 'frontend:task:all'] });
+      expect(useAuthStore.getState().hasPermission('frontend:admin:other:show')).toBe(true);
+      expect(useAuthStore.getState().hasPermission('frontend:task:all')).toBe(true);
+      expect(useAuthStore.getState().hasPermission('frontend:develop')).toBe(false);
+    });
+
+    it('空权限一律不通过', () => {
+      useAuthStore.setState({ permissions: [] });
+      expect(useAuthStore.getState().hasPermission('frontend:admin')).toBe(false);
+    });
+  });
+
   describe('login', () => {
     it('should set login state and save to localStorage', () => {
       const authData = {

@@ -4,7 +4,8 @@
 // 复用 api/profile.ts 的 getMyProfile / updateMyProfile / uploadAvatar / avatarUrl，无需后端改动。
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Popup, Button, Toast, Input } from 'tdesign-mobile-react';
+import { Popup, Button, Toast } from 'tdesign-mobile-react';
+import ClearableInput from '@/shared/components/ClearableInput';
 import { UserCircleIcon, CameraIcon, LogoutIcon, EditIcon, CheckIcon, CloseIcon } from 'tdesign-icons-react';
 import { useAuthStore } from '@/stores/auth';
 import { getMyProfile, updateMyProfile, uploadAvatar, avatarUrl } from '@/api/profile';
@@ -165,13 +166,12 @@ export default function UserAvatarMenu() {
             <div className="user-panel__info">
               {editingName ? (
                 <div className="user-panel__name-edit">
-                  <Input
+                  <ClearableInput
                     value={newName}
                     onChange={(v) => setNewName(String(v))}
                     placeholder="请输入姓名"
                     maxlength={MAX_NAME_LENGTH}
                     disabled={savingName}
-                    clearable
                   />
                   <button
                     className="user-panel__name-action user-panel__name-action--confirm"

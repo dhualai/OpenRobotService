@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import yaml
 import os
 import random
@@ -11,10 +11,26 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, List, Dict, Any
 from app.core.config import settings
+from app.core.user_identity import to_usernames
 
 logger = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="notification")
+
+TZ_SHANGHAI = timezone(timedelta(hours=8))
+
+
+def _format_shanghai(dt: Optional[datetime]) -> str:
+    """格式化为东八区时间字符串。
+
+    DB 中 deadline_at / created_at 为 naive UTC（见 backend convert_to_shanghai_time），
+    naive 视为 UTC 后转 +8；aware datetime 直接转 +8。None 返回空串。
+    """
+    if dt is None:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(TZ_SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
 
 class NotificationUtils:
     _mqtt_client = None
@@ -50,6 +66,9 @@ class NotificationUtils:
     DAYILY_TICKET = 2
     YUQU_TICKET = 4
     YUQU_TICKET_STATUS_CHANGE = 6
+    REASSIGN_TICKET = 7
+    MENTION_TICKET = 8
+    OVERDUE_WARNING_TICKET = 9
     TICKET_HOST = "https://usp.ep-zl.com/p/app/tasks"
 
     @classmethod
@@ -166,6 +185,105 @@ class NotificationUtils:
             }
 
     @staticmethod
+    def _resolve_mobiles(user_names: List[str]) -> List[str]:
+        """根据 username/id 列表查 users 表取手机号。
+
+        用于企业微信群机器人 mentioned_mobile_list @ 指定成员。
+        查不到手机号的用户会被跳过。
+        """
+        mobiles: List[str] = []
+        seen = set()
+        try:
+            from app.core.database import db_manager
+        except Exception as e:
+            logger.error(f"企业微信通知：导入 db_manager 失败: {str(e)}")
+            return mobiles
+
+        for uname in user_names or []:
+            try:
+                user = db_manager.get_user(uname) or db_manager.get_user_by_id(uname)
+            except Exception as e:
+                logger.error(f"企业微信通知：查询用户 {uname} 失败: {str(e)}")
+                user = None
+            phone = (user or {}).get("phone")
+            if phone and phone not in seen:
+                seen.add(phone)
+                mobiles.append(phone)
+        return mobiles
+
+    @staticmethod
+    def send_wechat_work_notification(
+        content: str,
+        user_names: List[str] = None,
+        is_all: bool = False,
+    ) -> Dict[str, Any]:
+        """通过企业微信群机器人 webhook 发送文本消息。
+
+        参考 wechat_api.md：向 webhook 发起 HTTP POST，msgtype=text，
+        通过 mentioned_mobile_list 指定被 @ 的成员（手机号列表）。
+        - is_all=True 时 mentioned_mobile_list=["@all"]，@ 群内所有人；
+        - 否则按 user_names 查 users.phone 填充 mentioned_mobile_list。
+
+        webhook 未配置（WECHAT_WORK_WEBHOOK_URL 为空）时跳过推送。
+        """
+        webhook_url = getattr(settings, "WECHAT_WORK_WEBHOOK_URL", "")
+        if not webhook_url:
+            logger.warning("企业微信群机器人 webhook 未配置，跳过推送")
+            return {
+                "code": 500,
+                "message": "企业微信 webhook 未配置",
+                "data": {"status": "failed"},
+            }
+
+        if is_all:
+            mentioned_mobile_list = ["@all"]
+            resolved_mobiles: List[str] = []
+        else:
+            resolved_mobiles = NotificationUtils._resolve_mobiles(to_usernames(user_names))
+            mentioned_mobile_list = resolved_mobiles
+
+        # content 最长不超过 2048 个字节（utf8）
+        payload = {
+            "msgtype": "text",
+            "text": {
+                "content": content,
+                "mentioned_mobile_list": mentioned_mobile_list,
+            },
+        }
+
+        try:
+            import requests
+            resp = requests.post(webhook_url, json=payload, timeout=5)
+            result = resp.json()
+        except Exception as e:
+            logger.error(f"企业微信通知请求异常: {str(e)}")
+            return {
+                "code": 500,
+                "message": f"请求失败: {str(e)}",
+                "data": {"status": "failed", "error": str(e)},
+            }
+
+        if result.get("errcode", 0) == 0:
+            logger.info(f"企业微信通知已发送，@ 手机号: {resolved_mobiles}")
+            return {
+                "code": 200,
+                "message": "企业微信通知已发送",
+                "data": {
+                    "status": "success",
+                    "mentioned_mobile_list": mentioned_mobile_list,
+                },
+            }
+
+        errcode = result.get("errcode")
+        errmsg = result.get("errmsg")
+        logger.error(f"企业微信通知发送失败: errcode={errcode}, errmsg={errmsg}")
+        return {
+            "code": 500,
+            "message": f"发送失败: {errmsg}",
+            "data": {"status": "failed", "errcode": errcode, "errmsg": errmsg},
+        }
+
+    @staticmethod
     def instantiate_template(template_id: int, *params, **args) -> Dict[str, Any]:
         template_file = os.path.join(os.path.dirname(__file__), 'template.yaml')
         with open(template_file, 'r', encoding='utf-8') as f:
@@ -203,7 +321,7 @@ class NotificationUtils:
                 "url": args.get('url', "https://usp.ep-zl.com/p/app/tasks")
             },
             "at": {
-                "user_names": list(set(args.get('user_names', []))),
+                "user_names": list(set(to_usernames(args.get('user_names', [])))),
                 "is_all": args.get('is_all', False)
             }
         }
@@ -361,7 +479,7 @@ class NotificationUtils:
                 finally:
                     loop.close()
 
-                deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
+                deadline_str = _format_shanghai(deadline_at) or _format_shanghai(datetime.now(timezone.utc) + timedelta(days=7))
                 payload = NotificationUtils.instantiate_template(NotificationUtils.NEW_TICKET,
                                                                  ticket_id, processed_project_name, processed_title, operator, deadline_str,
                                                                  user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
@@ -374,6 +492,52 @@ class NotificationUtils:
             except Exception as e:
                 logger.error(f"发送通知失败：{str(e)}")
         
+        asyncio.get_event_loop().run_in_executor(_executor, _send)
+        return {"code": 200, "message": "通知已发送"}
+
+    @staticmethod
+    async def send_ticket_reassign_notification(
+        ticket_id: int,
+        title: str,
+        project_name: str,
+        operator: str,
+        new_assignee: str,
+        deadline_at: Optional[datetime] = None,
+        user_names: List[str] = None,
+        token: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """工单转派提醒（模板 7）。
+
+        通知对象：工单创建人 + 新被指派人。
+        模板字段：[工单名称, 项目名称, 转派人, 新负责人, 要求完成时间]
+        """
+        def _send():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    processed_title = loop.run_until_complete(
+                        NotificationUtils.simplify_title(title)
+                    )
+                    processed_project_name = loop.run_until_complete(
+                        NotificationUtils.simplify_title(project_name)
+                    )
+                finally:
+                    loop.close()
+
+                deadline_str = _format_shanghai(deadline_at) or _format_shanghai(datetime.now(timezone.utc) + timedelta(days=7))
+                payload = NotificationUtils.instantiate_template(NotificationUtils.REASSIGN_TICKET,
+                                                                 processed_title, processed_project_name, operator, new_assignee, deadline_str,
+                                                                 user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
+                loop2 = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop2)
+                try:
+                    loop2.run_until_complete(NotificationUtils.send_notification(payload, token))
+                finally:
+                    loop2.close()
+            except Exception as e:
+                logger.error(f"发送转派通知失败：{str(e)}")
+
         asyncio.get_event_loop().run_in_executor(_executor, _send)
         return {"code": 200, "message": "通知已发送"}
 
@@ -399,20 +563,44 @@ class NotificationUtils:
                                                                      extr.get('pending_count', 0), extr.get('near_overdue_count', 0),
                                                                      extr.get('overdue_count', 0), user_names=user_names)
                 elif notify_type == 6:
-                    deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else ''
-                    create_str = create_at.strftime('%Y-%m-%d %H:%M:%S') if create_at else ''
-                    
+                    # 工单逾期提醒, [工单名称, 项目名称, 逾期天数, 派单时间, 逾期时间]
+                    deadline_str = _format_shanghai(deadline_at)
+                    create_str = _format_shanghai(create_at)
+
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                     try:
                         processed_ticket_name = loop.run_until_complete(
                             NotificationUtils.simplify_title(ticket_name)
                         )
+                        processed_project_name = loop.run_until_complete(
+                            NotificationUtils.simplify_title(project_name)
+                        )
                     finally:
                         loop.close()
-                    
+
                     payload = NotificationUtils.instantiate_template(NotificationUtils.YUQU_TICKET_STATUS_CHANGE,
-                                                                     ticket_id, processed_ticket_name, yuqi_day, create_str, deadline_str,
+                                                                     processed_ticket_name, processed_project_name, yuqi_day, create_str, deadline_str,
+                                                                     user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
+                elif notify_type == 9:
+                    # 工单超时预警提醒, [工单名称, 项目名称, 处理人, 提交时间, 截止时间]
+                    deadline_str = _format_shanghai(deadline_at)
+                    create_str = _format_shanghai(create_at)
+
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        processed_ticket_name = loop.run_until_complete(
+                            NotificationUtils.simplify_title(ticket_name)
+                        )
+                        processed_project_name = loop.run_until_complete(
+                            NotificationUtils.simplify_title(project_name)
+                        )
+                    finally:
+                        loop.close()
+
+                    payload = NotificationUtils.instantiate_template(NotificationUtils.OVERDUE_WARNING_TICKET,
+                                                                     processed_ticket_name, processed_project_name, assigned_name, create_str, deadline_str,
                                                                      user_names=user_names, url=NotificationUtils.TICKET_HOST + f"/{ticket_id}")
                 else:
                     reason = "工单长时间未更新"
@@ -428,8 +616,8 @@ class NotificationUtils:
                     finally:
                         loop.close()
                     
-                    deadline_str = deadline_at.strftime('%Y-%m-%d %H:%M:%S') if deadline_at else ''
-                    create_str = create_at.strftime('%Y-%m-%d %H:%M:%S') if create_at else ''
+                    deadline_str = _format_shanghai(deadline_at)
+                    create_str = _format_shanghai(create_at)
 
                     if notify_type == 1:
                         payload = NotificationUtils.instantiate_template(NotificationUtils.CUIBAN_TICKET,

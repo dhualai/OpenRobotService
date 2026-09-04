@@ -11,7 +11,10 @@ class Settings(BaseSettings):
     AUTH_STR: str = Field(default="/auth")
     
     APP_ENV: str = Field(default="dev")
-    
+
+    # 服务监听端口（main.py 启动时读取，优先来自 backend/.env）
+    PORT: int = Field(default=8400, description="后端服务监听端口")
+
     SECRET_KEY: str = Field(default="")
     JWT_SECRET: str = Field(default="")
     ALGORITHM: str = Field(default="HS256")
@@ -68,6 +71,17 @@ class Settings(BaseSettings):
     FILE_IMAGES: str = Field(default="helpdesk-images")
     
     COMMENT_BUCKET: str = Field(default="helpdesk-comment")
+
+    # ===== 阿里云 OSS（大文件分流：>1GB 写 OSS；同步 OSS 桶内容到 DB 资源表）=====
+    ALIYUN_OSS_ACCESS_KEY_ID: str = Field(default="")
+    ALIYUN_OSS_ACCESS_KEY_SECRET: str = Field(default="")
+    ALIYUN_OSS_ENDPOINT: str = Field(default="https://oss-cn-hangzhou.aliyuncs.com")
+    ALIYUN_OSS_REGION: str = Field(default="cn-hangzhou")
+    ALIYUN_OSS_BUCKET: str = Field(default="")
+    # 桶内统一上传目录前缀（空字符串=桶根目录），例 "uploads" -> 所有文件落在 bucket/uploads/
+    ALIYUN_OSS_UPLOAD_DIR: str = Field(default="")
+    # 分片上传每片大小（MB），仅对 >100MB 大文件生效
+    ALIYUN_OSS_PART_SIZE_MB: int = Field(default=10)
     
     REDIS_HOST: str = Field(default="localhost")
     REDIS_PORT: int = Field(default=6379)
@@ -83,7 +97,14 @@ class Settings(BaseSettings):
     LLM_MODEL_NAME: str = Field(default="deepseek-v4-flash")
     LLM_TEMPERATURE: float = Field(default=0.7)
     LLM_STREAM: bool = Field(default=False)
-    
+    # 二次派单感知增强（M3 高情商回复）：未派到指定人时，tip_detail 是否用 AI 润色。
+    # 默认 False=纯模板（零 LLM 成本、文案确定可复用）；True 时才调 ModelService 润色（失败仍降级模板）。
+    REDISPATCH_TIP_AI_POLISH: bool = Field(default=False)
+
+    # 协商回合上限：接单人↔提单人来回应答最大次数（含首次）。
+    # 达到最后一轮前端展示升级上报，用户点击现有升级上报通道替代管理员介入。
+    TICKET_STEP_MAX_NEGOTIATION_ROUNDS: int = Field(default=3)
+
     CUSTOM_AI_BASE_URL: str = Field(default="")
     CUSTOM_AI_API_PATH: str = Field(default="/api/ask")
     
@@ -93,12 +114,17 @@ class Settings(BaseSettings):
     MQTT_PASSWORD: str = Field(default="")
     
     WECHAT_API_BASE_URL: str = Field(default="https://api.weixin.qq.com")
-    
+
     WECHAT_TOKEN: str = Field(default="")
     WECHAT_APP_ID: str = Field(default="")
     WECHAT_APP_SECRET: str = Field(default="")
     WECHAT_ENCODING_AES_KEY: str = Field(default="")
-    
+
+    # 企业微信群机器人 webhook（消息推送用）。形如：
+    # https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+    # 留空则企业微信通知渠道不启用。
+    WECHAT_WORK_WEBHOOK_URL: str = Field(default="")
+
     SUGGESTIONS_NOTIFICATION_USERS: List[str] = Field(default=[])
     
     MQTT_BROKER: str = Field(default="")
@@ -145,6 +171,19 @@ class Settings(BaseSettings):
     @property
     def WECHAT_USER_LIST_URL(self) -> str:
         return f"{self.WECHAT_API_BASE_URL}/cgi-bin/user/get"
+    
+    @property
+    def WECHAT_USER_INFO_URL(self) -> str:
+        return f"{self.WECHAT_API_BASE_URL}/cgi-bin/user/info"
+
+    @property
+    def WECHAT_USER_BATCH_INFO_URL(self) -> str:
+        return f"{self.WECHAT_API_BASE_URL}/cgi-bin/user/info/batchget"
+
+    @property
+    def WECHAT_USER_SUMMARY_URL(self) -> str:
+        # datacube 数据分析接口无 cgi-bin 前缀（区别于 cgi 类接口）
+        return f"{self.WECHAT_API_BASE_URL}/datacube/getusersummary"
     
     @property
     def WECHAT_MENU_CREATE_URL(self) -> str:

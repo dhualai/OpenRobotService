@@ -1,8 +1,10 @@
 """人员信息同步服务：从后端 users 表拉取派单人数据。
 
-缓存策略：首次请求或缓存过期时全量同步，TTL 10 分钟。
-用户标识使用 users.username（唯一且稳定，真实环境为 wechat_ 前缀），
-与 tasks.created_by / assigned_to 保持一致，避免反复查表。
+缓存策略：更新驱动（update-driven）。
+- 正常缓存 TTL 24h（_CACHE_TTL），平时几乎不查库；
+- 后端保存责任树（画像随 sync_to_user_profiles 变更）后会调用 /api/ai/assigner/reload，
+  通过 invalidate_personnel_cache() 立即失效本缓存，下次派单马上用最新画像。
+用户标识使用 users.id（表主键），与 tasks.created_by / assigned_to 保持一致。
 """
 
 import time
@@ -15,17 +17,26 @@ logger = get_logger("ASSIGNER")
 
 _sync_cache: Optional[List[EngineerProfile]] = None
 _sync_ts: Optional[float] = None
-_CACHE_TTL = 600
+# 更新驱动：长 TTL，靠事件(树保存→reload)失效
+_CACHE_TTL = 86400  # 24h
 
 
 def _fetch_from_users_table() -> list[dict]:
-    """从后端 users 表查询可用于派单的用户（status='active'）。"""
+    """从后端 users 表查询可用于派单的用户（status='active'）。
+
+    company / department 字段：优先通过 company_id / department_id 关联主数据表获取名称，
+    若 ID 为空则回退到旧字符串列（过渡期）。
+    """
     from app.core.db import SessionLocal
     from app.models.identity import UserDB
+    from app.models.organization import Company, Department
 
     db = SessionLocal()
     try:
         rows = db.query(UserDB).filter(UserDB.status == "active").all()
+        # 预加载主数据表映射：id → name
+        comp_map = {c.id: c.name for c in db.query(Company).all()}
+        dept_map = {d.id: d.name for d in db.query(Department).all()}
         results = []
         for u in rows:
             modules = getattr(u, "responsibility_modules", None)
@@ -40,10 +51,29 @@ def _fetch_from_users_table() -> list[dict]:
                 modules = {"其他": modules}
             if not isinstance(modules, dict):
                 modules = {}
+            # 优先使用 ID 关联主数据表获取名称
+            comp_id = getattr(u, "company_id", None)
+            comp_name = None
+            if comp_id:
+                comp_name = comp_map.get(comp_id)
+            if not comp_name:
+                comp_name = getattr(u, "company", None)
+
+            dept_id = getattr(u, "department_id", None)
+            dept_name = None
+            if dept_id:
+                dept_name = dept_map.get(dept_id)
+            if not dept_name:
+                dept_name = getattr(u, "department", None)
+
+            uid = getattr(u, "id", None)
+            if not uid:
+                continue
             results.append({
-                "id": getattr(u, "username", None),  # 统一用 username 作为工程师标识（真实环境为 wechat_ 前缀）
-                "name": getattr(u, "name", None) or u.username,
-                "department": getattr(u, "department", None),
+                "id": uid,
+                "name": getattr(u, "name", None) or uid,
+                "company": comp_name,
+                "department": dept_name,
                 "responsibility_modules": modules or [],
                 "job_level": getattr(u, "job_level", 1),
                 "duty_text": getattr(u, "duty_text", None),
@@ -57,6 +87,9 @@ def _build_profiles(rows: list[dict]) -> List[EngineerProfile]:
     profiles = []
     skipped = 0
     for row in rows:
+        if not row.get("id"):
+            skipped += 1
+            continue
         # ── 准入校验：三个必填字段 ──
         dept = (row.get("department") or "").strip()
         modules = row.get("responsibility_modules") or {}
@@ -79,10 +112,11 @@ def _build_profiles(rows: list[dict]) -> List[EngineerProfile]:
         profiles.append(EngineerProfile(
             id=row["id"],
             name=row["name"],
+            company=row.get("company"),
             department=dept,
             responsibility_modules=modules,
             job_level=row.get("job_level", 1),
-            duty_text=row.get("duty_text"),  # 有更好，没有也行
+            duty_text=row.get("duty_text"),
         ))
 
     if skipped:

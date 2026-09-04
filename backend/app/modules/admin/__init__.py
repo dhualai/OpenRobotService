@@ -15,6 +15,8 @@ from app.modules.admin.api.permissions import router as permission_router
 from app.modules.admin.api.resource_manager import router as resource_manager_router
 from app.modules.admin.api.tickets import ticket_router
 from app.modules.admin.api.dashboard import dashboard_router
+from app.modules.admin.api.module_tree import router as module_tree_router
+from app.modules.admin.api.module_tree_ws import router as module_tree_ws_router
 
 admin_router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -30,3 +32,5 @@ admin_router.include_router(permission_router)
 admin_router.include_router(resource_manager_router)
 admin_router.include_router(ticket_router)
 admin_router.include_router(dashboard_router)
+admin_router.include_router(module_tree_router)
+admin_router.include_router(module_tree_ws_router)

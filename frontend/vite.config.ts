@@ -1,7 +1,9 @@
 /// <reference types="vitest" />
 import { defineConfig } from 'vite';
+import type { ProxyOptions } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import { compression } from 'vite-plugin-compression2';
 
 // ── dev 代理目标：业务后端与 AI 服务已拆分（与 deploy/nginx/conf/conf.d/app_gateway.conf 对齐）─────
 //    业务后端：backend/main.py @8400（auth/admin/tasks/call/wechat）
@@ -20,7 +22,8 @@ const APP_BASE = process.env.VITE_APP_BASE || '/';
 
 export default defineConfig(({ command }) => {
   // 仅 dev(serve) 生效的代理；build 不启动 dev server，生产走 nginx 分发
-  const proxy = command === 'serve' ? {
+  // 显式标注类型：否则空对象分支会被推断为 { '/api/ai'?: undefined } 联合类型，与 server.proxy 不兼容
+  const proxy: Record<string, ProxyOptions> = command === 'serve' ? {
     // AI 服务（/api/ai/*，含 SSE 流式）→ 8401；须排在 /api 之前，保证最长前缀优先命中
     '/api/ai': {
       target: DEV_AI_TARGET,
@@ -32,17 +35,32 @@ export default defineConfig(({ command }) => {
     '/api': {
       target: DEV_BACKEND_TARGET,
       changeOrigin: true,
-      ws: false,
+      // 开启 WebSocket 转发，使 dev 下评论区实时 WS（/api/tasks/{id}/ws）可连后端 8400；
+      // 生产不走 vite，由 nginx 的 Upgrade 透传处理（见 deploy/nginx/conf/nginx.conf）。
+      ws: true,
     },
   } : {};
 
   return {
     base: APP_BASE,
-    plugins: [react()],
+    plugins: [
+      react(),
+      // 构建时预压缩静态资源，配合 nginx `gzip_static on` / `brotli_static on` 直接发送预压缩文件，
+      // 避免 nginx 实时压缩开销，进一步降低首屏传输体积
+      // 注意：vite-plugin-compression2 v2 起选项为 algorithms（数组），旧的 algorithm（单数）会被忽略，
+      // 导致每个实例按默认算法把 .gz/.br 各发一份、同名文件重复告警，故只注册一个实例
+      compression({ algorithms: ['gzip', 'brotliCompress'], threshold: 1024 }),
+    ],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './src'),
       },
+    },
+    // tdesign-mobile-react 各组件按需引入 style 子路径（~60+ 个 */style/index.css），
+    // 不预打包会在页面加载中逐批发现新依赖并触发 "optimized dependencies changed. reloading"
+    // 整页重载（曾导致页面无限刷新循环），故启动时一次性预打包。
+    optimizeDeps: {
+      include: ['tdesign-mobile-react', 'tdesign-icons-react'],
     },
     server: {
       host: '0.0.0.0',
@@ -50,12 +68,38 @@ export default defineConfig(({ command }) => {
       proxy,
     },
     build: {
+      // echarts 按需引入（core + bar/pie + canvas 渲染）后单 chunk 约 555 kB，
+      // 已是 tree-shake 后的合理下限（整包原为 1.1MB），阈值放宽到 600 以避免误报。
+      chunkSizeWarningLimit: 600,
       rollupOptions: {
         output: {
-          manualChunks: {
-            echarts: ['echarts', 'echarts-for-react'],
-            tdesign: ['tdesign-mobile-react'],
-            react: ['react', 'react-dom', 'react-router-dom'],
+          // 按模块路径分组而非按包名整包引入：既能合并出稳定 chunk，又不破坏 tree-shaking。
+          // 此前 `echarts: ['echarts', ...]` 会把整个 echarts 包强制打入，正是 1.1MB chunk 的来源。
+          manualChunks(id: string) {
+            // 仅合并首屏明确依赖的少量共享组件为一个 admin-shared chunk，减少首屏 HTTP 请求数；
+            // 不合并整个 /src/shared —— 否则会把非首屏大模块（hooks/api/stores）一起拖进首屏，体积暴涨（曾达 746KB）。
+            if (
+              id.includes('/src/shared/components/macaronBits') ||
+              id.includes('/src/shared/components/macaronIcons') ||
+              id.includes('/src/shared/components/macaronMonthBars') ||
+              id.includes('/src/shared/components/UserAvatarMenu') ||
+              id.includes('/src/shared/components/SubscriptionReminder')
+            ) {
+              return 'admin-shared';
+            }
+            if (!id.includes('node_modules')) return undefined;
+            if (id.includes('/echarts') || id.includes('/zrender')) return 'echarts';
+            if (id.includes('/tdesign-mobile-react') || id.includes('/tdesign-icons-react')) return 'tdesign';
+            if (id.includes('/pdfjs-dist')) return 'pdfjs';
+            if (
+              id.includes('/react/') ||
+              id.includes('/react-dom/') ||
+              id.includes('/react-router') ||
+              id.includes('/scheduler/')
+            ) {
+              return 'react';
+            }
+            return undefined;
           },
         },
       },

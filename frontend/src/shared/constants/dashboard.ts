@@ -11,15 +11,25 @@
 export type TicketStatusKey =
   | 'new' | 'in_progress' | 'paused' | 'resolved' | 'closed' | 'cancelled';
 
-export interface StatusMeta { key: TicketStatusKey; label: string; color: string; backendReady: boolean; }
+export interface StatusMeta {
+  key: TicketStatusKey;
+  label: string;
+  color: string;
+  /** 马卡龙蓝色阶（blue-1 深 → blue-5 浅），工单状态监测环图/图例用 */
+  tone: string;
+  backendReady: boolean;
+}
 
 export const TICKET_STATUS_LIST: StatusMeta[] = [
-  { key: 'new', label: '新建', color: '#0052d9', backendReady: true },
-  { key: 'in_progress', label: '处理中', color: '#2ba471', backendReady: true },
-  { key: 'paused', label: '暂停/挂起', color: '#e37318', backendReady: true },
-  { key: 'resolved', label: '已解决', color: '#00a870', backendReady: true },
-  { key: 'closed', label: '已关闭', color: '#999999', backendReady: true },
-  { key: 'cancelled', label: '已取消', color: '#d54941', backendReady: true },
+  // 「新建」不参与工单状态监测统计（后端 get_ticket_summary 亦排除 new），仅监控五种状态；
+  // tone 用五状态专用蓝阶 status-1(深) → status-5(浅)，亮度等距拉开、相邻状态对比明显；
+  // 图例顺序由 Dashboard 的 STATUS_TONE_ORDER 控制：
+  // 处理中 status-1 / 暂停挂起 status-2 / 已关闭 status-3 / 已解决 status-4 / 已取消 status-5。
+  { key: 'in_progress', label: '处理中', color: '#2ba471', tone: 'status-1', backendReady: true },
+  { key: 'paused', label: '暂停/挂起', color: '#e37318', tone: 'status-2', backendReady: true },
+  { key: 'closed', label: '已关闭', color: '#999999', tone: 'status-3', backendReady: true },
+  { key: 'resolved', label: '已解决', color: '#00a870', tone: 'status-4', backendReady: true },
+  { key: 'cancelled', label: '已取消', color: '#d54941', tone: 'status-5', backendReady: true },
 ];
 
 export const TICKET_STATUS_MAP: Record<string, StatusMeta> =
@@ -71,13 +81,19 @@ export const PROJECT_STAGE_MAP: Record<string, StageMeta> =
 // ============================================================
 export type UrgencyKey = 'important_urgent' | 'urgent_not_important' | 'important_not_urgent' | 'not_important_not_urgent';
 
-export interface UrgencyMeta { key: UrgencyKey; label: string; color: string; }
+export interface UrgencyMeta {
+  key: UrgencyKey;
+  label: string;
+  color: string;
+  /** 马卡龙蓝色阶（对照 macaron 原型紧急度看板：blue-2 深 → blue-5 浅） */
+  tone: string;
+}
 
 export const URGENCY_LIST: UrgencyMeta[] = [
-  { key: 'important_urgent', label: '重要紧急', color: '#d54941' },
-  { key: 'important_not_urgent', label: '重要不紧急', color: '#e37318' },
-  { key: 'urgent_not_important', label: '紧急不重要', color: '#0052d9' },
-  { key: 'not_important_not_urgent', label: '不重要不紧急', color: '#999999' },
+  { key: 'important_urgent', label: '重要紧急', color: '#d54941', tone: 'blue-2' },
+  { key: 'important_not_urgent', label: '重要不紧急', color: '#e37318', tone: 'blue-3' },
+  { key: 'urgent_not_important', label: '紧急不重要', color: '#0052d9', tone: 'blue-4' },
+  { key: 'not_important_not_urgent', label: '不重要不紧急', color: '#999999', tone: 'blue-5' },
 ];
 
 export const URGENCY_MAP: Record<string, UrgencyMeta> =

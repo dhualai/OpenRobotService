@@ -7,9 +7,12 @@ const Login = lazy(() => import('@/pages/Login'));
 const NoPermission = lazy(() => import('@/pages/NoPermission'));
 const MainLayout = lazy(() => import('@/shared/components/MainLayout'));
 const CallView = lazy(() => import('@/pages/call/CallView'));
+const HistoryTicketsPage = lazy(() => import('@/pages/call/HistoryTicketsPage'));
 const TicketDetailPage = lazy(() => import('@/pages/call/TicketDetailPage'));
 const TasksView = lazy(() => import('@/pages/tasks/TasksView'));
 const TaskDetailPage = lazy(() => import('@/pages/tasks/TaskDetailPage'));
+const OperationLogsPage = lazy(() => import('@/pages/tasks/OperationLogsPage'));
+const DownloadRedirect = lazy(() => import('@/pages/DownloadRedirect'));
 
 // Admin
 const Dashboard = lazy(() => import('@/pages/admin/Dashboard'));
@@ -41,17 +44,22 @@ const RiskList = lazy(() => import('@/pages/admin/RiskList'));
 const RiskEdit = lazy(() => import('@/pages/admin/RiskEdit'));
 const ReportsAnalytics = lazy(() => import('@/pages/admin/ReportsAnalytics'));
 const UserManage = lazy(() => import('@/pages/admin/UserManage'));
+const ModuleTreeManage = lazy(() => import('@/pages/admin/ModuleTreeManage'));
 const RoleManage = lazy(() => import('@/pages/admin/RoleManage'));
 const AssignRole = lazy(() => import('@/pages/admin/AssignRole'));
 const UserSetup = lazy(() => import('@/pages/admin/UserSetup'));
 const PermissionManage = lazy(() => import('@/pages/admin/PermissionManage'));
 const ResourceManage = lazy(() => import('@/pages/admin/ResourceManage'));
+const FileExplorer = lazy(() => import('@/pages/admin/FileExplorer'));
 const DailyReportManage = lazy(() => import('@/pages/admin/DailyReportManage'));
 const WechatManage = lazy(() => import('@/pages/admin/WechatManage'));
 
 export const router = createBrowserRouter([
   { path: '/login', element: <Login /> },
   { path: '/no-permission', element: <NoPermission /> },
+  // 下载中转页：微信内「在浏览器中打开」时，WebView 地址栏需是本页 URL 而非下载链接，
+  // 否则微信拦截下载回退到工单页，用户打开的是工单页 URL 而非下载。
+  { path: '/download', element: <DownloadRedirect /> },
 
   // 工作台主入口：底部三 Tab（我要摇人 / 系统任务 / 后台管理）
   {
@@ -60,9 +68,13 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/call" replace /> },
       { path: 'call', element: <CallView /> },
+      { path: 'call/history', element: <HistoryTicketsPage /> },
       { path: 'call/ticket/:id', element: <TicketDetailPage /> },
       { path: 'tasks', element: <TasksView /> },
       { path: 'tasks/:id', element: <TaskDetailPage /> },
+      { path: 'tasks/:id/operations', element: <OperationLogsPage /> },
+      // 责任模块树（临时）：从系统任务入口进入，绕开依赖微信后台壳
+      { path: 'module-tree', element: <ModuleTreeManage /> },
       {
         path: 'admin',
         element: <Outlet />,
@@ -99,11 +111,13 @@ export const router = createBrowserRouter([
               { path: 'risk-edit/:id?', element: <RiskEdit /> },
               { path: 'reports', element: <ReportsAnalytics /> },
               { path: 'users', element: <UserManage /> },
+              { path: 'module-tree', element: <ModuleTreeManage /> },
               { path: 'roles', element: <RoleManage /> },
               { path: 'assign-role', element: <AssignRole /> },
               { path: 'user-setup', element: <UserSetup /> },
               { path: 'permissions', element: <PermissionManage /> },
               { path: 'resources', element: <ResourceManage /> },
+              { path: 'file-explorer', element: <FileExplorer /> },
               { path: 'wechat', element: <WechatManage /> },
             ],
           },

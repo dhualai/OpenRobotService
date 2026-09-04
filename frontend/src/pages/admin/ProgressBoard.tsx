@@ -4,7 +4,7 @@ import { Loading } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
-import ReactECharts from 'echarts-for-react';
+import ReactECharts from '@/shared/components/ReactECharts';
 
 interface ProgressItem { name: string; progress: number; status: string; }
 

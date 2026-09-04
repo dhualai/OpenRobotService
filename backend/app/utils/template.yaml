@@ -55,3 +55,30 @@ template:
       character_string22: ""
       time4: ""
       time6: ""
+# 工单转派提醒, [工单名称, 项目名称, 转单人, 新负责人, 要求完成时间]
+  7:
+    id: OxgGQeG0FBDq6f0Q7JBZb7M_trjIDBgkCl_JxraW3_Y
+    data:
+      thing4: ""
+      thing14: ""
+      thing12: ""
+      thing7: ""
+      time9: ""
+# 工单被@提醒, [工单名称, 项目名称, 工单状态, 变更原因, 要求完成时间]
+  8:
+    id: sqoVSsxbTKMyFYWdyNnw15F_fWZxzZIlrgLu_YG9Y_Q
+    data:
+      thing13: ""
+      thing8: ""
+      short_thing5: ""
+      thing15: ""
+      time23: ""
+# 工单超时预警提醒, [工单名称, 项目名称, 处理人, 提交时间, 截止时间]
+  9:
+    id: pj9-ng_9J296PMY4QAhiDaKqPMNAnUMHzPUjCRuMiV0
+    data:
+      thing13: ""
+      thing2: ""
+      thing19: ""
+      time11: ""
+      time14: ""

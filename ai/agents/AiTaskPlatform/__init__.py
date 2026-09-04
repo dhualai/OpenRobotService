@@ -18,16 +18,13 @@ logger = get_logger("TASK_AGENT")
 from ai.agents.AiTaskPlatform.pipeline import AiTaskAgent, get_task_agent
 from ai.agents.AiTaskPlatform.log_analyzer import LogSubAgent, LogAnalysisResult
 from ai.agents.AiTaskPlatform.attachments import parse_attachments
-from ai.agents.AiTaskPlatform.analysis import TaskAnalyzer, AnalysisResults
 from ai.agents.AiTaskPlatform.schemas import (
     TaskAnalyzeRequest,
     TaskContext,
     SolutionDraft,
     TaskListRequest,
-    TaskSubmitRequest,
     TaskBrief,
     TaskListResponse,
-    TaskSubmitResponse,
     TaskHealthResponse,
     AttachmentAnalysis,
 )
@@ -39,7 +36,6 @@ __all__ = [
     # 请求模型
     "TaskAnalyzeRequest",
     "TaskListRequest",
-    "TaskSubmitRequest",
     # 数据模型
     "TaskContext",
     "SolutionDraft",
@@ -47,6 +43,5 @@ __all__ = [
     "AttachmentAnalysis",
     # 响应模型
     "TaskListResponse",
-    "TaskSubmitResponse",
     "TaskHealthResponse",
 ]

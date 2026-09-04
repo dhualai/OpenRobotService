@@ -83,6 +83,17 @@ class CodeSkill:
             self.ensure_index()
         return await self._retriever.search(query)
 
+    async def build_semantic(self) -> None:
+        """（离线一次）构建/刷新语义索引（embedding）。
+
+        需 code_index.json 已存在（ensure_index 或手动生成）。构建较慢
+        （1305 函数约 1~2 分钟），不放在首次检索路径里阻塞；调用方视需要触发。
+        构建成功后 self._indexer.semantic 就绪，检索自动启用语义召回。
+        """
+        if not self._indexed:
+            self.ensure_index()
+        await self._indexer.build_semantic(str(_INDEX_CACHE))
+
 
 # ── 模块级单例 ──
 

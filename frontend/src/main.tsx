@@ -5,7 +5,10 @@
 import '@/shared/polyfills';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { RouterProvider, createBrowserRouter, Navigate, Outlet, useRouteError } from 'react-router-dom';
+// React 19 已移除 findDOMNode，antd v5 浮层（DatePicker 日历面板等）依赖它挂载，
+// 需引入官方兼容补丁，否则浮层不弹出（与 tdesign 编辑弹窗的遮挡问题无关，是独立的前提）
+import '@ant-design/v5-patch-for-react-19';
+import { RouterProvider, createBrowserRouter, Navigate, Outlet, useRouteError, useLocation } from 'react-router-dom';
 import { AuthGuard } from '@/shared/utils/authGuard';
 import { RAW_BASE } from '@/config/api';
 import 'tdesign-mobile-react/es/style/index.css';
@@ -103,9 +106,11 @@ const Login = lazyImport(() => import('@/pages/Login'));
 const NoPermission = lazyImport(() => import('@/pages/NoPermission'));
 const MainLayout = lazyImport(() => import('@/shared/components/MainLayout'));
 const CallView = lazyImport(() => import('@/pages/call/CallView'));
+const HistoryTicketsPage = lazyImport(() => import('@/pages/call/HistoryTicketsPage'));
 const TicketDetailPage = lazyImport(() => import('@/pages/call/TicketDetailPage'));
 const TasksView = lazyImport(() => import('@/pages/tasks/TasksView'));
 const TaskDetailPage = lazyImport(() => import('@/pages/tasks/TaskDetailPage'));
+const OperationLogsPage = lazyImport(() => import('@/pages/tasks/OperationLogsPage'));
 
 const Dashboard = lazyImport(() => import('@/pages/admin/Dashboard'));
 const AdminEntries = lazyImport(() => import('@/pages/admin/AdminEntries'));
@@ -136,15 +141,26 @@ const RiskList = lazyImport(() => import('@/pages/admin/RiskList'));
 const RiskEdit = lazyImport(() => import('@/pages/admin/RiskEdit'));
 const ReportsAnalytics = lazyImport(() => import('@/pages/admin/ReportsAnalytics'));
 const UserManage = lazyImport(() => import('@/pages/admin/UserManage'));
+const ModuleTreeManage = lazyImport(() => import('@/pages/admin/ModuleTreeManage'));
+const OrgChart = lazyImport(() => import('@/pages/admin/OrgChart'));
 const RoleManage = lazyImport(() => import('@/pages/admin/RoleManage'));
 const AssignRole = lazyImport(() => import('@/pages/admin/AssignRole'));
 const UserSetup = lazyImport(() => import('@/pages/admin/UserSetup'));
 const PermissionManage = lazyImport(() => import('@/pages/admin/PermissionManage'));
 const ResourceManage = lazyImport(() => import('@/pages/admin/ResourceManage'));
+const FileExplorer = lazyImport(() => import('@/pages/admin/FileExplorer'));
 const DailyReportManage = lazyImport(() => import('@/pages/admin/DailyReportManage'));
 const DailySummaryAgent = lazyImport(() => import('@/pages/admin/DailySummaryAgent'));
 const WechatManage = lazyImport(() => import('@/pages/admin/WechatManage'));
 const UserProfile = lazyImport(() => import('@/pages/admin/UserProfile'));
+
+// /admin/* 兜底：未匹配到的 admin 子路由会命中这里，
+// 打日志便于排查"新增 admin 子路由没生效"类问题（通常是路由没加到 main.tsx）。
+function AdminFallback() {
+  const loc = useLocation();
+  console.warn('[Router] /admin/* catch-all fired for pathname=', loc.pathname, '→ redirect /admin');
+  return <Navigate to="/admin" replace />;
+}
 
 const router = createBrowserRouter([
   {
@@ -162,9 +178,13 @@ const router = createBrowserRouter([
         children: [
           { index: true, element: <Navigate to="/call" replace /> },
           { path: 'call', element: <CallView /> },
+          { path: 'call/history', element: <HistoryTicketsPage /> },
           { path: 'call/ticket/:id', element: <TicketDetailPage /> },
           { path: 'tasks', element: <TasksView /> },
           { path: 'tasks/:id', element: <TaskDetailPage /> },
+          { path: 'tasks/:id/operations', element: <OperationLogsPage /> },
+          // 责任模块树（临时）：从系统任务入口进入，绕开依赖微信后台壳
+          { path: 'module-tree', element: <ModuleTreeManage /> },
           {
             path: 'admin',
             element: <Outlet />,
@@ -202,11 +222,14 @@ const router = createBrowserRouter([
                   { path: 'risk-edit/:id?', element: <RiskEdit /> },
                   { path: 'reports', element: <ReportsAnalytics /> },
                   { path: 'users', element: <UserManage /> },
+                  { path: 'module-tree', element: <ModuleTreeManage /> },
+                  { path: 'org-chart', element: <OrgChart /> },
                   { path: 'roles', element: <RoleManage /> },
                   { path: 'assign-role', element: <AssignRole /> },
                   { path: 'user-setup', element: <UserSetup /> },
                   { path: 'permissions', element: <PermissionManage /> },
                   { path: 'resources', element: <ResourceManage /> },
+                  { path: 'file-explorer', element: <FileExplorer /> },
                   { path: 'wechat', element: <WechatManage /> },
                   { path: 'profile', element: <UserProfile /> },
                 ],
@@ -222,7 +245,7 @@ const router = createBrowserRouter([
       { path: '/call/new-ticket', element: <Navigate to="/call" replace /> },
       { path: '/tasks', element: <Navigate to="/tasks" replace /> },
       { path: '/admin', element: <Navigate to="/admin" replace /> },
-      { path: '/admin/*', element: <Navigate to="/admin" replace /> },
+      { path: '/admin/*', element: <AdminFallback /> },
       { path: '/home', element: <Navigate to="/call" replace /> },
       { path: '*', element: <Navigate to="/call" replace /> },
     ],

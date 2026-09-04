@@ -172,6 +172,7 @@ class BaseIngester(ABC, Generic[T]):
         from qdrant_client.models import (
             PointStruct, Distance, VectorParams,
             SparseVectorParams, SparseIndexParams, SparseVector,
+            PayloadSchemaType,
         )
 
         config = get_ai_config()
@@ -220,6 +221,20 @@ class BaseIngester(ABC, Generic[T]):
                     )
                 },
             )
+            # payload 索引：filter 查询(sub_domain/error_code)必需。
+            # 此前新集合未建索引,retrieve_cheduan 的精确错误码过滤
+            # (error_code MatchAny)和子域过滤(sub_domain MatchValue)全部
+            # 抛「字段未索引」→ 错误码精确检索静默失效(生产实锤)。
+            for _f in ("sub_domain", "error_code"):
+                try:
+                    client.create_payload_index(
+                        collection_name=collection_name,
+                        field_name=_f,
+                        field_schema=PayloadSchemaType.KEYWORD,
+                    )
+                    self._log(f"[INDEX] payload 索引 {_f} 已建")
+                except Exception as e:
+                    self._log(f"[WARN] payload 索引 {_f} 创建失败: {e}")
 
         # 5. 写入（named vectors: dense + sparse）
         self._log(f"[WRITE] upserting {len(chunks)} points...")

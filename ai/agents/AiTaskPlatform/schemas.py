@@ -19,14 +19,6 @@ class TaskListRequest(BaseModel):
     username: str = Field(..., description="当前用户（从 token 解析）")
 
 
-class TaskSubmitRequest(BaseModel):
-    """方案提交请求"""
-    task_id: str = Field(..., description="工单 ID")
-    session_id: str = Field(..., description="对话 session")
-    final_solution: "SolutionDraft" = Field(..., description="工程师编辑后的最终方案")
-    resolution: str = Field(default="resolved", description="resolved | escalated | needs_review")
-
-
 # ============================================================
 # 核心数据模型
 # ============================================================
@@ -77,6 +69,8 @@ class TaskContext(BaseModel):
     project_name: Optional[str] = None
     attachments: List[dict] = Field(default_factory=list)
     metadata_info: Optional[dict] = None
+    attachment_analysis: Dict[str, dict] = Field(default_factory=dict,
+        description="已解读附件记忆 {object_path: {kind, analyzed, summary, analyzed_at}}")
 
     # ── 来自 diagnosis JSON（提单 Agent 交付）──
     problem_summary: str = ""
@@ -87,6 +81,16 @@ class TaskContext(BaseModel):
     robot_type: str = ""
     location: str = ""
     diagnosis_rounds: int = 0
+
+    # ── 最终解决方案 ──
+    # solution: 历史「任务 Agent 提交方案」流程曾写入 metadata_info.diagnosis.solution（dict），
+    #            该流程前端未启用且已移除 submit 接口，此字段多为空，仅作兼容保留。
+    # resolution_summary: 「结束工单」时工程师填写的解决方式（metadata_info.resolution_summary，纯字符串），
+    #            这是实际生产唯一会写入的解决方式字段，@# 引用读取时优先用它。
+    solution: Optional[dict] = None
+    resolution_summary: str = ""
+    # AI 讨论摘要（metadata_info.ai_summary），作为"怎么解决"的补充说明
+    ai_summary: str = ""
 
 
 # ============================================================
@@ -107,12 +111,6 @@ class TaskBrief(BaseModel):
 
 class TaskListResponse(BaseModel):
     """工单列表响应"""
-    code: int = 0
-    data: dict = Field(default_factory=dict)
-
-
-class TaskSubmitResponse(BaseModel):
-    """方案提交响应"""
     code: int = 0
     data: dict = Field(default_factory=dict)
 
