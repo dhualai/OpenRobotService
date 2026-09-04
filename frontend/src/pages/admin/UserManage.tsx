@@ -14,6 +14,7 @@ import {
 } from '@/api/profile';
 import type { OrgOption, ProfileFieldOptions } from '@/api/profile';
 import FilterableSelect from '@/shared/components/FilterableSelect';
+import AvatarImg from '@/shared/components/AvatarImg';
 import {
   MacSearch, MacCheck, MacBuilding2, MacClipboardList,
 } from '@/shared/components/macaronIcons';
@@ -648,17 +649,16 @@ export default function UserManage() {
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div style={{ display: 'flex', gap: 12, flex: 1, minWidth: 0 }}>
-                {user.avatar_resource_id ? (
-                  <img
-                    className="mac-user-card__avatar mac-user-card__avatar--img"
-                    src={avatarUrl(user.avatar_resource_id)}
-                    alt={user.name || user.username}
-                  />
-                ) : (
-                  <span className="mac-user-card__avatar mac-user-card__avatar--initial" aria-hidden>
-                    {avatarInitial(user.name, user.username)}
-                  </span>
-                )}
+                <AvatarImg
+                  className="mac-user-card__avatar mac-user-card__avatar--img"
+                  src={user.avatar_resource_id ? avatarUrl(user.avatar_resource_id) : null}
+                  alt={user.name || user.username}
+                  fallback={(
+                    <span className="mac-user-card__avatar mac-user-card__avatar--initial" aria-hidden>
+                      {avatarInitial(user.name, user.username)}
+                    </span>
+                  )}
+                />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
                     <span className="mac-user-card__title">{user.name || user.username}</span>
@@ -928,17 +928,16 @@ export default function UserManage() {
           ) : detailUser ? (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-                {detailUser.avatar_resource_id ? (
-                  <img
-                    className="mac-detail-avatar mac-detail-avatar--img"
-                    src={avatarUrl(detailUser.avatar_resource_id)}
-                    alt={detailUser.name || detailUser.username}
-                  />
-                ) : (
-                  <span className="mac-detail-avatar mac-detail-avatar--initial" aria-hidden>
-                    {avatarInitial(detailUser.name, detailUser.username)}
-                  </span>
-                )}
+                <AvatarImg
+                  className="mac-detail-avatar mac-detail-avatar--img"
+                  src={detailUser.avatar_resource_id ? avatarUrl(detailUser.avatar_resource_id) : null}
+                  alt={detailUser.name || detailUser.username}
+                  fallback={(
+                    <span className="mac-detail-avatar mac-detail-avatar--initial" aria-hidden>
+                      {avatarInitial(detailUser.name, detailUser.username)}
+                    </span>
+                  )}
+                />
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flex: 1, minWidth: 0 }}>
                   <span className="mac-detail-name">{detailUser.name || detailUser.username}</span>
                   {detailUser.name && detailUser.name !== detailUser.username && (
