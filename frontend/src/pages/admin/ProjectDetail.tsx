@@ -2,14 +2,13 @@
 // 该项目数据经 backend/app/integrations/sources/wecom/adapter.py 从企业微信项目表同步而来，
 // 落库为 backend/app/models/delivery.py 的 Project；本页每一项都直接对应 Project 的一个真实列，
 // 不再使用 field_links 承载编造的扩展字段。system_id 即企业微信原始记录 record_id，用于溯源。
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Loading, Toast, Popup, Upload, Checkbox } from 'tdesign-mobile-react';
 import { Input, Textarea } from 'tdesign-mobile-react';
 import { createRequest, ApiError, clearCache } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { useAuthStore } from '@/stores/auth';
-import { aiGet } from '@/api/ai';
 import { STATUS_OPTIONS, LIFECYCLE_STATUSES, PROJECT_ABORTED, calcLifecycleProgress } from '@/shared/utils/projectLifecycle';
 import { MacCheck, MacChevronRight, MacFileText, MacPencil, MacPlus, MacRefreshCw } from '@/shared/components/macaronIcons';
 
@@ -61,17 +60,6 @@ interface ProjectDetailData {
   settlement_period?: string | null;
 }
 
-// 企业微信台账记录（GET /api/ai/wecom/projects 返回，values 的键为企业微信智能表格列名）
-interface WecomProjectRecord {
-  record_id: string;
-  values?: Record<string, unknown>;
-}
-interface WecomProjectsResponse {
-  code: number;
-  data?: { records?: WecomProjectRecord[] };
-  message?: string;
-}
-
 // 项目阶段枚举与「项目时间进度」计算见 shared/utils/projectLifecycle.ts（与项目进度列表共用同一口径）
 
 // 与 backend ProjectCategory 枚举严格一致
@@ -113,49 +101,7 @@ const SYSTEM_INTEGRATION_OPTIONS = [
   '码垛机/叠盘机', '缠膜机',
 ];
 
-// 企业微信台账列 → 项目详情字段 映射（页面实时展示用；列不存在或为空时回退本地值）
-const WECOM_VALUE_MAP: Record<string, keyof ProjectDetailData> = {
-  '项目编号': 'project_code',
-  '项目名称': 'name',
-  '承接描述': 'description',
-  '调度对接人': 'contact_person',
-  '项目生命周期': 'status',
-  '预计AGV下线时间': 'deployment_date',
-  '更新时间': 'recent_delivery_date',
-  '车型&车数': 'recent_delivery_content',
-  '项目类型': 'project_type',
-  '业绩核算期': 'settlement_period',
-  '方案项目命名': 'project_summary',
-  '销售': 'sales',
-  '售前方案': 'pre_sales',
-  '项目经理': 'project_manager',
-  '实施工程师': 'field_engineer',
-  '内部编号': 'internal_code',
-  '项目区域/地点': 'project_region',
-  '项目区域': 'project_region',
-  '总车数': 'total_vehicle_count',
-  '控制器选择': 'controller_vendor',
-  '服务器部署': 'server_deployment_status',
-  '部署版本': 'deployment_version',
-  '最终交付时间': 'final_delivery_date',
-  '预计走向': 'expected_trend',
-  '人员计划': 'personnel_plan',
-  '特别关注': 'special_attention',
-  '风险和任务描述': 'risk_task_description',
-  '项目管理策略': 'management_strategy',
-  '风险承接': 'risk_carrying_type',
-  '任务执行情况': 'task_execution_status',
-};
-
-// 企业微信「项目类型」列 → 项目类别（与后端 adapter 的 CATEGORY_MAP 一致）
-const WECOM_CATEGORY_MAP: Record<string, string> = {
-  '受关注项目': '重要紧急',
-  '普通项目': '重要不紧急',
-  '一般项目': '紧急不重要',
-  '其他': '不紧急不重要',
-};
-
-const AUTO_SYNC_INTERVAL = 5 * 60 * 1000; // 5 分钟自动刷新同步
+// 字段映射与 CATEGORY 转换已统一在后端 adapter.py 中实现，前端只展示 DB 数据，不再做合并。
 
 type PickerKey = 'status' | 'category_basis' | 'project_type' | 'risk_carrying_type' | 'project_region' | 'controller_vendor' | 'server_deployment_status';
 
@@ -195,12 +141,12 @@ export default function ProjectDetail() {
   const [systemIntegrationOpen, setSystemIntegrationOpen] = useState(false);
   const [systemIntegrationDraft, setSystemIntegrationDraft] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [liveValues, setLiveValues] = useState<Record<string, unknown> | null>(null);
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
   const [syncFailed, setSyncFailed] = useState(false);
-  const liveInFlight = useRef(false);
-  const overriddenRef = useRef<Set<keyof ProjectDetailData>>(new Set());
+  const [syncing, setSyncing] = useState(false);
   const request = createRequest(API_CONFIG.ADMIN.BASE_URL, 'Admin');
+  // tasks 路由独立于 admin 路由，单独建一个 request 实例供 /sources/wecom/projects/sync 调用
+  const tasksRequest = createRequest(API_CONFIG.TASKS.BASE_URL, 'Tasks');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -221,66 +167,31 @@ export default function ProjectDetail() {
     load();
   }, [isNew, load]);
 
-  // 将企业微信台账实时值合并进 project（仅覆盖映射列；用户手动编辑过的字段不再被覆盖）
-  const applyLiveToProject = useCallback((values: Record<string, unknown>) => {
-    setProject((prev) => {
-      if (!prev) return prev;
-      const patch: Partial<ProjectDetailData> = {};
-      const raw = (k: string) => { const v = values[k]; return v == null ? '' : String(v).trim(); };
-      for (const [col, field] of Object.entries(WECOM_VALUE_MAP) as [string, keyof ProjectDetailData][]) {
-        if (overriddenRef.current.has(field)) continue;
-        const v = raw(col);
-        if (!v) continue;
-        if (field === 'total_vehicle_count') { const n = Number(v); if (Number.isFinite(n)) { (patch as Record<string, unknown>)[field] = n; } continue; }
-        (patch as Record<string, unknown>)[field] = v;
-      }
-      if (!overriddenRef.current.has('category_basis')) {
-        const t = raw('项目类型');
-        if (t && WECOM_CATEGORY_MAP[t]) patch.category_basis = WECOM_CATEGORY_MAP[t];
-      }
-      return Object.keys(patch).length ? { ...prev, ...patch } : prev;
-    });
-  }, []);
-
-  // 拉取企业微信台账实时数据（GET /api/ai/wecom/projects），按 项目编号/record_id 匹配；
-  // 用户正在输入时跳过本轮，避免打断编辑
-  const fetchLiveWecom = useCallback(async (code: string, systemId?: string | null) => {
-    const active = document.activeElement;
-    if (liveInFlight.current || (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA'))) return;
-    liveInFlight.current = true;
+  // 触发后端企业微信项目同步（POST /api/tasks/sources/wecom/projects/sync），
+  // 后端拉取企微 Smartsheet → 字段映射 → upsert project 表；完成后重载本页详情。
+  // 与 dags/wecom_projects_sync_dag.py 共用同一入口，DB 是单一数据源，前端不再做合并。
+  // 5 分钟自动轮询已迁移到 Airflow DAG，本函数仅由「立即同步」按钮触发。
+  const triggerSync = useCallback(async () => {
+    if (syncing) return;
+    setSyncing(true);
     try {
-      const res = await aiGet<WecomProjectsResponse>('/wecom/projects');
-      const records = res?.data?.records || [];
-      const match = records.find((r) =>
-        String(r.values?.['项目编号'] ?? '') === code || (systemId && r.record_id === systemId),
-      );
-      if (match?.values) {
-        setLiveValues(match.values);
-        applyLiveToProject(match.values);
-        setSyncFailed(false);
-      }
+      await tasksRequest('/sources/wecom/projects/sync', { method: 'POST' });
+      // 请求层有 5 分钟 GET 缓存，sync 后必须清掉，load() 才能拿到 DB 最新值
+      clearCache();
+      await load();
+      setSyncFailed(false);
       setLastSyncTime(new Date().toLocaleTimeString());
-    } catch {
+    } catch (err) {
       setSyncFailed(true);
+      Toast({ message: `同步失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
     } finally {
-      liveInFlight.current = false;
+      setSyncing(false);
     }
-  }, [applyLiveToProject]);
-
-  // 首次进入 + 每 5 分钟自动刷新同步（后台标签页暂停轮询）
-  useEffect(() => {
-    if (isNew || !project?.project_code) return;
-    fetchLiveWecom(project.project_code, project.system_id);
-    const timer = setInterval(() => {
-      if (!document.hidden) fetchLiveWecom(project.project_code, project.system_id);
-    }, AUTO_SYNC_INTERVAL);
-    return () => clearInterval(timer);
-  }, [isNew, project?.project_code, project?.system_id, fetchLiveWecom]);
+  }, [syncing, load]);
 
   // 保存单个 Project 字段（真实列），仅回写发生变化的那一个字段；
   // 新建模式下项目尚未落库，仅更新本地草稿，待「创建」时一并提交
   const saveField = async (key: keyof ProjectDetailData, value: unknown) => {
-    overriddenRef.current.add(key); // 用户手动编辑的字段不再被企业微信实时同步覆盖
     if (isNew) {
       setProject((prev) => (prev ? { ...prev, [key]: value } : prev));
       return;
@@ -417,20 +328,21 @@ export default function ProjectDetail() {
         fixed
       />
       <div style={{ padding: 16, paddingTop: 64 }}>
-        {/* 企业微信实时同步状态条（对照原型：浅灰圆角条 + 刷新图标 + 立即同步） */}
+        {/* 企业微信同步状态条：5min 自动轮询已迁移至 Airflow DAG，本页仅保留手动「立即同步」 */}
         {!isNew && (
           <div className="mac-sync-banner">
             <span className="mac-sync-banner__icon"><MacRefreshCw size={14} /></span>
-            <span className="mac-sync-banner__title">企业微信实时数据</span>
+            <span className="mac-sync-banner__title">企业微信数据</span>
             <span className={syncFailed ? 'mac-sync-banner__time is-error' : 'mac-sync-banner__time'}>
-              {syncFailed ? '同步失败，将自动重试' : lastSyncTime ? `上次同步 ${lastSyncTime} · 每5分钟自动刷新` : '同步中…'}
+              {syncFailed ? '同步失败，点击重试' : lastSyncTime ? `上次同步 ${lastSyncTime}` : '点击右侧按钮立即同步'}
             </span>
             <button
               type="button"
               className="mac-sync-banner__sync"
-              onClick={() => project?.project_code && fetchLiveWecom(project.project_code, project.system_id)}
+              onClick={triggerSync}
+              disabled={syncing}
             >
-              立即同步
+              {syncing ? '同步中...' : '立即同步'}
             </button>
           </div>
         )}
@@ -504,6 +416,7 @@ export default function ProjectDetail() {
           <EditableField label="项目名称" value={project.name} onSave={(v) => saveField('name', v)} required={isNew} />
           <EditableField label="项目编号" value={project.project_code} onSave={(v) => saveField('project_code', v)} required={isNew} />
           <EditableField label="内部编号" value={project.internal_code || ''} placeholder="未填写" onSave={(v) => saveField('internal_code', v)} />
+          <EditableField label="搬运数据自动同步编号" value={project.system_id || ''} placeholder="未填写" onSave={(v) => saveField('system_id', v)} />
           <EditableField label="项目描述" value={project.description || ''} placeholder="未填写" multiline onSave={(v) => saveField('description', v)} />
           <PickerField label="项目类型" value={project.project_type || '未设置'} onClick={() => setActivePicker('project_type')} />
           <PickerField label="项目区域/地点" value={project.project_region || '未设置'} onClick={() => setActivePicker('project_region')} />
@@ -619,23 +532,6 @@ export default function ProjectDetail() {
           <EditableField label="实施工程师" value={project.field_engineer || ''} placeholder="未指定" onSave={(v) => saveField('field_engineer', v)} />
           <EditableField label="人员计划" value={project.personnel_plan || ''} placeholder="无" multiline onSave={(v) => saveField('personnel_plan', v)} />
         </section>
-
-        {/* 企业微信台账原文（实时）—— 展示智能表格全部列，未映射到结构化字段的列也在此可见 */}
-        {!isNew && liveValues && Object.keys(liveValues).length > 0 && (
-          <section className="mac-card mac-card--pad" style={{ marginBottom: 12 }}>
-            <h3 className="mac-card-title">企业微信台账 · 实时</h3>
-            {Object.entries(liveValues).map(([k, v]) => {
-              const text = v == null ? '' : String(v).trim();
-              if (!text) return null;
-              return (
-                <div key={k} className="mac-ledger-row">
-                  <span className="mac-ledger-row__key">{k}</span>
-                  <span className="mac-ledger-row__value">{text}</span>
-                </div>
-              );
-            })}
-          </section>
-        )}
       </div>
 
       {/* 项目阶段 / 项目类别 / 项目类型 / 风险承接 —— 单选弹窗（真实枚举，与 backend 对应 Enum 一致） */}

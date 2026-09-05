@@ -1622,8 +1622,12 @@ async def complete_task_step(
     ticket.step_phase_round = int(getattr(ticket, 'step_phase_round', 0) or 0) + 1
     ticket.updated_at = func.now()
 
-    # 阶段完成 = 当前操作人"提案"推进到下一节点，记入回合
+    # 阶段完成 = 当前操作人"提案"推进到下一节点：记录操作方（回合归属）
     round_meta = _apply_step_update_meta(ticket, current_user, username)
+    # 进入新节点 = 新一轮协商的开始：协商回合重置为第 1 回合（处理人推进提案为该节点首轮），
+    # 避免上一节点累计的回合把新节点直接带到"满回合/升级上报"状态
+    ticket.step_negotiation_round = 1
+    round_meta = {**round_meta, "bump_round": False, "round": 1}
     await db.commit()
 
     # 操作日志 + 系统评论

@@ -57,6 +57,20 @@ def _ensure_contact_person_role(project_id: str, user_id: str) -> bool:
     return ok
 
 
+def _to_int(value: Any) -> Optional[int]:
+    """将企业微信字段值转 int；空值或非数字返回 None。
+
+    与前端 applyLiveToProject 中 Number(v) & isFinite 的处理保持一致，
+    非数字值（如 'N/A'、'待定'）一律落 None，不污染数据库。
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 WECOM_PROJECT_API_URL = "https://usp.ep-zl.com/p/api/ai/wecom/projects"
 
 STATUS_MAP = {
@@ -101,22 +115,33 @@ def map_wecom_record_to_project(record: Dict[str, Any]) -> Dict[str, Any]:
         "contact_person": contact_person,
         "contact_person_id": _resolve_contact_person_id(contact_person),
         "status": STATUS_MAP.get(lifecycle, lifecycle) or "待开始",
-        "expected_trend": "",
-        "issues": 0,
-        "risks": 0,
-        "personnel_plan": "",
-        "risk_list": "",
+        # 以下字段与前端 WECOM_VALUE_MAP 一一对应（ProjectDetail.tsx#L117-L148），
+        # 空值统一转 None，sync_projects 的 update_data 会过滤空值不覆盖 DB 既有值
+        "expected_trend": values.get("预计走向") or None,
+        "personnel_plan": values.get("人员计划") or None,
         "deployment_date": values.get("预计AGV下线时间", ""),
-        "deployment_version": "",
+        "deployment_version": values.get("部署版本") or None,
         "recent_delivery_date": values.get("更新时间", ""),
         "recent_delivery_content": values.get("车型&车数", ""),
-        "final_delivery_date": "",
+        "final_delivery_date": values.get("最终交付时间") or None,
         "project_summary": f"{values.get('方案项目命名', '')} - {values.get('车型&车数', '')}",
-        "task_execution_status": "",
+        "task_execution_status": values.get("任务执行情况") or None,
+        "internal_code": values.get("内部编号") or None,
+        "project_region": values.get("项目区域/地点") or values.get("项目区域") or None,
+        "total_vehicle_count": _to_int(values.get("总车数")),
+        "controller_vendor": values.get("控制器选择") or None,
+        "server_deployment_status": values.get("服务器部署") or None,
+        "special_attention": values.get("特别关注") or None,
+        "risk_task_description": values.get("风险和任务描述") or None,
+        "management_strategy": values.get("项目管理策略") or None,
+        "risk_carrying_type": values.get("风险承接") or None,
+        # 以下字段不在企微映射列，保留默认初始化值（空值会被 sync_projects 过滤，不覆盖 DB）
+        "issues": 0,
+        "risks": 0,
+        "risk_list": "",
         "field_links": None,
         "category_basis": CATEGORY_MAP.get(values.get("项目类型", ""), "重要紧急"),
         "project_type": values.get("项目类型") or None,
-        "system_id": record.get("record_id", ""),
         "settlement_period": values.get("业绩核算期") or None,
         "sales": values.get("销售") or None,
         "pre_sales": values.get("售前方案") or None,

@@ -11,10 +11,11 @@ import json
 import time
 from datetime import datetime
 import threading
-import os
+import sys
 import asyncio
 import traceback
 from data_service import data_service
+from db import SessionLocal, Project
 
 # MQTT服务器配置
 MQTT_CONFIG = {
@@ -29,12 +30,59 @@ MQTT_CONFIG = {
 SUBSCRIBE_TOPIC = 'data/1.0/EP/+/+'
 
 
-# 项目标识映射表: MQTT topic中的project段 → 系统内project编号
-# 未在映射表中的project将被丢弃，不入库
-PROJECT_MAPPING = {
-    'AJNQ': '24',
-    'AJBQSC': '67'
-}
+# 项目标识映射表: MQTT topic中的project段(=project.system_id) → 系统内project编号(project.id/code)
+# 未在映射表中的project将被丢弃，不入库。
+# 映射不再硬编码，改为从数据库 project 表动态加载（模型定义见同目录 db.py 的 Project）：
+#   key   = project.system_id（MQTT/外部系统标识，如 AJNQ）
+#   value = project.id（系统内项目编号，如 24；与 code 一致）
+# 仅要求 system_id 非空；内存缓存 + 定时刷新，DB 不可用时沿用上次缓存。
+PROJECT_MAPPING_REFRESH_SECONDS = 300
+_project_mapping = {}
+_project_mapping_loaded_at = 0.0
+
+
+def load_project_mapping(force: bool = False) -> dict:
+    """从 project 表加载 {system_id: project_id} 映射。
+
+    - 仅要求 system_id 非空（不过滤 status）
+    - 缓存 TTL 为 PROJECT_MAPPING_REFRESH_SECONDS；force=True 强制刷新（如 MQTT 重连后）
+    - 查询失败时保留旧缓存并返回，保证 DB 短暂不可用不影响消息转发
+    """
+    global _project_mapping, _project_mapping_loaded_at
+    if not force and _project_mapping and (time.time() - _project_mapping_loaded_at < PROJECT_MAPPING_REFRESH_SECONDS):
+        return _project_mapping
+    try:
+        db = SessionLocal()
+        try:
+            rows = db.query(
+                Project.system_id, Project.id
+            ).filter(Project.system_id.isnot(None)).all()
+        finally:
+            db.close()
+
+        mapping = {}
+        for system_id, project_id in rows:
+            if not system_id or not project_id:
+                continue
+            key = str(system_id).strip()
+            if not key:
+                continue
+            value = str(project_id).strip()
+            if key in mapping and mapping[key] != value:
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [WARN] system_id={key} "
+                      f"对应多个项目编号({mapping[key]} / {value})，以后者为准")
+            mapping[key] = value
+
+        _project_mapping = mapping
+        _project_mapping_loaded_at = time.time()
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 项目映射加载成功: "
+              f"共{len(mapping)}条")
+    except Exception as e:
+        # DB 不可用时沿用旧缓存；重置计时避免每条消息都打 DB
+        _project_mapping_loaded_at = time.time()
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [WARN] 加载项目映射失败，"
+              f"沿用上次缓存({len(_project_mapping)}条): {e}")
+    return _project_mapping
 
 
 class MQTTSubscriber:
@@ -59,6 +107,8 @@ class MQTTSubscriber:
                 client.subscribe(SUBSCRIBE_TOPIC, qos=1)
                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 已订阅主题: {SUBSCRIBE_TOPIC}")
                 self.last_reconnect_time = time.time()
+                # 连接/重连后强制刷新项目映射
+                load_project_mapping(force=True)
             else:
                 print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] MQTT连接失败，返回码: {rc}")
 
@@ -82,12 +132,13 @@ class MQTTSubscriber:
                 indicator = topic_parts[4]
                 print(f"[{ts}] [TOPIC] raw_project={project}, indicator={indicator}")
 
-                # 项目标识映射: MQTT topic中的project段 → 系统内project编号
-                # 未在映射表中的project将被丢弃，不入库
-                if project not in PROJECT_MAPPING:
+                # 项目标识映射: MQTT topic中的project段(=project.system_id) → 系统内project编号
+                # 映射从DB project表加载(带缓存)，未在映射中的project将被丢弃，不入库
+                project_mapping = load_project_mapping()
+                if project not in project_mapping:
                     print(f"[{ts}] [WARN] 未找到项目映射,丢弃消息: raw_project={project}, topic={msg.topic}")
                     return
-                project = PROJECT_MAPPING[project]
+                project = project_mapping[project]
                 print(f"[{ts}] [MAPPED] mapped_project={project}")
 
                 # 解析消息内容
@@ -234,13 +285,34 @@ class MQTTSubscriber:
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 断开连接时出错: {e}")
 
 
+def test_mapping_mode():
+    """测试运行模式：仅加载并输出项目映射字典后退出，不连接MQTT。"""
+    print("数据接入服务 - 测试模式（仅输出项目映射）")
+    print("=" * 50)
+    mapping = load_project_mapping(force=True)
+    print("-" * 50)
+    print(f"项目映射字典（project.system_id → project.id，共 {len(mapping)} 条）:")
+    print(mapping)
+    print("-" * 50)
+    if not mapping:
+        print("[WARN] 映射为空：请检查数据库连接（DATABASE_URL）或 project 表是否有 system_id 非空的记录")
+
+
 def main():
     """主函数"""
+    # 测试模式: --test-mapping，仅输出项目映射字典后退出
+    if "--test-mapping" in sys.argv:
+        test_mapping_mode()
+        return
+
     print("数据接入服务 - MQTT订阅 → DAS接口持久化")
     print("=" * 50)
     print(f"订阅主题: {SUBSCRIBE_TOPIC}")
     print(f"转发目标: data_service.insert_project_data → /api/data/insert/")
     print("=" * 50)
+
+    # 启动时预加载项目映射（project.system_id → project.id）
+    load_project_mapping(force=True)
 
     try:
         subscriber = MQTTSubscriber()
