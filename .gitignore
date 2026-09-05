@@ -65,6 +65,9 @@ codebuddy.md
 # ===== CodeBuddy 本地规则（个人纪律/项目约定，仅本地，不入库；用户规则在用户目录本就不跟踪）=====
 .codebuddy/rules/
 
+# ===== WorkBuddy 本地记忆/配置（跨会话记忆与自动化配置，仅本地，不入库）=====
+.workbuddy/
+
 # ===== topo-pack 临时工件 / 授权包（含敏感 token，禁止入库）=====
 .tmp_*/
 .tmp_import_pack.py
