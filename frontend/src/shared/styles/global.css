@@ -2573,6 +2573,11 @@ html, body, #root {
   gap: 6px;
   min-width: 0;
 }
+/* 「待你确认」标识的呼吸圆点：阶段性协商轮到我且未达成一致 */
+@keyframes task-card2-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.75); }
+}
 /* 状态：浅灰底 + 蓝阶文字（唯一带色文字），终态为灰色 */
 .task-card2__status-tag {
   font-size: 11.5px;

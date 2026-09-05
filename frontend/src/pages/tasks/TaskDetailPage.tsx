@@ -1561,7 +1561,7 @@ export default function TaskDetailPage() {
           const currIdx = stepTemplate.findIndex((s) => s.id === detail.curr_step_id);
           const stepName = detail.curr_step_name || (currIdx >= 0 ? stepTemplate[currIdx].step_name : '');
           const endtimeText = detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '';
-          // 最新协商理由：从系统评论中解析（negotiate-step 评论含"理由："）。
+          // 最新协商理由：从系统评论中解析（negotiate-step 评论含"缘由："/旧文案"理由："）。
           // 倒序扫描评论：遇到"完成阶段/打回重开"等阶段边界评论则说明当前节点尚无协商理由。
           const latestNegotiateReason = (() => {
             const list = detail.comments ?? [];
@@ -1572,8 +1572,8 @@ export default function TaskDetailPage() {
               const c = sorted[i]?.content || '';
               // 阶段边界：推进到新节点 / 打回重开 → 当前节点暂无协商理由
               if (c.includes('完成阶段「') || c.includes('标记工单未解决') || c.includes('打回重开')) return '';
-              const m = c.match(/理由：([\s\S]+)$/);
-              if (m && (c.includes('协商节点') || c.includes('协商将节点'))) {
+              const m = c.match(/[理缘]由：([\s\S]+)$/);
+              if (m && (c.includes('预期「') || c.includes('协商节点') || c.includes('协商将节点'))) {
                 // 去掉系统附加的回合/首次响应/警示后缀
                 return m[1]
                   .replace(/（本轮协商回合[\s\S]*$/, '')
@@ -1668,7 +1668,7 @@ export default function TaskDetailPage() {
                       background: isEscalated ? '#fef3c7' : pillBg, color: isEscalated ? '#92400e' : pillColor, fontSize: 12, fontWeight: 500, lineHeight: 1.4,
                     }}
                   >
-                    {isEscalated ? `已升级×${escalateCount} · 回合 ${round}` : `交涉回合 ${round} / ${maxRound}`}
+                    {isEscalated ? `已升级×${escalateCount} · 不受回合限制` : `交涉回合 ${round} / ${maxRound}`}
                   </span>
                 </div>
               </div>

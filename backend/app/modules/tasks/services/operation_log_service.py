@@ -3,21 +3,35 @@
 统一管理工单操作的记录与查询。
 """
 import logging
-from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
+import asyncio
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, and_
+from sqlalchemy import select, desc, and_, text
 from sqlalchemy.sql import func
 
 from app.models.task import TaskOperationLog, OperationType
-from app.core.database import db_manager
+from app.core.database import db_manager, AsyncSessionLocal
 from app.core.user_identity import same_identity
 
 logger = logging.getLogger(__name__)
 
 # 查看记录去重时间窗口（秒）
 VIEW_DEDUP_WINDOW = 300  # 5 分钟
+
+# 查看日志写入的进程内串行锁：去重是「SELECT 窗口内记录 → 无则 INSERT」两步，
+# 并发的详情请求会在彼此提交前都查不到记录，导致同一用户同一秒插入重复 VIEW 行。
+# 按 (task_id, operator) 加锁把检查+写入串行化（单 worker 部署即可消除竞态）。
+_view_locks: Dict[tuple, asyncio.Lock] = {}
+
+
+def _get_view_lock(task_id: int, username: str) -> asyncio.Lock:
+    key = (task_id, username)
+    lock = _view_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _view_locks[key] = lock
+    return lock
 
 
 def get_role_prefix(
@@ -168,34 +182,46 @@ class OperationLogService:
             创建的 TaskOperationLog 实例，去重或失败返回 None
         """
         try:
-            # 去重：查询最近时间窗口内是否已有同一用户的 VIEW 记录
-            cutoff_time = datetime.now() - timedelta(seconds=VIEW_DEDUP_WINDOW)
-            logger.info(f"[OpLog] log_view: task_id={task_id}, username={username}, passed user_name={user_name!r}")
-            dedup_query = select(TaskOperationLog).where(
-                and_(
-                    TaskOperationLog.task_id == task_id,
-                    TaskOperationLog.operator == username,
-                    TaskOperationLog.operation_type == OperationType.VIEW,
-                    TaskOperationLog.created_at >= cutoff_time,
-                )
-            ).limit(1)
-            result = await db.execute(dedup_query)
-            if result.scalar_one_or_none():
-                logger.info(f"[OpLog] log_view deduped: task_id={task_id}, operator={username}")
-                return None  # 去重，不重复记录
+            # 同一工单 + 同一用户的查看日志写入串行化，消除并发请求下
+            # 「都查不到窗口内记录 → 都插入」的竞态
+            async with _get_view_lock(task_id, username):
+                # 去重检查与写入均使用独立短会话：
+                # 1. 独立会话拥有新的事务读视图，能读到其它并发请求刚提交的 VIEW 行
+                #    （调用方 db 会话此前已执行查询，REPEATABLE READ 下读视图固定）；
+                # 2. 不触碰调用方会话——rollback/close 会 expire 已加载的 ticket 对象，
+                #    导致后续响应序列化时异步懒加载失败（MissingGreenlet → 500）。
+                async with AsyncSessionLocal() as dedup_db:
+                    # 窗口边界必须与 created_at 同源：created_at 由 MySQL NOW() 填充
+                    # （服务器会话时区，可能为 UTC），而 Python datetime.now() 是 OS 本地时区。
+                    # 混用会导致比较恒不成立、去重失效，因此用 DATE_SUB(NOW(), ...) 在 DB 端计算。
+                    # VIEW_DEDUP_WINDOW 为内部常量，可直接内联。
+                    cutoff_expr = func.date_sub(func.now(), text(f'INTERVAL {VIEW_DEDUP_WINDOW} SECOND'))
+                    logger.info(f"[OpLog] log_view: task_id={task_id}, username={username}, passed user_name={user_name!r}")
+                    dedup_query = select(TaskOperationLog).where(
+                        and_(
+                            TaskOperationLog.task_id == task_id,
+                            TaskOperationLog.operator == username,
+                            TaskOperationLog.operation_type == OperationType.VIEW,
+                            TaskOperationLog.created_at >= cutoff_expr,
+                        )
+                    ).limit(1)
+                    result = await dedup_db.execute(dedup_query)
+                    if result.scalar_one_or_none():
+                        logger.info(f"[OpLog] log_view deduped: task_id={task_id}, operator={username}")
+                        return None  # 去重，不重复记录
 
-            # 写入新的查看记录（log 内部会自动补全 operator_name）
-            resolved = _resolve_operator_name(username, user_name)
-            role = get_role_prefix(ticket_created_by, ticket_assigned_to, username)
-            logger.info(f"[OpLog] log_view writing: task_id={task_id}, operator={username}, resolved_name={resolved!r}, role={role!r}")
-            return await OperationLogService.log(
-                db=db,
-                task_id=task_id,
-                op_type=OperationType.VIEW,
-                operator=username,
-                operator_name=user_name,
-                description=f"{role}{resolved} 查看了工单" if role else f"{resolved} 查看了工单",
-            )
+                    # 写入新的查看记录（独立会话，log 内部自动补全 operator_name 并提交）
+                    resolved = _resolve_operator_name(username, user_name)
+                    role = get_role_prefix(ticket_created_by, ticket_assigned_to, username)
+                    logger.info(f"[OpLog] log_view writing: task_id={task_id}, operator={username}, resolved_name={resolved!r}, role={role!r}")
+                    return await OperationLogService.log(
+                        db=dedup_db,
+                        task_id=task_id,
+                        op_type=OperationType.VIEW,
+                        operator=username,
+                        operator_name=user_name,
+                        description=f"{role}{resolved} 查看了工单" if role else f"{resolved} 查看了工单",
+                    )
         except Exception as e:
             logger.error(f"Failed to log view for task {task_id}: {str(e)}", exc_info=True)
             return None
@@ -244,7 +270,8 @@ class OperationLogService:
             # 累加停留时长（多次回传累加，覆盖同一查看会话的多个可见性周期）
             existing = log.duration_seconds or 0
             log.duration_seconds = existing + duration_seconds
-            log.ended_at = datetime.now()
+            # 与 created_at 同源（MySQL NOW()），避免 Python 本地时区与 DB 时区差 8 小时
+            log.ended_at = func.now()
             await db.commit()
             logger.info(
                 f"[OpLog] update_view_duration: task_id={task_id}, operator={username}, "

@@ -261,7 +261,6 @@ def _apply_step_update_meta(ticket, current_user, username: str) -> Dict[str, An
 
     返回 dict：{bump_round: bool, round_reached_max: bool}，供调用方决定是否发软提醒。
     """
-    from sqlalchemy import func
     side = _actor_side(ticket, current_user, username)
     prev_side = getattr(ticket, 'step_last_updated_by', None)
 
@@ -902,18 +901,32 @@ async def update_task(
                 changed_fields.append(key)
         
         if op_type_str == 'escalate':
-            # 升级上报：escalate_count +1，协商回合重置为1，不再受回合上限限制
+            # 升级上报：escalate_count +1，协商回合清零，且升级后不再受回合上限限制
+            # （处理人可一锤定音直接设置节点时间；双方仍可继续协商但不卡回合）
             prev_count = int(getattr(ticket, 'escalate_count', 0) or 0)
             ticket.escalate_count = prev_count + 1
             ticket.step_negotiation_round = 0
             ticket.curr_step_agreed = False
+            # 节点结束时间对齐当前工单截止时间（升级时以工单 deadline 为准）
+            ticket.curr_step_endtime = ticket.deadline_at
+            # 回合归属：记录升级操作方侧标识 → 轮到另一方响应
+            # （提单人升级 → step_last_updated_by='creator'，轮到处理人一锤定音）
+            esc_side = _actor_side(ticket, current_user, username)
+            if esc_side:
+                ticket.step_last_updated_by = esc_side
+                ticket.step_last_updated_at = func.now()
             await OperationLogService.log(
                 db=db, task_id=task_id, op_type=OperationType.ESCALATE,
                 operator=username, operator_name=user_name,
-                detail={"escalate_count": prev_count + 1, "round_reset": 1},
-                description=f"{_role}{user_name} 升级了工单（第{prev_count + 1}次），协商回合重置为1，不再受限" if _role else f"{user_name} 升级了工单（第{prev_count + 1}次），协商回合重置为1，不再受限",
+                detail={
+                    "escalate_count": prev_count + 1,
+                    "round_reset": 0,
+                    "actor_side": esc_side,
+                    "curr_step_endtime": ticket.curr_step_endtime.isoformat() if ticket.curr_step_endtime else None,
+                },
+                description=f"{_role}{user_name} 升级了工单（第{prev_count + 1}次），协商不再受回合上限限制" if _role else f"{user_name} 升级了工单（第{prev_count + 1}次），协商不再受回合上限限制",
             )
-            await _add_system_comment(db, task_id, f"{user_name} 升级了工单（第{prev_count + 1}次），协商回合重置为1，不再受回合上限限制", username, token)
+            await _add_system_comment(db, task_id, f"{user_name} 升级了工单（第{prev_count + 1}次），协商不再受回合上限限制", username, token)
         elif op_type_str == 'return':
             await OperationLogService.log(
                 db=db, task_id=task_id, op_type=OperationType.RETURN,
@@ -1759,11 +1772,9 @@ async def negotiate_step(
     _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
     # 节点时间按东八区展示（DB 为 naive UTC）
     endtime_label = _format_shanghai(endtime)
-    action_desc = (
-        f"协商将节点「{old_step_name}」调整为「{ticket.curr_step_name}」（节点时间 {endtime_label}）"
-        if step_changed
-        else f"协商节点「{ticket.curr_step_name}」时间（{endtime_label}）"
-    )
+    action_desc = f"预期「{ticket.curr_step_name}」时间（{endtime_label}）"
+    if step_changed:
+        action_desc += f"，节点由「{old_step_name}」调整为「{ticket.curr_step_name}」"
     await OperationLogService.log(
         db=db,
         task_id=task_id,
@@ -1776,7 +1787,7 @@ async def negotiate_step(
             "curr_step_endtime": endtime.isoformat() if endtime else None,
             "negotiation_round": round_meta["round"],
         },
-        description=f"{_role}{user_name} {action_desc}" if _role else f"{user_name} {action_desc}",
+        description=f"{_role}{user_name} {action_desc}。缘由：{reason}" if _role else f"{user_name} {action_desc}。缘由：{reason}",
     )
     # 首次响应触发的状态变更单独记录一条 STATUS_CHANGE 日志，与 respond 接口保持一致
     if status_transitioned:
@@ -1790,7 +1801,7 @@ async def negotiate_step(
             detail={"from": old_status, "to": TicketStatus.IN_PROGRESS.value},
             description=f"{_role}{user_name} 首次响应协商节点，工单进入处理中" if _role else f"{user_name} 首次响应协商节点，工单进入处理中",
         )
-    comment_lines = [f"{user_name} {action_desc}，理由：{reason}"]
+    comment_lines = [f"{user_name} {action_desc}。缘由：{reason}"]
     if status_transitioned:
         comment_lines.append("（首次响应，工单状态变更为「处理中」）")
     if round_meta["bump_round"]:
@@ -1856,7 +1867,7 @@ async def set_step_time(
     await db.commit()
     await db.refresh(ticket)
 
-    user_name = await _resolve_display_name(current_user, ticket, db, token)
+    user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
     _role = "处理人" if _is_assignee else ("管理员" if is_admin else "")
 
     await OperationLogService.log(
@@ -1871,7 +1882,7 @@ async def set_step_time(
     )
     await _add_system_comment(
         db, task_id,
-        f"{user_name} 设置节点时间为 {endtime.strftime('%Y-%m-%d %H:%M')}（升级上报后一锤定音，不再协商）",
+        f"{user_name} 设置节点时间为 {_format_shanghai(endtime)}（升级上报后一锤定音，不再协商）",
         username, token,
     )
     try:

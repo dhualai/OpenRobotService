@@ -20,6 +20,7 @@ import { formatDateTime } from '@/shared/utils/url';
 // 相关性分类过滤条件：列表查询与分类角标计数共用（底部导航「待我处理」角标复用同一口径）
 import { buildRelevanceFilters, type TicketFilterCondition } from '@/shared/utils/ticketFilters';
 import { Search, ArrowRight, Calendar, SlidersHorizontal, ChevronDown } from 'lucide-react';
+import { isSameUser } from '@/shared/utils/userIdentity';
 import { avatarUrl } from '@/api/profile';
 import { useHorizontalScroll } from '@/shared/hooks/useHorizontalScroll';
 import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
@@ -41,6 +42,11 @@ interface Ticket {
   created_by?: string; created_by_name?: string;
   assigned_to?: string; assigned_to_name?: string;
   participants?: string[];
+  // 阶段性协商（用于「轮到我且未达成一致」标识）
+  curr_step_id?: number | null;
+  curr_step_name?: string | null;
+  curr_step_agreed?: boolean;
+  step_last_updated_by?: 'assigned' | 'creator' | null;
 }
 
 /** username / user_id → avatar_resource_id 的查找表；缺失时回退为首字母头像 */
@@ -241,12 +247,27 @@ const buildFilterParams = (filter: {
 // 马卡龙极简工单卡片：状态为唯一带色文字（蓝阶），优先级蓝阶色块，
 // 头像统一灰底白字（无头像时）/ 圆形头像图片（有 avatar_resource_id 时），
 // 信息层级靠字号与字重区分（参考 macaron-minimal-ui 设计）。
-function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) => void; avatarMap?: AvatarMap }) {
+function TicketCard({ t, onOpen, avatarMap, currentUserId, currentUsername }: { t: Ticket; onOpen: (id: string) => void; avatarMap?: AvatarMap; currentUserId?: string; currentUsername?: string }) {
   const creator = t.created_by_name || t.created_by || '-';
   const assignee = t.assigned_to_name || t.assigned_to || '-';
   const participants = (t.participants || []).filter(Boolean);
   const creatorAvatarId = t.created_by ? avatarMap?.get(t.created_by) : undefined;
   const assigneeAvatarId = t.assigned_to ? avatarMap?.get(t.assigned_to) : undefined;
+
+  // 「轮到我且未达成一致」：当前用户是提单人/处理人、工单进入阶段性协商、
+  // 最近一次 step 操作来自对方（或尚无操作且我是处理人）、且尚未协商一致。
+  // 身份比对与详情页同口径：created_by/assigned_to 可能存 user_id 或 username，需双重匹配。
+  const isCreator = isSameUser(t.created_by, currentUserId, currentUsername);
+  const isAssignee = isSameUser(t.assigned_to, currentUserId, currentUsername);
+  const lastStepBy = t.step_last_updated_by;
+  const myTurn = (!lastStepBy && isAssignee)
+    || (lastStepBy === 'assigned' && isCreator)
+    || (lastStepBy === 'creator' && isAssignee);
+  const stepPendingMyResponse = !!t.curr_step_id
+    && !t.curr_step_agreed
+    && (t.status === 'new' || t.status === 'in_progress')
+    && myTurn;
+
   return (
     <div className="task-card2" onClick={() => onOpen(t.id)}>
       <div className="task-card2__head">
@@ -257,6 +278,26 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
           <span className="task-card2__priority" data-priority={(t.priority || '').toLowerCase()}>
             {PRIORITY_DISPLAY_MAP[t.priority] || t.priority || '中'}
           </span>
+          {stepPendingMyResponse && (
+            <span
+              title="阶段性协商轮到你操作，且双方尚未达成一致"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                padding: '2px 8px', borderRadius: 999, fontSize: 12, fontWeight: 600,
+                color: '#b45309', background: 'rgba(245,158,11,0.14)',
+                border: '1px solid rgba(245,158,11,0.45)',
+              }}
+            >
+              <span
+                style={{
+                  width: 6, height: 6, borderRadius: '50%', background: '#f59e0b',
+                  animation: 'task-card2-pulse 1.2s ease-in-out infinite',
+                }}
+              />
+              时间节点 · 待确认
+              {/* 待你确认{t.curr_step_name ? ` · ${t.curr_step_name}` : ''} */}
+            </span>
+          )}
         </div>
         <span className="task-card2__type">{TICKET_TYPE_DISPLAY_MAP[t.ticket_type] || t.ticket_type || '其他'}</span>
       </div>
@@ -1483,7 +1524,7 @@ export default function TasksView() {
             <div className="tasks-empty">暂无工单</div>
           ) : (
             tickets.map((t) => (
-              <TicketCard key={t.id} t={t} onOpen={openDetail} avatarMap={avatarMap} />
+              <TicketCard key={t.id} t={t} onOpen={openDetail} avatarMap={avatarMap} currentUserId={userId} currentUsername={username} />
             ))
           )}
           <Pagination current={page} total={total} pageSize={pageSize} onChange={setPage} />
