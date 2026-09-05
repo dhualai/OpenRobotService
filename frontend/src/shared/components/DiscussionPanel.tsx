@@ -9,6 +9,7 @@ import { Button, Toast, Popover } from 'tdesign-mobile-react';
 import { Paperclip, Send, Smile } from 'lucide-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
+import AvatarImg from '@/shared/components/AvatarImg';
 import EmojiPicker from '@/shared/components/EmojiPicker';
 import { replaceWechatEmoji, parseStandaloneEmoji } from '@/shared/emoji/wechat';
 
@@ -972,22 +973,20 @@ export default function DiscussionPanel({
       {/* 在线成员（实时，按用户去重） */}
       {taskId !== undefined && online.length > 0 && (
         <div className="detail-chat-presence">
-          {online.map((o) => {
-            const av = o.avatar_resource_id ? avatarUrl(o.avatar_resource_id) : '';
-            return av ? (
-              <img
-                key={o.username}
-                className="detail-chat-presence__avatar detail-chat-presence__avatar--img"
-                src={av}
-                alt={o.name || o.username}
-                title={o.name || o.username}
-              />
-            ) : (
-              <span key={o.username} className="detail-chat-presence__avatar" title={o.name || o.username}>
-                {initialOf(o.username)}
-              </span>
-            );
-          })}
+          {online.map((o) => (
+            <AvatarImg
+              key={o.username}
+              className="detail-chat-presence__avatar detail-chat-presence__avatar--img"
+              src={o.avatar_resource_id ? avatarUrl(o.avatar_resource_id) : null}
+              alt={o.name || o.username}
+              title={o.name || o.username}
+              fallback={(
+                <span className="detail-chat-presence__avatar" title={o.name || o.username}>
+                  {initialOf(o.username)}
+                </span>
+              )}
+            />
+          ))}
           <span className="detail-chat-presence__text">{online.length} 人在线</span>
         </div>
       )}
@@ -1026,10 +1025,13 @@ export default function DiscussionPanel({
             const avSrc =
               (c.created_by_avatar_resource_id ? avatarUrl(c.created_by_avatar_resource_id) : '') ||
               avatarSrcOf(c.created_by);
-            const avatarEl = avSrc ? (
-              <img className="detail-chat-avatar detail-chat-avatar--img" src={avSrc} alt={authorName} />
-            ) : (
-              <span className="detail-chat-avatar">{initialOf(c.created_by)}</span>
+            const avatarEl = (
+              <AvatarImg
+                className="detail-chat-avatar detail-chat-avatar--img"
+                src={avSrc || null}
+                alt={authorName}
+                fallback={<span className="detail-chat-avatar">{initialOf(c.created_by)}</span>}
+              />
             );
             return (
               <Fragment key={c.id}>
@@ -1171,21 +1173,19 @@ export default function DiscussionPanel({
                           title="查看已读名单"
                         >
                           <span className="detail-chat-read__avatars">
-                            {visibleAvatars.map((r) => {
-                              const av = r.avatar_resource_id ? avatarUrl(r.avatar_resource_id) : '';
-                              return av ? (
-                                <img
-                                  key={r.username}
-                                  className="detail-chat-read__avatar"
-                                  src={av}
-                                  alt={r.name || r.username}
-                                />
-                              ) : (
-                                <span key={r.username} className="detail-chat-read__avatar">
-                                  {(r.name || r.username || '?').slice(0, 1).toUpperCase()}
-                                </span>
-                              );
-                            })}
+                            {visibleAvatars.map((r) => (
+                              <AvatarImg
+                                key={r.username}
+                                className="detail-chat-read__avatar"
+                                src={r.avatar_resource_id ? avatarUrl(r.avatar_resource_id) : null}
+                                alt={r.name || r.username}
+                                fallback={(
+                                  <span className="detail-chat-read__avatar">
+                                    {(r.name || r.username || '?').slice(0, 1).toUpperCase()}
+                                  </span>
+                                )}
+                              />
+                            ))}
                             {overflowCount > 0 && (
                               <span className="detail-chat-read__more">+{overflowCount}</span>
                             )}
@@ -1265,22 +1265,22 @@ export default function DiscussionPanel({
                 <div className="detail-chat-readlist__title">已读 {readers.length} 人</div>
                 {readers.length > 0 ? (
                   <div className="detail-chat-readlist__body">
-                    {readers.map((r) => {
-                      const av = r.avatar_resource_id ? avatarUrl(r.avatar_resource_id) : '';
-                      return (
-                        <div key={r.username} className="detail-chat-readlist__item">
-                          {av ? (
-                            <img className="detail-chat-readlist__avatar" src={av} alt={r.name || r.username} />
-                          ) : (
+                    {readers.map((r) => (
+                      <div key={r.username} className="detail-chat-readlist__item">
+                        <AvatarImg
+                          className="detail-chat-readlist__avatar"
+                          src={r.avatar_resource_id ? avatarUrl(r.avatar_resource_id) : null}
+                          alt={r.name || r.username}
+                          fallback={(
                             <span className="detail-chat-readlist__avatar">
                               {(r.name || r.username || '?').slice(0, 1).toUpperCase()}
                             </span>
                           )}
-                          <span className="detail-chat-readlist__name">{r.name || r.username}</span>
-                          <span className="detail-chat-readlist__time">{formatReadTime(r.read_at)}</span>
-                        </div>
-                      );
-                    })}
+                        />
+                        <span className="detail-chat-readlist__name">{r.name || r.username}</span>
+                        <span className="detail-chat-readlist__time">{formatReadTime(r.read_at)}</span>
+                      </div>
+                    ))}
                   </div>
                 ) : (
                   <div className="detail-chat-readlist__empty">暂无已读记录</div>

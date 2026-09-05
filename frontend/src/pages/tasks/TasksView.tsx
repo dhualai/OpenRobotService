@@ -8,6 +8,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Navbar, Toast, Loading, Popup, Button, Textarea, Form, FormItem } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
+import AvatarImg from '@/shared/components/AvatarImg';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import Pagination from '@/shared/components/Pagination';
@@ -267,30 +268,26 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
       {/* 人员流转：发起人 →（参与人）→ 处理人 */}
       <div className="task-card2__people">
         <div className="task-card2__person" title={`发起人：${creator}`} aria-label={`发起人：${creator}`}>
-          {creatorAvatarId ? (
-            <img
-              className="task-card2__avatar task-card2__avatar--img"
-              src={avatarUrl(creatorAvatarId)}
-              alt={creator}
-            />
-          ) : (
-            <span className="task-card2__avatar">{creator.slice(0, 1).toUpperCase()}</span>
-          )}
+          <AvatarImg
+            className="task-card2__avatar task-card2__avatar--img"
+            src={creatorAvatarId ? avatarUrl(creatorAvatarId) : null}
+            alt={creator}
+            fallback={<span className="task-card2__avatar">{creator.slice(0, 1).toUpperCase()}</span>}
+          />
           <span className="task-card2__person-name">{creator}</span>
         </div>
         {participants.length > 0 && (
           <span className="task-card2__participants" title={`参与人：${participants.join('、')}`} aria-label={`参与人：${participants.join('、')}`}>
             {participants.slice(0, 3).map((p, i) => {
               const pid = avatarMap?.get(p);
-              return pid ? (
-                <img
+              return (
+                <AvatarImg
                   key={`${p}-${i}`}
                   className="task-card2__participant task-card2__participant--img"
-                  src={avatarUrl(pid)}
+                  src={pid ? avatarUrl(pid) : null}
                   alt={p}
+                  fallback={<span className="task-card2__participant">{p.slice(0, 1).toUpperCase()}</span>}
                 />
-              ) : (
-                <span key={`${p}-${i}`} className="task-card2__participant">{p.slice(0, 1).toUpperCase()}</span>
               );
             })}
             {participants.length > 3 && (
@@ -303,15 +300,12 @@ function TicketCard({ t, onOpen, avatarMap }: { t: Ticket; onOpen: (id: string) 
         </span>
         <div className="task-card2__person task-card2__person--assignee" title={`处理人：${assignee}`} aria-label={`处理人：${assignee}`}>
           <span className="task-card2__person-name">{assignee}</span>
-          {assigneeAvatarId ? (
-            <img
-              className="task-card2__avatar task-card2__avatar--img task-card2__avatar--assignee"
-              src={avatarUrl(assigneeAvatarId)}
-              alt={assignee}
-            />
-          ) : (
-            <span className="task-card2__avatar task-card2__avatar--assignee">{assignee.slice(0, 1).toUpperCase()}</span>
-          )}
+          <AvatarImg
+            className="task-card2__avatar task-card2__avatar--img task-card2__avatar--assignee"
+            src={assigneeAvatarId ? avatarUrl(assigneeAvatarId) : null}
+            alt={assignee}
+            fallback={<span className="task-card2__avatar task-card2__avatar--assignee">{assignee.slice(0, 1).toUpperCase()}</span>}
+          />
         </div>
       </div>
 

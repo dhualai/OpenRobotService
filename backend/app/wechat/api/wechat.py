@@ -329,19 +329,37 @@ async def get_user_permissions(openid: str = Query(..., description="微信用�
 async def check_user_subscription(username: str = Query(..., description="用户username")):
     """检查用户是否关注了公众号。
 
-
-
-    通过 username 查找用户 openid，再调用微信 /cgi-bin/user/info 接口获取订阅状态，
-
+    微信登录用户（username 形如 wechat_xxx）的 users.id 即 openid，
+    通过 openid 调用微信 /cgi-bin/user/info 接口获取订阅状态：
     subscribe=1 表示已关注，subscribe=0 表示未关注。
 
+    手工创建/后台账号（username 无 wechat_ 前缀，如管理员 zhangjunlei1）不是微信用户，
+    没有公众号订阅关系：直接返回 200 + is_wechat_user=false，不再把 id 当 openid
+    去调微信 API（此前返回 400，前端管理端登录时反复报错并可能误弹关注提醒）。
     """
-
     try:
         user_detail = user_service.get_user_detail(username)
 
         if not user_detail:
             raise HTTPException(status_code=404, detail="用户不存在")
+
+        # 非微信用户：无 openid 订阅关系，直接放行（subscribe=0、subscribed=false）
+        if not username.startswith('wechat_'):
+            return {
+                "openid": "",
+                "is_wechat_user": False,
+                "subscribed": False,
+                "subscribe": 0,
+                "nickname": "",
+                "headimgurl": "",
+                "sex": 0,
+                "city": "",
+                "province": "",
+                "country": "",
+                "language": "",
+                "subscribe_time": 0,
+            }
+
         openid = user_detail['id']
         user_info = await wechat_service.get_user_info(openid)
 
@@ -356,6 +374,7 @@ async def check_user_subscription(username: str = Query(..., description="用户
         subscribed = user_info.get('subscribe', 0) == 1
         return {
             "openid": openid,
+            "is_wechat_user": True,
             "subscribed": subscribed,
             "subscribe": user_info.get('subscribe', 0),
             "nickname": user_info.get('nickname', ''),

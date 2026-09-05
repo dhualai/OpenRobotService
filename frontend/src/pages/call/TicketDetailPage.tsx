@@ -26,6 +26,7 @@ import {
 } from '@/shared/constants/ticket';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { readStored } from '@/stores/authStorage';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
 import UserSelect from '@/shared/components/UserSelect';
 import SafeHtml from '@/shared/components/SafeHtml';
@@ -630,7 +631,7 @@ export default function TicketDetailPage() {
       if (!parsed) return null;
       minioPath = `${parsed.bucket}/${parsed.objectKey}`;
     }
-    const authToken = localStorage.getItem('auth_token') || '';
+    const authToken = readStored('AUTH_TOKEN') || '';
     // 必须拼成绝对 URL：微信内 window.open(相对URL) 打开的是微信内置 WebView，无法下载；
     // 用户「在浏览器打开」后相对路径在外部浏览器解析失败会落到 SPA 404 → 未登录重定向微信 OAuth
     // （表现为「提示跳转到微信客户端」）。绝对 URL 携带 token，在外部浏览器可直接下载。

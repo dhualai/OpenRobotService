@@ -4,6 +4,7 @@
 import { getApiBaseUrl } from '../config/api';
 import { WECHAT_CONFIG } from '../config/wechat';
 import { buildWechatAuthUrl, buildStateFromPath } from '../shared/utils/url';
+import { persistAuthTokens, readStored, removeStored } from '../stores/authStorage';
 
 const MAX_RETRIES = 2;
 const RETRY_DELAY = 1000;
@@ -86,7 +87,8 @@ function buildErrorMessage(errorData: Record<string, unknown>, status: number): 
 export function initToken(): string {
   if (userToken) return userToken;
   try {
-    const savedToken = localStorage.getItem('auth_token');
+    // 读当前环境命名空间 key；升级前老用户回退无前缀 legacy key
+    const savedToken = readStored('AUTH_TOKEN');
     if (savedToken) {
       userToken = savedToken;
       return userToken;
@@ -108,7 +110,8 @@ export function clearToken(): void {
 }
 
 async function refreshTokenRequest(): Promise<string> {
-  const storedRefreshToken = localStorage.getItem('refresh_token');
+  // 优先读当前环境 scoped key，未迁移前回退 legacy key
+  const storedRefreshToken = readStored('REFRESH_TOKEN');
   if (!storedRefreshToken) {
     throw new Error('No refresh token available');
   }
@@ -123,9 +126,8 @@ async function refreshTokenRequest(): Promise<string> {
   if (!data.access_token) throw new Error('No access token in refresh response');
   const expiresAt = Date.now() + data.expires_in * 1000;
   userToken = data.access_token;
-  localStorage.setItem('auth_token', data.access_token);
-  localStorage.setItem('refresh_token', data.refresh_token);
-  localStorage.setItem('token_expires_at', String(expiresAt));
+  // 刷新结果写回当前环境命名空间 key
+  persistAuthTokens(data.access_token, data.refresh_token, expiresAt);
   return data.access_token;
 }
 
@@ -234,9 +236,9 @@ export function createRequest(baseUrl: string, _serviceName = 'API') {
               // 又 401 又跳回来，形成无限重载循环（对齐 kickToLogin 先登出清 token 再跳转的做法）。
               userToken = null;
               try {
-                localStorage.removeItem('auth_token');
-                localStorage.removeItem('refresh_token');
-                localStorage.removeItem('token_expires_at');
+                removeStored('AUTH_TOKEN');
+                removeStored('REFRESH_TOKEN');
+                removeStored('TOKEN_EXPIRES_AT');
               } catch { /* SSR safe */ }
               if (WECHAT_CONFIG.loginEnabled) {
                 const state = buildStateFromPath(window.location.pathname);

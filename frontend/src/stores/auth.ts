@@ -2,17 +2,15 @@
 import { create } from 'zustand';
 import { createRequest, setToken as setApiToken, clearToken as clearApiToken, setLoggingOut } from '@/api/client';
 import API_CONFIG from '@/config/api';
-
-const STORAGE_KEYS = {
-  AUTH_TOKEN: 'auth_token',
-  REFRESH_TOKEN: 'refresh_token',
-  TOKEN_EXPIRES_AT: 'token_expires_at',
-  USERNAME: 'username',
-  USER_ID: 'user_id',
-  NAME: 'profile_name',
-  AVATAR_RESOURCE_ID: 'profile_avatar_resource_id',
-  PROJECT_IDS: 'profile_project_ids',
-};
+import {
+  clearAllAuth,
+  hasScopedAuthSession,
+  migrateLegacyAuthAsync,
+  persistAuthTokens,
+  readStored,
+  removeStored,
+  writeStored,
+} from '@/stores/authStorage';
 
 /**
  * 「手动登出」持久标记（sessionStorage）。
@@ -81,16 +79,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try { sessionStorage.removeItem(MANUAL_LOGOUT_KEY); } catch { /* SSR safe */ }
     const expiresAt = Date.now() + authData.expires_in * 1000;
     setApiToken(authData.access_token);
+    // 写入「当前环境命名空间」的 localStorage key（t_/p_），避免与另一环境 token 串用
+    persistAuthTokens(authData.access_token, authData.refresh_token, expiresAt, user);
     set({
       token: authData.access_token,
       username: user,
       isLoggedIn: true,
       isLoading: false,
     });
-    localStorage.setItem(STORAGE_KEYS.AUTH_TOKEN, authData.access_token);
-    localStorage.setItem(STORAGE_KEYS.REFRESH_TOKEN, authData.refresh_token);
-    localStorage.setItem(STORAGE_KEYS.TOKEN_EXPIRES_AT, String(expiresAt));
-    localStorage.setItem(STORAGE_KEYS.USERNAME, user);
     // 登录后异步回填姓名/头像/角色，使 Navbar 头像在刷新/重登后持续展示
     void get().fetchUserDetails(user, authData.access_token);
   },
@@ -102,6 +98,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     clearApiToken();
     // 标记「手动登出」：同一会话内禁止微信静默 OAuth 自动登录，固定在 /login
     try { sessionStorage.setItem(MANUAL_LOGOUT_KEY, '1'); } catch { /* SSR safe */ }
+    // 清空当前环境 + legacy 全部认证/资料（登出即彻底清除，恢复旧版「全清」语义）
+    clearAllAuth();
     set({
       token: null,
       username: '',
@@ -115,11 +113,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       permissions: [],
       projectIds: [],
     });
-    Object.values(STORAGE_KEYS).forEach((key) => localStorage.removeItem(key));
   },
 
   refreshAuthToken: async () => {
-    const storedRefreshToken = localStorage.getItem(STORAGE_KEYS.REFRESH_TOKEN);
+    // 优先读当前环境 scoped key，未迁移前回退 legacy key
+    const storedRefreshToken = readStored('REFRESH_TOKEN');
     if (!storedRefreshToken) {
       get().logout();
       return false;
@@ -136,9 +134,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         const expiresAt = Date.now() + data.expires_in * 1000;
         setApiToken(data.access_token);
         set({ token: data.access_token });
-        localStorage.setItem(STORAGE_KEYS.AUTH_TOKEN, data.access_token);
-        localStorage.setItem(STORAGE_KEYS.REFRESH_TOKEN, data.refresh_token);
-        localStorage.setItem(STORAGE_KEYS.TOKEN_EXPIRES_AT, String(expiresAt));
+        persistAuthTokens(data.access_token, data.refresh_token, expiresAt);
         return true;
       }
       throw new Error('No access token in refresh response');
@@ -173,15 +169,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         userId,
       });
       try {
-        if (userId) localStorage.setItem(STORAGE_KEYS.USER_ID, userId);
-        else localStorage.removeItem(STORAGE_KEYS.USER_ID);
-        localStorage.setItem(STORAGE_KEYS.NAME, name);
+        if (userId) writeStored('USER_ID', userId);
+        else removeStored('USER_ID');
+        writeStored('NAME', name);
         if (avatarResourceId === null) {
-          localStorage.removeItem(STORAGE_KEYS.AVATAR_RESOURCE_ID);
+          removeStored('AVATAR_RESOURCE_ID');
         } else {
-          localStorage.setItem(STORAGE_KEYS.AVATAR_RESOURCE_ID, String(avatarResourceId));
+          writeStored('AVATAR_RESOURCE_ID', String(avatarResourceId));
         }
-        localStorage.setItem(STORAGE_KEYS.PROJECT_IDS, JSON.stringify(projectIds));
+        writeStored('PROJECT_IDS', JSON.stringify(projectIds));
       } catch { /* SSR safe */ }
       return hasAdminRole;
     } catch {
@@ -196,12 +192,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       avatarResourceId: avatarResourceId !== undefined ? avatarResourceId : state.avatarResourceId,
     }));
     try {
-      if (name !== undefined) localStorage.setItem(STORAGE_KEYS.NAME, name);
+      if (name !== undefined) writeStored('NAME', name);
       if (avatarResourceId !== undefined) {
         if (avatarResourceId === null) {
-          localStorage.removeItem(STORAGE_KEYS.AVATAR_RESOURCE_ID);
+          removeStored('AVATAR_RESOURCE_ID');
         } else {
-          localStorage.setItem(STORAGE_KEYS.AVATAR_RESOURCE_ID, String(avatarResourceId));
+          writeStored('AVATAR_RESOURCE_ID', String(avatarResourceId));
         }
       }
     } catch { /* SSR safe */ }
@@ -209,14 +205,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   checkLoginStatus: () => {
     try {
-      const savedToken = localStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
-      const savedUsername = localStorage.getItem(STORAGE_KEYS.USERNAME);
+      // 读当前环境 scoped key；升级前的老用户（无 scoped）回退 legacy key 乐观恢复，
+      // 随后异步探测并迁移（见 migrateLegacyAuthAsync），生产存量用户升级后无感。
+      const savedToken = readStored('AUTH_TOKEN');
+      const savedUsername = readStored('USERNAME');
       if (savedToken && savedUsername) {
         setApiToken(savedToken);
-        const savedName = localStorage.getItem(STORAGE_KEYS.NAME) || '';
-        const savedUserId = localStorage.getItem(STORAGE_KEYS.USER_ID) || '';
-        const savedAvatarId = localStorage.getItem(STORAGE_KEYS.AVATAR_RESOURCE_ID);
-        const savedProjectIdsRaw = localStorage.getItem(STORAGE_KEYS.PROJECT_IDS);
+        const savedName = readStored('NAME') || '';
+        const savedUserId = readStored('USER_ID') || '';
+        const savedAvatarId = readStored('AVATAR_RESOURCE_ID');
+        const savedProjectIdsRaw = readStored('PROJECT_IDS');
         let savedProjectIds: string[] = [];
         try {
           savedProjectIds = savedProjectIdsRaw ? JSON.parse(savedProjectIdsRaw) : [];
@@ -231,6 +229,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           avatarResourceId: savedAvatarId ? Number(savedAvatarId) : null,
           projectIds: savedProjectIds,
         });
+        // 仅当读到的 token 来自 legacy（当前环境尚未建立自己的 key）时触发迁移；
+        // /auth/me 探测命中才落盘，串环境的脏 token 不迁移、也不影响另一环境。
+        if (!hasScopedAuthSession()) void migrateLegacyAuthAsync();
         // 本地缓存先行展示，避免闪回微信ID；随后静默刷新最新的姓名/头像
         get().fetchUserDetails(savedUsername, savedToken);
         return;

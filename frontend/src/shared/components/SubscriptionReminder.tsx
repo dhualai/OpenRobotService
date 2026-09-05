@@ -1,16 +1,20 @@
 // 公众号关注提醒弹窗
 // 页面挂载时检查用户是否关注服务号，未关注则弹窗提醒。
 // 不缓存结果——离开页面再返回或刷新都会重新检查并弹窗。
+// 仅对微信账号（username 形如 wechat_xxx）生效：手工/后台账号在 hook 内已直接放行，
+// 不发请求、不弹窗。
 import { useState } from 'react';
 import { Dialog } from 'tdesign-mobile-react';
 import { useSubscriptionCheck } from '@/shared/hooks/useSubscriptionCheck';
 
 export default function SubscriptionReminder({ username }: { username?: string | null }) {
-  const { subscribed, loading } = useSubscriptionCheck(username);
+  const { subscribed, loading, isWechatUser } = useSubscriptionCheck(username);
   // dismissed 为本地 state：仅在当前页面会话内生效，
   // 离开页面后组件卸载、state 重置，再返回时会重新弹窗。
   const [dismissed, setDismissed] = useState(false);
-  const visible = !loading && subscribed === false && !dismissed;
+  // 仅当「确实是微信用户 且 后端确认未关注」时才弹关注提醒；
+  // 手工/后台账号（isWechatUser=false）一律不弹
+  const visible = !loading && isWechatUser && subscribed === false && !dismissed;
 
   return (
     <Dialog
