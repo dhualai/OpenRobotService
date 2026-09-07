@@ -4,7 +4,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 const mockNavigate = vi.fn();
-const mockHasPermission = vi.fn(() => true);
+const mockHasPermission = vi.fn((code?: string) => true);
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return {
@@ -59,7 +59,7 @@ describe('AdminEntries', () => {
   });
 
   it('hides developer mode without permission', () => {
-    mockHasPermission.mockImplementation((code: string) => code !== 'frontend:admin:dispatch-dev:show');
+    mockHasPermission.mockImplementation((code?: string) => code !== 'frontend:admin:dispatch-dev:show');
     renderView();
     expect(screen.queryByText('开发者模式')).not.toBeInTheDocument();
     expect(screen.getByText('角色管理')).toBeInTheDocument();
