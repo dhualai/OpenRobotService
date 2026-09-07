@@ -214,12 +214,17 @@ def render_chat_snapshot(
 
 
 def _fmt_created_at(iso: str) -> str:
-    """iso 字符串 → 'MM-DD HH:MM'；解析失败返回空串（时间戳省略显示）。"""
+    """iso 字符串 → 北京时间 'MM-DD HH:MM'；解析失败返回空串（时间戳省略显示）。
+    DB created_at 是 naive UTC（后端建消息用 utcnow），显示前统一转 +8——
+    0907 用户实锤：附件 md 时间全比北京时间早 8 小时。"""
     if not iso:
         return ""
     try:
-        from datetime import datetime
-        return datetime.fromisoformat(iso).strftime("%m-%d %H:%M")
+        from datetime import datetime, timedelta, timezone
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone(timedelta(hours=8))).strftime("%m-%d %H:%M")
     except Exception:
         return ""
 

@@ -462,6 +462,324 @@ class ReportDataCollector:
         finally:
             db.close()
 
+    # ── 按指标采集（新增）──────────────────────────────────
+
+    def collect_by_plan(
+        self,
+        metric_keys: list[str],
+        start: datetime,
+        end: datetime,
+        date_range_str: str,
+    ) -> dict:
+        """按指标白名单采集数据，只查询所需维度。
+
+        Args:
+            metric_keys: 指标 key 列表，如 ["ticket.total", "ticket.resolve_rate"]。
+            start: 统计起始时间。
+            end: 统计结束时间。
+            date_range_str: 时间范围描述。
+
+        Returns:
+            dict，key 为维度名（ticket/project/risk），value 为对应指标数据。
+            始终包含 "date_range" 字段。
+        """
+        from .metric_registry import get_metric_def
+
+        # 按维度分组
+        ticket_keys: set[str] = set()
+        project_keys: set[str] = set()
+        risk_keys: set[str] = set()
+
+        for key in metric_keys:
+            metric = get_metric_def(key)
+            if metric is None:
+                logger.warning("未知指标 key=%s，跳过", key)
+                continue
+            if metric.dimension == "ticket":
+                ticket_keys.add(key)
+            elif metric.dimension == "project":
+                project_keys.add(key)
+            elif metric.dimension == "risk":
+                risk_keys.add(key)
+
+        logger.info(
+            "按指标采集 ticket=%s project=%s risk=%s",
+            ticket_keys, project_keys, risk_keys,
+        )
+
+        result: dict = {"date_range": date_range_str}
+
+        if ticket_keys:
+            result["ticket"] = self._collect_ticket_metrics(ticket_keys, start, end)
+        if project_keys:
+            result["project"] = self._collect_project_metrics(project_keys)
+        if risk_keys:
+            result["risk"] = self._collect_risk_metrics(risk_keys, start, end)
+
+        return result
+
+    # ── 工单维度指标采集 ────────────────────────────────────
+
+    def _collect_ticket_metrics(
+        self, keys: set[str], start: datetime, end: datetime
+    ) -> dict:
+        """一次性采集所有请求的工单指标。"""
+        db = self._get_db()
+        try:
+            q = db.query(Task)
+            if self._project_ids:
+                q = q.filter(Task.project_id.in_(self._project_ids))
+
+            all_tickets = q.all()
+            result: dict = {}
+
+            # -- 标量指标 --
+            if "ticket.total" in keys:
+                result["total"] = len(all_tickets)
+
+            if "ticket.new_count" in keys:
+                result["new_count"] = sum(
+                    1 for t in all_tickets if t.created_at and start <= t.created_at <= end
+                )
+
+            if "ticket.resolved_count" in keys:
+                result["resolved_count"] = sum(
+                    1 for t in all_tickets if t.resolved_at and start <= t.resolved_at <= end
+                )
+
+            if "ticket.closed_count" in keys:
+                result["closed_count"] = sum(
+                    1 for t in all_tickets if t.closed_at and start <= t.closed_at <= end
+                )
+
+            if "ticket.resolve_rate" in keys:
+                total = len(all_tickets)
+                done = sum(
+                    1 for t in all_tickets
+                    if _norm_enum(t.status) in ("resolved", "closed", "canceled", "cancelled")
+                )
+                result["resolve_rate"] = round(done / total * 100, 1) if total > 0 else 0.0
+
+            if "ticket.overdue_count" in keys:
+                today = date.today()
+                result["overdue_count"] = sum(
+                    1 for t in all_tickets
+                    if t.deadline_at and t.deadline_at.date() < today
+                    and _norm_enum(t.status) not in ("resolved", "closed", "canceled", "cancelled")
+                )
+
+            # -- 分布指标 --
+            if "ticket.by_status" in keys:
+                dist: dict[str, int] = {}
+                for t in all_tickets:
+                    label = _cn_label(_TICKET_STATUS_CN, t.status, "未知")
+                    dist[label] = dist.get(label, 0) + 1
+                result["by_status"] = dist
+
+            if "ticket.by_priority" in keys:
+                dist: dict[str, int] = {}
+                for t in all_tickets:
+                    label = _cn_label(_TICKET_PRIORITY_CN, t.priority, "中")
+                    dist[label] = dist.get(label, 0) + 1
+                result["by_priority"] = dist
+
+            if "ticket.by_type" in keys:
+                dist: dict[str, int] = {}
+                for t in all_tickets:
+                    label = _cn_label(_TICKET_TYPE_CN, t.task_type, "其他")
+                    dist[label] = dist.get(label, 0) + 1
+                result["by_type"] = dist
+
+            # -- 趋势指标 --
+            if "ticket.new_by_day" in keys:
+                trend: dict[str, int] = {}
+                for t in all_tickets:
+                    if t.created_at and start <= t.created_at <= end:
+                        day = t.created_at.strftime("%Y-%m-%d")
+                        trend[day] = trend.get(day, 0) + 1
+                result["new_by_day"] = dict(sorted(trend.items()))
+
+            # -- 列表指标 --
+            if "ticket.overdue_list" in keys:
+                today = date.today()
+                overdue_items = []
+                for t in all_tickets:
+                    if t.deadline_at and t.deadline_at.date() < today:
+                        raw = _norm_enum(t.status)
+                        if raw not in ("resolved", "closed", "canceled", "cancelled"):
+                            overdue_items.append({
+                                "工单ID": t.id,
+                                "标题": t.title,
+                                "状态": _cn_label(_TICKET_STATUS_CN, t.status, "未知"),
+                                "截止日期": t.deadline_at.isoformat() if t.deadline_at else None,
+                                "项目名称": t.project_name,
+                            })
+                result["overdue_list"] = overdue_items[:50]
+
+            if "ticket.items" in keys:
+                items = []
+                for t in all_tickets:
+                    created = t.created_at
+                    updated = t.updated_at
+                    is_new = created and start <= created <= end
+                    has_update = updated and start <= updated <= end
+                    if (is_new or has_update) and len(items) < 50:
+                        items.append({
+                            "工单ID": t.id,
+                            "标题": t.title,
+                            "描述": (t.description or "")[:80],
+                            "状态": _cn_label(_TICKET_STATUS_CN, t.status, "未知"),
+                            "类型": _cn_label(_TICKET_TYPE_CN, t.task_type, "其他"),
+                            "优先级": _cn_label(_TICKET_PRIORITY_CN, t.priority, "中"),
+                            "项目名称": t.project_name,
+                            "创建时间": created.isoformat() if created else None,
+                            "更新时间": updated.isoformat() if updated else None,
+                        })
+                result["items"] = items
+
+            return result
+        finally:
+            db.close()
+
+    # ── 项目维度指标采集 ────────────────────────────────────
+
+    def _collect_project_metrics(self, keys: set[str]) -> dict:
+        """一次性采集所有请求的项目指标。"""
+        db = self._get_db()
+        try:
+            q = db.query(ProjectDelivery)
+            if self._project_ids:
+                q = q.filter(ProjectDelivery.id.in_(self._project_ids))
+
+            projects = q.all()
+            result: dict = {}
+
+            if "project.total" in keys:
+                result["total"] = len(projects)
+
+            if "project.active_count" in keys:
+                result["active_count"] = sum(
+                    1 for p in projects if _norm_enum(p.status) == "active"
+                )
+
+            if "project.completed_count" in keys:
+                result["completed_count"] = sum(
+                    1 for p in projects
+                    if _norm_enum(p.status) in ("completed", "done", "closed")
+                )
+
+            if "project.on_hold_count" in keys:
+                result["on_hold_count"] = sum(
+                    1 for p in projects
+                    if _norm_enum(p.status) in ("on_hold", "paused", "suspended")
+                )
+
+            if "project.by_status" in keys:
+                dist: dict[str, int] = {}
+                for p in projects:
+                    label = _cn_label(_PROJECT_STATUS_CN, p.status, "未知")
+                    dist[label] = dist.get(label, 0) + 1
+                result["by_status"] = dist
+
+            need_items = "project.items" in keys
+            if need_items:
+                members_by_project = self._get_project_members_map(
+                    db, [p.id for p in projects if p.id]
+                )
+                items = []
+                for p in projects:
+                    items.append({
+                        "项目ID": p.id,
+                        "项目代码": p.code,
+                        "项目名称": p.name,
+                        "状态": _cn_label(_PROJECT_STATUS_CN, p.status, "未知"),
+                        "问题数": p.issues,
+                        "风险数": p.risks,
+                        "对接人": p.contact_person,
+                        "成员": members_by_project.get(p.id, []),
+                    })
+                result["items"] = items
+
+            return result
+        finally:
+            db.close()
+
+    # ── 风险维度指标采集 ────────────────────────────────────
+
+    def _collect_risk_metrics(
+        self, keys: set[str], start: datetime, end: datetime
+    ) -> dict:
+        """一次性采集所有请求的风险指标。"""
+        db = self._get_db()
+        try:
+            q = db.query(Risk)
+            if self._project_ids:
+                q = q.filter(Risk.project_code.in_(self._project_ids))
+
+            all_risks = q.all()
+            result: dict = {}
+
+            if "risk.total" in keys:
+                result["total"] = len(all_risks)
+
+            if "risk.new_count" in keys:
+                start_s = start.strftime("%Y-%m-%d")
+                end_s = end.strftime("%Y-%m-%d")
+                result["new_count"] = sum(
+                    1 for r in all_risks
+                    if r.created_at and start_s <= r.created_at[:10] <= end_s
+                )
+
+            if "risk.closed_count" in keys:
+                start_s = start.strftime("%Y-%m-%d")
+                end_s = end.strftime("%Y-%m-%d")
+                result["closed_count"] = sum(
+                    1 for r in all_risks
+                    if r.close_time and start_s <= r.close_time[:10] <= end_s
+                )
+
+            if "risk.by_level" in keys:
+                dist: dict[str, int] = {}
+                for r in all_risks:
+                    level = r.risk_level or "未知"
+                    dist[level] = dist.get(level, 0) + 1
+                result["by_level"] = dist
+
+            if "risk.by_status" in keys:
+                dist: dict[str, int] = {}
+                for r in all_risks:
+                    label = _cn_label(_RISK_STATUS_CN, r.status, "未知")
+                    dist[label] = dist.get(label, 0) + 1
+                result["by_status"] = dist
+
+            if "risk.by_category" in keys:
+                dist: dict[str, int] = {}
+                for r in all_risks:
+                    cat = r.risk_category or "未分类"
+                    dist[cat] = dist.get(cat, 0) + 1
+                result["by_category"] = dist
+
+            if "risk.items" in keys:
+                items = []
+                for r in all_risks[:50]:
+                    items.append({
+                        "风险代码": r.risk_code,
+                        "项目代码": r.project_code,
+                        "项目名称": r.project_name,
+                        "风险分类": r.risk_category,
+                        "风险等级": r.risk_level,
+                        "风险描述": (r.description or "")[:100],
+                        "状态": _cn_label(_RISK_STATUS_CN, r.status, "未知"),
+                        "负责人": r.responsible_person,
+                        "创建时间": r.created_at,
+                        "关闭时间": r.close_time,
+                    })
+                result["items"] = items
+
+            return result
+        finally:
+            db.close()
+
     # ── 汇总采集 ──────────────────────────────────────────────
 
     def collect_all(

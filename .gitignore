@@ -166,3 +166,6 @@ ai/.env.example
 /ai/tests
 /ai/tests
 start_all.ps1
+docs/PRODUCT/摇人吧服务号平台手册（操作指引）.md
+docs/直答率统计口径.md
+/docs

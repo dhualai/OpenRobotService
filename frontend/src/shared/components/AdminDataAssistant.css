@@ -326,3 +326,85 @@
   cursor: default;
   box-shadow: none;
 }
+
+/* ── 分析口径回显 badge（analysis 模式：显示指标/时间/范围） ── */
+.ada-plan-badge {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--ada-iris) 8%, var(--card));
+  border: 1px solid color-mix(in oklab, var(--ada-iris) 18%, var(--border));
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--gray-40);
+}
+
+.ada-plan-badge__row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ada-plan-badge__row + .ada-plan-badge__row {
+  margin-top: 3px;
+}
+
+.ada-plan-badge__row svg {
+  color: var(--ada-iris);
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.ada-plan-badge__row span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── clarify 澄清追问 ── */
+.ada-clarify {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in oklab, var(--border) 50%, transparent);
+}
+
+.ada-clarify__hint {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  margin-bottom: 6px;
+}
+
+.ada-clarify__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ada-clarify__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--ada-iris-deep);
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--ada-iris) 8%, var(--card));
+  border: 1px solid color-mix(in oklab, var(--ada-iris) 22%, var(--border));
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+
+.ada-clarify__chip svg {
+  color: var(--ada-iris);
+  flex-shrink: 0;
+}
+
+.ada-clarify__chip:hover {
+  border-color: color-mix(in oklab, var(--ada-iris) 50%, var(--border));
+  background: color-mix(in oklab, var(--ada-iris) 16%, var(--card));
+  color: var(--foreground);
+}
+
+.ada-clarify__chip:active {
+  transform: scale(0.95);
+}
