@@ -20,7 +20,8 @@
 .ada-fab {
   position: fixed;
   right: 16px;
-  bottom: 92px;
+  /* 整体上移 100px（原 92px），避开底部导航上方的其他悬浮元素 */
+  bottom: 192px;
   z-index: 30;
   display: flex;
   flex-direction: column;

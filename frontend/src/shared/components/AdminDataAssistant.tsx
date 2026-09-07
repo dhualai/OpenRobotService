@@ -116,8 +116,8 @@ export default function AdminDataAssistant() {
   const FAB_SIZE = 52;
   const clampFabPos = (x: number, y: number) => ({
     x: Math.min(Math.max(8, x), window.innerWidth - FAB_SIZE - 8),
-    // 底部避开三 Tab 导航（留 ~88px）
-    y: Math.min(Math.max(8, y), window.innerHeight - FAB_SIZE - 88),
+    // 底部避开三 Tab 导航及其他悬浮元素（留 ~188px，与 CSS 初始 bottom:192px 对齐）
+    y: Math.min(Math.max(8, y), window.innerHeight - FAB_SIZE - 188),
   });
   const onFabPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
     const el = fabRef.current;

@@ -264,9 +264,10 @@ def _apply_step_update_meta(ticket, current_user, username: str) -> Dict[str, An
     side = _actor_side(ticket, current_user, username)
     prev_side = getattr(ticket, 'step_last_updated_by', None)
 
-    # 对手回应：前一方有记录且与当前不同，加 1 回合
+    # 对手回应：前一方有记录且与当前不同，加 1 回合；
+    # 首次协商（无任何一方记录）也视为开启第 1 回合
     bump_round = False
-    if prev_side and side and prev_side != side:
+    if side and (not prev_side or prev_side != side):
         bump_round = True
         ticket.step_negotiation_round = (getattr(ticket, 'step_negotiation_round', 0) or 0) + 1
 

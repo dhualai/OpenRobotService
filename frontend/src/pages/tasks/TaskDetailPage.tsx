@@ -1560,6 +1560,8 @@ export default function TaskDetailPage() {
           const total = stepTemplate.length;
           const currIdx = stepTemplate.findIndex((s) => s.id === detail.curr_step_id);
           const stepName = detail.curr_step_name || (currIdx >= 0 ? stepTemplate[currIdx].step_name : '');
+          // 尚未开始阶段性处理（当前节点未初始化）→ 整卡隐藏
+          if (!stepName) return null;
           const endtimeText = detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '';
           // 最新协商理由：从系统评论中解析（negotiate-step 评论含"缘由："/旧文案"理由："）。
           // 倒序扫描评论：遇到"完成阶段/打回重开"等阶段边界评论则说明当前节点尚无协商理由。
