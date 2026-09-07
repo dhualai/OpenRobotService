@@ -4031,14 +4031,16 @@ class AiDiagnosisPlatform:
                                 else:
                                     break
                             turns = db_turns[:first_idx] + mem_turns
-                            # 对齐中途断裂时合成上传轮可能既留在 db 前缀、又
-                            # 在 memory 窗口里（同一句「我上传了…」出现两次），
-                            # 去掉前缀侧副本、保 memory 完整版。
-                            _drop = ({(t.get("content") or "").strip() for t in mem_turns}
-                                     & {_msg for _, _msg in _batches})
-                            if _drop:
-                                turns = [t for t in db_turns[:first_idx]
-                                         if (t.get("content") or "").strip() not in _drop] + mem_turns
+                            # 对齐中途断裂（need_info 等轮 DB 落库文案与 memory 记录
+                            # 版本不一致，_same_turn 失配提前 break）时，db 前缀里与
+                            # memory 窗口同 (role, content) 的轮次保留在前缀侧就成段
+                            # 重复——统一剔除前缀侧副本、保 memory 完整版（0907 生产
+                            # 实锤：附件 md 整段重复 7 轮；含旧版上传轮去重场景）。
+                            _mem_keys = {(t.get("role") or "user").lower() + "\x00"
+                                         + (t.get("content") or "").strip() for t in mem_turns}
+                            turns = [t for t in db_turns[:first_idx]
+                                     if ((t.get("role") or "user").lower() + "\x00"
+                                         + (t.get("content") or "").strip()) not in _mem_keys] + mem_turns
                             logger.info(f"[chat_markdown] MySQL 尾部顺序已用 memory 校正: session={sid}, "
                                         f"db={len(db_turns)}, mem={len(mem_turns)}, first={first_idx}")
                         else:
@@ -4121,6 +4123,13 @@ class AiDiagnosisPlatform:
                     f"title={ticket.get('title', '')}, type={ticket.get('type', '')}")
 
         _reset_state_after_submit(agent_state, memory, ticket, db_id)
+        # 对话记录附件回改文件名（生成时拿不到工单 id）；mock 全栈测试无
+        # 该函数/DB，import/执行失败都不阻塞提单
+        try:
+            from ai.core.task_adapter import rename_chat_record_attachments
+            rename_chat_record_attachments(db_id)
+        except Exception:
+            logger.debug(f"[chat_markdown] 对话记录附件改名跳过: db_id={db_id}")
         await self._memory_manager.save_memory(memory)
 
         # ---- 加入待派单池 + 通知 Worker 立即派单 ----
@@ -4465,6 +4474,13 @@ class AiDiagnosisPlatform:
 
         agent_state.ticket_seq += 1
         _reset_state_after_submit(agent_state, memory, ticket, record.id)
+        # 对话记录附件回改文件名（生成时拿不到工单 id）；mock 全栈测试无
+        # 该函数/DB，import/执行失败都不阻塞提单
+        try:
+            from ai.core.task_adapter import rename_chat_record_attachments
+            rename_chat_record_attachments(record.id)
+        except Exception:
+            logger.debug(f"[chat_markdown] 对话记录附件改名跳过: db_id={record.id}")
         memory.metadata.pop("ticket_draft", None)
         await self._memory_manager.save_memory(memory)
 
