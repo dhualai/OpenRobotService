@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 
 from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
 from ai.agents.AiDiagnosisPlatform.assigner.schemas import TicketContext
+from ai.agents.AiDiagnosisPlatform.assigner.prompts.step1 import build_audit
 from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER")
@@ -47,29 +48,7 @@ class DeptAuditSignal:
         return bool(self._departments)
 
     def _build_prompt(self, ticket: TicketContext, suggested_dept: str) -> str:
-        dept_blocks = []
-        for dept in self._departments:
-            name = dept.get("name") or ""
-            if not name:
-                continue
-            profile = (dept.get("profile_text") or "").strip()
-            dept_blocks.append(f"---\n部门：{name}\n{profile}")
-        return (
-            "你是工单部门派发审查员。系统已把工单初步判给某个部门，请你复核这个判断是否正确。\n"
-            "请基于工单内容与各部门职责画像（**负责什么/不负责什么**）独立判断，"
-            "不要被原判部门带偏。\n\n"
-            "【全部部门画像】\n" + "\n".join(dept_blocks) + "\n\n"
-            "【工单】\n"
-            f"标题：{ticket.title or ''}\n"
-            f"描述：{ticket.problem_description or ''}\n"
-            f"故障码：{ticket.fault_code or '无'}\n"
-            f"车型：{ticket.robot_type or '无'}\n"
-            f"项目：{ticket.project_name or '无'}\n\n"
-            f"【系统初步判定部门】\n{suggested_dept or '未确定'}\n\n"
-            "请复核并输出 JSON（不要其它文字）：\n"
-            '{"ok": true, "correct_dept": "<若ok=false给出正确部门，ok=true可为空>", '
-            '"confidence": 0.0, "reason": "一句话理由"}'
-        )
+        return build_audit(ticket, self._departments, suggested_dept)
 
     @staticmethod
     def _parse(response: str) -> DeptAuditResult:

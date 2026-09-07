@@ -68,6 +68,7 @@ async def assign_ticket(
     diagnosis_hypotheses: Optional[List[str]] = None,
     diagnosis_ruled_out: Optional[List[str]] = None,
     diagnosis_collected_info: Optional[Dict[str, str]] = None,
+    diagnosis_problem_summary: Optional[str] = None,
     diagnosis_rounds: Optional[int] = None,
     dispatch_hint: Optional[str] = None,  # 提单信息充分性信号（lacking/severe），信息充分为 None
     contact: Optional[str] = None,
@@ -109,6 +110,7 @@ async def assign_ticket(
         diagnosis_hypotheses=diagnosis_hypotheses,
         diagnosis_ruled_out=diagnosis_ruled_out,
         diagnosis_collected_info=diagnosis_collected_info,
+        diagnosis_problem_summary=diagnosis_problem_summary,
         diagnosis_rounds=diagnosis_rounds,
         dispatch_hint=dispatch_hint,
         contact=contact,

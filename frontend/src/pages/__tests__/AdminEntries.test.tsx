@@ -4,6 +4,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 const mockNavigate = vi.fn();
+const mockHasPermission = vi.fn(() => true);
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return {
@@ -11,6 +12,12 @@ vi.mock('react-router-dom', async () => {
     useNavigate: () => mockNavigate,
   };
 });
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: (sel?: (s: { hasPermission: typeof mockHasPermission }) => unknown) => {
+    const state = { hasPermission: mockHasPermission };
+    return typeof sel === 'function' ? sel(state) : state;
+  },
+}));
 
 // 用户统计区域依赖 Loading（加载态）与 ReactECharts（两个分组共四张图表），
 // jsdom 无 canvas，均以占位组件 mock
@@ -41,6 +48,21 @@ describe('AdminEntries', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockNavigate.mockClear();
+    mockHasPermission.mockImplementation(() => true);
+  });
+
+  it('shows developer mode only when permitted', () => {
+    renderView();
+    expect(screen.getByText('开发者模式')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('开发者模式'));
+    expect(mockNavigate).toHaveBeenCalledWith('/admin/dispatch-dev');
+  });
+
+  it('hides developer mode without permission', () => {
+    mockHasPermission.mockImplementation((code: string) => code !== 'frontend:admin:dispatch-dev:show');
+    renderView();
+    expect(screen.queryByText('开发者模式')).not.toBeInTheDocument();
+    expect(screen.getByText('角色管理')).toBeInTheDocument();
   });
 
   it('should render navbar with title', () => {

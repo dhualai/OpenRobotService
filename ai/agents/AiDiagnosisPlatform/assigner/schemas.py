@@ -7,7 +7,38 @@
 """
 
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+# collected_info → TicketContext 已有栏。指名/项目不补：指定人走 Step0，项目另有字段。
+COLLECTED_TO_TICKET = {
+    "location": "location",
+    "robot_type": "robot_type",
+    "fault_code": "fault_code",
+    "special_notes": "special_notes",
+    "severity": "severity",
+    "version": "version",
+    "steps_to_reproduce": "steps_to_reproduce",
+    "expected_result": "expected_result",
+    "actual_result": "actual_result",
+    "scenario": "scenario",
+    "expected_effect": "expected_effect",
+    "support_type": "support_type",
+    "preferred_response": "preferred_response",
+}
+_USELESS_COLLECTED = {"", "无", "未知", "none", "null", "n/a"}
+
+
+def collected_value(v) -> Optional[str]:
+    """收集字段有内容才用；「无」和占位句丢掉。"""
+    if v is None:
+        return None
+    text = str(v).strip()
+    if not text or text.lower() in _USELESS_COLLECTED:
+        return None
+    if text.startswith("无（") or text.startswith("无("):
+        return None
+    return text
 
 
 class TicketContext(BaseModel):
@@ -47,10 +78,11 @@ class TicketContext(BaseModel):
     special_notes: Optional[str] = Field(None, description="特殊说明 ↔ tasks.metadata_info.special_notes")
 
     # === Agent 诊断信息（可用于派单增强，落库存 metadata_info）===
-    diagnosis_hypotheses: Optional[List[str]] = Field(None, description="Agent 推断的可能原因 ↔ tasks.metadata_info.diagnosis_hypotheses")
-    diagnosis_ruled_out: Optional[List[str]] = Field(None, description="Agent 已排除的原因 ↔ tasks.metadata_info.diagnosis_ruled_out")
-    diagnosis_collected_info: Optional[Dict[str, str]] = Field(None, description="Agent 收集的上下文 ↔ tasks.metadata_info.diagnosis_collected_info")
-    diagnosis_rounds: Optional[int] = Field(None, description="诊断轮数 ↔ tasks.metadata_info.diagnosis_rounds")
+    diagnosis_hypotheses: Optional[List[str]] = Field(None, description="Agent 推断的可能原因 ↔ metadata_info.diagnosis.hypotheses")
+    diagnosis_ruled_out: Optional[List[str]] = Field(None, description="Agent 已排除的原因 ↔ metadata_info.diagnosis.ruled_out")
+    diagnosis_collected_info: Optional[Dict[str, str]] = Field(None, description="Agent 收集的上下文 ↔ metadata_info.diagnosis.collected_info")
+    diagnosis_problem_summary: Optional[str] = Field(None, description="诊断一句话摘要 ↔ metadata_info.diagnosis.problem_summary")
+    diagnosis_rounds: Optional[int] = Field(None, description="诊断轮数 ↔ metadata_info.diagnosis.rounds")
 
     # === Bug 专属 ===
     severity: Optional[str] = Field(None, description="严重程度: 阻塞/主要/次要/轻微 ↔ tasks.metadata_info.severity")
@@ -104,6 +136,21 @@ class TicketContext(BaseModel):
     # === 其他 ===
     updated_at: Optional[str] = Field(None, description="修改时间 ↔ tasks.updated_at")
     planned_finish_at: Optional[str] = Field(None, description="计划完成时间 ↔ tasks.deadline_at")
+
+    @model_validator(mode="after")
+    def _fill_empty_from_collected(self):
+        """顶栏空着时，用诊断 collected_info 补上，不覆盖已有值。"""
+        info = self.diagnosis_collected_info
+        if not isinstance(info, dict):
+            return self
+        for src, attr in COLLECTED_TO_TICKET.items():
+            current = getattr(self, attr, None)
+            if (current or "").strip():
+                continue
+            filled = collected_value(info.get(src))
+            if filled:
+                setattr(self, attr, filled)
+        return self
 
 
 class EngineerProfile(BaseModel):
@@ -231,7 +278,7 @@ _DISPATCH_HINT_TEXT = {
     ),
     "severe": (
         "提单提示：用户提供信息严重不足（对话中未配合提供关键细节），"
-        "描述基本无法定位问题，建议派单给接单人，接单人需从零了解情况。"
+        "描述基本无法定位问题，建议派单给项目对接人，对接人需从零了解情况。"
     ),
 }
 

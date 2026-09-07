@@ -1576,11 +1576,13 @@ class RetrievalService:
         fault_code: str = "",
         robot_type: str = "",
         closed_at: Optional[str] = None,
+        ticket_id: Optional[str] = None,
     ) -> bool:
         """向量化并写入一条派单历史工单到 Qdrant（dispatch domain）。
 
         Payload 特别带上 engineer_id（解决人），供 L3-A 路按人聚合。
         查询/向量文本 = 标题+描述+故障码+车型（与派单召回语义一致）。
+        有 ticket_id 时用稳定点位覆盖写入，同一单 resolved→closed 不会重复两条。
         """
         from ai.config import get_active_collection_for
         import uuid
@@ -1595,9 +1597,12 @@ class RetrievalService:
         if self._qdrant.is_unavailable:
             return False
 
-        index_text = " ".join(filter(None, [
+        from ai.agents.AiDiagnosisPlatform.assigner.recall.dispatch_text import (
+            build_dispatch_ticket_text,
+        )
+        index_text = build_dispatch_ticket_text(
             title, description, robot_type, fault_code,
-        ]))
+        )
         query_vector = await self._embed_client.embed(index_text)
 
         payload = {
@@ -1609,13 +1614,18 @@ class RetrievalService:
             "fault_code": fault_code,
             "robot_type": robot_type,
             "closed_at": closed_at or "",
+            "ticket_id": str(ticket_id) if ticket_id is not None else "",
             "domain": "dispatch",
         }
+        point_id = (
+            str(uuid.uuid5(uuid.NAMESPACE_URL, f"dispatch-ticket-{ticket_id}"))
+            if ticket_id is not None else str(uuid.uuid4())
+        )
 
         return await self._qdrant.upsert_to_collection(
             collection_name=col,
             vectors=[query_vector.tolist()],
-            ids=[str(uuid.uuid4())],
+            ids=[point_id],
             payloads=[payload],
         )
 
@@ -1670,6 +1680,25 @@ class RetrievalService:
         except Exception as e:
             logger.warning(f"[retrieval] 派单历史检索失败: {e}")
             return []
+
+    async def dispatch_history_stats(self) -> dict:
+        """当前 dispatch 集合名和点数。没有集合就空。"""
+        from ai.config import get_active_collection_for
+
+        col = get_active_collection_for("dispatch") or ""
+        if not col:
+            return {"collection": "", "points": 0}
+        try:
+            await self._ensure_clients()
+            if self._qdrant.is_unavailable:
+                return {"collection": col, "points": 0}
+            client = await self._qdrant._ensure_client()
+            info = await self._qdrant._to_thread(client.get_collection, col)
+            points = getattr(info, "points_count", 0) or 0
+            return {"collection": col, "points": int(points)}
+        except Exception as e:
+            logger.warning(f"[retrieval] 派单历史统计失败: {e}")
+            return {"collection": col, "points": 0}
 
     async def ensure_collection(self, vector_size: int) -> None:
         """确保集合存在"""

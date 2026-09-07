@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
-import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot } from 'lucide-react';
+import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ChevronDown } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
@@ -115,7 +115,8 @@ interface Ticket {
   // tasks 详情接口 GET /{id} 返回蛇形 deadline_at（见 TicketResponse）
   deadline_at?: string | null;
   // 二次派单感知增强（M3）：未派到指定人时的完整话术（详情页 redispatch.result.tip_detail）
-  redispatch?: { result?: { tip_detail?: string | null } } | null;
+  // 二次派单感知增强：派单理由（为什么派给接单人，仅接单人/管理员可见 → redispatch.result.reasoning）
+  redispatch?: { result?: { tip_detail?: string | null; reasoning?: string | null } } | null;
   // 工单阶段性处理（协商节点）：当前节点 ID/名称/结束时间（naive UTC）
   curr_step_id?: number | null;
   curr_step_name?: string | null;
@@ -153,12 +154,16 @@ export default function TaskDetailPage() {
   const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, '管理服务');
 
   const { refreshTasks } = useWorkbenchStore();
-  const { username, userId, name, hasPermission } = useAuthStore();
+  const { username, userId, name, hasPermission, isAdmin } = useAuthStore();
 
   const [detail, setDetail] = useState<Ticket | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   // 二次派单感知增强（M3）：未派到指定人时的完整情商话术（详情页 redispatch.result.tip_detail）
   const [redispatchTipDetail, setRedispatchTipDetail] = useState<string>('');
+  // 二次派单感知增强：派单理由（为什么派给接单人；仅接单人/管理员可看到，详情页 redispatch.result.reasoning）
+  const [dispatchReason, setDispatchReason] = useState<string>('');
+  const [tipFoldOpen, setTipFoldOpen] = useState(false);
+  const [reasonFoldOpen, setReasonFoldOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; curr_step_endtime?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
   // 当前阶段截止时间区间：基准 = 工单创建时间（detail.created_at），而非用户操作时刻
@@ -257,6 +262,10 @@ export default function TaskDetailPage() {
         setDetail(t);
         // 二次派单感知增强（M3）：未派到指定人时的完整话术
         setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
+        // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
+        setDispatchReason(t.redispatch?.result?.reasoning || '');
+        setTipFoldOpen(false);
+        setReasonFoldOpen(false);
         // 摘要存 metadata_info.ai_summary（不混入讨论区）
         const meta = t.metadata_info || {};
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
@@ -1370,6 +1379,10 @@ export default function TaskDetailPage() {
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
         // 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径）
         setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
+        // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
+        setDispatchReason(t.redispatch?.result?.reasoning || '');
+        setTipFoldOpen(false);
+        setReasonFoldOpen(false);
       })
       .catch(() => {});
   };
@@ -1543,8 +1556,69 @@ export default function TaskDetailPage() {
 
           {/* 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径） */}
           {redispatchTipDetail && (
-            <div className="redispatch-tip-detail">派单说明：{redispatchTipDetail}</div>
+            <div className={`dispatch-fold dispatch-fold--tip${tipFoldOpen ? ' is-open' : ''}`}>
+              <button
+                type="button"
+                className="dispatch-fold__header"
+                onClick={() => setTipFoldOpen((v) => !v)}
+                aria-expanded={tipFoldOpen}
+              >
+                <span className="dispatch-fold__preview">
+                  <span className="dispatch-fold__label">派单说明</span>
+                  <span className="dispatch-fold__sep">：</span>
+                  <span className="dispatch-fold__clip">{redispatchTipDetail.replace(/\s+/g, ' ').trim()}</span>
+                </span>
+                <ChevronDown size={14} className="dispatch-fold__chevron" aria-hidden />
+              </button>
+              <div className="dispatch-fold__bodywrap">
+                <div className="dispatch-fold__body">{redispatchTipDetail}</div>
+              </div>
+            </div>
           )}
+
+          {/* 
+              ┌──────────────┬─────────────┬───────────────────┬──────────────────┬──────────────┐
+              │ 查看者/场景   │ dispatchReason│ redispatchTipDetail│ isAssignee/isAdmin│ 是否显示卡片  │
+              ├──────────────┼─────────────┼───────────────────┼──────────────────┼──────────────┤
+              │ 普通接单人   │ 空/有       │ 空(后端不返回 tip) │ isAssignee ✓      │ 仅看 reason │
+              │ (有理由)     │（按后端给）  │                   │                  │   → 显示     │
+              │ 接单人但无理由│ 空          │ 空                 │ isAssignee ✓      │  → 不显示    │
+              │ 提单人==接   │ 空/有       │ 空                 │ isAssignee ✓      │  → 显示      │
+              │ 单人(无 tip) │             │                   │                  │              │
+              │ 提单人==接   │ 有          │ 有                 │ isAssignee ✓      │  → 不显示    │
+              │ 单人(有 tip) │             │                   │                  │ (只显 tip)   │
+              │ 管理员       │ 有          │ 依工单而定          │ isAdmin ✓         │ tip 空→显示  │
+              │              │             │                   │                  │ tip 有→不显示│
+              │ 其它第三方   │ 空(后端过滤)│ 空                 │ 均 ✗              │  → 不显示    │
+              │ 老后端+第三方│ 有          │ —                 │ 均 ✗              │  → 不显示    │
+              │ (前端兜底防泄│             │                   │                  │ (角色兜底拦) │
+              │  露)         │             │                   │                  │              │
+              └──────────────┴─────────────┴───────────────────┴──────────────────┴──────────────┘ */}
+          {(() => {
+            if (!dispatchReason || redispatchTipDetail) return null;
+            const { isAssignee } = getCurrentUserRoles();
+            if (!isAssignee && !isAdmin) return null;
+            return (
+              <div className={`dispatch-fold dispatch-fold--reason${reasonFoldOpen ? ' is-open' : ''}`}>
+                <button
+                  type="button"
+                  className="dispatch-fold__header"
+                  onClick={() => setReasonFoldOpen((v) => !v)}
+                  aria-expanded={reasonFoldOpen}
+                >
+                  <span className="dispatch-fold__preview">
+                    <span className="dispatch-fold__label">派单理由</span>
+                    <span className="dispatch-fold__sep">：</span>
+                    <span className="dispatch-fold__clip">{dispatchReason.replace(/\s+/g, ' ').trim()}</span>
+                  </span>
+                  <ChevronDown size={14} className="dispatch-fold__chevron" aria-hidden />
+                </button>
+                <div className="dispatch-fold__bodywrap">
+                  <div className="dispatch-fold__body">{dispatchReason}</div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         <div className="detail-card">

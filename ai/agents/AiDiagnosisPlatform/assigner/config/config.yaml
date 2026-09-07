@@ -4,62 +4,90 @@
 # 说明：本文件是派单模块唯一的配置入口，由 settings.py 加载。
 # 各配置块与代码的对应关系：
 #   module_keywords      → recall/history_recall.py（L3 历史召回：历史工单标签提取）
-#   module_anchor_texts  → recall/semantic_recall.py（L2 语义召回：Embedding 锚文本）
-#   ranker_weights       → ranking/ranker.py（三路召回加权）
+#   ranker_weights       → ranking/ranker.py（记录用；精排取命中路最高分）
 #   history_recall       → recall/history_recall.py（L3 历史召回增强：时间衰减 + Top-K + 故障码）
 #   job_level_penalty    → ranking/ranker.py（职级折扣）
 #   department_routing   → filtering/dept_router.py
-#   departments          → filtering/signals/llm_dept_signal.py
+#   departments          → 运行时不读；部门画像只认 DB。yaml 这段仅作历史底稿/迁移种子
 #   product_routing      → filtering/product_router.py
-#   decision_thresholds  → ranking/fallback_decision.py（兜底置信度阈值）
-#   load_balance         → pipeline/dispatch_flow.py（算法工程师负载均衡）
+#   decision_thresholds  → 遗留配置（Step7 不再按分数阈值选人）
+#   load_balance         → 代码保留、流程未调用（enabled=false）
+#   vague_strong_signals → ranking/tags.py（Step2 模糊强信号；命中跳过 Step3–6）
+#   llm_recall           → recall/llm_recall.py（L1：单轮 single_top_k，分批每批 batch_top_k 全保留）
+#   preferred_floor      → ranking/ranker.py（倾向接单人精排保底；对接人只打标）
 # ══════════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════════
-# 2. 精排权重（LLM 主导 + 语义辅助 + 历史辅助）
-#    消费方：ranking/ranker.py（三路召回加权）
-#    说明：L2 语义召回是真正的 Embedding 向量相似度匹配（cos(工单, 模块锚文本)），
-#          非关键词子串匹配。当初误诊为"关键词匹配"而停用，实为 config 缺失
-#          ranker_weights 导致权重退化（默认语义 0.35 > LLM 0.30 语义反超 LLM）所致。
-#          现恢复为 LLM 主导(t链路) + L2 语义辅助 + L3 历史辅助：权重相加见下。
+# 2. 精排（本版：命中各路归一分取最高，不按权重加总）
+#    消费方：ranking/ranker.py
+#    下列三项仅作记录，不参与合成。
 # ══════════════════════════════════════════════════════════════════
 ranker_weights:
-  llm_match: 0.70       # L1 纯LLM：LLM 看全员画像直接打分（主导派单）
-  semantic_match: 0.15  # L2 语义：Embedding 向量相似度（辅助信号，不反超 LLM）
-  history_match: 0.15   # L3 历史：相似历史工单 → 按解决人聚合
+  llm_match: 0.70
+  similar_match: 0.15
+  cluster_match: 0.15
 
 # ══════════════════════════════════════════════════════════════════
 # 3.2 L3 历史召回增强参数（双路并行）
-#    消费方：recall/history_recall.py（A路）+ recall/expertise_recall.py（B路）
+#    消费方：recall/history_recall.py（A路，resolved+closed）+ recall/expertise_recall.py（B路自动簇，resolved+closed）
 #    - top_k:             每人取最高的前 K 条历史记录参与聚合（A路）
-#    - half_life_days:    时间衰减半衰期（天），越大历史越不易被遗忘（A/B 共用）
+#    - half_life_days:    时间衰减半衰期（天），A/B 共用同一函数
+#    - decay_floor:       时间衰减尽头（默认 0.4，老单不会掉到 0）
 #    - sim_threshold:     历史工单相似度阈值（A路）
 #    - fault_code_boost:  历史同故障码的加分（A路）
 #    - robot_type_boost:  历史同车型的加分（A路）
-#    - decay_weight:      时间衰减在最终分中的占比（剩余部分给相似度）
-#    - weight_a:          A路（相似工单聚人）融合权重
-#    - weight_b:          B路（问题域聚人）融合权重
+#    - cluster_merge:     两张历史单余弦 ≥ 此值先并团；并完后每张还必须靠近簇中心，防单链接串香肠
+#    - cluster_min_size:  小于此人数的团丢掉（噪声）
+#    - cluster_assign:    新单与簇中心余弦低于此值 → B 路空，不通配
+#    - cluster_top_k:     新单最多落入几个簇
+#    - cluster_count_exp: 次数项 ln(1+n)^exp，越小次数收益越弱（1=旧口径，现用 0.3）
 # ══════════════════════════════════════════════════════════════════
 history_recall:
   top_k: 5
-  half_life_days: 90        # 半衰期90天：90天后经验仍保留 ~37%，半年后仍保留 ~14%
+  half_life_days: 90        # 半衰期：90天后约 0.62，半年后约 0.48，尽头 0.4
+  decay_floor: 0.4
   sim_threshold: 0.3
   fault_code_boost: 0.15
   robot_type_boost: 0.10
-  decay_weight: 0.5
-  weight_a: 0.5             # A路（相似工单聚人）
-  weight_b: 0.5             # B路（问题域聚人）
+  cluster_merge: 0.55
+  cluster_min_size: 4
+  cluster_assign: 0.40
+  cluster_top_k: 2
+  cluster_count_exp: 0.3    # 次数收益：结10张 ≈ 结1张的 1.45 倍（旧口径约 3.5 倍）
 
 # ══════════════════════════════════════════════════════════════════
-# 3.3 对接人/倾向人 加权与精排保底
-#    消费方：ranking/ranker.py（项目对接人 / 用户倾向处理人）
-#    - contact_bonus: 对接人/倾向人 精排 × 的加权系数（默认 2.0）
-#    - contact_floor: 对接人/倾向人 精排保底分（默认 0.8）。理由：即使其召回基础分很低，
-#                     翻倍后仍可能进不了 Step6 决策窗口 → 再抬到该保底分，保证能被 LLM 看到并权衡。
-#                     （=1 或 <1 则不启用保底）
+# 3.3 倾向接单人精排保底
+#    消费方：ranking/ranker.py
+#    - preferred_floor: 倾向接单人 total = max(加权后分数, 该值)。对接人 / 提单人 / 原不满意
+#                       只打标，不加分；对接人不再 ×2。contact_bonus 本版不读。
 # ══════════════════════════════════════════════════════════════════
-contact_bonus: 2.0
-contact_floor: 0.8
+preferred_floor: 0.9
+
+# ══════════════════════════════════════════════════════════════════
+# 3.4 模糊强信号（Step2）
+#    消费方：ranking/tags.py::match_vague_strong_signal
+#    只认 dispatch_hint=severe → 跳过 Step3–6，进 Step7。
+#    lacking 不截断：只往 prompt 注入「建议正常派单、接手后再问」。
+#    不再扫描述正文。
+# ══════════════════════════════════════════════════════════════════
+vague_strong_signals:
+  enabled: true
+
+# ══════════════════════════════════════════════════════════════════
+# 3.5 L1 LLM 召回人数（Step3）
+#    消费方：recall/llm_recall.py
+#    单轮只要 Top single_top_k；人多分批时每批 Top batch_top_k，合并后全部进 Step4，
+#    不再做第二轮决选。不用分数阈值当主开关。
+#    - single_top_k:     单轮（人数 ≤ single_round_max）输出人数（默认 5）
+#    - batch_top_k:      分批时每批输出人数（默认 3）；三批则最多 9 人全进精排
+#    - single_round_max: 候选人数 ≤ 此值时不分批（默认 12）
+#    - batch_size:       分批每批人数（默认 8）
+# ══════════════════════════════════════════════════════════════════
+llm_recall:
+  single_top_k: 5
+  batch_top_k: 3
+  single_round_max: 12
+  batch_size: 8
 
 # ══════════════════════════════════════════════════════════════════
 # 4. 职级惩罚系数
@@ -87,7 +115,7 @@ job_level_penalty:
 #     - history_bonus:    历史明确偏向该部门（占比 ≥ history_confirm_threshold）时加的分（佐证确认）。
 #     - 历史不足/缺失（占比 < threshold 或 hist=0）→ 不加不减，final = LLM 分，不打折。
 #   阈值：
-#     - hard_filter_score: 融合分达到此值且 margin 明显领先才收紧（R2 强确认 0.9+ 时可达到）。
+#     - hard_filter_score: 与 R2「明确负责」档同一下沿 0.80；只有认准了才硬收紧部门。
 #     - hard_filter_margin: 第一名与第二名的差距门槛，避免"接近并列"还被硬框。
 #     - soft_prior_score: 中等信度 → 倾向该部门但不强制（精排给该部门加分）。
 #    说明：R5 强关键词已移除（子串匹配易误触），R-Audit 独立复核兜底（dept_audit_enabled=true）。
@@ -98,17 +126,17 @@ department_routing:
     history_bonus: 0.05             # 历史明确偏向时加的分（佐证确认）
                                     # 注：历史缺失/不足以确认时，LLM 为基础分不打折、不加不减
   thresholds:
-    hard_filter_score: 0.63
+    hard_filter_score: 0.80
     hard_filter_margin: 0.10
     soft_prior_score: 0.55
     dept_boost: 1.5
   llm:
     enabled: true
     # max_tokens 需容纳最多 3 个部门 + reason
-    max_tokens: 320
+    max_tokens: 480
     temperature: 0
     # min_confidence：R2 输出 confidence 的保留下限。配合 R2 prompt 四档刻度，
-    # 主判(0.85+)与主要候选(0.55+)均可过；次要候选(0.25~0.55)也保留，供融合/收紧权衡。
+    # 主判(0.80+)与主要候选(0.55+)均可过；次要候选(0.25~0.55)也保留，供融合/收紧权衡。
     min_confidence: 0.3
   history:
     enabled: true
@@ -118,6 +146,8 @@ department_routing:
 # R-Audit 部门派发审查开关（true = R2 判完部门后独立 LLM 单轮复核）
 dept_audit_enabled: true
 
+# 运行时不读。部门画像只认 DB departments.profile_text；没有则 tip「没有部门画像」。
+# 以下仅作历史底稿 / migrate_department_profiles.py 种子，不再补漏。
 departments:
   - id: robot_hardware
     name: 机器人事业部
@@ -179,19 +209,29 @@ product_routing:
     车端硬件: ["车端硬件"]
 
 # ══════════════════════════════════════════════════════════════════
-# 7. 置信度阈值（规则兜底决策用）
-#    消费方：ranking/fallback_decision.py
-#    auto ≥ 0.8 直接派单；recommend 0.5~0.8 建议确认；< 0.5 fallback
+# 7. 置信度阈值（遗留，Step7 不再读取）
+#    旧规则兜底曾按分数分 auto / recommend / fallback。
+#    现 Step7 只派对接人 / 项目经理，不再按阈值选人。键保留以免旧脚本读配置报错。
 # ══════════════════════════════════════════════════════════════════
 decision_thresholds:
   auto: 0.8
   recommend: 0.5
 
 # ══════════════════════════════════════════════════════════════════
-# 9. 负载均衡（已移除，enabled=false）
-#    背景：按在途工单数打折，会把"唯一该承接者"（如产品经理）压出决策窗口，
-#          导致 feature 需求等本应派给专门角色的工单派错。已从派单流程中移除。
-#    保留配置项仅为可逆标记，启用后 dispatch_flow._apply_load_balance 会重新生效。
+# 7.1 兜底转「项目经理」（Step7）
+#    消费方：pipeline/dispatch_flow.py + ranking/fallback_decision.py
+#    顺序：本单对接人 → 本单 project.project_manager_id → 本配置。
+#    三者都空 → 未指派 + tip，不拔精排 #1。
+#    - project_manager_id：配置兜底的项目经理 users.id（项目字段为空时才用）
+#    - project_manager_name：姓名；查 users 失败时用，避免只配了 ID 却派不出去
+# ══════════════════════════════════════════════════════════════════
+project_manager_id: "oD5oY3e8Lpa689OQHmGRV-kVcVIc"
+project_manager_name: 毛梦晴
+
+# ══════════════════════════════════════════════════════════════════
+# 9. 负载均衡（Step5 保留、本版关闭）
+#    代码仍在 dispatch_flow._apply_load_balance，主流程不调用。
+#    enabled=false。打开会按在途工单数打折，可能把唯一承接者压出决策窗口。
 #    消费方：pipeline/dispatch_flow.py
 # ══════════════════════════════════════════════════════════════════
 load_balance:
@@ -201,24 +241,12 @@ load_balance:
 # ══════════════════════════════════════════════════════════════════
 # 10. LLM 最终决策（Step 6）
 #    消费方：ranking/llm_decision.py
-#    规则：Step6 的 LLM 是『最终拍板决策者』，所有工单都进入 LLM 在精排 Top-K 窗口内
-#          做最终决策（不再有"高分直接拍板/确定性分支"）。精排 #1 是默认最强依据，
-#          但 LLM 有权在有实质理由（如用户重派、模块明显不匹配）时改选。
-#    - llm_decision_topk：LLM 的候选窗口 = 精排前 K 名（default 3）
-#    - yaorenba_force_module_owner：摇人吧服务号项目是否识别"模块总负责人"作为
-#      额外决策线索喂给 LLM（default true；仅线索，非强制）
+#    规则：Step6 铁律 + 产品附录；can_decide=false / 名单外 / 调用失败 → None，不回精排 #1。
+#          精排全量进仲裁（本版不截 Top-K）。
+#    - llm_decision_topk：<=0 不截窗（本版 0）；>0 时才截到精排前 K 名（兼容旧配置）
+#    - yaorenba_force_module_owner：摇人吧附录是否列出子界面负责人（default true；仅附录，非强制）
 #    - llm_decision_low_score_threshold：保留仅为兼容日志展示，不再作为"触发 LLM"的门槛
 # ══════════════════════════════════════════════════════════════════
 llm_decision_low_score_threshold: 0.6
-llm_decision_topk: 3
+llm_decision_topk: 0
 yaorenba_force_module_owner: true
-
-# ══════════════════════════════════════════════════════════════════
-# 11. L2 语义召回开关
-#    消费方：pipeline/dispatch_flow.py（Step 3）
-#    说明：true = 启用 L2 Embedding 向量语义召回（cos(工单, 模块锚文本)）。
-#          L2 是真正的语义匹配（非关键词子串匹配），当初因误判为关键词而停用，
-#          实为 ranker_weights 权重退化（语义 0.35 反超 LLM 0.30）所致。
-#          现已把 semantic_match 权重收敛为辅助值(0.15 < llm 0.70)，LLM 保持主导。
-# ══════════════════════════════════════════════════════════════════
-semantic_recall_enabled: true

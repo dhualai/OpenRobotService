@@ -15,8 +15,7 @@ logger = logging.getLogger("admin.tickets")
 
 ticket_router = APIRouter(prefix="/tickets", tags=["admin-tickets"])
 
-# AI 服务内部地址（注意：ai/run.py 实际端口是 8401，与 settings.AI_SERVICE_URL 默认值 8010 不同；
-# 生产环境请通过环境变量 AI_SERVICE_URL 覆盖为正确的值，例如 http://ai-service:8401）
+# AI 服务内部地址（ai/run.py 默认 8401；生产用环境变量 AI_SERVICE_URL 覆盖）
 AI_SERVICE_URL = settings.AI_SERVICE_URL.rstrip("/")
 
 

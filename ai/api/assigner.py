@@ -32,3 +32,40 @@ async def reload_config():
     except Exception as e:
         logger.exception("Assigner 配置热更新失败: %s", e)
         raise HTTPException(status_code=500, detail=f"热更新失败: {e}")
+
+
+def _ok(data):
+    return {"code": 0, "data": data}
+
+
+@assigner_router.get("/debug/overview")
+async def debug_overview():
+    """开发者模式：当前簇缓存 + 历史工单/索引概况。不触发向量化。"""
+    try:
+        from ai.agents.AiDiagnosisPlatform.assigner.debug_views import debug_overview as _overview
+        return _ok(await _overview())
+    except Exception as e:
+        logger.exception("派单调试概览失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"概览失败: {e}")
+
+
+@assigner_router.post("/debug/clusters/rebuild")
+async def debug_rebuild_clusters():
+    """开发者模式：清缓存并重新自动聚簇。"""
+    try:
+        from ai.agents.AiDiagnosisPlatform.assigner.debug_views import debug_rebuild_clusters as _rebuild
+        return _ok(await _rebuild())
+    except Exception as e:
+        logger.exception("重建问题簇失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"重建簇失败: {e}")
+
+
+@assigner_router.post("/debug/history/reindex")
+async def debug_reindex_history():
+    """开发者模式：把已解决/已关闭工单按四栏模板写入 Qdrant。"""
+    try:
+        from ai.agents.AiDiagnosisPlatform.assigner.debug_views import debug_reindex as _reindex
+        return _ok(await _reindex())
+    except Exception as e:
+        logger.exception("补索引失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"补索引失败: {e}")

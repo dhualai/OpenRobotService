@@ -385,6 +385,8 @@ async def diagnosis_tool_loop_branch(pipe, request, state, memory):
     from ai.agents.AiDiagnosisPlatform.search_tool import SEARCH_KB_SCHEMA, make_search_result, make_search_error
     from ai.agents.AiDiagnosisPlatform.ticket_tool import TOOL_SCHEMA, execute_submit_ticket
     from ai.agents.AiDiagnosisPlatform.tool_loop import run_tool_loop
+    # 函数内 import 破循环（pipeline → 本模块 → pipeline）
+    from ai.agents.AiDiagnosisPlatform.pipeline import _user_profile_block
 
     yield {"event": "status", "data": {"stage": "analyzing", "round": state.diagnosis_rounds}}
     t0 = time.perf_counter()
@@ -395,8 +397,11 @@ async def diagnosis_tool_loop_branch(pipe, request, state, memory):
     # 构造 messages：system + 最近对话 + 本轮用户消息
     _conv = pipe._format_conversation(
         memory, from_turn=state.context_start, max_turns=8)
+    # 用户身份块置顶（0904）：闲聊/诊断走工具循环的小 prompt 同样需要
+    # （「我是谁」类问题 + 结合岗位回答）；无画像空串零侵入。
     system_prompt = (
-        "你是「摇人吧」微信服务号的 AI 诊断助手 U老师，面向 AGV/AMR 行业，"
+        _user_profile_block(state)
+        + "你是「摇人吧」微信服务号的 AI 诊断助手 U老师，面向 AGV/AMR 行业，"
         "像一位经验丰富的现场工程师在微信上帮用户解决问题。\n"
         "你有两个工具：\n"
         "1. search_kb：检索知识库（操作手册/FAQ/排查手册/错误码）。"

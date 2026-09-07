@@ -11,6 +11,62 @@ from typing import List, Optional
 from app.core.config import settings
 
 
+def build_redispatch_tip(log, user_map) -> Optional[str]:
+    """派单结果提醒的唯一出口（列表摘要 / 详情非「未派到」分支）。
+
+    数据源：task_dispatch_log 结构化字段（preferred_id / pinyin_match /
+    name_collision / profile.missing / profile.specified_name）。
+    Step0 指定人与重派倾向人走同一条规则。
+    """
+    if log is None:
+        return None
+    assigned_name = user_map.get(log.assigned_id, log.assigned_id)
+    preferred_id = log.preferred_id
+    preferred_name = user_map.get(preferred_id, preferred_id) if preferred_id else None
+    prof = log.profile if isinstance(getattr(log, "profile", None), dict) else {}
+    specified_name = (prof.get("specified_name") or "").strip()
+
+    # Step7 无人可派：不编接单人，但要让提单人看到失败说明（优先于其它分支）
+    if prof.get("unassignable"):
+        return (
+            "暂时无法派单：项目未配置对接人和项目经理，工单还没有接单人。"
+            "配置后系统会继续尝试。"
+        )
+
+    # Step0 指定人找不到：没有 users.id，只记下了指定名
+    if specified_name and not preferred_id:
+        return f"没找到您指定的【{specified_name}】，已按智能派单处理"
+
+    # ② 未派到指定人 / 倾向人
+    if preferred_id and preferred_id != log.assigned_id:
+        tip = f"很抱歉，您指定的【{preferred_name}】暂未采纳，已改派更合适的【{assigned_name}】处理"
+    # ④ 拼音命中（已派到解析出的人）
+    elif getattr(log, "pinyin_match", False):
+        tip = f"拼音找到的是【{assigned_name}】，有可能不准确"
+    # ③ 同名
+    elif getattr(log, "name_collision", False):
+        if prof.get("collision_random"):
+            tip = f"指派人存在同名，已随机选择【{assigned_name}】"
+        else:
+            tip = f"指派人存在同名，已按评估选择【{assigned_name}】"
+    else:
+        tip = None
+
+    # ① 画像不完整（可叠加；同名随机多半两边都不完整，要提醒补）
+    missing = (prof.get("missing") or []) if prof else []
+    if missing:
+        if preferred_id and preferred_id == log.assigned_id:
+            suffix = "您指定的接单人画像不完整，请补充"
+        else:
+            suffix = "该接单人画像不完整，待补充"
+        tip = (f"{tip}；{suffix}") if tip else suffix
+    # 部门职责画像：只认库，yaml 不补；库里没有就提醒去后台补
+    if prof.get("no_dept_profile"):
+        suffix = "没有部门画像，请到后台补充部门职责"
+        tip = (f"{tip}；{suffix}") if tip else suffix
+    return tip
+
+
 async def build_redispatch_tip_detail(
     pref_name: str,
     assigned_name: str,

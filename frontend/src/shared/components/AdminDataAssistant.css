@@ -1,5 +1,5 @@
 /* =====================================================================
- * 后台管理 · AI 数据助手（AdminDataAssistant，UI 原型）
+ * 后台管理 · AI 数据助手（AdminDataAssistant）
  * ---------------------------------------------------------------------
  * 设计对照「转工单」悬浮球（.chat-panel__ticket-fab / .chat-ticket-btn）：
  * 52px 液态玻璃圆钮 + 常显小标签 + 可拖拽 + 入场回弹动画；差异为
@@ -159,16 +159,6 @@
   color: var(--foreground);
 }
 
-.ada-head__demo {
-  font-size: 10px;
-  line-height: 1;
-  padding: 3px 6px;
-  border-radius: 6px;
-  background: var(--apricot-soft);
-  color: var(--apricot);
-  font-weight: 600;
-}
-
 .ada-head__sub {
   margin-top: 2px;
   font-size: 11px;
@@ -211,7 +201,7 @@
   max-width: 88%;
 }
 
-/* 演示答案中的表格：超出抽屉宽度时横向滚动 */
+/* AI 回答中的表格：超出抽屉宽度时横向滚动 */
 .ada-msgs .markdown-body table {
   display: block;
   width: max-content;

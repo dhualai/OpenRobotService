@@ -17,6 +17,7 @@ const DownloadRedirect = lazy(() => import('@/pages/DownloadRedirect'));
 // Admin
 const Dashboard = lazy(() => import('@/pages/admin/Dashboard'));
 const AdminEntries = lazy(() => import('@/pages/admin/AdminEntries'));
+const DispatchDev = lazy(() => import('@/pages/admin/DispatchDev'));
 const AdminLayout = lazy(() => import('@/shared/components/AdminLayout'));
 
 // 仪表盘下钻明细
@@ -101,6 +102,7 @@ export const router = createBrowserRouter([
               { path: 'dashboard', element: <ProjectMetrics /> },
               { path: 'data-import', element: <DataImport /> },
               { path: 'operation-logs', element: <OperationLogs /> },
+              { path: 'dispatch-dev', element: <DispatchDev /> },
               // { path: 'progress', element: <ProgressBoard /> },       // 已并入 ProjectProgress
               // { path: 'personnel', element: <PersonnelBoard /> },     // 已从导航移除
               { path: 'project-edit/:id?', element: <ProjectEdit /> },
