@@ -252,6 +252,21 @@ class TestL3AutoCluster:
         sizes = sorted(len(g) for g in groups)
         assert sizes == [4, 4]
 
+    def test_chain_does_not_stay_one_cluster(self):
+        """异常流程：A≈B、B≈C 但 A 远 C → 不能靠串门并成一簇。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.recall.expertise_recall import (
+            cluster_by_similarity,
+        )
+        import numpy as np
+        a = np.array([1.0, 0.0, 0.0])
+        ab = np.array([1.0, 1.0, 0.0]) / np.sqrt(2)
+        b = np.array([0.0, 1.0, 0.0])
+        bc = np.array([0.0, 1.0, 1.0]) / np.sqrt(2)
+        c = np.array([0.0, 0.0, 1.0])
+        embs = np.vstack([a, ab, b, bc, c])
+        groups = cluster_by_similarity(embs, merge_threshold=0.55, min_size=3)
+        assert all(len(g) < 5 for g in groups)
+
     def test_query_lands_in_near_cluster(self):
         """正常流程：新单靠近 A 团 → 只落入 A。"""
         from ai.agents.AiDiagnosisPlatform.assigner.recall.expertise_recall import (
@@ -311,6 +326,64 @@ class TestL3AutoCluster:
         assert 0.50 < mid < 0.75
         assert strong == 1.0
         assert cluster_person_score(count=20, freshness=1.0, cluster_sim=1.0) == 1.0
+
+    def test_project_to_2d_keeps_two_blobs_apart(self):
+        """正常流程：两团高维向量投到二维后仍分开。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.recall.expertise_recall import (
+            project_to_2d,
+        )
+        import numpy as np
+        a = np.array([[1.0, 0.0, 0.0], [0.99, 0.01, 0.0], [0.98, 0.02, 0.0]])
+        b = np.array([[0.0, 1.0, 0.0], [0.01, 0.99, 0.0], [0.02, 0.98, 0.0]])
+        xy = project_to_2d(np.vstack([a, b]))
+        assert xy.shape == (6, 2)
+        mid_a = xy[:3].mean(axis=0)
+        mid_b = xy[3:].mean(axis=0)
+        assert float(np.linalg.norm(mid_a - mid_b)) > 0.8
+
+    def test_ticket_points_mark_noise(self):
+        """正常流程：未入簇的点 cluster_id=-1。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.recall.expertise_recall import (
+            build_ticket_points,
+        )
+        import numpy as np
+        recs = [
+            {"ticket_id": "1", "title": "A", "engineer_id": "u-a"},
+            {"ticket_id": "2", "title": "B", "engineer_id": "u-b"},
+        ]
+        xy = np.array([[0.1, 0.2], [0.8, -0.3]])
+        pts = build_ticket_points(recs, [[0]], xy)
+        assert pts[0]["cluster_id"] == 0
+        assert pts[1]["cluster_id"] == -1
+        assert pts[0]["x"] == 0.1
+
+    def test_cluster_snapshot_from_cache(self):
+        """正常流程：缓存里的簇能读出工单和结单人，未入簇算噪声。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.recall import expertise_recall as er
+        er._cache.update({
+            "hash": "x",
+            "centroids": object(),
+            "cluster_people": [{"u-a": {"count": 3, "last_ts": 1.0}}],
+            "cluster_titles": [["车子停了"]],
+            "cluster_tickets": [[{
+                "ticket_id": "1", "title": "车子停了", "engineer_id": "u-a",
+            }]],
+            "ticket_total": 5,
+            "ticket_points": [{
+                "ticket_id": "1", "title": "车子停了", "engineer_id": "u-a",
+                "cluster_id": 0, "x": 0.2, "y": -0.1,
+            }],
+        })
+        snap = er.cluster_snapshot_from_cache({"u-a": "甲"})
+        assert snap["ready"] is True
+        assert snap["clustered"] == 1
+        assert snap["noise"] == 4
+        assert snap["clusters"][0]["people"][0]["name"] == "甲"
+        assert snap["clusters"][0]["tickets"][0]["engineer_name"] == "甲"
+        assert snap["points"][0]["engineer_name"] == "甲"
+        assert snap["points"][0]["x"] == 0.2
+        er.invalidate_expertise_cache()
+        assert er.cluster_snapshot_from_cache()["ready"] is False
 
     def test_count_term_softer_than_raw_log(self):
         """正常流程：次数收益弱于纯 ln(1+n)，结 10 张不会碾压结 1 张。"""

@@ -1681,6 +1681,25 @@ class RetrievalService:
             logger.warning(f"[retrieval] 派单历史检索失败: {e}")
             return []
 
+    async def dispatch_history_stats(self) -> dict:
+        """当前 dispatch 集合名和点数。没有集合就空。"""
+        from ai.config import get_active_collection_for
+
+        col = get_active_collection_for("dispatch") or ""
+        if not col:
+            return {"collection": "", "points": 0}
+        try:
+            await self._ensure_clients()
+            if self._qdrant.is_unavailable:
+                return {"collection": col, "points": 0}
+            client = await self._qdrant._ensure_client()
+            info = await self._qdrant._to_thread(client.get_collection, col)
+            points = getattr(info, "points_count", 0) or 0
+            return {"collection": col, "points": int(points)}
+        except Exception as e:
+            logger.warning(f"[retrieval] 派单历史统计失败: {e}")
+            return {"collection": col, "points": 0}
+
     async def ensure_collection(self, vector_size: int) -> None:
         """确保集合存在"""
         await self._ensure_clients()

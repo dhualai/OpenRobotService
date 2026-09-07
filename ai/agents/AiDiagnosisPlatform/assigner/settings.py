@@ -41,7 +41,7 @@ class AssignerConfig:
     - project_manager_name: 配置项目经理姓名（查不到 users 时用）
     - load_balance:         {enabled, step}，Step5 保留但主流程不调用
     - history_recall:       {top_k, half_life_days, decay_floor, sim_threshold, fault_code_boost, robot_type_boost}，L3 历史召回增强参数
-    - vague_strong_signals: {enabled, keywords}，Step2 模糊强信号；本版含「[问题描述不完整]」
+    - vague_strong_signals: {enabled}，Step2 只认 dispatch_hint=severe
     - llm_recall:           {single_top_k, batch_top_k, single_round_max, batch_size}，L1 单轮/分批人数
     - preferred_floor:      倾向接单人精排保底（默认 0.9）；对接人不再 ×2
     - llm_decision_topk:    Step6 窗口；<=0 不截窗（本版默认 0）
@@ -86,7 +86,7 @@ class AssignerConfig:
         # 新增：精排第一名的评分阈值。总分>=此阈值时直接采用第一名（保证派单尊重排名）；
         # 仅当第一名总分<此阈值（说明整体得分很低、候选都不理想）时才触发 LLM 再决定一遍。
         self.llm_decision_low_score_threshold: float = 0.5
-        self.vague_strong_signals: Dict[str, Any] = {"enabled": True, "keywords": []}
+        self.vague_strong_signals: Dict[str, Any] = {"enabled": True}
         self.llm_recall: Dict[str, Any] = {
             "single_top_k": 5, "batch_top_k": 3, "single_round_max": 12, "batch_size": 8,
         }
@@ -162,7 +162,6 @@ class AssignerConfig:
         raw_vague = config.get("vague_strong_signals") or {}
         self.vague_strong_signals = {
             "enabled": bool(raw_vague.get("enabled", True)),
-            "keywords": list(raw_vague.get("keywords") or []),
         }
         raw_l1 = config.get("llm_recall") or {}
         def _i(key, default):

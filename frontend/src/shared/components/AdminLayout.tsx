@@ -46,6 +46,7 @@ const adminMenuItems: MenuItem[] = [
 
   // === 系统日志 ===
   { path: '/admin/operation-logs', label: '操作记录', emoji: '📝' },
+  { path: '/admin/dispatch-dev', label: '开发者模式', emoji: '🧪' },
 ];
 
 function matchMenuPath(items: MenuItem[], currentPath: string): string {

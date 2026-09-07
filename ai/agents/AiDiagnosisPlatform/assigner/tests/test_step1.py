@@ -60,6 +60,49 @@ def test_r2_and_audit_share_ticket_fields():
     assert "原样复制" in audit
 
 
+def test_ticket_fields_use_diagnosis_collected():
+    """正常流程：诊断摘要和 collected_info 进工单段；已有栏去重，指名不进。"""
+    ticket = TicketContext(
+        id="t-diag",
+        title="车子停了",
+        problem_description="在货架前不动",
+        status="new",
+        ticket_type="problem",
+        robot_type="",
+        fault_code="",
+        diagnosis_problem_summary="车子在货架前停住起不来",
+        diagnosis_collected_info={
+            "robot_type": "S20",
+            "fault_code": "E1001",
+            "occurrence_time": "昨天傍晚",
+            "frequency": "每天两三次",
+            "requested_assignee": "张三",
+            "project": "某某调度现场",
+            "special_notes": "无",
+        },
+        diagnosis_hypotheses=["电机过热"],
+        project_name="现场A",
+    )
+    block = ticket_fields_block(ticket)
+    assert "诊断摘要：车子在货架前停住起不来" in block
+    assert "车型：S20" in block
+    assert "故障码：E1001" in block
+    assert "故障时间：昨天傍晚" in block
+    assert "出现频率：每天两三次" in block
+    assert "张三" not in block
+    assert "某某调度现场" not in block
+    assert "特殊说明" not in block
+    assert "Agent假设：电机过热" in block
+
+
+def test_ticket_fields_skip_duplicate_summary():
+    """正常流程：摘要与标题相同则不重复带。"""
+    ticket = _ticket()
+    ticket.diagnosis_problem_summary = ticket.title
+    block = ticket_fields_block(ticket)
+    assert "诊断摘要" not in block
+
+
 def test_departments_empty_db_no_yaml_fallback():
     """异常流程：库里没有部门画像 → 不用 yaml 补，标记 missing。"""
     with patch.object(AssignerConfig, "_load_departments_from_db", return_value=[]):

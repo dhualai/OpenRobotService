@@ -85,21 +85,20 @@ class TestFallbackOrder:
 
 
 class TestVagueSkipFlag:
-    """词表空不截断；有词才跳过 3–6。"""
+    """只认 dispatch_hint=severe 才跳过 3–6。"""
 
-    def test_empty_keywords_still_no_skip(self):
-        """正常流程：keywords=[] → 不截断（与现网一致）。"""
-        cfg = SimpleNamespace(vague_strong_signals={"enabled": True, "keywords": []})
-        assert match_vague_strong_signal(_ticket(problem_description="帮我看一下"), cfg) is False
-
-    def test_keyword_would_skip(self):
-        """正常流程：词表命中 → True（主流程将跳过 Step3–6）。"""
-        cfg = SimpleNamespace(
-            vague_strong_signals={"enabled": True, "keywords": ["[问题描述不完整]"]},
-        )
+    def test_description_no_skip(self):
+        """正常流程：描述含旧标记也不截断。"""
+        cfg = SimpleNamespace(vague_strong_signals={"enabled": True})
         assert match_vague_strong_signal(
             _ticket(problem_description="车子停了 [问题描述不完整]"), cfg,
-        ) is True
+        ) is False
+
+    def test_dispatch_hint_severe_would_skip(self):
+        """正常流程：诊断 dispatch_hint=severe → 主流程将跳过 Step3–6。"""
+        cfg = SimpleNamespace(vague_strong_signals={"enabled": True})
+        assert match_vague_strong_signal(_ticket(dispatch_hint="severe"), cfg) is True
+        assert match_vague_strong_signal(_ticket(dispatch_hint="lacking"), cfg) is False
 
 
 class TestRunStep7:
@@ -165,3 +164,37 @@ class TestUnassignableTip:
         tip = build_redispatch_tip(log, {})
         assert "暂时无法派单" in tip
         assert "已按智能派单处理" not in tip
+
+
+class TestDiagnosisFromMeta:
+    """诊断落库是 metadata_info.diagnosis 嵌套对象。"""
+
+    def test_reads_nested_diagnosis_not_flat_keys(self):
+        """正常流程：从 diagnosis.hypotheses 取值，不读顶层 diagnosis_hypotheses。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.pipeline.worker import (
+            _diagnosis_from_meta,
+        )
+        meta = {
+            "diagnosis_hypotheses": ["错误平铺，不该读"],
+            "diagnosis": {
+                "problem_summary": "车子停了",
+                "hypotheses": ["电机过热", "调度锁死"],
+                "ruled_out": ["电池没电"],
+                "collected_info": {"robot_type": "S20"},
+                "rounds": 3,
+            },
+        }
+        out = _diagnosis_from_meta(meta)
+        assert out["diagnosis_hypotheses"] == ["电机过热", "调度锁死"]
+        assert out["diagnosis_ruled_out"] == ["电池没电"]
+        assert out["diagnosis_collected_info"] == {"robot_type": "S20"}
+        assert out["diagnosis_problem_summary"] == "车子停了"
+        assert out["diagnosis_rounds"] == 3
+
+    def test_empty_diagnosis(self):
+        """异常流程：没有 diagnosis → 全空。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.pipeline.worker import (
+            _diagnosis_from_meta,
+        )
+        assert _diagnosis_from_meta({})["diagnosis_hypotheses"] is None
+        assert _diagnosis_from_meta(None)["diagnosis_rounds"] is None

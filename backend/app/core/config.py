@@ -56,7 +56,7 @@ class Settings(BaseSettings):
             'database': 'helpdesk'
         }
     
-    AI_SERVICE_URL: str = Field(default="http://localhost:8010")
+    AI_SERVICE_URL: str = Field(default="http://localhost:8401")
     
     MINIO_ENDPOINT: str = Field(default="localhost:9000")
     MINIO_ACCESS_KEY: str = Field(default="")
