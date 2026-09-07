@@ -276,6 +276,13 @@ class WecomProjectAdapter:
                     if contact_person_id and _ensure_contact_person_role(project_code, contact_person_id):
                         authorized += 1
                 else:
+                    # 同 id 已被软删除：后台删除决定优先于企微推送，跳过不复用。
+                    # delete_project 软删除保留行以阻止编号复用，其主键仍被占用，
+                    # 直接 create 会撞 Duplicate entry 主键冲突。
+                    if project_service.get_project_include_deleted(project_code):
+                        skipped += 1
+                        logger.info(f"项目 {project_code} 已被软删除，跳过同步不复用")
+                        continue
                     result = project_service.create_project(project_data)
                     if result:
                         created += 1

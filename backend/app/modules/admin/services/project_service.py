@@ -267,7 +267,22 @@ class ProjectService:
             return self._convert_to_dict(project) if project else None
         finally:
             db.close()
-    
+
+    def get_project_include_deleted(self, project_id) -> Optional[Dict]:
+        """按 id 查询项目，包含软删除行。
+
+        get_project 已过滤软删除行；当 get_project 返回 None 而本方法返回非 None，
+        说明该 id 被一个软删除行占用，其主键不可被新 INSERT 复用
+        （见 delete_project：软删除保留行以阻止编号复用）。供 wecom 同步在
+        create 前判断是否撞软删除主键，避免 Duplicate entry 主键冲突。
+        """
+        db = SessionLocal()
+        try:
+            project = db.query(Project).filter(Project.id == project_id).first()
+            return self._convert_to_dict(project) if project else None
+        finally:
+            db.close()
+
     def get_project_code_by_system_id(self, system_id: str) -> Optional[str]:
         db = SessionLocal()
         try:
