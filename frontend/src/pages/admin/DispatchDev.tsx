@@ -85,8 +85,7 @@ function unwrap<T>(raw: unknown): T {
 
 export default function DispatchDev() {
   const navigate = useNavigate();
-  const hasPermission = useAuthStore((s) => s.hasPermission);
-  const allowed = hasPermission(PERM_DISPATCH_DEV);
+  const allowed = useAuthStore((s) => s.hasPermission(PERM_DISPATCH_DEV));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [clusters, setClusters] = useState<ClusterSnap | null>(null);
