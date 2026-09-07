@@ -43,28 +43,22 @@ def _format_project_display(p: dict) -> str:
 
 
 def _build_project_choice_ask(candidates: List[Dict[str, str]]) -> str:
-    """项目选择题话术：服务端模板直出，不走 LLM——保证编号列表格式绝对稳定
+    """项目选择题话术：服务端模板直出，不走 LLM——保证格式绝对稳定
     （LLM 生成会在数字后加标点/改措辞，下一轮编号还原就没了锚点）。
-    0904 回退：0903 曾改为题面不带列表、候选由前端渲染成按钮气泡——前端
-    回滚后按钮不存在、题面又无列表，用户一个候选都看不到（生产实锤）。
-    改回文字编号列表兼容旧前端；前端按钮重新上线后列表与按钮并存不冲突。
-    编号还原数据源是 state.project_candidates（_proj_pick_block 注入 +
-    服务端 code 匹配），题面列表只是展示，两端解耦。"""
-    lines = "\n".join(
-        f"{i}. {_format_project_display(c)}"
-        for i, c in enumerate(candidates, 1))
+    0907 按钮版定稿：单段话术——把「点按钮/回序号」和「列表没有项目的
+    兜底路径」一次提醒完，候选按钮由前端渲染在话术下方（题面无编号
+    列表，0904 的列表是按钮被回滚期间的兼容措施）。手打序号的编号还原
+    数据源是 state.project_candidates（_proj_pick_block 注入 + 服务端
+    code 匹配），题面只是展示，两端解耦。注意保持单段（无空行）——
+    前端按第一个空行切分插按钮，无空行时按钮自然落在话术下方。"""
+    fallback = ("列表里没有你的项目，稍后在工单弹窗里搜索选择，"
+                "或勾选「没有我的项目」由管理员新建。")
     if len(candidates) == 1:
-        head = (f"出单前确认一下关联项目——看到你最近提交过 "
-                f"{_format_project_display(candidates[0])} 的工单，还是这个项目吗？")
-    else:
-        head = "出单前确认一下关联项目——查到你最近的工单记录："
-    tail = ("回复【序号】我帮你预填；列表里没有你的项目，稍后在工单弹窗里搜索选择，"
-            "或勾选「没有我的项目」由管理员新建。")
-    # 🔴 lines 与 tail 之间必须空行：前端把 AI 消息按 markdown 渲染，`N.` 开头的
-    # 行构成有序列表，尾随普通文本若只用单个 \n 相接会触发「lazy continuation」
-    # 被并进最后一条列表项（0827 生产实锤：「…（编号: 2026040303） 回复【编号】」
-    # 粘成一行）；空行（段落分隔）才是任何渲染器都认的硬断开。
-    return f"{head}\n{lines}\n\n{tail}"
+        return (f"出单前确认一下关联项目——看到你最近提交过 "
+                f"{_format_project_display(candidates[0])} 的工单，还是这个项目吗？"
+                f"点击下方按钮确认，或回复【1】；{fallback}")
+    return (f"出单前确认一下关联项目——这次要关联哪个项目？"
+            f"点击下方按钮选择，或直接回复【序号】；{fallback}")
 
 
 def _extract_json_object(raw: str) -> dict:
@@ -1239,11 +1233,14 @@ _PLANNER_TOOLS = [
                        "只要用户消息里出现**疑似提到某个公司/客户/场地/产品/项目**"
                        "的称呼就调用——包括：完整项目名（如「河南郑州东昇汽配厂潜伏车"
                        "项目」）、客户简称（如「东昇」「本川」「瑞贝卡」「中力」）、"
-                       "地点场景（如「襄阳629」「吉隆坡展厅」）、平台/产品名"
-                       "（如「服务号」「公众号」「摇人吧」）。project_name 填**用户"
-                       "原话**（照抄，不要补全、不要拼接成完整项目名、不要判断它对应"
-                       "哪个项目——对应关系由服务端校验）。拿不准时也算疑似，调用"
-                       "（服务端会自行校验是否真匹配到项目，匹配不上或歧义会自动忽略）。"
+                       "地点场景（如「襄阳629」「吉隆坡展厅」）、产品项目名。"
+                       "project_name 填**用户原话**（照抄，不要补全、不要拼接成完整"
+                       "项目名、不要判断它对应哪个项目——对应关系由服务端校验）。"
+                       "拿不准时也算疑似，调用（服务端会自行校验是否真匹配到项目，"
+                       "匹配不上或歧义会自动忽略）。"
+                       "🔴 只认**本轮用户消息文字里**的称呼：本对话平台/服务号自身"
+                       "的名称、只在助手回复或历史上下文里出现过的名称，都不是项目"
+                       "提及，绝不调用。"
                        "用户明确指代**上一张工单**的项目（如「项目还是上次提单的项目」"
                        "「跟上个单一个项目」）时，project_name 填 \"last\"。纯设备"
                        "故障/操作咨询、完全没提任何公司/客户/产品/场地时，不用调。",
@@ -1290,8 +1287,9 @@ _PLANNER_SYSTEM = (
     "- ticket 且消息明确指代某个已有工单（如「针对那个单子的问题再提一单」）→ "
     "调 lookup_ticket 取该工单内容，不调 search_kb\n"
     "- courtesy → 不调用任何工具\n"
-    "- 用户消息里出现具体项目名/简称（如「摇人吧」「本川项目」）→ mention_project"
-    "（记录跨轮记忆，与 route 并列输出；没提项目名就不调）\n"
+    "- 用户消息里出现具体项目名/简称（如「本川项目」）→ mention_project"
+    "（记录跨轮记忆，与 route 并列输出；没提项目名就不调——平台/服务号自身的"
+    "名称不算项目提及）\n"
     "- 🔴 拿不准要不要查知识库、或消息包含任何具体故障/错误码/操作疑问 → 调用 search_kb"
     "（宁多勿漏，错误码含义必须查）\n\n"
     "route 每轮必调；只输出工具调用，不要输出任何解释文字。"
@@ -2053,13 +2051,15 @@ class AiDiagnosisPlatform:
         def _query():
             session = SessionLocal()
             try:
+                # 库名可配：生产 helpdesk_724，测试环境库名不同时设 HELPDESK_DB
+                db = os.getenv("HELPDESK_DB", "helpdesk_724")
                 rows = session.execute(text(
-                    "SELECT DISTINCT p.name, p.code "
-                    "FROM helpdesk_724.user_project_roles upr "
-                    "JOIN helpdesk_724.users u ON u.id = upr.user_id "
-                    "JOIN helpdesk_724.project p ON p.id = upr.project_id "
-                    "WHERE u.username = :u AND upr.project_id IS NOT NULL "
-                    "AND upr.project_id != 'global' ORDER BY p.name"
+                    f"SELECT DISTINCT p.name, p.code "
+                    f"FROM {db}.user_project_roles upr "
+                    f"JOIN {db}.users u ON u.id = upr.user_id "
+                    f"JOIN {db}.project p ON p.id = upr.project_id "
+                    f"WHERE u.username = :u AND upr.project_id IS NOT NULL "
+                    f"AND upr.project_id != 'global' ORDER BY p.name"
                 ), {"u": username.strip()}).fetchall()
                 return [{"name": r[0], "code": str(r[1] or "")} for r in rows if r[0]]
             finally:
@@ -2574,6 +2574,10 @@ class AiDiagnosisPlatform:
             "用户只发图没配文字时不要默认在报障——先判断意图（查图上的错 / 问界面怎么操作 / 告知情况），"
             "判断不了就一句话确认后再深入，描述里没有报错提示时禁止自行推测故障\n"
             "- 回答操作步骤、错误码含义、故障排查等问题时，基于下方提供的知识库内容作答，禁止编造步骤\n"
+            "- 🔴 多份资料都相关时按问题类型选回答主体：用户问某设备**如何完成某个流程**"
+            "（上线/配置/恢复/激活等动作类问题），完整描述该流程步骤的资料是主体答案；"
+            "其他资料（同设备的单项功能开关、零散问答）不是流程答案，不进主体，"
+            "至多结尾一句话提及可补充——禁止反客为主拿单项配置资料充当流程答案\n"
             "- 🔴 分清资料的产品侧（回答前先判断）：知识库资料分属两侧——我们的产品"
             "（手册/FAQ/诊断卡/服务号等标签：调度系统与服务号平台的功能、页面操作、平台配置）"
             "和车端（🚗 车端标签：机器人本体上的软件与硬件，包括车上运行的程序、车端日志文件、"
@@ -2597,12 +2601,16 @@ class AiDiagnosisPlatform:
             "就别先说「部署完成后需要激活License」这种废话），"
             "直接进入步骤或关键区分\n"
             "- 不要复述知识库的章节号/文档编号（如「5.13」「9.4」这类数字编号），"
-            "用自己的话把步骤总结出来\n"
-            "- 知识库内容中的 ![](url) 是操作界面截图：与当前问题直接相关的截图，"
-            "必须用 ![说明](url) 格式引用到回复中对应步骤下面；与问题无关的图片一律不要带。"
+            "步骤的组织和衔接用自己的话，但资料里的页面/菜单/按钮名称和参数值必须"
+            "照抄原文，禁止换成同义说法（用户要按名称找到入口，改写会找不到）\n"
+            "- 🔴 知识库内容中的 ![](url) 是操作界面截图：与当前问题直接相关的截图，"
+            "必须用 ![说明](url) 格式引用到回复中**所属步骤**下面——多个步骤各有截图时"
+            "逐步骤配图，禁止只配第一张、禁止全部省略；带截图的步骤丢了截图，用户就"
+            "不知道界面长什么样，视为不完整回答。与问题无关的图片一律不要带。"
             "介绍产品/车型时，知识库中若有该产品的图片，必须用 ![说明](url) 引用，不要省略\n"
-            "- 回答控制在 600 字以内（含分析段），步骤/操作类回答可放宽到 900 字，"
-            "宁可简短完整，不要写太长（防止被截断）\n"
+            "- 回答控制在 600 字以内（含分析段），步骤/操作类回答以完整覆盖资料的步骤"
+            "和截图为前提，控制在 1200 字以内；压缩时删修饰词和重复说明，"
+            "🔴 绝不删步骤、参数值、界面名称和截图引用（防止被截断）\n"
             "- 知识库内容没有覆盖时，才如实说明手册未收录这一部分，给出通用排查方向；"
             "用户问题确实需要人工处理时才提转工单，语气自然"
             "（如「这个问题要现场看的话，可以转工单，我来帮你提」）\n"
@@ -2639,7 +2647,7 @@ class AiDiagnosisPlatform:
             async with asyncio.timeout(90.0):
                 async for token in self._llm_client.stream(
                         prompt=user_msg, system_prompt=system_prompt,
-                        max_tokens=2000, temperature=0.2):
+                        max_tokens=4000, temperature=0.2):
                     final_text += token
                     streamed = True
                     yield {"event": "token", "data": token}
@@ -2819,6 +2827,14 @@ class AiDiagnosisPlatform:
                     plan.append((name, tc["arguments"]))
             logger.info(f"[plan] 规划结果: intent={intent} tools={plan}"
                         + (f" mention={mention_raw!r}" if mention_raw else ""))
+            if mention_raw and mention_raw.lower() != "last":
+                # 反幻觉闸门（0904 生产实锤：规划 prompt 旧示例把平台名列为可报
+                # 称呼，flash 对没提项目的话也报 mention，所有用户提单都被误预填
+                # 平台测试项目）。schema 要求 project_name 照抄用户原话——不在
+                # 本轮消息文字里 = 幻觉/从上下文串入，拒收（backfill 溯源门同款纪律）。
+                if "".join(mention_raw.split()) not in "".join(request.query.split()):
+                    logger.info(f"[mention] 拒收（原话不在本轮消息文字里）: {mention_raw!r}")
+                    mention_raw = ""
             if mention_raw:
                 if mention_raw.lower() == "last":
                     # 指代上一单项目（0828）：咨询轮说了指代再点按钮的场景——
@@ -3034,6 +3050,8 @@ class AiDiagnosisPlatform:
                     self._retriever.retrieve_domain_dual(query, domain, top_k=8),
                     timeout=15.0,
                 )
+                for r in list(dense_res) + list(sparse_res):
+                    r.domain = domain  # 旧集合 payload 可能缺 domain，显式打标
                 return list(dense_res)[:top_k], list(sparse_res)[:top_k]
             except Exception as e:
                 # 不静默:缺方法(部署缺 retrieval.py)/超时/异常都打出来,
@@ -3291,6 +3309,18 @@ class AiDiagnosisPlatform:
         # 真相关的顶进 top6。码保送与同节 cap 不变；reranker 失败时
         # _rerank_results 内部降级为候选原序。
         _balanced, _seen_bal = [], set()
+        # 域保底（0904 生产实锤）：改写检索词被其他域标题字面碰瓷（「调度上线」）
+        # 时，team 域正确章节（自研车上线 0.614）在三域合并稠密排序中排第 6，
+        # 进不了「稠密 top4」候选池——flash 只拿到错域资料，如实答「手册未收录」。
+        # 三路域检索的多样性语义必须保到精排池：每域稠密 top2 直进池。
+        for _dom in ("team", "company", "industry"):
+            _dom_pool = sorted(
+                [x for x in uniq if x.domain == _dom and x.vector_score],
+                key=lambda x: x.vector_score, reverse=True)
+            for r in _dom_pool[:2]:
+                if r.id not in _seen_bal:
+                    _seen_bal.add(r.id)
+                    _balanced.append(r)
         for r in _dense_part[:4] + _sparse_part[:4]:
             if r.id not in _seen_bal:
                 _seen_bal.add(r.id)
@@ -3307,9 +3337,12 @@ class AiDiagnosisPlatform:
             content = self._rewrite_images(r) if r.content else ""
             if not content.strip():
                 continue
-            # 单个 chunk 截断到 800 字：平铺 bullet 的大章节 chunk 可达数千字,
-            # 全文进 prompt 会把 prompt 撑到 2 万字符(生产日志实锤),模型也抓不住重点
-            content = content[:800]
+            # 单个 chunk 截断到 1500 字：平铺 bullet 的大章节 chunk 可达数千字,
+            # 全文进 prompt 会把 prompt 撑到 2 万字符(生产日志实锤),模型也抓不住重点。
+            # 0904 从 800 提到 1500：手册操作章节（上线/配置流程）普遍 1100-1800 字
+            # 带多图，800 会把后半段步骤+截图砍掉——生产实锤 RXX 上线章节断尾，
+            # flash 转而拿标题字面更匹配的零散 FAQ 当回答主体（步骤和图全丢）。
+            content = content[:1500]
             title = f"（{r.title}）" if r.title else ""
             docs.append(f"---\n{_label(r)} {idx}{title}：\n{content}\n---")
             _tag = _final_tags[_ri] if _ri < len(_final_tags) else "?"

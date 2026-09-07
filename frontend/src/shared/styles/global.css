@@ -879,38 +879,67 @@ html, body, #root {
   color: var(--foreground);
   line-height: 1.6;
 }
-/* 项目编号题候选按钮（prepare not_ready+project_ask）：题面下方一排 pill 按钮，
-   点击=以用户身份发送序号走编号还原→预填→弹窗链路；答复后随 project_choices 清空消失 */
+/* 项目编号题候选按钮（project_ask）：题面提示语下方等宽两列网格，
+   实心蓝底序号徽标+名字左对齐（超长省略号），点击=以用户身份发送序号走
+   编号还原→预填→弹窗链路；答复后随 project_choices 清空消失 */
 .chat-proj-choices {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-wrap: wrap;
+  /* 插在题面 head/tail 两段之间（原编号列表位置）：上下对称留白，无分隔线 */
+  margin: 10px 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
+/* 奇数个候选时最后一个独占半行右侧空缺，拉通栏补齐 */
+.chat-proj-choices > button:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
 .chat-proj-choices__btn {
-  max-width: 100%;
-  padding: 5px 12px;
-  border: 1px solid var(--primary);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--primary);
-  font-size: 12px;
-  line-height: 1.5;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 12px 7px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--primary-soft);
+  color: var(--card-foreground);
+  font-size: 13px;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
-  transition: background 0.15s, color 0.15s;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  transition: background 0.15s;
 }
 .chat-proj-choices__btn:hover {
   background: var(--primary);
-  color: var(--card);
+  color: var(--primary-foreground);
 }
 .chat-proj-choices__btn:active {
-  opacity: 0.8;
+  opacity: 0.85;
+}
+/* 序号徽标：手打序号的依据（题面不再列编号列表） */
+.chat-proj-choices__index {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+/* hover 整钮变蓝后徽标反白，避免蓝底融在一起 */
+.chat-proj-choices__btn:hover .chat-proj-choices__index {
+  background: var(--primary-foreground);
+  color: var(--primary);
+}
+.chat-proj-choices__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
 }
 .chat-ticket-overview__footer {
   margin-top: 12px;
