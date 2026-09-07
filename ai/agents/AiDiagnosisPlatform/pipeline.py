@@ -43,20 +43,28 @@ def _format_project_display(p: dict) -> str:
 
 
 def _build_project_choice_ask(candidates: List[Dict[str, str]]) -> str:
-    """项目选择题话术：服务端模板直出，不走 LLM——保证格式绝对稳定。
-    0903 起不再输出编号列表（前端用结构化候选渲染等宽按钮，列表重复且不美观），
-    只留提示语；用户手打序号的依据=按钮上的序号徽标。编号还原数据源是
-    state.project_candidates（_proj_pick_block 注入 + 服务端 code 匹配），
-    与题面文字无关，删列表不影响还原链路。"""
+    """项目选择题话术：服务端模板直出，不走 LLM——保证编号列表格式绝对稳定
+    （LLM 生成会在数字后加标点/改措辞，下一轮编号还原就没了锚点）。
+    0904 回退：0903 曾改为题面不带列表、候选由前端渲染成按钮气泡——前端
+    回滚后按钮不存在、题面又无列表，用户一个候选都看不到（生产实锤）。
+    改回文字编号列表兼容旧前端；前端按钮重新上线后列表与按钮并存不冲突。
+    编号还原数据源是 state.project_candidates（_proj_pick_block 注入 +
+    服务端 code 匹配），题面列表只是展示，两端解耦。"""
+    lines = "\n".join(
+        f"{i}. {_format_project_display(c)}"
+        for i, c in enumerate(candidates, 1))
     if len(candidates) == 1:
         head = (f"出单前确认一下关联项目——看到你最近提交过 "
-                f"{_format_project_display(candidates[0])} 的工单，还是这个项目吗？"
-                f"点击下方按钮或直接回复序号确认：")
+                f"{_format_project_display(candidates[0])} 的工单，还是这个项目吗？")
     else:
-        head = "出单前确认一下关联项目——查到你最近的工单记录，点击下方按钮或直接回复序号选择："
-    tail = ("列表里没有你的项目，稍后在工单弹窗里搜索选择，"
+        head = "出单前确认一下关联项目——查到你最近的工单记录："
+    tail = ("回复【序号】我帮你预填；列表里没有你的项目，稍后在工单弹窗里搜索选择，"
             "或勾选「没有我的项目」由管理员新建。")
-    return f"{head}\n\n{tail}"
+    # 🔴 lines 与 tail 之间必须空行：前端把 AI 消息按 markdown 渲染，`N.` 开头的
+    # 行构成有序列表，尾随普通文本若只用单个 \n 相接会触发「lazy continuation」
+    # 被并进最后一条列表项（0827 生产实锤：「…（编号: 2026040303） 回复【编号】」
+    # 粘成一行）；空行（段落分隔）才是任何渲染器都认的硬断开。
+    return f"{head}\n{lines}\n\n{tail}"
 
 
 def _extract_json_object(raw: str) -> dict:
@@ -164,6 +172,11 @@ class AgentState:
     # 后提升为 mentioned 并清空；用户转移话题/取消/提单后清——话题级临时澄清
     # 状态，不是「人」的持久属性（与 project_candidates 区别）。
     ambiguous_project_candidates: List[Dict[str, str]] = field(default_factory=list)
+    # 用户画像（0904，users 表）：{name, department, job_level_cn, modules_text,
+    # duty}。run/run_stream 入口按 created_by 解析一次后随 memory 持久化，
+    # 三套 prompt 注入【用户】块让 LLM 结合岗位/职责回答；空 = 未解析或查无
+    # 此人（对话照常，AI 不知用户身份）。
+    user_profile: dict = field(default_factory=dict)
 
 
 # ============================================================
@@ -218,6 +231,7 @@ def _load_agent_state(metadata: dict) -> Optional[AgentState]:
         if isinstance(s.get("mentioned_project"), dict) else None,
         ambiguous_project_candidates=[c for c in (s.get("ambiguous_project_candidates") or [])
                                       if isinstance(c, dict)],
+        user_profile=dict(s.get("user_profile") or {}),
     )
 
 
@@ -254,6 +268,7 @@ def _save_agent_state(memory, state: AgentState) -> None:
         "project_candidates": state.project_candidates,
         "mentioned_project": state.mentioned_project,
         "ambiguous_project_candidates": state.ambiguous_project_candidates,
+        "user_profile": state.user_profile,
         "attachments": existing.get("attachments", []),  # 保留上传的附件
     }
 
@@ -295,6 +310,132 @@ def _can_submit(state: AgentState) -> tuple[bool, str]:
     return True, ""
 
 
+# ============================================================
+# 用户画像（0904）：对话侧注入用户身份，LLM 结合岗位/职责回答
+# 数据源 users 表（与派单 EngineerProfile 同源）；正常缓存 5 分钟、
+# 失败/查无负缓存 60 秒——与项目候选同一套纪律，任何降级不阻断对话。
+# ============================================================
+
+_USER_PROFILE_CACHE: Dict[str, tuple] = {}
+
+_JOB_LEVEL_CN = {1: "一线工程师", 2: "管理/审核", 3: "最高负责人"}
+
+
+def _flatten_resp_modules(modules) -> str:
+    """responsibility_modules 三层/两层/扁平 JSON → 「产品：界面(功能)」串。
+
+    三层 {产品:{界面:[功能]}} → 产品：界面(功能1、功能2)；两层 {产品:[模块]}
+    → 产品：模块1、模块2；旧扁平 list → 「其他」归一；垃圾输入返回空串。
+    """
+    if isinstance(modules, str):
+        try:
+            modules = json.loads(modules)
+        except Exception:
+            return ""
+    if isinstance(modules, list):
+        modules = {"其他": modules}
+    if not isinstance(modules, dict):
+        return ""
+    parts = []
+    for prod, sub in modules.items():
+        if isinstance(sub, dict):
+            subs = []
+            for iface, funcs in sub.items():
+                if isinstance(funcs, list) and funcs:
+                    subs.append(f"{iface}({'、'.join(str(x) for x in funcs)})")
+                else:
+                    subs.append(str(iface))
+            parts.append(f"{prod}：{'/'.join(subs)}" if subs else str(prod))
+        elif isinstance(sub, list) and sub:
+            parts.append(f"{prod}：{'、'.join(str(x) for x in sub)}")
+    return "；".join(parts)
+
+
+async def _resolve_user_profile(username: str) -> dict:
+    """username → users 表画像 {name, department, job_level_cn, modules_text, duty}。
+
+    department_id 关联 departments 表取名，ID 空回退旧字符串列（与
+    engineers_sync 同一兼容逻辑）。查不到人/任何异常返回 {}——对话照常，
+    只是 AI 不知道用户身份。
+    """
+    key = (username or "").strip()
+    if not key:
+        return {}
+    now = time.time()
+    cached = _USER_PROFILE_CACHE.get(key)
+    if cached and now < cached[0]:
+        return cached[1]
+    from ai.core.database import SessionLocal
+    from sqlalchemy import text
+    loop = asyncio.get_running_loop()
+
+    def _query():
+        session = SessionLocal()
+        try:
+            return session.execute(text(
+                "SELECT u.name, d.name, u.department, u.job_level, "
+                "       u.responsibility_modules, u.duty_text "
+                "FROM users u LEFT JOIN departments d ON u.department_id = d.id "
+                "WHERE u.username = :u LIMIT 1"
+            ), {"u": key}).fetchone()
+        finally:
+            session.close()
+
+    try:
+        row = await asyncio.wait_for(
+            loop.run_in_executor(None, _query), timeout=1.5)
+    except Exception as e:
+        logger.warning(f"[user_profile] 查询失败(降级无画像): username={key}, err={e}")
+        _USER_PROFILE_CACHE[key] = (now + 60, {})
+        return {}
+    if not row:
+        _USER_PROFILE_CACHE[key] = (now + 60, {})
+        return {}
+    profile = {
+        "name": (row[0] or key).strip(),
+        "department": ((row[1] or row[2]) or "").strip(),
+        "job_level_cn": _JOB_LEVEL_CN.get(row[3], ""),
+        "modules_text": _flatten_resp_modules(row[4])[:120],
+        "duty": ((row[5] or "").strip())[:80],
+    }
+    _USER_PROFILE_CACHE[key] = (now + 300, profile)
+    # 打全五项：低频事件（每用户 5 分钟一次），排障时一眼看出哪些字段空
+    logger.info(f"[user_profile] 解析成功: {key} → {profile}")
+    return profile
+
+
+def _user_profile_block(state: "AgentState") -> str:
+    """【用户】身份块——三套 prompt 共用（全量走 _session_state_block 内嵌，
+    收集/快路径在 _build_diagnosis_prompt 拼接）。无画像返回空串不注入。
+
+    使用规则抽象表述（flash 会把具体示例逐字抄进输出的老毛病），
+    且明确「无需每句称呼用户名」防谄媚式回复。
+    """
+    p = getattr(state, "user_profile", None) or {}
+    if not p.get("name"):
+        return ""
+    seg = [p["name"]]
+    if p.get("department"):
+        seg.append(p["department"])
+    if p.get("job_level_cn"):
+        seg.append(p["job_level_cn"])
+    lines = [f"【用户】{'｜'.join(seg)}"]
+    _duty_parts = []
+    if p.get("modules_text"):
+        _duty_parts.append(f"负责：{p['modules_text']}")
+    if p.get("duty"):
+        _duty_parts.append(p["duty"])
+    if _duty_parts:
+        lines.append(f"【用户职责】{'｜'.join(_duty_parts)}")
+    lines.append(
+        "（回答时可结合用户岗位与职责调整针对性与深浅，按职级适当调整"
+        "表达的正式程度与内容详略，但保持一致的专业工程师态度，"
+        "不因职级谄媚或怠慢；无需每句称呼用户名。"
+        "用户询问自己的身份/姓名时，以【用户】信息直接回答——"
+        "用户在问自己是谁，不是在问你（助手）的身份）")
+    return "\n".join(lines) + "\n"
+
+
 def _session_state_block(state: "AgentState", memory) -> str:
     """会话全局状态块（0901，主 LLM 全局视角）。
 
@@ -310,6 +451,10 @@ def _session_state_block(state: "AgentState", memory) -> str:
     单号会诱导抠号当 referenced_ticket。只说「已提交+完结」这个事实。
     """
     lines = []
+    # 用户身份块置顶（0904）：用户是会话里最稳定的上下文，先于工单/项目事实
+    _up = _user_profile_block(state)
+    if _up:
+        lines.extend(_up.splitlines())
     _lt = state.last_submitted_ticket or {}
     if _lt.get("ticket_id") or _lt.get("db_id"):
         _when = ""
@@ -337,7 +482,7 @@ def _session_state_block(state: "AgentState", memory) -> str:
     elif getattr(state, "ambiguous_project_candidates", None):
         lines.append("【项目】待确认：系统已向用户列出候选反问")
     elif getattr(state, "project_candidates", None):
-        # 编号题挂着未答（0903）：题面文字不带候选列表（前端渲染按钮气泡），
+        # 编号题挂着未答（0903）：题面列编号列表（0904 回退，旧前端兼容），
         # 候选只在本块可见——答编号轮落到全量诊断 prompt 时唯一的还原依据。
         _pc = state.project_candidates
         _pc_lines = "\n".join(
@@ -553,6 +698,30 @@ _MAX_FIELD_ASK_ROUNDS = 3   # 同一缺失字段连续未收集到值的轮数�
 _MAX_RETRIEVAL_DOCS = 8     # 三路检索合并后按 score 排序，只保留 top N 个 chunk 进 prompt
 
 
+# 工单状态 → 中文（查单注入供主 LLM 解读）
+_TICKET_STATUS_CN = {
+    "new": "新建（待分配/待接手）",
+    "in_progress": "处理中",
+    "pending": "挂起",
+    "resolved": "已解决（待提单人确认关闭）",
+    "closed": "已关闭",
+}
+
+# 工单流转规则指引（0904）：查单注入必带。此前只返回标题+描述+评论，状态/角色
+# 字段全缺，主 LLM 从评论人名里编造流转过程（生产实锤：无转派记录的单被编出
+# 「@某人→另一人处理并关闭」的故事）。规则抽象表述，不带具体示例（flash 照抄铁律）。
+_TICKET_FLOW_GUIDE = (
+    "【工单流转规则（解读本工单信息时必须遵守）】\n"
+    "- 提单人＝创建工单的人；当前接单人＝此刻被分配处理的人。接单人认为指派"
+    "不合理可转派他人，故当前接单人未必是最初指派的人，也可能经历多次转派。\n"
+    "- 状态流转：新建→处理中→已解决→已关闭。「已解决」由真正解决问题的人点击；"
+    "「已关闭」由提单人确认完成。\n"
+    "- 🔴 回答「谁处理/谁转派/谁关闭」只能依据上面列出的字段与评论原文：没有"
+    "记录就直说查不到，禁止从评论里的@、人名出现先后等线索推断派单或转派过程；"
+    "评论中@某人仅是评论提及，不等于把工单派给或转派给此人。"
+)
+
+
 def _ticket_visible_to(ticket, username: str) -> bool:
     """工单查看权限（0828 新需求）：仅 创建者/处理人 可见，其余回复权限不足。
 
@@ -610,6 +779,21 @@ async def _lookup_ticket_ref(ref_text: str, created_by: str = "") -> str:
                         f"🔴 禁止透露该工单的任何内容（标题/描述/状态都不行），"
                         f"也不要反复追问）")
             parts = [f"#{t.id} {str(t.title or '').strip()}"]
+            # 字段真相（0904）：状态/提单人/接单人缺失时主 LLM 会编造流转过程
+            _sv = getattr(getattr(t, "status", None), "value", "") or ""
+            if _sv:
+                parts.append(f"状态：{_TICKET_STATUS_CN.get(_sv, _sv)}")
+            _umap = {}
+            try:
+                from app.services.user_service import UserService
+                _umap = UserService.get_user_map() or {}
+            except Exception:
+                _umap = {}
+            for _label, _attr in (("提单人", "created_by"), ("当前接单人", "assigned_to")):
+                _raw = str(getattr(t, _attr, "") or "").strip()
+                if _raw:
+                    parts.append(f"{_label}：{_umap.get(_raw, _raw)}")
+            parts.append(_TICKET_FLOW_GUIDE)
             desc = re.sub(r"[ \t]+\n", "\n", str(t.description or "")).strip()
             if desc:
                 parts.append(desc[:600] + ("…" if len(desc) > 600 else ""))
@@ -620,7 +804,7 @@ async def _lookup_ticket_ref(ref_text: str, created_by: str = "") -> str:
                     continue
                 who = str(getattr(c, "created_by_name", "") or "").strip()
                 parts.append(f"【{who}】{body[:200]}")
-            return "\n".join(parts)[:1500]
+            return "\n".join(parts)[:1800]
     except Exception as e:
         logger.warning(f"[ticket_ref] 查询用户指代的工单失败: ref={ref_text!r}, err={e}")
         return ""
@@ -812,7 +996,7 @@ USP 是网页端系统（PC浏览器访问），没有移动端APP。严禁在�
 - **用户指名处理人**（"提单给XX""交给XX""派给XX"）→ 把 XX 写入 collected_info["requested_assignee"]，
   然后**按场景区分**：
   ① 已有工单草稿（出现过「已生成工单草稿」）、用户是给旧草稿**补充指派/备注** → action=answer 简短确认「好的，已记录」，不走提单流程；
-  ② 用户这句话**本身是新的服务请求**（如「能让贾爽帮我配置一下自动门吗」= 让工程师去干活）→
+  ② 用户这句话**本身是新的服务请求**（如「能让某工程师帮我配置一下设备吗」= 让工程师去干活）→
   这就是提单诉求，正常走提单流程（收集缺口 → submit 弹窗），不能只 answer 记录。
   判断要点：请求内容是新任务还是旧任务的补充？新任务必须提单。
 - **草稿已生成后的任何补充说明**（「还有个补充，是XX时间发生的」「补充一下XX」）→
@@ -1380,6 +1564,16 @@ class AiDiagnosisPlatform:
             _save_agent_state(memory, agent_state)
             await self._memory_manager.save_memory(memory)
 
+        # 用户画像解析（0904）：created_by 非空且 state 尚无画像时查 users 表，
+        # 成功后随 memory 持久化（同一会话只查一次）；查不到不写 state，
+        # 靠模块级负缓存挡住重复查库。
+        if request.created_by and not (getattr(agent_state, "user_profile", None) or {}):
+            _prof = await _resolve_user_profile(request.created_by)
+            if _prof:
+                agent_state.user_profile = _prof
+                _save_agent_state(memory, agent_state)
+                await self._memory_manager.save_memory(memory)
+
         result = await self._agent_think(request, agent_state, memory)
         total_ms = (time.perf_counter() - t0) * 1000
         logger.debug(f"[run] total={total_ms:.0f}ms init={t_init:.0f}ms")
@@ -1462,7 +1656,7 @@ class AiDiagnosisPlatform:
                   "🔴 禁止把「和上次一样」「还是上次的」这类指代原文当字段值记录。\n"
             )
         # 项目选择题还原块（0827 功能，0903 提升为三套 prompt 共用）：上一轮系统
-        # 以编号题（前端渲染按钮气泡）请用户选项目，题面文字不带候选列表，
+        # 以编号题请用户选项目（题面列编号列表，0904 回退），
         # 候选只在 state——无论后续哪套 prompt 接手答编号轮（收集/快路径/全量
         # 诊断），都必须注入候选，否则 LLM 不知道「1」指什么。用户用编号回应时
         # 由 LLM 还原为完整项目名照抄进 project_choice（服务端仍严格校验候选
@@ -1488,6 +1682,10 @@ class AiDiagnosisPlatform:
                 f"用户说都不是/不管项目 → project_choice 留空字符串继续收集其余字段；"
                 f"🚫 绝不把任何编号本身当成 collected_info 里字段的值。\n"
             )
+        # 用户身份块（0904）：收集/快路径两套精简 prompt 不走 _session_state_block，
+        # 在此提升共用——三套 prompt 同一【用户】块，LLM 确认字段/提单回复时
+        # 都知道在和谁说话。无画像为空串零开销。
+        _user_block = _user_profile_block(state)
         # 工单填写模式（对话路径 ticket_collecting / 按钮路径 prepare not_ready）
         if state.ticket_collecting:
             fields = "、".join(state.ticket_collecting)
@@ -1570,7 +1768,7 @@ class AiDiagnosisPlatform:
             return (
                 f"你是工单填写助手。用户正在补充工单所需信息，请把对话里出现的信息记录到 collected_info。\n\n"
                 f"{ticket_collecting_context}\n\n"
-                f"{_ref_block}{_proj_pick_block}{_amb_ask_block}\n"
+                f"{_user_block}{_ref_block}{_proj_pick_block}{_amb_ask_block}\n"
                 f"{_proj_block}\n"
                 f"## 对话\n{conversation_text}\n\n"
                 f"---\n"
@@ -1625,7 +1823,7 @@ class AiDiagnosisPlatform:
                     )
                 return (
                     "请先判断用户本轮是否真的提出了提单诉求（转工单/提单/派单/找工程师处理）。\n\n"
-                    f"{_fast_ref}"
+                    f"{_fast_ref}{_user_block}"
                     "## 对话\n"
                     f"{conversation_text}\n\n"
                     "## 任务\n"
@@ -1662,7 +1860,7 @@ class AiDiagnosisPlatform:
                     "4. 🔴 用户指名处理人（「提给XX」「交给XX」）分两种场景：\n"
                     "   a. 对话里**已有工单草稿**且用户说的是**同一个问题**的补充指派/备注 → "
                     "写入 collected_info，action=answer 简短确认「好的，已记录」，不重新提单\n"
-                    "   b. 用户这句话**本身是新的服务请求**（如「能让贾爽帮我配置一下自动门吗」= 让工程师去干活）→ "
+                    "   b. 用户这句话**本身是新的服务请求**（如「能让某工程师帮我配置一下设备吗」= 让工程师去干活）→ "
                     "这就是提单诉求：写入 requested_assignee，按规则 2/3 走收集缺口 → submit 弹窗\n"
                     "   c. 🔴 对话里已有草稿，但用户要提的是**另一个新问题**的单"
                     "（话题已切换，如草稿是任务模拟器培训、用户刚聊完车不动现在要提车故障）→ "
@@ -2347,8 +2545,12 @@ class AiDiagnosisPlatform:
 
         _conv = self._format_conversation(
             memory, from_turn=state.context_start, max_turns=8)
+        # 用户身份块置顶（0904 生产实锤：「我是谁」判 courtesy 走此分支，
+        # 画像解析成功却因 prompt 未注入而答「不知道你是谁」）。闲聊/诊断
+        # 单轮共用此分支，与 _session_state_block 同一置顶纪律；无画像空串。
         system_prompt = (
-            "你是「摇人吧」微信服务号的 AI 诊断助手 U老师，面向 AGV/AMR 行业，"
+            _user_profile_block(state)
+            + "你是「摇人吧」微信服务号的 AI 诊断助手 U老师，面向 AGV/AMR 行业，"
             "像一位经验丰富的现场工程师在微信上帮用户解决问题。\n"
             "语气与风格：\n"
             "- 语气自然、口语化，先一句话回应问题本身（能解决/是什么/要查什么），"
@@ -3532,7 +3734,7 @@ class AiDiagnosisPlatform:
             f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
             f"然后以 JSON 格式返回：\n"
             f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤500字，简述问题和排查过程，不要带项目/现场名；🔴 对话里与本问题相关的信息全部总结进去——AI 追问过、用户回答过的要装，用户主动提到的碎片（抱怨、纠正、对之前处理的反馈）同样要装，一项都不能丢；🔴 对话过程中 AI 已给出的排查假设或分诊结论，浓缩成一两句写进描述（给接单工程师排查方向）；🔴 AI 没问过的信息不要凭空出现，禁止罗列一堆「XX：未提供」凑格式（如没问过调度版本就不能有「调度版本：未提供」）；🔴 唯一例外——故障时间、车辆编号这两个关键字段，对话里没拿到的，在描述末尾明写一句「用户未提供：…」，只列真实缺失的那几项；用户答「没看清/没记住」的照实写（如「报错一闪而过，用户未看清具体内容」）；🔴 型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 结构化字段填过也要写；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
-            f'"priority":"紧急|高|中|低","contact":"从对话提取的联系人，没有则为空",'
+            f'"priority":"紧急|高|中|低","contact":"用户方（报障侧）的联系人，不是指派的处理人；从对话提取，没有则为空（系统会自动兜底为用户注册姓名，不要编造）",'
             f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
             f'"project":"固定为空字符串——项目由用户在确认弹窗搜索选择，不要从对话提取",'
             f'"fault_code":"仅type=problem时填，故障码","special_notes":"所有类型可用，特殊说明（用户指名处理人、额外备注等）",'
@@ -3613,7 +3815,8 @@ class AiDiagnosisPlatform:
             "description": _desc,
             "priority": analysis.get("priority", "中"),
             "status": "pending",
-            "contact": analysis.get("contact", ""),
+            "contact": analysis.get("contact", "") or (
+                (getattr(agent_state, "user_profile", None) or {}).get("name", "")),
             # 项目：本函数 LLM 不产生（默认空）；prefill_project 预填见下方覆盖。
             # 弹窗搜索选择仍是权威入口，confirm_submit 用 overrides 写回。
             "project": "",
@@ -4044,10 +4247,13 @@ class AiDiagnosisPlatform:
                 await self._memory_manager.save_memory(memory)
                 logger.info(f"[prepare] 项目引导出题({len(_gate_cands)}个): session={session_id}, "
                             f"collecting={agent_state.ticket_collecting}")
+                # missing_info 空：旧前端按 length>0 挂「转工单前请补全」常驻
+                # 卡片+角标——项目题被当字段拦截误导；空数组卡片不渲染、Toast
+                # 变中性。新前端 isProjectAsk 分支不读此字段，零影响。
                 return {
                     "code": 1,
                     "stage": "not_ready",
-                    "missing_info": ["项目"],
+                    "missing_info": [],
                     "message": ask_text,
                     # 项目编号题≠字段拦截：前端据此不挂「信息不足」
                     # 引导卡片、不发「还差N项」Toast（题面气泡即完整引导）
@@ -4072,10 +4278,11 @@ class AiDiagnosisPlatform:
             _gate_cands = agent_state.project_candidates
             logger.info(f"[prepare] 项目题挂着未答，重出题({len(_gate_cands)}个): "
                         f"session={session_id}")
+            # missing_info 空：同上，防旧前端挂「补全信息」卡片
             return {
                 "code": 1,
                 "stage": "not_ready",
-                "missing_info": ["项目"],
+                "missing_info": [],
                 "message": _build_project_choice_ask(_gate_cands),
                 "project_ask": True,
                 "project_choices": [
@@ -4577,6 +4784,15 @@ class AiDiagnosisPlatform:
             agent_state.original_query = request.query
             _save_agent_state(memory, agent_state)
             await self._memory_manager.save_memory(memory)
+
+        # 用户画像解析（0904）：同 run()——created_by 有值且 state 无画像时查
+        # users 表，成功后持久化，本会话后续轮直接复用。
+        if request.created_by and not (getattr(agent_state, "user_profile", None) or {}):
+            _prof = await _resolve_user_profile(request.created_by)
+            if _prof:
+                agent_state.user_profile = _prof
+                _save_agent_state(memory, agent_state)
+                await self._memory_manager.save_memory(memory)
 
         async for event in self._agent_think_stream(request, agent_state, memory):
             yield event
