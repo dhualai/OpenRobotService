@@ -25,11 +25,11 @@ FRONTEND_STATUS_MAP: Dict[str, TaskStatus] = {
     "cancelled": TaskStatus.CANCELED,
 }
 
-# 仪表盘「工单状态监测」监控的五种状态（不含 new：新建工单不参与该看板的计数统计，
-# 与前端 TICKET_STATUS_LIST 保持一致；下钻接口 get_tickets_by_status 仍支持查询 new）
-MONITORED_STATUS_KEYS = ["in_progress", "paused", "resolved", "closed", "cancelled"]
+# 仪表盘「工单状态监测」监控的六种状态（含 new：新建工单计入工单总数与解决率分母，
+# 与前端 TICKET_STATUS_LIST 保持一致；超时/待处理口径不含 new，见 OPEN_STATUSES）
+MONITORED_STATUS_KEYS = ["new", "in_progress", "paused", "resolved", "closed", "cancelled"]
 
-# 超时工单统计的口径：仅监控中的未完成状态（new 不计入）
+# 超时工单统计的口径：未完成且已进入处理流程的状态（new 尚未开始处理，不计入）
 OPEN_STATUSES = [TaskStatus.IN_PROGRESS, TaskStatus.PENDING]
 
 
@@ -58,7 +58,7 @@ class TaskDashboardService:
             result = await db.execute(query)
             by_status[key] = result.scalar() or 0
 
-        # 总数与状态分布同口径：仅统计监控中的五种状态（不含 new）
+        # 总数与状态分布同口径：监控中的六种状态之和（含 new）
         total = sum(by_status.values())
 
         pending_count = by_status["in_progress"] + by_status["paused"]
@@ -76,7 +76,7 @@ class TaskDashboardService:
         overdue_result = await db.execute(overdue_query)
         overdue_count = overdue_result.scalar() or 0
 
-        # 解决率 =（已解决 + 已关闭 + 已取消）/ 总工单数（与上方 total 同口径，均不含 new）
+        # 解决率 =（已解决 + 已关闭 + 已取消）/ 总工单数（分母含 new，与上方 total 同口径）
         resolved_rate = (
             round(
                 (by_status["resolved"] + by_status["closed"] + by_status["cancelled"]) / total,
@@ -106,7 +106,7 @@ class TaskDashboardService:
             return {"items": [], "total": 0}
 
         # 组合 scope key（对应仪表盘统计卡下钻，与 get_ticket_summary 同口径）：
-        #   all     总工单数 = 监控中的五种状态（不含 new）
+        #   all     总工单数 = 监控中的六种状态（含 new）
         #   pending 待处理   = 处理中 + 暂停/挂起
         #   overdue 超时工单 = 截止时间已过且仍处于未完成状态
         if status_key == "all":

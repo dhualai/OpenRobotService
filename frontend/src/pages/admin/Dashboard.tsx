@@ -96,8 +96,9 @@ const MORE_FUNCTION_ENTRIES: MoreFunctionEntry[] = [
   { path: '/admin/entries', label: '其他', kind: 'other', tone: 'blue-4' },
 ];
 
-// 工单状态环图/图例按色阶由深到浅排列（对照 macaron 原型：处理中→暂停挂起→已关闭→已解决→已取消）
-const STATUS_TONE_ORDER = ['status-1', 'status-2', 'status-3', 'status-4', 'status-5'];
+// 工单状态环图/图例按色阶由深到浅排列，颜色按处理流程分配：
+// 新建(最深) → 处理中 → 暂停/挂起 → 已解决 → 已关闭 → 已取消(最浅)
+const STATUS_TONE_ORDER = ['status-1', 'status-2', 'status-3', 'status-4', 'status-5', 'status-6'];
 const SORTED_TICKET_STATUS_LIST = [...TICKET_STATUS_LIST].sort(
   (a, b) => STATUS_TONE_ORDER.indexOf(a.tone) - STATUS_TONE_ORDER.indexOf(b.tone),
 );
