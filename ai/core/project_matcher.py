@@ -9,6 +9,7 @@
 """
 import asyncio
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -77,9 +78,10 @@ class ProjectMatcher:
         def _query():
             session = SessionLocal()
             try:
-                # 跨库查询：明确指定 helpdesk_724.project
+                # 跨库查询：库名可配（生产 helpdesk_724，测试环境设 HELPDESK_DB）
+                db = os.getenv("HELPDESK_DB", "helpdesk_724")
                 rows = session.execute(
-                    text("SELECT name, code FROM helpdesk_724.project ORDER BY name")
+                    text(f"SELECT name, code FROM {db}.project ORDER BY name")
                 ).fetchall()
                 return [{"name": r[0], "code": r[1]} for r in rows if r[0]]
             finally:

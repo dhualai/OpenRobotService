@@ -87,6 +87,10 @@ interface Message {
   // 项目编号题候选（prepare not_ready+project_ask）：气泡下方渲染可点按钮，
   // 点击=以用户身份发送序号走编号还原链路；点击/发送后清空（防重复点与过期按钮）
   project_choices?: Array<{ index: number; name: string; code?: string }> | null;
+  // 后端落库的 assistant 消息 DB id（event:message_created 回传）。不替换气泡 id
+  // （流式闭包持续以本地 id 引用），仅作 mergeDbMessages 对账锚点——打字机排空
+  // 未完时 content 与 DB 全文不等，role+content 匹配会失手产生幽灵重复气泡
+  dbId?: string;
   // 工单确认后的概览气泡：confirm 成功时构造，DB 持久化（metadata_.kind='ticket_overview'）
   ticket_overview?: {
     db_id: number;
@@ -296,6 +300,11 @@ const mergeDbMessages = (prev: Message[], fresh: Message[]): Message[] => {
   const used = new Set<number>();
   const merged = prev.map((m) => {
     let idx = fresh.findIndex((f, i) => !used.has(i) && String(f.id) === String(m.id));
+    // dbId 锚点（message_created 回传）：打字机排空未完时 content 与 DB 全文不等，
+    // role+content 匹配失手 → 重复气泡。先按 dbId 精准对账，content 匹配退居兜底。
+    if (idx < 0 && m.dbId) {
+      idx = fresh.findIndex((f, i) => !used.has(i) && String(f.id) === String(m.dbId));
+    }
     // 乐观消息（本地临时 id）兜底：user/assistant 统一按「角色 + 内容」匹配 DB 记录。
     // 此前 assistant 无内容兜底，而本地 AI 气泡的临时 id 历史上未回写 DB id → 切回会话
     // 触发合并时 DB 侧回复全部匹配不上，被当作新消息整段追加到尾部（幽灵重复回复）。
@@ -312,7 +321,9 @@ const mergeDbMessages = (prev: Message[], fresh: Message[]): Message[] => {
     if (m.subtype === 'ticket_overview' && m.ticket_overview && f.ticket_overview) {
       return { ...m, ticket_overview: { ...m.ticket_overview, assigned_to_name: f.ticket_overview.assigned_to_name } };
     }
-    return f;
+    // 本地独有状态（项目题候选按钮）DB 快照没有：以 DB 版为主体但保留，
+    // 否则任何 merge 触发（切回校正/producer 轮询/首轮同步）都会把按钮替换掉
+    return m.project_choices ? { ...f, project_choices: m.project_choices } : f;
   });
   fresh.forEach((f, i) => { if (!used.has(i)) merged.push(f); });
   return merged;
@@ -482,7 +493,35 @@ const MessageBubble = memo(function MessageBubble({
               )}
             </div>
           ) : msg.content ? (
-            msg.streaming ? (
+            msg.project_choices && msg.project_choices.length > 0 ? (
+              // 项目选择题：题面=「head\n\ntail」两段（服务端 0907 版无编号列表），
+              // 按钮网格插在两段之间=原列表输出位置。按第一个空行切分，服务端
+              // 模板保证恒有空行；无空行异常时按钮退到尾部（head 全量渲染）。
+              (() => {
+                const splitAt = msg.content.indexOf('\n\n');
+                const head = splitAt >= 0 ? msg.content.slice(0, splitAt) : msg.content;
+                const tail = splitAt >= 0 ? msg.content.slice(splitAt + 2) : '';
+                return (
+                  <>
+                    <MarkdownRenderer content={head} compact={compact} />
+                    <div className="chat-proj-choices">
+                      {msg.project_choices.map((c) => (
+                        <button
+                          key={c.index}
+                          type="button"
+                          className="chat-proj-choices__btn"
+                          onClick={() => onProjectChoice?.(msg.id, c.index)}
+                        >
+                          <span className="chat-proj-choices__index">{c.index}</span>
+                          <span className="chat-proj-choices__name">{c.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                    {tail && <MarkdownRenderer content={tail} compact={compact} />}
+                  </>
+                );
+              })()
+            ) : msg.streaming ? (
               // 流式期间实时 Markdown 渲染文字/格式；媒体（图片/视频）由 MarkdownRenderer 用
               // 稳定占位代替（streaming=true），避免流式中间态渲染真实 <img> 反复 remount/重载闪烁；
               // 定稿（streaming=false）后才加载真实媒体。
@@ -500,23 +539,6 @@ const MessageBubble = memo(function MessageBubble({
           )
         ) : (
           <div className="chat-bubble__text">{msg.content}</div>
-        )}
-
-        {/* 项目编号题候选按钮：点击=以用户身份发送序号（走编号还原→预填→弹窗链路）。
-            发送/点击后 project_choices 被清空，按钮随之消失（防重复点与过期引导） */}
-        {msg.project_choices && msg.project_choices.length > 0 && (
-          <div className="chat-proj-choices">
-            {msg.project_choices.map((c) => (
-              <button
-                key={c.index}
-                type="button"
-                className="chat-proj-choices__btn"
-                onClick={() => onProjectChoice?.(msg.id, c.index)}
-              >
-                {c.name}
-              </button>
-            ))}
-          </div>
         )}
       </div>
 
@@ -949,7 +971,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         convRef.current = full.id;
         // mapDbMessages 统一做：附件恢复 + AI 文本清洗（带 }/JSON 残留）+ 空白 AI 气泡过滤
         const restored: Message[] = mapDbMessages(full);
-        setMessages(restored);
+        // 增量合并而非整体替换：首轮问答完成触发会话定位（conversationId 从 null
+        // 变化）会重进本 effect，此时乐观消息已在屏上——整体替换会丢本地独有状态
+        // （项目题候选按钮 choices 一秒后消失的根因）；merge 以本地为基准并入 DB
+        // 快照。首次进入时 prev 为空，merge 结果等同 restored，行为不变
+        setMessages((prev) => (prev.length ? mergeDbMessages(prev, restored) : restored));
         setConversationTitle(full.title && full.title !== '新会话' ? full.title : '新建会话');
         const sid = readAiSessionId(full);
         if (sid) setSessionId(sid);
@@ -1191,6 +1217,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         onResult: (data) => {
           hasResult = true;
           if (data.ticket) refreshTasks();
+          // 项目题（附件+文字触发提单闸门）：与纯文字路径统一挂可点按钮
+          if (data.project_ask && Array.isArray(data.project_choices) && data.project_choices.length) {
+            const choices = data.project_choices as Array<{ index: number; name: string; code?: string }>;
+            setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, project_choices: choices } : m)));
+          }
           if (!acc && typeof data.message === 'string' && data.message) {
             acc = data.message;
             paint();
@@ -1424,9 +1455,14 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         if (!line.startsWith('data: ')) return;
         try {
           const data = JSON.parse(line.slice(6));
-          // 后端建好的 assistant 消息 DB id（后端 SSE 侧落库接管后回传）
+          // 后端建好的 assistant 消息 DB id（后端 SSE 侧落库接管后回传）：
+          // 挂到气泡作 merge 对账锚点（不替换 id——流式闭包持续用本地 id 引用）。
+          // 不挂的话，打字机排空未完时首轮 setConversationId 触发的 DB 快照合并
+          // 按 role+content 匹配失手 → DB 版被当新消息追加 → 幽灵重复气泡
           if (currentEvent === 'message_created' && data.message_id) {
             assistantDbId = data.message_id;
+            const dbMsgId = String(data.message_id);
+            setMessages((prev) => prev.map((m) => (m.id === assistantId && !m.dbId ? { ...m, dbId: dbMsgId } : m)));
           }
           // 后端代建/复用的 user 消息 id（前端写入失败时由后端按幂等键代建）：对账乐观气泡 id。
           // 前端写入成功时气泡 id 已是同一 DB id，此替换为无操作。
@@ -1449,6 +1485,15 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           // AI 自动建单（对话中输入「转工单」等）：result 事件携带 ticket，标记本轮已建单
           if (currentEvent === 'result' && data.ticket) {
             ticketCreatedThisTurn = true;
+          }
+          // 项目题（对话闸门出题轮）：result 携带 project_choices → 挂到本轮
+          // assistant 气泡渲染可点按钮（与按钮转工单路径统一：点击=发送序号
+          // 走编号还原→预填→弹窗链路）。题面 token 已流式上屏，按钮随定稿出现
+          if (currentEvent === 'result' && data.project_ask && Array.isArray(data.project_choices)) {
+            const choices = data.project_choices as Array<{ index: number; name: string; code?: string }>;
+            if (choices.length) {
+              setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, project_choices: choices } : m)));
+            }
           }
           // 第2轮 AI 生成会话标题：更新当前标题 + 刷新左侧列表（DB 已由后端同步）
           if (currentEvent === 'title' && data.title) {
