@@ -43,23 +43,20 @@ def _format_project_display(p: dict) -> str:
 
 
 def _build_project_choice_ask(candidates: List[Dict[str, str]]) -> str:
-    """项目选择题话术：服务端模板直出，不走 LLM——保证编号列表格式绝对稳定
-    （LLM 生成会在数字后加标点/改措辞，下一轮编号还原就没了锚点）。"""
-    lines = "\n".join(
-        f"{i}. {_format_project_display(c)}"
-        for i, c in enumerate(candidates, 1))
+    """项目选择题话术：服务端模板直出，不走 LLM——保证格式绝对稳定。
+    0903 起不再输出编号列表（前端用结构化候选渲染等宽按钮，列表重复且不美观），
+    只留提示语；用户手打序号的依据=按钮上的序号徽标。编号还原数据源是
+    state.project_candidates（_proj_pick_block 注入 + 服务端 code 匹配），
+    与题面文字无关，删列表不影响还原链路。"""
     if len(candidates) == 1:
         head = (f"出单前确认一下关联项目——看到你最近提交过 "
-                f"{_format_project_display(candidates[0])} 的工单，还是这个项目吗？")
+                f"{_format_project_display(candidates[0])} 的工单，还是这个项目吗？"
+                f"点击下方按钮或直接回复序号确认：")
     else:
-        head = "出单前确认一下关联项目——查到你最近的工单记录："
-    tail = ("回复【序号】我帮你预填；列表里没有你的项目，稍后在工单弹窗里搜索选择，"
+        head = "出单前确认一下关联项目——查到你最近的工单记录，点击下方按钮或直接回复序号选择："
+    tail = ("列表里没有你的项目，稍后在工单弹窗里搜索选择，"
             "或勾选「没有我的项目」由管理员新建。")
-    # 🔴 lines 与 tail 之间必须空行：前端把 AI 消息按 markdown 渲染，`N.` 开头的
-    # 行构成有序列表，尾随普通文本若只用单个 \n 相接会触发「lazy continuation」
-    # 被并进最后一条列表项（0827 生产实锤：「…（编号: 2026040303） 回复【编号】」
-    # 粘成一行）；空行（段落分隔）才是任何渲染器都认的硬断开。
-    return f"{head}\n{lines}\n\n{tail}"
+    return f"{head}\n\n{tail}"
 
 
 def _extract_json_object(raw: str) -> dict:
@@ -339,6 +336,20 @@ def _session_state_block(state: "AgentState", memory) -> str:
         lines.append(f"【项目】已确定「{_pf.get('name')}」")
     elif getattr(state, "ambiguous_project_candidates", None):
         lines.append("【项目】待确认：系统已向用户列出候选反问")
+    elif getattr(state, "project_candidates", None):
+        # 编号题挂着未答（0903）：题面文字不带候选列表（前端渲染按钮气泡），
+        # 候选只在本块可见——答编号轮落到全量诊断 prompt 时唯一的还原依据。
+        _pc = state.project_candidates
+        _pc_lines = "\n".join(
+            f"  {i}. {_format_project_display(c)}"
+            for i, c in enumerate(_pc, 1))
+        lines.append(
+            "【项目】待确认：系统已向用户列出下列候选（项目确认环节，等用户选择）：\n"
+            + _pc_lines + "\n"
+            "→ 用户本轮以序号回应（如「1」「第2个」）时，把对应行完整项目名"
+            "原样照抄进输出 JSON 顶层的 project_choice 字段；用户直接报项目名也照抄；"
+            "指代上一单项目 → project_choice 填 \"last\"；用户说都不是 → 留空；"
+            "用户问其他问题时正常回答，不要因此重新追问项目。")
     else:
         lines.append("【项目】本单未确定（由系统在需要时引导，你不要追问项目名）")
     block = "\n".join(lines)
@@ -1450,6 +1461,33 @@ class AiDiagnosisPlatform:
                   "指代了但上一单没有该信息 → 追问具体值；"
                   "🔴 禁止把「和上次一样」「还是上次的」这类指代原文当字段值记录。\n"
             )
+        # 项目选择题还原块（0827 功能，0903 提升为三套 prompt 共用）：上一轮系统
+        # 以编号题（前端渲染按钮气泡）请用户选项目，题面文字不带候选列表，
+        # 候选只在 state——无论后续哪套 prompt 接手答编号轮（收集/快路径/全量
+        # 诊断），都必须注入候选，否则 LLM 不知道「1」指什么。用户用编号回应时
+        # 由 LLM 还原为完整项目名照抄进 project_choice（服务端仍严格校验候选
+        # 名单，零新增协议——LLM 回看自己看到的清单）。
+        _proj_pick_block = ""
+        # 歧义挂起时编号题块不注入：其「都不是→留空继续收集」规则与反问块
+        # 冲突，LLM 会按它把「不是这些」当否定放过项目（0829 冒烟实锤）；
+        # 反问块自带候选序号还原，编号题清单已被用户否定，不再需要。
+        if (getattr(state, "project_candidates", None)
+                and not getattr(state, "ambiguous_project_candidates", None)):
+            _pc_lines = "\n".join(
+                f"{i}. {_format_project_display(c)}"
+                for i, c in enumerate(state.project_candidates, 1))
+            _proj_pick_block = (
+                f"\n🔴 此前系统曾以下面编号向用户列出候选项目（项目确认环节）：\n"
+                f"{_pc_lines}\n"
+                f"→ 用户本轮若以**序号**回应（如「1」「2」「第2个」），把序号对应行的"
+                f"**完整项目名原样照抄**进输出 JSON 的 project_choice 字段；"
+                f"用户若直接报了项目名旁边括号里的那个编号（如「69」「12」），"
+                f"同样按对应项目还原成完整名称照抄；"
+                f"用户答「还是上次提单的项目」「跟上个单一样」这类**指代上一单**的"
+                f"说法 → project_choice 填 \"last\"（系统自动取上一单项目，不要猜名）；"
+                f"用户说都不是/不管项目 → project_choice 留空字符串继续收集其余字段；"
+                f"🚫 绝不把任何编号本身当成 collected_info 里字段的值。\n"
+            )
         # 工单填写模式（对话路径 ticket_collecting / 按钮路径 prepare not_ready）
         if state.ticket_collecting:
             fields = "、".join(state.ticket_collecting)
@@ -1497,30 +1535,6 @@ class AiDiagnosisPlatform:
                     f"{state.ticket_ref_context}\n"
                     f"→ 缺失字段的值优先从这里提取写入 collected_info；"
                     f"其中确实没有的直接记'无'跳过，不要再问用户。\n"
-                )
-            # 项目选择题还原块（0827 新功能）：上一轮系统以编号列出候选项目，
-            # 用户用编号回应时由 LLM 还原为完整项目名照抄进 project_choice
-            # （服务端仍严格校验候选名单，零新增协议——LLM 回看自己看到的清单）。
-            _proj_pick_block = ""
-            # 歧义挂起时编号题块不注入：其「都不是→留空继续收集」规则与反问块
-            # 冲突，LLM 会按它把「不是这些」当否定放过项目（0829 冒烟实锤）；
-            # 反问块自带候选序号还原，编号题清单已被用户否定，不再需要。
-            if (getattr(state, "project_candidates", None)
-                    and not getattr(state, "ambiguous_project_candidates", None)):
-                _pc_lines = "\n".join(
-                    f"{i}. {_format_project_display(c)}"
-                    for i, c in enumerate(state.project_candidates, 1))
-                _proj_pick_block = (
-                    f"\n🔴 此前系统曾以下面编号向用户列出候选项目（项目确认环节）：\n"
-                    f"{_pc_lines}\n"
-                    f"→ 用户本轮若以**序号**回应（如「1」「2」「第2个」），把序号对应行的"
-                    f"**完整项目名原样照抄**进输出 JSON 的 project_choice 字段；"
-                    f"用户若直接报了项目名旁边括号里的那个编号（如「69」「12」），"
-                    f"同样按对应项目还原成完整名称照抄；"
-                    f"用户答「还是上次提单的项目」「跟上个单一样」这类**指代上一单**的"
-                    f"说法 → project_choice 填 \"last\"（系统自动取上一单项目，不要猜名）；"
-                    f"用户说都不是/不管项目 → project_choice 留空字符串继续收集其余字段；"
-                    f"🚫 绝不把任何编号本身当成 collected_info 里字段的值。\n"
                 )
             # 歧义挂起反问块（0829 印尼实锤）：收集轮无规划器/检索通道，
             # 项目待确认状态只能进 prompt——列候选让 LLM 自然反问。
@@ -1655,6 +1669,7 @@ class AiDiagnosisPlatform:
                     "输出 reset_ticket=true：服务端会清掉旧草稿重新收集，本轮按规则 2/3 正常走\n"
                     "5. 🔴 任何情况下都不问项目名称（项目在弹窗里选）\n"
                     + _prev_ref_block +
+                    f"{_proj_pick_block}"
                     f"\n{_proj_block}"
                     "## 输出\n"
                     '```json\n'
@@ -2401,6 +2416,9 @@ class AiDiagnosisPlatform:
             "才进入提单话题；用户只是咨询、提问、描述需求或粘贴工单标题时正常答疑，"
             "绝不自行启动提单或字段收集；判断适合转工单时最多在结尾加一句"
             "「需要的话我可以帮你转工单」\n"
+            "- 🔴 正文只写给用户看的最终答复本身：任何自我判断过程、意图分析、"
+            "对上面规则的执行说明都禁止出现在正文里——不要先分析用户属于什么情况"
+            "再给结论，直接给用户要的结论和内容\n"
             "- 用户明确表达提单诉求时，自然引导：「可以说“转工单”，我来帮你提单」\n"
         )
         if reference_docs and reference_docs != "（跳过检索）":
@@ -3524,7 +3542,8 @@ class AiDiagnosisPlatform:
             f'"version":"仅type=bug时填","scenario":"仅type=feature时填，需求场景",'
             f'"expected_effect":"仅type=feature时填","source":"仅type=feature时填:客户提出/内部发现/竞品对标",'
             f'"support_type":"仅type=support时填","preferred_response":"仅type=support时填:电话/现场/线上",'
-            f'"attach_files":[附件候选里与本单问题相关的序号数组，如[1,3]；无关或无附件则为空数组]}}'
+            f'"attach_files":[附件候选里与本单问题相关的序号数组，如[1,3]；无关或无附件则为空数组],'
+            f'"dispatch_hint":"信息充分时留空；用户描述简略、信息不足以定位问题时填 lacking，用户不配合、几乎未提供关键细节时填 severe"}}'
         )
 
         logger.info(f"[build_ticket] 工单生成 prompt: {len(prompt)} chars: session={session_id}")
@@ -3617,6 +3636,13 @@ class AiDiagnosisPlatform:
         if _assignee and "指定处理人" not in _notes:
             _notes = f"指定处理人：{_assignee}" + (f"；{_notes}" if _notes else "")
         result["special_notes"] = _notes
+
+        # 派单提示（信息充分性信号）：LLM 按对话信息量输出 lacking/severe，
+        # 白名单校验防幻觉值；信息充分留空 → 不写键，派单侧 prompt 不注入。
+        _dh = str((analysis.get("dispatch_hint") or "")).strip() if analysis else ""
+        if _dh in ("lacking", "severe"):
+            result["dispatch_hint"] = _dh
+            logger.info(f"[build_ticket] 派单提示信号: {_dh}, session={session_id}")
 
         # 项目预填（单向管道，不回流 state）：工具循环里 LLM 从该用户名下项目
         # 列表照抄 + 严格校验（_match_project_choice）通过的结果，写进 draft 作为
@@ -4034,6 +4060,30 @@ class AiDiagnosisPlatform:
                         for i, c in enumerate(_gate_cands, 1)
                     ],
                 }
+        elif (not _pf_src and not _existing_draft
+              and agent_state.project_asked
+              and agent_state.project_candidates):
+            # 项目题挂着未答时点按钮（asked=True∧候选挂着∧无预填无草稿）：
+            # 用户点转工单=明确要提单，第一道门是项目——重出编号题（带按钮）
+            # 比「字段拦截却漏说项目」清晰（0903 实测：出题未答点按钮出
+            # 「还差3项字段」卡片，用户不知道项目还等着答）。候选用挂着的
+            # （不重查），state 不动（asked/candidates/collecting 均已挂），
+            # 话术不重复落 turns（同题不进两遍上下文）。
+            _gate_cands = agent_state.project_candidates
+            logger.info(f"[prepare] 项目题挂着未答，重出题({len(_gate_cands)}个): "
+                        f"session={session_id}")
+            return {
+                "code": 1,
+                "stage": "not_ready",
+                "missing_info": ["项目"],
+                "message": _build_project_choice_ask(_gate_cands),
+                "project_ask": True,
+                "project_choices": [
+                    {"index": i, "name": str(c.get("name") or "").strip(),
+                     "code": str(c.get("code") or "").strip()}
+                    for i, c in enumerate(_gate_cands, 1)
+                ],
+            }
 
         # 必填字段校验（required_fields，不含项目）——不足则不开弹窗，回对话补充。
         # 项目不在对话中收集：弹窗打开后用户搜索选择项目，未选项目前端禁止提交。
@@ -4729,6 +4779,13 @@ class AiDiagnosisPlatform:
             elif _plan is not None:
                 _needs_kb = any(n == "search_kb" for n, _a in _plan[1])
 
+            # 项目题挂着未答（编号候选在 state，题面文字不带列表）：答「1」这类
+            # 序号轮必须走主协议（_proj_pick_block/会话状态块注入候选才有还原
+            # 通道）。oneshot 纯文本分支既无协议也无候选，flash 拿着不带列表的
+            # 题面上文只能瞎猜（0903 生产实锤：把意图判断过程当答案输出）。
+            # 与草稿守卫同理：挂着就回落主循环。
+            _pending_proj_ask = bool(getattr(state, "project_candidates", None))
+
             if _intent == "ticket":
                 # 提单意图 → 不需要知识库检索。
                 reference_docs = "（提单轮跳过检索）"
@@ -4793,8 +4850,10 @@ class AiDiagnosisPlatform:
                 # diagnosis——诊断单轮分支没有草稿处理能力，LLM 会在正文里谎称
                 # 「已记到工单上」而草稿根本没动。与 courtesy 的取消话术守卫同理：
                 # 有待确认草稿时不进单轮分支，回落主循环（草稿轮铁律在那）。
+                # 项目题挂着未答同理（见 _pending_proj_ask 注释）：序号/名称回答
+                # 需要主协议还原，单轮分支没有候选也没有协议。
                 _has_draft = bool(memory.metadata.get("ticket_draft"))
-                if not _needs_kb and not _has_draft:
+                if not _needs_kb and not _has_draft and not _pending_proj_ask:
                     # 诊断但无需知识库（续接轮/通用对话）：单轮分支自带最近 8 轮对话
                     # + 省略式追问承接规则，靠上文即可作答，省下 rerank 等检索尾延。
                     # plan-execute 开时以规划器为准：它判了工具就执行（判无工具 → 空，
@@ -4812,8 +4871,9 @@ class AiDiagnosisPlatform:
                 # 诊断单轮：等资料（plan-execute=执行规划工具；否则并发检索）
                 # → 小 prompt 1 次 LLM 直接回答（无工具往返）
                 reference_docs = await _get_reference_docs()
-                if _has_draft:
-                    logger.info(f"[stream] 草稿存在，诊断意图回落主循环（防补充说明掉进无草稿能力的单轮分支）: "
+                if _has_draft or _pending_proj_ask:
+                    logger.info(f"[stream] 草稿/项目题挂着，诊断意图回落主循环"
+                                f"（防序号回答掉进无候选无协议的单轮分支）: "
                                 f"session={request.session_id}")
                 else:
                     logger.info(f"[stream] 诊断走单轮分支（服务端检索+1次LLM）: session={request.session_id}")
@@ -4826,8 +4886,10 @@ class AiDiagnosisPlatform:
                 # 单轮闲聊分支没有 ticket_cancel 处理，LLM 会在正文里谎称
                 # 「已取消草稿」而草稿根本没删。守卫：有待确认草稿时不走闲聊
                 # 分支，回落主循环（草稿轮铁律在那，取消/补充由 LLM 结构化判定）。
-                if memory.metadata.get("ticket_draft"):
-                    logger.info(f"[stream] 草稿存在，闲聊意图回落主循环（防取消话术掉进无取消能力的单轮分支）: "
+                # 项目题挂着未答同理：答序号/「好的」要主协议还原或重新引导。
+                if memory.metadata.get("ticket_draft") or _pending_proj_ask:
+                    logger.info(f"[stream] 草稿/项目题挂着，闲聊意图回落主循环"
+                                f"（防取消话术/序号回答掉进无处理能力的单轮分支）: "
                                 f"session={request.session_id}")
                     reference_docs = await _get_reference_docs()
                 else:
@@ -5196,6 +5258,9 @@ class AiDiagnosisPlatform:
         # 也好、全齐直达也好，都先撞这道闸，话术由服务端模板接管（与拦截段同源）。
         # 答编号经 prefill 校验池还原预填；候选空/已出过题/已点名项目/已在收集中
         # → 原流程照旧。按钮路径不经此处（prepare_ticket 与项目零关联）。
+        # 出题候选记入 _gate_proj_choices，收尾塞 result 事件给前端渲染可点按钮
+        # （与 prepare 路径统一：点击=以用户身份发送序号走编号还原链路）。
+        _gate_proj_choices = []
         if (parsed.get("ticket_intent") and not state.project_asked
                 and not state.pending_prefill_project and not state.ticket_collecting
                 # 草稿已存在＝项目已进草稿（预填/弹窗已定），再出选题只会
@@ -5221,6 +5286,11 @@ class AiDiagnosisPlatform:
                 state.project_candidates = _gate_cands
                 parsed["action"] = "ask"
                 parsed["message"] = _build_project_choice_ask(_gate_cands)
+                _gate_proj_choices = [
+                    {"index": i, "name": str(c.get("name") or "").strip(),
+                     "code": str(c.get("code") or "").strip()}
+                    for i, c in enumerate(_gate_cands, 1)
+                ]
                 logger.info(f"[stream] 提单意图→先出项目选择题({len(_gate_cands)}个): "
                             f"接管action={_gate_orig_action}")
                 _msg_buf.clear()
@@ -5593,6 +5663,11 @@ class AiDiagnosisPlatform:
             streaming=True)
         if ticket_data:
             result_data["ticket"] = ticket_data
+        # 项目题轮：候选随 result 事件带给前端渲染可点按钮（与 prepare
+        # not_ready 通道的 project_choices 同构，前端同一渲染逻辑）
+        if _gate_proj_choices:
+            result_data["project_ask"] = True
+            result_data["project_choices"] = _gate_proj_choices
 
         # 标题生成：第2轮对话结束后通过独立 SSE event 发送
         if result_data.get("title"):

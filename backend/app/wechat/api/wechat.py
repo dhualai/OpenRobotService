@@ -21,6 +21,8 @@ from app.wechat.services.auth_service import auth_service
 from app.wechat.services.data_service import data_service
 from app.wechat.services.wechat_service import wechat_service
 from app.wechat.services.project_ticket_service import project_ticket_service
+from app.wechat.services.user_info_snapshot import run_user_info_snapshot
+from app.wechat.services.user_statistics_snapshot import run_user_statistics_job, run_user_statistics_job_for_range
 from app.wechat.utils.qrcode import process_qrcode_content, decompress_data
 from app.wechat.utils.opt_logger import log_operation
 from app.services.hmac_utils import generate_password, chinese_to_pinyin, get_password_hash, verify_password
@@ -327,19 +329,37 @@ async def get_user_permissions(openid: str = Query(..., description="微信用�
 async def check_user_subscription(username: str = Query(..., description="用户username")):
     """检查用户是否关注了公众号。
 
-
-
-    通过 username 查找用户 openid，再调用微信 /cgi-bin/user/info 接口获取订阅状态，
-
+    微信登录用户（username 形如 wechat_xxx）的 users.id 即 openid，
+    通过 openid 调用微信 /cgi-bin/user/info 接口获取订阅状态：
     subscribe=1 表示已关注，subscribe=0 表示未关注。
 
+    手工创建/后台账号（username 无 wechat_ 前缀，如管理员 zhangjunlei1）不是微信用户，
+    没有公众号订阅关系：直接返回 200 + is_wechat_user=false，不再把 id 当 openid
+    去调微信 API（此前返回 400，前端管理端登录时反复报错并可能误弹关注提醒）。
     """
-
     try:
         user_detail = user_service.get_user_detail(username)
 
         if not user_detail:
             raise HTTPException(status_code=404, detail="用户不存在")
+
+        # 非微信用户：无 openid 订阅关系，直接放行（subscribe=0、subscribed=false）
+        if not username.startswith('wechat_'):
+            return {
+                "openid": "",
+                "is_wechat_user": False,
+                "subscribed": False,
+                "subscribe": 0,
+                "nickname": "",
+                "headimgurl": "",
+                "sex": 0,
+                "city": "",
+                "province": "",
+                "country": "",
+                "language": "",
+                "subscribe_time": 0,
+            }
+
         openid = user_detail['id']
         user_info = await wechat_service.get_user_info(openid)
 
@@ -354,6 +374,7 @@ async def check_user_subscription(username: str = Query(..., description="用户
         subscribed = user_info.get('subscribe', 0) == 1
         return {
             "openid": openid,
+            "is_wechat_user": True,
             "subscribed": subscribed,
             "subscribe": user_info.get('subscribe', 0),
             "nickname": user_info.get('nickname', ''),
@@ -478,6 +499,8 @@ async def batch_get_user_info(
 @router.post("/user-summary")
 async def get_user_summary(
     request: Request,
+    begin_date: Optional[str] = Query(None, description="开始日期 yyyy-MM-dd"),
+    end_date: Optional[str] = Query(None, description="结束日期 yyyy-MM-dd"),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
     """获取用户增减数据（管理后台「其他」页用户统计卡片用）。
@@ -514,8 +537,8 @@ async def get_user_summary(
         body = await request.json()
     except Exception:
         body = None
-    begin_date = (body or {}).get('begin_date')
-    end_date = (body or {}).get('end_date')
+    begin_date = begin_date or (body or {}).get('begin_date')
+    end_date = end_date or (body or {}).get('end_date')
 
     if not begin_date or not end_date:
         raise HTTPException(status_code=400, detail="需提供 begin_date 和 end_date (yyyy-MM-dd)")
@@ -546,6 +569,8 @@ async def get_user_summary(
 @router.post("/user-summary-db")
 async def get_user_summary_from_db(
     request: Request,
+    begin_date: Optional[str] = Query(None, description="开始日期 yyyy-MM-dd"),
+    end_date: Optional[str] = Query(None, description="结束日期 yyyy-MM-dd"),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
     """读取 user_statistics 表存储的用户增减数据（整点任务刷新出的昨日微信渠道明细）。
@@ -560,8 +585,8 @@ async def get_user_summary_from_db(
     except Exception:
         body = None
 
-    begin_date = (body or {}).get('begin_date')
-    end_date = (body or {}).get('end_date')
+    begin_date = begin_date or (body or {}).get('begin_date')
+    end_date = end_date or (body or {}).get('end_date')
 
     if not begin_date or not end_date:
         raise HTTPException(status_code=400, detail="需提供 begin_date 和 end_date (yyyy-MM-dd)")
@@ -616,6 +641,7 @@ async def get_user_summary_from_db(
 
 @router.post("/batch-user-info-db")
 async def get_batch_user_info_from_db(
+    created_date: Optional[str] = Query(None, description="指定快照日期 yyyy-MM-dd；不传则取最新"),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
     """读取 user_info 表最新快照（整点快照任务落库的 batch-user-info 返回值）。
@@ -627,7 +653,15 @@ async def get_batch_user_info_from_db(
     try:
         db = db_manager.get_db()
         try:
-            latest = db.query(UserInfo).order_by(
+            query = db.query(UserInfo)
+            if created_date:
+                try:
+                    target_date = datetime.strptime(created_date, '%Y-%m-%d').date()
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="created_date 日期格式错误，需为 yyyy-MM-dd")
+                query = query.filter(UserInfo.created_time == target_date)
+
+            latest = query.order_by(
                 UserInfo.created_time.desc(), UserInfo.id.desc(),
             ).first()
         finally:
@@ -643,9 +677,89 @@ async def get_batch_user_info_from_db(
             "total": len(payload.get('user_info_list', [])),
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"读取用户信息快照失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"读取用户信息快照过程中发生错误: {str(e)}")
+
+
+@router.post("/batch-user-info/debug-run")
+async def debug_run_batch_user_info_snapshot(
+    created_date: Optional[str] = Query(None, description="调试落库日期 yyyy-MM-dd；不传默认今天"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """手动触发 user_info 整点快照任务，便于线上即时调试。"""
+    try:
+        target_date = None
+        if created_date:
+            try:
+                target_date = datetime.strptime(created_date, '%Y-%m-%d').date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="created_date 日期格式错误，需为 yyyy-MM-dd")
+
+        payload = await run_user_info_snapshot(target_date)
+        if payload is None:
+            return {
+                "success": False,
+                "message": "user_info 快照任务执行失败或无可用用户，本次未落库",
+                "user_info_list": [],
+                "total": 0,
+                "created_date": created_date,
+            }
+
+        return {
+            "success": True,
+            "message": "user_info 快照任务执行成功",
+            "user_info_list": payload.get("user_info_list", []),
+            "total": payload.get("total", len(payload.get("user_info_list", []))),
+            "created_date": created_date or datetime.now().strftime('%Y-%m-%d'),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"手动触发 user_info 快照任务失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"手动触发 user_info 快照任务失败: {str(e)}")
+
+
+@router.post("/user-summary/debug-run")
+async def debug_run_user_statistics_snapshot(
+    begin_date: Optional[str] = Query(None, description="开始日期 yyyy-MM-dd；不传默认昨天"),
+    end_date: Optional[str] = Query(None, description="结束日期 yyyy-MM-dd；不传默认昨天"),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """手动触发 user_statistics 整点统计任务，便于线上即时调试。"""
+    try:
+        if begin_date and end_date:
+            items = await run_user_statistics_job_for_range(begin_date, end_date)
+        elif begin_date or end_date:
+            raise HTTPException(status_code=400, detail="begin_date 和 end_date 需同时提供，格式为 yyyy-MM-dd")
+        else:
+            items = await run_user_statistics_job()
+
+        if items is None:
+            return {
+                "success": False,
+                "message": "user_statistics 统计任务执行失败，本次未落库",
+                "list": [],
+                "total": 0,
+                "begin_date": begin_date,
+                "end_date": end_date,
+            }
+
+        return {
+            "success": True,
+            "message": "user_statistics 统计任务执行成功",
+            "list": items,
+            "total": len(items),
+            "begin_date": begin_date,
+            "end_date": end_date,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"手动触发 user_statistics 统计任务失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"手动触发 user_statistics 统计任务失败: {str(e)}")
 
 
 @router.get("/callback")

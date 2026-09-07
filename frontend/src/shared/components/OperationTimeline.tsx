@@ -80,6 +80,206 @@ interface TimelineGroup {
   children: OperationLog[];
 }
 
+// ── 阶段性处理（step）二级分组 ──────────────────────────────────────────────
+// 状态段（一级）内，按 step 边界日志切分「阶段段」（二级），具体操作日志为三级子项。
+// step 边界：完成阶段进入下一节点 / 打回重开；数据优先取 detail.from_step/to_step，
+// 缺失时回退到描述文本正则（描述格式由后端固定）。
+
+/** step 边界日志：返回进入的新阶段名与离开的旧阶段名 */
+const matchStepBoundary = (log: OperationLog): { enter: string; from: string | null } | null => {
+  const desc = log.description || '';
+  const isComplete = desc.includes('完成阶段') && desc.includes('进入');
+  const isReopen = desc.includes('打回重开');
+  if (!isComplete && !isReopen) return null;
+  const detail = (log.detail || {}) as Record<string, unknown>;
+  const detailTo = typeof detail.to_step === 'string' ? detail.to_step : null;
+  const detailFrom = typeof detail.from_step === 'string' ? detail.from_step : null;
+  if (isComplete) {
+    const m = desc.match(/完成阶段「([^」]+)」，进入「([^」]+)」/);
+    return { enter: detailTo || m?.[2] || '新阶段', from: detailFrom || m?.[1] || null };
+  }
+  const m = desc.match(/从「([^」]+)」重新开始/);
+  return { enter: detailTo || m?.[1] || '新阶段', from: detailFrom };
+};
+
+/** 带阶段名的 step 日志（预期时间/协商 / 确认同意）：返回所属阶段名 */
+const matchStepName = (log: OperationLog): string | null => {
+  const desc = log.description || '';
+  const detail = (log.detail || {}) as Record<string, unknown>;
+  // 新文案：预期「X」时间（…），节点由「A」调整为「B」
+  if (desc.includes('预期「') && desc.includes('时间')) {
+    const m = desc.match(/预期「([^」]+)」时间/);
+    return (typeof detail.to_step === 'string' ? detail.to_step : null) || m?.[1] || null;
+  }
+  // 旧文案（历史数据）：协商将节点「A」调整为「B」 / 协商节点「X」
+  if (desc.includes('协商将节点')) {
+    const m = desc.match(/协商将节点「[^」]+」调整为「([^」]+)」/);
+    return (typeof detail.to_step === 'string' ? detail.to_step : null) || m?.[1] || null;
+  }
+  if (desc.includes('协商节点')) {
+    const m = desc.match(/协商节点「([^」]+)」/);
+    return (typeof detail.to_step === 'string' ? detail.to_step : null) || m?.[1] || null;
+  }
+  if (desc.includes('确认同意节点') || desc.includes('确认协商节点')) {
+    // 兼容三种文案：确认同意节点「X」/ 确认协商节点「X」/ 确认同意协商节点「X」
+    const m = desc.match(/确认(?:同意(?:协商)?|协商)节点「([^」]+)」/);
+    return m?.[1] || null;
+  }
+  return null;
+};
+
+/** 与 step 相关但描述中不含阶段名的日志（升级上报 / 一锤定音） */
+const isUnnamedStepLog = (log: OperationLog): boolean => {
+  const desc = log.description || '';
+  const detail = (log.detail || {}) as Record<string, unknown>;
+  return log.operation_type === 'escalate'
+    || detail.finalized === true
+    || desc.includes('一锤定音')
+    || desc.includes('升级了工单');
+};
+
+const isAgreeLog = (log: OperationLog): boolean => {
+  const desc = log.description || '';
+  const detail = (log.detail || {}) as Record<string, unknown>;
+  // 一锤定音（升级后处理人直接定时间，curr_step_agreed=True）与"达成一致"等价
+  return detail.finalized === true
+    || desc.includes('一锤定音')
+    // 非首次：确认同意节点并达成一致；首次响应：确认协商节点开始处理
+    || (desc.includes('确认同意节点') && desc.includes('达成协商一致'))
+    || (desc.includes('确认协商节点') && desc.includes('开始处理'));
+};
+
+const isNegotiateLog = (log: OperationLog): boolean => {
+  const desc = log.description || '';
+  // 新文案「预期「X」时间…缘由：…」+ 旧文案「协商节点/协商将节点」（历史数据）
+  return desc.includes('预期「')
+    || desc.includes('协商节点')
+    || desc.includes('协商将节点');
+};
+
+type ChildItem =
+  | { kind: 'step'; stepName: string; state: 'agreed' | 'negotiating'; escalated: boolean; round: number | null;
+      ended: boolean; endTime: string | null; enterTime: string; enterOperator: string | null; logs: OperationLog[] }
+  | { kind: 'log'; log: OperationLog };
+
+interface StepBlock {
+  stepName: string | null;
+  hasEntry: boolean;
+  enterLog: OperationLog | null;   // 进入本阶段的边界日志（完成阶段/打回重开）；首个阶段无边界日志时为 null
+  ended: boolean;                  // 本阶段是否已结束（被后续「完成阶段」推进）
+  endTime: string | null;          // 结束时间（= 后一个边界日志时间）
+  logs: OperationLog[];
+  agreeIndex: number;   // 块内（新→旧）「达成一致」日志位置，-1 无
+  negotiateIndex: number;
+  escalateIndex: number;
+  round: number | null; // 最新一次协商回合数
+}
+
+const newStepBlock = (stepName: string | null, ended = false, endTime: string | null = null): StepBlock => ({
+  stepName, hasEntry: false, enterLog: null, ended, endTime,
+  logs: [], agreeIndex: -1, negotiateIndex: -1, escalateIndex: -1, round: null,
+});
+
+/**
+ * 将状态段内的子日志（时间新→旧）切分为 阶段段 / 游离日志。
+ * 边界日志（完成阶段/打回重开）归入其「进入」的阶段段（作为该阶段的起始事件）；
+ * 阶段段内的非 step 日志（评论、改派、字段修改等）按发生时段归入当前阶段段；
+ * 早于一切阶段活动的游离日志直接挂在状态段下。
+ */
+const buildStepItems = (children: OperationLog[]): ChildItem[] => {
+  const items: ChildItem[] = [];
+  let block: StepBlock | null = null;
+  // 比已识别阶段更新的游离日志（如协商后的查看/评论）：当前阶段进行中，这些操作属于该阶段，
+  // 待首个阶段块创建时吸收；若整段无任何阶段活动，最后作为游离日志输出。
+  let leadingLoose: OperationLog[] = [];
+
+  const absorbLeading = (b: StepBlock) => {
+    if (leadingLoose.length) {
+      b.logs = [...leadingLoose, ...b.logs];
+      leadingLoose = [];
+    }
+  };
+
+  const flushBlock = () => {
+    if (!block || block.logs.length === 0) {
+      block = null;
+      return;
+    }
+    if (block.stepName) {
+      // 主状态只有两种：时间达成一致 / 时间协商中。
+      // 「已升级上报」是额外事实标记（该阶段内发生过升级），不替代协商状态。
+      const agreed = block.agreeIndex !== -1
+        && (block.negotiateIndex === -1 || block.agreeIndex < block.negotiateIndex);
+      const tagState: 'agreed' | 'negotiating' = agreed ? 'agreed' : 'negotiating';
+      const escalated = block.escalateIndex !== -1;
+      // 进入时间/操作人：有边界日志用边界日志；否则用块内最早一条日志（首个阶段由首个协商动作开启）
+      const oldestLog = block.logs[block.logs.length - 1];
+      const enterTime = block.enterLog?.created_at || oldestLog?.created_at || '';
+      const enterOperator = block.enterLog?.operator_name || oldestLog?.operator_name || null;
+      items.push({ kind: 'step', stepName: block.stepName, state: tagState, escalated, round: block.round,
+        ended: block.ended, endTime: block.endTime, enterTime, enterOperator, logs: block.logs });
+    } else {
+      // 无法归属到具体阶段的日志，降级为游离日志
+      block.logs.forEach((log) => items.push({ kind: 'log', log }));
+    }
+    block = null;
+  };
+
+  children.forEach((log) => {
+    const boundary = matchStepBoundary(log);
+    if (boundary) {
+      if (!block) block = newStepBlock(null);
+      absorbLeading(block);
+      block.logs.push(log);
+      block.hasEntry = true;
+      if (!block.stepName) block.stepName = boundary.enter;
+      if (!block.enterLog) block.enterLog = log;  // 进入该阶段的边界事件
+      flushBlock();
+      // 边界之前（更早）的日志属于被完成/打回前的旧阶段——该阶段在此边界处结束
+      block = newStepBlock(boundary.from, true, log.created_at);
+      return;
+    }
+    const name = matchStepName(log);
+    // 阶段相关日志：能识别阶段名 / 升级·一锤定音 / 协商 / 确认同意。
+    // isAgreeLog/isNegotiateLog 作为兜底，即使阶段名正则失配也必须纳入阶段块并更新状态索引。
+    const stepRelated = !!name || isUnnamedStepLog(log) || isAgreeLog(log) || isNegotiateLog(log);
+    if (stepRelated) {
+      if (!block) block = newStepBlock(null);
+      absorbLeading(block);
+      block.logs.push(log);
+      if (name && !block.stepName) block.stepName = name;
+      markStepLogIndex(block, log);
+    } else if (block) {
+      block.logs.push(log);
+      markStepLogIndex(block, log);  // 双保险：游离归入的日志也更新状态索引
+    } else {
+      leadingLoose.push(log);
+    }
+  });
+  flushBlock();
+  // 该状态段内从未出现阶段活动：缓存的游离日志直接输出
+  leadingLoose.forEach((log) => items.push({ kind: 'log', log }));
+
+  return items;
+};
+
+/** 日志进入阶段块后，更新 协商/一致/升级 的最新位置索引与回合数（logs 为新→旧，索引越小越新） */
+const markStepLogIndex = (block: StepBlock, log: OperationLog) => {
+  const idx = block.logs.length - 1;
+  if (isAgreeLog(log) && block.agreeIndex === -1) block.agreeIndex = idx;
+  if (isNegotiateLog(log)) {
+    if (block.negotiateIndex === -1) block.negotiateIndex = idx;
+    const r = (log.detail as Record<string, unknown> | null)?.negotiation_round;
+    if (typeof r === 'number') block.round = r;
+  }
+  if (log.operation_type === 'escalate' && block.escalateIndex === -1) block.escalateIndex = idx;
+};
+
+const STEP_STATE_TAG: Record<'agreed' | 'negotiating', string> = {
+  agreed: '时间达成一致',
+  negotiating: '时间协商中',
+};
+
 /**
  * 判断日志是否为状态转换节点（create 或 status_change）。
  * create 与初始 status_change 通常代表同一次状态进入，需要去重。
@@ -172,6 +372,35 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
 
   const groups = buildTimelineGroups(logs);
 
+  /** 渲染单条操作日志（三级子项），游离日志与阶段段内日志共用 */
+  const renderSubLog = (log: OperationLog, key: React.Key) => {
+    const style = OP_TYPE_STYLE[log.operation_type];
+    const subCls = `op-segment__sub${
+      log.operation_type === 'reassign' ? ' op-segment__sub--reassign' : ''
+    }${isAgreeLog(log) ? ' op-segment__sub--agreed' : ''}`;
+    return (
+      <div className={subCls} key={key}>
+        <div className="op-segment__sub-dot" style={{ borderColor: isAgreeLog(log) ? '#10b981' : style.color }}>
+          <span className="op-segment__sub-icon">{isAgreeLog(log) ? '✅' : style.icon}</span>
+        </div>
+        <div className="op-segment__sub-content">
+          <div className="op-segment__action">
+            {log.description || `${OP_TYPE_LABEL[log.operation_type]}操作`}
+            {log.operation_type === 'view' && formatDuration(log.duration_seconds) && (
+              <span className="op-segment__duration">（停留 {formatDuration(log.duration_seconds)}）</span>
+            )}
+          </div>
+          <div className="op-segment__sub-meta">
+            <span className="op-segment__time">{formatTime(log.created_at)}</span>
+            {log.operator_name && (
+              <span className="op-segment__sub-operator">{log.operator_name}</span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="op-timeline">
       {groups.map((group, idx) => {
@@ -208,32 +437,54 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
                 </div>
               </div>
 
-              {/* 子节点操作 */}
+              {/* 子节点操作：状态段内再按「阶段」切二级节点 */}
               {group.children.length > 0 && (
                 <div className="op-segment__children">
-                  {group.children.map((log) => {
-                    const style = OP_TYPE_STYLE[log.operation_type];
-                    const subCls = `op-segment__sub${
-                      log.operation_type === 'reassign' ? ' op-segment__sub--reassign' : ''
-                    }`;
+                  {buildStepItems(group.children).map((item, iIdx) => {
+                    if (item.kind === 'log') {
+                      return renderSubLog(item.log, `loose-${iIdx}`);
+                    }
                     return (
-                      <div className={subCls} key={log.id}>
-                        <div className="op-segment__sub-dot" style={{ borderColor: style.color }}>
-                          <span className="op-segment__sub-icon">{style.icon}</span>
+                      <div className={`op-segment__step${item.ended ? ' op-segment__step--ended' : ''}`} key={`step-${iIdx}`}>
+                        <div className="op-segment__step-head">
+                          {item.ended ? (
+                            <>
+                              <span className="op-segment__step-marker">🚩</span>
+                              <span className="op-segment__step-name">结束「{item.stepName}」阶段</span>
+                              {item.endTime && (
+                                <span className="op-segment__time">{formatTime(item.endTime)}</span>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <span className="op-segment__step-marker">🚩</span>
+                              <span className="op-segment__step-name">阶段「{item.stepName}」进行中</span>
+                              <span className={`op-segment__step-tag op-segment__step-tag--${item.state}`}>
+                                {STEP_STATE_TAG[item.state]}
+                              </span>
+                              {item.escalated && (
+                                <span className="op-segment__step-tag op-segment__step-tag--escalated">
+                                  已升级上报
+                                </span>
+                              )}
+                              {item.round !== null && (
+                                <span className="op-segment__step-round">回合 {item.round}</span>
+                              )}
+                            </>
+                          )}
                         </div>
-                        <div className="op-segment__sub-content">
-                          <div className="op-segment__action">
-                            {log.description || `${OP_TYPE_LABEL[log.operation_type]}操作`}
-                            {log.operation_type === 'view' && formatDuration(log.duration_seconds) && (
-                              <span className="op-segment__duration">（停留 {formatDuration(log.duration_seconds)}）</span>
-                            )}
-                          </div>
-                          <div className="op-segment__sub-meta">
-                            <span className="op-segment__time">{formatTime(log.created_at)}</span>
-                            {log.operator_name && (
-                              <span className="op-segment__sub-operator">{log.operator_name}</span>
-                            )}
-                          </div>
+                        <div className="op-segment__step-children">
+                          {item.logs.map((log) => renderSubLog(log, `step-${iIdx}-${log.id}`))}
+                        </div>
+                        <div className="op-segment__step-foot">
+                          <span className="op-segment__step-marker">🚩</span>
+                          <span className="op-segment__step-enter">进入「{item.stepName}」阶段</span>
+                          {item.enterTime && (
+                            <span className="op-segment__time">{formatTime(item.enterTime)}</span>
+                          )}
+                          {item.enterOperator && (
+                            <span className="op-segment__sub-operator">{item.enterOperator}</span>
+                          )}
                         </div>
                       </div>
                     );

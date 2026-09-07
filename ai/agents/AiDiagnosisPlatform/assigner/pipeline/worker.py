@@ -159,6 +159,7 @@ class AssignmentWorker:
                     "diagnosis_hypotheses": (task.metadata_info or {}).get("diagnosis_hypotheses") if task.metadata_info else None,
                     "diagnosis_ruled_out": (task.metadata_info or {}).get("diagnosis_ruled_out") if task.metadata_info else None,
                     "diagnosis_collected_info": (task.metadata_info or {}).get("diagnosis_collected_info") if task.metadata_info else None,
+                    "dispatch_hint": (task.metadata_info or {}).get("dispatch_hint", "") if task.metadata_info else "",
                     "project_name": task.project_name or "",
                     "project_id": task.project_id or "",
                 }
@@ -224,6 +225,7 @@ class AssignmentWorker:
                         "fault_code": (r.metadata_info or {}).get("fault_code", "") if r.metadata_info else "",
                         "preferred_assignee": (r.metadata_info or {}).get("preferred_assignee") if r.metadata_info else None,
                         "preferred_assignee_remark": (r.metadata_info or {}).get("preferred_assignee_remark") if r.metadata_info else None,
+                        "dispatch_hint": (r.metadata_info or {}).get("dispatch_hint", "") if r.metadata_info else "",
                         "project_name": r.project_name or "",
                         "project_id": r.project_id or "",
                     }
@@ -264,6 +266,7 @@ class AssignmentWorker:
             diagnosis_hypotheses=ticket.get("diagnosis_hypotheses"),
             diagnosis_ruled_out=ticket.get("diagnosis_ruled_out"),
             diagnosis_collected_info=ticket.get("diagnosis_collected_info"),
+            dispatch_hint=ticket.get("dispatch_hint") or None,
         )
 
         # 派单结果写回数据库

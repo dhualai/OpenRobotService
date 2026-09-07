@@ -43,10 +43,10 @@ class WechatService:
                 self.access_token_info['expires_at'] = now + 7000
                 return result['access_token']
             else:
-                print(f'获取access_token失败: {result}')
+                logger.error(f'获取access_token失败: {result}')
                 return None
         except Exception as e:
-            print(f'请求access_token异常: {e}')
+            logger.error(f'请求access_token异常: {e}')
             return None
 
     def send_message_to_user(self, open_id: str, content: str, url: Optional[str] = None) -> bool:
@@ -344,11 +344,15 @@ class WechatService:
                 # 微信 datacube 接口在 end_date 为今天/未来或账号无数据权限时可能返回空体
                 raw = resp.content
                 if not raw:
+                    logger.warning(f'获取用户增减数据失败: 微信返回空响应 (HTTP {resp.status_code})')
                     return {'errcode': -1, 'errmsg': f'微信返回空响应 (HTTP {resp.status_code})'}
                 try:
                     response = json.loads(raw)
                 except json.JSONDecodeError:
                     snippet = resp.text[:200] if resp.text else ''
+                    logger.warning(
+                        f'获取用户增减数据失败: 微信返回非JSON响应 (HTTP {resp.status_code}): {snippet}'
+                    )
                     return {'errcode': -1, 'errmsg': f'微信返回非JSON响应 (HTTP {resp.status_code}): {snippet}'}
                 if 'list' in response:
                     aggregated.extend(response['list'])

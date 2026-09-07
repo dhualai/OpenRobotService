@@ -69,6 +69,7 @@ async def assign_ticket(
     diagnosis_ruled_out: Optional[List[str]] = None,
     diagnosis_collected_info: Optional[Dict[str, str]] = None,
     diagnosis_rounds: Optional[int] = None,
+    dispatch_hint: Optional[str] = None,  # 提单信息充分性信号（lacking/severe），信息充分为 None
     contact: Optional[str] = None,
     creator: Optional[str] = None,
     preferred_assignee: Optional[str] = None,  # 预留：用户提单时填写的倾向处理人（users.id）
@@ -109,6 +110,7 @@ async def assign_ticket(
         diagnosis_ruled_out=diagnosis_ruled_out,
         diagnosis_collected_info=diagnosis_collected_info,
         diagnosis_rounds=diagnosis_rounds,
+        dispatch_hint=dispatch_hint,
         contact=contact,
         creator=creator,
         preferred_assignee=preferred_assignee,

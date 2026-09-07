@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List
 
-from ai.agents.AiDiagnosisPlatform.assigner.schemas import TicketContext
+from ai.agents.AiDiagnosisPlatform.assigner.schemas import TicketContext, dispatch_hint_text
 
 _CURRENT_RULER = {
     "problem": "本单是报障(problem)，按【故障现象】归到职责里负责该故障的部门",
@@ -98,6 +98,9 @@ def ticket_fields_block(ticket: TicketContext) -> str:
         extra.append(f"车型：{ticket.robot_type}")
     if ruled_out:
         extra.append(f"Agent已排除：{ruled_out}")
+    hint = dispatch_hint_text(getattr(ticket, "dispatch_hint", None))
+    if hint:
+        extra.append(hint)
     extra_text = ("\n".join(extra) + "\n") if extra else ""
 
     return (

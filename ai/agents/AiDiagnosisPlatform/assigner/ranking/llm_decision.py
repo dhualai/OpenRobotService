@@ -424,15 +424,17 @@ class LlmDecision:
             for d in (ranked_scores or {}).values()
         ) or bool((getattr(ticket, "preferred_assignee", "") or "").strip())
         remark = (getattr(ticket, "preferred_assignee_remark", "") or "").strip()
+        extra: List[str] = []
         if has_pref or remark:
-            extra = [""]
-            if has_pref:
-                extra.append(
-                    "名单中带 [倾向接单人] 的是用户勾选。"
-                    "正常情况不要拒绝这一选择，除非另有非常合适的人。"
-                )
-            if remark:
-                extra.append(f"用户重派备注：{remark}")
+            extra.append("")
+        if has_pref:
+            extra.append(
+                "名单中带 [倾向接单人] 的是用户勾选。"
+                "正常情况不要拒绝这一选择，除非另有非常合适的人。"
+            )
+        if remark:
+            extra.append(f"用户重派备注：{remark}")
+        if extra:
             lines.extend(extra)
 
         appendix = self._appendix_lines(ticket, engineers, ranked_scores, product=product)

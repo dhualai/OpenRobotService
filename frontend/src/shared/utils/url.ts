@@ -1,13 +1,7 @@
 // URL 工具函数 - 从 HelpDesk urlUtils.js 移植
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { formatBackendTime, parseBackendDate } from '@/shared/utils/time';
-
-const STORAGE_KEYS = {
-  AUTH_TOKEN: 'auth_token',
-  REFRESH_TOKEN: 'refresh_token',
-  TOKEN_EXPIRES_AT: 'token_expires_at',
-  USERNAME: 'username',
-};
+import { persistAuthTokens, writeStored } from '@/stores/authStorage';
 
 export function getUrlParams(): boolean {
   try {
@@ -19,10 +13,8 @@ export function getUrlParams(): boolean {
 }
 
 function storeTokens(token: string, refreshToken: string): void {
-  localStorage.setItem(STORAGE_KEYS.AUTH_TOKEN, token);
-  localStorage.setItem(STORAGE_KEYS.REFRESH_TOKEN, refreshToken);
-  const expirationTime = Date.now() + 28 * 60 * 1000;
-  localStorage.setItem(STORAGE_KEYS.TOKEN_EXPIRES_AT, String(expirationTime));
+  // 写入当前环境命名空间 key（t_/p_），避免 OAuth 回跳 token 串到另一环境
+  persistAuthTokens(token, refreshToken, Date.now() + 28 * 60 * 1000);
 }
 
 export function checkUrlTokens(): string | null {
@@ -37,7 +29,7 @@ export function checkUrlTokens(): string | null {
         const payload = JSON.parse(atob(token.split('.')[1]));
         const username = payload.sub || '';
         if (username) {
-          localStorage.setItem(STORAGE_KEYS.USERNAME, username);
+          writeStored('USERNAME', username);
         }
       } catch { /* JWT parse error */ }
       const cleanUrl = window.location.pathname;
