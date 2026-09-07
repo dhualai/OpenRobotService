@@ -83,6 +83,14 @@ export class TaskRoomSocket {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectAttempts = 0;
   private pingDeadline: ReturnType<typeof setTimeout> | null = null;
+  /** 待发队列：连接未就绪时用 sendReliable 投递的帧，onopen 后按序补发。
+   *  已读回执必须可靠送达 —— 旧实现在 WS CONNECTING 时静默丢弃，导致
+   *  「进入讨论区那一帧的已读上报永久丢失」。 */
+  private outbox: string[] = [];
+  /** onopen 回调（区别于 on()：后者是服务端下发的消息） */
+  private openHandlers = new Set<() => void>();
+  /** 待发队列上限：长期断网时避免无限堆积（已读帧会被节流合并，正常远小于此） */
+  private static readonly MAX_OUTBOX = 50;
 
   constructor(taskId: string | number) {
     // 后端路由：/api/tasks/{task_id}/ws（task_router 在 /api/tasks 前缀下）
@@ -95,6 +103,8 @@ export class TaskRoomSocket {
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
       this.startHeartbeat();
+      this.flushOutbox();
+      this.openHandlers.forEach((h) => h());
     };
     this.ws.onmessage = (ev) => {
       try {
@@ -157,18 +167,70 @@ export class TaskRoomSocket {
     return () => this.handlers.delete(handler);
   }
 
-  send(obj: unknown): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(obj));
+  /** 注册「连接已就绪」回调（每次 onopen 都会触发，含断线重连） */
+  onOpen(handler: () => void): () => void {
+    this.openHandlers.add(handler);
+    return () => this.openHandlers.delete(handler);
+  }
+
+  /** 连接是否已可写 */
+  isOpen(): boolean {
+    return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  /** 尽力而为发送，返回是否真的写入了 socket（未连接则丢弃，不入队）。
+   *  适用于 typing / ping 这类「过期即无意义」的帧。 */
+  send(obj: unknown): boolean {
+    if (this.isOpen()) {
+      this.ws!.send(JSON.stringify(obj));
+      return true;
+    }
+    return false;
+  }
+
+  /** 可靠发送：未连接时入队，onopen 后按序补发。用于已读回执等必须送达的帧。
+   *  返回 true 表示已写入 socket；false 表示已入队（稍后自动补发）或队列已满被丢弃。 */
+  sendReliable(obj: unknown): boolean {
+    if (this.isOpen()) {
+      this.ws!.send(JSON.stringify(obj));
+      return true;
+    }
+    if (this.closedByUser) return false;
+    // 队列上限保护：极端断网场景避免无限堆积
+    if (this.outbox.length >= TaskRoomSocket.MAX_OUTBOX) {
+      this.outbox.shift();
+    }
+    this.outbox.push(JSON.stringify(obj));
+    return false;
+  }
+
+  /** 待发队列长度（测试/诊断用） */
+  pendingCount(): number {
+    return this.outbox.length;
+  }
+
+  private flushOutbox(): void {
+    if (!this.outbox.length || !this.isOpen()) return;
+    const frames = this.outbox;
+    this.outbox = [];
+    for (const frame of frames) {
+      try {
+        this.ws!.send(frame);
+      } catch {
+        // socket 在补发过程中被关闭：剩余帧回队，等下次重连再发
+        this.outbox.push(frame);
+      }
     }
   }
 
-  sendTyping(value: boolean): void {
-    this.send({ type: 'typing', value });
+  sendTyping(value: boolean): boolean {
+    return this.send({ type: 'typing', value });
   }
 
-  sendRead(lastReadCommentId: number, commentIds?: number[]): void {
-    this.send({
+  /** 已读上报：可靠投递（未连接时入队，建连/重连后自动补发）。
+   *  返回 true 表示已写入 socket，false 表示已入队待补发。 */
+  sendRead(lastReadCommentId: number, commentIds?: number[]): boolean {
+    return this.sendReliable({
       type: 'read',
       last_read_comment_id: lastReadCommentId,
       comment_ids: commentIds,
@@ -179,7 +241,9 @@ export class TaskRoomSocket {
     this.closedByUser = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.stopHeartbeat();
+    this.outbox = [];
     this.ws?.close();
     this.handlers.clear();
+    this.openHandlers.clear();
   }
 }

@@ -7,7 +7,38 @@
 """
 
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+# collected_info → TicketContext 已有栏。指名/项目不补：指定人走 Step0，项目另有字段。
+COLLECTED_TO_TICKET = {
+    "location": "location",
+    "robot_type": "robot_type",
+    "fault_code": "fault_code",
+    "special_notes": "special_notes",
+    "severity": "severity",
+    "version": "version",
+    "steps_to_reproduce": "steps_to_reproduce",
+    "expected_result": "expected_result",
+    "actual_result": "actual_result",
+    "scenario": "scenario",
+    "expected_effect": "expected_effect",
+    "support_type": "support_type",
+    "preferred_response": "preferred_response",
+}
+_USELESS_COLLECTED = {"", "无", "未知", "none", "null", "n/a"}
+
+
+def collected_value(v) -> Optional[str]:
+    """收集字段有内容才用；「无」和占位句丢掉。"""
+    if v is None:
+        return None
+    text = str(v).strip()
+    if not text or text.lower() in _USELESS_COLLECTED:
+        return None
+    if text.startswith("无（") or text.startswith("无("):
+        return None
+    return text
 
 
 class TicketContext(BaseModel):
@@ -47,10 +78,11 @@ class TicketContext(BaseModel):
     special_notes: Optional[str] = Field(None, description="特殊说明 ↔ tasks.metadata_info.special_notes")
 
     # === Agent 诊断信息（可用于派单增强，落库存 metadata_info）===
-    diagnosis_hypotheses: Optional[List[str]] = Field(None, description="Agent 推断的可能原因 ↔ tasks.metadata_info.diagnosis_hypotheses")
-    diagnosis_ruled_out: Optional[List[str]] = Field(None, description="Agent 已排除的原因 ↔ tasks.metadata_info.diagnosis_ruled_out")
-    diagnosis_collected_info: Optional[Dict[str, str]] = Field(None, description="Agent 收集的上下文 ↔ tasks.metadata_info.diagnosis_collected_info")
-    diagnosis_rounds: Optional[int] = Field(None, description="诊断轮数 ↔ tasks.metadata_info.diagnosis_rounds")
+    diagnosis_hypotheses: Optional[List[str]] = Field(None, description="Agent 推断的可能原因 ↔ metadata_info.diagnosis.hypotheses")
+    diagnosis_ruled_out: Optional[List[str]] = Field(None, description="Agent 已排除的原因 ↔ metadata_info.diagnosis.ruled_out")
+    diagnosis_collected_info: Optional[Dict[str, str]] = Field(None, description="Agent 收集的上下文 ↔ metadata_info.diagnosis.collected_info")
+    diagnosis_problem_summary: Optional[str] = Field(None, description="诊断一句话摘要 ↔ metadata_info.diagnosis.problem_summary")
+    diagnosis_rounds: Optional[int] = Field(None, description="诊断轮数 ↔ metadata_info.diagnosis.rounds")
 
     # === Bug 专属 ===
     severity: Optional[str] = Field(None, description="严重程度: 阻塞/主要/次要/轻微 ↔ tasks.metadata_info.severity")
@@ -72,6 +104,15 @@ class TicketContext(BaseModel):
     required_parts: Optional[List[str]] = Field(None, description="所需配件 ↔ tasks.metadata_info.required_parts")
     attachments: Optional[List[str]] = Field(None, description="附件路径列表 ↔ tasks.attachments")
 
+    # === 派单提示（信息充分性信号）===
+    # 提单 Agent 在生成工单时判断用户对话信息量：lacking=信息不足 / severe=严重不足
+    # （用户不配合、几乎零信息）；信息充分时不写键。仅作事实信号注入派单各 LLM prompt，
+    # 不携带路由指令、不干预决策类型（怎么用由派单 LLM 自行判断）。
+    dispatch_hint: Optional[str] = Field(
+        None,
+        description="提单信息充分性信号: lacking=用户信息不足 / severe=严重不足 ↔ tasks.metadata_info.dispatch_hint",
+    )
+
     # === 派单增强-预留：用户倾向处理人 ===
     # 前端提单时若新增"倾向处理人"字段，可复用本字段（传工程师 users.id）。
     # 前端未传时恒为 None，整体不生效、完全向后兼容；传了即作为派单强加权信号启用。
@@ -79,10 +120,37 @@ class TicketContext(BaseModel):
         None,
         description="倾向处理人（用户提单时填写，传工程师 users.id，预留）↔ tasks.metadata_info.preferred_assignee",
     )
+    # 重新派单备注/原因：用户重派时填写的意图说明（如"希望派给熟悉XXX的人/之前派错"等）。
+    # 作为 Step6 决策的强信号参考（契合度判断），并有独立字段供决策层/日志使用。
+    preferred_assignee_remark: Optional[str] = Field(
+        None,
+        description="重新派单备注/原因 ↔ tasks.metadata_info.preferred_assignee_remark",
+    )
+    # 重新派单时的「原处理人」（users.id）。重派单会清空 assigned_to，故在复位前
+    # 把旧值存进 metadata_info.prev_assignee，供 Step6 决策识别"对谁不满意/换掉谁"。
+    prev_assignee: Optional[str] = Field(
+        None,
+        description="重新派单前的原处理人 users.id ↔ tasks.metadata_info.prev_assignee",
+    )
 
     # === 其他 ===
     updated_at: Optional[str] = Field(None, description="修改时间 ↔ tasks.updated_at")
     planned_finish_at: Optional[str] = Field(None, description="计划完成时间 ↔ tasks.deadline_at")
+
+    @model_validator(mode="after")
+    def _fill_empty_from_collected(self):
+        """顶栏空着时，用诊断 collected_info 补上，不覆盖已有值。"""
+        info = self.diagnosis_collected_info
+        if not isinstance(info, dict):
+            return self
+        for src, attr in COLLECTED_TO_TICKET.items():
+            current = getattr(self, attr, None)
+            if (current or "").strip():
+                continue
+            filled = collected_value(info.get(src))
+            if filled:
+                setattr(self, attr, filled)
+        return self
 
 
 class EngineerProfile(BaseModel):
@@ -177,7 +245,6 @@ class AssignmentResult(BaseModel):
     - engineer_name → 工程师姓名（users.name）
     - confidence_score / reasoning / decision_type → 建议存入 tasks.metadata_info 供日志/前端展示
     """
-
     engineer_id: str = Field(..., description="推荐工程师标识（users.id）→ 直接写入 tasks.assigned_to")
     engineer_name: str = Field(..., description="推荐工程师姓名（对应 users.name）")
     confidence_score: float = Field(..., description="置信度分数（0~1），建议存 tasks.metadata_info.confidence_score")
@@ -186,3 +253,36 @@ class AssignmentResult(BaseModel):
         ...,
         description="决策类型: auto(直接拍板) / recommend(建议确认) / fallback(兜底派单) → tasks.metadata_info.decision_type"
     )
+
+    # === 二次派单感知增强 追加字段（落 task_dispatch_log）===
+    # 本次派单上下文
+    preferred_id: Optional[str] = Field(None, description="意向处理人 users.id（重派有；首次派单可 None）")
+    matched_pref: Optional[bool] = Field(None, description="是否派到意向处理人（无意向处理人时保持 None，勿用 False 表示「未派到」以区分『没有指定人』）")
+    name_collision: bool = Field(False, description="是否按姓名命中多人（同名）")
+    pinyin_match: bool = Field(False, description="是否经拼音/近似名匹配命中")
+
+    # 本轮完整评估（M1 profile / M2 candidates 快照）
+    profile: Optional[Dict[str, Any]] = Field(
+        None, description="被派人画像 {dept, job_level, modules, duty, missing:[...]}（missing=缺失画像字段）"
+    )
+    candidates: Optional[List[Dict[str, Any]]] = Field(
+        None, description="本轮精排 Top10 快照 [{rank, engineer_id, name, scores, profile, tags}]（M2 填充）"
+    )
+
+
+# ── dispatch_hint 枚举 → 派单 prompt 注入话术（服务端写死，防 LLM 自由生成跑偏）──
+_DISPATCH_HINT_TEXT = {
+    "lacking": (
+        "提单提示：用户提供的故障信息不足，描述可靠性有限，"
+        "建议正常派单给接单人，由其接手后向用户补充了解情况。"
+    ),
+    "severe": (
+        "提单提示：用户提供信息严重不足（对话中未配合提供关键细节），"
+        "描述基本无法定位问题，建议派单给项目对接人，对接人需从零了解情况。"
+    ),
+}
+
+
+def dispatch_hint_text(hint: Optional[str]) -> str:
+    """dispatch_hint 枚举 → 注入派单各 LLM prompt 的一句话；未知/空返回空串（不注入）。"""
+    return _DISPATCH_HINT_TEXT.get((hint or "").strip(), "")

@@ -179,6 +179,115 @@
   color: #6b7280;
 }
 
+/* 二级节点：阶段段（step） */
+.op-segment__step {
+  position: relative;
+  margin: 4px 0;
+  padding: 8px 10px 8px 12px;
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.05), rgba(99, 102, 241, 0.01) 60%, transparent);
+  border-left: 3px solid #a5b4fc;
+  border-radius: 0 8px 8px 0;
+}
+
+/* 已结束阶段：视觉降饱和，与进行中的阶段区分 */
+.op-segment__step--ended {
+  background: linear-gradient(90deg, rgba(156, 163, 175, 0.1), rgba(156, 163, 175, 0.02) 60%, transparent);
+  border-left-color: #d1d5db;
+}
+
+.op-segment__step--ended .op-segment__step-name {
+  color: #6b7280;
+}
+
+.op-segment__step-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.op-segment__step-marker {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.op-segment__step-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #3730a3;
+}
+
+.op-segment__step-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  line-height: 1.6;
+}
+
+.op-segment__step-tag--agreed {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.op-segment__step-tag--negotiating {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.op-segment__step-tag--escalated {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.op-segment__step-tag--started {
+  color: #1d4ed8;
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.op-segment__step-round {
+  font-size: 11px;
+  color: #6b7280;
+  background: #f3f4f6;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+
+.op-segment__step-children {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 阶段底部：进入阶段标记（与状态段底部「进入状态」呼应） */
+.op-segment__step-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed #e5e7eb;
+  font-size: 12.5px;
+  color: #4b5563;
+}
+
+.op-segment__step-enter {
+  font-weight: 600;
+}
+
+/* 「确认同意 / 协商一致」记录高亮 */
+.op-segment__sub--agreed {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+}
+
+.op-segment__sub--agreed .op-segment__action {
+  color: #047857;
+  font-weight: 700;
+}
+
 /* 状态终点提示 */
 .op-segment__end {
   margin-top: 6px;
@@ -232,5 +341,13 @@
 
   .op-segment__sub {
     padding: 6px 8px;
+  }
+
+  .op-segment__step {
+    padding: 6px 8px 6px 10px;
+  }
+
+  .op-segment__step-name {
+    font-size: 13px;
   }
 }

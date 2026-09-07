@@ -879,6 +879,68 @@ html, body, #root {
   color: var(--foreground);
   line-height: 1.6;
 }
+/* 项目编号题候选按钮（project_ask）：题面提示语下方等宽两列网格，
+   实心蓝底序号徽标+名字左对齐（超长省略号），点击=以用户身份发送序号走
+   编号还原→预填→弹窗链路；答复后随 project_choices 清空消失 */
+.chat-proj-choices {
+  /* 插在题面 head/tail 两段之间（原编号列表位置）：上下对称留白，无分隔线 */
+  margin: 10px 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+/* 奇数个候选时最后一个独占半行右侧空缺，拉通栏补齐 */
+.chat-proj-choices > button:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+.chat-proj-choices__btn {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 12px 7px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--primary-soft);
+  color: var(--card-foreground);
+  font-size: 13px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s;
+}
+.chat-proj-choices__btn:hover {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.chat-proj-choices__btn:active {
+  opacity: 0.85;
+}
+/* 序号徽标：手打序号的依据（题面不再列编号列表） */
+.chat-proj-choices__index {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+/* hover 整钮变蓝后徽标反白，避免蓝底融在一起 */
+.chat-proj-choices__btn:hover .chat-proj-choices__index {
+  background: var(--primary-foreground);
+  color: var(--primary);
+}
+.chat-proj-choices__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
 .chat-ticket-overview__footer {
   margin-top: 12px;
   padding-top: 12px;
@@ -909,6 +971,19 @@ html, body, #root {
   cursor: pointer;
 }
 .chat-ticket-overview__redispatch:active { background: var(--blue-2); border-color: var(--blue-2); }
+/* 二次派单感知增强（M3）：派单结果提醒单行（警示色、单行省略，整卡点击进详情） */
+.chat-ticket-overview__tip {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: #B45309;
+  background: rgba(255, 171, 0, 0.10);
+  border-radius: 4px;
+  padding: 3px 8px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* 提交中旋转圆环 */
 .chat-ticket-spinner {
@@ -1127,6 +1202,75 @@ html, body, #root {
   display: flex;
   gap: 8px;
   margin-top: 8px;
+}
+
+/* 远程方式下拉 */
+.tasks-create-modal__select {
+  width: 100%;
+  height: 44px;
+  padding: 0 12px;
+  font-size: 15px;
+  color: var(--foreground);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* 远程截图上传区 */
+.tasks-create-modal__remote {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.tasks-create-modal__remote-tip {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.tasks-create-modal__remote-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tasks-create-modal__remote-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  background: var(--muted);
+  border-radius: 6px;
+}
+
+.tasks-create-modal__remote-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--foreground);
+}
+
+.tasks-create-modal__remote-remove {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--danger, #e34d59);
+  background: transparent;
+  border: none;
+  cursor: pointer;
 }
 
 /* 我要摇人：Navbar 标题随会话标题变化（新建会话为空），超长省略 */
@@ -1708,6 +1852,112 @@ html, body, #root {
   color: var(--muted-foreground);
   margin-top: 2px;
 }
+/* 二次派单感知增强（M3）：派单结果提醒行（警示色、单行省略） */
+.history-row__tip {
+  font-size: 11.5px;
+  color: #B45309;
+  background: rgba(255, 171, 0, 0.10);
+  border-radius: 4px;
+  padding: 2px 8px;
+  margin-top: 4px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 派单说明 / 派单理由：默认折叠成一行标题，点开再看全文 */
+.dispatch-fold {
+  margin-top: 10px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.dispatch-fold--tip {
+  color: #92400E;
+  background: rgba(255, 171, 0, 0.06);
+  border: 1px solid rgba(255, 171, 0, 0.22);
+}
+.dispatch-fold--reason {
+  color: #1D4ED8;
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.16);
+}
+.dispatch-fold__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 20px;
+  color: inherit;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+.dispatch-fold__preview {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.dispatch-fold__label {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+.dispatch-fold__sep {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+.dispatch-fold__clip {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+}
+.dispatch-fold--tip .dispatch-fold__label,
+.dispatch-fold--tip .dispatch-fold__sep { color: #92400E; }
+.dispatch-fold--tip .dispatch-fold__clip { color: #92400E; }
+.dispatch-fold--reason .dispatch-fold__label,
+.dispatch-fold--reason .dispatch-fold__sep { color: #1E40AF; }
+.dispatch-fold--reason .dispatch-fold__clip { color: #1E3A8A; }
+.dispatch-fold__chevron {
+  flex-shrink: 0;
+  color: inherit;
+  opacity: 0.7;
+  transition: transform 0.2s ease;
+}
+.dispatch-fold.is-open > .dispatch-fold__header .dispatch-fold__chevron {
+  transform: rotate(180deg);
+}
+.dispatch-fold__bodywrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.22s ease-out;
+}
+.dispatch-fold.is-open > .dispatch-fold__bodywrap {
+  grid-template-rows: 1fr;
+}
+.dispatch-fold__body {
+  overflow: hidden;
+  min-height: 0;
+  padding: 0 10px;
+  font-size: 12.5px;
+  line-height: 20px;
+  font-weight: 400;
+}
+.dispatch-fold.is-open .dispatch-fold__body {
+  padding-bottom: 8px;
+}
+.dispatch-fold--tip .dispatch-fold__body { color: #92400E; }
+.dispatch-fold--reason .dispatch-fold__body { color: #1E3A8A; }
 /* 编辑弹窗-所属项目选择（仿下拉，点击弹出搜索层） */
 .ticket-edit-form__select {
   display: flex;
@@ -2204,6 +2454,162 @@ html, body, #root {
   transition: height 0.06s linear, opacity 0.15s ease;
 }
 
+/* 后台管理欢迎区：左侧圆形头像 + 右侧两排文字（Hello / 用户名），马卡龙风格 */
+.admin-welcome {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0 14px;
+}
+.admin-welcome__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--mac-blue-5) 55%, #fff);
+  color: var(--mac-blue-2);
+}
+.admin-welcome__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.admin-welcome__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.admin-welcome__hello {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--mac-muted-fg);
+}
+.admin-welcome__name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--mac-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 工单数据来源分析：类型分布 / 提单人角色分布各占一张卡片（上下排列），
+   卡片内环图在左、图例在右占满剩余宽度，保证角色名/数值完整展示 */
+.mac-source-block {
+  min-width: 0;
+}
+.mac-source-block__title {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mac-fg);
+  padding-bottom: 10px;
+  border-bottom: 1px solid color-mix(in oklab, var(--mac-border) 60%, transparent);
+}
+.mac-source-block__body {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 24px;
+}
+.mac-source-block__body .mac-donut {
+  flex-shrink: 0;
+}
+.mac-source-block .mac-legend {
+  flex: 1;
+  min-width: 0;
+}
+/* 工单分布并排两栏：左=类型分布环图（固定 140px），右=平均完单耗时条形图（占剩余宽度） */
+.mac-source-split {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 0 16px;
+  align-items: start;
+}
+.mac-source-split__col {
+  min-width: 0;
+}
+/* 卡片底部颜色图例：色点 + 类型名 + 占比（不重复数量），占满整行并均分排列；
+   手机端放不下时自动换行（窄屏下占比数字与类型名贴在一行，保证可读） */
+.mac-donut-legend {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  column-gap: 14px;
+  row-gap: 8px;
+  margin-top: 14px;
+}
+.mac-donut-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--mac-muted-fg);
+  white-space: nowrap;
+}
+.mac-donut-legend__pct {
+  font-weight: 600;
+  color: var(--mac-fg);
+  font-variant-numeric: tabular-nums;
+}
+.mac-donut-legend__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+@media (min-width: 768px) {
+  /* 宽屏：恢复一排均分整行的原布局 */
+  .mac-donut-legend {
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    column-gap: 12px;
+  }
+}
+/* 平均完单耗时横向条形图：标签 + 轨道 + 耗时数值 */
+.mac-avgclose-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.mac-avgclose-bar__label {
+  flex-shrink: 0;
+  width: 36px;
+  font-size: 12px;
+  color: var(--mac-muted-fg);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mac-avgclose-bar__track {
+  flex: 1;
+  min-width: 0;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--mac-secondary);
+  overflow: hidden;
+}
+.mac-avgclose-bar__fill {
+  display: block;
+  height: 100%;
+  border-radius: 5px;
+}
+.mac-avgclose-bar__val {
+  flex-shrink: 0;
+  min-width: 52px;
+  font-size: 12px;
+  color: var(--mac-fg);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ===== 系统任务 / 工单 ===== */
 /* ===== 马卡龙极简设计变量（参考 macaron-minimal-ui 设计系统，系统任务页） ===== */
 :root {
@@ -2276,6 +2682,11 @@ html, body, #root {
   align-items: center;
   gap: 6px;
   min-width: 0;
+}
+/* 「待你确认」标识的呼吸圆点：阶段性协商轮到我且未达成一致 */
+@keyframes task-card2-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.75); }
 }
 /* 状态：浅灰底 + 蓝阶文字（唯一带色文字），终态为灰色 */
 .task-card2__status-tag {
@@ -3217,6 +3628,28 @@ html, body, #root {
   text-decoration: underline;
 }
 
+/* 工单引用（@#编号 → 工单标题）标签样式：与普通文字/链接区分。
+   行内浅蓝底色 + 圆角，box-decoration-break: clone 保证长标题换行时每行都带背景，
+   视觉上呈现为独立的「引用标签」，一眼可辨这是对另一工单的引用。
+   用 a.md-ticket-ref 提升特异性，避免被评论气泡的 color 规则（如 .is-self *）覆盖。 */
+.markdown-body a.md-ticket-ref {
+  display: inline;
+  padding: 1px 7px;
+  margin: 0 1px;
+  border-radius: 6px;
+  background: rgba(86, 177, 218, 0.13);
+  color: #1f6fb2;
+  font-weight: 500;
+  word-break: break-all;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.markdown-body a.md-ticket-ref:hover {
+  background: rgba(86, 177, 218, 0.24);
+  text-decoration: none;
+  color: #175a96;
+}
+
 /* 图片/视频容器 */
 .markdown-body .md-media-wrap,
 .markdown-body img,
@@ -3625,13 +4058,15 @@ html, body, #root {
   color: var(--mac-muted-fg);
   transition: transform 0.3s;
 }
-.mac-collapsible.is-open .mac-collapsible__chevron { transform: rotate(180deg); }
+/* 使用直接子代选择器 `>`：仅当本折叠区自身 is-open 时才旋转/展开，
+   避免父级 is-open 通过后代选择器误作用到嵌套子折叠区（导致子项无法收起） */
+.mac-collapsible.is-open > .mac-collapsible__header .mac-collapsible__chevron { transform: rotate(180deg); }
 .mac-collapsible__bodywrap {
   display: grid;
   grid-template-rows: 0fr;
   transition: grid-template-rows 0.3s ease-out;
 }
-.mac-collapsible.is-open .mac-collapsible__bodywrap { grid-template-rows: 1fr; }
+.mac-collapsible.is-open > .mac-collapsible__bodywrap { grid-template-rows: 1fr; }
 .mac-collapsible__bodyinner { overflow: hidden; min-height: 0; }
 .mac-collapsible--card .mac-collapsible__bodyinner { border-top: 1px solid rgba(232, 234, 234, 0.6); }
 .mac-collapsible--card .mac-collapsible__body { padding: 16px; }
@@ -3852,8 +4287,52 @@ html, body, #root {
   outline: none;
 }
 .admin-entries-stats__date:focus { border-color: var(--mac-blue-2); background: #fff; }
+/* 重置按钮：恢复默认时间范围，与日期输入框同高的蓝色幽灵按钮 */
+.admin-entries-stats__reset {
+  border: 1px solid var(--mac-blue-2);
+  border-radius: 13px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--mac-blue-2);
+  background: #fff;
+  font-family: inherit;
+  outline: none;
+  cursor: pointer;
+}
+.admin-entries-stats__reset:hover,
+.admin-entries-stats__reset:active { background: #eaf7fd; }
+.admin-entries-stats__groups {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+.admin-entries-stats__group {
+  border: 1px solid rgba(232, 234, 234, 0.7);
+  border-radius: 24px;
+  background: rgba(250, 252, 252, 0.72);
+  padding: 14px;
+}
+.admin-entries-stats__group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.admin-entries-stats__group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mac-fg);
+}
+.admin-entries-stats__group-desc {
+  font-size: 11.5px;
+  color: var(--mac-muted-fg);
+}
 .admin-entries-stats__charts { display: grid; grid-template-columns: 1fr; gap: 12px; }
-@media (min-width: 768px) { .admin-entries-stats__charts { grid-template-columns: repeat(3, 1fr); } }
+/* 每个分组内两张图：平板及以上并排两列，移动端单列 */
+@media (min-width: 768px) { .admin-entries-stats__charts { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1280px) { .admin-entries-stats__groups { grid-template-columns: repeat(2, 1fr); } }
 .admin-entries-stats__sub { display: block; font-size: 12px; color: var(--mac-muted-fg); margin-bottom: 4px; }
 .admin-entries-stats__empty {
   padding: 32px 0;
@@ -4782,7 +5261,8 @@ html, body, #root {
 
 /* 马卡龙数据组件：环形图 / 图例 / 指标卡（对照原型 Bits.tsx） */
 .mac-donut { position: relative; flex-shrink: 0; }
-.mac-donut__svg { transform: rotate(-90deg); display: block; }
+/* overflow: visible：小扇区的百分比标签渲染在圆环外侧，需允许超出 viewBox */
+.mac-donut__svg { transform: rotate(-90deg); display: block; overflow: visible; }
 .mac-donut__center {
   position: absolute;
   inset: 0;
@@ -4942,10 +5422,44 @@ html, body, #root {
   color: #fff;
   /* bottom 由组件内联样式控制（柱高 + 8px），气泡始终贴着激活柱顶部、完整可见 */
 }
+/* 柱子 = 堆叠容器：下段已承接（--bar-color 原色），上段待定（同色混白 45%，明显更浅）。
+   overflow:hidden + 圆角让两段共同裁成一颗完整胶囊，视觉上仍是一根柱子。 */
 .mac-monthbars__bar {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   width: 22px;
   border-radius: 16px; /* 原型 rounded-t-lg rounded-b-lg */
   transition: all 0.3s;
+}
+.mac-monthbars__seg {
+  width: 100%;
+  flex-shrink: 0;
+  background: var(--bar-color);
+}
+.mac-monthbars__seg--pending {
+  background: color-mix(in oklab, var(--bar-color) 45%, #fff);
+  /* 底边一道同色深一档的发丝线：两段都很浅时仍能一眼看出分界 */
+  box-shadow: inset 0 -1px 0 color-mix(in oklab, var(--bar-color) 70%, #fff);
+}
+/* 图例：两颗小圆点对应柱子的深/浅两段 */
+.mac-monthbars__legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--mac-muted-fg);
+}
+.mac-monthbars__legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--mac-blue-5);
+}
+.mac-monthbars__legend-dot--pending {
+  margin-left: 4px;
+  background: color-mix(in oklab, var(--mac-blue-5) 45%, #fff);
+  box-shadow: inset 0 0 0 1px var(--mac-border);
 }
 .mac-monthbars__month { font-size: 11px; color: var(--mac-muted-fg); }
 .mac-monthbars__month.is-active { font-weight: 700; color: var(--mac-fg); }
@@ -5760,7 +6274,7 @@ html, body, #root {
 .detail-chat-input-row {
   display: flex;
   gap: 8px;
-  align-items: flex-end;
+  align-items: center;
 }
 .detail-chat-input-row .t-button {
   padding: 0 10px;
@@ -5873,17 +6387,50 @@ html, body, #root {
 }
 .detail-chat-read {
   margin-left: 6px;
-  font-size: 11px;
-  color: var(--primary);
-  font-weight: 500;
   background: none;
   border: none;
   padding: 0;
   cursor: pointer;
   line-height: inherit;
+  align-self: center;
 }
 .detail-chat-read.is-open {
   opacity: 0.7;
+}
+/* 头像堆叠（飞书式）：气泡上的已读指示，最多 3 个头像 + 超出显示 +N */
+/* 最新阅读的在最左、盖在最上层；后面的头像向左叠入前一个下方形成堆叠 */
+.detail-chat-read__avatars {
+  display: flex;
+  align-items: center;
+}
+.detail-chat-read__avatar,
+.detail-chat-read__more {
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  object-fit: cover;
+  box-sizing: border-box;
+}
+.detail-chat-read__avatar {
+  background: var(--primary);
+  color: #fff;
+  border: 1.5px solid #fff;
+}
+/* 头像两两叠放：除第一个外，每个头像向左偏移叠入前一个下方 */
+.detail-chat-read__avatars > * + * {
+  margin-left: -8px;
+}
+.detail-chat-read__more {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border: 1.5px solid #fff;
+  padding: 0 2px;
 }
 
 /* ===== 已读名单弹层（飞书式） ===== */
@@ -6384,6 +6931,114 @@ html, body, #root {
   padding: 4px 12px;
   height: auto;
 }
+
+/* 表情按钮：视觉与附件按钮一致（36px rounded-md bg-secondary muted 图标居中） */
+/* 表情按钮：与附件按钮样式完全一致（36px rounded-md bg-secondary muted 图标居中） */
+.detail-chat-emoji {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--secondary);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.detail-chat-emoji svg { display: block; }
+.detail-chat-emoji:active { background: var(--gray-soft); color: var(--foreground); }
+.detail-chat-emoji:disabled { opacity: 0.4; }
+
+/* 表情面板 - 白底卡片浮于输入栏上方
+   移动端（默认）：自适应全宽铺满输入框宽度，左右贴边无溢出
+   PC 端（≥768px）：右对齐固定宽度浮层，贴合输入框右下角（微信 PC 同款） */
+.emoji-picker {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  margin-bottom: 4px;
+  z-index: 100;
+  background: #ffffff; /* 强制纯白，避免 --card 浅灰透到表情之间 */
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.1);
+  padding: 8px;
+  overflow: hidden;
+}
+@media (min-width: 768px) {
+  .emoji-picker {
+    left: auto;
+    right: 0;
+    width: 380px;
+    margin-bottom: 8px;
+    border-radius: 12px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  }
+}
+
+/* 自适应列网格：
+   minmax(40px, 1fr) 让每格最小 40px、不足时由 grid 自动减小；
+   设备越宽，列数自动变多（移动端约 7 列、平板约 10+ 列、桌面约 13+ 列） */
+.emoji-picker__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.emoji-picker__grid::-webkit-scrollbar { width: 4px; }
+.emoji-picker__grid::-webkit-scrollbar-track { background: transparent; }
+.emoji-picker__grid::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.emoji-picker__grid::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
+
+/* 单个表情按钮：透明底、居中、仅 hover/active 给反馈，无边框无背景 */
+.emoji-picker__item {
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  padding: 6px 0;
+  line-height: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s;
+}
+.emoji-picker__item img {
+  width: 28px;
+  height: 28px;
+  display: block;
+  pointer-events: none;
+}
+.emoji-picker__item:hover { background: rgba(0, 0, 0, 0.06); }
+.emoji-picker__item:active { background: rgba(0, 0, 0, 0.1); }
+
+/* 微信经典表情：气泡内行内展示（MarkdownRenderer 直渲）。
+   尺寸与选择面板一致（28px），选 .markdown-body 前缀提高特异性，
+   压制 .markdown-body img 的 display:block / 圆角等默认样式 */
+.markdown-body .md-emoji {
+  width: 28px;
+  height: 28px;
+  display: inline-block;
+  vertical-align: -6px;
+  margin: 0 1px;
+  border-radius: 0;
+  user-select: none;
+}
+/* 单条 shortcode（整条消息就是一个表情）：与选择面板 / 行内表情一致保持 28px，
+   仅独占一行（display:block）不放大；用户要求单发与混排尺寸统一 */
+.md-emoji--standalone {
+  width: 28px;
+  height: 28px;
+  display: block;
+  margin: 2px 0;
+}
 .detail-chat-mention-btn.t-button:not(.t-button--disabled):active { background: var(--blue-soft); color: var(--blue-2); }
 
 /* 历史工单入口红点 */
@@ -6433,6 +7088,83 @@ html, body, #root {
 .ticket-confirm__textarea:focus,
 .ticket-confirm__select:focus { border-color: var(--primary); }
 .ticket-confirm__textarea { resize: vertical; line-height: 1.5; font-family: inherit; }
+/* 阶段完成时间快捷选项（1/3/5/7/14 天） */
+.ticket-confirm__quick-options {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;
+}
+.ticket-confirm__quick-option {
+  padding: 6px 14px; font-size: 13px; border: 1px solid #e7e7e7;
+  border-radius: 999px; background: var(--card); color: var(--foreground);
+  cursor: pointer; outline: none;
+}
+.ticket-confirm__quick-option--active {
+  border-color: var(--primary); color: var(--primary);
+  background: rgba(var(--primary-rgb, 0, 0, 0), 0.06);
+}
+
+/* 转工单确认弹窗：远程方式截图上传区（与 TasksView 新建弹窗 .tasks-create-modal__remote* 对齐） */
+.ticket-confirm__remote {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--muted, #f5f5f5);
+  border-radius: 8px;
+}
+.ticket-confirm__remote-tip {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+.ticket-confirm__remote-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ticket-confirm__remote-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  background: var(--card, #fff);
+  border-radius: 6px;
+}
+.ticket-confirm__remote-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--foreground);
+}
+.ticket-confirm__remote-remove {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: #e34d59;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.ticket-confirm__remote-upload {
+  align-self: flex-start;
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--primary, #0052d9);
+  background: var(--card, #fff);
+  border: 1px dashed var(--border, #e7e7e7);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ticket-confirm__remote-upload:hover { border-color: var(--primary, #0052d9); }
+.ticket-confirm__remote-upload:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .ticket-confirm__btns { display: flex; gap: 12px; margin-top: 20px; }
 .ticket-confirm__btn {
@@ -6994,4 +7726,48 @@ html, body, #root {
 
 /* 历史工单 搜索图标（HistoryTickets 使用） */
 .history-search__icon { flex-shrink: 0; color: var(--muted-foreground); }
+
+/* 派单开发者模式 */
+.dispatch-dev { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.dispatch-dev__card {
+  background: #fff;
+  border: 1px solid var(--mac-line, #e8eaea);
+  border-radius: 12px;
+  padding: 14px 14px 10px;
+}
+.dispatch-dev__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dispatch-dev__title { font-size: 14px; font-weight: 600; color: var(--mac-fg, #303435); }
+.dispatch-dev__btn {
+  border: 0;
+  border-radius: 8px;
+  background: #eaf7fd;
+  color: var(--mac-blue-2, #3697c3);
+  font-size: 12px;
+  padding: 6px 10px;
+}
+.dispatch-dev__btn:disabled { opacity: 0.55; }
+.dispatch-dev__hint { margin: 8px 0 0; font-size: 11.5px; color: var(--mac-muted-fg, #888d8f); line-height: 1.45; }
+.dispatch-dev__stats { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 10px; font-size: 12px; color: #303435; }
+.dispatch-dev__chart { margin-top: 12px; }
+.dispatch-dev__sub { display: block; font-size: 12px; color: #888d8f; margin-bottom: 4px; }
+.dispatch-dev__list { list-style: none; margin: 10px 0 0; padding: 0; }
+.dispatch-dev__list li {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 0; border-top: 1px solid #f1f4f4; font-size: 12px;
+}
+.dispatch-dev__list strong { font-weight: 600; color: #303435; }
+.dispatch-dev__list em { font-style: normal; color: var(--mac-blue-2, #3697c3); }
+.dispatch-dev__list span { color: #888d8f; font-size: 11px; }
+.dispatch-dev__cluster { margin-top: 8px; border: 1px solid #eef3f5; border-left-width: 4px; border-radius: 10px; overflow: hidden; }
+.dispatch-dev__cluster-head {
+  width: 100%; text-align: left; border: 0; background: #f7fbfc; padding: 10px 12px;
+}
+.dispatch-dev__cluster-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: #303435; }
+.dispatch-dev__dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.dispatch-dev__cluster-meta { display: block; margin-top: 4px; font-size: 11.5px; color: #888d8f; }
+.dispatch-dev__cluster .dispatch-dev__list { margin: 0 12px 8px; }
+.dispatch-dev__empty, .dispatch-dev__empty-row {
+  padding: 24px 8px; text-align: center; color: #888d8f; font-size: 12px;
+}
+.dispatch-dev__empty-row { padding: 16px 0; }
 

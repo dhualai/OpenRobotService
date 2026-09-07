@@ -4,6 +4,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 const mockNavigate = vi.fn();
+const mockHasPermission = vi.fn((code?: string) => true);
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual('react-router-dom');
   return {
@@ -11,11 +12,26 @@ vi.mock('react-router-dom', async () => {
     useNavigate: () => mockNavigate,
   };
 });
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: (sel?: (s: { hasPermission: typeof mockHasPermission }) => unknown) => {
+    const state = { hasPermission: mockHasPermission };
+    return typeof sel === 'function' ? sel(state) : state;
+  },
+}));
 
+// 用户统计区域依赖 Loading（加载态）与 ReactECharts（两个分组共四张图表），
+// jsdom 无 canvas，均以占位组件 mock
 vi.mock('tdesign-mobile-react', () => ({
   Navbar: ({ title }: { title?: ReactNode }) => (
     <nav data-testid="navbar">{title}</nav>
   ),
+  Loading: ({ text }: { text?: ReactNode }) => (
+    <div data-testid="loading">{text}</div>
+  ),
+}));
+
+vi.mock('echarts-for-react', () => ({
+  default: () => <div data-testid="echarts" />,
 }));
 
 import AdminEntries from '../admin/AdminEntries';
@@ -32,6 +48,21 @@ describe('AdminEntries', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockNavigate.mockClear();
+    mockHasPermission.mockImplementation(() => true);
+  });
+
+  it('shows developer mode only when permitted', () => {
+    renderView();
+    expect(screen.getByText('开发者模式')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('开发者模式'));
+    expect(mockNavigate).toHaveBeenCalledWith('/admin/dispatch-dev');
+  });
+
+  it('hides developer mode without permission', () => {
+    mockHasPermission.mockImplementation((code?: string) => code !== 'frontend:admin:dispatch-dev:show');
+    renderView();
+    expect(screen.queryByText('开发者模式')).not.toBeInTheDocument();
+    expect(screen.getByText('角色管理')).toBeInTheDocument();
   });
 
   it('should render navbar with title', () => {
@@ -52,9 +83,21 @@ describe('AdminEntries', () => {
     expect(mockNavigate).toHaveBeenCalledWith('/admin/roles');
   });
 
+  it('should render the two user stats groups and all four charts', () => {
+    renderView();
+    expect(screen.getByText('用户增减趋势')).toBeInTheDocument();
+    expect(screen.getByText('关注来源分布')).toBeInTheDocument();
+    expect(screen.getByText('当前用户构成')).toBeInTheDocument();
+    expect(screen.getByText('用户来源分布')).toBeInTheDocument();
+    expect(screen.getByText('重置')).toBeInTheDocument();
+  });
+
   it('should render line icons for each entry card', () => {
     renderView();
-    const cards = screen.getAllByRole('button');
+    // 页面还有用户统计区的「重置」等按钮，这里只校验入口卡片
+    const cards = screen
+      .getAllByRole('button')
+      .filter((b) => b.classList.contains('admin-entries-card'));
     expect(cards.length).toBeGreaterThanOrEqual(3);
     cards.forEach((card) => {
       expect(card.querySelector('svg')).not.toBeNull();

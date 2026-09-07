@@ -130,7 +130,18 @@ export interface TicketDraft {
   missing_fields?: string[];
   /** 最晚解决时间（ISO 字符串，转工单弹窗 antd DatePicker 选择 → overrides → confirm_submit 入库 → 落 Task.deadline_at） */
   deadline_at?: string;
+  /** 协商阶段（当前步骤）ID：提单弹窗必选，落 Task.curr_step_id */
+  curr_step_id?: number;
+  /** 阶段完成时间（SLA，ISO 字符串）：提单弹窗必选，落 Task.curr_step_endtime */
+  curr_step_endtime?: string;
   [k: string]: unknown;
+}
+
+/** 协商阶段（task_steps 模板步骤） */
+export interface TicketStep {
+  id: number;
+  step_name: string;
+  sequence: number;
 }
 
 export interface PrepareTicketResult {
@@ -143,6 +154,10 @@ export interface PrepareTicketResult {
   missing_info?: string[];
   /** stage=not_ready 时返回的面向用户的引导话术 */
   message?: string;
+  /** 项目编号题标记（not_ready 且因项目未定出题）：前端据此不挂「信息不足」卡片/Toast */
+  project_ask?: boolean;
+  /** 项目编号题结构化候选：前端渲染可点按钮，点击=以用户身份发送序号 */
+  project_choices?: Array<{ index: number; name: string; code?: string }>;
   prompt: string;
   ticket_ready?: boolean;
 }
@@ -182,6 +197,12 @@ export const qaClearDraft = (sessionId: string): Promise<{ code: number; message
     (r) => r.json(),
   );
 
+/** 按工单类型拉协商阶段列表（提单弹窗打开时调用；task_steps 后续可配置，故独立按需拉取） */
+export const qaGetTicketSteps = (type: string) =>
+  aiGet<{ code: number; data?: { steps: TicketStep[] }; message?: string }>(
+    '/qa/ticket/steps', { type },
+  );
+
 /** 获取工单 */
 export const qaGetTicket = (sessionId: string) =>
   aiGet<{ code: number; data?: unknown; message?: string }>('/qa/ticket', { session_id: sessionId });
@@ -214,6 +235,8 @@ export interface AiTicketBrief {
   project?: string;
   // 工单来源（ai 智能派单 / manual 系统任务），用于控制「重新派单」按钮显隐
   source?: string;
+  // 二次派单感知增强（M3）：派单结果提醒一句话摘要（无提醒为 null/undefined）
+  redispatch_tip?: string | null;
 }
 
 /** 历史工单列表筛选参数 */

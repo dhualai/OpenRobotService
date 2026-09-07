@@ -5,14 +5,20 @@ MIGRATION.md 阶段 3：从 `app/modules/fqa/ticket/api/ticket.py` 搬迁而来�
 
 Wave 2.2 完成：工单(tickets)已升格为任务(tasks)，本模块使用统一的 Task/TaskComment 模型。
 """
+import logging
+
 from fastapi import APIRouter, HTTPException, Depends, Query, Request, UploadFile, File, Form, Body
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 
 from app.core.database import get_async_db as get_db, db_manager
 from app.core.auth_routes import get_current_active_user_from_token
-from pydantic import BaseModel
+from app.modules.admin.api.auth import has_permission_code
+from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
+from app.modules.tasks.read_receipt import fetch_comment_read_list, report_read
 from app.modules.tasks.schemas.ticket import (
     TicketCreate, TicketUpdate, TicketResponse, TicketListResponse,
     TicketCommentCreate, TicketCommentUpdate, TicketCommentResponse,
@@ -20,17 +26,30 @@ from app.modules.tasks.schemas.ticket import (
     TicketCreateNotificationRequest, ProjectMemberResponse
 )
 from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, TicketType
-from app.modules.tasks.services.ticket_service import TicketService
+from app.modules.tasks.services.ticket_service import TicketService, convert_to_shanghai_time
 from app.modules.tasks.services.operation_log_service import OperationLogService, get_role_prefix
-from app.models.task import OperationType
-from app.modules.tasks.api.ws import ws_broadcast_comment, ws_broadcast_comment_deleted, ws_broadcast_task_updated, manager
+from app.models.task import OperationType, TaskStep
+from app.modules.tasks.api.ws import (
+    ws_broadcast_comment,
+    ws_broadcast_comment_deleted,
+    ws_broadcast_task_updated,
+    ws_broadcast_read_receipt,
+    manager,
+)
 from app.utils.minio_client import minio_client
-from app.utils.notification_utils import NotificationUtils
+from app.utils.notification_utils import NotificationUtils, _format_shanghai
 from app.integrations.api import verify_sync_api_key
 from app.core.config import settings
 from app.core.user_identity import user_matches, is_admin_user, to_user_id, actor_username, identity_keys
+from app.services.redispatch_tip_service import (  # 派单说明话术生成（模板+可选AI润色）
+    build_redispatch_tip,
+    build_redispatch_tip_detail,
+)
 
 router = APIRouter(tags=["tasks"])
+
+# 模块级 logger（避免每个端点内重复 logging.getLogger(__name__)）
+logger_task = logging.getLogger(__name__)
 
 # 状态中文映射（用于操作日志描述）
 STATUS_LABEL = {
@@ -88,6 +107,123 @@ def _get_attachment_label(attachments) -> Optional[str]:
         return _ATTACHMENT_CATEGORY_LABEL[next(iter(categories))]
     return "附件"
 
+
+# 画像缺失英文字段 → 中文展示（供派单情商话术点明缺失项）
+_PROFILE_MISSING_LABEL = {
+    "department": "部门",
+    "job_level": "职级",
+    "responsibility_modules": "责任模块",
+}
+
+
+def _fallback_redispatch_candidates() -> List[Dict]:
+    """候选快照为空时的兜底：拉全部启用工程师（users.status='active'，与派单权威口径一致），
+    按「有画像优先、无画像殿后」排序，供重派弹窗在无精排候选时仍能选择。
+
+    场景：老工单首次派单走了 Step0/精排不足导致落库 candidates 为空 → 重派弹窗「暂无精排候选」死锁。
+    此兜底保证弹窗永远有可选项；重派落地后由派单流水线重新生成完整快照覆盖。
+    """
+    try:
+        from app.services.user_service import UserService
+        users = UserService.get_user_list(limit=999999999)
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.warning(f"拉取全部用户作重派兜底候选失败: {e}")
+        return []
+
+    def _has_profile(u: Dict) -> bool:
+        if (u.get("department") or "").strip():
+            return True
+        rm = u.get("responsibility_modules") or {}
+        if isinstance(rm, dict) and any(rm.values()):
+            return True
+        if isinstance(rm, list) and rm:
+            return True
+        if u.get("job_level"):
+            return True
+        return False
+
+    def _eligible(u: Dict) -> bool:
+        """是否可为候选：需有可辨识姓名（非“微信用户/无名字”占位），且至少有部门或模块画像，
+        避免把微信客服号/空画像噪音用户排进重派弹窗。"""
+        name = (u.get("name") or "").strip()
+        if not name or name in ("微信用户", "。。", "无"):
+            return False
+        return _has_profile(u)
+
+    # 仅取启用用户；过滤掉无辨识、无画像的噪音；按“有画像优先”稳定排序（同画像保留原顺序）
+    actives = [u for u in users
+               if (u.get("status") or "").lower() == "active" and _eligible(u)]
+    actives.sort(key=_has_profile, reverse=True)
+
+    out: List[Dict] = []
+    for i, u in enumerate(actives, 1):
+        uid = u.get("id")
+        if not uid:
+            continue
+        name = u.get("name") or u.get("username") or str(uid)
+        if not name:
+            continue
+        rm = u.get("responsibility_modules") or {}
+        if isinstance(rm, dict):
+            modules = [k for k, v in rm.items() if v]
+        elif isinstance(rm, list):
+            modules = list(rm)
+        else:
+            modules = []
+        # 画像缺失项（与前端 hasProfile/hasProfile 权威 missing 字段口径一致）
+        missing = []
+        if not (u.get("department") or "").strip():
+            missing.append("department")
+        if not modules:
+            missing.append("responsibility_modules")
+        out.append({
+            "rank": i,
+            "engineer_id": str(uid),
+            "name": str(name),
+            "department": u.get("department"),
+            "job_level": u.get("job_level"),
+            "modules": modules or [],
+            "duty": u.get("duty_text"),
+            "missing": missing,
+            "scores": {"llm": 0, "semantic": 0, "history": 0, "total": 0},
+            "tags": [],
+        })
+    return out
+
+
+# 注：派单说明（tip_detail）话术生成已抽离到独立 service，见
+# app.services.redispatch_tip_service.build_redispatch_tip_detail
+
+
+def _clean_reasoning_for_display(reasoning_raw, log, user_map) -> str:
+    """把派单理由（reasoning）清洗成面向用户展示的文本。
+
+    reasoning 由 AI 派单引擎生成，可能残留候选人/工程师的 users.id（如 "ID:xxx"、"（xxx）"），
+    展示给用户（提单人的 tip_detail、接单人/管理员的派单理由）前需替换为姓名，避免暴露内部 id。
+
+    - 先用本轮候选快照（log.candidates）把 id 换成姓名；
+    - 候选未覆盖的 id（如原处理人等）再用 user_map 兜底反查。
+    """
+    if not isinstance(reasoning_raw, str) or not reasoning_raw.strip():
+        return reasoning_raw if isinstance(reasoning_raw, str) else ""
+    txt = reasoning_raw
+    for _cand in (getattr(log, "candidates", None) or []):
+        if isinstance(_cand, dict):
+            _cid = _cand.get("engineer_id")
+            _cname = _cand.get("name") or (user_map or {}).get(_cid, _cid)
+            if _cid and _cname:
+                txt = txt.replace(f"ID:{_cid}", _cname)
+                txt = txt.replace(f"({_cid})", f"({_cname})")
+                txt = txt.replace(f"（{_cid}）", f"（{_cname}）")
+                txt = txt.replace(_cid, _cname)
+    # 候选内未覆盖的 id（如原处理人等），用 user_map 兜底反查姓名
+    for _cid, _cname in (user_map or {}).items():
+        if _cname and _cid and isinstance(_cid, str) and _cid in txt:
+            txt = txt.replace(_cid, _cname)
+    return txt
+
+
 # 解决方式总结 Worker 的 Redis 任务队列（与 ai/agents/AiTaskPlatform/services/resolution_worker.py 保持一致）
 RESOLUTION_WORKER_QUEUE = "ors:resolution"
 # 占位文案（前端 placeholder，不入库；这里用于识别"无内容"状态）
@@ -130,6 +266,60 @@ async def _reload_ticket_with_comments(db: AsyncSession, task_id: int):
         select(Ticket).where(Ticket.id == task_id).options(joinedload(Ticket.comments))
     )
     return result.unique().scalar_one_or_none()
+
+
+# 最近 step 更新的"操作方标识"：与 assigned_to / created_by 字段无关，只表示角色侧，
+# 便于判定工单当前该轮到哪一方。
+_ACTOR_SIDE_ASSIGNED = "assigned"
+_ACTOR_SIDE_CREATOR = "creator"
+
+
+def _actor_side(ticket, current_user, username: str) -> Optional[str]:
+    """返回当前操作人属于接单人侧(assigned) 还是 提单人侧(creator)，都不是则 None。"""
+    if user_matches(current_user, getattr(ticket, 'assigned_to', None)):
+        return _ACTOR_SIDE_ASSIGNED
+    if user_matches(current_user, getattr(ticket, 'created_by', None)):
+        return _ACTOR_SIDE_CREATOR
+    if username and username and username == getattr(ticket, 'assigned_to', None):
+        return _ACTOR_SIDE_ASSIGNED
+    if username and username == getattr(ticket, 'created_by', None):
+        return _ACTOR_SIDE_CREATOR
+    return None
+
+
+def _apply_step_update_meta(ticket, current_user, username: str) -> Dict[str, Any]:
+    """记录当前 step 更新元信息，并按对手回应规则累加回合。
+
+    返回 dict：{bump_round: bool, round_reached_max: bool}，供调用方决定是否发软提醒。
+    """
+    side = _actor_side(ticket, current_user, username)
+    prev_side = getattr(ticket, 'step_last_updated_by', None)
+
+    # 对手回应：前一方有记录且与当前不同，加 1 回合；
+    # 首次协商（无任何一方记录）也视为开启第 1 回合
+    bump_round = False
+    if side and (not prev_side or prev_side != side):
+        bump_round = True
+        ticket.step_negotiation_round = (getattr(ticket, 'step_negotiation_round', 0) or 0) + 1
+
+    if side:
+        ticket.step_last_updated_by = side
+        ticket.step_last_updated_at = func.now()
+
+    max_rounds = getattr(ticket, 'step_neg_max_rounds', settings.TICKET_STEP_MAX_NEGOTIATION_ROUNDS) or settings.TICKET_STEP_MAX_NEGOTIATION_ROUNDS
+    cur_round = getattr(ticket, 'step_negotiation_round', 0) or 0
+    esc_count = int(getattr(ticket, 'escalate_count', 0) or 0)
+    is_escalated = esc_count > 0
+    return {
+        "bump_round": bump_round,
+        "round": cur_round,
+        "max_rounds": max_rounds,
+        "escalate_count": esc_count,
+        "escalated": is_escalated,
+        # 已升级上报后不再受回合上限限制
+        "round_reached_max": (not is_escalated) and cur_round >= max_rounds,
+        "round_almost_max": (not is_escalated) and cur_round == max_rounds - 1,
+    }
 
 
 @router.post("/", response_model=TicketResponse)
@@ -362,7 +552,113 @@ async def get_task(
                     )
             except Exception as view_err:
                 logger.warning(f"Failed to log view for task {task_id}: {view_err}")
-        
+
+        # ── 二次派单感知增强（M2）：组装 redispatch 子对象（读 task_dispatch_log 最新一条）──
+        try:
+            from app.models.task_dispatch_log import TaskDispatchLog
+            from sqlalchemy import select as _sel
+            # 权限控制：派单理由相关属较敏感信息，按下述身份矩阵返回，避免无关查看者拿到：
+            #   - result.reasoning（"为什么派给他"）→ 仅「接单人(assigned_to) 或 管理员」可见
+            #   - result.tip_detail（重派高情商话术）→ 仅「提单人(created_by) 或 管理员」可见
+            # （接单人身份依据 _log.assigned_id（本轮真正被派单对象）判定，见下 `_viewer_assignee`）
+            _viewer_user = None
+            _viewer_creator = False
+            _viewer_admin = False
+            try:
+                from app.core.database import get_user_with_roles
+                from app.core.user_identity import user_matches, is_admin_user
+                from app.core.security import decode_token
+                if token:
+                    _payload = decode_token(token)
+                    _uname = (_payload or {}).get("sub")
+                    if _uname:
+                        _viewer_user = get_user_with_roles(_uname)
+                        if _viewer_user:
+                            _viewer_creator = user_matches(_viewer_user, getattr(ticket, "created_by", None))
+                            _viewer_admin = is_admin_user(_viewer_user)
+            except Exception:
+                _viewer_user = None
+                _viewer_creator = False
+                _viewer_admin = False
+            _log = (await db.execute(
+                _sel(TaskDispatchLog)
+                .where(TaskDispatchLog.task_id == task_id)
+                .order_by(TaskDispatchLog.dispatch_round.desc())
+                .limit(1)
+            )).scalars().first()
+            if _log is not None:
+                user_map = await TicketService._get_user_map(token)
+                prof = dict(_log.profile or {})
+                assigned_name = user_map.get(_log.assigned_id, _log.assigned_id)
+                pref_name = user_map.get(_log.preferred_id) if _log.preferred_id else None
+                # 接单人身份：当前登录者 == 本轮真正被派单对象（_log.assigned_id）时可看「派单理由」
+                _viewer_assignee = bool(_viewer_user and user_matches(_viewer_user, _log.assigned_id))
+                # 面向用户展示的派单理由：把 reasoning 里可能残留的 users.id 替换为姓名
+                # （供 tip_detail 话术与接单人/管理员的「派单理由」共用）
+                reasoning_display = _clean_reasoning_for_display(_log.reasoning, _log, user_map)
+                # 二次派单感知增强（M3 高情商回复）：未派到指定人时生成一段「模板为主+AI润色」的完整话术
+                # （供详情页展示）。从候选快照取倾向人画像缺失项（missing）判定引导分支；其余分支无此字段。
+                tip_detail = None
+                if _log.preferred_id and _log.preferred_id != _log.assigned_id and _log.assigned_id:
+                    # 倾向人画像缺失项（英文 → 中文）
+                    pref_missing_zh = []
+                    for cand in (_log.candidates or []):
+                        if isinstance(cand, dict) and cand.get("engineer_id") == _log.preferred_id:
+                            for f in (cand.get("missing") or []):
+                                zh = _PROFILE_MISSING_LABEL.get(str(f), str(f))
+                                if zh not in pref_missing_zh:
+                                    pref_missing_zh.append(zh)
+                            break
+                    tip_detail = await build_redispatch_tip_detail(
+                        pref_name or _log.preferred_id,
+                        assigned_name,
+                        reasoning=reasoning_display,
+                        pref_missing_zh=pref_missing_zh,
+                    )
+                else:
+                    # Step0 / 已派到指定人：与列表同一出口（找不到 / 拼音 / 画像不完整）
+                    tip_detail = build_redispatch_tip(_log, user_map)
+                # 二次派单感知增强（M2 兜底）：候选快照为空（老工单 Step0/精排不足 → 空落库）时，
+                # 拉全部启用工程师作兜底候选，保证重派弹窗有可选项；重派落地后由流水线覆盖。
+                _cands = _log.candidates if _log.candidates else _fallback_redispatch_candidates()
+                setattr(ticket, "redispatch", {
+                    "dispatch_round": _log.dispatch_round,
+                    "candidates": _cands,
+                    "result": {
+                        "assigned_id": _log.assigned_id,
+                        "assigned_name": assigned_name,
+                        "preferred_id": _log.preferred_id,
+                        "preferred_name": pref_name,
+                        "confidence": _log.confidence,
+                        "decision_type": _log.decision_type,
+                        # 派单理由（为什么派给他）仅对「接单人」或「管理员」可见；其余查看者不返回
+                        # （前端据此展示给被派单工程师；提单人看 tip_detail 已含原因，无需重复）
+                        "reasoning": reasoning_display if (_viewer_assignee or _viewer_admin) else None,
+                        "profile": {
+                            "dept": prof.get("dept"),
+                            "job_level": prof.get("job_level"),
+                            "modules": prof.get("modules"),
+                            "duty": prof.get("duty"),
+                            "missing": prof.get("missing") or [],
+                        } if prof else None,
+                        "matched_pref": _log.matched_pref,
+                        "name_collision": _log.name_collision,
+                        "pinyin_match": _log.pinyin_match,
+                        # 派单原因仅对提单人/管理员可见；其他查看者不返回（前端不渲染派单说明）
+                        "tip_detail": tip_detail if (_viewer_creator or _viewer_admin) else None,
+                    },
+                })
+            else:
+                # 无派单日志（老工单/未派过单）：重派弹窗没有候选会形成「无法选人→无法重派→无新日志」死锁，
+                # 故仍给兜底候选（拉全部启用工程师，有画像优先），保证弹窗有可选项。重派落地后由流水线覆盖。
+                setattr(ticket, "redispatch", {
+                    "dispatch_round": 0,
+                    "candidates": _fallback_redispatch_candidates(),
+                    "result": None,
+                })
+        except Exception as redisp_err:
+            logger.warning(f"组装 redispatch 失败 task_id={task_id}: {redisp_err}")
+
         return ticket
     except HTTPException:
         raise
@@ -455,10 +751,16 @@ async def get_similar_tasks(
 @router.get("/{task_id}/project-members", response_model=List[ProjectMemberResponse])
 async def get_task_project_members(
     task_id: int,
+    all: bool = Query(False, description="为 true 时在项目成员基础上追加返回全部在职用户（用于 @ 时按关键字过滤到项目外的人）"),
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token)
 ):
-    """获取任务关联项目的成员列表 + 工单处理人（用于讨论区 @ 提及）。"""
+    """获取任务关联项目的成员列表 + 工单处理人（用于讨论区 @ 提及）。
+
+    all=false：仅返回提单人/处理人 + 项目成员（默认候选池）。
+    all=true：在前者基础上再追加全部 active 在职用户（已去重），
+             使讨论区输入 @关键字 时可过滤到项目外的人。
+    """
     import logging
     logger = logging.getLogger(__name__)
 
@@ -520,6 +822,31 @@ async def get_task_project_members(
                     role_name=m.get("role_name"),
                 ))
 
+        # ── 3. all=true：追加全部 active 在职用户（去重），漏出项目外的人供 @ 过滤 ──
+        if all:
+            from app.core.db import SessionLocal
+            from app.models.identity import UserDB
+            sync_db = SessionLocal()
+            try:
+                all_users = sync_db.query(UserDB).filter(UserDB.status == "active").all()
+                # 按姓名、用户名排序，保证姓名相近的排在一起
+                def _sort_key(u):
+                    return (u.name or u.username or "").lower()
+                all_users.sort(key=_sort_key)
+                for u in all_users:
+                    uname = (u.username or "").strip()
+                    if not uname or uname in seen:
+                        continue
+                    seen.add(uname)
+                    result.append(ProjectMemberResponse(
+                        id=uname,
+                        username=uname,
+                        name=u.name or uname,
+                        role_name=None,
+                    ))
+            finally:
+                sync_db.close()
+
         # 即使没有项目也能 @ 处理人
         return result
     except HTTPException:
@@ -544,7 +871,9 @@ async def update_task(
     username = actor_username(current_user)
     user_name = (current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", username))
 
-    if not is_admin:
+    # 拥有 backend:tasks:operate 权限的用户视同 admin，跳过身份与状态流转校验
+    can_operate = has_permission_code(current_user, "backend:tasks:operate")
+    if not is_admin and not can_operate:
         if not user_matches(current_user, ticket.assigned_to, ticket.customer, ticket.created_by):
             raise HTTPException(status_code=403, detail="无权限更新此任务")
         if ticket.status == TicketStatus.CLOSED:
@@ -603,12 +932,32 @@ async def update_task(
                 changed_fields.append(key)
         
         if op_type_str == 'escalate':
+            # 升级上报：escalate_count +1，协商回合清零，且升级后不再受回合上限限制
+            # （处理人可一锤定音直接设置节点时间；双方仍可继续协商但不卡回合）
+            prev_count = int(getattr(ticket, 'escalate_count', 0) or 0)
+            ticket.escalate_count = prev_count + 1
+            ticket.step_negotiation_round = 0
+            ticket.curr_step_agreed = False
+            # 节点结束时间对齐当前工单截止时间（升级时以工单 deadline 为准）
+            ticket.curr_step_endtime = ticket.deadline_at
+            # 回合归属：记录升级操作方侧标识 → 轮到另一方响应
+            # （提单人升级 → step_last_updated_by='creator'，轮到处理人一锤定音）
+            esc_side = _actor_side(ticket, current_user, username)
+            if esc_side:
+                ticket.step_last_updated_by = esc_side
+                ticket.step_last_updated_at = func.now()
             await OperationLogService.log(
                 db=db, task_id=task_id, op_type=OperationType.ESCALATE,
                 operator=username, operator_name=user_name,
-                description=f"{_role}{user_name} 升级了工单" if _role else f"{user_name} 升级了工单",
+                detail={
+                    "escalate_count": prev_count + 1,
+                    "round_reset": 0,
+                    "actor_side": esc_side,
+                    "curr_step_endtime": ticket.curr_step_endtime.isoformat() if ticket.curr_step_endtime else None,
+                },
+                description=f"{_role}{user_name} 升级了工单（第{prev_count + 1}次），协商不再受回合上限限制" if _role else f"{user_name} 升级了工单（第{prev_count + 1}次），协商不再受回合上限限制",
             )
-            await _add_system_comment(db, task_id, f"{user_name} 升级了工单", username, token)
+            await _add_system_comment(db, task_id, f"{user_name} 升级了工单（第{prev_count + 1}次），协商不再受回合上限限制", username, token)
         elif op_type_str == 'return':
             await OperationLogService.log(
                 db=db, task_id=task_id, op_type=OperationType.RETURN,
@@ -868,6 +1217,89 @@ async def get_task_comments(
     return comments
 
 
+class CommentReadReport(BaseModel):
+    """已读上报表单（WS 不可用时的 REST 兜底通道）。
+
+    ``comment_ids`` 为本轮实际读到的评论 id 列表，``last_read_comment_id`` 为游标。
+    长度上限与服务端清洗上限一致（MAX_COMMENT_IDS_PER_REQUEST）。
+    """
+    comment_ids: List[int] = Field(default_factory=list, max_length=500)
+    last_read_comment_id: Optional[int] = None
+
+
+class CommentReadRecordItem(BaseModel):
+    username: str
+    name: Optional[str] = None
+    avatar_resource_id: Optional[int] = None
+    read_at: Optional[str] = None
+
+
+@router.post("/{task_id}/comments/read")
+async def report_comments_read(
+    task_id: int,
+    payload: CommentReadReport,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """已读上报的 REST 兜底通道。
+
+    前端在 WS 未连接（尚未建连 / 断线重连中 / 降级）时改走本接口，避免
+    「已读帧被静默丢弃后再也不重试」导致的名单漏报。写库成功后同样广播
+    read_receipt，房间内在线成员实时可见。
+    """
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    username = actor_username(current_user)
+    user_name = current_user.get('name') or username
+    avatar_resource_id = current_user.get('avatar_resource_id')
+
+    # 同步 ORM 走线程池，避免阻塞事件循环（report_read 内部自带独立会话）
+    result = await run_in_threadpool(
+        report_read,
+        task_id,
+        username,
+        payload.comment_ids,
+        user_name,
+        avatar_resource_id,
+        payload.last_read_comment_id,
+    )
+
+    try:
+        await ws_broadcast_read_receipt(
+            task_id,
+            username,
+            result["records"],
+            result["comment_ids"],
+            result["last_read_comment_id"],
+        )
+    except Exception as e:  # noqa: BLE001
+        logger_task.warning(f"已读回执广播失败（已读已落库）task_id={task_id}: {e}")
+
+    return {
+        "ok": True,
+        "comment_ids": result["comment_ids"],
+        "last_read_comment_id": result["last_read_comment_id"],
+        "records": result["records"],
+    }
+
+
+@router.get("/{task_id}/comments/{comment_id}/read", response_model=List[CommentReadRecordItem])
+async def get_comment_read_list(
+    task_id: int,
+    comment_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """按需拉取单条评论的已读名单（已读弹层打开时刷新，兜底 welcome 快照截断）。"""
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    return await run_in_threadpool(fetch_comment_read_list, task_id, comment_id)
+
+
 @router.put("/comments/{comment_id}", response_model=TicketCommentResponse)
 async def update_comment(
     comment_id: int,
@@ -1026,6 +1458,576 @@ async def update_task_status(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新任务状态失败: {str(e)}")
+
+
+# ==================== 工单阶段性处理（协商节点） ====================
+
+
+class RespondRequest(BaseModel):
+    """首次响应请求：确认协商节点并开始处理。
+
+    curr_step_id 不传时确认工单当前 curr_step_id（AI 提单时已设置）。
+    """
+    curr_step_id: Optional[int] = Field(None, description="确认的协商节点ID（不传则确认当前 curr_step_id）")
+
+
+@router.get("/{task_id}/steps", summary="按工单类型读取协商阶段模板")
+async def get_task_steps(
+    task_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """读取 task_steps 模板（按工单 task_type 过滤，sequence 升序）。
+
+    前端「工单阶段性处理」区域据此生成当前节点描述（如 1/3 进度）。
+    """
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+    result = await db.execute(
+        select(TaskStep)
+        .where(TaskStep.task_type == ticket.task_type)
+        .order_by(TaskStep.sequence.asc())
+    )
+    rows = result.unique().scalars().all()
+    steps = [{"id": r.id, "step_name": r.step_name, "sequence": r.sequence} for r in rows]
+    return {"code": 0, "data": {"steps": steps}}
+
+
+@router.post("/{task_id}/respond", response_model=TicketResponse, summary="确认同意：当前协商节点协商一致")
+async def respond_task(
+    task_id: int,
+    body: RespondRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+    request: Request = None,
+):
+    """确认同意：将当前协商节点标记为「已协商一致」。
+
+    两种情形：
+    1. 处理人首次响应（status=NEW）：状态 new → in_progress（工单开始处理），同时标记 curr_step_agreed=True。
+    2. 处理中（status=IN_PROGRESS）的「对方」确认：仅将 curr_step_agreed 由 False 置 True，
+       状态不变（用于新节点推进后再次达成一致）。
+
+    权限：AI 工单允许任何登录用户；其余需处理人/提单人/管理员/操作权限。
+    """
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
+    token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
+    can_operate = has_permission_code(current_user, "backend:tasks:operate")
+
+    # AI 工单（created_by='system'）允许任何登录用户操作；其余需处理人/提单人/管理员/操作权限
+    if ticket.source == 'ai':
+        pass
+    elif not (user_matches(current_user, ticket.assigned_to) or user_matches(current_user, ticket.created_by) or is_admin or can_operate):
+        raise HTTPException(status_code=403, detail="无权限响应此工单")
+
+    old_status = ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)
+    is_first_response = (ticket.status == TicketStatus.NEW)
+    if not is_first_response and ticket.status != TicketStatus.IN_PROGRESS:
+        raise HTTPException(status_code=400, detail="当前状态不可确认同意")
+    if getattr(ticket, 'curr_step_agreed', False) and is_first_response is False:
+        # 协商一致阶段重复点确认同意：避免覆盖（无操作意义）
+        raise HTTPException(status_code=400, detail="当前节点已协商一致，无需重复确认")
+
+    # 确认协商节点：优先取 body.curr_step_id，否则用工单现有 curr_step_id
+    step_id = body.curr_step_id if body.curr_step_id is not None else ticket.curr_step_id
+    if step_id is None:
+        raise HTTPException(status_code=400, detail="请先设置协商节点后再响应")
+
+    # 反查节点名称，保证 curr_step_name 与模板一致
+    step_row = await db.execute(select(TaskStep).where(TaskStep.id == int(step_id)))
+    step = step_row.unique().scalar_one_or_none()
+    step_name = step.step_name if step else (ticket.curr_step_name or "")
+
+    ticket.curr_step_id = int(step_id)
+    ticket.curr_step_name = step_name
+    if is_first_response:
+        ticket.status = TicketStatus.IN_PROGRESS
+    ticket.curr_step_agreed = True
+    # 确认同意时同步更新工单截止时间为当前节点时间
+    if ticket.curr_step_endtime:
+        ticket.deadline_at = ticket.curr_step_endtime
+    ticket.updated_at = func.now()
+
+    # 确认同意是"达成一致"的正向动作，不计入协商回合（回合只在"协商节点时间"时累加），
+    # 但需记录操作方元信息，供下一节点的回合归属判定使用。
+    side = _actor_side(ticket, current_user, username)
+    if side:
+        ticket.step_last_updated_by = side
+        ticket.step_last_updated_at = func.now()
+    await db.commit()
+
+    # 操作日志 + 系统评论
+    user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
+    _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
+    if is_first_response:
+        await OperationLogService.log(
+            db=db,
+            task_id=task_id,
+            op_type=OperationType.STATUS_CHANGE,
+            operator=username,
+            operator_name=user_name,
+            to_status=TicketStatus.IN_PROGRESS.value,
+            detail={"from": old_status, "to": TicketStatus.IN_PROGRESS.value},
+            description=f"{_role}{user_name} 确认协商节点「{step_name}」，开始处理" if _role else f"{user_name} 确认协商节点「{step_name}」，开始处理",
+        )
+        await _add_system_comment(
+            db, task_id,
+            f"{user_name} 确认协商节点「{step_name}」，开始处理工单",
+            username, token,
+        )
+    else:
+        await OperationLogService.log(
+            db=db,
+            task_id=task_id,
+            op_type=OperationType.UPDATE,
+            operator=username,
+            operator_name=user_name,
+            detail={"curr_step_id": int(step_id), "curr_step_agreed": True},
+            description=f"{_role}{user_name} 确认同意节点「{step_name}」，达成协商一致" if _role else f"{user_name} 确认同意节点「{step_name}」，达成协商一致",
+        )
+        await _add_system_comment(
+            db, task_id,
+            f"{user_name} 确认同意节点「{step_name}」，达成协商一致",
+            username, token,
+        )
+    try:
+        await ws_broadcast_task_updated(task_id, ticket)
+    except Exception:
+        pass
+    return await _reload_ticket_with_comments(db, task_id)
+
+
+class CompleteStepRequest(BaseModel):
+    """当前阶段完成请求：处理人选择下一阶段节点并设置其结束时间。"""
+    next_step_id: int = Field(..., description="下一阶段节点ID（必须为同 task_type 的节点）")
+    curr_step_endtime: datetime = Field(..., description="下一阶段节点结束时间（ISO 字符串，naive UTC 存库）")
+
+
+@router.post("/{task_id}/complete-step", response_model=TicketResponse, summary="当前阶段完成：推进到下一协商节点")
+async def complete_task_step(
+    task_id: int,
+    body: CompleteStepRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+    request: Request = None,
+):
+    """当前协商节点完成：处理人选择同类型的下一阶段节点并设置其结束时间。
+
+    - next_step_id 必须为同 task_type 的节点；推进后 curr_step_agreed 重置为 False，
+      工单进入"未一致"状态，等待对方（创建人）「确认同意」后才视为协商一致。
+    - curr_step_endtime 为新节点的结束时间（SLA）。
+    """
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
+    token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
+    can_operate = has_permission_code(current_user, "backend:tasks:operate")
+
+    if ticket.source == 'ai':
+        pass
+    elif not (user_matches(current_user, ticket.assigned_to) or is_admin or can_operate):
+        raise HTTPException(status_code=403, detail="无权限操作此工单")
+
+    if ticket.status != TicketStatus.IN_PROGRESS:
+        raise HTTPException(status_code=400, detail="仅处理中的工单可完成当前阶段")
+    if not getattr(ticket, 'curr_step_agreed', False):
+        raise HTTPException(status_code=400, detail="当前节点尚未协商一致，无法推进到下一阶段")
+    if ticket.curr_step_id is None:
+        raise HTTPException(status_code=400, detail="当前节点不存在，无法推进")
+
+    # 反查当前节点，用于日志与回退校验
+    cur_row = await db.execute(select(TaskStep).where(TaskStep.id == int(ticket.curr_step_id)))
+    cur_step = cur_row.unique().scalar_one_or_none()
+    if cur_step is None:
+        raise HTTPException(status_code=400, detail="当前节点不存在，无法推进")
+
+    # 校验目标节点：必须为同 task_type，且 sequence > 当前节点（只能向前推进）
+    next_row = await db.execute(
+        select(TaskStep).where(TaskStep.id == int(body.next_step_id))
+    )
+    next_step = next_row.unique().scalar_one_or_none()
+    if next_step is None:
+        raise HTTPException(status_code=400, detail="所选下一阶段节点不存在")
+    if next_step.task_type != ticket.task_type:
+        raise HTTPException(status_code=400, detail="下一阶段节点与工单类型不匹配")
+    if next_step.sequence <= cur_step.sequence:
+        raise HTTPException(status_code=400, detail="下一阶段必须晚于当前阶段")
+
+    old_step_name = ticket.curr_step_name or cur_step.step_name
+    endtime = convert_to_shanghai_time(body.curr_step_endtime)
+    ticket.curr_step_id = next_step.id
+    ticket.curr_step_name = next_step.step_name
+    ticket.curr_step_endtime = endtime
+    ticket.deadline_at = endtime  # 新阶段首次设置时间 → 更新工单截止时间
+    ticket.curr_step_agreed = False  # 进入新节点：等待对方确认同意才视为协商一致
+    ticket.step_phase_round = int(getattr(ticket, 'step_phase_round', 0) or 0) + 1
+    ticket.updated_at = func.now()
+
+    # 阶段完成 = 当前操作人"提案"推进到下一节点：记录操作方（回合归属）
+    round_meta = _apply_step_update_meta(ticket, current_user, username)
+    # 进入新节点 = 新一轮协商的开始：协商回合重置为第 1 回合（处理人推进提案为该节点首轮），
+    # 避免上一节点累计的回合把新节点直接带到"满回合/升级上报"状态
+    ticket.step_negotiation_round = 1
+    round_meta = {**round_meta, "bump_round": False, "round": 1}
+    await db.commit()
+
+    # 操作日志 + 系统评论
+    user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
+    _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
+    endtime_label = _format_shanghai(endtime)
+    await OperationLogService.log(
+        db=db,
+        task_id=task_id,
+        op_type=OperationType.UPDATE,
+        operator=username,
+        operator_name=user_name,
+        detail={
+            "from_step": old_step_name,
+            "to_step": next_step.step_name,
+            "curr_step_endtime": endtime.isoformat() if endtime else None,
+            "negotiation_round": round_meta["round"],
+        },
+        description=f"{_role}{user_name} 完成阶段「{old_step_name}」，进入「{next_step.step_name}」（节点时间 {endtime_label}）" if _role else f"{user_name} 完成阶段「{old_step_name}」，进入「{next_step.step_name}」（节点时间 {endtime_label}）",
+    )
+    comment_lines = [f"{user_name} 完成阶段「{old_step_name}」，进入「{next_step.step_name}」（节点时间 {endtime_label}）"]
+    if round_meta["bump_round"]:
+        comment_lines.append(f"（本轮协商回合：{round_meta['round']}/{round_meta['max_rounds']}）")
+        if round_meta["round_almost_max"]:
+            comment_lines.append("⚠️ 已临近最大协商回合，请尽快收敛；若仍无法达成一致可使用升级上报。")
+    await _add_system_comment(
+        db, task_id,
+        "".join(comment_lines),
+        username, token,
+    )
+    try:
+        await ws_broadcast_task_updated(task_id, ticket)
+    except Exception:
+        pass
+    return await _reload_ticket_with_comments(db, task_id)
+
+
+class NegotiateStepRequest(BaseModel):
+    """协商节点请求：可调整节点为当前或之后（sequence >= 当前）+ 设置节点结束时间，理由必填。"""
+    curr_step_endtime: datetime = Field(..., description="协商节点结束时间（ISO 字符串，naive UTC 存库）")
+    curr_step_id: Optional[int] = Field(None, description="协商后的节点ID（仅当前及之后；不传则保持当前节点）")
+    reason: str = Field(..., description="协商理由（必填，记录为评论）")
+
+
+@router.post("/{task_id}/negotiate-step", response_model=TicketResponse, summary="协商节点：调整节点并设置节点结束时间")
+async def negotiate_step(
+    task_id: int,
+    body: NegotiateStepRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+    request: Request = None,
+):
+    """协商节点：可将当前节点调整为当前或之后的任一节点，并设置节点结束时间（SLA）。
+
+    协商理由必填，作为系统评论记录。
+    权限：AI 工单允许任何登录用户；其余需处理人/管理员/操作权限。
+    """
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
+    token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
+    can_operate = has_permission_code(current_user, "backend:tasks:operate")
+
+    # 权限：接单人 / 提单人 / 管理员 / 操作权限均可协商（回合双方对话）
+    _is_assignee = user_matches(current_user, ticket.assigned_to)
+    _is_creator = user_matches(current_user, ticket.created_by)
+    if ticket.source != 'ai' and not (_is_assignee or _is_creator or is_admin or can_operate):
+        raise HTTPException(status_code=403, detail="无权限协商此工单")
+
+    # 协商理由必填
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="协商理由必填")
+
+    # 节点调整：校验目标节点存在且与工单类型匹配
+    # 第一轮（step_phase_round==0，未被"当前阶段完成"推进过）不限制 sequence，可任选节点；
+    # 之后仅允许当前及之后（sequence >= 当前）
+    phase_round = int(getattr(ticket, 'step_phase_round', 0) or 0)
+    old_step_name = ticket.curr_step_name
+    step_changed = False
+    if body.curr_step_id is not None and int(body.curr_step_id) != ticket.curr_step_id:
+        # 反查当前节点 sequence 用于下限校验
+        cur_row = await db.execute(select(TaskStep).where(TaskStep.id == int(ticket.curr_step_id)))
+        cur_step = cur_row.unique().scalar_one_or_none()
+        cur_seq = cur_step.sequence if cur_step else 0
+
+        row = await db.execute(select(TaskStep).where(TaskStep.id == int(body.curr_step_id)))
+        target_step = row.unique().scalar_one_or_none()
+        if target_step is None:
+            raise HTTPException(status_code=400, detail="协商节点不存在")
+        if target_step.task_type != ticket.task_type:
+            raise HTTPException(status_code=400, detail="协商节点与工单类型不匹配")
+        if phase_round > 0 and target_step.sequence < cur_seq:
+            raise HTTPException(status_code=400, detail="协商节点不能早于当前节点")
+        ticket.curr_step_id = target_step.id
+        ticket.curr_step_name = target_step.step_name
+        step_changed = True
+
+    # 前端 dayjs(...).toISOString() 传入 UTC aware datetime，剥时区转 naive UTC 存库
+    # 协商节点时间只更新 curr_step_endtime，不动 deadline_at；
+    # 待"确认同意"(/respond) 时再把 deadline_at 同步到已协商一致的节点时间。
+    endtime = convert_to_shanghai_time(body.curr_step_endtime)
+    ticket.curr_step_endtime = endtime
+    ticket.updated_at = func.now()
+
+    # 处理人首次响应（协商节点时间）：工单状态 new → in_progress
+    old_status = ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)
+    status_transitioned = False
+    if ticket.status == TicketStatus.NEW:
+        ticket.status = TicketStatus.IN_PROGRESS
+        status_transitioned = True
+    # 任何协商（含节点变更/时间调整）都视为新一轮提案，重置协商一致状态
+    ticket.curr_step_agreed = False
+
+    # 回合计数：对手回应 +1
+    round_meta = _apply_step_update_meta(ticket, current_user, username)
+    await db.commit()
+
+    user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
+    _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
+    # 节点时间按东八区展示（DB 为 naive UTC）
+    endtime_label = _format_shanghai(endtime)
+    action_desc = f"预期「{ticket.curr_step_name}」时间（{endtime_label}）"
+    if step_changed:
+        action_desc += f"，节点由「{old_step_name}」调整为「{ticket.curr_step_name}」"
+    await OperationLogService.log(
+        db=db,
+        task_id=task_id,
+        op_type=OperationType.UPDATE,
+        operator=username,
+        operator_name=user_name,
+        detail={
+            "from_step": old_step_name if step_changed else None,
+            "to_step": ticket.curr_step_name,
+            "curr_step_endtime": endtime.isoformat() if endtime else None,
+            "negotiation_round": round_meta["round"],
+        },
+        description=f"{_role}{user_name} {action_desc}。缘由：{reason}" if _role else f"{user_name} {action_desc}。缘由：{reason}",
+    )
+    # 首次响应触发的状态变更单独记录一条 STATUS_CHANGE 日志，与 respond 接口保持一致
+    if status_transitioned:
+        await OperationLogService.log(
+            db=db,
+            task_id=task_id,
+            op_type=OperationType.STATUS_CHANGE,
+            operator=username,
+            operator_name=user_name,
+            to_status=TicketStatus.IN_PROGRESS.value,
+            detail={"from": old_status, "to": TicketStatus.IN_PROGRESS.value},
+            description=f"{_role}{user_name} 首次响应协商节点，工单进入处理中" if _role else f"{user_name} 首次响应协商节点，工单进入处理中",
+        )
+    comment_lines = [f"{user_name} {action_desc}。缘由：{reason}"]
+    if status_transitioned:
+        comment_lines.append("（首次响应，工单状态变更为「处理中」）")
+    if round_meta["bump_round"]:
+        comment_lines.append(f"（本轮协商回合：{round_meta['round']}/{round_meta['max_rounds']}）")
+        if round_meta["round_almost_max"]:
+            comment_lines.append("⚠️ 已临近最大协商回合，请尽快收敛；若仍无法达成一致可使用升级上报。")
+    await _add_system_comment(
+        db, task_id,
+        "".join(comment_lines),
+        username, token,
+    )
+    try:
+        await ws_broadcast_task_updated(task_id, ticket)
+    except Exception:
+        pass
+    return await _reload_ticket_with_comments(db, task_id)
+
+
+class SetStepTimeRequest(BaseModel):
+    """设置节点时间请求：处理人一锤定音，直接设置当前节点结束时间，跳过协商。"""
+    curr_step_endtime: datetime = Field(..., description="节点结束时间（ISO 字符串，naive UTC 存库）")
+
+
+@router.post("/{task_id}/set-step-time")
+async def set_step_time(
+    task_id: int,
+    body: SetStepTimeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+    request: Request = None,
+):
+    """设置节点时间：处理人一锤定音，直接设置节点结束时间并标记为协商一致。
+
+    仅限已升级上报（escalate_count > 0）的工单，仅处理人/管理员可调用。
+    调用后 curr_step_agreed=True，不再进入协商回合。
+    """
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
+    token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
+    can_operate = has_permission_code(current_user, "backend:tasks:operate")
+
+    # 仅处理人/管理员/操作权限
+    _is_assignee = user_matches(current_user, ticket.assigned_to)
+    if ticket.source != 'ai' and not (_is_assignee or is_admin or can_operate):
+        raise HTTPException(status_code=403, detail="无权限设置节点时间")
+
+    # 仅已升级上报的工单可用
+    esc_count = int(getattr(ticket, 'escalate_count', 0) or 0)
+    if esc_count <= 0:
+        raise HTTPException(status_code=400, detail="仅已升级上报的工单可使用此功能")
+
+    # 设置节点结束时间 + 一锤定音（协商一致）
+    endtime = body.curr_step_endtime
+    ticket.curr_step_endtime = endtime
+    ticket.deadline_at = endtime  # 一锤定音设置时间 → 更新工单截止时间
+    ticket.curr_step_agreed = True
+    ticket.step_last_updated_by = 'assigned'
+    ticket.step_last_updated_at = func.now()
+    await db.commit()
+    await db.refresh(ticket)
+
+    user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
+    _role = "处理人" if _is_assignee else ("管理员" if is_admin else "")
+
+    await OperationLogService.log(
+        db=db, task_id=task_id, op_type=OperationType.UPDATE,
+        operator=username, operator_name=user_name,
+        detail={
+            "curr_step_endtime": endtime.isoformat() if endtime else None,
+            "finalized": True,
+            "escalate_count": esc_count,
+        },
+        description=f"{_role}{user_name} 一锤定音设置节点时间" if _role else f"{user_name} 一锤定音设置节点时间",
+    )
+    await _add_system_comment(
+        db, task_id,
+        f"{user_name} 设置节点时间为 {_format_shanghai(endtime)}（升级上报后一锤定音，不再协商）",
+        username, token,
+    )
+    try:
+        await ws_broadcast_task_updated(task_id, ticket)
+    except Exception:
+        pass
+    return await _reload_ticket_with_comments(db, task_id)
+
+
+class ReopenStepRequest(BaseModel):
+    """未解决打回请求：提单人选择重新开始的阶段节点 + 节点结束时间。"""
+    curr_step_id: int = Field(..., description="重新开始的阶段节点ID（必须为同 task_type 的节点）")
+    curr_step_endtime: datetime = Field(..., description="节点结束时间（ISO 字符串，naive UTC 存库）")
+
+
+@router.post("/{task_id}/reopen-step", response_model=TicketResponse, summary="未解决打回：回到处理中并从头开始阶段性处理")
+async def reopen_step(
+    task_id: int,
+    body: ReopenStepRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+    request: Request = None,
+):
+    """未解决打回：已解决工单由提单人打回到处理中，阶段性处理从头再开始。
+
+    - 仅已解决（resolved）状态的工单可打回；权限：提单人/管理员/操作权限（AI 工单放行）。
+    - 目标节点必须为同 task_type 的节点（通常选择第一阶段）。
+    - 打回后：curr_step_agreed=False（等待处理人确认同意）、协商回合重置为 1、回合归属设为提单人（轮到处理人响应）。
+    """
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
+    token = request.headers.get("Authorization", "").replace("Bearer ", "") if request else ""
+    can_operate = has_permission_code(current_user, "backend:tasks:operate")
+
+    # 权限：提单人 / 管理员 / 操作权限（AI 工单放行）
+    _is_creator = user_matches(current_user, ticket.created_by)
+    if ticket.source != 'ai' and not (_is_creator or is_admin or can_operate):
+        raise HTTPException(status_code=403, detail="仅提单人可打回工单")
+
+    # 仅已解决状态可打回
+    if ticket.status != TicketStatus.RESOLVED:
+        raise HTTPException(status_code=400, detail="仅已解决的工单可打回")
+
+    # 校验目标节点：必须为同 task_type
+    row = await db.execute(select(TaskStep).where(TaskStep.id == int(body.curr_step_id)))
+    target_step = row.unique().scalar_one_or_none()
+    if target_step is None:
+        raise HTTPException(status_code=400, detail="所选阶段节点不存在")
+    if target_step.task_type != ticket.task_type:
+        raise HTTPException(status_code=400, detail="所选阶段节点与工单类型不匹配")
+
+    old_status = ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status)
+    old_step_name = ticket.curr_step_name
+
+    # 状态回到处理中 + 阶段性处理从头开始
+    endtime = convert_to_shanghai_time(body.curr_step_endtime)
+    ticket.status = TicketStatus.IN_PROGRESS
+    ticket.curr_step_id = target_step.id
+    ticket.curr_step_name = target_step.step_name
+    ticket.curr_step_endtime = endtime
+    ticket.deadline_at = endtime  # 打回重设节点时间 → 更新工单截止时间
+    ticket.curr_step_agreed = False
+    ticket.step_negotiation_round = 0
+    ticket.step_phase_round = 0  # 打回重开：阶段回合数归零，回到第一轮
+    ticket.step_last_updated_by = 'creator'  # 提单人打回提案 → 轮到处理人确认
+    ticket.step_last_updated_at = func.now()
+    ticket.resolved_at = None
+    ticket.updated_at = func.now()
+    await db.commit()
+
+    user_name = current_user.get('name', username) if isinstance(current_user, dict) else getattr(current_user, "name", None) or username
+    _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
+    endtime_label = _format_shanghai(endtime)
+
+    # 状态变更日志 + 系统评论
+    await OperationLogService.log(
+        db=db,
+        task_id=task_id,
+        op_type=OperationType.STATUS_CHANGE,
+        operator=username,
+        operator_name=user_name,
+        to_status=TicketStatus.IN_PROGRESS.value,
+        detail={"from": old_status, "to": TicketStatus.IN_PROGRESS.value},
+        description=f"{_role}{user_name} 标记工单未解决，打回到处理中" if _role else f"{user_name} 标记工单未解决，打回到处理中",
+    )
+    # 阶段重置日志
+    await OperationLogService.log(
+        db=db,
+        task_id=task_id,
+        op_type=OperationType.UPDATE,
+        operator=username,
+        operator_name=user_name,
+        detail={
+            "from_step": old_step_name,
+            "to_step": target_step.step_name,
+            "curr_step_endtime": endtime.isoformat() if endtime else None,
+            "round_reset": 1,
+        },
+        description=f"{_role}{user_name} 打回重开阶段性处理：从「{target_step.step_name}」重新开始（节点时间 {endtime_label}）" if _role else f"{user_name} 打回重开阶段性处理：从「{target_step.step_name}」重新开始（节点时间 {endtime_label}）",
+    )
+    await _add_system_comment(
+        db, task_id,
+        f"{user_name} 标记工单未解决，打回到处理中：阶段性处理从「{target_step.step_name}」重新开始（节点时间 {endtime_label}），等待处理人确认",
+        username, token,
+    )
+    try:
+        await ws_broadcast_task_updated(task_id, ticket)
+    except Exception:
+        pass
+    return await _reload_ticket_with_comments(db, task_id)
 
 
 @router.post("/{task_id}/resolution-summary")
@@ -1219,6 +2221,72 @@ async def assign_task(
         raise HTTPException(status_code=500, detail=f"分配任务失败: {str(e)}")
 
 
+class CreatorNameUpdate(BaseModel):
+    """更新工单创建人姓名请求体。仅更新 users.name，不改变工单 created_by。"""
+    name: str
+
+
+@router.patch("/{task_id}/creator-name", summary="更新工单创建人姓名（仅处理人/管理员可操作）")
+async def update_creator_name(
+    task_id: int,
+    payload: CreatorNameUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
+):
+    """通过工单 created_by 反查用户表并更新其 name；不改变 created_by 本身。
+
+    权限：仅工单处理人（assigned_to）或管理员可操作。创建人姓名为后端从 users 表
+    实时解析的派生字段（无独立列），故更新用户 name 后，工单 created_by_name 自动刷新。
+    """
+    ticket = await TicketService.get_ticket_by_id(db, task_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="任务未找到")
+
+    is_admin = is_admin_user(current_user)
+    username = actor_username(current_user)
+    user_name = (current_user.get('name', username) if isinstance(current_user, dict) else username)
+
+    # 仅工单处理人（assigned_to）或管理员可修改创建人姓名
+    if not is_admin and not user_matches(current_user, ticket.assigned_to):
+        raise HTTPException(status_code=403, detail="仅工单处理人可修改创建人姓名")
+
+    new_name = (payload.name or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="创建人姓名不能为空")
+
+    created_by = getattr(ticket, "created_by", None)
+    if not created_by:
+        raise HTTPException(status_code=400, detail="工单无创建人，无法更新姓名")
+
+    # created_by 存 users.id；过渡期历史数据可能是 username，两种键都尝试解析
+    creator = db_manager.get_user_by_id(created_by) or db_manager.get_user(created_by)
+    if not creator:
+        raise HTTPException(status_code=404, detail="创建人用户记录不存在")
+
+    success = db_manager.update_user(creator['id'], name=new_name)
+    if not success:
+        raise HTTPException(status_code=500, detail="更新创建人姓名失败")
+
+    # 操作日志 + 系统评论（与派单/改派一致，记录操作与操作人）
+    token = current_user.get('token') or ''
+    try:
+        _role = get_role_prefix(getattr(ticket, 'created_by', None), getattr(ticket, 'assigned_to', None), username)
+        await OperationLogService.log(
+            db=db,
+            task_id=task_id,
+            op_type=OperationType.UPDATE,
+            operator=username,
+            operator_name=user_name,
+            detail={"field": "created_by_name", "new_name": new_name},
+            description=f"{_role}{user_name} 将创建人姓名更新为「{new_name}」" if _role else f"{user_name} 将创建人姓名更新为「{new_name}」",
+        )
+        await _add_system_comment(db, task_id, f"{user_name} 将创建人姓名更新为「{new_name}」", username, token)
+    except Exception:
+        pass
+
+    return {"name": new_name, "created_by": created_by}
+
+
 @router.post("/{task_id}/ai-assign")
 async def trigger_ai_assignment(
     task_id: int,
@@ -1303,7 +2371,8 @@ async def re_dispatch_task(
     ticket.assigned_to = None
     ticket.status = TicketStatus.NEW
 
-    # 写入用户倾向派单人 + 清掉上一次派单的推荐元数据
+    # 写入用户倾向派单人；派单详情已不再写 metadata_info（统一走 task_dispatch_log，见 §4.2/§九-M1），
+    # 此处 pop 仅用于清理历史遗留的旧派单元数据（worker 已不再写入这些键）
     meta = dict(ticket.metadata_info or {})
     meta["preferred_assignee"] = preferred
     if remark:
@@ -1458,7 +2527,9 @@ async def upload_comment_attachment(
             comment_attachment_map[temp_id] = []
         comment_attachment_map[temp_id].append(object_path)
 
-        return {"message": "上传附件成功"}
+        # 返回 object_path，前端可直接透传给建单接口的 attachments 字段，
+        # 无需依赖进程内存 comment_attachment_map 的 temp_id 解析（跨进程/重启更稳）。
+        return {"message": "上传附件成功", "object_path": object_path}
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(

@@ -67,9 +67,10 @@ def build_ticket_context(row: dict) -> TicketContext:
         project_name=row.get("project_name"),
         robot_type=meta.get("robot_type") or meta.get("robotType", ""),
         fault_code=meta.get("fault_code") or meta.get("faultCode", ""),
-        diagnosis_hypotheses=meta.get("diagnosis_hypotheses"),
-        diagnosis_ruled_out=meta.get("diagnosis_ruled_out"),
-        diagnosis_collected_info=meta.get("diagnosis_collected_info"),
+        diagnosis_hypotheses=(meta.get("diagnosis") or {}).get("hypotheses"),
+        diagnosis_ruled_out=(meta.get("diagnosis") or {}).get("ruled_out"),
+        diagnosis_collected_info=(meta.get("diagnosis") or {}).get("collected_info"),
+        diagnosis_problem_summary=(meta.get("diagnosis") or {}).get("problem_summary"),
     )
 
 

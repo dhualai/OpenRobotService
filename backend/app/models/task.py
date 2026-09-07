@@ -18,6 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, mapped_column, Mapped
+from sqlalchemy.ext.hybrid import hybrid_property
 
 from app.models.base import Base
 
@@ -110,6 +111,19 @@ class Task(Base):
     external_id = Column(String(64), nullable=True, index=True, comment="外部系统任务ID")
     external_url = Column(String(512), nullable=True, comment="外部系统跳转链接")
 
+    # --- 当前步骤（关联 task_steps 模板，冗余存名称/结束时间便于直接展示）---
+    curr_step_id = Column(BigInteger, nullable=True, index=True, comment="当前步骤ID")
+    curr_step_name = Column(String(128), nullable=True, comment="当前步骤名称")
+    curr_step_endtime = Column(DateTime, nullable=True, comment="当前步骤结束时间")
+    step_last_updated_by = Column(String(100), nullable=True, comment="最近一次改step的操作人：assigned/creator侧标识，用于判定待处理回合")
+    step_last_updated_at = Column(DateTime, nullable=True, comment="最近一次step更新时间")
+    step_negotiation_round = Column(Integer, nullable=False, server_default="0", default=0, comment="协商回合数：初始0，对手回应一次+1")
+    step_phase_round = Column(Integer, nullable=False, server_default="0", default=0, comment="阶段回合数：complete-step 推进+1，初始0=第一轮；0时协商节点不受sequence下限限制")
+    curr_step_agreed = Column(Boolean, nullable=False, server_default="0", default=False,
+                              comment="当前协商节点是否已协商一致：respond 置 True；negotiate-step/complete-step 重置为 False")
+    escalate_count = Column(Integer, nullable=False, server_default="0", default=0,
+                        comment="升级上报次数：>0 表示已升级，协商回合重置为1且不再受限")
+
     __table_args__ = (
         # MySQL 允许多个 NULL，故 manual 任务（external_id=NULL）不冲突
         UniqueConstraint("source", "external_id", name="uq_task_source_external"),
@@ -117,6 +131,13 @@ class Task(Base):
 
     def __repr__(self):
         return f"<Task(id={self.id}, title='{self.title}', status={self.status})>"
+
+    @hybrid_property
+    def step_neg_max_rounds(self) -> int:
+        """协商回合上限。工单未指定专属上限时读取全局配置。"""
+        # 延迟引入避免循环依赖
+        from app.core.config import settings as _s
+        return _s.TICKET_STEP_MAX_NEGOTIATION_ROUNDS
 
     @property
     def is_open(self) -> bool:
@@ -263,3 +284,20 @@ class TaskOperationLog(Base):
 
     def __repr__(self):
         return f"<TaskOperationLog(id={self.id}, task_id={self.task_id}, op={self.operation_type})>"
+
+
+class TaskStep(Base):
+    """任务步骤模板：按 task_type 预定义的处理步骤（每类型可有多步）。
+
+    与 Task.task_type 共用 TaskType 枚举语义；用于驱动标准化处理流程
+    （如创建任务时按类型展开步骤清单）。
+    """
+    __tablename__ = "task_steps"
+
+    id = Column(BigInteger, primary_key=True, index=True, comment="步骤ID")
+    task_type: Mapped[TaskType] = mapped_column(SQLEnum(TaskType), nullable=False, index=True, comment="任务类型")
+    step_name = Column(String(128), nullable=False, comment="步骤名称")
+    sequence = Column(Integer, nullable=False, server_default="0", comment="当前步骤在当前任务类型下的序号")
+
+    def __repr__(self):
+        return f"<TaskStep(id={self.id}, task_type={self.task_type}, sequence={self.sequence}, step_name='{self.step_name}')>"

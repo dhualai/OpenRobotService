@@ -10,6 +10,7 @@ from datetime import datetime
 
 from app.core.config import settings
 from app.core.database import db_manager, UserDB
+from app.models.delivery import UNDERTAKE_PENDING, UNDERTAKE_YES
 from app.modules.admin.services.project_service import project_service
 from app.services.identity_service import IdentityService
 
@@ -56,6 +57,50 @@ def _ensure_contact_person_role(project_id: str, user_id: str) -> bool:
     return ok
 
 
+def _to_int(value: Any) -> Optional[int]:
+    """将企业微信字段值转 int；空值或非数字返回 None。
+
+    与前端 applyLiveToProject 中 Number(v) & isFinite 的处理保持一致，
+    非数字值（如 'N/A'、'待定'）一律落 None，不污染数据库。
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_str(value: Any) -> Optional[str]:
+    """将企业微信字段值规范化为字符串。
+
+    flatten_value 对图片/附件/位置等字段会"保留原结构"（list of dict 或 dict），
+    这些值直接传给 SQLAlchemy 的 String 列会报 "dict can not be used as parameter"，
+    这里统一兜底：
+      - None / 空字符串 / 空白 → None（让 sync_projects 的 update_data 过滤掉，不覆盖 DB）
+      - str → trim 后非空返回
+      - int/float/bool → str()
+      - list → 取首个非空 str 元素（flatten 已处理过文本/选项/成员，这里只兜底 list of str）
+      - dict / list of dict → None（非字符串列应有的值，丢弃）
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        return s or None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+        return None
+    # dict / 其他类型 → 不属于字符串列，丢弃
+    return None
+
+
 WECOM_PROJECT_API_URL = "https://usp.ep-zl.com/p/api/ai/wecom/projects"
 
 STATUS_MAP = {
@@ -85,42 +130,67 @@ CATEGORY_MAP = {
 
 
 def map_wecom_record_to_project(record: Dict[str, Any]) -> Dict[str, Any]:
-    """将企业微信项目记录映射为数据库 Project 模型字段。"""
+    """将企业微信项目记录映射为数据库 Project 模型字段。
+
+    所有字符串列统一经 _to_str 兜底——企微 flatten_value 对图片/附件/位置等字段会
+    保留 list of dict / dict 原结构，直接传给 SQLAlchemy 会报
+    "dict can not be used as parameter"；这里一律降级为 None 不污染 DB。
+    """
     values = record.get("values", {})
-    
+
     project_code = str(values.get("项目编号", record.get("record_id", "")))
     lifecycle = values.get("项目生命周期", "")
-    
-    contact_person = values.get("调度对接人", "")
+
+    contact_person = _to_str(values.get("调度对接人")) or ""
+
+    # name 列在 DB 上为 NOT NULL，企微记录可能存在但值为 None，这里兜底
+    name = _to_str(values.get("项目名称")) or project_code or "未命名项目"
+
+    # project_summary 由两个字段拼接，先各自 _to_str 再拼，避免把 dict 带进 f-string
+    scheme_name = _to_str(values.get("方案项目命名")) or ""
+    vehicle_info = _to_str(values.get("车型&车数")) or ""
+    project_summary = f"{scheme_name} - {vehicle_info}".strip(" -") or None
 
     return {
         "project_code": project_code,
-        "name": values.get("项目名称", ""),
-        "description": values.get("承接描述", ""),
+        "name": name,
+        "description": _to_str(values.get("承接描述")),
         "contact_person": contact_person,
         "contact_person_id": _resolve_contact_person_id(contact_person),
-        "status": STATUS_MAP.get(lifecycle, lifecycle) or "待开始",
-        "expected_trend": "",
+        "status": _to_str(STATUS_MAP.get(lifecycle, lifecycle)) or "待开始",
+        # 以下字段与前端 WECOM_VALUE_MAP 一一对应（ProjectDetail.tsx#L117-L148）
+        "expected_trend": _to_str(values.get("预计走向")),
+        "personnel_plan": _to_str(values.get("人员计划")),
+        "deployment_date": _to_str(values.get("预计AGV下线时间")),
+        "deployment_version": _to_str(values.get("部署版本")),
+        "recent_delivery_date": _to_str(values.get("更新时间")),
+        "recent_delivery_content": _to_str(values.get("车型&车数")),
+        "final_delivery_date": _to_str(values.get("最终交付时间")),
+        "project_summary": project_summary,
+        "task_execution_status": _to_str(values.get("任务执行情况")),
+        "internal_code": _to_str(values.get("内部编号")),
+        # 项目区域可能是 location 类型，企微返回 dict，必须 _to_str 兜底
+        "project_region": _to_str(values.get("项目区域/地点")) or _to_str(values.get("项目区域")),
+        "total_vehicle_count": _to_int(values.get("总车数")),
+        "controller_vendor": _to_str(values.get("控制器选择")),
+        "server_deployment_status": _to_str(values.get("服务器部署")),
+        "special_attention": _to_str(values.get("特别关注")),
+        "risk_task_description": _to_str(values.get("风险和任务描述")),
+        "management_strategy": _to_str(values.get("项目管理策略")),
+        "risk_carrying_type": _to_str(values.get("风险承接")),
+        # 以下字段不在企微映射列，保留默认初始化值（空值会被 sync_projects 过滤，不覆盖 DB）
         "issues": 0,
         "risks": 0,
-        "personnel_plan": "",
         "risk_list": "",
-        "deployment_date": values.get("预计AGV下线时间", ""),
-        "deployment_version": "",
-        "recent_delivery_date": values.get("更新时间", ""),
-        "recent_delivery_content": values.get("车型&车数", ""),
-        "final_delivery_date": "",
-        "project_summary": f"{values.get('方案项目命名', '')} - {values.get('车型&车数', '')}",
-        "task_execution_status": "",
         "field_links": None,
-        "category_basis": CATEGORY_MAP.get(values.get("项目类型", ""), "重要紧急"),
-        "project_type": values.get("项目类型") or None,
-        "system_id": record.get("record_id", ""),
-        "settlement_period": values.get("业绩核算期") or None,
-        "sales": values.get("销售") or None,
-        "pre_sales": values.get("售前方案") or None,
-        "project_manager": values.get("项目经理") or None,
-        "field_engineer": values.get("实施工程师") or None,
+        "category_basis": CATEGORY_MAP.get(_to_str(values.get("项目类型")) or "", "重要紧急"),
+        "project_type": _to_str(values.get("项目类型")),
+        "settlement_period": _to_str(values.get("业绩核算期")),
+        "sales": _to_str(values.get("销售")),
+        "pre_sales": _to_str(values.get("售前方案")),
+        "project_manager": _to_str(values.get("项目经理")),
+        "field_engineer": _to_str(values.get("实施工程师")),
+        "undertake_status": _to_str(values.get("是否承接")) or UNDERTAKE_YES,
     }
 
 
@@ -168,17 +238,27 @@ class WecomProjectAdapter:
         authorized = 0
         errors = []
         filtered = 0
+        pending = 0
 
         for record in records:
             try:
                 values = record.get("values", {})
-                if values.get("是否承接") != "是":
+                # 「是」入库为正式项目；「待定」也入库但仅供仪表盘月柱图浅色段统计，
+                # 其余项目列表/统计一律不含（见 project_service 的 include_pending 开关）；
+                # 「否」及空值仍旧整条丢弃。
+                undertake_status = values.get("是否承接")
+                if undertake_status not in (UNDERTAKE_YES, UNDERTAKE_PENDING):
                     filtered += 1
                     continue
+                is_pending = undertake_status == UNDERTAKE_PENDING
+                if is_pending:
+                    pending += 1
 
                 project_data = map_wecom_record_to_project(record)
                 project_code = project_data["project_code"]
-                contact_person_id = project_data.get("contact_person_id", "")
+                # 待定项目不做自动授权：授权即意味着对接人能在各处看到该项目，
+                # 与「待定只进月柱图」的口径冲突；待其转为「是」后下次同步补授权。
+                contact_person_id = "" if is_pending else project_data.get("contact_person_id", "")
 
                 existing_project = project_service.get_project(project_code)
 
@@ -210,6 +290,7 @@ class WecomProjectAdapter:
         return {
             "fetched": len(records),
             "filtered": filtered,
+            "pending": pending,
             "created": created,
             "updated": updated,
             "skipped": skipped,

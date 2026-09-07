@@ -6,9 +6,8 @@
 """
 import asyncio
 import json
-import re
 import time
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
 
 from ai.config import get_ai_config
@@ -32,22 +31,6 @@ class MemoryManager:
 
     优先 Redis，连接失败自动降到内存模式。
     """
-
-    PRONOUN_PATTERNS = [
-        (r"然后呢", "继续上一步"),
-        (r"接着", "继续上一步"),
-        (r"下一步", "下一步"),
-        (r"还有呢", "继续"),
-        (r"刚才说的", "上一条"),
-        (r"那个", "上一条"),
-        # 数字选择（分流/列表选择场景）："2"、"选1"、"第一个" 等
-        (r"^\d+$", "选择列表项"),
-        (r"选\d+", "选择列表项"),
-        (r"第\d+个", "选择列表项"),
-        (r"第[一二三四五六七八九十]个", "选择列表项"),
-        (r"是\d+", "确认列表项"),
-        (r"我选\d+", "选择列表项"),
-    ]
 
     def __init__(self, redis_url: str, max_turns: int = 10, ttl: int = 0):
         self.redis_url = redis_url
@@ -176,49 +159,6 @@ class MemoryManager:
         memory = await self.get_memory(session_id)
         turns = memory.turns[-self.max_turns:] if max_turns is None else memory.turns[-max_turns:]
         return [{"role": t["role"], "content": t["content"]} for t in turns]
-
-    async def resolve_pronoun(self, query: str, session_id: str) -> Tuple[str, bool]:
-        """
-        指代消解：检测"然后呢""还有呢"等省略表达，用上文补全为完整查询。
-
-        用于提升检索精度——"然后呢"本身无法命中知识库，
-        结合上文用户问题和助手回答后可以构造出有意义的检索词。
-        """
-        # 检测是否匹配指代模式
-        matched_pattern = None
-        for pattern, _ in self.PRONOUN_PATTERNS:
-            if re.search(pattern, query):
-                matched_pattern = pattern
-                break
-        if not matched_pattern:
-            return query, False
-
-        memory = await self.get_memory(session_id)
-        turns = memory.turns
-
-        # 找到最近一轮用户消息和助手回复（跳过当前 query 本身）
-        prev_user = None
-        prev_assistant = None
-        for t in reversed(turns):
-            if t["role"] == "user" and prev_user is None:
-                prev_user = t["content"]
-            elif t["role"] == "assistant" and prev_assistant is None:
-                prev_assistant = t["content"]
-            if prev_user and prev_assistant:
-                break
-
-        if not prev_user:
-            return query, False
-
-        # 用上文补全：把用户省略表达和对话上下文拼接成可检索的完整查询
-        parts = [f"用户追问：{query}"]
-        parts.append(f"用户原问题：{prev_user[:300]}")
-        if prev_assistant:
-            # 截取助手回答的要点（去掉过长的细节）
-            assistant_brief = prev_assistant[:400]
-            parts.append(f"助手此前回答：{assistant_brief}")
-        resolved = "；".join(parts)
-        return resolved, True
 
     async def clear(self, session_id: str) -> None:
         client = await self._ensure_redis()

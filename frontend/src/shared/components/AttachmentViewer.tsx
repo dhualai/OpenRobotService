@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import ImageLightbox from './ImageLightbox';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { urlTransformAllowDataImage } from '@/shared/utils/markdown';
+import { readStored } from '@/stores/authStorage';
 import { setupWechatFilePreview } from '@/shared/utils/wechatJsSdk';
 // pdf.js 体积大（主库 + worker 约 1.5MB），懒加载：仅在用户真正点开 PDF 附件时才下载，
 // 避免随 AttachmentViewer 被多路由静态引入而进入首屏 bundle。
@@ -43,6 +45,34 @@ function formatSize(bytes?: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * 带鉴权 token 的附件下载：用 fetch 拉取 blob 后用 <a download> 触发浏览器下载。
+ * 不能用 window.open —— 浏览器原生导航请求带不上 SPA 的 Bearer token，会被后端/网关 401/403；
+ * 且后端固定返回 Content-Disposition: inline，window.open 会「打开」而非「下载」文件。
+ * 同源请求（前端与 /p/api 同域）不受 CORS 限制，可直接带 Authorization 头。
+ */
+async function downloadViaFetch(url: string, filename: string) {
+  // 读当前环境命名空间 key（t_/p_），未迁移前回退 legacy key
+  const token = readStored('AUTH_TOKEN');
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const resp = await fetch(url, { headers, credentials: 'include' });
+  if (!resp.ok) {
+    // 回退：新标签打开（让浏览器自行处理，可能触发登录流程）
+    window.open(url, '_blank', 'noopener,noreferrer');
+    throw new Error(`下载失败: ${resp.status}`);
+  }
+  const blob = await resp.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = filename || 'download';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
 }
 
 /**
@@ -165,7 +195,9 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
                   if (wechat) {
                     window.location.href = dl;
                   } else {
-                    window.open(dl, '_blank', 'noopener,noreferrer');
+                    void downloadViaFetch(dl, item.filename).catch((e) =>
+                      console.error('[AttachmentViewer] 下载失败', e),
+                    );
                   }
                 }}
               >
@@ -213,7 +245,9 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
                   // （downloadUrl 已携带 token，浏览器打开不会落到 SPA 404 → 微信 OAuth 重定向）。
                   window.location.href = dl;
                 } else {
-                  window.open(dl, '_blank', 'noopener,noreferrer');
+                  void downloadViaFetch(dl, item.filename).catch((e) =>
+                    console.error('[AttachmentViewer] 下载失败', e),
+                  );
                 }
               }}
             >
@@ -237,7 +271,12 @@ export default function AttachmentViewer({ item, onClose }: { item: AttachmentVi
               <div className="attachment-viewer__hint attachment-viewer__hint--error">预览失败：{mdError}</div>
             ) : (
               <div className="markdown-body md-content attachment-viewer__md">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{mdText}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  urlTransform={urlTransformAllowDataImage}
+                >
+                  {mdText}
+                </ReactMarkdown>
               </div>
             ))}
           {(kind === 'other' || kind === 'office') && (

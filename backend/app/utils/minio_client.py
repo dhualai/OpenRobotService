@@ -11,6 +11,37 @@ from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
 
+# ── 本地经 nginx 代理访问 MinIO 时，被拦截后缀的绕过（与 ai/core/minio_client.py 一致）──
+# 服务器 nginx 存在 `location ~* \.(php|py|pl|sh|cgi|ini|conf|sql|bak|tar|gz|zip|log)$ { deny all; }`
+# 本地开发为远程连生产 MinIO 把 MINIO_API_PREFIX 设为 /minio-api（经 nginx /minio-api/ 代理），
+# 对象名以 .zip/.log/.gz/.tar 等结尾时，multipart 初始化请求会被 nginx 403 拦截。
+# 仅当 MINIO_API_PREFIX 非空（即本地/经 nginx 代理；生产直连 prefix 为空）时，给被拦截后缀的
+# object key 追加《.localproxy》安全后缀，使 URL 不再以 .zip 等结尾而绕开拦截；生产直连不生效。
+_BLOCKED_SUFFIXES = (
+    ".php", ".py", ".pl", ".sh", ".cgi", ".ini", ".conf",
+    ".sql", ".bak", ".tar", ".gz", ".zip", ".log",
+)
+_LOCAL_SAFE_SUFFIX = ".localproxy"
+
+
+def _via_proxy() -> bool:
+    """是否经 nginx 反向代理访问 MinIO（MINIO_API_PREFIX 非空；生产直连为空则 False）。"""
+    return bool(getattr(settings, "MINIO_API_PREFIX", "") or "")
+
+
+def _local_safe_key(object_name: str) -> str:
+    """仅经 nginx 代理（生产直连 prefix 为空）时，对被拦截后缀的 object key 追加安全后缀；否则原样返回。
+
+    例如 xxx.zip → xxx.zip.localproxy（URL 不再以 .zip 结尾，绕开 nginx deny all）。
+    上传/读取统一走此归一化，保证对象名一致、能正常读写。
+    """
+    if not _via_proxy():
+        return object_name
+    low = object_name.lower()
+    if any(low.endswith(s) for s in _BLOCKED_SUFFIXES) and not low.endswith(_LOCAL_SAFE_SUFFIX):
+        return object_name + _LOCAL_SAFE_SUFFIX
+    return object_name
+
 
 class MinIOClient:
     _instance: Optional['MinIOClient'] = None
@@ -80,7 +111,7 @@ class MinIOClient:
         object_name = '/'.join(object_path.split('/')[1:])
         return self._with_api_prefix(self.client.presigned_get_object(
             bucket_name,
-            object_name,
+            _local_safe_key(object_name),
             expires=timedelta(minutes=expires_minutes)
         ))
 
@@ -93,7 +124,7 @@ class MinIOClient:
         object_name = '/'.join(object_path.split('/')[1:])
         return self._with_api_prefix(self.client.presigned_put_object(
             bucket_name,
-            object_name,
+            _local_safe_key(object_name),
             expires=timedelta(minutes=expires_minutes)
         ))
 
@@ -108,7 +139,7 @@ class MinIOClient:
             object_name = '/'.join(object_path.split('/')[1:])
             self.client.fput_object(
                 bucket_name,
-                object_name,
+                _local_safe_key(object_name),
                 file_path,
                 content_type=content_type
             )
@@ -130,7 +161,7 @@ class MinIOClient:
             file_obj = BytesIO(file_bytes)
             self.client.put_object(
                 bucket_name,
-                object_name,
+                _local_safe_key(object_name),
                 file_obj,
                 len(file_bytes),
                 content_type=content_type
@@ -149,7 +180,7 @@ class MinIOClient:
         try:
             bucket_name = object_path.split('/')[0]
             object_name = '/'.join(object_path.split('/')[1:])
-            self.client.remove_object(bucket_name, object_name)
+            self.client.remove_object(bucket_name, _local_safe_key(object_name))
             return True
         except S3Error as e:
             print(f"删除文件失败: {e}")
@@ -177,7 +208,7 @@ class MinIOClient:
         try:
             bucket_name = object_path.split('/')[0]
             object_name = '/'.join(object_path.split('/')[1:])
-            return self.client.stat_object(bucket_name, object_name)
+            return self.client.stat_object(bucket_name, _local_safe_key(object_name))
         except S3Error as e:
             print(f"获取文件信息失败: {e}")
             return None

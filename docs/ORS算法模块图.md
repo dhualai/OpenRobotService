@@ -75,7 +75,7 @@ Step 7  规则兜底决策（auto / recommend / fallback 阈值判定）
 
 | 组件目录 | 职责 |
 |------|------|
-| `recall/` | LlmRecall(L1) · SemanticRecall(L2) · HistoryRecall(L3-A 相似工单) + ExpertiseRecall(L3-B 问题域) |
+| `recall/` | LlmRecall(L1) · HistoryRecall(L3-A 相似工单) + ExpertiseRecall(L3-B 问题域) |
 | `ranking/` | Ranker 三路加权精排 · LlmDecision 综合决策 · FallbackDecision 规则兜底 |
 | `filtering/` | department_filter 部门三大类硬过滤（硬件/车端软件/调度） |
 | `sync/` | engineers_sync 人员画像（users 表+4字段）· history_sync 历史工单同步 · history_indexer 历史向量索引 |

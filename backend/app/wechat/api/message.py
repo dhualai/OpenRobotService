@@ -4,6 +4,7 @@ from app.wechat.schemas.message import SendMessageRequest, BroadcastMessageReque
 from app.wechat.services.wechat_service import wechat_service
 from app.wechat.services.permission_service import PermissionService
 from app.wechat.api.dependencies import admin_auth
+from app.services.user_service import user_service
 import logging
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,31 @@ async def send_notification_core(payload: dict, token: str = None):
             try:
                 title = "通知消息"
                 
-                open_id = users_dict.get(user_name, {"id": user_name})["id"]
+                # users_dict 仅含 user_service.get_user_list 默认分页(limit=100)内的用户，
+                # 命中失败时按 username 查库取真实 id，避免把 username（形如 wechat_xxx）
+                # 误当 open_id 推给微信触发 errcode 40003 invalid openid。
+                user_info = users_dict.get(user_name)
+                if not user_info:
+                    user_detail = user_service.get_user_detail(user_name)
+                    if user_detail:
+                        user_info = {
+                            'username': user_detail['username'],
+                            'name': user_detail.get('name') or user_name,
+                            'id': user_detail['id'],
+                        }
+                        # 缓存到 users_dict，本次发送后续 .get(user_name) 均可命中真实 name
+                        users_dict[user_name] = user_info
+                if not user_info or not user_info.get('id'):
+                    logger.warning(f'用户 {user_name} 未找到或缺少有效 id，跳过微信推送')
+                    return {
+                        "name": user_name,
+                        "user_name": user_name,
+                        "status": "failed",
+                        "platform": "wechat",
+                        "error_code": "NO_OPEN_ID",
+                        "error_message": f'用户 {user_name} 未绑定微信，无法推送'
+                    }
+                open_id = user_info['id']
 
                 if request.msg_type == "link":
                     description = request.link.content

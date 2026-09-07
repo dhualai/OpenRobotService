@@ -12,11 +12,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { TaskRoomSocket, type CommentPayload, type WsEvent, type AiProgressTodo, type ReadRecord } from '@/api/ws';
 import type { DiscussionComment } from '@/shared/components/DiscussionPanel';
+import type { ReadRecordItem } from '@/api/taskRead';
 
 export interface TaskUpdatedPatch {
   status?: string;
   assigned_to?: string | null;
   assigned_to_name?: string | null;
+  updated_at?: string | null;
 }
 
 /** 在线成员（按用户去重，含头像） */
@@ -51,7 +53,16 @@ export function useTaskCommentsWS(
   typingUser: string | null;
   readMap: Record<string, number>;
   sendTyping: (value: boolean) => void;
-  sendRead: (lastReadCommentId: number, commentIds?: number[]) => void;
+  /** 已读上报：仅在 WS 已 OPEN 时真正写入 socket 并返回 true；
+   *  未连接时返回 false（调用方应改走 REST 兜底，避免帧被丢弃后永不重试）。 */
+  sendRead: (lastReadCommentId: number, commentIds?: number[]) => boolean;
+  /** WS 当前是否可写（用于决定走 WS 还是 REST 兜底） */
+  isWsOpen: () => boolean;
+  /** WS 就绪序号：每次收到服务端 welcome（含断线重连）自增。
+   *  调用方监听其变化触发已读补报 —— 这是「重连后不漏报」的关键。 */
+  readySeq: number;
+  /** 合并外部（REST 按需拉取）拿到的单条评论已读名单 */
+  mergeReadRecords: (commentId: string | number, records: ReadRecordItem[]) => void;
   readRecords: Record<string, ReadRecord[]>;
   deletedIds: Set<string>;
 } {
@@ -65,6 +76,9 @@ export function useTaskCommentsWS(
   // 同步维护 ref（合并基线时用，避免闭包旧值）+ state（驱动引用块「已删除」展示重渲染）。
   const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
   const deletedIdsRef = useRef<Set<string>>(new Set());
+  // WS 就绪序号：welcome 到达（含断线重连）时自增。
+  // 用序号而非布尔值，保证「每次重连」都是一个可监听的变化事件。
+  const [readySeq, setReadySeq] = useState(0);
 
   const socketRef = useRef<TaskRoomSocket | null>(null);
   const currentUserRef = useRef(options?.currentUser);
@@ -106,6 +120,8 @@ export function useTaskCommentsWS(
           setOnline(e.online || []);
           setReadMap(e.read_map || {});
           setReadRecords(e.read_records || {});
+          // 连接就绪（含断线重连）→ 通知调用方补发未确认的已读
+          setReadySeq((n) => n + 1);
           break;
         case 'presence':
           setOnline(e.online || []);
@@ -139,21 +155,28 @@ export function useTaskCommentsWS(
           if (typeof e.last_read_comment_id === 'number') {
             setReadMap((r) => ({ ...r, [e.username]: e.last_read_comment_id as number }));
           }
-          // 名单增量：将本次广播的 records 合并进对应 comment_id 的名单（按 username 去重）
+          // 名单增量：合并进对应 comment_id 的名单；同 username 已存在则用新的 read_at
+          // 覆盖（后端 upsert 后每次阅读都会广播），保证「之前的消息后来被重读」也能更新显示
           if (e.records && e.records.length > 0) {
             setReadRecords((prev) => {
-              const next: Record<string, ReadRecord[]> = {};
-              for (const key of Object.keys(prev)) next[key] = prev[key];
+              const next: Record<string, ReadRecord[]> = { ...prev };
               for (const rec of e.records!) {
                 const cid = String(rec.comment_id);
-                const existing = next[cid] || [];
-                if (existing.some((x) => x.username === rec.username)) continue;
-                next[cid] = [...existing, {
+                const item: ReadRecord = {
                   username: rec.username,
                   name: rec.name,
                   avatar_resource_id: rec.avatar_resource_id,
                   read_at: rec.read_at ?? new Date().toISOString(),
-                }];
+                };
+                const existing = next[cid] || [];
+                const idx = existing.findIndex((x) => x.username === item.username);
+                if (idx >= 0) {
+                  const updated = existing.slice();
+                  updated[idx] = { ...updated[idx], ...item };
+                  next[cid] = updated;
+                } else {
+                  next[cid] = [...existing, item];
+                }
               }
               return next;
             });
@@ -164,6 +187,7 @@ export function useTaskCommentsWS(
             status: e.status,
             assigned_to: e.assigned_to,
             assigned_to_name: e.assigned_to_name,
+            updated_at: e.updated_at,
           });
           break;
         case 'ai.progress':
@@ -189,9 +213,50 @@ export function useTaskCommentsWS(
     socketRef.current?.sendTyping(value);
   }, []);
 
+  /** 已读上报：WS 已 OPEN 才真正发送并返回 true；未 OPEN 返回 false，
+   *  由调用方改走 REST 兜底（旧实现在此处静默丢弃且不再重试，导致永久漏报）。 */
   const sendRead = useCallback((lastReadCommentId: number, commentIds?: number[]) => {
-    socketRef.current?.sendRead(lastReadCommentId, commentIds);
+    const sock = socketRef.current;
+    if (!sock || !sock.isOpen()) return false;
+    return sock.sendRead(lastReadCommentId, commentIds);
   }, []);
 
-  return { displayComments, online, typingUser, readMap, sendTyping, sendRead, readRecords, deletedIds };
+  const isWsOpen = useCallback(() => socketRef.current?.isOpen() ?? false, []);
+
+  /** 合并外部拉取到的单条评论名单（REST 按需拉取兜底 welcome 快照截断） */
+  const mergeReadRecords = useCallback((commentId: string | number, records: ReadRecordItem[]) => {
+    if (!records || records.length === 0) return;
+    const cid = String(commentId);
+    setReadRecords((prev) => {
+      const next: Record<string, ReadRecord[]> = { ...prev };
+      const existing = next[cid] || [];
+      const byUser = new Map<string, ReadRecord>();
+      for (const r of existing) byUser.set(r.username, r);
+      // 服务端数据为准：同名覆盖，保证「重读刷新 read_at」生效
+      for (const r of records) {
+        byUser.set(r.username, {
+          username: r.username,
+          name: r.name,
+          avatar_resource_id: r.avatar_resource_id,
+          read_at: r.read_at ?? null,
+        });
+      }
+      next[cid] = Array.from(byUser.values());
+      return next;
+    });
+  }, []);
+
+  return {
+    displayComments,
+    online,
+    typingUser,
+    readMap,
+    sendTyping,
+    sendRead,
+    isWsOpen,
+    readySeq,
+    mergeReadRecords,
+    readRecords,
+    deletedIds,
+  };
 }

@@ -138,6 +138,20 @@ def _get_weekly_range(target: date) -> tuple[datetime, datetime]:
     return start, end
 
 
+def _resolve_period_range(
+    period: ReportPeriod, target_date: date
+) -> tuple[datetime, datetime, str]:
+    """根据周期和目标日期解析统计时间范围与展示文案。"""
+    if period == ReportPeriod.DAILY:
+        start, end = _get_daily_range(target_date)
+        return start, end, target_date.strftime("%Y-%m-%d")
+
+    start, end = _get_weekly_range(target_date)
+    monday = target_date - timedelta(days=target_date.weekday())
+    sunday = monday + timedelta(days=6)
+    return start, end, f"{monday.strftime('%Y-%m-%d')} ~ {sunday.strftime('%Y-%m-%d')}"
+
+
 # ── 数据采集 ──────────────────────────────────────────────────────
 
 class ReportDataCollector:
@@ -544,6 +558,20 @@ class ReportGenerator:
             return project_ids or ["__no_project__"]
         return None
 
+    def collect_data(
+        self,
+        period: ReportPeriod,
+        target_date: date,
+        project_code: str | None = None,
+        user_id: str | None = None,
+    ) -> CollectedData:
+        """按报告口径从 MySQL 采集分析数据。"""
+        start, end, date_range_str = _resolve_period_range(period, target_date)
+        project_ids = self._resolve_project_filter(project_code, user_id)
+
+        collector = ReportDataCollector(project_ids=project_ids)
+        return collector.collect_all(start, end, date_range_str)
+
     async def generate(
         self,
         period: ReportPeriod,
@@ -559,22 +587,18 @@ class ReportGenerator:
         - 均不传 → 全局统计
         """
         # 1. 计算时间范围
-        if period == ReportPeriod.DAILY:
-            start, end = _get_daily_range(target_date)
-            date_range_str = target_date.strftime("%Y-%m-%d")
-        else:
-            start, end = _get_weekly_range(target_date)
-            monday = target_date - timedelta(days=target_date.weekday())
-            sunday = monday + timedelta(days=6)
-            date_range_str = f"{monday.strftime('%Y-%m-%d')} ~ {sunday.strftime('%Y-%m-%d')}"
+        _, _, date_range_str = _resolve_period_range(period, target_date)
 
         # 2. 确定数据范围与项目过滤
         scope = self._resolve_scope(project_code, user_id)
-        project_ids = self._resolve_project_filter(project_code, user_id)
 
         # 3. 采集数据
-        collector = ReportDataCollector(project_ids=project_ids)
-        collected = collector.collect_all(start, end, date_range_str)
+        collected = self.collect_data(
+            period=period,
+            target_date=target_date,
+            project_code=project_code,
+            user_id=user_id,
+        )
 
         # 4. 序列化为 JSON 文本
         data_text = json.dumps(collected.model_dump(by_alias=True), ensure_ascii=False, indent=2, default=str)
@@ -616,22 +640,18 @@ class ReportGenerator:
     ) -> AsyncIterator[str]:
         """流式生成报告，逐 chunk 返回文本。"""
         # 1. 计算时间范围
-        if period == ReportPeriod.DAILY:
-            start, end = _get_daily_range(target_date)
-            date_range_str = target_date.strftime("%Y-%m-%d")
-        else:
-            start, end = _get_weekly_range(target_date)
-            monday = target_date - timedelta(days=target_date.weekday())
-            sunday = monday + timedelta(days=6)
-            date_range_str = f"{monday.strftime('%Y-%m-%d')} ~ {sunday.strftime('%Y-%m-%d')}"
+        _, _, date_range_str = _resolve_period_range(period, target_date)
 
         # 2. 确定数据范围与项目过滤
         scope = self._resolve_scope(project_code, user_id)
-        project_ids = self._resolve_project_filter(project_code, user_id)
 
         # 3. 采集数据
-        collector = ReportDataCollector(project_ids=project_ids)
-        collected = collector.collect_all(start, end, date_range_str)
+        collected = self.collect_data(
+            period=period,
+            target_date=target_date,
+            project_code=project_code,
+            user_id=user_id,
+        )
 
         # 4. 序列化
         data_text = json.dumps(collected.model_dump(by_alias=True), ensure_ascii=False, indent=2, default=str)

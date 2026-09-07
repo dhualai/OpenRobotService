@@ -184,6 +184,50 @@ class LogAnalysisResult:
         return "\n".join(parts)
 
 
+# ── 日志索引进程内内存缓存 ─────────────────────────────────────
+# 同一份日志（同一 log_path + 文件未变）在 AI 服务进程运行期间反复讨论时，
+# 复用已建好的 LogIndex，避免大日志每次全量 rebuild（数十秒）。
+# key: log_path；value: (signature, index)。signature 用 (mtime, size) 判断文件是否变化。
+_LOG_INDEX_CACHE: Dict[str, tuple] = {}
+_LOG_CACHE_MAX = 16  # 缓存条目上限，防无限增长
+
+
+def _log_index_signature(path: str) -> tuple:
+    """日志文件签名：mtime + size（文件变化/追加时失效）。"""
+    try:
+        st = os.stat(path)
+        return (st.st_mtime, st.st_size)
+    except Exception:
+        return (0, 0)
+
+
+def _get_cached_log_index(log_path: str) -> Optional[LogIndex]:
+    """从进程内缓存取日志索引；缓存未命中或文件已变（mtime/size 变化）时返回 None。
+
+    索引是日志的稳定物理结构，不因"重新分析"而重建：只要文件没变就一直复用，
+    用户再次要求分析时只重新跑推理（analyze），索引仍走缓存。
+    """
+    hit = _LOG_INDEX_CACHE.get(log_path)
+    if hit is None:
+        return None
+    sig, idx = hit
+    if sig != _log_index_signature(log_path):
+        _LOG_INDEX_CACHE.pop(log_path, None)
+        return None
+    return idx
+
+
+def _cache_log_index(log_path: str, idx: LogIndex) -> None:
+    """把建好的索引写进进程内缓存（LRU 上限淘汰最旧）。"""
+    _LOG_INDEX_CACHE[log_path] = (_log_index_signature(log_path), idx)
+    if len(_LOG_INDEX_CACHE) > _LOG_CACHE_MAX:
+        try:
+            oldest = next(iter(_LOG_INDEX_CACHE))
+            _LOG_INDEX_CACHE.pop(oldest, None)
+        except Exception:
+            pass
+
+
 # ── 子 Agent 主循环 ─────────────────────────────────────────
 
 class LogSubAgent:
@@ -211,22 +255,32 @@ class LogSubAgent:
             self._llm = await get_llm_client()
         if self._index is None:
             try:
+                # 复用进程内缓存：同一份日志 + 文件未变 → 不重新全量 build（快，数十秒省到毫秒）。
+                # 索引是稳定物理结构，不因"重新分析"重建；用户再次要求分析时只重跑 analyze 推理。
+                cached = _get_cached_log_index(self.log_path)
+                _reusing = cached is not None
                 if progress is not None:
                     progress({
                         "id": "log_index",
-                        "description": "正在建立日志索引（大日志需数十秒）",
+                        "description": ("复用已缓存的日志索引" if _reusing
+                                        else "正在建立日志索引（大日志需数十秒）"),
                         "status": "in_progress",
                         "capability": "log_analyze",
                         "phase": "running",
                     })
-                self._index = LogIndex(self.log_path).build()
+                if _reusing:
+                    self._index = cached
+                    logger.info(f"LogSubAgent: 复用已缓存日志索引 path={Path(self.log_path).name}")
+                else:
+                    self._index = LogIndex(self.log_path).build()
+                    _cache_log_index(self.log_path, self._index)
                 self._facts = self._index.discover_facts(top_n=8)
             finally:
                 try:
                     if progress is not None:
                         progress({
                             "id": "log_index",
-                            "description": "日志索引建立完成",
+                            "description": "日志索引就绪",
                             "status": "completed",
                             "capability": "log_analyze",
                             "phase": "done",

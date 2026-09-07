@@ -11,7 +11,10 @@ class Settings(BaseSettings):
     AUTH_STR: str = Field(default="/auth")
     
     APP_ENV: str = Field(default="dev")
-    
+
+    # 服务监听端口（main.py 启动时读取，优先来自 backend/.env）
+    PORT: int = Field(default=8400, description="后端服务监听端口")
+
     SECRET_KEY: str = Field(default="")
     JWT_SECRET: str = Field(default="")
     ALGORITHM: str = Field(default="HS256")
@@ -53,7 +56,7 @@ class Settings(BaseSettings):
             'database': 'helpdesk'
         }
     
-    AI_SERVICE_URL: str = Field(default="http://localhost:8010")
+    AI_SERVICE_URL: str = Field(default="http://localhost:8401")
     
     MINIO_ENDPOINT: str = Field(default="localhost:9000")
     MINIO_ACCESS_KEY: str = Field(default="")
@@ -94,7 +97,14 @@ class Settings(BaseSettings):
     LLM_MODEL_NAME: str = Field(default="deepseek-v4-flash")
     LLM_TEMPERATURE: float = Field(default=0.7)
     LLM_STREAM: bool = Field(default=False)
-    
+    # 二次派单感知增强（M3 高情商回复）：未派到指定人时，tip_detail 是否用 AI 润色。
+    # 默认 False=纯模板（零 LLM 成本、文案确定可复用）；True 时才调 ModelService 润色（失败仍降级模板）。
+    REDISPATCH_TIP_AI_POLISH: bool = Field(default=False)
+
+    # 协商回合上限：接单人↔提单人来回应答最大次数（含首次）。
+    # 达到最后一轮前端展示升级上报，用户点击现有升级上报通道替代管理员介入。
+    TICKET_STEP_MAX_NEGOTIATION_ROUNDS: int = Field(default=3)
+
     CUSTOM_AI_BASE_URL: str = Field(default="")
     CUSTOM_AI_API_PATH: str = Field(default="/api/ask")
     
@@ -104,12 +114,17 @@ class Settings(BaseSettings):
     MQTT_PASSWORD: str = Field(default="")
     
     WECHAT_API_BASE_URL: str = Field(default="https://api.weixin.qq.com")
-    
+
     WECHAT_TOKEN: str = Field(default="")
     WECHAT_APP_ID: str = Field(default="")
     WECHAT_APP_SECRET: str = Field(default="")
     WECHAT_ENCODING_AES_KEY: str = Field(default="")
-    
+
+    # 企业微信群机器人 webhook（消息推送用）。形如：
+    # https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+    # 留空则企业微信通知渠道不启用。
+    WECHAT_WORK_WEBHOOK_URL: str = Field(default="")
+
     SUGGESTIONS_NOTIFICATION_USERS: List[str] = Field(default=[])
     
     MQTT_BROKER: str = Field(default="")

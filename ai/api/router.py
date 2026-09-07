@@ -11,6 +11,7 @@ import os
 import uuid
 import asyncio
 import collections
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Request, Header, HTTPException
@@ -19,7 +20,10 @@ from pydantic import BaseModel, Field
 
 from ai.core.logging import get_logger
 
-logger = get_logger(__name__)
+# name 固定 "AI"（直挂 file handler，propagate=False）：__name__（ai.api.router）
+# 走 root propagate 链路，在 uvicorn reload spawn 的 worker 里实测丢日志
+# （[sse] 行全部不进 ai.log），换 "AI" 后与 pipeline 同链路，已被生产日志验证。
+logger = get_logger()
 
 from ai.core import get_llm_client, get_memory_manager
 from ai.config import get_ai_config
@@ -91,6 +95,13 @@ class QAAskRequest(BaseModel):
     # 后端在流式中把 assistant 回复节流写入同会话 messages 表，刷新/切 Tab 也能从 DB 恢复。
     conversation_id: Optional[int] = Field(default=None, description="前端 call 会话 id（传了才启用后端落库）")
     assistant_message_id: Optional[int] = Field(default=None, description="已预建的 assistant 占位消息 id；不传则由后端创建")
+    # 单写入方+幂等：True 时后端在流式开头确保本轮 user 消息已落库（前端已写则按
+    # client_message_id 幂等复用，未写/写失败则代建），并创建 assistant 占位指向它
+    # （parent_message_id）→ sequence 严格 user < assistant，消息顺序由落库顺序决定，
+    # 与前端网络时序彻底解耦（根治 0827「回答跳到问题上方」）。
+    # 旧前端不传此标志 → 行为完全不变（兼容灰度期新旧版本混跑）。
+    persist_user_message: bool = Field(default=False, description="True=后端确保 user 消息已落库（幂等复用优先，缺失则代建）")
+    client_message_id: Optional[str] = Field(default=None, max_length=64, description="本轮消息幂等键（前端本地乐观气泡 id）")
 
 
 class QASubmitRequest(BaseModel):
@@ -196,10 +207,16 @@ async def ask_question_stream(
 
         # ── 后端增量落库准备（仅当前端传入 conversation_id 时启用）──
         persist_msg_id = qa_req.assistant_message_id
+        user_msg_id: Optional[int] = None
         db = None
 
-        # 先建占位 assistant 消息并通知前端（需在 consumer 侧 yield message_created）。
-        # db 随后交给 producer 独占使用与关闭。
+        # 流式开头统一落库本轮消息（单写入方+幂等）：
+        #   1) user 消息：persist_user_message=True 时确保存在——前端已写（metadata 含
+        #      client_message_id）则复用该行，否则代建。响应丢失后同键重发不会产生重复行。
+        #   2) assistant 占位：parent_message_id 指向 user 行；同 user 下已有占位（上次
+        #      重试遗留）则复用。sequence 按创建顺序递增 → DB 顺序天然「问题在上、回答在下」，
+        #      与前端写入/网络时序彻底解耦。
+        # 旧前端不传 persist_user_message → 走原逻辑（只建 assistant 占位），行为不变。
         if qa_req.conversation_id:
             try:
                 db = AsyncSessionLocal()
@@ -239,12 +256,33 @@ async def ask_question_stream(
 
             async def _do_persist(content: str):
                 nonlocal _persist_tasks
-                try:
-                    async with _persist_lock:
-                        await MessageService.update_message(
-                            db, persist_msg_id, MessageUpdate(content=content))
-                except Exception as e:
-                    logger.warning(f"[sse] 增量落库失败 sid={qa_req.session_id[:8]}: {e}")
+                # 重试 + 换 session：原 session 可能已失效（长流期间连接闲置被断）。
+                # 最终落库失败曾被 warning 吞掉 → DB 停在节流写的部分内容
+                # （0825 事故：补充轮只剩单字「请」）。
+                for attempt, delay in enumerate((0.0, 0.5, 1.0)):
+                    if delay:
+                        await asyncio.sleep(delay)
+                    session = db if attempt == 0 else AsyncSessionLocal()
+                    try:
+                        async with _persist_lock:
+                            await MessageService.update_message(
+                                session, persist_msg_id, MessageUpdate(content=content))
+                        if session is not db:
+                            try:
+                                await session.close()
+                            except Exception:
+                                pass
+                        return
+                    except Exception as e:
+                        logger.warning(f"[sse] 增量落库失败(第{attempt + 1}次) "
+                                       f"sid={qa_req.session_id[:8]} msg_id={persist_msg_id}: {e}")
+                        if session is not db:
+                            try:
+                                await session.close()
+                            except Exception:
+                                pass
+                logger.error(f"[sse] 增量落库最终失败 sid={qa_req.session_id[:8]} "
+                             f"msg_id={persist_msg_id} len={len(content)}")
 
             def _persist_bg(content: str, force: bool = False):
                 """节流落库（后台执行，不阻塞流）。force=True 走同步等待。"""
@@ -265,12 +303,23 @@ async def ask_question_stream(
                         if db is not None and persist_msg_id is not None:
                             _persist_bg(acc)
                     elif ev_type == "status":
-                        # 提交/补信息阶段清空 acc（系统话术会重新流式），保证 DB 与前端展示一致
+                        # 提交/补信息阶段清空 acc（系统话术会重新流式），保证 DB 与前端展示一致。
+                        # 同时刷新节流计时：清空后第一个 token 距上次落库常超 0.8s，
+                        # 不刷新会把「请」这类单字/超短前缀立即写进 DB，若流结束的
+                        # 最终落库失败，DB 终态就停在单字（0825 生产事故）。
                         stage = event.get('data', {}).get('stage', '?')
                         if stage in ('need_info', 'need_fields', 'review', 'submit_failed'):
                             acc = ""
+                            last_persist = time.perf_counter()
                     await queue.put(event)
-                # 流结束：最终落库（完整内容，同步等待保证 DB 有终态）
+                # 流结束：先排空后台节流任务再写终态。
+                # 0825 事故（补充轮只剩单字「已」）：pipeline 兜底路径逐字符 yield，
+                # 首字符触发 _persist_bg 的 create_task，其余字符被节流挡住；
+                # 流结束的最终全量落库先 await 让出事件循环，锁队列里那个单字
+                # task 后拿到锁执行，把完整内容覆盖回首字快照。先 gather 排空，
+                # 保证终态写入永远是最后一次。
+                if _persist_tasks:
+                    await asyncio.gather(*_persist_tasks, return_exceptions=True)
                 if db is not None and persist_msg_id is not None:
                     try:
                         await _do_persist(acc)
@@ -288,7 +337,9 @@ async def ask_question_stream(
                     await queue.put({"event": "title", "data": {"title": _title}})
                 await queue.put(_SENTINEL)
             except Exception as e:
-                # 异常：保留已接收内容
+                # 异常：保留已接收内容（同样先排空后台任务，防止单字快照后写覆盖）
+                if _persist_tasks:
+                    await asyncio.gather(*_persist_tasks, return_exceptions=True)
                 if db is not None and persist_msg_id is not None and acc:
                     try:
                         await _do_persist(acc)
@@ -514,8 +565,14 @@ async def prepare_ticket(
     body: QASubmitRequest,
     pipeline: AiDiagnosisPlatform = Depends(get_pipeline),
 ) -> dict:
+    # 0903 路径统一：prepare 无项目来源时按名下项目出选择题，需要用户身份。
+    # token 解析权威防伪造，失效时用前端显式传的兜底（与 confirm 同一模式）。
+    username, _ = _current_user(request)
+    if not username:
+        username = (getattr(body, "username", "") or "").strip()
     try:
-        result = await pipeline.prepare_ticket(session_id=body.session_id)
+        result = await pipeline.prepare_ticket(
+            session_id=body.session_id, created_by=username)
         return {"code": 0, "data": result}
     except Exception as e:
         logger.error(f"prepare_ticket 异常: {e}", exc_info=True)
@@ -539,6 +596,43 @@ async def confirm_ticket(
         )
     except Exception as e:
         logger.error(f"confirm_ticket 异常: {e}", exc_info=True)
+        return {"code": 1, "message": str(e)}
+
+
+@qa_router.get("/ticket/steps", summary="按工单类型查协商阶段列表（提单弹窗下拉）")
+async def get_ticket_steps(
+    type: str = Query(..., description="工单类型：problem|bug|feature|support|other"),
+) -> dict:
+    """按工单类型返回 task_steps 模板步骤列表（按 sequence 升序）。
+
+    独立接口（不塞进 /ticket/prepare）：task_steps 后续会改成可配置，
+    前端弹窗打开时按类型实时拉取，天然支持配置变更。
+    """
+    try:
+        from app.models.task import TaskStep, TaskType
+        from app.core.db import SessionLocal
+        # 类型校验：非法值直接返回空（前端按空列表处理），避免异常透出
+        try:
+            _type = TaskType(type.strip())
+        except ValueError:
+            return {"code": 0, "data": {"steps": []}}
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(TaskStep)
+                .filter(TaskStep.task_type == _type)
+                .order_by(TaskStep.sequence.asc())
+                .all()
+            )
+            steps = [
+                {"id": r.id, "step_name": r.step_name, "sequence": r.sequence}
+                for r in rows
+            ]
+            return {"code": 0, "data": {"steps": steps}}
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"get_ticket_steps 异常: {e}", exc_info=True)
         return {"code": 1, "message": str(e)}
 
 
@@ -650,6 +744,8 @@ async def _upload_events(
 
     # ── 2. 图片描述：VLM 流式看图 ──
     image_desc = ""
+    _vlm_full = ""   # 要点+回应（用户可见的完整回执）
+    _vlm_reply = ""  # 【回应】段单独留存，供 ack 拼接
     _MIME_MAP = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                  ".png": "image/png", ".bmp": "image/bmp",
                  ".gif": "image/gif", ".webp": "image/webp"}
@@ -670,63 +766,103 @@ async def _upload_events(
         f"non_image_files={len(files) - len(data_uris)}"
     )
     if data_uris:
-        t_vlm = time.perf_counter()
-        llm = await get_llm_client()
-        names = ", ".join(n for n, _ in data_uris)
-        uris = [u for _, u in data_uris]
-        logger.info(
-            f"[upload] 开始VLM调用: session={session_id[:12]}, "
-            f"image_count={len(data_uris)}, names={names}"
-        )
-        # 拉取最近对话上下文，让 VLM 知道图片是在什么排查场景下截的
-        vlm_context = ""
-        try:
-            mgr = await get_memory_manager()
-            mem = await mgr.get_memory(session_id)
-            recent = [t for t in mem.turns[-6:] if t.get("role") in ("user", "assistant")]
-            if recent:
-                lines = []
-                for t in recent:
-                    role = "用户" if t["role"] == "user" else "AI"
-                    c = t.get("content", "")[:200]
-                    lines.append(f"{role}：{c}")
-                vlm_context = "以下是最近的对话记录，供你理解图片背景：\n" + "\n".join(lines) + "\n"
-        except Exception:
-            pass
-        yield {"event": "vision_start", "names": names}
-        prompt = (
-            f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。\n"
-            f"{vlm_context}"
-            f"请用**结构化要点**输出，总字数 ≤ 200 字，只列关键信息：\n"
-            f"- 界面状态 / 关键数据（含错误码、机器人ID、数值等）\n"
-            f"- 发现的异常或提示，用'可能''疑似'措辞\n"
-            f"- 一句话说明可能的故障方向（没有异常则写'画面正常'）\n"
-            f"不要输出长段分析或背景介绍，不要复述 prompt 要求，直接给要点。"
-        )
-        try:
-            async for tok in llm.stream_vision(
-                prompt=prompt,
-                images=uris,
-                system_prompt=(
-                    "你是 AGV/AMR 调度系统的运维专家。看图后只输出关键要点的简短描述，"
-                    "总字数 ≤ 200 字。使用'可能''疑似'等措辞，不下最终结论，不写长段分析。"
-                ),
-                max_tokens=600,
-                temperature=0.3,
-            ):
-                image_desc += tok
-                yield {"event": "vision_token", "token": tok}
-            image_desc = image_desc.strip()
-            vlm_ms = round((time.perf_counter() - t_vlm) * 1000)
-            logger.info(
-                f"[upload] VLM调用完成: session={session_id[:12]}, "
-                f"elapsed={vlm_ms}ms, desc_len={len(image_desc)}, "
-                f"desc_empty={not image_desc}, desc前80字={image_desc[:80]}"
+        # 降级兜底：视觉模型未配置（本地/开发环境常见）时，跳过 VLM 图片分析，
+        # 直接按「无图片分析」走后续回执逻辑，避免 stream_vision 打到空 base_url
+        # 卡在连接超时（connect=45s × 3 次重试）导致前端一直「正在分析图片」。
+        # 生产环境配置了 VISION_BASE_URL / VISION_API_KEY 后，此分支不生效，照常看图。
+        _vision_cfg = get_ai_config()
+        _vision_ready = bool(_vision_cfg.vision_base_url and _vision_cfg.vision_api_key)
+        if not _vision_ready:
+            logger.warning(
+                f"[upload] 视觉模型未配置（VISION_BASE_URL/VISION_API_KEY 缺失），"
+                f"跳过图片分析走降级回执: session={session_id[:12]}, "
+                f"image_count={len(data_uris)}"
             )
-        except Exception as e:
-            logger.error(f"[upload] VLM失败: {e}", exc_info=True)
-            yield {"event": "vision_error", "error": str(e)}
-        yield {"event": "vision_done", "desc": image_desc}
+            _names = ", ".join(n for n, _ in data_uris)
+            # 降级回执：图片已正常保存，仅跳过「看内容」这一步；文案区别于非图片文件
+            # 的「暂不支持解析」提示，避免误导用户以为是图片格式问题。
+            _vlm_full = (
+                f"已收到 {len(saved)} 个文件（{filenames}）。"
+                f"图片已保存，当前环境未启用图片内容分析，"
+                f"后续提单时这些图片会作为接单人处理工单的参考附件。"
+            )
+            yield {"event": "vision_start", "names": _names}
+            yield {"event": "vision_done", "desc": ""}
+        else:
+            t_vlm = time.perf_counter()
+            llm = await get_llm_client()
+            names = ", ".join(n for n, _ in data_uris)
+            uris = [u for _, u in data_uris]
+            logger.info(
+                f"[upload] 开始VLM调用: session={session_id[:12]}, "
+                f"image_count={len(data_uris)}, names={names}"
+            )
+            # 拉取最近对话上下文，让 VLM 知道图片是在什么排查场景下截的
+            vlm_context = ""
+            try:
+                mgr = await get_memory_manager()
+                mem = await mgr.get_memory(session_id)
+                recent = [t for t in mem.turns[-6:] if t.get("role") in ("user", "assistant")]
+                if recent:
+                    lines = []
+                    for t in recent:
+                        role = "用户" if t["role"] == "user" else "AI"
+                        c = t.get("content", "")[:200]
+                        lines.append(f"{role}：{c}")
+                    vlm_context = "以下是最近的对话记录，供你理解图片背景：\n" + "\n".join(lines) + "\n"
+            except Exception:
+                pass
+            yield {"event": "vision_start", "names": names}
+            prompt = (
+                f"分析图片 {names}。这是 AGV/AMR 调度系统的现场照片或界面截图。\n"
+                f"{vlm_context}"
+                f"请用**结构化要点**输出，总字数 ≤ 200 字：\n"
+                f"- 画面类型（调度界面截图 / 设备现场照 / 文档表格 / 其他）\n"
+                f"- 画面上可见的关键内容：界面名称/页面元素、文字标签、数值（含错误码、机器人ID）、"
+                f"指示灯/设备状态——**逐字原样抄录，禁止推测补全**，看不清的写「（模糊）」\n"
+                f"- 仅当画面上有明确的错误提示/告警标识时，原样转述该提示文字；画面正常就写「画面无报错提示」\n"
+                f"要点之后另起一行写「【回应】」加一句话（≤40 字），结合画面要点和上面的对话背景：\n"
+                f"- 背景已明确在排查什么 → 自然接话（如「这个数值确实不对，先记下了」）\n"
+                f"- 看不出用户目的 → 一句话问清意图（要查图上的报错，还是问这个界面怎么操作，还是其他情况）\n"
+                f"- 画面无报错且没有对话背景 → 问「这是遇到什么问题了，还是想了解这个界面的配置？」\n"
+                f"要点部分禁止推测故障原因；回应部分不要给排查步骤、不要下诊断结论。"
+            )
+            try:
+                async for tok in llm.stream_vision(
+                    prompt=prompt,
+                    images=uris,
+                    system_prompt=(
+                        "你是 AGV/AMR 调度系统的图片转述员，只做客观转述、不做分析判断："
+                        "把画面上真实可见的内容（文字、数值、状态、错误码）逐字抄录成要点，"
+                        "总字数 ≤ 200 字。看不清的注明「（模糊）」，禁止编造画面上没有的信息，"
+                        "禁止推测故障原因。最后按 prompt 要求在「【回应】」行用一句话回应用户。"
+                    ),
+                    max_tokens=600,
+                    temperature=0.3,
+                ):
+                    image_desc += tok
+                    yield {"event": "vision_token", "token": tok}
+                image_desc = image_desc.strip()
+                # 【回应】段拆分：要点进 upload_message（主模型只看纯转述，不被回应话术
+                # 带偏），要点+回应进 ack_message（用户看到的回执，图片+反问自然衔接）
+                _vlm_full = image_desc
+                _vlm_reply = ""
+                if "【回应】" in image_desc:
+                    _body, _, _vlm_reply = image_desc.partition("【回应】")
+                    image_desc = _body.strip()
+                    _vlm_reply = _vlm_reply.strip()
+                    _vlm_full = image_desc + (f"\n\n{_vlm_reply}" if _vlm_reply else "")
+                vlm_ms = round((time.perf_counter() - t_vlm) * 1000)
+                logger.info(
+                    f"[upload] VLM调用完成: session={session_id[:12]}, "
+                    f"elapsed={vlm_ms}ms, desc_len={len(image_desc)}, "
+                    f"reply_len={len(_vlm_reply)}, "
+                    f"desc_empty={not image_desc}, desc前80字={image_desc[:80]}"
+                )
+            except Exception as e:
+                logger.error(f"[upload] VLM失败: {e}", exc_info=True)
+                yield {"event": "vision_error", "error": str(e)}
+            yield {"event": "vision_done", "desc": _vlm_full}
     else:
         logger.info(f"[upload] 无图片文件，跳过VLM: session={session_id[:12]}")
         yield {"event": "vision_done", "desc": ""}
@@ -743,14 +879,20 @@ async def _upload_events(
             f"turns={turn_count_before}, has_desc={bool(image_desc)}, "
             f"desc_len={len(image_desc)}"
         )
+        # 上传轮的完整原文随附件条目持久化（metadata 不受 10 轮滑动窗口截断）：
+        # memory 里的上传轮被滑出窗口后，_attach_chat_snapshot 用它重建合成轮
+        # 插回 db 历史——否则附件 md 里丢失「我上传了…」轮，图片内联无锚点
+        # （0825 事故：图全落末尾节）。created_at 口径对齐 MySQL（naive UTC）。
+        _uploaded_at = datetime.utcnow().isoformat(timespec="seconds")
         if image_desc:
-            await mgr.add_turn(session_id, "user",
-                               f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}")
+            upload_message = f"我上传了 {len(saved)} 个文件：{filenames}。图片主要内容为：{image_desc}"
         else:
-            await mgr.add_turn(session_id, "user", f"[上传了附件] {filenames}")
-        # 确认回执（assistant turn）：VLM 描述直接作为回执，非图片则提示暂不支持解析
-        if image_desc:
-            ack_message = image_desc
+            upload_message = f"[上传了附件] {filenames}"
+        await mgr.add_turn(session_id, "user", upload_message)
+        # 确认回执（assistant turn）：要点+【回应】完整版给用户（图片分析后自然
+        # 反问意图）；upload_message 里仍只存纯要点——主模型消费的对话保持纯转述
+        if _vlm_full:
+            ack_message = _vlm_full
         else:
             exts = {Path(f["filename"]).suffix.lower() for f in saved}
             ext_str = "、".join(exts)
@@ -773,6 +915,8 @@ async def _upload_events(
         # 「附件与本单问题是否相关」的唯一内容信号。多图批次共享同一段摘要。
         if image_desc:
             _new = [{**s, "desc": image_desc[:160]} for s in _new]
+        _new = [{**s, "uploaded_at": _uploaded_at, "upload_message": upload_message}
+                for s in _new]
         state["attachments"] = existing + _new
         if image_desc:
             ci = state.get("collected_info", {}) or {}
@@ -1090,6 +1234,32 @@ async def list_pending() -> dict:
         return {"code": 1, "data": {"error": str(e)}}
 
 
+async def _redispatch_tip_for_log(log, user_map) -> Optional[str]:
+    """按需求方案 §3.6 四分支规则生成派单结果提醒的一句话摘要（无提醒返回 None）。
+
+    ⚠️ 内部辅助函数，非路由（路由装饰器在 list_all_tickets 上）。
+    数据源：task_dispatch_log 最新一条（与 backend TicketService._redispatch_tip 口径一致）。
+
+    【日志标签】[redispatch_tip] 每次调用记入口/出口 + 命中分支，便于在 ai.log 定位派单结果提醒链路。
+    """
+    _ltag = "[redispatch_tip]"
+    if log is None:
+        logger.debug(f"{_ltag} log=None，返回 None")
+        return None
+    task_id = getattr(log, "task_id", None)
+    assigned_name = user_map.get(log.assigned_id, log.assigned_id)
+    preferred_id = log.preferred_id
+    preferred_name = user_map.get(preferred_id, preferred_id) if preferred_id else None
+    logger.info(
+        f"{_ltag} task={task_id} 入口: preferred={preferred_name or preferred_id} "
+        f"assigned={assigned_name} pinyin={log.pinyin_match} collision={log.name_collision}"
+    )
+    from app.services.redispatch_tip_service import build_redispatch_tip
+    tip = build_redispatch_tip(log, user_map)
+    logger.info(f"{_ltag} task={task_id} 出口 tip={'有' if tip else 'None'}")
+    return tip
+
+
 @memory_router.get("/tickets/all", summary="历史工单列表")
 async def list_all_tickets(
     skip: int = Query(0, ge=0, description="跳过条数"),
@@ -1135,7 +1305,14 @@ async def list_all_tickets(
                 except ValueError:
                     pass
             if keyword:
-                q = q.filter(Task.title.contains(keyword) | Task.description.contains(keyword))
+                # 工单编号搜索：支持「#123」或「123」形式命中 Task.id
+                kw_id = keyword.lstrip('#')
+                title_desc = Task.title.contains(keyword) | Task.description.contains(keyword)
+                try:
+                    kw_int = int(kw_id)
+                    q = q.filter(title_desc | (Task.id == kw_int))
+                except ValueError:
+                    q = q.filter(title_desc)
             # 排除指定状态（如「除已关闭外全部」）；非法值忽略
             if exclude_status:
                 for s in [x.strip() for x in exclude_status.split(",") if x.strip()]:
@@ -1159,6 +1336,22 @@ async def list_all_tickets(
 
             total = q.count()
             rows = q.order_by(desc(Task.created_at)).offset(skip).limit(limit).all()
+
+            # 二次派单感知增强（M3）：批量取各工单最新一条派单日志 → redispatch_tip（避免 N+1）
+            from app.models.task_dispatch_log import TaskDispatchLog
+            _ids = [r.id for r in rows]
+            tip_map: Dict[int, Optional[str]] = {}
+            if _ids:
+                _log_rows = db.query(TaskDispatchLog).filter(
+                    TaskDispatchLog.task_id.in_(_ids)
+                ).order_by(TaskDispatchLog.task_id.asc(), TaskDispatchLog.dispatch_round.desc()).all()
+                _seen: set = set()
+                for _lr in _log_rows:
+                    if _lr.task_id in _seen:
+                        continue
+                    _seen.add(_lr.task_id)
+                    tip_map[_lr.task_id] = await _redispatch_tip_for_log(_lr, user_map)
+
             items = []
             for r in rows:
                 d = task_to_dict(r)
@@ -1172,13 +1365,17 @@ async def list_all_tickets(
                     "location": d["location"], "robot_type": d["robot_type"],
                     "fault_code": d["fault_code"], "severity": d["severity"],
                     "attachments": d["attachments"], "diagnosis": d["diagnosis"],
-                    "created_at": d["created_at"].isoformat() if d["created_at"] else None,
-                    "updated_at": d["updated_at"].isoformat() if d["updated_at"] else None,
+                    # task_to_dict 已把 created_at/updated_at 显式 isoformat 为字符串（与 deadline_at 同口径），
+                    # 这里直接透传，不再二次 .isoformat()（字符串无此方法，会抛 AttributeError）
+                    "created_at": d["created_at"] or None,
+                    "updated_at": d["updated_at"] or None,
                     # 提单人 / 接单人（username + 展示名），供前端「提单人 → 接单人」指向性 UI 渲染
                     "created_by": created_by,
                     "created_by_name": user_map.get(created_by, created_by) if created_by else "",
                     "assigned_to": assigned_to,
                     "assigned_to_name": user_map.get(assigned_to, assigned_to) if assigned_to else "",
+                    # 二次派单感知增强（M3）：派单结果提醒一句话摘要（无提醒为 null）
+                    "redispatch_tip": tip_map.get(r.id) or None,
                 })
             return {"code": 0, "data": {"total": total, "skip": skip, "limit": limit, "items": items,
                                         "by_status": by_status, "active_total": active_total}}
@@ -1212,12 +1409,6 @@ async def clear_history(session_id: str = Query(..., description="会话 ID")) -
 # 任务 Agent (prefix /api/ai/task)
 # ============================================================
 task_agent_router = APIRouter(prefix="/api/ai/task", tags=["U老师"])
-
-class TaskSubmitAPIRequest(BaseModel):
-    task_id: str = Field(..., description="工单 ID")
-    session_id: str = Field(..., description="对话 session")
-    final_solution: dict = Field(..., description="工程师编辑后的最终方案")
-    resolution: str = Field(default="resolved")
 
 class SummarizeRequest(BaseModel):
     """后端触发摘要扫描（无参数 — U老师 自动扫描所有活跃工单）"""
@@ -1304,26 +1495,31 @@ async def task_summarize(body: SummarizeRequest = SummarizeRequest()) -> dict:
         return {"code": 1, "message": str(e)}
 
 
-@task_agent_router.post("/submit", summary="提交方案")
-async def task_submit(request: Request, body: TaskSubmitAPIRequest) -> dict:
-    try:
-        from ai.agents.AiTaskPlatform import get_task_agent, SolutionDraft
-        agent = await get_task_agent()
-        draft = SolutionDraft(**body.final_solution)
-        result = await agent.submit(
-            task_id=body.task_id,
-            session_id=body.session_id,
-            draft=draft,
-            resolution=body.resolution,
-        )
-        return result
-    except Exception as e:
-        return {"code": 1, "message": str(e)}
-
-
 @task_agent_router.get("/health", summary="健康检查")
 async def task_agent_health() -> dict:
     return {"status": "ok", "service": "ai-task-agent"}
+
+
+class LogCacheCleanupRequest(BaseModel):
+    task_id: str = Field(..., description="工单 ID")  # 该工单已解决/关闭，清理其日志缓存
+
+
+@task_agent_router.post("/log-cache/cleanup", summary="清理工单日志缓存（已解决/已关闭时调用）")
+async def task_log_cache_cleanup(body: LogCacheCleanupRequest) -> dict:
+    """工单已解决/已关闭时，删除该工单的所有日志附件缓存（磁盘目录 + 内存索引）。
+
+    由后端在 `update_ticket_status` 状态变更为 resolved/closed 时调用。
+    """
+    import logging
+    logger = logging.getLogger("TASK_AGENT")
+    try:
+        from ai.core.log_cache import cleanup_task_log_cache
+        removed = cleanup_task_log_cache(body.task_id)
+        logger.info(f"[log-cache/cleanup] task_id={body.task_id}, removed_dirs={removed}")
+        return {"code": 0, "data": {"task_id": body.task_id, "removed_dirs": removed}}
+    except Exception as e:
+        logger.exception(f"[log-cache/cleanup] 失败 task_id={body.task_id}: {e}")
+        return {"code": 1, "message": str(e)}
 
 
 # ============================================================

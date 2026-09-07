@@ -8,6 +8,7 @@
  */
 import { createRequest, getToken } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { readStored } from '@/stores/authStorage';
 
 const request = createRequest(API_CONFIG.TASKS.BASE_URL, '工单服务');
 
@@ -41,6 +42,9 @@ export interface CreateTicketParams {
   customer?: string;
   metadata_info?: Record<string, unknown>;
   tags?: string[];
+  /** 附件列表：字符串为 object_path；dict 为 {path, object_path, filename} 结构（远程截图等）。
+   *  与 tasks.attachments 列约定对齐——详情页读 path，AI 路径去重读 object_path。 */
+  attachments?: Array<string | { path?: string; object_path?: string; filename?: string; [k: string]: unknown }>;
 }
 
 export interface CreatedTicket {
@@ -85,6 +89,56 @@ export const reDispatchTicket = (
     body: JSON.stringify({ preferred_assignee: preferredAssignee, remark: remark || null }),
   });
 
+// ── 二次派单感知增强（M2）：详情 redispatch 子对象类型 + 读取 ──
+export interface RedispatchCandidate {
+  rank: number;
+  engineer_id: string;
+  name: string;
+  department?: string | null;
+  job_level?: number | null;
+  modules?: string[] | null;
+  duty?: string | null;
+  // 画像缺失英文字段（department/job_level/responsibility_modules），供前端权威判定"待补充画像"
+  missing?: string[] | null;
+  scores?: { llm?: number; semantic?: number; history?: number; total?: number } | null;
+  tags?: string[] | null;
+}
+
+export interface RedispatchProfile {
+  dept?: string | null;
+  job_level?: number | null;
+  modules?: string[] | null;
+  duty?: string | null;
+  missing?: string[] | null;
+}
+
+export interface RedispatchResult {
+  assigned_id?: string;
+  assigned_name?: string;
+  preferred_id?: string | null;
+  preferred_name?: string | null;
+  confidence?: number | null;
+  decision_type?: string | null;
+  reasoning?: string | null;
+  profile?: RedispatchProfile | null;
+  matched_pref?: boolean | null;
+  name_collision?: boolean | null;
+  pinyin_match?: boolean | null;
+  tip_detail?: string | null;
+}
+
+export interface TicketRedispatch {
+  dispatch_round?: number;
+  candidates?: RedispatchCandidate[] | null;
+  result?: RedispatchResult | null;
+}
+
+/** 读取工单详情的 redispatch 子对象（R2 候选快照 + R3 结果信息），无记录返回 null */
+export const fetchRedispatch = (ticketId: number | string) =>
+  request<{ redispatch?: TicketRedispatch | null }>(`/${Number(ticketId)}`).then((r) => {
+    return r?.redispatch ?? null;
+  });
+
 /** 评论列表（按工单绑定） */
 export const listComments = (ticketId: number | string) =>
   request<TicketComment[]>(`/${Number(ticketId)}/comments`);
@@ -101,19 +155,23 @@ export const addComment = (
     body: JSON.stringify({ content, is_public: isPublic, attachments }),
   });
 
-/** 上传评论附件（FormData；temp_id 用于随后发评论时关联）。鉴权带 Bearer token */
-export const uploadCommentAttachment = async (file: File, tempId: string): Promise<void> => {
+/** 上传评论附件（FormData；temp_id 用于随后发评论时关联）。鉴权带 Bearer token
+ *  返回 MinIO 上的真实 object_path（如 "helpdesk/temp/xxx.png"），
+ *  前端建单时可直接透传给 createTicket 的 attachments 字段，无需依赖后端进程内存 temp_id 映射。 */
+export const uploadCommentAttachment = async (file: File, tempId: string): Promise<string> => {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('temp_id', tempId);
-  // 优先取 client.ts 内存 token，其次 localStorage；确保与 createRequest 使用同一个 token
-  const token = getToken() || localStorage.getItem('auth_token') || '';
+  // 优先取 client.ts 内存 token，其次环境命名空间 localStorage；确保与 createRequest 使用同一个 token
+  const token = getToken() || readStored('AUTH_TOKEN') || '';
   const res = await fetch(`${API_CONFIG.TASKS.BASE_URL}/comments/attachments`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: formData,
   });
   if (!res.ok) throw new Error(`附件上传失败: ${res.status}`);
+  const data = (await res.json()) as { object_path?: string };
+  return data.object_path || '';
 };
 
 /** 创建系统任务（工单）。返回创建后的工单（含 id）。
@@ -134,6 +192,7 @@ export async function createTicket(params: CreateTicketParams): Promise<CreatedT
       customer: params.customer ?? null,
       metadata_info: params.metadata_info ?? null,
       tags: params.tags ?? null,
+      attachments: params.attachments ?? null,
     }),
   });
 }

@@ -1,7 +1,10 @@
 """人员信息同步服务：从后端 users 表拉取派单人数据。
 
-缓存策略：首次请求或缓存过期时全量同步，TTL 10 分钟。
-用户标识使用 users.id（表主键），与 tasks.created_by / assigned_to 保持一致，避免反复查表。
+缓存策略：更新驱动（update-driven）。
+- 正常缓存 TTL 24h（_CACHE_TTL），平时几乎不查库；
+- 后端保存责任树（画像随 sync_to_user_profiles 变更）后会调用 /api/ai/assigner/reload，
+  通过 invalidate_personnel_cache() 立即失效本缓存，下次派单马上用最新画像。
+用户标识使用 users.id（表主键），与 tasks.created_by / assigned_to 保持一致。
 """
 
 import time
@@ -14,7 +17,8 @@ logger = get_logger("ASSIGNER")
 
 _sync_cache: Optional[List[EngineerProfile]] = None
 _sync_ts: Optional[float] = None
-_CACHE_TTL = 600
+# 更新驱动：长 TTL，靠事件(树保存→reload)失效
+_CACHE_TTL = 86400  # 24h
 
 
 def _fetch_from_users_table() -> list[dict]:

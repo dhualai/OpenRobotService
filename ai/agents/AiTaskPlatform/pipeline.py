@@ -248,9 +248,12 @@ class AiTaskAgent(DiagnoseFlow, DiscussFlow, SummarizeFlow, SolutionFlow):
         return _extract_log_errors_impl(text)
 
     @staticmethod
-    def _extract_log_paths(attachments: list) -> tuple[list[str], list[str]]:
-        """从附件列表提取日志路径（压缩包先解压）。委托 attachments.extract_log_paths。"""
-        return _extract_log_paths_impl(attachments)
+    def _extract_log_paths(attachments: list, task_id: str = "") -> tuple[list[str], list[str]]:
+        """从附件列表提取日志路径（压缩包先解压）。委托 attachments.extract_log_paths。
+
+        传入 task_id 时落到稳定日志缓存目录（跨讨论复用），否则回退临时目录。
+        """
+        return _extract_log_paths_impl(attachments, task_id=task_id or None)
 
     # ============================================================
     # 私有：Prompt 构建 + 解析

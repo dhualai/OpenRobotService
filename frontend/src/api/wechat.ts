@@ -41,11 +41,11 @@ export const USER_SOURCE_LABELS: Record<number, string> = {
 const request = createRequest(API_CONFIG.WECHAT.BASE_URL, 'Wechat');
 
 /**
- * 获取公众号用户增减数据。
- * 注意：微信数据统计有 T+1 延迟，end_date 最早只能到昨日，传今天后端会返回 400 提示。
+ * 获取公众号用户增减数据（读 user_statistics 表：每日凌晨 1:00 定时任务落库的微信渠道明细）。
+ * 查询跨度不限；但数据 T+1 落库，end_date 不能为当天或未来（后端返回 400 提示）。
  */
 export function fetchUserSummary(beginDate: string, endDate: string): Promise<UserSummaryResp> {
-  return request<UserSummaryResp>('/user-summary', {
+  return request<UserSummaryResp>('/user-summary-db', {
     method: 'POST',
     headers: { 'X-API-Key': SYNC_API_KEY },
     body: JSON.stringify({ begin_date: beginDate, end_date: endDate }),
@@ -58,6 +58,8 @@ export interface WechatUserInfo {
   subscribe: number;
   openid: string;
   tagid_list?: number[];
+  /** 关注渠道来源，如 ADD_SCENE_SEARCH（公众号搜索），完整编码见微信官方文档 */
+  subscribe_scene?: string;
   [key: string]: unknown;
 }
 
@@ -69,11 +71,11 @@ export interface BatchUserInfoResp {
 }
 
 /**
- * 批量获取用户信息（不传请求体时后端自动查询 users 表全量 openid）。
- * 用于统计当前用户总数与真实/虚拟用户构成。
+ * 获取当前用户构成（读 user_info 表最新快照：整点快照任务落库的 batch-user-info 返回值，
+ * 最长滞后 1 小时）。subscribe===1 为真实用户，否则为虚拟用户。
  */
 export function fetchBatchUserInfo(): Promise<BatchUserInfoResp> {
-  return request<BatchUserInfoResp>('/batch-user-info', {
+  return request<BatchUserInfoResp>('/batch-user-info-db', {
     method: 'POST',
     headers: { 'X-API-Key': SYNC_API_KEY },
     skipCache: true,

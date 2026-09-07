@@ -3,7 +3,7 @@
 // surface-card 用户卡（状态胶囊 + 职级/部门芯片 + 责任模块芯片 + 职责画像）+ 弹层表单。
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Toast, Loading, Dialog, Popup } from 'tdesign-mobile-react';
+import { Toast, Loading, Dialog, Popup, BackTop } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
@@ -14,6 +14,7 @@ import {
 } from '@/api/profile';
 import type { OrgOption, ProfileFieldOptions } from '@/api/profile';
 import FilterableSelect from '@/shared/components/FilterableSelect';
+import AvatarImg from '@/shared/components/AvatarImg';
 import {
   MacSearch, MacCheck, MacBuilding2, MacClipboardList,
 } from '@/shared/components/macaronIcons';
@@ -48,6 +49,7 @@ interface UserCreateData {
   job_level?: number;
   duty_text?: string;
   status?: string;
+  external_credentials?: Record<string, Record<string, string>>;
 }
 
 interface UserUpdateData {
@@ -539,6 +541,15 @@ export default function UserManage() {
           job_level: form.job_level,
           duty_text: form.duty_text || undefined,
           status: form.status,
+          // 初始化 USP 账户：usp.username 与登录账号一致，usp.password 使用明文，
+          // 由后端 create_user 走 get_password_hash(pbkdf2_sha256) 加密存储，
+          // 与个人中心更新接口保持一致。
+          external_credentials: {
+            usp: {
+              username: form.username,
+              password: form.password,
+            },
+          },
         };
         await request('/users/', {
           method: 'POST',
@@ -638,17 +649,16 @@ export default function UserManage() {
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div style={{ display: 'flex', gap: 12, flex: 1, minWidth: 0 }}>
-                {user.avatar_resource_id ? (
-                  <img
-                    className="mac-user-card__avatar mac-user-card__avatar--img"
-                    src={avatarUrl(user.avatar_resource_id)}
-                    alt={user.name || user.username}
-                  />
-                ) : (
-                  <span className="mac-user-card__avatar mac-user-card__avatar--initial" aria-hidden>
-                    {avatarInitial(user.name, user.username)}
-                  </span>
-                )}
+                <AvatarImg
+                  className="mac-user-card__avatar mac-user-card__avatar--img"
+                  src={user.avatar_resource_id ? avatarUrl(user.avatar_resource_id) : null}
+                  alt={user.name || user.username}
+                  fallback={(
+                    <span className="mac-user-card__avatar mac-user-card__avatar--initial" aria-hidden>
+                      {avatarInitial(user.name, user.username)}
+                    </span>
+                  )}
+                />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
                     <span className="mac-user-card__title">{user.name || user.username}</span>
@@ -918,17 +928,16 @@ export default function UserManage() {
           ) : detailUser ? (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-                {detailUser.avatar_resource_id ? (
-                  <img
-                    className="mac-detail-avatar mac-detail-avatar--img"
-                    src={avatarUrl(detailUser.avatar_resource_id)}
-                    alt={detailUser.name || detailUser.username}
-                  />
-                ) : (
-                  <span className="mac-detail-avatar mac-detail-avatar--initial" aria-hidden>
-                    {avatarInitial(detailUser.name, detailUser.username)}
-                  </span>
-                )}
+                <AvatarImg
+                  className="mac-detail-avatar mac-detail-avatar--img"
+                  src={detailUser.avatar_resource_id ? avatarUrl(detailUser.avatar_resource_id) : null}
+                  alt={detailUser.name || detailUser.username}
+                  fallback={(
+                    <span className="mac-detail-avatar mac-detail-avatar--initial" aria-hidden>
+                      {avatarInitial(detailUser.name, detailUser.username)}
+                    </span>
+                  )}
+                />
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flex: 1, minWidth: 0 }}>
                   <span className="mac-detail-name">{detailUser.name || detailUser.username}</span>
                   {detailUser.name && detailUser.name !== detailUser.username && (
@@ -1205,6 +1214,18 @@ export default function UserManage() {
           </button>
         </div>
       </Popup>
+
+      {/* 一键回到顶部：滚动超过 200px 时出现在右下角；弹层打开时隐藏避免遮挡。
+          底部 TabBar 高约 56px（item 40px + margin 16px）+ 安全区，按钮上移到菜单栏上方，
+          即「后台管理」tab 的垂直上方靠边。 */}
+      {!(editVisible || detailVisible || globalRoleEditVisible || projectRoleEditVisible) && (
+        <BackTop
+          container={() => document.querySelector('.admin-scroll') as HTMLElement}
+          visibilityHeight={200}
+          theme="round"
+          style={{ bottom: 'calc(56px + env(safe-area-inset-bottom) + 12px)' }}
+        />
+      )}
     </div>
   );
 }

@@ -1,6 +1,8 @@
 // 马卡龙月柱状图（对照 macaron MonthBars）：按月展示项目数量，
 // 默认「近一年」13 个月可滑动窗口（当月在最右侧，可向左滑动查看更早月份），
 // 可按年筛选 12 个月。
+// 每根柱子是堆叠的两段：下段=已承接（value，深色），上段=待定（pending_value，同色调更浅），
+// 浅色由 CSS 用 --bar-color 混白得到，柱高按两者之和取，Y 轴上限也按之和计算。
 import { useMemo, useRef, useState, useEffect } from 'react';
 import type { ProjectMonthlyItem } from '@/api/dashboard';
 
@@ -39,18 +41,25 @@ export function ProjectMonthBars({
             year: Number(k.slice(0, 4)),
             month: Number(k.slice(5)),
             value: 0,
+            pending_value: 0,
           },
       );
     }
     return Array.from({ length: 12 }, (_, i) => {
       const k = `${year}-${String(i + 1).padStart(2, '0')}`;
       return (
-        data.find((d) => d.key === k) ?? { key: k, year: year as number, month: i + 1, value: 0 }
+        data.find((d) => d.key === k) ?? {
+          key: k,
+          year: year as number,
+          month: i + 1,
+          value: 0,
+          pending_value: 0,
+        }
       );
     });
   }, [data, year, now]);
 
-  const max = Math.max(...items.map((i) => i.value), 4);
+  const max = Math.max(...items.map((i) => i.value + (i.pending_value ?? 0)), 4);
   const ticks = 4;
   const step = Math.ceil(max / ticks);
   const top = step * ticks;
@@ -73,6 +82,13 @@ export function ProjectMonthBars({
     <div style={style}>
       <div className="mac-monthbars__head">
         <span className="mac-monthbars__head-label">按月统计</span>
+        {/* 图例：说明柱子上方浅色段是「是否承接=待定」的项目 */}
+        <span className="mac-monthbars__legend">
+          <i className="mac-monthbars__legend-dot" />
+          已承接
+          <i className="mac-monthbars__legend-dot mac-monthbars__legend-dot--pending" />
+          待定
+        </span>
         <select
           value={String(year)}
           onChange={(e) => setYear(e.target.value === 'recent' ? 'recent' : Number(e.target.value))}
@@ -99,7 +115,14 @@ export function ProjectMonthBars({
             {items.map((it) => {
               const isActive = it.key === active;
               const isFuture = it.key > currentKey;
-              const h = Math.round((it.value / top) * 130);
+              const pendingValue = it.pending_value ?? 0;
+              const total = it.value + pendingValue;
+              // 总高含空月份的 4px 占位；两段按占比切分总高（而非各自独立换算），
+              // 保证像素和恒等于总高。待定为 0 时整根都是已承接色，空月份占位同理；
+              // 待定不为 0 时至少留 2px，避免只有 1 个待定项目时看不见。
+              const h = Math.max(Math.round((total / top) * 130), 4);
+              const hPending = pendingValue > 0 ? Math.max(Math.round((pendingValue / total) * h), 2) : 0;
+              const hValue = h - hPending;
               return (
                 <button
                   key={it.key}
@@ -114,20 +137,26 @@ export function ProjectMonthBars({
                   <span className="mac-monthbars__barwrap">
                     {isActive ? (
                       <span className="mac-monthbars__tooltip" style={{ bottom: h + 8 }}>
-                        {it.value} 个项目
+                        {pendingValue > 0 ? `已承接 ${it.value} · 待定 ${pendingValue}` : `${it.value} 个项目`}
                       </span>
                     ) : null}
                     <span
                       className="mac-monthbars__bar"
                       style={{
-                        height: Math.max(h, 4),
-                        background: isActive
+                        height: h,
+                        // 已承接段直接用 --bar-color，待定段由 CSS 混白得到更浅的同色
+                        ['--bar-color' as string]: isActive
                           ? 'var(--mac-blue-3)'
                           : isFuture
                             ? 'var(--mac-gray-light)'
                             : 'var(--mac-blue-5)',
                       }}
-                    />
+                    >
+                      {hPending > 0 ? (
+                        <span className="mac-monthbars__seg mac-monthbars__seg--pending" style={{ height: hPending }} />
+                      ) : null}
+                      <span className="mac-monthbars__seg" style={{ height: hValue }} />
+                    </span>
                   </span>
                   <span className={`mac-monthbars__month ${isActive ? 'is-active' : ''}`}>
                     {it.month} 月

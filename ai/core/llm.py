@@ -571,6 +571,7 @@ class LLMClient:
             return {
                 "content": _msg.get("content") or "",
                 "tool_calls": tool_calls,
+                "reasoning": reasoning,
                 "raw": response,
             }
 
@@ -942,8 +943,11 @@ class LLMClient:
                     except Exception:
                         args = {}
                     tool_calls.append({"id": frag["id"], "name": frag["name"], "arguments": args})
+                # reasoning_content 一并带出：DeepSeek 协议要求 tools+思考开启时
+                # 后续轮必须回传中间 assistant 的 reasoning_content（tool_loop 拼消息用）
                 yield {"type": "tool_calls", "tool_calls": tool_calls,
-                       "content": "".join(full_content)}
+                       "content": "".join(full_content),
+                       "reasoning_content": "".join(reasoning_parts)}
                 return
             except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException,
                     ServiceUnavailableError) as e:

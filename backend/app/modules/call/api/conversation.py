@@ -39,7 +39,7 @@ async def get_conversation(conversation_id: int, db: AsyncSession = Depends(get_
     if not conversation:
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    messages = await MessageService.get_messages_by_conversation(db, conversation_id)
+    messages = await MessageService.get_messages_by_conversation(db, conversation_id, limit=None)
     # file_urls 持久存的是 object_path（永久有效），原样返回。
     # 前端用 object_path 拼后端代理路径 /api/call/files/{object_path} 加载图片/下载文件，
     # 不再生成预签名 URL（预签名 host=MINIO_ENDPOINT=localhost:9000，生产浏览器访问不了 → 碎图）。

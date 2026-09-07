@@ -6,7 +6,7 @@
 """
 import logging
 import mimetypes
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from urllib.parse import quote
 
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/{file_path:path}", summary="代理下载评论附件（图片/文件）")
-async def download_attachment(file_path: str):
+async def download_attachment(request: Request, file_path: str):
     """file_path = object_path（{bucket}/{...}/{filename}）。
 
     后端直连 MinIO 读取并流式返回，浏览器经后端域名访问，永远可达。

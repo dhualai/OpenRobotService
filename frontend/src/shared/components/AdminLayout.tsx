@@ -46,6 +46,7 @@ const adminMenuItems: MenuItem[] = [
 
   // === 系统日志 ===
   { path: '/admin/operation-logs', label: '操作记录', emoji: '📝' },
+  { path: '/admin/dispatch-dev', label: '开发者模式', emoji: '🧪' },
 ];
 
 function matchMenuPath(items: MenuItem[], currentPath: string): string {
@@ -83,7 +84,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         fixed
       />
 
-      <div ref={scrollRef} style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 16 }}>
+      <div ref={scrollRef} className="admin-scroll" style={{ flex: 1, overflow: 'auto', paddingTop: 48, paddingBottom: 16 }}>
         <Suspense fallback={<Loading text="加载中..." />}>
           {children || <Outlet />}
         </Suspense>

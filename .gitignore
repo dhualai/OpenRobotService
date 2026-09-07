@@ -62,6 +62,12 @@ codebuddy.md
 # ===== CodeBuddy 本地记忆（跨会话记忆文件，仅本地，不入库）=====
 .codebuddy/memory/
 
+# ===== CodeBuddy 本地规则（个人纪律/项目约定，仅本地，不入库；用户规则在用户目录本就不跟踪）=====
+.codebuddy/rules/
+
+# ===== WorkBuddy 本地记忆/配置（跨会话记忆与自动化配置，仅本地，不入库）=====
+.workbuddy/
+
 # ===== topo-pack 临时工件 / 授权包（含敏感 token，禁止入库）=====
 .tmp_*/
 .tmp_import_pack.py
@@ -115,6 +121,9 @@ automation/references/generated-cases/
 
 # ===== 本地脚本（不入库）=====
 scripts/start-minio.ps1
+# 部署脚本含本机私钥路径/明文 sudo 密码等个性化配置，每台机器各留本地一份，不入库
+/deploy.ps1
+deploy/deploy.ps1
 
 # ===== 本地部署/打包产物（不入库）=====
 /ai_deploy.zip
@@ -156,3 +165,4 @@ ai/.env.example
 ai/.env.example
 /ai/tests
 /ai/tests
+start_all.ps1

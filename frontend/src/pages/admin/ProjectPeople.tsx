@@ -6,6 +6,7 @@ import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { normalizeList } from '@/shared/utils/list';
 import UserSelect from '@/shared/components/UserSelect';
+import { MacSearch } from '@/shared/components/macaronIcons';
 import type { UserItem } from '@/api/users';
 
 interface Project { id?: string; code?: string; name: string; }
@@ -30,6 +31,7 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
   const [associateUser, setAssociateUser] = useState<UserItem | null>(null);
   const [associateRole, setAssociateRole] = useState<string | null>(null);
   const [associateSuperiorUsername, setAssociateSuperiorUsername] = useState<string | null>(null);
+  const [superiorSearch, setSuperiorSearch] = useState('');
   const [submittingAssociates, setSubmittingAssociates] = useState(false);
 
   const [roles, setRoles] = useState<RoleItem[]>([]);
@@ -172,6 +174,7 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
     setAssociateUser(null);
     setAssociateRole(null);
     setAssociateSuperiorUsername(null);
+    setSuperiorSearch('');
     setAssociateVisible(true);
     if (roles.length === 0) fetchRoles();
   };
@@ -238,6 +241,12 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
     });
     return Array.from(map.values()).filter((c) => c.username !== associateUser?.username);
   })();
+  // 按搜索关键词（姓名/用户名，不区分大小写）模糊过滤
+  const filteredSuperiorCandidates = superiorCandidates.filter((c) => {
+    const q = superiorSearch.trim().toLowerCase();
+    if (!q) return true;
+    return c.label.toLowerCase().includes(q) || c.username.toLowerCase().includes(q);
+  });
 
   if (!selectedProject) {
     return <div className="mac-empty">请先选择项目</div>;
@@ -332,74 +341,94 @@ export default function ProjectPeople({ selectedProject }: { selectedProject: Pr
 
       {/* 添加关联人员弹窗 */}
       <Popup visible={associateVisible} onClose={() => setAssociateVisible(false)} placement="bottom" showOverlay>
-        <div className="mac-sheet" style={{ maxHeight: '70vh', overflow: 'auto' }}>
-          <h4 className="mac-sheet__title" style={{ marginBottom: 4 }}>添加关联人员</h4>
-          <div style={{ fontSize: 12, color: 'var(--mac-muted-fg)', marginBottom: 16 }}>
-            项目：{selectedProject?.name}
-          </div>
-
-          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8, color: 'var(--mac-fg)' }}>选择用户</div>
-          <div style={{ marginBottom: 20 }}>
-            <UserSelect
-              value={associateUser?.id}
-              onChange={setAssociateUser}
-              placeholder="请选择用户"
-              title="选择用户"
-            />
-          </div>
-
-          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8, color: 'var(--mac-fg)' }}>选择角色</div>
-          <div style={{ marginBottom: 20 }}>
-            {rolesLoading ? (
-              <Loading text="加载角色..." />
-            ) : roles.length === 0 ? (
-              <div style={{ padding: '10px 0', color: 'var(--mac-muted-fg)', fontSize: 13 }}>暂无可选角色，请先在角色管理中创建</div>
-            ) : (
-              roles.map((role) => (
-                <div
-                  key={role.id}
-                  className={`mac-radio ${associateRole === role.id ? 'is-active' : ''}`}
-                  onClick={() => setAssociateRole(role.id)}
-                >
-                  <span className="mac-radio__dot">
-                    {associateRole === role.id && <span className="mac-radio__inner" />}
-                  </span>
-                  <span className="mac-radio__label">{role.name}</span>
-                </div>
-              ))
-            )}
-          </div>
-
-          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8, color: 'var(--mac-fg)' }}>上级人员（可选，用于展示上下层关系）</div>
-          <div style={{ marginBottom: 20 }}>
-            <div
-              className={`mac-radio ${!associateSuperiorUsername ? 'is-active' : ''}`}
-              onClick={() => setAssociateSuperiorUsername(null)}
-            >
-              <span className="mac-radio__dot">
-                {!associateSuperiorUsername && <span className="mac-radio__inner" />}
-              </span>
-              <span className="mac-radio__label">无（顶层）</span>
+        <div className="mac-sheet" style={{ maxHeight: '70vh', display: 'flex', flexDirection: 'column', paddingBottom: 12 }}>
+          {/* 可滚动内容区：取消/保存按钮固定在底部，不随列表移动 */}
+          <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+            <h4 className="mac-sheet__title" style={{ marginBottom: 4 }}>添加关联人员</h4>
+            <div style={{ fontSize: 12, color: 'var(--mac-muted-fg)', marginBottom: 16 }}>
+              项目：{selectedProject?.name}
             </div>
-            {superiorCandidates.length === 0 ? (
-              <div style={{ padding: '10px 0', color: 'var(--mac-muted-fg)', fontSize: 13 }}>暂无已添加人员可选为上级</div>
-            ) : (
-              superiorCandidates.map((c) => (
-                <div
-                  key={c.username}
-                  className={`mac-radio ${associateSuperiorUsername === c.username ? 'is-active' : ''}`}
-                  onClick={() => setAssociateSuperiorUsername(c.username)}
-                >
-                  <span className="mac-radio__dot">
-                    {associateSuperiorUsername === c.username && <span className="mac-radio__inner" />}
-                  </span>
-                  <span className="mac-radio__label">{c.label}</span>
-                </div>
-              ))
-            )}
+
+            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8, color: 'var(--mac-fg)' }}>选择用户</div>
+            <div style={{ marginBottom: 20 }}>
+              <UserSelect
+                value={associateUser?.id}
+                onChange={setAssociateUser}
+                placeholder="请选择用户"
+                title="选择用户"
+              />
+            </div>
+
+            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8, color: 'var(--mac-fg)' }}>选择角色</div>
+            <div style={{ marginBottom: 20 }}>
+              {rolesLoading ? (
+                <Loading text="加载角色..." />
+              ) : roles.length === 0 ? (
+                <div style={{ padding: '10px 0', color: 'var(--mac-muted-fg)', fontSize: 13 }}>暂无可选角色，请先在角色管理中创建</div>
+              ) : (
+                roles.map((role) => (
+                  <div
+                    key={role.id}
+                    className={`mac-radio ${associateRole === role.id ? 'is-active' : ''}`}
+                    onClick={() => setAssociateRole(role.id)}
+                  >
+                    <span className="mac-radio__dot">
+                      {associateRole === role.id && <span className="mac-radio__inner" />}
+                    </span>
+                    <span className="mac-radio__label">{role.name}</span>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8, color: 'var(--mac-fg)' }}>上级人员（可选，用于展示上下层关系）</div>
+            <div className="mac-search" style={{ marginBottom: 8 }}>
+              <MacSearch size={16} />
+              <input
+                className="mac-search__input"
+                value={superiorSearch}
+                onChange={(e) => setSuperiorSearch(e.target.value)}
+                placeholder="搜索人员名称 / 用户名"
+              />
+            </div>
+            <div style={{ marginBottom: 20 }}>
+              <div
+                className={`mac-radio ${!associateSuperiorUsername ? 'is-active' : ''}`}
+                onClick={() => setAssociateSuperiorUsername(null)}
+              >
+                <span className="mac-radio__dot">
+                  {!associateSuperiorUsername && <span className="mac-radio__inner" />}
+                </span>
+                <span className="mac-radio__label">无（顶层）</span>
+              </div>
+              {superiorCandidates.length === 0 ? (
+                <div style={{ padding: '10px 0', color: 'var(--mac-muted-fg)', fontSize: 13 }}>暂无已添加人员可选为上级</div>
+              ) : filteredSuperiorCandidates.length === 0 ? (
+                <div style={{ padding: '10px 0', color: 'var(--mac-muted-fg)', fontSize: 13 }}>未找到匹配「{superiorSearch.trim()}」的人员</div>
+              ) : (
+                filteredSuperiorCandidates.map((c) => (
+                  <div
+                    key={c.username}
+                    className={`mac-radio ${associateSuperiorUsername === c.username ? 'is-active' : ''}`}
+                    onClick={() => setAssociateSuperiorUsername(c.username)}
+                  >
+                    <span className="mac-radio__dot">
+                      {associateSuperiorUsername === c.username && <span className="mac-radio__inner" />}
+                    </span>
+                    <span className="mac-radio__label">{c.label}</span>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
 
-          <div style={{ display: 'flex', gap: 8 }}>
+          {/* 底部固定操作区（不随内容滚动） */}
+          <div
+            style={{
+              display: 'flex', gap: 8, paddingTop: 12, marginTop: 4,
+              borderTop: '1px solid rgba(232, 234, 234, 0.6)', background: '#fff',
+            }}
+          >
             <button type="button" className="mac-btn mac-btn--outline mac-btn--block" onClick={() => setAssociateVisible(false)}>取消</button>
             <button type="button" className="mac-btn mac-btn--primary mac-btn--block" disabled={submittingAssociates} onClick={handleSaveAssociate}>
               {submittingAssociates ? '保存中...' : '保存'}
