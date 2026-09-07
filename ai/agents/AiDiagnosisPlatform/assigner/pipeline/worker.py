@@ -18,6 +18,30 @@ logger = get_logger("ASSIGNER")
 CHANNEL_NEW_TICKET = "usp:new_ticket"
 
 
+def _diagnosis_from_meta(meta) -> dict:
+    """从 metadata_info.diagnosis 取出派单字段。
+
+    诊断落库是嵌套对象：
+      diagnosis.hypotheses / ruled_out / collected_info / rounds / problem_summary
+    不是顶层平铺的 diagnosis_hypotheses。
+    """
+    diag = (meta or {}).get("diagnosis") or {}
+    if not isinstance(diag, dict):
+        diag = {}
+    hyps = diag.get("hypotheses")
+    ruled = diag.get("ruled_out")
+    collected = diag.get("collected_info")
+    rounds = diag.get("rounds")
+    summary = diag.get("problem_summary")
+    return {
+        "diagnosis_hypotheses": hyps if isinstance(hyps, list) else None,
+        "diagnosis_ruled_out": ruled if isinstance(ruled, list) else None,
+        "diagnosis_collected_info": collected if isinstance(collected, dict) else None,
+        "diagnosis_problem_summary": summary.strip() if isinstance(summary, str) and summary.strip() else None,
+        "diagnosis_rounds": rounds if isinstance(rounds, int) else None,
+    }
+
+
 class AssignmentWorker:
     """后台派单 Worker
 
@@ -156,9 +180,7 @@ class AssignmentWorker:
                     "fault_code": (task.metadata_info or {}).get("fault_code", "") if task.metadata_info else "",
                     "preferred_assignee": (task.metadata_info or {}).get("preferred_assignee") if task.metadata_info else None,
                     "preferred_assignee_remark": (task.metadata_info or {}).get("preferred_assignee_remark") if task.metadata_info else None,
-                    "diagnosis_hypotheses": (task.metadata_info or {}).get("diagnosis_hypotheses") if task.metadata_info else None,
-                    "diagnosis_ruled_out": (task.metadata_info or {}).get("diagnosis_ruled_out") if task.metadata_info else None,
-                    "diagnosis_collected_info": (task.metadata_info or {}).get("diagnosis_collected_info") if task.metadata_info else None,
+                    **_diagnosis_from_meta(task.metadata_info),
                     "dispatch_hint": (task.metadata_info or {}).get("dispatch_hint", "") if task.metadata_info else "",
                     "project_name": task.project_name or "",
                     "project_id": task.project_id or "",
@@ -225,6 +247,7 @@ class AssignmentWorker:
                         "fault_code": (r.metadata_info or {}).get("fault_code", "") if r.metadata_info else "",
                         "preferred_assignee": (r.metadata_info or {}).get("preferred_assignee") if r.metadata_info else None,
                         "preferred_assignee_remark": (r.metadata_info or {}).get("preferred_assignee_remark") if r.metadata_info else None,
+                        **_diagnosis_from_meta(r.metadata_info),
                         "dispatch_hint": (r.metadata_info or {}).get("dispatch_hint", "") if r.metadata_info else "",
                         "project_name": r.project_name or "",
                         "project_id": r.project_id or "",
@@ -266,6 +289,8 @@ class AssignmentWorker:
             diagnosis_hypotheses=ticket.get("diagnosis_hypotheses"),
             diagnosis_ruled_out=ticket.get("diagnosis_ruled_out"),
             diagnosis_collected_info=ticket.get("diagnosis_collected_info"),
+            diagnosis_problem_summary=ticket.get("diagnosis_problem_summary"),
+            diagnosis_rounds=ticket.get("diagnosis_rounds"),
             dispatch_hint=ticket.get("dispatch_hint") or None,
         )
 

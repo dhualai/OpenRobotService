@@ -24,7 +24,22 @@ _cache = {
     "centroids": None,          # (C, D) 归一化
     "cluster_people": [],       # [{eid: {count, last_ts}}]
     "cluster_titles": [],       # 每簇 2～3 条代表标题，仅日志
+    "cluster_tickets": [],      # [[{ticket_id, title, engineer_id}]]
+    "ticket_points": [],        # 二维投影，给开发者模式散点图
+    "ticket_total": 0,          # 参与聚簇的历史单数（含未入簇噪声）
 }
+
+
+def _blank_cache(h: str = ""):
+    return {
+        "hash": h,
+        "centroids": None,
+        "cluster_people": [],
+        "cluster_titles": [],
+        "cluster_tickets": [],
+        "ticket_points": [],    # [{ticket_id, title, engineer_id, cluster_id, x, y}]
+        "ticket_total": 0,
+    }
 
 
 def _as_ts(created_at) -> Optional[float]:
@@ -90,7 +105,74 @@ def cluster_by_similarity(
     groups: Dict[int, List[int]] = {}
     for i in range(n):
         groups.setdefault(find(i), []).append(i)
-    return [idx for idx in groups.values() if len(idx) >= min_size]
+    raw = [idx for idx in groups.values() if len(idx) >= min_size]
+    return tighten_clusters(vecs, raw, merge_threshold, min_size)
+
+
+def tighten_clusters(
+    embs: np.ndarray,
+    groups: Sequence[Sequence[int]],
+    cohesion: float,
+    min_size: int,
+) -> List[List[int]]:
+    """单链接会把 A≈B、B≈C 串成一团。这里要求每张单都靠近簇中心，否则踢出去。"""
+    vecs = _normalize_rows(np.asarray(embs, dtype=float))
+    kept: List[List[int]] = []
+    for idx in groups:
+        members = [int(i) for i in idx]
+        while len(members) >= min_size:
+            cent = np.mean(vecs[members], axis=0)
+            norm = float(np.linalg.norm(cent)) or 1e-12
+            cent = cent / norm
+            sims = vecs[members] @ cent
+            nxt = [members[i] for i, s in enumerate(sims) if float(s) >= cohesion]
+            if len(nxt) == len(members):
+                kept.append(members)
+                break
+            members = nxt
+    return kept
+
+
+def project_to_2d(embs: np.ndarray) -> np.ndarray:
+    """把高维工单向量投到二维，方便看簇是散是糊。轴没有业务含义。"""
+    mat = np.asarray(embs, dtype=float)
+    if mat.ndim != 2 or mat.shape[0] == 0:
+        return np.zeros((0, 2))
+    if mat.shape[0] == 1 or mat.shape[1] == 0:
+        return np.zeros((mat.shape[0], 2))
+    centered = mat - mat.mean(axis=0)
+    rank = min(2, centered.shape[0] - 1, centered.shape[1])
+    if rank < 1:
+        return np.zeros((mat.shape[0], 2))
+    _, _, vt = np.linalg.svd(centered, full_matrices=False)
+    xy = centered @ vt[:rank].T
+    if rank == 1:
+        xy = np.column_stack([np.ravel(xy), np.zeros(len(xy))])
+    scale = float(np.max(np.abs(xy))) or 1.0
+    return np.round(xy / scale, 4)
+
+
+def build_ticket_points(
+    recs: Sequence[dict],
+    groups: Sequence[Sequence[int]],
+    xy: np.ndarray,
+) -> List[dict]:
+    belong: Dict[int, int] = {}
+    for cid, idx in enumerate(groups):
+        for i in idx:
+            belong[int(i)] = cid
+    points: List[dict] = []
+    for i, rec in enumerate(recs):
+        eid = (rec.get("engineer_id") or "").strip()
+        points.append({
+            "ticket_id": str(rec.get("ticket_id") or ""),
+            "title": (rec.get("title") or "").strip(),
+            "engineer_id": eid,
+            "cluster_id": belong.get(i, -1),
+            "x": float(xy[i, 0]) if i < len(xy) else 0.0,
+            "y": float(xy[i, 1]) if i < len(xy) else 0.0,
+        })
+    return points
 
 
 def cluster_centroids(embs: np.ndarray, groups: Sequence[Sequence[int]]) -> np.ndarray:
@@ -172,16 +254,23 @@ class ExpertiseRecall:
 
     def _people_in_groups(
         self, recs: List[dict], groups: Sequence[Sequence[int]],
-    ) -> Tuple[List[dict], List[List[str]]]:
+    ) -> Tuple[List[dict], List[List[str]], List[List[dict]]]:
         people: List[dict] = []
         titles: List[List[str]] = []
+        tickets: List[List[dict]] = []
         for idx in groups:
             tbl: Dict[str, dict] = {}
             seen_titles: List[str] = []
+            items: List[dict] = []
             for i in idx:
                 rec = recs[i]
                 eid = (rec.get("engineer_id") or "").strip()
                 title = (rec.get("title") or "").strip()
+                items.append({
+                    "ticket_id": str(rec.get("ticket_id") or ""),
+                    "title": title,
+                    "engineer_id": eid,
+                })
                 if title and title not in seen_titles and len(seen_titles) < 3:
                     seen_titles.append(title)
                 if not eid:
@@ -193,27 +282,35 @@ class ExpertiseRecall:
                     entry["last_ts"] = ts
             people.append(tbl)
             titles.append(seen_titles)
-        return people, titles
+            tickets.append(items)
+        return people, titles, tickets
 
     async def _ensure_cache(self) -> None:
         global _cache
         recs = load_history_records(self._config.module_keywords or {})
         if not recs:
-            _cache.update(hash="", centroids=None, cluster_people=[], cluster_titles=[])
+            _cache.update(_blank_cache(""))
             return
 
         import hashlib, json
         h = hashlib.md5(
             json.dumps(recs, sort_keys=True, ensure_ascii=False, default=str).encode()
         ).hexdigest()
-        if _cache["hash"] == h and _cache["centroids"] is not None:
+        if (
+            _cache["hash"] == h
+            and _cache["centroids"] is not None
+            and _cache.get("ticket_points")
+        ):
             return
 
         texts = [_ticket_text(r) for r in recs]
         keep = [i for i, t in enumerate(texts) if t]
         if len(keep) < self._min_size:
             logger.info(f"[expertise_recall] 可向量化工单不足 {self._min_size}，B 路空")
-            _cache.update(hash=h, centroids=np.zeros((0, 1)), cluster_people=[], cluster_titles=[])
+            empty = _blank_cache(h)
+            empty["centroids"] = np.zeros((0, 1))
+            empty["ticket_total"] = len(keep)
+            _cache.update(empty)
             return
 
         slim_recs = [recs[i] for i in keep]
@@ -224,15 +321,25 @@ class ExpertiseRecall:
             raw = await ec.embed_batch(slim_texts, normalize=True)
         except Exception as e:
             logger.warning(f"[expertise_recall] 历史单向量化失败，B 路空: {e}")
-            _cache.update(hash=h, centroids=np.zeros((0, 1)), cluster_people=[], cluster_titles=[])
+            empty = _blank_cache(h)
+            empty["centroids"] = np.zeros((0, 1))
+            empty["ticket_total"] = len(slim_recs)
+            _cache.update(empty)
             return
 
         embs = np.vstack([np.asarray(v, dtype=float) for v in raw])
         groups = cluster_by_similarity(embs, self._merge_threshold, self._min_size)
         cents = cluster_centroids(embs, groups)
-        people, titles = self._people_in_groups(slim_recs, groups)
+        people, titles, tickets = self._people_in_groups(slim_recs, groups)
+        points = build_ticket_points(slim_recs, groups, project_to_2d(embs))
         _cache.update(
-            hash=h, centroids=cents, cluster_people=people, cluster_titles=titles,
+            hash=h,
+            centroids=cents,
+            cluster_people=people,
+            cluster_titles=titles,
+            cluster_tickets=tickets,
+            ticket_points=points,
+            ticket_total=len(slim_recs),
         )
         logger.info(
             f"[expertise_recall] 自动簇完成: 单={len(slim_recs)} 簇={len(groups)} "
@@ -302,9 +409,69 @@ class ExpertiseRecall:
 
 def invalidate_expertise_cache():
     global _cache
-    _cache = {
-        "hash": "",
-        "centroids": None,
-        "cluster_people": [],
-        "cluster_titles": [],
+    _cache = _blank_cache("")
+
+
+def cluster_snapshot_from_cache(name_by_id: Optional[Dict[str, str]] = None) -> dict:
+    """当前进程里的簇快照。不触发向量化；缓存空则 ready=false。"""
+    names = name_by_id or {}
+    people = _cache.get("cluster_people") or []
+    titles = _cache.get("cluster_titles") or []
+    tickets = _cache.get("cluster_tickets") or []
+    total = int(_cache.get("ticket_total") or 0)
+    clusters = []
+    clustered = 0
+    for i, tbl in enumerate(people):
+        items = tickets[i] if i < len(tickets) else []
+        clustered += len(items)
+        members = []
+        for eid, entry in sorted(
+            (tbl or {}).items(),
+            key=lambda kv: (-int(kv[1].get("count") or 0), kv[0]),
+        ):
+            members.append({
+                "engineer_id": eid,
+                "name": names.get(eid) or eid,
+                "count": int(entry.get("count") or 0),
+            })
+        shown = []
+        for t in items[:40]:
+            eid = t.get("engineer_id") or ""
+            shown.append({
+                **t,
+                "engineer_name": names.get(eid) or eid,
+            })
+        clusters.append({
+            "id": i,
+            "titles": titles[i] if i < len(titles) else [],
+            "ticket_count": len(items),
+            "people": members,
+            "tickets": shown,
+        })
+    cents = _cache.get("centroids")
+    ready = bool(_cache.get("hash") and cents is not None)
+    points = []
+    for p in _cache.get("ticket_points") or []:
+        eid = p.get("engineer_id") or ""
+        points.append({
+            **p,
+            "engineer_name": names.get(eid) or eid,
+        })
+    return {
+        "ready": ready,
+        "ticket_total": total,
+        "clustered": clustered,
+        "noise": max(0, total - clustered),
+        "clusters": clusters,
+        "points": points,
     }
+
+
+async def rebuild_cluster_cache() -> dict:
+    """清历史单缓存和簇缓存，再现场聚一次。"""
+    from ai.agents.AiDiagnosisPlatform.assigner.sync.history_sync import invalidate_cache
+    invalidate_cache()
+    invalidate_expertise_cache()
+    rec = ExpertiseRecall()
+    await rec._ensure_cache()
+    return cluster_snapshot_from_cache()

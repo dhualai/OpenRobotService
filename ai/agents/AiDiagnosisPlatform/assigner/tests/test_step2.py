@@ -291,13 +291,13 @@ class TestL1PromptPerson:
 
 
 class TestVagueStrongSignal:
-    """词表空不截断；有词才命中；enabled=false 不命中。"""
+    """只认 dispatch_hint=severe；描述正文不截断。"""
 
-    def test_empty_keywords_no_match(self):
-        """正常流程：keywords=[] → False（与现网一致，不截断）。"""
-        ticket = _ticket(title="随便看看", problem_description="帮我看一下")
+    def test_description_marker_no_longer_hits(self):
+        """正常流程：描述里写 [问题描述不完整] 不再截断。"""
+        cfg = SimpleNamespace(vague_strong_signals={"enabled": True})
         assert match_vague_strong_signal(
-            ticket, SimpleNamespace(vague_strong_signals={"enabled": True, "keywords": []}),
+            _ticket(problem_description="车子停了\n[问题描述不完整]"), cfg,
         ) is False
 
     def test_missing_config_no_match(self):
@@ -305,44 +305,22 @@ class TestVagueStrongSignal:
         ticket = _ticket(problem_description="帮我看一下")
         assert match_vague_strong_signal(ticket, SimpleNamespace()) is False
 
-    def test_keyword_hits_title_or_desc(self):
-        """正常流程：词表有值且出现在标题或描述 → True。"""
-        cfg = SimpleNamespace(
-            vague_strong_signals={"enabled": True, "keywords": ["随便看看", "帮我看一下"]},
-        )
-        assert match_vague_strong_signal(_ticket(title="随便看看"), cfg) is True
+    def test_dispatch_hint_only_severe_skips(self):
+        """正常流程：severe 截断；lacking 不截断（仍走正常召回）。"""
+        cfg = SimpleNamespace(vague_strong_signals={"enabled": True})
         assert match_vague_strong_signal(
-            _ticket(title="现场", problem_description="帮我看一下车子"), cfg,
+            _ticket(dispatch_hint="severe"), cfg,
         ) is True
         assert match_vague_strong_signal(
-            _ticket(title="调度超时", problem_description="任务下发失败"), cfg,
+            _ticket(dispatch_hint="lacking"), cfg,
+        ) is False
+        assert match_vague_strong_signal(
+            _ticket(dispatch_hint=""), cfg,
         ) is False
 
-    def test_incomplete_description_marker(self):
-        """正常流程：描述含 [问题描述不完整] → 命中（本版词表）。"""
-        cfg = SimpleNamespace(
-            vague_strong_signals={"enabled": True, "keywords": ["[问题描述不完整]"]},
-        )
+    def test_dispatch_hint_disabled(self):
+        """权限/开关：enabled=false → severe 也不截断。"""
+        cfg = SimpleNamespace(vague_strong_signals={"enabled": False})
         assert match_vague_strong_signal(
-            _ticket(problem_description="车子停了\n[问题描述不完整]"), cfg,
-        ) is True
-        assert match_vague_strong_signal(
-            _ticket(problem_description="车子停了"), cfg,
+            _ticket(dispatch_hint="severe"), cfg,
         ) is False
-
-    def test_config_yaml_includes_incomplete_marker(self):
-        """正常流程：config.yaml 词表含 [问题描述不完整]。"""
-        import yaml
-        from pathlib import Path
-        path = Path(__file__).resolve().parents[1] / "config" / "config.yaml"
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        kws = (data.get("vague_strong_signals") or {}).get("keywords") or []
-        assert "[问题描述不完整]" in kws
-
-    def test_disabled_no_match_even_with_keywords(self):
-        """权限/开关：enabled=false → 即使有词也不命中。"""
-        ticket = _ticket(problem_description="帮我看一下")
-        cfg = SimpleNamespace(
-            vague_strong_signals={"enabled": False, "keywords": ["帮我看一下"]},
-        )
-        assert match_vague_strong_signal(ticket, cfg) is False

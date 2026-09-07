@@ -125,20 +125,20 @@ def score_tag_labels(d: Optional[Dict[str, Any]]) -> List[str]:
 
 
 def match_vague_strong_signal(ticket, config) -> bool:
-    """问题描述是否命中「模糊强信号」。keywords 为空或未启用 → False（不截断）。"""
+    """问题是否命中「模糊强信号」。命中则 Step2 跳过召回，进 Step7。
+
+    只认诊断/提单 metadata_info.dispatch_hint == severe。
+    lacking / 空 / 描述正文都不截断。
+    enabled=false → False。
+    """
     cfg = getattr(config, "vague_strong_signals", None)
     if cfg is None:
         cfg = {}
     if isinstance(cfg, dict):
         enabled = bool(cfg.get("enabled", True))
-        raw = cfg.get("keywords") or []
     else:
         enabled = bool(getattr(cfg, "enabled", True))
-        raw = getattr(cfg, "keywords", None) or []
     if not enabled:
         return False
-    keywords = [str(k).strip() for k in raw if str(k).strip()]
-    if not keywords:
-        return False
-    text = f"{getattr(ticket, 'title', '') or ''}\n{getattr(ticket, 'problem_description', '') or ''}"
-    return any(kw in text for kw in keywords)
+    hint = (getattr(ticket, "dispatch_hint", None) or "").strip().lower()
+    return hint == "severe"

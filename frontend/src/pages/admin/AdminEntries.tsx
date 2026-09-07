@@ -10,11 +10,13 @@ import { useNavigate } from 'react-router-dom';
 import { Loading, Navbar } from 'tdesign-mobile-react';
 import type { ReactNode } from 'react';
 import {
-  MacUsers, MacTags, MacKeyRound, MacUserCog, MacShuffle, MacScrollText,
+  MacUsers, MacTags, MacKeyRound, MacUserCog, MacShuffle, MacScrollText, MacClipboardList,
 } from '@/shared/components/macaronIcons';
 import ReactECharts from '@/shared/components/ReactECharts';
 import { fetchBatchUserInfo, fetchUserSummary, USER_SOURCE_LABELS } from '@/api/wechat';
 import type { UserSummaryItem, WechatUserInfo } from '@/api/wechat';
+import { useAuthStore } from '@/stores/auth';
+import { PERM_DISPATCH_DEV } from '@/pages/admin/DispatchDev';
 
 interface Entry { path: string; label: string; desc: string; icon: ReactNode; tone: string; }
 
@@ -70,10 +72,17 @@ const adminEntries: Entry[] = [
   { path: '/admin/assign-role', label: '分配角色', desc: '为用户在项目中分配角色', icon: <MacUserCog />, tone: 'blue-2' },
   { path: '/admin/user-setup', label: '设置用户', desc: '迁移用户数据、合并账号', icon: <MacShuffle />, tone: 'blue-3' },
   { path: '/admin/operation-logs', label: '操作记录', desc: '操作日志审计与追溯', icon: <MacScrollText />, tone: 'blue-4' },
+  { path: '/admin/dispatch-dev', label: '开发者模式', desc: '看问题簇、重建簇、一键补索引', icon: <MacClipboardList />, tone: 'blue-4' },
 ];
+
+const DEV_ENTRY_PATH = '/admin/dispatch-dev';
 
 export default function AdminEntries() {
   const navigate = useNavigate();
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+  const visibleEntries = adminEntries.filter(
+    (e) => e.path !== DEV_ENTRY_PATH || hasPermission(PERM_DISPATCH_DEV),
+  );
 
   // ── 用户统计：时间筛选默认最近 5 天（不含当天；微信数据 T+1 延迟，最早可查昨日） ──
   const yesterdayDate = new Date();
@@ -356,7 +365,7 @@ export default function AdminEntries() {
         </section>
       </div>
       <div className="admin-entries-grid">
-        {adminEntries.map((e) => (
+        {visibleEntries.map((e) => (
           <button
             key={e.path}
             type="button"

@@ -7727,3 +7727,47 @@ html, body, #root {
 /* 历史工单 搜索图标（HistoryTickets 使用） */
 .history-search__icon { flex-shrink: 0; color: var(--muted-foreground); }
 
+/* 派单开发者模式 */
+.dispatch-dev { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.dispatch-dev__card {
+  background: #fff;
+  border: 1px solid var(--mac-line, #e8eaea);
+  border-radius: 12px;
+  padding: 14px 14px 10px;
+}
+.dispatch-dev__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dispatch-dev__title { font-size: 14px; font-weight: 600; color: var(--mac-fg, #303435); }
+.dispatch-dev__btn {
+  border: 0;
+  border-radius: 8px;
+  background: #eaf7fd;
+  color: var(--mac-blue-2, #3697c3);
+  font-size: 12px;
+  padding: 6px 10px;
+}
+.dispatch-dev__btn:disabled { opacity: 0.55; }
+.dispatch-dev__hint { margin: 8px 0 0; font-size: 11.5px; color: var(--mac-muted-fg, #888d8f); line-height: 1.45; }
+.dispatch-dev__stats { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 10px; font-size: 12px; color: #303435; }
+.dispatch-dev__chart { margin-top: 12px; }
+.dispatch-dev__sub { display: block; font-size: 12px; color: #888d8f; margin-bottom: 4px; }
+.dispatch-dev__list { list-style: none; margin: 10px 0 0; padding: 0; }
+.dispatch-dev__list li {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 0; border-top: 1px solid #f1f4f4; font-size: 12px;
+}
+.dispatch-dev__list strong { font-weight: 600; color: #303435; }
+.dispatch-dev__list em { font-style: normal; color: var(--mac-blue-2, #3697c3); }
+.dispatch-dev__list span { color: #888d8f; font-size: 11px; }
+.dispatch-dev__cluster { margin-top: 8px; border: 1px solid #eef3f5; border-left-width: 4px; border-radius: 10px; overflow: hidden; }
+.dispatch-dev__cluster-head {
+  width: 100%; text-align: left; border: 0; background: #f7fbfc; padding: 10px 12px;
+}
+.dispatch-dev__cluster-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: #303435; }
+.dispatch-dev__dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.dispatch-dev__cluster-meta { display: block; margin-top: 4px; font-size: 11.5px; color: #888d8f; }
+.dispatch-dev__cluster .dispatch-dev__list { margin: 0 12px 8px; }
+.dispatch-dev__empty, .dispatch-dev__empty-row {
+  padding: 24px 8px; text-align: center; color: #888d8f; font-size: 12px;
+}
+.dispatch-dev__empty-row { padding: 16px 0; }
+

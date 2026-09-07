@@ -93,6 +93,7 @@ def _fetch_from_tasks_table(module_keywords: Dict[str, List[str]]) -> list[dict]
                 except Exception:
                     meta = {}
             records.append({
+                "ticket_id": str(t.id),
                 "engineer_id": t.assigned_to,
                 "title": title,
                 "description": desc[:300],

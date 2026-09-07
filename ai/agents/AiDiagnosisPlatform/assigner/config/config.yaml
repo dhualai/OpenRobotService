@@ -36,7 +36,7 @@ ranker_weights:
 #    - sim_threshold:     历史工单相似度阈值（A路）
 #    - fault_code_boost:  历史同故障码的加分（A路）
 #    - robot_type_boost:  历史同车型的加分（A路）
-#    - cluster_merge:     两张历史单余弦 ≥ 此值并入同一簇（不手定簇数）
+#    - cluster_merge:     两张历史单余弦 ≥ 此值先并团；并完后每张还必须靠近簇中心，防单链接串香肠
 #    - cluster_min_size:  小于此人数的团丢掉（噪声）
 #    - cluster_assign:    新单与簇中心余弦低于此值 → B 路空，不通配
 #    - cluster_top_k:     新单最多落入几个簇
@@ -66,14 +66,12 @@ preferred_floor: 0.9
 # ══════════════════════════════════════════════════════════════════
 # 3.4 模糊强信号（Step2）
 #    消费方：ranking/tags.py::match_vague_strong_signal
-#    本版先认提单描述里的标记「[问题描述不完整]」（诊断/提单侧写入）。
-#    keywords 为空 → 不命中、不截断。
-#    命中 → 跳过 Step3–6，进 Step7（对接人 → 项目经理）。
+#    只认 dispatch_hint=severe → 跳过 Step3–6，进 Step7。
+#    lacking 不截断：只往 prompt 注入「建议正常派单、接手后再问」。
+#    不再扫描述正文。
 # ══════════════════════════════════════════════════════════════════
 vague_strong_signals:
   enabled: true
-  keywords:
-    - "[问题描述不完整]"
 
 # ══════════════════════════════════════════════════════════════════
 # 3.5 L1 LLM 召回人数（Step3）

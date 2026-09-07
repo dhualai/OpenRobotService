@@ -1,18 +1,25 @@
-// 后台管理「AI 数据助手」入口 —— UI 原型（本地演示假数据，未接任何真实接口）
+// 后台管理「AI 数据助手」入口 —— 悬浮球 + 聊天抽屉
 //
 // 设计对照：
-//  - 悬浮球形制完全模仿「我要摇人」聊天页的转工单悬浮球（ChatPanel 内 .chat-panel__ticket-fab）：
-//    52px 液态玻璃圆钮 + 常显小标签 + 可拖拽自由定位；差异点是色相换为深一号蓝（--blue-2）、呼吸闪烁放慢至 3.6s。
+//  - 悬浮球形制模仿「我要摇人」聊天页的转工单悬浮球（ChatPanel 内 .chat-panel__ticket-fab）：
+//    52px 液态玻璃圆钮 + 常显小标签 + 可拖拽自由定位；差异点是色相换为深一号蓝（--blue-2）、
+//    呼吸闪烁放慢至 3.6s。
 //  - 点开为右侧抽屉式聊天对话框（窄屏自动全宽），气泡样式复用全局 .chat-bubble 体系，与摇人对话观感一致。
-//  - 问答内容为本地 canned 演示数据（标注「演示」），仅用于评审 UI 形态，后续接真实数据时替换 send 逻辑即可。
+//  - 问答走真实接口：POST /api/ai/analysis/chat（AiDataAnalysisPlatform 快速对话，非流式 JSON）。
+//  - 权限：入口可见性由权限码 frontend:dataqa:view（「后台管理-问数据按钮可见性」）控制——
+//    在后台管理-其他-权限管理里定义、按角色在角色管理/分配角色里勾选：
+//    授予该权限的角色可见，未授予（且非 admin 通配权限）整组件不渲染。
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Popup } from 'tdesign-mobile-react';
+import { Popup, Toast } from 'tdesign-mobile-react';
 import { Bot, RotateCcw, Send, Sparkles, X } from 'lucide-react';
 import MarkdownRenderer from '@/shared/components/MarkdownRenderer';
+import { analysisChat } from '@/api/analysis';
+import { kickToLogin, isKickingToLogin } from '@/shared/utils/session';
+import { useAuthStore } from '@/stores/auth';
 import './AdminDataAssistant.css';
 
-/** 气泡 id 生成（纯本地，无需落库） */
+/** 气泡 id 生成（纯本地） */
 const uid = (() => {
   let n = 0;
   return () => `ada-msg-${++n}-${Date.now().toString(36)}`;
@@ -22,64 +29,11 @@ interface AdaMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
-  /** true = AI 正在「思考」（打字占位），内容定稿前不渲染 Markdown */
+  /** true = 正在等待后端回答（打字占位），内容定稿前不渲染 Markdown */
   typing?: boolean;
 }
 
-/** 演示问答库：keywords 与用户输入做包含匹配，命中数最多者胜出 */
-interface DemoQA { id: string; keywords: string[]; answer: string }
-
-const DEMO_QA: DemoQA[] = [
-  {
-    id: 'new-today',
-    keywords: ['今天', '新增', '报障', '新单', '今日', '多少单'],
-    answer: `截至今日 **17:30**，服务号收到客户报障 **12 单**：
-
-| 环节 | 数量 |
-| --- | --- |
-| 已转工单 | 9 |
-| 待接单 | 2 |
-| 已解决 | 6 |
-
-📈 报障高峰集中在 **10:00–11:00**（3 单），车型集中在 AGV-800 系列（5 单）。`,
-  },
-  {
-    id: 'week-timely',
-    keywords: ['本周', '超时', '处理', '时效', '响应', '积压', '进度'],
-    answer: `本周（09-01 ~ 09-03）工单 **47 单**：已完成 31 · 进行中 13 · 挂起 3。
-
-⏰ **超时预警 2 单**：
-1. **#T20260903-018**「AGV 激光停障误报」—— 最晚解决时间已过 2h
-2. **#T20260902-011**「货叉下降抖动」—— 今晚 20:00 前到期
-
-⚡ 平均首响 **18 分钟**，平均解决 **6.2 小时**，整体时效较上周提升 12%。`,
-  },
-  {
-    id: 'users',
-    keywords: ['用户', '增长', '关注', '粉丝', '取关', '新增'],
-    answer: `微信关注用户（T+1 口径，最新为昨日）：
-- 昨日**净增 +23**（新增 28 / 取关 5）
-- 近 7 天**净增 +141**，累计关注 **3,286** 人
-
-菜单点击 Top3：**我要摇人** 38% · **历史工单** 24% · **项目交付** 17%。`,
-  },
-  {
-    id: 'distribution',
-    keywords: ['分布', '车型', '项目', '汇总', '分类', '哪类', 'top'],
-    answer: `本月报障分布（按车型）：
-
-| 车型 | 单量 | 占比 |
-| --- | --- | --- |
-| AGV-800 | 24 | 41% |
-| AGV-500 | 17 | 29% |
-| 叉车 AMR | 12 | 21% |
-| 其他 | 5 | 9% |
-
-建议关注 **AGV-800 激光导航** 类问题（占其故障 60%）。`,
-  },
-];
-
-/** 空态推荐问题（与上方 demo 库一一对应） */
+/** 空态推荐问题 */
 const CHIP_QUESTIONS = [
   '今天服务号有多少新报障？',
   '本周工单处理情况怎么样？',
@@ -87,27 +41,25 @@ const CHIP_QUESTIONS = [
   '本月报障集中在哪些车型？',
 ];
 
-const WELCOME_TEXT = `你好，我是**后台数据助手** 👋 可以问我服务号的运营数据：报障工单、处理时效、用户增长、项目进展……
+const WELCOME_TEXT = `你好，我是**后台数据助手** 👋 可以问我服务号的运营情况：新增报障、处理时效、用户增长、项目进展……`;
 
-> 💡 当前为 **UI 原型**，回答为本地演示数据，暂未接真实数据源。`;
-
-const FALLBACK_TEXT = `这个问题演示库暂时没有准备 😅
-当前为 **UI 原型**（未接真实数据），可以先点点下面的问题体验交互形态；接真实数据后这里会变成任意问。`;
-
-/** 匹配问答：返回命中最多的演示条目，无命中返回 null（走兜底话术） */
-function pickDemoAnswer(text: string): DemoQA | null {
-  let best: DemoQA | null = null;
-  let bestHits = 0;
-  for (const qa of DEMO_QA) {
-    const hits = qa.keywords.reduce((n, k) => n + (text.includes(k) ? 1 : 0), 0);
-    if (hits > bestHits) { bestHits = hits; best = qa; }
-  }
-  return bestHits > 0 ? best : null;
-}
+/** 「问数据」按钮可见性权限码（后台管理-权限管理里维护，按角色勾选授予） */
+const DATA_ASSISTANT_PERMISSION = 'frontend:dataqa:view';
 
 export default function AdminDataAssistant() {
   const { pathname } = useLocation();
-  const isAdmin = pathname.startsWith('/admin');
+  const isAdminPath = pathname.startsWith('/admin');
+  const permissions = useAuthStore((s) => s.permissions);
+  const isAdmin = useAuthStore((s) => s.isAdmin);
+
+  // ── 权限门禁：按「后台管理-问数据按钮可见性」（frontend:dataqa:view）控制可见性 ──
+  // 后端 /users/{username}/detail 会把用户所有角色授予的权限码聚合进 permissions；
+  // admin 通配（isAdmin 或 permissions 含 'admin'）始终可见，其余看是否被授予该权限码。
+  const canAskData = useMemo(() => {
+    if (isAdmin) return true; // 鉴权中心返回的 admin 判定
+    if ((permissions ?? []).includes('admin')) return true; // admin 通配权限
+    return (permissions ?? []).includes(DATA_ASSISTANT_PERMISSION);
+  }, [isAdmin, permissions]);
 
   // ── 悬浮球（转工单同款拖拽：pointer 捕获，位移 >8px 视为移动并抑制点击） ──
   const fabRef = useRef<HTMLButtonElement>(null);
@@ -152,9 +104,18 @@ export default function AdminDataAssistant() {
   const [input, setInput] = useState('');
   const thinking = messages.some((m) => m.typing);
   const userTurnCount = messages.filter((m) => m.role === 'user').length;
-  const answerTimerRef = useRef<number | null>(null);
+  // 在途请求：发新问题 / 清空 / 关抽屉 / 卸载时 abort，杜绝迟到响应回写已关闭的对话框
+  const pendingRef = useRef<AbortController | null>(null);
+  const sendingRef = useRef(false); // 防双发（Enter + click 竞态）
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const abortPending = () => {
+    if (pendingRef.current) {
+      pendingRef.current.abort();
+      pendingRef.current = null;
+    }
+  };
 
   // 打开抽屉后聚焦输入框（等位移动画结束）
   useEffect(() => {
@@ -163,10 +124,11 @@ export default function AdminDataAssistant() {
     return () => window.clearTimeout(t);
   }, [open]);
 
-  // 卸载清理未到期的「思考→回答」定时器
-  useEffect(() => () => {
-    if (answerTimerRef.current) window.clearTimeout(answerTimerRef.current);
-  }, []);
+  // 关抽屉 / 卸载：中断在途请求
+  useEffect(() => {
+    if (!open) abortPending();
+  }, [open]);
+  useEffect(() => () => abortPending(), []);
 
   // 新消息 → 滚到底
   useEffect(() => {
@@ -175,17 +137,19 @@ export default function AdminDataAssistant() {
   }, [messages, open]);
 
   const resetConversation = () => {
-    if (answerTimerRef.current) window.clearTimeout(answerTimerRef.current);
+    abortPending();
+    sendingRef.current = false;
     setMessages([{ ...welcomeMsg, id: uid() }]);
     setInput('');
     const t = inputRef.current;
     if (t) t.style.height = '';
   };
 
-  /** 发送问题（本地演示：思考占位 ~1s 后给出 canned 回答） */
-  const ask = (raw: string) => {
+  /** 发送问题：思考占位 → POST /api/ai/analysis/chat → 定稿替换占位气泡 */
+  const ask = async (raw: string) => {
     const text = raw.trim();
-    if (!text || thinking) return;
+    if (!text || thinking || sendingRef.current) return;
+    sendingRef.current = true;
     const thinkingId = uid();
     setMessages((prev) => [
       ...prev,
@@ -195,16 +159,36 @@ export default function AdminDataAssistant() {
     setInput('');
     const t = inputRef.current;
     if (t) t.style.height = '';
-    const qa = pickDemoAnswer(text);
-    // 1s ~ 1.7s 随机延迟，模拟思考耗时，方便评审「思考中」占位 UI
-    answerTimerRef.current = window.setTimeout(() => {
-      setMessages((prev) => prev.map((m) => (m.id === thinkingId
-        ? { id: m.id, role: 'assistant' as const, content: qa ? qa.answer : FALLBACK_TEXT }
-        : m)));
-    }, 900 + Math.random() * 700);
+
+    const controller = new AbortController();
+    abortPending();
+    pendingRef.current = controller;
+    try {
+      const answer = await analysisChat({ question: text }, controller.signal);
+      if (controller.signal.aborted) return;
+      setMessages((prev) => prev.map((m) =>
+        m.id === thinkingId ? { id: m.id, role: 'assistant' as const, content: answer } : m));
+    } catch (err) {
+      if (controller.signal.aborted || isKickingToLogin()) return;
+      const reason = err instanceof Error ? err.message : '未知错误';
+      // 401/403：统一走登录流程；其余错误在气泡内给出原因，提示重发
+      if (/(401|403)/.test(reason)) {
+        kickToLogin('登录已过期，请重新登录');
+        setMessages((prev) => prev.filter((m) => m.id !== thinkingId));
+        return;
+      }
+      Toast({ message: `回答失败：${reason}`, theme: 'error' });
+      setMessages((prev) => prev.map((m) =>
+        m.id === thinkingId
+          ? { id: m.id, role: 'assistant' as const, content: `⚠️ 回答失败：${reason}\n\n请稍后重新提问。` }
+          : m));
+    } finally {
+      if (pendingRef.current === controller) pendingRef.current = null;
+      sendingRef.current = false;
+    }
   };
 
-  const onSend = () => ask(input);
+  const onSend = () => { void ask(input); };
   const onInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const t = e.target;
     setInput(t.value);
@@ -215,12 +199,12 @@ export default function AdminDataAssistant() {
   const onInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      ask(input);
+      void ask(input);
     }
   };
 
-  // 离开后台管理区域（切到别的 Tab）不渲染
-  if (!isAdmin) return null;
+  // 离开后台管理区域（切到别的 Tab）或角色无权限（非超级管理员/开发者/部门负责人）不渲染
+  if (!isAdminPath || !canAskData) return null;
 
   return (
     <>
@@ -266,10 +250,7 @@ export default function AdminDataAssistant() {
               <Bot size={18} strokeWidth={2} />
             </div>
             <div className="ada-head__info">
-              <div className="ada-head__title">
-                AI 数据问答
-                <span className="ada-head__demo">UI 原型</span>
-              </div>
+              <div className="ada-head__title">AI 数据问答</div>
               <div className="ada-head__sub">服务号运营数据 · 报障 / 时效 / 用户 / 项目</div>
             </div>
             <button
@@ -315,7 +296,7 @@ export default function AdminDataAssistant() {
           {userTurnCount === 0 && (
             <div className="ada-chips">
               {CHIP_QUESTIONS.map((q) => (
-                <button key={q} type="button" className="ada-chip" onClick={() => ask(q)}>
+                <button key={q} type="button" className="ada-chip" onClick={() => void ask(q)}>
                   <Sparkles size={12} strokeWidth={2} />
                   {q}
                 </button>

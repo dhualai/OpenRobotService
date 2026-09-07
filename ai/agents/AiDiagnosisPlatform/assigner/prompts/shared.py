@@ -4,7 +4,25 @@ from __future__ import annotations
 
 from typing import List
 
-from ai.agents.AiDiagnosisPlatform.assigner.schemas import TicketContext, dispatch_hint_text
+from ai.agents.AiDiagnosisPlatform.assigner.schemas import (
+    COLLECTED_TO_TICKET,
+    TicketContext,
+    collected_value,
+    dispatch_hint_text,
+)
+
+# 已映射到工单栏的不再重复；指名/项目不进工单段。
+_SKIP_COLLECTED_KEYS = frozenset(COLLECTED_TO_TICKET) | {
+    "requested_assignee",
+    "project",
+    "project_id",
+    "ticket_type",
+}
+_COLLECTED_LABELS = {
+    "occurrence_time": "故障时间",
+    "frequency": "出现频率",
+    "page_module": "页面模块",
+}
 
 _CURRENT_RULER = {
     "problem": "本单是报障(problem)，按【故障现象】归到职责里负责该故障的部门",
@@ -73,6 +91,11 @@ def ticket_fields_block(ticket: TicketContext) -> str:
         ruled_out = "；".join(ticket.diagnosis_ruled_out[:5])
 
     extra: List[str] = []
+    summary = (ticket.diagnosis_problem_summary or "").strip()
+    title = (ticket.title or "").strip()
+    desc = ticket.problem_description or ""
+    if summary and summary != title and summary not in desc:
+        extra.append(f"诊断摘要：{summary[:200]}")
     if ticket.priority:
         extra.append(f"优先级：{ticket.priority}")
     if ticket.location:
@@ -84,6 +107,8 @@ def ticket_fields_block(ticket: TicketContext) -> str:
         extra.append(f"预期效果：{ticket.expected_effect or '无'}")
     if ticket.support_type:
         extra.append(f"支持类型：{ticket.support_type}")
+    if ticket.preferred_response:
+        extra.append(f"期望响应：{ticket.preferred_response}")
     if ticket.severity or ticket.version:
         extra.append(f"严重程度：{ticket.severity or '无'}")
         extra.append(f"版本：{ticket.version or '无'}")
@@ -96,6 +121,17 @@ def ticket_fields_block(ticket: TicketContext) -> str:
         extra.append(f"故障码：{ticket.fault_code}")
     if (ticket.robot_type or "").strip():
         extra.append(f"车型：{ticket.robot_type}")
+    leftover = 0
+    info = ticket.diagnosis_collected_info if isinstance(ticket.diagnosis_collected_info, dict) else {}
+    for key, raw in info.items():
+        name = str(key).strip()
+        if leftover >= 8 or name in _SKIP_COLLECTED_KEYS:
+            continue
+        value = collected_value(raw)
+        if not value:
+            continue
+        extra.append(f"{_COLLECTED_LABELS.get(name, name)}：{value[:120]}")
+        leftover += 1
     if ruled_out:
         extra.append(f"Agent已排除：{ruled_out}")
     hint = dispatch_hint_text(getattr(ticket, "dispatch_hint", None))
