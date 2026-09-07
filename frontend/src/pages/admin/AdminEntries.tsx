@@ -79,9 +79,10 @@ const DEV_ENTRY_PATH = '/admin/dispatch-dev';
 
 export default function AdminEntries() {
   const navigate = useNavigate();
-  const hasPermission = useAuthStore((s) => s.hasPermission);
+  // 订阅权限结果（不要订阅 hasPermission 函数引用，否则 permissions 回填后本页不重绘）
+  const canShowDispatchDev = useAuthStore((s) => s.hasPermission(PERM_DISPATCH_DEV));
   const visibleEntries = adminEntries.filter(
-    (e) => e.path !== DEV_ENTRY_PATH || hasPermission(PERM_DISPATCH_DEV),
+    (e) => e.path !== DEV_ENTRY_PATH || canShowDispatchDev,
   );
 
   // ── 用户统计：时间筛选默认最近 5 天（不含当天；微信数据 T+1 延迟，最早可查昨日） ──

@@ -53,6 +53,7 @@ describe('AdminEntries', () => {
 
   it('shows developer mode only when permitted', () => {
     renderView();
+    expect(mockHasPermission).toHaveBeenCalledWith('frontend:admin:dispatch-dev:show');
     expect(screen.getByText('开发者模式')).toBeInTheDocument();
     fireEvent.click(screen.getByText('开发者模式'));
     expect(mockNavigate).toHaveBeenCalledWith('/admin/dispatch-dev');
