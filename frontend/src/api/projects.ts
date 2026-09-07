@@ -33,6 +33,19 @@ export async function getMyProjects(includeAnalysis = false): Promise<ProjectIte
   return Array.isArray(data) ? data : [];
 }
 
+// 用户相关项目编码集（GET /api/admin/projects/me/relevance）：
+// ticketed=提过单的项目编码（tasks.project_id），owned=名下项目编码（已剔除提过单的）。
+// 工单弹窗项目选择器的相关性排序信号（0907：提过单 > 名下 > 其他）。
+export interface ProjectRelevance {
+  ticketed: string[];
+  owned: string[];
+}
+export async function getMyProjectRelevance(): Promise<ProjectRelevance> {
+  const request = createRequest(API_CONFIG.ADMIN.BASE_URL, '项目服务');
+  const data = await request<ProjectRelevance>('/projects/me/relevance');
+  return { ticketed: data?.ticketed || [], owned: data?.owned || [] };
+}
+
 // ── 项目成员（用于讨论区 @ 提及）──────────────────────────────
 
 export interface ProjectMember {
