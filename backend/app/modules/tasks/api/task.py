@@ -1602,6 +1602,12 @@ async def respond_task(
     return await _reload_ticket_with_comments(db, task_id)
 
 
+class CompleteStepRequest(BaseModel):
+    """当前阶段完成请求：处理人选择下一阶段节点并设置其结束时间。"""
+    next_step_id: int = Field(..., description="下一阶段节点ID（必须为同 task_type 的节点）")
+    curr_step_endtime: datetime = Field(..., description="下一阶段节点结束时间（ISO 字符串，naive UTC 存库）")
+
+
 @router.post("/{task_id}/complete-step", response_model=TicketResponse, summary="当前阶段完成：推进到下一协商节点")
 async def complete_task_step(
     task_id: int,
@@ -1713,12 +1719,6 @@ class NegotiateStepRequest(BaseModel):
     curr_step_endtime: datetime = Field(..., description="协商节点结束时间（ISO 字符串，naive UTC 存库）")
     curr_step_id: Optional[int] = Field(None, description="协商后的节点ID（仅当前及之后；不传则保持当前节点）")
     reason: str = Field(..., description="协商理由（必填，记录为评论）")
-
-
-class CompleteStepRequest(BaseModel):
-    """当前阶段完成请求：处理人选择下一阶段节点并设置其结束时间。"""
-    next_step_id: int = Field(..., description="下一阶段节点ID（必须为同 task_type 的节点）")
-    curr_step_endtime: datetime = Field(..., description="下一阶段节点结束时间（ISO 字符串，naive UTC 存库）")
 
 
 @router.post("/{task_id}/negotiate-step", response_model=TicketResponse, summary="协商节点：调整节点并设置节点结束时间")
