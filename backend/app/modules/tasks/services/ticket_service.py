@@ -95,34 +95,12 @@ class TicketService:
 
     @staticmethod
     def _redispatch_tip(log, user_map: Dict[str, str]) -> Optional[str]:
-        """按需求方案 §3.6 四分支规则生成派单结果提醒的一句话摘要（无提醒返回 None）。
+        """生成派单结果提醒的一句话摘要（无提醒返回 None）。
 
-        分支优先级：②未派到指定人 > ④拼音近似名 > ③同名；①画像不完整可叠加追加。
+        与重派 / Step0 指定人同一出口：见 redispatch_tip_service.build_redispatch_tip。
         """
-        if log is None:
-            return None
-        assigned_name = user_map.get(log.assigned_id, log.assigned_id)
-        preferred_id = log.preferred_id
-        preferred_name = user_map.get(preferred_id, preferred_id) if preferred_id else None
-
-        # ② 未派到指定人（简洁而礼貌的措辞，照顾用户情绪）
-        if preferred_id and preferred_id != log.assigned_id:
-            tip = f"很抱歉，您指定的【{preferred_name}】暂未采纳，已改派更合适的【{assigned_name}】处理"
-        # ④ 拼音/近似名命中
-        elif log.pinyin_match:
-            tip = f"按拼音匹配到【{assigned_name}】（与输入【{preferred_name or assigned_name}】不同字），如非此人请更正"
-        # ③ 同名命中
-        elif log.name_collision:
-            tip = f"指派人存在同名，已按评估选择【{assigned_name}】"
-        else:
-            tip = None
-
-        # ① 画像不完整（可叠加追加）
-        missing = ((log.profile or {}).get("missing") or []) if isinstance(log.profile, dict) else []
-        if missing:
-            suffix = "；该接单人画像不完整，待补充"
-            tip = (tip + suffix) if tip else "该接单人画像不完整，待补充"
-        return tip
+        from app.services.redispatch_tip_service import build_redispatch_tip
+        return build_redispatch_tip(log, user_map)
 
     @staticmethod
     async def _redispatch_tips_map(

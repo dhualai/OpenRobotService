@@ -41,7 +41,10 @@ from app.utils.notification_utils import NotificationUtils, _format_shanghai
 from app.integrations.api import verify_sync_api_key
 from app.core.config import settings
 from app.core.user_identity import user_matches, is_admin_user, to_user_id, actor_username, identity_keys
-from app.services.redispatch_tip_service import build_redispatch_tip_detail  # 派单说明话术生成（模板+可选AI润色）
+from app.services.redispatch_tip_service import (  # 派单说明话术生成（模板+可选AI润色）
+    build_redispatch_tip,
+    build_redispatch_tip_detail,
+)
 
 router = APIRouter(tags=["tasks"])
 
@@ -191,6 +194,34 @@ def _fallback_redispatch_candidates() -> List[Dict]:
 
 # 注：派单说明（tip_detail）话术生成已抽离到独立 service，见
 # app.services.redispatch_tip_service.build_redispatch_tip_detail
+
+
+def _clean_reasoning_for_display(reasoning_raw, log, user_map) -> str:
+    """把派单理由（reasoning）清洗成面向用户展示的文本。
+
+    reasoning 由 AI 派单引擎生成，可能残留候选人/工程师的 users.id（如 "ID:xxx"、"（xxx）"），
+    展示给用户（提单人的 tip_detail、接单人/管理员的派单理由）前需替换为姓名，避免暴露内部 id。
+
+    - 先用本轮候选快照（log.candidates）把 id 换成姓名；
+    - 候选未覆盖的 id（如原处理人等）再用 user_map 兜底反查。
+    """
+    if not isinstance(reasoning_raw, str) or not reasoning_raw.strip():
+        return reasoning_raw if isinstance(reasoning_raw, str) else ""
+    txt = reasoning_raw
+    for _cand in (getattr(log, "candidates", None) or []):
+        if isinstance(_cand, dict):
+            _cid = _cand.get("engineer_id")
+            _cname = _cand.get("name") or (user_map or {}).get(_cid, _cid)
+            if _cid and _cname:
+                txt = txt.replace(f"ID:{_cid}", _cname)
+                txt = txt.replace(f"({_cid})", f"({_cname})")
+                txt = txt.replace(f"（{_cid}）", f"（{_cname}）")
+                txt = txt.replace(_cid, _cname)
+    # 候选内未覆盖的 id（如原处理人等），用 user_map 兜底反查姓名
+    for _cid, _cname in (user_map or {}).items():
+        if _cname and _cid and isinstance(_cid, str) and _cid in txt:
+            txt = txt.replace(_cid, _cname)
+    return txt
 
 
 # 解决方式总结 Worker 的 Redis 任务队列（与 ai/agents/AiTaskPlatform/services/resolution_worker.py 保持一致）
@@ -526,22 +557,27 @@ async def get_task(
         try:
             from app.models.task_dispatch_log import TaskDispatchLog
             from sqlalchemy import select as _sel
-            # 权限控制：派单原因（tip_detail）属敏感信息，仅对「提单人」或「管理员」可见，其他人不返回。
+            # 权限控制：派单理由相关属较敏感信息，按下述身份矩阵返回，避免无关查看者拿到：
+            #   - result.reasoning（"为什么派给他"）→ 仅「接单人(assigned_to) 或 管理员」可见
+            #   - result.tip_detail（重派高情商话术）→ 仅「提单人(created_by) 或 管理员」可见
+            # （接单人身份依据 _log.assigned_id（本轮真正被派单对象）判定，见下 `_viewer_assignee`）
+            _viewer_user = None
+            _viewer_creator = False
+            _viewer_admin = False
             try:
                 from app.core.database import get_user_with_roles
                 from app.core.user_identity import user_matches, is_admin_user
                 from app.core.security import decode_token
-                _viewer_creator = False
-                _viewer_admin = False
                 if token:
                     _payload = decode_token(token)
                     _uname = (_payload or {}).get("sub")
                     if _uname:
-                        _viewer = get_user_with_roles(_uname)
-                        if _viewer:
-                            _viewer_creator = user_matches(_viewer, getattr(ticket, "created_by", None))
-                            _viewer_admin = is_admin_user(_viewer)
+                        _viewer_user = get_user_with_roles(_uname)
+                        if _viewer_user:
+                            _viewer_creator = user_matches(_viewer_user, getattr(ticket, "created_by", None))
+                            _viewer_admin = is_admin_user(_viewer_user)
             except Exception:
+                _viewer_user = None
                 _viewer_creator = False
                 _viewer_admin = False
             _log = (await db.execute(
@@ -555,6 +591,11 @@ async def get_task(
                 prof = dict(_log.profile or {})
                 assigned_name = user_map.get(_log.assigned_id, _log.assigned_id)
                 pref_name = user_map.get(_log.preferred_id) if _log.preferred_id else None
+                # 接单人身份：当前登录者 == 本轮真正被派单对象（_log.assigned_id）时可看「派单理由」
+                _viewer_assignee = bool(_viewer_user and user_matches(_viewer_user, _log.assigned_id))
+                # 面向用户展示的派单理由：把 reasoning 里可能残留的 users.id 替换为姓名
+                # （供 tip_detail 话术与接单人/管理员的「派单理由」共用）
+                reasoning_display = _clean_reasoning_for_display(_log.reasoning, _log, user_map)
                 # 二次派单感知增强（M3 高情商回复）：未派到指定人时生成一段「模板为主+AI润色」的完整话术
                 # （供详情页展示）。从候选快照取倾向人画像缺失项（missing）判定引导分支；其余分支无此字段。
                 tip_detail = None
@@ -568,28 +609,15 @@ async def get_task(
                                 if zh not in pref_missing_zh:
                                     pref_missing_zh.append(zh)
                             break
-                    reasoning_txt = _log.reasoning if isinstance(_log.reasoning, str) else ""
-                    # 面向用户展示：reasoning 里若残留候选人 users.id，替换为姓名（避免向提单人暴露内部 id）
-                    if reasoning_txt:
-                        for _cand in (_log.candidates or []):
-                            if isinstance(_cand, dict):
-                                _cid = _cand.get("engineer_id")
-                                _cname = _cand.get("name") or user_map.get(_cid, _cid)
-                                if _cid and _cname:
-                                    reasoning_txt = reasoning_txt.replace(f"ID:{_cid}", _cname)
-                                    reasoning_txt = reasoning_txt.replace(f"({_cid})", f"({_cname})")
-                                    reasoning_txt = reasoning_txt.replace(f"（{_cid}）", f"（{_cname}）")
-                                    reasoning_txt = reasoning_txt.replace(_cid, _cname)
-                        # 原处理人等不在候选内的 id，用 user_map 兜底反查姓名
-                        for _cid, _cname in (user_map or {}).items():
-                            if _cname and _cid and isinstance(_cid, str) and _cid in reasoning_txt:
-                                reasoning_txt = reasoning_txt.replace(_cid, _cname)
                     tip_detail = await build_redispatch_tip_detail(
                         pref_name or _log.preferred_id,
                         assigned_name,
-                        reasoning=reasoning_txt,
+                        reasoning=reasoning_display,
                         pref_missing_zh=pref_missing_zh,
                     )
+                else:
+                    # Step0 / 已派到指定人：与列表同一出口（找不到 / 拼音 / 画像不完整）
+                    tip_detail = build_redispatch_tip(_log, user_map)
                 # 二次派单感知增强（M2 兜底）：候选快照为空（老工单 Step0/精排不足 → 空落库）时，
                 # 拉全部启用工程师作兜底候选，保证重派弹窗有可选项；重派落地后由流水线覆盖。
                 _cands = _log.candidates if _log.candidates else _fallback_redispatch_candidates()
@@ -603,7 +631,9 @@ async def get_task(
                         "preferred_name": pref_name,
                         "confidence": _log.confidence,
                         "decision_type": _log.decision_type,
-                        "reasoning": _log.reasoning,
+                        # 派单理由（为什么派给他）仅对「接单人」或「管理员」可见；其余查看者不返回
+                        # （前端据此展示给被派单工程师；提单人看 tip_detail 已含原因，无需重复）
+                        "reasoning": reasoning_display if (_viewer_assignee or _viewer_admin) else None,
                         "profile": {
                             "dept": prof.get("dept"),
                             "job_level": prof.get("job_level"),
