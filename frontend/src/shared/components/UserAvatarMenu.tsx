@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Popup, Button, Toast } from 'tdesign-mobile-react';
 import ClearableInput from '@/shared/components/ClearableInput';
+import AvatarImg from '@/shared/components/AvatarImg';
 import { UserCircleIcon, CameraIcon, LogoutIcon, EditIcon, CheckIcon, CloseIcon } from 'tdesign-icons-react';
 import { useAuthStore } from '@/stores/auth';
 import { getMyProfile, updateMyProfile, uploadAvatar, avatarUrl } from '@/api/profile';
@@ -129,11 +130,12 @@ export default function UserAvatarMenu() {
         onClick={() => setVisible(true)}
         aria-label="个人信息中心"
       >
-        {avatarSrc ? (
-          <img className="user-avatar-menu__thumb" src={avatarSrc} alt="头像" />
-        ) : (
-          <UserCircleIcon size="24px" />
-        )}
+        <AvatarImg
+          className="user-avatar-menu__thumb"
+          src={avatarSrc}
+          alt="头像"
+          fallback={<UserCircleIcon size="24px" />}
+        />
       </button>
 
       {/* 个人信息面板（顶部弹出） */}
@@ -141,18 +143,15 @@ export default function UserAvatarMenu() {
         <div className="user-panel">
           <div className="user-panel__profile">
             <button className="user-panel__avatar" onClick={handlePickAvatar} aria-label="更换头像">
-              {avatarSrc ? (
-                <img
-                  src={avatarSrc}
-                  alt="头像"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setPreviewVisible(true);
-                  }}
-                />
-              ) : (
-                <UserCircleIcon size="56px" />
-              )}
+              <AvatarImg
+                src={avatarSrc}
+                alt="头像"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPreviewVisible(true);
+                }}
+                fallback={<UserCircleIcon size="56px" />}
+              />
               <span
                 className="user-panel__avatar-badge"
                 onClick={(e) => {
@@ -238,7 +237,12 @@ export default function UserAvatarMenu() {
       {/* 头像全屏预览：点击上传后的头像图片进入，点击遮罩关闭 */}
       {previewVisible && avatarSrc && (
         <div className="avatar-fullscreen" onClick={() => setPreviewVisible(false)}>
-          <img className="avatar-fullscreen__img" src={avatarSrc} alt="头像大图" />
+          <AvatarImg
+            className="avatar-fullscreen__img"
+            src={avatarSrc}
+            alt="头像大图"
+            fallback={<UserCircleIcon size="96px" />}
+          />
         </div>
       )}
     </>

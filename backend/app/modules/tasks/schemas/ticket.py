@@ -193,6 +193,8 @@ class TicketListItemResponse(TicketBase):
     curr_step_id: Optional[int] = Field(None, description="当前协商节点ID")
     curr_step_name: Optional[str] = Field(None, description="当前协商节点名称")
     curr_step_endtime: Optional[datetime] = Field(None, description="当前协商节点结束时间（naive UTC）")
+    step_last_updated_by: Optional[str] = Field(None, description="最近一次改step的操作人侧标识：assigned/creator")
+    curr_step_agreed: bool = Field(False, description="当前协商节点是否已协商一致")
     reply_count: int
     view_count: int
     redispatch_tip: Optional[str] = Field(None, description="派单结果提醒一句话摘要（无提醒为 None，见 §3.6）")

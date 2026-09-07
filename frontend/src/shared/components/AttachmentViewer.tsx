@@ -4,6 +4,7 @@ import ImageLightbox from './ImageLightbox';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { urlTransformAllowDataImage } from '@/shared/utils/markdown';
+import { readStored } from '@/stores/authStorage';
 import { setupWechatFilePreview } from '@/shared/utils/wechatJsSdk';
 // pdf.js 体积大（主库 + worker 约 1.5MB），懒加载：仅在用户真正点开 PDF 附件时才下载，
 // 避免随 AttachmentViewer 被多路由静态引入而进入首屏 bundle。
@@ -53,7 +54,8 @@ function formatSize(bytes?: number): string {
  * 同源请求（前端与 /p/api 同域）不受 CORS 限制，可直接带 Authorization 头。
  */
 async function downloadViaFetch(url: string, filename: string) {
-  const token = localStorage.getItem('auth_token');
+  // 读当前环境命名空间 key（t_/p_），未迁移前回退 legacy key
+  const token = readStored('AUTH_TOKEN');
   const headers: Record<string, string> = {};
   if (token) headers['Authorization'] = `Bearer ${token}`;
   const resp = await fetch(url, { headers, credentials: 'include' });

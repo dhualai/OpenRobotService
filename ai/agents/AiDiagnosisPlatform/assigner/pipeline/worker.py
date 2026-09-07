@@ -282,10 +282,8 @@ class AssignmentWorker:
         except Exception:
             pass
 
-        # 新建工单通知：派单写回成功后，回调后端内部接口（仅传 task_id，
-        # 后端按 task_id 查库组装标题/项目/截止时间/受理人后发通知）。
-        # 失败仅告警，不影响派单主流程。
-        if ok:
+        # 新建工单通知：真正派到人之后才回调（未指派失败只写 tip，不发「已派单」通知）。
+        if ok and result.engineer_id:
             try:
                 import httpx
                 from ai.config import get_ai_config
@@ -305,10 +303,16 @@ class AssignmentWorker:
             except Exception as e:
                 logger.warning(f"新建工单通知发送失败 task_id={t_id}: {e}")
 
-        logger.info(
-            f"派单完成: task_id={t_id}, assignee={result.engineer_name}, "
-            f"confidence={result.confidence_score:.0%}, decision={result.decision_type}"
-        )
+        if (result.profile or {}).get("unassignable") or not result.engineer_id:
+            logger.info(
+                f"派单未指派: task_id={t_id}, decision={result.decision_type}, "
+                f"reason={(result.reasoning or '')[:80]}"
+            )
+        else:
+            logger.info(
+                f"派单完成: task_id={t_id}, assignee={result.engineer_name}, "
+                f"confidence={result.confidence_score:.0%}, decision={result.decision_type}"
+            )
 
     @staticmethod
     def _fetch_prev_assignee(task_id: int) -> Optional[str]:
@@ -358,15 +362,32 @@ class AssignmentWorker:
                 task.assigned_to = result.engineer_id or None
                 task.updated_at = func.now()
 
-                # ── 派单日志：统一落 task_dispatch_log（append-only，见需求方案 §4.2 §九-M1）。
-                #    每轮派单（含首次）写一条；dispatch_round = 该工单已有最大轮次 + 1。
-                #    与 tasks 更新、操作日志同一事务，保证强一致。 ──
                 from sqlalchemy import select
                 prev_round = db.scalar(
                     select(func.coalesce(func.max(TaskDispatchLog.dispatch_round), 0))
                     .where(TaskDispatchLog.task_id == task.id)
                 ) or 0
                 prof = dict(result.profile or {})
+                unassignable = bool(prof.get("unassignable")) and not result.engineer_id
+                if unassignable:
+                    last = (
+                        db.query(TaskDispatchLog)
+                        .filter(TaskDispatchLog.task_id == task.id)
+                        .order_by(TaskDispatchLog.dispatch_round.desc())
+                        .first()
+                    )
+                    last_prof = last.profile if last and isinstance(last.profile, dict) else {}
+                    if last and last_prof.get("unassignable") and not last.assigned_id:
+                        logger.info(
+                            f"Step7 仍无人可派，tip 已在第{last.dispatch_round}轮，本轮不重复落库 "
+                            f"task_id={task_id}"
+                        )
+                        db.commit()
+                        return True
+
+                # ── 派单日志：统一落 task_dispatch_log（append-only，见需求方案 §4.2 §九-M1）。
+                #    每轮派单（含首次）写一条；dispatch_round = 该工单已有最大轮次 + 1。
+                #    与 tasks 更新、操作日志同一事务，保证强一致。 ──
                 db.add(TaskDispatchLog(
                     task_id=task.id,
                     dispatch_round=int(prev_round) + 1,

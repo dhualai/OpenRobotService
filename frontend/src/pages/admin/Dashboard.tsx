@@ -18,6 +18,7 @@ import {
 } from '@/api/dashboard';
 import { TICKET_TYPE_DISPLAY_MAP } from '@/shared/constants/ticket';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
+import AvatarImg from '@/shared/components/AvatarImg';
 import SubscriptionReminder from '@/shared/components/SubscriptionReminder';
 import { MacDonut, MacLegend, MacStat, macTone } from '@/shared/components/macaronBits';
 import { MacChevronRight, MacRefreshCw } from '@/shared/components/macaronIcons';
@@ -290,11 +291,11 @@ export default function Dashboard() {
         {/* ============ 顶：欢迎区（左侧头像 + 右侧两排：Hello / 用户名） ============ */}
         <div className="admin-welcome">
           <div className="admin-welcome__avatar">
-            {avatarResourceId ? (
-              <img src={avatarUrl(avatarResourceId)} alt="头像" />
-            ) : (
-              <UserCircleIcon size="40px" />
-            )}
+            <AvatarImg
+              src={avatarResourceId ? avatarUrl(avatarResourceId) : null}
+              alt="头像"
+              fallback={<UserCircleIcon size="40px" />}
+            />
           </div>
           <div className="admin-welcome__text">
             <span className="admin-welcome__hello">Hello</span>

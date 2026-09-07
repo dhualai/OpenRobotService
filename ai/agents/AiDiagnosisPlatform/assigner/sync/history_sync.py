@@ -1,9 +1,9 @@
-"""历史工单同步服务：从后端 tasks 表拉取已关闭的工单分配记录。
+"""历史工单同步服务：从后端 tasks 表拉取已解决/已关闭的工单分配记录。
 
 缓存策略：首次请求或缓存过期时全量同步，TTL 10 分钟。
-数据来源：tasks 表 status = closed（提单人确认已解决）且 assigned_to 非空的记录。
-注意：只取 closed，不取 resolved——resolved 仅代表工程师单方认为解决，
-      closed 才是提单人确认问题真正解决，作为历史经验更可靠。
+数据来源：tasks 表 status ∈ {resolved, closed} 且 assigned_to 非空。
+A/B 两路都吃这两档：很多人解了不关，只取 closed 会漏经验。
+A 路走 Qdrant（history_indexer），B 路走本模块拉表聚簇。
 """
 
 import time
@@ -69,8 +69,8 @@ def _fetch_from_tasks_table(module_keywords: Dict[str, List[str]]) -> list[dict]
         rows = (
             db.query(Task)
             .filter(
-                # 只取已关闭：closed 才是提单人确认问题真正解决，作为历史经验更可靠
-                Task.status == TaskStatus.CLOSED,
+                # 已解决 + 已关闭：解了不关的单也进 B 路自动簇
+                Task.status.in_([TaskStatus.RESOLVED, TaskStatus.CLOSED]),
                 Task.assigned_to.isnot(None),
                 Task.assigned_to != "",
             )
@@ -100,7 +100,11 @@ def _fetch_from_tasks_table(module_keywords: Dict[str, List[str]]) -> list[dict]
                 "keywords": keywords,
                 # ── 召回增强字段 ──
                 "modules": _extract_modules(combined, module_keywords),  # 问题域标签（B路用）
-                "created_at": getattr(t, "created_at", None),            # 时间衰减用
+                "created_at": (                                         # 时间衰减：优先用解决/关闭时间
+                    getattr(t, "resolved_at", None)
+                    or getattr(t, "closed_at", None)
+                    or getattr(t, "created_at", None)
+                ),
                 "fault_code": meta.get("fault_code") or "",              # 故障码强匹配用
                 "robot_type": meta.get("robot_type") or "",              # 车型匹配用
             })

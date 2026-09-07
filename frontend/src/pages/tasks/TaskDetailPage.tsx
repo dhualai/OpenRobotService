@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Navbar, Button, Textarea, Toast, Loading, Tag, Popup, Dialog, Form, FormItem } from 'tdesign-mobile-react';
 import AppButton from '@/shared/components/AppButton';
-import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot } from 'lucide-react';
+import { User, UserCheck, Folder, AlarmClock, Clock, RefreshCw, Building2, Store, Download, FileImage, FileText, FileSpreadsheet, FileCode, FileArchive, Paperclip, Bot, ChevronDown } from 'lucide-react';
 import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
@@ -11,6 +11,7 @@ import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { createRequest, getToken } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { readStored } from '@/stores/authStorage';
 import SafeHtml from '@/shared/components/SafeHtml';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
@@ -114,7 +115,8 @@ interface Ticket {
   // tasks 详情接口 GET /{id} 返回蛇形 deadline_at（见 TicketResponse）
   deadline_at?: string | null;
   // 二次派单感知增强（M3）：未派到指定人时的完整话术（详情页 redispatch.result.tip_detail）
-  redispatch?: { result?: { tip_detail?: string | null } } | null;
+  // 二次派单感知增强：派单理由（为什么派给接单人，仅接单人/管理员可见 → redispatch.result.reasoning）
+  redispatch?: { result?: { tip_detail?: string | null; reasoning?: string | null } } | null;
   // 工单阶段性处理（协商节点）：当前节点 ID/名称/结束时间（naive UTC）
   curr_step_id?: number | null;
   curr_step_name?: string | null;
@@ -152,12 +154,16 @@ export default function TaskDetailPage() {
   const adminRequest = createRequest(API_CONFIG.ADMIN.BASE_URL, '管理服务');
 
   const { refreshTasks } = useWorkbenchStore();
-  const { username, userId, name, hasPermission } = useAuthStore();
+  const { username, userId, name, hasPermission, isAdmin } = useAuthStore();
 
   const [detail, setDetail] = useState<Ticket | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   // 二次派单感知增强（M3）：未派到指定人时的完整情商话术（详情页 redispatch.result.tip_detail）
   const [redispatchTipDetail, setRedispatchTipDetail] = useState<string>('');
+  // 二次派单感知增强：派单理由（为什么派给接单人；仅接单人/管理员可看到，详情页 redispatch.result.reasoning）
+  const [dispatchReason, setDispatchReason] = useState<string>('');
+  const [tipFoldOpen, setTipFoldOpen] = useState(false);
+  const [reasonFoldOpen, setReasonFoldOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; curr_step_endtime?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
   // 当前阶段截止时间区间：基准 = 工单创建时间（detail.created_at），而非用户操作时刻
@@ -256,6 +262,10 @@ export default function TaskDetailPage() {
         setDetail(t);
         // 二次派单感知增强（M3）：未派到指定人时的完整话术
         setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
+        // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
+        setDispatchReason(t.redispatch?.result?.reasoning || '');
+        setTipFoldOpen(false);
+        setReasonFoldOpen(false);
         // 摘要存 metadata_info.ai_summary（不混入讨论区）
         const meta = t.metadata_info || {};
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
@@ -1107,7 +1117,7 @@ export default function TaskDetailPage() {
       if (!parsed) return null;
       minioPath = `${parsed.bucket}/${parsed.objectKey}`;
     }
-    const authToken = localStorage.getItem('auth_token') || '';
+    const authToken = readStored('AUTH_TOKEN') || '';
     // 必须拼成绝对 URL：微信内 window.open(相对URL) 打开的是微信内置 WebView，无法下载；
     // 用户「在浏览器打开」后相对路径在外部浏览器解析失败会落到 SPA 404 → 未登录重定向微信 OAuth
     // （表现为「提示跳转到微信客户端」）。绝对 URL 携带 token，在外部浏览器可直接下载。
@@ -1369,6 +1379,10 @@ export default function TaskDetailPage() {
         setAiSummary(typeof meta.ai_summary === 'string' ? meta.ai_summary as string : '');
         // 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径）
         setRedispatchTipDetail(t.redispatch?.result?.tip_detail || '');
+        // 二次派单感知增强：派单理由（后端仅对接单人/管理员返回 reasoning，非空即展示）
+        setDispatchReason(t.redispatch?.result?.reasoning || '');
+        setTipFoldOpen(false);
+        setReasonFoldOpen(false);
       })
       .catch(() => {});
   };
@@ -1542,8 +1556,69 @@ export default function TaskDetailPage() {
 
           {/* 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径） */}
           {redispatchTipDetail && (
-            <div className="redispatch-tip-detail">派单说明：{redispatchTipDetail}</div>
+            <div className={`dispatch-fold dispatch-fold--tip${tipFoldOpen ? ' is-open' : ''}`}>
+              <button
+                type="button"
+                className="dispatch-fold__header"
+                onClick={() => setTipFoldOpen((v) => !v)}
+                aria-expanded={tipFoldOpen}
+              >
+                <span className="dispatch-fold__preview">
+                  <span className="dispatch-fold__label">派单说明</span>
+                  <span className="dispatch-fold__sep">：</span>
+                  <span className="dispatch-fold__clip">{redispatchTipDetail.replace(/\s+/g, ' ').trim()}</span>
+                </span>
+                <ChevronDown size={14} className="dispatch-fold__chevron" aria-hidden />
+              </button>
+              <div className="dispatch-fold__bodywrap">
+                <div className="dispatch-fold__body">{redispatchTipDetail}</div>
+              </div>
+            </div>
           )}
+
+          {/* 
+              ┌──────────────┬─────────────┬───────────────────┬──────────────────┬──────────────┐
+              │ 查看者/场景   │ dispatchReason│ redispatchTipDetail│ isAssignee/isAdmin│ 是否显示卡片  │
+              ├──────────────┼─────────────┼───────────────────┼──────────────────┼──────────────┤
+              │ 普通接单人   │ 空/有       │ 空(后端不返回 tip) │ isAssignee ✓      │ 仅看 reason │
+              │ (有理由)     │（按后端给）  │                   │                  │   → 显示     │
+              │ 接单人但无理由│ 空          │ 空                 │ isAssignee ✓      │  → 不显示    │
+              │ 提单人==接   │ 空/有       │ 空                 │ isAssignee ✓      │  → 显示      │
+              │ 单人(无 tip) │             │                   │                  │              │
+              │ 提单人==接   │ 有          │ 有                 │ isAssignee ✓      │  → 不显示    │
+              │ 单人(有 tip) │             │                   │                  │ (只显 tip)   │
+              │ 管理员       │ 有          │ 依工单而定          │ isAdmin ✓         │ tip 空→显示  │
+              │              │             │                   │                  │ tip 有→不显示│
+              │ 其它第三方   │ 空(后端过滤)│ 空                 │ 均 ✗              │  → 不显示    │
+              │ 老后端+第三方│ 有          │ —                 │ 均 ✗              │  → 不显示    │
+              │ (前端兜底防泄│             │                   │                  │ (角色兜底拦) │
+              │  露)         │             │                   │                  │              │
+              └──────────────┴─────────────┴───────────────────┴──────────────────┴──────────────┘ */}
+          {(() => {
+            if (!dispatchReason || redispatchTipDetail) return null;
+            const { isAssignee } = getCurrentUserRoles();
+            if (!isAssignee && !isAdmin) return null;
+            return (
+              <div className={`dispatch-fold dispatch-fold--reason${reasonFoldOpen ? ' is-open' : ''}`}>
+                <button
+                  type="button"
+                  className="dispatch-fold__header"
+                  onClick={() => setReasonFoldOpen((v) => !v)}
+                  aria-expanded={reasonFoldOpen}
+                >
+                  <span className="dispatch-fold__preview">
+                    <span className="dispatch-fold__label">派单理由</span>
+                    <span className="dispatch-fold__sep">：</span>
+                    <span className="dispatch-fold__clip">{dispatchReason.replace(/\s+/g, ' ').trim()}</span>
+                  </span>
+                  <ChevronDown size={14} className="dispatch-fold__chevron" aria-hidden />
+                </button>
+                <div className="dispatch-fold__bodywrap">
+                  <div className="dispatch-fold__body">{dispatchReason}</div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         <div className="detail-card">
@@ -1559,10 +1634,30 @@ export default function TaskDetailPage() {
           const total = stepTemplate.length;
           const currIdx = stepTemplate.findIndex((s) => s.id === detail.curr_step_id);
           const stepName = detail.curr_step_name || (currIdx >= 0 ? stepTemplate[currIdx].step_name : '');
-          const desc = stepName
-            ? `当前节点：${stepName}${total > 0 ? `（${currIdx >= 0 ? currIdx + 1 : '-'} / ${total}）` : ''}`
-            : '当前节点：尚未设置协商节点';
           const endtimeText = detail.curr_step_endtime ? formatRawDateTime(detail.curr_step_endtime) : '';
+          // 最新协商理由：从系统评论中解析（negotiate-step 评论含"缘由："/旧文案"理由："）。
+          // 倒序扫描评论：遇到"完成阶段/打回重开"等阶段边界评论则说明当前节点尚无协商理由。
+          const latestNegotiateReason = (() => {
+            const list = detail.comments ?? [];
+            const sorted = [...list].sort(
+              (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+            );
+            for (let i = sorted.length - 1; i >= 0; i--) {
+              const c = sorted[i]?.content || '';
+              // 阶段边界：推进到新节点 / 打回重开 → 当前节点暂无协商理由
+              if (c.includes('完成阶段「') || c.includes('标记工单未解决') || c.includes('打回重开')) return '';
+              const m = c.match(/[理缘]由：([\s\S]+)$/);
+              if (m && (c.includes('预期「') || c.includes('协商节点') || c.includes('协商将节点'))) {
+                // 去掉系统附加的回合/首次响应/警示后缀
+                return m[1]
+                  .replace(/（本轮协商回合[\s\S]*$/, '')
+                  .replace(/（首次响应[\s\S]*$/, '')
+                  .replace(/⚠️[\s\S]*$/, '')
+                  .trim();
+              }
+            }
+            return '';
+          })();
           const isProcessing = status === 'in_progress';
           const stepAgreed = !!detail.curr_step_agreed;  // 当前协商节点是否已协商一致
           const canRespond = !!detail.curr_step_id && (status === 'new' || (status === 'in_progress' && !stepAgreed));
@@ -1613,7 +1708,9 @@ export default function TaskDetailPage() {
           };
           const respondBtnDisabled = !canRespond || reachedMax;
           const negotiateDisabled = !canNegotiate || reachedMax;
-          const completeDisabled = !hasNext || reachedMax;
+          // 已协商一致（含满回合确认同意）即可推进；!hasNext 时渲染的是「最末阶段结束」按钮，
+          // reachedMax 不参与禁用——未一致时本就不渲染完成按钮。
+          const completeDisabled = !hasNext;
           return (
             <div className="detail-card">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -1624,9 +1721,11 @@ export default function TaskDetailPage() {
                       ● 轮到你确认/答复
                     </span>
                   )}
-                  {reachedMax && (
+                  {reachedMax && !stepAgreed && (
                     <span style={{ fontSize: 12, color: '#b91c1c', fontWeight: 500 }}>
-                      ● 已达最大回合，请使用升级上报
+                      {myTurn
+                        ? '● 已达最大回合。'
+                        : '● 已达最大回合，待你确认/升级'}
                     </span>
                   )}
                   {isEscalated && (
@@ -1643,24 +1742,112 @@ export default function TaskDetailPage() {
                       background: isEscalated ? '#fef3c7' : pillBg, color: isEscalated ? '#92400e' : pillColor, fontSize: 12, fontWeight: 500, lineHeight: 1.4,
                     }}
                   >
-                    {isEscalated ? `已升级×${escalateCount} · 回合 ${round}` : `交涉回合 ${round} / ${maxRound}`}
+                    {isEscalated ? `已升级×${escalateCount} · 不受回合限制` : `交涉回合 ${round} / ${maxRound}`}
                   </span>
                 </div>
               </div>
-              <div style={{ fontSize: 13, color: 'var(--foreground)', marginBottom: 12, lineHeight: 1.6 }}>
-                当前节点描述：{desc}
+              <div style={{ marginBottom: 12 }}>
+                {stepName ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--foreground)' }}>{stepName}</span>
+                    {total > 0 && (
+                      <span style={{
+                        fontSize: 11, color: 'var(--muted-foreground)',
+                        padding: '1px 8px', borderRadius: 999, background: 'rgba(100,116,139,0.12)',
+                      }}>
+                        第 {currIdx >= 0 ? currIdx + 1 : '-'} / {total} 步
+                      </span>
+                    )}
+                    <span style={{
+                      fontSize: 11, fontWeight: 500, padding: '1px 8px', borderRadius: 999,
+                      background: stepAgreed ? 'rgba(22,163,74,0.12)' : 'rgba(234,179,8,0.18)',
+                      color: stepAgreed ? '#15803d' : '#8a6400',
+                    }}>
+                      {stepAgreed ? '已达成一致' : (myTurn ? '待你确认' : '待对方确认')}
+                    </span>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 13, color: 'var(--muted-foreground)', marginBottom: 6 }}>
+                    尚未开始阶段性处理
+                  </div>
+                )}
                 {endtimeText && (
-                  <span style={{ color: 'var(--muted-foreground)', marginLeft: 8 }}>
-                    节点时间：{endtimeText}
-                  </span>
+                  <div style={{ fontSize: 12, color: 'var(--muted-foreground)', lineHeight: 1.6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <AlarmClock size={13} strokeWidth={2} />
+                    {stepAgreed ? (
+                      <span>预计解决时间 <span style={{ color: 'var(--foreground)', fontWeight: 500 }}>{endtimeText}</span></span>
+                    ) : (
+                      (() => {
+                        // 当前节点时间由谁提出：step_last_updated_by 与本人角色同侧 → 自己提出
+                        const proposerIsMe =
+                          (lastStepBy === 'assigned' && isAssignee) ||
+                          (lastStepBy === 'creator' && isReporter);
+                        return (
+                          <span>
+                            {proposerIsMe ? '你期望在' : '对方期望在'}{' '}
+                            <span style={{ color: 'var(--foreground)', fontWeight: 500 }}>{endtimeText}</span>{' '}
+                            前完成本阶段
+                          </span>
+                        );
+                      })()
+                    )}
+                  </div>
                 )}
               </div>
+              {latestNegotiateReason && !stepAgreed && (() => {
+                // 协商中：缘由归属与时间提议方一致；已达成一致后不再展示
+                const proposerIsMe =
+                  (lastStepBy === 'assigned' && isAssignee) ||
+                  (lastStepBy === 'creator' && isReporter);
+                return (
+                  <div style={{
+                    fontSize: 12, color: 'var(--foreground)', marginBottom: 12, lineHeight: 1.7,
+                    padding: '8px 12px', background: 'rgba(100,116,139,0.08)',
+                    borderRadius: 6, borderLeft: '3px solid #94a3b8',
+                  }}>
+                    <div style={{ color: 'var(--muted-foreground)', marginBottom: 2 }}>
+                      {proposerIsMe ? '你的提议理由' : '对方提议理由'}
+                    </div>
+                    “{latestNegotiateReason}”
+                  </div>
+                );
+              })()}
               {!isTerminal && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {canOperate ? (
                   reachedMax ? (
-                    // 最后一轮：直接显示升级上报按钮（替代管理员介入）
-                    <Button block size="small" theme="danger" onClick={openEscalate}>升级上报</Button>
+                    stepAgreed ? (
+                      // 已在最大回合达成一致：处理人推进/结束阶段
+                      isAssignee ? (
+                        hasNext ? (
+                          <Button block size="small" theme="primary" loading={completing} disabled={completeDisabled} onClick={openCompleteStep}>
+                            当前阶段完成
+                          </Button>
+                        ) : (
+                          <Button block size="small" theme="primary" onClick={handleResolveClick}>
+                            最末阶段结束，处理完成
+                          </Button>
+                        )
+                      ) : null
+                    ) : myTurn ? (
+                      // 最后一轮且轮到自己：二选一 —— 确认同意（达成一致）或有异议升级上报
+                      <>
+                        <Button
+                          block
+                          size="small"
+                          theme="primary"
+                          loading={responding}
+                          disabled={!canRespond}
+                          onClick={handleRespond}
+                        >
+                          确认同意
+                        </Button>
+                        <Button block size="small" theme="danger" onClick={openEscalate}>
+                          有异议，升级上报
+                        </Button>
+                      </>
+                    ) : null
+                    // 满回合但不是自己回合：不显示任何操作按钮
                   ) : stepAgreed ? (
                     // 协商一致阶段（curr_step_agreed=true）：仅处理人可完成当前阶段，创建人无操作按钮
                     isAssignee ? (
@@ -2358,35 +2545,36 @@ export default function TaskDetailPage() {
           <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
             可将节点调整为当前或之后的任一节点，并设置节点结束时间（SLA），协商理由必填。
           </p>
-          <Form initialData={{}}>
-            <FormItem label="协商节点" name="negotiateStepId" labelAlign="top" requiredMark>
-              <select
-                value={negotiateStepId ?? ''}
-                onChange={(e) => setNegotiateStepId(e.target.value ? Number(e.target.value) : null)}
-                style={{
-                  width: '100%', padding: '8px 10px', fontSize: 14,
-                  border: '1px solid var(--component-border, #dcdcdc)', borderRadius: 6,
-                  background: '#fff', marginBottom: 12,
-                }}
-              >
-                {(() => {
-                  // 第一轮（step_phase_round==0，未被"当前阶段完成"推进过）可任选节点；
-                  // 之后仅展示 sequence >= 当前节点的可选节点（当前及之后）
-                  const isPhaseRound0 = !(detail?.step_phase_round) || detail.step_phase_round === 0;
-                  const curSeqForNegotiate = stepTemplate.find((s) => s.id === detail?.curr_step_id)?.sequence ?? -1;
-                  const negotiableSteps = (stepTemplate.length > 0 ? stepTemplate : [])
-                    .filter((s) => isPhaseRound0 || s.sequence >= curSeqForNegotiate)
-                    .sort((a, b) => a.sequence - b.sequence);
-                  const fallback = detail?.curr_step_id
-                    ? [{ id: detail.curr_step_id, step_name: detail.curr_step_name || '当前节点', sequence: 0 }]
-                    : [];
-                  return (negotiableSteps.length > 0 ? negotiableSteps : fallback);
-                })().map((s) => (
-                  <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
-                ))}
-              </select>
-            </FormItem>
-          </Form>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 13, color: '#666', marginBottom: 4 }}>
+              协商节点<span style={{ color: '#e34d59' }}>*</span>
+            </label>
+            <select
+              value={negotiateStepId ?? ''}
+              onChange={(e) => setNegotiateStepId(e.target.value ? Number(e.target.value) : null)}
+              style={{
+                width: '100%', padding: '8px 10px', fontSize: 14,
+                border: '1px solid var(--component-border, #dcdcdc)', borderRadius: 6,
+                background: '#fff',
+              }}
+            >
+              {(() => {
+                // 第一轮（step_phase_round==0，未被"当前阶段完成"推进过）可任选节点；
+                // 之后仅展示 sequence >= 当前节点的可选节点（当前及之后）
+                const isPhaseRound0 = !(detail?.step_phase_round) || detail.step_phase_round === 0;
+                const curSeqForNegotiate = stepTemplate.find((s) => s.id === detail?.curr_step_id)?.sequence ?? -1;
+                const negotiableSteps = (stepTemplate.length > 0 ? stepTemplate : [])
+                  .filter((s) => isPhaseRound0 || s.sequence >= curSeqForNegotiate)
+                  .sort((a, b) => a.sequence - b.sequence);
+                const fallback = detail?.curr_step_id
+                  ? [{ id: detail.curr_step_id, step_name: detail.curr_step_name || '当前节点', sequence: 0 }]
+                  : [];
+                return (negotiableSteps.length > 0 ? negotiableSteps : fallback);
+              })().map((s) => (
+                <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
+              ))}
+            </select>
+          </div>
           {(() => {
             // 选择下限 = 工单创建时间，与当前阶段截止时间编辑口径一致
             const range = getDeadlineRange(detail?.priority, detail?.created_at);
@@ -2442,23 +2630,24 @@ export default function TaskDetailPage() {
           <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
             工单将打回到「处理中」，阶段性处理从头再开始：请选择重新开始的阶段及节点结束时间（SLA），打回后等待处理人确认。
           </p>
-          <Form initialData={{}}>
-            <FormItem label="重新开始的阶段" name="reopenStepId" labelAlign="top" requiredMark>
-              <select
-                value={reopenStepId ?? ''}
-                onChange={(e) => setReopenStepId(e.target.value ? Number(e.target.value) : null)}
-                style={{
-                  width: '100%', padding: '8px 10px', fontSize: 14,
-                  border: '1px solid var(--component-border, #dcdcdc)', borderRadius: 6,
-                  background: '#fff', marginBottom: 12,
-                }}
-              >
-                {[...stepTemplate].sort((a, b) => a.sequence - b.sequence).map((s) => (
-                  <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
-                ))}
-              </select>
-            </FormItem>
-          </Form>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 13, color: '#666', marginBottom: 4 }}>
+              重新开始的阶段<span style={{ color: '#e34d59' }}>*</span>
+            </label>
+            <select
+              value={reopenStepId ?? ''}
+              onChange={(e) => setReopenStepId(e.target.value ? Number(e.target.value) : null)}
+              style={{
+                width: '100%', padding: '8px 10px', fontSize: 14,
+                border: '1px solid var(--component-border, #dcdcdc)', borderRadius: 6,
+                background: '#fff',
+              }}
+            >
+              {[...stepTemplate].sort((a, b) => a.sequence - b.sequence).map((s) => (
+                <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
+              ))}
+            </select>
+          </div>
           {(() => {
             // 选择下限 = 工单创建时间，与当前阶段截止时间编辑口径一致
             const range = getDeadlineRange(detail?.priority, detail?.created_at);
@@ -2511,26 +2700,27 @@ export default function TaskDetailPage() {
               <p style={{ color: '#666', fontSize: '13px', marginBottom: '12px', lineHeight: 1.6 }}>
                 完成当前阶段后，工单将进入"未一致"状态，回合交给创建人确认。
               </p>
-              <Form initialData={{}}>
-                <FormItem label="下一阶段" name="completeNextStepId" labelAlign="top" requiredMark>
-                  <select
-                    value={completeNextStepId ?? ''}
-                    onChange={(e) => setCompleteNextStepId(e.target.value ? Number(e.target.value) : null)}
-                    style={{
-                      width: '100%', padding: '8px 10px', fontSize: 14,
-                      border: '1px solid var(--component-border, #dcdcdc)', borderRadius: 6,
-                      background: '#fff', marginBottom: 12,
-                    }}
-                  >
-                    {nextStepOptions.length === 0 && (
-                      <option value="" disabled>无可选下一阶段</option>
-                    )}
-                    {nextStepOptions.map((s) => (
-                      <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
-                    ))}
-                  </select>
-                </FormItem>
-              </Form>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: 'block', fontSize: 13, color: '#666', marginBottom: 4 }}>
+                  下一阶段<span style={{ color: '#e34d59' }}>*</span>
+                </label>
+                <select
+                  value={completeNextStepId ?? ''}
+                  onChange={(e) => setCompleteNextStepId(e.target.value ? Number(e.target.value) : null)}
+                  style={{
+                    width: '100%', padding: '8px 10px', fontSize: 14,
+                    border: '1px solid var(--component-border, #dcdcdc)', borderRadius: 6,
+                    background: '#fff',
+                  }}
+                >
+                  {nextStepOptions.length === 0 && (
+                    <option value="" disabled>无可选下一阶段</option>
+                  )}
+                  {nextStepOptions.map((s) => (
+                    <option key={s.id} value={s.id}>{`第${s.sequence + 1}步 · ${s.step_name}`}</option>
+                  ))}
+                </select>
+              </div>
               <DatePicker
                 style={{ width: '100%', marginBottom: 12 }}
                 placeholder="点击选择下一阶段结束时间"

@@ -1836,18 +1836,99 @@ html, body, #root {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* 二次派单感知增强（M3）：详情页"派单说明"完整情商话术（未派到指定人时） */
-.redispatch-tip-detail {
+/* 派单说明 / 派单理由：默认折叠成一行标题，点开再看全文 */
+.dispatch-fold {
   margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed rgba(255, 171, 0, 0.35);
-  font-size: 12px;
-  line-height: 20px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.dispatch-fold--tip {
   color: #92400E;
   background: rgba(255, 171, 0, 0.06);
-  border-radius: 6px;
-  padding: 8px 10px;
+  border: 1px solid rgba(255, 171, 0, 0.22);
 }
+.dispatch-fold--reason {
+  color: #1D4ED8;
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.16);
+}
+.dispatch-fold__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 20px;
+  color: inherit;
+  text-align: left;
+  -webkit-tap-highlight-color: transparent;
+}
+.dispatch-fold__preview {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.dispatch-fold__label {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+.dispatch-fold__sep {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+.dispatch-fold__clip {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+}
+.dispatch-fold--tip .dispatch-fold__label,
+.dispatch-fold--tip .dispatch-fold__sep { color: #92400E; }
+.dispatch-fold--tip .dispatch-fold__clip { color: #92400E; }
+.dispatch-fold--reason .dispatch-fold__label,
+.dispatch-fold--reason .dispatch-fold__sep { color: #1E40AF; }
+.dispatch-fold--reason .dispatch-fold__clip { color: #1E3A8A; }
+.dispatch-fold__chevron {
+  flex-shrink: 0;
+  color: inherit;
+  opacity: 0.7;
+  transition: transform 0.2s ease;
+}
+.dispatch-fold.is-open > .dispatch-fold__header .dispatch-fold__chevron {
+  transform: rotate(180deg);
+}
+.dispatch-fold__bodywrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.22s ease-out;
+}
+.dispatch-fold.is-open > .dispatch-fold__bodywrap {
+  grid-template-rows: 1fr;
+}
+.dispatch-fold__body {
+  overflow: hidden;
+  min-height: 0;
+  padding: 0 10px;
+  font-size: 12.5px;
+  line-height: 20px;
+  font-weight: 400;
+}
+.dispatch-fold.is-open .dispatch-fold__body {
+  padding-bottom: 8px;
+}
+.dispatch-fold--tip .dispatch-fold__body { color: #92400E; }
+.dispatch-fold--reason .dispatch-fold__body { color: #1E3A8A; }
 /* 编辑弹窗-所属项目选择（仿下拉，点击弹出搜索层） */
 .ticket-edit-form__select {
   display: flex;
@@ -2572,6 +2653,11 @@ html, body, #root {
   align-items: center;
   gap: 6px;
   min-width: 0;
+}
+/* 「待你确认」标识的呼吸圆点：阶段性协商轮到我且未达成一致 */
+@keyframes task-card2-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.75); }
 }
 /* 状态：浅灰底 + 蓝阶文字（唯一带色文字），终态为灰色 */
 .task-card2__status-tag {

@@ -1971,18 +1971,18 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         Toast({ message: '生成工单草稿失败', theme: 'error' });
         return;
       }
+      const data = res.data;
       // ① 信息不足：stage=not_ready → 对话区列出缺失项引导补充，不弹窗
       //    project_ask=true 是项目编号选择题（等用户回复序号），不是字段拦截
-      if (res.data.stage === 'not_ready') {
-        // 属性收窄不进 setMessages 闭包（TS18048），提局部 const 固化非空
-        const data = res.data;
+      if (data.stage === 'not_ready') {
         const isProjectAsk = !!data.project_ask;
         const missing = data.missing_info ?? [];
         const msg = data.message || (missing.length
           ? `工单信息不足，还差：${missing.join('、')}。在对话中补充后会自动为您生成工单。`
           : '工单信息不足，在对话中补充后会自动为您生成工单。');
-        const choices = isProjectAsk && Array.isArray(data.project_choices)
-          ? data.project_choices : [];
+        const projectChoices = isProjectAsk && Array.isArray(data.project_choices)
+          ? data.project_choices
+          : [];
         setMessages((prev) => [...prev, {
           id: uid(),
           role: 'assistant',
@@ -1990,7 +1990,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           // 字段拦截才用 missing_hint 折叠样式
           ...(isProjectAsk ? {} : { subtype: 'missing_hint' as const }),
           // 项目题挂结构化候选：气泡下方渲染可点按钮
-          ...(choices.length ? { project_choices: choices } : {}),
+          ...(projectChoices.length ? { project_choices: projectChoices } : {}),
           content: msg,
           timestamp: new Date().toISOString(),
         }]);
@@ -2007,8 +2007,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         return;
       }
       // ② 重复提单：data.code=1 + 无 stage（_can_submit 拦截）→ 友好提示，不弹窗
-      if (res.data.code === 1) {
-        const msg = res.data.message || '当前会话无需重复提交工单';
+      if (data.code === 1) {
+        const msg = data.message || '当前会话无需重复提交工单';
         setMessages((prev) => [...prev, {
           id: uid(),
           role: 'assistant',
@@ -2021,7 +2021,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         return;
       }
       // ③ 草稿就绪 / 缺字段：stage=draft_ready | need_fields → 弹确认窗
-      const { draft, missing_fields, prompt } = res.data;
+      const { draft, missing_fields } = data;
       // 打开确认弹窗，让用户核对/编辑/补字段
       setTicketMissing(null); // 已就绪，清掉待补充清单
       setTicketConfirm({ visible: true, draft, overrides: {}, submitting: false, force_submit: false, dualTicket: false, projectOwner: null });
