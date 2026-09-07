@@ -145,6 +145,36 @@ async def get_users(
     finally:
         db.close()
 
+@router.get("/lite", response_model=List[Dict[str, Any]], summary="获取用户精简列表（仅标识与头像字段）")
+async def get_users_lite(
+    current_user: Dict[str, Any] = require_permission("backend:user:base:read")
+):
+    """仅返回 id/username/name/avatar_resource_id 四字段。
+
+    供系统任务页头像映射与处理人/创建人过滤下拉使用，替代全字段 /users?limit=1000
+    的大 payload 拉取（显著降低首屏传输与序列化开销）。
+    """
+    db = db_manager.get_db()
+    try:
+        user_records = db.query(UserDB).all()
+        return [
+            {
+                "id": record.id,
+                "username": record.username,
+                "name": getattr(record, "name", None),
+                "avatar_resource_id": getattr(record, "avatar_resource_id", None),
+            }
+            for record in user_records
+        ]
+    except Exception as e:
+        print(f"获取用户精简列表失败:{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"获取用户精简列表失败: {str(e)}"
+        )
+    finally:
+        db.close()
+
 @router.get("/usp-username", summary="根据姓名生成去重的 USP 账户名")
 async def generate_usp_username(
     name: str = Query(..., description="用户真实姓名"),

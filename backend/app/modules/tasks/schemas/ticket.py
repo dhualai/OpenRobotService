@@ -289,6 +289,11 @@ class TicketFilterRequest(BaseModel):
     size: int = Field(default=10, ge=1, le=100, description="每页数量")
 
 
+class TicketBatchCountRequest(BaseModel):
+    """批量计数请求：每组 queries 独立统计 total，一次网络往返返回多组角标数。"""
+    queries: List[TicketFilterRequest] = Field(default_factory=list, description="多组过滤查询")
+
+
 class ProjectMemberResponse(BaseModel):
     """项目成员（用于 @ 提及选择），复用 user_project_roles 表数据。"""
     id: str
