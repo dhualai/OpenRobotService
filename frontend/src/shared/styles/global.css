@@ -6735,6 +6735,10 @@ html, body, #root {
 }
 .user-select__status--active { background: #e3f9e9; color: var(--sky); }
 .user-select__status--inactive { background: var(--border); color: var(--muted-foreground); }
+/* 项目选择器小字标注（相关性/状态）统一蓝色调 */
+.user-select__status--ticketed,
+.user-select__status--owned,
+.user-select__status--info { background: #e8f1fd; color: #2563eb; }
 
 /* ===== 通用下拉刷新 / 触底加载（PullToRefresh） ===== */
 .ptr-scroll {
