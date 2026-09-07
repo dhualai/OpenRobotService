@@ -1,12 +1,10 @@
-"""存量补索引脚本：把 tasks 表所有已关闭(closed)工单一次性索引进 Qdrant dispatch_history。
+"""存量补索引脚本：把 tasks 表已解决/已关闭工单索引进 Qdrant dispatch_history。
 
-用法（部署/初始化时手动跑一次）：
+用法（部署/初始化或口径变更后手动跑一次）：
     uv run python -m ai.agents.AiDiagnosisPlatform.assigner.sync.history_indexer
 
-之后历史工单随工单闭环持续入库（见 ai/core/retrieval.py::index_dispatch_history），
-本脚本只在首次搭建派单历史向量库时补齐存量数据。
-
-数据来源：与 sync/history_sync.py 一致——只取 status=closed（提单人确认解决）。
+数据来源：与 B 路 history_sync 一致——status ∈ {resolved, closed} 且有处理人。
+同一工单用 ticket_id 稳定覆盖，解了再关不会写成两条。
 """
 import asyncio
 import json
@@ -53,8 +51,16 @@ def _get_engine():
     return _ENGINE
 
 
-def _load_closed_tasks() -> list[dict]:
-    """从 tasks 表拉取所有 closed 工单（含 engineer_id 及召回所需字段）。
+def _as_iso(v) -> str:
+    if v is None:
+        return ""
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    return str(v)
+
+
+def _load_history_tasks() -> list[dict]:
+    """从 tasks 表拉取 resolved + closed 工单（含 engineer_id 及召回所需字段）。
 
     自举实现：直接连库 + 原生 SQL，不依赖 backend 的 ORM 模型（避免触发
     backend app 包初始化导致的循环导入崩溃，见 _get_database_url 注释）。
@@ -71,9 +77,9 @@ def _load_closed_tasks() -> list[dict]:
     try:
         rows = db.execute(text(
             "SELECT id, title, description, task_type, assigned_to, "
-            "       metadata_info, created_at "
+            "       metadata_info, created_at, resolved_at, closed_at "
             "FROM tasks "
-            "WHERE status = 'closed' "
+            "WHERE status IN ('resolved', 'closed') "
             "  AND assigned_to IS NOT NULL AND assigned_to != '' "
             "ORDER BY created_at DESC"
         )).mappings().all()
@@ -89,7 +95,9 @@ def _load_closed_tasks() -> list[dict]:
                     meta = json.loads(meta) if meta else {}
                 except Exception:
                     meta = {}
+            finished = t["resolved_at"] or t["closed_at"] or t["created_at"]
             records.append({
+                "ticket_id": t["id"],
                 "engineer_id": t["assigned_to"],
                 "title": title,
                 "description": desc[:2000],
@@ -97,7 +105,7 @@ def _load_closed_tasks() -> list[dict]:
                 "task_type": _norm_task_type(t["task_type"]),
                 "fault_code": meta.get("fault_code") or "",
                 "robot_type": meta.get("robot_type") or "",
-                "closed_at": t["created_at"],
+                "closed_at": _as_iso(finished),
             })
         return records
     finally:
@@ -115,9 +123,9 @@ async def run_indexer(dry_run: bool = False) -> dict:
     """
     from ai.core import get_retrieval_service
 
-    records = _load_closed_tasks()
+    records = _load_history_tasks()
     total = len(records)
-    logger.info(f"[history_indexer] 待索引进 closed 工单: {total} 条")
+    logger.info(f"[history_indexer] 待索引进 resolved+closed 工单: {total} 条")
 
     retriever = await get_retrieval_service()
     # 确保集合存在

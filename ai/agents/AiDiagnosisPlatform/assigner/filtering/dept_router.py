@@ -117,6 +117,14 @@ class DeptRouter:
             self._llm.classify(ticket),
             self._history.aggregate(ticket, engineers),
         )
+        if not (self._config.departments or []):
+            result.signals["no_dept_profile"] = True
+            skipped = getattr(self._config, "departments_without_profile", None) or []
+            extra = f"（已批准但未写职责：{'、'.join(skipped)}）" if skipped else ""
+            logger.warning(
+                f"{ltag} 没有部门画像{extra}，yaml 不补漏；R2/审查不可用，不按部门硬收紧"
+            )
+
         result.signals["llm"] = llm_scores
         result.signals["history"] = hist_scores
 
