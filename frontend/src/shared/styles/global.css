@@ -881,7 +881,8 @@ html, body, #root {
 }
 /* 项目编号题候选按钮（project_ask）：题面提示语下方等宽两列网格，
    实心蓝底序号徽标+名字左对齐（超长省略号），点击=以用户身份发送序号走
-   编号还原→预填→弹窗链路；答复后随 project_choices 清空消失 */
+   编号还原→预填→弹窗链路；答复后按钮持久保留：所选项加深（--selected）、
+   其余弱化（--done）且整组禁用防重复发序号（派生态见 ChatPanel messages.map） */
 .chat-proj-choices {
   /* 插在题面 head/tail 两段之间（原编号列表位置）：上下对称留白，无分隔线 */
   margin: 10px 0;
@@ -940,6 +941,30 @@ html, body, #root {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 500;
+}
+/* 已答复：所选项加深（=hover 蓝底白字的持久版，徽标同步反白） */
+.chat-proj-choices__btn--selected {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  cursor: default;
+}
+.chat-proj-choices__btn--selected .chat-proj-choices__index {
+  background: var(--primary-foreground);
+  color: var(--primary);
+}
+/* 已答复：其余按钮弱化置灰，不可再点 */
+.chat-proj-choices__btn--done {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  cursor: default;
+  opacity: 0.72;
+}
+.chat-proj-choices__btn--done .chat-proj-choices__index {
+  background: var(--muted-foreground);
+  color: #fff;
+}
+.chat-proj-choices__btn:disabled {
+  pointer-events: none;
 }
 .chat-ticket-overview__footer {
   margin-top: 12px;

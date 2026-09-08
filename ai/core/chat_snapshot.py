@@ -13,6 +13,7 @@
 """
 import base64
 import io
+import json
 import logging
 import re
 import time
@@ -238,6 +239,32 @@ _IMG_MIME = {
 }
 
 
+def _expand_project_choices(turn: dict, content: str) -> str:
+    """项目题轮：metadata_.project_choices 渲染成编号列表文字——前端按钮的文字版，
+    md 附件里能看到候选内容（对话界面的按钮不进文字流）。content 按第一个空行
+    切 head/tail（与前端按钮插入位置一致），列表插中间；无空行退尾部。"""
+    meta = turn.get("metadata_")
+    if not meta:
+        return content
+    try:
+        v = json.loads(meta)
+        if isinstance(v, str):
+            v = json.loads(v)  # safe_json_dumps 二次编码
+        choices = v.get("project_choices") if isinstance(v, dict) else None
+    except Exception:
+        return content
+    if not isinstance(choices, list) or not choices:
+        return content
+    listing = "\n".join(
+        f"{c.get('index', i + 1)}. {c.get('name', '')}".rstrip()
+        for i, c in enumerate(choices) if isinstance(c, dict))
+    split_at = content.find("\n\n")
+    if split_at < 0:
+        return f"{content}\n\n{listing}" if content.strip() else listing
+    return (content[:split_at] + "\n\n" + listing + "\n\n"
+            + content[split_at + 2:]).strip()
+
+
 def _turns_to_markdown(
     turns: List[Dict[str, str]],
     title: str = "AI 诊断对话记录",
@@ -279,6 +306,8 @@ def _turns_to_markdown(
         content = (turn.get("content") or "").strip()
         if not content:
             continue
+        if role == "assistant":
+            content = _expand_project_choices(turn, content)
         if _prev == (role, content):
             continue  # 相邻重复（如上传后的重复回执），跳过
         _prev = (role, content)

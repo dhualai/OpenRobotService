@@ -248,6 +248,12 @@ const mapDbMessages = (
         content: m.role === 'assistant' ? sanitizeAiText(m.content) : m.content,
         timestamp: m.created_at,
       };
+      // 项目题候选持久化恢复（metadata_.project_choices，后端 SSE/prepare 落库）：
+      // 切会话/刷新重拉历史后按钮仍可渲染（本地 state 丢失不再导致按钮消失）
+      const pc = meta?.project_choices;
+      if (Array.isArray(pc) && pc.length > 0) {
+        msg.project_choices = pc as NonNullable<Message['project_choices']>;
+      }
       const extraMsgs: Message[] = [];
       if (m.file_urls) {
         try {
@@ -331,7 +337,7 @@ const mergeDbMessages = (prev: Message[], fresh: Message[]): Message[] => {
 
 // 单条消息气泡（React.memo）：流式期间仅最后一条 content/streaming 变化，历史消息跳过整列表重渲染，消除抖动
 const MessageBubble = memo(function MessageBubble({
-  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch, onProjectChoice,
+  msg, editingId, compact, expandedDesc, onToggleDesc, onToggleReaction, onCopy, onEditStart, onEditChange, onEditSave,   onEditCancel, onImageClick, onOpenTicket, onRedispatch, onProjectChoice, answered, selectedChoice,
 }: {
   msg: Message;
   editingId: string | null;
@@ -348,6 +354,10 @@ const MessageBubble = memo(function MessageBubble({
   onOpenTicket: (dbId: number) => void;
   onRedispatch?: (msgId: string, ov: NonNullable<Message['ticket_overview']>) => void;
   onProjectChoice?: (msgId: string, index: number) => void;
+  // 项目题派生态（由消息序列计算，不持久化）：answered=题后已有用户消息（按钮整组
+  // 禁用防重复发序号）；selectedChoice=答复序号对应按钮（加深显示）
+  answered?: boolean;
+  selectedChoice?: number;
 }) {
   return (
     <div className={`chat-bubble-wrap ${msg.role === 'user' ? 'is-right' : 'is-left'}`}>
@@ -509,7 +519,8 @@ const MessageBubble = memo(function MessageBubble({
                         <button
                           key={c.index}
                           type="button"
-                          className="chat-proj-choices__btn"
+                          className={`chat-proj-choices__btn${answered ? (c.index === selectedChoice ? ' chat-proj-choices__btn--selected' : ' chat-proj-choices__btn--done') : ''}`}
+                          disabled={answered}
                           onClick={() => onProjectChoice?.(msg.id, c.index)}
                         >
                           <span className="chat-proj-choices__index">{c.index}</span>
@@ -1078,18 +1089,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     }
   };
 
-  // 项目题按钮随用户答复消失：点按钮/手动打字/传附件回答同效（答复已给出，旧按钮继续可点是过期引导）
-  const clearProjectChoices = () => {
-    setMessages((prev) => (prev.some((m) => m.project_choices)
-      ? prev.map((m) => (m.project_choices ? { ...m, project_choices: null } : m))
-      : prev));
-  };
-
   /** 带附件发送：文件(可附文字)一起上传 /qa/upload（SSE 流式），逐步推送 VLM 分析 + 诊断。
    * 方案一（乐观渲染）：点发送即插入用户气泡（附件+文字，内嵌上传进度遮罩）+ AI 分析占位气泡，
    * 上传进度实时更新到用户气泡，完成后遮罩消失、AI 回复填入占位气泡。文件名不拼进文字上下文。 */
   const sendWithFile = async (items: Array<{ file: File; url?: string }>, content: string) => {
-    clearProjectChoices();
     const files = items.map((it) => it.file);
     // 每个文件独立气泡（像原来单文件一样各自显示图片缩略图/文件卡片）
     const firstImage = files.find((f) => f.type.startsWith('image/'));
@@ -1132,6 +1135,8 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     let hasResult = false;
     let streamError = '';
     let lastFlush = 0;
+    // 本轮项目题候选：前端兜底落库时随 metadata 持久化（同 send 主链路）
+    let turnChoices: Array<{ index: number; name: string; code?: string }> | null = null;
     const FLUSH_MS = 90;
     const paint = () => setMessages((prev) => prev.map((m) => {
       if (m.id !== assistantId) return m;
@@ -1220,6 +1225,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           // 项目题（附件+文字触发提单闸门）：与纯文字路径统一挂可点按钮
           if (data.project_ask && Array.isArray(data.project_choices) && data.project_choices.length) {
             const choices = data.project_choices as Array<{ index: number; name: string; code?: string }>;
+            turnChoices = choices;
             setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, project_choices: choices } : m)));
           }
           if (!acc && typeof data.message === 'string' && data.message) {
@@ -1246,8 +1252,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const finalContent = sanitizeAiText(acc);
       if (finalContent) {
         setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, content: finalContent, phase: undefined, streaming: false } : m)));
-        // 落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）
-        if (convId) appendMessage(convId, 'assistant', finalContent).then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); }).catch(() => {});
+        // 落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）；
+        // 项目题候选随 metadata 持久化（切会话/刷新后按钮可恢复）
+        if (convId) appendMessage(convId, 'assistant', finalContent, {
+          ...(turnChoices ? { metadata: JSON.stringify({ project_choices: turnChoices }) } : {}),
+        }).then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); }).catch(() => {});
       } else if (!hasResult) {
         setMessages((prev) => prev.filter((m) => m.id !== assistantId));
       } else {
@@ -1299,7 +1308,6 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     resumeFollowBottom();
     // 用户开始补充信息：清掉待补充清单卡片（新一轮对话后再 prepare 会重新给出最新缺口）
     setTicketMissing(null);
-    clearProjectChoices();
 
     // 带附件：走 /qa/upload（SSE 流式），由 sendWithFile 流式渲染 VLM 分析 + 诊断
     if (files.length > 0) {
@@ -1326,6 +1334,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     // 节流渲染相关变量提升到函数作用域：try 块内的 const/let 对 finally 不可见，必须外提
     let acc = '';
     let pending = '';
+    // 本轮项目题候选（result 事件挂到气泡）：前端兜底落库时随 metadata 持久化
+    // （后端 SSE 主路径自己写 metadata，这里仅老后端未接管时的兜底）
+    let turnChoices: Array<{ index: number; name: string; code?: string }> | null = null;
     let typeTimer: ReturnType<typeof setInterval> | null = null;
     // 伪流式（打字机缓冲）：token 先入 pending 队列，定时器按积压规模渐进出字到 acc。
     // 上游（中转站）token 是突发块+真空期交替，直接上屏就是「卡一下出一坨」；
@@ -1492,6 +1503,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           if (currentEvent === 'result' && data.project_ask && Array.isArray(data.project_choices)) {
             const choices = data.project_choices as Array<{ index: number; name: string; code?: string }>;
             if (choices.length) {
+              turnChoices = choices;
               setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, project_choices: choices } : m)));
             }
           }
@@ -1589,8 +1601,11 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         }
       }
       if (fullText && assistantDbId == null && sentConvId) {
-        // 兜底落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）
-        appendMessage(sentConvId, 'assistant', fullText)
+        // 兜底落库成功后回写 DB id（同 finishDrain 对账策略，防合并幽灵重复）；
+        // 项目题候选随 metadata 持久化（切会话/刷新后按钮可恢复）
+        appendMessage(sentConvId, 'assistant', fullText, {
+          ...(turnChoices ? { metadata: JSON.stringify({ project_choices: turnChoices }) } : {}),
+        })
           .then((dbMsg) => { if (dbMsg?.id) setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, id: String(dbMsg.id) } : m))); })
           .catch((e) => console.warn('[ChatPanel] AI 回复落库失败:', e));
       }
@@ -1673,10 +1688,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const handleEditSave = useCallback((msg: Message) => editAndResendRef.current(msg), []);
   // 项目题按钮点击：以用户身份发送序号（如「2」），走编号还原→预填→自动弹窗既有链路。
   // ref 转发保持 onProjectChoice 引用稳定（MessageBubble memo）；发送锁占用时直接忽略，
-  // 不清按钮不吞消息（等流式结束后用户再点）
+  // 不吞消息（等流式结束后用户再点）。按钮不清除——持久存在，答复后由派生态
+  // answered 整组禁用+所选序号加深（见 messages.map 处派生计算）
   const pickProjectChoice = (msgId: string, index: number) => {
     if (sendingRef.current) return;
-    setMessages((prev) => prev.map((m) => (m.id === msgId ? { ...m, project_choices: null } : m)));
     send(String(index));
   };
   const pickProjectChoiceRef = useRef(pickProjectChoice);
@@ -2040,7 +2055,10 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
           timestamp: new Date().toISOString(),
         }]);
         scrollToBottomNow();
-        if (convRef.current) appendMessage(convRef.current, 'assistant', msg).catch(() => {});
+        // 项目题候选随 metadata 持久化（该路径 AI 消息由前端落库，切会话/刷新后按钮可恢复）
+        if (convRef.current) appendMessage(convRef.current, 'assistant', msg, {
+          ...(projectChoices.length ? { metadata: JSON.stringify({ project_choices: projectChoices }) } : {}),
+        }).catch(() => {});
         if (isProjectAsk) {
           // 题面气泡即完整引导，回复序号即预填；不挂「信息不足」
           // 常驻卡片、不发「还差N项」Toast（误导为被拦截）
@@ -2581,7 +2599,25 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
         {messages
           // 渲染层兜底：空白 AI 气泡（空内容/纯空白，且非流式占位、无附件、非工单概览）不渲染
           .filter((m) => m.role !== 'assistant' || !!m.streaming || m.content.trim().length > 0 || !!m.imageUrl || !!m.attachment || m.subtype === 'ticket_overview')
-          .map((msg) => (
+          .map((msg, i, arr) => {
+          // 项目题派生态（纯计算不持久化，重放历史自动还原）：题后已有用户消息 →
+          // 整组按钮禁用防重复发序号；答复是纯序号（点按钮发出的即序号，手打
+          // 「2」「2号」「第3个」同效）→ 对应按钮加深
+          let answered: boolean | undefined;
+          let selectedChoice: number | undefined;
+          if (msg.project_choices?.length) {
+            const nextUser = arr.slice(i + 1).find((x) => x.role === 'user');
+            if (nextUser) {
+              answered = true;
+              const mm = (nextUser.content || '').trim().match(/^(?:第\s*)?(\d+|[一二三四五])\s*(?:号|个)?$/);
+              if (mm) {
+                const cn: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5 };
+                const n = cn[mm[1]] ?? Number(mm[1]);
+                if (Number.isInteger(n)) selectedChoice = n;
+              }
+            }
+          }
+          return (
           <MessageBubble
             key={msg.id}
             msg={msg}
@@ -2597,10 +2633,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             onOpenTicket={handleOpenTicket}
             onRedispatch={openRedispatch}
             onProjectChoice={handleProjectChoice}
+            answered={answered}
+            selectedChoice={selectedChoice}
             expandedDesc={expandedMsgIds.has(msg.id)}
             onToggleDesc={toggleMsgExpanded}
           />
-        ))}
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
 
