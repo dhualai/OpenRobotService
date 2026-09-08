@@ -237,6 +237,10 @@ async def get_my_project_relevance(
 
     owned: set = set()
     try:
+        # 必须用 app.services 的 PermissionService（查 user_project_roles）；
+        # 模块顶部导入的 admin 版 PermissionService 没有此方法，
+        # AttributeError 会被下面 except 吞掉 → owned 永远空集（0908 生产实锤）
+        from app.services.permission_service import PermissionService
         user_roles = PermissionService.get_user_roles_all_projects(user_id)
         for pid in [p for p in user_roles.keys() if p != "global"]:
             project = project_service.get_project(pid)
