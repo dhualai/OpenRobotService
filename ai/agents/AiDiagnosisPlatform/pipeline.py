@@ -764,7 +764,9 @@ async def _lookup_ticket_ref(ref_text: str, created_by: str = "") -> str:
         async with AsyncSessionLocal() as db:
             t = await TicketService.get_ticket_by_id(db, ticket_no, load_comments=True)
             if t is None:
-                return f"#{ticket_no}（未找到该工单号，可能记错或已被删除）"
+                return (f"#{ticket_no}（未找到该工单号，可能记错或已被删除。"
+                        f"请一句话告知用户即可，不要反复追问，"
+                        f"也不要编造该工单的内容）")
             if not _ticket_visible_to(t, created_by):
                 logger.info(f"[ticket_ref] 权限不足拒绝查看: ticket={ticket_no}, "
                             f"user={created_by!r}")
