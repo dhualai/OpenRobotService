@@ -149,7 +149,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       setApiToken(authToken);
       const userData = await request<{ id?: string; roles?: { project_backend?: string[] }, name?: string, avatar_resource_id?: number | null, permissions?: string[], projectPermissions?: Record<string, unknown> }>(
-        `/users/${user}/detail`
+        `/users/${encodeURIComponent(user)}/detail`,
+        { skipCache: true },
       );
       const projectRoles = userData.roles?.project_backend || [];
       const hasAdminRole = projectRoles.includes('admin');

@@ -1,7 +1,7 @@
 // 系统任务（供给视角）—— 上：AI 任务助手 / 下：工单卡片列表
 // 马卡龙极简风格（参考 macaron-minimal-ui 设计）：胶囊筛选 + 灰阶卡片信息层级；
 // 「待我处理」为按天时间轴。跨视图流转：消费 ticketDraft 自动建单。
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -11,6 +11,7 @@ import TitleEllipsis from '@/shared/components/TitleEllipsis';
 import AvatarImg from '@/shared/components/AvatarImg';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { POLL_INTERVAL_MS } from '@/config/poll';
 import Pagination from '@/shared/components/Pagination';
 import UserAvatarMenu from '@/shared/components/UserAvatarMenu';
 import { useWorkbenchStore } from '@/stores/workbench';
@@ -53,13 +54,6 @@ interface Ticket {
 type AvatarMap = Map<string, number>;
 
 const pageSize = 20;
-
-const PRIORITY_WEIGHT_MAP: Record<string, number> = {
-  urgent: 4,
-  high: 3,
-  medium: 2,
-  low: 1,
-};
 
 // 默认选中的任务状态：新建 / 进行中 / 已挂起 / 已解决（排除 已取消 / 已关闭）
 const DEFAULT_STATUS_VALUES: string[] = ['new', 'in_progress', 'pending', 'resolved'];
@@ -129,6 +123,23 @@ const parseFilterFromUrl = (params: URLSearchParams) => {
 // 数组对比：判断两个无序数组是否包含相同元素
 const sameSet = (a: string[], b: string[]) =>
   a.length === b.length && a.every((v) => b.includes(v));
+
+// 工单列表数据级比较：id/更新时间/状态/协商字段一致即视为未变化。
+// 轮询回包去重用——数据没变时复用旧数组引用，配合 TicketCard memo 跳过整列表重渲染。
+const sameTicketItems = (a: Ticket[], b: Ticket[]) =>
+  a.length === b.length &&
+  a.every((t, i) => {
+    const o = b[i];
+    return t.id === o.id && t.updated_at === o.updated_at && t.status === o.status
+      && t.curr_step_id === o.curr_step_id && t.curr_step_agreed === o.curr_step_agreed;
+  });
+
+// 角标计数浅比较：键集与值完全一致即视为未变化
+const sameCounts = (a: Record<string, number>, b: Record<string, number>) => {
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  return ka.length === kb.length && ka.every((k) => a[k] === b[k]);
+};
 
 // 创建时间起止统一使用原生 datetime-local：PC 为浏览器日期面板，移动端自动唤起系统原生滚轮选择器
 //（tdesign DateTimePicker 拖动时存在跳变问题，已弃用）
@@ -247,7 +258,8 @@ const buildFilterParams = (filter: {
 // 马卡龙极简工单卡片：状态为唯一带色文字（蓝阶），优先级蓝阶色块，
 // 头像统一灰底白字（无头像时）/ 圆形头像图片（有 avatar_resource_id 时），
 // 信息层级靠字号与字重区分（参考 macaron-minimal-ui 设计）。
-function TicketCard({ t, onOpen, avatarMap, currentUserId, currentUsername }: { t: Ticket; onOpen: (id: string) => void; avatarMap?: AvatarMap; currentUserId?: string; currentUsername?: string }) {
+// memo 包装：轮询回包数据不变时（sameTicketItems 复用旧引用）跳过卡片重渲染。
+const TicketCard = memo(function TicketCard({ t, onOpen, avatarMap, currentUserId, currentUsername }: { t: Ticket; onOpen: (id: string) => void; avatarMap?: AvatarMap; currentUserId?: string; currentUsername?: string }) {
   const creator = t.created_by_name || t.created_by || '-';
   const assignee = t.assigned_to_name || t.assigned_to || '-';
   const participants = (t.participants || []).filter(Boolean);
@@ -361,7 +373,7 @@ function TicketCard({ t, onOpen, avatarMap, currentUserId, currentUsername }: { 
       </div>
     </div>
   );
-}
+});
 
 // 「待我处理」原先按日期分组的时间轴已移除：所有分类统一走扁平卡片列表，
 // 排序完全由 fetchTickets 中的 sortBy/sortOrder 决定，快捷排序对所有分类生效。
@@ -581,7 +593,21 @@ export default function TasksView() {
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [loading, setLoading] = useState(false);
+  // 搜索双 state：searchInput 即时反映输入（URL 同步），search 防抖 400ms 后提交（触发列表请求）
+  const [searchInput, setSearchInput] = useState(() => initialFilter.current.search);
   const [search, setSearch] = useState(() => initialFilter.current.search);
+  // 已提交搜索值：挂载时与 searchInput 相等 → 跳过首次 commit（避免 URL 恢复的 page 被重置为 1）
+  const committedSearchRef = useRef(initialFilter.current.search);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (searchInput !== committedSearchRef.current) {
+        committedSearchRef.current = searchInput;
+        setSearch(searchInput);
+        setPage(1);
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [searchInput]);
   const [statusFilter, setStatusFilter] = useState(() => initialFilter.current.statusFilter);
   const [priorityFilter, setPriorityFilter] = useState<string[]>(() => initialFilter.current.priorityFilter);
   // 工单类型多选过滤（全部选中时表示不过滤）
@@ -635,9 +661,10 @@ export default function TasksView() {
     let cancelled = false;
     (async () => {
       try {
+        // 精简接口：仅 id/username/name/avatar_resource_id 四字段，避免全字段大 payload
         const data = await adminRequest<Array<{
           username?: string; id?: string; name?: string | null; avatar_resource_id?: number | null;
-        }>>('/users/?skip=0&limit=1000');
+        }>>('/users/lite');
         if (cancelled) return;
         const m: AvatarMap = new Map();
         const list: Array<{ username: string; name?: string }> = [];
@@ -813,14 +840,14 @@ export default function TasksView() {
         ...listExtraFilters,
       ];
 
+      // 排序全部下沉后端（priority 由后端 CASE 加权保证权重序，避免页内排序错位）
       const sortFieldMap: Record<string, string> = {
+        priority: 'priority',
         created_at: 'createdAt',
         updated_at: 'updatedAt',
         deadline_at: 'deadlineAt',
       };
-      const sorts = sortBy === 'priority'
-        ? []
-        : [{ field: sortFieldMap[sortBy] || 'updatedAt', direction: sortOrder }];
+      const sorts = [{ field: sortFieldMap[sortBy] || 'updatedAt', direction: sortOrder }];
 
       const data = await request<{ items: Ticket[]; total: number }>('/filter', {
         method: 'POST',
@@ -833,15 +860,9 @@ export default function TasksView() {
         skipCache: true,
       });
 
-      let sortedItems = data.items || [];
-      if (sortBy === 'priority') {
-        sortedItems = [...sortedItems].sort((a, b) => {
-          const weightA = PRIORITY_WEIGHT_MAP[a.priority] || 0;
-          const weightB = PRIORITY_WEIGHT_MAP[b.priority] || 0;
-          return sortOrder === 'desc' ? weightB - weightA : weightA - weightB;
-        });
-      }
-      setTickets(sortedItems);
+      // 回包与当前数据一致时复用旧引用，避免轮询触发整列表无效重渲染
+      const items = data.items || [];
+      setTickets((prev) => (sameTicketItems(prev, items) ? prev : items));
       setTotal(data.total || 0);
     } catch (err) {
       if (!silent) {
@@ -855,26 +876,43 @@ export default function TasksView() {
 
   fetchTicketsRef.current = fetchTickets;
 
-  // 筛选状态变化时同步到 URL
+  // 筛选状态变化时同步到 URL（搜索用即时值 searchInput，列表请求用防抖后的 search）
   useEffect(() => {
     const newParams = buildFilterParams({
-      search, statusFilter, priorityFilter, typeFilter,
+      search: searchInput, statusFilter, priorityFilter, typeFilter,
       relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder,
     });
     if (newParams !== searchParams.toString()) {
       setSearchParams(newParams, { replace: true });
     }
-  }, [search, statusFilter, priorityFilter, typeFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder]);
+  }, [searchInput, statusFilter, priorityFilter, typeFilter, relevanceFilter, projectFilter, assigneeFilter, creatorFilter, createdStart, createdEnd, resolvedStart, resolvedEnd, closedStart, closedEnd, page, sortBy, sortOrder]);
 
   useEffect(() => { fetchTickets(); }, [fetchTickets]);
   useEffect(() => { if (tasksRefreshKey > 0) fetchTickets(); }, [tasksRefreshKey]);
 
+  // 轮询刷新：按 VITE_POLL_INTERVAL_MS（默认 10s，见 @/config/poll）静默拉取列表与角标；
+  // 页面不可见时暂停（省电省请求），恢复可见时立即同步一次再恢复轮询。
   useEffect(() => {
-    const interval = setInterval(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (timer) return;
+      timer = setInterval(() => {
+        fetchTicketsRef.current(true);
+        fetchCountsRef.current();
+      }, POLL_INTERVAL_MS);
+    };
+    const stop = () => {
+      if (timer) { clearInterval(timer); timer = null; }
+    };
+    const onVisibility = () => {
+      if (document.hidden) { stop(); return; }
       fetchTicketsRef.current(true);
       fetchCountsRef.current();
-    }, 2000);
-    return () => clearInterval(interval);
+      start();
+    };
+    if (!document.hidden) start();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => { stop(); document.removeEventListener('visibilitychange', onVisibility); };
   }, []);
 
   useEffect(() => {
@@ -893,7 +931,7 @@ export default function TasksView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketDraft]);
 
-  const openDetail = (id: string) => { navigate(`/tasks/${id}`); };
+  const openDetail = useCallback((id: string) => { navigate(`/tasks/${id}`); }, [navigate]);
 
   
 
@@ -911,41 +949,36 @@ export default function TasksView() {
 
   // 拉取各分类角标条数：与列表共用同一套过滤口径（含搜索/状态/优先级/类型/项目/人员/时间范围），
   // 仅相关性维度按各分类切换——这样角标数 = 「切到该分类后列表会显示的总数」，与列表动态对齐。
-  // 每次只取 total（size=1）；单个分类失败静默跳过，保留旧值。
+  // 批量接口一次网络往返取全部分类 total（替代原先 3~4 个并发 POST /filter）。
   const fetchRelevanceCounts = useCallback(async () => {
     if (countsFetchingRef.current) return;
     countsFetchingRef.current = true;
     try {
-      const entries = await Promise.all(
-        relevanceOptions.map(async (option) => {
-          try {
-            // 「全部」无权限时按项目维度计数，与列表回退口径一致
-            const key = option.value === 'global' && !canViewAllTasks ? 'all' : option.value;
-            const filters = [
-              ...buildRelevanceFilters(key, userId || username, projectIds),
-              ...listExtraFilters,
-            ];
-            const data = await request<{ total: number }>('/filter', {
-              method: 'POST',
-              body: JSON.stringify({
-                filters,
-                sorts: [],
-                page: 1,
-                size: 1,
-              }),
-              skipCache: true,
-            });
-            return [option.value, data.total] as const;
-          } catch {
-            return null;
-          }
-        }),
-      );
-      const next: Record<string, number> = {};
-      entries.forEach((entry) => {
-        if (entry) next[entry[0]] = entry[1];
+      const queries = relevanceOptions.map((option) => {
+        // 「全部」无权限时按项目维度计数，与列表回退口径一致
+        const key = option.value === 'global' && !canViewAllTasks ? 'all' : option.value;
+        return {
+          filters: [
+            ...buildRelevanceFilters(key, userId || username, projectIds),
+            ...listExtraFilters,
+          ],
+          sorts: [],
+          page: 1,
+          size: 1,
+        };
       });
-      setRelevanceCounts(next);
+      const totals = await request<number[]>('/filter/counts', {
+        method: 'POST',
+        body: JSON.stringify({ queries }),
+        skipCache: true,
+      });
+      const next: Record<string, number> = {};
+      relevanceOptions.forEach((option, i) => {
+        const v = totals?.[i];
+        if (typeof v === 'number') next[option.value] = v;
+      });
+      // 计数没变化时复用旧引用，避免轮询触发无效重渲染；整批失败保持旧角标
+      setRelevanceCounts((prev) => (sameCounts(prev, next) ? prev : next));
     } catch {
       // 计数失败保持旧角标，不打扰页面
     } finally {
@@ -1361,8 +1394,8 @@ export default function TasksView() {
               <input
                 className="tasks-search"
                 placeholder="搜索工单（支持编号/标题）…"
-                value={search}
-                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+                value={searchInput}
+                onChange={(e) => { setSearchInput(e.target.value); }}
               />
             </div>
           </div>

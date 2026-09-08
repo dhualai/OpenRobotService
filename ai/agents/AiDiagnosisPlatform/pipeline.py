@@ -3766,7 +3766,7 @@ class AiDiagnosisPlatform:
             f"## Agent 推理链\n{reasoning}{_att_block}\n\n"
             f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
             f"然后以 JSON 格式返回：\n"
-            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤500字，简述问题和排查过程，不要带项目/现场名；🔴 对话里与本问题相关的信息全部总结进去——AI 追问过、用户回答过的要装，用户主动提到的碎片（抱怨、纠正、对之前处理的反馈）同样要装，一项都不能丢；🔴 对话过程中 AI 已给出的排查假设或分诊结论，浓缩成一两句写进描述（给接单工程师排查方向）；🔴 AI 没问过的信息不要凭空出现，禁止罗列一堆「XX：未提供」凑格式（如没问过调度版本就不能有「调度版本：未提供」）；🔴 唯一例外——故障时间、车辆编号这两个关键字段，对话里没拿到的，在描述末尾明写一句「用户未提供：…」，只列真实缺失的那几项；用户答「没看清/没记住」的照实写（如「报错一闪而过，用户未看清具体内容」）；🔴 型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 结构化字段填过也要写；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
+            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤500字，简述问题和排查过程，不要带项目/现场名；🔴 对话里与本问题相关的信息全部总结进去——AI 追问过、用户回答过的要装，用户主动提到的碎片（抱怨、纠正、对之前处理的反馈）同样要装，一项都不能丢；🔴 对话过程中 AI 已给出的排查假设或分诊结论，浓缩成一两句写进描述（给接单工程师排查方向）；🔴 排查假设只能浓缩对话里 AI 真实说过的话——对话中 AI 没给过任何假设或结论时，描述只写用户报告的事实，禁止自行推测原因或编造排查建议；🔴 AI 没问过的信息不要凭空出现，禁止罗列一堆「XX：未提供」凑格式（如没问过调度版本就不能有「调度版本：未提供」）；🔴 唯一例外——故障时间、车辆编号这两个关键字段，对话里没拿到的，在描述末尾明写一句「用户未提供：…」，只列真实缺失的那几项；用户答「没看清/没记住」的照实写（如「报错一闪而过，用户未看清具体内容」）；🔴 型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 结构化字段填过也要写；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
             f'"priority":"紧急|高|中|低","contact":"用户方（报障侧）的联系人，不是指派的处理人；从对话提取，没有则为空（系统会自动兜底为用户注册姓名，不要编造）",'
             f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
             f'"project":"固定为空字符串——项目由用户在确认弹窗搜索选择，不要从对话提取",'
@@ -4359,7 +4359,9 @@ class AiDiagnosisPlatform:
                 "code": 1,
                 "stage": "not_ready",
                 "missing_info": missing,
-                "message": f"工单信息不足，还差：{'、'.join(missing)}。补充后我自动生成工单。",
+                # 与 memory.turns 同一条 LLM 话术（chat_msg）——此前这里返回另一条
+                # 固定文案，前端落库后 DB/memory 两版并存，附件拼接对不上号成段重复
+                "message": chat_msg,
             }
 
         # 0828 新规则：按钮路径话术仍零项目（不出题不追问），但**预填恢复**——
@@ -4452,8 +4454,16 @@ class AiDiagnosisPlatform:
             ready, missing = _assess_ticket_readiness(agent_state)
             if not ready:
                 logger.info(f"[confirm] 信息不足拦截: session={session_id}, missing={missing}")
+                # 与 prepare_ticket 拦截同构：生成 LLM 追问写进 memory + 返回同一条
+                # message（此前固定文案与 memory 版并存，附件拼接成段重复的源头）
+                chat_msg = await self._generate_missing_ask(missing, agent_state, memory,
+                                                            via_button=True)
+                memory.turns.append({"role": "assistant", "content": chat_msg})
+                agent_state.ticket_collecting = missing
+                _save_agent_state(memory, agent_state)
+                await self._memory_manager.save_memory(memory)
                 return {"code": 1, "stage": "not_ready", "missing_info": missing,
-                        "message": f"工单信息不足，还差：{'、'.join(missing)}。补充后我自动生成工单。"}
+                        "message": chat_msg}
 
         # 弹窗里选的项目 → 归一为项目库全名 + code（弹窗 ProjectSelect 已传全名，
         # 这里是防旧前端/直调 API 传简称的兜底）
