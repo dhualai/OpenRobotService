@@ -23,6 +23,7 @@ from app.modules.tasks.schemas.ticket import (
     TicketCreate, TicketUpdate, TicketResponse, TicketListResponse,
     TicketCommentCreate, TicketCommentUpdate, TicketCommentResponse,
     TicketQueryParams, TicketCuibanNotification, TicketFilterRequest,
+    TicketBatchCountRequest,
     TicketCreateNotificationRequest, ProjectMemberResponse
 )
 from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, TicketType
@@ -487,17 +488,42 @@ async def filter_tasks(
     logger = logging.getLogger(__name__)
     
     try:
-        logger.info(f"开始复合过滤查询任务列表, filters_count={len(filter_request.filters) if filter_request.filters else 0}, page={filter_request.page}, size={filter_request.size}")
-        
+        logger.debug(f"开始复合过滤查询任务列表, filters_count={len(filter_request.filters) if filter_request.filters else 0}, page={filter_request.page}, size={filter_request.size}")
+
         auth_header = request.headers.get("Authorization")
         token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
 
         result = await TicketService.filter_tickets(db, filter_request, token)
-        logger.info(f"复合过滤查询任务列表成功, total={result.get('total', 0)}")
+        logger.debug(f"复合过滤查询任务列表成功, total={result.get('total', 0)}")
         return result
     except Exception as e:
         logger.error(f"复合过滤查询任务列表失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"复合过滤查询任务列表失败: {str(e)}")
+
+
+@router.post("/filter/counts", response_model=List[int])
+async def filter_tasks_counts(
+    batch_request: TicketBatchCountRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """批量计数：每组 queries 独立统计 total，一次网络往返返回多组角标数。
+
+    供系统任务页「全部/项目相关/待我处理/与我相关」分类角标使用，
+    替代前端并发多次 POST /filter（减少认证/中间件开销与连接占用）。
+    """
+    try:
+        auth_header = request.headers.get("Authorization")
+        token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
+
+        totals = []
+        for q in batch_request.queries:
+            totals.append(await TicketService.count_tickets(db, q, token))
+        return totals
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"批量计数失败: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"批量计数失败: {str(e)}")
 
 
 @router.get("/stats/overview", response_model=dict)
