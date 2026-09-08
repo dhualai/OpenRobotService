@@ -173,7 +173,7 @@ class Conversation(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(255), nullable=False, default="新会话", comment="会话标题")
     user_id = Column(String(255), nullable=False, default="", comment="用户ID")
-    scene_type = Column(String(255), nullable=False, default="chat", comment="场景类型: chat/faq/support/consultation/other")
+    scene_type = Column(String(255), nullable=False, default="chat", comment="场景类型: chat/faq/support/consultation/other/dataqa")
     service_ticket_id = Column(String(255), nullable=False, default="", comment="关联工单ID")
     metadata_ = Column(Text, nullable=True, comment="元数据")
     created_at = Column(DateTime, server_default=func.now(), comment="创建时间")

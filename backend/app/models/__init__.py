@@ -54,6 +54,9 @@ from app.models.conversation import (
     MessageType,
 )
 
+# 数据助手会话 / 消息（独立于摇人 conversations/messages）
+from app.models.dataqa import DataqaConversation, DataqaMessage
+
 # 工单（AI 诊断生成，独立于 Task）
 from app.models.ticket import Ticket
 
@@ -99,6 +102,8 @@ __all__ = [
     "TaskDispatchLog",
     # conversation
     "Conversation", "Message", "SceneType", "MessageRole", "MessageType",
+    # dataqa
+    "DataqaConversation", "DataqaMessage",
     # ticket (AI)
     "Ticket",
     # resource

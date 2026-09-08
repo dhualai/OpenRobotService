@@ -15,6 +15,7 @@ from app.wechat import wechat_api_router
 from app.modules.admin import admin_router
 from app.modules.tasks import tasks_router
 from app.modules.call import call_router
+from app.modules.dataqa import dataqa_router
 
 import app.integrations  # noqa: E402  装载外部任务源插件（按 TASK_SOURCES_ENABLED 自注册）
 from app.integrations.api import router as integrations_sources_router
@@ -98,6 +99,7 @@ app.include_router(admin_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(integrations_sources_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(tasks_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(call_router, prefix=f"{settings.API_V1_STR}")
+app.include_router(dataqa_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(wechat_api_router, prefix=f"{settings.API_V1_STR}")
 app.include_router(integrations_mappings_router, prefix=f"{settings.API_V1_STR}/admin")
 

@@ -70,6 +70,13 @@ _ANALYSIS_STRONG_PATTERNS = (
     r"(成功率|完成率|解决率|逾期率|风险分布|工单分布|趋势)",
 )
 
+# LLM 兜底意图判定的系统提示词：要求只输出一个词，便于低成本解析
+_INTENT_CLASSIFY_SYSTEM_PROMPT = """\
+你是意图分类器。判断用户输入属于哪一类，只输出一个词，不要输出任何其他内容：
+- 用户想查询、统计、分析平台数据（项目/工单/任务/风险/指标等）→ 输出 analysis
+- 用户只是闲聊、问候、咨询功能用法或其他无关话题 → 输出 chat
+"""
+
 
 class DataAnalysisAgent:
     """AI 数据分析 Agent。
@@ -194,7 +201,10 @@ class DataAnalysisAgent:
         """
         has_data = data is not None and bool(data.strip())
         has_scope = bool(project_code or user_id)
+        # 混合判定：关键词快筛（零成本）→ 无法判定时 LLM 兜底（低温度短回答）
         intent = self._classify_question_intent(question, context)
+        if intent == "unknown":
+            intent = await self._classify_intent_with_llm(question, context)
 
         if has_data:
             result = await self._analyzer.analyze(
@@ -213,12 +223,21 @@ class DataAnalysisAgent:
             )
 
         if has_scope and intent == "analysis":
+            # 从问题中解析时间范围（覆盖默认的 today+DAILY）
+            resolved_period, resolved_date = self._extract_time_scope(question, period, date)
+            # 项目优先级：问题实体提取 > 页面上下文 project_code > 用户关联全部项目
+            resolved_project = project_code
+            if not resolved_project:
+                project_hint = self._extract_project_hint(question)
+                if project_hint:
+                    resolved_project = ReportGenerator.lookup_project_by_hint(project_hint)
+
             generator = ReportGenerator(self._llm)
-            target_date = _parse_date(date)
+            target_date = _parse_date(resolved_date)
             collected = generator.collect_data(
-                period=period,
+                period=resolved_period,
                 target_date=target_date,
-                project_code=project_code,
+                project_code=resolved_project,
                 user_id=user_id,
             )
             collected_data = json.dumps(
@@ -229,7 +248,7 @@ class DataAnalysisAgent:
             )
             collected_context = (
                 f"数据来源：OpenRobotService MySQL 实时采集；"
-                f"统计周期：{period.value}；"
+                f"统计周期：{resolved_period.value}；"
                 f"统计范围：{collected.date_range}。"
             )
             merged_context = (
@@ -270,7 +289,12 @@ class DataAnalysisAgent:
 
     @staticmethod
     def _classify_question_intent(question: str, context: str | None = None) -> str:
-        """基于问题文本自动识别是普通聊天还是数据分析。"""
+        """基于关键词快筛意图，返回三态：chat / analysis / unknown。
+
+        - 命中礼貌用语 → "chat"（明确闲聊，无需 LLM 判定）
+        - 命中分析动作词+主体词组合 → "analysis"（明确分析，无需 LLM 判定）
+        - 其余 → "unknown"，交由 :meth:`_classify_intent_with_llm` 用 LLM 兜底判定
+        """
         text = "\n".join(part.strip() for part in [question, context or ""] if part).lower()
         if not text:
             return "chat"
@@ -287,6 +311,100 @@ class DataAnalysisAgent:
         if action_hit and subject_hit:
             return "analysis"
 
+        return "unknown"
+
+    @staticmethod
+    def _extract_project_hint(question: str) -> str | None:
+        """从问题中提取项目名线索，供 project 表精确匹配。
+
+        支持的常见表述模式：
+        - "XX项目" / "XX 项目" → XX
+        - "XX的工单/风险/指标/数据" → XX
+        - 引号或书名号内容 「XX」 / "XX" / 《XX》
+
+        返回提取到的线索文本（≥2 字符）或 None。
+        """
+        # 模式1: "XX项目"
+        m = re.search(r'([^，,。.!！？?\s]{2,16})项目', question)
+        if m:
+            return m.group(1).strip()
+        # 模式2: "XX的工单/风险/指标/数据/任务/报障"
+        m = re.search(
+            r'([^，,。.!！？?\s]{2,16})的(?:工单|风险|指标|数据|任务|项目|报障)',
+            question,
+        )
+        if m:
+            return m.group(1).strip()
+        # 模式3: 引号/书名号内容 「XX」 / "XX" / 《XX》
+        m = re.search(r'[""《]([^""》]{2,20})[""》]', question)
+        if m:
+            return m.group(1).strip()
+        return None
+
+    @staticmethod
+    def _extract_time_scope(
+        question: str,
+        default_period: ReportPeriod,
+        default_date: str | None,
+    ) -> tuple[ReportPeriod, str | None]:
+        """从问题中解析时间表述，返回 (period, date_str)。
+
+        仅在问题中有明确时间词时才覆盖默认值；
+        否则返回原始 (default_period, default_date)。
+        """
+        from datetime import date as _dt_date, timedelta as _td
+
+        today = _dt_date.today()
+        text = question.lower()
+
+        # 本周 / 这周
+        if re.search(r'(?:本周|这周|这礼拜)', text):
+            return ReportPeriod.WEEKLY, today.isoformat()
+        # 上周
+        if re.search(r'上周', text):
+            last_monday = today - _td(days=today.weekday() + 7)
+            return ReportPeriod.WEEKLY, last_monday.isoformat()
+        # 今天
+        if re.search(r'今天', text):
+            return ReportPeriod.DAILY, today.isoformat()
+        # 昨天
+        if re.search(r'昨天', text):
+            yesterday = today - _td(days=1)
+            return ReportPeriod.DAILY, yesterday.isoformat()
+        # 前天
+        if re.search(r'前天', text):
+            two_days_ago = today - _td(days=2)
+            return ReportPeriod.DAILY, two_days_ago.isoformat()
+
+        return default_period, default_date
+
+    async def _classify_intent_with_llm(self, question: str, context: str | None = None) -> str:
+        """LLM 兜底意图判定：关键词快筛无法判定时调用。
+
+        低温度 + 短回答的轻量调用，避免闲聊场景误判为 analysis 引发无谓查库；
+        LLM 异常或回复无法解析时保守回退 "chat"（不阻断主流程）。
+        """
+        user_prompt = (
+            f"## 补充上下文\n{context}\n\n## 用户输入\n{question}"
+            if context else f"## 用户输入\n{question}"
+        )
+        try:
+            reply, _ = await self._llm.chat(
+                _INTENT_CLASSIFY_SYSTEM_PROMPT,
+                user_prompt,
+                temperature=0,
+                max_tokens=16,
+            )
+        except Exception:
+            logger.warning("LLM 意图兜底判定失败，回退 chat", exc_info=True)
+            return "chat"
+
+        text = (reply or "").strip().lower()
+        if "analysis" in text:
+            return "analysis"
+        if "chat" in text:
+            return "chat"
+        logger.info("LLM 意图判定回复无法解析 %r，回退 chat", text)
         return "chat"
 
     # ── 健康检查 ────────────────────────────────────────────

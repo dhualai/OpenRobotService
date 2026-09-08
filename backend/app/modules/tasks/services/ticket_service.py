@@ -1,7 +1,7 @@
 import logging
 import threading
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, func, or_, and_, case
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import joinedload
@@ -540,7 +540,8 @@ class TicketService:
         return query
 
     @staticmethod
-    async def filter_tickets(db: AsyncSession, filter_request: TicketFilterRequest, token: Optional[str] = None) -> Dict[str, Any]:
+    async def _build_filter_query(filter_request: TicketFilterRequest, token: Optional[str] = None):
+        """构建复合过滤查询（含排序），供列表查询与纯计数（角标）共用。"""
         query = select(Ticket).where(Ticket.id.isnot(None))
 
         FIELD_MAPPING = {
@@ -583,25 +584,52 @@ class TicketService:
             for sort in filter_request.sorts:
                 field = sort.field
                 direction = sort.direction.lower()
-                
+
                 if field not in FIELD_MAPPING:
                     continue
-                
+
                 column, _ = FIELD_MAPPING[field]
-                
-                if direction == 'asc':
+
+                if field == 'priority':
+                    # 优先级枚举列存字符串，直接 order by 是字母序（high<low<medium<urgent），
+                    # 用 CASE 显式加权保证权重序：low(1) < medium(2) < high(3) < urgent(4)
+                    weight = case(
+                        (Ticket.priority == TicketPriority.URGENT, 4),
+                        (Ticket.priority == TicketPriority.HIGH, 3),
+                        (Ticket.priority == TicketPriority.MEDIUM, 2),
+                        else_=1,
+                    )
+                    query = query.order_by(weight.desc() if direction == 'desc' else weight.asc())
+                elif direction == 'asc':
                     query = query.order_by(column.asc())
                 else:
                     query = query.order_by(column.desc())
         else:
             query = query.order_by(Ticket.created_at.desc())
 
+        return query
+
+    @staticmethod
+    async def _count_by_query(db: AsyncSession, query) -> int:
+        """按已有查询的 where 条件统计总数（count + select 共用同一过滤口径）。"""
         count_query = select(func.count(Ticket.id)).select_from(Ticket)
         if query.whereclause is not None:
             count_query = count_query.where(query.whereclause)
 
         total_result = await db.execute(count_query)
-        total = total_result.scalar_one()
+        return total_result.scalar_one()
+
+    @classmethod
+    async def count_tickets(cls, db: AsyncSession, filter_request: TicketFilterRequest, token: Optional[str] = None) -> int:
+        """纯计数：只统计复合过滤命中的总数，不取明细、不拼用户名（批量角标接口复用）。"""
+        query = await cls._build_filter_query(filter_request, token)
+        return await cls._count_by_query(db, query)
+
+    @staticmethod
+    async def filter_tickets(db: AsyncSession, filter_request: TicketFilterRequest, token: Optional[str] = None) -> Dict[str, Any]:
+        query = await TicketService._build_filter_query(filter_request, token)
+
+        total = await TicketService._count_by_query(db, query)
 
         page = filter_request.page
         size = filter_request.size
