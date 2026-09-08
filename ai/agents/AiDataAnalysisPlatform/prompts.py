@@ -123,3 +123,82 @@ def build_chat_prompt(question: str, context: str | None = None) -> str:
     if context:
         return f"## 上下文\n{context}\n\n## 问题\n{question}"
     return question
+
+
+# ── 指标意图解析 prompt（阶段 2：AnalysisPlanner 专用）────────────────
+
+_PLAN_PARSER_SYSTEM_PROMPT = """\
+你是一个数据分析意图解析器，负责把用户的问题解析成结构化的分析计划。
+
+你的输出必须是一个合法的 JSON 对象，不要输出任何其他文字、解释或 Markdown 代码块。
+"""
+
+_PLAN_PARSER_JSON_SCHEMA = """\
+{
+  "metric_keys": ["指标Key数组，只能从上面的指标清单中选，不确定时留空数组"],
+  "time_range_type": "时间范围类型，未提及时填 recent_days",
+  "time_days": 近N天的天数（仅 recent_days 有效，默认 7）,
+  "time_start": "自定义起始日期 YYYY-MM-DD（仅 custom 有效，否则 null）",
+  "time_end": "自定义结束日期 YYYY-MM-DD（仅 custom 有效，否则 null）",
+  "time_mentioned": true/false（用户是否明确提到了时间范围）,
+  "scope_type": "global / single_project / user_projects",
+  "project_code": "项目代码（仅 single_project 且能确定时填写，否则 null）",
+  "project_name": "用户提到的项目名称（无法映射到代码时保留原文，否则 null）",
+  "action": "summary / trend / distribution / compare / top",
+  "confidence": 0.0~1.0 的解析置信度
+}"""
+
+
+def build_plan_parser_system_prompt() -> str:
+    """构建指标意图解析的系统提示词。"""
+    return _PLAN_PARSER_SYSTEM_PROMPT
+
+
+def build_plan_parser_user_prompt(
+    question: str,
+    context: str | None = None,
+    previous_plan=None,
+) -> str:
+    """构建指标意图解析的用户消息：指标目录 + 输出格式 + 用户问题。
+
+    Args:
+        question: 用户问题。
+        context: 补充上下文（可选）。
+        previous_plan: 上一轮澄清会话的 AnalysisPlan（可选），供多轮合并。
+    """
+    from .metric_registry import catalog_for_llm_prompt
+
+    parts: list[str] = []
+
+    parts.append("## 可查询的指标清单\n" + catalog_for_llm_prompt())
+
+    parts.append(
+        "## 时间范围类型\n"
+        "today / yesterday / recent_days(近N天) / this_week / last_week "
+        "/ this_month / last_month / custom(自定义起止)"
+    )
+
+    parts.append(
+        "## 输出 JSON 格式\n"
+        "请只输出一个 JSON 对象，字段如下：\n" + _PLAN_PARSER_JSON_SCHEMA
+    )
+
+    if previous_plan is not None:
+        parts.append(
+            "## 上一轮已解析的分析计划（本轮回答是对其的补充）\n"
+            + previous_plan.model_dump_json(indent=2)
+        )
+
+    parts.append("## 用户问题\n" + question)
+
+    if context:
+        parts.append("## 页面上下文\n" + context)
+
+    parts.append(
+        "\n注意：\n"
+        "1. 只输出 JSON，不要解释\n"
+        "2. metric_keys 只能从指标清单中选择\n"
+        "3. 无法判断为数据分析请求时，metric_keys 输出空数组，confidence 输出 0\n"
+    )
+
+    return "\n\n".join(parts)
