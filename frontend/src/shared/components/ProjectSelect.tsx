@@ -101,8 +101,8 @@ export default function ProjectSelect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects, value, nameHint]);
 
-  // 相关性排序：搜索过滤后按 提过单 > 名下 > 其他 排列（各组内保持原序），
-  // 同一项目两属性兼有时归入「提过单」组
+  // 相关性排序：搜索过滤后按 提过单 > 名下 > 其他 排列，
+  // 同一项目两属性兼有时归入「提过单」组；提单组内按提单数降序（同数保持原序）
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
     const base = kw
@@ -113,16 +113,22 @@ export default function ProjectSelect({
         )
       : projects;
     if (relevance.ticketed.length === 0 && relevance.owned.length === 0) return base;
-    const ticketed = new Set(relevance.ticketed);
+    const ticketed = new Set(relevance.ticketed.map((t) => t.code));
+    const ticketedCount = new Map(relevance.ticketed.map((t) => [t.code, t.count]));
     const owned = new Set(relevance.owned);
-    const g1 = base.filter((p) => ticketed.has(p.project_code));
+    const g1 = base
+      .filter((p) => ticketed.has(p.project_code))
+      .sort(
+        (a, b) =>
+          (ticketedCount.get(b.project_code) || 0) - (ticketedCount.get(a.project_code) || 0),
+      );
     const g2 = base.filter((p) => !ticketed.has(p.project_code) && owned.has(p.project_code));
     const rest = base.filter((p) => !ticketed.has(p.project_code) && !owned.has(p.project_code));
     return g1.length || g2.length ? [...g1, ...g2, ...rest] : base;
   }, [projects, keyword, relevance]);
 
   const relLabel = (code: string): { text: string; cls: string } | null => {
-    if (relevance.ticketed.includes(code)) return { text: '你提过单的项目', cls: 'user-select__status--ticketed' };
+    if (relevance.ticketed.some((t) => t.code === code)) return { text: '你提过单的项目', cls: 'user-select__status--ticketed' };
     if (relevance.owned.includes(code)) return { text: '你名下的项目', cls: 'user-select__status--owned' };
     return null;
   };
