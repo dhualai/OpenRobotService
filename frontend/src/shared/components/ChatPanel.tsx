@@ -2838,12 +2838,28 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
             {ticketConfirm.draft && (
               <div className="ticket-confirm__body">
                 <div className="ticket-confirm__tags">
-                  {ticketConfirm.draft.type && <Tag theme="primary">{TICKET_TYPE_LABEL[ticketConfirm.draft.type] || ticketConfirm.draft.type}</Tag>}
                   {ticketConfirm.draft.priority && <Tag theme="warning">{ticketConfirm.draft.priority}</Tag>}
                 </div>
                 {ticketConfirm.force_submit && (
                   <div className="ticket-confirm__banner">⚠️ 信息收集超限，请重点核对项目、车型等关键字段</div>
                 )}
+                <label className="ticket-confirm__label">工单类型</label>
+                <select
+                  className="ticket-confirm__select"
+                  value={draftField('type')}
+                  onChange={(e) => {
+                    const t = e.target.value;
+                    setDraftField('type', t);
+                    // 工单类型切换后，处理阶段模板随类型变化：清空已选阶段并重新拉取该类型阶段列表
+                    setDraftField('curr_step_id', '');
+                    void loadTicketSteps(t);
+                  }}
+                >
+                  <option value="">请选择工单类型</option>
+                  {Object.entries(TICKET_TYPE_LABEL).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
                 <label className="ticket-confirm__label">标题</label>
                 <input
                   className="ticket-confirm__input"
