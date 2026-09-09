@@ -548,8 +548,8 @@ def _realtime_rates(env: str):
         ok, bad, unc = p.get("直答正确", 0), p.get("未直答", 0), p.get("未覆盖", 0)
         if ok + bad:
             rt["L3_AI同段"] = (
-                f"确定 {ok / (ok + bad) * 100:.1f}%（{ok}/{ok + bad}）"
-                f"｜端到端 {ok / (ok + bad + unc) * 100:.1f}%（{ok}/{ok + bad + unc}）"
+                f"端到端 {ok / (ok + bad + unc) * 100:.1f}%（{ok}/{ok + bad + unc}）"
+                f"｜确定 {ok / (ok + bad) * 100:.1f}%（{ok}/{ok + bad}）"
                 f"｜全段 {len(sub)}（未吸收标注）")
     manual = {"test": "manual_segmentation.json",
               "prod": "manual_segmentation_prod.json"}[env]
@@ -571,8 +571,8 @@ def _realtime_rates(env: str):
         ok, bad, unc = c["直答正确"], c["未直答"], c["未覆盖"]
         if ok + bad:
             rt["L2_人工"] = (
-                f"确定 {ok / (ok + bad) * 100:.1f}%（{ok}/{ok + bad}）"
-                f"｜端到端 {ok / (ok + bad + unc) * 100:.1f}%（{ok}/{ok + bad + unc}）"
+                f"端到端 {ok / (ok + bad + unc) * 100:.1f}%（{ok}/{ok + bad + unc}）"
+                f"｜确定 {ok / (ok + bad) * 100:.1f}%（{ok}/{ok + bad}）"
                 f"｜已标 {ok + bad + unc} 段（标注即出，未跑吸收）")
     return rt
 
@@ -594,7 +594,8 @@ def _realtime_small(env: str):
                 no = sum(1 for r in sub if r["verdict"] == "no")
                 small.append({"label": "KB 缺口率",
                               "value": f"{no / len(sub) * 100:.1f}%",
-                              "sub": f"真实组检索 no {no}/{len(sub)}（知识库没有答案）"})
+                              "sub": f"真实组检索重放 no {no}/{len(sub)}"
+                                     "（资料层上界，含直接提单段；补库缺口看 L3 未覆盖）"})
         except Exception:
             pass
     manual = {"test": "manual_segmentation.json",
@@ -707,8 +708,8 @@ def metrics(env: str = "prod"):
     # hero 优先级：本环境周报同分母口径 > 本环境过程产物实时值（各步跑完
     # 即时刷新，不等第五步）；两者皆无才落到回退环境的数
     zh = {"L1_段级": ("L1 机器信号", "未出单即算直答（上界）"),
-          "L2_人工": ("L2 人工标注", "端到端真实口径"),
-          "L3_AI同段": ("L3 AI 预标", "judge 偏宽仅供参考")}
+          "L2_人工": ("L2 人工标注", "端到端真实口径（未覆盖计入分母）"),
+          "L3_AI同段": ("L3 AI 预标", "端到端含未覆盖 · judge 偏宽仅供参考")}
     for k, (label, sub) in zh.items():
         v = same.get(k) or rt.get(k)
         if v:

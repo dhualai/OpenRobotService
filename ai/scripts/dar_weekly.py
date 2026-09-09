@@ -500,7 +500,8 @@ def _write_md(rep, path):
                         [[k, v] for k, v in rep["l1_真实组"].items()]), ""]
     if rep.get("kb_gap") is not None:
         L += [f"## KB 缺口率：{rep['kb_gap']}",
-              "（真实组检索判定 no 占比=知识库没有答案的段比例，本地重放近似）", ""]
+              "（真实组检索重放 no 占比：资料层上界，含直接提单段；"
+              "补库可救的实际缺口看 L3 未覆盖）", ""]
     if rep.get("matrix"):
         mx = rep["matrix"]
         L += ["## 下钻矩阵：用户 × 话题类型（L1 段级直答率=未出单段/段数）", "",
@@ -679,8 +680,8 @@ def step_report():
     ok, bad, unc = l2.get("直答正确", 0), l2.get("未直答", 0), l2.get("未覆盖", 0)
     if ok + bad:
         rates["L2_人工"] = (
-            f"确定 {ok / (ok + bad) * 100:.1f}%（{ok}/{ok + bad}）"
-            f"｜端到端 {ok / (ok + bad + unc) * 100:.1f}%（{ok}/{ok + bad + unc}）"
+            f"端到端 {ok / (ok + bad + unc) * 100:.1f}%（{ok}/{ok + bad + unc}）"
+            f"｜确定 {ok / (ok + bad) * 100:.1f}%（{ok}/{ok + bad}）"
             f"｜已标 {ok + bad + unc} 段")
     if j_path:
         sub = [r for r in rows if r.get("grp") == "真实组"]
@@ -688,8 +689,8 @@ def step_report():
         ok, bad, unc = p.get("直答正确", 0), p.get("未直答", 0), p.get("未覆盖", 0)
         if ok + bad:
             rates["L3_AI预标"] = (
-                f"确定 {ok / (ok + bad) * 100:.1f}%（{ok}/{ok + bad}）"
-                f"｜端到端 {ok / (ok + bad + unc) * 100:.1f}%（{ok}/{ok + bad + unc}）"
+                f"端到端 {ok / (ok + bad + unc) * 100:.1f}%（{ok}/{ok + bad + unc}）"
+                f"｜确定 {ok / (ok + bad) * 100:.1f}%（{ok}/{ok + bad}）"
                 f"｜全段 {len(sub)}（judge 偏宽仅供参考）")
     if rates:
         rep["dar_rates"] = rates
@@ -711,7 +712,8 @@ def step_report():
     # ---- 六项指标增强：KB 缺口 / 下钻矩阵 / 解决轮次 / 转单质量 / 预标 precision / 失败清单 ----
     kb = (rep.get("retrieval_no_rate") or {}).get("真实组")
     if kb is not None:
-        rep["kb_gap"] = f"{kb * 100:.1f}%（真实组检索判定 no 占比，本地重放近似）"
+        rep["kb_gap"] = (f"{kb * 100:.1f}%（真实组检索重放 no 占比，资料层上界；"
+                         "含直接提单段，≠L3 未覆盖）")
         print(f"\nKB 缺口率：{rep['kb_gap']}")
     csv_rows, csv_name = _load_csv_rows()
     if csv_rows:
