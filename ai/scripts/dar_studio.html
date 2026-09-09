@@ -273,6 +273,7 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
         <div class="connbar">
           <label class="f">用户名<input type="text" id="f_user" style="width:120px"></label>
           <label class="f">密码<input type="password" id="f_pass" style="width:120px"></label>
+          <label class="f" style="font-size:12px;color:var(--ink3)"><input type="checkbox" id="remember" checked style="width:auto">记住</label>
           <button class="btn pri" id="loginbtn">登录测试环境</button>
           <span id="loginstate" class="badge dim">未连接</span>
           <span style="flex:1"></span>
@@ -653,7 +654,6 @@ function setConn(user){
 }
 (async ()=>{
   const j = await (await fetch("/api/status")).json();
-  $("#envtip").textContent = j.backend.replace("http://","") + " / " + j.ai.replace("http://","");
   if(j.prod_export) $("#conn-prod").textContent = "已导入 " + j.prod_export;
   else{
     $("#conn-prod").textContent = "未导数据";
@@ -662,22 +662,32 @@ function setConn(user){
   if(j.logged_in){
     $("#loginstate").className = "badge ok"; $("#loginstate").textContent = "已连接 " + j.logged_in;
     setConn(j.logged_in);
+  }else{
+    const sv = localStorage.getItem("dar_test_login");  // 记住的凭据 → 静默自动登录
+    if(sv){ try{ const c = JSON.parse(sv); doLogin(c.u, c.p, true); }catch(_){} }
   }
 })();
-$("#loginbtn").onclick = async ()=>{
+async function doLogin(u, p, quiet){
   const b = $("#loginbtn");
   b.disabled = true; b.innerHTML = '<span class="spin"></span>登录中';
   try{
     const r = await fetch("/api/login", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({username: $("#f_user").value.trim(), password: $("#f_pass").value})});
+      body: JSON.stringify({username: u, password: p})});
     const txt = await r.text(); let j = null; try{ j = JSON.parse(txt); }catch(_){}
     if(!r.ok) throw new Error((j && j.detail) || txt.slice(0, 80) || "登录失败");
     $("#loginstate").className = "badge ok"; $("#loginstate").textContent = "已连接 " + j.username;
     setConn(j.username);
-    toast("登录成功", "ok");
-  }catch(e){ toast(e.message, "err"); }
-  b.disabled = false; b.textContent = "登录测试环境";
-};
+    $("#f_user").value = u; $("#f_pass").value = p;
+    if($("#remember").checked)
+      localStorage.setItem("dar_test_login", JSON.stringify({u, p}));
+    else
+      localStorage.removeItem("dar_test_login");
+    if(!quiet) toast("登录成功", "ok");
+    return true;
+  }catch(e){ toast(e.message, "err"); return false; }
+  finally{ b.disabled = false; b.textContent = "登录测试环境"; }
+}
+$("#loginbtn").onclick = ()=>doLogin($("#f_user").value.trim(), $("#f_pass").value);
 
 /* 会话 */
 function newSid(){ return "dar_test_" + Date.now().toString(36); }
