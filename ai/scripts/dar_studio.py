@@ -507,16 +507,72 @@ def _weekly_files(env: str):
     return sorted(glob.glob(os.path.join(DATA_ROOT, env, "processed", "weekly_*.json")))
 
 
+def _realtime_rates(env: str):
+    """三口径即时读各步产物算（不依赖周报）：L1←l1 汇总、L3←judge 预标分布、
+    L2←Downloads 标注文件（落盘即出）。周报（第五步吸收）出同分母口径后
+    以周报为准，实时值只是过程口径。"""
+    from collections import Counter as _Ctr
+    proc = os.path.join(DATA_ROOT, env, "processed")
+    rt = {}
+    fs = sorted(glob.glob(os.path.join(proc, "direct_answer_summary_*.json")))
+    if fs:
+        s = json.load(open(fs[-1], encoding="utf-8"))
+        ms = [v for k, v in (s.get("stats") or {}).items() if k.startswith("真实组|")]
+        sq, st = (sum(m.get("segs_q", 0) for m in ms),
+                  sum(m.get("segs_ticket", 0) for m in ms))
+        if sq:
+            rt["L1_段级"] = (f"话题级 {(1 - st / sq) * 100:.1f}%（{sq - st}/{sq}）"
+                            "上界近似（未吸收标注）")
+    fj = sorted(glob.glob(os.path.join(proc, "l3_judge_all_*.json")))
+    if fj:
+        rows = json.load(open(fj[-1], encoding="utf-8"))
+        sub = [r for r in rows if r.get("grp") == "真实组" and r.get("pre")]
+        p = _Ctr(r["pre"] for r in sub)
+        ok, bad, unc = p.get("直答正确", 0), p.get("未直答", 0), p.get("未覆盖", 0)
+        if ok + bad:
+            rt["L3_AI同段"] = (
+                f"确定 {ok / (ok + bad) * 100:.1f}%（{ok}/{ok + bad}）"
+                f"｜端到端 {ok / (ok + bad + unc) * 100:.1f}%（{ok}/{ok + bad + unc}）"
+                f"｜全段 {len(sub)}（未吸收标注）")
+    manual = {"test": "manual_segmentation.json",
+              "prod": "manual_segmentation_prod.json"}[env]
+    mp = os.path.join(os.path.expanduser("~"), "Downloads", manual)
+    split = os.path.join(proc, "conversations_split.jsonl")
+    if os.path.exists(mp) and os.path.exists(split):
+        man = json.load(open(mp, encoding="utf-8"))
+        convs = {}
+        with open(split, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    c = json.loads(line)
+                    convs[str(c["conversation_id"])] = c
+        legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+        c = _Ctr(legacy.get(v, v)
+                 for cid, lm in (man.get("labels") or {}).items()
+                 if not (convs.get(cid) or {}).get("is_tester")
+                 for v in lm.values())
+        ok, bad, unc = c["直答正确"], c["未直答"], c["未覆盖"]
+        if ok + bad:
+            rt["L2_人工"] = (
+                f"确定 {ok / (ok + bad) * 100:.1f}%（{ok}/{ok + bad}）"
+                f"｜端到端 {ok / (ok + bad + unc) * 100:.1f}%（{ok}/{ok + bad + unc}）"
+                f"｜已标 {ok + bad + unc} 段（标注即出，未跑吸收）")
+    return rt
+
+
 @app.get("/api/metrics")
 def metrics(env: str = "prod"):
     if env not in ("test", "prod"):
         raise HTTPException(400, "env 取值 test|prod")
+    # 周报块（第五步产物：same_base/wow/trend/this_week/小卡）——没出就没有
     files = _weekly_files(env)
     src = env
-    if not files and env == "prod":  # 生产尚未出周报 → 回退展示 test 数据（标注来源）
-        src = "test"
+    rt = _realtime_rates(env)
+    if not files and not rt and env == "prod":
+        src = "test"  # 本环境连过程产物都没有才借 test 展示
         files = _weekly_files(src)
-    if not files:
+        rt = _realtime_rates(src)
+    if not files and not rt:
         return {"found": False}
     # 历史趋势：各期周报同分母三口径数值化（多周累积后成走势线）
     trend = []
@@ -537,23 +593,20 @@ def metrics(env: str = "prod"):
                               **pt})
         except Exception:
             continue
-    with open(files[-1], encoding="utf-8") as fh:
-        rep = json.load(fh)
+    rep = {}
+    if files:
+        with open(files[-1], encoding="utf-8") as fh:
+            rep = json.load(fh)
 
     hero, small = [], []
     same = rep.get("dar_rates_same_base") or {}
-    # 标注前先出数：same_base（分母=人工已标段）缺的口径从 dar_rates 回退——
-    # L1 只要 l1 产物就有、L3 只要预标产物就有；人工标注完成后再跑 report 会
-    # 覆盖成同分母口径，不冲突
-    dr = rep.get("dar_rates") or {}
-    fb = {"L1_段级": dr.get("L1_基础(1−转工单率)"),
-          "L2_人工": dr.get("L2_人工"),
-          "L3_AI同段": dr.get("L3_AI预标")}
+    # hero 优先级：本环境周报同分母口径 > 本环境过程产物实时值（各步跑完
+    # 即时刷新，不等第五步）；两者皆无才落到回退环境的数
     zh = {"L1_段级": ("L1 机器信号", "未出单即算直答（上界）"),
           "L2_人工": ("L2 人工标注", "端到端真实口径"),
           "L3_AI同段": ("L3 AI 预标", "judge 偏宽仅供参考")}
     for k, (label, sub) in zh.items():
-        v = same.get(k) or fb.get(k)
+        v = same.get(k) or rt.get(k)
         if v:
             hero.append({"label": label, "value": _pct(v), "sub": f"{v} · {sub}"})
     if rep.get("kb_gap"):
@@ -573,7 +626,8 @@ def metrics(env: str = "prod"):
     if rep.get("manual_progress"):
         small.append({"label": "标注进度", "value": rep["manual_progress"],
                       "sub": "人工标签（L2）覆盖"})
-    return {"found": True, "source_env": src, "file": os.path.basename(files[-1]),
+    return {"found": True, "source_env": src,
+            "file": os.path.basename(files[-1]) if files else "",
             "date": rep.get("date"), "note": rep.get("note"),
             "meta": rep.get("meta"), "manual_progress": rep.get("manual_progress"),
             "avg_rounds": ar, "ticket_quality": rep.get("ticket_quality"),
