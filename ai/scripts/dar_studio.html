@@ -803,7 +803,8 @@ $("#regrun").onclick = async ()=>{
         const detl = (det.fails||[]).map(f=>`<div style="color:var(--danger)">· ${esc(f)}</div>`).join("");
         const facts = [];
         if(det.hit) facts.push(`命中「${esc(det.hit)}」 rank#${det.rank}${det.limit?` (≤${det.limit})`:""}`);
-        if(det.stages) facts.push(`阶段：${det.stages.map(s=>esc(JSON.stringify(s))).join(" → ").slice(0,120)}`);
+        if(det.stages){const SZ={idle:"空闲",retrieving:"检索",analyzing:"分析",diagnosing:"诊断",generating_ticket:"生成工单",review:"弹窗",collect_cancel:"已取消"};
+          facts.push(`阶段：${det.stages.map((arr,i)=>`${i+1}）${arr.map(s=>SZ[s]||s).join("→")}`).join("　")}`.slice(0,160));}
         if(det.ms) facts.push(`${det.ms}ms`);
         const row = document.createElement("details");
         row.className = "row";

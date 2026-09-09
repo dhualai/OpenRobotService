@@ -29,7 +29,7 @@ from pydantic import BaseModel
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.dirname(os.path.dirname(HERE))
 DATA_ROOT = r"C:/Users/PAJ26020/Desktop/export_dar"
-PORT = 9527
+PORT = int(os.environ.get("DAR_STUDIO_PORT", "9527"))
 
 DEFAULT_BACKEND = "http://127.0.0.1:19640"      # 经 ssh 隧道 → 测试环境后端 9400（login）
 DEFAULT_AI = "http://127.0.0.1:19641"            # 经 ssh 隧道 → 测试环境 AI 服务 9401（ask/stream）
