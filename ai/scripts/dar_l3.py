@@ -191,10 +191,26 @@ async def main():
         rows = json.load(open(out_path, encoding="utf-8"))
         print(f"读已落盘 judge 结果（{len(rows)} 条），跳过 LLM")
     else:
-        rows = []
+        # 断点续跑：当日 jsonl 里已判段（cid+astart 匹配）复用，只补跑未判段
+        # （judge 跑完才写 json 快照，被中断=json 不存在，jsonl 兜底）
+        jpath = out_path[:-5] + ".jsonl"
+        done_keys = {}
+        if os.path.exists(jpath):
+            for line in open(jpath, encoding="utf-8"):
+                if not line.strip():
+                    continue
+                old = json.loads(line)
+                if old.get("intent") != "error":
+                    done_keys[(str(old["cid"]), old.get("astart"))] = old
+            if done_keys:
+                print(f"断点续跑：复用已判 {len(done_keys)} 段，"
+                      f"补跑 {len(exam) - len(done_keys)} 段")
+        exam = [s for s in exam if (str(s["cid"]), s["astart"]) not in done_keys]
+        rows = list(done_keys.values())
         sem = asyncio.Semaphore(CONCURRENCY)
         done = [0]
         t0 = time.time()
+        lock = asyncio.Lock()
 
         async def one(seg):
             async with sem:
@@ -231,9 +247,14 @@ async def main():
                     r["faithful"] = "na"
                     r["reason"] = f"{type(ex).__name__}: {ex}"[:120]
                 rows.append(r)
-                done[0] += 1
-                if done[0] % 40 == 0:
-                    print(f"  {done[0]}/{len(exam)}（{time.time()-t0:.0f}s）")
+                async with lock:
+                    # 判定落 jsonl（断点续跑）；error 不落，重跑自动重试
+                    if r["intent"] != "error":
+                        with open(jpath, "a", encoding="utf-8") as fh:
+                            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+                    done[0] += 1
+                    if done[0] % 20 == 0 or done[0] == len(exam):
+                        print(f"  {done[0]}/{len(exam)}（{time.time()-t0:.0f}s）")
 
         await asyncio.gather(*(one(s) for s in exam))
         with open(out_path, "w", encoding="utf-8") as fh:
