@@ -29,7 +29,11 @@ load_dotenv(os.path.join(_PROJ, "ai", ".env"))
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 CONCURRENCY = 8
-DATA = r"C:/Users/PAJ26020/Desktop/export_dar/processed/conversations_split.jsonl"
+ENV = os.environ.get("DAR_ENV", "test")
+DATA = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed/conversations_split.jsonl"
+
+# 话题类型枚举（抽象表述，禁具体设备示例）：周报下钻矩阵/失败清单的聚类维度
+TOPIC_TYPES = ["故障处置", "操作指引", "功能咨询", "状态查询", "资料查询", "其他"]
 
 
 async def classify(rounds):
@@ -58,7 +62,14 @@ async def classify(rounds):
             "   要求提单/报障、为提单补全信息（报型号、发图片、确认单据内容）不算（q=false）；\n"
             "   问候闲聊、确认收到、纯表情、发链接不算。\n"
             "t=助手回答是否明确建议用户转工单/提单（仅口头建议，与用户是否实际提单无关）。\n"
-            "只输出 JSON：{\"rounds\": [{\"i\":0,\"topic\":0,\"q\":true,\"t\":false}, ...], \"n\": 2}，"
+            "另给每个话题标 type（话题类型，枚举选一）："
+            "故障处置=报错/异常/不正常行为的排查修复诉求；"
+            "操作指引=怎么操作、配置、使用某功能；"
+            "功能咨询=功能是否存在、有什么能力、概念含义；"
+            "状态查询=查某个单据/任务/数据的当前状态；"
+            "资料查询=要文档、参数、清单等资料；其他=以上都不是。\n"
+            "只输出 JSON：{\"rounds\": [{\"i\":0,\"topic\":0,\"q\":true,\"t\":false}, ...],"
+            " \"topics\": [{\"topic\":0,\"type\":\"操作指引\"}, ...], \"n\": 2}，"
             "不要输出其他内容。\n\n"
             + "\n".join(lines)
         )
@@ -71,13 +82,22 @@ async def classify(rounds):
             if 0 <= i < len(out):
                 out[i] = {"q": bool(it.get("q", True)), "t": bool(it.get("t", False)),
                           "topic": max(0, int(it.get("topic", 0) or 0))}
-        # topic 编号归一化（按首次出现顺序重编，防 LLM 跳号乱序）
-        remap, nxt = {}, 0
+        # topic 编号归一化（按首次出现顺序重编，防 LLM 跳号乱序）+ type 随映射同步
+        ttype = {}
+        for it in obj.get("topics") or []:
+            try:
+                ttype[int(it.get("topic", -1))] = str(it.get("type", "其他"))[:12]
+            except (TypeError, ValueError):
+                continue
+        remap, nxt, tmap = {}, 0, {}
         for o in out:
             if o["topic"] not in remap:
                 remap[o["topic"]] = nxt
+                tmap[nxt] = ttype.get(o["topic"], "其他")
                 nxt += 1
             o["topic"] = remap[o["topic"]]
+        for o in out:
+            o["type"] = tmap.get(o["topic"], "其他")
         out.append({"n_topics": nxt})
         return out
     except Exception as e:
@@ -243,6 +263,7 @@ async def main():
                 "conversation_id": c["conversation_id"],
                 "topic": s, "time": rounds[q_idx[0]]["at"],
                 "first_question": (rounds[q_idx[0]]["q"] or "")[:200],
+                "type": cls[idxs[0]].get("type") or "未分类",
                 "n_rounds": len(idxs), "n_q_rounds": len(q_idx),
                 "seg_ticketed": int(ticketed),
                 "suggest_no_ticket": int(suggests),
@@ -283,6 +304,17 @@ async def main():
         tot.update(v)
     print(f"伴生：建议转单未提单 {tot['suggest_no_ticket']}｜空回答 {tot['empty_answer']}"
           f"｜非咨询轮 {tot['courtesy']}")
+    # 话题类型分布（真实组；replay 旧判定无 type 落「未分类」，重跑判定后消失）
+    tcnt = defaultdict(Counter)
+    for r in rows:
+        if r["group"] == "真实组":
+            tcnt[r["type"]][r["seg_ticketed"]] += 1
+    if tcnt:
+        print("-" * 72)
+        print("话题类型分布（真实组，转单率=该类出单段占比）：")
+        for t, c in sorted(tcnt.items(), key=lambda kv: -sum(kv[1].values())):
+            n = sum(c.values())
+            print(f"  {t:<6} {n:>4} 段｜转单率 {(c[1] / n * 100):.0f}%")
     n_conv = sum(seg_dist.values())
     if n_conv:
         multi = sum(v for k, v in seg_dist.items() if k >= 2)

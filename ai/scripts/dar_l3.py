@@ -34,14 +34,24 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(_PROJ, "ai", ".env"))
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-OUT = r"C:/Users/PAJ26020/Desktop/export_dar/processed"
+ENV = os.environ.get("DAR_ENV", "test")
+OUT = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed"
 SPLIT = os.path.join(OUT, "conversations_split.jsonl")
 CLS = os.path.join(OUT, "conversations_classified.jsonl")
-MANUAL = r"C:/Users/PAJ26020/Downloads/manual_segmentation.json"
+_MANUAL_NAME = {"test": "manual_segmentation.json",
+                "prod": "manual_segmentation_prod.json"}
+MANUAL = rf"C:/Users/PAJ26020/Downloads/{_MANUAL_NAME[ENV]}"
 RETRIEVAL = os.path.join(OUT, f"retrieval_check_{_dt.now():%Y%m%d}.json")
-JUDGE_OUT = os.path.join(OUT, "l3_judge_20260908.json")          # 校准结果
-ALL_OUT = os.path.join(OUT, f"l3_judge_all_{_dt.now():%Y%m%d}.json")  # 预标结果
+JUDGE_OUT = os.path.join(OUT, f"l3_judge_{_dt.now():%Y%m%d}.json")      # 校准结果（按日滚动）
+ALL_OUT = os.path.join(OUT, f"l3_judge_all_{_dt.now():%Y%m%d}.json")    # 预标结果
 CONCURRENCY = 8
+
+
+def _latest_judge():
+    """取最新已落盘校准文件（滚动校准集：上周的校准继续可比）。"""
+    import glob
+    files = sorted(glob.glob(os.path.join(OUT, "l3_judge_[0-9]*.json")))
+    return files[-1] if files else ""
 
 
 def pts(s):
@@ -58,7 +68,8 @@ def build_exam(all_mode=False):
     convs = [json.loads(l) for l in open(SPLIT, encoding="utf-8")]
     cls_all = {j["conversation_id"]: j["cls"] for j in
                (json.loads(l) for l in open(CLS, encoding="utf-8"))}
-    man = json.load(open(MANUAL, encoding="utf-8"))
+    man = ({} if not os.path.exists(MANUAL)
+           else json.load(open(MANUAL, encoding="utf-8")))
     bounds, labels = man.get("bounds") or {}, man.get("labels") or {}
     legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
     exam = []
@@ -136,12 +147,17 @@ JUDGE_PROMPT = (
     "转入新话题都视为无负面，不要求显式确认；助手答可能被截断显示，不要因显示截断而判未解决。\n"
     "②回答内容能在检索资料中找到支撑（资料里有对应的知识内容）。若检索资料与该话题基本"
     "无关，而回答看起来完整详细，这说明回答来自资料外的通用知识或推测，不可视为解决。\n"
-    "以下任一情况 resolved=no：用户负面反应；该话题以提工单收尾；回答只有方向没有答案；"
-    "回答内容无资料支撑。\n\n"
+    "以下任一情况 resolved=no：用户负面反应；该话题以提工单收尾；回答只有方向没有答案。\n"
+    "faithful=回答内容是否忠于检索资料（防编造）：\n"
+    "yes=回答的关键内容能在检索资料中找到支撑；\n"
+    "no=回答看起来完整但资料里没有对应内容（来自资料外通用知识或推测）；\n"
+    "na=检索资料与该话题基本无关（此时 resolved 依据①单独判断，faithful 填 na）。\n"
+    "resolved=yes 且 faithful=no 的情况：回答流利但是编的，resolved 填 no。\n\n"
     "{prev}话题段时间线（每轮：用户说 → 助手答，内容可能截断）：\n{timeline}\n\n"
     "检索资料：\n{retrieval}\n\n"
     "段末信号：{ticket_sig}\n"
-    "只输出 JSON：{{\"intent\":\"consult|ticket\",\"resolved\":\"yes|no\",\"reason\":\"一句话\"}}"
+    "只输出 JSON：{{\"intent\":\"consult|ticket\",\"resolved\":\"yes|no\","
+    "\"faithful\":\"yes|no|na\",\"reason\":\"一句话\"}}"
 )
 
 
@@ -188,13 +204,17 @@ async def main():
                     obj = json.loads(re.search(r"\{.*\}", raw or "", re.S).group(0))
                     r["intent"] = str(obj.get("intent", "?"))
                     r["resolved"] = str(obj.get("resolved", "?"))
+                    r["faithful"] = str(obj.get("faithful", "na"))
                     r["reason"] = str(obj.get("reason", ""))[:120]
                     if r["intent"] not in ("consult", "ticket"):
                         r["intent"] = "?"
                     if r["resolved"] not in ("yes", "no"):
                         r["resolved"] = "?"
+                    if r["faithful"] not in ("yes", "no", "na"):
+                        r["faithful"] = "na"
                 except Exception as ex:
                     r["intent"] = r["resolved"] = "error"
+                    r["faithful"] = "na"
                     r["reason"] = f"{type(ex).__name__}: {ex}"[:120]
                 rows.append(r)
                 done[0] += 1
@@ -218,7 +238,8 @@ async def main():
             if r["intent"] == "ticket":
                 r["pre"] = "直接提单"
             elif r["intent"] == "consult" and r["resolved"] == "yes":
-                r["pre"] = "直答正确"
+                # 忠实性前置：resolved=yes 但回答无资料支撑（编造）→ 未直答，不得直答分
+                r["pre"] = "直答正确" if r.get("faithful") != "no" else "未直答"
             elif rv.get((r["cid"], r["astart"])) == "no":
                 r["pre"] = "未覆盖"
             else:
@@ -248,7 +269,8 @@ async def main():
         if r["intent"] == "ticket":
             return "直接提单"
         if r["intent"] == "consult" and r["resolved"] == "yes":
-            return "直答正确"
+            # 编造（faithful=no）归未直答：回答层问题，不给直答分
+            return "直答正确" if r.get("faithful") != "no" else "未直答/未覆盖"
         return "未直答/未覆盖"  # consult+no，待检索 verdict 分流
 
     print("\n== judge 三分类 × 人工标签 ==")
