@@ -42,6 +42,10 @@ ENV = os.environ.get("DAR_ENV", "test")
 # 0901/0824/0903 旧快照、服务器是 0904 集合，industry 差两周 → faithful/resolved
 # 判据与四类组合的「未覆盖」来自不同知识库）
 QDRANT = os.environ.get("DAR_QDRANT", "prod" if ENV == "prod" else "local")
+# 当前检索源标记：__main__ 按实际指针填，local 模式为 "local"。判定行落盘存证——
+# 知识库每周重入库（指针日期变），旧判定按 cid+astart 复用会静默混口径，
+# 启动日志显式提示（与 model 字段同处理）
+KB_TAG = "local"
 OUT = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed"
 SPLIT = os.path.join(OUT, "conversations_split.jsonl")
 CLS = os.path.join(OUT, "conversations_classified.jsonl")
@@ -214,11 +218,15 @@ async def main():
             done_keys[(str(old["cid"]), int(old["astart"]))] = old
     rows = list(done_keys.values())
     todo = [s for s in exam if (str(s["cid"]), int(s["astart"])) not in done_keys]
-    # 切模型后旧判定仍按 cid+astart 复用（指标会混口径）——显式提示，不静默
+    # 切模型/换知识库后旧判定仍按 cid+astart 复用（指标会混口径）——显式提示，不静默
     n_other = sum(1 for r in rows if r.get("model") != llm.model)
+    n_kb = sum(1 for r in rows if r.get("kb") != KB_TAG)
     print(f"增量：复用已判 {len(done_keys)} 段，补跑 {len(todo)} 段"
-          + (f"；其中 {n_other} 段未记/非当前模型（当前 {llm.model}）——"
-             "要统一口径须删对应 .json/.jsonl 重跑" if n_other else ""))
+          + (f"；其中 {n_other} 段未记/非当前模型（当前 {llm.model}）"
+             if n_other else "")
+          + (f"；{n_kb} 段未记/非当前检索源（当前 {KB_TAG}）" if n_kb else "")
+          + ("——要统一口径须删对应 .json/.jsonl 重跑"
+             if n_other or n_kb else ""))
 
     if todo:
         # LLM 探活：模型名过期/网关不可用时快速失败，别把 419 段全烧成 error
@@ -287,7 +295,8 @@ async def main():
             # 段首问题跑真实检索（三件套之一：检索资料）
             q0 = seg["timeline"].split("用户：", 1)[-1].split(" →", 1)[0]
             r = {"cid": seg["cid"], "seg": seg["seg"], "astart": seg["astart"],
-                 "grp": seg["grp"], "lab": seg["lab"], "model": llm.model}
+                 "grp": seg["grp"], "lab": seg["lab"], "model": llm.model,
+                 "kb": KB_TAG}
             try:
                 ctx = await retrieve_ctx(seg, q0)
                 prompt = JUDGE_PROMPT.format(prev=seg["prev"], timeline=seg["timeline"],
@@ -443,6 +452,7 @@ if __name__ == "__main__":
                          f"  → 检查免密 ssh {SSH_HOST}:{SSH_PORT}；"
                          "或 DAR_QDRANT=local 用本地知识库跑")
             print(f"检索源={QDRANT} 服务器 qdrant（指针: {ptr}）")
+            KB_TAG = ";".join(f"{k}={v}" for k, v in sorted(ptr.items()))
             asyncio.run(main())
     else:
         print("检索源=本地知识库")
