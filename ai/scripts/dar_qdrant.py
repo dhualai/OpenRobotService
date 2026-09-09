@@ -96,12 +96,36 @@ def remote_pointers(which: str):
     return out
 
 
+def _bak_path(domain_file: str) -> str:
+    return domain_file + ".dar_bak"
+
+
+def _restore_leftover():
+    """上次 remote_qdrant 被 kill（stop 按钮/进程树杀）时 finally 不执行，
+    指针文件残留远程值 → 之后跑 local 检索全查不存在的集合（0909 实锤）。
+    进入时发现 .bak 还在 = 上次没退干净，先恢复本地原值再继续。"""
+    for d in DOMAINS:
+        p = os.path.join(_LOCAL_KB, f"active_{d}_collection.txt")
+        bak = _bak_path(p)
+        if not os.path.exists(bak):
+            continue
+        val = open(bak, encoding="utf-8").read().strip()
+        if val:
+            open(p, "w", encoding="utf-8").write(val + "\n")
+            print(f"[dar_qdrant] 检测到上次异常退出残留，{d} 指针已恢复: {val}")
+        elif os.path.exists(p):
+            os.remove(p)
+            print(f"[dar_qdrant] 检测到上次异常退出残留，{d} 指针已恢复为删除")
+        os.remove(bak)
+
+
 @contextmanager
 def remote_qdrant(which: str):
     """进入远程检索模式（隧道+指针+env），退出自动恢复指针与 env。which=test|prod。"""
     if which not in REMOTE_AI_ROOTS:
         raise ValueError("which 取值 test|prod")
     ensure_tunnel()
+    _restore_leftover()
     ptr = remote_pointers(which)
     backs, old_env = {}, {k: os.environ.get(k) for k in _ENV_KEYS}
     try:
@@ -109,6 +133,8 @@ def remote_qdrant(which: str):
             p = os.path.join(_LOCAL_KB, f"active_{d}_collection.txt")
             backs[p] = open(p, encoding="utf-8").read() if os.path.exists(p) else None
             open(p, "w", encoding="utf-8").write(col + "\n")
+            # 备份旁挂：正常退出删除；被 kill 后下次进入据此自愈恢复
+            open(_bak_path(p), "w", encoding="utf-8").write(backs[p] or "")
         os.environ["QDRANT_LOCAL_PATH"] = ""
         os.environ["QDRANT_HOST"] = "localhost"
         os.environ["QDRANT_PORT"] = str(TUNNEL_PORT)
@@ -120,6 +146,8 @@ def remote_qdrant(which: str):
                     os.remove(p)
             else:
                 open(p, "w", encoding="utf-8").write(old)
+            if os.path.exists(_bak_path(p)):
+                os.remove(_bak_path(p))
         for k, v in old_env.items():
             if v is None:
                 os.environ.pop(k, None)

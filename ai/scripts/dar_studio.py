@@ -330,11 +330,22 @@ def regression(req: RegReq):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+def _kill_tree(p):
+    """杀整棵进程树：p.kill() 只杀直接子进程，dar_weekly 的孙脚本
+    （dar_retrieval_check 等 subprocess.run 子进程）会变孤儿继续跑——
+    0909 实锤「点停止不管用」。Windows 用 taskkill /T。"""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                       capture_output=True)
+    else:
+        p.kill()
+
+
 @app.post("/api/stop_regression")
 def stop_regression():
     p = _reg_state["proc"]
     if p and p.poll() is None:
-        p.kill()
+        _kill_tree(p)
         return {"ok": True, "killed": True}
     return {"ok": True, "killed": False}
 
@@ -410,9 +421,32 @@ def run_status(after: int = -1):
 def stop_run():
     p = _run_state["proc"]
     if p and p.poll() is None:
-        p.kill()
+        _kill_tree(p)
         return {"ok": True, "killed": True}
     return {"ok": True, "killed": False}
+
+
+class ResetReq(BaseModel):
+    env: str = "prod"
+
+
+@app.post("/api/reset_retrieval")
+def reset_retrieval(req: ResetReq):
+    """删当日检索判定产物（jsonl+json）→ 重跑 retrieval 即全量重判
+    （增量只认这两个文件；换判定模型后想全部重判用这个）。"""
+    if _run_state["proc"] and _run_state["proc"].poll() is None:
+        raise HTTPException(409, "流程在跑，先停止")
+    if req.env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    root = os.path.join(DATA_ROOT, req.env, "processed")
+    stamp = time.strftime("%Y%m%d")
+    removed = []
+    for ext in (".jsonl", ".json"):
+        p = os.path.join(root, f"retrieval_check_{stamp}{ext}")
+        if os.path.exists(p):
+            os.remove(p)
+            removed.append(os.path.basename(p))
+    return {"ok": True, "removed": removed}
 
 
 # ── 产物浏览（白名单）───────────────────────────────────────────

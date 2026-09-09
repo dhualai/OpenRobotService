@@ -88,8 +88,10 @@ dispatch 不碰）+ 退出自动恢复。测试与生产 qdrant 指针当前一�
 
 - 检索重放=本地 qdrant 当前状态，≠线上当时检索（线上未留档 hits）；
   verdict 只作参考，重大结论以人工标注为准。
-- L3 judge 用 DAR_MODEL（缺省 deepseek-v4-pro，判定类任务质量优先，flash 摇摆）；
-  偏宽是已知倾向，precision 指标就是监控它的。L1 切分/检索 no 判定同用此模型。
+- L3 judge 用 DAR_MODEL（0909 起缺省 deepseek-v4.1-flash-expires-on-0910——
+  pro 在中转上频繁超时/不可用；模型 0910 过期后换回或用环境变量改）。
+  L1 切分/检索 no 判定同用此模型。flash 判定偏摇摆/偏宽是已知倾向，
+  precision 指标就是监控它的。
   注意：已落盘判定会增量复用，切模型后旧结果不自动重判（删对应产物才会）。
 - 标注进度存 localStorage，换浏览器/清缓存会丢——审完及时导出。
 

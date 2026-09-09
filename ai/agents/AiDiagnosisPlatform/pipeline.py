@@ -2885,7 +2885,8 @@ class AiDiagnosisPlatform:
                 elif name in ("search_kb", "lookup_ticket", "search_history_tickets",
                               "list_user_projects"):
                     plan.append((name, tc["arguments"]))
-            logger.info(f"[plan] 规划结果: intent={intent} tools={plan}"
+            logger.info(f"[plan] 规划结果: session={request.session_id}, "
+                        f"intent={intent} tools={plan}"
                         + (f" mention={mention_raw!r}" if mention_raw else ""))
             if mention_raw and mention_raw.lower() != "last":
                 # 反幻觉闸门（0904 生产实锤：规划 prompt 旧示例把平台名列为可报

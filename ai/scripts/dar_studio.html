@@ -244,6 +244,7 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
           运行日志 <span class="hint" id="runstate" style="font-weight:400"></span></summary>
         <div style="display:flex;gap:8px;margin:10px 0">
           <input type="text" id="note" placeholder="附注（--note，随周报落盘）" style="flex:1">
+          <button class="btn sm dng" id="resetretr" title="删当日检索判定（jsonl+json），重跑 retrieval 步即全量重判——换判定模型后用">重判全部</button>
           <button class="btn sm dng" id="stopbtn" disabled>停止</button>
         </div>
         <div class="term" id="term" style="height:150px"><div class="hd">$ 等待运行…（步骤可增量复用，重复跑只补新数据）</div></div>
@@ -528,6 +529,23 @@ async function followRun(first){
   }catch(_){ folTimer = setTimeout(()=>followRun(false), 5000); }
 }
 followRun(true);
+/* 重判全部：删当日 retrieval_check 产物（增量只认这两个文件），重跑 retrieval 即全量重判 */
+$("#resetretr").onclick = async ()=>{
+  if(!confirm("删除当日检索判定产物？删后重跑「L3 预标」=全部段重新判定（换判定模型后用这个）。")) return;
+  try{
+    const j = await (await fetch("/api/reset_retrieval", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({env})})).json();
+    document.querySelector("#logcard").open = true;
+    if(j.removed && j.removed.length){
+      termLine("err", `已删当日判定：${j.removed.join("、")}（重跑 L3 预标即全量重判）`);
+      toast(`已删 ${j.removed.length} 个文件，重跑即全量重判`);
+    }else{
+      termLine("", "当日无判定产物（重跑本来就是全量）");
+      toast("当日无判定产物，重跑本来就是全量");
+    }
+  }catch(e){ toast("删除失败：" + e.message, "err"); }
+};
 let running = false;
 async function runSteps(steps, wstepEl){
   if(running){ toast("已有流程在跑", "err"); return; }

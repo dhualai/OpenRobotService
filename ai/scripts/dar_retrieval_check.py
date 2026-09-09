@@ -6,6 +6,8 @@
 段切分：有人工 bounds 用人工边界（lab=人工标签），否则用 AI topic 切分
      （lab=未标）——测试组/未标会话全覆盖。
 增量：当日输出文件已存在的段（cid+段首问题匹配）复用判定，只补跑新段。
+断点续跑：判定成功的段逐条追加 .jsonl（异常段不落，重跑自动重试），
+     LLM 断网/中途杀进程后重跑只补未判段；跑完仍写全量 .json 快照。
 每行带 astart（段首回合索引）= 预标注入的锚定键。
 
 用法：
@@ -135,19 +137,27 @@ async def main():
 
     rows = build_rows()
     path = os.path.join(OUT, f"retrieval_check_{_dt.now():%Y%m%d}.json")
-    # 增量：当日文件已判过的段（cid+段首问题匹配）复用判定，补 astart
+    jpath = path[:-5] + ".jsonl"  # 断点续跑：逐段追加；中断后重跑只补未判段
+    # 增量：jsonl（逐段追加，最新）+ json（上次快照）里已判过的段（cid+段首问题
+    # 匹配）复用判定，补 astart；jsonl 后读覆盖 json 的旧结果
     done_keys = {}
-    if os.path.exists(path):
-        for old in json.load(open(path, encoding="utf-8")):
+    for src in (path, jpath):
+        if not os.path.exists(src):
+            continue
+        items = ([json.loads(l) for l in open(src, encoding="utf-8") if l.strip()]
+                 if src.endswith(".jsonl") else json.load(open(src, encoding="utf-8")))
+        for old in items:
             if old.get("verdict") in ("yes", "partial", "no"):
                 done_keys[(str(old["cid"]), (old.get("q") or "")[:80])] = old
-        for r in rows:  # 复用判定拷回（否则落盘行缺 verdict）
-            old = done_keys.get((r["cid"], r["q"][:80]))
-            if old and "verdict" not in r:
-                for k in ("verdict", "reason", "retrieval", "chunks"):
-                    if old.get(k) is not None:
-                        r[k] = old[k]
-        n_hit = sum(1 for r in rows if r.get("verdict") in ("yes", "partial", "no"))
+    for r in rows:  # 复用判定拷回（否则落盘行缺 verdict）；jsonl 后读覆盖 json
+        old = done_keys.get((r["cid"], r["q"][:80]))
+        if old and "verdict" not in r:
+            for k in ("verdict", "reason", "retrieval", "chunks"):
+                if old.get(k) is not None:
+                    r[k] = old[k]
+    n_hit = sum(1 for r in rows if r.get("verdict") in ("yes", "partial", "no"))
+    n_err = sum(1 for r in rows if r.get("verdict") == "error")
+    if n_hit or n_err:
         print(f"增量：{n_hit}/{len(rows)} 段复用已判结果，补跑 {len(rows) - n_hit} 段")
     todo = [r for r in rows if r.get("verdict") not in ("yes", "partial", "no")]
     print(f"待验证 {len(todo)} 条咨询段（真实组+测试组）")
@@ -181,12 +191,18 @@ async def main():
                     r["verdict"] = "error"
                     r["reason"] = f"{type(e).__name__}: {e}"[:120]
                 async with lock:
+                    # 成功/格式异常即落 jsonl（断点续跑）；error 不落，重跑重试
+                    if r["verdict"] in ("yes", "partial", "no", "?"):
+                        with open(jpath, "a", encoding="utf-8") as fh:
+                            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
                     done[0] += 1
                     if done[0] % 20 == 0:
                         print(f"  {done[0]}/{len(todo)}（{time.time()-t0:.0f}s）")
 
         await asyncio.gather(*(one(r) for r in todo))
-        print(f"\n补跑完成 {len(todo)} 条，{time.time()-t0:.0f}s")
+        n_err = sum(1 for r in todo if r.get("verdict") == "error")
+        print(f"\n补跑完成 {len(todo)} 条（异常 {n_err} 条，重跑自动重试），"
+              f"{time.time()-t0:.0f}s")
 
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(rows, fh, ensure_ascii=False, indent=1)
