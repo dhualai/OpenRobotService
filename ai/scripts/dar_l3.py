@@ -122,14 +122,22 @@ def build_exam(all_mode=False):
             lab = lab_map.get(s)
             if not all_mode and (not lab or lab == "未标"):
                 continue
-            # 时间线（前 12 轮，每轮截断）
+            # 检索问句=段内首个「有问题且有回答」的回合（与 dar_retrieval_check 同规则）：
+            # 段首常是「你是谁」「提工单，接单人：…」这类无检索价值的开场，两步骤取不同
+            # 问句会让四类组合的「未覆盖」与 judge 的 faithful/resolved 判据来自不同检索
+            q_idx = next((i for i in range(s, e) if cls[i]["q"]
+                          and any(a.strip() for a in rounds[i]["a"])), s)
+            q0 = (rounds[q_idx]["q"] or "").strip()
+            # 时间线（前 12 轮）：问句截 150 字；回答取全部消息合并（一轮可能多条
+            # 助手消息，只看首条会丢掉实质回答——0909 实测 26% 轮次多消息、
+            # 11% 轮次首条不足 100 字），整体截 1200 字（实测 99.4% 回答不超）
             lines = []
             for i in range(s, min(e, s + 12)):
                 q_raw = (rounds[i]["q"] or "").replace("\n", " ")
                 q = q_raw[:150] + ("…" if len(q_raw) > 150 else "")
-                a_raw = next((x for x in rounds[i]["a"] if x.strip()), "") or ""
+                a_raw = " ".join(x.strip() for x in rounds[i]["a"] if x.strip())
                 a_raw = a_raw.replace("\n", " ")
-                a = a_raw[:200] + ("…(截断)" if len(a_raw) > 200 else "")
+                a = a_raw[:1200] + ("…(截断)" if len(a_raw) > 1200 else "")
                 lines.append(f"[{(rounds[i]['at'] or '')[5:16]}] 用户：{q} → 助手：{a}")
             # 上一段尾（承接语境，段首问题可能指代上文）
             prev = ""
@@ -152,7 +160,7 @@ def build_exam(all_mode=False):
                         n_ticket += 1
             exam.append({"cid": cid, "seg": tid, "astart": s,
                          "grp": "测试组" if c["is_tester"] else "真实组",
-                         "lab": lab or "未标",
+                         "lab": lab or "未标", "q0": q0,
                          "timeline": "\n".join(lines), "prev": prev,
                          "n_ticket": n_ticket})
     return exam
@@ -292,8 +300,8 @@ async def main():
         async with (sem_ or sem):
             sig = (f"该段结束前用户提了 {seg['n_ticket']} 张工单" if seg["n_ticket"]
                    else "该段未提工单")
-            # 段首问题跑真实检索（三件套之一：检索资料）
-            q0 = seg["timeline"].split("用户：", 1)[-1].split(" →", 1)[0]
+            # 检索问句（build_exam 已按「首个有问题且有回答的回合」定好，与检索判定同源）
+            q0 = seg["q0"]
             r = {"cid": seg["cid"], "seg": seg["seg"], "astart": seg["astart"],
                  "grp": seg["grp"], "lab": seg["lab"], "model": llm.model,
                  "kb": KB_TAG}
