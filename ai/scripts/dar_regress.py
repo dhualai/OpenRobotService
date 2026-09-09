@@ -234,12 +234,34 @@ async def run_api_suite(suite: str, cases: list, base: str, token: str, counted)
         try:
             turns_out = []
             review_hit = False
-            for j, text in enumerate(turns):
-                r = await _ask_turn(base, token, sid, text)
+            # 模拟全流程（响应式多轮，0909 实锤教训：一轮预设台词测不完提单链路）：
+            # ①服务端出项目选择题（模板直出「出单前确认一下关联项目」，特征绝对
+            #   稳定）自动回「1」选第 1 个候选——真实用户点按钮/回序号，无头回归
+            #   必须替用户答，否则草稿无项目、confirm 被弹窗闸门拦（票史候选
+            #   1 个时 LLM 照抄预填碰巧能过，≥2 个摇摆即挂）；
+            # ②预设 turns 发完仍未到弹窗 → 按 followup_pool 关键词接力应答信息
+            #   追问（追问顺序/轮数由 LLM 决定，固定轮次测不稳）。
+            pool = c.get("followup_pool") or []
+            pool_used = set()
+            queue = list(turns)
+            auto_ans = 0
+            while queue and len(turns_out) < len(turns) + 6:
+                r = await _ask_turn(base, token, sid, queue.pop(0))
                 turns_out.append(r)
                 if "review" in r["stages"]:
                     review_hit = True
                     break  # 到弹窗即达成本轮目标，省 API 轮次
+                ans = r["answer"]
+                if auto_ans < 2 and "出单前确认一下关联项目" in ans:
+                    auto_ans += 1
+                    queue.insert(0, "1")
+                    continue
+                if not queue:
+                    for k, item in enumerate(pool):
+                        if k not in pool_used and item["when"] in ans:
+                            pool_used.add(k)
+                            queue.append(item["say"])
+                            break
             # 提单链路纵深：到弹窗后验草稿 → confirm 落库 → ssh 查测试库
             extra_fails, db_row = [], None
             if review_hit and (c.get("expect_draft_any") or c.get("expect_confirm")):
