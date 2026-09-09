@@ -269,6 +269,41 @@ class TestL1TopKCap:
         }))
         assert rec._single_top_k == 4
 
+    def test_unpack_arecall_keeps_reasons_with_scores(self):
+        """正常流程：分数和理由从返回值拆开，不读共享 last_reasons。"""
+        scores, reasons = LlmRecall.unpack_arecall(
+            ({"u-a": 0.9}, {"u-a": "甲负责前端"}),
+        )
+        assert scores == {"u-a": 0.9}
+        assert reasons == {"u-a": "甲负责前端"}
+
+    def test_unpack_arecall_ignores_shared_last_reasons(self):
+        """异常流程：即使 last_reasons 已被另一张单盖掉，仍用本次返回值。"""
+        rec = LlmRecall(_cfg())
+        rec.last_reasons = {"u-b": "乙的理由"}
+        scores, reasons = LlmRecall.unpack_arecall(({"u-a": 1.0}, {"u-a": "甲的理由"}))
+        assert scores == {"u-a": 1.0}
+        assert reasons == {"u-a": "甲的理由"}
+
+    def test_unpack_arecall_exception_is_empty(self):
+        """异常流程：召回抛错 → 分数和理由都空。"""
+        assert LlmRecall.unpack_arecall(RuntimeError("boom")) == ({}, {})
+
+    def test_arecall_returns_scores_and_reasons_together(self):
+        """正常流程：arecall 把理由和分数一起返回；事后改 last_reasons 不影响返回值。"""
+        import asyncio
+        rec = LlmRecall(_cfg())
+
+        async def fake_batch(ticket, engineers, top_k):
+            return {"u-a": 0.9}, {"u-a": "甲负责前端"}
+
+        rec._llm_score_batch = fake_batch
+        scores, reasons = asyncio.run(rec.arecall(_ticket(), [_eng("u-a", "甲")]))
+        rec.last_reasons = {"u-b": "串单"}
+        assert scores == {"u-a": 0.9}
+        assert reasons == {"u-a": "甲负责前端"}
+        assert LlmRecall.unpack_arecall((scores, reasons))[1] == {"u-a": "甲负责前端"}
+
 
 class TestL3AutoCluster:
     """B 路：已解决/已关闭单自动聚簇，不手切问题域。"""

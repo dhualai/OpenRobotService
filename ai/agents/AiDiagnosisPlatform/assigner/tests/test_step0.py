@@ -48,7 +48,11 @@ def _run_detect(title: str, engineers, everyone=None, description: str = "现场
             with patch.object(DispatchFlow, "_match_preferred_everyone", return_value=None):
                 return await flow._detect_preferred_assignee(ctx, engineers)
         if isinstance(everyone, tuple):
-            with patch.object(DispatchFlow, "_match_preferred_everyone", return_value=everyone):
+            val = everyone
+            if len(everyone) == 3 and not isinstance(everyone[0], list):
+                uid, uname, py = everyone
+                val = ([EngineerProfile(id=uid, name=uname)], py)
+            with patch.object(DispatchFlow, "_match_preferred_everyone", return_value=val):
                 return await flow._detect_preferred_assignee(ctx, engineers)
         return await flow._detect_preferred_assignee(ctx, engineers)
 
@@ -67,7 +71,11 @@ def _run_weak(description: str, engineers, llm_json: str, everyone=None):
                 with patch.object(DispatchFlow, "_match_preferred_everyone", return_value=None):
                     return await flow._detect_preferred_assignee(ctx, engineers)
             if isinstance(everyone_patch, tuple):
-                with patch.object(DispatchFlow, "_match_preferred_everyone", return_value=everyone_patch):
+                val = everyone_patch
+                if len(everyone_patch) == 3 and not isinstance(everyone_patch[0], list):
+                    uid, uname, py = everyone_patch
+                    val = ([EngineerProfile(id=uid, name=uname)], py)
+                with patch.object(DispatchFlow, "_match_preferred_everyone", return_value=val):
                     return await flow._detect_preferred_assignee(ctx, engineers)
             return await flow._detect_preferred_assignee(ctx, engineers)
 
@@ -576,3 +584,147 @@ class TestPickCollisionCanDetermine:
         assert winner.id == "u-1"
         assert rnd is True
         assert winner.id != "u-3"
+
+
+class TestStep0EveryoneCollision:
+    """准入池没有时，全量在职同名也走最完整档，不取表里第一个。"""
+
+    def test_everyone_two_same_name_picks_collision(self):
+        """正常流程：池外两个张三 → 同名抉择，打 name_collision。"""
+        a = EngineerProfile(id="u-1", name="张三")
+        b = EngineerProfile(id="u-2", name="张三")
+        flow = DispatchFlow()
+        llm = SimpleNamespace(complete=AsyncMock(return_value='{"can_determine": false}'))
+
+        async def _go():
+            ctx = _ticket("指定处理人：张三")
+            with patch.object(
+                DispatchFlow, "_match_preferred_everyone", return_value=([a, b], False),
+            ):
+                with patch("ai.core.get_llm_client", AsyncMock(return_value=llm)):
+                    with patch(
+                        "ai.agents.AiDiagnosisPlatform.assigner.pipeline.dispatch_flow.random.choice",
+                        return_value=a,
+                    ):
+                        return await flow._detect_preferred_assignee(ctx, [])
+
+        result, unresolved = asyncio.run(_go())
+        assert result is not None
+        assert result.engineer_id == "u-1"
+        assert result.name_collision is True
+        assert result.matched_pref is True
+        assert unresolved is None
+
+    def test_everyone_single_no_collision(self):
+        """正常流程：池外只有一个张三 → 不打同名。"""
+        result, unresolved = _run_detect(
+            "指定处理人：张三", [],
+            everyone=("u-zhang", "张三", False),
+        )
+        assert result is not None
+        assert result.engineer_id == "u-zhang"
+        assert result.name_collision is False
+
+
+class TestStep0BlocksRedispatch:
+    """重派拦截看首轮是否真派上，不看 specified_name。"""
+
+    def test_pinyin_hit_still_blocks(self):
+        """边界：拼音命中写了 specified_name，人已派上 → 仍拦截。"""
+        from app.services.redispatch_tip_service import step0_blocks_redispatch
+
+        log = SimpleNamespace(
+            matched_pref=True,
+            preferred_id="u-jia",
+            assigned_id="u-jia",
+            profile={"specified_name": "加双"},
+        )
+        assert step0_blocks_redispatch(log) == "u-jia"
+
+    def test_multi_second_person_blocks_with_assignee(self):
+        """边界：指定张三、李四实际派了李四 → 拦截 id 是李四。"""
+        from app.services.redispatch_tip_service import step0_blocks_redispatch
+
+        log = SimpleNamespace(
+            matched_pref=True,
+            preferred_id="u-li",
+            assigned_id="u-li",
+            profile={"specified_multi": True},
+        )
+        assert step0_blocks_redispatch(log) == "u-li"
+
+    def test_not_found_allows(self):
+        """异常流程：找不到指定人走了智能派单 → 放行。"""
+        from app.services.redispatch_tip_service import step0_blocks_redispatch
+
+        log = SimpleNamespace(
+            matched_pref=None,
+            preferred_id=None,
+            assigned_id="u-other",
+            profile={"specified_name": "赵不存在"},
+        )
+        assert step0_blocks_redispatch(log) is None
+
+    def test_later_redispatch_log_not_used(self):
+        """边界：只认首轮；本函数不看最新一轮表单倾向人。"""
+        from app.services.redispatch_tip_service import step0_blocks_redispatch
+
+        first = SimpleNamespace(
+            matched_pref=None,
+            preferred_id=None,
+            assigned_id="u-smart",
+            profile={"specified_name": "赵不存在"},
+        )
+        assert step0_blocks_redispatch(first) is None
+
+
+class TestStep0LlmJson:
+    """弱信号 JSON：中文引号也能解析。"""
+
+    def test_cn_quotes(self):
+        """边界：模型用中文引号包 JSON 仍能抽出人名。"""
+        data = DispatchFlow._loads_llm_json(
+            "好的\n{“has_preference”: true, “preferred_name”: “张三”}"
+        )
+        assert data is not None
+        assert data.get("has_preference") is True
+        assert data.get("preferred_name") == "张三"
+
+    def test_plain_json(self):
+        """正常流程：标准 JSON。"""
+        data = DispatchFlow._loads_llm_json(
+            '{"has_preference": true, "preferred_name": "李四"}'
+        )
+        assert data["preferred_name"] == "李四"
+
+
+class TestAdmissionJobLevel:
+    """智能派单准入：职级也要有。"""
+
+    def test_skip_zero_job_level(self):
+        """边界：有部门有模块但职级为 0 → 不进准入池。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.sync.engineers_sync import _build_profiles
+
+        rows = [{
+            "id": "u-0",
+            "name": "零级",
+            "department": "智能规划研究院",
+            "job_level": 0,
+            "responsibility_modules": {"摇人吧服务号": {"前端": ["页面"]}},
+        }]
+        assert _build_profiles(rows) == []
+
+    def test_keep_job_level_one(self):
+        """正常流程：职级 1 且部门模块齐全 → 进池。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.sync.engineers_sync import _build_profiles
+
+        rows = [{
+            "id": "u-1",
+            "name": "一线",
+            "department": "智能规划研究院",
+            "job_level": 1,
+            "responsibility_modules": {"摇人吧服务号": {"前端": ["页面"]}},
+        }]
+        out = _build_profiles(rows)
+        assert len(out) == 1
+        assert out[0].id == "u-1"

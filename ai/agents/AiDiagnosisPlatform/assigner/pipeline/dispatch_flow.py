@@ -367,9 +367,11 @@ class DispatchFlow:
         if isinstance(l1_fut, Exception):
             logger.warning(f"{ltag} Step3 画像召回异常: {l1_fut}")
             recall_result.llm_recall = {}
+            recall_result.llm_reasons = {}
         else:
-            recall_result.llm_recall = l1_fut or {}
-            recall_result.llm_reasons = dict(getattr(self._llm_recall, "last_reasons", {}) or {})
+            scores, reasons = LlmRecall.unpack_arecall(l1_fut)
+            recall_result.llm_recall = scores
+            recall_result.llm_reasons = reasons
             self._log_recall_top(
                 ltag, "画像", recall_result.llm_recall, candidates, "画像召回(逐人置信)", count=8,
             )
@@ -464,7 +466,10 @@ class DispatchFlow:
     def _run_step7(
         self, ticket, contact_id, contact_name, engineers, reason, ltag,
     ) -> AssignmentResult:
-        """对接人 → 本单项目经理 → 配置项目经理。都空则返回未指派结果（写 tip，不编精排 #1）。"""
+        """对接人 → 本单项目经理 → 配置项目经理。都空则返回未指派结果（写 tip，不编精排 #1）。
+
+        这三人都是配置的兜底人，不看智能派单准入门槛（画像可以不完整）。
+        """
         row = self._load_project_row(ticket)
         project_pm_id, project_pm_name = self._pm_from_row(row, engineers)
         cfg_pm = self._config_project_manager()
@@ -795,6 +800,26 @@ class DispatchFlow:
     _PREFERRED_STRONG_RE = None
 
     @staticmethod
+    def _loads_llm_json(raw: Optional[str]) -> Optional[dict]:
+        """解析 Step0 LLM 输出。中文引号、第一段扁平 JSON 都能认。"""
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        txt = (
+            raw.replace("\u201c", '"').replace("\u201d", '"')
+            .replace("\u2018", "'").replace("\u2019", "'")
+        )
+        m = re.search(r"\{[^{}]*\}", txt)
+        if not m:
+            m = re.search(r"\{.*\}", txt, re.DOTALL)
+        if not m:
+            return None
+        try:
+            data = json.loads(m.group())
+        except json.JSONDecodeError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
     def _split_preferred_names(raw: str) -> List[str]:
         """把「张三、李四」拆成多个人名；每人仍按 2～6 字。"""
         parts = [p.strip() for p in re.split(r"[、，,；;]+", raw or "") if p.strip()]
@@ -856,16 +881,22 @@ class DispatchFlow:
         _m = self._match_preferred_everyone(name)
         if not _m:
             return None
-        _everyone_id, _everyone_name, _everyone_py = _m
-        from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile as _EP
-        winner = _EP(id=_everyone_id, name=_everyone_name)
+        stubs, everyone_py = _m
+        if not stubs:
+            return None
+        winner, llm_reason, collision_random = await self._pick_collision(
+            ticket, name, stubs,
+        )
+        collision = len(stubs) > 1
         reason = (
             f"{reason_prefix}{name} → 匹配 {winner.name}"
             "（无完整画像，按指定直接指派）"
         )
-        if _everyone_py:
+        if everyone_py:
             reason += "（按拼音匹配）"
-        return winner, _everyone_py, False, False, reason, []
+        if llm_reason:
+            reason += f"（{llm_reason}）"
+        return winner, everyone_py, collision, collision_random, reason, stubs
 
     async def _detect_preferred_assignee(
         self, ticket: TicketContext, engineers: List[EngineerProfile],
@@ -904,7 +935,7 @@ class DispatchFlow:
                     f" → {winner.name}{'(' + winner.id + ')' if collision else ''}"
                     f"{' 同名=' + str(len(matches)) if collision else ''}"
                     f"{'[拼音]' if pinyin_hit else ''}"
-                    f"{'[全量兜底/无画像]' if not matches else ''}"
+                    f"{'[全量兜底/无画像]' if '无完整画像' in reason else ''}"
                 )
                 return AssignmentResult(
                     engineer_id=winner.id,
@@ -942,14 +973,9 @@ class DispatchFlow:
             logger.warning(f"[派单:{ticket.id}] Step0 LLM 识别失败: {e}")
             return None, None
 
-        m = re.search(r"\{.*\}", response, re.DOTALL)
-        if not m:
-            logger.debug(f"[派单:{ticket.id}] Step0 无 JSON，raw: {response[:150]}")
-            return None, None
-        try:
-            data = json.loads(m.group())
-        except json.JSONDecodeError:
-            logger.debug(f"[派单:{ticket.id}] Step0 JSON 解析失败，raw: {response[:200]}")
+        data = self._loads_llm_json(response)
+        if not data:
+            logger.debug(f"[派单:{ticket.id}] Step0 无 JSON，raw: {(response or '')[:150]}")
             return None, None
 
         if not data.get("has_preference"):
@@ -969,7 +995,7 @@ class DispatchFlow:
                 f" → {winner.name}{'(' + winner.id + ')' if collision else ''}"
                 f"{' 同名=' + str(len(matches)) if collision else ''}"
                 f"{'[拼音]' if pinyin_hit else ''}"
-                f"{'[全量兜底/无画像]' if not matches else ''}"
+                f"{'[全量兜底/无画像]' if '无完整画像' in reason else ''}"
             )
             return AssignmentResult(
                 engineer_id=winner.id,
@@ -1036,9 +1062,9 @@ class DispatchFlow:
     def _match_engineer_names(
         cls, name: str, engineers: List[EngineerProfile],
     ) -> List[EngineerProfile]:
-        """按姓名匹配工程师：返回**全部命中的同名集合**（精确 + 包含并集）。
+        """按姓名匹配工程师：返回**姓名严格全等**的全部命中（即同名集合，不含"包含/被包含"）。
 
-        二次派单感知增强（M5/D6b）：匹配到多人即视为同名（name_collision），
+        二次派单感知增强（M5/D6b）：匹配到多个姓名完全相同的人即视为同名（name_collision），
         并按画像完整度排序（`missing` 少者优先，即 department/job_level/
         responsibility_modules 命中数多者靠前），供上层做同名抉择。
         """
@@ -1107,12 +1133,30 @@ class DispatchFlow:
             pass
         return py_hits, True
 
-    def _match_preferred_everyone(self, name: str) -> Optional[tuple]:
-        """全量 active 用户兜底匹配（含无画像者）：精确全等 → 拼音全拼；返回 (uid, uname, pinyin_hit)。
+    @staticmethod
+    def _everyone_stubs(rows: list) -> List[EngineerProfile]:
+        stubs: List[EngineerProfile] = []
+        for r in rows or []:
+            if not r or not r.get("id"):
+                continue
+            mods = r.get("responsibility_modules") or {}
+            if not isinstance(mods, dict):
+                mods = {}
+            jl = r.get("job_level")
+            stubs.append(EngineerProfile(
+                id=r["id"],
+                name=(r.get("name") or "").strip() or r["id"],
+                department=(r.get("department") or "").strip() or None,
+                job_level=jl if jl else 0,
+                responsibility_modules=mods,
+            ))
+        return stubs
 
-        用途：当指定的处理人在「准入画像工程师列表」里匹配不到（例如 TA 缺部门/责任模块，没进派单候选池），
-        只要该人确实存在于 users（status='active'），仍按用户意愿直接指派——即「指定了就直接派过去」。
-        返回 None 表示全量 active 用户里也没有该人（只能走正常派单）。
+    def _match_preferred_everyone(self, name: str) -> Optional[tuple]:
+        """全量 active 用户兜底：精确全等 → 拼音全拼。返回 (stubs, pinyin_hit)。
+
+        准入池没有此人（缺部门/职级/责任模块）时，只要在职名单里有，仍按指定派。
+        同名/同音多人交给 _pick_collision，不再取表里第一个。
         """
         if not name:
             return None
@@ -1125,16 +1169,16 @@ class DispatchFlow:
         if not rows:
             return None
         name = name.strip()
-        # 精确全等
         exact = [r for r in rows if (r.get("name") or "").strip() == name]
         if exact:
-            return exact[0]["id"], exact[0]["name"], False
-        # 拼音全拼兜底
+            stubs = self._everyone_stubs(exact)
+            return (stubs, False) if stubs else None
         name_py = self._to_pinyin(name)
         if name_py:
             py = [r for r in rows if self._to_pinyin((r.get("name") or "").strip()) == name_py]
             if py:
-                return py[0]["id"], py[0]["name"], True
+                stubs = self._everyone_stubs(py)
+                return (stubs, True) if stubs else None
         return None
 
     async def _pick_collision(
@@ -1172,10 +1216,9 @@ class DispatchFlow:
             from ai.agents.AiDiagnosisPlatform.assigner.prompts.step0 import build_collision
             prompt = build_collision(ticket, cand_list)
             resp = await llm.complete(prompt, max_tokens=200, temperature=0.2)
-            m = re.search(r"\{.*\}", resp or "", re.DOTALL)
-            if m:
-                data = json.loads(m.group())
-                # prompt 约定无法区分时输出 can_determine:false；以前误写成 is True，这条出口等于睡着。
+            data = self._loads_llm_json(resp)
+            if data:
+                # prompt 约定无法区分时输出 can_determine:false
                 if data.get("can_determine") is False:
                     logger.info(
                         f"[派单:{ticket.id}] 同名 '{pref_name}' LLM 无法区分，随机选择一个"

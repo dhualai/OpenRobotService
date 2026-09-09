@@ -45,6 +45,7 @@ from app.core.user_identity import user_matches, is_admin_user, to_user_id, acto
 from app.services.redispatch_tip_service import (  # 派单说明：列表/气泡/详情同一出口
     build_redispatch_tip,
     clean_reasoning_for_display,
+    step0_blocks_redispatch,
 )
 
 router = APIRouter(tags=["tasks"])
@@ -2306,31 +2307,25 @@ class ReDispatchRequest(BaseModel):
 
 
 async def _step0_hit_blocks_redispatch(db: AsyncSession, ticket) -> Optional[str]:
-    """指定人命中才拦截重派；找不到人已走智能派单则放行。
+    """首轮 Step0 已派上指定人则拦截重派（拼音/弱信号/指定多人同样拦截）。
 
-    正则与 assigner Step0 强信号口径一致。命中后 Step0 会覆盖倾向人；
-    未找到时派单日志 profile.specified_name 有值，重派倾向人可以生效。
+    找不到人已走智能派单：首轮 matched_pref 不是 True，重派倾向人可以生效。
+    展示名用首轮实际接单人，避免「张三、李四」只派了李四却提示张三。
     """
-    import re as _re
     from app.models.task_dispatch_log import TaskDispatchLog
+    from app.models.identity import UserDB
 
-    text = f"{getattr(ticket, 'title', '') or ''}\n{getattr(ticket, 'description', '') or ''}"
-    m = _re.search(r"指定(?:处理人|人|人员)[:：]\s*([^\]\s，,；;:：）)】]{2,6})", text)
-    if not m:
-        return None
-    name = m.group(1).strip()
-    log = (await db.execute(
+    first = (await db.execute(
         select(TaskDispatchLog)
         .where(TaskDispatchLog.task_id == ticket.id)
-        .order_by(TaskDispatchLog.dispatch_round.desc())
+        .order_by(TaskDispatchLog.dispatch_round.asc())
         .limit(1)
     )).scalars().first()
-    unresolved = ""
-    if log and isinstance(log.profile, dict):
-        unresolved = (log.profile.get("specified_name") or "").strip()
-    if unresolved:
+    blocked_id = step0_blocks_redispatch(first)
+    if not blocked_id:
         return None
-    return name
+    row = (await db.execute(select(UserDB).where(UserDB.id == blocked_id))).scalars().first()
+    return ((row.name if row else None) or blocked_id)
 
 
 @router.post("/{task_id}/re-dispatch", response_model=TicketResponse)
@@ -2368,8 +2363,8 @@ async def re_dispatch_task(
     # 若允许 manual 工单重派，Worker 永远查不到它，会一直卡在「派单中」。
     if (ticket.source or "") != "ai":
         raise HTTPException(status_code=400, detail="该工单非智能派单工单，无法重新派单")
-    # 指定人命中并派上：Step0 会覆盖重派倾向人，拦截。
-    # 指定人找不到、已走智能派单：profile.specified_name 有值，允许重派。
+    # 首轮 Step0 已派上指定人：再派仍会被 Step0 盖掉，拦截。
+    # 指定人找不到、已走智能派单：允许重派。
     _blocked = await _step0_hit_blocks_redispatch(db, ticket)
     if _blocked:
         raise HTTPException(

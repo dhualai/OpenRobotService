@@ -72,6 +72,26 @@ def format_unmatched_preferred_tip(
     )
 
 
+def step0_blocks_redispatch(first_log) -> Optional[str]:
+    """首轮已由 Step0 派上指定人 → 返回 assigned_id（拦截重派）。
+
+    看第一轮日志，不看最新一轮（重派后 preferred_id 会变成表单倾向人）。
+    不看 profile.specified_name：拼音命中也会写入对照原文，人已经派上了。
+    找不到指定人走了智能派单：matched_pref 不是 True → 放行。
+    """
+    if first_log is None:
+        return None
+    if not getattr(first_log, "matched_pref", False):
+        return None
+    pref = getattr(first_log, "preferred_id", None)
+    assigned = getattr(first_log, "assigned_id", None) or None
+    if not pref:
+        return None
+    if assigned and pref != assigned:
+        return None
+    return assigned or pref
+
+
 def build_redispatch_tip(log, user_map) -> Optional[str]:
     """派单结果提醒的唯一出口（列表 / 气泡 / 详情 tip_detail）。
 
@@ -94,7 +114,8 @@ def build_redispatch_tip(log, user_map) -> Optional[str]:
             "配置后系统会继续尝试。"
         )
 
-    # Step0 指定人找不到：没有 users.id，只记下了指定名（智能派单不会派画像不全的人，不再叠）
+    # Step0 指定人找不到：没有 users.id，只记下指定名。
+    # 智能派单有门槛，只有画像完整的人能进候选池，不会派到画像不全的人。
     if specified_name and not preferred_id:
         return f"没找到您指定的【{specified_name}】，已按智能派单处理"
 
