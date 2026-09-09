@@ -211,6 +211,35 @@ async def main():
         done = [0]
         t0 = time.time()
         lock = asyncio.Lock()
+        if exam:
+            # 预热：本地嵌入式 qdrant 冷启动加载 >5s 会踩 5s 操作超时 + 30s
+            # 快速失败窗口，并发首轮检索全空——先单发一次把库打开
+            try:
+                await platform._retrieve_with_context(
+                    "dar_l3_warmup", AgentState(session_id="dar_l3_warmup",
+                                                original_query="AGV 上线部署"))
+                print("qdrant 预热完成")
+            except Exception as ex:
+                print(f"qdrant 预热失败（继续，段内会重试）：{type(ex).__name__}: {ex}")
+
+        async def retrieve_ctx(seg, q0):
+            """段首问题检索资料。qdrant 冷启动加载 >5s 会触发操作超时 + 30s
+            快速失败窗口，窗口内检索全空（0909 实锤：47 段拿空资料判成未直答，
+            系统性偏保守）——检测到不可用等冷却后重试，仍不可用抛错让该段记
+            error 不落盘（重跑自动补）。"""
+            st = AgentState(session_id=f"dar_l3_{seg['cid']}_{seg['astart']}",
+                            original_query=q0)
+            for _ in range(5):
+                if not getattr(platform._retriever, "is_qdrant_unavailable", False):
+                    try:
+                        ctx = await platform._retrieve_with_context(st.session_id, st)
+                    except Exception:
+                        ctx = ""
+                    if ctx or not getattr(platform._retriever,
+                                          "is_qdrant_unavailable", False):
+                        return ctx or ""
+                await asyncio.sleep(10)  # 等快速失败冷却（30s）后重试
+            raise RuntimeError("qdrant 持续不可用（快速失败窗口）")
 
         async def one(seg):
             async with sem:
@@ -218,17 +247,12 @@ async def main():
                        else "该段未提工单")
                 # 段首问题跑真实检索（三件套之一：检索资料）
                 q0 = seg["timeline"].split("用户：", 1)[-1].split(" →", 1)[0]
-                st = AgentState(session_id=f"dar_l3_{seg['cid']}_{seg['astart']}",
-                                original_query=q0)
-                try:
-                    ctx = await platform._retrieve_with_context(st.session_id, st)
-                except Exception:
-                    ctx = ""
-                prompt = JUDGE_PROMPT.format(prev=seg["prev"], timeline=seg["timeline"],
-                                             retrieval=(ctx or "")[:2500], ticket_sig=sig)
                 r = {"cid": seg["cid"], "seg": seg["seg"], "astart": seg["astart"],
                      "grp": seg["grp"], "lab": seg["lab"]}
                 try:
+                    ctx = await retrieve_ctx(seg, q0)
+                    prompt = JUDGE_PROMPT.format(prev=seg["prev"], timeline=seg["timeline"],
+                                                 retrieval=(ctx or "")[:2500], ticket_sig=sig)
                     raw = await llm.complete(prompt=prompt, max_tokens=200, temperature=0,
                                              thinking=False)
                     obj = json.loads(re.search(r"\{.*\}", raw or "", re.S).group(0))
