@@ -499,10 +499,39 @@ async function loadProg(){
   }catch(_){}
 }
 loadProg();
+/* 运行状态恢复：刷新/重开页面后重连正在跑的流程（服务端独立线程读日志留档，不受前端断连影响） */
+let folN = null, folTimer = null;
+function stopFollow(){ folN = null; if(folTimer){ clearTimeout(folTimer); folTimer = null; } }
+async function followRun(first){
+  try{
+    const q = folN != null ? `?after=${folN}` : "";
+    const j = await (await fetch("/api/run_status" + q)).json();
+    if(first && (j.running || j.n > 0)){
+      document.querySelector("#logcard").open = true;
+      if(j.cmd) termLine("hd", `▶ ${j.cmd}${j.running ? "（恢复跟随）" : ""}`);
+    }
+    (j.logs || []).forEach(l=>termLine("", l));
+    folN = j.n;
+    if(j.running){
+      $("#runstate").innerHTML = '<span class="badge warn">运行中</span>';
+      $("#stopbtn").disabled = false;
+      document.querySelectorAll(".wstep .ops button, #advrun").forEach(x=>x.disabled = true);
+      folTimer = setTimeout(()=>followRun(false), 2500);
+    }else if(folN > 0){
+      termLine(j.rc === 0 ? "okl" : "err", j.rc === 0 ? "✔ 完成" : `✘ 退出码 ${j.rc}`);
+      $("#stopbtn").disabled = true;
+      $("#runstate").innerHTML = '<span class="badge ok">空闲</span>';
+      folN = null;
+      loadMetrics().then(()=>{ loadArts(); loadUA(); });
+      loadProg();
+    }else{ folN = null; }
+  }catch(_){ folTimer = setTimeout(()=>followRun(false), 5000); }
+}
+followRun(true);
 let running = false;
 async function runSteps(steps, wstepEl){
   if(running){ toast("已有流程在跑", "err"); return; }
-  running = true;
+  running = true; stopFollow();
   document.querySelectorAll(".wstep .ops button, #advrun").forEach(x=>x.disabled = true);
   $("#stopbtn").disabled = false;
   wstepEl?.classList.add("run");

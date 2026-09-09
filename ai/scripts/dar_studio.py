@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -339,7 +340,7 @@ def stop_regression():
 
 
 # ── 周流程（subprocess dar_weekly，SSE 日志）────────────────────
-_run_state: dict = {"proc": None}
+_run_state: dict = {"proc": None, "logs": [], "cmd": "", "env": "", "rc": None}
 
 
 class RunReq(BaseModel):
@@ -353,7 +354,7 @@ class StopReq(BaseModel):
 
 
 @app.post("/api/run")
-def run(req: RunReq):
+async def run(req: RunReq):
     if _run_state["proc"] and _run_state["proc"].poll() is None:
         raise HTTPException(409, "已有流程在跑（先停止）")
     if req.env not in ("test", "prod"):
@@ -362,23 +363,47 @@ def run(req: RunReq):
     if req.note:
         args += ["--note", req.note]
     args += req.steps
-    _run_state["proc"] = subprocess.Popen(
+    proc = subprocess.Popen(
         args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
         cwd=PROJ, env=_child_env())
+    _run_state.update(proc=proc, logs=[], cmd=" ".join(req.steps),
+                      env=req.env, rc=None)
 
-    def gen():
-        p = _run_state["proc"]
-        yield f"data: {json.dumps({'event': 'begin', 'data': {'cmd': ' '.join(req.steps), 'env': req.env}}, ensure_ascii=False)}\n\n"
-        for line in p.stdout:
-            yield f"data: {json.dumps({'event': 'log', 'data': {'line': line.rstrip()}}, ensure_ascii=False)}\n\n"
-        rc = p.wait()
-        _run_state["proc"] = None
-        yield f"data: {json.dumps({'event': 'done', 'data': {'rc': rc}}, ensure_ascii=False)}\n\n"
+    def reader():  # 独立线程持续读：与前端是否在线无关（防 PIPE 满卡死子进程）+ 留档供刷新恢复
+        for line in proc.stdout:
+            _run_state["logs"].append(line.rstrip())
+        _run_state["rc"] = proc.wait()
+
+    threading.Thread(target=reader, daemon=True).start()
+
+    async def gen():
+        i = 0
+        yield f"data: {json.dumps({'event': 'begin', 'data': {'cmd': _run_state['cmd'], 'env': req.env}}, ensure_ascii=False)}\n\n"
+        while True:
+            logs = _run_state["logs"]
+            while i < len(logs):
+                yield f"data: {json.dumps({'event': 'log', 'data': {'line': logs[i]}}, ensure_ascii=False)}\n\n"
+                i += 1
+            if _run_state["rc"] is not None:
+                break
+            await asyncio.sleep(0.3)
+        yield f"data: {json.dumps({'event': 'done', 'data': {'rc': _run_state['rc']}}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/run_status")
+def run_status(after: int = -1):
+    """运行状态 + 留档日志：页面刷新/重开后恢复现场；after=已收行数则只取增量。"""
+    p = _run_state["proc"]
+    running = bool(p and p.poll() is None)
+    logs = _run_state["logs"]
+    chunk = logs[after:after + 500] if after >= 0 else logs[-300:]
+    return {"running": running, "cmd": _run_state["cmd"], "env": _run_state["env"],
+            "rc": _run_state["rc"], "n": len(logs), "logs": chunk}
 
 
 @app.post("/api/stop_run")
