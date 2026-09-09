@@ -44,7 +44,11 @@ MANUAL = rf"C:/Users/PAJ26020/Downloads/{_MANUAL_NAME[ENV]}"
 RETRIEVAL = os.path.join(OUT, f"retrieval_check_{_dt.now():%Y%m%d}.json")
 JUDGE_OUT = os.path.join(OUT, f"l3_judge_{_dt.now():%Y%m%d}.json")      # 校准结果（按日滚动）
 ALL_OUT = os.path.join(OUT, f"l3_judge_all_{_dt.now():%Y%m%d}.json")    # 预标结果
-CONCURRENCY = 8
+# 并发：网关限流/本地嵌入式 qdrant 扛不住时可 DAR_L3_CONC=4 降并发
+try:
+    CONCURRENCY = max(1, int(os.environ.get("DAR_L3_CONC") or 8))
+except ValueError:
+    CONCURRENCY = 8
 
 
 def _latest_judge():
@@ -187,103 +191,131 @@ async def main():
     await platform._ensure_clients()  # 懒加载只在 run 入口触发，直连检索前必须显式初始化
     llm = await get_dar_client()
 
-    if os.path.exists(out_path):
-        rows = json.load(open(out_path, encoding="utf-8"))
-        print(f"读已落盘 judge 结果（{len(rows)} 条），跳过 LLM")
-    else:
-        # 断点续跑：当日 jsonl 里已判段（cid+astart 匹配）复用，只补跑未判段
-        # （judge 跑完才写 json 快照，被中断=json 不存在，jsonl 兜底）
-        jpath = out_path[:-5] + ".jsonl"
-        done_keys = {}
-        if os.path.exists(jpath):
-            for line in open(jpath, encoding="utf-8"):
-                if not line.strip():
-                    continue
-                old = json.loads(line)
-                if old.get("intent") != "error":
-                    done_keys[(str(old["cid"]), old.get("astart"))] = old
-            if done_keys:
-                print(f"断点续跑：复用已判 {len(done_keys)} 段，"
-                      f"补跑 {len(exam) - len(done_keys)} 段")
-        exam = [s for s in exam if (str(s["cid"]), s["astart"]) not in done_keys]
-        rows = list(done_keys.values())
-        sem = asyncio.Semaphore(CONCURRENCY)
-        done = [0]
-        t0 = time.time()
-        lock = asyncio.Lock()
-        if exam:
-            # 预热：本地嵌入式 qdrant 冷启动加载 >5s 会踩 5s 操作超时 + 30s
-            # 快速失败窗口，并发首轮检索全空——先单发一次把库打开
+    # 增量：jsonl（逐段追加，最新）+ json 快照（上次全量）双源收已判段，jsonl
+    # 覆盖 json。不再「产物存在就整段跳过 LLM」——段根/模型变更后重跑即自动
+    # 补判差异段（旧行为必须手工删文件才重判，0909 两次踩坑）
+    jpath = out_path[:-5] + ".jsonl"
+    done_keys = {}
+    for src in (out_path, jpath):
+        if not os.path.exists(src):
+            continue
+        items = ([json.loads(l) for l in open(src, encoding="utf-8") if l.strip()]
+                 if src.endswith(".jsonl") else json.load(open(src, encoding="utf-8")))
+        for old in items:
+            if old.get("intent") in (None, "error") or old.get("astart") is None:
+                continue  # error 不落，重跑自动补
+            done_keys[(str(old["cid"]), int(old["astart"]))] = old
+    rows = list(done_keys.values())
+    todo = [s for s in exam if (str(s["cid"]), int(s["astart"])) not in done_keys]
+    print(f"增量：复用已判 {len(done_keys)} 段，补跑 {len(todo)} 段")
+
+    if todo:
+        # LLM 探活：模型名过期/网关不可用时快速失败，别把 419 段全烧成 error
+        for attempt in range(3):
             try:
-                await platform._retrieve_with_context(
-                    "dar_l3_warmup", AgentState(session_id="dar_l3_warmup",
-                                                original_query="AGV 上线部署"))
-                print("qdrant 预热完成")
+                await llm.complete(prompt="回复：OK", max_tokens=5, temperature=0,
+                                   thinking=False)
+                print("LLM 探活通过")
+                break
             except Exception as ex:
-                print(f"qdrant 预热失败（继续，段内会重试）：{type(ex).__name__}: {ex}")
+                if attempt == 2:
+                    sys.exit(f"LLM 不可用（当前模型 {os.getenv('DAR_MODEL') or 'flash4.1'}，"
+                             f"过期或网关问题？）：{type(ex).__name__}: {ex}")
+                await asyncio.sleep(5)
+        # 预热：本地嵌入式 qdrant 冷启动加载 >5s 会踩 5s 操作超时 + 30s
+        # 快速失败窗口，并发首轮检索全空——先单发一次把库打开
+        try:
+            await platform._retrieve_with_context(
+                "dar_l3_warmup", AgentState(session_id="dar_l3_warmup",
+                                            original_query="AGV 上线部署"))
+            print("qdrant 预热完成")
+        except Exception as ex:
+            print(f"qdrant 预热失败（继续，段内会重试）：{type(ex).__name__}: {ex}")
 
-        async def retrieve_ctx(seg, q0):
-            """段首问题检索资料。qdrant 冷启动加载 >5s 会触发操作超时 + 30s
-            快速失败窗口，窗口内检索全空（0909 实锤：47 段拿空资料判成未直答，
-            系统性偏保守）——检测到不可用等冷却后重试，仍不可用抛错让该段记
-            error 不落盘（重跑自动补）。"""
-            st = AgentState(session_id=f"dar_l3_{seg['cid']}_{seg['astart']}",
-                            original_query=q0)
-            for _ in range(5):
-                if not getattr(platform._retriever, "is_qdrant_unavailable", False):
-                    try:
-                        ctx = await platform._retrieve_with_context(st.session_id, st)
-                    except Exception:
-                        ctx = ""
-                    if ctx or not getattr(platform._retriever,
-                                          "is_qdrant_unavailable", False):
-                        return ctx or ""
-                await asyncio.sleep(10)  # 等快速失败冷却（30s）后重试
-            raise RuntimeError("qdrant 持续不可用（快速失败窗口）")
+    sem = asyncio.Semaphore(CONCURRENCY)
+    done = [0]
+    total = [len(todo)]
+    t0 = time.time()
+    lock = asyncio.Lock()
+    err_keys = set()
 
-        async def one(seg):
-            async with sem:
-                sig = (f"该段结束前用户提了 {seg['n_ticket']} 张工单" if seg["n_ticket"]
-                       else "该段未提工单")
-                # 段首问题跑真实检索（三件套之一：检索资料）
-                q0 = seg["timeline"].split("用户：", 1)[-1].split(" →", 1)[0]
-                r = {"cid": seg["cid"], "seg": seg["seg"], "astart": seg["astart"],
-                     "grp": seg["grp"], "lab": seg["lab"]}
+    async def retrieve_ctx(seg, q0):
+        """段首问题检索资料。qdrant 冷启动加载 >5s 会触发操作超时 + 30s
+        快速失败窗口，窗口内检索全空（0909 实锤：47 段拿空资料判成未直答，
+        系统性偏保守）——检测到不可用等冷却后重试，仍不可用抛错让该段记
+        error 不落盘（重跑自动补）。"""
+        st = AgentState(session_id=f"dar_l3_{seg['cid']}_{seg['astart']}",
+                        original_query=q0)
+        for _ in range(5):
+            if not getattr(platform._retriever, "is_qdrant_unavailable", False):
                 try:
-                    ctx = await retrieve_ctx(seg, q0)
-                    prompt = JUDGE_PROMPT.format(prev=seg["prev"], timeline=seg["timeline"],
-                                                 retrieval=(ctx or "")[:2500], ticket_sig=sig)
-                    raw = await llm.complete(prompt=prompt, max_tokens=200, temperature=0,
-                                             thinking=False)
-                    obj = json.loads(re.search(r"\{.*\}", raw or "", re.S).group(0))
-                    r["intent"] = str(obj.get("intent", "?"))
-                    r["resolved"] = str(obj.get("resolved", "?"))
-                    r["faithful"] = str(obj.get("faithful", "na"))
-                    r["reason"] = str(obj.get("reason", ""))[:120]
-                    if r["intent"] not in ("consult", "ticket"):
-                        r["intent"] = "?"
-                    if r["resolved"] not in ("yes", "no"):
-                        r["resolved"] = "?"
-                    if r["faithful"] not in ("yes", "no", "na"):
-                        r["faithful"] = "na"
-                except Exception as ex:
-                    r["intent"] = r["resolved"] = "error"
-                    r["faithful"] = "na"
-                    r["reason"] = f"{type(ex).__name__}: {ex}"[:120]
-                rows.append(r)
-                async with lock:
-                    # 判定落 jsonl（断点续跑）；error 不落，重跑自动重试
-                    if r["intent"] != "error":
-                        with open(jpath, "a", encoding="utf-8") as fh:
-                            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-                    done[0] += 1
-                    if done[0] % 10 == 0 or done[0] == len(exam):
-                        print(f"  {done[0]}/{len(exam)}（{time.time()-t0:.0f}s）")
+                    ctx = await platform._retrieve_with_context(st.session_id, st)
+                except Exception:
+                    ctx = ""
+                if ctx or not getattr(platform._retriever,
+                                      "is_qdrant_unavailable", False):
+                    return ctx or ""
+            await asyncio.sleep(10)  # 等快速失败冷却（30s）后重试
+        raise RuntimeError("qdrant 持续不可用（快速失败窗口）")
 
-        await asyncio.gather(*(one(s) for s in exam))
+    async def one(seg, sem_=None):
+        async with (sem_ or sem):
+            sig = (f"该段结束前用户提了 {seg['n_ticket']} 张工单" if seg["n_ticket"]
+                   else "该段未提工单")
+            # 段首问题跑真实检索（三件套之一：检索资料）
+            q0 = seg["timeline"].split("用户：", 1)[-1].split(" →", 1)[0]
+            r = {"cid": seg["cid"], "seg": seg["seg"], "astart": seg["astart"],
+                 "grp": seg["grp"], "lab": seg["lab"]}
+            try:
+                ctx = await retrieve_ctx(seg, q0)
+                prompt = JUDGE_PROMPT.format(prev=seg["prev"], timeline=seg["timeline"],
+                                             retrieval=(ctx or "")[:2500], ticket_sig=sig)
+                raw = await llm.complete(prompt=prompt, max_tokens=200, temperature=0,
+                                         thinking=False)
+                obj = json.loads(re.search(r"\{.*\}", raw or "", re.S).group(0))
+                r["intent"] = str(obj.get("intent", "?"))
+                r["resolved"] = str(obj.get("resolved", "?"))
+                r["faithful"] = str(obj.get("faithful", "na"))
+                r["reason"] = str(obj.get("reason", ""))[:120]
+                if r["intent"] not in ("consult", "ticket"):
+                    r["intent"] = "?"
+                if r["resolved"] not in ("yes", "no"):
+                    r["resolved"] = "?"
+                if r["faithful"] not in ("yes", "no", "na"):
+                    r["faithful"] = "na"
+            except Exception as ex:
+                r["intent"] = r["resolved"] = "error"
+                r["faithful"] = "na"
+                r["reason"] = f"{type(ex).__name__}: {ex}"[:120]
+            rows.append(r)
+            async with lock:
+                # 判定落 jsonl（增量/断点续跑）；error 不落，重跑自动重试
+                if r["intent"] == "error":
+                    err_keys.add((str(seg["cid"]), int(seg["astart"])))
+                else:
+                    with open(jpath, "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+                done[0] += 1
+                if done[0] % 10 == 0 or done[0] == total[0]:
+                    print(f"  {done[0]}/{total[0]}（{time.time()-t0:.0f}s）")
+
+    if todo:
+        await asyncio.gather(*(one(s) for s in todo))
+        if err_keys:
+            # 异常段降并发补跑一轮：网关瞬断/超时不拖到下次手工重跑
+            retry = [s for s in todo if (str(s["cid"]), int(s["astart"])) in err_keys]
+            print(f"异常 {len(retry)} 段，降并发补跑一轮…")
+            rows[:] = [r for r in rows
+                       if (str(r["cid"]), int(r["astart"])) not in err_keys]
+            err_keys.clear()
+            total[0] += len(retry)
+            rsem = asyncio.Semaphore(2)
+            await asyncio.gather(*(one(s, rsem) for s in retry))
+        print(f"judge 完成，{time.time()-t0:.0f}s → {out_path}"
+              + (f"（仍异常 {len(err_keys)} 段，重跑自动补）" if err_keys else ""))
+    if rows:
         with open(out_path, "w", encoding="utf-8") as fh:
             json.dump(rows, fh, ensure_ascii=False, indent=1)
-        print(f"judge 完成，{time.time()-t0:.0f}s → {out_path}")
 
     # ---- 预标模式：组合四类 pre，落盘 + 分布 ----
     if all_mode:
