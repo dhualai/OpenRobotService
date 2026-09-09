@@ -88,14 +88,13 @@ dispatch 不碰）+ 退出自动恢复。测试与生产 qdrant 指针当前一�
 
 - 检索重放=本地 qdrant 当前状态，≠线上当时检索（线上未留档 hits）；
   verdict 只作参考，重大结论以人工标注为准。
-- L3 judge 用 DAR_MODEL（缺省 deepseek-v4-flash=网关受支持列表里的正式名、与线上
-  回答同源）。沿革：pro 在中转上频繁超时/不可用 → 0909 换
-  deepseek-v4.1-flash-expires-on-0910（当时实测可用）→ 该名不在网关受支持列表
-  （只有 v4-pro/v4-flash/v4-flash-vision-exp），属未文档化别名，名字自带
-  expires-on-0910 但未获官方确认 → 缺省改回 v4-flash。要复跑 0909 口径可
-  DAR_MODEL=deepseek-v4.1-flash-expires-on-0910（别名若失效会 400）。
-  L1 切分/检索 no 判定同用此模型。flash 判定偏摇摆/偏宽是已知倾向，
-  precision 指标就是监控它的。
+- L3 judge 用 DAR_MODEL（缺省 deepseek-v4.1-flash-expires-on-0910——已判的 prod
+  419 段 / test 231 段都是它判的，保持同模型）。该名不在网关受支持列表（只有
+  v4-pro/v4-flash/v4-flash-vision-exp），属未文档化别名，名字自带 expires-on-0910
+  但未获官方确认是否真失效；若某天失效，L3 起跑探活会明确报出模型名，用
+  DAR_MODEL=deepseek-v4-flash 切正式名即可（判定行带 model 字段，全量重判用
+  工作台「重判 L3」）。L1 切分/检索 no 判定同用此模型。flash 判定偏摇摆/偏宽是
+  已知倾向，precision 指标就是监控它的。
   注意：已落盘判定按 cid+astart 增量复用，切模型后旧结果不自动重判（删对应
   .json/.jsonl 才会）；每行带 model 字段，复用非当前模型判定时启动日志会提示。
 - L3 起跑先做 LLM 探活（3 次失败即退，提示模型过期/网关），首轮异常段自动
