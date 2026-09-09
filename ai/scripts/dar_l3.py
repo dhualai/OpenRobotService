@@ -313,9 +313,13 @@ async def main():
             rows[:] = [r for r in rows
                        if (str(r["cid"]), int(r["astart"])) not in err_keys]
             err_keys.clear()
-            total[0] += len(retry)
+            done[0], total[0] = 0, len(retry)
             rsem = asyncio.Semaphore(2)
             await asyncio.gather(*(one(s, rsem) for s in retry))
+            # 补跑仍失败的也不进 json 快照：error 不是判定，落盘会被预标组合
+            # 当成「未直答」注入标注工具、并拉低 L3 指标（测试实锤）
+            rows[:] = [r for r in rows
+                       if (str(r["cid"]), int(r["astart"])) not in err_keys]
         print(f"judge 完成，{time.time()-t0:.0f}s → {out_path}"
               + (f"（仍异常 {len(err_keys)} 段，重跑自动补）" if err_keys else ""))
     if rows:
