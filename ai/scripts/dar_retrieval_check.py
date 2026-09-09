@@ -21,7 +21,7 @@ import time
 from collections import Counter
 from datetime import datetime as _dt
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")  # 不换 wrapper 对象：pytest 捕获下替换会炸
 _PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, _PROJ)
 os.chdir(_PROJ)
@@ -31,11 +31,44 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(_PROJ, "ai", ".env"))
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-OUT = r"C:/Users/PAJ26020/Desktop/export_dar/processed"
+# 环境随 dar_weekly --env 走（subprocess 继承 DAR_ENV）；单独跑缺省 test
+ENV = os.environ.get("DAR_ENV", "test")
+OUT = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed"
 SPLIT = os.path.join(OUT, "conversations_split.jsonl")
 CLS = os.path.join(OUT, "conversations_classified.jsonl")
-MANUAL = r"C:/Users/PAJ26020/Downloads/manual_segmentation.json"
+_MANUAL_NAME = {"test": "manual_segmentation.json",
+                "prod": "manual_segmentation_prod.json"}
+MANUAL = rf"C:/Users/PAJ26020/Downloads/{_MANUAL_NAME[ENV]}"
 CONCURRENCY = 8
+
+# chunk 首行：『{emoji路别} N（标题）：』；title 可缺（FAQ/翻译表等无名块）
+_HEAD = re.compile(r"^(?P<route>[^\d（]+?)\s*(?P<idx>\d+)?\s*(?:（(?P<title>[^）]*)）)?：\s*$")
+
+
+def parse_retrieval_chunks(ctx, max_chunks=6, text_cap=200):
+    """检索 ctx 拼接文本 → [{route,title,text}]，供标注工具折叠展示。
+
+    块边界=行首 `---`（pipeline._retrieve_with_context 每 chunk 自带前后 ---）；
+    首行不匹配编号格式的块（如 🚗 提示）route 取冒号前原文。纯函数，单测覆盖。
+    """
+    chunks = []
+    for part in re.split(r"(?m)^---\s*$", ctx or ""):
+        lines = [l for l in part.splitlines() if l.strip()]
+        if not lines:
+            continue
+        m = _HEAD.match(lines[0].strip())
+        if m:
+            route, title = m.group("route").strip(), (m.group("title") or "").strip()
+            body = lines[1:]
+        else:
+            head, sep, rest = lines[0].strip().partition("：")
+            route, title = head, ""
+            body = ([rest.strip()] if sep and rest.strip() else []) + lines[1:]
+        text = " ".join(l.strip() for l in body)[:text_cap]
+        chunks.append({"route": route, "title": title, "text": text})
+        if len(chunks) >= max_chunks:
+            break
+    return chunks
 
 
 def build_rows():
@@ -46,7 +79,8 @@ def build_rows():
     convs = [json.loads(l) for l in open(SPLIT, encoding="utf-8")]
     cls_all = {j["conversation_id"]: j["cls"] for j in
                (json.loads(l) for l in open(CLS, encoding="utf-8"))}
-    man = json.load(open(MANUAL, encoding="utf-8"))
+    man = ({ } if not os.path.exists(MANUAL)
+           else json.load(open(MANUAL, encoding="utf-8")))
     bounds, labels = man.get("bounds") or {}, man.get("labels") or {}
     legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
     rows = []
@@ -107,7 +141,7 @@ async def main():
         for r in rows:  # 复用判定拷回（否则落盘行缺 verdict）
             old = done_keys.get((r["cid"], r["q"][:80]))
             if old and "verdict" not in r:
-                for k in ("verdict", "reason", "retrieval"):
+                for k in ("verdict", "reason", "retrieval", "chunks"):
                     if old.get(k) is not None:
                         r[k] = old[k]
         n_hit = sum(1 for r in rows if r.get("verdict") in ("yes", "partial", "no"))
@@ -131,6 +165,7 @@ async def main():
                                        original_query=r["q"])
                     ctx = await platform._retrieve_with_context(state.session_id, state)
                     r["retrieval"] = (ctx or "")[:400]
+                    r["chunks"] = parse_retrieval_chunks(ctx)
                     prompt = JUDGE_PROMPT.format(q=r["q"][:300], ctx=(ctx or "")[:3500])
                     raw = await llm.complete(prompt=prompt, max_tokens=200, temperature=0,
                                              thinking=False)

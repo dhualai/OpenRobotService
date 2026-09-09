@@ -45,6 +45,13 @@
   .pre-row .rv { font-weight: 600; }
   .pre-row .why { color: #78716c; flex: 1; min-width: 200px; }
   .pre-row button { padding: 1px 9px; font-size: 11px; }
+  .chk { background: #f8fafc; border: 1px solid #e2e5ea; border-radius: 6px;
+         padding: 4px 10px; margin: 4px 0 6px; font-size: 12px; }
+  .chk summary { cursor: pointer; color: #2563eb; font-size: 12px; user-select: none; }
+  .chk .chk-i { padding: 4px 0 2px; border-top: 1px dashed #e2e5ea; margin-top: 4px; }
+  .chk .chk-i:first-of-type { border-top: none; }
+  .chk .chk-r { color: #7c3aed; font-weight: 600; }
+  .chk .chk-t { color: #555; word-break: break-word; margin-top: 1px; }
   .kbd { background: #fff; border: 1px solid #cbd5e1; border-bottom-width: 2px; border-radius: 4px;
          padding: 0 5px; font-size: 11px; color: #334155; }
   .lbtn { border: 1px solid #cbd5e1; background: #fff; border-radius: 4px; font-size: 11px;
@@ -223,6 +230,21 @@ function renderProg() {
 
 const RV_TXT = { yes: "检索:有答案", partial: "检索:部分相关", no: "检索:无关", error: "检索:异常" };
 const PRE_COL = Object.fromEntries(LABELS);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, m =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
+
+// 检索命中折叠块：本地 qdrant 重放当时查询的 top 命中（非线上留档，仅供审核参考）
+function renderChkRow(c, st) {
+  const chunks = ((c.pre || {})[st] || {}).chunks;
+  if (!chunks || !chunks.length) return null;
+  const d = document.createElement("details");
+  d.className = "chk";
+  d.innerHTML = `<summary>检索命中 ${chunks.length} 块（本地重放）</summary>` +
+    chunks.map(ch => `<div class="chk-i"><span class="chk-r">${esc(ch.route)}</span>` +
+      (ch.title ? ` <b>${esc(ch.title)}</b>` : "") +
+      `<div class="chk-t">${esc(ch.text)}</div></div>`).join("");
+  return d;
+}
 
 function renderPreRow(c, st) {
   const p = (c.pre || {})[st];
@@ -278,6 +300,8 @@ function renderFlow() {
     // AI 预标行（按 AI 段首索引锚定；边界改动后该段不显示，防错位）
     const preRow = renderPreRow(c, st);
     if (preRow) seg.appendChild(preRow);
+    const chkRow = renderChkRow(c, st);
+    if (chkRow) seg.appendChild(chkRow);
     // L2 标注行：是否直答（先定边界再标注——段首索引即标签键，边界改动后需重标）
     const curLab = labelsOf(c)[st] || "";
     const lr = document.createElement("div");
@@ -378,7 +402,9 @@ document.getElementById("btn-export").onclick = () => {
   saveCur();
   const blob = new Blob([JSON.stringify(store, null, 1)], { type: "application/json" });
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob); a.download = "manual_segmentation.json"; a.click();
+  a.href = URL.createObjectURL(blob);
+  a.download = "manual_segmentation" + (DATA.env === "prod" ? "_prod" : "") + ".json";
+  a.click();
 };
 document.querySelectorAll("#side .filters button").forEach(b => {
   b.onclick = () => {

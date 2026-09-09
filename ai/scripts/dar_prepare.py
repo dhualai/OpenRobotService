@@ -19,7 +19,8 @@ from datetime import datetime, timedelta
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 TESTER_NAMES = ["罗昊", "罗昊2号", "贾爽", "胡健楠", "张俊磊", "张文星", "白永奇", "耿洪秀"]
-DATA = r"C:/Users/PAJ26020/Desktop/export_dar"
+ENV = os.environ.get("DAR_ENV", "test")
+DATA = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}"
 OUT = os.path.join(DATA, "processed")
 TICKET_WINDOW = timedelta(minutes=30)  # 回合→工单归属近似窗口
 

@@ -23,7 +23,8 @@ from datetime import datetime, timedelta
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = r"C:/Users/PAJ26020/Desktop/export_dar/processed"
+ENV = os.environ.get("DAR_ENV", "test")
+OUT = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed"
 SPLIT = os.path.join(OUT, "conversations_split.jsonl")
 CLS = os.path.join(OUT, "conversations_classified.jsonl")
 TPL = os.path.join(HERE, "segmentation_tool.template.html")
@@ -38,25 +39,34 @@ def latest(pattern):
 
 
 def load_pre():
-    """AI 预标 {cid: {ai段首索引: {pre, rv, reason}}}。段首按 AI topic 首现索引。"""
+    """AI 预标 + 检索 chunks {cid: {ai段首索引: {pre, rv, reason, chunks}}}。
+    l3 预标缺席时仍注入 chunks-only 行（检索审核不依赖 l3）。"""
     j_path, r_path = latest("l3_judge_all_*.json"), latest("retrieval_check_*.json")
-    if not j_path:
-        return {}
-    j_rows = json.load(open(j_path, encoding="utf-8"))
-    rv = {}
+    j_rows = json.load(open(j_path, encoding="utf-8")) if j_path else []
+    chk = {}
     if r_path:
         for r in json.load(open(r_path, encoding="utf-8")):
-            rv[(str(r["cid"]), r.get("astart", r.get("seg")))] = r.get("verdict")
+            chk[(str(r["cid"]), r.get("astart", r.get("seg")))] = {
+                "rv": r.get("verdict", ""), "chunks": r.get("chunks") or []}
     pre = {}
     for r in j_rows:
         astart = r.get("astart")
         if astart is None:
             continue
+        c = chk.get((str(r["cid"]), astart), {})
         pre.setdefault(str(r["cid"]), {})[astart] = {
-            "pre": r.get("pre", ""), "rv": rv.get((str(r["cid"]), astart), ""),
-            "reason": (r.get("reason") or "")[:80],
+            "pre": r.get("pre", ""), "rv": c.get("rv", ""),
+            "reason": (r.get("reason") or "")[:80], "chunks": c.get("chunks", []),
         }
-    print(f"AI 预标注入：{j_path}（{len(pre)} 会话）" + (f"｜检索 {r_path}" if r_path else "（无检索判定）"))
+    for (cid, astart), c in chk.items():
+        pre.setdefault(cid, {}).setdefault(
+            astart, {"pre": "", "rv": c["rv"], "reason": "", "chunks": c["chunks"]})
+    src = []
+    if j_path:
+        src.append(f"预标 {j_path}")
+    if r_path:
+        src.append(f"检索 {r_path}")
+    print(f"注入：{'｜'.join(src) or '（无预标无检索判定）'}（{len(pre)} 会话）")
     return pre
 
 
@@ -110,7 +120,7 @@ def main():
 
     tpl = open(TPL, encoding="utf-8").read()
     # </ 转义：JSON 内嵌 <script> 时，内容里出现 </script> 会提前截断脚本（JS 字符串里 \/ 合法）
-    payload = json.dumps({"convs": out}, ensure_ascii=False).replace("</", "<\\/")
+    payload = json.dumps({"convs": out, "env": ENV}, ensure_ascii=False).replace("</", "<\\/")
     html = tpl.replace("__DATA__", payload)
     path = os.path.join(OUT, "segmentation_tool.html")
     with open(path, "w", encoding="utf-8") as fh:
