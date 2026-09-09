@@ -139,8 +139,17 @@ class TestStep0StrongPhrases:
         assert extract("[指定处理人：张三] 现场报障") == "张三"
         assert extract("指定人：李四") == "李四"
         assert extract("指定人员：王五") == "王五"
+        assert extract("[指定处理人：张三、李四]") == "张三"
+        assert extract("[指定处理人：张三、李四、王五]") == "张三"
         assert extract("车辆定位漂移") is None
         assert extract("转给张三") is None
+
+    def test_parse_multi_flag(self):
+        """边界：多人强信号只认第一个，并打 specified_multi。"""
+        parse = DispatchFlow._parse_strong_preferred
+        assert parse("[指定处理人：张三]") == ("张三", False)
+        assert parse("[指定处理人：张三、李四]") == ("张三", True)
+        assert parse("指定处理人：张三，李四") == ("张三", True)
 
     def test_in_description_not_title(self):
         """正常流程：人名写在描述里（提单 Agent 实际落点）也能命中。"""
@@ -151,6 +160,56 @@ class TestStep0StrongPhrases:
         assert result is not None
         assert result.engineer_id == "u-zhang"
         assert unresolved is None
+
+    def test_multi_assigns_first(self):
+        """正常流程：[指定处理人：张三、李四] → 派张三，打 specified_multi。"""
+        result, unresolved = _run_detect(
+            "虚拟车任务不执行",
+            [_complete(), _complete("李四", "u-li")],
+            description="[指定处理人：张三、李四] 任务停留在下发阶段",
+        )
+        assert result is not None
+        assert result.engineer_id == "u-zhang"
+        assert result.preferred_id == "u-zhang"
+        assert result.matched_pref is True
+        assert (result.profile or {}).get("specified_multi") is True
+        assert unresolved is None
+        from app.services.redispatch_tip_service import build_redispatch_tip
+        log = SimpleNamespace(
+            assigned_id=result.engineer_id,
+            preferred_id=result.preferred_id,
+            pinyin_match=result.pinyin_match,
+            name_collision=result.name_collision,
+            profile=result.profile,
+        )
+        assert build_redispatch_tip(log, {"u-zhang": "张三", "u-li": "李四"}) == (
+            "工单暂时只允许分配一个处理人"
+        )
+
+    def test_multi_skips_to_next(self):
+        """正常流程：第一人找不到 → 派第二人，仍打 specified_multi。"""
+        result, unresolved = _run_detect(
+            "虚拟车任务不执行",
+            [_complete("李四", "u-li")],
+            everyone=False,
+            description="[指定处理人：赵不存在、李四] 任务停留在下发阶段",
+        )
+        assert result is not None
+        assert result.engineer_id == "u-li"
+        assert result.preferred_id == "u-li"
+        assert (result.profile or {}).get("specified_multi") is True
+        assert unresolved is None
+
+    def test_multi_none_found(self):
+        """异常流程：名单里的人都找不到 → 记下第一个名字，走智能派单。"""
+        result, unresolved = _run_detect(
+            "虚拟车任务不执行",
+            [_complete()],
+            everyone=False,
+            description="[指定处理人：赵不存在、钱也没有]",
+        )
+        assert result is None
+        assert unresolved == "赵不存在"
 
 
 class TestStep0WeakPhrases:
@@ -228,6 +287,21 @@ class TestStep0TipOutlet:
         )
         assert build_redispatch_tip(log, {"u-zhang": "张三"}) == "您指定的接单人画像不完整。"
 
+    def test_specified_multi_tip(self):
+        """正常流程：指定多人且第一人画像不完整 → 两条 tip 叠加。"""
+        from app.services.redispatch_tip_service import build_redispatch_tip
+
+        log = SimpleNamespace(
+            assigned_id="u-zhang",
+            preferred_id="u-zhang",
+            pinyin_match=False,
+            name_collision=False,
+            profile={"specified_multi": True, "missing": ["department"]},
+        )
+        assert build_redispatch_tip(log, {"u-zhang": "张三"}) == (
+            "工单暂时只允许分配一个处理人；接单人画像不完整。"
+        )
+
     def test_pinyin_tip(self):
         """正常流程：拼音命中，对照用户原文和系统找到的人。"""
         from app.services.redispatch_tip_service import build_redispatch_tip
@@ -242,6 +316,22 @@ class TestStep0TipOutlet:
         assert (
             build_redispatch_tip(log, {"u-jia": "贾爽"})
             == "系统找到的是【贾爽】没有您指定的【加双】，有可能不准确"
+        )
+
+    def test_pinyin_and_missing_tip(self):
+        """正常流程：拼音对照句叠加画像时不写「您指定的」。"""
+        from app.services.redispatch_tip_service import build_redispatch_tip
+
+        log = SimpleNamespace(
+            assigned_id="u-jia",
+            preferred_id="u-jia",
+            pinyin_match=True,
+            name_collision=False,
+            profile={"specified_name": "加双", "missing": ["department"]},
+        )
+        assert (
+            build_redispatch_tip(log, {"u-jia": "贾爽"})
+            == "系统找到的是【贾爽】没有您指定的【加双】，有可能不准确；接单人画像不完整。"
         )
 
     def test_pinyin_tip_without_specified_name(self):
@@ -277,8 +367,8 @@ class TestStep0TipOutlet:
             == "没找到您指定的【赵不存在】，已按智能派单处理"
         )
 
-    def test_redispatch_unmatched_still_works(self):
-        """正常流程：重派未派到倾向人，旧出口不变。"""
+    def test_redispatch_unmatched_uses_detail(self):
+        """正常流程：重派未派到倾向人 → 详情模板（原因+下一步），不用短句。"""
         from app.services.redispatch_tip_service import build_redispatch_tip
 
         log = SimpleNamespace(
@@ -286,12 +376,36 @@ class TestStep0TipOutlet:
             preferred_id="u-zhang",
             pinyin_match=False,
             name_collision=False,
+            reasoning="更熟现场模块",
+            candidates=[],
             profile={"missing": []},
         )
-        assert (
-            build_redispatch_tip(log, {"u-zhang": "张三", "u-li": "李四"})
-            == "很抱歉，您指定的【张三】暂未采纳，已改派更合适的【李四】处理"
+        tip = build_redispatch_tip(log, {"u-zhang": "张三", "u-li": "李四"})
+        assert tip == (
+            "很抱歉，未派给您指定的【张三】；"
+            "已优先改派给【李四】处理，原因：更熟现场模块。"
+            "如需【张三】接单，可 @ 接单人 转派或重新派单。"
         )
+
+    def test_redispatch_unmatched_pref_incomplete(self):
+        """正常流程：倾向人画像不全 → 详情里引导补画像，不叠接单人短句。"""
+        from app.services.redispatch_tip_service import build_redispatch_tip
+
+        log = SimpleNamespace(
+            assigned_id="u-li",
+            preferred_id="u-zhang",
+            pinyin_match=False,
+            name_collision=False,
+            reasoning="",
+            candidates=[{"engineer_id": "u-zhang", "missing": ["department"]}],
+            profile={"missing": ["department"]},
+        )
+        tip = build_redispatch_tip(log, {"u-zhang": "张三", "u-li": "李四"})
+        assert "未派给您指定的【张三】" in tip
+        assert "已优先改派给【李四】" in tip
+        assert "您倾向的【张三】画像不完整（缺：部门）" in tip
+        assert "暂未采纳" not in tip
+        assert "接单人画像不完整" not in tip
 
     def test_collision_random_and_missing_tip(self):
         """正常流程：同名随机 + 画像缺项 → 提醒随机选了谁，并请补充画像。"""
@@ -309,7 +423,7 @@ class TestStep0TipOutlet:
         )
         assert (
             build_redispatch_tip(log, {"u-1": "张三"})
-            == "指派人存在同名，已随机选择【张三】；您指定的接单人画像不完整。"
+            == "指派人存在同名，已随机选择【张三】；接单人画像不完整。"
         )
 
     def test_collision_eval_tip(self):
@@ -326,6 +440,26 @@ class TestStep0TipOutlet:
         assert (
             build_redispatch_tip(log, {"u-1": "张三"})
             == "指派人存在同名，已按评估选择【张三】"
+        )
+
+    def test_multi_and_collision_tip(self):
+        """正常流程：指定多人且命中同名 → 两条风险都提醒。"""
+        from app.services.redispatch_tip_service import build_redispatch_tip
+
+        log = SimpleNamespace(
+            assigned_id="u-1",
+            preferred_id="u-1",
+            pinyin_match=False,
+            name_collision=True,
+            profile={
+                "specified_multi": True,
+                "missing": [],
+                "collision_random": True,
+            },
+        )
+        assert (
+            build_redispatch_tip(log, {"u-1": "张三"})
+            == "工单暂时只允许分配一个处理人；指派人存在同名，已随机选择【张三】"
         )
 
     def test_everyone_fallback_incomplete_tip(self):
@@ -386,3 +520,59 @@ class TestPickCollisionCanDetermine:
         assert winner.id == "u-2"
         assert reason == "更熟现场"
         assert rnd is False
+
+    def test_weaker_third_skipped_no_llm(self):
+        """正常流程：[0缺,1缺] 只留最完整档一人 → 不调 LLM。"""
+        a, b = _complete("张三", "u-1"), _incomplete("张三", "u-2")
+        flow = DispatchFlow()
+        llm = SimpleNamespace(complete=AsyncMock(return_value='{"selected_id":"u-2"}'))
+
+        async def _go():
+            ctx = _ticket("指定处理人：张三")
+            with patch("ai.core.get_llm_client", AsyncMock(return_value=llm)):
+                return await flow._pick_collision(ctx, "张三", [a, b])
+
+        winner, reason, rnd = asyncio.run(_go())
+        assert winner.id == "u-1"
+        assert rnd is False
+        llm.complete.assert_not_called()
+
+    def test_weaker_third_not_in_llm_or_random(self):
+        """正常流程：[0缺,0缺,2缺] 残缺第三人既不进 LLM 也不进随机。"""
+        a, b = _complete("张三", "u-1"), _complete("张三", "u-2")
+        c = _incomplete("张三", "u-3")
+        flow = DispatchFlow()
+        llm = SimpleNamespace(complete=AsyncMock(return_value='{"can_determine": false}'))
+        captured = {}
+
+        def _choose(seq):
+            captured["pool"] = list(seq)
+            return seq[0]
+
+        async def _go():
+            ctx = _ticket("指定处理人：张三")
+            with patch("ai.core.get_llm_client", AsyncMock(return_value=llm)):
+                with patch(
+                    "ai.agents.AiDiagnosisPlatform.assigner.pipeline.dispatch_flow.random.choice",
+                    side_effect=_choose,
+                ):
+                    return await flow._pick_collision(ctx, "张三", [a, b, c])
+
+        winner, reason, rnd = asyncio.run(_go())
+        assert winner.id == "u-1"
+        assert rnd is True
+        prompt = llm.complete.await_args.args[0]
+        assert "u-3" not in prompt
+        assert "u-1" in prompt and "u-2" in prompt
+        assert {e.id for e in captured["pool"]} == {"u-1", "u-2"}
+
+    def test_llm_cannot_pick_weaker_third(self):
+        """异常流程：模型点名残缺第三人 → 当不在档内，在最完整档随机。"""
+        a, b = _complete("张三", "u-1"), _complete("张三", "u-2")
+        c = _incomplete("张三", "u-3")
+        winner, reason, rnd = _run_pick(
+            [a, b, c], '{"selected_id":"u-3","reason":"误选"}', pick=a,
+        )
+        assert winner.id == "u-1"
+        assert rnd is True
+        assert winner.id != "u-3"
