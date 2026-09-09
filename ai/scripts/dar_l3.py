@@ -10,8 +10,8 @@
   consult + resolved=no + 检索yes/partial → 未直答（资料有，回答层没答好）
   consult + resolved=no + 检索no   → 未覆盖（知识库没有）
 0910 增：judge 另判 covered（检索资料是否覆盖用户问的那个问题），落盘存证——
-「未覆盖」现由检索重放 verdict 决定，与人工口径（知识库确实没有）对不上（57 段互串），
-先收数据再定是否改映射。
+「未覆盖」现由检索重放 verdict 决定，与人工口径（知识库确实没有）对不上
+（r3 上未直答↔未覆盖互串 67 段），先收数据再定是否改映射。
 
 0910 四轮校准定稿（290 段人工考卷，检索固定 0909 那份做干净 A/B）：
   基线 49.0% → r1 49.0% → r2 49.7% → r3 51.0%（三分类 68.6→74.1%；端到端直答率
@@ -80,9 +80,11 @@ except ValueError:
 
 
 def _latest_judge():
-    """取最新已落盘校准文件（滚动校准集：上周的校准继续可比）。"""
+    """取最新已落盘校准文件（滚动校准集：上周的校准继续可比）。
+    只认规范名 l3_judge_YYYYMMDD.json——_vN 是历史轮次归档，按名排序会排在规范名之后。"""
     import glob
-    files = sorted(glob.glob(os.path.join(OUT, "l3_judge_[0-9]*.json")))
+    files = [f for f in sorted(glob.glob(os.path.join(OUT, "l3_judge_[0-9]*.json")))
+             if os.path.basename(f)[len("l3_judge_"):-len(".json")].isdigit()]
     return files[-1] if files else ""
 
 

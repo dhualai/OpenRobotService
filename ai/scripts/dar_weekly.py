@@ -608,7 +608,10 @@ def step_report():
         rep["manual_progress"] = f"{n_lab}/{n_seg} 段已标"
 
     # AI 判定 vs 人工标签（校准 judge：人工段考卷的四类混淆矩阵）
-    cal_files = sorted(glob.glob(os.path.join(OUT, "l3_judge_[0-9]*.json")))
+    # 只认规范名 l3_judge_YYYYMMDD.json：_vN 是历史轮次归档，按名排序会排在规范名之后，
+    # 取 [-1] 会取到被弃的那一轮（0910 实锤：r4 试跑归档后成了「最新」）
+    cal_files = [f for f in sorted(glob.glob(os.path.join(OUT, "l3_judge_[0-9]*.json")))
+                 if os.path.basename(f)[len("l3_judge_"):-len(".json")].isdigit()]
     if cal_files:
         cal_path = cal_files[-1]
         cal = json.load(open(cal_path, encoding="utf-8"))
