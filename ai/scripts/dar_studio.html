@@ -348,10 +348,14 @@ $("#nav-test").onclick = ()=>nav("test");
 const env = "prod";  // 指标固定连生产（用户定调：对话记录只从生产拿）
 
 /* 指标卡片 */
+let activeEnv = env;  // 展示用环境：生产无周报时回退 test（跑流程仍固定 env）
 async function loadMetrics(){
   const j = await (await fetch(`/api/metrics?env=${env}`)).json();
   const hero = $("#mhero"), small = $("#msmall"), bar = $("#repbar");
   hero.innerHTML = ""; small.innerHTML = "";
+  activeEnv = j.found ? (j.source_env || env) : env;
+  document.querySelector('#view-week .badge.dim').textContent =
+    j.found && activeEnv !== env ? "数据源：生产库（当前展示 test 周报）" : "数据源：生产库";
   if(!j.found){
     hero.innerHTML = `<div class="mcard" style="grid-column:1/-1"><div class="lb">暂无周报</div>
       <div class="v" style="font-size:18px;color:var(--ink3)">跑一遍流程后，三口径指标会显示在这里</div></div>`;
@@ -369,6 +373,8 @@ async function loadMetrics(){
        <div class="sb">${esc(c.sub)}</div></div>`);
   });
   const bits = [`周报 <b>${esc(j.date || "")}</b>`];
+  if(j.source_env && j.source_env !== env)
+    bits.push(`<span class="badge warn" style="font-weight:400">生产尚未出周报，展示 test 环境数据</span>`);
   if(j.note) bits.push(`附注：${esc(j.note)}`);
   if(j.meta?.git_head) bits.push(`版本 <span class="mono">${esc(String(j.meta.git_head).slice(0,8))}</span>（本周合入 ${(j.meta.merges||[]).length} 条）`);
   if(j.avg_rounds && Object.keys(j.avg_rounds).length)
@@ -379,7 +385,7 @@ async function loadMetrics(){
 }
 $("#mrefresh").onclick = loadMetrics;
 $("#openreport").onclick = async ()=>{
-  const j = await (await fetch(`/api/artifacts?env=${env}`)).json();
+  const j = await (await fetch(`/api/artifacts?env=${activeEnv}`)).json();
   const md = (j.items || []).find(x => x.name.endsWith(".md"));
   if(!md){ toast("还没有 Markdown 周报（先跑 report 步）", "err"); return; }
   preview(md.name);
@@ -404,7 +410,7 @@ function renderWiz(){
     const b = d.querySelector(".ops").appendChild(document.createElement("button"));
     if(st.label){
       b.className = "btn sm pri"; b.textContent = "打开标注工具";
-      b.onclick = ()=>{ if(!window.open(`/label_tool?env=${env}`, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err"); };
+      b.onclick = ()=>{ if(!window.open(`/label_tool?env=${activeEnv}`, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err"); };
     }else{
       b.className = "btn sm"; b.textContent = "运行";
       b.onclick = ()=>runSteps(st.steps, d);
@@ -472,7 +478,7 @@ $("#stopbtn").onclick = async ()=>{
 };
 
 async function loadArts(){
-  const r = await fetch(`/api/artifacts?env=${env}`);
+  const r = await fetch(`/api/artifacts?env=${activeEnv}`);
   const j = await r.json();
   const el = $("#artlist");
   el.innerHTML = "";
@@ -483,12 +489,12 @@ async function loadArts(){
     const isLabel = it.name === "segmentation_tool.html";
     row.innerHTML = `<span class="nm mono">${esc(it.name)}</span><span class="mt">${it.mtime}</span><span class="sz">${(it.size/1024).toFixed(0)} KB</span>`
       + (isLabel ? `<button class="btn sm pri">打开标注</button>` : "");
-    row.onclick = isLabel ? ()=>window.open(`/label_tool?env=${env}`, "_blank") : ()=>preview(it.name);
+    row.onclick = isLabel ? ()=>window.open(`/label_tool?env=${activeEnv}`, "_blank") : ()=>preview(it.name);
     el.appendChild(row);
   });
 }
 async function preview(name){
-  const r = await fetch(`/api/artifact?env=${env}&name=${encodeURIComponent(name)}`);
+  const r = await fetch(`/api/artifact?env=${activeEnv}&name=${encodeURIComponent(name)}`);
   if(!r.ok){ toast("读取失败", "err"); return; }
   const j = await r.json();
   const w = window.open("", "_blank");
@@ -506,8 +512,7 @@ async function preview(name){
     w.document.body.appendChild(pre);
   }
 }
-loadArts();
-loadMetrics();
+loadMetrics().then(loadArts);
 
 /* ══ 页签2 在线测试 ══ */
 (async ()=>{

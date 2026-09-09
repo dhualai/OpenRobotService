@@ -306,6 +306,10 @@ def metrics(env: str = "prod"):
     if env not in ("test", "prod"):
         raise HTTPException(400, "env 取值 test|prod")
     files = sorted(glob.glob(os.path.join(DATA_ROOT, env, "processed", "weekly_*.json")))
+    src = env
+    if not files and env == "prod":  # 生产尚未出周报 → 回退展示 test 数据（标注来源）
+        src = "test"
+        files = sorted(glob.glob(os.path.join(DATA_ROOT, src, "processed", "weekly_*.json")))
     if not files:
         return {"found": False}
     with open(files[-1], encoding="utf-8") as fh:
@@ -336,7 +340,7 @@ def metrics(env: str = "prod"):
     if rep.get("manual_progress"):
         small.append({"label": "标注进度", "value": rep["manual_progress"],
                       "sub": "人工标签（L2）覆盖"})
-    return {"found": True, "file": os.path.basename(files[-1]),
+    return {"found": True, "source_env": src, "file": os.path.basename(files[-1]),
             "date": rep.get("date"), "note": rep.get("note"),
             "meta": rep.get("meta"), "manual_progress": rep.get("manual_progress"),
             "avg_rounds": ar, "ticket_quality": rep.get("ticket_quality"),
