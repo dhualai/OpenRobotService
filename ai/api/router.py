@@ -315,17 +315,27 @@ async def ask_question_stream(
                         # 项目选择题：候选持久化到消息 metadata_（前端切会话/刷新后
                         # 仍可渲染按钮；md 对话记录渲染成编号列表文字）。
                         # fire-and-forget：不阻塞 result 事件转发，失败仅告警。
+                        # 必须用独立 session：与 _do_persist 并发共享 db 会撞
+                        # SQLAlchemy session 并发限制（commit() can't be called
+                        # here / _prepare_impl already in progress），0911 测试环境
+                        # 出题轮 metadata 全部写入失败即此因。
                         choices = (event.get('data') or {}).get("project_choices")
-                        if db is not None and persist_msg_id is not None and isinstance(choices, list) and choices:
+                        if persist_msg_id is not None and isinstance(choices, list) and choices:
                             async def _persist_choices_meta():
+                                session = AsyncSessionLocal()
                                 try:
                                     await MessageService.update_message(
-                                        db, persist_msg_id,
+                                        session, persist_msg_id,
                                         MessageUpdate(metadata_={"project_choices": choices}))
                                 except Exception as e:
                                     logger.warning(
                                         f"[sse] 项目题候选落 metadata 失败 "
                                         f"sid={qa_req.session_id[:8]} msg_id={persist_msg_id}: {e}")
+                                finally:
+                                    try:
+                                        await session.close()
+                                    except Exception:
+                                        pass
                             _meta_task = asyncio.create_task(_persist_choices_meta())
                             _persist_tasks.add(_meta_task)
                             _meta_task.add_done_callback(_persist_tasks.discard)
