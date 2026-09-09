@@ -11,17 +11,27 @@
   consult + resolved=no + 检索no   → 未覆盖（知识库没有）
 0910 增：judge 另判 covered（检索资料是否覆盖用户问的那个问题），落盘存证——
 「未覆盖」现由检索重放 verdict 决定，与人工口径（知识库确实没有）对不上（57 段互串），
-先收数据再定是否改映射。第一轮收窄（0910 00:0x）在 290 段考卷上四类一致率没动
-（142/290），但三分类（直答正确/未答/直接提单）从 68.6% 升到 72.4%——precision
-44%→57%；副作用三类已修：段后消息被当负面信号（切段即按话题切，段后是下一话题，
-已撤）、intent 被 resolved 规则污染（段末提单把报障段判成咨询）、自述「资料未收录」
-一刀判未解决（通用可行答案不因此判死）。
+先收数据再定是否改映射。
+
+0910 四轮校准定稿（290 段人工考卷，检索固定 0909 那份做干净 A/B）：
+  基线 49.0% → r1 49.0% → r2 49.7% → r3 51.0%（三分类 68.6→74.1%；端到端直答率
+  34.8%→23.2%，人工 23.0%）。r1–r3 修的副作用：段后消息被当负面信号（切段即按话题切，
+  段后是下一话题，已撤）、intent 被 resolved 规则污染（段末提单把报障段判成咨询）、
+  自述「资料未收录」一刀判未解决（通用可行答案不因此判死）。
+  r4 试过「问句形态不改变来意」（缺陷问句也算 ticket）：直接提单 recall 55%→84%，
+  但把 25 段人工未直答误翻成直接提单，端到端率虚高到 37.3%、三分类掉到 66.2%，已弃。
+残余分歧的边界（实测，非 prompt 可修）：
+  直接提单 vs 未直答——人工直接提单段 91% 段内有工单，但未直答 36%、未覆盖 18% 也有；
+  开口带疑问的比例 26% vs 38% 重叠。同一形态的开口（裸报障）两类都出现，故四类一致率
+  的上限由标签口径本身决定，不是判据不够细。
+  未直答 vs 未覆盖——57 段互串，但两者同在分母，只影响 KB 缺口率，不影响直答率。
 
 用法：
   python ai/scripts/dar_l3.py          # 校准：judge + 对齐分析
   python ai/scripts/dar_l3.py --all    # 预标：全段 judge，输出 l3_judge_all_*.json
 """
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -215,6 +225,9 @@ JUDGE_PROMPT = (
     "只输出 JSON：{{\"intent\":\"consult|ticket\",\"resolved\":\"yes|no\","
     "\"faithful\":\"yes|no|na\",\"covered\":\"yes|no\",\"reason\":\"一句话\"}}"
 )
+# 判据指纹：改 prompt 后旧行会被续跑静默复用（cid+astart 命中即跳过），
+# 落进同一份文件混口径。行内记指纹，续跑时提示（与 model/kb 同样处理）。
+PROMPT_VER = hashlib.md5(JUDGE_PROMPT.encode("utf-8")).hexdigest()[:8]
 
 
 async def main():
@@ -249,12 +262,14 @@ async def main():
     # 切模型/换知识库后旧判定仍按 cid+astart 复用（指标会混口径）——显式提示，不静默
     n_other = sum(1 for r in rows if r.get("model") != llm.model)
     n_kb = sum(1 for r in rows if r.get("kb") != KB_TAG)
+    n_pv = sum(1 for r in rows if r.get("prompt_ver") != PROMPT_VER)
     print(f"增量：复用已判 {len(done_keys)} 段，补跑 {len(todo)} 段"
           + (f"；其中 {n_other} 段未记/非当前模型（当前 {llm.model}）"
              if n_other else "")
           + (f"；{n_kb} 段未记/非当前检索源（当前 {KB_TAG}）" if n_kb else "")
+          + (f"；{n_pv} 段未记/非当前判据（当前 {PROMPT_VER}）" if n_pv else "")
           + ("——要统一口径须删对应 .json/.jsonl 重跑"
-             if n_other or n_kb else ""))
+             if n_other or n_kb or n_pv else ""))
 
     if todo:
         # LLM 探活：模型名过期/网关不可用时快速失败，别把 419 段全烧成 error
@@ -324,7 +339,7 @@ async def main():
             q0 = seg["q0"]
             r = {"cid": seg["cid"], "seg": seg["seg"], "astart": seg["astart"],
                  "grp": seg["grp"], "lab": seg["lab"], "model": llm.model,
-                 "kb": KB_TAG}
+                 "kb": KB_TAG, "prompt_ver": PROMPT_VER}
             try:
                 ctx = await retrieve_ctx(seg, q0)
                 # 资料给全：ctx 已是线上装配结果（每块 ≤1500 字、最多 8 块、整串不截断），
