@@ -299,8 +299,10 @@ async def main():
                  "kb": KB_TAG}
             try:
                 ctx = await retrieve_ctx(seg, q0)
+                # 资料给全：ctx 已是线上装配结果（每块 ≤1500 字、最多 8 块、整串不截断），
+                # 再砍一刀会让判定模型看到的资料比回答模型少——系统性偏向未直答/未覆盖
                 prompt = JUDGE_PROMPT.format(prev=seg["prev"], timeline=seg["timeline"],
-                                             retrieval=(ctx or "")[:2500], ticket_sig=sig)
+                                             retrieval=(ctx or ""), ticket_sig=sig)
                 raw = await llm.complete(prompt=prompt, max_tokens=200, temperature=0,
                                          thinking=False)
                 obj = json.loads(re.search(r"\{.*\}", raw or "", re.S).group(0))

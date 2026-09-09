@@ -185,7 +185,9 @@ async def main():
                     ctx = await platform._retrieve_with_context(state.session_id, state)
                     r["retrieval"] = (ctx or "")[:400]
                     r["chunks"] = parse_retrieval_chunks(ctx)
-                    prompt = JUDGE_PROMPT.format(q=r["q"][:300], ctx=(ctx or "")[:3500])
+                    # 资料给全（与线上一致）：ctx 已是装配结果（每块 ≤1500 字、最多 8 块、
+                    # 整串不截断）；再砍一刀会让判定看到的资料比回答模型少，偏向 no
+                    prompt = JUDGE_PROMPT.format(q=r["q"][:300], ctx=(ctx or ""))
                     raw = await llm.complete(prompt=prompt, max_tokens=200, temperature=0,
                                              thinking=False)
                     obj = json.loads(re.search(r"\{.*\}", raw or "", re.S).group(0))
