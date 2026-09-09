@@ -346,6 +346,9 @@ for _group in DIMENSION_GROUPS.values():
     for _m in _group.metrics:
         _METRIC_BY_KEY[_m.key] = _m
 
+# 扁平指标目录（key → MetricDef），供外部按 key 检索与遍历
+METRIC_CATALOG: dict[str, MetricDef] = dict(_METRIC_BY_KEY)
+
 
 def get_metric_def(key: str) -> MetricDef | None:
     """按 key 获取指标定义。"""
