@@ -196,6 +196,88 @@ async def probe(req: ProbeReq):
     return result
 
 
+# ── 一键回归（golden 用例集 → 测试 API / 本地检索重放）──────────
+_reg_state: dict = {"proc": None}
+
+
+@app.get("/api/cases")
+def cases():
+    """golden 四维度用例清单（同一份真源 ai/tests/golden/cases/*.yaml）。"""
+    out = {}
+    desc = {"retrieval": "检索命中（本地重放，连测试知识库）",
+            "answer": "回答质量（打测试环境真实链路）",
+            "ticket": "提单流程（多轮打测试环境）",
+            "flow": "追问/铁律（多轮打测试环境）"}
+    try:
+        import yaml
+        for s in ("retrieval", "answer", "ticket", "flow"):
+            p = os.path.join(PROJ, "ai", "tests", "golden", "cases", f"{s}.yaml")
+            if os.path.exists(p):
+                out[s] = {"desc": desc[s],
+                          "cases": yaml.safe_load(open(p, encoding="utf-8")) or []}
+    except Exception as e:
+        raise HTTPException(500, f"用例集解析失败: {e}")
+    return out
+
+
+class RegReq(BaseModel):
+    suites: list[str]
+    only: list[str] = []
+    qdrant: str = "test"
+
+
+@app.post("/api/regression")
+def regression(req: RegReq):
+    bad = [s for s in req.suites if s not in ("retrieval", "answer", "ticket", "flow")]
+    if bad:
+        raise HTTPException(400, f"未知 suite：{bad}")
+    if _reg_state["proc"] and _reg_state["proc"].poll() is None:
+        raise HTTPException(409, "已有回归在跑（先等完或停掉）")
+    if not req.suites:
+        raise HTTPException(400, "至少选一个维度")
+    token = _tokens.get(DEFAULT_AI, {}).get("token", "")
+    if not token and any(s in req.suites for s in ("answer", "ticket", "flow")):
+        raise HTTPException(401, "answer/ticket/flow 需先登录测试环境")
+    env = {**_child_env(), "REGRESS_TOKEN": token}
+    _reg_state["proc"] = subprocess.Popen(
+        [sys.executable, os.path.join(HERE, "dar_regress.py"),
+         "--suites", ",".join(req.suites), "--qdrant", req.qdrant,
+         "--base", DEFAULT_AI]
+        + (["--only", ",".join(req.only)] if req.only else []),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+        cwd=PROJ, env=env)
+
+    def gen():
+        p = _reg_state["proc"]
+        for line in p.stdout:
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            ev = obj.pop("event", "log")
+            yield f"data: {json.dumps({'event': ev, 'data': obj}, ensure_ascii=False)}\n\n"
+        rc = p.wait()
+        _reg_state["proc"] = None
+        yield f"data: {json.dumps({'event': 'exit', 'data': {'rc': rc}}, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/stop_regression")
+def stop_regression():
+    p = _reg_state["proc"]
+    if p and p.poll() is None:
+        p.kill()
+        return {"ok": True, "killed": True}
+    return {"ok": True, "killed": False}
+
+
 # ── 周流程（subprocess dar_weekly，SSE 日志）────────────────────
 _run_state: dict = {"proc": None}
 

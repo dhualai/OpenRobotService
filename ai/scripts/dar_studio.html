@@ -122,6 +122,10 @@ label.f{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--in
 .art .row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);
   border-radius:8px;cursor:pointer;transition:.12s}
 .art .row:hover{border-color:var(--brand2);background:var(--brand-soft)}
+#reglist details.row{border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin-bottom:6px}
+#reglist details.row>summary{list-style:none}
+#reglist details.row>summary::-webkit-details-marker{display:none}
+#reglist details.row[open]{border-color:var(--brand2);background:var(--brand-soft)}
 .art .nm{flex:1;font-size:13px}
 .art .mt{color:var(--ink3);font-size:12px;white-space:nowrap}
 .art .sz{color:var(--ink3);font-size:11px;min-width:64px;text-align:right}
@@ -250,12 +254,30 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
       </div>
 
       <div class="modebar">
-        <button class="btn pri" id="m-chat">全链路对话</button>
+        <button class="btn pri" id="m-reg">一键回归</button>
+        <button class="btn" id="m-chat">全链路对话</button>
         <button class="btn" id="m-probe">检索探针</button>
       </div>
 
+      <!-- 一键回归 -->
+      <div id="pane-reg">
+        <p class="sub" style="margin-bottom:10px">用例集来自 <span class="mono">ai/tests/golden/cases</span>（四维度基准，同一份真源可直接改 yaml 加用例）。
+        retrieval=本地重放连测试知识库断言命中排名；answer/ticket/flow=逐用例打测试环境真实链路断言回答/弹窗/话术。</p>
+        <div class="card" id="regcases"><div class="empty">用例清单加载中…</div></div>
+        <div class="card" style="display:flex;gap:10px;align-items:center">
+          <label class="f">检索源
+            <select id="f_rsrc"><option value="test">测试环境（默认）</option><option value="prod">生产（只读）</option><option value="local">本地</option></select></label>
+          <button class="btn pri" id="regrun">一键运行</button>
+          <button class="btn dng" id="regstop" disabled>停止</button>
+          <span style="flex:1"></span>
+          <span class="hint" id="regsum"></span>
+        </div>
+        <div class="card" id="reglive" style="display:none"></div>
+        <div class="card" id="reglist" style="display:none"></div>
+      </div>
+
       <!-- 全链路对话 -->
-      <div id="pane-chat">
+      <div id="pane-chat" style="display:none">
         <div class="card" style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
           <label class="f" style="flex:1">会话 ID（多轮上下文共享）<input type="text" id="f_sess"></label>
           <button class="btn" id="newsess" style="margin-top:14px">新会话</button>
@@ -544,10 +566,113 @@ $("#f_sess").value = newSid();
 $("#newsess").onclick = ()=>{ $("#f_sess").value = newSid(); $("#chat").innerHTML = '<div class="empty-chat">新会话已开启</div>'; };
 
 /* 模式切换 */
-$("#m-chat").onclick = ()=>{ $("#m-chat").classList.add("pri"); $("#m-probe").classList.remove("pri");
-  $("#pane-chat").style.display = ""; $("#pane-probe").style.display = "none"; };
-$("#m-probe").onclick = ()=>{ $("#m-probe").classList.add("pri"); $("#m-chat").classList.remove("pri");
-  $("#pane-probe").style.display = ""; $("#pane-chat").style.display = "none"; };
+const MODES = [["m-reg","pane-reg"],["m-chat","pane-chat"],["m-probe","pane-probe"]];
+function switchMode(mid){
+  MODES.forEach(([m, p])=>{
+    document.getElementById(m).classList.toggle("pri", m === mid);
+    document.getElementById(p).style.display = (m === mid) ? "" : "none";
+  });
+}
+MODES.forEach(([m])=> document.getElementById(m).onclick = ()=>switchMode(m));
+
+/* 一键回归 */
+const SUITE_ZH = {retrieval:"检索", answer:"回答", ticket:"提单", flow:"流程"};
+const V_ICON = {PASS:"✓", WARN:"⚠", FAIL:"✗", ERROR:"✗"};
+const V_CLS = {PASS:"ok", WARN:"warn", FAIL:"err", ERROR:"err"};
+
+async function loadCases(){
+  const el = $("#regcases");
+  let j;
+  try{ j = await (await fetch("/api/cases")).json(); }
+  catch(e){ el.innerHTML = '<div class="empty">用例集加载失败</div>'; return; }
+  el.innerHTML = "";
+  for(const [suite, info] of Object.entries(j)){
+    const grp = document.createElement("div");
+    grp.style.marginBottom = "10px";
+    grp.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <input type="checkbox" class="gsel" data-suite="${esc(suite)}" checked>
+      <b>${esc(SUITE_ZH[suite]||suite)}（${info.cases.length} 例）</b>
+      <span class="hint">${esc(info.desc)}</span></div>`;
+    const list = document.createElement("div");
+    list.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:4px 16px";
+    info.cases.forEach(c=>{
+      const lab = document.createElement("label");
+      lab.style.cssText = "display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--ink2);cursor:pointer";
+      lab.innerHTML = `<input type="checkbox" class="csel" data-suite="${esc(suite)}"
+        data-name="${esc(c.name)}" checked>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.query||c.turns?.[0]||"")}">${esc(c.name)}</span>`;
+      list.appendChild(lab);
+    });
+    grp.appendChild(list);
+    el.appendChild(grp);
+  }
+  el.querySelectorAll(".gsel").forEach(g=> g.onclick = ()=>{
+    el.querySelectorAll(`.csel[data-suite="${g.dataset.suite}"]`)
+      .forEach(c=> c.checked = g.checked);
+  });
+}
+loadCases();
+
+let regRunning = false;
+$("#regrun").onclick = async ()=>{
+  if(regRunning) return;
+  const picked = [...document.querySelectorAll(".csel:checked")];
+  if(!picked.length){ toast("先勾选至少一个用例", "err"); return; }
+  const suites = [...new Set(picked.map(c=> c.dataset.suite))];
+  regRunning = true;
+  $("#regrun").disabled = true; $("#regstop").disabled = false;
+  $("#regsum").textContent = "运行中…";
+  const live = $("#reglive"), listEl = $("#reglist");
+  live.style.display = ""; listEl.style.display = "";
+  live.innerHTML = '<div class="hd" style="font-size:12.5px;color:var(--ink3)">启动中…（retrieval 首跑含模型加载约 1-2 分钟）</div>';
+  listEl.innerHTML = "";
+  const rows = {};
+  let counts = {PASS:0, WARN:0, FAIL:0, ERROR:0};
+  await sse("/api/regression",
+    {suites, only: picked.map(c=> c.dataset.name), qdrant: $("#f_rsrc").value},
+    ev=>{
+      const d = ev.data || {};
+      if(ev.event === "case_begin"){
+        live.innerHTML = `<div style="font-size:12.5px">▶ 运行中：<b>${esc(d.name)}</b>
+          <span class="badge dim">${esc(SUITE_ZH[d.suite]||d.suite)}</span> ${d.index+1}/${d.total}</div>`;
+      }else if(ev.event === "case"){
+        counts[d.verdict] = (counts[d.verdict]||0) + 1;
+        live.innerHTML = `<div style="font-size:12.5px;color:var(--ink3)">完成：${esc(d.name)} → ${V_ICON[d.verdict]} ${d.verdict}</div>`;
+        const det = d.detail || {};
+        const detl = (det.fails||[]).map(f=>`<div style="color:var(--danger)">· ${esc(f)}</div>`).join("");
+        const facts = [];
+        if(det.hit) facts.push(`命中「${esc(det.hit)}」 rank#${det.rank}${det.limit?` (≤${det.limit})`:""}`);
+        if(det.stages) facts.push(`阶段：${det.stages.map(s=>esc(JSON.stringify(s))).join(" → ").slice(0,120)}`);
+        if(det.ms) facts.push(`${det.ms}ms`);
+        const row = document.createElement("details");
+        row.className = "row";
+        row.innerHTML = `<summary style="cursor:pointer;display:flex;gap:8px;align-items:center">
+          <span class="badge ${V_CLS[d.verdict]}">${V_ICON[d.verdict]} ${d.verdict}</span>
+          <b>${esc(d.name)}</b>
+          <span class="badge dim">${esc(SUITE_ZH[d.suite]||d.suite)}</span>
+          <span style="flex:1"></span><span class="hint">${esc(facts.join(" · "))}</span></summary>
+          <div style="padding:8px 4px 2px;font-size:12.5px;color:var(--ink2)">
+            <div>问句：${esc(det.query||"")}</div>${detl}
+            ${det.answer_head?`<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--ink3)">回答（前 400 字）</summary><div style="white-space:pre-wrap;padding:6px 0">${esc(det.answer_head)}</div></details>`:""}
+            ${det.docs_head?`<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--ink3)">送 prompt 资料（前 300 字）</summary><div style="white-space:pre-wrap;padding:6px 0">${esc(det.docs_head)}</div></details>`:""}
+            ${det.error?`<div style="color:var(--danger)">${esc(det.error)}</div>`:""}
+          </div>`;
+        listEl.prepend(row);
+        rows[d.suite + d.name] = row;
+        $("#regsum").innerHTML = `<b>${counts.PASS}</b> 通过 · <b style="color:#b8860b">${counts.WARN}</b> 警告 · <b style="color:#c0392b">${counts.FAIL+counts.ERROR}</b> 失败`;
+      }else if(ev.event === "fatal"){
+        live.innerHTML = `<div style="color:#c0392b">执行器崩溃：${esc((d.error||"").slice(0,160))}</div>`;
+      }
+    }, ()=>{
+      regRunning = false;
+      $("#regrun").disabled = false; $("#regstop").disabled = true;
+      if($("#regsum").textContent === "运行中…") $("#regsum").textContent = "未完成（中断或出错，看下方明细）";
+    });
+};
+$("#regstop").onclick = async ()=>{
+  await fetch("/api/stop_regression", {method:"POST"});
+  toast("已发送终止信号", "ok");
+};
 
 /* 全链路对话 */
 const STAGE_ZH = {retrieving:"检索", generating:"生成回答", diagnosing:"诊断", tool:"工具",
