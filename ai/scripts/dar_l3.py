@@ -253,7 +253,7 @@ async def main():
                         with open(jpath, "a", encoding="utf-8") as fh:
                             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
                     done[0] += 1
-                    if done[0] % 20 == 0 or done[0] == len(exam):
+                    if done[0] % 10 == 0 or done[0] == len(exam):
                         print(f"  {done[0]}/{len(exam)}（{time.time()-t0:.0f}s）")
 
         await asyncio.gather(*(one(s) for s in exam))
