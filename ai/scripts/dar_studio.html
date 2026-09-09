@@ -276,7 +276,7 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
           <button class="btn pri" id="loginbtn">登录测试环境</button>
           <span id="loginstate" class="badge dim">未连接</span>
           <span style="flex:1"></span>
-          <span style="font-size:12px;color:var(--ink3)" class="mono" id="envtip">125.122.97.107:9400 / :9401</span>
+          <span style="font-size:12px;color:var(--ink3)" class="mono" id="envtip">ssh 隧道 → 125.122.97.107:9400/:9401（登录时自动建立）</span>
         </div>
       </div>
 
@@ -654,8 +654,8 @@ $("#loginbtn").onclick = async ()=>{
   try{
     const r = await fetch("/api/login", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({username: $("#f_user").value.trim(), password: $("#f_pass").value})});
-    const j = await r.json();
-    if(!r.ok) throw new Error(j.detail || "登录失败");
+    const txt = await r.text(); let j = null; try{ j = JSON.parse(txt); }catch(_){}
+    if(!r.ok) throw new Error((j && j.detail) || txt.slice(0, 80) || "登录失败");
     $("#loginstate").className = "badge ok"; $("#loginstate").textContent = "已连接 " + j.username;
     setConn(j.username);
     toast("登录成功", "ok");

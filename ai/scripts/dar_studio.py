@@ -30,10 +30,51 @@ PROJ = os.path.dirname(os.path.dirname(HERE))
 DATA_ROOT = r"C:/Users/PAJ26020/Desktop/export_dar"
 PORT = 9527
 
-DEFAULT_BACKEND = "http://125.122.97.107:9400"  # 测试环境后端（login）
-DEFAULT_AI = "http://125.122.97.107:9401"       # 测试环境 AI 服务（ask/stream）
+DEFAULT_BACKEND = "http://127.0.0.1:19640"      # 经 ssh 隧道 → 测试环境后端 9400（login）
+DEFAULT_AI = "http://127.0.0.1:19641"            # 经 ssh 隧道 → 测试环境 AI 服务 9401（ask/stream）
+SSH_HOST = "usp-a@125.122.97.107"
+SSH_PORT = "8802"
 
 app = FastAPI(title="AI 质量工作台")
+
+# ── ssh 隧道（测试环境 9400/9401 不对公网开放，只能经服务器转发）────
+_tunnel = {"proc": None, "ready": False}
+
+
+def _port_open(port: int) -> bool:
+    import socket
+    s = socket.socket()
+    s.settimeout(0.6)
+    try:
+        s.connect(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def ensure_tunnel() -> bool:
+    """本地 19640/19641 → 服务器 9400/9401。已有隧道（含上次实例残留）直接复用。"""
+    if _tunnel["ready"] or _port_open(19640):
+        _tunnel["ready"] = True
+        return True
+    if not _tunnel["proc"] or _tunnel["proc"].poll() is not None:
+        _tunnel["proc"] = subprocess.Popen(
+            ["ssh", "-p", SSH_PORT, "-N",
+             "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes",
+             "-o", "ServerAliveInterval=30",
+             "-L", "19640:127.0.0.1:9400", "-L", "19641:127.0.0.1:9401",
+             SSH_HOST],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(40):  # 最多等 10s
+        if _port_open(19640):
+            _tunnel["ready"] = True
+            print(f"ssh 隧道就绪：19640→9400 / 19641→9401（{SSH_HOST}:{SSH_PORT}）")
+            return True
+        time.sleep(0.25)
+    return False
+
 
 # ── 登录态（内存）──────────────────────────────────────────────
 _tokens: dict[str, dict] = {}  # DEFAULT_AI -> {token, username, at}
@@ -42,11 +83,14 @@ _tokens: dict[str, dict] = {}  # DEFAULT_AI -> {token, username, at}
 class LoginReq(BaseModel):
     username: str
     password: str
+    base: str = ""  # 可选自定义后端地址，缺省测试环境
 
 
 @app.post("/api/login")
 async def login(req: LoginReq):
     base = (req.base.rstrip("/") or DEFAULT_BACKEND) if req.base else DEFAULT_BACKEND
+    if not req.base and not ensure_tunnel():
+        raise HTTPException(502, f"ssh 隧道建不上（测试环境不对公网开放，需免密 ssh {SSH_HOST}:{SSH_PORT}）")
     try:
         async with httpx.AsyncClient(timeout=15) as c:
             r = await c.post(f"{base}/api/auth/login",
@@ -101,6 +145,8 @@ async def ask(req: AskReq):
     t = _tokens.get(DEFAULT_AI)
     if not t:
         raise HTTPException(401, "未登录（先在连接条登录）")
+    if not ensure_tunnel():
+        raise HTTPException(502, f"ssh 隧道断开（重试或检查免密 ssh {SSH_HOST}:{SSH_PORT}）")
     headers = {"Authorization": f"Bearer {t['token']}"}
     payload = {"session_id": req.session_id, "query": req.query,
                "skip_retrieval": req.skip_retrieval}
@@ -161,6 +207,8 @@ async def _ticket_post(path: str, body: dict):
     t = _tokens.get(DEFAULT_AI)
     if not t:
         raise HTTPException(401, "未登录")
+    if not ensure_tunnel():
+        raise HTTPException(502, f"ssh 隧道断开（重试或检查免密 ssh {SSH_HOST}:{SSH_PORT}）")
     payload = {**body, "username": t["username"]}
     try:
         async with httpx.AsyncClient(timeout=60) as c:
@@ -245,8 +293,11 @@ def regression(req: RegReq):
     if not req.suites:
         raise HTTPException(400, "至少选一个维度")
     token = _tokens.get(DEFAULT_AI, {}).get("token", "")
-    if not token and any(s in req.suites for s in ("answer", "ticket", "flow")):
+    needs_test = any(s in req.suites for s in ("answer", "ticket", "flow"))
+    if not token and needs_test:
         raise HTTPException(401, "answer/ticket/flow 需先登录测试环境")
+    if needs_test and not ensure_tunnel():
+        raise HTTPException(502, f"ssh 隧道断开（重试或检查免密 ssh {SSH_HOST}:{SSH_PORT}）")
     env = {**_child_env(), "REGRESS_TOKEN": token}
     _reg_state["proc"] = subprocess.Popen(
         [sys.executable, os.path.join(HERE, "dar_regress.py"),
