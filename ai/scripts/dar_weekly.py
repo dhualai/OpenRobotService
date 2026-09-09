@@ -606,10 +606,14 @@ def step_report():
         real = [r for r in csv_rows if r["group"] == "真实组"]
         ok_r = [int(r["n_rounds"]) for r in real if r["l2_label"] == "直答正确"]
         all_r = [int(r["n_rounds"]) for r in real]
+        tk_r = [int(r["n_rounds"]) for r in real if r["seg_ticketed"] == "1"]
         if ok_r and all_r:
             rep["avg_rounds"] = {
                 "直答正确段": f"{sum(ok_r) / len(ok_r):.1f} 轮（{len(ok_r)} 段）",
                 "全部段": f"{sum(all_r) / len(all_r):.1f} 轮（{len(all_r)} 段）"}
+            if tk_r:
+                rep["avg_rounds"]["转工单段"] = (
+                    f"{sum(tk_r) / len(tk_r):.1f} 轮（{len(tk_r)} 段）")
             print(f"平均解决轮次：{rep['avg_rounds']}")
         tk_rows = [r for r in real if r["seg_ticketed"] == "1"]
         if tk_rows:
@@ -697,7 +701,8 @@ def _migrate_legacy():
 
 def main():
     global ENV, DATA, OUT, MANUAL, SPLIT, NOTE
-    args, names, env = sys.argv[1:], [], "test"
+    args, names = sys.argv[1:], []
+    env = os.environ.get("DAR_ENV", "test")  # 缺省跟随环境变量（与子脚本口径一致）
     i = 0
     while i < len(args):
         a = args[i]
@@ -717,10 +722,13 @@ def main():
     if env not in ENVS:
         sys.exit(f"未知环境 {env!r}；可用：{list(ENVS)}")
     ENV = env
+    os.environ["DAR_ENV"] = env  # 子脚本按环境变量取数据目录（subprocess 继承）
     DATA = os.path.join(DATA_ROOT, ENV)
     OUT = os.path.join(DATA, "processed")
     MANUAL = os.path.join(r"C:/Users/PAJ26020/Downloads", MANUAL_NAME[ENV])
     SPLIT = os.path.join(OUT, "conversations_split.jsonl")
+    # retrieval 检索源跟随数据环境（prod=连生产 qdrant 只读重放）；显式 DAR_QDRANT 可覆盖
+    os.environ.setdefault("DAR_QDRANT", "prod" if ENV == "prod" else "local")
     if ENV == "test":
         _migrate_legacy()
     if not names:

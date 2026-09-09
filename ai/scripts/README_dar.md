@@ -3,14 +3,27 @@
 每周从服务器导对话数据 → 本地重放/LLM 批判 → 标注 → 周报的完整流水线。
 单入口 `dar_weekly.py`，七步按需组合，缺省跑本地全流程（除 export）。
 
+**推荐入口：直答率工作台（dar_studio）**，图形界面双页签——
+
+```bash
+python ai/scripts/dar_studio.py     # → http://127.0.0.1:9527
+```
+
+- **周流程 · 指标生成**：固定连生产库（数据从生产导）。点选步骤、实时日志流、
+  产物预览（周报/明细）、**人工标注入口**（打开标注工具新标签页）。
+- **在线测试**：固定打测试环境真实服务（代码/知识库先上测试验证）。
+  登录（测试环境账号）后发问题走线上全链路（意图→检索→回答→提单），
+  流式展示阶段/回答/结果详情；转工单可「生成草稿→确认提单」（落测试库）。
+  **检索探针**：单问题看知识库命中，源可选测试/生产（只读）/本地。
+
 ## 环境要求
 
 - 本机 conda `ai` 环境（Python 3.14，`sentence-transformers` 等已装）
 - `HF_HUB_OFFLINE=1`（ai/.env 已配；embedding 离线，否则检索重放挂）
-- 本地 qdrant + redis 起着（检索重放用本地知识库集合）
-- ssh 免密到 `usp-a@125.122.97.107:8802`（export 用；凭据只在服务器端解析）
+- 本地 qdrant + redis 起着（本地源检索重放用）
+- ssh 免密到 `usp-a@125.122.97.107:8802`（export / 远程知识库指针用；凭据只在服务器端解析）
 
-## 用法
+## 用法（命令行）
 
 ```bash
 # 全流程（test 环境数据，缺省）
@@ -24,11 +37,20 @@ python ai/scripts/dar_weekly.py --env prod export
 
 # 附注随周报落盘
 python ai/scripts/dar_weekly.py --env test --note "本周上线了检索域保底" report
+
+# 检索探针（单问题看命中；test=测试服务在用的知识库，prod=生产）
+python ai/scripts/dar_probe.py --q "AGV 怎么上线部署" --qdrant prod
 ```
 
 `--env test|prod` 影响所有子步骤（数据目录 `Desktop/export_dar/{env}/`、
 人工标注文件 `Downloads/manual_segmentation[_prod].json`、周报输出位置）。
 子脚本单独跑时用环境变量 `DAR_ENV=prod python ai/scripts/dar_l3.py --all`。
+
+**检索源**：`DAR_QDRANT`（缺省随数据环境：prod 数据→生产 qdrant，test→本地）。
+生产/测试远程知识库走 `dar_qdrant.py`：ssh 隧道（本地 16333→服务器 6333，
+测试生产同一 qdrant 实例、不同指针文件）+ 三域指针临时切换（company/industry/team，
+dispatch 不碰）+ 退出自动恢复。测试与生产 qdrant 指针当前一致，测试先更新后会分叉——
+这正是探针 test/prod 两个选项的意义。
 
 ## 七步
 

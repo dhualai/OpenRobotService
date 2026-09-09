@@ -33,6 +33,9 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 # 环境随 dar_weekly --env 走（subprocess 继承 DAR_ENV）；单独跑缺省 test
 ENV = os.environ.get("DAR_ENV", "test")
+# 检索源：prod=连生产 qdrant 只读重放（隧道+切指针，见 dar_qdrant.py），local=本地知识库。
+# 缺省跟随数据环境；显式 DAR_QDRANT=local 可在 prod 数据下仍用本地检索
+QDRANT = os.environ.get("DAR_QDRANT", "prod" if ENV == "prod" else "local")
 OUT = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed"
 SPLIT = os.path.join(OUT, "conversations_split.jsonl")
 CLS = os.path.join(OUT, "conversations_classified.jsonl")
@@ -201,4 +204,12 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # prod 检索源必须在首次 import pipeline 前切好 env/指针（进程级，退出自动恢复）
+    if QDRANT == "prod":
+        from dar_qdrant import remote_qdrant
+        with remote_qdrant("prod") as ptr:
+            print(f"检索源=生产 qdrant（指针: {ptr}）")
+            asyncio.run(main())
+    else:
+        print("检索源=本地知识库")
+        asyncio.run(main())

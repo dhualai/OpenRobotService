@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>直答率工作台</title>
+<style>
+:root{
+  --bg:#f1f5f9; --card:#ffffff; --ink:#0f172a; --ink2:#475569; --ink3:#94a3b8;
+  --line:#e2e8f0; --brand:#4f46e5; --brand2:#6366f1; --brand-soft:#eef2ff;
+  --ok:#16a34a; --ok-soft:#f0fdf4; --warn:#d97706; --warn-soft:#fffbeb;
+  --danger:#dc2626; --danger-soft:#fef2f2;
+  --side:#0f172a; --side-ink:#cbd5e1; --side-dim:#64748b;
+  --term:#0b1020; --term-ink:#a8b8d0;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+  background:var(--bg);color:var(--ink);font-size:14px;height:100vh;overflow:hidden}
+.mono{font-family:ui-monospace,Consolas,"Courier New",monospace}
+
+/* ── 布局 ── */
+.shell{display:flex;height:100vh}
+.side{width:216px;background:var(--side);color:var(--side-ink);display:flex;flex-direction:column;flex-shrink:0}
+.brand{padding:20px 18px 16px;border-bottom:1px solid #1e293b}
+.brand .t{font-size:16px;font-weight:700;color:#fff;letter-spacing:.5px}
+.brand .s{font-size:11px;color:var(--side-dim);margin-top:4px}
+.nav{padding:10px 8px;display:flex;flex-direction:column;gap:2px}
+.nav button{all:unset;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;
+  cursor:pointer;color:var(--side-ink);font-size:14px;position:relative}
+.nav button:hover{background:#1e293b}
+.nav button.on{background:#1e293b;color:#fff}
+.nav button.on::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:2px;background:var(--brand2)}
+.nav .dot{width:8px;height:8px;border-radius:50%;background:#334155;flex-shrink:0}
+.nav button.on .dot{background:var(--brand2)}
+.side .fill{flex:1}
+.side .conn{padding:14px 16px;border-top:1px solid #1e293b;font-size:12px;color:var(--side-dim)}
+.side .conn b{color:var(--side-ink);font-weight:600}
+.side .foot{padding:10px 16px 16px;font-size:11px;color:#334155}
+
+.main{flex:1;overflow:auto;padding:22px 26px}
+.view{display:none;max-width:1080px;margin:0 auto}
+.view.on{display:block}
+h2.pg{font-size:19px;font-weight:700;margin-bottom:4px}
+p.sub{color:var(--ink2);font-size:13px;margin-bottom:18px}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px;
+  box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.card h3{font-size:14px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.card h3 .hint{font-weight:400;color:var(--ink3);font-size:12px}
+
+/* ── 通用控件 ── */
+button.btn{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:8px;
+  padding:7px 14px;font-size:13px;cursor:pointer;transition:.15s;display:inline-flex;align-items:center;gap:6px}
+button.btn:hover:not(:disabled){border-color:var(--brand2);color:var(--brand)}
+button.btn:disabled{opacity:.45;cursor:not-allowed}
+button.btn.pri{background:var(--brand);border-color:var(--brand);color:#fff}
+button.btn.pri:hover:not(:disabled){background:var(--brand2);color:#fff}
+button.btn.dng{color:var(--danger);border-color:#fecaca}
+button.btn.dng:hover:not(:disabled){background:var(--danger-soft);border-color:var(--danger)}
+button.btn.sm{padding:4px 10px;font-size:12px;border-radius:6px}
+input[type=text],input[type=password],select{border:1px solid var(--line);border-radius:8px;
+  padding:7px 10px;font-size:13px;background:#fff;color:var(--ink);outline:none;min-width:0}
+input:focus,select:focus{border-color:var(--brand2);box-shadow:0 0 0 3px rgba(99,102,241,.12)}
+label.f{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--ink2)}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:12px;border-radius:99px;padding:3px 10px}
+.badge.ok{background:var(--ok-soft);color:var(--ok)}
+.badge.warn{background:var(--warn-soft);color:var(--warn)}
+.badge.err{background:var(--danger-soft);color:var(--danger)}
+.badge.dim{background:#f1f5f9;color:var(--ink3)}
+.spin{width:13px;height:13px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;
+  animation:sp .7s linear infinite}
+.spin.d{border-color:#c7d2fe;border-top-color:var(--brand)}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* ── 指标卡片 ── */
+.mhero{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px}
+.mcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;
+  box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.mcard .lb{font-size:12.5px;color:var(--ink2);display:flex;align-items:center;gap:6px;margin-bottom:8px}
+.mcard .v{font-size:34px;font-weight:750;letter-spacing:-.5px;line-height:1.1}
+.mcard .sb{font-size:11.5px;color:var(--ink3);margin-top:8px;line-height:1.5;word-break:break-all}
+.mhero .mcard{border-top:3px solid var(--brand2)}
+.mhero .mcard:nth-child(2){border-top-color:var(--ok)}
+.mhero .mcard:nth-child(3){border-top-color:var(--warn)}
+.mgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}
+.mgrid .mcard .v{font-size:24px}
+.repbar{display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:var(--ink2);
+  padding:10px 14px;background:var(--brand-soft);border:1px solid #e0e7ff;border-radius:10px;margin-bottom:16px}
+.repbar b{color:var(--ink)}
+/* ── 向导 ── */
+.wiz{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.wstep{border:1px solid var(--line);border-radius:12px;padding:12px 12px 10px;background:#fff;
+  display:flex;flex-direction:column;gap:8px;position:relative;transition:.15s}
+.wstep:hover{border-color:var(--brand2)}
+.wstep .no{width:22px;height:22px;border-radius:50%;background:#f1f5f9;color:var(--ink2);
+  font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.wstep.run .no{background:var(--brand);color:#fff}
+.wstep.done .no{background:var(--ok);color:#fff}
+.wstep .t{font-size:13.5px;font-weight:650}
+.wstep .d{font-size:11.5px;color:var(--ink3);line-height:1.5;flex:1}
+.wstep .ops{display:flex;gap:6px}
+.wstep kbd{display:none}
+
+/* ── 页签1 周流程 ── */
+.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{all:unset;padding:7px 16px;font-size:13px;cursor:pointer;color:var(--ink2)}
+.seg button.on{background:var(--brand);color:#fff}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:99px;padding:5px 13px;font-size:12.5px;
+  cursor:pointer;color:var(--ink2);user-select:none;transition:.12s}
+.chip:hover{border-color:var(--brand2)}
+.chip.on{background:var(--brand-soft);border-color:var(--brand2);color:var(--brand);font-weight:600}
+.term{background:var(--term);border-radius:10px;padding:14px 16px;height:340px;overflow:auto;
+  font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.75;color:var(--term-ink)}
+.term .hd{color:#64748b}
+.term .err{color:#f87171}
+.term .okl{color:#4ade80}
+.term .bar{display:flex;gap:10px;align-items:center;margin-bottom:10px}
+.term .bar .t{font-size:12px;color:var(--ink3)}
+.art{display:flex;flex-direction:column;gap:6px}
+.art .row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);
+  border-radius:8px;cursor:pointer;transition:.12s}
+.art .row:hover{border-color:var(--brand2);background:var(--brand-soft)}
+.art .nm{flex:1;font-size:13px}
+.art .mt{color:var(--ink3);font-size:12px;white-space:nowrap}
+.art .sz{color:var(--ink3);font-size:11px;min-width:64px;text-align:right}
+.empty{color:var(--ink3);font-size:13px;padding:14px;text-align:center}
+
+/* ── 页签2 在线测试 ── */
+.connbar{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.modebar{display:flex;gap:8px;margin-bottom:14px}
+.chatwrap{display:flex;flex-direction:column;height:calc(100vh - 320px);min-height:420px}
+.chat{flex:1;overflow:auto;display:flex;flex-direction:column;gap:14px;padding:4px 2px}
+.msg{display:flex;flex-direction:column;max-width:86%}
+.msg.u{align-self:flex-end;align-items:flex-end}
+.msg .who{font-size:11px;color:var(--ink3);margin-bottom:4px}
+.bubble{border-radius:12px;padding:10px 14px;line-height:1.7;white-space:pre-wrap;word-break:break-word;font-size:13.5px}
+.msg.u .bubble{background:var(--brand);color:#fff;border-bottom-right-radius:4px}
+.msg.a .bubble{background:#fff;border:1px solid var(--line);border-bottom-left-radius:4px}
+.stages{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px}
+.stage{font-size:11px;border-radius:5px;padding:2px 8px;background:#f1f5f9;color:var(--ink3)}
+.stage.run{background:var(--brand-soft);color:var(--brand)}
+.stage.done{background:var(--ok-soft);color:var(--ok)}
+.dets{margin-top:6px;font-size:12px}
+.dets summary{cursor:pointer;color:var(--ink3);user-select:none}
+.dets pre{background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:6px;
+  overflow:auto;max-height:260px;font-size:11.5px;line-height:1.6}
+.tk{margin-top:8px;border:1px solid #fde68a;background:var(--warn-soft);border-radius:10px;padding:10px 12px}
+.tk .tt{font-weight:600;font-size:13px;margin-bottom:4px;display:flex;gap:8px;align-items:center}
+.tk .fld{font-size:12px;color:var(--ink2);line-height:1.8}
+.tk .ops{margin-top:8px;display:flex;gap:8px}
+.askbar{display:flex;gap:10px;margin-top:12px}
+.askbar input{flex:1}
+.empty-chat{margin:auto;color:var(--ink3);font-size:13px;text-align:center;line-height:2}
+
+/* 探针 */
+.prow{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+.prow .rt{display:flex;gap:8px;align-items:center;margin-bottom:5px;flex-wrap:wrap}
+.prow .route{font-size:11.5px;background:var(--brand-soft);color:var(--brand);border-radius:5px;padding:2px 8px}
+.prow .ttl{font-size:12.5px;font-weight:600}
+.prow .txt{font-size:12.5px;color:var(--ink2);line-height:1.7;word-break:break-word}
+.prow img{max-width:200px;border-radius:6px;margin-top:6px}
+.meta-line{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--ink2);margin:10px 0 14px}
+.meta-line b{color:var(--ink)}
+
+/* toast */
+#toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:99}
+.toast{background:#0f172a;color:#fff;font-size:13px;border-radius:10px;padding:10px 16px;
+  box-shadow:0 6px 20px rgba(15,23,42,.25);animation:up .2s ease-out}
+.toast.err{background:var(--danger)}
+.toast.ok{background:var(--ok)}
+@keyframes up{from{transform:translateY(8px);opacity:0}}
+kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;
+  padding:0 5px;font-size:11px;font-family:inherit}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="brand"><div class="t">直答率工作台</div><div class="s">Direct-Answer Studio</div></div>
+    <nav class="nav">
+      <button id="nav-week" class="on"><span class="dot"></span>周流程 · 指标生成</button>
+      <button id="nav-test"><span class="dot"></span>在线测试</button>
+    </nav>
+    <div class="fill"></div>
+    <div class="conn" id="connbox">测试环境：未连接</div>
+    <div class="foot">dar_studio · 本地工具</div>
+  </aside>
+
+  <main class="main">
+    <!-- ══ 页签1 周流程 ══ -->
+    <section class="view on" id="view-week">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <h2 class="pg" style="margin:0">周流程 · 指标生成</h2>
+        <span class="badge dim" style="margin-top:2px">数据源：生产库</span>
+        <span style="flex:1"></span>
+        <button class="btn sm" id="mrefresh">刷新指标</button>
+        <button class="btn sm pri" id="openreport">完整周报</button>
+      </div>
+
+      <div class="mhero" id="mhero"></div>
+      <div class="mgrid" id="msmall"></div>
+      <div class="repbar" id="repbar" style="display:none"></div>
+
+      <div class="card">
+        <h3>流程</h3>
+        <div class="wiz" id="wiz"></div>
+      </div>
+
+      <details class="card" id="logcard">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
+          运行日志 <span class="hint" id="runstate" style="font-weight:400"></span></summary>
+        <div style="display:flex;gap:8px;margin:10px 0">
+          <input type="text" id="note" placeholder="附注（--note，随周报落盘）" style="flex:1">
+          <button class="btn sm dng" id="stopbtn" disabled>停止</button>
+        </div>
+        <div class="term" id="term" style="height:150px"><div class="hd">$ 等待运行…（步骤可增量复用，重复跑只补新数据）</div></div>
+      </details>
+
+      <details class="card">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">高级：自选步骤</summary>
+        <div style="margin-top:10px;font-size:12px;color:var(--ink3);margin-bottom:8px">
+          点选步骤（可多选，顺序固定）；export 需连服务器，retrieval 生产源走 ssh 隧道。
+        </div>
+        <div class="chips" id="steps"></div>
+        <button class="btn sm" id="advrun" style="margin-top:10px">运行所选</button>
+      </details>
+
+      <details class="card">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">产物文件</summary>
+        <div class="art" id="artlist" style="margin-top:10px"><div class="empty">暂无产物</div></div>
+      </details>
+    </section>
+
+    <!-- ══ 页签2 在线测试 ══ -->
+    <section class="view" id="view-test">
+      <h2 class="pg">在线测试</h2>
+      <p class="sub">固定打<b>测试环境</b>真实服务（代码/知识库先上测试验证）：全链路=意图→检索→回答→提单（提单落测试库）；检索探针=本地重放，可选测试/生产知识库（只读）。</p>
+
+      <div class="card">
+        <div class="connbar">
+          <label class="f">用户名<input type="text" id="f_user" style="width:120px"></label>
+          <label class="f">密码<input type="password" id="f_pass" style="width:120px"></label>
+          <button class="btn pri" id="loginbtn">登录测试环境</button>
+          <span id="loginstate" class="badge dim">未连接</span>
+          <span style="flex:1"></span>
+          <span style="font-size:12px;color:var(--ink3)" class="mono" id="envtip">125.122.97.107:9400 / :9401</span>
+        </div>
+      </div>
+
+      <div class="modebar">
+        <button class="btn pri" id="m-chat">全链路对话</button>
+        <button class="btn" id="m-probe">检索探针</button>
+      </div>
+
+      <!-- 全链路对话 -->
+      <div id="pane-chat">
+        <div class="card" style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+          <label class="f" style="flex:1">会话 ID（多轮上下文共享）<input type="text" id="f_sess"></label>
+          <button class="btn" id="newsess" style="margin-top:14px">新会话</button>
+          <label style="display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--ink2);margin-top:14px">
+            <input type="checkbox" id="f_skip"> 跳过检索</label>
+        </div>
+        <div class="card chatwrap">
+          <div class="chat" id="chat"><div class="empty-chat">登录后发送问题，走线上真实链路。<br>回答流式展示；状态行显示检索/生成阶段；结果详情可展开；转工单会出草稿卡片。</div></div>
+          <div class="askbar">
+            <input type="text" id="f_q" placeholder="输入测试问题，Enter 发送">
+            <button class="btn pri" id="sendbtn">发送</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 检索探针 -->
+      <div id="pane-probe" style="display:none">
+        <div class="card" style="display:flex;gap:10px;align-items:flex-end">
+          <label class="f" style="flex:1">问题<input type="text" id="f_pq" placeholder="如：AGV 怎么上线部署"></label>
+          <label class="f">知识库
+            <select id="f_psrc"><option value="test">测试环境（默认）</option><option value="prod">生产（只读）</option><option value="local">本地</option></select></label>
+          <button class="btn pri" id="probebtn">检索</button>
+        </div>
+        <div id="probeout"><div class="card"><div class="empty">输入问题查看知识库命中</div></div></div>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toasts"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => (s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function toast(msg, kind){
+  const d = document.createElement("div");
+  d.className = "toast " + (kind||"");
+  d.textContent = msg;
+  $("#toasts").appendChild(d);
+  setTimeout(()=>d.remove(), 3200);
+}
+
+/* SSE over fetch：onEvent({event,data}) */
+async function sse(url, body, onEvent, onDone){
+  const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  if(!r.ok){
+    let t = ""; try{ t = (await r.json()).detail || ""; }catch(e){ t = await r.text(); }
+    onEvent({event:"error", data:{error:`HTTP ${r.status} ${t}`.slice(0,180), fatal:true}});
+    onDone && onDone(); return;
+  }
+  const rd = r.body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  for(;;){
+    const {done, value} = await rd.read();
+    if(done) break;
+    buf += dec.decode(value, {stream:true});
+    let i;
+    while((i = buf.indexOf("\n\n")) >= 0){
+      const blk = buf.slice(0, i); buf = buf.slice(i+2);
+      let ev = null, data = "";
+      for(const line of blk.split("\n")){
+        if(line.startsWith("event:")) ev = line.slice(6).trim();
+        else if(line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if(data === "[DONE]"){ onDone && onDone(); return; }
+      if(ev || data){
+        let d = data;
+        try{ d = JSON.parse(data); }catch(e){}
+        let name = ev, payload = d;
+        if(d && typeof d === "object" && "event" in d){ name = d.event; payload = d.data; }
+        onEvent({event: name || "message", data: payload});
+      }
+    }
+  }
+  onDone && onDone();
+}
+
+/* ── 导航 ── */
+function nav(v){
+  $("#nav-week").classList.toggle("on", v==="week");
+  $("#nav-test").classList.toggle("on", v==="test");
+  $("#view-week").classList.toggle("on", v==="week");
+  $("#view-test").classList.toggle("on", v==="test");
+}
+$("#nav-week").onclick = ()=>nav("week");
+$("#nav-test").onclick = ()=>nav("test");
+
+/* ══ 页签1 周流程 ══ */
+const env = "prod";  // 指标固定连生产（用户定调：对话记录只从生产拿）
+
+/* 指标卡片 */
+async function loadMetrics(){
+  const j = await (await fetch(`/api/metrics?env=${env}`)).json();
+  const hero = $("#mhero"), small = $("#msmall"), bar = $("#repbar");
+  hero.innerHTML = ""; small.innerHTML = "";
+  if(!j.found){
+    hero.innerHTML = `<div class="mcard" style="grid-column:1/-1"><div class="lb">暂无周报</div>
+      <div class="v" style="font-size:18px;color:var(--ink3)">跑一遍流程后，三口径指标会显示在这里</div></div>`;
+    bar.style.display = "none";
+    return;
+  }
+  (j.hero || []).forEach(c=>{
+    hero.insertAdjacentHTML("beforeend",
+      `<div class="mcard"><div class="lb">${esc(c.label)}</div><div class="v">${esc(c.value)}</div>
+       <div class="sb">${esc(c.sub)}</div></div>`);
+  });
+  (j.small || []).forEach(c=>{
+    small.insertAdjacentHTML("beforeend",
+      `<div class="mcard"><div class="lb">${esc(c.label)}</div><div class="v">${esc(c.value)}</div>
+       <div class="sb">${esc(c.sub)}</div></div>`);
+  });
+  const bits = [`周报 <b>${esc(j.date || "")}</b>`];
+  if(j.note) bits.push(`附注：${esc(j.note)}`);
+  if(j.meta?.git_head) bits.push(`版本 <span class="mono">${esc(String(j.meta.git_head).slice(0,8))}</span>（本周合入 ${(j.meta.merges||[]).length} 条）`);
+  if(j.avg_rounds && Object.keys(j.avg_rounds).length)
+    bits.push(`轮次：${Object.entries(j.avg_rounds).map(([k,v])=>`${esc(k)} ${esc(v)}`).join(" · ")}`);
+  if(j.ticket_quality?.建议转单未提单) bits.push(`建议转单未提单：${esc(j.ticket_quality.建议转单未提单)}`);
+  bar.innerHTML = bits.join('<span style="color:#c7d2fe">｜</span>');
+  bar.style.display = "";
+}
+$("#mrefresh").onclick = loadMetrics;
+$("#openreport").onclick = async ()=>{
+  const j = await (await fetch(`/api/artifacts?env=${env}`)).json();
+  const md = (j.items || []).find(x => x.name.endsWith(".md"));
+  if(!md){ toast("还没有 Markdown 周报（先跑 report 步）", "err"); return; }
+  preview(md.name);
+};
+
+/* 流程向导 */
+const WIZ = [
+  {t:"导数据", steps:["export","prepare"], d:"生产库四表 → 本地切分（ssh，约 1-2 分钟）"},
+  {t:"L1 指标", steps:["l1"], d:"LLM 逐会话切话题 + 问题类型（flash 批判）"},
+  {t:"L3 预标", steps:["retrieval","l3","tool"], d:"重放检索判定 + judge 四类预标 + 生成标注工具"},
+  {t:"人工标注", label:true, d:"新标签页打开标注工具，审段改分段打标签，导出 JSON 放 Downloads/"},
+  {t:"吸收 → 周报", steps:["l1","retrieval","l3","report"], d:"吸收人工标签出 L2，增量补判变更段，三口径对比 + 周报"},
+];
+function renderWiz(){
+  const w = $("#wiz");
+  w.innerHTML = "";
+  WIZ.forEach((st, i)=>{
+    const d = document.createElement("div");
+    d.className = "wstep";
+    d.innerHTML = `<div class="no">${i+1}</div><div class="t">${esc(st.t)}</div><div class="d">${esc(st.d)}</div>
+      <div class="ops"></div>`;
+    const b = d.querySelector(".ops").appendChild(document.createElement("button"));
+    if(st.label){
+      b.className = "btn sm pri"; b.textContent = "打开标注工具";
+      b.onclick = ()=>{ if(!window.open(`/label_tool?env=${env}`, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err"); };
+    }else{
+      b.className = "btn sm"; b.textContent = "运行";
+      b.onclick = ()=>runSteps(st.steps, d);
+    }
+    w.appendChild(d);
+  });
+}
+let running = false;
+async function runSteps(steps, wstepEl){
+  if(running){ toast("已有流程在跑", "err"); return; }
+  running = true;
+  document.querySelectorAll(".wstep .ops button, #advrun").forEach(x=>x.disabled = true);
+  $("#stopbtn").disabled = false;
+  wstepEl?.classList.add("run");
+  $("#runstate").innerHTML = '<span class="badge warn">运行中</span>';
+  document.querySelector("#logcard").open = true;
+  $("#term").innerHTML = "";
+  termLine("hd", `$ dar_weekly --env ${env} ${steps.join(" ")}`);
+  await sse("/api/run", {env, steps, note: $("#note").value.trim()}, ev=>{
+    if(ev.event === "log") termLine("", ev.data.line);
+    else if(ev.event === "begin") termLine("hd", `▶ ${ev.data.cmd}`);
+    else if(ev.event === "done")
+      termLine(ev.data.rc === 0 ? "okl" : "err", ev.data.rc === 0 ? "✔ 完成" : `✘ 退出码 ${ev.data.rc}`);
+  }, ()=>{
+    running = false;
+    document.querySelectorAll(".wstep .ops button, #advrun").forEach(x=>x.disabled = false);
+    $("#stopbtn").disabled = true;
+    wstepEl?.classList.remove("run");
+    wstepEl?.classList.add("done");
+    $("#runstate").innerHTML = '<span class="badge ok">空闲</span>';
+    loadMetrics(); loadArts();
+  });
+}
+renderWiz();
+
+/* 高级：自选步骤 */
+const STEPS = [
+  ["export","导出数据"],["prepare","切分准备"],["l1","L1 话题"],
+  ["retrieval","检索判定"],["l3","L3 预标"],["tool","生成标注工具"],["report","周报"]
+];
+const chosen = new Set();
+STEPS.forEach(([k, name])=>{
+  const c = document.createElement("div");
+  c.className = "chip"; c.textContent = name; c.dataset.k = k;
+  c.onclick = ()=>{ c.classList.toggle("on"); c.classList.contains("on") ? chosen.add(k) : chosen.delete(k); };
+  $("#steps").appendChild(c);
+});
+$("#advrun").onclick = ()=>{
+  if(!chosen.size){ toast("先点选步骤", "err"); return; }
+  runSteps([...chosen], null);
+};
+
+function termLine(cls, txt){
+  const t = $("#term");
+  const atBottom = t.scrollTop + t.clientHeight >= t.scrollHeight - 30;
+  const d = document.createElement("div");
+  d.className = cls||""; d.textContent = txt;
+  if(t.firstChild?.classList?.contains("hd")) t.innerHTML = "";
+  t.appendChild(d);
+  if(atBottom) t.scrollTop = t.scrollHeight;
+}
+$("#stopbtn").onclick = async ()=>{
+  await fetch("/api/stop_run", {method:"POST"});
+  toast("已发送终止信号", "ok");
+};
+
+async function loadArts(){
+  const r = await fetch(`/api/artifacts?env=${env}`);
+  const j = await r.json();
+  const el = $("#artlist");
+  el.innerHTML = "";
+  if(!j.items.length){ el.innerHTML = '<div class="empty">暂无产物</div>'; return; }
+  j.items.forEach(it=>{
+    const row = document.createElement("div");
+    row.className = "row";
+    const isLabel = it.name === "segmentation_tool.html";
+    row.innerHTML = `<span class="nm mono">${esc(it.name)}</span><span class="mt">${it.mtime}</span><span class="sz">${(it.size/1024).toFixed(0)} KB</span>`
+      + (isLabel ? `<button class="btn sm pri">打开标注</button>` : "");
+    row.onclick = isLabel ? ()=>window.open(`/label_tool?env=${env}`, "_blank") : ()=>preview(it.name);
+    el.appendChild(row);
+  });
+}
+async function preview(name){
+  const r = await fetch(`/api/artifact?env=${env}&name=${encodeURIComponent(name)}`);
+  if(!r.ok){ toast("读取失败", "err"); return; }
+  const j = await r.json();
+  const w = window.open("", "_blank");
+  if(!w){ toast("浏览器拦截了弹窗", "err"); return; }
+  w.document.title = name;
+  w.document.body.style = "margin:0;font:12.5px/1.7 ui-monospace,Consolas,monospace;background:#f8fafc";
+  if(name.endsWith(".md")){
+    w.document.body.style.whiteSpace = "pre-wrap";
+    w.document.body.textContent = j.content;
+  }else{
+    const pre = w.document.createElement("pre");
+    pre.style = "padding:16px;white-space:pre-wrap;word-break:break-word";
+    try{ pre.textContent = JSON.stringify(JSON.parse(j.content), null, 2); }
+    catch(e){ pre.textContent = j.content; }
+    w.document.body.appendChild(pre);
+  }
+}
+loadArts();
+loadMetrics();
+
+/* ══ 页签2 在线测试 ══ */
+(async ()=>{
+  const j = await (await fetch("/api/status")).json();
+  $("#envtip").textContent = j.backend.replace("http://","") + " / " + j.ai.replace("http://","");
+  if(j.logged_in){
+    $("#loginstate").className = "badge ok"; $("#loginstate").textContent = "已连接 " + j.logged_in;
+    $("#connbox").innerHTML = `测试环境：<b>${esc(j.logged_in)}</b> 已连接`;
+  }
+})();
+$("#loginbtn").onclick = async ()=>{
+  const b = $("#loginbtn");
+  b.disabled = true; b.innerHTML = '<span class="spin"></span>登录中';
+  try{
+    const r = await fetch("/api/login", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({username: $("#f_user").value.trim(), password: $("#f_pass").value})});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || "登录失败");
+    $("#loginstate").className = "badge ok"; $("#loginstate").textContent = "已连接 " + j.username;
+    $("#connbox").innerHTML = `测试环境：<b>${esc(j.username)}</b> 已连接`;
+    toast("登录成功", "ok");
+  }catch(e){ toast(e.message, "err"); }
+  b.disabled = false; b.textContent = "登录测试环境";
+};
+
+/* 会话 */
+function newSid(){ return "dar_test_" + Date.now().toString(36); }
+$("#f_sess").value = newSid();
+$("#newsess").onclick = ()=>{ $("#f_sess").value = newSid(); $("#chat").innerHTML = '<div class="empty-chat">新会话已开启</div>'; };
+
+/* 模式切换 */
+$("#m-chat").onclick = ()=>{ $("#m-chat").classList.add("pri"); $("#m-probe").classList.remove("pri");
+  $("#pane-chat").style.display = ""; $("#pane-probe").style.display = "none"; };
+$("#m-probe").onclick = ()=>{ $("#m-probe").classList.add("pri"); $("#m-chat").classList.remove("pri");
+  $("#pane-probe").style.display = ""; $("#pane-chat").style.display = "none"; };
+
+/* 全链路对话 */
+const STAGE_ZH = {retrieving:"检索", generating:"生成回答", diagnosing:"诊断", tool:"工具",
+  ticket:"提单", thinking:"思考", rewriting:"改写", waiting:"等待"};
+let busy = false;
+async function send(){
+  if(busy) return;
+  const q = $("#f_q").value.trim(); if(!q) return;
+  busy = true; $("#sendbtn").disabled = true; $("#f_q").value = "";
+  const chat = $("#chat");
+  if(chat.querySelector(".empty-chat")) chat.innerHTML = "";
+
+  const u = document.createElement("div");
+  u.className = "msg u"; u.innerHTML = `<div class="who">我</div><div class="bubble"></div>`;
+  u.querySelector(".bubble").textContent = q;
+  chat.appendChild(u);
+
+  const a = document.createElement("div");
+  a.className = "msg a";
+  a.innerHTML = `<div class="who">AI · 线上链路</div><div class="stages"></div><div class="bubble"></div>
+    <div class="dets" style="display:none"><details><summary>结果详情</summary><pre></pre></details></div>`;
+  chat.appendChild(a);
+  const bubble = a.querySelector(".bubble"), stages = a.querySelector(".stages");
+  const dets = a.querySelector(".dets"), pre = a.querySelector("pre");
+  chat.scrollTop = chat.scrollHeight;
+
+  let answer = "", curStage = null;
+  const mark = (key, cls, txt)=>{
+    stages.querySelectorAll(".stage").forEach(x=>{ if(!x.classList.contains("run")) x.className = "stage done"; });
+    if(curStage) curStage.remove();
+    curStage = document.createElement("span");
+    curStage.className = "stage " + cls;
+    curStage.textContent = txt;
+    stages.appendChild(curStage);
+  };
+
+  await sse("/api/ask", {session_id: $("#f_sess").value.trim(), query: q,
+      skip_retrieval: $("#f_skip").checked}, ev=>{
+    const d = ev.data || {};
+    if(ev.event === "message" || ev.event === "token"){
+      if(d.token){ answer += d.token; bubble.textContent = answer; chat.scrollTop = chat.scrollHeight; }
+    }else if(ev.event === "status"){
+      const s = STAGE_ZH[d.stage] || d.stage || "处理中";
+      mark("s", "run", s + (d.round ? ` ·${d.round}` : ""));
+    }else if(ev.event === "first_token"){
+      mark("t", "done", "首字 " + d.ms + "ms");
+    }else if(ev.event === "result"){
+      if(d.answer && !answer){ answer = d.answer; bubble.textContent = answer; }
+      pre.textContent = JSON.stringify(d, null, 2);
+      dets.style.display = "";
+      mark("r", "done", "完成");
+      if(d.ticket || d.draft || d.task_id) ticketCard(a, d);
+    }else if(ev.event === "title"){
+      /* 忽略 */
+    }else if(ev.event === "error"){
+      mark("e", "run", "错误");
+      bubble.textContent = (answer ? answer + "\n\n" : "") + "⚠ " + (d.error || "未知错误");
+      if(d.fatal && /401|过期/.test(d.error||"")){ $("#loginstate").className="badge err"; $("#loginstate").textContent="登录过期"; }
+    }else if(ev.event === "done"){
+      mark("d", "done", d.total_ms + "ms");
+    }
+    chat.scrollTop = chat.scrollHeight;
+  }, ()=>{ busy = false; $("#sendbtn").disabled = false; });
+}
+$("#sendbtn").onclick = send;
+$("#f_q").addEventListener("keydown", e=>{ if(e.key === "Enter" && !e.isComposing) send(); });
+
+/* 工单草稿/确认（按钮转工单路径） */
+function ticketCard(msgEl, result){
+  const box = document.createElement("div");
+  box.className = "tk";
+  box.innerHTML = `<div class="tt"><span>工单草稿</span></div><div class="fld"></div><div class="ops">
+    <button class="btn sm pri">生成草稿（prepare）</button><button class="btn sm dng" style="display:none">确认提单（落测试库）</button></div>`;
+  msgEl.appendChild(box);
+  const fld = box.querySelector(".fld"), bPre = box.querySelector(".pri"), bCfm = box.querySelector(".dng");
+  bPre.onclick = async ()=>{
+    bPre.disabled = true; bPre.innerHTML = '<span class="spin"></span>生成中';
+    try{
+      const r = await fetch("/api/ticket_prepare", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({session_id: $("#f_sess").value.trim()})});
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.detail || "prepare 失败");
+      const d = j.body?.data || j.body || {};
+      box._draft = d;
+      fld.innerHTML = ["title","type","description","project"].filter(k=>d[k])
+        .map(k=>`<b>${esc(k)}</b>：${esc(String(d[k]).slice(0,160))}`).join("<br>") || `<pre style="margin:6px 0">${esc(JSON.stringify(d, null, 2).slice(0,800))}</pre>`;
+      bPre.style.display = "none"; bCfm.style.display = "";
+      toast("草稿已生成", "ok");
+    }catch(e){ toast(e.message, "err"); bPre.disabled = false; bPre.textContent = "生成草稿（prepare）"; }
+  };
+  bCfm.onclick = async ()=>{
+    if(!confirm("确认向测试环境提交工单？")) return;
+    bCfm.disabled = true;
+    try{
+      const r = await fetch("/api/ticket_confirm", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({session_id: $("#f_sess").value.trim(), overrides: box._draft || {}})});
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.detail || "confirm 失败");
+      fld.innerHTML += `<br><span style="color:var(--ok);font-weight:600">✔ 已提交（测试库）</span>`;
+      bCfm.style.display = "none";
+      toast("工单已提交（测试库）", "ok");
+    }catch(e){ toast(e.message, "err"); bCfm.disabled = false; }
+  };
+}
+
+/* 检索探针 */
+$("#probebtn").onclick = async ()=>{
+  const q = $("#f_pq").value.trim(); if(!q) return;
+  const b = $("#probebtn");
+  b.disabled = true; b.innerHTML = '<span class="spin"></span>检索中';
+  $("#probeout").innerHTML = '<div class="card"><div class="empty">检索中…（远程源走 ssh 隧道，首次约 1-2 分钟含模型加载）</div></div>';
+  try{
+    const r = await fetch("/api/probe", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({q, qdrant: $("#f_psrc").value})});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || "探针失败");
+    renderProbe(j);
+  }catch(e){
+    $("#probeout").innerHTML = `<div class="card"><div class="empty" style="color:var(--danger)">${esc(e.message)}</div></div>`;
+  }
+  b.disabled = false; b.textContent = "检索";
+};
+function renderProbe(j){
+  const out = $("#probeout");
+  const src = {test:"测试知识库", prod:"生产知识库", local:"本地知识库"}[j.qdrant] || j.qdrant;
+  const heads = `<div class="meta-line">
+    <span>源：<b>${src}</b></span>
+    <span>命中：<b>${j.chunks?.length || 0} 块</b></span><span>上下文：<b>${j.ctx_len || 0} 字</b></span>
+    ${j.pointers?.company ? `<span class="mono" style="font-size:11px;color:var(--ink3)">${esc(j.pointers.company)} · ${esc(j.pointers.team||"")}</span>` : ""}</div>`;
+  const rows = (j.chunks || []).map(c=>`
+    <div class="prow"><div class="rt"><span class="route">${esc(c.route)}</span>
+    ${c.title ? `<span class="ttl">${esc(c.title)}</span>` : ""}</div>
+    <div class="txt">${esc(c.text)}</div></div>`).join("");
+  out.innerHTML = heads + (rows || '<div class="card"><div class="empty">无命中</div></div>');
+}
+</script>
+</body>
+</html>
