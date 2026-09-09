@@ -18,7 +18,8 @@
   python ai/scripts/dar_weekly.py --env prod export         # 连生产导数据（目录隔离到 export_dar/prod/）
   python ai/scripts/dar_weekly.py --env prod --note 上线v2 prepare l1 ...   # 附注随周报落盘
 环境：--env test（缺省）| prod。两环境数据/人工标注/周报完全隔离；
-模型：l1/l3/retrieval 三步共用 INTENT_MODEL（分段与审核判定，轻量无思考）。
+模型：l1/l3/retrieval 三步的判定用 DAR_MODEL（缺省 deepseek-v4.1-flash-expires-on-0910，
+温度 0 无思考）；检索词改写走 pipeline 内部 get_intent_client（INTENT_MODEL）。
 """
 import glob
 import io
@@ -692,8 +693,8 @@ def step_report():
                 f"｜全段 {len(sub)}（judge 偏宽仅供参考）")
     if rates:
         rep["dar_rates"] = rates
-        # 分母纯化口径：L1 只计有实质咨询段的会话（纯提单/纯问候会话不进分母）
-        rep["l1_note"] = "分母=有实质咨询段的会话（convs_q）；纯提单/纯问候已剔除"
+        # 分母纯化口径：L1 只计有实质咨询回合的话题段（纯提单/纯问候段不进分母）
+        rep["l1_note"] = "分母=有实质咨询回合的话题段（segs_q，段级）；纯提单/纯问候段已剔除"
         print("\n== 直答率三口径对比（真实组；L1 分母已剔除非咨询会话）==")
         for k, v in rates.items():
             print(f"  {k}：{v}")
