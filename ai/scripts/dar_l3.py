@@ -34,7 +34,14 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(_PROJ, "ai", ".env"))
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
+# 环境随 dar_weekly --env 走（subprocess 继承 DAR_ENV）；单独跑缺省 test
 ENV = os.environ.get("DAR_ENV", "test")
+# 检索源：prod/test=连服务器 qdrant（隧道+切指针，见 dar_qdrant.py；两环境指针当前
+# 指向同一批集合），local=本地知识库。缺省跟随数据环境——与 dar_retrieval_check
+# 同规则，保证 L3 的检索资料与「检索判定/未覆盖」同源（0909 实锤：本地 KB 是
+# 0901/0824/0903 旧快照、服务器是 0904 集合，industry 差两周 → faithful/resolved
+# 判据与四类组合的「未覆盖」来自不同知识库）
+QDRANT = os.environ.get("DAR_QDRANT", "prod" if ENV == "prod" else "local")
 OUT = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed"
 SPLIT = os.path.join(OUT, "conversations_split.jsonl")
 CLS = os.path.join(OUT, "conversations_classified.jsonl")
@@ -243,6 +250,11 @@ async def main():
     t0 = time.time()
     lock = asyncio.Lock()
     err_keys = set()
+    # 远程检索源自愈：ssh 隧道掉了就重连（local 模式无隧道，保持 None）
+    reconnect = None
+    if QDRANT in ("prod", "test"):
+        from dar_qdrant import ensure_tunnel
+        reconnect = ensure_tunnel
 
     async def retrieve_ctx(seg, q0):
         """段首问题检索资料。qdrant 冷启动加载 >5s 会触发操作超时 + 30s
@@ -260,6 +272,11 @@ async def main():
                 if ctx or not getattr(platform._retriever,
                                       "is_qdrant_unavailable", False):
                     return ctx or ""
+            if reconnect:  # 隧道断了先重连再等冷却，避免整轮全空
+                try:
+                    reconnect()
+                except Exception as ex:
+                    print(f"  [隧道重连失败] {type(ex).__name__}: {ex}")
             await asyncio.sleep(10)  # 等快速失败冷却（30s）后重试
         raise RuntimeError("qdrant 持续不可用（快速失败窗口）")
 
@@ -413,4 +430,20 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # 服务器检索源必须在首次 import pipeline 前切好 env/指针（进程级，退出自动恢复）
+    if QDRANT in ("prod", "test"):
+        from contextlib import ExitStack
+
+        from dar_qdrant import SSH_HOST, SSH_PORT, remote_qdrant
+        with ExitStack() as st:
+            try:  # 隧道/指针拉不到=起跑前明确退出，不烧 LLM 也不半途炸
+                ptr = st.enter_context(remote_qdrant(QDRANT))
+            except Exception as ex:
+                sys.exit(f"服务器检索源不可用（{QDRANT}）：{type(ex).__name__}: {ex}\n"
+                         f"  → 检查免密 ssh {SSH_HOST}:{SSH_PORT}；"
+                         "或 DAR_QDRANT=local 用本地知识库跑")
+            print(f"检索源={QDRANT} 服务器 qdrant（指针: {ptr}）")
+            asyncio.run(main())
+    else:
+        print("检索源=本地知识库")
+        asyncio.run(main())

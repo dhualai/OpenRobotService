@@ -50,7 +50,10 @@ python ai/scripts/dar_probe.py --q "AGV 怎么上线部署" --qdrant prod
 生产/测试远程知识库走 `dar_qdrant.py`：ssh 隧道（本地 16333→服务器 6333，
 测试生产同一 qdrant 实例、不同指针文件）+ 三域指针临时切换（company/industry/team，
 dispatch 不碰）+ 退出自动恢复。测试与生产 qdrant 指针当前一致，测试先更新后会分叉——
-这正是探针 test/prod 两个选项的意义。
+这正是探针 test/prod 两个选项的意义。`retrieval` 与 `l3` 同按此规则选源
+（0909 对齐：l3 原固定用本地知识库，本地是 0901/0824/0903 旧快照，导致
+faithful/resolved 判据与「未覆盖」来自另一套知识库）；l3 起跑即建隧道/切指针，
+拿不到就直接退出并给排查指引，段内隧道掉线自动重连。
 
 ## 七步
 
@@ -86,8 +89,8 @@ dispatch 不碰）+ 退出自动恢复。测试与生产 qdrant 指针当前一�
 
 ## 已知限制
 
-- 检索重放=本地 qdrant 当前状态，≠线上当时检索（线上未留档 hits）；
-  verdict 只作参考，重大结论以人工标注为准。
+- 检索重放=知识库当前状态（prod 数据→服务器 qdrant，test/本地→本地 qdrant），
+  ≠线上当时检索（线上未留档 hits）；verdict 只作参考，重大结论以人工标注为准。
 - L3 judge 用 DAR_MODEL（缺省 deepseek-v4.1-flash-expires-on-0910——已判的 prod
   419 段 / test 231 段都是它判的，保持同模型）。该名不在网关受支持列表（只有
   v4-pro/v4-flash/v4-flash-vision-exp），属未文档化别名，名字自带 expires-on-0910
