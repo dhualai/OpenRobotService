@@ -1623,7 +1623,7 @@ export default function TaskDetailPage() {
 
         <div className="detail-card">
           <h4 className="detail-card__h">问题描述</h4>
-          <SafeHtml html={detail.description || '<p style="color:var(--muted-foreground)">无描述</p>'} />
+          <SafeHtml className="detail-card__body detail-card__body--pre" html={detail.description || '<p style="color:var(--muted-foreground)">无描述</p>'} />
         </div>
 
         {/* 工单阶段性处理（协商节点）：当前节点描述 + 回合胶囊 + 操作按钮 */}
@@ -1751,7 +1751,10 @@ export default function TaskDetailPage() {
               <div style={{ marginBottom: 12 }}>
                 {stepName ? (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-                    <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--foreground)' }}>{stepName}</span>
+                    <span className="detail-step-current">
+                      <span className="detail-step-current__label">当前阶段</span>
+                      <span className="detail-step-current__name">「{stepName}」</span>
+                    </span>
                     {total > 0 && (
                       <span style={{
                         fontSize: 11, color: 'var(--muted-foreground)',
@@ -1998,7 +2001,7 @@ export default function TaskDetailPage() {
           </h4>
           {(() => {
             if (opLogs.length === 0) {
-              return <p style={{ color: 'var(--muted-foreground)', fontSize: 12.5 }}>暂无动态</p>;
+              return <p className="detail-card__body detail-card__body--muted">暂无动态</p>;
             }
             const formatTime = (ts: string) => {
               // 后端返回 naive datetime（UTC），需经 parseUtcDate 标记为 UTC 后由浏览器按本地时区自动 +8
@@ -2039,7 +2042,7 @@ export default function TaskDetailPage() {
           return (
             <div className="detail-card">
               <h4 className="detail-card__h">解决方式</h4>
-              <div style={{ color: 'var(--foreground)', fontSize: '12.5px', lineHeight: '24px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              <div className="detail-card__body detail-card__body--pre">
                 {rs}
               </div>
             </div>
@@ -2049,9 +2052,9 @@ export default function TaskDetailPage() {
         <div className="detail-card">
           <h4 className="detail-card__h">讨论摘要</h4>
           {aiSummary ? (
-            <SafeHtml html={aiSummary} />
+            <SafeHtml className="detail-card__body detail-card__body--pre" html={aiSummary} />
           ) : (
-            <p style={{ color: 'var(--muted-foreground)', fontSize: 12.5, lineHeight: '24px' }}>暂无摘要，U老师 将自动总结讨论进展</p>
+            <p className="detail-card__body detail-card__body--muted">暂无摘要，U老师 将自动总结讨论进展</p>
           )}
         </div>
 

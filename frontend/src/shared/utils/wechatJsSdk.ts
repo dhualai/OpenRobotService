@@ -129,8 +129,24 @@ export interface WechatShareData {
  * 注意：JS-SDK 分享只是「配置卡片元信息」，用户需在微信内点右上角「…」实际转发，本函数仅完成预置。
  * @returns 是否配置成功（未启用/非微信环境/签名失败均返回 false）
  */
+/**
+ * 调用序号：用于消除「快速切换工单」时的异步竞态。
+ * 每次调用自增，只有序号仍为「最新」的那次才允许真正写入 wx，
+ * 避免较慢的旧异步链在晚到时用上一张工单的 link 覆盖当前分享卡片
+ * （PC 微信端尤其明显，会表现为转发出上一单的链接）。
+ */
+let shareCallSeq = 0;
+
 export async function setupWechatShare(data: WechatShareData): Promise<boolean> {
+  const mySeq = ++shareCallSeq;
+
+  // 首次校验：若已被更新的调用取代，直接放弃（连 wx.config 旧 URL 签名都不发）
+  if (mySeq !== shareCallSeq) return false;
+
   const ok = await initWechatJsSdk(TASK_JS_API_LIST);
+
+  // 二次校验：await 期间可能又来了更新的工单，此时旧调用作废，避免写入过期 link
+  if (mySeq !== shareCallSeq) return false;
   if (!ok || !window.wx) return false;
   try {
     window.wx.updateAppMessageShareData({
