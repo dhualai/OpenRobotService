@@ -5797,6 +5797,36 @@ html, body, #root {
 .detail-card__title-inner { font: inherit; color: inherit; letter-spacing: inherit; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 /* 卡片小节标题（设计稿 SectionCard：13px font-semibold 前景色） */
 .detail-card__h { font-size: 13px; font-weight: 600; margin: 0 0 8px; color: var(--foreground); }
+/* 卡片正文文本（统一标准：12.5px / 24px 行高，与讨论气泡 .detail-chat-bubble 一致；
+   问题描述 / 解决方式 / 讨论摘要 等卡片正文统一使用，避免裸容器回退到 body 15px） */
+.detail-card__body {
+  font-size: 12.5px;
+  line-height: 24px;
+  color: var(--foreground);
+  word-break: break-word;
+}
+/* 纯文本正文（Textarea 录入 / AI 纯文本摘要）：保留换行符 */
+.detail-card__body--pre { white-space: pre-wrap; }
+/* 占位/提示性正文（暂无摘要等）：弱化色 */
+.detail-card__body--muted { color: var(--muted-foreground); }
+
+/* 当前阶段名称（工单阶段性处理卡片：当前阶段「xxx」） */
+.detail-step-current {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.detail-step-current__label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+.detail-step-current__name {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--blue-2);
+}
 
 /* 工单动态卡片（详情页内嵌，点击跳转流转记录页） */
 .ticket-dynamics-card { cursor: pointer; transition: background 0.15s; }

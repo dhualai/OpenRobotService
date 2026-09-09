@@ -14,13 +14,18 @@
 - 不传 project_ids：不过滤（向后兼容）
 - 传 project_ids（即使为空）：仅统计指定项目内的数据
 """
+import asyncio
 import re
+import time
+
 from fastapi import APIRouter, Depends, Query
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any, Optional, List, Tuple
 
 from app.core.database import get_async_db as get_db
-from app.models.delivery import UNDERTAKE_PENDING
+from app.core.database import AsyncSessionLocal
+from app.models.delivery import UNDERTAKE_PENDING, UNDERTAKE_YES
 from app.modules.admin.services.task_dashboard_service import task_dashboard_service
 from app.modules.admin.services.project_service import project_service
 from app.modules.admin.services.risk_service import risk_service
@@ -83,6 +88,24 @@ def _parse_settlement_period(period: Any) -> Optional[Tuple[int, int]]:
     if not (2000 <= year <= 2100) or not (1 <= month <= 12):
         return None
     return year, month
+
+
+# summary-all 进程内缓存：TTL 内重复打开仪表盘直接命中，避免每次全量重算。
+# 看板数字允许分钟级延迟，30s 是实时性与压力的折中；key 为 project_ids 签名。
+_SUMMARY_ALL_TTL_SECONDS = 30
+_summary_all_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+
+def _summary_all_cache_key(pid_list: Optional[List[str]]) -> str:
+    return "*" if pid_list is None else ",".join(pid_list)
+
+
+def _load_dashboard_projects(pid_list: Optional[list], include_pending: bool = False) -> List[Dict[str, Any]]:
+    """仪表盘统计专用项目加载：轻量字段查询（见 project_service light 参数），
+    跳过 project_summary / risk_list 等重 JSON 列。"""
+    if pid_list is not None:
+        return project_service.get_projects_by_ids(pid_list, include_pending=include_pending, light=True)
+    return project_service.get_projects(0, 1000, include_pending=include_pending, light=True)
 
 
 def _enrich_projects_with_analysis(projects: List[Dict]) -> None:
@@ -274,12 +297,15 @@ async def get_project_stage_summary(
     }
 
 
-def _compute_monthly_summary(pid_list: Optional[list]) -> Dict[str, Any]:
-    """项目按月统计（承接/待定分开），供仪表盘月柱状图与 summary-all 聚合复用。"""
-    if pid_list is not None:
-        projects = project_service.get_projects_by_ids(pid_list, include_pending=True)
-    else:
-        projects = project_service.get_projects(0, 1000, include_pending=True)
+def _compute_monthly_summary(pid_list: Optional[list],
+                             projects: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """项目按月统计（承接/待定分开），供仪表盘月柱状图与 summary-all 聚合复用。
+
+    projects 可传入预加载列表（summary-all 聚合时一次查询三处复用）；
+    不传时内部自行轻量加载（含待定）。
+    """
+    if projects is None:
+        projects = _load_dashboard_projects(pid_list, include_pending=True)
 
     monthly_map: Dict[str, int] = {}
     pending_map: Dict[str, int] = {}
@@ -334,12 +360,15 @@ async def get_project_monthly_summary(
     return {"code": 0, "data": _compute_monthly_summary(pid_list)}
 
 
-def _compute_urgency_summary(pid_list: Optional[list]) -> Dict[str, int]:
-    """项目紧急度汇总，供紧急度四象限与 summary-all 聚合复用。"""
-    if pid_list is not None:
-        projects = project_service.get_projects_by_ids(pid_list)
-    else:
-        projects = project_service.get_projects(0, 1000)
+def _compute_urgency_summary(pid_list: Optional[list],
+                             projects: Optional[List[Dict[str, Any]]] = None) -> Dict[str, int]:
+    """项目紧急度汇总，供紧急度四象限与 summary-all 聚合复用。
+
+    projects 可传入预加载列表（仅已承接，口径同 get_projects 默认过滤）；
+    不传时内部自行轻量加载。
+    """
+    if projects is None:
+        projects = _load_dashboard_projects(pid_list)
 
     by_urgency: Dict[str, int] = {key: 0 for key in URGENCY_MAP.keys()}
     for project in projects:
@@ -369,18 +398,20 @@ async def get_project_urgency_summary(
     return {"code": 0, "data": {"by_urgency": _compute_urgency_summary(pid_list)}}
 
 
-def _compute_projects_brief(pid_list: Optional[list]) -> List[Dict[str, Any]]:
+def _compute_projects_brief(pid_list: Optional[list],
+                            projects: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """仪表盘首屏轻量项目列表：仅取 4 个统计卡所需字段 + 未关闭风险数。
 
     替代前端单独请求 /projects?include_analysis=true —— 那个接口会附带
     project_summary 文本、7 天任务 JSON 聚合等重字段；首屏只需要
     risks/contact_person/settlement_period，一条 risks 计数即可，无任何逐项目查询。
     口径与 /projects/include_analysis 一致（status != "关闭" 计未关闭风险）。
+
+    projects 可传入预加载列表（仅已承接，口径同 get_projects 默认过滤）；
+    不传时内部自行轻量加载。
     """
-    if pid_list is not None:
-        projects = project_service.get_projects_by_ids(pid_list)
-    else:
-        projects = project_service.get_projects(0, 1000)
+    if projects is None:
+        projects = _load_dashboard_projects(pid_list)
 
     codes = [p["project_code"] for p in projects]
     risk_counts: Dict[str, int] = {}
@@ -403,16 +434,46 @@ def _compute_projects_brief(pid_list: Optional[list]) -> List[Dict[str, Any]]:
     ]
 
 
+def _compute_summary_all_sync_parts(
+    pid_list: Optional[list],
+) -> Tuple[Dict[str, Any], Dict[str, int], List[Dict[str, Any]]]:
+    """summary-all 的同步部分：一次轻量查询加载项目（含待定），月度/紧急度/项目简表三处复用。
+
+    已承接口径 = undertake_status == UNDERTAKE_YES（与 get_projects 默认 SQL 过滤等价，
+    在 Python 侧过滤）。整个函数在线程池中执行，避免同步 DB 调用阻塞事件循环。
+    """
+    all_projects = _load_dashboard_projects(pid_list, include_pending=True)
+    undertaken = [p for p in all_projects if p.get("undertake_status") == UNDERTAKE_YES]
+    monthly = _compute_monthly_summary(pid_list, projects=all_projects)
+    urgency = _compute_urgency_summary(pid_list, projects=undertaken)
+    projects_brief = _compute_projects_brief(pid_list, projects=undertaken)
+    return monthly, urgency, projects_brief
+
+
+async def _run_summary_all_query(fn, pid_list):
+    """在独立 AsyncSession 中执行仪表盘子查询，供 asyncio.gather 并发。
+
+    SQLAlchemy 的 AsyncSession 不允许并发使用，因此每个子查询各开一个会话。
+    """
+    async with AsyncSessionLocal() as session:
+        return await fn(session, pid_list)
+
+
 @dashboard_router.get("/summary-all", response_model=Dict[str, Any])
 async def get_dashboard_summary_all(
     project_ids: Optional[str] = Query(None, description="项目ID列表，逗号分隔；传入后仅统计这些项目"),
-    db: AsyncSession = Depends(get_db),
 ):
     """仪表盘聚合接口 —— 一次返回工单汇总/来源/响应时间/平均完单耗时/项目月统计/紧急度/轻量项目列表，
     替代前端首屏 7 个并发请求（/dashboard/tickets/summary、source-analysis、
     response-time、avg-close-time、projects/monthly、projects/urgency、
     projects?include_analysis=true），降低首屏接口并发与延迟；项目列表只带首屏
     统计卡所需轻量字段（见 _compute_projects_brief）。
+
+    性能设计：
+    - 4 个 async 子查询各用独立会话并发执行；项目相关同步查询合并为一次轻量
+      加载（含待定，三处统计复用）并放入线程池，不阻塞事件循环；
+    - 结果带 30s 进程内缓存（key 为 project_ids 签名），看板允许分钟级延迟，
+      TTL 内重复打开仪表盘直接返回缓存。
 
     响应结构：
     {
@@ -429,25 +490,34 @@ async def get_dashboard_summary_all(
     }
     """
     pid_list = _parse_project_ids(project_ids)
-    tickets = await task_dashboard_service.get_ticket_summary(db, pid_list)
-    source = await task_dashboard_service.get_source_analysis(db, pid_list)
-    response_time = await task_dashboard_service.get_response_time_analysis(db, pid_list)
-    avg_close_time = await task_dashboard_service.get_avg_close_time_analysis(db, pid_list)
-    monthly = _compute_monthly_summary(pid_list)
-    urgency = {"by_urgency": _compute_urgency_summary(pid_list)}
-    projects_brief = _compute_projects_brief(pid_list)
-    return {
-        "code": 0,
-        "data": {
-            "tickets": tickets,
-            "source": source,
-            "response_time": response_time,
-            "avg_close_time": avg_close_time,
-            "monthly": monthly,
-            "urgency": urgency,
-            "projects_brief": projects_brief,
-        },
+
+    cache_key = _summary_all_cache_key(pid_list)
+    now = time.monotonic()
+    cached = _summary_all_cache.get(cache_key)
+    if cached and now - cached[0] < _SUMMARY_ALL_TTL_SECONDS:
+        return cached[1]
+
+    tickets, source, response_time, avg_close_time, sync_parts = await asyncio.gather(
+        _run_summary_all_query(task_dashboard_service.get_ticket_summary, pid_list),
+        _run_summary_all_query(task_dashboard_service.get_source_analysis, pid_list),
+        _run_summary_all_query(task_dashboard_service.get_response_time_analysis, pid_list),
+        _run_summary_all_query(task_dashboard_service.get_avg_close_time_analysis, pid_list),
+        run_in_threadpool(_compute_summary_all_sync_parts, pid_list),
+    )
+    monthly, urgency, projects_brief = sync_parts
+
+    data = {
+        "tickets": tickets,
+        "source": source,
+        "response_time": response_time,
+        "avg_close_time": avg_close_time,
+        "monthly": monthly,
+        "urgency": {"by_urgency": urgency},
+        "projects_brief": projects_brief,
     }
+    resp = {"code": 0, "data": data}
+    _summary_all_cache[cache_key] = (time.monotonic(), resp)
+    return resp
 
 
 @dashboard_router.get("/projects", response_model=Dict[str, Any])

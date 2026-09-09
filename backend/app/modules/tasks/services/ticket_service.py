@@ -6,6 +6,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import joinedload
 from sqlalchemy.orm.attributes import set_committed_value
+from starlette.concurrency import run_in_threadpool
 
 from app.modules.tasks.models.ticket import Ticket, TicketComment, TicketStatus, TicketPriority, TicketType
 from app.models.identity import UserDB
@@ -73,7 +74,9 @@ def spawn_log_cache_cleanup(ticket_id) -> None:
 class TicketService:
     @classmethod
     async def _get_user_map(cls, token: Optional[str] = None) -> Dict[str, str]:
-        return user_service.get_user_map()
+        # 用户映射加载是同步 pymysql；未命中缓存时丢进线程池执行，
+        # 避免冷启动/失效重建期间阻塞事件循环（连带拖慢同进程其他请求）
+        return await run_in_threadpool(user_service.get_user_map)
 
     @classmethod
     async def _get_user_ids_by_name(cls, name: str, token: Optional[str] = None) -> List[str]:
