@@ -117,8 +117,12 @@ def build_exam(all_mode=False):
                    (labels.get(cid) or {}).items() if str(k).isdigit()}
         for tid, s in enumerate(manual):
             e = manual[tid + 1] if tid + 1 < len(manual) else len(rounds)
-            if all_mode and not any(cls[i]["q"] for i in range(s, e)):
-                continue  # 段内无咨询回合（纯问候/寒暄，如整段只有「你好」）——无问题可判
+            # 段内要有「有提问且有回答」的回合才判：无提问=没东西可判（纯问候/寒暄段）；
+            # 问了但 AI 全程没回=当时可能服务异常，不是回答质量问题，不进分母
+            # （与 dar_l1 的 seg_q、dar_retrieval_check 的 q_idx 同口径，0909 定调）
+            if not any(cls[i]["q"] and any(a.strip() for a in rounds[i]["a"])
+                       for i in range(s, e)):
+                continue
             lab = lab_map.get(s)
             if not all_mode and (not lab or lab == "未标"):
                 continue
