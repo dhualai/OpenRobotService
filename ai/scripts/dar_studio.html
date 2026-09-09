@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>直答率工作台</title>
+<title>AI 质量工作台</title>
 <style>
 :root{
   --bg:#f1f5f9; --card:#ffffff; --ink:#0f172a; --ink2:#475569; --ink3:#94a3b8;
@@ -33,8 +33,13 @@ body{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif
 .nav .dot{width:8px;height:8px;border-radius:50%;background:#334155;flex-shrink:0}
 .nav button.on .dot{background:var(--brand2)}
 .side .fill{flex:1}
-.side .conn{padding:14px 16px;border-top:1px solid #1e293b;font-size:12px;color:var(--side-dim)}
+.side .conn{padding:14px 16px;border-top:1px solid #1e293b;font-size:12px;color:var(--side-dim);
+  display:flex;flex-direction:column;gap:7px}
 .side .conn b{color:var(--side-ink);font-weight:600}
+.side .cline{display:flex;align-items:center;gap:7px;white-space:nowrap;overflow:hidden}
+.side .cdot{width:7px;height:7px;border-radius:50%;background:#475569;flex-shrink:0}
+.side .cdot.ok{background:var(--ok)}
+.side .cdot.bad{background:var(--danger)}
 .side .foot{padding:10px 16px 16px;font-size:11px;color:#334155}
 
 .main{flex:1;overflow:auto;padding:22px 26px}
@@ -82,6 +87,14 @@ label.f{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--in
 .mhero .mcard{border-top:3px solid var(--brand2)}
 .mhero .mcard:nth-child(2){border-top-color:var(--ok)}
 .mhero .mcard:nth-child(3){border-top-color:var(--warn)}
+.mcard .wow{font-size:12px;font-weight:650;margin-top:6px}
+.mcard .wow.up{color:var(--ok)}
+.mcard .wow.down{color:var(--danger)}
+.urow{padding:8px 4px;border-bottom:1px solid var(--line);font-size:12.5px}
+.urow:last-child{border-bottom:none}
+.urow .uq{font-weight:600;color:var(--ink);margin-bottom:3px}
+.urow .um{display:flex;gap:8px;align-items:center;color:var(--ink3);font-size:11.5px;flex-wrap:wrap}
+.urow .ur{color:var(--ink3);font-size:11.5px;margin-top:3px}
 .mgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}
 .mgrid .mcard .v{font-size:24px}
 .repbar{display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:var(--ink2);
@@ -182,13 +195,16 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
 <body>
 <div class="shell">
   <aside class="side">
-    <div class="brand"><div class="t">直答率工作台</div><div class="s">Direct-Answer Studio</div></div>
+    <div class="brand"><div class="t">AI 质量工作台</div><div class="s">AI Quality Studio</div></div>
     <nav class="nav">
       <button id="nav-week" class="on"><span class="dot"></span>周流程 · 指标生成</button>
       <button id="nav-test"><span class="dot"></span>在线测试</button>
     </nav>
     <div class="fill"></div>
-    <div class="conn" id="connbox">测试环境：未连接</div>
+    <div class="conn">
+      <div class="cline"><span class="cdot ok"></span>生产库 <b id="conn-prod">就绪</b></div>
+      <div class="cline"><span class="cdot" id="conn-dot"></span>测试环境 <b id="conn-test">未连接</b></div>
+    </div>
     <div class="foot">dar_studio · 本地工具</div>
   </aside>
 
@@ -206,6 +222,17 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
       <div class="mhero" id="mhero"></div>
       <div class="mgrid" id="msmall"></div>
       <div class="repbar" id="repbar" style="display:none"></div>
+
+      <details class="card" id="uacard">
+        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
+          未直答问题清单 <span class="hint" id="uasum" style="font-weight:400">加载中…</span></summary>
+        <div style="margin-top:10px;font-size:12px;color:var(--ink3);margin-bottom:8px">
+          L3 预标「未直答/未覆盖」段全量底账（知识缺口）；按周分组看增量，type 过滤定位缺口类型。
+        </div>
+        <div class="chips" id="uaweeks" style="margin-bottom:8px"></div>
+        <div class="chips" id="uatypes" style="margin-bottom:10px"></div>
+        <div id="ualist" style="max-height:420px;overflow:auto"></div>
+      </details>
 
       <div class="card">
         <h3>流程</h3>
@@ -384,10 +411,22 @@ async function loadMetrics(){
     bar.style.display = "none";
     return;
   }
+  // 环比：hero 卡下挂 vs 上期变化（trend 取最近两期，多周后自然成走势）
+  const KEYMAP = {"L1 机器信号":"L1_段级", "L2 人工标注":"L2_人工", "L3 AI 预标":"L3_AI同段"};
+  const tr = j.trend || [];
+  const prevT = tr.length >= 2 ? tr[tr.length-2] : null;
+  const wowOf = (label)=>{
+    const k = KEYMAP[label];
+    if(!k || !prevT || prevT[k] == null || (tr[tr.length-1][k] == null)) return null;
+    return Math.round((tr[tr.length-1][k] - prevT[k]) * 10) / 10;
+  };
   (j.hero || []).forEach(c=>{
+    const d = wowOf(c.label);
+    const wowHtml = d === null ? "" :
+      `<div class="wow ${d > 0 ? "up" : d < 0 ? "down" : ""}">${d > 0 ? "↗ +" : d < 0 ? "↘ " : "± "}${d}pp vs 上期</div>`;
     hero.insertAdjacentHTML("beforeend",
       `<div class="mcard"><div class="lb">${esc(c.label)}</div><div class="v">${esc(c.value)}</div>
-       <div class="sb">${esc(c.sub)}</div></div>`);
+       <div class="sb">${esc(c.sub)}</div>${wowHtml}</div>`);
   });
   (j.small || []).forEach(c=>{
     small.insertAdjacentHTML("beforeend",
@@ -397,11 +436,15 @@ async function loadMetrics(){
   const bits = [`周报 <b>${esc(j.date || "")}</b>`];
   if(j.source_env && j.source_env !== env)
     bits.push(`<span class="badge warn" style="font-weight:400">生产尚未出周报，展示 test 环境数据</span>`);
+  if(j.this_week && j.this_week.n_segs)
+    bits.push(`本周新增（${esc(j.this_week.from)}~${esc(j.this_week.to)}）：<b>${j.this_week.n_convs}</b> 会话 <b>${j.this_week.n_segs}</b> 段 · L1 <b>${esc(j.this_week.L1_rate)}</b>（全量为上线以来累积，本周单独看）`);
   if(j.note) bits.push(`附注：${esc(j.note)}`);
   if(j.meta?.git_head) bits.push(`版本 <span class="mono">${esc(String(j.meta.git_head).slice(0,8))}</span>（本周合入 ${(j.meta.merges||[]).length} 条）`);
   if(j.avg_rounds && Object.keys(j.avg_rounds).length)
     bits.push(`轮次：${Object.entries(j.avg_rounds).map(([k,v])=>`${esc(k)} ${esc(v)}`).join(" · ")}`);
   if(j.ticket_quality?.建议转单未提单) bits.push(`建议转单未提单：${esc(j.ticket_quality.建议转单未提单)}`);
+  if(tr.length >= 2)
+    bits.push(`L1 走势：${tr.map(t=>`${esc(String(t.date).slice(5))} ${t["L1_段级"]??"—"}`).join(" → ")}`);
   bar.innerHTML = bits.join('<span style="color:#c7d2fe">｜</span>');
   bar.style.display = "";
 }
@@ -416,7 +459,7 @@ $("#openreport").onclick = async ()=>{
 /* 流程向导 */
 const WIZ = [
   {t:"导数据", steps:["export","prepare"], d:"生产库四表 → 本地切分（ssh，约 1-2 分钟）"},
-  {t:"L1 指标", steps:["l1"], d:"LLM 逐会话切话题 + 问题类型（flash 批判）"},
+  {t:"L1 指标", steps:["l1"], d:"LLM 逐会话切话题 + 问题类型（pro 批判）"},
   {t:"L3 预标", steps:["retrieval","l3","tool"], d:"重放检索判定 + judge 四类预标 + 生成标注工具"},
   {t:"人工标注", label:true, d:"新标签页打开标注工具，审段改分段打标签，导出 JSON 放 Downloads/"},
   {t:"吸收 → 周报", steps:["l1","retrieval","l3","report"], d:"吸收人工标签出 L2，增量补判变更段，三口径对比 + 周报"},
@@ -463,7 +506,7 @@ async function runSteps(steps, wstepEl){
     wstepEl?.classList.remove("run");
     wstepEl?.classList.add("done");
     $("#runstate").innerHTML = '<span class="badge ok">空闲</span>';
-    loadMetrics(); loadArts();
+    loadMetrics().then(()=>{ loadArts(); loadUA(); });
   });
 }
 renderWiz();
@@ -534,15 +577,75 @@ async function preview(name){
     w.document.body.appendChild(pre);
   }
 }
-loadMetrics().then(loadArts);
+loadMetrics().then(()=>{ loadArts(); loadUA(); });
+
+/* 未直答问题清单（全量底账，按周看增量） */
+let uaItems = [], uaWeek = "all", uaType = "all";
+function chipRow(el, pairs, cur, onpick){
+  el.innerHTML = "";
+  pairs.forEach(([val, txt])=>{
+    const c = document.createElement("div");
+    c.className = "chip" + (val === cur ? " on" : "");
+    c.textContent = txt;
+    c.onclick = ()=>onpick(val);
+    el.appendChild(c);
+  });
+}
+function renderUA(){
+  const inWeek = uaItems.filter(it=> uaWeek === "all" || it.week === uaWeek);
+  const tc = {};
+  inWeek.forEach(it=>{ tc[it.type] = (tc[it.type] || 0) + 1; });
+  chipRow($("#uaweeks"), uaWeekPairs, uaWeek, v=>{ uaWeek = v; renderUA(); });
+  chipRow($("#uatypes"), [["all", `全部类型 ${inWeek.length}`],
+    ...Object.entries(tc).sort((a,b)=>b[1]-a[1]).map(([t,n])=>[t, `${t} ${n}`])],
+    uaType, v=>{ uaType = v; renderUA(); });
+  const rows = inWeek.filter(it=> uaType === "all" || it.type === uaType);
+  const CAP = 300;
+  $("#ualist").innerHTML = rows.slice(0, CAP).map(it=>`<div class="urow">
+      <div class="uq">${esc(it.q)}</div>
+      <div class="um"><span class="badge ${it.pre === "未覆盖" ? "warn" : "err"}">${esc(it.pre)}</span>
+        <span class="badge dim">${esc(it.type)}</span>
+        <span>${esc(it.user || "")}</span><span class="mono">${esc(it.at || "")}</span></div>
+      ${it.reason ? `<div class="ur">${esc(it.reason)}</div>` : ""}</div>`).join("")
+    + (rows.length > CAP ? `<div class="empty" style="padding:8px">仅显示前 ${CAP} 条（共 ${rows.length}）</div>`
+       : (rows.length ? "" : '<div class="empty">该过滤条件下没有段</div>'));
+}
+let uaWeekPairs = [];
+async function loadUA(){
+  const j = await (await fetch(`/api/unanswered?env=${activeEnv}`)).json();
+  if(!j.found){
+    $("#uasum").textContent = "暂无（先跑 L3 预标 + 周报）";
+    $("#uaweeks").innerHTML = ""; $("#uatypes").innerHTML = ""; $("#ualist").innerHTML = "";
+    return;
+  }
+  uaItems = j.items || [];
+  uaWeek = "all"; uaType = "all";
+  const weeks = Object.entries(j.weeks || {}).sort((a,b)=>a[0] < b[0] ? -1 : 1);
+  const latest = weeks.length ? weeks[weeks.length - 1] : null;
+  $("#uasum").textContent = `共 ${j.total} 条`
+    + (latest ? ` · 最新周（${latest[0].slice(5)} 起）+${latest[1]}` : "");
+  uaWeekPairs = [["all", `全部 ${j.total}`],
+    ...weeks.map(([w, n])=>[w, `${w.slice(5).replace("-", "/")} 周 +${n}`])];
+  renderUA();
+}
 
 /* ══ 页签2 在线测试 ══ */
+function setConn(user){
+  const dot = $("#conn-dot"), txt = $("#conn-test");
+  if(user){ dot.className = "cdot ok"; txt.textContent = "已连接 · " + user; }
+  else{ dot.className = "cdot"; txt.textContent = "未连接"; }
+}
 (async ()=>{
   const j = await (await fetch("/api/status")).json();
   $("#envtip").textContent = j.backend.replace("http://","") + " / " + j.ai.replace("http://","");
+  if(j.prod_export) $("#conn-prod").textContent = "已导数 " + j.prod_export;
+  else{
+    $("#conn-prod").textContent = "未导数据";
+    document.querySelector("#conn-prod").closest(".cline").querySelector(".cdot").className = "cdot";
+  }
   if(j.logged_in){
     $("#loginstate").className = "badge ok"; $("#loginstate").textContent = "已连接 " + j.logged_in;
-    $("#connbox").innerHTML = `测试环境：<b>${esc(j.logged_in)}</b> 已连接`;
+    setConn(j.logged_in);
   }
 })();
 $("#loginbtn").onclick = async ()=>{
@@ -554,7 +657,7 @@ $("#loginbtn").onclick = async ()=>{
     const j = await r.json();
     if(!r.ok) throw new Error(j.detail || "登录失败");
     $("#loginstate").className = "badge ok"; $("#loginstate").textContent = "已连接 " + j.username;
-    $("#connbox").innerHTML = `测试环境：<b>${esc(j.username)}</b> 已连接`;
+    setConn(j.username);
     toast("登录成功", "ok");
   }catch(e){ toast(e.message, "err"); }
   b.disabled = false; b.textContent = "登录测试环境";
@@ -730,7 +833,8 @@ async function send(){
     }else if(ev.event === "error"){
       mark("e", "run", "错误");
       bubble.textContent = (answer ? answer + "\n\n" : "") + "⚠ " + (d.error || "未知错误");
-      if(d.fatal && /401|过期/.test(d.error||"")){ $("#loginstate").className="badge err"; $("#loginstate").textContent="登录过期"; }
+      if(d.fatal && /401|过期/.test(d.error||"")){ $("#loginstate").className="badge err"; $("#loginstate").textContent="登录过期";
+        $("#conn-dot").className = "cdot bad"; $("#conn-test").textContent = "登录过期"; }
     }else if(ev.event === "done"){
       mark("d", "done", d.total_ms + "ms");
     }

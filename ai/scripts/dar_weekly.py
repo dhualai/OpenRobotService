@@ -27,7 +27,7 @@ import os
 import subprocess
 import sys
 from collections import Counter
-from datetime import datetime as _dt
+from datetime import datetime as _dt, timedelta as _td
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -279,41 +279,138 @@ def _drilldown_matrix(csv_rows):
          "total": sum(v[1] for v in cell[u].values())} for u in users]}
 
 
-def _fail_list(j_rows):
-    """L3 预标「未直答/未覆盖」段 → 按话题类型分组的知识缺口清单（type=聚类维度）。
-    段首问题取 SPLIT，type 取 cls，reason 取 judge 理由。>30 段截断标注。"""
+def _fail_items(j_rows):
+    """L3 预标「未直答/未覆盖」段全量清单（不截断），供工作台按周浏览。
+    每条含问题/type/判定/理由/用户/时间/所在周（周一日期）——
+    周增量=按 week 分组后的各组条数。
+    纯问候/寒暄段（段内无 L1 咨询回合，如整段只有「你好」）不进清单；
+    问候开头但段内有真问题的，展示首个咨询回合的问题而非段首「你好」。"""
     if not j_rows or not os.path.exists(SPLIT) or not os.path.exists(
             os.path.join(OUT, "conversations_classified.jsonl")):
-        return None
-    bad = [r for r in j_rows if r.get("pre") in ("未直答", "未覆盖")]
+        return []
+    bad = [r for r in j_rows if r.get("pre") in ("未直答", "未覆盖")
+           and r.get("grp") == "真实组"]  # 测试组是自测流量，不进缺口清单
     if not bad:
-        return None
+        return []
     convs = {str(c["conversation_id"]): c for c in
              (json.loads(l) for l in open(SPLIT, encoding="utf-8"))}
     cls_by = {str(j["conversation_id"]): j["cls"] for j in
               (json.loads(l) for l in open(
                   os.path.join(OUT, "conversations_classified.jsonl"),
                   encoding="utf-8"))}
-    groups = {}
+    starts = {}  # cid → 段起点集合（j_rows 是全段判定，含未失败段，边界才完整）
+    for r in j_rows:
+        if r.get("astart") is not None:
+            starts.setdefault(str(r["cid"]), set()).add(r["astart"])
+    items = []
     for r in bad:
         c, cl = convs.get(str(r["cid"])), cls_by.get(str(r["cid"]))
         a = r.get("astart")
         if not c or not cl or a is None or a >= len(c["rounds"]) or a >= len(cl):
             continue
-        q = (c["rounds"][a]["q"] or "").strip()[:80]
+        ast = sorted(starts.get(str(r["cid"])) or [])
+        e = next((x for x in ast if x > a), len(c["rounds"]))
+        qi = next((i for i in range(a, min(e, len(cl)))
+                   if cl[i].get("q") and (c["rounds"][i].get("q") or "").strip()),
+                  None)
+        if qi is None:  # 段内无咨询回合=纯问候/寒暄，不是可改进的失败问题
+            continue
+        q = (c["rounds"][qi]["q"] or "").strip()[:80]
         if not q:
             continue
-        groups.setdefault(cl[a].get("type") or "未分类", []).append(
-            {"pre": r["pre"], "q": q, "reason": (r.get("reason") or "")[:60],
-             "cid": r["cid"], "astart": a})
-    if not groups:
+        at = (c["rounds"][qi].get("at") or "")[:16]
+        t = _dt.fromisoformat(at) if at else None
+        week = (t - _td(days=t.weekday())).strftime("%Y-%m-%d") if t else ""
+        items.append({"pre": r["pre"], "q": q, "type": cl[qi].get("type") or "未分类",
+                      "reason": (r.get("reason") or "")[:60],
+                      "user": (c.get("name") or c.get("user_id") or "?"),
+                      "cid": r["cid"], "astart": a, "at": at, "week": week})
+    return items
+
+
+def _fail_list(items):
+    """全量清单 → 按 type 分组（周报 md 用，>30 段截断标注）。"""
+    if not items:
         return None
+    groups = {}
+    for it in items:
+        groups.setdefault(it["type"], []).append(
+            {k: it[k] for k in ("pre", "q", "reason", "cid", "astart")})
     out = []
     for t in sorted(groups, key=lambda k: -len(groups[k])):
-        items = groups[t]
-        out.append({"type": t, "n": len(items), "truncated": len(items) > 30,
-                    "items": items[:30]})
+        g = groups[t]
+        out.append({"type": t, "n": len(g), "truncated": len(g) > 30, "items": g[:30]})
     return out
+
+
+def _this_monday():
+    d = _dt.now()
+    return (d - _td(days=d.weekday())).strftime("%Y-%m-%d")
+
+
+def _this_week_block(csv_rows):
+    """本周新增对话的指标（真实组）：窗口=上次导出锚点→本次导出锚点，
+    只有一条锚点时回退最近 7 天。全量口径随数据累积慢变，本周口径回答
+    「这周服务质量怎么样」。L2 人工标注通常滞后，本周只算 L1 段级。"""
+    if not csv_rows:
+        return None
+    to_at = from_at = None
+    mp = os.path.join(DATA, "meta.json")
+    try:
+        metas = json.load(open(mp, encoding="utf-8"))
+        to_at = _dt.fromisoformat((metas[-1].get("at") or "")[:19])
+        from_at = (_dt.fromisoformat((metas[-2].get("at") or "")[:19])
+                   if len(metas) >= 2 else to_at - _td(days=7))
+    except Exception:
+        to_at = _dt.now()
+        from_at = to_at - _td(days=7)
+    rows = []
+    for r in csv_rows:
+        if r.get("group") != "真实组":
+            continue
+        try:
+            t = _dt.fromisoformat((r.get("time") or "")[:19].replace("T", " "))
+        except ValueError:
+            continue
+        if from_at <= t < to_at:
+            rows.append(r)
+    if not rows:
+        return {"from": from_at.strftime("%m-%d"), "to": to_at.strftime("%m-%d"),
+                "n_segs": 0, "note": "窗口内无新对话"}
+    n, tk = len(rows), sum(int(r["seg_ticketed"]) for r in rows)
+    return {"from": from_at.strftime("%m-%d"), "to": to_at.strftime("%m-%d"),
+            "n_convs": len({r["conversation_id"] for r in rows}),
+            "n_segs": n, "n_ticketed": tk,
+            "L1_rate": f"{(n - tk) / n * 100:.1f}%（{n - tk}/{n}）"}
+
+
+def _pct_val(s):
+    """「76.6%（23/31）」→ 76.6，供环比数值化。"""
+    try:
+        return float(_re_search_pct(s))
+    except (TypeError, ValueError):
+        return None
+
+
+def _re_search_pct(s):
+    import re as _re2
+    m = _re2.search(r"([\d.]+)%", str(s or ""))
+    return m.group(1) if m else None
+
+
+def _wow_block(prev_rep, rep):
+    """整体直答率环比（同分母三口径，数值化对比上次周报）。
+    分母=人工已标段，新增标注会让两期数字都动，delta 注明口径相同才可比。"""
+    keys = ("L1_段级", "L2_人工", "L3_AI同段")
+    prev, curr = (prev_rep or {}).get("dar_rates_same_base") or {}, \
+        (rep or {}).get("dar_rates_same_base") or {}
+    wow = {}
+    for k in keys:
+        p, c = _pct_val(prev.get(k)), _pct_val(curr.get(k))
+        if p is None or c is None:
+            continue
+        wow[k] = {"prev": p, "curr": c, "delta": round(c - p, 1)}
+    return wow or None
 
 
 def _precision_by_label(j_rows):
@@ -380,6 +477,22 @@ def _write_md(rep, path):
         L += [f"## 同分母对比（{s['base']}，消除各口径剔除规则差异）", "",
               _md_table(["口径", "数值"],
                         [[k, v] for k, v in s.items() if k != "base"]), ""]
+    if rep.get("wow"):
+        L += ["## 整体直答率环比（对比上次周报，同分母口径）", "",
+              _md_table(["口径", "上期", "本期", "变化"],
+                        [[k, f"{v['prev']}%", f"{v['curr']}%",
+                          f"{v['delta']:+.1f}pp"]
+                         for k, v in rep["wow"].items()]),
+              "*分母=人工已标段，两期新增标注都会让数字动，方向比绝对值重要*", ""]
+    if rep.get("this_week"):
+        t = rep["this_week"]
+        L += ["## 本周新增对话（" + f"{t['from']}~{t['to']}" + "）", ""]
+        if t.get("n_segs"):
+            L += [f"- 会话 {t['n_convs']} 场｜话题段 {t['n_segs']}（出单 {t.get('n_ticketed', 0)}）",
+                  f"- L1 段级直答率 {t['L1_rate']}（人工标注滞后，本周只算 L1）"]
+        else:
+            L += [f"- {t.get('note', '窗口内无新对话')}"]
+        L.append("")
     if rep.get("l1_真实组"):
         L += ["## L1 明细（最新月）", "",
               _md_table(["指标", "值"],
@@ -417,6 +530,9 @@ def _write_md(rep, path):
             for it in g["items"]:
                 L.append(f"- [{it['pre']}] {it['q']}｜{it['reason']}")
             L.append("")
+        if rep.get("unanswered_total"):
+            L += [f"*全量 {rep['unanswered_total']} 条（含用户/时间/所在周）已落 "
+                  "`unanswered_*.json`，工作台「未直答清单」可按周增量浏览*", ""]
     if rep.get("delta"):
         L += ["## 环比（对比上次周报）", ""]
         for d in rep["delta"]:
@@ -629,7 +745,20 @@ def step_report():
             rep["precision"] = prec
             print(f"L3 预标 precision：{prec['overall']}"
                   + ("（≥90% 可放权）" if prec["delegable"] else ""))
-        fl = _fail_list(rows)
+        items = _fail_items(rows)
+        if items:
+            ua_path = os.path.join(OUT, f"unanswered_{_dt.now():%Y%m%d}.json")
+            weeks = Counter(i["week"] for i in items if i["week"])
+            with open(ua_path, "w", encoding="utf-8") as fh:
+                json.dump({"generated": f"{_dt.now():%Y-%m-%d %H:%M}",
+                           "total": len(items),
+                           "weeks": {w: n for w, n in sorted(weeks.items())},
+                           "items": items}, fh, ensure_ascii=False, indent=1)
+            rep["unanswered_total"] = len(items)
+            rep["unanswered_this_week"] = weeks.get(_this_monday(), 0)
+            print(f"未直答清单：{len(items)} 条（本周 +{rep['unanswered_this_week']}"
+                  f"）→ {os.path.basename(ua_path)}")
+        fl = _fail_list(items)
         if fl:
             rep["fails"] = fl
             print(f"失败清单：{sum(g['n'] for g in fl)} 段"
@@ -644,12 +773,13 @@ def step_report():
 
     prevs = [p for p in sorted(glob.glob(os.path.join(OUT, "weekly_*.json")))
              if os.path.basename(p) != f"weekly_{_dt.now():%Y%m%d}.json"]
+    prev_rep = None
     if prevs:
-        prev = json.load(open(prevs[-1], encoding="utf-8"))
+        prev_rep = json.load(open(prevs[-1], encoding="utf-8"))
         delta = []
         for k in ("l1_真实组", "retrieval_no_rate", "manual_progress",
                   "kb_gap", "dar_rates_same_base"):
-            old, new = prev.get(k), rep.get(k)
+            old, new = prev_rep.get(k), rep.get(k)
             if old != new and (old is not None or new is not None):
                 delta.append(f"{k}: {old} → {new}")
         if delta:
@@ -657,6 +787,18 @@ def step_report():
             print(f"对比 {os.path.basename(prevs[-1])} → 本周变化：")
             for d in delta:
                 print(f"  {d}")
+    wow = _wow_block(prev_rep, rep)
+    if wow:
+        rep["wow"] = wow
+        print("整体直答率环比（同分母三口径）：")
+        for k, v in wow.items():
+            print(f"  {k}: {v['prev']}% → {v['curr']}%（{v['delta']:+.1f}pp）")
+    tw = _this_week_block(csv_rows)
+    if tw:
+        rep["this_week"] = tw
+        print(f"本周新增（{tw['from']}~{tw['to']}）："
+              + (f"{tw['n_convs']} 会话 {tw['n_segs']} 段，"
+                 f"L1 {tw['L1_rate']}" if tw.get("n_segs") else tw.get("note", "")))
 
     path = os.path.join(OUT, f"weekly_{_dt.now():%Y%m%d}.json")
     with open(path, "w", encoding="utf-8") as fh:

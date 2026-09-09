@@ -42,8 +42,8 @@ async def classify(rounds):
     if not rounds:
         return fb
     try:
-        from ai.core import get_intent_client
-        llm = await get_intent_client()
+        from dar_llm import get_dar_client
+        llm = await get_dar_client()
         lines = []
         for i, r in enumerate(rounds):
             head = (r["a"][0] if r["a"] else "")[:120]

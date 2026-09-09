@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""直答率工作台：本地 Web UI，双页签（周流程指标生成 / 在线测试）。
+"""AI 质量工作台：本地 Web UI，双页签（周流程指标生成 / 在线测试）。
 
     python ai/scripts/dar_studio.py          # → http://127.0.0.1:9527
 
@@ -33,7 +33,7 @@ PORT = 9527
 DEFAULT_BACKEND = "http://125.122.97.107:9400"  # 测试环境后端（login）
 DEFAULT_AI = "http://125.122.97.107:9401"       # 测试环境 AI 服务（ask/stream）
 
-app = FastAPI(title="直答率工作台")
+app = FastAPI(title="AI 质量工作台")
 
 # ── 登录态（内存）──────────────────────────────────────────────
 _tokens: dict[str, dict] = {}  # DEFAULT_AI -> {token, username, at}
@@ -73,7 +73,16 @@ async def logout():
 @app.get("/api/status")
 async def status():
     t = _tokens.get(DEFAULT_AI)
-    return {"backend": DEFAULT_BACKEND, "ai": DEFAULT_AI, "logged_in": t["username"] if t else ""}
+    prod_at = ""
+    mp = os.path.join(DATA_ROOT, "prod", "meta.json")
+    try:
+        metas = json.load(open(mp, encoding="utf-8"))
+        prod_at = (metas[-1].get("at") or "")[:10]  # 最近一次生产导数日期
+    except Exception:
+        pass
+    return {"backend": DEFAULT_BACKEND, "ai": DEFAULT_AI,
+            "logged_in": t["username"] if t else "",
+            "prod_export": prod_at}
 
 
 # ── 全链路对话代理（SSE）────────────────────────────────────────
@@ -333,6 +342,7 @@ def stop_run():
 # ── 产物浏览（白名单）───────────────────────────────────────────
 _ARTIFACT_PATTERNS = [
     "processed/weekly_*.md", "processed/weekly_*.json", "meta.json",
+    "processed/unanswered_*.json",
     "segmentation_tool.html",
     "processed/retrieval_check_*.json",
     "processed/l3_judge_*.json",
@@ -383,17 +393,40 @@ def _pct(s: str):
     return m.group(1) + "%" if m else (s or "")
 
 
+def _weekly_files(env: str):
+    return sorted(glob.glob(os.path.join(DATA_ROOT, env, "processed", "weekly_*.json")))
+
+
 @app.get("/api/metrics")
 def metrics(env: str = "prod"):
     if env not in ("test", "prod"):
         raise HTTPException(400, "env 取值 test|prod")
-    files = sorted(glob.glob(os.path.join(DATA_ROOT, env, "processed", "weekly_*.json")))
+    files = _weekly_files(env)
     src = env
     if not files and env == "prod":  # 生产尚未出周报 → 回退展示 test 数据（标注来源）
         src = "test"
-        files = sorted(glob.glob(os.path.join(DATA_ROOT, src, "processed", "weekly_*.json")))
+        files = _weekly_files(src)
     if not files:
         return {"found": False}
+    # 历史趋势：各期周报同分母三口径数值化（多周累积后成走势线）
+    trend = []
+    for p in files:
+        try:
+            r = json.load(open(p, encoding="utf-8"))
+            same = r.get("dar_rates_same_base") or {}
+            pt = {}
+            for k in ("L1_段级", "L2_人工", "L3_AI同段"):
+                v = _pct(same.get(k)).rstrip("%")
+                try:
+                    if v:
+                        pt[k] = float(v)
+                except ValueError:
+                    pass
+            if pt:
+                trend.append({"date": r.get("date") or os.path.basename(p)[7:17],
+                              **pt})
+        except Exception:
+            continue
     with open(files[-1], encoding="utf-8") as fh:
         rep = json.load(fh)
 
@@ -427,7 +460,29 @@ def metrics(env: str = "prod"):
             "meta": rep.get("meta"), "manual_progress": rep.get("manual_progress"),
             "avg_rounds": ar, "ticket_quality": rep.get("ticket_quality"),
             "dar_rates": rep.get("dar_rates"), "same_base": same,
-            "hero": hero, "small": small}
+            "wow": rep.get("wow"), "this_week": rep.get("this_week"),
+            "unanswered_total": rep.get("unanswered_total"),
+            "unanswered_this_week": rep.get("unanswered_this_week"),
+            "trend": trend, "hero": hero, "small": small}
+
+
+@app.get("/api/unanswered")
+def unanswered(env: str = "prod"):
+    """未直答问题全量清单（最新 unanswered_*.json），前端按周/类型过滤。"""
+    if env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    files = sorted(glob.glob(os.path.join(DATA_ROOT, env, "processed",
+                                          "unanswered_*.json")))
+    if not files and env == "prod":
+        files = sorted(glob.glob(os.path.join(DATA_ROOT, "test", "processed",
+                                              "unanswered_*.json")))
+    if not files:
+        return {"found": False}
+    with open(files[-1], encoding="utf-8") as fh:
+        ua = json.load(fh)
+    return {"found": True, "file": os.path.basename(files[-1]),
+            "total": ua.get("total"), "weeks": ua.get("weeks"),
+            "items": ua.get("items", [])}
 
 
 @app.get("/label_tool")
@@ -446,5 +501,5 @@ def index():
 
 
 if __name__ == "__main__":
-    print(f"直答率工作台 → http://127.0.0.1:{PORT}")
+    print(f"AI 质量工作台 → http://127.0.0.1:{PORT}")
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

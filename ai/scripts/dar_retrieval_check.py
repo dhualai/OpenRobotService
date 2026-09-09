@@ -131,7 +131,7 @@ JUDGE_PROMPT = (
 
 async def main():
     from ai.agents.AiDiagnosisPlatform.pipeline import AgentState, get_diagnosis_platform
-    from ai.core import get_intent_client
+    from dar_llm import get_dar_client
 
     rows = build_rows()
     path = os.path.join(OUT, f"retrieval_check_{_dt.now():%Y%m%d}.json")
@@ -154,7 +154,7 @@ async def main():
     if todo:
         platform = await get_diagnosis_platform()
         await platform._ensure_clients()  # 懒加载只在 run 入口触发，直连检索前必须显式初始化
-        llm = await get_intent_client()
+        llm = await get_dar_client()
 
         sem = asyncio.Semaphore(CONCURRENCY)
         done = [0]

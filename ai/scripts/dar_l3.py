@@ -91,6 +91,8 @@ def build_exam(all_mode=False):
                    (labels.get(cid) or {}).items() if str(k).isdigit()}
         for tid, s in enumerate(manual):
             e = manual[tid + 1] if tid + 1 < len(manual) else len(rounds)
+            if all_mode and not any(cls[i]["q"] for i in range(s, e)):
+                continue  # 段内无咨询回合（纯问候/寒暄，如整段只有「你好」）——无问题可判
             lab = lab_map.get(s)
             if not all_mode and (not lab or lab == "未标"):
                 continue
@@ -163,7 +165,7 @@ JUDGE_PROMPT = (
 
 async def main():
     from ai.agents.AiDiagnosisPlatform.pipeline import AgentState, get_diagnosis_platform
-    from ai.core import get_intent_client
+    from dar_llm import get_dar_client
 
     all_mode = "--all" in sys.argv
     out_path = ALL_OUT if all_mode else JUDGE_OUT
@@ -171,7 +173,7 @@ async def main():
     print(f"考卷 {len(exam)} 段（{'全部段·预标' if all_mode else '真实组人工已标·校准'}）")
     platform = await get_diagnosis_platform()
     await platform._ensure_clients()  # 懒加载只在 run 入口触发，直连检索前必须显式初始化
-    llm = await get_intent_client()
+    llm = await get_dar_client()
 
     if os.path.exists(out_path):
         rows = json.load(open(out_path, encoding="utf-8"))
