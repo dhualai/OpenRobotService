@@ -5,6 +5,7 @@ from app.services.permission_service import permission_service
 from app.models import role_permissions
 from app.models.organization import Company, Department
 import json
+import threading
 import time
 
 
@@ -12,6 +13,9 @@ class UserService:
     _user_cache: Optional[Dict[str, str]] = None
     _cache_timestamp: Optional[float] = None
     _CACHE_EXPIRE_SECONDS = 600
+    # 过期后后台刷新的防重入标志：同一时刻只允许一个线程去刷新，
+    # 其余请求拿旧缓存直接返回（stale-while-revalidate）
+    _refreshing = False
 
     @classmethod
     def get_user_list(cls, skip: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
@@ -186,34 +190,66 @@ class UserService:
         return user_data
 
     @classmethod
-    def get_user_map(cls) -> Dict[str, str]:
-        current_time = time.time()
-        
-        if (cls._user_cache is not None and 
-            cls._cache_timestamp is not None and 
-            current_time - cls._cache_timestamp < cls._CACHE_EXPIRE_SECONDS):
-            return cls._user_cache
-        
+    def _load_user_map_from_db(cls) -> Dict[str, str]:
+        """轻量加载 id/username → 显示名 映射：单条 SQL 只取 3 列。
+
+        不走 get_user_list —— 那条路径会全量加载 UserDB（含 external_credentials、
+        responsibility_modules 等重列）并对每个用户单独查一次 Company/Department
+        （2N 条串行 SQL 的 N+1，是首屏请求 6s 的主因），而本映射只需要
+        id/username/name 三个字段。用户集合口径与 get_user_list 一致（全量用户，不过滤状态）。
+        """
+        db = db_manager.get_db()
         try:
-            users = cls.get_user_list(limit=999999999)
-            user_map = {}
-            for user in users:
-                username = user.get("username")
-                user_id = user.get("id")
-                user_name = user.get("name") or user.get("username") or user_id
-                
-                if user_id:
-                    user_map[user_id] = user_name
-                if username:
-                    user_map[username] = user_name
-            
-            cls._user_cache = user_map
-            cls._cache_timestamp = current_time
+            rows = db.query(UserDB.id, UserDB.username, UserDB.name).all()
+        finally:
+            db.close()
+
+        user_map: Dict[str, str] = {}
+        for user_id, username, name in rows:
+            display = name or username or user_id
+            if user_id:
+                user_map[user_id] = display
+            if username:
+                user_map[username] = display
+        return user_map
+
+    @classmethod
+    def _refresh_cache(cls) -> None:
+        """重新加载用户映射缓存；失败时保留旧缓存且不更新时间戳（下次调用重试）。"""
+        try:
+            cls._user_cache = cls._load_user_map_from_db()
+            cls._cache_timestamp = time.time()
         except Exception as e:
-            cls._user_cache = {}
             print(f"加载用户信息失败: {str(e)}")
-        
-        return cls._user_cache
+        finally:
+            cls._refreshing = False
+
+    @classmethod
+    def get_user_map(cls) -> Dict[str, str]:
+        """id/username → 显示名 映射，进程内缓存 TTL 600s。
+
+        性能设计（stale-while-revalidate）：
+        - 未过期：直接返回内存 dict（微秒级）；
+        - 已过期：先返回旧缓存，同时起一个后台线程刷新 —— 消除"每 10 分钟
+          第一个请求同步等全量加载"的毛刺；
+        - 无缓存（进程首次调用或刚被 invalidate）：同步加载，单条轻量 SQL
+          几十 ms 量级；async 上下文须经 run_in_threadpool 调用本方法
+          （见 TicketService._get_user_map），避免阻塞事件循环；
+        - 加载失败：返回旧缓存或空 dict，时间戳不更新，下次调用自动重试。
+        """
+        cache = cls._user_cache
+        if cache is not None and cls._cache_timestamp is not None:
+            if time.time() - cls._cache_timestamp < cls._CACHE_EXPIRE_SECONDS:
+                return cache
+            # 过期：防重入地派发后台刷新，先返回旧值
+            if not cls._refreshing:
+                cls._refreshing = True
+                threading.Thread(target=cls._refresh_cache, daemon=True).start()
+            return cache
+
+        # 无缓存：同步加载（调用方为 async 上下文时应已在线程池中）
+        cls._refresh_cache()
+        return cls._user_cache or {}
 
     @classmethod
     def invalidate_cache(cls):

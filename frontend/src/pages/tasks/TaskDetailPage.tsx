@@ -7,7 +7,7 @@ import { DatePicker } from 'antd';
 import dayjs from 'dayjs';
 import ClearableInput from '@/shared/components/ClearableInput';
 import TitleEllipsis from '@/shared/components/TitleEllipsis';
-import { setupWechatShare } from '@/shared/utils/wechatJsSdk';
+import { setupWechatShare, isPcWechat, navigateInWechat } from '@/shared/utils/wechatJsSdk';
 import { WECHAT_CONFIG } from '@/config/wechat';
 import { createRequest, getToken } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -357,6 +357,20 @@ export default function TaskDetailPage() {
       flush();
     };
   }, [detailId]);
+
+  // PC 微信专用：SPA(pushState) 跳转不会更新微信内部记录的「分享页 URL」，
+  // 导致分享链接停留在首次加载的工单。检测当前工单是否经 SPA 跳入，是则用整页刷新修正。
+  // 仅 PC 微信生效；手机端 / 普通浏览器走 SPA，不受影响。
+  useEffect(() => {
+    if (!detail?.id) return;
+    if (!isPcWechat()) return;
+    const current = window.location.href.split('#')[0];
+    const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    const loadUrl = nav ? String(nav.name).split('#')[0] : '';
+    if (loadUrl !== current) {
+      window.location.href = current;
+    }
+  }, [detail?.id]);
 
   // 进入详情页即静默预置微信分享卡片：用户点右上角「…」可直接转发到群/好友/朋友圈，无需额外按钮
   useEffect(() => {
@@ -1991,7 +2005,7 @@ export default function TaskDetailPage() {
 
         <div
           className="detail-card ticket-dynamics-card"
-          onClick={() => navigate(`/tasks/${detailId}/operations`)}
+          onClick={() => navigateInWechat(navigate, `/tasks/${detailId}/operations`)}
           role="button"
           tabIndex={0}
         >
