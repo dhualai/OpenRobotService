@@ -146,8 +146,9 @@ async def main():
             async with sem:
                 res = await classify(c["rounds"])
                 done[0] += 1
-                if done[0] % 50 == 0:
-                    print(f"  {done[0]}/{len(convs)}（{time.time()-t0:.0f}s）")
+                if done[0] % 20 == 0 or done[0] == len(convs):
+                    print(f"  {done[0]}/{len(convs)}"
+                          f"（{done[0] / len(convs) * 100:.0f}%，{time.time()-t0:.0f}s）")
                 c["_cls"] = res[:len(c["rounds"])]
 
         await asyncio.gather(*(one(c) for c in convs))

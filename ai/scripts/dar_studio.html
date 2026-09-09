@@ -470,7 +470,7 @@ function renderWiz(){
   WIZ.forEach((st, i)=>{
     const d = document.createElement("div");
     d.className = "wstep";
-    d.innerHTML = `<div class="no">${i+1}</div><div class="t">${esc(st.t)}</div><div class="d">${esc(st.d)}</div>
+    d.innerHTML = `<div class="no">${i+1}</div><div class="t">${esc(st.t)} <span class="badge ok wok" style="display:none;font-weight:400"></span></div><div class="d">${esc(st.d)}</div>
       <div class="ops"></div>`;
     const b = d.querySelector(".ops").appendChild(document.createElement("button"));
     if(st.label){
@@ -483,6 +483,21 @@ function renderWiz(){
     w.appendChild(d);
   });
 }
+async function loadProg(){
+  try{
+    const j = await (await fetch(`/api/progress?env=${env}`)).json();
+    document.querySelectorAll("#wiz .wstep").forEach((el, i)=>{
+      const st = WIZ[i];
+      const key = st.label ? "label" : st.steps.includes("report") ? "report"
+                : st.steps.includes("l3") ? "l3" : st.steps[0];
+      const t = (j.steps || {})[key] || "";
+      const b = el.querySelector(".wok");
+      if(t){ b.style.display = ""; b.textContent = "✓ " + t; el.classList.add("done"); }
+      else { b.style.display = "none"; el.classList.remove("done"); }
+    });
+  }catch(_){}
+}
+loadProg();
 let running = false;
 async function runSteps(steps, wstepEl){
   if(running){ toast("已有流程在跑", "err"); return; }
@@ -507,6 +522,7 @@ async function runSteps(steps, wstepEl){
     wstepEl?.classList.add("done");
     $("#runstate").innerHTML = '<span class="badge ok">空闲</span>';
     loadMetrics().then(()=>{ loadArts(); loadUA(); });
+    loadProg();
   });
 }
 renderWiz();
@@ -638,7 +654,7 @@ function setConn(user){
 (async ()=>{
   const j = await (await fetch("/api/status")).json();
   $("#envtip").textContent = j.backend.replace("http://","") + " / " + j.ai.replace("http://","");
-  if(j.prod_export) $("#conn-prod").textContent = "已导数 " + j.prod_export;
+  if(j.prod_export) $("#conn-prod").textContent = "已导入 " + j.prod_export;
   else{
     $("#conn-prod").textContent = "未导数据";
     document.querySelector("#conn-prod").closest(".cline").querySelector(".cdot").className = "cdot";

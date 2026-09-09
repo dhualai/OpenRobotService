@@ -121,7 +121,7 @@ async def status():
     mp = os.path.join(DATA_ROOT, "prod", "meta.json")
     try:
         metas = json.load(open(mp, encoding="utf-8"))
-        prod_at = (metas[-1].get("at") or "")[:10]  # 最近一次生产导数日期
+        prod_at = (metas[-1].get("at") or "").replace("T", " ")[:16]  # 最近一次生产导数时间
     except Exception:
         pass
     return {"backend": DEFAULT_BACKEND, "ai": DEFAULT_AI,
@@ -534,6 +534,35 @@ def unanswered(env: str = "prod"):
     return {"found": True, "file": os.path.basename(files[-1]),
             "total": ua.get("total"), "weeks": ua.get("weeks"),
             "items": ua.get("items", [])}
+
+
+def _mtime_str(p: str) -> str:
+    try:
+        return time.strftime("%m-%d %H:%M", time.localtime(os.path.getmtime(p)))
+    except OSError:
+        return ""
+
+
+@app.get("/api/progress")
+def progress(env: str = "prod"):
+    """向导各步完成状态：从产物文件 mtime 推断（页面刷新不丢）。"""
+    if env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    proc = os.path.join(DATA_ROOT, env, "processed")
+
+    def latest(pat: str) -> str:
+        files = sorted(glob.glob(os.path.join(proc, pat)))
+        return _mtime_str(files[-1]) if files else ""
+
+    manual = {"test": "manual_segmentation.json",
+              "prod": "manual_segmentation_prod.json"}[env]
+    return {"env": env, "steps": {
+        "export": _mtime_str(os.path.join(proc, "conversations_split.jsonl")),
+        "l1": latest("direct_answer_summary_*.json"),
+        "l3": latest("segmentation_tool.html") or latest("l3_judge_all_*.json"),
+        "label": _mtime_str(os.path.join(os.path.expanduser("~"), "Downloads", manual)),
+        "report": latest("weekly_*.json"),
+    }}
 
 
 @app.get("/label_tool")
