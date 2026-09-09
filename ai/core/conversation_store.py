@@ -171,6 +171,7 @@ def get_history(session_id: str) -> List[dict]:
                 "content": r.content,
                 "message_type": r.message_type,
                 "created_at": r.created_at.isoformat() if r.created_at else "",
+                "metadata_": r.metadata_,
             }
             for r in rows
         ]

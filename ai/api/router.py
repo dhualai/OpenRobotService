@@ -311,6 +311,24 @@ async def ask_question_stream(
                         if stage in ('need_info', 'need_fields', 'review', 'submit_failed'):
                             acc = ""
                             last_persist = time.perf_counter()
+                    elif ev_type == "result":
+                        # 项目选择题：候选持久化到消息 metadata_（前端切会话/刷新后
+                        # 仍可渲染按钮；md 对话记录渲染成编号列表文字）。
+                        # fire-and-forget：不阻塞 result 事件转发，失败仅告警。
+                        choices = (event.get('data') or {}).get("project_choices")
+                        if db is not None and persist_msg_id is not None and isinstance(choices, list) and choices:
+                            async def _persist_choices_meta():
+                                try:
+                                    await MessageService.update_message(
+                                        db, persist_msg_id,
+                                        MessageUpdate(metadata_={"project_choices": choices}))
+                                except Exception as e:
+                                    logger.warning(
+                                        f"[sse] 项目题候选落 metadata 失败 "
+                                        f"sid={qa_req.session_id[:8]} msg_id={persist_msg_id}: {e}")
+                            _meta_task = asyncio.create_task(_persist_choices_meta())
+                            _persist_tasks.add(_meta_task)
+                            _meta_task.add_done_callback(_persist_tasks.discard)
                     await queue.put(event)
                 # 流结束：先排空后台节流任务再写终态。
                 # 0825 事故（补充轮只剩单字「已」）：pipeline 兜底路径逐字符 yield，
