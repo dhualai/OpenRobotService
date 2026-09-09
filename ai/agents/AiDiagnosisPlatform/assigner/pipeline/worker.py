@@ -4,10 +4,12 @@
 设计原则：
   - Redis Pub/Sub 监听 "usp:new_ticket" 通道，新工单立即派单（事件驱动）
   - 每 N 秒定时扫描 MySQL 兜底，防止 Pub/Sub 丢消息或 Worker 重启期间的工单遗漏
-  - 派单结果直接写入数据库（assigned_to + metadata_info）
+  - 派单结果写回 assigned_to：仅当库里仍未指派（CAS），避免双通道双写
+  - 定时扫描顺带把新结单 upsert 进 Qdrant（A 路），不依赖开发者手动补索引
 """
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from ai.core.logging import get_logger
@@ -16,6 +18,25 @@ from ai.agents.AiDiagnosisPlatform.assigner import assign_ticket, load_engineers
 logger = get_logger("ASSIGNER")
 
 CHANNEL_NEW_TICKET = "usp:new_ticket"
+
+
+def _in_learn_window(created_at, learn_at_raw, since: datetime) -> bool:
+    """created_at 或审核写入的 learn_at 落在索引窗口内即可学。"""
+    if created_at is not None and created_at >= since:
+        return True
+    raw = str(learn_at_raw or "").strip()
+    if not raw:
+        return False
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        since_naive = since
+        if getattr(since, "tzinfo", None) is not None:
+            since_naive = since.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt >= since_naive
+    except ValueError:
+        return False
 
 
 def _diagnosis_from_meta(meta) -> dict:
@@ -61,6 +82,11 @@ class AssignmentWorker:
         self._stop = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
         self._redis = None  # 用于 stop() 时主动断开连接，唤醒 listen()
+        # Pub/Sub 与 poll 可能同时捡到同一张单；同进程互斥避免各跑一遍 LLM。
+        self._inflight: set = set()
+        self._inflight_lock = asyncio.Lock()
+        # 增量索引水位：首次扫描向前看 2 小时，之后与 interval 重叠，防重启漏单。
+        self._index_since: Optional[datetime] = None
 
     async def run(self):
         """启动：订阅通道 + 定时扫描 并行"""
@@ -135,12 +161,16 @@ class AssignmentWorker:
                     break
 
     async def _poll_loop(self):
-        """定时扫描兜底：防 Pub/Sub 丢消息或重启期间遗漏"""
+        """定时扫描兜底：防 Pub/Sub 丢消息或重启期间遗漏；顺带增量索引结单。"""
         while not self._stop.is_set():
             try:
                 await self._scan_and_assign()
             except Exception as e:
                 logger.error(f"派单扫描轮次异常: {e}", exc_info=True)
+            try:
+                await self._scan_and_index_closed()
+            except Exception as e:
+                logger.error(f"结单增量索引异常: {e}", exc_info=True)
 
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self.interval)
@@ -207,6 +237,8 @@ class AssignmentWorker:
         for t in tickets:
             if self._stop.is_set():
                 break
+            if t["id"] in self._inflight:
+                continue
             try:
                 await self._assign_one(t)
             except Exception as e:
@@ -260,8 +292,30 @@ class AssignmentWorker:
             logger.error(f"查询待派单工单失败: {e}", exc_info=True)
             return []
 
+    async def _try_begin_inflight(self, task_id: int) -> bool:
+        """本进程已在派这张单则返回 False，调用方应直接跳过。"""
+        async with self._inflight_lock:
+            if task_id in self._inflight:
+                return False
+            self._inflight.add(task_id)
+            return True
+
+    async def _end_inflight(self, task_id: int) -> None:
+        async with self._inflight_lock:
+            self._inflight.discard(task_id)
+
     async def _assign_one(self, ticket: dict):
         """派单一条工单并写回数据库"""
+        t_id = ticket["id"]
+        if not await self._try_begin_inflight(t_id):
+            logger.debug(f"派单跳过 inflight: task_id={t_id}")
+            return
+        try:
+            await self._assign_one_locked(ticket)
+        finally:
+            await self._end_inflight(t_id)
+
+    async def _assign_one_locked(self, ticket: dict):
         t_id = ticket["id"]
         logger.debug(f"派单中: task_id={t_id}, title={ticket.get('title', '')[:30]}")
 
@@ -366,13 +420,33 @@ class AssignmentWorker:
             return None
 
     @staticmethod
+    def _is_unassigned(assigned_to) -> bool:
+        return assigned_to is None or assigned_to == ""
+
+    @staticmethod
+    def _claim_unassigned(db, task_id: int, engineer_id: str) -> int:
+        """CAS：仅当 assigned_to 仍空才写回。返回更新行数（1=本进程抢到）。"""
+        from app.models.task import Task
+        from sqlalchemy import func, or_
+
+        return (
+            db.query(Task)
+            .filter(Task.id == task_id)
+            .filter(or_(Task.assigned_to.is_(None), Task.assigned_to == ""))
+            .update(
+                {"assigned_to": engineer_id, "updated_at": func.now()},
+                synchronize_session="fetch",
+            )
+        )
+
+    @staticmethod
     def _update_task_assignee(task_id: int, result) -> bool:
-        """将派单结果写回 tasks 表"""
+        """将派单结果写回 tasks 表。有处理人时用 CAS，未指派路径不得清空别人刚派上的人。"""
         try:
             from app.models.task import Task, TaskOperationLog, OperationType
             from app.models.task_dispatch_log import TaskDispatchLog
             from app.core.db import SessionLocal
-            from sqlalchemy import func
+            from sqlalchemy import func, select
 
             db = SessionLocal()
             try:
@@ -381,19 +455,33 @@ class AssignmentWorker:
                     logger.warning(f"派单结果写回失败: task_id={task_id} 不存在")
                     return False
 
-                # engineer_id 已统一为 users.id（与 assigned_to 一致），无需反查
+                engineer_id = result.engineer_id or None
                 # 注意：派单成功只写 assigned_to，不改状态——工单保持「新建」，
                 # 由处理人「首次响应」（POST /{task_id}/respond）后才进入「处理中」。
-                task.assigned_to = result.engineer_id or None
-                task.updated_at = func.now()
+                if engineer_id:
+                    claimed = AssignmentWorker._claim_unassigned(db, task_id, engineer_id)
+                    if claimed != 1:
+                        db.rollback()
+                        logger.info(
+                            f"派单写回跳过: task_id={task_id} 已被指派，不覆盖、不双写日志"
+                        )
+                        return False
+                    db.refresh(task)
+                else:
+                    # 无人可派：不要把别人刚写上的 assigned_to 清成 None。
+                    if not AssignmentWorker._is_unassigned(task.assigned_to):
+                        db.rollback()
+                        logger.info(
+                            f"派单写回跳过: task_id={task_id} 已有处理人，unassignable 不落库"
+                        )
+                        return False
 
-                from sqlalchemy import select
                 prev_round = db.scalar(
                     select(func.coalesce(func.max(TaskDispatchLog.dispatch_round), 0))
                     .where(TaskDispatchLog.task_id == task.id)
                 ) or 0
                 prof = dict(result.profile or {})
-                unassignable = bool(prof.get("unassignable")) and not result.engineer_id
+                unassignable = bool(prof.get("unassignable")) and not engineer_id
                 if unassignable:
                     last = (
                         db.query(TaskDispatchLog)
@@ -407,7 +495,7 @@ class AssignmentWorker:
                             f"Step7 仍无人可派，tip 已在第{last.dispatch_round}轮，本轮不重复落库 "
                             f"task_id={task_id}"
                         )
-                        db.commit()
+                        db.rollback()
                         return True
 
                 # ── 派单日志：统一落 task_dispatch_log（append-only，见需求方案 §4.2 §九-M1）。
@@ -417,7 +505,7 @@ class AssignmentWorker:
                     task_id=task.id,
                     dispatch_round=int(prev_round) + 1,
                     preferred_id=result.preferred_id,
-                    assigned_id=result.engineer_id or "",
+                    assigned_id=engineer_id or "",
                     confidence=result.confidence_score,
                     decision_type=result.decision_type,
                     reasoning=result.reasoning,
@@ -432,19 +520,17 @@ class AssignmentWorker:
                 # 中文风格对齐；operator 用 AI 系统标识，与 _log_task_creation 的
                 # "system" 兜底风格一致。日志与派单写入同一事务，保证强一致：
                 # 要么工单已派单+日志齐全，要么整体回滚由下次扫描重试派单。
-                if task.assigned_to:
+                if engineer_id:
                     _AI_OP = "ai_dispatch"
                     _AI_OP_NAME = "AI 派单"
-                    engineer_name = result.engineer_name or task.assigned_to or ""
-                    # AI 派单记录：「工单已派单给 XXX」（不写状态变更日志：
-                    # 派单不改状态，状态流转由处理人「首次响应」触发）
+                    engineer_name = result.engineer_name or engineer_id
                     db.add(TaskOperationLog(
                         task_id=task.id,
                         operation_type=OperationType.AI_ASSIGN,
                         operator=_AI_OP,
                         operator_name=_AI_OP_NAME,
                         detail={
-                            "new_assignee": result.engineer_id,
+                            "new_assignee": engineer_id,
                             "assignee_name": engineer_name,
                             "confidence_score": result.confidence_score,
                             "decision_type": result.decision_type,
@@ -460,6 +546,159 @@ class AssignmentWorker:
         except Exception as e:
             logger.error(f"派单结果写回数据库失败: task_id={task_id}, error={e}", exc_info=True)
             return False
+
+    def _index_lookback_since(self) -> datetime:
+        if self._index_since is None:
+            return datetime.now() - timedelta(hours=2)
+        return self._index_since
+
+    def _load_recently_finished(self, since: datetime) -> Optional[list]:
+        """扫描窗口内新变成 resolved/closed 且已有处理人的工单。"""
+        try:
+            from app.models.task import Task, TaskStatus
+            from app.core.db import SessionLocal
+            from sqlalchemy import or_
+            from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
+            from ai.agents.AiDiagnosisPlatform.assigner.sync.history_indexer import (
+                build_index_record,
+            )
+
+            keyword_dict = AssignerConfig().module_keywords or {}
+            db = SessionLocal()
+            try:
+                rows = (
+                    db.query(Task)
+                    .filter(
+                        Task.status.in_([TaskStatus.RESOLVED, TaskStatus.CLOSED]),
+                        Task.assigned_to.isnot(None),
+                        Task.assigned_to != "",
+                        or_(Task.resolved_at >= since, Task.closed_at >= since),
+                    )
+                    .all()
+                )
+                records = []
+                for t in rows:
+                    finished = t.resolved_at or t.closed_at or t.created_at
+                    records.append(build_index_record(
+                        ticket_id=t.id,
+                        engineer_id=t.assigned_to,
+                        title=t.title or "",
+                        description=t.description or "",
+                        task_type=t.task_type,
+                        metadata=t.metadata_info,
+                        finished_at=finished,
+                        keyword_dict=keyword_dict,
+                    ))
+                return records
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"查询待索引结单失败: {e}", exc_info=True)
+            return None
+
+    def _load_recent_misassigns(self, since: datetime) -> list:
+        """窗口内可学习纠错：弹窗「派错了」+ 审核为不准确的重新派单。阶段/其它不进。"""
+        try:
+            from sqlalchemy import func, or_
+            from app.models.task import Task, TaskOperationLog, OperationType
+            from app.core.db import SessionLocal
+            from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
+            from ai.agents.AiDiagnosisPlatform.assigner.sync.history_indexer import (
+                build_index_record,
+            )
+            from ai.agents.AiDiagnosisPlatform.assigner.sync.reassign_stats import (
+                correction_pair,
+            )
+
+            keyword_dict = AssignerConfig().module_keywords or {}
+            db = SessionLocal()
+            try:
+                learn_at_col = func.json_unquote(
+                    func.json_extract(TaskOperationLog.detail, "$.learn_at")
+                )
+                since_iso = since.strftime("%Y-%m-%dT%H:%M:%S")
+                rows = (
+                    db.query(TaskOperationLog, Task)
+                    .join(Task, Task.id == TaskOperationLog.task_id)
+                    .filter(
+                        TaskOperationLog.operation_type == OperationType.REASSIGN,
+                        or_(
+                            TaskOperationLog.created_at >= since,
+                            learn_at_col >= since_iso,
+                        ),
+                    )
+                    .all()
+                )
+                records = []
+                for log, task in rows:
+                    detail = log.detail if isinstance(log.detail, dict) else {}
+                    pair = correction_pair(detail, log.description or "")
+                    if not pair:
+                        continue
+                    from_id, to_id, reason = pair
+                    if not _in_learn_window(log.created_at, detail.get("learn_at"), since):
+                        continue
+                    if not to_id:
+                        continue
+                    rec = build_index_record(
+                        ticket_id=task.id,
+                        engineer_id=to_id,
+                        title=task.title or "",
+                        description=task.description or "",
+                        task_type=task.task_type,
+                        metadata=task.metadata_info,
+                        finished_at=log.created_at,
+                        keyword_dict=keyword_dict,
+                    )
+                    rec.update({
+                        "feed_type": "reassign",
+                        "from_assignee": from_id,
+                        "rejected_id": from_id,
+                        "reason": reason,
+                        "point_key": f"reassign-{log.id}",
+                    })
+                    records.append(rec)
+                return records
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"查询派错转派失败，本轮跳过纠错索引: {e}")
+            return []
+
+    async def _scan_and_index_closed(self):
+        """把窗口内新结单 upsert 进 Qdrant；同一 ticket_id 覆盖写。开发者补索引仍作兜底。"""
+        since = self._index_lookback_since()
+        records = self._load_recently_finished(since)
+        if records is None:
+            return
+        records = list(records) + list(self._load_recent_misassigns(since) or [])
+
+        if records:
+            from ai.agents.AiDiagnosisPlatform.assigner.sync.history_indexer import (
+                index_history_records,
+            )
+            from ai.agents.AiDiagnosisPlatform.assigner.sync.history_sync import (
+                invalidate_cache,
+            )
+            from ai.agents.AiDiagnosisPlatform.assigner.recall.expertise_recall import (
+                invalidate_expertise_cache,
+            )
+
+            stats = await index_history_records(records)
+            indexed = int(stats.get("indexed") or 0)
+            skipped = int(stats.get("skipped") or 0)
+            if indexed:
+                invalidate_cache()
+                invalidate_expertise_cache()
+                logger.info(
+                    f"结单增量索引: 成功 {indexed}/{stats.get('total', 0)} 条 "
+                    f"(since={since.isoformat(timespec='seconds')})"
+                )
+            if indexed == 0 and skipped:
+                return
+
+        overlap = timedelta(seconds=max(30, self.interval * 2))
+        self._index_since = datetime.now() - overlap
 
     async def stop(self, timeout: float = 10.0):
         """优雅停止 Worker"""

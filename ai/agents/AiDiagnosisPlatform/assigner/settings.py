@@ -2,18 +2,15 @@
 
 配置项与消费方对应关系（与 config.yaml 头部注释保持一致）：
 - module_keywords      → recall/history_recall.py（L3 历史召回：历史工单标签提取）
-- ranker_weights       → ranking/ranker.py（L1 / L3 加权）
 - job_level_penalty    → ranking/ranker.py（职级折扣）
 - department_routing   → filtering/dept_router.py（R2/R3 融合与门槛）
 - departments          → 已不再从 yaml 读；只认 DB departments.profile_text
 - product_routing      → filtering/product_router.py（产品收紧）
-- decision_thresholds  → 遗留（Step7 不再按分数阈值选人）
-- load_balance         → 代码保留、流程未调用（enabled=false）
 - vague_strong_signals → ranking/tags.py（Step2 模糊强信号）
 """
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 try:
     import yaml
@@ -24,26 +21,103 @@ except ImportError:
     raise RuntimeError("PyYAML 是必要依赖，请安装: pip install pyyaml")
 
 
+CLUSTER_OVERRIDE_KEYS = ("cluster_merge", "cluster_assign", "cluster_min_size")
+_OVERRIDE_FILE = Path(__file__).parent / "config" / "runtime_overrides.yaml"
+
+
+def load_runtime_overrides() -> dict:
+    if not _OVERRIDE_FILE.exists():
+        return {}
+    try:
+        data = _load_yaml(_OVERRIDE_FILE) or {}
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _as_float(raw):
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if val != val:  # NaN
+        return None
+    return val
+
+
+def normalize_cluster_params(
+    *,
+    cluster_merge=None,
+    cluster_assign=None,
+    cluster_min_size=None,
+) -> dict:
+    """开发者模式写入前校验。空值跳过；越界直接报错。"""
+    out = {}
+    merge = _as_float(cluster_merge) if cluster_merge is not None else None
+    if merge is not None and merge > 0:
+        if not 0.10 <= merge <= 0.99:
+            raise ValueError("合并门槛应在 0.10～0.99")
+        out["cluster_merge"] = round(merge, 4)
+    assign = _as_float(cluster_assign) if cluster_assign is not None else None
+    if assign is not None and assign > 0:
+        if not 0.10 <= assign <= 0.99:
+            raise ValueError("进簇门槛应在 0.10～0.99")
+        out["cluster_assign"] = round(assign, 4)
+    if cluster_min_size is not None and str(cluster_min_size).strip() != "":
+        size_f = _as_float(cluster_min_size)
+        if size_f is None:
+            raise ValueError("最小团必须是整数")
+        size = int(size_f)
+        if size < 2:
+            # 空输入会变成 0，忽略而不是整单保存失败
+            pass
+        elif size > 20:
+            raise ValueError("最小团应在 2～20")
+        else:
+            out["cluster_min_size"] = size
+    if not out:
+        raise ValueError("没有要保存的簇参数")
+    return out
+
+
+def save_cluster_overrides(
+    *,
+    cluster_merge=None,
+    cluster_assign=None,
+    cluster_min_size=None,
+) -> dict:
+    """把簇门槛写进 runtime_overrides.yaml，不改 config.yaml 正文。"""
+    patch = normalize_cluster_params(
+        cluster_merge=cluster_merge,
+        cluster_assign=cluster_assign,
+        cluster_min_size=cluster_min_size,
+    )
+    data = load_runtime_overrides()
+    hr = dict(data.get("history_recall") or {})
+    hr.update(patch)
+    data["history_recall"] = hr
+    _OVERRIDE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(_OVERRIDE_FILE, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+    return hr
+
+
 class AssignerConfig:
     """派单配置对象：从 config/config.yaml 一次性加载全部派单参数。
 
     各属性含义：
     - module_keywords:      {模块名: [关键词]}，供 L3 历史召回提取历史工单标签
     - module_classify:      {产品: {功能name: 功能name}}，责任树派生，供 L3 问题域等使用
-    - ranker_weights:       记录用；精排按命中路归一分取最高，不按此加权
     - job_level_penalty:    {职级: 惩罚系数}，精排后按职级打折
     - department_routing:   部门路由融合权重与 hard/soft 门槛
     - departments:          部门画像（只认 DB，yaml 不补漏；空则 dept_profiles_missing）
     - product_routing:        产品收紧规则
-    - department_rules:       R1 确定性规则（预留）
-    - decision_thresholds:  遗留 {auto, recommend}；Step7 不再按分数阈值选人
     - project_manager_id:   Step7 最后一档配置项目经理 users.id（项目字段都空才用）
     - project_manager_name: 配置项目经理姓名（查不到 users 时用）
-    - load_balance:         {enabled, step}，Step5 保留但主流程不调用
-    - history_recall:       {top_k, half_life_days, decay_floor, sim_threshold, fault_code_boost, robot_type_boost}，L3 历史召回增强参数
+    - history_recall:       {retrieve_top_k, half_life_days, decay_floor, sim_threshold, fault_code_boost, robot_type_boost, cluster_merge=0.85, cluster_assign=0.80, cluster_*}，L3 双路参数
     - vague_strong_signals: {enabled}，Step2 只认 dispatch_hint=severe
     - llm_recall:           {single_top_k, batch_top_k, single_round_max, batch_size}，L1 单轮/分批人数
-    - preferred_floor:      倾向接单人精排保底（默认 0.9）；对接人不再 ×2
+    - preferred_floor:      倾向接单人精排保底（默认 0.9）；对接人只打标
     - llm_decision_topk:    Step6 窗口；<=0 不截窗（本版默认 0）
     """
 
@@ -54,9 +128,7 @@ class AssignerConfig:
         self.module_anchor_texts: Dict[str, str] = {}
         self.module_classify: Dict[str, Dict[str, str]] = {}
         self.module_tree: Dict[str, Any] = {}
-        self.ranker_weights: Dict[str, Any] = {}
         self.job_level_penalty: Dict[int, float] = {}
-        self.contact_bonus: float = 1.0
         # 倾向接单人精排保底：total = max(加权后分数, preferred_floor)。对接人只打标。
         self.preferred_floor: float = 0.9
         # 用户倾向处理人（预留）：前端未传字段时整体不生效；传了即启用。
@@ -70,22 +142,14 @@ class AssignerConfig:
         self.departments_without_profile: list = []  # 已批准但没写职责描述
         self.dept_profiles_missing: bool = True      # 库里没有任何可用部门画像
         self.product_routing: Dict[str, Any] = {}
-        self.department_rules: Dict[str, Any] = {}
-        self.decision_thresholds: Dict[str, float] = {}
         # Step7 配置兜底项目经理：仅当本单对接人、project.project_manager_id 都空时使用。
         self.project_manager_id: str = ""
         self.project_manager_name: str = ""
-        self.load_balance: Dict[str, Any] = {}
         self.history_recall: Dict[str, Any] = {}
-        # 新增：LLM 覆写数值排名的最小差距阈值（当 top - second >= 此阈值时，直接选 top，LLM 不覆写）
-        self.llm_respect_ranking_threshold: float = 0.3
-        # 新增：是否在“摇人吧服务号”项目下强制优先模块总负责人
+        # 是否在“摇人吧服务号”项目下强制优先模块总负责人
         self.yaorenba_force_module_owner: bool = True
         # Step6 窗口：<=0 表示精排全量不截窗（本版默认 0）
         self.llm_decision_topk: int = 0
-        # 新增：精排第一名的评分阈值。总分>=此阈值时直接采用第一名（保证派单尊重排名）；
-        # 仅当第一名总分<此阈值（说明整体得分很低、候选都不理想）时才触发 LLM 再决定一遍。
-        self.llm_decision_low_score_threshold: float = 0.5
         self.vague_strong_signals: Dict[str, Any] = {"enabled": True}
         self.llm_recall: Dict[str, Any] = {
             "single_top_k": 5, "batch_top_k": 3, "single_round_max": 12, "batch_size": 8,
@@ -110,15 +174,9 @@ class AssignerConfig:
             self.module_keywords = {}
             self.module_anchor_texts = {}
             self.module_classify = {}
-        self.ranker_weights = config.get("ranker_weights", {})
         # job_level_penalty 的 key 在 YAML 中是整数，需显式转 int
         raw = config.get("job_level_penalty", {})
         self.job_level_penalty = {int(k): v for k, v in raw.items()}
-        # 本版对接人不再 ×2；保留 contact_bonus 键以免旧配置报错，默认 1.0 不加权。
-        try:
-            self.contact_bonus = float(config.get("contact_bonus", 1.0))
-        except (TypeError, ValueError):
-            self.contact_bonus = 1.0
         try:
             self.preferred_floor = float(config.get("preferred_floor", 0.9))
         except (TypeError, ValueError):
@@ -133,18 +191,11 @@ class AssignerConfig:
         # 可由 config.yaml 覆盖：部门派发审查开关（false 则不做二次复核）
         self.dept_audit_enabled = bool(config.get("dept_audit_enabled", True))
         self.product_routing = config.get("product_routing", {})
-        self.department_rules = config.get("department_rules", {})
-        self.decision_thresholds = config.get("decision_thresholds", {})
         # 可由 config.yaml 覆盖：兜底转派的项目经理 users.id（默认空串；空=维持现状兜底）
         self.project_manager_id = (config.get("project_manager_id") or "").strip()
         self.project_manager_name = (config.get("project_manager_name") or "").strip()
-        self.load_balance = config.get("load_balance", {})
-        self.history_recall = config.get("history_recall", {})
-        # 可由 config.yaml 覆盖：LLM 覆写数值排名的最小差距阈值
-        try:
-            self.llm_respect_ranking_threshold = float(config.get("llm_respect_ranking_threshold", 0.3))
-        except (TypeError, ValueError):
-            self.llm_respect_ranking_threshold = 0.3
+        self.history_recall = config.get("history_recall", {}) or {}
+        self._merge_runtime_overrides()
         # 可由 config.yaml 覆盖：是否在摇人吧服务号项目下优先模块总负责人
         self.yaorenba_force_module_owner = bool(config.get("yaorenba_force_module_owner", True))
         # Step6 窗口：<=0 表示精排全量不截窗（本版默认 0）
@@ -154,11 +205,6 @@ class AssignerConfig:
             self.llm_decision_topk = 0
         if self.llm_decision_topk < 0:
             self.llm_decision_topk = 0
-        # 可由 config.yaml 覆盖：第一名评分阈值（低于此值才触发 LLM 再决定）
-        try:
-            self.llm_decision_low_score_threshold = float(config.get("llm_decision_low_score_threshold", 0.6))
-        except (TypeError, ValueError):
-            self.llm_decision_low_score_threshold = 0.6
         raw_vague = config.get("vague_strong_signals") or {}
         self.vague_strong_signals = {
             "enabled": bool(raw_vague.get("enabled", True)),
@@ -274,6 +320,18 @@ class AssignerConfig:
             })
         self.departments_without_profile = skipped
         return result
+
+    def _merge_runtime_overrides(self):
+        """开发者模式改过的簇门槛盖在 yaml 默认值上。"""
+        extra = load_runtime_overrides()
+        hr = extra.get("history_recall") if isinstance(extra, dict) else None
+        if not isinstance(hr, dict):
+            return
+        if not isinstance(self.history_recall, dict):
+            self.history_recall = {}
+        for key in CLUSTER_OVERRIDE_KEYS:
+            if key in hr and hr[key] is not None:
+                self.history_recall[key] = hr[key]
 
     def reload(self):
         """重新加载配置（配置热更新入口，配合派单缓存失效使用）。"""

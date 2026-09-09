@@ -3,63 +3,50 @@
 #
 # 说明：本文件是派单模块唯一的配置入口，由 settings.py 加载。
 # 各配置块与代码的对应关系：
-#   module_keywords      → recall/history_recall.py（L3 历史召回：历史工单标签提取）
-#   ranker_weights       → ranking/ranker.py（记录用；精排取命中路最高分）
-#   history_recall       → recall/history_recall.py（L3 历史召回增强：时间衰减 + Top-K + 故障码）
 #   job_level_penalty    → ranking/ranker.py（职级折扣）
+#   history_recall       → recall/history_recall.py（相似工单）+ expertise_recall.py（问题簇）
 #   department_routing   → filtering/dept_router.py
 #   departments          → 运行时不读；部门画像只认 DB。yaml 这段仅作历史底稿/迁移种子
 #   product_routing      → filtering/product_router.py
-#   decision_thresholds  → 遗留配置（Step7 不再按分数阈值选人）
-#   load_balance         → 代码保留、流程未调用（enabled=false）
 #   vague_strong_signals → ranking/tags.py（Step2 模糊强信号；命中跳过 Step3–6）
-#   llm_recall           → recall/llm_recall.py（L1：单轮 single_top_k，分批每批 batch_top_k 全保留）
+#   llm_recall           → recall/llm_recall.py（画像召回：单轮 single_top_k，分批每批 batch_top_k 全保留）
 #   preferred_floor      → ranking/ranker.py（倾向接单人精排保底；对接人只打标）
 # ══════════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════════
-# 2. 精排（本版：命中各路归一分取最高，不按权重加总）
-#    消费方：ranking/ranker.py
-#    下列三项仅作记录，不参与合成。
-# ══════════════════════════════════════════════════════════════════
-ranker_weights:
-  llm_match: 0.70
-  similar_match: 0.15
-  cluster_match: 0.15
-
-# ══════════════════════════════════════════════════════════════════
-# 3.2 L3 历史召回增强参数（双路并行）
-#    消费方：recall/history_recall.py（A路，resolved+closed）+ recall/expertise_recall.py（B路自动簇，resolved+closed）
-#    - top_k:             每人取最高的前 K 条历史记录参与聚合（A路）
+# 3.2 相似工单 / 问题簇 参数（两路并行，可空）
+#    消费方：recall/history_recall.py（相似工单，resolved+closed）+ recall/expertise_recall.py（问题簇，resolved+closed）
+#    - retrieve_top_k:    相似工单 Qdrant 检索条数
 #    - half_life_days:    时间衰减半衰期（天），A/B 共用同一函数
 #    - decay_floor:       时间衰减尽头（默认 0.4，老单不会掉到 0）
-#    - sim_threshold:     历史工单相似度阈值（A路）
-#    - fault_code_boost:  历史同故障码的加分（A路）
-#    - robot_type_boost:  历史同车型的加分（A路）
-#    - cluster_merge:     两张历史单余弦 ≥ 此值先并团；并完后每张还必须靠近簇中心，防单链接串香肠
-#    - cluster_min_size:  小于此人数的团丢掉（噪声）
-#    - cluster_assign:    新单与簇中心余弦低于此值 → B 路空，不通配
+#    - sim_threshold:     相似工单相似度阈值
+#    - fault_code_boost:  历史同故障码的加分（相似工单）
+#    - robot_type_boost:  历史同车型的加分（相似工单）
+#    - cluster_merge / cluster_assign：开发者模式可改，写入 runtime_overrides.yaml（不改本文件正文）
 #    - cluster_top_k:     新单最多落入几个簇
 #    - cluster_count_exp: 次数项 ln(1+n)^exp，越小次数收益越弱（1=旧口径，现用 0.3）
+#    - misassign_confirm_boost / misassign_reject_factor：「派错了」+ 审核不准确的重新派单，压原处理人 ×0.7，不剔除
 # ══════════════════════════════════════════════════════════════════
 history_recall:
-  top_k: 5
+  retrieve_top_k: 30        # 相似工单 Qdrant 检索条数
   half_life_days: 90        # 半衰期：90天后约 0.62，半年后约 0.48，尽头 0.4
   decay_floor: 0.4
   sim_threshold: 0.3
   fault_code_boost: 0.15
   robot_type_boost: 0.10
-  cluster_merge: 0.55
+  cluster_merge: 0.85
   cluster_min_size: 4
-  cluster_assign: 0.40
+  cluster_assign: 0.80
   cluster_top_k: 2
   cluster_count_exp: 0.3    # 次数收益：结10张 ≈ 结1张的 1.45 倍（旧口径约 3.5 倍）
+  misassign_confirm_boost: 0.15   # 派错纠正：接手人相似分加这么多
+  misassign_reject_factor: 0.70   # 派错纠正：原处理人相似分/精排总分 × 此系数
 
 # ══════════════════════════════════════════════════════════════════
 # 3.3 倾向接单人精排保底
 #    消费方：ranking/ranker.py
 #    - preferred_floor: 倾向接单人 total = max(加权后分数, 该值)。对接人 / 提单人 / 原不满意
-#                       只打标，不加分；对接人不再 ×2。contact_bonus 本版不读。
+#                       只打标，不加分；对接人不再 ×2。
 # ══════════════════════════════════════════════════════════════════
 preferred_floor: 0.9
 
@@ -182,9 +169,6 @@ departments:
       - title: "调度任务一直处于阻塞状态，无法下发"
         dept: 智能规划研究院
 
-# R1 确定性规则（预留，有 evidence 后扩展）
-department_rules: {}
-
 # ══════════════════════════════════════════════════════════════════
 # 6. 产品收紧（Layer 2）
 #    消费方：filtering/product_router.py
@@ -209,15 +193,6 @@ product_routing:
     车端硬件: ["车端硬件"]
 
 # ══════════════════════════════════════════════════════════════════
-# 7. 置信度阈值（遗留，Step7 不再读取）
-#    旧规则兜底曾按分数分 auto / recommend / fallback。
-#    现 Step7 只派对接人 / 项目经理，不再按阈值选人。键保留以免旧脚本读配置报错。
-# ══════════════════════════════════════════════════════════════════
-decision_thresholds:
-  auto: 0.8
-  recommend: 0.5
-
-# ══════════════════════════════════════════════════════════════════
 # 7.1 兜底转「项目经理」（Step7）
 #    消费方：pipeline/dispatch_flow.py + ranking/fallback_decision.py
 #    顺序：本单对接人 → 本单 project.project_manager_id → 本配置。
@@ -229,24 +204,12 @@ project_manager_id: "oD5oY3e8Lpa689OQHmGRV-kVcVIc"
 project_manager_name: 毛梦晴
 
 # ══════════════════════════════════════════════════════════════════
-# 9. 负载均衡（Step5 保留、本版关闭）
-#    代码仍在 dispatch_flow._apply_load_balance，主流程不调用。
-#    enabled=false。打开会按在途工单数打折，可能把唯一承接者压出决策窗口。
-#    消费方：pipeline/dispatch_flow.py
-# ══════════════════════════════════════════════════════════════════
-load_balance:
-  enabled: false
-  step: 0.15
-
-# ══════════════════════════════════════════════════════════════════
 # 10. LLM 最终决策（Step 6）
 #    消费方：ranking/llm_decision.py
 #    规则：Step6 铁律 + 产品附录；can_decide=false / 名单外 / 调用失败 → None，不回精排 #1。
 #          精排全量进仲裁（本版不截 Top-K）。
 #    - llm_decision_topk：<=0 不截窗（本版 0）；>0 时才截到精排前 K 名（兼容旧配置）
 #    - yaorenba_force_module_owner：摇人吧附录是否列出子界面负责人（default true；仅附录，非强制）
-#    - llm_decision_low_score_threshold：保留仅为兼容日志展示，不再作为"触发 LLM"的门槛
 # ══════════════════════════════════════════════════════════════════
-llm_decision_low_score_threshold: 0.6
 llm_decision_topk: 0
 yaorenba_force_module_owner: true

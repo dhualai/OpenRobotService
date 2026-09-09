@@ -180,6 +180,7 @@ export default function TaskDetailPage() {
   const [escalateReason, setEscalateReason] = useState('');
   const [returnReason, setReturnReason] = useState('');
   const [reassignReason, setReassignReason] = useState('');
+  const [reassignKind, setReassignKind] = useState<'misassign' | 'stage' | 'other' | ''>('');
   // 创建人姓名编辑（仅处理人/管理员可点击设置）
   const [showCreatorNamePopup, setShowCreatorNamePopup] = useState(false);
   const [creatorNameInput, setCreatorNameInput] = useState('');
@@ -1025,31 +1026,39 @@ export default function TaskDetailPage() {
 
   const handleReassign = async () => {
     if (!detail || !reassignUser) return;
-    if (!reassignReason.trim()) {
-      Toast({ message: '请填写变更原因', theme: 'warning' });
+    if (!reassignKind) {
+      Toast({ message: '请选择转派类型', theme: 'warning' });
       return;
     }
     const target = reassignUser.name || reassignUser.username;
+    const remark = reassignReason.trim();
     try {
       await request(`/${detail.id}`, {
         method: 'PUT',
-        body: JSON.stringify({ assigned_to: reassignUser.id || reassignUser.username, operation_type: 'reassign' }),
+        body: JSON.stringify({
+          assigned_to: reassignUser.id || reassignUser.username,
+          operation_type: 'reassign',
+          reassign_kind: reassignKind,
+          reassign_reason: remark || undefined,
+        }),
       });
 
-      // 将重新指派原因记录为评论（系统评论只记录操作本身，不包含原因）
-      try {
-        await request(`/${detail.id}/comments`, {
-          method: 'POST',
-          body: JSON.stringify({ content: `重新指派原因：${reassignReason.trim()}`, is_public: true }),
-        });
-      } catch {
-        // 评论写入失败不阻断主流程，工单状态已变更
+      if (remark) {
+        try {
+          await request(`/${detail.id}/comments`, {
+            method: 'POST',
+            body: JSON.stringify({ content: `重新指派原因：${remark}`, is_public: true }),
+          });
+        } catch {
+          // 评论写入失败不阻断主流程，工单状态已变更
+        }
       }
 
       await refreshDetail();
       Toast({ message: `已重新指派给 ${target}`, theme: 'success' });
       setReassignUser(null);
       setReassignReason('');
+      setReassignKind('');
       setShowReassignPopup(false);
     } catch (err) {
       Toast({ message: `重新指派失败: ${err instanceof Error ? err.message : ''}`, theme: 'error' });
@@ -2415,25 +2424,53 @@ export default function TaskDetailPage() {
       </Popup>
 
 
-      <Popup visible={showReassignPopup} onClose={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); }} placement="bottom" showOverlay destroyOnClose>
+      <Popup visible={showReassignPopup} onClose={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); setReassignKind(''); }} placement="bottom" showOverlay destroyOnClose>
         <div className="ticket-edit">
           <h4 className="ticket-edit__title">重新指派</h4>
           <p style={{ color: '#999', fontSize: '13px', marginBottom: '12px' }}>选择新的处理人</p>
           <UserSelect value={reassignUser?.id ?? null} onChange={setReassignUser} placeholder="请选择处理人" title="选择处理人" />
+          <div style={{ margin: '12px 0 8px', fontSize: '14px', color: '#333' }}>转派类型<span style={{ color: '#d54941' }}> *</span></div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+            {([
+              { id: 'misassign' as const, label: '派错了', hint: '不该派给当前处理人，同类单会学习' },
+              { id: 'stage' as const, label: '阶段转派', hint: '做到这个阶段该换人，不进入学习' },
+              { id: 'other' as const, label: '其它', hint: '太忙、请假等，不进入学习' },
+            ]).map((opt) => {
+              const on = reassignKind === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setReassignKind(opt.id)}
+                  style={{
+                    textAlign: 'left',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: on ? '1px solid #0052d9' : '1px solid #e7e7e7',
+                    background: on ? '#f2f3ff' : '#fff',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ fontSize: '14px', fontWeight: 600, color: '#222' }}>{opt.label}</div>
+                  <div style={{ fontSize: '12px', color: '#888', marginTop: '2px' }}>{opt.hint}</div>
+                </button>
+              );
+            })}
+          </div>
           <Form initialData={{}}>
-            <FormItem label="变更原因" name="reassignReason" labelAlign="top" requiredMark>
+            <FormItem label="变更原因" name="reassignReason" labelAlign="top">
               <Textarea
                 value={reassignReason}
                 onChange={(v) => setReassignReason(String(v))}
-                placeholder="请输入重新指派原因（必填）"
+                placeholder="选填，补充说明（派错了时写上更有助于下次派准）"
                 autosize={{ minRows: 3, maxRows: 6 }}
                 maxlength={500}
               />
             </FormItem>
           </Form>
           <div className="ticket-edit__btns">
-            <Button theme="default" onClick={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); }}>取消</Button>
-            <Button theme="primary" onClick={handleReassign} disabled={!reassignUser || !reassignReason.trim()}>确认指派</Button>
+            <Button theme="default" onClick={() => { setShowReassignPopup(false); setReassignUser(null); setReassignReason(''); setReassignKind(''); }}>取消</Button>
+            <Button theme="primary" onClick={handleReassign} disabled={!reassignUser || !reassignKind}>确认指派</Button>
           </div>
         </div>
       </Popup>

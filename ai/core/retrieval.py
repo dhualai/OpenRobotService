@@ -1577,12 +1577,18 @@ class RetrievalService:
         robot_type: str = "",
         closed_at: Optional[str] = None,
         ticket_id: Optional[str] = None,
+        feed_type: str = "normal",
+        from_assignee: str = "",
+        reason: str = "",
+        rejected_id: str = "",
+        point_key: Optional[str] = None,
     ) -> bool:
         """向量化并写入一条派单历史工单到 Qdrant（dispatch domain）。
 
         Payload 特别带上 engineer_id（解决人），供 L3-A 路按人聚合。
         查询/向量文本 = 标题+描述+故障码+车型（与派单召回语义一致）。
         有 ticket_id 时用稳定点位覆盖写入，同一单 resolved→closed 不会重复两条。
+        纠错样本用 point_key 另开点位，不覆盖结单那条。
         """
         from ai.config import get_active_collection_for
         import uuid
@@ -1606,7 +1612,7 @@ class RetrievalService:
         query_vector = await self._embed_client.embed(index_text)
 
         payload = {
-            "engineer_id": engineer_id,     # 解决人（核心）
+            "engineer_id": engineer_id,     # 解决人（核心）；纠错样本=纠正后的人
             "title": title,
             "description": description,
             "modules": modules or [],       # 问题域标签（模块）
@@ -1616,11 +1622,18 @@ class RetrievalService:
             "closed_at": closed_at or "",
             "ticket_id": str(ticket_id) if ticket_id is not None else "",
             "domain": "dispatch",
+            "feed_type": feed_type or "normal",
+            "from_assignee": from_assignee or "",
+            "reason": (reason or "")[:500],
+            "rejected_id": rejected_id or "",
         }
-        point_id = (
-            str(uuid.uuid5(uuid.NAMESPACE_URL, f"dispatch-ticket-{ticket_id}"))
-            if ticket_id is not None else str(uuid.uuid4())
-        )
+        if point_key:
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"dispatch-key-{point_key}"))
+        else:
+            point_id = (
+                str(uuid.uuid5(uuid.NAMESPACE_URL, f"dispatch-ticket-{ticket_id}"))
+                if ticket_id is not None else str(uuid.uuid4())
+            )
 
         return await self._qdrant.upsert_to_collection(
             collection_name=col,
@@ -1675,6 +1688,10 @@ class RetrievalService:
                     "fault_code": pl.get("fault_code", ""),
                     "robot_type": pl.get("robot_type", ""),
                     "closed_at": pl.get("closed_at", ""),
+                    "ticket_id": pl.get("ticket_id") or "",
+                    "feed_type": pl.get("feed_type") or "normal",
+                    "rejected_id": pl.get("rejected_id") or "",
+                    "reason": pl.get("reason") or "",
                 })
             return results
         except Exception as e:

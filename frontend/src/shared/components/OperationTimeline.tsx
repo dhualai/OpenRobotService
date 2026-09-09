@@ -47,6 +47,12 @@ const OP_TYPE_LABEL: Record<OperationType, string> = {
   ai_assign: 'AI派单',
 };
 
+const REASSIGN_KIND_LABEL: Record<string, string> = {
+  misassign: '派错了',
+  stage: '阶段转派',
+  other: '其它',
+};
+
 // 操作类型图标
 const OP_TYPE_STYLE: Record<OperationType, { color: string; icon: string }> = {
   create: { color: '#0052D9', icon: '📋' },
@@ -386,6 +392,11 @@ const OperationTimeline: React.FC<OperationTimelineProps> = ({ logs, loading = f
         <div className="op-segment__sub-content">
           <div className="op-segment__action">
             {log.description || `${OP_TYPE_LABEL[log.operation_type]}操作`}
+            {log.operation_type === 'reassign' && REASSIGN_KIND_LABEL[String(log.detail?.kind || '')] ? (
+              <span className={`op-segment__kind op-segment__kind--${log.detail?.kind}`}>
+                {REASSIGN_KIND_LABEL[String(log.detail?.kind)]}
+              </span>
+            ) : null}
             {log.operation_type === 'view' && formatDuration(log.duration_seconds) && (
               <span className="op-segment__duration">（停留 {formatDuration(log.duration_seconds)}）</span>
             )}
