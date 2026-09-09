@@ -94,6 +94,47 @@ async def _retrieval_body(cases: list, counted):
 
 
 # ── answer/ticket/flow：打测试环境 ask/stream ──
+TEST_ENV_FILE = "/data/apps/TestOpenRobotService/ai/.env"
+TEST_PY = "~/miniconda3/envs/test-ai/bin/python"
+SSH_CMD = ["ssh", "-p", "8802", "usp-a@125.122.97.107"]
+
+
+def remote_query_one(sql: str):
+    """ssh 到测试机查 helpdesk_test 单行（工单落库验证；凭据只在服务器端解析）。"""
+    import subprocess
+    script = (
+        "import re,json,pymysql\n"
+        f"env=open({TEST_ENV_FILE!r},encoding='utf-8').read()\n"
+        "url=next(l for l in env.splitlines() if l.startswith('DATABASE_URL='))\n"
+        "m=re.search(r'//([^:]+):([^@]+)@([^/:]+)(?::(\\d+))?/(\\w+)',url)\n"
+        "conn=pymysql.connect(host=m.group(3),port=int(m.group(4) or 3306),"
+        "user=m.group(1),password=m.group(2),database=m.group(5),charset='utf8mb4')\n"
+        "cur=conn.cursor()\n"
+        f"cur.execute({sql!r})\n"
+        "print('ROW:'+json.dumps(cur.fetchone(),ensure_ascii=False,default=str))\n"
+    )
+    r = subprocess.run(SSH_CMD + [f"{TEST_PY} -"], input=script,
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=90)
+    for line in (r.stdout or "").splitlines():
+        if line.startswith("ROW:"):
+            return json.loads(line[4:])
+    return None
+
+
+async def _post_ticket(base: str, token: str, path: str, body: dict) -> dict:
+    """打测试环境提单接口（prepare/confirm）。返回 {status, json}。"""
+    import httpx
+    async with httpx.AsyncClient(timeout=60) as c:
+        r = await c.post(f"{base}{path}", json=body,
+                         headers={"Authorization": f"Bearer {token}"})
+        try:
+            j = r.json()
+        except Exception:
+            j = {"raw": r.text[:200]}
+        return {"status": r.status_code, "json": j}
+
+
 async def _ask_turn(base: str, token: str, sid: str, query: str) -> dict:
     """单轮打测试环境，返回 {answer, stages, result, first_ms, total_ms}。"""
     import httpx
@@ -147,22 +188,39 @@ def _check_text(c: dict, answer: str) -> tuple[bool, list, list]:
     mc = c.get("max_chars")
     if mc and len(answer) > mc:
         warns.append(f"超长 {len(answer)}>{mc}")
+    n_img = c.get("min_images")
+    if n_img:
+        imgs = re.findall(r"/api/ai/media/kb/", answer)
+        if len(imgs) < n_img:
+            fails.append(f"回答缺图（命中 {len(imgs)}<{n_img}，拦弃图）")
     return (not fails and not warns), fails, warns
 
 
-def _check_turns(c: dict, turns_out: list) -> tuple[bool, list]:
-    """ticket/flow 多轮断言。返回 (ok, fails)。"""
-    fails = []
+def _check_turns(c: dict, turns_out: list, extra_fails: list = None) -> tuple[bool, list]:
+    """ticket/flow 多轮断言（含 extra_fails：落库/草稿等链路断言）。"""
+    fails = list(extra_fails or [])
     all_text = "\n".join(t["answer"] for t in turns_out)
     all_stages = [s for t in turns_out for s in t["stages"]]
-    if c.get("expect_review_any_round") and "review" not in all_stages:
+    review = "review" in all_stages
+    if c.get("expect_review_any_round") and not review:
         fails.append("任一轮都没出现 review 弹窗")
+    if c.get("forbid_review") and review:
+        fails.append("不应出现 review 弹窗但出现了")
     ask = c.get("expect_ask_any")
     if ask and not any(kw in all_text for kw in ask):
         fails.append(f"话术缺追问要素（任一即可：{'、'.join(ask[:4])}…）")
     for kw in c.get("forbid_any", []):
         if kw in all_text:
             fails.append(f"话术含禁词「{kw}」")
+    stages_any = c.get("expect_stages_any")
+    if stages_any and not any(s in all_stages for s in stages_any):
+        fails.append(f"阶段未出现（任一：{'、'.join(stages_any)}）")
+    n_img = c.get("min_images")
+    if n_img:
+        last = turns_out[-1]["answer"] if turns_out else ""
+        imgs = re.findall(r"/api/ai/media/kb/", last)
+        if len(imgs) < n_img:
+            fails.append(f"回答缺图（{len(imgs)}<{n_img}）")
     return (not fails), fails
 
 
@@ -175,11 +233,48 @@ async def run_api_suite(suite: str, cases: list, base: str, token: str, counted)
         turns = c.get("turns") or [c.get("query", "")]
         try:
             turns_out = []
+            review_hit = False
             for j, text in enumerate(turns):
                 r = await _ask_turn(base, token, sid, text)
                 turns_out.append(r)
                 if "review" in r["stages"]:
+                    review_hit = True
                     break  # 到弹窗即达成本轮目标，省 API 轮次
+            # 提单链路纵深：到弹窗后验草稿 → confirm 落库 → ssh 查测试库
+            extra_fails, db_row = [], None
+            if review_hit and (c.get("expect_draft_any") or c.get("expect_confirm")):
+                prep = await _post_ticket(base, token, "/api/ai/qa/ticket/prepare",
+                                          {"session_id": sid})
+                draft_text = json.dumps(prep.get("json", {}), ensure_ascii=False)
+                if c.get("expect_draft_any") and \
+                        not any(kw in draft_text for kw in c["expect_draft_any"]):
+                    extra_fails.append(
+                        f"草稿缺关键词（任一：{'、'.join(c['expect_draft_any'][:3])}）")
+                if c.get("expect_confirm"):
+                    conf = await _post_ticket(base, token, "/api/ai/qa/ticket/confirm",
+                                              {"session_id": sid, "overrides": {}})
+                    cj = conf.get("json", {}) or {}
+                    db_id = (cj.get("data") or {}).get("db_id")
+                    if conf.get("status") != 200 or cj.get("code") != 0 or not db_id:
+                        extra_fails.append(
+                            "confirm 未落库: "
+                            + f"HTTP{conf.get('status')} "
+                            + json.dumps(cj, ensure_ascii=False)[:120])
+                    elif c.get("expect_db"):
+                        db_row = remote_query_one(
+                            f"SELECT id,title,created_by,source "
+                            f"FROM tasks WHERE id={int(db_id)}")
+                        if not db_row:
+                            extra_fails.append(f"测试库 tasks 未查到 db_id={db_id}")
+                        else:
+                            row_text = json.dumps(db_row, ensure_ascii=False)
+                            if c.get("expect_draft_any") and \
+                                    not any(kw in row_text for kw in c["expect_draft_any"]):
+                                extra_fails.append(
+                                    f"落库记录缺关键词: {row_text[:120]}")
+                    if c.get("after_confirm_ask") and not extra_fails:
+                        r2 = await _ask_turn(base, token, sid, c["after_confirm_ask"])
+                        turns_out.append(r2)
             detail = {
                 "query": c.get("query") or turns[0],
                 "turns_run": len(turns_out),
@@ -188,10 +283,12 @@ async def run_api_suite(suite: str, cases: list, base: str, token: str, counted)
                 "first_ms": turns_out[0].get("first_ms") if turns_out else None,
                 "ms": round((time.time() - t0) * 1000),
             }
+            if db_row:
+                detail["db_row"] = db_row
             if suite == "answer":
                 ok, fails, warns = _check_text(c, turns_out[0]["answer"] if turns_out else "")
             else:
-                ok, fails = _check_turns(c, turns_out)
+                ok, fails = _check_turns(c, turns_out, extra_fails)
                 warns = []
             strict = c.get("strict", False)
             if not ok:

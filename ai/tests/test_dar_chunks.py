@@ -57,3 +57,66 @@ def test_env_paths():
         drc.OUT.endswith("export_dar/test/processed")
     assert "prod" not in drc.OUT
     assert drc.MANUAL.endswith("manual_segmentation.json")
+
+
+# ── dar_regress 断言逻辑（线上回归判定核心，纯函数无外部依赖） ──
+_drg_spec = importlib.util.spec_from_file_location(
+    "drg", os.path.join(_HERE, "..", "scripts", "dar_regress.py"))
+drg = importlib.util.module_from_spec(_drg_spec)
+_drg_spec.loader.exec_module(drg)
+
+
+def _turn(answer="", stages=()):
+    return {"answer": answer, "stages": list(stages)}
+
+
+def test_check_turns_review_and_extra_fails():
+    ok, fails = drg._check_turns(
+        {"expect_review_any_round": True}, [_turn(stages=["need_info", "review"])])
+    assert ok and not fails
+    # 落库断言失败要并入多轮断言（extra_fails 链路）
+    ok, fails = drg._check_turns(
+        {"expect_review_any_round": True, "expect_confirm": True},
+        [_turn(stages=["review"])], extra_fails=["confirm 未落库: HTTP500"])
+    assert not ok and any("confirm 未落库" in f for f in fails)
+
+
+def test_check_turns_forbid_review():
+    ok, fails = drg._check_turns({"forbid_review": True}, [_turn(stages=["review"])])
+    assert not ok and any("不应出现" in f for f in fails)
+    ok, _ = drg._check_turns({"forbid_review": True}, [_turn(stages=["answering"])])
+    assert ok
+
+
+def test_check_turns_stages_and_images():
+    ok, fails = drg._check_turns(
+        {"expect_stages_any": ["diagnosing"]}, [_turn(stages=["diagnosing", "answering"])])
+    assert ok
+    ok, fails = drg._check_turns(
+        {"expect_stages_any": ["diagnosing"]}, [_turn(stages=["answering"])])
+    assert not ok and any("阶段未出现" in f for f in fails)
+    img = "步骤如下 ![](/api/ai/media/kb/manual/x.png)"
+    ok, _ = drg._check_turns({"min_images": 1}, [_turn(answer=img)])
+    assert ok
+    ok, fails = drg._check_turns({"min_images": 2}, [_turn(answer=img)])
+    assert not ok and any("缺图" in f for f in fails)
+
+
+def test_check_text_min_images_and_keywords():
+    ok, fails, warns = drg._check_text(
+        {"must_reference": ["813"], "min_images": 1},
+        "错误码813处理：![](/api/ai/media/kb/manual/a.png)")
+    assert ok and not fails
+    ok, fails, warns = drg._check_text(
+        {"must_reference": ["813"]}, "错误码是通讯超时")
+    assert not ok and any("缺关键词" in f for f in fails)
+
+
+def test_regress_case_yaml_loads():
+    """用例集可解析且关键字段合法（防止 yaml 写坏线上回归全 ERROR）。"""
+    for suite in ("retrieval", "answer", "ticket", "flow"):
+        cases = drg.load_cases(suite)
+        assert cases, f"{suite}.yaml 为空"
+        for c in cases:
+            assert c.get("name"), c
+            assert c.get("turns") or c.get("query"), c
