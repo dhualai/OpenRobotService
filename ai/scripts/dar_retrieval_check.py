@@ -106,8 +106,10 @@ def build_rows():
             manual = sorted({0, *(int(x) for x in bounds[cid] if 0 <= int(x) < len(rounds))})
             lab_of = lambda s: lab_map.get(s, "未标")
         else:
+            # 段根与标注工具/dar_l3 一致：topic 变化切段（t 布尔不可靠且与
+            # 标注工具前端不同源——astart 对不上会导致预标注入 miss）
             manual = sorted({0, *(i for i in range(1, len(rounds))
-                                  if cls[i]["t"] != cls[i - 1]["t"])})
+                                  if cls[i]["topic"] != cls[i - 1]["topic"])})
             lab_of = lambda s: "未标"
         for tid, s in enumerate(manual):
             e = manual[tid + 1] if tid + 1 < len(manual) else len(rounds)

@@ -460,11 +460,11 @@ $("#openreport").onclick = async ()=>{
 
 /* 流程向导 */
 const WIZ = [
-  {t:"导数据", steps:["export","prepare"], d:"生产库四表 → 本地切分（ssh，约 1-2 分钟）"},
-  {t:"L1 指标", steps:["l1"], d:"LLM 逐会话切话题 + 问题类型（pro 批判）"},
-  {t:"L3 预标", steps:["retrieval","l3","tool"], d:"重放检索判定 + judge 四类预标 + 生成标注工具"},
+  {t:"导数据", steps:["export","prepare"], pk:"export", d:"生产库四表 → 本地切分（ssh，约 1-2 分钟）"},
+  {t:"L1 指标", steps:["l1","report"], pk:"l1", d:"LLM 逐会话切话题 + 即时出周报（L1 口径，不等人工标注即可看指标）"},
+  {t:"L3 预标", steps:["retrieval","l3","tool"], pk:"l3", d:"重放检索判定 + judge 四类预标 + 生成标注工具"},
   {t:"人工标注", label:true, d:"新标签页打开标注工具，审段改分段打标签，导出 JSON 放 Downloads/"},
-  {t:"吸收 → 周报", steps:["l1","retrieval","l3","report"], d:"吸收人工标签出 L2，增量补判变更段，三口径对比 + 周报"},
+  {t:"吸收 → 周报", steps:["l1","retrieval","l3","report"], pk:"report", d:"吸收人工标签出 L2，增量补判变更段，三口径对比 + 周报"},
 ];
 function renderWiz(){
   const w = $("#wiz");
@@ -490,8 +490,7 @@ async function loadProg(){
     const j = await (await fetch(`/api/progress?env=${env}`)).json();
     document.querySelectorAll("#wiz .wstep").forEach((el, i)=>{
       const st = WIZ[i];
-      const key = st.label ? "label" : st.steps.includes("report") ? "report"
-                : st.steps.includes("l3") ? "l3" : st.steps[0];
+      const key = st.label ? "label" : (st.pk || st.steps[0]);
       const t = (j.steps || {})[key] || "";
       const b = el.querySelector(".wok");
       if(t){ b.style.display = ""; b.textContent = "✓ " + t; el.classList.add("done"); }

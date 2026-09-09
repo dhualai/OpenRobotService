@@ -542,12 +542,20 @@ def metrics(env: str = "prod"):
 
     hero, small = [], []
     same = rep.get("dar_rates_same_base") or {}
+    # 标注前先出数：same_base（分母=人工已标段）缺的口径从 dar_rates 回退——
+    # L1 只要 l1 产物就有、L3 只要预标产物就有；人工标注完成后再跑 report 会
+    # 覆盖成同分母口径，不冲突
+    dr = rep.get("dar_rates") or {}
+    fb = {"L1_段级": dr.get("L1_基础(1−转工单率)"),
+          "L2_人工": dr.get("L2_人工"),
+          "L3_AI同段": dr.get("L3_AI预标")}
     zh = {"L1_段级": ("L1 机器信号", "未出单即算直答（上界）"),
           "L2_人工": ("L2 人工标注", "端到端真实口径"),
           "L3_AI同段": ("L3 AI 预标", "judge 偏宽仅供参考")}
     for k, (label, sub) in zh.items():
-        if same.get(k):
-            hero.append({"label": label, "value": _pct(same[k]), "sub": f"{same[k]} · {sub}"})
+        v = same.get(k) or fb.get(k)
+        if v:
+            hero.append({"label": label, "value": _pct(v), "sub": f"{v} · {sub}"})
     if rep.get("kb_gap"):
         small.append({"label": "KB 缺口率", "value": _pct(rep["kb_gap"]),
                       "sub": "真实组检索 no（知识库没有答案）"})
@@ -631,7 +639,8 @@ def label_tool(env: str = "test"):
     p = os.path.join(DATA_ROOT, env, "processed", "segmentation_tool.html")
     if not os.path.exists(p):
         raise HTTPException(404, "标注工具未生成（先运行「生成标注工具」步骤）")
-    return FileResponse(p)
+    # no-cache：0909 实锤浏览器缓存旧页面——导数后重开工具还看到前天的会话与旧预标
+    return FileResponse(p, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/")

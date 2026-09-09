@@ -83,8 +83,15 @@ def build_exam(all_mode=False):
         if c["is_tester"] and os.environ.get("DAR_INCLUDE_TEST") != "1":
             continue
         if all_mode:
-            manual = sorted({0, *(i for i in range(1, len(c["rounds"]))
-                                  if cls[i]["t"] != cls[i - 1]["t"])})
+            # 段根与标注工具前端一致（0909 实锤两套不同源：标注工具按 topic 变化
+            # 分组、旧代码用 t 布尔翻转——已标会话预标 astart 对不上=全 miss）。
+            # 有人工边界用人工（已标会话对齐人工标签），否则 topic 变化切段。
+            if cid in bounds:
+                manual = sorted({0, *(int(x) for x in bounds[cid]
+                                      if 0 <= int(x) < len(c["rounds"]))})
+            else:
+                manual = sorted({0, *(i for i in range(1, len(c["rounds"]))
+                                      if cls[i]["topic"] != cls[i - 1]["topic"])})
         else:
             if cid not in bounds or c["is_tester"]:
                 continue
