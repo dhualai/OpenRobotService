@@ -97,6 +97,19 @@ interface ReassignSample {
   reason: string;
   created_at: string;
 }
+interface UnlabeledHop {
+  id: number;
+  created_at: string;
+  from_id: string;
+  from_name: string;
+  to_id: string;
+  to_name: string;
+  reason: string;
+  description: string;
+  kind?: string;
+  channel?: string;
+  reviewable?: boolean;
+}
 interface UnlabeledItem {
   id: number;
   task_id: number;
@@ -108,6 +121,11 @@ interface UnlabeledItem {
   from_name: string;
   to_id: string;
   to_name: string;
+}
+interface UnlabeledGroup {
+  task_id: number;
+  title: string;
+  hops: UnlabeledHop[];
 }
 interface RedispatchItem {
   id: number;
@@ -127,6 +145,7 @@ interface ReassignSnap {
   persisted?: number;
   samples?: ReassignSample[];
   unlabeled_items?: UnlabeledItem[];
+  unlabeled_groups?: UnlabeledGroup[];
   redispatch_items?: RedispatchItem[];
   note?: string;
   error?: string;
@@ -138,9 +157,42 @@ const KIND_LABEL: Record<string, string> = {
   other: '其它',
 };
 
-function pct(v: number | null | undefined): string {
-  if (v == null || Number.isNaN(Number(v))) return '—';
-  return `${(Number(v) * 100).toFixed(1)}%`;
+function hopKindLabel(hop: UnlabeledHop): string {
+  if (hop.kind && KIND_LABEL[hop.kind]) return KIND_LABEL[hop.kind];
+  if (hop.channel === 'redispatch') return '重新派单';
+  if (hop.channel === 'skipped') return '已跳过';
+  return '未标类型';
+}
+
+function formatHopTime(iso: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const m = d.getMonth() + 1;
+  const day = d.getDate();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${m}月${day}日 ${hh}:${mm}`;
+}
+
+function unlabeledGroupsFromSnap(reassign: ReassignSnap | null): UnlabeledGroup[] {
+  if (reassign?.unlabeled_groups?.length) return reassign.unlabeled_groups;
+  const items = reassign?.unlabeled_items || [];
+  const map = new Map<number, UnlabeledGroup>();
+  const out: UnlabeledGroup[] = [];
+  for (const item of items) {
+    let g = map.get(item.task_id);
+    if (!g) {
+      g = { task_id: item.task_id, title: item.title, hops: [] };
+      map.set(item.task_id, g);
+      out.push(g);
+    }
+    g.hops.push({
+      ...item,
+      reviewable: true,
+    });
+  }
+  return out;
 }
 
 const CLUSTER_COLORS = [
@@ -361,6 +413,11 @@ export default function DispatchDev() {
   if (!allowed) return null;
 
   const params = clusters?.params || history?.params || {};
+  const unlabeledGroups = unlabeledGroupsFromSnap(reassign);
+  const unlabeledRemain = unlabeledGroups.reduce(
+    (n, g) => n + g.hops.filter((h) => h.reviewable !== false).length,
+    0,
+  );
   const hasScatter = (clusters?.points || []).length > 0;
 
   return (
@@ -436,7 +493,12 @@ export default function DispatchDev() {
                   <li key={item.id} className="dispatch-dev__review">
                     <strong>#{item.task_id} {item.title || '（无标题）'}</strong>
                     <em>{item.operator_name} → 倾向 {item.preferred_name}</em>
-                    <span>{item.reason || item.description || '（无备注）'}</span>
+                    <span>{item.description || ''}</span>
+                    {item.reason ? (
+                      <p className="dispatch-dev__hop-reason">备注：{item.reason}</p>
+                    ) : (
+                      <p className="dispatch-dev__hop-reason dispatch-dev__hop-reason--empty">（无备注）</p>
+                    )}
                     <div className="dispatch-dev__review-btns">
                       <button
                         type="button"
@@ -465,43 +527,60 @@ export default function DispatchDev() {
             <div className="dispatch-dev__head">
               <span className="dispatch-dev__title">未标类型审核</span>
               <span className="dispatch-dev__hint" style={{ margin: 0 }}>
-                剩 {reassign?.unlabeled_items?.length ?? reassign?.unlabeled ?? 0} 条
+                剩 {unlabeledRemain} 条
               </span>
             </div>
             <p className="dispatch-dev__hint">
-              旧转派没有点过类型。标成三个固定类型后计入指标；标成「派错了」也会进入派单学习。
-              继续处理改人、实在看不出来的点「跳过」，不进错派率。
+              一张单转过多次会整链列出来，每一次未标转派都要单独点。已经有类型的那几跳只作对照，不能改。
+              标成三个固定类型后计入指标；标成「派错了」也会进入派单学习。继续处理改人、实在看不出来的点「跳过」，不进错派率。
             </p>
-            {(reassign?.unlabeled_items || []).length === 0 ? (
+            {unlabeledGroups.length === 0 ? (
               <div className="dispatch-dev__empty-row">没有待审核的未标转派</div>
             ) : (
               <ul className="dispatch-dev__list">
-                {(reassign?.unlabeled_items || []).map((item) => (
-                  <li key={item.id} className="dispatch-dev__review">
-                    <strong>#{item.task_id} {item.title || '（无标题）'}</strong>
-                    <em>{item.from_name} → {item.to_name}</em>
-                    <span>{item.reason || item.description || '（无原因）'}</span>
-                    <div className="dispatch-dev__review-btns">
-                      {(['misassign', 'stage', 'other'] as const).map((k) => (
-                        <button
-                          key={k}
-                          type="button"
-                          className="dispatch-dev__btn"
-                          disabled={reviewingId === item.id}
-                          onClick={() => reviewItem(item.id, k)}
-                        >
-                          {KIND_LABEL[k]}
-                        </button>
+                {unlabeledGroups.map((g) => (
+                  <li key={g.task_id} className="dispatch-dev__review">
+                    <strong>#{g.task_id} {g.title || '（无标题）'}</strong>
+                    <span>共 {g.hops.length} 次转派，其中 {g.hops.filter((h) => h.reviewable !== false).length} 次未标</span>
+                    <ul className="dispatch-dev__hops">
+                      {g.hops.map((hop, idx) => (
+                        <li key={hop.id} className="dispatch-dev__hop">
+                          <em>
+                            第 {idx + 1} 次 · {hop.from_name} → {hop.to_name}
+                            <span className="dispatch-dev__hop-tag">{hopKindLabel(hop)}</span>
+                          </em>
+                          <span>{formatHopTime(hop.created_at)}{hop.description ? ` · ${hop.description}` : ''}</span>
+                          {hop.reason ? (
+                            <p className="dispatch-dev__hop-reason">转派原因：{hop.reason}</p>
+                          ) : (
+                            <p className="dispatch-dev__hop-reason dispatch-dev__hop-reason--empty">（当时没有填写转派原因）</p>
+                          )}
+                          {hop.reviewable !== false ? (
+                            <div className="dispatch-dev__review-btns">
+                              {(['misassign', 'stage', 'other'] as const).map((k) => (
+                                <button
+                                  key={k}
+                                  type="button"
+                                  className="dispatch-dev__btn"
+                                  disabled={reviewingId === hop.id}
+                                  onClick={() => reviewItem(hop.id, k)}
+                                >
+                                  {KIND_LABEL[k]}
+                                </button>
+                              ))}
+                              <button
+                                type="button"
+                                className="dispatch-dev__btn dispatch-dev__btn--ghost"
+                                disabled={reviewingId === hop.id}
+                                onClick={() => reviewItem(hop.id, 'skipped')}
+                              >
+                                跳过
+                              </button>
+                            </div>
+                          ) : null}
+                        </li>
                       ))}
-                      <button
-                        type="button"
-                        className="dispatch-dev__btn dispatch-dev__btn--ghost"
-                        disabled={reviewingId === item.id}
-                        onClick={() => reviewItem(item.id, 'skipped')}
-                      >
-                        跳过
-                      </button>
-                    </div>
+                    </ul>
                   </li>
                 ))}
               </ul>

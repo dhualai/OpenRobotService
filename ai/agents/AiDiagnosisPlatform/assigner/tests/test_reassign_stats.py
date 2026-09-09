@@ -4,6 +4,10 @@ from ai.agents.AiDiagnosisPlatform.assigner.sync.reassign_stats import (
     aggregate_events,
     correction_pair,
     event_channel,
+    parse_reason_comment,
+    _apply_comment_reasons,
+    _unlabeled_groups,
+    _unlabeled_items,
 )
 
 
@@ -135,6 +139,81 @@ class TestAggregate:
         assert m["misassign_rate_of_signal"] == 1.0
         assert m["redispatch_inaccurate_rate_of_reviewed"] == 0.5
         assert m["inaccurate_rate_of_ai_assign"] == 0.2
+
+
+class TestUnlabeledGroups:
+    def test_same_ticket_keeps_every_unlabeled_hop(self):
+        """正常流程：一张单多次未标转派全部进审核，不只最后一次。"""
+        events = [
+            {"id": 3, "task_id": 10, "title": "电机过热", "channel": "unlabeled",
+             "kind": "", "reason": "", "description": "转给王五",
+             "created_at": "2026-09-09T12:00:00",
+             "detail": {"from_assignee": "u2", "new_assignee": "u3"}},
+            {"id": 2, "task_id": 10, "title": "电机过热", "channel": "unlabeled",
+             "kind": "", "reason": "", "description": "转给李四",
+             "created_at": "2026-09-09T11:00:00",
+             "detail": {"from_assignee": "u1", "new_assignee": "u2"}},
+            {"id": 1, "task_id": 10, "title": "电机过热", "channel": "signal",
+             "kind": "stage", "reason": "", "description": "转给张三",
+             "created_at": "2026-09-09T10:00:00",
+             "detail": {"from_assignee": "u0", "new_assignee": "u1", "kind": "stage"}},
+        ]
+        names = {"u0": "零号", "u1": "张三", "u2": "李四", "u3": "王五"}
+        groups = _unlabeled_groups(events, names)
+        assert len(groups) == 1
+        hops = groups[0]["hops"]
+        assert len(hops) == 3
+        assert [h["reviewable"] for h in hops] == [False, True, True]
+        assert [h["to_name"] for h in hops] == ["张三", "李四", "王五"]
+        items = _unlabeled_items(events, names)
+        assert [i["id"] for i in items] == [2, 3]
+
+    def test_fill_from_previous_hop(self):
+        """边界：旧日志没有 from_assignee 时，用上一跳的接手人补上。"""
+        events = [
+            {"id": 2, "task_id": 8, "title": "旧单", "channel": "unlabeled",
+             "kind": "", "reason": "", "description": "第二次",
+             "created_at": "2026-09-09T11:00:00",
+             "detail": {"new_assignee": "u2"}},
+            {"id": 1, "task_id": 8, "title": "旧单", "channel": "unlabeled",
+             "kind": "", "reason": "", "description": "第一次",
+             "created_at": "2026-09-09T10:00:00",
+             "detail": {"new_assignee": "u1"}},
+        ]
+        groups = _unlabeled_groups(events, {"u1": "甲", "u2": "乙"})
+        hops = groups[0]["hops"]
+        assert hops[0]["from_name"] == "—"
+        assert hops[0]["to_name"] == "甲"
+        assert hops[1]["from_name"] == "甲"
+        assert hops[1]["to_name"] == "乙"
+
+
+class TestReasonComment:
+    def test_parse_old_required_reason(self):
+        """正常流程：旧转派原因写在评论前缀里。"""
+        assert parse_reason_comment("重新指派原因：不归硬件，应派软件") == "不归硬件，应派软件"
+        assert parse_reason_comment("重新指派原因:现场已换人") == "现场已换人"
+
+    def test_apply_comment_to_matching_hop(self):
+        """正常流程：审核列表用评论补上日志里没有的原因。"""
+        hops = [
+            {"id": 1, "created_at": "2026-09-09T10:00:00", "reason": ""},
+            {"id": 2, "created_at": "2026-09-09T11:00:00", "reason": ""},
+        ]
+        _apply_comment_reasons(hops, [
+            {"created_at": "2026-09-09T10:00:02", "reason": "第一次转走"},
+            {"created_at": "2026-09-09T11:00:03", "reason": "第二次转走"},
+        ])
+        assert hops[0]["reason"] == "第一次转走"
+        assert hops[1]["reason"] == "第二次转走"
+
+    def test_keep_log_reason(self):
+        """边界：日志里已有 reason 时不要被评论覆盖。"""
+        hops = [{"id": 1, "created_at": "2026-09-09T10:00:00", "reason": "日志里的原因"}]
+        _apply_comment_reasons(hops, [
+            {"created_at": "2026-09-09T10:00:02", "reason": "评论里的原因"},
+        ])
+        assert hops[0]["reason"] == "日志里的原因"
 
 
 class TestClusterParams:

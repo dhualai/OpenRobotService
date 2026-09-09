@@ -243,7 +243,7 @@ def _load_rows() -> Tuple[List[dict], int, int]:
             "kind": _norm_kind(detail.get("kind")),
             "channel": channel,
             "redispatch_verdict": redispatch_verdict(detail),
-            "reason": (detail.get("reason") or detail.get("remark") or "")[:200],
+            "reason": (detail.get("reason") or detail.get("remark") or "")[:500],
             "created_at": created.isoformat() if hasattr(created, "isoformat") else str(created or ""),
             "description": r.get("description") or "",
             "operator": r.get("operator") or "",
@@ -280,28 +280,163 @@ def _name_by_id() -> dict:
         return {}
 
 
-def _unlabeled_items(events: List[dict], names: dict, limit: int = 100) -> List[dict]:
-    items = []
+def _ts_key(v) -> str:
+    s = str(v or "").replace(" ", "T")
+    return s[:19]
+
+
+def parse_reason_comment(content: str) -> str:
+    """从工单评论抽出转派原因。旧数据原因必填，只写在评论里，日志 detail 没有。"""
+    text = (content or "").strip()
+    for mark in ("重新指派原因：", "重新指派原因:", "转派原因：", "转派原因:"):
+        idx = text.find(mark)
+        if idx >= 0:
+            return text[idx + len(mark):].strip()[:500]
+    return ""
+
+
+def _apply_comment_reasons(hops: List[dict], comments: List[dict]) -> None:
+    """按时间把原因评论贴到还没有 reason 的 hop 上。"""
+    pending = [h for h in hops if not str(h.get("reason") or "").strip()]
+    for c in comments:
+        reason = str(c.get("reason") or "").strip()
+        if not reason or not pending:
+            continue
+        cts = _ts_key(c.get("created_at"))
+        target = None
+        for h in pending:
+            hop_ts = _ts_key(h.get("created_at"))
+            if hop_ts and cts and cts < hop_ts:
+                continue
+            target = h
+        if target is None:
+            target = pending[0]
+        target["reason"] = reason[:500]
+        pending.remove(target)
+
+
+def _load_reason_comments(task_ids: List[int]) -> dict:
+    ids = []
+    for raw in task_ids or []:
+        try:
+            ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return {}
+    from ai.agents.AiDiagnosisPlatform.assigner.sync.history_indexer import _get_engine
+
+    engine = _get_engine()
+    with engine.connect() as db:
+        rows = db.execute(
+            text(
+                "SELECT task_id, content, created_at FROM task_comments "
+                "WHERE task_id IN :ids AND content LIKE :pat "
+                "ORDER BY created_at ASC"
+            ).bindparams(bindparam("ids", expanding=True)),
+            {"ids": ids, "pat": "%重新指派原因%"},
+        ).mappings().all()
+    out: dict = {}
+    for r in rows:
+        reason = parse_reason_comment(r.get("content") or "")
+        if not reason:
+            continue
+        created = r.get("created_at")
+        out.setdefault(int(r["task_id"]), []).append({
+            "created_at": created.isoformat() if hasattr(created, "isoformat") else str(created or ""),
+            "reason": reason,
+        })
+    return out
+
+
+def _attach_reasons_from_comments(groups: List[dict]) -> None:
+    comments_map = _load_reason_comments([g.get("task_id") for g in groups])
+    for g in groups:
+        _apply_comment_reasons(g.get("hops") or [], comments_map.get(g.get("task_id")) or [])
+
+
+def _hop_assignees(detail: dict) -> Tuple[str, str]:
+    d = detail or {}
+    from_id = str(d.get("from_assignee") or "").strip()
+    to_id = str(d.get("new_assignee") or d.get("preferred_assignee") or "").strip()
+    return from_id, to_id
+
+
+def _unlabeled_groups(events: List[dict], names: dict, limit_tickets: int = 80) -> List[dict]:
+    """有未标转派的工单整链列出，不按工单折叠成最后一次。"""
+    by_ticket: dict = {}
+    for e in events:
+        tid = e.get("task_id")
+        if tid is None:
+            continue
+        by_ticket.setdefault(tid, []).append(e)
+
+    ticket_order = []
+    seen = set()
     for e in events:
         if e.get("channel") != "unlabeled":
             continue
-        detail = e.get("detail") or {}
-        from_id = str(detail.get("from_assignee") or "").strip()
-        to_id = str(detail.get("new_assignee") or "").strip()
-        items.append({
-            "id": e["id"],
-            "task_id": e["task_id"],
-            "title": e.get("title") or "",
-            "reason": e.get("reason") or "",
-            "description": e.get("description") or "",
-            "created_at": e.get("created_at") or "",
-            "from_id": from_id,
-            "from_name": names.get(from_id) or from_id or "—",
-            "to_id": to_id,
-            "to_name": names.get(to_id) or to_id or "—",
-        })
-        if len(items) >= limit:
+        tid = e.get("task_id")
+        if tid in seen:
+            continue
+        seen.add(tid)
+        ticket_order.append(tid)
+        if len(ticket_order) >= limit_tickets:
             break
+
+    groups = []
+    for tid in ticket_order:
+        hops_raw = sorted(by_ticket.get(tid) or [], key=lambda x: x.get("created_at") or "")
+        hops = []
+        prev_to = ""
+        for e in hops_raw:
+            from_id, to_id = _hop_assignees(e.get("detail") or {})
+            if not from_id and prev_to:
+                from_id = prev_to
+            hops.append({
+                "id": e["id"],
+                "created_at": e.get("created_at") or "",
+                "from_id": from_id,
+                "from_name": names.get(from_id) or from_id or "—",
+                "to_id": to_id,
+                "to_name": names.get(to_id) or to_id or "—",
+                "reason": e.get("reason") or "",
+                "description": e.get("description") or "",
+                "kind": e.get("kind") or "",
+                "channel": e.get("channel") or "",
+                "reviewable": e.get("channel") == "unlabeled",
+            })
+            if to_id:
+                prev_to = to_id
+        if not hops:
+            continue
+        groups.append({
+            "task_id": tid,
+            "title": hops_raw[0].get("title") or "",
+            "hops": hops,
+        })
+    return groups
+
+
+def _unlabeled_items(events: List[dict], names: dict, limit: int = 100) -> List[dict]:
+    """兼容旧前端：未标 hop 扁平列表。同一张单多次未标转派会全部返回。"""
+    items = []
+    for g in _unlabeled_groups(events, names, limit_tickets=limit):
+        for h in g["hops"]:
+            if not h.get("reviewable"):
+                continue
+            items.append({
+                "id": h["id"],
+                "task_id": g["task_id"],
+                "title": g.get("title") or "",
+                "reason": h.get("reason") or "",
+                "description": h.get("description") or "",
+                "created_at": h.get("created_at") or "",
+                "from_id": h.get("from_id") or "",
+                "from_name": h.get("from_name") or "—",
+                "to_id": h.get("to_id") or "",
+                "to_name": h.get("to_name") or "—",
+            })
     return items
 
 
@@ -398,13 +533,36 @@ def summarize_reassign_stats() -> dict:
     events, ai_total, ai_tickets = _load_rows()
     metrics = aggregate_events(events, ai_assign_total=ai_total, ai_assign_tickets=ai_tickets)
     names = _name_by_id()
+    groups = _unlabeled_groups(events, names)
+    try:
+        _attach_reasons_from_comments(groups)
+    except Exception as e:
+        logger.warning(f"[转派统计] 读取转派原因评论失败: {e}")
+    items = []
+    for g in groups:
+        for h in g.get("hops") or []:
+            if not h.get("reviewable"):
+                continue
+            items.append({
+                "id": h["id"],
+                "task_id": g["task_id"],
+                "title": g.get("title") or "",
+                "reason": h.get("reason") or "",
+                "description": h.get("description") or "",
+                "created_at": h.get("created_at") or "",
+                "from_id": h.get("from_id") or "",
+                "from_name": h.get("from_name") or "—",
+                "to_id": h.get("to_id") or "",
+                "to_name": h.get("to_name") or "—",
+            })
     return {
         "metrics": metrics,
         "unlabeled": metrics.get("unlabeled_total") or 0,
         "llm": {"called": 0, "failed": 0, "pending": 0},
         "persisted": 0,
         "samples": _sample_events(events),
-        "unlabeled_items": _unlabeled_items(events, names),
+        "unlabeled_items": items,
+        "unlabeled_groups": groups,
         "redispatch_items": _redispatch_items(events, names),
         "note": (
             "转派弹窗三个类型单独计错派率。"

@@ -21,7 +21,7 @@
         └── 问题簇：这类问题堆里的常客（可空）
         │
         ▼
-    【Step 4 精排】三路各自归一；空路权重摊给有人的路；职级折扣 × 部门soft_prior；倾向人保底；对接人只打标
+    【Step 4 精排】三路绝对 0～1 取最高；职级折扣 × 部门soft_prior；倾向人保底；对接人只打标
         │
         ▼
     【Step 6 LLM 最终决策】铁律 + 产品附录；失败/很难决策/名单外 → None，不回精排#1
@@ -87,11 +87,21 @@ def _engineer_profile_dict(eng: "EngineerProfile") -> Dict:
     }
 
 
-def _step0_winner_profile(eng: "EngineerProfile", collision_random: bool = False) -> Dict:
-    """Step0 落库画像：缺项进 missing；同名随机选中再打 collision_random，供 tip 提醒补画像。"""
+def _step0_winner_profile(
+    eng: "EngineerProfile",
+    collision_random: bool = False,
+    specified_name: Optional[str] = None,
+) -> Dict:
+    """Step0 落库画像：缺项进 missing；同名随机选中再打 collision_random，供 tip 提醒补画像。
+
+    拼音命中时把用户原文（如「加双」）写入 specified_name，和工程师名（如「贾爽」）对照。
+    """
     prof = _engineer_profile_dict(eng)
     if collision_random:
         prof["collision_random"] = True
+    query = (specified_name or "").strip()
+    if query and query != (eng.name or "").strip():
+        prof["specified_name"] = query
     return prof
 
 
@@ -867,7 +877,9 @@ class DispatchFlow:
                     pinyin_match=pinyin_hit,
                     preferred_id=winner.id,
                     matched_pref=True,
-                    profile=_step0_winner_profile(winner, collision_random),
+                    profile=_step0_winner_profile(
+                        winner, collision_random, specified_name=strong_name,
+                    ),
                 ), None
             logger.info(
                 f"[派单:{ticket.id}] Step0 强信号指定 '{strong_name}' 未匹配到工程师，走正常派单"
@@ -951,9 +963,11 @@ class DispatchFlow:
                 decision_type="auto",
                 name_collision=collision,
                 pinyin_match=pinyin_hit,
-                preferred_id=winner.id,
-                matched_pref=True,
-                    profile=_step0_winner_profile(winner, collision_random),
+                    preferred_id=winner.id,
+                    matched_pref=True,
+                    profile=_step0_winner_profile(
+                        winner, collision_random, specified_name=preferred_name,
+                    ),
                 ), None
 
         logger.info(

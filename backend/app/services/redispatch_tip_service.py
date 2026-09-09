@@ -42,7 +42,13 @@ def build_redispatch_tip(log, user_map) -> Optional[str]:
         tip = f"很抱歉，您指定的【{preferred_name}】暂未采纳，已改派更合适的【{assigned_name}】处理"
     # ④ 拼音命中（已派到解析出的人）
     elif getattr(log, "pinyin_match", False):
-        tip = f"拼音找到的是【{assigned_name}】，有可能不准确"
+        if specified_name and specified_name != assigned_name:
+            tip = (
+                f"系统找到的是【{assigned_name}】没有您指定的【{specified_name}】，"
+                "有可能不准确"
+            )
+        else:
+            tip = f"系统找到的是【{assigned_name}】，有可能不准确"
     # ③ 同名
     elif getattr(log, "name_collision", False):
         if prof.get("collision_random"):
@@ -52,11 +58,11 @@ def build_redispatch_tip(log, user_map) -> Optional[str]:
     else:
         tip = None
 
-    # ① 画像不完整（可叠加；同名随机多半两边都不完整，要提醒补）
+    # ① 画像不完整（可叠加；同名随机多半两边都不完整）
     missing = (prof.get("missing") or []) if prof else []
     if missing:
         if preferred_id and preferred_id == log.assigned_id:
-            suffix = "您指定的接单人画像不完整，请补充"
+            suffix = "您指定的接单人画像不完整。"
         else:
             suffix = "该接单人画像不完整，待补充"
         tip = (f"{tip}；{suffix}") if tip else suffix

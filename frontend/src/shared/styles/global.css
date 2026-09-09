@@ -1962,6 +1962,12 @@ html, body, #root {
 .dispatch-fold.is-open > .dispatch-fold__header .dispatch-fold__chevron {
   transform: rotate(180deg);
 }
+.dispatch-fold.is-open .dispatch-fold__clip {
+  display: none;
+}
+.dispatch-fold:not(.is-foldable) > .dispatch-fold__header {
+  cursor: default;
+}
 .dispatch-fold__bodywrap {
   display: grid;
   grid-template-rows: 0fr;
@@ -1977,6 +1983,7 @@ html, body, #root {
   font-size: 12.5px;
   line-height: 20px;
   font-weight: 400;
+  white-space: pre-wrap;
 }
 .dispatch-fold.is-open .dispatch-fold__body {
   padding-bottom: 8px;
@@ -7824,5 +7831,31 @@ html, body, #root {
   width: 88px; border: 1px solid #e8eaea; border-radius: 8px; padding: 6px 8px; font-size: 13px; color: #303435;
 }
 .dispatch-dev__review-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.dispatch-dev__hops { list-style: none; margin: 8px 0 0; padding: 0; }
+.dispatch-dev__hop {
+  padding: 8px 0 8px 10px;
+  border-left: 2px solid #e8eaea;
+  margin-top: 6px;
+}
+.dispatch-dev__hop-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: #f4f6f6;
+  color: #888d8f;
+  font-size: 11px;
+}
+.dispatch-dev__hop-reason {
+  margin: 4px 0 0;
+  color: #303435;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.dispatch-dev__hop-reason--empty {
+  color: #888d8f;
+  font-size: 12px;
+}
 .dispatch-dev__btn--ghost { background: #f4f6f6; color: #888d8f; }
 
