@@ -1,6 +1,6 @@
-"""L3-B：已解决/已关闭工单自动聚簇 → 新单落入哪一簇 → 簇里谁常结单。
+"""Step3·问题簇：已结单自动聚堆 → 新单落入哪堆 → 堆里谁常结单。
 
-不再用手切「算法/前端/界面」问题域。单多了，簇自己长、自己拆。
+不再用手切「算法/前端/界面」。单多了，簇自己长、自己拆。
 派单时不现场重聚：缓存按历史记录哈希重建。
 """
 
@@ -39,6 +39,7 @@ def _blank_cache(h: str = ""):
         "cluster_tickets": [],
         "ticket_points": [],    # [{ticket_id, title, engineer_id, cluster_id, x, y}]
         "ticket_total": 0,
+        "error": "",
     }
 
 
@@ -60,10 +61,17 @@ def _as_ts(created_at) -> Optional[float]:
 
 
 def _ticket_text(rec: dict) -> str:
-    return " ".join(filter(None, [
-        (rec.get("title") or "").strip(),
-        (rec.get("description") or "").strip(),
-    ])).strip()
+    """与 A 路入库/检索同一套四栏，缺栏写「无」。"""
+    from ai.agents.AiDiagnosisPlatform.assigner.recall.dispatch_text import (
+        build_dispatch_ticket_text,
+    )
+    return build_dispatch_ticket_text(
+        rec.get("title"),
+        rec.get("description"),
+        rec.get("robot_type"),
+        rec.get("fault_code"),
+        skip_empty=True,
+    )
 
 
 def _normalize_rows(mat: np.ndarray) -> np.ndarray:
@@ -77,7 +85,9 @@ def cluster_by_similarity(
     merge_threshold: float,
     min_size: int,
 ) -> List[List[int]]:
-    """余弦 ≥ merge_threshold 的单并入同一簇；小于 min_size 的团丢掉。"""
+    """余弦 ≥ merge_threshold 的单并入同一簇；小于 min_size 的团丢掉。
+    收紧时用同一道合并门槛要求靠近簇中心，不再额外抬高。
+    """
     if embs.size == 0:
         return []
     vecs = _normalize_rows(np.asarray(embs, dtype=float))
@@ -106,7 +116,8 @@ def cluster_by_similarity(
     for i in range(n):
         groups.setdefault(find(i), []).append(i)
     raw = [idx for idx in groups.values() if len(idx) >= min_size]
-    return tighten_clusters(vecs, raw, merge_threshold, min_size)
+    # 靠近簇中心用同一道合并门槛，不再暗中 +0.05（开发者调低合并值时否则仍聚不出簇）。
+    return tighten_clusters(vecs, raw, float(merge_threshold), min_size)
 
 
 def tighten_clusters(
@@ -202,7 +213,7 @@ def cluster_person_score(
     cluster_sim: float,
     exp: float = 0.3,
 ) -> float:
-    """问题域人分：绝对 0～1，不按本批第一名拉满。
+    """问题簇人分：绝对 0～1，不按本批第一名拉满。
 
     次数项 × 时间新鲜度 × 簇相似度，超过 1 截断。
     弱命中停在 0.2～0.4，强命中才到 0.8～1.0。
@@ -246,9 +257,20 @@ class ExpertiseRecall:
         hc = self._config.history_recall or {}
         self._half_life_days = float(hc.get("half_life_days", 90))
         self._decay_floor = float(hc.get("decay_floor", 0.4))
-        self._merge_threshold = float(hc.get("cluster_merge", 0.55))
+        self._merge_threshold = float(hc.get("cluster_merge", 0.85))
         self._min_size = max(2, int(hc.get("cluster_min_size", 4)))
-        self._assign_threshold = float(hc.get("cluster_assign", 0.40))
+        self._assign_threshold = float(hc.get("cluster_assign", 0.80))
+        self._cluster_top_k = max(1, int(hc.get("cluster_top_k", 2)))
+        self._count_exp = float(hc.get("cluster_count_exp", 0.3))
+
+    def reload_cluster_params(self):
+        """热更新后把 yaml/覆盖文件里的簇门槛同步到本实例。"""
+        hc = self._config.history_recall or {}
+        self._half_life_days = float(hc.get("half_life_days", 90))
+        self._decay_floor = float(hc.get("decay_floor", 0.4))
+        self._merge_threshold = float(hc.get("cluster_merge", 0.85))
+        self._min_size = max(2, int(hc.get("cluster_min_size", 4)))
+        self._assign_threshold = float(hc.get("cluster_assign", 0.80))
         self._cluster_top_k = max(1, int(hc.get("cluster_top_k", 2)))
         self._count_exp = float(hc.get("cluster_count_exp", 0.3))
 
@@ -294,7 +316,9 @@ class ExpertiseRecall:
 
         import hashlib, json
         h = hashlib.md5(
-            json.dumps(recs, sort_keys=True, ensure_ascii=False, default=str).encode()
+            ("dispatch-text-v2|" + json.dumps(
+                recs, sort_keys=True, ensure_ascii=False, default=str,
+            )).encode()
         ).hexdigest()
         if (
             _cache["hash"] == h
@@ -324,6 +348,7 @@ class ExpertiseRecall:
             empty = _blank_cache(h)
             empty["centroids"] = np.zeros((0, 1))
             empty["ticket_total"] = len(slim_recs)
+            empty["error"] = f"向量模型加载失败，簇无法计算：{e}"
             _cache.update(empty)
             return
 
@@ -340,10 +365,14 @@ class ExpertiseRecall:
             cluster_tickets=tickets,
             ticket_points=points,
             ticket_total=len(slim_recs),
+            error="",
         )
+        sizes = sorted((len(g) for g in groups), reverse=True)
         logger.info(
             f"[expertise_recall] 自动簇完成: 单={len(slim_recs)} 簇={len(groups)} "
-            f"（合并阈值={self._merge_threshold} 最小团={self._min_size}）"
+            f"最大簇={sizes[0] if sizes else 0} "
+            f"（合并阈值={self._merge_threshold} 入簇={self._assign_threshold} "
+            f"最小团={self._min_size}）"
         )
 
     def _score_people(self, cluster_hits: List[Tuple[int, float]]) -> Dict[str, float]:
@@ -371,18 +400,22 @@ class ExpertiseRecall:
         if cents is None or getattr(cents, "size", 0) == 0:
             return {}
 
-        q = " ".join(filter(None, [
-            ticket.title or "",
-            ticket.problem_description or "",
-        ])).strip()
-        if not q:
-            return {}
+        from ai.agents.AiDiagnosisPlatform.assigner.recall.dispatch_text import (
+            build_dispatch_ticket_text,
+        )
+        q = build_dispatch_ticket_text(
+            ticket.title,
+            ticket.problem_description,
+            ticket.robot_type,
+            ticket.fault_code,
+            skip_empty=True,
+        )
         try:
             from ai.core import get_embed_client
             ec = await get_embed_client()
             qe = await ec.embed(q, normalize=True)
         except Exception as e:
-            logger.warning(f"[派单:{ticket.id}] Step3-L3-B 新单向量化失败: {e}")
+            logger.warning(f"[派单:{ticket.id}] Step3 问题簇 新单向量化失败: {e}")
             return {}
 
         hits = pick_cluster_ids(
@@ -392,7 +425,7 @@ class ExpertiseRecall:
             self._cluster_top_k,
         )
         if not hits:
-            logger.debug(f"[派单:{ticket.id}] Step3-L3-B 自动簇: 未落入任何簇")
+            logger.debug(f"[派单:{ticket.id}] Step3 问题簇: 未落入任何簇")
             return {}
 
         titles = _cache.get("cluster_titles") or []
@@ -402,7 +435,7 @@ class ExpertiseRecall:
             desc.append(f"#{cid}({sim:.2f}|{reps})")
         scores = self._score_people(hits)
         logger.debug(
-            f"[派单:{ticket.id}] Step3-L3-B 自动簇: 落入[{', '.join(desc)}] 聚人={len(scores)}"
+            f"[派单:{ticket.id}] Step3 问题簇: 落入[{', '.join(desc)}] 聚人={len(scores)}"
         )
         return scores
 
@@ -464,6 +497,7 @@ def cluster_snapshot_from_cache(name_by_id: Optional[Dict[str, str]] = None) -> 
         "noise": max(0, total - clustered),
         "clusters": clusters,
         "points": points,
+        "error": _cache.get("error") or "",
     }
 
 

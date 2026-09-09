@@ -11,6 +11,7 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv, dotenv_values
 from sqlalchemy import create_engine, text
@@ -59,6 +60,50 @@ def _as_iso(v) -> str:
     return str(v)
 
 
+def _parse_metadata(meta) -> dict:
+    if isinstance(meta, dict):
+        return meta
+    try:
+        return json.loads(meta) if meta else {}
+    except Exception:
+        return {}
+
+
+def build_index_record(
+    *,
+    ticket_id,
+    engineer_id: str,
+    title: str,
+    description: str,
+    task_type,
+    metadata=None,
+    finished_at=None,
+    keyword_dict: Optional[dict] = None,
+) -> dict:
+    """把一张已解决/已关闭工单收成 A 路 Qdrant 写入字段（稳定 ticket_id 覆盖）。"""
+    from ai.agents.AiDiagnosisPlatform.assigner.sync.history_sync import (
+        _extract_modules, _norm_task_type,
+    )
+
+    if keyword_dict is None:
+        from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
+        keyword_dict = AssignerConfig().module_keywords or {}
+    title = title or ""
+    desc = description or ""
+    meta = _parse_metadata(metadata)
+    return {
+        "ticket_id": ticket_id,
+        "engineer_id": engineer_id,
+        "title": title,
+        "description": desc[:2000],
+        "modules": _extract_modules(f"{title} {desc}", keyword_dict),
+        "task_type": _norm_task_type(task_type),
+        "fault_code": meta.get("fault_code") or "",
+        "robot_type": meta.get("robot_type") or "",
+        "closed_at": _as_iso(finished_at),
+    }
+
+
 def _load_history_tasks() -> list[dict]:
     """从 tasks 表拉取 resolved + closed 工单（含 engineer_id 及召回所需字段）。
 
@@ -66,12 +111,8 @@ def _load_history_tasks() -> list[dict]:
     backend app 包初始化导致的循环导入崩溃，见 _get_database_url 注释）。
     """
     from ai.agents.AiDiagnosisPlatform.assigner.settings import AssignerConfig
-    from ai.agents.AiDiagnosisPlatform.assigner.sync.history_sync import (
-        _extract_modules, _norm_task_type,
-    )
 
-    cfg = AssignerConfig()
-    keyword_dict = cfg.module_keywords or {}
+    keyword_dict = AssignerConfig().module_keywords or {}
 
     db = _get_engine().connect()
     try:
@@ -86,57 +127,35 @@ def _load_history_tasks() -> list[dict]:
 
         records = []
         for t in rows:
-            title = t["title"] or ""
-            desc = t["description"] or ""
-            combined = f"{title} {desc}"
-            meta = t["metadata_info"]
-            if not isinstance(meta, dict):
-                try:
-                    meta = json.loads(meta) if meta else {}
-                except Exception:
-                    meta = {}
             finished = t["resolved_at"] or t["closed_at"] or t["created_at"]
-            records.append({
-                "ticket_id": t["id"],
-                "engineer_id": t["assigned_to"],
-                "title": title,
-                "description": desc[:2000],
-                "modules": _extract_modules(combined, keyword_dict),
-                "task_type": _norm_task_type(t["task_type"]),
-                "fault_code": meta.get("fault_code") or "",
-                "robot_type": meta.get("robot_type") or "",
-                "closed_at": _as_iso(finished),
-            })
+            records.append(build_index_record(
+                ticket_id=t["id"],
+                engineer_id=t["assigned_to"],
+                title=t["title"] or "",
+                description=t["description"] or "",
+                task_type=t["task_type"],
+                metadata=t["metadata_info"],
+                finished_at=finished,
+                keyword_dict=keyword_dict,
+            ))
         return records
     finally:
         db.close()
 
 
-async def run_indexer(dry_run: bool = False) -> dict:
-    """执行补索引。
-
-    Args:
-        dry_run: 只统计不写入（预览模式）。
-
-    Returns:
-        {"total": 总工单数, "indexed": 成功索引数, "skipped": 跳过/失败数, "collection": 集合名}
-    """
+async def index_history_records(records: list[dict]) -> dict:
+    """把若干条历史工单 upsert 进 dispatch 集合。同一 ticket_id 覆盖写，不双条。"""
     from ai.core import get_retrieval_service
 
-    records = _load_history_tasks()
     total = len(records)
-    logger.info(f"[history_indexer] 待索引进 resolved+closed 工单: {total} 条")
+    if total == 0:
+        return {"total": 0, "indexed": 0, "skipped": 0, "collection": ""}
 
     retriever = await get_retrieval_service()
-    # 确保集合存在
     col = await retriever.ensure_dispatch_history_collection()
     if not col:
         logger.error("[history_indexer] 无法创建/定位 dispatch 集合，终止")
         return {"total": total, "indexed": 0, "skipped": total, "collection": ""}
-
-    if dry_run:
-        logger.info(f"[history_indexer] dry-run: 目标集合 {col}, 将索引 {total} 条")
-        return {"total": total, "indexed": 0, "skipped": 0, "collection": col}
 
     t0 = time.perf_counter()
     ok = 0
@@ -149,7 +168,7 @@ async def run_indexer(dry_run: bool = False) -> dict:
             else:
                 failed += 1
         except Exception as e:
-            logger.warning(f"[history_indexer] 索引失败 {r.get('title','')}: {e}")
+            logger.warning(f"[history_indexer] 索引失败 {r.get('title', '')}: {e}")
             failed += 1
 
     logger.info(
@@ -157,6 +176,22 @@ async def run_indexer(dry_run: bool = False) -> dict:
         f"耗时 {(time.perf_counter() - t0) * 1000:.0f}ms, 集合 {col}"
     )
     return {"total": total, "indexed": ok, "skipped": failed, "collection": col}
+
+
+async def run_indexer(dry_run: bool = False) -> dict:
+    """全量补索引（部署/口径变更后手动跑；日常结单走 Worker 增量）。"""
+    records = _load_history_tasks()
+    total = len(records)
+    logger.info(f"[history_indexer] 待索引进 resolved+closed 工单: {total} 条")
+
+    if dry_run:
+        from ai.core import get_retrieval_service
+        retriever = await get_retrieval_service()
+        col = await retriever.ensure_dispatch_history_collection()
+        logger.info(f"[history_indexer] dry-run: 目标集合 {col}, 将索引 {total} 条")
+        return {"total": total, "indexed": 0, "skipped": 0, "collection": col or ""}
+
+    return await index_history_records(records)
 
 
 if __name__ == "__main__":

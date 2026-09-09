@@ -1,20 +1,16 @@
-"""召回结果容器 — Step3 三路：LLM / 相似工单 / 问题域（自动簇）。"""
+"""召回结果容器 — Step3 三路：画像召回 / 相似工单 / 问题簇。"""
 
-from typing import Any, Dict
-
-
-def empty_transfer_signals() -> Dict[str, Dict[str, Any]]:
-    """L3 转派旁路占位：本版恒空，精排先削/加 L1 分再加权。"""
-    return {"boosts": {}, "penalties": {}}
+from typing import Dict
 
 
 class RecallResult:
     def __init__(self):
         self.llm_recall: Dict[str, float] = {}         # LLM 看人卡片
-        self.similar_recall: Dict[str, float] = {}     # 相似工单（A）
-        self.cluster_recall: Dict[str, float] = {}     # 问题域自动簇（B）
+        self.similar_recall: Dict[str, float] = {}     # 相似工单（近邻办案人）
+        self.cluster_recall: Dict[str, float] = {}     # 问题簇（类型熟手）
         self.llm_reasons: Dict[str, str] = {}
-        self.transfer_signals: Dict[str, Dict[str, Any]] = empty_transfer_signals()
+        self.misassign_confirmed: Dict[str, str] = {}
+        self.misassign_rejected: Dict[str, str] = {}
 
     @property
     def history_recall(self) -> Dict[str, float]:

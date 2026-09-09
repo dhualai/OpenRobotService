@@ -1697,27 +1697,36 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   const openRedispatch = useCallback((msgId: string, ov: NonNullable<Message['ticket_overview']>) => {
     const strongText = `${ov.title || ''}\n${ov.description || ''}`;
     const strongMatch = strongText.match(/指定(?:处理人|人|人员)[:：]\s*([^\]\s，,；;:：）)】]{2,6})/);
-    if (strongMatch) {
-      Toast({ message: `该工单已指定处理人「${strongMatch[1]}」，无法重新派单`, theme: 'warning' });
-      return;
-    }
     setRedispatchMsgId(msgId);
     setRedispatchOv(ov);
     setRedispatchCands(null);
     setRedispatchRefDept(null);
     setRedispatchCand(null);
     setRedispatchRemark('');
-    setShowRedispatchPopup(true);
-    // 二次派单感知增强（M2）：拉取详情 redispatch（R2 候选快照 + 当前接单人部门作为“同部门”参照）
     setRedispatchLoading(true);
     fetchRedispatch(ov.db_id)
       .then((rd) => {
+        const unresolved = (rd?.result?.profile?.specified_name || '').trim();
+        if (strongMatch && !unresolved) {
+          Toast({ message: `该工单已指定处理人「${strongMatch[1]}」，无法重新派单`, theme: 'warning' });
+          setRedispatchMsgId(null);
+          setRedispatchOv(null);
+          return;
+        }
         setRedispatchCands(rd?.candidates ?? null);
         setRedispatchRefDept(rd?.result?.profile?.dept || null);
+        setShowRedispatchPopup(true);
       })
       .catch(() => {
+        if (strongMatch) {
+          Toast({ message: `该工单已指定处理人「${strongMatch[1]}」，无法重新派单`, theme: 'warning' });
+          setRedispatchMsgId(null);
+          setRedispatchOv(null);
+          return;
+        }
         setRedispatchCands(null);
         setRedispatchRefDept(null);
+        setShowRedispatchPopup(true);
       })
       .finally(() => setRedispatchLoading(false));
   }, []);

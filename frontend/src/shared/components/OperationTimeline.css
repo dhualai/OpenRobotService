@@ -164,7 +164,23 @@
   color: #374151;
   line-height: 1.5;
   word-break: break-all;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
+
+.op-segment__kind {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  line-height: 1.6;
+  flex-shrink: 0;
+}
+.op-segment__kind--misassign { color: #b91c1c; background: rgba(239, 68, 68, 0.12); }
+.op-segment__kind--stage { color: #1d4ed8; background: rgba(59, 130, 246, 0.12); }
+.op-segment__kind--other { color: #6b7280; background: #f3f4f6; }
 
 .op-segment__sub-meta {
   display: flex;

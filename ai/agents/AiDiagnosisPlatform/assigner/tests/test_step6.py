@@ -15,7 +15,6 @@ from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, Tick
 
 def _cfg(**kwargs):
     data = dict(
-        ranker_weights={"llm_match": 0.70, "semantic_match": 0.15, "history_match": 0.15},
         job_level_penalty={1: 1.0, 2: 0.90, 3: 0.90, 99: 0.90},
         preferred_floor=0.9,
         llm_decision_topk=0,
@@ -83,10 +82,10 @@ class TestIronRulesPrompt:
 
 
 class TestRedispatchRemarkOnly:
-    """重派身份看 Step2 标签；备注有才带一句。"""
+    """重派身份看 Step2 标签；备注不与描述全文重复。"""
 
-    def test_remark_appended_when_present(self):
-        """正常流程：有备注才出现「用户重派备注」，不复述倾向人/原处理人。"""
+    def test_remark_appended_when_not_in_description(self):
+        """正常流程：描述里还没有备注时，才单独带一句全文。"""
         prompt = LlmDecision(_cfg())._build_prompt(
             _ticket(
                 preferred_assignee="u-a",
@@ -101,6 +100,22 @@ class TestRedispatchRemarkOnly:
         assert "【用户重新派单意图】" not in prompt
         assert "用户指定倾向处理人" not in prompt
         assert "原处理人（用户重派前要换掉的）" not in prompt
+
+    def test_remark_not_duplicated_when_already_in_description(self):
+        """正常流程：assign_ticket 已把备注拼进描述时，Step6 只留一句提示。"""
+        remark = "请换更熟现场的人"
+        prompt = LlmDecision(_cfg())._build_prompt(
+            _ticket(
+                problem_description=f"车子停了\n【重新派单备注】{remark}",
+                preferred_assignee="u-a",
+                preferred_assignee_remark=remark,
+            ),
+            [_eng("u-a", "甲")], RecallResult(), _ranked("u-a"),
+        )
+        assert prompt.count(remark) == 1
+        assert "用户重派备注已写在工单描述末尾，按该意图换人。" in prompt
+        assert f"用户重派备注：{remark}" not in prompt
+        assert "【重新派单备注】" in prompt
 
 
 class TestProductAppendix:
@@ -201,7 +216,7 @@ class TestRecallSourceOnPrompt:
     """并集候选人要把命中哪几路带给仲裁。"""
 
     def test_prompt_lists_path_hits_and_outside_tighten(self):
-        """正常流程：来源行含 LLM / 问题域，以及历史捞回说明。"""
+        """正常流程：来源行含 画像 / 问题簇，以及历史捞回说明。"""
         ranked = {
             "u-a": {
                 "total_score": 0.9, "llm_score": 1.0, "similar_score": 0.0,
@@ -219,10 +234,10 @@ class TestRecallSourceOnPrompt:
         prompt = LlmDecision(_cfg())._build_prompt(
             _ticket(), [_eng("u-a", "甲"), _eng("u-c", "丙")], RecallResult(), ranked,
         )
-        assert "来源: LLM" in prompt
-        assert "来源: 问题域" in prompt
+        assert "来源: 画像" in prompt
+        assert "来源: 问题簇" in prompt
         assert "不在部门/产品收紧名单，由历史捞回" in prompt
-        assert "LLM未召回" in prompt
+        assert "画像未召回" in prompt
 
 
 class TestNoTop1Fallback:

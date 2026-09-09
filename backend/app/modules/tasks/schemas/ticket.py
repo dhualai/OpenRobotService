@@ -50,6 +50,11 @@ class TicketUpdate(BaseModel):
     curr_step_endtime: Optional[datetime] = Field(None, description="当前阶段截止时间（更新时同步 deadline_at，对用户不可见）")
     # 用于操作日志识别，不入库
     operation_type: Optional[str] = Field(None, description="操作类型：escalate/return/reassign/update")
+    reassign_kind: Optional[str] = Field(
+        None,
+        description="转派类型：misassign=派错了 / stage=阶段转派 / other=其它。仅 misassign 进入派单学习",
+    )
+    reassign_reason: Optional[str] = Field(None, description="转派原因（选填；有则落日志，并再写一条评论给人看）")
 
 
 class TicketCommentBase(BaseModel):

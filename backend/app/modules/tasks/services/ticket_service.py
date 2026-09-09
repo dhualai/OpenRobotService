@@ -715,8 +715,11 @@ class TicketService:
         if not ticket:
             return {"ticket": None, "notification": None}
 
-        # operation_type 仅用于操作日志识别，不入库、不入通知（与 API 层及 schema 注释一致）
-        update_data = ticket_update.dict(exclude_unset=True, exclude={'operation_type'})
+        # operation_type / 转派类型原因仅用于操作日志，不入库
+        update_data = ticket_update.dict(
+            exclude_unset=True,
+            exclude={'operation_type', 'reassign_kind', 'reassign_reason'},
+        )
 
         for field, value in update_data.items():
             if field == "deadline_at":

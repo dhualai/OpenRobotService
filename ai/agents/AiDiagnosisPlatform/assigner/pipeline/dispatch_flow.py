@@ -16,9 +16,9 @@
         │
         ▼
     【Step 3 三路召回】
-        ├── LLM：看人卡片推断谁能接
-        ├── 相似工单：最像的已解决/已关闭单 → 按人（可空）
-        └── 问题域：自动簇里谁常结单（可空）
+        ├── 画像召回：看职责卡片推断谁能接
+        ├── 相似工单：近邻旧单的处理人（可空）
+        └── 问题簇：这类问题堆里的常客（可空）
         │
         ▼
     【Step 4 精排】三路各自归一；空路权重摊给有人的路；职级折扣 × 部门soft_prior；倾向人保底；对接人只打标
@@ -53,9 +53,7 @@ from ai.agents.AiDiagnosisPlatform.assigner.ranking.tags import (
     score_tag_labels,
 )
 from ai.agents.AiDiagnosisPlatform.assigner.recall.recall_result import RecallResult
-from ai.agents.AiDiagnosisPlatform.assigner.recall.history_recall import (
-    HistoryRecall, invalidate_history_cache,
-)
+from ai.agents.AiDiagnosisPlatform.assigner.recall.history_recall import HistoryRecall
 from ai.agents.AiDiagnosisPlatform.assigner.recall.expertise_recall import (
     ExpertiseRecall, invalidate_expertise_cache,
 )
@@ -182,8 +180,8 @@ class DispatchFlow:
         self._config = config or AssignerConfig()
         self._tightener = CandidateTightener(config=self._config)
         self._llm_recall = LlmRecall(config=self._config)
-        self._history_recall = HistoryRecall(config=self._config)      # L3-A：相似工单聚人
-        self._expertise_recall = ExpertiseRecall(config=self._config)   # L3-B：自动簇聚人
+        self._history_recall = HistoryRecall(config=self._config)      # 相似工单：近邻聚人
+        self._expertise_recall = ExpertiseRecall(config=self._config)   # 问题簇：类型熟手
         self._ranker = Ranker(config=self._config)
         self._llm_decision = LlmDecision(config=self._config)
         self._fallback_decision = FallbackDecision(config=self._config)
@@ -338,12 +336,13 @@ class DispatchFlow:
                     f" -> 候选 {len(candidates)}人"
                 )
 
-        # ── Step 3: 三路召回（LLM / 相似工单 / 问题域），后两路可空 ──
+        # ── Step 3: 三路召回（画像 / 相似工单 / 问题簇），后两路可空 ──
         recall_result = RecallResult()
+        sim_fb: Dict[str, Dict[str, str]] = {}
         try:
             l1_fut, sim_fut, clu_fut = await asyncio.gather(
                 self._llm_recall.arecall(ticket=ticket_context, engineers=candidates),
-                self._history_recall.arecall(ticket=ticket_context),
+                self._history_recall.arecall(ticket=ticket_context, feedback=sim_fb),
                 self._expertise_recall.arecall(ticket=ticket_context),
                 return_exceptions=True,
             )
@@ -352,13 +351,13 @@ class DispatchFlow:
             l1_fut = sim_fut = clu_fut = {}
 
         if isinstance(l1_fut, Exception):
-            logger.warning(f"{ltag} Step3 LLM召回异常: {l1_fut}")
+            logger.warning(f"{ltag} Step3 画像召回异常: {l1_fut}")
             recall_result.llm_recall = {}
         else:
             recall_result.llm_recall = l1_fut or {}
             recall_result.llm_reasons = dict(getattr(self._llm_recall, "last_reasons", {}) or {})
             self._log_recall_top(
-                ltag, "LLM", recall_result.llm_recall, candidates, "LLM召回(逐人置信)", count=8,
+                ltag, "画像", recall_result.llm_recall, candidates, "画像召回(逐人置信)", count=8,
             )
 
         if isinstance(sim_fut, Exception):
@@ -366,6 +365,8 @@ class DispatchFlow:
             recall_result.similar_recall = {}
         else:
             recall_result.similar_recall = sim_fut or {}
+            recall_result.misassign_confirmed = dict(sim_fb.get("confirmed") or {})
+            recall_result.misassign_rejected = dict(sim_fb.get("rejected") or {})
             self._log_recall_top(
                 ltag, "相似", recall_result.similar_recall, candidates, "相似工单(可空)", count=8,
             )
@@ -373,18 +374,15 @@ class DispatchFlow:
             logger.info(f"{ltag} Step3 相似工单: 空")
 
         if isinstance(clu_fut, Exception):
-            logger.warning(f"{ltag} Step3 问题域召回异常: {clu_fut}")
+            logger.warning(f"{ltag} Step3 问题簇召回异常: {clu_fut}")
             recall_result.cluster_recall = {}
         else:
             recall_result.cluster_recall = clu_fut or {}
             self._log_recall_top(
-                ltag, "问题域", recall_result.cluster_recall, candidates, "问题域自动簇(可空)", count=8,
+                ltag, "问题簇", recall_result.cluster_recall, candidates, "问题簇(可空)", count=8,
             )
         if not recall_result.cluster_recall:
-            logger.info(f"{ltag} Step3 问题域: 空")
-
-        recall_result.transfer_signals = self._history_recall.empty_transfer_signals()
-        logger.info(f"{ltag} Step3 转派旁路 transfer_signals=empty")
+            logger.info(f"{ltag} Step3 问题簇: 空")
 
         # ── Step 4: 精排 + 职级折扣（对接人只打标；倾向人 max(分, preferred_floor)）──
         ranked_scores = self._ranker.rank(
@@ -561,7 +559,6 @@ class DispatchFlow:
             nm = eng.name if eng else "未知"
             if eng and nm in _dup:
                 nm = f"{nm}({eng.id})"
-            load = f"在途={d['load_count']}" if 'load_count' in d else ""
             tag = "".join(f" [{t}]" for t in score_tag_labels(d))
             parts.append(
                 f"#{rank} {nm}(L{d.get('job_level','?')}) "
@@ -569,7 +566,7 @@ class DispatchFlow:
                 f"LLM={d.get('llm_score',0):.2f} "
                 f"相似={d.get('similar_score', d.get('history_score',0)):.2f} "
                 f"簇={d.get('cluster_score',0):.2f}"
-                f"{load}{tag}"
+                f"{tag}"
             )
         logger.info(f"{ltag} {prefix} | " + " | ".join(parts))
 
@@ -778,84 +775,6 @@ class DispatchFlow:
             return to_user_id(prev) or prev
         except Exception:
             return prev
-
-    # ── Step 5 实现: 负载均衡（对全体候选人按在途工单数打折，带查询缓存）──
-    _workload_cache: Dict[str, object] = {}  # {"ts": float, "data": {engineer_id: 在途数}}
-
-    def _apply_load_balance(
-        self, ranked_scores: Dict[str, Dict[str, float]],
-    ) -> Dict[str, Dict[str, float]]:
-        """对进入精排的全部候选人按在途工单数打折，避免单子集中在少数人。
-
-        负载系数 = 1 / (1 + 在途数 × step)。对所有 rank 候选人统一施加；
-        在途为 0 的人系数=1（不被打折）。在途数查询带短 TTL 缓存，降低 DB 压力。
-        """
-        lb_cfg = self._config.load_balance or {}
-        if not lb_cfg.get("enabled", True):
-            return ranked_scores
-        step = float(lb_cfg.get("step", 0.15))
-        if not ranked_scores:
-            return ranked_scores
-
-        # 查询全体候选人的在途工单数（含缓存）
-        workload = self._query_workload()
-        if not workload:
-            return ranked_scores
-
-        for eid in ranked_scores:
-            count = workload.get(eid, 0)
-            factor = 1.0 / (1.0 + count * step)
-            old_total = ranked_scores[eid].get("total_score", 0.0)
-            ranked_scores[eid]["load_factor"] = factor
-            ranked_scores[eid]["load_count"] = count
-            ranked_scores[eid]["total_score"] = round(old_total * factor, 4)
-            if count and logger.isEnabledFor(10):
-                logger.debug(
-                    f"Step5 负载均衡: {eid} 在途={count} 系数={factor:.2f} "
-                    f"分={old_total:.2f}→{ranked_scores[eid]['total_score']:.2f}"
-                )
-
-        return dict(sorted(ranked_scores.items(), key=lambda x: x[1]["total_score"], reverse=True))
-
-    @classmethod
-    def _query_workload(cls, ttl: float = 30.0) -> Dict[str, int]:
-        """查询全体候选工程师的在途工单数（tasks.assigned_to 统计，status 非 closed）。
-
-        结果做短 TTL 模块级缓存（默认 30s），避免高频派单时每张工单都查库。
-        Returns: {engineer_id: 在途数}；查询失败返回空 dict（不阻断派单）。
-        """
-        cache = cls._workload_cache
-        import time as _t
-        now = _t.time()
-        if cache.get("ts") and (now - cache["ts"]) < ttl:
-            return cache["data"]
-
-        try:
-            from app.models.task import Task
-            from app.core.db import SessionLocal
-            from sqlalchemy import func
-
-            db = SessionLocal()
-            try:
-                rows = (
-                    db.query(Task.assigned_to, func.count(Task.id))
-                    .filter(
-                        Task.assigned_to.isnot(None),
-                        Task.assigned_to != "",
-                        Task.status != "closed",
-                    )
-                    .group_by(Task.assigned_to)
-                    .all()
-                )
-                data = {uid: cnt for uid, cnt in rows if uid}
-                cache["ts"] = now
-                cache["data"] = data
-                return data
-            finally:
-                db.close()
-        except Exception as e:
-            logger.warning(f"Step5 查询在途工单失败，跳过负载均衡: {e}")
-            return {}
 
     # ── Step 0 实现: 识别提单人期望接单人（强信号 + LLM 兜底）──
     # 强信号：提单 Agent 结构化输出的"[指定处理人：贾爽]"等格式
@@ -1245,5 +1164,15 @@ class DispatchFlow:
 
     def reload_config(self):
         self._config.reload()
-        invalidate_history_cache()
         invalidate_expertise_cache()
+        from ai.agents.AiDiagnosisPlatform.assigner.sync.history_sync import (
+            invalidate_cache as invalidate_history_sync,
+        )
+        from ai.agents.AiDiagnosisPlatform.assigner.sync.engineers_sync import (
+            invalidate_cache as invalidate_personnel,
+        )
+        invalidate_history_sync()
+        invalidate_personnel()
+        rec = getattr(self, "_expertise_recall", None)
+        if rec is not None and hasattr(rec, "reload_cluster_params"):
+            rec.reload_cluster_params()

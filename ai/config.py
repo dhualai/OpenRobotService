@@ -89,6 +89,10 @@ class AIConfig(BaseModel):
 
     # ========== Embedding ==========
     embedding_model_name: str = Field(default="BAAI/bge-base-zh-v1.5")
+    embedding_model_local: str = Field(
+        default="",
+        description="本机 embedding 目录；服务器路径不存在时用",
+    )
     embedding_device: str = Field(default="cpu")
     embedding_batch_size: int = Field(default=32)
     embedding_cache_size: int = Field(default=10000)
@@ -298,6 +302,7 @@ def get_ai_config() -> AIConfig:
         redis_ttl=int(os.getenv("REDIS_TTL", "0")),
         # Embedding
         embedding_model_name=os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-base-zh-v1.5"),
+        embedding_model_local=os.getenv("EMBEDDING_MODEL_LOCAL", ""),
         embedding_device=os.getenv("EMBEDDING_DEVICE", "cpu"),
         embedding_batch_size=int(os.getenv("EMBEDDING_BATCH_SIZE", "32")),
         embedding_cache_size=int(os.getenv("EMBEDDING_CACHE_SIZE", "10000")),

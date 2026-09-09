@@ -1,24 +1,13 @@
-"""L3-A路 历史召回：Qdrant 语义检索相似历史工单 → 按 engineer_id 聚合
+"""Step3·相似工单：Qdrant 检索近邻历史单 → 按处理人聚合。
 
-这是历史召回（L3）的 A路——「按相似工单聚人」：
-- 从 Qdrant dispatch_history 检索与当前工单相似的已解决/已关闭工单
-- 按解决人（engineer_id）聚合
+看的是「像这张单的旧单上当时谁结的」。一张极像的旧单就能把人捞上来。
+数据源：Qdrant dispatch_history；结单增量写入，开发者模式可全量补索引。
 
-数据源：Qdrant 独立集合 dispatch_history（见 ai/core/retrieval.py，
-index_dispatch_history / retrieve_dispatch_history），由补索引脚本
-（sync/history_indexer.py）写入 resolved+closed，每条 payload 带 engineer_id。
-
-与之并行的问题域一路（见 recall/expertise_recall.py）按自动簇聚人。
-两路独立进精排，不再合成一路；本路可空。
-
-召回增强（相比纯余弦平均）：
-1. 时间衰减：A/B 共用 time_decay，尽头 0.4（不会掉到 0）
-2. 人分取该人各张旧单的最高分，截到 1.0；只有一张不打折
-3. 故障码/车型强匹配：历史工单若与当前工单故障码/车型相同，直接 boost
+与 [问题簇] 并行：那边看的是一类问题堆里的常客。两路独立进精排，本路可空。
 """
 
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -30,21 +19,6 @@ from ai.agents.AiDiagnosisPlatform.assigner.recall.dispatch_text import (
 from ai.core.logging import get_logger
 
 logger = get_logger("ASSIGNER")
-
-
-def similar_person_score(ticket_scores: List[float]) -> float:
-    """相似工单人分：取各张最高，截到 1.0。只有一张就是那张，不打七折。"""
-    if not ticket_scores:
-        return 0.0
-    return round(min(1.0, max(float(s) for s in ticket_scores)), 4)
-
-
-# 兼容：旧实现用的缓存（Qdrant 化后不再用，保留惰性清理）
-_cache = {
-    "hist_recs": [],
-    "hist_embs": [],
-    "hist_hash": "",
-}
 
 
 def time_decay_factor(
@@ -67,6 +41,85 @@ def similar_person_score(ticket_scores: List[float]) -> float:
     if not ticket_scores:
         return 0.0
     return round(min(1.0, max(float(s) for s in ticket_scores)), 4)
+
+
+MISASSIGN_FEED = "reassign"
+
+
+def score_similar_hits(
+    hits: List[dict],
+    *,
+    sim_threshold: float,
+    half_life_days: float,
+    decay_floor: float,
+    cur_fault: str = "",
+    cur_robot: str = "",
+    fault_boost: float = 0.15,
+    type_boost: float = 0.10,
+    confirm_boost: float = 0.15,
+    reject_factor: float = 0.70,
+    extra_pairs: Optional[List[dict]] = None,
+) -> Tuple[Dict[str, float], Dict[str, str], Dict[str, str]]:
+    """把检索命中聚成人分。纠错样本加减分；相似单上发生过派错了也压原处理人。
+
+    extra_pairs: [{from_id, to_id, reason}]，由相似命中的 ticket_id 反查操作日志。
+    """
+    per_engineer: Dict[str, List[float]] = {}
+    confirmed: Dict[str, str] = {}
+    rejected: Dict[str, str] = {}
+    cur_fault = (cur_fault or "").strip().lower()
+    cur_robot = (cur_robot or "").strip().lower()
+
+    for h in hits:
+        sim = float(h.get("score", 0.0))
+        if sim < sim_threshold:
+            continue
+        eid = (h.get("engineer_id") or "").strip()
+        if not eid:
+            continue
+
+        decay = time_decay(
+            h.get("closed_at"), half_life_days, decay_floor,
+        )
+        rec_fault = (h.get("fault_code") or "").strip().lower()
+        rec_robot = (h.get("robot_type") or "").strip().lower()
+        boost = 0.0
+        if cur_fault and cur_fault == rec_fault:
+            boost += fault_boost
+        if cur_robot and cur_robot == rec_robot:
+            boost += type_boost
+
+        final = sim * decay + boost
+        feed = (h.get("feed_type") or "normal").strip()
+        reason = (h.get("reason") or "").strip()
+        if feed == MISASSIGN_FEED:
+            final = min(1.0, final + max(float(confirm_boost), 0.0))
+            confirmed[eid] = reason or confirmed.get(eid, "")
+            rid = (h.get("rejected_id") or "").strip()
+            if rid and rid != eid:
+                rejected[rid] = reason or rejected.get(rid, "")
+
+        per_engineer.setdefault(eid, []).append(final)
+
+    for pair in extra_pairs or []:
+        a = str((pair or {}).get("from_id") or "").strip()
+        b = str((pair or {}).get("to_id") or "").strip()
+        reason = str((pair or {}).get("reason") or "").strip()
+        if b:
+            confirmed[b] = reason or confirmed.get(b, "")
+        if a and a != b:
+            rejected[a] = reason or rejected.get(a, "")
+
+    his: Dict[str, float] = {}
+    for eid, finals in per_engineer.items():
+        his[eid] = similar_person_score(finals)
+
+    factor = min(max(float(reject_factor), 0.0), 1.0)
+    for rid in rejected:
+        if rid in his:
+            his[rid] = round(his[rid] * factor, 4)
+
+    return his, confirmed, rejected
 
 
 def time_decay(
@@ -103,12 +156,15 @@ class HistoryRecall:
         self._config = config or AssignerConfig()
         # 召回增强参数（从 config.yaml 的 history_recall 读取）
         hc = self._config.history_recall or {}
-        self._top_k = int(hc.get("top_k", 5))
+        # retrieve_top_k：Qdrant 检索条数。缺省 30；不要回落到旧键 top_k=5，会把召回收窄。
+        self._retrieve_top_k = max(1, int(hc.get("retrieve_top_k", 30)))
         self._half_life_days = float(hc.get("half_life_days", 90))
         self._decay_floor = float(hc.get("decay_floor", 0.4))
         self._sim_threshold = float(hc.get("sim_threshold", 0.3))
         self._fault_boost = float(hc.get("fault_code_boost", 0.15))
         self._type_boost = float(hc.get("robot_type_boost", 0.10))
+        self._confirm_boost = float(hc.get("misassign_confirm_boost", 0.15))
+        self._reject_factor = float(hc.get("misassign_reject_factor", 0.70))
         self._retriever = None
 
     def _build_query_text(self, ticket: TicketContext) -> str:
@@ -126,71 +182,57 @@ class HistoryRecall:
             self._retriever = await get_retrieval_service()
         return self._retriever
 
-    async def arecall(self, ticket: TicketContext) -> Dict[str, float]:
+    async def arecall(
+        self,
+        ticket: TicketContext,
+        feedback: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> Dict[str, float]:
         """A路：从 Qdrant 检索相似历史工单 → 按 engineer_id 聚合成分数。
 
-        Returns:
-            his: {engineer_id: score} — 历史工单匹配分数（0-1 未归一，供融合）
+        feedback 若传入，写入 confirmed / rejected（派错纠正样本）。
         """
         retriever = await self._get_retriever()
         q = self._build_query_text(ticket)
         if not q.strip():
             return {}
 
-        # 当前工单的故障码/车型（用于强匹配）
-        cur_fault = (ticket.fault_code or "").strip().lower()
-        cur_robot = (ticket.robot_type or "").strip().lower()
-
-        # 从 Qdrant 检索相似历史工单（返回带 engineer_id 的原始 points）
-        hits = await retriever.retrieve_dispatch_history(q, top_k=30)
+        hits = await retriever.retrieve_dispatch_history(q, top_k=self._retrieve_top_k)
         if not hits:
-            logger.debug(f"[派单:{ticket.id}] Step3-L3-A 相似工单: 无检索命中")
+            logger.debug(f"[派单:{ticket.id}] Step3 相似工单: 无检索命中")
             return {}
 
-        # 逐条算最终分：sim×融合 + 故障码/车型 boost，再按 engineer_id 聚合
-        per_engineer: Dict[str, List[float]] = {}
-        for h in hits:
-            sim = float(h.get("score", 0.0))
-            if sim < self._sim_threshold:
-                continue
-            eid = (h.get("engineer_id") or "").strip()
-            if not eid:
-                continue
-
-            decay = time_decay(
-                h.get("closed_at"), self._half_life_days, self._decay_floor,
+        extra_pairs = []
+        try:
+            from ai.agents.AiDiagnosisPlatform.assigner.sync.reassign_stats import (
+                load_correction_pairs,
             )
-            rec_fault = (h.get("fault_code") or "").strip().lower()
-            rec_robot = (h.get("robot_type") or "").strip().lower()
-            boost = 0.0
-            if cur_fault and cur_fault == rec_fault:
-                boost += self._fault_boost
-            if cur_robot and cur_robot == rec_robot:
-                boost += self._type_boost
+            tids = [h.get("ticket_id") for h in hits if h.get("ticket_id")]
+            extra_pairs = load_correction_pairs(tids) or []
+        except Exception as e:
+            logger.warning(f"[派单:{ticket.id}] Step3 相似工单 纠错对反查失败: {e}")
 
-            final = sim * decay + boost
-            per_engineer.setdefault(eid, []).append(final)
-
-        his: Dict[str, float] = {}
-        for eid, finals in per_engineer.items():
-            his[eid] = similar_person_score(finals)
-
+        his, confirmed, rejected = score_similar_hits(
+            hits,
+            sim_threshold=self._sim_threshold,
+            half_life_days=self._half_life_days,
+            decay_floor=self._decay_floor,
+            cur_fault=ticket.fault_code or "",
+            cur_robot=ticket.robot_type or "",
+            fault_boost=self._fault_boost,
+            type_boost=self._type_boost,
+            confirm_boost=self._confirm_boost,
+            reject_factor=self._reject_factor,
+            extra_pairs=extra_pairs,
+        )
+        if feedback is not None:
+            feedback["confirmed"] = confirmed
+            feedback["rejected"] = rejected
+        extra = ""
+        if confirmed or rejected:
+            extra = f" 纠正+{len(confirmed)} 错派-{len(rejected)}"
         logger.debug(
-            f"[派单:{ticket.id}] Step3-L3-A 相似工单: 检索{len(hits)}条(过阈值{sum(1 for h in hits if float(h.get('score',0)) >= self._sim_threshold)}) "
-            f"聚人={len(his)}人"
+            f"[派单:{ticket.id}] Step3 相似工单: 检索{len(hits)}条"
+            f"(过阈值{sum(1 for h in hits if float(h.get('score',0)) >= self._sim_threshold)}) "
+            f"聚人={len(his)}人{extra}"
         )
         return his
-
-    @staticmethod
-    def empty_transfer_signals() -> Dict:
-        """L3 转派旁路：本版恒返回空，不改 reassign / 不写 Qdrant。"""
-        from ai.agents.AiDiagnosisPlatform.assigner.recall.recall_result import empty_transfer_signals
-        return empty_transfer_signals()
-
-
-def invalidate_history_cache():
-    """清理兼容性缓存（Qdrant 化后无本地全量缓存，保留以防旧引用）"""
-    global _cache
-    _cache["hist_recs"] = []
-    _cache["hist_embs"] = []
-    _cache["hist_hash"] = ""
