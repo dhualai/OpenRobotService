@@ -2357,6 +2357,13 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     const projectNameVal = draftField('project').trim();
     const isDual = ticketConfirm.dualTicket;
 
+    // 工单类型必填：下拉已删空占位项，但 AI 草稿 type 缺失/不在枚举内时浏览器会默认
+    // 选中第一项（报障）作为显示文本，state 仍为空 → 此处拦下避免提交生成空类型工单。
+    if (!draftField('type').trim()) {
+      Toast({ message: '请选择工单类型', theme: 'warning' });
+      return;
+    }
+
     // 校验：非双工单要求 project_id；双工单要求项目负责人
     if (!isDual && !projectIdVal) {
       Toast({
@@ -2903,7 +2910,9 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                     void loadTicketSteps(t);
                   }}
                 >
-                  <option value="">请选择工单类型</option>
+                  {/* 不展示空占位项：用户误选「请选择工单类型」会提交生成空类型工单。
+                      AI 草稿 type 缺失时 select 显示第一项（报障），但 state 仍为空，
+                      由 handleConfirmTicket 的非空校验兜底拦截。 */}
                   {Object.entries(TICKET_TYPE_LABEL).map(([value, label]) => (
                     <option key={value} value={value}>{label}</option>
                   ))}
@@ -2944,9 +2953,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                   value={selectedStepId ?? ''}
                   onChange={(e) => setDraftField('curr_step_id', e.target.value)}
                 >
-                  {stepsLoading
-                    ? <option value="">加载中…</option>
-                    : <option value="">请选择本工单预期的处理阶段</option>}
+                  {stepsLoading && <option value="">加载中…</option>}
                   {ticketSteps.map((s) => (
                     <option key={s.id} value={s.id}>{s.step_name}</option>
                   ))}
