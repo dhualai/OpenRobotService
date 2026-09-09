@@ -78,6 +78,10 @@ def build_exam(all_mode=False):
         cls = cls_all.get(cid)
         if not cls or len(cls) != len(c["rounds"]):
             continue
+        # 测试组=自测流量，预标/判定只跑真实组（0909：占 55% 白烧 LLM）；
+        # DAR_INCLUDE_TEST=1 可开回（要看测试组交叉对比时）
+        if c["is_tester"] and os.environ.get("DAR_INCLUDE_TEST") != "1":
+            continue
         if all_mode:
             manual = sorted({0, *(i for i in range(1, len(c["rounds"]))
                                   if cls[i]["t"] != cls[i - 1]["t"])})
@@ -170,7 +174,8 @@ async def main():
     all_mode = "--all" in sys.argv
     out_path = ALL_OUT if all_mode else JUDGE_OUT
     exam = build_exam(all_mode)
-    print(f"考卷 {len(exam)} 段（{'全部段·预标' if all_mode else '真实组人工已标·校准'}）")
+    print(f"考卷 {len(exam)} 段（{'真实组全部段·预标' if all_mode else '真实组人工已标·校准'}；"
+          "测试组默认不判，DAR_INCLUDE_TEST=1 开回）")
     platform = await get_diagnosis_platform()
     await platform._ensure_clients()  # 懒加载只在 run 入口触发，直连检索前必须显式初始化
     llm = await get_dar_client()

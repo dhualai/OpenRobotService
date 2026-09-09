@@ -92,6 +92,10 @@ def build_rows():
     for c in convs:
         cid = str(c["conversation_id"])
         grp = "测试组" if c["is_tester"] else "真实组"
+        # 测试组=自测流量（0909 起默认不判，占 55% 纯烧时间）；
+        # DAR_INCLUDE_TEST=1 开回（周报测试组交叉块要有数据时）
+        if grp == "测试组" and os.environ.get("DAR_INCLUDE_TEST") != "1":
+            continue
         rounds = c["rounds"]
         cls = cls_all.get(cid)
         if not cls or len(cls) != len(rounds):
@@ -160,7 +164,7 @@ async def main():
     if n_hit or n_err:
         print(f"增量：{n_hit}/{len(rows)} 段复用已判结果，补跑 {len(rows) - n_hit} 段")
     todo = [r for r in rows if r.get("verdict") not in ("yes", "partial", "no")]
-    print(f"待验证 {len(todo)} 条咨询段（真实组+测试组）")
+    print(f"待验证 {len(todo)} 条咨询段（真实组；测试组默认不判，DAR_INCLUDE_TEST=1 开回）")
     if todo:
         platform = await get_diagnosis_platform()
         await platform._ensure_clients()  # 懒加载只在 run 入口触发，直连检索前必须显式初始化
