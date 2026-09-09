@@ -246,7 +246,9 @@ async def run_api_suite(suite: str, cases: list, base: str, token: str, counted)
             queue = list(turns)
             auto_ans = 0
             while queue and len(turns_out) < len(turns) + 6:
-                r = await _ask_turn(base, token, sid, queue.pop(0))
+                text = queue.pop(0)
+                r = await _ask_turn(base, token, sid, text)
+                r["q"] = text
                 turns_out.append(r)
                 if "review" in r["stages"]:
                     review_hit = True
@@ -296,11 +298,14 @@ async def run_api_suite(suite: str, cases: list, base: str, token: str, counted)
                                     f"落库记录缺关键词: {row_text[:120]}")
                     if c.get("after_confirm_ask") and not extra_fails:
                         r2 = await _ask_turn(base, token, sid, c["after_confirm_ask"])
+                        r2["q"] = c["after_confirm_ask"]
                         turns_out.append(r2)
             detail = {
                 "query": c.get("query") or turns[0],
                 "turns_run": len(turns_out),
                 "stages": [t["stages"] for t in turns_out],
+                "turns_qa": [{"q": t.get("q", ""),
+                              "a": (t["answer"] or "")[:400]} for t in turns_out],
                 "answer_head": (turns_out[-1]["answer"] if turns_out else "")[:400],
                 "first_ms": turns_out[0].get("first_ms") if turns_out else None,
                 "ms": round((time.time() - t0) * 1000),

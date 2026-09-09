@@ -814,7 +814,7 @@ $("#regrun").onclick = async ()=>{
           <span style="flex:1"></span><span class="hint">${esc(facts.join(" · "))}</span></summary>
           <div style="padding:8px 4px 2px;font-size:12.5px;color:var(--ink2)">
             <div>问句：${esc(det.query||"")}</div>${detl}
-            ${det.answer_head?`<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--ink3)">回答（前 400 字）</summary><div style="white-space:pre-wrap;padding:6px 0">${esc(det.answer_head)}</div></details>`:""}
+            ${(det.turns_qa||[]).length?`<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--ink3)">每轮问答（${det.turns_qa.length} 轮，各前 400 字）</summary>${det.turns_qa.map((t,i)=>`<div style="padding:6px 0;border-top:1px dashed var(--line)"><div>第 ${i+1} 轮问：${esc(t.q)}</div><div style="white-space:pre-wrap;padding:4px 0">答：${esc(t.a)}</div></div>`).join("")}</details>`:(det.answer_head?`<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--ink3)">回答（前 400 字）</summary><div style="white-space:pre-wrap;padding:6px 0">${esc(det.answer_head)}</div></details>`:"")}
             ${det.docs_head?`<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--ink3)">送 prompt 资料（前 300 字）</summary><div style="white-space:pre-wrap;padding:6px 0">${esc(det.docs_head)}</div></details>`:""}
             ${det.error?`<div style="color:var(--danger)">${esc(det.error)}</div>`:""}
           </div>`;
