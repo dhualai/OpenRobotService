@@ -560,6 +560,93 @@ def _realtime_rates(env: str):
     return rt
 
 
+def _realtime_small(env: str):
+    """小卡即时算：KB 缺口←第 3 步检索判定、标注进度/L3 precision/预标×人工
+    对齐与召回←judge × 人工标注文件（标注现值优先于 judge 时的快照）。
+    平均解决轮次仍由周报出（依赖第五步吸收 review）。"""
+    from collections import Counter as _Ctr
+    proc = os.path.join(DATA_ROOT, env, "processed")
+    small = []
+    fr = sorted(glob.glob(os.path.join(proc, "retrieval_check_*.json")))
+    if fr:
+        try:
+            rows = json.load(open(fr[-1], encoding="utf-8"))
+            sub = [r for r in rows if r.get("grp") == "真实组"
+                   and r.get("verdict") in ("yes", "partial", "no")]
+            if sub:
+                no = sum(1 for r in sub if r["verdict"] == "no")
+                small.append({"label": "KB 缺口率",
+                              "value": f"{no / len(sub) * 100:.1f}%",
+                              "sub": f"真实组检索 no {no}/{len(sub)}（知识库没有答案）"})
+        except Exception:
+            pass
+    manual = {"test": "manual_segmentation.json",
+              "prod": "manual_segmentation_prod.json"}[env]
+    mp = os.path.expanduser(os.path.join("~", "Downloads", manual))
+    split = os.path.join(proc, "conversations_split.jsonl")
+    fj = sorted(glob.glob(os.path.join(proc, "l3_judge_all_*.json")))
+    if not (os.path.exists(mp) and os.path.exists(split) and fj):
+        return small
+    try:
+        legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+        labs_man = {}
+        for cid, lm in (json.load(open(mp, encoding="utf-8")).get("labels") or {}).items():
+            labs_man[str(cid)] = {int(k): legacy.get(v, v) for k, v in lm.items()
+                                  if str(k).isdigit()}
+        convs = {}
+        with open(split, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    c = json.loads(line)
+                    convs[str(c["conversation_id"])] = c
+        n_real_segs = 0  # 真实组总段数：有 cls 的会话按 topic 变化计数
+        clsf = os.path.join(proc, "conversations_classified.jsonl")
+        if os.path.exists(clsf):
+            cls_all = {str(j["conversation_id"]): j["cls"] for j in
+                       (json.loads(l) for l in open(clsf, encoding="utf-8") if l.strip())}
+            n_real_segs = sum(
+                1 + sum(1 for i in range(1, len(cls_all[cid]))
+                        if cls_all[cid][i]["topic"] != cls_all[cid][i - 1]["topic"])
+                for cid, c in convs.items()
+                if not c.get("is_tester") and cid in cls_all
+                and len(cls_all[cid]) == len(c["rounds"]))
+        n_lab = sum(len(lm) for cid, lm in labs_man.items()
+                    if cid in convs and not convs[cid].get("is_tester"))
+        if n_real_segs:
+            small.append({"label": "标注进度",
+                          "value": f"{n_lab}/{n_real_segs}",
+                          "sub": "真实组人工标签覆盖（L2）"})
+        rows = json.load(open(fj[-1], encoding="utf-8"))
+        labs4 = ("直接提单", "直答正确", "未直答", "未覆盖")
+        hit, tot, cm = _Ctr(), _Ctr(), _Ctr()
+        for r in rows:
+            lab = labs_man.get(str(r["cid"]), {}).get(r.get("astart")) or r.get("lab")
+            pre = r.get("pre")
+            if lab in labs4 and pre in labs4:
+                tot[pre] += 1
+                hit[pre] += pre == lab
+                cm[(lab, pre)] += 1
+        n_hit, n_tot = sum(hit.values()), sum(tot.values())
+        if n_tot:
+            small.append({"label": "L3 precision",
+                          "value": f"{n_hit / n_tot * 100:.0f}%",
+                          "sub": (f"{n_hit}/{n_tot} · ≥90% 可放权（人工只抽检）"
+                                  if n_hit / n_tot >= 0.9
+                                  else f"{n_hit}/{n_tot} · 未达 90% 放权线")})
+            rl = [cm[(l, l)] / sum(cm[(l, k)] for k in labs4) * 100
+                  for l in labs4 if sum(cm[(l, k)] for k in labs4)]
+            if rl:
+                small.append({"label": "预标召回",
+                              "value": f"{sum(rl) / len(rl):.0f}%",
+                              "sub": "宏平均｜" + "｜".join(
+                                  f"{l} {cm[(l, l)] / sum(cm[(l, k)] for k in labs4) * 100:.0f}%"
+                                  for l in labs4 if sum(cm[(l, k)] for k in labs4))[:80]
+                              + "（人工已标段）"})
+    except Exception:
+        pass
+    return small
+
+
 @app.get("/api/metrics")
 def metrics(env: str = "prod"):
     if env not in ("test", "prod"):
@@ -609,23 +696,15 @@ def metrics(env: str = "prod"):
         v = same.get(k) or rt.get(k)
         if v:
             hero.append({"label": label, "value": _pct(v), "sub": f"{v} · {sub}"})
-    if rep.get("kb_gap"):
-        small.append({"label": "KB 缺口率", "value": _pct(rep["kb_gap"]),
-                      "sub": "真实组检索 no（知识库没有答案）"})
+    # 小卡即时算（KB 缺口/标注进度/precision/召回——产物到哪算到哪）；
+    # 平均解决轮次依赖第五步吸收 review，仍由周报出
+    small = _realtime_small(env if src == env else src)
     ar = rep.get("avg_rounds") or {}
     if ar.get("直答正确段"):
         rest = " · ".join(f"{k} {v}" for k, v in ar.items() if k != "直答正确段")
         m = _re.match(r"([\d.]+)", ar["直答正确段"])
         small.append({"label": "平均解决轮次", "value": (m.group(1) + " 轮") if m else ar["直答正确段"],
                       "sub": f"直答正确段 {ar['直答正确段']}" + (f" · {rest}" if rest else "")})
-    prec = rep.get("precision") or {}
-    if prec.get("overall"):
-        small.append({"label": "L3 precision", "value": _pct(prec["overall"]),
-                      "sub": ("≥90% 可放权（人工只抽检）" if prec.get("delegable")
-                              else "未达 90% 放权线，预标仅供参考")})
-    if rep.get("manual_progress"):
-        small.append({"label": "标注进度", "value": rep["manual_progress"],
-                      "sub": "人工标签（L2）覆盖"})
     return {"found": True, "source_env": src,
             "file": os.path.basename(files[-1]) if files else "",
             "date": rep.get("date"), "note": rep.get("note"),
