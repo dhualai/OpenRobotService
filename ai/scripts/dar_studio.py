@@ -138,7 +138,9 @@ class AskReq(BaseModel):
 
 
 def _child_env():
-    return {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    # PYTHONUNBUFFERED：子进程 stdout 走 PIPE 非行缓冲，进度行会攒 8KB 不吐
+    # （0909 实锤：l3 判了 180 段日志零进度行，只有大块 traceback 挤出去）
+    return {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
 
 
 @app.post("/api/ask")
