@@ -654,7 +654,10 @@ function setConn(user){
 }
 (async ()=>{
   const j = await (await fetch("/api/status")).json();
-  if(j.prod_export) $("#conn-prod").textContent = "已导入 " + j.prod_export;
+  if(j.prod_export){
+    $("#conn-prod").textContent = "已导入 " + j.prod_export.replace(/^\d{4}-/, "");
+    $("#conn-prod").title = j.prod_export;  // 悬停看完整时间
+  }
   else{
     $("#conn-prod").textContent = "未导数据";
     document.querySelector("#conn-prod").closest(".cline").querySelector(".cdot").className = "cdot";
