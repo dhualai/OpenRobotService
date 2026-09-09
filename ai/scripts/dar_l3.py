@@ -207,7 +207,11 @@ async def main():
             done_keys[(str(old["cid"]), int(old["astart"]))] = old
     rows = list(done_keys.values())
     todo = [s for s in exam if (str(s["cid"]), int(s["astart"])) not in done_keys]
-    print(f"增量：复用已判 {len(done_keys)} 段，补跑 {len(todo)} 段")
+    # 切模型后旧判定仍按 cid+astart 复用（指标会混口径）——显式提示，不静默
+    n_other = sum(1 for r in rows if r.get("model") != llm.model)
+    print(f"增量：复用已判 {len(done_keys)} 段，补跑 {len(todo)} 段"
+          + (f"；其中 {n_other} 段未记/非当前模型（当前 {llm.model}）——"
+             "要统一口径须删对应 .json/.jsonl 重跑" if n_other else ""))
 
     if todo:
         # LLM 探活：模型名过期/网关不可用时快速失败，别把 419 段全烧成 error
@@ -219,8 +223,9 @@ async def main():
                 break
             except Exception as ex:
                 if attempt == 2:
-                    sys.exit(f"LLM 不可用（当前模型 {os.getenv('DAR_MODEL') or 'flash4.1'}，"
-                             f"过期或网关问题？）：{type(ex).__name__}: {ex}")
+                    sys.exit(f"LLM 不可用（当前模型 {getattr(llm, 'model', '?')}，"
+                             f"过期或网关问题？可 DAR_MODEL=deepseek-v4-flash）："
+                             f"{type(ex).__name__}: {ex}")
                 await asyncio.sleep(5)
         # 预热：本地嵌入式 qdrant 冷启动加载 >5s 会踩 5s 操作超时 + 30s
         # 快速失败窗口，并发首轮检索全空——先单发一次把库打开
@@ -265,7 +270,7 @@ async def main():
             # 段首问题跑真实检索（三件套之一：检索资料）
             q0 = seg["timeline"].split("用户：", 1)[-1].split(" →", 1)[0]
             r = {"cid": seg["cid"], "seg": seg["seg"], "astart": seg["astart"],
-                 "grp": seg["grp"], "lab": seg["lab"]}
+                 "grp": seg["grp"], "lab": seg["lab"], "model": llm.model}
             try:
                 ctx = await retrieve_ctx(seg, q0)
                 prompt = JUDGE_PROMPT.format(prev=seg["prev"], timeline=seg["timeline"],

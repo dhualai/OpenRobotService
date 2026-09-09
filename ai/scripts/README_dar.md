@@ -88,11 +88,15 @@ dispatch 不碰）+ 退出自动恢复。测试与生产 qdrant 指针当前一�
 
 - 检索重放=本地 qdrant 当前状态，≠线上当时检索（线上未留档 hits）；
   verdict 只作参考，重大结论以人工标注为准。
-- L3 judge 用 DAR_MODEL（0909 起缺省 deepseek-v4.1-flash-expires-on-0910——
-  pro 在中转上频繁超时/不可用；模型 0910 过期后换回或用环境变量改）。
+- L3 judge 用 DAR_MODEL（缺省 deepseek-v4-flash=生产同款、不过期）。沿革：pro 在
+  中转上频繁超时/不可用 → 0909 换 flash 4.1 预览名（expires-on-0910，0910 过期，
+  且正式名 deepseek-v4.1-flash 网关不认）→ 0910 起缺省回 v4-flash。
   L1 切分/检索 no 判定同用此模型。flash 判定偏摇摆/偏宽是已知倾向，
   precision 指标就是监控它的。
-  注意：已落盘判定会增量复用，切模型后旧结果不自动重判（删对应产物才会）。
+  注意：已落盘判定按 cid+astart 增量复用，切模型后旧结果不自动重判（删对应
+  .json/.jsonl 才会）；每行带 model 字段，复用非当前模型判定时启动日志会提示。
+- L3 起跑先做 LLM 探活（3 次失败即退，提示模型过期/网关），首轮异常段自动
+  降并发补跑一轮；并发可 DAR_L3_CONC 覆盖（缺省 8）。
 - 标注进度存 localStorage，换浏览器/清缓存会丢——审完及时导出。
 
 ## 单测

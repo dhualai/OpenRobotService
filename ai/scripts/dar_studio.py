@@ -430,24 +430,39 @@ def stop_run():
 
 class ResetReq(BaseModel):
     env: str = "prod"
+    kind: str = "retrieval"  # retrieval | l3
+
+
+# 重判产物白名单：增量只认这些文件（jsonl+json 双源），删掉=下次跑全量重判
+_RESET_FILES = {
+    "retrieval": ["retrieval_check_{stamp}{ext}"],
+    "l3": ["l3_judge_{stamp}{ext}", "l3_judge_all_{stamp}{ext}"],
+}
 
 
 @app.post("/api/reset_retrieval")
 def reset_retrieval(req: ResetReq):
-    """删当日检索判定产物（jsonl+json）→ 重跑 retrieval 即全量重判
-    （增量只认这两个文件；换判定模型后想全部重判用这个）。"""
+    """删当日判定产物（jsonl+json）→ 重跑对应步即全量重判（换判定模型后用）。
+
+    kind=retrieval 删检索判定；kind=l3 删 L3 judge 两套（校准 l3_judge_* +
+    预标 l3_judge_all_*）。两者都是 DAR_MODEL 判的，换模型要一起清。
+    """
     if _run_state["proc"] and _run_state["proc"].poll() is None:
         raise HTTPException(409, "流程在跑，先停止")
     if req.env not in ("test", "prod"):
         raise HTTPException(400, "env 取值 test|prod")
+    pats = _RESET_FILES.get(req.kind)
+    if not pats:
+        raise HTTPException(400, "kind 取值 retrieval|l3")
     root = os.path.join(DATA_ROOT, req.env, "processed")
     stamp = time.strftime("%Y%m%d")
     removed = []
-    for ext in (".jsonl", ".json"):
-        p = os.path.join(root, f"retrieval_check_{stamp}{ext}")
-        if os.path.exists(p):
-            os.remove(p)
-            removed.append(os.path.basename(p))
+    for pat in pats:
+        for ext in (".jsonl", ".json"):
+            p = os.path.join(root, pat.format(stamp=stamp, ext=ext))
+            if os.path.exists(p):
+                os.remove(p)
+                removed.append(os.path.basename(p))
     return {"ok": True, "removed": removed}
 
 
