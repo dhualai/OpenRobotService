@@ -9,7 +9,7 @@
         ...  # 此范围内本地代码的检索全部走远程知识库
 
 - 隧道：本地 16333 → 服务器 localhost:6333（测试/生产 qdrant 同一实例）；
-  已开直接复用，没开自动 `ssh -f -N -L`（-f 后台驻留，本脚本不负责回收）
+  已开直接复用，没开自动起 ssh -N 后台进程（Windows 无 -f，Popen 驻留）
 - 指针：ssh 拉 {服务}/ai/kb/active_{domain}_collection.txt 三域
   （company/industry/team），备份本地值 → 写远程值 → with 结束自动恢复
   （原本不存在的文件恢复为删除）
@@ -42,23 +42,32 @@ def _tunnel_alive():
         return False
 
 
+_proc = None
+
+
 def ensure_tunnel():
-    """隧道通则复用；不通则 ssh -f -N 建立。返回 True，失败抛异常。"""
+    """隧道通则复用；不通则起 ssh -N 后台进程。返回 True，失败抛异常。
+
+    Windows 的 ssh 没有 -f（后台化后不关闭继承的输出句柄，捕获式调用会挂死
+    直到超时把隧道杀掉），所以用 Popen 驻留 + 本地端口轮询探测。"""
+    global _proc
     if _tunnel_alive():
         return True
-    r = subprocess.run(
-        ["ssh", "-f", "-N", "-L", f"{TUNNEL_PORT}:localhost:6333",
-         "-p", SSH_PORT, "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10",
-         SSH_HOST],
-        capture_output=True, timeout=40)
-    if r.returncode != 0:
-        raise RuntimeError("建 ssh 隧道失败: "
-                           + r.stderr.decode("utf-8", "replace").strip()[:200])
-    for _ in range(20):
+    if not _proc or _proc.poll() is not None:
+        _proc = subprocess.Popen(
+            ["ssh", "-N", "-L", f"{TUNNEL_PORT}:localhost:6333",
+             "-p", SSH_PORT, "-o", "ExitOnForwardFailure=yes",
+             "-o", "ConnectTimeout=10", "-o", "BatchMode=yes",
+             "-o", "ServerAliveInterval=30", SSH_HOST],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+    for _ in range(30):  # 最多等 15s
         if _tunnel_alive():
             return True
+        if _proc.poll() is not None:  # ssh 已自己退出（免密/网络问题）
+            break
         time.sleep(0.5)
-    raise RuntimeError("隧道已建但端口探测不通")
+    raise RuntimeError(f"建 ssh 隧道失败（检查免密 ssh {SSH_HOST}:{SSH_PORT}）")
 
 
 def remote_pointers(which: str):
