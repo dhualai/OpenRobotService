@@ -14,7 +14,7 @@ import {
 } from '@/shared/components/macaronIcons';
 import ReactECharts from '@/shared/components/ReactECharts';
 import { fetchBatchUserInfo, fetchUserSummary, USER_SOURCE_LABELS } from '@/api/wechat';
-import type { UserSummaryItem, WechatUserInfo } from '@/api/wechat';
+import type { UserSummaryItem } from '@/api/wechat';
 import { useAuthStore } from '@/stores/auth';
 import { PERM_DISPATCH_DEV } from '@/pages/admin/DispatchDev';
 
@@ -79,9 +79,10 @@ const DEV_ENTRY_PATH = '/admin/dispatch-dev';
 
 export default function AdminEntries() {
   const navigate = useNavigate();
-  const hasPermission = useAuthStore((s) => s.hasPermission);
+  // 订阅权限结果（不要订阅 hasPermission 函数引用，否则 permissions 回填后本页不重绘）
+  const canShowDispatchDev = useAuthStore((s) => s.hasPermission(PERM_DISPATCH_DEV));
   const visibleEntries = adminEntries.filter(
-    (e) => e.path !== DEV_ENTRY_PATH || hasPermission(PERM_DISPATCH_DEV),
+    (e) => e.path !== DEV_ENTRY_PATH || canShowDispatchDev,
   );
 
   // ── 用户统计：时间筛选默认最近 5 天（不含当天；微信数据 T+1 延迟，最早可查昨日） ──
@@ -147,24 +148,19 @@ export default function AdminEntries() {
     fetchBatchUserInfo()
       .then((r) => {
         if (!mountedRef.current) return;
-        const items = r.user_info_list || [];
-        const real = items.filter((u) => u.subscribe === 1).length;
+        // 后端已在 DB 侧完成 real/virtual 与渠道分布聚合，直接取统计值
         setUserStats({
-          total: typeof r.total === 'number' ? r.total : items.length,
-          real,
-          virtual: items.length - real,
+          total: typeof r.total === 'number' ? r.total : 0,
+          real: typeof r.real === 'number' ? r.real : 0,
+          virtual: typeof r.virtual === 'number' ? r.virtual : 0,
         });
-        // 用户来源分布：仅统计 subscribe===1 的用户，按 subscribe_scene 归组（缺失归入其他）
-        const sceneMap = new Map<string, number>();
-        items.filter((u) => u.subscribe === 1).forEach((u) => {
-          const scene = String((u as WechatUserInfo).subscribe_scene || 'ADD_SCENE_OTHERS');
-          sceneMap.set(scene, (sceneMap.get(scene) || 0) + 1);
-        });
+        // 用户来源分布：后端按 subscribe_scene 归组并按 value 降序，此处仅做编码→中文映射
+        const sceneList = (r.scene_distribution || [])
+          .map((s) => ({ name: SUBSCRIBE_SCENE_LABELS[s.scene] ?? `未知(${s.scene})`, value: s.value }))
+          .filter((d) => d.value > 0);
         setSceneStats({
-          total: sceneMap.size,
-          list: [...sceneMap.entries()]
-            .map(([s, v]) => ({ name: SUBSCRIBE_SCENE_LABELS[s] ?? `未知(${s})`, value: v }))
-            .sort((a, b) => b.value - a.value),
+          total: sceneList.length,
+          list: sceneList,
         });
         setUserError('');
       })

@@ -9,12 +9,13 @@ const TONE_VARS: Record<string, string> = {
   'blue-4': 'var(--mac-blue-4)',
   'blue-5': 'var(--mac-blue-5)',
   'blue-soft': 'var(--mac-blue-soft)',
-  // 工单状态五色调：等距拉开亮度的专用蓝阶（见 global.css --mac-status-*）
+  // 工单状态色调：等距拉开亮度的专用蓝阶（见 global.css --mac-status-*）
   'status-1': 'var(--mac-status-1)',
   'status-2': 'var(--mac-status-2)',
   'status-3': 'var(--mac-status-3)',
   'status-4': 'var(--mac-status-4)',
   'status-5': 'var(--mac-status-5)',
+  'status-6': 'var(--mac-status-6)',
   gray: 'var(--mac-muted-fg)',
 };
 
@@ -25,9 +26,9 @@ export function macTone(tone: string): string {
 
 export interface MacDonutSegment { value: number; tone: string; }
 
-/** 扇区百分比标签文字色：浅色弧段（blue-4/5、status-4/5）用深蓝，深色弧段用白字 */
+/** 扇区百分比标签文字色：浅色弧段（blue-4/5、status-4/5/6）用深蓝，深色弧段用白字 */
 function percentLabelColor(tone: string): string {
-  return ['blue-4', 'blue-5', 'status-4', 'status-5'].includes(tone)
+  return ['blue-4', 'blue-5', 'status-4', 'status-5', 'status-6'].includes(tone)
     ? 'var(--mac-blue-1)'
     : '#fff';
 }

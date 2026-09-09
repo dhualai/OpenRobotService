@@ -1,6 +1,6 @@
 """Step3 L1：给大模型看 姓名+ID，并带回一句话原因给 Step6。
 
-不调 LLM、不连库。转派旁路本版恒空。
+不调 LLM、不连库。
 运行（仓库根）：
     pytest ai/agents/AiDiagnosisPlatform/assigner/tests/test_step3.py -v
 """
@@ -16,9 +16,7 @@ from ai.agents.AiDiagnosisPlatform.assigner.schemas import EngineerProfile, Tick
 
 def _cfg(**kwargs):
     data = dict(
-        ranker_weights={"llm_match": 0.70, "semantic_match": 0.15, "history_match": 0.15},
         job_level_penalty={1: 1.0, 2: 0.90, 3: 0.90, 99: 0.90},
-        contact_bonus=1.0,
         preferred_floor=0.9,
         llm_decision_topk=0,
         history_recall={},
@@ -90,6 +88,55 @@ class TestDispatchTicketText:
             "车型：S20\n"
             "故障码：E1001"
         )
+
+
+class TestRetrieveTopKFromConfig:
+    """A 路检索条数走配置，不再写死 30。"""
+
+    def test_retrieve_top_k_reads_config(self):
+        """正常流程：retrieve_top_k 从 history_recall 读取。"""
+        rec = HistoryRecall(_cfg(history_recall={"retrieve_top_k": 17}))
+        assert rec._retrieve_top_k == 17
+
+    def test_retrieve_top_k_default_not_five(self):
+        """数据校验：只配了旧键 top_k=5 时，检索仍默认 30，避免召回收窄。"""
+        rec = HistoryRecall(_cfg(history_recall={"top_k": 5}))
+        assert rec._retrieve_top_k == 30
+
+
+class TestBPathFourColumnText:
+    """B 路与 A 路同一套栏位；空的车型/故障码不写，避免无关单被「无」粘在一起。"""
+
+    def test_history_record_uses_dispatch_template(self):
+        """正常流程：有车型/故障码时四栏都在。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.recall.expertise_recall import (
+            _ticket_text,
+        )
+        text = _ticket_text({
+            "title": "定位漂移",
+            "description": "无法重定位",
+            "robot_type": "S20",
+            "fault_code": "E1001",
+        })
+        assert text == (
+            "标题：定位漂移\n"
+            "描述：无法重定位\n"
+            "车型：S20\n"
+            "故障码：E1001"
+        )
+
+    def test_empty_robot_and_fault_omitted(self):
+        """正常流程：车型/故障码为空时 B 路不写这两栏。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.recall.expertise_recall import (
+            _ticket_text,
+        )
+        text = _ticket_text({
+            "title": "定位漂移",
+            "description": "无法重定位",
+        })
+        assert text == "标题：定位漂移\n描述：无法重定位"
+        assert "车型：" not in text
+        assert "故障码：" not in text
 
 
 class TestL1PromptHasName:
@@ -169,18 +216,6 @@ class TestL1ReasonGoesToStep6:
         assert "L1原因: 甲负责前端页面" in prompt
 
 
-class TestTransferSignalsEmpty:
-    """L3 转派旁路本版恒空。"""
-
-    def test_empty_interface(self):
-        """正常流程：empty_transfer_signals 只有空 boosts/penalties。"""
-        sig = HistoryRecall(_cfg()).empty_transfer_signals()
-        assert sig == {"boosts": {}, "penalties": {}}
-        recall = RecallResult()
-        assert recall.transfer_signals == {"boosts": {}, "penalties": {}}
-        assert recall.llm_reasons == {}
-
-
 class TestL1TopKCap:
     """单轮 Top5；分批每批 Top3，合并后全进 Step4，不再决选截断。"""
 
@@ -252,6 +287,19 @@ class TestL3AutoCluster:
         sizes = sorted(len(g) for g in groups)
         assert sizes == [4, 4]
 
+    def test_low_merge_still_forms_cluster(self):
+        """正常流程：合并 0.4 时两团仍能各自成簇，不再被暗中抬高的收紧剔光。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.recall.expertise_recall import (
+            cluster_by_similarity,
+        )
+        import numpy as np
+        a = np.array([[1.0, 0.0], [0.99, 0.01], [0.98, 0.02], [0.97, 0.03]])
+        b = np.array([[0.0, 1.0], [0.01, 0.99], [0.02, 0.98], [0.03, 0.97]])
+        embs = np.vstack([a, b])
+        groups = cluster_by_similarity(embs, merge_threshold=0.4, min_size=3)
+        assert len(groups) >= 1
+        assert max(len(g) for g in groups) >= 3
+
     def test_chain_does_not_stay_one_cluster(self):
         """异常流程：A≈B、B≈C 但 A 远 C → 不能靠串门并成一簇。"""
         from ai.agents.AiDiagnosisPlatform.assigner.recall.expertise_recall import (
@@ -266,6 +314,23 @@ class TestL3AutoCluster:
         embs = np.vstack([a, ab, b, bc, c])
         groups = cluster_by_similarity(embs, merge_threshold=0.55, min_size=3)
         assert all(len(g) < 5 for g in groups)
+
+    def test_default_merge_does_not_glue_same_domain(self):
+        """异常流程：同域不同题（相邻余弦≈0.71）在默认 0.85 下不能并成一团。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.recall.expertise_recall import (
+            ExpertiseRecall,
+            cluster_by_similarity,
+        )
+        import numpy as np
+        rec = ExpertiseRecall(_cfg())
+        assert rec._merge_threshold == 0.85
+        assert rec._assign_threshold == 0.80
+        angles = np.linspace(0, np.pi, 8, endpoint=False)
+        embs = np.column_stack([np.cos(angles), np.sin(angles)])
+        groups = cluster_by_similarity(
+            embs, merge_threshold=rec._merge_threshold, min_size=3,
+        )
+        assert all(len(g) < 8 for g in groups)
 
     def test_query_lands_in_near_cluster(self):
         """正常流程：新单靠近 A 团 → 只落入 A。"""
@@ -313,6 +378,60 @@ class TestL3AutoCluster:
         assert similar_person_score([0.72]) == 0.72
         assert similar_person_score([0.40, 0.85, 0.50]) == 0.85
         assert similar_person_score([1.25, 0.90]) == 1.0
+
+    def test_misassign_hit_boosts_b_and_penalizes_a(self):
+        """正常流程：派错纠正样本给接手人加分、原处理人乘 0.7。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.recall.history_recall import (
+            score_similar_hits,
+        )
+        hits = [
+            {"engineer_id": "u-a", "score": 0.90, "feed_type": "normal"},
+            {
+                "engineer_id": "u-b", "score": 0.80, "feed_type": "reassign",
+                "rejected_id": "u-a", "reason": "不归硬件",
+            },
+        ]
+        scores, confirmed, rejected = score_similar_hits(
+            hits, sim_threshold=0.3, half_life_days=90, decay_floor=0.4,
+            confirm_boost=0.15, reject_factor=0.70,
+        )
+        assert confirmed["u-b"] == "不归硬件"
+        assert rejected["u-a"] == "不归硬件"
+        assert scores["u-b"] == 0.95
+        assert abs(scores["u-a"] - 0.90 * 0.70) < 1e-6
+
+    def test_stage_feed_type_does_not_learn(self):
+        """正常流程：阶段转派不会以 reassign 进库；普通命中不加减分。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.recall.history_recall import (
+            score_similar_hits,
+        )
+        hits = [{"engineer_id": "u-b", "score": 0.80, "feed_type": "normal"}]
+        scores, confirmed, rejected = score_similar_hits(
+            hits, sim_threshold=0.3, half_life_days=90, decay_floor=0.4,
+        )
+        assert confirmed == {}
+        assert rejected == {}
+        assert scores["u-b"] == 0.80
+
+    def test_extra_pairs_penalize_a_on_similar_ticket(self):
+        """正常流程：相似单上发生过派错了/重派不准确，候选人里的 A 乘 0.7，不改普通命中 feed_type。"""
+        from ai.agents.AiDiagnosisPlatform.assigner.recall.history_recall import (
+            score_similar_hits,
+        )
+        hits = [
+            {"engineer_id": "u-a", "score": 0.90, "feed_type": "normal", "ticket_id": "101"},
+            {"engineer_id": "u-c", "score": 0.85, "feed_type": "normal", "ticket_id": "101"},
+        ]
+        scores, confirmed, rejected = score_similar_hits(
+            hits, sim_threshold=0.3, half_life_days=90, decay_floor=0.4,
+            reject_factor=0.70,
+            extra_pairs=[{"from_id": "u-a", "to_id": "u-b", "reason": "派错了"}],
+        )
+        assert rejected["u-a"] == "派错了"
+        assert confirmed["u-b"] == "派错了"
+        assert abs(scores["u-a"] - 0.90 * 0.70) < 1e-6
+        assert scores["u-c"] == 0.85
+        assert "u-b" not in scores
 
     def test_cluster_person_score_is_absolute(self):
         """正常流程：问题域人分不按本批拉满；弱命中低于 0.5，强命中可到 1。"""

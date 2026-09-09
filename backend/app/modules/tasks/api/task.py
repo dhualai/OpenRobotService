@@ -23,6 +23,7 @@ from app.modules.tasks.schemas.ticket import (
     TicketCreate, TicketUpdate, TicketResponse, TicketListResponse,
     TicketCommentCreate, TicketCommentUpdate, TicketCommentResponse,
     TicketQueryParams, TicketCuibanNotification, TicketFilterRequest,
+    TicketBatchCountRequest,
     TicketCreateNotificationRequest, ProjectMemberResponse
 )
 from app.modules.tasks.models.ticket import TicketStatus, TicketPriority, TicketType
@@ -487,17 +488,42 @@ async def filter_tasks(
     logger = logging.getLogger(__name__)
     
     try:
-        logger.info(f"开始复合过滤查询任务列表, filters_count={len(filter_request.filters) if filter_request.filters else 0}, page={filter_request.page}, size={filter_request.size}")
-        
+        logger.debug(f"开始复合过滤查询任务列表, filters_count={len(filter_request.filters) if filter_request.filters else 0}, page={filter_request.page}, size={filter_request.size}")
+
         auth_header = request.headers.get("Authorization")
         token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
 
         result = await TicketService.filter_tickets(db, filter_request, token)
-        logger.info(f"复合过滤查询任务列表成功, total={result.get('total', 0)}")
+        logger.debug(f"复合过滤查询任务列表成功, total={result.get('total', 0)}")
         return result
     except Exception as e:
         logger.error(f"复合过滤查询任务列表失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"复合过滤查询任务列表失败: {str(e)}")
+
+
+@router.post("/filter/counts", response_model=List[int])
+async def filter_tasks_counts(
+    batch_request: TicketBatchCountRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """批量计数：每组 queries 独立统计 total，一次网络往返返回多组角标数。
+
+    供系统任务页「全部/项目相关/待我处理/与我相关」分类角标使用，
+    替代前端并发多次 POST /filter（减少认证/中间件开销与连接占用）。
+    """
+    try:
+        auth_header = request.headers.get("Authorization")
+        token = auth_header[7:] if auth_header and auth_header.startswith("Bearer ") else None
+
+        totals = []
+        for q in batch_request.queries:
+            totals.append(await TicketService.count_tickets(db, q, token))
+        return totals
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"批量计数失败: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"批量计数失败: {str(e)}")
 
 
 @router.get("/stats/overview", response_model=dict)
@@ -640,6 +666,7 @@ async def get_task(
                             "modules": prof.get("modules"),
                             "duty": prof.get("duty"),
                             "missing": prof.get("missing") or [],
+                            "specified_name": (prof.get("specified_name") or "").strip() or None,
                         } if prof else None,
                         "matched_pref": _log.matched_pref,
                         "name_collision": _log.name_collision,
@@ -888,6 +915,7 @@ async def update_task(
 
     try:
         token = current_user.get('token')
+        from_assignee = (getattr(ticket, "assigned_to", None) or "").strip()
         result = await TicketService.update_ticket(db, task_id, ticket_update, token=token, operator_id=username)
         # ── WS 实时广播：工单字段更新（标题/描述/处理人等）──
         try:
@@ -926,7 +954,10 @@ async def update_task(
         # 2. 其他操作日志（根据 operation_type 或字段变更推断）
         op_type_str = ticket_update.operation_type
         changed_fields = []
-        update_data = ticket_update.model_dump(exclude={'operation_type'}, exclude_unset=True)
+        update_data = ticket_update.model_dump(
+            exclude={'operation_type', 'reassign_kind', 'reassign_reason'},
+            exclude_unset=True,
+        )
         for key, value in update_data.items():
             if value is not None and key != 'status':
                 changed_fields.append(key)
@@ -969,11 +1000,27 @@ async def update_task(
             new_assignee = update_data.get('assigned_to', '')
             user_map = await TicketService._get_user_map(token)
             new_assignee_name = user_map.get(new_assignee, new_assignee)
+            kind = (getattr(ticket_update, "reassign_kind", None) or "").strip()
+            if kind not in ("misassign", "stage", "other"):
+                kind = ""
+            reason = (getattr(ticket_update, "reassign_reason", None) or "").strip()
+            kind_label = {"misassign": "派错了", "stage": "阶段转派", "other": "其它"}.get(kind, "")
+            detail = {
+                "new_assignee": new_assignee,
+                "from_assignee": from_assignee,
+            }
+            if kind:
+                detail["kind"] = kind
+            if reason:
+                detail["reason"] = reason
+            desc = f"{_role}{user_name} 将工单重新指派给 {new_assignee_name}" if _role else f"{user_name} 将工单重新指派给 {new_assignee_name}"
+            if kind_label:
+                desc = f"{desc}（{kind_label}）"
             await OperationLogService.log(
                 db=db, task_id=task_id, op_type=OperationType.REASSIGN,
                 operator=username, operator_name=user_name,
-                detail={"new_assignee": new_assignee},
-                description=f"{_role}{user_name} 将工单重新指派给 {new_assignee_name}" if _role else f"{user_name} 将工单重新指派给 {new_assignee_name}",
+                detail=detail,
+                description=desc,
             )
             await _add_system_comment(db, task_id, f"{user_name} 将工单重新指派给 {new_assignee_name}", username, token)
             # 工单转派提醒：通知创建人 + 新被指派人
@@ -2312,6 +2359,34 @@ class ReDispatchRequest(BaseModel):
     remark: Optional[str] = None
 
 
+async def _step0_hit_blocks_redispatch(db: AsyncSession, ticket) -> Optional[str]:
+    """指定人命中才拦截重派；找不到人已走智能派单则放行。
+
+    正则与 assigner Step0 强信号口径一致。命中后 Step0 会覆盖倾向人；
+    未找到时派单日志 profile.specified_name 有值，重派倾向人可以生效。
+    """
+    import re as _re
+    from app.models.task_dispatch_log import TaskDispatchLog
+
+    text = f"{getattr(ticket, 'title', '') or ''}\n{getattr(ticket, 'description', '') or ''}"
+    m = _re.search(r"指定(?:处理人|人|人员)[:：]\s*([^\]\s，,；;:：）)】]{2,6})", text)
+    if not m:
+        return None
+    name = m.group(1).strip()
+    log = (await db.execute(
+        select(TaskDispatchLog)
+        .where(TaskDispatchLog.task_id == ticket.id)
+        .order_by(TaskDispatchLog.dispatch_round.desc())
+        .limit(1)
+    )).scalars().first()
+    unresolved = ""
+    if log and isinstance(log.profile, dict):
+        unresolved = (log.profile.get("specified_name") or "").strip()
+    if unresolved:
+        return None
+    return name
+
+
 @router.post("/{task_id}/re-dispatch", response_model=TicketResponse)
 async def re_dispatch_task(
     task_id: int,
@@ -2347,15 +2422,13 @@ async def re_dispatch_task(
     # 若允许 manual 工单重派，Worker 永远查不到它，会一直卡在「派单中」。
     if (ticket.source or "") != "ai":
         raise HTTPException(status_code=400, detail="该工单非智能派单工单，无法重新派单")
-    # 提单时已指定处理人（title/description 里的强信号）会触发派单 Step 0 直接指派，
-    # 覆盖掉重新派单的倾向人，导致重派无效——提前拦截并提示（正则与 assigner Step 0 口径一致）。
-    import re as _re
-    _strong_text = f"{ticket.title or ''}\n{ticket.description or ''}"
-    _strong_m = _re.search(r"指定(?:处理人|人|人员)[:：]\s*([^\]\s，,；;:：）)】]{2,6})", _strong_text)
-    if _strong_m:
+    # 指定人命中并派上：Step0 会覆盖重派倾向人，拦截。
+    # 指定人找不到、已走智能派单：profile.specified_name 有值，允许重派。
+    _blocked = await _step0_hit_blocks_redispatch(db, ticket)
+    if _blocked:
         raise HTTPException(
             status_code=400,
-            detail=f"该工单已指定处理人「{_strong_m.group(1).strip()}」，重新派单不会改变接单人",
+            detail=f"该工单已指定处理人「{_blocked}」，重新派单不会改变接单人",
         )
 
     preferred = to_user_id((payload.preferred_assignee or "").strip()) or (payload.preferred_assignee or "").strip()
@@ -2375,6 +2448,8 @@ async def re_dispatch_task(
     # 此处 pop 仅用于清理历史遗留的旧派单元数据（worker 已不再写入这些键）
     meta = dict(ticket.metadata_info or {})
     meta["preferred_assignee"] = preferred
+    if old_assigned_to:
+        meta["prev_assignee"] = old_assigned_to
     if remark:
         meta["preferred_assignee_remark"] = remark
     for k in ("assignee_name", "assignee_id", "assign_confidence",
@@ -2412,7 +2487,7 @@ async def re_dispatch_task(
         op_type=OperationType.REASSIGN,
         operator=username,
         operator_name=user_name,
-        detail={"preferred_assignee": preferred, "remark": remark or None},
+        detail={"preferred_assignee": preferred, "remark": remark or None, "channel": "redispatch", "from_assignee": (old_assigned_to or "").strip() or None},
         description=desc,
     )
     await _add_system_comment(db, task_id, comment_text, username, token)

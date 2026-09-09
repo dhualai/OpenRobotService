@@ -74,7 +74,8 @@ codebuddy.md
 **/auth.json
 **/outbox_patch.zip
 
-# ===== 临时 / 草稿（如 logo 草稿、导出中间文件）=====
+.ai/agents/AiDiagnosisPlatform/assigner/config/runtime_overrides.yaml
+ai/agents/AiDiagnosisPlatform/assigner/config/runtime_overrides.yaml
 old/
 # git commit 临时信息文件（write_to_file 写入，提交后删除，绝不入库）
 .commit-msg-tmp.txt
@@ -166,3 +167,6 @@ ai/.env.example
 /ai/tests
 /ai/tests
 start_all.ps1
+docs/PRODUCT/摇人吧服务号平台手册（操作指引）.md
+docs/直答率统计口径.md
+/docs

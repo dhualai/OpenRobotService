@@ -23,29 +23,6 @@ class Ranker:
         except (TypeError, ValueError):
             self._preferred_floor = 0.9
 
-    @staticmethod
-    def _apply_transfer_signals(
-        llm_scores: Dict[str, float],
-        transfer_signals: Optional[Dict],
-    ) -> Dict[str, float]:
-        """转派旁路：先改 L1 分再加权。本版 signals 恒空，有值时 delta 可正可负。"""
-        out = dict(llm_scores or {})
-        if not transfer_signals or not isinstance(transfer_signals, dict):
-            return out
-        for key in ("penalties", "boosts"):
-            bucket = transfer_signals.get(key) or {}
-            if not isinstance(bucket, dict):
-                continue
-            for eid, spec in bucket.items():
-                if not eid:
-                    continue
-                try:
-                    delta = float((spec or {}).get("delta") or 0.0)
-                except (TypeError, ValueError):
-                    delta = 0.0
-                out[eid] = max(0.0, out.get(eid, 0.0) + delta)
-        return out
-
     def rank(
         self, recall_result: RecallResult,
         engineers: Optional[List[EngineerProfile]] = None,
@@ -55,12 +32,9 @@ class Ranker:
         prev_assignee_id: Optional[str] = None,
         dept_routing: Optional["DeptRoutingResult"] = None,
     ) -> Dict[str, Dict[str, float]]:
-        llm_scores = self._apply_transfer_signals(
-            recall_result.llm_recall,
-            getattr(recall_result, "transfer_signals", None),
-        )
-        similar = getattr(recall_result, "similar_recall", None) or recall_result.history_recall or {}
-        cluster = getattr(recall_result, "cluster_recall", None) or {}
+        llm_scores = recall_result.llm_recall or {}
+        similar = recall_result.similar_recall or {}
+        cluster = recall_result.cluster_recall or {}
 
         ids = set()
         ids.update(llm_scores.keys())
@@ -104,7 +78,7 @@ class Ranker:
             hit_similar = bool(eid in similar and similar.get(eid, 0) > 0)
             hit_cluster = bool(eid in cluster and cluster.get(eid, 0) > 0)
             llm = _norm(llm_scores.get(eid, 0.0), llm_max) if hit_llm else 0.0
-            # 相似工单 / 问题域已是绝对 0～1，不再按本批最高拉满
+            # 相似工单 / 问题簇已是绝对 0～1，不再按本批最高拉满
             sim = min(1.0, max(0.0, float(similar.get(eid, 0.0)))) if hit_similar else 0.0
             clu = min(1.0, max(0.0, float(cluster.get(eid, 0.0)))) if hit_cluster else 0.0
             hit_vals = []
@@ -138,6 +112,10 @@ class Ranker:
 
             is_creator = bool(creator_id and eid == creator_id)
             is_prev = bool(prev_assignee_id and eid == prev_assignee_id)
+            was_rejected = eid in (getattr(recall_result, "misassign_rejected", None) or {})
+            was_confirmed = eid in (getattr(recall_result, "misassign_confirmed", None) or {})
+            if was_rejected:
+                total *= 0.70
 
             scores[eid] = {
                 "llm_score": llm,
@@ -154,7 +132,8 @@ class Ranker:
                 "preferred_assignee": is_preferred,
                 "is_creator": is_creator,
                 "prev_unsatisfied": is_prev,
-                "contact_multiplier": 1.0,
+                "misassign_rejected": was_rejected,
+                "misassign_confirmed": was_confirmed,
                 "preferred_floor": round(self._preferred_floor, 3) if is_preferred else None,
                 "dept_multiplier": round(dept_mul, 3),
                 "total_score": round(total, 4),

@@ -764,7 +764,9 @@ async def _lookup_ticket_ref(ref_text: str, created_by: str = "") -> str:
         async with AsyncSessionLocal() as db:
             t = await TicketService.get_ticket_by_id(db, ticket_no, load_comments=True)
             if t is None:
-                return f"#{ticket_no}（未找到该工单号，可能记错或已被删除）"
+                return (f"#{ticket_no}（未找到该工单号，可能记错或已被删除。"
+                        f"请一句话告知用户即可，不要反复追问，"
+                        f"也不要编造该工单的内容）")
             if not _ticket_visible_to(t, created_by):
                 logger.info(f"[ticket_ref] 权限不足拒绝查看: ticket={ticket_no}, "
                             f"user={created_by!r}")
@@ -1224,6 +1226,17 @@ _PLANNER_TOOLS = [
                                                        "保留错误码/车型/故障现象关键词"},
         }, "required": ["query"]},
     }},
+    {"type": "function", "function": {
+        "name": "list_user_projects",
+        "description": "查询**当前用户自己**名下关联的项目清单（系统按登录身份查询，"
+                       "无需也无法指定其他用户）。两类情况调用：①用户询问「我有哪些项目/"
+                       "我名下的项目/我参与了哪些项目/我关联的项目」这类自己项目列表的问题；"
+                       "②用户询问项目整体或某个项目的进度、状态、计划等管理情况——"
+                       "此时也调用（系统会随结果返回标准边界话术，照着答即可）。"
+                       "🈲 设备故障、操作配置类问题即使提到项目也不要调用；"
+                       "问别人的项目清单时不要调用。",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    }},
     # 项目提及捕捉（0828 治本）：咨询轮 oneshot 纯文本无协议可挂，规划器每轮
     # 必跑且本轮消息必在 prompt——搭便车捕捉，零额外 LLM 调用。服务端唯一
     # 子串匹配后跨轮持久，修复多轮后提单时历史窗口截断导致项目识别不到。
@@ -1287,6 +1300,9 @@ _PLANNER_SYSTEM = (
     "- ticket 且消息明确指代某个已有工单（如「针对那个单子的问题再提一单」）→ "
     "调 lookup_ticket 取该工单内容，不调 search_kb\n"
     "- courtesy → 不调用任何工具\n"
+    "- 用户询问自己名下的项目清单（有哪些项目/参与了哪些项目/关联的项目），"
+    "或询问项目整体/某个项目的进度、状态等管理情况 → "
+    "list_user_projects（系统按登录身份查询，无需参数；结果自带标准边界话术，照着答）\n"
     "- 用户消息里出现具体项目名/简称（如「本川项目」）→ mention_project"
     "（记录跨轮记忆，与 route 并列输出；没提项目名就不调——平台/服务号自身的"
     "名称不算项目提及）\n"
@@ -2027,6 +2043,49 @@ class AiDiagnosisPlatform:
         # 避免"刚答完诊断"和"刚提完工单"共用同一 phase 导致 _apply_state_update guard 误拦。
         if action == "submit":
             state.phase = "escalated"
+
+    # list_user_projects 工具结果块（纯函数，供单测）。>5 个物理截断到 5——
+    # 只把前 5 个项目名放进资料块，flash 模型想多列也没有素材；两种情况各带
+    # 对应提示语，空列表的措辞同时覆盖「真没有」与「DB 查询失败降级」两种态。
+    _PROJECT_LIST_SHOW_MAX = 5
+
+    @staticmethod
+    def _format_user_projects_block(projects: List[Dict[str, str]]) -> str:
+        if not projects:
+            return ("【用户名下项目】查询结果：该用户名下暂无关联项目。请如实告知"
+                    "用户名下当前没有查到项目，不要编造任何项目；若用户认为自己"
+                    "应该有项目，建议其稍后再试或联系管理员核实权限。"
+                    + AiDiagnosisPlatform._project_boundary_tail())
+        total = len(projects)
+        shown = projects[:AiDiagnosisPlatform._PROJECT_LIST_SHOW_MAX]
+        lines = "\n".join(f"- {p.get('name') or ''}".rstrip() for p in shown if p.get("name"))
+        # 能力边界收口（0908 产品定调：清单给、属性拒）：边界话术只随工具块注入，
+        # 不进主 prompt——flash 顺着话术主动揽活，但查详情根本没这能力
+        if total > AiDiagnosisPlatform._PROJECT_LIST_SHOW_MAX:
+            head = (f"【用户名下项目】系统按登录身份查询到该用户名下共 {total} 个项目，"
+                    f"数量较多，以下仅展示其中前 {len(shown)} 个（按名称排序）：\n"
+                    f"{lines}\n"
+                    "请回答时：①只列出上面这些项目，禁止编造列表之外的任何项目；"
+                    f"②明确告知用户其名下共有 {total} 个项目，此处仅展示前 {len(shown)} 个，"
+                    "其余项目的名称及各项目的详细情况，请用户前往后台管理系统的项目"
+                    "管理页面查看。"
+                    + AiDiagnosisPlatform._project_boundary_tail())
+        else:
+            head = (f"【用户名下项目】系统按登录身份查询到该用户名下共 {total} 个项目，"
+                    f"已全部列出：\n{lines}\n"
+                    "请回答时：①列出以上项目（这就是该用户名下全部项目），"
+                    "禁止编造列表之外的任何项目；②告知用户以上即其名下全部项目。"
+                    + AiDiagnosisPlatform._project_boundary_tail())
+        return head
+
+    @staticmethod
+    def _project_boundary_tail() -> str:
+        """工具块统一结尾：能力边界话术只在这里维护，主 prompt 不承载。"""
+        return ("\n③这是项目查询的全部能力：你只能基于上面的查询结果作答，查不了任何"
+                "项目的详细情况。🔴 回答完自然收尾，禁止追问「需要我帮你看看哪个"
+                "项目」之类的话，禁止表示可以进一步查询/介绍某个项目；用户想了解"
+                "某个项目的进度、状态等详细情况时，告知其前往后台管理系统的项目"
+                "管理页面查看。")
 
     async def _get_user_projects(self, username: str) -> List[Dict[str, str]]:
         """查 username 名下关联的项目列表（helpdesk_724 跨库，与后端
@@ -2823,7 +2882,8 @@ class AiDiagnosisPlatform:
                     # 项目提及捕捉（0828 治本）：咨询轮 oneshot 无协议可挂，
                     # 规划器搭便车。校验与持久化在下方统一做。
                     mention_raw = str(tc["arguments"].get("project_name") or "").strip()
-                elif name in ("search_kb", "lookup_ticket", "search_history_tickets"):
+                elif name in ("search_kb", "lookup_ticket", "search_history_tickets",
+                              "list_user_projects"):
                     plan.append((name, tc["arguments"]))
             logger.info(f"[plan] 规划结果: intent={intent} tools={plan}"
                         + (f" mention={mention_raw!r}" if mention_raw else ""))
@@ -2968,6 +3028,14 @@ class AiDiagnosisPlatform:
                         "【历史工单经验】（公司工单沉淀库里相似问题的历史解决记录，"
                         "回答可参考其根因与解法，注明这是历史工单经验）\n"
                         + "\n".join(_items))
+                if name == "list_user_projects":
+                    # 身份只认请求的 created_by（登录用户），LLM 无参数可指定别人
+                    try:
+                        projects = await self._get_user_projects(created_by)
+                    except Exception as e:
+                        logger.warning(f"[plan_exec] 名下项目查询失败: {e}")
+                        projects = []
+                    return name, self._format_user_projects_block(projects)
                 if name == "project_disambiguate":
                     _cs = args.get("candidates") or []
                     _names = "\n".join(f"- {c.get('name')}" for c in _cs
@@ -2988,6 +3056,7 @@ class AiDiagnosisPlatform:
         history_blocks = [c for k, c in results
                           if k == "search_history_tickets" and c]
         disamb_blocks = [c for k, c in results if k == "project_disambiguate" and c]
+        proj_blocks = [c for k, c in results if k == "list_user_projects" and c]
         parts = []
         if history_blocks:
             parts.append("\n\n".join(history_blocks))
@@ -2998,6 +3067,8 @@ class AiDiagnosisPlatform:
         if ticket_blocks:
             parts.append("用户询问的工单（系统已查到，回答工单相关问题基于此内容，"
                          "不要说无法查看）：\n" + "\n\n".join(ticket_blocks))
+        if proj_blocks:
+            parts.append("\n\n".join(proj_blocks))
         if disamb_blocks:
             parts.append("\n\n".join(disamb_blocks))
         return "\n\n".join(parts)
@@ -3766,7 +3837,7 @@ class AiDiagnosisPlatform:
             f"## Agent 推理链\n{reasoning}{_att_block}\n\n"
             f"请先判断工单类型（problem=报障/bug=缺陷/feature=功能需求/support=支持请求/other=其他），"
             f"然后以 JSON 格式返回：\n"
-            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤500字，简述问题和排查过程，不要带项目/现场名；🔴 对话里与本问题相关的信息全部总结进去——AI 追问过、用户回答过的要装，用户主动提到的碎片（抱怨、纠正、对之前处理的反馈）同样要装，一项都不能丢；🔴 对话过程中 AI 已给出的排查假设或分诊结论，浓缩成一两句写进描述（给接单工程师排查方向）；🔴 AI 没问过的信息不要凭空出现，禁止罗列一堆「XX：未提供」凑格式（如没问过调度版本就不能有「调度版本：未提供」）；🔴 唯一例外——故障时间、车辆编号这两个关键字段，对话里没拿到的，在描述末尾明写一句「用户未提供：…」，只列真实缺失的那几项；用户答「没看清/没记住」的照实写（如「报错一闪而过，用户未看清具体内容」）；🔴 型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 结构化字段填过也要写；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
+            f'{{"type":"problem|bug|feature|support|other","title":"≤20字，不要含项目名（项目由用户在弹窗选择）","description":"≤500字，简述问题和排查过程，不要带项目/现场名；🔴 对话里与本问题相关的信息全部总结进去——AI 追问过、用户回答过的要装，用户主动提到的碎片（抱怨、纠正、对之前处理的反馈）同样要装，一项都不能丢；🔴 对话过程中 AI 已给出的排查假设或分诊结论，浓缩成一两句写进描述（给接单工程师排查方向）；🔴 排查假设只能浓缩对话里 AI 真实说过的话——对话中 AI 没给过任何假设或结论时，描述只写用户报告的事实，禁止自行推测原因或编造排查建议；🔴 AI 没问过的信息不要凭空出现，禁止罗列一堆「XX：未提供」凑格式（如没问过调度版本就不能有「调度版本：未提供」）；🔴 唯一例外——故障时间、车辆编号这两个关键字段，对话里没拿到的，在描述末尾明写一句「用户未提供：…」，只列真实缺失的那几项；用户答「没看清/没记住」的照实写（如「报错一闪而过，用户未看清具体内容」）；🔴 型号/车辆编号必须写进 description 正文——工单表单没有独立的型号字段，描述是它唯一对用户可见的地方，即使已在 robot_type 结构化字段填过也要写；🔴 如果对话里用户指名了接单人（提给XX/交给XX/派单给XX），description 开头必须写「[指定处理人：XX]」，绝不能漏",'
             f'"priority":"紧急|高|中|低","contact":"用户方（报障侧）的联系人，不是指派的处理人；从对话提取，没有则为空（系统会自动兜底为用户注册姓名，不要编造）",'
             f'"location":"仅type=problem时填，现场位置","robot_type":"仅type=problem时填，机器人型号/编号",'
             f'"project":"固定为空字符串——项目由用户在确认弹窗搜索选择，不要从对话提取",'
@@ -4031,14 +4102,16 @@ class AiDiagnosisPlatform:
                                 else:
                                     break
                             turns = db_turns[:first_idx] + mem_turns
-                            # 对齐中途断裂时合成上传轮可能既留在 db 前缀、又
-                            # 在 memory 窗口里（同一句「我上传了…」出现两次），
-                            # 去掉前缀侧副本、保 memory 完整版。
-                            _drop = ({(t.get("content") or "").strip() for t in mem_turns}
-                                     & {_msg for _, _msg in _batches})
-                            if _drop:
-                                turns = [t for t in db_turns[:first_idx]
-                                         if (t.get("content") or "").strip() not in _drop] + mem_turns
+                            # 对齐中途断裂（need_info 等轮 DB 落库文案与 memory 记录
+                            # 版本不一致，_same_turn 失配提前 break）时，db 前缀里与
+                            # memory 窗口同 (role, content) 的轮次保留在前缀侧就成段
+                            # 重复——统一剔除前缀侧副本、保 memory 完整版（0907 生产
+                            # 实锤：附件 md 整段重复 7 轮；含旧版上传轮去重场景）。
+                            _mem_keys = {(t.get("role") or "user").lower() + "\x00"
+                                         + (t.get("content") or "").strip() for t in mem_turns}
+                            turns = [t for t in db_turns[:first_idx]
+                                     if ((t.get("role") or "user").lower() + "\x00"
+                                         + (t.get("content") or "").strip()) not in _mem_keys] + mem_turns
                             logger.info(f"[chat_markdown] MySQL 尾部顺序已用 memory 校正: session={sid}, "
                                         f"db={len(db_turns)}, mem={len(mem_turns)}, first={first_idx}")
                         else:
@@ -4121,6 +4194,13 @@ class AiDiagnosisPlatform:
                     f"title={ticket.get('title', '')}, type={ticket.get('type', '')}")
 
         _reset_state_after_submit(agent_state, memory, ticket, db_id)
+        # 对话记录附件回改文件名（生成时拿不到工单 id）；mock 全栈测试无
+        # 该函数/DB，import/执行失败都不阻塞提单
+        try:
+            from ai.core.task_adapter import rename_chat_record_attachments
+            rename_chat_record_attachments(db_id)
+        except Exception:
+            logger.debug(f"[chat_markdown] 对话记录附件改名跳过: db_id={db_id}")
         await self._memory_manager.save_memory(memory)
 
         # ---- 加入待派单池 + 通知 Worker 立即派单 ----
@@ -4350,7 +4430,9 @@ class AiDiagnosisPlatform:
                 "code": 1,
                 "stage": "not_ready",
                 "missing_info": missing,
-                "message": f"工单信息不足，还差：{'、'.join(missing)}。补充后我自动生成工单。",
+                # 与 memory.turns 同一条 LLM 话术（chat_msg）——此前这里返回另一条
+                # 固定文案，前端落库后 DB/memory 两版并存，附件拼接对不上号成段重复
+                "message": chat_msg,
             }
 
         # 0828 新规则：按钮路径话术仍零项目（不出题不追问），但**预填恢复**——
@@ -4443,8 +4525,16 @@ class AiDiagnosisPlatform:
             ready, missing = _assess_ticket_readiness(agent_state)
             if not ready:
                 logger.info(f"[confirm] 信息不足拦截: session={session_id}, missing={missing}")
+                # 与 prepare_ticket 拦截同构：生成 LLM 追问写进 memory + 返回同一条
+                # message（此前固定文案与 memory 版并存，附件拼接成段重复的源头）
+                chat_msg = await self._generate_missing_ask(missing, agent_state, memory,
+                                                            via_button=True)
+                memory.turns.append({"role": "assistant", "content": chat_msg})
+                agent_state.ticket_collecting = missing
+                _save_agent_state(memory, agent_state)
+                await self._memory_manager.save_memory(memory)
                 return {"code": 1, "stage": "not_ready", "missing_info": missing,
-                        "message": f"工单信息不足，还差：{'、'.join(missing)}。补充后我自动生成工单。"}
+                        "message": chat_msg}
 
         # 弹窗里选的项目 → 归一为项目库全名 + code（弹窗 ProjectSelect 已传全名，
         # 这里是防旧前端/直调 API 传简称的兜底）
@@ -4465,6 +4555,13 @@ class AiDiagnosisPlatform:
 
         agent_state.ticket_seq += 1
         _reset_state_after_submit(agent_state, memory, ticket, record.id)
+        # 对话记录附件回改文件名（生成时拿不到工单 id）；mock 全栈测试无
+        # 该函数/DB，import/执行失败都不阻塞提单
+        try:
+            from ai.core.task_adapter import rename_chat_record_attachments
+            rename_chat_record_attachments(record.id)
+        except Exception:
+            logger.debug(f"[chat_markdown] 对话记录附件改名跳过: db_id={record.id}")
         memory.metadata.pop("ticket_draft", None)
         await self._memory_manager.save_memory(memory)
 

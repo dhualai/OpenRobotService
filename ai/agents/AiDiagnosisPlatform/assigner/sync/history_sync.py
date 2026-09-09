@@ -3,7 +3,7 @@
 缓存策略：首次请求或缓存过期时全量同步，TTL 10 分钟。
 数据来源：tasks 表 status ∈ {resolved, closed} 且 assigned_to 非空。
 A/B 两路都吃这两档：很多人解了不关，只取 closed 会漏经验。
-A 路走 Qdrant（history_indexer），B 路走本模块拉表聚簇。
+A 路走 Qdrant（history_indexer），B 路走本模块拉表聚簇；两边都吃 resolved+closed 全量，不再截 500。
 """
 
 import time
@@ -75,7 +75,6 @@ def _fetch_from_tasks_table(module_keywords: Dict[str, List[str]]) -> list[dict]
                 Task.assigned_to != "",
             )
             .order_by(Task.created_at.desc())
-            .limit(500)
             .all()
         )
         records = []

@@ -10,6 +10,7 @@ import { useWorkbenchStore, type WorkbenchTab } from '@/stores/workbench';
 import { useAuthStore } from '@/stores/auth';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
+import { POLL_INTERVAL_MS } from '@/config/poll';
 import { buildRelevanceFilters } from '@/shared/utils/ticketFilters';
 import AdminDataAssistant from '@/shared/components/AdminDataAssistant';
 
@@ -84,7 +85,8 @@ export default function MainLayout() {
   const { username, userId, projectIds } = useAuthStore();
 
   // 「待我处理」工单数角标：与系统任务页共用同一相关性过滤口径（size=1 只取 total），
-  // 每 30 秒刷新；无用户名时无法计算「待我处理」，不展示角标。
+  // 轮询间隔与系统任务页统一（VITE_POLL_INTERVAL_MS，默认 10s，见 @/config/poll）；
+  // 无用户名时无法计算「待我处理」，不展示角标。
   const [mineTicketCount, setMineTicketCount] = useState<number | null>(null);
 
   const fetchMineTicketCount = useCallback(async () => {
@@ -109,7 +111,7 @@ export default function MainLayout() {
 
   useEffect(() => {
     fetchMineTicketCount();
-    const timer = window.setInterval(fetchMineTicketCount, 30000);
+    const timer = window.setInterval(fetchMineTicketCount, POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [fetchMineTicketCount]);
 

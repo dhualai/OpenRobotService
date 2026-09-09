@@ -50,6 +50,11 @@ class TicketUpdate(BaseModel):
     curr_step_endtime: Optional[datetime] = Field(None, description="当前阶段截止时间（更新时同步 deadline_at，对用户不可见）")
     # 用于操作日志识别，不入库
     operation_type: Optional[str] = Field(None, description="操作类型：escalate/return/reassign/update")
+    reassign_kind: Optional[str] = Field(
+        None,
+        description="转派类型：misassign=派错了 / stage=阶段转派 / other=其它。仅 misassign 进入派单学习",
+    )
+    reassign_reason: Optional[str] = Field(None, description="转派原因（选填；有则落日志，并再写一条评论给人看）")
 
 
 class TicketCommentBase(BaseModel):
@@ -287,6 +292,11 @@ class TicketFilterRequest(BaseModel):
     sorts: Optional[List[TicketSort]] = Field(default_factory=list, description="排序条件列表")
     page: int = Field(default=1, ge=1, description="页码")
     size: int = Field(default=10, ge=1, le=100, description="每页数量")
+
+
+class TicketBatchCountRequest(BaseModel):
+    """批量计数请求：每组 queries 独立统计 total，一次网络往返返回多组角标数。"""
+    queries: List[TicketFilterRequest] = Field(default_factory=list, description="多组过滤查询")
 
 
 class ProjectMemberResponse(BaseModel):

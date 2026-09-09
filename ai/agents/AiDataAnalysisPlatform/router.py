@@ -88,6 +88,7 @@ def _merge_chat_context(request: QuickChatRequest) -> dict:
         "user_id": pick("user_id"),
         "period": pick("period"),
         "date": pick("date"),
+        "conversation_id": request.conversation_id,
     }
 
 
@@ -158,7 +159,8 @@ async def quick_chat(request: QuickChatRequest) -> ChatResponse:
 
     - 仅传 question/context：自动识别是普通聊天还是数据分析。
     - 传 data：执行带数据上下文的分析问答。
-    - 不传 data 但传 project_code / user_id：自动查库并分析。
+    - 不传 data：自动解析指标意图（AnalysisPlan），按需查库分析；
+      信息不足时返回 clarify 追问（配合 conversation_id 多轮补充）。
         - 未显式传范围参数时，可由 context_meta 补充页面上下文。
     """
     agent = get_agent()

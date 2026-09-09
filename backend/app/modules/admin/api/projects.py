@@ -190,6 +190,75 @@ async def get_my_projects(
     return projects
 
 
+@project_router.get("/me/relevance", summary="用户相关项目编码（提过单/名下）")
+async def get_my_project_relevance(
+    request: Request,
+    credentials: Optional = Depends(security if not DEBUG_MODE else lambda: None)
+) -> dict:
+    """工单弹窗项目选择器的相关性信号（0907 需求：提过单 > 名下 > 其他）。
+    ticketed=该用户创建过工单的项目（tasks.project_id，含提单数，按提单数降序——
+    0908：提得多的排前），owned=名下项目（user_project_roles，DB id 经
+    project_service 转码）。ticketed 与 owned 有交集时只出现在 ticketed
+    （提过单优先）。任一信号查询失败静默降级为空，不影响另一个。"""
+    from app.core.security import decode_token
+
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if not token:
+        raise HTTPException(status_code=401, detail="未提供认证令牌")
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="无效的认证令牌")
+    username = payload.get("sub")
+    if not username:
+        raise HTTPException(status_code=401, detail="令牌中缺少用户信息")
+
+    from app.core.database import db_manager
+    user = db_manager.get_user(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    user_id = user.get("id")
+
+    ticketed_counts: Dict[str, int] = {}
+    try:
+        from sqlalchemy import func
+        from app.core.db import SessionLocal
+        from app.models.task import Task
+        db = SessionLocal()
+        try:
+            rows = db.query(Task.project_id, func.count(Task.id)).filter(
+                Task.created_by == user_id,
+                Task.project_id.isnot(None),
+                Task.project_id != "",
+            ).group_by(Task.project_id).all()
+            ticketed_counts = {r[0]: int(r[1]) for r in rows if r[0]}
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"[projects/me/relevance] 提过单项目查询失败: {e}")
+
+    owned: set = set()
+    try:
+        # 必须用 app.services 的 PermissionService（查 user_project_roles）；
+        # 模块顶部导入的 admin 版 PermissionService 没有此方法，
+        # AttributeError 会被下面 except 吞掉 → owned 永远空集（0908 生产实锤）
+        from app.services.permission_service import PermissionService
+        user_roles = PermissionService.get_user_roles_all_projects(user_id)
+        for pid in [p for p in user_roles.keys() if p != "global"]:
+            project = project_service.get_project(pid)
+            if project and project.get("project_code"):
+                owned.add(project["project_code"])
+    except Exception as e:
+        logger.warning(f"[projects/me/relevance] 名下项目查询失败: {e}")
+
+    owned -= ticketed_counts.keys()
+    # 提单数降序，同数按编码升序保证返回稳定（前端组内顺序以此为信号）
+    ticketed_sorted = sorted(
+        ({"code": c, "count": n} for c, n in ticketed_counts.items()),
+        key=lambda x: (-x["count"], x["code"]),
+    )
+    return {"ticketed": ticketed_sorted, "owned": sorted(owned)}
+
+
 @project_router.get("/{project_id}", summary="获取单个项目")
 async def get_project(
     project_id: str,

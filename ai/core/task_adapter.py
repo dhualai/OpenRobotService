@@ -333,6 +333,36 @@ def upsert_task(ticket: dict, created_by: str = "") -> Task:
         db.close()
 
 
+def rename_chat_record_attachments(task_id: int) -> bool:
+    """入库后把对话记录附件 filename 改为「工单{task_id}对话记录.{ext}」。
+    附件生成于入库前（拿不到工单 id），filename 先用日期占位（对话记录_YYYYMMDD.md）
+    ——同一天多张工单的附件同名，下载时无法区分（0907 派单同事反馈）。入库拿到
+    task_id 后回改显示名；MinIO object_path 不动。失败仅记日志，不影响工单。"""
+    try:
+        from pathlib import Path as _P
+        db = SessionLocal()
+        try:
+            task = db.query(Task).filter(Task.id == task_id).first()
+            if not task or not task.attachments:
+                return False
+            atts = [dict(a) if isinstance(a, dict) else a for a in task.attachments]
+            hit = False
+            for a in atts:
+                if isinstance(a, dict) and (a.get("filename") or "").startswith("对话记录_"):
+                    ext = _P(a["filename"]).suffix or ".md"
+                    a["filename"] = f"工单{task_id}对话记录{ext}"
+                    hit = True
+            if not hit:
+                return False
+            task.attachments = atts  # JSON 列纪律：整体替换
+            db.commit()
+            return True
+        finally:
+            db.close()
+    except Exception:
+        return False
+
+
 def _log_task_creation(db, task: Task, created_by: str) -> None:
     """AI 创建工单后补写操作日志（create + status_change 初始主节点）。
 

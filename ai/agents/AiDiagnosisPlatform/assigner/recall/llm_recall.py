@@ -1,7 +1,7 @@
-"""L1 纯LLM召回：工单 + 全员画像 → LLM 直接推荐 Top-K
+"""Step3·画像召回：工单 + 全员职责卡片 → 逐人打分。
 
-这是三路召回中语义理解最强的一路。LLM 能同时看到所有人的 duty_text
-和 responsibility_modules，理解模糊边界（"这个人主要负责地图但也参与后端"）。
+三路里看人的那一路。能读 duty_text 和责任模块，理解模糊边界
+（「这个人主要负责地图但也参与后端」）。不看历史工单。
 """
 
 import json, re
@@ -69,12 +69,12 @@ class LlmRecall:
             llm = await get_llm_client()
             response = await llm.complete(prompt, max_tokens=1200, temperature=0.0)
             logger.info(
-                f"[派单:{ticket.id}] Step3-L1 LLM原始输出(候选{len(engineers)}人,要Top{k}): {response[:800]}"
+                f"[派单:{ticket.id}] Step3 画像 LLM原始输出(候选{len(engineers)}人,要Top{k}): {response[:800]}"
             )
             scores, reasons = self._parse(response, engineers)
             return self._clip_top(scores, reasons, k)
         except Exception as e:
-            logger.warning(f"[派单:{ticket.id}] Step3-L1 LLM召回失败: {e}")
+            logger.warning(f"[派单:{ticket.id}] Step3 画像召回失败: {e}")
             return {}, {}
 
     async def arecall(
@@ -100,7 +100,7 @@ class LlmRecall:
             scores, reasons = self._clip_top(scores, reasons, k_single)
             self.last_reasons = reasons
             logger.info(
-                f"[派单:{ticket.id}] Step3-L1 单轮 Top{k_single} 人数={n} 输出={len(scores)}人"
+                f"[派单:{ticket.id}] Step3 画像 单轮 Top{k_single} 人数={n} 输出={len(scores)}人"
             )
             return scores
 
@@ -111,7 +111,7 @@ class LlmRecall:
             for i in range(0, n, self._batch_size)
         ]
         logger.info(
-            f"[派单:{ticket.id}] Step3-L1 分批召回 总人数={n} 分{len(batches)}批 "
+            f"[派单:{ticket.id}] Step3 画像 分批召回 总人数={n} 分{len(batches)}批 "
             f"每批Top{self._batch_top_k}（合并后全部进精排，不再决选）"
         )
         for bi, batch in enumerate(batches, 1):
@@ -128,17 +128,17 @@ class LlmRecall:
                 hit = next((e for e in batch if e.id == eid), None)
                 top_names.append(f"{llm_person_label(eng=hit) if hit else llm_person_label(eid)}:{sc:.2f}")
             logger.debug(
-                f"[派单:{ticket.id}] Step3-L1   批次{bi}/{len(batches)} 人数={len(batch)} "
+                f"[派单:{ticket.id}] Step3 画像   批次{bi}/{len(batches)} 人数={len(batch)} "
                 f"命中={len(top)}人 [{', '.join(top_names)}]"
             )
 
         scores, reasons = self._keep_batch_union(stage1, reasons)
         self.last_reasons = reasons
         if not scores:
-            logger.warning(f"[派单:{ticket.id}] Step3-L1 分批召回无胜者，返回空")
+            logger.warning(f"[派单:{ticket.id}] Step3 画像 分批召回无胜者，返回空")
             return {}
         logger.info(
-            f"[派单:{ticket.id}] Step3-L1 分批合并 {n}→{len(scores)}人（各批 Top{self._batch_top_k} 全保留）"
+            f"[派单:{ticket.id}] Step3 画像 分批合并 {n}→{len(scores)}人（各批 Top{self._batch_top_k} 全保留）"
         )
         return scores
 
@@ -160,17 +160,17 @@ class LlmRecall:
     ) -> Tuple[Dict[str, float], Dict[str, str]]:
         m = re.search(r"\{.*\}", response, re.DOTALL)
         if not m:
-            logger.debug(f"Step3-L1 LLM 返回无 JSON，raw: {response[:200]}")
+            logger.debug(f"Step3 画像 LLM 返回无 JSON，raw: {response[:200]}")
             return {}, {}
         try:
             data = json.loads(m.group())
         except json.JSONDecodeError:
-            logger.debug(f"Step3-L1 JSON 解析失败，raw: {response[:300]}")
+            logger.debug(f"Step3 画像 JSON 解析失败，raw: {response[:300]}")
             return {}, {}
 
         rankings = data.get("rankings", [])
         if not isinstance(rankings, list) or not rankings:
-            logger.debug(f"Step3-L1 rankings 为空或非列表: {rankings}")
+            logger.debug(f"Step3 画像 rankings 为空或非列表: {rankings}")
             return {}, {}
 
         scores: Dict[str, float] = {}
@@ -187,5 +187,5 @@ class LlmRecall:
             else:
                 not_found.append(f"{eid}(conf={conf})")
         if not_found:
-            logger.debug(f"Step3-L1 ID 未匹配 {len(not_found)}: {not_found[:5]}")
+            logger.debug(f"Step3 画像 ID 未匹配 {len(not_found)}: {not_found[:5]}")
         return scores, reasons

@@ -63,21 +63,45 @@ export interface WechatUserInfo {
   [key: string]: unknown;
 }
 
+export interface SceneDistributionItem {
+  /** 关注渠道编码，如 ADD_SCENE_SEARCH；中文含义见 SUBSCRIBE_SCENE_LABELS */
+  scene: string;
+  /** 该渠道的已关注用户数 */
+  value: number;
+}
+
 export interface BatchUserInfoResp {
   success: boolean;
-  user_info_list: WechatUserInfo[];
   /** 当前用户总数 */
   total: number;
+  /** 已关注用户数（subscribe===1） */
+  real: number;
+  /** 已取关用户数（虚拟用户） */
+  virtual: number;
+  /** 已关注用户的关注渠道分布（按 value 降序） */
+  scene_distribution: SceneDistributionItem[];
 }
 
 /**
- * 获取当前用户构成（读 user_info 表最新快照：整点快照任务落库的 batch-user-info 返回值，
- * 最长滞后 1 小时）。subscribe===1 为真实用户，否则为虚拟用户。
+ * 获取当前用户构成聚合统计（读 user_info 表最新快照：整点快照任务落库，
+ * 最长滞后 1 小时）。后端已在 DB 侧完成 real/virtual 与渠道分布聚合，
+ * 响应体仅含统计值，不再返回全量 user_info_list。
+ *
+ * 客户端缓存：后端每整点刷新，数据最长滞后 1 小时，此处缓存 10 分钟，
+ * 避免每次进入「其他」页都重复请求。
  */
-export function fetchBatchUserInfo(): Promise<BatchUserInfoResp> {
-  return request<BatchUserInfoResp>('/batch-user-info-db', {
+const BATCH_USER_INFO_CACHE_TTL = 10 * 60 * 1000; // 10 分钟
+let _batchUserInfoCache: { data: BatchUserInfoResp; timestamp: number } | null = null;
+
+export async function fetchBatchUserInfo(force = false): Promise<BatchUserInfoResp> {
+  if (!force && _batchUserInfoCache && Date.now() - _batchUserInfoCache.timestamp < BATCH_USER_INFO_CACHE_TTL) {
+    return _batchUserInfoCache.data;
+  }
+  const data = await request<BatchUserInfoResp>('/batch-user-info-db', {
     method: 'POST',
     headers: { 'X-API-Key': SYNC_API_KEY },
     skipCache: true,
   });
+  _batchUserInfoCache = { data, timestamp: Date.now() };
+  return data;
 }

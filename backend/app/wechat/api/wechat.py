@@ -608,15 +608,18 @@ async def get_user_summary_from_db(
             detail=f"end_date 不能为今天或未来日期（统计数据 T+1 落库，最早可查到昨日；今天为 {today.strftime('%Y-%m-%d')}）",
         )
 
-    try:
+    def _query_rows() -> List[UserStatistics]:
         db = db_manager.get_db()
         try:
-            rows = db.query(UserStatistics).filter(
+            return db.query(UserStatistics).filter(
                 UserStatistics.ref_date >= begin,
                 UserStatistics.ref_date <= end,
             ).order_by(UserStatistics.ref_date, UserStatistics.user_source).all()
         finally:
             db.close()
+
+    try:
+        rows = await asyncio.to_thread(_query_rows)
 
         return {
             "success": True,
@@ -644,13 +647,14 @@ async def get_batch_user_info_from_db(
     created_date: Optional[str] = Query(None, description="指定快照日期 yyyy-MM-dd；不传则取最新"),
     current_user: Dict[str, Any] = Depends(get_current_active_user_from_token),
 ):
-    """读取 user_info 表最新快照（整点快照任务落库的 batch-user-info 返回值）。
+    """读取 user_info 表最新快照并返回聚合统计（整点快照任务落库）。
 
-    返回结构与 /batch-user-info 一致：{"success": true, "user_info_list": [...],
-    "total": N}。无快照时返回空列表（total=0）。数据最长滞后 1 小时
-    （快照任务每整点刷新）。
+    返回 {"success": true, "total": N, "real": N, "virtual": N,
+    "scene_distribution": [{"scene": "...", "value": N}, ...]}。
+    real/virtual 按 subscribe===1 区分；scene_distribution 仅统计已关注用户
+    （subscribe===1）的 subscribe_scene 分布。数据最长滞后 1 小时。
     """
-    try:
+    def _query_latest() -> Optional[Dict[str, Any]]:
         db = db_manager.get_db()
         try:
             query = db.query(UserInfo)
@@ -664,17 +668,41 @@ async def get_batch_user_info_from_db(
             latest = query.order_by(
                 UserInfo.created_time.desc(), UserInfo.id.desc(),
             ).first()
+            if not latest or not latest.user_info:
+                return None
+            return latest.user_info if isinstance(latest.user_info, dict) else None
         finally:
             db.close()
 
-        if not latest or not latest.user_info:
-            return {"success": True, "user_info_list": [], "total": 0}
+    try:
+        payload = await asyncio.to_thread(_query_latest)
 
-        payload = latest.user_info if isinstance(latest.user_info, dict) else {}
+        if not payload:
+            return {"success": True, "total": 0, "real": 0, "virtual": 0, "scene_distribution": []}
+
+        items = payload.get('user_info_list', [])
+        total = len(items)
+        real = sum(1 for u in items if u.get('subscribe') == 1)
+
+        scene_map: Dict[str, int] = {}
+        for u in items:
+            if u.get('subscribe') != 1:
+                continue
+            scene = str(u.get('subscribe_scene') or 'ADD_SCENE_OTHERS')
+            scene_map[scene] = scene_map.get(scene, 0) + 1
+
+        scene_distribution = sorted(
+            [{"scene": s, "value": v} for s, v in scene_map.items()],
+            key=lambda x: x["value"],
+            reverse=True,
+        )
+
         return {
             "success": True,
-            "user_info_list": payload.get('user_info_list', []),
-            "total": len(payload.get('user_info_list', [])),
+            "total": total,
+            "real": real,
+            "virtual": total - real,
+            "scene_distribution": scene_distribution,
         }
 
     except HTTPException:

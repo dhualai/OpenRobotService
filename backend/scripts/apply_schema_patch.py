@@ -40,6 +40,9 @@ PATCHES = {
         ("profile_text", "TEXT NULL COMMENT '部门职责描述（AI 派单部门分类用）'", None),
         ("examples", "JSON NULL COMMENT '典型工单示例（[{title, dept}]）'", None),
     ],
+    "tasks": [
+        ("step_phase_round", "INT NOT NULL DEFAULT 0 COMMENT '阶段回合数：complete-step 推进+1，初始0=第一轮；0时协商节点不受sequence下限限制'", None),
+    ],
 }
 
 

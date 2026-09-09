@@ -64,7 +64,8 @@ class LlmDecision:
         说明：用户重派时的『备注/原因』（preferred_assignee_remark）是转派的原因说明，
         不一定点名某人，不应从备注正则抠人名当强信号（易误配、语义失真）。
         因此这里只认 ticket.preferred_assignee（结构化 users.id，用户在表单中明确选择）。
-        倾向人 / 原处理人由 Step2 打在候选人标签上；备注有才单独带一句。
+        倾向人 / 原处理人由 Step2 打在候选人标签上。
+        备注全文已由 assign_ticket 拼进问题描述；Step6 只留一句提示，不把同一段再贴一遍。
         """
         emap = {e.id: e for e in engineers}
         # 结构化倾向人（users.id）
@@ -207,11 +208,9 @@ class LlmDecision:
         d = (ranked_scores or {}).get(eid) or {}
         tags = score_tag_labels(d)
         l1 = (getattr(recall_result, "llm_reasons", None) or {}).get(eid) or ""
-        pen = ((getattr(recall_result, "transfer_signals", None) or {}).get("penalties") or {}).get(eid) or {}
-        wrong = (pen or {}).get("reason") or ""
         logger.info(
             f"[派单:{getattr(ticket, 'id', '?')}] Step6 依据: "
-            f"L1原因={l1 or '-'} / 错派={wrong or '-'} / tags={tags or '-'}（不进 tip）"
+            f"L1原因={l1 or '-'} / tags={tags or '-'}（不进 tip）"
         )
 
     async def adecide(self, ticket, engineers, recall_result, ranked_scores, product: str = ""):
@@ -239,12 +238,6 @@ class LlmDecision:
 
         # ── 决策日志：展示精排总分、LLM 维度分与候选窗口，便于定位"为什么派了某人" ──
         try:
-            low_score_threshold = float(
-                getattr(self._config, "llm_decision_low_score_threshold", 0.6)
-            )
-        except Exception:
-            low_score_threshold = 0.6
-        try:
             topk = self._window_k(len(items))
         except Exception:
             topk = len(items)
@@ -262,8 +255,7 @@ class LlmDecision:
         )[:3]
         outside_str = ", ".join(
             f"{emap_diag[eid].name}(总={ranked_scores[eid].get('total_score',0):.2f},"
-            f"LLM={ranked_scores[eid].get('llm_score',0):.2f},"
-            f"在途={ranked_scores[eid].get('load_count','-')})"
+            f"LLM={ranked_scores[eid].get('llm_score',0):.2f})"
             for eid in outside_llm_top
         ) or "-"
         top1_name = emap_diag[top_eid].name if top_eid in emap_diag else top_eid
@@ -280,7 +272,7 @@ class LlmDecision:
             )
         logger.info(
             f"[派单:{getattr(ticket,'id','?')}] Step6决策 | top1={top1_name} 总={top_score:.2f} "
-            f"second={second_score:.2f} | 低分阈值={low_score_threshold} "
+            f"second={second_score:.2f} "
             f"窗口={'全量' if topk >= len(items) else f'Top{topk}'}({topk}人) "
             f"| 窗口内=[{', '.join(window_names)}] | 窗口外LLM最高=[{outside_str}]"
         )
@@ -341,6 +333,17 @@ class LlmDecision:
             )
             return None
 
+    @staticmethod
+    def _redispatch_remark_hint(ticket) -> Optional[str]:
+        """Step6 对重派备注只留一句。全文已在描述里就不再贴第二遍。"""
+        remark = (getattr(ticket, "preferred_assignee_remark", "") or "").strip()
+        if not remark:
+            return None
+        desc = getattr(ticket, "problem_description", "") or ""
+        if remark in desc:
+            return "用户重派备注已写在工单描述末尾，按该意图换人。"
+        return f"用户重派备注：{remark}"
+
     def _build_prompt(self, ticket, engineers, recall_result, ranked_scores, extra_hints=None, product: str = ""):
         from ai.agents.AiDiagnosisPlatform.assigner.prompts.step6 import (
             IRON_RULES,
@@ -380,7 +383,7 @@ class LlmDecision:
             )
             lines.append(
                 f"   分数: 总={d.get('total_score',0):.2f} "
-                f"LLM={d.get('llm_score',0):.2f} "
+                f"画像={d.get('llm_score',0):.2f} "
                 f"相似={d.get('similar_score', d.get('history_score',0)):.2f} "
                 f"簇={d.get('cluster_score',0):.2f}"
             )
@@ -389,7 +392,7 @@ class LlmDecision:
             # 主要依据各维度原始分 + 加权来源（职级/对接人/倾向人/部门）推导，不需要额外信息。
             raw_parts = []
             dims = [
-                ("LLM", d.get("llm_score", 0.0)),
+                ("画像", d.get("llm_score", 0.0)),
                 ("相似", d.get("similar_score", d.get("history_score", 0.0))),
                 ("簇", d.get("cluster_score", 0.0)),
             ]
@@ -418,22 +421,23 @@ class LlmDecision:
 
         from ai.agents.AiDiagnosisPlatform.assigner.prompts.shared import ticket_fields_block
         lines.extend(["", ticket_fields_block(ticket).rstrip()])
-        # 倾向人 / 原处理人已在排名行的 Step2 标签上；有倾向人时补一句采纳口径，备注有才带。
+        # 倾向人 / 原处理人已在排名行的 Step2 标签上；有倾向人时补一句采纳口径。
+        # 备注全文在工单描述里；这里只留一句，避免模型读两遍同一意图。
         has_pref = any(
             (d or {}).get("preferred_assignee")
             for d in (ranked_scores or {}).values()
         ) or bool((getattr(ticket, "preferred_assignee", "") or "").strip())
-        remark = (getattr(ticket, "preferred_assignee_remark", "") or "").strip()
+        remark_line = self._redispatch_remark_hint(ticket)
         extra: List[str] = []
-        if has_pref or remark:
+        if has_pref or remark_line:
             extra.append("")
         if has_pref:
             extra.append(
                 "名单中带 [倾向接单人] 的是用户勾选。"
                 "正常情况不要拒绝这一选择，除非另有非常合适的人。"
             )
-        if remark:
-            extra.append(f"用户重派备注：{remark}")
+        if remark_line:
+            extra.append(remark_line)
         if extra:
             lines.extend(extra)
 

@@ -37,7 +37,7 @@ function appendProjectIdsQuery(existingQuery: string, projectIds?: string[]): st
 // ============================================================
 export interface TicketSummary {
   total: number;
-  pending_count: number;       // 待处理（new + in_progress + paused 之和，后端可直接给出，也可前端累加）
+  pending_count: number;       // 待处理（处理中 + 暂停/挂起之和，不含 new；后端给出，前端不做累加）
   overdue_count: number;       // 超时工单数（依据 deadline_at < now 计算，见 backend/app/models/task.py deadline_at）
   resolved_rate: number;       // 解决率 0-1，例如 0.82 表示 82%
   by_status: Partial<Record<TicketStatusKey, number>>;
@@ -163,8 +163,8 @@ export interface TicketListItem {
 /**
  * GET /api/admin/dashboard/tickets?status={key}&project_ids=id1,id2
  * 点击某个状态标签后展示该状态下的工单列表，响应：{ code: 0, data: { items: TicketListItem[], total: number } }
- * status 支持单一状态 key（in_progress/paused/resolved/closed/cancelled）及仪表盘统计卡下钻的组合 scope：
- *   all     全部工单（监控中的五种状态，不含 new，与 summary.total 同口径）
+ * status 支持单一状态 key（new/in_progress/paused/resolved/closed/cancelled）及仪表盘统计卡下钻的组合 scope：
+ *   all     全部工单（监控中的六种状态，含 new，与 summary.total 同口径）
  *   pending 待处理（处理中 + 暂停/挂起，与 summary.pending_count 同口径）
  *   overdue 超时工单（deadline_at < now 且未完成，与 summary.overdue_count 同口径）
  * projectIds 传入后仅返回这些项目内的工单。
