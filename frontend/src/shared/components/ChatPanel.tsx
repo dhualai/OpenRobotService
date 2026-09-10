@@ -2136,7 +2136,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
     return raw ? Number(raw) : undefined;
   })();
 
-  /** 弹窗打开/类型确定后：拉取该类型的处理阶段列表（默认不选，仅回填默认阶段完成时间 +7 天） */
+  /** 弹窗打开/类型确定后：拉取该类型的处理阶段列表（默认选中第一个步骤，并回填阶段完成时间 +7 天） */
   const loadTicketSteps = useCallback(async (ticketType: string) => {
     if (!ticketType) return;
     setStepsLoading(true);
@@ -2144,11 +2144,16 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
       const res = await qaGetTicketSteps(ticketType);
       const steps = res?.data?.steps ?? [];
       setTicketSteps(steps);
-      // 阶段完成时间默认 +7 天；已有则不动（处理阶段默认不选，由用户手动选择）
+      // 阶段完成时间默认 +7 天；已有则不动。
+      // 处理阶段默认选中第一个步骤：下拉已删空占位项，若不回填 state，浏览器会显示首个
+      // 步骤但 curr_step_id 仍为空，提交时被「请选择处理阶段」误拦（视觉有默认值却提交不了）。
       setTicketConfirm((s) => {
         const overrides = { ...s.overrides };
         if (!overrides.curr_step_endtime) {
           overrides.curr_step_endtime = dayjs().add(7, 'day').toISOString();
+        }
+        if (!overrides.curr_step_id && steps.length > 0) {
+          overrides.curr_step_id = Number(steps[0].id);
         }
         return { ...s, overrides };
       });
