@@ -424,10 +424,13 @@ function nav(v){
     $("#nav-"+k).classList.toggle("on", v===k);
     $("#view-"+k).classList.toggle("on", v===k);
   });
+  try { localStorage.setItem("dar_studio_tab", v); } catch (e) {}
 }
 $("#nav-week").onclick = ()=>nav("week");
 $("#nav-test").onclick = ()=>nav("test");
 $("#nav-sink").onclick = ()=>nav("sink");
+// 启动恢复上次页签：F5 刷新停留在原页签，不回第一个
+nav(localStorage.getItem("dar_studio_tab") || "week");
 
 /* ══ 页签1 周流程 ══ */
 const env = "prod";  // 指标固定连生产（用户定调：对话记录只从生产拿）
