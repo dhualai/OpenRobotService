@@ -138,7 +138,7 @@
   <div class="meta" id="h-meta"></div>
   <span id="h-dirty" style="display:none;color:#b45309;font-size:13px;font-weight:600">● 有未导出修改</span>
   <div class="progress" id="h-prog">0/0</div>
-  <button id="btn-export">导出 JSON</button>
+  <button id="btn-export" class="primary">保存到工作台</button>
   <button id="btn-skip" class="primary">保存并下一个 →</button>
 </header>
 <div id="wrap">
@@ -286,9 +286,7 @@ function renderList() {
   if (!vis.length) {
     list.innerHTML = DATA.convs.length
       ? '<div style="padding:16px 10px;color:#15803d;font-weight:700;font-size:14px">全部会话已过完 ✓<br><br>'
-        + '<span style="color:#555;font-weight:400;font-size:12.5px">别忘了点右上「'
-        + (MODE === "bounds" ? "导出切分结果" : "导出 JSON")
-        + '」存到 Downloads 目录</span></div>' : "";
+        + '<span style="color:#555;font-weight:400;font-size:12.5px">别忘了点右上「保存到工作台」保存成果</span></div>' : "";
     return;
   }
   vis.forEach(c => {
@@ -518,15 +516,27 @@ document.getElementById("btn-prev").onclick = () => {
   const i = all.indexOf(state.cur);
   openConv(all[(i - 1 + all.length) % all.length]);
 };
-document.getElementById("btn-export").onclick = () => {
+document.getElementById("btn-export").onclick = async () => {
   saveCur();
-  const blob = new Blob([JSON.stringify(store, null, 1)], { type: "application/json" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "manual_segmentation" + (DATA.env === "prod" ? "_prod" : "") + ".json";
-  a.click();
-  dirty = false; updateDirty();
-  toast("已导出到浏览器下载目录（通常是 Downloads/），回工作台继续下一步");
+  const markClean = msg => { dirty = false; updateDirty(); toast(msg); };
+  try {
+    const r = await fetch("/api/save_manual", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({env: DATA.env, data: store})});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+    markClean(j.rerun
+      ? "已保存，正在按你的边界重算 L1——十几秒后回工作台点「刷新指标」"
+      : "已保存到工作台（export_dar/" + DATA.env + "/），回工作台继续下一步");
+  } catch (e) {
+    // 直接以文件方式打开（非工作台入口）时接口不通：退回浏览器下载兜底
+    const blob = new Blob([JSON.stringify(store, null, 1)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "manual_segmentation" + (DATA.env === "prod" ? "_prod" : "") + ".json";
+    a.click();
+    markClean("接口不通，退回浏览器下载——从工作台重新打开本工具即可直接保存");
+  }
 };
 document.querySelectorAll("#side .filters button").forEach(b => {
   b.onclick = () => {
@@ -597,8 +607,7 @@ document.getElementById("h-mode").textContent =
 if (MODE === "bounds") {
   const b = document.getElementById("mode-banner");
   b.style.display = "block";
-  b.textContent = "这一轮只定话题边界、不打标签；过完点右下「保存并下一个」，全部过完点右上「导出切分结果」放 Downloads/，再回工作台跑第 4 步。";
-  document.getElementById("btn-export").textContent = "导出切分结果";
+  b.textContent = "这一轮只定话题边界、不打标签；过完点右下「保存并下一个」，全部过完点右上「保存到工作台」（自动按你的边界重算 L1），再回工作台跑第 4 步。";
 }
 buildHelp();
 

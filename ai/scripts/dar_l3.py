@@ -73,9 +73,8 @@ KB_TAG = "local"
 OUT = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed"
 SPLIT = os.path.join(OUT, "conversations_split.jsonl")
 CLS = os.path.join(OUT, "conversations_classified.jsonl")
-_MANUAL_NAME = {"test": "manual_segmentation.json",
-                "prod": "manual_segmentation_prod.json"}
-MANUAL = rf"C:/Users/PAJ26020/Downloads/{_MANUAL_NAME[ENV]}"
+# 人工切分/标注：随数据集放 export_dar/{env}/（与 dar_weekly/dar_studio 同源）
+MANUAL = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/manual_segmentation.json"
 RETRIEVAL = os.path.join(OUT, f"retrieval_check_{_dt.now():%Y%m%d}.json")
 JUDGE_OUT = os.path.join(OUT, f"l3_judge_{_dt.now():%Y%m%d}.json")      # 校准结果（按日滚动）
 ALL_OUT = os.path.join(OUT, f"l3_judge_all_{_dt.now():%Y%m%d}.json")    # 预标结果

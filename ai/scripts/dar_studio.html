@@ -465,11 +465,11 @@ const WIZ = [
   {t:"导数据", steps:["export","prepare"], pk:"export", d:"生产库四表 → 本地切分（ssh，约 1-2 分钟）"},
   {t:"L1 指标", steps:["l1"], pk:"l1", d:"LLM 逐会话切话题——跑完 L1 指标卡即时出（不等标注/周报）"},
   {t:"人工切题", steps:["tool0"], pk:"tool0", openAfter:true,
-   d:"生成切题工具（蓝色界面），只核对/修正话题边界不打标签，导出 JSON 放 Downloads/"},
+   d:"生成切题工具（蓝色界面），只核对/修正话题边界不打标签；「保存到工作台」自动重算 L1"},
   {t:"L3 预标", steps:["l1r","retrieval","l3","tool"], pk:"l3",
    d:"按人工边界重算 L1 + 检索判定 + judge 预标，重生成标注工具（预标全程有效）"},
   {t:"人工标注", label:true,
-   d:"新标签页打开标注工具（绿色界面）打标签，回车采纳预标，导出 JSON 放 Downloads/"},
+   d:"新标签页打开标注工具（绿色界面）打标签，回车采纳预标，「保存到工作台」收标签"},
   {t:"吸收 → 周报", steps:["l1r","retrieval","l3","report"], pk:"report",
    d:"吸收人工标签出 L2，增量补判变更段，三口径对比 + 周报"},
 ];

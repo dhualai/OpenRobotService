@@ -42,9 +42,8 @@ QDRANT = os.environ.get("DAR_QDRANT", "test")
 OUT = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed"
 SPLIT = os.path.join(OUT, "conversations_split.jsonl")
 CLS = os.path.join(OUT, "conversations_classified.jsonl")
-_MANUAL_NAME = {"test": "manual_segmentation.json",
-                "prod": "manual_segmentation_prod.json"}
-MANUAL = rf"C:/Users/PAJ26020/Downloads/{_MANUAL_NAME[ENV]}"
+# 人工切分/标注：随数据集放 export_dar/{env}/（与 dar_weekly/dar_studio 同源）
+MANUAL = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/manual_segmentation.json"
 CONCURRENCY = 8
 
 # chunk 首行：『{emoji路别} N（标题）：』；title 可缺（FAQ/翻译表等无名块）

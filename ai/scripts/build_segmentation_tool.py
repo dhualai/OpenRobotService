@@ -8,10 +8,10 @@
 
 两轮用法（0910 起：先人工定边界、后按人工边界判定——judge 与检索重放的
 输入就是人工认可的话题段，标注轮预标全部有效）：
-  --bounds-only  切题轮：不注入预标/检索，只核对修正话题边界，
-                 导出 JSON 放 Downloads/（工作台第 3 步）
+  --bounds-only  切题轮：不注入预标/检索，只核对修正边界，「保存到工作台」
+                 → export_dar/{env}/manual_segmentation.json（自动重算 L1）
   （缺省）       标注轮：注入 AI 四类预标 + 检索判定 + judge 理由，段头一键采纳；
-                 数字键 1-6 选标签（工作台第 4 步后）
+                 数字键 1-6 选标签，「保存到工作台」收标签
 已导出过人工边界的会话，初始切分即人工边界（与 localStorage 双重一致）。
 预标按段首索引锚定，边界改动后该段预标不显示（防错位）。
 进度存 localStorage（换浏览器/清缓存会丢，审完及时导出）。
@@ -32,9 +32,9 @@ OUT = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed"
 SPLIT = os.path.join(OUT, "conversations_split.jsonl")
 CLS = os.path.join(OUT, "conversations_classified.jsonl")
 TPL = os.path.join(HERE, "segmentation_tool.template.html")
-MANUAL_NAME = {"test": "manual_segmentation.json",
-               "prod": "manual_segmentation_prod.json"}
-MANUAL = os.path.join(r"C:/Users/PAJ26020/Downloads", MANUAL_NAME[ENV])
+# 人工切分/标注：随数据集放 export_dar/{env}/（0910-6 迁出 Downloads；
+# 工具「保存到工作台」经 dar_studio /api/save_manual 直写这里）
+MANUAL = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/manual_segmentation.json"
 
 WINDOW = timedelta(minutes=30)
 A_MAX = 3000  # AI 回答注入上限（审核看话题够用）

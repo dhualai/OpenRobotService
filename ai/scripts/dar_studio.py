@@ -526,7 +526,7 @@ def _weekly_files(env: str):
 
 def _realtime_rates(env: str):
     """三口径即时读各步产物算（不依赖周报）：L1←l1 汇总、L3←judge 预标分布、
-    L2←Downloads 标注文件（落盘即出）。周报（第五步吸收）出同分母口径后
+    L2←人工标注文件（保存到工作台即出）。周报（第五步吸收）出同分母口径后
     以周报为准，实时值只是过程口径。"""
     from collections import Counter as _Ctr
     proc = os.path.join(DATA_ROOT, env, "processed")
@@ -551,9 +551,7 @@ def _realtime_rates(env: str):
                 f"端到端 {ok / (ok + bad + unc) * 100:.1f}%（{ok}/{ok + bad + unc}）"
                 f"｜确定 {ok / (ok + bad) * 100:.1f}%（{ok}/{ok + bad}）"
                 f"｜全段 {len(sub)}（未吸收标注）")
-    manual = {"test": "manual_segmentation.json",
-              "prod": "manual_segmentation_prod.json"}[env]
-    mp = os.path.join(os.path.expanduser("~"), "Downloads", manual)
+    mp = _manual_path(env)
     split = os.path.join(proc, "conversations_split.jsonl")
     if os.path.exists(mp) and os.path.exists(split):
         man = json.load(open(mp, encoding="utf-8"))
@@ -598,9 +596,7 @@ def _realtime_small(env: str):
                                      "（资料层上界，含直接提单段；补库缺口看 L3 未覆盖）"})
         except Exception:
             pass
-    manual = {"test": "manual_segmentation.json",
-              "prod": "manual_segmentation_prod.json"}[env]
-    mp = os.path.expanduser(os.path.join("~", "Downloads", manual))
+    mp = _manual_path(env)
     split = os.path.join(proc, "conversations_split.jsonl")
     fj = sorted(glob.glob(os.path.join(proc, "l3_judge_all_*.json")))
     if not (os.path.exists(mp) and os.path.exists(split) and fj):
@@ -761,6 +757,42 @@ def _mtime_str(p: str) -> str:
         return ""
 
 
+def _manual_path(env: str) -> str:
+    """人工切分/标注文件：随数据集放 export_dar/{env}/（0910-6 迁出 Downloads，
+    浏览器下载列表清理会误删；两环境目录隔离，文件同名不混用）。"""
+    return os.path.join(DATA_ROOT, env, "manual_segmentation.json")
+
+
+class SaveManualReq(BaseModel):
+    env: str = "test"
+    data: dict
+
+
+@app.post("/api/save_manual")
+def save_manual(req: SaveManualReq):
+    """标注工具「保存到工作台」：store 直写 export_dar/{env}/manual_segmentation.json，
+    并后台按人工边界重算 L1（l1r 本地无 LLM，十几秒）——刷新指标即见。"""
+    if req.env not in ("test", "prod"):
+        raise HTTPException(400, "env 取值 test|prod")
+    d = req.data
+    if not isinstance(d, dict) or not isinstance(d.get("bounds"), dict) \
+            or not isinstance(d.get("labels"), dict):
+        raise HTTPException(400, "数据缺 bounds/labels")
+    p = _manual_path(req.env)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump(d, fh, ensure_ascii=False, indent=1)
+    busy = bool(_run_state["proc"] and _run_state["proc"].poll() is None)
+    split = os.path.join(DATA_ROOT, req.env, "processed", "conversations_split.jsonl")
+    if not busy and os.path.exists(split):
+        subprocess.Popen([sys.executable, os.path.join(HERE, "dar_weekly.py"),
+                          "--env", req.env, "l1r"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         cwd=PROJ, env=_child_env())
+        return {"ok": True, "path": p, "rerun": True}
+    return {"ok": True, "path": p, "rerun": False}
+
+
 @app.get("/api/progress")
 def progress(env: str = "prod"):
     """向导各步完成状态：从产物文件 mtime 推断（页面刷新不丢）。"""
@@ -772,14 +804,12 @@ def progress(env: str = "prod"):
         files = sorted(glob.glob(os.path.join(proc, pat)))
         return _mtime_str(files[-1]) if files else ""
 
-    manual = {"test": "manual_segmentation.json",
-              "prod": "manual_segmentation_prod.json"}[env]
     return {"env": env, "steps": {
         "export": _mtime_str(os.path.join(proc, "conversations_split.jsonl")),
         "l1": latest("direct_answer_summary_*.json"),
         "tool0": latest("segmentation_tool.html"),
         "l3": latest("segmentation_tool.html") or latest("l3_judge_all_*.json"),
-        "label": _mtime_str(os.path.join(os.path.expanduser("~"), "Downloads", manual)),
+        "label": _mtime_str(_manual_path(env)),
         "report": latest("weekly_*.json"),
     }}
 
