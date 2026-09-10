@@ -315,6 +315,7 @@ function openConv(c) {
   document.getElementById("h-meta").textContent =
     `${fmtT(c.created_at)} · ${c.name || "无名"} · ${c.tester ? "测试组" : "真实组"} · 工单 ${c.tasks.length} 张`;
   renderFlow(); renderList(); renderProg();
+  document.getElementById("flow").scrollTop = 0;  // 换会话回顶部：不留在上一会话的滚动位置
 }
 
 function renderProg() {
