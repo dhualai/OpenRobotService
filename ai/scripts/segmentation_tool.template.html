@@ -239,6 +239,7 @@ function labelsOf(c) { return store.labels[String(c.conversation_id)] || {}; }
 function setLabel(c, start, name) {
   snapshotOf(c);
   const key = String(c.conversation_id);
+  if (store.auto && store.auto[key]) delete store.auto[key][start];  // 人工碰过即不再是 AI 预填
   store.labels[key] = store.labels[key] || {};
   if (store.labels[key][start] === name) delete store.labels[key][start];
   else store.labels[key][start] = name;
@@ -371,11 +372,7 @@ function renderPreRow(c, st) {
     why.textContent = p.why;
     row.appendChild(why);
   }
-  const btn = document.createElement("button");
-  btn.textContent = "采纳";
-  btn.onclick = () => { setLabel(c, st, p.pre); renderFlow(); };
-  row.appendChild(btn);
-  return row;
+  return row;  // 预标已自动填为标签（见底部自动预填），此处只作判定依据展示
 }
 
 function renderFlow() {
@@ -405,12 +402,18 @@ function renderFlow() {
     if (preRow) seg.appendChild(preRow);
     const chkRow = MODE === "bounds" ? null : renderChkRow(c, st);
     if (chkRow) seg.appendChild(chkRow);
-    // L2 标注行：是否直答（先定边界再标注——段首索引即标签键，边界改动后需重标）
-    // 切题轮不显示（该轮只定边界，标签在标注轮打）
+    // L2 标注行：AI 预标已自动填好（标「AI 预填」），人工只点改不同意的段
+    // （点已选的可取消/改选；段首索引即标签键，改过边界后该段需重选）
     if (MODE !== "bounds") {
-      const curLab = labelsOf(c)[st] || "";
       const lr = document.createElement("div");
       lr.className = "labels";
+      if ((store.auto || {})[String(c.conversation_id)]?.[st] != null) {
+        const tag = document.createElement("span");
+        tag.style.cssText = "font-size:11px;color:#94a3b8;align-self:center;margin-right:2px";
+        tag.textContent = "AI 预填";
+        lr.appendChild(tag);
+      }
+      const curLab = labelsOf(c)[st] || "";
       LABELS.forEach(([name, col]) => {
         const b = document.createElement("button");
         b.className = "lbtn" + (curLab === name ? " on" : "");
@@ -589,7 +592,7 @@ function buildHelp(){
     '<div><b>段头</b>咨询数 / 出单数（红色 = 该段出了工单）</div>',
   ];
   if (MODE !== "bounds") {
-    rows.push('<div><b>标签</b>段头彩色按钮选一类，点已选中的可取消；改过边界后该段要重新选</div>');
+    rows.push('<div><b>标签</b>AI 预标已自动填好（段头标「AI 预填」）——只点改不同意的段；点已选的可取消</div>');
     LABELS.forEach(([n, c]) =>
       rows.push(`<div class="lb-row"><span class="lb" style="background:${c}">${n}</span>${LABEL_DEF[n]}</div>`));
   }
@@ -610,6 +613,24 @@ if (MODE === "bounds") {
   b.textContent = "这一轮只定话题边界、不打标签；过完点右下「保存并下一个」，全部过完点右上「保存到工作台」（自动按你的边界重算 L1），再回工作台跑第 4 步。";
 }
 buildHelp();
+
+// AI 预标直接作为标签（用户 0910 定调：打开即已标好，人工只点改不同意的段，
+// 不做「逐段采纳」）。store.auto 记「AI 预填、人工未动过」的段（人工一点即移除）——
+// 导出后可区分真人工判定与预填默认，供校准口径留档。
+if (MODE !== "bounds") {
+  store.auto = store.auto || {};
+  DATA.convs.forEach(c => {
+    const key = String(c.conversation_id);
+    store.labels[key] = store.labels[key] || {};
+    [...boundsOf(c)].sort((a, b) => a - b).forEach(st => {
+      const p = (c.pre || {})[st];
+      if (!p || !p.pre || store.labels[key][st] !== undefined) return;
+      store.labels[key][st] = p.pre;
+      (store.auto[key] = store.auto[key] || {})[st] = p.pre;
+    });
+  });
+  persist();
+}
 
 renderProg(); renderList();
 const init = visible();
