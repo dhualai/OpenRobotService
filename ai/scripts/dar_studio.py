@@ -895,6 +895,25 @@ def sink_save(req: SinkSaveReq):
             "path": csv_path}
 
 
+@app.get("/api/sink_csv")
+def sink_csv(dir: str = ""):
+    """审核页打开时加载已判基线：CSV 判定解析成 JSON 行（服务端解析，页面
+    不用手写 CSV 引号解析）。CSV 是保存后的真相——重拉合并的判定靠它回显。"""
+    d = dir or _latest_sink_dir()
+    if not d or not _DIR_RE.fullmatch(d):
+        raise HTTPException(400, "dir 应为 export_YYYYMMDD_HHMMSS")
+    p = os.path.join(SINK_ROOT, d, "review.csv")
+    if not os.path.isfile(p):
+        raise HTTPException(404, "review.csv 不存在")
+    import csv as _csv
+    rows = []
+    with open(p, encoding="utf-8-sig", newline="") as fh:
+        for r in _csv.DictReader(fh):
+            rows.append({k: (r.get(k) or "").strip() for k in
+                         ("point_id", "task_id", "title", "verdict", "reason", "note")})
+    return {"rows": rows}
+
+
 @app.get("/api/sink_status")
 def sink_status():
     """最新导出目录 + review.csv 判定进度（无导出则 found=false）。"""

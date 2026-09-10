@@ -47,12 +47,58 @@ def _patch_review_html(path):
     服务器部署新版后（页面自带 saveCsv）自然跳过。"""
     with open(path, encoding="utf-8") as fh:
         html = fh.read()
-    if "saveCsv" in html:
-        return False
+    if "loadExisting" in html:
+        return False  # 已带最新补丁（CSV 基线加载 + 本地持久化）
     if "function exportCsv() {" not in html:
         return False  # 结构对不上（模板大改），保守不动
     patch = '''<script>
-// 工作台本地升级（追加覆盖，不改原脚本）：导出按钮 → 保存到工作台
+// 工作台本地升级（追加覆盖，不改原脚本）：保存到工作台 + 判定本地持久化
+// （0910 实锤：审完直接关页/刷新，判定全丢——state 只在内存里）
+(function () {
+  const DIR = new URLSearchParams(location.search).get("dir") || "local";
+  const LS_KEY = "sink_review_" + DIR;
+  function persistState() { try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch (e) {} }
+  function applyRestored() {
+    CARDS.forEach((c, i) => {
+      const s = state[c.point_id];
+      if (!s || !s.verdict) return;
+      const card = document.getElementById("card-" + i);
+      if (!card) return;
+      card.className = "card v-" + s.verdict;
+      card.querySelectorAll(".ops button").forEach(b =>
+        b.className = b.dataset.v === s.verdict ? "on-" + b.dataset.v : "");
+      const sel = card.querySelector("select"); if (sel && s.reason) sel.value = s.reason;
+      const inp = card.querySelector("input"); if (inp && s.note) inp.value = s.note;
+    });
+    updateBar();
+  }
+  async function loadExisting() {
+    // CSV 是保存后的真相（含重拉合并的判定）——打开页面先加载为基线；
+    // localStorage 里只有此后未保存的编辑，叠加其上
+    try {
+      const r = await fetch("/api/sink_csv?dir=" + encodeURIComponent(DIR));
+      if (!r.ok) return;
+      const j = await r.json();
+      (j.rows || []).forEach(row => {
+        if (row.verdict && row.point_id != null)
+          state[String(row.point_id)] = {verdict: row.verdict, reason: row.reason || "", note: row.note || ""};
+      });
+    } catch (e) {}
+  }
+  (async () => {
+    await loadExisting();
+    try {
+      const saved = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+      for (const k in saved) if (saved[k] && saved[k].verdict) state[k] = saved[k];
+    } catch (e) {}
+    applyRestored();
+  })();
+  const _j = judge, _r = setReason, _n = setNote;
+  judge = function (i, v) { _j(i, v); persistState(); };
+  setReason = function (i, v) { _r(i, v); persistState(); };
+  setNote = function (i, v) { _n(i, v); persistState(); };
+  window.__clearSinkLS = function () { localStorage.removeItem(LS_KEY); };
+})();
 function buildCsv() {
   const bad = CARDS.filter(c => state[c.point_id] && state[c.point_id].verdict === "rejected"
                                && !state[c.point_id].reason);
@@ -75,6 +121,7 @@ async function saveCsv() {
       body: JSON.stringify({dir, csv})});
     const j = await r.json();
     if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+    if (window.__clearSinkLS) window.__clearSinkLS();  // 保存成功，本地备份让位给 CSV 真相
     alert("已保存到工作台（已判 " + (j.judged || 0) + "/" + (j.total || 0)
       + " 张）——回工作台点「③ 应用判定」");
   } catch (e) {
@@ -91,6 +138,39 @@ function exportCsv() { saveCsv(); }  // 覆盖旧导出函数：按钮 onclick �
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(html)
     return True
+
+
+def _merge_prev_verdicts(new_dir: str) -> int:
+    """重新拉取不该吞掉已判结果（0910 实锤：用户审完 33 张，重拉后工作台
+    指向新表显示 0 判定=白审）。把最近一份旧导出的 verdict/reason/note 按
+    task_id 并入新 CSV，新卡片（旧表没有的号）保持未判。"""
+    import csv as _csv
+    prevs = sorted((d for d in os.listdir(LOCAL_ROOT)
+                    if _DIR_RE.fullmatch(d) and d != new_dir), reverse=True)
+    if not prevs:
+        return 0
+    prev_csv = os.path.join(LOCAL_ROOT, prevs[0], "review.csv")
+    new_csv = os.path.join(LOCAL_ROOT, new_dir, "review.csv")
+    if not (os.path.isfile(prev_csv) and os.path.isfile(new_csv)):
+        return 0
+    verdicts = {}
+    for r in _csv.DictReader(open(prev_csv, encoding="utf-8-sig")):
+        if (r.get("verdict") or "").strip():
+            verdicts[r["task_id"].strip()] = r
+    if not verdicts:
+        return 0
+    rows = list(_csv.DictReader(open(new_csv, encoding="utf-8-sig")))
+    n = 0
+    for r in rows:
+        v = verdicts.get(r["task_id"].strip())
+        if v:
+            r["verdict"], r["reason"], r["note"] = v["verdict"], v["reason"], v["note"]
+            n += 1
+    with open(new_csv, "w", encoding="utf-8-sig", newline="") as fh:
+        w = _csv.DictWriter(fh, fieldnames=rows[0].keys())
+        w.writeheader()
+        w.writerows(rows)
+    return n
 
 
 def cmd_export():
@@ -110,6 +190,9 @@ def cmd_export():
     os.makedirs(LOCAL_ROOT, exist_ok=True)
     sh(["scp", "-P", SSH_PORT, "-r",
         f"{SSH_HOST}:{SRV_ROOT}/{name}", LOCAL_ROOT + "/"])
+    n_merged = _merge_prev_verdicts(name)
+    if n_merged:
+        print(f"（已把上一轮 {n_merged} 张判定并入新表，重拉不吞审核结果）")
     html_path = os.path.join(LOCAL_ROOT, name, "review.html")
     if os.path.isfile(html_path) and _patch_review_html(html_path):
         print("（旧版审核页已本地升级：导出按钮 → 保存到工作台）")
