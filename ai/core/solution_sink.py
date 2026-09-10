@@ -39,7 +39,12 @@ _EXCLUDE_TITLE_PATTERNS = ("【项目申请】", "新公司录入审核", "新�
 
 def load_candidates(limit: int, offset: int = 0, include_skipped: bool = False,
                     task_id: int | None = None) -> list[dict]:
-    """待沉淀工单：closed/resolved ∧ ¬solution_indexed ∧ (rs已填 ∨ 有人类评论)。
+    """待沉淀工单：**仅 closed**（已关闭，解决被提单人确认、内容终态）∧
+    ¬solution_indexed ∧ (rs已填 ∨ 有人类评论)。
+
+    0910 用户实锤：resolved（处理人点解决、提单人未确认关闭）不该沉淀——
+    过早提炼会锁死旧总结（提单人驳回重解决后 worker 不再重沉，卡停在旧解上），
+    且审核列表混入未关闭单。只收 closed 后，resolved 单等关闭后自动重进候选。
 
     0902 人工审核规则（240 张实锤）：
     - 【项目申请】类标题一律不沉淀
@@ -67,7 +72,8 @@ def load_candidates(limit: int, offset: int = 0, include_skipped: bool = False,
             "SELECT t.id, t.title, t.description, t.assigned_to, t.metadata_info, "
             "       t.project_name, t.task_type "
             "FROM tasks t "
-            "WHERE t.status IN ('resolved','closed') "
+            # 只收 closed（0910 定调）：resolved 未关闭=解决未确认，内容可能变
+            "WHERE t.status = 'closed' "
             # IS NOT TRUE 而非 NOT ... = TRUE：键缺失时 JSON_EXTRACT 返回 NULL，
             # 三值逻辑下 NOT(NULL=TRUE) 仍是 NULL，会把所有未标记的行全过滤掉
             "AND JSON_EXTRACT(t.metadata_info, '$.solution_indexed') IS NOT TRUE "
