@@ -42,17 +42,18 @@ def _remote(cmd):
 
 
 def _patch_review_html(path):
-    """旧服务器模板（导出 CSV 按钮）→ 本地换成保存到工作台版。
-    服务器部署新版后此替换自然失配为 no-op。"""
+    """旧服务器模板（导出 CSV 按钮）→ 追加一段覆盖脚本：exportCsv 改走保存到工作台。
+    只在 </body> 前追加，不做字符串切片（0910 实锤切片边界错位产 JS 语法错误=白屏）；
+    服务器部署新版后（页面自带 saveCsv）自然跳过。"""
     with open(path, encoding="utf-8") as fh:
         html = fh.read()
-    old_btn = '<button onclick="exportCsv()">导出标注 CSV</button>'
-    new_btn = '<button onclick="saveCsv()">保存标注结果</button>'
-    if old_btn not in html:
+    if "saveCsv" in html:
         return False
-    old_fn_start = html.index("function exportCsv() {")
-    old_fn_end = html.index("render();", old_fn_start)
-    new_fn = '''function buildCsv() {
+    if "function exportCsv() {" not in html:
+        return False  # 结构对不上（模板大改），保守不动
+    patch = '''<script>
+// 工作台本地升级（追加覆盖，不改原脚本）：导出按钮 → 保存到工作台
+function buildCsv() {
   const bad = CARDS.filter(c => state[c.point_id] && state[c.point_id].verdict === "rejected"
                                && !state[c.point_id].reason);
   if (bad.length) { alert("以下驳回的卡还没选理由：\\n" + bad.map(c => "#" + c.task_id).join(", ")); return null; }
@@ -83,9 +84,10 @@ async function saveCsv() {
     alert("接口不通（非工作台入口打开），已退回浏览器下载 review.csv");
   }
 }
-'''
-    html = html.replace(old_btn, new_btn)
-    html = html[:old_fn_start] + new_fn + html[old_fn_end:]
+function exportCsv() { saveCsv(); }  // 覆盖旧导出函数：按钮 onclick 不用动
+</script>
+</body>'''
+    html = html.replace("</body>", patch, 1)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(html)
     return True
