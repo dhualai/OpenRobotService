@@ -9,12 +9,37 @@
   consult + resolved=yes           → 直答正确
   consult + resolved=no + 检索yes/partial → 未直答（资料有，回答层没答好）
   consult + resolved=no + 检索no   → 未覆盖（知识库没有）
+0910 增：judge 另判 covered（检索资料是否覆盖用户问的那个问题），落盘存证——
+「未覆盖」现由检索重放 verdict 决定，与人工口径（知识库确实没有）对不上
+（r3 上未直答↔未覆盖互串 67 段），先收数据再定是否改映射。
+
+0910 四轮校准定稿（290 段人工考卷，检索固定 0909 那份做干净 A/B）：
+  基线 49.0% → r1 49.0% → r2 49.7% → r3 51.0%（三分类 68.6→74.1%；端到端直答率
+  34.8%→23.2%，人工 23.0%）。r1–r3 修的副作用：段后消息被当负面信号（切段即按话题切，
+  段后是下一话题，已撤）、intent 被 resolved 规则污染（段末提单把报障段判成咨询）、
+  自述「资料未收录」一刀判未解决（通用可行答案不因此判死）。
+  r4 试过「问句形态不改变来意」（缺陷问句也算 ticket）：直接提单 recall 55%→84%，
+  但把 25 段人工未直答误翻成直接提单，端到端率虚高到 37.3%、三分类掉到 66.2%，已弃。
+残余分歧的边界（实测，非 prompt 可修）：
+  直接提单 vs 未直答——人工直接提单段 91% 段内有工单，但未直答 36%、未覆盖 18% 也有；
+  开口带疑问的比例 26% vs 38% 重叠。同一形态的开口（裸报障）两类都出现，故四类一致率
+  的上限由标签口径本身决定，不是判据不够细。
+  未直答 vs 未覆盖——57 段互串，但两者同在分母，只影响 KB 缺口率，不影响直答率。
+
+0910-2 口径 B 落地（用户拍板）：产品类/需求类算直接提单（剔除）——「用户的目的就是提单」，
+要求把「产品类/需求类」的判定做准。r4 试跑（当时拿旧标签当考卷）已实证方向：25 段旧标
+未直答里绝大多数是产品类（升级回归、产品报错、界面显示不全、需求诉求），少数是用户侧
+（如「休息任务未被打断」实为忙时打断阈值配置）。r5 = 按 B 重写 intent：判「指向产品本身
+还是用户自己的使用」，句子的疑问形态不决定来意；产品类连疑问句也归 ticket，用户侧
+（助手教他排查/调配置/改操作即可解决）连异常现象也归 consult。旧标签是旧口径，一致率
+只作趋势参考，重点看争议段上的翻转方向。
 
 用法：
   python ai/scripts/dar_l3.py          # 校准：judge + 对齐分析
   python ai/scripts/dar_l3.py --all    # 预标：全段 judge，输出 l3_judge_all_*.json
 """
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -24,7 +49,7 @@ import time
 from collections import Counter
 from datetime import datetime as _dt
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", line_buffering=True)
 _PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, _PROJ)
 os.chdir(_PROJ)
@@ -34,23 +59,38 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(_PROJ, "ai", ".env"))
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
+# 环境随 dar_weekly --env 走（subprocess 继承 DAR_ENV）；单独跑缺省 test
 ENV = os.environ.get("DAR_ENV", "test")
+# 检索源（规定，用户 0910 定调）：L1/L3 等用到检索的一律走**服务器测试环境**
+# （隧道+切测试指针，见 dar_qdrant.py）；本地快照又旧又慢，只作 DAR_QDRANT=local
+# 应急，不作缺省。对话数据由 DAR_ENV 决定（prod=生产库导出，指标生成用；
+# test=测试库，校准考卷用）——数据与检索的取舍互不影响。
+QDRANT = os.environ.get("DAR_QDRANT", "test")
+# 当前检索源标记：__main__ 按实际指针填，local 模式为 "local"。判定行落盘存证——
+# 知识库每周重入库（指针日期变），旧判定按 cid+astart 复用会静默混口径，
+# 启动日志显式提示（与 model 字段同处理）
+KB_TAG = "local"
 OUT = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed"
 SPLIT = os.path.join(OUT, "conversations_split.jsonl")
 CLS = os.path.join(OUT, "conversations_classified.jsonl")
-_MANUAL_NAME = {"test": "manual_segmentation.json",
-                "prod": "manual_segmentation_prod.json"}
-MANUAL = rf"C:/Users/PAJ26020/Downloads/{_MANUAL_NAME[ENV]}"
+# 人工切分/标注：随数据集放 export_dar/{env}/（与 dar_weekly/dar_studio 同源）
+MANUAL = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/manual_segmentation.json"
 RETRIEVAL = os.path.join(OUT, f"retrieval_check_{_dt.now():%Y%m%d}.json")
 JUDGE_OUT = os.path.join(OUT, f"l3_judge_{_dt.now():%Y%m%d}.json")      # 校准结果（按日滚动）
 ALL_OUT = os.path.join(OUT, f"l3_judge_all_{_dt.now():%Y%m%d}.json")    # 预标结果
-CONCURRENCY = 8
+# 并发：网关限流/本地嵌入式 qdrant 扛不住时可 DAR_L3_CONC=4 降并发
+try:
+    CONCURRENCY = max(1, int(os.environ.get("DAR_L3_CONC") or 8))
+except ValueError:
+    CONCURRENCY = 8
 
 
 def _latest_judge():
-    """取最新已落盘校准文件（滚动校准集：上周的校准继续可比）。"""
+    """取最新已落盘校准文件（滚动校准集：上周的校准继续可比）。
+    只认规范名 l3_judge_YYYYMMDD.json——_vN 是历史轮次归档，按名排序会排在规范名之后。"""
     import glob
-    files = sorted(glob.glob(os.path.join(OUT, "l3_judge_[0-9]*.json")))
+    files = [f for f in sorted(glob.glob(os.path.join(OUT, "l3_judge_[0-9]*.json")))
+             if os.path.basename(f)[len("l3_judge_"):-len(".json")].isdigit()]
     return files[-1] if files else ""
 
 
@@ -78,9 +118,20 @@ def build_exam(all_mode=False):
         cls = cls_all.get(cid)
         if not cls or len(cls) != len(c["rounds"]):
             continue
+        # 测试组=自测流量，预标/判定只跑真实组（0909：占 55% 白烧 LLM）；
+        # DAR_INCLUDE_TEST=1 可开回（要看测试组交叉对比时）
+        if c["is_tester"] and os.environ.get("DAR_INCLUDE_TEST") != "1":
+            continue
         if all_mode:
-            manual = sorted({0, *(i for i in range(1, len(c["rounds"]))
-                                  if cls[i]["t"] != cls[i - 1]["t"])})
+            # 段根与标注工具前端一致（0909 实锤两套不同源：标注工具按 topic 变化
+            # 分组、旧代码用 t 布尔翻转——已标会话预标 astart 对不上=全 miss）。
+            # 有人工边界用人工（已标会话对齐人工标签），否则 topic 变化切段。
+            if cid in bounds:
+                manual = sorted({0, *(int(x) for x in bounds[cid]
+                                      if 0 <= int(x) < len(c["rounds"]))})
+            else:
+                manual = sorted({0, *(i for i in range(1, len(c["rounds"]))
+                                      if cls[i]["topic"] != cls[i - 1]["topic"])})
         else:
             if cid not in bounds or c["is_tester"]:
                 continue
@@ -91,19 +142,31 @@ def build_exam(all_mode=False):
                    (labels.get(cid) or {}).items() if str(k).isdigit()}
         for tid, s in enumerate(manual):
             e = manual[tid + 1] if tid + 1 < len(manual) else len(rounds)
-            if all_mode and not any(cls[i]["q"] for i in range(s, e)):
-                continue  # 段内无咨询回合（纯问候/寒暄，如整段只有「你好」）——无问题可判
+            # 段内要有「有提问且有回答」的回合才判：无提问=没东西可判（纯问候/寒暄段）；
+            # 问了但 AI 全程没回=当时可能服务异常，不是回答质量问题，不进分母
+            # （与 dar_l1 的 seg_q、dar_retrieval_check 的 q_idx 同口径，0909 定调）
+            if not any(cls[i]["q"] and any(a.strip() for a in rounds[i]["a"])
+                       for i in range(s, e)):
+                continue
             lab = lab_map.get(s)
             if not all_mode and (not lab or lab == "未标"):
                 continue
-            # 时间线（前 12 轮，每轮截断）
+            # 检索问句=段内首个「有问题且有回答」的回合（与 dar_retrieval_check 同规则）：
+            # 段首常是「你是谁」「提工单，接单人：…」这类无检索价值的开场，两步骤取不同
+            # 问句会让四类组合的「未覆盖」与 judge 的 faithful/resolved 判据来自不同检索
+            q_idx = next((i for i in range(s, e) if cls[i]["q"]
+                          and any(a.strip() for a in rounds[i]["a"])), s)
+            q0 = (rounds[q_idx]["q"] or "").strip()
+            # 时间线（前 12 轮）：问句截 150 字；回答取全部消息合并（一轮可能多条
+            # 助手消息，只看首条会丢掉实质回答——0909 实测 26% 轮次多消息、
+            # 11% 轮次首条不足 100 字），整体截 1200 字（实测 99.4% 回答不超）
             lines = []
             for i in range(s, min(e, s + 12)):
                 q_raw = (rounds[i]["q"] or "").replace("\n", " ")
                 q = q_raw[:150] + ("…" if len(q_raw) > 150 else "")
-                a_raw = next((x for x in rounds[i]["a"] if x.strip()), "") or ""
+                a_raw = " ".join(x.strip() for x in rounds[i]["a"] if x.strip())
                 a_raw = a_raw.replace("\n", " ")
-                a = a_raw[:200] + ("…(截断)" if len(a_raw) > 200 else "")
+                a = a_raw[:1200] + ("…(截断)" if len(a_raw) > 1200 else "")
                 lines.append(f"[{(rounds[i]['at'] or '')[5:16]}] 用户：{q} → 助手：{a}")
             # 上一段尾（承接语境，段首问题可能指代上文）
             prev = ""
@@ -126,7 +189,7 @@ def build_exam(all_mode=False):
                         n_ticket += 1
             exam.append({"cid": cid, "seg": tid, "astart": s,
                          "grp": "测试组" if c["is_tester"] else "真实组",
-                         "lab": lab or "未标",
+                         "lab": lab or "未标", "q0": q0,
                          "timeline": "\n".join(lines), "prev": prev,
                          "n_ticket": n_ticket})
     return exam
@@ -136,97 +199,227 @@ JUDGE_PROMPT = (
     "你在审核客服对话的一个话题段。背景：AGV 调度平台的服务号对话，用户是现场运维/项目人员，"
     "助手是 AI 客服（可查知识库答题，也可帮用户提工单）。\n"
     "知识库检索系统针对该话题问题的返回资料也给你（可能含多片段、图片引用，可能截断）。\n"
-    "判断两件事：\n"
-    "intent=用户来意，看用户最初几条消息的形态：\n"
-    "ticket=反馈腔或委托腔——开口明确要求提单/转人工/报障登记；或消息是产品缺陷反馈/"
-    "功能需求（质问系统为什么不行、指出哪里有 bug、要求系统应该怎样）；或描述问题后不等"
-    "解答直接催着处理/提单。这类用户不期待被解答，只想把事情报出去。\n"
-    "consult=求助腔——用户想知道怎么做/什么原因/帮忙看看，接受 AI 解答。即使咨询后不满意"
-    "转了工单，来意仍是 consult（属于咨询未解决）。\n"
-    "resolved=该话题的问题是否被实质解决（仅 intent=consult 时有意义），两个条件须同时成立：\n"
-    "①助手的回答给出了可执行的步骤或明确的答案（不是只给方向、只反问、只说联系谁），"
-    "且用户没有负面反应（重复问同一问题、明显不满、纠缠不休）；用户沉默、确认、感谢、"
-    "转入新话题都视为无负面，不要求显式确认；助手答可能被截断显示，不要因显示截断而判未解决。\n"
-    "②回答内容能在检索资料中找到支撑（资料里有对应的知识内容）。若检索资料与该话题基本"
-    "无关，而回答看起来完整详细，这说明回答来自资料外的通用知识或推测，不可视为解决。\n"
-    "以下任一情况 resolved=no：用户负面反应；该话题以提工单收尾；回答只有方向没有答案。\n"
+    "判断以下几项：\n"
+    "intent=用户来意：想把这件问题交给人办（提单），还是想从助手这里得到一个自己用得上"
+    "的答案（咨询）。判断方法：看用户开头几条消息指向的对象是「产品本身」还是「用户自己的"
+    "使用」；段内后面怎么发展（助手解答、用户改口转工单、最终生成工单）都不改变它。\n"
+    "ticket=产品类/需求类——开口明确要求提单/转人工/报障登记；或描述问题后不等解答直接"
+    "催着处理；或指向产品自身的毛病、提出对产品的改进或新增诉求：报错、崩溃、卡顿、升级"
+    "或变更后行为异常、功能没做或做不到、界面显示不对或不全、希望支持或优化某能力。"
+    "产品类的事用户自己改不了，只能提给人做——即使写成疑问句（为什么不行、这个怎么处理），"
+    "来意仍是提单：用户要的是这件事被处理掉，不是从助手这里学会什么。\n"
+    "consult=用户侧类——开口指向用户自己的配置、参数、操作方式或现场环境：怎么做、怎么配、"
+    "什么原因、帮忙看看、某功能怎么用；或现象看似异常，但段内助手给出的解答就是在教用户"
+    "自己排查、调配置、改操作（属于用户侧就能解决的事）。即使咨询后不满意转了工单、"
+    "或该话题最终以工单收尾，来意仍是 consult（属于咨询未解决）。\n"
+    "resolved=该话题的问题是否被实质解决（仅 intent=consult 时有意义）。先看本段内的负面"
+    "信号（只看用户消息；本段之后的消息属于下一个话题，不算）：重复问同一问题（同一现象"
+    "或同一操作，措辞相同或相近都算）、换说法再问、表达不满、催处理，或本段以生成工单"
+    "收尾——出现任一条即 resolved=no。用户追问别的新问题（不同现象、不同操作）不算负面信号。\n"
+    "没有负面信号时，下面两条须同时成立：\n"
+    "①助手给出了用户可自行执行的步骤或明确答案，且直接回应了用户问的那个具体问题"
+    "（泛泛的相关知识、通用流程、只有反问、只让人去联系谁而不给判断依据或排查方向，"
+    "都不算）；\n"
+    "②回答本身站得住：不与其他资料矛盾，不含凭空编造的关键信息（数值、路径、编码等）。"
+    "资料里没有该内容、回答来自资料外的通用知识但可行，不因此判未解决（那是 covered 的事）。\n"
+    "用户沉默、确认、感谢、转入新话题都算「无负面」，不要求显式确认；但「无负面」只是"
+    "必要条件，不能单凭它判解决。助手答可能被截断显示，不要因显示截断而判未解决。\n"
     "faithful=回答内容是否忠于检索资料（防编造）：\n"
     "yes=回答的关键内容能在检索资料中找到支撑；\n"
-    "no=回答看起来完整但资料里没有对应内容（来自资料外通用知识或推测）；\n"
-    "na=检索资料与该话题基本无关（此时 resolved 依据①单独判断，faithful 填 na）。\n"
-    "resolved=yes 且 faithful=no 的情况：回答流利但是编的，resolved 填 no。\n\n"
+    "no=回答与其他资料矛盾，或含检索资料中不存在的、可能不实的具体信息（编造）；\n"
+    "na=检索资料与该话题基本无关。\n"
+    "covered=检索资料是否覆盖用户问的那个问题（资料里有能回答它的内容）：\n"
+    "yes=有；no=没有——资料只沾边、只覆盖同类问题但不是用户问的、属于其他产品或"
+    "其他版本系统的资料，都算没有。\n\n"
     "{prev}话题段时间线（每轮：用户说 → 助手答，内容可能截断）：\n{timeline}\n\n"
     "检索资料：\n{retrieval}\n\n"
     "段末信号：{ticket_sig}\n"
     "只输出 JSON：{{\"intent\":\"consult|ticket\",\"resolved\":\"yes|no\","
-    "\"faithful\":\"yes|no|na\",\"reason\":\"一句话\"}}"
+    "\"faithful\":\"yes|no|na\",\"covered\":\"yes|no\",\"reason\":\"一句话\"}}"
 )
+# 判据指纹：改 prompt 后旧行会被续跑静默复用（cid+astart 命中即跳过），
+# 落进同一份文件混口径。行内记指纹，续跑时提示（与 model/kb 同样处理）。
+PROMPT_VER = hashlib.md5(JUDGE_PROMPT.encode("utf-8")).hexdigest()[:8]
 
 
 async def main():
     from ai.agents.AiDiagnosisPlatform.pipeline import AgentState, get_diagnosis_platform
     from dar_llm import get_dar_client
 
+    if QDRANT == "local":  # 指针残留自愈+校验：否则全轮静默空检索（0910 实锤，见 dar_qdrant）
+        from dar_qdrant import heal_local_pointers
+        miss = heal_local_pointers()
+        if miss:
+            print("!! 本地指针指向的集合在本地库不存在：" + "；".join(f"{d}={v}" for d, v in miss)
+                  + "\n!! 常见原因：远程跑被中断，指针残留远程值未恢复。此状态下检索全空"
+                  "且整轮不报错，判定失真——先修指针再跑。")
+            sys.exit(2)
+
     all_mode = "--all" in sys.argv
     out_path = ALL_OUT if all_mode else JUDGE_OUT
     exam = build_exam(all_mode)
-    print(f"考卷 {len(exam)} 段（{'全部段·预标' if all_mode else '真实组人工已标·校准'}）")
+    print(f"考卷 {len(exam)} 段（{'真实组全部段·预标' if all_mode else '真实组人工已标·校准'}；"
+          "测试组默认不判，DAR_INCLUDE_TEST=1 开回）")
     platform = await get_diagnosis_platform()
     await platform._ensure_clients()  # 懒加载只在 run 入口触发，直连检索前必须显式初始化
     llm = await get_dar_client()
 
-    if os.path.exists(out_path):
-        rows = json.load(open(out_path, encoding="utf-8"))
-        print(f"读已落盘 judge 结果（{len(rows)} 条），跳过 LLM")
-    else:
-        rows = []
-        sem = asyncio.Semaphore(CONCURRENCY)
-        done = [0]
-        t0 = time.time()
+    # 增量：jsonl（逐段追加，最新）+ json 快照（上次全量）双源收已判段，jsonl
+    # 覆盖 json。不再「产物存在就整段跳过 LLM」——段根/模型变更后重跑即自动
+    # 补判差异段（旧行为必须手工删文件才重判，0909 两次踩坑）
+    jpath = out_path[:-5] + ".jsonl"
+    done_keys = {}
+    for src in (out_path, jpath):
+        if not os.path.exists(src):
+            continue
+        items = ([json.loads(l) for l in open(src, encoding="utf-8") if l.strip()]
+                 if src.endswith(".jsonl") else json.load(open(src, encoding="utf-8")))
+        for old in items:
+            if old.get("intent") in (None, "error") or old.get("astart") is None:
+                continue  # error 不落，重跑自动补
+            done_keys[(str(old["cid"]), int(old["astart"]))] = old
+    rows = list(done_keys.values())
+    todo = [s for s in exam if (str(s["cid"]), int(s["astart"])) not in done_keys]
+    # 切模型/换知识库后旧判定仍按 cid+astart 复用（指标会混口径）——显式提示，不静默
+    n_other = sum(1 for r in rows if r.get("model") != llm.model)
+    n_kb = sum(1 for r in rows if r.get("kb") != KB_TAG)
+    n_pv = sum(1 for r in rows if r.get("prompt_ver") != PROMPT_VER)
+    print(f"增量：复用已判 {len(done_keys)} 段，补跑 {len(todo)} 段"
+          + (f"；其中 {n_other} 段未记/非当前模型（当前 {llm.model}）"
+             if n_other else "")
+          + (f"；{n_kb} 段未记/非当前检索源（当前 {KB_TAG}）" if n_kb else "")
+          + (f"；{n_pv} 段未记/非当前判据（当前 {PROMPT_VER}）" if n_pv else "")
+          + ("——要统一口径须删对应 .json/.jsonl 重跑"
+             if n_other or n_kb or n_pv else ""))
 
-        async def one(seg):
-            async with sem:
-                sig = (f"该段结束前用户提了 {seg['n_ticket']} 张工单" if seg["n_ticket"]
-                       else "该段未提工单")
-                # 段首问题跑真实检索（三件套之一：检索资料）
-                q0 = seg["timeline"].split("用户：", 1)[-1].split(" →", 1)[0]
-                st = AgentState(session_id=f"dar_l3_{seg['cid']}_{seg['astart']}",
-                                original_query=q0)
+    if todo:
+        # LLM 探活：模型名过期/网关不可用时快速失败，别把 419 段全烧成 error
+        for attempt in range(3):
+            try:
+                await llm.complete(prompt="回复：OK", max_tokens=5, temperature=0,
+                                   thinking=False)
+                print("LLM 探活通过")
+                break
+            except Exception as ex:
+                if attempt == 2:
+                    sys.exit(f"LLM 不可用（当前模型 {getattr(llm, 'model', '?')}，"
+                             f"过期或网关问题？可 DAR_MODEL=deepseek-v4-flash）："
+                             f"{type(ex).__name__}: {ex}")
+                await asyncio.sleep(5)
+        # 预热：本地嵌入式 qdrant 冷启动加载 >5s 会踩 5s 操作超时 + 30s
+        # 快速失败窗口，并发首轮检索全空——先单发一次把库打开
+        try:
+            await platform._retrieve_with_context(
+                "dar_l3_warmup", AgentState(session_id="dar_l3_warmup",
+                                            original_query="AGV 上线部署"))
+            print("qdrant 预热完成")
+        except Exception as ex:
+            print(f"qdrant 预热失败（继续，段内会重试）：{type(ex).__name__}: {ex}")
+
+    sem = asyncio.Semaphore(CONCURRENCY)
+    done = [0]
+    total = [len(todo)]
+    t0 = time.time()
+    lock = asyncio.Lock()
+    err_keys = set()
+    # 远程检索源自愈：ssh 隧道掉了就重连（local 模式无隧道，保持 None）
+    reconnect = None
+    if QDRANT in ("prod", "test"):
+        from dar_qdrant import ensure_tunnel
+        reconnect = ensure_tunnel
+
+    async def retrieve_ctx(seg, q0):
+        """段首问题检索资料。qdrant 冷启动加载 >5s 会触发操作超时 + 30s
+        快速失败窗口，窗口内检索全空（0909 实锤：47 段拿空资料判成未直答，
+        系统性偏保守）——检测到不可用等冷却后重试，仍不可用抛错让该段记
+        error 不落盘（重跑自动补）。"""
+        st = AgentState(session_id=f"dar_l3_{seg['cid']}_{seg['astart']}",
+                        original_query=q0)
+        for _ in range(5):
+            if not getattr(platform._retriever, "is_qdrant_unavailable", False):
                 try:
                     ctx = await platform._retrieve_with_context(st.session_id, st)
                 except Exception:
                     ctx = ""
-                prompt = JUDGE_PROMPT.format(prev=seg["prev"], timeline=seg["timeline"],
-                                             retrieval=(ctx or "")[:2500], ticket_sig=sig)
-                r = {"cid": seg["cid"], "seg": seg["seg"], "astart": seg["astart"],
-                     "grp": seg["grp"], "lab": seg["lab"]}
+                if ctx or not getattr(platform._retriever,
+                                      "is_qdrant_unavailable", False):
+                    return ctx or ""
+            if reconnect:  # 隧道断了先重连再等冷却，避免整轮全空
                 try:
-                    raw = await llm.complete(prompt=prompt, max_tokens=200, temperature=0,
-                                             thinking=False)
-                    obj = json.loads(re.search(r"\{.*\}", raw or "", re.S).group(0))
-                    r["intent"] = str(obj.get("intent", "?"))
-                    r["resolved"] = str(obj.get("resolved", "?"))
-                    r["faithful"] = str(obj.get("faithful", "na"))
-                    r["reason"] = str(obj.get("reason", ""))[:120]
-                    if r["intent"] not in ("consult", "ticket"):
-                        r["intent"] = "?"
-                    if r["resolved"] not in ("yes", "no"):
-                        r["resolved"] = "?"
-                    if r["faithful"] not in ("yes", "no", "na"):
-                        r["faithful"] = "na"
+                    reconnect()
                 except Exception as ex:
-                    r["intent"] = r["resolved"] = "error"
-                    r["faithful"] = "na"
-                    r["reason"] = f"{type(ex).__name__}: {ex}"[:120]
-                rows.append(r)
-                done[0] += 1
-                if done[0] % 40 == 0:
-                    print(f"  {done[0]}/{len(exam)}（{time.time()-t0:.0f}s）")
+                    print(f"  [隧道重连失败] {type(ex).__name__}: {ex}")
+            await asyncio.sleep(10)  # 等快速失败冷却（30s）后重试
+        raise RuntimeError("qdrant 持续不可用（快速失败窗口）")
 
-        await asyncio.gather(*(one(s) for s in exam))
+    async def one(seg, sem_=None):
+        async with (sem_ or sem):
+            sig = (f"该段结束前用户提了 {seg['n_ticket']} 张工单" if seg["n_ticket"]
+                   else "该段未提工单")
+            # 检索问句（build_exam 已按「首个有问题且有回答的回合」定好，与检索判定同源）
+            q0 = seg["q0"]
+            r = {"cid": seg["cid"], "seg": seg["seg"], "astart": seg["astart"],
+                 "grp": seg["grp"], "lab": seg["lab"], "model": llm.model,
+                 "kb": KB_TAG, "prompt_ver": PROMPT_VER}
+            try:
+                ctx = await retrieve_ctx(seg, q0)
+                # 资料给全：ctx 已是线上装配结果（每块 ≤1500 字、最多 8 块、整串不截断），
+                # 再砍一刀会让判定模型看到的资料比回答模型少——系统性偏向未直答/未覆盖
+                prompt = JUDGE_PROMPT.format(prev=seg["prev"], timeline=seg["timeline"],
+                                             retrieval=(ctx or ""), ticket_sig=sig)
+                raw = await llm.complete(prompt=prompt, max_tokens=240, temperature=0,
+                                         thinking=False)
+                obj = json.loads(re.search(r"\{.*\}", raw or "", re.S).group(0))
+                r["intent"] = str(obj.get("intent", "?"))
+                r["resolved"] = str(obj.get("resolved", "?"))
+                r["faithful"] = str(obj.get("faithful", "na"))
+                r["covered"] = str(obj.get("covered", "?"))
+                r["reason"] = str(obj.get("reason", ""))[:120]
+                if r["intent"] not in ("consult", "ticket"):
+                    r["intent"] = "?"
+                if r["resolved"] not in ("yes", "no"):
+                    r["resolved"] = "?"
+                if r["faithful"] not in ("yes", "no", "na"):
+                    r["faithful"] = "na"
+                if r["covered"] not in ("yes", "no"):
+                    r["covered"] = "?"
+            except Exception as ex:
+                r["intent"] = r["resolved"] = "error"
+                r["faithful"] = "na"
+                r["reason"] = f"{type(ex).__name__}: {ex}"[:120]
+            rows.append(r)
+            async with lock:
+                # 判定落 jsonl（增量/断点续跑）；error 不落，重跑自动重试
+                if r["intent"] == "error":
+                    err_keys.add((str(seg["cid"]), int(seg["astart"])))
+                else:
+                    with open(jpath, "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+                done[0] += 1
+                if done[0] % 10 == 0 or done[0] == total[0]:
+                    print(f"  {done[0]}/{total[0]}（{time.time()-t0:.0f}s）")
+
+    if todo:
+        await asyncio.gather(*(one(s) for s in todo))
+        if err_keys:
+            # 异常段降并发补跑一轮：网关瞬断/超时不拖到下次手工重跑
+            retry = [s for s in todo if (str(s["cid"]), int(s["astart"])) in err_keys]
+            print(f"异常 {len(retry)} 段，降并发补跑一轮…")
+            rows[:] = [r for r in rows
+                       if (str(r["cid"]), int(r["astart"])) not in err_keys]
+            err_keys.clear()
+            done[0], total[0] = 0, len(retry)
+            rsem = asyncio.Semaphore(2)
+            await asyncio.gather(*(one(s, rsem) for s in retry))
+            # 补跑仍失败的也不进 json 快照：error 不是判定，落盘会被预标组合
+            # 当成「未直答」注入标注工具、并拉低 L3 指标（测试实锤）
+            rows[:] = [r for r in rows
+                       if (str(r["cid"]), int(r["astart"])) not in err_keys]
+        print(f"judge 完成，{time.time()-t0:.0f}s → {out_path}"
+              + (f"（仍异常 {len(err_keys)} 段，重跑自动补）" if err_keys else ""))
+    if rows:
         with open(out_path, "w", encoding="utf-8") as fh:
             json.dump(rows, fh, ensure_ascii=False, indent=1)
-        print(f"judge 完成，{time.time()-t0:.0f}s → {out_path}")
 
     # ---- 预标模式：组合四类 pre，落盘 + 分布 ----
     if all_mode:
@@ -315,4 +508,21 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # 服务器检索源必须在首次 import pipeline 前切好 env/指针（进程级，退出自动恢复）
+    if QDRANT in ("prod", "test"):
+        from contextlib import ExitStack
+
+        from dar_qdrant import SSH_HOST, SSH_PORT, remote_qdrant
+        with ExitStack() as st:
+            try:  # 隧道/指针拉不到=起跑前明确退出，不烧 LLM 也不半途炸
+                ptr = st.enter_context(remote_qdrant(QDRANT))
+            except Exception as ex:
+                sys.exit(f"服务器检索源不可用（{QDRANT}）：{type(ex).__name__}: {ex}\n"
+                         f"  → 检查免密 ssh {SSH_HOST}:{SSH_PORT}；"
+                         "或 DAR_QDRANT=local 用本地知识库跑")
+            print(f"检索源={QDRANT} 服务器 qdrant（指针: {ptr}）")
+            KB_TAG = ";".join(f"{k}={v}" for k, v in sorted(ptr.items()))
+            asyncio.run(main())
+    else:
+        print("检索源=本地知识库")
+        asyncio.run(main())

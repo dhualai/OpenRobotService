@@ -99,6 +99,65 @@ TEST_PY = "~/miniconda3/envs/test-ai/bin/python"
 SSH_CMD = ["ssh", "-p", "8802", "usp-a@125.122.97.107"]
 
 
+def remote_plan_tools(sid: str, since_kw: str = "") -> list:
+    """ssh 到测试机读该会话实际调用的工具（从 [plan] 规划行解析，多轮合并去重）。
+    服务端 [plan] 行已补 session= 字段（0909，待部署）——有则精确匹配；
+    旧版无 session 用会话首末行号区间近似（回归串行跑、测试环境低并发，
+    区间内 [plan] 行即该会话各轮规划）。
+    since_kw：只取日志中含该关键词的行**之后**的 plan 行——post_ask 轮级断言用
+    （ask 文本会出现在 [sse] q= 行里，锚定后即该轮规划，不含前几轮）。"""
+    import subprocess
+    script = (
+        "import json\n"
+        f"log=open('/data/apps/TestOpenRobotService/ai/logs/ai.log',encoding='utf-8',errors='replace').read().splitlines()\n"
+        f"sid={sid!r}\n"
+        "hits=[(i,l) for i,l in enumerate(log) if '[plan]' in l and sid in l]\n"
+        "if not hits:\n"
+        "    idx=[i for i,l in enumerate(log) if sid in l]\n"
+        "    lo,hi=(idx[0],idx[-1]) if idx else (-1,-2)\n"
+        "    hits=[(i,l) for i,l in enumerate(log) if '[plan]' in l and lo<=i<=hi]\n"
+        f"kw={since_kw!r}\n"
+        "if kw:\n"
+        "    a=[i for i,l in enumerate(log) if kw in l]\n"
+        "    if a: hits=[(i,l) for i,l in hits if i>a[0]]\n"
+        "print('PLAN:'+json.dumps([l for _,l in hits][-30:],ensure_ascii=False))\n"
+    )
+    r = subprocess.run(SSH_CMD + [f"{TEST_PY} -"], input=script,
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=90)
+    names: list = []
+    for line in (r.stdout or "").splitlines():
+        if not line.startswith("PLAN:"):
+            continue
+        import json as _j
+        for plan_line in _j.loads(line[5:]):
+            for m in re.finditer(r"tools=\[([^\]]*)\]", plan_line):
+                for nm in re.findall(r"\('([a-z_]+)'", m.group(1)):
+                    if nm not in names:
+                        names.append(nm)
+    return names
+
+
+def _fill_refs(ask: str, db_id, db_row) -> str:
+    """追问占位符：{db_id}=本用例落库的单号；{other_id}=动态查一张别人的单
+    （权限反例——测试库静态号会被清/换人，别人的单只能现查现用；
+    查不到时返回空串，调用方跳过该步）。
+    remote_query_one 返回值是 list（tuple 经 json 序列化），按位取列。"""
+    ask = ask.replace("{db_id}", str(db_id or ""))
+    if "{other_id}" in ask:
+        # db_row = [id, title, created_by, source]（见 expect_db 的 SELECT）
+        owner = ""
+        if isinstance(db_row, list) and len(db_row) > 2:
+            owner = str(db_row[2] or "").replace("'", "")
+        cond = f"created_by <> '{owner}' AND created_by IS NOT NULL" if owner \
+            else "created_by IS NOT NULL"
+        row = remote_query_one(
+            f"SELECT id FROM tasks WHERE {cond} ORDER BY id DESC LIMIT 1")
+        oid = row[0] if isinstance(row, list) and row else None
+        ask = ask.replace("{other_id}", str(oid)) if oid else ""
+    return ask
+
+
 def remote_query_one(sql: str):
     """ssh 到测试机查 helpdesk_test 单行（工单落库验证；凭据只在服务器端解析）。"""
     import subprocess
@@ -234,14 +293,38 @@ async def run_api_suite(suite: str, cases: list, base: str, token: str, counted)
         try:
             turns_out = []
             review_hit = False
-            for j, text in enumerate(turns):
+            # 模拟全流程（响应式多轮，0909 实锤教训：一轮预设台词测不完提单链路）：
+            # ①服务端出项目选择题（模板直出「出单前确认一下关联项目」，特征绝对
+            #   稳定）自动回「1」选第 1 个候选——真实用户点按钮/回序号，无头回归
+            #   必须替用户答，否则草稿无项目、confirm 被弹窗闸门拦（票史候选
+            #   1 个时 LLM 照抄预填碰巧能过，≥2 个摇摆即挂）；
+            # ②预设 turns 发完仍未到弹窗 → 按 followup_pool 关键词接力应答信息
+            #   追问（追问顺序/轮数由 LLM 决定，固定轮次测不稳）。
+            pool = c.get("followup_pool") or []
+            pool_used = set()
+            queue = list(turns)
+            auto_ans = 0
+            while queue and len(turns_out) < len(turns) + 6:
+                text = queue.pop(0)
                 r = await _ask_turn(base, token, sid, text)
+                r["q"] = text
                 turns_out.append(r)
                 if "review" in r["stages"]:
                     review_hit = True
                     break  # 到弹窗即达成本轮目标，省 API 轮次
+                ans = r["answer"]
+                if auto_ans < 2 and "出单前确认一下关联项目" in ans:
+                    auto_ans += 1
+                    queue.insert(0, "1")
+                    continue
+                if not queue:
+                    for k, item in enumerate(pool):
+                        if k not in pool_used and item["when"] in ans:
+                            pool_used.add(k)
+                            queue.append(item["say"])
+                            break
             # 提单链路纵深：到弹窗后验草稿 → confirm 落库 → ssh 查测试库
-            extra_fails, db_row = [], None
+            extra_fails, db_row, db_id = [], None, None
             if review_hit and (c.get("expect_draft_any") or c.get("expect_confirm")):
                 prep = await _post_ticket(base, token, "/api/ai/qa/ticket/prepare",
                                           {"session_id": sid})
@@ -273,12 +356,64 @@ async def run_api_suite(suite: str, cases: list, base: str, token: str, counted)
                                 extra_fails.append(
                                     f"落库记录缺关键词: {row_text[:120]}")
                     if c.get("after_confirm_ask") and not extra_fails:
-                        r2 = await _ask_turn(base, token, sid, c["after_confirm_ask"])
+                        q2 = _fill_refs(c["after_confirm_ask"], db_id, db_row)
+                        r2 = await _ask_turn(base, token, sid, q2)
+                        r2["q"] = q2
                         turns_out.append(r2)
+            # post_asks：confirm 后多步追问（查单状态/权限对比/再提单等），
+            # 支持 {db_id}=本用例落的单、{other_id}=动态查一张别人的单（权限反例）
+            if c.get("post_asks") and not extra_fails:
+                for pa in c["post_asks"]:
+                    ask = _fill_refs(pa.get("ask", ""), db_id, db_row)
+                    if not ask:
+                        continue
+                    r2 = await _ask_turn(base, token, sid, ask)
+                    r2["q"] = ask
+                    turns_out.append(r2)
+                    txt = r2["answer"]
+                    if pa.get("expect_any") and not any(k in txt for k in pa["expect_any"]):
+                        extra_fails.append(
+                            f"追问「{ask[:24]}」回答缺关键词"
+                            f"（任一：{'、'.join(pa['expect_any'][:4])}）")
+                    for kw in pa.get("forbid_any") or []:
+                        if kw in txt:
+                            extra_fails.append(f"追问「{ask[:24]}」回答含禁词「{kw}」")
+                    # 轮级工具断言：锚=ask 文本（[sse] q= 行），只看该轮之后的规划
+                    if pa.get("expect_tools_all") or pa.get("forbid_tools"):
+                        called2 = remote_plan_tools(sid, since_kw=ask)
+                        miss2 = [t for t in (pa.get("expect_tools_all") or [])
+                                 if t not in called2]
+                        if miss2:
+                            extra_fails.append(
+                                f"追问「{ask[:24]}」轮工具未调"
+                                f"（实际 {'、'.join(called2) or '无'}）：{'、'.join(miss2)}")
+                        hit2 = [t for t in (pa.get("forbid_tools") or []) if t in called2]
+                        if hit2:
+                            extra_fails.append(
+                                f"追问「{ask[:24]}」轮禁调工具被调：{'、'.join(hit2)}")
+            # 工具路由断言（全轮跑完后拉服务端 [plan] 日志；合并集合语义）
+            _tkeys = ("expect_tools_any", "expect_tools_all", "forbid_tools")
+            if any(c.get(k) for k in _tkeys):
+                called = remote_plan_tools(sid)
+                miss = [t for t in (c.get("expect_tools_all") or []) if t not in called]
+                if miss:
+                    extra_fails.append(
+                        f"工具未调用（必须全调，实际调了 {'、'.join(called) or '无'}）："
+                        f"{'、'.join(miss)}")
+                if c.get("expect_tools_any") and \
+                        not any(t in called for t in c["expect_tools_any"]):
+                    extra_fails.append(
+                        f"工具全未调用（任一即可，实际调了 {'、'.join(called) or '无'}）："
+                        f"{'、'.join(c['expect_tools_any'])}")
+                hit = [t for t in (c.get("forbid_tools") or []) if t in called]
+                if hit:
+                    extra_fails.append(f"禁调工具被调用：{'、'.join(hit)}")
             detail = {
                 "query": c.get("query") or turns[0],
                 "turns_run": len(turns_out),
                 "stages": [t["stages"] for t in turns_out],
+                "turns_qa": [{"q": t.get("q", ""),
+                              "a": (t["answer"] or "")[:400]} for t in turns_out],
                 "answer_head": (turns_out[-1]["answer"] if turns_out else "")[:400],
                 "first_ms": turns_out[0].get("first_ms") if turns_out else None,
                 "ms": round((time.time() - t0) * 1000),

@@ -105,6 +105,15 @@ async def ingest_all(
                     if ok:
                         print(f"[OK] kb/{domain}/ 入库完成")
                         succeeded.append(domain)
+                        if domain == "company":
+                            # 工单沉淀卡不在 kb/ 源目录、只活在 qdrant——换集合会
+                            # 整批丢下（0910 实锤）。入库后从源文件∪旧集合搬进
+                            # 新集合并回写源文件，作为固有资料存续。
+                            try:
+                                from ai.core.ticket_card_store import carry_over_cards
+                                carry_over_cards(qc=shared_client)
+                            except Exception as e:
+                                print(f"[WARN] 工单卡搬运失败（下次入库自动再试）: {e}")
                     else:
                         print(f"[FAIL] kb/{domain}/ 入库失败")
                         failed.append(domain)

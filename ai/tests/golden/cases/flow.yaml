@@ -39,3 +39,75 @@
     - 货叉取货的时候动作不对，想查下日志，运动控制的日志在哪里看
   expect_stages_any: ["diagnosing", "retrieving", "answering"]
 
+# ── 工具路由断言（0909 补）：expect_tools_* 从服务端 [plan] 规划日志读实际
+# 调用的工具（合并全轮集合）——组合问法测的就是规划器路由对不对 ──
+#   expect_tools_any:  任一调了即过；expect_tools_all: 列出的必须都调
+#   forbid_tools:      列出的一个都不许调
+# post_asks 项内也可写 expect_tools_all / forbid_tools（轮级断言：只看该轮
+# 之后的规划行，锚=追问文本；全会话断言会误伤前几轮的合法调用）
+# 可用工具名：search_kb / lookup_ticket / search_history_tickets / list_user_projects
+
+- name: 项目查询-名下清单
+  turns:
+    - 我名下关联的项目都有哪些
+  expect_tools_all: [list_user_projects]
+  strict: true
+
+- name: 故障问原因-手册与实战双检索
+  turns:
+    - 我们一台XQE车报错813停在货架前取不了货，是什么原因，怎么解决
+  expect_tools_all: [search_kb, search_history_tickets]
+  strict: true
+
+- name: 故障带项目名-不误调项目查询
+  turns:
+    - 中力项目的车报813故障，怎么处理
+  expect_tools_any: [search_kb]
+  forbid_tools: [list_user_projects]
+  strict: true
+
+- name: 纯问候-不调任何资料工具
+  turns:
+    - 你好，在吗
+  forbid_tools: [search_kb, lookup_ticket, search_history_tickets, list_user_projects]
+
+- name: 多轮工具切换-从故障检索到项目查询
+  turns:
+    - 我们车报错813了，该怎么办
+    - 对了，顺便问下我名下有哪些项目
+  expect_tools_all: [search_kb, list_user_projects]
+  strict: true
+
+# ── 查单链路（动态工单号：静态号在测试库会被清/换人不可靠）──
+# 提单落库拿自己的 {db_id}，{other_id} 动态查一张别人的单做权限反例
+- name: 查单全链路-自己的单透内容别人的单拒查
+  turns:
+    - 帮我提个工单，我们一台XQE车报错813停在货架前取不了货，车编号A027
+    - 今天上午的事，货架在A区03库位，反复出现
+  expect_review_any_round: true
+  expect_confirm: true
+  expect_db: true
+  expect_tools_all: [lookup_ticket]
+  post_asks:
+    - ask: "{db_id}号工单现在处理得怎么样了"
+      expect_any: ["状态", "处理", "受理", "流转", "待处理", "进行中"]
+    - ask: "{other_id}号工单现在处理得怎么样了"
+      expect_any: ["权限", "无关", "不能查看", "无法查看", "不开放", "看不到", "查不到", "没有关联"]
+      forbid_any: ["已解决", "工程师正在", "处理中"]
+  strict: true
+
+- name: 查单后引用再提单-查单但不检索
+  turns:
+    - 帮我提个工单，XQE车报813取不了货，车编号A027
+    - 今天上午十点的事，A区03库位，反复出现
+  expect_review_any_round: true
+  expect_confirm: true
+  post_asks:
+    - ask: "针对{db_id}号工单的问题再帮我提一单，还是这台车"
+      expect_any: ["工单", "单据", "草稿", "确认"]
+      # 轮级断言：再提单这轮应引用已有工单（lookup）而非重新检索（search_kb
+      # 第一轮提单调它是设计行为，禁调只对再提单轮成立）
+      expect_tools_all: [lookup_ticket]
+      forbid_tools: [search_kb]
+  strict: true
+

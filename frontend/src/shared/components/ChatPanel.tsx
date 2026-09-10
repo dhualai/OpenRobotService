@@ -641,6 +641,16 @@ const TICKET_TYPE_LABEL: Record<string, string> = {
   problem: '报障', bug: '缺陷', feature: '需求', support: '支持', other: '其他',
 };
 
+// AI 诊断输入框轮播提示（复刻 DiscussionPanel 讨论区小技巧轮播）：教用户怎么用
+// 这个界面——「你可以试着说」口吻给示范句，仅 call 场景轮播，其他场景静态文案。
+export const AI_INPUT_PLACEHOLDER_TIPS = [
+  '你可以试着说：「我有哪些工单？」「我的待处理工单有哪些？」',
+  '你可以试着说：「我的xxx工单处理得怎么样了？」',
+  '描述完问题对我说「提单 / 转工单」，或点下方按钮，即可创建工单',
+  '可以帮您查询您名下的项目',
+  '设备遇到问题，直接描述现象就行',
+];
+
 // 按会话 id 的内存消息缓存（模块级）：切走前把当前会话最新 messages（含未落库的乐观消息）存入，
 // 切回时优先从此同步恢复。提升到模块级以跨 ChatPanel 卸载/重挂载（切 Tab）存活——
 // 否则切 Tab 卸载后 ref 丢失，切回只能落库重拉（且 appendMessage 落库竞态会丢新消息）。
@@ -658,6 +668,16 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
   // 图片预览：点击用户气泡图片 → 全屏遮罩放大查看
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [input, setInput] = useState('');
+  // 输入框 placeholder 轮播（仅 AI 诊断场景）：3s 一换，输入有内容时 placeholder
+  // 本身不显示，无需暂停逻辑
+  const [inputTipIndex, setInputTipIndex] = useState(0);
+  useEffect(() => {
+    if (!isCall) return;
+    const timer = setInterval(
+      () => setInputTipIndex((i) => (i + 1) % AI_INPUT_PLACEHOLDER_TIPS.length), 3000);
+    return () => clearInterval(timer);
+  }, [isCall]);
+  const rotatingPlaceholder = isCall ? AI_INPUT_PLACEHOLDER_TIPS[inputTipIndex] : '发消息…';
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string>('');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -2781,7 +2801,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
               <Textarea
                 value={input}
                 onChange={(v) => setInput(String(v))}
-                placeholder="发消息…"
+                placeholder={rotatingPlaceholder}
                 autosize={{ minRows: 1, maxRows: 6 }}
               />
               {textareaMaxed && !textareaFullscreen && (
@@ -2842,7 +2862,7 @@ export default function ChatPanel({ scene, compact = false }: { scene: ChatScene
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onPaste={handlePaste}
-                placeholder="发消息..."
+                placeholder={rotatingPlaceholder}
                 autoFocus
               />
               <div className="chat-input-bar__fullscreen-footer">

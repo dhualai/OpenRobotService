@@ -2,17 +2,21 @@
 """生成话题切分审核工具（单 HTML，浏览器直接打开）。
 
 输入：processed/conversations_split.jsonl + conversations_classified.jsonl
+     + Downloads/manual_segmentation*.json（人工边界，可选）
      + l3_judge_all_*.json（AI 预标，可选） + retrieval_check_*.json（检索判定，可选）
 输出：processed/segmentation_tool.html（数据内嵌，无依赖离线可用）
 
-交互：橙色虚线=话题边界（LLM 预切），可拖动/增删；审完「保存并下一个」；
-导出 manual_segmentation.json 后用 dar_l1.py --replay --review 重算。
+两轮用法（0910 起：先人工定边界、后按人工边界判定——judge 与检索重放的
+输入就是人工认可的话题段，标注轮预标全部有效）：
+  --bounds-only  切题轮：不注入预标/检索，只核对修正边界，「保存到工作台」
+                 → export_dar/{env}/manual_segmentation.json（自动重算 L1）
+  （缺省）       标注轮：注入 AI 四类预标 + 检索判定 + judge 理由，段头一键采纳；
+                 数字键 1-6 选标签，「保存到工作台」收标签
+已导出过人工边界的会话，初始切分即人工边界（与 localStorage 双重一致）。
+预标按段首索引锚定，边界改动后该段预标不显示（防错位）。
 进度存 localStorage（换浏览器/清缓存会丢，审完及时导出）。
-
-预标模式：注入 AI 四类预标（直接提单/直答正确/未直答/未覆盖）+ 检索判定 +
-judge 理由，段头一键采纳；数字键 1-6 选标签。预标按 AI 段首索引锚定，
-边界改动后该段预标不显示（防错位）。
 """
+import argparse
 import glob
 import io
 import json
@@ -28,6 +32,9 @@ OUT = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/processed"
 SPLIT = os.path.join(OUT, "conversations_split.jsonl")
 CLS = os.path.join(OUT, "conversations_classified.jsonl")
 TPL = os.path.join(HERE, "segmentation_tool.template.html")
+# 人工切分/标注：随数据集放 export_dar/{env}/（0910-6 迁出 Downloads；
+# 工具「保存到工作台」经 dar_studio /api/save_manual 直写这里）
+MANUAL = rf"C:/Users/PAJ26020/Desktop/export_dar/{ENV}/manual_segmentation.json"
 
 WINDOW = timedelta(minutes=30)
 A_MAX = 3000  # AI 回答注入上限（审核看话题够用）
@@ -78,12 +85,23 @@ def ts(s):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bounds-only", action="store_true",
+                    help="切题轮：不注入 AI 预标/检索判定（边界定稿后再判定）")
+    args = ap.parse_args()
+
     convs = [json.loads(l) for l in open(SPLIT, encoding="utf-8")]
     cls_all = {j["conversation_id"]: j["cls"] for j in
                (json.loads(l) for l in open(CLS, encoding="utf-8"))}
-    pre = load_pre()
+    man = {}
+    if os.path.exists(MANUAL):
+        man = json.load(open(MANUAL, encoding="utf-8")).get("bounds") or {}
+    pre = {} if args.bounds_only else load_pre()
+    if args.bounds_only:
+        print("切题轮：不注入预标/检索（先人工定边界，判定在边界定稿后跑）")
 
     out = []
+    n_man = n_llm_multi = n_noise = 0
     for c in convs:
         rounds = c["rounds"]
         if len(rounds) < 2:
@@ -92,6 +110,13 @@ def main():
         cls = cls_all.get(cid)
         if not cls or len(cls) != len(rounds):
             cls = [{"q": True, "t": False, "topic": 0} for _ in rounds]
+        # 全程无咨询且无工单（纯寒暄）：无话题可切、无标签可打，不进工具
+        # （带工单的保留——纯提单会话是「直接提单」标的标的；指标层本就跳过无咨询段）
+        if not any(k["q"] for k in cls) and not (c.get("tasks") or []):
+            n_noise += 1
+            continue
+        if len({k.get("topic", 0) for k in cls}) >= 2:
+            n_llm_multi += 1
         task_ts = [ts(t["at"]) for t in c.get("tasks") or []]
         rj = []
         for i, r in enumerate(rounds):
@@ -106,6 +131,17 @@ def main():
                 "tk": any(rt <= tt <= rt + WINDOW.total_seconds() * 1000
                           for tt in task_ts),
             })
+        # 人工边界覆盖初始切分：没导出过边界的会话仍按 LLM topic 展示
+        b = man.get(cid)
+        if b:
+            n_man += 1
+            starts = sorted({0, *(int(x) for x in b
+                                  if 0 <= int(x) < len(rounds))})
+            si = 0
+            for i in range(len(rj)):
+                if si + 1 < len(starts) and i >= starts[si + 1]:
+                    si += 1
+                rj[i]["t"] = si
         out.append({
             "conversation_id": cid,
             "name": c.get("name") or "",
@@ -120,16 +156,20 @@ def main():
 
     tpl = open(TPL, encoding="utf-8").read()
     # </ 转义：JSON 内嵌 <script> 时，内容里出现 </script> 会提前截断脚本（JS 字符串里 \/ 合法）
-    payload = json.dumps({"convs": out, "env": ENV}, ensure_ascii=False).replace("</", "<\\/")
+    payload = json.dumps({"convs": out, "env": ENV,
+                          "mode": "bounds" if args.bounds_only else "label"},
+                         ensure_ascii=False).replace("</", "<\\/")
     html = tpl.replace("__DATA__", payload)
     path = os.path.join(OUT, "segmentation_tool.html")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(html)
     print(f"生成 {path}")
-    print(f"会话 {len(out)} 个（≥2 回合），回合 {sum(len(c['rounds']) for c in out)}")
-    n_multi = sum(1 for c in out
-                  if len({r["t"] for r in c["rounds"]}) >= 2)
-    print(f"LLM 切出多话题的 {n_multi} 个")
+    print(f"会话 {len(out)} 个（≥2 回合），回合 {sum(len(c['rounds']) for c in out)}"
+          + (f"，滤掉纯寒暄（无咨询无工单）{n_noise} 个" if n_noise else ""))
+    if man:
+        print(f"人工边界嵌入 {n_man} 个已切会话（初始切分=人工边界），LLM 切出多话题的 {n_llm_multi} 个")
+    else:
+        print(f"LLM 切出多话题的 {n_llm_multi} 个")
 
 
 if __name__ == "__main__":
