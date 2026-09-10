@@ -849,6 +849,36 @@ class ReportGenerator:
             db.close()
 
     @staticmethod
+    def lookup_project_by_hint(hint: str) -> str | None:
+        """从问题文本提取的项目名线索中匹配 project 表，返回 project.code。
+
+        匹配优先级：code 精确匹配 → name 包含匹配。
+        返回首个命中；无命中返回 None。
+
+        Args:
+            hint: 从问题中提取的项目名线索（如 "XX"、"XX项目" 中的 XX）。
+               小于 2 字符直接返回 None。
+        """
+        if not hint or len(hint) < 2:
+            return None
+        db = SessionLocal()
+        try:
+            # code 精确匹配
+            proj = db.query(ProjectDelivery).filter(ProjectDelivery.code == hint).first()
+            if proj:
+                logger.info("项目名线索 %r → code 精确命中 %s", hint, proj.code)
+                return proj.code
+            # name 包含匹配
+            proj = db.query(ProjectDelivery).filter(ProjectDelivery.name.contains(hint)).first()
+            if proj:
+                logger.info("项目名线索 %r → name 包含命中 %s (code=%s)", hint, proj.name, proj.code)
+                return proj.code
+            logger.info("项目名线索 %r 未匹配到任何项目", hint)
+            return None
+        finally:
+            db.close()
+
+    @staticmethod
     def _resolve_scope(
         project_code: str | None, user_id: str | None
     ) -> ReportScope:

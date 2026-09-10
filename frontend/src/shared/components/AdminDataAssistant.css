@@ -185,6 +185,145 @@
 .ada-head__act:hover {
   background: var(--gray-soft);
 }
+/* 头部按钮激活态（历史面板打开时） */
+.ada-head__act.is-active {
+  background: var(--ada-iris-soft);
+  color: var(--ada-iris-deep);
+}
+
+/* ── 历史会话视图 ── */
+.ada-history {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ada-history__head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+}
+
+.ada-history__head .ada-history__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.ada-history__back {
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--ada-iris-deep);
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 8px;
+  transition: background 0.2s ease;
+}
+.ada-history__back:hover {
+  background: var(--gray-soft);
+}
+
+.ada-history__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  scrollbar-width: none;
+}
+.ada-history__list::-webkit-scrollbar {
+  display: none;
+}
+
+.ada-history__empty {
+  padding: 48px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--gray-light);
+}
+
+.ada-history__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+.ada-history__item:hover {
+  background: var(--gray-soft);
+}
+.ada-history__item.is-active {
+  background: var(--ada-iris-soft);
+}
+
+.ada-history__main {
+  flex: 1;
+  min-width: 0;
+}
+.ada-history__main .ada-history__title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ada-history__time {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--gray-light);
+}
+
+.ada-history__del {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--gray-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.ada-history__del:hover {
+  background: rgba(213, 73, 65, 0.1);
+  color: var(--destructive);
+}
+
+.ada-history__footer {
+  flex-shrink: 0;
+  padding: 10px 12px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+}
+
+.ada-history__new {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px dashed color-mix(in oklab, var(--ada-iris) 45%, var(--border));
+  background: transparent;
+  color: var(--ada-iris-deep);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+.ada-history__new:hover {
+  background: color-mix(in oklab, var(--ada-iris) 8%, transparent);
+}
 
 /* ── 消息区（气泡复用 .chat-bubble 体系；抽屉内收紧到 88% 宽） ── */
 .ada-msgs {
@@ -199,6 +338,20 @@
 }
 .ada-msgs .chat-bubble {
   max-width: 88%;
+}
+
+/* 数据分析标记：浅蓝底 + 小字号徽章，放在气泡内容上方，参考摇人「转工单」action 标记 */
+.ada-bubble__tag {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  font-weight: 600;
+  color: var(--ada-iris-deep);
+  background: var(--ada-iris-soft);
+  pointer-events: none;
 }
 
 /* AI 回答中的表格：超出抽屉宽度时横向滚动 */

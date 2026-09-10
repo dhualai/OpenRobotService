@@ -26,6 +26,10 @@ const API_CONFIG = {
   CALL: {
     BASE_URL: `${API_ROOT}/call`,
   },
+  /** 数据助手服务 - /api/dataqa (AI数据助手会话/消息，独立于 call 会话) */
+  DATAQA: {
+    BASE_URL: `${API_ROOT}/dataqa`,
+  },
   /** AI 模块 - /api/ai (诊断问答/LLM对话/会话记忆)，独立服务（ai/run.py @8401） */
   AI: {
     BASE_URL: `${API_ROOT}/ai`,

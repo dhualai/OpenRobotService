@@ -82,6 +82,13 @@ _ANALYSIS_STRONG_PATTERNS = (
     r"(新增|新建|逾期|解决率|完成率|等级分布|状态分布|类型分布|优先级分布)",
 )
 
+# LLM 兜底意图判定的系统提示词：要求只输出一个词，便于低成本解析
+_INTENT_CLASSIFY_SYSTEM_PROMPT = """\
+你是意图分类器。判断用户输入属于哪一类，只输出一个词，不要输出任何其他内容：
+- 用户想查询、统计、分析平台数据（项目/工单/任务/风险/指标等）→ 输出 analysis
+- 用户只是闲聊、问候、咨询功能用法或其他无关话题 → 输出 chat
+"""
+
 
 class DataAnalysisAgent:
     """AI 数据分析 Agent。
@@ -212,7 +219,10 @@ class DataAnalysisAgent:
         """
         has_data = data is not None and bool(data.strip())
         has_scope = bool(project_code or user_id)
+        # 混合判定：关键词快筛（零成本）→ 无法判定时 LLM 兜底（低温度短回答）
         intent = self._classify_question_intent(question, context)
+        if intent == "unknown":
+            intent = await self._classify_intent_with_llm(question, context)
         # 澄清会话进行中：缓存里有待补充的 plan 时优先进入指标流程
         pending_plan = self._plan_cache.get(conversation_id)
 
@@ -272,12 +282,19 @@ class DataAnalysisAgent:
             code = self._resolve_project_code_by_name(plan.scope.project_name)
             if code:
                 plan.scope.project_code = code
+        elif plan.scope.type == "global":
+            # 快路径不解析项目名：问题中出现"XX项目"等实体时查库映射补全范围
+            hint = self._extract_project_hint(question)
+            if hint:
+                code = ReportGenerator.lookup_project_by_hint(hint)
+                if code:
+                    plan.scope = ScopeSpec(type="single_project", project_code=code)
 
         missing = self._planner.missing_fields(plan)
         plan.missing_fields = missing
 
         # 无法解析出指标且无显式范围 → 回落普通聊天
-        if not plan.metric_keys and not (project_code or user_id):
+        if not plan.metric_keys and plan.scope.type == "global":
             return await self._chat_reply(question, context)
 
         if missing:
@@ -415,7 +432,13 @@ class DataAnalysisAgent:
 
     @staticmethod
     def _classify_question_intent(question: str, context: str | None = None) -> str:
-        """基于问题文本自动识别是普通聊天还是数据分析。"""
+        """基于问题文本快速识别意图（混合判定第一步：关键词快筛）。
+
+        返回三态：
+        - "chat"：明确的礼貌用语/闲聊
+        - "analysis"：明确的指标分析意图
+        - "unknown"：关键词无法判定，交由 :meth:`_classify_intent_with_llm` LLM 兜底
+        """
         text = "\n".join(part.strip() for part in [question, context or ""] if part).lower()
         if not text:
             return "chat"
@@ -432,6 +455,63 @@ class DataAnalysisAgent:
         if action_hit and subject_hit:
             return "analysis"
 
+        return "unknown"
+
+    @staticmethod
+    def _extract_project_hint(question: str) -> str | None:
+        """从问题中提取项目名线索，供 project 表精确匹配。
+
+        支持的常见表述模式：
+        - "XX项目" / "XX 项目" → XX
+        - "XX的工单/风险/指标/数据" → XX
+        - 引号或书名号内容 「XX」 / "XX" / 《XX》
+
+        返回提取到的线索文本（≥2 字符）或 None。
+        """
+        # 模式1: "XX项目"
+        m = re.search(r'([^，,。.!！？?\s]{2,16})项目', question)
+        if m:
+            return m.group(1).strip()
+        # 模式2: "XX的工单/风险/指标/数据/任务/报障"
+        m = re.search(
+            r'([^，,。.!！？?\s]{2,16})的(?:工单|风险|指标|数据|任务|项目|报障)',
+            question,
+        )
+        if m:
+            return m.group(1).strip()
+        # 模式3: 引号/书名号内容 「XX」 / "XX" / 《XX》
+        m = re.search(r'[""《]([^""》]{2,20})[""》]', question)
+        if m:
+            return m.group(1).strip()
+        return None
+
+    async def _classify_intent_with_llm(self, question: str, context: str | None = None) -> str:
+        """LLM 兜底意图判定：关键词快筛无法判定时调用。
+
+        低温度 + 短回答的轻量调用，避免闲聊场景误判为 analysis 引发无谓查库；
+        LLM 异常或回复无法解析时保守回退 "chat"（不阻断主流程）。
+        """
+        user_prompt = (
+            f"## 补充上下文\n{context}\n\n## 用户输入\n{question}"
+            if context else f"## 用户输入\n{question}"
+        )
+        try:
+            reply, _ = await self._llm.chat(
+                _INTENT_CLASSIFY_SYSTEM_PROMPT,
+                user_prompt,
+                temperature=0,
+                max_tokens=16,
+            )
+        except Exception:
+            logger.warning("LLM 意图兜底判定失败，回退 chat", exc_info=True)
+            return "chat"
+
+        text = (reply or "").strip().lower()
+        if "analysis" in text:
+            return "analysis"
+        if "chat" in text:
+            return "chat"
+        logger.info("LLM 意图判定回复无法解析 %r，回退 chat", text)
         return "chat"
 
     # ── 健康检查 ────────────────────────────────────────────
