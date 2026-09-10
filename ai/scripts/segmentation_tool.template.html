@@ -319,9 +319,17 @@ function openConv(c) {
 }
 
 function renderProg() {
-  const n = Object.keys(store[RK]).length;
+  // 进度按当前组过滤口径算：默认真实组（测试组是自测流量，不用切/标）；
+  // 只统计本数据集里的会话，localStorage 里旧数据集的已读不计入
+  const scope = DATA.convs.filter(c => {
+    if (state.fGroup === "real" && c.tester) return false;
+    if (state.fGroup === "test" && !c.tester) return false;
+    return true;
+  });
+  const n = scope.filter(c => store[RK][String(c.conversation_id)]).length;
+  const zh = { real: "真实组", test: "测试组", all: "全部" }[state.fGroup];
   document.getElementById("h-prog").textContent =
-    `${MODE === "bounds" ? "已切" : "已审"} ${n}/${DATA.convs.length}`;
+    `${MODE === "bounds" ? "已切" : "已审"} ${n}/${scope.length}（${zh}）`;
 }
 
 const RV_TXT = { yes: "检索:有答案", partial: "检索:部分相关", no: "检索:无关", error: "检索:异常" };
@@ -526,7 +534,7 @@ document.querySelectorAll("#side .filters button").forEach(b => {
     document.querySelectorAll(grp).forEach(x => x.classList.remove("on"));
     b.classList.add("on");
     if (b.dataset.f === "status") state.fStatus = b.dataset.v; else state.fGroup = b.dataset.v;
-    renderList();
+    renderList(); renderProg();
   };
 });
 
