@@ -627,27 +627,40 @@ def _realtime_small(env: str):
         return small
     try:
         legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+        man = json.load(open(mp, encoding="utf-8"))
         labs_man = {}
-        for cid, lm in (json.load(open(mp, encoding="utf-8")).get("labels") or {}).items():
+        for cid, lm in (man.get("labels") or {}).items():
             labs_man[str(cid)] = {int(k): legacy.get(v, v) for k, v in lm.items()
                                   if str(k).isdigit()}
+        bounds_man = {str(k): v for k, v in (man.get("bounds") or {}).items()}
         convs = {}
         with open(split, encoding="utf-8") as fh:
             for line in fh:
                 if line.strip():
                     c = json.loads(line)
                     convs[str(c["conversation_id"])] = c
-        n_real_segs = 0  # 真实组总段数：有 cls 的会话按 topic 变化计数
+        # 真实组总段数：与 dar_l1/dar_l3/标注工具同口径——人工边界优先、
+        # 只计有咨询回合且有回答的段（LLM 切分又不滤咨询会虚到 452 vs 410，0910 实锤）
+        n_real_segs = 0
         clsf = os.path.join(proc, "conversations_classified.jsonl")
         if os.path.exists(clsf):
             cls_all = {str(j["conversation_id"]): j["cls"] for j in
                        (json.loads(l) for l in open(clsf, encoding="utf-8") if l.strip())}
-            n_real_segs = sum(
-                1 + sum(1 for i in range(1, len(cls_all[cid]))
-                        if cls_all[cid][i]["topic"] != cls_all[cid][i - 1]["topic"])
-                for cid, c in convs.items()
-                if not c.get("is_tester") and cid in cls_all
-                and len(cls_all[cid]) == len(c["rounds"]))
+            for cid, c in convs.items():
+                cl = cls_all.get(cid)
+                if c.get("is_tester") or not cl or len(cl) != len(c["rounds"]):
+                    continue
+                if cid in bounds_man:
+                    segs = sorted({0, *(int(x) for x in bounds_man[cid]
+                                        if 0 <= int(x) < len(c["rounds"]))})
+                else:
+                    segs = [0] + [i for i in range(1, len(cl))
+                                  if cl[i]["topic"] != cl[i - 1]["topic"]]
+                for tid, s in enumerate(segs):
+                    e = segs[tid + 1] if tid + 1 < len(segs) else len(c["rounds"])
+                    if any(cl[i].get("q") and any(a.strip() for a in c["rounds"][i]["a"])
+                           for i in range(s, e)):
+                        n_real_segs += 1
         n_lab = sum(len(lm) for cid, lm in labs_man.items()
                     if cid in convs and not convs[cid].get("is_tester"))
         if n_real_segs:
