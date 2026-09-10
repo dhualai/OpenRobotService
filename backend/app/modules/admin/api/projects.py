@@ -372,7 +372,7 @@ async def create_project(
                 role_data["role_ids"].append(diaoyan_role_id)
             await PermissionService.assign_role(request, token, project_data.contact_person_id, role_data)
 
-            from app.modules.admin.utils_das.security import decode_token
+            from app.core.security import decode_token
             from app.modules.admin.services.wechat_service import WeChatService
 
             current_user = decode_token(token)
@@ -415,7 +415,7 @@ async def create_project(
     try:
         token = request.headers.get("Authorization", "")
         token = token[7:]  # 去掉 "Bearer " 前缀，与下方 decode_token 约定一致
-        from app.modules.admin.utils_das.security import decode_token
+        from app.core.security import decode_token
         current_user = decode_token(token)
         if current_user:
             current_username = current_user.get("sub", "")
@@ -476,7 +476,7 @@ async def update_project(
         }
         await PermissionService.assign_role(request, token, update_data.contact_person_id, new_role_data)
         
-        from app.modules.admin.utils_das.security import decode_token
+        from app.core.security import decode_token
         from app.modules.admin.services.wechat_service import WeChatService
         
         current_user = decode_token(token)
