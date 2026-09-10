@@ -394,9 +394,12 @@ export default function HistoryTickets({ showHeader = true }: { showHeader?: boo
               </div>
               {t.description && <span className="history-row__summary">{t.description}</span>}
               {t.project && <span className="history-row__project">所属项目：{t.project}</span>}
-              {/* 二次派单感知增强（M3）：派单结果提醒（单独一行，警示色，超长省略，跟随整行点击进详情） */}
+              {/* 派单提醒：标签蓝、正文灰，超长省略，跟随整行点击进详情 */}
               {t.redispatch_tip && (
-                <div className="history-row__tip">派单结果提醒：{t.redispatch_tip}</div>
+                <div className="history-row__tip">
+                  <span className="history-row__tip-label">派单提醒：</span>
+                  <span className="history-row__tip-text">{t.redispatch_tip}</span>
+                </div>
               )}
               {/* 人员流转（设计稿：头像 blue-3 + 姓名 | ArrowRight blue-3 居中 | 姓名 + 头像 blue-2）。
                   派单中（status=new 且处理人未写入，AI 派单 Worker 60s 轮询中）：显示「派单中」呼吸动效 */}
