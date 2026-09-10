@@ -8,6 +8,9 @@
 增量：当日输出文件已存在的段（cid+段首问题匹配）复用判定，只补跑新段。
 断点续跑：判定成功的段逐条追加 .jsonl（异常段不落，重跑自动重试），
      LLM 断网/中途杀进程后重跑只补未判段；跑完仍写全量 .json 快照。
+防护：qdrant 不可用（隧道中途断开/冷启动冷却窗）时空资料不判——等冷却+
+     重建隧道重试，仍不可用记 error 不落盘；连续 15 段拿不到真资料熔断中止
+     （0910 实锤：隧道死 220 条全空照判 no 落盘，整轮废）。
 每行带 astart（段首回合索引）= 预标注入的锚定键。
 
 用法：
@@ -185,13 +188,32 @@ async def main():
         done = [0]
         t0 = time.time()
         lock = asyncio.Lock()
+        unavail_streak = [0]  # 连续「qdrant 不可用」段数：熔断用（防烧整轮）
 
         async def one(r):
             async with sem:
                 try:
+                    # qdrant 不可用（隧道中途断开/冷启动冷却窗）时：等冷却 + 重建隧道
+                    # 重试，仍不可用记 error 不落盘。0910 实锤：隧道死后检索静默返回
+                    # 空资料，LLM 拿空照判 no 且落盘，220 条全废——拿不到真资料不判。
+                    for i in range(5):
+                        if not getattr(platform._retriever, "is_qdrant_unavailable",
+                                       False):
+                            break
+                        if QDRANT in ("prod", "test"):
+                            from dar_qdrant import ensure_tunnel
+                            try:
+                                await asyncio.to_thread(ensure_tunnel)
+                                print("  [隧道] 检测到断开，已重建 ssh 隧道")
+                            except Exception as ex:
+                                print(f"  [隧道重建失败] {type(ex).__name__}: {ex}")
+                        await asyncio.sleep(10)  # 等快速失败冷却后重试
                     state = AgentState(session_id=f"dar_chk_{r['cid']}_{r['astart']}",
                                        original_query=r["q"])
                     ctx = await platform._retrieve_with_context(state.session_id, state)
+                    # 拿资料的这趟若正撞上不可用（返回空但不抛错），同样不判
+                    if getattr(platform._retriever, "is_qdrant_unavailable", False):
+                        raise RuntimeError("qdrant 不可用（隧道断开），本段资料无效不判")
                     r["retrieval"] = (ctx or "")[:400]
                     r["chunks"] = parse_retrieval_chunks(ctx)
                     # 资料给全（与线上一致）：ctx 已是装配结果（每块 ≤1500 字、最多 6 块、
@@ -209,12 +231,20 @@ async def main():
                     r["reason"] = f"{type(e).__name__}: {e}"[:120]
                 async with lock:
                     # 成功/格式异常即落 jsonl（断点续跑）；error 不落，重跑重试
+                    if "qdrant 不可用" in (r.get("reason") or ""):
+                        unavail_streak[0] += 1
+                    else:
+                        unavail_streak[0] = 0
                     if r["verdict"] in ("yes", "partial", "no", "?"):
                         with open(jpath, "a", encoding="utf-8") as fh:
                             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
                     done[0] += 1
                     if done[0] % 20 == 0:
                         print(f"  {done[0]}/{len(todo)}（{time.time()-t0:.0f}s）")
+                    if unavail_streak[0] >= 15:
+                        print("\n!! qdrant 持续不可用（连续 15 段拿不到真资料）——熔断中止。"
+                              "已判定段落有效，中断段不落盘，修复隧道后重跑自动补。")
+                        raise SystemExit(3)
 
         await asyncio.gather(*(one(r) for r in todo))
         n_err = sum(1 for r in todo if r.get("verdict") == "error")
