@@ -597,7 +597,27 @@ def cmd_apply(qc, col, csv_path: str, reviewer: str) -> None:
                 "point_id": r["point_id"], "verdict": r["_verdict"],
                 "reason": r["_reason"], "note": r["_note"],
             }, ensure_ascii=False) + "\n")
-    print(f"审核留档已追加: {hist_path}")
+    # 源文件随 apply 同步：approved 更新行、rejected/test 移除行——源文件是
+    # 固有资料（换集合靠它搬运），只改 qdrant 会让源滞后到下次入库才追平
+    try:
+        from ai.core.ticket_card_store import load_source, save_source
+        cards = load_source()
+        touched = False
+        for r in approve_rows:
+            c = cards.get(r["point_id"])
+            if c:
+                c["payload"]["review_status"] = "approved"
+                c["payload"]["reviewed_by"] = reviewer
+                c["payload"]["reviewed_at"] = now
+                touched = True
+        for r in delete_rows:
+            touched = cards.pop(r["point_id"], None) is not None or touched
+        if touched:
+            save_source(cards)
+            from ai.core.ticket_card_store import _source_path
+            print(f"固有资料源文件已随 apply 同步: {_source_path()}")
+    except Exception as e:
+        print(f"（源文件同步失败，不影响本次 apply: {e}）")
 
 
 def cmd_export_skipped() -> None:
