@@ -28,13 +28,13 @@ import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
 import { readStored } from '@/stores/authStorage';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
-import DispatchInfoFold from '@/shared/components/DispatchInfoFold';
 import TicketDynamicsCard from '@/shared/components/TicketDynamicsCard';
 import UserSelect from '@/shared/components/UserSelect';
 import SafeHtml from '@/shared/components/SafeHtml';
 import { isSameUser } from '@/shared/utils/userIdentity';
 import { useAuthStore } from '@/stores/auth';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
+import DispatchFold from '@/shared/components/DispatchFold';
 import { dedupeFileNames } from '@/shared/utils/uniqueFileNames';
 import { formatDateTime, formatRawDateTime } from '@/shared/utils/url';
 import { getDeadlineRange, makeDisabledDate, makeDisabledTime, parseDeadlineString } from '@/shared/utils/deadline';
@@ -789,13 +789,15 @@ export default function TicketDetailPage() {
               )}
             </div>
             {/* 二次派单感知增强（M3）：未派到指定人时的完整情商话术（仅 matched_pref=false 时有） */}
-            <DispatchInfoFold label="派单说明" content={redispatchTipDetail} variant="tip" key={`tip-${ticket.ticket_id}`} />
+            {redispatchTipDetail && (
+              <DispatchFold label="派单提醒" text={redispatchTipDetail} variant="tip" />
+            )}
             {/* 二次派单感知增强：派单理由（为什么派给接单人；仅接单人/管理员可见，与系统任务详情页同源） */}
             {(() => {
               if (!dispatchReason || redispatchTipDetail) return null;
               const { isAssignee } = getCurrentUserRoles();
               if (!isAssignee && !isAdmin) return null;
-              return <DispatchInfoFold label="派单理由" content={dispatchReason} variant="reason" key={`reason-${ticket.ticket_id}`} />;
+              return <DispatchFold label="派单原因" text={dispatchReason} variant="reason" />;
             })()}
           </div>
         )}

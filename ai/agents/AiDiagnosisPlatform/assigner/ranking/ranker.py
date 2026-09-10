@@ -1,6 +1,7 @@
-"""精排评分层：三路并集，命中路取最高归一分 + 职级折扣 + 部门 soft_prior
+"""精排评分层：三路并集，命中路取最高绝对分 + 职级折扣 + 部门 soft_prior
 
-只命中一路：保留该路归一分，不因其他路空而打折。
+三路都用 0～1 绝对分，不按本批第一名拉满。
+只命中一路：保留该路分数，不因其他路空而打折。
 多路命中：取最高，来源标签仍标出命中了哪几路。
 """
 
@@ -63,24 +64,17 @@ class Ranker:
             dept_boost = float(thresholds.get("dept_boost", 1.5))
             primary_dept = dept_routing.primary_dept
 
-        def _max_of(recall: Dict[str, float]) -> float:
-            vals = [recall.get(eid, 0.0) for eid in ids]
-            return max(vals) if vals else 0.0
-
-        def _norm(v: float, m: float) -> float:
-            return round(v / m, 4) if m > 0 else 0.0
-
-        llm_max, sim_max, clu_max = _max_of(llm_scores), _max_of(similar), _max_of(cluster)
+        def _abs01(v: float) -> float:
+            return round(min(1.0, max(0.0, float(v or 0.0))), 4)
 
         scores = {}
         for eid in ids:
             hit_llm = bool(eid in llm_scores and llm_scores.get(eid, 0) > 0)
             hit_similar = bool(eid in similar and similar.get(eid, 0) > 0)
             hit_cluster = bool(eid in cluster and cluster.get(eid, 0) > 0)
-            llm = _norm(llm_scores.get(eid, 0.0), llm_max) if hit_llm else 0.0
-            # 相似工单 / 问题簇已是绝对 0～1，不再按本批最高拉满
-            sim = min(1.0, max(0.0, float(similar.get(eid, 0.0)))) if hit_similar else 0.0
-            clu = min(1.0, max(0.0, float(cluster.get(eid, 0.0)))) if hit_cluster else 0.0
+            llm = _abs01(llm_scores.get(eid, 0.0)) if hit_llm else 0.0
+            sim = _abs01(similar.get(eid, 0.0)) if hit_similar else 0.0
+            clu = _abs01(cluster.get(eid, 0.0)) if hit_cluster else 0.0
             hit_vals = []
             if hit_llm:
                 hit_vals.append(llm)

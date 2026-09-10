@@ -42,9 +42,10 @@ from app.utils.notification_utils import NotificationUtils, _format_shanghai
 from app.integrations.api import verify_sync_api_key
 from app.core.config import settings
 from app.core.user_identity import user_matches, is_admin_user, to_user_id, actor_username, identity_keys
-from app.services.redispatch_tip_service import (  # 派单说明话术生成（模板+可选AI润色）
+from app.services.redispatch_tip_service import (  # 派单说明：列表/气泡/详情同一出口
     build_redispatch_tip,
-    build_redispatch_tip_detail,
+    clean_reasoning_for_display,
+    step0_blocks_redispatch,
 )
 
 router = APIRouter(tags=["tasks"])
@@ -109,12 +110,7 @@ def _get_attachment_label(attachments) -> Optional[str]:
     return "附件"
 
 
-# 画像缺失英文字段 → 中文展示（供派单情商话术点明缺失项）
-_PROFILE_MISSING_LABEL = {
-    "department": "部门",
-    "job_level": "职级",
-    "responsibility_modules": "责任模块",
-}
+
 
 
 def _fallback_redispatch_candidates() -> List[Dict]:
@@ -193,36 +189,7 @@ def _fallback_redispatch_candidates() -> List[Dict]:
     return out
 
 
-# 注：派单说明（tip_detail）话术生成已抽离到独立 service，见
-# app.services.redispatch_tip_service.build_redispatch_tip_detail
-
-
-def _clean_reasoning_for_display(reasoning_raw, log, user_map) -> str:
-    """把派单理由（reasoning）清洗成面向用户展示的文本。
-
-    reasoning 由 AI 派单引擎生成，可能残留候选人/工程师的 users.id（如 "ID:xxx"、"（xxx）"），
-    展示给用户（提单人的 tip_detail、接单人/管理员的派单理由）前需替换为姓名，避免暴露内部 id。
-
-    - 先用本轮候选快照（log.candidates）把 id 换成姓名；
-    - 候选未覆盖的 id（如原处理人等）再用 user_map 兜底反查。
-    """
-    if not isinstance(reasoning_raw, str) or not reasoning_raw.strip():
-        return reasoning_raw if isinstance(reasoning_raw, str) else ""
-    txt = reasoning_raw
-    for _cand in (getattr(log, "candidates", None) or []):
-        if isinstance(_cand, dict):
-            _cid = _cand.get("engineer_id")
-            _cname = _cand.get("name") or (user_map or {}).get(_cid, _cid)
-            if _cid and _cname:
-                txt = txt.replace(f"ID:{_cid}", _cname)
-                txt = txt.replace(f"({_cid})", f"({_cname})")
-                txt = txt.replace(f"（{_cid}）", f"（{_cname}）")
-                txt = txt.replace(_cid, _cname)
-    # 候选内未覆盖的 id（如原处理人等），用 user_map 兜底反查姓名
-    for _cid, _cname in (user_map or {}).items():
-        if _cname and _cid and isinstance(_cid, str) and _cid in txt:
-            txt = txt.replace(_cid, _cname)
-    return txt
+# 注：派单说明（tip_detail）唯一出口见 app.services.redispatch_tip_service.build_redispatch_tip
 
 
 # 解决方式总结 Worker 的 Redis 任务队列（与 ai/agents/AiTaskPlatform/services/resolution_worker.py 保持一致）
@@ -621,29 +588,9 @@ async def get_task(
                 _viewer_assignee = bool(_viewer_user and user_matches(_viewer_user, _log.assigned_id))
                 # 面向用户展示的派单理由：把 reasoning 里可能残留的 users.id 替换为姓名
                 # （供 tip_detail 话术与接单人/管理员的「派单理由」共用）
-                reasoning_display = _clean_reasoning_for_display(_log.reasoning, _log, user_map)
-                # 二次派单感知增强（M3 高情商回复）：未派到指定人时生成一段「模板为主+AI润色」的完整话术
-                # （供详情页展示）。从候选快照取倾向人画像缺失项（missing）判定引导分支；其余分支无此字段。
-                tip_detail = None
-                if _log.preferred_id and _log.preferred_id != _log.assigned_id and _log.assigned_id:
-                    # 倾向人画像缺失项（英文 → 中文）
-                    pref_missing_zh = []
-                    for cand in (_log.candidates or []):
-                        if isinstance(cand, dict) and cand.get("engineer_id") == _log.preferred_id:
-                            for f in (cand.get("missing") or []):
-                                zh = _PROFILE_MISSING_LABEL.get(str(f), str(f))
-                                if zh not in pref_missing_zh:
-                                    pref_missing_zh.append(zh)
-                            break
-                    tip_detail = await build_redispatch_tip_detail(
-                        pref_name or _log.preferred_id,
-                        assigned_name,
-                        reasoning=reasoning_display,
-                        pref_missing_zh=pref_missing_zh,
-                    )
-                else:
-                    # Step0 / 已派到指定人：与列表同一出口（找不到 / 拼音 / 画像不完整）
-                    tip_detail = build_redispatch_tip(_log, user_map)
+                reasoning_display = clean_reasoning_for_display(_log.reasoning, _log, user_map)
+                # 列表 / 气泡 / 详情同一出口（未派到倾向人走详情模板，Step0 走短句）
+                tip_detail = build_redispatch_tip(_log, user_map)
                 # 二次派单感知增强（M2 兜底）：候选快照为空（老工单 Step0/精排不足 → 空落库）时，
                 # 拉全部启用工程师作兜底候选，保证重派弹窗有可选项；重派落地后由流水线覆盖。
                 _cands = _log.candidates if _log.candidates else _fallback_redispatch_candidates()
@@ -2360,31 +2307,25 @@ class ReDispatchRequest(BaseModel):
 
 
 async def _step0_hit_blocks_redispatch(db: AsyncSession, ticket) -> Optional[str]:
-    """指定人命中才拦截重派；找不到人已走智能派单则放行。
+    """首轮 Step0 已派上指定人则拦截重派（拼音/弱信号/指定多人同样拦截）。
 
-    正则与 assigner Step0 强信号口径一致。命中后 Step0 会覆盖倾向人；
-    未找到时派单日志 profile.specified_name 有值，重派倾向人可以生效。
+    找不到人已走智能派单：首轮 matched_pref 不是 True，重派倾向人可以生效。
+    展示名用首轮实际接单人，避免「张三、李四」只派了李四却提示张三。
     """
-    import re as _re
     from app.models.task_dispatch_log import TaskDispatchLog
+    from app.models.identity import UserDB
 
-    text = f"{getattr(ticket, 'title', '') or ''}\n{getattr(ticket, 'description', '') or ''}"
-    m = _re.search(r"指定(?:处理人|人|人员)[:：]\s*([^\]\s，,；;:：）)】]{2,6})", text)
-    if not m:
-        return None
-    name = m.group(1).strip()
-    log = (await db.execute(
+    first = (await db.execute(
         select(TaskDispatchLog)
         .where(TaskDispatchLog.task_id == ticket.id)
-        .order_by(TaskDispatchLog.dispatch_round.desc())
+        .order_by(TaskDispatchLog.dispatch_round.asc())
         .limit(1)
     )).scalars().first()
-    unresolved = ""
-    if log and isinstance(log.profile, dict):
-        unresolved = (log.profile.get("specified_name") or "").strip()
-    if unresolved:
+    blocked_id = step0_blocks_redispatch(first)
+    if not blocked_id:
         return None
-    return name
+    row = (await db.execute(select(UserDB).where(UserDB.id == blocked_id))).scalars().first()
+    return ((row.name if row else None) or blocked_id)
 
 
 @router.post("/{task_id}/re-dispatch", response_model=TicketResponse)
@@ -2422,8 +2363,8 @@ async def re_dispatch_task(
     # 若允许 manual 工单重派，Worker 永远查不到它，会一直卡在「派单中」。
     if (ticket.source or "") != "ai":
         raise HTTPException(status_code=400, detail="该工单非智能派单工单，无法重新派单")
-    # 指定人命中并派上：Step0 会覆盖重派倾向人，拦截。
-    # 指定人找不到、已走智能派单：profile.specified_name 有值，允许重派。
+    # 首轮 Step0 已派上指定人：再派仍会被 Step0 盖掉，拦截。
+    # 指定人找不到、已走智能派单：允许重派。
     _blocked = await _step0_hit_blocks_redispatch(db, ticket)
     if _blocked:
         raise HTTPException(

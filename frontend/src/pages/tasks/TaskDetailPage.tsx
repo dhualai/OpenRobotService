@@ -14,9 +14,9 @@ import API_CONFIG from '@/config/api';
 import { readStored } from '@/stores/authStorage';
 import SafeHtml from '@/shared/components/SafeHtml';
 import DiscussionPanel from '@/shared/components/DiscussionPanel';
-import DispatchInfoFold from '@/shared/components/DispatchInfoFold';
 import TicketDynamicsCard from '@/shared/components/TicketDynamicsCard';
 import AttachmentViewer, { type AttachmentViewItem } from '@/shared/components/AttachmentViewer';
+import DispatchFold from '@/shared/components/DispatchFold';
 import UserSelect from '@/shared/components/UserSelect';
 import type { UserItem } from '@/api/users';
 import { useWorkbenchStore } from '@/stores/workbench';
@@ -163,8 +163,6 @@ export default function TaskDetailPage() {
   const [redispatchTipDetail, setRedispatchTipDetail] = useState<string>('');
   // 二次派单感知增强：派单理由（为什么派给接单人；仅接单人/管理员可看到，详情页 redispatch.result.reasoning）
   const [dispatchReason, setDispatchReason] = useState<string>('');
-  const [tipFoldOpen, setTipFoldOpen] = useState(false);
-  const [reasonFoldOpen, setReasonFoldOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<{ title: string; description: string; priority: string; ticket_type: string; curr_step_endtime?: string }>({ title: '', description: '', priority: 'medium', ticket_type: 'problem' });
   // 当前阶段截止时间区间：基准 = 工单创建时间（detail.created_at），而非用户操作时刻
@@ -1564,7 +1562,9 @@ export default function TaskDetailPage() {
           </div>
 
           {/* 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径） */}
-          <DispatchInfoFold label="派单说明" content={redispatchTipDetail} variant="tip" key={`tip-${detail.id}`} />
+          {redispatchTipDetail && (
+            <DispatchFold label="派单提醒" text={redispatchTipDetail} variant="tip" />
+          )}
 
           {/* 
               ┌──────────────┬─────────────┬───────────────────┬──────────────────┬──────────────┐
@@ -1588,7 +1588,9 @@ export default function TaskDetailPage() {
             if (!dispatchReason || redispatchTipDetail) return null;
             const { isAssignee } = getCurrentUserRoles();
             if (!isAssignee && !isAdmin) return null;
-            return <DispatchInfoFold label="派单理由" content={dispatchReason} variant="reason" key={`reason-${detail.id}`} />;
+            return (
+              <DispatchFold label="派单原因" text={dispatchReason} variant="reason" />
+            );
           })()}
         </div>
 
