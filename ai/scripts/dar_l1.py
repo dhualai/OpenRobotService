@@ -297,7 +297,9 @@ async def main():
         return f"{a/b*100:.1f}%" if b else "—"
 
     print("\n" + "=" * 72)
-    print("L1 直答率（1 − 转工单率，上界近似；话题段=LLM 按内容+时间切分）")
+    print("L1 直答率（1 − 转工单率，上界近似；话题段="
+          + ("人工边界已覆盖（--review）" if args.review and os.path.exists(args.review)
+             else "LLM 按内容+时间切分") + "）")
     print("-" * 72)
     print(f"{'组':　<4} {'月':<8} {'有效会话':>6} {'有单会话':>6} {'会话级':>7} "
           f"{'有效话题':>6} {'转单话题':>6} {'话题级':>7}")
