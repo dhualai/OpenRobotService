@@ -1214,7 +1214,7 @@ _PLANNER_TOOLS = [
                        "「那个N号单」）时，传 ticket_no。"
                        "②查自己的工单清单——用户不带工单号地问「我有哪些工单/我的工单/"
                        "我名下待处理的工单/我之前提过什么单」时，不传 ticket_no，"
-                       "可传 only_open（问「待处理/没解决/还在处理」为 true；"
+                       "可传 only_open（问「待处理」为 true；"
                        "问「全部/所有/历史」为 false 或不传）。清单按登录身份查询，"
                        "无法查别人的。"
                        "🔴 车型/设备编号（TD-96、XP11）、错误码（E201）、楼层（3F）里的数字"
@@ -1223,8 +1223,8 @@ _PLANNER_TOOLS = [
             "ticket_no": {"type": "integer",
                           "description": "工单号，纯数字；查单张详情时传"},
             "only_open": {"type": "boolean",
-                          "description": "查清单时用：true=只看未完结（新建/处理中/挂起）"
-                                         "，false或缺省=全部"},
+                          "description": "查清单时用：true=只看待处理（处理中/挂起，"
+                                         "不含新建待分配），false或缺省=全部"},
         }, "required": []},
     }},
     {"type": "function", "function": {
@@ -1306,7 +1306,7 @@ _PLANNER_SYSTEM = (
     "中有明确工单号 → 传该号查详情；消息用「之前那个工单」「那个单子」等指代且上下文"
     "任一轮出现过工单号时，用该号调用；用户不带工单号地问自己的工单清单"
     "（我有哪些工单/我的待处理工单/我提过什么单）→ 不传号"
-    "（问「待处理/没解决」时传 only_open=true）\n"
+    "（问「待处理」时传 only_open=true）\n"
     "- 同时需要两者（如：工单里提到的问题怎么解决）→ 两个都调用\n"
     "- 🔴 消息只是极短的续接/反馈（「然后呢」「下一步」「还是不行」「好的我试试」「可以了」），"
     "本身不含新问题且上文刚给过资料 → 不调用工具，顺着上文继续即可；"
@@ -2164,7 +2164,7 @@ class AiDiagnosisPlatform:
     @staticmethod
     def _format_user_tickets_block(tickets: List[Dict[str, object]],
                                    total: int, only_open: bool) -> str:
-        scope = "未完结（新建/处理中/挂起）" if only_open else ""
+        scope = "待处理（处理中/挂起）" if only_open else ""
         if not tickets:
             return (f"【用户名下工单】系统按登录身份查询，该用户名下暂无{scope}工单。"
                     "请如实告知用户没有查到工单，不要编造；若用户认为应该有，"
@@ -2214,7 +2214,8 @@ class AiDiagnosisPlatform:
             session = SessionLocal()
             try:
                 ks = list(dict.fromkeys(str(k) for k in identity_keys(username) if k))
-                open_clause = ("AND t.status IN ('new','in_progress','pending')"
+                # 待处理=处理中+挂起（0910 用户定调：新建待分配不算待处理）
+                open_clause = ("AND t.status IN ('in_progress','pending')"
                                if only_open else "")
                 where = (f"WHERE (t.created_by IN :ks OR t.assigned_to IN :ks) "
                          f"{open_clause}")
