@@ -769,7 +769,7 @@ export default function TicketDetailPage() {
             </div>
             {/* 二次派单感知增强（M3）：未派到指定人时的完整情商话术（仅 matched_pref=false 时有） */}
             {redispatchTipDetail && (
-              <DispatchFold label="派单说明" text={redispatchTipDetail} variant="tip" />
+              <DispatchFold label="派单提醒" text={redispatchTipDetail} variant="tip" />
             )}
           </div>
         )}

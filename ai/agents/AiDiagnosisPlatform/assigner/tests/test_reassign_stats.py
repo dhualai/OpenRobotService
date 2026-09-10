@@ -2,6 +2,8 @@
 
 from ai.agents.AiDiagnosisPlatform.assigner.sync.reassign_stats import (
     aggregate_events,
+    build_ticket_lists,
+    build_weekly_metrics,
     correction_pair,
     event_channel,
     parse_reason_comment,
@@ -139,6 +141,54 @@ class TestAggregate:
         assert m["misassign_rate_of_signal"] == 1.0
         assert m["redispatch_inaccurate_rate_of_reviewed"] == 0.5
         assert m["inaccurate_rate_of_ai_assign"] == 0.2
+
+
+class TestTicketListsAndWeekly:
+    def test_ticket_lists_dedupe_latest(self):
+        """正常流程：错派清单按工单去重，保留最新一条。"""
+        events = [
+            {"task_id": 1, "title": "新", "channel": "signal", "kind": "misassign",
+             "created_at": "2026-09-09T12:00:00", "reason": "第二次"},
+            {"task_id": 1, "title": "旧", "channel": "signal", "kind": "misassign",
+             "created_at": "2026-09-08T12:00:00", "reason": "第一次"},
+            {"task_id": 2, "title": "重派坏", "channel": "redispatch", "kind": "",
+             "redispatch_verdict": "inaccurate", "created_at": "2026-09-09T10:00:00",
+             "detail": {"redispatch_verdict": "inaccurate"}, "reason": ""},
+            {"task_id": 3, "title": "阶段", "channel": "signal", "kind": "stage",
+             "created_at": "2026-09-09T09:00:00", "reason": ""},
+        ]
+        lists = build_ticket_lists(events)
+        assert [x["task_id"] for x in lists["misassign"]] == [1]
+        assert lists["misassign"][0]["title"] == "新"
+        assert [x["task_id"] for x in lists["redispatch_inaccurate"]] == [2]
+        assert {x["task_id"] for x in lists["inaccurate"]} == {1, 2}
+        assert {x["task_id"] for x in lists["signal"]} == {1, 3}
+
+    def test_weekly_metrics_split_by_week(self):
+        """正常流程：两周各自算错派率，不混总盘。"""
+        events = [
+            {"task_id": 1, "channel": "signal", "kind": "misassign",
+             "created_at": "2026-09-08T10:00:00", "detail": {}},  # 周二 W37
+            {"task_id": 2, "channel": "signal", "kind": "stage",
+             "created_at": "2026-09-08T11:00:00", "detail": {}},
+            {"task_id": 3, "channel": "signal", "kind": "misassign",
+             "created_at": "2026-09-15T10:00:00", "detail": {}},  # 下一周
+        ]
+        ai_rows = [
+            {"task_id": 10, "created_at": "2026-09-08T09:00:00"},
+            {"task_id": 11, "created_at": "2026-09-08T09:30:00"},
+            {"task_id": 12, "created_at": "2026-09-15T09:00:00"},
+        ]
+        weekly = build_weekly_metrics(events, ai_rows, keep=8)
+        assert len(weekly) == 2
+        assert weekly[0]["metrics"]["misassign_events"] == 1
+        assert weekly[0]["metrics"]["signal_total"] == 2
+        assert weekly[0]["metrics"]["misassign_rate_of_signal"] == 0.5
+        assert weekly[0]["metrics"]["ai_assign_total"] == 2
+        assert weekly[1]["metrics"]["misassign_events"] == 1
+        assert weekly[1]["metrics"]["signal_total"] == 1
+        assert weekly[1]["metrics"]["misassign_rate_of_signal"] == 1.0
+        assert weekly[1]["metrics"]["ai_assign_total"] == 1
 
 
 class TestUnlabeledGroups:

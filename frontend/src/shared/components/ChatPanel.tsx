@@ -469,9 +469,12 @@ const MessageBubble = memo(function MessageBubble({
                   </span>
                 )}
               </div>
-              {/* 二次派单感知增强（M3）：派单结果提醒单行（警示色，整卡点击进详情） */}
+              {/* 派单提醒单行：标签蓝、正文灰，整卡点击进详情 */}
               {msg.ticket_overview.redispatch_tip && (
-                <div className="chat-ticket-overview__tip">派单结果提醒：{msg.ticket_overview.redispatch_tip}</div>
+                <div className="chat-ticket-overview__tip">
+                  <span className="chat-ticket-overview__tip-label">派单提醒：</span>
+                  <span className="chat-ticket-overview__tip-text">{msg.ticket_overview.redispatch_tip}</span>
+                </div>
               )}
             </div>
           ) : msg.content ? (

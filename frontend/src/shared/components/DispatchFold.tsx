@@ -6,7 +6,7 @@ function collapseDupLines(text: string): string {
   return lines.filter((l, i) => l !== lines[i - 1]).join('\n');
 }
 
-/** 派单说明 / 派单理由：一行放得下就不折叠；超出才省略并点开看全文。 */
+/** 派单提醒 / 派单原因：一行放得下就不折叠；超出才省略并点开看全文。 */
 export default function DispatchFold({
   label,
   text,

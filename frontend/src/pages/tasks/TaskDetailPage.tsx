@@ -1560,7 +1560,7 @@ export default function TaskDetailPage() {
 
           {/* 二次派单感知增强（M3）：未派到指定人时的完整话术（与「我要摇人」历史详情同口径） */}
           {redispatchTipDetail && (
-            <DispatchFold label="派单说明" text={redispatchTipDetail} variant="tip" />
+            <DispatchFold label="派单提醒" text={redispatchTipDetail} variant="tip" />
           )}
 
           {/* 
@@ -1586,7 +1586,7 @@ export default function TaskDetailPage() {
             const { isAssignee } = getCurrentUserRoles();
             if (!isAssignee && !isAdmin) return null;
             return (
-              <DispatchFold label="派单理由" text={dispatchReason} variant="reason" />
+              <DispatchFold label="派单原因" text={dispatchReason} variant="reason" />
             );
           })()}
         </div>

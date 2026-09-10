@@ -14,8 +14,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from typing import Iterable, List, Tuple
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import bindparam, text
 
@@ -26,6 +27,7 @@ logger = get_logger("ASSIGNER")
 SIGNAL_KINDS = ("misassign", "stage", "other")
 REDISPATCH_VERDICTS = ("inaccurate", "skipped")
 CHANNELS = ("signal", "redispatch", "unlabeled", "skipped")
+WEEKLY_KEEP = 16  # 趋势图最多保留最近多少周
 
 
 def _as_dict(raw) -> dict:
@@ -210,7 +212,127 @@ def aggregate_events(
     }
 
 
-def _load_rows() -> Tuple[List[dict], int, int]:
+def _parse_created_at(value) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        raw = str(value).strip().replace("Z", "+00:00")
+        if not raw:
+            return None
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _iso_week_meta(dt: datetime) -> Tuple[str, str, str]:
+    """返回 (week_key, label, week_start_iso)。周一为一周起点。"""
+    monday = dt.date() - timedelta(days=dt.weekday())
+    sunday = monday + timedelta(days=6)
+    iso = monday.isocalendar()
+    week_key = f"{iso.year}-W{iso.week:02d}"
+    label = f"{monday.month}/{monday.day}–{sunday.month}/{sunday.day}"
+    return week_key, label, monday.isoformat()
+
+
+def build_ticket_lists(events: Iterable[dict]) -> Dict[str, List[dict]]:
+    """指标可下钻：错派 / 重派不准确 / 合并不准确 / 有类型转派 对应工单清单。
+
+    同一工单多次命中只留最新一条（events 已按时间倒序时自然取到）。
+    """
+    buckets = {
+        "misassign": {},
+        "redispatch_inaccurate": {},
+        "inaccurate": {},
+        "signal": {},
+    }
+    for ev in events:
+        tid = ev.get("task_id")
+        if tid is None:
+            continue
+        tid = int(tid)
+        ch = ev.get("channel") or ""
+        kind = _norm_kind(ev.get("kind") or (ev.get("detail") or {}).get("kind"))
+        verdict = ev.get("redispatch_verdict") or redispatch_verdict(ev.get("detail") or {})
+        row = {
+            "task_id": tid,
+            "title": ev.get("title") or "",
+            "kind": kind or "",
+            "channel": ch,
+            "created_at": ev.get("created_at") or "",
+            "reason": (ev.get("reason") or "")[:200],
+        }
+        if ch == "signal" and kind:
+            buckets["signal"].setdefault(tid, row)
+            if kind == "misassign":
+                buckets["misassign"].setdefault(tid, {**row, "tag": "派错了"})
+                buckets["inaccurate"].setdefault(tid, {**row, "tag": "派错了"})
+        elif ch == "redispatch" and verdict == "inaccurate":
+            tagged = {**row, "tag": "重派不准确", "kind": "inaccurate"}
+            buckets["redispatch_inaccurate"].setdefault(tid, tagged)
+            buckets["inaccurate"].setdefault(tid, tagged)
+
+    def _sorted(d: dict) -> List[dict]:
+        return sorted(d.values(), key=lambda x: str(x.get("created_at") or ""), reverse=True)
+
+    return {k: _sorted(v) for k, v in buckets.items()}
+
+
+def build_weekly_metrics(
+    events: List[dict],
+    ai_rows: List[dict],
+    *,
+    keep: int = WEEKLY_KEEP,
+) -> List[dict]:
+    """按自然周（周一～周日）汇总与总览同口径的指标，供趋势图。"""
+    week_events: Dict[str, List[dict]] = defaultdict(list)
+    week_meta: Dict[str, Tuple[str, str]] = {}
+    for ev in events:
+        dt = _parse_created_at(ev.get("created_at"))
+        if not dt:
+            continue
+        key, label, start = _iso_week_meta(dt)
+        week_meta[key] = (label, start)
+        week_events[key].append(ev)
+
+    week_ai: Dict[str, List[dict]] = defaultdict(list)
+    for row in ai_rows:
+        dt = _parse_created_at(row.get("created_at"))
+        if not dt:
+            continue
+        key, label, start = _iso_week_meta(dt)
+        week_meta[key] = (label, start)
+        week_ai[key].append(row)
+
+    keys = sorted(week_meta.keys(), key=lambda k: week_meta[k][1])
+    if keep > 0:
+        keys = keys[-keep:]
+    out = []
+    for key in keys:
+        label, start = week_meta[key]
+        ai_list = week_ai.get(key) or []
+        ai_total = len(ai_list)
+        ai_tickets = len({int(r["task_id"]) for r in ai_list if r.get("task_id") is not None})
+        metrics = aggregate_events(
+            week_events.get(key) or [],
+            ai_assign_total=ai_total,
+            ai_assign_tickets=ai_tickets,
+        )
+        out.append({
+            "week": key,
+            "label": label,
+            "week_start": start,
+            "metrics": metrics,
+        })
+    return out
+
+
+def _load_rows() -> Tuple[List[dict], List[dict]]:
     from ai.agents.AiDiagnosisPlatform.assigner.sync.history_indexer import _get_engine
 
     engine = _get_engine()
@@ -223,13 +345,11 @@ def _load_rows() -> Tuple[List[dict], int, int]:
             "WHERE l.operation_type = 'reassign' "
             "ORDER BY l.created_at DESC"
         )).mappings().all()
-        ai_total = db.execute(text(
-            "SELECT COUNT(*) AS n FROM task_operation_logs WHERE operation_type = 'ai_assign'"
-        )).scalar() or 0
-        ai_tickets = db.execute(text(
-            "SELECT COUNT(DISTINCT task_id) AS n FROM task_operation_logs "
-            "WHERE operation_type = 'ai_assign'"
-        )).scalar() or 0
+        ai_logs = db.execute(text(
+            "SELECT task_id, created_at FROM task_operation_logs "
+            "WHERE operation_type = 'ai_assign' "
+            "ORDER BY created_at DESC"
+        )).mappings().all()
 
     events = []
     for r in logs:
@@ -250,7 +370,14 @@ def _load_rows() -> Tuple[List[dict], int, int]:
             "operator_name": r.get("operator_name") or r.get("operator") or "",
             "detail": detail,
         })
-    return events, int(ai_total), int(ai_tickets)
+    ai_rows = []
+    for r in ai_logs:
+        created = r.get("created_at")
+        ai_rows.append({
+            "task_id": int(r["task_id"]) if r.get("task_id") is not None else None,
+            "created_at": created.isoformat() if hasattr(created, "isoformat") else str(created or ""),
+        })
+    return events, ai_rows
 
 
 def _sample_events(events: List[dict], limit: int = 40) -> List[dict]:
@@ -530,7 +657,9 @@ def review_reassign(log_id: int, kind: str) -> dict:
 
 
 def summarize_reassign_stats() -> dict:
-    events, ai_total, ai_tickets = _load_rows()
+    events, ai_rows = _load_rows()
+    ai_total = len(ai_rows)
+    ai_tickets = len({r["task_id"] for r in ai_rows if r.get("task_id") is not None})
     metrics = aggregate_events(events, ai_assign_total=ai_total, ai_assign_tickets=ai_tickets)
     names = _name_by_id()
     groups = _unlabeled_groups(events, names)
@@ -561,6 +690,8 @@ def summarize_reassign_stats() -> dict:
         "llm": {"called": 0, "failed": 0, "pending": 0},
         "persisted": 0,
         "samples": _sample_events(events),
+        "ticket_lists": build_ticket_lists(events),
+        "weekly": build_weekly_metrics(events, ai_rows),
         "unlabeled_items": items,
         "unlabeled_groups": groups,
         "redispatch_items": _redispatch_items(events, names),
@@ -568,6 +699,7 @@ def summarize_reassign_stats() -> dict:
             "转派弹窗三个类型单独计错派率。"
             "重新派单（提单人/处理人/管理员让 AI 再派）测试期要人工审核："
             "算不准确计入不准确率并进入派单学习（压原处理人 ×0.7），测试不算则跳过。"
+            "点开指标可看对应工单；下方按周看趋势。"
         ),
     }
 

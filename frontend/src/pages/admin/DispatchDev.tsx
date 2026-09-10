@@ -1,7 +1,7 @@
 // 派单开发者模式：看问题簇、重建簇、一键补索引、转派指标。
 // 入口在「其他」，权限 frontend:admin:dispatch-dev:show（admin 直通仍可见）。
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Loading, Toast } from 'tdesign-mobile-react';
 import { createRequest } from '@/api/client';
 import API_CONFIG from '@/config/api';
@@ -9,6 +9,27 @@ import { useAuthStore } from '@/stores/auth';
 import ReactECharts from '@/shared/components/ReactECharts';
 
 export const PERM_DISPATCH_DEV = 'frontend:admin:dispatch-dev:show';
+
+function pct(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(Number(v))) return '—';
+  return `${(Number(v) * 100).toFixed(1)}%`;
+}
+
+function TicketLink({ taskId, title }: { taskId: number; title?: string }) {
+  const label = title ? `#${taskId} ${title}` : `#${taskId}`;
+  return (
+    <Link
+      className="dispatch-dev__ticket-link"
+      to={`/tasks/${taskId}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      title="在新标签打开工单详情"
+    >
+      {label || `（无标题）#${taskId}`}
+    </Link>
+  );
+}
 
 interface ClusterPerson { engineer_id: string; name: string; count: number }
 interface ClusterTicket { ticket_id: string; title: string; engineer_id: string; engineer_name?: string }
@@ -97,6 +118,22 @@ interface ReassignSample {
   reason: string;
   created_at: string;
 }
+interface TicketListItem {
+  task_id: number;
+  title: string;
+  kind?: string;
+  channel?: string;
+  created_at?: string;
+  reason?: string;
+  tag?: string;
+}
+interface WeeklyBucket {
+  week: string;
+  label: string;
+  week_start: string;
+  metrics: ReassignMetrics;
+}
+type TicketListKey = 'misassign' | 'redispatch_inaccurate' | 'inaccurate' | 'signal';
 interface UnlabeledHop {
   id: number;
   created_at: string;
@@ -144,6 +181,8 @@ interface ReassignSnap {
   llm?: { called: number; failed: number; pending: number };
   persisted?: number;
   samples?: ReassignSample[];
+  ticket_lists?: Partial<Record<TicketListKey, TicketListItem[]>>;
+  weekly?: WeeklyBucket[];
   unlabeled_items?: UnlabeledItem[];
   unlabeled_groups?: UnlabeledGroup[];
   redispatch_items?: RedispatchItem[];
@@ -239,6 +278,7 @@ export default function DispatchDev() {
   const [minSizeInput, setMinSizeInput] = useState('');
   const [savingParams, setSavingParams] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [listKey, setListKey] = useState<TicketListKey | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -410,6 +450,56 @@ export default function DispatchDev() {
     };
   }, [clusters]);
 
+  const weeklyOption = useMemo(() => {
+    const weeks = reassign?.weekly || [];
+    const labels = weeks.map((w) => w.label);
+    const seriesOf = (getter: (m: ReassignMetrics) => number | null | undefined, name: string, color: string) => ({
+      name,
+      type: 'line' as const,
+      smooth: true,
+      symbol: 'circle',
+      symbolSize: 7,
+      lineStyle: { width: 2, color },
+      itemStyle: { color },
+      data: weeks.map((w) => {
+        const v = getter(w.metrics);
+        return v == null ? null : Number((Number(v) * 100).toFixed(2));
+      }),
+    });
+    return {
+      color: ['#227197', '#e37318', '#2ba471'],
+      tooltip: {
+        trigger: 'axis',
+        valueFormatter: (v: number | null) => (v == null ? '—' : `${v}%`),
+      },
+      legend: {
+        top: 0,
+        itemWidth: 10,
+        itemHeight: 10,
+        textStyle: { color: '#888d8f', fontSize: 11 },
+      },
+      grid: { left: 36, right: 12, top: 36, bottom: 28, containLabel: false },
+      xAxis: {
+        type: 'category',
+        data: labels,
+        axisLabel: { color: '#888d8f', fontSize: 10, rotate: labels.length > 6 ? 30 : 0 },
+        axisLine: { lineStyle: { color: '#e8eaea' } },
+      },
+      yAxis: {
+        type: 'value',
+        min: 0,
+        max: 100,
+        axisLabel: { color: '#888d8f', fontSize: 10, formatter: '{value}%' },
+        splitLine: { lineStyle: { color: '#f1f4f4' } },
+      },
+      series: [
+        seriesOf((m) => m.misassign_rate_of_signal ?? m.misassign_rate_of_reassign, '错派率', '#227197'),
+        seriesOf((m) => m.redispatch_inaccurate_rate_of_reviewed, '重派不准确率', '#e37318'),
+        seriesOf((m) => m.inaccurate_rate_of_ai_assign, '不准确率', '#2ba471'),
+      ],
+    };
+  }, [reassign?.weekly]);
+
   if (!allowed) return null;
 
   const params = clusters?.params || history?.params || {};
@@ -434,41 +524,113 @@ export default function DispatchDev() {
             </div>
             <p className="dispatch-dev__hint">
               转派弹窗三个类型单独计错派率。重新派单（提单人 / 处理人 / 管理员让 AI 再派）测试期要人工审核：算不准确计入不准确率并进入派单学习（原处理人 ×0.7），测试操作点「测试不算」。
+              点下面的比率可看对应工单清单；工单号可新标签打开详情。
             </p>
             {reassign?.error ? (
               <p className="dispatch-dev__hint">{reassign.error}</p>
             ) : (
               <>
                 <div className="dispatch-dev__stats">
-                  <span>有类型转派 {reassign?.metrics?.signal_total ?? reassign?.metrics?.reassign_total ?? 0} 次 / {reassign?.metrics?.signal_tickets ?? 0} 张</span>
+                  <button
+                    type="button"
+                    className={`dispatch-dev__stat-btn${listKey === 'signal' ? ' is-active' : ''}`}
+                    onClick={() => setListKey((k) => (k === 'signal' ? null : 'signal'))}
+                  >
+                    有类型转派 {reassign?.metrics?.signal_total ?? reassign?.metrics?.reassign_total ?? 0} 次 / {reassign?.metrics?.signal_tickets ?? 0} 张
+                  </button>
                   <span>AI 派单 {reassign?.metrics?.ai_assign_total ?? 0} 次</span>
-                  <span>弹窗派错了 {reassign?.metrics?.misassign_events ?? 0} 次 / {reassign?.metrics?.misassign_tickets ?? 0} 张</span>
+                  <button
+                    type="button"
+                    className={`dispatch-dev__stat-btn${listKey === 'misassign' ? ' is-active' : ''}`}
+                    onClick={() => setListKey((k) => (k === 'misassign' ? null : 'misassign'))}
+                  >
+                    弹窗派错了 {reassign?.metrics?.misassign_events ?? 0} 次 / {reassign?.metrics?.misassign_tickets ?? 0} 张
+                  </button>
                   <span>未标类型 {reassign?.metrics?.unlabeled_total ?? reassign?.unlabeled ?? 0}</span>
                 </div>
                 <div className="dispatch-dev__stats">
                   <span>重新派单 {reassign?.metrics?.redispatch_total ?? 0} 次 / {reassign?.metrics?.redispatch_tickets ?? 0} 张</span>
                   <span>待审 {reassign?.metrics?.redispatch_pending ?? 0}</span>
-                  <span>不准确 {reassign?.metrics?.redispatch_inaccurate ?? 0}</span>
+                  <button
+                    type="button"
+                    className={`dispatch-dev__stat-btn${listKey === 'redispatch_inaccurate' ? ' is-active' : ''}`}
+                    onClick={() => setListKey((k) => (k === 'redispatch_inaccurate' ? null : 'redispatch_inaccurate'))}
+                  >
+                    不准确 {reassign?.metrics?.redispatch_inaccurate ?? 0}
+                  </button>
                   <span>测试不算 {reassign?.metrics?.redispatch_skipped ?? 0}</span>
                 </div>
                 <div className="dispatch-dev__rates">
-                  <div>
+                  <button
+                    type="button"
+                    className={`dispatch-dev__rate-btn${listKey === 'misassign' ? ' is-active' : ''}`}
+                    onClick={() => setListKey((k) => (k === 'misassign' ? null : 'misassign'))}
+                  >
                     <strong>{pct(reassign?.metrics?.misassign_rate_of_signal ?? reassign?.metrics?.misassign_rate_of_reassign)}</strong>
                     <span>错派率（/有类型转派）</span>
-                  </div>
-                  <div>
+                    <em>点开看工单</em>
+                  </button>
+                  <button
+                    type="button"
+                    className={`dispatch-dev__rate-btn${listKey === 'redispatch_inaccurate' ? ' is-active' : ''}`}
+                    onClick={() => setListKey((k) => (k === 'redispatch_inaccurate' ? null : 'redispatch_inaccurate'))}
+                  >
                     <strong>{pct(reassign?.metrics?.redispatch_inaccurate_rate_of_reviewed)}</strong>
                     <span>重派不准确率（/已审核）</span>
-                  </div>
-                  <div>
+                    <em>点开看工单</em>
+                  </button>
+                  <button
+                    type="button"
+                    className={`dispatch-dev__rate-btn${listKey === 'inaccurate' ? ' is-active' : ''}`}
+                    onClick={() => setListKey((k) => (k === 'inaccurate' ? null : 'inaccurate'))}
+                  >
                     <strong>{pct(reassign?.metrics?.inaccurate_rate_of_ai_assign)}</strong>
                     <span>不准确率（派错了+重派不准确 / AI 派单）</span>
-                  </div>
+                    <em>点开看工单</em>
+                  </button>
                 </div>
                 <div className="dispatch-dev__stats">
                   {(['misassign', 'stage', 'other'] as const).map((k) => (
                     <span key={k}>{KIND_LABEL[k]} {reassign?.metrics?.by_kind?.[k] ?? 0}</span>
                   ))}
+                </div>
+                {listKey ? (
+                  <div className="dispatch-dev__drill">
+                    <div className="dispatch-dev__drill-head">
+                      <span>
+                        {{
+                          misassign: '错派工单',
+                          redispatch_inaccurate: '重派不准确工单',
+                          inaccurate: '不准确工单（派错了 + 重派不准确）',
+                          signal: '有类型转派工单',
+                        }[listKey]}
+                        {' · '}
+                        {reassign?.ticket_lists?.[listKey]?.length ?? 0} 张
+                      </span>
+                      <button type="button" className="dispatch-dev__btn dispatch-dev__btn--ghost" onClick={() => setListKey(null)}>收起</button>
+                    </div>
+                    {(reassign?.ticket_lists?.[listKey] || []).length === 0 ? (
+                      <div className="dispatch-dev__empty-row">这一类暂时没有工单</div>
+                    ) : (
+                      <ul className="dispatch-dev__list">
+                        {(reassign?.ticket_lists?.[listKey] || []).map((t) => (
+                          <li key={`${listKey}-${t.task_id}`}>
+                            <TicketLink taskId={t.task_id} title={t.title || '（无标题）'} />
+                            <em>{t.tag || KIND_LABEL[t.kind || ''] || t.kind || t.channel || '—'}</em>
+                            <span>{formatHopTime(t.created_at || '')}{t.reason ? ` · ${t.reason}` : ''}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ) : null}
+                <div className="dispatch-dev__chart">
+                  <span className="dispatch-dev__sub">按周趋势（最近 {reassign?.weekly?.length ?? 0} 周，比率单位 %）</span>
+                  {(reassign?.weekly || []).length === 0 ? (
+                    <div className="dispatch-dev__empty-row">还没有带时间的转派 / 派单记录，趋势图暂时为空</div>
+                  ) : (
+                    <ReactECharts option={weeklyOption} style={{ height: 280 }} notMerge />
+                  )}
                 </div>
               </>
             )}
@@ -491,7 +653,7 @@ export default function DispatchDev() {
               <ul className="dispatch-dev__list">
                 {(reassign?.redispatch_items || []).map((item) => (
                   <li key={item.id} className="dispatch-dev__review">
-                    <strong>#{item.task_id} {item.title || '（无标题）'}</strong>
+                    <strong><TicketLink taskId={item.task_id} title={item.title || '（无标题）'} /></strong>
                     <em>{item.operator_name} → 倾向 {item.preferred_name}</em>
                     <span>{item.description || ''}</span>
                     {item.reason ? (
@@ -540,7 +702,7 @@ export default function DispatchDev() {
               <ul className="dispatch-dev__list">
                 {unlabeledGroups.map((g) => (
                   <li key={g.task_id} className="dispatch-dev__review">
-                    <strong>#{g.task_id} {g.title || '（无标题）'}</strong>
+                    <strong><TicketLink taskId={g.task_id} title={g.title || '（无标题）'} /></strong>
                     <span>共 {g.hops.length} 次转派，其中 {g.hops.filter((h) => h.reviewable !== false).length} 次未标</span>
                     <ul className="dispatch-dev__hops">
                       {g.hops.map((hop, idx) => (
@@ -615,7 +777,11 @@ export default function DispatchDev() {
                 ) : (
                   (history?.tickets || []).map((t) => (
                     <li key={t.ticket_id || t.title}>
-                      <strong>{t.title || '（无标题）'}</strong>
+                      {t.ticket_id && /^\d+$/.test(String(t.ticket_id)) ? (
+                        <TicketLink taskId={Number(t.ticket_id)} title={t.title || '（无标题）'} />
+                      ) : (
+                        <strong>{t.title || '（无标题）'}</strong>
+                      )}
                       <em>{t.engineer_name || t.engineer_id || '无人'}</em>
                       <span>
                         {[t.task_type, t.robot_type, t.fault_code].filter(Boolean).join(' · ') || '—'}
@@ -738,7 +904,11 @@ export default function DispatchDev() {
                       <ul className="dispatch-dev__list">
                         {c.tickets.map((t, i) => (
                           <li key={`${t.ticket_id}-${i}`}>
-                            <strong>{t.title || '（无标题）'}</strong>
+                            {t.ticket_id && /^\d+$/.test(String(t.ticket_id)) ? (
+                              <TicketLink taskId={Number(t.ticket_id)} title={t.title || '（无标题）'} />
+                            ) : (
+                              <strong>{t.title || '（无标题）'}</strong>
+                            )}
                             <em>{t.engineer_name || t.engineer_id || '无人'}</em>
                           </li>
                         ))}
