@@ -18,7 +18,7 @@ _ROWS = [
 
 
 def test_empty_open_and_all():
-    assert "暂无未完结" in fmt([], 0, True)
+    assert "暂无待处理" in fmt([], 0, True)
     assert "暂无名下工单" in fmt([], 0, False) or "暂无工单" in fmt([], 0, False)
     assert "不要编造" in fmt([], 0, True)
 
@@ -37,7 +37,7 @@ def test_truncation_wording():
 
 
 def test_only_open_scope_header():
-    assert "未完结" in fmt(_ROWS, 2, True)
+    assert "待处理" in fmt(_ROWS, 2, True)
 
 
 def test_status_map_has_canceled():

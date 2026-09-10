@@ -315,7 +315,10 @@ def _drilldown_matrix(csv_rows):
 
 
 def _fail_items(j_rows):
-    """L3 预标「未直答/未覆盖」段全量清单（不截断），供工作台按周浏览。
+    """未直答/未覆盖段全量清单（不截断），供工作台按周浏览。
+    **人工标签优先于 AI 预标**（0910 实锤：用户标了「直接提单」的段仍进清单——
+    原先只看 pre，人工纠正被无视）。段上有人工标签（含预填）按标签计，
+    无标签段才按 AI 预标计。
     每条含问题/type/判定/理由/用户/时间/所在周（周一日期）——
     周增量=按 week 分组后的各组条数。
     纯问候/寒暄段（段内无 L1 咨询回合，如整段只有「你好」）不进清单；
@@ -323,8 +326,20 @@ def _fail_items(j_rows):
     if not j_rows or not os.path.exists(SPLIT) or not os.path.exists(
             os.path.join(OUT, "conversations_classified.jsonl")):
         return []
-    bad = [r for r in j_rows if r.get("pre") in ("未直答", "未覆盖")
-           and r.get("grp") == "真实组"]  # 测试组是自测流量，不进缺口清单
+    labs_man = {}
+    if os.path.exists(MANUAL):
+        legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+        for cid, lm in (json.load(open(MANUAL, encoding="utf-8"))
+                        .get("labels") or {}).items():
+            labs_man[str(cid)] = {int(k): legacy.get(v, v) for k, v in lm.items()
+                                  if str(k).isdigit()}
+    bad = []
+    for r in j_rows:
+        if r.get("grp") != "真实组":
+            continue  # 测试组是自测流量，不进缺口清单
+        eff = labs_man.get(str(r["cid"]), {}).get(r.get("astart")) or r.get("pre")
+        if eff in ("未直答", "未覆盖"):
+            bad.append((r, eff))
     if not bad:
         return []
     convs = {str(c["conversation_id"]): c for c in
@@ -338,7 +353,7 @@ def _fail_items(j_rows):
         if r.get("astart") is not None:
             starts.setdefault(str(r["cid"]), set()).add(r["astart"])
     items = []
-    for r in bad:
+    for r, eff in bad:
         c, cl = convs.get(str(r["cid"])), cls_by.get(str(r["cid"]))
         a = r.get("astart")
         if not c or not cl or a is None or a >= len(c["rounds"]) or a >= len(cl):
@@ -356,7 +371,7 @@ def _fail_items(j_rows):
         at = (c["rounds"][qi].get("at") or "")[:16]
         t = _dt.fromisoformat(at) if at else None
         week = (t - _td(days=t.weekday())).strftime("%Y-%m-%d") if t else ""
-        items.append({"pre": r["pre"], "q": q, "type": cl[qi].get("type") or "未分类",
+        items.append({"pre": eff, "q": q, "type": cl[qi].get("type") or "未分类",
                       "reason": (r.get("reason") or "")[:60],
                       "user": (c.get("name") or c.get("user_id") or "?"),
                       "cid": r["cid"], "astart": a, "at": at, "week": week})
@@ -580,6 +595,27 @@ def _write_md(rep, path):
         fh.write("\n".join(L))
 
 
+def _overlay_manual_labels(rows):
+    """人工标签覆盖进判定行（lab ← MANUAL 的标签，无标签行保持原值）。
+
+    0910 实锤：判定行是增量复用的，行内 lab 停在判定时刻——用户其后改的
+    标签（含直接提单改判）永远进不了周报；precision/一致率/未直答清单
+    全部失真。凡吃 j_rows 的统计必须先过这一层。"""
+    if not os.path.exists(MANUAL):
+        return rows
+    legacy = {"直答错误": "未直答", "直答不完整": "未直答", "转工单正确": "建议转单"}
+    labs_man = {}
+    for cid, lm in (json.load(open(MANUAL, encoding="utf-8"))
+                    .get("labels") or {}).items():
+        labs_man[str(cid)] = {int(k): legacy.get(v, v) for k, v in lm.items()
+                              if str(k).isdigit()}
+    for r in rows:
+        lab = labs_man.get(str(r.get("cid")), {}).get(r.get("astart"))
+        if lab:
+            r["lab"] = lab
+    return rows
+
+
 def step_report():
     def latest_one(pattern):
         files = sorted(glob.glob(os.path.join(OUT, pattern)))
@@ -617,7 +653,8 @@ def step_report():
     # 预标分布 + 已标段一致率
     j_path = latest_one("l3_judge_all_*.json")
     if j_path:
-        rows = json.load(open(j_path, encoding="utf-8"))
+        rows = _overlay_manual_labels(
+            json.load(open(j_path, encoding="utf-8")))
         rep["pre_source"] = os.path.basename(j_path)
         for g in ("真实组", "测试组"):
             sub = [r for r in rows if r.get("grp") == g]
