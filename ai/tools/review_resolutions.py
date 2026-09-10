@@ -272,6 +272,15 @@ const REASONS = __REASONS__;
 const TYPES = __TYPES__;
 const SKIPPED = __SKIPPED__;
 const state = {};  // point_id -> {verdict, reason, note}
+// 判定本地持久化（0910 实锤：审完直接关页/刷新全丢——state 只在内存）：
+// 每步点选即存 localStorage（按导出目录分键），重开页面自动恢复
+const DIR = new URLSearchParams(location.search).get("dir") || "local";
+const LS_KEY = "sink_review_" + DIR;
+function persistState() { try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch (e) {} }
+try {
+  const saved = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+  for (const k in saved) if (saved[k] && saved[k].verdict) state[k] = saved[k];
+} catch (e) {}
 
 function esc(s) {
   return String(s == null ? "" : s)
@@ -308,6 +317,7 @@ function judge(i, v) {
     verdict: (cur && cur.verdict === v) ? "" : v,
     reason: cur ? cur.reason : "", note: cur ? cur.note : "",
   };
+  persistState();
   const card = document.getElementById("card-" + i);
   card.className = "card" + (state[c.point_id].verdict ? " v-" + state[c.point_id].verdict : "");
   card.querySelectorAll(".ops button").forEach(b =>
@@ -320,10 +330,12 @@ function judge(i, v) {
 function setReason(i, val) {
   const c = CARDS[i]; state[c.point_id] = state[c.point_id] || {verdict: "", reason: "", note: ""};
   state[c.point_id].reason = val;
+  persistState();
 }
 function setNote(i, val) {
   const c = CARDS[i]; state[c.point_id] = state[c.point_id] || {verdict: "", reason: "", note: ""};
   state[c.point_id].note = val;
+  persistState();
 }
 function updateBar() {
   const done = CARDS.filter(c => state[c.point_id] && state[c.point_id].verdict).length;
@@ -371,6 +383,7 @@ async function saveCsv() {
       body: JSON.stringify({dir, csv})});
     const j = await r.json();
     if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+    localStorage.removeItem(LS_KEY);  // 保存成功，本地备份让位给 CSV 真相
     alert("已保存到工作台（已判 " + (j.judged || 0) + "/" + (j.total || 0)
       + " 张）——回工作台点「③ 应用判定」");
   } catch (e) {
@@ -381,6 +394,20 @@ async function saveCsv() {
   }
 }
 render();
+(function applyRestored() {
+  CARDS.forEach((c, i) => {
+    const s = state[c.point_id];
+    if (!s || !s.verdict) return;
+    const card = document.getElementById("card-" + i);
+    if (!card) return;
+    card.className = "card v-" + s.verdict;
+    card.querySelectorAll(".ops button").forEach(b =>
+      b.className = b.dataset.v === s.verdict ? "on-" + b.dataset.v : "");
+    const sel = card.querySelector("select"); if (sel && s.reason) sel.value = s.reason;
+    const inp = card.querySelector("input"); if (inp && s.note) inp.value = s.note;
+  });
+  updateBar();
+})();
 (function renderSkipped() {
   if (!SKIPPED.length) return;
   document.getElementById("skippedBox").style.display = "";
