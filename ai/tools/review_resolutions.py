@@ -273,14 +273,36 @@ const TYPES = __TYPES__;
 const SKIPPED = __SKIPPED__;
 const state = {};  // point_id -> {verdict, reason, note}
 // 判定本地持久化（0910 实锤：审完直接关页/刷新全丢——state 只在内存）：
-// 每步点选即存 localStorage（按导出目录分键），重开页面自动恢复
+// 每步点选即存 localStorage（按导出目录分键）；打开时先加载 CSV 基线
+// （保存后的真相，含重拉合并的判定），localStorage 里未保存的编辑叠加其上
 const DIR = new URLSearchParams(location.search).get("dir") || "local";
 const LS_KEY = "sink_review_" + DIR;
 function persistState() { try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch (e) {} }
-try {
-  const saved = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
-  for (const k in saved) if (saved[k] && saved[k].verdict) state[k] = saved[k];
-} catch (e) {}
+function applyRestored() {
+  CARDS.forEach((c, i) => {
+    const s = state[c.point_id];
+    if (!s || !s.verdict) return;
+    const card = document.getElementById("card-" + i);
+    if (!card) return;
+    card.className = "card v-" + s.verdict;
+    card.querySelectorAll(".ops button").forEach(b =>
+      b.className = b.dataset.v === s.verdict ? "on-" + b.dataset.v : "");
+    const sel = card.querySelector("select"); if (sel && s.reason) sel.value = s.reason;
+    const inp = card.querySelector("input"); if (inp && s.note) inp.value = s.note;
+  });
+  updateBar();
+}
+async function loadExisting() {
+  try {
+    const r = await fetch("/api/sink_csv?dir=" + encodeURIComponent(DIR));
+    if (!r.ok) return;
+    const j = await r.json();
+    (j.rows || []).forEach(row => {
+      if (row.verdict && row.point_id != null)
+        state[String(row.point_id)] = {verdict: row.verdict, reason: row.reason || "", note: row.note || ""};
+    });
+  } catch (e) {}
+}
 
 function esc(s) {
   return String(s == null ? "" : s)
@@ -394,19 +416,13 @@ async function saveCsv() {
   }
 }
 render();
-(function applyRestored() {
-  CARDS.forEach((c, i) => {
-    const s = state[c.point_id];
-    if (!s || !s.verdict) return;
-    const card = document.getElementById("card-" + i);
-    if (!card) return;
-    card.className = "card v-" + s.verdict;
-    card.querySelectorAll(".ops button").forEach(b =>
-      b.className = b.dataset.v === s.verdict ? "on-" + b.dataset.v : "");
-    const sel = card.querySelector("select"); if (sel && s.reason) sel.value = s.reason;
-    const inp = card.querySelector("input"); if (inp && s.note) inp.value = s.note;
-  });
-  updateBar();
+(async () => {
+  await loadExisting();  // CSV 基线（保存过的判定）
+  try {
+    const saved = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+    for (const k in saved) if (saved[k] && saved[k].verdict) state[k] = saved[k];
+  } catch (e) {}
+  applyRestored();
 })();
 (function renderSkipped() {
   if (!SKIPPED.length) return;

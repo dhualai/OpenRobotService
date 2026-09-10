@@ -47,8 +47,8 @@ def _patch_review_html(path):
     服务器部署新版后（页面自带 saveCsv）自然跳过。"""
     with open(path, encoding="utf-8") as fh:
         html = fh.read()
-    if "sink_review_" in html:
-        return False  # 已带新补丁（含本地持久化）
+    if "loadExisting" in html:
+        return False  # 已带最新补丁（CSV 基线加载 + 本地持久化）
     if "function exportCsv() {" not in html:
         return False  # 结构对不上（模板大改），保守不动
     patch = '''<script>
@@ -58,22 +58,41 @@ def _patch_review_html(path):
   const DIR = new URLSearchParams(location.search).get("dir") || "local";
   const LS_KEY = "sink_review_" + DIR;
   function persistState() { try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch (e) {} }
-  try {
-    const saved = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
-    for (const k in saved) if (saved[k] && saved[k].verdict) state[k] = saved[k];
-  } catch (e) {}
-  CARDS.forEach((c, i) => {
-    const s = state[c.point_id];
-    if (!s || !s.verdict) return;
-    const card = document.getElementById("card-" + i);
-    if (!card) return;
-    card.className = "card v-" + s.verdict;
-    card.querySelectorAll(".ops button").forEach(b =>
-      b.className = b.dataset.v === s.verdict ? "on-" + b.dataset.v : "");
-    const sel = card.querySelector("select"); if (sel && s.reason) sel.value = s.reason;
-    const inp = card.querySelector("input"); if (inp && s.note) inp.value = s.note;
-  });
-  updateBar();
+  function applyRestored() {
+    CARDS.forEach((c, i) => {
+      const s = state[c.point_id];
+      if (!s || !s.verdict) return;
+      const card = document.getElementById("card-" + i);
+      if (!card) return;
+      card.className = "card v-" + s.verdict;
+      card.querySelectorAll(".ops button").forEach(b =>
+        b.className = b.dataset.v === s.verdict ? "on-" + b.dataset.v : "");
+      const sel = card.querySelector("select"); if (sel && s.reason) sel.value = s.reason;
+      const inp = card.querySelector("input"); if (inp && s.note) inp.value = s.note;
+    });
+    updateBar();
+  }
+  async function loadExisting() {
+    // CSV 是保存后的真相（含重拉合并的判定）——打开页面先加载为基线；
+    // localStorage 里只有此后未保存的编辑，叠加其上
+    try {
+      const r = await fetch("/api/sink_csv?dir=" + encodeURIComponent(DIR));
+      if (!r.ok) return;
+      const j = await r.json();
+      (j.rows || []).forEach(row => {
+        if (row.verdict && row.point_id != null)
+          state[String(row.point_id)] = {verdict: row.verdict, reason: row.reason || "", note: row.note || ""};
+      });
+    } catch (e) {}
+  }
+  (async () => {
+    await loadExisting();
+    try {
+      const saved = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+      for (const k in saved) if (saved[k] && saved[k].verdict) state[k] = saved[k];
+    } catch (e) {}
+    applyRestored();
+  })();
   const _j = judge, _r = setReason, _n = setNote;
   judge = function (i, v) { _j(i, v); persistState(); };
   setReason = function (i, v) { _r(i, v); persistState(); };
