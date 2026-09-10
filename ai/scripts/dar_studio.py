@@ -14,6 +14,7 @@ import asyncio
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -29,6 +30,7 @@ from pydantic import BaseModel
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.dirname(os.path.dirname(HERE))
 DATA_ROOT = r"C:/Users/PAJ26020/Desktop/export_dar"
+SINK_ROOT = r"D:/Code/OpenRobotService_Data/review/ticket_resolutions"
 PORT = int(os.environ.get("DAR_STUDIO_PORT", "9527"))
 
 DEFAULT_BACKEND = "http://127.0.0.1:19640"      # 经 ssh 隧道 → 测试环境后端 9400（login）
@@ -358,8 +360,11 @@ _run_state: dict = {"proc": None, "logs": [], "cmd": "", "env": "", "rc": None}
 
 class RunReq(BaseModel):
     env: str = "test"
-    steps: list[str]
+    steps: list[str] = []
     note: str = ""
+    kind: str = "dar"      # dar=周流程（缺省）｜sink_export/sink_apply=工单沉淀编排
+    dir: str = ""          # sink_apply：导出目录名 export_YYYYMMDD_HHMMSS
+    reviewer: str = ""     # sink_apply：审核人
 
 
 class StopReq(BaseModel):
@@ -370,18 +375,35 @@ class StopReq(BaseModel):
 async def run(req: RunReq):
     if _run_state["proc"] and _run_state["proc"].poll() is None:
         raise HTTPException(409, "已有流程在跑（先停止）")
-    if req.env not in ("test", "prod"):
-        raise HTTPException(400, "env 取值 test|prod")
-    args = [sys.executable, os.path.join(HERE, "dar_weekly.py"), "--env", req.env]
-    if req.note:
-        args += ["--note", req.note]
-    args += req.steps
+    if req.kind == "dar":
+        if req.env not in ("test", "prod"):
+            raise HTTPException(400, "env 取值 test|prod")
+        args = [sys.executable, os.path.join(HERE, "dar_weekly.py"), "--env", req.env]
+        if req.note:
+            args += ["--note", req.note]
+        args += req.steps
+        cmd_disp = f"dar_weekly --env {req.env} {' '.join(req.steps)}"
+    elif req.kind in ("sink_export", "sink_apply"):
+        if not os.path.isfile(os.path.join(HERE, "sink_flow.py")):
+            raise HTTPException(500, "sink_flow.py 缺失")
+        args = [sys.executable, os.path.join(HERE, "sink_flow.py"),
+                "--export" if req.kind == "sink_export" else "--apply"]
+        cmd_disp = "sink_flow --export"
+        if req.kind == "sink_apply":
+            if not re.fullmatch(r"export_\d{8}_\d{6}", req.dir or ""):
+                raise HTTPException(400, "dir 应为 export_YYYYMMDD_HHMMSS")
+            if not req.reviewer.strip():
+                raise HTTPException(400, "apply 需要审核人名字")
+            args += ["--dir", req.dir, "--reviewer", req.reviewer.strip()]
+            cmd_disp = f"sink_flow --apply {req.dir} --reviewer {req.reviewer.strip()}"
+    else:
+        raise HTTPException(400, "kind 取值 dar|sink_export|sink_apply")
     proc = subprocess.Popen(
         args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
         cwd=PROJ, env=_child_env())
-    _run_state.update(proc=proc, logs=[], cmd=" ".join(req.steps),
-                      env=req.env, rc=None)
+    _run_state.update(proc=proc, logs=[], cmd=cmd_disp,
+                      env=req.env if req.kind == "dar" else req.kind, rc=None)
 
     def reader():  # 独立线程持续读：与前端是否在线无关（防 PIPE 满卡死子进程）+ 留档供刷新恢复
         for line in proc.stdout:
@@ -822,6 +844,72 @@ def label_tool(env: str = "test"):
     if not os.path.exists(p):
         raise HTTPException(404, "标注工具未生成（先运行「生成标注工具」步骤）")
     # no-cache：0909 实锤浏览器缓存旧页面——导数后重开工具还看到前天的会话与旧预标
+    return FileResponse(p, headers={"Cache-Control": "no-cache"})
+
+
+# ── 工单沉淀审核（review.html 自包含页 + CSV 收发）──────────────
+_DIR_RE = re.compile(r"export_\d{8}_\d{6}$")
+
+
+def _latest_sink_dir() -> str:
+    dirs = sorted(d for d in os.listdir(SINK_ROOT) if _DIR_RE.fullmatch(d)) \
+        if os.path.isdir(SINK_ROOT) else []
+    return dirs[-1] if dirs else ""
+
+
+class SinkSaveReq(BaseModel):
+    dir: str = ""
+    csv: str = ""
+
+
+@app.post("/api/sink_save")
+def sink_save(req: SinkSaveReq):
+    """审核页「保存标注结果」：CSV 直写导出目录 review.csv（apply 按钮读它）。"""
+    if not _DIR_RE.fullmatch(req.dir or ""):
+        raise HTTPException(400, "dir 应为 export_YYYYMMDD_HHMMSS")
+    csv_path = os.path.join(SINK_ROOT, req.dir, "review.csv")
+    if not os.path.isdir(os.path.dirname(csv_path)):
+        raise HTTPException(404, f"导出目录不存在：{req.dir}")
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as fh:
+        fh.write(req.csv)
+    from collections import Counter as _Ctr
+    rows = [r.split(",") for r in req.csv.splitlines() if r.strip()]
+    verdicts = _Ctr((r[3].strip().strip('"') if len(r) > 3 else "") for r in rows[1:])
+    judged = sum(verdicts.get(v, 0) for v in ("approved", "rejected", "test"))
+    return {"ok": True, "judged": judged, "total": max(len(rows) - 1, 0),
+            "path": csv_path}
+
+
+@app.get("/api/sink_status")
+def sink_status():
+    """最新导出目录 + review.csv 判定进度（无导出则 found=false）。"""
+    d = _latest_sink_dir()
+    if not d:
+        return {"found": False}
+    csv_path = os.path.join(SINK_ROOT, d, "review.csv")
+    out = {"found": True, "dir": d,
+           "mtime": _mtime_str(os.path.join(SINK_ROOT, d, "review.html")),
+           "total": 0, "judged": 0, "approved": 0, "rejected": 0, "test": 0}
+    if os.path.isfile(csv_path):
+        import csv as _csv
+        from collections import Counter as _Ctr
+        with open(csv_path, encoding="utf-8-sig", newline="") as fh:
+            rows = list(_csv.DictReader(fh))
+        c = _Ctr((r.get("verdict") or "").strip().lower() for r in rows)
+        out.update(total=len(rows), judged=sum(c.get(v, 0) for v in ("approved", "rejected", "test")),
+                   approved=c.get("approved", 0), rejected=c.get("rejected", 0), test=c.get("test", 0))
+    return out
+
+
+@app.get("/sink_review")
+def sink_review(dir: str = ""):
+    """服务最新（或指定）导出目录的审核页；dir 校验防路径穿越。"""
+    d = dir or _latest_sink_dir()
+    if not d or not _DIR_RE.fullmatch(d):
+        raise HTTPException(400, "dir 应为 export_YYYYMMDD_HHMMSS")
+    p = os.path.join(SINK_ROOT, d, "review.html")
+    if not os.path.isfile(p):
+        raise HTTPException(404, "审核页不存在（先「拉取待审」）")
     return FileResponse(p, headers={"Cache-Control": "no-cache"})
 
 

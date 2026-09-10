@@ -199,6 +199,7 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
     <nav class="nav">
       <button id="nav-week" class="on"><span class="dot"></span>周流程 · 指标生成</button>
       <button id="nav-test"><span class="dot"></span>在线测试</button>
+      <button id="nav-sink"><span class="dot"></span>工单沉淀</button>
     </nav>
     <div class="fill"></div>
     <div class="conn">
@@ -238,18 +239,6 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
         <h3>流程</h3>
         <div class="wiz" id="wiz"></div>
       </div>
-
-      <details class="card" id="logcard">
-        <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
-          运行日志 <span class="hint" id="runstate" style="font-weight:400"></span></summary>
-        <div style="display:flex;gap:8px;margin:10px 0">
-          <input type="text" id="note" placeholder="附注（--note，随周报落盘）" style="flex:1">
-          <button class="btn sm dng" id="resetretr" title="删当日检索判定（jsonl+json），重跑 retrieval 步即全量重判——换判定模型后用">重判全部</button>
-          <button class="btn sm dng" id="resetl3" title="删当日 L3 judge 两套（校准+预标 jsonl+json），重跑 L3 步即全段重判——换判定模型后用">重判 L3</button>
-          <button class="btn sm dng" id="stopbtn" disabled>停止</button>
-        </div>
-        <div class="term" id="term" style="height:150px"><div class="hd">$ 等待运行…（步骤可增量复用，重复跑只补新数据）</div></div>
-      </details>
 
       <details class="card">
         <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">高级：自选步骤</summary>
@@ -334,6 +323,41 @@ kbd{background:#f1f5f9;border:1px solid var(--line);border-bottom-width:2px;bord
         <div id="probeout"><div class="card"><div class="empty">输入问题查看知识库命中</div></div></div>
       </div>
     </section>
+
+    <!-- ══ 页签3 工单沉淀 ══ -->
+    <section class="view" id="view-sink">
+      <h2 class="pg">工单沉淀审核</h2>
+      <p class="sub">closed 工单 → LLM 提炼卡（pending 不可检索）→ 人工判定 → 应用。每周三步：拉取 → 审核 → 应用（应用是<b>生产写</b>：放行卡即刻可检索，驳回/测试单删点+终态标记）。</p>
+
+      <div class="card">
+        <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+          <button class="btn pri" id="sinkexport">① 拉取待审</button>
+          <button class="btn pri" id="sinkopen">② 打开审核页</button>
+          <label class="f">审核人<input type="text" id="sinkrev" style="width:110px"></label>
+          <button class="btn dng" id="sinkapply">③ 应用判定</button>
+          <span style="flex:1"></span>
+          <span class="badge dim" id="sinkstat">未拉取</span>
+        </div>
+        <div style="margin-top:10px;font-size:12.5px;color:var(--ink3);line-height:1.8">
+          ① ssh 生产跑导出并拉回本地（只读库，几十秒）；② 新标签页逐卡判定（通过 / 驳回 / 测试单，驳回必选理由），
+          点「保存标注结果」回写本页；③ 确认后回写生产。<br>
+          误杀复检：AI 判「无知识可提」跳过的单在审核页底部折叠区，抽检后按卡内命令单张重跑。
+        </div>
+      </div>
+    </section>
+
+    <!-- 运行日志：全局（周流程/工单沉淀两页签共用同一运行通道） -->
+    <details class="card" id="logcard">
+      <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--ink2)">
+        运行日志 <span class="hint" id="runstate" style="font-weight:400"></span></summary>
+      <div style="display:flex;gap:8px;margin:10px 0">
+        <input type="text" id="note" placeholder="附注（--note，随周报落盘）" style="flex:1">
+        <button class="btn sm dng" id="resetretr" title="删当日检索判定（jsonl+json），重跑 retrieval 步即全量重判——换判定模型后用">重判全部</button>
+        <button class="btn sm dng" id="resetl3" title="删当日 L3 judge 两套（校准+预标 jsonl+json），重跑 L3 步即全段重判——换判定模型后用">重判 L3</button>
+        <button class="btn sm dng" id="stopbtn" disabled>停止</button>
+      </div>
+      <div class="term" id="term" style="height:150px"><div class="hd">$ 等待运行…（步骤可增量复用，重复跑只补新数据）</div></div>
+    </details>
   </main>
 </div>
 <div id="toasts"></div>
@@ -388,13 +412,14 @@ async function sse(url, body, onEvent, onDone){
 
 /* ── 导航 ── */
 function nav(v){
-  $("#nav-week").classList.toggle("on", v==="week");
-  $("#nav-test").classList.toggle("on", v==="test");
-  $("#view-week").classList.toggle("on", v==="week");
-  $("#view-test").classList.toggle("on", v==="test");
+  ["week","test","sink"].forEach(k=>{
+    $("#nav-"+k).classList.toggle("on", v===k);
+    $("#view-"+k).classList.toggle("on", v===k);
+  });
 }
 $("#nav-week").onclick = ()=>nav("week");
 $("#nav-test").onclick = ()=>nav("test");
+$("#nav-sink").onclick = ()=>nav("sink");
 
 /* ══ 页签1 周流程 ══ */
 const env = "prod";  // 指标固定连生产（用户定调：对话记录只从生产拿）
@@ -567,7 +592,7 @@ async function resetJudge(kind, label){
 $("#resetretr").onclick = ()=>resetJudge("retrieval", "检索");
 $("#resetl3").onclick = ()=>resetJudge("l3", "L3");
 let running = false;
-async function runSteps(steps, wstepEl, after){
+async function runSteps(steps, wstepEl, after, opts){
   if(running){ toast("已有流程在跑", "err"); return; }
   running = true; stopFollow();
   document.querySelectorAll(".wstep .ops button, #advrun").forEach(x=>x.disabled = true);
@@ -576,9 +601,9 @@ async function runSteps(steps, wstepEl, after){
   $("#runstate").innerHTML = '<span class="badge warn">运行中</span>';
   document.querySelector("#logcard").open = true;
   $("#term").innerHTML = "";
-  termLine("hd", `$ dar_weekly --env ${env} ${steps.join(" ")}`);
+  termLine("hd", `$ ${(opts && opts.hdr) || `dar_weekly --env ${env} ${steps.join(" ")}`}`);
   let lastRc = null;
-  await sse("/api/run", {env, steps, note: $("#note").value.trim()}, ev=>{
+  await sse("/api/run", {env, steps, note: $("#note").value.trim(), ...(opts||{})}, ev=>{
     if(ev.event === "log") termLine("", ev.data.line);
     else if(ev.event === "begin") termLine("hd", `▶ ${ev.data.cmd}`);
     else if(ev.event === "done"){
@@ -594,6 +619,7 @@ async function runSteps(steps, wstepEl, after){
     $("#runstate").innerHTML = '<span class="badge ok">空闲</span>';
     loadMetrics().then(()=>{ loadArts(); loadUA(); });
     loadProg();
+    loadSink();
     if(after) after(lastRc);
   });
 }
@@ -717,6 +743,40 @@ async function loadUA(){
     ...weeks.map(([w, n])=>[w, `${w.slice(5).replace("-", "/")} 周 +${n}`])];
   renderUA();
 }
+
+/* ══ 页签3 工单沉淀 ══ */
+let sinkDir = "";
+async function loadSink(){
+  try{
+    const j = await (await fetch("/api/sink_status")).json();
+    const el = $("#sinkstat");
+    if(!j.found){ el.textContent = "未拉取"; el.className = "badge dim"; sinkDir = ""; return; }
+    sinkDir = j.dir;
+    el.className = "badge " + (j.total && j.judged >= j.total ? "ok" : "warn");
+    el.textContent = j.total
+      ? `${j.dir.slice(7,16)}｜已判 ${j.judged}/${j.total}（过${j.approved} 驳${j.rejected} 测${j.test}）`
+      : `${j.dir.slice(7,16)}｜待审（未保存标注）`;
+  }catch(_){}
+}
+$("#sinkexport").onclick = ()=>runSteps([], null, null, {kind:"sink_export", hdr:"sink_flow --export"});
+$("#sinkopen").onclick = ()=>{
+  if(!sinkDir){ toast("先「① 拉取待审」", "err"); return; }
+  if(!window.open(`/sink_review?dir=${encodeURIComponent(sinkDir)}`, "_blank")) toast("浏览器拦截弹窗，允许后重试", "err");
+};
+$("#sinkrev").value = localStorage.getItem("sink_reviewer") || "";
+$("#sinkapply").onclick = async ()=>{
+  const reviewer = $("#sinkrev").value.trim();
+  if(!sinkDir){ toast("先「① 拉取待审」", "err"); return; }
+  if(!reviewer){ toast("先填审核人", "err"); return; }
+  const j = await (await fetch("/api/sink_status")).json();
+  if(!j.found || !j.total){ toast("先在审核页「保存标注结果」", "err"); return; }
+  if(!j.judged){ toast("还没有任何判定", "err"); return; }
+  if(!confirm(`应用判定到生产？\n\n放行 ${j.approved} 张（即刻可检索）\n删除 ${j.rejected + j.test} 张（驳回+测试单：删点+终态标记）\n未判 ${j.total - j.judged} 张跳过\n\n审核人：${reviewer}`)) return;
+  localStorage.setItem("sink_reviewer", reviewer);
+  runSteps([], null, null, {kind:"sink_apply", dir:sinkDir, reviewer,
+                            hdr:`sink_flow --apply ${sinkDir} --reviewer ${reviewer}`});
+};
+loadSink();
 
 /* ══ 页签2 在线测试 ══ */
 function setConn(user){
